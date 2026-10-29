@@ -21,7 +21,8 @@ from collections.abc import Callable
 from typing import Any
 
 #: A fetcher takes a C-number and returns the footprint dict
-#: ``{pads, pin_map, courtyard, centroid, source, raw}`` or None.
+#: ``{pads, pin_map, courtyard, centroid, graphics, graphics_dropped,
+#: source, raw}`` or None.
 Fetcher = Callable[[str], "dict[str, Any] | None"]
 
 

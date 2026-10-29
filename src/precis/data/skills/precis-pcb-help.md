@@ -349,6 +349,10 @@ current by each `put`. So `get(kind='part', id='C25804')` lists the boards
 that use it ([[precis-part-select-help]]). A C-number not in the catalog gets
 no edge.
 
+## Inspect one part's footprint graphics
+
+`get(kind='skill', id='precis-pcb-footprint-help')`.
+
 ## See the geometry — `get(view=…)` (the "eyes")
 
 You never look at a render. You ask numeric questions:

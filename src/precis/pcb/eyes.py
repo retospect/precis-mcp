@@ -199,6 +199,148 @@ def _pinout_holes(
     return rows
 
 
+#: Display cap for ``view='footprint'``: a footprint can carry hundreds
+#: of graphics of thousands of points each (vendor silk dumps) — the
+#: table shows the first ``_MAX_GRAPHIC_ROWS``, the body names the rest.
+_MAX_GRAPHIC_ROWS = 50
+
+
+def _points_bbox(pts: Any) -> list[float] | None:
+    """``[min_x, min_y, max_x, max_y]`` over the valid ``[x, y]`` pairs in
+    ``pts`` — the summary a 2000-point path gets instead of a JSON dump."""
+    xs: list[float] = []
+    ys: list[float] = []
+    if isinstance(pts, (list, tuple)):
+        for p in pts:
+            if not isinstance(p, (list, tuple)) or len(p) != 2:
+                continue
+            x, y = _pinout_number(p[0]), _pinout_number(p[1])
+            if x is None or y is None:
+                continue
+            xs.append(x)
+            ys.append(y)
+    if not xs:
+        return None
+    return [round(min(xs), 4), round(min(ys), 4), round(max(xs), 4), round(max(ys), 4)]
+
+
+def footprint_graphics(
+    instance: dict[str, Any], footprint: dict[str, Any]
+) -> dict[str, Any]:
+    """One row per stored footprint graphic (silk/courtyard/fab/doc
+    primitives, text, regions — gr520150), local and board geometry side
+    by side. Board coordinates map through :mod:`precis.pcb.pose`, the
+    same transform the pads use; a bottom instance additionally flips an
+    arc's ``cw`` and a text's ``mirror`` (mirror-X runs before rotate,
+    so a local CW sense reads reversed and the text stays legible).
+
+    Missing placement never becomes an origin: ``board_mm`` is ``None``
+    per row when the instance is unplaced, exactly as pinout does."""
+    placed = all(_pinout_number(instance.get(k)) is not None for k in ("x", "y"))
+    placed = placed and _pinout_number(instance.get("rot", 0) or 0) is not None
+    bottom = padplace.is_bottom_instance(instance)
+    inst_rot = _pinout_number(instance.get("rot") or 0) or 0.0
+
+    def world(pt: Any) -> list[float] | None:
+        if not placed or not isinstance(pt, (list, tuple)) or len(pt) != 2:
+            return None
+        lx, ly = _pinout_number(pt[0]), _pinout_number(pt[1])
+        if lx is None or ly is None:
+            return None
+        bx, by = pose.to_world(lx, ly, instance)
+        if not math.isfinite(bx) or not math.isfinite(by):
+            return None
+        return [round(bx, 4), round(by, 4)]
+
+    graphics = footprint.get("graphics") or []
+    rows = []
+    for index, raw in enumerate(graphics[:_MAX_GRAPHIC_ROWS], 1):
+        g = raw if isinstance(raw, dict) else {}
+        kind = str(g.get("kind") or "")
+        local: dict[str, Any] = {}
+        board: dict[str, Any] | None = {} if placed else None
+        if g.get("points") is not None:
+            pts = g["points"]
+            local["points"] = {
+                "count": len(pts) if isinstance(pts, (list, tuple)) else 0,
+                "bbox": _points_bbox(pts),
+            }
+            if board is not None:
+                board["points"] = {
+                    "count": local["points"]["count"],
+                    "bbox": _points_bbox([world(p) for p in pts])
+                    if isinstance(pts, (list, tuple))
+                    else None,
+                }
+        if g.get("center") is not None:
+            local["center"] = g["center"]
+            if board is not None:
+                board["center"] = world(g["center"])
+            for key in ("radius_mm",):
+                if g.get(key) is not None:
+                    local[key] = _pinout_number(g[key])
+                    if board is not None:
+                        board[key] = local[key]
+        if g.get("start") is not None or g.get("end") is not None:
+            local["start"], local["end"] = g.get("start"), g.get("end")
+            if board is not None:
+                board["start"], board["end"] = (
+                    world(g.get("start")),
+                    world(g.get("end")),
+                )
+            for key in ("angle_deg", "radius_mm"):
+                if g.get(key) is not None:
+                    local[key] = _pinout_number(g[key])
+                    if board is not None:
+                        board[key] = local[key]
+            for key in ("cw", "large_arc"):
+                if g.get(key) is not None:
+                    local[key] = bool(g[key])
+                    if board is not None:
+                        board[key] = (
+                            (not local[key]) if (key == "cw" and bottom) else local[key]
+                        )
+        if g.get("text") is not None:
+            for key in ("x", "y"):
+                local[key] = _pinout_number(g.get(key))
+            if board is not None:
+                xy = world([local["x"], local["y"]])
+                board["x"], board["y"] = (
+                    (xy[0], xy[1]) if xy is not None else (None, None)
+                )
+            for key in ("height_mm",):
+                if g.get(key) is not None:
+                    local[key] = _pinout_number(g[key])
+                    if board is not None:
+                        board[key] = local[key]
+            rot = _pinout_number(g.get("rot_deg") or 0) or 0.0
+            local["rot_deg"] = rot
+            if board is not None:
+                # Bottom mirrors before the instance rotation, so the
+                # text's own turn subtracts — padplace.oblique_world_rot's
+                # rule for pad rotation.
+                board["rot_deg"] = (inst_rot - rot if bottom else inst_rot + rot) % 360
+            if g.get("mirror") is not None:
+                local["mirror"] = bool(g["mirror"])
+                if board is not None:
+                    board["mirror"] = (
+                        (not local["mirror"]) if bottom else local["mirror"]
+                    )
+        rows.append(
+            {
+                "graphic_index": index,
+                "kind": kind,
+                "layer": str(g.get("layer") or ""),
+                "keepout": "yes" if g.get("keepout") else "",
+                "width_mm": _pinout_number(g.get("width_mm")),
+                "local_mm": local,
+                "board_mm": board,
+                "text": str(g.get("text") or ""),
+            }
+        )
+    return {"rows": rows, "placed": placed, "total": len(graphics)}
+
+
 def pinout_preview(
     instance: dict[str, Any],
     footprint: dict[str, Any],

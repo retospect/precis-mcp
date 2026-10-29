@@ -257,6 +257,7 @@ def _emit_footprint(
         "centroid",
         "note",
         "holes",
+        "graphics",
     }
     if unknown:
         loss.append(f"footprint {fp['name']!r}: unknown keys {sorted(unknown)}")
@@ -265,19 +266,20 @@ def _emit_footprint(
     }
     if fp.get("holes"):
         rest["holes"] = fp["holes"]
-    one = (
-        f"{var} = b.footprint(pcb.Footprint({fp['name']!r}, {pads_var}"
-        + ((", " + _kw(**rest)) if rest else "")
-        + "))"
-    )
-    if len("    " + one) <= _LIMIT:
-        return [one]
-    inner = (
+    ctor = (
         f"pcb.Footprint({fp['name']!r}, {pads_var}"
         + ((", " + _kw(**rest)) if rest else "")
+        + (
+            ", graphics=" + _value(fp["graphics"], indent=12)
+            if fp.get("graphics")
+            else ""
+        )
         + ")"
     )
-    return [f"{var} = b.footprint(", f"    {inner}", ")"]
+    one = f"{var} = b.footprint({ctor})"
+    if "\n" not in ctor and len("    " + one) <= _LIMIT:
+        return [one]
+    return [f"{var} = b.footprint(", f"    {ctor}", ")"]
 
 
 def _emit_feature(f_: dict[str, Any]) -> str:
@@ -583,6 +585,7 @@ def emit(
             "centroid",
             "note",
             "holes",
+            "graphics",
         }:
             loss.append(f"footprint {fp['name']!r}: unknown key {k!r}")
     if loss and not allow_loss:
@@ -953,6 +956,8 @@ def board_batch(store: Any, slug: str) -> tuple[dict[str, Any], dict[str, Any]]:
                 entry[key] = fp[key]
         if fp.get("holes"):
             entry["holes"] = fp["holes"]
+        if fp.get("graphics"):
+            entry["graphics"] = fp["graphics"]
         footprints.append(entry)
 
     batch: dict[str, Any] = {

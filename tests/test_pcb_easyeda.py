@@ -351,3 +351,128 @@ def test_fetch_component_injected_client_bypasses_default(
 
     assert doc == body
     assert calls == [sentinel]  # our client was used, not a freshly-opened one
+
+
+def test_parse_component_keeps_track_and_region_graphics():
+    """gr520150: silk/outline primitives used to be dropped (only a
+    courtyard hint was read off TRACK). They now land as ``graphics`` —
+    the same canonical dicts the epro reader emits."""
+    footprint = easyeda.parse_component(_doc())
+    assert footprint is not None
+    gfx = footprint["graphics"]
+    polyline = next(g for g in gfx if g["kind"] == "polyline")
+    assert polyline["layer"] == "F.SilkS"
+    assert polyline["width_mm"] == pytest.approx(0.254)
+    assert polyline["points"][0] == pytest.approx([-1.27, 3.81])
+    region = next(g for g in gfx if g["kind"] == "region")
+    assert region["layer"] == "F.SilkS"
+    assert region.get("keepout") is not True
+    assert region["points"][0] == region["points"][-1]  # Z closes it
+
+
+def test_footprint_graphics_lazy_decode_matches_parse_and_warns():
+    """The view-side lazy decode off a cached ``raw`` row: same output as
+    parse_component's stored graphics, plus the per-class drop warnings."""
+    doc = _doc()
+    gfx, warnings = easyeda.footprint_graphics(doc)
+    parsed = easyeda.parse_component(doc)
+    assert parsed is not None
+    assert gfx == parsed["graphics"]
+    shape = doc["result"]["packageDetail"]["dataStr"]["shape"]
+    shape.append("BOGUS~1~2~3")
+    gfx2, warnings2 = easyeda.footprint_graphics(doc)
+    assert gfx2 == gfx
+    assert warnings2 == [
+        "1 BOGUS primitive(s) precis does not decode — NOT imported as footprint graphics"
+    ]
+    assert easyeda.footprint_graphics({}) == ([], [])
+
+
+def test_footprint_graphics_malformed_path_drops_not_aborts():
+    """gr520150 FIX: a SOLIDREGION path whose letter pair has no numbers
+    (``M L 1 2 …``) used to raise out of ``_svg_polyline`` and kill the
+    whole ``parse_component``. Vendor data degrades — the primitive is
+    counted dropped, the footprint still parses."""
+    gfx, warnings = easyeda.footprint_graphics(
+        {
+            "result": {
+                "packageDetail": {
+                    "uuid": "pkg-bad",
+                    "dataStr": {
+                        "docType": 4,
+                        "head": {"x": 0, "y": 0},
+                        "shape": [
+                            "SOLIDREGION~1~~M L 1 2 L 3 4 L 5 6 Z~solid~id~x",
+                            "TRACK~1~3~~0 0 10 0~t1~0",
+                        ],
+                    },
+                }
+            }
+        }
+    )
+    assert [g["kind"] for g in gfx] == ["polyline"]
+    assert warnings == [
+        "1 SOLIDREGION primitive(s) precis does not decode — NOT "
+        "imported as footprint graphics"
+    ]
+    # The same malformed primitive inside a real fetch doc still parses.
+    doc = _doc()
+    doc["result"]["packageDetail"]["dataStr"]["shape"].append(
+        "SOLIDREGION~1~~M L 1 2 L 3 4 L 5 6 Z~solid~id~x"
+    )
+    parsed = easyeda.parse_component(doc)
+    assert parsed is not None and len(parsed["pads"]) == 6
+
+
+def test_parse_component_returns_the_drop_warnings():
+    """gr520150 FIX: ``parse_component`` used to decode-then-bin the
+    per-class drop warnings; they now ride the parsed dict as
+    ``graphics_dropped`` for the import surface to report."""
+    doc = _doc()
+    doc["result"]["packageDetail"]["dataStr"]["shape"].append(
+        "SOLIDREGION~1~~M L 1 2 L 3 4 L 5 6 Z~solid~id~x"
+    )
+    parsed = easyeda.parse_component(doc)
+    assert parsed is not None
+    assert parsed["graphics_dropped"] == [
+        "1 SOLIDREGION primitive(s) precis does not decode — NOT "
+        "imported as footprint graphics"
+    ]
+    clean = easyeda.parse_component(_doc())
+    assert clean is not None and clean["graphics_dropped"] == []
+
+
+def test_footprint_graphics_caps_report_overflow_as_dropped():
+    """gr520150: a footprint can carry unlimited primitives — cap at 500
+    graphics / 2000 points each, overflow reported as dropped."""
+    track = "TRACK~1~3~~0 0 10 0~t{i}~0"
+    shape = [track.format(i=i) for i in range(501)]
+    gfx, warnings = easyeda._footprint_graphics(shape, 0.0, 0.0)
+    assert len(gfx) == 500
+    assert any("500-per-footprint cap" in w for w in warnings)
+    huge = "TRACK~1~3~~" + " ".join(f"{i} {i}" for i in range(2002)) + "~t~0"
+    gfx, warnings = easyeda._footprint_graphics([huge], 0.0, 0.0)
+    assert gfx == []
+    assert any("2000-point cap" in w for w in warnings)
+
+
+def test_footprint_graphics_bad_value_drops_not_aborts():
+    """A primitive that decodes to a formally-invalid graphic (a negative
+    width, say) is dropped by the row validator rather than stored —
+    same vendor-degrades rule, one layer down."""
+    gfx, warnings = easyeda.footprint_graphics(
+        {
+            "result": {
+                "packageDetail": {
+                    "uuid": "pkg-negw",
+                    "dataStr": {
+                        "docType": 4,
+                        "head": {"x": 0, "y": 0},
+                        "shape": ["TRACK~-1~3~~0 0 10 0 10 10~t1~0"],
+                    },
+                }
+            }
+        }
+    )
+    assert gfx == []
+    assert any("width_mm must be >= 0" in w for w in warnings)

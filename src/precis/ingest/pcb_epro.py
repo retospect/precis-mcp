@@ -50,7 +50,7 @@ from typing import Any
 from shapely.geometry import Polygon
 from shapely.ops import unary_union
 
-from precis.pcb import copper_report, datasheets, drc, epro, ir, padplace
+from precis.pcb import copper_report, datasheets, drc, epro, ir, padplace, rows
 from precis.pcb.capabilities import CapabilityRow, capability_for
 from precis.pcb.rules import NetRules, resolve_net_rules
 from precis.store._pcb_ops import (
@@ -833,6 +833,15 @@ def import_epro(
         board, pours=design.epro_pours, outline=_outline_path(design)
     )
     warnings = [*design.warnings, *stackup_warnings]
+    # Vendor-decoded graphics degrade, they never reject: one malformed
+    # graphic drops with a warning rather than failing the footprint's
+    # whole import (``normalize_footprint`` runs strict at put time —
+    # agent-authored input still hears about a bad graphic). Clean here,
+    # ahead of every strict call (_design_pads, _plan_footprints, apply).
+    for f in design.footprints:
+        f["graphics"] = rows.normalize_footprint_graphics(
+            str(f.get("name") or "?"), f.get("graphics"), dropped=warnings
+        )
     if freeze:
         newly = 0
         for comp in design.components:
@@ -1282,7 +1291,7 @@ def _plan_footprints(
             plan.footprints_differ.append(name)
         elif any(
             _canon(old.get(k)) != _canon(fresh.get(k))
-            for k in ("pads", "courtyard", "centroid", "holes")
+            for k in ("pads", "courtyard", "centroid", "holes", "graphics")
         ):
             plan.footprints_refreshed.append(name)
     plan.footprints_refreshed.sort()

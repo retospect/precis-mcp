@@ -242,6 +242,14 @@ PIN_ETYPES: tuple[str, ...] = (
 #: series-capable pins).
 PIN_CURRENT_ROLES: tuple[str, ...] = ("series", "shunt", "signal")
 
+#: Footprint-graphics ceilings (gr520150): a vendor file can carry
+#: thousands of primitives per footprint — past these caps the overflow
+#: is reported as dropped rather than stored or rendered. Enforced by
+#: both decoders (epro/easyeda) and by
+#: :func:`precis.pcb.rows.normalize_footprint_graphics`.
+MAX_FOOTPRINT_GRAPHICS = 500
+MAX_GRAPHIC_POINTS = 2000
+
 #: Ceramic-capacitor dielectric classes, ranked by capacitance stability —
 #: lower number is better (docs/backlog/pcb-datasheet-review.md in-scope
 #: 5: "dielectric rank C0G > X7R > X5R > Y5V/Z5U"). ``np0`` is the IEC

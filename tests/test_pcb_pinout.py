@@ -220,6 +220,28 @@ def board(store):
                     "pads": pads,
                     "pin_map": fp["pin_map"],
                     "holes": _HOLES,
+                    "graphics": [
+                        {
+                            "kind": "polygon",
+                            "layer": "F.SilkS",
+                            "width_mm": 0.1,
+                            "points": [[-3, -2], [4, -2], [4, 2], [-3, -2]],
+                        },
+                        {
+                            "kind": "text",
+                            "layer": "F.SilkS",
+                            "x": 0,
+                            "y": 2.5,
+                            "text": "NO COPPER",
+                            "height_mm": 1.0,
+                        },
+                        {
+                            "kind": "region",
+                            "layer": "F.Cu",
+                            "keepout": True,
+                            "points": [[1, 1], [3, 1], [3, 2]],
+                        },
+                    ],
                 }
             ],
             "components": [
@@ -395,3 +417,98 @@ def test_handler_reports_unmatched_declared_pins(board, store):
     text = board.get(id="pinout-test#J_UNMATCHED", view="pinout").body
     assert "unmatched declared pins:" in text
     assert "LOST" in text and "explicit pad has no geometry" in text
+
+
+def test_footprint_view_shows_graphics_with_board_coords(board):
+    assert "footprint" in board.spec.views
+    front = board.get(id="pinout-test#J_TOP", view="footprint").body
+    assert "# pinout-test#J_TOP — footprint" in front
+    assert "design-local-authored" in front and "graphics: 3" in front
+    assert "NO COPPER" in front and "F.SilkS" in front
+    # J_TOP sits at (10, 20) rot 0: the polygon's points summarise to a
+    # board-frame bbox — local [-3..4, -2..2] maps to [7..14, 18..22].
+    assert "[7.0, 18.0, 14.0, 22.0]" in front and '"count": 4' in front
+    assert '"keepout": "yes"' in front or '"keepout":"yes"' in front or "yes" in front
+    unplaced = board.get(id="pinout-test#J_UNPLACED", view="footprint").body
+    assert "board coordinates: unavailable" in unplaced
+    missing = board.get(id="pinout-test#J_MISSING", view="footprint").body
+    assert "geometry: unavailable" in missing
+
+
+def test_footprint_view_requires_instance_and_refuses_bare_board(board):
+    with pytest.raises(NotFound):
+        board.get(id="pinout-test#MISSING", view="footprint")
+    with pytest.raises(BadInput) as exc:
+        board.get(id="pinout-test", view="footprint")
+    assert "view='footprint'" in str(exc.value.next)
+
+
+def test_footprint_view_lazy_decodes_cached_raw(board, store):
+    """A catalog row written before graphics existed decodes its raw."""
+    raw = {
+        "result": {
+            "packageDetail": {
+                "dataStr": {
+                    "head": {"x": 0, "y": 0, "docType": "4"},
+                    "shape": ["TRACK~1~3~~0 0 10 0~t1~0"],
+                }
+            }
+        }
+    }
+    store.part_footprint_put("C888888", {**_footprint(), "raw": raw})
+    store.pcb_apply(
+        slug="pinout-test",
+        title="pinout test",
+        nets=[],
+        connections=[],
+        components=[
+            {
+                "refdes": "J_RAW",
+                "part": "C888888",
+                "footprint": "ASYM",
+                "x": 0,
+                "y": 0,
+            }
+        ],
+    )
+    body = board.get(id="pinout-test#J_RAW", view="footprint").body
+    assert "decoded from cached raw" in body
+    assert "polyline" in body and "F.SilkS" in body
+
+
+def test_footprint_view_caps_at_50_rows_and_names_the_overflow(board, store):
+    """gr520150 FIX: a footprint with 60 graphics shows 50 rows and a
+    line naming the rest — the total is the stored count, never a
+    silent truncation."""
+    graphics = [
+        {
+            "kind": "line",
+            "layer": "F.SilkS",
+            "width_mm": 0.1,
+            "points": [[0, 0], [1, 0]],
+        }
+        for _ in range(60)
+    ]
+    result = eyes.footprint_graphics(
+        {"x": 0, "y": 0, "rot": 0, "layer": "top"}, {"graphics": graphics}
+    )
+    assert len(result["rows"]) == 50 and result["total"] == 60
+    store.part_footprint_put("C777777", {**_footprint(), "graphics": graphics})
+    store.pcb_apply(
+        slug="pinout-test",
+        title="pinout test",
+        nets=[],
+        connections=[],
+        components=[
+            {
+                "refdes": "J_MANY",
+                "part": "C777777",
+                "footprint": "ASYM",
+                "x": 0,
+                "y": 0,
+            }
+        ],
+    )
+    body = board.get(id="pinout-test#J_MANY", view="footprint").body
+    assert "graphics: 60" in body
+    assert "showing first 50 — 10 more not shown" in body

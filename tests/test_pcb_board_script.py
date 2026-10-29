@@ -283,6 +283,36 @@ def test_import_keys_roundtrip() -> None:
     _roundtrip(batch)
 
 
+def test_footprint_graphics_roundtrip() -> None:
+    """gr520150: footprint ``graphics`` used to be dropped at export —
+    they now ride the ``Footprint`` kwarg and come back byte-equal."""
+    batch = _tiny_batch()
+    batch["footprints"][0]["graphics"] = [
+        {
+            "kind": "polygon",
+            "layer": "F.SilkS",
+            "width_mm": 0.1,
+            "points": [[-3, -2], [4, -2], [4, 2], [-3, -2]],
+        },
+        {
+            "kind": "text",
+            "layer": "F.SilkS",
+            "x": 0,
+            "y": 2.5,
+            "text": "NO COPPER",
+            "height_mm": 1.0,
+        },
+        {
+            "kind": "region",
+            "layer": "F.Cu",
+            "keepout": True,
+            "points": [[1, 1], [3, 1], [3, 2]],
+        },
+    ]
+    text = _roundtrip(batch)
+    assert "graphics=" in text
+
+
 def test_unexpressible_keys_refuse_or_report() -> None:
     batch = _tiny_batch()
     batch["components"][0]["pin_decls"] = {"claims": [{"pin": "1", "name": "A"}]}

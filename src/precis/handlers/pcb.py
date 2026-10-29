@@ -131,6 +131,7 @@ from precis.pcb import catalog as pcb_catalog
 from precis.pcb import connectivity as pcb_connectivity
 from precis.pcb import datasheets as pcb_datasheets
 from precis.pcb import drc as pcb_drc
+from precis.pcb import easyeda as pcb_easyeda
 from precis.pcb import edge_mate as pcb_edge_mate
 from precis.pcb import epro_verify as pcb_epro_verify
 from precis.pcb import epro_write as pcb_epro_write
@@ -264,6 +265,7 @@ _RENDER_VIEWS = ("svg", "schematic", "capability")
 _OTHER_VIEWS = (
     "links",
     "footprints",
+    "footprint",
     "pinout",
     "pinout-preview",
     "notes",
@@ -1178,7 +1180,10 @@ class PcbHandler(Handler):
             "instance; args={'format':'json'} exports the cached rows as "
             "one JSON document — save as footprints.json for an offline "
             "run), one instance's actual physical pinout "
-            "(id='slug#J1', view='pinout', read-only), an unsaved explicit mapping "
+            "(id='slug#J1', view='pinout', read-only), one instance's "
+            "footprint graphics -- silk/courtyard/fab/doc primitives, text "
+            "and keepout regions with local+board mm "
+            "(id='slug#J1', view='footprint', read-only), an unsaved explicit mapping "
             "preview (same selector, view='pinout-preview', "
             "args={'pins':[{name,pad}]}), a vector figure (view='svg', "
             "args={'level':'board'|'sketch'|'fab','layers':[...],'include':[...]}), "
@@ -1785,7 +1790,7 @@ class PcbHandler(Handler):
         args: dict[str, Any] | None = None,
         **_kw: Any,
     ) -> Response:
-        if view in ("pinout", "pinout-preview"):
+        if view in ("pinout", "pinout-preview", "footprint"):
             selector = str(id or "").strip()
             if selector.count("#") != 1 or "@" in selector:
                 raise BadInput(
@@ -1799,6 +1804,8 @@ class PcbHandler(Handler):
                     next=f"get(kind='pcb', id='<board>#<REFDES>', view={view!r})",
                 )
             ref = resolve_live_slug_ref(self.store, kind="pcb", id=slug)
+            if view == "footprint":
+                return self._render_footprint(ref, refdes)
             proposals = self._preview_pins(args) if view == "pinout-preview" else None
             return self._render_pinout(ref, refdes, proposals=proposals)
         if id is None or (isinstance(id, str) and id.strip() in ("", "/")):
@@ -3946,12 +3953,25 @@ class PcbHandler(Handler):
                 n_ok += 1
             rows.append(self._footprint_summary_row(lcsc, row, error=error))
         head = f"# footprint — {n_ok}/{len(parts)} cached"
-        return Response(
-            body=head
+        body = (
+            head
             + "\n"
             + render_agent_table(rows, schema=_FOOTPRINT_SCHEMA)
             + self._footprint_judge_lines(ref, list(fetched), judged)
         )
+        # Vendor primitives that did not decode are not errors — the
+        # footprint still caches — but the drops are named the way the
+        # epro importer's warnings name them, never silently.
+        dropped = [
+            (lcsc, note)
+            for lcsc, data in fetched.items()
+            for note in data.get("graphics_dropped") or []
+        ]
+        if dropped:
+            body += "graphics dropped at import:\n" + "".join(
+                f"  {lcsc}: {note}\n" for lcsc, note in dropped
+            )
+        return Response(body=body)
 
     def _put_footprints_judged(
         self, ref: Any, footprints: dict[str, dict[str, Any]]
@@ -6558,7 +6578,14 @@ class PcbHandler(Handler):
             hits = {
                 lcsc: {
                     k: row.get(k)
-                    for k in ("pads", "pin_map", "courtyard", "centroid", "holes")
+                    for k in (
+                        "pads",
+                        "pin_map",
+                        "courtyard",
+                        "centroid",
+                        "holes",
+                        "graphics",
+                    )
                 }
                 for lcsc, row in sorted(rows_by_lcsc.items())
                 if row is not None
@@ -8508,6 +8535,119 @@ class PcbHandler(Handler):
                     "preview exceeds 16384 text characters; no output truncated",
                     next="reduce proposals or use view='pinout' for stored evidence",
                 )
+        return Response(body=body)
+
+    def _render_footprint(self, ref: Any, refdes: str) -> Response:
+        """``view='footprint'`` on a ``slug#REFDES`` selector (gr520150) —
+        every stored graphic the instance's footprint carries (silk,
+        courtyard, fab/doc/document primitives, text, keepout/rule
+        regions), one row each with footprint-local and board mm through
+        the same transform pinout uses. Inspectable only: a
+        ``keepout='yes'`` region binds nothing yet.
+
+        A catalog row written before ``graphics`` existed decodes its
+        cached ``raw`` lazily through
+        :func:`precis.pcb.easyeda.footprint_graphics` — same decoder
+        ``parse_component`` runs — so old rows show their graphics (and
+        per-class drop warnings) without a backfill."""
+        design = self.store.pcb_load(ref.id)
+        instance = next((i for i in design["instances"] if i["refdes"] == refdes), None)
+        if instance is None:
+            raise NotFound(
+                f"pcb instance {refdes!r} not found in this design",
+                next=f"get(kind='pcb', id={ref.slug!r})",
+            )
+        lcsc = instance.get("part_lcsc")
+        key = str(lcsc or instance.get("footprint") or "")
+        if lcsc:
+            footprint = self.store.part_footprint_get(key)
+            source = (
+                f"catalog-cache; source={(footprint or {}).get('source') or 'unknown'}"
+            )
+        else:
+            footprint = self.store.pcb_local_footprints_for(ref.id).get(key)
+            source = "design-local-authored"
+        if not footprint:
+            head = (
+                f"# {ref.slug}#{refdes} — footprint\n"
+                f"footprint: {key or 'unavailable'}; {source}\n"
+            )
+            hint = (
+                f"put(kind='pcb', id={ref.slug!r}, "
+                f"args={{'op':'footprint', 'part':{key!r}}})"
+                if lcsc
+                else "get(kind='skill', id='precis-pcb-help') — author footprints[] "
+                f"for {key or 'this instance'}"
+            )
+            return Response(
+                body=head + f"geometry: unavailable (no stored footprint)\nnext: {hint}"
+            )
+        graphics = list(footprint.get("graphics") or [])
+        notes: list[str] = []
+        raw = footprint.get("raw")
+        # The cached ``raw`` is re-parsed only for a row written before
+        # ``graphics`` existed — when stored graphics are present the
+        # decode (and its per-class drop notes) already ran at import.
+        if raw and not graphics:
+            decoded, dropped = pcb_easyeda.footprint_graphics(raw)
+            if decoded:
+                graphics = decoded
+                source += " (decoded from cached raw)"
+            notes += dropped
+        head = (
+            f"# {ref.slug}#{refdes} — footprint\n"
+            f"footprint: {key or 'unavailable'}; {source}\n"
+            f"instance: x_mm={instance.get('x')} y_mm={instance.get('y')} "
+            f"side={'bottom' if padplace.is_bottom_instance(instance) else 'top'} "
+            f"rotation_deg={instance.get('rot') or 0}\n"
+            "orientation: footprint-local +X right / +Y up; board top-view, "
+            "CW-positive rotation; bottom mirrors local X before rotate/translate.\n"
+            "Inspectable only — graphics bind nothing (a keepout region is "
+            "recorded, not yet enforced).\n"
+        )
+        result = eyes.footprint_graphics(instance, {**footprint, "graphics": graphics})
+        rows = [
+            {
+                **row,
+                "width_mm": (
+                    "unavailable"
+                    if row["width_mm"] is None
+                    else f"{row['width_mm']:.4f}"
+                ),
+                "local_mm": json.dumps(
+                    row["local_mm"], ensure_ascii=False, sort_keys=True
+                ),
+                "board_mm": (
+                    "unavailable"
+                    if row["board_mm"] is None
+                    else json.dumps(row["board_mm"], ensure_ascii=False, sort_keys=True)
+                ),
+            }
+            for row in result["rows"]
+        ]
+        body = head + f"graphics: {result['total']}\n"
+        if result["total"] > len(rows):
+            body += (
+                f"showing first {len(rows)} — "
+                f"{result['total'] - len(rows)} more not shown\n"
+            )
+        if not result["placed"]:
+            body += "board coordinates: unavailable (unplaced/invalid pose)\n"
+        if notes:
+            body += "dropped at import:\n" + "".join(f"  - {note}\n" for note in notes)
+        body += render_agent_table(
+            rows,
+            schema=[
+                "graphic_index",
+                "kind",
+                "layer",
+                "keepout",
+                "width_mm",
+                "local_mm",
+                "board_mm",
+                "text",
+            ],
+        )
         return Response(body=body)
 
     def _render_instance(self, ref_id: int, refdes: str) -> Response:

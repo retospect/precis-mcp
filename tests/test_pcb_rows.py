@@ -23,6 +23,7 @@ from typing import Any, cast
 import pytest
 
 from precis.dispatch import Hub
+from precis.errors import BadInput
 from precis.handlers.part import PartHandler
 from precis.pcb import local as pcb_local
 from precis.pcb import rows as pcb_rows
@@ -457,3 +458,95 @@ def test_catalog_footer_wrapped_response(monkeypatch: pytest.MonkeyPatch) -> Non
     part = pcb.catalog("C1", board=w)
     assert part.resolved and part.pads == _CATALOG_FP["pads"]
     assert w.manifest()["parts"][0]["lcsc"] == "C1"
+
+
+def test_footprint_graphics_validate_and_reject_bad_kind() -> None:
+    """gr520150: an authored ``graphics`` entry is validated like the pads
+    — a kind outside the alphabet, a non-list, or missing required
+    geometry all refuse instead of being stored as read-back garbage."""
+    base = {
+        "name": "GFX",
+        "pads": [{"pin": "1", "shape": "rect", "x": 0, "y": 0, "w": 1}],
+    }
+    _name, data = pcb_rows.normalize_footprint(
+        {
+            **base,
+            "graphics": [
+                {
+                    "kind": "polygon",
+                    "layer": "F.SilkS",
+                    "width_mm": 0.1,
+                    "points": [[-1, -1], [1, -1], [1, 1], [-1, -1]],
+                },
+                {
+                    "kind": "text",
+                    "layer": "F.SilkS",
+                    "x": 0,
+                    "y": 1,
+                    "text": "NO COPPER",
+                    "height_mm": 1.0,
+                },
+                {
+                    "kind": "region",
+                    "layer": "F.Cu",
+                    "keepout": True,
+                    "points": [[0, 0], [1, 0], [1, 1]],
+                },
+            ],
+        }
+    )
+    assert [g["kind"] for g in data["graphics"]] == ["polygon", "text", "region"]
+    assert data["graphics"][2]["keepout"] is True
+    for bad in (
+        {"kind": "spline", "layer": "F.SilkS", "points": [[0, 0], [1, 1]]},
+        {"kind": "polygon", "layer": "F.SilkS", "points": [[0, 0]]},
+        {"kind": "text", "layer": "F.SilkS", "x": 0, "y": 0, "height_mm": 1.0},
+        {"kind": "line", "layer": "", "points": [[0, 0], [1, 1]]},
+        {"kind": "circle", "layer": "F.Cu", "center": [0, 0], "radius_mm": -1},
+    ):
+        with pytest.raises(BadInput):
+            pcb_rows.normalize_footprint({**base, "graphics": [bad]})
+
+
+def test_footprint_graphics_lenient_drops_bad_keeps_good() -> None:
+    """gr520150 FIX: on a vendor-import path (``dropped=`` a list) one
+    malformed graphic is dropped with a warning instead of rejecting the
+    whole footprint — strict mode stays the default for authored input."""
+    good = {
+        "kind": "polyline",
+        "layer": "F.SilkS",
+        "width_mm": 0.1,
+        "points": [[0, 0], [1, 1]],
+    }
+    bad = {"kind": "circle", "layer": "F.Cu", "center": [0, 0], "radius_mm": -1}
+    dropped: list[str] = []
+    out = pcb_rows.normalize_footprint_graphics("FP", [bad, good], dropped=dropped)
+    assert [g["kind"] for g in out] == ["polyline"]
+    assert len(dropped) == 1 and "radius_mm must be > 0" in dropped[0]
+    # Non-graphic shape errors still refuse even in lenient mode.
+    with pytest.raises(BadInput):
+        pcb_rows.normalize_footprint_graphics("FP", {"not": "a list"}, dropped=[])
+
+
+def test_footprint_graphics_caps_strict_raises_lenient_drops() -> None:
+    """gr520150 FIX: the 500-graphics / 2000-points ceilings bind in the
+    row validator too — strict mode (agent-authored input) refuses, the
+    vendor-import ``dropped=`` mode drops the overflow into the list."""
+    good = {
+        "kind": "polyline",
+        "layer": "F.SilkS",
+        "width_mm": 0.1,
+        "points": [[0, 0], [1, 1]],
+    }
+    with pytest.raises(BadInput, match="at most 500 graphics per footprint"):
+        pcb_rows.normalize_footprint_graphics("FP", [good] * 501)
+    dropped: list[str] = []
+    out = pcb_rows.normalize_footprint_graphics("FP", [good] * 501, dropped=dropped)
+    assert len(out) == 500
+    assert len(dropped) == 1 and "500-per-footprint cap" in dropped[0]
+    huge = {**good, "points": [[0, i] for i in range(2001)]}
+    with pytest.raises(BadInput, match="the cap is 2000"):
+        pcb_rows.normalize_footprint_graphics("FP", [huge])
+    dropped = []
+    assert pcb_rows.normalize_footprint_graphics("FP", [huge], dropped=dropped) == []
+    assert "cap is 2000" in dropped[0]

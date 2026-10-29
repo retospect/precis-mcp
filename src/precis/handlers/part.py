@@ -611,6 +611,7 @@ class PartHandler(Handler):
             ),
             "package": part.get("package"),
             "height_mm": part.get("height_mm"),
+            "graphics": row.get("graphics") or [],
             **geometry,
             "sha": hashlib.sha256(
                 json.dumps(geometry, sort_keys=True, separators=(",", ":")).encode(

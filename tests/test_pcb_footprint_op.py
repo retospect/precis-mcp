@@ -173,6 +173,29 @@ def test_op_footprint_batch_one_bad_one_good(pcb, monkeypatch):
     assert "404-ish vendor error" in resp.body
 
 
+def test_op_footprint_reports_graphics_dropped_at_import(pcb, monkeypatch):
+    """gr520150 FIX: ``parse_component``'s per-class drop warnings reach
+    the op's response — an undecodable vendor primitive is named, not
+    silently lost inside a still-cached footprint."""
+    monkeypatch.setattr(
+        pcb_footprint_mod,
+        "_easyeda_fetch",
+        lambda lcsc: {
+            **_fake_footprint(),
+            "graphics_dropped": [
+                "1 SOLIDREGION primitive(s) precis does not decode — NOT "
+                "imported as footprint graphics"
+            ],
+        },
+    )
+    pcb.put(id="fp1", args=_minimal_design())
+
+    resp = pcb.put(id="fp1", args={"op": "footprint", "part": _LCSC})
+
+    assert "graphics dropped at import" in resp.body
+    assert f"{_LCSC}: 1 SOLIDREGION primitive(s)" in resp.body
+
+
 # ── (c) author a footprint directly ──────────────────────────────────────
 
 

@@ -38,8 +38,11 @@ re-spiking:
 
 from __future__ import annotations
 
+import re
 from typing import TYPE_CHECKING, Any
 
+from precis.pcb import MAX_FOOTPRINT_GRAPHICS, MAX_GRAPHIC_POINTS
+from precis.pcb import rows as pcb_rows
 from precis.pcb._http import EASYEDA_POLICY, with_backoff
 from precis.utils.coerce import float_or_zero
 
@@ -134,9 +137,11 @@ def fetch_component(
 # ── parse (pure) ────────────────────────────────────────────────────────
 def parse_component(doc: dict[str, Any]) -> dict[str, Any] | None:
     """Decode a fetched EasyEDA component JSON into the canonical footprint
-    dict ``store.part_footprint_put`` expects: ``{pads, pin_map, courtyard,
-    centroid, source, raw}``. Returns None when the doc has no footprint
-    (a symbol-only part, or an unrecognized shape).
+    dict ``store.part_footprint_put`` expects — ``{pads, pin_map,
+    courtyard, centroid, graphics, source, raw}`` plus
+    ``graphics_dropped``, the decode's per-class drop warnings the store
+    ignores and the import surface reports. Returns None when the doc
+    has no footprint (a symbol-only part, or an unrecognized shape).
 
     Raises ``ValueError`` if ``result.packageDetail.dataStr`` does not
     resolve to ``docType: 4`` — either because it resolves to something
@@ -184,6 +189,13 @@ def parse_component(doc: dict[str, Any]) -> dict[str, Any] | None:
 
     pads: list[dict[str, Any]] = []
     outline: list[tuple[float, float]] = []
+    graphics, dropped = _footprint_graphics(shape, origin_x, origin_y)
+    # The decode keeps only well-formed primitives, but a value can still
+    # be formally off (a negative width, a non-finite point) — the row
+    # validator drops those too rather than storing read-back garbage.
+    graphics = pcb_rows.normalize_footprint_graphics(
+        f"easyeda:{package.get('uuid') or '?'}", graphics, dropped=dropped
+    )
     for prim in shape:
         if not isinstance(prim, str) or not prim:
             continue
@@ -196,7 +208,7 @@ def parse_component(doc: dict[str, Any]) -> dict[str, Any] | None:
         elif kind == "TRACK":
             outline.extend(_parse_track(fields, origin_x, origin_y))
         # else: CIRCLE/ARC/VIA/SOLIDREGION/... — not needed for pads/
-        # courtyard, skipped rather than treated as an error.
+        # courtyard; the decodable ones land in ``graphics``.
 
     if not pads:
         return None
@@ -225,9 +237,40 @@ def parse_component(doc: dict[str, Any]) -> dict[str, Any] | None:
         "pin_map": pin_map,
         "courtyard": _courtyard(pads, outline),
         "centroid": _centroid(pads),
+        "graphics": graphics,
+        "graphics_dropped": dropped,
         "source": source,
         "raw": doc,
     }
+
+
+def footprint_graphics(doc: dict[str, Any]) -> tuple[list[dict[str, Any]], list[str]]:
+    """``(graphics, dropped_classes)`` off a raw EasyEDA component JSON —
+    the same ``dataStr.shape`` primitives :func:`parse_component` keeps,
+    for a caller holding only the cached ``raw`` (a ``part_footprints``
+    row written before this decode existed)."""
+    result = doc.get("result") if isinstance(doc, dict) else None
+    package = result.get("packageDetail") if isinstance(result, dict) else None
+    data = package.get("dataStr") if isinstance(package, dict) else None
+    if not isinstance(data, dict):
+        return [], []
+    shape = data.get("shape")
+    if not isinstance(shape, list):
+        return [], []
+    head = data.get("head") or {}
+    graphics, dropped = _footprint_graphics(
+        shape,
+        _to_mm(float_or_zero(head.get("x"))),
+        _to_mm(float_or_zero(head.get("y"))),
+    )
+    return (
+        pcb_rows.normalize_footprint_graphics(
+            f"easyeda:{(package or {}).get('uuid') or '?'}",
+            graphics,
+            dropped=dropped,
+        ),
+        dropped,
+    )
 
 
 def _symbol_pin_names(result: dict[str, Any]) -> dict[str, str]:
@@ -428,4 +471,247 @@ def _to_mm(units_10mil: float) -> float:
     return units_10mil * _MM_PER_UNIT
 
 
-__all__ = ["fetch_component", "parse_component"]
+# ── footprint graphics (gr520150) ───────────────────────────────────────
+
+#: Standard-format layer ids the spikes verified (``TRACK`` layer 3 = top
+#: silk; 11 = the multi layer, mapped to Edge.Cuts like Pro's layer 12).
+#: Anything else emits ``layer-<n>`` — a name is never invented for an
+#: unobserved id.
+_GRAPHIC_LAYER_NAMES = {
+    1: "F.Cu",
+    2: "B.Cu",
+    3: "F.SilkS",
+    4: "B.SilkS",
+    11: "Edge.Cuts",
+}
+
+#: The primitive letters an SVG path this decoder reads: absolute M/L/Z
+#: for a region, plus A for the arc form — anything else rejects the
+#: path rather than misparsing it.
+_SVG_TOKEN = re.compile(r"[MLAZ]|-?\d*\.?\d+(?:[eE][-+]?\d+)?")
+
+
+def _graphic_layer(fields: list[str], index: int) -> str | None:
+    try:
+        return _GRAPHIC_LAYER_NAMES.get(int(fields[index]), f"layer-{fields[index]}")
+    except (IndexError, ValueError):
+        return None
+
+
+def _svg_tokens(path: str) -> list[str] | None:
+    """Tokenise an SVG path string, or ``None`` when it carries anything
+    this decoder does not handle (a relative or curve command — better
+    dropped loudly than misparsed)."""
+    cleaned = path.replace(",", " ")
+    tokens = _SVG_TOKEN.findall(cleaned)
+    if not tokens or _SVG_TOKEN.sub("", cleaned).strip():
+        return None
+    return tokens
+
+
+def _svg_polyline(
+    path: str, origin_x: float, origin_y: float
+) -> list[list[float]] | None:
+    """An absolute ``M x y L x y ... [Z]`` path -> origin-shifted mm
+    points (the Y flip applied, like the pads)."""
+    tokens = _svg_tokens(path)
+    if tokens is None or "A" in tokens:
+        return None
+    pts: list[list[float]] = []
+    i = 0
+    closed = False
+    while i < len(tokens):
+        t = tokens[i]
+        if t == "Z":
+            closed = True
+            i += 1
+            continue
+        if t not in ("M", "L") or i + 2 >= len(tokens):
+            return None
+        try:
+            x, y = float(tokens[i + 1]), float(tokens[i + 2])
+        except ValueError:
+            # A letter pair the number regex let through ("M L 1 2" —
+            # float("L")) is a malformed path, not a fatal one.
+            return None
+        pts.append(
+            [
+                round(_to_mm(x) - origin_x, 4),
+                round(-(_to_mm(y) - origin_y), 4),
+            ]
+        )
+        i += 3
+    if closed and pts and pts[0] != pts[-1]:
+        pts.append(list(pts[0]))
+    return pts if len(pts) >= 2 else None
+
+
+def _decode_graphic(
+    fields: list[str], kind: str, origin_x: float, origin_y: float
+) -> dict[str, Any] | None:
+    """One ``shape`` primitive (already ``~``-split) -> a canonical
+    ``graphics[]`` dict, or ``None`` when it is not decodable. Conversion
+    slips propagate — the caller catches them and counts the primitive as
+    dropped, so one malformed primitive never aborts the footprint."""
+    item: dict[str, Any] | None = None
+    if kind == "TRACK" and len(fields) >= 5:
+        pts = _parse_points_field(fields[4], origin_x, origin_y)
+        layer = _graphic_layer(fields, 2)
+        if layer is not None and len(pts) >= 2:
+            points = [[round(px, 4), round(py, 4)] for px, py in pts]
+            closed = len(points) >= 4 and points[0] == points[-1]
+            item = {
+                "kind": "polygon" if closed else "polyline",
+                "layer": layer,
+                "width_mm": round(_to_mm(float_or_zero(fields[1])), 4),
+                "points": points,
+            }
+    elif kind == "SOLIDREGION" and len(fields) >= 6:
+        rpts = _svg_polyline(fields[3], origin_x, origin_y)
+        layer = _graphic_layer(fields, 1)
+        if layer is not None and rpts is not None and len(rpts) >= 3:
+            item = {"kind": "region", "layer": layer, "points": rpts}
+            if fields[4].strip().lower() in ("keepout", "prohibit", "prohibited"):
+                item["keepout"] = True
+    elif kind == "TEXT" and len(fields) >= 13 and fields[1] in ("P", "N"):
+        # ``TEXT~P|N~x~y~width~rotation~mirror~layer~net~fontSize~
+        # font~text~id~locked`` — positionally decoded, validated.
+        try:
+            x = _to_mm(float_or_zero(fields[2])) - origin_x
+            y = -(_to_mm(float_or_zero(fields[3])) - origin_y)
+            layer = _graphic_layer(fields, 7)
+            font = _to_mm(float_or_zero(fields[9]))
+            rot = float_or_zero(fields[5])
+            text = fields[11].strip()
+        except (IndexError, ValueError):
+            x, layer, font, text = 0.0, None, 0.0, ""
+        if layer is not None and text and font > 0:
+            item = {
+                "kind": "text",
+                "layer": layer,
+                "x": round(x, 4),
+                "y": round(y, 4),
+                "text": text,
+                "height_mm": round(font, 4),
+            }
+            if rot:
+                # CCW-positive in EasyEDA's Y-down frame reads as
+                # CW-positive after the flip — precis' own convention.
+                item["rot_deg"] = rot
+            if fields[6].strip().lower() in ("1", "true", "yes"):
+                item["mirror"] = True
+    elif kind == "ARC" and len(fields) >= 5:
+        # ``ARC~w~layer~net~path~id~locked``; path is SVG
+        # ``M sx sy A rx ry rot laf sf ex ey``.
+        tokens = _svg_tokens(fields[4])
+        layer = _graphic_layer(fields, 2)
+        if (
+            layer is not None
+            and tokens is not None
+            and len(tokens) == 11
+            and tokens[0] == "M"
+            and tokens[3] == "A"
+        ):
+            try:
+                sx, sy = float(tokens[1]), float(tokens[2])
+                rx, laf, sf = float(tokens[4]), float(tokens[7]), float(tokens[8])
+                ex, ey = float(tokens[9]), float(tokens[10])
+            except ValueError:
+                tokens = None
+            if tokens is not None and rx > 0:
+                item = {
+                    "kind": "arc",
+                    "layer": layer,
+                    "start": [
+                        round(_to_mm(sx) - origin_x, 4),
+                        round(-(_to_mm(sy) - origin_y), 4),
+                    ],
+                    "end": [
+                        round(_to_mm(ex) - origin_x, 4),
+                        round(-(_to_mm(ey) - origin_y), 4),
+                    ],
+                    "radius_mm": round(_to_mm(rx), 4),
+                    "large_arc": bool(laf),
+                    # SVG sweep=1 is clockwise on a Y-down canvas; the
+                    # flip inverts it in the Y-up frame.
+                    "cw": sf == 0,
+                    "width_mm": round(_to_mm(float_or_zero(fields[1])), 4),
+                }
+    elif kind == "CIRCLE" and len(fields) >= 6:
+        # ``CIRCLE~cx~cy~r~w~layer~id``
+        try:
+            cx, cy = float_or_zero(fields[1]), float_or_zero(fields[2])
+            r = _to_mm(float_or_zero(fields[3]))
+            layer = _graphic_layer(fields, 5)
+        except (IndexError, ValueError):
+            r, layer = 0.0, None
+        if layer is not None and r > 0:
+            item = {
+                "kind": "circle",
+                "layer": layer,
+                "center": [
+                    round(_to_mm(cx) - origin_x, 4),
+                    round(-(_to_mm(cy) - origin_y), 4),
+                ],
+                "radius_mm": round(r, 4),
+                "width_mm": round(_to_mm(float_or_zero(fields[4])), 4),
+            }
+    return item
+
+
+def _footprint_graphics(
+    shape: list[Any], origin_x: float, origin_y: float
+) -> tuple[list[dict[str, Any]], list[str]]:
+    """Decode ``dataStr.shape`` primitives into canonical ``graphics[]``
+    dicts (footprint-local mm, Y up, origin-shifted like the pads).
+
+    Returns ``(graphics, warnings)``: every primitive that is not a PAD
+    (decoded as pads) either lands as a graphic or is counted — one
+    warning per undecoded primitive class, never a silent drop. A
+    primitive that CRASHES its decoder (a malformed path, a field that
+    is not a number) is counted the same way — vendor data degrades,
+    it never aborts the footprint."""
+    out: list[dict[str, Any]] = []
+    dropped: dict[str, int] = {}
+    over_points = 0
+    over_cap = 0
+    for prim in shape:
+        if not isinstance(prim, str) or not prim:
+            continue
+        fields = prim.split("~")
+        kind = fields[0]
+        if kind == "PAD":
+            continue
+        try:
+            item = _decode_graphic(fields, kind, origin_x, origin_y)
+        except (ValueError, TypeError, IndexError):
+            item = None
+        if item is None:
+            dropped[kind] = dropped.get(kind, 0) + 1
+            continue
+        pts = item.get("points")
+        if isinstance(pts, list) and len(pts) > MAX_GRAPHIC_POINTS:
+            over_points += 1
+        elif len(out) >= MAX_FOOTPRINT_GRAPHICS:
+            over_cap += 1
+        else:
+            out.append(item)
+    warnings = [
+        f"{count} {kind} primitive(s) precis does not decode — NOT "
+        "imported as footprint graphics"
+        for kind, count in sorted(dropped.items())
+    ]
+    if over_points:
+        warnings.append(
+            f"{over_points} graphic(s) over the {MAX_GRAPHIC_POINTS}-point "
+            "cap — NOT imported as footprint graphics"
+        )
+    if over_cap:
+        warnings.append(
+            f"{over_cap} graphic(s) over the {MAX_FOOTPRINT_GRAPHICS}-per-"
+            "footprint cap — NOT imported"
+        )
+    return out, warnings
+
+
+__all__ = ["fetch_component", "footprint_graphics", "parse_component"]

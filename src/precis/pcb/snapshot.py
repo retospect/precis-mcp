@@ -170,13 +170,27 @@ def _upgrade_legacy(fixture: dict[str, Any]) -> dict[str, Any]:
     """Accept a v1 fixture captured before 0221 (``pcb_pin_swaps``).
 
     Its swap rows become ONE ``pcb_netlist_snapshots`` row holding the full
-    effective pin set, the same semantics as the migration's SQL.
+    effective pin set, the same semantics as the migration's SQL. Footprint
+    ``graphics`` (0260) fills its column default on rows captured before the
+    column existed, matching what the migration wrote.
     """
     tables = fixture.get("tables", {})
-    if "pcb_pin_swaps" not in tables or "pcb_netlist_snapshots" in tables:
+    needs_graphics = any(
+        "graphics" not in r
+        for t in ("pcb_local_footprints", "part_footprints")
+        for r in tables.get(t, ())
+    )
+    if (
+        "pcb_pin_swaps" not in tables or "pcb_netlist_snapshots" in tables
+    ) and not needs_graphics:
         return fixture
     fixture = copy.deepcopy(fixture)
     tables = fixture["tables"]
+    for t in ("pcb_local_footprints", "part_footprints"):
+        for r in tables.get(t, ()):
+            r.setdefault("graphics", [])
+    if "pcb_pin_swaps" not in tables or "pcb_netlist_snapshots" in tables:
+        return fixture
     all_swaps = tables.pop("pcb_pin_swaps")
     swaps = [r for r in all_swaps if not r.get("retired_at")]
     retired_swaps = [r for r in all_swaps if r.get("retired_at")]

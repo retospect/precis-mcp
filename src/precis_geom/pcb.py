@@ -1197,6 +1197,7 @@ class Footprint:
         centroid: Any = None,
         note: str | None = None,
         holes: list[dict[str, Any]] | None = None,
+        graphics: list[dict[str, Any]] | None = None,
     ) -> None:
         self.name = name
         self.pads = pads
@@ -1205,6 +1206,7 @@ class Footprint:
         self.centroid = centroid
         self.note = note
         self.holes = list(holes or [])
+        self.graphics = list(graphics or [])
 
     def to_dict(self) -> dict[str, Any]:
         d: dict[str, Any] = {"name": self.name, "pads": copy.deepcopy(self.pads)}
@@ -1218,6 +1220,8 @@ class Footprint:
             d["note"] = self.note
         if self.holes:
             d["holes"] = copy.deepcopy(self.holes)
+        if self.graphics:
+            d["graphics"] = copy.deepcopy(self.graphics)
         return d
 
 

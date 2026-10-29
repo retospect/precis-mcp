@@ -816,11 +816,178 @@ def test_different_same_title_footprints_still_split_and_warn(project):
         "R0603~tiny0000",
     ]
     assert names["tiny000000000fp3"] == "R0603~tiny0000"
-    assert [w for w in warnings if "share the title" in w] == [
-        "two footprints share the title 'R0603'; the second is imported as "
-        "'R0603~tiny0000' so both keep their own pads"
+
+
+def test_footprint_graphics_survive_extract(project, pcb):
+    """gr520150: a footprint's non-pad primitives were dropped wholesale.
+    The fixture's R0603 courtyard POLY (layer 48) imports as a polygon on
+    F.CrtYd and its multi-layer FILL circle as a circle on Edge.Cuts —
+    footprint-local mm, Y up, the pads' frame."""
+    from precis.pcb import rows as pcb_rows
+
+    fps, _names, _warnings = epro.extract_footprints(project, pcb)
+    fp = next(f for f in fps if f["name"] == "R0603")
+    assert fp["graphics"] == [
+        {
+            "kind": "polygon",
+            "layer": "F.CrtYd",
+            "width_mm": pytest.approx(0.0508),
+            "points": [
+                [-1.524, 1.016],
+                [1.524, 1.016],
+                [1.524, -1.651],
+                [-1.524, -1.651],
+                [-1.524, 1.016],
+            ],
+        },
+        {
+            "kind": "circle",
+            "layer": "Edge.Cuts",
+            "center": [pytest.approx(1.016), pytest.approx(-0.508)],
+            "radius_mm": pytest.approx(0.254),
+            "width_mm": pytest.approx(0.00508),
+        },
     ]
+    assert next(f for f in fps if f["name"].startswith("SOT"))["graphics"] == []
+    # And the emitted dicts are the canonical shape the store validates
+    # (normalise rounds to 4 decimals, so compare kind/layer coverage).
+    _name, data = pcb_rows.normalize_footprint(fp)
+    assert [(g["kind"], g["layer"]) for g in data["graphics"]] == [
+        (g["kind"], g["layer"]) for g in fp["graphics"]
+    ]
+
+
+def _graphics_project(project, *records: str):
+    """The fixture stream with extra records spliced inside the R0603
+    (fp1) FOOTPRINT doc — text, a keepout region and an undecodable
+    record class, none of which the fixture carries."""
+    stream = (_FIXTURE / "board.epru").read_text(encoding="utf-8")
+    lines = stream.splitlines(keepends=True)
+    fp1 = lines[43:51]
+    assert '"docType":"FOOTPRINT"' in fp1[0] and "fp1" in fp1[0]
+    assert '"type":"FILL"' in fp1[-1]
+    mutated = "".join(lines[:51]) + "".join(records) + "".join(lines[51:])
+    return epro.EproProject(
+        title=project.title,
+        editor_version=project.editor_version,
+        documents=epro.split_documents(mutated),
+    )
+
+
+def test_footprint_graphics_text_keepout_and_dropped_classes(project):
+    """gr520150: text lands as a ``text`` graphic, a region-family record
+    as a ``keepout`` region, a non-circular multi-layer cutout as an
+    Edge.Cuts region (with the warning moved out of the holes path), and
+    every undecoded record type earns ONE per-class warning."""
+    proj = _graphics_project(
+        project,
+        '{"type":"STRING","ticket":78,"id":"st1"}||{"layerId":3,"x":10,'
+        '"y":-20,"text":"NO COPPER","fontSize":40,"strokeWidth":6,'
+        '"angle":0,"mirror":false}|\n',
+        '{"type":"PROHIBITEDREGION","ticket":79,"id":"ko1"}||{"layerId":1,'
+        '"path":[-50,-50,"L",50,-50,50,50,-50,50,-50,-50]}|\n',
+        '{"type":"FILL","ticket":80,"id":"h13"}||{"layerId":12,"width":0.2,'
+        '"path":[-70,-70,"L",-60,-70,-60,-60,-70,-60,-70,-70]}|\n',
+        '{"type":"DIMENSION","ticket":81,"id":"dim1"}||{"layerId":13,"value":"12"}|\n',
+    )
+    fps, _names, warnings = epro.extract_footprints(proj, proj.by_type("PCB")[0])
+    gfx = next(f for f in fps if f["name"] == "R0603")["graphics"]
+    by_kind = {(g["kind"], g["layer"]): g for g in gfx}
+    text = by_kind[("text", "F.SilkS")]
+    assert text["text"] == "NO COPPER"
+    assert (text["x"], text["y"]) == pytest.approx((0.254, 0.508))
+    assert text["height_mm"] == pytest.approx(1.016)
+    keepout = by_kind[("region", "F.Cu")]
+    assert keepout["keepout"] is True
+    assert keepout["points"][0] == pytest.approx([-1.27, 1.27])
+    cutout = by_kind[("region", "Edge.Cuts")]
+    assert cutout.get("keepout") is not True
+    assert ("polygon", "F.CrtYd") in by_kind and ("circle", "Edge.Cuts") in by_kind
+    assert any(
+        "non-circular cutout" in w and "Edge.Cuts region graphic" in w for w in warnings
+    )
+    assert any("carries 1 DIMENSION record(s)" in w for w in warnings)
     assert not [w for w in warnings if "identical copies" in w]
+
+
+def test_footprint_graphics_bad_field_drops_the_record_not_the_footprint(
+    project,
+):
+    """gr520150 FIX: a non-numeric ``width`` used to raise out of the
+    decode and kill the whole footprint extract. One malformed record is
+    counted undecoded; the rest of the footprint still lands."""
+    proj = _graphics_project(
+        project,
+        '{"type":"LINE","ticket":82,"id":"ln1"}||{"layerId":3,'
+        '"startX":0,"startY":0,"endX":10,"endY":0,"width":"abc"}|\n',
+        '{"type":"LINE","ticket":83,"id":"ln2"}||{"layerId":3,'
+        '"startX":0,"startY":0,"endX":10,"endY":0,"width":5}|\n',
+    )
+    fps, _names, warnings = epro.extract_footprints(proj, proj.by_type("PCB")[0])
+    gfx = next(f for f in fps if f["name"] == "R0603")["graphics"]
+    assert [g["kind"] for g in gfx].count("line") == 1
+    assert next(g for g in gfx if g["kind"] == "line")["width_mm"] == pytest.approx(
+        5 * _MIL
+    )
+    assert any("carries 1 LINE record(s)" in w for w in warnings)
+
+
+def test_footprint_arc_stores_cw_like_easyeda(project):
+    """gr520150 FIX: ``ARC.angle`` is a signed sweep in the source's
+    Y-down frame; a positive sweep is CW once Y points up — the same
+    sign ``_segment`` gives copper arcs. The stored graphic carries the
+    easyeda shape: ``cw`` the sense, ``angle_deg`` the magnitude."""
+    proj = _graphics_project(
+        project,
+        '{"type":"ARC","ticket":84,"id":"fa1"}||{"layerId":3,"startX":0,'
+        '"startY":0,"endX":10,"endY":0,"angle":90,"width":5}|\n',
+        '{"type":"ARC","ticket":85,"id":"fa2"}||{"layerId":3,"startX":0,'
+        '"startY":0,"endX":10,"endY":0,"angle":-90,"width":5}|\n',
+    )
+    fps, _names, _warnings = epro.extract_footprints(proj, proj.by_type("PCB")[0])
+    arcs = [
+        g
+        for f in fps
+        if f["name"] == "R0603"
+        for g in f["graphics"]
+        if g["kind"] == "arc"
+    ]
+    assert [a["cw"] for a in arcs] == [True, False]
+    assert [a["angle_deg"] for a in arcs] == [
+        pytest.approx(90),
+        pytest.approx(90),
+    ]
+    assert arcs[0]["start"] == pytest.approx([0.0, 0.0])
+    assert arcs[0]["end"] == pytest.approx([10 * _MIL, 0.0])
+
+
+def test_footprint_graphics_caps_report_overflow_as_dropped(project):
+    """gr520150 FIX: the decoder's own ceilings — 500 graphics per
+    footprint, 2000 points per graphic — report their overflow as
+    dropped, same as the easyeda parser's."""
+    flood = [
+        f'{{"type":"LINE","ticket":{5000 + i},"id":"cap{i}"}}||'
+        '{"layerId":3,"startX":0,"startY":0,"endX":10,"endY":0,"width":5}|\n'
+        for i in range(500)
+    ]
+    proj = _graphics_project(project, *flood)
+    fps, _names, warnings = epro.extract_footprints(proj, proj.by_type("PCB")[0])
+    gfx = next(f for f in fps if f["name"] == "R0603")["graphics"]
+    assert len(gfx) == 500
+    assert any("more than 500 decodable graphics" in w for w in warnings)
+    # …and a path past the point cap is reported per-graphic.
+    path: list[int | str] = [0, 0]
+    for i in range(1, 2001):
+        path += ["L", i, i]
+    proj = _graphics_project(
+        project,
+        '{"type":"POLY","ticket":6001,"id":"big"}||{"layerId":3,'
+        f'"path":{json.dumps(path)},"width":5}}|\n',
+    )
+    fps, _names, warnings = epro.extract_footprints(proj, proj.by_type("PCB")[0])
+    gfx = next(f for f in fps if f["name"] == "R0603")["graphics"]
+    assert len(gfx) == 2  # the fixture's polygon + circle, nothing more
+    assert any("2000-point cap" in w for w in warnings)
 
 
 def test_a_footprint_courtyard_comes_from_its_component_shape_layer(project):

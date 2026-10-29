@@ -87,7 +87,7 @@ import zipfile
 from dataclasses import dataclass, field
 from typing import Any
 
-from precis.pcb import PIN_ETYPES
+from precis.pcb import MAX_FOOTPRINT_GRAPHICS, MAX_GRAPHIC_POINTS, PIN_ETYPES
 
 #: 1 mil = 0.0254 mm. The ``.epru`` document body's unit, everywhere
 #: except ``POURED.pourFill`` (see the module docstring).
@@ -1857,6 +1857,7 @@ def extract_footprints(
             "pin_map": pin_map,
             "courtyard": _footprint_courtyard(doc, pads),
             "holes": _footprint_holes(doc, title, holes_warn),
+            "graphics": _footprint_graphics(doc, title, holes_warn),
         }
         local += holes_warn
         sha = hashlib.sha256(
@@ -1899,8 +1900,10 @@ def _footprint_holes(
     """The footprint's non-plated holes, ``{x, y, dia_mm}`` in
     footprint-local mm (the pads' frame): every circular ``FILL`` on
     :data:`_FP_MULTI_LAYER`. A non-circular one is a cutout of another
-    shape, which precis has no model for, so it is warned about and
-    dropped rather than approximated."""
+    shape, which precis has no model for — it is kept as an
+    ``Edge.Cuts`` ``region`` graphic by :func:`_footprint_graphics`
+    (inspectable only) rather than silently dropped, and the warning
+    lives there."""
     out: list[dict[str, float]] = []
     for b in doc.bodies("FILL"):
         if b.get("layerId") != _FP_MULTI_LAYER:
@@ -1915,11 +1918,332 @@ def _footprint_holes(
                     "dia_mm": 2.0 * Frame.length(float(circle[3])),
                 }
             )
+    return out
+
+
+#: ``layerType`` -> precis layer name for footprint-doc graphics resolved
+#: through the doc's own LAYER records (:func:`layer_map`). ``SIGNAL``
+#: needs its position among the declared inner ids, handled separately.
+_FP_LAYER_TYPE_NAMES = {
+    "TOP": "F.Cu",
+    "BOTTOM": "B.Cu",
+    "TOP_SILK": "F.SilkS",
+    "BOT_SILK": "B.SilkS",
+    "TOP_SOLDER_MASK": "F.Mask",
+    "BOT_SOLDER_MASK": "B.Mask",
+    "TOP_PASTE_MASK": "F.Paste",
+    "BOT_PASTE_MASK": "B.Paste",
+    "TOP_ASSEMBLY": "F.Fab",
+    "BOT_ASSEMBLY": "B.Fab",
+    "OUTLINE": "Edge.Cuts",
+    "MULTI": "Edge.Cuts",
+    "DOCUMENT": "Dwgs.User",
+    "MECHANICAL": "Mech",
+    "HOLE": "Hole",
+    "COMPONENT_SHAPE": "F.CrtYd",
+    "COMPONENT_MARKING": "F.Marking",
+}
+
+#: ``layerId`` -> precis layer name for a footprint doc carrying no LAYER
+#: records of its own (the small library fixtures) — the palette Pro
+#: writes on every document (:data:`precis.pcb.epro_write._LAYER_TABLE`),
+#: minus copper, which ids 15-46 spell out per position anyway.
+_FP_LAYER_ID_NAMES = {
+    3: "F.SilkS",
+    4: "B.SilkS",
+    5: "F.Mask",
+    6: "B.Mask",
+    7: "F.Paste",
+    8: "B.Paste",
+    9: "F.Fab",
+    10: "B.Fab",
+    11: "Edge.Cuts",
+    12: "Edge.Cuts",
+    13: "Dwgs.User",
+    14: "Mech",
+    47: "Hole",
+    48: "F.CrtYd",
+    49: "F.Marking",
+}
+
+#: Record types a footprint doc carries that are document state, not
+#: graphics — PAD is decoded as pads, the rest are palette/canvas/attr
+#: bookkeeping. Anything else that is not decoded below earns one
+#: warning per record-type class.
+_FP_GRAPHIC_SKIP = frozenset(
+    {
+        "META",
+        "CANVAS",
+        "LAYER",
+        "LAYER_PHYS",
+        "PAD",
+        "ATTR",
+        "PAD_NET",
+        "PRIMITIVE",
+        "PREFERENCE",
+        "SILK_OPTS",
+        "ACTIVE_LAYER",
+        "NET",
+    }
+)
+
+#: The region-family record types — Pro's keepout/rule-area vocabulary
+#: (:data:`precis.pcb.epro_write._PRIMITIVE_TABLE` names PROHIBITEDREGION,
+#: SLOTREGION, FILLREGIEN, CONSTRAINT; a footprint keepout record itself
+#: is unobserved, so the decode accepts a ``path`` on any of these).
+_FP_REGION_TYPES = frozenset(
+    {"REGION", "SOLIDREGION", "PROHIBIT", "PROHIBITEDREGION", "KEEPOUT", "RULE_AREA"}
+)
+
+
+def _fp_layer_name(
+    lid: int, layers: dict[int, tuple[str, str]], inner: list[int]
+) -> str:
+    """precis layer name for a footprint-doc ``layerId``: the doc's own
+    LAYER records first (a 93-record palette per real doc), the static
+    palette for a fixture doc without them, ``layer-<n>`` last — never
+    an invented name for an unobserved id."""
+    entry = layers.get(lid)
+    if entry is not None:
+        ltype, lname = entry
+        if ltype == _INNER:
+            return f"In{inner.index(lid) + 1}.Cu" if lid in inner else f"layer-{lid}"
+        return _FP_LAYER_TYPE_NAMES.get(ltype) or lname
+    if lid == 1:
+        return "F.Cu"
+    if lid == 2:
+        return "B.Cu"
+    if 15 <= lid <= 46:
+        return f"In{lid - 14}.Cu"
+    return _FP_LAYER_ID_NAMES.get(lid, f"layer-{lid}")
+
+
+def _footprint_graphics(
+    doc: EproDocument, name: str, warnings: list[str]
+) -> list[dict[str, Any]]:
+    """The footprint's non-pad graphics — silk/courtyard/fab/doc lines,
+    arcs, fills, text and keepout/rule regions — as canonical
+    ``graphics[]`` dicts in footprint-local mm (Y up, as the pads).
+
+    Everything with decodable geometry is kept, including copper-layer
+    graphics — inspectable only, they bind nothing (the keepout-binds
+    slice is separate). What cannot be decoded is not dropped silently:
+    one warning per record-type class names the loss."""
+    layers = layer_map(doc)
+    inner = sorted(lid for lid, (lt, _) in layers.items() if lt == _INNER)
+
+    def lname(raw_lid: Any) -> str | None:
+        try:
+            lid = int(raw_lid)
+        except (TypeError, ValueError):
+            return None
+        return _fp_layer_name(lid, layers, inner)
+
+    def mm_pts(path: list[Any]) -> list[list[float]]:
+        return [[_nm(x), -_nm(y) or 0.0] for x, y in _poly_points(path)]
+
+    out: list[dict[str, Any]] = []
+    undecoded: dict[str, int] = {}
+    over_points = 0
+    over_cap = 0
+
+    def emit(item: dict[str, Any]) -> None:
+        """Append a graphic unless it breaches a cap — a >2000-point
+        path or >500 graphics per footprint are reported as dropped, not
+        stored (:data:`precis.pcb.MAX_GRAPHIC_POINTS`,
+        :data:`precis.pcb.MAX_FOOTPRINT_GRAPHICS`)."""
+        nonlocal over_points, over_cap
+        pts = item.get("points")
+        if isinstance(pts, list) and len(pts) > MAX_GRAPHIC_POINTS:
+            over_points += 1
+        elif len(out) >= MAX_FOOTPRINT_GRAPHICS:
+            over_cap += 1
         else:
-            warnings.append(
-                f"footprint {name!r} has a non-circular cutout on the multi "
-                f"layer; precis has no cutout model, so it is NOT imported"
-            )
+            out.append(item)
+
+    for rec in doc.records:
+        rtype, b = rec.type, rec.body
+        if b is None or rtype in _FP_GRAPHIC_SKIP:
+            continue
+        layer = lname(b.get("layerId"))
+        if layer is None:
+            undecoded[rtype] = undecoded.get(rtype, 0) + 1
+            continue
+        # One bad field (a non-numeric width, a malformed path) must not
+        # abort the decode — the record counts as undecoded and the rest
+        # of the footprint still lands.
+        try:
+            if rtype == "POLY":
+                path = b.get("path") or []
+                if _outline_opcodes(path) - {"L"}:
+                    undecoded["POLY(non-line opcodes)"] = (
+                        undecoded.get("POLY(non-line opcodes)", 0) + 1
+                    )
+                    continue
+                pts = mm_pts(path)
+                if len(pts) < 2:
+                    undecoded[rtype] = undecoded.get(rtype, 0) + 1
+                    continue
+                closed = len(pts) >= 4 and pts[0] == pts[-1]
+                emit(
+                    {
+                        "kind": "polygon" if closed else "polyline",
+                        "layer": layer,
+                        "width_mm": _nm(float(b.get("width") or 0.0)),
+                        "points": pts,
+                    }
+                )
+            elif rtype == "LINE":
+                try:
+                    pts = mm_pts(
+                        [
+                            float(b["startX"]),
+                            float(b["startY"]),
+                            float(b["endX"]),
+                            float(b["endY"]),
+                        ]
+                    )
+                except (KeyError, TypeError, ValueError):
+                    undecoded[rtype] = undecoded.get(rtype, 0) + 1
+                    continue
+                emit(
+                    {
+                        "kind": "line",
+                        "layer": layer,
+                        "width_mm": _nm(float(b.get("width") or 0.0)),
+                        "points": pts,
+                    }
+                )
+            elif rtype == "ARC":
+                try:
+                    start = mm_pts([float(b["startX"]), float(b["startY"])])[0]
+                    end = mm_pts([float(b["endX"]), float(b["endY"])])[0]
+                    angle = float(b.get("angle") or 0.0)
+                except (KeyError, TypeError, ValueError):
+                    undecoded[rtype] = undecoded.get(rtype, 0) + 1
+                    continue
+                emit(
+                    {
+                        "kind": "arc",
+                        "layer": layer,
+                        "start": start,
+                        "end": end,
+                        # ``angle`` is a signed sweep in the source's
+                        # Y-down frame; a positive sweep is clockwise
+                        # once Y points up — the same sign rule
+                        # ``_segment``'s ``cw = sweep > 0`` applies to
+                        # copper arcs. The stored shape matches the
+                        # easyeda graphic arc: ``cw`` carries the sense,
+                        # ``angle_deg`` the magnitude.
+                        "cw": angle > 0,
+                        "angle_deg": abs(angle),
+                        "width_mm": _nm(float(b.get("width") or 0.0)),
+                    }
+                )
+            elif rtype == "FILL":
+                path = b.get("path") or []
+                subpaths = path if path and isinstance(path[0], list) else [path]
+                for sub in subpaths:
+                    if not isinstance(sub, list) or not sub:
+                        continue
+                    if len(sub) == 4 and sub[0] == "CIRCLE":
+                        emit(
+                            {
+                                "kind": "circle",
+                                "layer": layer,
+                                "center": [
+                                    _nm(float(sub[1])),
+                                    -_nm(float(sub[2])) or 0.0,
+                                ],
+                                "radius_mm": _nm(float(sub[3])),
+                                "width_mm": _nm(float(b.get("width") or 0.0)),
+                            }
+                        )
+                        continue
+                    if _outline_opcodes(sub) - {"L"}:
+                        undecoded["FILL(non-line opcodes)"] = (
+                            undecoded.get("FILL(non-line opcodes)", 0) + 1
+                        )
+                        continue
+                    pts = mm_pts(sub)
+                    if len(pts) < 3:
+                        undecoded[rtype] = undecoded.get(rtype, 0) + 1
+                        continue
+                    if b.get("layerId") == _FP_MULTI_LAYER:
+                        warnings.append(
+                            f"footprint {name!r} has a non-circular cutout on the "
+                            f"multi layer; precis has no cutout model, so it is "
+                            f"kept as an Edge.Cuts region graphic (inspectable "
+                            f"only — it binds nothing)"
+                        )
+                    emit(
+                        {
+                            "kind": "region",
+                            "layer": layer,
+                            "points": pts,
+                        }
+                    )
+            elif rtype == "STRING":
+                text = b.get("text")
+                try:
+                    x, y = mm_pts([float(b["x"]), float(b["y"])])[0]
+                    height = _nm(float(b.get("fontSize") or 0.0))
+                except (KeyError, TypeError, ValueError):
+                    text = None
+                    height = 0.0
+                if not text or height <= 0:
+                    undecoded[rtype] = undecoded.get(rtype, 0) + 1
+                    continue
+                item = {
+                    "kind": "text",
+                    "layer": layer,
+                    "x": x,
+                    "y": y,
+                    "text": str(text),
+                    "height_mm": height,
+                }
+                if b.get("angle"):
+                    item["rot_deg"] = float(b["angle"])
+                if b.get("mirror"):
+                    item["mirror"] = True
+                emit(item)
+            elif rtype in _FP_REGION_TYPES:
+                path = b.get("path") or []
+                if _outline_opcodes(path) - {"L"}:
+                    undecoded[rtype] = undecoded.get(rtype, 0) + 1
+                    continue
+                pts = mm_pts(path)
+                if len(pts) < 3:
+                    undecoded[rtype] = undecoded.get(rtype, 0) + 1
+                    continue
+                emit(
+                    {
+                        "kind": "region",
+                        "layer": layer,
+                        "points": pts,
+                        "keepout": True,
+                    }
+                )
+            else:
+                undecoded[rtype] = undecoded.get(rtype, 0) + 1
+        except (KeyError, TypeError, ValueError, IndexError):
+            undecoded[rtype] = undecoded.get(rtype, 0) + 1
+    if over_points:
+        warnings.append(
+            f"footprint {name!r} carries {over_points} graphic(s) over the "
+            f"{MAX_GRAPHIC_POINTS}-point cap — NOT imported"
+        )
+    if over_cap:
+        warnings.append(
+            f"footprint {name!r} has more than {MAX_FOOTPRINT_GRAPHICS} "
+            f"decodable graphics; {over_cap} NOT imported"
+        )
+    for rtype, count in sorted(undecoded.items()):
+        warnings.append(
+            f"footprint {name!r} carries {count} {rtype} record(s) precis "
+            f"does not decode — NOT imported as graphics; a keepout/rule "
+            f"area among them binds nothing"
+        )
     return out
 
 

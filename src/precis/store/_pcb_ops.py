@@ -5769,7 +5769,8 @@ class PcbMixin:
         pad geometry where present and falls back to centroid pins otherwise."""
         with self._pcb_conn() as conn:
             rows = conn.execute(
-                "SELECT f.lcsc, f.pads, f.pin_map, f.courtyard, f.centroid, f.holes "
+                "SELECT f.lcsc, f.pads, f.pin_map, f.courtyard, f.centroid, f.holes, "
+                "f.graphics "
                 "FROM part_footprints f "
                 "WHERE f.lcsc IN ("
                 "  SELECT DISTINCT c.part_lcsc FROM pcb_instances i "
@@ -5785,6 +5786,7 @@ class PcbMixin:
                 "courtyard": r[3],
                 "centroid": r[4],
                 "holes": r[5] or [],
+                "graphics": r[6] or [],
             }
             for r in rows
         }
@@ -5799,12 +5801,13 @@ class PcbMixin:
         conn.execute(
             """
             INSERT INTO pcb_local_footprints
-                (ref_id, name, pads, pin_map, courtyard, centroid, note, holes)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                (ref_id, name, pads, pin_map, courtyard, centroid, note, holes, graphics)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
             ON CONFLICT (ref_id, name) DO UPDATE SET
                 pads=EXCLUDED.pads, pin_map=EXCLUDED.pin_map,
                 courtyard=EXCLUDED.courtyard, centroid=EXCLUDED.centroid,
-                note=EXCLUDED.note, holes=EXCLUDED.holes
+                note=EXCLUDED.note, holes=EXCLUDED.holes,
+                graphics=EXCLUDED.graphics
             """,
             (
                 ref_id,
@@ -5815,6 +5818,7 @@ class PcbMixin:
                 _jsonb_or_none(data.get("centroid")),
                 data.get("note"),
                 Jsonb(data.get("holes") or []),
+                Jsonb(data.get("graphics") or []),
             ),
         )
 
@@ -5862,7 +5866,7 @@ class PcbMixin:
         inspection."""
         with self._pcb_conn() as conn:
             rows = conn.execute(
-                "SELECT name, pads, pin_map, courtyard, centroid, holes "
+                "SELECT name, pads, pin_map, courtyard, centroid, holes, graphics "
                 "FROM pcb_local_footprints WHERE ref_id = %s",
                 (ref_id,),
             ).fetchall()
@@ -5873,6 +5877,7 @@ class PcbMixin:
                 "courtyard": r[3],
                 "centroid": r[4],
                 "holes": r[5] or [],
+                "graphics": r[6] or [],
             }
             for r in rows
         }
@@ -6774,7 +6779,7 @@ class PcbMixin:
         table."""
         with self._pcb_conn() as conn:
             r = conn.execute(
-                "SELECT pads, pin_map, courtyard, centroid, kicad_mod, source, raw, escape, holes "
+                "SELECT pads, pin_map, courtyard, centroid, kicad_mod, source, raw, escape, holes, graphics "
                 "FROM part_footprints WHERE lcsc = %s",
                 (lcsc,),
             ).fetchone()
@@ -6791,6 +6796,7 @@ class PcbMixin:
             "raw": r[6],
             "escape": r[7],
             "holes": r[8] or [],
+            "graphics": r[9] or [],
         }
 
     def part_footprints_many(
@@ -6866,14 +6872,15 @@ class PcbMixin:
             conn.execute(
                 """
                 INSERT INTO part_footprints
-                    (lcsc, pads, pin_map, courtyard, centroid, kicad_mod, source, raw, escape, holes)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    (lcsc, pads, pin_map, courtyard, centroid, kicad_mod, source, raw, escape, holes, graphics)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 ON CONFLICT (lcsc) DO UPDATE SET
                     pads=EXCLUDED.pads, pin_map=EXCLUDED.pin_map,
                     courtyard=EXCLUDED.courtyard, centroid=EXCLUDED.centroid,
                     kicad_mod=EXCLUDED.kicad_mod, source=EXCLUDED.source,
                     raw=EXCLUDED.raw, escape=EXCLUDED.escape,
-                    holes=EXCLUDED.holes, fetched_at=now()
+                    holes=EXCLUDED.holes, graphics=EXCLUDED.graphics,
+                    fetched_at=now()
                 """,
                 (
                     lcsc,
@@ -6886,6 +6893,7 @@ class PcbMixin:
                     _jsonb_or_none(data.get("raw")),
                     _jsonb_or_none(data.get("escape")),
                     Jsonb(data.get("holes") or []),
+                    Jsonb(data.get("graphics") or []),
                 ),
             )
 

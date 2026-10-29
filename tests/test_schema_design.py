@@ -211,6 +211,11 @@ JSONB_COLUMNS: frozenset[str] = frozenset(
         # per_shell_capacity/required_layers) — footprint-intrinsic, cached
         # once, never recomputed per placement.
         "part_footprints.escape",
+        # 0260: imported/authored non-pad primitives (silk/courtyard/fab
+        # lines, arcs, polygons, regions, text) — a list whose key set
+        # varies per kind; read whole by the footprint view, never queried
+        # by key.
+        "part_footprints.graphics",
         # mounting/NPTH hole list: open-ended per-footprint geometry, same
         # shape family as pads; read whole, never queried by key.
         "part_footprints.holes",
@@ -262,6 +267,9 @@ JSONB_COLUMNS: frozenset[str] = frozenset(
         # instead of C-number-keyed.
         "pcb_local_footprints.centroid",
         "pcb_local_footprints.courtyard",
+        # 0260: the same open per-kind graphics list part_footprints
+        # carries above, ref_id-scoped.
+        "pcb_local_footprints.graphics",
         "pcb_local_footprints.holes",
         "pcb_local_footprints.pads",
         "pcb_local_footprints.pin_map",

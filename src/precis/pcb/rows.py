@@ -37,7 +37,7 @@ from collections.abc import Iterable
 from typing import Any
 
 from precis.errors import BadInput
-from precis.pcb import PIN_ETYPES
+from precis.pcb import MAX_FOOTPRINT_GRAPHICS, MAX_GRAPHIC_POINTS, PIN_ETYPES
 from precis.pcb import padplace as pcb_padplace
 from precis.utils.units import parse_angle_deg
 
@@ -431,7 +431,204 @@ _LOCAL_FOOTPRINT_KEYS = (
     "centroid",
     "note",
     "holes",
+    "graphics",
 )
+
+
+#: The ``kind`` values a footprint graphic may carry. ``region`` is the
+#: filled-area shape (a pour outline, a cutout, a keepout/rule area —
+#: ``keepout: true`` names the last).
+_GRAPHIC_KINDS = frozenset(
+    {"line", "polyline", "polygon", "arc", "circle", "region", "text"}
+)
+
+#: The keys each ``kind`` may carry, beyond ``kind``/``layer``/``keepout``.
+_GRAPHIC_KEYS: dict[str, frozenset[str]] = {
+    "line": frozenset({"points", "width_mm"}),
+    "polyline": frozenset({"points", "width_mm"}),
+    "polygon": frozenset({"points", "width_mm"}),
+    "region": frozenset({"points", "width_mm"}),
+    "arc": frozenset(
+        {"start", "end", "width_mm", "angle_deg", "radius_mm", "cw", "large_arc"}
+    ),
+    "circle": frozenset({"center", "radius_mm", "width_mm"}),
+    "text": frozenset({"x", "y", "text", "height_mm", "rot_deg", "mirror"}),
+}
+
+#: Minimum vertex counts for the ``points``-carrying kinds.
+_GRAPHIC_MIN_POINTS = {"line": 2, "polyline": 2, "polygon": 3, "region": 3}
+
+
+def _graphic_num(value: Any, name: str, i: int, key: str) -> float:
+    try:
+        out = float(value)
+    except (TypeError, ValueError) as exc:
+        raise BadInput(
+            f"pcb footprint {name!r}: graphics[{i}].{key} must be numeric"
+        ) from exc
+    if not math.isfinite(out):
+        raise BadInput(f"pcb footprint {name!r}: graphics[{i}].{key} must be finite")
+    return out
+
+
+def _graphic_point(value: Any, name: str, i: int, key: str) -> list[float]:
+    """One ``[x, y]`` pair, validated and rounded like the pads."""
+    if (
+        not isinstance(value, (list, tuple))
+        or len(value) != 2
+        or isinstance(value, str)
+    ):
+        raise BadInput(
+            f"pcb footprint {name!r}: graphics[{i}].{key} entries must be [x, y] pairs"
+        )
+    return [
+        round(_graphic_num(value[0], name, i, key), 4),
+        round(_graphic_num(value[1], name, i, key), 4),
+    ]
+
+
+def _normalize_graphic(name: str, i: int, g: Any) -> dict[str, Any]:
+    """One ``graphics[]`` entry, validated and rounded — raises
+    :class:`BadInput` on anything off. :func:`normalize_footprint_graphics`
+    decides per call whether that raise propagates (authored input) or
+    demotes to a dropped-graphic warning (vendor-decoded input)."""
+    if not isinstance(g, dict):
+        raise BadInput(f"pcb footprint {name!r}: graphics[{i}] must be an object")
+    kind = g.get("kind")
+    if kind not in _GRAPHIC_KINDS:
+        raise BadInput(
+            f"pcb footprint {name!r}: graphics[{i}].kind must be one of "
+            f"{sorted(_GRAPHIC_KINDS)}, got {kind!r}"
+        )
+    layer = g.get("layer")
+    if not isinstance(layer, str) or not layer.strip():
+        raise BadInput(f"pcb footprint {name!r}: graphics[{i}] needs a nonempty layer")
+    accepted = _GRAPHIC_KEYS[kind] | {"kind", "layer", "keepout"}
+    extra = sorted(set(g) - accepted)
+    if extra:
+        raise BadInput(
+            f"pcb footprint {name!r}: graphics[{i}] ({kind}) has unknown "
+            f"key(s) {extra}; accepted: {sorted(accepted)}"
+        )
+    item: dict[str, Any] = {"kind": kind, "layer": layer.strip()}
+    if g.get("keepout") is not None:
+        item["keepout"] = bool(g["keepout"])
+    if "width_mm" in g:
+        width = _graphic_num(g["width_mm"], name, i, "width_mm")
+        if width < 0:
+            raise BadInput(
+                f"pcb footprint {name!r}: graphics[{i}].width_mm must be >= 0"
+            )
+        item["width_mm"] = round(width, 4)
+    if kind in _GRAPHIC_MIN_POINTS:
+        points = g.get("points")
+        if not isinstance(points, (list, tuple)):
+            raise BadInput(
+                f"pcb footprint {name!r}: graphics[{i}] ({kind}) needs a points list"
+            )
+        if len(points) < _GRAPHIC_MIN_POINTS[kind]:
+            raise BadInput(
+                f"pcb footprint {name!r}: graphics[{i}] ({kind}) needs at "
+                f"least {_GRAPHIC_MIN_POINTS[kind]} points"
+            )
+        if len(points) > MAX_GRAPHIC_POINTS:
+            raise BadInput(
+                f"pcb footprint {name!r}: graphics[{i}] ({kind}) has "
+                f"{len(points)} points — the cap is {MAX_GRAPHIC_POINTS}"
+            )
+        item["points"] = [_graphic_point(p, name, i, "points") for p in points]
+    elif kind == "arc":
+        for key in ("start", "end"):
+            if g.get(key) is None:
+                raise BadInput(
+                    f"pcb footprint {name!r}: graphics[{i}] (arc) needs {key}"
+                )
+            item[key] = _graphic_point(g[key], name, i, key)
+        for key in ("angle_deg", "radius_mm"):
+            if g.get(key) is not None:
+                item[key] = round(_graphic_num(g[key], name, i, key), 4)
+        for key in ("cw", "large_arc"):
+            if g.get(key) is not None:
+                item[key] = bool(g[key])
+    elif kind == "circle":
+        if g.get("center") is None:
+            raise BadInput(
+                f"pcb footprint {name!r}: graphics[{i}] (circle) needs center"
+            )
+        item["center"] = _graphic_point(g["center"], name, i, "center")
+        radius = _graphic_num(g.get("radius_mm"), name, i, "radius_mm")
+        if radius <= 0:
+            raise BadInput(
+                f"pcb footprint {name!r}: graphics[{i}].radius_mm must be > 0"
+            )
+        item["radius_mm"] = round(radius, 4)
+    else:  # text
+        for key in ("x", "y"):
+            if g.get(key) is None:
+                raise BadInput(
+                    f"pcb footprint {name!r}: graphics[{i}] (text) needs {key}"
+                )
+            item[key] = round(_graphic_num(g[key], name, i, key), 4)
+        text = g.get("text")
+        if not isinstance(text, str) or not text:
+            raise BadInput(
+                f"pcb footprint {name!r}: graphics[{i}] (text) needs nonempty text"
+            )
+        item["text"] = text
+        height = _graphic_num(g.get("height_mm"), name, i, "height_mm")
+        if height <= 0:
+            raise BadInput(
+                f"pcb footprint {name!r}: graphics[{i}].height_mm must be > 0"
+            )
+        item["height_mm"] = round(height, 4)
+        if g.get("rot_deg") is not None:
+            item["rot_deg"] = round(_graphic_num(g["rot_deg"], name, i, "rot_deg"), 4)
+        if g.get("mirror") is not None:
+            item["mirror"] = bool(g["mirror"])
+    return item
+
+
+def normalize_footprint_graphics(
+    name: str, raw: Any, *, dropped: list[str] | None = None
+) -> list[dict[str, Any]]:
+    """A footprint's non-pad graphics, ``[{kind, layer, ...}]`` in
+    footprint-local mm (the pads' frame, Y up), validated and rounded.
+
+    Inspectable only: a ``keepout: true`` region is the footprint's own
+    rule area (an antenna or crystal "no copper" zone), stored so a
+    later slice can bind it — nothing enforces it yet.
+
+    ``dropped`` picks the failure mode per call site: ``None`` (the
+    default, agent-authored input) raises :class:`BadInput` on the first
+    bad graphic so the author hears about it; a list (a vendor-decoded
+    import) drops just that graphic and appends the refusal text — one
+    bad primitive must not reject the whole footprint.
+    """
+    if raw is None:
+        return []
+    if not isinstance(raw, (list, tuple)):
+        raise BadInput(f"pcb footprint {name!r}: graphics must be a list of objects")
+    out: list[dict[str, Any]] = []
+    for i, g in enumerate(raw):
+        if len(out) >= MAX_FOOTPRINT_GRAPHICS:
+            overflow = len(raw) - i
+            if dropped is None:
+                raise BadInput(
+                    f"pcb footprint {name!r}: at most {MAX_FOOTPRINT_GRAPHICS} "
+                    "graphics per footprint"
+                )
+            dropped.append(
+                f"pcb footprint {name!r}: {overflow} graphic(s) over the "
+                f"{MAX_FOOTPRINT_GRAPHICS}-per-footprint cap — dropped at import"
+            )
+            break
+        try:
+            out.append(_normalize_graphic(name, i, g))
+        except BadInput as exc:
+            if dropped is None:
+                raise
+            dropped.append(f"{exc} — dropped at import")
+    return out
 
 
 def normalize_footprint_holes(name: str, raw: Any) -> list[dict[str, float]]:
@@ -552,6 +749,7 @@ def normalize_footprint(f: dict[str, Any]) -> tuple[str, dict[str, Any]]:
         "centroid": centroid,
         "note": f.get("note"),
         "holes": normalize_footprint_holes(name, f.get("holes")),
+        "graphics": normalize_footprint_graphics(name, f.get("graphics")),
     }
     return name, data
 
