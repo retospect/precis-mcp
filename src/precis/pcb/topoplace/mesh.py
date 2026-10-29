@@ -666,6 +666,7 @@ def _conflict_data(
     world_rings: list[np.ndarray | None],
     pose: np.ndarray,
     outline: np.ndarray,
+    world_bodies: list[np.ndarray | None],
 ) -> tuple[
     tuple[MeshConflict, ...],
     tuple[tuple[int, float], ...],
@@ -678,7 +679,15 @@ def _conflict_data(
     split matches ``check_courtyard_overlap``'s ``bottom_by_refdes``:
     a same-side pair is the placer violation Reto priced (2026-10-25),
     an opposite-side pair is legal facing. Bbox masks prune the pair
-    scan before any polygon work."""
+    scan before any polygon work.
+
+    The zone test (the ``courtyard_hole`` hard gate) measures the part
+    BODY (``world_bodies``, the zero-clearance pad union) against the
+    zone polygon — gr529963's ruling (Reto 2026-10-28): the hole's
+    keep-out ring already carries its single margin claim in its radius,
+    so the part's 0.4mm house courtyard margin must not stack on top of
+    it. Part-part conflicts and outline escapes stay on the courtyard
+    rings — the house margin IS between-parts breathing room."""
     from shapely.geometry import Polygon
 
     def _poly(ring: np.ndarray | None) -> Polygon | None:
@@ -714,6 +723,7 @@ def _conflict_data(
     zone_conflicts: list[tuple[int, int, float]] = []
     ogeom = _poly(np.vstack([outline, outline[:1]])) if len(outline) >= 3 else None
     zgeoms = [_poly(zone_world_ring(d, z, pose)) for z in d.zones]
+    bodies = [_poly(r) for r in world_bodies]
     for i, gi in enumerate(parts):
         if gi is None:
             continue
@@ -721,10 +731,13 @@ def _conflict_data(
             outside = float(gi.area - gi.intersection(ogeom).area)
             if outside > _EPS:
                 outline_conflicts.append((i, outside))
+    for i, bi in enumerate(bodies):
+        if bi is None:
+            continue
         for z, zg in enumerate(zgeoms):
             if zg is None:
                 continue
-            area = float(gi.intersection(zg).area)
+            area = float(bi.intersection(zg).area)
             # the hole's owner covers it by design — courtyard_hole's
             # exemption, so the placement passes do not shove a
             # connector off its own standoff
@@ -790,6 +803,7 @@ def build_mesh(d: TopoDesign, pose: np.ndarray) -> TopoMesh:
 
     ring_segs: list[tuple[int, list[tuple[int, int]]]] = []
     world_rings: list[np.ndarray | None] = [None] * n
+    world_bodies: list[np.ndarray | None] = [None] * n
     for part in range(n):
         ring = d.part_outline[part] if part < len(d.part_outline) else ()
         pts = np.asarray(ring, dtype=np.float64).reshape(-1, 2)
@@ -809,6 +823,14 @@ def build_mesh(d: TopoDesign, pose: np.ndarray) -> TopoMesh:
         ]
         if segs:
             ring_segs.append((part, segs))
+        # The pad-union BODY world ring (gr529963): the part-on-zone
+        # conflict test measures this against the zone polygon — the
+        # fab bar prices the body, the courtyard above stays the
+        # between-parts reservation. A part with no body ring
+        # (synthetic designs) falls back to its courtyard ring.
+        body = d.part_body[part] if part < len(d.part_body) else ()
+        bpts = np.asarray(body, dtype=np.float64).reshape(-1, 2)
+        world_bodies[part] = _place(bpts, pose[part]) if len(bpts) >= 4 else wpts
 
     # Pad outline corners (round-3 seam R3-1): each pad's ``pin_wh``
     # rectangle becomes a constrained ring owned by its part. Without
@@ -1097,7 +1119,7 @@ def build_mesh(d: TopoDesign, pose: np.ndarray) -> TopoMesh:
         )
 
     conflicts, outline_conflicts, zone_conflicts = _conflict_data(
-        d, world_rings, pose, outline
+        d, world_rings, pose, outline, world_bodies
     )
 
     return TopoMesh(

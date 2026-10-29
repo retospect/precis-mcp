@@ -140,10 +140,11 @@ def convex_polygons_overlap(poly_a: list[Point], poly_b: list[Point]) -> bool:
     of a part's pad outlines offset outward, which can be CONCAVE (a
     shaped electrode's ring hugs its teeth). SAT consumers of courtyards
     hull at their own boundary — :func:`precis.pcb.topoplace.legalize.
-    _mtv` does; the legacy engine (``optimize``/``cost``) still feeds
-    these rings raw and reads conservative hull-ish answers (fable
-    review S4 — no collision can ship, but the graded separations and
-    this docstring were wrong until then).
+    _mtv` does. The legacy engine (``optimize``/``cost``) DID feed these
+    rings raw until gr525380 switched its legality tests to exact
+    shapely intersections over the raw concave unions; what remains on
+    SAT there is graded-margin terms only, which read conservative
+    hull-ish answers by design.
 
     Touching counts as overlapping: the test is a strict ``<`` on the
     projection gap, so two polygons sharing exactly one edge or vertex

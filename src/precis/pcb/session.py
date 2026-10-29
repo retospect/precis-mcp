@@ -1064,7 +1064,10 @@ def placement_drc_findings(
       objects the placer reserves and silk draws, with bottom-side
       membership tracked separately so a part directly under another on the
       OTHER side of the board is not a false overlap (the identical split
-      ``_render_drc`` uses via ``courtyard_bottom``).
+      ``_render_drc`` uses via ``courtyard_bottom``). Their zero-clearance
+      twins (the pad-union BODIES, gr529963) ride along for the
+      edge-clearance rule, which measures the body against the fab bar —
+      the 0.4mm house margin is between-parts breathing room only.
 
     Unplaced (NaN-pose) instances contribute no courtyard, the same way
     :func:`positions` omits them.
@@ -1106,6 +1109,22 @@ def placement_drc_findings(
         courtyards.append((refdes, poly))
         courtyard_bottom[refdes] = bool(ir.inst_bottom[i])
 
+    # gr529963 (ruling Reto 2026-10-28): the zero-clearance pad-union body
+    # the edge-clearance rule measures (the fab bar) — same call shape and
+    # fallback as the courtyard build above, only the offset differs. The
+    # 0.4mm house margin is between-parts breathing room only.
+    bodies: list[tuple[str, list[tuple[float, float]]]] = [
+        (str(ir.instance_refdes[i]), poly)
+        for i, poly in enumerate(
+            world_courtyard_polygons(
+                ir,
+                clearance_mm=0.0,
+                fallback_half_extent_mm=COURTYARD_MIN_SEPARATION_MM / 2.0,
+            )
+        )
+        if poly
+    ]
+
     return pcb_drc.run_placement_drc(
         model,
         capability=capability,
@@ -1115,6 +1134,7 @@ def placement_drc_findings(
         net_rules=net_rules,
         edge_mates=pcb_edge_mate.records(ir),
         courtyard_clearance_mm=COURTYARD_CLEARANCE_MM,
+        bodies=bodies,
     )
 
 

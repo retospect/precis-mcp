@@ -217,7 +217,6 @@ from precis.pcb.eyes import (
 )
 from precis.pcb.geom import (
     convex_hull_ring,
-    convex_polygons_overlap,
     convex_polygons_signed_separation,
     segments_cross,
 )
@@ -2092,12 +2091,21 @@ _VIA_KEY_BASE = 20_000_000
 #: by ``tests/test_pcb_optimize.py``.
 _FIXED_VIA_CLEARANCE_MM = 0.15
 
-#: How many sides approximate a mounting hole's circular keep-out for the
-#: SAT overlap test :func:`~precis.pcb.geom.convex_polygons_overlap` (and
-#: its graded sibling) already run on every other courtyard pair — a
-#: circle has no SAT primitive of its own, and one is not worth adding to
-#: ``geom.py`` for a shape this module is the only user of.
+#: How many sides approximate a mounting hole's circular keep-out: the
+#: exact shapely legality test (gr525380) and the convex SAT predicates
+#: (:func:`~precis.pcb.geom.convex_polygons_overlap` and its graded
+#: sibling, still used by the margin terms) all read the same polygon —
+#: a circle has no SAT primitive of its own, and one is not worth adding
+#: to ``geom.py`` for a shape this module is the only user of.
 _HOLE_POLY_SIDES = 16
+
+#: Area floor (mm²) for the exact concave-courtyard overlap tests in
+#: :meth:`OptimizeEngine._placement_is_legal` and
+#: :meth:`OptimizeEngine.pose_conflicts` (gr525380). A measure-zero touch
+#: (shared edge or vertex) is CLEAR: that is what DRC's exact rules do
+#: (:data:`precis.pcb.drc._EPS`), and the placer and DRC must not answer
+#: the same question differently.
+_EXACT_OVERLAP_AREA_MM2 = 1e-9
 
 
 def _hole_polygon(cx: float, cy: float, r: float) -> list[tuple[float, float]]:
@@ -2299,20 +2307,23 @@ class OptimizeEngine:
         #: during the anneal, never its footprint.
         #:
         #: HULLED HERE, once: since gr524238 a courtyard ring can be
-        #: concave (a shaped electrode's union hugs its teeth), and every
-        #: consumer of this cache feeds the convex-only SAT predicates
-        #: — hulling at the source keeps ``_placement_is_legal`` and the
-        #: graded cost reading conservative hull answers instead of
-        #: silently-wrong concave ones (fable review S4, gr530631; the
-        #: topoplace ``legalize._mtv`` precedent).
-        self._keepout_poly = [
-            convex_hull_ring(poly)
-            for poly in instance_courtyard_polygons(
-                ir,
-                clearance_mm=COURTYARD_CLEARANCE_MM,
-                fallback_half_extent_mm=COURTYARD_MIN_SEPARATION_MM / 2.0,
-            )
-        ]
+        #: concave (a shaped electrode's union hugs its teeth), and the
+        #: graded cost's consumers of this cache feed the convex-only SAT
+        #: predicates — hulling at the source keeps the graded cost reading
+        #: conservative hull answers instead of silently-wrong concave ones
+        #: (fable review S4, gr530631; the topoplace ``legalize._mtv``
+        #: precedent). The LEGALITY tests are exact since gr525380 and read
+        #: the raw union (``_keepout_poly_raw`` below) instead: a hull
+        #: bridges a concave notch, so a mounting hole parked inside one
+        #: (the taz leaf comb's zip-tie hole) read as a
+        #: ``courtyard_hole`` conflict that DRC's exact
+        #: :func:`~precis.pcb.drc.check_courtyard_hole` does not report.
+        self._keepout_poly_raw = instance_courtyard_polygons(
+            ir,
+            clearance_mm=COURTYARD_CLEARANCE_MM,
+            fallback_half_extent_mm=COURTYARD_MIN_SEPARATION_MM / 2.0,
+        )
+        self._keepout_poly = [convex_hull_ring(poly) for poly in self._keepout_poly_raw]
         #: The broad phase for :meth:`_placement_is_legal`, derived FROM
         #: the polygon rather than independently: a rotation-invariant
         #: circumscribed radius (:func:`~precis.pcb.ir.
@@ -2469,6 +2480,10 @@ class OptimizeEngine:
         self._world_poly: dict[
             int, tuple[tuple[float, float, float], list[tuple[float, float]]]
         ] = {}
+        #: Same pose-keyed caching as ``_world_poly``, for the RAW
+        #: (unhulled, possibly concave) courtyard as a shapely ``Polygon``
+        #: — what the exact legality tests intersect (gr525380).
+        self._world_poly_raw: dict[int, tuple[tuple[float, float, float], Any]] = {}
         self._placement_bounds = self._derive_placement_bounds()
         self._outline_region = _outline_region(ir.outline)
         #: ``t0`` and TRANSLATE's step both scale off ``board_side``. It is
@@ -3827,6 +3842,8 @@ class OptimizeEngine:
         it cannot price (a run with the term active still settled with 10
         overlapping pairs — a penalty is a price, and the search paid it).
         """
+        from shapely.geometry import Polygon
+
         ir = self.ir
         keepout = self._keepout_r
         moving = [inst for inst, _, _ in proposals]
@@ -3875,8 +3892,14 @@ class OptimizeEngine:
             for other in near:
                 if self._sides_clear(inst, int(other)):
                     continue
-                if convex_polygons_overlap(
-                    proposed_poly[inst], self._world_courtyard(int(other))
+                # Exact on the raw unions, not SAT on the hulls (gr525380):
+                # two concave courtyards whose hulls meet in each other's
+                # notches are legal when the unions stay disjoint.
+                if (
+                    self._world_courtyard_exact(inst, x, y, rotations.get(inst))
+                    .intersection(self._world_courtyard_exact(int(other)))
+                    .area
+                    > _EXACT_OVERLAP_AREA_MM2
                 ):
                     return False
             for hole_idx in range(len(self._hole_polys)):
@@ -3887,7 +3910,14 @@ class OptimizeEngine:
                 sep_h = keepout[inst] + self._hole_radius[hole_idx]
                 if (x - hx) ** 2 + (y - hy) ** 2 >= sep_h * sep_h:
                     continue
-                if convex_polygons_overlap(proposed_poly[inst], hole_poly):
+                # Exact for the same reason: a hole inside a courtyard
+                # notch clears the pad union but never the hull.
+                if (
+                    self._world_courtyard_exact(inst, x, y, rotations.get(inst))
+                    .intersection(Polygon(hole_poly))
+                    .area
+                    > _EXACT_OVERLAP_AREA_MM2
+                ):
                     return False
             if (
                 self._fixed_via_gap(inst, x, y, rotations.get(inst))
@@ -3900,7 +3930,14 @@ class OptimizeEngine:
                 sep_ij = keepout[inst] + keepout[other]
                 if (x - ox) ** 2 + (y - oy) ** 2 >= sep_ij * sep_ij:
                     continue
-                if convex_polygons_overlap(proposed_poly[inst], proposed_poly[other]):
+                if (
+                    self._world_courtyard_exact(inst, x, y, rotations.get(inst))
+                    .intersection(
+                        self._world_courtyard_exact(other, ox, oy, rotations.get(other))
+                    )
+                    .area
+                    > _EXACT_OVERLAP_AREA_MM2
+                ):
                     return False
         return True
 
@@ -3924,10 +3961,21 @@ class OptimizeEngine:
         (``op='move'``) can be refused with the rule and the pair. The
         placement-bounds test is left out: those bounds are the anneal's
         search domain, not a board rule, and a hand move is not bound by
-        them (outline containment is DRC's)."""
+        them (outline containment is DRC's).
+
+        The courtyard tests are EXACT shapely intersections on the raw
+        (possibly concave) pad-union courtyards, not the convex SAT test
+        on their hulls (gr525380): since gr524238 a courtyard can have a
+        notch, and a hull bridges it — a mounting hole sitting inside the
+        notch then read as ``courtyard_hole`` here while DRC's exact
+        :func:`~precis.pcb.drc.check_courtyard_hole` accepted the pose.
+        A measure-zero touch (shared edge) is clear, matching DRC's
+        ``_EPS`` area floor."""
+        from shapely.geometry import Polygon
+
         ir = self.ir
         keepout = self._keepout_r
-        poly = self._world_courtyard(inst, x, y, rot)
+        poly = self._world_courtyard_exact(inst, x, y, rot)
         conflicts: list[tuple[str, str]] = []
         dx, dy = ir.inst_x - x, ir.inst_y - y
         d2 = dx * dx + dy * dy
@@ -3936,7 +3984,10 @@ class OptimizeEngine:
         for other in np.nonzero(d2 < sep * sep)[0]:
             if self._sides_clear(inst, int(other)):
                 continue
-            if convex_polygons_overlap(poly, self._world_courtyard(int(other))):
+            if (
+                poly.intersection(self._world_courtyard_exact(int(other))).area
+                > _EXACT_OVERLAP_AREA_MM2
+            ):
                 conflicts.append(
                     ("courtyard_overlap", str(ir.instance_refdes[int(other)]))
                 )
@@ -3948,7 +3999,7 @@ class OptimizeEngine:
             sep_h = keepout[inst] + self._hole_radius[hole_idx]
             if (x - hx) ** 2 + (y - hy) ** 2 >= sep_h * sep_h:
                 continue
-            if convex_polygons_overlap(poly, hole_poly):
+            if poly.intersection(Polygon(hole_poly)).area > _EXACT_OVERLAP_AREA_MM2:
                 conflicts.append(("courtyard_hole", f"hole @ ({hx:g}, {hy:g})"))
         gap = self._fixed_via_gap(inst, x, y, rot)
         if gap < _FIXED_VIA_CLEARANCE_MM:
@@ -3984,8 +4035,10 @@ class OptimizeEngine:
         from shapely.geometry import Polygon
 
         ir = self.ir
-        poly = self._world_courtyard(inst, x, y, rot)
-        mine = Polygon(poly)
+        # The same RAW unions the legality test now judges (gr525380) —
+        # a depth measured on the hulls would price a notch the legality
+        # test just cleared.
+        mine = self._world_courtyard_exact(inst, x, y, rot)
         by_name = {str(r): i for i, r in enumerate(ir.instance_refdes)}
         holes = {
             f"hole @ ({hx:g}, {hy:g})": hpoly
@@ -3996,8 +4049,9 @@ class OptimizeEngine:
         out: list[tuple[str, str, float]] = []
         for rule, other in self.pose_conflicts(inst, x, y, rot):
             if rule == "courtyard_overlap":
-                theirs = self._world_courtyard(by_name[other])
-                depth = mine.intersection(Polygon(theirs)).area
+                depth = mine.intersection(
+                    self._world_courtyard_exact(by_name[other])
+                ).area
             elif rule == "courtyard_hole":
                 depth = mine.intersection(Polygon(holes[other])).area
             else:
@@ -4232,6 +4286,44 @@ class OptimizeEngine:
             mirrored=bool(ir.inst_bottom[inst]),
         )
         self._world_poly[inst] = (pose, poly)
+        return poly
+
+    def _world_courtyard_exact(
+        self,
+        inst: int,
+        x: float | None = None,
+        y: float | None = None,
+        rot: float | None = None,
+    ):
+        """``inst``'s RAW courtyard (the possibly-concave pad union,
+        :attr:`_keepout_poly_raw`) in BOARD coordinates as a shapely
+        ``Polygon``, at the current pose or a proposed ``(x, y)`` /
+        ``rot`` — the shape the legality tests intersect since gr525380,
+        where :meth:`_world_courtyard`'s hull would bridge a notch and
+        flag a mounting hole sitting inside it (SAT is convex-only; DRC
+        judges the same rule exactly). Pose-keyed cached like
+        :meth:`_world_courtyard`."""
+        from shapely.geometry import Polygon
+
+        ir = self.ir
+        px = float(ir.inst_x[inst]) if x is None else x
+        py = float(ir.inst_y[inst]) if y is None else y
+        prot = float(ir.inst_rot[inst]) if rot is None else rot
+        prot = 0.0 if math.isnan(prot) else prot
+        pose = (px, py, prot)
+        cached = self._world_poly_raw.get(inst)
+        if cached is not None and cached[0] == pose:
+            return cached[1]
+        poly = Polygon(
+            place_points(
+                self._keepout_poly_raw[inst],
+                cx=px,
+                cy=py,
+                rot_deg=prot,
+                mirrored=bool(ir.inst_bottom[inst]),
+            )
+        )
+        self._world_poly_raw[inst] = (pose, poly)
         return poly
 
     def _rescan_after_move(self, moved_inst: int) -> None:

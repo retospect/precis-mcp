@@ -4020,6 +4020,67 @@ def test_every_enqueue_op_option_is_an_accepted_put_key():
     assert read <= PcbHandler.ARGS_KEYS["put"], read - PcbHandler.ARGS_KEYS["put"]
 
 
+def test_every_get_path_args_key_is_an_accepted_get_key():
+    """gr531204: every ``args=`` key the get-path subtree reads must be
+    declared in ``ARGS_KEYS['get']`` — undeclared reads die as
+    ``UndeclaredArgsKey`` on the slim/tools path even though the handler
+    implements them (``flip`` for view='svg' fab, ``focus``/``sheet``/
+    ``only`` for view='schematic' shipped exactly this way). AST walk
+    from ``get`` through the self-method call graph, so ``(args or
+    {}).get(...)`` and nested-in-arguments calls are seen too."""
+    import ast
+    import inspect
+
+    def _is_args(expr: ast.expr) -> bool:
+        if isinstance(expr, ast.Name):
+            return expr.id == "args"
+        if isinstance(expr, ast.BoolOp):  # args or {}
+            return any(_is_args(v) for v in expr.values)
+        return False
+
+    tree = ast.parse(inspect.getsource(PcbHandler))
+    cls = tree.body[0]
+    assert isinstance(cls, ast.ClassDef)
+    methods = {
+        node.name: node
+        for node in cls.body
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+    }
+    read: set[str] = set()
+    visited: set[str] = set()
+    stack = ["get"]
+    while stack:
+        name = stack.pop()
+        if name in visited or name not in methods:
+            continue
+        visited.add(name)
+        for sub in ast.walk(methods[name]):
+            key = None
+            if (
+                isinstance(sub, ast.Call)
+                and isinstance(sub.func, ast.Attribute)
+                and sub.func.attr in ("get", "pop")
+                and sub.args
+                and isinstance(sub.args[0], ast.Constant)
+                and _is_args(sub.func.value)
+            ):
+                key = sub.args[0].value
+            elif (
+                isinstance(sub, ast.Subscript)
+                and _is_args(sub.value)
+                and isinstance(sub.slice, ast.Constant)
+            ):
+                key = sub.slice.value
+            if isinstance(key, str):
+                read.add(key)
+            if isinstance(sub, ast.Call) and isinstance(sub.func, ast.Attribute):
+                receiver = sub.func.value
+                if isinstance(receiver, ast.Name) and receiver.id == "self":
+                    stack.append(sub.func.attr)
+    assert read, "the audit must see at least the args keys the views read"
+    assert read <= PcbHandler.ARGS_KEYS["get"], read - PcbHandler.ARGS_KEYS["get"]
+
+
 def test_roles_supplies_client_of_round_trip(pcb, store):
     """§1b: top-level ``roles`` upserts ``pcb_roles``; ``supplies`` rides
     the instance dict; ``client_of`` rides the pin's member meta."""

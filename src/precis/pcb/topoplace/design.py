@@ -307,6 +307,15 @@ class TopoDesign:
     #: wire threads a part body. ``()``/empty = no outline (synthetic
     #: designs, pinless parts without a fallback).
     part_outline: tuple[np.ndarray, ...] = ()
+    #: The pad-union BODY rings (gr529963, ruling Reto 2026-10-28):
+    #: ``part_outline``'s shape at ZERO clearance — the same
+    #: :func:`precis.pcb.ir.instance_courtyard_polygons` call with
+    #: ``clearance_mm=0.0``. The fab bar (board-edge and hole keep-out
+    #: rules, and the proxy's edge half of the overlap term) measures
+    #: THIS, where ``part_outline`` is the between-parts courtyard the
+    #: 0.4mm house margin belongs to. ``()``/empty = no body (synthetic
+    #: designs) — consumers fall back to the courtyard ring.
+    part_body: tuple[np.ndarray, ...] = ()
     #: Slice 2 (list-2-colouring): per ``net_pins`` entry the forced
     #: outer layer from the net's class ``layers`` rule, projected onto
     #: the two outer layers: ``-1`` free (both outers allowed or no
@@ -939,6 +948,19 @@ def design_from_ir(
             fallback_half_extent_mm=DEFAULT_COURTYARD_RADIUS_MM,
         )
     )
+    # gr529963 (ruling Reto 2026-10-28): the same pad-union shape at ZERO
+    # clearance — the body the edge-clearance and hole keep-out rules
+    # measure (the fab bar). Same call shape, same fallback, only the
+    # offset differs; the courtyard above stays the between-parts
+    # reservation.
+    part_body = tuple(
+        np.asarray(poly, dtype=np.float64) if poly else np.zeros((0, 2))
+        for poly in instance_courtyard_polygons(
+            ir,
+            clearance_mm=0.0,
+            fallback_half_extent_mm=DEFAULT_COURTYARD_RADIUS_MM,
+        )
+    )
 
     names = _layer_name_map(ir)
     pin_side = _pin_sides(ir, footprints)
@@ -1121,6 +1143,7 @@ def design_from_ir(
         decl_net_name=decl["net_name"],
         pin_functions=decl["pin_functions"],
         part_outline=part_outline,
+        part_body=part_body,
         net_layer_force=_net_layer_force(ir, route_of, net_classes, names),
         net_pin_force=_net_pin_force(tuple(net_pins), pin_side, ir.n_layers),
         net_direction_exempt=_net_direction_exempt(ir, route_of, net_classes),

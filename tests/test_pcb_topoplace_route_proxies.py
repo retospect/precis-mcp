@@ -394,6 +394,57 @@ def test_edge_clearance_priced_against_courtyard() -> None:
     assert proxy.overlap == pytest.approx(0.2)
 
 
+def test_edge_clearance_priced_against_body() -> None:
+    """gr529963 (ruling Reto 2026-10-28): the edge term prices the
+    pad-union BODY against _EDGE_CLEAR_MM, not the courtyard — pricing
+    the courtyard squeezed placement to an effective 0.8mm body-to-edge
+    demand and disagreed with the DRC rule's own measure. A design with
+    explicit ``part_body`` rings: the courtyard 0.2mm off the edge pays
+    NOTHING while the body clears; a body 0.3mm off pays 0.1, through
+    the full recompute AND the staged delta / commit path. A part with
+    no body ring (synthetic designs) falls back to its courtyard ring —
+    the case the test above pins."""
+    import dataclasses
+
+    from precis.pcb.topoplace.proxy import ProxyState, edge_clearance_total
+
+    d = _design(
+        ["A", "B"],
+        [(0, 0.0, 0.0, 0), (0, 10.0, 0.0, 0), (1, 0.0, 0.0, 1), (1, 2.0, 0.0, 1)],
+        [0, 0, 0, 0],
+        [(10.0, 20.0, 0.0, 0.0), (20.0, 20.0, 0.0, 0.0)],
+        part_rings=True,
+    )
+    # An 8x4 body inside each 10x6 courtyard (same closure convention).
+    body = np.array(
+        [[-4.0, -2.0], [4.0, -2.0], [4.0, 2.0], [-4.0, 2.0], [-4.0, -2.0]],
+        dtype=np.float64,
+    )
+    d = dataclasses.replace(d, part_body=(body.copy(), body.copy()))
+    # B's courtyard at (34.8, 20) spans x 29.8..39.8 — 0.2mm off the
+    # x=40 edge — but its body spans 30.8..38.8: 1.2mm clear. Pays
+    # nothing now; priced the 0.2mm shortfall before the ruling.
+    near = d.pose0.copy()
+    near[1, 0] = 34.8
+    assert edge_clearance_total(d, near) == 0.0
+    # The same move on the courtyard-fallback design (no part_body)
+    # still pays — the fallback keeps synthetic designs on the ring.
+    assert edge_clearance_total(
+        dataclasses.replace(d, part_body=()), near
+    ) == pytest.approx(0.2)
+    # A body that crowds the edge: B at x=35.7 -> body spans 31.7..39.7,
+    # gap 0.3, shortfall 0.1 — staged delta and commit agree exactly.
+    w = ObjectiveShares(crossings=0.5, ratsnest=0.2, overlap=0.3)
+    proxy = ProxyState(d, d.pose0, w)
+    assert proxy.overlap == 0.0
+    row = proxy.pose[1].copy()
+    row[0] = 35.7
+    proxy.try_move(1, row)
+    assert proxy.overlap == pytest.approx(0.1)
+    proxy.commit()
+    assert proxy.overlap == pytest.approx(edge_clearance_total(d, proxy.pose))
+
+
 # -- the flow preset --------------------------------------------------------
 
 

@@ -1136,6 +1136,17 @@ class PcbHandler(Handler):
                 # view='check'/'drc': force the inline run past reuse
                 # (gr496242).
                 "fresh",
+                # gr531204: the AST audit of the get-path subtree found
+                # these reads missing from the spec — view='svg' fab level
+                # (flip the bottom-side render) and view='schematic'
+                # (focus/sheet pick the region, only=1 drops dimmed parts,
+                # gr520807). Undeclared here they die as
+                # UndeclaredArgsKey on the slim/tools path even though
+                # the handler implements them.
+                "flip",
+                "focus",
+                "sheet",
+                "only",
             }
         ),
     }
@@ -4823,10 +4834,12 @@ class PcbHandler(Handler):
     ) -> tuple[
         list[dict[str, Any]],
         dict[str, list[tuple[float, float]]],
+        dict[str, list[tuple[float, float]]],
         dict[str, dict[str, Any]],
     ]:
         """Delegates to :func:`precis.pcb.check_run.geometry` — DRC's pads,
-        courtyard polygons and the refdes-keyed footprint map."""
+        courtyard polygons, zero-clearance body polygons (gr529963) and
+        the refdes-keyed footprint map."""
         return check_run.geometry(self.store, ref_id, layers)
 
     def _drc_drills(self, ir: pcb_ir.PcbIR) -> list[dict[str, Any]]:
@@ -7151,15 +7164,17 @@ class PcbHandler(Handler):
         design: dict[str, Any],
         courtyard_local: dict[str, list[tuple[float, float]]],
         capability: CapabilityRow,
+        body_local: dict[str, list[tuple[float, float]]] | None = None,
     ) -> tuple[
         list[pcb_drc.Courtyard],
         dict[str, bool],
         dict[str, NetRules],
         dict[str, float],
+        list[pcb_drc.Courtyard] | None,
     ]:
         """Delegates to :func:`precis.pcb.check_run.rule_inputs`; shared by
         the check run and :meth:`_validity_findings`."""
-        return check_run.rule_inputs(design, courtyard_local, capability)
+        return check_run.rule_inputs(design, courtyard_local, capability, body_local)
 
     @staticmethod
     def _clearance_net_rules(
@@ -7272,15 +7287,18 @@ class PcbHandler(Handler):
                 ),
             ) from exc
         layer_names = [str(layer.get("name")) for layer in board["stackup"]]
-        pads, courtyard_local, _footprints = self._drc_geometry(ref_id, layer_names)
+        pads, courtyard_local, body_local, _footprints = self._drc_geometry(
+            ref_id, layer_names
+        )
         # A part with no real footprint is checked at a guessed bound, which
         # `view='drc'` itself calls "not a verdict" — never gate on a guess.
         guessed = {str(p.get("refdes")) for p in pads if p.get("synthesized")}
         pads = [p for p in pads if str(p.get("refdes")) not in guessed]
-        courtyards, courtyard_bottom, net_rules, net_voltages = self._drc_rule_inputs(
-            design, courtyard_local, capability
+        courtyards, courtyard_bottom, net_rules, net_voltages, bodies = (
+            self._drc_rule_inputs(design, courtyard_local, capability, body_local)
         )
         courtyards = [c for c in courtyards if c[0] not in guessed]
+        bodies = [b for b in bodies or [] if b[0] not in guessed]
         copper = [
             {**row, "net": row.get("net") or ""}
             if row.get("fixed")
@@ -7315,6 +7333,7 @@ class PcbHandler(Handler):
                 capability,
                 outline=outline,
                 edge_mates=edge_records,
+                bodies=bodies,
             ),
             *pcb_drc.check_edge_mating(
                 edge_records,
@@ -7338,6 +7357,7 @@ class PcbHandler(Handler):
                     )
                     for h in ir.mounting_holes
                 ],
+                bodies,
             )
         # gr345859 §F — measures at `strength='invariant'` (the generator-
         # declared fabric rules) gate beside the geometric ones: a violated

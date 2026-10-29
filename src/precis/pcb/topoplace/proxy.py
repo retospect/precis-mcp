@@ -120,6 +120,21 @@ def _ring_geom(d: TopoDesign, row: np.ndarray, part: int):
     return g if not g.is_empty and g.area > _EPS else None
 
 
+def _body_geom(d: TopoDesign, row: np.ndarray, part: int):
+    """The part's pad-union BODY in board space as a shapely polygon —
+    :func:`_ring_geom`'s twin over :attr:`TopoDesign.part_body`
+    (gr529963: the fab bar measures the body). A part without a body
+    ring (synthetic designs carry no ``part_body``) falls back to its
+    courtyard ring, so a hand-built design prices exactly as before;
+    ``None`` for a part with neither."""
+    ring = d.part_body[part] if part < len(d.part_body) else ()
+    pts = np.asarray(ring, dtype=np.float64).reshape(-1, 2)
+    if len(pts) < 4:
+        return _ring_geom(d, row, part)
+    g = Polygon(local_to_world(pts, row)[:-1])
+    return g if not g.is_empty and g.area > _EPS else None
+
+
 def through_hole_parts(d: TopoDesign) -> np.ndarray:
     """Per-part flag: any pin on a through-hole land (``pin_side == 2``).
     A TH part's pads exist on EVERY copper layer (the plated barrel), so
@@ -228,20 +243,24 @@ def _outline_geom(d: TopoDesign) -> Any | None:
     return g if not g.is_empty else None
 
 
-#: Courtyard-to-board-edge clearance floor — the DRC's
-#: ``courtyard_edge_clearance`` jlc_min bar (JLC vcut minimum). The
-#: placer design build sees no fab capability row (the same constraint
-#: as net rule widths), so the term holds the flat minimum; the
-#: house-default tier and edge-mate exemptions belong to the rung that
-#: carries capability.
+#: Body-to-board-edge clearance floor — the DRC's
+#: ``courtyard_edge_clearance`` jlc_min bar (JLC vcut minimum), measured
+#: against the pad-union BODY since gr529963 (ruling Reto 2026-10-28:
+#: the fab bar prices the body; the 0.4mm house courtyard margin applies
+#: only between parts). The placer design build sees no fab capability
+#: row (the same constraint as net rule widths), so the term holds the
+#: flat minimum; the house-default tier and edge-mate exemptions belong
+#: to the rung that carries capability.
 _EDGE_CLEAR_MM = 0.4
 
 
 def _ring_edge_violation(g: Any, ring: Any) -> float:
-    """``max(0, _EDGE_CLEAR_MM − gap)`` between a courtyard ring and
+    """``max(0, _EDGE_CLEAR_MM − gap)`` between a part polygon and
     the outline's EXTERIOR ring — the DRC's
     ``courtyard_edge_clearance`` distance (taz-leaf-b's C12: pads
-    inside, courtyard 0.13 mm off the V-cut). ``Polygon.distance``
+    inside, courtyard 0.13 mm off the V-cut). The polygon passed in is
+    the pad-union BODY since gr529963 (the fab bar measures the body);
+    the measure itself is unchanged. ``Polygon.distance``
     cannot be used here: it is 0 whenever one polygon contains the
     other, so the gap must be measured against the boundary, exactly
     what :func:`precis.pcb.drc.check_courtyard_edge_clearance` does."""
@@ -251,18 +270,22 @@ def _ring_edge_violation(g: Any, ring: Any) -> float:
 
 
 def edge_clearance_total(d: TopoDesign, pose: np.ndarray) -> float:
-    """Σ courtyard-to-edge shortfall over all parts — full recompute,
-    the edge half of the overlap term's outline measures. Edge-mated
-    parts are skipped: their mating face is SUPPOSED to sit on the
-    outline, and pricing them would push them inboard where
-    ``check_edge_mating`` refuses the board (gr530632)."""
+    """Σ body-to-edge shortfall over all parts — full recompute,
+    the edge half of the overlap term's outline measures, priced against
+    the pad-union BODY since gr529963 (ruling Reto 2026-10-28: the fab
+    bar measures the body; pricing the courtyard squeezed placement to
+    an effective 0.8mm body-to-edge demand and disagreed with the DRC
+    rule's own measure). Edge-mated parts are skipped: their mating
+    face is SUPPOSED to sit on the outline, and pricing them would push
+    them inboard where ``check_edge_mating`` refuses the board
+    (gr530632)."""
     g = _outline_geom(d)
     if g is None:
         return 0.0
     em = d.part_edge_mate
     return float(
         sum(
-            _ring_edge_violation(g, _ring_geom(d, pose[i], i))
+            _ring_edge_violation(g, _body_geom(d, pose[i], i))
             for i in range(len(d.parts))
             if not (len(em) == len(d.parts) and bool(em[i]))
         )
@@ -693,6 +716,15 @@ class ProxyState:
             if (self.w.overlap or self.w.silkroom)
             else []
         )
+        #: the pad-union BODY polygons, parallel to ``_rings`` — what the
+        #: edge half of the overlap term measures since gr529963 (the fab
+        #: bar prices the body; the courtyard ring is the between-parts
+        #: reservation the pair terms still use).
+        self._bodies = (
+            [_body_geom(d, self.pose[i], i) for i in range(len(d.parts))]
+            if (self.w.overlap or self.w.silkroom)
+            else []
+        )
         self._th = through_hole_parts(d)
         self._ov = (
             _ring_overlap_total(self._rings, self.pose, self._th)
@@ -779,6 +811,7 @@ class ProxyState:
         self._stage: dict[int, np.ndarray] = {}
         self._stage_wires: dict[int, np.ndarray] = {}
         self._stage_rings: dict[int, Any] = {}
+        self._stage_bodies: dict[int, Any] = {}
         self._d_cross = 0
         self._d_len = 0.0
         self._d_ov = 0.0
@@ -892,6 +925,12 @@ class ProxyState:
     def _ring_of(self, part: int):
         """The part's ring under the CURRENT staged-or-committed state."""
         return self._stage_rings.get(part, self._rings[part])
+
+    def _body_of(self, part: int):
+        """The part's body polygon under the CURRENT staged-or-committed
+        state — :meth:`_ring_of`'s twin over the pad-union bodies the
+        edge term prices (gr529963)."""
+        return self._stage_bodies.get(part, self._bodies[part])
 
     def _side_of(self, part: int) -> bool:
         row = self._stage.get(part, self.pose[part])
@@ -1041,6 +1080,9 @@ class ProxyState:
             new_geom = _ring_geom(self.d, staged_row, part)
             old_ring = self._ring_of(part)
             self._stage_rings[part] = new_geom
+            new_body = _body_geom(self.d, staged_row, part)
+            old_body = self._body_of(part)
+            self._stage_bodies[part] = new_body
         if self.w.silkroom:
             self._d_sk += self._pair_silkroom(
                 part, new_geom, staged_row[3] >= 0.5
@@ -1050,11 +1092,12 @@ class ProxyState:
                 part, new_geom, staged_row[3] >= 0.5
             ) - self._pair_overlap(part, old_ring, self._side_of(part))
             # Containment and edge clearance telescope per part: only this
-            # part's pins and ring move. The ring pair delta above prices
+            # part's pins and body move. The ring pair delta above prices
             # the courtyard-overlap half; the outline half keeps pads on a
             # non-rectangular board the bbox clamp can't describe, and
-            # the edge half keeps courtyards off the V-cut line (the
-            # DRC's ``courtyard_edge_clearance``).
+            # the edge half keeps BODIES off the V-cut line (the
+            # DRC's ``courtyard_edge_clearance``, measured against the
+            # pad-union body since gr529963).
             g = _outline_geom(self.d)
             if g is not None:
                 old_row = self._stage.get(part, self.pose[part])
@@ -1066,8 +1109,8 @@ class ProxyState:
                 em = self.d.part_edge_mate
                 if not (len(em) == len(self.d.parts) and bool(em[part])):
                     self._d_ov += _ring_edge_violation(
-                        g, new_geom
-                    ) - _ring_edge_violation(g, old_ring)
+                        g, new_body
+                    ) - _ring_edge_violation(g, old_body)
                 self._d_ov += _containment_part(
                     g, staged_pw[self.d.pin_part == part]
                 ) - _containment_part(g, pin_world(self.d, old_row, part))
@@ -1127,6 +1170,7 @@ class ProxyState:
             self._pw[self.d.pin_part == p] = pin_world(self.d, row, p)
             if self._rings:
                 self._rings[p] = self._stage_rings.get(p, self._rings[p])
+                self._bodies[p] = self._stage_bodies.get(p, self._bodies[p])
         self._ov += self._d_ov
         self._sk += self._d_sk
         self._sp += self._d_sp
@@ -1165,6 +1209,7 @@ class ProxyState:
         self._stage.clear()
         self._stage_wires.clear()
         self._stage_rings.clear()
+        self._stage_bodies.clear()
         self._d_cross = 0
         self._d_len = 0.0
         self._d_ov = 0.0

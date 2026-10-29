@@ -70,11 +70,37 @@ def test_bottom_courtyard_mirrored_consistently() -> None:
     courtyard_local = {
         str(ir.instance_refdes[i]): list(local_rings[i]) for i in range(ir.n_instances)
     }
-    courtyards, courtyard_bottom, _rules, _volts = check_run.rule_inputs(
+    courtyards, courtyard_bottom, _rules, _volts, bodies = check_run.rule_inputs(
         design.graph, courtyard_local, design.fab_caps
     )
     assert courtyard_bottom == {"B1": True}
     assert sorted(dict(courtyards)["B1"]) == expected
+    # No body_local passed: bodies is None — the "silent as before"
+    # contract (gr529963).
+    assert bodies is None
+
+    # With body_local: the zero-clearance body travels the SAME mirrored
+    # affine path as the courtyard (gr529963's measure must see the
+    # physical polygon, not its unmirrored twin).
+    body_local = {
+        str(ir.instance_refdes[i]): ring
+        for i, ring in enumerate(
+            instance_courtyard_polygons(
+                ir,
+                clearance_mm=0.0,
+                fallback_half_extent_mm=COURTYARD_MIN_SEPARATION_MM / 2.0,
+            )
+        )
+    }
+    world_body = world_courtyard_polygons(
+        ir,
+        clearance_mm=0.0,
+        fallback_half_extent_mm=COURTYARD_MIN_SEPARATION_MM / 2.0,
+    )[0]
+    _c, _cb, _r, _v, bodies = check_run.rule_inputs(
+        design.graph, courtyard_local, design.fab_caps, body_local
+    )
+    assert sorted(dict(bodies or [])["B1"]) == sorted(world_body)
 
     # and placement DRC flags a same-side pair over that polygon
     findings = check_courtyard_overlap(

@@ -211,15 +211,18 @@ def geometry(
 ) -> tuple[
     list[dict[str, Any]],
     dict[str, list[tuple[float, float]]],
+    dict[str, list[tuple[float, float]]],
     dict[str, dict[str, Any]],
 ]:
     """DRC's pads (the same IR-sourced geometry :meth:`PcbHandler._drc_pads`
     builds, off ONE ``build_ir`` call here rather than two independent
     ones) plus each instance's courtyard POLYGON in local-frame
-    coordinates, keyed by refdes, plus the refdes-keyed footprint map
-    the pad build consumed (Slice 2's ``undeclared_pad`` rule needs it
-    to tell "footprint cached, every pad declared" from "footprint
-    never cached — cannot check").
+    coordinates, keyed by refdes, plus each instance's zero-clearance
+    pad-union BODY polygon in the same local frame (gr529963 — what the
+    edge-clearance and hole keep-out rules measure), plus the
+    refdes-keyed footprint map the pad build consumed (Slice 2's
+    ``undeclared_pad`` rule needs it to tell "footprint cached, every
+    pad declared" from "footprint never cached — cannot check").
 
     **The shape is not computed here, and since 2026-08-30 there is
     only one of it.** :func:`precis.pcb.ir.instance_courtyard_polygon`
@@ -260,9 +263,20 @@ def geometry(
         clearance_mm=pcb_ir.COURTYARD_CLEARANCE_MM,
         fallback_half_extent_mm=pcb_cost.COURTYARD_MIN_SEPARATION_MM / 2.0,
     )
+    # gr529963 (ruling Reto 2026-10-28): the same pad-union shape at ZERO
+    # clearance — the body the edge-clearance and hole keep-out rules
+    # measure (the fab bar), where the courtyard above is the
+    # between-parts reservation. Same call shape, same fallback, only the
+    # offset differs.
+    body_polys = pcb_ir.instance_courtyard_polygons(
+        ir,
+        clearance_mm=0.0,
+        fallback_half_extent_mm=pcb_cost.COURTYARD_MIN_SEPARATION_MM / 2.0,
+    )
     return (
         pads,
         {str(ir.instance_refdes[i]): polys[i] for i in range(ir.n_instances)},
+        {str(ir.instance_refdes[i]): body_polys[i] for i in range(ir.n_instances)},
         footprints,
     )
 
@@ -306,16 +320,23 @@ def rule_inputs(
     design: dict[str, Any],
     courtyard_local: dict[str, list[tuple[float, float]]],
     capability: CapabilityRow,
+    body_local: dict[str, list[tuple[float, float]]] | None = None,
 ) -> tuple[
     list[pcb_drc.Courtyard],
     dict[str, bool],
     dict[str, NetRules],
     dict[str, float],
+    list[pcb_drc.Courtyard] | None,
 ]:
-    """``(courtyards, courtyard_bottom, net_rules, net_voltages)`` — the
-    per-design inputs the geometric rules take besides the copper model.
-    Shared by :func:`run` and :meth:`PcbHandler._validity_findings` so the two
-    cannot judge a board by different courtyards or class rules."""
+    """``(courtyards, courtyard_bottom, net_rules, net_voltages, bodies)``
+    — the per-design inputs the geometric rules take besides the copper
+    model. Shared by :func:`run` and :meth:`PcbHandler._validity_findings`
+    so the two cannot judge a board by different courtyards or class rules.
+    ``body_local`` (gr529963) is :func:`geometry`'s zero-clearance
+    pad-union body per refdes, placed through the SAME affine path as the
+    courtyard below; ``None`` keeps the edge/hole rules measuring
+    courtyards, exactly as before (the "silent about a thing this module
+    was never told" contract the drc.py runners document)."""
     # The part's own courtyard POLYGON (see :func:`geometry`),
     # placed into board coordinates through the SAME affine path its
     # pads and its silkscreen travel — a courtyard that rotated by a
@@ -342,6 +363,25 @@ def rule_inputs(
         for i in design["instances"]
         if i["x"] is not None and i["y"] is not None
     ]
+    # The zero-clearance body (gr529963), placed through the identical
+    # affine path — a body rotated by a different convention would clear
+    # an edge its own copper crowds.
+    bodies: list[pcb_drc.Courtyard] | None = None
+    if body_local is not None:
+        bodies = [
+            (
+                str(i["refdes"]),
+                place_points(
+                    body_local.get(str(i["refdes"])) or _fallback,
+                    cx=float(i["x"]),
+                    cy=float(i["y"]),
+                    rot_deg=float(i.get("rot") or 0.0),
+                    mirrored=padplace.is_bottom_instance(i),
+                ),
+            )
+            for i in design["instances"]
+            if i["x"] is not None and i["y"] is not None
+        ]
     # gr341516 — a courtyard reservation says nothing about which side
     # of the board it sits on; two parts on OPPOSITE sides, one
     # directly beneath the other (an EWOD sink grid's whole point,
@@ -363,7 +403,7 @@ def rule_inputs(
         for n in design["nets"]
         if n.get("working_voltage_v") is not None
     }
-    return courtyards, courtyard_bottom, net_rules, net_voltages
+    return courtyards, courtyard_bottom, net_rules, net_voltages, bodies
 
 
 def design_phase(design: dict[str, Any]) -> str:
@@ -665,7 +705,7 @@ def run(
     # pad source is how this build's recurring defect works — one rule,
     # two call sites, drifted — and connectivity is precisely the check
     # that would be fooled by pads in the wrong place.
-    pads, courtyard_local, footprints = geometry(store, ref_id, layer_names)
+    pads, courtyard_local, body_local, footprints = geometry(store, ref_id, layer_names)
 
     # The phase this board is judged at: an explicit ``eval_phase``,
     # the authored claim, or the derived default — in that order.
@@ -896,8 +936,8 @@ def run(
             )[0]
         ],
     }
-    courtyards, courtyard_bottom, net_rules, net_voltages = rule_inputs(
-        design, courtyard_local, capability
+    courtyards, courtyard_bottom, net_rules, net_voltages, bodies = rule_inputs(
+        design, courtyard_local, capability, body_local
     )
     # Fixed source copper routes a net with no ``pcb_routes`` row
     # (gr492989): judge "unrouted" by the copper, not the status alone.
@@ -917,6 +957,7 @@ def run(
         courtyard_bottom=courtyard_bottom,
         net_rules=net_rules,
         net_voltages=net_voltages,
+        bodies=bodies,
         unrouted=[
             {"net": r["name"], "note": r.get("note")}
             for r in pending

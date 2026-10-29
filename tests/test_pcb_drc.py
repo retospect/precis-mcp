@@ -1700,7 +1700,54 @@ def test_check_courtyard_hole_flags_a_courtyard_over_a_plated_hole():
     assert drc.check_courtyard_hole(on_it, []) == []
 
 
-def test_run_geometric_drc_threads_holes_into_the_courtyard_hole_rule():
+def test_check_courtyard_hole_measures_the_body_when_passed():
+    """gr529963 (ruling Reto 2026-10-28): the hole keep-out rule measures
+    the BODY. The keep-out ring already carries the hole's margin in its
+    radius (``widest/2 + COURTYARD_CLEARANCE_MM``), so the courtyard's
+    0.4mm must not stack on top: a part whose COURTYARD intersects the
+    keep-out while its body clears it is clean when ``bodies`` is passed,
+    and a body that bites the keep-out still errors. ``bodies=None``
+    keeps the courtyard measure, byte-identical to before."""
+    from precis.pcb.ir import MountingHole
+    from precis.pcb.optimize import mounting_hole_keepout_polygon
+
+    nut = MountingHole(x=0.0, y=0.0, drill_mm=3.2, ring_dia_mm=6.0, plated=True)
+    holes = [("hole @ (0, 0)", mounting_hole_keepout_polygon(nut), None)]
+    # keep-out radius = 6.0/2 + 0.4 = 3.4mm. The courtyard at (4.1, 0)
+    # reaches x=3.1 — 0.3mm INSIDE the keep-out; the body at (4.6, 0)
+    # reaches x=3.6 — 0.2mm clear of it.
+    courtyard = [("U1", _square(4.1, 0.0))]
+    body = [("U1", _square(4.6, 0.0))]
+    # Legacy callers (no bodies) measure the courtyard: still an error.
+    assert [f.rule for f in drc.check_courtyard_hole(courtyard, holes)] == [
+        "courtyard_hole"
+    ]
+    # Under the ruling the body clears the keep-out: clean.
+    assert drc.check_courtyard_hole(courtyard, holes, body) == []
+    # ...and a body that DOES bite the keep-out still errors.
+    findings = drc.check_courtyard_hole(courtyard, holes, [("U1", _square(4.2, 0.0))])
+    assert [f.rule for f in findings] == ["courtyard_hole"]
+    assert findings[0].severity == "error"
+
+
+def test_run_geometric_drc_threads_bodies_into_the_courtyard_hole_rule():
+    from precis.pcb.ir import MountingHole
+    from precis.pcb.optimize import mounting_hole_keepout_polygon
+
+    hole = MountingHole(x=0.0, y=0.0, drill_mm=3.2)
+    model = {"layers": ["F.Cu", "B.Cu"], "copper": [], "pads": [], "drills": []}
+    # drill 3.2, no ring/head: keep-out radius 1.6 + 0.4 = 2.0mm.
+    findings = drc.run_geometric_drc(
+        model,
+        capability=_CAP4,
+        courtyards=[("U1", _square(2.9, 0.0)), ("U2", _square(20.0, 0.0))],
+        holes=[("hole @ (0, 0)", mounting_hole_keepout_polygon(hole), None)],
+        bodies=[("U1", _square(3.2, 0.0)), ("U2", _square(20.0, 0.0))],
+    )
+    # U1's courtyard reaches x=1.9 (0.1mm inside the keep-out) but its
+    # body reaches x=2.2 (0.2mm clear): no finding under the ruling.
+    assert [f for f in findings if f.rule == "courtyard_hole"] == []
+
     from precis.pcb.ir import MountingHole
     from precis.pcb.optimize import mounting_hole_keepout_polygon
 
@@ -2229,6 +2276,72 @@ def test_check_courtyard_edge_clearance_wired_into_both_run_levels():
         model, capability=_CAP4, outline=_EDGE_OUTLINE, courtyards=courtyards
     )
     assert any(f.rule == "courtyard_edge_clearance" for f in place)
+
+
+def test_check_courtyard_edge_clearance_measures_the_body_when_passed():
+    """gr529963 (ruling Reto 2026-10-28): the fab bar measures the BODY;
+    the 0.4mm house courtyard margin is between-parts breathing room
+    only. A part whose COURTYARD crosses the outline while its body
+    clears the fab bar is clean when ``bodies`` is passed (taz-leaf's
+    wetness combs: body copper 0.482mm off the leaf edge, over JLC's
+    0.4mm bar, but their courtyard errored); a body crowding the edge
+    still errors. ``bodies=None`` keeps the courtyard measure,
+    byte-identical to before."""
+    house = _CAP4.house_default["board_edge_clearance_vcut_mm"]
+    assert house is not None
+    # Courtyard flush against the left edge (x=0): gap 0 — deep inside
+    # jlc_min, an error measured on the courtyard. The body sits 3.5mm
+    # inboard — clear of BOTH tiers.
+    courtyard = [(0.0, 8.0), (1.0, 8.0), (1.0, 12.0), (0.0, 12.0)]
+    body = [(3.5, 8.0), (4.5, 8.0), (4.5, 12.0), (3.5, 12.0)]
+    assert (
+        drc.check_courtyard_edge_clearance(
+            [("E1", courtyard)], _CAP4, outline=_EDGE_OUTLINE
+        )[0].severity
+        == "error"
+    )
+    assert (
+        drc.check_courtyard_edge_clearance(
+            [("E1", courtyard)], _CAP4, outline=_EDGE_OUTLINE, bodies=[("E1", body)]
+        )
+        == []
+    )
+    # A body that crowds the edge still errors under the ruling.
+    hot_body = [(0.1, 8.0), (1.1, 8.0), (1.1, 12.0), (0.1, 12.0)]
+    findings = drc.check_courtyard_edge_clearance(
+        [("E1", courtyard)],
+        _CAP4,
+        outline=_EDGE_OUTLINE,
+        bodies=[("E1", hot_body)],
+    )
+    assert len(findings) == 1 and findings[0].severity == "error"
+
+
+def test_run_levels_measure_bodies_when_passed():
+    """The threaded seam: both run levels take ``bodies`` and measure
+    them — the placement run is exactly the pass that must accept an
+    authored edge-hugging electrode before routing (gr529963)."""
+    courtyard = [(0.0, 8.0), (1.0, 8.0), (1.0, 12.0), (0.0, 12.0)]
+    body = [(3.5, 8.0), (4.5, 8.0), (4.5, 12.0), (3.5, 12.0)]
+    courtyards = [("E1", courtyard)]
+    bodies = [("E1", body)]
+    model = {"layers": ["F.Cu"], "copper": [], "pads": []}
+    geo = drc.run_geometric_drc(
+        model,
+        capability=_CAP4,
+        outline=_EDGE_OUTLINE,
+        courtyards=courtyards,
+        bodies=bodies,
+    )
+    assert not [f for f in geo if f.rule == "courtyard_edge_clearance"]
+    place = drc.run_placement_drc(
+        model,
+        capability=_CAP4,
+        outline=_EDGE_OUTLINE,
+        courtyards=courtyards,
+        bodies=bodies,
+    )
+    assert not [f for f in place if f.rule == "courtyard_edge_clearance"]
 
 
 # ── process_for_stackup ───────────────────────────────────────────────

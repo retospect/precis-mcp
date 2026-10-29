@@ -2824,29 +2824,44 @@ def _pad_gap_mm(
 
 
 def check_courtyard_hole(
-    courtyards: list[Courtyard], holes: Sequence[HoleKeepout]
+    courtyards: list[Courtyard],
+    holes: Sequence[HoleKeepout],
+    bodies: Sequence[Courtyard] | None = None,
 ) -> list[DrcFinding]:
-    """A part's courtyard overlapping a mounting hole's keep-out is a hard
+    """A part's body overlapping a mounting hole's keep-out is a hard
     error, on either side of the board — the hole and its hardware go
     through it. ``holes`` are ``(label, polygon, owner)`` triples, the
     polygon built by
     :func:`precis.pcb.optimize.mounting_hole_keepout_polygon`, the shape the
     placer's ``_placement_is_legal`` already rejects against, so the placer
-    and DRC hold the same rule. Without this a part whose courtyard covers a
+    and DRC hold the same rule. Without this a part whose body covers a
     plated solder-nut hole while its pads miss it was DRC-clean:
     :func:`check_npth_clearance` tests copper, and only against unplated
     holes. ``owner`` is the refdes whose footprint the hole is cut from
     (:attr:`precis.pcb.ir.MountingHole.part`): that part's own courtyard
     covers it by design and is skipped; every other part is still
-    checked."""
+    checked.
+
+    ``bodies`` (gr529963, ruling Reto 2026-10-28): the keep-out rule
+    measures against the BODY (the zero-clearance pad union, the same
+    ``(refdes, poly)`` shape as ``courtyards``) — the keep-out polygon
+    already carries the hole's single margin claim in its radius
+    (``widest/2 + COURTYARD_CLEARANCE_MM``), so charging the 0.4mm house
+    courtyard margin on top of it double-stacked the margin and forbade
+    authored near-hole electrodes whose body bite cleared the keep-out.
+    The 0.4mm house margin is between-parts breathing room only. When
+    ``bodies`` is None (the default) the check measures ``courtyards``,
+    exactly as before — the "silent about a thing this module was never
+    told" contract ``census=None`` carries."""
     hole_geoms = [
         (label, Polygon(poly), owner) for label, poly, owner in holes if len(poly) >= 3
     ]
-    if not hole_geoms or not courtyards:
+    measured = bodies if bodies is not None else courtyards
+    if not hole_geoms or not measured:
         return []
     tree = STRtree([g for _, g, _ in hole_geoms])
     findings: list[DrcFinding] = []
-    for refdes, poly in courtyards:
+    for refdes, poly in measured:
         if len(poly) < 3:
             continue
         gc = Polygon(poly)
@@ -2864,7 +2879,9 @@ def check_courtyard_hole(
                     severity="error",
                     where=f"{refdes} <-> {label}",
                     detail=(
-                        f"{refdes} courtyard overlaps the {label} keep-out "
+                        f"{refdes} "
+                        f"{'body' if bodies is not None else 'courtyard'} "
+                        f"overlaps the {label} keep-out "
                         f"over {overlap.area:.4f}mm^2, {depth:.3f}mm deep"
                     ),
                     objects=({"a": refdes, "b": label},),
@@ -3706,11 +3723,12 @@ def check_courtyard_edge_clearance(
     outline: list[list[float]] | None,
     edge_mates: Sequence[Any] | None = None,
     panel_type: str | None = None,
+    bodies: Sequence[Courtyard] | None = None,
 ) -> list[DrcFinding]:
     """Part-body-to-board-edge clearance — the two-tier bar
     :func:`check_board_edge_clearance` applies to copper and
     :func:`check_silk_edge_clearance` to ink, applied here to a part's
-    COURTYARD (gr520793).
+    BODY (gr520793, measured against the body since gr529963).
 
     Neither neighbour can answer this question. Copper edge clearance
     iterates ``_clearance_items`` — a pad whose own geometry clears the
@@ -3724,6 +3742,18 @@ def check_courtyard_edge_clearance(
     A non-edge-mount part body that crowds the routed/scored edge is a
     part the assembler cannot place and the fab cannot cut around — an
     error at ``jlc_min``, margin-eating at ``house_default``.
+
+    ``bodies`` (gr529963, ruling Reto 2026-10-28): "the edge-clearance
+    rule measures against the body (the fab bar); the 0.4mm house
+    courtyard margin applies only between parts." Before the ruling this
+    rule measured the COURTYARD, double-stacking the house margin onto
+    the fab bar (a body 0.48mm off the edge — comfortably over JLC's
+    0.4mm routed-edge minimum — errored because its courtyard sat 0.08mm
+    off). ``bodies`` is the zero-clearance pad union in the same
+    ``(refdes, poly)`` shape as ``courtyards``; when given, IT is
+    measured. When None (the default) the check measures ``courtyards``,
+    byte-identical to before — the "silent about a thing this module was
+    never told" contract.
 
     ``edge_mates`` (:func:`precis.pcb.edge_mate.records`) exempts the
     declared side-insertion connectors whose courtyards are SUPPOSED to
@@ -3744,7 +3774,8 @@ def check_courtyard_edge_clearance(
     )
     jlc_min = capability.jlc_min[field]
     house = capability.house_default.get(field)
-    if jlc_min is None or not outline or len(outline) < 3 or not courtyards:
+    measured = bodies if bodies is not None else courtyards
+    if jlc_min is None or not outline or len(outline) < 3 or not measured:
         return []
     ring_pts = [(float(p[0]), float(p[1])) for p in outline]
     if ring_pts[0] != ring_pts[-1]:
@@ -3752,7 +3783,7 @@ def check_courtyard_edge_clearance(
     boundary = LineString(ring_pts)
     exempt = {str(r.refdes) for r in edge_mates or []}
     findings: list[DrcFinding] = []
-    for refdes, poly in courtyards:
+    for refdes, poly in measured:
         if str(refdes) in exempt or len(poly) < 3:
             continue
         geom = Polygon(poly)
@@ -3769,7 +3800,9 @@ def check_courtyard_edge_clearance(
                 severity=severity,
                 where=f"part {refdes}",
                 detail=_margin_detail(
-                    "courtyard-to-board-edge clearance",
+                    "body-to-board-edge clearance"
+                    if bodies is not None
+                    else "courtyard-to-board-edge clearance",
                     gap,
                     capability,
                     field,
@@ -4776,6 +4809,7 @@ def run_geometric_drc(
     undeclared_unchecked: Sequence[str] = (),
     courtyard_clearance_mm: float | None = None,
     profile_rules: ProfileRules | None = None,
+    bodies: Sequence[Courtyard] | None = None,
 ) -> list[DrcFinding]:
     """Every geometric DRC rule over one realized board, in one call — what
     ``view='drc'`` and the ``netlist_drc_clean`` gate evaluator both run.
@@ -4844,6 +4878,16 @@ def run_geometric_drc(
     default, same as a ``prod`` board's all-off rules) emits none of the
     three, so a caller that does not pass it stays byte-identical to
     before these rules existed.
+
+    ``bodies`` (gr529963, ruling Reto 2026-10-28): the zero-clearance
+    pad-union body per part, same ``(refdes, poly)`` shape as
+    ``courtyards`` — what :func:`check_courtyard_edge_clearance` and
+    :func:`check_courtyard_hole` measure, since the fab bar prices the
+    body and the 0.4mm house margin is between-parts breathing room
+    only. ``None`` (the default) keeps both rules measuring
+    ``courtyards``, byte-identical to before — the identical "silent
+    about a thing this module was never told" contract ``unrouted=None``
+    already has.
     """
     findings: list[DrcFinding] = []
     findings += check_synthesized_footprint(model)
@@ -4865,6 +4909,7 @@ def run_geometric_drc(
         outline=outline,
         edge_mates=edge_mates,
         panel_type=panel_type,
+        bodies=bodies,
     )
     findings += check_octilinear(model)
     findings += check_outline_missing(outline)
@@ -4888,7 +4933,7 @@ def run_geometric_drc(
             clearance_mm=courtyard_clearance_mm,
             pads=model.get("pads"),
         )
-        findings += check_courtyard_hole(courtyards, holes)
+        findings += check_courtyard_hole(courtyards, holes, bodies)
     findings += check_silk_missing(census or (), model)
     findings += check_silk_printability(census or (), capability)
     if profile_rules is not None:
@@ -6097,6 +6142,7 @@ def run_placement_drc(
     net_rules: dict[str, NetRules] | None = None,
     edge_mates: Sequence[Any] | None = None,
     courtyard_clearance_mm: float | None = None,
+    bodies: Sequence[Courtyard] | None = None,
 ) -> list[DrcFinding]:
     """The PLACEMENT-only subset of :func:`run_geometric_drc` — every rule
     that can fire before a single trace is routed, over a model carrying
@@ -6139,6 +6185,13 @@ def run_placement_drc(
     is ``jlc_min``, which no per-net override ever lowers — an override only
     ever RAISES the required clearance, so the floor errors this returns are
     identical with or without it.
+
+    ``bodies`` (gr529963, ruling Reto 2026-10-28) threads into
+    :func:`check_courtyard_edge_clearance` — the zero-clearance pad-union
+    body the fab bar measures. ``None`` (the default) keeps the rule
+    measuring ``courtyards``, byte-identical to before — the same "silent
+    about a thing this module was never told" contract
+    :func:`run_geometric_drc`'s optional inputs carry.
     """
     findings: list[DrcFinding] = []
     findings += check_clearance(model, capability, net_rules=net_rules)
@@ -6147,7 +6200,7 @@ def run_placement_drc(
     findings += check_outline_missing(outline)
     findings += check_outline_containment(model, outline=outline, courtyards=courtyards)
     findings += check_courtyard_edge_clearance(
-        courtyards, capability, outline=outline, edge_mates=edge_mates
+        courtyards, capability, outline=outline, edge_mates=edge_mates, bodies=bodies
     )
     findings += check_edge_mating(edge_mates, outline=outline)
     if courtyards:

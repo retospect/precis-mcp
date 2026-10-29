@@ -333,6 +333,61 @@ def test_zones_constrain_and_report() -> None:
     assert mesh.zone_conflicts and mesh.zone_conflicts[0][0] == 2
 
 
+def test_zone_conflict_measures_the_part_body() -> None:
+    """gr529963 (ruling Reto 2026-10-28): the part-on-zone hard gate
+    (``courtyard_hole``) measures the part BODY against the zone polygon
+    — the zone ring already carries its margin in its radius, so the
+    courtyard's 0.4mm must not stack on top. Part-part conflicts and
+    outline escapes stay on courtyard rings. A part with no ``part_body``
+    ring falls back to its courtyard ring (``test_zones_constrain_and_report``
+    above pins exactly that)."""
+    import dataclasses
+
+    from precis.pcb.topoplace.design import TopoZone
+
+    ring = np.asarray([[2.0, -1.0], [4.0, -1.0], [4.0, 1.0], [2.0, 1.0], [2.0, -1.0]])
+    zones = (TopoZone(kind="keepout", ring=ring, layers=(0,), name="k"),)
+    pose = example_a().pose0.copy()
+    pose[2, 0] = 1.7  # B1's 0.8mm courtyard spans x 1.3..2.1: on the zone
+
+    # B1's body: a 0.3mm square — spans x 1.55..1.85, clear of the zone.
+    # The other parts carry no body ring, so they fall back to their
+    # courtyard rings in the zone test; all of them sit clear of the
+    # zone anyway.
+    def sq(half: float) -> np.ndarray:
+        return np.asarray(
+            [
+                [-half, -half],
+                [half, -half],
+                [half, half],
+                [-half, half],
+                [-half, -half],
+            ]
+        )
+
+    part_body = tuple(
+        sq(0.15) if i == 2 else np.zeros((0, 2)) for i in range(len(example_a().parts))
+    )
+    d = dataclasses.replace(example_a(), zones=zones, part_body=part_body)
+    mesh = build_mesh(d, pose)
+    assert not mesh.zone_conflicts
+    # Same pose WITHOUT body rings: the courtyard fallback flags B1 —
+    # proving the clean verdict above came from the body measure.
+    d_nobody = dataclasses.replace(example_a(), zones=zones)
+    assert build_mesh(d_nobody, pose).zone_conflicts
+    # And a body that DOES bite the zone still conflicts.
+    d_hot = dataclasses.replace(
+        example_a(),
+        zones=zones,
+        part_body=tuple(
+            sq(0.5) if i == 2 else np.zeros((0, 2))
+            for i in range(len(example_a().parts))
+        ),
+    )
+    mesh_hot = build_mesh(d_hot, pose)
+    assert mesh_hot.zone_conflicts and mesh_hot.zone_conflicts[0][0] == 2
+
+
 def test_outline_escape_is_separated() -> None:
     """A part whose courtyard spills over the board edge reports on
     ``outline_conflicts``, not as a part-pair conflict."""
@@ -1891,6 +1946,13 @@ def test_design_from_ir_net_layer_force_and_slice2_fields() -> None:
     assert force["FREE"] == LAYER_FORCE_FREE
     assert len(td.part_outline) == len(td.parts)
     assert all(len(r) >= 4 for r in td.part_outline)
+    # gr529963: the zero-clearance pad-union bodies ride alongside —
+    # same ring count, strictly smaller than the courtyard (no 0.4mm
+    # offset).
+    assert len(td.part_body) == len(td.parts)
+    assert all(len(b) >= 4 for b in td.part_body)
+    for ring, body in zip(td.part_outline, td.part_body):
+        assert np.ptp(body[:, 0]) < np.ptp(ring[:, 0])
     assert td.pin_wh.shape == (len(td.pin_xy), 2)
     assert (td.pin_wh[:, 0] > 0).all()
     # pin-side forces: all-bottom SMD net -> bottom outer, mixed -> free,

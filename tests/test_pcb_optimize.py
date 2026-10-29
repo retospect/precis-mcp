@@ -1642,8 +1642,13 @@ def test_rotate_is_refused_when_it_would_swing_a_part_into_its_neighbour():
     # A 6 x 0.6mm bar for both instances, in the local frame.
     bar = [(-3.0, -0.3), (3.0, -0.3), (3.0, 0.3), (-3.0, 0.3), (-3.0, -0.3)]
     engine._keepout_poly = [list(bar) for _ in range(ir.n_instances)]
+    # The legality gate reads the RAW (unhulled) cache since gr525380 —
+    # patch it with the same convex bars so this test still steers the
+    # exact test (for convex bars hull == raw, so both caches agree).
+    engine._keepout_poly_raw = [list(bar) for _ in range(ir.n_instances)]
     engine._keepout_r = courtyard_bound_radius_mm(engine._keepout_poly)
     engine._world_poly.clear()
+    engine._world_poly_raw.clear()
     # The domain is derived from the SEED's own extent; these hand-placed
     # coordinates are not in it, and `_placement_is_legal` checks bounds
     # first. Widen it so this test reads the courtyard gate and nothing
@@ -1673,8 +1678,11 @@ def test_rotate_still_fires_when_there_is_room_to_turn():
     engine = OptimizeEngine(ir, OptimizeConfig(seed=75))
     bar = [(-3.0, -0.3), (3.0, -0.3), (3.0, 0.3), (-3.0, 0.3), (-3.0, -0.3)]
     engine._keepout_poly = [list(bar) for _ in range(ir.n_instances)]
+    # The legality gate reads the raw cache since gr525380; same bars.
+    engine._keepout_poly_raw = [list(bar) for _ in range(ir.n_instances)]
     engine._keepout_r = courtyard_bound_radius_mm(engine._keepout_poly)
     engine._world_poly.clear()
+    engine._world_poly_raw.clear()
     # The domain is derived from the SEED's own extent; these hand-placed
     # coordinates are not in it, and `_placement_is_legal` checks bounds
     # first. Widen it so this test reads the courtyard gate and nothing
@@ -2080,6 +2088,114 @@ def test_footprint_hole_follows_its_owner_through_the_optimizer():
     assert engine._placement_is_legal(((1, 52.0, 20.0),))
     engine.undo_move(rotate)
     assert at() == pytest.approx((52.0, 20.0))
+
+
+def _u_shaped_pads(inst: int):
+    """Three rect pads forming a ∪ (opening +y): after the 0.40mm
+    courtyard offset the notch stays open at |x| < 1.6, y > -1.6, while
+    the convex hull of the same courtyard covers it entirely — the
+    geometry gr525380's SAT false positive needed. Pad union, not the
+    disjoint-cluster hull fallback (gaps close over the bottom bar)."""
+    from precis.pcb.ir import FootprintPad
+
+    return [
+        FootprintPad(
+            instance=inst,
+            number="1",
+            label="l",
+            pin=-1,
+            primary=False,
+            raw={"x": -3.0, "y": 0.0, "w": 2.0, "h": 8.0},
+        ),
+        FootprintPad(
+            instance=inst,
+            number="2",
+            label="r",
+            pin=-1,
+            primary=False,
+            raw={"x": 3.0, "y": 0.0, "w": 2.0, "h": 8.0},
+        ),
+        FootprintPad(
+            instance=inst,
+            number="3",
+            label="b",
+            pin=-1,
+            primary=False,
+            raw={"x": 0.0, "y": -3.0, "w": 8.0, "h": 2.0},
+        ),
+    ]
+
+
+def test_a_hole_inside_a_concave_courtyard_notch_is_legal():
+    """gr525380: the courtyard is the pad UNION (gr524238), which can be
+    concave; the hole keep-out test was convex SAT on the hull, so a hole
+    parked inside a notch read as ``courtyard_hole`` while DRC's exact
+    ``check_courtyard_hole`` accepted the pose. The exact shapely test
+    clears the notch and still flags a hole that truly hits the pads."""
+    ir = from_graph(
+        {"instances": [{"refdes": "U1"}], "nets": []},
+        stackup=LEGACY_V1_STACKUP,
+        mounting_holes=(
+            # keep-out radius 1.2/2 + 0.40 = 1.0mm around (0, 1): inside
+            # the notch, clear of every pad's offset outline
+            MountingHole(x=0.0, y=1.0, drill_mm=1.0, ring_dia_mm=1.2, plated=True),
+        ),
+    )
+    ir.footprint_pads = tuple(_u_shaped_pads(0))
+    ir.inst_x[0], ir.inst_y[0] = 20.0, 20.0
+    engine = OptimizeEngine(ir, OptimizeConfig(seed=1))
+    engine._placement_bounds = (-50.0, -50.0, 100.0, 100.0)
+
+    # Fixture sanity: the OLD test (SAT on the hull) does fire here — the
+    # notch really is enclosed by the convex hull this engine caches.
+    assert convex_polygons_overlap(
+        engine._world_courtyard(0, 0.0, 0.0), engine._hole_at(0)[2]
+    )
+
+    assert engine.pose_conflicts(0, 0.0, 0.0) == []
+    assert engine.pose_conflict_depths(0, 0.0, 0.0) == []
+    assert engine._placement_is_legal(((0, 0.0, 0.0),))
+    # Control: slid 3mm +x the hole lands on the left bar's offset
+    # outline — a real overlap the exact test must still catch.
+    assert [r for r, _ in engine.pose_conflicts(0, 3.0, 0.0)] == ["courtyard_hole"]
+    assert not engine._placement_is_legal(((0, 3.0, 0.0),))
+
+
+def test_a_part_inside_another_parts_concave_courtyard_notch_is_legal():
+    """gr525380, part-vs-part arm: two concave courtyards whose hulls
+    interlock (a small part parked in the ∪'s notch) are legal when the
+    pad unions stay disjoint — hull SAT said ``courtyard_overlap``."""
+    from precis.pcb.ir import FootprintPad
+
+    ir = from_graph(
+        {"instances": [{"refdes": "U1"}, {"refdes": "U2"}], "nets": []},
+        stackup=LEGACY_V1_STACKUP,
+    )
+    ir.footprint_pads = tuple(_u_shaped_pads(0)) + (
+        # 1x1 pad -> a 1.8mm-square offset courtyard, fits the notch
+        FootprintPad(
+            instance=1,
+            number="1",
+            label="p",
+            pin=-1,
+            primary=False,
+            raw={"x": 0.0, "y": 0.0, "w": 1.0, "h": 1.0},
+        ),
+    )
+    ir.inst_x[:], ir.inst_y[:] = [0.0, 40.0], [0.0, 40.0]
+    engine = OptimizeEngine(ir, OptimizeConfig(seed=1))
+    engine._placement_bounds = (-50.0, -50.0, 100.0, 100.0)
+
+    # Fixture sanity, as above: the hulls DO overlap at the notch pose.
+    assert convex_polygons_overlap(
+        engine._world_courtyard(0), engine._world_courtyard(1, 0.0, 1.0)
+    )
+
+    assert engine.pose_conflicts(1, 0.0, 1.0) == []
+    assert engine._placement_is_legal(((1, 0.0, 1.0),))
+    # Control: onto U1's right bar the exact test still flags it.
+    assert [r for r, _ in engine.pose_conflicts(1, 3.0, 0.0)] == ["courtyard_overlap"]
+    assert not engine._placement_is_legal(((1, 3.0, 0.0),))
 
 
 def test_mounting_holes_from_features_carries_the_owning_part():
