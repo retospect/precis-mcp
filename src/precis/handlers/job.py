@@ -347,6 +347,11 @@ _TRANSCRIPT_FINAL_CAP = 2000
 #: ``view='result'`` returns every ``job_result`` chunk uncapped.
 _JOB_RESULT_HEAD_CAP = 4000
 
+#: Cap on one run file's rendered content in ``view='run-files'``
+#: (gr524274) — placement.svg runs to tens of KB; the capped head is
+#: enough to eyeball and the listing names the true size.
+_RUN_FILE_CONTENT_CAP = 20_000
+
 
 def _tool_call_digest(name: str, args: dict[str, Any]) -> str:
     """One-line arg digest for a ``view='transcript'`` row.
@@ -434,6 +439,35 @@ def _stream_tool_lines(stream: str) -> tuple[list[str], str | None]:
     if not saw_event:
         return [], None
     return lines, final
+
+
+def _run_file_size(payload: Any) -> str:
+    """The run-files listing's size cell — chars after the same
+    serialization the single-file view renders, plus the payload kind."""
+    import json as _json
+
+    if isinstance(payload, str):
+        return f"{len(payload):,} chars (text)"
+    return f"{len(_json.dumps(payload, sort_keys=True)):,} chars (json)"
+
+
+def _run_file_content(payload: Any) -> str:
+    """One run file's rendered content — JSON re-serialized sorted
+    (``write_run``'s convention), text/SVG verbatim — capped at
+    :data:`_RUN_FILE_CONTENT_CAP` with a note naming the true size."""
+    import json as _json
+
+    if isinstance(payload, str):
+        text = payload
+    else:
+        text = _json.dumps(payload, indent=1, sort_keys=True) + "\n"
+    if len(text) <= _RUN_FILE_CONTENT_CAP:
+        return text
+    return (
+        text[:_RUN_FILE_CONTENT_CAP]
+        + f"\n\n[truncated — {len(text):,} chars total; head shown "
+        f"to {_RUN_FILE_CONTENT_CAP:,}]"
+    )
 
 
 class JobHandler(NumericRefHandler):
@@ -530,6 +564,11 @@ class JobHandler(NumericRefHandler):
         # ``limit`` stays accepted above as the deprecated alias.
         page_size: str | int | None = None,
         job: str | int | None = None,
+        # view='run-files' file selector (gr524274): ``args={'file':
+        # '<name>'}`` returns one run file's content; without it the view
+        # lists the file names and sizes plus the summary text. Declared
+        # (not read off ``**_kw``) so the args= extras gate passes it.
+        file: str | None = None,
         **_kw: Any,
     ) -> Response:
         # ``/logs`` takes its filters from the id's query string; a
@@ -585,6 +624,9 @@ class JobHandler(NumericRefHandler):
         if view == "result":
             ref = self._resolve_live_ref(self._coerce_id(id))
             return interpreted(self._render_result_view(ref), readings)
+        if view == "run-files":
+            ref = self._resolve_live_ref(self._coerce_id(id))
+            return interpreted(self._render_run_files_view(ref, file=file), readings)
         # ``sha=`` is the ``/builds`` ancestry question (gr463592). It is
         # declared here, not read off the query string alone, so
         # ``get(kind='job', id='/builds', args={'sha': ...})`` passes the
@@ -675,6 +717,55 @@ class JobHandler(NumericRefHandler):
         for block in blocks:
             lines += ["", f"## result {block.ord}", block.text]
         return Response(body="\n".join(lines), result_count=1)
+
+    def _render_run_files_view(self, ref: Any, *, file: str | None) -> Response:
+        """``view='run-files'`` (gr524274) — a finished ``placer='topo'``
+        ``pcb_place`` job's run artifacts (``summary.txt``,
+        ``manifest.json``, ``elites.json``, ``pairs.json``,
+        ``pins.json``, ``placement.svg``) plus the route-stage meta, off
+        ``meta.topo_run`` via :meth:`Store.pcb_job_run_files` — the API
+        a reporting path reads instead of digging ``refs.meta`` by hand.
+        Without ``args`` the view lists each file's name and size plus
+        the summary text and route meta; ``args={'file': '<name>'}`
+        returns one file's content (JSON re-serialized sorted, text and
+        SVG verbatim), capped at :data:`_RUN_FILE_CONTENT_CAP` with a
+        note. A job with no ``topo_run`` gets a clear empty answer."""
+        run = self.store.pcb_job_run_files(ref.id)
+        if run is None:
+            return Response(
+                body=(
+                    f"job {ref.id} has no topo_run — run files exist only on "
+                    "a finished placer='topo' pcb_place job"
+                ),
+                result_count=0,
+            )
+        files = run["files"]
+        if file is not None:
+            name = file.strip()
+            if name not in files:
+                raise BadInput(
+                    f"job {ref.id} has no run file {name!r}",
+                    options=sorted(files),
+                    next=f"get(kind='job', id={ref.id}, view='run-files')",
+                )
+            return Response(body=_run_file_content(files[name]), result_count=1)
+        lines = [f"# job {ref.id} run files", ""]
+        for name in sorted(files):
+            lines.append(f"- {name} — {_run_file_size(files[name])}")
+        if run["summary"]:
+            lines += ["", "## summary.txt", "", "```", run["summary"], "```"]
+        if run["route"]:
+            import json as _json
+
+            lines += [
+                "",
+                "## route meta",
+                "",
+                "```json",
+                _json.dumps(run["route"], indent=1, sort_keys=True),
+                "```",
+            ]
+        return Response(body="\n".join(lines), result_count=len(files))
 
     def _render_cadence_view(self, name: str | None) -> Response:
         """``id='/cadence[/<name>]'`` — the ``scheduler_leases`` lease

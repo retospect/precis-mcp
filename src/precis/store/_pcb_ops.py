@@ -3255,6 +3255,36 @@ class PcbMixin:
         return board, net_classes, route_status
 
     # -- read -----------------------------------------------------------
+    def pcb_job_run_files(self, job_id: int) -> dict[str, Any] | None:
+        """A finished ``placer='topo'`` pcb job's run artifacts by job id
+        (gr524274): ``{"files": {name: parsed-json | text}, "summary": str,
+        "route": {...}}`` — the payload the ``pcb_place`` worker stamped
+        at ``refs.meta.topo_run`` (Decision 20). ``None`` when the id is
+        not a live ``kind='job'`` ref or the job carries no ``topo_run``;
+        every missing key reads back empty (``files`` {}, ``summary`` "",
+        ``route`` {}) — the reporting path reads THIS instead of
+        reverse-engineering the meta path out of a test fixture."""
+        with self._pcb_conn() as conn:
+            row = conn.execute(
+                "SELECT meta FROM refs WHERE ref_id = %s AND kind = 'job' "
+                "AND retired_at IS NULL",
+                (job_id,),
+            ).fetchone()
+        if row is None:
+            return None
+        topo_run = (row[0] or {}).get("topo_run")
+        if not isinstance(topo_run, dict):
+            return None
+        files = topo_run.get("files")
+        files = dict(files) if isinstance(files, dict) else {}
+        route = topo_run.get("route")
+        summary = files.get("summary.txt")
+        return {
+            "files": files,
+            "summary": str(summary) if summary is not None else "",
+            "route": dict(route) if isinstance(route, dict) else {},
+        }
+
     def pcb_load(self, ref_id: int) -> dict[str, Any]:
         """The design's board/net_classes/route-status + instances + nets +
         a fanout count per net, for the netlist TOC. Components/pins are

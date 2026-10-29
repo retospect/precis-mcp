@@ -500,14 +500,15 @@ def _job_meta(store: Store, job_id: int) -> dict[str, Any]:
 
 def _topo_stage(store: Store, job_id: int, place_wall: float) -> TopoStage:
     """A finished ``placer='topo'`` job's own metrics, off the run files
-    the job stamped into ``refs.meta.topo_run`` (crossings come from
+    the job stamped into ``refs.meta.topo_run`` — via the store accessor
+    (gr524274), not a hand-rolled meta dig (crossings come from
     ``summary.txt``'s ``crossings A → B`` line, the rest from
     ``manifest.json.result``)."""
-    meta = _job_meta(store, job_id)
-    route_meta = (meta.get("topo_run") or {}).get("route") or {}
-    files = (meta.get("topo_run") or {}).get("files") or {}
+    run = store.pcb_job_run_files(job_id) or {}
+    route_meta = run.get("route") or {}
+    files = run.get("files") or {}
     result = ((files.get("manifest.json") or {}).get("result")) or {}
-    summary = str(files.get("summary.txt") or "")
+    summary = str(run.get("summary") or "")
     m = _BASE_CROSS_RE.search(summary)
     evals = int(result["evals"]) if result.get("evals") is not None else None
     return TopoStage(

@@ -281,6 +281,25 @@ A `job_result` chunk (a job's structured deliverable — a ranking or
 proposal JSON) shows as a capped head on the card;
 `get(kind='job', id=<job>, view='result')` returns it in full.
 
+## A finished topo pcb job's run files — view='run-files'
+
+A finished `placer='topo'` `pcb_place` job keeps its run artifacts
+(`summary.txt`, `manifest.json`, `elites.json`, `pairs.json`,
+`pins.json`, `placement.svg`) and the route-stage meta on its own
+`refs.meta.topo_run`. Read them through the view — never by digging
+`refs.meta` paths by hand (gr524274):
+
+```python
+get(kind='job', id=<job>, view='run-files')
+# → file names + sizes, the summary text, the route meta
+get(kind='job', id=<job>, view='run-files', args={'file': 'manifest.json'})
+# → one file's content (JSON sorted, text/SVG verbatim, capped with a note)
+```
+
+An unknown `file=` refuses listing the available names; a job with
+no `topo_run` gets a clear empty answer. For the board-side drill-down
+(run pick, diffs) see `precis-pcb-topo-help` (`view='topo'`).
+
 ## What jobs have run on this gripe?
 ## History of fix attempts for a gripe
 
