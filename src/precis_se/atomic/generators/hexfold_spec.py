@@ -342,6 +342,9 @@ def build_hexfold(params: dict[str, Any]) -> GeneratedBlock:
 #: (``"none"``).
 TERMINATE_MODES = ("H", "ports-open", "none")
 TERMINATED_TAG = "terminated:h"
+#: structure tag of a block carrying ``sheetnet.decorate`` H (authored
+#: interior chemistry, as against :data:`TERMINATED_TAG`'s edge caps)
+HYDROGENATED_TAG = "hydrogenated:interior"
 
 
 def terminate_mode(params: dict[str, Any]) -> str:
@@ -384,7 +387,7 @@ def _h_directions(unit: np.ndarray, missing: int, hyb: str) -> list[np.ndarray]:
     return [-unit[0] * 0.5 + s * side * math.sqrt(3.0) / 2.0 for s in (1.0, -1.0)]
 
 
-def _terminate_open_edges(
+def terminate_open_edges(
     net: Net,
     coords: np.ndarray,
     mode: str,
@@ -394,7 +397,11 @@ def _terminate_open_edges(
     """Which carbons get an H and where: every atom short of its
     valence (3 for sp2, 4 for sp3), skipping ports' rim atoms under
     ``"ports-open"``. Returns parallel lists of host ordinals and H
-    positions (``sigma_CH_A`` along the completion directions)."""
+    positions (``sigma_CH_A`` along the completion directions).
+
+    Public since molecular-workspace-code slice 2: ``mol.cap`` calls it
+    on a Net-built Geom, so its caps equal the ``terminate`` op's by
+    construction. ``_terminate_open_edges`` stays as the private alias."""
     if mode == "none":
         return [], []
     skip: set[int] = set()
@@ -425,6 +432,9 @@ def _terminate_open_edges(
             hosts.append(a.ord)
             positions.append(coords[a.ord] + net.lattice.sigma_CH_A * direction)
     return hosts, positions
+
+
+_terminate_open_edges = terminate_open_edges  # private alias (termination.py et al.)
 
 
 #: ``_resolve_edge_caps`` — two cap-bearing carbons whose placed H
@@ -1283,7 +1293,10 @@ def _block_from_net(
                 f"{worst[0]:.2f} A, {_label(worst[1])}~{_label(worst[2])}) — "
                 "refusing to mint a colliding structure"
             )
-    capped = bool(h_positions) or any(a.element == "H" for a in net.atoms)
+    # an authored decoration H (sheetnet.decorate) is chemistry, not a cap
+    capped = bool(h_positions) or (
+        sum(1 for a in net.atoms if a.element == "H") > len(net.decorations)
+    )
 
     ports: list[GeneratedPort] = []
     se_names = [_se_port_name(p.name) for _n, p in net.ports]
@@ -1371,6 +1384,15 @@ def _block_from_net(
         "are resolved by a C-C ring bond or a rim trim before minting, "
         "and a clash the rim cannot resolve fails the build",
     }
+    if net.decorations:
+        # authored interior chemistry (multicell F4), beside — not inside —
+        # the edge capping record above
+        topology["hydrogenated"] = {
+            "element": "H",
+            "count": len(net.decorations),
+            "sites": [d.host for d in net.decorations],
+            "face": [d.face for d in net.decorations],
+        }
     if target is not None:
         if target_flip is None:
             raise GeneratorError("evaluated target requires its build-to-judge map")
@@ -1422,5 +1444,8 @@ def _block_from_net(
         bonds=bonds,
         hybridizations=hybridizations,
         measures=measures,
-        tags=[TERMINATED_TAG] if capped else [],
+        tags=[
+            *([TERMINATED_TAG] if capped else []),
+            *([HYDROGENATED_TAG] if net.decorations else []),
+        ],
     )

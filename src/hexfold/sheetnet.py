@@ -30,7 +30,7 @@ import numpy as np
 from ._trace import leaf_id as _leaf_id
 from ._trace import record as _trace_record
 from ._trace import traced as _traced
-from .build import Atom, JunctionRecord, Net
+from .build import Atom, DecorationRecord, JunctionRecord, Net
 from .ids import AtomPath
 from .join import (
     Block,
@@ -986,3 +986,154 @@ def assemble(
         tuple(jrecords),
         tuple(overrides),
     )
+
+
+# ------------------------------------------------------------- decorate
+
+
+def _face_sign(spec: object, normal: np.ndarray, what: str) -> int:
+    """+1 / -1: which side of ``normal`` a decoration's ``face`` names —
+    an int or ``"+"``/``"-"``, or a 3-vector pointing at the wanted side."""
+    if isinstance(spec, str):
+        if spec in ("+", "+1", "up"):
+            return 1
+        if spec in ("-", "-1", "down"):
+            return -1
+    elif isinstance(spec, (int, np.integer)) and not isinstance(spec, bool):
+        if spec in (1, -1):
+            return int(spec)
+    elif isinstance(spec, (Sequence, np.ndarray)) and len(spec) == 3:
+        side = float(np.dot(np.asarray(spec, dtype=float), normal))
+        if abs(side) > 1e-9:
+            return 1 if side > 0 else -1
+        raise ValueError(f"decorate face for {what} is perpendicular to its normal")
+    raise ValueError(
+        f"decorate face for {what} must be +1/-1 ('+'/'-') or a 3-vector; got {spec!r}"
+    )
+
+
+@_traced
+def decorate(
+    net: Net,
+    sites: Sequence[int],
+    face: int | str | np.ndarray | Sequence[object] = 1,
+    element: str = "H",
+    *,
+    up: Sequence[float] = (0.0, 0.0, 1.0),
+) -> Net:
+    """``net`` with one ``element`` (H) bonded to each of ``sites`` — the
+    interior counterpart of edge termination (multicell slice 2,
+    molecular-workspace-code slice 2).
+
+    Each site must be a saturated sp2 carbon (three bonds) with seed
+    coordinates; it is relabelled ``hyb="sp3"`` and gets one H at
+    ``lattice.sigma_CH_A`` along the oriented normal of its neighbours'
+    plane. The normal points to the ``up`` side (``+z`` by default; pass
+    the tube's radial for a curved sheet). ``face`` is the side: ``+1`` /
+    ``-1`` (``"+"``/``"-"``) for every site, a sequence of them per site
+    (a chair alternation is ``[1, -1, ...]``), or a numpy 3-vector
+    direction for every site (a tuple of 3-vectors gives one per site).
+
+    The H atoms are appended after the existing atoms (ordinals, ports,
+    regions and rings keep their numbers), bonded ``(host, H, 1)``, seeded
+    in ``seed3``, and recorded in ``Net.decorations``. They belong to no
+    sheet, so the Euler bookkeeping and ``counting_residual`` are the
+    undecorated net's; ``check`` reads the decorated carbon at valence 4
+    and warns ``geom.sp3.mismatch`` on a closed sp3 band."""
+    if element != "H":
+        raise ValueError(f"decorate places H only here; got element {element!r}")
+    if net.seed3 is None:
+        raise ValueError("decorate needs seed coordinates (net.seed3) to place H")
+    sites = [int(s) for s in sites]
+    if len(set(sites)) != len(sites):
+        raise ValueError("decorate sites must be distinct atom ordinals")
+    if isinstance(face, (str, int, np.integer)) or (
+        isinstance(face, np.ndarray) and face.shape == (3,)
+    ):
+        faces: list[object] = [face] * len(sites)  # one side (or direction) for all
+    else:
+        faces = list(face)
+    if len(faces) != len(sites):
+        raise ValueError(
+            f"decorate face has {len(faces)} entries for {len(sites)} sites"
+        )
+    n0 = len(net.atoms)
+    xyz = np.asarray(net.seed3, dtype=float)
+    nbrs: dict[int, list[int]] = {}
+    for i, j, _o in net.bonds:
+        nbrs.setdefault(i, []).append(j)
+        nbrs.setdefault(j, []).append(i)
+    up_v = np.asarray(up, dtype=float)
+    already = {d.host for d in net.decorations}
+    new_atoms: list[Atom] = []
+    new_bonds: list[tuple[int, int, int]] = []
+    new_xyz: list[tuple[float, float, float]] = []
+    records: list[DecorationRecord] = []
+    flipped: dict[int, Atom] = {}
+    maker = _leaf_id()
+    for k, (site, spec) in enumerate(zip(sites, faces)):
+        if not 0 <= site < n0:
+            raise ValueError(
+                f"decorate site {site} is not an atom ordinal (0..{n0 - 1})"
+            )
+        host = net.atoms[site]
+        if host.element not in net.lattice.elements or host.hyb != "sp2":
+            raise ValueError(
+                f"decorate site {site} ({host.path}) is {host.element}/{host.hyb}; "
+                "only an sp2 lattice carbon takes an H"
+            )
+        if site in already:
+            raise ValueError(f"decorate site {site} ({host.path}) is already decorated")
+        around = nbrs.get(site, [])
+        if len(around) != 3:
+            raise ValueError(
+                f"decorate site {site} ({host.path}) has {len(around)} bonds; a "
+                "saturated sp2 carbon (3) becomes sp3 with the H"
+            )
+        v0, v1, v2 = (xyz[a] for a in around)
+        normal = np.cross(v1 - v0, v2 - v0)
+        length = float(np.linalg.norm(normal))
+        if length < 1e-9:
+            raise ValueError(
+                f"decorate site {site} ({host.path}): degenerate neighbours"
+            )
+        normal /= length
+        lean = float(np.dot(normal, up_v))
+        if lean < 0 or (abs(lean) < 1e-9 and normal[np.flatnonzero(normal)[0]] < 0):
+            normal = -normal
+        sign = _face_sign(spec, normal, f"site {site}")
+        pos = xyz[site] + net.lattice.sigma_CH_A * sign * normal
+        ho = n0 + k
+        path = host.path
+        new_atoms.append(
+            Atom(
+                AtomPath(
+                    path.instance,
+                    path.site,
+                    path.defect,
+                    h=True,
+                    label=f"{path.label}.H" if path.label is not None else None,
+                ),
+                ho,
+                element,
+                "s",
+                host.instance,
+                maker=maker,
+            )
+        )
+        new_bonds.append((site, ho, 1))
+        new_xyz.append((float(pos[0]), float(pos[1]), float(pos[2])))
+        records.append(DecorationRecord(site, ho, sign))
+        flipped[site] = replace(host, hyb="sp3")
+    out = replace(
+        net,
+        atoms=tuple(flipped.get(a.ord, a) for a in net.atoms) + tuple(new_atoms),
+        bonds=net.bonds + tuple(new_bonds),
+        seed3=tuple(net.seed3) + tuple(new_xyz),
+        decorations=net.decorations + tuple(records),
+    )
+    _trace_record(
+        made={"atoms": len(new_atoms), "bonds": len(new_bonds)},
+        touched={"atoms": len(flipped)},
+    )
+    return out

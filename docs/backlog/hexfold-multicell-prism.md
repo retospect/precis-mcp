@@ -327,6 +327,15 @@ over the in-scope files (target −1.2k to −1.5k lines across 1a–1c);
 
 ### Slice 2 — `decorate` (gap 4)
 
+·landed 2026-10-29 (built under
+[molecular-workspace-code](molecular-workspace-code.md) slice 2,
+`worktree-agent-a27496041e346c77d`)· As built: `sheetnet.decorate(net,
+sites, face=1, element="H", *, up=(0, 0, 1))` — `face` is the side (±1,
+per site, or a direction) of each site's oriented normal; the record is
+`Net.decorations` (`DecorationRecord(host, atom, face)`); `geom.sp3.mismatch`
+fires when the decorated carbons' bonds close a loop (topological, in the
+geometry tier). The spec text below is the design.
+
 `sheetnet.decorate(sites, face, element="H")`: relabel `hyb="sp3"`, add
 one H at 1.09 Å along `face`, record the decoration on the net.
 `_block_from_net` emits F4 and keeps `_SP2_BOND_ORDER` off C–H. `check`:

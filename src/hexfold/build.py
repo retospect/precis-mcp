@@ -168,6 +168,19 @@ class JunctionRecord:
 
 
 @dataclass(frozen=True)
+class DecorationRecord:
+    """One authored site decoration (``sheetnet.decorate``): the ``host``
+    carbon (relabelled ``sp3``), the ``atom`` ordinal of the H it
+    carries, and the ``face`` side (+1 / -1 of the host's oriented
+    normal) the H sits on. Authored chemistry, not edge capping — see
+    ``topology.hydrogenated`` against ``topology.terminated``."""
+
+    host: int
+    atom: int
+    face: int
+
+
+@dataclass(frozen=True)
 class Net:
     atoms: tuple[Atom, ...]
     bonds: tuple[tuple[int, int, int], ...]
@@ -215,6 +228,11 @@ class Net:
     # strain-read zones: one per `fuse{reducer}` seam (``reducer:<wide>-><narrow>:
     # outer|inner``) and per `opening(port=)` mouth (``opening:<sheet>``)
     junctions: tuple[JunctionRecord, ...] = ()
+    # site decorations (``sheetnet.decorate``): each relabels its host
+    # ``sp3`` and adds one H atom beside it; the H atoms are not in
+    # ``sheet_atoms`` or the counting law, so ``counting_residual`` is the
+    # undecorated net's
+    decorations: tuple[DecorationRecord, ...] = ()
 
     def authored_dict(self) -> dict[str, Any]:
         """The authored-only sections (SPEC 4/14/18): everything a ``.hx``

@@ -282,6 +282,29 @@ def test_wheel_import_graph() -> None:
     )
 
 
+def test_site_enumeration_ships_and_stays_db_free() -> None:
+    """molecular-workspace-code slice 2: the pure site enumeration lives in
+    ``precis.structure.sites`` (not ``precis_se.atomic.sites``, whose
+    handler imports cannot ship), is inside the wheel's ``precis/structure``
+    tree, and imports only numpy/scipy and the carved ``precis.structure``."""
+    sites = _SRC / "precis" / "structure" / "sites.py"
+    assert sites in _iter_files() and _is_shipped(sites)
+    assert _module_source("precis.structure.sites") == sites
+    tree = ast.parse(sites.read_text(encoding="utf-8"), filename=str(sites))
+    seen: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            seen.update(a.name for a in node.names)
+        elif isinstance(node, ast.ImportFrom):
+            seen.add(_resolve(sites, node))
+    first_party = {m for m in seen if m.split(".")[0] in _WHEEL_TOPS}
+    assert first_party == {"precis.structure"}, first_party
+    assert all(_is_allowed(m) for m in first_party)
+    # the view renderer (not shipped) is the caller, never the other way round
+    assert _module_source("precis_se.atomic.sites") is not None
+    assert not _is_shipped(_SRC / "precis_se" / "atomic" / "sites.py")
+
+
 def test_wheel_is_dependency_light() -> None:
     """Module-level third-party imports stay inside the declared deps —
     everything heavier (torch/OCP/tblite/httpx) must stay lazy."""

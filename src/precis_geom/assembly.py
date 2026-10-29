@@ -95,6 +95,21 @@ class Port:
     annotations: dict[str, Any] = field(default_factory=dict)
 
 
+class NetRef:
+    """The hexfold ``Net`` a :func:`geom` was built from, with the
+    coordinates and scene it exported — ``Geom.meta['_net']``, read by
+    ``mol.cap`` (the Net path) and ``mol.sites`` (the Net's per-atom
+    hybridization). A plain class, not a dataclass: the trace digest
+    samples dataclass fields, and a Net is not an argument worth walking."""
+
+    __slots__ = ("net", "scene", "xyz")
+
+    def __init__(self, net: Any, xyz: np.ndarray, scene: Any) -> None:
+        self.net = net
+        self.xyz = xyz
+        self.scene = scene
+
+
 @dataclass(frozen=True)
 class Geom:
     """An immutable built object: geometry (atomic ``scene`` or macro
@@ -567,6 +582,7 @@ def geom(
         m = {"units": "A", "coords": coord_kind, **dict(meta or {})}
         if census is not None:
             m["census"] = census
+            m["_net"] = NetRef(obj, np.asarray(xyz, dtype=np.float64), scene)
         return Geom(scene=scene, ports=ports_d, meta=m)
     raise BadInput(
         f"pga: unrecognised geometry {type(obj).__name__} — want a "

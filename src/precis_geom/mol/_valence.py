@@ -76,7 +76,9 @@ def _any_perpendicular(v: np.ndarray) -> np.ndarray:
     return _unit(np.cross(v, ref))
 
 
-def free_direction(scene: Any, label: str, *, prefer_h: bool = True) -> np.ndarray:
+def free_direction(
+    scene: Any, label: str, *, prefer_h: bool = True, hyb: str | None = None
+) -> np.ndarray:
     """Unit vector from ``label`` toward where a new bond would leave it.
 
     With ``prefer_h`` and a bonded H, that H's own direction (the bond a
@@ -84,7 +86,8 @@ def free_direction(scene: Any, label: str, *, prefer_h: bool = True) -> np.ndarr
     one neighbour → the hybridization's ideal angle; two → the bisector
     (planar sp/sp2) or the out-of-plane sp3 lone direction; three or
     more → opposite the neighbour sum, or the POAV normal for a planar
-    centre."""
+    centre. ``hyb`` overrides the inferred hybridization (a hexfold Net's
+    per-atom ``sp2``/``sp3`` tag, which its all-single-bond scene hides)."""
     pos = cart(scene, label)
     if prefer_h:
         hs = bonded_hydrogens(scene, label)
@@ -92,7 +95,7 @@ def free_direction(scene: Any, label: str, *, prefer_h: bool = True) -> np.ndarr
             return _unit(cart(scene, hs[0]) - pos)
     vecs = [v for _o, _od, v in bond_vectors(scene, label)]
     atom = scene.atoms[label]
-    hyb = vsepr.infer_hybridization(scene, label)
+    hyb = hyb or vsepr.infer_hybridization(scene, label)
     if not vecs:
         return np.array([0.0, 0.0, 1.0])
     if len(vecs) == 1:
@@ -135,3 +138,51 @@ def require_open_valence(scene: Any, label: str, order: float, n_h: int) -> None
             next="pick an atom with an open valence, or bind a Port on the "
             "host atom (mol.frag(scene=..., ports=...))",
         )
+
+
+#: Sigma-neighbour budget of a hybridised carbon: sp2 takes three, sp two.
+#: Declared bond orders cannot say so on a scene whose pi bonds are
+#: implicit (a hexfold Net exports every bond as order 1).
+_SIGMA_BUDGET = {"sp": 2, "sp2": 3}
+
+
+def bond_tables(scene: Any) -> tuple[dict[str, float], dict[str, int]]:
+    """``(order sum, bond count)`` per atom label in one pass over the
+    bonds — :func:`open_count`'s input when it runs over every atom."""
+    used: dict[str, float] = {}
+    count: dict[str, int] = {}
+    for b in scene.bonds:
+        if b.i in scene.atoms and b.j in scene.atoms:
+            for la in (b.i, b.j):
+                used[la] = used.get(la, 0.0) + float(b.order)
+                count[la] = count.get(la, 0) + 1
+    return used, count
+
+
+def open_count(
+    scene: Any,
+    label: str,
+    *,
+    hyb: str | None = None,
+    tables: tuple[dict[str, float], dict[str, int]] | None = None,
+) -> int:
+    """How many more single bonds ``label`` can take: the unused valence
+    budget (bond orders against :func:`elements.effective_valence`,
+    rounded down; none for a metal), capped for an ``sp``/``sp2`` carbon
+    by its sigma-neighbour budget. ``hyb`` is the caller's
+    hybridization for the atom (else the atom's own tag); ``tables``
+    (:func:`bond_tables`) spares the per-atom walk over the bonds."""
+    atom = scene.atoms[label]
+    mv, _known = elements.effective_valence(atom.element, atom.charge)
+    if mv is None:
+        return 0
+    if tables is None:
+        vecs = bond_vectors(scene, label)
+        used, count = sum(o for _la, o, _v in vecs), len(vecs)
+    else:
+        used, count = tables[0].get(label, 0.0), tables[1].get(label, 0)
+    free = float(mv) - used
+    tag = hyb or atom.hybridization
+    if atom.element == "C" and tag in _SIGMA_BUDGET:
+        free = min(free, _SIGMA_BUDGET[tag] - count)
+    return max(0, math.floor(free + _EPS))

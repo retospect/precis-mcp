@@ -10,6 +10,11 @@ the fragment about the new bond. Everything else here is bookkeeping:
 drop the H the new bond replaces, mint fragment labels clear of the
 host's, add the bond, and report clashes by the one validator rule
 (``precis.structure.validate.OVERLAP_FRACTION``).
+
+The work is split in two so ``mol.decorate`` can pick a torsion without
+building a scene per candidate: :func:`_plan` resolves the site, the bond
+and the ``place`` pose once; :func:`_build` merges host and fragment at a
+given torsion. :func:`attach` is the two in a row.
 """
 
 from __future__ import annotations
@@ -50,30 +55,73 @@ def _tup(v: Any) -> tuple[float, float, float]:
     return (float(v[0]), float(v[1]), float(v[2]))
 
 
-@_trace.traced(name="attach")
-def attach(
+class _Plan:
+    """Everything decided before the fragment is turned: host and
+    fragment scenes in a common frame, the host site, the bond and the
+    ``place`` pose. A plain class (not a dataclass) so a trace digest
+    never walks the scenes it holds."""
+
+    __slots__ = (
+        "T",
+        "anchor",
+        "consumed",
+        "d",
+        "f_labels",
+        "fg_ports",
+        "fg_scene",
+        "fport",
+        "frag_geom",
+        "h_ports",
+        "h_scene",
+        "host_g",
+        "label",
+        "order",
+        "removed",
+    )
+
+    h_scene: Scene
+    fg_scene: Scene
+    h_ports: dict[str, Port]
+    fg_ports: dict[str, Port]
+    fport: Port
+    frag_geom: Geom
+    host_g: Geom
+    label: str  # the host atom
+    order: float
+    removed: list[str]  # host H atoms the new bond replaces
+    consumed: str | None  # the host Port name a Port site spends
+    d: np.ndarray  # unit bond direction, host → fragment
+    anchor: np.ndarray  # where the fragment's attachment atom lands
+    T: Any  # place's Transform (fragment frame → host frame)
+    f_labels: list[str]
+
+    def _rot(self, torsion: float) -> np.ndarray:
+        return pga._rot_axis(self.d, math.radians(float(torsion)))
+
+    def f_carts(self, torsion: float) -> dict[str, np.ndarray]:
+        """Fragment atom positions (host frame, Å) after the pose and
+        ``torsion`` degrees about the new bond."""
+        Rt = self._rot(torsion)
+        return {
+            la: Rt @ (self.T.apply(_valence.cart(self.fg_scene, la)) - self.anchor)
+            + self.anchor
+            for la in self.f_labels
+        }
+
+    def pose(self, torsion: float, x: np.ndarray) -> np.ndarray:
+        return self._rot(torsion) @ (self.T.apply(x) - self.anchor) + self.anchor
+
+    def pose_dir(self, torsion: float, v: np.ndarray) -> np.ndarray:
+        return self._rot(torsion) @ self.T.apply_dir(v)
+
+
+def _plan(
     host: Any,
     site: Any,
     frag_port: Any,
     *,
-    torsion: float = 0.0,
     bond: float | None = None,
-) -> Geom:
-    """``host`` with the fragment bonded at ``site``.
-
-    ``site`` is a host :class:`Port` (or a ``host.port(name)`` handle) —
-    the fragment lands along its ``direction`` — or an atom label with an
-    open valence: one bonded H (per unit of bond order) is removed and
-    the bond leaves along the H's own direction, else along the free
-    direction the neighbours leave (:func:`mol._valence.free_direction`).
-    ``frag_port`` is ``frag.port('a1')``. The bond length is the sum of
-    covalent radii unless ``bond=`` (Å). ``torsion`` (degrees,
-    right-handed about host→fragment) turns the fragment about the new
-    bond; the host never moves. Returns one fused ``Geom`` (one scene):
-    host and fragment atoms keep their ``maker``, the new bond is made
-    by the ``attach`` frame, the unused ports of both carry over, and
-    ``findings`` gains one ``attach.clash`` row per new atom pair under
-    ``validate.OVERLAP_FRACTION``."""
+) -> _Plan:
     if not (isinstance(frag_port, tuple) and len(frag_port) == 2):
         raise BadInput(
             "mol.attach: frag_port must be a port handle, e.g. frag.port('a1')",
@@ -149,7 +197,7 @@ def attach(
             next="omit bond= for the covalent-radii sum",
         )
 
-    # -- the pose: place's solve, then the torsion ---------------------------
+    # -- the pose: place's solve (the torsion is applied per build) ----------
     host_pos = _valence.cart(h_scene, label)
     anchor = host_pos + d * length
     placed = pga.place(
@@ -160,29 +208,39 @@ def attach(
         ),
         align=(frag_geom, fport),
     )
-    T = placed.pose
-    if T is None:  # pragma: no cover - place always sets it
+    if placed.pose is None:  # pragma: no cover - place always sets it
         raise BadInput("mol.attach: place returned no pose")
-    Rt = pga._rot_axis(d, math.radians(float(torsion)))
+    plan = _Plan()
+    plan.h_scene, plan.fg_scene = h_scene, fg_scene
+    plan.h_ports, plan.fg_ports = h_ports, fg_ports
+    plan.fport, plan.frag_geom, plan.host_g = fport, frag_geom, host_g
+    plan.label, plan.order = label, order
+    plan.removed, plan.consumed = removed, consumed
+    plan.d, plan.anchor, plan.T = d, anchor, placed.pose
+    plan.f_labels = list(fg_scene.atoms)
+    return plan
 
-    def pose(x: np.ndarray) -> np.ndarray:
-        return Rt @ (T.apply(x) - anchor) + anchor
 
-    def pose_dir(v: np.ndarray) -> np.ndarray:
-        return Rt @ T.apply_dir(v)
+def _build(plan: _Plan, torsion: float, *, clashes: bool = True) -> Geom:
+    """Merge host and fragment at ``torsion``; ``clashes`` adds the
+    ``attach.clash`` rows (a whole-scene validate — skipped by
+    ``mol.decorate``, which tests the candidate before building)."""
+    h_scene, fg_scene = plan.h_scene, plan.fg_scene
+    label, fport, removed = plan.label, plan.fport, plan.removed
+    host_g, frag_geom = plan.host_g, plan.frag_geom
 
     # -- merge ----------------------------------------------------------------
     maker = pga._leaf()
     keep_cell = any(h_scene.cell.pbc)
     h_labels = [la for la in h_scene.atoms if la not in removed]
-    f_labels = list(fg_scene.atoms)
+    f_labels = plan.f_labels
     carts: dict[str, np.ndarray] = {la: _valence.cart(h_scene, la) for la in h_labels}
     label_hi = dict(h_scene.label_hi)
     for el in {a.element for a in h_scene.atoms.values()}:
         label_hi[el] = max(
             label_hi.get(el, 0), int(h_scene.next_label(el)[1 + len(el) :]) - 1
         )
-    f_carts = {la: pose(_valence.cart(fg_scene, la)) for la in f_labels}
+    f_carts = plan.f_carts(torsion)
     cell = (
         h_scene.cell
         if keep_cell
@@ -217,8 +275,8 @@ def attach(
     out.bonds.append(
         Bond(
             i=label,
-            j=new_label[fport.atom],
-            order=order,
+            j=new_label[str(fport.atom)],
+            order=plan.order,
             kind="pairwise",
             provenance="declared",
             maker=maker,
@@ -228,20 +286,22 @@ def attach(
     # -- ports ------------------------------------------------------------------
     ports: dict[str, Port] = {
         n: p
-        for n, p in h_ports.items()
-        if n != consumed and (p.atom is None or p.atom not in rm)
+        for n, p in plan.h_ports.items()
+        if n != plan.consumed and (p.atom is None or p.atom not in rm)
     }
     prefix = frag_geom.name or "frag"
-    for n, p in fg_ports.items():
+    for n, p in plan.fg_ports.items():
         if n == fport.name:
             continue
         key = n if n not in ports else f"{prefix}.{n}"
         ports[key] = replace(
             p,
             name=key,
-            pos=_tup(pose(np.asarray(p.pos, dtype=float))) if p.pos else None,
+            pos=_tup(plan.pose(torsion, np.asarray(p.pos, dtype=float)))
+            if p.pos
+            else None,
             direction=(
-                _tup(pose_dir(np.asarray(p.direction, dtype=float)))
+                _tup(plan.pose_dir(torsion, np.asarray(p.direction, dtype=float)))
                 if p.direction
                 else None
             ),
@@ -249,18 +309,54 @@ def attach(
         )
 
     # -- clash rows: the validator's overlap rule, new atoms only -----------------
-    fresh = set(new_label.values())
-    clashes = tuple(
-        f"attach.clash: {i.atoms[0]}–{i.atoms[1]} {i.measured:.2f} Å < "
-        f"{i.expected:.2f} Å ({OVERLAP_FRACTION:g} × covalent radii)"
-        for i in validate(out)
-        if i.rule == "atom_overlap" and fresh & set(i.atoms)
-    )
+    rows: tuple[str, ...] = ()
+    if clashes:
+        fresh = set(new_label.values())
+        rows = tuple(
+            f"attach.clash: {i.atoms[0]}–{i.atoms[1]} {i.measured:.2f} Å < "
+            f"{i.expected:.2f} Å ({OVERLAP_FRACTION:g} × covalent radii)"
+            for i in validate(out)
+            if i.rule == "atom_overlap" and fresh & set(i.atoms)
+        )
     pga._record(atoms=len(f_labels), bonds=len(fg_scene.bonds) + 1)
     _trace.record(touched={"atoms": 1 + len(removed)})
     return Geom(
         scene=out,
         ports=ports,
         meta=dict(host_g.meta),
-        findings=(*host_g.findings, *frag_geom.findings, *clashes),
+        findings=(*host_g.findings, *frag_geom.findings, *rows),
     )
+
+
+@_trace.traced(name="attach")
+def attach(
+    host: Any,
+    site: Any,
+    frag_port: Any,
+    *,
+    torsion: float = 0.0,
+    bond: float | None = None,
+) -> Geom:
+    """``host`` with the fragment bonded at ``site``.
+
+    ``site`` is a host :class:`Port` (or a ``host.port(name)`` handle) —
+    the fragment lands along its ``direction`` — or an atom label with an
+    open valence: one bonded H (per unit of bond order) is removed and
+    the bond leaves along the H's own direction, else along the free
+    direction the neighbours leave (:func:`mol._valence.free_direction`).
+    ``frag_port`` is ``frag.port('a1')``. The bond length is the sum of
+    covalent radii unless ``bond=`` (Å). ``torsion`` (degrees,
+    right-handed about host→fragment) turns the fragment about the new
+    bond; the host never moves. Returns one fused ``Geom`` (one scene):
+    host and fragment atoms keep their ``maker``, the new bond is made
+    by the ``attach`` frame, the unused ports of both carry over, and
+    ``findings`` gains one ``attach.clash`` row per new atom pair under
+    ``validate.OVERLAP_FRACTION``."""
+    return _build(_plan(host, site, frag_port, bond=bond), torsion)
+
+
+@_trace.traced(name="attach")
+def attach_planned(plan: _Plan, torsion: float) -> Geom:
+    """One ``attach`` frame over an already-solved :class:`_Plan`, without
+    the whole-scene clash validate — ``mol.decorate``'s per-site call."""
+    return _build(plan, torsion, clashes=False)

@@ -68,6 +68,7 @@ from precis.cad.vec import pose as cad_pose
 from precis.errors import BadInput
 from precis.format import render_agent_table
 from precis.structure import Scene as StructScene
+from precis.structure.sites import axis_basis as _axis_basis
 from precis.utils.units import parse_angle_deg
 from precis_se.atomic import validate as se_atomic_validate
 from precis_se.ops import SeBlock, SeTree, effective_envelope
@@ -396,20 +397,6 @@ class Pocket:
     theta_deg: float | None
     extent_deg: float | None
     volume_A3: float | None
-
-
-def _axis_basis(
-    axis_dir: NDArray[np.float64],
-) -> tuple[NDArray[np.float64], NDArray[np.float64]]:
-    """An orthonormal ``(v1, v2)`` spanning the plane normal to the axis —
-    the θ=0 reference and its quarter-turn, deterministic off a fixed
-    world axis (never the data, so the same pocket reports the same θ)."""
-    ref = np.array([0.0, 0.0, 1.0])
-    if abs(float(np.dot(axis_dir, ref))) > 0.9:
-        ref = np.array([1.0, 0.0, 0.0])
-    v1 = ref - float(np.dot(ref, axis_dir)) * axis_dir
-    v1 /= np.linalg.norm(v1)
-    return v1, np.cross(axis_dir, v1)
 
 
 def pockets(

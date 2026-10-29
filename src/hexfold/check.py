@@ -10,7 +10,9 @@ Phase-2 codes: seam.rings, annot.sublattice, fit.unsolvable, fit.alternatives,
 fit.propagated (roll-up domains, hexfold.domains), extent.snap (Angstrom
 sheet extents, hexfold.extent),
 hole.missing, port.unknown, frag.unrealized, annot.host_sublattices;
-an sp3 atom is allowed 4 bonds before valence.over fires.
+an sp3 atom is allowed 4 bonds before valence.over fires. A carbon
+decorated by ``sheetnet.decorate`` must sit at exactly 4 (valence.under
+otherwise), and a closed band of them reports ``geom.sp3.mismatch``.
 0.2: ``spec`` may be a ``.hx.json`` sectioned-JSON string; when it carries a
 ``generated`` block, its cached hash is recomputed against a fresh
 rebuild of the authored sections and a mismatch reports ``gen.stale``
@@ -88,6 +90,19 @@ def _findings_from_net(net: Net) -> list[Finding]:
                     Severity.WARN,
                     f"atom {a.path} has {d} bonds, not on a rim",
                     where=a.instance,
+                )
+            )
+    # a decorated carbon (sheetnet.decorate) is sp3: three lattice bonds
+    # plus its one H, so exactly valence 4
+    for dec in net.decorations:
+        if deg[dec.host] != 4:
+            host = net.atoms[dec.host]
+            out.append(
+                Finding(
+                    "valence.under",
+                    Severity.WARN,
+                    f"decorated atom {host.path} has {deg[dec.host]} bonds, not 4",
+                    where=host.instance,
                 )
             )
     # rim standard (SPEC 10): INFO, never WARN -- chiral ends, cap rims
@@ -435,6 +450,8 @@ def _geometry_findings(
             )
         )
 
+    out.extend(_sp3_band_findings(net))
+
     inst = {a.ord: a.instance for a in net.atoms}
     elem = {a.ord: a.element for a in net.atoms}
 
@@ -640,6 +657,61 @@ def _geometry_findings(
         )
     )
     return out
+
+
+#: sp3 C-C bond length (A) against graphene's sigma 1.42: the ~7% mismatch
+#: that stresses whatever a closed sp3 band encloses
+#: (docs/backlog/hexfold-sp3-isolation-band.md, open question 3).
+SP3_CC_A = 1.53
+
+
+def _sp3_band_findings(net: Net) -> list[Finding]:
+    """``geom.sp3.mismatch`` (WARN) when the decorated sp3 carbons close a
+    loop: their C-C bonds form a cycle, so the enclosed sp2 island is
+    held by a band whose bonds want 1.53 A against the sheet's sigma. An
+    open arc (a path of sp3 carbons) lets the sheet pucker out of the
+    strain and stays quiet. Topological, so it needs no coordinates —
+    the stick pass can show the pucker but not judge it."""
+    hosts = {d.host for d in getattr(net, "decorations", ())}
+    if not hosts:
+        return []
+    edges = [(i, j) for i, j, _o in net.bonds if i in hosts and j in hosts]
+    parent = {h: h for h in hosts}
+
+    def root(x: int) -> int:
+        while parent[x] != x:
+            parent[x] = parent[parent[x]]
+            x = parent[x]
+        return x
+
+    for i, j in edges:
+        parent[root(i)] = root(j)
+    members: dict[int, int] = {}
+    for h in hosts:
+        members[root(h)] = members.get(root(h), 0) + 1
+    # independent cycles = edges - nodes + components, per component
+    loops = len(edges) - len(hosts) + len(members)
+    if loops <= 0:
+        return []
+    sig = net.lattice.sigma_A
+    mismatch = (SP3_CC_A - sig) / sig
+    return [
+        Finding(
+            "geom.sp3.mismatch",
+            Severity.WARN,
+            f"closed sp3 band: {len(hosts)} decorated carbons close {loops} "
+            f"loop(s); sp3 C-C {SP3_CC_A:.2f} A against the sheet's {sig:.2f} A "
+            f"({mismatch:.0%} mismatch) leaves the enclosed sp2 island in a "
+            "stress state a stick relax can show but not judge",
+            data=(
+                ("sp3_atoms", len(hosts)),
+                ("loops", loops),
+                ("sp3_cc_A", SP3_CC_A),
+                ("sigma_A", round(sig, 3)),
+                ("mismatch", round(mismatch, 3)),
+            ),
+        )
+    ]
 
 
 def _round_or_none(x: float | None) -> float | None:

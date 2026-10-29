@@ -3,7 +3,9 @@ shape-and-polarity complementarity stub that scores it (tools 3–4 of
 ``docs/backlog/rotary-ratchet-valve.md`` "Design tool set", hexfold spec
 §28.8).
 
-**Sites.** Every carbon that can take a substituent, classified three
+**Sites.** (The pure enumeration and taxonomy below live in
+:mod:`precis.structure.sites`, which ships in the wheel; this module
+renders them.) Every carbon that can take a substituent, classified three
 ways:
 
 - *ring taxonomy* — ``sp3`` when the carbon is four-or-more-coordinated
@@ -61,13 +63,9 @@ it is the se atomic-mode relax/charge work.
 
 from __future__ import annotations
 
-import math
-from collections import deque
-from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 import numpy as np
-from numpy.typing import NDArray
 
 from precis.blocktree.types import no_block_msg
 from precis.errors import BadInput, NotFound
@@ -75,6 +73,7 @@ from precis.format import render_agent_table
 from precis.handlers._interpret import PREFIX as _INTERPRETED
 from precis.handlers._slice_args import slice_window
 from precis.structure import Scene as StructScene
+from precis.structure import sites as _core
 from precis_se.atomic import clearance as se_atomic_clearance
 from precis_se.atomic.clearance import AtomCloud, SweepAxis
 from precis_se.ops import SeTree
@@ -82,37 +81,17 @@ from precis_se.ops import SeTree
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from precis.store import Store
 
+# The pure enumeration and taxonomy live in precis.structure.sites (wheel-safe);
+# the names this module renders with, and its tests import, stay here.
+Site = _core.Site
+ring_classes = _core.ring_classes
+is_closed_cage = _core.is_closed_cage
+_bond_graph = _core.bond_graph
+_hyb_of = _core.hyb_of
+_sites_block = _core.sites_block
+_SITE_CLASSES = _core.SITE_CLASSES
+_EXCLUDED_CLASSES = _core.EXCLUDED_CLASSES
 
-#: Carbon–carbon bond cutoff used only when a bound structure carries no
-#: declared bonds at all (generated scenes always do).
-_CC_DERIVE_BOND_A = 1.9
-
-#: A bond under this order counts as single for the sp³ test — aromatic
-#: (~1.33) and double bonds do not, so an H-capped aromatic carbon with
-#: four neighbours stays a ring site rather than reading as sp³.
-_SINGLE_BOND_ORDER = 1.2
-
-#: Ring search depth on the C–C graph — covers 5–8 membered rings;
-#: anything longer reads as ``non-ring``.
-_RING_MAX_DEPTH = 4
-
-#: Ring sizes the taxonomy names — a carbon closing only 3/4-rings or
-#: cycles past 8 reads ``non-ring``.
-_RING_SIZES = frozenset({5, 6, 7, 8})
-
-#: Free-direction vs axis-radial cosine thresholds for the face
-#: classification: beyond ±0.3 the site faces clearly in or out; a
-#: dangling bond along the tube axis reads ``axial``.
-_FACE_COS = 0.3
-
-#: A probe point inside the exposure sphere counts as free when no atom
-#: sits this close — a ~vdW contact distance, not the full probe radius.
-_EXPOSURE_CLEAR_A = 1.0
-
-#: Deterministic sampling of the exposure sphere: Fibonacci directions ×
-#: radial shells — reproducible, no RNG.
-_EXPOSURE_DIRS = 40
-_EXPOSURE_SHELLS = 5
 
 #: A site "faces" the other block when the cross-block nearest atom lies
 #: inside this half-cone of the free direction (and the pair's gap is
@@ -133,315 +112,7 @@ GROUP_POLARITY: dict[str, str] = {
 #: acceptor–acceptor).
 _POLAR = frozenset({"polar-donor", "polar-acceptor"})
 
-#: Classes that ARE sites — a carbon can take a substituent; ``sp3`` and
-#: ``substituted`` are counted in the summary but never listed. Compound
-#: defect classes (``5+7-ring`` — an atom two defect rings share) are
-#: site classes too but are not nameable ``ring:`` selectors: each
-#: named size selects them by membership, so ``ring:5-ring`` and
-#: ``ring:7-ring`` both reach a ``5+7-ring`` atom.
-_SITE_CLASSES = ("5-ring", "6-ring", "7-ring", "8-ring", "open-edge", "non-ring")
-_EXCLUDED_CLASSES = ("sp3", "substituted")
 _GROUP_NAMES = tuple(GROUP_POLARITY)
-
-
-def _fib_dirs(n: int) -> NDArray[np.float64]:
-    """``n`` Fibonacci-spiral unit directions — a deterministic, even
-    sphere covering."""
-    i = np.arange(n, dtype=float) + 0.5
-    phi = np.pi * (1.0 + 5.0**0.5) * i
-    z = 1.0 - 2.0 * i / n
-    r = np.sqrt(np.maximum(0.0, 1.0 - z * z))
-    return np.stack([r * np.cos(phi), r * np.sin(phi), z], axis=1)
-
-
-def _probe_lattice() -> NDArray[np.float64]:
-    """Unit-sphere interior lattice: Fibonacci directions × shell radii
-    (cube-root spacing for even volume fill), reused by every exposure
-    probe."""
-    shells = (np.arange(_EXPOSURE_SHELLS, dtype=float) + 0.5) / _EXPOSURE_SHELLS
-    radii = shells ** (1.0 / 3.0)
-    return (
-        np.repeat(_fib_dirs(_EXPOSURE_DIRS), _EXPOSURE_SHELLS, axis=0)
-        * np.tile(radii, _EXPOSURE_DIRS)[:, None]
-    )
-
-
-_LATTICE = _probe_lattice()
-
-
-def _bond_graph(
-    scene: StructScene, labels: list[str], pts_A: NDArray[np.float64]
-) -> tuple[list[list[int]], list[bool]]:
-    """``(adjacency, unsaturated)`` over the cloud's atom indices —
-    ALL-element declared scene bonds when present (hexfold scenes always
-    carry them), a C–C distance derivation as the fallback.
-    ``unsaturated[i]`` is set when any bond at ``i`` exceeds
-    :data:`_SINGLE_BOND_ORDER` — the sp³ test needs it so an aromatic C–H
-    (three aromatic C bonds + one H) doesn't read as four-coordinated."""
-    index = {label: i for i, label in enumerate(labels)}
-    adj: list[set[int]] = [set() for _ in labels]
-    unsat = [False] * len(labels)
-    n_bonds = 0
-    for bond in scene.bonds:
-        i, j = index.get(bond.i), index.get(bond.j)
-        if i is None or j is None:
-            continue
-        adj[i].add(j)
-        adj[j].add(i)
-        if bond.order >= _SINGLE_BOND_ORDER:
-            unsat[i] = unsat[j] = True
-        n_bonds += 1
-    if n_bonds == 0:
-        from scipy.spatial import cKDTree
-
-        carbon = [
-            i for i, label in enumerate(labels) if scene.atoms[label].element == "C"
-        ]
-        pts = pts_A[carbon]
-        for a, b in cKDTree(pts).query_pairs(_CC_DERIVE_BOND_A):
-            adj[carbon[a]].add(carbon[b])
-            adj[carbon[b]].add(carbon[a])
-    return [sorted(s) for s in adj], unsat
-
-
-def _hyb_of(scene: StructScene, cloud: AtomCloud) -> list[str | None]:
-    """The generator-authored hybridization tag per cloud atom
-    (``sp2``/``sp3`` straight from hexfold's net), or ``None``."""
-    return [scene.atoms[label].hybridization for label in cloud.labels]
-
-
-def _c_adjacency(adj: list[list[int]], elements: list[str]) -> list[list[int]]:
-    """The C–C subgraph of a full bond graph — the ring-search graph."""
-    return [[j for j in nbrs if elements[j] == "C"] for nbrs in adj]
-
-
-def _ring_sizes(adj: list[list[int]], root: int) -> set[int]:
-    """Every small-cycle size through ``root`` on the C–C graph — BFS to
-    :data:`_RING_MAX_DEPTH`, tracking which root-neighbour subtree each
-    visited node belongs to: an edge joining different subtrees closes a
-    simple cycle through root of ``depth[u] + depth[v] + 1``. All closure
-    sizes count, not just the smallest: a heptagon's carbon that also
-    sits on hexagons must still read as a 7-ring site."""
-    subtree: dict[int, int] = {}
-    depth: dict[int, int] = {}
-    queue: deque[int] = deque()
-    sizes: set[int] = set()
-    for nb in adj[root]:
-        if nb in subtree:
-            sizes.add(3)  # two root-neighbours bonded to each other
-            continue
-        subtree[nb] = nb
-        depth[nb] = 1
-        queue.append(nb)
-    while queue:
-        u = queue.popleft()
-        for v in adj[u]:
-            if v == root:
-                continue
-            if v not in subtree:
-                subtree[v] = subtree[u]
-                depth[v] = depth[u] + 1
-                if depth[v] <= _RING_MAX_DEPTH:
-                    queue.append(v)
-            elif subtree[v] != subtree[u]:
-                sizes.add(depth[u] + depth[v] + 1)
-    return sizes
-
-
-def _ring_label(sizes: set[int]) -> str:
-    """The site's ring name: its defect (non-6) ring sizes joined ``+``
-    (``5+7-ring`` for a vertex two defect rings share), ``6-ring`` for a
-    pure-hexagon carbon, ``non-ring`` when it closes no named ring. The
-    hexagon membership of a defect-ring atom is implicit — ``6-ring`` is
-    reserved for carbons that close ONLY hexagons."""
-    defects = sorted(sizes - {6})
-    if defects:
-        return "+".join(str(s) for s in defects) + "-ring"
-    return "6-ring" if 6 in sizes else "non-ring"
-
-
-def ring_classes(
-    cloud: AtomCloud,
-    adj: list[list[int]],
-    unsat: list[bool],
-    hyb: list[str | None] | None = None,
-) -> list[str | None]:
-    """Per-atom ring taxonomy parallel to ``cloud`` — ``None`` for
-    non-carbons (never site candidates), ``substituted`` for a carbon
-    carrying a non-C non-H group, ``sp3`` for a four-or-more-coordinated
-    all-single-bond carbon (or one the generator tagged ``sp3`` — a graft
-    junction has no free valence), ``open-edge`` under three C
-    neighbours, else the C–C rings (5–8) the atom sits on
-    (:func:`_ring_label`) or ``non-ring``."""
-    cadj = _c_adjacency(adj, cloud.elements)
-    out: list[str | None] = []
-    for i, el in enumerate(cloud.elements):
-        if el != "C":
-            out.append(None)
-            continue
-        if any(cloud.elements[j] not in ("C", "H") for j in adj[i]):
-            out.append("substituted")
-            continue
-        if (hyb is not None and hyb[i] == "sp3") or (len(adj[i]) >= 4 and not unsat[i]):
-            out.append("sp3")
-            continue
-        if len(cadj[i]) < 3:
-            out.append("open-edge")
-            continue
-        out.append(_ring_label(_ring_sizes(cadj, i) & _RING_SIZES))
-    return out
-
-
-def _free_dirs(
-    i: int,
-    pts: NDArray[np.float64],
-    cadj: list[list[int]],
-    adj: list[list[int]],
-) -> list[NDArray[np.float64]]:
-    """The directions a substituent could grow from atom ``i`` — the
-    dangling-bond direction for open-edge carbons (away from the C
-    neighbours' centroid, the all-neighbour centroid for a carbon with
-    no C neighbours at all), both sides of the neighbour plane's normal
-    for a saturated sp² wall carbon."""
-    p = pts[i]
-    if len(cadj[i]) < 3:
-        ref = cadj[i] or adj[i]
-        if not ref:
-            return []
-        d = p - pts[ref].mean(axis=0)
-        n = float(np.linalg.norm(d))
-        return [d / n] if n > 1e-9 else []
-    centred = pts[cadj[i]] - p
-    _u, _s, vt = np.linalg.svd(centred)
-    normal = vt[-1]
-    return [normal, -normal]
-
-
-def _exposure(
-    atom_pos: NDArray[np.float64],
-    free_dir: NDArray[np.float64],
-    occluder_tree: Any,
-    exposure_A: float,
-) -> float:
-    """Free fraction of the probe sphere centred ``exposure_A`` out along
-    ``free_dir`` — the deterministic lattice's points whose nearest
-    occluding atom is at least :data:`_EXPOSURE_CLEAR_A` away."""
-    centre = atom_pos + free_dir * exposure_A
-    dists, _ = occluder_tree.query(centre + _LATTICE * exposure_A)
-    return float((dists >= _EXPOSURE_CLEAR_A).mean())
-
-
-def _cyl(p: NDArray[np.float64], axis: SweepAxis) -> tuple[float, float, float]:
-    """``(z, θ°, r)`` about the axis — z from the anchor along the axis,
-    θ off the fixed world basis, r the axis distance."""
-    v1, v2 = se_atomic_clearance._axis_basis(axis.dir_A)
-    rel = p - axis.point_A
-    z = float(np.dot(rel, axis.dir_A))
-    theta = float(
-        np.degrees(math.atan2(float(np.dot(rel, v2)), float(np.dot(rel, v1)))) % 360.0
-    )
-    r = float(np.linalg.norm(rel - z * axis.dir_A))
-    return z, theta, r
-
-
-def _face(free_dir: NDArray[np.float64], radial: NDArray[np.float64]) -> str:
-    norm = float(np.linalg.norm(radial))
-    if norm < 1e-9:
-        return "axial"
-    cos = float(np.dot(free_dir, radial / norm))
-    if cos > _FACE_COS:
-        return "out"
-    if cos < -_FACE_COS:
-        return "in"
-    return "axial"
-
-
-@dataclass
-class Site:
-    """One (atom, face) site row: the carbon's cloud ordinal and label,
-    ring class, face vs the envelope axis (``n/a`` when the block has no
-    axis-bearing envelope), free direction, exposure, and cylindrical
-    coordinates (``None`` without an axis)."""
-
-    block: str
-    ordinal: int
-    label: str
-    ring_class: str
-    face: str
-    normal: NDArray[np.float64]
-    exposure: float
-    z_A: float | None
-    theta_deg: float | None
-    r_A: float | None
-
-
-def enumerate_sites(
-    cloud: AtomCloud,
-    classes: list[str | None],
-    adj: list[list[int]],
-    axis: SweepAxis | None,
-    exposure_A: float,
-    occluder_pts: NDArray[np.float64] | None = None,
-) -> list[Site]:
-    """Every (carbon, free-face) site on ``cloud`` — only the real site
-    classes (``sp3``/``substituted`` are excluded here and counted in the
-    summary); the probe sphere sees the block's own atoms plus
-    ``occluder_pts`` (the partner block, in the pair view). ``axis`` may
-    be ``None`` — ring class, ``n/a`` face and exposure still render."""
-    from scipy.spatial import cKDTree
-
-    cadj = _c_adjacency(adj, cloud.elements)
-    occl = (
-        np.concatenate([cloud.pts_A, occluder_pts])
-        if occluder_pts is not None and len(occluder_pts)
-        else cloud.pts_A
-    )
-    occluder_tree = cKDTree(occl)
-    centroid = cloud.pts_A.mean(axis=0)
-    sites: list[Site] = []
-    for i, ring in enumerate(classes):
-        if ring is None or ring in _EXCLUDED_CLASSES:
-            continue
-        if axis is not None:
-            rel = cloud.pts_A[i] - axis.point_A
-            radial = rel - float(np.dot(rel, axis.dir_A)) * axis.dir_A
-        for free_dir in _free_dirs(i, cloud.pts_A, cadj, adj):
-            face = _face(free_dir, radial) if axis is not None else "n/a"
-            if face == "axial" and len(cadj[i]) >= 3:
-                # A wall normal along the axis — a cap carbon near the
-                # pole. Its two faces are still a surface's two sides:
-                # out is away from the block's centroid.
-                face = (
-                    "out"
-                    if float(np.dot(free_dir, cloud.pts_A[i] - centroid)) > 0
-                    else "in"
-                )
-            exp = _exposure(cloud.pts_A[i], free_dir, occluder_tree, exposure_A)
-            z, theta, r = (
-                _cyl(cloud.pts_A[i], axis)
-                if axis is not None
-                else (
-                    None,
-                    None,
-                    None,
-                )
-            )
-            sites.append(
-                Site(
-                    block=cloud.name,
-                    ordinal=i,
-                    label=cloud.labels[i],
-                    ring_class=ring,
-                    face=face,
-                    normal=free_dir,
-                    exposure=exp,
-                    z_A=z,
-                    theta_deg=theta,
-                    r_A=r,
-                )
-            )
-    sites.sort(key=lambda s: (-s.exposure, s.block, s.ordinal, s.face))
-    return sites
 
 
 def _facing_sites(
@@ -629,37 +300,6 @@ def _require_atomic(
         )
     scene = _block_scene(store, node)
     return node, se_atomic_clearance.atom_cloud(node, scene), scene
-
-
-def is_closed_cage(cloud: AtomCloud, classes: list[str | None]) -> bool:
-    """A carbon net with no open edge — every carbon closes rings on all
-    sides, so the surface is sealed and its ``in`` face is an interior no
-    reagent reaches (a pillbox, a fullerene)."""
-    carbons = [c for c in classes if c is not None]
-    return bool(carbons) and "open-edge" not in carbons
-
-
-def _sites_block(
-    cloud: AtomCloud,
-    scene: StructScene,
-    axis: SweepAxis | None,
-    exposure_A: float,
-    occl: Any = None,
-) -> tuple[list[Site], list[str | None]]:
-    """``(sites, classes)`` — the bond graph is built once here and feeds
-    the classifier AND the free-direction search (finding 5: no double
-    walk of the scene's bonds). A closed cage's ``in`` sites read
-    exposure 0: the probe sphere fits inside the cavity, but the cavity is
-    sealed (:func:`is_closed_cage`)."""
-    adj, unsat = _bond_graph(scene, cloud.labels, cloud.pts_A)
-    classes = ring_classes(cloud, adj, unsat, _hyb_of(scene, cloud))
-    sites = enumerate_sites(cloud, classes, adj, axis, exposure_A, occluder_pts=occl)
-    if is_closed_cage(cloud, classes):
-        for s in sites:
-            if s.face == "in":
-                s.exposure = 0.0
-        sites.sort(key=lambda s: (-s.exposure, s.block, s.ordinal, s.face))
-    return sites, classes
 
 
 def _carbon_note(name: str, cloud: AtomCloud, classes: list[str | None]) -> str:
