@@ -39,6 +39,7 @@
   let hovered = null;    // handle currently hovered
   let selecting = new Set(); // els carrying the persistent xs class
   let lastSel = null;    // the selected target, re-marked after a schematic reload
+  let soloNet = null;    // gr531205: net whose ratsnest the selection pins lit
 
   const boardDoc = () => DOCS.find((d) => d.obj === boardObj);
   const STYLE = {
@@ -50,6 +51,13 @@
     xs: '.pcb-xs{stroke:#facc15;stroke-width:0.15;paint-order:stroke}'
       + '.pcb-xs .stub,.pcb-xs>path{stroke:#f59e0b;stroke-width:2.4}'
       + '.pcb-xs>.part{stroke:#f59e0b;stroke-width:2.2}',
+    // gr531205 per-net isolate: while the root carries rs-isolate, every
+    // visible airwire (rs-line — never the wide rs-hit hover wire) drops
+    // to a whisper except the hovered net's (pcb-xh, transient) and the
+    // selected net's (pcb-rs-on, pinned until deselect).
+    rs: '.rs-isolate .ratsnest .rs-line{stroke-opacity:0.08}'
+      + '.rs-isolate .ratsnest .rs-line.pcb-xh,'
+      + '.rs-isolate .ratsnest .rs-line.pcb-rs-on{stroke-opacity:1}',
   };
 
   const docOf = (e) => e && e.ownerDocument;
@@ -207,6 +215,37 @@
     }
   }
 
+  // gr531205: rs-isolate on the board root dims every airwire but the
+  // hovered net's (pcb-xh) and the soloed net's (pcb-rs-on). The hover
+  // side is recomputed per setHover; the solo side per selection change.
+  function applyRsIsolate(hoverExp) {
+    const b = boardDoc();
+    const root = b && b.doc && b.doc.documentElement;
+    if (!root || !root.classList) return;
+    const hoverNet = !!(hoverExp && hoverExp.nets && hoverExp.nets.size);
+    root.classList.toggle('rs-isolate', hoverNet || !!soloNet);
+  }
+
+  function clearSolo() {
+    const b = boardDoc();
+    if (b && b.doc) {
+      b.doc.querySelectorAll('.pcb-rs-on').forEach((e) => e.classList.remove('pcb-rs-on'));
+    }
+  }
+
+  function setSolo(net) {
+    clearSolo();
+    soloNet = net || null;
+    if (soloNet) {
+      const b = boardDoc();
+      if (b && b.doc) {
+        b.doc.querySelectorAll(
+          `.ratsnest [data-pcb-net="${CSS.escape(soloNet)}"]`
+        ).forEach((e) => e.classList.add('pcb-rs-on'));
+      }
+    }
+  }
+
   function describe(t) {
     const h = t.handle;
     if (t.object) {
@@ -274,13 +313,16 @@
     hovered = t;
     hoverEl.textContent = '';
     if (t) {
-      mark(expansion(t), 'pcb-xh');
+      const exp = expansion(t);
+      mark(exp, 'pcb-xh');
+      applyRsIsolate(exp);
       const refdes = t.handle && (t.handle.includes('.') ? t.handle.split('.')[0] : t.handle);
       const card = refdes && !refdes.includes(':') ? partCard(refdes) : null;
       if (card) hoverEl.appendChild(card);
       else hoverEl.textContent = describe(t);
       panel.classList.add('hovering');
     } else {
+      applyRsIsolate(null);
       panel.classList.remove('hovering');
     }
   }
@@ -389,6 +431,7 @@
       doc.__pcbXprobe = true;
       inject(doc, 'pcb-xh-css', STYLE.xh);
       inject(doc, 'pcb-xs-css', STYLE.xs);
+      inject(doc, 'pcb-rs-css', STYLE.rs);
       DOCS.push({obj, doc});
       if (obj === boardObj) {
         facts = window.PcbFacts.load(doc);
@@ -427,6 +470,14 @@
     clearCls('pcb-xs');
     selecting = new Set();
     lastSel = null;
+    // gr531205 'solo on click': a selected net (or an object on one) pins
+    // its airwires lit and the rest dimmed until the selection clears.
+    setSolo(null);
+    if (d.object) {
+      const o = d.object;
+      setSolo(o.kind === 'net' ? o.name : o.net || null);
+    }
+    applyRsIsolate(null);
     // A selection lights the same expansion a click resolved — the pin,
     // its net, every pin on it and their parts, in both panes.
     if (d.object && d.object.key) {

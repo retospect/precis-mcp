@@ -188,6 +188,7 @@ def test_detail_renders_the_two_pane_workbench(pcb_client, runtime_with_store) -
         'id="pcb-selection-panel"',
         'id="pcb-selection-hover"',
         'id="pcb-flip"',
+        'id="pcb-ratsnest-toggle"',
         'id="pcb-focus-bar"',
         'id="pcb-schematic-object"',
         'id="pcb-board-object"',

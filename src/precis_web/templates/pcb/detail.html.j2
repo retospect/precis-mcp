@@ -142,6 +142,9 @@
                 class="rounded border border-line px-1 font-mono text-xs text-fg-secondary">select: detail</button>
         <button type="button" id="pcb-layers-toggle" aria-pressed="true"
                 title="hide or show the layer panel" class="rounded border border-line px-1 font-mono text-xs text-fg-secondary">hide layers</button>
+        <button type="button" id="pcb-ratsnest-toggle" aria-pressed="true"
+                title="hide or show the unrouted-nets overlay (the red dashed airwires)"
+                class="rounded border border-line px-1 font-mono text-xs text-fg-secondary">ratsnest: on</button>
         <button type="button" id="pcb-flip" aria-pressed="false"
                 title="bottom view — mirrored, B.* layers on top" class="rounded border border-line px-1 font-mono text-xs text-fg-secondary">bottom view</button>
         <button type="button" data-vp="in" data-shortcut-label="Zoom in" title="zoom in (+)" class="rounded border border-line px-1 font-mono text-xs text-fg-secondary">+</button>
@@ -184,6 +187,7 @@
     <li><b>select: detail/part</b> — detail picks the exact object under the pointer; part resolves a pad, part-body or part-silkscreen click to the whole part, and a track click to its net (board outline and vias stay detail).</li>
     <li><b>Schematic</b> — sheet tabs switch placement groups; double-click a part or net label to focus it (only connected trims to its neighbourhood, pin locks the part's placement — persisted); a click selects the same board object and jumps to its sheet.</li>
     <li><b>Layers</b> — the legend box in the board's left gutter toggles each layer and shows the cursor's board x/y; <i>hide layers</i> collapses it, <i>bottom view</i> mirrors the board.</li>
+    <li><b>Ratsnest</b> — the red dashed airwires are the unrouted nets; they fade as the count grows and sit under realized copper. <i>ratsnest: on/off</i> hides them all; hovering a net's wire, pad or track lights its airwires and dims the rest, and selecting a net pins that isolate until you deselect.</li>
     <li><b>Keys</b> — <kbd>+</kbd>/<kbd>−</kbd> zoom, <kbd>f</kbd> fit, <kbd>0</kbd> reset, <kbd>Esc</kbd> deselect or leave focus.</li>
     <li><b>Design chat</b> — Ask answers without changing anything; Propose suggests an edit and always needs explicit Apply.</li>
   </ul>

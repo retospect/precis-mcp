@@ -115,11 +115,49 @@ def test_ratsnest_has_a_legend_toggle_and_the_facts_ride_in_metadata() -> None:
     root = _svg()
     row = next(e for e in root.iter() if e.get("data-layer") == "ratsnest")
     assert "rs-off" in row.get("onclick", "")
+    # the page-side master toggle (pcb-workbench.js) syncs this row by id
+    assert row.get("id") == "legend-ratsnest"
     style = next(e for e in root.iter() if e.tag.endswith("style")).text or ""
     assert ".rs-off .ratsnest" in style and "svg:not(.rs-off) .pcb-failed" in style
     meta = next(e for e in root.iter() if e.get("id") == "pcb-facts")
     assert json.loads(meta.text or "")["nets"]["CC2"]["status"] == "failed"
     assert not any(e.get("data-layer") == "ratsnest" for e in _svg(None).iter())
+
+
+def test_ratsnest_paints_under_the_copper_layers() -> None:
+    """gr531205: the airwire group is emitted BEFORE the layer stack, so a
+    realized 0.15mm track reads above the overlay instead of under it."""
+    root = _svg()
+    board = next(e for e in root.iter() if "transform" in e.attrib)
+    ids = [g.get("id") or "" for g in board if g.tag.endswith("g")]
+    first_layer = next(i for i, gid in enumerate(ids) if gid.startswith("layer-"))
+    assert 0 < ids.index("ratsnest") < first_layer
+
+
+def test_ratsnest_lines_carry_isolate_hooks_and_density_alpha() -> None:
+    """gr531205: the visible wire (rs-line) is density-faded and distinct
+    from the wide hover wire (rs-hit); the group reports the unrouted
+    count the alpha came from."""
+    root = _svg()
+    group = next(e for e in root.iter() if e.get("id") == "ratsnest")
+    assert group.get("data-pcb-unrouted") == "1"
+    lines = _attrs(root, "data-pcb-ratsnest")
+    by_class = {e.get("class") for e in lines}
+    assert by_class == {"rs-line", "rs-hit"}
+    visible = [e for e in lines if e.get("class") == "rs-line"]
+    assert visible and all(e.get("stroke-opacity") == "1.0" for e in visible)
+    hits = [e for e in lines if e.get("class") == "rs-hit"]
+    assert hits and all(e.get("stroke-opacity") == "0.01" for e in hits)
+
+
+def test_ratsnest_alpha_fades_with_the_unrouted_count() -> None:
+    """gr531205: full alpha through 10 unrouted nets, a linear ramp to the
+    0.25 floor at 40, the floor past it — sparse boards stay readable,
+    dense ones stop glowing."""
+    a = gerber_view._ratsnest_alpha
+    assert a(1) == 1.0 and a(10) == 1.0
+    assert a(25) == 0.625
+    assert a(40) == 0.25 and a(400) == 0.25
 
 
 _TABLES: dict[str, list[dict[str, Any]]] = {

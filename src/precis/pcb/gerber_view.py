@@ -1051,13 +1051,32 @@ def _part_body_els(arts: dict[str, LayerArt]) -> list[str]:
     return out
 
 
+#: Density-aware ratsnest alpha (gr531205): the airwires of a nearly-
+#: unrouted board tangle into a white-out over the parts, so opacity fades
+#: with the unrouted-net count — full up to _RS_ALPHA_FULL, a linear ramp
+#: down to _RS_ALPHA_FLOOR at _RS_ALPHA_MIN_AT, the floor past it. A sparse
+#: board keeps readable lines; a dense one stops glowing.
+_RS_ALPHA_FULL = 10
+_RS_ALPHA_MIN_AT = 40
+_RS_ALPHA_FLOOR = 0.25
+
+
+def _ratsnest_alpha(unrouted: int) -> float:
+    if unrouted <= _RS_ALPHA_FULL:
+        return 1.0
+    t = min(1.0, (unrouted - _RS_ALPHA_FULL) / (_RS_ALPHA_MIN_AT - _RS_ALPHA_FULL))
+    return round(1.0 - t * (1.0 - _RS_ALPHA_FLOOR), 3)
+
+
 def _ratsnest_els(arts: dict[str, LayerArt], nets: set[str]) -> list[str]:
     """Straight airwires for the nets the router has not realized: the MST
     (:func:`precis.pcb.ratsnest._mst_edges`) over each net's pad positions as
     the gerber drew them (one point per refdes.pin), in board mm. Each wire is
-    a thin dashed line plus a wide invisible one so it is hoverable. Which nets
-    count is the caller's: the board page passes :func:`route_state`'s pending
-    set, never a second computation (gr495391)."""
+    a thin dashed line (``rs-line``, opacity density-scaled by
+    :func:`_ratsnest_alpha`) plus a wide invisible one (``rs-hit``) so it is
+    hoverable — the page's isolate CSS dims ``rs-line`` only, never the hit
+    wire. Which nets count is the caller's: the board page passes
+    :func:`route_state`'s pending set, never a second computation (gr495391)."""
     from precis.pcb.ratsnest import _mst_edges
 
     pads: dict[str, dict[str, tuple[float, float]]] = {}
@@ -1067,7 +1086,8 @@ def _ratsnest_els(arts: dict[str, LayerArt], nets: set[str]) -> list[str]:
         for f in art.flashes:
             if f.net in nets and f.refdes and f.pin:
                 pads.setdefault(f.net, {}).setdefault(f"{f.refdes}.{f.pin}", (f.x, f.y))
-    out = ['<g id="ratsnest" class="ratsnest">']
+    alpha = _ratsnest_alpha(len(nets))
+    out = [f'<g id="ratsnest" class="ratsnest" data-pcb-unrouted="{len(nets)}">']
     for net in sorted(pads):
         members = sorted(pads[net].items())
         for _a, _b, p1, p2 in _mst_edges(members):
@@ -1077,12 +1097,13 @@ def _ratsnest_els(arts: dict[str, LayerArt], nets: set[str]) -> list[str]:
             )
             out.append(
                 f'<line {coords} stroke="#ef4444" stroke-width="0.12" '
-                f'stroke-dasharray="0.4 0.3" data-pcb-net="{net_attr}" '
+                f'stroke-opacity="{alpha}" stroke-dasharray="0.4 0.3" '
+                f'class="rs-line" data-pcb-net="{net_attr}" '
                 'data-pcb-ratsnest="1"/>'
             )
             out.append(
                 f'<line {coords} stroke="#ef4444" stroke-opacity="0.01" '
-                f'stroke-width="0.6" data-pcb-net="{net_attr}" '
+                f'stroke-width="0.6" class="rs-hit" data-pcb-net="{net_attr}" '
                 'data-pcb-ratsnest="1"/>'
             )
     out.append("</g>")
@@ -1222,6 +1243,15 @@ def render_fab_svg(
     )
 
     body: list[str] = _part_body_els(arts)
+    hover = (selection_manifest or {}).get("hover") or {}
+    rs_nets = set(hover.get("unrouted") or ())
+    if rs_nets:
+        # The ratsnest paints UNDER the layer stack (gr531205): emitted
+        # ahead of it, so realized copper — even a 0.15mm track — reads
+        # above the airwires and a partially-routed board no longer reads
+        # as "nothing routed". Hover is unaffected: the page walks every
+        # stacked element at the point, not just the top one.
+        body.extend(_ratsnest_els(arts, rs_nets))
     for key in keys:
         colour, visible = _layer_style(key, flip)
         cls = "layer" if visible else "layer off"
@@ -1299,10 +1329,6 @@ def render_fab_svg(
             )
         body.append("</g>")
 
-    hover = (selection_manifest or {}).get("hover") or {}
-    rs_nets = set(hover.get("unrouted") or ())
-    if rs_nets:
-        body.extend(_ratsnest_els(arts, rs_nets))
     hover_meta = ""
     if hover.get("facts") is not None:
         hover_meta = (
@@ -1344,7 +1370,7 @@ def render_fab_svg(
     if rs_nets:
         ty = 18 + len(keys) * 20
         rows.append(
-            '<g class="legend-row on" data-layer="ratsnest" '
+            '<g id="legend-ratsnest" class="legend-row on" data-layer="ratsnest" '
             "onclick=\"(function(g){g.classList.toggle('off');"
             "document.documentElement.classList.toggle('rs-off');})"
             '(this)">'

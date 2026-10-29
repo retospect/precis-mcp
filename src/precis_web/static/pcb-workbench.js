@@ -116,6 +116,51 @@
     });
   }
 
+  // gr531205: the ratsnest master toggle — one button in the layout
+  // toolbar hides/shows every airwire (the SVG's own legend row toggles
+  // the same rs-off class; both stay in sync through it). Remembered per
+  // user, re-applied on every load (flip reloads the object). Default ON:
+  // the unrouted overlay is the point of the fab view.
+  const rsBtn = el('pcb-ratsnest-toggle');
+  const RS_KEY = 'precis:pcb-workbench:ratsnest-hidden';
+  if (rsBtn && boardObj) {
+    let hidden = false;
+    try {
+      hidden = localStorage.getItem(RS_KEY) === '1';
+    } catch (_) {
+      /* same */
+    }
+    const paint = () => {
+      let doc = null;
+      try {
+        doc = boardObj.contentDocument;
+      } catch (_) {
+        doc = null;
+      }
+      const svg = doc && doc.documentElement;
+      // A fully-routed board has no ratsnest group — the toggle does
+      // nothing there, so say so on the button.
+      const has = !!(doc && doc.getElementById('ratsnest'));
+      rsBtn.disabled = !has;
+      rsBtn.setAttribute('aria-pressed', String(has && !hidden));
+      rsBtn.textContent = has ? `ratsnest: ${hidden ? 'off' : 'on'}` : 'ratsnest: none';
+      if (svg) svg.classList.toggle('rs-off', hidden);
+      const row = doc && doc.getElementById('legend-ratsnest');
+      if (row) row.classList.toggle('off', hidden);
+    };
+    paint();
+    boardObj.addEventListener('load', paint);
+    rsBtn.addEventListener('click', () => {
+      hidden = !hidden;
+      try {
+        localStorage.setItem(RS_KEY, hidden ? '1' : '0');
+      } catch (_) {
+        /* same */
+      }
+      paint();
+    });
+  }
+
   // gr519469: a stale shown token answers board.svg with a 409 whose text
   // body the <object> paints raw. When the loaded document isn't the svg
   // and its text says the board changed, offer a page reload — reloading

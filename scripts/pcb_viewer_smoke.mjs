@@ -21,6 +21,13 @@
 //   6. pcb-focus.js — a part dblclick enters focus (?focus=), the
 //      'only connected' button toggles ?only= alongside it, and exit
 //      clears both (gr520807).
+//   7. gr531205 — selecting a net pins its ratsnest isolate (solo);
+//      deselect clears it.
+//   8. gr531205 — hovering an airwire isolates its net (transient);
+//      a scroll clears it.
+//   9. gr531205 — the pcb-workbench.js ratsnest master toggle flips
+//      rs-off on the board document and the legend row, remembers per
+//      user, and disables itself on a fully-routed board.
 
 import assert from 'node:assert/strict';
 import { createRequire } from 'node:module';
@@ -312,5 +319,57 @@ fire(exitBtn, 'click');
 assert.equal(schemObj.dataset.focus, undefined, 'exit clears the focus');
 assert.equal(schemObj.attrs.data, '/pcb/web_pcb/schematic.svg');
 assert(focusBar.classList.contains('hidden'), 'focus bar hides on exit');
+
+// ── 7. gr531205: selecting a net pins its ratsnest isolate (solo) ────
+const boardRoot = boardDoc.documentElement;
+document.dispatchEvent(
+  new CustomEvent('pcb-selection-changed', {
+    detail: { object: { kind: 'net', name: 'SIG', key: 'net:SIG' }, text: '' },
+  })
+);
+assert(boardRoot.classList.contains('rs-isolate'), 'a net selection solos its airwires');
+document.dispatchEvent(
+  new CustomEvent('pcb-selection-changed', { detail: { object: null, text: '' } })
+);
+assert(!boardRoot.classList.contains('rs-isolate'), 'deselect clears the solo');
+schemObj.attrs.data = undefined;
+
+// ── 8. gr531205: hovering an airwire isolates its net, transiently ───
+boardDoc._els = [{ dataset: { pcbRatsnest: '1', pcbNet: 'SIG' }, closest: () => null }];
+fire(boardDoc, 'mousemove', { clientX: 2, clientY: 2 });
+assert(boardRoot.classList.contains('rs-isolate'), 'hover isolates the net');
+globalThis.dispatchEvent({ type: 'scroll' });
+assert(!boardRoot.classList.contains('rs-isolate'), 'scroll clears the hover isolate');
+
+// ── 9. gr531205: the ratsnest master toggle (pcb-workbench.js) ───────
+globalThis.localStorage = {
+  _s: {},
+  getItem(k) { return this._s[k] === undefined ? null : this._s[k]; },
+  setItem(k, v) { this._s[k] = String(v); },
+};
+ids['pcb-workbench'] = elem('div');
+ids['pcb-ratsnest-toggle'] = elem('button');
+const rsGroup = elem('g');
+const rsRow = elem('g');
+boardDoc.byId['ratsnest'] = rsGroup;
+boardDoc.byId['legend-ratsnest'] = rsRow;
+require(stat('pcb-workbench.js'));
+const rsBtn = ids['pcb-ratsnest-toggle'];
+assert.equal(rsBtn.disabled, false, 'a board with airwires has a live toggle');
+assert.equal(rsBtn.textContent, 'ratsnest: on', 'default ON');
+assert(!boardRoot.classList.contains('rs-off'));
+fire(rsBtn, 'click');
+assert(boardRoot.classList.contains('rs-off'), 'click hides the airwires');
+assert(rsRow.classList.contains('off'), '…and dims the legend row');
+assert.equal(rsBtn.textContent, 'ratsnest: off');
+assert.equal(localStorage.getItem('precis:pcb-workbench:ratsnest-hidden'), '1');
+fire(rsBtn, 'click');
+assert(!boardRoot.classList.contains('rs-off'), 'second click shows them again');
+assert(!rsRow.classList.contains('off'));
+delete boardDoc.byId['ratsnest'];
+fire(ids['pcb-board-object'], 'load');
+assert.equal(rsBtn.disabled, true, 'a fully-routed board disables the toggle');
+assert.equal(rsBtn.textContent, 'ratsnest: none');
+boardDoc.byId['ratsnest'] = rsGroup;
 
 console.log('pcb viewer smoke: ok');
