@@ -1,5 +1,5 @@
 ---
-status: specced
+status: in-progress
 pillar: platform
 ---
 
