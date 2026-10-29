@@ -20,7 +20,8 @@ as a violation.
 from __future__ import annotations
 
 import errno
-from collections.abc import Collection
+import re
+from collections.abc import Callable, Collection
 from pathlib import Path
 
 NOT_A_VERDICT = (
@@ -83,3 +84,110 @@ def read_text(path: Path, *, errors: str = "strict") -> str:
         return ""
     except OSError as exc:
         raise ScanIncomplete(exc, f"reading {path}") from exc
+
+
+def _ignore_glob(pat: str) -> str:
+    """gitignore glob → regex body: ``*``/``?``/``[...]`` never cross ``/``;
+    ``**/`` matches any run of directories (including none) and a trailing
+    ``**`` everything below."""
+    out: list[str] = []
+    i, n = 0, len(pat)
+    while i < n:
+        c = pat[i]
+        if c == "*":
+            if pat.startswith("**/", i):
+                out.append("(?:[^/]+/)*")
+                i += 3
+            elif pat.startswith("**", i) and i + 2 == n:
+                out.append(".*")
+                i += 2
+            else:
+                out.append("[^/]*")
+                i += 1
+        elif c == "?":
+            out.append("[^/]")
+            i += 1
+        elif c == "[":
+            j = i + 1
+            if j < n and pat[j] == "!":
+                j += 1
+            if j < n and pat[j] == "]":
+                j += 1
+            while j < n and pat[j] != "]":
+                j += 1
+            if j < n:
+                inner = pat[i + 1 : j]
+                if inner.startswith("!"):
+                    inner = "^" + inner[1:]
+                out.append("[" + inner + "]")
+                i = j + 1
+            else:
+                out.append(re.escape(c))
+                i += 1
+        else:
+            out.append(re.escape(c))
+            i += 1
+    return "".join(out)
+
+
+def gitignore_matcher(anchor: Path) -> Callable[[str], bool]:
+    """Predicate ``ignored(relpath)`` parsed from ``anchor/.gitignore`` —
+    always ``False`` when the file is absent.
+
+    The fallback filesystem walks (no ``.git``) use this to drop paths a
+    checkout would never track: a ``git archive`` tree carries tracked
+    files plus whatever the run then generated — ``.test-hang-stacks/``
+    faulthandler dumps holding the test DSN tripped the credential gate
+    as ``url with inline password`` (gr523994).
+
+    Grammar covered: comments, ``!`` negations (last match wins), trailing
+    ``/`` dir rules, ``*``/``?``/``[...]``/``**`` globs, and ``/``-anchored
+    vs any-level patterns (a non-dir pattern matching an ancestor dir
+    excludes everything under it, as git does). Two deliberate
+    simplifications vs git, both erring toward scanning MORE: nested
+    ``.gitignore`` files are not read, and a negation may re-include a
+    path under an ignored dir (git refuses that).
+
+    Scope: the matcher applies only on the no-``.git`` fallback walk. Git
+    mode scans tracked files, so a ``.gitignore`` entry cannot hide a
+    committed secret there. In the fallback (a ``git archive`` tree) a
+    force-added tracked file matching a ``.gitignore`` pattern is skipped —
+    a known narrow gap.
+    """
+    path = anchor / ".gitignore"
+    if not path.is_file():
+        return lambda rel: False
+    rules: list[tuple[bool, bool, bool, re.Pattern[str]]] = []
+    for raw in read_text(path, errors="ignore").splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        neg = line.startswith("!")
+        if neg:
+            line = line[1:]
+        dir_only = line.endswith("/")
+        if dir_only:
+            line = line[:-1]
+        anchored = "/" in line
+        line = line.lstrip("/")
+        if not line:
+            continue
+        rules.append((neg, dir_only, anchored, re.compile(_ignore_glob(line))))
+
+    def ignored(rel: str) -> bool:
+        parts = rel.split("/")
+        hit = False
+        for neg, dir_only, anchored, rx in rules:
+            if anchored:
+                # match the full relpath or an ancestor dir prefix
+                for i in range(1, len(parts) + (0 if dir_only else 1)):
+                    if rx.fullmatch("/".join(parts[:i])):
+                        hit = not neg
+            else:
+                # match any component; dir rules only ancestor components
+                stop = len(parts) - 1 if dir_only else len(parts)
+                if any(rx.fullmatch(part) for part in parts[:stop]):
+                    hit = not neg
+        return hit
+
+    return ignored

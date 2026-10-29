@@ -564,7 +564,15 @@ def _run_card_describe_batch(
                     "failed": 0,
                     "deferred": reason,
                 }
-            log.exception("card_describe: ref_id=%s dispatch failed", ref_id)
+            # The reason goes in the line itself, not only exc_info —
+            # the shipped log record is the message line, and a bare
+            # ``ref_id=N failed`` gives the cause nowhere (gr523669).
+            log.exception(
+                "card_describe: ref_id=%s dispatch failed: %s: %s",
+                ref_id,
+                type(exc).__name__,
+                str(exc)[:300],
+            )
             failed += 1
         except (LockNotAvailable, DeadlockDetected) as exc:
             # Residual contention outlasting retry_locked's budget —
@@ -574,8 +582,13 @@ def _run_card_describe_batch(
                 ref_id,
                 exc,
             )
-        except Exception:
-            log.exception("card_describe: ref_id=%s failed", ref_id)
+        except Exception as exc:
+            log.exception(
+                "card_describe: ref_id=%s failed: %s: %s",
+                ref_id,
+                type(exc).__name__,
+                str(exc)[:300],
+            )
             failed += 1
     return {"claimed": claimed, "ok": ok, "failed": failed}
 

@@ -28,7 +28,10 @@ reaches any tracked file fails the ship before it can ever be pushed.
 Files are enumerated with ``git ls-files`` — only TRACKED files are scanned,
 so untracked or gitignored scratch (e.g. a sibling builder's uv-cache,
 gr518224) can never trip the gate. When there is no checkout (the container
-gate can run with ``.git`` absent) it falls back to a filesystem walk.
+gate can run with ``.git`` absent) it falls back to a filesystem walk —
+filtered through the root ``.gitignore`` so runtime scratch no checkout
+would track (``.test-hang-stacks/`` faulthandler dumps, gr523994) stays out
+of scope there too.
 
 **Legitimate uses exist** — the SSRF blocklist in ``utils/safe_fetch.py`` must
 name RFC1918 and CGNAT *ranges*, and this file's own self-test must quote the
@@ -61,7 +64,12 @@ from typing import Any
 
 import pytest
 
-from tests._policy_scan import ScanIncomplete, read_text, walk_files
+from tests._policy_scan import (
+    ScanIncomplete,
+    gitignore_matcher,
+    read_text,
+    walk_files,
+)
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent
 _DEPLOY = _REPO_ROOT / "deploy"
@@ -70,12 +78,11 @@ _DEPLOY = _REPO_ROOT / "deploy"
 # overlay (gitignored, real secrets) — never scan it. ``worktrees`` holds full
 # sibling checkouts of this same repo in the main clone: scanning them would be
 # quadratic and would report another branch's lines as this tree's failures.
-# ``.test-hang-stacks`` is gitignored worker stack-dump output (gr523994): it
-# can hold the test DB URL, and the no-.git container gate walks the disk.
-# The rest is build/cache noise.
+# ``.test-hang-stacks`` (gitignored worker stack dumps, gr523994 — they can
+# hold the test DB URL) needs no entry here: the no-.git fallback walk honours
+# ``.gitignore``. The rest is build/cache noise.
 _SKIP_DIRS = {
     ".git",
-    ".test-hang-stacks",
     ".mypy_cache",
     ".pytest_cache",
     ".ruff_cache",
@@ -228,7 +235,14 @@ def _scannable_files(root: Path) -> list[Path]:
     present, else a filesystem walk."""
     files = _git_tracked_files(root)
     if files is None:
+        # No checkout: the tree is a ``git archive`` (tracked files) plus
+        # whatever the run generated. The generated half is what the root
+        # ``.gitignore`` exists to name — honour it or runtime scratch
+        # (hang dumps carrying the test DSN, gr523994) reads as content.
         files = walk_files(root, skip_dirs=_SKIP_DIRS)
+        anchor = _REPO_ROOT if root.is_relative_to(_REPO_ROOT) else root
+        ignored = gitignore_matcher(anchor)
+        files = [p for p in files if not ignored(p.relative_to(anchor).as_posix())]
     return [p for p in files if p.suffix.lower() not in _BINARY_SUFFIXES]
 
 
@@ -330,6 +344,27 @@ def test_credential_gate_flags_a_planted_secret_without_echoing_it(
         f"token {secret}  # {_ALLOW_MARKER} - fake\n", encoding="utf-8"
     )
     assert _credential_findings(tmp_path) == {}
+
+
+def test_fallback_walk_skips_gitignored_dump(tmp_path: Path) -> None:
+    """gr523994: with no ``.git`` the scan walks the filesystem — a hang
+    dump under ``.test-hang-stacks/`` (gitignored) carried the test DSN
+    and failed ``scripts/ship --checked`` as ``url with inline password``.
+    The fallback honours ``.gitignore``: what it excludes is never scanned."""
+    secret = "postgres" + "ql://u:" + "hunter2pw9x" + "@db/app"
+    (tmp_path / ".gitignore").write_text(".test-hang-stacks/\n", encoding="utf-8")
+    dump = tmp_path / ".test-hang-stacks"
+    dump.mkdir()
+    (dump / "hang-gw0-1.log").write_text(f"dsn {secret}\n", encoding="utf-8")
+    (tmp_path / "notes.md").write_text(f"also {secret}\n", encoding="utf-8")
+    # The ignored dump is skipped; the same string un-ignored is flagged.
+    assert set(_credential_findings(tmp_path)) == {"notes.md"}
+    # And it is .gitignore doing the skipping, not a hardcoded dir name.
+    (tmp_path / ".gitignore").write_text("other/\n", encoding="utf-8")
+    assert set(_credential_findings(tmp_path)) == {
+        ".test-hang-stacks/hang-gw0-1.log",
+        "notes.md",
+    }
 
 
 def test_repo_carries_no_cluster_addresses() -> None:
@@ -455,14 +490,16 @@ _ENFILE = OSError(errno.ENFILE, "Too many open files in system")
 
 def test_walk_fallback_skips_hang_stack_dumps(tmp_path: Path) -> None:
     """gr523994: the no-.git filesystem walk must not read the gitignored
-    hang-stack dumps (they can carry the test DB URL)."""
+    hang-stack dumps (they can carry the test DB URL) — ``.gitignore``
+    does the skipping, not a hardcoded name."""
+    (tmp_path / ".gitignore").write_text(".test-hang-stacks/\n", encoding="utf-8")
     (tmp_path / ".test-hang-stacks").mkdir()
     (tmp_path / ".test-hang-stacks" / "hang-gw0-1.log").write_text(
         "x", encoding="utf-8"
     )
     (tmp_path / "keep.py").write_text("x", encoding="utf-8")
-    names = {p.name for p in walk_files(tmp_path, skip_dirs=_SKIP_DIRS)}
-    assert names == {"keep.py"}
+    names = {p.name for p in _scannable_files(tmp_path)}
+    assert names == {".gitignore", "keep.py"}
 
 
 def test_oserror_mid_walk_is_an_incomplete_scan_not_a_verdict(

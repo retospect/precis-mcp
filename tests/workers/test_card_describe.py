@@ -368,6 +368,90 @@ def test_failing_ref_is_braked_by_attempt_lease(store: Any, hub: Any) -> None:
     assert len(_desc_chunks(store, ref_id)) == 1
 
 
+# ── gr523669: the ERROR line itself names the failure reason ────────────
+
+
+def test_failed_ref_error_line_carries_class_and_reason(
+    store: Any, hub: Any, caplog: Any
+) -> None:
+    """gr523669: prod showed bare ``card_describe: ref_id=N failed`` lines —
+    ``log.exception``'s reason lived only in exc_info, which the shipped
+    log line drops. Assert on ``record.getMessage()`` (the line itself),
+    never ``caplog.text`` — that renders the traceback and would pass
+    without the fix."""
+    import logging
+
+    ref_id = _put_structure(hub)
+
+    class _BadShapeClient(_FakeClient):
+        def complete(self, messages: list[dict[str, str]]) -> Any:
+            return SimpleNamespace(
+                text='{"narrative": "..."}',
+                data={"narrative": "..."},
+                model="local",
+            )
+
+    with caplog.at_level(logging.ERROR, logger="precis.workers.card_describe"):
+        r = run_card_describe_pass(store, client=_BadShapeClient(), batch_size=10)
+
+    assert (r["claimed"], r["ok"], r["failed"]) == (1, 0, 1)
+    lines = [rec.getMessage() for rec in caplog.records if rec.levelno >= logging.ERROR]
+    assert lines == [
+        f"card_describe: ref_id={ref_id} failed: ValueError: "
+        "card_describe reply carried no usable 'description' field"
+    ]
+
+
+def test_error_line_bounds_exception_text_to_300_chars(
+    store: Any, hub: Any, caplog: Any
+) -> None:
+    """The failure line carries at most 300 chars of exception text; a
+    1000-char message is cut, the class name and ref_id stay."""
+    import logging
+
+    ref_id = _put_structure(hub)
+
+    class _HugeErrClient(_FakeClient):
+        def complete(self, messages: list[dict[str, str]]) -> Any:
+            raise ValueError("x" * 1000)
+
+    with caplog.at_level(logging.ERROR, logger="precis.workers.card_describe"):
+        r = run_card_describe_pass(store, client=_HugeErrClient(), batch_size=10)
+
+    assert (r["claimed"], r["ok"], r["failed"]) == (1, 0, 1)
+    lines = [rec.getMessage() for rec in caplog.records if rec.levelno >= logging.ERROR]
+    assert len(lines) == 1
+    assert (
+        lines[0] == f"card_describe: ref_id={ref_id} failed: ValueError: " + "x" * 300
+    )
+
+
+def test_dispatch_failure_error_line_carries_class_and_reason(
+    store: Any, hub: Any, caplog: Any
+) -> None:
+    """gr523669: same shape on the non-paused ``DispatchError`` branch —
+    a genuine route failure must name itself too."""
+    import logging
+
+    from precis.utils.llm.router import DispatchError
+
+    ref_id = _put_structure(hub)
+
+    class _BoomClient(_FakeClient):
+        def complete(self, messages: list[dict[str, str]]) -> Any:
+            raise DispatchError("all BIG rungs declined", paused=False)
+
+    with caplog.at_level(logging.ERROR, logger="precis.workers.card_describe"):
+        r = run_card_describe_pass(store, client=_BoomClient(), batch_size=10)
+
+    assert (r["claimed"], r["ok"], r["failed"]) == (1, 0, 1)
+    lines = [rec.getMessage() for rec in caplog.records if rec.levelno >= logging.ERROR]
+    assert lines == [
+        f"card_describe: ref_id={ref_id} dispatch failed: "
+        "DispatchError: all BIG rungs declined"
+    ]
+
+
 # ── gr500371: emptied chain defers the batch, log names cli_unavailable ──
 
 
