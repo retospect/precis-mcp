@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import base64
 import io
+import itertools
 import logging
 import multiprocessing
 import re
@@ -510,6 +511,10 @@ def extract_blocks_marker(
             fallback_info["used_fallback"] = True
             fallback_info["reason"] = str(exc)
     merged = _merge_small_blocks(blocks, paper_id=paper_id)
+    # Printed margin line numbers (gr524015): detect per block page
+    # after the merge consolidated the page's text. Idempotent — the
+    # fitz fallback's pages arrive already stripped.
+    merged = _strip_margin_line_numbers_blocks(merged)
     if glyph_health is not None:
         # gr228652 — deterministic font-level scan for the Advent-3B2 "Adv*"
         # encoding lies (μ/Greek silently destroyed at extraction). Runs off
@@ -1261,8 +1266,12 @@ def _fitz_page_texts(
             page_texts.append((page_num, text))
     doc.close()
 
-    # Strip repeating headers/footers
+    # Strip repeating headers/footers, then printed margin line numbers
+    # (gr524015) — per page, only when the page's own pattern holds.
     page_texts = _strip_running_lines(page_texts, total_pages)
+    page_texts = [
+        (page_num, strip_margin_line_numbers(text)) for page_num, text in page_texts
+    ]
     return page_texts, total_pages, doc_title
 
 
@@ -1357,6 +1366,167 @@ def _strip_running_lines(
         if cleaned:
             result.append((page_num, cleaned))
     return result
+
+
+# Printed margin line numbers (gr524015): preprint/redline PDFs carry a
+# per-line integer in the margin. Extraction lands it as a bare-integer
+# line or as an integer token at a line's edge separated from the text
+# by whitespace — glued forms ("text12", "12text") are deliberately not
+# candidates; the ruling strips only the clear, whitespace-separated
+# pattern. Applied only when building chunk text: the raw PDF/extraction
+# stays the stored source of truth so quotes and anchors still resolve.
+_BARE_MARGIN_NUM_RE = re.compile(r"\d+")
+_LEAD_MARGIN_NUM_RE = re.compile(r"^(\d+)\s")
+_TRAIL_MARGIN_NUM_RE = re.compile(r"\s(\d+)$")
+_LEAD_MARGIN_NUM_CUT_RE = re.compile(r"^(\s*)\d+\s+")
+_TRAIL_MARGIN_NUM_CUT_RE = re.compile(r"\s+\d+\s*$")
+
+#: Numbered lines needed before a page counts as margin-numbered — keeps
+#: short numbered lists, tables and references out.
+_MARGIN_NUM_MIN_LINES = 8
+#: Share of consecutive token diffs that must be +1 (every-line
+#: numbering) or +5 (every-5th numbering) — "mostly increasing"
+#: tolerates the odd OCR gap or missed line.
+_MARGIN_NUM_STEP_SHARE = 0.6
+#: The numbered lines must span this share of the page's non-empty
+#: lines — margin numbering runs edge to edge; a contiguous numbered
+#: run inside a longer page is a list or table column, not a margin.
+_MARGIN_NUM_SPAN_SHARE = 0.5
+
+
+def _edge_margin_tokens(line: str) -> tuple[int | None, int | None]:
+    """``line``'s ``(leading, trailing)`` edge-integer tokens.
+
+    A bare-integer line counts on both edges — wrapped extraction often
+    lands the margin number on its own line beside its text line, with
+    the side it came from unknown.
+    """
+    s = line.strip()
+    if not s:
+        return (None, None)
+    if _BARE_MARGIN_NUM_RE.fullmatch(s):
+        return (int(s), int(s))
+    lead = int(m.group(1)) if (m := _LEAD_MARGIN_NUM_RE.match(s)) else None
+    trail = int(m.group(1)) if (m := _TRAIL_MARGIN_NUM_RE.search(s)) else None
+    return (lead, trail)
+
+
+def _margin_run(lines: list[str]) -> tuple[bool, set[int]] | None:
+    """The margin-number run of ``lines`` as ``(is_leading, member line
+    indices)``, else ``None``.
+
+    Each side is scored on its own: at least ``_MARGIN_NUM_MIN_LINES``
+    lines carry a token there, the token values are mostly increasing
+    by 1 or by 5, and the numbered lines span most of the page rather
+    than one contiguous run. When both sides qualify the busier side
+    wins; when neither does the page is not margin-numbered — tables,
+    equations, numbered lists, references. A member's token sits within
+    +1 or +5 of a neighbour in its side's sequence, so a stray edge
+    number off the run keeps its line.
+    """
+    non_empty = sum(1 for ln in lines if ln.strip())
+    best: tuple[int, bool, set[int]] | None = None
+    for leading in (True, False):
+        edge = 0 if leading else 1
+        marked = [
+            (i, v)
+            for i, ln in enumerate(lines)
+            if (v := _edge_margin_tokens(ln)[edge]) is not None
+        ]
+        if len(marked) < _MARGIN_NUM_MIN_LINES:
+            continue
+        diffs = [b - a for a, b in itertools.pairwise(v for _, v in marked)]
+        if sum(1 for d in diffs if d in (1, 5)) / len(diffs) < _MARGIN_NUM_STEP_SHARE:
+            continue
+        span = marked[-1][0] - marked[0][0] + 1
+        if span / max(non_empty, 1) < _MARGIN_NUM_SPAN_SHARE:
+            continue
+        members = {
+            i
+            for j, (i, v) in enumerate(marked)
+            if (j and v - marked[j - 1][1] in (1, 5))
+            or (j + 1 < len(marked) and marked[j + 1][1] - v in (1, 5))
+        }
+        if best is None or len(marked) > best[0]:
+            best = (len(marked), leading, members)
+    if best is None:
+        return None
+    return (best[1], best[2])
+
+
+def _strip_margin_token(line: str, leading: bool) -> str | None:
+    """``line`` minus its margin-number token on the run's side;
+    ``None`` when the line was nothing but the token (dropped rather
+    than left as a blank line)."""
+    if _BARE_MARGIN_NUM_RE.fullmatch(line.strip()):
+        return None
+    if leading:
+        return _LEAD_MARGIN_NUM_CUT_RE.sub(r"\1", line, count=1)
+    return _TRAIL_MARGIN_NUM_CUT_RE.sub("", line)
+
+
+def strip_margin_line_numbers(text: str) -> str:
+    """Drop printed margin line numbers from one page's text.
+
+    Strips only tokens that belong to the detected margin run — an
+    integer within +1 or +5 of its sequence neighbour on the page's
+    numbered side (:func:`_margin_run`), which is chosen once per page.
+    A line's other numbers survive, so continuation quantities
+    ("n = 12", "Fig. 3") keep their digits. Pure: the caller keeps the
+    raw; a page without the pattern is returned unchanged. A re-ingest
+    of an old paper can break finding quotes that included a margin
+    number.
+    """
+    lines = text.split("\n")
+    run = _margin_run(lines)
+    if run is None:
+        return text
+    leading, members = run
+    out: list[str] = []
+    for i, ln in enumerate(lines):
+        if i in members:
+            if kept := _strip_margin_token(ln, leading):
+                out.append(kept)
+        else:
+            out.append(ln)
+    return "\n".join(out)
+
+
+def _strip_margin_line_numbers_blocks(
+    blocks: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Margin-number strip for the block-based (Marker) path.
+
+    Detects per page — blocks carry their assigned ``page`` — then
+    strips each qualifying page's block lines. Pages are estimates
+    (:func:`_assign_pages`), which is fine: they are only a grouping
+    key for the pattern check. Idempotent, so already-stripped fitz
+    blocks pass through untouched.
+    """
+    by_page: dict[Any, list[dict[str, Any]]] = {}
+    for block in blocks:
+        by_page.setdefault(block.get("page") or 0, []).append(block)
+    for page_blocks in by_page.values():
+        page_lines = [
+            ln for b in page_blocks for ln in str(b.get("text") or "").split("\n")
+        ]
+        run = _margin_run(page_lines)
+        if run is None:
+            continue
+        leading, members = run
+        idx = 0
+        for b in page_blocks:
+            text = b.get("text") or ""
+            kept: list[str] = []
+            for ln in text.split("\n"):
+                if idx in members:
+                    if stripped := _strip_margin_token(ln, leading):
+                        kept.append(stripped)
+                else:
+                    kept.append(ln)
+                idx += 1
+            b["text"] = "\n".join(kept)
+    return blocks
 
 
 def _is_likely_heading(text: str) -> bool:

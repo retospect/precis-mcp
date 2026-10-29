@@ -245,7 +245,11 @@ def _extract_pres_slides(pdf_path: Path) -> tuple[list[PresSlide], int]:
     # keep ``precis serve`` / ``precis migrate`` lean.
     import fitz
 
-    from precis.ingest.marker import _clean_text, _strip_running_lines
+    from precis.ingest.marker import (
+        _clean_text,
+        _strip_running_lines,
+        strip_margin_line_numbers,
+    )
 
     doc = fitz.open(str(pdf_path))
     total_pages = doc.page_count
@@ -262,6 +266,8 @@ def _extract_pres_slides(pdf_path: Path) -> tuple[list[PresSlide], int]:
     stripped = dict(
         _strip_running_lines([(i, t) for i, t in raw_pages if t], total_pages)
     )
+    # Printed margin line numbers (gr524015) — no-op without the pattern.
+    stripped = {i: strip_margin_line_numbers(t) for i, t in stripped.items()}
 
     slides: list[PresSlide] = []
     for i, _raw in raw_pages:

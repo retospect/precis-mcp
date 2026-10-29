@@ -446,3 +446,18 @@ class TestExtractPresPages:
         assert len(result.slides) == 3  # 1:1 with pages, blank kept
         assert result.slides[1].text == ""
         assert result.slides[1].slide_title == "Slide 2"
+
+    def test_margin_line_numbers_stripped(self, tmp_path: Path):
+        # gr524015 — a slide page carrying printed margin line numbers
+        # loses the tokens; the body text survives.
+        pytest.importorskip("fitz")
+        page = "Heading\n" + "\n".join(f"{i} body text line" for i in range(1, 21))
+        pdf = _make_pdf([page], tmp_path / "numbered.pdf")
+        result = extract_pres(pdf)
+
+        slide = result.slides[0]
+        assert slide.slide_title == "Heading"
+        assert "body text line" in slide.text
+        assert not any(
+            ln.split() and ln.split()[0].isdigit() for ln in slide.text.split("\n")
+        )

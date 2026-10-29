@@ -11,8 +11,11 @@ from precis.ingest.marker import (
     _MERGE_TARGET_CHARS,
     _assign_pages,
     _clean_text,
+    _fitz_fallback,
     _mark_junk,
     _merge_small_blocks,
+    _strip_margin_line_numbers_blocks,
+    strip_margin_line_numbers,
 )
 
 
@@ -705,3 +708,188 @@ class TestAssignPages:
         ]
         assignments = _assign_pages(chunks, total_pages=6, toc=toc)
         assert assignments == [0, 2, 2, 2, 4, 4]
+
+
+class TestStripMarginLineNumbers:
+    """gr524015 — printed margin line numbers are stripped from chunk
+    text when the page shows the numbering pattern, never otherwise."""
+
+    def test_every_line_numbered_page_stripped(self):
+        page = "\n".join(f"{i} body text line" for i in range(1, 41))
+        assert strip_margin_line_numbers(page) == "\n".join(["body text line"] * 40)
+
+    def test_trailing_numbers_stripped(self):
+        page = "\n".join(f"body text line {i}" for i in range(1, 41))
+        assert strip_margin_line_numbers(page) == "\n".join(["body text line"] * 40)
+
+    def test_bare_number_lines_dropped(self):
+        # Wrapped extraction lands the margin number on its own line.
+        page = "\n".join(ln for i in range(1, 41) for ln in (str(i), "body text line"))
+        out = strip_margin_line_numbers(page)
+        assert out == "\n".join(["body text line"] * 40)
+
+    def test_every_fifth_numbering_stripped(self):
+        # 8 numbered lines (5,10,…,40) spread across the page.
+        lines = [
+            f"{5 * (i // 5 + 1)} body text line" if i % 5 == 0 else "body text line"
+            for i in range(40)
+        ]
+        page = "\n".join(lines)
+        assert strip_margin_line_numbers(page) == "\n".join(["body text line"] * 40)
+
+    def test_five_item_numbered_list_left_alone(self):
+        page = "1 alpha\n2 beta\n3 gamma\n4 delta\n5 epsilon"
+        assert strip_margin_line_numbers(page) == page
+
+    def test_table_numeric_first_column_left_alone(self):
+        # A leading integer token per line, but the values are data —
+        # no increasing-by-1-or-5 sequence.
+        rows = [
+            "12 30.5 88",
+            "7 41.2 90",
+            "99 10.0 12",
+            "3 55.1 44",
+            "88 22.4 61",
+            "1 18.9 75",
+            "44 9.3 20",
+            "2 47.8 33",
+            "10 61.0 52",
+            "60 14.7 19",
+        ]
+        page = "header\n" + "\n".join(rows) + "\nfooter"
+        assert strip_margin_line_numbers(page) == page
+
+    def test_embedded_numbered_list_left_alone(self):
+        # A contiguous numbered run that fills only a slice of a longer
+        # page is a list, not a margin (the span guard).
+        page = "\n".join(
+            ["intro text"] * 20
+            + [f"{i} item" for i in range(1, 11)]
+            + ["outro text"] * 20
+        )
+        assert strip_margin_line_numbers(page) == page
+
+    def test_unmatched_text_returned_unchanged(self):
+        page = "plain prose\nwith several\nordinary lines of text"
+        # Identity, not just equality — the raw passes through as-is.
+        assert strip_margin_line_numbers(page) is page
+
+    def test_table_of_contents_left_alone(self):
+        # Dotted section numbers are not edge tokens; the trailing page
+        # numbers don't form a +1/+5 run.
+        page = "\n".join(
+            [
+                "Contents",
+                "1. Introduction ........... 5",
+                "2. Model .................. 12",
+                "3.1 Dataset ............. 21",
+                "3.2 Method .............. 29",
+                "4. Results ................ 38",
+                "5. Discussion ........... 44",
+                "6. Related Work ......... 57",
+                "7. Conclusion ........... 66",
+                "Appendix A .............. 71",
+            ]
+        )
+        assert strip_margin_line_numbers(page) == page
+
+    def test_table_row_index_column_left_alone(self):
+        # A 1..10 row index sits mid-line — the pipe columns keep the
+        # index off both edges, so no line carries an edge token.
+        page = "\n".join(
+            ["| idx | sample | density |"]
+            + [f"| {i} | sample-{i} | {i * 0.5:.2f} |" for i in range(1, 11)]
+        )
+        assert strip_margin_line_numbers(page) == page
+
+    def test_reference_list_consecutive_years_left_alone(self):
+        # "[n] ... 20YY" trailing years are a clean +1 run, but the run
+        # spans only the list's slice of the page — the span guard.
+        refs = [
+            f"[{i}] Smith, A. et al. Paper title {i}. J. Chem. {2000 + i}"
+            for i in range(1, 11)
+        ]
+        page = "\n".join(["body paragraph text"] * 30 + refs)
+        assert strip_margin_line_numbers(page) == page
+
+    def test_continuation_line_quantities_survive(self):
+        # A leading 1..40 margin run with interleaved continuation
+        # lines carrying quantities — only the run tokens strip.
+        lines = [f"{i} body text line" for i in range(1, 41)]
+        lines.insert(10, "annealed at T = 300")
+        lines.insert(21, "n = 12")
+        lines.insert(32, "Fig. 3")
+        lines.insert(43, "300 K for 2 h")
+        page = "\n".join(lines)
+        out = strip_margin_line_numbers(page)
+        for frag in ("annealed at T = 300", "n = 12", "Fig. 3", "300 K for 2 h"):
+            assert frag in out
+        assert out.count("body text line") == 40
+        assert not any(
+            ln.split() and ln.split()[0].isdigit()
+            for ln in out.split("\n")
+            if "body" in ln
+        )
+
+    def test_step_share_boundary(self):
+        # 6 of 9 diffs on-step qualifies; 5 of 9 does not.
+        page_hit = (
+            "\n".join(f"{n} text" for n in [1, 2, 3, 4, 30, 31, 50, 51, 70, 71])
+            + "\ntail one\ntail two"
+        )
+        assert strip_margin_line_numbers(page_hit) == "\n".join(
+            ["text"] * 10 + ["tail one", "tail two"]
+        )
+        page_miss = (
+            "\n".join(f"{n} text" for n in [1, 2, 3, 4, 30, 31, 50, 51, 70, 78])
+            + "\ntail one\ntail two"
+        )
+        assert strip_margin_line_numbers(page_miss) == page_miss
+
+    def test_span_share_boundary(self):
+        # A numbered run spanning exactly half the page's non-empty
+        # lines qualifies; just under half does not.
+        page_hit = "\n".join([f"{i} text" for i in range(1, 11)] + ["plain text"] * 10)
+        assert strip_margin_line_numbers(page_hit) == "\n".join(
+            ["text"] * 10 + ["plain text"] * 10
+        )
+        page_miss = "\n".join([f"{i} text" for i in range(1, 10)] + ["plain text"] * 11)
+        assert strip_margin_line_numbers(page_miss) == page_miss
+
+    def test_blocks_strip_per_page(self):
+        blocks = [
+            {
+                "page": 0,
+                "type": "text",
+                "text": "\n".join(f"{i} body text line" for i in range(1, 21)),
+            },
+            {
+                "page": 1,
+                "type": "text",
+                "text": "1 alpha\n2 beta\n3 gamma",
+            },
+        ]
+        out = _strip_margin_line_numbers_blocks(blocks)
+        assert out[0]["text"] == "\n".join(["body text line"] * 20)
+        # Page 1 has no numbering pattern — untouched.
+        assert out[1]["text"] == "1 alpha\n2 beta\n3 gamma"
+
+    def test_fitz_fallback_chunk_text_stripped(self, tmp_path):
+        fitz = pytest.importorskip("fitz")
+        doc = fitz.open()
+        page = doc.new_page()
+        y = 72.0
+        for i in range(1, 41):
+            page.insert_text((72, y), f"{i} body text line", fontsize=12)
+            y += 15.0
+        pdf = tmp_path / "numbered.pdf"
+        doc.save(str(pdf))
+        doc.close()
+
+        blocks = _fitz_fallback(pdf, "paper1")
+        assert blocks
+        assert all(
+            not (ln.split() and ln.split()[0].isdigit())
+            for b in blocks
+            for ln in str(b["text"]).split("\n")
+        )
