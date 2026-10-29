@@ -170,17 +170,30 @@ def _plane_board() -> pcb.Board:
     return b
 
 
-def _drc_errors(result: pcb_realize.RealizeResult, ir: PcbIR, layers: list[str]) -> int:
+def _drc_findings(
+    result: pcb_realize.RealizeResult,
+    ir: PcbIR,
+    layers: list[str],
+    footprints: dict | None = None,
+) -> list:
     model = pcb_realize.to_gerber_model(
-        result, ir, layers=layers, outline=[list(p) for p in (ir.outline or [])]
+        result,
+        ir,
+        layers=layers,
+        outline=[list(p) for p in (ir.outline or [])],
+        footprints=footprints,
     )
-    return sum(
-        1
+    return [
+        f
         for f in drc.run_geometric_drc(
             model, capability=capability_for("4layer"), outline=model["outline"]
         )
         if f.severity == "error"
-    )
+    ]
+
+
+def _drc_errors(result: pcb_realize.RealizeResult, ir: PcbIR, layers: list[str]) -> int:
+    return len(_drc_findings(result, ir, layers))
 
 
 def test_widen_oracle_judges_class_min_clearance(tmp_path) -> None:
@@ -233,7 +246,7 @@ def test_widen_power_widens_gnd_where_clearance_allows() -> None:
     res2, widths = widen_power(
         res,
         {gnd_ir},
-        drc_errors=lambda r: _drc_errors(r, ir, layers),
+        drc_findings=lambda r: _drc_findings(r, ir, layers),
         targets={gnd_ir: 1.0},
     )
     assert widths[gnd_ir] > 0.15  # left the default rule width
@@ -244,9 +257,9 @@ def test_widen_power_widens_gnd_where_clearance_allows() -> None:
 
 
 def test_widen_power_keeps_the_rule_width_when_the_oracle_refuses() -> None:
-    """The contract without a board: accepted widths never push the
-    error count over the baseline, and a net the oracle always refuses
-    keeps its rule width verbatim."""
+    """The contract without a board: an accepted step mints no new error
+    finding, and a net the oracle always refuses keeps its rule width
+    verbatim."""
     tracks = tuple(
         pcb_realize.RealizedTrack(
             seg_id=i,
@@ -261,17 +274,23 @@ def test_widen_power_keeps_the_rule_width_when_the_oracle_refuses() -> None:
     )
     res = pcb_realize.RealizeResult(tracks, (), ())
 
-    def errs(r: pcb_realize.RealizeResult) -> int:
+    def errs(r: pcb_realize.RealizeResult) -> list[drc.DrcFinding]:
         # net 1 clears only at <=0.5; net 2 clears nothing above its rule
-        return sum(
-            1
+        return [
+            drc.DrcFinding(
+                rule="clearance",
+                severity="error",
+                where=f"synthetic N{t.net_id}",
+                detail="",
+                objects=({"ctype": "track", "net": f"N{t.net_id}", "layer": "F.Cu"},),
+            )
             for t in r.tracks
             if (t.net_id == 1 and t.width_mm > 0.5)
             or (t.net_id == 2 and t.width_mm > 0.15)
-        )
+        ]
 
     res2, widths = widen_power(
-        res, {0, 1, 2}, drc_errors=errs, targets={0: 1.0, 1: 0.5, 2: 0.2}
+        res, {0, 1, 2}, drc_findings=errs, targets={0: 1.0, 1: 0.5, 2: 0.2}
     )
     assert widths == {0: 1.0, 1: 0.5, 2: 0.15}
     assert {t.net_id: t.width_mm for t in res2.tracks} == widths
@@ -296,15 +315,86 @@ def test_widen_power_target_at_or_below_rule_skips_widening_and_the_oracle() -> 
     res = pcb_realize.RealizeResult(tracks, (), ())
     calls = 0
 
-    def errs(r: pcb_realize.RealizeResult) -> int:
+    def errs(r: pcb_realize.RealizeResult) -> list[drc.DrcFinding]:
         nonlocal calls
         calls += 1
-        return 0
+        return []
 
-    res2, widths = widen_power(res, {0}, drc_errors=errs, targets={0: 0.1})
+    res2, widths = widen_power(res, {0}, drc_findings=errs, targets={0: 0.1})
     assert widths == {0: 0.15}
     assert res2.tracks[0].width_mm == 0.15
     assert calls == 1  # only the baseline measurement
+
+
+def test_widen_power_refuses_step_that_trades_connectivity_for_clearance() -> None:
+    """gr524392 (reopened): judged on the error COUNT, a widening step
+    that bridges its net's own broken pieces (a connectivity error gone)
+    and eats the clearance to a foreign pad (a clearance error minted)
+    kept the total level and was accepted — on prod, VIN_DC widened to
+    0.5 mm and came out touching pad U2/VSS at 0.000 mm. The oracle now
+    keys findings: a step is kept only when it mints NO new error.
+
+    Net A here is two collinear tracks whose ends sit 0.3 mm apart —
+    one connectivity error until a step bridges them; a foreign pad's
+    edge sits 0.3 mm off the track centreline, inside JLC-min clearance
+    of any track wider than 0.42 mm (the first erroring ladder step is
+    0.5 mm). On the count oracle the 1.0 mm step traded one finding for
+    another and committed; the keyed oracle refuses every step that
+    mints the pad finding."""
+    fp = pcb.Footprint(
+        "SIP2",
+        [
+            pcb.pad("1", "rect", -0.8, 0.0, w=0.9, h=1.0),
+            pcb.pad("2", "rect", 0.8, 0.0, w=0.9, h=1.0),
+        ],
+    )
+    b = pcb.Board("widen-trade", stackup=4, outline=pcb.rect(30.0, 10.0))
+    f = b.footprint(fp)
+    a1 = b.part("A1", footprint=f, pins=["1", "2"]).at(4.0, 5.0)
+    a2 = b.part("A2", footprint=f, pins=["1", "2"]).at(26.0, 5.0)
+    # foreign (unwired) copper above the gap: a 0.9x0.4 pad centred 0.5
+    # mm off the track centreline — its bottom edge 0.3 mm off.
+    b.part(
+        "B1",
+        footprint=b.footprint(
+            pcb.Footprint("STUB", [pcb.pad("1", "rect", 0.0, 0.0, w=0.9, h=0.4)])
+        ),
+        pins=["1"],
+    ).at(14.15, 5.5)
+    b.net("A").tie(a1["2"], a2["1"])
+
+    design = kernel._design(b, None)
+    ir = kernel._build_ir(design)
+    footprints = kernel._footprints(design, ir)
+    layers = [str(layer.get("name") or "") for layer in ir.stackup]
+    a_net = int(list(ir.net_name).index("A"))
+
+    def track(seg_id: int, x0: float, x1: float) -> pcb_realize.RealizedTrack:
+        return pcb_realize.RealizedTrack(
+            seg_id=seg_id,
+            net_id=a_net,
+            layer=0,
+            segments=({"shape": "line", "start": [x0, 5.0], "end": [x1, 5.0]},),
+            length_mm=abs(x1 - x0),
+            blocked_by=None,
+            width_mm=0.15,
+        )
+
+    res = pcb_realize.RealizeResult((track(0, 5.0, 14.0), track(1, 14.3, 25.5)), (), ())
+    findings = lambda r: _drc_findings(r, ir, layers, footprints=footprints)
+
+    # the fixture IS the trade: net A is broken until a step bridges it
+    assert {f.rule for f in findings(res)} == {"connectivity"}
+
+    res2, widths = widen_power(
+        res, {a_net}, drc_findings=findings, targets={a_net: 1.0}
+    )
+    # refused at 1.0/0.8/0.6/0.5 — each mints track[A] <-> pad[B1]: the
+    # kept width stays below the first step that adds it, and the kept
+    # board carries no clearance finding (the connectivity error may go;
+    # nothing new may come).
+    assert widths[a_net] < 0.5
+    assert not [f for f in findings(res2) if f.rule == "clearance"]
 
 
 def _via_fixture(

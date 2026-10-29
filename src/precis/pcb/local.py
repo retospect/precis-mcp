@@ -998,15 +998,24 @@ def topo_place(
         # floor alone would let a widened rail violate.
         drc_net_rules = pcb_session.clearance_net_rules(design.graph, design.fab_caps)
 
-        def _drc_errors(rres_: Any) -> int:
+        def _drc_findings(rres_: Any) -> list[Any]:
+            # ``widen_power`` keys the findings, so the oracle returns
+            # them, not a count (gr524392). ``footprints`` gives the real
+            # per-pin pad shapes (the synthesized pads it defaulted to
+            # under-measure); the authored fixed copper rides the model
+            # too — the same authored-copper masking the job oracle had.
             model = pcb_realize.to_gerber_model(
                 rres_,
                 ir,
                 layers=layers,
                 outline=[list(p) for p in (design.outline or [])],
+                footprints=footprints,
             )
-            return sum(
-                1
+            model["copper"] += [
+                {**row, "net": row.get("net") or ""} for row in design.fixed_copper
+            ]
+            return [
+                f
                 for f in pcb_drc.run_geometric_drc(
                     model,
                     capability=design.fab_caps,
@@ -1015,7 +1024,7 @@ def topo_place(
                     net_rules=drc_net_rules,
                 )
                 if f.severity == "error"
-            )
+            ]
 
         # See _topo_route for the rationale: targets are the current-derived
         # IPC-2221 widths (clearance_net_rules) of the current-annotated
@@ -1042,7 +1051,7 @@ def topo_place(
             or targets.get(net_id, 0.0) > born.get(net_id, math.inf)
         }
         rres, widths = _tprealise.widen_power(
-            rres, sorted(power_ids), drc_errors=_drc_errors, targets=targets
+            rres, sorted(power_ids), drc_findings=_drc_findings, targets=targets
         )
         rows = _tprealise.sketch_rows(plan, td_route, ir, layers)
         route_pair = (plan, rres)

@@ -41,7 +41,12 @@ pair, matching ``build_wires``' own fallback.
 widen where clearance allows, never below the net's rule width. The
 clearance question is answered by an injected oracle — the caller's own
 DRC over the emitted copper — so "allows" means exactly what the gate
-accepts, not a second geometric estimate that could drift.
+accepts, not a second geometric estimate that could drift. The oracle
+returns FINDINGS, not a count: a step that erases one error and mints
+another (widening a rail can bridge its own broken pieces while it
+eats a foreign pad's clearance) keeps an error count level, and was
+accepted — gr524392. Only a step whose keyed findings are a
+sub-multiset of the baseline's is kept.
 """
 
 from __future__ import annotations
@@ -49,6 +54,7 @@ from __future__ import annotations
 import dataclasses
 import itertools
 import math
+from collections import Counter
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
@@ -1203,11 +1209,34 @@ def sketch_rows(
     return rows
 
 
+def _error_keys(findings: Iterable[Any]) -> Counter:
+    """A finding multiset keyed ``(rule, sorted participant identities,
+    layer)`` — :func:`precis.pcb.drc.finding_identity`, with the
+    finding's ``where`` when it names no objects. A multiset, not a
+    count: a widening step that erases one error and mints another must
+    not hide behind an unchanged total (gr524392, reopened — widening a
+    rail can bridge its own broken pieces, removing a connectivity
+    error, while it eats the clearance to a foreign pad; the count
+    stayed equal and the step was accepted — on prod a VIN_DC track
+    widened to 0.5 mm came out touching pad U2/VSS at 0.000 mm).
+    Several findings may legitimately share a key (two clearance hits
+    between the same pair on one layer), so keys count with
+    multiplicity: a second hit on an already-faulted pair is a NEW
+    finding, not the old one seen twice."""
+    from precis.pcb import drc as pcb_drc
+
+    keys: Counter = Counter()
+    for f in findings:
+        rule, ids, layer = pcb_drc.finding_identity(f)
+        keys[(rule, ids or (f.where,), layer)] += 1
+    return keys
+
+
 def widen_power(
     result: Any,
     power_net_ids: Iterable[int],
     *,
-    drc_errors: Callable[[Any], int],
+    drc_findings: Callable[[Any], Iterable[Any]],
     targets: Mapping[int, float] | None = None,
     ladder: Sequence[float] = _WIDEN_LADDER,
 ) -> tuple[Any, dict[int, float]]:
@@ -1217,11 +1246,14 @@ def widen_power(
 
     ``power_net_ids`` are IR net ids (``RealizedTrack.net_id``);
     ``result``/the oracle traffic in :class:`precis.pcb.realize.
-    RealizeResult`. ``drc_errors`` counts error findings on the emitted
-    copper — the caller's own DRC, so "clearance allows" is exactly what
-    the gate accepts. Baseline is the result AS GIVEN: a widened step is
-    kept when its error count does not exceed it (a board already
-    carrying errors is not asked to heal them to widen a rail).
+    RealizeResult`. ``drc_findings`` returns the ERROR findings of the
+    caller's own DRC over the emitted copper, so "clearance allows" is
+    exactly what the gate accepts. Baseline is the result AS GIVEN: a
+    widened step is kept only when its findings are a sub-multiset of
+    the baseline's — it adds NO new error finding (removing errors is
+    fine; a board already carrying errors is not asked to heal them to
+    widen a rail, but it is not allowed to trade one for another
+    either — gr524392).
 
     ``targets`` is the per-net width the net's estimated current asks
     for — the IPC-2221 width :func:`precis.pcb.session.
@@ -1243,7 +1275,7 @@ def widen_power(
     covering every power net that had tracks — widened or not — so the
     caller can report the delta; a net that never beat the oracle keeps
     its rule width verbatim."""
-    base = drc_errors(result)
+    base = _error_keys(drc_findings(result))
     tracks = list(result.tracks)
     widths: dict[int, float] = {}
     for net_id in sorted({int(n) for n in power_net_ids}):
@@ -1269,7 +1301,10 @@ def widen_power(
                 dataclasses.replace(t, width_mm=float(w)) if i in idx else t
                 for i, t in enumerate(tracks)
             )
-            if drc_errors(dataclasses.replace(result, tracks=trial)) <= base:
+            trial_errors = _error_keys(
+                drc_findings(dataclasses.replace(result, tracks=trial))
+            )
+            if not (trial_errors - base):
                 tracks, widths[net_id] = list(trial), float(w)
                 break
     return dataclasses.replace(result, tracks=tuple(tracks)), widths

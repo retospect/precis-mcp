@@ -333,19 +333,22 @@ def _topo_route(
     # class floors included), not the route map's signal-width variant.
     drc_net_rules = pcb_session.clearance_net_rules(loaded, capability)
 
-    def _drc_errors(result: Any) -> int:
+    def _drc_findings(result: Any) -> list[Any]:
         # The widen stage's clearance oracle — the SAME model + rules the
-        # view='drc' gate runs (pads + emitted copper + keepouts + per-net
-        # clearance), so "clearance allows" is exactly what the gate
-        # accepts — a class ``min_clearance_mm`` is an error tier the fab
-        # floor alone would let a widened rail violate.
+        # view='drc' gate runs (pads + emitted copper + authored fixed
+        # copper + keepouts + per-net clearance), so "clearance allows"
+        # is exactly what the gate accepts — a class ``min_clearance_mm``
+        # is an error tier the fab floor alone would let a widened rail
+        # violate. ``widen_power`` keys the findings, so the oracle must
+        # return them, not a count (gr524392).
         model = pcb_session._copper_model(
             ir,
-            pcb_realize.result_copper_rows(result, ir, layers, derived=True),
+            pcb_realize.result_copper_rows(result, ir, layers, derived=True)
+            + [{**row, "net": row.get("net") or ""} for row in (fixed_copper or [])],
             footprints=footprints,
         )
-        return sum(
-            1
+        return [
+            f
             for f in pcb_drc.run_geometric_drc(
                 model,
                 capability=capability,
@@ -354,7 +357,7 @@ def _topo_route(
                 net_rules=drc_net_rules,
             )
             if f.severity == "error"
-        )
+        ]
 
     # The widen targets are the nets' current-derived IPC-2221 widths —
     # clearance_net_rules' resolution, the same map the DRC oracle below
@@ -384,7 +387,7 @@ def _topo_route(
         or targets.get(net_id, 0.0) > born.get(net_id, math.inf)
     }
     rres, widths = _tprealise.widen_power(
-        rres, sorted(power_ids), drc_errors=_drc_errors, targets=targets
+        rres, sorted(power_ids), drc_findings=_drc_findings, targets=targets
     )
     rows = _tprealise.sketch_rows(plan, td_route, ir, layers)
 
