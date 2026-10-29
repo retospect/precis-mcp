@@ -91,7 +91,7 @@ def test_limits_hides_host_rows_by_default(jobs: JobHandler, store: Store) -> No
 def test_limits_provider_pin(jobs: JobHandler, store: Store) -> None:
     prov = f"test-{uuid4().hex[:8]}"
     other = f"host:test-{uuid4().hex[:8]}.example"
-    _seed_limit(store, prov, capacity=2, tokens=0)
+    _seed_limit(store, prov, capacity=2, refill=0.0, tokens=0)
     _seed_limit(store, other)
 
     resp = jobs.get(id=f"/limits?provider={prov}")
