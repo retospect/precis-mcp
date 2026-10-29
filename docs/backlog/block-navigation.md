@@ -77,10 +77,74 @@ which TOC line quality sets, not block size.
 - md kind: heading outline and section selectors (`handlers/md.py`).
 - No `budget=` anywhere; `tests/test_token_budget.py` pins cold-start
   bytes only.
-- Batched get: the `get` signature accepts a list; no kind implements it.
+- Batched get: the `get` signature accepts a list; gripes implement it
+  (`get(kind='gripe', id=[<ids>], view='body'|'full')`), no other kind
+  does.
 - Telemetry: the `tool_calls` ledger (`tool_ledger.record_call`) logs
   verb, kind, outcome, latency; no response bytes, no per-session
   roll-up, `result_count` unpopulated.
+
+## Evidence (lit search 2026-10-28)
+
+Perplexity survey (`perplexity-research:529881`, `529960`, `529961`,
+`529965`, `529968`, `529969`, `529970`) plus 31 papers imported
+(`pa529971`–`pa530008`). Figures are paper-reported.
+
+- **Search-first holds.** RAPTOR's collapsed tree beat top-down
+  traversal on QASPER at ~2k retrieved tokens (`pa529971`); HIRO's
+  adaptive traversal used fewer tokens than collapsed but was no more
+  accurate (`pa529972`). Retrieval lands at any depth; the tree is for
+  addressing, not the route.
+- **Wrong-branch rate is the deciding parameter.** Corpus2Skill traced
+  19 of 45 doc-navigation failures to a wrong top-level branch
+  (`pa530005`); RIT-RAG recovers 6.8–11.4 points by switching subtrees
+  (`pa530006`). TOC-line quality sets the ceiling; breadcrumbs and
+  typed links make recovery cheap (web agents backtrack often —
+  WebRollback `pa530004`).
+- **Focused context beats full reads** for sparse evidence: LongMemEval
+  87.0% evidence-only vs 60.6% full history (`pa529980`); NoLiMa shows
+  GPT-4o at 69.7% of baseline by 32K (`pa529978`); distractor
+  sensitivity (`pa529977`) backs the residency argument. Exception:
+  Self-Route found full context wins when evidence is dispersed
+  (`pa529982`) — which is why `more` survives for straight-through
+  ingested reads and over-budget refuses with an outline instead of
+  truncating.
+- **A cheap categorizer is enough for pack selection** — Adaptive-RAG
+  routed none/single/multi-step at near-parity accuracy in ~1 step
+  (`pa529990`); RAG-MCP retrieved the relevant MCP schema at ~half the
+  tokens of exposing all, but at 43% selection accuracy (`pa529993`),
+  so misroute rate needs measuring and search stays the fallback.
+- **Tool and doc text wants a lint, not more length**: 97.1% of 856
+  MCP tool descriptions carry a defect, and augmentation raised
+  success 5.85 points while costing +67% steps (`pa529998`). Gate doc
+  changes on tokens per correct answer, not correctness alone.
+- **The optimizer pattern is proven**: DSPy/GEPA-style compile and
+  select beat hand prompts under held-out evaluation (`pa529995`,
+  `pa529996`); DRAFT rewrites docs from execution feedback
+  (`pa529997`). Keep a change only when held-out correctness holds.
+
+Contradictions to fold in, not around:
+
+- **8b is unproven for tool-heavy runs.** Masking or stubbing old tool
+  results matched or beat summaries at lower cost (SWE-agent
+  `pa521204`; Complexity Trap `pa529984`; systematic study `pa529989`,
+  free-form summary −11 points). Context-folding matched a 10× larger
+  ReAct history (`pa529986`); pruning plus a state summary won one
+  enterprise benchmark (`pa529988`). Rewriting the prefix also breaks
+  the cache (ACON `pa529985`; Don't Break the Cache `pa529987`), so
+  the rolling summary must live after the stable prefix. Treat the
+  asa pattern as a hypothesis slice 2's telemetry tests.
+- **Preloaded packs can cost more than they save.** Generated context
+  files scored −0.5 to −2 points at +20% cost (`pa529999`); compact
+  docs did not help when the agent could read the source (`pa530000`).
+  Packs stay A/B-tested (slice 8), and the harness question bank
+  should come from doc-dependent tasks.
+- **Very small blocks are not free.** LongRAG's 4–6K retrieval units
+  raised recall (`pa529974`); dispersed-evidence tasks prefer full
+  context (`pa529982`). The 500–2000 target fits an agent reader on
+  designed content, not a universal optimum — the lint should watch
+  for over-splitting.
+- `llms.txt` has no controlled evaluation — do not cite it.
 
 ## Slices (dependency order)
 
@@ -99,8 +163,8 @@ which TOC line quality sets, not block size.
    `_pagination.split`. Skills and md first.
 5. **Split the 18 skills over 24 KiB** (M–L, content). The five at 32 KiB
    first; then remove `more` for designed kinds.
-6. **Batched `get(id=[...])`** (S–M). Dispatcher fan-out under one budget;
-   skill, md and paper first.
+6. **Batched `get(id=[...])`** (S–M). Extend the existing gripe batch
+   read; dispatcher fan-out under one budget, skill, md and paper first.
 7. **Search over block summaries** (M). Summaries indexed as their own
    chunks; hits carry `slug~id` plus breadcrumb at any depth.
 8. **Starter packs** (M). n packs per problem type (indexes + most-used
