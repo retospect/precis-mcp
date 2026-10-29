@@ -55,7 +55,7 @@ from __future__ import annotations
 import math
 import re
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import numpy as np
 
@@ -74,6 +74,7 @@ from precis.cad.vec import Transform, euler_rad_from_matrix
 from precis.cad.vec import as_vec3 as cad_as_vec3
 from precis.cad.vec import normalize as cad_normalize
 from precis.cad.vec import pose as cad_pose
+from precis.cad.vec import translation as cad_translation
 from precis.cad_resolve import design_resolver
 from precis.utils.units import format_dsl_number
 from precis_se import fasten as se_fasten
@@ -175,11 +176,12 @@ def _feature_already_cut(
 #: enough to tell air from material.
 _CUT_PROBE_GRID = 24
 
-#: Thickness of the annulus probed just outside a cutter that removed
+#: Floor of the annulus probed just outside a cutter that removed
 #: nothing — the witness that tells "the bound cad already carries this
 #: hole" (a void with material standing around it) apart from "the tool
-#: is in air" (nothing around it at all). Radial only, over the cutter's
-#: own depth.
+#: is in air" (nothing around it at all). The probe's real thickness is
+#: ``max(_CUT_SHELL_M, 0.15 × cutter radius)``: a fixed 0.5 mm is nearly
+#: the whole wall of a thin boss and invisible inside a fat one.
 _CUT_SHELL_M = 5e-4
 
 #: The annulus probe's ray grid — finer than ``_CUT_PROBE_GRID`` because
@@ -187,6 +189,12 @@ _CUT_SHELL_M = 5e-4
 #: thinner still (a counterbore in a boss leaves a sub-millimetre
 #: annulus), so a coarse grid could step over the only material there.
 _CUT_SHELL_GRID = 48
+
+#: How much solid material along the stamped axis depth still reads as
+#: "the void is open" — a hole the cad already carries is open the whole
+#: way; anything more than this sliver of coverage is a shallower or
+#: partial feature, not the stamped one.
+_CUT_VOID_OPEN_M = 1e-6
 
 
 def _components_met(design: CadDesign, cutter: Expr) -> list[str]:
@@ -264,14 +272,18 @@ def _apply_cuts(
             > 0.0
         ]
         if not removing:
-            removing = _wall_around_void(design, hole, cutter, xform, met)
+            removing, why = _wall_around_void(design, hole, cutter, xform, met)
             if not removing:
                 findings.append(
                     _feature_not_cut(
                         block_name,
                         hole,
-                        "the tool meets no material — it cuts air (hole origin "
-                        "or axis outside every component of the bound design)",
+                        why
+                        or (
+                            "the tool meets no material — it cuts air (hole "
+                            "origin or axis outside every component of the "
+                            "bound design)"
+                        ),
                     )
                 )
                 continue
@@ -301,42 +313,207 @@ def _apply_cuts(
     return cut_nodes, feature_names, bool(cutters_by_component)
 
 
+def _cutter_radius_m(hole: Hole) -> float:
+    """The tool's radius about its own axis — half the diameter for a
+    round tool, half the across-flats (the inradius) for a hex pocket."""
+    return max(hole.diameter_m, hole.across_flats_m or 0.0) / 2.0
+
+
+def _void_cover_m(
+    design: CadDesign, o: Any, d: Any, depth_m: float, *, component: str | None
+) -> float:
+    """Metres of material along the ray inside ``[0, depth_m]`` — how
+    much of the cutter's stamped depth is NOT open void. The whole
+    design's material when ``component`` is ``None``."""
+    covered = 0.0
+    for lo, hi in design.ray_material(o, d, component=component):
+        covered += max(0.0, min(float(hi), depth_m) - max(float(lo), 0.0))
+    return covered
+
+
+def _quadrant_probes(
+    design: CadDesign,
+    hole: Hole,
+    radius_m: float,
+    shell_t: float,
+    xform: Transform,
+) -> list[tuple[Expr, Expr]]:
+    """Build each quadrant's near/far probes once for all met components."""
+    reach = radius_m + shell_t
+    half = format_dsl_number(reach)
+    depth = format_dsl_number(hole.depth_m)
+    try:
+        quad_prim = cad_dsl.build_config(f"box:w{half}d{half}h{depth}")
+        width = format_dsl_number(2.0 * reach)
+        half_depth = format_dsl_number(hole.depth_m / 2.0)
+        slab_prim = cad_dsl.build_config(f"box:w{width}d{width}h{half_depth}")
+    except (cad_dsl.DslError, ValueError):  # pragma: no cover — defensive
+        return []
+    # A full-depth positive volume cannot distinguish a complete wall from
+    # one that exists only near the opening or only at the far end.
+    slabs = [
+        design.prim(
+            f"{_safe_node_name(hole.name)}_depth{i}",
+            slab_prim,
+            xform.compose(cad_translation(0.0, 0.0, i * hole.depth_m / 2.0)),
+        )
+        for i in range(2)
+    ]
+    probes: list[tuple[Expr, Expr]] = []
+    for i, (sx, sy) in enumerate(((1, 1), (1, -1), (-1, 1), (-1, -1))):
+        # DSL boxes are centred in x/y, but their base is at local z=0.
+        qx = xform.compose(cad_translation(sx * reach / 2.0, sy * reach / 2.0, 0.0))
+        qbox = design.prim(f"{_safe_node_name(hole.name)}_q{i}", quad_prim, qx)
+        probes.append(
+            (design.intersect(qbox, slabs[0]), design.intersect(qbox, slabs[1]))
+        )
+    return probes
+
+
+def _quadrant_walls(
+    design: CadDesign,
+    region: Expr,
+    probes: list[tuple[Expr, Expr]],
+) -> int:
+    """Count quadrants with material in both halves, stopping at two misses.
+
+    Only a count of at least three witnesses a surrounding wall. Once two
+    quadrants miss, the partial count suffices to reject the component.
+    """
+    walls = misses = 0
+    for halves in probes:
+        if all(
+            cad_bulk.volume(
+                design, expr=design.intersect(region, half), grid=_CUT_SHELL_GRID
+            ).volume
+            > 0.0
+            for half in halves
+        ):
+            walls += 1
+        else:
+            misses += 1
+            if misses == 2:
+                break
+    return walls
+
+
+def _void_radius_m(
+    design: CadDesign, o_mid: Any, xform: Transform
+) -> tuple[float, float] | None:
+    """``(nearest, farthest)`` distance from the cutter's axis at
+    mid-depth to material, over the four directions perpendicular to the
+    axis — the shape of whatever void the tool sits in. ``None`` when no
+    direction meets material at all (genuinely open space).
+
+    A real hole's wall is roughly equidistant all around; a tool in air
+    next to an unrelated wall is not — the ratio is what tells an
+    *oversized* existing hole apart from open space."""
+    radii: list[float] = []
+    for local_dir in ((1, 0, 0), (-1, 0, 0), (0, 1, 0), (0, -1, 0)):
+        rd = xform.apply_dir(cad_as_vec3(local_dir))
+        # ray_material is the full line — the first interval past the
+        # probe point is the wall's distance in this direction.
+        hit = next(
+            (iv for iv in design.ray_material(o_mid, rd) if float(iv[1]) > 0.0),
+            None,
+        )
+        if hit is not None and float(hit[0]) > 0.0:
+            radii.append(float(hit[0]))
+    if not radii:
+        return None
+    return min(radii), max(radii)
+
+
 def _wall_around_void(
     design: CadDesign,
     hole: Hole,
     cutter: Expr,
     xform: Transform,
     met: list[str],
-) -> list[str]:
-    """The ``met`` components with material in the thin shell just
-    outside ``cutter``'s radial wall — the ``feature_already_cut``
-    witness.
+) -> tuple[list[str], str | None]:
+    """``(witnessed, why)`` — the ``feature_already_cut`` witness,
+    hardened.
 
-    A cutter that removes nothing sits in one of two places: inside a
+    A cutter that removes nothing sits in one of three places: inside a
     void the authored cad already carries (precis-se-fasten-help §5's
     pre-cut — ``intersect`` reads ~0 because the hole is *there*, not
-    because the tool missed) or in air. Material standing in the shell —
-    ``intersect(component, dilated tool)`` minus the tool itself — is
-    what tells them apart: a void with a wall is a hole, a void with
-    nothing around it is air.
-    """
-    try:
-        shell_prim = cad_dsl.build_config(_cut_config(hole, _CUT_SHELL_M))
-    except (cad_dsl.DslError, ValueError):  # pragma: no cover — same shape built
-        return []
-    shell = design.prim(f"{_safe_node_name(hole.name)}_wall", shell_prim, xform)
-    return [
-        name
-        for name in met
-        if cad_bulk.volume(
-            design,
-            expr=design.subtract(
-                design.intersect(design.components[name], shell), cutter
-            ),
-            grid=_CUT_SHELL_GRID,
-        ).volume
-        > 0.0
-    ]
+    because the tool missed), inside a *different* void (wider or
+    shallower than the stamped hole), or in air. A fixed 0.5 mm shell
+    plus "any material in it" could not tell those apart — a tool in
+    air next to an unrelated wall, or a void bigger than the stamp,
+    passed as already-cut. The witness now:
+
+    - sizes the shell ``max(0.5 mm, 0.15 × cutter radius)``;
+    - demands material in both depth halves of at least 3 of the shell's
+      4 quadrants around the axis — a hole's wall surrounds the tool,
+      a nearby or half-depth wall does not;
+    - demands the void be open along the cutter's whole stamped depth —
+      a shallower feature is not the stamped hole.
+
+    ``witnessed`` is the ``met`` components passing all three. When it
+    is empty, ``why`` is the sharper ``feature_not_cut`` reason the
+    diagnostic found — a shallower void, or a size mismatch naming the
+    compared radius (hex inradius) or diameter — or ``None`` for plain air."""
+    cutter_r = _cutter_radius_m(hole)
+    shell_t = max(_CUT_SHELL_M, 0.15 * cutter_r)
+    origin = xform.apply(cad_as_vec3([0.0, 0.0, 0.0]))
+    axis = xform.apply_dir(cad_as_vec3([0.0, 0.0, 1.0]))
+    open_tol = _CUT_VOID_OPEN_M + 0.02 * hole.depth_m
+    witnessed: list[str] = []
+    shell: Expr | None = None
+    probes: list[tuple[Expr, Expr]] = []
+    for name in met:
+        if _void_cover_m(design, origin, axis, hole.depth_m, component=name) > open_tol:
+            continue
+        # Reject blocked axes before building or evaluating volume probes;
+        # the same geometry serves every component around this hole.
+        if shell is None:
+            try:
+                shell_prim = cad_dsl.build_config(_cut_config(hole, shell_t))
+            except (
+                cad_dsl.DslError,
+                ValueError,
+            ):  # pragma: no cover — same shape built
+                return [], None
+            shell = design.prim(f"{_safe_node_name(hole.name)}_wall", shell_prim, xform)
+            probes = _quadrant_probes(design, hole, cutter_r, shell_t, xform)
+        region = design.subtract(
+            design.intersect(design.components[name], shell), cutter
+        )
+        if _quadrant_walls(design, region, probes) < 3:
+            continue
+        witnessed.append(name)
+    if witnessed:
+        return witnessed, None
+    # No component witnessed — diagnose once, on the whole solid.
+    covered = _void_cover_m(design, origin, axis, hole.depth_m, component=None)
+    if covered > open_tol:
+        return [], (
+            f"the void under the tool is open only "
+            f"{max(0.0, hole.depth_m - covered) * 1000:.1f} mm of the stamped "
+            f"{hole.depth_m * 1000:.1f} mm — a shallower feature, not the "
+            "stamped hole"
+        )
+    radii = _void_radius_m(
+        design, np.asarray(origin) + 0.5 * hole.depth_m * np.asarray(axis), xform
+    )
+    if (
+        radii is not None
+        and radii[0] > cutter_r * 0.5
+        and radii[1] <= 4.0 * max(cutter_r, _CUT_SHELL_M)
+    ):
+        if hole.kind == "nut-pocket" and hole.across_flats_m:
+            return [], (
+                f"the sampled void radius is {radii[1] * 1000:.2f} mm, not the "
+                f"stamped inradius {cutter_r * 1000:.2f} mm — a radius "
+                "mismatch, not the stamped hex pocket"
+            )
+        return [], (
+            f"the void there is Ø{2.0 * radii[1] * 1000:.2f} mm, not the "
+            f"stamped Ø{2.0 * cutter_r * 1000:.2f} mm — a diameter "
+            "mismatch, not the stamped hole"
+        )
+    return [], None
 
 
 def _cut_config(hole: Hole, radial_extra_m: float = 0.0) -> str:

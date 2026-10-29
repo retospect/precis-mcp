@@ -216,7 +216,11 @@ class TestFastenerTargetTruncation:
 class TestLengthAndEngagement:
     def test_a_long_enough_screw_through_a_nut_has_no_finding(self) -> None:
         res = _only(_stack(nut=True))
-        assert res.required_length_m == pytest.approx(0.0172 + 0.002)
+        # The nut's far face is 23.2 mm along the axis; +2 pitches of
+        # protrusion. Length is an axial position — the 6 mm between the
+        # head face and the first member is span the screw must cover,
+        # not material in the grip sum.
+        assert res.required_length_m == pytest.approx(0.0232 + 0.002)
         assert res.length_m == pytest.approx(0.030)
         assert "screw_too_short" not in _rules(res)
 
@@ -224,14 +228,15 @@ class TestLengthAndEngagement:
         res = _only(_stack(nut=True, length=0.016))
         assert "screw_too_short" in _rules(res)
         detail = next(f.detail for f in res.findings if f.rule == "screw_too_short")
-        assert "3.2 mm short" in detail  # 19.2 needed − 16.0 available
+        assert "9.2 mm short" in detail  # 25.2 needed − 16.0 available
 
     def test_a_nutless_stack_taps_the_last_member(self) -> None:
         res = _only(_stack(nut=False))
         assert res.termination == "tapped"
-        # grip is everything above the tapped member; engagement is 1×D
+        # grip is everything above the tapped member; engagement is 1×D —
+        # the seat's surface is 12 mm along the axis.
         assert res.grip_m == pytest.approx(0.006)
-        assert res.required_length_m == pytest.approx(0.006 + 0.006)
+        assert res.required_length_m == pytest.approx(0.012 + 0.006)
 
     def test_a_tapped_member_thinner_than_one_diameter_is_a_finding(self) -> None:
         tree = _stack(nut=False)
@@ -255,19 +260,21 @@ class TestThread:
         assert res.thread.turns == pytest.approx(5.2)
 
     def test_engagement_in_a_tapped_hole_is_bounded_by_the_screw(self) -> None:
-        """A 16 mm screw through 6 mm of plate has 10 mm of thread left,
-        but the tapped plate is only 6 mm deep — the limit is the shorter
-        of the two, and it is the plate here."""
+        """A 16 mm screw's tip is 16 mm along the axis; the tapped plate's
+        surface is 12 mm along it, so the thread reaches 4 mm in — the
+        6 mm under the head is span the screw has to cover first."""
         res = _only(_stack(nut=False, length=0.016))
         assert res.thread is not None
-        assert res.thread.engagement_m == pytest.approx(0.006)
+        assert res.thread.engagement_m == pytest.approx(0.004)
 
     def test_engagement_is_bounded_by_the_thread_when_the_screw_is_short(
         self,
     ) -> None:
+        """A 9 mm screw's tip does not even reach the seat's surface at
+        12 mm — no thread is engaged at all."""
         res = _only(_stack(nut=False, length=0.009))
         assert res.thread is not None
-        assert res.thread.engagement_m == pytest.approx(0.003)
+        assert res.thread.engagement_m == pytest.approx(0.0)
 
     def test_a_declared_lead_that_disagrees_with_the_pitch_is_a_finding(self) -> None:
         res = _only(

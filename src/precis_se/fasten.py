@@ -18,12 +18,19 @@ origin is its pose. A declared ``joint.axis`` is then something to
 *check* against that, not something to trust — which is the whole point
 of having both.
 
-**The stack is walked, not assumed.** Members come from casting that ray
-through the design (:func:`precis.cad.probe.probe_ray`, one probe per
-posed envelope) and keeping the material intervals on the thread side of
-the head. That is what makes the grip a measurement rather than a
-guess — nobody has to declare the order of a stack that the poses
-already state.
+**The stack is walked, not assumed — and walked on real solids, not
+envelopes.** Members come from casting that ray through each block's
+*realized* solid — the bound cad design's folded SDF when it binds one
+(the same resolution the cad inspect probes use,
+:func:`precis_se.rays_macro.block_geoms`), else its envelope — and
+keeping the material runs on the thread side of the head. That is what
+makes the grip a measurement rather than a guess — nobody has to declare
+the order of a stack that the poses already state, and a member the
+axis pierces is in it even when the connect names only the far end. A
+carved void still counts: a member whose hole is already cut is pierced,
+present and clamped, and the stamp it needs is still this pass's to name
+(whether the cut is already there is :mod:`precis_se.printsolid`'s
+question, not a reason to drop it from the stack).
 
 **Stamped features are derived and regenerable**, never stored: a
 :class:`Hole` is recomputed from the connect on every read, named after
@@ -118,7 +125,6 @@ from precis import component_series
 from precis import fit_classes as core_fit
 from precis import thread_forming as core_tf
 from precis.cad import probe as cad_probe
-from precis.cad.graph import Design as CadDesign
 from precis.cad.vec import as_vec3 as cad_as_vec3
 from precis.cad.vec import pose as cad_pose
 from precis.utils.units import format_quantity
@@ -126,15 +132,10 @@ from precis_se import capabilities as se_caps
 from precis_se import catalog as se_catalog
 from precis_se import joints as se_joints
 from precis_se import modes as se_modes
+from precis_se import rays_macro as se_rays_macro
 from precis_se import toolaccess as se_toolaccess
-from precis_se.ops import ConnectSpec, SeTree, effective_envelope
-from precis_se.validate import ValidationIssue, _is_ancestor, _posed_component
-
-#: The ray-span state that means material (``precis.cad.fold`` spells the
-#: pair ``'solid' | 'void'``). Named rather than inlined because the miss
-#: is silent: a wrong literal here yields an empty stack, which reads
-#: exactly like a screw pointing into thin air.
-_SOLID = "solid"
+from precis_se.ops import ConnectSpec, SeTree
+from precis_se.validate import ValidationIssue, _is_ancestor
 
 #: Material shorter than this along the axis is a graze, not a member —
 #: two envelopes that merely touch at a face would otherwise each
@@ -152,6 +153,13 @@ _SOLID = "solid"
 #: that scale is not, physically, a machine screw), not a bug to paper
 #: over by relativizing the threshold.
 _MIN_MEMBER_M = 1e-6
+
+#: Two consecutive non-air spans of one block this far apart or closer
+#: are one member — a solid run and the carved void it opens into share a
+#: boundary exactly, so only float noise can sit between them; anything
+#: wider is real air and splits the block into a second member (a wall,
+#: then a gap, then a boss).
+_MEMBER_GAP_M = 1e-9
 
 #: Declared-vs-derived axis tolerance, radians (~2.5°, the same order the
 #: DOF probe uses for principal-axis alignment, for the same reason: a
@@ -187,9 +195,14 @@ _LEAD_TOL_REL = 0.01
 
 @dataclass(frozen=True)
 class Member:
-    """One block the fastener's axis passes through, on the thread side of
-    the head. ``t_in``/``t_out`` are metres along the axis from the head
-    bearing face; ``thickness_m`` is the material between them."""
+    """One contiguous run of a block's material along the fastener's
+    axis, on the thread side of the head — measured on the block's
+    realized solid (:func:`_walk_axis`), so ``t_in``/``t_out`` are real
+    entry/exit surfaces in metres from the head bearing face, and
+    ``thickness_m`` is the material between them. A block the axis leaves
+    and re-enters (a wall, air, then a boss) contributes one member per
+    run. A run that is all carved void — the axis down a pre-cut hole —
+    is still a member: the block is pierced but present, and clamped."""
 
     block: str
     t_in: float
@@ -373,60 +386,95 @@ def _angle_rad(a: list[float], b: list[float]) -> float:
 def _walk_axis(
     tree: SeTree, fastener: str, origin: list[float], axis: list[float]
 ) -> list[Member]:
-    """Every block whose material the fastener's axis crosses on the
-    thread side of the head, in axis order.
+    """Every block whose solid the fastener's axis passes through on the
+    thread side of the head, in axis order — one :class:`Member` per
+    contiguous run of the block's material (and its carved features)
+    along the axis.
 
-    One posed design, one ray, one probe per component — the probe is
-    analytic interval arithmetic, so this is cheap next to the DOF
-    probe's contact scan. Material behind the head (``t < 0``) is not a
-    member: the screw does not pass through it."""
-    design = CadDesign()
-    posed: dict[str, Any] = {}
-    for name, node in sorted(tree.blocks.items()):
+    Each block is measured on its **realized** solid — the bound cad
+    design's folded SDF when it binds one, else its envelope — through
+    the same :func:`precis_se.rays_macro.block_geoms` resolution the cad
+    inspect probes use (gr524390: on AABB-sphere envelopes the walk
+    reported a 137 mm "member" for a 60 mm box, missed the lid the axis
+    pierced, and anchored stamps in air). The ray is cast in the block's
+    own frame — a rigid transform, so the ray parameter is the world
+    axis's — and every span the probe returns is non-air by construction
+    (``solid`` material or a ``void`` carved feature); consecutive spans
+    that touch are one member, and a void still counts because a member
+    whose hole is already cut is pierced, present and clamped. Material
+    behind the head (``t < 0``) is not a member: the screw does not pass
+    through it."""
+    o_w = cad_as_vec3(origin)
+    d_w = cad_as_vec3(axis)
+    members: list[Member] = []
+    for geom in se_rays_macro.block_geoms(tree):
+        name = geom.name
         if name == fastener:
             continue
         # Same rule as validate.envelope_overlaps: a grouping block's
-        # envelope contains the fastener rather than intersecting it, so
+        # solid contains the fastener rather than intersecting it, so
         # the ray already starts inside it — walking it as material would
         # report a "member" the height of the whole enclosing box.
         if _is_ancestor(tree, name, fastener):
             continue
-        env = effective_envelope(tree, node)
-        if not env:
-            continue
-        expr = _posed_component(design, name, env, node)
-        if expr is not None:
-            posed[name] = expr
-    members: list[Member] = []
-    for name in sorted(posed):
+        inv = geom.placement.inverse()
         try:
             result = cad_probe.probe_ray(
-                design, cad_as_vec3(origin), cad_as_vec3(axis), component=name
+                geom.design, inv.apply(o_w), inv.apply_dir(d_w)
             )
         except (ValueError, ArithmeticError):  # pragma: no cover — defensive
             continue
+        run_in: float | None = None
+        run_out = 0.0
         for seg in result.segments:
-            if seg.state != _SOLID:
+            t_in, t_out = float(seg.t_in), float(seg.t_out)
+            if t_out <= 0.0:
+                continue  # wholly behind the head — the screw does not pass
+            if run_in is not None and t_in - run_out <= _MEMBER_GAP_M:
+                run_out = max(run_out, t_out)
                 continue
-            t_in = max(float(seg.t_in), 0.0)
-            t_out = float(seg.t_out)
-            if not math.isfinite(t_out) or t_out - t_in <= _MIN_MEMBER_M:
-                continue
-            node = tree.blocks[name]
-            members.append(
-                Member(
-                    block=name,
-                    t_in=t_in,
-                    t_out=t_out,
-                    thickness_m=t_out - t_in,
-                    form=_form(tree, name),
-                    bought=node.bound_kind in ("component", "part", "pcb")
-                    and bool(node.bound),
-                    mode=getattr(node, "mode", None),
-                )
-            )
+            if run_in is not None:
+                _member_for(members, tree, name, run_in, run_out)
+            run_in, run_out = t_in, t_out
+        if run_in is not None:
+            _member_for(members, tree, name, run_in, run_out)
     members.sort(key=lambda m: (m.t_in, m.block))
     return members
+
+
+def _member_for(
+    members: list[Member], tree: SeTree, name: str, t_in: float, t_out: float
+) -> None:
+    """Append the member one contiguous ``[t_in, t_out]`` run of block
+    ``name`` makes — clipped to the thread side of the head, dropped when
+    the material that remains is a graze.
+
+    The member's facets are read off the block's *owner* — for an
+    instance, its template — because the solid just probed is the
+    owner's, not the instance's (an instance carries no binding or mode
+    of its own; :func:`precis_se.rays_macro.block_geoms` resolves the
+    geometry the same way)."""
+    node = tree.blocks[name]
+    owner = tree.blocks.get(node.template or "") or node
+    t_in = max(t_in, 0.0)
+    if not math.isfinite(t_out) or t_out - t_in <= _MIN_MEMBER_M:
+        return
+    members.append(
+        Member(
+            block=name,
+            t_in=t_in,
+            t_out=t_out,
+            thickness_m=t_out - t_in,
+            form=(
+                se_catalog.fastener_form(_specs(owner))
+                if owner.bound_kind == "component"
+                else None
+            ),
+            bought=owner.bound_kind in ("component", "part", "pcb")
+            and bool(owner.bound),
+            mode=getattr(owner, "mode", None),
+        )
+    )
 
 
 def _truncate_at_target(
@@ -438,21 +486,27 @@ def _truncate_at_target(
     which one the joint names — a bolt posed on a saddle and connected to
     ``seatpost.top`` would otherwise walk straight through the seatpost,
     the clamp and the crown, out to the axle. The connect's non-fastener
-    endpoint *is* that block; a nut sitting just beyond it is still the
-    joint's own hardware (the ``nut`` termination expects it as the
-    terminal member) and survives the cut, but nothing further does.
-    Ownership of that nut is by position only: two collinear joints
-    packed so tightly that a foreign nut sits immediately past this
-    joint's target are not told apart here.
+    endpoint *is* that block — and its **last** run on the axis is where
+    the thread seats, because a block's solid can give the ray more than
+    one run (the screw clears a hollow box's near wall and threads into
+    the boss deeper in the same block). A nut sitting just beyond it is
+    still the joint's own hardware (the ``nut`` termination expects it
+    as the terminal member) and survives the cut, but nothing further
+    does. Ownership of that nut is by position only: two collinear
+    joints packed so tightly that a foreign nut sits immediately past
+    this joint's target are not told apart here.
 
     If the target never appears in the walk at all, the walk is returned
     unchanged and a detail string is returned instead of ``None`` — a
     silent guess here would hide the very axis mismatch that caused it."""
-    idx = next((i for i, m in enumerate(members) if m.block == target), None)
+    idx = next(
+        (i for i in range(len(members) - 1, -1, -1) if members[i].block == target),
+        None,
+    )
     if idx is None:
         return members, (
             f"the connect names {target!r} as what this screw fastens into, "
-            "but the screw's axis never crosses its envelope — the stack "
+            "but the screw's axis never crosses its solid — the stack "
             "was taken as everything on the axis; check its pose/rot or "
             "the connect's far endpoint"
         )
@@ -848,7 +902,7 @@ def _one(
     if not res.members:
         res.why_not = (
             f"{fastener!r}'s axis passes through nothing — no other block's "
-            "envelope lies on the thread side of its head (check its pose "
+            "solid lies on the thread side of its head (check its pose "
             "and rot; the screw drives along its own +z)"
         )
         return res
@@ -876,16 +930,20 @@ def _one(
     nominal = _num(specs, "outer_diameter")
     pitch = res.thread.pitch_m if res.thread else None
     engage_d = _engagement_d(res)
+    # Lengths and engagement are measured in axis *position*, not summed
+    # member material — the two agree on a stack contiguous from the
+    # head, but a stack with air in it (a hollow member giving the ray a
+    # wall, a gap, then a boss) needs the screw to span the air too.
     if res.termination == "nut" and pitch is not None:
-        res.required_length_m = res.stack_m + _PROTRUSION_PITCHES * pitch
+        res.required_length_m = last.t_out + _PROTRUSION_PITCHES * pitch
     elif res.termination == "tapped" and nominal is not None:
-        res.required_length_m = res.grip_m + engage_d * nominal
+        res.required_length_m = last.t_in + engage_d * nominal
 
     if res.required_length_m is not None and res.length_m is not None:
         engagement = (
             last.thickness_m
             if res.termination == "nut"
-            else max(0.0, min(res.length_m - res.grip_m, last.thickness_m))
+            else max(0.0, min(res.length_m - last.t_in, last.thickness_m))
         )
         if res.thread is not None:
             res.thread = Thread(
@@ -898,10 +956,10 @@ def _one(
         if res.length_m < res.required_length_m:
             short = res.required_length_m - res.length_m
             need = (
-                f"{res.stack_m * 1000:.1f} mm of stack + "
+                f"{last.t_out * 1000:.1f} mm of stack + "
                 f"{_PROTRUSION_PITCHES:g} threads of protrusion past the nut"
                 if res.termination == "nut"
-                else f"{res.grip_m * 1000:.1f} mm of grip + "
+                else f"{last.t_in * 1000:.1f} mm under the head to the seat + "
                 f"{engage_d:g}×D of thread engagement"
             )
             res.findings.append(
@@ -1182,11 +1240,11 @@ def _blind_hole_depth(
         return member.thickness_m, None, far.source or ""
     pitch_m = res.thread.pitch_m
     nominal = _num(specs, "outer_diameter")
-    actual_m = (
-        max(0.0, res.length_m - (res.grip_m or 0.0))
-        if res.length_m is not None
-        else 0.0
-    )
+    # How far past this member's entry surface the screw's thread
+    # actually reaches — its length is an axis position, the surface is
+    # ``member.t_in`` (the sum of clamped material understates it when
+    # the stack has air in it).
+    actual_m = max(0.0, res.length_m - member.t_in) if res.length_m is not None else 0.0
     if actual_m > 0.0:
         # The screw's own declared length says how much thread it puts
         # into this member — capped at the member, which is the most any
@@ -1391,20 +1449,19 @@ def _head_feature(
     if head_d is None:
         return None
     # The member picked for the head feature is the one the far end
-    # threads into: possible only when the member the head actually
-    # bears on never measured into the stack (envelope-walked members,
-    # gr524390), so "first non-bought member" silently degraded to the
-    # far member. Head clearance there machines the thread seat — a
-    # counterbore into a boss's core hole leaves a sliver of annulus —
-    # so the stamp is withheld and warned, not cut (gr525812).
+    # threads into — a genuinely single-member stack (every nearer member
+    # is bought or absent), measurable now that members are walked on
+    # real solids (gr524390). A counterbore there machines the thread
+    # seat — into a boss's core hole it leaves a sliver of annulus — so
+    # the optional bore is withheld and warned, not cut (gr525812). The
+    # countersink is NOT withheld: the cone is required for the screw to
+    # seat at all, and into a one-member joint that cone on the seat is
+    # the ordinary countersunk-tapped hole.
     seat_bound = near is res.members[-1] and res.termination == "tapped"
     if form == "countersunk":
-        if seat_bound:
-            res.findings.append(_near_member_missing(subject, form, near))
-            return None
         # The theoretical sharp cone: sized so the real head, which is
         # smaller by its edge radius, lands at or below flush.
-        return _hole_for(
+        hole = _hole_for(
             near,
             subject=subject,
             kind="countersink",
@@ -1417,6 +1474,8 @@ def _head_feature(
                 f"{head_d * 1000:.2f} mm ({specs.get('head_form')} head)"
             ),
         )
+        _head_floor_finding(res, hole, near, subject=subject)
+        return hole
     head_h = _num(specs, "head_height")
     if head_h is None:
         return None
@@ -1441,9 +1500,9 @@ def _head_feature(
         )
         return None
     if seat_bound:
-        res.findings.append(_near_member_missing(subject, form, near))
+        res.findings.append(_head_in_thread_seat(subject, form, near))
         return None
-    return _hole_for(
+    hole = _hole_for(
         near,
         subject=subject,
         kind="counterbore",
@@ -1457,24 +1516,53 @@ def _head_feature(
             "(params.counterbore asked for it)"
         ),
     )
+    _head_floor_finding(res, hole, near, subject=subject)
+    return hole
 
 
-def _near_member_missing(subject: str, form: str, near: Member) -> ValidationIssue:
+def _head_floor_finding(
+    res: FastenResult, hole: Hole, near: Member, *, subject: str
+) -> None:
+    """A head feature as deep as its member leaves the head no floor to
+    bear on — it breaks through and the head drops onto whatever is next.
+    Warned, not withheld: the stamp is still the right feature if the
+    builder thickens the member, flips the joint head-down on the far
+    member, or accepts a proud head."""
+    if hole.depth_m < near.thickness_m - _MIN_MEMBER_M:
+        return
+    res.findings.append(
+        ValidationIssue(
+            rule="head_feature_no_floor",
+            subject=subject,
+            detail=(
+                f"the {hole.kind} wants {hole.depth_m * 1000:.1f} mm of "
+                f"{near.block!r}, which is only {near.thickness_m * 1000:.1f} "
+                "mm on this axis — the bore has no floor and the head "
+                "bears on air. Thicken the member, or flip the joint so "
+                "the head bears on the far member instead"
+            ),
+            severity="warn",
+        )
+    )
+
+
+def _head_in_thread_seat(subject: str, form: str, near: Member) -> ValidationIssue:
     """gr525812: the member ``_head_feature`` picked is the one this
-    joint's thread seats in — the member the head actually bears on
-    never made the measured stack (members are envelope-walked,
-    gr524390), so "first non-bought member" degraded to the far member.
-    A head feature there machines the thread seat, so it is withheld and
+    joint's thread seats in — a genuinely single-member stack, now that
+    members are walked on real solids rather than envelopes (gr524390).
+    A counterbore there machines the thread seat, so it is withheld and
     warned rather than cut."""
     return ValidationIssue(
-        rule="near_member_missing",
+        rule="head_in_thread_seat",
         subject=subject,
         detail=(
             f"the {form} head feature would stamp into {near.block!r}, "
-            "the member this joint's thread seats in — the member the "
-            "head bears on is missing from the measured stack (members "
-            "are envelope-walked; gr524390), so the stamp is withheld "
-            "rather than cut into the thread seat"
+            "the member this joint's thread seats in — boring the seat "
+            "down to a sliver of annulus, so the stamp is withheld rather "
+            "than cut. If a member the head actually bears on is missing "
+            "from the stack, check the axis pierces it and that it is not "
+            "bought; if this is a genuinely single-member joint, a buried "
+            "head needs a thicker member or a proud head"
         ),
         severity="warn",
     )

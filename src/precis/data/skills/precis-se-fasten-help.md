@@ -183,18 +183,21 @@ bears on the far member and the thread seats in the near one, which
 needs no bore depth at all — but the head ends up captive on the blind
 side, so no driver reaches it once the joint is closed.
 
-**Verify placement before you cut — stamped origins are
-envelope-anchored.** Members are walked on bounding envelopes, so an
-origin can sit in the airspace above the real surface rather than on the
-pierced member, and an envelope-incomplete stack can aim a head feature
-at the wrong member entirely (then `near_member_missing` warns and the
-stamp is withheld). Cut the holes to the stamped *sizes* — diameter,
-depth and axis are trustworthy — then prove where they landed on the
-bound cad: `view='point'` inside the void reports `removed-by <leaf>`
-naming the cutter, `view='ray'` down the screw axis attributes every
-void segment to the feature that made it, and `view='volume'` per
-component confirms the material that should still be there. Trust the
-sizes, probe the placement.
+**Stamps are surface-anchored, and pierced members get clearance.** The
+stack is measured on each member's *realized* solid — the bound cad
+design's folded SDF when the block binds one, else its envelope — so a
+stamped origin is the surface the axis actually pierces (a boss top, not
+airspace above it), and every member between head and far end gets a
+shank clearance hole even when the connect names only the far end. The
+near member gets the head feature; the one case still withheld is a
+counterbore into the very member the thread seats in — a genuinely
+single-member stack — which `head_in_thread_seat` warns about instead of
+cutting (a bore that deep has no floor also warns,
+`head_feature_no_floor`). Cut what is stamped — diameter, depth, origin
+and axis are all real — and `view='print'` tells pre-cut from missed: a
+void already there comes back `feature_already_cut` (info), a cutter in
+air or a wrong-size void stays `feature_not_cut` (error, and a wrong
+diameter is named).
 
 ## 4 — read `view='fasten'`
 

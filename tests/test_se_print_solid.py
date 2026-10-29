@@ -21,11 +21,14 @@ from __future__ import annotations
 import json
 import math
 import re
+from dataclasses import replace
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
 
 from precis.cad import bulk as cad_bulk
+from precis.cad import dsl as cad_dsl
 from precis.cad.graph import Design as CadDesign
 from precis.cad.scene import NodeSpec, SceneSpec, build_design
 from precis.cad.vec import identity
@@ -507,3 +510,226 @@ class TestMultiComponentCuts:
         assert finding.severity == "info"
         assert names == ["h-precut"] and cut_any
         assert [n.component for n in nodes] == ["right"]
+
+    def test_a_tool_in_air_next_to_a_wall_is_not_already_cut(self) -> None:
+        """The review case: a fixed shell plus "any material" let a tool
+        standing in air beside an unrelated wall pass as already-cut —
+        material on one or two quadrants is a wall nearby, not the wall
+        around a void."""
+        design = self._two_boxes()
+        # Stand diagonally outside right's corner (x=.04, y=.01).
+        # The corner is 2.121 mm away: the 2 mm cutter is wholly in air,
+        # but the 2.5 mm shell meets one quadrant. The cutter AABB still
+        # overlaps right, so this reaches the quadrant gate. Moving far
+        # enough along x alone to clear the wall would miss its AABB.
+        hole = se_fasten.Hole(
+            name="h-beside-wall",
+            block="asm",
+            kind="clearance",
+            diameter_m=0.004,
+            depth_m=0.02,
+            origin=[0.0385, 0.0115, 0.02],
+            axis=[0.0, 0.0, -1.0],
+        )
+        corner_distance = math.hypot(0.04 - hole.origin[0], hole.origin[1] - 0.01)
+        radius = hole.diameter_m / 2.0
+        assert radius < corner_distance < radius + printsolid._CUT_SHELL_M
+        findings: list[ValidationIssue] = []
+        nodes, names, cut_any = printsolid._apply_cuts(
+            design, "asm", [hole], identity(), findings
+        )
+        assert not cut_any and nodes == [] and names == []
+        (finding,) = findings
+        assert finding.rule == "feature_not_cut"
+        assert finding.severity == "error"
+
+    @pytest.mark.parametrize(
+        "missing_half",
+        ["near", "far", None],
+        ids=["far-wall-only", "near-wall-only", "full-wall"],
+    )
+    def test_a_precut_hole_needs_wall_in_both_depth_halves(
+        self, missing_half: str | None
+    ) -> None:
+        """A zero-volume cutter and a full-depth component bounding box
+        do not prove the stamped hole has walls along its whole depth."""
+        design = self._two_boxes()
+        hole = self._hole("h-precut-depth", 0.05)
+        first: list[ValidationIssue] = []
+        printsolid._apply_cuts(design, "asm", [hole], identity(), first)
+        assert first == []
+        if missing_half is not None:
+            # Open one depth half to Ø8, well beyond the Ø4 tool's thin
+            # wall shell. The outer box still spans the full 20 mm depth;
+            # the tool body stays empty in BOTH halves of the feature.
+            relief = se_fasten.Hole(
+                name="h-depth-relief",
+                block="asm",
+                kind="clearance",
+                diameter_m=0.008,
+                depth_m=0.010,
+                origin=[0.05, 0.0, 0.02 if missing_half == "near" else 0.01],
+                axis=[0.0, 0.0, -1.0],
+            )
+            relief_findings: list[ValidationIssue] = []
+            printsolid._apply_cuts(design, "asm", [relief], identity(), relief_findings)
+            assert relief_findings == []
+        before = cad_bulk.volume(design, component="right").volume
+        findings: list[ValidationIssue] = []
+        nodes, names, cut_any = printsolid._apply_cuts(
+            design, "asm", [hole], identity(), findings
+        )
+        (finding,) = findings
+        if missing_half is None:
+            assert finding.rule == "feature_already_cut"
+            assert finding.severity == "info"
+            assert cut_any and names == [hole.name]
+            assert [node.component for node in nodes] == ["right"]
+        else:
+            assert finding.rule == "feature_not_cut"
+            assert finding.severity == "error"
+            assert not cut_any and names == [] and nodes == []
+        assert cad_bulk.volume(design, component="right").volume == pytest.approx(
+            before
+        )
+
+    def test_an_oversized_existing_hole_is_a_diameter_mismatch(self) -> None:
+        """A Ø6 void where a Ø4 hole was stamped: the tool sits inside
+        the bigger hole, so nothing is removed — but the void is NOT the
+        stamped feature, and the error has to say so with both
+        diameters."""
+        design = self._two_boxes()
+        bigger = se_fasten.Hole(
+            name="h-oversize",
+            block="asm",
+            kind="clearance",
+            diameter_m=0.006,
+            depth_m=0.010,
+            origin=[0.05, 0.0, 0.02],
+            axis=[0.0, 0.0, -1.0],
+        )
+        first: list[ValidationIssue] = []
+        printsolid._apply_cuts(design, "asm", [bigger], identity(), first)
+        assert first == []
+        stamped = se_fasten.Hole(
+            name="h-stamped",
+            block="asm",
+            kind="clearance",
+            diameter_m=0.004,
+            depth_m=0.010,
+            origin=[0.05, 0.0, 0.02],
+            axis=[0.0, 0.0, -1.0],
+        )
+        findings: list[ValidationIssue] = []
+        nodes, names, cut_any = printsolid._apply_cuts(
+            design, "asm", [stamped], identity(), findings
+        )
+        assert not cut_any and names == []
+        (finding,) = findings
+        assert finding.rule == "feature_not_cut"
+        assert "diameter mismatch" in finding.detail
+        assert "Ø6" in finding.detail and "Ø4" in finding.detail
+
+    def test_blocked_axis_skips_wall_probe_construction_and_volume(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        design = self._two_boxes()
+        hole = self._hole("h-blocked-axis", 0.05)
+        xform, _, _ = printsolid._cut_placement(hole, identity())
+        cutter = design.prim("tool", cad_dsl.build_config("cyl:r0.002h0.02"), xform)
+        before = set(design.instances)
+
+        def forbidden(*args: Any, **kwargs: Any) -> Any:
+            pytest.fail("a blocked axis must reject before building/evaluating probes")
+
+        monkeypatch.setattr(printsolid, "_quadrant_probes", forbidden)
+        monkeypatch.setattr(cad_bulk, "volume", forbidden)
+        witnessed, why = printsolid._wall_around_void(
+            design, hole, cutter, xform, ["right"]
+        )
+        assert witnessed == []
+        assert why is not None and "shallower" in why
+        assert set(design.instances) == before
+
+    def test_hex_pocket_mismatch_reports_the_compared_inradius(self) -> None:
+        design = self._two_boxes()
+        bigger = replace(self._hole("h-hex-oversize", 0.05), diameter_m=0.012)
+        first: list[ValidationIssue] = []
+        printsolid._apply_cuts(design, "asm", [bigger], identity(), first)
+        assert first == []
+        stamped = se_fasten.Hole(
+            name="h-hex-stamped",
+            block="asm",
+            kind="nut-pocket",
+            diameter_m=0.004,
+            across_flats_m=0.006,
+            depth_m=0.02,
+            origin=[0.05, 0.0, 0.02],
+            axis=[0.0, 0.0, -1.0],
+        )
+        findings: list[ValidationIssue] = []
+        nodes, names, cut_any = printsolid._apply_cuts(
+            design, "asm", [stamped], identity(), findings
+        )
+        assert not cut_any and nodes == [] and names == []
+        (finding,) = findings
+        assert finding.rule == "feature_not_cut"
+        assert "sampled void radius is 6.00 mm" in finding.detail
+        assert "stamped inradius 3.00 mm" in finding.detail
+        assert "radius mismatch" in finding.detail
+
+    @pytest.mark.parametrize(
+        "volumes",
+        [(0.0, 0.0), (1.0, 0.0, 1.0, 0.0), (1.0, 1.0, 0.0, 0.0)],
+        ids=["two-near-misses", "two-far-misses", "wall-then-two-misses"],
+    )
+    def test_two_missed_quadrants_stop_volume_work(
+        self, monkeypatch: pytest.MonkeyPatch, volumes: tuple[float, ...]
+    ) -> None:
+        design = self._two_boxes()
+        hole = self._hole("h-probe-budget", 0.05)
+        xform, _, _ = printsolid._cut_placement(hole, identity())
+        probes = printsolid._quadrant_probes(design, hole, 0.002, 0.0005, xform)
+        calls = 0
+
+        def measured(*args: Any, **kwargs: Any) -> SimpleNamespace:
+            nonlocal calls
+            assert calls < len(volumes), "evaluated a quadrant after two misses"
+            volume = volumes[calls]
+            calls += 1
+            return SimpleNamespace(volume=volume)
+
+        monkeypatch.setattr(cad_bulk, "volume", measured)
+        assert (
+            printsolid._quadrant_walls(design, design.components["right"], probes) < 3
+        )
+        assert calls == len(volumes)
+
+    def test_wall_probe_geometry_is_shared_across_components(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        design = self._two_boxes()
+        hole = self._hole("h-shared-probes", 0.05)
+        xform, _, _ = printsolid._cut_placement(hole, identity())
+        cutter = design.prim("tool", cad_dsl.build_config("cyl:r0.002h0.02"), xform)
+        ring = design.subtract(design.components["right"], cutter)
+        # Two separately named components carry the same open bore. This
+        # checks probe allocation independently of their wall quadrature.
+        design.components["right"] = ring
+        design.components["right-copy"] = ring
+        before = set(design.instances)
+        monkeypatch.setattr(
+            cad_bulk, "volume", lambda *args, **kwargs: SimpleNamespace(volume=1.0)
+        )
+        witnessed, why = printsolid._wall_around_void(
+            design, hole, cutter, xform, ["right", "right-copy"]
+        )
+        assert witnessed == ["right", "right-copy"] and why is None
+        labels = [
+            instance.label
+            for iid, instance in design.instances.items()
+            if iid not in before
+        ]
+        # One shell, two depth slabs and four quadrant boxes serve BOTH
+        # components; duplicate labels would allocate the probes twice.
+        assert len(labels) == len(set(labels)) == 7

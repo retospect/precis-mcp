@@ -102,15 +102,16 @@ class TestBlindTapDepthFromEngagement:
         """The dogfood case: a 150 mm seatpost with 10 mm of engaged
         thread gets a blind hole a little deeper than the engagement,
         nowhere near the member's full 150 mm."""
-        # grip (6 mm under the saddle) + 10 mm of engagement.
+        # 6 mm under the head + the 6 mm saddle + 4 mm of engagement (the
+        # 16 mm screw's tip reaches 4 mm past the seat surface at 12 mm).
         res = _only(_seatpost_like(terminal_thickness_m=0.150, length_m=0.006 + 0.010))
         assert res.termination == "tapped"
         assert res.thread_strategy == "tapped"
         assert res.thread is not None
-        assert res.thread.engagement_m == pytest.approx(0.010)
+        assert res.thread.engagement_m == pytest.approx(0.004)
         tapped = next(h for h in res.holes if h.kind == "tapped")
-        assert tapped.depth_m == pytest.approx(0.010 + _TAPPED_ALLOWANCE_M)
-        assert tapped.thread_depth_m == pytest.approx(0.012)
+        assert tapped.depth_m == pytest.approx(0.004 + _TAPPED_ALLOWANCE_M)
+        assert tapped.thread_depth_m == pytest.approx(0.006)
         assert tapped.depth_m < 0.150
         assert not tapped.through
 
@@ -119,12 +120,13 @@ class TestBlindTapDepthFromEngagement:
         blind hole deeper than itself — it comes out a through hole
         instead, and the feature says so rather than implying a bottom
         that isn't there."""
-        # grip (6 mm) + 6 mm of engagement, into an 8 mm member: engagement
-        # (6 mm) + the 3 mm allowance is 9 mm, more than the 8 mm the
-        # member actually is.
+        # The 12 mm screw's tip lands exactly on the seat surface — no
+        # engagement at all — so the hole is sized from the required 1×D
+        # (6 mm) + 5 mm allowance = 11 mm, more than the 8 mm the member
+        # actually is.
         res = _only(_seatpost_like(terminal_thickness_m=0.008, length_m=0.006 + 0.006))
         assert res.thread is not None
-        assert res.thread.engagement_m == pytest.approx(0.006)
+        assert res.thread.engagement_m == pytest.approx(0.0)
         tapped = next(h for h in res.holes if h.kind == "tapped")
         assert tapped.depth_m == pytest.approx(0.008)
         assert tapped.through
@@ -161,8 +163,8 @@ class TestBlindThreadFormingDepth:
         )
         assert res.thread_strategy == "thread-forming"
         assert res.thread is not None
-        assert res.thread.engagement_m == pytest.approx(0.010)
+        assert res.thread.engagement_m == pytest.approx(0.004)
         core = next(h for h in res.holes if h.kind == "core")
-        assert core.depth_m == pytest.approx(0.010 + _CORE_ALLOWANCE_M)
+        assert core.depth_m == pytest.approx(0.004 + _CORE_ALLOWANCE_M)
         assert core.depth_m < 0.150
         assert not core.through

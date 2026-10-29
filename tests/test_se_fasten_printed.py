@@ -297,23 +297,24 @@ class TestHeadFeatures:
         assert "head_stands_proud" not in _rules(res)
 
     def test_a_counterbore_never_lands_in_the_thread_seat_member(self) -> None:
-        """gr525812: the lid misses the envelope-measured stack, so 'first
-        non-bought member' falls through to the block — the member the
-        core hole stamps. A counterbore there machines the boss's thread
-        seat to a sliver; it is withheld and warned, not cut."""
+        """gr525812: 'first non-bought member' landing on the member the
+        core hole stamps would machine the boss's thread seat to a
+        sliver; the bore is withheld and warned, not cut — on real-solid
+        stacks (gr524390) that is a genuinely single-member joint, not a
+        member the envelope walk dropped."""
         tree = _stack(
             screw=M4_CAP,
             mode="fdm/asa",
             params={"counterbore": True, "thread_strategy": "thread-forming"},
         )
-        # The lid is in the tree but off the screw's axis — the envelope
-        # walk never sees it, and the measured stack is the block alone.
+        # The lid is in the tree but off the screw's axis — the measured
+        # stack is genuinely the block alone.
         tree.blocks["plate"].pose = [0.05, 0.0, 0.006]
         res = _only(tree)
         assert [m.block for m in res.members] == ["block"]
         assert not _holes(res, "counterbore")
         assert _holes(res, "core")  # the seat itself still stamps
-        warn = next(f for f in res.findings if f.rule == "near_member_missing")
+        warn = next(f for f in res.findings if f.rule == "head_in_thread_seat")
         assert warn.severity == "warn" and "'block'" in warn.detail
 
     def test_a_countersunk_head_needs_no_asking(self) -> None:
