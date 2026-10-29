@@ -1854,20 +1854,31 @@ def test_build_wires_capacity_honours_rotation() -> None:
 def test_build_wires_rate_printed() -> None:
     """The 2b route runs well inside the spec's 2 evals/s full-route
     floor at 100 parts — the old-form assert is back (round-5 ruling):
-    wall time of the wire build only, ringless synth n=100 seed 0. The
-    padded/ringless CPU ratio stays on as a second guard for
-    ring/gap-path regressions — each side takes the min of two reps:
-    gate containers inflate CPU unevenly under load, and the min is
-    the least-loaded sample."""
+    wall time of the wire build only, ringless synth n=100 seed 0; the
+    rep takes the min of two wall samples — under parallel load the
+    least-loaded sample is the honest one.
+
+    The padded/ringless CPU ratio stays on as a second guard for
+    ring/gap-path regressions, measured as INTERLEAVED pairs: a gate
+    container's load inflates both sides of a pair in the same moment,
+    so the pairwise ratio cancels it and the min picks the least-loaded
+    pair. The old min-per-side let one side's reps all land in a burst —
+    4.7x against the 4.0x budget under parallel load (gr537677).
+    """
     import time
 
     from precis.pcb.topoplace.wires import build_wires
 
     d, _inst, _nets = synth_design(seed=0, n_parts=100)
     mesh = build_mesh(d, d.pose0)
-    t0 = time.monotonic()
+
+    def wire_wall() -> float:
+        t0 = time.monotonic()
+        build_wires(mesh, d, 4)
+        return time.monotonic() - t0
+
     w = build_wires(mesh, d, 4)
-    dt = time.monotonic() - t0
+    dt = min(wire_wall(), wire_wall())
     rate = 1.0 / dt
     print(
         f"\nwires: {len(w.branches)} branches in {dt * 1e3:.0f} ms -> {rate:.1f} evals/s"
@@ -1880,14 +1891,19 @@ def test_build_wires_rate_printed() -> None:
         build_wires(build_mesh(dd, dd.pose0), dd, 4)
         return time.process_time() - t0c
 
-    ringless = min(timed(0.0), timed(0.0))
-    padded = min(timed(0.5), timed(0.5))
+    ringless: list[float] = []
+    padded: list[float] = []
+    for _ in range(3):
+        ringless.append(timed(0.0))
+        padded.append(timed(0.5))
+    ratios = [p / r for r, p in zip(ringless, padded, strict=True)]
     print(
-        f"mesh+wires: ringless {ringless * 1e3:.0f} ms cpu, "
-        f"padded {padded * 1e3:.0f} ms cpu "
-        f"({1.0 / padded:.1f} evals/s, {padded / ringless:.1f}x)"
+        f"mesh+wires: ringless {min(ringless) * 1e3:.0f} ms cpu, "
+        f"padded {min(padded) * 1e3:.0f} ms cpu, "
+        f"pairwise {', '.join(f'{r:.1f}x' for r in ratios)} "
+        f"(min {min(ratios):.1f}x)"
     )
-    assert padded <= 4.0 * ringless
+    assert min(ratios) <= 4.0
 
 
 def test_build_wires_deterministic() -> None:
