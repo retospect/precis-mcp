@@ -1043,6 +1043,15 @@ def _merge_ingest_meta(
     other key (abstract, journal, keywords, ...) only fills a gap: a stub's
     S2/Crossref metadata is richer than what Marker scrapes off a PDF, so
     an existing non-empty value always wins.
+
+    The write bumps ``updated_at``: a folded ``abstract`` is content
+    arriving, and readers that key on "ref changed since T" (the
+    ``context_sentence`` heal arms, which compare ``updated_at`` and chunk
+    ``created_at`` against a stamp's ``at`` — gr514381) must see it. A
+    bodiless ingest is exactly the case no chunk ``created_at`` covers:
+    this ref's card-only ``paper.chunks`` collide on ``(ref_id, ord)`` and
+    insert nothing, so the timestamp is the ONLY signal the abstract
+    landed.
     """
     incoming = incoming or {}
     row = conn.execute(
@@ -1063,7 +1072,8 @@ def _merge_ingest_meta(
     if not patch and not stale:
         return
     conn.execute(
-        "UPDATE refs SET meta = (coalesce(meta, '{}'::jsonb) - %s::text[]) || %s "
+        "UPDATE refs SET meta = (coalesce(meta, '{}'::jsonb) - %s::text[]) || %s, "
+        "updated_at = now() "
         "WHERE ref_id = %s AND retired_at IS NULL",
         (stale, Jsonb(patch), ref_id),
     )

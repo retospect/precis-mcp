@@ -1013,6 +1013,52 @@ class TestSelfHealingStamps:
         assert META_NO_ABSTRACT_KEY not in meta
         assert META_FAILED_KEY not in meta
 
+    def test_an_abstract_folded_by_a_bodiless_ingest_heals_the_stamp(
+        self, store: Any
+    ) -> None:
+        """gr514381 residual: an ingest that yields no body writes no new
+        chunks (its cards collide on ``(ref_id, ord)``), so the folded
+        ``meta.abstract`` used to leave no trace in either heal arm —
+        ``updated_at`` never moved and no chunk ``created_at`` landed —
+        and the paper stayed stamped forever. The fold now bumps
+        ``updated_at``, which re-arms the claim."""
+        ref_id = seed_ref(store, title="Helical microtubules")
+        claimed_at = store.fetch_refs_by_ids([ref_id])[ref_id].updated_at
+        _stamp_no_abstract(store, ref_id, claimed_at)
+        gated = run_context_sentence_pass(
+            store, client=_FakeClient(["x"]), ref_ids=[ref_id]
+        )
+        assert gated["claimed"] == 0
+
+        from precis.ingest.db_writer import (
+            PaperToWrite,
+            register_aliases_and_maybe_upgrade,
+        )
+
+        bodiless = PaperToWrite(
+            title="Helical microtubules",
+            authors=[{"name": "Iijima, S"}],
+            year=1991,
+            paper_id="cs514381",
+            cite_key_prefix="iijima91",
+            doi="10.9/helical",
+            provider="markup",
+            content_hash="ab" * 32,
+            meta={"abstract": _ABSTRACT},
+            chunks=[],
+        )
+        with store.pool.connection() as conn:
+            register_aliases_and_maybe_upgrade(ref_id, bodiless, conn=conn)
+            conn.commit()
+
+        client = _FakeClient(["Helical microtubules were observed by TEM."])
+        result = run_context_sentence_pass(store, client=client, ref_ids=[ref_id])
+
+        assert result == {"claimed": 1, "ok": 1, "failed": 0}
+        meta = store.fetch_refs_by_ids([ref_id])[ref_id].meta or {}
+        assert meta.get(META_KEY) == "Helical microtubules were observed by TEM."
+        assert META_NO_ABSTRACT_KEY not in meta
+
     def test_stale_no_abstract_heals_on_an_abstract_paragraph(self, store: Any) -> None:
         """The abstract was in the body all along (the 11-paper prod
         cohort): the stamp alone must not keep the pass from finding it."""

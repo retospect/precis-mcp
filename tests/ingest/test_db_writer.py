@@ -834,6 +834,35 @@ class TestUpgradeMergesIngestMeta:
         assert meta["source_format"] == "jats"
         assert "glyph_health" not in meta
 
+    def test_bodiless_meta_fold_bumps_updated_at(self, store):
+        """gr514381: a bodiless ingest (no ord >= 0 chunks; its card chunk
+        collides on ``(ref_id, ord)``) writes nothing but the meta fold —
+        the ``updated_at`` bump is the only record that an abstract just
+        landed, and the ``context_sentence`` heal arms key on it."""
+        ref_id = self._seed_stub(store, {})
+        before = store.fetch_refs_by_ids([ref_id])[ref_id].updated_at
+
+        paper = PaperToWrite(
+            title="Stub",
+            authors=[{"name": "C, D"}],
+            year=2024,
+            paper_id="gm333333",
+            cite_key_prefix="glyph24",
+            doi="10.9/glyph",
+            provider="markup",
+            content_hash="ef" * 32,
+            meta={"abstract": "scraped abstract"},
+            chunks=[],  # the yielded-no-body-text ingest (gr510690 shape)
+        )
+        with store.pool.connection() as conn:
+            written = register_aliases_and_maybe_upgrade(ref_id, paper, conn=conn)
+            conn.commit()
+
+        assert written == 0
+        ref = store.fetch_refs_by_ids([ref_id])[ref_id]
+        assert ref.meta["abstract"] == "scraped abstract"
+        assert ref.updated_at > before
+
 
 class TestMarkupBackfillReplace:
     """register_aliases_and_maybe_upgrade — gr372781 item 3 gated replace."""
