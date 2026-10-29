@@ -2529,6 +2529,35 @@ COURTYARD_SIMPLIFY_MM = 0.025
 #: the simplify and gain from it.
 COURTYARD_DENSE_VERTS = 32
 
+#: Union vertex count above which the courtyard offset decimates its
+#: INPUT first (gr536561). A mitre-join buffer's cost is the offset
+#: curve's self-intersection noding, which grows superlinearly with
+#: input vertices: an EWOD instance's 51k-vertex electrode union ran
+#: 10-33s per call, and a put+place+DRC cycle invokes the courtyard
+#: builder ~11 times — the tests read as a ~20 minute hang. Below this
+#: count the exact buffer is already sub-second, so ordinary pad sets
+#: keep byte-identical output; above it the union is simplified by the
+#: chord tolerance and offset by ``clearance + tolerance``, which still
+#: provably covers the exact buffered union (Douglas-Peucker moves the
+#: boundary by at most the tolerance in either direction, so every union
+#: point stays within tolerance of the simplified one) while
+#: over-covering by under 2x the tolerance — the same grow-then-prove
+#: bound :func:`_decimate_courtyard` applies at the output end.
+COURTYARD_UNION_DENSE_VERTS = 2048
+
+
+def _buffer_input_verts(geom: Any) -> int:
+    """Total vertex count of a union result, across every member's
+    exterior and interior rings — the figure a mitre-join buffer's
+    cost follows."""
+    t = geom.geom_type
+    if t == "Polygon":
+        return len(geom.exterior.coords) + sum(len(r.coords) for r in geom.interiors)
+    if t in ("MultiPolygon", "GeometryCollection"):
+        return sum(_buffer_input_verts(g) for g in geom.geoms)
+    coords = getattr(geom, "coords", None)
+    return len(coords) if coords is not None else 0
+
 
 def _bridge_pad_clusters(grown: Any) -> Any | None:
     """Join a MultiPolygon's clusters into one ring with a minimal
@@ -2697,6 +2726,16 @@ def instance_courtyard_polygon(
     A courtyard hulled from the netlist's pins alone left an NC lead or
     a connector's second tab outside it, so the placer could park a
     neighbour on copper the gerbers flash.
+
+    **Dense unions decimate BEFORE the offset** (:data:`COURTYARD_UNION_
+    DENSE_VERTS`, gr536561): a shaped-electrode instance arrives with
+    ~50k union vertices, and a mitre-join buffer's offset-curve noding
+    blows up superlinearly — one courtyard ran 10-33s and a
+    put+place+DRC cycle builds it ~11 times. Simplifying the union by
+    the chord tolerance and offsetting by ``clearance + tolerance``
+    keeps the ring a proven superset of the exact buffered union (the
+    same bound :func:`_decimate_courtyard` re-proves at the output end),
+    never the under-covering direction this function exists to avoid.
     """
     if pads is None:
         pads = [pad for pad in ir.footprint_pads if pad.instance == inst]
@@ -2765,9 +2804,16 @@ def instance_courtyard_polygon(
         return [(-h, -h), (h, -h), (h, h), (-h, h), (-h, -h)]
     shape = None
     try:
-        grown = _shapely_unary_union(geoms).buffer(
-            clearance_mm, join_style=2, mitre_limit=COURTYARD_MITRE_LIMIT
-        )
+        union = _shapely_unary_union(geoms)
+        offset_mm = clearance_mm
+        if _buffer_input_verts(union) > COURTYARD_UNION_DENSE_VERTS:
+            # Dense authored outlines (shaped electrodes): the exact
+            # mitre offset costs minutes at this vertex count — decimate
+            # the input first (see COURTYARD_UNION_DENSE_VERTS for the
+            # cover proof).
+            union = union.simplify(COURTYARD_SIMPLIFY_MM, preserve_topology=True)
+            offset_mm += COURTYARD_SIMPLIFY_MM
+        grown = union.buffer(offset_mm, join_style=2, mitre_limit=COURTYARD_MITRE_LIMIT)
         # Disjoint pad clusters surviving the offset (a connector's far
         # tabs, or a shaped electrode's two pads at zero clearance) break
         # the one-ring contract. Bridge them with a minimal corridor —

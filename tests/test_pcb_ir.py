@@ -15,6 +15,8 @@ from precis.pcb import DEFAULT_STACKUP
 from precis.pcb.ir import (
     COURTYARD_MITRE_LIMIT,
     NO_NET,
+    NO_PIN,
+    FootprintPad,
     Level,
     PlaneConnectivity,
     compute_gap_capacity,
@@ -312,6 +314,61 @@ def test_instance_courtyard_polygon_decimates_without_under_covering():
         0.3, join_style=2, mitre_limit=COURTYARD_MITRE_LIMIT
     )
     assert shape.covers(exact), "decimated ring under-covers the exact keep-out"
+
+
+def test_instance_courtyard_polygon_dense_union_decimates_before_the_offset():
+    """gr536561: an EWOD instance's pad set is a ~51k-vertex union (54
+    crenellated electrodes, dumped on the hv_ring dogfood board —
+    ``tests/fixtures/pcb/ewod-arr1-courtyard-union.wkt.gz``, provenance
+    in the ``.md`` next to it). A mitre-join buffer on that input ran
+    10-33s per call — GEOS's offset-curve noding grows superlinearly
+    with input vertices — and a put+place+DRC cycle calls this builder
+    ~11 times, so the place-job tests read as a ~20-minute hang. The
+    union now decimates BEFORE the offset; this pins that the call
+    stays fast and the ring still provably covers the exact keep-out."""
+    import gzip
+    import time
+    from pathlib import Path
+
+    from shapely import from_wkt
+    from shapely.geometry import Polygon
+
+    with gzip.open(
+        Path("tests/fixtures/pcb/ewod-arr1-courtyard-union.wkt.gz"),
+        "rt",
+        encoding="utf-8",
+    ) as f:
+        union = from_wkt(f.read())
+    ir = from_graph(_star_graph(), stackup=DEFAULT_STACKUP)
+    inst = 0
+    pads = [
+        FootprintPad(
+            instance=inst,
+            number=str(i),
+            label=str(i),
+            pin=NO_PIN,
+            primary=False,
+            raw={"x": 0.0, "y": 0.0, "poly": list(geom.exterior.coords)},
+        )
+        for i, geom in enumerate(union.geoms)
+    ]
+    t0 = time.monotonic()
+    poly = instance_courtyard_polygon(ir, inst, clearance_mm=0.4, pads=pads)
+    elapsed = time.monotonic() - t0
+    shape = Polygon(poly)
+    assert shape.is_valid and not shape.is_empty
+    # The dense path must still over-cover: the keep-out it must beat is
+    # the ideal rounded offset of the pad union — a ROUND join computes
+    # it exactly and cheaply, where the mitre reference is the slow op
+    # this regression exists because of.
+    assert shape.covers(union.buffer(0.4, join_style=1)), (
+        "decimated-input ring under-covers the exact keep-out"
+    )
+    n_union_verts = sum(len(g.exterior.coords) for g in union.geoms)
+    assert elapsed < 5.0, (
+        f"courtyard on a {n_union_verts}-vertex union took {elapsed:.1f}s — "
+        "the dense-input decimate regressed"
+    )
 
 
 def test_instance_courtyard_polygon_disjoint_pads_bridge_without_hulling():
