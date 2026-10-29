@@ -1,10 +1,10 @@
 {
  "esp32c3": {
-  "crossings": 35,
+  "crossings": 40,
   "errors": 0
  },
  "nano_usb_pd": {
-  "crossings": 874,
+  "crossings": 1140,
   "errors": 14
  }
 }
