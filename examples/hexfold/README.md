@@ -32,21 +32,29 @@ reused. `<name>` is `prism` / `nanobud` / `pillar`, `<slug>` is
 3. Mint the empty design:
    `put(kind='se', id='<slug>', title='<name> workspace dogfood',
    text='{}')`.
-4. Import — `run` carries the whole `out/` tree inline as
-   `{relpath: text}` (read every file under `scratch/out/<name>/`,
-   skip the `.fitcache/` cache dir); `files` syncs the script itself
-   into the workspace folder, `part-of` the design:
+4. Import — the bytes ride a staged upload, never model tokens.
+   Mint the link (sole op), POST the tar, import the answer:
 
    ```python
+   edit(kind='se', id='<slug>', ops=[{'op': 'workspace_upload_link'}])
+   # → url; then, outside the model:
+   #   tar cf run.tar -C scratch/out/<name> .
+   #   curl -f --data-binary @run.tar \
+   #     -H 'Content-Type: application/x-tar' '<url>'
+   # → {'sha256': '<sha>', ...}
    edit(kind='se', id='<slug>', ops=[{
        'op': 'import_workspace',
        'workspace': '<slug>',
-       'run': {'manifest.json': '<text>', 'trace.json': '<text>',
-               'blocks/<name>.extxyz': '<text>',
-               'blocks/<name>.bonds.json': '<text>', 'fit.json': '<text>'},
+       'staged': '<sha>',
        'files': {'main.py': '<the script text>'},
    }])
    ```
+
+   The small-tree fallback is `'run'` carrying `out/` inline as
+   `{relpath: text}` (read every file under `scratch/out/<name>/`,
+   skip the `.fitcache/` cache dir) — it retypes every byte through
+   the model, which is exactly what the manifest `sha`/`bonds_sha`
+   verification exists to catch.
 
    Add `'dry_run': True` to see the plan with nothing written. The
    op must ride alone — no other ops in the same `edit`.

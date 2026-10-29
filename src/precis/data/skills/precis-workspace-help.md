@@ -322,10 +322,16 @@ files' bytes are verified: a declared `sha`/`bonds_sha` that does not
 match the uploaded file refuses the import, an empty bonds list or a
 `files` `.py` that does not compile refuses naming file:line
 (gr517643). `edit(ops=[...])` is the canonical call form — `ops=` is a
-declared kwarg of `edit`, not a deprecated spelling. The inline `run`
-map is the interim door: a staged-upload path (signed URL, bytes land
-server-side, `import_workspace` takes a digest instead of text) is
-planned so file bytes never pass through model tokens. `files` syncs
+declared kwarg of `edit`, not a deprecated spelling.
+
+**Staged door.** Multi-KB `out/` trees should never ride the inline
+map: `ops=[{'op': 'workspace_upload_link'}]` (sole op, same
+`edit(kind='se')` door) mints a single-use signed URL; `tar cf
+run.tar -C out .` then `curl -f --data-binary @run.tar` POSTs the
+bytes straight to precis_web — they never pass through model tokens.
+The answer's sha256 then goes in as `'staged': '<sha256>'` instead of
+`'run'` (same caps, same manifest-sha verification — the staged tar
+is what `sha`/`bonds_sha` were made to vouch for). `files` syncs
 the workspace's code: a `folder` ref `part-of` the design plus
 `plaintext` children slugged `ws-<workspace>--<path>` — the
 `ws-<workspace>` python root then serves them (`get(kind='python',

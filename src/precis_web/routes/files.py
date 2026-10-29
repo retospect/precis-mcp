@@ -31,6 +31,14 @@ reusable-until-expiry rule does NOT hold here. A failed upload
 (``413``/``415``/disconnect) drops the tombstone again, leaving the
 token reusable until expiry.
 
+``POST /files/upload_tree/{ref_id}?t=<token>`` is the same door for an
+se workspace's out/ tree (gr517643): ``{'op': 'workspace_upload_link'}``
+on ``edit(kind='se')`` mints it over ``(op='put', sha='upload_tree',
+ref_id, exp)``, the body is an uncompressed tar (``ustar`` magic at
+offset 257 is the format gate), and the part renames to
+``<ref_id>-<sha>.tar`` for ``import_workspace``'s ``staged`` key to
+consume.
+
 **This route authenticates itself**, which is why
 :mod:`precis_web.auth` exempts the ``/files`` prefix from its blanket
 Basic gate — and why there is deliberately NO Basic fallback here
@@ -86,6 +94,90 @@ def _verify(request: Request, *, op: str, sha: str):
         raise HTTPException(status_code=403, detail="invalid token") from exc
 
 
+async def _stage_stream(
+    request: Request,
+    directory: Path,
+    *,
+    stem: str,
+    magic_offset: int,
+    magic: bytes,
+    oversized: str,
+    not_what: str,
+) -> tuple[str, int]:
+    """Claim ``<stem>.done``, then stream the request body to
+    ``<stem>.part`` hashing it as it arrives; return ``(sha256, size)``
+    for the caller to rename the part into its staged name.
+
+    ``magic`` at ``magic_offset`` is the format gate — a body that ends
+    before the check completes, or whose bytes fail it, is a 415;
+    ``MAX_UPLOAD_BYTES`` is a 413 raised mid-read so an over-cap body
+    never reaches disk in full. A failed upload (413/415/disconnect)
+    drops both artifacts so the token stays reusable until expiry.
+    """
+    part, done = directory / f"{stem}.part", directory / f"{stem}.done"
+    try:
+        # The nonce is claimed BEFORE the body streams: the ``.done``
+        # tombstone is created exclusively up front, so a replay is
+        # refused no matter where the first upload stands — writing it
+        # only after the rename left a double-claim window between the
+        # ``.part`` rename and the touch.
+        await asyncio.to_thread(done.touch, exist_ok=False)
+    except FileExistsError as exc:
+        raise HTTPException(status_code=409, detail="upload link already used") from exc
+    hasher = hashlib.sha256()
+    size = 0
+    head = bytearray()
+    want = magic_offset + len(magic)
+    checked = False
+    try:
+        fh = await asyncio.to_thread(part.open, "xb")
+        try:
+            async for chunk in request.stream():
+                size += len(chunk)
+                if size > pdf_upload.MAX_UPLOAD_BYTES:
+                    raise HTTPException(status_code=413, detail=oversized)
+                if not checked:
+                    head += chunk[: want - len(head)]
+                    if len(head) >= want:
+                        checked = True
+                        if bytes(head[magic_offset:want]) != magic:
+                            raise HTTPException(status_code=415, detail=not_what)
+                await asyncio.to_thread(_store_chunk, fh, hasher, chunk)
+        finally:
+            await asyncio.to_thread(fh.close)
+        if not checked:
+            raise HTTPException(status_code=415, detail=not_what)
+    except FileExistsError as exc:
+        # A stray ``.part`` under our own fresh nonce — cannot happen
+        # (the tombstone claim serializes the nonce); still a 409, never
+        # a clobbered in-flight upload.
+        await asyncio.to_thread(done.unlink, missing_ok=True)
+        raise HTTPException(status_code=409, detail="upload link already used") from exc
+    except BaseException:
+        # A failed upload (413/415/disconnect) frees the nonce again —
+        # the token stays reusable until expiry.
+        await asyncio.to_thread(part.unlink, missing_ok=True)
+        await asyncio.to_thread(done.unlink, missing_ok=True)
+        raise
+    return hasher.hexdigest(), size
+
+
+def _staging_dir_or_503() -> Path:
+    directory = pdf_upload.uploads_dir()
+    if directory is None:
+        raise HTTPException(
+            status_code=503,
+            detail=f"{pdf_upload.UPLOAD_STAGING_ENV} unset on this node",
+        )
+    return directory
+
+
+def _check_declared_length(request: Request, detail: str) -> None:
+    declared = request.headers.get("content-length")
+    if declared and declared.isdigit() and int(declared) > pdf_upload.MAX_UPLOAD_BYTES:
+        raise HTTPException(status_code=413, detail=detail)
+
+
 @router.post("/files/upload/{ref_id}")
 async def upload_pdf(ref_id: int, request: Request):
     """Stage one agent-held PDF under ``PRECIS_UPLOAD_STAGING`` for
@@ -107,61 +199,20 @@ async def upload_pdf(ref_id: int, request: Request):
         # 403 a sha-bound token earns off its own resource.
         raise HTTPException(status_code=403, detail="token names another ref")
     store = get_store(request)
-    directory = pdf_upload.uploads_dir()
-    if directory is None:
-        raise HTTPException(
-            status_code=503,
-            detail=f"{pdf_upload.UPLOAD_STAGING_ENV} unset on this node",
-        )
-    declared = request.headers.get("content-length")
-    if declared and declared.isdigit() and int(declared) > pdf_upload.MAX_UPLOAD_BYTES:
-        raise HTTPException(status_code=413, detail="PDF exceeds the 50 MB cap")
+    directory = _staging_dir_or_503()
+    _check_declared_length(request, "PDF exceeds the 50 MB cap")
     await asyncio.to_thread(directory.mkdir, parents=True, exist_ok=True)
     stem = pdf_upload.nonce(claims.exp, (request.query_params["t"]).rsplit(".", 1)[1])
-    part, done = directory / f"{stem}.part", directory / f"{stem}.done"
-    try:
-        # The nonce is claimed BEFORE the body streams: the ``.done``
-        # tombstone is created exclusively up front, so a replay is
-        # refused no matter where the first upload stands — writing it
-        # only after the rename left a double-claim window between the
-        # ``.part`` rename and the touch.
-        await asyncio.to_thread(done.touch, exist_ok=False)
-    except FileExistsError as exc:
-        raise HTTPException(status_code=409, detail="upload link already used") from exc
-    hasher = hashlib.sha256()
-    size = 0
-    head = bytearray()
-    try:
-        fh = await asyncio.to_thread(part.open, "xb")
-        try:
-            async for chunk in request.stream():
-                size += len(chunk)
-                if size > pdf_upload.MAX_UPLOAD_BYTES:
-                    raise HTTPException(
-                        status_code=413, detail="PDF exceeds the 50 MB cap"
-                    )
-                if len(head) < 4:
-                    head += chunk[: 4 - len(head)]
-                    if len(head) == 4 and not head.startswith(b"%PDF"):
-                        raise HTTPException(status_code=415, detail="not a PDF")
-                await asyncio.to_thread(_store_chunk, fh, hasher, chunk)
-        finally:
-            await asyncio.to_thread(fh.close)
-        if len(head) < 4:
-            raise HTTPException(status_code=415, detail="not a PDF")
-    except FileExistsError as exc:
-        # A stray ``.part`` under our own fresh nonce — cannot happen
-        # (the tombstone claim serializes the nonce); still a 409, never
-        # a clobbered in-flight upload.
-        await asyncio.to_thread(done.unlink, missing_ok=True)
-        raise HTTPException(status_code=409, detail="upload link already used") from exc
-    except BaseException:
-        # A failed upload (413/415/disconnect) frees the nonce again —
-        # the token stays reusable until expiry.
-        await asyncio.to_thread(part.unlink, missing_ok=True)
-        await asyncio.to_thread(done.unlink, missing_ok=True)
-        raise
-    sha = hasher.hexdigest()
+    sha, size = await _stage_stream(
+        request,
+        directory,
+        stem=stem,
+        magic_offset=0,
+        magic=b"%PDF",
+        oversized="PDF exceeds the 50 MB cap",
+        not_what="not a PDF",
+    )
+    part = directory / f"{stem}.part"
     await asyncio.to_thread(
         os.replace, part, directory / pdf_upload.staged_name(ref_id, sha)
     )
@@ -173,6 +224,54 @@ async def upload_pdf(ref_id: int, request: Request):
         "next": (
             f"put(kind='paper', id='{handle}', args="
             f"{{'pdf_upload': '{sha}', 'reason': '<why>'}})"
+        ),
+    }
+
+
+@router.post("/files/upload_tree/{ref_id}")
+async def upload_workspace_tree(ref_id: int, request: Request):
+    """Stage one agent-held out/ tree — an uncompressed tar — under
+    ``PRECIS_UPLOAD_STAGING`` for ``import_workspace``'s ``staged`` key
+    (gr517643): the se analog of :func:`upload_pdf`, so workspace
+    geometry bytes ride HTTP, never model tokens. Same contract —
+    token verified before a body byte is read, single-use nonce
+    tombstone, streamed hash — with ``ustar`` magic at offset 257 as
+    the format gate instead of ``%PDF``. Its own token sentinel
+    (``upload_tree``) means a paper-upload token cannot feed it and a
+    tree token cannot stage a PDF."""
+    claims = await asyncio.to_thread(
+        _verify, request, op="put", sha=file_links.UPLOAD_TREE_SHA
+    )
+    if claims.ref_id != ref_id:
+        raise HTTPException(status_code=403, detail="token names another ref")
+    store = get_store(request)
+    directory = _staging_dir_or_503()
+    _check_declared_length(request, "tar exceeds the 50 MB cap")
+    await asyncio.to_thread(directory.mkdir, parents=True, exist_ok=True)
+    stem = pdf_upload.nonce(claims.exp, (request.query_params["t"]).rsplit(".", 1)[1])
+    sha, size = await _stage_stream(
+        request,
+        directory,
+        stem=stem,
+        magic_offset=257,
+        magic=b"ustar",
+        oversized="tar exceeds the 50 MB cap",
+        not_what="not an uncompressed tar",
+    )
+    part = directory / f"{stem}.part"
+    await asyncio.to_thread(
+        os.replace, part, directory / pdf_upload.staged_tree_name(ref_id, sha)
+    )
+    refs = await asyncio.to_thread(store.fetch_refs_by_ids, [ref_id])
+    target = refs.get(ref_id)
+    handle = str(getattr(target, "slug", "") or "") or f"ref{ref_id}"
+    return {
+        "sha256": sha,
+        "bytes": size,
+        "next": (
+            f"edit(kind='se', id='{handle}', ops=[{{'op': "
+            f"'import_workspace', 'workspace': '<workspace slug>', "
+            f"'staged': '{sha}'}}])"
         ),
     }
 

@@ -388,10 +388,12 @@ class SeHandler(Handler):
             "declare_states/declare_transitions/set_current_state/"
             "declare_helix/declare_strand/add_domain/unpair/remove_domain/"
             "fill_complement/clear_chain/layout_chain); "
-            "import_workspace(workspace=, run={relpath:text}, files?=, "
-            "dry_run?=, target?='design'|'fork') — edit-only, the sole op "
+            "import_workspace(workspace=, run={relpath:text} OR "
+            "staged=<sha256>, files?=, dry_run?=, "
+            "target?='design'|'fork') — edit-only, the sole op "
             "of its call — imports a workspace run's out/ tree into the "
-            "design (precis-workspace-help); "
+            "design (precis-workspace-help); workspace_upload_link(ttl_s?=) "
+            "mints the single-use POST URL whose answer feeds 'staged'; "
             "declare_helix block= n_units= (bp) + lattice='honeycomb'|"
             "'square' row= col= OR path={'waypoints':[[x,y,z],…]} declares "
             "the block to BE a helix (nucleic='DNA'|'RNA', phase0=, "
@@ -994,11 +996,20 @@ class SeHandler(Handler):
             ops = payload.get("ops") or []
         if not isinstance(ops, list):
             raise BadInput("put(kind='se') 'ops' must be a list of typed ops")
-        if any(isinstance(o, dict) and o.get("op") == "import_workspace" for o in ops):
+        door_hit = next(
+            (
+                str(o.get("op"))
+                for o in ops
+                if isinstance(o, dict)
+                and o.get("op") in workspace_import.WORKSPACE_DOOR_OPS
+            ),
+            None,
+        )
+        if door_hit is not None:
             raise BadInput(
-                "import_workspace is an edit(kind='se') op — put builds a "
-                "fresh tree and the import writes the design's whole "
-                "workspace-owned block set",
+                f"{door_hit} is an edit(kind='se') op — put builds a "
+                "fresh tree and the workspace door ops need an existing "
+                "design ref",
                 next="put(kind='se', id=...) the design first, then "
                 "edit(kind='se', id=..., ops=[{'op':'import_workspace', "
                 "'workspace': '<slug>', 'run': {...}}])",
@@ -1167,9 +1178,10 @@ class SeHandler(Handler):
         if ref is None:
             nxt = (
                 f"put(kind='se', id={str(id).strip()!r}, ...) first — "
-                "import_workspace imports into an existing design"
+                "the workspace door ops need an existing design"
                 if any(
-                    isinstance(o, dict) and o.get("op") == "import_workspace"
+                    isinstance(o, dict)
+                    and o.get("op") in workspace_import.WORKSPACE_DOOR_OPS
                     for o in op_list or []
                 )
                 else None
@@ -1182,29 +1194,43 @@ class SeHandler(Handler):
                 f"{str(ref.slug)!r}, "
                 "ops=[{'op':'add_block','name':'hub','parent':'fork'}])",
             )
-        # ``import_workspace`` is a whole-run door, not a tree op —
+        # The workspace door ops are whole-run doors, not tree ops —
         # intercepted here like the design-history ops, BEFORE
         # ``tree_mutation`` (and before the dry_run-join check: the op's
         # own ``dry_run`` key means "show me, write nothing").
-        if any(
-            isinstance(o, dict) and o.get("op") == "import_workspace" for o in op_list
-        ):
+        door_op = next(
+            (
+                o
+                for o in op_list
+                if isinstance(o, dict)
+                and o.get("op") in workspace_import.WORKSPACE_DOOR_OPS
+            ),
+            None,
+        )
+        if door_op is not None:
+            door_name = str(door_op.get("op"))
             if len(op_list) != 1:
                 raise BadInput(
-                    "import_workspace must be the only op in its edit call",
+                    f"{door_name} must be the only op in its edit call",
                     next="edit(kind='se', id="
                     f"{str(ref.slug)!r}, ops=[{{'op':'import_workspace',"
                     "'workspace':'<slug>','run':{...}}}])",
                 )
             if "prefunits" in payload:
                 raise BadInput(
-                    "prefunits cannot ride an import_workspace op — it "
+                    f"prefunits cannot ride a {door_name} op — it "
                     "returns before the meta write; send the prefunits "
                     "change as a separate edit"
                 )
+            if door_name == "workspace_upload_link":
+                return Response(
+                    body=workspace_import.workspace_upload_link_op(
+                        self.store, design=str(ref.slug), op=door_op
+                    )
+                )
             return Response(
                 body=workspace_import.import_workspace_op(
-                    self.store, design=str(ref.slug), op=op_list[0]
+                    self.store, design=str(ref.slug), op=door_op
                 )
             )
         # Sticky ``meta.prefunits``: an edit carrying ``prefunits`` rewrites
@@ -1560,9 +1586,17 @@ class SeHandler(Handler):
             raise BadInput("pin's 'ops' must be a list of typed ops for the branch")
         if any(o.get("op") in _HISTORY_OPS for o in branch_ops):
             raise BadInput("pin's 'ops' cannot carry another design-history op")
-        if any(o.get("op") == "import_workspace" for o in branch_ops):
+        door_hit = next(
+            (
+                str(o.get("op"))
+                for o in branch_ops
+                if o.get("op") in workspace_import.WORKSPACE_DOOR_OPS
+            ),
+            None,
+        )
+        if door_hit is not None:
             raise BadInput(
-                "pin's 'ops' cannot carry an import_workspace op — run it "
+                f"pin's 'ops' cannot carry a {door_hit} op — run it "
                 "on the branch design after the pin lands"
             )
         if self.store.get_ref(kind="se", id=new_slug) is not None:

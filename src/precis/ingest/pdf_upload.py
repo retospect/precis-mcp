@@ -32,9 +32,12 @@ lose its PDF when a same-sha re-upload was abandoned and swept.
 Three artifact kinds live in the staging dir:
 
 * ``<nonce>.part`` — an upload in flight (or interrupted);
-* ``<ref_id>-<sha>.pdf`` — a completed upload awaiting attach, the
-  ``ref_id`` in the name binding the staging to the stub its token
-  named (an attach for another ref finds nothing);
+* ``<ref_id>-<sha>.pdf`` / ``<ref_id>-<sha>.tar`` — a completed upload
+  awaiting attach, the ``ref_id`` in the name binding the staging to
+  the ref its token named (an attach for another ref finds nothing).
+  ``.pdf`` is the paper door; ``.tar`` is the se workspace door —
+  ``import_workspace``'s ``staged`` key resolves a run's whole out/
+  tree as one uncompressed tar (gr517643);
 * ``<nonce>.done`` — the single-use marker: the upload token's nonce
   (``exp.sig``) is tombstoned here — before the body streams — so a
   replayed token is refused (``409``) even after its ``.part`` was
@@ -123,6 +126,24 @@ def staged_name(ref_id: int, sha: str) -> str:
     return f"{ref_id}-{sha.strip().lower()}.pdf"
 
 
+def staged_tree_name(ref_id: int, sha: str) -> str:
+    """The staged workspace-tree filename ``<ref_id>-<sha>.tar`` — the
+    se analog of :func:`staged_name`: one uncompressed tar holding a
+    run's whole out/ tree, ref-bound the same way (gr517643)."""
+    return f"{ref_id}-{sha.strip().lower()}.tar"
+
+
+def staged_tree_path(sha: str, *, ref_id: int) -> str | None:
+    """The staging path of an uploaded-but-unconsumed workspace tree
+    bound to ``ref_id``, else ``None`` — same existence-is-the-record
+    rule as :func:`staged_upload_path`."""
+    directory = uploads_dir()
+    if directory is None:
+        return None
+    path = directory / staged_tree_name(ref_id, sha)
+    return str(path) if path.is_file() else None
+
+
 def staged_upload_path(sha: str, *, ref_id: int) -> str | None:
     """The staging path of an uploaded-but-unattached PDF bound to
     ``ref_id``, else ``None`` — the file's existence IS the record (no
@@ -172,6 +193,8 @@ __all__ = [
     "nonce",
     "require_uploads_dir",
     "staged_name",
+    "staged_tree_name",
+    "staged_tree_path",
     "staged_upload_path",
     "sweep_stale_uploads",
     "uploads_dir",

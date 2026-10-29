@@ -2981,6 +2981,10 @@ video {
   error: Unsupported;
 }
 
+.\[magic_offset\:want\] {
+  magic_offset: want;
+}
+
 /* The web UI's palette: the one place a colour value lives.
  *
  * Every colour the UI paints is a variable below. Light values sit on

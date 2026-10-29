@@ -47,8 +47,13 @@ OPS = ("get", "put")
 #: bind at mint time — the bytes do not exist yet — so the field is a
 #: fixed sentinel the route verifies verbatim; what an upload token
 #: actually binds is ``ref_id`` (the path must match) and single-use
-#: (the nonce tombstone under ``PRECIS_UPLOAD_STAGING``).
+#: (the nonce tombstone under ``PRECIS_UPLOAD_STAGING``). Each upload
+#: door gets its own sentinel so a token minted for one kind's route
+#: can never feed another's: ``upload`` stages a paper PDF
+#: (``/files/upload``), ``upload_tree`` an se workspace's out/ tar
+#: (``/files/upload_tree``, gr517643).
 UPLOAD_SHA = "upload"
+UPLOAD_TREE_SHA = "upload_tree"
 
 #: Reto 2026-10-25: links last 600 s by default, 3600 s max, and a
 #: download link is reusable until expiry.
@@ -210,6 +215,7 @@ __all__ = [
     "MAX_TTL_S",
     "OPS",
     "UPLOAD_SHA",
+    "UPLOAD_TREE_SHA",
     "WEB_BASE_URL_SECRET",
     "Claims",
     "LinkTokenError",

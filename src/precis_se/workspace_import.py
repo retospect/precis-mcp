@@ -110,8 +110,10 @@ import json
 import logging
 import math
 import re
+import tarfile
 from collections.abc import Callable
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
 from tempfile import TemporaryDirectory
 from typing import Any
@@ -2183,12 +2185,16 @@ def import_workspace_run(
 #
 # ``edit(kind='se', id=<design>, ops=[{'op': 'import_workspace', ...}])`` —
 # the agent-callable door into :func:`import_workspace_run` (the
-# precis-workspace-help "one-command import"). The run's ``out/`` tree and
-# the workspace's source files ride inline as ``{relpath: text}`` dicts:
-# nothing on prod needs a host path. ``SeHandler._edit_impl`` intercepts
-# it before ``tree_mutation`` (sole op, like the design-history ops);
-# ``_put_impl`` refuses it — put builds a fresh tree and the op needs an
-# existing design ref.
+# precis-workspace-help "one-command import"). The run's ``out/`` tree
+# rides inline as a ``{relpath: text}`` dict, OR as one uncompressed tar
+# staged server-side: ``{'op': 'workspace_upload_link'}`` mints a
+# single-use signed URL, the agent POSTs the tar to it
+# (``precis_web.routes.files`` ``/files/upload_tree`` — bytes ride HTTP,
+# never model tokens, gr517643), and ``import_workspace``'s ``staged``
+# key names the sha256 the POST answered. ``SeHandler._edit_impl``
+# intercepts both ops before ``tree_mutation`` (sole op, like the
+# design-history ops); ``_put_impl`` refuses them — put builds a fresh
+# tree and the ops need an existing design ref.
 
 #: ``additionalProperties: false``, same posture as the manifest vet —
 #: a typo'd key is the caller's failure, named.
@@ -2197,6 +2203,7 @@ _IMPORT_OP_KEYS = frozenset(
         "op",
         "workspace",
         "run",
+        "staged",
         "files",
         "dry_run",
         "target",
@@ -2207,6 +2214,12 @@ _IMPORT_OP_KEYS = frozenset(
         "run_job",
     }
 )
+
+#: The ops ``SeHandler._edit_impl`` intercepts BEFORE ``tree_mutation``
+#: — the whole-run import door and its upload-link mint. Each is the
+#: sole op of its edit call; ``_put_impl`` and ``pin``'s branch ops
+#: refuse both.
+WORKSPACE_DOOR_OPS = frozenset({"import_workspace", "workspace_upload_link"})
 
 #: The workspace folder predicates — the rows
 #: :mod:`precis.handlers._python_ws` reads for the ``ws-<slug>`` python
@@ -2298,6 +2311,145 @@ def _vet_relpath_map(raw: Any, *, what: str, total_cap: int) -> dict[str, str]:
                     next="drop one of the two keys",
                 )
     return out
+
+
+def _extract_staged_tree(tar_path: Path, out_dir: Path) -> list[str]:
+    """Unpack a staged out/ tar into ``out_dir`` under the same caps
+    :func:`_vet_relpath_map` enforces on the inline map — file count,
+    per-file bytes, total bytes, clean relative posix names — plus a
+    regular-files-only rule (links, devices and fifos refuse; directory
+    members are implicit in each file's parent mkdir, but still count
+    against a ``MAX_WS_FILES * 4`` cap — a tar is free to carry
+    thousands of bare dir headers). The file/dir nesting vet runs in
+    BOTH member orders: a file under an already-written file refuses,
+    and so does a member that IS a directory an earlier member nested
+    under (a reversed tar otherwise dies on a raw IsADirectoryError).
+    Returns the extracted relpaths. ``tar`` tool quirks (``./name``
+    members, doubled separators) normalize away via ``PurePosixPath``;
+    the manifest's own ``sha``/``bonds_sha`` vetting downstream is what
+    vouches for the content."""
+    names: set[str] = set()
+    dirs: set[str] = set()
+    n_dirs = 0
+    total = 0
+    try:
+        with tarfile.open(tar_path) as tf:
+            for member in tf:
+                if member.isdir():
+                    n_dirs += 1
+                    if n_dirs > MAX_WS_FILES * 4:
+                        raise BadInput(
+                            f"import_workspace: staged tar holds over the "
+                            f"{MAX_WS_FILES * 4} directory-member cap",
+                            next="tar cf the out/ dir itself (tar cf run.tar -C out .)",
+                        )
+                    continue
+                p = PurePosixPath(member.name)
+                rel = p.as_posix()
+                if not member.isreg():
+                    raise BadInput(
+                        f"import_workspace: staged tar member {member.name!r} "
+                        "is not a regular file — links, devices and fifos "
+                        "refuse",
+                        next="tar cf the out/ dir itself (tar cf run.tar -C out .)",
+                    )
+                if p.is_absolute() or ".." in p.parts or rel == ".":
+                    raise BadInput(
+                        f"import_workspace: staged tar member {member.name!r} "
+                        "is not a clean relative path inside the tree",
+                        next="tar cf the out/ dir itself (tar cf run.tar -C out .)",
+                    )
+                if any(len(part.encode("utf-8")) > 255 for part in p.parts):
+                    raise BadInput(
+                        f"import_workspace: staged tar member {rel!r} has a "
+                        "path component longer than 255 bytes",
+                        next="rename files and directories so names are at most "
+                        "255 UTF-8 bytes per component, then rebuild the tar "
+                        "(tar cf run.tar -C out .)",
+                    )
+                if member.size > MAX_WS_FILE_BYTES:
+                    raise BadInput(
+                        f"import_workspace: staged tar member {rel!r} is "
+                        f"{member.size} B, over the {MAX_WS_FILE_BYTES} B "
+                        "file cap",
+                        next=f"shrink each file to at most {MAX_WS_FILE_BYTES} bytes, "
+                        "then rebuild the tar (tar cf run.tar -C out .)",
+                    )
+                total += member.size
+                if total > MAX_WS_OUT_BYTES:
+                    raise BadInput(
+                        f"import_workspace: staged tar totals over the "
+                        f"{MAX_WS_OUT_BYTES} B cap",
+                        next=f"shrink or split the workspace into runs of at most "
+                        f"{MAX_WS_OUT_BYTES} bytes, then rebuild each tar "
+                        "(tar cf run.tar -C out .)",
+                    )
+                if rel in names:
+                    raise BadInput(
+                        f"import_workspace: staged tar holds {rel!r} twice — "
+                        "the tree must carry each path once",
+                        next="remove duplicate members by rebuilding the tar "
+                        "from out/ (tar cf run.tar -C out .)",
+                    )
+                parents: list[str] = []
+                for parent in p.parents:
+                    parent_s = parent.as_posix()
+                    if parent_s == ".":
+                        break
+                    parents.append(parent_s)
+                    if parent_s in names:
+                        raise BadInput(
+                            f"import_workspace: staged tar path {rel!r} nests "
+                            f"under {parent_s!r}, which is also a file — a "
+                            "path can't be both file and directory",
+                            next="drop one of the two members",
+                        )
+                if rel in dirs:
+                    raise BadInput(
+                        f"import_workspace: staged tar path {rel!r} is a "
+                        "directory an earlier member nests under — a path "
+                        "can't be both file and directory",
+                        next="drop one of the two members",
+                    )
+                names.add(rel)
+                dirs.update(parents)
+                if len(names) > MAX_WS_FILES:
+                    raise BadInput(
+                        f"import_workspace: staged tar holds over the "
+                        f"{MAX_WS_FILES} file-count cap",
+                        next=f"shrink or split the workspace into runs of at most "
+                        f"{MAX_WS_FILES} files, then rebuild each tar "
+                        "(tar cf run.tar -C out .)",
+                    )
+                src = tf.extractfile(member)
+                assert src is not None  # isreg() above
+                dest = out_dir / rel
+                try:
+                    if dest.exists():
+                        raise BadInput(
+                            f"import_workspace: staged tar path {rel!r} already "
+                            "exists in the extracted tree — a path can't be "
+                            "both file and directory",
+                            next="drop one of the two members",
+                        )
+                    dest.parent.mkdir(parents=True, exist_ok=True)
+                    dest.write_bytes(src.read())
+                except OSError as exc:
+                    raise BadInput(
+                        f"import_workspace: staged tar path {rel!r} could not "
+                        "be written to the extracted tree",
+                        next="shorten the full path, keep names at most 255 UTF-8 "
+                        "bytes per component, and ensure the server extraction "
+                        "directory is writable with enough free space; rebuild "
+                        "the tar (tar cf run.tar -C out .) and upload it again",
+                    ) from exc
+    except tarfile.TarError as exc:
+        raise BadInput(
+            f"import_workspace: the staged file {tar_path.name!r} is not a "
+            f"readable tar — {exc}",
+            next="upload an uncompressed tar of the out/ dir (tar cf run.tar -C out .)",
+        ) from exc
+    return sorted(names)
 
 
 def _file_slug(rel: str) -> str:
@@ -2455,15 +2607,18 @@ def _sync_workspace_files(
 def import_workspace_op(store: Any, *, design: str, op: dict[str, Any]) -> str:
     """Run the ``import_workspace`` se op; return the response body.
 
-    Keys: ``workspace`` (req — the workspace slug), ``run`` (req —
-    ``{relpath: text}``, the run's whole ``out/`` tree verbatim:
-    ``manifest.json``, ``trace.json``, ``blocks/*``), ``files`` (opt —
-    ``{relpath: text}`` synced into the workspace folder, linked
-    ``part-of`` the design; absent = the folder untouched, ``{}`` =
-    cleared), ``dry_run``, ``target`` ('design'|'fork'), and the
-    provenance keys ``script_sha``/``lock_sha``/``params``/
-    ``requested_by``/``run_job`` (``None`` stores the trace on the
-    design ref — the containerless path)."""
+    Keys: ``workspace`` (req — the workspace slug), ``run`` or
+    ``staged`` (req — the run's whole ``out/`` tree verbatim:
+    ``manifest.json``, ``trace.json``, ``blocks/*`` — inline as
+    ``{relpath: text}``, or ``staged`` naming the sha256 a
+    ``workspace_upload_link`` POST staged under this design's ref),
+    ``files`` (opt — ``{relpath: text}`` synced into the workspace
+    folder, linked ``part-of`` the design; absent = the folder
+    untouched, ``{}`` = cleared), ``dry_run``, ``target``
+    ('design'|'fork'), and the provenance keys
+    ``script_sha``/``lock_sha``/``params``/``requested_by``/``run_job``
+    (``None`` stores the trace on the design ref — the containerless
+    path)."""
     _unknown_keys(op, _IMPORT_OP_KEYS, "import_workspace op")
     workspace = str(op.get("workspace") or "").strip()
     if not workspace:
@@ -2473,13 +2628,41 @@ def import_workspace_op(store: Any, *, design: str, op: dict[str, Any]) -> str:
             "'workspace':'hexfold','run':{'manifest.json':'{...}', ...}}])",
         )
     _vet_workspace_slug(workspace)
-    run = _vet_relpath_map(op.get("run"), what="'run'", total_cap=MAX_WS_OUT_BYTES)
-    if "manifest.json" not in run:
-        raise BadInput(
-            "import_workspace: 'run' holds no manifest.json",
-            next="the out/ tree verbatim — out.run writes manifest.json "
-            "beside trace.json and blocks/",
+    ref = store.get_ref(kind="se", id=design)
+    if ref is None:
+        raise NotFound(
+            f"se design {design!r} not found",
+            next=f"put(kind='se', id={design!r}, title=...) first — "
+            "import_workspace imports into an existing design",
         )
+    staged_sha: str | None = None
+    run: dict[str, str] | None
+    if op.get("staged") is not None:
+        if op.get("run") is not None:
+            raise BadInput(
+                "import_workspace takes 'run' or 'staged', not both",
+                next="drop 'run' — 'staged' resolves the staged tar",
+            )
+        raw_sha = op["staged"]
+        sha = raw_sha.strip().lower() if isinstance(raw_sha, str) else ""
+        if len(sha) != 64 or any(c not in "0123456789abcdef" for c in sha):
+            raise BadInput(
+                f"import_workspace 'staged' must be the sha256 the upload "
+                f"POST answered, got {raw_sha!r}",
+                next=f"edit(kind='se', id={design!r}, ops=[{{'op': "
+                "'workspace_upload_link'}}]) for a fresh upload URL",
+            )
+        staged_sha = sha
+        run = None
+    else:
+        run = _vet_relpath_map(op.get("run"), what="'run'", total_cap=MAX_WS_OUT_BYTES)
+        if "manifest.json" not in run:
+            raise BadInput(
+                "import_workspace: 'run' holds no manifest.json",
+                next="the out/ tree verbatim — out.run writes manifest.json "
+                "beside trace.json and blocks/, or 'staged' for a "
+                "workspace_upload_link tar",
+            )
     files_raw = op.get("files")
     files = (
         None
@@ -2547,13 +2730,6 @@ def import_workspace_op(store: Any, *, design: str, op: dict[str, Any]) -> str:
     script_sha = str(op["script_sha"]).strip() if op.get("script_sha") else None
     lock_sha = str(op["lock_sha"]).strip() if op.get("lock_sha") else None
     requested_by = str(op["requested_by"]).strip() if op.get("requested_by") else None
-    ref = store.get_ref(kind="se", id=design)
-    if ref is None:
-        raise NotFound(
-            f"se design {design!r} not found",
-            next=f"put(kind='se', id={design!r}, title=...) first — "
-            "import_workspace imports into an existing design",
-        )
     # The foreign-block gate runs inside ``import_workspace_run``, under
     # the tree advisory lock its ``tree_mutation`` takes inside this
     # ``atomic`` — the check and the writes share one serialized span.
@@ -2573,22 +2749,63 @@ def import_workspace_op(store: Any, *, design: str, op: dict[str, Any]) -> str:
                 )
             with TemporaryDirectory() as td:
                 out_dir = Path(td) / "out"
-                for rel, text in run.items():
-                    dest = out_dir / rel
-                    dest.parent.mkdir(parents=True, exist_ok=True)
-                    dest.write_text(text, encoding="utf-8")
-                result = import_workspace_run(
-                    store,
-                    workspace=workspace,
-                    design=design,
-                    out_dir=out_dir,
-                    run_job=run_job,
-                    script_sha=script_sha,
-                    lock_sha=lock_sha,
-                    params=params,
-                    requested_by=requested_by,
-                    target=target,
-                )
+                if run is not None:
+                    for rel, text in run.items():
+                        dest = out_dir / rel
+                        dest.parent.mkdir(parents=True, exist_ok=True)
+                        dest.write_text(text, encoding="utf-8")
+                else:
+                    # The staged door (gr517643): the out/ tree arrived
+                    # as one tar POSTed to a signed URL — the sha names
+                    # the ``<ref_id>-<sha>.tar`` the route left under
+                    # PRECIS_UPLOAD_STAGING, bound to THIS design's ref.
+                    from precis.ingest import pdf_upload
+
+                    pdf_upload.require_uploads_dir()
+                    assert staged_sha is not None
+                    staged = pdf_upload.staged_tree_path(staged_sha, ref_id=int(ref.id))
+                    if staged is None:
+                        raise BadInput(
+                            f"import_workspace: no staged tree "
+                            f"{staged_sha[:16]}… bound to {design!r} — "
+                            "the sha comes from the upload POST's answer "
+                            "(stagings bind to their token's design and "
+                            "sweep after 24 h)",
+                            next=f"edit(kind='se', id={design!r}, ops="
+                            "[{'op': 'workspace_upload_link'}]) for a "
+                            "fresh upload URL",
+                        )
+                    if "manifest.json" not in _extract_staged_tree(
+                        Path(staged), out_dir
+                    ):
+                        raise BadInput(
+                            "import_workspace: the staged tar holds no manifest.json",
+                            next="the out/ tree verbatim — out.run writes "
+                            "manifest.json beside trace.json and blocks/",
+                        )
+                try:
+                    result = import_workspace_run(
+                        store,
+                        workspace=workspace,
+                        design=design,
+                        out_dir=out_dir,
+                        run_job=run_job,
+                        script_sha=script_sha,
+                        lock_sha=lock_sha,
+                        params=params,
+                        requested_by=requested_by,
+                        target=target,
+                    )
+                except UnicodeDecodeError as exc:
+                    # Only the staged door can land non-UTF-8 bytes in
+                    # out/ — the inline 'run' map is vetted text.
+                    raise BadInput(
+                        "import_workspace: a file in the staged tar is "
+                        f"not UTF-8 text — {exc}",
+                        next="manifest.json, trace.json and the blocks/ "
+                        "files must be UTF-8 — re-tar the run's out/ dir "
+                        "(tar cf run.tar -C out .)",
+                    ) from exc
             if dry_run:
                 raise _DryRunDone
     except _DryRunDone:
@@ -2617,3 +2834,81 @@ def import_workspace_op(store: Any, *, design: str, op: dict[str, Any]) -> str:
         )
     )
     return "\n\n".join(parts)
+
+
+#: ``workspace_upload_link`` — the mint half of the staged door. Sole
+#: optional key is ``ttl_s``.
+_LINK_OP_KEYS = frozenset({"op", "ttl_s"})
+
+
+def workspace_upload_link_op(store: Any, *, design: str, op: dict[str, Any]) -> str:
+    """Run the ``workspace_upload_link`` se op; return the mint body.
+
+    Mints a single-use signed URL
+    (``precis.file_links`` ``(op='put', sha='upload_tree', ref_id)``)
+    bound to the design's ref; the agent POSTs one uncompressed tar of
+    the run's out/ dir to ``precis_web``'s ``/files/upload_tree``
+    route, which stages it under ``PRECIS_UPLOAD_STAGING`` — the bytes
+    ride HTTP, never model tokens (gr517643). The POST's answer sha256
+    then feeds ``import_workspace``'s ``staged`` key.
+    """
+    _unknown_keys(op, _LINK_OP_KEYS, "workspace_upload_link op")
+    from precis import file_links
+    from precis import secrets as vault
+    from precis.ingest import pdf_upload
+
+    ref = store.get_ref(kind="se", id=design)
+    if ref is None:
+        raise NotFound(
+            f"se design {design!r} not found",
+            next=f"put(kind='se', id={design!r}, title=...) first — "
+            "the upload link binds the design's ref",
+        )
+    pdf_upload.require_uploads_dir()
+    ttl_raw = op.get("ttl_s")
+    if ttl_raw is None:
+        ttl_s = file_links.DEFAULT_TTL_S
+    else:
+        try:
+            ttl_s = int(ttl_raw)
+        except (TypeError, ValueError) as exc:
+            raise BadInput(
+                f"workspace_upload_link 'ttl_s' must be seconds, got {ttl_raw!r}",
+                next="omit 'ttl_s' — the default is 600 s",
+            ) from exc
+    token = file_links.mint(
+        "put",
+        file_links.UPLOAD_TREE_SHA,
+        int(ref.id),
+        ttl_s=ttl_s,
+        store=store,
+    )
+    exp = file_links.parse(token).exp
+    path = f"/files/upload_tree/{int(ref.id)}?t={token}"
+    base = (vault.get_secret(file_links.WEB_BASE_URL_SECRET, store=store) or "").rstrip(
+        "/"
+    )
+    url = f"{base}{path}" if base else path
+    expires = datetime.fromtimestamp(exp, UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+    lines: list[str] = []
+    if not base:
+        lines.append(
+            "PRECIS_WEB_BASE_URL is not set — the link below is "
+            "path-only; prepend the precis_web origin to POST to it "
+            "(the operator sets it via the vault)."
+        )
+    lines += [
+        f"# {design} — workspace out/ upload link",
+        f"url: {url}",
+        f"expires: {expires} (single use — one upload per link)",
+        f"max bytes: {pdf_upload.MAX_UPLOAD_BYTES} · one UNCOMPRESSED tar "
+        "of the run's out/ dir",
+        "",
+        "tar cf run.tar -C out .",
+        f"curl -f --data-binary @run.tar -H 'Content-Type: application/x-tar' '{url}'",
+        "",
+        "then import the sha256 the POST answers:",
+        f"edit(kind='se', id='{design}', ops=[{{'op': 'import_workspace', "
+        "'workspace': '<workspace slug>', 'staged': '<sha256>'}}])",
+    ]
+    return "\n".join(lines)

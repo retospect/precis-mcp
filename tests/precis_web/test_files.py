@@ -7,7 +7,9 @@ no valid token can only ever see 403/410."""
 
 from __future__ import annotations
 
+import io
 import struct
+import tarfile
 
 import pytest
 from fastapi.testclient import TestClient
@@ -290,6 +292,124 @@ def test_upload_no_staging_503(
     monkeypatch.setenv("PRECIS_WATCH_INBOX", str(tmp_path / "inbox"))
     monkeypatch.delenv("PRECIS_UPLOAD_STAGING", raising=False)
     r = _post(_client(runtime, tmp_path), 50, _put_token(50))
+    assert r.status_code == 503
+    assert "PRECIS_UPLOAD_STAGING" in r.json()["detail"]
+
+
+# -- POST /files/upload_tree/{ref_id} (gr517643 — the se workspace door)
+#
+# Same contract as the PDF door — token before a body byte, single-use
+# nonce, staged name ref-bound — but its own token sentinel
+# (``upload_tree``) and an uncompressed-tar gate (``ustar`` magic at
+# offset 257). ``import_workspace``'s ``staged`` key consumes what it
+# leaves.
+
+
+def _tree_token(ref_id: int = 50, **kw) -> str:
+    return file_links.mint("put", file_links.UPLOAD_TREE_SHA, ref_id, **kw)
+
+
+def _post_tree(client: TestClient, ref_id: int, token: str, body: bytes):
+    return client.post(
+        f"/files/upload_tree/{ref_id}?t={token}",
+        content=body,
+        headers={"content-type": "application/x-tar"},
+    )
+
+
+def _tar_bytes(files: dict[str, bytes] | None = None) -> bytes:
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w") as tf:
+        for name, data in (files or {"manifest.json": b"{}"}).items():
+            info = tarfile.TarInfo(name)
+            info.size = len(data)
+            tf.addfile(info, io.BytesIO(data))
+    return buf.getvalue()
+
+
+def test_upload_tree_stages_tar_and_answers_sha(
+    runtime: FakeRuntime, staging_dir, tmp_path
+) -> None:
+    body = _tar_bytes()
+    r = _post_tree(_client(runtime, tmp_path), 50, _tree_token(50), body)
+    assert r.status_code == 200
+    sha = r.json()["sha256"]
+    assert (staging_dir / f"50-{sha}.tar").read_bytes() == body
+    assert r.json()["bytes"] == len(body)
+    assert "'staged'" in r.json()["next"]
+
+
+def test_upload_tree_pdf_token_403(runtime: FakeRuntime, staging_dir, tmp_path) -> None:
+    """A paper-upload token can't feed the tree door — each door's
+    sentinel is signed into its token."""
+    r = _post_tree(_client(runtime, tmp_path), 50, _put_token(50), _tar_bytes())
+    assert r.status_code == 403
+
+
+def test_upload_pdf_tree_token_403(runtime: FakeRuntime, staging_dir, tmp_path) -> None:
+    """…and a tree token can't stage a PDF."""
+    r = _post(_client(runtime, tmp_path), 50, _tree_token(50))
+    assert r.status_code == 403
+
+
+def test_upload_tree_non_tar_415(runtime: FakeRuntime, staging_dir, tmp_path) -> None:
+    r = _post_tree(
+        _client(runtime, tmp_path), 50, _tree_token(50), _PDF_BYTES + b"0" * 300
+    )
+    assert r.status_code == 415
+    assert list(staging_dir.iterdir()) == []
+
+
+def test_upload_tree_gzip_tar_415(runtime: FakeRuntime, staging_dir, tmp_path) -> None:
+    """A gzipped tar has gzip magic, not ustar at 257 — the door takes
+    uncompressed tars only."""
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w:gz") as tf:
+        info = tarfile.TarInfo("manifest.json")
+        data = b"{}"
+        info.size = len(data)
+        tf.addfile(info, io.BytesIO(data))
+    r = _post_tree(_client(runtime, tmp_path), 50, _tree_token(50), buf.getvalue())
+    assert r.status_code == 415
+
+
+def test_upload_tree_short_body_415(
+    runtime: FakeRuntime, staging_dir, tmp_path
+) -> None:
+    """Fewer than 262 bytes can never show ustar magic — a 415, not a
+    staged file."""
+    r = _post_tree(_client(runtime, tmp_path), 50, _tree_token(50), b"x" * 100)
+    assert r.status_code == 415
+    assert list(staging_dir.iterdir()) == []
+
+
+def test_upload_tree_single_use_409(
+    runtime: FakeRuntime, staging_dir, tmp_path
+) -> None:
+    token = _tree_token(50)
+    client = _client(runtime, tmp_path)
+    assert _post_tree(client, 50, token, _tar_bytes()).status_code == 200
+    assert _post_tree(client, 50, token, _tar_bytes()).status_code == 409
+
+
+def test_upload_tree_wrong_ref_403(runtime: FakeRuntime, staging_dir, tmp_path) -> None:
+    r = _post_tree(_client(runtime, tmp_path), 99, _tree_token(50), _tar_bytes())
+    assert r.status_code == 403
+
+
+def test_upload_tree_expired_410(runtime: FakeRuntime, staging_dir, tmp_path) -> None:
+    r = _post_tree(
+        _client(runtime, tmp_path), 50, _tree_token(50, now=1_000_000), _tar_bytes()
+    )
+    assert r.status_code == 410
+
+
+def test_upload_tree_no_staging_503(
+    runtime: FakeRuntime, tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("PRECIS_WATCH_INBOX", str(tmp_path / "inbox"))
+    monkeypatch.delenv("PRECIS_UPLOAD_STAGING", raising=False)
+    r = _post_tree(_client(runtime, tmp_path), 50, _tree_token(50), _tar_bytes())
     assert r.status_code == 503
     assert "PRECIS_UPLOAD_STAGING" in r.json()["detail"]
 
