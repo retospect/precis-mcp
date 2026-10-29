@@ -439,6 +439,7 @@ def _run_oss_tick(
         workspace=workspace.path if workspace is not None else None,
         model=model,
         agentlog_id=agentlog_id,
+        source="plan_tick",
         disabled_kinds=(gate,) if gate is not None else (),
     )
     if log_event:

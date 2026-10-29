@@ -36,7 +36,7 @@ import os
 import posixpath
 import subprocess
 import time
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 
 from precis.utils.claude_agent import MCP_CONNECT_TIMEOUT_MS, MCP_STARTUP_WAIT_MS
@@ -333,12 +333,46 @@ def agent_run_mode() -> str:
     return "api" if os.environ.get("PRECIS_AGENT_MODE") == "api" else "oauth"
 
 
+#: The non-secret run-context env keys a caller's ``env_overlay`` may carry
+#: INTO the container (gr537773). The overlay reaches only the host-side
+#: ``docker run`` client; the container's stdio ``precis serve`` inherits the
+#: container env alone, so without this allowlist the run's attribution
+#: (``tool_calls.agentlog_id``/``source``), todo auto-parenting, acting-user
+#: and the ``PRECIS_KINDS_DISABLED`` kind gate all silently stop at the
+#: boundary. An explicit allowlist, never the whole overlay: the overlay can
+#: carry ``CLAUDE_CODE_OAUTH_TOKEN`` (asa_bot) and deny-verb / role values this
+#: module pins from the envelope. ``PRECIS_WORKSPACE`` / ``PRECIS_PYTHON_ROOTS``
+#: are host paths with no meaning in the container — deliberately absent.
+RUN_CONTEXT_ENV_KEYS: tuple[str, ...] = (
+    "PRECIS_CURRENT_AGENTLOG",
+    "PRECIS_CURRENT_MODEL",
+    "PRECIS_CURRENT_TODO",
+    "PRECIS_KINDS_DISABLED",
+    "PRECIS_ACTING_USER",
+    "PRECIS_CURRENT_SOURCE",
+)
+
+
+def run_context_env(overlay: Mapping[str, str] | None) -> dict[str, str]:
+    """The :data:`RUN_CONTEXT_ENV_KEYS` entries of ``overlay`` with a
+    non-empty value — what may cross into the container. Everything else in
+    the overlay (secrets, host paths, pinned keys) is dropped."""
+    if not overlay:
+        return {}
+    return {
+        k: str(overlay[k])
+        for k in RUN_CONTEXT_ENV_KEYS
+        if str(overlay.get(k, "")) != ""
+    }
+
+
 def container_env(
     env: _envelope.Envelope,
     *,
     model: str,
     mode: str | None = None,
     dsn: str | None = None,
+    run_context: Mapping[str, str] | None = None,
 ) -> ContainerEnv:
     """Build the container's env for an envelope (tiers 2 + secrets).
 
@@ -355,6 +389,11 @@ def container_env(
     secret-key request with nothing behind it). ``dsn`` mirrors the same
     param already threaded through :func:`resolve_network` /
     :func:`containerize_claude_argv` / :func:`build_agent_run`.
+
+    ``run_context`` is the caller's ``env_overlay`` (or any mapping): only its
+    :data:`RUN_CONTEXT_ENV_KEYS` entries are forwarded, and every value this
+    function pins itself (role, deny verbs, mode, model, MCP waits) wins on a
+    key clash — an overlay can never loosen the envelope.
     """
     mode = mode or agent_run_mode()
     auth_key = "ANTHROPIC_API_KEY" if mode == "api" else "CLAUDE_CODE_OAUTH_TOKEN"
@@ -363,6 +402,7 @@ def container_env(
     return ContainerEnv(
         secret_keys=secret_keys,
         values={
+            **run_context_env(run_context),
             "PRECIS_MCP_DB_ROLE": _envelope.db_role(env),
             **({_envelope.DENY_VERBS_ENV: ",".join(deny_verbs)} if deny_verbs else {}),
             "PRECIS_AGENT_MODE": mode,
@@ -581,6 +621,7 @@ def build_agent_run(
     max_turns: int = 20,
     permission_mode: str = "bypassPermissions",
     output_format: str = "stream-json",
+    run_context: Mapping[str, str] | None = None,
 ) -> list[str]:
     """Convenience: envelope → full run argv, resolving image + env + network +
     (when ``prompt`` is given) the ``claude -p`` command. The one call a live
@@ -603,7 +644,9 @@ def build_agent_run(
         container_bin=_container_bin(),
         name=name,
         image=image or default_agent_image(),
-        cenv=container_env(env, model=model, mode=mode, dsn=dsn),
+        cenv=container_env(
+            env, model=model, mode=mode, dsn=dsn, run_context=run_context
+        ),
         net=resolve_network(env, dsn=dsn),
         detached=detached,
         command=command,
@@ -641,6 +684,7 @@ def containerize_claude_argv(
     mounts: tuple[Mount, ...] = (),
     workdir: str | None = None,
     interactive: bool = False,
+    run_context: Mapping[str, str] | None = None,
 ) -> list[str]:
     """Wrap an already-built host ``claude -p …`` argv into a synchronous
     ``docker/podman run`` that execs the SAME command inside the container.
@@ -679,13 +723,19 @@ def containerize_claude_argv(
     ``interactive`` threads ``-i`` to :func:`build_agent_run_argv` for a gated
     run whose prompt arrives over stdin (see there); the host argv it wraps has
     no positional prompt in that case.
+
+    ``run_context`` (gr537773) is the caller's ``env_overlay``; only its
+    :data:`RUN_CONTEXT_ENV_KEYS` cross into the container (see
+    :func:`container_env`). Default ``None`` ⇒ byte-identical.
     """
     command = ["claude", *_rebase_mcp_config(list(host_argv)[1:])]
     return build_agent_run_argv(
         container_bin=_container_bin(),
         name=name,
         image=image or default_agent_image(),
-        cenv=container_env(env, model=model, mode=mode, dsn=dsn),
+        cenv=container_env(
+            env, model=model, mode=mode, dsn=dsn, run_context=run_context
+        ),
         net=resolve_network(env, dsn=dsn),
         detached=False,
         command=command,
@@ -696,6 +746,7 @@ def containerize_claude_argv(
 
 
 __all__ = [
+    "RUN_CONTEXT_ENV_KEYS",
     "ContainerEnv",
     "Mount",
     "NetworkPlan",
@@ -711,5 +762,6 @@ __all__ = [
     "default_agent_mcp_config",
     "reset_capability_cache",
     "resolve_network",
+    "run_context_env",
     "trip_container_unhealthy",
 ]

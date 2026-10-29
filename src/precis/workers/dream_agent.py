@@ -213,6 +213,11 @@ def run_dream_pass(store: Store) -> BatchResult:
         DENY_VERBS_ENV: _DREAM_DENIED_VERBS,
         _DREAM_EXEMPT_ENV: _DREAM_EXEMPT_VALUE,
     }
+    # The tier, like plan_tick's overlay: the MCP server reads it for the
+    # model-aware paths and (gr537773) the container forwards it. ``None`` pin
+    # ⇒ the tier default; nothing to advertise.
+    if model_pin:
+        env_overlay["PRECIS_CURRENT_MODEL"] = model_pin
     if log_id is not None:
         env_overlay[agentlog.ENV_VAR] = str(log_id)
 

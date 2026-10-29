@@ -250,8 +250,10 @@ def call_claude_agent(
             to thread runtime context a subprocess can't receive as an
             in-process ContextVar (``PRECIS_CURRENT_TODO``/``_MODEL``/
             ``PRECIS_WORKSPACE``/the agentlog id/``PRECIS_KINDS_DISABLED``).
-            Applies to the in-process subprocess only; the container path
-            doesn't forward it.
+            In-process the whole overlay reaches the subprocess; the
+            container path forwards only the run-context allowlist
+            (``agent_container.RUN_CONTEXT_ENV_KEYS``) as ``--env`` — never
+            secrets, never the envelope-pinned keys.
         cwd: Working directory for the subprocess (threaded to
             :func:`run_claude`) — a CLAUDE.md-free neutral cwd avoids
             discovering an ambient project persona. ``None`` inherits the
@@ -404,6 +406,10 @@ def call_claude_agent(
             # A gated run feeds the prompt over stdin, which ``docker run``
             # only forwards with ``-i``.
             interactive=gated,
+            # gr537773: the overlay only reaches the host-side ``docker run``
+            # client; its allowlisted run-context keys are re-emitted as
+            # ``--env`` so the container's ``precis serve`` sees them.
+            run_context=env_overlay,
         )
         run_binary = run_argv[0]
         containerized = True

@@ -41,7 +41,10 @@ the numeric-ref family, ``utils.search_merge.merge_and_render``);
 ``session_id``/``seq`` bind MCP-session calls; ``agentlog_id``/``source``
 cover the in-process agent loop via ``LlmRequest.env_overlay`` →
 :func:`precis.utils.llm.router._overlay_tick_context` (the spawned-claude
-path's env back-doors have no subprocess on that transport).
+path's env back-doors have no subprocess on that transport). ``source`` is
+the PRODUCING JOB (``LlmRequest.source``: ``dream``, ``plan_tick``, …) from
+``PRECIS_CURRENT_SOURCE``, never the model tier; a containerized
+``claude -p`` gets both vars via ``agent_container.RUN_CONTEXT_ENV_KEYS``.
 
 Operational, **not corpus** — never embedded (peer to
 :mod:`precis.route_log` / :mod:`precis.agentlog` / alerts).

@@ -428,6 +428,7 @@ def test_run_dream_pass_opens_and_finalizes_agentlog(
 
     monkeypatch.setattr("precis.utils.llm.router.call_claude_agent", _fake)
 
+    monkeypatch.setenv("PRECIS_DREAM_AGENT_MODEL", "sonnet")
     result = run_dream_pass(store)
     assert result.claimed == 1 and result.ok == 1
 
@@ -440,11 +441,14 @@ def test_run_dream_pass_opens_and_finalizes_agentlog(
     log_id = opened["log_id"]
 
     # env_overlay threads PRECIS_CURRENT_AGENTLOG onto the dispatched
-    # request, alongside the run's verb deny (gr503441).
+    # request, alongside the run's verb deny (gr503441), the pinned model tier
+    # (like plan_tick) and — added by the router — the producing job (gr537773).
     from precis.workers.envelope import DENY_VERBS_ENV
 
     assert captured["env_overlay"] == {
         agentlog.ENV_VAR: str(log_id),
+        "PRECIS_CURRENT_MODEL": "sonnet",
+        "PRECIS_CURRENT_SOURCE": "dream",
         DENY_VERBS_ENV: "edit,delete,link",
         da._DREAM_EXEMPT_ENV: "memory:DREAM",
     }

@@ -1381,8 +1381,9 @@ class LlmRequest:
     #: env to inherit — the same keys bind the per-tick ContextVar for the
     #: loop's span instead (:func:`_overlay_tick_context`), so run attribution
     #: (``tool_calls.agentlog_id``/``source``, ``touched`` links) works
-    #: in-process too. Other transports ignore it. ``None`` ⇒ inherit the
-    #: worker env unchanged.
+    #: in-process too. The router adds ``PRECIS_CURRENT_SOURCE`` = ``source``
+    #: (see :func:`_overlay_with_source`) unless the caller set it. Other
+    #: transports ignore it. ``None`` ⇒ inherit the worker env unchanged.
     env_overlay: dict[str, str] | None = None
     #: Working directory for the ``claude_agent`` subprocess — a CLAUDE.md-free
     #: neutral cwd so ``claude -p`` discovers no ambient project persona.
@@ -1478,7 +1479,7 @@ class ClaudeAgentProvider:
                 extra_args=req.extra_args,
                 settings_extra=req.settings_extra,
                 log_event=req.log_event,
-                env_overlay=req.env_overlay,
+                env_overlay=_overlay_with_source(req),
                 cwd=req.cwd,
                 # gr463517: a tool-using pass with an MCP config only starts
                 # once ``precis`` reports connected (fail closed, $0 otherwise).
@@ -3354,7 +3355,7 @@ async def _dispatch_claude_agent_async(req: LlmRequest, model: str) -> LlmResult
             extra_args=req.extra_args,
             settings_extra=req.settings_extra,
             log_event=req.log_event,
-            env_overlay=req.env_overlay,
+            env_overlay=_overlay_with_source(req),
             cwd=req.cwd,
             on_event=req.on_event,
         )
@@ -4417,7 +4418,26 @@ _OVERLAY_CTX_KEYS = (
     "PRECIS_WORKSPACE",
     "PRECIS_CURRENT_AGENTLOG",
     "PRECIS_KINDS_DISABLED",
+    "PRECIS_CURRENT_SOURCE",
 )
+
+#: Literal twin of ``agentlog.SOURCE_ENV_VAR`` (this module stays off the
+#: DB import chain) — the producing job, i.e. ``tool_calls.source``.
+_SOURCE_ENV = "PRECIS_CURRENT_SOURCE"
+
+
+def _overlay_with_source(req: LlmRequest) -> dict[str, str] | None:
+    """``req.env_overlay`` plus ``PRECIS_CURRENT_SOURCE`` = ``req.source``.
+
+    The producing job's name (``"dream"``, ``"plan_tick"``) rides every
+    agent dispatch so the ledger's ``tool_calls.source`` names the job, not
+    the model tier (gr537773). A caller-set ``PRECIS_CURRENT_SOURCE`` wins; an
+    empty ``req.source`` adds nothing. Returns a NEW dict when it adds the key
+    — the caller's overlay is never mutated."""
+    overlay = req.env_overlay
+    if not req.source or (overlay is not None and _SOURCE_ENV in overlay):
+        return overlay
+    return {**(overlay or {}), _SOURCE_ENV: req.source}
 
 
 def _overlay_tick_context(overlay: Mapping[str, str] | None) -> TickContext | None:
@@ -4466,6 +4486,7 @@ def _overlay_tick_context(overlay: Mapping[str, str] | None) -> TickContext | No
         workspace=_sval("PRECIS_WORKSPACE", base.workspace),
         model=_sval("PRECIS_CURRENT_MODEL", base.model),
         agentlog_id=_ival("PRECIS_CURRENT_AGENTLOG", base.agentlog_id),
+        source=_sval(_SOURCE_ENV, base.source),
         disabled_kinds=disabled,
     )
 
@@ -4486,7 +4507,7 @@ def _dispatch_openai_tools(req: LlmRequest, model: str) -> LlmResult:
     """
     from precis.utils.inproc_context import tick_context
 
-    ctx = _overlay_tick_context(req.env_overlay)
+    ctx = _overlay_tick_context(_overlay_with_source(req))
     try:
         with tick_context(ctx) if ctx is not None else contextlib.nullcontext():
             result = run_oss_tool_loop(

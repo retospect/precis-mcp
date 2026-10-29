@@ -277,7 +277,9 @@ dollars (gr162594: the quest lane never reports a $ cost).
 
 - **Per-invocation IPC** (a parent sets them per child; never
   "configure" these): `PRECIS_CURRENT_TODO`, `PRECIS_WORKSPACE`,
-  `PRECIS_CURRENT_MODEL`, `PRECIS_CURRENT_AGENTLOG`, `PRECIS_SOURCE`
+  `PRECIS_CURRENT_MODEL`, `PRECIS_CURRENT_AGENTLOG`,
+  `PRECIS_CURRENT_SOURCE` (producing job → `tool_calls.source`;
+  see `docs/conventions/env-vars.md` for the container allowlist), `PRECIS_SOURCE`
   (`precis-worker`/`web:reto`/…), `PRECIS_PROCESS`, `PRECIS_HOST_NAME`.
 - **Build/provenance stamps** (baked into the image, surfaced in
   `/status`): `PRECIS_GIT_SHA`, `PRECIS_GIT_SHA_SHORT`,

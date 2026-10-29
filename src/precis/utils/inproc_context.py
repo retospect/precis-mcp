@@ -64,6 +64,9 @@ class TickContext:
     workspace: str | None = None
     model: str | None = None
     agentlog_id: int | None = None
+    #: The producing job (``LlmRequest.source``: ``"dream"``, ``"plan_tick"``,
+    #: …) — what ``tool_calls.source`` records. Not the model tier.
+    source: str | None = None
     disabled_kinds: tuple[tuple[str, str], ...] = ()
 
 

@@ -137,6 +137,32 @@ def test_container_env_with_dsn_includes_database_url_secret() -> None:
     assert "PRECIS_DATABASE_URL" in cenv.secret_keys
 
 
+def test_container_env_run_context_is_allowlisted_and_pinned_values_win() -> None:
+    """gr537773: only RUN_CONTEXT_ENV_KEYS cross; empty values are dropped;
+    a clashing overlay value never displaces what the envelope pins."""
+    cenv = ac.container_env(
+        Envelope(write="none"),
+        model="opus",
+        run_context={
+            "PRECIS_CURRENT_AGENTLOG": "7",
+            "PRECIS_ACTING_USER": "reto",
+            "PRECIS_CURRENT_TODO": "",
+            "CLAUDE_CODE_OAUTH_TOKEN": "tok-secret",
+            "PRECIS_WORKSPACE": "/host/path",
+            "PRECIS_MCP_DB_ROLE": "agent_rw",
+            "PRECIS_AGENT_MODEL": "evil",
+        },
+    )
+    assert cenv.values["PRECIS_CURRENT_AGENTLOG"] == "7"
+    assert cenv.values["PRECIS_ACTING_USER"] == "reto"
+    assert "PRECIS_CURRENT_TODO" not in cenv.values
+    assert "CLAUDE_CODE_OAUTH_TOKEN" not in cenv.values
+    assert "PRECIS_WORKSPACE" not in cenv.values
+    assert cenv.values["PRECIS_MCP_DB_ROLE"] == "agent_ro"
+    assert cenv.values["PRECIS_AGENT_MODEL"] == "opus"
+    assert "tok-secret" not in cenv.values.values()
+
+
 # ── argv assembly (secret-by-key, network, image-last) ─────────────
 
 

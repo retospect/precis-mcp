@@ -484,6 +484,84 @@ def test_dispatch_agent_forwards_disallowed_tools_and_log_event(
     assert seen["output_format"] == "stream-json"
 
 
+def test_dispatch_agent_overlay_carries_producing_job_source(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """gr537773: a claude_agent request naming a ``source`` reaches the
+    provider with ``PRECIS_CURRENT_SOURCE`` in its overlay (the ledger's
+    ``tool_calls.source``), without mutating the caller's dict; a caller-set
+    value wins; no source and no overlay passes ``None`` through."""
+    seen: list[dict[str, str] | None] = []
+
+    def fake_agent(prompt: str, **kwargs: Any) -> AgentResult:
+        seen.append(kwargs["env_overlay"])
+        return AgentResult(final_text="ok", cost_usd=None, duration_s=0.0, turns_used=1)
+
+    monkeypatch.setattr(router, "call_claude_agent", fake_agent)
+
+    mine = {"PRECIS_CURRENT_AGENTLOG": "9"}
+    route(
+        LlmRequest(
+            tier=Tier.BIG,
+            prompt="x",
+            tools_needed=True,
+            source="dream",
+            env_overlay=mine,
+        )
+    )
+    assert seen.pop() == {
+        "PRECIS_CURRENT_AGENTLOG": "9",
+        "PRECIS_CURRENT_SOURCE": "dream",
+    }
+    assert mine == {"PRECIS_CURRENT_AGENTLOG": "9"}  # caller's dict untouched
+
+    route(
+        LlmRequest(
+            tier=Tier.BIG,
+            prompt="x",
+            tools_needed=True,
+            source="dream",
+            env_overlay={"PRECIS_CURRENT_SOURCE": "custom"},
+        )
+    )
+    assert seen.pop() == {"PRECIS_CURRENT_SOURCE": "custom"}
+
+    route(LlmRequest(tier=Tier.BIG, prompt="x", tools_needed=True, source="dream"))
+    assert seen.pop() == {"PRECIS_CURRENT_SOURCE": "dream"}
+
+    route(LlmRequest(tier=Tier.BIG, prompt="x", tools_needed=True))
+    assert seen.pop() is None
+
+
+def test_openai_tools_binds_source_from_request(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The OPENAI_TOOLS path binds ``req.source`` into the tick ContextVar."""
+    from precis.utils import inproc_context
+    from precis.utils.llm.openai_tools import AgentLoopResult
+    from precis.utils.llm.router import _dispatch_openai_tools
+
+    seen: list[inproc_context.TickContext | None] = []
+
+    def fake_loop(**k: Any) -> AgentLoopResult:
+        seen.append(inproc_context.current())
+        return AgentLoopResult(
+            final_text="",
+            turns_used=1,
+            tool_calls_made=0,
+            total_tokens=None,
+            stop_reason="stop",
+        )
+
+    monkeypatch.setattr("precis.utils.llm.router.run_oss_tool_loop", fake_loop)
+    _dispatch_openai_tools(
+        LlmRequest(tier=Tier.BIG, prompt="x", tools_needed=True, source="dream"), "m"
+    )
+    ctx = seen.pop()
+    assert ctx is not None
+    assert ctx.source == "dream"
+
+
 def test_dispatch_agent_max_tokens_truncates_post_hoc(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

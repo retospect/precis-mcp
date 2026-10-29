@@ -1592,6 +1592,53 @@ def test_bare_container_requests_api_key_not_oauth(monkeypatch, _container_selec
     assert "CLAUDE_CODE_OAUTH_TOKEN" not in argv
 
 
+def test_container_forwards_run_context_allowlist_only(
+    monkeypatch, _container_selected
+):
+    """gr537773: the overlay reaches only the host-side ``docker run`` client,
+    so its allowlisted run-context keys are re-emitted as ``--env K=V`` for the
+    container's ``precis serve``. A secret in the overlay never crosses, and an
+    overlay can't override the values the envelope pins (deny verbs, role)."""
+    import precis.utils.claude_agent as ca
+    from precis.workers.envelope import DENY_VERBS_ENV, Envelope
+
+    fake = _RunClaudeSeq(_ok("done"))
+    monkeypatch.setattr(ca, "run_claude", fake)
+    ca.call_claude_agent(
+        "do it",
+        model="opus",
+        envelope=Envelope(write="none"),
+        env_overlay={
+            "PRECIS_CURRENT_AGENTLOG": "123",
+            "PRECIS_CURRENT_MODEL": "sonnet",
+            "PRECIS_KINDS_DISABLED": "draft",
+            "PRECIS_CURRENT_SOURCE": "dream",
+            "CLAUDE_CODE_OAUTH_TOKEN": "tok-secret",
+            "PRECIS_WORKSPACE": "/host/only/path",
+            DENY_VERBS_ENV: "none",
+            "PRECIS_MCP_DB_ROLE": "agent_rw",
+        },
+    )
+    argv = fake.calls[0]
+    envs = [argv[i + 1] for i, a in enumerate(argv) if a == "--env"]
+    for pair in (
+        "PRECIS_CURRENT_AGENTLOG=123",
+        "PRECIS_CURRENT_MODEL=sonnet",
+        "PRECIS_KINDS_DISABLED=draft",
+        "PRECIS_CURRENT_SOURCE=dream",
+    ):
+        assert pair in envs
+    assert "tok-secret" not in " ".join(argv)
+    assert not any(e.startswith("PRECIS_WORKSPACE") for e in envs)
+    # The envelope's pinned values, not the overlay's, each appear exactly once.
+    assert [e for e in envs if e.startswith(f"{DENY_VERBS_ENV}=")] == [
+        f"{DENY_VERBS_ENV}=put,edit,delete,tag,link"
+    ]
+    assert [e for e in envs if e.startswith("PRECIS_MCP_DB_ROLE=")] == [
+        "PRECIS_MCP_DB_ROLE=agent_ro"
+    ]
+
+
 # ── §H cycle a: mounts/workdir threaded through the container branch ───
 
 

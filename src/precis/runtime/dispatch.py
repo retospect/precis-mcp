@@ -1294,7 +1294,7 @@ class DispatchMixin(RuntimeShape):
             return
         try:
             from precis import serve_ledger
-            from precis.agentlog import current_from_env
+            from precis.agentlog import current_from_env, current_source_from_env
             from precis.tool_ledger import (
                 ToolCallRecord,
                 _mint_session_key,
@@ -1303,7 +1303,6 @@ class DispatchMixin(RuntimeShape):
                 error_head,
                 record_call,
             )
-            from precis.utils.workspace import current_model_from_env
 
             error_type: str | None = None
             if is_error:
@@ -1338,7 +1337,9 @@ class DispatchMixin(RuntimeShape):
                     result_count=result_count,
                     latency_ms=int((time.monotonic() - started) * 1000),
                     agentlog_id=current_from_env(),
-                    source=current_model_from_env(),
+                    # The producing JOB ("dream", "plan_tick"), not the model
+                    # tier (gr537773) — the tier lives on agentlog.model.
+                    source=current_source_from_env(),
                     profile=os.environ.get("PRECIS_MCP_PROFILE", "typed"),
                     session_id=session_id,
                     seq=seq,

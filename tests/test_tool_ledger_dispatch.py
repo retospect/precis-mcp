@@ -12,6 +12,8 @@ from __future__ import annotations
 from typing import Any
 from uuid import uuid4
 
+import pytest
+
 from precis import serve_ledger
 from precis.runtime import PrecisRuntime
 
@@ -223,6 +225,40 @@ def test_dispatch_ledger_0209_session_seq_sample(
     assert ok_row[4] is not None and "skill" in str(ok_row[4])
 
 
+def test_dispatch_ledger_stamps_run_context_from_env(
+    runtime_with_store: PrecisRuntime, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr537773: ``agentlog_id`` and ``source`` come from the run-context env
+    (``PRECIS_CURRENT_AGENTLOG`` / ``PRECIS_CURRENT_SOURCE``) — ``source`` is the
+    producing JOB, not the model tier, even with ``PRECIS_CURRENT_MODEL`` set;
+    with neither var set both columns are NULL."""
+    store = runtime_with_store.store
+    assert store is not None
+    tag = uuid4().hex[:8]
+    kind_set, kind_unset = f"ctx-set-{tag}", f"ctx-unset-{tag}"
+
+    monkeypatch.setenv("PRECIS_CURRENT_AGENTLOG", "123")
+    monkeypatch.setenv("PRECIS_CURRENT_SOURCE", "plan_tick")
+    monkeypatch.setenv("PRECIS_CURRENT_MODEL", "sonnet")
+    runtime_with_store.dispatch_with_status("get", {"kind": kind_set, "id": "1"})
+
+    monkeypatch.delenv("PRECIS_CURRENT_AGENTLOG")
+    monkeypatch.delenv("PRECIS_CURRENT_SOURCE")
+    monkeypatch.delenv("PRECIS_CURRENT_MODEL")
+    runtime_with_store.dispatch_with_status("get", {"kind": kind_unset, "id": "1"})
+
+    with store.pool.connection() as conn:
+        rows = {
+            r[0]: (r[1], r[2])
+            for r in conn.execute(
+                "SELECT kind, agentlog_id, source FROM tool_calls WHERE kind = ANY(%s)",
+                ([kind_set, kind_unset],),
+            ).fetchall()
+        }
+    assert rows[kind_set] == (123, "plan_tick")
+    assert rows[kind_unset] == (None, None)
+
+
 def test_dispatch_ledger_records_result_count(
     runtime_with_store: PrecisRuntime,
 ) -> None:
@@ -341,7 +377,7 @@ def test_every_error_path_fills_error_head_source_client(
     from precis import serve_ledger
     from precis.runtime import dispatch as d
 
-    monkeypatch.setenv("PRECIS_CURRENT_MODEL", "sonnet")
+    monkeypatch.setenv("PRECIS_CURRENT_SOURCE", "plan_tick")
     monkeypatch.setattr(d, "_retry_sleep", lambda _a: None)
 
     class _Info:
@@ -389,7 +425,7 @@ def test_every_error_path_fills_error_head_source_client(
     assert len(rows) == 3
     for error_type, head, source, client in rows:
         assert error_type and head and "error" in head
-        assert source == "sonnet"
+        assert source == "plan_tick"
         assert client == "ledger-test/9"
 
 

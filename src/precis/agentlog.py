@@ -54,6 +54,11 @@ log = logging.getLogger(__name__)
 #: to ``PRECIS_CURRENT_TODO``.
 ENV_VAR = "PRECIS_CURRENT_AGENTLOG"
 
+#: Env var carrying the PRODUCING JOB (``LlmRequest.source``: ``"dream"``,
+#: ``"plan_tick"``, …) — what ``tool_calls.source`` records. The router sets
+#: it on every ``claude_agent`` dispatch whose request names a source.
+SOURCE_ENV_VAR = "PRECIS_CURRENT_SOURCE"
+
 #: Default retention window (days) before the sweeper reaps an agentlog
 #: and its ``touched`` links. Overridable via env in the sweeper.
 RETENTION_DAYS = 30
@@ -408,6 +413,25 @@ def current_from_env() -> int | None:
     return val if val > 0 else None
 
 
+def current_source_from_env() -> str | None:
+    """Return the producing job's name for the current run, or None.
+
+    Mirrors :func:`current_from_env`: the in-process tick ContextVar first
+    (``OPENAI_TOOLS`` has no subprocess env), then :data:`SOURCE_ENV_VAR`
+    off the ``claude -p`` / container env. Free-text job name (e.g.
+    ``"dream"``), whitespace-stripped; ``None`` when unset or blank —
+    interactive / direct calls have no producing job."""
+    from precis.utils import inproc_context
+
+    ctx = inproc_context.current()
+    if ctx is not None and ctx.source:
+        return ctx.source
+    raw = os.environ.get(SOURCE_ENV_VAR)
+    if not raw or not raw.strip():
+        return None
+    return raw.strip()
+
+
 def _now_iso(store: Store) -> str:
     """ISO8601 'now' from the DB clock (no host-clock skew across nodes)."""
     with store.pool.connection() as conn:
@@ -421,8 +445,10 @@ __all__ = [
     "CHECKPOINT_KEY",
     "ENV_VAR",
     "RETENTION_DAYS",
+    "SOURCE_ENV_VAR",
     "attach_touch",
     "current_from_env",
+    "current_source_from_env",
     "finalize_log",
     "gc_stale_logs",
     "list_recent",
