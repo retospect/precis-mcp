@@ -722,7 +722,14 @@ def _conflict_data(
     outline_conflicts: list[tuple[int, float]] = []
     zone_conflicts: list[tuple[int, int, float]] = []
     ogeom = _poly(np.vstack([outline, outline[:1]])) if len(outline) >= 3 else None
-    zgeoms = [_poly(zone_world_ring(d, z, pose)) for z in d.zones]
+    # label_keepout zones (reserved refdes-label boxes) never conflict a
+    # part — they exist only on the route design and the parts are
+    # already placed; counting them here would mint a bogus
+    # part-on-zone finding per label.
+    zgeoms = [
+        None if z.kind == "label_keepout" else _poly(zone_world_ring(d, z, pose))
+        for z in d.zones
+    ]
     bodies = [_poly(r) for r in world_bodies]
     for i, gi in enumerate(parts):
         if gi is None:
@@ -870,7 +877,15 @@ def build_mesh(d: TopoDesign, pose: np.ndarray) -> TopoMesh:
 
     # Non-part constrained regions (keepouts, mounting holes, fixed
     # copper) — world-frame already; owner ``n + zone_index``.
+    # label_keepout zones (reserved refdes-label boxes) are VIA-only:
+    # silk prints over traces freely, so wires may cross a label box;
+    # only a via's annulus conflicts with the ink. The via-siting walk
+    # reads these zones itself (realise.py's keepout list) — excluding
+    # them here keeps the wire corridors open (taz-leaf widen fixtures
+    # showed a 2 mm label box otherwise eating a rail's corridor).
     for z, zone in enumerate(d.zones):
+        if zone.kind == "label_keepout":
+            continue
         zpts = np.asarray(zone_world_ring(d, zone, pose), dtype=np.float64).reshape(
             -1, 2
         )

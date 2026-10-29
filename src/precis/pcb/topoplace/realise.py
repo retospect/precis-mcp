@@ -634,7 +634,10 @@ def plan_route(
     keepout_geoms: list[Any] = []
     outer_idx = {0, n_layers - 1}
     for z in d.zones:
-        if z.kind not in ("keepout", "mounting_hole"):
+        # label_keepout zones ride along: a via's annulus conflicts with
+        # refdes-label ink exactly the way a pad's does, so the siting
+        # walk honors them even though the wire mesh ignores them.
+        if z.kind not in ("keepout", "mounting_hole", "label_keepout"):
             continue
         zl = {int(l) for l in (z.layers or ())}
         if zl and not (zl & outer_idx):

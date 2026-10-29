@@ -169,15 +169,21 @@ def _topo_run(
     features: list[dict[str, Any]] | None = None,
     fixed_copper: list[dict[str, Any]] | None = None,
     preset: str = "compact",
-) -> tuple[Any, dict[str, Any], str, dict[str, str]] | None:
+    capability: Any = None,
+) -> tuple[Any, dict[str, Any], str, dict[str, str], dict[str, str]] | None:
     """The ``placer='topo'`` run (topo-place spec §1c, Decision 21):
     ``design_from_ir`` → the proxy placer → ``assign_pins`` → the run
     files, with the winning pose folded back into ``ir`` so the shared
     gate/ripup/``pcb_set_pose`` tail below measures and writes it like
-    an anneal result. Returns ``(result, files, summary, side_changes)``
-    — ``None`` after recording an unclassed ``PinConflict`` failure (the
-    board script's error, not the job's). Lazy imports: the kernel pulls
-    scipy, which this worker otherwise never loads."""
+    an anneal result. Returns ``(result, files, summary, side_changes,
+    label_spots)`` — ``label_spots`` the refdes → LABEL_SPOT_ORDER pin
+    each part's refdes label should try first
+    (:func:`precis.pcb.topoplace.label_spots_for`), persisted by the
+    run tail as instance ``meta.label_spot`` so the silk draw honors
+    the label space the placer preserved — ``None`` after recording an
+    unclassed ``PinConflict`` failure (the board script's error, not
+    the job's). Lazy imports: the kernel pulls scipy, which this
+    worker otherwise never loads."""
     from precis.pcb import topoplace as _tp
     from precis.pcb.topoplace import runstore as _runstore
     from precis.pcb.topoplace import summary as _tpsummary
@@ -198,6 +204,7 @@ def _topo_run(
                 ((graph.get("board") or {}).get("meta") or {}).get("placement_sides")
             ),
             measures=graph.get("measures"),
+            capability=capability,
         )
         _tp.check_slots(td)
         # gr520546: authored near()/separation/align measures steer the
@@ -210,6 +217,14 @@ def _topo_run(
             dataclasses.replace(base_obj, measures=0.2) if td.measures else base_obj
         )
         result = _tp.topo_place(td, objective=objective, effort=effort, seed=seed)
+        # Post-anneal label-room repair (Reto 2026-10-29, taz-leaf runs
+        # 34-39: 23-37 far labels however the anneal priced the room):
+        # deterministic nudges that put every reachable refdes label next
+        # to its part and pull edge-squished rings off the outline —
+        # the guarantee the anneal's approximate box model cannot give.
+        result = dataclasses.replace(
+            result, best_pose=_tp.settle_label_room(td, result.best_pose)
+        )
         assignment = _tp.assign_pins(td, result.best_pose)
     except PinConflict as exc:
         ctx.record_failure(str(exc))
@@ -230,6 +245,11 @@ def _topo_run(
         for i in range(len(td.parts))
         if bool(ir.inst_bottom[i]) != bool(bottom_before[i])
     }
+    # The refdes-label pins for the settled pose — the placer's margin
+    # term priced the label space, this is the spot each part's label
+    # actually takes, in silk's greedy order. The run tail persists
+    # them as instance meta in the same transaction as the pose.
+    label_spots = _tp.label_spots_for(td, result.best_pose)
 
     board_hash = hashlib.sha256(
         json.dumps(graph, sort_keys=True, default=str).encode("utf-8")
@@ -260,7 +280,8 @@ def _topo_run(
             footprints=_runstore.footprint_shas(footprints or {}),
         ),
     )
-    return result, files, summary_text, side_changes
+    files["label_spots.json"] = dict(sorted(label_spots.items()))
+    return result, files, summary_text, side_changes, label_spots
 
 
 def _topo_route(
@@ -274,12 +295,19 @@ def _topo_route(
     capability: Any,
     board_id: Any,
     pcb_ref_id: int,
+    label_spots: dict[str, str] | None = None,
 ) -> tuple[str, dict[str, Any]]:
     """The topo route half of a ``placer='topo'`` run (slice-5 ruling:
     place and route are ONE job — the pose commits above, then the same
     pose is routed and its copper + ``pcb_routes`` rows written). ``ir``
     already carries the placed pose (``_topo_run`` mutated it), so
     ``route_design``'s ``d.pose0`` default IS the routed pose.
+
+    The place half's label pins ride in as ``keepout`` zones
+    (:func:`precis.pcb.topoplace.label_boxes_for`) — the router never
+    sites a via where the placer promised the refdes label would sit;
+    without this the silk pass runs after routing and a via on the pin
+    walks the label (taz-leaf run 35: U2's label 13 mm away).
 
     BEST-EFFORT: never fails the place. No board row or no fab
     capability row skips with a note; a raise is caught by the caller
@@ -312,7 +340,27 @@ def _topo_route(
         features=features,
         fixed_copper=fixed_copper,
         route_planes=True,
+        capability=capability,
     )
+    # The place half's label pins become route-time keep-outs: the
+    # router never sites a via (or threads a wire) through the box the
+    # placer promised the refdes label. td_route's pose0 IS the placed
+    # pose, so the boxes land where the silk pass will look for them.
+    if label_spots:
+        boxes = _tp.label_boxes_for(td_route, td_route.pose0, label_spots)
+        if boxes:
+            td_route = dataclasses.replace(
+                td_route,
+                zones=tuple(td_route.zones)
+                + tuple(
+                    _tp.TopoZone(
+                        kind="label_keepout",
+                        ring=ring,
+                        name=f"label:{refdes}",
+                    )
+                    for refdes, ring in boxes
+                ),
+            )
     layers = [str(layer.get("name")) for layer in ir.stackup]
     outline = pcb_session.outline_from_features(features or [])
     keepouts = pcb_session.keepouts_from_features(features or [])
@@ -823,6 +871,7 @@ def _dispatch(ctx: DispatchContext, spec: JobTypeSpec) -> None:
         _placement_gate() if fully_placed_before else (None, None)
     )
     side_changes: dict[str, str] = {}
+    label_spots: dict[str, str] = {}
     topo_files: dict[str, Any] | None = None
     topo_text = ""
     topo_result: Any = None
@@ -840,10 +889,11 @@ def _dispatch(ctx: DispatchContext, spec: JobTypeSpec) -> None:
             features=features,
             fixed_copper=design.fixed_copper,
             preset=preset,
+            capability=capability,
         )
         if topo_out is None:  # PinConflict already recorded
             return
-        topo_result, topo_files, topo_text, side_changes = topo_out
+        topo_result, topo_files, topo_text, side_changes, label_spots = topo_out
     else:
         result = optimize(ir, config)
     pose = pcb_session.positions(ir)
@@ -934,6 +984,22 @@ def _dispatch(ctx: DispatchContext, spec: JobTypeSpec) -> None:
         )
         for refdes, layer in side_changes.items():
             ctx.store.pcb_move_instance(pcb_ref_id, refdes, layer=layer, conn=conn)
+        # The placer's label pins ride the same transaction: a pose write
+        # without its pins would leave the silk pass honoring spots the
+        # new placement never preserved (or stale pins from the previous
+        # placement parked on a moved part). Clear every instance's pin,
+        # then write the fresh set — meta=None deletes the key
+        # (pcb_move_instance's documented merge).
+        for inst in graph.get("instances") or []:
+            refdes = str(inst.get("refdes") or "")
+            if refdes:
+                ctx.store.pcb_move_instance(
+                    pcb_ref_id, refdes, meta={"label_spot": None}, conn=conn
+                )
+        for refdes, spot in label_spots.items():
+            ctx.store.pcb_move_instance(
+                pcb_ref_id, refdes, meta={"label_spot": spot}, conn=conn
+            )
         n_ripped = (
             ctx.store.pcb_fixed_copper_retire_ids(
                 int(gate_board_id), sorted(ripped), conn=conn
@@ -996,6 +1062,7 @@ def _dispatch(ctx: DispatchContext, spec: JobTypeSpec) -> None:
                     capability=capability,
                     board_id=gate_board_id,
                     pcb_ref_id=pcb_ref_id,
+                    label_spots=label_spots,
                 )
             except Exception as exc:
                 log.exception("pcb_place: topo route stage raised; placement kept")

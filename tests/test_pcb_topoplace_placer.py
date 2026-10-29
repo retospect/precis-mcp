@@ -68,10 +68,13 @@ def test_proxy_throughput_floor_and_printed_rate() -> None:
     this floor, not just the compact lane. A 25% forced acceptance keeps
     commits flowing regardless of pose quality. Floor rationale: the
     default lane keeps the spec's 500/s; the flow lane gets 100/s —
-    measured ~840/s quiet, ~360/s under the gate's parallel workers,
-    ~220/s on instrumented Linux CI shards (coverage + typeguard), so
-    100 trips only on a genuine ~2× regression, not on runner noise (a
-    loaded shared CI runner measured 144/s in r141, under the old 150)."""
+    measured 2026-10-29 with the margin term's label axis (canonical-
+    spot walk + edge-ink erosion) at ~360/s quiet on the dev Mac, ~430/s
+    for the prior margin term (a 1.19× label-axis cost, accepted: the
+    axis is what keeps refdes labels on their parts), ~220/s on
+    instrumented Linux CI shards (coverage + typeguard), and a loaded
+    shared CI runner measured 144/s in r141 — so 100 trips only on a
+    genuine ~2× regression, not on runner noise."""
     from precis.pcb.topoplace.design import PRESETS
 
     d, _inst, _nets = synth_design(seed=0)
@@ -243,6 +246,227 @@ def test_route_proxy_terms_parity_300_moves() -> None:
         _ring_silkroom_total(proxy._rings, proxy.pose, proxy._th, _SILK_ROOM_REQ_MM)
     )
     assert proxy.margin == pytest.approx(margin_total(d, proxy.pose))
+
+
+def _margin_label_fixture(
+    spec: list[tuple[str, float, float, float]],
+    *,
+    edge_mate: tuple[bool, ...] = (),
+):
+    """Tiny hand-built design for the margin label/edge axis tests:
+    ``spec`` rows are ``(refdes, x, y, ring_half_mm)`` on a 30mm square
+    board, one pin per part, no nets."""
+    from precis.pcb.topoplace.design import TopoDesign
+
+    n = len(spec)
+
+    def sq(h: float) -> np.ndarray:
+        return np.asarray([[-h, -h], [h, -h], [h, h], [-h, h], [-h, -h]])
+
+    return TopoDesign(
+        parts=tuple(r for r, _x, _y, _h in spec),
+        pin_xy=np.zeros((n, 2)),
+        pin_part=np.arange(n),
+        pin_side=np.zeros(n, dtype=np.int8),
+        pin_label=np.asarray([str(i) for i in range(n)], dtype=object),
+        pin_net=np.full(n, -1, dtype=np.int32),
+        net_pins=(),
+        flex=(),
+        swap_groups=(),
+        fixed=np.zeros(n, dtype=bool),
+        freedoms=np.full(n, 3, dtype=np.uint8),
+        outline=np.asarray([[0, 0], [30, 0], [30, 30], [0, 30]]),
+        pose0=np.asarray([[x, y, 0.0, 0.0] for _r, x, y, _h in spec]),
+        part_outline=tuple(sq(h) for _r, _x, _y, h in spec),
+        part_edge_mate=np.asarray(edge_mate, dtype=bool)
+        if edge_mate
+        else np.zeros(0, bool),
+    )
+
+
+def test_margin_label_axis_blocked_when_surrounded() -> None:
+    """The label axis pays _LBL_NO_SPOT_MM when every canonical spot's
+    box is covered (taz-leaf run 34's R23: edge to the south, rings
+    east/west/north) and 0 again the moment one blocker moves off."""
+    from precis.pcb.topoplace.proxy import _LBL_NO_SPOT_MM, margin_total
+
+    off = 2.2  # ring-to-ring 0.4mm — inside the label box gap
+    spec = [("R1", 15.0, 15.0, 0.9)]
+    for k, (dx, dy) in enumerate(
+        ((0, 1), (1, 1), (1, 0), (1, -1), (0, -1), (-1, -1), (-1, 0), (-1, 1))
+    ):
+        spec.append((f"B{k}", 15.0 + dx * off, 15.0 + dy * off, 0.9))
+    d = _margin_label_fixture(spec)
+    w = ObjectiveShares(crossings=0.5, overlap=0.3, margin=0.2)
+    proxy = ProxyState(d, d.pose0, w)
+    # Every canonical box is covered and the ladder climbs past the
+    # blockers — the axis is the GRADED walk (0 < excess ≤ NO_SPOT),
+    # not the flat no-spot constant: the gradient is what lets the
+    # anneal unstick the part (a flat 4.0 saturates the softmin).
+    assert 0.0 < proxy._mg_l[0] <= _LBL_NO_SPOT_MM
+    blocked_before = float(proxy.margin)
+    # The south trio (B3 SE, B4 S, B5 SW — indices 4/5/6) steps away —
+    # the wide bottom-corner boxes are clipped by the diagonals too, so
+    # freeing only the cardinal south blocker is not enough.
+    for idx in (4, 5, 6):
+        row = proxy.pose[idx].copy()
+        row[1] -= 10.0
+        proxy.try_move(idx, row)
+        proxy.commit()
+    assert proxy._mg_l[0] == 0.0
+    assert proxy.margin < blocked_before
+    assert proxy.margin == pytest.approx(margin_total(d, proxy.pose))
+
+
+def test_margin_edge_axis_flat_even_for_big_rings() -> None:
+    """The edge axis is the flat _SILK_EDGE_REQ_MM, not a ring-radius
+    want: a big ring whose courtyard sits 1.0mm off the edge pays 0.25mm
+    — under the retired want its circumradius (> room) priced 0, which
+    is exactly how run 34's R23 hugged the outline for free. Edge-mated
+    parts stay exempt."""
+    from precis.pcb.topoplace.proxy import _SILK_EDGE_REQ_MM
+
+    d = _margin_label_fixture([("U1", 6.0, 15.0, 5.0)])
+    w = ObjectiveShares(crossings=0.5, overlap=0.3, margin=0.2)
+    proxy = ProxyState(d, d.pose0, w)
+    # ring edge at x=1.0 → distance to the outline is 1.0 exactly.
+    assert proxy._mg_e[0] == pytest.approx(_SILK_EDGE_REQ_MM - 1.0)
+
+    dm = _margin_label_fixture([("U1", 6.0, 15.0, 5.0)], edge_mate=(True,))
+    pm = ProxyState(dm, dm.pose0, w)
+    assert pm._mg_e[0] == 0.0
+
+
+def test_label_spots_for_pins_canonical_greedy() -> None:
+    """The pins are LABEL_SPOT_ORDER members, one per un-crowded part,
+    chosen boxes never overlap, a fully surrounded part gets none, and
+    the pick is deterministic across calls."""
+    from precis.pcb.silk import LABEL_SPOT_ORDER
+    from precis.pcb.topoplace import label_spots_for
+
+    spread = _margin_label_fixture(
+        [("R1", 6.0, 6.0, 0.9), ("R2", 15.0, 15.0, 0.9), ("R3", 24.0, 24.0, 0.9)]
+    )
+    pins = label_spots_for(spread, spread.pose0)
+    assert sorted(pins) == ["R1", "R2", "R3"]
+    assert all(p in LABEL_SPOT_ORDER for p in pins.values())
+    assert pins == label_spots_for(spread, spread.pose0)
+
+    off = 2.2
+    spec = [("R1", 15.0, 15.0, 0.9)]
+    for k, (dx, dy) in enumerate(
+        ((0, 1), (1, 1), (1, 0), (1, -1), (0, -1), (-1, -1), (-1, 0), (-1, 1))
+    ):
+        spec.append((f"B{k}", 15.0 + dx * off, 15.0 + dy * off, 0.9))
+    crowded = _margin_label_fixture(spec)
+    pins_c = label_spots_for(crowded, crowded.pose0)
+    assert "R1" not in pins_c  # every canonical box covered → no pin
+    # chosen boxes pairwise non-overlapping (the greedy's own invariant)
+    from precis.pcb.topoplace.proxy import _label_spot_boxes, _ring_geom
+
+    boxes = []
+    for i, refdes in enumerate(crowded.parts):
+        name = pins_c.get(refdes)
+        if name is None:
+            continue
+        ring = _ring_geom(crowded, crowded.pose0[i], i)
+        box = dict(
+            zip(
+                LABEL_SPOT_ORDER,
+                _label_spot_boxes(refdes, ring, crowded.silk.label_anchor_mm),
+            )
+        )[name]
+        boxes.append(box)
+    for a in range(len(boxes)):
+        for b in range(a + 1, len(boxes)):
+            ax0, ay0, ax1, ay1 = boxes[a]
+            bx0, by0, bx1, by1 = boxes[b]
+            assert ax1 <= bx0 or bx1 <= ax0 or ay1 <= by0 or by1 <= ay0
+
+
+def test_label_boxes_for_route_keepouts() -> None:
+    """The route stage threads the pins in as keep-out zones:
+    :func:`label_boxes_for` returns one CLOSED world ring per pinned
+    part at its pinned spot, nothing for unpinned parts, and every ring
+    is a non-degenerate polygon."""
+    from shapely.geometry import Polygon
+
+    from precis.pcb.topoplace import label_boxes_for, label_spots_for
+
+    spread = _margin_label_fixture(
+        [("R1", 6.0, 6.0, 0.9), ("R2", 15.0, 15.0, 0.9), ("R3", 24.0, 24.0, 0.9)]
+    )
+    spots = label_spots_for(spread, spread.pose0)
+    boxes = dict(label_boxes_for(spread, spread.pose0, spots))
+    assert sorted(boxes) == sorted(spots)
+    for refdes, ring in boxes.items():
+        assert ring.shape[1] == 2 and ring[0].tolist() == ring[-1].tolist()
+        g = Polygon(ring[:-1])
+        assert g.is_valid and g.area > 0.0
+    # unpinned part -> no row
+    boxes_none = dict(label_boxes_for(spread, spread.pose0, {}))
+    assert boxes_none == {}
+
+
+def test_silkroom_resolves_from_capability_not_fallback() -> None:
+    """The capability threading's whole point: the real 4-layer row's
+    target (0.675) prices a 1.00 mm pair ask, a 0.775 mm label gap and
+    a 1.35 mm edge ask — NOT the module fallbacks (0.80 / 0.675 /
+    1.25) — so the anneal stops packing parts into shared-wall
+    distances the draw cannot label (taz-leaf runs 34-37: 26-32 of 50
+    labels walked). The fallback path stays available for capability-
+    less designs."""
+    from precis.pcb.capabilities import capability_for
+    from precis.pcb.topoplace.design import SilkRoom
+
+    silk = SilkRoom.from_capability(capability_for("4layer"))
+    assert silk.pair_req_mm == pytest.approx(1.0, abs=1e-9)
+    assert silk.label_anchor_mm == pytest.approx(0.725, abs=1e-9)
+    assert silk.label_clear_mm == pytest.approx(0.8, abs=1e-9)
+    assert silk.edge_req_mm == pytest.approx(1.35, abs=1e-9)
+    fallback = SilkRoom.fallback()
+    assert fallback.pair_req_mm == pytest.approx(0.8, abs=1e-9)
+    assert fallback.label_anchor_mm == pytest.approx(0.625, abs=1e-9)
+    assert fallback.label_clear_mm == pytest.approx(0.7, abs=1e-9)
+    assert fallback.edge_req_mm == pytest.approx(1.25, abs=1e-9)
+    assert SilkRoom.from_capability(None) == fallback
+    # the design field defaults to the fallback (hand-built synthetics)
+    d = _margin_label_fixture([("U1", 15.0, 15.0, 0.9)])
+    assert d.silk == fallback
+
+
+def test_settle_label_room_nudges_walkers_and_edge_parts() -> None:
+    """The post-anneal repair is the guarantee: on the crowded fixture
+    (centre part boxed in by eight blockers) it nudges until the centre
+    part's label room comes back — walk 0 — and a part parked in the
+    edge band comes off the outline. Survivors it cannot fix are left
+    in place (honest, not hidden)."""
+    from precis.pcb.topoplace import label_room_walks, settle_label_room
+
+    off = 2.2
+    spec = [("R1", 15.0, 15.0, 0.9)]
+    for k, (dx, dy) in enumerate(
+        ((0, 1), (1, 1), (1, 0), (1, -1), (0, -1), (-1, -1), (-1, 0), (-1, 1))
+    ):
+        spec.append((f"B{k}", 15.0 + dx * off, 15.0 + dy * off, 0.9))
+    d = _margin_label_fixture(spec)
+    walk0, _edge0 = label_room_walks(d, d.pose0)
+    assert walk0[0] > 0.0
+
+    repaired = settle_label_room(d, d.pose0)
+    walk1, _edge1 = label_room_walks(d, repaired)
+    assert walk1[0] == 0.0
+    # somebody moved — the boxed-in centre part or a blocker it pushed
+    assert not np.array_equal(repaired, d.pose0)
+
+    # edge half: a ring straddling the edge band gets pulled inboard
+    de = _margin_label_fixture([("U9", 1.2, 15.0, 0.9)])
+    we0, ee0 = label_room_walks(de, de.pose0)
+    assert ee0[0] > 0.0
+    rep_e = settle_label_room(de, de.pose0)
+    _we1, ee1 = label_room_walks(de, rep_e)
+    assert ee1[0] == 0.0
+    assert rep_e[0, 0] > de.pose0[0, 0]
 
 
 def test_placer_beats_autoplace_at_equal_evals_median() -> None:

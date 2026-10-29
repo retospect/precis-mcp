@@ -29,6 +29,7 @@ import numpy as np
 
 from precis.errors import BadInput
 from precis.pcb import padplace, ratsnest
+from precis.pcb.gerber import DEFAULT_SILK_WIDTH_MM
 from precis.pcb.ir import (
     COURTYARD_CLEARANCE_MM,
     NO_NET,
@@ -38,7 +39,86 @@ from precis.pcb.ir import (
     instance_courtyard_polygons,
     layer_name,
 )
+from precis.pcb.silk import (
+    DEFAULT_REFDES_HEIGHT_MM,
+    OUTLINE_GAP_STROKES,
+    outline_offsets_mm,
+    outline_pair_separation_mm,
+)
+from precis.pcb.stroke_font import GLYPHS
 from precis_geom.pcb import PinConflict
+
+#: How far a refdes glyph's centreline leaves its advance box (em) —
+#: silk's ``_GLYPH_OVERHANG_EM``, recomputed here so the design builder
+#: stays self-contained ('#', '(' and ')' drop below the baseline; the
+#: edge-ink test measures INK, not the box).
+_REFDES_OVERHANG_EM = max(
+    max(-y, y - 1.0, -x, 0.0)
+    for glyph in GLYPHS.values()
+    for stroke in glyph
+    for x, y in stroke
+)
+
+
+@dataclass(frozen=True, slots=True)
+class SilkRoom:
+    """The draw-side silk figures the placer prices, resolved ONCE from
+    the board's fab-capability row — the pair separation two full
+    outline rings need, the label box's gap off a ring (including the
+    draw's own outline inflation), the flat edge-axis requirement, and
+    the outline erosion the label acceptance test prices. Priced with
+    the module fallbacks these under-read the real draw by 0.1-0.2 mm
+    (taz-leaf runs 34-37: the anneal packed parts at the fallback pair
+    floor 0.80 mm where the capability figures need 1.00 mm, so nearly
+    every tight pair shared one outline wall and every canonical label
+    box between them failed the draw's 0.45 mm gap — 26-32 of 50 labels
+    walked the relocation ladder). The figures here are THE SAME
+    functions the silk pass draws with (:mod:`precis.pcb.silk`), so
+    "the placer thinks there is room" and "the draw finds room" stop
+    being two definitions."""
+
+    pair_req_mm: float  # ring-to-ring separation for two FULL outlines
+    label_anchor_mm: float  # where the draw puts a label box off a ring
+    label_clear_mm: float  # the model's ring-clearance acceptance test
+    edge_req_mm: float  # flat edge-axis requirement (ring to cut edge)
+    edge_erode_mm: float  # outline erosion for the label box acceptance
+
+    @classmethod
+    def from_capability(cls, capability: Any) -> SilkRoom:
+        from precis.pcb.silk import _silk_edge_margin_mm
+
+        sw = DEFAULT_SILK_WIDTH_MM
+        target = outline_offsets_mm(capability, stroke_width_mm=sw)[1]
+        edge = _silk_edge_margin_mm(capability)
+        anchor = (1.0 + OUTLINE_GAP_STROKES) * sw + max(
+            0.0, target - COURTYARD_CLEARANCE_MM
+        )
+        # The acceptance test prices the DRAWN outline, which settles
+        # 0.025-0.05 mm outside the clean ring+target inflation
+        # (decimation, shared-wall bridging) and bulges around routed
+        # vias by the annulus reach. Runs 42-43 taught the hard version
+        # of this: the anchor slack and the draw inflation are the SAME
+        # 0.05, so a model-free spot sat exactly ON silk's minimum and
+        # every pin walked — the clearance must price the draw's reach,
+        # not the formula's.
+        return cls(
+            pair_req_mm=max(
+                0.0,
+                outline_pair_separation_mm(capability) - 2.0 * COURTYARD_CLEARANCE_MM,
+            ),
+            label_anchor_mm=anchor,
+            label_clear_mm=anchor + 0.075,
+            edge_req_mm=edge + sw / 2.0 + target,
+            edge_erode_mm=edge
+            + sw / 2.0
+            + _REFDES_OVERHANG_EM * DEFAULT_REFDES_HEIGHT_MM,
+        )
+
+    @classmethod
+    def fallback(cls) -> SilkRoom:
+        """The documented no-capability figures (module fallbacks)."""
+        return cls.from_capability(None)
+
 
 #: ``freedoms`` bitset values (Decision 17's "allowed freedoms").
 #: ROTATE — quarter-turn moves are legal; BACK_SIDE — the part may be
@@ -137,13 +217,15 @@ class ObjectiveShares:
     #: slices'.
     silkroom: float = 0.0
     #: Maximin margin (Reto 2026-10-29): a softmin over per-part WORST
-    #: margin shortfalls (edge / pair / hole axes — see proxy.py's
+    #: margin shortfalls (edge / pair / hole / label axes — see proxy.py's
     #: :func:`margin_total`), where ``silkroom`` prices the SUM of pair
     #: shortfalls. One small violation can hide in silkroom's total; the
     #: softmin always prices the worst-off part (taz-leaf run 31: two
     #: courtyards 0.25–0.37mm off the board edge, a label inside a
-    #: mounting hole). 0 keeps a share vector identical to earlier
-    #: slices'.
+    #: mounting hole; run 34: 23/50 labels >3mm off their parts and an
+    #: 0402 squished flat against the leaf outline — the flat edge ask
+    #: and the label axis price both). 0 keeps a share vector identical
+    #: to earlier slices'.
     margin: float = 0.0
 
     def __post_init__(self) -> None:
@@ -245,7 +327,11 @@ class TopoZone:
     of them); ``net`` the fixed copper's net name when known (a same-net
     wire may pass — the wire builder reads it, the mesh does not)."""
 
-    kind: str  # 'keepout' | 'mounting_hole' | 'fixed_via' | 'fixed_copper'
+    kind: str  # 'keepout' | 'mounting_hole' | 'fixed_via' | 'fixed_copper' | 'label_keepout'
+    #: 'label_keepout' is VIA-ONLY: a reserved refdes-label box the wire
+    #: mesh ignores (silk prints over traces) but the via-siting walk
+    #: honors (an annulus conflicts with the ink). Minted only on route
+    #: designs by the place half's label pins.
     ring: np.ndarray  # (K, 2) world mm, closed
     layers: tuple[int, ...] = ()
     net: str = ""
@@ -368,6 +454,14 @@ class TopoDesign:
     #: Slice 2 (certificates): the routable net's name per ``net_pins``
     #: entry — odd-cycle certificates name nets, not indices.
     net_name: tuple[str, ...] = ()
+    #: The draw-side silk figures the margin/silkroom terms price
+    #:(:class:`SilkRoom`) — resolved from the board's capability row
+    #: when the caller passes one, else the documented fallbacks. The
+    #: placer's pair/label/edge axes and the silk pass draw from these
+    #: SAME numbers, so a placement the term calls spacious is spacious
+    #: at draw time (taz-leaf runs 34-37: fallback-priced placements
+    #: shared outline walls everywhere and 26-32 of 50 labels walked).
+    silk: SilkRoom = field(default_factory=SilkRoom.fallback)
     #: Slice 4 (corridor capacity): each pin's pad ``(w, h)`` in the part
     #: frame — an edge's wire capacity is its length minus the pad
     #: extents it touches. ``ir.pin_w``/``pin_h`` verbatim.
@@ -828,6 +922,7 @@ def design_from_ir(
     route_planes: bool = False,
     placement_sides: str | None = None,
     measures: list[dict[str, Any]] | None = None,
+    capability: Any = None,
 ) -> TopoDesign:
     """Build the one immutable placer input from the IR.
 
@@ -1176,6 +1271,7 @@ def design_from_ir(
         ),
         zones=_zones(ir, features, fixed_copper, names, pose0),
         net_name=tuple(net_names),
+        silk=SilkRoom.from_capability(capability),
         pin_wh=np.column_stack(
             [
                 np.asarray(ir.pin_w, dtype=np.float64),

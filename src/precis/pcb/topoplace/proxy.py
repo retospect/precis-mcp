@@ -56,17 +56,36 @@ anneal spreads parts before the silk pass must bend an outline, share
 one wall, or push a refdes label out along its relocation ladder.
 ``margin`` is the maximin twin (Reto 2026-10-29 — "the minimal margin
 around each part is at least X; maximize that"): per part, the WORST of
-three margin axes — the courtyard ring's gap to the board edge against
-a ring-radius-aware want (:func:`_edge_wants` — the silk draw drops a
-ring wholly inside the edge margin, which only small rings can fall
-victim to), the ring's separation to its nearest same-side
-neighbour against the silk-room requirement (the SAME pair scan
-``silkroom`` prices), and the pad-union body's distance to the mounting-
-hole keep-outs against ``HOLE_WANT_MM`` — then a softmin over parts of
-those worst shortfalls. Where ``silkroom``'s SUM lets one cramped part
-hide in the total, the softmin always prices the worst-off part
+four margin axes — the courtyard ring's gap to the board edge against
+the flat ``silk.edge_req_mm`` (the full outline's room: any ring that
+merely overlaps the edge-margin band loses its outer wall to the edge —
+a ring-radius-aware want priced big rings 0 and let run 34's R23 sit
+squished flat against the leaf outline), the ring's separation to its
+nearest same-side neighbour against the silk-room requirement (the
+SAME pair scan ``silkroom`` prices), the pad-union body's distance to
+the mounting-hole keep-outs against ``HOLE_WANT_MM``, and the LABEL
+axis — the distance the refdes label will have to walk: 0 while one of
+silk's eight canonical LABEL_SPOT_ORDER boxes sits clear of every
+colliding ring, the edge-margin-eroded outline and the hole keep-outs,
+else the first free relocation-ladder rung's excess over the canonical
+gap (capped at ``_LBL_NO_SPOT_MM`` — the graded excess is what gives
+the anneal a gradient to unstick a boxed-in part; a flat constant
+saturates the softmin and prices nothing) — then a softmin over parts
+of those worst shortfalls. Where ``silkroom``'s SUM lets one cramped
+part hide in the total, the softmin always prices the worst-off part
 (taz-leaf run 31: two courtyards 0.25–0.37mm off the board edge, an
-L2–U1 pair inside the silk rule, a refdes label inside a mounting hole).
+L2–U1 pair inside the silk rule, a refdes label inside a mounting
+hole; runs 34-38: 23-33 labels >3mm off their parts until the axis was
+graded and the room capability-priced). The settled pose's label pins
+ride :func:`label_spots_for` — the same canonical-spot greedy the silk
+pass runs, persisted as instance ``meta.label_spot`` so the draw honors
+the space the placer preserved; the route stage keeps vias and wires
+out of the pinned boxes (:func:`label_boxes_for` keepout zones). All
+four silk figures come from :class:`TopoDesign.silk` — resolved from
+the board's fab capability by :func:`design_from_ir`, the SAME
+functions the silk pass draws with; pricing with the module fallbacks
+on a capability board shared an outline wall across every tight pair
+(runs 34-37).
 """
 
 from __future__ import annotations
@@ -75,11 +94,15 @@ import math
 from typing import Any
 
 import numpy as np
+import shapely
 from shapely.geometry import Point, Polygon
 
-from precis.pcb.ir import COURTYARD_CLEARANCE_MM
-from precis.pcb.silk import outline_pair_separation_mm
-from precis.pcb.topoplace.design import ObjectiveShares, TopoDesign
+from precis.pcb.silk import (
+    DEFAULT_REFDES_HEIGHT_MM,
+    LABEL_SPOT_ORDER,
+)
+from precis.pcb.stroke_font import text_width_mm
+from precis.pcb.topoplace.design import ObjectiveShares, SilkRoom, TopoDesign
 
 #: Same straddle epsilon as ``geom.segments_cross`` — parity between the
 #: incremental count and the scalar predicate is literal, not "close".
@@ -186,17 +209,45 @@ def _ring_overlap_total(geoms: list[Any], pose: np.ndarray, th: np.ndarray) -> f
     return total
 
 
-#: The separation two courtyard rings must keep so BOTH parts draw their
-#: full silk outline with the ruled outline-to-outline gap
-#: (:func:`precis.pcb.silk.outline_pair_separation_mm` on the zero-clearance
-#: pad hulls, minus the clearance the placer's courtyard polygons already
-#: inflate by). 0.80 mm under the module fallbacks (1.60 − 2×0.40) — the
-#: same "no capability row in the placer design build" constraint
-#: :data:`_EDGE_CLEAR_MM` documents; the rung that carries capability can
-#: scale the term without a second formula.
-_SILK_ROOM_REQ_MM = max(
-    0.0, outline_pair_separation_mm(None) - 2.0 * COURTYARD_CLEARANCE_MM
+#: Fallback silk figures for designs built WITHOUT a capability row.
+#: Every real design carries :class:`TopoDesign.silk` — resolved from
+#: the board's fab-capability row by :func:`design_from_ir`, the SAME
+#: functions the silk pass draws with — and the terms read those. These
+#: module aliases exist for hand-built synthetic designs (which take
+#: ``TopoDesign.silk``'s fallback default) and for the tests that pin
+#: the fallback numbers. Under the fallbacks the pair ask is 0.80 mm;
+#: JLC 4-layer house defaults want 1.00 mm — pricing with the fallbacks
+#: on a capability board shared an outline wall across every tight pair
+#: and walked 26-32 of 50 refdes labels (taz-leaf runs 34-37).
+_FALLBACK_SILK = SilkRoom.fallback()
+_SILK_ROOM_REQ_MM = _FALLBACK_SILK.pair_req_mm
+_SILK_EDGE_REQ_MM = _FALLBACK_SILK.edge_req_mm
+_LBL_GAP_MM = _FALLBACK_SILK.label_clear_mm  # fallback ring-clearance
+(_LBL_ANCHOR_MM, _LBL_CLEAR_MM) = (
+    _FALLBACK_SILK.label_anchor_mm,
+    _FALLBACK_SILK.label_clear_mm,
 )
+_LBL_HEIGHT_MM = DEFAULT_REFDES_HEIGHT_MM
+#: No canonical spot free ⇒ the silk pass walks the ladder or drops the
+#: label — priced well beyond any adjacent outcome (the measure's
+#: ">3mm = far" threshold is ~4-5mm on this geometry; the softmin only
+#: needs the RELATIVE ordering, and 4mm sits above every achievable
+#: walk on a board the anneal can fix).
+_LBL_NO_SPOT_MM = 4.0
+#: The route-time keep-out ring pads each label box by this much: a via
+#: sited near a box bulges the settled courtyard outline by the via
+#: annulus + silk clearance (:func:`precis.pcb.silk._via_to_silk_mm`,
+#: ~0.3 + 0.15) and the bulge swallows the box at draw time (taz-leaf
+#: run 36: pinned boxes intersected by neighbours' via bulges, d=0.000).
+#: 0.6 covers the annulus reach with slack.
+_LBL_KEEPOUT_PAD_MM = 0.6
+#: Bbox slack a moved ring can reach a partner's label candidates:
+#: a canonical box extends at most ``(ring half-extent) + gap + text``
+#: off its ring — ~6mm for these parts — so a partner farther than this
+#: from BOTH the old and new ring bounds cannot have a candidate's
+#: free/block status flip. The try_move prescreen uses it the same way
+#: the pair axis uses ``_SILK_ROOM_REQ_MM``.
+_LBL_TOUCH_REACH_MM = 8.0
 
 
 def _ring_silkroom_total(
@@ -225,39 +276,43 @@ def _ring_silkroom_total(
     return total
 
 
-#: Margin term, edge axis (Reto 2026-10-29): the courtyard-to-board-edge
-#: distance at which a part's silk outline ring reaches the DRAW's drop
-#: threshold, for a ring of radius r: ``want(r) = max(0, ROOM − r)``.
-#: The silk pass DROPS a ring lying wholly inside the board's edge
-#: margin — ring centerline at ``courtyard_gap − target offset`` with
-#: ring radius r is wholly inside when
-#: ``courtyard_gap − target + r < edge_margin + stroke/2`` (silk.py's
-#: ``inside`` buffer). Under this module's no-capability fallbacks
-#: (target 0.575, edge margin 0.6, stroke 0.15) the room is 1.25mm: a
-#: small 0402's ring (r≈0.7) drops when its courtyard comes within
-#: ~0.55mm of the edge; a big IC's ring (r≈4mm) can never be wholly
-#: inside and wants nothing. Measured on taz-leaf runs 32-33
-#: (2026-10-29): a FLAT want under-priced exactly the small tip-row
-#: parts whose outlines dropped. A QUALITY margin, NOT the 0.4mm fab
-#: bar — that stays in the overlap term's edge measure
-#: (:data:`_EDGE_CLEAR_MM`, body-measured since gr529963).
-_SILK_EDGE_ROOM_MM = 1.25
-
-
-def _edge_wants(rings: list[Any]) -> np.ndarray:
-    """Per-part edge-axis want in mm — :data:`_SILK_EDGE_ROOM_MM` minus
-    the courtyard ring's circumradius (clamped at 0): a ring bigger than
-    the edge-margin band can never fall wholly inside it, so it wants
-    nothing."""
-
-    out = np.zeros(len(rings), dtype=np.float64)
-    for i, g in enumerate(rings):
-        if g is None:
-            continue
-        c = g.representative_point()
-        r = max(math.hypot(x - c.x, y - c.y) for x, y in g.exterior.coords)
-        out[i] = max(0.0, _SILK_EDGE_ROOM_MM - r)
-    return out
+#: Margin term, label axis (2026-10-29, taz-leaf run 34: 23/50 refdes
+#: labels ended >3mm off their part, R23's 4.9mm — the silk pass walks a
+#: relocation ladder when a part's own canonical spots are all blocked,
+#: and placement never knew). Per part: 0 when one of silk's eight
+#: canonical LABEL_SPOT_ORDER spots has its text box free, else
+#: :data:`_LBL_NO_SPOT_MM` — "the label WILL leave the part". The box
+#: model mirrors silk's acceptance stricter-than-draw, so a placer-free
+#: spot is a silk-free spot (modulo routed vias, which the silk pass
+#: resolves by falling back past the pin):
+#:   * box ``gap_mm`` clear of every colliding ring (the design's
+#:     :class:`SilkRoom.label_gap_mm` — the label gap off the DRAWN
+#:     outline plus the draw's own inflation slack);
+#:   * box fully inside the outline eroded by the edge-margin ink band
+#:     PLUS the glyph overhang (silk measures INK there — the design's
+#:     :class:`SilkRoom.edge_erode_mm`);
+#:   * box not intersecting a mounting-hole keep-out (R26 printed inside
+#:     the zip hole, 2026-10-29).
+#: No canonical spot free ⇒ the silk pass walks the ladder or drops the
+#: label — priced well beyond any adjacent outcome (the measure's
+#: ">3mm = far" threshold is ~4-5mm on this geometry; the softmin only
+#: needs the RELATIVE ordering, and 4mm sits above every achievable
+#: walk on a board the anneal can fix).
+_LBL_NO_SPOT_MM = 4.0
+#: The route-time keep-out ring pads each label box by this much: a via
+#: sited near a box bulges the settled courtyard outline by the via
+#: annulus + silk clearance (:func:`precis.pcb.silk._via_to_silk_mm`,
+#: ~0.3 + 0.15) and the bulge swallows the box at draw time (taz-leaf
+#: run 36: pinned boxes intersected by neighbours' via bulges, d=0.000).
+#: 0.6 covers the annulus reach with slack.
+_LBL_KEEPOUT_PAD_MM = 0.6
+#: Bbox slack a moved ring can reach a partner's label candidates:
+#: a canonical box extends at most ``(ring half-extent) + gap + text``
+#: off its ring — ~6mm for these parts — so a partner farther than this
+#: from BOTH the old and new ring bounds cannot have a candidate's
+#: free/block status flip. The try_move prescreen uses it the same way
+#: the pair axis uses ``_SILK_ROOM_REQ_MM``.
+_LBL_TOUCH_REACH_MM = 8.0
 
 
 #: Margin term, hole axis: the body-to-mounting-hole-keep-out distance
@@ -299,45 +354,735 @@ def _margin_zone_entries(d: TopoDesign, pose: np.ndarray) -> list[tuple[int, Any
     return out
 
 
+def _label_spot_boxes(
+    refdes: str, ring: Any, anchor_mm: float
+) -> tuple[tuple[float, float, float, float], ...]:
+    """The eight canonical :data:`precis.pcb.silk.LABEL_SPOT_ORDER` label
+    boxes for a placed ring, as ``(x0, y0, x1, y1)`` — silk's
+    ``_outline_spot_candidates`` formulas on the ring's world bbox,
+    spaced ``anchor_mm`` (:class:`SilkRoom.label_anchor_mm`) off it:
+    where the DRAW puts the box (the label gap off the drawn outline
+    plus the drawn outline's target offset the placer ring doesn't
+    carry). The text box needs no glyph layout:
+    :func:`precis.pcb.stroke_font.text_width_mm` is the exact advance."""
+    x0, y0, x1, y1 = ring.bounds
+    xc, yc = (x0 + x1) / 2.0, (y0 + y1) / 2.0
+    g = anchor_mm
+    w = text_width_mm(refdes, _LBL_HEIGHT_MM)
+    h = _LBL_HEIGHT_MM
+    # (anchor, h_align, v_align) — silk LABEL_SPOT_ORDER, board frame.
+    spots = (
+        ((x0, y0 - g), "left", "top"),  # bottom-left
+        ((x1, y0 - g), "right", "top"),  # bottom-right
+        ((x0, y1 + g), "left", "baseline"),  # top-left
+        ((x1, y1 + g), "right", "baseline"),  # top-right
+        ((x0 - g, yc), "right", "middle"),  # left
+        ((x1 + g, yc), "left", "middle"),  # right
+        ((xc, y1 + g), "center", "baseline"),  # top
+        ((xc, y0 - g), "center", "top"),  # bottom
+    )
+    out = []
+    for (ax, ay), ha, va in spots:
+        dx = {"left": 0.0, "center": -w / 2.0, "right": -w}[ha]
+        dy = {"baseline": 0.0, "middle": -h / 2.0, "top": -h}[va]
+        out.append((ax + dx, ay + dy, ax + dx + w, ay + dy + h))
+    return tuple(out)
+
+
+def _label_box_free(
+    part: int,
+    box: tuple[float, float, float, float],
+    ring_at: Any,
+    side_at: Any,
+    n: int,
+    th: np.ndarray,
+    eroded: Any | None,
+    zones: list[tuple[int, Any]],
+    bounds: np.ndarray,
+    clear_mm: float,
+) -> bool:
+    """The placement-time acceptance test for one label box — stricter
+    than silk's draw-side test, so placer-free ⇒ silk-free. The box must
+    sit fully inside the outline eroded by
+    :class:`SilkRoom.edge_erode_mm`, keep ``clear_mm``
+    (:class:`SilkRoom.label_clear_mm` — the draw's label gap off the
+    DRAWN outline, plus the drawn outline's target offset, PLUS the
+    draw's settling inflation: decimation, shared-wall bridging, via
+    bulges; runs 42-43 priced the formula and every pin sat exactly on
+    silk's minimum) off every colliding ring (line or area — one polygon
+    distance covers both), and not intersect a hole keep-out. ``bounds``
+    is every ring's ``(x0, y0, x1, y1)`` as an ``(n, 4)`` array — the
+    numpy broad phase over what the ring loop would prescreen one
+    shapely call at a time."""
+    bx0, by0, bx1, by1 = box
+    if eroded is not None:
+        ex0, ey0, ex1, ey1 = eroded.bounds
+        if bx0 < ex0 or by0 < ey0 or bx1 > ex1 or by1 > ey1:
+            return False
+        poly = Polygon(((bx0, by0), (bx1, by0), (bx1, by1), (bx0, by1)))
+        if not eroded.covers(poly):
+            return False
+    else:
+        poly = Polygon(((bx0, by0), (bx1, by0), (bx1, by1), (bx0, by1)))
+    g = clear_mm
+    side_p = side_at(part)
+    th_p = bool(th[part])
+    near = (
+        (bounds[:, 0] <= bx1 + g)
+        & (bounds[:, 2] + g >= bx0)
+        & (bounds[:, 1] <= by1 + g)
+        & (bounds[:, 3] + g >= by0)
+    )
+    for idx in np.nonzero(near)[0]:
+        j = int(idx)
+        if j == part:
+            continue
+        gj = ring_at(j)
+        if gj is None or (side_p != side_at(j) and not (th_p or th[j])):
+            continue
+        if poly.distance(gj) < g:
+            return False
+    for owner, zg in zones:
+        if owner != part and poly.intersects(zg):
+            return False
+    return True
+
+
+def _label_axis(
+    part: int,
+    refdes: str,
+    ring: Any | None,
+    ring_at: Any,
+    side_at: Any,
+    n: int,
+    th: np.ndarray,
+    eroded: Any | None,
+    zones: list[tuple[int, Any]],
+    bounds: np.ndarray,
+    anchor_mm: float,
+    clear_mm: float,
+) -> float:
+    """The margin term's label axis: 0 when one canonical spot's box is
+    free, else :data:`_LBL_NO_SPOT_MM` (the silk pass walks the
+    relocation ladder or drops the label). FLAT on purpose: a graded
+    walk measured on the anneal's model actively hurt the search
+    (taz-leaf run 39b: 69 squished pairs vs run 38's 2 — the walk
+    gradient pushes parts toward their label side and tightens their
+    pair gaps; and the placer's box model can never match the draw's
+    settled-outline geometry exactly, so in-anneal grading optimises a
+    ghost). The fix lives in :func:`settle_label_room` — the
+    deterministic post-anneal repair that nudges offenders and checks
+    against the model with real acceptance. Ringless parts take 0."""
+    if ring is None:
+        return 0.0
+    for box in _label_spot_boxes(refdes, ring, anchor_mm):
+        if _label_box_free(
+            part, box, ring_at, side_at, n, th, eroded, zones, bounds, clear_mm
+        ):
+            return 0.0
+    return _LBL_NO_SPOT_MM
+
+
+def _ladder_candidates(
+    refdes: str,
+    ring: Any,
+    origin: tuple[float, float],
+    anchor_mm: float,
+    *,
+    mirror: bool,
+) -> tuple[list[tuple[float, float]], ...]:
+    """The silk pass's relocation-ladder candidates for a placed ring —
+    the quarter-edge anchors, then the radial ring sweep, in silk's
+    exact try order (:data:`precis.pcb.silk._CANDIDATES`), with boxes
+    from the exact advance width (no glyph layout — the axis grades,
+    the draw re-derives). ``box_board`` is the world ring translated
+    back to the part origin, the frame the support math works in."""
+    from precis.pcb.silk import _CANDIDATES, _LADDER_STEP_CAP_MM
+
+    ox, oy = origin
+    pts = [(float(x) - ox, float(y) - oy) for x, y in ring.exterior.coords]
+    xs = [p[0] for p in pts]
+    ys = [p[1] for p in pts]
+    x0, x1, y0, y1 = min(xs), max(xs), min(ys), max(ys)
+    # silk spaces the ladder off the DRAWN outline; this ring is the
+    # reservation (drawn minus the target/clearance delta), so the
+    # anchor carries the delta — without it the graded walk sits
+    # 0.275 mm closer than the draw's ladder.
+    g = max(_LBL_HEIGHT_MM * 0.3, anchor_mm)
+    w = text_width_mm(refdes, _LBL_HEIGHT_MM)
+    h = _LBL_HEIGHT_MM
+    raw: list[tuple[tuple[float, float], str, str]] = []
+    for f in (0.25, 0.75):
+        mid_x = x0 + f * (x1 - x0)
+        mid_y = y0 + f * (y1 - y0)
+        raw += [
+            ((mid_x, y0 - g), "center", "top"),
+            ((x0 - g, mid_y), "right", "middle"),
+            ((x1 + g, mid_y), "left", "middle"),
+            ((mid_x, y1 + g), "center", "baseline"),
+        ]
+    for du, dv, h_align, v_align, _spot in _CANDIDATES:
+        rn = math.hypot(du, dv)
+        if rn > 2.0:
+            break  # grading cap: rings 1-2 price the walk; deeper rungs
+            # only push the excess toward the NO_SPOT ceiling the axis
+            # returns anyway when nothing nearer is free (and each rung
+            # costs a full acceptance test per stuck part per eval)
+        ux, uy = du / rn, dv / rn
+        reach = max(px * ux + py * uy for px, py in pts) + g
+        off = reach + (rn - 1.0) * min(reach, _LADDER_STEP_CAP_MM)
+        raw.append(((ux * off, uy * off), h_align, v_align))
+    out: list[list[tuple[float, float]]] = []
+    for (ax, ay), ha, va in raw:
+        if mirror:
+            ha = {"left": "right", "right": "left"}.get(ha, ha)
+        dx = {"left": 0.0, "center": -w / 2.0, "right": -w}[ha]
+        dy = {"baseline": 0.0, "middle": -h / 2.0, "top": -h}[va]
+        out.append(
+            [
+                (ax + dx, ay + dy),
+                (ax + dx + w, ay + dy),
+                (ax + dx + w, ay + dy + h),
+                (ax + dx, ay + dy + h),
+            ]
+        )
+    return tuple(out)
+
+
+def label_boxes_for(
+    d: TopoDesign, pose: np.ndarray, spots: dict[str, str]
+) -> tuple[tuple[str, np.ndarray], ...]:
+    """The pinned label boxes as ``(refdes, closed world ring)`` rows —
+    the route stage threads them in as ``keepout`` zones so the router
+    never sites a via (or threads a wire) where the placer promised the
+    refdes label would sit. Without this the silk pass runs AFTER
+    routing and a via on the pin walks the label onto the relocation
+    ladder (taz-leaf run 35: R23's pinned right spot carried a via, U2's
+    label walked 13 mm). Each ring is padded by
+    :data:`_LBL_KEEPOUT_PAD_MM`: a via near (not on) a box still bulges
+    the settled courtyard outline into it (run 36: neighbours' bulges
+    intersected pinned boxes at d=0), so the reservation must claim the
+    bulge's reach, not just the ink's box."""
+    if not spots:
+        return ()
+    pose = np.asarray(pose, dtype=np.float64)
+    out: list[tuple[str, np.ndarray]] = []
+    for i, refdes in enumerate(d.parts):
+        name = spots.get(refdes)
+        if name is None:
+            continue
+        ring = _ring_geom(d, pose[i], i)
+        if ring is None:
+            continue
+        box = dict(
+            zip(
+                LABEL_SPOT_ORDER,
+                _label_spot_boxes(refdes, ring, d.silk.label_anchor_mm),
+            )
+        ).get(name)
+        if box is None:
+            continue
+        x0, y0, x1, y1 = box
+        p = _LBL_KEEPOUT_PAD_MM
+        out.append(
+            (
+                refdes,
+                np.asarray(
+                    [
+                        [x0 - p, y0 - p],
+                        [x1 + p, y0 - p],
+                        [x1 + p, y1 + p],
+                        [x0 - p, y1 + p],
+                        [x0 - p, y0 - p],
+                    ],
+                    dtype=np.float64,
+                ),
+            )
+        )
+    return tuple(out)
+
+
+def label_room_walks(d: TopoDesign, pose: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    """Per-part ``(walk_mm, edge_shortfall_mm)`` under the label model —
+    the repair pass's scoreboard. ``walk`` is 0 when a canonical spot's
+    box is free, else the first free relocation-ladder rung's excess
+    over the canonical gap (capped at :data:`_LBL_NO_SPOT_MM`); the
+    graded ladder lives HERE, in the deterministic repair, not in the
+    anneal term (:func:`_label_axis` is flat on purpose — run 39b).
+    ``edge_shortfall`` is the margin edge axis, the "squished by the
+    outline" half of the complaint."""
+    n = len(d.parts)
+    walk = np.zeros(n, dtype=np.float64)
+    edge = np.zeros(n, dtype=np.float64)
+    if not n:
+        return walk, edge
+    pose = np.asarray(pose, dtype=np.float64)
+    rings = [_ring_geom(d, pose[i], i) for i in range(n)]
+    sides = pose[:, 3] >= 0.5
+    th = through_hole_parts(d)
+    outline = _outline_geom(d)
+    eroded = _eroded_outline(outline, d.silk.edge_erode_mm)
+    zones = _margin_zone_entries(d, pose)
+    ring_at = rings.__getitem__
+    side_at = lambda j: bool(sides[j])  # noqa: E731
+    bounds = _rings_bounds(rings)
+    em = (
+        np.asarray(d.part_edge_mate, dtype=bool)
+        if len(d.part_edge_mate) == n
+        else np.zeros(n, dtype=bool)
+    )
+    anchor = d.silk.label_anchor_mm
+    clear = d.silk.label_clear_mm
+    for i in range(n):
+        ring = rings[i]
+        if ring is None:
+            continue
+        if outline is not None and not em[i]:
+            edge[i] = max(
+                0.0, d.silk.edge_req_mm - float(outline.exterior.distance(ring))
+            )
+        free = any(
+            _label_box_free(i, b, ring_at, side_at, n, th, eroded, zones, bounds, clear)
+            for b in _label_spot_boxes(d.parts[i], ring, anchor)
+        )
+        if free:
+            continue
+        ox, oy = float(pose[i][0]), float(pose[i][1])
+        excess = _LBL_NO_SPOT_MM
+        for corners in _ladder_candidates(
+            d.parts[i], ring, (ox, oy), anchor, mirror=side_at(i)
+        ):
+            box = (
+                min(p[0] for p in corners) + ox,
+                min(p[1] for p in corners) + oy,
+                max(p[0] for p in corners) + ox,
+                max(p[1] for p in corners) + oy,
+            )
+            if not _label_box_free(
+                i, box, ring_at, side_at, n, th, eroded, zones, bounds, clear
+            ):
+                continue
+            poly = Polygon(
+                ((box[0], box[1]), (box[2], box[1]), (box[2], box[3]), (box[0], box[3]))
+            )
+            excess = min(_LBL_NO_SPOT_MM, max(0.0, float(poly.distance(ring)) - anchor))
+            break
+        walk[i] = excess
+    return walk, edge
+
+
+def _label_room_legal(
+    d: TopoDesign,
+    pose: np.ndarray,
+    part: int,
+    row: np.ndarray,
+    rings: list[Any],
+    sides: np.ndarray,
+    th: np.ndarray,
+    outline: Any | None,
+    zones: list[tuple[int, Any]],
+) -> bool:
+    """One candidate nudge's legality: the moved part's PADS stay inside
+    the outline (the DRC's ``outline_containment`` measures pad RECTS —
+    a pin whose centre is inside but whose pad overhangs still fails;
+    run 42's repair committed 4 such errors before this check), its
+    ring gains NO same-side overlap, and its body stays out of every
+    hole keep-out — the same three rules the placement DRC enforces, so
+    a repaired pose cannot fail the gate the anneal pose passed."""
+    if outline is not None:
+        pins = np.nonzero(d.pin_part == part)[0]
+        centers = pin_world(d, row, part)
+        if len(d.pin_wh):
+            for k, p in enumerate(pins):
+                w, h = float(d.pin_wh[p][0]), float(d.pin_wh[p][1])
+                if w <= 0.0 and h <= 0.0:
+                    if (
+                        outline.distance(
+                            Point(float(centers[k][0]), float(centers[k][1]))
+                        )
+                        > 0.0
+                    ):
+                        return False
+                    continue
+                base = np.asarray(d.pin_xy[p], dtype=np.float64)
+                corners = local_to_world(
+                    np.asarray(
+                        [
+                            base + [-w / 2.0, -h / 2.0],
+                            base + [w / 2.0, -h / 2.0],
+                            base + [w / 2.0, h / 2.0],
+                            base + [-w / 2.0, h / 2.0],
+                        ]
+                    ),
+                    row,
+                )
+                if not outline.covers(Polygon(corners)):
+                    return False
+        elif len(centers) and _containment_part(outline, centers) > 0.0:
+            return False
+    gi = _ring_geom(d, row, part)
+    if gi is None:
+        return False
+    for j, gj in enumerate(rings):
+        if j == part or gj is None or not _collides(sides, th, part, j):
+            continue
+        bx0, by0, bx1, by1 = gj.bounds
+        x0, y0, x1, y1 = gi.bounds
+        if x1 < bx0 or bx1 < x0 or y1 < by0 or by1 < y0:
+            continue
+        if gi.intersection(gj).area > _EPS:
+            return False
+    body = _body_geom(d, row, part)
+    if body is not None:
+        for owner, zg in zones:
+            if owner != part and body.intersects(zg):
+                return False
+    return True
+
+
+def _label_room_blockers(
+    d: TopoDesign,
+    part: int,
+    rings: list[Any],
+    gap_mm: float,
+) -> list[int]:
+    """Parts whose rings fall inside ``part``'s canonical label boxes
+    dilated by the label gap — the neighbours pinning every spot. When
+    the offender itself has no legal improving nudge, the repair moves
+    THESE instead (nearest first): on a crowded board whoever moves
+    easiest, moves."""
+    ring = rings[part]
+    if ring is None:
+        return []
+    out: set[int] = set()
+    for box in _label_spot_boxes(d.parts[part], ring, gap_mm):
+        poly = Polygon(
+            ((box[0], box[1]), (box[2], box[1]), (box[2], box[3]), (box[0], box[3]))
+        ).buffer(gap_mm)
+        for j, gj in enumerate(rings):
+            if j == part or gj is None or j in out:
+                continue
+            if poly.intersects(gj):
+                out.add(j)
+    return sorted(out, key=lambda j: rings[j].distance(ring))
+
+
+def _label_room_tuple(
+    d: TopoDesign,
+    part: int,
+    rings: list[Any],
+    sides: np.ndarray,
+    th: np.ndarray,
+    outline: Any | None,
+    zones: list[tuple[int, Any]],
+) -> tuple[float, float]:
+    """``part``'s ``(walk, edge)`` tuple under the model with a given
+    ring list — the acceptance score for both the offender's and the
+    blockers' candidate moves."""
+    ring = rings[part]
+    if ring is None:
+        return 0.0, 0.0
+    ring_at = rings.__getitem__
+    side_at = lambda j: bool(sides[j])  # noqa: E731
+    n = len(d.parts)
+    bounds = _rings_bounds(rings)
+    eroded = _eroded_outline(outline, d.silk.edge_erode_mm)
+    anchor = d.silk.label_anchor_mm
+    clear = d.silk.label_clear_mm
+    walk = 0.0
+    free = any(
+        _label_box_free(part, b, ring_at, side_at, n, th, eroded, zones, bounds, clear)
+        for b in _label_spot_boxes(d.parts[part], ring, anchor)
+    )
+    if not free:
+        walk = _LBL_NO_SPOT_MM
+        for corners in _ladder_candidates(
+            d.parts[part], ring, (0.0, 0.0), anchor, mirror=side_at(part)
+        ):
+            box = (
+                min(p[0] for p in corners),
+                min(p[1] for p in corners),
+                max(p[0] for p in corners),
+                max(p[1] for p in corners),
+            )
+            if not _label_box_free(
+                part, box, ring_at, side_at, n, th, eroded, zones, bounds, clear
+            ):
+                continue
+            poly = Polygon(
+                ((box[0], box[1]), (box[2], box[1]), (box[2], box[3]), (box[0], box[3]))
+            )
+            walk = min(_LBL_NO_SPOT_MM, max(0.0, float(poly.distance(ring)) - anchor))
+            break
+    edge = 0.0
+    if outline is not None:
+        em = d.part_edge_mate
+        if not (len(em) == n and bool(em[part])):
+            edge = max(0.0, d.silk.edge_req_mm - float(outline.exterior.distance(ring)))
+    return walk, edge
+
+
+def _label_room_nudges(radius: float) -> tuple[tuple[float, float], ...]:
+    return tuple(
+        (radius * math.cos(k * math.pi / 4.0), radius * math.sin(k * math.pi / 4.0))
+        for k in range(8)
+    )
+
+
+def _try_label_nudges(
+    d: TopoDesign,
+    pose: np.ndarray,
+    who: int,
+    score: int,
+    rings: list[Any],
+    sides: np.ndarray,
+    th: np.ndarray,
+    outline: Any | None,
+    zones: list[tuple[int, Any]],
+    nudges: tuple[tuple[tuple[float, float], ...], ...],
+) -> bool:
+    """Nudge ``who`` (legality-checked); accept the first pose that
+    improves ``score``'s ``(walk, edge)`` tuple. The mover must not
+    strictly worsen unless it IS the scorer (there the improving tuple
+    is the acceptance test). Mutates ``pose``; True when a nudge
+    landed. Fixed parts never move — the authored locks are a contract
+    (taz-leaf's comb electrodes are ``fixed='both'``; run 42's repair
+    dragged one off the outline and the gate refused the board)."""
+    if bool(d.fixed[who]):
+        return False
+    who_cur = _label_room_tuple(d, who, rings, sides, th, outline, zones)
+    score_cur = _label_room_tuple(d, score, rings, sides, th, outline, zones)
+    for ring_nudges in nudges:
+        for dx, dy in ring_nudges:
+            row = pose[who].copy()
+            row[0] += dx
+            row[1] += dy
+            if not _label_room_legal(
+                d, pose, who, row, rings, sides, th, outline, zones
+            ):
+                continue
+            trial = list(rings)
+            trial[who] = _ring_geom(d, row, who)
+            if (
+                _label_room_tuple(d, score, trial, sides, th, outline, zones)
+                >= score_cur
+            ):
+                continue
+            if (
+                who != score
+                and _label_room_tuple(d, who, trial, sides, th, outline, zones)
+                > who_cur
+            ):
+                continue
+            pose[who] = row
+            return True
+    return False
+
+
+def settle_label_room(
+    d: TopoDesign, pose: np.ndarray, *, max_rounds: int = 4
+) -> np.ndarray:
+    """Deterministic post-anneal repair: nudge parts whose refdes label
+    would walk (canonical spots all blocked) or whose ring sits in the
+    edge band, until the model is clean or the round budget ends. This
+    is the "labels sit next to their parts and nothing hugs the outline"
+    guarantee the anneal cannot give — its box model can never match the
+    draw's settled-outline geometry exactly, so the pressure belongs in
+    a pass that scores exactly the model the pins and keep-outs use.
+
+    Worst offender first; nudges on a 0.5 mm lattice out to 3 mm in the
+    8 board directions (the same local-fixup class as the kernel's own
+    ``_settle_pose``, which likewise post-adjusts the best pose without
+    re-entering the anneal). A nudge must be legal — pins inside, no new
+    ring overlap, no hole intersection — and improve the offender's own
+    ``(walk, edge)`` tuple. Rounds repeat until nothing moves or the
+    budget ends; the survivors (genuinely no room on a full board) are
+    left for the measure and the web view to show honestly.
+    """
+    n = len(d.parts)
+    pose = np.asarray(pose, dtype=np.float64).copy()
+    if not n:
+        return pose
+    th = through_hole_parts(d)
+    outline = _outline_geom(d)
+    sides = pose[:, 3] >= 0.5
+    nudges = tuple(_label_room_nudges(r) for r in (0.5, 1.0, 1.5, 2.0, 2.5, 3.0))
+    for _round in range(max_rounds):
+        walk, edge = label_room_walks(d, pose)
+        offenders = sorted(
+            (
+                i
+                for i in range(n)
+                if not bool(d.fixed[i]) and (walk[i] > 0.25 or edge[i] > 0.05)
+            ),
+            key=lambda i: -(walk[i] + edge[i]),
+        )
+        if not offenders:
+            break
+        moved = False
+        for i in offenders:
+            rings = [_ring_geom(d, pose[k], k) for k in range(n)]
+            zones = _margin_zone_entries(d, pose)
+            if _try_label_nudges(
+                d, pose, i, i, rings, sides, th, outline, zones, nudges
+            ):
+                moved = True
+                continue
+            # The offender is boxed in — move whichever neighbour pins
+            # its spots (nearest first, movable only), then re-try the
+            # offender.
+            for j in _label_room_blockers(d, i, rings, d.silk.label_clear_mm):
+                if bool(d.fixed[j]):
+                    continue
+                rings = [_ring_geom(d, pose[k], k) for k in range(n)]
+                zones = _margin_zone_entries(d, pose)
+                if _try_label_nudges(
+                    d, pose, j, i, rings, sides, th, outline, zones, nudges
+                ):
+                    moved = True
+                    rings = [_ring_geom(d, pose[k], k) for k in range(n)]
+                    if _try_label_nudges(
+                        d, pose, i, i, rings, sides, th, outline, zones, nudges
+                    ):
+                        break
+        if not moved:
+            break
+    return pose
+
+
+def _eroded_outline(outline: Any | None, erode_mm: float) -> Any | None:
+    """The outline eroded by ``erode_mm`` (:class:`SilkRoom.edge_erode_mm`
+    — the edge-margin ink band PLUS the label glyph overhang, since silk
+    measures INK, not the advance box), PREPARED for the label axis's
+    repeated ``covers`` tests (shapely 2 caches the prep on the
+    geometry). ``None`` in/out."""
+    if outline is None:
+        return None
+    g = outline.buffer(-erode_mm)
+    shapely.prepare(g)
+    return g
+
+
+def _rings_bounds(rings: list[Any]) -> np.ndarray:
+    """Every ring's bbox as an ``(n, 4)`` array (NaN row for ``None``) —
+    the label axis's numpy broad phase."""
+    out = np.full((len(rings), 4), np.nan)
+    for i, g in enumerate(rings):
+        if g is not None:
+            out[i] = g.bounds
+    return out
+
+
+def label_spots_for(d: TopoDesign, pose: np.ndarray) -> dict[str, str]:
+    """The refdes-label spot pins for a settled pose — each part's first
+    free canonical spot, chosen greedily in silk's natural refdes order
+    (the SAME greedy the silk pass runs, so the pin is what silk would
+    pick given the space the placer preserved). Each chosen box also
+    blocks later parts, like a committed label does draw-side. Parts with
+    no free canonical spot get no pin — the silk pass decides. The job
+    persists these as instance ``meta.label_spot``; the silk builder
+    honors a pin as the part's first candidate, falling back past it
+    only when routed vias or committed silk block it (gr496552)."""
+    from precis.pcb.silk import _refdes_sort_key
+
+    n = len(d.parts)
+    if not n:
+        return {}
+    pose = np.asarray(pose, dtype=np.float64)
+    rings = [_ring_geom(d, pose[i], i) for i in range(n)]
+    sides = pose[:, 3] >= 0.5
+    th = through_hole_parts(d)
+    outline = _outline_geom(d)
+    eroded = _eroded_outline(outline, d.silk.edge_erode_mm)
+    zones = _margin_zone_entries(d, pose)
+    ring_at = rings.__getitem__
+    side_at = lambda j: bool(sides[j])  # noqa: E731
+    bounds = _rings_bounds(rings)
+    chosen: list[tuple[float, float, float, float]] = []
+    out: dict[str, str] = {}
+    for i in sorted(range(n), key=lambda k: _refdes_sort_key(d.parts[k])):
+        ring = rings[i]
+        if ring is None:
+            continue
+        for name, box in zip(
+            LABEL_SPOT_ORDER,
+            _label_spot_boxes(d.parts[i], ring, d.silk.label_anchor_mm),
+        ):
+            if not _label_box_free(
+                i,
+                box,
+                ring_at,
+                side_at,
+                n,
+                th,
+                eroded,
+                zones,
+                bounds,
+                d.silk.label_clear_mm,
+            ):
+                continue
+            cx0, cy0, cx1, cy1 = box
+            if any(
+                cx0 + _EPS < px1
+                and px0 + _EPS < cx1
+                and cy0 + _EPS < py1
+                and py0 + _EPS < cy1
+                for px0, py0, px1, py1 in chosen
+            ):
+                continue
+            out[d.parts[i]] = name
+            chosen.append(box)
+            break
+    return out
+
+
 def _margin_axes(
     rings: list[Any],
     bodies: list[Any],
     pose: np.ndarray,
     th: np.ndarray,
     outline: Any | None,
+    eroded: Any | None,
     zones: list[tuple[int, Any]],
     edge_mate: np.ndarray,
-    wants: np.ndarray,
-) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """Per-part (edge, pair, hole) margin shortfalls in mm over placed
-    ring/body lists — the full-recompute body ``margin_total`` and
-    ``ProxyState.__init__`` share. The pair loop is
+    refdes: tuple[str, ...],
+    silk: SilkRoom,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """Per-part (edge, pair, hole, label) margin shortfalls in mm over
+    placed ring/body lists — the full-recompute body ``margin_total``
+    and ``ProxyState.__init__`` share. The pair loop is
     :func:`_ring_silkroom_total`'s scan (same rings, same side rule, same
     ``req`` of bbox slack) with the shortfall MAXED per part instead of
     summed; the edge axis measures the COURTYARD ring against the outline
-    (:func:`_edge_wants` — the silk ring's room, not the 0.4mm fab bar
-    the overlap term prices on the body); the hole axis measures the
-    pad-union BODY against the hole keep-outs, the owner exempt like the
-    DRC's ``courtyard_hole``. Edge-mated parts pay no edge axis
-    (gr530632 — the mating face is SUPPOSED to sit on the outline)."""
+    against the flat ``silk.edge_req_mm`` (the silk ring's room, not
+    the 0.4mm fab bar the overlap term prices on the body); the hole axis
+    measures the pad-union BODY against the hole keep-outs, the owner
+    exempt like the DRC's ``courtyard_hole``; the label axis is
+    :func:`_label_axis` over the canonical spot boxes. Edge-mated parts
+    pay no edge axis (gr530632 — the mating face is SUPPOSED to sit on
+    the outline)."""
     n = len(rings)
     e = np.zeros(n, dtype=np.float64)
     p = np.zeros(n, dtype=np.float64)
     h = np.zeros(n, dtype=np.float64)
+    l = np.zeros(n, dtype=np.float64)
     if not n:
-        return e, p, h
+        return e, p, h, l
     sides = np.asarray(pose)[:, 3] >= 0.5
     em = (
         np.asarray(edge_mate, dtype=bool)
         if len(edge_mate) == n
         else np.zeros(n, dtype=bool)
     )
-    req = _SILK_ROOM_REQ_MM
+    ring_at = rings.__getitem__
+    side_at = lambda j: bool(sides[j])  # noqa: E731
+    bounds = _rings_bounds(rings)
+    req = silk.pair_req_mm
     for i in range(n):
         gi = rings[i]
         if gi is not None:
             if outline is not None and not em[i]:
-                e[i] = max(0.0, wants[i] - float(outline.exterior.distance(gi)))
+                e[i] = max(0.0, silk.edge_req_mm - float(outline.exterior.distance(gi)))
             x0, y0, x1, y1 = gi.bounds
             for j in range(n):
                 if j == i:
@@ -352,6 +1097,20 @@ def _margin_axes(
                     continue
                 p[i] = max(p[i], req - float(gi.distance(gj)))
             p[i] = max(0.0, p[i])
+            l[i] = _label_axis(
+                i,
+                refdes[i],
+                gi,
+                ring_at,
+                side_at,
+                n,
+                th,
+                eroded,
+                zones,
+                bounds,
+                silk.label_anchor_mm,
+                silk.label_clear_mm,
+            )
         bi = bodies[i]
         if bi is not None:
             best = math.inf
@@ -361,7 +1120,7 @@ def _margin_axes(
                 best = min(best, float(bi.distance(zg)))
             if math.isfinite(best):
                 h[i] = max(0.0, HOLE_WANT_MM - best)
-    return e, p, h
+    return e, p, h, l
 
 
 def _margin_softmin(exp_sum: float, n: int) -> float:
@@ -376,9 +1135,9 @@ def _margin_softmin(exp_sum: float, n: int) -> float:
 def margin_total(d: TopoDesign, pose: np.ndarray) -> float:
     """The maximin margin term (Reto 2026-10-29), full recompute — the
     reference the ``ProxyState`` parity-check runs against. Per part, the
-    worst of the edge / pair / hole axis shortfalls (:func:`_margin_axes`);
-    the term is the softmin over parts of those worsts,
-    ``−τ·log(mean(exp(−worst/τ)))`` with ``τ =
+    worst of the edge / pair / hole / label axis shortfalls
+    (:func:`_margin_axes`); the term is the softmin over parts of those
+    worsts, ``−τ·log(mean(exp(−worst/τ)))`` with ``τ =
     :data:`_MARGIN_SOFTMIN_TAU_MM` — all margins satisfied ⇒ 0."""
     n = len(d.parts)
     if not n:
@@ -386,17 +1145,21 @@ def margin_total(d: TopoDesign, pose: np.ndarray) -> float:
     pose = np.asarray(pose, dtype=np.float64)
     rings = [_ring_geom(d, pose[i], i) for i in range(n)]
     bodies = [_body_geom(d, pose[i], i) for i in range(n)]
-    e, p, h = _margin_axes(
+    outline = _outline_geom(d)
+    eroded = _eroded_outline(outline, d.silk.edge_erode_mm)
+    e, p, h, l = _margin_axes(
         rings,
         bodies,
         pose,
         through_hole_parts(d),
-        _outline_geom(d),
+        outline,
+        eroded,
         _margin_zone_entries(d, pose),
         d.part_edge_mate,
-        _edge_wants(rings),
+        d.parts,
+        d.silk,
     )
-    worst = np.maximum(np.maximum(e, p), h)
+    worst = np.maximum(np.maximum(e, p), np.maximum(h, l))
     exp_sum = float(np.exp(-worst / _MARGIN_SOFTMIN_TAU_MM).sum())
     return _margin_softmin(exp_sum, n)
 
@@ -906,6 +1669,12 @@ class ProxyState:
             if (self.w.overlap or self.w.silkroom or self.w.margin)
             else []
         )
+        #: every committed ring's bbox as an ``(n, 4)`` array — the label
+        #: axis's numpy broad phase (:func:`_rings_bounds`). Updated at
+        #: commit; try_move overlays staged rings on a per-call copy.
+        #: Always an ndarray (empty when no rings are built), so the
+        #: label axis never sees an Optional.
+        self._ring_bounds = _rings_bounds(self._rings)
         #: the pad-union BODY polygons, parallel to ``_rings`` — what the
         #: edge half of the overlap term measures since gr529963 (the fab
         #: bar prices the body; the courtyard ring is the between-parts
@@ -927,28 +1696,32 @@ class ProxyState:
         #: silk-room margin: same rings, separation shortfall below the
         #: outline-pair requirement. Built only when the share is on.
         self._sk = (
-            _ring_silkroom_total(self._rings, self.pose, self._th, _SILK_ROOM_REQ_MM)
+            _ring_silkroom_total(self._rings, self.pose, self._th, d.silk.pair_req_mm)
             if self.w.silkroom
             else 0.0
         )
-        #: maximin margin (Reto 2026-10-29): per-part (edge, pair, hole)
-        #: axis arrays, the exp-sum the softmin reads, and the hole
-        #: keep-outs. Static (board-level) hole zones are posed ONCE here
-        #: — they never move; part-local hole rings ride their owner and
-        #: are posed on use under the owner's staged-or-committed row
+        #: maximin margin (Reto 2026-10-29): per-part (edge, pair, hole,
+        #: label) axis arrays, the exp-sum the softmin reads, and the
+        #: hole keep-outs. Static (board-level) hole zones are posed ONCE
+        #: here — they never move; part-local hole rings ride their owner
+        #: and are posed on use under the owner's staged-or-committed row
         #: (:meth:`_mg_zone_geoms`) — cheaper than re-posing every zone
         #: per eval the way a mesh rebuild does, and exact either way.
+        #: The label axis reads the outline eroded by the edge-margin ink
+        #: band — built once, the outline never moves.
         self._mg_outline = None
+        self._mg_eroded = None
         self._mg_zones_static: list[tuple[int, Any]] = []
         self._mg_zones_local: list[Any] = []
         self._mg_e = np.zeros(len(d.parts), dtype=np.float64)
         self._mg_p = np.zeros(len(d.parts), dtype=np.float64)
         self._mg_h = np.zeros(len(d.parts), dtype=np.float64)
+        self._mg_l = np.zeros(len(d.parts), dtype=np.float64)
         self._mg_s = 0.0
         self._mg = 0.0
         if self.w.margin:
             self._mg_outline = _outline_geom(d)
-            self._mg_want = _edge_wants(self._rings)
+            self._mg_eroded = _eroded_outline(self._mg_outline, d.silk.edge_erode_mm)
             for z in d.zones:
                 if z.kind != "mounting_hole":
                     continue
@@ -958,17 +1731,22 @@ class ProxyState:
                     g = _zone_poly(zone_world_ring(d, z, self.pose))
                     if g is not None:
                         self._mg_zones_static.append((int(z.part), g))
-            self._mg_e, self._mg_p, self._mg_h = _margin_axes(
+            self._mg_e, self._mg_p, self._mg_h, self._mg_l = _margin_axes(
                 self._rings,
                 self._bodies,
                 self.pose,
                 self._th,
                 self._mg_outline,
+                self._mg_eroded,
                 self._mg_zone_geoms(),
                 d.part_edge_mate,
-                self._mg_want,
+                d.parts,
+                d.silk,
             )
-            worst = np.maximum(np.maximum(self._mg_e, self._mg_p), self._mg_h)
+            worst = np.maximum(
+                np.maximum(self._mg_e, self._mg_p),
+                np.maximum(self._mg_h, self._mg_l),
+            )
             self._mg_s = float(np.exp(-worst / _MARGIN_SOFTMIN_TAU_MM).sum())
             self._mg = _margin_softmin(self._mg_s, len(d.parts))
         #: spread term: the no-shared-net pair mask, kernel scale and
@@ -1044,10 +1822,10 @@ class ProxyState:
         self._stage_wires: dict[int, np.ndarray] = {}
         self._stage_rings: dict[int, Any] = {}
         self._stage_bodies: dict[int, Any] = {}
-        #: part id → staged (edge, pair, hole) axis values — the margin
+        #: part id → staged (edge, pair, hole, label) axis values — the margin
         #: term's per-part overlay, applied to ``_mg_e/_mg_p/_mg_h`` at
         #: commit like ``_stage_rings`` is to ``_rings``.
-        self._stage_mg: dict[int, tuple[float, float, float]] = {}
+        self._stage_mg: dict[int, tuple[float, float, float, float]] = {}
         self._d_cross = 0
         self._d_len = 0.0
         self._d_ov = 0.0
@@ -1209,16 +1987,16 @@ class ProxyState:
     def _pair_room(self, part: int, geom, side: bool) -> tuple[float, float]:
         """``part``'s ring-separation picture against every OTHER part
         under the current staged-or-committed state, ONE scan serving two
-        terms: ``(Σ shortfall, max shortfall)`` below
-        :data:`_SILK_ROOM_REQ_MM` — the silkroom term's sum and the margin
-        term's pair axis, so a move that prices both never runs a second
-        pair loop. ``(0, 0)`` for a ringless part. The telescoping unit
-        :meth:`try_move` deltas on, the separation-margin mirror of
+        terms: ``(Σ shortfall, max shortfall)`` below the design's
+        :class:`SilkRoom.pair_req_mm` — the silkroom term's sum and the
+        margin term's pair axis, so a move that prices both never runs a
+        second pair loop. ``(0, 0)`` for a ringless part. The telescoping
+        unit :meth:`try_move` deltas on, the separation-margin mirror of
         :meth:`_pair_overlap` (same rings, same side rule, ``req_mm`` of
         bbox slack instead of contact)."""
         if geom is None:
             return 0.0, 0.0
-        req = _SILK_ROOM_REQ_MM
+        req = self.d.silk.pair_req_mm
         x0, y0, x1, y1 = geom.bounds
         total = 0.0
         worst = 0.0
@@ -1262,19 +2040,51 @@ class ProxyState:
 
     def _mg_edge(self, part: int, ring) -> float:
         """The margin term's edge axis for one part:
-        ``max(0, want(part) − courtyard-to-outline gap)`` with the want
-        ring-radius-aware (:func:`_edge_wants` — the silk draw drops a
-        ring wholly inside the edge margin, which small rings can fall
-        victim to and big rings cannot). Edge-mated parts are exempt
-        like the overlap term's edge half (gr530632 — the mating face is
-        SUPPOSED to meet the outline)."""
+        ``max(0, silk.edge_req_mm − courtyard-to-outline gap)`` — the
+        FLAT silk-room requirement (a big ring overlapping the edge band
+        still loses its outer wall; the retired ring-radius want priced
+        that at 0). Edge-mated parts are exempt like the overlap term's
+        edge half (gr530632 — the mating face is SUPPOSED to meet the
+        outline)."""
         if ring is None or self._mg_outline is None:
             return 0.0
         em = self.d.part_edge_mate
         if len(em) == len(self.d.parts) and bool(em[part]):
             return 0.0
         return max(
-            0.0, self._mg_want[part] - float(self._mg_outline.exterior.distance(ring))
+            0.0,
+            self.d.silk.edge_req_mm - float(self._mg_outline.exterior.distance(ring)),
+        )
+
+    def _mg_label(self, part: int, zones: list[tuple[int, Any]]) -> float:
+        """The margin term's label axis for one part under the CURRENT
+        staged-or-committed state — :func:`_label_axis` over the
+        canonical spot boxes, reading staged rings/sides through
+        :meth:`_ring_of` / :meth:`_side_of` so a staged move prices its
+        own label consequences. The numpy broad phase runs on the
+        committed bounds array with staged rings overlaid (a stale row
+        could wrongly prescreen the staged ring out). ``zones`` is the
+        try_move-shared posed keep-out list — the label axis reads the
+        same set the hole axis does."""
+        bounds = self._ring_bounds
+        if self._stage_rings:
+            bounds = bounds.copy()
+            for p, g in self._stage_rings.items():
+                if g is not None:
+                    bounds[p] = g.bounds
+        return _label_axis(
+            part,
+            self.d.parts[part],
+            self._ring_of(part),
+            self._ring_of,
+            self._side_of,
+            len(self.d.parts),
+            self._th,
+            self._mg_eroded,
+            zones,
+            bounds,
+            self.d.silk.label_anchor_mm,
+            self.d.silk.label_clear_mm,
         )
 
     def _mg_hole(self, part: int, body, zones: list[tuple[int, Any]]) -> float:
@@ -1293,7 +2103,7 @@ class ProxyState:
         return max(0.0, HOLE_WANT_MM - best) if math.isfinite(best) else 0.0
 
     def _mg_pair(self, part: int, *, moved: int, moved_ring, moved_side: bool) -> float:
-        """``part``'s pair axis — ``max(0, _SILK_ROOM_REQ_MM − min ring
+        """``part``'s pair axis — ``max(0, silk.pair_req_mm − min ring
         separation)`` — under the current staged-or-committed state: the
         per-part recompute a touched partner gets when ``moved``'s ring
         enters or leaves its ``req`` neighbourhood. The max half of
@@ -1303,7 +2113,7 @@ class ProxyState:
         geom = self._ring_of(part)
         if geom is None:
             return 0.0
-        req = _SILK_ROOM_REQ_MM
+        req = self.d.silk.pair_req_mm
         side = self._side_of(part)
         x0, y0, x1, y1 = geom.bounds
         worst = 0.0
@@ -1437,7 +2247,7 @@ class ProxyState:
             # bounds-only prescan over the same staged ring list the pair
             # scan reads (both side variants, so a flip re-scans the face
             # the part leaves and the one it joins).
-            req = _SILK_ROOM_REQ_MM
+            req = self.d.silk.pair_req_mm
             for ring, side in ((new_geom, new_side), (old_ring, old_side)):
                 if ring is None:
                     continue
@@ -1465,18 +2275,50 @@ class ProxyState:
             owns_zones = any(z.part == part for z in self._mg_zones_local)
             if owns_zones:
                 touched.update(range(len(self.d.parts)))
-            for j in sorted(touched):
-                e_old, p_old, h_old = self._stage_mg.get(
-                    j, (self._mg_e[j], self._mg_p[j], self._mg_h[j])
+            # Label axis: a partner's canonical boxes reach at most
+            # ``_LBL_TOUCH_REACH_MM`` off its ring — a partner whose ring
+            # sits farther from BOTH the old and new ring bounds cannot
+            # have a candidate's free/block status flip. Partners beyond
+            # ``req`` keep their pair/edge/hole axes (the moved ring is
+            # too far to change the min-separation) and recompute ONLY
+            # the label axis — a full ``_mg_pair`` rescan of the annulus
+            # was measured at ~3× the whole prior eval cost.
+            label_touched: set[int] = set()
+            reach = _LBL_TOUCH_REACH_MM
+            for ring, side in ((new_geom, new_side), (old_ring, old_side)):
+                if ring is None:
+                    continue
+                x0, y0, x1, y1 = ring.bounds
+                for j in range(len(self.d.parts)):
+                    if j == part or j in touched or j in label_touched:
+                        continue
+                    gj = self._ring_of(j)
+                    if gj is None or (
+                        side != self._side_of(j) and not (self._th[part] or self._th[j])
+                    ):
+                        continue
+                    bx0, by0, bx1, by1 = gj.bounds
+                    if (
+                        x1 + reach < bx0
+                        or bx1 + reach < x0
+                        or y1 + reach < by0
+                        or by1 + reach < y0
+                    ):
+                        continue
+                    label_touched.add(j)
+            for j in sorted(touched | label_touched):
+                e_old, p_old, h_old, l_old = self._stage_mg.get(
+                    j, (self._mg_e[j], self._mg_p[j], self._mg_h[j], self._mg_l[j])
                 )
                 if j == part:
                     axes = (
                         self._mg_edge(j, new_geom),
                         new_scan[1],
                         self._mg_hole(j, new_body, zones),
+                        self._mg_label(j, zones),
                     )
                     p_old = old_scan[1]
-                else:
+                elif j in touched:
                     axes = (
                         e_old,
                         self._mg_pair(
@@ -1485,11 +2327,16 @@ class ProxyState:
                         self._mg_hole(j, self._body_of(j), zones)
                         if owns_zones
                         else h_old,
+                        self._mg_label(j, zones),
                     )
+                else:
+                    # Label-only touch: the moved ring is beyond ``req``
+                    # of this partner — pair/edge/hole axes are unchanged.
+                    axes = (e_old, p_old, h_old, self._mg_label(j, zones))
                 self._stage_mg[j] = axes
                 tau = _MARGIN_SOFTMIN_TAU_MM
                 self._d_mg_s += math.exp(-max(axes) / tau) - math.exp(
-                    -max(e_old, p_old, h_old) / tau
+                    -max(e_old, p_old, h_old, l_old) / tau
                 )
             self._d_mg = (
                 _margin_softmin(self._mg_s + self._d_mg_s, len(self.d.parts)) - self._mg
@@ -1580,8 +2427,14 @@ class ProxyState:
             if self._rings:
                 self._rings[p] = self._stage_rings.get(p, self._rings[p])
                 self._bodies[p] = self._stage_bodies.get(p, self._bodies[p])
+        if self._rings:
+            for p, g in enumerate(self._rings):
+                if g is not None:
+                    self._ring_bounds[p] = g.bounds
+                else:
+                    self._ring_bounds[p] = np.nan
         for p, axes in self._stage_mg.items():
-            self._mg_e[p], self._mg_p[p], self._mg_h[p] = axes
+            self._mg_e[p], self._mg_p[p], self._mg_h[p], self._mg_l[p] = axes
         self._ov += self._d_ov
         self._sk += self._d_sk
         self._sp += self._d_sp

@@ -829,6 +829,11 @@ class TopoRun:
     #: :func:`~precis.pcb.topoplace.realise.widen_power`). ``None`` only
     #: if that stage itself raised — place output still stands.
     route: Any = field(repr=False, default=None)
+    #: The refdes-label pins for the winning pose
+    #: (:func:`precis.pcb.topoplace.label_spots_for`) — the job persists
+    #: these as instance ``meta.label_spot``; the in-process run exposes
+    #: them here and in the run files' ``label_spots.json``.
+    label_spots: dict[str, str] = field(default_factory=dict)
 
     def summary(self) -> str:
         return str(self.files["summary.txt"])
@@ -895,6 +900,7 @@ def topo_place(
             ((design.graph.get("board") or {}).get("meta") or {}).get("placement_sides")
         ),
         measures=design.graph.get("measures"),
+        capability=design.fab_caps,
     )
     _tp.check_slots(td)
     if td.measures and not obj.measures:
@@ -904,8 +910,16 @@ def topo_place(
         # when the design carries resolvable specs.
         obj = dataclasses.replace(obj, measures=0.2)
     result = _tp.topo_place(td, objective=obj, effort=effort, seed=seed)
+    # Post-anneal label-room repair — the same deterministic nudge pass
+    # the pcb_place job runs (labels adjacent, nothing edge-squished).
+    import dataclasses as _dc
+
+    result = _dc.replace(result, best_pose=_tp.settle_label_room(td, result.best_pose))
     assignment = _tp.assign_pins(td, result.best_pose)
     pm = _tp.pair_map(td)
+    # The refdes-label pins for the winning pose — computed before the run
+    # files so label_spots.json rides the same write_run.
+    label_spots = _tp.label_spots_for(td, result.best_pose)
 
     import hashlib
     import json
@@ -940,6 +954,7 @@ def topo_place(
             footprints=_runstore.footprint_shas(footprints),
         ),
     )
+    files["label_spots.json"] = dict(sorted(label_spots.items()))
     _runstore.write_run(files, out)
     poses = {
         str(refdes): (
@@ -967,7 +982,29 @@ def topo_place(
             features=design.features,
             fixed_copper=design.fixed_copper,
             route_planes=True,
+            capability=design.fab_caps,
         )
+        # The place half's label pins become route-time keep-outs (the
+        # same threading the pcb_place job's route stage uses) — the
+        # router never sites a via where the silk pass will draw the
+        # refdes label.
+        if label_spots:
+            boxes = _tp.label_boxes_for(td_route, result.best_pose, label_spots)
+            if boxes:
+                import dataclasses as _dc
+
+                td_route = _dc.replace(
+                    td_route,
+                    zones=tuple(td_route.zones)
+                    + tuple(
+                        _tp.TopoZone(
+                            kind="label_keepout",
+                            ring=ring,
+                            name=f"label:{refdes}",
+                        )
+                        for refdes, ring in boxes
+                    ),
+                )
         net_rules = pcb_session.route_net_rules(design.graph, design.fab_caps)
         # gr524334: siting falls back to the fab-minimum via diameter
         # when the net-rule via (house default) finds no site.
@@ -1092,6 +1129,7 @@ def topo_place(
         pair_map=pm,
         design_ctx=design,
         route=route_pair,
+        label_spots=label_spots,
     )
 
 
