@@ -490,6 +490,152 @@ class TestCallsRead:
         assert "→ ERROR BadInput" in line
 
 
+class TestSessionsRollup:
+    """Block-navigation slice 2 — the per-session meter: hops, summed
+    response bytes, calls by verb, pagination continuations, wall span."""
+
+    def _session_rows(self, store: Any, tag: str) -> tuple[str, str]:
+        """Two tagged sessions. ``sess-<tag>-a``: get×2 (100+200 B, one
+        page=2 continuation) + search×1 (50 B); ``sess-<tag>-b``: one
+        get (10 B, page=1 — NOT a continuation) plus a NULL-bytes row."""
+        sid_a, sid_b = f"sess-{tag}-a", f"sess-{tag}-b"
+        tool_ledger.record_call(
+            store,
+            _rec(
+                verb="get",
+                session_id=sid_a,
+                seq=1,
+                result_bytes=100,
+                arg_sample='{"kind":"paper","id":"pa1"}',
+            ),
+        )
+        tool_ledger.record_call(
+            store,
+            _rec(
+                verb="get",
+                session_id=sid_a,
+                seq=2,
+                result_bytes=200,
+                arg_sample='{"kind":"paper","id":"pa1","page":2}',
+            ),
+        )
+        tool_ledger.record_call(
+            store,
+            _rec(
+                verb="search",
+                session_id=sid_a,
+                seq=3,
+                result_bytes=50,
+                arg_sample='{"kind":"paper","q":"x"}',
+            ),
+        )
+        tool_ledger.record_call(
+            store,
+            _rec(
+                verb="get",
+                session_id=sid_b,
+                seq=1,
+                result_bytes=10,
+                arg_sample='{"kind":"job","page":1}',
+            ),
+        )
+        tool_ledger.record_call(
+            store, _rec(verb="get", session_id=sid_b, seq=2, result_bytes=None)
+        )
+        # An unrelated session — must stay out of the tagged totals.
+        tool_ledger.record_call(
+            store, _rec(verb="get", session_id=f"other-{tag}", seq=1)
+        )
+        return sid_a, sid_b
+
+    def test_rollup_hops_bytes_verbs_continuations(self, store: Any) -> None:
+        tag = uuid4().hex[:8]
+        sid_a, sid_b = self._session_rows(store, tag)
+        out = tool_ledger.sessions_rollup(store, session=f"sess-{tag}-", since_hours=1)
+        assert out["total"] == 2
+        rows = {r["session_id"]: r for r in out["rows"]}
+        a, b = rows[sid_a], rows[sid_b]
+        assert a["hops"] == 3 and a["resp_bytes"] == 350
+        assert a["calls_by_verb"] == {"get": 2, "search": 1}
+        assert a["continuations"] == 1  # page=2 counts, page=1 does not
+        assert b["hops"] == 2 and b["resp_bytes"] == 10
+        assert b["calls_by_verb"] == {"get": 2}
+        assert b["continuations"] == 0
+        assert a["first_ts"] is not None and a["last_ts"] is not None
+        assert isinstance(a["span_seconds"], int)
+
+    def test_rollup_wall_span(self, store: Any) -> None:
+        tag = uuid4().hex[:8]
+        sid_a, _ = self._session_rows(store, tag)
+        with store.pool.connection() as conn:
+            conn.execute(
+                "UPDATE tool_calls SET ts = ts - interval '30 minutes' "
+                "WHERE session_id = %s AND seq = 1",
+                (sid_a,),
+            )
+            conn.commit()
+        out = tool_ledger.sessions_rollup(store, session=sid_a, since_hours=1)
+        (a,) = out["rows"]
+        assert a["span_seconds"] >= 1800
+
+    def test_rollup_verb_filter_narrows_session_and_counts(self, store: Any) -> None:
+        tag = uuid4().hex[:8]
+        sid_a, _ = self._session_rows(store, tag)
+        out = tool_ledger.sessions_rollup(
+            store, session=f"sess-{tag}-", verb="search", since_hours=1
+        )
+        # Only sid_a ran a search; its counts cover the search rows only.
+        assert out["total"] == 1
+        (a,) = out["rows"]
+        assert a["session_id"] == sid_a
+        assert a["hops"] == 1 and a["resp_bytes"] == 50
+        assert a["calls_by_verb"] == {"search": 1}
+
+    def test_rollup_window_excludes_old_sessions(self, store: Any) -> None:
+        tag = uuid4().hex[:8]
+        sid = f"old-{tag}"
+        tool_ledger.record_call(store, _rec(verb="get", session_id=sid, seq=1))
+        with store.pool.connection() as conn:
+            conn.execute(
+                "UPDATE tool_calls SET ts = now() - interval '2 hours' "
+                "WHERE session_id = %s",
+                (sid,),
+            )
+            conn.commit()
+        out = tool_ledger.sessions_rollup(store, session=sid, since_hours=1)
+        assert out["total"] == 0 and out["rows"] == []
+
+    def test_rollup_page_cast_cannot_overflow(self, store: Any) -> None:
+        """A ``page`` sampled beyond int4 range (``99999999999``) or
+        non-numeric (``"abc"``) must not poison the roll-up — the
+        FILTER's CASE bounds the digits before the cast; one bad ledger
+        row used to break ``/sessions`` for the whole window."""
+        tag = uuid4().hex[:8]
+        sid = f"sess-{tag}"
+        tool_ledger.record_call(
+            store,
+            _rec(
+                verb="get",
+                session_id=sid,
+                seq=1,
+                arg_sample='{"kind":"job","page":99999999999}',
+            ),
+        )
+        tool_ledger.record_call(
+            store,
+            _rec(
+                verb="get",
+                session_id=sid,
+                seq=2,
+                arg_sample='{"kind":"job","page":"abc"}',
+            ),
+        )
+        out = tool_ledger.sessions_rollup(store, session=sid, since_hours=1)
+        (row,) = out["rows"]
+        assert row["session_id"] == sid
+        assert row["hops"] == 2 and row["continuations"] == 0
+
+
 def test_gc_single_flight_skips_when_lock_held(store: Any) -> None:
     tag = uuid4().hex[:8]
     verb = f"gclock-{tag}"

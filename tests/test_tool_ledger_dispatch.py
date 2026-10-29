@@ -321,6 +321,48 @@ def test_dispatch_ledger_records_result_count(
     assert get_row is not None and get_row[0] == 1  # a resolved single ref
 
 
+def test_dispatch_ledger_result_bytes_equals_body_length(
+    runtime_with_store: PrecisRuntime,
+) -> None:
+    """``result_bytes`` is the UTF-8 byte length of the exact body the
+    caller got back (block-navigation slice 2 meter — the roll-up sums
+    it, so off-by-rendering bugs would corrupt per-session bytes)."""
+    tag = uuid4().hex[:8]
+    _, is_error = runtime_with_store.dispatch_with_status(
+        "put",
+        {"kind": "memory", "text": f"body-{tag}", "title": f"rb-{tag}"},
+    )
+    assert is_error is False
+
+    store = runtime_with_store.store
+    assert store is not None
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            "SELECT ref_id FROM refs WHERE kind='memory' AND title=%s "
+            "ORDER BY ref_id DESC LIMIT 1",
+            (f"rb-{tag}",),
+        ).fetchone()
+    assert row is not None
+    ref_id = int(row[0])
+
+    body, is_error = runtime_with_store.dispatch_with_status(
+        "get", {"kind": "memory", "id": str(ref_id)}
+    )
+    assert is_error is False, body
+
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            "SELECT result_bytes FROM tool_calls "
+            "WHERE verb='get' AND kind='memory' "
+            "AND arg_sample::text LIKE %s "
+            "AND ts > now() - interval '1 minute' "
+            "ORDER BY call_id DESC LIMIT 1",
+            (f'%"{ref_id}"%',),
+        ).fetchone()
+    assert row is not None
+    assert row[0] == len(body.encode("utf-8"))
+
+
 def test_dispatch_survives_ledger_write_failure(
     runtime_with_store: PrecisRuntime, monkeypatch: Any
 ) -> None:

@@ -511,9 +511,11 @@ def gc(store: Store, *, retention_days: int = DEFAULT_RETENTION_DAYS) -> int:
 #
 # Until these the ledger was write-only: "which views did that run call"
 # needed a prod-psql regex over job transcripts. The agentlog surface
-# exposes two shapes — ``get(kind='agentlog', id=N, view='calls')`` reads
-# one run's own calls, and ``get(kind='agentlog', id='/calls?…')`` is the
-# cross-run mining view (GROUP BY + the newest matching rows). arg_sample
+# exposes three shapes — ``get(kind='agentlog', id=N, view='calls')`` reads
+# one run's own calls, ``get(kind='agentlog', id='/calls?…')`` is the
+# cross-run mining view (GROUP BY + the newest matching rows), and
+# ``get(kind='agentlog', id='/sessions?…')`` is the per-session roll-up
+# (:func:`sessions_rollup`, block-navigation slice 2). arg_sample
 # / error_head are already masked + bounded at write time, so rendering
 # them here carries no payload.
 
@@ -621,6 +623,85 @@ def calls_mining(
     }
 
 
+def sessions_rollup(
+    store: Store,
+    *,
+    verb: str | None = None,
+    session: str | None = None,
+    since_hours: int = CALLS_DEFAULT_SINCE_HOURS,
+    limit: int = CALLS_DEFAULT_LIMIT,
+) -> dict[str, Any]:
+    """Per-session roll-up of the ledger — the block-navigation slice-2
+    meter ("hops, bytes and ``more`` calls per session",
+    ``docs/backlog/block-navigation.md``).
+
+    One row per ``session_id`` (0209's key; NULL-session rows — CLI,
+    inproc — correlate by ``agentlog_id`` instead and stay out): call
+    count (``hops``), summed ``result_bytes`` (``resp_bytes``), error
+    count, calls by verb, the count of *pagination continuations* —
+    a ``page`` arg sampled > 1, the only continuation signal the
+    ledger can see — and the wall span ``first_ts``→``last_ts``.
+    Ordered most-recently-active first, capped at ``limit`` sessions.
+    ``session`` is an exact prefix match (session ids are long);
+    ``verb`` narrows both which sessions appear and what is counted.
+    """
+    from datetime import UTC, datetime, timedelta
+
+    from psycopg.rows import dict_row
+
+    cutoff = datetime.now(UTC) - timedelta(hours=since_hours)
+    where = ["session_id IS NOT NULL", "ts >= %(cutoff)s"]
+    sql_params: dict[str, Any] = {"cutoff": cutoff, "limit": int(limit)}
+    if verb:
+        where.append("verb = %(verb)s")
+        sql_params["verb"] = verb
+    if session:
+        # ``starts_with`` — a literal prefix, so a session-id fragment
+        # can't smuggle LIKE wildcards.
+        where.append("starts_with(session_id, %(session)s)")
+        sql_params["session"] = session
+    where_sql = " AND ".join(where)
+    with store.pool.connection() as conn, conn.cursor(row_factory=dict_row) as cur:
+        total_row = cur.execute(
+            "SELECT count(*) AS n FROM ("
+            f"SELECT 1 FROM tool_calls WHERE {where_sql} GROUP BY session_id) s",
+            sql_params,
+        ).fetchone()
+        rows = cur.execute(
+            "SELECT session_id, count(*) AS hops, "
+            "sum(result_bytes) AS resp_bytes, "
+            "count(*) FILTER (WHERE outcome = 'error') AS errors, "
+            "count(*) FILTER (WHERE CASE WHEN arg_sample->>'page' "
+            "~ '^[0-9]{1,9}$' THEN (arg_sample->>'page')::int "
+            "END > 1) AS continuations, "
+            "min(ts) AS first_ts, max(ts) AS last_ts, "
+            "EXTRACT(EPOCH FROM max(ts) - min(ts))::int AS span_seconds "
+            f"FROM tool_calls WHERE {where_sql} "
+            "GROUP BY session_id ORDER BY max(ts) DESC LIMIT %(limit)s",
+            sql_params,
+        ).fetchall()
+        sids = [r["session_id"] for r in rows]
+        verb_counts: dict[str, dict[str, int]] = {sid: {} for sid in sids}
+        if sids:
+            verb_where = ["session_id = ANY(%(sids)s)", "ts >= %(cutoff)s"]
+            if verb:
+                verb_where.append("verb = %(verb)s")
+            for vr in cur.execute(
+                "SELECT session_id, verb, count(*) AS n FROM tool_calls "
+                f"WHERE {' AND '.join(verb_where)} GROUP BY session_id, verb",
+                {**sql_params, "sids": sids},
+            ).fetchall():
+                verb_counts[vr["session_id"]][vr["verb"]] = int(vr["n"])
+        for r in rows:
+            r["calls_by_verb"] = verb_counts[r["session_id"]]
+            r["resp_bytes"] = int(r["resp_bytes"] or 0)
+            r["continuations"] = int(r["continuations"])
+    return {
+        "total": int(total_row["n"]) if total_row else 0,
+        "rows": rows,
+    }
+
+
 def call_line(row: dict[str, Any]) -> str:
     """One ledger row as the agentlog surface renders it::
 
@@ -678,4 +759,5 @@ __all__ = [
     "error_head",
     "gc",
     "record_call",
+    "sessions_rollup",
 ]

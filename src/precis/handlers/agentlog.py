@@ -13,6 +13,8 @@ surface is the read / triage half:
 
     - get(kind='agentlog', id=N)         — read one run + its tags
     - get(kind='agentlog', id='/recent') — recent runs (newest-first)
+    - get(kind='agentlog', id='/calls')  — tool_calls mining view
+    - get(kind='agentlog', id='/sessions') — per-session ledger roll-up
     - search(kind='agentlog', q=...)     — lexical search over titles
     - tag(id=N, add/remove=[...])        — classify / annotate
     - link(id=N, target='kind:id')       — relate a run to a ref
@@ -68,6 +70,17 @@ _CALLS_FILTER_KEYS = frozenset(
         "page_size",
     }
 )
+#: ``id='/sessions?<k>=<v>'`` accepted filter keys — the per-session
+#: roll-up shares the ``/calls`` posture (all optional, all bound).
+_SESSIONS_FILTER_KEYS = frozenset(
+    {
+        "verb",
+        "session",
+        "since",
+        "limit",
+        "page_size",
+    }
+)
 #: Group rows a ``/calls`` summary shows before folding to the line count.
 _CALLS_GROUP_CAP = 12
 
@@ -77,6 +90,18 @@ def _meta_value(val: Any) -> str:
     s = val if isinstance(val, str) else json.dumps(val, default=str, sort_keys=True)
     s = " ".join(str(s).split())
     return s if len(s) <= _META_VALUE_CHARS else s[:_META_VALUE_CHARS].rstrip() + "…"
+
+
+def _fmt_span(seconds: int) -> str:
+    """A session wall span as ``45m`` / ``2h5m`` / ``1d3h`` — one
+    coarse unit pair, never a float."""
+    if seconds < 60:
+        return f"{seconds}s"
+    if seconds < 3600:
+        return f"{seconds // 60}m"
+    if seconds < 86400:
+        return f"{seconds // 3600}h{seconds % 3600 // 60}m"
+    return f"{seconds // 86400}d{seconds % 86400 // 3600}h"
 
 
 class AgentLogHandler(NumericRefHandler):
@@ -115,7 +140,7 @@ class AgentLogHandler(NumericRefHandler):
     # ── list-view filters (id='/<view>') ────────────────────────────
 
     def _supported_list_views(self) -> tuple[str, ...]:
-        return ("recent", "calls")
+        return ("recent", "calls", "sessions")
 
     def get(
         self,
@@ -139,9 +164,14 @@ class AgentLogHandler(NumericRefHandler):
         if view == "calls" and single and q is None:
             ref = self._resolve_live_ref(self._coerce_id(id))
             return self._render_calls_view(ref, limit=limit)
-        if isinstance(id, str) and (id == "/calls" or id.startswith("/calls?")):
-            # A top-level limit= folds into the /calls query string (the
-            # job /logs fold, gr500645); the id's own value wins.
+        if isinstance(id, str) and (
+            id == "/calls"
+            or id.startswith("/calls?")
+            or id == "/sessions"
+            or id.startswith("/sessions?")
+        ):
+            # A top-level limit= folds into the /calls or /sessions query
+            # string (the job /logs fold, gr500645); the id's own value wins.
             if limit is not None:
                 path, _, qs = id.partition("?")
                 merged = {
@@ -153,7 +183,8 @@ class AgentLogHandler(NumericRefHandler):
         elif limit is not None:
             raise BadInput(
                 "limit= only applies to "
-                "get(kind='agentlog', id=<N>, view='calls') or id='/calls?…'",
+                "get(kind='agentlog', id=<N>, view='calls'), "
+                "id='/calls?…' or id='/sessions?…'",
                 next="get(kind='agentlog', id=<N>, view='calls', limit=50)",
             )
         return super().get(id=id, view=view, q=q, **_kw)
@@ -164,6 +195,9 @@ class AgentLogHandler(NumericRefHandler):
         if view == "calls" or view.startswith("calls?"):
             _, _, query_string = view.partition("?")
             return self._render_calls_mining(query_string)
+        if view == "sessions" or view.startswith("sessions?"):
+            _, _, query_string = view.partition("?")
+            return self._render_sessions_mining(query_string)
         return super()._list_view(view)
 
     def _render_calls_view(self, ref: Any, *, limit: Any = None) -> Response:
@@ -340,6 +374,120 @@ class AgentLogHandler(NumericRefHandler):
         lines += [tool_ledger.call_line(r) for r in out["rows"]]
         lines.append("")
         lines.append(f"{len(out['rows'])} rows shown of {out['total']} matching")
+        return interpreted(Response(body="\n".join(lines)), readings)
+
+    def _render_sessions_mining(self, query_string: str) -> Response:
+        """``id='/sessions?verb=<v>&session=<prefix>&since=<hrs>&page_size=<n>'``
+        — the per-session ``tool_calls`` roll-up (block-navigation slice
+        2): one line per session with hops, summed response bytes, calls
+        by verb, pagination continuations (``page>1``) and the wall
+        span. Same posture as ``/calls`` — all params optional, all
+        bound."""
+        from precis import tool_ledger
+        from precis.handlers._interpret import interpreted
+        from precis.handlers.job import _parse_logs_int
+        from precis.utils.next_block import render_next_section
+        from precis.utils.timeutil import as_utc
+
+        params = dict(parse_qsl(query_string, keep_blank_values=True))
+        unknown = sorted(k for k in params if k not in _SESSIONS_FILTER_KEYS)
+        if unknown:
+            raise BadInput(
+                f"unknown /sessions filter(s): {', '.join(unknown)}",
+                options=sorted(_SESSIONS_FILTER_KEYS),
+                next="get(kind='agentlog', id='/sessions?since=168&page_size=50')",
+            )
+
+        since_hours = _parse_logs_int(
+            params.get("since"),
+            default=tool_ledger.CALLS_DEFAULT_SINCE_HOURS,
+            field="since",
+            example="since=168 (default) — hours to look back",
+            units=True,
+        )
+        if since_hours <= 0:
+            raise BadInput(
+                f"since={since_hours} must be a positive number of hours",
+                next="since=168 (default) — hours to look back",
+            )
+        since_hours = min(since_hours, tool_ledger.CALLS_MAX_SINCE_HOURS)
+
+        readings: list[str] = []
+        raw_ps, raw_lim = params.get("page_size"), params.get("limit")
+        if raw_ps not in (None, "") and raw_lim not in (None, "") and raw_ps != raw_lim:
+            raise BadInput(
+                f"conflicting page_size={raw_ps!r} and limit={raw_lim!r}",
+                next="pass one — page_size= is the canonical name",
+            )
+        if raw_lim not in (None, "") and raw_ps in (None, ""):
+            readings.append("'limit' read as 'page_size'")
+        limit = _parse_logs_int(
+            raw_ps if raw_ps not in (None, "") else raw_lim,
+            default=tool_ledger.CALLS_DEFAULT_LIMIT,
+            field="page_size",
+            example="page_size=100 (default), cap 200",
+        )
+        if limit <= 0:
+            raise BadInput(
+                f"page_size={limit} must be positive",
+                next="page_size=100 (default), cap 200",
+            )
+        limit = min(limit, tool_ledger.CALLS_MAX_LIMIT)
+
+        verb = (params.get("verb") or "").strip() or None
+        session = (params.get("session") or "").strip() or None
+        out = tool_ledger.sessions_rollup(
+            self.store,
+            verb=verb,
+            session=session,
+            since_hours=since_hours,
+            limit=limit,
+        )
+
+        filter_bits = [f"since={since_hours}h"]
+        if verb:
+            filter_bits.append(f"verb={verb!r}")
+        if session:
+            filter_bits.append(f"session={session!r}*")
+        lines = [f"# tool_calls sessions — {', '.join(filter_bits)}", ""]
+        if not out["rows"]:
+            if verb or session:
+                lines.append("no sessions matched the filter")
+            else:
+                lines.append(
+                    "no sessions in the window — the ledger keys sessions by "
+                    "session_id (migration 0209); CLI and in-process calls "
+                    "carry none and correlate by agentlog_id instead."
+                )
+            body = "\n".join(lines)
+            body += render_next_section(
+                [
+                    (
+                        "get(kind='agentlog', id='/sessions?since=720')",
+                        "widen the window to the 30d retention floor",
+                    ),
+                ]
+            )
+            return interpreted(Response(body=body), readings)
+        for r in out["rows"]:
+            verbs = " ".join(f"{v}×{n}" for v, n in sorted(r["calls_by_verb"].items()))
+            first = as_utc(r["first_ts"])
+            last = as_utc(r["last_ts"])
+            span = _fmt_span(int(r["span_seconds"] or 0))
+            window = (
+                f"{first.strftime('%H:%M')}→{last.strftime('%H:%M')}Z"
+                if first is not None and last is not None
+                else "?"
+            )
+            err_bit = f" · {r['errors']} err" if r["errors"] else ""
+            lines.append(
+                f"{r['session_id']} — {r['hops']} hops · "
+                f"{r['resp_bytes']:,} B · {verbs} · "
+                f"{r['continuations']} continuation(s){err_bit} · "
+                f"{window} ({span})"
+            )
+        lines.append("")
+        lines.append(f"{len(out['rows'])} sessions shown of {out['total']}")
         return interpreted(Response(body="\n".join(lines)), readings)
 
     def _render_one(self, ref, tags):

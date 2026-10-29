@@ -87,8 +87,12 @@ which TOC line quality sets, not block size.
   (`get(kind='gripe', id=[<ids>], view='body'|'full')`), no other kind
   does.
 - Telemetry: the `tool_calls` ledger (`tool_ledger.record_call`) logs
-  verb, kind, outcome, latency; no response bytes, no per-session
-  roll-up, `result_count` unpopulated.
+  verb, kind, outcome, latency, `result_bytes` (rendered-body byte
+  length, 0209), `result_count` (`Response.result_count`), and
+  `session_id`/`seq` per MCP session; `tool_ledger.sessions_rollup` —
+  `get(kind='agentlog', id='/sessions?…')` — is the per-session
+  roll-up (hops, summed bytes, calls by verb, `page>1` continuations,
+  wall span).
 
 ## Evidence (lit search 2026-10-28)
 
