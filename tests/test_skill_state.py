@@ -237,6 +237,79 @@ def test_status_breadcrumb_is_consumed_not_repeated(
         install_watchdog._reset_breadcrumb_state_for_tests()
 
 
+# ── precis-status: dep-sync marker (gr529877) ───────────────────────────
+
+
+@_NEEDS_SIGHUP
+def test_status_surfaces_degraded_prepare_marker(
+    skill: SkillHandler, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr529877: a failed runtime dep sync lived only in ``docker logs``
+    while the status page read clean — the marker must render as a WARN
+    beside a ``dep_sync: degraded`` row, and spoil the OK verdict."""
+    from precis import install_watchdog
+    from precis.handlers import skill as skill_mod
+
+    monkeypatch.setattr(install_watchdog, "consume_last_exit_breadcrumb", lambda: None)
+    monkeypatch.setattr(
+        install_watchdog,
+        "read_prepare_status",
+        lambda: {
+            "written_at": "2026-10-29T10:15:00Z",
+            "state": "degraded",
+            "detail": "dependency sync FAILED (wanted: simpleeval==2.1.0)",
+        },
+    )
+    rows = dict(skill_mod._collect_build_info())
+    assert rows["dep_sync"] == "degraded"
+    body = skill.get(id="precis-status").body
+    assert "WARN dep sync degraded" in body
+    assert "simpleeval==2.1.0" in body
+    assert "Overall: OK" not in body
+
+
+@_NEEDS_SIGHUP
+def test_status_silent_when_prepare_marker_ok_or_absent(
+    skill: SkillHandler, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An ``ok`` marker — like no marker at all — renders quiet: the flag
+    only speaks when it has something to say."""
+    from precis import install_watchdog
+
+    monkeypatch.setattr(install_watchdog, "consume_last_exit_breadcrumb", lambda: None)
+    monkeypatch.setattr(
+        install_watchdog, "read_prepare_status", lambda: {"state": "ok"}
+    )
+    assert "dep sync degraded" not in skill.get(id="precis-status").body
+    monkeypatch.setattr(install_watchdog, "read_prepare_status", lambda: None)
+    assert "dep sync degraded" not in skill.get(id="precis-status").body
+
+
+@_NEEDS_SIGHUP
+def test_read_prepare_status_reads_the_marker_file(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The reader takes the JSON the prepare step writes, and tolerates a
+    missing or corrupt file — a status probe must never raise."""
+    import json
+
+    from precis import install_watchdog
+
+    target = tmp_path / "prepare-status.json"
+    monkeypatch.setattr(install_watchdog, "_prepare_status_path", lambda: target)
+    assert install_watchdog.read_prepare_status() is None
+    target.write_text("not json", encoding="utf-8")
+    assert install_watchdog.read_prepare_status() is None
+    target.write_text(
+        json.dumps({"state": "degraded", "detail": "metadata reinstall FAILED"}),
+        encoding="utf-8",
+    )
+    assert install_watchdog.read_prepare_status() == {
+        "state": "degraded",
+        "detail": "metadata reinstall FAILED",
+    }
+
+
 @_NEEDS_SIGHUP
 def test_status_names_kinds_that_failed_their_gate(
     skill: SkillHandler, monkeypatch: pytest.MonkeyPatch

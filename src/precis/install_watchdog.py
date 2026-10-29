@@ -219,6 +219,36 @@ def _read_and_delete_breadcrumb() -> dict[str, object] | None:
     return data if isinstance(data, dict) else None
 
 
+def _prepare_status_path() -> Path:
+    """The shared-server prepare step's status marker — same server-state dir.
+
+    Written by the ``precis-prepare`` script baked into
+    ``deploy/mcp-http/precis-mcp-http-ensure.sh`` before every serve child
+    starts: ``{"state": "ok"}``, or ``{"state": "degraded", "detail": …}``
+    when the runtime dep sync / metadata reinstall could not reconcile the
+    venv with the checkout (gr529877 — the failure used to live only in
+    ``docker logs``).
+    """
+    from precis.config import cache_root
+
+    return cache_root("server-state") / "prepare-status.json"
+
+
+def read_prepare_status() -> dict[str, object] | None:
+    """The last prepare run's outcome, or ``None`` when no marker exists.
+
+    Absent on every non-container install — nothing there runs the prepare
+    step. Unlike the exit breadcrumb this is a *state* file, not a
+    consume-once note: every prepare run overwrites it, so readers always
+    see the current verdict rather than a historical one.
+    """
+    try:
+        data = json.loads(_prepare_status_path().read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    return data if isinstance(data, dict) else None
+
+
 #: The most recent breadcrumb this process has taken off disk, held in
 #: memory so it can be served to more than one session (the file itself is
 #: gone after the first read). ``None`` until one is found.

@@ -238,9 +238,15 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
 # already taken (`dialout`), so without ``-o`` the build fails on macOS.
 ARG UID=501
 ARG GID=20
+# ``/home/precis/.cache/uv`` must exist and be precis-owned even though the
+# image itself never writes it: deploy/mcp-http mounts a named volume over
+# that path, and Docker seeds a *new* named volume's contents and ownership
+# from this directory. Absent, the volume root comes up root-owned and the
+# session server's runtime dep sync (precis-prepare) dies on permission
+# denied — gr529877.
 RUN groupadd -g "${GID}" -o precis && \
     useradd -m -u "${UID}" -g "${GID}" -o -s /bin/bash precis && \
-    mkdir -p /data /inbox /home/precis/.cache && \
+    mkdir -p /data /inbox /home/precis/.cache/uv && \
     chown -R precis:precis /data /inbox /home/precis/.cache
 
 # Secrets reader (lives next to this Dockerfile).

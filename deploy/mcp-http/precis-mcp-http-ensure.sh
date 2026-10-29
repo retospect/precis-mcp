@@ -788,6 +788,9 @@ ENVS=(
 #     pyproject.toml changes, reinstall the project metadata (--no-deps, ~4 s).
 # A dependency failure stops prepare before the child starts and says to
 # rebuild the image (a dep with no wheel needs the builder's compiler).
+# Every run also overwrites a prepare-status.json marker in the mounted
+# cache so `precis-status` can show a degraded dep sync — the docker log
+# line was previously the only place that failure surfaced (gr529877).
 #
 # PID 1 is precis.mcp_supervisor (gr459481): it binds the port once and runs
 # `precis serve --fd` as a child, re-running the prepare step before each one,
@@ -799,6 +802,38 @@ RUN_CMD='set -e
 cat > /tmp/precis-prepare.sh <<"PREP"
 set -e
 t0=$SECONDS
+# A status marker precis-status in the serve child surfaces
+# (install_watchdog.read_prepare_status): same server-state dir as the
+# last-exit breadcrumb, inside the mounted ~/.cache/precis. Overwritten
+# every run — "degraded" with the reason when a step below could not
+# reconcile the venv with the checkout, "ok" otherwise (gr529877: a
+# failed dep sync used to live only in docker logs). Best-effort — a
+# status note must never break the prepare. No single quotes anywhere in
+# this body — it lives inside the single-quoted RUN_CMD, where each one
+# silently ends the literal (bash -n caught the comment apostrophe; code
+# quotes would have been eaten at container start just the same).
+prep_status_file="${XDG_CACHE_HOME:-${HOME}/.cache}/precis/server-state/prepare-status.json"
+prep_issues=""
+note_issue() { prep_issues="${prep_issues:+${prep_issues}; }$1"; }
+write_prepare_status() {
+  local esc
+  mkdir -p "${prep_status_file%/*}" 2>/dev/null || return 0
+  [ -w "${prep_status_file%/*}" ] || return 0
+  rm -f "$prep_status_file" 2>/dev/null || true
+  esc="$(printf %s "$prep_issues" | tr "\n" " " | sed -e "s/\\\\/\\\\\\\\/g" -e "s/\"/\\\\\"/g")"
+  if [ -n "$prep_issues" ]; then
+    printf "{\"written_at\":\"%s\",\"state\":\"degraded\",\"detail\":\"%s\"}\n" \
+      "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$esc" >"$prep_status_file" 2>/dev/null || true
+  else
+    printf "{\"written_at\":\"%s\",\"state\":\"ok\"}\n" \
+      "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >"$prep_status_file" 2>/dev/null || true
+  fi
+}
+# A crash under set -e (the tar copy most of all) must not leave a stale
+# "ok" standing: plant the unfinished marker up front, overwrite below.
+prep_issues="prepare did not finish"
+write_prepare_status
+prep_issues=""
 rm -rf /app/* /app/.[!.]* 2>/dev/null || true
 tar -C /src --exclude=./.git --exclude=./.claude --exclude=./.venv \
     --exclude=./node_modules -cf - . | tar -C /app -xf -
@@ -811,6 +846,8 @@ if [ "$(cat "$lstamp" 2>/dev/null)" != "$lwant" ]; then
   # A failed dry-run must not read as "nothing new": that would stamp the
   # lock and skip the sync until uv.lock next changes.
   if ! plan="$(cd /app && "${sync[@]}" --dry-run 2>&1)"; then
+    note_issue "dependency dry-run FAILED: $(printf "%s" "$plan" | tail -1)"
+    write_prepare_status
     echo "precis-prepare: dependency dry-run FAILED: $(printf "%s" "$plan" | tail -1) — rebuild the image with scripts/mcp-image-refresh" >&2
     exit 1
   else
@@ -824,6 +861,8 @@ if [ "$(cat "$lstamp" 2>/dev/null)" != "$lwant" ]; then
     printf "%s\n" "$lwant" > "$lstamp"
     echo "precis-prepare: synced dependencies from uv.lock:" $new >&2
   else
+    note_issue "dependency sync FAILED (wanted: $new)"
+    write_prepare_status
     echo "precis-prepare: dependency sync FAILED (wanted:" $new ") — rebuild the image with scripts/mcp-image-refresh" >&2
     exit 1
   fi
@@ -833,6 +872,7 @@ fi
 lockrev="$(sed -n "/^name = \"autocatpath\"\$/,/^source = /s/^source = .*#\([0-9a-f]\{7,40\}\)\".*/\1/p" /app/uv.lock | head -1)"
 haverev="$(cat /opt/venv/lib/python*/site-packages/autocatpath-*.dist-info/direct_url.json 2>/dev/null | sed -n "s/.*\"commit_id\": *\"\([0-9a-f]*\)\".*/\1/p" | head -1)"
 if [ -n "$lockrev" ] && [ "$haverev" != "$lockrev" ]; then
+  note_issue "autocatpath SKEW: image has ${haverev:-unknown}, uv.lock pins $lockrev"
   echo "precis-prepare: autocatpath SKEW: image has ${haverev:-unknown}, uv.lock pins $lockrev — run scripts/mcp-image-refresh" >&2
 fi
 t2=$SECONDS
@@ -843,9 +883,11 @@ if [ "$(cat "$stamp" 2>/dev/null)" != "$want" ]; then
     printf "%s\n" "$want" > "$stamp"
     echo "precis-prepare: reinstalled project metadata (pyproject $want)" >&2
   else
+    note_issue "metadata reinstall FAILED; entry points may be stale"
     echo "precis-prepare: metadata reinstall FAILED; entry points may be stale" >&2
   fi
 fi
+write_prepare_status
 # One line per child start: where a slow start spent its time.
 echo "precis-prepare: copy $((t1-t0))s, deps $((t2-t1))s, metadata $((SECONDS-t2))s" >&2
 PREP
@@ -1092,10 +1134,14 @@ create_backend() {  # $1 = colour; created and started, not yet verified
     local name
     name="$(bname "$1")"
     docker rm -f "$name" >/dev/null 2>&1 || true
-    # The image has no ~/.cache/uv, so docker creates the volume root-owned and
-    # uv cannot write it. Before anything switches: not in a dark window.
+    # Docker seeds a new named volume from the image's ~/.cache/uv only at
+    # creation. Volumes made before the image carried that dir (gr529877) —
+    # or filled while something ran as root — keep root-owned files a bare
+    # chown of the volume root cannot reach (the dep sync died on
+    # sdists-v9/.git, one level down). -R walks the cache: metadata only,
+    # seconds even when warm, and only at backend create, never per respawn.
     if [ -z "${PRECIS_MCP_RUN_CMD:-}" ]; then
-        docker run --rm --user 0 --entrypoint chown -v "${UV_CACHE_VOLUME}:/c" "$IMAGE" precis: /c
+        docker run --rm --user 0 --entrypoint chown -v "${UV_CACHE_VOLUME}:/c" "$IMAGE" -R precis: /c
     fi
     docker create \
         --name "$name" \

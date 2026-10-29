@@ -6,6 +6,7 @@ commands under tmp_path. No Docker daemon, server, image or real uv is used.
 
 from __future__ import annotations
 
+import json
 import os
 import re
 import subprocess
@@ -47,7 +48,8 @@ def _prep_rig(tmp_path: Path, mode: str) -> tuple[Path, dict[str, str]]:
     source, app, venv, fakebin = (
         tmp_path / p for p in ("source", "app", "venv", "bin")
     )
-    for path in (source, app, venv, fakebin):
+    home = tmp_path / "home"
+    for path in (source, app, venv, fakebin, home):
         path.mkdir()
     (source / "uv.lock").write_text("version = 1\n", encoding="utf-8")
     (source / "pyproject.toml").write_text("[project]\n", encoding="utf-8")
@@ -66,7 +68,9 @@ def _prep_rig(tmp_path: Path, mode: str) -> tuple[Path, dict[str, str]]:
         fakebin / "tar",
         'case " $* " in\n'
         '  *" -cf "*) printf "archive\\n" ;;\n'
-        '  *" -xf "*) cat >/dev/null; cp "$RIG_SOURCE/uv.lock" '
+        '  *" -xf "*) cat >/dev/null\n'
+        '    if [ "$RIG_MODE" = tar-crash ]; then exit 7; fi\n'
+        '    cp "$RIG_SOURCE/uv.lock" '
         '"$RIG_SOURCE/pyproject.toml" "$2/" ;;\n'
         "  *) exit 99 ;;\n"
         "esac\n",
@@ -107,6 +111,7 @@ def _prep_rig(tmp_path: Path, mode: str) -> tuple[Path, dict[str, str]]:
     )
     return launcher, {
         "PATH": f"{fakebin}:{os.environ['PATH']}",
+        "HOME": str(home),
         "RIG_SOURCE": str(source),
         "RIG_PREP": str(prep),
         "RIG_CHILD": str(tmp_path / "child-started"),
@@ -206,3 +211,68 @@ def test_ready_backend_forwards_only_prepare_logs_to_stderr(
         if prepare_output
         else []
     )
+
+
+def _marker(env: dict[str, str]) -> dict[str, object]:
+    """The prepare-status.json the PREP body wrote under the rig's HOME."""
+    path = Path(env["HOME"]) / ".cache/precis/server-state/prepare-status.json"
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+def test_failed_prepare_writes_a_degraded_status_marker(tmp_path: Path) -> None:
+    """gr529877: a failed dep sync used to live only in docker logs. The
+    marker precis-status reads must name the failure and its reason, and
+    land even on the exit-1 path."""
+    launcher, env = _prep_rig(tmp_path, "sync-failure")
+    assert _run(launcher, env).returncode == 1
+    marker = _marker(env)
+    assert marker["state"] == "degraded"
+    assert "dependency sync FAILED" in str(marker["detail"])
+    assert str(marker["written_at"]).endswith("Z")
+
+
+def test_successful_prepare_writes_an_ok_status_marker(tmp_path: Path) -> None:
+    """A clean run overwrites the marker — the file is the *current*
+    verdict, so a healed sync stops reporting degraded."""
+    launcher, env = _prep_rig(tmp_path, "noop")
+    result = _run(launcher, env)
+    assert result.returncode == 0, result.stderr
+    marker = _marker(env)
+    assert marker["state"] == "ok"
+    assert "detail" not in marker
+
+
+def test_crashed_prepare_replaces_a_stale_ok_marker(tmp_path: Path) -> None:
+    """A crash under set -e before the final write — the tar copy is the
+    biggest one — must not leave the previous run's "ok" standing: the
+    marker planted at prepare start reports the run as unfinished."""
+    launcher, env = _prep_rig(tmp_path, "noop")
+    assert _run(launcher, env).returncode == 0
+    assert _marker(env)["state"] == "ok"
+    env["RIG_MODE"] = "tar-crash"
+    assert _run(launcher, env).returncode != 0
+    marker = _marker(env)
+    assert marker["state"] == "degraded"
+    assert "did not finish" in str(marker["detail"])
+
+
+@pytest.mark.parametrize("xdg", [False, True], ids=["home-fallback", "xdg"])
+def test_status_marker_lands_where_the_python_reader_looks(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, xdg: bool
+) -> None:
+    """The shell writer resolves ``$XDG_CACHE_HOME`` else ``$HOME/.cache``;
+    the precis-status reader is ``install_watchdog.read_prepare_status``.
+    Both must name the same file in both configurations."""
+    from precis import install_watchdog
+
+    launcher, env = _prep_rig(tmp_path, "noop")
+    if xdg:
+        env["XDG_CACHE_HOME"] = str(tmp_path / "xdg")
+        monkeypatch.setenv("XDG_CACHE_HOME", env["XDG_CACHE_HOME"])
+    else:
+        monkeypatch.setenv("HOME", env["HOME"])
+        monkeypatch.delenv("XDG_CACHE_HOME", raising=False)
+    result = _run(launcher, env)
+    assert result.returncode == 0, result.stderr
+    marker = install_watchdog.read_prepare_status()
+    assert marker is not None and marker["state"] == "ok"

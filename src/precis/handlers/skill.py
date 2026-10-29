@@ -2492,8 +2492,10 @@ class SkillHandler(Handler):
            process executes), ``image_sha`` and the baked build
            metadata, ``source_drift`` and ``build_age``, then one
            ``⚠ WARN`` line per staleness finding (drift unknown, tree
-           moved, build older than :data:`_BUILD_AGE_WARN_DAYS`). Any
-           WARN makes the overall verdict ``WARN`` rather than ``OK``.
+           moved, build older than :data:`_BUILD_AGE_WARN_DAYS`) or per
+           degraded prepare-step marker (a failed runtime dep sync —
+           gr529877). Any WARN makes the overall verdict ``WARN``
+           rather than ``OK``.
            Surfaces ``"unknown"`` when the image was built without the
            build-args (so the response still answers "what is this
            build" honestly).
@@ -2521,6 +2523,7 @@ class SkillHandler(Handler):
             lines.append("")
         staleness = _staleness()
         stale_warnings = staleness.warnings()
+        prepare_warnings = _prepare_status_warnings()
         lines += [
             "**Build**",
             "",
@@ -2535,7 +2538,7 @@ class SkillHandler(Handler):
         # gr458061: a stale process whose status page read "Overall: OK"
         # cost two false root-cause analyses. Anything that cannot be shown
         # fresh is said out loud here, next to the fields it qualifies.
-        for warning in stale_warnings:
+        for warning in stale_warnings + prepare_warnings:
             lines.extend(["", f"**⚠ {warning}**"])
         lines += [
             "",
@@ -2672,7 +2675,7 @@ class SkillHandler(Handler):
                 schema=["module", "status", "backs", "install_hint"],
             )
         )
-        if worst == "OK" and stale_warnings:
+        if worst == "OK" and (stale_warnings or prepare_warnings):
             worst = "WARN"
         lines.append("")
         lines.append(f"**Overall: {worst}**")
@@ -3318,6 +3321,50 @@ def _source_drift() -> str:
     return _staleness().drift_row
 
 
+def _dep_sync_state() -> str:
+    """The ``dep_sync`` row: ``ok`` / ``degraded`` / ``none reported``.
+
+    The container prepare step's last verdict
+    (:func:`precis.install_watchdog.read_prepare_status`). ``none
+    reported`` on installs that have no prepare step at all — local dev,
+    a baked image, the cluster venv — where the question does not apply.
+    """
+    from precis.install_watchdog import read_prepare_status
+
+    try:
+        marker = read_prepare_status()
+    except Exception:  # pragma: no cover — a status field must not raise
+        return "unknown"
+    if marker is None:
+        return "none reported"
+    return str(marker.get("state") or "unknown")
+
+
+def _prepare_status_warnings() -> list[str]:
+    """WARN line when the container's prepare step left a degraded marker.
+
+    ``precis-status`` is the surface an agent hits *because* something is
+    wrong; a failed runtime dep sync that lived only in ``docker logs``
+    let the shared server crash-loop on a missing ``simpleeval`` with the
+    status page reading clean (gr529877).
+    """
+    from precis.install_watchdog import read_prepare_status
+
+    try:
+        marker = read_prepare_status()
+    except Exception:  # pragma: no cover — a status page must not raise
+        return []
+    if marker is None or marker.get("state") != "degraded":
+        return []
+    detail = marker.get("detail") or "no detail"
+    when = marker.get("written_at") or "unknown time"
+    return [
+        f"WARN dep sync degraded — {detail} (prepare reported at {when}). "
+        "The venv may be missing dependencies the served checkout needs; "
+        "rebuild the image with scripts/mcp-image-refresh."
+    ]
+
+
 def _collect_build_info(staleness: _Staleness | None = None) -> list[tuple[str, str]]:
     """Return ``(field, value)`` rows for the **Build** section.
 
@@ -3368,6 +3415,10 @@ def _collect_build_info(staleness: _Staleness | None = None) -> list[tuple[str, 
     source_path = lane.get("source_path") or _SOURCE_GIT_INFO.get("source_path")
     rows.append(("source_path", source_path or "unknown"))
     rows.append(("source_drift", st.drift_row))
+    # The container prepare step's last dep-sync verdict (gr529877): a
+    # failed runtime sync leaves the venv short of the checkout's deps
+    # while every git row above still reads current.
+    rows.append(("dep_sync", _dep_sync_state()))
     # The host paths the container mounts at /src and /main (gr515239): a
     # backend recreated from a stale second repo copy names that copy here
     # instead of hiding it. Container envs, not baked build args.
