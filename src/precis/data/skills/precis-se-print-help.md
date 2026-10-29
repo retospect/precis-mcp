@@ -499,6 +499,9 @@ every thread size a tap, every package a reflow pass
 ([[precis-component-help]]). Preferring the house sizes keeps a design's
 tool set to one of each.
 
+A part to be molded rather than printed — the `mold` op cutting `sla`
+halves from a cad-bound part — is [[precis-se-mold-help]]'s domain.
+
 ## What this does not do yet
 
 Support-structure generation, slicing, g-code — the deliverable stops at
