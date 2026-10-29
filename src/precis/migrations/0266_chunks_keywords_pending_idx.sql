@@ -1,4 +1,4 @@
--- 0262_chunks_keywords_pending_idx.sql
+-- 0266_chunks_keywords_pending_idx.sql
 --
 -- chunk_keywords drain fix (gr520236): the fresh-backlog claim is
 -- `WHERE keywords IS NULL ... ORDER BY chunk_id DESC` (newest-first, so
@@ -27,7 +27,7 @@
 --       ON chunks (chunk_id DESC)
 --       WHERE keywords IS NULL
 --         AND chunk_kind NOT IN ('card_authors', 'card_combined',
---             'card_description', 'card_title', 'equation', 'figure',
+--             'card_description', 'card_title', 'equation', 'figure', 'paper_note',
 --             'references', 'table')
 --         AND length(text) >= 150
 --         AND (meta->>'no_index') IS DISTINCT FROM 'true';
@@ -53,12 +53,12 @@ DECLARE
     -- The predicate as pg_get_indexdef/pg_get_expr PRINT it (PG 17):
     -- NOT IN deparses to <> ALL over an ARRAY literal, and every
     -- literal carries an explicit ::text cast.
-    want_pred constant text := '((keywords IS NULL) AND (chunk_kind <> ALL (ARRAY[''card_authors''::text, ''card_combined''::text, ''card_description''::text, ''card_title''::text, ''equation''::text, ''figure''::text, ''references''::text, ''table''::text])) AND (length(text) >= 150) AND ((meta ->> ''no_index''::text) IS DISTINCT FROM ''true''::text))';
-    rebuild constant text := 'CREATE INDEX CONCURRENTLY chunks_keywords_pending_idx ON chunks (chunk_id DESC) WHERE keywords IS NULL AND chunk_kind NOT IN (''card_authors'', ''card_combined'', ''card_description'', ''card_title'', ''equation'', ''figure'', ''references'', ''table'') AND length(text) >= 150 AND (meta->>''no_index'') IS DISTINCT FROM ''true''';
+    want_pred constant text := '((keywords IS NULL) AND (chunk_kind <> ALL (ARRAY[''card_authors''::text, ''card_combined''::text, ''card_description''::text, ''card_title''::text, ''equation''::text, ''figure''::text, ''paper_note''::text, ''references''::text, ''table''::text])) AND (length(text) >= 150) AND ((meta ->> ''no_index''::text) IS DISTINCT FROM ''true''::text))';
+    rebuild constant text := 'CREATE INDEX CONCURRENTLY chunks_keywords_pending_idx ON chunks (chunk_id DESC) WHERE keywords IS NULL AND chunk_kind NOT IN (''card_authors'', ''card_combined'', ''card_description'', ''card_title'', ''equation'', ''figure'', ''paper_note'', ''references'', ''table'') AND length(text) >= 150 AND (meta->>''no_index'') IS DISTINCT FROM ''true''';
 BEGIN
     IF EXISTS (SELECT 1 FROM pg_index i JOIN pg_class c ON c.oid = i.indexrelid
                 WHERE c.relname = 'chunks_keywords_pending_idx' AND NOT i.indisvalid) THEN
-        RAISE EXCEPTION '0262: index chunks_keywords_pending_idx exists but is INVALID (a failed CONCURRENTLY build)'
+        RAISE EXCEPTION '0266: index chunks_keywords_pending_idx exists but is INVALID (a failed CONCURRENTLY build)'
             USING HINT = 'DROP INDEX CONCURRENTLY chunks_keywords_pending_idx; ' || rebuild || ' — outside a transaction, then re-apply.';
     END IF;
     -- A pre-built index with a DIFFERENT predicate passes a name-only
@@ -70,13 +70,13 @@ BEGIN
       FROM pg_index i JOIN pg_class c ON c.oid = i.indexrelid
      WHERE c.relname = 'chunks_keywords_pending_idx';
     IF FOUND AND pred IS DISTINCT FROM want_pred THEN
-        RAISE EXCEPTION '0262: chunks_keywords_pending_idx exists with an unexpected predicate — the claim cannot use it: %',
+        RAISE EXCEPTION '0266: chunks_keywords_pending_idx exists with an unexpected predicate — the claim cannot use it: %',
                 COALESCE(pred, '(none — the index is not partial)')
             USING HINT = 'DROP INDEX CONCURRENTLY chunks_keywords_pending_idx; ' || rebuild || ' — outside a transaction, then re-apply.';
     END IF;
     IF NOT EXISTS (SELECT 1 FROM pg_class WHERE relname = 'chunks_keywords_pending_idx')
        AND (SELECT reltuples FROM pg_class WHERE relname = 'chunks') > 1000000 THEN
-        RAISE EXCEPTION '0262: chunks_keywords_pending_idx missing on a large chunks table'
+        RAISE EXCEPTION '0266: chunks_keywords_pending_idx missing on a large chunks table'
             USING HINT = rebuild || ' — outside a transaction, then re-apply.';
     END IF;
 END
@@ -86,11 +86,11 @@ CREATE INDEX IF NOT EXISTS chunks_keywords_pending_idx
     ON chunks (chunk_id DESC)
     WHERE keywords IS NULL
       AND chunk_kind NOT IN ('card_authors', 'card_combined',
-          'card_description', 'card_title', 'equation', 'figure',
+          'card_description', 'card_title', 'equation', 'figure', 'paper_note',
           'references', 'table')
       AND length(text) >= 150
       AND (meta->>'no_index') IS DISTINCT FROM 'true';
 
 COMMIT;
 
--- End of 0262_chunks_keywords_pending_idx.sql
+-- End of 0266_chunks_keywords_pending_idx.sql

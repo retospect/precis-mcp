@@ -290,7 +290,7 @@ class TestClaimQuery:
         assert {r[0] for r in rows} == {fresh_id, stale_id}
 
     def test_pending_partial_index_exists(self, store: Store) -> None:
-        """The DESC fresh claim's cheapness depends on migration 0262's
+        """The DESC fresh claim's cheapness depends on migration 0266's
         partial index existing and being valid."""
         with store.pool.connection() as conn:
             row = conn.execute(
@@ -310,7 +310,7 @@ class TestClaimQuery:
         mig = (
             Path(chunk_keywords.__file__).resolve().parent.parent
             / "migrations"
-            / "0262_chunks_keywords_pending_idx.sql"
+            / "0266_chunks_keywords_pending_idx.sql"
         ).read_text(encoding="utf-8")
         # Unescape SQL '' -> ' so literals embedded in HINT strings
         # compare against the claim's own text; collapse whitespace so
@@ -338,7 +338,7 @@ class TestClaimQuery:
         assert deparse in norm
 
     def test_index_predicate_matches_postgres_deparse(self, store: Store) -> None:
-        """The 0262 guard compares the recorded indexdef to a literal
+        """The 0266 guard compares the recorded indexdef to a literal
         deparse — pin that literal to what this Postgres actually
         prints for the live index."""
         with store.pool.connection() as conn:
