@@ -350,6 +350,11 @@ search(kind="job", under="qu459585", args={"job_type": "graph_garden"})
 rejected — they belong to the unfiltered ranked path. This is the MCP
 answer for what used to need `refs.meta->>'job_type'` SQL.
 
+Top-level `since=`/`until=` also work on the queryless plain listing —
+`search(kind='job', since='2026-10-20', status='*')` is the same
+recency-ordered listing without a `job_type=` filter (adding `q=` makes
+it a ranked search and `sort=`/`mode=` legal again).
+
 ## When does a cadence fire next? — [[precis-job-observe-help]]
 
 `get(kind='job', id='/cadence…')` lives in

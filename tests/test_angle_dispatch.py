@@ -107,6 +107,24 @@ def test_n_alone_in_args_still_refused(runtime_with_store: PrecisRuntime) -> Non
     assert "not accepted" in out
 
 
+def test_page_size_is_read_as_n(runtime_with_store: PrecisRuntime) -> None:
+    """The wrapper's canonical size spelling (``k=``/``limit=`` map onto
+    ``page_size``) is accepted as the spray's ``n`` — it used to die at
+    the unapplied-args gate on the documented call."""
+    rt = runtime_with_store
+    a = _put_memory(rt, "copper catalyses nitrate reduction")
+    b = _put_memory(rt, "palladium absorbs hydrogen gas")
+    c = _put_memory(rt, "iron rusts in salt water")
+    _embed_card(rt, a, "copper catalyses nitrate reduction")
+    _embed_card(rt, b, "palladium absorbs hydrogen gas")
+    _embed_card(rt, c, "iron rusts in salt water")
+    out = rt.dispatch("search", {"like": f"memory:{a}", "angle": 1.0, "page_size": 1})
+    assert "[error" not in out, out
+    assert "neighbour" in out
+    shown = [rid for rid in (b, c) if f"#{rid}" in out]
+    assert len(shown) == 1
+
+
 # ── guards / errors ─────────────────────────────────────────────────
 
 

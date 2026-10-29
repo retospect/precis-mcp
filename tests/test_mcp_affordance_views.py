@@ -246,3 +246,29 @@ class TestSearchPlanView:
         assert "exact" in body or "none (exact scan)" in body
         wide = rt.dispatch("search", {"view": "plan"})
         assert "kind=" in wide and "index:" in wide
+
+    def test_plan_accepts_filters_and_names_the_route(
+        self, store: Any, monkeypatch: Any
+    ) -> None:
+        """The real search's filters are accepted, echoed, and used to
+        pick the path the same call would take — not refused."""
+        from precis.config import PrecisConfig
+        from precis.dispatch import boot
+        from precis.runtime import PrecisRuntime
+
+        rt = PrecisRuntime(config=PrecisConfig(), hub=boot(store=store))
+        body = rt.dispatch(
+            "search",
+            {"kind": "memory", "view": "plan", "tags": ["x"], "status": "open"},
+        )
+        assert "[error" not in body, body
+        assert "path: single-kind search on kind='memory'" in body, body
+        assert "filters:" in body and "status='open'" in body, body
+        body = rt.dispatch(
+            "search", {"kind": "paper", "view": "plan", "q": "x", "sort": "recency"}
+        )
+        assert "path: cross-kind source search" in body, body
+        body = rt.dispatch("search", {"kind": "paper", "view": "plan", "folder": 5})
+        assert "path: cross-kind fan-out" in body, body
+        body = rt.dispatch("search", {"view": "plan"})
+        assert "path: cross-kind fan-out" in body, body

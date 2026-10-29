@@ -8,7 +8,10 @@ only holds the handful of names referenced from more than one of
 
 from __future__ import annotations
 
+from collections.abc import Callable, Sequence
 from typing import TYPE_CHECKING, Any
+
+from precis.errors import BadInput
 
 if TYPE_CHECKING:
     from precis.dispatch import Hub
@@ -49,6 +52,90 @@ CROSS_KIND_SOURCE_KINDS: tuple[str, ...] = ("paper", "finding")
 # works. See ``runtime.search._dispatch_cross_kind`` /
 # ``runtime.dispatch._dispatch_inner_core``.
 UNCITED_UNSUPPORTED_KINDS: frozenset[str] = frozenset({"patent", "edgar"})
+
+#: Payload key the search-facet resolutions (``uncited=``/``cited=``/
+#: ``hubbed=``/``under=``) use to record the caller's original keys after
+#: rewriting them into the ``exclude_ref_ids``/``include_ref_ids``
+#: channel — ``runtime.search._search_call_text`` re-renders the
+#: originals in ``next=`` hints instead of the resolved ref-id lists.
+#: Dispatch-internal, never a caller key: popped before the handler
+#: kwargs gate. Shape: ``{channel: [(orig_key, orig_value), ...]}``.
+RESOLVED_FACETS_KEY = "__resolved_facets__"
+
+
+def refuse_unapplied_args(
+    args: dict[str, Any],
+    *,
+    consumed: frozenset[str],
+    shape: str,
+    next: str | Sequence[str] | Callable[[list[str]], str | Sequence[str]],
+    tolerated: dict[str, tuple[Any, ...]] | None = None,
+    ignored: frozenset[str] | set[str] = frozenset(),
+) -> None:
+    """Refuse caller args an intercepted ``search`` shape never reads.
+
+    The single-kind path vets payload keys against the resolved
+    handler's signature (gr334695); the dispatch-level interceptions
+    (cross-kind fan-out, source search, the sprays and backlog views)
+    build their own kwarg set for the store/per-kind calls and never
+    see that gate — a key they don't consume was silently dropped
+    (gr524663: ``kinds=[...]`` on a kind-less ``search`` ran the ~34-kind
+    fan-out under only a deprecation note, looking applied). Each
+    interception declares the payload keys it consumes in ``consumed``
+    and calls this before doing any work; whatever remains — top-level
+    keys, plus every leftover ``args={...}`` key (``__extras__`` mirrors
+    ``dispatch._EXTRAS_KEY``) — is refused with ``next`` naming the
+    corrected call. ``tolerated`` maps a key to the values that count
+    as not supplied (the ``page=1`` wrapper default); ``ignored`` names
+    keys a path deliberately no-ops on, a contract its tests pin (e.g.
+    ``q=`` on the backlog views — documented, not a silent drop).
+    ``next`` may be a callable taking the refused plain key names
+    (top-level and ``args=`` alike) and returning the hint(s) — for a
+    call site whose corrected call depends on which keys were refused
+    (mcp-authoring rule 2: ``next=`` is a call that works).
+    """
+    tolerated = tolerated or {}
+    stray = sorted(
+        k
+        for k, v in args.items()
+        if k not in consumed
+        and k not in ignored
+        and not k.startswith("__")
+        and v is not None
+        and v not in tolerated.get(k, ())
+    )
+    extras = args.get("__extras__")
+    stray_extras = (
+        sorted(k for k, v in extras.items() if v is not None)
+        if isinstance(extras, dict)
+        else []
+    )
+    if not stray and not stray_extras:
+        return
+    names = stray + [f"args[{k!r}]" for k in stray_extras]
+    built = next(stray + stray_extras) if callable(next) else next
+    hints: list[str] = [built] if isinstance(built, str) else list(built)
+    if "kinds" in stray:
+        # The most-misread name (gr524663): on a kind-less call the
+        # caller plainly meant to choose the searched kinds.
+        hints.insert(
+            0,
+            "kinds= is the kind='skill' catalogue axis, not a kind "
+            "selector — to choose which kinds are searched pass "
+            "kind='a,b' (e.g. search(kind='memory,finding', q='…'))",
+        )
+    if "page" in stray:
+        hints.append(
+            "search returns a bounded top-N set — page_size= sizes it "
+            "(max 100); refine q= for more, there is no page=2"
+        )
+    raise BadInput(
+        f"{names!r} {'is' if len(names) == 1 else 'are'} not applied by "
+        f"{shape} — silently dropping "
+        f"{'it' if len(names) == 1 else 'them'} would return a result "
+        "the call didn't ask for",
+        next=hints,
+    )
 
 
 class RuntimeShape:
@@ -136,6 +223,11 @@ class RuntimeShape:
         raise NotImplementedError
 
     def _is_source_search_request(self, args: dict[str, Any]) -> bool:
+        raise NotImplementedError
+
+    def _routes_to_source_search(
+        self, verb: str, kind: Any, args: dict[str, Any]
+    ) -> bool:
         raise NotImplementedError
 
     def _dispatch_source_search(

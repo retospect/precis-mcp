@@ -22,7 +22,11 @@ from urllib.parse import parse_qsl, urlencode
 
 from precis.errors import BadInput, NotFound
 from precis.handlers._interpret import interpreted
-from precis.handlers._numeric_ref import NumericRefHandler, _parse_window_bound
+from precis.handlers._numeric_ref import (
+    NumericRefHandler,
+    _parse_id_range,
+    _parse_window_bound,
+)
 from precis.protocol import KindSpec
 from precis.response import Response
 from precis.store import Tag
@@ -172,6 +176,57 @@ def _fmt_interval(seconds: int) -> str:
     if s and s % 60 == 0:
         return f"{s // 60}m"
     return f"{s}s"
+
+
+def _job_search_call(
+    *,
+    job_type: str | None = None,
+    q: Any = None,
+    tags: Any = None,
+    link: Any = None,
+    status: str | None = None,
+    since: str | None = None,
+    until: str | None = None,
+    id_min: Any = None,
+    id_max: Any = None,
+    view: str | None = None,
+    group_by: Any = None,
+) -> str:
+    """``search(kind='job', …)`` call text for a refusal's ``next=``.
+
+    Renders only keys the dated listing / job_type-filtered search
+    provably applies — ``sort=``/``mode=`` are deliberately absent (the
+    listing refuses them) and callers pass ``view=``/``group_by=`` only
+    when ``view == 'count'`` — so the rendered call is one that works
+    (mcp-authoring rule 2). ``job_type``/``id_min``/``id_max``/
+    ``group_by`` ride ``args=`` on the wire; the rest are top-level
+    verb params.
+    """
+    parts = ["kind='job'"]
+    for k, v in (
+        ("since", since),
+        ("until", until),
+        ("status", status),
+        ("q", q),
+        ("tags", tags),
+        ("link", link),
+        ("view", view),
+    ):
+        if v is not None:
+            parts.append(f"{k}={v!r}")
+    extras = {
+        k: v
+        for k, v in (
+            ("job_type", job_type),
+            ("group_by", group_by),
+            ("id_min", id_min),
+            ("id_max", id_max),
+        )
+        if v is not None
+    }
+    if extras:
+        parts.append(f"args={extras!r}")
+    return f"search({', '.join(parts)})"
 
 
 def _norm_error_head(text: str | None) -> str:
@@ -3082,13 +3137,37 @@ class JobHandler(NumericRefHandler):
                 job_type=job_type,
             )
         if job_type is not None:
+            forwarded = {
+                k: kw.pop(k) for k in ("q", "tags", "link", "sort", "mode") if k in kw
+            }
+            id_min, id_max = kw.pop("id_min", None), kw.pop("id_max", None)
+            leftover = sorted(k for k, v in kw.items() if v is not None)
+            if leftover:
+                raise BadInput(
+                    f"{leftover!r} not applied by a job_type-filtered job "
+                    "search (search(kind='job', args={'job_type': …}) takes "
+                    "q/tags/link/status/since/until/id_min/id_max only)",
+                    next=_job_search_call(
+                        job_type=str(job_type).strip(),
+                        q=forwarded.get("q"),
+                        tags=forwarded.get("tags"),
+                        link=forwarded.get("link"),
+                        status=status,
+                        since=since,
+                        until=until,
+                        id_min=id_min,
+                        id_max=id_max,
+                        view=view if view == "count" else None,
+                        group_by=group_by if view == "count" else None,
+                    ),
+                )
             return self._search_by_job_type(
                 str(job_type).strip(),
-                q=kw.get("q"),
+                q=forwarded.get("q"),
                 view=view,
                 status=status,
-                tags=kw.get("tags"),
-                link=kw.get("link"),
+                tags=forwarded.get("tags"),
+                link=forwarded.get("link"),
                 page_size=page_size,
                 page=page,
                 group_by=group_by,
@@ -3096,8 +3175,60 @@ class JobHandler(NumericRefHandler):
                 until=until,
                 exclude_ref_ids=exclude_ref_ids,
                 include_ref_ids=include_ref_ids,
-                sort=kw.get("sort"),
-                mode=kw.get("mode"),
+                sort=forwarded.get("sort"),
+                mode=forwarded.get("mode"),
+                id_min=id_min,
+                id_max=id_max,
+            )
+        if (since is not None or until is not None) and view != "count":
+            # A queryless top-level since=/until= stays on the job
+            # listing path (dispatch routes a q=-bearing call to the
+            # source-search primitive instead), but the base listing
+            # refuses those bounds: apply them through the same filtered
+            # listing the job_type search uses. view='count' deliberately
+            # falls through to super().search — the shared count path
+            # applies the bounds and id_min/id_max itself; it does NOT
+            # vet the rest of kw (NumericRefHandler.search ends in
+            # **_kw, which swallows whatever it doesn't declare).
+            id_min, id_max = kw.pop("id_min", None), kw.pop("id_max", None)
+            forwarded = {
+                k: kw.pop(k) for k in ("q", "tags", "link", "sort", "mode") if k in kw
+            }
+            leftover = sorted(k for k, v in kw.items() if v is not None)
+            if leftover:
+                raise BadInput(
+                    f"{leftover!r} not applied by the dated job listing "
+                    "(kind='job' with since=/until= takes q/tags/link/"
+                    "status/id_min/id_max only)",
+                    next=_job_search_call(
+                        q=forwarded.get("q"),
+                        tags=forwarded.get("tags"),
+                        link=forwarded.get("link"),
+                        status=status,
+                        since=since,
+                        until=until,
+                        id_min=id_min,
+                        id_max=id_max,
+                    ),
+                )
+            return self._search_by_job_type(
+                None,
+                q=forwarded.get("q"),
+                view=view,
+                status=status,
+                tags=forwarded.get("tags"),
+                link=forwarded.get("link"),
+                page_size=page_size,
+                page=page,
+                group_by=group_by,
+                since=since,
+                until=until,
+                exclude_ref_ids=exclude_ref_ids,
+                include_ref_ids=include_ref_ids,
+                sort=forwarded.get("sort"),
+                mode=forwarded.get("mode"),
+                id_min=id_min,
+                id_max=id_max,
             )
         return super().search(
             view=view,
@@ -3380,7 +3511,7 @@ class JobHandler(NumericRefHandler):
 
     def _search_by_job_type(
         self,
-        job_type: str,
+        job_type: str | None,
         *,
         q: Any,
         view: str | None,
@@ -3396,11 +3527,18 @@ class JobHandler(NumericRefHandler):
         include_ref_ids: list[int] | None,
         sort: Any,
         mode: Any,
+        id_min: Any = None,
+        id_max: Any = None,
     ) -> Response:
         """``search(kind='job', args={'job_type': ...})`` — jobs of one
         ``meta.job_type`` (gr502653: the watch question "how many
         <type> jobs minted/finished/failed since <t>" needed raw
-        ``refs.meta->>'job_type'`` SQL).
+        ``refs.meta->>'job_type'`` SQL). ``job_type=None`` is the plain
+        filtered listing — reached when a queryless top-level
+        ``since=``/``until=`` stays on the job listing path (dispatch
+        keeps only the queryless call here; a ``q=``-bearing call goes
+        to the source-search primitive, and the base listing path
+        refuses those bounds).
 
         The filtered set runs through :func:`filtered_ref_clauses` —
         the same builder ``view='count'`` uses — so the listing's
@@ -3410,29 +3548,50 @@ class JobHandler(NumericRefHandler):
         one. ``view='count'`` delegates to the shared aggregate, so
         ``group_by='state'`` gives the status facets.
         """
+        # job_type=None is the plain dated listing, not a job_type
+        # search — its refusals describe that shape, not "job_type-".
+        label = (
+            "a job_type-filtered job search"
+            if job_type is not None
+            else "the dated job listing"
+        )
         if view is not None and view != "count":
             raise BadInput(
-                f"unknown view {view!r} for a job_type-filtered job search",
+                f"unknown view {view!r} for {label}",
                 options=["count"],
-                next="search(kind='job', view='count', "
-                "args={'job_type': '<type>', 'group_by': 'state'})",
+                next=(
+                    "search(kind='job', view='count', "
+                    "args={'job_type': '<type>', 'group_by': 'state'})"
+                    if job_type is not None
+                    else "search(kind='job', view='count', since='<ISO>', "
+                    "args={'group_by': 'state'})"
+                ),
             )
         if sort is not None:
             raise BadInput(
-                "sort= doesn't apply to a job_type-filtered job search "
-                "(the listing is recency-ordered)",
-                next="search(kind='job', args={'job_type': '<type>'})",
+                f"sort= doesn't apply to {label} (the listing is recency-ordered)",
+                next=(
+                    "search(kind='job', args={'job_type': '<type>'})"
+                    if job_type is not None
+                    else "drop sort=, or add q= for a ranked dated search: "
+                    "search(kind='job', q='…', sort='recency', since='…')"
+                ),
             )
         if mode is not None:
             raise BadInput(
-                "mode= has no ranked-search meaning on a job_type-filtered "
-                "job search — q= is title-lexical",
-                next="drop mode=, or drop job_type= for the hybrid ranked path",
+                f"mode= has no ranked-search meaning on {label} — q= is title-lexical",
+                next=(
+                    "drop mode=, or drop job_type= for the hybrid ranked path"
+                    if job_type is not None
+                    else "drop mode=, or add q= for the hybrid ranked path: "
+                    "search(kind='job', q='…', mode='semantic', since='…')"
+                ),
             )
         effective_tags, status_note, excluded = self._apply_status_default(
             status, tags if isinstance(tags, list) else None
         )
         normalized_tags = Tag.normalize_filter(effective_tags, kind=self.kind)
+        id_lo, id_hi = _parse_id_range(id_min, id_max, kind=self.kind)
         if view == "count":
             return self._count_view(
                 q=q,
@@ -3446,7 +3605,9 @@ class JobHandler(NumericRefHandler):
                 include_ref_ids=include_ref_ids,
                 since=since,
                 until=until,
-                meta_eq=("job_type", job_type),
+                meta_eq=("job_type", job_type) if job_type is not None else None,
+                id_min=id_lo,
+                id_max=id_hi,
             )
         link_ref_id: int | None = None
         if link is not None and str(link).strip():
@@ -3463,7 +3624,9 @@ class JobHandler(NumericRefHandler):
             exclude_ref_ids=exclude_ref_ids,
             since=_parse_window_bound(since, "since"),
             until=_parse_window_bound(until, "until"),
-            meta_eq=("job_type", job_type),
+            meta_eq=("job_type", job_type) if job_type is not None else None,
+            id_min=id_lo,
+            id_max=id_hi,
         )
         where = " AND ".join(clauses)
         page = max(1, int(page))
@@ -3488,15 +3651,16 @@ class JobHandler(NumericRefHandler):
             frag = f"{shown} of {total}"
         else:
             frag = str(total)
-        head = (
-            f"# {frag} job entr{'y' if total == 1 else 'ies'} "
-            f"with job_type {job_type!r}"
+        head = f"# {frag} job entr{'y' if total == 1 else 'ies'}" + (
+            f" with job_type {job_type!r}" if job_type is not None else ""
         )
         parts = [head]
         if status_note:
             parts.append(status_note)
         if not refs:
-            parts[0] = f"no job entries with job_type {job_type!r}"
+            parts[0] = "no job entries" + (
+                f" with job_type {job_type!r}" if job_type is not None else ""
+            )
             parts.append(
                 render_next_section(
                     [
@@ -3518,8 +3682,13 @@ class JobHandler(NumericRefHandler):
             render_next_section(
                 [
                     (
-                        "search(kind='job', view='count', args={'job_type': "
-                        f"'{job_type}', 'group_by': 'state'}})",
+                        (
+                            "search(kind='job', view='count', args={'job_type': "
+                            f"'{job_type}', 'group_by': 'state'}})"
+                            if job_type is not None
+                            else "search(kind='job', view='count', "
+                            "args={'group_by': 'state'})"
+                        ),
                         "the same set counted by status",
                     ),
                 ]

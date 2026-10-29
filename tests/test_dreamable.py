@@ -176,6 +176,27 @@ def test_dreamable_renders_region(runtime_with_store: PrecisRuntime) -> None:
     assert f"#{a}" in out
 
 
+def test_dreamable_page_size_is_read_as_n(
+    runtime_with_store: PrecisRuntime,
+) -> None:
+    """``page_size=`` — the wrapper's canonical size spelling — is
+    accepted as the region size (used to be refused by the
+    unapplied-args gate)."""
+    rt = runtime_with_store
+    store = rt.hub.live_store
+    a = _put_memory(rt, "copper catalyses nitrate reduction")
+    b = _put_memory(rt, "palladium absorbs hydrogen gas")
+    ca = _embed_card(rt, a, "copper catalyses nitrate reduction")
+    cb = _embed_card(rt, b, "palladium absorbs hydrogen gas")
+    _set_score(store, ca, 100)  # a most due
+    _set_score(store, cb, 50)
+
+    out = rt.dispatch("search", {"view": "dreamable", "page_size": 1})
+    assert "[error" not in out, out
+    assert f"#{a}" in out
+    assert f"#{b}" not in out  # n=1 → seed only
+
+
 def test_dreamable_stamps_rotation(runtime_with_store: PrecisRuntime) -> None:
     rt = runtime_with_store
     store = rt.hub.live_store

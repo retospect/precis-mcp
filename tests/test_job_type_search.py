@@ -12,8 +12,10 @@ scope honouring the same filter, and the cadence lease read.
 
 from __future__ import annotations
 
+import ast
 import re
 from datetime import UTC, datetime, timedelta
+from typing import Any
 from uuid import uuid4
 
 import pytest
@@ -59,6 +61,23 @@ def _facet_counts(body: str) -> dict[str, int]:
 
 def _cad() -> str:
     return f"cad-{uuid4().hex}"
+
+
+def _run_search_hint(runtime: PrecisRuntime, call_text: str) -> str:
+    """Run a ``search(kind='job', …)`` ``next=`` hint through dispatch —
+    the ``next=``-is-a-working-call rule verified by executing it, not
+    by matching its text. ``args={…}`` re-nests into ``__extras__``."""
+    call = ast.parse(call_text, mode="eval").body
+    assert isinstance(call, ast.Call)
+    payload: dict[str, Any] = {}
+    for kwarg in call.keywords:
+        assert kwarg.arg is not None  # ``**kw`` unpacks carry no name
+        value = ast.literal_eval(kwarg.value)
+        if kwarg.arg == "args":
+            payload["__extras__"] = value
+        else:
+            payload[kwarg.arg] = value
+    return runtime.dispatch("search", payload)
 
 
 class TestJobTypeListing:
@@ -127,6 +146,24 @@ class TestJobTypeListing:
         with pytest.raises(BadInput, match="sort="):
             jobs.search(job_type="sweep", sort="recency")
 
+    def test_refuses_unapplied_kw_with_working_next(
+        self, jobs: JobHandler, runtime_with_store: PrecisRuntime
+    ) -> None:
+        """The job_type branch drops no kw silently either — a key it
+        can't apply refuses, and ``next=`` is the caller's own call
+        minus the stray key (mcp-authoring rule 2), verified by running
+        it."""
+        with pytest.raises(BadInput) as exc_info:
+            jobs.search(job_type="sweep", status="*", chunk_scope="body")
+        err = exc_info.value
+        assert "job_type-filtered" in str(err), err
+        hint = err.next
+        assert isinstance(hint, str)
+        assert "chunk_scope" not in hint
+        assert "'job_type': 'sweep'" in hint
+        out = _run_search_hint(runtime_with_store, hint)
+        assert "[error" not in out, out
+
 
 class TestJobTypeCount:
     """``view='count'`` + ``job_type=`` — the gripe's exact call shape:
@@ -159,6 +196,90 @@ class TestJobTypeCount:
             since=(datetime.now(UTC) - timedelta(days=1)).isoformat(),
         )
         assert resp.body.startswith("# 1 job entry"), resp.body
+
+    def test_count_since_id_min(
+        self, runtime_with_store: PrecisRuntime, store: Store
+    ) -> None:
+        """``view='count'`` + top-level ``since=`` stays on the shared
+        count path — so a top-level ``id_min=`` narrows it instead of
+        being silently dropped by the dated-listing branch."""
+        _job(store, job_type="sweep", status="succeeded")
+        keep = _job(store, job_type="sweep", status="succeeded")
+        body = runtime_with_store.dispatch(
+            "search",
+            {
+                "kind": "job",
+                "view": "count",
+                "status": "*",
+                "since": (datetime.now(UTC) - timedelta(days=1)).isoformat(),
+                "id_min": keep,
+            },
+        )
+        assert "[error" not in body, body
+        assert body.startswith("# 1 job entr"), body
+
+    def test_since_listing_applies_id_min(self, jobs: JobHandler, store: Store) -> None:
+        """The dated plain listing (job_type=None) honours id bounds too."""
+        _job(store, job_type="sweep", status="queued")
+        keep = _job(store, job_type="sweep", status="queued")
+        resp = jobs.search(
+            since=(datetime.now(UTC) - timedelta(days=1)).isoformat(),
+            status="*",
+            id_min=keep,
+        )
+        assert resp.body.startswith("# 1 job entr"), resp.body
+        assert str(keep) in resp.body
+
+    def test_since_listing_refuses_unapplied_kw(self, jobs: JobHandler) -> None:
+        """A kw the dated listing can't apply is refused, not swallowed."""
+        with pytest.raises(BadInput, match="bogus_arg"):
+            jobs.search(
+                since=(datetime.now(UTC) - timedelta(days=1)).isoformat(),
+                bogus_arg=1,
+            )
+
+    def test_since_listing_refusal_next_is_a_working_call(
+        self, jobs: JobHandler, runtime_with_store: PrecisRuntime
+    ) -> None:
+        """``next=`` is the caller's own call minus the unapplied key —
+        a concrete ``search(…)`` that works (mcp-authoring rule 2), not
+        prose and not a detour through ``view='count'`` (whose ``**_kw``
+        would swallow the same key). The accepted-keys list drops
+        sort/mode — the queryless listing refuses both."""
+        with pytest.raises(BadInput) as exc_info:
+            jobs.search(
+                since=(datetime.now(UTC) - timedelta(days=1)).isoformat(),
+                status="*",
+                chunk_scope="body",
+            )
+        err = exc_info.value
+        assert "view='count'" not in str(err), err
+        assert "sort" not in str(err), err
+        hint = err.next
+        assert isinstance(hint, str)
+        assert "chunk_scope" not in hint
+        out = _run_search_hint(runtime_with_store, hint)
+        assert "[error" not in out, out
+
+    def test_since_listing_refusals_do_not_name_job_type(
+        self, jobs: JobHandler
+    ) -> None:
+        """sort=/mode=/view= refused with no job_type must not read
+        "job_type-filtered" — the caller never named one — and the
+        next= must be a call that works."""
+        cases: list[tuple[dict[str, Any], str, str]] = [
+            ({"sort": "recency"}, "sort=", "q="),
+            ({"mode": "semantic"}, "mode=", "q="),
+            ({"view": "tree"}, "unknown view", "view='count'"),
+        ]
+        for kwargs, marker, want_next in cases:
+            with pytest.raises(BadInput, match=marker) as exc_info:
+                jobs.search(
+                    since=(datetime.now(UTC) - timedelta(days=1)).isoformat(),
+                    **kwargs,
+                )
+            assert "job_type-filtered" not in str(exc_info.value), exc_info.value
+            assert want_next in str(exc_info.value.next or ""), exc_info.value
 
     def test_dispatch_end_to_end(
         self, runtime_with_store: PrecisRuntime, store: Store

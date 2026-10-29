@@ -264,11 +264,23 @@ class TestCountTimeWindow:
         with pytest.raises(BadInput, match="ISO date"):
             jobs.search(view="count", since="yesterday-ish")
 
-    def test_since_off_count_view_raises(self, jobs: JobHandler) -> None:
-        # Reached only on a direct handler call (dispatch routes dated
-        # non-count searches to the source-search primitive).
-        with pytest.raises(BadInput, match="view='count'"):
-            jobs.search(since="2024-01-01", status="*")
+    def test_since_off_count_view_applies_on_the_listing(
+        self, jobs: JobHandler, store: Store
+    ) -> None:
+        # Top-level since=/until= stay on the job listing path —
+        # precis-job-help is the contract, so dispatch keeps a
+        # kind='job' bare window off the source-search primitive and the
+        # listing bounds refs.created_at the same way the job_type
+        # filtered listing does.
+        old = _job(store, job_type="sweep", status="succeeded")
+        new = _job(store, job_type="sweep", status="succeeded")
+        now = datetime.now(UTC)
+        _backdate(store, old, now - timedelta(days=10))
+        _backdate(store, new, now - timedelta(hours=1))
+        resp = jobs.search(status="*", since=(now - timedelta(days=1)).isoformat())
+        assert resp.body.startswith("# 1 job entry"), resp.body
+        resp = jobs.search(status="*", until=(now - timedelta(days=1)).isoformat())
+        assert resp.body.startswith("# 1 job entry"), resp.body
 
     def test_since_via_dispatch(
         self, runtime_with_store: PrecisRuntime, store: Store

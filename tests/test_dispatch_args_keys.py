@@ -66,6 +66,365 @@ def _call(runtime: PrecisRuntime, kind: str, verb: str, extras: dict) -> str:
     return runtime.dispatch(verb, {"kind": kind, "__extras__": extras})
 
 
+# ── gr524663: intercepted search shapes refuse args they can't apply ───
+#
+# The single-kind path vets payload keys against the resolved handler's
+# signature; the dispatch-level interceptions (cross-kind fan-out,
+# source search, the sprays/views) build their own kwarg set and used to
+# silently drop everything else — ``search(q='nanobuds', kinds=[...])``
+# ran the full ~34-kind fan-out under only a deprecation note. Each
+# interception now refuses the keys it does not consume, naming the
+# corrected call (``runtime._shared.refuse_unapplied_args``).
+
+
+def test_cross_kind_search_refuses_kinds_naming_kind_form(
+    runtime_with_store: PrecisRuntime,
+) -> None:
+    """The gripe's exact call: ``kinds=[...]`` with no ``kind=`` meant
+    "search these kinds" — the corrected form is ``kind='a,b'``."""
+    out = runtime_with_store.dispatch(
+        "search", {"q": "nanobuds", "kinds": ["memory", "finding"]}
+    )
+    assert "[error:BadInput]" in out, out
+    assert "'kinds'" in out, out
+    assert "kind='memory,finding'" in out, out
+    assert "not applied by a cross-kind search" in out, out
+    # the expensive default must NOT have run
+    assert "matches" not in out.lower(), out
+
+
+def test_cross_kind_search_refuses_per_kind_knobs_and_extras(
+    runtime_with_store: PrecisRuntime,
+) -> None:
+    """Every unapplied payload key is named — top-level and args= alike."""
+    out = runtime_with_store.dispatch(
+        "search",
+        {
+            "q": "x",
+            "per_paper": 2,
+            "status": "open",
+            "__extras__": {"bogus_extra": 1},
+        },
+    )
+    assert "[error:BadInput]" in out, out
+    for name in ("per_paper", "status", "bogus_extra"):
+        assert name in out, out
+
+
+def test_cross_kind_search_page_gt_one_refused(
+    runtime_with_store: PrecisRuntime,
+) -> None:
+    out = runtime_with_store.dispatch("search", {"q": "x", "page": 3})
+    assert "[error:BadInput]" in out, out
+    assert "page" in out and "bounded top-N" in out, out
+
+
+def test_cross_kind_search_still_runs_when_args_apply(
+    runtime_with_store: PrecisRuntime,
+) -> None:
+    """The gate fires only on unconsumed keys — a plain fan-out and a
+    tags-only sweep are untouched."""
+    out = runtime_with_store.dispatch("search", {"q": "zz_no_such_token_zz"})
+    assert "[error" not in out, out
+    out = runtime_with_store.dispatch("search", {"tags": ["topic:zz-none"]})
+    assert "[error" not in out, out
+
+
+def test_source_search_refuses_unapplied_keys(
+    runtime_with_store: PrecisRuntime,
+) -> None:
+    """sort=/since=/until= route to the source-search primitive, which
+    drops the same per-kind knobs the fan-out did."""
+    out = runtime_with_store.dispatch(
+        "search", {"q": "x", "sort": "recency", "kinds": ["memory"], "view": "abstract"}
+    )
+    assert "[error:BadInput]" in out, out
+    assert "kinds" in out and "view" in out, out
+
+
+def test_source_search_sort_still_applies(runtime_with_store: PrecisRuntime) -> None:
+    out = runtime_with_store.dispatch(
+        "search", {"q": "zz_nothing_zz", "sort": "recency"}
+    )
+    assert "[error" not in out, out
+
+
+def test_folder_scoped_search_refuses_sort(runtime_with_store: PrecisRuntime) -> None:
+    """``folder=`` routes to the fan-out before the source-search
+    interception, so ``folder= + sort=`` used to drop sort silently."""
+    out = runtime_with_store.dispatch(
+        "search", {"q": "x", "folder": "no-such-folder", "sort": "recency"}
+    )
+    assert "[error:BadInput]" in out, out
+    assert "sort" in out, out
+
+
+def test_angle_spray_refuses_unapplied_keys(runtime_with_store: PrecisRuntime) -> None:
+    out = runtime_with_store.dispatch(
+        "search", {"q": "x", "angle": 0.5, "status": "open"}
+    )
+    assert "[error:BadInput]" in out, out
+    assert "status" in out, out
+
+
+def test_stubs_view_refuses_stray_but_q_stays_a_documented_noop(
+    runtime_with_store: PrecisRuntime,
+) -> None:
+    """``q=`` on the backlog views is a documented no-op pinned by
+    ``test_view_stubs_ignores_q`` — the gate tolerates it, but any other
+    unapplied key still refuses."""
+    out = runtime_with_store.dispatch("search", {"view": "stubs", "status": "open"})
+    assert "[error:BadInput]" in out, out
+    assert "status" in out, out
+
+
+def test_folder_scoped_search_next_is_a_working_call(
+    runtime_with_store: PrecisRuntime,
+) -> None:
+    """``search(kind='todo', q='x', folder=N, status='open')``: the caller
+    already named one kind — "narrow to one kind" is the wrong hint.
+    The refusal's ``next`` is built from the call shape: drop the refused
+    key, or drop the interception trigger so the kind's own search sees
+    it (mcp-authoring rule 2)."""
+    out = runtime_with_store.dispatch(
+        "search", {"kind": "todo", "q": "x", "folder": 12, "status": "open"}
+    )
+    assert "[error:BadInput]" in out, out
+    assert "'status'" in out, out
+    assert "narrow to one kind" not in out, out
+    assert "search(kind='todo', q='x', folder=12)" in out, out
+    assert "search(kind='todo', q='x', status='open')" in out, out
+
+
+def test_source_search_next_is_a_working_call(
+    runtime_with_store: PrecisRuntime,
+) -> None:
+    """Same for the sort=/since=/until= route: drop the refused key, or
+    drop the trigger so the kind's own listing applies it."""
+    out = runtime_with_store.dispatch(
+        "search", {"kind": "todo", "sort": "recency", "link": "gr1"}
+    )
+    assert "[error:BadInput]" in out, out
+    assert "'link'" in out, out
+    assert "search(kind='todo', sort='recency')" in out, out
+    assert "search(kind='todo', link='gr1')" in out, out
+
+
+def test_tags_only_sweep_refuses_ranking_knobs(
+    runtime_with_store: PrecisRuntime,
+) -> None:
+    """The tags-only sweep is a flat list_refs query — the fan-out's
+    ranking knobs (``mode``, ``exclude``, ``view``) never reach it, so
+    they refuse under its own narrower consumed set instead of silently
+    dropping. ``top_k``/``n`` are the exception: they read as the page
+    cap, matching angle/dreamable."""
+    out = runtime_with_store.dispatch(
+        "search",
+        {"tags": ["topic:zz-none"], "mode": "semantic", "exclude": ["paper"]},
+    )
+    assert "[error:BadInput]" in out, out
+    assert "'mode'" in out and "'exclude'" in out, out
+    assert "tags-only" in out, out
+
+
+def test_tags_only_sweep_reads_top_k_and_n(
+    runtime_with_store: PrecisRuntime,
+) -> None:
+    """``top_k``/``n`` cap the sweep's page size like ``page_size=`` —
+    accepted, not refused."""
+    for kw in ({"top_k": 20}, {"n": 5}):
+        out = runtime_with_store.dispatch("search", {"tags": ["topic:zz-none"], **kw})
+        assert "[error" not in out, (kw, out)
+
+
+def test_tags_only_sweep_reads_top_k_from_args(
+    runtime_with_store: PrecisRuntime,
+) -> None:
+    """The MCP verb exposes ``n=`` but not ``top_k=`` — ``args={'top_k':
+    N}`` is the only way a caller sends it, and it used to refuse as an
+    unapplied extras key. Hoisted, it reads as the sweep's page cap
+    with the same ``n`` > ``top_k`` > ``page_size`` precedence as the
+    top-level spelling."""
+    from tests.conftest import id_of
+
+    for i in range(3):
+        mid = id_of(
+            runtime_with_store.dispatch("put", {"kind": "memory", "text": f"t{i}"})
+        )
+        runtime_with_store.dispatch(
+            "tag", {"kind": "memory", "id": mid, "add": ["topic:zz-sweep-cap"]}
+        )
+    out = runtime_with_store.dispatch(
+        "search",
+        {"tags": ["topic:zz-sweep-cap"], "__extras__": {"top_k": 2}},
+    )
+    assert "[error" not in out, out
+    assert "# 2 refs tagged" in out, out
+    # extras ``n`` reads too, and outranks extras ``top_k``.
+    out = runtime_with_store.dispatch(
+        "search",
+        {"tags": ["topic:zz-sweep-cap"], "__extras__": {"n": 1, "top_k": 2}},
+    )
+    assert "# 1 ref tagged" in out, out
+
+
+def test_next_hints_render_caller_keys_not_resolved_ids(
+    runtime_with_store: PrecisRuntime, store: Store
+) -> None:
+    """``under=`` resolves into ``include_ref_ids`` before the refusal
+    runs — the drop-keys hint must re-render the caller's own key, not
+    the dispatch-internal id list, and must not render ``page=1``
+    (a tolerated wrapper default, not caller intent)."""
+    from precis.utils import handle_registry
+
+    ref = store.insert_ref(kind="memory", slug=None, title="t", meta={})
+    handle = handle_registry.format_handle("memory", ref.id)
+    out = runtime_with_store.dispatch(
+        "search",
+        {
+            "kind": "paper",
+            "q": "x",
+            "sort": "recency",
+            "under": handle,
+            "bogus": 1,
+            "page": 1,
+        },
+    )
+    assert "[error:BadInput]" in out, out
+    assert "'bogus'" in out, out
+    assert "include_ref_ids" not in out, out
+    assert f"under='{handle}'" in out, out
+    assert "page=" not in out, out
+
+
+def test_queryless_folder_call_raises_needs_q_not_strays(
+    runtime_with_store: PrecisRuntime,
+) -> None:
+    """``search(kind='todo', folder=12, status='open')``: the first
+    problem is the missing filter — refusing ``status`` first would
+    mislabel the call "a tags-only sweep" and offer a drop-keys hint
+    whose rewritten call still has no q=/tags=. The refusal names the
+    folder-scoped search (not "cross-kind" — the caller named one
+    kind), and the q= hint keeps ``folder=``, which the fan-out
+    applies. When dropping folder= lands on the kind's own search,
+    that working call is the second hint."""
+    out = runtime_with_store.dispatch(
+        "search", {"kind": "todo", "folder": 12, "status": "open"}
+    )
+    assert "[error:BadInput]" in out, out
+    assert "folder-scoped search requires q= or tags=" in out, out
+    assert "not applied by" not in out, out
+    assert "search(kind='todo', folder=12, q='your query')" in out, out
+    assert "search(kind='todo', folder=12, tags=['<tag>'])" in out, out
+    assert "search(kind='todo', status='open')" in out, out
+
+
+def test_queryless_wildcard_mode_raises_needs_q_not_strays(
+    runtime_with_store: PrecisRuntime,
+) -> None:
+    """``search(kind='*', mode='lexical')``: same gate — the stray
+    ``mode`` is not what fails first."""
+    out = runtime_with_store.dispatch("search", {"kind": "*", "mode": "lexical"})
+    assert "[error:BadInput]" in out, out
+    assert "requires q= or tags=" in out, out
+    assert "not applied by" not in out, out
+
+
+def test_job_since_stays_on_the_job_listing(
+    runtime_with_store: PrecisRuntime,
+) -> None:
+    """A queryless ``search(kind='job', since=…)`` is the job listing's
+    own ``created_at`` bound — it must not route to the cross-kind
+    source-search primitive, which requires q=."""
+    out = runtime_with_store.dispatch(
+        "search", {"kind": "job", "since": "2024-01-01", "status": "*"}
+    )
+    assert "[error" not in out, out
+    assert "matches across" not in out, out
+
+
+def test_job_since_with_link_stays_on_the_job_listing(
+    runtime_with_store: PrecisRuntime,
+) -> None:
+    """link= + since= composes on the job listing path — pre-fix the
+    source-search route refused ``link`` as an unapplied key."""
+    gripe = runtime_with_store.dispatch("put", {"kind": "gripe", "text": "x"})
+    assert "[error" not in gripe, gripe
+    out = runtime_with_store.dispatch(
+        "search", {"kind": "job", "link": "gripe:1", "since": "2024-01-01"}
+    )
+    assert "[error" not in out, out
+    assert "matches across" not in out, out
+
+
+def test_job_since_with_explicit_sort_still_routes_to_source_search(
+    runtime_with_store: PrecisRuntime,
+) -> None:
+    """An explicit ``sort=`` still asks for the source-search primitive —
+    the job exemption covers the bare-window call shape only."""
+    out = runtime_with_store.dispatch(
+        "search",
+        {"kind": "job", "q": "zz_no_such_token_zz", "sort": "recency"},
+    )
+    assert "[error" not in out, out
+    assert "matches" in out.lower(), out
+
+
+def test_job_since_with_q_routes_to_source_search(
+    runtime_with_store: PrecisRuntime,
+) -> None:
+    """``search(kind='job', q='…', since=…)`` is a ranked dated search —
+    the listing exemption covers queryless calls only, so a ``q=``
+    routes back to the source-search primitive's hybrid ranking."""
+    out = runtime_with_store.dispatch(
+        "search",
+        {"kind": "job", "q": "zz_no_such_token_zz", "since": "2024-01-01"},
+    )
+    assert "[error" not in out, out
+    assert "matches" in out.lower(), out
+    assert "job entries" not in out, out
+
+
+def test_dated_job_listing_refusals_do_not_name_job_type(
+    runtime_with_store: PrecisRuntime,
+) -> None:
+    """mode=/view= refused on the plain dated listing must not read
+    "job_type-filtered" — the caller passed no job_type — and the
+    next= must be a call that works (add q= for the ranked path). An
+    explicit sort= diverts to the source-search primitive upstream, so
+    its wording is covered by a direct handler call in
+    test_job_type_search."""
+    out = runtime_with_store.dispatch(
+        "search", {"kind": "job", "since": "2024-01-01", "mode": "semantic"}
+    )
+    assert "[error:BadInput]" in out, out
+    assert "job_type-filtered" not in out, out
+    out = runtime_with_store.dispatch(
+        "search", {"kind": "job", "since": "2024-01-01", "view": "tree"}
+    )
+    assert "[error:BadInput]" in out, out
+    assert "job_type-filtered" not in out, out
+
+
+def test_get_extent_refuses_stray_args(runtime_with_store: PrecisRuntime) -> None:
+    """The ``get`` twin of the gripe: ``handler.eye`` takes only
+    id/extent/q/ring, so any other payload or args= key was silently
+    dropped on an eye read."""
+    out = runtime_with_store.dispatch(
+        "get",
+        {
+            "kind": "memory",
+            "id": 1,
+            "extent": "fisheye",
+            "kinds": "x",
+            "__extras__": {"bogus": 1},
+        },
+    )
+    assert "[error:BadInput]" in out, out
+    assert "kinds" in out and "bogus" in out, out
+    assert "extent='fisheye'" in out, out
+
+
 @pytest.mark.parametrize(("kind", "verb"), PASSTHROUGH)
 def test_junk_args_key_rejected_naming_accepted_keys(
     runtime_with_store: PrecisRuntime, kind: str, verb: str

@@ -305,9 +305,10 @@ search(kind="paper", q="photocatalysis water splitting", page_size=20)
 ```
 
 `page_size=` is the only result-size spelling (default 10; 25 on paper
-kind's default one-row-per-paper view, max 100). Search returns a bounded
-top-N set, not continuation pages. Add distinctive terms, narrow `scope=`,
-or use `args={'exclude': …}` to remove known-irrelevant refs. Removed
+kind's default one-row-per-paper view, max 100) — *not* a quality cutoff
+despite the name. Search returns a bounded top-N set, not continuation
+pages. Add distinctive terms, narrow `scope=`, or use
+`args={'exclude': …}` to remove known-irrelevant refs. Removed
 spellings `k=`, `limit=`, `offset=`, and `page=` refuse with a canonical
 next call instead of executing a broad default.
 

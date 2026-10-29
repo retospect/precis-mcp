@@ -38,9 +38,13 @@ from precis.runtime._shared import CROSS_KIND_SOURCE_ALIAS as _CROSS_KIND_SOURCE
 from precis.runtime._shared import CROSS_KIND_SOURCE_KINDS as _CROSS_KIND_SOURCE_KINDS
 from precis.runtime._shared import CROSS_KIND_WILDCARD as _CROSS_KIND_WILDCARD
 from precis.runtime._shared import (
+    RESOLVED_FACETS_KEY,
+    RuntimeShape,
+    refuse_unapplied_args,
+)
+from precis.runtime._shared import (
     UNCITED_UNSUPPORTED_KINDS as _UNCITED_UNSUPPORTED_KINDS,
 )
-from precis.runtime._shared import RuntimeShape
 from precis.store._chunks_ops import ANN_STATEMENT_TIMEOUT_MS
 from precis.store._mappers import SEMANTIC_DISTANCE_FLOOR
 from precis.store.types import Tag
@@ -53,6 +57,102 @@ from precis.utils.search_merge import (
 )
 
 log = logging.getLogger(__name__)
+
+#: Payload keys :meth:`SearchMixin._dispatch_cross_kind` actually reads.
+#: Anything else the caller supplied silently did nothing on the fan-out
+#: — the per-kind kwargs gate (gr334695) never runs for a fan-out — so
+#: :func:`refuse_unapplied_args` refuses it up front (gr524663).
+#: ``view`` joins the set only when it is ``'keywords'`` (the one view the
+#: fan-out renders); every other ``view=`` is refused.
+_FAN_OUT_CONSUMED: frozenset[str] = frozenset(
+    {
+        "q",
+        "tags",
+        "exclude",
+        "mode",
+        "folder",
+        "page_size",
+        "top_k",
+        "exclude_ref_ids",
+        "include_ref_ids",
+    }
+)
+
+#: Same for :meth:`SearchMixin._dispatch_cross_kind_tags_only` — much
+#: narrower than the fan-out's: the sweep is a flat ``list_refs`` tag
+#: query, so the fan-out's ranking knobs (``mode``, ``exclude``, the
+#: ref-id facets, ``view``) are all unapplied on it. ``q`` stays in the
+#: set only as the shape discriminator — a non-blank ``q=`` takes the
+#: real fan-out instead; a blank one is not a filter. ``n``/``top_k``
+#: are read as the page cap, matching angle/dreamable.
+_TAGS_ONLY_CONSUMED: frozenset[str] = frozenset(
+    {"q", "tags", "folder", "page_size", "top_k", "n"}
+)
+
+#: Same for :meth:`SearchMixin._dispatch_source_search`.
+_SOURCE_SEARCH_CONSUMED: frozenset[str] = frozenset(
+    {
+        "q",
+        "sort",
+        "since",
+        "until",
+        "tags",
+        "status",
+        "mode",
+        "page_size",
+        "top_k",
+        "exclude_ref_ids",
+        "include_ref_ids",
+    }
+)
+
+#: Same for :meth:`SearchMixin._dispatch_search_plan`. The plan accepts
+#: the real search's filters — echoed in the output and used to name the
+#: dispatch path the same call would take; it no longer refuses them.
+_PLAN_CONSUMED: frozenset[str] = frozenset(
+    {
+        "view",
+        "mode",
+        "q",
+        "page_size",
+        "top_k",
+        "n",
+        "tags",
+        "status",
+        "link",
+        "folder",
+        "exclude",
+        "sort",
+        "since",
+        "until",
+        "under",
+        "depth",
+        "axis",
+        "exclude_ref_ids",
+        "include_ref_ids",
+    }
+)
+
+#: The subset of :data:`_PLAN_CONSUMED` echoed as ``filters:`` in the plan
+#: output — everything the caller supplied that is a filter rather than a
+#: size/display knob (mode/q already ride their own output line).
+_PLAN_FILTER_KEYS: frozenset[str] = _PLAN_CONSUMED - {
+    "view",
+    "mode",
+    "q",
+    "page_size",
+    "top_k",
+    "n",
+}
+
+#: Same for :meth:`SearchMixin._dispatch_stubs` /
+#: :meth:`SearchMixin._dispatch_chase_queue`.
+_STUBS_CONSUMED: frozenset[str] = frozenset({"view", "n", "page_size"})
+
+#: ``page=1`` is the verb wrapper's always-present default — the value
+#: below is what flags it as caller intent; a real ``page=N`` is refused
+#: on these paths too (search returns a bounded top-N set, not pages).
+_PAGE_TOLERATED: dict[str, tuple[Any, ...]] = {"page": (1,)}
 
 #: Cross-kind fan-out bounds (gr495190, gr513663). Workers stay under the DB
 #: pool (default 10) so a wildcard search can't starve other requests. 2
@@ -143,6 +243,51 @@ def _stamp_non_production_embedder(
     return Response(body=marker, cost=response.cost, result_count=response.result_count)
 
 
+def _search_call_text(kind: str | None, args: dict[str, Any], drop: set[str]) -> str:
+    """Render ``search(…)`` over ``args`` minus ``drop``.
+
+    Builds the literal ``next=`` hint — a copy-pasteable call that works
+    (mcp-authoring rule 2), not prose. ``kind`` is the kind the
+    interception ran under (popped off ``args`` before dispatch — ``None``
+    when the call omitted it); leftover ``__extras__`` keys re-render as
+    ``args={…}``.
+
+    Two things never render: ``__``-prefixed dispatch-internal keys and
+    the ``exclude_ref_ids``/``include_ref_ids`` channel when a facet
+    resolution wrote it — the origins recorded under
+    :data:`RESOLVED_FACETS_KEY` render as the caller's own keys
+    (``uncited=``/``cited=``/``hubbed=``/``under=``) instead. Tolerated
+    wrapper defaults (``page=1``) are dropped too — they are not caller
+    intent.
+    """
+    resolved = args.get(RESOLVED_FACETS_KEY)
+    resolved_map = resolved if isinstance(resolved, dict) else {}
+    parts = [f"kind={kind!r}"] if kind is not None else []
+    for k, v in args.items():
+        if (
+            k in drop
+            or k.startswith("__")
+            or k in resolved_map
+            or v is None
+            or v in _PAGE_TOLERATED.get(k, ())
+        ):
+            continue
+        parts.append(f"{k}={v!r}")
+    for channel, origins in resolved_map.items():
+        if channel in drop:
+            continue
+        for ok, ov in origins:
+            if ok in drop or ov is None:
+                continue
+            parts.append(f"{ok}={ov!r}")
+    extras = args.get("__extras__")
+    if isinstance(extras, dict):
+        kept = {k: v for k, v in extras.items() if k not in drop and v is not None}
+        if kept:
+            parts.append(f"args={kept!r}")
+    return f"search({', '.join(parts)})"
+
+
 def _stub_state_line(row: dict[str, Any]) -> str:
     """The per-stub state line, with ``prio N`` and (when the ``stub_rank``
     pass's Tier-2 LLM band has labeled this stub) `` · <label>`` appended.
@@ -178,13 +323,23 @@ class SearchMixin(RuntimeShape):
         manual-fill stubs ``put(kind='datasheet', args={'part': …,
         'stub': True})`` mints (gr520099); any other kind is refused —
         nothing else has a stub backlog. ``q=`` is ignored (the view
-        *is* the filter). ``n=`` / ``page_size=`` cap the row count;
+        *is* the filter — a documented no-op, pinned by
+        ``test_view_stubs_ignores_q``). ``n=`` / ``page_size=``
+        cap the row count;
         ``prio``-ranked first (1=hottest, unranked last), oldest request
         the tiebreak. Read-only — surfacing the backlog does not touch
         salience or the fetch pipeline.
         """
         from precis.utils.next_block import render_next_section
 
+        refuse_unapplied_args(
+            args,
+            consumed=_STUBS_CONSUMED,
+            ignored={"q"},
+            shape="a view='stubs' backlog listing",
+            next="search(kind='paper', view='stubs')",
+            tolerated=_PAGE_TOLERATED,
+        )
         store = self.hub.store
         if store is None:
             raise Unsupported("view='stubs' needs a store-backed deployment")
@@ -332,12 +487,21 @@ class SearchMixin(RuntimeShape):
         "what should I go find a PDF for right now" rather than "what's
         been waiting longest". Paper-only (gr520077: any other kind is
         refused — nothing else has a DOI-fetcher queue to list); ``q=``
-        is ignored (like ``view='stubs'``). ``n=`` / ``page_size=`` cap
+        is ignored (like ``view='stubs'`` — a documented no-op).
+        ``n=`` / ``page_size=`` cap
         the row count. Read-only — surfacing the queue does not touch
         the fetch pipeline.
         """
         from precis.utils.next_block import render_next_section
 
+        refuse_unapplied_args(
+            args,
+            consumed=_STUBS_CONSUMED,
+            ignored={"q"},
+            shape="a view='chase-queue' listing",
+            next="search(kind='paper', view='chase-queue')",
+            tolerated=_PAGE_TOLERATED,
+        )
         normalized = str(kind or "").strip().lower()
         if normalized != "paper" and normalized not in _CROSS_KIND_ALIASES:
             raise BadInput(
@@ -459,6 +623,13 @@ class SearchMixin(RuntimeShape):
             ann_route_plan,
         )
 
+        refuse_unapplied_args(
+            args,
+            consumed=_PLAN_CONSUMED,
+            shape="a view='plan' render (no ranking runs)",
+            next="run the search itself — view='plan' only describes the route",
+            tolerated=_PAGE_TOLERATED,
+        )
         store = self.store
         if store is None:
             raise Unsupported("view='plan' needs a store-backed deployment")
@@ -468,14 +639,21 @@ class SearchMixin(RuntimeShape):
             kinds = [self._expand_kind_code(str(kind))]
         mode = str(args.get("mode") or "hybrid").strip().lower()
         q = args.get("q")
-        limit = int(args.get("page_size") or 20)
+        limit = int(args.get("page_size") or args.get("top_k") or args.get("n") or 20)
         ef = min(
             _ANN_EF_SEARCH_MAX,
             max(_ANN_EF_SEARCH_MIN, _ANN_EF_SEARCH_PER_LIMIT * limit),
         )
         embedder = getattr(self.hub, "embedder", None)
+        # The real search's filters are accepted, echoed, and used to
+        # name the path the same call would take without view='plan' —
+        # they decide the dispatch route (folder= and sort=/since=/
+        # until= divert to interceptions), so naming the single-kind
+        # path unconditionally would claim a route the call never takes.
+        sim = {k: v for k, v in args.items() if k != "view"}
         lines = [
             "# search plan (no ranking executed)",
+            f"path: {self._plan_path_label(kind, sim)}",
             f"mode: {mode}"
             + (f" · q={str(q)[:40]!r}" if q is not None else "")
             + (
@@ -487,6 +665,13 @@ class SearchMixin(RuntimeShape):
             f" of {_ANN_EF_SEARCH_PER_LIMIT}×limit {limit})"
             f" · hnsw.max_scan_tuples={_ANN_MAX_SCAN_TUPLES}",
         ]
+        supplied = [
+            f"{k}={args[k]!r}"
+            for k in sorted(_PLAN_FILTER_KEYS)
+            if args.get(k) is not None
+        ]
+        if supplied:
+            lines.append("filters: " + ", ".join(supplied))
         for k in kinds:
             handler = self.hub.handler_for(k)
             with store.pool.connection() as conn:
@@ -510,6 +695,26 @@ class SearchMixin(RuntimeShape):
                 f"  lexical: {lex}",
             ]
         return Response(body="\n".join(lines))
+
+    def _plan_path_label(self, kind: Any, args: dict[str, Any]) -> str:
+        """The dispatch path this call (``view='plan'`` removed) would take.
+
+        Mirrors the interception order in
+        :meth:`~precis.runtime.dispatch.DispatchMixin._dispatch_inner_core`:
+        ``folder=`` post-filters through the fan-out first, then the
+        ``sort=``/``since=``/``until=`` source-search primitive (with its
+        numeric-browse, count-view, owned-``under=`` and queryless
+        ``kind='job'`` carve-outs inside :meth:`_routes_to_source_search`),
+        then the
+        plain cross-kind merge, then the single-kind handler path.
+        """
+        if args.get("folder") is not None:
+            return "cross-kind fan-out (folder= subtree post-filter)"
+        if self._routes_to_source_search("search", kind, args):
+            return "cross-kind source search (sort=/since=/until= primitive)"
+        if kind is None or self._is_cross_kind_request(str(kind)):
+            return "cross-kind fan-out (RRF merge)"
+        return f"single-kind search on kind={self._expand_kind_code(str(kind))!r}"
 
     def _cross_kind_excluded_kinds(self) -> list[str]:
         """Active kinds searchable per-kind but opted out of cross-kind.
@@ -617,6 +822,53 @@ class SearchMixin(RuntimeShape):
         if sort in ("relevance", "recency"):
             return True
         return args.get("since") is not None or args.get("until") is not None
+
+    def _routes_to_source_search(
+        self, verb: str, kind: Any, args: dict[str, Any]
+    ) -> bool:
+        """Whether this call takes the cross-kind source-search primitive.
+
+        The interception condition shared by
+        :meth:`~precis.runtime.dispatch.DispatchMixin._dispatch_inner_core`
+        and :meth:`_dispatch_search_plan` (which names the route a real
+        call would take — the label must not drift from the routing).
+        A few shapes keep their own path even with trigger keys present:
+
+        * ``numeric_browse`` — a queryless status/tag browse on
+          gripe/todo/quest is the kind's own listing, not a dated search;
+        * ``view='count'`` — keeps ``since=``/``until=`` for its own
+          ``created_at`` filter;
+        * an ``under=`` the kind OWNS (``owns_under`` — todo/taxon trees,
+          job's hierarchical scope) — source search would silently drop
+          the scope;
+        * a queryless ``kind='job'`` without an explicit ``sort=`` —
+          ``since=``/``until=`` on a plain job listing are the kind's own
+          ``created_at`` bounds, so a bare window stays on the job
+          listing path. A ``q=`` or an explicit ``sort=`` asks for
+          ranking and still routes here.
+        """
+        if verb != "search" or not self._is_source_search_request(args):
+            return False
+        from precis.utils.browse_sort import numeric_browse
+
+        if numeric_browse(kind, args):
+            return False
+        if str(args.get("view") or "").strip() == "count":
+            return False
+        if kind is not None and not self._is_cross_kind_request(str(kind)):
+            resolved = self._expand_kind_code(str(kind))
+            if args.get("under") is not None and bool(
+                (h := self.hub.handler_for(resolved)) and h.owns_under
+            ):
+                return False
+            q = args.get("q")
+            if (
+                resolved == "job"
+                and args.get("sort") is None
+                and not (isinstance(q, str) and q.strip())
+            ):
+                return False
+        return True
 
     @staticmethod
     def _parse_search_date(value: Any, field: str) -> datetime | None:
@@ -795,6 +1047,13 @@ class SearchMixin(RuntimeShape):
         store = self.hub.store
         if store is None:
             raise Unsupported("source search needs a store-backed deployment")
+        refuse_unapplied_args(
+            args,
+            consumed=_SOURCE_SEARCH_CONSUMED,
+            shape="a source search (sort=/since=/until=)",
+            next=lambda strays: self._source_search_next(kind, args, strays),
+            tolerated=_PAGE_TOLERATED,
+        )
         q = args.get("q")
         if not (isinstance(q, str) and q.strip()):
             raise BadInput(
@@ -955,6 +1214,106 @@ class SearchMixin(RuntimeShape):
                 )
         return _stamp_non_production_embedder(response, embedder)
 
+    def _kind_search_takes(
+        self, kind: str, args: dict[str, Any], drop: set[str]
+    ) -> bool:
+        """Whether ``search`` minus ``drop`` lands wholly on ``kind``'s
+        own search — every remaining top-level key an accepted kwarg,
+        every ``args={…}`` key a declared ``args`` key or kwarg.
+
+        Gates the "drop the interception trigger" ``next=`` hints: the
+        rewrite claims the kind's own search applies the keys, so it is
+        only offered when it provably does — an unverifiable hint
+        violates the ``next=``-that-works rule (mcp-authoring rule 2).
+        """
+        from precis.runtime.dispatch import (
+            _WRAPPER_DEFAULTED_KWARGS,
+            _handler_accepted_kwargs,
+        )
+
+        handler: Handler | None = self.hub.handler_for(self._expand_kind_code(kind))
+        if handler is None:
+            return False
+        accepted = _handler_accepted_kwargs(type(handler), "search") | (
+            _WRAPPER_DEFAULTED_KWARGS.get("search") or frozenset()
+        )
+        extras_keys = (getattr(type(handler), "ARGS_KEYS", None) or {}).get(
+            "search"
+        ) or frozenset()
+        extras = args.get("__extras__")
+        for k, v in args.items():
+            # ``__``-prefixed keys are dispatcher-internal sentinels
+            # (``__extras__``, the resolved-facets marker), never caller
+            # args — they don't reach the handler kwargs gate.
+            if k in drop or v is None or k.startswith("__"):
+                continue
+            if k not in accepted:
+                return False
+        if isinstance(extras, dict):
+            for k, v in extras.items():
+                if k in drop or v is None:
+                    continue
+                if k not in extras_keys and k not in accepted:
+                    return False
+        return True
+
+    def _fan_out_next(
+        self, kind: str, args: dict[str, Any], strays: list[str]
+    ) -> list[str]:
+        """The corrected call(s) for a refused fan-out/tags-only call.
+
+        ``next=`` must be a call that works (mcp-authoring rule 2), and
+        "narrow to one kind" is wrong when the caller already named one —
+        ``folder=`` routes a single-kind call through here. Two working
+        recoveries, built from the actual call: drop the refused keys
+        (the interception still applies what's left), or drop the
+        interception trigger (``folder=``/``view='keywords'``) so the
+        kind's own search sees them — the second only when the kind's
+        search actually accepts the refused keys.
+        """
+        if self._is_cross_kind_request(kind):
+            return [
+                "narrow to one kind for per-kind filters: "
+                "search(kind='<one kind>', q='…', <key>=…); a kind's own "
+                "args= keys apply there too"
+            ]
+        hints = ["drop the refused keys: " + _search_call_text(kind, args, set(strays))]
+        for trigger in ("folder", "view"):
+            if args.get(trigger) is not None and self._kind_search_takes(
+                kind, args, {trigger}
+            ):
+                hints.append(
+                    f"or drop {trigger}= so kind={kind!r}'s own search "
+                    f"applies them: " + _search_call_text(kind, args, {trigger})
+                )
+        return hints
+
+    def _source_search_next(
+        self, kind: str | None, args: dict[str, Any], strays: list[str]
+    ) -> list[str]:
+        """The corrected call(s) for a refused source-search call.
+
+        Same contract as :meth:`_fan_out_next`: the triggers here are
+        ``sort=``/``since=``/``until=`` — dropping them returns the call
+        to the kind's own search path, which may consume the refused
+        keys.
+        """
+        if kind is None or self._is_cross_kind_request(kind):
+            return [
+                "narrow to one kind for per-kind filters: "
+                "search(kind='<one kind>', q='…', <key>=…); a kind's own "
+                "args= keys apply there too"
+            ]
+        hints = ["drop the refused keys: " + _search_call_text(kind, args, set(strays))]
+        triggers = {t for t in ("sort", "since", "until") if args.get(t) is not None}
+        if triggers:
+            names = "/".join(f"{t}=" for t in sorted(triggers))
+            hints.append(
+                f"or drop {names} so kind={kind!r}'s own search applies "
+                f"them: " + _search_call_text(kind, args, triggers)
+            )
+        return hints
+
     def _dispatch_cross_kind(self, kind: str, args: dict[str, Any]) -> Response:
         """Fan out a search across multiple kinds and RRF-fuse the streams.
 
@@ -977,7 +1336,8 @@ class SearchMixin(RuntimeShape):
         # ``args['exclude_ref_ids']``/``args['include_ref_ids']`` above
         # would silently ride through unfiltered — raise instead of
         # falling through to that path.
-        if q is None or not (isinstance(q, str) and q.strip()):
+        queryless = q is None or not (isinstance(q, str) and q.strip())
+        if queryless:
             if args.get("exclude_ref_ids") is not None:
                 raise BadInput(
                     "uncited= requires q= (it filters a ranked search, not "
@@ -990,16 +1350,90 @@ class SearchMixin(RuntimeShape):
                     "the tags-only sweep)",
                     next=f"search(kind={kind!r}, q='your query', cited=…)",
                 )
-            if tags_in:
-                return self._dispatch_cross_kind_tags_only(kind, args)
-            raise BadInput(
-                "cross-kind search requires q= or tags=",
-                next=(
-                    f"search(kind={kind!r}, q='your query') - cross-kind merge "
-                    "fans out via search_hits, which needs a non-empty query; "
-                    f"or search(kind={kind!r}, tags=['<tag>']) for a tags-only sweep"
-                ),
-            )
+            if not tags_in:
+                # The missing filter is the first problem, not any stray
+                # keys — refusing them here would mislabel the call "a
+                # tags-only sweep" and offer a drop-keys hint whose
+                # rewritten call still has no q=/tags= to apply.
+                single_kind_folder = (
+                    not self._is_cross_kind_request(kind)
+                    and args.get("folder") is not None
+                )
+                if single_kind_folder:
+                    # ``folder=`` routed a named single kind through the
+                    # fan-out — name that shape, and keep ``folder=`` in
+                    # the corrected call (the fan-out applies it). Other
+                    # supplied keys stay dropped: only each shape's
+                    # consumed set survives its gate.
+                    fan_out_args = {
+                        k: v
+                        for k, v in args.items()
+                        if k in _FAN_OUT_CONSUMED and k not in {"q", "tags"}
+                    }
+                    sweep_args = {
+                        k: v
+                        for k, v in args.items()
+                        if k in _TAGS_ONLY_CONSUMED and k not in {"q", "tags"}
+                    }
+                    message = "folder-scoped search requires q= or tags="
+                    nexts = [
+                        _search_call_text(
+                            kind, {**fan_out_args, "q": "your query"}, set()
+                        )
+                        + " - the folder scope post-filters a fan-out via "
+                        "search_hits, which needs a non-empty query; or "
+                        + _search_call_text(
+                            kind, {**sweep_args, "tags": ["<tag>"]}, set()
+                        )
+                        + " for a tags-only sweep"
+                    ]
+                else:
+                    message = "cross-kind search requires q= or tags="
+                    nexts = [
+                        f"search(kind={kind!r}, q='your query') - cross-kind merge "
+                        "fans out via search_hits, which needs a non-empty query; "
+                        f"or search(kind={kind!r}, tags=['<tag>']) for a tags-only sweep"
+                    ]
+                if single_kind_folder and self._kind_search_takes(
+                    kind, args, {"folder"}
+                ):
+                    nexts.append(
+                        f"or drop folder= so kind={kind!r}'s own search "
+                        "applies the filters: "
+                        + _search_call_text(kind, args, {"folder"})
+                    )
+                raise BadInput(message, next=nexts)
+            # ``n``/``top_k`` are the sweep's page cap (read in
+            # ``_dispatch_cross_kind_tags_only``), not a kind's args=
+            # key — nested they died at the unapplied-args gate below
+            # as ``args['top_k']``, which is the only spelling an MCP
+            # caller has (the verb exposes ``n=`` but not ``top_k=``).
+            # Hoist like the spray knobs; a key at both levels stays
+            # nested and still refuses.
+            extras = args.get("__extras__")
+            if isinstance(extras, dict):
+                for key in ("n", "top_k"):
+                    if extras.get(key) is not None and args.get(key) is None:
+                        args[key] = extras.pop(key)
+        refuse_unapplied_args(
+            args,
+            consumed=(
+                _TAGS_ONLY_CONSUMED
+                if queryless
+                else (
+                    _FAN_OUT_CONSUMED
+                    | ({"view"} if args.get("view") == "keywords" else set())
+                )
+            ),
+            shape=(
+                "a tags-only cross-kind sweep" if queryless else "a cross-kind search"
+            ),
+            next=lambda strays: self._fan_out_next(kind, args, strays),
+            tolerated=_PAGE_TOLERATED,
+        )
+        if queryless:
+            return self._dispatch_cross_kind_tags_only(kind, args)
+        assert isinstance(q, str)  # non-blank — queryless returned/raised above
         top_k = int(args.get("page_size") or args.get("top_k") or 10)
         tags = args.get("tags")
         exclude = args.get("exclude")
@@ -1462,7 +1896,9 @@ class SearchMixin(RuntimeShape):
         # returns canonical string form so the store filter matches by
         # string equality. Mirrors the validation in the q= path above.
         normalized = Tag.normalize_filter(tags, kind=None)
-        page_size = max(1, int(args.get("page_size") or 10))
+        page_size = max(
+            1, int(args.get("n") or args.get("top_k") or args.get("page_size") or 10)
+        )
 
         # ``folder=`` scope applies to the tags-only sweep too.
         folder_scope: set[int] | None = None

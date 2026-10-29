@@ -59,6 +59,7 @@ from precis.protocol import (
 )
 from precis.response import Response
 from precis.runtime._shared import CROSS_KIND_WILDCARD as _CROSS_KIND_WILDCARD
+from precis.runtime._shared import RESOLVED_FACETS_KEY as _RESOLVED_FACETS_KEY
 from precis.runtime._shared import (
     UNCITED_UNSUPPORTED_KINDS as _UNCITED_UNSUPPORTED_KINDS,
 )
@@ -1588,6 +1589,11 @@ class DispatchMixin(RuntimeShape):
         under = args.pop("under", None)
         depth = args.pop("depth", None)
         axis = args.pop("axis", None)
+        if under is not None or depth is not None or axis is not None:
+            self._note_channel_value(args, "include_ref_ids")
+            for _k, _v in (("under", under), ("depth", depth), ("axis", axis)):
+                if _v is not None:
+                    self._note_facet_origin(args, "include_ref_ids", _k, _v)
         if under is None:
             if depth is not None or axis is not None:
                 raise BadInput(
@@ -1796,6 +1802,29 @@ class DispatchMixin(RuntimeShape):
             ),
         )
 
+    @staticmethod
+    def _note_facet_origin(
+        args: dict[str, Any], channel: str, key: str, value: Any
+    ) -> None:
+        """Record that ``key=value`` was rewritten into ``channel``.
+
+        ``uncited=``/``cited=``/``hubbed=``/``under=`` resolve into
+        ``args['exclude_ref_ids']``/``args['include_ref_ids']`` and are
+        popped — the record lets ``SearchMixin._search_call_text``
+        re-render the caller's own keys in ``next=`` hints instead of
+        leaking the resolved ref-id lists. A caller-supplied channel
+        key (``exclude_ref_ids=``) is itself recorded as an origin the
+        first time dispatch rewrites it, so the hint still names the
+        value the caller actually passed.
+        """
+        origins = args.setdefault(_RESOLVED_FACETS_KEY, {})
+        origins.setdefault(channel, []).append((key, value))
+
+    def _note_channel_value(self, args: dict[str, Any], channel: str) -> None:
+        origins = args.setdefault(_RESOLVED_FACETS_KEY, {})
+        if channel not in origins and channel in args:
+            origins[channel] = [(channel, args[channel])]
+
     def _resolve_source_facets(self, args: dict[str, Any]) -> str | None:
         """Resolve ``uncited=``/``cited=``/``hubbed=`` into
         ``args['exclude_ref_ids']``/``args['include_ref_ids']``, in that
@@ -1853,6 +1882,8 @@ class DispatchMixin(RuntimeShape):
             raise Unsupported("uncited= needs a store-backed deployment")
         draft_ref_id = resolve_draft_ref_id(store, str(token))
         cited = draft_cited_ref_ids(store, draft_ref_id)
+        self._note_channel_value(args, "exclude_ref_ids")
+        self._note_facet_origin(args, "exclude_ref_ids", "uncited", token)
         merged: set[int] = set(args.get("exclude_ref_ids") or ())
         merged |= cited
         args["exclude_ref_ids"] = sorted(merged)
@@ -1890,6 +1921,8 @@ class DispatchMixin(RuntimeShape):
             raise Unsupported("cited= needs a store-backed deployment")
         draft_ref_id = resolve_draft_ref_id(store, str(token))
         cited = draft_cited_ref_ids(store, draft_ref_id)
+        self._note_channel_value(args, "include_ref_ids")
+        self._note_facet_origin(args, "include_ref_ids", "cited", token)
         self._intersect_include_ref_ids(args, cited)
         handle = (
             handle_registry.try_format("draft", draft_ref_id) or f"draft:{draft_ref_id}"
@@ -1939,8 +1972,12 @@ class DispatchMixin(RuntimeShape):
         is_true = hubbed
         n = len(hubbed_ids)
         if is_true:
+            self._note_channel_value(args, "include_ref_ids")
+            self._note_facet_origin(args, "include_ref_ids", "hubbed", hubbed)
             self._intersect_include_ref_ids(args, hubbed_ids)
             return f"_(hubbed=true: restricted to {n} hubbed paper{'s' if n != 1 else ''})_"
+        self._note_channel_value(args, "exclude_ref_ids")
+        self._note_facet_origin(args, "exclude_ref_ids", "hubbed", hubbed)
         merged: set[int] = set(args.get("exclude_ref_ids") or ())
         merged |= hubbed_ids
         args["exclude_ref_ids"] = sorted(merged)
@@ -2175,31 +2212,10 @@ class DispatchMixin(RuntimeShape):
         # by relevance (default) or recency. Distinct from the per-handler
         # fan-out below. Intercept before kind resolution so it composes
         # with a single kind, a comma-list, a wildcard, or an omitted kind.
-        from precis.utils.browse_sort import numeric_browse
-
-        # ``under=`` left in args means the kind OWNS its own under=
-        # semantics (``owns_under`` — todo/taxon trees, job's
-        # hierarchical scope); routing it to source search would
-        # silently drop the scope. Its handler sees it instead.
-        _under_owned = (
-            args.get("under") is not None
-            and kind is not None
-            and not self._is_cross_kind_request(str(kind))
-            and bool(
-                (_h := self.hub.handler_for(self._expand_kind_code(str(kind))))
-                and _h.owns_under
-            )
-        )
-        if (
-            verb == "search"
-            and self._is_source_search_request(args)
-            and not numeric_browse(kind, args)
-            # ``view='count'`` keeps since=/until= for its own
-            # created_at filter — the interception above already
-            # validated the shape (mcp-introspection gap closures).
-            and str(args.get("view") or "").strip() != "count"
-            and not _under_owned
-        ):
+        # ``_routes_to_source_search`` (SearchMixin) owns the full
+        # condition — numeric_browse, view='count', kind-owned under= and
+        # a queryless kind='job' since=/until= all keep their own path.
+        if self._routes_to_source_search(verb, kind, args):
             return self._dispatch_source_search(kind, dict(args))
 
         # Cross-kind: ``kind='*'`` or comma-list. Other verbs keep the
@@ -2816,6 +2832,26 @@ class DispatchMixin(RuntimeShape):
                 extras = args.get(_EXTRAS_KEY)
                 if ring is None and isinstance(extras, dict):
                     ring = extras.pop("ring", None)
+                # gr524663: ``handler.eye`` takes only id/extent/q/ring —
+                # any other payload or args= key (``kinds``, ``spec``,
+                # ``tag``, ``project``, ``full``…) silently did nothing.
+                # Refuse them the way find-in-ref refuses strays below.
+                stray_eye = sorted(
+                    k
+                    for k, v in args.items()
+                    if k not in ("id", "view", "q", _EXTRAS_KEY) and v is not None
+                )
+                if isinstance(extras, dict):
+                    stray_eye += sorted(
+                        f"args[{k!r}]" for k, v in extras.items() if v is not None
+                    )
+                if stray_eye:
+                    raise BadInput(
+                        f"get(kind={kind!r}): extent= (the fisheye ladder) "
+                        f"doesn't combine with {stray_eye!r} — drop them, "
+                        "or drop extent=",
+                        next=f"get(kind={kind!r}, id=<ref>, extent={extent!r})",
+                    )
                 try:
                     response = handler.eye(
                         id=args.get("id"), extent=extent, q=args.get("q"), ring=ring
@@ -2918,6 +2954,10 @@ class DispatchMixin(RuntimeShape):
                 or "agent",
             )
 
+        # The resolved-facets marker (``uncited=``/``under=`` origins
+        # recorded for ``next=`` hint rendering) is dispatch-internal —
+        # never let it reach a handler kwargs gate.
+        args.pop(_RESOLVED_FACETS_KEY, None)
         extras = args.pop(_EXTRAS_KEY, None)
         if extras:
             accepted = self._accepted_kwargs(method)

@@ -14,13 +14,23 @@ from typing import Any
 from precis.errors import BadInput, Unsupported, Upstream
 from precis.response import Response
 from precis.runtime._shared import CROSS_KIND_ALIASES as _CROSS_KIND_ALIASES
-from precis.runtime._shared import RuntimeShape
+from precis.runtime._shared import RuntimeShape, refuse_unapplied_args
 from precis.utils.search_merge import SearchHit, merge_and_render
 
 #: Preview length for an angle-spray hit. Short — the spray is a
 #: breadth-first scan, not a read; the agent drills with ``get`` once a
 #: neighbour looks worth chasing.
 _ANGLE_PREVIEW_CHARS = 200
+
+#: Payload keys each spray/region path actually reads — anything else
+#: the caller supplied is refused, never silently dropped (gr524663;
+#: :func:`precis.runtime._shared.refuse_unapplied_args`). ``page_size``
+#: is the wrapper's canonical size spelling (``k=``/``limit=`` map onto
+#: it) — read as ``n`` the same way stubs/chase-queue do.
+_ANGLE_CONSUMED: frozenset[str] = frozenset(
+    {"q", "like", "angle", "n", "top_k", "page_size"}
+)
+_DREAMABLE_CONSUMED: frozenset[str] = frozenset({"view", "n", "page_size"})
 
 
 def _angle_excerpt(text: str) -> str:
@@ -57,11 +67,21 @@ class AngleMixin(RuntimeShape):
         angle spray this does **not** bump salience: looking at a region
         counts as *dreaming* it, not as an external access.
         """
+        refuse_unapplied_args(
+            args,
+            consumed=_DREAMABLE_CONSUMED,
+            # ``q=`` is a documented no-op here, pinned by
+            # test_uncited_search's unfiltered-shapes sweep.
+            ignored={"q"},
+            shape="a view='dreamable' region render",
+            next="search(view='dreamable', n=12)",
+            tolerated={"page": (1,)},
+        )
         store = self.hub.store
         if store is None:
             raise Unsupported("view='dreamable' needs a store-backed deployment")
 
-        n = int(args.get("n") or self._DREAMABLE_DEFAULT_N)
+        n = int(args.get("n") or args.get("page_size") or self._DREAMABLE_DEFAULT_N)
         if n < 1:
             raise BadInput("n must be >= 1", next="search(view='dreamable', n=12)")
 
@@ -118,12 +138,20 @@ class AngleMixin(RuntimeShape):
         chunks are valid snap targets so a memory's only embedding is
         reachable. Surfacing bumps salience (suppressed for the dreamer).
         """
+        refuse_unapplied_args(
+            args,
+            consumed=_ANGLE_CONSUMED,
+            shape="an angle=/like= spray",
+            next="search(q='…', angle=0.5, n=8) — the spray honours "
+            "angle/like/q/n only; other filters need a real search",
+            tolerated={"page": (1,)},
+        )
         store = self.hub.store
         if store is None:
             raise Unsupported("angle search needs a store-backed deployment")
 
         angle = self._angle_float(args.get("angle", 1.0))
-        n = int(args.get("n") or args.get("top_k") or 8)
+        n = int(args.get("n") or args.get("top_k") or args.get("page_size") or 8)
         if n < 1:
             raise BadInput("n must be >= 1", next="search(q='...', angle=0.5, n=8)")
 
