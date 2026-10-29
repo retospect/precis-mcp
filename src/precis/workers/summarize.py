@@ -62,7 +62,16 @@ class RakeLemmaHandler(WorkerHandler):
     #     just skip the keyword summary.
     #   * ``field`` — a cad sampled-SDF grid's carrier chunk (one-line
     #     geometry blurb over a binary blob); nothing to summarize.
-    skip_chunk_kinds: ClassVar[tuple[str, ...]] = ("references", "table", "field")
+    #   * ``paper_note`` — a paper's append-only note timeline
+    #     (gr521094); agent annotations, never body text. ord<0 +
+    #     meta.no_index already gate it; listed so a kind scan reads
+    #     as classified.
+    skip_chunk_kinds: ClassVar[tuple[str, ...]] = (
+        "references",
+        "table",
+        "field",
+        "paper_note",
+    )
 
     def __init__(
         self,

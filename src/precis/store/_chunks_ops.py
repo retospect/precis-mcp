@@ -3494,6 +3494,28 @@ class ChunkStore:
         with nullcontext(conn) if conn is not None else self.pool.connection() as c:
             return _fetch_chunks(c, where, params, with_embedding=with_embedding)
 
+    def list_chunks_for_ref_by_kind(
+        self,
+        ref_id: int,
+        chunk_kind: str,
+        *,
+        conn: Connection | None = None,
+    ) -> list[ChunkRow]:
+        """All chunks of one ``chunk_kind`` on a ref, any ord, ord-ordered.
+
+        ``list_chunks_for_ref``'s ``ord >= 0`` filter hides the kinds
+        that live off-body (``paper_note``'s ord<0 note band, cards);
+        this is the same read without it, for the code that owns those
+        kinds' timelines.
+        """
+        with nullcontext(conn) if conn is not None else self.pool.connection() as c:
+            return _fetch_chunks(
+                c,
+                "c.ref_id = %s AND c.chunk_kind = %s",
+                [ref_id, chunk_kind],
+                with_embedding=False,
+            )
+
     def table_chunks_for_ref(
         self, ref_id: int, *, neighbour_window: int = 2
     ) -> tuple[list[tuple[int, int, str, list[str]]], list[tuple[int, int, str]]]:

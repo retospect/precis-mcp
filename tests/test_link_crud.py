@@ -567,6 +567,46 @@ class TestStoreMergeRefs:
         assert store.follow_supersede(victim) == survivor
         assert "redirect stamped" in resp.body
 
+    def test_merge_carries_notes_to_survivor(self, store: Store, hub: Hub) -> None:
+        """gr521094: the web-UI merge path strands notes on the
+        tombstone without the carry — the victim's ``paper_note``
+        chunks must land in the survivor's note band (next free ords,
+        created order, author kept), and a hidden note keeps its
+        marker remapped to the new number."""
+        from precis.handlers.paper import PaperHandler
+
+        handler = PaperHandler(hub=hub)
+        survivor = _seed_paper(store, slug="keepnotes2026")
+        victim = _seed_paper(store, slug="dropnotes2026")
+        handler.put(id="keepnotes2026", text="survivor note")
+        handler.put(id="dropnotes2026", text="victim note 1")
+        handler.put(id="dropnotes2026", text="victim note 2")
+        handler.delete(id="dropnotes2026", args={"comment": 1})
+
+        merge_refs(store, victim, survivor)
+
+        out = handler.get(id="keepnotes2026", view="comments").body
+        for text in ("survivor note", "victim note 1", "victim note 2"):
+            assert text in out
+        assert (
+            out.index("survivor note")
+            < out.index("victim note 1")
+            < out.index("victim note 2")
+        )
+        notes = store.chunks.list_chunks_for_ref_by_kind(survivor, "paper_note")
+        assert len(notes) == 3
+        with store.pool.connection() as conn:
+            row = conn.execute(
+                "SELECT count(*), (SELECT meta->'hidden_comments' FROM refs "
+                "WHERE ref_id = %s) FROM chunks "
+                "WHERE ref_id = %s AND chunk_kind = 'paper_note'",
+                (survivor, victim),
+            ).fetchone()
+        assert row is not None
+        assert int(row[0]) == 0  # nothing left on the tombstone
+        assert row[1] == [2]  # the hidden marker remapped
+        assert "[hidden]" in out
+
 
 # ── relations vocabulary: literal vs schema parity ─────────────────
 

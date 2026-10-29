@@ -55,6 +55,17 @@ def _card(store: Store, ref_id: int, *, ord_: int, kind: str, text: str) -> None
         )
 
 
+def _note(store: Store, ref_id: int, *, ord_: int, text: str) -> None:
+    """A ``paper_note`` row — the ord<0 note band (gr521094), same
+    shape ``_append_note`` writes."""
+    with store.pool.connection() as conn:
+        conn.execute(
+            "INSERT INTO chunks (ref_id, set_by, ord, chunk_kind, text, "
+            "meta) VALUES (%s, 'agent', %s, 'paper_note', %s, '{}'::jsonb)",
+            (ref_id, ord_, text),
+        )
+
+
 def _all_chunks(store: Store, ref_id: int) -> list[tuple[int, str, str]]:
     """``(ord, chunk_kind, text)`` for every chunk — the natural key a
     restore round-trips against (chunk_ids themselves do not survive)."""
@@ -282,6 +293,60 @@ class TestSameRefRoundTrip:
             _restore(store, dump)
         assert exc.value.next and "drop_body" in exc.value.next
         assert _meta_restore(store, ref) is None
+
+    def test_a_diverged_note_is_never_replaced(self, store: Store) -> None:
+        """gr521094: a live ``paper_note`` is append-only agent
+        timeline — the card rule (swap on any difference) must not
+        reach it. The keep leaves the completion body_sha diverged, so
+        the restore refuses and rolls back: the live note is
+        untouched, not silently swapped for the dump's."""
+        ref = _seed(store, "resnote2020", year=2020)
+        _body(store, ref, 2)
+        _note(store, ref, ord_=-1000000, text="note as dumped")
+        dump = _dump(store, ref)
+        _drop_body(store, ref)
+        # The note drifts after the dump — DELETE+INSERT under the same
+        # ord, what an out-of-band rewrite looks like.
+        with store.pool.connection() as conn:
+            conn.execute(
+                "DELETE FROM chunks WHERE ref_id = %s AND ord = -1000000",
+                (ref,),
+            )
+            conn.execute(
+                "INSERT INTO chunks (ref_id, ord, chunk_kind, text, meta) "
+                "VALUES (%s, -1000000, 'paper_note', 'note edited since', "
+                "'{}'::jsonb)",
+                (ref,),
+            )
+        with pytest.raises(BadInput, match="body_sha does not match"):
+            _restore(store, dump)
+        # Rolled back wholesale: the note still carries its live text.
+        assert _all_chunks(store, ref) == [
+            (-1000000, "paper_note", "note edited since")
+        ]
+
+    def test_notes_restore_insert_only_the_missing(self, store: Store) -> None:
+        """The flip side: a note the ref lacks IS restored (INSERT),
+        an identical live one is kept — the same round-trip rule body
+        rows follow, minus the replace."""
+        ref = _seed(store, "resnoteb2020", year=2020)
+        _body(store, ref, 2)
+        _note(store, ref, ord_=-1000000, text="kept note")
+        _note(store, ref, ord_=-999999, text="lost note")
+        dump = _dump(store, ref)
+        _drop_body(store, ref)
+        # One note survives, the other is missing — the restore
+        # re-adds only the missing one.
+        with store.pool.connection() as conn:
+            conn.execute(
+                "DELETE FROM chunks WHERE ref_id = %s AND ord = -999999",
+                (ref,),
+            )
+        report = _restore(store, dump)
+        assert report.completed
+        assert report.inserted == 3  # 2 body chunks + the missing note
+        assert report.kept == 1
+        assert _all_chunks(store, ref) == _dump_chunks(dump)
 
 
 class TestRestoreDoor:

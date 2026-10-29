@@ -107,23 +107,31 @@ class TestPaperPutAcceptedOps:
 class TestPaperPutRejected:
     """Paper bodies are import-only. ``put`` mints *stubs* only
     (doi=/arxiv=/identifier=/title=); it never writes a body, so a
-    ``put`` carrying ``text=`` is rejected. Classification +
-    cross-citation move to the dedicated ``tag`` / ``link`` verbs.
+    ``put`` carrying ``text=`` *without* an existing paper's id is
+    rejected — ``id=<paper>`` + ``text=`` is the note-append door
+    (gr521094), not a body rewrite. Classification + cross-citation
+    move to the dedicated ``tag`` / ``link`` verbs.
 
     These tests pin the failure modes — the body-write rejection and
     the per-axis validation that survives on the new verbs (e.g.
     ``STATUS:`` is still not on paper's allowed closed-axis list).
     """
 
-    def test_put_unsupported(self, paper: PaperHandler, store: Store) -> None:
-        """``put`` with ``text=`` is a body rewrite — unsupported;
-        bodies arrive via .acatome bundle ingest, not the agent
-        surface. (Stub minting via doi=/title= is a separate path.)"""
-        _seed_paper(store, "paper-a")
+    def test_put_text_appends_a_note(self, paper: PaperHandler, store: Store) -> None:
+        """gr521094: ``put(id=<paper>, text=…)`` appends a
+        ``paper_note`` in the ord<0 band — the comment idiom, not a
+        body rewrite. ``text=`` without an id remains the unsupported
+        body-write spelling; bodies still arrive via ingest only."""
+        ref_id = _seed_paper(store, "paper-a")
+        ack = paper.put(id="paper-a", text="a note on the paper").body
+        assert "appended comment 1 to paper" in ack
+        notes = store.chunks.list_chunks_for_ref_by_kind(ref_id, "paper_note")
+        assert [c.text for c in notes] == ["a note on the paper"]
+
         from precis.errors import Unsupported
 
-        with pytest.raises(Unsupported, match="paper does not support put"):
-            paper.put(id="paper-a", text="rewrite me")
+        with pytest.raises(Unsupported, match="never writes bodies"):
+            paper.put(text="rewrite me")
 
     def test_unknown_paper_on_link(self, paper: PaperHandler) -> None:
         with pytest.raises(NotFound, match="paper slug 'no-such' not found"):

@@ -422,6 +422,7 @@ get(kind="paper", id="pa40", view="measures")
 
 Views: `abstract`, `toc`, `summaries`, `tables`, `measures`, `bibtex` (`cite/bib`), `ris`
 (`cite/ris`), `endnote` (`cite/endnote`), `links`, `claims`, `authors`,
+`comments` (the note timeline — see Add a note to a paper),
 `ops` (full-state JSON dump — see precis-paper-ref-help), `pdf_link`
 (signed download URL for the held PDF — see precis-paper-ref-help). The
 `view=` kwarg and `slug/<view>` path are equivalent (except for DOIs — see
@@ -470,6 +471,27 @@ Cite as "Figure 3 of `pa40`" and quote the legend. The
 don't invent URLs. (A figure *inside a paper* is this; the `figure`
 kind is a different thing — a drawable SVG canvas, see
 [[precis-figure-help]].)
+
+## Add a note to a paper
+## Attach an annotation that stays with the record
+## Where do per-paper notes live?
+
+```python
+put(kind="paper", id="pa40", text="replication code: github.com/…")
+get(kind="paper", id="pa40")                     # overview shows the newest note
+get(kind="paper", id="pa40", view="comments")    # all notes, oldest first
+delete(kind="paper", id="pa40", args={"comment": 2})          # hide a stale note
+delete(kind="paper", id="pa40", args={"comment": 2, "restore": True})  # undo
+```
+
+Notes are append-only (`paper_note` chunks): `put(id=…, text=…)` on an
+existing paper appends one and takes no other field in the call. They
+are not body text — body search, embeddings, citations, `slug~N` chunk
+reads and body rewrites (`drop_body`, `reextract`, merges, restores)
+never see or touch them; `view='comments'` is their read surface, with
+`args={'comment': K}` for one note and `args={'comments': K|'A-B'}` for
+the newest K or a number window. `put(id=…)` without `text=` keeps its
+other doors (`fetch-si`, `pdf_url`, `record_type`, `restore`).
 
 ## Tag a paper or cross-link it
 ## Annotate a paper with topic tags or relationships

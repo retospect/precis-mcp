@@ -119,6 +119,10 @@ SKIP_KINDS: frozenset[str] = frozenset(
         "equation",
         "figure",
         "references",
+        # Paper notes (gr521094) sit at ord<0 so the claim queries
+        # never reach them anyway — listed so a kind scan reads as
+        # classified, not missed.
+        "paper_note",
     }
 )
 

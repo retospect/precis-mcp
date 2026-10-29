@@ -1802,7 +1802,10 @@ def _restore_chunks(
 ) -> None:
     """The per-ord rules: an identical live row keeps, a different live
     body row refuses, a retired row DELETEs+INSERTs, a card row swaps on
-    any difference (the card exception to append-only). ``chunk_ords``
+    any difference (the card exception to append-only) — a live
+    ``paper_note`` row NEVER does (gr521094): notes are agent-authored
+    timeline, not derivable like a card, so the ref's own note wins and
+    only a note the ref lacks is inserted. ``chunk_ords``
     is the run's accumulated dump-chunk_id→ord map — a parent can sit in
     a slice this one hasn't seen; whatever doesn't resolve yet lands
     NULL and the completion fix-up wires it. ``inserted_ords`` collects
@@ -1828,6 +1831,12 @@ def _restore_chunks(
                     "now; to force the dump's body, drop_body first and "
                     "resend",
                 )
+            if str(existing[1]) == "paper_note":
+                # A diverged note is kept, never swapped — the
+                # completion body_sha still sees the difference and
+                # refuses, so nothing is silently lost.
+                report.kept += 1
+                continue
         if existing is not None:
             conn.execute("DELETE FROM chunks WHERE chunk_id = %s", (int(existing[0]),))
             report.replaced += 1

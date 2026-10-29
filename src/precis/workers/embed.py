@@ -148,7 +148,15 @@ class EmbedHandler(WorkerHandler):
     # ``field`` — a cad sampled-SDF grid's carrier chunk
     # (``store/_cad_ops.py::put_field``): structured geometry, never
     # embedded, same treatment as ``cad_nodes``.
-    skip_chunk_kinds: ClassVar[tuple[str, ...]] = ("references", "field")
+    # ``paper_note`` — a paper's append-only note timeline (gr521094):
+    # notes are agent annotations, never body text; the ord<0 band
+    # keeps them out of body predicates and this keeps them out of
+    # the vector index (meta.no_index backs it on the chunk too).
+    skip_chunk_kinds: ClassVar[tuple[str, ...]] = (
+        "references",
+        "field",
+        "paper_note",
+    )
 
     def __init__(self, embedder: Embedder) -> None:
         self._embedder = embedder

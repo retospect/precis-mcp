@@ -54,6 +54,7 @@ from precis.ingest.pres import (
     write_pres,
 )
 from precis.store import Store
+from precis.store._links_ops import _carry_notes_to_survivor
 from precis.store.revision_context import trust_door
 from precis.store.types import Tag
 from precis.utils.title_merge import _first_family
@@ -2106,6 +2107,11 @@ def _reconcile_orphan_stub(
         loser_ref_id=stub_id,
         source="ingest:dedup",
         conn=conn,
+    )
+    # The stub retires below — its paper_notes ride to the survivor,
+    # same as merge_duplicate's carry (gr521094).
+    _carry_notes_to_survivor(
+        conn, survivor_ref_id=survivor_ref_id, loser_ref_id=stub_id
     )
     store.migrate_links(stub_id, survivor_ref_id, conn=conn)
     store.add_link(

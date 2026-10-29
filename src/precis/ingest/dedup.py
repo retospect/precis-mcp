@@ -41,6 +41,7 @@ from precis.ingest.pdf_sidecar import is_garbage_title, is_pii
 from precis.store import Store, Tag
 from precis.store._body_predicate import has_body_sql
 from precis.store._identifiers_ops import _dropped_pairs
+from precis.store._links_ops import _carry_notes_to_survivor
 from precis.store.revision_context import trust_door
 from precis.utils.title_merge import _first_family, title_merge_refusal
 
@@ -133,7 +134,9 @@ def _move_body_to_survivor(
       summaries, keywords, citations, blobs, tags, review) copy onto the
       new chunk ids, and ``links`` chunk anchors re-point onto the copies
       instead of cascading away with the delete. The duplicate's cards
-      (``ord < 0``) stay behind, the survivor keeps its own.
+      (``ord < 0``) stay behind, the survivor keeps its own — its
+      ``paper_note`` rows do not (``_carry_notes_to_survivor`` runs
+      next, on every merge, not only when a body moves).
     * **pdf**: survivor has no ``pdf_sha256`` and the duplicate does:
       ``refs.pdf_sha256/pdf_pages/pdf_role`` move (the ``pdfs`` row and its
       stored file are keyed by sha, so the file follows the sha). A
@@ -533,7 +536,9 @@ def merge_duplicate(
     soft-deletes the duplicate. When the survivor lacks a body and/or PDF
     that the duplicate holds, those move too
     (:func:`_move_body_to_survivor`, gr479362); a survivor that already has
-    them keeps them and the duplicate's stay behind. Mirrors
+    them keeps them and the duplicate's stay behind. The duplicate's
+    ``paper_note`` chunks always carry over
+    (:func:`_carry_notes_to_survivor`, gr521094) — cards don't. Mirrors
     :func:`precis.ingest.add._reconcile_orphan_stub`.
     """
     if survivor_ref_id == duplicate_ref_id:
@@ -617,6 +622,14 @@ def merge_duplicate(
         duplicate_ref_id=duplicate_ref_id,
         source=source,
         conn=conn,
+    )
+    # (a3) Notes → survivor, on every merge (gr521094): the ord<0 band
+    # never moves with a body, and the loser retires either way — left
+    # behind, its notes become unreachable.
+    notes_carried = _carry_notes_to_survivor(
+        conn,
+        survivor_ref_id=survivor_ref_id,
+        loser_ref_id=duplicate_ref_id,
     )
     # (b) Graph edges → survivor (self-loops + dup rows dropped internally).
     migrated = store.migrate_links(duplicate_ref_id, survivor_ref_id, conn=conn)
@@ -702,6 +715,7 @@ def merge_duplicate(
             "duplicate_ref_id": duplicate_ref_id,
             "reason": reason,
             **({"moved": moved} if moved else {}),
+            **({"notes": notes_carried} if notes_carried else {}),
         },
         conn=conn,
     )

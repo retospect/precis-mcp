@@ -2378,4 +2378,88 @@ class LinksMixin:
             return _do(c)
 
 
+#: Base of the ``paper_note`` ord<0 band — note K stores at
+#: ``_NOTE_ORD_BASE + K - 1`` (handlers/paper.py's constant, mirrored
+#: here — as in migration 0262 — because the store does not import the
+#: handler layer).
+_NOTE_ORD_BASE = -1_000_000
+
+
+def _carry_notes_to_survivor(
+    conn: Any, *, survivor_ref_id: int, loser_ref_id: int
+) -> int:
+    """Carry the loser's live ``paper_note`` chunks onto the survivor.
+
+    Notes (gr521094) are agent-authored timeline, not body: they sit in
+    the ``ord < 0`` band body moves deliberately skip. Cards stay
+    behind on the retired loser (the survivor keeps its own — they are
+    derived, not authored), but a note annotates the *paper*, so it
+    rides to the survivor: each is INSERTed at the survivor's next free
+    note ord — created order and ``set_by`` (author) preserved — and
+    DELETEd on the loser. DELETE + INSERT, never UPDATE. The loser's
+    ``meta.hidden_comments`` markers remap onto the new note numbers.
+
+    Shared by every paper-merge path: ingest's ``merge_duplicate``
+    (which ``dedup.merge_refs``, the web UI's resolver, delegates to)
+    and ``_reconcile_orphan_stub``.
+    """
+    rows = conn.execute(
+        "SELECT ord, set_by, text, meta, created_at FROM chunks "
+        "WHERE ref_id = %s AND chunk_kind = 'paper_note' "
+        "AND retired_at IS NULL ORDER BY ord, chunk_id",
+        (loser_ref_id,),
+    ).fetchall()
+    if not rows:
+        return 0
+    row = conn.execute(
+        "SELECT COALESCE(MAX(ord), %s - 1) + 1 FROM chunks "
+        "WHERE ref_id = %s AND chunk_kind = 'paper_note'",
+        (_NOTE_ORD_BASE, survivor_ref_id),
+    ).fetchone()
+    next_ord = int(row[0])
+    for i, (_, set_by, text, meta, created_at) in enumerate(rows):
+        conn.execute(
+            "INSERT INTO chunks (ref_id, set_by, ord, chunk_kind, text, "
+            "meta, created_at) "
+            "VALUES (%s, %s, %s, 'paper_note', %s, %s, "
+            "COALESCE(%s::timestamptz, now()))",
+            (
+                survivor_ref_id,
+                set_by,
+                next_ord + i,
+                text,
+                Jsonb(meta or {}),
+                created_at,
+            ),
+        )
+    conn.execute(
+        "DELETE FROM chunks WHERE ref_id = %s AND chunk_kind = 'paper_note' "
+        "AND retired_at IS NULL",
+        (loser_ref_id,),
+    )
+    loser_hidden = conn.execute(
+        "SELECT COALESCE(meta->'hidden_comments', '[]'::jsonb) "
+        "FROM refs WHERE ref_id = %s",
+        (loser_ref_id,),
+    ).fetchone()[0]
+    remapped = [
+        (next_ord + i) - _NOTE_ORD_BASE + 1
+        for i, r in enumerate(rows)
+        if (int(r[0]) - _NOTE_ORD_BASE + 1) in {int(k) for k in loser_hidden or []}
+    ]
+    if remapped:
+        # Same atomic union _comment_timeline._set_hidden uses.
+        conn.execute(
+            "UPDATE refs SET meta = jsonb_set(COALESCE(meta, '{}'::jsonb), "
+            "'{hidden_comments}', (SELECT COALESCE(jsonb_agg(DISTINCT v "
+            "ORDER BY v), '[]'::jsonb) FROM ("
+            "SELECT (x)::int AS v FROM jsonb_array_elements_text("
+            "COALESCE(meta->'hidden_comments', '[]'::jsonb)) x "
+            "UNION SELECT unnest(%s::int[])) s)), updated_at = now() "
+            "WHERE ref_id = %s",
+            (remapped, survivor_ref_id),
+        )
+    return len(rows)
+
+
 __all__ = ["LinksMixin"]

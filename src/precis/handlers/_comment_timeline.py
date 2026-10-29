@@ -26,10 +26,19 @@ written through :meth:`Store.stamp_ref_meta`). The chunk is untouched — still
 searchable, still in ``view='comments'`` (marked ``[hidden]``) — and
 ``delete(..., args={'comment': K, 'restore': True})`` removes K from the list.
 A comment's number K is its chunk ``ord``: stable, shown in every header.
+
+Comment kinds that do not live at ``ord >= 0`` — ``paper_note``
+(gr521094), stored in its own ``ord < 0`` band so no body predicate,
+body rewrite or re-ingest can touch it — ride the same machinery
+through three seams: ``lister`` (which chunks count for numbering),
+``ord_for`` (comment number K → stored ``ord``) and ``number_of``
+(stored ``ord`` → K). With none supplied a comment's K is its ``ord``
+— the gripe/todo shape.
 """
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from datetime import UTC
 from typing import Any, NamedTuple
 
@@ -77,7 +86,11 @@ _DEFAULT_POLICY = _Policy(FULL_COMMENTS, None, ONE_LINER_CAP)
 #: default. Gripe left the table entirely on 2026-10-19 (gr499040): its
 #: bare get is the title card + bounded body + newest-comment gist
 #: (gr514351/gr515189) — the timeline lives behind ``view='comments'``.
-_KIND_POLICY: dict[str, _Policy] = {}
+#: Paper (gr521094): the newest note only — the overview card is
+#: already dense, so older notes stay one-liners.
+_KIND_POLICY: dict[str, _Policy] = {
+    "paper": _Policy(1, None, ONE_LINER_CAP),
+}
 
 
 def _policy(kind: str) -> _Policy:
@@ -135,39 +148,53 @@ def hidden_comments(ref: Ref) -> set[int]:
     return {int(n) for n in raw if isinstance(n, int) and not isinstance(n, bool)}
 
 
+def _number_by_ord(chunk: ChunkRow) -> int:
+    """Default ``number_of``: a comment's number is its ``ord``."""
+    return chunk.ord
+
+
 def _stamp(chunk: ChunkRow) -> str:
     return chunk.created_at.astimezone(UTC).strftime("%Y-%m-%d %H:%MZ")
 
 
-def _one_liner(chunk: ChunkRow) -> str:
+def _one_liner(chunk: ChunkRow, number: int) -> str:
     gist = " ".join(chunk.text.split())
     if len(gist) > ONE_LINER_CHARS:
         gist = gist[:ONE_LINER_CHARS].rstrip() + "…"
-    return f"comment {chunk.ord} · {_stamp(chunk)} · {gist}"
+    return f"comment {number} · {_stamp(chunk)} · {gist}"
 
 
 def render_comments(
-    ref: Ref, comments: list[ChunkRow], *, kind: str, full: bool = False
+    ref: Ref,
+    comments: list[ChunkRow],
+    *,
+    kind: str,
+    full: bool = False,
+    number_of: Callable[[ChunkRow], int] | None = None,
 ) -> str:
     """The comment part of a ``get`` ("" when the ref has no comments).
 
     ``full=False`` is the bare-``get`` policy (``_KIND_POLICY``);
     ``full=True`` is ``view='comments'`` (all, oldest first, hidden
     ones marked) — the complete read the footer points at.
+    ``number_of`` maps a chunk to its caller-facing comment number
+    (default: its ``ord``); ord<0 comment kinds pass their band's
+    K↔ord mapping (``lister``/``ord_for`` on :func:`append_comment`).
     """
     if not comments:
         return ""
-    ordered = sorted(comments, key=lambda c: c.ord)
+    num = number_of or _number_by_ord
+    ordered = sorted(comments, key=lambda c: num(c))
     hidden = hidden_comments(ref)
     if full:
         parts = [
-            f"## comment {c.ord} · {_stamp(c)}"
-            f"{' [hidden]' if c.ord in hidden else ''}\n{c.text}"
+            f"## comment {num(c)} · {_stamp(c)}"
+            f"{' [hidden]' if num(c) in hidden else ''}\n{c.text}"
             for c in ordered
         ]
         return "\n\n".join(parts)
     policy = _policy(kind)
-    visible = [c for c in ordered if c.ord not in hidden]
+    visible = [c for c in ordered if num(c) not in hidden]
     newest = list(reversed(visible[-policy.full_count :]))
     older = (
         list(reversed(visible[: -policy.full_count]))
@@ -176,16 +203,16 @@ def render_comments(
     )
     pointer = f"get(kind={kind!r}, id={ref.id}, view='comments')"
     parts = [
-        f"## comment {c.ord} · {_stamp(c)}\n"
+        f"## comment {num(c)} · {_stamp(c)}\n"
         + clip_middle(c.text, policy.full_chars, pointer)
         for c in newest
     ]
     if older:
-        lines = [_one_liner(c) for c in older[: policy.one_liner_cap]]
+        lines = [_one_liner(c, num(c)) for c in older[: policy.one_liner_cap]]
         if len(older) > policy.one_liner_cap:
             lines.append(f"+{len(older) - policy.one_liner_cap} older")
         parts.append("\n".join(lines))
-    n_hidden = len([c for c in ordered if c.ord in hidden])
+    n_hidden = len([c for c in ordered if num(c) in hidden])
     if n_hidden:
         parts.append(
             f"{n_hidden} hidden comment{'s' if n_hidden != 1 else ''} — "
@@ -222,9 +249,9 @@ def _selector_footer(ref: Ref, kind: str, note: str) -> str:
     )
 
 
-def _comment_piece(c: ChunkRow, hidden: set[int]) -> str:
-    mark = " [hidden]" if c.ord in hidden else ""
-    return f"## comment {c.ord} · {_stamp(c)}{mark}\n{c.text}"
+def _comment_piece(c: ChunkRow, hidden: set[int], number: int) -> str:
+    mark = " [hidden]" if number in hidden else ""
+    return f"## comment {number} · {_stamp(c)}{mark}\n{c.text}"
 
 
 def render_comment_view(
@@ -237,43 +264,46 @@ def render_comment_view(
     lo: int | None = None,
     hi: int | None = None,
     budget: int = COMMENT_PAGE_CHARS,
+    number_of: Callable[[ChunkRow], int] | None = None,
 ) -> str:
     """The selectable ``view='comments'`` render (gr499040, gr515093).
 
     ``only=K`` is one comment, uncapped. ``last=K`` is the newest K and
-    ``lo``/``hi`` an ord window (``args={'comments': 'A-B'}``); both
-    render oldest first like the complete view. Everything pages whole
-    comments under ``budget`` — the view never cuts inside one — and a
-    page that can't hold the rest names the elided ords and the one
-    windowed call that reaches them. Hidden comments render marked
+    ``lo``/``hi`` a comment-number window (``args={'comments': 'A-B'}``);
+    both render oldest first like the complete view. Everything pages
+    whole comments under ``budget`` — the view never cuts inside one —
+    and a page that can't hold the rest names the elided ords and the
+    one windowed call that reaches them. Hidden comments render marked
     ``[hidden]`` everywhere (the chunk is never the thing hidden).
+    ``number_of`` maps a chunk to its comment number (default: ``ord``).
     """
     if not comments:
         return ""
-    ordered = sorted(comments, key=lambda c: c.ord)
+    num = number_of or _number_by_ord
+    ordered = sorted(comments, key=lambda c: num(c))
     hidden = hidden_comments(ref)
     if only is not None:
-        c = next((c for c in ordered if c.ord == only), None)
+        c = next((c for c in ordered if num(c) == only), None)
         if c is None:
             return ""
         return (
-            _comment_piece(c, hidden)
+            _comment_piece(c, hidden, num(c))
             + "\n\n"
             + _selector_footer(
-                ref, kind, f"comment {c.ord} of {len(ordered)} — uncapped"
+                ref, kind, f"comment {num(c)} of {len(ordered)} — uncapped"
             )
         )
     window = [
         c
         for c in ordered
-        if (lo is None or c.ord >= lo) and (hi is None or c.ord <= hi)
+        if (lo is None or num(c) >= lo) and (hi is None or num(c) <= hi)
     ]
     if last is not None:
         window = window[-last:]
     shown: list[ChunkRow] = []
     used = 0
     for c in window:
-        piece_len = len(_comment_piece(c, hidden))
+        piece_len = len(_comment_piece(c, hidden, num(c)))
         if shown and used + piece_len > budget:
             break
         shown.append(c)
@@ -286,12 +316,12 @@ def render_comment_view(
         note = f"comments: newest {last} of {len(ordered)}"
     else:
         note = f"comments: all {len(ordered)}"
-    parts = [_comment_piece(c, hidden) for c in shown]
+    parts = [_comment_piece(c, hidden, num(c)) for c in shown]
     if remaining:
-        span = f"{remaining[0].ord}-{remaining[-1].ord}"
+        span = f"{num(remaining[0])}-{num(remaining[-1])}"
         parts.append(
             f"… comments {span} elided — the page held "
-            f"{shown[0].ord}-{shown[-1].ord} whole; one call reads the "
+            f"{num(shown[0])}-{num(shown[-1])} whole; one call reads the "
             f"rest: get(kind={kind!r}, id={ref.id}, view='comments', "
             f"args={{'comments': '{span}'}})"
         )
@@ -299,33 +329,80 @@ def render_comment_view(
     return "\n\n".join(parts)
 
 
-def _insert_next(store: Any, ref_id: int, comment_kind: str, text: str) -> int:
-    existing = store.chunks.list_chunks_for_ref(ref_id)
-    number = max((c.ord for c in existing), default=0) + 1
+def _insert_next(
+    store: Any,
+    ref_id: int,
+    comment_kind: str,
+    text: str,
+    *,
+    lister: Callable[[], list[ChunkRow]] | None = None,
+    number_of: Callable[[ChunkRow], int] | None = None,
+    ord_for: Callable[[int], int] | None = None,
+    meta: dict[str, Any] | None = None,
+) -> int:
+    lister = lister or (lambda: store.chunks.list_chunks_for_ref(ref_id))
+    num = number_of or _number_by_ord
+    existing = lister()
+    number = max((num(c) for c in existing), default=0) + 1
     with store.tx() as conn:
         store.chunks.insert_chunks(
             ref_id,
-            [ChunkInsert(ord=number, text=text, meta={"chunk_kind": comment_kind})],
+            [
+                ChunkInsert(
+                    ord=ord_for(number) if ord_for is not None else number,
+                    text=text,
+                    meta={"chunk_kind": comment_kind, **(meta or {})},
+                )
+            ],
             conn=conn,
         )
     return number
 
 
 def append_comment(
-    store: Any, ref: Ref, *, kind: str, comment_kind: str, text: str
+    store: Any,
+    ref: Ref,
+    *,
+    kind: str,
+    comment_kind: str,
+    text: str,
+    lister: Callable[[], list[ChunkRow]] | None = None,
+    number_of: Callable[[ChunkRow], int] | None = None,
+    ord_for: Callable[[int], int] | None = None,
+    meta: dict[str, Any] | None = None,
 ) -> Response:
     """Append ``text`` as a ``comment_kind`` chunk on ``ref``.
 
     The new ord is ``max(existing ord, 0) + 1`` (not a chunk count): it can
     never collide with the body chunk or a tag-overflow chunk, even when ords
     have gaps. Comment numbers therefore start at 1.
+
+    ``lister``/``number_of``/``ord_for`` are the ord<0 band seams (module
+    docstring): ``lister`` supplies the chunks the next comment number is
+    computed from (default: the ref's ``ord >= 0`` chunks), ``number_of``
+    maps a chunk to its number, ``ord_for`` maps the new number back to
+    the ord it stores under. ``meta`` merges into the chunk's meta dict
+    (e.g. ``{"no_index": "true"}``).
     """
+
+    def _ins() -> int:
+        return _insert_next(
+            store,
+            ref.id,
+            comment_kind,
+            text,
+            lister=lister,
+            number_of=number_of,
+            ord_for=ord_for,
+            meta=meta,
+        )
+
     try:
-        number = _insert_next(store, ref.id, comment_kind, text)
+        number = _ins()
     except UniqueViolation:
         # A concurrent append (or first body write) took the same ord;
         # recompute once. A second collision surfaces as an error.
-        number = _insert_next(store, ref.id, comment_kind, text)
+        number = _ins()
     except ForeignKeyViolation as e:
         # ``chunks.chunk_kind`` FK against ``chunk_kinds.slug``: the seed
         # migration for this comment kind is missing on this DB — server-side
@@ -336,12 +413,12 @@ def append_comment(
             next=[
                 f"verify: SELECT slug FROM chunk_kinds WHERE slug='{comment_kind}'",
                 "re-apply the migration that seeds it (gripe_comment: 0005, "
-                "todo_comment: 0195) against this DB",
+                "todo_comment: 0195, paper_note: 0262) against this DB",
             ],
         ) from e
     # The ack names what a bare get now shows of the timeline — per kind
     # (gripe's bare get is the title card + bounded body + newest gist,
-    # gr514351/gr515189).
+    # gr514351/gr515189; paper's shows the newest note only, gr521094).
     shown = (
         "the title, body and newest comment"
         if kind == "gripe"
@@ -404,11 +481,16 @@ def delete_comment(
     kind: str,
     comment_kind: str,
     args: dict[str, Any],
+    chunks: list[ChunkRow] | None = None,
+    number_of: Callable[[ChunkRow], int] | None = None,
 ) -> Response:
     """``delete(kind, id=N, args={'comment': K[, 'restore': True]})``.
 
     Hides (or restores) comment K by editing ``refs.meta['hidden_comments']``.
-    Never touches the chunk and never retires the ref.
+    Never touches the chunk and never retires the ref. ``chunks`` overrides
+    the candidate list (default: the ref's ``ord >= 0`` chunks — ord<0
+    comment kinds pass their own list so K resolves there); ``number_of``
+    maps a chunk to its comment number (default: ``ord``).
     """
     raw = args.get("comment")
     if isinstance(raw, bool) or raw is None:
@@ -424,9 +506,10 @@ def delete_comment(
             f"comment must be an integer, got {raw!r}",
             next=f"delete(kind={kind!r}, id={ref.id}, args={{'comment': <K>}})",
         ) from None
-    chunks = store.chunks.list_chunks_for_ref(ref.id)
-    numbers = sorted(c.ord for c in chunks if c.chunk_kind == comment_kind)
-    target = next((c for c in chunks if c.ord == number), None)
+    num = number_of or _number_by_ord
+    chunks = chunks if chunks is not None else store.chunks.list_chunks_for_ref(ref.id)
+    numbers = sorted(num(c) for c in chunks if c.chunk_kind == comment_kind)
+    target = next((c for c in chunks if num(c) == number), None)
     if target is not None and target.chunk_kind != comment_kind:
         raise BadInput(
             f"{number} is the {kind}'s {target.chunk_kind.split('_')[-1]}, not a "

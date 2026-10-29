@@ -293,6 +293,89 @@ def test_two_bodiless_refs_move_nothing(store: Store) -> None:
     assert _one(store, "SELECT pdf_sha256 FROM refs WHERE ref_id=%s", a) is None
 
 
+def test_merge_carries_notes_to_survivor(store: Store, hub: Any) -> None:
+    """gr521094: the loser's ``paper_note`` chunks ride to the
+    survivor's note band (next free ords, created order and author
+    preserved) on EVERY merge — here both refs are bodied, so no body
+    moves. Cards stay behind on the retired loser; a hidden note keeps
+    its hidden marker, remapped to the new number."""
+    from precis.handlers.paper import PaperHandler
+
+    handler = PaperHandler(hub=hub)
+    survivor = int(
+        store.insert_ref(kind="paper", slug="survnotes26", title="Survivor").id
+    )
+    dup = int(store.insert_ref(kind="paper", slug="dupnotes26", title="Duplicate").id)
+    with store.pool.connection() as conn:
+        for rid in (survivor, dup):
+            conn.execute(
+                "INSERT INTO chunks (ref_id, ord, chunk_kind, text) "
+                "VALUES (%s, 0, 'paragraph', 'body'), "
+                "       (%s, 1, 'paragraph', 'more body')",
+                (rid, rid),
+            )
+        conn.commit()
+    handler.put(id="survnotes26", text="survivor note")
+    handler.put(id="dupnotes26", text="dup note 1")
+    handler.put(id="dupnotes26", text="dup note 2")
+    # A hidden note and a card on the loser: the marker remaps, the
+    # card stays.
+    handler.delete(id="dupnotes26", args={"comment": 1})
+    with store.pool.connection() as conn:
+        conn.execute(
+            "INSERT INTO chunks (ref_id, ord, chunk_kind, text) "
+            "VALUES (%s, -1, 'card_combined', 'dup card')",
+            (dup,),
+        )
+        conn.commit()
+
+    _merge(store, survivor, dup)
+
+    out = handler.get(id="survnotes26", view="comments").body
+    for text in ("survivor note", "dup note 1", "dup note 2"):
+        assert text in out
+    # Order: survivor's own note first, then the loser's in created order.
+    assert (
+        out.index("survivor note") < out.index("dup note 1") < out.index("dup note 2")
+    )
+    notes = store.chunks.list_chunks_for_ref_by_kind(survivor, "paper_note")
+    assert len(notes) == 3
+    # The loser's notes are gone; the card stays behind on the tombstone.
+    assert (
+        _one(
+            store,
+            "SELECT count(*) FROM chunks WHERE ref_id=%s AND chunk_kind='paper_note'",
+            dup,
+        )
+        == 0
+    )
+    assert (
+        _one(
+            store,
+            "SELECT text FROM chunks WHERE ref_id=%s AND ord=-1",
+            dup,
+        )
+        == "dup card"
+    )
+    # The hidden marker remapped onto the carried note's new number.
+    assert "[hidden]" in out
+    assert _one(
+        store,
+        "SELECT meta->'hidden_comments' FROM refs WHERE ref_id=%s",
+        survivor,
+    ) == [2]
+    # The merge event records the carry.
+    assert (
+        _one(
+            store,
+            "SELECT payload->>'notes' FROM ref_events "
+            "WHERE ref_id=%s AND event='duplicate_merged'",
+            survivor,
+        )
+        == "2"
+    )
+
+
 def _id_rows(store: Store, ref_id: int, kinds: list[str]) -> list[tuple[str, str]]:
     with store.pool.connection() as conn:
         rows = conn.execute(

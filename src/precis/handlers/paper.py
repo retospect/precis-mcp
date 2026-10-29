@@ -10,7 +10,14 @@ plus the ``args=`` lifecycle doors — ``retire`` / ``redirect_to`` /
 ``merge_into``, the wrong-body repair set (``drop_body`` /
 ``move_body_to`` / ``split_body`` / ``clear_abstract``, gr514995) and
 the single-row identifier removal (``drop_identifier``, gr513878); it
-never edits block text in place.
+never edits block text in place. The one ``put`` door that writes a
+chunk is the append-only note timeline (gr521094):
+``put(kind='paper', id=<paper>, text='...')`` appends a ``paper_note``
+chunk — notes live in their own ``ord < 0`` band (migration 0262) so no
+body predicate, body rewrite or re-ingest touches them; the overview
+shows the newest, ``view='comments'`` lists them all,
+``delete(id=.., args={'comment': K})`` hides one — never an in-place
+edit.
 
 Superseded paper restoration is CLI-only (``precis garden restore``);
 MCP/web handlers expose no restore-superseded write door.
@@ -43,7 +50,7 @@ import re
 import shlex
 from collections.abc import Iterator
 from datetime import UTC, datetime
-from typing import Any, ClassVar
+from typing import Any, ClassVar, NamedTuple
 
 import psycopg
 
@@ -51,6 +58,7 @@ from precis import settings
 from precis.dispatch import Hub, InitError
 from precis.errors import BadInput, Gone, NotFound, Unsupported, Upstream
 from precis.format import render_agent_table
+from precis.handlers import _comment_timeline as tl
 from precis.handlers._exclude_closure import resolve_exclude_paper_ids
 from precis.handlers._eye import is_eye_view
 from precis.handlers._paper_format import (
@@ -93,7 +101,7 @@ from precis.store._identifiers_ops import (
 from precis.store._review_ops import trust_refusal
 from precis.store._stub_predicate import ACQUIRE_RESTAMP_MIN_HOURS
 from precis.store._tag_filter import build_tag_filter
-from precis.store.types import ONE_PAGE_COVERAGE_NOTE
+from precis.store.types import ONE_PAGE_COVERAGE_NOTE, ChunkRow
 from precis.utils import handle_registry
 from precis.utils.authors import (
     author_display,
@@ -117,6 +125,7 @@ from precis.utils.link_tag_ops import (
 from precis.utils.next_block import render_next_section
 from precis.utils.record_cite import RECORD_TYPES, is_record_cite, record_type_of
 from precis.utils.search_merge import SearchHit, block_hits_to_search_hits
+from precis.utils.secret_scan import mask_secrets
 from precis.utils.text import excerpt as _excerpt
 from precis.utils.title_merge import title_merge_refusal
 from precis.utils.title_views import title_md, title_plain
@@ -287,10 +296,50 @@ _SUPPORTED_VIEWS = (
     "tables",
     "measures",
     "page_image",
+    "comments",
 )
 
 #: Chunk kinds that always get a figure pointer on read (gr520326).
 _FIGURE_CHUNK_KINDS: frozenset[str] = frozenset({"figure", "caption"})
+
+#: Chunk kind of an appended paper note (migration 0262): the
+#: ``gripe_comment`` shape applied to papers —
+#: ``put(kind='paper', id=<paper>, text='...')`` appends one.
+_NOTE_KIND = "paper_note"
+
+#: Notes live in a dedicated ``ord < 0`` band, NOT at ``ord >= 0`` like
+#: gripe/todo comments: paper bodies are rewritten in place
+#: (``drop_body``/``reextract``/``move_body_to``/restore all
+#: ``DELETE ... WHERE ord >= 0`` and re-INSERT at ords 0..M), so an
+#: ``ord >= 0`` note would die with the body or collide with a longer
+#: re-ingest on the ``(ref_id, ord)`` unique key. The band makes every
+#: ``ord >= 0`` body predicate (search, count, TOC, ``has_body``,
+#: find-in-ref) exclude notes by construction — migration 0262 widens
+#: ``chunks_check`` to admit ``paper_note`` here. ``ord =
+#: _NOTE_ORD_BASE + (K - 1)`` keeps ord order == note order; K = 1, 2, …
+#: is the caller-facing comment number (``args={'comment': K}``).
+_NOTE_ORD_BASE = -1_000_000
+
+
+def _note_number(c: ChunkRow) -> int:
+    """A note chunk's caller-facing comment number K (1-based)."""
+    return c.ord - _NOTE_ORD_BASE + 1
+
+
+def _note_ord(number: int) -> int:
+    """The storage ord of note number K, inside the band."""
+    return _NOTE_ORD_BASE + number - 1
+
+
+class _NoteWindow(NamedTuple):
+    """A validated note selector: one note, the newest K, or a
+    comment-number range ``lo``-``hi`` (``args={'comments': 'A-B'}``)."""
+
+    only: int | None = None
+    last: int | None = None
+    lo: int | None = None
+    hi: int | None = None
+
 
 #: How far (in ords) a figure pointer may reach for a Marker ``page-N``
 #: span when the chunk's own text carries none — ``page_first`` is a
@@ -521,6 +570,7 @@ class PaperHandler(Handler):
     #: the ``args={'clear_stamp': …}`` cohort re-arm; other field edits
     #: refuse a list there with a named per-id call.
     edit_id_list: ClassVar[str] = "native"
+
     ARGS: ClassVar[dict[str, ArgsSpec]] = {
         # ``get`` reads the ``view='ops'`` slice window only
         # (gr517423: :meth:`_render_ops_view`); the deprecated
@@ -534,7 +584,22 @@ class PaperHandler(Handler):
             # ``ord`` is ``view='page_image'``'s chunk selector
             # (gr520326): resolve the figure crop / page for the chunk
             # at that ord.
-            {"page", "page_size", "offset", "limit", "ttl_s", "match", "table", "ord"}
+            {
+                "page",
+                "page_size",
+                "offset",
+                "limit",
+                "ttl_s",
+                "match",
+                "table",
+                "ord",
+                # ``view='comments'`` note selectors (gr521094):
+                # ``args={'comment': K}`` one note, ``args={'comments':
+                # K}`` the newest K, ``args={'comments': 'A-B'}`` a
+                # comment-number window.
+                "comment",
+                "comments",
+            }
         ),
         # Every acquire knob — ``args={'doi': …, 'verify': False}`` is the
         # spelling the slim schema pushes (kind-specific fields ride
@@ -613,6 +678,9 @@ class PaperHandler(Handler):
                 "reason",
             }
         ),
+        # ``args={'comment': K[, 'restore': True]}`` hides/restores a
+        # note (gr521094) — the shared comment-timeline key set.
+        "delete": ArgsSpec(tl.DELETE_ARGS_KEYS),
     }
 
     stamps_recall = True
@@ -662,6 +730,10 @@ class PaperHandler(Handler):
         supports_edit=True,
         supports_tag=True,
         supports_link=True,
+        # ``delete`` exists for the note-hide door
+        # (``args={'comment': K}``) only — a bare delete still refuses;
+        # a paper ref is retired through ``edit(args={'retire': …})``.
+        supports_delete=True,
         is_numeric=False,
         id_required=False,
         # A paper is citable evidence — it participates in literature
@@ -692,6 +764,11 @@ class PaperHandler(Handler):
         context_ref_id: int | str | None = None,
         verify: bool = True,
         id: str | int | None = None,
+        # ``id=<paper>`` + ``text=`` is the note-append door (gr521094)
+        # — declared explicitly, like GripeHandler.put's, so dispatch's
+        # strict-kwargs gate admits it instead of dropping it into
+        # ``**_kw`` and refusing the call.
+        text: str | None = None,
         mode: str | None = None,
         citation: str | None = None,
         tags: list[str] | None = None,
@@ -710,6 +787,11 @@ class PaperHandler(Handler):
         ``put(kind='paper', id=<slug>, mode='fetch-si')`` is the one other
         door: it queues a supplementary-information fetch for an existing
         paper (:meth:`_queue_si_fetch`).
+
+        ``put(kind='paper', id=<paper>, text='...')`` appends a note to
+        the paper — the gripe-comment idiom as ``paper_note`` chunks
+        (gr521094, :meth:`_append_note`); it takes no other field in the
+        same call.
 
         Ingest paper *bodies* with ``precis add FILE.pdf`` or drop a PDF
         into ``inbox/papers/`` for ``precis watch``. Stub requests enter
@@ -809,7 +891,7 @@ class PaperHandler(Handler):
                     ("tags", tags),
                     ("mode", mode),
                     ("pdf_url", pdf_url),
-                    ("text", _kw.get("text")),
+                    ("text", text),
                 )
                 if val is not None and (not isinstance(val, str) or val.strip())
             ]
@@ -841,7 +923,7 @@ class PaperHandler(Handler):
                     ("tags", tags),
                     ("mode", mode),
                     ("pdf_url", pdf_url),
-                    ("text", _kw.get("text")),
+                    ("text", text),
                 )
                 if val is not None and (not isinstance(val, str) or val.strip())
             ]
@@ -859,6 +941,45 @@ class PaperHandler(Handler):
             if pdf_upload_link:
                 return self._mint_pdf_upload_link(id)
             return self._queue_pdf_upload(id, pdf_upload_sha, reason, dry_run=dry_run)
+        note_text = text
+        if id is not None and note_text is not None:
+            # ``put(id=<paper>, text='...')`` appends a paper_note
+            # (gr521094) — the gripe comment idiom on papers. Every
+            # other door's fields would be silently dropped by the
+            # append, so the combined call refuses and names the doors.
+            if not isinstance(note_text, str) or not note_text.strip():
+                raise BadInput(
+                    f"appending a note to {self.spec.kind} id={id!r} "
+                    "requires non-empty text=",
+                    next=f"put(kind={self.spec.kind!r}, id={id}, text='your note')",
+                )
+            combined = [
+                name
+                for name, val in (
+                    ("doi", doi),
+                    ("arxiv", arxiv),
+                    ("identifier", identifier),
+                    ("title", title),
+                    ("year", year),
+                    ("reason", reason),
+                    ("context_ref_id", context_ref_id),
+                    ("citation", citation),
+                    ("record_type", record_type),
+                    ("tags", tags),
+                    ("mode", mode),
+                    ("pdf_url", pdf_url),
+                    ("dry_run", dry_run),
+                    ("supporters", _kw.get("supporters")),
+                )
+                if val is not None and (not isinstance(val, str) or val.strip())
+            ]
+            if combined:
+                raise BadInput(
+                    "text= on an existing paper appends a note; it does "
+                    f"not combine with: {', '.join(combined)}",
+                    next=f"put(kind={self.spec.kind!r}, id={id}, text='your note')",
+                )
+            return self._append_note(id=id, text=note_text.strip())
         if tags:
             if pdf_url is not None or mode is not None:
                 raise BadInput(
@@ -907,16 +1028,18 @@ class PaperHandler(Handler):
                 id, record_type, supporters=_kw.get("supporters"), tags=tags
             )
         # ``put`` mints stubs; it never writes a body. A caller passing
-        # ``text=`` is trying to rewrite a paper body — reject loudly
+        # ``text=`` without an existing paper's id is either trying to
+        # rewrite a body or dropped the id on a note — reject loudly
         # rather than silently drop the text into ``_kw``. Bodies arrive
         # through the PDF ingest pipeline.
-        if _kw.get("text") is not None:
+        if text is not None:
             raise Unsupported(
                 "paper does not support put with text= — ingest PDF bodies "
                 "with `precis add FILE.pdf` or drop a PDF into `inbox/papers/` "
                 "for `precis watch`; put(kind='paper') requests stubs or "
                 "queues mode='fetch-si', never writes bodies",
-                next="precis add FILE.pdf",
+                next=f"to append a note to an existing paper: "
+                f"put(kind={self.spec.kind!r}, id='<slug>', text='your note')",
             )
         ident = identifier.strip() if identifier and identifier.strip() else None
         if (
@@ -2087,6 +2210,19 @@ class PaperHandler(Handler):
                     f"get(id='{_pa(ref)}', view='tables', "
                     "args={'table': 1} or args={'match': 'word'})"
                 ),
+            )
+
+        # Same rule for the note selectors — ``args={'comment'|'comments'}``
+        # belong to view='comments' (gr521094).
+        if (
+            effective_view != "comments"
+            and isinstance(args, dict)
+            and (args.get("comment") is not None or args.get("comments") is not None)
+        ):
+            raise BadInput(
+                "args={'comment'|'comments'} only apply to view='comments', "
+                f"not view={effective_view!r}",
+                next=(f"get(id='{_pa(ref)}', view='comments', args={{'comments': 5}})"),
             )
 
         # Combined form: ``slug~A..B/toc`` → range-scoped TOC drill-down.
@@ -3291,6 +3427,193 @@ class PaperHandler(Handler):
         """
         _slug, ref_id = self._resolve_paper_slug(id)
         return ref_id
+
+    # ── notes: the append-only comment timeline (gr521094) ─────────
+
+    def _resolve_paper_ref(self, id: str | int) -> Ref:
+        """The live ``Ref`` behind any paper id spelling (slug, numeric
+        ref_id, DOI) — for the note doors that need ``ref.meta`` as well
+        as the ``ref_id``."""
+        _slug, ref_id = self._resolve_paper_slug(id)
+        ref = self.store.get_ref(kind=self.spec.kind, id=ref_id)
+        if ref is None:
+            raise NotFound(
+                f"{self.spec.kind} id={ref_id} not found",
+                next=f"search(kind={self.spec.kind!r}, q='...') to find existing",
+            )
+        return ref
+
+    def _note_chunks(self, ref_id: int) -> list[ChunkRow]:
+        """The ref's notes (``ord < 0`` band), ord-ordered = K-ordered."""
+        return self.store.chunks.list_chunks_for_ref_by_kind(ref_id, _NOTE_KIND)
+
+    def _append_note(self, *, id: str | int, text: str) -> Response:
+        ref = self._resolve_paper_ref(id)
+        return tl.append_comment(
+            self.store,
+            ref,
+            kind=self.spec.kind,
+            comment_kind=_NOTE_KIND,
+            # Automated writers cannot rephrase a pasted secret away —
+            # mask the same way the gripe comment path does.
+            text=mask_secrets(text),
+            lister=lambda: self._note_chunks(ref.id),
+            number_of=_note_number,
+            ord_for=_note_ord,
+            # The embed/summarize workers claim by chunk_kind and
+            # meta.no_index, not ord — belt for the ord<0 exclusion so a
+            # note can never become an embedded/searchable body chunk.
+            meta={"no_index": "true"},
+        )
+
+    def delete(
+        self,
+        *,
+        id: str | int | None = None,
+        args: dict[str, Any] | None = None,
+        **_kw: Any,
+    ) -> Response:
+        """``delete(id=N, args={'comment': K[, 'restore': True]})`` hides
+        (or restores) note K. The paper itself is never deleted this way
+        — a phantom stub retires through
+        ``edit(args={'retire': True})``."""
+        kind = self.spec.kind
+        if id is None:
+            raise BadInput(
+                f"delete(kind={kind!r}) requires id=",
+                next=f"delete(kind={kind!r}, id=<paper>, args={{'comment': <K>}})",
+            )
+        if args and "comment" in args:
+            ref = self._resolve_paper_ref(id)
+            # Body + notes: a K that names a body ord still hits the
+            # timeline's "not a comment" refusal instead of a miss.
+            chunks = self.store.chunks.list_chunks_for_ref(ref.id) + self._note_chunks(
+                ref.id
+            )
+            return tl.delete_comment(
+                self.store,
+                ref,
+                kind=kind,
+                comment_kind=_NOTE_KIND,
+                args=args,
+                chunks=chunks,
+                number_of=_note_number,
+            )
+        if args:
+            raise BadInput(
+                f"unknown delete args {sorted(args)!r}",
+                next=f"delete(kind={kind!r}, id={id}, args={{'comment': <K>}})",
+            )
+        raise BadInput(
+            f"{kind} refs are not deletable through delete()",
+            next=[
+                f"retire a phantom stub: edit(kind={kind!r}, id={id}, "
+                "args={'retire': True, 'reason': '<why>'})",
+                f"hide a note: delete(kind={kind!r}, id={id}, args={{'comment': <K>}})",
+            ],
+        )
+
+    def _note_window(
+        self, ref: Ref, notes: list[ChunkRow], args: dict[str, Any] | None
+    ) -> _NoteWindow:
+        """Validate ``args={'comment'|'comments'}`` into a window —
+        :meth:`GripeHandler._comment_window`'s grammar on note numbers."""
+        kind = self.spec.kind
+        args = args or {}
+        comment = args.get("comment")
+        comments_sel = args.get("comments")
+        if comment is not None and comments_sel is not None:
+            raise BadInput(
+                "pass args={'comment': K} or args={'comments': K}, not both",
+                next=(
+                    f"get(kind={kind!r}, id='{_pa(ref)}', view='comments', "
+                    "args={'comments': 5})"
+                ),
+            )
+        numbers = sorted(_note_number(c) for c in notes)
+        have = (
+            f"comments on {kind} {_pa(ref)}: {numbers}"
+            if numbers
+            else f"{kind} {_pa(ref)} has no comments"
+        )
+        if comment is not None:
+            try:
+                number = int(comment)
+            except (TypeError, ValueError):
+                raise BadInput(
+                    f"args['comment'] must be a comment number, got {comment!r}",
+                    next=have,
+                ) from None
+            if number not in numbers:
+                raise BadInput(f"{kind} {_pa(ref)} has no comment {number}", next=have)
+            return _NoteWindow(only=number)
+        if comments_sel is not None:
+            text = str(comments_sel).strip()
+            lo_s, sep, hi_s = text.partition("-")
+            if sep and lo_s.isdigit() and (hi_s.isdigit() or hi_s == ""):
+                lo, hi = int(lo_s), int(hi_s) if hi_s else None
+                if lo < 1 or (hi is not None and hi < lo):
+                    raise BadInput(
+                        "args['comments'] range must be 'A-B' with "
+                        f"1 <= A <= B, got {comments_sel!r}",
+                        next=have,
+                    )
+                if not any(
+                    lo <= _note_number(c) and (hi is None or _note_number(c) <= hi)
+                    for c in notes
+                ):
+                    raise BadInput(
+                        f"{kind} {_pa(ref)} has no comments in range {text!r}",
+                        next=have,
+                    )
+                return _NoteWindow(lo=lo, hi=hi)
+            try:
+                count = int(text)
+            except (TypeError, ValueError):
+                raise BadInput(
+                    f"args['comments'] must be a count or 'A-B' range, "
+                    f"got {comments_sel!r}",
+                    next=(
+                        f"get(kind={kind!r}, id='{_pa(ref)}', view='comments', "
+                        "args={'comments': 5})"
+                    ),
+                ) from None
+            if count < 1:
+                raise BadInput(
+                    f"args['comments'] must be >= 1, got {count}",
+                    next=(
+                        f"get(kind={kind!r}, id='{_pa(ref)}', view='comments', "
+                        "args={'comments': 5})"
+                    ),
+                )
+            return _NoteWindow(last=count)
+        return _NoteWindow()
+
+    def _render_comments_view(
+        self, ref: Ref, args: dict[str, Any] | None = None
+    ) -> Response:
+        """``view='comments'`` — the full note timeline, oldest first,
+        hidden notes marked; selectable by
+        ``args={'comment': K}`` / ``args={'comments': K|'A-B'}``."""
+        notes = self._note_chunks(ref.id)
+        w = self._note_window(ref, notes, args)
+        section = tl.render_comment_view(
+            ref,
+            notes,
+            kind=self.spec.kind,
+            last=w.last,
+            only=w.only,
+            lo=w.lo,
+            hi=w.hi,
+            number_of=_note_number,
+        )
+        if not section:
+            section = (
+                "no comments — "
+                f"put(kind={self.spec.kind!r}, id='{_pa(ref)}', text='...') "
+                "adds a note"
+            )
+        return Response(body=f"# {_pa(ref)} — comments\n\n{section}")
 
     def _edit_args(
         self, ref_id: int, args: dict[str, Any] | None, *, dry: bool
@@ -6577,6 +6900,17 @@ class PaperHandler(Handler):
         body += render_links_section(
             self.store, ref, limit=DEFAULT_LINK_ROW_CAP, priority=True
         )
+        # Append-only note timeline (gr521094): the overview shows the
+        # newest note in full + older one-liners; view='comments' is the
+        # complete read.
+        notes = tl.render_comments(
+            ref,
+            self._note_chunks(ref.id),
+            kind=self.spec.kind,
+            number_of=_note_number,
+        )
+        if notes:
+            body += "\n\n" + notes
         return Response(body=body)
 
     def _render_ops_view(
@@ -7078,6 +7412,9 @@ class PaperHandler(Handler):
             from precis.handlers._paper_tables import render_tables_view
 
             return render_tables_view(self.store, ref, args=args)
+
+        if view == "comments":
+            return self._render_comments_view(ref, args)
 
         if view == "measures":
             from precis.handlers._paper_measures import render_measures_view
@@ -8777,6 +9114,10 @@ _VIEW_KWARG_ALIASES: dict[str, str] = {
     "cite/bibtex": "bibtex",
     "cite/ris": "ris",
     "cite/endnote": "endnote",
+    # The note timeline reads 'notes' as 'comments' — the stored
+    # chunk_kind is paper_note but the timeline machinery's vocabulary
+    # is comments (gr521094).
+    "notes": "comments",
 }
 
 
