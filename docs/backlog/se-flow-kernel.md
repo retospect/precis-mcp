@@ -352,7 +352,10 @@ commit carrying this line; `git log` has the sha.*
      modules are built in code, while place/route/DRC stay server
      services, like relax.
    - **Build-step stack cache** (ruled, Reto 2026-10-23; general kit
-     infra at both scales, not a chamber special case). `build(recipe)`
+     infra at both scales, not a chamber special case). The cache
+     itself (`precis_geom.steps`) is built by
+     [molecular-workspace-code](molecular-workspace-code.md) slice 0;
+     this slice keeps the per-step cost/rebuild report over it. `build(recipe)`
      is a stack — generally a DAG — of primitive and 3-D manipulation
      steps (box, extrude, drill, boolean, fillet, wrap, relax…). Each
      step's output is memoised under `step key = hash(step name, its

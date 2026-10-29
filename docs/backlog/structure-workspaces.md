@@ -61,7 +61,10 @@ read MCP over a socket) and [agent-workspace-containers](agent-workspace-contain
    renders, relax dispatch, catalogue. The generators become the importable
    core library (§Packaging); the construction-op surface shrinks on a
    timeline (§MCP surface).
-6. **Relax is a service, cached.** Scripts never relax. A block's manifest
+6. **Relax is a service, cached.** Scripts never relax (amended
+   2026-10-29 for a cached quick collapse check only —
+   [molecular-workspace-code](molecular-workspace-code.md) §Collapse
+   check; the service relax stays the record). A block's manifest
    entry declares `relax: {method, constraints}`; the importer dispatches
    the existing compute path and links the relaxed variant `derived-from`
    its seed. Lookups are keyed `(function, version, params sha, method)`
@@ -1183,6 +1186,10 @@ change — the op refuses with `next=` naming the workspace path (the
 blocks keep their coordinates and `regenerate` keeps working through the
 core wheel (same functions). Until slice 1 lands they stay as-is (nothing
 else to build with). Pose, connect and the small edits stay.
+**Amended (Reto 2026-10-29):** the removal no longer waits for the
+sandbox lane — it ships once [molecular-workspace-code](molecular-workspace-code.md)
+slices 1, 2 and 5 cover what the ops build, with `next=` naming the
+`import_workspace` path (script on the host, tar upload).
 
 **Script-made rows are read-only to construction ops** (Reto,
 2026-10-22). A surviving op that would change geometry a workspace run
