@@ -337,6 +337,11 @@ def _norm(out: str, **refs: Any) -> str:
     pairs = sorted(((_handle(r), n) for n, r in refs.items()), key=lambda p: -len(p[0]))
     for handle, name in pairs:
         out = re.sub(rf"(?<![A-Za-z0-9]){re.escape(handle)}(?!\d)", f"<{name}>", out)
+    # gr524009: the head's age/read chip and each row's `· -Nd` age are
+    # pinned separately (test_ref_reads, test_eye_render); these goldens
+    # pin ring structure — normalise the volatile dressing out.
+    out = re.sub(r" +\[created -[^\]]*\]", "", out)
+    out = re.sub(r" · -\d+[a-z]+(?=\n|  \[|$)", "", out)
     return out
 
 

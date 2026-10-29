@@ -2080,11 +2080,23 @@ def _reconcile_orphan_stub(
         "   AND d.id_value = s.id_value",
         (stub_id, survivor_ref_id),
     )
-    conn.execute(
-        "UPDATE ref_identifiers SET ref_id = %s "
-        "WHERE ref_id = %s AND id_kind = 'cite_key_alias'",
-        (survivor_ref_id, stub_id),
-    )
+    moved_aliases = [
+        str(r[0])
+        for r in conn.execute(
+            "UPDATE ref_identifiers SET ref_id = %s "
+            "WHERE ref_id = %s AND id_kind = 'cite_key_alias' "
+            "RETURNING id_value",
+            (survivor_ref_id, stub_id),
+        ).fetchall()
+    ]
+    if moved_aliases:
+        from precis.store.paper_rekey import record_rehomed_cite_keys
+
+        # The stub's cite_key stays on the retired row, but its alias
+        # redirects just moved — record them so a restore puts them
+        # back on the stub instead of leaving them claiming the
+        # survivor.
+        record_rehomed_cite_keys(conn, stub_id, [], rehomed_aliases=moved_aliases)
     _merge_cleared_markers(conn, survivor_ref_id=survivor_ref_id, loser_ref_id=stub_id)
     _merge_dropped_markers(conn, survivor_ref_id=survivor_ref_id, loser_ref_id=stub_id)
 

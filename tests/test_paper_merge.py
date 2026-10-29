@@ -226,6 +226,35 @@ class TestMergeRefusals:
         with pytest.raises(BadInput, match="record itself"):
             _call(handler, f"pa{ref}", f"pa{ref}")
 
+    def test_merge_alias_address_refused(
+        self, store: Store, handler: PaperHandler
+    ) -> None:
+        """gr524022 follow-up: a merged loser's old key resolves to the
+        survivor through ``cite_key_alias`` — merge_into addressed by
+        that slug would fold the SURVIVOR. Refuse, naming the survivor
+        handle + the loser's ``garden restore`` path."""
+        from precis.ingest.dedup import merge_duplicate
+
+        winner = _seed_paper(store, "survaliasmerge1", year=2020)
+        loser = _seed_paper(store, "lostaliasmerge1", year=2020)
+        with store.tx() as conn:
+            merge_duplicate(
+                store,
+                survivor_ref_id=winner,
+                duplicate_ref_id=loser,
+                source="test",
+                reason="dup",
+                conn=conn,
+            )
+        other = _seed_paper(store, "othertgtmerge1", year=2020)
+        with pytest.raises(BadInput, match="merged alias") as exc:
+            _call(handler, "lostaliasmerge1", f"pa{other}")
+        assert f"pa{winner}" in exc.value.cause
+        nxt = exc.value.next
+        assert nxt is not None and f"pa{loser}" in nxt
+        assert not _is_retired(store, winner)
+        assert not _is_retired(store, other)
+
     def test_missing_reason_refused(self, store: Store, handler: PaperHandler) -> None:
         loser = _seed_paper(store, "nrloser2020", year=2020)
         winner = _seed_paper(store, "nrwinner2020", year=2020)
@@ -342,6 +371,41 @@ class TestMergeDispatch:
             },
         )
         assert not is_error, body
+        assert _is_retired(store, loser)
+
+    def test_merge_via_dispatch_handle_shaped_cite_key(
+        self, runtime_with_store: PrecisRuntime
+    ) -> None:
+        """gr524004: a live ``pa<id>`` in ``id=`` must resolve by ref id
+        for the merge door — never through the cite_key, which can spell
+        like another kind's handle (``dr00`` parses as draft ``dr00``)."""
+        store = runtime_with_store.store
+        assert store is not None
+        loser = _seed_paper(store, "dr00", year=2020)
+        winner = _seed_paper(store, "dispwinner2032", year=2020)
+        body, is_error = runtime_with_store.dispatch_with_status(
+            "edit",
+            {
+                "kind": "paper",
+                "id": f"pa{loser}",
+                "__extras__": {
+                    "merge_into": f"pa{winner}",
+                    "reason": "confirmed dup",
+                },
+            },
+        )
+        assert not is_error, body
+        assert _is_retired(store, loser)
+
+    def test_merge_with_handle_shaped_cite_key_id(
+        self, store: Store, handler: PaperHandler
+    ) -> None:
+        """gr524004: the cite_key spelling itself must still reach the
+        ref — ``dr00`` is a paper slug even though it parses as a draft
+        handle."""
+        loser = _seed_paper(store, "dr00", year=2020)
+        winner = _seed_paper(store, "ckwinner2032", year=2020)
+        _call(handler, "dr00", f"pa{winner}")
         assert _is_retired(store, loser)
 
     def test_merge_into_on_tombstone_hits_tombstone_not_survivor(

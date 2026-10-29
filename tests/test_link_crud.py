@@ -27,6 +27,7 @@ from precis.errors import BadInput, NotFound, Unsupported
 from precis.handlers.gripe import GripeHandler
 from precis.handlers.memory import MemoryHandler
 from precis.handlers.todo import TodoHandler
+from precis.ingest.dedup import merge_refs
 from precis.store import ChunkInsert, Store
 from precis.store.types import Relation
 from precis.utils import handle_registry
@@ -446,17 +447,21 @@ class TestStoreMergeRefs:
         # An inbound edge to the victim that must survive the merge.
         store.add_link(src_ref_id=other, dst_ref_id=victim, relation="related-to")
 
-        migrated = store.merge_refs(victim, survivor)
+        migrated = merge_refs(store, victim, survivor)
         assert migrated == 1
-        # The edge now points at the survivor; the victim has none left.
+        # The edge now points at the survivor; the victim keeps only the
+        # tombstone's ``supersedes`` pointer back to it (gr524021).
         in_survivor = store.links_for(survivor, direction="in")
         assert len(in_survivor) == 1 and in_survivor[0].src_ref_id == other
-        assert store.links_for(victim, direction="both") == []
+        victim_links = store.links_for(victim, direction="both")
+        assert len(victim_links) == 1
+        assert victim_links[0].relation == "supersedes"
+        assert victim_links[0].src_ref_id == survivor
 
     def test_merge_soft_deletes_the_victim(self, store: Store) -> None:
         survivor = _seed_paper(store, slug="keepme2021")
         victim = _seed_paper(store, slug="dropme2021")
-        store.merge_refs(victim, survivor)
+        merge_refs(store, victim, survivor)
         live = store.fetch_refs_by_ids([survivor, victim], include_deleted=False)
         assert survivor in live
         assert victim not in live  # retired
@@ -472,7 +477,7 @@ class TestStoreMergeRefs:
         with pytest.raises(BadInput, match="already belongs to ref"):
             store.set_ref_identifier(survivor, "doi", "10.1234/dup.2022")
 
-        store.merge_refs(victim, survivor)
+        merge_refs(store, victim, survivor)
         # After the merge it can be assigned to the survivor.
         store.set_ref_identifier(survivor, "doi", "10.1234/dup.2022")
         assert store.find_paper_ref_by_identifier("10.1234/dup.2022") == survivor
@@ -521,7 +526,46 @@ class TestStoreMergeRefs:
     def test_merge_into_self_rejected(self, store: Store) -> None:
         a = _seed_paper(store, slug="self2023")
         with pytest.raises(BadInput, match="cannot merge a ref into itself"):
-            store.merge_refs(a, a)
+            merge_refs(store, a, a)
+
+    def test_merge_stamps_supersede_redirect(self, store: Store) -> None:
+        """gr524021: the folded victim is a real merge tombstone —
+        ``meta.superseded_by`` + the ``supersedes`` edge + audit events —
+        so its ``pa`` handle resolves to the survivor instead of
+        ``NotFound``-ing."""
+        survivor = _seed_paper(store, slug="keepsurv2033")
+        victim = _seed_paper(store, slug="folded2033")
+        merge_refs(store, victim, survivor)
+        ref = store.fetch_refs_by_ids([victim], include_deleted=True)[victim]
+        assert ref.retired_at is not None
+        assert (ref.meta or {}).get("superseded_by") == survivor
+        resolved = store.resolve_handle(f"pa{victim}")
+        assert resolved is not None and resolved.ref_id == survivor
+        events = {e.event for e in store.events_for(survivor)}
+        assert "duplicate_merged" in events
+
+    def test_redirect_to_repairs_half_tombstone(self, store: Store, hub: Hub) -> None:
+        """gr524021: a retired ref with no ``superseded_by`` — the old
+        merge_refs signature — takes ``redirect_to`` as a repair: the
+        caller names the survivor and the door stamps the pointer."""
+        from precis.handlers.paper import PaperHandler
+
+        handler = PaperHandler(hub=hub)
+        survivor = _seed_paper(store, slug="surv2035")
+        victim = _seed_paper(store, slug="half2035")
+        # Simulate the old fold: retired, identifiers dropped, no pointer.
+        with store.pool.connection() as conn:
+            conn.execute("DELETE FROM ref_identifiers WHERE ref_id = %s", (victim,))
+        store.retire_ref(victim)
+
+        resp = handler.edit(
+            id=f"pa{victim}",
+            args={"redirect_to": f"pa{survivor}", "reason": "folded, no pointer"},
+        )
+        ref = store.fetch_refs_by_ids([victim], include_deleted=True)[victim]
+        assert (ref.meta or {}).get("superseded_by") == survivor
+        assert store.follow_supersede(victim) == survivor
+        assert "redirect stamped" in resp.body
 
 
 # ── relations vocabulary: literal vs schema parity ─────────────────

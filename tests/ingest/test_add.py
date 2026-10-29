@@ -609,6 +609,57 @@ class TestReconcileOrphanStub:
         # supersedes edge recorded for audit.
         assert link is not None
 
+    def test_folded_stub_alias_returns_on_restore(self, store):
+        """The stub's ``cite_key_alias`` redirects fold onto the
+        survivor and are recorded on the stub
+        (``meta.rehomed_cite_key_aliases``); restoring the stub puts
+        them back AS aliases instead of leaving them claiming the
+        survivor."""
+        survivor = store.insert_ref(
+            kind="paper", slug="lee24d", title="Atomic evolution of hydrogen"
+        )
+        stub = store.insert_ref(
+            kind="paper", slug="atomic24c", title="Atomic evolution (stub)"
+        )
+        with store.pool.connection() as conn:
+            conn.execute(
+                "INSERT INTO ref_identifiers (ref_id, id_kind, id_value, source) "
+                "VALUES (%s, 'cite_key_alias', 'atomicstub24old', 'manual')",
+                (stub.id,),
+            )
+            conn.commit()
+
+        with store.pool.connection() as conn:
+            merged = _reconcile_orphan_stub(
+                store,
+                survivor_ref_id=survivor.id,
+                file_stem="atomic24c",
+                conn=conn,
+            )
+            conn.commit()
+        assert merged == stub.id
+        # The redirect moved to the survivor and the move is on record.
+        assert (
+            store.find_ref_by_identifier("cite_key_alias", "atomicstub24old")
+            == survivor.id
+        )
+        stub_meta = dict(
+            store.fetch_refs_by_ids([stub.id], include_deleted=True)[stub.id].meta or {}
+        )
+        assert stub_meta["rehomed_cite_key_aliases"] == ["atomicstub24old"]
+
+        assert store.restore_superseded_ref(stub.id) is True
+        # Back on the stub as its own redirect; the marker is cleared.
+        assert (
+            store.find_ref_by_identifier("cite_key_alias", "atomicstub24old") == stub.id
+        )
+        assert store.find_ref_by_identifier("cite_key", "atomicstub24old") is None
+        stub_meta = dict(
+            store.fetch_refs_by_ids([stub.id], include_deleted=True)[stub.id].meta or {}
+        )
+        assert "rehomed_cite_key_aliases" not in stub_meta
+        assert "superseded_by" not in stub_meta
+
     def test_orphan_stub_fold_rejects_title_mismatch(self, store, caplog):
         """gr264748 (pa42497 -> pa42939): a stub named by handle whose title
         shares nothing with the PDF's ref/body is left live."""

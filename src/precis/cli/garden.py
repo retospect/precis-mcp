@@ -229,7 +229,10 @@ def _restore(args: argparse.Namespace, store: Store) -> None:
         "retired_at, meta.superseded_by and meta.dedup cleared; "
         "incoming supersedes edges removed. Identifiers, body/PDF, "
         "bibliography references and ordinary links are not moved back; "
-        "audit history is preserved."
+        "audit history is preserved. cite_keys the merge re-homed to the "
+        "survivor move back onto the restored ref, and the loser's own "
+        "cite_key_alias redirects move back as aliases — survivor-owned "
+        "keys stay put."
     )
     with (
         revision_context(
@@ -241,22 +244,104 @@ def _restore(args: argparse.Namespace, store: Store) -> None:
         store.tx() as conn,
     ):
         # Resolve and lock the original row together: normal handle resolution
-        # follows the redirect and would restore the winner instead.
-        row = conn.execute(
-            "SELECT r.ref_id, r.kind, r.retired_at, r.meta FROM refs r WHERE "
-            + (
-                "r.ref_id = %s"
-                if numeric
-                else "r.kind = 'paper' AND EXISTS ("
-                "SELECT 1 FROM ref_identifiers i WHERE i.ref_id = r.ref_id "
-                "AND i.id_kind = 'cite_key' AND i.id_value = %s)"
+        # follows the redirect and would restore the winner instead. A merged
+        # ref's cite_key no longer sits on the tombstone — the gr524022 fold
+        # re-homes it as cite_key_alias on the survivor and stamps the moved
+        # sets on the loser (meta.rehomed_cite_keys /
+        # meta.rehomed_cite_key_aliases) — so the marker, not any alias on
+        # the survivor, pins which loser owned the key. A live ref
+        # that holds the key outright only matches when no retired ref
+        # claims it (the marker wins — it is the merge's own record).
+        if numeric:
+            rows = conn.execute(
+                "SELECT r.ref_id, r.kind, r.retired_at, r.meta "
+                "FROM refs r WHERE r.ref_id = %s FOR UPDATE OF r",
+                (int(numeric[1]),),
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                "SELECT r.ref_id, r.kind, r.retired_at, r.meta, "
+                "COALESCE(r.meta->'rehomed_cite_keys' ? %s, false) "
+                "AS keyed "
+                "FROM refs r WHERE "
+                "r.kind = 'paper' AND ("
+                "  (r.retired_at IS NOT NULL "
+                "   AND (r.meta->'rehomed_cite_keys' ? %s "
+                "        OR r.meta->'rehomed_cite_key_aliases' ? %s)) "
+                "  OR (EXISTS (SELECT 1 FROM ref_identifiers i "
+                "              WHERE i.ref_id = r.ref_id "
+                "                AND i.id_kind = 'cite_key' "
+                "                AND i.id_value = %s) "
+                "      AND NOT EXISTS (SELECT 1 FROM refs l "
+                "                      WHERE l.retired_at IS NOT NULL "
+                "                        AND (l.meta->'rehomed_cite_keys' "
+                "                             ? %s "
+                "                             OR l.meta->"
+                "'rehomed_cite_key_aliases' ? %s)))) "
+                "ORDER BY keyed DESC, r.retired_at DESC, r.ref_id "
+                "FOR UPDATE OF r",
+                (address, address, address, address, address, address),
+            ).fetchall()
+        if len(rows) > 1 and bool(rows[1][4]) == bool(rows[0][4]):
+            # Ambiguous only among same-rank claims: a rehomed_cite_keys
+            # match outranks an alias-only one — the key's true owner is
+            # the loser it was taken from, not a later fold the redirect
+            # moved through — so a unique top rank wins outright.
+            tied = [r for r in rows if bool(r[4]) == bool(rows[0][4])]
+            ids = ", ".join(f"pa{r[0]}" for r in tied)
+            raise BadInput(
+                f"{address!r} resolves to {len(tied)} merged papers — "
+                f"address one by id: {ids}",
+                next=[f"precis garden restore pa{r[0]}" for r in tied],
             )
-            + " FOR UPDATE OF r",
-            (int(numeric[1]) if numeric else address,),
-        ).fetchone()
+        row = rows[0] if rows else None
+        if row is None and not numeric:
+            # Pre-marker merges (folded before the rehomed_cite_keys
+            # record existed) leave no claim, so the query above finds
+            # nothing — and a live-alias hit below would read "already
+            # live" while the loser stays retired. Fall back to the old
+            # resolution: chase the cite_key_alias to its holder, then
+            # the holder's supersedes edge back to the loser. A survivor
+            # that absorbed several losers can't be pinned by key alone
+            # — refuse and name each candidate's explicit id. One marker
+            # still vetoes the chase even here: a value recorded as a
+            # loser's adopted_displaced_key is provably the SURVIVOR's
+            # own pre-merge key, never any loser's — the PK puts that
+            # alias on the survivor the marker names.
+            rows = conn.execute(
+                "SELECT r.ref_id, r.kind, r.retired_at, r.meta "
+                "FROM refs r WHERE r.kind = 'paper' "
+                "AND EXISTS (SELECT 1 FROM ref_identifiers i "
+                "            JOIN links l ON l.src_ref_id = i.ref_id "
+                "              AND l.relation = 'supersedes' "
+                "            WHERE l.dst_ref_id = r.ref_id "
+                "              AND i.id_kind = 'cite_key_alias' "
+                "              AND i.id_value = %s) "
+                "AND NOT EXISTS (SELECT 1 FROM refs l "
+                "               WHERE l.retired_at IS NOT NULL "
+                "                 AND l.meta->>'adopted_displaced_key' "
+                "                     = %s) "
+                "FOR UPDATE OF r",
+                (address, address),
+            ).fetchall()
+            if len(rows) > 1:
+                ids = ", ".join(f"pa{r[0]}" for r in rows)
+                raise BadInput(
+                    f"{address!r} resolves to {len(rows)} merged papers — "
+                    f"address one by id: {ids}",
+                    next=[f"precis garden restore pa{r[0]}" for r in rows],
+                )
+            row = rows[0] if rows else None
         if row is None:
+            # No retired ref claims the key — but it may still resolve to a
+            # LIVE ref through a cite_key_alias (the survivor's own displaced
+            # key, or an adopted key). Say that plainly instead of NotFound.
+            live = store.get_ref(kind="paper", id=address)
+            if live is not None:
+                print(f"no change: pa{live.id} is already live.")
+                return
             raise NotFound(f"no paper ref for {address!r}")
-        ref_id, kind, retired_at, meta = row
+        ref_id, kind, retired_at, meta = row[0], row[1], row[2], row[3]
         if kind != "paper":
             raise BadInput(f"ref {ref_id} is {kind}, not paper")
         handle = f"pa{ref_id}"
@@ -282,10 +367,19 @@ def _restore(args: argparse.Namespace, store: Store) -> None:
                 next=f"edit(kind='paper', id='{handle}', "
                 "args={'retire': False, 'reason': '<why>'})",
             )
+        notes: list[str] = []
         if args.dry_run:
+            # Run the real restore inside a savepoint that always rolls
+            # back — a dry run surfaces the same refusals (and notes)
+            # the real run would raise instead of promising a restore
+            # that then refuses.
+            with conn.transaction(force_rollback=True):
+                store.restore_superseded_ref(ref_id, conn=conn, notes=notes)
             print(f"DRY RUN (no write) — would restore {handle}: {scope}")
+            for note in notes:
+                print(f"  note: {note}")
             return
-        store.restore_superseded_ref(ref_id, conn=conn)
+        store.restore_superseded_ref(ref_id, conn=conn, notes=notes)
         store.append_event(
             ref_id,
             source="garden.restore",
@@ -298,6 +392,8 @@ def _restore(args: argparse.Namespace, store: Store) -> None:
             conn=conn,
         )
     print(f"restored {handle}: {scope}")
+    for note in notes:
+        print(f"  note: {note}")
 
 
 def _review(args: argparse.Namespace, store: Store) -> None:

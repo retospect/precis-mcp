@@ -928,9 +928,12 @@ class FakeStore(_FakeStoreBase):
 
     def merge_refs(self, victim_ref_id, survivor_ref_id):
         """Record a duplicate-merge: soft-delete the victim (mirrors the real
-        store's atomic migrate-links + free-identifiers + soft-delete) and
+        merge's atomic migrate-links + free-identifiers + soft-delete) and
         log the pair so the resolve-duplicate route's two directions can be
-        asserted. Returns a canned migrated-link count."""
+        asserted. The route calls ``dedup.merge_refs`` (store is the bottom
+        layer — the fold lives at ingest), so route tests monkeypatch the
+        ``papers.merge_refs`` binding onto this method. Returns a canned
+        migrated-link count."""
         from precis.errors import BadInput
 
         if victim_ref_id == survivor_ref_id:

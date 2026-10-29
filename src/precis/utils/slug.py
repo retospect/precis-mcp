@@ -17,7 +17,7 @@ import hashlib
 import re
 from collections.abc import Callable
 
-from precis.identity import _ascii_fold
+from precis.identity import _ascii_fold, _drop_paren_honorifics
 
 # Stopwords skipped when picking the first content word from a title.
 # Kept small and conservative — anything ambiguous (e.g. ``via``) is
@@ -60,7 +60,7 @@ def _first_author(authors: list[str]) -> str:
     """
     if not authors:
         return ""
-    first = (authors[0] or "").strip()
+    first = _drop_paren_honorifics(authors[0] or "").strip()
     if not first:
         return ""
     # Comma form: "Last, First"

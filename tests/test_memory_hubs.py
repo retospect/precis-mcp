@@ -3,6 +3,7 @@ write-path ``Next:`` link hints, and the hub columns of the export manifest."""
 
 from __future__ import annotations
 
+import re
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -72,8 +73,14 @@ def test_hub_lists_every_member_one_line_with_hook(hub: Hub) -> None:
 
     assert f"  contains ({len(members)}):" in out
     assert "… +" not in out.split("related-to")[0]
-    assert f"    {_h(hooked)} — Hooked  [{SPACE_TAG}] — the hook text" in out
-    assert f"    {_h(bodied)} — Bodied  [{SPACE_TAG}] — first line of body" in out
+    assert re.search(
+        rf"    {_h(hooked)} — Hooked · -\d+s  \[{SPACE_TAG}\] — the hook text",
+        out,
+    )
+    assert re.search(
+        rf"    {_h(bodied)} — Bodied · -\d+s  \[{SPACE_TAG}\] — first line of body",
+        out,
+    )
     member_rows = [ln for ln in out.splitlines() if ln.startswith("    me")]
     assert len(member_rows) == len(members) + _NEIGHBOR_GROUP_CAP
     assert f"  related-to ({_NEIGHBOR_GROUP_CAP + 2}):" in out

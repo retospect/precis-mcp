@@ -2667,12 +2667,21 @@ def test_paper_edit_duplicate_identifier_renders_resolver(
 
 
 def test_resolve_duplicate_keep_this_absorbs_owner_and_reapplies_edit(
-    client, runtime
+    client, runtime, monkeypatch
 ) -> None:
     """``keep=this`` merges the owner into this paper (link migration +
     identifier free-up + soft-delete) and re-applies the pending edit, which
     now succeeds since the clashing DOI is free."""
+    from precis_web.routes import papers as papers_routes
+
     store = runtime.store
+    # The route calls dedup.merge_refs(store, victim, survivor); the fake
+    # store's merge_refs method stands in (records merges, retires victim).
+    monkeypatch.setattr(
+        papers_routes,
+        "merge_refs",
+        lambda s, victim, survivor, **kw: s.merge_refs(victim, survivor),
+    )
     resp = client.post(
         "/papers/10/resolve-duplicate",
         data={
@@ -2695,10 +2704,19 @@ def test_resolve_duplicate_keep_this_absorbs_owner_and_reapplies_edit(
     assert edit_calls[-1]["title"] == "Recovered title"
 
 
-def test_resolve_duplicate_keep_other_absorbs_this(client, runtime) -> None:
+def test_resolve_duplicate_keep_other_absorbs_this(
+    client, runtime, monkeypatch
+) -> None:
     """``keep=other`` keeps the existing paper and absorbs this copy into it
     (this paper's links migrate onto the owner; this copy is retired)."""
+    from precis_web.routes import papers as papers_routes
+
     store = runtime.store
+    monkeypatch.setattr(
+        papers_routes,
+        "merge_refs",
+        lambda s, victim, survivor, **kw: s.merge_refs(victim, survivor),
+    )
     resp = client.post(
         "/papers/10/resolve-duplicate",
         data={"owner_id": "11", "keep": "other"},

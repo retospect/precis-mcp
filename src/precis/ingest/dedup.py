@@ -36,6 +36,7 @@ from typing import Any
 
 from psycopg.types.json import Jsonb
 
+from precis.errors import BadInput
 from precis.ingest.pdf_sidecar import is_garbage_title, is_pii
 from precis.store import Store, Tag
 from precis.store._body_predicate import has_body_sql
@@ -524,7 +525,7 @@ def merge_duplicate(
     source: str,
     reason: str,
     conn: Any,
-) -> None:
+) -> int:
     """Fold ``duplicate_ref_id`` into ``survivor_ref_id`` (must run in a tx).
 
     Migrates external identifiers + links to the survivor, records the
@@ -583,7 +584,10 @@ def merge_duplicate(
     # drafts that cite the loser's old keys. The survivor may already
     # hold the same alias value — drop the loser's copy first (the PK
     # is (id_kind, id_value); first claim wins, the survivor's alias
-    # points at the same ref set anyway).
+    # points at the same ref set anyway). The moved set is recorded on
+    # the loser (meta.rehomed_cite_key_aliases, stamped at the record
+    # call below) so a restore puts them back on the loser — not left
+    # claiming the survivor.
     conn.execute(
         "DELETE FROM ref_identifiers d USING ref_identifiers s "
         " WHERE d.ref_id = %s AND s.ref_id = %s "
@@ -591,11 +595,15 @@ def merge_duplicate(
         "   AND d.id_value = s.id_value",
         (duplicate_ref_id, survivor_ref_id),
     )
-    conn.execute(
-        "UPDATE ref_identifiers SET ref_id = %s "
-        "WHERE ref_id = %s AND id_kind = 'cite_key_alias'",
-        (survivor_ref_id, duplicate_ref_id),
-    )
+    moved_aliases = [
+        str(r[0])
+        for r in conn.execute(
+            "UPDATE ref_identifiers SET ref_id = %s "
+            "WHERE ref_id = %s AND id_kind = 'cite_key_alias' "
+            "RETURNING id_value",
+            (survivor_ref_id, duplicate_ref_id),
+        ).fetchall()
+    ]
     _merge_cleared_markers(
         conn, survivor_ref_id=survivor_ref_id, loser_ref_id=duplicate_ref_id
     )
@@ -611,7 +619,7 @@ def merge_duplicate(
         conn=conn,
     )
     # (b) Graph edges → survivor (self-loops + dup rows dropped internally).
-    store.migrate_links(duplicate_ref_id, survivor_ref_id, conn=conn)
+    migrated = store.migrate_links(duplicate_ref_id, survivor_ref_id, conn=conn)
     # (b2) Repoint bib entries that already resolved to the loser — else
     # they keep citing a soft-deleted ref forever (nothing else re-checks
     # a bib entry once match_conf is set; see resolve.py's retired_at
@@ -627,6 +635,49 @@ def merge_duplicate(
         loser_ref_id=duplicate_ref_id,
         source=source,
         conn=conn,
+    )
+    # (b4) A junk-mint survivor key adopts the loser's non-junk key — on
+    # every merge, not only when (b3) just inherited the byline
+    # (gr524022: a survivor that already had authors kept ``dr00`` while
+    # the loser's real key died on the tombstone). No-op when the
+    # survivor's key isn't junk-shaped.
+    from precis.store.paper_rekey import (
+        record_rehomed_cite_keys,
+        remint_junk_cite_key,
+    )
+
+    remint_junk_cite_key(
+        store,
+        survivor_ref_id,
+        source=source,
+        conn=conn,
+        adopt_from_ref_id=duplicate_ref_id,
+    )
+    # (b5) The loser's live ``cite_key`` rows re-home on the survivor as
+    # ``cite_key_alias`` redirects (gr524022): a draft's
+    # ``\cite{<loserkey>}`` must keep resolving after the tombstone, and
+    # the value stays reserved against re-minting. When the remint
+    # adopted a key outright its rows already moved — this no-ops then.
+    # The moved set is stamped on the loser (meta.rehomed_cite_keys) so
+    # restore moves back exactly those keys — never a survivor-owned or
+    # another loser's alias.
+    rehomed = [
+        str(r[0])
+        for r in conn.execute(
+            "DELETE FROM ref_identifiers "
+            "WHERE ref_id = %s AND id_kind = 'cite_key' RETURNING id_value",
+            (duplicate_ref_id,),
+        ).fetchall()
+    ]
+    for key_value in rehomed:
+        conn.execute(
+            "INSERT INTO ref_identifiers (id_kind, id_value, ref_id, source) "
+            "VALUES ('cite_key_alias', %s, %s, %s) "
+            "ON CONFLICT DO NOTHING",
+            (key_value, survivor_ref_id, source),
+        )
+    record_rehomed_cite_keys(
+        conn, duplicate_ref_id, rehomed, rehomed_aliases=moved_aliases
     )
     # (c) supersedes edge + provenance on the loser.
     store.add_link(
@@ -667,6 +718,77 @@ def merge_duplicate(
         survivor_ref_id,
         reason,
     )
+    return migrated
+
+
+def merge_refs(
+    store: Store,
+    victim_ref_id: int,
+    survivor_ref_id: int,
+    *,
+    source: str = "web-resolve",
+    reason: str = "duplicate pair folded via the web resolver",
+) -> int:
+    """Absorb ``victim_ref_id`` into ``survivor_ref_id`` and retire the victim.
+
+    The duplicate-paper resolver's primitive (same DOI / arXiv held
+    twice). Delegates to :func:`merge_duplicate` in one transaction
+    (gr524021/22): links migrate onto the survivor, the migratable
+    external identifiers move with it (the uniqueness check ignores
+    ``retired_at``, so a bare soft-delete would leave them claimed),
+    the victim's ``cite_key`` re-homes as a ``cite_key_alias``
+    redirect, a junk survivor key adopts the victim's real one, and
+    the victim is soft-deleted with the ``supersedes`` edge +
+    ``meta.superseded_by`` pointer + audit events a handle follows to
+    the survivor — the old hand-rolled fold left a half-tombstone that
+    resolved to ``NotFound``.
+
+    Lives at the ingest layer, not on ``Store``: the fold needs ingest
+    machinery (body moves, junk-title heuristics) and store is the
+    bottom layer (import-linter contract).
+
+    Returns the number of migrated link rows. Raises ``BadInput`` on a
+    self-merge and ``NotFound`` (from ``store.retire_ref``) if the
+    victim is missing or already deleted.
+    """
+    if victim_ref_id == survivor_ref_id:
+        raise BadInput("cannot merge a ref into itself")
+    with store.tx() as conn:
+        return merge_duplicate(
+            store,
+            survivor_ref_id=survivor_ref_id,
+            duplicate_ref_id=victim_ref_id,
+            source=source,
+            reason=reason,
+            conn=conn,
+        )
+
+
+def find_half_tombstones(
+    store: Store, *, kind: str = "paper", ref_id: int | None = None
+) -> list[int]:
+    """Retired ``kind`` refs with no ``meta.superseded_by`` and no
+    ``ref_identifiers`` rows — the signature the pre-gr524021
+    ``merge_refs`` fold left (links migrated, identifiers dropped, no
+    supersede pointer). A plain delete keeps its identifiers, so a
+    zero-identifier tombstone is a fold-repair candidate: repair one
+    with ``edit(args={'redirect_to': <survivor>, 'reason': …})``.
+    ``ref_id`` narrows the sweep to one ref — the door's
+    zero-identifier check is ``ref.id in find_half_tombstones(...)``."""
+    sql = (
+        "SELECT r.ref_id FROM refs r "
+        "WHERE r.retired_at IS NOT NULL AND r.kind = %s "
+        "AND r.meta->>'superseded_by' IS NULL "
+        "AND NOT EXISTS (SELECT 1 FROM ref_identifiers ri "
+        "               WHERE ri.ref_id = r.ref_id) "
+    )
+    params: tuple[Any, ...] = (kind,)
+    if ref_id is not None:
+        sql += "AND r.ref_id = %s "
+        params = (kind, ref_id)
+    with store.pool.connection() as conn:
+        rows = conn.execute(sql + "ORDER BY r.ref_id", params).fetchall()
+    return [int(r[0]) for r in rows]
 
 
 # ---------------------------------------------------------------------------
@@ -1260,6 +1382,7 @@ __all__ = [
     "ReconcileOutcome",
     "TitleMatchReview",
     "merge_duplicate",
+    "merge_refs",
     "pick_survivor",
     "pick_survivor_keep_chunks",
     "reconcile_by_doi_case",

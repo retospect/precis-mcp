@@ -2721,6 +2721,7 @@ class RefsMixin:
         ref_id: int,
         *,
         conn: Connection | None = None,
+        notes: list[str] | None = None,
     ) -> bool:
         """Restore a merge loser; callers must authorize an operator first.
 
@@ -2729,8 +2730,23 @@ class RefsMixin:
         merges must use their full undo path: its record holds the only
         copy of the original links. Identifiers,
         body/PDF, ordinary links and audit history stay where the merge put
-        them. Inverse ``superseded-by`` edges are read-time projections.
+        them — the one exception is the cite_key material the merge
+        recorded as re-homed (``meta.rehomed_cite_keys`` back as live
+        keys, ``meta.rehomed_cite_key_aliases`` back as the loser's own
+        redirects), so drafts citing the loser's keys resolve to it
+        again.
+        Inverse ``superseded-by`` edges are read-time projections.
         Missing, live and plain-retired refs return False without writes.
+
+        ``notes``, when a list is passed, collects one human line per
+        recorded cite_key_alias value the move-back deliberately left
+        in place (a row a live ref outside the superseded_by chain
+        holds, a value a still-retired ref claims as its own rehomed
+        key, or a value another ref already holds as a live cite_key)
+        — the caller prints them in its ack so a partial move-back is
+        never silent. A live ref outside the chain holding the loser's
+        OWN key (or the survivor's displaced key) as an alias is a hard
+        conflict instead: the restore refuses before any write.
 
         The supplied connection joins the caller's transaction; the explicit
         transaction/savepoint makes the operation atomic even on autocommit.
@@ -2764,6 +2780,9 @@ class RefsMixin:
                     "SELECT set_config('precis.trust_origin', 'human', true), "
                     "set_config('precis.trust_actor_type', 'operator', true)"
                 )
+                self._move_rehomed_cite_keys_back(
+                    c, ref_id, int(row[1]), meta, notes if notes is not None else []
+                )
                 c.execute(
                     "DELETE FROM links WHERE dst_ref_id = %s "
                     "AND relation = 'supersedes'",
@@ -2771,12 +2790,362 @@ class RefsMixin:
                 )
                 c.execute(
                     "UPDATE refs SET retired_at = NULL, "
-                    "meta = meta - 'superseded_by' - 'dedup', "
+                    "meta = meta - 'superseded_by' - 'dedup' "
+                    "- 'rehomed_cite_keys' - 'rehomed_cite_key_aliases' "
+                    "- 'adopted_cite_key' - 'adopted_displaced_key', "
                     "updated_at = now() "
                     "WHERE ref_id = %s",
                     (ref_id,),
                 )
                 return True
+
+    def _move_rehomed_cite_keys_back(
+        self,
+        c: Connection,
+        ref_id: int,
+        survivor_id: int,
+        meta: dict[str, Any],
+        notes: list[str],
+    ) -> None:
+        """Return exactly the cite_key values a merge re-homed to the
+        survivor — the ``meta.rehomed_cite_keys`` the merge stamped on
+        the loser (gr524022). The ``cite_key_alias`` row for a recorded
+        value drops wherever it now sits (a chained re-merge may have
+        moved it on to a later survivor) and the value becomes a live
+        ``cite_key`` on the restored ref; survivor-owned and other
+        losers' aliases are never touched. The loser's own pre-merge
+        redirects (``meta.rehomed_cite_key_aliases``) likewise move
+        back onto the loser as ``cite_key_alias`` rows.
+
+        When the survivor *adopted* a value outright as its live
+        cite_key (``meta.adopted_cite_key``), and still holds it, the
+        survivor's own displaced key (``meta.adopted_displaced_key`` —
+        kept as its ``cite_key_alias``) goes back on the survivor first
+        so the adopted value frees up cleanly.
+
+        Every value about to become a live ``cite_key`` is checked
+        BEFORE any DELETE: a post-merge re-mint (or an unrelated ingest)
+        can claim the value while it sat as an alias, and the
+        ``ON CONFLICT DO NOTHING`` below would then silently drop the
+        INSERT — the loser ends with no identifiers, and in the adopt
+        leg the survivor ends with no key. A holder other than the
+        destination (or, for the adopted value, the survivor the
+        free-leg releases) refuses the whole restore; the transaction
+        rolls back with nothing changed.
+
+        The delete-by-value only takes a ``cite_key_alias`` row held by
+        the *survivor chain* — the refs the loser's tombstone chain runs
+        through (``superseded_by``, transitively) or a retired ref.
+        A live ref outside the chain holding the row is someone else's
+        claim: for the loser's OWN key or the survivor's displaced key
+        that is a hard conflict — the pre-flight check refuses the
+        restore before any write, naming the holder and the alias with
+        a ``next=`` that detaches it, the same shape as a live
+        cite_key holder. For the loser's own recorded *aliases* the
+        conflict is softer — the redirect can stay where it is while
+        the ref itself comes back — so the value is skipped with a
+        ``notes`` line instead of stolen, and a recorded alias whose
+        value is already a live ``cite_key`` anywhere is skipped the
+        same way (a restored alias would only shadow it). One more
+        alias-list skip: a value a STILL-RETIRED ref claims under its
+        own ``rehomed_cite_keys`` (an upstream loser in the same
+        chain, e.g. L1's key recorded on L2's alias list when
+        L1→L2→S folded) stays where it sits — the own-key claim
+        outranks an alias claim — but ONLY when that owner's
+        ``superseded_by`` chain does not pass through this ref. When it
+        does (a non-collapsed chain: L1.superseded_by == L2 while L2
+        restores), leaving the row on the survivor strands it — L1's
+        own later chain is {L1, L2} and S sits outside it as a live
+        holder, so the own-key pre-flight refuses. The row moves onto
+        this ref as an alias instead; the owner's later restore takes
+        it from a live chain member. A collapsed chain
+        (L1.superseded_by == S) does not pass through, so the row
+        still stays put for the owner's own restore.
+
+        Every value actually moved back is then stripped from other
+        retired refs' ``rehomed_cite_key_aliases`` — a chained re-merge
+        copies an upstream loser's values onto the next loser's alias
+        list, and a stale claim left behind would dual-claim the value
+        on that loser's later restore. The same strip touches another
+        ref's ``rehomed_cite_keys`` only for values this ref took back
+        as its OWN keys: an alias-list move never erases an own-key
+        claim, or restoring the downstream loser first (L2 before L1)
+        would erase L1's claim and L1 would come back keyless."""
+        rehomed_raw = meta.get("rehomed_cite_keys")
+        rehomed = [str(v) for v in rehomed_raw] if isinstance(rehomed_raw, list) else []
+        aliases_raw = meta.get("rehomed_cite_key_aliases")
+        aliases = [str(v) for v in aliases_raw] if isinstance(aliases_raw, list) else []
+        if not rehomed and not aliases:
+            return
+        adopted = meta.get("adopted_cite_key")
+        adopted = str(adopted) if adopted else None
+        prior = meta.get("adopted_displaced_key")
+        prior = str(prior) if prior else None
+        cur_key: str | None = None
+        if adopted is not None:
+            cur = c.execute(
+                "SELECT id_value FROM ref_identifiers "
+                "WHERE ref_id = %s AND id_kind = 'cite_key' LIMIT 1",
+                (survivor_id,),
+            ).fetchone()
+            cur_key = str(cur[0]) if cur is not None else None
+        # The survivor chain: this loser plus every ref its superseded_by
+        # chain runs through — the refs a chained re-merge may have
+        # moved the recorded alias rows onto.
+        chain: set[int] = {ref_id}
+        link_id: int | None = survivor_id
+        while link_id is not None and link_id not in chain:
+            chain.add(link_id)
+            nxt = c.execute(
+                "SELECT meta->>'superseded_by' FROM refs WHERE ref_id = %s",
+                (link_id,),
+            ).fetchone()
+            link_id = int(nxt[0]) if nxt is not None and nxt[0] else None
+        returned = [(v, ref_id) for v in rehomed]
+        if adopted is not None and cur_key == adopted and prior:
+            returned.append((prior, survivor_id))
+        for value, dest in returned:
+            holder = c.execute(
+                "SELECT ref_id FROM ref_identifiers "
+                "WHERE id_kind = 'cite_key' AND id_value = %s",
+                (value,),
+            ).fetchone()
+            holder_id = int(holder[0]) if holder is not None else None
+            if (
+                holder_id is not None
+                and holder_id != dest
+                and not (holder_id == survivor_id and value == adopted)
+            ):
+                raise BadInput(
+                    f"cannot restore cite_key {value!r} to pa{dest}: "
+                    f"pa{holder_id} holds it as a live cite_key",
+                    next=f"rekey the holder first (edit(kind='paper', "
+                    f"id='pa{holder_id}', args={{'cite_key': '<newkey>', "
+                    "'reason': '<why>'}})), then retry "
+                    f"precis garden restore pa{ref_id}",
+                )
+            outside = self._alias_held_outside_chain(c, value, chain)
+            if outside is not None:
+                raise BadInput(
+                    f"cannot restore cite_key {value!r} to pa{dest}: "
+                    f"pa{outside} holds it as a cite_key_alias outside "
+                    "the superseded_by chain",
+                    next=(
+                        f"detach the alias from pa{outside} first "
+                        f"(edit(kind='paper', id='pa{outside}', args="
+                        f"{{'drop_identifier': {{'scheme': "
+                        f"'cite_key_alias', 'value': '{value}'}}, "
+                        f"'reason': '<why>'}}), then retry "
+                        f"precis garden restore pa{ref_id}"
+                    ),
+                )
+        if adopted is not None and cur_key == adopted:
+            # The survivor still holds the adopted key as its live
+            # cite_key — restore the survivor's own pre-merge key
+            # first so the adopted value frees up for the loser.
+            c.execute(
+                "DELETE FROM ref_identifiers WHERE ref_id = %s "
+                "AND id_kind = 'cite_key' AND id_value = %s",
+                (survivor_id, adopted),
+            )
+            if prior:
+                c.execute(
+                    "DELETE FROM ref_identifiers "
+                    "WHERE id_kind = 'cite_key_alias' AND id_value = %s",
+                    (prior,),
+                )
+                c.execute(
+                    "INSERT INTO ref_identifiers "
+                    "(id_kind, id_value, ref_id, source) "
+                    "VALUES ('cite_key', %s, %s, 'restore') "
+                    "ON CONFLICT DO NOTHING",
+                    (prior, survivor_id),
+                )
+        moved_keys: list[str] = []
+        for value in rehomed:
+            # The recorded value is this loser's own key — delete the
+            # alias wherever it sits on the survivor chain, not only on
+            # the recorded direct survivor (the (id_kind, id_value) PK
+            # makes it at most one row): a chained re-merge (L1→L2, then
+            # L2→S) re-homes the alias onto S, and a survivor-scoped
+            # delete would leave S claiming a value the restored loser
+            # now holds live.
+            c.execute(
+                "DELETE FROM ref_identifiers "
+                "WHERE id_kind = 'cite_key_alias' AND id_value = %s",
+                (value,),
+            )
+            c.execute(
+                "INSERT INTO ref_identifiers "
+                "(id_kind, id_value, ref_id, source) "
+                "VALUES ('cite_key', %s, %s, 'restore') "
+                "ON CONFLICT DO NOTHING",
+                (value, ref_id),
+            )
+            moved_keys.append(value)
+        moved_aliases: list[str] = []
+        for value in aliases:
+            # A value recorded in BOTH marker lists was already moved
+            # back as this ref's live cite_key above — an alias row
+            # would only shadow it, and the checks below would emit a
+            # misleading "left in place" note for a row that did move.
+            if value in moved_keys:
+                continue
+            # The loser's own pre-merge redirects (earlier rekey
+            # demotions the merge re-homed as cite_key_alias rows) —
+            # recorded under meta.rehomed_cite_key_aliases. Same
+            # delete-wherever-on-the-chain move: they go back on the
+            # loser AS aliases, still redirecting at it.
+            outside = self._alias_held_outside_chain(c, value, chain)
+            if outside is not None:
+                notes.append(
+                    f"{value!r} stayed as a cite_key_alias on "
+                    f"pa{outside} — a live ref outside the superseded_by "
+                    "chain holds the row, so the restore did not take it"
+                )
+                continue
+            owner = c.execute(
+                "SELECT ref_id FROM refs WHERE ref_id <> %s "
+                "AND retired_at IS NOT NULL "
+                "AND meta->'rehomed_cite_keys' ? %s LIMIT 1",
+                (ref_id, value),
+            ).fetchone()
+            if owner is not None and not self._superseded_by_passes_through(
+                c, int(owner[0]), ref_id
+            ):
+                notes.append(
+                    f"{value!r} left in place — retired "
+                    f"pa{int(owner[0])} claims it as its own rehomed "
+                    "cite_key, so this restore leaves it for that "
+                    "ref's own restore"
+                )
+                continue
+            key_holder = c.execute(
+                "SELECT ref_id FROM ref_identifiers "
+                "WHERE id_kind = 'cite_key' AND id_value = %s",
+                (value,),
+            ).fetchone()
+            if key_holder is not None:
+                notes.append(
+                    f"{value!r} not restored as an alias — "
+                    f"pa{int(key_holder[0])} holds it as a live "
+                    "cite_key, so a restored alias would only shadow it"
+                )
+                continue
+            c.execute(
+                "DELETE FROM ref_identifiers "
+                "WHERE id_kind = 'cite_key_alias' AND id_value = %s",
+                (value,),
+            )
+            c.execute(
+                "INSERT INTO ref_identifiers "
+                "(id_kind, id_value, ref_id, source) "
+                "VALUES ('cite_key_alias', %s, %s, 'restore') "
+                "ON CONFLICT DO NOTHING",
+                (value, ref_id),
+            )
+            moved_aliases.append(value)
+        if moved_keys or moved_aliases:
+            self._strip_moved_marker_claims(c, ref_id, moved_keys, moved_aliases)
+
+    @staticmethod
+    def _alias_held_outside_chain(
+        c: Connection, value: str, chain: set[int]
+    ) -> int | None:
+        """A live ref outside ``chain`` holding ``value`` as a
+        ``cite_key_alias``, else ``None``.
+
+        The move-back's delete-by-value may legitimately take the row
+        from any survivor-chain member or any retired ref — an outside
+        LIVE holder is an unrelated claim the restore must not steal."""
+        row = c.execute(
+            "SELECT i.ref_id FROM ref_identifiers i "
+            "JOIN refs r ON r.ref_id = i.ref_id "
+            "WHERE i.id_kind = 'cite_key_alias' AND i.id_value = %s "
+            "AND r.retired_at IS NULL",
+            (value,),
+        ).fetchone()
+        if row is None or int(row[0]) in chain:
+            return None
+        return int(row[0])
+
+    @staticmethod
+    def _superseded_by_passes_through(
+        c: Connection, owner_id: int, ref_id: int
+    ) -> bool:
+        """Whether ``owner_id``'s ``superseded_by`` chain runs through
+        ``ref_id`` — this ref is a downstream tombstone the owner folded
+        through, so the owner's own-key claim on a value this ref's
+        alias list records is honoured by moving the row HERE (the
+        owner's later restore takes it back from a live chain member),
+        not by leaving it on the survivor where that owner's chain can
+        no longer reach it."""
+        link_id: int | None = owner_id
+        seen: set[int] = set()
+        while link_id is not None and link_id not in seen:
+            if link_id == ref_id:
+                return True
+            seen.add(link_id)
+            nxt = c.execute(
+                "SELECT meta->>'superseded_by' FROM refs WHERE ref_id = %s",
+                (link_id,),
+            ).fetchone()
+            link_id = int(nxt[0]) if nxt is not None and nxt[0] else None
+        return False
+
+    @staticmethod
+    def _strip_moved_marker_claims(
+        c: Connection,
+        ref_id: int,
+        moved_keys: list[str],
+        moved_aliases: list[str],
+    ) -> None:
+        """Drop just-restored values from every OTHER retired ref's
+        marker lists.
+
+        A chained merge records an upstream loser's values on the next
+        loser's marker list too (L1's key lands in L2's
+        ``rehomed_cite_key_aliases`` when L2 folds into S). Restoring
+        L1 moves the value back but L2's claim survives — its own later
+        restore would re-move a value it no longer owns (or mint a
+        shadowing alias). The claim goes in the same transaction that
+        moves the value, so only the true owner ever names it again.
+
+        The strip is asymmetric: ``rehomed_cite_key_aliases`` loses
+        every moved value, but ``rehomed_cite_keys`` loses only values
+        this ref took back as its own keys. A value returned through
+        the ALIAS list never erases another ref's own-key claim — the
+        owner outranks an alias claim, and erasing it would leave the
+        owner keyless when its own restore later finds nothing to
+        move back."""
+        moved = list(dict.fromkeys([*moved_keys, *moved_aliases]))
+        rows = c.execute(
+            "SELECT ref_id, meta FROM refs WHERE ref_id <> %s "
+            "AND retired_at IS NOT NULL "
+            "AND (meta->'rehomed_cite_keys' ?| %s::text[] "
+            "     OR meta->'rehomed_cite_key_aliases' ?| %s::text[])",
+            (ref_id, moved_keys, moved),
+        ).fetchall()
+        for other_id, other_meta in rows:
+            updated = dict(other_meta or {})
+            changed = False
+            for key, taken in (
+                ("rehomed_cite_keys", set(moved_keys)),
+                ("rehomed_cite_key_aliases", set(moved)),
+            ):
+                claimed = updated.get(key)
+                if isinstance(claimed, list) and any(str(v) in taken for v in claimed):
+                    remaining = [v for v in claimed if str(v) not in taken]
+                    if remaining:
+                        updated[key] = remaining
+                    else:
+                        del updated[key]
+                    changed = True
+            if changed:
+                c.execute(
+                    "UPDATE refs SET meta = %s, updated_at = now() WHERE ref_id = %s",
+                    (Jsonb(updated), other_id),
+                )
 
     def retire_todo_subtree(self, ref_id: int) -> int:
         """Soft-delete a todo and every live ``kind='todo'`` descendant.
@@ -3110,6 +3479,41 @@ class RefsMixin:
             rows = conn.execute(sql, open_params).fetchall()
         return {str(r[0]): (r[1], int(r[2])) for r in rows}
 
+    def _read_ident_target(self, kind: str, ident: str) -> tuple[str, Any] | None:
+        """Resolve a ``get`` id as the caller spelled it — an int, a
+        ``kind:id`` target, a record handle (``me5``), a chunk handle
+        (``pc<N>``, relative chunk nav) or a slug — to the ref a read
+        counts against: ``("ref", ref_id)``, ``("chunk", chunk_pk)`` (the
+        parent ref reads, gr514186), ``("cite_key", value)`` for a slug,
+        ``("skill", slug)`` for a skill id, or ``None`` when the ident
+        can't name a ``kind`` ref. Shared by :meth:`touch_recalled_for`
+        and :meth:`bump_ref_read_for`."""
+        from precis.utils import handle_registry
+
+        s = ident.strip()
+        if s.startswith(f"{kind}:"):
+            s = s[len(kind) + 1 :].strip()
+        if kind == "skill":
+            return ("skill", s.split("~", 1)[0].split("/", 1)[0].strip())
+        if not s:
+            return None
+        base = re.split(r"~|\.\.", s, maxsplit=1)[0].strip()
+        if not base:
+            return None
+        parsed = handle_registry.parse(base)
+        if parsed is not None:
+            if parsed[0] != kind:
+                return None
+            return ("chunk", parsed[2]) if parsed[1] else ("ref", parsed[2])
+        rel = handle_registry.parse_relative(base)
+        if rel is not None:
+            if rel[0] != kind:
+                return None
+            return ("chunk", rel[2])
+        if base.isdigit():
+            return ("ref", int(base))
+        return ("cite_key", base)
+
     def touch_recalled_for(self, kind: str, ident: str) -> None:
         """:meth:`touch_recalled` from a ``get`` id as the caller spelled it —
         an int, a ``kind:id`` target, a record handle (``me5``) or a slug —
@@ -3118,55 +3522,88 @@ class RefsMixin:
         counts as a read of the parent ref (gr514186): the selector is
         stripped, a chunk handle maps to the chunk's owning ref, same 1h
         throttle."""
-        from precis.utils import handle_registry
-
-        s = ident.strip()
-        if s.startswith(f"{kind}:"):
-            s = s[len(kind) + 1 :].strip()
-        if kind == "skill":
-            self._touch_skill_recalled(s)
+        target = self._read_ident_target(kind, ident)
+        if target is None:
             return
-        if not s:
+        shape, value = target
+        if shape == "skill":
+            self._touch_skill_recalled(value)
             return
-        base = re.split(r"~|\.\.", s, maxsplit=1)[0].strip()
-        if not base:
-            return
-        parsed = handle_registry.parse(base)
-        chunk_pk: int | None = None
-        if parsed is not None:
-            if parsed[0] != kind:
-                return
-            if parsed[1]:
-                chunk_pk = parsed[2]
-            ref_id: int | None = parsed[2]
-        else:
-            rel = handle_registry.parse_relative(base)
-            if rel is not None:
-                if rel[0] != kind:
-                    return
-                chunk_pk = rel[2]
-            ref_id = int(base) if base.isdigit() else None
-        if chunk_pk is not None:
+        if shape == "chunk":
             self._stamp_recalled_sql(
                 f"UPDATE refs SET last_recalled_at = now() "
                 f"WHERE kind = %s AND ref_id = (SELECT ref_id FROM chunks "
                 f"WHERE chunk_id = %s) {self._RECALL_THROTTLE}",
-                (kind, chunk_pk),
+                (kind, value),
             )
             return
-        if ref_id is not None:
+        if shape == "ref":
             self._stamp_recalled_sql(
                 f"UPDATE refs SET last_recalled_at = now() "
                 f"WHERE ref_id = %s AND kind = %s {self._RECALL_THROTTLE}",
-                (ref_id, kind),
+                (value, kind),
             )
             return
         self._stamp_recalled_sql(
             f"UPDATE refs SET last_recalled_at = now() "
             f"WHERE kind = %s AND ref_id = (SELECT ref_id FROM ref_identifiers "
             f"WHERE id_kind = 'cite_key' AND id_value = %s) {self._RECALL_THROTTLE}",
-            (kind, base),
+            (kind, value),
         )
+
+    def bump_ref_read_for(
+        self, kind: str, ident: str, *, actor: str, reader: str
+    ) -> None:
+        """Count one read of the ref ``ident`` names in ``ref_reads``
+        (gr524009) — the same id resolution as :meth:`touch_recalled_for`
+        (a chunk get counts against its parent ref), one ``SELECT
+        bump_ref_read(...)``, fire-and-forget. ``actor`` is ``'agent'``
+        (an MCP call) or ``'human'`` (the /eye route under an
+        authenticated user); ``reader`` is the per-reader 60s debounce
+        identity — the MCP session/token or the user's actor string.
+        Fail-soft: pre-0261 the function doesn't exist and the read is
+        still served."""
+        target = self._read_ident_target(kind, ident)
+        if target is None:
+            return
+        shape, value = target
+        if shape == "skill":
+            if not self._skill_ref_for(value):
+                return
+            self._bump_read_sql(
+                "SELECT bump_ref_read(ref_id, %s, %s) FROM refs "
+                "WHERE kind = 'skill' AND ref_id = (SELECT ref_id FROM "
+                "ref_identifiers WHERE id_kind = 'cite_key' "
+                "AND id_value = %s)",
+                (actor, reader, value),
+            )
+            return
+        if shape == "chunk":
+            self._bump_read_sql(
+                "SELECT bump_ref_read(ref_id, %s, %s) FROM chunks WHERE chunk_id = %s",
+                (actor, reader, value),
+            )
+            return
+        if shape == "ref":
+            self._bump_read_sql(
+                "SELECT bump_ref_read(ref_id, %s, %s) FROM refs "
+                "WHERE ref_id = %s AND kind = %s",
+                (actor, reader, value, kind),
+            )
+            return
+        self._bump_read_sql(
+            "SELECT bump_ref_read(ref_id, %s, %s) FROM refs "
+            "WHERE kind = %s AND ref_id = (SELECT ref_id FROM ref_identifiers "
+            "WHERE id_kind = 'cite_key' AND id_value = %s)",
+            (actor, reader, kind, value),
+        )
+
+    def _bump_read_sql(self, sql: str, params: tuple[Any, ...]) -> None:
+        try:
+            with self.pool.connection() as conn:
+                conn.execute(sql, params)
+        except Exception:
+            logging.getLogger(__name__).debug("ref_read bump failed", exc_info=True)
 
     def _touch_skill_recalled(self, ident: str) -> None:
         """Stamp the parent skill of a skill ``get`` id — ``slug``,
@@ -3175,14 +3612,8 @@ class RefsMixin:
         ids (``toc``, ``precis-help``, an alias) are skipped. Fail-soft: skills
         must stay readable with the DB down, and with no probe registered
         (:func:`set_skill_probe`) nothing is minted."""
-        probe = _SKILL_PROBE
         slug = ident.split("~", 1)[0].split("/", 1)[0].strip()
-        try:
-            if probe is None or not slug or not probe(slug):
-                return
-            self.ensure_skill_ref(slug)
-        except Exception:
-            logging.getLogger(__name__).debug("skill mint failed", exc_info=True)
+        if not self._skill_ref_for(slug):
             return
         self._stamp_recalled_sql(
             f"UPDATE refs SET last_recalled_at = now() "
@@ -3197,6 +3628,23 @@ class RefsMixin:
                 conn.execute(sql, params)
         except Exception:
             logging.getLogger(__name__).debug("recall stamp failed", exc_info=True)
+
+    def _skill_ref_for(self, slug: str) -> bool:
+        """Probe ``slug`` against the skill index and mint its anchor row
+        (:meth:`ensure_skill_ref`) — the shared first step of the skill
+        read-stamp paths (:meth:`bump_ref_read_for`,
+        :meth:`_touch_skill_recalled`). Synthesised/unknown ids and any
+        mint failure read as ``False`` — fail-soft, the caller just skips
+        its stamp."""
+        probe = _SKILL_PROBE
+        try:
+            if probe is None or not slug or not probe(slug):
+                return False
+            self.ensure_skill_ref(slug)
+            return True
+        except Exception:
+            logging.getLogger(__name__).debug("skill mint failed", exc_info=True)
+            return False
 
     def list_refs(
         self,

@@ -259,6 +259,96 @@ class TestRetireRefusals:
         with pytest.raises(BadInput, match="merge tombstone"):
             _retire(handler, f"pa{loser}")
 
+    def test_merge_alias_address_refused(
+        self, store: Store, handler: PaperHandler
+    ) -> None:
+        """gr524022 follow-up: a merged loser's old key lives on as a
+        ``cite_key_alias`` on the survivor — a destructive door addressed
+        by that slug would silently land on the SURVIVOR. Refuse, naming
+        the survivor handle + the loser's ``garden restore`` path."""
+        from precis.ingest.dedup import merge_duplicate
+
+        winner = _seed_paper(store, "survdoorkey1")
+        loser = _seed_paper(store, "loserdoorkey1")
+        with store.tx() as conn:
+            merge_duplicate(
+                store,
+                survivor_ref_id=winner,
+                duplicate_ref_id=loser,
+                source="test",
+                reason="dup",
+                conn=conn,
+            )
+        with pytest.raises(BadInput, match="merged alias") as exc:
+            _retire(handler, "loserdoorkey1")
+        assert f"pa{winner}" in exc.value.cause
+        nxt = exc.value.next
+        assert nxt is not None
+        assert f"id='pa{winner}'" in nxt
+        assert f"pa{loser}" in nxt and "garden restore" in nxt
+        # By explicit pa<id> the door still reaches the real tombstone —
+        # the pre-existing merge-tombstone refusal, not the alias guard.
+        with pytest.raises(BadInput, match="merge tombstone"):
+            _retire(handler, f"pa{loser}")
+
+    def test_handle_shaped_merge_alias_refused(
+        self, store: Store, handler: PaperHandler
+    ) -> None:
+        """gr524004 shape: a loser's cite_key can spell like another
+        kind's handle — 'dr00' parses as a draft handle. The door
+        guard's handle early-return must not skip the alias check for
+        a foreign-kind handle shape, or a destructive door addressed by
+        that key would still land on the survivor."""
+        from precis.ingest.dedup import merge_duplicate
+
+        winner = _seed_paper(store, "survdoorkey2")
+        loser = _seed_paper(store, "dr00")
+        with store.tx() as conn:
+            merge_duplicate(
+                store,
+                survivor_ref_id=winner,
+                duplicate_ref_id=loser,
+                source="test",
+                reason="dup",
+                conn=conn,
+            )
+        with pytest.raises(BadInput, match="merged alias") as exc:
+            _retire(handler, "dr00")
+        nxt = exc.value.next
+        assert nxt is not None
+        assert f"id='pa{winner}'" in nxt
+        assert f"pa{loser}" in nxt and "garden restore" in nxt
+        assert not _is_retired(store, winner)
+
+    def test_two_refs_recording_same_key_no_db_error(
+        self, store: Store, handler: PaperHandler
+    ) -> None:
+        """Two retired refs recording the same value in
+        meta.rehomed_cite_keys must not break the guard's scalar
+        subquery — LIMIT 1 keeps the refusal a clean BadInput, not a
+        raw cardinality violation."""
+        from precis.ingest.dedup import merge_duplicate
+
+        winner = _seed_paper(store, "survdoorkey3")
+        loser = _seed_paper(store, "loserdoorkey3")
+        with store.tx() as conn:
+            merge_duplicate(
+                store,
+                survivor_ref_id=winner,
+                duplicate_ref_id=loser,
+                source="test",
+                reason="dup",
+                conn=conn,
+            )
+        # A second retired ref also records the value (corrupt/migrated
+        # data) — the subquery must still return at most one row.
+        other = _seed_paper(store, "otherkey3")
+        store.stamp_ref_meta(other, {"rehomed_cite_keys": ["loserdoorkey3"]})
+        store.retire_ref(other)
+        with pytest.raises(BadInput, match="merged alias"):
+            _retire(handler, "loserdoorkey3")
+        assert not _is_retired(store, winner)
+
 
 class TestUnretireRefusals:
     def test_live_ref_refused(self, store: Store, handler: PaperHandler) -> None:

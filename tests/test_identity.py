@@ -678,6 +678,31 @@ def test_cite_key_generational_suffixes() -> None:
     assert make_cite_key(["Smith IV"], 2026) == "smith26"
 
 
+def test_cite_key_paren_honorifics() -> None:
+    """gr524004: a parenthesised honorific tail — ``(Dr)``, ``(Prof)``,
+    ``(PhD)`` — is not the surname; ``"Wu Shaoteng (Dr)"`` minted the
+    ``dr00`` junk key that broke the merge path's slug lookup."""
+    assert make_cite_key(["Wu Shaoteng (Dr)"], 2026) == "shaoteng26"
+    assert make_cite_key(["Wu Shaoteng (Dr)"], None) == "shaoteng00"
+    assert make_cite_key(["Jane Doe (Prof)"], 2026) == "doe26"
+    assert make_cite_key(["Jane Doe (PhD)"], 2026) == "doe26"
+    assert make_cite_key(["Jane Doe (Ph.D.)"], 2026) == "doe26"
+    # Comma form and the parsed-family shape drop the same tail.
+    assert make_cite_key(["Doe, Jane (Dr)"], 2026) == "doe26"
+    assert make_cite_key([{"family": "Doe (Dr)", "given": "Jane"}], 2026) == ("doe26")
+    # A parenthesised token that isn't an honorific is kept — it can be
+    # the surname itself.
+    assert make_cite_key(["John (Smith)"], 2026) == "smith26"
+
+
+def test_cite_key_paren_honorifics_non_latin() -> None:
+    """The honorific fold runs after romanisation, so a Cyrillic
+    credential tail — ``"(Др)"`` transliterates to ``"(Dr)"`` — drops
+    the same way instead of minting as the surname."""
+    assert make_cite_key(["Иванов (Др)"], 2026) == "ivanov26"
+    assert make_cite_key([{"family": "Иванов (Др)"}], 2026) == "ivanov26"
+
+
 def test_cite_key_capitalized_particles() -> None:
     """The family field folds ``"De La Cruz"`` whole — the free-string
     form now matches it: a *capitalized* particle joins the surname

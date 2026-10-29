@@ -70,6 +70,12 @@ class TestAuthors:
         assert s.startswith("a" * 30)
         assert s == "a" * 30 + "2024x"
 
+    def test_paren_honorific_dropped(self) -> None:
+        """gr524004: ``(Dr)``/``(Prof)``/``(PhD)`` tails are not the
+        surname — the un-stripped form minted the ``dr`` junk chunk."""
+        s = mint_slug(authors=["Wu Shaoteng (Dr)"], year=2026, title="X")
+        assert s == "shaoteng2026x"
+
 
 # ---------------------------------------------------------------------------
 # Title edge cases

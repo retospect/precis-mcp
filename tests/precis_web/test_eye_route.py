@@ -5,6 +5,7 @@ browser with every handle linked to its own focus page."""
 from __future__ import annotations
 
 import base64
+import re
 from typing import Any
 
 import pytest
@@ -57,7 +58,12 @@ def test_focus_page_renders_the_mcp_eye_with_linked_handles(
     assert "Roadmap:" in page.text and "serves: <a" in page.text
     assert f'href="/eye/qu{quest.id}?extent=fisheye%2B1hop"' in page.text
     # the MCP head line, with its own handle turned into a self-link
-    assert mcp_body.splitlines()[0] == f"td{todo.id} [todo] Ship the ring"
+    # (gr524009: the head now carries the age/read chip)
+    assert re.fullmatch(
+        rf"td{todo.id} \[todo\] Ship the ring  "
+        rf"\[created -\d+s · read 1× · last -\d+s\]",
+        mcp_body.splitlines()[0],
+    )
     assert f">td{todo.id}</a> [todo] Ship the ring" in page.text
     # the ladder row names every rung, the current one marked
     for rung in ("kwd", "summary", "verbatim", "fisheye", "fisheye+2hop", "+recall"):

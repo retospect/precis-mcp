@@ -1359,6 +1359,79 @@ class TestClearAbstract:
         assert _meta(store, ref)["abstract"] == "x"
 
 
+class TestMergeAliasDoors:
+    """gr524022 fix: the destructive/identity-changing body doors
+    resolve through ``_resolve_door_subject`` too — a merged loser's old
+    key only redirects to the survivor, so a body door addressed by it
+    must refuse instead of silently acting on the SURVIVOR (the probe:
+    ``clear_abstract`` by loser key cleared the survivor's abstract)."""
+
+    @staticmethod
+    def _merge(store: Store, loser: int, winner: int) -> None:
+        from precis.ingest.dedup import merge_duplicate
+
+        with store.tx() as conn:
+            merge_duplicate(
+                store,
+                survivor_ref_id=winner,
+                duplicate_ref_id=loser,
+                source="test",
+                reason="dup",
+                conn=conn,
+            )
+
+    def test_clear_abstract_by_loser_key_refused(
+        self, store: Store, handler: PaperHandler
+    ) -> None:
+        winner = _seed(
+            store,
+            "survabsmerge2020",
+            year=2020,
+            meta={"abstract": "survivor's real abstract"},
+        )
+        loser = _seed(store, "loserabsmerge2020", year=2020)
+        self._merge(store, loser, winner)
+        with pytest.raises(BadInput, match="merged alias") as exc:
+            _edit(
+                handler,
+                "loserabsmerge2020",
+                {"clear_abstract": True, "reason": "x"},
+            )
+        nxt = exc.value.next
+        assert nxt is not None
+        assert f"id='pa{winner}'" in nxt
+        assert f"pa{loser}" in nxt and "garden restore" in nxt
+        # The refusal did not touch the survivor.
+        assert _meta(store, winner)["abstract"] == "survivor's real abstract"
+        # By explicit pa<id> the same door works on the survivor.
+        resp = _edit(
+            handler,
+            f"pa{winner}",
+            {"clear_abstract": True, "reason": "junk abstract"},
+        )
+        assert "cleared" in resp.body
+        assert "abstract" not in _meta(store, winner)
+
+    def test_drop_body_by_loser_key_refused(
+        self, store: Store, handler: PaperHandler
+    ) -> None:
+        winner = _seed(store, "survbodymerge2020", year=2020)
+        _body(store, winner, 2)
+        loser = _seed(store, "loserbodymerge2020", year=2020)
+        self._merge(store, loser, winner)
+        with pytest.raises(BadInput, match="merged alias"):
+            _edit(
+                handler,
+                "loserbodymerge2020",
+                {"drop_body": True, "reason": "x"},
+            )
+        assert _ords(store, winner) == [0, 1]
+        # By explicit pa<id> the same door works on the survivor.
+        resp = _edit(handler, f"pa{winner}", {"drop_body": True, "reason": "wrong pdf"})
+        assert "dropped" in resp.body
+        assert _ords(store, winner) == []
+
+
 class TestDoorDispatch:
     def test_doors_cannot_combine(self, store: Store, handler: PaperHandler) -> None:
         ref = _seed(store, "doorcombo2020", year=2020)

@@ -650,7 +650,8 @@ class IdentifiersMixin:
         cross-ref uniqueness conflict) rather than silently dropping
         this ref's old alias. A conflicting owner that is **soft-deleted**
         is not a real conflict: it has no live claim on the value (and
-        nothing can load it to merge against — see ``merge_refs``), so we
+        nothing can load it to merge against — see
+        :func:`precis.ingest.dedup.merge_refs`), so we
         reclaim its orphaned row for this ref. This covers the bare-delete
         path (the ``🗑 Delete paper`` button soft-deletes the ref but, unlike
         ``merge_refs``, leaves its ``ref_identifiers`` rows), which would

@@ -150,6 +150,36 @@ class TestRepointRefusals:
         with pytest.raises(NotFound):
             _call(handler, "pa99999999", f"pa{tgt}")
 
+    def test_merge_alias_address_refused(
+        self, store: Store, handler: PaperHandler
+    ) -> None:
+        """gr524022 follow-up: a merged loser's old key resolves to the
+        survivor through ``cite_key_alias`` — redirect_to addressed by
+        that slug would re-point the SURVIVOR's row, not the tombstone.
+        Refuse, naming the survivor handle + ``garden restore``."""
+        from precis.ingest.dedup import merge_duplicate
+
+        winner = _seed_paper(store, "survaliasred1")
+        loser = _seed_paper(store, "lostaliasred1")
+        with store.tx() as conn:
+            merge_duplicate(
+                store,
+                survivor_ref_id=winner,
+                duplicate_ref_id=loser,
+                source="test",
+                reason="dup",
+                conn=conn,
+            )
+        tgt = _seed_paper(store, "tgred1")
+        with pytest.raises(BadInput, match="merged alias") as exc:
+            _call(handler, "lostaliasred1", f"pa{tgt}")
+        assert f"pa{winner}" in exc.value.cause
+        nxt = exc.value.next
+        assert nxt is not None and f"pa{loser}" in nxt
+        # The tombstone itself still takes the door by pa<id>.
+        resp = _call(handler, f"pa{loser}", f"pa{tgt}")
+        assert "re-pointed" in resp.body
+
     def test_target_retired_refused(self, store: Store, handler: PaperHandler) -> None:
         old = _seed_paper(store, "oldsurv2025")
         stub = _seed_paper(store, "stub2025")

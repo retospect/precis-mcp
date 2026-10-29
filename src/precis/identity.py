@@ -281,6 +281,59 @@ _CAPS_INITIALS_TOKEN_RE = re.compile(r"[A-Z]{1,3}")
 #: ``"Sr"``, ``"II"``, ``"III"``, ``"IV"``).
 _GENERATIONAL_SUFFIXES = frozenset({"jr", "sr", "ii", "iii", "iv"})
 
+#: Parenthesised honorifics / credentials dropped from a byline before
+#: surname extraction — ``"(Dr)"``, ``"(Prof)"``, ``"(PhD)"``. A trailing
+#: honorific is otherwise taken as the surname and mints a junk key
+#: (gr524004: ``"Wu Shaoteng (Dr)"`` → ``dr00``). Compared on the inner
+#: text folded to ASCII letters — ``"(Ph.D.)"`` matches ``phd``.
+_PAREN_HONORIFICS = frozenset(
+    {
+        "dr",
+        "prof",
+        "phd",
+        "dphil",
+        "mphil",
+        "md",
+        "do",
+        "dds",
+        "dmd",
+        "dvm",
+        "pharmd",
+        "edd",
+        "jd",
+        "esq",
+        "mba",
+        "msc",
+        "bsc",
+        "ma",
+        "ba",
+        "ms",
+        "bs",
+        "mph",
+        "rn",
+        "pe",
+        "frs",
+    }
+)
+
+_PAREN_TOKEN_RE = re.compile(r"\(([^()]*)\)")
+
+
+def _drop_paren_honorifics(name: str) -> str:
+    """Drop parenthesised honorific tokens from a byline name.
+
+    Only tokens whose inner text is a known honorific/credential are
+    removed — a parenthesised word that isn't a title (``"(Smith)"``)
+    stays, so it can still mint as the surname.
+    """
+
+    def _sub(m: re.Match[str]) -> str:
+        inner = re.sub(r"[^a-z]", "", m.group(1).lower())
+        return " " if inner in _PAREN_HONORIFICS else m.group(0)
+
+    return _PAREN_TOKEN_RE.sub(_sub, name)
+
+
 #: Nobiliary particles — the lowercase connective tokens that belong to
 #: the surname they precede ("de Sa", "van der Berg", "von Neumann").
 #: A *lowercase* token always joins; capitalized members of the smaller
@@ -383,8 +436,12 @@ def _surname_from_string(name: str) -> str:
     - ``"Батманова, А.Н."`` / ``"Иванов И.В."`` → ``batmanova`` /
       ``ivanov``  (Cyrillic romanises first, gr523665 — then the
       comma/initials rules apply to the Latin text)
+    - ``"Wu Shaoteng (Dr)"`` → ``shaoteng``  (parenthesised honorifics
+      drop before the last-token take — gr524004; honorific matching
+      runs AFTER romanisation so a non-Latin tail — ``"(Др)"`` —
+      drops too)
     """
-    first = _transliterate((name or "").strip())
+    first = _drop_paren_honorifics(_transliterate(name or "")).strip()
     if not first:
         return ""
     if "," in first:
@@ -437,7 +494,7 @@ def _family_key(family: str) -> str:
     letter fold (gr521515 dry-run: ``mis26``, ``sa98``). A pathological
     ``"Family, Given"`` blob still takes the head.
     """
-    s = _transliterate(str(family))
+    s = _drop_paren_honorifics(_transliterate(str(family)))
     if "," in s:
         s = s.split(",", 1)[0]
     return _key_letters(s)

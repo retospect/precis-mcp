@@ -2821,6 +2821,7 @@ class DispatchMixin(RuntimeShape):
                         id=args.get("id"), extent=extent, q=args.get("q"), ring=ring
                     )
                     self._stamp_recalled(kind, args.get("id"))
+                    self._bump_ref_read(kind, args.get("id"))
                     return response
                 except PrecisError as exc:
                     if kind_was_defaulted:
@@ -2878,6 +2879,7 @@ class DispatchMixin(RuntimeShape):
                     exc.cause = f"(searched kind={kind!r}) {exc.cause}"
                 raise
             self._stamp_recalled(kind, args.get("id"))
+            self._bump_ref_read(kind, args.get("id"))
             if kind_was_defaulted:
                 response = self._tag_defaulted_kind(response, kind)
             return response
@@ -3126,9 +3128,15 @@ class DispatchMixin(RuntimeShape):
                 ) from exc
             raise
 
-        if verb == "get" and args.get("view") is None:
-            self._stamp_recalled(kind, args.get("id"))
-            response = self._append_trust_line(handler, kind, args.get("id"), response)
+        if verb == "get":
+            # gr524009: a read counts on every focused get — any view,
+            # not only the bare one ``_stamp_recalled`` covers.
+            self._bump_ref_read(kind, args.get("id"))
+            if args.get("view") is None:
+                self._stamp_recalled(kind, args.get("id"))
+                response = self._append_trust_line(
+                    handler, kind, args.get("id"), response
+                )
         if kind_was_defaulted:
             response = self._tag_defaulted_kind(response, kind)
         if verb == "get" and self._is_id_empty(args.get("id")):
@@ -3198,6 +3206,51 @@ class DispatchMixin(RuntimeShape):
                 cache.popitem(last=False)
         except Exception:
             log.debug("recall stamp skipped for %s %r", kind, ident, exc_info=True)
+
+    def _bump_ref_read(self, kind: str, ident: Any) -> None:
+        """Count one read of the focus ref in ``ref_reads`` (gr524009).
+
+        Fires once per ``get`` that names a single concrete id — any
+        view, any fisheye rung, a chunk or range get inside the ref —
+        after the response is built, so the bump never breaks a read and
+        a failed render never counts. Neighbour rows, 2hop counts,
+        search hits and worker passes never reach here (the bump lives
+        at the verb entry, never in a Store fetch helper). ``actor`` is
+        ``human`` only when the call runs inside a browser write context
+        (``human_write_context`` sets ``trust_origin='human'`` with the
+        ``user:<abbrev>`` actor — the /eye route); every other caller is
+        ``agent``, debounced on the acting user, the MCP session id or
+        the declared client, in that order."""
+        try:
+            if ident is None or isinstance(ident, (list, tuple)):
+                return
+            if isinstance(ident, str) and ident.strip().startswith("/"):
+                return
+            store = self.store
+            handler = self.hub.handler_for(kind)
+            if store is None or handler is None or not handler.stamps_recall:
+                return
+            outer = current_revision_context()
+            if outer is not None and outer.trust_origin == "human" and outer.actor:
+                store.bump_ref_read_for(
+                    kind, str(ident).strip(), actor="human", reader=outer.actor
+                )
+                return
+            from precis.tool_ledger import _session_id, current_client
+
+            reader = (
+                (outer.actor if outer is not None else None)
+                or current_background_actor()
+                or process_actor()
+                or _session_id()
+                or current_client()
+                or "agent"
+            )
+            store.bump_ref_read_for(
+                kind, str(ident).strip(), actor="agent", reader=reader
+            )
+        except Exception:
+            log.debug("ref_read bump skipped for %s %r", kind, ident, exc_info=True)
 
     @staticmethod
     def _validate_mode(
@@ -3724,15 +3777,13 @@ class DispatchMixin(RuntimeShape):
             return True
         # resolve_handle already emitted the merge-redirect hint (via the
         # store's wired hint bus) if it followed a supersede; nothing to do here.
-        if (
-            resolved.redirected_from is not None
-            and isinstance(args.get(_EXTRAS_KEY), dict)
-            and (
-                "redirect_to" in args[_EXTRAS_KEY]
-                or "retire" in args[_EXTRAS_KEY]
-                or "merge_into" in args[_EXTRAS_KEY]
-            )
-        ):
+        door_extras = args.get(_EXTRAS_KEY)
+        ref_door = isinstance(door_extras, dict) and (
+            "redirect_to" in door_extras
+            or "retire" in door_extras
+            or "merge_into" in door_extras
+        )
+        if resolved.redirected_from is not None and ref_door:
             # The paper redirect_to, retire and merge_into doors operate
             # ON the merged tombstone: rewriting id= to the survivor (the
             # transparent redirect below) would land the re-point /
@@ -3749,6 +3800,14 @@ class DispatchMixin(RuntimeShape):
             args["id"] = (str(parsed[2]) if parsed else normalized) + suffix
             return True
         args["kind"] = resolved.kind
+        if ref_door:
+            # The paper retire / redirect_to / merge_into doors resolve
+            # the ref themselves (``_resolve_ref_incl_retired``), so route
+            # the decoded ref_id: a ``pa<id>`` handle must resolve by ref
+            # id, never re-resolve through the cite_key — which can spell
+            # like another kind's handle (``dr00``, gr524004).
+            args["id"] = str(resolved.ref_id) + suffix
+            return True
         args["id"] = resolved.public_id + suffix
         return True
 
@@ -3799,13 +3858,17 @@ class DispatchMixin(RuntimeShape):
         if handler is None:
             return False
         extras = args.get(_EXTRAS_KEY)
-        if isinstance(extras, dict) and ("retire" in extras or "merge_into" in extras):
-            # The paper retire and merge_into doors resolve tombstones
-            # themselves (_resolve_ref_incl_retired), so a soft-deleted
-            # ``pa<id>`` still routes: without this, ``args={'retire':
-            # False}`` — the undo — and ``args={'merge_into': …}`` on a
-            # retired loser died on the NotFound below before the handler
-            # could see them (gr509441, gr509659).
+        if isinstance(extras, dict) and (
+            "retire" in extras or "merge_into" in extras or "redirect_to" in extras
+        ):
+            # The paper retire, merge_into and redirect_to doors resolve
+            # tombstones themselves (_resolve_ref_incl_retired), so a
+            # soft-deleted ``pa<id>`` still routes: without this,
+            # ``args={'retire': False}`` — the undo —,
+            # ``args={'merge_into': …}`` on a retired loser and
+            # ``args={'redirect_to': …}`` on a half-tombstone (retired
+            # with no superseded_by, gr524021) died on the NotFound below
+            # before the handler could see them (gr509441, gr509659).
             args["kind"] = kind
             args["id"] = str(pk) + suffix
             return True

@@ -61,6 +61,7 @@ from __future__ import annotations
 import logging
 import weakref
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
 import psycopg
@@ -313,14 +314,85 @@ def _head(ref: Any, kind: str, chips: str = "") -> str:
     return f"{head}  {chips}" if chips else head
 
 
-def _head_chips(store: Any, ref_id: int, kind: str) -> str:
-    """The focus ref's own tag chips for its ``_head`` line — same helper
-    and order as the row chips, wider cap (it renders once)."""
+def _head_chips(store: Any, ref: Any, kind: str) -> str:
+    """The focus ref's chips for its ``_head`` line — its tag chips (same
+    helper and order as the row chips, wider cap since it renders once)
+    plus the age/read chip (gr524009)."""
     from precis.utils import tag_chips
 
-    return tag_chips.chips_bulk(store, {ref_id: kind}, cap=tag_chips.HEAD_CHIP_CAP).get(
+    ref_id = int(ref.id)
+    tags = tag_chips.chips_bulk(store, {ref_id: kind}, cap=tag_chips.HEAD_CHIP_CAP).get(
         ref_id, ""
     )
+    return f"{tags} {_read_chip(store, ref)}".strip()
+
+
+def _coarse_age(at: Any) -> str:
+    """``-10d`` / ``-4h`` / ``-2mo`` — a coarse UTC-relative age in the eye
+    chips' ``-N<u>`` form (gr524009): seconds under a minute, then
+    m/h/d/mo/y."""
+    s = max(0, int((datetime.now(UTC) - at.astimezone(UTC)).total_seconds()))
+    if s < 60:
+        return f"-{s}s"
+    if s < 3600:
+        return f"-{s // 60}m"
+    if s < 86400:
+        return f"-{s // 3600}h"
+    if s < 30 * 86400:
+        return f"-{s // 86400}d"
+    if s < 365 * 86400:
+        return f"-{s // (30 * 86400)}mo"
+    return f"-{s // (365 * 86400)}y"
+
+
+def _read_chip(store: Any, ref: Any) -> str:
+    """``[created -10d · edited -2d · read 12× (3 human) · last -4h]`` —
+    the focus header's age/read chip (gr524009). ``created``/``edited``
+    come from the ref row (``edited`` only when its coarse age differs
+    from ``created``'s — the "much later" case); the read count and
+    ``last`` come from ``ref_reads``. A failed read (pre-0261 schema)
+    drops the whole chip; a never-read ref shows age only."""
+    created = getattr(ref, "created_at", None)
+    if created is None:
+        return ""
+    try:
+        with store.pool.connection() as conn:
+            row = conn.execute(
+                "SELECT n_agent + n_human, n_human, "
+                "GREATEST(last_agent_at, last_human_at) "
+                "FROM ref_reads WHERE ref_id = %s",
+                (int(ref.id),),
+            ).fetchone()
+    except Exception:
+        log.debug("ref_reads chip read failed", exc_info=True)
+        return ""
+    parts = [f"created {_coarse_age(created)}"]
+    updated = getattr(ref, "updated_at", None)
+    if updated is not None and _coarse_age(updated) != _coarse_age(created):
+        parts.append(f"edited {_coarse_age(updated)}")
+    if row is not None:
+        n_human = int(row[1])
+        read = f"read {int(row[0])}×"
+        if n_human:
+            read += f" ({n_human} human)"
+        parts.append(read)
+        if row[2] is not None:
+            parts.append(f"last {_coarse_age(row[2])}")
+    return f"[{' · '.join(parts)}]"
+
+
+def _row_age(ref: Any) -> str:
+    """``-10d`` (+`` · edited -2d`` when the edit's coarse age differs) —
+    the age-only chip a ring row carries (gr524009: read counts stay on
+    the header, not on every neighbour label)."""
+    created = getattr(ref, "created_at", None)
+    if created is None:
+        return ""
+    age = _coarse_age(created)
+    updated = getattr(ref, "updated_at", None)
+    if updated is not None and _coarse_age(updated) != age:
+        return f"{age} · edited {_coarse_age(updated)}"
+    return age
 
 
 def _cap(text: str, cap: int) -> str:
@@ -477,7 +549,7 @@ def _render_doc_eye(
     ref = store.fetch_refs_by_ids([ref_id]).get(ref_id)
     if ref is None or getattr(ref, "retired_at", None) is not None:
         raise ValueError(f"eye: no live {kind} ref for {handle!r}")
-    head = _head(ref, kind, _head_chips(store, ref_id, kind))
+    head = _head(ref, kind, _head_chips(store, ref, kind))
     if ext <= Extent.TOC:
         return f"· {head}"
 
@@ -582,7 +654,7 @@ def _render_note_eye(
     ref = _resolve_ref(store, handle)
     if ref is None or getattr(ref, "retired_at", None) is not None:
         raise ValueError(f"eye: no live {kind} ref for {handle!r}")
-    chips = _head_chips(store, int(ref.id), kind)
+    chips = _head_chips(store, ref, kind)
     if ext <= Extent.TOC and not recall:
         return f"· {_head(ref, kind, chips)}"
     cap = _SUMMARY_CAP if ext <= Extent.SUMMARY else _VERBATIM_CAP
@@ -1296,6 +1368,9 @@ def _neighbor_label(ref: Any, ref_id: int, *, chips: str = "") -> str:
     if len(title) > _NEIGHBOR_TITLE_CAP:
         title = title[: _NEIGHBOR_TITLE_CAP - 1].rstrip() + "…"
     label = f"{oh} — {title}" if title else oh
+    age = _row_age(ref)
+    if age:
+        label = f"{label} · {age}"
     return f"{label}  {chips}" if chips else label
 
 

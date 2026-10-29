@@ -8,6 +8,7 @@ todo and memory; the doc eye on a paper; the skill eye."""
 
 from __future__ import annotations
 
+import re
 from typing import Any, cast
 
 import pytest
@@ -64,7 +65,10 @@ class TestTheDoor:
             runtime_with_store, kind="todo", id=todo.id, view="fisheye+1hop"
         )
         assert not err1 and not err2
-        assert via_extent == via_view
+        # The head's read chip legitimately differs: the first call's own
+        # bump shows on the second (gr524009). Strip it before comparing.
+        chip = re.compile(r"  \[created [^\]]*\]")
+        assert chip.sub("", via_extent) == chip.sub("", via_view)
         assert "— linked (1 hop) —" in via_extent
         assert f"related-to: me{memo.id} — Why the eye is one door" in via_extent
 

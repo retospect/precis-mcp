@@ -50,6 +50,7 @@ SECONDARY_FUNCS = (
 #: Deliberate ro carve-outs / decided-PUBLIC verbs — must keep EXECUTE.
 KEPT_FUNCS = (
     "public.bump_salience(bigint[])",
+    "public.bump_ref_read(bigint, text, text)",
     "public.file_gripe_readonly(text)",
     "public.file_gripe_readonly(text, text)",
     "vault.list()",

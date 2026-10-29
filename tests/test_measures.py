@@ -15,6 +15,7 @@ import psycopg
 import pytest
 
 from precis.errors import BadInput
+from precis.ingest.dedup import merge_refs
 from precis.store import Migrator, Store
 from precis.store._measures_ops import MeasureAnchor, MeasureSpec
 from precis.taxonomy.nodes import slugify, validate_taxon_meta
@@ -1898,7 +1899,7 @@ def test_merging_a_paper_that_anchors_measures_is_refused_naming_the_count(
         )
     survivor = seed_ref(store, title="the same paper again", kind="paper")
     with pytest.raises(BadInput, match="2 live measure"):
-        store.merge_refs(world["paper"], survivor)
+        merge_refs(store, world["paper"], survivor)
     paper = store.get_ref(kind="paper", id=world["paper"])
     assert paper is not None  # nothing was touched
     assert len(store.measures_for(world["paper"])) == 2

@@ -120,8 +120,11 @@ def test_memory_eye_1hop_marks_an_audit_flagged_neighbour(hub: Hub) -> None:
         store, handle_registry.format_handle("memory", mem.id), "fisheye+1hop"
     )
 
-    assert f"me{flagged.id} — Flagged note  [AUDIT:ungrounded-number]" in out
-    assert f"me{clean.id} — Clean note\n" in out
+    assert re.search(
+        rf"me{flagged.id} — Flagged note · -\d+s  \[AUDIT:ungrounded-number\]",
+        out,
+    )
+    assert re.search(rf"me{clean.id} — Clean note · -\d+s\n", out)
     assert out.count("[AUDIT:ungrounded-number]") == 1
 
 
@@ -186,10 +189,12 @@ def test_eye_head_sinks_unlisted_uppercase_axes_to_the_tail(hub: Hub) -> None:
         store, handle_registry.format_handle("memory", focus.id), "fisheye"
     )
     head = out.splitlines()[0]
-    assert head.rstrip().endswith(
-        "[thread:agent-surface] [DOMAIN:other] [STUDYTYPE:unknown] "
-        "[DREAM:acquire] [DOMAINCASCADE:1] [INBOUND:pending] "
-        "[STUDYTYPECASCADE:1] [TOPICCASCADE:3-75b618c5]"
+    assert re.search(
+        r"\[thread:agent-surface\] \[DOMAIN:other\] \[STUDYTYPE:unknown\] "
+        r"\[DREAM:acquire\] \[DOMAINCASCADE:1\] \[INBOUND:pending\] "
+        r"\[STUDYTYPECASCADE:1\] \[TOPICCASCADE:3-75b618c5\] "
+        r"\[created -\d+s( · .*)?\]$",
+        head,
     )
 
 
@@ -741,8 +746,10 @@ def test_second_hop_expands_one_group_with_q(hub: Hub) -> None:
     )
     out = render_eye(store, h, "fisheye+2hop", q="paper:cites")
     assert "— second hop: 2 paper via cites —" in out
-    assert f"pa{papers[0].id} — Paper 1\n" in out
-    assert f"pa{papers[1].id} — Paper 2  [AUDIT:ungrounded-number]" in out
+    assert re.search(rf"pa{papers[0].id} — Paper 1 · -\d+s\n", out)
+    assert re.search(
+        rf"pa{papers[1].id} — Paper 2 · -\d+s  \[AUDIT:ungrounded-number\]", out
+    )
     assert "— linked (1 hop) —" not in out, "an expansion shows the group only"
     with pytest.raises(ValueError, match="groups here: paper:cites"):
         render_eye(store, h, "fisheye+2hop", q="patent:cites")

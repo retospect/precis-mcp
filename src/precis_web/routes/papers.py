@@ -51,6 +51,7 @@ from precis.errors import BadInput, NotFound
 from precis.export.latex import DATASHEET_SUBTYPE_LABELS
 from precis.handlers._paper_format import ENTRY_TYPE_CHOICES, ENTRY_TYPE_LABELS
 from precis.identity import normalize_doi
+from precis.ingest.dedup import merge_refs
 from precis.store.paper_rekey import REKEY_DEADLINE_S, rekey_paper
 from precis.store.si_links import queue_si_on_attention
 from precis.store.types import BibEntry
@@ -2339,7 +2340,7 @@ async def resolve_duplicate(
 
     * ``keep='this'`` — keep #``ref_id``, absorb #``owner_id``. The owner's
       links migrate onto this paper and its DOI / arXiv / cite_key free up
-      (``store.merge_refs``), then the operator's pending metadata edit is
+      (``dedup.merge_refs``), then the operator's pending metadata edit is
       re-applied here (the identifier it clashed on is now available) and
       ``needs-triage`` is cleared. This is the "the other is an empty stub,
       keep my PDF and redirect its links here" case.
@@ -2367,14 +2368,14 @@ async def resolve_duplicate(
     if keep == "other":
         # Keep the owner, absorb this paper into it.
         try:
-            await asyncio.to_thread(store.merge_refs, ref_id, owner_id)
+            await asyncio.to_thread(merge_refs, store, ref_id, owner_id)
         except (NotFound, BadInput) as exc:
             return _paper_error(request, "Merge error", str(exc), 400)
         return RedirectResponse(url=f"/papers/{owner_id}?tab=Meta", status_code=303)
 
     # keep == 'this': absorb the owner here, then re-apply the pending edit.
     try:
-        await asyncio.to_thread(store.merge_refs, owner_id, ref_id)
+        await asyncio.to_thread(merge_refs, store, owner_id, ref_id)
     except (NotFound, BadInput) as exc:
         return _paper_error(request, "Merge error", str(exc), 400)
 

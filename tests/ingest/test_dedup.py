@@ -12,9 +12,11 @@ from __future__ import annotations
 from precis.ingest.dedup import (
     ReconcileOutcome,
     _Cand,
+    find_half_tombstones,
     pick_survivor,
     pick_survivor_keep_chunks,
 )
+from precis.store import Store
 
 
 def _c(
@@ -114,3 +116,31 @@ class TestReconcileOutcomeLine:
         line = o.line()
         assert "survivor #5891" in line
         assert "#31" in line and "#32" in line
+
+
+class TestFindHalfTombstones:
+    """gr524021: the sweep matches exactly the old fold's signature —
+    retired, no ``meta.superseded_by``, zero ``ref_identifiers`` rows."""
+
+    def _paper(self, store: Store, slug: str) -> int:
+        return store.insert_ref(
+            kind="paper", slug=slug, title=f"Half {slug}", provider="manual"
+        ).id
+
+    def test_matches_only_zero_identifier_tombstone(self, store: Store):
+        live = self._paper(store, "hftlive26")
+        plain = self._paper(store, "hftplain26")
+        merged = self._paper(store, "hftmerged26")
+        folded = self._paper(store, "hftfolded26")
+        store.retire_ref(plain)  # plain delete: keeps its identifiers
+        store.stamp_ref_meta(merged, {"superseded_by": live})
+        store.retire_ref(merged)  # real merge tombstone: pointer, no ids needed
+        with store.pool.connection() as conn:
+            conn.execute("DELETE FROM ref_identifiers WHERE ref_id = %s", (folded,))
+        store.retire_ref(folded)  # the fold's signature: no ids, no pointer
+
+        assert find_half_tombstones(store) == [folded]
+        assert find_half_tombstones(store, ref_id=folded) == [folded]
+        assert find_half_tombstones(store, ref_id=plain) == []
+        assert find_half_tombstones(store, ref_id=merged) == []
+        assert find_half_tombstones(store, ref_id=live) == []

@@ -3906,9 +3906,13 @@ class PaperHandler(Handler):
 
         The redirect door addresses the retired tombstone itself — the
         thing every other path transparently follows to the survivor.
-        Accepts a ``pa<id>`` handle, a bare ref_id / digits, or a slug
-        (the loser keeps its cite_key across a merge). ``None`` for an
-        unresolvable or foreign-kind id; the caller names the failure.
+        Accepts a ``pa<id>`` handle, a bare ref_id / digits, or a slug.
+        A merged loser's cite_key no longer sits on the tombstone — the
+        gr524022 fold re-homes it to the survivor as a ``cite_key_alias``
+        redirect — so a slug resolves to the LIVE survivor while
+        ``pa<loser-id>`` still addresses the tombstone itself. ``None``
+        for an unresolvable or foreign-kind id; the caller names the
+        failure.
         """
         kind = self.spec.kind
         ref_id: int | None = None
@@ -3920,18 +3924,88 @@ class PaperHandler(Handler):
                 kind=kind, slug=slug, sel=sel, path_view=path_view
             )
             parsed = handle_registry.parse(slug)
-            if parsed is not None and not parsed[1]:
-                if parsed[0] != kind:
-                    return None
+            if parsed is not None and not parsed[1] and parsed[0] == kind:
                 ref_id = parsed[2]
             elif slug.isdigit():
                 ref_id = int(slug)
             else:
+                # A cite_key can spell like another kind's handle —
+                # ``dr00`` minted off a ``"(Dr)"`` byline parses as a
+                # ``dr`` (draft) handle (gr524004) — so a foreign-kind
+                # handle shape falls through to the slug lookup instead
+                # of refusing the paper's own key. A genuine foreign
+                # handle simply misses the slug lookup the same way.
                 return self.store.get_ref(kind=kind, id=slug, include_deleted=True)
         ref = self.store.fetch_refs_by_ids([ref_id], include_deleted=True).get(ref_id)
         if ref is None or ref.kind != kind:
             return None
         return ref
+
+    def _resolve_door_subject(self, id: str | int, *, door: str) -> Ref | None:
+        """Resolve a destructive door's subject ref; refuse a merge alias.
+
+        When ``id`` is a slug that resolves to a live ref ONLY through a
+        ``cite_key_alias`` a merge re-homed from its loser (gr524022 —
+        the loser's old key kept as a redirect on the survivor), a
+        destructive door (``retire`` / ``merge_into`` / ``redirect_to``)
+        taking that address would silently land on the SURVIVOR while the
+        caller likely meant the loser the key belongs to. Refuse with a
+        ``next=`` naming the same call by explicit ``pa<id>`` plus
+        ``garden restore`` for the caller who meant the loser. Detection
+        uses the loser's ``meta.rehomed_cite_keys`` /
+        ``meta.rehomed_cite_key_aliases`` markers — a survivor-owned
+        alias (e.g. a rekey-displaced key) is NOT refused.
+        Read doors (``get``, ``\\cite``) keep resolving aliases to the
+        survivor."""
+        ref = self._resolve_ref_incl_retired(id)
+        if ref is None or ref.retired_at is not None or isinstance(id, int):
+            return ref
+        kind = self.spec.kind
+        slug, sel, path_view = _parse_paper_id(str(id).strip(), kind)
+        if sel is not None or path_view is not None:
+            return ref
+        parsed = handle_registry.parse(slug)
+        if (
+            parsed is not None and not parsed[1] and parsed[0] == kind
+        ) or slug.isdigit():
+            # A same-kind record handle or a bare ref_id can't be a
+            # recorded merge alias. A FOREIGN-kind handle shape still
+            # falls through: a cite_key can spell like another kind's
+            # handle ('dr00' minted off a "(Dr)" byline parses as a
+            # draft handle, gr524004) — the alias check below decides.
+            return ref
+        with self.store.pool.connection() as conn:
+            row = conn.execute(
+                "SELECT EXISTS (SELECT 1 FROM ref_identifiers "
+                "               WHERE ref_id = %s AND id_kind = 'cite_key' "
+                "                 AND id_value = %s), "
+                "      (SELECT ref_id FROM refs "
+                "       WHERE retired_at IS NOT NULL AND kind = %s "
+                "         AND (meta->'rehomed_cite_keys' ? %s "
+                "              OR meta->'rehomed_cite_key_aliases' ? %s) "
+                "       ORDER BY COALESCE(meta->'rehomed_cite_keys' "
+                "                ? %s, false) DESC, "
+                "                retired_at DESC, ref_id "
+                "       LIMIT 1)",
+                (ref.id, slug, kind, slug, slug, slug),
+            ).fetchone()
+        # Resolved through a live cite_key on this ref — not an alias.
+        if row is None or row[0] or row[1] is None:
+            return ref
+        survivor_h = _pa(ref)
+        loser_h = handle_registry.format_handle(kind, int(row[1]))
+        raise BadInput(
+            f"{slug!r} is a merged alias of {survivor_h} — a loser's old "
+            "key that only redirects to the survivor; destructive doors "
+            "don't take it",
+            next=(
+                f"run the door by explicit id: edit(kind='{kind}', "
+                f"id='{survivor_h}', args={{'{door}': <value>, "
+                "'reason': '<why>'}}); if you meant the merged loser "
+                f"{loser_h}, restore it first: precis garden restore "
+                f"{loser_h} --reason '<why>'"
+            ),
+        )
 
     def _repoint_supersede(
         self, id: str | int, target: Any, *, reason: str, dry: bool
@@ -3950,14 +4024,19 @@ class PaperHandler(Handler):
         old target, new target and ``reason`` — undo is the same call
         aimed back at the old target.
 
-        Refuses (each with a ``next=``): a source that isn't a retired
-        merge (live, or deleted with no pointer), a target that isn't
-        live (missing, itself merged, or deleted), a target whose
+        Refuses (each with a ``next=``): a live source (a plain ``retire``
+        or a merge tombstone is what the door operates on), a target that
+        isn't live (missing, itself merged, or deleted), a target whose
         supersede chain leads back to the source (a cycle the
         reader-side follow would hang on), and a missing ``reason``.
+
+        A retired source carrying NO ``meta.superseded_by`` — the
+        half-tombstone the pre-gr524021 web ``merge_refs`` fold left —
+        is accepted as a repair: the caller names the survivor and the
+        door stamps the pointer the fold never wrote.
         """
         kind = self.spec.kind
-        src = self._resolve_ref_incl_retired(id)
+        src = self._resolve_door_subject(id, door="redirect_to")
         if src is None:
             raise NotFound(
                 f"{kind} id={id!r} resolves to no ref (live or retired)",
@@ -3976,13 +4055,26 @@ class PaperHandler(Handler):
             old_id = int(str((src.meta or {}).get("superseded_by")))
         except (TypeError, ValueError):
             old_id = -1
-        if old_id < 0:
-            raise BadInput(
-                f"{src_h} is retired but carries no meta.superseded_by — "
-                "a plain deletion has no redirect to re-point",
-                next="if it should resolve to another paper that is a merge: "
-                "get(kind='skill', id='precis-paper-help')",
-            )
+        # gr524021: a half-tombstone — retired by the old web ``merge_refs``
+        # fold, which stamped no pointer — carries ``old_id < 0`` too. The
+        # door accepts it as a repair: the caller names the survivor and
+        # this call stamps the pointer the fold never wrote (a supersedes
+        # edge + ``meta.superseded_by``), so the dead ref's handles start
+        # resolving instead of ``NotFound``-ing.
+        half_tombstone = old_id < 0
+        if half_tombstone:
+            # Only a *zero-identifier* tombstone is the fold's signature
+            # (find_half_tombstones): a plain retire keeps its identifiers
+            # and is a delete, not a merge to repair.
+            from precis.ingest.dedup import find_half_tombstones
+
+            if src.id not in find_half_tombstones(self.store, kind=kind, ref_id=src.id):
+                raise BadInput(
+                    f"{src_h} is retired with no meta.superseded_by — a plain "
+                    "delete, not a merge fold",
+                    next=f"un-retire instead: edit(kind='{kind}', id='{src_h}', "
+                    "args={'retire': False, 'reason': '<why>'})",
+                )
         if not reason:
             raise BadInput(
                 "args['redirect_to'] needs args['reason'] — the "
@@ -4028,23 +4120,30 @@ class PaperHandler(Handler):
                 next="pick a live target whose supersede chain does not "
                 "pass through this stub",
             )
-        old_h = handle_registry.format_handle(kind, old_id)
-        if tgt.id == old_id:
+        old_h = (
+            handle_registry.format_handle(kind, old_id) if not half_tombstone else ""
+        )
+        if not half_tombstone and tgt.id == old_id:
             return Response(body=f"no change: {src_h} already redirects to {tgt_h}.")
         if dry:
+            verb = "stamp a missing redirect on" if half_tombstone else "re-point"
             return Response(
                 body=(
-                    f"DRY RUN (no write) - would re-point {src_h}: "
-                    f"superseded_by {old_h} -> {tgt_h}, the supersedes "
+                    f"DRY RUN (no write) - would {verb} {src_h}: "
+                    f"superseded_by {old_h or '—'} -> {tgt_h}, the supersedes "
                     "edge moved and a redirect_repointed ref_event logged."
                 )
             )
         with self.store.tx() as conn:
-            removed = self.store.remove_link(
-                src_ref_id=old_id,
-                dst_ref_id=src.id,
-                relation="supersedes",
-                conn=conn,
+            removed = (
+                self.store.remove_link(
+                    src_ref_id=old_id,
+                    dst_ref_id=src.id,
+                    relation="supersedes",
+                    conn=conn,
+                )
+                if not half_tombstone
+                else False
             )
             self.store.add_link(
                 src_ref_id=tgt.id,
@@ -4059,9 +4158,10 @@ class PaperHandler(Handler):
                 source="edit",
                 event="redirect_repointed",
                 payload={
-                    "old_survivor": old_id,
+                    "old_survivor": None if half_tombstone else old_id,
                     "new_survivor": tgt.id,
                     "reason": reason,
+                    **({"repaired_half_tombstone": True} if half_tombstone else {}),
                 },
                 conn=conn,
             )
@@ -4070,12 +4170,25 @@ class PaperHandler(Handler):
             if removed
             else "no old supersedes edge found; new one added"
         )
-        return Response(
-            body=(
-                f"re-pointed {src_h}: superseded_by {old_h} -> {tgt_h} "
-                f"({edge_note}; ref_event 'redirect_repointed' logged). "
+        verb = "redirect stamped" if half_tombstone else "re-pointed"
+        if half_tombstone:
+            # A repair has no old pointer to aim back at — undo is
+            # re-retiring without one (garden restore clears it).
+            undo = (
+                f"Undo: re-retire {src_h} without a pointer — precis "
+                f"garden restore {src_h} clears it, then "
+                f"edit(kind='{kind}', id='{src_h}', args="
+                "{'retire': True, 'reason': '<why>'})"
+            )
+        else:
+            undo = (
                 f"Undo: edit(kind='{kind}', id='{src_h}', args="
                 f"{{'redirect_to': '{old_h}', 'reason': '<why>'}})"
+            )
+        return Response(
+            body=(
+                f"{verb} {src_h}: superseded_by {old_h or '—'} -> {tgt_h} "
+                f"({edge_note}; ref_event 'redirect_repointed' logged). {undo}"
             )
         )
 
@@ -4116,7 +4229,7 @@ class PaperHandler(Handler):
         from precis.ingest.dedup import merge_duplicate
 
         kind = self.spec.kind
-        loser = self._resolve_ref_incl_retired(id)
+        loser = self._resolve_door_subject(id, door="merge_into")
         if loser is None:
             raise NotFound(
                 f"{kind} id={id!r} resolves to no ref (live or retired)",
@@ -4266,7 +4379,7 @@ class PaperHandler(Handler):
         directions: re-point it with ``redirect_to``, don't resurrect it.
         """
         kind = self.spec.kind
-        ref = self._resolve_ref_incl_retired(id)
+        ref = self._resolve_door_subject(id, door="retire")
         if ref is None:
             raise NotFound(
                 f"{kind} id={id!r} resolves to no ref (live or retired)",
@@ -4410,9 +4523,12 @@ class PaperHandler(Handler):
 
         All four doors act on a *live* ref — a merged tombstone's body is
         the survivor's to manage, and a plain-retired one restores first.
-        Returns ``(ref, handle)``."""
+        Resolution goes through :meth:`_resolve_door_subject`: these are
+        destructive/identity-changing doors, so a slug that reaches the
+        live ref only through a merge-re-homed alias refuses the same
+        way ``retire`` does. Returns ``(ref, handle)``."""
         kind = self.spec.kind
-        ref = self._resolve_ref_incl_retired(id)
+        ref = self._resolve_door_subject(id, door=door)
         if ref is None:
             raise NotFound(
                 f"{kind} id={id!r} resolves to no ref (live or retired)",

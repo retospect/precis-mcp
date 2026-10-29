@@ -68,7 +68,12 @@ def test_restore_cli_uses_operator_transaction_and_original_row(
     door = store.restore_superseded_ref
     calls: list[int] = []
 
-    def spy(ref_id: int, *, conn: Connection | None = None) -> bool:
+    def spy(
+        ref_id: int,
+        *,
+        conn: Connection | None = None,
+        notes: list[str] | None = None,
+    ) -> bool:
         ctx = current_revision_context()
         assert ctx is not None
         assert (ctx.actor, ctx.trust_origin, ctx.trust_actor_type) == (
@@ -83,7 +88,7 @@ def test_restore_cli_uses_operator_transaction_and_original_row(
             "current_setting('precis.trust_actor_type')"
         ).fetchone() == ("test-operator", "operator")
         calls.append(ref_id)
-        return door(ref_id, conn=conn)
+        return door(ref_id, conn=conn, notes=notes)
 
     monkeypatch.setattr(store, "restore_superseded_ref", spy)
     target = {
@@ -197,6 +202,46 @@ def test_restore_cli_dry_run_does_not_write(
     assert _ref(store, winner) == winner_before
     assert store.events_for(loser) == events
     assert _edges(store, loser) == edges
+
+
+def test_restore_cli_dry_run_surfaces_the_real_refusal(
+    store: Store,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """A dry run must not print "would restore" when the real run
+    refuses: it runs the same restore inside a rolled-back savepoint,
+    so the refusal reaches the operator and nothing is written."""
+    loser, _ = _pair(store)
+    outsider = _paper(store, "clidryoutsider2026")
+    # A live ref outside the chain holds the loser's rehomed key as a
+    # cite_key_alias — the real restore refuses on the outside holder.
+    with store.pool.connection() as conn:
+        conn.execute(
+            "UPDATE ref_identifiers SET ref_id = %s "
+            "WHERE id_kind = 'cite_key_alias' AND id_value = %s",
+            (outsider, "clirestoreloser2026"),
+        )
+        conn.commit()
+    before, events, edges = (
+        _ref(store, loser),
+        store.events_for(loser),
+        _edges(store, loser),
+    )
+    with pytest.raises(SystemExit) as exc:
+        _run(store, monkeypatch, f"pa{loser}", "--dry-run")
+    assert exc.value.code == 2
+    err = capsys.readouterr().err
+    assert "DRY RUN" not in err
+    assert f"pa{outsider}" in err and "cite_key_alias" in err
+    assert "drop_identifier" in err
+    assert _ref(store, loser) == before
+    assert store.events_for(loser) == events
+    assert _edges(store, loser) == edges
+    assert (
+        store.find_ref_by_identifier("cite_key_alias", "clirestoreloser2026")
+        == outsider
+    )
 
 
 def test_restore_cli_rolls_back_restoration_and_event_together(

@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from psycopg.errors import UniqueViolation
+from psycopg.types.json import Jsonb
 
 from precis.corpus_layout import (
     corpus_pdf_dest,
@@ -278,6 +279,47 @@ def remint_junk_cite_key(
         return None
 
 
+def record_rehomed_cite_keys(
+    conn: Connection,
+    loser_ref_id: int,
+    values: list[str],
+    *,
+    adopted: str | None = None,
+    survivor_prior_key: str | None = None,
+    rehomed_aliases: list[str] | None = None,
+) -> None:
+    """Stamp on the merge loser exactly which cite_key values were
+    re-homed to the survivor (``meta.rehomed_cite_keys``), which of its
+    own ``cite_key_alias`` redirects moved with them
+    (``meta.rehomed_cite_key_aliases`` — the loser's earlier rekey
+    demotions), plus, when the survivor *adopted* a value outright as
+    its live cite_key, which value and which survivor key it displaced
+    (gr524022 restore fix).
+
+    The merge's re-home is a plain identifier move — nothing else records
+    that a survivor's ``cite_key_alias`` came from THIS loser rather than
+    being survivor-owned, so a restore that chased any alias could give
+    the loser the survivor's own displaced key, or a wrong loser's key.
+    :meth:`Store.restore_superseded_ref` moves back exactly this recorded
+    set (and, for an adopted value, first puts the survivor's displaced
+    key back), then clears the markers."""
+    updates: dict[str, Any] = {}
+    if values:
+        updates["rehomed_cite_keys"] = [str(v) for v in values]
+    if rehomed_aliases:
+        updates["rehomed_cite_key_aliases"] = [str(v) for v in rehomed_aliases]
+    if adopted is not None:
+        updates["adopted_cite_key"] = str(adopted)
+        if survivor_prior_key:
+            updates["adopted_displaced_key"] = str(survivor_prior_key)
+    if not updates:
+        return
+    conn.execute(
+        "UPDATE refs SET meta = meta || %s WHERE ref_id = %s",
+        (Jsonb(updates), loser_ref_id),
+    )
+
+
 def _remint_target(
     store: Store,
     ref_id: int,
@@ -343,18 +385,28 @@ def _remint_in_tx(
         # survivor as a redirect first — the adopted value included, so
         # a refused promote still leaves it resolving (a successful
         # promote drops the survivor's own alias row for it anyway).
-        for value_row in conn.execute(
-            "DELETE FROM ref_identifiers "
-            "WHERE ref_id = %s AND id_kind = 'cite_key' RETURNING id_value",
-            (adopt_from_ref_id,),
-        ).fetchall():
+        # The re-homed set is stamped on the loser NOW (before the
+        # promote): even a refused promote leaves the aliases moved, and
+        # the restore door needs the record either way. adopt_key is only
+        # set when adopt_from_ref_id was given — it's an int here.
+        assert adopt_from_ref_id is not None
+        rehomed_values = [
+            str(value_row[0])
+            for value_row in conn.execute(
+                "DELETE FROM ref_identifiers "
+                "WHERE ref_id = %s AND id_kind = 'cite_key' RETURNING id_value",
+                (adopt_from_ref_id,),
+            ).fetchall()
+        ]
+        for value in rehomed_values:
             conn.execute(
                 "INSERT INTO ref_identifiers "
                 "(id_kind, id_value, ref_id, source) "
                 "VALUES ('cite_key_alias', %s, %s, %s) "
                 "ON CONFLICT DO NOTHING",
-                (str(value_row[0]), ref_id, source),
+                (value, ref_id, source),
             )
+        record_rehomed_cite_keys(conn, adopt_from_ref_id, rehomed_values)
         new_key = adopt_key
         adopted_from = adopt_from_ref_id
     else:
@@ -366,6 +418,14 @@ def _remint_in_tx(
     )
     if not changed:
         return None
+    if adopted_from is not None:
+        record_rehomed_cite_keys(
+            conn,
+            adopted_from,
+            [],
+            adopted=new_key,
+            survivor_prior_key=old_key or None,
+        )
     store.append_event(
         ref_id,
         source=source,
