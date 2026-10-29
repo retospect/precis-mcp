@@ -1236,6 +1236,7 @@ class QuestHandler(NumericRefHandler):
             "and normalization (never compared across groups)",
             "",
         ]
+        money = self.store.money_tables()
         for g in groups:
             part = " · ".join(f"{k}={v}" for k, v in (g.get("by") or {}).items())
             label = (
@@ -1260,9 +1261,9 @@ class QuestHandler(NumericRefHandler):
             lines.append(
                 " | ".join(
                     [
-                        f"{label}: {render.value_text(best)}",
+                        f"{label}: {render.value_text(best, money=money)}",
                         render.subject_label(best),
-                        render.conditions_text(best["conditions"]),
+                        render.conditions_text(best["conditions"], money=money),
                         str(best["tier"] or "tier unknown"),
                         render.paper_handle(best),
                         handle_registry.format_handle("measure", int(best["id"])),

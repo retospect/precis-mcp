@@ -11,6 +11,7 @@ from __future__ import annotations
 import re
 import shutil
 import tempfile
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -22,8 +23,13 @@ from precis.errors import BadInput
 from precis.handlers import _measure_render as render
 from precis.handlers.measure import MeasureHandler
 from precis.store import Migrator, Store
-from precis.store._measures_ops import ANY_YEAR, MeasureSpec, row_interval
-from precis.taxonomy.money import row_currency
+from precis.store._measures_ops import (
+    ANY_YEAR,
+    MeasureSpec,
+    reset_money_tables_cache,
+    row_interval,
+)
+from precis.taxonomy.money import CPI_SERIES, row_currency
 from precis.taxonomy.nodes import slugify
 from tests.workers._helpers import seed_chunk, seed_ref
 
@@ -527,3 +533,165 @@ def test_0249_the_frozen_trigger_covers_the_new_columns(fresh_db: str) -> None:
                 "UPDATE measures SET currency = 'EUR' WHERE id = %s",
                 (ids["measure"],),
             )
+
+
+# ── convert-on-read (slice 3, ruling 2026-10-28) ──────────────────────────
+
+_NOW_YEAR = datetime.now(UTC).year
+
+
+def _seed_money(store: Store, *, through_current: bool = True) -> None:
+    """50 daily USD quotes for 2019 (the thin-year floor) and CPI points:
+    2019 always, the current year unless ``through_current`` is False (the
+    World Bank series lags — the falling-back case). 1300 USD at 2019
+    prices prices at 1.12 USD/EUR and deflates by 121/110 to 1277 EUR at
+    the current year."""
+    rows = [(CPI_SERIES, 2019, "110")]
+    if through_current:
+        rows.append((CPI_SERIES, _NOW_YEAR, "121"))
+    with store.pool.connection() as conn:
+        with conn.cursor() as cur:
+            cur.executemany(
+                "INSERT INTO fx_rates (currency, rate_date, per_eur, source) "
+                "VALUES ('USD', %s, 1.12, 'test')",
+                [(date(2019, 1, 2) + timedelta(days=2 * i),) for i in range(50)],
+            )
+            cur.executemany(
+                "INSERT INTO price_index (series, year, value, source) "
+                "VALUES (%s, %s, %s, 'test')",
+                rows,
+            )
+
+
+class TestConvertOnRead:
+    def test_money_tables_loads_the_caches(self, store: Store) -> None:
+        _seed_money(store)
+        tables = store.money_tables()
+        per_eur, n_days = tables.fx[("USD", 2019)]
+        assert per_eur == pytest.approx(1.12) and n_days == 50
+        assert tables.cpi[2019] == pytest.approx(110.0)
+        assert tables.cpi[_NOW_YEAR] == pytest.approx(121.0)
+
+    def test_search_converts_usd_to_eur_at_the_target_year(
+        self, store: Store, w: dict[str, Any], h: MeasureHandler
+    ) -> None:
+        _seed_money(store)
+        run = _put(store, w, "cost", "1300", unit="USD2019/t")
+        body = h.search(property="measurand/unit-cost").body
+        assert f"mx{run.output_id}" in body
+        assert (
+            f"1277 EUR({_NOW_YEAR})/t "
+            "(1300 USD/t, 2019, FX: ECB annual mean 2019)" in body
+        )
+
+    def test_a_missing_current_year_falls_back_to_the_latest_cpi_year(
+        self, store: Store, w: dict[str, Any], h: MeasureHandler
+    ) -> None:
+        # the World Bank series lags: no CPI for the current year, so the
+        # target is 2019 and the note says so — priced by the FX leg only
+        _seed_money(store, through_current=False)
+        run = _put(store, w, "cost", "1300", unit="USD2019/t")
+        body = h.search(property="measurand/unit-cost").body
+        assert (
+            "1161 EUR(2019)/t (1300 USD/t, 2019, FX: ECB annual mean 2019, "
+            "latest CPI year)" in body
+        )
+
+    def test_get_notes_a_missing_fx_rate(
+        self, store: Store, w: dict[str, Any], h: MeasureHandler
+    ) -> None:
+        _seed_money(store)
+        run = _put(store, w, "cost", "100", unit="GBP2020/t")
+        body = h.get(id=f"mx{run.output_id}").body
+        assert "100 GBP(2020)/t (not converted: no ECB rate for GBP in 2020)" in body
+
+    def test_a_eur_row_of_the_target_year_reads_unchanged(
+        self, store: Store, w: dict[str, Any], h: MeasureHandler
+    ) -> None:
+        _seed_money(store)
+        run = _put(store, w, "cost", "100", unit=f"EUR{_NOW_YEAR}/t")
+        body = h.get(id=f"mx{run.output_id}").body
+        assert f"100 EUR({_NOW_YEAR})/t (100 EUR/t, {_NOW_YEAR})" in body
+
+
+# ── a mid-chain database (no 0253) must not break reads ───────────────────
+
+
+def _chain_dir_without_0253(tmp: Path) -> None:
+    for f in MIGRATIONS_DIR.glob("*.sql"):
+        if f.name >= "0253":
+            continue
+        shutil.copy(f, tmp / f.name)
+
+
+def test_money_tables_before_0253_falls_back_to_empty_and_is_not_cached(
+    fresh_db: str,
+) -> None:
+    """At a mid-chain schema (0249 applied, 0253 not — the state
+    test_measures_si's 0187/0188 readers run at is older still) the
+    convert-on-read path must not fail: money_tables() answers an empty
+    MoneyTables, a currency row shows as reported with the not-converted
+    note, and the fallback is NOT cached — once 0253 lands, the next read
+    sees the real tables."""
+
+    def _one(conn: psycopg.Connection[Any], sql: str, params: tuple = ()) -> Any:
+        row = conn.execute(sql, params).fetchone()
+        assert row is not None
+        return row[0]
+
+    # This test uses fresh_db directly, so the conftest store fixture's
+    # reset has not run — drop any tables a previous test's store cached.
+    reset_money_tables_cache()
+    tmp = Path(tempfile.mkdtemp(prefix="precis_test_0253_"))
+    try:
+        _chain_dir_without_0253(tmp)
+        Migrator(fresh_db, tmp).apply_all()
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+    # Seed through the store, as the other tests do. The measurand sits under
+    # the ``measurand`` start node so ``property=`` can address it; it is not
+    # named "unit cost" because the chain already seeds a taxon at
+    # ``measurand/unit-cost`` (a second node there makes the path ambiguous).
+    s = Store.connect(fresh_db)
+    try:
+        start = _taxon(s, "measurand")
+        cost = _taxon(
+            s,
+            "ore cost",
+            unit="USD/t",
+            display="USD/t",
+            dimension_kind="currency",
+            parent=start,
+        )
+        paper = seed_ref(s, title="p", kind="paper")
+        measure = _put(
+            s, {"cost": cost, "paper": paper}, "cost", "1300", unit="USD2019/t"
+        ).output_id
+    finally:
+        s.close()
+
+    s = Store.connect(fresh_db)
+    try:
+        assert s.money_tables().fx == {} and s.money_tables().cpi == {}
+        body = (
+            MeasureHandler(hub=Hub(store=s)).search(property="measurand/ore-cost").body
+        )
+        assert f"mx{measure}" in body
+        assert "1300 USD(2019)/t (not converted: no ECB rate for USD in 2019)" in body
+    finally:
+        s.close()
+
+    # The fallback must not stick: with 0253 applied and a CPI row seeded,
+    # the next read serves the real tables.
+    Migrator(fresh_db, MIGRATIONS_DIR).apply_all()
+    with psycopg.connect(fresh_db, autocommit=True) as conn:
+        conn.execute(
+            "INSERT INTO price_index (series, year, value, source) "
+            "VALUES (%s, 2019, '110', 'test')",
+            (CPI_SERIES,),
+        )
+    s = Store.connect(fresh_db)
+    try:
+        assert s.money_tables().cpi == {2019: 110.0}
+    finally:
+        s.close()

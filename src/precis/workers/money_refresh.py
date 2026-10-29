@@ -44,6 +44,7 @@ from datetime import date
 from decimal import Decimal, InvalidOperation
 from typing import TYPE_CHECKING, Any
 
+from precis.taxonomy.money import CPI_SERIES
 from precis.utils.http import (
     POLICIES,
     call_with_backoff,
@@ -70,8 +71,6 @@ WB_CPI_URL = (
 #: "rows already cached for that source" key.
 ECB_SOURCE = "ecb:eurofxref-hist"
 WB_SOURCE = "worldbank:v2"
-#: The only series S2 fills; FX-first conversion needs the US CPI only.
-CPI_SERIES = "wb:FP.CPI.TOTL:USA"
 
 _FETCH_TIMEOUT_S = 30.0
 #: Wire cap per response — the job must fail, not buffer an unbounded body.

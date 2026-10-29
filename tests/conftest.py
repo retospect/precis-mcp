@@ -1419,6 +1419,13 @@ def store() -> Iterator[Store]:
     # Store, so a resolved secret would otherwise answer across the per-test
     # TRUNCATE for the rest of the process (gr451657).
     _secrets.invalidate()
+    # Same for the convert-on-read money tables (gr510555 S3): a 1h TTL keyed
+    # by database, not by Store — a cached fx_rates/price_index snapshot
+    # would otherwise survive the per-test TRUNCATE and shadow newly seeded
+    # cache rows.
+    from precis.store._measures_ops import reset_money_tables_cache
+
+    reset_money_tables_cache()
     # And the band-ref sets (gr515633): 300s TTL keyed by (predicate,
     # kinds), not by Store — a resolved set would otherwise hand the next
     # test's claim sweep ref_ids the TRUNCATE already deleted.

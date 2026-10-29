@@ -95,7 +95,9 @@ from __future__ import annotations
 import logging
 import math
 import re
+import time
 import uuid
+import weakref
 from collections.abc import Sequence
 from contextlib import AbstractContextManager, nullcontext
 from dataclasses import dataclass, field
@@ -124,6 +126,8 @@ from precis.taxonomy.measure_units import (
     to_canonical,
 )
 from precis.taxonomy.money import (
+    CPI_SERIES,
+    MoneyTables,
     check_price_year,
     effective_currency,
     row_currency,
@@ -135,6 +139,24 @@ from precis.utils.glyph_health import glyph_suspected
 from precis.utils.text import markup_surface
 
 log = logging.getLogger(__name__)
+
+#: Seconds a cached :meth:`MeasuresMixin.money_tables` answer stays fresh.
+_MONEY_TABLES_TTL_S = 3600.0
+#: The cache, keyed weakly by the Store instance -> ``(fetched_at, tables)``.
+#: A process-global key cannot tell two stores on the same database apart
+#: (fresh_db replays the migration chain on the shared test DB, so host,
+#: port and dbname match), and one store's freshly truncated or mid-chain
+#: state must never be served another store's cached tables.
+_money_tables_cache: weakref.WeakKeyDictionary[
+    MeasuresMixin, tuple[float, MoneyTables]
+] = weakref.WeakKeyDictionary()
+
+
+def reset_money_tables_cache() -> None:
+    """Drop cached :meth:`MeasuresMixin.money_tables` answers (tests, after
+    a TRUNCATE of the cache tables)."""
+    _money_tables_cache.clear()
+
 
 TIERS = ("measured", "computed", "derived", "asserted")
 ATTRIBUTIONS = ("own_work", "cited_work", "not_established")
@@ -2165,3 +2187,43 @@ class MeasuresMixin:
         ]
         r["reviews"] = self.reviews_for("measure", measure_id)
         return r
+
+    def money_tables(self) -> MoneyTables:
+        """The FX/CPI caches for convert-on-read (gr510555 slice 3): the
+        ``fx_rates_annual`` view plus the :data:`~precis.taxonomy.money.CPI_SERIES`
+        rows of ``price_index``, as a :class:`~precis.taxonomy.money.MoneyTables`.
+        About a thousand rows; cached per Store for
+        :data:`_MONEY_TABLES_TTL_S`. Reads never touch the network — the
+        ``money_refresh`` job is the only writer.
+
+        A database older than migration 0253 (no ``fx_rates`` /
+        ``price_index``) answers with an empty MoneyTables: reads show as
+        reported with the not-converted note. The empty fallback is NOT
+        cached — a mid-chain schema must pick up the tables as soon as the
+        migration lands, and the fallback path only runs on those old
+        databases."""
+        now = time.monotonic()
+        hit = _money_tables_cache.get(self)
+        if hit is not None and now - hit[0] < _MONEY_TABLES_TTL_S:
+            return hit[1]
+        with self.pool.connection() as conn:
+            try:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        "SELECT currency, year, per_eur_avg::float8, n_days "
+                        "FROM fx_rates_annual"
+                    )
+                    fx = {
+                        (str(c), int(y)): (float(p), int(n))
+                        for c, y, p, n in cur.fetchall()
+                    }
+                    cur.execute(
+                        "SELECT year, value::float8 FROM price_index WHERE series = %s",
+                        (CPI_SERIES,),
+                    )
+                    cpi = {int(y): float(v) for y, v in cur.fetchall()}
+            except (psycopg.errors.UndefinedTable, psycopg.errors.UndefinedColumn):
+                return MoneyTables(fx={}, cpi={})
+        tables = MoneyTables(fx=fx, cpi=cpi)
+        _money_tables_cache[self] = (now, tables)
+        return tables

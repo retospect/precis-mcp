@@ -130,8 +130,18 @@ prefix, so 1.4e-10 m reads `140 pm`, never `0.00000000014 m`.
 - A **currency** row is the exception to "stored in SI": the number stays in
   the *reported* currency and only the remainder scales — `1 EUR2015/kg` on a
   `USD/t` measurand stores `1000` with `currency='EUR'`, `price_year=2015`,
-  and shows as `1000 EUR(2015)/t`. Currencies never convert between each
-  other.
+  and shows as `1000 EUR(2015)/t`. On read it converts to EUR at the target
+  year — the latest year with CPI in the `price_index` cache, capped at the
+  current UTC year (the World Bank series lags; a missing current year is
+  never extrapolated) — and shows as
+  `1277 EUR(2026)/t (1300 USD/t, 2019, FX: ECB annual mean 2019)`: the
+  converted value with its year, the original and the FX basis beside it.
+  The FX rate is the ECB annual mean of the price year — a measure stores
+  only `price_year`, not a date. A missing (or too thin, under 50 quote
+  days) rate or index shows the original with a note naming it
+  (`not converted: no ECB rate for GBP in 2020`); a rate is never guessed,
+  and a row without a price year shows as reported with the note
+  `price year unknown`.
 
 ## One measure, one run
 

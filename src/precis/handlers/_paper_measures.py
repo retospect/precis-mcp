@@ -34,10 +34,11 @@ def render_measures_view(store: Store, ref: Ref) -> Response:
             prose.append(row)
 
     lines = [f"# {paper} — {len(rows)} measure(s)"]
+    money = store.money_tables()
     for number in sorted(groups):
         lines.extend(["", f"## T{number}"])
-        lines.extend(render.result_line(row) for row in groups[number])
+        lines.extend(render.result_line(row, money=money) for row in groups[number])
     if prose:
         lines.extend(["", "## prose"])
-        lines.extend(render.result_line(row) for row in prose)
+        lines.extend(render.result_line(row, money=money) for row in prose)
     return Response(body="\n".join(lines), result_count=len(rows))

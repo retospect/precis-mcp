@@ -18,8 +18,16 @@ The pint side lives with the shared registry
 (:func:`precis.taxonomy.measure_units._registry` applies
 :data:`MONEY_DEFINITION`): the converter swaps the token for ``money`` and
 lets pint scale the remainder, so ``EUR/kg`` on a ``USD/t`` measurand stores
-x1000 and keeps ``currency='EUR'``. Slice 1 records the currency *as
-reported* — there is no FX conversion anywhere yet.
+x1000 and keeps ``currency='EUR'`.
+
+Slice 3 (the 2026-10-28 ruling) adds convert-on-read: a value in currency C
+at price year Y reads as EUR at a target year T (default: the latest year
+with CPI in the cache, capped at the current UTC year — the series lags and
+is never extrapolated) — FX at the ECB annual-average quote of Y, then
+deflated by the CPI ratio — with the original figure shown beside it. A
+missing rate or index refuses with a reason naming it; a rate is never
+guessed (:func:`convert_money` over a :class:`MoneyTables` the store loads
+from the ``fx_rates``/``price_index`` caches).
 """
 
 from __future__ import annotations
@@ -330,4 +338,131 @@ def row_currency(row: Mapping[str, Any]) -> tuple[str | None, int | None]:
         row.get("price_year"),
         row.get("reported_unit"),
         row.get("canonical_unit"),
+    )
+
+
+#: The canonical currency a converted value displays in (ruling, Reto
+#: 2026-10-28, superseding the slice-1 backlog draft's USD default).
+CANONICAL_CURRENCY: Final[str] = "EUR"
+
+#: The price-index series the read path deflates with — today the only
+#: series the ``money_refresh`` job fills (World Bank US CPI, 2010=100).
+#: A second series would be a new constant, not a schema change.
+CPI_SERIES: Final[str] = "wb:FP.CPI.TOTL:USA"
+
+#: An ECB annual average built from fewer quote days than this refuses
+#: conversion: a rate from a fragment is a guessed rate.
+_MIN_FX_DAYS = 50
+
+
+@dataclass(frozen=True, slots=True)
+class MoneyTables:
+    """The conversion caches as plain maps, loaded once per process by the
+    store (``fx_rates_annual`` + ``price_index``). ``fx`` keys
+    ``(currency, year)`` to ``(per_eur_avg, n_days)`` — the annual-average
+    quote in units of the currency per 1 EUR and its quote-day count;
+    ``cpi`` keys year to the index value of :data:`CPI_SERIES`."""
+
+    fx: Mapping[tuple[str, int], tuple[float, int]]
+    cpi: Mapping[int, float]
+
+
+@dataclass(frozen=True, slots=True)
+class MoneyConversion:
+    """A successful convert-on-read. ``factor`` turns an amount in the
+    reported currency at the price year into EUR at the target year; the
+    rest is the audit trail behind the display."""
+
+    factor: float
+    per_eur: float | None  # quote at the price year; None when the row is EUR
+    fx_days: int | None  # quote days behind that average
+    cpi_from: float | None  # index at the price year (None when Y == T)
+    cpi_to: float | None  # index at the target year (None when Y == T)
+
+
+@dataclass(frozen=True, slots=True)
+class MoneyRefusal:
+    """Conversion could not run. ``reason`` is the display note; it names
+    the missing (or too thin) rate or index — never a guess."""
+
+    reason: str
+
+
+def default_target_year(tables: MoneyTables) -> tuple[int, bool]:
+    """The default deflation target: the latest year with CPI in the cache,
+    capped at the current UTC year.
+
+    The World Bank series lags, so the current year usually has no CPI yet
+    and is never extrapolated — the target falls back to the latest cached
+    year. Returns the year and whether it is that latest cached CPI year
+    rather than the current one (the "latest CPI year" note on a converted
+    value). An empty cache targets the current year: every conversion then
+    refuses on the missing index, except a row already priced at the
+    current year, which converts by its FX leg alone."""
+    now = datetime.now(UTC).year
+    if not tables.cpi:
+        return now, False
+    latest = max(tables.cpi)
+    return (latest, True) if latest < now else (now, False)
+
+
+def convert_money(
+    tables: MoneyTables,
+    *,
+    currency: str,
+    price_year: int | None,
+    target_year: int,
+) -> MoneyConversion | MoneyRefusal:
+    """Convert ``currency`` at ``price_year`` into EUR at ``target_year``.
+
+    FX first — the amount is priced into EUR at the ECB annual-average
+    quote of the price year, ``per_eur`` being units of the currency per
+    1 EUR — then deflated by the :data:`CPI_SERIES` ratio, so one CPI
+    series serves every currency. A EUR amount skips the FX leg; a price
+    year equal to the target year skips the CPI leg. Missing data refuses,
+    naming it: no price year, no (or thin) ECB rate for the year, or a CPI
+    gap — the caller shows the original with the reason."""
+    if price_year is None:
+        return MoneyRefusal("price year unknown")
+    per_eur: float | None = None
+    fx_days: int | None = None
+    if currency != CANONICAL_CURRENCY:
+        row = tables.fx.get((currency, price_year))
+        if row is None:
+            return MoneyRefusal(f"no ECB rate for {currency} in {price_year}")
+        per_eur, fx_days = row
+        if fx_days < _MIN_FX_DAYS:
+            return MoneyRefusal(
+                f"ECB rate for {currency} in {price_year} has only {fx_days} quote days"
+            )
+    if price_year == target_year:
+        return MoneyConversion(
+            factor=(1.0 if per_eur is None else 1.0 / per_eur),
+            per_eur=per_eur,
+            fx_days=fx_days,
+            cpi_from=None,
+            cpi_to=None,
+        )
+    have = sorted(tables.cpi)
+    if have and have[0] == have[-1]:
+        span = f" (have {have[0]})"
+    elif have:
+        span = f" (have {have[0]}–{have[-1]})"
+    else:
+        span = ""
+    missing = [y for y in (price_year, target_year) if y not in tables.cpi]
+    if missing:
+        years = " or ".join(str(y) for y in missing)
+        return MoneyRefusal(f"no CPI for {years}{span}")
+    cpi_from = tables.cpi[price_year]
+    cpi_to = tables.cpi[target_year]
+    factor = cpi_to / cpi_from
+    if per_eur is not None:
+        factor /= per_eur
+    return MoneyConversion(
+        factor=factor,
+        per_eur=per_eur,
+        fx_days=fx_days,
+        cpi_from=cpi_from,
+        cpi_to=cpi_to,
     )

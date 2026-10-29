@@ -60,7 +60,7 @@ from precis.taxonomy.measure_units import (
     is_unit,
     to_canonical,
 )
-from precis.taxonomy.money import row_currency, split_currency
+from precis.taxonomy.money import MoneyTables, row_currency, split_currency
 from precis.utils import handle_registry
 from precis.utils.slug_ref import resolve_live_slug_ref
 
@@ -232,17 +232,22 @@ class MeasureHandler(Handler):
                 next="search(kind='measure', property='<measurand>') lists rows with their ids",
             )
         return Response(
-            body=self._render_row(self.store.measure_detail(self._coerce_id(id)))
+            body=self._render_row(
+                self.store.measure_detail(self._coerce_id(id)),
+                money=self.store.money_tables(),
+            )
         )
 
-    def _render_row(self, r: dict[str, Any]) -> str:
+    def _render_row(self, r: dict[str, Any], *, money: MoneyTables) -> str:
         mx = handle_registry.format_handle("measure", int(r["id"]))
         out = [f"# {mx} — {render.subject_label(r)}: {r['measurand']}"]
         reported = (
             f" (reported unit: {r['reported_unit']})" if r["reported_unit"] else ""
         )
         out.append(f"literal: {r['literal']}{reported}")
-        out.append(f"value: {render.value_text(r)}   SI: {self._si_text(r)}")
+        out.append(
+            f"value: {render.value_text(r, money=money)}   SI: {self._si_text(r)}"
+        )
         extras = []
         if r["reference"]:
             extras.append(f"reference {r['reference']}")
@@ -275,7 +280,8 @@ class MeasureHandler(Handler):
                 role = f", {c['role']}" if c["role"] else ""
                 live = "" if c["superseded_by"] is None else ", superseded"
                 out.append(
-                    f"  - {render.one_condition(c)}   [{c['literal']}{role}{live}] "
+                    f"  - {render.one_condition(c, money=money)}   "
+                    f"[{c['literal']}{role}{live}] "
                     f"{handle_registry.format_handle('measure', int(c['id']))}"
                 )
         else:
@@ -686,7 +692,8 @@ class MeasureHandler(Handler):
             head += f" · serves: {handle_registry.format_handle('quest', serving)}"
         if not rows:
             return Response(body=head)
-        lines = [head, *(render.result_line(r, unit=unit) for r in shown)]
+        money = self.store.money_tables()
+        lines = [head, *(render.result_line(r, unit=unit, money=money) for r in shown)]
         if len(rows) > page * size:
             lines.append(f"… {len(rows) - page * size} more: page={page + 1}")
         if found.other_currency:

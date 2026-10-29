@@ -8,6 +8,17 @@ A stored value is SI; this turns it into the unit a person expects
 prefix. A currency row is the exception: its stored number is already in
 the reported currency, so only the remainder converts and the label carries
 that currency and price year (``1000 EUR(2015)/t``; gr510555 S1).
+
+Convert-on-read (gr510555 slice 3, ruling 2026-10-28): when the caller
+passes ``money`` — the :class:`~precis.taxonomy.money.MoneyTables` the
+store loads from the ``fx_rates``/``price_index`` caches — a currency value
+converts to EUR at the target year (the latest year with CPI in the cache,
+capped at the current UTC year — the series lags and is never extrapolated)
+and renders as
+``1277 EUR(2026)/t (1300 USD/t, 2019, FX: ECB annual mean 2019)``: the
+converted value with its year, the original figure and the FX basis beside
+it. A missing (or too thin) rate or index renders the original with a note
+naming it; a rate is never guessed.
 """
 
 from __future__ import annotations
@@ -22,7 +33,15 @@ from precis.taxonomy.measure_units import (
     make_converter,
     pint_unit_text,
 )
-from precis.taxonomy.money import row_currency, split_currency
+from precis.taxonomy.money import (
+    CANONICAL_CURRENCY,
+    MoneyRefusal,
+    MoneyTables,
+    convert_money,
+    default_target_year,
+    row_currency,
+    split_currency,
+)
 from precis.utils import handle_registry
 
 
@@ -47,18 +66,38 @@ def _money_unit(currency: str, remainder: str) -> str:
     )
 
 
+def _figure_text(row: dict[str, Any], values: Sequence[float]) -> str:
+    """The original figure for a converted value's bracket: mirrors
+    :func:`value_text`'s composition (interval, ``±`` err, plain) over the
+    unconverted display numbers."""
+    if row.get("value_form") == "interval" and len(values) >= 2:
+        return f"{format_number(values[0])}–{format_number(values[1])}"
+    if row.get("value_err") and len(values) >= 2:
+        return (
+            f"{format_number(values[0])} ± {format_number(abs(values[1] - values[0]))}"
+        )
+    return format_number(values[0])
+
+
 def _money_numbers(
-    row: dict[str, Any], values: Sequence[float], unit: str | None
+    row: dict[str, Any],
+    values: Sequence[float],
+    unit: str | None,
+    money: MoneyTables | None,
 ) -> tuple[list[float], str] | None:
     """Numbers + label for a currency row, or None on a non-currency row.
 
     Slice 1 of measure-currency-units (gr510555): a stored value is in the
     *reported* currency (``measures.currency``, or the legacy token) with the
-    remainder scaled to the canonical one. Currencies never convert, so the
-    only thing pint scales here is the remainder — toward the requested
-    ``unit``'s, else the display unit's, else the canonical remainder —
-    and the label always carries the row's own currency
-    (``1000 EUR(2015)/t``)."""
+    remainder scaled to the canonical one, so the only thing pint scales here
+    is the remainder — toward the requested ``unit``'s, else the display
+    unit's, else the canonical remainder.
+
+    Slice 3 (``money`` given): the remainder-scaled value then converts to
+    EUR at the target year — the latest year with CPI in the cache, capped
+    at the current UTC year — and the label becomes
+    ``EUR(2026)/t (1300 USD/t, 2019, FX: ECB annual mean 2019)``. A refusal
+    renders the original label plus the reason."""
     currency, price_year = row_currency(row)
     if currency is None:
         return None
@@ -75,6 +114,7 @@ def _money_numbers(
                 rem = t.remainder
         except BadInput:
             pass
+    out = list(values)
     if rem != canon_rem:
         try:
             conv = make_converter(
@@ -83,10 +123,27 @@ def _money_numbers(
         except BadInput:
             rem = canon_rem  # an unconvertible target keeps the stored remainder
         else:
-            return [conv.value(v) for v in values], _money_label(
-                currency, price_year, rem
-            )
-    return list(values), _money_label(currency, price_year, rem)
+            out = [conv.value(v) for v in out]
+    label = _money_label(currency, price_year, rem)
+    if money is None:
+        return out, label
+    target_year, latest_cpi = default_target_year(money)
+    done = convert_money(
+        money,
+        currency=currency,
+        price_year=price_year,
+        target_year=target_year,
+    )
+    if isinstance(done, MoneyRefusal):
+        return out, f"{label} (not converted: {done.reason})"
+    note = f"{_figure_text(row, out)} {_money_label(currency, None, rem)}, {price_year}"
+    if done.per_eur is not None:
+        note += f", FX: ECB annual mean {price_year}"
+    if latest_cpi:
+        note += ", latest CPI year"
+    return [v * done.factor for v in out], (
+        f"{_money_label(CANONICAL_CURRENCY, target_year, rem)} ({note})"
+    )
 
 
 def stored_unit(row: dict[str, Any]) -> str:
@@ -105,13 +162,16 @@ def stored_unit(row: dict[str, Any]) -> str:
 
 
 def _numbers(
-    row: dict[str, Any], values: Sequence[float], unit: str | None
+    row: dict[str, Any],
+    values: Sequence[float],
+    unit: str | None,
+    money: MoneyTables | None,
 ) -> tuple[list[float], str]:
     """Display numbers for a row; an explicit ``unit`` that does not fit this
     row's measurand falls back to the row's own default rather than failing a
     whole result list."""
-    if (money := _money_numbers(row, values, unit)) is not None:
-        return money
+    if (money_out := _money_numbers(row, values, unit, money)) is not None:
+        return money_out
     try:
         return display_numbers(
             values,
@@ -131,7 +191,9 @@ def _with(label: str, *parts: str) -> str:
     return " ".join([*parts, label]).strip() if label else " ".join(parts)
 
 
-def value_text(row: dict[str, Any], *, unit: str | None = None) -> str:
+def value_text(
+    row: dict[str, Any], *, unit: str | None = None, money: MoneyTables | None = None
+) -> str:
     """The row's reading in the output unit: ``95 %``, ``1.4–2.1 Å``, ``< 5 mA/m²``,
     ``~3 V``, ``9.6 ± 1.7 mV``, a category as printed."""
     form = row.get("value_form")
@@ -146,11 +208,11 @@ def value_text(row: dict[str, Any], *, unit: str | None = None) -> str:
     if row.get("value_bool") is not None and num is None:
         return "true" if row["value_bool"] else "false"
     if form == "interval" and low is not None and high is not None:
-        (a, b), label = _numbers(row, [low, high], unit)
+        (a, b), label = _numbers(row, [low, high], unit, money)
         return _with(label, f"{format_number(a)}–{format_number(b)}")
     if num is not None and form != "categorical":
         err = row.get("value_err")
-        nums, label = _numbers(row, [num, num + err] if err else [num], unit)
+        nums, label = _numbers(row, [num, num + err] if err else [num], unit, money)
         text = format_number(nums[0])
         if err:
             text += f" ± {format_number(abs(nums[1] - nums[0]))}"
@@ -159,16 +221,20 @@ def value_text(row: dict[str, Any], *, unit: str | None = None) -> str:
     return str(row.get("value_text") or row.get("literal") or "—")
 
 
-def one_condition(c: dict[str, Any]) -> str:
+def one_condition(c: dict[str, Any], *, money: MoneyTables | None = None) -> str:
     """``potential=-0.5 V vs RHE`` — the input's value in its own display unit."""
-    text = value_text(c)
+    text = value_text(c, money=money)
     if c.get("reference"):
         text += f" vs {c['reference']}"
     return f"{c.get('name') or c.get('measurand') or '?'}={text}"
 
 
-def conditions_text(conditions: Sequence[dict[str, Any]]) -> str:
-    return ", ".join(one_condition(c) for c in conditions) or "no conditions"
+def conditions_text(
+    conditions: Sequence[dict[str, Any]], *, money: MoneyTables | None = None
+) -> str:
+    return (
+        ", ".join(one_condition(c, money=money) for c in conditions) or "no conditions"
+    )
 
 
 def ref_handle(kind: str | None, ref_id: int | None) -> str | None:
@@ -207,17 +273,19 @@ def flags(row: dict[str, Any]) -> list[str]:
     return out
 
 
-def result_line(row: dict[str, Any], *, unit: str | None = None) -> str:
+def result_line(
+    row: dict[str, Any], *, unit: str | None = None, money: MoneyTables | None = None
+) -> str:
     """One line per row: id, subject, measurand and value, conditions, tier,
     paper handle (plus any flag, shown only for ``status='all'`` rows)."""
     mx = handle_registry.format_handle("measure", int(row["id"]))
     parts = [
         mx,
         subject_label(row),
-        f"{row.get('measurand') or '?'}: {value_text(row, unit=unit)}"
+        f"{row.get('measurand') or '?'}: {value_text(row, unit=unit, money=money)}"
         + (f" vs {row['reference']}" if row.get("reference") else "")
         + (f" [{row['normalization']}]" if row.get("normalization") else ""),
-        conditions_text(row.get("conditions") or []),
+        conditions_text(row.get("conditions") or [], money=money),
         str(row.get("tier") or "tier unknown"),
         paper_handle(row),
     ]

@@ -450,12 +450,16 @@ def _finding_measure_lines(store: Store, ref: Ref) -> list[str]:
         from precis.handlers._measure_render import result_line
     except Exception:
         return []
+    try:
+        money = store.money_tables()
+    except Exception:
+        money = None  # a cache read failure renders the lines unconverted
     out = []
     for row in rows:
         if row.get("direction") != "output":
             continue
         try:
-            out.append(result_line(row))
+            out.append(result_line(row, money=money))
         except Exception:
             continue
     return out[:3]
