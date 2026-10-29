@@ -35,6 +35,8 @@ GRANT/REVOKE statements stay in the dump (``--no-owner`` only): the
 migration chain's privilege layout names PUBLIC exclusively, so the
 snapshot reproduces it verbatim — a baseline-built install gets the same
 ACLs a replayed one does (gr505335; the convergence test asserts it).
+The one exception is the guarded ``agent_rw`` grants of 0257/0258, which a
+role-less scratch DB never applies: ``_APP_ROLE_GRANTS`` re-emits them.
 
 This is a dual-track scheme (Rails ``schema.rb`` / Ecto
 ``structure.sql``), **not** a third greenfield: the numbered migrations
@@ -139,6 +141,41 @@ _LEDGER_EPOCH = "1970-01-01 00:00:00+00"
 
 #: Default scratch database name created on the maintenance server.
 DEFAULT_SCRATCH_DB = "precis_schema_dump"
+
+
+#: Grants to the out-of-tree ``agent_rw`` role that migrations 0257/0258
+#: apply in a ``pg_roles``-guarded DO block. The scratch DB the dump runs
+#: against has no such role, so the guarded GRANTs never fire there and
+#: pg_dump cannot capture them — yet the REVOKE FROM PUBLIC lines it does
+#: capture would leave a baseline-built install (role present) without
+#: vault access. Re-emit them here, behind the same guard. Keep in step
+#: with any later migration that grants to ``agent_rw``.
+_APP_ROLE_GRANTS = """\
+--
+-- Grants to agent_rw (migrations 0257, 0258), guarded like the migrations:
+-- the role is provisioned out-of-tree, absent on a fresh dev/test DB.
+--
+
+DO $$
+BEGIN
+    IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'agent_rw') THEN
+        EXECUTE 'GRANT EXECUTE ON FUNCTION
+            vault.reveal(text),
+            vault.reveal(text, text, text, integer, integer, text),
+            vault.set_secret(text, text),
+            vault.set_secret_if_absent(text, text),
+            vault.delete_secret(text),
+            vault.gc_events(integer)
+            TO agent_rw';
+        EXECUTE 'GRANT EXECUTE ON FUNCTION
+            public.refs_retire_event_trail(),
+            public.precis_revision_triggers_refresh(),
+            public.precis_kinds_refresh_guarded()
+            TO agent_rw';
+    END IF;
+END
+$$;
+"""
 
 
 def baseline_path(migrations_dir: Path) -> Path:
@@ -288,7 +325,10 @@ def _assemble(schema_ddl: str, seed_data: str, ledger: str, *, head: str) -> str
         f"{ext_lines}\n"
         "CREATE SCHEMA IF NOT EXISTS public;\n"
     )
-    return f"{header}\n{schema_ddl.rstrip()}\n\n{seed_data.rstrip()}\n\n{ledger}"
+    return (
+        f"{header}\n{schema_ddl.rstrip()}\n\n{_APP_ROLE_GRANTS}\n"
+        f"{seed_data.rstrip()}\n\n{ledger}"
+    )
 
 
 def generate_baseline_sql(
