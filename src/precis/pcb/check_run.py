@@ -103,6 +103,16 @@ class DrcRun(NamedTuple):
     #: a run just computed. Callers say so in their ack.
     reused: bool = False
 
+    @property
+    def diags(self) -> list[Any]:
+        """``findings`` as structured Diags — ``pcb.<rule>``-coded
+        records with the finding's participant refs (gr522027, S1b).
+        DRC and ERC findings share the :class:`DrcFinding` shape, so
+        ``erc_findings`` output converts identically."""
+        from precis.pcb import diag as pcb_diag
+
+        return [pcb_diag.drc_to_diag(f) for f in self.findings]
+
 
 def outline_from_features(store: Store, ref_id: int) -> list[list[float]] | None:
     """The board outline, as a plain point polygon — the single
@@ -641,7 +651,14 @@ def run(
             stackup, board_profile_name, meta=board.get("meta")
         )
     except ValueError as exc:
-        raise BadInput(f"pcb: {exc}") from exc
+        refusal = BadInput(f"pcb: {exc}")
+        from precis.pcb import diag as pcb_diag
+
+        pcb_diag._stamp(
+            refusal,
+            pcb_diag.error_diag(refusal, op="check", code="pcb.check-capability"),
+        )
+        raise refusal from exc
     layer_names = [str(layer.get("name")) for layer in stackup]
     # Pads come from the IR, which is the SAME source the router and the
     # realizer use (precis.pcb.landpattern via ir.pin_point). A second

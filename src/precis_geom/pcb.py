@@ -106,7 +106,26 @@ _NOT_CHECKED_REASON = "no lcsc, no authored footprint (synthesized landpattern)"
 class PcbBuilderError(ValueError):
     """A builder-time misuse: a reused refdes/prefix, a module touching a
     net it was not handed, a non-electrical net domain, an unknown
-    footprint name."""
+    footprint name.
+
+    ``refs=`` names the entities the error is about — the
+    ``part:<refdes>``/``pad:<refdes>/<pin>``/``net:<name>`` vocabulary
+    ``precis.pcb.drc._object_identity`` uses — and ``code=`` overrides
+    the derived ``pcb.<type-slug>`` code. Both ride ``diag_refs``/
+    ``diag_code`` (gr522027): :func:`precis_geom.out._error_entry`
+    serializes them onto a failed manifest's ``error`` for the Diag
+    adapter, and ``precis.pcb.diag.op`` reads them when stamping
+    ``exc.diag`` — named ``diag_*`` so they can never collide with a
+    caller's own attribute."""
+
+    def __init__(
+        self, msg: str, *, refs: tuple[str, ...] = (), code: str | None = None
+    ) -> None:
+        super().__init__(msg)
+        self.diag_refs = tuple(refs)
+        self.diag_code = code or (
+            f"pcb.{_DIAG_CODES.get(type(self).__name__, 'builder-error')}"
+        )
 
 
 class PinConflict(PcbBuilderError):
@@ -114,6 +133,10 @@ class PinConflict(PcbBuilderError):
     fixed pin claimed under two different names, or a flexible slot left
     with no feasible pin at solve time. The message names the signals,
     the pins and the claim sites."""
+
+
+#: ``PcbBuilderError`` subclass → its ``pcb.`` Diag code slug.
+_DIAG_CODES = {"PinConflict": "pin-conflict"}
 
 
 _AMPS_PER_UNIT = {"a": 1.0, "ma": 1e-3, "ua": 1e-6, "µa": 1e-6, "na": 1e-9}
@@ -219,13 +242,20 @@ def _param_docs(fn: Callable[..., Any]) -> dict[str, str]:
     return docs
 
 
-def _bad_kwarg(fn: Callable[..., Any], param: str, msg: str) -> PcbBuilderError:
+def _bad_kwarg(
+    fn: Callable[..., Any],
+    param: str,
+    msg: str,
+    *,
+    refs: tuple[str, ...] = (),
+) -> PcbBuilderError:
     """`PcbBuilderError` about `param` on `fn`, with that param's doc
     line appended — the contract surfaces where it was broken. `msg`
     passes through unquoted when `fn`'s docstring has no Args entry for
-    it, so an undocumented param degrades to today's message."""
+    it, so an undocumented param degrades to today's message. `refs`
+    names the entities the refusal is about (gr522027)."""
     doc = _param_docs(fn).get(param)
-    return PcbBuilderError(f"{msg} — {param}: {doc}" if doc else msg)
+    return PcbBuilderError(f"{msg} — {param}: {doc}" if doc else msg, refs=refs)
 
 
 @functools.cache
@@ -691,7 +721,8 @@ class Part:
             if prev is not None and prev["name"] != name:
                 raise PinConflict(
                     f"{self.refdes} pin {p.name}: claimed as "
-                    f"{prev['name']!r} ({prev['site']}) and as {name!r} ({site})"
+                    f"{prev['name']!r} ({prev['site']}) and as {name!r} ({site})",
+                    refs=(f"part:{self.refdes}", f"pad:{self.refdes}/{p.name}"),
                 )
             self._pin_claims.setdefault(p.name, {"name": name, "site": site})
         return p
@@ -1037,7 +1068,12 @@ class Net:
                 if p.net is not None and p.net != self.name:
                     raise PinConflict(
                         f"slot {p.handle}: tied to net {p.net!r} "
-                        f"({p.site}) and again to {self.name!r}"
+                        f"({p.site}) and again to {self.name!r}",
+                        refs=(
+                            f"part:{p.part.refdes}",
+                            f"net:{p.net}",
+                            f"net:{self.name}",
+                        ),
                     )
                 p.net = self.name
                 p.requirement = current or p.requirement
@@ -1623,7 +1659,8 @@ class Board:
             _trace.record(made={"footprints": 1})
         elif prev is not fp:
             raise PcbBuilderError(
-                f"footprint {fp.name!r} already registered on board {self.slug!r}"
+                f"footprint {fp.name!r} already registered on board {self.slug!r}",
+                refs=(f"footprint:{fp.name}",),
             )
         return fp
 
@@ -1708,6 +1745,7 @@ class Board:
                 Board.part,
                 "refdes",
                 f"refdes {qualified!r} already used on board {self.slug!r}",
+                refs=(f"part:{qualified}",),
             )
         fp_name = (
             self.footprint(footprint).name
@@ -1805,6 +1843,7 @@ class Board:
                 Board.net,
                 "name",
                 f"net {qualified!r} already declared on board {self.slug!r}",
+                refs=(f"net:{qualified}",),
             )
         n = Net(
             board=self,
@@ -1841,7 +1880,8 @@ class Board:
         if frame is not None and net.name not in frame.allowed_net_names:
             raise PcbBuilderError(
                 f"module {frame.qualname!r} (prefix {frame.prefix!r}) touched "
-                f"net {net.name!r} it was not handed as a port"
+                f"net {net.name!r} it was not handed as a port",
+                refs=(f"net:{net.name}", f"part:{pin.part.refdes}"),
             )
         entry: dict[str, Any] = {
             "net": net.name,

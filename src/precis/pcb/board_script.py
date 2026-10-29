@@ -48,6 +48,7 @@ from __future__ import annotations
 
 import keyword
 import pprint
+import re
 from pathlib import Path
 from typing import Any
 
@@ -78,7 +79,37 @@ _CONNS_SQL = (
 
 class BoardScriptError(ValueError):
     """A batch key ``precis_geom.pcb`` cannot express (or a malformed
-    batch) — :func:`emit` raises unless ``allow_loss``."""
+    batch) — :func:`emit` raises unless ``allow_loss``.
+
+    ``refs`` names the entities the refusal is about
+    (``part:<refdes>``/``net:<name>``/``footprint:<name>``… — the Diag
+    ref vocabulary, gr522027); the error carries ``diag`` /
+    ``diag_refs`` / ``diag_code`` so both the direct-caller path
+    (``exc.diag``) and the traced manifest path (``_error_entry``'s
+    attribute read) report it."""
+
+    def __init__(
+        self,
+        msg: str,
+        *,
+        refs: tuple[str, ...] = (),
+        next: str = "",
+        op: str = "emit",
+    ) -> None:
+        super().__init__(msg)
+        from precis.pcb import diag as pcb_diag
+
+        self.diag = pcb_diag.error_diag(
+            self, op=op, code="pcb.script-error", refs=refs, next=next
+        )
+        self.diag_refs = self.diag.refs
+        self.diag_code = self.diag.code
+
+
+#: Loss lines name their entity as ``<kind> '<name>'`` — the Diag
+#: ``refs`` a loss raise carries (gr522027). ``part:<refdes>`` matches
+#: ``precis.pcb.drc._object_identity``'s vocabulary.
+_LOSS_REF = re.compile(r"^(part|net|footprint|generator|measure|group) '([^']+)'")
 
 
 _PART_KEYS = {
@@ -380,7 +411,8 @@ def _emit_groups(components: list[dict[str, Any]], var_of: dict[str, str]) -> li
         if any(offs):
             if any(set(o) != {"x", "y", "rot"} for o in offs):
                 raise BoardScriptError(
-                    f"group {name!r}: every member needs a full x/y/rot offset"
+                    f"group {name!r}: every member needs a full x/y/rot offset",
+                    refs=(f"group:{name}",),
                 )
             tuples = ", ".join(f"({o['x']!r}, {o['y']!r}, {o['rot']!r})" for o in offs)
             lines.append(f"b.group({name!r}, [{parts}], offsets=[{tuples}])")
@@ -557,7 +589,14 @@ def emit(
         raise BoardScriptError(
             "batch carries keys precis_geom.pcb cannot express: "
             + "; ".join(loss[:8])
-            + (" …" if len(loss) > 8 else "")
+            + (" …" if len(loss) > 8 else ""),
+            refs=tuple(
+                dict.fromkeys(
+                    f"{m.group(1)}:{m.group(2)}"
+                    for l in loss
+                    if (m := _LOSS_REF.match(l)) is not None
+                )
+            ),
         )
 
     mods = _modules(batch["components"])
@@ -799,7 +838,7 @@ def board_batch(store: Any, slug: str) -> tuple[dict[str, Any], dict[str, Any]]:
     """
     ref = store.get_ref(kind="pcb", id=slug)
     if ref is None:
-        raise BoardScriptError(f"no pcb {slug!r}")
+        raise BoardScriptError(f"no pcb {slug!r}", op="board_batch")
     ref_id = int(ref.id)
     graph = store.pcb_graph(ref_id)
     load = store.pcb_load(ref_id)

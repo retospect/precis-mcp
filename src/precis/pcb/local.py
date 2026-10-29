@@ -59,6 +59,7 @@ from precis.pcb import (
     STACKUP_PRESETS,
     ratsnest,
 )
+from precis.pcb import diag as pcb_diag
 from precis.pcb import drc as pcb_drc
 from precis.pcb import profiles as pcb_profiles
 from precis.pcb import realize as pcb_realize
@@ -72,6 +73,7 @@ from precis.pcb.optimize import (
     optimize,
     resolve_measures,
 )
+from precis_diag import Diag
 
 log = logging.getLogger(__name__)
 
@@ -80,7 +82,27 @@ class LocalError(ValueError):
     """A refusal the offline run raises before spending the solve — the
     laptop analogue of a job's ``record_failure`` (outline defect,
     fixed-copper collision, pre-route placement gate, unsupported
-    board shape). Carries the same fix text a job summary would."""
+    board shape). Carries the same fix text a job summary would.
+
+    ``refs``/``next``/``code`` feed the Diag the public ops' ``@op``
+    stamp on the way out (gr522027): ``refs`` names entities in the
+    ``part:``/``pad:``/``net:`` vocabulary, ``next`` the fix step when
+    the message doesn't already carry it, ``code`` a ``pcb.`` code
+    override. ``diag`` starts ``None`` — the innermost op stamps it."""
+
+    def __init__(
+        self,
+        msg: str,
+        *,
+        refs: tuple[str, ...] = (),
+        next: str = "",
+        code: str = "",
+    ) -> None:
+        super().__init__(msg)
+        self.refs = tuple(refs)
+        self.next = next
+        self.code = code
+        self.diag: Diag | None = None
 
 
 # ── batch → engine surfaces ────────────────────────────────────────────
@@ -577,13 +599,15 @@ def _design(board: Any, catalog: dict[str, dict[str, Any]] | None) -> _Design:
                     f"{inst['refdes']} declares {key} — supply/client "
                     "matching and pin-swap warm starts are server-side "
                     "only (the rebind lives on the resolved snapshot the "
-                    "laptop does not have)"
+                    "laptop does not have)",
+                    refs=(f"part:{inst['refdes']}",),
                 )
     for pin in graph.get("unconnected") or []:
         if (pin.get("meta") or {}).get("client_of"):
             raise LocalError(
                 f"{pin['refdes']}.{pin['pin']} declares client_of — "
-                "supply/client matching is server-side only; see above"
+                "supply/client matching is server-side only; see above",
+                refs=(f"pad:{pin['refdes']}/{pin['pin']}",),
             )
     local_by_name = _local_footprints(batch)
     missing = _uncached_lcscs(graph, by_lcsc, local_by_name)
@@ -667,7 +691,12 @@ def _prepare(design: _Design) -> tuple[PcbIR, dict[str, dict[str, Any]], Any]:
         raise LocalError(
             f"refusing — {len(collisions)} fixed-copper clearance "
             "error(s) against another net's copper, which no routing can "
-            f"remove:\n{shown}"
+            f"remove:\n{shown}",
+            refs=tuple(
+                sorted(
+                    {r for f_ in collisions for r in pcb_drc.finding_identity(f_)[1]}
+                )
+            ),
         )
     return ir, footprints, (applied, measures)
 
@@ -703,6 +732,7 @@ class LocalPlacement:
         )
 
 
+@pcb_diag.op("place")
 def place(
     board: Any,
     *,
@@ -750,6 +780,7 @@ def place(
 # ── route (retired) ────────────────────────────────────────────────────
 
 
+@pcb_diag.op("route")
 def route(
     board: Any,
     *,
@@ -803,6 +834,7 @@ class TopoRun:
         return str(self.files["summary.txt"])
 
 
+@pcb_diag.op("topo_place")
 def topo_place(
     board: Any,
     *,
@@ -1027,7 +1059,12 @@ def topo_place(
         files["route.json"] = route_json
         _runstore.write_run(files, out)
     except Exception as exc:
-        route_json = {"error": f"{type(exc).__name__}: {exc}"}
+        route_json = {
+            "error": f"{type(exc).__name__}: {exc}",
+            "diag": pcb_diag.error_diag(
+                exc, op="topo_place.route", code="pcb.route-failed"
+            ).to_dict(),
+        }
         files["route.json"] = route_json
         _runstore.write_run(files, out)
     return TopoRun(
@@ -1140,6 +1177,7 @@ def _model(placement: LocalPlacement) -> dict[str, Any]:
     return model
 
 
+@pcb_diag.op("drc")
 def drc(placement: LocalPlacement) -> list[Any]:
     """``run_geometric_drc`` over the placed model at the board's profile
     capability row — the geometric rule set ``view='drc'`` runs, on the
@@ -1159,9 +1197,21 @@ def drc(placement: LocalPlacement) -> list[Any]:
     )
 
 
+def diags(placement: LocalPlacement) -> list[Diag]:
+    """``drc(placement)`` as structured Diags — the ``pcb.<rule>``-coded
+    records S1b defines (gr522027); :func:`findings_text` renders the
+    same findings as text."""
+    return [pcb_diag.drc_to_diag(f) for f in drc(placement)]
+
+
 def findings_text(findings: list[Any], *, header: str = "") -> str:
     """The ``drc.txt`` rendering — one ``rule  severity  where  detail``
-    line per finding, errors first."""
+    line per finding, errors first. Accepts ``Diag`` items too: a
+    ``pcb.`` Diag converts back through
+    :func:`precis.pcb.diag.drc_from_diag` before rendering."""
+    findings = [
+        pcb_diag.drc_from_diag(f) if isinstance(f, Diag) else f for f in findings
+    ]
     lines = [header] if header else []
     for f in sorted(
         findings,
@@ -1308,6 +1358,7 @@ def cpl_csv(placement: LocalPlacement) -> str:
 # ── the main.py entry ──────────────────────────────────────────────────
 
 
+@pcb_diag.op("run")
 def run(
     board: Any,
     out_dir: str,
@@ -1393,6 +1444,7 @@ __all__ = [
     "bom_csv",
     "copper_json",
     "cpl_csv",
+    "diags",
     "drc",
     "findings_text",
     "gerbers",

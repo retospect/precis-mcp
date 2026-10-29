@@ -9,7 +9,10 @@ with inner frames in the chain (gr522025); ``error_code`` is the
 adapter's own record code. ``cad-run-failure``
 (``precis_geom.run_diag``) is the first registrant, ``hex-run-failure``
 the S2 one (gr522031) — a report-carrying failure yields one Diag per
-finding instead of the run-level code. S1b adds the pcb adapter.
+finding instead of the run-level code. ``pcb-run-failure`` is the S1b
+one (gr522027) — the builder stamps ``diag_code``/``diag_refs`` on its
+raises, so the run-failed Diag carries the domain's own code and the
+entity refs.
 """
 
 from __future__ import annotations
@@ -99,10 +102,47 @@ def _hex_run_failure(tmp_path: Path) -> tuple[RunResult, dict]:
     )
 
 
+#: ``build()`` reuses refdes ``U1`` — the second traced ``b.part``
+#: raises ``PcbBuilderError`` carrying ``diag_refs``/``diag_code``,
+#: which ``_error_entry`` serializes and the adapter folds into the
+#: run-failed Diag (gr522027).
+_PCB_SCRIPT = (
+    "import precis_geom.pcb as pcb\n"
+    "\n"
+    "\n"
+    "def build():\n"
+    "    b = pcb.Board('x')\n"
+    "    b.part('U1')\n"
+    "    b.part('U1')\n"
+)
+
+
+def _pcb_run_failure(tmp_path: Path) -> tuple[RunResult, dict]:
+    """A real board-script failure under ``out.run``: the stamped
+    ``diag_refs``/``diag_code`` ride ``manifest.error`` into the
+    run-failed Diag — ``pcb.builder-error`` with a ``part:`` ref."""
+    import precis_geom.pcb as pcb
+    from precis.pcb import diag as pcb_diag
+
+    mod = load_script(tmp_path, _PCB_SCRIPT)
+    out_dir = tmp_path / "out" / "x"
+    with pytest.raises(pcb.PcbBuilderError), geom_out.run(out_dir, work_root=tmp_path):
+        mod.build()
+    manifest = json.loads((out_dir / "manifest.json").read_text(encoding="utf-8"))
+    trace_doc = trace_schema.loads((out_dir / "trace.json").read_text(encoding="utf-8"))
+    return (
+        pcb_diag.failed_run_result(
+            manifest, trace_doc, run=str(out_dir / "trace.json")
+        ),
+        trace_doc,
+    )
+
+
 #: name → ``(tmp_path -> (RunResult, trace_doc), expected error code)``.
 ADAPTERS = {
     "cad-run-failure": (_cad_run_failure, "cad.run-failed"),
     "hex-run-failure": (_hex_run_failure, "port.unknown"),
+    "pcb-run-failure": (_pcb_run_failure, "pcb.builder-error"),
 }
 
 

@@ -871,6 +871,11 @@ def _error_entry(
     report = _report_dict(exc)
     if report is not None:
         entry["report"] = report
+    code, refs = _diag_fields(exc)
+    if code:
+        entry["code"] = code
+    if refs:
+        entry["refs"] = refs
     anchor, below = _error_path(doc)
     at = _failure_at(exc, tr, anchor)
     if at is not None:
@@ -910,6 +915,33 @@ def _report_dict(exc: BaseException) -> dict[str, Any] | None:
             nxt = cur.__context__
         cur = nxt
     return None
+
+
+def _diag_fields(exc: BaseException) -> tuple[str, list[str]]:
+    """``(code, refs)`` a failing exception carries for the run-failed
+    Diag — the ``diag_code``/``diag_refs`` attribute protocol
+    (:class:`precis_geom.pcb.PcbBuilderError` sets both; a stamped
+    ``exc.diag``'s fields are mirrored onto it by
+    :func:`precis.pcb.diag.op`, gr522027). Same chain walk as
+    :func:`_report_dict`, same never-raise rule: anything odd reads as
+    no fields."""
+    seen: set[int] = set()
+    cur: BaseException | None = exc
+    while cur is not None and id(cur) not in seen and len(seen) < 6:
+        seen.add(id(cur))
+        try:
+            code = getattr(cur, "diag_code", None)
+            refs = getattr(cur, "diag_refs", None)
+            out_refs = [str(r) for r in refs] if refs else []
+        except Exception:
+            code, out_refs = None, []
+        if (isinstance(code, str) and code) or out_refs:
+            return (code if isinstance(code, str) else "", out_refs)
+        nxt: BaseException | None = cur.__cause__
+        if nxt is None and not cur.__suppress_context__:
+            nxt = cur.__context__
+        cur = nxt
+    return "", []
 
 
 def _error_path(

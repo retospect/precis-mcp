@@ -133,6 +133,20 @@ _KNOWN_UNWIRED: dict[str, str] = {
         "pcb-workspace-code slice 4: the out/gerbers.zip payload, reached "
         "only through the lazy local door; no in-src caller by name"
     ),
+    "src/precis/pcb/diag.py::failed_run_result": (
+        "gr522027 S1b: the pcb domain's named conformance adapter — "
+        "only the conformance suite calls it (the shared "
+        "precis_geom.run_diag is the impl)"
+    ),
+    "src/precis/pcb/local.py::diags": (
+        "gr522027 S1b: the pcb.local script-side structured-readback "
+        "surface, reached through precis_geom.pcb's lazy local door — "
+        "no in-src caller yet (same shape as local.py::gerbers_zip)"
+    ),
+    "src/precis/pcb/check_run.py::DrcRun.diags": (
+        "gr522027 S1b: the structured-readback surface for "
+        "view='check'/'drc' consumers; no handler renders Diags yet"
+    ),
     "src/precis/pcb/clearance.py::outward_circle": (
         "pcb-vector-router slice 2: the circumscribed polygon for consumers "
         "that only take polygons; its first caller is slice 5's CDT input"

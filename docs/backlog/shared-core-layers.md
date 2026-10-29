@@ -184,6 +184,10 @@ Acceptance:
 - A failed pcb edit op returns a Diag with `anchor.op_id`; a failed
   board-script run returns one with `anchor.frame_key`.
 
+Deferred to a follow-on slice: server-side pcb `put`/`edit` handler
+refusals do not yet return a Diag with `anchor.op_id` (the scriptless-op
+stamp covers `pcb.local` only).
+
 ### S1c — probes (gr522026, gr522028)
 
 One slice, two resolvers: workspace selectors (`frame:` in

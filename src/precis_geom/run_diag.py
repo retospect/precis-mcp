@@ -26,10 +26,17 @@ the adapter stays domain-free — the reverse direction lives in
 ``hexfold.diag``. A report whose findings are all below ``error``
 still appends the ``cad.run-failed`` Diag: a failed run's RunResult is
 never ``ok``.
+
+A domain exception can also carry the record's own code and entity
+refs — ``_error_entry`` serializes ``diag_code``/``diag_refs`` onto
+``manifest.error`` (gr522027: the pcb builder names e.g.
+``part:<refdes>`` this way) — and the run-failed Diag takes them over
+``cad.run-failed`` verbatim.
 """
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
 from precis_diag import Anchor, Diag, FrameSite, RunResult, Status
@@ -40,6 +47,12 @@ NEXT = (
     "fix the script and re-run — a failed run's out/ is a record of "
     "where it stopped, not importable state"
 )
+
+#: The ``<domain>.<code>`` shape ``Diag.__post_init__`` enforces — a
+#: serialized ``error.code`` can carry anything (nothing validates it
+#: upstream), so a malformed one falls back to ``cad.run-failed``
+#: instead of refusing the whole record.
+_CODE_RE = re.compile(r"[a-z][a-z0-9_-]*\.[A-Za-z0-9][A-Za-z0-9_.-]*")
 
 
 def failed_run_result(
@@ -79,11 +92,19 @@ def failed_run_result(
             for f in below[1:]
         ),
     )
+    raw_code = str(err.get("code") or "") if isinstance(err, dict) else ""
     run_failed = Diag(
         status=Status.ERROR,
-        code="cad.run-failed",
+        # gr522027: a domain error's own ``code``/``refs`` (what
+        # ``_error_entry`` reads off ``diag_code``/``diag_refs``)
+        # replace the generic record — the pcb builder names its
+        # entities this way.
+        code=raw_code if _CODE_RE.fullmatch(raw_code) else "cad.run-failed",
         message=f"manifest.json: run failed{detail}",
         anchor=anchor,
+        refs=tuple(str(r) for r in err["refs"])
+        if isinstance(err, dict) and isinstance(err.get("refs"), list)
+        else (),
         next=NEXT,
         data=(("exception", str(err["type"])),) if has_type else (),
     )
