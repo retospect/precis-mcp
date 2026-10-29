@@ -35,8 +35,9 @@ from precis.pcb.topoplace.summary import crossing_info
 from precis.pcb.topoplace.writeback import lock_payload
 
 #: ``manifest.json``'s schema tag — bump on any shape change (the
-#: objective dict gained ``silkroom``, 2026-10-29).
-RUN_SCHEMA = "precis.topo-run/2"
+#: objective dict gained ``silkroom`` at /2, ``margin`` at /3,
+#: 2026-10-29).
+RUN_SCHEMA = "precis.topo-run/3"
 #: Kernel version stamped on every manifest: bump when the solver's
 #: output changes for equal inputs (the route job's ``CODE_VERSION``
 #: convention — a stored run must name the code that made it).
@@ -106,6 +107,7 @@ def manifest(
             "backtrack": float(objective.backtrack),
             "direction": float(objective.direction),
             "silkroom": float(objective.silkroom),
+            "margin": float(objective.margin),
         },
         "board_hash": str(board_hash),
         "parts": parts,

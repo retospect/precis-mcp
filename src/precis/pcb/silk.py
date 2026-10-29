@@ -139,7 +139,8 @@ Fixed by making ``reserved`` — the SAME board-level obstacle list
 :func:`build_fiducials`/:func:`build_title_block` already feed —
 the ONE obstacle mechanism every check reads, and growing it as this
 function goes: each side's obstacle list starts at ``pads + that side's
-via annuli + the caller's reserved geometry`` and every tick/
+via annuli + the IR's mounting holes + the caller's reserved geometry``
+and every tick/
 refdes-label that survives its own check is folded straight back into
 that SAME list (via :func:`obstacle_from_bbox`, a conservative
 axis-aligned bounding box of what was just drawn — never under-flagging,
@@ -1101,6 +1102,42 @@ def via_obstacles(vias: list[dict[str, Any]]) -> list[dict[str, Any]]:
     item 2). Silk dodging copper is this module's normal direction —
     the refdes ladder already avoids vias the same way."""
     return [_via_pad(v) for v in vias]
+
+
+def _mounting_hole_obstacles(
+    ir: PcbIR, capability: CapabilityRow | None
+) -> list[dict[str, Any]]:
+    """One circle obstacle per IR mounting hole, in the circle-pad dict
+    shape every clearance check here reads (``_via_pad``'s convention).
+
+    2026-10-29, taz-leaf: R26's refdes printed INSIDE the 5 mm zip-tie
+    hole at (133,30) -- the silk pass never learned holes exist. The
+    obstacle's diameter is the hole's widest feature -- the drill, the
+    plated annulus, or the hardware envelope above the board
+    (:attr:`~precis.pcb.ir.MountingHole.head_dia_mm`) -- the same
+    ``max(drill, ring, head)`` semantics as
+    ``precis.pcb.optimize._hole_keepout_radius_mm`` (reimplemented, not
+    imported: silk sits below optimize in the pcb module layering, and
+    the import would cycle through cost/drc), then widened by this
+    board's soldermask expansion, the same swell every pad obstacle gets
+    (:func:`_mask_opening`). THT hardware spans the board -- the screw
+    head sits above it, the solder nut below -- so the caller seeds BOTH
+    sides with these regardless of ``plated``; and a hole blocks every
+    part's label, its ``part`` owner's included, the same policy pads
+    follow."""
+    expansion_mm = soldermask_expansion_mm(capability)
+    return [
+        _mask_opening(
+            {
+                "x": float(hole.x),
+                "y": float(hole.y),
+                "w": max(hole.drill_mm, hole.ring_dia_mm, hole.head_dia_mm),
+                "obstacle": "mounting hole",
+            },
+            expansion_mm,
+        )
+        for hole in ir.mounting_holes
+    ]
 
 
 def _via_reaches_side(span: Any, layer_names: list[str]) -> tuple[bool, bool]:
@@ -3936,7 +3973,8 @@ def build_silk(
     :func:`obstacle_from_bbox`. This is also the ONE mechanism cross-part
     avoidance uses (module docstring's "Avoidance is GLOBAL" section):
     each side's obstacle list starts at ``pads + that side's via annuli +
-    reserved`` and every courtyard/tick/refdes-label this function itself
+    the IR's mounting holes + reserved`` and every
+    courtyard/tick/refdes-label this function itself
     draws is folded straight back into that SAME growing list
     (:func:`obstacle_from_bbox`) the moment it survives its own check —
     so a part's own later silk, and every part processed after it, checks
@@ -4099,12 +4137,22 @@ def _build_silk_pass(
         if reaches_bottom:
             bottom_via_pads.append(via_pad)
 
+    # Mounting holes join the seed set on BOTH sides (2026-10-29,
+    # taz-leaf: R26's refdes printed inside the 5 mm zip-tie hole at
+    # (133,30) -- no silk check knew the hole was there). THT hardware
+    # spans the board -- a screw head above it, a solder nut below -- so
+    # `plated` is irrelevant here, and a part-owned hole (a connector's
+    # standoff) blocks every label including its owner's, the same
+    # policy pads follow.
+    hole_obstacles = _mounting_hole_obstacles(ir, capability)
+
     # The ONE obstacle list per side (module docstring): seeded with the
     # real pads REACHING that side (gr520373: every pad used to seed BOTH
     # sides, so bottom silk could be scraped off by top copper -- a
     # collision that cannot exist; `_pad_reaches_side` is the pad
     # counterpart of the via split just above), that side's via annuli,
-    # and the caller's board-level `reserved` geometry -- then grown in
+    # the mounting holes, and the caller's board-level `reserved`
+    # geometry -- then grown in
     # place as each instance's own silk survives, so it is simultaneously
     # "what this instance must avoid" and "what the NEXT instance (and
     # this instance's later draws) must avoid".
@@ -4117,6 +4165,7 @@ def _build_silk_pass(
                 [
                     *[p for p in pads if _pad_reaches_side(p, layer_names)[0]],
                     *top_via_pads,
+                    *hole_obstacles,
                     *reserved_by_side.get("top", []),
                 ],
                 key=_obstacle_sort_key,
@@ -4127,6 +4176,7 @@ def _build_silk_pass(
                 [
                     *[p for p in pads if _pad_reaches_side(p, layer_names)[1]],
                     *bottom_via_pads,
+                    *hole_obstacles,
                     *reserved_by_side.get("bottom", []),
                 ],
                 key=_obstacle_sort_key,

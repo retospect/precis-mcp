@@ -54,6 +54,17 @@ rings plus the ruled outline-to-outline gap, minus the clearance the
 courtyard polygons already carry) pay the shortfall in mm — so the
 anneal spreads parts before the silk pass must bend an outline, share
 one wall, or push a refdes label out along its relocation ladder.
+``margin`` is the maximin twin (Reto 2026-10-29 — "the minimal margin
+around each part is at least X; maximize that"): per part, the WORST of
+three margin axes — the courtyard ring's gap to the board edge against
+``EDGE_WANT_MM``, the ring's separation to its nearest same-side
+neighbour against the silk-room requirement (the SAME pair scan
+``silkroom`` prices), and the pad-union body's distance to the mounting-
+hole keep-outs against ``HOLE_WANT_MM`` — then a softmin over parts of
+those worst shortfalls. Where ``silkroom``'s SUM lets one cramped part
+hide in the total, the softmin always prices the worst-off part
+(taz-leaf run 31: two courtyards 0.25–0.37mm off the board edge, an
+L2–U1 pair inside the silk rule, a refdes label inside a mounting hole).
 """
 
 from __future__ import annotations
@@ -210,6 +221,156 @@ def _ring_silkroom_total(
                 continue
             total += max(0.0, req_mm - float(gi.distance(gj)))
     return total
+
+
+#: Margin term, edge axis (Reto 2026-10-29): how far a part's COURTYARD
+#: ring should sit off the board edge so the silk outline ring — drawn
+#: ~0.575mm outside the courtyard — still fits on the board. A fallback
+#: constant: the placer design build sees no capability row (the same
+#: constraint :data:`_SILK_ROOM_REQ_MM` documents), and the rung carrying
+#: capability can refine it. A QUALITY margin, NOT the 0.4mm fab bar —
+#: that stays in the overlap term's edge measure
+#: (:data:`_EDGE_CLEAR_MM`, body-measured since gr529963) and is not
+#: duplicated here.
+EDGE_WANT_MM = 0.6
+
+#: Margin term, hole axis: the body-to-mounting-hole-keep-out distance
+#: the softmin asks for. 0.0 — any non-intersection satisfies it (the
+#: HARD rule lives in DRC/mesh, ``courtyard_hole``); the axis exists so
+#: the softmin SEES holes, and a positive want is the knob that turns
+#: "don't touch" into "keep X mm of room".
+HOLE_WANT_MM = 0.0
+
+#: The margin softmin's temperature (mm). A hard min would hand the
+#: anneal gradient through exactly ONE part — every other part's move
+#: scores 0 and the search stalls on the current worst; τ = 0.5 spreads
+#: the pull over the worst handful while staying worst-dominated.
+_MARGIN_SOFTMIN_TAU_MM = 0.5
+
+
+def _zone_poly(ring: Any) -> Any | None:
+    """A zone ring as a shapely polygon — the same shape
+    ``mesh._conflict_data``'s ``_poly`` accepts: closed rings drop their
+    duplicate last point; degenerate/empty/non-finite → ``None``."""
+    pts = np.asarray(ring, dtype=np.float64).reshape(-1, 2)
+    if len(pts) < 4 or not np.isfinite(pts).all():
+        return None
+    g = Polygon(pts[:-1])
+    return g if not g.is_empty and g.area > _EPS else None
+
+
+def _margin_zone_entries(d: TopoDesign, pose: np.ndarray) -> list[tuple[int, Any]]:
+    """``(owner part id, posed polygon)`` per mounting-hole zone — the
+    hole axis's keep-out set. A part-owned ring rides its owner's pose
+    (:func:`zone_world_ring`), exactly as the mesh's zone pass poses it."""
+    out: list[tuple[int, Any]] = []
+    for z in d.zones:
+        if z.kind != "mounting_hole":
+            continue
+        g = _zone_poly(zone_world_ring(d, z, pose))
+        if g is not None:
+            out.append((int(z.part), g))
+    return out
+
+
+def _margin_axes(
+    rings: list[Any],
+    bodies: list[Any],
+    pose: np.ndarray,
+    th: np.ndarray,
+    outline: Any | None,
+    zones: list[tuple[int, Any]],
+    edge_mate: np.ndarray,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Per-part (edge, pair, hole) margin shortfalls in mm over placed
+    ring/body lists — the full-recompute body ``margin_total`` and
+    ``ProxyState.__init__`` share. The pair loop is
+    :func:`_ring_silkroom_total`'s scan (same rings, same side rule, same
+    ``req`` of bbox slack) with the shortfall MAXED per part instead of
+    summed; the edge axis measures the COURTYARD ring against the outline
+    (:data:`EDGE_WANT_MM` — the silk ring's room, not the 0.4mm fab bar
+    the overlap term prices on the body); the hole axis measures the
+    pad-union BODY against the hole keep-outs, the owner exempt like the
+    DRC's ``courtyard_hole``. Edge-mated parts pay no edge axis
+    (gr530632 — the mating face is SUPPOSED to sit on the outline)."""
+    n = len(rings)
+    e = np.zeros(n, dtype=np.float64)
+    p = np.zeros(n, dtype=np.float64)
+    h = np.zeros(n, dtype=np.float64)
+    if not n:
+        return e, p, h
+    sides = np.asarray(pose)[:, 3] >= 0.5
+    em = (
+        np.asarray(edge_mate, dtype=bool)
+        if len(edge_mate) == n
+        else np.zeros(n, dtype=bool)
+    )
+    req = _SILK_ROOM_REQ_MM
+    for i in range(n):
+        gi = rings[i]
+        if gi is not None:
+            if outline is not None and not em[i]:
+                e[i] = max(0.0, EDGE_WANT_MM - float(outline.exterior.distance(gi)))
+            x0, y0, x1, y1 = gi.bounds
+            for j in range(n):
+                if j == i:
+                    continue
+                gj = rings[j]
+                if gj is None or not _collides(sides, th, i, j):
+                    continue
+                bx0, by0, bx1, by1 = gj.bounds
+                if x1 + req < bx0 or bx1 + req < x0:
+                    continue
+                if y1 + req < by0 or by1 + req < y0:
+                    continue
+                p[i] = max(p[i], req - float(gi.distance(gj)))
+            p[i] = max(0.0, p[i])
+        bi = bodies[i]
+        if bi is not None:
+            best = math.inf
+            for owner, zg in zones:
+                if owner == i:
+                    continue  # a part's own hole is covered by design
+                best = min(best, float(bi.distance(zg)))
+            if math.isfinite(best):
+                h[i] = max(0.0, HOLE_WANT_MM - best)
+    return e, p, h
+
+
+def _margin_softmin(exp_sum: float, n: int) -> float:
+    """``−τ·log(mean(exp(−worst/τ)))`` from the exp-sum — ONE code path
+    for the full recompute and the ProxyState, so parity is structural.
+    Every margin satisfied ⇒ ``exp_sum == n`` ⇒ 0."""
+    if n <= 0 or exp_sum <= 0.0:
+        return 0.0
+    return -_MARGIN_SOFTMIN_TAU_MM * math.log(exp_sum / n)
+
+
+def margin_total(d: TopoDesign, pose: np.ndarray) -> float:
+    """The maximin margin term (Reto 2026-10-29), full recompute — the
+    reference the ``ProxyState`` parity-check runs against. Per part, the
+    worst of the edge / pair / hole axis shortfalls (:func:`_margin_axes`);
+    the term is the softmin over parts of those worsts,
+    ``−τ·log(mean(exp(−worst/τ)))`` with ``τ =
+    :data:`_MARGIN_SOFTMIN_TAU_MM` — all margins satisfied ⇒ 0."""
+    n = len(d.parts)
+    if not n:
+        return 0.0
+    pose = np.asarray(pose, dtype=np.float64)
+    rings = [_ring_geom(d, pose[i], i) for i in range(n)]
+    bodies = [_body_geom(d, pose[i], i) for i in range(n)]
+    e, p, h = _margin_axes(
+        rings,
+        bodies,
+        pose,
+        through_hole_parts(d),
+        _outline_geom(d),
+        _margin_zone_entries(d, pose),
+        d.part_edge_mate,
+    )
+    worst = np.maximum(np.maximum(e, p), h)
+    exp_sum = float(np.exp(-worst / _MARGIN_SOFTMIN_TAU_MM).sum())
+    return _margin_softmin(exp_sum, n)
 
 
 def overlap_area(d: TopoDesign, pose: np.ndarray) -> float:
@@ -710,19 +871,21 @@ class ProxyState:
         #: and pair scan were the whole marginal cost (3136→1319
         #: evals/s regression, seam fix2). The silkroom term reads the
         #: same rings (its shortfall is the same pair scan with a
-        #: separation margin), so either share keeps them alive.
+        #: separation margin) and the margin term its pair axis, so any
+        #: of the three shares keeps them alive.
         self._rings = (
             [_ring_geom(d, self.pose[i], i) for i in range(len(d.parts))]
-            if (self.w.overlap or self.w.silkroom)
+            if (self.w.overlap or self.w.silkroom or self.w.margin)
             else []
         )
         #: the pad-union BODY polygons, parallel to ``_rings`` — what the
         #: edge half of the overlap term measures since gr529963 (the fab
         #: bar prices the body; the courtyard ring is the between-parts
-        #: reservation the pair terms still use).
+        #: reservation the pair terms still use). The margin term's hole
+        #: axis measures the same bodies against the hole keep-outs.
         self._bodies = (
             [_body_geom(d, self.pose[i], i) for i in range(len(d.parts))]
-            if (self.w.overlap or self.w.silkroom)
+            if (self.w.overlap or self.w.silkroom or self.w.margin)
             else []
         )
         self._th = through_hole_parts(d)
@@ -740,6 +903,44 @@ class ProxyState:
             if self.w.silkroom
             else 0.0
         )
+        #: maximin margin (Reto 2026-10-29): per-part (edge, pair, hole)
+        #: axis arrays, the exp-sum the softmin reads, and the hole
+        #: keep-outs. Static (board-level) hole zones are posed ONCE here
+        #: — they never move; part-local hole rings ride their owner and
+        #: are posed on use under the owner's staged-or-committed row
+        #: (:meth:`_mg_zone_geoms`) — cheaper than re-posing every zone
+        #: per eval the way a mesh rebuild does, and exact either way.
+        self._mg_outline = None
+        self._mg_zones_static: list[tuple[int, Any]] = []
+        self._mg_zones_local: list[Any] = []
+        self._mg_e = np.zeros(len(d.parts), dtype=np.float64)
+        self._mg_p = np.zeros(len(d.parts), dtype=np.float64)
+        self._mg_h = np.zeros(len(d.parts), dtype=np.float64)
+        self._mg_s = 0.0
+        self._mg = 0.0
+        if self.w.margin:
+            self._mg_outline = _outline_geom(d)
+            for z in d.zones:
+                if z.kind != "mounting_hole":
+                    continue
+                if z.part_local and 0 <= z.part < len(d.parts):
+                    self._mg_zones_local.append(z)
+                else:
+                    g = _zone_poly(zone_world_ring(d, z, self.pose))
+                    if g is not None:
+                        self._mg_zones_static.append((int(z.part), g))
+            self._mg_e, self._mg_p, self._mg_h = _margin_axes(
+                self._rings,
+                self._bodies,
+                self.pose,
+                self._th,
+                self._mg_outline,
+                self._mg_zone_geoms(),
+                d.part_edge_mate,
+            )
+            worst = np.maximum(np.maximum(self._mg_e, self._mg_p), self._mg_h)
+            self._mg_s = float(np.exp(-worst / _MARGIN_SOFTMIN_TAU_MM).sum())
+            self._mg = _margin_softmin(self._mg_s, len(d.parts))
         #: spread term: the no-shared-net pair mask, kernel scale and
         #: committed repulsion total — built only when the share is on
         #: (an (N, N) mask is the whole setup cost).
@@ -765,6 +966,7 @@ class ProxyState:
         self._ref_ov = max(self._ov, 1.0)
         self._ref_sp = max(self._sp, 1.0)
         self._ref_sk = max(self._sk, 1.0)
+        self._ref_mg = max(self._mg, 1.0)
         #: authored-measure pull (gr520546): per-part spec index list for
         #: the try_move delta, the committed violation total and its
         #: reference magnitude. Built only when the design carries
@@ -812,6 +1014,10 @@ class ProxyState:
         self._stage_wires: dict[int, np.ndarray] = {}
         self._stage_rings: dict[int, Any] = {}
         self._stage_bodies: dict[int, Any] = {}
+        #: part id → staged (edge, pair, hole) axis values — the margin
+        #: term's per-part overlay, applied to ``_mg_e/_mg_p/_mg_h`` at
+        #: commit like ``_stage_rings`` is to ``_rings``.
+        self._stage_mg: dict[int, tuple[float, float, float]] = {}
         self._d_cross = 0
         self._d_len = 0.0
         self._d_ov = 0.0
@@ -821,6 +1027,8 @@ class ProxyState:
         self._d_back = 0.0
         self._d_dir = 0.0
         self._d_sk = 0.0
+        self._d_mg = 0.0
+        self._d_mg_s = 0.0
 
     def _backtrack_of(self, wires: list[np.ndarray], pw: np.ndarray) -> float:
         """Fold-back mileage over a per-net wire list against pin world
@@ -892,6 +1100,12 @@ class ProxyState:
         return self._sk + self._d_sk
 
     @property
+    def margin(self) -> float:
+        """Maximin margin: softmin over parts of each part's worst
+        (edge / pair / hole) margin shortfall, mm."""
+        return self._mg + self._d_mg
+
+    @property
     def cost(self) -> float:
         """Share-weighted, reference-normalised J."""
         return (
@@ -904,6 +1118,7 @@ class ProxyState:
             + self.w.backtrack * self.backtrack / self._ref_back
             + self.w.direction * self.direction / self._ref_dir
             + self.w.silkroom * self.silkroom / self._ref_sk
+            + self.w.margin * self.margin / self._ref_mg
         )
 
     def _rest_view(self, affected: set[int]) -> tuple[np.ndarray, np.ndarray]:
@@ -961,17 +1176,22 @@ class ProxyState:
             total += float(geom.intersection(gj).area)
         return total
 
-    def _pair_silkroom(self, part: int, geom, side: bool) -> float:
-        """``part``'s silk-room shortfall against every OTHER part under
-        the current staged-or-committed state — the telescoping unit
+    def _pair_room(self, part: int, geom, side: bool) -> tuple[float, float]:
+        """``part``'s ring-separation picture against every OTHER part
+        under the current staged-or-committed state, ONE scan serving two
+        terms: ``(Σ shortfall, max shortfall)`` below
+        :data:`_SILK_ROOM_REQ_MM` — the silkroom term's sum and the margin
+        term's pair axis, so a move that prices both never runs a second
+        pair loop. ``(0, 0)`` for a ringless part. The telescoping unit
         :meth:`try_move` deltas on, the separation-margin mirror of
         :meth:`_pair_overlap` (same rings, same side rule, ``req_mm`` of
         bbox slack instead of contact)."""
         if geom is None:
-            return 0.0
+            return 0.0, 0.0
         req = _SILK_ROOM_REQ_MM
         x0, y0, x1, y1 = geom.bounds
         total = 0.0
+        worst = 0.0
         part_th = self._th[part]
         for j in range(len(self.d.parts)):
             if j == part:
@@ -986,8 +1206,89 @@ class ProxyState:
                 continue
             if y1 + req < by0 or by1 + req < y0:
                 continue
-            total += max(0.0, req - float(geom.distance(gj)))
-        return total
+            short = req - float(geom.distance(gj))
+            total += max(0.0, short)
+            worst = max(worst, short)
+        return total, max(0.0, worst)
+
+    def _mg_zone_geoms(
+        self, moved: int = -1, moved_row: np.ndarray | None = None
+    ) -> list[tuple[int, Any]]:
+        """``(owner part id, polygon)`` per hole keep-out under the
+        current staged-or-committed state: static zones come pre-posed
+        from ``__init__`` (they never move); a part-local ring is posed
+        under its owner's CURRENT row — ``moved``/``moved_row`` override
+        for the part this ``try_move`` is staging, whose row ``_stage``
+        does not carry yet."""
+        out = list(self._mg_zones_static)
+        for z in self._mg_zones_local:
+            row = self._stage.get(z.part, self.pose[z.part])
+            if z.part == moved and moved_row is not None:
+                row = moved_row
+            g = _zone_poly(local_to_world(np.asarray(z.ring, dtype=np.float64), row))
+            if g is not None:
+                out.append((int(z.part), g))
+        return out
+
+    def _mg_edge(self, part: int, ring) -> float:
+        """The margin term's edge axis for one part:
+        ``max(0, EDGE_WANT_MM − courtyard-to-outline gap)``. Edge-mated
+        parts are exempt like the overlap term's edge half (gr530632 —
+        the mating face is SUPPOSED to meet the outline)."""
+        if ring is None or self._mg_outline is None:
+            return 0.0
+        em = self.d.part_edge_mate
+        if len(em) == len(self.d.parts) and bool(em[part]):
+            return 0.0
+        return max(0.0, EDGE_WANT_MM - float(self._mg_outline.exterior.distance(ring)))
+
+    def _mg_hole(self, part: int, body, zones: list[tuple[int, Any]]) -> float:
+        """The margin term's hole axis for one part:
+        ``max(0, HOLE_WANT_MM − min body-to-keep-out distance)`` — the
+        pad-union body against the hole keep-outs, the zone's owner
+        exempt like the DRC's ``courtyard_hole`` (a connector's courtyard
+        covers its own standoff hole by design)."""
+        if body is None:
+            return 0.0
+        best = math.inf
+        for owner, zg in zones:
+            if owner == part:
+                continue
+            best = min(best, float(body.distance(zg)))
+        return max(0.0, HOLE_WANT_MM - best) if math.isfinite(best) else 0.0
+
+    def _mg_pair(self, part: int, *, moved: int, moved_ring, moved_side: bool) -> float:
+        """``part``'s pair axis — ``max(0, _SILK_ROOM_REQ_MM − min ring
+        separation)`` — under the current staged-or-committed state: the
+        per-part recompute a touched partner gets when ``moved``'s ring
+        enters or leaves its ``req`` neighbourhood. The max half of
+        :meth:`_pair_room`'s scan over the same rings; the moved part's
+        NEW ring/side arrive as arguments because ``_stage`` does not
+        hold this ``try_move``'s row yet."""
+        geom = self._ring_of(part)
+        if geom is None:
+            return 0.0
+        req = _SILK_ROOM_REQ_MM
+        side = self._side_of(part)
+        x0, y0, x1, y1 = geom.bounds
+        worst = 0.0
+        part_th = self._th[part]
+        for j in range(len(self.d.parts)):
+            if j == part:
+                continue
+            gj = moved_ring if j == moved else self._ring_of(j)
+            if gj is None:
+                continue
+            sj = moved_side if j == moved else self._side_of(j)
+            if side != sj and not (part_th or self._th[j]):
+                continue
+            bx0, by0, bx1, by1 = gj.bounds
+            if x1 + req < bx0 or bx1 + req < x0:
+                continue
+            if y1 + req < by0 or by1 + req < y0:
+                continue
+            worst = max(worst, req - float(geom.distance(gj)))
+        return max(0.0, worst)
 
     def _pair_spread(self, part: int, cent: np.ndarray, side: bool) -> float:
         """``part``'s repulsion total against every OTHER part under the
@@ -1076,17 +1377,88 @@ class ProxyState:
             else 0.0
         )
         staged_row = np.asarray(pose_row, dtype=np.float64)
-        if self.w.overlap or self.w.silkroom:
+        if self.w.overlap or self.w.silkroom or self.w.margin:
             new_geom = _ring_geom(self.d, staged_row, part)
             old_ring = self._ring_of(part)
             self._stage_rings[part] = new_geom
             new_body = _body_geom(self.d, staged_row, part)
             old_body = self._body_of(part)
             self._stage_bodies[part] = new_body
+        if self.w.silkroom or self.w.margin:
+            # ONE pair scan per ring state serves both terms: the sum
+            # half feeds ``_d_sk``'s telescope, the max half is the moved
+            # part's margin pair axis.
+            new_scan = self._pair_room(part, new_geom, staged_row[3] >= 0.5)
+            old_scan = self._pair_room(part, old_ring, self._side_of(part))
         if self.w.silkroom:
-            self._d_sk += self._pair_silkroom(
-                part, new_geom, staged_row[3] >= 0.5
-            ) - self._pair_silkroom(part, old_ring, self._side_of(part))
+            self._d_sk += new_scan[0] - old_scan[0]
+        if self.w.margin:
+            new_side = bool(staged_row[3] >= 0.5)
+            old_side = self._side_of(part)
+            zones = self._mg_zone_geoms(part, staged_row)
+            touched = {part}
+            # Pair axis: a partner's min-separation can change only when
+            # the moved ring WAS or WILL BE within ``req`` of it — a
+            # bounds-only prescan over the same staged ring list the pair
+            # scan reads (both side variants, so a flip re-scans the face
+            # the part leaves and the one it joins).
+            req = _SILK_ROOM_REQ_MM
+            for ring, side in ((new_geom, new_side), (old_ring, old_side)):
+                if ring is None:
+                    continue
+                x0, y0, x1, y1 = ring.bounds
+                for j in range(len(self.d.parts)):
+                    if j == part or j in touched:
+                        continue
+                    gj = self._ring_of(j)
+                    if gj is None or (
+                        side != self._side_of(j) and not (self._th[part] or self._th[j])
+                    ):
+                        continue
+                    bx0, by0, bx1, by1 = gj.bounds
+                    if (
+                        x1 + req < bx0
+                        or bx1 + req < x0
+                        or y1 + req < by0
+                        or by1 + req < y0
+                    ):
+                        continue
+                    touched.add(j)
+            # Hole axis: a part-local hole ring RIDES its owner — when the
+            # moved part owns one, every part's hole distance may move
+            # with it (rare; board-level holes never reach this).
+            owns_zones = any(z.part == part for z in self._mg_zones_local)
+            if owns_zones:
+                touched.update(range(len(self.d.parts)))
+            for j in sorted(touched):
+                e_old, p_old, h_old = self._stage_mg.get(
+                    j, (self._mg_e[j], self._mg_p[j], self._mg_h[j])
+                )
+                if j == part:
+                    axes = (
+                        self._mg_edge(j, new_geom),
+                        new_scan[1],
+                        self._mg_hole(j, new_body, zones),
+                    )
+                    p_old = old_scan[1]
+                else:
+                    axes = (
+                        e_old,
+                        self._mg_pair(
+                            j, moved=part, moved_ring=new_geom, moved_side=new_side
+                        ),
+                        self._mg_hole(j, self._body_of(j), zones)
+                        if owns_zones
+                        else h_old,
+                    )
+                self._stage_mg[j] = axes
+                tau = _MARGIN_SOFTMIN_TAU_MM
+                self._d_mg_s += math.exp(-max(axes) / tau) - math.exp(
+                    -max(e_old, p_old, h_old) / tau
+                )
+            self._d_mg = (
+                _margin_softmin(self._mg_s + self._d_mg_s, len(self.d.parts)) - self._mg
+            )
         if self.w.overlap:
             self._d_ov += self._pair_overlap(
                 part, new_geom, staged_row[3] >= 0.5
@@ -1162,19 +1534,25 @@ class ProxyState:
         float summation order (~1e-13 — a different association of the
         same per-net sums); that ulp is the honest contract and sits far
         below the Metropolis noise floor. The geometric proxies (overlap,
-        spread, measures, silkroom) delta-accumulate their staged deltas
-        instead — a telescoped float sum the parity tests pin against the
-        module totals."""
+        spread, measures, silkroom, margin) delta-accumulate their staged
+        deltas instead — a telescoped float sum the parity tests pin
+        against the module totals. Margin's committed value is the
+        softmin of its accumulated exp-sum over the per-part axis arrays
+        its ``_stage_mg`` overlay applies here."""
         for p, row in self._stage.items():
             self.pose[p] = row
             self._pw[self.d.pin_part == p] = pin_world(self.d, row, p)
             if self._rings:
                 self._rings[p] = self._stage_rings.get(p, self._rings[p])
                 self._bodies[p] = self._stage_bodies.get(p, self._bodies[p])
+        for p, axes in self._stage_mg.items():
+            self._mg_e[p], self._mg_p[p], self._mg_h[p] = axes
         self._ov += self._d_ov
         self._sk += self._d_sk
         self._sp += self._d_sp
         self._meas += self._d_meas
+        self._mg_s += self._d_mg_s
+        self._mg += self._d_mg
         self._wires = [self._stage_wires.get(k, w) for k, w in enumerate(self._wires)]
         self._flat, self._flat_net = _concat(
             self._wires, list(range(len(self.d.net_pins)))
@@ -1210,6 +1588,7 @@ class ProxyState:
         self._stage_wires.clear()
         self._stage_rings.clear()
         self._stage_bodies.clear()
+        self._stage_mg.clear()
         self._d_cross = 0
         self._d_len = 0.0
         self._d_ov = 0.0
@@ -1219,3 +1598,5 @@ class ProxyState:
         self._d_back = 0.0
         self._d_dir = 0.0
         self._d_sk = 0.0
+        self._d_mg = 0.0
+        self._d_mg_s = 0.0

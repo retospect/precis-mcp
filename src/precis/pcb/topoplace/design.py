@@ -136,6 +136,15 @@ class ObjectiveShares:
     #: yields by design). 0 keeps a share vector identical to earlier
     #: slices'.
     silkroom: float = 0.0
+    #: Maximin margin (Reto 2026-10-29): a softmin over per-part WORST
+    #: margin shortfalls (edge / pair / hole axes — see proxy.py's
+    #: :func:`margin_total`), where ``silkroom`` prices the SUM of pair
+    #: shortfalls. One small violation can hide in silkroom's total; the
+    #: softmin always prices the worst-off part (taz-leaf run 31: two
+    #: courtyards 0.25–0.37mm off the board edge, a label inside a
+    #: mounting hole). 0 keeps a share vector identical to earlier
+    #: slices'.
+    margin: float = 0.0
 
     def __post_init__(self) -> None:
         total = (
@@ -148,6 +157,7 @@ class ObjectiveShares:
             + self.backtrack
             + self.direction
             + self.silkroom
+            + self.margin
         )
         if total <= 0:
             raise ValueError("objective shares must not all be zero")
@@ -160,6 +170,7 @@ class ObjectiveShares:
         object.__setattr__(self, "backtrack", self.backtrack / total)
         object.__setattr__(self, "direction", self.direction / total)
         object.__setattr__(self, "silkroom", self.silkroom / total)
+        object.__setattr__(self, "margin", self.margin / total)
 
 
 #: The named share vectors (Decision 18's presets) over the terms the
@@ -193,6 +204,11 @@ PRESETS: dict[str, ObjectiveShares] = {
         direction=0.1,
         overlap=0.2,
         silkroom=0.2,
+        #: the maximin worst-part margin (Reto 2026-10-29) — silkroom's
+        #: pair sum lets one cramped part hide in the total; margin keeps
+        #: the worst part honest. crossings/ratsnest stay on so the
+        #: anneal still trades spread against grouping.
+        margin=0.15,
     ),
 }
 

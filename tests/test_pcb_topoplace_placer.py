@@ -136,18 +136,22 @@ def test_spread_proxy_term_parity_and_direction() -> None:
 
 
 def test_route_proxy_terms_parity_300_moves() -> None:
-    """The slice-5 route proxies (vias, backtrack, direction) and the
-    silkroom term join the exactness contract: with every share on,
-    staged/commit tracks the full recompute over 300 seeded
-    translate/rotate/flip moves. The direction term pins its seed scale
-    like the spread term, so the reference recompute passes
-    ``scale=proxy._d_scale`` (the outline makes that scale
-    pose-independent). Silkroom delta-accumulates at commit rather than
-    re-deriving, so its staged value is pinned against the module total
-    every 25 moves — a wrong ``_d_sk`` would drift silently across
-    commits otherwise."""
+    """The slice-5 route proxies (vias, backtrack, direction), the
+    silkroom term and the maximin margin term join the exactness
+    contract: with every share on, staged/commit tracks the full
+    recompute over 300 seeded translate/rotate/flip moves. The direction
+    term pins its seed scale like the spread term, so the reference
+    recompute passes ``scale=proxy._d_scale`` (the outline makes that
+    scale pose-independent). Silkroom and margin delta-accumulate at
+    commit rather than re-deriving, so their staged values are pinned
+    against the module totals every 25 moves — a wrong ``_d_sk`` or
+    ``_d_mg`` would drift silently across commits otherwise."""
     d, _inst, _nets = synth_design(seed=0)
-    from precis.pcb.topoplace.proxy import _SILK_ROOM_REQ_MM, _ring_silkroom_total
+    from precis.pcb.topoplace.proxy import (
+        _SILK_ROOM_REQ_MM,
+        _ring_silkroom_total,
+        margin_total,
+    )
 
     w = ObjectiveShares(
         crossings=0.4,
@@ -158,6 +162,7 @@ def test_route_proxy_terms_parity_300_moves() -> None:
         backtrack=0.1,
         direction=0.1,
         silkroom=0.1,
+        margin=0.1,
     )
     proxy = ProxyState(d, d.pose0, w)
     assert proxy.vias == via_estimate_total(d, d.pose0)
@@ -166,6 +171,7 @@ def test_route_proxy_terms_parity_300_moves() -> None:
     assert proxy.silkroom == pytest.approx(
         _ring_silkroom_total(proxy._rings, d.pose0, proxy._th, _SILK_ROOM_REQ_MM)
     )
+    assert proxy.margin == pytest.approx(margin_total(d, d.pose0))
     rng = np.random.default_rng(7)
     movable = np.flatnonzero(~d.fixed)
     for i in range(300):
@@ -193,6 +199,7 @@ def test_route_proxy_terms_parity_300_moves() -> None:
                 proxy.backtrack,
                 proxy.direction,
                 proxy.silkroom,
+                proxy.margin,
             )
             proxy.commit()
             # Commit re-derives the float terms from committed state in a
@@ -207,11 +214,13 @@ def test_route_proxy_terms_parity_300_moves() -> None:
             assert proxy.vias == staged[1], i
             assert proxy.backtrack == pytest.approx(staged[2], abs=1e-9), i
             assert proxy.direction == pytest.approx(staged[3], abs=1e-9), i
-            # silkroom delta-accumulates at commit (like overlap/spread), so
-            # staged == committed by construction — but a wrong try_move Δ
-            # would drift silently across commits, which the every-25
-            # recompute assert below pins against the module total.
+            # silkroom and margin delta-accumulate at commit (like
+            # overlap/spread), so staged == committed by construction —
+            # but a wrong try_move Δ would drift silently across commits,
+            # which the every-25 recompute asserts below pin against the
+            # module totals.
             assert proxy.silkroom == pytest.approx(staged[4], abs=1e-9), i
+            assert proxy.margin == pytest.approx(staged[5], abs=1e-9), i
         else:
             proxy.revert()
         if i % 25 == 0:
@@ -225,12 +234,14 @@ def test_route_proxy_terms_parity_300_moves() -> None:
                     proxy._rings, proxy.pose, proxy._th, _SILK_ROOM_REQ_MM
                 )
             ), i
+            assert proxy.margin == pytest.approx(margin_total(d, proxy.pose)), i
     assert proxy.vias == via_estimate_total(d, proxy.pose)
     assert proxy.backtrack == backtrack_total(d, proxy.pose)
     assert proxy.direction == direction_total(d, proxy.pose, scale=proxy._d_scale)
     assert proxy.silkroom == pytest.approx(
         _ring_silkroom_total(proxy._rings, proxy.pose, proxy._th, _SILK_ROOM_REQ_MM)
     )
+    assert proxy.margin == pytest.approx(margin_total(d, proxy.pose))
 
 
 def test_placer_beats_autoplace_at_equal_evals_median() -> None:

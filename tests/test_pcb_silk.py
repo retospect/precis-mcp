@@ -37,6 +37,7 @@ from precis.pcb.furniture import board_furniture
 from precis.pcb.geom import convex_polygons_overlap, point_in_polygon
 from precis.pcb.ir import (
     COURTYARD_SIMPLIFY_MM,
+    MountingHole,
     from_graph,
     instance_courtyard_polygon,
 )
@@ -2768,6 +2769,69 @@ def test_a_boxed_in_label_drops_rather_than_print_under_the_part():
     assert findings[0].severity == "error" and "U1" in findings[0].where
     # An outside label is never reported.
     assert drc.check_silk_missing(bare.census, {"silkscreen": bare.draws}) == []
+
+
+def test_a_refdes_label_moves_off_a_mounting_hole():
+    """2026-10-29, taz-leaf: R26's refdes printed INSIDE the 5 mm zip-tie
+    hole at (133,30) -- the silk pass never learned mounting holes exist.
+    A hole whose disc covers the default bottom-left spot must push the
+    label to the next spot (the same obstacle policy a pad gets), and no
+    drawn glyph stroke may cross the hole."""
+    # Pads widened past the pin pitch, same fixture move as
+    # test_refdes_label_spot_order: at the synthesized 0.325mm the
+    # corridor-bridged outline already shoulders a bare build's label off
+    # bottom-left, which would make this test vacuous.
+    bare_ir = from_graph(_graph("R1", 4, x=0.0, y=0.0), stackup=DEFAULT_STACKUP)
+    for pid in range(bare_ir.n_pins):
+        bare_ir.pin_w[pid] = 1.4
+    bare = build_silk(bare_ir, pads=[])
+    bare_row = next(c for c in bare.census if c.kind == "refdes")
+    assert bare_row.outcome == "placed"  # control: no hole, no relocation
+    cx, cy = _box_centre(_spot_boxes(bare_ir, 0, "R1")["bottom-left"])
+    hole = MountingHole(x=cx, y=cy, drill_mm=3.2)  # disc covers the default box
+    ir = from_graph(
+        _graph("R1", 4, x=0.0, y=0.0),
+        stackup=DEFAULT_STACKUP,
+        mounting_holes=(hole,),
+    )
+    for pid in range(ir.n_pins):
+        ir.pin_w[pid] = 1.4
+    result = build_silk(ir, pads=[])
+    row = next(c for c in result.census if c.kind == "refdes")
+    assert row.outcome == "relocated", row
+    # Honest geometry, not just a census row: no drawn glyph centreline
+    # enters the hole's disc (the builder's own check is stricter -- the
+    # text box must clear the disc plus the soldermask swell).
+    disc = {"shape": "circle", "x": cx, "y": cy, "w": hole.drill_mm}
+    assert not _draws_hit_any_pad(
+        [
+            d
+            for d in result.draws["top"]
+            if d["role"] == "refdes" and d["refdes"] == "R1"
+        ],
+        [disc],
+    )
+
+
+def test_a_far_mounting_hole_leaves_the_refdes_label_alone():
+    """The hole obstacle set is a seed like any other: a hole -- hardware
+    envelope and all -- nowhere near the part changes nothing."""
+    ir = from_graph(
+        _graph("R1", 4, x=0.0, y=0.0),
+        stackup=DEFAULT_STACKUP,
+        mounting_holes=(
+            MountingHole(x=30.0, y=30.0, drill_mm=3.2, head_dia_mm=7.0, plated=True),
+        ),
+    )
+    # Same pad widening as the hole test above: the bare 0.325mm fixture
+    # relocates even without a hole (corridor-bridged outline).
+    for pid in range(ir.n_pins):
+        ir.pin_w[pid] = 1.4
+    result = build_silk(ir, pads=[])
+    row = next(c for c in result.census if c.kind == "refdes")
+    assert row.outcome == "placed", row
+    courtyard = next(c for c in result.census if c.kind == "courtyard")
+    assert courtyard.outcome == "placed", courtyard
 
 
 def test_a_label_never_lands_over_a_neighbours_outline():

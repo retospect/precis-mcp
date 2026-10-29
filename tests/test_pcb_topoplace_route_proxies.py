@@ -445,6 +445,119 @@ def test_edge_clearance_priced_against_body() -> None:
     assert proxy.overlap == pytest.approx(edge_clearance_total(d, proxy.pose))
 
 
+# -- the maximin margin term (Reto 2026-10-29) ------------------------------
+
+
+def test_margin_edge_part_softmin_by_hand_and_inward_move() -> None:
+    """Part A's 10×6 courtyard parked 0.2 mm off the x=40 board edge pays
+    the edge axis ``EDGE_WANT_MM − 0.2 = 0.4``; part B centered pays
+    nothing on any axis (pair gap 4.8 mm ≫ the silk-room requirement, no
+    holes). The term is exactly the softmin formula over the two worsts,
+    and moving the edge part inward past the want takes it to 0 — the
+    staged ProxyState tracks both, bit-consistent with the full
+    recompute."""
+    import math
+
+    from precis.pcb.topoplace import ProxyState, margin_total
+    from precis.pcb.topoplace.proxy import (
+        _MARGIN_SOFTMIN_TAU_MM,
+        EDGE_WANT_MM,
+        HOLE_WANT_MM,
+    )
+
+    assert EDGE_WANT_MM > 0.4 and HOLE_WANT_MM == 0.0
+    d = _design(
+        ["A", "B"],
+        [(0, 0.0, 0.0, 0), (0, 10.0, 0.0, 0), (1, 20.0, 0.0, 1), (1, 30.0, 0.0, 1)],
+        [0, 0, 0, 0],
+        [(34.8, 20.0, 0.0, 0.0), (20.0, 20.0, 0.0, 0.0)],
+        part_rings=True,
+    )
+    # A's ring spans x 29.8..39.8 → 0.2 mm off the edge; B's spans
+    # 15..25 × 17..23 → every gap ≥ 15 mm. worst = (0.4, 0).
+    tau = _MARGIN_SOFTMIN_TAU_MM
+    worst_a = EDGE_WANT_MM - 0.2
+    expected = -tau * math.log((math.exp(-worst_a / tau) + math.exp(0.0)) / 2.0)
+    assert margin_total(d, d.pose0) == pytest.approx(expected)
+
+    w = ObjectiveShares(crossings=0.5, ratsnest=0.2, overlap=0.2, margin=0.1)
+    proxy = ProxyState(d, d.pose0, w)
+    assert proxy.margin == pytest.approx(expected)
+    before = proxy.margin
+    row = proxy.pose[0].copy()
+    row[0] = 33.0  # A's ring 28..38: 2 mm off the edge — the want met
+    proxy.try_move(0, row)
+    assert proxy.margin < before
+    proxy.commit()
+    assert proxy.margin == pytest.approx(0.0, abs=1e-12)
+    assert proxy.margin == pytest.approx(margin_total(d, proxy.pose))
+
+
+def test_margin_hole_axis_uses_the_body_not_the_courtyard(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """gr525380's notch geometry on the margin term's hole axis: a
+    mounting-hole keep-out parked inside a part's U-notch clears the
+    pad-union BODY, so the axis is 0 even at a positive want — while the
+    same hole inside the courtyard ring (the no-body fallback) pays the
+    full want. With HOLE_WANT_MM = 0 the axis is inert by design; the
+    monkeypatch raises the knob so the test sees the measure."""
+    import dataclasses
+
+    from precis.pcb.topoplace import ProxyState, TopoZone, margin_total
+
+    monkeypatch.setattr("precis.pcb.topoplace.proxy.HOLE_WANT_MM", 0.5)
+    d = _design(
+        ["A"],
+        [(0, 0.0, 0.0, 0), (0, 10.0, 0.0, 0)],
+        [0, 0],
+        [(20.0, 20.0, 0.0, 0.0)],
+        part_rings=True,
+    )
+    # The U body (opening +y): bars at x ±2..±4, a bottom bar at
+    # y −4..−2, the notch |x| < 2, y > −2 open. The hole keep-out (a
+    # 0.5 mm square at local (0, 2)) sits 1.75 mm clear of both bar
+    # walls — inside the notch, clear of the body.
+    u_ring = np.array(
+        [
+            [-4.0, -4.0],
+            [4.0, -4.0],
+            [4.0, 4.0],
+            [2.0, 4.0],
+            [2.0, -2.0],
+            [-2.0, -2.0],
+            [-2.0, 4.0],
+            [-4.0, 4.0],
+            [-4.0, -4.0],
+        ],
+        dtype=np.float64,
+    )
+    hole = np.array(
+        [[-0.25, 1.75], [0.25, 1.75], [0.25, 2.25], [-0.25, 2.25], [-0.25, 1.75]],
+        dtype=np.float64,
+    ) + np.array([20.0, 20.0])  # board-level (world) ring
+    d = dataclasses.replace(
+        d,
+        part_body=(u_ring,),
+        zones=(TopoZone(kind="mounting_hole", ring=hole, name="mh"),),
+    )
+    # Body clears the notch hole: every axis 0, so the softmin is 0.
+    assert margin_total(d, d.pose0) == pytest.approx(0.0, abs=1e-12)
+    w = ObjectiveShares(crossings=0.5, ratsnest=0.2, margin=0.3)
+    proxy = ProxyState(d, d.pose0, w)
+    assert proxy.margin == pytest.approx(0.0, abs=1e-12)
+    # The no-body fallback (courtyard ring covers the notch) pays the
+    # full want — a one-part softmin returns the worst verbatim.
+    d_nobody = dataclasses.replace(d, part_body=())
+    assert margin_total(d_nobody, d_nobody.pose0) == pytest.approx(0.5)
+    # And a small nudge keeps the proxy exactly on the recompute.
+    row = proxy.pose[0].copy()
+    row[0] += 1.0
+    proxy.try_move(0, row)
+    proxy.commit()
+    assert proxy.margin == pytest.approx(margin_total(d, proxy.pose))
+
+
 # -- the flow preset --------------------------------------------------------
 
 
@@ -552,6 +665,7 @@ def test_flow_preset_is_crossings_primary() -> None:
     assert f.crossings > f.backtrack
     assert f.crossings > f.direction
     assert f.crossings > f.silkroom
+    assert f.crossings > f.margin
     assert (
         f.crossings
         + f.ratsnest
@@ -562,5 +676,6 @@ def test_flow_preset_is_crossings_primary() -> None:
         + f.spread
         + f.measures
         + f.silkroom
+        + f.margin
         == pytest.approx(1.0)
     )
