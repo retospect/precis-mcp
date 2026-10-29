@@ -618,3 +618,70 @@ def test_topo_bench_table(store: Store) -> None:
     print(tb.render(rows))
     assert rows
     assert all(r.anneal.nets is None or r.anneal.nets > 0 for r in rows)
+
+
+# ── _drain strict/lenient (gr524304) ────────────────────────────────────
+
+
+def _drain_fixture_refs(store: Store) -> tuple[int, int, int]:
+    """A board parent + the just-enqueued target job + a stray queued job
+    sharing the dev DB."""
+    parent = store.insert_ref(kind="pcb", slug="drain-gr524304", title="b", meta={})
+    target = store.insert_ref(kind="job", slug=None, title="target", meta={})
+    stray = store.insert_ref(kind="job", slug=None, title="stray", meta={})
+    return int(parent.id), int(target.id), int(stray.id)
+
+
+def test_drain_lenient_tolerates_stray_claims(
+    store: Store,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """gr524304: strict=False keeps passing while a stray queued job
+    shares the dev DB — the target still finishes and _drain returns,
+    noting the unexpected claim count instead of failing AFTER the real
+    work already ran."""
+    from precis.store import Tag
+
+    parent_id, target_id, _stray_id = _drain_fixture_refs(store)
+    calls = {"n": 0}
+
+    def _fake_pass(_store: Store, *, limit: int) -> dict[str, int]:
+        calls["n"] += 1
+        if calls["n"] == 1:
+            # The stray shares the pass: two claims where the strict
+            # assert expects exactly one.
+            return {"claimed": 2, "ok": 2, "failed": 0}
+        store.add_tag(
+            target_id,
+            Tag.parse_strict("STATUS:succeeded", kind="job"),
+            set_by="agent",
+            replace_prefix=True,
+        )
+        return {"claimed": 1, "ok": 1, "failed": 0}
+
+    monkeypatch.setattr(tb, "run_job_inproc_pass", _fake_pass)
+
+    job_id, status, wall = tb._drain(
+        store, parent_id, target_job_id=target_id, strict=False
+    )
+
+    assert (job_id, status) == (target_id, tb.SUCCEEDED)
+    assert wall >= 0.0
+    assert "claimed 2 job(s), not 1" in capsys.readouterr().out
+
+
+def test_drain_strict_still_raises_on_stray_claims(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The default stays exact: one pass claiming anything but exactly
+    one job is the AssertionError the bench has always raised."""
+    parent_id, target_id, _stray_id = _drain_fixture_refs(store)
+
+    def _fake_pass(_store: Store, *, limit: int) -> dict[str, int]:
+        return {"claimed": 2, "ok": 2, "failed": 0}
+
+    monkeypatch.setattr(tb, "run_job_inproc_pass", _fake_pass)
+
+    with pytest.raises(AssertionError, match="expected a queued job"):
+        tb._drain(store, parent_id, target_job_id=target_id)

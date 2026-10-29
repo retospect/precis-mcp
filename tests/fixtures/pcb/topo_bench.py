@@ -467,27 +467,60 @@ def job_summary_text(store: Store, job_id: int) -> str:
     return "\n".join(texts)
 
 
-def _drain(store: Store, parent_id: int) -> tuple[int, str, float]:
-    """Drain this design's newest job; returns ``(job_id, status,
-    wall_s)`` — a failed job is a measurement, not an exception."""
-    with store.pool.connection() as conn:
-        row = conn.execute(
-            "SELECT ref_id FROM refs WHERE kind = 'job' AND parent_id = %s "
-            "ORDER BY ref_id DESC LIMIT 1",
-            (parent_id,),
-        ).fetchone()
-    assert row is not None, f"no job queued for parent_id={parent_id}"
-    job_id = int(row[0])
+def _drain(
+    store: Store,
+    parent_id: int,
+    *,
+    target_job_id: int | None = None,
+    strict: bool = True,
+    max_passes: int = 60,
+) -> tuple[int, str, float]:
+    """Drain this design's job to a terminal status; returns
+    ``(job_id, status, wall_s)`` — a failed job is a measurement, not
+    an exception.
+
+    ``target_job_id`` names the job the caller just enqueued (default:
+    the newest job under ``parent_id``) — the drain watches THAT job to
+    terminal, so a stray queued job left on a shared dev DB by a
+    crashed run or another session cannot fail an unrelated run.
+    ``strict=True`` (the default every bench/test caller keeps) asserts
+    each pass claims exactly one job — today's behaviour. ``strict=False``
+    records any other claim count as a note and keeps passing until the
+    target is terminal, bounded by ``max_passes`` — past the bound a
+    clear error names the job and its last status."""
+    if target_job_id is None:
+        with store.pool.connection() as conn:
+            row = conn.execute(
+                "SELECT ref_id FROM refs WHERE kind = 'job' AND parent_id = %s "
+                "ORDER BY ref_id DESC LIMIT 1",
+                (parent_id,),
+            ).fetchone()
+        assert row is not None, f"no job queued for parent_id={parent_id}"
+        job_id = int(row[0])
+    else:
+        job_id = int(target_job_id)
     t0 = time.monotonic()
-    for _ in range(60):
+    last_status: str | None = None
+    for _ in range(max_passes):
         with store.pool.connection() as conn:
             status = current_status(conn, job_id)
             if status in TERMINAL:
                 assert status is not None
                 return job_id, status, time.monotonic() - t0
+            last_status = status
         result = run_job_inproc_pass(store, limit=1)
-        assert result["claimed"] == 1, f"expected a queued job, got {result}"
-    raise AssertionError(f"job {job_id} never reached a terminal status")
+        if strict:
+            assert result["claimed"] == 1, f"expected a queued job, got {result}"
+        elif int(result.get("claimed") or 0) != 1:
+            print(
+                f"topo_bench: drain pass claimed {result['claimed']} job(s), "
+                f"not 1 — a stray queued job may share the DB; draining "
+                f"until job {job_id} is terminal"
+            )
+    raise AssertionError(
+        f"job {job_id} not terminal after {max_passes} drain pass(es); "
+        f"last status: {last_status!r}"
+    )
 
 
 def _job_meta(store: Store, job_id: int) -> dict[str, Any]:
