@@ -1390,7 +1390,18 @@ def _head_feature(
     head_d = _num(specs, "head_diameter")
     if head_d is None:
         return None
+    # The member picked for the head feature is the one the far end
+    # threads into: possible only when the member the head actually
+    # bears on never measured into the stack (envelope-walked members,
+    # gr524390), so "first non-bought member" silently degraded to the
+    # far member. Head clearance there machines the thread seat — a
+    # counterbore into a boss's core hole leaves a sliver of annulus —
+    # so the stamp is withheld and warned, not cut (gr525812).
+    seat_bound = near is res.members[-1] and res.termination == "tapped"
     if form == "countersunk":
+        if seat_bound:
+            res.findings.append(_near_member_missing(subject, form, near))
+            return None
         # The theoretical sharp cone: sized so the real head, which is
         # smaller by its edge radius, lands at or below flush.
         return _hole_for(
@@ -1429,6 +1440,9 @@ def _head_feature(
             )
         )
         return None
+    if seat_bound:
+        res.findings.append(_near_member_missing(subject, form, near))
+        return None
     return _hole_for(
         near,
         subject=subject,
@@ -1442,6 +1456,27 @@ def _head_feature(
             f"deep enough to bury a {head_h * 1000:.1f} mm head "
             "(params.counterbore asked for it)"
         ),
+    )
+
+
+def _near_member_missing(subject: str, form: str, near: Member) -> ValidationIssue:
+    """gr525812: the member ``_head_feature`` picked is the one this
+    joint's thread seats in — the member the head actually bears on
+    never made the measured stack (members are envelope-walked,
+    gr524390), so "first non-bought member" degraded to the far member.
+    A head feature there machines the thread seat, so it is withheld and
+    warned rather than cut."""
+    return ValidationIssue(
+        rule="near_member_missing",
+        subject=subject,
+        detail=(
+            f"the {form} head feature would stamp into {near.block!r}, "
+            "the member this joint's thread seats in — the member the "
+            "head bears on is missing from the measured stack (members "
+            "are envelope-walked; gr524390), so the stamp is withheld "
+            "rather than cut into the thread seat"
+        ),
+        severity="warn",
     )
 
 

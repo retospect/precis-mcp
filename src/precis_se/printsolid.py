@@ -45,6 +45,9 @@ the hole in whichever part it lands in, not in the first part regardless
 (gr344816). A hole whose tool meets no part, or meets one and still
 removes nothing (it sits in a bounding-box corner's air), is a
 ``feature_not_cut`` finding: the cut is never allowed to succeed on air.
+Unless the air is the feature — a void with material standing just
+outside the tool's radial wall means the authored cad already carries
+the hole (``feature_already_cut``, info; gr525812).
 """
 
 from __future__ import annotations
@@ -146,10 +149,44 @@ def _feature_not_cut(block_name: str, hole: Hole, why: str) -> ValidationIssue:
     )
 
 
+def _feature_already_cut(
+    block_name: str, hole: Hole, components: list[str]
+) -> ValidationIssue:
+    """The info-severity receipt for a stamped hole whose void the bound
+    cad already carries — precis-se-fasten-help §5 tells the builder to
+    cut the stamped features into the authored geometry, so
+    ``intersect ≈ 0`` with material standing around the void is success
+    (gr525812), not the missing-feature error it used to emit."""
+    return ValidationIssue(
+        rule="feature_already_cut",
+        subject=block_name,
+        detail=(
+            f"stamped {hole.kind} hole {hole.name!r} removes nothing from "
+            f"{', '.join(repr(c) for c in components)} — material stands "
+            "in a thin shell just outside the void, so the bound cad "
+            "already carries this feature and the cut is a no-op"
+        ),
+        severity="info",
+    )
+
+
 #: Ray grid for the per-hole "did this cut remove anything" probe —
 #: quadrature over the tool's own (small) AABB, so a coarse grid is exact
 #: enough to tell air from material.
 _CUT_PROBE_GRID = 24
+
+#: Thickness of the annulus probed just outside a cutter that removed
+#: nothing — the witness that tells "the bound cad already carries this
+#: hole" (a void with material standing around it) apart from "the tool
+#: is in air" (nothing around it at all). Radial only, over the cutter's
+#: own depth.
+_CUT_SHELL_M = 5e-4
+
+#: The annulus probe's ray grid — finer than ``_CUT_PROBE_GRID`` because
+#: the shell is thin by construction and the wall around a void can be
+#: thinner still (a counterbore in a boss leaves a sub-millimetre
+#: annulus), so a coarse grid could step over the only material there.
+_CUT_SHELL_GRID = 48
 
 
 def _components_met(design: CadDesign, cutter: Expr) -> list[str]:
@@ -178,7 +215,13 @@ def _apply_cuts(
     them — a hole that meets no part, or only a part's bounding-box air,
     is a ``feature_not_cut`` finding rather than a silently whole solid
     (gr344816: cutting ``components[0]`` regardless put a later part's
-    hole into the first part, and the union re-filled it). Returns the
+    hole into the first part, and the union re-filled it). A hole the
+    tool removes nothing from is *not* automatically missing, though:
+    ``_wall_around_void`` checks the thin shell just outside the tool's
+    radial wall, and material standing there means the bound cad already
+    carries the void (``feature_already_cut``, an info note — the cut
+    node is still emitted, a no-op subtract); only a tool with nothing
+    around it — genuinely in air — stays ``feature_not_cut``. Returns the
     ``cut`` node specs (one per component actually cut), the names of the
     holes cut, and whether any component changed.
     """
@@ -209,9 +252,10 @@ def _apply_cuts(
             continue
         xform, loc, rot = _cut_placement(hole, inv)
         cutter = design.prim(_safe_node_name(hole.name), primitive, xform)
+        met = _components_met(design, cutter)
         removing = [
             name
-            for name in _components_met(design, cutter)
+            for name in met
             if cad_bulk.volume(
                 design,
                 expr=design.intersect(design.components[name], cutter),
@@ -220,15 +264,18 @@ def _apply_cuts(
             > 0.0
         ]
         if not removing:
-            findings.append(
-                _feature_not_cut(
-                    block_name,
-                    hole,
-                    "the tool meets no material — it cuts air (hole origin "
-                    "or axis outside every component of the bound design)",
+            removing = _wall_around_void(design, hole, cutter, xform, met)
+            if not removing:
+                findings.append(
+                    _feature_not_cut(
+                        block_name,
+                        hole,
+                        "the tool meets no material — it cuts air (hole origin "
+                        "or axis outside every component of the bound design)",
+                    )
                 )
-            )
-            continue
+                continue
+            findings.append(_feature_already_cut(block_name, hole, removing))
         for name in removing:
             cutters_by_component.setdefault(name, []).append(cutter)
             # Node names are unique per SceneSpec (the parser refuses a
@@ -254,15 +301,58 @@ def _apply_cuts(
     return cut_nodes, feature_names, bool(cutters_by_component)
 
 
-def _cut_config(hole: Hole) -> str:
+def _wall_around_void(
+    design: CadDesign,
+    hole: Hole,
+    cutter: Expr,
+    xform: Transform,
+    met: list[str],
+) -> list[str]:
+    """The ``met`` components with material in the thin shell just
+    outside ``cutter``'s radial wall — the ``feature_already_cut``
+    witness.
+
+    A cutter that removes nothing sits in one of two places: inside a
+    void the authored cad already carries (precis-se-fasten-help §5's
+    pre-cut — ``intersect`` reads ~0 because the hole is *there*, not
+    because the tool missed) or in air. Material standing in the shell —
+    ``intersect(component, dilated tool)`` minus the tool itself — is
+    what tells them apart: a void with a wall is a hole, a void with
+    nothing around it is air.
+    """
+    try:
+        shell_prim = cad_dsl.build_config(_cut_config(hole, _CUT_SHELL_M))
+    except (cad_dsl.DslError, ValueError):  # pragma: no cover — same shape built
+        return []
+    shell = design.prim(f"{_safe_node_name(hole.name)}_wall", shell_prim, xform)
+    return [
+        name
+        for name in met
+        if cad_bulk.volume(
+            design,
+            expr=design.subtract(
+                design.intersect(design.components[name], shell), cutter
+            ),
+            grid=_CUT_SHELL_GRID,
+        ).volume
+        > 0.0
+    ]
+
+
+def _cut_config(hole: Hole, radial_extra_m: float = 0.0) -> str:
     """The cutting tool's canonical ``config`` text for one stamped hole —
     default a round ``cyl:``, a hex nut pocket a ``hex:`` sized from
     across-flats, a countersink a ``cone:`` (module docstring: a
-    counterbore is already just a wider ``cyl:``, no special case)."""
-    radius = format_dsl_number(hole.diameter_m / 2.0)
+    counterbore is already just a wider ``cyl:``, no special case).
+    ``radial_extra_m`` pushes the tool's radial wall out by that much —
+    :func:`_wall_around_void`'s annulus probe is the same body of
+    revolution, fattened."""
+    radius = format_dsl_number(hole.diameter_m / 2.0 + radial_extra_m)
     depth = format_dsl_number(hole.depth_m)
     if hole.kind == "nut-pocket" and hole.across_flats_m:
-        circumradius = hole.across_flats_m * _HEX_ACROSS_FLATS_TO_CIRCUMRADIUS
+        circumradius = (
+            hole.across_flats_m * _HEX_ACROSS_FLATS_TO_CIRCUMRADIUS + radial_extra_m
+        )
         return f"hex:r{format_dsl_number(circumradius)}h{depth}"
     if hole.kind == "countersink":
         return f"cone:r{radius}h{depth}"

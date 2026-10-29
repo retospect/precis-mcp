@@ -476,3 +476,34 @@ class TestMultiComponentCuts:
         assert finding.rule == "feature_not_cut"
         assert "cuts air" in finding.detail and "'h-air'" in finding.detail
         assert cad_bulk.volume(design).volume == pytest.approx(before)
+
+    def test_a_hole_the_cad_already_carries_is_an_info_note(self) -> None:
+        """gr525812 / fasten-help §5: the authored cad carries the stamped
+        holes pre-cut, so the void probe reads ~0 because the hole is
+        THERE — material standing just outside the tool's radial wall is
+        the witness, and the finding is an info note, not
+        ``feature_not_cut``."""
+        design = self._two_boxes()
+        # A blind hole down -z into `right`'s top face — stamped once, so
+        # the bound cad carries the void exactly as §5 prescribes.
+        hole = se_fasten.Hole(
+            name="h-precut",
+            block="asm",
+            kind="clearance",
+            diameter_m=0.004,
+            depth_m=0.010,
+            origin=[0.05, 0.0, 0.02],
+            axis=[0.0, 0.0, -1.0],
+        )
+        first: list[ValidationIssue] = []
+        printsolid._apply_cuts(design, "asm", [hole], identity(), first)
+        assert first == []
+        findings: list[ValidationIssue] = []
+        nodes, names, cut_any = printsolid._apply_cuts(
+            design, "asm", [hole], identity(), findings
+        )
+        (finding,) = findings
+        assert finding.rule == "feature_already_cut"
+        assert finding.severity == "info"
+        assert names == ["h-precut"] and cut_any
+        assert [n.component for n in nodes] == ["right"]

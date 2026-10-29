@@ -133,13 +133,6 @@ than no hole, because it prints.
 For `insert` and `nut-trap`, the insert or the nut is a **second part**:
 add it to the BOM. A pocket with nothing in it is a hole.
 
-**The head end takes one decision too.** A countersunk head always gets
-its 90° cone — the screw does not seat without it. A cap, pan or button
-head is left **standing proud** unless you ask: `params.counterbore=true`
-stamps a bore deep enough to bury it, and without it you get a
-`head_stands_proud` note saying how far it sticks up. Burying a 4 mm head
-in a 6 mm plate is too big a thing to do to a part unasked.
-
 ### the numbers, if you want to know where they come from
 
 The design numbers — core-hole ratio for a formed thread, engagement by
@@ -169,6 +162,39 @@ What the *pass* does with them:
   finding. The boss around a formed thread is reported in prose, not
   stamped — this pass subtracts holes, it never adds material, so
   modelling the boss is yours.
+- **A free-standing boss wants ribs.** A boss standing off the wall
+  carries the screw's clamp load as a bending moment at its root — tie
+  it to the nearest wall with ribs (gussets) 0.5–0.6× the wall
+  thickness. That is the molding rule, and it prints fine on FDM too.
+
+## 3b — the head end, and trusting the stamps
+
+**The head end takes one decision too.** A countersunk head always gets
+its 90° cone — the screw does not seat without it. A cap, pan or button
+head is left **standing proud** unless you ask: `params.counterbore=true`
+stamps a bore deep enough to bury it, and without it you get a
+`head_stands_proud` note saying how far it sticks up. Burying a 4 mm head
+in a 6 mm plate is too big a thing to do to a part unasked.
+
+Burying a head needs a **floor**: a k-mm cap head wants a plate thicker
+than k mm, or the bore breaks through and the head bears on air — so
+thicken the plate. When it cannot grow, flip the joint instead: the head
+bears on the far member and the thread seats in the near one, which
+needs no bore depth at all — but the head ends up captive on the blind
+side, so no driver reaches it once the joint is closed.
+
+**Verify placement before you cut — stamped origins are
+envelope-anchored.** Members are walked on bounding envelopes, so an
+origin can sit in the airspace above the real surface rather than on the
+pierced member, and an envelope-incomplete stack can aim a head feature
+at the wrong member entirely (then `near_member_missing` warns and the
+stamp is withheld). Cut the holes to the stamped *sizes* — diameter,
+depth and axis are trustworthy — then prove where they landed on the
+bound cad: `view='point'` inside the void reports `removed-by <leaf>`
+naming the cutter, `view='ray'` down the screw axis attributes every
+void segment to the feature that made it, and `view='volume'` per
+component confirms the material that should still be there. Trust the
+sizes, probe the placement.
 
 ## 4 — read `view='fasten'`
 

@@ -296,6 +296,26 @@ class TestHeadFeatures:
         assert bores[0].depth_m == pytest.approx(0.004)
         assert "head_stands_proud" not in _rules(res)
 
+    def test_a_counterbore_never_lands_in_the_thread_seat_member(self) -> None:
+        """gr525812: the lid misses the envelope-measured stack, so 'first
+        non-bought member' falls through to the block — the member the
+        core hole stamps. A counterbore there machines the boss's thread
+        seat to a sliver; it is withheld and warned, not cut."""
+        tree = _stack(
+            screw=M4_CAP,
+            mode="fdm/asa",
+            params={"counterbore": True, "thread_strategy": "thread-forming"},
+        )
+        # The lid is in the tree but off the screw's axis — the envelope
+        # walk never sees it, and the measured stack is the block alone.
+        tree.blocks["plate"].pose = [0.05, 0.0, 0.006]
+        res = _only(tree)
+        assert [m.block for m in res.members] == ["block"]
+        assert not _holes(res, "counterbore")
+        assert _holes(res, "core")  # the seat itself still stamps
+        warn = next(f for f in res.findings if f.rule == "near_member_missing")
+        assert warn.severity == "warn" and "'block'" in warn.detail
+
     def test_a_countersunk_head_needs_no_asking(self) -> None:
         """The cone is physics: the screw does not seat without it."""
         res = _only(_stack(screw=M4_CSK, mode="cnc-2.5ax/aluminium"))
