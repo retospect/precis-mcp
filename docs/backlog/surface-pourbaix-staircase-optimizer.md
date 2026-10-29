@@ -285,10 +285,11 @@ So anchors are computed, not read.
   killable child (`runner.run_coverage_scan_subprocess`, the seed child's
   `python -m precis_pathway.runner` entrypoint with `mode: coverage`).
   Defaults: adsorbates H, O, OH at 0.25/0.5/0.75/1.0 ML; (111) only (q7);
-  `coverage.facets` must be empty; a prebuilt slab is refused
-  (`failure_class="input"`) because the engine's scan builds its own clean
-  slab and ignores the pathway pipeline's prebuilt-slab side channel —
-  doped candidates and β-PdH wait on the engine task below.
+  `coverage.facets` must be empty. A prebuilt slab was refused at
+  first-landing because the engine's scan built its own clean slab;
+  since autocatpath 0.25.0 `slab_extxyz` (or `structure_ref`, resolved
+  server-side) injects the candidate's slab, so doped slabs and β-PdH
+  twins scan on their own geometry (`coverage_job.py` module docstring).
 - Footing per anchor set (acceptance "one footing"): `meta.anchor_key`
   (`runner.coverage_anchor_key`: config minus `mlip` + engine version),
   `meta.model`, `meta.engine_version`, `meta.corrections` (what the scan
@@ -338,16 +339,15 @@ The agreement therefore bounds the single-subsurface-Sn effect plus
 lateral/lattice terms at ≲0.1 eV; a strictly clean θ→0 check needs a
 clean 0.24.1 pathway on st203306 (pa246095's footing is incomplete).
 
-**Not yet (slice-1 residue):** the engine task A1 (catpath repo, in
-build 2026-10-13; the 2026-10-07 brief was never filed). Mint recipe for
-further scans: `put(kind='job', job_type='surface_coverage_scan',
+**Engine task A1 (shipped, catpath 0.25.0):** the coverage scan honours
+the injected slab (doped slabs, β-PdH twins; `n_slab` from `slab.info` so
+lattice H is not counted), applies the same gas set and H* shift as the
+pipeline under `cfg.corrections`, and records a `corrections` block plus
+`slab_source: injected|built` in `coverage.json`. Mint recipe for further
+scans: `put(kind='job', job_type='surface_coverage_scan',
 parent_id=<structure id>, params={config: REACTION_CONFIG, point_U_RHE:
--0.3})`, `target_node` unset (the `ssh_node` executor routes it). A1: the coverage scan honours
-`cfg._prebuilt_slab` (doped slabs, β-PdH twins; `n_slab` from
-`slab.info` so lattice H is not counted), applies the same gas set and H*
-shift as the pipeline under `cfg.corrections`, and records a
-`corrections` block plus `slab_source: injected|built` in
-`coverage.json`.
+-0.3, structure_ref: <structure id>})`, `target_node` unset (the
+`ssh_node` executor routes it); omit `structure_ref` for a clean slab.
 
 ## Carried from qu164903-campaign (the old `autocatpath_coverage` spec)
 
