@@ -57,7 +57,9 @@ one wall, or push a refdes label out along its relocation ladder.
 ``margin`` is the maximin twin (Reto 2026-10-29 — "the minimal margin
 around each part is at least X; maximize that"): per part, the WORST of
 three margin axes — the courtyard ring's gap to the board edge against
-``EDGE_WANT_MM``, the ring's separation to its nearest same-side
+a ring-radius-aware want (:func:`_edge_wants` — the silk draw drops a
+ring wholly inside the edge margin, which only small rings can fall
+victim to), the ring's separation to its nearest same-side
 neighbour against the silk-room requirement (the SAME pair scan
 ``silkroom`` prices), and the pad-union body's distance to the mounting-
 hole keep-outs against ``HOLE_WANT_MM`` — then a softmin over parts of
@@ -223,16 +225,40 @@ def _ring_silkroom_total(
     return total
 
 
-#: Margin term, edge axis (Reto 2026-10-29): how far a part's COURTYARD
-#: ring should sit off the board edge so the silk outline ring — drawn
-#: ~0.575mm outside the courtyard — still fits on the board. A fallback
-#: constant: the placer design build sees no capability row (the same
-#: constraint :data:`_SILK_ROOM_REQ_MM` documents), and the rung carrying
-#: capability can refine it. A QUALITY margin, NOT the 0.4mm fab bar —
-#: that stays in the overlap term's edge measure
-#: (:data:`_EDGE_CLEAR_MM`, body-measured since gr529963) and is not
-#: duplicated here.
-EDGE_WANT_MM = 0.6
+#: Margin term, edge axis (Reto 2026-10-29): the courtyard-to-board-edge
+#: distance at which a part's silk outline ring reaches the DRAW's drop
+#: threshold, for a ring of radius r: ``want(r) = max(0, ROOM − r)``.
+#: The silk pass DROPS a ring lying wholly inside the board's edge
+#: margin — ring centerline at ``courtyard_gap − target offset`` with
+#: ring radius r is wholly inside when
+#: ``courtyard_gap − target + r < edge_margin + stroke/2`` (silk.py's
+#: ``inside`` buffer). Under this module's no-capability fallbacks
+#: (target 0.575, edge margin 0.6, stroke 0.15) the room is 1.25mm: a
+#: small 0402's ring (r≈0.7) drops when its courtyard comes within
+#: ~0.55mm of the edge; a big IC's ring (r≈4mm) can never be wholly
+#: inside and wants nothing. Measured on taz-leaf runs 32-33
+#: (2026-10-29): a FLAT want under-priced exactly the small tip-row
+#: parts whose outlines dropped. A QUALITY margin, NOT the 0.4mm fab
+#: bar — that stays in the overlap term's edge measure
+#: (:data:`_EDGE_CLEAR_MM`, body-measured since gr529963).
+_SILK_EDGE_ROOM_MM = 1.25
+
+
+def _edge_wants(rings: list[Any]) -> np.ndarray:
+    """Per-part edge-axis want in mm — :data:`_SILK_EDGE_ROOM_MM` minus
+    the courtyard ring's circumradius (clamped at 0): a ring bigger than
+    the edge-margin band can never fall wholly inside it, so it wants
+    nothing."""
+
+    out = np.zeros(len(rings), dtype=np.float64)
+    for i, g in enumerate(rings):
+        if g is None:
+            continue
+        c = g.representative_point()
+        r = max(math.hypot(x - c.x, y - c.y) for x, y in g.exterior.coords)
+        out[i] = max(0.0, _SILK_EDGE_ROOM_MM - r)
+    return out
+
 
 #: Margin term, hole axis: the body-to-mounting-hole-keep-out distance
 #: the softmin asks for. 0.0 — any non-intersection satisfies it (the
@@ -281,6 +307,7 @@ def _margin_axes(
     outline: Any | None,
     zones: list[tuple[int, Any]],
     edge_mate: np.ndarray,
+    wants: np.ndarray,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """Per-part (edge, pair, hole) margin shortfalls in mm over placed
     ring/body lists — the full-recompute body ``margin_total`` and
@@ -288,7 +315,7 @@ def _margin_axes(
     :func:`_ring_silkroom_total`'s scan (same rings, same side rule, same
     ``req`` of bbox slack) with the shortfall MAXED per part instead of
     summed; the edge axis measures the COURTYARD ring against the outline
-    (:data:`EDGE_WANT_MM` — the silk ring's room, not the 0.4mm fab bar
+    (:func:`_edge_wants` — the silk ring's room, not the 0.4mm fab bar
     the overlap term prices on the body); the hole axis measures the
     pad-union BODY against the hole keep-outs, the owner exempt like the
     DRC's ``courtyard_hole``. Edge-mated parts pay no edge axis
@@ -310,7 +337,7 @@ def _margin_axes(
         gi = rings[i]
         if gi is not None:
             if outline is not None and not em[i]:
-                e[i] = max(0.0, EDGE_WANT_MM - float(outline.exterior.distance(gi)))
+                e[i] = max(0.0, wants[i] - float(outline.exterior.distance(gi)))
             x0, y0, x1, y1 = gi.bounds
             for j in range(n):
                 if j == i:
@@ -367,6 +394,7 @@ def margin_total(d: TopoDesign, pose: np.ndarray) -> float:
         _outline_geom(d),
         _margin_zone_entries(d, pose),
         d.part_edge_mate,
+        _edge_wants(rings),
     )
     worst = np.maximum(np.maximum(e, p), h)
     exp_sum = float(np.exp(-worst / _MARGIN_SOFTMIN_TAU_MM).sum())
@@ -920,6 +948,7 @@ class ProxyState:
         self._mg = 0.0
         if self.w.margin:
             self._mg_outline = _outline_geom(d)
+            self._mg_want = _edge_wants(self._rings)
             for z in d.zones:
                 if z.kind != "mounting_hole":
                     continue
@@ -937,6 +966,7 @@ class ProxyState:
                 self._mg_outline,
                 self._mg_zone_geoms(),
                 d.part_edge_mate,
+                self._mg_want,
             )
             worst = np.maximum(np.maximum(self._mg_e, self._mg_p), self._mg_h)
             self._mg_s = float(np.exp(-worst / _MARGIN_SOFTMIN_TAU_MM).sum())
@@ -1232,15 +1262,20 @@ class ProxyState:
 
     def _mg_edge(self, part: int, ring) -> float:
         """The margin term's edge axis for one part:
-        ``max(0, EDGE_WANT_MM − courtyard-to-outline gap)``. Edge-mated
-        parts are exempt like the overlap term's edge half (gr530632 —
-        the mating face is SUPPOSED to meet the outline)."""
+        ``max(0, want(part) − courtyard-to-outline gap)`` with the want
+        ring-radius-aware (:func:`_edge_wants` — the silk draw drops a
+        ring wholly inside the edge margin, which small rings can fall
+        victim to and big rings cannot). Edge-mated parts are exempt
+        like the overlap term's edge half (gr530632 — the mating face is
+        SUPPOSED to meet the outline)."""
         if ring is None or self._mg_outline is None:
             return 0.0
         em = self.d.part_edge_mate
         if len(em) == len(self.d.parts) and bool(em[part]):
             return 0.0
-        return max(0.0, EDGE_WANT_MM - float(self._mg_outline.exterior.distance(ring)))
+        return max(
+            0.0, self._mg_want[part] - float(self._mg_outline.exterior.distance(ring))
+        )
 
     def _mg_hole(self, part: int, body, zones: list[tuple[int, Any]]) -> float:
         """The margin term's hole axis for one part:

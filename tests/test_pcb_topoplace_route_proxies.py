@@ -449,34 +449,47 @@ def test_edge_clearance_priced_against_body() -> None:
 
 
 def test_margin_edge_part_softmin_by_hand_and_inward_move() -> None:
-    """Part A's 10×6 courtyard parked 0.2 mm off the x=40 board edge pays
-    the edge axis ``EDGE_WANT_MM − 0.2 = 0.4``; part B centered pays
-    nothing on any axis (pair gap 4.8 mm ≫ the silk-room requirement, no
-    holes). The term is exactly the softmin formula over the two worsts,
-    and moving the edge part inward past the want takes it to 0 — the
-    staged ProxyState tracks both, bit-consistent with the full
-    recompute."""
+    """Part A's courtyard parked 0.2 mm off the x=40 board edge pays the
+    edge axis ``want(A) − 0.2`` with the want ring-radius-aware
+    (:func:`_edge_wants` — a small ring's outline can be wholly inside
+    the edge margin and drop, a big ring's cannot); part B's big ring
+    wants nothing and its other gaps clear everything. The term is
+    exactly the softmin formula over the two worsts, and moving the edge
+    part inward past the want takes it to 0 — the staged ProxyState
+    tracks both, bit-consistent with the full recompute."""
+    import dataclasses
     import math
 
     from precis.pcb.topoplace import ProxyState, margin_total
     from precis.pcb.topoplace.proxy import (
         _MARGIN_SOFTMIN_TAU_MM,
-        EDGE_WANT_MM,
+        _SILK_EDGE_ROOM_MM,
         HOLE_WANT_MM,
+        _edge_wants,
     )
 
-    assert EDGE_WANT_MM > 0.4 and HOLE_WANT_MM == 0.0
+    assert HOLE_WANT_MM == 0.0
     d = _design(
         ["A", "B"],
         [(0, 0.0, 0.0, 0), (0, 10.0, 0.0, 0), (1, 20.0, 0.0, 1), (1, 30.0, 0.0, 1)],
         [0, 0, 0, 0],
-        [(34.8, 20.0, 0.0, 0.0), (20.0, 20.0, 0.0, 0.0)],
+        [(39.3, 20.0, 0.0, 0.0), (20.0, 20.0, 0.0, 0.0)],
         part_rings=True,
     )
-    # A's ring spans x 29.8..39.8 → 0.2 mm off the edge; B's spans
-    # 15..25 × 17..23 → every gap ≥ 15 mm. worst = (0.4, 0).
+    # A's ring is a 1x1 square (r=sqrt(0.5)) instead of the 10x6 default:
+    # the default's ring is bigger than the edge-margin band and wants
+    # nothing, which would make this test vacuous.
+    small = np.array(
+        [[-0.5, -0.5], [0.5, -0.5], [0.5, 0.5], [-0.5, 0.5], [-0.5, -0.5]],
+        dtype=np.float64,
+    )
+    d = dataclasses.replace(d, part_outline=(small, d.part_outline[1]))
+    want_a = _SILK_EDGE_ROOM_MM - math.sqrt(0.5)
+    assert _edge_wants([None, None])[1] == 0.0  # ringless part wants nothing
+    # A's ring spans x 38.8..39.8 -> 0.2 mm off the edge; B's spans
+    # 15..25 x 17..23 -> every gap >= 15 mm. worst = (want_a - 0.2, 0).
     tau = _MARGIN_SOFTMIN_TAU_MM
-    worst_a = EDGE_WANT_MM - 0.2
+    worst_a = want_a - 0.2
     expected = -tau * math.log((math.exp(-worst_a / tau) + math.exp(0.0)) / 2.0)
     assert margin_total(d, d.pose0) == pytest.approx(expected)
 
@@ -485,7 +498,7 @@ def test_margin_edge_part_softmin_by_hand_and_inward_move() -> None:
     assert proxy.margin == pytest.approx(expected)
     before = proxy.margin
     row = proxy.pose[0].copy()
-    row[0] = 33.0  # A's ring 28..38: 2 mm off the edge — the want met
+    row[0] = 33.0  # A's ring 32.5..33.5: 6.5 mm off the edge — the want met
     proxy.try_move(0, row)
     assert proxy.margin < before
     proxy.commit()
