@@ -45,6 +45,12 @@ Package-level invariants (detail lives on the named module):
   **provisional** band (``frontier.ProvisionalCandidate`` — merged measures,
   untrusted keys + reasons named, own Pareto rank) in the tick prompt, text
   view, and web scatter, so the loop is never blind to its own measurements.
+  Seeded pathway runs record ``requested_seeds`` at dispatch and accumulate
+  ``executed_seeds`` only after child launch, including later failures.
+  Trust verdicts show both lists and flag dispatch mismatches, while the
+  independent-seed gate still uses actual trust records: starting a child
+  does not prove usable independent evidence. Historical launch lists stay
+  unknown; neither queued jobs nor successful-only aggregates can supply them.
 - **The dossier can't bloat or lose its trail.** The pinned ledger is a
   nested attempt tree mutated only via explicit ops
   (``dossier.add_attempt``/``mark_attempt`` — exact-text addressed,

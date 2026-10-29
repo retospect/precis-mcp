@@ -1891,6 +1891,10 @@ def dispatch_autocatpath(
                         "reaction_key": reaction_key,
                         "status": "computing",
                         "candidate_ref": structure_ref_id,
+                        # Intent is recorded at mint; only a launched child
+                        # adds to executed_seeds, including later failures.
+                        "requested_seeds": _autocatpath_search_seeds(run_config),
+                        "executed_seeds": [],
                         # dispatch-time tier stamp — the promotion-eligibility
                         # + `refines`-lineage seam (:func:`_find_tier_pathway`)
                         # reads this even while the pathway is still
@@ -4573,6 +4577,13 @@ def harvest_measures(
                     by=MEASURED_BY,
                 )
             if seed_blk:
+                from precis.utils.trust_gate import seed_execution_note
+
+                seed_diagnostic = (
+                    f" {seed_execution_note(pw_meta)}"
+                    if seed_blk.startswith("seeds:")
+                    else ""
+                )
                 if seed_blk == "seeds:unknown":
                     detail = (
                         "seed set unknowable — no record seed fields "
@@ -4605,7 +4616,7 @@ def harvest_measures(
                     quest_id,
                     text=(
                         f"seed-independence gate for [{handle}] ({name}): "
-                        f"{seed_blk} — {detail}; auto-untrusted{tail}"
+                        f"{seed_blk}{seed_diagnostic} — {detail}; auto-untrusted{tail}"
                     ),
                     entry_type="result",
                     by=MEASURED_BY,

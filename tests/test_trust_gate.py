@@ -652,6 +652,104 @@ def test_trust_toon_two_seed_pass_renders_seed_row_pass() -> None:
     assert "next:" not in body
 
 
+@pytest.mark.parametrize(
+    ("requested", "executed", "usable", "verdict", "note"),
+    [
+        pytest.param(
+            [2, 3],
+            [1],
+            [1],
+            "BLOCKED",
+            "(requested [2,3], executed [1]); dispatch dropped or substituted seeds",
+            id="substituted-single-seed",
+        ),
+        pytest.param(
+            [2, 3],
+            [2, 3],
+            [2, 3],
+            "PASS",
+            "(requested [2,3], executed [2,3])",
+            id="matching-two-seeds",
+        ),
+        pytest.param(
+            [2, 3],
+            [2, 3],
+            [2],
+            "BLOCKED",
+            "(requested [2,3], executed [2,3])",
+            id="started-is-not-usable",
+        ),
+        pytest.param(
+            None,
+            None,
+            [2, 3],
+            "PASS",
+            "(requested unknown, executed unknown)",
+            id="historical-unknown",
+        ),
+        pytest.param(
+            [2, 3],
+            [3, 2],
+            [2, 3],
+            "PASS",
+            "(requested [2,3], executed [3,2])",
+            id="order-is-not-substitution",
+        ),
+        pytest.param(
+            [2, 3],
+            [1, 2],
+            [1, 2],
+            "PASS",
+            "(requested [2,3], executed [1,2]); dispatch dropped or substituted seeds",
+            id="diagnostics-do-not-change-trust",
+        ),
+    ],
+)
+def test_trust_toon_reports_seed_dispatch_without_changing_independence(
+    requested: list[int] | None,
+    executed: list[int] | None,
+    usable: list[int],
+    verdict: str,
+    note: str,
+) -> None:
+    """gr525725: starts diagnose dispatch; usable trust records decide independence."""
+    records = _records(usable, hi_states=(), with_detachment=False)
+    meta = _meta(_results(records, usable))
+    if requested is not None:
+        meta["requested_seeds"] = requested
+    if executed is not None:
+        meta["executed_seeds"] = executed
+
+    body = trust_toon(meta, pw_handle="pw1")
+
+    verdict_line = next(
+        line for line in body.splitlines() if line.startswith("verdict:")
+    )
+    seed_line = next(
+        line for line in body.splitlines() if line.startswith("seed independence")
+    )
+    assert f"verdict: {verdict}" in verdict_line
+    assert note in verdict_line
+    assert note in seed_line
+    if verdict == "BLOCKED":
+        assert f"seeds:1-independent {note}" in verdict_line
+        assert "fail" in seed_line
+    else:
+        assert "pass" in seed_line
+        assert "seeds:1-independent" not in body
+    if "substituted seeds" not in note:
+        assert "dispatch dropped or substituted seeds" not in body
+
+
+def test_seed_execution_note_absent_metadata_is_unknown() -> None:
+    assert (
+        trust_gate.seed_execution_note(None) == "(requested unknown, executed unknown)"
+    )
+    assert trust_gate.seed_execution_note({"results": {"seeds": [2, 3]}}) == (
+        "(requested unknown, executed unknown)"
+    )
+
+
 def test_trust_toon_pooled_seeds_form_one_union() -> None:
     """R6: a seed a sibling already ran counts once and never untrusts —
     run {0,1} + sibling {1,2} unions to 3 distinct → PASS, and the row

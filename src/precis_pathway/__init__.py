@@ -24,6 +24,14 @@ under CHE (``analysis.at_potential``: states shift by ``n_H·eU``, barriers
 don't; refused on a pre-CHE graph). Loop + levers: skill
 ``precis-pathway-help``.
 
+Seed diagnostics separate intent (``requested_seeds``), observed child
+launches (``executed_seeds``), and result trust. A launched child remains
+executed even if its compute fails; queued work and successful polls do not
+prove a new launch. Detached submit records immediately, while the legacy
+blocking runner records when ``subprocess.run`` returns or times out.
+Pathway execution lists are atomically unioned across seed/model jobs;
+diagnostic write failures never discard a compute handle or alter dispatch.
+
 ``results_json``/``graph_json`` are ``autocatpath.pipeline.analyze``'s
 output (>= 0.5.2) verbatim — traps/poisons/selectivity/CHE/``score``
 (>= 0.6.0) — not a local mirror. The aggregate additionally runs the

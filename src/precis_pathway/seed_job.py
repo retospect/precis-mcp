@@ -160,6 +160,56 @@ def _retry_suffix(params: dict[str, Any]) -> str:
     return f" — step retry of {marker.get('step')} (replaces seed {marker.get('from_seed')})"
 
 
+def _record_requested_seed(ctx: Any, seed: int) -> None:
+    """Record intent before launch without changing the compute outcome."""
+    try:
+        ctx.set_meta(
+            requested_seeds=[seed],
+            executed_seeds=(ctx.meta or {}).get("executed_seeds") or [],
+        )
+    except Exception:
+        log.warning("autocatpath_seed: requested-seed diagnostic failed", exc_info=True)
+
+
+def _record_started_seed(ctx: Any, seed: int) -> None:
+    """A spawned child counts even if it later fails; diagnostics never own it.
+
+    The pathway union happens in one UPDATE so concurrent model/seed starts
+    cannot overwrite each other's observations. Job and pathway telemetry
+    fail independently; neither exception may discard a launched handle.
+    """
+    try:
+        ctx.set_meta(executed_seeds=[seed])
+    except Exception:
+        log.warning("autocatpath_seed: executed-seed diagnostic failed", exc_info=True)
+    try:
+        pathway_ref_id = ((ctx.meta or {}).get("params") or {}).get("pathway_ref_id")
+        if not isinstance(pathway_ref_id, int) or isinstance(pathway_ref_id, bool):
+            return
+        with ctx.store.pool.connection() as conn:
+            conn.execute(
+                """
+                UPDATE refs
+                   SET meta = meta || jsonb_build_object(
+                       'executed_seeds', (
+                           SELECT jsonb_agg(DISTINCT value ORDER BY value)
+                             FROM jsonb_array_elements(
+                                 CASE WHEN jsonb_typeof(meta->'executed_seeds') = 'array'
+                                      THEN meta->'executed_seeds'
+                                      ELSE '[]'::jsonb END
+                                 || jsonb_build_array(%s::int)
+                             ) AS seeds(value)
+                       )
+                   )
+                 WHERE ref_id = %s AND kind = 'pathway' AND retired_at IS NULL
+                """,
+                (seed, pathway_ref_id),
+            )
+            conn.commit()
+    except Exception:
+        log.warning("autocatpath_seed: pathway seed diagnostic failed", exc_info=True)
+
+
 def _dispatch(ctx: Any, spec: Any) -> None:
     """Plugin dispatcher invoked by ``ssh_node`` for a claimed job. Runs one
     ``run_one_seed`` unit and writes the partial onto this job's OWN meta —
@@ -179,6 +229,7 @@ def _dispatch(ctx: Any, spec: Any) -> None:
     except (KeyError, TypeError, ValueError) as exc:
         ctx.record_failure(f"autocatpath_seed: malformed params ({exc})")
         return
+    _record_requested_seed(ctx, seed)
     from precis_pathway import runner as _runner
 
     config = _runner.drop_unsupported_spectators(config)
@@ -211,6 +262,7 @@ def _dispatch(ctx: Any, spec: Any) -> None:
         kw: dict[str, Any] = {
             "force_backend": force_backend,
             "slab_extxyz": slab_extxyz,
+            "on_started": lambda: _record_started_seed(ctx, seed),
         }
         if timeout_s > 0:
             kw["timeout"] = timeout_s
@@ -223,8 +275,8 @@ def _dispatch(ctx: Any, spec: Any) -> None:
         # INFRA-class (parked-leaf-recovery, docs/backlog/
         # parked-leaf-recovery.md): the child died by signal (SIGKILL/OOM)
         # or exited without writing its result envelope — the compute
-        # never ran. Tag at this generic call site (not per job_type) so
-        # the bounded infra-retry in ``_job_bubble.bubble_job_failure``
+        # produced no usable result. Tag at this generic call site (not per
+        # job_type) so the bounded infra-retry in ``_job_bubble.bubble_job_failure``
         # applies instead of an immediate content-class latch.
         log.warning("autocatpath_seed: run failed (child killed)", exc_info=True)
         exit_meta = {
@@ -303,6 +355,7 @@ def _submit(ctx: Any, spec: Any) -> DetachedHandle | None:
     except (KeyError, TypeError, ValueError) as exc:
         ctx.record_failure(f"autocatpath_seed: malformed params ({exc})")
         return None
+    _record_requested_seed(ctx, seed)
     force_backend = params.get("force_backend")
     slab_extxyz = params.get("slab_extxyz")
 
@@ -321,7 +374,7 @@ def _submit(ctx: Any, spec: Any) -> DetachedHandle | None:
             submit_kw["cpuset"] = cpuset
         if _only_steps(params):
             submit_kw["only_steps"] = _only_steps(params)
-        return runner.submit_seed_partial_detached(
+        handle = runner.submit_seed_partial_detached(
             config,
             seed,
             model_index,
@@ -333,6 +386,8 @@ def _submit(ctx: Any, spec: Any) -> DetachedHandle | None:
         log.warning("autocatpath_seed: submit failed", exc_info=True)
         ctx.record_failure(f"autocatpath_seed: submit failed: {exc}")
         return None
+    _record_started_seed(ctx, seed)
+    return handle
 
 
 def _job_stamped(ctx: Any) -> bool:

@@ -173,6 +173,38 @@ def run_seeds(
     return {int(r["seed"]) for r in seeded if not is_stale(r, engine)}
 
 
+def seed_execution_note(meta: dict[str, Any] | None) -> str:
+    """Render launch provenance without treating it as independence evidence.
+
+    Missing historical fields remain unknown: result/trust seeds describe
+    usable evidence, not every child that started (including failed ones).
+    Compare sets because launch order and repeated models do not change
+    which requested seeds ran.
+    """
+    meta = meta or {}
+
+    def seeds(key: str) -> list[int] | None:
+        value = meta.get(key)
+        if isinstance(value, list) and all(type(s) is int for s in value):
+            return value
+        return None
+
+    requested = seeds("requested_seeds")
+    executed = seeds("executed_seeds")
+
+    def show(value: list[int] | None) -> str:
+        return "unknown" if value is None else json.dumps(value, separators=(",", ":"))
+
+    note = f"(requested {show(requested)}, executed {show(executed)})"
+    if (
+        requested is not None
+        and executed is not None
+        and set(requested) != set(executed)
+    ):
+        note += "; dispatch dropped or substituted seeds"
+    return note
+
+
 def seed_blocker(
     records: list[dict[str, Any]],
     *,

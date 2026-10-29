@@ -440,6 +440,8 @@ def trust_toon(
             lookup_failed=seed_lookup_failed,
         )
     )
+    seed_execution = trust_gate.seed_execution_note(meta)
+    rows[-1]["input"] += f" · {seed_execution}"
 
     graph = meta.get("graph") or {}
     root, target = _roots(meta)
@@ -547,7 +549,7 @@ def trust_toon(
     )
     head.append(
         f"verdict: {verdict} · {len(record_blocked)} fatal on-route fails"
-        + (f" · {seed_blk}" if seed_blk else "")
+        + (f" · {seed_blk} {seed_execution}" if seed_blk else f" · {seed_execution}")
         + f" · {replay}"
     )
     if rl:

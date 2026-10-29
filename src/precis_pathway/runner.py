@@ -39,7 +39,7 @@ import re
 import shutil
 import signal
 import sys
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, cast
 
@@ -787,6 +787,7 @@ def run_seed_partial_subprocess(
     timeout: int = _DEFAULT_SEED_TIMEOUT_S,
     cpuset: str | None = None,
     only_steps: Sequence[str] | None = None,
+    on_started: Callable[[], None] | None = None,
 ) -> SeedPartialResult:
     """Run :func:`run_seed_partial` in a FRESH child process — killable + isolated.
 
@@ -825,6 +826,7 @@ def run_seed_partial_subprocess(
         job_name="autocatpath_seed",
         unit=f"seed={seed} model_index={model_index}",
         prefix="autocatpath-seed-",
+        on_started=on_started,
     )
     return cast("SeedPartialResult", result)
 
@@ -837,15 +839,28 @@ def _run_request_subprocess(
     job_name: str,
     unit: str,
     prefix: str,
+    on_started: Callable[[], None] | None = None,
 ) -> dict[str, Any]:
     """The blocking child launch both :func:`run_seed_partial_subprocess` and
     :func:`run_coverage_scan_subprocess` share: write ``request`` to a temp
     dir, run :func:`_child_cmd` under ``timeout`` (SIGKILL on expiry), read
     the ``{"ok", "result"|"error"}`` envelope back. ``job_name``/``unit``
-    only shape the error text; ``prefix`` names the scratch dir."""
+    only shape the error text; ``prefix`` names the scratch dir.
+
+    ``subprocess.run`` exposes launch evidence only when it returns or
+    times out. Notify ``on_started`` then, before interpreting the result;
+    failed launches never notify, and callback failures are diagnostic only.
+    """
     import os
     import subprocess
     import tempfile
+
+    def notify_started() -> None:
+        if on_started is not None:
+            try:
+                on_started()
+            except Exception:
+                log.warning("%s start diagnostic failed", job_name, exc_info=True)
 
     with tempfile.TemporaryDirectory(prefix=prefix) as td:
         req_path = os.path.join(td, "request.json")
@@ -864,6 +879,7 @@ def _run_request_subprocess(
                 check=False,
             )
         except subprocess.TimeoutExpired as exc:
+            notify_started()
             # subprocess.run has already SIGKILLed the child by here — the
             # hung MACE/CUDA process is gone, the worker pass is free again.
             tail = (exc.stderr or exc.stdout or "")[-2000:]
@@ -872,6 +888,7 @@ def _run_request_subprocess(
                 f"and was killed ({unit}); last output: {tail!r}"
             ) from exc
 
+        notify_started()
         if proc.stdout:
             log.debug("%s child stdout:\n%s", job_name, proc.stdout[-4000:])
         if proc.stderr:
@@ -901,7 +918,7 @@ def _run_request_subprocess(
             )
             # INFRA-class: the child was signal-killed (SIGKILL/OOM, a
             # negative returncode) or exited without writing its result
-            # envelope at all — the compute never ran. A positive nonzero
+            # envelope at all — no usable result survived. A positive nonzero
             # returncode WITH the envelope present (an unhandled-but-non-
             # fatal child exception that still exited normally) is the one
             # case that reaches this branch (via the OR's first arm) without

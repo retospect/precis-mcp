@@ -4642,6 +4642,34 @@ class TestAutocatpathHarvest:
         ]
         assert any("seed-independence gate" in b.text for b in logs)
 
+    def test_seed_gate_log_reports_requested_and_executed_seeds(
+        self, store: Any
+    ) -> None:
+        qid = _mk_quest(store, "A striving")
+        sid = self._candidate(store, qid)
+        pw = self._trust_pathway(store, sid, seeds=[1])
+        store.stamp_ref_meta(pw, {"requested_seeds": [2, 3], "executed_seeds": [1]})
+        self._autocatpath_job(
+            store, sid, {"result": {"barrier": 0.4}, "pathway_ref": pw}
+        )
+
+        compute_mod.harvest_measures(store, qid)
+
+        meta = store.fetch_refs_by_ids({sid})[sid].meta or {}
+        assert meta["barrier_trusted"] is False
+        assert meta["barrier_seed_blocker"] == "seeds:1-independent"
+        assert meta["barrier_independent_seeds"] == 1
+        logs = [
+            b.text
+            for b in store.chunks.list_chunks_for_ref(qid)
+            if b.chunk_kind == "quest_log"
+        ]
+        assert any(
+            "seeds:1-independent (requested [2,3], executed [1]); "
+            "dispatch dropped or substituted seeds" in text
+            for text in logs
+        )
+
     def test_gate_refused_logbook_names_check_measured_tol_and_subject(
         self, store: Any
     ) -> None:
@@ -9423,6 +9451,45 @@ class TestRequestRerun(TestDispatchAutocatpath):
         (agg_id,) = [t for t in self._agg_todo_ids(store, sid)][1:]
         agg = store.fetch_refs_by_ids({agg_id})[agg_id]
         assert agg.meta["params"]["config"]["search"]["seeds"] == [3, 4]
+
+    def test_rerun_records_requested_seeds_before_any_launch(self, store: Any) -> None:
+        """gr525725: queuing a rerun records intent, never fabricated executions."""
+        qid = self._quest_with_rx(store)
+        sid = self._candidate(store, qid)
+        prior = self._settle(store, sid)
+        store.stamp_ref_meta(
+            prior, {"requested_seeds": [0, 1, 2], "executed_seeds": [0]}
+        )
+
+        compute_mod.request_rerun(store, sid, seeds=[2, 3])
+
+        new_pid = compute_mod._find_tier_pathway(store, sid, compute_mod._TIER_NEB)
+        assert new_pid is not None and new_pid != prior
+        new_meta = store.fetch_refs_by_ids({new_pid})[new_pid].meta
+        assert new_meta["requested_seeds"] == [2, 3]
+        assert new_meta["executed_seeds"] == []
+        assert {
+            meta["params"]["seed"] for _, meta in self._seed_jobs(store, sid)[3:]
+        } == {2, 3}
+        prior_meta = store.fetch_refs_by_ids({prior})[prior].meta
+        assert prior_meta["requested_seeds"] == [0, 1, 2]
+        assert prior_meta["executed_seeds"] == [0]
+
+    def test_reused_pathway_preserves_seed_execution_metadata(self, store: Any) -> None:
+        qid = self._quest_with_rx(store)
+        sid = self._candidate(store, qid)
+        compute_mod.dispatch_autocatpath(store, sid, self._RX)
+        pid = compute_mod._find_tier_pathway(store, sid, compute_mod._TIER_NEB)
+        assert pid is not None
+        store.stamp_ref_meta(pid, {"requested_seeds": [0, 1, 2], "executed_seeds": [0]})
+
+        compute_mod.dispatch_autocatpath(store, sid, self._RX)
+
+        assert compute_mod._find_tier_pathway(store, sid, compute_mod._TIER_NEB) == pid
+        meta = store.fetch_refs_by_ids({pid})[pid].meta
+        assert meta["requested_seeds"] == [0, 1, 2]
+        assert meta["executed_seeds"] == [0]
+        assert len(self._seed_jobs(store, sid)) == 3
 
     def test_seeds_validation_refuses_bad_lists(self, store: Any) -> None:
         qid = self._quest_with_rx(store)

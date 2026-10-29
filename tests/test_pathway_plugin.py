@@ -1474,7 +1474,11 @@ def test_persist_result_replaces_the_computing_placeholder_title(
             kind="pathway",
             slug=slug,
             title=f"pathway {slug} (computing)",
-            meta={"status": "computing"},
+            meta={
+                "status": "computing",
+                "requested_seeds": [1, 7],
+                "executed_seeds": [1],
+            },
             conn=conn,
         )
 
@@ -1485,6 +1489,8 @@ def test_persist_result_replaces_the_computing_placeholder_title(
     # kind-resolving getter raises `unknown kind` here.
     after = pathway_store.fetch_refs_by_ids([ref.id])[ref.id]
     assert after.meta["status"] == "ready"
+    assert after.meta["requested_seeds"] == [1, 7]
+    assert after.meta["executed_seeds"] == [1]
     assert "(computing)" not in after.title
     assert after.title == pathway_title(artifact)
 
@@ -1867,7 +1873,8 @@ def test_seed_job_dispatch_writes_partial_onto_its_own_meta(
         runner,
         "run_seed_partial_subprocess",
         lambda *a, **k: runner.run_seed_partial(
-            *a, **{kk: vv for kk, vv in k.items() if kk != "timeout"}
+            *a,
+            **{kk: vv for kk, vv in k.items() if kk not in {"timeout", "on_started"}},
         ),
     )
 
@@ -1917,6 +1924,7 @@ def test_seed_job_dispatch_sizes_timeout_from_wall_seconds(
         force_backend: str | None = None,
         slab_extxyz: str | None = None,
         timeout: int = runner._DEFAULT_SEED_TIMEOUT_S,
+        on_started: Any = None,
     ) -> dict[str, Any]:
         seen.update(
             seed=seed,
@@ -2670,6 +2678,193 @@ def test_seed_job_dispatch_malformed_params_fails_cleanly(
 
 
 # ─────── §H piece 4: autocatpath_seed's detached submit/poll/kill ─────────
+
+
+@pytest.mark.parametrize("launch_fails", [False, True])
+def test_seed_submit_records_requested_before_launch_and_executed_only_on_start(
+    pathway_store: Store, monkeypatch: pytest.MonkeyPatch, launch_fails: bool
+) -> None:
+    from precis_pathway import seed_job
+
+    ctx = _FakeCtx(
+        store=pathway_store, params={"config": {}, "seed": 7, "model_index": 0}
+    )
+    handle = {"pid": 4321}
+
+    def launch(*_args: Any, **_kwargs: Any) -> Any:
+        assert ctx.meta_updates["requested_seeds"] == [7]
+        assert ctx.meta_updates["executed_seeds"] == []
+        if launch_fails:
+            raise OSError("failed to spawn")
+        return handle
+
+    monkeypatch.setattr(runner, "submit_seed_partial_detached", launch)
+    returned = seed_job._submit(ctx, seed_job.SPEC)
+
+    assert returned is (None if launch_fails else handle)
+    assert ctx.meta_updates["executed_seeds"] == ([] if launch_fails else [7])
+    if not launch_fails:
+        monkeypatch.setattr(
+            runner,
+            "poll_seed_partial_detached",
+            lambda *_args, **_kwargs: {"state": "failed", "error": "compute failed"},
+        )
+        monkeypatch.setattr(seed_job, "_reap_scratch", lambda *_args, **_kwargs: None)
+        assert seed_job._poll(ctx, handle) is True
+        assert ctx.status == "failed"
+        assert ctx.meta_updates["executed_seeds"] == [7]
+
+
+def test_seed_requested_diagnostic_preserves_prior_execution(
+    pathway_store: Store,
+) -> None:
+    from precis_pathway import seed_job
+
+    ctx = _FakeCtx(store=pathway_store, params={"seed": 7})
+    ctx.meta["executed_seeds"] = [7]
+    seed_job._record_requested_seed(ctx, 7)
+    assert ctx.meta_updates == {"requested_seeds": [7], "executed_seeds": [7]}
+
+
+@pytest.mark.parametrize("job_meta_fails", [False, True])
+def test_seed_submit_diagnostic_failure_never_discards_handle(
+    monkeypatch: pytest.MonkeyPatch, job_meta_fails: bool
+) -> None:
+    from precis_pathway import seed_job
+
+    failures: list[str] = []
+
+    def fail_connection() -> Any:
+        raise OSError("diagnostic database unavailable")
+
+    def set_meta(**_fields: Any) -> None:
+        if job_meta_fails:
+            raise OSError("job diagnostics unavailable")
+
+    ctx = SimpleNamespace(
+        meta={
+            "params": {"config": {}, "seed": 7, "model_index": 0, "pathway_ref_id": 1}
+        },
+        store=SimpleNamespace(pool=SimpleNamespace(connection=fail_connection)),
+        set_meta=set_meta,
+        append_chunk=lambda *_args: None,
+        record_failure=failures.append,
+    )
+    handle = {"pid": 4321}
+    monkeypatch.setattr(
+        runner, "submit_seed_partial_detached", lambda *_a, **_k: handle
+    )
+
+    assert seed_job._submit(ctx, seed_job.SPEC) is handle
+    assert failures == []
+
+
+@pytest.mark.parametrize("kind", ["pathway", "todo"])
+def test_seed_started_pathway_union_is_ordered_unique_and_kind_scoped(
+    pathway_store: Store, kind: str
+) -> None:
+    from precis_pathway import seed_job
+
+    with pathway_store.tx() as conn:
+        ref = pathway_store.insert_ref(
+            kind=kind,
+            slug=f"seed-diagnostic-{kind}" if kind == "pathway" else None,
+            title="seed diagnostics",
+            meta={"executed_seeds": [], "requested_seeds": [9, 2], "unrelated": "keep"},
+            conn=conn,
+        )
+    ctx = _FakeCtx(store=pathway_store, params={"pathway_ref_id": int(ref.id)})
+    for seed in [9, 2, 9]:
+        seed_job._record_started_seed(ctx, seed)
+    meta = pathway_store.fetch_refs_by_ids([ref.id])[ref.id].meta
+    assert meta["executed_seeds"] == ([2, 9] if kind == "pathway" else [])
+    assert meta["requested_seeds"] == [9, 2]
+    assert meta["unrelated"] == "keep"
+
+
+def test_concurrent_seed_starts_union_pathway_executions(pathway_store: Store) -> None:
+    import threading
+    from concurrent.futures import ThreadPoolExecutor
+
+    from precis_pathway import seed_job
+
+    with pathway_store.tx() as conn:
+        ref = pathway_store.insert_ref(
+            kind="pathway",
+            slug="concurrent-seed-diagnostics",
+            title="concurrent seed diagnostics",
+            meta={"executed_seeds": []},
+            conn=conn,
+        )
+    barrier = threading.Barrier(4)
+
+    def started(seed: int) -> None:
+        ctx = _FakeCtx(store=pathway_store, params={"pathway_ref_id": int(ref.id)})
+        barrier.wait(timeout=10)
+        seed_job._record_started_seed(ctx, seed)
+        assert ctx.meta_updates["executed_seeds"] == [seed]
+
+    with ThreadPoolExecutor(max_workers=4) as executor:
+        list(executor.map(started, [9, 2, 9, 3]))
+
+    meta = pathway_store.fetch_refs_by_ids([ref.id])[ref.id].meta
+    assert meta["executed_seeds"] == [2, 3, 9]
+
+
+@pytest.mark.parametrize("outcome", ["done", "failed", "timeout", "launch-failed"])
+def test_legacy_seed_records_spawn_evidence_even_when_compute_fails(
+    pathway_store: Store, monkeypatch: pytest.MonkeyPatch, outcome: str
+) -> None:
+    import subprocess
+
+    from precis_pathway import seed_job
+
+    ctx = _FakeCtx(
+        store=pathway_store, params={"config": {}, "seed": 7, "model_index": 0}
+    )
+
+    def run(cmd: list[str], **_kwargs: Any) -> Any:
+        assert ctx.meta_updates == {"requested_seeds": [7], "executed_seeds": []}
+        if outcome == "launch-failed":
+            raise OSError("failed to spawn")
+        if outcome == "timeout":
+            raise subprocess.TimeoutExpired(cmd, 1)
+        if outcome == "failed":
+            return subprocess.CompletedProcess(cmd, -9, stdout="", stderr="")
+        Path(cmd[-1]).write_text(
+            json.dumps({"ok": True, "result": {"model": "emt", "partial": {}}}),
+            encoding="utf-8",
+        )
+        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(subprocess, "run", run)
+    monkeypatch.setattr(runner, "_child_cmd", lambda req, out: ["fake-child", req, out])
+    seed_job._dispatch(ctx, seed_job.SPEC)
+
+    assert ctx.meta_updates["executed_seeds"] == (
+        [] if outcome == "launch-failed" else [7]
+    )
+    assert ctx.status == ("succeeded" if outcome == "done" else "failed")
+
+
+def test_legacy_seed_callback_failure_preserves_result(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import subprocess
+
+    def run(cmd: list[str], **_kwargs: Any) -> Any:
+        Path(cmd[-1]).write_text(
+            json.dumps({"ok": True, "result": {"seed": 7}}), encoding="utf-8"
+        )
+        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+    def failed_diagnostic() -> None:
+        raise OSError("diagnostics unavailable")
+
+    monkeypatch.setattr(subprocess, "run", run)
+    monkeypatch.setattr(runner, "_child_cmd", lambda req, out: ["fake-child", req, out])
+    result = runner.run_seed_partial_subprocess({}, 7, 0, on_started=failed_diagnostic)
+    assert result["seed"] == 7
 
 
 def test_seed_job_submit_returns_handle_and_does_not_set_status(
