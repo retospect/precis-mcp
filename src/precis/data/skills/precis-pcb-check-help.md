@@ -25,10 +25,12 @@ same findings, same table.
 Workspace `Board.check()` also runs the stdlib `precis_geom.pcb_motifs.MOTIFS`
 registry at netlist time: `led_without_limit` retains its current-path rule;
 `motif.buck` checks SW–inductor–output against the FB divider and FB resistance
-to GND; `motif.ldo` checks VIN/VOUT capacitors to GND. Eligibility reads
+to GND, or accepts direct FB output sensing on fixed-output bucks;
+`motif.ldo` checks VIN/VOUT capacitors to GND. Eligibility reads
 `pin_functions` or semantic pin labels (`SW`, `FB`, `VIN`, `VOUT`, `GND`);
 unclassified parts are ineligible. Passive roles or R/C/L designators identify
-bridges. Each `Motif` has a name, eligibility predicate and check callback;
+bridges; multi-terminal passives use every distinct-net terminal pair.
+Each `Motif` has a name, eligibility predicate and check callback;
 findings name the violating pin and net. High-side gate checks are deferred.
 
 - `args={'rule':'a,b'}`/`{'severity':'error'}` filter the table;

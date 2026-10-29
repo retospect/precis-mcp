@@ -12,7 +12,7 @@ from pathlib import Path
 import pytest
 
 from precis_geom.pcb import Board, CheckFinding, Max
-from precis_geom.pcb_motifs import MOTIFS
+from precis_geom.pcb_motifs import MOTIFS, _bridges, _pin_nets
 from tests.workspaces._script import load_module
 
 _BOARDS = Path(__file__).resolve().parents[2] / "examples" / "boards"
@@ -74,7 +74,7 @@ def test_nano_buck_motifs_are_eligible_and_clean() -> None:
     assert _motif_findings(board) == []
 
 
-@pytest.mark.parametrize("wrong_net", ["V9", "VBUS", "GND"])
+@pytest.mark.parametrize("wrong_net", ["V9", "VBUS", "GND", "FB15"])
 def test_buck_inductor_wrong_output_rail_names_the_moved_pin(wrong_net: str) -> None:
     board = _nano()
     _move_pin(board, "L15", "2", wrong_net)
@@ -105,6 +105,76 @@ def test_buck_feedback_must_reach_ground_through_resistor() -> None:
     assert finding.code == "motif.buck"
     assert (finding.refdes, finding.pin, finding.net) == ("U_B15", "FB", "FB15")
     assert "FB" in finding.message and "FB15" in finding.message
+
+
+def test_fixed_output_buck_feedback_needs_no_external_divider() -> None:
+    board = Board("fixed-output-buck")
+    converter = board.part("U1")
+    inductor = board.part("L1")
+    board.net("INPUT", cls="power").tie(converter["VIN"])
+    board.net("SWITCH").tie(converter["SW"], inductor["1"])
+    board.net("OUTPUT", cls="power").tie(inductor["2"], converter["FB"])
+    board.net("GROUND", cls="ground").tie(converter["GND"])
+
+    buck = next(motif for motif in MOTIFS if motif.name == "buck")
+    assert buck.eligibility(converter)
+    assert board.check().findings == []
+
+
+def test_buck_names_every_inductor_on_wrong_output_rail_in_one_finding() -> None:
+    board = _nano()
+    _move_pin(board, "L15", "2", "V9")
+    extra = board.part("L_EXTRA")
+    board._nets["SW15"].tie(extra["1"])
+    board._nets["VBUS"].tie(extra["2"])
+
+    (finding,) = _motif_findings(board)
+    assert finding.code == "motif.buck"
+    assert (finding.refdes, finding.pin, finding.net) == ("U_B15", "SW", "SW15")
+    assert all(
+        name in finding.message for name in ("L15.2", "V9", "L_EXTRA.2", "VBUS", "V15")
+    )
+    assert finding.not_checked is False
+
+
+@pytest.mark.parametrize("terminals", [3, 4])
+def test_buck_accepts_multiterminal_inductor_and_resistor_network(
+    terminals: int,
+) -> None:
+    board = Board("multiterminal-buck")
+    converter = board.part("U1")
+    inductor = board.part("L1")
+    divider = board.part("RN1", roles=["resistor"])
+    board.net("INPUT", cls="power").tie(converter["VIN"])
+    board.net("AUXILIARY").tie(inductor["1"])
+    switch = board.net("SWITCH")
+    switch.tie(converter["SW"], inductor["2"])
+    board.net("OUTPUT", cls="power").tie(inductor["3"], divider["3"])
+    ground = board.net("GROUND", cls="ground")
+    ground.tie(converter["GND"], divider["2"])
+    board.net("FEEDBACK").tie(converter["FB"], divider["1"])
+    if terminals == 4:
+        switch.tie(inductor["4"])
+        ground.tie(divider["4"])
+
+    assert board.check().findings == []
+
+
+def test_passive_bridge_pairs_keep_pin_identity_and_exclude_same_net() -> None:
+    board = Board("resistor-network")
+    network = board.part("RN1", roles=["resistor"])
+    board.net("A").tie(network["1"], network["2"])
+    board.net("B").tie(network["3"])
+    board.net("C").tie(network["4"])
+
+    bridges = _bridges(board, _pin_nets(board), "resistor")
+    assert [(part.refdes, p1, n1, p2, n2) for part, p1, n1, p2, n2 in bridges] == [
+        ("RN1", "1", "A", "3", "B"),
+        ("RN1", "1", "A", "4", "C"),
+        ("RN1", "2", "A", "3", "B"),
+        ("RN1", "2", "A", "4", "C"),
+        ("RN1", "3", "B", "4", "C"),
+    ]
 
 
 @pytest.mark.parametrize("classes", ["functions", "labels", "etypes"])

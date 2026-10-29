@@ -3,8 +3,10 @@
 Eligibility uses pin functions or semantic pin labels, never catalog/model
 names. An explicit function table entry overrides its pin's label. Passive
 roles override conventional R/C/L designators. The FB divider identifies a
-buck's output independently of the inductor, so another power rail cannot
-silently satisfy the check. Unclassified parts are ineligible, not errors.
+buck's output independently of the inductor; fixed-output parts instead
+sense that output directly at FB. Multi-terminal passives use every pair
+of terminals as a bridge, since the builder has no internal winding/network
+map. Unclassified parts are ineligible, not errors.
 """
 
 from __future__ import annotations
@@ -12,6 +14,7 @@ from __future__ import annotations
 import re
 from collections.abc import Callable
 from dataclasses import dataclass
+from itertools import combinations
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -106,10 +109,10 @@ def _bridges(
     for ref in board._part_order:
         part = board._parts[ref]
         terminals = list(nets.get(ref, {}).items())
-        if _passive(part, role) and len(terminals) == 2:
-            (p1, n1), (p2, n2) = terminals
-            if n1 != n2:
-                bridges.append((part, p1, n1, p2, n2))
+        if _passive(part, role):
+            for (p1, n1), (p2, n2) in combinations(terminals, 2):
+                if n1 != n2:
+                    bridges.append((part, p1, n1, p2, n2))
     return bridges
 
 
@@ -149,11 +152,26 @@ def _buck_check(board: Board, parts: list[Part]) -> list[CheckFinding]:
                 for _, _, n1, _, n2 in resistors
                 if net in (n1, n2)
             }
+            rails = neighbors - ground - inputs - switches
+            # A fixed-output converter senses the output directly, without
+            # an external divider. Reject input/ground/SW shorts as outputs.
+            # Existing divider evidence wins: an inductor mistakenly wired
+            # to FB must not make an adjustable converter look fixed-output.
+            if (
+                net is not None
+                and not rails
+                and net not in ground | inputs | switches
+                and any(
+                    (n1 == net and n2 in switches) or (n2 == net and n1 in switches)
+                    for _, _, n1, _, n2 in inductors
+                )
+            ):
+                outputs.add(net)
+                continue
             if not neighbors & ground:
                 findings.append(
                     _finding("buck", part, pin, net, "FB needs a resistor to GND")
                 )
-            rails = neighbors - ground - inputs - switches
             if not rails:
                 findings.append(
                     _finding(
@@ -165,7 +183,7 @@ def _buck_check(board: Board, parts: list[Part]) -> list[CheckFinding]:
                     )
                 )
             outputs.update(rails)
-        # Without a divider output there is no independent output identity;
+        # Without a divider or direct sense there is no output identity;
         # report that cause above instead of guessing an inductor's far rail.
         if not outputs:
             continue
@@ -177,16 +195,30 @@ def _buck_check(board: Board, parts: list[Part]) -> list[CheckFinding]:
             ):
                 continue
             if candidates:
-                inductor, p1, n1, p2, n2 = candidates[0]
-                bad_pin, bad_net = (p2, n2) if n1 == net else (p1, n1)
+                # One finding per SW pin, with every offending far terminal.
+                # Multiple SW terminals on a passive can yield the same far
+                # endpoint through several pairs; name that endpoint once.
+                endpoints = {}
+                for inductor, p1, n1, p2, n2 in candidates:
+                    bad_pin, bad_net = (p2, n2) if n1 == net else (p1, n1)
+                    endpoints[(inductor.refdes, bad_pin, bad_net)] = inductor
+                subject_net: str | None
+                if len(endpoints) == 1:
+                    (_, bad_pin, bad_net), inductor = next(iter(endpoints.items()))
+                    subject, subject_pin, subject_net = inductor, bad_pin, bad_net
+                else:
+                    subject, subject_pin, subject_net = part, pin, net
+                terminals = ", ".join(
+                    f"{ref}.{p} on net {n}" for ref, p, n in endpoints
+                )
                 findings.append(
                     _finding(
                         "buck",
-                        inductor,
-                        bad_pin,
-                        bad_net,
-                        f"inductor from {part.refdes}.{pin} ({net}) must end on "
-                        f"output rail {'/'.join(sorted(outputs))}",
+                        subject,
+                        subject_pin,
+                        subject_net,
+                        f"inductor terminals {terminals} from {part.refdes}.{pin} "
+                        f"({net}) must end on output rail {'/'.join(sorted(outputs))}",
                     )
                 )
             else:
