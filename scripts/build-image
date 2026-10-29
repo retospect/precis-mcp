@@ -71,6 +71,7 @@ GIT_BRANCH="$(git rev-parse --abbrev-ref HEAD)"
 BUILD_TIME="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 BUILD_HOST="$(hostname -f 2>/dev/null || hostname)"
 BUILD_USER="${USER:-unknown}"
+UV_LOCK_SHA256="$(shasum -a 256 uv.lock | cut -d ' ' -f1)"
 
 # Build the dev image's autocatpath layer from the commit uv.lock pins — the
 # same engine the cluster wheelhouse is built from (scripts/deploy reads the
@@ -97,6 +98,7 @@ AUTOCATPATH_REV="${AUTOCATPATH_REV:-main}"
 export GH_TOKEN="${GH_TOKEN:-$(gh auth token 2>/dev/null || true)}"
 
 exec docker compose -f "${INFRA_COMPOSE}" build \
+    --build-arg "PRECIS_UV_LOCK_SHA256=${UV_LOCK_SHA256}" \
     --build-arg "AUTOCATPATH_REV=${AUTOCATPATH_REV}" \
     --build-arg "PRECIS_GIT_LAST_TAG=${GIT_LAST_TAG}" \
     --build-arg "PRECIS_GIT_SHA=${GIT_SHA}" \

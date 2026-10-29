@@ -11,7 +11,8 @@ the MCP on an older engine until the image is rebuilt.
                                          and the diff; change nothing
 
 Steps (stops at the first failure):
-  1. compare the image's `precis.autocatpath_rev` label with the uv.lock pin
+  1. compare the image's autocatpath and uv.lock SHA256 labels with the
+     served tree (ensure's REPO-prod selection, not this build checkout)
      and decide what to do with the installed ensure script (step 2). Image
      current AND script in sync -> "up to date", exit 0
   2. install decision, taken before anything is built or changed:
@@ -21,14 +22,14 @@ Steps (stops at the first failure):
                      git history, i.e. no local edits; the repo copy is newer
        refuse     -> the installed file matches NO revision (local edits) or is
                      missing: STOP (exit 3), change nothing. The only human stop.
-  3. image stale: scripts/build-image precis-dev, tag it precis-mcp:dev,
-     re-check the label
+  3. image stale: require HEAD to contain origin/prod, then
+     scripts/build-image precis-dev, tag it precis-mcp:dev, re-check labels
   4. auto-apply: scripts/mcp-http-install --apply (backs up the old copy)
   5. <ensure script> --recreate (blue-green), then poll --status until the
      backend answers 401 (serving) directly and via the proxy, within
      --timeout; else exit 4
 
-Reads two labels with `docker image inspect --format`; never the env, never a
+Reads labels with `docker image inspect --format`; never the env, never a
 whole inspect. Owned by the release owner, run after a deploy that moved the
 autocatpath pin or the ensure script (docs/conventions/shipping.md). Not wired
 into scripts/deploy: the repo copy compared is this checkout's HEAD, so the run
@@ -52,6 +53,7 @@ IMAGE = "precis-mcp:dev"
 BUILD_SERVICE = "precis-dev"  # compose service and the tag it builds
 REV_LABEL = "precis.autocatpath_rev"
 SHA_LABEL = "precis.git_sha"
+LOCK_LABEL = "precis.uv_lock_sha256"
 REPO_ENSURE_REL = "deploy/mcp-http/precis-mcp-http-ensure.sh"
 REPO_ENSURE = ROOT / REPO_ENSURE_REL
 EXIT_DIFF = 3
@@ -74,6 +76,68 @@ def locked_sha(lock: Path) -> str:
         re.M,
     )
     return m.group(1) if m else ""
+
+
+def lock_sha256(lock: Path) -> str:
+    """All locked dependencies, including additions that leave catpath unchanged."""
+    return hashlib.sha256(lock.read_bytes()).hexdigest()
+
+
+def served_repo() -> Path:
+    """Mirror ensure's REPO/SRC_REPO selection, including linked worktrees.
+
+    The installed ensure script is standalone, so importing/sourcing it would
+    run its container lifecycle. Keep this read-only resolution in sync with
+    deploy/mcp-http/precis-mcp-http-ensure.sh's REPO-prod source selection.
+    """
+    repo = os.environ.get("PRECIS_MCP_REPO", "")
+    marker = mcp_http_state() / "main-checkout"
+    if not repo and marker.is_file():
+        repo = "".join(marker.read_text(encoding="utf-8").split())
+    main = Path(repo) if repo else Path.home() / "work/project/code/precis-mcp"
+    source = Path(os.environ.get("PRECIS_MCP_SRC") or f"{main}-prod")
+    if (source / ".git/HEAD").is_file() or (source / ".git").is_file():
+        return source
+    return main
+
+
+def build_refusal(served: Path) -> str:
+    """A stale build checkout must not replace the image needed by origin/prod."""
+    try:
+        build_lock = lock_sha256(ROOT / "uv.lock")
+        served_lock = lock_sha256(served / "uv.lock")
+    except OSError as exc:
+        return f"cannot compare build and served uv.lock: {exc}. Nothing was built or changed."
+    if build_lock != served_lock:
+        return (
+            f"build uv.lock ({ROOT / 'uv.lock'}) sha256 {build_lock} differs from "
+            f"served uv.lock ({served / 'uv.lock'}) sha256 {served_lock}. "
+            "Deploy, or run git fetch origin and rebuild from the served tree. "
+            "Nothing was built or changed."
+        )
+    try:
+        result = subprocess.run(
+            ["git", "merge-base", "--is-ancestor", "origin/prod", "HEAD"],
+            cwd=ROOT,
+            capture_output=True,
+        )
+        if result.returncode == 0:
+            return ""
+        head = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=served,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+        )
+        served_sha = head.stdout.strip() if head.returncode == 0 else "unknown"
+    except OSError:
+        served_sha = "unknown"
+    return (
+        "build tree HEAD does not contain origin/prod (or the ref is unavailable); "
+        f"served tree {served} is at {served_sha}. Run git fetch origin, then "
+        "use a build checkout containing origin/prod. Nothing was built or changed."
+    )
 
 
 def image_label(image: str, key: str) -> str:
@@ -227,9 +291,13 @@ def canonical_mismatch() -> str:
         canon = Path(recorded).resolve(strict=True)
     except OSError:
         return ""
-    return "" if mine == canon else (
-        f"this tree's main checkout is {mine} but {canon} is recorded as "
-        f"canonical in {marker}"
+    return (
+        ""
+        if mine == canon
+        else (
+            f"this tree's main checkout is {mine} but {canon} is recorded as "
+            f"canonical in {marker}"
+        )
     )
 
 
@@ -284,16 +352,26 @@ def main(argv: list[str] | None = None) -> int:
         )
         return EXIT_DIFF
 
-    pinned = locked_sha(ROOT / "uv.lock")
+    try:
+        served = served_repo()
+        served_lock = served / "uv.lock"
+        pinned = locked_sha(served_lock)
+        wanted_lock = lock_sha256(served_lock)
+    except OSError as exc:
+        print(f"STOP: cannot read the served tree's uv.lock: {exc}", file=sys.stderr)
+        return 1
     baked = image_label(IMAGE, REV_LABEL)
     built = image_label(IMAGE, SHA_LABEL)
+    baked_lock = image_label(IMAGE, LOCK_LABEL)
+    print(f"served uv.lock ({served_lock}): {wanted_lock}")
     print(f"autocatpath pin (uv.lock): {pinned or 'none (not git-sourced)'}")
     print(
         f"image {IMAGE}: autocatpath {baked or 'unlabelled'}, built from {built[:12] or 'unknown'}"
     )
+    print(f"image uv.lock: {baked_lock or 'unlabelled'}")
 
     installed = installed_ensure()
-    stale = not is_current(baked, pinned)
+    stale = baked_lock != wanted_lock or not is_current(baked, pinned)
     history = history_hashes()
     decision = install_decision(REPO_ENSURE, installed, history)
     reason = "local edits matching no revision of the repo script, or missing"
@@ -306,6 +384,10 @@ def main(argv: list[str] | None = None) -> int:
     if not stale and decision == "in-sync":
         print("up to date")
         return 0
+
+    if stale and decision != "refuse" and (refusal := build_refusal(served)):
+        print(f"STOP: {refusal}", file=sys.stderr)
+        return EXIT_DIFF
 
     diff = "" if decision == "in-sync" else diff_summary(REPO_ENSURE, installed)
     plan: list[str] = []
@@ -349,15 +431,25 @@ def main(argv: list[str] | None = None) -> int:
     if stale:
         if run(["scripts/build-image", BUILD_SERVICE]) != 0:
             return 1
-        # compose tags the build `precis-dev`; the ensure script runs `precis-mcp:dev`.
-        if run(["docker", "tag", BUILD_SERVICE, IMAGE]) != 0:
+        # Verify compose's candidate before replacing the tag ensure runs.
+        rebuilt = image_label(BUILD_SERVICE, REV_LABEL)
+        rebuilt_lock = image_label(BUILD_SERVICE, LOCK_LABEL)
+        # A build can take minutes; a deploy may have moved the served tree.
+        try:
+            pinned = locked_sha(served_lock)
+            wanted_lock = lock_sha256(served_lock)
+        except OSError as exc:
+            print(f"STOP: cannot re-read served uv.lock: {exc}", file=sys.stderr)
             return 1
-        rebuilt = image_label(IMAGE, REV_LABEL)
-        if not is_current(rebuilt, pinned):
+        if not is_current(rebuilt, pinned) or rebuilt_lock != wanted_lock:
             print(
-                f"built image carries autocatpath {rebuilt or 'unlabelled'}, not the pin; not recreating",
+                f"built image does not match served uv.lock {wanted_lock}: "
+                f"lock {rebuilt_lock or 'unlabelled'}, autocatpath "
+                f"{rebuilt or 'unlabelled'} (wanted {pinned}); not recreating",
                 file=sys.stderr,
             )
+            return 1
+        if run(["docker", "tag", BUILD_SERVICE, IMAGE]) != 0:
             return 1
     if decision == "auto-apply":
         # the build can take minutes: re-check the installed file before overwriting it

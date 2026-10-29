@@ -786,8 +786,8 @@ ENVS=(
 #   - New entry points: the venv is a path-editable install, so new modules
 #     import from /app but entry points stay at the image build's. When
 #     pyproject.toml changes, reinstall the project metadata (--no-deps, ~4 s).
-# A failure is logged and the child starts anyway; a dependency failure says
-# to rebuild the image (a dep with no wheel needs the builder's compiler).
+# A dependency failure stops prepare before the child starts and says to
+# rebuild the image (a dep with no wheel needs the builder's compiler).
 #
 # PID 1 is precis.mcp_supervisor (gr459481): it binds the port once and runs
 # `precis serve --fd` as a child, re-running the prepare step before each one,
@@ -811,22 +811,21 @@ if [ "$(cat "$lstamp" 2>/dev/null)" != "$lwant" ]; then
   # A failed dry-run must not read as "nothing new": that would stamp the
   # lock and skip the sync until uv.lock next changes.
   if ! plan="$(cd /app && "${sync[@]}" --dry-run 2>&1)"; then
-    echo "precis-prepare: dependency dry-run FAILED: $(printf "%s" "$plan" | tail -1)" >&2
-    new=""; lwant=""
+    echo "precis-prepare: dependency dry-run FAILED: $(printf "%s" "$plan" | tail -1) — rebuild the image with scripts/mcp-image-refresh" >&2
+    exit 1
   else
     adds="$(printf "%s\n" "$plan" | sed -n "s/^ + //p" | sort)"
     drops="$(printf "%s\n" "$plan" | sed -n "s/^ - //p" | sort)"
     new="$(comm -23 <(printf "%s\n" "$adds") <(printf "%s\n" "$drops") | sed "/^$/d")"
   fi
-  if [ -z "$lwant" ]; then
-    :
-  elif [ -z "$new" ]; then
+  if [ -z "$new" ]; then
     printf "%s\n" "$lwant" > "$lstamp"
   elif (cd /app && "${sync[@]}" --quiet); then
     printf "%s\n" "$lwant" > "$lstamp"
     echo "precis-prepare: synced dependencies from uv.lock:" $new >&2
   else
-    echo "precis-prepare: dependency sync FAILED (wanted:" $new ") — rebuild the image" >&2
+    echo "precis-prepare: dependency sync FAILED (wanted:" $new ") — rebuild the image with scripts/mcp-image-refresh" >&2
+    exit 1
   fi
 fi
 # The sync above skips autocatpath (the image bakes it), so a lock bump never
@@ -1153,22 +1152,30 @@ check_python_root_mounts() {
 }
 
 # Wait (bounded) for backend ${1} to answer 401. On failure print its logs.
+prepare_logs() {
+    # Container stderr is otherwise hidden on a successful detached start.
+    docker logs "$1" 2>&1 | sed -n '/^precis-prepare:/p' >&2 || true
+}
+
 wait_backend_ready() {
     local name="$1" deadline code
     deadline=$(( $(date +%s) + READY_TIMEOUT ))
     while [ "$(date +%s)" -lt "$deadline" ]; do
         if ! running "$name"; then
+            prepare_logs "$name"
             echo "precis-mcp: ${name} exited before it answered:" >&2
             docker logs --tail 40 "$name" >&2 || true
             return 1
         fi
         code="$(probe_backend "$name")"
         if [ "$code" = 401 ]; then
+            prepare_logs "$name"
             check_python_root_mounts "$name"
             return 0
         fi
         sleep 1
     done
+    prepare_logs "$name"
     echo "precis-mcp: ${name} did not answer 401 within ${READY_TIMEOUT}s; its log:" >&2
     docker logs --tail 40 "$name" >&2 || true
     return 1

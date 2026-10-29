@@ -490,11 +490,13 @@ ENV PRECIS_GIT_LAST_TAG=$PRECIS_GIT_LAST_TAG \
     PRECIS_BUILD_HOST=$PRECIS_BUILD_HOST \
     PRECIS_BUILD_USER=$PRECIS_BUILD_USER
 
-# Labels (not env) so scripts/mcp-image-refresh can read exactly these two
+# Labels (not env) so scripts/mcp-image-refresh can read exactly these
 # values with `docker image inspect --format` without touching the env.
 ARG AUTOCATPATH_REV=unknown
+ARG PRECIS_UV_LOCK_SHA256=unknown
 LABEL precis.autocatpath_rev=$AUTOCATPATH_REV \
-      precis.git_sha=$PRECIS_GIT_SHA
+      precis.git_sha=$PRECIS_GIT_SHA \
+      precis.uv_lock_sha256=$PRECIS_UV_LOCK_SHA256
 
 USER precis
 
