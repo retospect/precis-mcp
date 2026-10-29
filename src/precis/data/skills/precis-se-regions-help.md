@@ -459,3 +459,35 @@ each a block child with a `made-by:` line naming the script frame; a ray
 the next run stops writing retires. `pg`/`pga`/`out` are the import
 aliases every workspace example uses — the whole loop is in
 [[precis-workspace-help]].
+
+## Ad hoc probes — view='inspect'
+
+One probe family at Å and macro scale, computed on demand and never
+stored (stored rays stay `view='ray'`). `probe=` names what comes back:
+
+| probe | answers |
+|---|---|
+| `ray` | material runs along a line, with the surface frame at each end; `profile_samples` adds the free radius and the frame that pinches it (a channel bottleneck); `radius` sweeps a cylinder — blocked or clear; `events` merges `pi`/`frame` hits |
+| `section` | the loops a plane cuts, `hole_count`, wall distance, bonds crossing the plane |
+| `overlap` | intersection volume with `with=<selector>` (another frame of the block) or a `radius` cylinder, naming the frames on both sides |
+| `thickness` | face-on column map, one ray per `pitch` node (slow below 0.5 Å) |
+
+```
+get(kind='se', id='<slug>', view='inspect', args={'block': 'p',
+  'probe': 'ray', 'origin': '[0 0 -1] nm', 'axis': [0, 0, 1],
+  'profile_samples': 200, 'radius': '0.4 nm'})
+get(kind='se', id='<slug>', view='inspect', args={'block': 'p',
+  'probe': 'overlap', 'target': 'frame:<tube>', 'with': 'frame:<guest>'})
+get(kind='structure', id='<slug>', view='inspect',
+  args={'probe': 'section', 'normal': [0, 0, 1]})
+```
+
+`origin`, `pitch`, `radius`, `length`: metres or unit strings on se,
+bare Å on structure; `axis`/`normal` are directions. Omitted, the origin
+is the target's centroid (a ray starts 2 Å before it) and the direction
+its principal axis. `target` narrows to `frame:<key>`, `pi:<id>`,
+`find:element=C` or atom labels (se only for `frame:`). Atoms are
+van der Waals spheres (Bondi; `radii={'C': 0.9}` overrides), so a benzene
+ring-plane section is one loop — the ring centre is inside the carbon
+spheres. A macro block probes its bound cad design or envelope, in mm.
+From a script: `pg.inspect.ray/section/overlap/thickness(geom, …)`.

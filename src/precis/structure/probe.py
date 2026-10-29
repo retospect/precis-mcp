@@ -12,6 +12,7 @@ never SI.
 
 from __future__ import annotations
 
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from typing import Any
 
@@ -371,6 +372,126 @@ def _spheres_inside(carts: np.ndarray, radii: np.ndarray) -> Any:
         return np.any(d <= radii[None, :], axis=1)
 
     return inside
+
+
+#: Bondi van der Waals radii (Å) — the valve doc's gap definition, one
+#: table for the clearance gap, the pocket radius and :func:`vdw_field`
+#: (``precis_se.atomic.clearance`` re-exports it). Elements absent from it
+#: use :data:`VDW_DEFAULT_A`.
+VDW_RADII_A: dict[str, float] = {
+    "H": 1.20,
+    "C": 1.70,
+    "N": 1.55,
+    "O": 1.52,
+    "F": 1.47,
+    "P": 1.80,
+    "S": 1.80,
+    "Cl": 1.75,
+}
+VDW_DEFAULT_A = 1.80
+#: Distance-matrix entries evaluated per block in :func:`vdw_sdf`.
+_VDW_BLOCK = 2_000_000
+
+
+def _vdw_arrays(
+    scene: Scene,
+    labels: Sequence[str] | None,
+    radii: dict[str, float] | None,
+) -> tuple[list[str], np.ndarray, np.ndarray]:
+    """``(labels, carts, radii)`` of the atoms a vdW field is built from —
+    ``labels`` restricts to a subset (a frame's atoms, a region)."""
+    names = (
+        list(scene.atoms)
+        if labels is None
+        else [la for la in labels if la in scene.atoms]
+    )
+    table = {**VDW_RADII_A, **(radii or {})}
+    carts = np.asarray([_cart(scene, la) for la in names], dtype=float).reshape(-1, 3)
+    rad = np.asarray(
+        [table.get(scene.atoms[la].element, VDW_DEFAULT_A) for la in names],
+        dtype=float,
+    )
+    return names, carts, rad
+
+
+def _nearest_sphere(
+    carts: np.ndarray, rad: np.ndarray, pts: np.ndarray
+) -> tuple[np.ndarray, np.ndarray]:
+    """``(d, idx)`` per point: the signed distance to the union of spheres
+    ``min_i(|p − c_i| − r_i)`` and the index of the sphere that attains it
+    (blocked, so a many-atom field stays inside a fixed temporary)."""
+    pts = np.asarray(pts, dtype=float).reshape(-1, 3)
+    d = np.empty(len(pts))
+    idx = np.empty(len(pts), dtype=np.intp)
+    rows = max(1, _VDW_BLOCK // max(len(carts), 1))
+    for k in range(0, len(pts), rows):
+        dd = (
+            np.linalg.norm(pts[k : k + rows, None, :] - carts[None, :, :], axis=2)
+            - rad[None, :]
+        )
+        j = np.argmin(dd, axis=1)
+        idx[k : k + rows] = j
+        d[k : k + rows] = dd[np.arange(len(j)), j]
+    return d, idx
+
+
+def vdw_sdf(
+    scene: Scene,
+    pts: np.ndarray,
+    *,
+    labels: Sequence[str] | None = None,
+    radii: dict[str, float] | None = None,
+) -> np.ndarray:
+    """Signed distance (Å, negative inside) from ``pts`` to the union of
+    the atoms' van der Waals spheres — the field form of the boolean
+    :func:`_spheres_inside`. On a channel axis it is the free radius to
+    the nearest wall. ``labels`` restricts to a subset; ``radii`` overrides
+    :data:`VDW_RADII_A` per element. In-cell positions only (no periodic
+    image expansion, as :func:`line`)."""
+    _names, carts, rad = _vdw_arrays(scene, labels, radii)
+    if not len(carts):
+        return np.full(len(np.asarray(pts).reshape(-1, 3)), np.inf)
+    return _nearest_sphere(carts, rad, pts)[0]
+
+
+def vdw_field(
+    scene: Scene,
+    *,
+    labels: Sequence[str] | None = None,
+    radii: dict[str, float] | None = None,
+    frame_key: Callable[[int | None], str | None] | None = None,
+) -> Any:
+    """The atomic inspect provider (:class:`precis.cad.inspect.Field`, Å):
+    :func:`vdw_sdf` plus attribution — the nearest atom's construction
+    frame, ``FeatureRef(label=<frame key>, role='owner')``, where
+    ``frame_key(maker)`` maps the atom's ``maker`` stamp to the trace
+    frame's key; an atom with no ``maker`` (or no resolver) is labelled by
+    its own atom label. Raises ``ValueError`` on an empty atom set."""
+    from precis.cad.inspect import FeatureRef, Field
+
+    names, carts, rad = _vdw_arrays(scene, labels, radii)
+    if not len(carts):
+        raise ValueError("no atoms to build a van der Waals field from")
+    pad = float(rad.max())
+    aabb = (carts.min(axis=0) - pad, carts.max(axis=0) + pad)
+
+    def label_of(i: int) -> str:
+        atom = scene.atoms[names[i]]
+        if frame_key is not None and atom.maker is not None:
+            key = frame_key(int(atom.maker))
+            if key:
+                return str(key)
+        return names[i]
+
+    def features_at(p: np.ndarray, _n: np.ndarray, _eps: float) -> Any:
+        _d, idx = _nearest_sphere(carts, rad, np.asarray(p, dtype=float)[None, :])
+        return (FeatureRef(label=label_of(int(idx[0])), role="owner"),)
+
+    return Field(
+        sdf=lambda pts: _nearest_sphere(carts, rad, pts)[0],
+        features_at=features_at,
+        aabb=aabb,
+    )
 
 
 def ray_hits(

@@ -36,6 +36,10 @@ package — the pieces that are *the script's own surface*:
   retaining creator stamps, so frame selection still reaches the source.
   Fusion retains source/placement makers; coincident atoms and duplicate
   bonds use the earliest copy's representative rather than a tile stamp.
+- :mod:`precis_geom.inspect` (``pg.inspect``) — ``ray`` / ``section`` /
+  ``overlap`` / ``thickness`` of a :class:`Geom` at either scale (vdW
+  spheres for atomic, the folded SDF for macro), SI metres, plain-data
+  results a script can assert on (molecular-workspace-code slice 6).
 - :mod:`precis_geom.pcb_motifs` — the stdlib netlist motif registry called
   by ``Board.check()``. Each ``Motif`` declares eligibility and a check
   returning the existing ``CheckFinding`` shape: LED current limiting,

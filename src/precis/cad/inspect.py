@@ -62,16 +62,31 @@ surface of A's part that A's code never authored. Folded boundaries
 always lie on some leaf's zero-set, so the pair lands somewhere by
 construction.
 
-All functions take a :class:`~precis.cad.graph.Design` and an
+The public functions take a :class:`~precis.cad.graph.Design` and an
 :class:`~precis.cad.fold.Expr`, matching :mod:`~precis.cad.bulk` and
 :mod:`~precis.cad.relate` — no store, no handlers; this package stays
 unit-testable in isolation.
+
+**One marcher, many fields (molecular-workspace-code slice 6).** Underneath,
+every marcher (:func:`ray_field`, :func:`section_field`,
+:func:`thickness_field`, :func:`overlap_fields`) takes a :class:`Field`
+provider — ``sdf(pts) → d``, ``features_at(p, n, eps) → FeatureRef[]`` and
+the field's AABB — not a ``(design, expr)`` pair. :func:`cad_field` wraps
+the folded SDF and :func:`~precis.cad.fold.classify`; the public
+``ray/section/thickness/overlap`` are thin wrappers over it, so their
+results are byte-identical to the pre-seam ones. The atomic provider
+(:func:`precis.structure.probe.vdw_field`, a signed distance to the union
+of van der Waals spheres) plugs in the same way. A provider works in the
+length unit its caller keeps; a few absolute floors in the marchers are
+metre-scale, so the atomic leg runs in Å and :func:`rescale` converts its
+results to metres.
 """
 
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass
+from collections.abc import Callable
+from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Any
 
 import numpy as np
@@ -105,6 +120,19 @@ class FeatureRef:
 
     label: str | None
     role: str  # 'owner' | 'blocker'
+
+
+@dataclass(frozen=True)
+class Field:
+    """A field provider — everything a marcher needs from a solid (module
+    docstring). ``sdf(pts)`` takes an ``(n, 3)`` array and returns the
+    ``(n,)`` signed distance (negative inside); ``features_at(p, n, eps)``
+    attributes the boundary point ``p`` with outward normal ``n`` (``eps``
+    the marcher's length scale); ``aabb`` is ``(lo, hi)``, conservative."""
+
+    sdf: Callable[[np.ndarray], np.ndarray]
+    features_at: Callable[[np.ndarray, np.ndarray, float], tuple[FeatureRef, ...]]
+    aabb: tuple[Any, Any]
 
 
 @dataclass(frozen=True)
@@ -151,6 +179,32 @@ class RayInspection:
     #: unfiltered) — the report stays self-describing.
     feature: str | None = None
     role: str | None = None
+    #: With ``profile_samples``: the profile's minimum ``(t, sdf)`` — on an
+    #: atomic field the free radius to the nearest van der Waals surface,
+    #: i.e. the channel bottleneck — and the attribution of the surface
+    #: that pinches it. ``None`` without a profile.
+    pinch_t_m: float | None = None
+    pinch_m: float | None = None
+    pinch_features: tuple[FeatureRef, ...] = ()
+    #: Beam radius and the overlap of the swept cylinder with the part
+    #: (atomic ``radius=``; ``None`` for a zero-radius ray).
+    radius_m: float | None = None
+    swept: OverlapInspection | None = None
+    #: Atomic observation events (:func:`precis.structure.probe.ray_hits`'
+    #: ``pi``/``frame``/``charge``/``relax``/``pass`` hits, ``s`` in metres)
+    #: in ``s`` order, beside the SDF runs — empty on a cad field.
+    events: tuple[Any, ...] = ()
+
+
+@dataclass(frozen=True)
+class PlaneCrossing:
+    """A bond whose segment crosses the section plane (atomic fields)."""
+
+    a: str
+    b: str
+    length_m: float
+    angle_deg: float
+    order: float = 1.0
 
 
 @dataclass(frozen=True)
@@ -183,6 +237,9 @@ class SectionInspection:
     #: pitch) — wall thickness falls out as the pair straddling material;
     #: the consumer interprets.
     wall_pairs_m: tuple[tuple[int, int, float], ...]
+    #: Atomic fields: the bonds that cross the plane (what stitches the
+    #: layers on either side); empty on a cad field.
+    crossings: tuple[PlaneCrossing, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -254,7 +311,17 @@ def _features_at(
     return tuple(out)
 
 
-def _normal_at(design: Design, expr: Expr, p: np.ndarray, eps: float) -> np.ndarray:
+def cad_field(design: Design, expr: Expr) -> Field:
+    """The cad provider: the folded SDF, :func:`~precis.cad.fold.classify`
+    attribution and the expression's AABB."""
+    return Field(
+        sdf=lambda pts: _sdf(design, expr, pts),
+        features_at=lambda p, n, eps: _features_at(design, expr, p, n, eps),
+        aabb=cad_bulk.expr_aabb(design, expr),
+    )
+
+
+def _normal_at(fld: Field, p: np.ndarray, eps: float) -> np.ndarray:
     """Central-difference gradient of the SDF — the surface normal."""
     offsets = np.array(
         [
@@ -266,7 +333,7 @@ def _normal_at(design: Design, expr: Expr, p: np.ndarray, eps: float) -> np.ndar
             [0, 0, -eps],
         ]
     )
-    g = _sdf(design, expr, np.broadcast_to(p, (6, 3)) + offsets)
+    g = fld.sdf(np.broadcast_to(p, (6, 3)) + offsets)
     n = np.array([g[0] - g[1], g[2] - g[3], g[4] - g[5]])
     norm = float(np.linalg.norm(n))
     if norm < 1e-30:
@@ -277,6 +344,45 @@ def _normal_at(design: Design, expr: Expr, p: np.ndarray, eps: float) -> np.ndar
 def ray(
     design: Design,
     expr: Expr,
+    *,
+    origin_m: tuple[float, float, float],
+    axis_m: tuple[float, float, float],
+    t_max_m: float | None = None,
+    profile_samples: int | None = None,
+    feature: str | None = None,
+    role: str | None = None,
+) -> RayInspection:
+    """:func:`ray_field` over the folded cad SDF (module docstring)."""
+    return ray_field(
+        cad_field(design, expr),
+        origin_m=origin_m,
+        axis_m=axis_m,
+        t_max_m=t_max_m,
+        profile_samples=profile_samples,
+        feature=feature,
+        role=role,
+    )
+
+
+def ray_extent(
+    fld: Field, origin_m: Any, axis_m: Any, t_max_m: float | None = None
+) -> tuple[np.ndarray, np.ndarray, float, float]:
+    """``(origin, unit axis, t_max, diag)`` as :func:`ray_field` resolves
+    them: the default ``t_max`` runs from the origin through and past the
+    field's AABB."""
+    o = np.asarray(as_vec3(origin_m), dtype=np.float64)
+    d = np.asarray(as_vec3(axis_m), dtype=np.float64)
+    d = d / np.linalg.norm(d)
+    lo, hi = fld.aabb
+    diag = float(np.linalg.norm(np.asarray(hi) - np.asarray(lo)))
+    if t_max_m is None:
+        reach = float(np.abs(o - 0.5 * (np.asarray(lo) + np.asarray(hi))) @ np.abs(d))
+        t_max_m = reach + diag  # from the origin through and past the solid
+    return o, d, float(t_max_m), diag
+
+
+def ray_field(
+    fld: Field,
     *,
     origin_m: tuple[float, float, float],
     axis_m: tuple[float, float, float],
@@ -297,14 +403,7 @@ def ray(
     attribution. ``min_distance_m`` and ``profile`` describe the whole
     solid along the beam and are computed before any filter applies.
     """
-    o = np.asarray(as_vec3(origin_m), dtype=np.float64)
-    d = np.asarray(as_vec3(axis_m), dtype=np.float64)
-    d = d / np.linalg.norm(d)
-    lo, hi = cad_bulk.expr_aabb(design, expr)
-    diag = float(np.linalg.norm(np.asarray(hi) - np.asarray(lo)))
-    if t_max_m is None:
-        reach = float(np.abs(o - 0.5 * (np.asarray(lo) + np.asarray(hi))) @ np.abs(d))
-        t_max_m = reach + diag  # from the origin through and past the solid
+    o, d, t_max_m, diag = ray_extent(fld, origin_m, axis_m, t_max_m)
 
     eps = LINEAR_REL_EPS * max(diag, t_max_m, 1e-3)
     min_step = 4.0 * eps
@@ -313,7 +412,7 @@ def ray(
     if profile_samples:
         for k in range(profile_samples):
             tp = t_max_m * k / max(profile_samples - 1, 1)
-            vp = float(_sdf(design, expr, (o + tp * d)[None, :])[0])
+            vp = float(fld.sdf((o + tp * d)[None, :])[0])
             profile.append((tp, vp))
 
     def bisect(ta: float, tb: float, want_inside: bool) -> float:
@@ -324,7 +423,7 @@ def ray(
             if abs(tb - ta) <= eps:
                 break
             tm = 0.5 * (ta + tb)
-            vm = float(_sdf(design, expr, (o + tm * d)[None, :])[0])
+            vm = float(fld.sdf((o + tm * d)[None, :])[0])
             if (vm < 0.0) == want_inside:
                 tb = tm
             else:
@@ -334,7 +433,7 @@ def ray(
     hits: list[RayHit] = []
     t = 0.0
     t_prev = 0.0
-    v_prev = float(_sdf(design, expr, o[None, :])[0])
+    v_prev = float(fld.sdf(o[None, :])[0])
     min_abs = abs(v_prev)
     inside = v_prev < 0.0
     span_start = 0.0 if inside else None
@@ -342,7 +441,7 @@ def ray(
 
     for _ in range(100_000):
         p = o + t * d
-        v = float(_sdf(design, expr, p[None, :])[0])
+        v = float(fld.sdf(p[None, :])[0])
         min_abs = min(min_abs, abs(v))
         if v < 0.0 and not inside:
             t_in = bisect(t_prev, t, want_inside=True)
@@ -356,8 +455,8 @@ def ray(
             assert span_start is not None  # inside implies a span is open
             entry = o + span_start * d
             exit_ = o + t_out * d
-            n_e = _normal_at(design, expr, entry, eps)
-            n_x = _normal_at(design, expr, exit_, eps)
+            n_e = _normal_at(fld, entry, eps)
+            n_x = _normal_at(fld, exit_, eps)
             hits.append(
                 RayHit(
                     float(span_start),
@@ -366,8 +465,8 @@ def ray(
                     _vec3f(exit_),
                     _vec3f(n_e),
                     _vec3f(n_x),
-                    entry_features=_features_at(design, expr, entry, n_e, eps),
-                    exit_features=_features_at(design, expr, exit_, n_x, eps),
+                    entry_features=fld.features_at(entry, n_e, eps),
+                    exit_features=fld.features_at(exit_, n_x, eps),
                 )
             )
             inside = False
@@ -403,7 +502,7 @@ def ray(
 
     if inside and span_start is not None:
         entry = o + span_start * d
-        n_e = _normal_at(design, expr, entry, eps)
+        n_e = _normal_at(fld, entry, eps)
         hits.append(
             RayHit(
                 float(span_start),
@@ -412,17 +511,30 @@ def ray(
                 _vec3f(o + t_max_m * d),
                 _vec3f(n_e),
                 (0.0, 0.0, 0.0),
-                entry_features=_features_at(design, expr, entry, n_e, eps),
+                entry_features=fld.features_at(entry, n_e, eps),
             )
         )
     if feature is not None or role is not None:
         hits = [h for h in hits if h.involves(feature=feature, role=role)]
+    pinch_t: float | None = None
+    pinch_v: float | None = None
+    pinch_refs: tuple[FeatureRef, ...] = ()
+    if profile:
+        pinch_t, pinch_v = min(profile, key=lambda tv: tv[1])
+        pp = o + pinch_t * d
+        n_p = _normal_at(fld, pp, eps)
+        # the surface that bounds the free radius: step from the sample
+        # to the nearest zero of the field along its gradient
+        pinch_refs = fld.features_at(pp - pinch_v * n_p, n_p, eps)
     return RayInspection(
         hits=tuple(hits),
         min_distance_m=min_abs,
         profile=tuple(profile) if profile_samples else None,
         feature=feature,
         role=role,
+        pinch_t_m=pinch_t,
+        pinch_m=pinch_v,
+        pinch_features=pinch_refs,
     )
 
 
@@ -434,8 +546,21 @@ def section(
     normal_m: tuple[float, float, float],
     pitch_m: float | None = None,
 ) -> SectionInspection:
-    """Marching-squares plane section of the folded SDF (module
-    docstring). The plane frame is right-handed about ``normal_m``."""
+    """:func:`section_field` over the folded cad SDF (module docstring)."""
+    return section_field(
+        cad_field(design, expr), origin_m=origin_m, normal_m=normal_m, pitch_m=pitch_m
+    )
+
+
+def section_field(
+    fld: Field,
+    *,
+    origin_m: tuple[float, float, float],
+    normal_m: tuple[float, float, float],
+    pitch_m: float | None = None,
+) -> SectionInspection:
+    """Marching-squares plane section of the SDF (module docstring). The
+    plane frame is right-handed about ``normal_m``."""
     n = np.asarray(as_vec3(normal_m), dtype=np.float64)
     n = n / np.linalg.norm(n)
     ref = np.array([1.0, 0.0, 0.0]) if abs(n[0]) < 0.9 else np.array([0.0, 1.0, 0.0])
@@ -444,7 +569,7 @@ def section(
     v = np.cross(n, u)
     origin = np.asarray(as_vec3(origin_m), dtype=np.float64)
 
-    lo, hi = cad_bulk.expr_aabb(design, expr)
+    lo, hi = fld.aabb
     corners = np.array(_aabb_corners(lo, hi))
     rel = corners - origin
     us = rel @ u
@@ -474,7 +599,7 @@ def section(
         + grid_u[None, :, None] * u[None, None, :]
         + grid_v[:, None, None] * v[None, None, :]
     ).reshape(-1, 3)
-    vals = _sdf(design, expr, pts).reshape(nv, nu)
+    vals = fld.sdf(pts).reshape(nv, nu)
 
     segs = _marching_segments(vals, grid_u, grid_v, origin, u, v)
     loops = _chain_segments(segs, float(pitch_m))
@@ -485,13 +610,13 @@ def section(
     signed: list[SectionLoop] = []
     for loop in loops:
         pts = np.asarray(loop.points_m)
-        n0 = _normal_at(design, expr, np.asarray(pts[0]), eps_s)
+        n0 = _normal_at(fld, np.asarray(pts[0]), eps_s)
         signed.append(
             SectionLoop(
                 points_m=loop.points_m,
                 length_m=loop.length_m,
                 area_m2=_shoelace_uv(pts, origin, u, v),
-                features=_features_at(design, expr, np.asarray(pts[0]), n0, eps_s),
+                features=fld.features_at(np.asarray(pts[0]), n0, eps_s),
             )
         )
     holes = sum(1 for loop in signed if loop.area_m2 < 0.0)
@@ -569,6 +694,175 @@ def overlap(
     )
 
 
+#: Quadrature points evaluated per :meth:`Field.sdf` call in
+#: :func:`overlap_fields` — bounds the temporary arrays of a many-atom field.
+_OVERLAP_CHUNK = 16384
+#: Overlap attribution looks at no more than this many inside samples.
+_OVERLAP_ATTRIB_SAMPLES = 256
+
+
+def overlap_fields(a: Field, b: Field, *, grid: int = 48) -> OverlapInspection:
+    """Intersection volume of two fields on a midpoint grid of the AABB
+    intersection (``grid`` points per axis) — the field-provider form of
+    :func:`overlap`, for solids that are not cad expressions (two
+    van der Waals unions, a union and a swept cylinder).
+
+    ``features`` names the surfaces on both sides of the overlap: the
+    attribution of ``a`` then of ``b`` at inside samples, duplicates
+    folded, so two frames that interpenetrate are both named. ``hit``
+    uses the same quadrature-noise floor as :func:`overlap`; ``aabb_m``
+    bounds the inside samples (the empty box at the AABB centre when
+    there are none)."""
+    alo, ahi = (np.asarray(v, dtype=np.float64) for v in a.aabb)
+    blo, bhi = (np.asarray(v, dtype=np.float64) for v in b.aabb)
+    lo = np.maximum(alo, blo)
+    hi = np.minimum(ahi, bhi)
+    probe_vol = float(np.prod(bhi - blo))
+    if np.any(hi <= lo):
+        mid = _vec3f(0.5 * (lo + hi))
+        return OverlapInspection(hit=False, volume_m3=0.0, aabb_m=(mid, mid))
+    step = (hi - lo) / grid
+    axes = [lo[k] + (np.arange(grid) + 0.5) * step[k] for k in range(3)]
+    gx, gy, gz = np.meshgrid(*axes, indexing="ij")
+    pts = np.column_stack([gx.ravel(), gy.ravel(), gz.ravel()])
+    inside = np.zeros(len(pts), dtype=bool)
+    for k in range(0, len(pts), _OVERLAP_CHUNK):
+        chunk = pts[k : k + _OVERLAP_CHUNK]
+        in_a = a.sdf(chunk) < 0.0
+        if not in_a.any():
+            continue
+        in_b = np.zeros(len(chunk), dtype=bool)
+        in_b[in_a] = b.sdf(chunk[in_a]) < 0.0
+        inside[k : k + _OVERLAP_CHUNK] = in_b
+    n_in = int(inside.sum())
+    vol = float(n_in * np.prod(step))
+    if n_in == 0:
+        mid = _vec3f(0.5 * (lo + hi))
+        return OverlapInspection(hit=False, volume_m3=0.0, aabb_m=(mid, mid))
+    hit_pts = pts[inside]
+    box = (
+        _vec3f(hit_pts.min(axis=0) - 0.5 * step),
+        _vec3f(hit_pts.max(axis=0) + 0.5 * step),
+    )
+    sel = hit_pts[:: max(1, n_in // _OVERLAP_ATTRIB_SAMPLES)]
+    eps = LINEAR_REL_EPS * max(float(np.linalg.norm(hi - lo)), 1e-3)
+    refs: list[FeatureRef] = []
+    for p in sel:
+        for fld in (a, b):
+            for fr in fld.features_at(p, np.zeros(3), eps):
+                if fr not in refs:
+                    refs.append(fr)
+    return OverlapInspection(
+        hit=vol > _HIT_VOLUME_REL * max(probe_vol, 1e-30),
+        volume_m3=vol,
+        aabb_m=box,
+        features=tuple(refs),
+    )
+
+
+def cylinder_field(origin: Any, axis: Any, radius: float, length: float) -> Field:
+    """An analytic cylinder as a :class:`Field` — the beam of
+    ``ray(..., radius=r)``: base disc centred on ``origin``, extending
+    ``length`` along ``axis``, flat caps. Unattributed (the beam is the
+    question, not an answer)."""
+    o = np.asarray(as_vec3(origin), dtype=np.float64)
+    a = np.asarray(as_vec3(axis), dtype=np.float64)
+    a = a / np.linalg.norm(a)
+    half = 0.5 * float(length)
+    centre = o + a * half
+    r = float(radius)
+
+    def sdf(pts: np.ndarray) -> np.ndarray:
+        rel = np.asarray(pts, dtype=np.float64) - centre
+        h = rel @ a
+        radial = np.linalg.norm(rel - h[:, None] * a[None, :], axis=1)
+        qx = radial - r
+        qy = np.abs(h) - half
+        outside = np.hypot(np.maximum(qx, 0.0), np.maximum(qy, 0.0))
+        return np.minimum(np.maximum(qx, qy), 0.0) + outside
+
+    # tight box of a finite cylinder: the axis segment grown by r·sin(angle)
+    grow = r * np.sqrt(np.clip(1.0 - a * a, 0.0, 1.0))
+    seg = np.array([o, o + a * float(length)])
+    lo = seg.min(axis=0) - grow
+    hi = seg.max(axis=0) + grow
+    return Field(sdf=sdf, features_at=lambda p, n, eps: (), aabb=(lo, hi))
+
+
+def rescale(res: Any, k: float) -> Any:
+    """``res`` (any inspection result) with every length multiplied by
+    ``k`` (areas by ``k²``, volumes by ``k³``) — the atomic leg marches in
+    Å and reports metres (module docstring). Angles and attributions pass
+    through."""
+
+    def v3(v: Any) -> tuple[float, float, float]:
+        return (float(v[0]) * k, float(v[1]) * k, float(v[2]) * k)
+
+    if isinstance(res, RayInspection):
+        events = tuple(replace(e, s=e.s * k) for e in res.events)
+        return replace(
+            res,
+            hits=tuple(
+                replace(
+                    h,
+                    t_entry_m=h.t_entry_m * k,
+                    t_exit_m=h.t_exit_m * k,
+                    entry_m=v3(h.entry_m),
+                    exit_m=v3(h.exit_m),
+                )
+                for h in res.hits
+            ),
+            min_distance_m=None
+            if res.min_distance_m is None
+            else res.min_distance_m * k,
+            profile=None
+            if res.profile is None
+            else tuple((t * k, v * k) for t, v in res.profile),
+            pinch_t_m=None if res.pinch_t_m is None else res.pinch_t_m * k,
+            pinch_m=None if res.pinch_m is None else res.pinch_m * k,
+            radius_m=None if res.radius_m is None else res.radius_m * k,
+            swept=None if res.swept is None else rescale(res.swept, k),
+            events=events,
+        )
+    if isinstance(res, SectionInspection):
+        return replace(
+            res,
+            plane_origin_m=v3(res.plane_origin_m),
+            pitch_m=res.pitch_m * k,
+            loops=tuple(
+                replace(
+                    lp,
+                    points_m=tuple(v3(q) for q in lp.points_m),
+                    length_m=lp.length_m * k,
+                    area_m2=lp.area_m2 * k * k,
+                )
+                for lp in res.loops
+            ),
+            wall_pairs_m=tuple((i, j, d * k) for i, j, d in res.wall_pairs_m),
+            crossings=tuple(replace(c, length_m=c.length_m * k) for c in res.crossings),
+        )
+    if isinstance(res, OverlapInspection):
+        return replace(
+            res,
+            volume_m3=res.volume_m3 * k**3,
+            aabb_m=(v3(res.aabb_m[0]), v3(res.aabb_m[1])),
+        )
+    if isinstance(res, ThicknessInspection):
+        return replace(
+            res,
+            plane_origin_m=v3(res.plane_origin_m),
+            pitch_m=res.pitch_m * k,
+            nominal_m=None if res.nominal_m is None else res.nominal_m * k,
+            samples=tuple(
+                replace(
+                    sm, position_m=v3(sm.position_m), thickness_m=sm.thickness_m * k
+                )
+                for sm in res.samples
+            ),
+        )
+    raise TypeError(f"rescale: not an inspection result: {type(res).__name__}")
+
+
 def probe_solid(design: Design, name: str, config: str, xf: Transform) -> Expr:
     """Convenience: register a probe primitive (e.g. ``cyl:r1.7mmh13.4mm``)
     on the design and return its expression for :func:`overlap`. Accepts
@@ -622,8 +916,7 @@ class ThicknessInspection:
 
 
 def _ball_thickness(
-    design: Design,
-    expr: Expr,
+    fld: Field,
     entry_m: tuple[float, float, float],
     outward_normal_m: tuple[float, float, float],
 ) -> float:
@@ -638,7 +931,7 @@ def _ball_thickness(
     brk = q
     miss = 0
     for _ in range(2048):
-        v = float(_sdf(design, expr, q[None, :])[0])
+        v = float(fld.sdf(q[None, :])[0])
         dist = -v
         if dist <= 0.0:
             # A hair of positive sdf right at a merged prim's coincident
@@ -646,7 +939,7 @@ def _ball_thickness(
             # ahead: material means step through, growing positive sdf
             # means a real exit.
             ahead = q + inward * max(best * 0.02, 1e-9)
-            if float(_sdf(design, expr, ahead[None, :])[0]) < 0.0:
+            if float(fld.sdf(ahead[None, :])[0]) < 0.0:
                 q = ahead
                 continue
             brk = q
@@ -675,21 +968,48 @@ def _ball_thickness(
     peak = best
     for k in range(1, 65):
         mk = prev + (brk - prev) * (k / 65.0)
-        peak = max(peak, -float(_sdf(design, expr, mk[None, :])[0]))
+        peak = max(peak, -float(fld.sdf(mk[None, :])[0]))
     return 2.0 * peak
 
 
-def _column_thickness(design: Design, expr: Expr, hit: RayHit, method: str) -> float:
+def _column_thickness(fld: Field, hit: RayHit, method: str) -> float:
     """Per-sample thickness for :func:`thickness` — run length (ray)
     or the rolling-ball measure (ball)."""
     if method == "ray":
         return float(hit.t_exit_m - hit.t_entry_m)
-    return _ball_thickness(design, expr, hit.entry_m, hit.entry_normal_m)
+    return _ball_thickness(fld, hit.entry_m, hit.entry_normal_m)
 
 
 def thickness(
     design: Design,
     expr: Expr,
+    *,
+    origin_m: tuple[float, float, float],
+    normal_m: tuple[float, float, float],
+    pitch_m: float,
+    nominal_m: float | None = None,
+    ratio: float = 1.5,
+    method: str = "ray",
+    feature: str | None = None,
+    role: str | None = None,
+) -> ThicknessInspection:
+    """:func:`thickness_field` over the folded cad SDF — the docstring
+    there is the probe's contract."""
+    return thickness_field(
+        cad_field(design, expr),
+        origin_m=origin_m,
+        normal_m=normal_m,
+        pitch_m=pitch_m,
+        nominal_m=nominal_m,
+        ratio=ratio,
+        method=method,
+        feature=feature,
+        role=role,
+    )
+
+
+def thickness_field(
+    fld: Field,
     *,
     origin_m: tuple[float, float, float],
     normal_m: tuple[float, float, float],
@@ -733,7 +1053,7 @@ def thickness(
     v = np.cross(n, u)
     origin = np.asarray(as_vec3(origin_m), dtype=np.float64)
 
-    lo, hi = cad_bulk.expr_aabb(design, expr)
+    lo, hi = fld.aabb
     corners = np.array(_aabb_corners(lo, hi))
     rel = corners - origin
     us = rel @ u
@@ -760,9 +1080,8 @@ def thickness(
     for gv in grid_v:
         for gu in grid_u:
             p = origin + gu * u + gv * v
-            r = ray(
-                design,
-                expr,
+            r = ray_field(
+                fld,
                 origin_m=_vec3f(p + n * pitch_m),
                 axis_m=_vec3f(-n),
                 t_max_m=span + 2.0 * pitch_m,
@@ -775,7 +1094,7 @@ def thickness(
             samples.append(
                 ThicknessSample(
                     position_m=_vec3f(p),
-                    thickness_m=_column_thickness(design, expr, h, method),
+                    thickness_m=_column_thickness(fld, h, method),
                     entry_features=h.entry_features,
                     exit_features=h.exit_features,
                 )

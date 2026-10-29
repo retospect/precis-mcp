@@ -127,6 +127,7 @@ from precis.format import render_agent_table
 from precis.protocol import ArgsSpec, Handler, KindSpec
 from precis.response import Response
 from precis.store._mappers import SEMANTIC_DISTANCE_FLOOR
+from precis.structure import inspectview
 from precis.utils.embed_query import embed_query
 from precis.utils.next_block import render_next_section
 from precis.utils.search_merge import SearchHit
@@ -356,6 +357,20 @@ class SeHandler(Handler):
                 "mean_free_path",
                 "prefunits",
                 "recompute",
+                # view='inspect' (precis.structure.inspectview.INSPECT_ARGS)
+                "probe",
+                "with",
+                "axis",
+                "normal",
+                "pitch",
+                "radius",
+                "profile_samples",
+                "events",
+                "nominal",
+                "ratio",
+                "method",
+                "grid",
+                "radii",
             }
         ),
         "put": ArgsSpec({"description", "ops", "scenario", "prefunits"}),
@@ -659,6 +674,7 @@ class SeHandler(Handler):
             "pockets",
             "ray",
             "rays",
+            "inspect",
             "validate",
             "clearance",
             "sites",
@@ -2176,6 +2192,10 @@ class SeHandler(Handler):
             from precis_se import rays as se_rays
 
             return Response(body=se_rays.render_rays(tree, str(ref.slug)))
+        if v == "inspect":
+            from precis_se.inspect_view import render_inspect
+
+            return Response(body=render_inspect(tree, str(ref.slug), args or {}))
         if v == "validate":
             return Response(body=self._render_validate(tree, ref.id, args))
         if v == "trace":
@@ -8094,6 +8114,9 @@ def _fill_fraction_line(tree: SeTree) -> str:
 #: round) — nor any other view; se has no ``view='sweep'`` at all yet.
 _STATE_VIEWS = frozenset({"", "tree", "block", "clearance", "chain", "drc"})
 
+#: ``view='inspect'``'s arg grammar (the structure kind's, one definition).
+_INSPECT_ARGS = inspectview.INSPECT_ARGS
+
 #: Every ``get(kind='se')`` view's accepted ``args=`` keys — the single
 #: source :func:`_vet_view_args` checks a caller's ``args`` dict against
 #: (nm's ``_VIEW_ARGS`` transferred by the merge, extended to se's views).
@@ -8141,6 +8164,7 @@ _VIEW_ARGS: dict[str, frozenset[str]] = {
         }
     ),
     "rays": frozenset(),
+    "inspect": frozenset({"block", *_INSPECT_ARGS}),
     "validate": frozenset({"previous", "load_cases"}),
     "clearance": frozenset(
         {"a", "b", "state", "previous", "sweep", "pocket_gap_A", "lining", "cargo_A3"}
@@ -9433,7 +9457,7 @@ _VIEW_FAMILIES: tuple[tuple[str, str], ...] = (
         "validate drc clearance sites sweep stations pick stability "
         "assembly_check mechanics kinematics surface flow fret fit",
     ),
-    ("build", "bom order fasten print fab ray rays literature"),
+    ("build", "bom order fasten print fab ray rays inspect literature"),
 )
 
 #: Every view name in :data:`_VIEW_FAMILIES` — difflib's candidate list

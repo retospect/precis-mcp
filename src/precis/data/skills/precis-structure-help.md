@@ -75,6 +75,8 @@ bonded shell (bond lines at hop 1, element groups at 2–3, counts at
 refuses — an atom has no embedding. A stored observation ray
 (`{'op':'ray', name, origin, direction, length}`, Å) reads with
 `view='ray'`/`'rays'` and `st<id>~ray:<name>` — `precis-se-regions-help` §Observation rays.
+`view='inspect'` (`probe=ray|section|overlap|thickness`, Å, nothing stored):
+same skill §Ad hoc probes.
 
 ## Author a design — `put(id=<slug>, text=<JSON>)`
 

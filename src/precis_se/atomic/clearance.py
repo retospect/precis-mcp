@@ -68,6 +68,7 @@ from precis.cad.vec import pose as cad_pose
 from precis.errors import BadInput
 from precis.format import render_agent_table
 from precis.structure import Scene as StructScene
+from precis.structure import probe as st_probe
 from precis.structure.sites import axis_basis as _axis_basis
 from precis.utils.units import parse_angle_deg
 from precis_se.atomic import validate as se_atomic_validate
@@ -77,19 +78,12 @@ if TYPE_CHECKING:  # pragma: no cover - typing only
     from precis.store import Store
 
 #: Bondi van der Waals radii (Å) — the valve doc's gap definition. One
-#: table, here, for both the gap and the pocket radius; elements absent
-#: from it use :data:`VDW_DEFAULT_A`.
-VDW_RADII_A: dict[str, float] = {
-    "H": 1.20,
-    "C": 1.70,
-    "N": 1.55,
-    "O": 1.52,
-    "F": 1.47,
-    "P": 1.80,
-    "S": 1.80,
-    "Cl": 1.75,
-}
-VDW_DEFAULT_A = 1.80
+#: table for the gap, the pocket radius and the inspect probes' vdW
+#: field; it lives in :mod:`precis.structure.probe` (the geom wheel ships
+#: that, not this module) and is re-exported here. Elements absent from
+#: it use :data:`VDW_DEFAULT_A`.
+VDW_RADII_A: dict[str, float] = st_probe.VDW_RADII_A
+VDW_DEFAULT_A = st_probe.VDW_DEFAULT_A
 
 #: ``verdict``: minimum gap at or above this is ``free`` — a rotor that
 #: turns without its van der Waals spheres grazing (valve doc's

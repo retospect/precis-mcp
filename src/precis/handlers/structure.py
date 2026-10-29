@@ -174,6 +174,7 @@ _VIEWS = (
     "markers",
     "ray",
     "rays",
+    "inspect",
     "links",
     "literature",
     "pourbaix",
@@ -962,6 +963,21 @@ class StructureHandler(Handler):
                 # 'U,pH' there, gr489471)
                 "U",
                 "pH",
+                # view='inspect' (precis.structure.inspectview.INSPECT_ARGS);
+                # origin / radius / normal are shared with the nav views
+                "probe",
+                "target",
+                "with",
+                "axis",
+                "pitch",
+                "length",
+                "profile_samples",
+                "events",
+                "nominal",
+                "ratio",
+                "method",
+                "grid",
+                "radii",
             }
         ),
     }
@@ -2388,6 +2404,8 @@ class StructureHandler(Handler):
             return self._render_markers(scene)
         if view in ("ray", "rays"):
             return self._render_rays(view, ref, scene, args or {})
+        if view == "inspect":
+            return self._render_inspect(ref, scene, args or {})
         if view == "literature":
             return self._render_literature(scene, ref)
         if view == "pair":
@@ -3546,6 +3564,30 @@ class StructureHandler(Handler):
             start=float(start) if start is not None else None,
         )
         return Response(body="\n".join(lines))
+
+    def _render_inspect(self, ref: Any, scene: Scene, args: dict[str, Any]) -> Response:
+        """``view='inspect'`` (molecular-workspace-code slice 6): one ad hoc
+        probe — ``ray`` / ``section`` / ``overlap`` / ``thickness`` of the
+        van der Waals union, optionally of ``target`` atoms only —
+        computed on demand, nothing stored (stored rays are
+        ``view='ray'``). Lengths are bare Å numbers."""
+        from precis.handlers._structure_eye import _pi_data
+        from precis.structure import inspectview as iv
+
+        handle = handle_registry.try_format("structure", int(ref.id)) or str(ref.slug)
+        base = f"get(kind='structure', id={handle!r}, view='inspect'"
+        spec = iv.parse_spec(args, length=iv.bare_A, next_base=base)
+        needs_pi = spec.probe == "ray" or (spec.target or "").startswith("pi:")
+        try:
+            res, n = iv.run(
+                spec,
+                scene,
+                pi_data=_pi_data(self.store, int(ref.id), scene) if needs_pi else None,
+            )
+        except ValueError as exc:
+            raise BadInput(str(exc), next=f"{base}, args={{'probe': ...}})") from exc
+        head = f"{handle} · {n}/{len(scene.atoms)} atoms · vdW union (Å)"
+        return Response(body=iv.render(spec.probe, res, head=head))
 
     def _render_markers(self, scene: Scene) -> Response:
         """The design's eyes + measures (§6.8/§7), each re-evaluated against
