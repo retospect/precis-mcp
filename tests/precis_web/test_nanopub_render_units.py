@@ -976,3 +976,21 @@ def test_contains_verbatim_strips_only_emphasis_asterisks() -> None:
     assert not cv("23", "a 2*3 b")
     assert cv("value* and", "see value* and more")
     assert not cv("value and", "see value* and more")
+
+
+def test_contains_verbatim_keeps_math_and_escaped_asterisks() -> None:
+    """pc1295795 (gripe 530995): ``G_{H^*}`` paired with a later ``H\\*``
+    as emphasis, stripping both on the chunk side only."""
+    from precis.nanopub.snip import contains_verbatim as cv
+
+    chunk = (
+        "To obtain $\\Delta G_{H^*}$ , we considered the free energy at P=1 bar "
+        "H<sub>2</sub>(g). The H\\* coverage is low, see **Figure 4**, and "
+        "$\\Delta G_{H^*}$ near zero is ideal."
+    )
+    assert cv("To obtain $\\Delta G_{H^*}$ , we considered the free energy", chunk)
+    assert cv("at P=1 bar H₂(g).", chunk)
+    assert cv("The H\\* coverage is low, see Figure 4,", chunk)
+    assert not cv("To obtain $\\Delta G_{H^}$", chunk)
+    assert cv("the *onset* moved", "the onset moved")
+    assert cv("the onset moved", "(*the* onset moved)")

@@ -52,10 +52,15 @@ MD_LINK_RE = re.compile(r"\[((?:\\.|[^\]\\])*)\]\([^)]*\)")
 _ADJ_SUP_RE = re.compile(r"(?i)</sup><sup>")
 _ADJ_SUB_RE = re.compile(r"(?i)</sub><sub>")
 _ESCAPED_BRACKET_RE = re.compile(r"\\([\[\]])")
-#: Markdown emphasis only: ``**x**`` / ``*x*`` wrapping non-space text and
-#: standing apart from word characters. A bare ``*`` between numbers
-#: (``2 * 3``, ``2*3``) or a footnote asterisk (``value*``) is meaning, kept.
-_EMPHASIS_RE = re.compile(r"(?<![\w*])(\*{1,3})(?=[^\s*])(.+?)(?<=[^\s*])\1(?![\w*])")
+#: Markdown emphasis only: ``**x**`` / ``*x*`` wrapping non-space text on one
+#: line, the opener at the start or after whitespace or an opening bracket
+#: or quote. A bare ``*`` between numbers (``2 * 3``, ``2*3``), a footnote
+#: asterisk (``value*``), an escaped ``\*`` and a math ``H^*`` are meaning,
+#: kept — pairing ``G_{H^*}`` with a later ``H\*`` stripped the chunk side
+#: only, so a verbatim quote holding one of them failed (gripe 530995).
+_EMPHASIS_RE = re.compile(
+    r"(?<![^\s(\[\"'“‘])(\*{1,3})(?=[^\s*])([^\n]+?)(?<=[^\s*\\])\1(?![\w*])"
+)
 
 _SUP_MAP = dict(
     zip(
