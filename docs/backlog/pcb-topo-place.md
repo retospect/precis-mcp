@@ -26,11 +26,11 @@ work end to end, every slice runs on the standing real board and its
 numbers are posted ("yes dogfood all the time when it starts kinda
 working").
 No pcb exists on prod under the literal name `epro2`; the standing
-.epro2-imported boards are `heater-base-test` (pb460559, from
-`heaterBaseTest.epro2`) and `taz15` (pb482131 "copper stripped, routing
-target", plus the refresh copies pb492863 and pb497132, from
-`taz15.epro2`) — those are the dogfood set until Reto names a specific
-one.
+.epro2-imported boards (all earlier ones retired 2026-10-26) are
+`heater-base-test` (from `heaterBaseTest.epro2`) and `taz15-blank` (from
+`taz15.epro2`), re-imported fresh under the same slugs, each with an
+`op='fork'` dogfood copy — those are the dogfood set until Reto names a
+specific one.
 
 ## Motivation / why
 

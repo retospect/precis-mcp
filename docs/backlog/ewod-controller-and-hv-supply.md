@@ -55,7 +55,7 @@ campaign burned several rounds chasing numbers produced by stale code.
 
 ## Motivation / why
 
-`ewod-dogfood-6` today is an array + sink + temp sensor with no controller,
+`ewod-dogfood-6` (retired 2026-10-26; regenerate to re-apply) was an array + sink + temp sensor with no controller,
 no protected power entry, and an external HV supply it
 was never going to get. Ruling 9 chose a 3.3 V controller that then needed
 a level shifter; a 5 V controller deletes that part. A single USB-C port

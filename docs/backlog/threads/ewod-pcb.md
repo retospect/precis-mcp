@@ -7,7 +7,7 @@ effort: medium
 
 ## Resume
 
-- **Next:** Reto ruled "fixed" on 2026-10-12 (chat): nothing beyond the netlist is fixed. Pin swaps are free, placement is free (the driver and parts may move), and the board outline may grow; no hand-routing of any net ("there are infinite solutions, we need one; don't constrain the problem"). The local escape repair build is withdrawn (td472840 comment 1; the item is deleted). So: (1) re-put the ARR1 generators entry and re-route `ewod-dogfood-6` on prod with the landed distance warm start and pin swaps enabled (replay 51/55 inner vs 42/55 radial, mx456/mx457, against prod's current 45/55, job 472111); (2) if that is short of 55/55, a placement pass that may enlarge the outline until every net routes. The levers evidence stays as the record: driver rotations 0°/180° collided with the then-fixed vias (mx458–mx463), connected In2 plaza-row exits regressed 51 → 50/55 (mx464), removal controls 51/49/49 (mx465–mx467). EasyEDA export work ([pcb-easyeda-round-trip](pcb-easyeda-round-trip.md#resume)) is sequenced behind this routing work, not parked. Historical handoffs below remain historical.
+- **Next:** Reto ruled "fixed" on 2026-10-12 (chat): nothing beyond the netlist is fixed. Pin swaps are free, placement is free (the driver and parts may move), and the board outline may grow; no hand-routing of any net ("there are infinite solutions, we need one; don't constrain the problem"). The local escape repair build is withdrawn (td472840 comment 1; the item is deleted). So: (1) re-route the EWOD board with the landed distance warm start and pin swaps enabled (replay 51/55 inner vs 42/55 radial, mx456/mx457; the last prod run was 45/55, job 472111, on `ewod-dogfood-6`, now retired: regenerate a fresh EWOD board from the generator, or measure on the replay fixture); (2) if that is short of 55/55, a placement pass that may enlarge the outline until every net routes. The levers evidence stays as the record: driver rotations 0°/180° collided with the then-fixed vias (mx458–mx463), connected In2 plaza-row exits regressed 51 → 50/55 (mx464), removal controls 51/49/49 (mx465–mx467). EasyEDA export work ([pcb-easyeda-round-trip](pcb-easyeda-round-trip.md#resume)) is sequenced behind this routing work, not parked. Historical handoffs below remain historical.
 - **Blocked by:** Nothing from Reto; the coordinator owns deployment. No provider/model/compute/manufacture/service work. Historical handoffs below do not renew programme holds.
 - **Unblocks:** Reproducible routing progress and trustworthy labels on the dogfood EWOD board.
 - **Acceptance:** Preserve all reference/fab seed routing and DRC ratchets; verify affected seeds plus explicit EWOD coarse/fine experiment. No global finer-grid gain or deployment claim.
@@ -76,7 +76,7 @@ se-machine-design's input shape (Do-next).
 
 1. **gr464240** → `backlog/pcb-anneal-best-state-vs-routability.md` (Do-next 0b;
    ruled 2026-10-12: route start/best/last, keep the most-routed).
-2. **ewod-dogfood-6 re-put owed on prod, no longer blocked** (ARR1 stored
+2. **ewod-dogfood-6 re-put (board retired 2026-10-26; applies to a fresh generated board)** (ARR1 stored
    v3, code v10). gr480010 is closed: `op='route'` on the stale board is
    refused with no job minted. A 2026-10-17 prod snapshot re-put on main
    lands with the stored sink pose (rot 90) and no via-in-pad, and
@@ -381,10 +381,6 @@ here: a code-version input to `content_hash` (round-2 review finding 1).
 
 ## Parked
 
-- **pb345846 regenerate** — destructive prod write; unparks on Reto's
-  per-write go-ahead. The regenerate itself is a plain re-put of its
-  generators entry (that also clears its stale escape class).
-
 - **round-7 residue (2026-09-03 review, item deleted)** — a large authored
   rigid group (~12x18 mm, TQFP-32 + crystal circuit) seeds straddling the
   outline and containment pressure cannot walk it back (fix direction:
@@ -395,27 +391,13 @@ here: a code-version input to `content_hash` (round-2 review finding 1).
 
 ## Boards on prod
 
-- **`ewod-dogfood-6` is the only live design, and it is now a valid
-  board.** 2026-10-02 (Reto: "whatever size please do it"): authored a
-  32 mm square outline centred on the array (corner radius 1 mm), which
-  fits the 19 x 23.5 mm driver underneath in any rotation. Re-place job
-  461063 (build 7242d4c9): 0 pre-route DRC errors, no land on a plaza via.
-  Route job 461064: 30 realized, 25 failed, 3 dangling, 49 pin swaps;
-  STATUS failed means incomplete, which the always-valid invariant allows.
-  DRC run 55023e04: 51 errors = the 25 unrouted nets twice (unrouted +
-  connectivity) + 1 `silk_missing` (ARR1_SINK_0's bottom refdes has no
-  spot clear of the 55 plaza vias: a real board finding). **Zero geometric
-  errors.** 160 warnings, all copper at JLC minimums. Earlier history
-  (the 116-error placement; jobs 460181/460302 accepting 0 of 3000 moves
-  for lack of an outline) is in git log.
-  **2026-10-07:** stackup re-authored to F.Cu signal / In1.Cu plane /
-  In2.Cu signal / B.Cu signal and `ewod_ARR1_escape` opened to
-  `[In2.Cu, B.Cu]` (clearance 0.099 mm). Latest route job 472111
-  (`negotiate=100`, seed 0): 45 realized, 10 failed, 3 dangling, 29 vias,
-  53 pin swaps, 0 pre-route DRC errors; STATUS failed = incomplete. Its
-  10 failures are Do-next 4's fixture. Generator ARR1 is stored at
-  version 3 against code version 4 (warned on every put, deliberately not
-  re-expanded).
+- **All prior prod designs are retired** (28 soft-retired 2026-10-26, backups
+  exported the same day), including `ewod-dogfood-6`. Live: `heater-base-test`
+  and `taz15-blank`, re-imported fresh from their original `.epro2` files
+  (same slugs; the importer now keeps LCSC part numbers), each with an
+  `op='fork'` topo dogfood copy. No live EWOD board: the `ewod-dogfood-6`
+  numbers in this file (jobs 461063/461064/472111, 45/55 routed, ARR1 stored
+  v3 vs code v4) describe the retired board and stay as evidence only.
 
 ## No action needed
 
