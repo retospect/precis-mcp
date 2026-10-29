@@ -7,21 +7,48 @@
 #                                      --for-hook — the client-entry half of
 #                                      the same check (gr513664)
 #   scripts/mcp-http-install --apply   show the diff, back up the installed copy
-#                                      to <installed>.bak-<UTC stamp>, copy the
-#                                      repo file over it (mode 755)
+#                                      to <installed>.bak-<UTC stamp>, install
+#                                      the repo file by atomic rename (temp
+#                                      file in the same directory + mv — never
+#                                      an in-place write: ensure.sh --recreate
+#                                      can be running, and bash reads scripts
+#                                      incrementally, gr530687), then write a
+#                                      stamp file <installed>.stamp recording
+#                                      the source commit sha, tree path and
+#                                      dirty flag of the tree that applied
+#   scripts/mcp-http-install --apply --force  override the stamp gate below
+# The stamp gate (gr530687): --apply refuses, naming the stamp's tree and sha,
+# when the installed copy's recorded source sha is not an ancestor of the
+# invoking tree's HEAD (git merge-base --is-ancestor — a stale worktree would
+# downgrade the live install), or when the stamp says the installed copy came
+# from a dirty tree (its content may not exist in git). A missing stamp is
+# allowed (first install, or a pre-stamp install).
 # Never runs the ensure script. Path override: PRECIS_MCP_ENSURE (as scripts/fleet).
 set -u
 
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 repo="$root/deploy/mcp-http/precis-mcp-http-ensure.sh"
 installed="${PRECIS_MCP_ENSURE:-$HOME/work/infrastructure/precis-mcp/scripts/precis-mcp-http-ensure.sh}"
+stamp="$installed.stamp"
 
 sha() { shasum -a 256 "$1" 2>/dev/null | cut -c1-64; }
+stamp_field() { sed -n "s/^$2=//p" "$1" 2>/dev/null | sed -n 1p; }
+
+apply=""
+force=""
+for_hook=""
+for a in "$@"; do
+  case "$a" in
+    --apply) apply=1 ;;
+    --force) force=1 ;;
+    --for-hook) for_hook=1 ;;
+  esac
+done
 
 repo_sha="$(sha "$repo")"
 inst_sha="$(sha "$installed")"
 
-if [ "${1:-}" = "--apply" ]; then
+if [ -n "$apply" ]; then
   if [ -z "$repo_sha" ]; then echo "repo copy missing: $repo" >&2; exit 1; fi
   # gr515239: --apply ships THIS checkout's copy over the installed script;
   # a stale second clone must not. The ensure script records the canonical
@@ -44,30 +71,105 @@ if [ "${1:-}" = "--apply" ]; then
     fi
   fi
   if [ "$repo_sha" = "$inst_sha" ]; then echo "mcp-http ensure script: in sync"; exit 0; fi
+  # gr530687 stamp gate: the installed copy records which commit installed
+  # it; refuse to overwrite a copy this tree cannot claim to supersede.
+  if [ -z "$force" ] && [ -s "$stamp" ]; then
+    s_sha="$(stamp_field "$stamp" sha)"
+    s_tree="$(stamp_field "$stamp" tree)"
+    s_dirty="$(stamp_field "$stamp" dirty)"
+    if [ "$s_dirty" = "true" ]; then
+      printf 'mcp-http-install: refusing --apply (gr530687): the installed copy came from a dirty tree (%s, sha %s), so the live content may not exist in git. next= re-apply from a clean commit of that tree, or pass --force to override.\n' \
+        "$s_tree" "$s_sha" >&2
+      exit 3
+    fi
+    # 0 = ancestor, 1 = known but not an ancestor, 128 = unknown to this
+    # clone — a fresh worktree that has not fetched yet. Keep the three
+    # apart so the reader gets the right recovery step.
+    git -C "$root" merge-base --is-ancestor "$s_sha" HEAD 2>/dev/null
+    anc_rc=$?
+    if [ "$anc_rc" -eq 128 ]; then
+      printf 'mcp-http-install: refusing --apply (gr530687): the installed copy came from %s at sha %s, which is unknown to this clone. next= run git fetch (or apply from the tree that made the install), or pass --force to override.\n' \
+        "$s_tree" "$s_sha" >&2
+      exit 3
+    fi
+    if [ "$anc_rc" -ne 0 ]; then
+      printf 'mcp-http-install: refusing --apply (gr530687): the installed copy came from %s at sha %s, which is not an ancestor of this tree HEAD (%s) — applying here would downgrade the live install. next= bring this tree up to date (or apply from a descendant tree), or pass --force to override.\n' \
+        "$s_tree" "$s_sha" "$(git -C "$root" rev-parse --short HEAD 2>/dev/null)" >&2
+      exit 3
+    fi
+  fi
+  # Resolve what the new stamp will say BEFORE anything touches the live
+  # install: a tree whose HEAD cannot be resolved must leave the installed
+  # script and its stamp untouched, never an install with an old stamp.
+  head_sha="$(git -C "$root" rev-parse HEAD 2>/dev/null)" || {
+    printf 'mcp-http-install: refusing --apply: cannot resolve HEAD in %s; nothing installed.\n' "$root" >&2
+    exit 1
+  }
+  # Dirty means the ensure script's own directory only — an untracked file
+  # elsewhere in the tree must not mark the stamp dirty.
+  dirty="false"
+  [ -n "$(git -C "$root" status --porcelain -- deploy/mcp-http 2>/dev/null)" ] && dirty="true"
   if [ -n "$inst_sha" ]; then
     diff -u "$installed" "$repo" || true
     cp -p "$installed" "$installed.bak-$(date -u +%Y%m%dT%H%M%SZ)" || exit 1
   else
     mkdir -p "$(dirname "$installed")" || exit 1
   fi
-  cp "$repo" "$installed" && chmod 755 "$installed" || exit 1
-  echo "mcp-http ensure script installed (repo $(echo "$repo_sha" | cut -c1-8)): now run $installed --recreate (or --migrate if --status says LEGACY)"
+  # Install via temp files in the same directory, then mv (atomic rename);
+  # never write the live paths in place — a concurrent ensure.sh --recreate
+  # reads its own script incrementally and a partial write crashes its bash.
+  # The stamp's temp file is filled BEFORE the script's mv, so the rename
+  # that publishes the new script is immediately followed by the stamp's.
+  tmp="$installed.tmp.$$"
+  tmp_stamp="$stamp.tmp.$$"
+  cp "$repo" "$tmp" && chmod 755 "$tmp" || { rm -f "$tmp" "$tmp_stamp"; exit 1; }
+  {
+    printf 'sha=%s\n' "$head_sha"
+    printf 'tree=%s\n' "$root"
+    printf 'dirty=%s\n' "$dirty"
+  } > "$tmp_stamp" || { rm -f "$tmp" "$tmp_stamp"; exit 1; }
+  mv -f "$tmp" "$installed" || { rm -f "$tmp" "$tmp_stamp"; exit 1; }
+  mv -f "$tmp_stamp" "$stamp" || {
+    echo "mcp-http-install: installed $installed but could not replace $stamp; the stamp still describes the previous install" >&2
+    exit 1
+  }
+  note=""
+  [ "$dirty" = "true" ] && note=" (dirty tree)"
+  echo "mcp-http ensure script installed (repo $(echo "$repo_sha" | cut -c1-8)$note): now run $installed --recreate (or --migrate if --status says LEGACY)"
   exit 0
 fi
 
 if [ -n "$repo_sha" ] && [ "$repo_sha" = "$inst_sha" ]; then
   # gr499042: under --for-hook a clean check prints nothing — SessionStart
-  # output is injected once and then carried every later turn.
-  [ "${1:-}" = "--for-hook" ] || echo "mcp-http ensure script: in sync"
+  # output is injected into context once and then carried every later turn.
+  [ -n "$for_hook" ] || echo "mcp-http ensure script: in sync"
 else
-  echo "mcp-http ensure script DIFFERS from repo (installed ${inst_sha:0:8}, repo ${repo_sha:0:8}): run scripts/mcp-http-install --apply, then $installed --recreate (or --migrate if --status says LEGACY)"
+  # gr530687: when a stamp records what installed the live copy, say which
+  # side of the diff is newer, so the reader knows whether --apply here is
+  # safe or a downgrade.
+  newer=""
+  if [ -s "$stamp" ]; then
+    s_sha="$(stamp_field "$stamp" sha)"
+    s_tree="$(stamp_field "$stamp" tree)"
+    s_dirty="$(stamp_field "$stamp" dirty)"
+    if [ "$s_dirty" = "true" ]; then
+      newer="; installed stamp is from a dirty tree ($s_tree, sha ${s_sha:0:12}) — compare by hand"
+    elif git -C "$root" merge-base --is-ancestor "$s_sha" HEAD 2>/dev/null; then
+      newer="; install is behind (installed from ${s_sha:0:8}) — safe to --apply from this tree"
+    elif git -C "$root" merge-base --is-ancestor HEAD "$s_sha" 2>/dev/null; then
+      newer="; worktree is behind the installed copy (installed from ${s_sha:0:8}) — do NOT --apply from this tree; bring it up to date first"
+    else
+      newer="; installed sha ${s_sha:0:8} shares no ancestry with this tree — compare by hand"
+    fi
+  fi
+  echo "mcp-http ensure script DIFFERS from repo (installed ${inst_sha:0:8}, repo ${repo_sha:0:8}$newer): run scripts/mcp-http-install --apply, then $installed --recreate (or --migrate if --status says LEGACY)"
 fi
 
 # The client-entry half of the same SessionStart check (gr513664): the
 # ensure script can be in sync while the user-scope `precis` entry in
 # ~/.claude.json is gone — the preflight re-adds it and prints one line
 # naming the restart runbook. Fail-open like the drift check above.
-if [ "${1:-}" = "--for-hook" ] && [ -x "$root/scripts/mcp-entry-preflight" ]; then
+if [ -n "$for_hook" ] && [ -x "$root/scripts/mcp-entry-preflight" ]; then
   "$root/scripts/mcp-entry-preflight" --for-hook || true
 fi
 exit 0
