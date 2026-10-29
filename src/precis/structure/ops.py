@@ -1073,13 +1073,10 @@ def _op_from_smiles(scene: Scene, op: dict[str, Any]) -> None:
     this op actually runs; a missing rdkit raises a clean, retryable
     ``OpError`` naming the extra, never a bare ``ImportError``. The SMILES is
     parsed (``Chem.MolFromSmiles``), hydrogenated (``Chem.AddHs``), and
-    embedded into 3D with ``AllChem.EmbedMolecule`` under ETKDGv3 params
+    embedded into 3D by :func:`precis_geom.mol.embed_molecule` (ETKDGv3
     seeded from ``seed`` — same ``(smiles, seed)`` in, bit-identical geometry
-    out (rdkit's embedder is deterministic per seed). A follow-up MMFF
-    force-field cleanup (``AllChem.MMFFOptimizeMolecule``) is attempted but
-    **best-effort**: any failure (missing MMFF params for an exotic atom,
-    non-convergence) is swallowed — the raw ETKDG geometry is acceptable on
-    its own.
+    out — then a **best-effort** MMFF cleanup; any MMFF failure is swallowed,
+    the raw ETKDG geometry is acceptable on its own).
 
     One scene atom per rdkit atom (element = ``GetSymbol()``, position = the
     embedded conformer + ``offset``, ``charge`` = ``GetFormalCharge()`` —
@@ -1102,7 +1099,6 @@ def _op_from_smiles(scene: Scene, op: dict[str, Any]) -> None:
     smiles = str(smiles)
     try:
         from rdkit import Chem
-        from rdkit.Chem import AllChem
     except ImportError as exc:  # pragma: no cover - rdkit is the [chem] extra
         raise OpError(
             "from_smiles needs rdkit (the [chem] extra) to parse SMILES and "
@@ -1122,27 +1118,14 @@ def _op_from_smiles(scene: Scene, op: dict[str, Any]) -> None:
             f"from_smiles 'seed' must be an integer, got {seed_raw!r}"
         ) from exc
 
-    # The installed `rdkit-stubs` package's AllChem.pyi doesn't re-export
-    # these three (they live in rdDistGeom/rdForceFieldHelpers at runtime,
-    # via AllChem's real `from .rdDistGeom import *` — the stub just misses
-    # the wildcard) — real, present attributes at runtime; a stub gap only.
-    params = AllChem.ETKDGv3()  # type: ignore[attr-defined]
-    params.randomSeed = seed
-    embed_fail_msg = (
-        "3D embedding failed — the SMILES may be valid but geometrically "
-        "pathological; try a different seed"
-    )
-    try:
-        embed_status = AllChem.EmbedMolecule(mol, params)  # type: ignore[attr-defined]
-    except Exception as exc:
-        raise OpError(embed_fail_msg) from exc
-    if embed_status != 0:
-        raise OpError(embed_fail_msg)
+    # The embed (seeded ETKDGv3 + best-effort MMFF) lives in the molecular
+    # workspace package — one path shared with ``mol.frag``.
+    from precis_geom.mol import embed_molecule
 
     try:
-        AllChem.MMFFOptimizeMolecule(mol)  # type: ignore[attr-defined]
-    except Exception:
-        pass  # best-effort cleanup only — raw ETKDG geometry is acceptable
+        embed_molecule(mol, seed)
+    except BadInput as exc:
+        raise OpError(exc.cause) from exc
 
     offset = _as_vec3(op.get("offset"), np.zeros(3), "from_smiles 'offset'")
 
