@@ -482,6 +482,12 @@ agent-facing `tag()` verb refuses to add/remove those two):
   `raises-concern-about` edge. Derived, not toggled — recomputed on
   every retraction-edge add or remove.
 
+`search(kind='memory', view='count', args={'group_by': 'tag:SPACE'})`
+counts every live memory per space; untagged nodes land in an
+`(untagged)` bucket so the buckets sum to the total. `group_by:
+'touched'` instead splits counts by last-touched — `<=7d` / `<=30d` /
+`>30d`.
+
 Every other closed axis (`STATUS:`, `PRIO:`, `SRC:`, `CACHE:`,
 `WATCH:`) is rejected. Express the same intent with open tags:
 

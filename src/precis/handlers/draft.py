@@ -77,7 +77,11 @@ from precis.utils.link_tag_ops import (
     validate_link_mode,
 )
 from precis.utils.record_cite import record_cite_handles, record_type_of
-from precis.utils.search_merge import SearchHit, block_hits_to_search_hits
+from precis.utils.search_merge import (
+    SearchHit,
+    block_hits_to_search_hits,
+    ref_hits_to_search_hits,
+)
 from precis.utils.table_data import (
     TABLE_CTRL_RE,
     cell_next_hint,
@@ -1177,13 +1181,67 @@ class DraftHandler(Handler):
             limit=page_size,
             offset=offset,
         )
-        return self._render_search(hits, q=q, where=where, headings_only=headings_only)
+        # refs.title has no paging: past page 1 (or for a headings-only
+        # query) the leg would only repeat page-1 title hits.
+        title_pairs = (
+            []
+            if offset > 0 or headings_only
+            else self._title_lexical_pairs(
+                q, mode=mode, limit=page_size, scope_ref_id=scope_ref_id
+            )
+        )
+        return self._render_search(
+            hits,
+            q=q,
+            where=where,
+            headings_only=headings_only,
+            title_pairs=title_pairs,
+        )
+
+    def _title_lexical_pairs(
+        self,
+        q: str,
+        *,
+        mode: str | None,
+        limit: int,
+        scope_ref_id: int | None = None,
+        tags: list[str] | None = None,
+        exclude_ref_ids: list[int] | None = None,
+        include_ref_ids: list[int] | None = None,
+    ) -> list[tuple[Any, float]]:
+        """``search_refs_lexical`` over ``refs.title`` — the lexical
+        surface ``chunks.tsv`` doesn't cover (a draft's title lives on
+        the ref, not in a chunk — gr537833: a title word found the draft
+        only when the body happened to restate it). Runs only for modes
+        that admit a lexical leg — ``'semantic'`` keeps its vector-only
+        contract, ``'regex'`` is a literal grep."""
+        if (mode or "hybrid").strip().lower() not in ("hybrid", "lexical"):
+            return []
+        pairs = self.store.search_refs_lexical(
+            q=q, kind="draft", tags=tags, limit=limit
+        )
+        if scope_ref_id is not None:
+            pairs = [(r, s) for r, s in pairs if r.id == scope_ref_id]
+        if exclude_ref_ids:
+            drop = set(exclude_ref_ids)
+            pairs = [(r, s) for r, s in pairs if r.id not in drop]
+        if include_ref_ids is not None:
+            keep = set(include_ref_ids)
+            pairs = [(r, s) for r, s in pairs if r.id in keep]
+        return pairs
 
     def _render_search(
-        self, hits: list[Any], *, q: str, where: str, headings_only: bool
+        self,
+        hits: list[Any],
+        *,
+        q: str,
+        where: str,
+        headings_only: bool,
+        title_pairs: list[tuple[Any, float]] | None = None,
     ) -> Response:
         noun = "heading" if headings_only else "chunk"
-        if not hits:
+        title_pairs = title_pairs or []
+        if not hits and not title_pairs:
             return Response(
                 body=(
                     f"no draft {noun}s match {q!r} in {where}\n\n"
@@ -1191,15 +1249,29 @@ class DraftHandler(Handler):
                     "drop headings_only to search body text too."
                 )
             )
-        lines = [f"# {len(hits)} draft {noun} hit(s) for {q!r} — {where}\n"]
-        for block, ref, _score in hits:
-            handle = handle_registry.format_handle("draft", block.id, chunk=True)
-            draft = ref.slug or ref.id
-            first = (block.text or "").strip().splitlines()[0] if block.text else ""
-            if len(first) > 90:
-                first = first[:89] + "…"
-            lines.append(f"draft:{draft}  {handle}  [{block.chunk_kind}] {first}")
-        lines.append("\nNext: get(id='dc<chunk_id>') to read any hit in full.")
+        lines: list[str] = []
+        if title_pairs:
+            lines.append(
+                f"# {len(title_pairs)} draft title hit(s) for {q!r} — {where}\n"
+            )
+            for ref, _rank in title_pairs:
+                handle = handle_registry.try_format("draft", ref.id, chunk=False) or "?"
+                title = " ".join((ref.title or "").split())
+                if len(title) > 90:
+                    title = title[:89] + "…"
+                lines.append(f"draft:{ref.slug or ref.id}  {handle}  [title] {title}")
+            lines.append("")
+        if hits:
+            lines.append(f"# {len(hits)} draft {noun} hit(s) for {q!r} — {where}\n")
+            for block, ref, _score in hits:
+                handle = handle_registry.format_handle("draft", block.id, chunk=True)
+                draft = ref.slug or ref.id
+                first = (block.text or "").strip().splitlines()[0] if block.text else ""
+                if len(first) > 90:
+                    first = first[:89] + "…"
+                lines.append(f"draft:{draft}  {handle}  [{block.chunk_kind}] {first}")
+            lines.append("")
+        lines.append("Next: get(id='dc<chunk_id>') to read any hit in full.")
         return Response(body="\n".join(lines))
 
     def search_hits(
@@ -1210,6 +1282,7 @@ class DraftHandler(Handler):
         query_vec: list[float] | None = None,
         mode: str | None = None,
         tags: list[str] | None = None,
+        exclude: list[str] | None = None,
         exclude_ref_ids: list[int] | None = None,
         include_ref_ids: list[int] | None = None,
         **_kw: Any,
@@ -1218,22 +1291,45 @@ class DraftHandler(Handler):
         same chunk legs as ``search()`` minus the render. gr537833: the
         wildcard fan-out skipped draft entirely, so a draft an agent
         names other than by its title ('root CTO plan' vs slug
-        'tech-plan') had no cross-kind reach."""
-        if not (q and q.strip()):
+        'tech-plan') had no cross-kind reach.
+
+        Body chunks (titles + headings live there too) plus the
+        ``refs.title`` lexical leg ``chunks.tsv`` can't see — a title
+        match ranks first in the stream since it's the strongest signal
+        the query *names* the draft."""
+        if not (q and str(q).strip()):
             return []
+        q = str(q)
         if query_vec is None:
             query_vec = query_vec_for(self.embedder, q, mode)
+        excluded = list(exclude_ref_ids or [])
+        if exclude:
+            excluded += self.store.fetch_ref_ids_by_slugs(list(exclude), kind="draft")
+        excluded = sorted(set(excluded))
         triples = self.store.chunks.search_chunks(
             q=q,
             query_vec=query_vec,
             mode=mode,
             kind="draft",
             tags=tags,
-            exclude_ref_ids=exclude_ref_ids,
+            exclude_ref_ids=excluded or None,
             include_ref_ids=include_ref_ids,
             limit=page_size,
         )
-        return block_hits_to_search_hits(triples, kind="draft")
+        out = block_hits_to_search_hits(triples, kind="draft")
+        title_pairs = self._title_lexical_pairs(
+            q,
+            mode=mode,
+            limit=page_size,
+            tags=tags,
+            exclude_ref_ids=excluded or None,
+            include_ref_ids=include_ref_ids,
+        )
+        title_hits = ref_hits_to_search_hits(title_pairs, kind="draft")
+        # A draft already surfaced by title doesn't repeat via its chunks.
+        titled = {h.ref_id for h in title_hits if h.ref_id is not None}
+        merged = title_hits + [h for h in out if h.ref_id not in titled]
+        return merged[:page_size]
 
     # ── regex find (grep) + substitute (s///) ────────────────────────
 

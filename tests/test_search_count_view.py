@@ -140,14 +140,14 @@ class TestJobTypeStateFacet:
             for st in ("succeeded", "failed", "queued", None)
         }
         for (jt, st), n in expected.items():
-            label = f"{jt or '(none)'} | {f'STATUS:{st}' if st else '(none)'}"
+            label = f"{jt or '(none)'} | {f'STATUS:{st}' if st else '(untagged)'}"
             if n:
                 assert got[label] == n, (label, got)
         # The seeded shape, spelled out — guards against a swapped axis.
         assert got["fix_gripe | STATUS:succeeded"] == 2
         assert got["fix_gripe | STATUS:failed"] == 1
         assert got["sweep | STATUS:succeeded"] == 1
-        assert got["sweep | (none)"] == 1
+        assert got["sweep | (untagged)"] == 1
         assert got["(none) | STATUS:queued"] == 1
         assert len(got) == 5
 
@@ -189,7 +189,7 @@ class TestGripeTagAxisFacet:
             assert got[axis_value] == int(m.group(1))
         assert got["area:token-waste"] == 2
         assert got["area:capability-gap"] == 1
-        assert got["(none)"] == 1
+        assert got["(untagged)"] == 1
 
     def test_default_status_filter_and_terminal_note(
         self, gripes: GripeHandler, store: Store
@@ -370,6 +370,52 @@ class TestPassthroughKinds:
             "section:threads": 2,
             "section:gotchas": 1,
         }
+
+    def test_memory_space_axis_untagged_bucket_sums_to_total(
+        self, hub: Hub, store: Store
+    ) -> None:
+        """gr538072: ``tag:SPACE`` must count untagged dream nodes too —
+        an ``(untagged)`` bucket so the groups sum to the total."""
+        from precis.handlers.memory import MemoryHandler
+
+        tagged = store.insert_ref(kind="memory", slug=None, title="t", meta={})
+        store.add_tag(tagged.id, Tag.closed("SPACE", "repo-dev"), set_by="agent")
+        store.insert_ref(kind="memory", slug=None, title="u1", meta={})
+        store.insert_ref(kind="memory", slug=None, title="u2", meta={})
+
+        resp = MemoryHandler(hub=hub).search(view="count", group_by="tag:SPACE")
+        got = _facet_counts(resp.body)
+        assert got["SPACE:repo-dev"] == 1
+        assert got["(untagged)"] == 2
+        assert resp.body.startswith("# 3 memory entr")
+        assert sum(got.values()) == 3
+
+    def test_touched_facet_recency_buckets(self, hub: Hub, store: Store) -> None:
+        """gr538072: ``group_by='touched'`` splits counts by last-touched
+        (``GREATEST(last_viewed_at, last_recalled_at, updated_at)``) into
+        <=7d / <=30d / older."""
+        from precis.handlers.memory import MemoryHandler
+
+        fresh = store.insert_ref(kind="memory", slug=None, title="a", meta={})
+        week3 = store.insert_ref(kind="memory", slug=None, title="b", meta={})
+        stale = store.insert_ref(kind="memory", slug=None, title="c", meta={})
+        del fresh
+        now = datetime.now(UTC)
+        with store.pool.connection() as conn:
+            conn.execute(
+                "UPDATE refs SET updated_at=%s, last_viewed_at=NULL, "
+                "last_recalled_at=NULL WHERE ref_id = ANY(%s)",
+                (now - timedelta(days=15), [week3.id]),
+            )
+            conn.execute(
+                "UPDATE refs SET updated_at=%s, last_viewed_at=NULL, "
+                "last_recalled_at=NULL WHERE ref_id = ANY(%s)",
+                (now - timedelta(days=90), [stale.id]),
+            )
+            conn.commit()
+
+        resp = MemoryHandler(hub=hub).search(view="count", group_by="touched")
+        assert _facet_counts(resp.body) == {"<=7d": 1, "<=30d": 1, ">30d": 1}
 
 
 class TestCountValidation:

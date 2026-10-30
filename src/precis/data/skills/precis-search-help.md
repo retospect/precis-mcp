@@ -418,9 +418,11 @@ search(kind="job", view="count", link="gripe:472990")
 `refs.meta` scalar like `meta.job_type`), `tag:<axis>` (closed axis
 when uppercase — `tag:STATUS` — else the open `prefix:*` tag family),
 `fulltext` (the ref's body state — `full-text` / `card-only` / `stub`;
-paper's count also trails a `passages:` line of live body chunks).
+paper's count also trails a `passages:` line of live body chunks),
+`touched` (last-touched recency buckets — `<=7d` / `<=30d` / `>30d`).
 Comma-separate up to 3 for a cross facet (`a | b` rows). Refs missing
-the facet land in `(none)`. The totals are exact `COUNT`s over the same
+a tag facet land in `(untagged)`; other missing facet values land in
+`(none)`. The totals are exact `COUNT`s over the same
 WHERE as the listing, so they match the "N of K" page headers; `folder=`
 and `under=` fold in as ref-set filters, and `since=`/`until=` bound on
 `refs.created_at` (`until=` exclusive). `kind='job'` counts also tail a

@@ -417,3 +417,130 @@ def test_cross_kind_mode_is_forwarded_to_ref_level_numeric_ref_kind(
     )
     assert "[error:" not in out
     assert marker in out
+
+
+# ── gr537833: drafts join the cross-kind fan-out; title/headings lexical ──
+
+
+def _seed_draft(
+    store: Store, slug: str, title: str, blocks: list[str], emb: MockEmbedder
+) -> int:
+    ref = store.insert_ref(kind="draft", slug=slug, title=title)
+    store.chunks.insert_chunks(
+        ref.id,
+        [
+            ChunkInsert(ord=i, text=t, embedding=emb.embed_one(t))
+            for i, t in enumerate(blocks)
+        ],
+    )
+    return ref.id
+
+
+def test_cross_kind_returns_a_matching_draft(
+    runtime_with_store: PrecisRuntime, store: Store
+) -> None:
+    """``kind='draft'`` was absent from the fan-out's kind list — the same
+    q that found it single-kind returned nothing cross-kind (gr537833)."""
+    emb = MockEmbedder(dim=store.embedding_dim())
+    marker = f"gr537833{uuid4().hex[:8]}"
+    _seed_draft(
+        store,
+        "xkind-plan",
+        f"the {marker} plan",
+        [f"staffing note for {marker}"],
+        emb,
+    )
+
+    out = runtime_with_store.dispatch(
+        "search", {"kind": "draft,paper", "q": marker, "mode": "lexical"}
+    )
+    assert "[error:" not in out
+    assert marker in out
+
+    # The wildcard (and a kindless search) take the same fan-out.
+    out = runtime_with_store.dispatch(
+        "search", {"kind": "*", "q": marker, "mode": "lexical"}
+    )
+    assert "[error:" not in out
+    assert marker in out
+
+
+def test_draft_search_heading_word_finds_its_draft(
+    runtime_with_store: PrecisRuntime, store: Store
+) -> None:
+    emb = MockEmbedder(dim=store.embedding_dim())
+    marker = f"hedwark{uuid4().hex[:8]}"
+    _seed_draft(
+        store,
+        "heading-plan",
+        "a plan",
+        [f"Root {marker} technical plan", "ordinary body prose"],
+        emb,
+    )
+    out = runtime_with_store.dispatch("search", {"kind": "draft", "q": marker})
+    assert "heading-plan" in out
+
+
+def test_draft_search_title_word_finds_its_draft(
+    runtime_with_store: PrecisRuntime, store: Store
+) -> None:
+    """``refs.title`` is not a chunk — only the title lexical leg can see
+    it. A title word absent from every chunk still finds the draft."""
+    emb = MockEmbedder(dim=store.embedding_dim())
+    marker = f"titlemark{uuid4().hex[:8]}"
+    _seed_draft(
+        store,
+        "title-plan",
+        f"The {marker} initiative",
+        ["body prose that never names the title word"],
+        emb,
+    )
+    out = runtime_with_store.dispatch(
+        "search", {"kind": "draft", "q": marker, "mode": "lexical"}
+    )
+    assert "title-plan" in out
+    assert "[title]" in out
+
+
+def test_draft_search_title_leg_skips_later_pages_and_headings_only(
+    runtime_with_store: PrecisRuntime, store: Store
+) -> None:
+    """refs.title has no paging: page 2 must not repeat the page-1 title
+    hit, and ``headings_only`` searches headings, not titles."""
+    emb = MockEmbedder(dim=store.embedding_dim())
+    marker = f"pgtitle{uuid4().hex[:8]}"
+    _seed_draft(
+        store,
+        "pg-title-plan",
+        f"The {marker} initiative",
+        ["body prose that never names the title word"],
+        emb,
+    )
+    args = {"kind": "draft", "q": marker, "mode": "lexical"}
+    page1 = runtime_with_store.dispatch("search", args)
+    assert "[title]" in page1
+    page2 = runtime_with_store.dispatch("search", {**args, "page": 2})
+    assert "[title]" not in page2
+    headings = runtime_with_store.dispatch("search", {**args, "headings_only": True})
+    assert "[title]" not in headings
+
+
+def test_draft_search_hits_capped_at_page_size(store: Store) -> None:
+    """Title hits are prepended to chunk hits; the combined stream must
+    still honour ``page_size`` (was up to 2x)."""
+    from precis.dispatch import Hub
+    from precis.handlers.draft import DraftHandler
+
+    emb = MockEmbedder(dim=store.embedding_dim())
+    marker = f"capmark{uuid4().hex[:8]}"
+    for i in range(3):
+        _seed_draft(
+            store,
+            f"cap-plan-{i}",
+            f"The {marker} plan {i}",
+            [f"chunk about {marker} number {i}"],
+            emb,
+        )
+    handler = DraftHandler(hub=Hub(store=store, embedder=emb))
+    hits = handler.search_hits(q=marker, page_size=2, mode="lexical")
+    assert len(hits) == 2

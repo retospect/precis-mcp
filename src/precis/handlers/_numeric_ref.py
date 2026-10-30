@@ -209,7 +209,9 @@ def _parse_count_facets(group_by: Any) -> list[tuple[str, str]]:
     a ``refs.meta`` JSONB scalar; ``tag:<axis>`` → a closed namespace
     when all-caps (``tag:STATUS``) or an open ``prefix:*`` tag family
     otherwise (``tag:area``); ``'fulltext'`` → the ref's body state
-    (``full-text``/``card-only``/``stub``, gr518168). Comma-separated
+    (``full-text``/``card-only``/``stub``, gr518168); ``'touched'`` →
+    last-touched recency buckets (``<=7d`` / ``<=30d`` / ``>30d``,
+    gr538072). Comma-separated
     string or list; order is preserved (rendered left-to-right as
     ``a | b`` groups). Raises :class:`BadInput` on an unrecognized term
     rather than silently counting the wrong axis.
@@ -226,6 +228,8 @@ def _parse_count_facets(group_by: Any) -> list[tuple[str, str]]:
             spec = ("axis", "STATUS")
         elif t == "fulltext":
             spec = ("fulltext", "")
+        elif t == "touched":
+            spec = ("touched", "")
         elif m := _COUNT_GROUP_BY_META.match(t):
             spec = ("meta", m.group(1))
         elif m := _COUNT_GROUP_BY_TAG.match(t):
@@ -234,7 +238,7 @@ def _parse_count_facets(group_by: Any) -> list[tuple[str, str]]:
         else:
             raise BadInput(
                 f"unknown group_by term {t!r}",
-                options=["state", "meta.<key>", "tag:<axis>", "fulltext"],
+                options=["state", "meta.<key>", "tag:<axis>", "fulltext", "touched"],
                 next=(
                     "e.g. args={'group_by': 'meta.job_type,state'} or "
                     "'tag:area' — comma-separated, max "
@@ -258,9 +262,22 @@ def _count_facet_label(spec: tuple[str, str]) -> str:
         return f"meta.{key}"
     if ftype == "fulltext":
         return "fulltext"
+    if ftype == "touched":
+        return "touched"
     if key == "STATUS":
         return "state"
     return f"tag:{key}"
+
+
+def _count_facet_null_label(spec: tuple[str, str]) -> str:
+    """Rendered bucket for a ref with no value on this facet.
+
+    Tag facets read ``(untagged)`` — gr538072's ``tag:SPACE`` count had
+    the ~10.8k untagged dream nodes landing in a ``(none)`` bucket that
+    read as a null-value artifact rather than "every memory with no
+    SPACE tag". ``(none)`` stays for meta/fulltext — a missing scalar
+    there isn't an untagged state."""
+    return "(untagged)" if spec[0] in ("axis", "open_axis") else "(none)"
 
 
 # Browse lifecycle follows each kind's actual vocabulary; dormant quests stay live.
@@ -1591,7 +1608,10 @@ class NumericRefHandler(Handler):
             parts.append("")
             parts.append(" × ".join(_count_facet_label(f) for f in facets) + ":")
             for vals, n in groups:
-                label = " | ".join(v if v is not None else "(none)" for v in vals)
+                label = " | ".join(
+                    v if v is not None else _count_facet_null_label(spec)
+                    for v, spec in zip(vals, facets, strict=True)
+                )
                 parts.append(f"  {label}: {n}")
             if len(groups) == _COUNT_GROUP_LIMIT:
                 parts.append(f"  … (top {_COUNT_GROUP_LIMIT} groups by count)")

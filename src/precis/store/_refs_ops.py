@@ -4528,10 +4528,14 @@ class RefsMixin:
           both groups);
         * ``("fulltext", _)`` — group by the ref's body state
           (``'full-text'`` / ``'card-only'`` / ``'stub'``, the
-          :func:`body_state_sql` vocabulary; gr518168).
+          :func:`body_state_sql` vocabulary; gr518168);
+        * ``("touched", _)`` — group by the ref's last-touched recency
+          bucket (``<=7d`` / ``<=30d`` / ``>30d`` on
+          ``GREATEST(last_viewed_at, last_recalled_at, updated_at)``,
+          gr538072).
 
         Tag facets LEFT-JOIN so refs with no tag in the axis still count
-        under a NULL label (rendered ``(none)``). Returns ``(total,
+        under a NULL label (rendered ``(untagged)``). Returns ``(total,
         groups)`` — ``total`` is the filtered ref count, ``groups`` the
         ``(value tuple, count)`` rows ordered by count desc then label,
         capped at ``group_limit`` (``COUNT(DISTINCT ref_id)`` per group:
@@ -4569,6 +4573,20 @@ class RefsMixin:
                 # 'full-text' | 'card-only' | 'stub' — the
                 # paper_fetch_status vocabulary (gr518168).
                 select_exprs.append(body_state_sql("r"))
+                continue
+            if ftype == "touched":
+                # Recency buckets on the index's "last touched" clock —
+                # GREATEST(last_viewed_at, last_recalled_at, updated_at)
+                # (precis.utils.memory_hubs.recency_stamps), split
+                # <=7d / <=30d / older (gr538072). No join: the bucket
+                # derives from the ref row itself.
+                select_exprs.append(
+                    "CASE WHEN GREATEST(r.last_viewed_at, r.last_recalled_at, "
+                    "r.updated_at) >= now() - interval '7 days' THEN '<=7d' "
+                    "WHEN GREATEST(r.last_viewed_at, r.last_recalled_at, "
+                    "r.updated_at) >= now() - interval '30 days' THEN '<=30d' "
+                    "ELSE '>30d' END"
+                )
                 continue
             if ftype == "axis":
                 label = (
