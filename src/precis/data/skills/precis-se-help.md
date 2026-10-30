@@ -557,4 +557,5 @@ script (gr514049).
 - [[precis-se-states-help]] — discrete states, transitions, the derived swing, view='sweep'
 - [[precis-se-fret-help]] — FRET links as a comm channel: chromophores, optical links
 - [[precis-se-flatpack-help]] — flat-pack boxes with shelves from one sheet
+- [[precis-se-enclosure-help]]
 - [[precis-se-search-help]] — ranked library search (wants=), the composition proposer (compose=) and the lever family

@@ -37,6 +37,11 @@ from precis_se.chain.fold import op_fold_layout
 from precis_se.chain.protocol import op_make_steps
 from precis_se.chain.relax import op_relax_chain
 from precis_se.datums import snapshot_measure_datums, stamp_region_pins
+from precis_se.enclosure.se_op import (
+    PendingEnclosure,
+    finish_enclosure_box,
+    prepare_enclosure_box,
+)
 from precis_se.flatpack.se_op import (
     PendingFlatpack,
     finish_flatpack_box,
@@ -104,6 +109,8 @@ HANDLER_LEVEL_OPS = (
     # through ``flatpack_params`` for the handler's ``meta['flatpack']``
     # home.
     "flatpack_box",
+    # Two assembled CAD parts, deferred until the batch validates.
+    "enclosure_box",
     # A molecule's painted surface inverted into a pocket spec
     # (:mod:`precis_se.properties.pocket_spec`, pocket-from-molecule
     # slice 2b): store-read for the bound structures, GFN2 for the ESP
@@ -211,6 +218,10 @@ def apply_ops_with_atomic(
     flat-pack checks regenerate from. A caller with no such list refuses
     the op rather than dropping the params on the floor.
 
+    **``enclosure_box`` also defers its two CAD saves** until the ops and
+    DOF checks pass. Its generator params live in each part's CAD metadata,
+    so it needs no handler metadata out-list.
+
     Returns a compact echo of every atomic store-aware op (for the caller's
     response), or ``None`` when there were none."""
     roster = all_op_names()
@@ -239,6 +250,7 @@ def apply_ops_with_atomic(
     pending_molds: list[PendingMold] = []
     pending_chain_realizes: list[PendingRealizeChain] = []
     pending_flatpacks: list[PendingFlatpack] = []
+    pending_enclosures: list[PendingEnclosure] = []
     flatpack_last_ids: set[str] | None = None
     pending_dof_checks: list[str] = []
     # Echo on write: ``op_notes`` is bound for the whole walk, so a
@@ -401,6 +413,13 @@ def apply_ops_with_atomic(
                 flatpack_last_ids = {p.block_name for p in flatpack_pending.panels}
                 pending_flatpacks.append(flatpack_pending)
                 continue
+            if name == "enclosure_box":
+                echo, enclosure_pending = prepare_enclosure_box(
+                    store, tree, op, design_slug
+                )
+                echoes.append(echo)
+                pending_enclosures.append(enclosure_pending)
+                continue
             if name == "pocket_from_molecule":
                 echoes.append(pocket_spec.op_pocket_from_molecule(store, tree, op))
                 continue
@@ -465,6 +484,8 @@ def apply_ops_with_atomic(
             check_dof_axis_ports(node, node.dof, block_name, what="add_block")
         except OpError as exc:
             raise BadInput(str(exc)) from exc
+    for enclosure_pending in pending_enclosures:
+        finish_enclosure_box(store, tree, enclosure_pending)
     # After the finishers: a ``generate`` in this call has bound (and saved)
     # its structure by now, so a region measure written beside it pins to
     # the version it will actually be read against. A fresh resolver — the

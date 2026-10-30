@@ -128,12 +128,17 @@ kind), :mod:`precis_se.chain` (DNA/RNA over the chemistry-free
 :mod:`precis_se.properties` (region properties), :mod:`precis_se.flatpack`
 (flat parts cut from one sheet — a box with shelves whose joinery derives
 from the sheet thickness, nested into the neutral :mod:`precis.sheet` job
-that the laser SVG and CNC DXF writers export; a pure python surface until
-its se op and ``view='cut'`` land).
+that the laser SVG and CNC DXF writers export; ``flatpack_box`` binds its
+panels through deferred CAD saves), :mod:`precis_se.enclosure`
+(a rounded enclosure with separate box/lid CAD designs, millimetre inputs
+and assembled SI scenes). Its ``enclosure_box`` op binds two zero-pose
+blocks because the scenes already share the assembled frame; CAD saves
+wait for batch validation, and generator params stay in each scene's
+``meta['enclosure']`` for reproducible reruns.
 
 **Lifecycle.** ``put``/``edit`` build a tree through the ops table — the
 store-aware ops (``bind_structure``/``unbind_structure``/``generate``/
-``realize``/``join``/``relax_chain``) are intercepted first by
+``realize``/``join``/``relax_chain``/``enclosure_box``) are intercepted first by
 :func:`precis_se.atomic.apply.apply_ops_with_atomic` — and save through
 ``persist.save_tree`` under ``tree_mutation``; reads load a tree, derive
 (catalog envelopes, array members, ``realized-by`` links) and render under the

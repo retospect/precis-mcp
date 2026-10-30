@@ -123,6 +123,7 @@ from precis_se.atomic.apply import HANDLER_LEVEL_OPS, all_op_names
 from precis_se.atomic.bind import bind_structure, unbind_structure
 from precis_se.atomic.generate import prepare_generate, prepare_realize_chain
 from precis_se.atomic.join import prepare_join
+from precis_se.enclosure.se_op import prepare_enclosure_box
 from precis_se.flatpack.se_op import prepare_flatpack_box
 from precis_se.handler import (
     SeHandler,
@@ -251,6 +252,12 @@ _SE_STORE_AWARE_SIGNATURES: dict[str, str] = {
     "flatpack_box": (
         "flatpack_box{params:{W,H,D,material?,t?,shelves?,joint?,'fit'?,"
         "kerf?,cutter_d?,sheet?,shelf_load_n?}}"
+    ),
+    "enclosure_box": (
+        "enclosure_box{params:{x,y,z,wall?,floor?,lid_thickness?,corner_radius?,"
+        "draft_angle?,lip_height?,lip_clearance?,boss_count?,boss_placement?,"
+        "boss_outer_diameter?,screw_size?,counterbore?,ribs?,rib_ratio?}}"
+        " (dimensions mm, draft_angle degrees)"
     ),
 }
 
@@ -703,6 +710,7 @@ _SE_DRY_RUN_PREPARE: dict[str, Callable[[Any, SeTree, dict[str, Any], str], Any]
     # the retire set. The cad mints and retires stay deferred, same as
     # ``realize``.
     "flatpack_box": prepare_flatpack_box,
+    "enclosure_box": prepare_enclosure_box,
 }
 
 #: Handler-level ops deliberately NOT run in the pure dry-run, or the work

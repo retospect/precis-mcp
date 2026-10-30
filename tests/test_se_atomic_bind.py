@@ -177,7 +177,8 @@ def test_the_store_aware_ops_are_in_the_roster_but_not_the_pure_table() -> None:
     ``realize`` — one cad design per panel, minted in the deferred
     finisher. ``mold`` (se-cylinder-wrap-mold slice 3) is the third: one
     cad mold piece per pull, likewise deferred, and store-read for the
-    part geometry it cuts the cavity from."""
+    part geometry it cuts the cavity from. ``enclosure_box`` likewise defers
+    the two generated box/lid CAD saves until batch validation."""
     assert set(HANDLER_LEVEL_OPS) == {
         "bind_structure",
         "unbind_structure",
@@ -189,6 +190,7 @@ def test_the_store_aware_ops_are_in_the_roster_but_not_the_pure_table() -> None:
         "realize_chain",
         "make_steps",
         "flatpack_box",
+        "enclosure_box",
         "pocket_from_molecule",
         "pocket_realize",
         "wall_rate",

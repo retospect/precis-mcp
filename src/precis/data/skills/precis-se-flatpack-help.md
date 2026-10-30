@@ -167,5 +167,6 @@ changed and the figures that did seat.
 
 ## See also
 
+- [[precis-se-enclosure-help]] — a solid enclosure with a mating lid, screw bosses and ribs
 - [[precis-se-help]] — the se design surface the flat-pack op lives on
 - [[precis-se-print-help]] — the printed route for the same block
