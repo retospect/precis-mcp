@@ -28,12 +28,12 @@ def _seed_off_vocab_gripe(store: Any, title: str, status: str) -> int:
     return int(ref.id)
 
 
-def test_initial_load_one_grouped_count_plus_open_rows_only(
+def test_initial_load_one_grouped_count_plus_selected_rows_only(
     store: Any, client: Any, monkeypatch: Any
 ) -> None:
     """Acceptance (a): ``GET /gripes`` issues exactly one grouped count
-    and fetches only the open rows — every other status is a chip whose
-    rows stay in the DB until its first expand."""
+    and fetches only the default (triaged) rows — every other status is
+    a chip whose rows stay in the DB until its first expand."""
     from precis_web.routes import gripes
 
     insert_gripe(store, "fixture-open", status="open")
@@ -62,13 +62,13 @@ def test_initial_load_one_grouped_count_plus_open_rows_only(
     live = client.get("/gripes")
     assert live.status_code == 200
     assert counts_calls == 1
-    assert rows_calls == ["open"]
-    assert "fixture-open" in live.text
-    for hidden in ("fixture-triaged", "fixture-done", "fixture-retired"):
+    assert rows_calls == ["triaged"]
+    assert "fixture-triaged" in live.text
+    for hidden in ("fixture-open", "fixture-done", "fixture-retired"):
         assert hidden not in live.text
     # …but their chips — retired included — are there on the shared
     # lazy path.
-    for state in ("triaged", "done", "retired"):
+    for state in ("open", "done", "retired"):
         assert f'hx-get="/gripes/rows?status={state}"' in live.text
 
 
@@ -249,8 +249,8 @@ def test_every_status_renders_as_a_collapsible_chip(
     store: Any, client: Any, monkeypatch: Any
 ) -> None:
     """Every status present is a ``<details>`` chip in workflow order:
-    open expanded with its rows inline; the rest collapsed behind an
-    hx-get — none of their rows in the served HTML."""
+    the default triaged filter expanded with its rows inline; the rest
+    collapsed behind an hx-get — none of their rows in the served HTML."""
     from precis_web.routes import gripes
 
     for state in ("open", "triaged", "done"):
@@ -260,35 +260,35 @@ def test_every_status_renders_as_a_collapsible_chip(
     monkeypatch.setattr(gripes, "get_store", lambda request: store)
 
     live = client.get("/gripes").text
-    assert '<details class="mb-3 group" data-status="open" open>' in live
-    assert "fixture-panel-open" in live
-    for state in ("triaged", "done", "retired"):
+    assert '<details class="mb-3 group" data-status="triaged" open>' in live
+    assert "fixture-panel-triaged" in live
+    for state in ("open", "done", "retired"):
         assert f'data-status="{state}"' in live
         assert f'hx-get="/gripes/rows?status={state}"' in live
     for hidden in (
-        "fixture-panel-triaged",
+        "fixture-panel-open",
         "fixture-panel-done",
         "fixture-panel-retired",
     ):
         assert hidden not in live
 
 
-def test_open_chip_renders_with_zero_rows(
+def test_selected_chip_renders_with_zero_rows(
     store: Any, client: Any, monkeypatch: Any
 ) -> None:
-    """No open gripes: the open chip still renders (count 0, expanded)
-    with the friendly empty state, and a rows hit for an empty status
-    gets the same line."""
+    """No triaged gripes: the default triaged chip still renders (count
+    0, expanded) with the friendly empty state, and a rows hit for an
+    empty status gets the same kind of line."""
     from precis_web.routes import gripes
 
-    insert_gripe(store, "fixture-populated-triaged", status="triaged")
+    insert_gripe(store, "fixture-populated-open", status="open")
     monkeypatch.setattr(gripes, "get_store", lambda request: store)
 
     live = client.get("/gripes")
     assert live.status_code == 200
-    assert 'data-status="open" open' in live.text
-    assert "No open gripes" in live.text
-    assert "fixture-populated-triaged" not in live.text
+    assert 'data-status="triaged" open' in live.text
+    assert "No triaged gripes" in live.text
+    assert "fixture-populated-open" not in live.text
     frag = client.get("/gripes/rows?status=verify")
     assert frag.status_code == 200
     assert "No gripes with status verify." in frag.text

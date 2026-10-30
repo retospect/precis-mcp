@@ -144,24 +144,26 @@ def test_web_count_and_rows_treat_untagged_gripe_as_open(store: Store) -> None:
     with store.tx() as conn:
         conn.execute("SET LOCAL session_replication_role = replica")
         conn.execute("DELETE FROM ref_tags WHERE ref_id = %s", (rid,))
-    assert _gripes_count(store) == 2
+    # the nav badge counts the triaged pick list only (td541981)
+    assert _gripes_count(store) == 0
     rows = _rows(store, status_filter="live")
     assert len(rows) == 2
     assert {r["status"] for r in rows} == {"open"}
 
 
-def test_live_lists_include_verify(store: Store) -> None:
-    """``verify`` is non-terminal: the web live queue and the nav badge
-    count a verify gripe the same as open."""
+def test_live_list_includes_verify_but_badge_is_triaged_only(store: Store) -> None:
+    """``verify`` is non-terminal, so the web ``live`` filter lists it; the
+    nav badge counts only the triaged pick list."""
     from precis_web.nav import _gripes_count
     from precis_web.routes.gripes import _rows
 
     with store.tx() as conn:
         _insert_gripe(store, conn, status="verify")
+        _insert_gripe(store, conn, status="triaged")
         _insert_gripe(store, conn, status="done")
     assert _gripes_count(store) == 1
     rows = _rows(store, status_filter="live")
-    assert [r["status"] for r in rows] == ["verify"]
+    assert {r["status"] for r in rows} == {"verify", "triaged"}
 
 
 # ── status='!v' exclusion (gr496191) ────────────────────────────────

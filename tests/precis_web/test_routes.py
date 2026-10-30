@@ -4573,12 +4573,12 @@ def test_alerts_ack_and_unack_redirect_to_list(client) -> None:
 
 
 def test_gripes_page_renders_empty(client) -> None:
-    """Under the fake store (empty pool) the open chip renders at 0."""
+    """Under the fake store (empty pool) the default triaged chip renders at 0."""
     resp = client.get("/gripes")
     assert resp.status_code == 200
     assert "Gripes" in resp.text
-    assert "No open gripes" in resp.text
-    assert 'data-status="open" open' in resp.text
+    assert "No triaged gripes" in resp.text
+    assert 'data-status="triaged" open' in resp.text
 
 
 def test_gripes_list_carries_the_filing_form(client) -> None:
@@ -4755,10 +4755,10 @@ def test_gripes_nav_tab_renders_with_badge_hook(client) -> None:
     assert ">Gripes<" in resp.text
 
 
-def test_gripes_count_excludes_terminal_statuses() -> None:
-    """``_gripes_count`` mirrors ``gripes.py``'s default 'live' filter —
-    a raw SQL count excluding the terminal statuses (``wontfix`` plus
-    the ``STATUS:done`` drift agents leave on fixed gripes)."""
+def test_gripes_count_is_the_triaged_pick_list() -> None:
+    """``_gripes_count`` mirrors ``gripes.py``'s default filter — a raw SQL
+    count of the un-retired ``STATUS:triaged`` gripes (the pick list), the
+    status bound as a parameter."""
     from contextlib import contextmanager
 
     from precis_web.nav import _gripes_count
@@ -4769,7 +4769,8 @@ def test_gripes_count_excludes_terminal_statuses() -> None:
 
     class _Conn:
         def execute(self, sql, params=None):
-            assert "t.value IN ('done', 'wontfix')" in sql
+            assert "t.value = %s" in sql
+            assert params == ("triaged",)
             return _Cursor()
 
     class _Pool:

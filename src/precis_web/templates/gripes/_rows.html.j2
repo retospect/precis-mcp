@@ -46,7 +46,11 @@
 </div>
 {% else %}
 <div class="rounded-md border border-line px-3 py-2 text-sm text-fg-faint">
-  {% if rows_status == 'open' %}
+  {% if rows_status == 'triaged' %}
+  ✓ No triaged gripes — the pick list is empty. File friction as you hit
+  it — use the form above, or
+  <span class="font-mono">put(kind='gripe', text='…')</span>.
+  {% elif rows_status == 'open' %}
   ✓ No open gripes. File friction as you hit it — use the form above, or
   <span class="font-mono">put(kind='gripe', text='…')</span>.
   {% else %}

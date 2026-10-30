@@ -8,11 +8,14 @@ data-layer work: every mutation dispatches an existing verb (``tag`` /
 ``put`` / ``delete``) through the in-process runtime so validation and
 tree guards stay single-sourced with the MCP surface (see ``deps.py``).
 
-* ``GET /gripes`` — open gripes inline plus one status chip per other
-  status (gr520298). The load is a single ``COUNT … GROUP BY`` status
-  plus the open rows; every other status's rows lazy-load on the chip's
-  first expand. Retired gripes (merged/duplicate/junk soft-deletes)
-  bucket under a ``retired`` pseudo-status chip; carries the filing form.
+* ``GET /gripes[?status=<s>]`` — the selected filter's gripes inline
+  (default ``triaged``, the pick list the nav badge counts; ``live`` /
+  ``all`` / any one status by ``status=``) plus one status chip per
+  status with its count (gr520298). The load is a single
+  ``COUNT … GROUP BY`` status plus the selected rows; every other
+  status's rows lazy-load on the chip's first expand. Retired gripes
+  (merged/duplicate/junk soft-deletes) bucket under a ``retired``
+  pseudo-status chip; carries the filing form.
 * ``GET /gripes/rows?status=<s>[&offset=<n>]`` — the chips' shared
   lazy-rows fragment: one status's rows, on the same ``_rows`` query
   the list used to run for every status at page load. Paged
@@ -77,8 +80,12 @@ STATUS_VALUES: tuple[str, ...] = (
     "wontfix",
 )
 
-#: Terminal STATUS values the "live" queue (and the nav badge,
-#: ``nav.py::_gripes_count``) excludes. ``done`` = fixed/resolved
+#: The list's default filter and what the nav badge counts
+#: (``nav.py::_gripes_count``): the triaged pick list. "live" and "all"
+#: stay reachable by ``?status=``.
+DEFAULT_STATUS = "triaged"
+
+#: Terminal STATUS values the "live" filter excludes. ``done`` = fixed/resolved
 #: (the documented terminal state since gr207238 blessed the de facto
 #: practice — see ``precis-gripe-help``'s lifecycle table); ``wontfix``
 #: = decided not to act. ``delete`` retires junk/test artifacts only.
@@ -322,31 +329,90 @@ def _status_counts(store: Store) -> list[dict[str, Any]]:
     ]
 
 
-@router.get("", response_class=HTMLResponse)
-async def gripes(request: Request) -> HTMLResponse:
-    """Open gripes inline + one chip per other status (gr520298).
+def _filter_chips(chips: list[dict[str, Any]], selected: str) -> list[dict[str, Any]]:
+    """The page's chips with the selected filter guaranteed present.
 
-    Two queries at load: the grouped count and the open rows — the
-    terminal/retired cohort (thousands of rows in prod) never leaves
-    the DB until its chip is expanded."""
-    store = get_store(request)
-    chips = _status_counts(store)
-    if not any(c["status"] == "open" for c in chips):
-        chips.insert(
-            0,
-            {"status": "open", "count": 0, "badge": _status_badge("open")},
+    ``live`` / ``all`` are cohort filters, not stored statuses, so they
+    get a synthetic leading chip whose count is summed from the grouped
+    count (``live`` = every non-retired, non-terminal status; ``all``
+    = everything including the retired bucket). A selected status with
+    no rows (``triaged`` on an empty pick list) still renders, at 0.
+    """
+    out = list(chips)
+    if selected == "live":
+        count = sum(
+            c["count"]
+            for c in chips
+            if c["status"] != "retired" and c["status"] not in TERMINAL_VALUES
         )
-    open_rows = _rows(store, status_filter="open", limit=_ROWS_PAGE + 1)
+    elif selected == "all":
+        count = sum(c["count"] for c in chips)
+    elif any(c["status"] == selected for c in chips):
+        return out
+    else:
+        count = 0
+    out.insert(
+        0, {"status": selected, "count": count, "badge": _status_badge(selected)}
+    )
+    return out
+
+
+@router.get("", response_class=HTMLResponse)
+async def gripes(request: Request, status: str = DEFAULT_STATUS) -> HTMLResponse:
+    """The selected filter's rows inline + one chip per status (gr520298).
+
+    The default filter is ``triaged`` — the pick list, the same count
+    the nav badge shows (``nav.py::_gripes_count``). ``?status=live`` /
+    ``all`` / any one status reaches the rest; the chips carry counts
+    per status so the big list is one click away.
+
+    Two queries at load: the grouped count and the selected rows — the
+    terminal/retired cohort (thousands of rows in prod) never leaves
+    the DB until its chip is expanded. ``status`` takes the same
+    allowlist as ``/gripes/rows``."""
+    store = get_store(request)
+    counts = _status_counts(store)
+    allowed = _allowed_statuses(counts)
+    if status not in allowed:
+        return _unknown_status(request, status, allowed)
+    chips = _filter_chips(counts, status)
+    selected_rows = _rows(store, status_filter=status, limit=_ROWS_PAGE + 1)
     return templates.TemplateResponse(
         request,
         "gripes/list.html.j2",
         {
             "active_tab": "gripes",
             "chips": chips,
-            "open_rows": open_rows[:_ROWS_PAGE],
-            "open_next_offset": (_ROWS_PAGE if len(open_rows) > _ROWS_PAGE else None),
+            "selected": status,
+            "selected_rows": selected_rows[:_ROWS_PAGE],
+            "selected_next_offset": (
+                _ROWS_PAGE if len(selected_rows) > _ROWS_PAGE else None
+            ),
             "filed_by": _filed_by(request),
         },
+    )
+
+
+def _allowed_statuses(counts: list[dict[str, Any]]) -> tuple[str, ...]:
+    """``_STATUS_PARAM_VALUES`` plus every status the grouped count
+    returned — a drift status's chip stays selectable."""
+    return tuple(
+        dict.fromkeys((*_STATUS_PARAM_VALUES, *(str(c["status"]) for c in counts)))
+    )
+
+
+def _unknown_status(
+    request: Request, status: str, allowed: tuple[str, ...]
+) -> HTMLResponse:
+    return templates.TemplateResponse(
+        request,
+        "error.html.j2",
+        {
+            "title": "Unknown gripe status",
+            "detail": f"unknown status {status!r} — allowed: " + ", ".join(allowed),
+            "status": 400,
+        },
+        status_code=400,
     )
 
 
@@ -367,24 +433,9 @@ async def status_rows(
     swaps into the tbody in place of the show-more row that fetched
     it."""
     store = get_store(request)
-    allowed = tuple(
-        dict.fromkeys(
-            (*_STATUS_PARAM_VALUES, *(str(c["status"]) for c in _status_counts(store)))
-        )
-    )
+    allowed = _allowed_statuses(_status_counts(store))
     if status not in allowed:
-        return templates.TemplateResponse(
-            request,
-            "error.html.j2",
-            {
-                "title": "Unknown gripe status",
-                "detail": (
-                    f"unknown status {status!r} — allowed: " + ", ".join(allowed)
-                ),
-                "status": 400,
-            },
-            status_code=400,
-        )
+        return _unknown_status(request, status, allowed)
     offset = max(offset, 0)
     rows = _rows(store, status_filter=status, limit=_ROWS_PAGE + 1, offset=offset)
     return templates.TemplateResponse(

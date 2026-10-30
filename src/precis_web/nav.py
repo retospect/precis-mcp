@@ -2,18 +2,22 @@
 
 The nav shows three live counts:
 
-* **Needs you** — open ``ask-user`` todos + papers tagged
-  ``needs-triage``. Both are queues where *you* must act: the planner is
-  paused on a question, or a paper's auto-derived metadata was junk and
-  needs a human fix. (The chunkless paper-stub *fetch* backlog is
+* **Needs you** — showstopper and ``ask-user`` decision rows from
+  :func:`precis.todo.asks_view.asks_model` (a lane is stopped / the next
+  slice waits on a question) + papers tagged ``needs-triage``. Both are
+  queues where *you* must act: the planner is paused on a question, or a
+  paper's auto-derived metadata was junk and needs a human fix.
+  Discussions and a bare ``waiting-for:reto`` are on the ``/asks`` page
+  but not the badge. (The chunkless paper-stub *fetch* backlog is
   deliberately excluded — the fetcher works that automatically; it lives
   under Browse, not here.) The ``Needs you`` tab
   (:mod:`precis_web.routes.needs_you`) lands on both.
-* **Gripes** — live ``kind='gripe'`` rows (every ``STATUS:`` value but
-  the terminal ``done``/``wontfix`` — the workbench's default "live"
-  filter, :mod:`precis_web.routes.gripes`). A distinct colour from both
-  other badges — dev-bug-tracker attention, not an operator health
-  signal or a planner block.
+* **Gripes** — ``kind='gripe'`` rows tagged ``STATUS:triaged``, the pick
+  list: the workbench's default filter
+  (:mod:`precis_web.routes.gripes`), so the badge reads what the page
+  opens on. A distinct colour from both other badges — dev-bug-tracker
+  attention, not an operator health signal or a planner block.
+  A permanent large count stops meaning anything.
 * **Alerts** — open ``kind='alert'`` rows (machine-detected ops /
   health conditions). A different colour from "Needs you" on purpose —
   system-flagged vs you-must-act, mirroring how ``alert`` is kept
@@ -48,31 +52,22 @@ log = logging.getLogger(__name__)
 
 
 def _asks_count(store: Store) -> int:
-    """Open todos carrying an ``ask-user`` tag.
+    """Showstoppers plus ask-user decisions from the asks model.
 
-    Count-only mirror of the ``_load_asks`` WHERE clause in
-    :mod:`precis_web.routes.asks` — keep the two filters in sync.
+    The ``/asks`` page's default view (td541979) shows the same rows:
+    every ``showstopper``-class row, and ``decision`` rows that are
+    ``ask-user`` todos. Discussions and the rest of the decision class
+    (a bare ``waiting-for:reto``, ``needs:ruling`` gripes) stay on the
+    page behind its filter chips but off the badge. Classification is
+    :func:`precis.todo.asks_view.asks_model`'s — not reimplemented here.
     """
-    with store.pool.connection() as conn:
-        row = conn.execute(
-            """
-            SELECT count(DISTINCT r.ref_id)
-              FROM refs r
-              JOIN ref_tags rt ON rt.ref_id = r.ref_id
-              JOIN tags t ON t.tag_id = rt.tag_id
-             WHERE r.kind = 'todo' AND r.retired_at IS NULL
-               AND t.namespace = 'OPEN'
-               AND (t.value = 'ask-user' OR t.value LIKE 'ask-user:%%')
-               AND COALESCE(
-                     (SELECT t2.value FROM ref_tags rt2
-                        JOIN tags t2 ON t2.tag_id = rt2.tag_id
-                       WHERE rt2.ref_id = r.ref_id
-                         AND t2.namespace = 'STATUS' LIMIT 1),
-                     'open'
-                   ) NOT IN ('done', 'won''t-do')
-            """,
-        ).fetchone()
-    return int(row[0]) if row and row[0] is not None else 0
+    from precis.todo.asks_view import DECISION, SHOWSTOPPER, asks_model
+
+    return sum(
+        1
+        for r in asks_model(store).rows
+        if r.klass == SHOWSTOPPER or (r.klass == DECISION and "ask-user" in r.reasons)
+    )
 
 
 def _alerts_count(store: Store) -> int:
@@ -97,28 +92,28 @@ def _alerts_count(store: Store) -> int:
 
 # store stays Any: tests pass a hand-rolled fake narrower than Store
 def _gripes_count(store: Any) -> int:
-    """Live (non-terminal) ``kind='gripe'`` rows; untagged counts as open.
+    """Un-retired ``kind='gripe'`` rows tagged ``STATUS:triaged`` — the pick list.
 
-    Count-only mirror of ``gripes.py::_rows``'s default ``status='live'``
-    filter — keep the two in sync (both exclude
-    ``gripes.TERMINAL_VALUES``: ``wontfix`` plus the ``STATUS:done``
-    drift agents leave on fixed-but-unretired gripes).
+    Count-only mirror of ``gripes.py::_rows`` at the page's default
+    filter (``gripes.DEFAULT_STATUS``, ``triaged``) — keep the two in
+    sync. The full live list is one click away on ``/gripes`` and is
+    deliberately not what the badge counts.
     """
-    from precis_web.routes.gripes import TERMINAL_VALUES
+    from precis_web.routes.gripes import DEFAULT_STATUS
 
-    terminals = ", ".join(f"'{v}'" for v in TERMINAL_VALUES)
     with store.pool.connection() as conn:
         row = conn.execute(
-            f"""
+            """
             SELECT count(*)
               FROM refs r
              WHERE r.kind = 'gripe' AND r.retired_at IS NULL
-               AND NOT EXISTS (
+               AND EXISTS (
                    SELECT 1 FROM ref_tags rt
                      JOIN tags t ON t.tag_id = rt.tag_id
                     WHERE rt.ref_id = r.ref_id AND t.namespace = 'STATUS'
-                      AND t.value IN ({terminals}))
+                      AND t.value = %s)
             """,
+            (DEFAULT_STATUS,),
         ).fetchone()
     return int(row[0]) if row and row[0] is not None else 0
 

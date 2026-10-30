@@ -35,15 +35,23 @@
 </details>
 
 {# One <details> chip per status, workflow order (gr520298). Only the
-   open panel carries rows at page load — every other status fires ONE
+   selected filter's panel carries rows at page load (default: triaged,
+   the pick list the nav badge counts) — every other status fires ONE
    /gripes/rows request on its first expand (``toggle once``), on the
    shared code path; counts come from the load-time GROUP BY, so a
    1.9k-row done bucket costs a number, not a table. ``retired`` is the
    pseudo-status the count gives soft-deleted rows (merged/duplicate/
-   junk). #}
+   junk). ``live`` / ``all`` lead the list only when selected. #}
+<p class="mb-3 text-sm text-fg-faint">
+  Showing <span class="font-mono">{{ selected }}</span>.
+  Filter:
+  {% for f in ['triaged', 'live', 'all'] %}
+  {% if f == selected %}<span class="font-semibold text-fg-secondary">{{ f }}</span>{% else %}<a href="/gripes?status={{ f }}" class="text-accent-deep hover:underline">{{ f }}</a>{% endif %}{% if not loop.last %} · {% endif %}
+  {% endfor %}
+</p>
 {% for c in chips %}
-<details class="mb-3 group" data-status="{{ c.status }}"{% if c.status == 'open' %} open{% endif %}
-  {%- if c.status != 'open' %} hx-get="/gripes/rows?status={{ c.status | urlencode }}" hx-trigger="toggle once" hx-target="#gripe-rows-{{ loop.index }}" hx-swap="innerHTML"{% endif %}>
+<details class="mb-3 group" data-status="{{ c.status }}"{% if c.status == selected %} open{% endif %}
+  {%- if c.status != selected %} hx-get="/gripes/rows?status={{ c.status | urlencode }}" hx-trigger="toggle once" hx-target="#gripe-rows-{{ loop.index }}" hx-swap="innerHTML"{% endif %}>
   <summary class="cursor-pointer select-none text-sm font-semibold text-fg-secondary py-1 flex items-center gap-2">
     <span class="text-fg-faint transition group-open:rotate-90">&#9656;</span>
     <span class="inline-block rounded border px-1.5 py-0.5 text-[11px] font-medium uppercase {{ c.badge }}">
@@ -52,8 +60,8 @@
     <span class="text-fg-faint font-normal">{{ c.count }}</span>
   </summary>
   <div id="gripe-rows-{{ loop.index }}" class="mt-2">
-    {% if c.status == 'open' %}
-      {% set rows = open_rows %}{% set rows_status = c.status %}{% set next_offset = open_next_offset %}{% set append = false %}{% include "gripes/_rows.html.j2" %}
+    {% if c.status == selected %}
+      {% set rows = selected_rows %}{% set rows_status = c.status %}{% set next_offset = selected_next_offset %}{% set append = false %}{% include "gripes/_rows.html.j2" %}
     {% else %}
       <div class="rounded-md border border-line px-3 py-2 text-sm text-fg-faint">loading…</div>
     {% endif %}
