@@ -238,6 +238,80 @@ Pick: fit for the task class first; among fit lanes the one most behind
 its pacing target; metered last. Fit learns from the loop (first-round
 `LAND` raises, `FIX` or a revert lowers), rolled up nightly.
 
+## Branches: who merges what, how
+
+Reto, 2026-10-30 (Round 3): squash merges, reviews, deploys, automatic,
+and no detritus branches. What exists: `scripts/ship` already squashes
+(`commit-tree` + CAS push, one message), merges `origin/main` forward
+first, then resets the branch to the shipped `main`; worktrees that are
+merged, clean and sessionless auto-reap; `*-pin` branches with no
+worktree are left alone ("stranded", hundreds today); no pull requests
+except Devin's; review is Reto's queue plus the reviewer agent. The
+factory keeps the machinery and adds an owner to every branch.
+
+- **A branch is a slice.** The dispatcher creates `slice/<todo id>` from
+  `origin/main` in a fresh worktree or `sandbox_run` container when it
+  launches the slice; the branch name is the slice id, the slice's
+  `handoff` chunk records the tip sha. No branch exists without a slice,
+  and a slice has at most one branch. Reto's desks keep their named
+  trees; everything below applies to factory branches only.
+- **The builder pushes to its branch, nothing else.** Enforced by the
+  credential, not the prompt: the lane's token or deploy key may push
+  `slice/*` refs only; `main`, `release/*`, `gated` and `prod` take the
+  lander's credential. Devin's pull request is just its branch; the
+  lander lands the branch and closes the PR, nobody presses the GitHub
+  merge button.
+- **Review before land, from another lane.** The reviewer (lane table
+  `exclude=` the builder's vendor) reads the branch diff against
+  `origin/main` and the brief, and writes a `review` chunk on the slice:
+  `LAND`, `FIX` (with the list) or `REJECT` (with why), pinned to the
+  tip sha it read. `FIX` is a fix round on the same branch by the same
+  lane; `REJECT` deletes the branch and requeues the slice with the
+  verdict in its handoff. Reto reviews only what authority marks
+  Reto-only (harness diffs, migrations, `safe_fetch.py`, authority,
+  loosened tests); those land as decision rows in the asks list, with
+  the diff handle, never in his inbox.
+- **Landing is `scripts/ship`, run by the lander.** The lander is the
+  release-owner daemon of step 4 (or a W-tier runner until the daemon
+  exists). It lands a branch only when the newest `review` chunk says
+  `LAND` *and* its sha equals the branch tip; a push after the review
+  invalidates it. `--checked` by default, `--quick` for docs-only diffs,
+  the squash message from the slice title and brief. A merge conflict on
+  the forward merge is a fix round for the builder lane, not a human.
+  After the land the lander writes the `landed` chunk and **deletes the
+  branch and its worktree or container**, instead of ship's reset to
+  `main`: the slice is done, so the branch has no owner left. Human
+  trees keep the reset.
+- **Deploy is the release pass** (step 4): previous release done, new
+  shas on `main`, cut, gate, deploy pinned, close `awaiting-deploy`
+  rows. Migrations and `safe_fetch.py` stay on the human `/go`.
+- **Detritus has one rule: no owner, no branch.** The reaper runs with
+  the release pass: a `slice/*` branch whose slice is `landed`,
+  `abandoned` or missing is deleted (local and remote); a stranded
+  `*-pin` branch whose tip is contained in `main` is deleted; one not
+  contained is listed as a discussion row once, deleted after a grace
+  of three builds unless a slice claims it. A crashed slice leaves no
+  orphan: the ctx-guard or the runner writes the handoff from the branch
+  state, and the branch stays owned until the slice is requeued or
+  abandoned.
+- **Tags and receipts are the record, not branches.** `release/r<N>`
+  is kept (receipts in `scripts/round`); `main`'s squash commit names
+  the slice id and the review verdict in its trailer, so the branch can
+  go.
+
+**How it breaks, and the guard:** a builder with the lander's
+credential → separate tokens, drift-tested like authority; a review
+read on sha A landing sha B → the equality check above; reviewer and
+builder from one vendor → `exclude=` is mandatory for the review role,
+a missing lane table entry refuses the launch; the reaper deleting a
+human's branch → it touches `slice/*` and stranded `*-pin` only, never
+a branch with a live worktree or session; a `REJECT` loop → the
+fingerprint breaker of step 7 (three rejects park the slice as a
+showstopper). **Open:** whether to keep Devin on pull requests at all
+or give it a branch credential like the others; the grace period for
+stranded branches (three builds proposed); whether `--checked` is the
+default even for prose-only diffs.
+
 ## Next steps, by unlock value
 
 1. **One work tree, read-only first** (one build). `get(kind='todo',
@@ -327,7 +401,9 @@ its pacing target; metered last. Fit learns from the loop (first-round
    `sandbox_run` container, scoped token, push to its branch only; the
    runner writes the handoff from the session's last message and the
    branch state; a reviewer from another lane writes the verdict; W-tier
-   lanes land through `scripts/ship` like anyone else. Harness sessions
+   lanes land through `scripts/ship` like anyone else, under the branch
+   rules above (one branch per slice, review pinned to the tip, delete
+   on land). Harness sessions
    in tmux remain for Reto's desks and for a slice marked `needs-human`.
    Mode B runners (MCP-TOKEN-FIX) take this lane over once plan_tick
    proves it.
