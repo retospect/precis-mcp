@@ -360,6 +360,30 @@ _sync_skipped_hosts() {
     return 0
 }
 
+# Merge {"deploying": {"sha": <target>, "at": <utc>}} into the existing
+# deploy.fleet row, leaving sha/covered/skipped alone — they still
+# describe the LAST green deploy until _publish_fleet_ledger replaces the
+# whole value at success (which also drops this field). Written once the
+# run is past the point of touching hosts so the health_digest
+# deploy-fleet probe can tell "already on the in-flight target" from
+# "left behind" (gr536349: the restarts precede the ledger write by ~a
+# minute, so every freshly-bounced host alerted as deploy-behind until it
+# landed). UPDATE-only: no row yet means the probe's
+# deploy-ledger:unpublished is still the true state, and a deploy that
+# dies mid-run leaves a marker the probe expires (~30 min). Best-effort —
+# a failed write warns, never blocks the deploy.
+_publish_fleet_deploying() {
+    local sha="$1"
+    [[ "$sha" =~ ^[0-9a-f]{40}$ ]] || return 0
+    [[ -x "${REPO_ROOT}/scripts/prod-psql" ]] || return 0
+    if "${REPO_ROOT}/scripts/prod-psql" "UPDATE app_settings SET value = (value::jsonb || '{\"deploying\": {\"sha\": \"${sha}\", \"at\": \"$(date -u +%Y-%m-%dT%H:%M:%SZ)\"}}'::jsonb)::text, updated_at = now() WHERE key = 'deploy.fleet'" >/dev/null; then
+        say "fleet ledger: deploy.fleet marked deploying → ${sha:0:8}"
+    else
+        say "WARNING: fleet ledger in-flight write failed (prod-psql nonzero) — deploy-behind may false-fire until _publish_fleet_ledger lands"
+    fi
+    return 0
+}
+
 # Publish "what the overlay covers + what sha just landed" into
 # app_settings.deploy.fleet (gr507870). The health_digest
 # deploy-fleet-coverage condition compares it against host_heartbeat —
@@ -1672,6 +1696,12 @@ fi
         > "$(deploy_attempt_path "$REPO_ROOT")"
 } 2>/dev/null || true
 
+# In-flight ledger field (gr536349): the fleet ledger's sha only moves at
+# the success write, so every host restarted onto the target read as
+# "behind" in between. Mark the target now — the success write replaces
+# the whole row and drops it. Same resolution the stamp and marker use.
+_publish_fleet_deploying "$(git -C "$REPO_ROOT" rev-parse "$REF" 2>/dev/null || true)" || true
+
 CANARY="${PRECIS_DEPLOY_CANARY:-}"
 if [[ -z "$CANARY" ]]; then
     # unchanged single-pass path (PRECIS_DEPLOY_CANARY unset). Routed through
@@ -1720,6 +1750,9 @@ else
         _target_sha="$(git ls-remote https://github.com/retospect/precis-mcp "$REF" | awk 'NR==1{print $1}')"
         [[ ${#_target_sha} -eq 40 ]] || die "could not resolve '${REF}' to a commit via git ls-remote (got '${_target_sha:-empty}') — refusing to deploy an unpinned/unresolvable ref."
     fi
+    # A ref name resolved via ls-remote can differ from the local rev-parse
+    # the pre-restart in-flight write used — refresh it with the real pin.
+    _publish_fleet_deploying "$_target_sha" || true
     SHA_ARGS=(-e precis_worker_git_ref="$_target_sha" -e precis_web_git_ref="$_target_sha" -e precis_embedder_git_ref="$_target_sha")
     _rollback_hint="rollback: scripts/deploy <previous-sha> with PRECIS_DEPLOY_CANARY=${CANARY} (targets just the canary)."
 

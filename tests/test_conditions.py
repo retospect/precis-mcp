@@ -1296,6 +1296,7 @@ def test_limiter_refusing_green_on_pre_s1_schema(store: Store, monkeypatch) -> N
 
 _FLEET_SHA_A = "a" * 40
 _FLEET_SHA_B = "b" * 40
+_FLEET_SHA_C = "c" * 40
 
 
 def _seed_beat(store: Store, host: str, *, code_sha: str | None = None) -> None:
@@ -1397,6 +1398,51 @@ def test_deploy_fleet_ignores_dark_hosts(store: Store, fleet_ledger) -> None:
     keys = {f.key for f in _probe_deploy_fleet(store)}
     assert "deploy-uncovered:fleet-dark" not in keys
     assert "deploy-behind:fleet-a" not in keys
+
+
+def test_deploy_fleet_in_flight_target(store: Store, fleet_ledger) -> None:
+    """gr536349: mid-deploy the ledger's ``sha`` still names the last green
+    release while hosts restart onto the new target — a fresh ``deploying``
+    field keeps them from reading as behind. A stale one (the deploy died
+    mid-run) is ignored."""
+    fresh = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+    stale = (datetime.now(UTC) - timedelta(hours=1)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    for h in ("fleet-a", "fleet-b", "fleet-c"):
+        fleet_ledger.append(h)
+    _seed_beat(store, "fleet-a", code_sha=_FLEET_SHA_A)  # still on last release
+    _seed_beat(store, "fleet-b", code_sha=_FLEET_SHA_B)  # already on the target
+    _seed_beat(store, "fleet-c", code_sha=_FLEET_SHA_C)  # on neither
+    mine = ("fleet-a", "fleet-b", "fleet-c")
+
+    def ledger(at: str | None) -> dict:
+        d: dict = {"sha": _FLEET_SHA_A, "covered": list(mine)}
+        if at is not None:
+            d["deploying"] = {"sha": _FLEET_SHA_B, "at": at}
+        return d
+
+    def keys() -> set[str]:
+        return {
+            f.key
+            for f in _probe_deploy_fleet(store)
+            if f.key.rsplit(":", 1)[-1] in mine
+        }
+
+    # In-flight: fleet-a on the old release is fine, fleet-b on the target
+    # is fine, fleet-c on neither is behind.
+    _set_ledger(store, ledger(fresh))
+    assert keys() == {"deploy-behind:fleet-c"}
+
+    # No in-flight field — the pre-fix shape: fleet-b reads as behind.
+    _set_ledger(store, ledger(None))
+    assert "deploy-behind:fleet-b" in keys()
+
+    # A malformed ``deploying`` is ignored the same way.
+    _set_ledger(store, {**ledger(None), "deploying": "junk"})
+    assert "deploy-behind:fleet-b" in keys()
+
+    # A stale in-flight (the deploy died past the expiry) is ignored.
+    _set_ledger(store, ledger(stale))
+    assert "deploy-behind:fleet-b" in keys()
 
 
 # ── local-serving-pressure (llm-lane-scheduler S0) ───────────────────────

@@ -1034,6 +1034,14 @@ def _probe_limiter_refusing(store: Store) -> list[ConditionFinding]:
 #: only — never an address (the repo is public).
 _DEPLOY_LEDGER_KEY = "deploy.fleet"
 
+#: While a deploy runs, ``scripts/deploy`` merges ``"deploying":
+#: {"sha": <target>, "at": <isoZ>}`` into the same row so a host already
+#: restarted onto the in-flight target does not read as behind in the gap
+#: before the success write lands (gr536349). The success write replaces
+#: the whole value, dropping the field; a deploy that dies mid-run leaves
+#: a stale marker behind, which stops counting after this many minutes.
+_DEPLOY_IN_FLIGHT_MAX_MIN = 30
+
 #: A host heartbeating within this window counts as live for the coverage
 #: question — generous on purpose: an hourly eval that caught a host
 #: mid-bounce would otherwise drop and re-fire the alert every deploy.
@@ -1062,6 +1070,12 @@ def _probe_deploy_fleet(store: Store) -> list[ConditionFinding]:
     * ``deploy-behind:<host>`` — a covered host whose ``meta.code_sha``
       (heartbeat.py's served-commit stamp) is not the deployed sha.
 
+    A host serving the ledger's ``deploying.sha`` — the target of a deploy
+    still in flight — counts as current too: hosts restart onto it before
+    the success write moves ``sha`` (gr536349). The field expires after
+    ``_DEPLOY_IN_FLIGHT_MAX_MIN`` so a dead deploy's stale marker re-arms
+    the check.
+
     Both need the ledger: written by ``scripts/deploy`` at each success
     marker because the overlay's group membership never leaves the deploy
     machine. ``deploy-ledger:unpublished`` fires while no deploy has
@@ -1071,6 +1085,9 @@ def _probe_deploy_fleet(store: Store) -> list[ConditionFinding]:
     """
     fresh_min = int(
         _env_f("PRECIS_COND_DEPLOY_FLEET_FRESH_MIN", _DEPLOY_FLEET_FRESH_MIN)
+    )
+    in_flight_min = _env_f(
+        "PRECIS_COND_DEPLOY_IN_FLIGHT_MAX_MIN", _DEPLOY_IN_FLIGHT_MAX_MIN
     )
     with store.pool.connection() as conn:
         row = conn.execute(
@@ -1116,6 +1133,24 @@ def _probe_deploy_fleet(store: Store) -> list[ConditionFinding]:
     )
     skipped = ledger.get("skipped")
     skipped_set = {str(h) for h in skipped} if isinstance(skipped, dict) else set()
+    deploying = ledger.get("deploying")
+    deploying_sha = None
+    if isinstance(deploying, dict):
+        d_sha = deploying.get("sha")
+        d_at = deploying.get("at")
+        if (
+            isinstance(d_sha, str)
+            and _DEPLOY_SHA_RE.match(d_sha)
+            and isinstance(d_at, str)
+        ):
+            try:
+                age_s = (
+                    datetime.now(UTC) - datetime.fromisoformat(d_at)
+                ).total_seconds()
+            except ValueError:
+                age_s = in_flight_min * 60
+            if age_s < in_flight_min * 60:
+                deploying_sha = d_sha
     out: list[ConditionFinding] = []
     for host, code_sha in beats:
         host = str(host)
@@ -1138,10 +1173,16 @@ def _probe_deploy_fleet(store: Store) -> list[ConditionFinding]:
             and isinstance(code_sha, str)
             and _DEPLOY_SHA_RE.match(code_sha)
             and code_sha != deployed_sha
+            and code_sha != deploying_sha
         ):
             skipped_note = (
                 " (the deploy recorded it skipped — it still runs the pre-deploy sha)"
                 if host in skipped_set
+                else ""
+            )
+            in_flight_note = (
+                f"; a deploy to {deploying_sha[:12]} is in flight and it serves neither"
+                if deploying_sha
                 else ""
             )
             out.append(
@@ -1149,7 +1190,8 @@ def _probe_deploy_fleet(store: Store) -> list[ConditionFinding]:
                     key=f"deploy-behind:{host}",
                     detail=(
                         f"{host} serves {code_sha[:12]} but the deployed "
-                        f"release is {deployed_sha[:12]}{skipped_note} — "
+                        f"release is {deployed_sha[:12]}{skipped_note}"
+                        f"{in_flight_note} — "
                         "running stale code behind a fleet it was left out of"
                     ),
                 )
