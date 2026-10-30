@@ -642,8 +642,8 @@ class FindingHandler(NumericRefHandler):
                 ) from exc
 
         # Resolve the cited target. parse_link_target handles
-        # kind:identifier and kind:identifier~N forms; bare handles
-        # (no kind prefix) default to 'paper:'.
+        # kind:identifier and kind:identifier~N forms; a bare token that
+        # isn't a well-formed universal handle defaults to 'paper:'.
         draft_source: dict[str, Any] | None = None
         if staged_mode:
             draft_source, target = self._resolve_draft_source(
@@ -2475,10 +2475,21 @@ class FindingHandler(NumericRefHandler):
         """Parse ``cited_in=`` into a :class:`LinkTarget`.
 
         Accepts (a corpus handle — the chunk the claim was read in):
+        - ``'pc42'`` / ``'pk1583630'``  — universal chunk handles, the
+          form search/get output hands back (paper / patent chunk)
+        - ``'pa5'`` / ``'pt9'``         — universal ref handles, likewise
         - ``'miller23a'``               — bare cite_key, paper kind implied
         - ``'miller23a~42'``            — bare cite_key + chunk ord
         - ``'paper:miller23a'``         — explicit kind prefix
         - ``'paper:miller23a~42'``      — explicit + chunk
+        - ``'patent:us20260057250a1'``  — patent ref, by DOCDB slug
+          (``'patent:<docdb>~<ord>'`` grounds at a patent chunk)
+
+        A bare token that decodes as a universal handle is passed to
+        :func:`parse_link_target` as-is — it resolves whatever kind the
+        handle's code names (``pk`` is a patent chunk). Anything else
+        unprefixed keeps the legacy ``paper:`` default so bare
+        cite_keys still resolve.
 
         A bare ``'doi:…'`` / ``'arxiv:…'`` is **rejected** —
         :func:`parse_link_target` only resolves corpus kinds, so a

@@ -116,7 +116,8 @@ ordinary chase `put`s. Patent sources work the same way:
 ## How do I reference the paper or patent I'm citing?
 
 For an ordinary chase, `cited_in=` takes a **handle** — the chunk
-where you read the claim (`pc<id>`, copied from search/get output):
+where you read the claim (`pc<id>` / `pk<id>`, copied from
+search/get output):
 
 ```python
 args={"cited_in": "pc42"}  # paper chunk handle — what output hands you back

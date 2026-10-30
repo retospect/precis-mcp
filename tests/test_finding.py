@@ -64,6 +64,29 @@ def _seed_memory(store, *, text: str = "a research note") -> int:
     return ref.id
 
 
+def _seed_patent(store, *, slug: str = "us20260057250a1") -> tuple[int, int]:
+    """Insert a minimal patent ref + one claim chunk at ord=0.
+
+    Returns ``(ref_id, chunk_id)`` — ``f"pk{chunk_id}"`` is the universal
+    chunk handle ``search(kind='patent')``/``get`` hand back.
+    """
+    from precis.store.types import ChunkInsert
+
+    ref = store.insert_ref(
+        kind="patent",
+        slug=slug,
+        title=f"Test patent {slug}",
+        meta={},
+    )
+    store.chunks.insert_chunks(
+        ref.id,
+        [ChunkInsert(ord=0, text=f"Claim 1 of {slug}.", meta={})],
+    )
+    chunk = store.chunks.get_chunk(ref.id, pos=0)
+    assert chunk is not None
+    return ref.id, chunk.id
+
+
 # ── put validation ──────────────────────────────────────────────────
 
 
@@ -277,6 +300,78 @@ class TestPutHappy:
         expected_paper_id = make_finding_paper_id(body, scope, "fischer13")
         expected_pub_id = make_pub_id(expected_paper_id)
         assert pub_id == expected_pub_id
+
+
+# ── cited_in handle grammar (gr538201 / gr538204 / gr538307) ────────
+
+
+class TestCitedInHandles:
+    """A bare universal handle in ``cited_in=`` resolves whatever kind
+    its code names — a ``pk<id>`` patent chunk handle lands the
+    ``derived-from`` edge on the patent chunk exactly the way ``pc<id>``
+    does for a paper (previously the bare token was force-prefixed to
+    ``paper:`` and rejected)."""
+
+    def test_patent_chunk_handle_at_dispatch(self, store, runtime_with_store) -> None:
+        patent_ref_id, chunk_id = _seed_patent(store)
+        body = runtime_with_store.dispatch(
+            "put",
+            {
+                "kind": "finding",
+                "title": "the claimed alloy resists creep",
+                "body": "claim prose read in the patent's claim 1",
+                "cited_in": f"pk{chunk_id}",
+            },
+        )
+        assert "[error" not in body, body
+        fid = int(_search(r"id=(\d+)", body).group(1))
+        links = store.links_for(fid, direction="out", relation="derived-from")
+        assert any(
+            lk.dst_ref_id == patent_ref_id and lk.dst_chunk_id == chunk_id
+            for lk in links
+        ), links
+
+    def test_patent_docdb_selector_form(self, store) -> None:
+        """``patent:<docdb>~<ord>`` — the explicit-prefix form — grounds
+        at the same chunk (it never went through the ``paper:`` default)."""
+        patent_ref_id, chunk_id = _seed_patent(store, slug="ep1234567b1")
+        h = _make_handler(store)
+        resp = h.put(
+            title="t",
+            body="claim prose",
+            cited_in="patent:ep1234567b1~0",
+        )
+        fid = int(_search(r"id=(\d+)", resp.body).group(1))
+        links = store.links_for(fid, direction="out", relation="derived-from")
+        assert any(
+            lk.dst_ref_id == patent_ref_id and lk.dst_chunk_id == chunk_id
+            for lk in links
+        ), links
+
+    def test_paper_chunk_handle_grounds_at_the_chunk(self, store) -> None:
+        """``pc<id>`` is chunk-precise, not ref-level: the universal
+        handle's ``chunk_ord`` must reach the ``derived-from`` edge."""
+        paper_ref_id = _seed_paper(store)
+        chunk = store.chunks.get_chunk(paper_ref_id, pos=0)
+        assert chunk is not None
+        h = _make_handler(store)
+        resp = h.put(title="t", body="claim prose", cited_in=f"pc{chunk.id}")
+        fid = int(_search(r"id=(\d+)", resp.body).group(1))
+        links = store.links_for(fid, direction="out", relation="derived-from")
+        assert any(
+            lk.dst_ref_id == paper_ref_id and lk.dst_chunk_id == chunk.id
+            for lk in links
+        ), links
+
+    def test_dead_patent_chunk_handle_is_clean_notfound(self, store) -> None:
+        """A well-formed ``pk`` handle with no live chunk behind it
+        rejects as a clean NotFound, not a paper-kind confusion."""
+        from precis.errors import NotFound
+
+        _seed_patent(store)
+        h = _make_handler(store)
+        with pytest.raises(NotFound):
+            h.put(title="t", body="claim prose", cited_in="pk999999999")
 
 
 # ── parent_id wiring (lit-hunt auto_check linchpin) ─────────────────
