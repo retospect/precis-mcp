@@ -853,9 +853,9 @@ def test_long_transcript_walkable_in_chunk_ranges(
 def test_over_cap_get_refusal_names_range_call(
     runtime_with_store: PrecisRuntime, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """gr533135 end-to-end: the over-budget whole-body refusal's next=
-    IS the first chunk-range call — previously it offered only a
-    narrower search, so the body was unreachable."""
+    """gr533135 end-to-end: an over-budget whole-body get (head-outline:
+    head + outline, not a refusal) still names the first chunk-range
+    call, so the body stays reachable."""
     # The suite disables the context cap by default
     # (``PRECIS_TOOL_RESULT_CONTEXT_BYTES=0`` in conftest) — restore the
     # prod default so the over-cap path runs.
@@ -864,6 +864,6 @@ def test_over_cap_get_refusal_names_range_call(
     out, is_error = runtime_with_store.dispatch_with_status(
         "get", {"kind": "youtube", "id": "dQw4w9WgXcQ"}, fold=True
     )
-    assert is_error
-    assert "exceeds" in out
+    assert not is_error
+    assert len(out.encode("utf-8")) <= 4096
     assert "dQw4w9WgXcQ~0..3" in out
