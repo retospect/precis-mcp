@@ -473,6 +473,8 @@ def test_topo_route_empty_result_keeps_stored_copper(
         unreachable=(),
         stranded=(),
         no_via=(),
+        guarded=(),
+        severed=(),
     )
     monkeypatch.setattr(
         _tprealise,
@@ -549,6 +551,8 @@ def test_topo_route_copper_and_route_rows_write_atomically(
         unreachable=(),
         stranded=(),
         no_via=(),
+        guarded=(),
+        severed=(),
     )
     monkeypatch.setattr(
         _tprealise,

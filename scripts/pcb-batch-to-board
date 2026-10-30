@@ -8,6 +8,7 @@ Usage::
 
     scripts/pcb-batch-to-board SOURCE SLUG OUT_DIR
     scripts/pcb-batch-to-board --epro FILE.epro2 SLUG OUT_DIR
+    scripts/pcb-batch-to-board --catalog-footprints FOOTPRINTS.json SOURCE SLUG OUT_DIR
 
 ``SOURCE`` is a ``.json`` file holding the batch dict, or
 ``path/to/module.py:callable`` returning it. ``--epro`` instead imports
@@ -25,6 +26,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -68,6 +70,11 @@ def main(argv: list[str]) -> int:
 
     allow_loss = "--allow-loss" in argv
     argv = [a for a in argv if a != "--allow-loss"]
+    catalog: Path | None = None
+    if "--catalog-footprints" in argv:
+        i = argv.index("--catalog-footprints")
+        catalog = Path(argv[i + 1])
+        argv = argv[:i] + argv[i + 2 :]
     annotations: dict[str, Any] = {}
     if "--epro" in argv:
         i = argv.index("--epro")
@@ -102,7 +109,19 @@ def main(argv: list[str]) -> int:
     dest.mkdir(parents=True, exist_ok=True)
     main_py = dest / "main.py"
     try:
-        text = emit(batch, slug, source, annotations=annotations, allow_loss=allow_loss)
+        text = emit(
+            batch,
+            slug,
+            source,
+            annotations=annotations,
+            allow_loss=allow_loss,
+            catalog_cache=catalog,
+            catalog_relative_path=(
+                os.path.relpath(catalog.resolve(), dest.resolve())
+                if catalog
+                else None
+            ),
+        )
     except BoardScriptError as exc:
         print(f"{main_py}: {exc}", file=sys.stderr)
         return 1

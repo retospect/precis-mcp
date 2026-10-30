@@ -9,11 +9,45 @@ Hierarchy: flat; source carries no schematic sheets or blocks.
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import precis_geom.pcb as pcb
 
 
 def build() -> pcb.Board:
     b = pcb.Board("nano-usb-pd-test")
+    catalog = {
+        "C165948": pcb.catalog_part(
+            "C165948",
+            Path(__file__).parent / "footprints.json",
+            sha256="a89a200a975f2e734a8c17e51650ce8362484e68ecff3a203faaad06334d5cd1",
+        ),
+        "C2678061": pcb.catalog_part(
+            "C2678061",
+            Path(__file__).parent / "footprints.json",
+            sha256="79b687804ed95a463a28fa6c26fa7d2bee6ae5010912e17323f9bd4bb51e3c56",
+        ),
+        "C44377": pcb.catalog_part(
+            "C44377",
+            Path(__file__).parent / "footprints.json",
+            sha256="b8df2a44147a201acc3f84b50e45a304868c454f0ed051932b46450e826e366c",
+        ),
+        "C14877": pcb.catalog_part(
+            "C14877",
+            Path(__file__).parent / "footprints.json",
+            sha256="58829385c0554b2ccfad3ba794e6fe4c457457b6085afd367b7a96a0bb62fb0f",
+        ),
+        "C621942": pcb.catalog_part(
+            "C621942",
+            Path(__file__).parent / "footprints.json",
+            sha256="f213b1c20dc37ddcd4781679e13a5a87b46617cbd46168f44949286931dc75bd",
+        ),
+        "C919581": pcb.catalog_part(
+            "C919581",
+            Path(__file__).parent / "footprints.json",
+            sha256="693c01c6cfa7c2ada854c5ddbc48f5535bff01668eb7720ae61f7df39acfc53f",
+        ),
+    }
 
     # synthesized footprint: 'HDR-2.54-1x15' (source pads)
     _pads_hdr_2_54_1x15 = [
@@ -312,8 +346,8 @@ def build() -> pcb.Board:
     # parts
     j_usb = b.part(  # board='nano-usb-pd-test' lcsc:C165948
         "J_USB",
+        part=catalog["C165948"],
         label="USB-C receptacle TYPE-C-31-M-12",
-        lcsc="C165948",
         pins=[
             {
                 "name": "VBUS",
@@ -384,8 +418,8 @@ def build() -> pcb.Board:
     j_usb.on_edge("S", require="required")
     u_pd = b.part(  # board='nano-usb-pd-test' lcsc:C2678061
         "U_PD",
+        part=catalog["C2678061"],
         label="STUSB4500QTR PD sink controller",
-        lcsc="C2678061",
         pins=[
             {
                 "name": "VDD",
@@ -534,8 +568,8 @@ def build() -> pcb.Board:
     )
     u_b15 = b.part(  # board='nano-usb-pd-test' lcsc:C44377
         "U_B15",
+        part=catalog["C44377"],
         label="TPS54360 60V/3.5A buck",
-        lcsc="C44377",
         pins=[
             {
                 "name": "VIN",
@@ -725,8 +759,8 @@ def build() -> pcb.Board:
     )
     u_b9 = b.part(  # board='nano-usb-pd-test' lcsc:C44377
         "U_B9",
+        part=catalog["C44377"],
         label="TPS54360 60V/3.5A buck",
-        lcsc="C44377",
         pins=[
             {
                 "name": "VIN",
@@ -916,8 +950,8 @@ def build() -> pcb.Board:
     )
     u_b5 = b.part(  # board='nano-usb-pd-test' lcsc:C44377
         "U_B5",
+        part=catalog["C44377"],
         label="TPS54360 60V/3.5A buck",
-        lcsc="C44377",
         pins=[
             {
                 "name": "VIN",
@@ -1107,8 +1141,8 @@ def build() -> pcb.Board:
     )
     u1 = b.part(  # board='nano-usb-pd-test' lcsc:C14877
         "U1",
+        part=catalog["C14877"],
         label="ATMEGA328P-AU",
-        lcsc="C14877",
         pins=[
             {
                 "name": "VCC",
@@ -2009,8 +2043,8 @@ def build() -> pcb.Board:
     )
     u_hs1 = b.part(  # board='nano-usb-pd-test' lcsc:C621942
         "U_HS1",
+        part=catalog["C621942"],
         label="MIC5019YFT high-side driver",
-        lcsc="C621942",
         pins=[
             {
                 "name": "VDD",
@@ -2050,8 +2084,8 @@ def build() -> pcb.Board:
     )
     q1 = b.part(  # board='nano-usb-pd-test' lcsc:C919581
         "Q1",
+        part=catalog["C919581"],
         label="YJD40N04A N-FET 40V/40A TO-252",
-        lcsc="C919581",
         pins=[
             {
                 "name": "G",
@@ -2141,8 +2175,8 @@ def build() -> pcb.Board:
     )
     u_hs2 = b.part(  # board='nano-usb-pd-test' lcsc:C621942
         "U_HS2",
+        part=catalog["C621942"],
         label="MIC5019YFT high-side driver",
-        lcsc="C621942",
         pins=[
             {
                 "name": "VDD",
@@ -2182,8 +2216,8 @@ def build() -> pcb.Board:
     )
     q2 = b.part(  # board='nano-usb-pd-test' lcsc:C919581
         "Q2",
+        part=catalog["C919581"],
         label="YJD40N04A N-FET 40V/40A TO-252",
-        lcsc="C919581",
         pins=[
             {
                 "name": "G",
@@ -2273,8 +2307,8 @@ def build() -> pcb.Board:
     )
     u_hs3 = b.part(  # board='nano-usb-pd-test' lcsc:C621942
         "U_HS3",
+        part=catalog["C621942"],
         label="MIC5019YFT high-side driver",
-        lcsc="C621942",
         pins=[
             {
                 "name": "VDD",
@@ -2314,8 +2348,8 @@ def build() -> pcb.Board:
     )
     q3 = b.part(  # board='nano-usb-pd-test' lcsc:C919581
         "Q3",
+        part=catalog["C919581"],
         label="YJD40N04A N-FET 40V/40A TO-252",
-        lcsc="C919581",
         pins=[
             {
                 "name": "G",
@@ -2405,8 +2439,8 @@ def build() -> pcb.Board:
     )
     u_hs4 = b.part(  # board='nano-usb-pd-test' lcsc:C621942
         "U_HS4",
+        part=catalog["C621942"],
         label="MIC5019YFT high-side driver",
-        lcsc="C621942",
         pins=[
             {
                 "name": "VDD",
@@ -2446,8 +2480,8 @@ def build() -> pcb.Board:
     )
     q4 = b.part(  # board='nano-usb-pd-test' lcsc:C919581
         "Q4",
+        part=catalog["C919581"],
         label="YJD40N04A N-FET 40V/40A TO-252",
-        lcsc="C919581",
         pins=[
             {
                 "name": "G",
