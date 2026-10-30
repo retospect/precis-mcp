@@ -2,11 +2,12 @@
 
 Folds the two queues where *you* must act into one landing:
 
-* **Asks** — everything waiting on a human, in three classes
-  (showstopper / decision / discussion) grouped by quest and thread
-  (:mod:`precis.todo.asks_view`). Open ``kind='todo'`` refs carrying an
-  ``ask-user`` tag (the planner is paused on a question) render fully
-  interactive: answer inline to unlock the todo. The answer / dismiss forms POST to
+* **Asks** — what waits on a human, in three classes (showstopper /
+  decision / discussion) grouped by quest and thread
+  (:mod:`precis.todo.asks_view`); the default set, as on ``/asks`` —
+  ``?all=1`` there adds waiting-for and discussion rows. Open
+  ``kind='todo'`` refs carrying an ``ask-user`` tag (a question for the
+  owner, ``meta.ask``) render fully interactive: answer inline. The answer / dismiss forms POST to
   ``/asks/...`` — the standalone Asks page is kept for those deep links
   and for its own pager.
 * **Needs triage** — ``kind='paper'`` refs tagged ``needs-triage``
@@ -51,7 +52,7 @@ async def index(request: Request) -> HTMLResponse:
     """Combined asks + needs-triage landing."""
     store = get_store(request)
     asks = _load_asks(store, limit=_ASK_CAP)
-    groups, ask_by_id = class_groups(store, asks)
+    groups, ask_by_id, _hidden = class_groups(store, asks)
 
     triage_total = store.count_refs(kind="paper", tags=[_TRIAGE_TAG])
     triage_refs = store.list_refs(

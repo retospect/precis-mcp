@@ -1,63 +1,45 @@
-# Review queue — protocol
+# Review session — protocol
 
-Reto's one place to answer what the thread sessions need from him. The
-`review` tmux window (index 1) runs the session that walks him through it.
-The orchestrator (`organizer` window) and the 19 thread sessions feed it.
+Reto's one place to see where things stand and to answer what the thread
+sessions need from him. The `review` tmux window (index 1) runs the session
+that walks him through it. The orchestrator (`organizer` window) and the 19
+thread sessions feed it.
 
-## Layout
+There is no review-queue directory. A question for Reto is an `ask-user`
+todo with `meta.ask`, filed through the precis MCP from any machine; the
+list is `search(kind='todo', view='asks')` and the web `/asks` page. How to
+file and answer one: `get(kind='skill', id='precis-work-help')`, section
+"How do I ask the owner a question?".
 
-- `open/<slug>-<n>.md` — one item per decision. Written by a thread session
-  or the orchestrator.
-- `answered/<same name>.md` — the item plus Reto's answer, moved here by the
-  review session once the answer is delivered.
+## Writing a question
 
-## Item format (`open/*.md`)
+Rules for the todo text and `meta.ask.context`:
 
-```markdown
----
-area: paper | chemistry | pcb | se-design | memory-graph | platform | cluster-chore
-source: <tmux window name, or `precis` for a todo, or `organizer`>
-kind: decision | approval | look-at | chore | design-verdict
-blocks: <what cannot proceed until answered; `nothing` if advisory>
-answer-via: tmux | precis:<td id> | file
-filed: <UTC timestamp, Z>
----
-**Question.** One sentence Reto can answer.
-
-**Options.** Numbered; the recommended one first with the reason.
-
-**Context.** The minimum he needs: numbers, the id to open, the link.
-```
-
-An item that tells Reto something is ready to sign or approve (a nanopub,
-a hub) must cite a passing gate dry run of the exact wording and payload
-he will submit: `get(kind='finding', id=…, view='mint-preflight',
-args={'payload': …})` or `precis nanopub check`, with the PASS line and
-when it ran. A claim edited after that run needs a new run. A sign item
-without it is not ready (fi263188, 2026-10-03: "ready to sign" was filed
-on a wording the claim-sentence gate refused).
-
-Ids carry their names. A quest id never stands alone: write it as
-`qu164903 (NO→NH3 selectivity)` at every mention, question and context
-alike. Reto reads items by quest, not by number (his rule, 2026-10-02);
-the same goes for a draft or paper id when the item turns on which one
-it is.
-
-Distances are in builds or dev cycles, never calendar dates: "S4: one
-build plus a render round trip", not "~10-09". Reto, 2026-10-03, on
-hexfold-toolkit-2: date estimates are time wasted; how many builds out it
-may be is the answer he wants. This applies to review items, design notes,
-`scripts/round eta` text and the Resume block of a thread file.
+- An item that tells Reto something is ready to sign or approve (a nanopub,
+  a hub) must cite a passing gate dry run of the exact wording and payload
+  he will submit: `get(kind='finding', id=…, view='mint-preflight',
+  args={'payload': …})` or `precis nanopub check`, with the PASS line and
+  when it ran. A claim edited after that run needs a new run. A sign item
+  without it is not ready (fi263188, 2026-10-03: "ready to sign" was filed
+  on a wording the claim-sentence gate refused).
+- Ids carry their names. A quest id never stands alone: write it as
+  `qu164903 (NO→NH3 selectivity)` at every mention, question and context
+  alike. Reto reads items by quest, not by number (his rule, 2026-10-02);
+  the same goes for a draft or paper id when the item turns on which one
+  it is.
+- Distances are in builds or dev cycles, never calendar dates: "S4: one
+  build plus a render round trip", not "~10-09". Reto, 2026-10-03, on
+  hexfold-toolkit-2: date estimates are time wasted; how many builds out it
+  may be is the answer he wants. This applies to questions, design notes,
+  `scripts/round eta` text and the Resume block of a thread file.
 
 ## The review session's job
 
-1. **Gather.** Read every file in `open/`. Also pull Reto's own precis
-   queue: `search(kind='todo', tags=['waiting-for:reto'], status='open',
-   page_size=100)`; treat each as an item with `source: precis`. Also check
-   each thread window for an open question dialog
-   (`scripts/fleet dialogs` lists every window with one, its type and the
-   command line; `scripts/fleet peek <window>` shows more); a dialog is an
-   item even if no file was written.
+1. **Gather.** `search(kind='todo', view='asks')`: showstoppers, then
+   decisions, then discussion, grouped by quest and thread. Also check each
+   thread window for an open question dialog (`scripts/fleet dialogs` lists
+   every window with one, its type and the command line; `scripts/fleet peek
+   <window>` shows more); a dialog is an item even if no todo was filed.
 2. **Cluster by work area**, and order the clusters by what blocks a live
    session now: paper (October slot) first, then anything a session is
    stopped on, then security and backup chores, then the rest. Inside a
@@ -67,22 +49,19 @@ may be is the answer he wants. This applies to review items, design notes,
    the question, the options, your recommendation and why, what it
    unblocks. Use AskUserQuestion where the options are discrete. Do not
    dump the whole queue. Bottom line first; no preamble.
-4. **Deliver each answer where it belongs**, then move the item to
-   `answered/` with the answer appended:
-   - `answer-via: tmux` — if the window shows a question dialog, select the
-     matching option with its number key; otherwise
-     `tmux send-keys -t <window> '<answer>' Enter`. Capture the pane after
-     and confirm it took. Never send keys to a window whose dialog is not
-     the one you are answering.
-   - `answer-via: precis:<td>` — record the ruling on the todo and drop
-     `waiting-for:reto`; close it if the ruling completes it. These are prod
-     writes: fine without asking unless destructive, outward-facing or over
-     $25, in which case hand Reto the exact command.
-   - `answer-via: file` — the `answered/` file is the delivery; the
-     orchestrator picks it up.
-5. **Between clusters**, rescan `open/` and the windows; say how many new
-   items arrived and in which areas. New items join their area's next pass;
-   only a session that is fully stopped on Reto jumps the order.
+4. **Deliver each answer where it belongs.**
+   - An `ask-user` todo — comment `answer: …` on it, then
+     `tag(kind='todo', id=N, add=['STATUS:done'], remove=['ask-user'])`
+     (the `/asks` form does both). These are prod writes: fine without
+     asking unless destructive, outward-facing or over $25, in which case
+     hand Reto the exact command.
+   - A question dialog in a window — select the matching option with its
+     number key; otherwise `tmux send-keys -t <window> '<answer>' Enter`.
+     Capture the pane after and confirm it took. Never send keys to a window
+     whose dialog is not the one you are answering.
+5. **Between clusters**, re-run the asks view and check the windows; say how
+   many new items arrived and in which areas. New items join their area's
+   next pass; only a session that is fully stopped on Reto jumps the order.
 6. **Things Reto must do himself** (a cluster SSH, a credential paste, an
    eyeball on a web page) are presented as a short ordered checklist with
    the exact command or URL, grouped so one sitting clears them.
@@ -112,8 +91,8 @@ of a sitting, between clusters when it changed, and whenever he asks
 
 ## After a deploy
 
-The orchestrator files `open/release-<round>-<n>.md` items (`kind:
-look-at`, `source: organizer`) naming what is newly live and what Reto
+The orchestrator files an `ask-user` todo per look-at (`meta.ask` kind
+`approval`, blocks `nothing`) naming what is newly live and what Reto
 should look at, with the URL or the command. Present them as their own
 cluster, first, before the area clusters: they are freshest and they gate
 the next round's dogfood verdicts.

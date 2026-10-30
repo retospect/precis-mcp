@@ -507,6 +507,110 @@ def is_owner(source: str | None = None) -> bool:
     return True
 
 
+# ── meta.ask: a question for the owner ─────────────────────────────
+
+#: ``meta.ask.kind`` closed vocabulary (td541979).
+ASK_KINDS: tuple[str, ...] = ("design-verdict", "ruling", "approval")
+_ASK_KEYS: frozenset[str] = frozenset({"kind", "options", "blocks", "context"})
+_ASK_NEXT = (
+    "put(kind='todo', text='<the question>', tags=['ask-user'], "
+    "meta={'ask': {'kind': 'ruling', 'options': ['yes', 'no'], "
+    "'blocks': 'td<id>' or 'nothing', 'context': '<short>'}})"
+)
+_ASK_OPTION_CAP = 200
+_ASK_CONTEXT_CAP = 600
+_ASK_MAX_OPTIONS = 12
+
+
+def check_ask_meta(meta: dict[str, Any] | None) -> int | None:
+    """Validate ``meta.ask``; return the todo id its ``blocks`` names.
+
+    Shape: ``{kind: design-verdict|ruling|approval, options: [str, ...],
+    blocks: 'td<id>'|'nothing', context: str}``. ``kind`` and ``blocks``
+    are required; ``options`` and ``context`` are optional. Unknown keys
+    are refused rather than dropped. Returns ``None`` when there is no
+    ``meta.ask`` or ``blocks`` is ``'nothing'``.
+    """
+    if not meta or "ask" not in meta:
+        return None
+    ask = meta["ask"]
+    if not isinstance(ask, dict):
+        raise BadInput(
+            f"meta.ask must be a dict, got {type(ask).__name__}", next=_ASK_NEXT
+        )
+    extra = set(ask) - _ASK_KEYS
+    if extra:
+        raise BadInput(
+            f"meta.ask key(s) {sorted(extra)} are unknown; allowed keys are "
+            f"[{', '.join(sorted(_ASK_KEYS))}]",
+            next=_ASK_NEXT,
+        )
+    if ask.get("kind") not in ASK_KINDS:
+        raise BadInput(
+            f"meta.ask.kind={ask.get('kind')!r}: unknown kind; allowed values "
+            f"are [{', '.join(ASK_KINDS)}]",
+            next=_ASK_NEXT,
+        )
+    options = ask.get("options", [])
+    if (
+        not isinstance(options, list)
+        or len(options) > _ASK_MAX_OPTIONS
+        or any(
+            not isinstance(o, str) or not o.strip() or len(o) > _ASK_OPTION_CAP
+            for o in options
+        )
+    ):
+        raise BadInput(
+            "meta.ask.options must be a list of at most "
+            f"{_ASK_MAX_OPTIONS} non-empty strings of at most "
+            f"{_ASK_OPTION_CAP} chars each (recommended option first)",
+            next=_ASK_NEXT,
+        )
+    context = ask.get("context", "")
+    if not isinstance(context, str) or len(context) > _ASK_CONTEXT_CAP:
+        raise BadInput(
+            f"meta.ask.context must be a string of at most {_ASK_CONTEXT_CAP} "
+            "chars; longer argument goes in body= or a comment",
+            next=_ASK_NEXT,
+        )
+    blocks = ask.get("blocks")
+    if blocks == "nothing":
+        return None
+    parsed = handle_registry.parse(blocks) if isinstance(blocks, str) else None
+    if parsed is None or parsed[0] != "todo" or parsed[1]:
+        raise BadInput(
+            f"meta.ask.blocks={blocks!r} must be a todo handle ('td<id>') "
+            "naming the slice that waits on the answer, or 'nothing'",
+            next=_ASK_NEXT,
+        )
+    return parsed[2]
+
+
+def check_ask_blocks_target(
+    store: Store, blocks_id: int, *, self_id: int | None
+) -> None:
+    """The slice ``meta.ask.blocks`` names must be a live todo, not the ask."""
+    if self_id is not None and blocks_id == self_id:
+        raise BadInput(
+            "meta.ask.blocks names the question itself",
+            next="name the slice that waits on the answer, or 'nothing'",
+        )
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            "SELECT kind, retired_at FROM refs WHERE ref_id = %s", (blocks_id,)
+        ).fetchone()
+    if row is None or row[0] != "todo" or row[1] is not None:
+        raise NotFound(
+            f"meta.ask.blocks=td{blocks_id}: no live todo with that id",
+            next="name a live slice ('td<id>') or 'nothing'",
+        )
+
+
+def has_ask_user_tag(tags: list[str] | None) -> bool:
+    """True when ``tags`` carries the bare ``ask-user`` (or ``ask-user:<q>``) tag."""
+    return any(t == "ask-user" or t.startswith("ask-user:") for t in tags or [])
+
+
 # ── parent / cycle / depth ─────────────────────────────────────────
 
 

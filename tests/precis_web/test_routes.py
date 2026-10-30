@@ -6324,6 +6324,92 @@ def test_asks_pages_group_rows_by_class_and_quest(client, monkeypatch, path) -> 
     assert "which venue?" in text
 
 
+def _asks_model_with_quiet_rows():
+    """The class model plus the two rows the default filter hides: a bare
+    ``waiting-for:reto`` decision and a ``discussion`` row (td541979)."""
+    from precis.todo.asks_view import AskRow, AsksModel
+
+    base = _asks_model_with_classes()
+    quiet = (
+        AskRow(
+            klass="decision",
+            kind="todo",
+            ref_id=91,
+            handle="td91",
+            title="Unclaimed slice waiting",
+            reasons=("waiting-for:reto",),
+        ),
+        AskRow(
+            klass="discussion",
+            kind="todo",
+            ref_id=92,
+            handle="td92",
+            title="Shape question",
+            reasons=("discussion",),
+        ),
+    )
+    return AsksModel(rows=(*base.rows, *quiet))
+
+
+def test_asks_page_default_hides_waiting_for_and_discussion(
+    client, monkeypatch
+) -> None:
+    """/asks shows showstoppers and ask-user / needs:ruling decisions;
+    bare waiting-for and discussion rows sit behind ?all=1."""
+    from precis_web.routes import asks as asks_mod
+
+    model = _asks_model_with_quiet_rows()
+    monkeypatch.setattr(asks_mod, "asks_model", lambda store: model)
+    monkeypatch.setattr(asks_mod, "_load_asks", lambda store, **kw: [_ASK_14634])
+
+    text = client.get("/asks").text
+    assert 'data-ask-row="td77"' in text  # showstopper
+    assert 'action="/asks/14634/answer"' in text  # ask-user decision
+    assert 'data-ask-row="gr88"' in text  # needs:ruling decision
+    assert 'data-ask-row="td91"' not in text
+    assert 'data-ask-row="td92"' not in text
+    assert 'data-ask-class="discussion"' not in text
+    assert 'href="/asks?all=1"' in text and "+2 more" in text
+
+    text = client.get("/asks?all=1").text
+    assert 'data-ask-row="td91"' in text
+    assert 'data-ask-row="td92"' in text
+    assert 'data-ask-class="discussion"' in text
+    assert 'data-asks-filter="default"' in text
+    assert "+2 more" not in text
+
+
+def test_asks_page_renders_meta_ask(client, monkeypatch) -> None:
+    """A meta.ask row shows its kind, the slice it blocks and the options."""
+    from precis_web.routes import asks as asks_mod
+
+    monkeypatch.setattr(
+        asks_mod,
+        "_load_asks",
+        lambda store, **kw: [
+            {
+                "id": 501,
+                "title": "Should the pass cut on a red gate?",
+                "created_at": None,
+                "questions": [],
+                "tags": ["ask-user"],
+                "ask": {
+                    "kind": "ruling",
+                    "options": ["yes, cut", "no, warn only"],
+                    "blocks": "td77",
+                    "context": "gate went red twice",
+                },
+            }
+        ],
+    )
+    text = client.get("/asks").text
+    assert "data-ask-meta" in text
+    assert "ruling" in text and 'href="/r/todo/77"' in text
+    assert "yes, cut" in text and "no, warn only" in text
+    assert "gate went red twice" in text
+    assert "no question text" not in text
+
+
 # ── needs-you (unified asks + needs-triage queue) ──────────────────
 
 
@@ -6580,6 +6666,57 @@ def test_answer_edit_failure_skips_tag_remove(client, runtime) -> None:
     verbs = [v for v, _ in runtime.calls]
     assert "edit" in verbs
     assert "tag" not in verbs
+
+
+def test_answer_to_a_meta_ask_todo_is_a_comment_then_close(client, runtime) -> None:
+    """td541979: an answer is an ``answer:`` comment, then the ask-user tag
+    comes off and the todo closes (releasing any slice blocked-by it)."""
+    from tests.precis_web.conftest import make_ref
+
+    runtime.store.todos.append(
+        make_ref(
+            id=55,
+            kind="todo",
+            title="Should the pass cut on a red gate?",
+            meta={"ask": {"kind": "ruling", "blocks": "nothing"}},
+        )
+    )
+    resp = client.post(
+        "/asks/55/answer",
+        data={"response": "yes, cut", "remove": ["ask-user"]},
+        follow_redirects=False,
+    )
+    assert resp.status_code == 303
+    assert [v for v, _ in runtime.calls][-2:] == ["put", "tag"]
+    assert runtime.calls[-2][1] == {
+        "kind": "todo",
+        "id": 55,
+        "text": "answer: yes, cut",
+    }
+    assert runtime.calls[-1][1] == {
+        "kind": "todo",
+        "id": 55,
+        "add": ["STATUS:done"],
+        "remove": ["ask-user"],
+    }
+    # the legacy body-rewrite flow is not used
+    assert "edit" not in [v for v, _ in runtime.calls]
+
+
+def test_answer_comment_failure_keeps_a_meta_ask_todo_open(client, runtime) -> None:
+    from tests.precis_web.conftest import make_ref
+
+    runtime.store.todos.append(
+        make_ref(id=56, kind="todo", title="Q?", meta={"ask": {"kind": "ruling"}})
+    )
+    runtime.error_verbs.add("put")
+    resp = client.post(
+        "/asks/56/answer",
+        data={"response": "x", "remove": ["ask-user"]},
+        follow_redirects=False,
+    )
+    assert resp.status_code == 400
+    assert "tag" not in [v for v, _ in runtime.calls]
 
 
 # ── asks context + follow-up thread ────────────────────────────────

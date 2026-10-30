@@ -1,14 +1,15 @@
 """Dark-factory step 1b (td540847): ``search(kind='todo', view='asks')`` —
-the asks list in three classes, grouped by quest then thread."""
+the asks list in three classes, grouped by quest then thread — and td541979:
+a question for the owner is an ``ask-user`` todo carrying ``meta.ask``."""
 
 from __future__ import annotations
 
-from pathlib import Path
 from typing import Any
 
 import pytest
 
 from precis.dispatch import Hub
+from precis.errors import BadInput, NotFound
 from precis.handlers.gripe import GripeHandler
 from precis.handlers.todo import _TREE_SEARCH_VIEWS, TodoHandler, TodoView
 from precis.store import Store
@@ -67,17 +68,54 @@ def _row(model: asks_view.AsksModel, ref_id: int) -> asks_view.AskRow:
     return next(r for r in model.rows if r.ref_id == ref_id)
 
 
+def _ask(
+    handler: TodoHandler,
+    text: str = "Should the pass cut on a red gate?",
+    *,
+    blocks: str = "nothing",
+    parent_id: int | None = None,
+    **ask: Any,
+) -> int:
+    meta = {
+        "ask": {
+            "kind": "ruling",
+            "options": ["yes, cut", "no, warn only"],
+            "blocks": blocks,
+            "context": "gate went red twice",
+            **ask,
+        }
+    }
+    return id_of(
+        handler.put(
+            text=text,
+            parent_id=parent_id,
+            tags=["ask-user", "thread:factory"],
+            meta=meta,
+        ).body
+    )
+
+
+def _blocked_by(store: Store, src: int) -> list[int]:
+    with store.pool.connection() as conn:
+        rows = conn.execute(
+            "SELECT dst_ref_id FROM links WHERE src_ref_id = %s "
+            "AND relation = 'blocked-by' ORDER BY dst_ref_id",
+            (src,),
+        ).fetchall()
+    return [int(r[0]) for r in rows]
+
+
 def test_asks_view_is_wired_in_the_vocabulary() -> None:
     assert TodoView("asks") is TodoView.ASKS
     assert TodoView.ASKS in _TREE_SEARCH_VIEWS
 
 
 def test_each_source_lands_in_its_class_under_its_quest(
-    handler: TodoHandler, hub: Hub, tmp_path: Path
+    handler: TodoHandler, hub: Hub
 ) -> None:
     store = hub.live_store
     t = _tree(handler, store, hub)
-    model = asks_view.asks_model(store, review_dir=tmp_path)
+    model = asks_view.asks_model(store)
 
     assert _row(model, t["stopped"]).klass == asks_view.SHOWSTOPPER
     assert _row(model, t["asking"]).klass == asks_view.DECISION
@@ -100,20 +138,20 @@ def test_each_source_lands_in_its_class_under_its_quest(
 
 
 def test_waiting_for_reto_unclaimed_is_a_decision(
-    handler: TodoHandler, hub: Hub, tmp_path: Path
+    handler: TodoHandler, hub: Hub
 ) -> None:
     store = hub.live_store
     t = _tree(handler, store, hub)
     handler.tag(id=t["plain"], add=["waiting-for:reto"])
-    model = asks_view.asks_model(store, review_dir=tmp_path)
+    model = asks_view.asks_model(store)
     assert _row(model, t["plain"]).klass == asks_view.DECISION
 
 
-def test_a_closed_row_drops_out(handler: TodoHandler, hub: Hub, tmp_path: Path) -> None:
+def test_a_closed_row_drops_out(handler: TodoHandler, hub: Hub) -> None:
     store = hub.live_store
     t = _tree(handler, store, hub)
     handler.tag(id=t["asking"], add=["STATUS:done"])
-    model = asks_view.asks_model(store, review_dir=tmp_path)
+    model = asks_view.asks_model(store)
     assert all(r.ref_id != t["asking"] for r in model.rows)
 
 
@@ -127,9 +165,8 @@ def test_quest_of_walks_parents_then_serves(handler: TodoHandler, hub: Hub) -> N
 
 
 def test_render_groups_by_class_then_quest_then_thread(
-    handler: TodoHandler, hub: Hub, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    handler: TodoHandler, hub: Hub
 ) -> None:
-    monkeypatch.setenv("PRECIS_REVIEW_QUEUE_DIR", str(tmp_path))
     store = hub.live_store
     t = _tree(handler, store, hub)
     out = handler.search(view="asks").body
@@ -156,64 +193,152 @@ def test_render_groups_by_class_then_quest_then_thread(
     assert out.index(f"td{t['asking']} ") < out.index(f"td{t['shape']} ")
 
 
-def test_render_when_nothing_waits(
-    handler: TodoHandler, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    monkeypatch.setenv("PRECIS_REVIEW_QUEUE_DIR", str(tmp_path))
+def test_render_when_nothing_waits(handler: TodoHandler) -> None:
     assert handler.search(view="asks").body.startswith("# asks — nothing waits on you")
 
 
-def _item(
-    root: Path, name: str, *, kind: str, blocks: str, answer_via: str = "file"
-) -> None:
-    (root / f"{name}.md").write_text(
-        f"---\narea: platform\nsource: organizer\nkind: {kind}\n"
-        f"blocks: {blocks}\nanswer-via: {answer_via}\nfiled: 2026-10-30T00:00:00Z\n"
-        "---\n**Question.** Should the pass cut on red?\n\n"
-        "**Options.** 1. yes\n",
-        encoding="utf-8",
-    )
+# ── meta.ask (td541979) ───────────────────────────────────────────
 
 
-def test_review_queue_files_are_rows_with_a_class(
-    handler: TodoHandler, hub: Hub, tmp_path: Path
+def test_meta_ask_without_blocks_is_a_decision_with_its_options(
+    handler: TodoHandler, hub: Hub
 ) -> None:
     store = hub.live_store
     t = _tree(handler, store, hub)
-    _item(tmp_path, "gate-1", kind="decision", blocks="the release pass")
-    _item(tmp_path, "look-1", kind="look-at", blocks="nothing")
-    _item(tmp_path, "shape-1", kind="design-verdict", blocks="nothing")
-    # answered via a todo that already has a row -> not repeated
-    _item(
-        tmp_path,
-        "dup-1",
-        kind="decision",
-        blocks="nothing",
-        answer_via=f"precis:td{t['asking']}",
-    )
-    (tmp_path / "notes.md").write_text("no frontmatter here", encoding="utf-8")
+    ask = _ask(handler, parent_id=t["root"])
+    row = _row(asks_view.asks_model(store), ask)
 
-    model = asks_view.asks_model(store, review_dir=tmp_path)
-    by_handle = {r.handle: r for r in model.rows if r.kind == "review"}
-
-    assert set(by_handle) == {"review:gate-1", "review:look-1", "review:shape-1"}
-    assert by_handle["review:gate-1"].klass == asks_view.SHOWSTOPPER
-    assert by_handle["review:look-1"].klass == asks_view.DECISION
-    assert by_handle["review:shape-1"].klass == asks_view.DISCUSSION
-    assert by_handle["review:gate-1"].title == "Should the pass cut on red?"
-    assert by_handle["review:gate-1"].thread == "platform"
-    assert by_handle["review:gate-1"].quest_id is None
-    # quest-less rows render in the "no quest" bucket
-    out = asks_view.render_asks(store, review_dir=tmp_path).body
-    assert "no quest" in out
-    assert "review:gate-1" in out
+    assert row.klass == asks_view.DECISION
+    assert row.reasons == ("ask-user",)
+    assert row.ask_kind == "ruling"
+    assert row.options == ("yes, cut", "no, warn only")
+    assert row.context == "gate went red twice"
+    assert row.blocks is None
+    assert row.quest_id == t["quest"]
+    assert row.thread == "factory"
+    out = handler.search(view="asks").body
+    assert "1. yes, cut" in out
+    assert "ruling: gate went red twice" in out
+    # a question for the owner is never auto-run
+    assert "llm_tier" not in (store.fetch_refs_by_ids([ask])[ask].meta or {})
 
 
-def test_missing_review_dir_is_just_no_files(
-    handler: TodoHandler, hub: Hub, tmp_path: Path
+def test_blocks_writes_a_blocked_by_link_and_files_a_showstopper_under_the_quest(
+    handler: TodoHandler, hub: Hub
 ) -> None:
     store = hub.live_store
-    _tree(handler, store, hub)
-    model = asks_view.asks_model(store, review_dir=tmp_path / "absent")
-    assert all(r.kind != "review" for r in model.rows)
-    assert len(model.rows) == 4
+    t = _tree(handler, store, hub)
+    # parentless question: it sits under the quest of the slice it blocks
+    ask = _ask(handler, blocks=f"td{t['plain']}")
+
+    assert _blocked_by(store, t["plain"]) == [ask]
+    row = _row(asks_view.asks_model(store), ask)
+    assert row.klass == asks_view.SHOWSTOPPER
+    assert row.reasons == ("ask-user", f"blocks:td{t['plain']}")
+    assert row.blocks == t["plain"]
+    assert row.quest_id == t["quest"]
+    assert row.thread == "factory"
+    # the blocked slice is parked until the question closes
+    assert f"td{t['plain']}" in handler.search(view="blocked").body
+
+
+def test_answering_closes_the_question_and_releases_the_slice(
+    handler: TodoHandler, hub: Hub
+) -> None:
+    store = hub.live_store
+    t = _tree(handler, store, hub)
+    ask = _ask(handler, blocks=f"td{t['plain']}", parent_id=t["root"])
+
+    handler.put(id=ask, text="answer: yes, cut; warn-only hides real reds")
+    handler.tag(id=ask, add=["STATUS:done"], remove=["ask-user"])
+
+    assert all(r.ref_id != ask for r in asks_view.asks_model(store).rows)
+    assert f"td{t['plain']}" not in handler.search(view="blocked").body
+    assert "answer: yes, cut" in handler.get(id=ask, view="comments").body
+
+
+def test_edit_replaces_meta_ask_and_adds_the_link(
+    handler: TodoHandler, hub: Hub
+) -> None:
+    store = hub.live_store
+    t = _tree(handler, store, hub)
+    ask = _ask(handler, parent_id=t["root"])
+    assert _blocked_by(store, t["plain"]) == []
+
+    handler.edit(
+        id=ask,
+        meta={"ask": {"kind": "approval", "blocks": f"td{t['plain']}"}},
+    )
+
+    assert _blocked_by(store, t["plain"]) == [ask]
+    row = _row(asks_view.asks_model(store), ask)
+    assert row.klass == asks_view.SHOWSTOPPER
+    assert row.ask_kind == "approval"
+    assert row.options == ()  # replaced, not merged
+
+
+@pytest.mark.parametrize(
+    ("ask", "fragment"),
+    [
+        ({"kind": "chat", "blocks": "nothing"}, "unknown kind"),
+        ({"kind": "ruling", "blocks": "nothing", "options": "yes"}, "options"),
+        ({"kind": "ruling", "blocks": "nothing", "options": ["ok", ""]}, "options"),
+        ({"kind": "ruling", "blocks": "nothing", "context": 5}, "context"),
+        ({"kind": "ruling", "blocks": "nothing", "colour": "red"}, "unknown"),
+        ({"kind": "ruling", "blocks": "soon"}, "blocks"),
+        ({"kind": "ruling", "blocks": "gr123456"}, "blocks"),
+        ({"kind": "ruling"}, "blocks"),
+        ("just a string", "dict"),
+    ],
+)
+def test_malformed_meta_ask_is_refused_with_a_next_step(
+    handler: TodoHandler, ask: Any, fragment: str
+) -> None:
+    with pytest.raises(BadInput) as exc:
+        handler.put(text="Q?", tags=["ask-user"], meta={"ask": ask})
+    assert fragment in exc.value.cause
+    assert exc.value.next
+
+
+def test_meta_ask_needs_the_ask_user_tag(handler: TodoHandler) -> None:
+    with pytest.raises(BadInput) as exc:
+        handler.put(text="Q?", meta={"ask": {"kind": "ruling", "blocks": "nothing"}})
+    assert "ask-user" in exc.value.cause
+    assert exc.value.next
+
+
+def test_blocks_must_name_a_live_other_todo(handler: TodoHandler) -> None:
+    with pytest.raises(NotFound) as exc:
+        handler.put(
+            text="Q?",
+            tags=["ask-user"],
+            meta={"ask": {"kind": "ruling", "blocks": "td999999999"}},
+        )
+    assert exc.value.next
+    ask = _ask(handler)
+    with pytest.raises(BadInput):
+        handler.edit(id=ask, meta={"ask": {"kind": "ruling", "blocks": f"td{ask}"}})
+
+
+def test_a_refused_put_leaves_nothing_behind(handler: TodoHandler, hub: Hub) -> None:
+    store = hub.live_store
+    before = len(store.list_refs(kind="todo", limit=1000))
+    with pytest.raises(BadInput):
+        handler.put(text="Q?", tags=["ask-user"], meta={"ask": {"kind": "chat"}})
+    assert len(store.list_refs(kind="todo", limit=1000)) == before
+
+
+def test_default_rows_hide_waiting_for_and_discussion(
+    handler: TodoHandler, hub: Hub
+) -> None:
+    store = hub.live_store
+    t = _tree(handler, store, hub)
+    handler.tag(id=t["plain"], add=["waiting-for:reto"])
+    ask = _ask(handler, blocks=f"td{t['shape']}")
+    full = asks_view.asks_model(store)
+    default = {r.ref_id for r in full.default_rows().rows}
+
+    assert {t["stopped"], t["asking"], t["gripe"], ask} <= default
+    assert t["plain"] not in default  # bare waiting-for:reto
+    assert t["shape"] not in default  # discussion
+    assert {r.ref_id for r in full.rows} - default == {t["plain"], t["shape"]}

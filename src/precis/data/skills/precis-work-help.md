@@ -2,11 +2,12 @@
 id: precis-work-help
 family: work
 title: precis — the work tree: what is in flight, what waits, how to claim a slice
-summary: one hierarchy of the work — quest → served todo roots → slices, with leases, agents and jobs per row; the asks list; claiming and releasing a slice; where gripes hang; what a pillar quest is
+summary: one hierarchy of the work — quest → served todo roots → slices, with leases, agents and jobs per row; the asks list; asking the owner a question (an ask-user todo with meta.ask) and answering it; claiming and releasing a slice; where gripes hang; what a pillar quest is
 answers:
   - what is in flight right now and who is on it?
   - how do I read a row of the work view?
   - what blocks a lane, and what waits on the owner?
+  - how do I ask the owner a question, and how is it answered?
   - how do I claim a slice before working it, and how do I release it?
   - where does a gripe land in the work tree, and what does its loop stage mean?
   - what is a pillar quest, and why is a paper a month todo and not a quest?
@@ -111,16 +112,20 @@ row serves, then by thread:
 
 | class | the row is | sources |
 |---|---|---|
-| showstopper | a lane is stopped on it | `waiting-for:reto` on a claimed slice, a tripped breaker, a red open release |
-| decision | a next slice waits on it | `ask-user:` todos, gripes tagged `needs:ruling` |
+| showstopper | a lane is stopped on it | `waiting-for:reto` on a claimed slice, an `ask-user` todo whose `meta.ask.blocks` names a slice, a tripped breaker, a red open release |
+| decision | a next slice waits on it | `ask-user` todos, gripes tagged `needs:ruling` |
 | discussion | a shape question, nothing waits yet | todos and gripes tagged `discussion` |
 
 ```python
-search(kind="todo", view="asks")  # lands with td540847; the web /asks page shows the same
+search(kind="todo", view="asks")
 ```
 
+The web `/asks` page shows the same list, but by default only the
+showstoppers and the `ask-user` / `needs:ruling` decisions; a bare
+`waiting-for:reto` row and the discussion rows sit behind `/asks?all=1`.
+
 Argument on a row is comments on that ref; every user sees every row.
-Until td540847 lands, read the sources one by one:
+The sources one by one, when you want only one of them:
 
 ```python
 search(kind="todo", view="ask-user")   # decisions parked on a human reply
@@ -129,9 +134,55 @@ search(kind="todo", view="attention")  # halted, asking, child-failed
 search(kind="gripe", tags=["needs:ruling"])
 ```
 
-To raise one yourself: tag the todo `ask-user:<question>` (a decision),
-or `waiting-for:reto` on the slice you hold when you cannot continue (a
-showstopper). Answering an ask is in `precis-todo-tree-help~11`.
+To raise one yourself: write a question for the owner (next section), or
+tag `waiting-for:reto` on the slice you hold when you cannot continue (a
+showstopper). A question raised on a gripe stays a gripe: tag it
+`needs:ruling` and comment the question.
+
+## How do I ask the owner a question?
+## Where does a question for Reto go, and how is it answered?
+
+A question for the owner is an `ask-user` todo written through this MCP,
+from any machine. Never a file, never a message in a pane.
+
+```python
+put(kind="todo", text="Should the pass cut on a red gate?", parent_id=540836,
+    tags=["ask-user", "thread:factory"],
+    meta={"ask": {"kind": "ruling", "options": ["yes, cut", "no, warn only"],
+                  "blocks": "td540848", "context": "gate went red twice this week"}})
+```
+
+- `text` is the question, one sentence he can answer. Put the argument in
+  `body=` or a later comment.
+- `parent_id` is the slice or root it belongs to; omit it for a loose
+  question. The row appears under that row's quest and thread.
+- `meta.ask.kind` is `design-verdict` (a shape question), `ruling` (a
+  choice between options) or `approval` (a yes to sign off). Anything else
+  is refused with the accepted values.
+- `meta.ask.options` is a list of short strings, the recommended one
+  first. Optional; `context` is one short line of what he needs to know.
+- `meta.ask.blocks` is `td<id>` of the slice that cannot proceed until
+  answered, or `nothing`. A handle writes a `blocked-by` link from that
+  slice to the question (it leaves `view='doable'` until the question
+  closes) and files the row as a showstopper; `nothing` files a decision.
+- The `ask-user` tag is required with `meta.ask`; add `thread:<slug>` so
+  the row sits with its thread.
+
+Change a question after filing with `edit(kind="todo", id=N,
+meta={"ask": {...}})`; the new dict replaces the old one.
+
+The owner answers on the web `/asks` page, which does both steps below.
+Over the MCP, an answer is a comment starting `answer:` and closing the
+row, which drops it from the asks view and releases the blocked slice:
+
+```python
+put(kind="todo", id=541990, text="answer: yes, cut; warn-only hides real reds")
+tag(kind="todo", id=541990, add=["STATUS:done"], remove=["ask-user"])
+```
+
+Read the answer back with `get(kind="todo", id=541990)`: it is the
+comment starting `answer:`. A question you filed and whose slice you
+hold: after it closes, re-read the row and continue.
 
 ## How do I claim a slice before working it?
 ## Take the lease on a todo so no other agent builds it

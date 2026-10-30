@@ -54,7 +54,8 @@ overlap; once your task is clear, write one line to `.claude/purpose`.
 When a coordinator has a round open (`scripts/round status`), mark it from
 your tree (`scripts/round in <sha>|none|eta <text>`) instead of messaging.
 In a fleet session leave deploys (and `/go`) to the coordinator. Fleet: `/fleet`; in a fleet session a
-question for Reto goes to the review queue (`.claude/fleet/review-protocol.md`).
+question for Reto is an `ask-user` todo with `meta.ask`, never a file
+(`search(kind='todo', view='asks')`; skill `precis-work-help`).
 Merged+clean+sessionless worktrees auto-reap. Work that belongs to a thread
 (`docs/backlog/threads/<slug>.md`) updates that file in the same commit —
 delete what shipped, insert what you filed at its rank (README there).

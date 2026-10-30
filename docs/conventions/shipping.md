@@ -444,8 +444,8 @@ head with a fresh green CI verdict (newest green main without a release) via
 `scripts/round gate|deploy` — no local gate, no ship lock). The fleet itself
 — one tmux window per active thread plus Reto's `review` window — comes up,
 and recovers after a crash, with `/fleet` (`scripts/fleet up`); in a fleet
-session a question for Reto is a review-queue item
-(`.claude/fleet/review-protocol.md`), not a stop in the pane.
+session a question for Reto is an `ask-user` todo with `meta.ask`
+(`search(kind='todo', view='asks')`), not a stop in the pane.
 
 **A branch lands only by ship run in its own tree** (Reto 2026-10-30).
 Subagent work enters through `scripts/take-agent`; a tier-R fleet builder's

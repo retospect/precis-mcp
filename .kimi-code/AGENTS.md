@@ -51,7 +51,7 @@ allow list as permission rules. `kimi doctor` validates it;
       Co-Authored-By: Kimi Code (<model display name>) <noreply@moonshot.ai>
       Claude-Session: none (Kimi Code builder, <tree name>)
 
-- **Fleet.** In a fleet session, questions for Reto go to the review
-  queue (`.claude/fleet/review-protocol.md`); leave deploys and `/go` to
-  the coordinator.
+- **Fleet.** In a fleet session, a question for Reto is an `ask-user`
+  todo with `meta.ask` (`search(kind='todo', view='asks')`; skill
+  `precis-work-help`); leave deploys and `/go` to the coordinator.
 - **Response style.** `CLAUDE.md` §Response style applies unchanged.

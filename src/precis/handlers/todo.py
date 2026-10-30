@@ -52,9 +52,14 @@ neighbourhood never sees that column (gr541348).
 
 ``view='asks'`` (dark-factory step 1b) is everything that waits on the
 human in three classes (showstopper / decision / discussion), grouped by
-quest then thread — ``ask-user:`` todos, ``waiting-for:reto``, gripes
-tagged ``needs:ruling`` or ``discussion``, review-queue files
-(:mod:`precis.todo.asks_view`); the web ``/asks`` shows the same.
+quest then thread — ``ask-user`` todos, ``waiting-for:reto``, gripes
+tagged ``needs:ruling`` or ``discussion`` (:mod:`precis.todo.asks_view`);
+the web ``/asks`` shows the same. A question for the owner is a todo
+tagged ``ask-user`` with ``meta.ask`` (``kind``, ``options``, ``blocks``,
+``context``; validated on put and edit, ``blocks='td<id>'`` writes a
+blocked-by link from that slice and makes the row a showstopper); answer
+it with a comment ``answer: …`` and ``tag`` ``STATUS:done`` + remove
+``ask-user``.
 ``id='/<view>'`` paths (/open /queue /doing /blocked /done) are
 deprecated aliases — same render, plus a pointer at the ``view=``
 spelling ('/open' and '/queue' land on ``view='active'``).
@@ -752,6 +757,15 @@ class TodoHandler(NumericRefHandler):
         guards.check_llm_select_meta(meta)
         guards.check_budget_usd_meta(meta)
         guards.check_rung_meta(meta)
+        ask_blocks = guards.check_ask_meta(meta)
+        if meta is not None and "ask" in meta and not guards.has_ask_user_tag(tags):
+            raise BadInput(
+                "meta.ask makes this todo a question for the owner, which "
+                "needs the 'ask-user' tag (the asks view lists by it)",
+                next="add tags=['ask-user', 'thread:<slug>'] to the put",
+            )
+        if ask_blocks is not None:
+            guards.check_ask_blocks_target(self.store, ask_blocks, self_id=None)
         guards.check_executor_tag(tags)
         # Workspace inheritance: if the parent carries meta.workspace
         # and this child doesn't specify its own, copy the parent's
@@ -833,6 +847,8 @@ class TodoHandler(NumericRefHandler):
             and not (isinstance(meta, dict) and meta.get("executor"))
             and not (isinstance(meta, dict) and "schedule" in meta)
             and not (isinstance(meta, dict) and "auto_check" in meta)
+            # a question for the owner is never auto-run (td541979)
+            and not (isinstance(meta, dict) and "ask" in meta)
         )
         # The flag rides ``_PutState`` so the create ack surfaces the stamp
         # — the default silently arms billed compute (dispatch mints a
@@ -978,6 +994,15 @@ class TodoHandler(NumericRefHandler):
                     dst_ref_id=target.ref_id,
                     dst_pos=target.pos,
                     relation=relation,
+                    conn=conn,
+                )
+            # meta.ask.blocks: the named slice waits on this question.
+            ask_blocks = guards.check_ask_meta(state.meta)
+            if ask_blocks is not None:
+                self.store.add_link(
+                    src_ref_id=ask_blocks,
+                    dst_ref_id=ref.id,
+                    relation="blocked-by",
                     conn=conn,
                 )
             if self.emits_card:
@@ -1176,13 +1201,16 @@ class TodoHandler(NumericRefHandler):
         unset_llm_tier = False
         params_value: dict[str, Any] | None = None
         clear_params = False
+        ask_value: dict[str, Any] | None = None
+        ask_blocks: int | None = None
         if meta is not None:
-            extra_keys = set(meta) - {"llm_tier", "params"}
+            extra_keys = set(meta) - {"llm_tier", "params", "ask"}
             if extra_keys:
                 raise BadInput(
                     f"edit(kind='todo', meta=...) only accepts keys 'llm_tier' "
-                    "(None parks the leaf's auto-run tier) and 'params' (a "
-                    f"recurring / executor todo's job config), not {sorted(extra_keys)}",
+                    "(None parks the leaf's auto-run tier), 'params' (a "
+                    "recurring / executor todo's job config) and 'ask' (a "
+                    f"question for the owner), not {sorted(extra_keys)}",
                     next=(
                         f"other meta mutations: tag(kind='todo', id={id}, meta={{...}})"
                     ),
@@ -1211,6 +1239,9 @@ class TodoHandler(NumericRefHandler):
                             f"edit(kind='todo', id={id}, meta={{'params': {{...}}}})"
                         ),
                     )
+            if "ask" in meta:
+                ask_blocks = guards.check_ask_meta(meta)
+                ask_value = dict(meta["ask"])
         has_text = text is not None and text.strip()
         has_body = body is not None and body.strip()
         if (
@@ -1220,6 +1251,7 @@ class TodoHandler(NumericRefHandler):
             and not unset_llm_tier
             and params_value is None
             and not clear_params
+            and ask_value is None
         ):
             raise BadInput(
                 "edit(kind='todo', mode='replace') requires text= and/or "
@@ -1241,6 +1273,8 @@ class TodoHandler(NumericRefHandler):
         body_present = body_chunk is not None
         if params_value is not None or clear_params:
             guards.check_recurring_params_edit(True, ref.meta)
+        if ask_blocks is not None:
+            guards.check_ask_blocks_target(self.store, ask_blocks, self_id=ref.id)
         if dry_run:
             preview: list[str] = []
             if has_text:
@@ -1271,6 +1305,8 @@ class TodoHandler(NumericRefHandler):
                 preview.append("meta.params would be replaced")
             if clear_params:
                 preview.append("meta.params would be cleared")
+            if ask_value is not None:
+                preview.append("meta.ask would be replaced")
             return Response(
                 body=(
                     f"dry-run (no write) — would replace {' + '.join(preview)} "
@@ -1380,6 +1416,26 @@ class TodoHandler(NumericRefHandler):
                     },
                     conn=conn,
                 )
+            if ask_value is not None:
+                # Whole-key replace (jsonb ||): the new ask is the ask.
+                self.store.stamp_ref_meta(ref_id, {"ask": ask_value}, conn=conn)
+                if ask_blocks is not None:
+                    self.store.add_link(
+                        src_ref_id=ask_blocks,
+                        dst_ref_id=ref_id,
+                        relation="blocked-by",
+                        conn=conn,
+                    )
+                self.store.append_event(
+                    ref_id,
+                    source="agent",
+                    event="meta_patched",
+                    payload={
+                        "old": {"ask": (ref.meta or {}).get("ask")},
+                        "new": {"ask": ask_value},
+                    },
+                    conn=conn,
+                )
             if prose_changed:
                 facts_deferred = self._sync_mention_links(
                     ref.id,
@@ -1409,6 +1465,12 @@ class TodoHandler(NumericRefHandler):
             parts.append("meta.params (replaced)")
         if clear_params:
             parts.append("meta.params (cleared)")
+        if ask_value is not None:
+            parts.append("meta.ask (replaced)")
+            if ask_blocks is not None:
+                parts.append(
+                    f"blocked-by link from {handle_registry.format_handle('todo', ask_blocks)}"
+                )
         return self._facts_note(
             Response(
                 body=(
@@ -2031,6 +2093,12 @@ class TodoHandler(NumericRefHandler):
                 " dispatcher will auto-run this leaf as a plan_tick; run"
                 f" edit(kind={self.kind!r}, id={ref_id},"
                 " meta={'llm_tier': None}) to park it instead."
+            )
+        ask_blocks = guards.check_ask_meta(state.meta)
+        if ask_blocks is not None:
+            body += (
+                f" blocked-by link written: {handle_registry.format_handle('todo', ask_blocks)}"
+                f" now waits on {handle}; the asks view lists this as a showstopper."
             )
         body += render_next_section(
             [

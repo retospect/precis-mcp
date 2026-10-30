@@ -20,22 +20,27 @@ Q/A rounds parsed back out of the body — a re-ask badges as a
 follow-up, not a context-free repeat. The row markup is the shared
 ``asks/_row.html.j2`` partial, reused by the Needs-you landing.
 
-Each ask row carries an answer form. Submitting it (1) appends an
-``Asked: <question>`` / ``Response: <answer>`` block to the todo body
-via ``edit(mode='replace')`` — the question is restated because the
-unlock strips the tag that carried it, and the planner prompt directs
-the re-ticked agent to judge the answer and re-yield a follow-up
-``ask-user:`` when it's inadequate — then (2) strips every
-``ask-user`` tag on the todo so the doable rotation can pick it up
-again.
+Each ask row carries an answer form. A question for the owner (the todo
+carries ``meta.ask``, td541979) is answered by a ``put`` comment
+starting ``answer:`` and one ``tag`` call that removes ``ask-user`` and
+sets ``STATUS:done`` — closing the todo is what releases a slice that is
+blocked-by it. A legacy planner yield (``ask-user:<q>``, no ``meta.ask``)
+takes the older flow: (1) append an ``Asked: <question>`` /
+``Response: <answer>`` block to the todo body via ``edit(mode='replace')``
+— the question is restated because the unlock strips the tag that carried
+it, and the planner prompt directs the re-ticked agent to judge the answer
+and re-yield a follow-up ``ask-user:`` when it's inadequate — then (2)
+strip every ``ask-user`` tag so the doable rotation can pick it up again.
 
 Rows are grouped by class (showstopper / decision / discussion) and then
 by quest and thread — the web mirror of ``search(kind='todo',
-view='asks')`` (:mod:`precis.todo.asks_view`). Ask-user todos keep the
-answer form; the other rows (a ``waiting-for:reto`` slice, a gripe
-tagged ``needs:ruling``, a ``discussion`` row, a review-queue file) are
-compact lines whose handle opens the row, where the argument happens as
-comments. :func:`class_groups` is shared with the Needs-you landing.
+view='asks')`` (:mod:`precis.todo.asks_view`). The page shows showstoppers
+and ask-user / ``needs:ruling`` decisions by default; waiting-for and
+discussion rows sit behind ``?all=1``. Ask-user todos keep the answer
+form; the other rows (a gripe tagged ``needs:ruling``, with ``?all=1`` a
+``waiting-for:reto`` slice or a ``discussion`` row) are compact lines
+whose handle opens the row, where the argument happens as comments.
+:func:`class_groups` is shared with the Needs-you landing.
 """
 
 from __future__ import annotations
@@ -302,7 +307,8 @@ def _load_asks(
         rows = conn.execute(
             """
             SELECT r.ref_id, r.title, r.created_at, r.meta->>'anchor',
-                   array_agg(t.value ORDER BY t.value) AS ask_tags
+                   array_agg(t.value ORDER BY t.value) AS ask_tags,
+                   r.meta->'ask'
               FROM refs r
               JOIN ref_tags rt ON rt.ref_id = r.ref_id
               JOIN tags t ON t.tag_id = rt.tag_id
@@ -316,14 +322,15 @@ def _load_asks(
                          AND t2.namespace = 'STATUS' LIMIT 1),
                      'open'
                    ) NOT IN ('done', 'won''t-do')
-             GROUP BY r.ref_id, r.title, r.created_at, r.meta->>'anchor'
+             GROUP BY r.ref_id, r.title, r.created_at, r.meta->>'anchor',
+                      r.meta->'ask'
              ORDER BY r.created_at DESC
              LIMIT %s OFFSET %s
             """,
             (limit, offset),
         ).fetchall()
     out: list[dict[str, Any]] = []
-    for ref_id, title, created_at, anchor, ask_tags in rows:
+    for ref_id, title, created_at, anchor, ask_tags, ask_meta in rows:
         raw_tags = [str(t) for t in (ask_tags or [])]
         questions = [
             q for q in (_ask_value(store, int(ref_id), t) for t in raw_tags) if q
@@ -371,22 +378,34 @@ def _load_asks(
                 "context": context,
                 "crumb": crumb,
                 "history": history,
+                # meta.ask (td541979): kind / options / blocks / context.
+                "ask": ask_meta if isinstance(ask_meta, dict) else None,
             }
         )
     return out
 
 
 def class_groups(
-    store: Store, asks: list[dict[str, Any]], *, first_page: bool = True
-) -> tuple[list[ClassGroup], dict[int, dict[str, Any]]]:
-    """Class → quest → thread groups for the page, plus ``ask_by_id``.
+    store: Store,
+    asks: list[dict[str, Any]],
+    *,
+    first_page: bool = True,
+    show_all: bool = False,
+) -> tuple[list[ClassGroup], dict[int, dict[str, Any]], int]:
+    """Class → quest → thread groups for the page, ``ask_by_id`` and the
+    number of rows the default filter hides.
 
     ``asks`` are the answerable ``ask-user`` rows (:func:`_load_asks`);
     each takes its class and quest from the model, falling back to a
     quest-less decision. The model's other rows (no answer form) join on
-    ``first_page`` only, so paging the asks never repeats them.
+    ``first_page`` only, so paging the asks never repeats them. Unless
+    ``show_all``, the other rows are the model's default set —
+    showstoppers and ``needs:ruling`` decisions; bare ``waiting-for:reto``
+    and ``discussion`` rows wait behind ``?all=1``.
     """
-    model = asks_model(store)
+    full = asks_model(store)
+    model = full if show_all else full.default_rows()
+    hidden = len(full.rows) - len(model.rows)
     by_id = {r.ref_id: r for r in model.rows if r.kind == "todo"}
     rows: list[AskRow] = []
     for a in asks:
@@ -412,7 +431,11 @@ def class_groups(
                 r.kind == "todo" and ("ask-user" in r.reasons or r.ref_id in ask_ids)
             )
         ]
-    return AsksModel(rows=tuple(rows)).groups(), {int(a["id"]): a for a in asks}
+    return (
+        AsksModel(rows=tuple(rows)).groups(),
+        {int(a["id"]): a for a in asks},
+        hidden,
+    )
 
 
 #: Rows per page on the asks queue.
@@ -421,15 +444,19 @@ _PAGE_SIZE = 50
 
 @router.get("", response_class=HTMLResponse)
 @router.get("/", response_class=HTMLResponse)
-async def index(request: Request, page: int = 1) -> HTMLResponse:
-    """List todos that need a user response. Paged via ``?page=N``."""
+async def index(request: Request, page: int = 1, all: int = 0) -> HTMLResponse:
+    """List what needs a user response. Paged via ``?page=N``; showstoppers
+    and ask-user decisions by default, every class with ``?all=1``."""
     store = get_store(request)
     page = max(1, page)
     offset = (page - 1) * _PAGE_SIZE
     asks = _load_asks(store, limit=_PAGE_SIZE + 1, offset=offset)
     has_next = len(asks) > _PAGE_SIZE
     asks = asks[:_PAGE_SIZE]
-    groups, ask_by_id = class_groups(store, asks, first_page=page == 1)
+    show_all = bool(all)
+    groups, ask_by_id, hidden = class_groups(
+        store, asks, first_page=page == 1, show_all=show_all
+    )
     return templates.TemplateResponse(
         request,
         "asks/index.html.j2",
@@ -442,6 +469,8 @@ async def index(request: Request, page: int = 1) -> HTMLResponse:
             "total": sum(g.count for g in groups),
             "page": page,
             "has_next": has_next,
+            "show_all": show_all,
+            "hidden": hidden,
         },
     )
 
@@ -476,6 +505,33 @@ async def answer(
     refs = store.fetch_refs_by_ids([ref_id])
     if ref_id not in refs:
         return RedirectResponse(url="/asks", status_code=303)
+    if (getattr(refs[ref_id], "meta", None) or {}).get("ask"):
+        # A structured question for the owner (td541979): the answer is a
+        # comment starting ``answer:``; closing the todo (with ``ask-user``
+        # removed) is what releases a slice blocked-by it.
+        body, is_error = await await_dispatch(
+            request,
+            "put",
+            {"kind": "todo", "id": ref_id, "text": f"answer: {answer_text}"},
+        )
+        if is_error:
+            return templates.TemplateResponse(
+                request,
+                "error.html.j2",
+                {"title": "Request error", "detail": body, "status": 400},
+                status_code=400,
+            )
+        return await redirect_or_error(
+            request,
+            "tag",
+            {
+                "kind": "todo",
+                "id": ref_id,
+                "add": ["STATUS:done"],
+                "remove": list(remove) or ["ask-user"],
+            },
+            redirect=dest,
+        )
     original = refs[ref_id].title or ""
     # Record the question WITH the answer: the ask-user tags are stripped
     # on unlock, so without this line the question text is gone and a

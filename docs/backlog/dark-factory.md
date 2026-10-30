@@ -31,9 +31,9 @@ steps, ranked by how many later steps each one unlocks.
 - **Hierarchy with leases.** The todo tree: strategic roots, `doable`
   leaves, `claimed-by:` leases, `part-of` (`precis-todo-tree-help`).
   Quests: PRIO flow-down over `serves`, WORM logbook, ticks
-  (`precis-quest-help`). Asks: `ask-user:` todos, web `/asks` and the
-  Needs-you landing (`routes/asks.py`); Reto's review queue
-  (`.claude/fleet/review-protocol.md`).
+  (`precis-quest-help`). Asks: `ask-user` todos with `meta.ask`
+  (td541979; no review-queue files), web `/asks` and the Needs-you
+  landing (`routes/asks.py`).
 - **Credits.** `budget.quota` (Claude windows via the `claude -p` probe),
   the dollar breaker, the work-class taper (`budget-guardrails.md`,
   design-of-record: guide rails + one breaker, no per-task accounting);

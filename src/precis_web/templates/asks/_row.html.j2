@@ -47,9 +47,29 @@
     </div>
     {% endfor %}
   </div>
-  {% else %}
+  {% elif not a.ask %}
   <div class="mt-2 ml-14 text-xs text-fg-faint">
     tagged <span class="font-mono">ask-user</span> (no question text)
+  </div>
+  {% endif %}
+
+  {# meta.ask (td541979): the structured question — kind, the slice that
+     waits on it, the options (recommended first) and a short context. #}
+  {% if a.ask %}
+  <div class="mt-2 ml-14 text-xs text-fg-secondary space-y-1" data-ask-meta>
+    <div>
+      <span class="rounded-full bg-surface-muted px-2 py-0.5 font-mono text-[10px]">{{ a.ask.kind }}</span>
+      {% if a.ask.blocks and a.ask.blocks != 'nothing' %}
+      <span class="text-danger">blocks</span>
+      <a href="/r/todo/{{ a.ask.blocks[2:] }}" class="font-mono hover:text-success-strong hover:underline">{{ a.ask.blocks }}</a>
+      {% endif %}
+    </div>
+    {% if a.ask.context %}<div class="break-words">{{ a.ask.context | linkify_refs }}</div>{% endif %}
+    {% if a.ask.options %}
+    <ol class="list-decimal ml-5">
+      {% for o in a.ask.options %}<li class="break-words">{{ o | linkify_refs }}</li>{% endfor %}
+    </ol>
+    {% endif %}
   </div>
   {% endif %}
 
@@ -99,12 +119,17 @@
     {% endfor %}
     <input type="hidden" name="next" value="{{ next_path | default('/asks') }}"/>
     <textarea name="response" required rows="3"
-              placeholder="Type your answer to unlock this todo…"
+              placeholder="{{ 'Your answer — recorded as an answer: comment and the question closes…' if a.ask else 'Type your answer to unlock this todo…' }}"
               class="w-full rounded-md border border-line-strong text-sm px-3 py-2 font-mono"></textarea>
     <div class="mt-2 flex items-center justify-between gap-3">
       <span class="text-[11px] text-fg-faint">
+        {% if a.ask %}
+        Saved as an <span class="font-mono">answer:</span> comment on the
+        row; the question closes and any slice it blocks is released.
+        {% else %}
         The planner picks your answer up in the background — if it doesn't
         resolve the question, it comes back here as a follow-up.
+        {% endif %}
       </span>
       <button class="shrink-0 rounded-md bg-success-solid text-on-solid text-sm px-4 py-1.5 hover:bg-success-solid-strong">
         Answer &amp; unlock

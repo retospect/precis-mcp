@@ -5,16 +5,23 @@
   <h1 class="text-lg font-semibold">Asks</h1>
   <span class="text-sm text-fg-subtle">
     {{ total }} row{{ '' if total == 1 else 's' }} waiting on you
+    {% if show_all %}
+    &middot; <a href="/asks" class="hover:underline" data-asks-filter="default">showstoppers and questions only</a>
+    {% elif hidden %}
+    &middot; <a href="/asks?all=1" class="hover:underline" data-asks-filter="all">+{{ hidden }} more (waiting-for, discussion)</a>
+    {% endif %}
   </span>
 </div>
 
 {% if not groups %}
 <p class="text-sm text-fg-subtle">
-  Nothing's waiting on you. Open todos carrying an
-  <span class="font-mono">ask-user</span> tag, claimed slices
-  <span class="font-mono">waiting-for:reto</span>, and gripes tagged
-  <span class="font-mono">needs:ruling</span> or
-  <span class="font-mono">discussion</span> will appear here.
+  Nothing's waiting on you. Showstoppers and
+  <span class="font-mono">ask-user</span> questions (todos carrying
+  <span class="font-mono">meta.ask</span>) and gripes tagged
+  <span class="font-mono">needs:ruling</span> appear here;
+  <span class="font-mono">waiting-for:reto</span> and
+  <span class="font-mono">discussion</span> rows are behind
+  <a href="/asks?all=1" class="underline">show all</a>.
 </p>
 {% else %}
 {% with next_path = "/asks" %}{% include "asks/_groups.html.j2" %}{% endwith %}
@@ -22,12 +29,12 @@
 {% if page > 1 or has_next %}
 <div class="mt-4 flex items-center gap-3 text-sm">
   {% if page > 1 %}
-  <a href="/asks?page={{ page - 1 }}"
+  <a href="/asks?page={{ page - 1 }}{{ '&all=1' if show_all else '' }}"
      class="rounded-md border border-line-strong px-3 py-1 hover:bg-surface-muted">&larr; Prev</a>
   {% endif %}
   <span class="text-fg-faint">Page {{ page }}</span>
   {% if has_next %}
-  <a href="/asks?page={{ page + 1 }}"
+  <a href="/asks?page={{ page + 1 }}{{ '&all=1' if show_all else '' }}"
      class="rounded-md border border-line-strong px-3 py-1 hover:bg-surface-muted">Next &rarr;</a>
   {% endif %}
 </div>

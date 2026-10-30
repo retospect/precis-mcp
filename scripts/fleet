@@ -213,9 +213,9 @@ cmd_up() {
       { echo "scripts/fleet up: no active thread in $threads_dir: $s" >&2; exit 2; }
   done
   wait_mcp
-  mkdir -p "$queue/open" "$queue/answered" "$reviews"
+  mkdir -p "$reviews"
   if ! has_window review; then
-    local prompt="You are the review session. Read $conf/review-protocol.md and follow it; the queue directory is $queue. Start with the gather step, then give Reto the status board and the first cluster."
+    local prompt="You are the review session. Read $conf/review-protocol.md and follow it. Start with the gather step (search(kind='todo', view='asks')), then give Reto the status board and the first cluster."
     if tmux list-windows -F '#{window_index}' | grep -q -x 1; then
       tmux new-window -d -b -t 1 -n review -c "$root" "'$root/scripts/mcp-token-env' claude --model $model '$prompt'"
     else

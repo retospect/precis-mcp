@@ -3,26 +3,20 @@
 ``search(kind='todo', view='asks')`` and the web ``/asks`` + Needs-you
 landing read one model (:func:`asks_model`): rows grouped by class, then
 by quest, then by thread. Dark-factory step 1b (td540847,
-``docs/backlog/dark-factory.md``); it replaces the review session's
-gather step in ``.claude/fleet/review-protocol.md``.
+``docs/backlog/dark-factory.md``). A question for the owner is an
+``ask-user`` todo carrying ``meta.ask`` (td541979); there is no file
+source — the review-queue directory is retired.
 
 Classes (the highest one a row qualifies for wins):
 
 * **showstopper** — a lane is stopped: ``waiting-for:reto`` on a claimed
-  slice (``claimed-by:`` lease), or an explicit ``showstopper`` tag. A
+  slice (``claimed-by:`` lease), an ``ask-user`` todo whose
+  ``meta.ask.blocks`` names a slice, or an explicit ``showstopper`` tag. A
   tripped breaker and a red open release join here when dark-factory
   step 4 gives them a source; today neither exists to read.
 * **decision** — a next slice waits: ``ask-user`` / ``ask-user:`` todos,
   an unclaimed ``waiting-for:reto``, gripes tagged ``needs:ruling``.
 * **discussion** — a shape question: tag ``discussion`` (todo or gripe).
-
-Review-queue files (``<review dir>/*.md`` with the protocol's frontmatter)
-are a fourth source, read straight from disk until the protocol retires;
-the dir is ``PRECIS_REVIEW_QUEUE_DIR`` or the checkout's
-``.claude/fleet/open``, and a server without one simply has none. A file
-that answers via ``precis:<td>`` is dropped when that todo already has a
-row. File class: ``kind: design-verdict`` is a discussion; a ``blocks:``
-other than ``nothing`` is a showstopper; the rest are decisions.
 
 Quest grouping: :func:`quest_of` walks ``refs.parent_id`` up from the
 row to its root and takes the first ``serves`` link to a quest on the
@@ -32,11 +26,8 @@ every row starts with its handle so it is a ``get``.
 
 from __future__ import annotations
 
-import os
-import re
 from dataclasses import dataclass
-from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from precis.response import Response
 from precis.utils import handle_registry
@@ -82,7 +73,7 @@ class AskRow:
     """One thing that waits on the human."""
 
     klass: str
-    #: ``todo`` | ``gripe`` | ``review`` (a file item with no ref).
+    #: ``todo`` | ``gripe``.
     kind: str
     ref_id: int | None
     handle: str
@@ -94,6 +85,19 @@ class AskRow:
     quest_title: str = ""
     quest_prio: int | None = None
     thread: str = ""
+    #: From ``meta.ask`` (ask-user todos): ``design-verdict`` | ``ruling`` |
+    #: ``approval``, the options offered, the slice that waits (a ref id),
+    #: and the short context line.
+    ask_kind: str = ""
+    options: tuple[str, ...] = ()
+    blocks: int | None = None
+    context: str = ""
+
+    @property
+    def is_ask(self) -> bool:
+        """An ask-user todo or a ruling-tagged row: a question, not a
+        status line (``waiting-for:reto``) or a shape discussion."""
+        return "ask-user" in self.reasons or "needs:ruling" in self.reasons
 
 
 @dataclass(frozen=True)
@@ -154,6 +158,14 @@ class AsksModel:
                 )
             out.append(ClassGroup(klass=klass, count=len(rows), quests=tuple(quests)))
         return out
+
+    def default_rows(self) -> AsksModel:
+        """What the web ``/asks`` shows by default: showstoppers plus the
+        ask-user / needs:ruling decisions. A bare ``waiting-for:reto`` row
+        and a ``discussion`` row wait behind ``?all=1``."""
+        return AsksModel(
+            rows=tuple(r for r in self.rows if r.klass == SHOWSTOPPER or r.is_ask)
+        )
 
     def counts(self) -> dict[str, int]:
         return {c: sum(1 for r in self.rows if r.klass == c) for c in CLASSES}
@@ -260,9 +272,19 @@ def _open_tags(store: Store, ids: list[int]) -> dict[int, list[str]]:
     return out
 
 
-def _classify(kind: str, tags: list[str]) -> tuple[str, tuple[str, ...]] | None:
-    """``(class, reasons)`` for a todo/gripe's open tags; ``None`` when no
-    tag puts it on the list."""
+def _ask_blocks(ask: dict[str, Any] | None) -> int | None:
+    """The todo id ``meta.ask.blocks`` names (``td<id>``); ``None`` for
+    ``nothing`` or anything unparseable (stored meta is validated on write)."""
+    blocks = (ask or {}).get("blocks")
+    parsed = handle_registry.parse(blocks) if isinstance(blocks, str) else None
+    return parsed[2] if parsed and parsed[0] == "todo" and not parsed[1] else None
+
+
+def _classify(
+    kind: str, tags: list[str], ask: dict[str, Any] | None = None
+) -> tuple[str, tuple[str, ...]] | None:
+    """``(class, reasons)`` for a todo/gripe's open tags and ``meta.ask``;
+    ``None`` when no tag puts it on the list."""
     classes: list[str] = []
     reasons: list[str] = []
     if kind == "todo" and any(
@@ -270,6 +292,10 @@ def _classify(kind: str, tags: list[str]) -> tuple[str, tuple[str, ...]] | None:
     ):
         classes.append(DECISION)
         reasons.append("ask-user")
+        blocks = _ask_blocks(ask)
+        if blocks is not None:
+            classes.append(SHOWSTOPPER)
+            reasons.append(f"blocks:{_h('todo', blocks)}")
     if "waiting-for:reto" in tags:
         claim = next((t for t in tags if t.startswith("claimed-by:")), None)
         reasons.append("waiting-for:reto")
@@ -306,7 +332,7 @@ def _ref_rows(store: Store) -> list[AskRow]:
     with store.pool.connection() as conn:
         cands = conn.execute(
             """
-            SELECT r.ref_id, r.kind, r.title
+            SELECT r.ref_id, r.kind, r.title, r.meta->'ask'
               FROM refs r
              WHERE r.kind IN ('todo', 'gripe') AND r.retired_at IS NULL
                AND EXISTS (
@@ -325,16 +351,26 @@ def _ref_rows(store: Store) -> list[AskRow]:
         ).fetchall()
     tags_by_ref = _open_tags(store, [int(c[0]) for c in cands])
     rows: list[AskRow] = []
-    for ref_id, kind, title in cands:
+    for ref_id, kind, title, ask_meta in cands:
         rid = int(ref_id)
         tags = tags_by_ref.get(rid, [])
-        verdict = _classify(str(kind), tags)
+        ask = ask_meta if isinstance(ask_meta, dict) else None
+        verdict = _classify(str(kind), tags, ask)
         if verdict is None:
             continue
         klass, reasons = verdict
         chain = _chain(store, rid)
         quest = _quest_in_chain(store, chain)
         thread = _thread_of(tags, chain, store)
+        blocks = _ask_blocks(ask)
+        if blocks is not None and (quest is None or not thread):
+            # A parentless question sits where the slice it blocks sits.
+            blocked_chain = _chain(store, blocks)
+            quest = quest or _quest_in_chain(store, blocked_chain)
+            thread = thread or _thread_of(
+                _open_tags(store, [blocks]).get(blocks, []), blocked_chain, store
+            )
+        options = (ask or {}).get("options")
         rows.append(
             AskRow(
                 klass=klass,
@@ -348,6 +384,12 @@ def _ref_rows(store: Store) -> list[AskRow]:
                 quest_title=_first_line(quest[1]) if quest else "",
                 quest_prio=quest[2] if quest else None,
                 thread=thread,
+                ask_kind=str((ask or {}).get("kind") or ""),
+                options=tuple(str(o) for o in options)
+                if isinstance(options, list)
+                else (),
+                blocks=blocks,
+                context=str((ask or {}).get("context") or ""),
             )
         )
     return rows
@@ -367,92 +409,12 @@ def _thread_of(tags: list[str], chain: list[int], store: Store) -> str:
     return ""
 
 
-# ── review-queue files ────────────────────────────────────────────
-
-_FRONT_RE = re.compile(r"\A---\n(.*?)\n---\n(.*)\Z", re.DOTALL)
-_QUESTION_RE = re.compile(r"\*\*Question\.\*\*\s*(.+?)(?:\n\s*\n|\Z)", re.DOTALL)
-_ANSWER_TD_RE = re.compile(r"precis:\s*td?(\d+)")
-
-
-def review_queue_dir() -> Path | None:
-    """Where the protocol's ``open/*.md`` items live, if anywhere."""
-    env = os.environ.get("PRECIS_REVIEW_QUEUE_DIR")
-    if env:
-        return Path(env)
-    for parent in Path(__file__).resolve().parents:
-        cand = parent / ".claude" / "fleet" / "open"
-        if cand.is_dir():
-            return cand
-    return None
-
-
-def _review_rows(review_dir: Path | None) -> list[tuple[AskRow, int | None]]:
-    """``(row, answered-via todo id)`` per protocol file in ``review_dir``."""
-    if review_dir is None or not review_dir.is_dir():
-        return []
-    out: list[tuple[AskRow, int | None]] = []
-    for path in sorted(review_dir.glob("*.md")):
-        try:
-            text = path.read_text(encoding="utf-8")
-        except OSError:
-            continue
-        m = _FRONT_RE.match(text)
-        if m is None:
-            continue
-        meta: dict[str, str] = {}
-        for line in m.group(1).splitlines():
-            key, sep, val = line.partition(":")
-            if sep:
-                meta[key.strip()] = val.strip()
-        qm = _QUESTION_RE.search(m.group(2))
-        question = _first_line(qm.group(1) if qm else "", _QUESTION_CAP)
-        item_kind = meta.get("kind", "")
-        blocks = meta.get("blocks", "")
-        blocked = f"blocks: {blocks}" if blocks.lower() not in ("", "nothing") else ""
-        if item_kind == "design-verdict":
-            klass = DISCUSSION
-        elif blocked:
-            klass = SHOWSTOPPER
-        else:
-            klass = DECISION
-        source = f"source={meta['source']}" if meta.get("source") else ""
-        reasons = tuple(v for v in (item_kind, source) if v)
-        td = _ANSWER_TD_RE.search(meta.get("answer-via", ""))
-        out.append(
-            (
-                AskRow(
-                    klass=klass,
-                    kind="review",
-                    ref_id=None,
-                    handle=f"review:{path.stem}",
-                    title=_first_line(question or blocks or path.stem),
-                    reasons=("review-queue", *reasons),
-                    question=blocked,
-                    thread=meta.get("area", ""),
-                ),
-                int(td.group(1)) if td else None,
-            )
-        )
-    return out
-
-
 # ── the model and the view ────────────────────────────────────────
 
 
-def asks_model(store: Store, *, review_dir: Path | None = None) -> AsksModel:
-    """Every row that waits on the human, classed and quest-resolved.
-
-    ``review_dir`` defaults to :func:`review_queue_dir`; pass a path to
-    read a different protocol directory (tests).
-    """
+def asks_model(store: Store) -> AsksModel:
+    """Every row that waits on the human, classed and quest-resolved."""
     rows = _ref_rows(store)
-    seen = {r.ref_id for r in rows if r.ref_id is not None}
-    if review_dir is None:
-        review_dir = review_queue_dir()
-    for row, td in _review_rows(review_dir):
-        if td is not None and td in seen:
-            continue
-        rows.append(row)
     rows.sort(key=lambda r: (_RANK[r.klass], r.kind, r.ref_id or 0, r.handle))
     return AsksModel(rows=tuple(rows))
 
@@ -461,12 +423,18 @@ def _line(r: AskRow, indent: str) -> str:
     out = f"{' '.join((r.handle, *r.reasons))} — {r.title}"
     if r.question and r.question != r.title:
         out += f"\n{indent}  ? {r.question}"
+    if r.ask_kind:
+        out += f"\n{indent}  {r.ask_kind}"
+        if r.context:
+            out += f": {r.context}"
+    for i, opt in enumerate(r.options, 1):
+        out += f"\n{indent}  {i}. {opt}"
     return out
 
 
-def render_asks(store: Store, *, review_dir: Path | None = None) -> Response:
+def render_asks(store: Store) -> Response:
     """``search(kind='todo', view='asks')`` — the list, grouped for reading."""
-    model = asks_model(store, review_dir=review_dir)
+    model = asks_model(store)
     counts = model.counts()
     head = " · ".join(f"{counts[c]} {c}" for c in CLASSES)
     out = [f"# asks — {head}" if model.rows else "# asks — nothing waits on you"]

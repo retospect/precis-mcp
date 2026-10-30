@@ -3,7 +3,8 @@
    routes.asks.class_groups), ask_by_id (id -> answerable ask dict),
    class_hints, next_path (where an answer returns the operator). An
    ask-user todo renders the full _row partial with its answer form; any
-   other row is one compact line whose handle opens the row — the
+   other row (a needs:ruling gripe; with ?all=1 also waiting-for and
+   discussion rows) is one compact line whose handle opens the row — the
    argument happens as comments there. #}
 {% for g in groups %}
 <section class="mb-8" data-ask-class="{{ g.klass }}">
@@ -31,11 +32,7 @@
       {% else %}
       <li class="rounded-lg border border-line bg-surface px-4 py-2" data-ask-row="{{ r.handle }}">
         <div class="flex items-baseline gap-2">
-          {% if r.kind == 'review' %}
-          <span class="text-xs text-fg-faint shrink-0 font-mono">{{ r.handle }}</span>
-          {% else %}
           <a href="/r/{{ r.kind }}/{{ r.ref_id }}" class="text-xs text-fg-faint hover:text-success-strong shrink-0 font-mono">{{ r.handle }}</a>
-          {% endif %}
           <div class="min-w-0 flex-1 text-sm text-fg break-words">{{ r.title | linkify_refs }}</div>
           <span class="shrink-0 text-[11px] font-mono text-fg-faint">{{ r.reasons | join(' ') }}</span>
         </div>

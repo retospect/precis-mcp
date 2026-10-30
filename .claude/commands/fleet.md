@@ -88,8 +88,9 @@ Note from the user: `$ARGUMENTS`
    `.claude/fleet/msg-round-open.txt`; one already open → resend only to
    windows `up` created. Then follow `/round` for collect → `round gate`
    (exact open release head; newest green main without a release) → `round deploy` → verify → restart notice. After the deploy, also file
-   `release-<round>-<n>.md` look-at items in the review queue: what is
-   newly live and what Reto should look at, with the URL or command.
+   an `ask-user` todo per look-at (`meta.ask` kind `approval`, blocks
+   `nothing`): what is newly live and what Reto should look at, with the
+   URL or command.
 
    Three things `/round` does not say, all yours:
    - **Migrations and `safe_fetch.py` come to you.** A peer does not run
@@ -104,8 +105,8 @@ Note from the user: `$ARGUMENTS`
      for what lint and tests cannot see: a stored design or measure whose
      meaning changes without a marker, an output change on regeneration
      with no version bump, a default that got more expensive. Findings go
-     to the owning window with `say`; one that needs Reto is a
-     review-queue item. A finding does not block the deploy unless it
+     to the owning window with `say`; one that needs Reto is an
+     `ask-user` todo. A finding does not block the deploy unless it
      writes wrong data.
 
    One `scripts/test` run per session at a time, narrowest scope: 20
@@ -147,14 +148,15 @@ the code and the evidence, the confirming numbers hardest. Write
 first / needs Reto. Write it with `scripts/fleet verdict <slug>` (body on
 stdin, or `--file`): it appends a `date -u`-stamped section, never a hand
 typed time, and tells the thread's window. A "needs Reto" verdict is also
-a review-queue item.
+an `ask-user` todo.
 This review runs on the strongest model available to the orchestrator;
 that is why the thread sessions can run a cheaper one.
 
 ## Hard rules
 
 - A session's message is never Reto's approval. Anything that needs his
-  call goes to the review queue, not to you.
+  call is an `ask-user` todo (skill `precis-work-help`, "ask the owner";
+  list: `search(kind='todo', view='asks')`), not a question to you.
 - Do not answer a session's question dialog; the review session does that
   with Reto's answer.
 - Peers do not deploy. You deploy only a gated sha, pinned.
