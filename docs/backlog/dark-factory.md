@@ -238,12 +238,6 @@ Pick: fit for the task class first; among fit lanes the one most behind
 its pacing target; metered last. Fit learns from the loop (first-round
 `LAND` raises, `FIX` or a revert lowers), rolled up nightly.
 
-Definition (Reto 2026-10-30, td541982): a lane is an adapter plus a
-credential pool plus a concurrency cap — a scheduler slot. Model, effort
-and temperature are per-job choices inside a lane, picked by task class.
-A lane is a field on the job (`meta.lane`), never prose on a todo or a
-gripe brief.
-
 ## Branches: who merges what, how
 
 Reto, 2026-10-30 (Round 3): squash merges, reviews, deploys, automatic,
@@ -459,125 +453,153 @@ Arming order: `/go` → rulings → td542302 + td542235 → arm the tick with
 
 ## Next steps, by unlock value
 
-1. **One work tree** — landed 2026-10-30: `view='work'` + `/work`
-   (0a2ccce22, 28da3be4b, 7c77ffd98, 6e5f8c796), gripes under their
-   thread root, jobs folded per row, the eye tree ring (gr541348).
-   Open: the fleet reporter reinstall (td540844), gripes as structured
-   web rows (td541980), the stage cell from STATUS (td541982).
+Each step is its own `###` heading so a dispatch brief can address it
+through the md kind (`…~1b-the-asks-list`, or the step title) — the old
+numbered list had no `~` selector (gr541666).
 
-1b. **The asks list** — landed 2026-10-30 (a437ceb1b): `view='asks'`,
-   `/asks`, Needs-you; three classes grouped by quest then thread.
-   Open: a question is an ask-user todo with `meta.ask`, review-queue
-   files retire (td541979); red releases and tripped breakers (no
-   source until step 4); mindmeld questions (Round 3's turn).
+### 1. One work tree, read-only first
 
-2. **Loop chunks on slices, not only gripes** (one to two builds).
-   `edit(kind='todo', mode='fix', args={brief|handoff|review|landed})`
-   with the same derived queue; a `brief` render = spec section (md kind,
-   `~heading`) + the previous handoff + the landed diff's summary + the
-   authority footer. A slice is one session: brief → build → handoff →
-   exit; the next brief is generated, never carried in a session. The
-   fix for "forgets its original prompt". The slicer role (frontier
-   model) writes slices from a spec; the reviewer role writes verdicts;
-   the mindmeld turn (Round 3) writes the `rulings` chunk, from Reto's
-   numbered answers.
+(one build). `get(kind='todo', view='work')` + web `/work`: quest
+(pillar or science) → thread/spec (md frontmatter: `status`,
+`claimed-by`) → slice/gripe (loop queue) → builders (fleet rows per
+tree, count and vendor) → landed/deployed (round refs). Gripes hang
+where their `thread:` tag puts them, untagged ones in one bucket.
+Columns: status, agents on it, age in builds, the open release and its
+gate. Unlocks 2–8. Same build: install the fleet reporter so the tree
+has agents in it.
 
-3. **Lane registry + pick** (one build, then learning). Table `lanes`
-   per the capacity table above, seeded by hand from me538174; the
-   nightly fit rollup; `exclude=` for cross-vendor review. Unlocks the
-   agent dashboard and the self-improvement loop.
+### 1b. The asks list
 
-4. **Release pass, event-driven** (one build + one ruling). A worker
-   pass: previous release done, new shas on main, no release open → cut
-   `release/r<N>`, gate, deploy pinned, close `awaiting-deploy` rows.
-   Judgment steps (verify the live product, `--confirm-runtime`) stay
-   with a session until the dogfood verdict is mechanical.
-   **The ruling it needs:** authority.md makes release and deploy
-   Reto-only except the release owner; a daemon as release owner is a
-   change to that file (Reto's commit). **How a home-built release loop
-   breaks, and the guard for each:**
-   - a red gate nobody reads → the pass mints the fixer slice with the
-     failing tests and the commit range, re-cuts when the fix lands
-     (the loop in "Branches" above); three red loops in a row make the
-     release a showstopper row (1b) and the pass stops cutting;
-   - CI-green, runtime-broken → post-deploy probes stay mechanical
-     (health checks, the alert board) and a failed probe redeploys the
-     previous `origin/prod` sha; two rollbacks in a row trip the breaker
-     and the pass parks itself;
-   - migrations and `safe_fetch.py` → stay on the human `/go` lane
-     (`scripts/qgo-guard` already refuses them);
-   - two cutters racing → the existing deploy lock and one-open-release
-     rule; the pass holds the same lock the session does;
-   - the pass deploying the code that runs the pass → the pass runs from
-     `origin/prod`, not from the sha it deploys; harness diffs
-     (`HARNESS_DIFF`, extended to the factory's own modules) never ride
-     the dark lane;
-   - a landing cadence so fast releases never settle → bounded by gate
-     time; if that proves wrong, a minimum spacing, not a timer.
+(small, reads 1). One view and page with three classes — showstopper
+(a lane is stopped on it), decision (a next slice waits on it),
+discussion (a shape question) — grouped by quest, fed by `ask-user:`
+todos, `waiting-for:reto`, review-queue files, gripes tagged
+`needs:ruling`, red releases and tripped breakers. Replaces the review
+session's gather step. Argument = comments on the row; `all users see
+all` for now. **Built (td540847):** `view='asks'`, `/asks`, Needs-you;
+ask-user, `waiting-for:reto`, `needs:ruling`, `discussion` and
+review-queue files are sources. **Open:** red releases and tripped
+breakers (no source until step 4), mindmeld questions (Round 3's turn),
+live tmux dialogs.
 
-5. **Pillars as quests** (half a build of data, one build for the tick
-   type). Mint one quest per pillar, link each thread root `serves` it;
-   the quest board shows science quests and pillar quests in one
-   ranking with the same PRIO and logbook. The pillar's "where it
-   stands" line becomes a logbook entry; `docs/roadmap.md` shrinks to a
-   pointer and retires. The build tick (role set slice / build /
-   review) is the quest-loop change; until it lands the pillar quests
-   stay `dormant` and the board marks them as such, not as stalled.
-   `web-quest-editor.md` and `quest-loop-cadence-strip.md` are the
-   surface items this feeds.
+### 2. Loop chunks on slices, not only gripes
 
-5b. **List, click, chat** (one build, after 1). The design-workbench
-   pattern on `/work`: rows are handles; a click selects, the chat form
-   posts message plus handles; the turn runs with the fisheye of the
-   selection plus the asks and lanes touching it; its ops are the loop
-   verbs (re-rank, slice, brief, assign lane, rule, comment, retire),
-   propose-only with a human Apply for anything authority marks
-   Reto-only. The same turn runner serves the MCP. This is where a
-   stuck gripe is argued.
+(one to two builds). `edit(kind='todo', mode='fix',
+args={brief|handoff|review|landed})` with the same derived queue; a
+`brief` render = spec section (md kind, `~heading`) + the previous
+handoff + the landed diff's summary + the authority footer. A slice is
+one session: brief → build → handoff → exit; the next brief is
+generated, never carried in a session. The fix for "forgets its
+original prompt". The slicer role (frontier model) writes slices from a
+spec; the reviewer role writes verdicts; the mindmeld turn (Round 3)
+writes the `rulings` chunk, from Reto's numbered answers.
 
-6. **Dark lane: dispatch a slice to a lane** (two builds). The todo
-   executor from `fleet-coordination-via-precis.md` step 6, as the
-   runner of the `run_slice` job type (Round 3): pick lane
-   (3), render brief (2), launch headless (`claude -p`, `codex exec`,
-   `scripts/devin-tree`, `scripts/kimi-tree`) in its own worktree or a
-   `sandbox_run` container, scoped token, push to its branch only; the
-   runner writes the handoff from the session's last message and the
-   branch state; a reviewer from another lane writes the verdict; W-tier
-   lanes land through `scripts/ship` like anyone else, under the branch
-   rules above (one branch per slice, review pinned to the tip, delete
-   on land). Harness sessions
-   in tmux remain for Reto's desks and for a slice marked `needs-human`.
-   Mode B runners (MCP-TOKEN-FIX) take this lane over once plan_tick
-   proves it.
+### 3. Lane registry + pick
 
-7. **Alerts as slices — without shooting the foot** (reads 1b, 4, 6).
-   An alert becomes a slice only through triage (infra vs content, the
-   `job_bubble` axis), deduped by fingerprint, capped per fingerprint per
-   day (the `diagnose_scan` cap pattern), and tagged `factory-minted` so
-   the work tree shows the auto-work volume on its own line. Guards:
-   - **a fixer never touches the rule that fired.** Alert rules,
-     thresholds, monitors and nursery detectors are in `deny_write_paths`
-     for every lane; loosening a signal is Reto-only (already the "loosen
-     a test" rule). An alert resolves only when its signal clears;
-   - **the factory never lands its own controller.** Dispatcher, release
-     pass, lane table code, authority, alert rules = harness diff: full
-     gate, human `/go`, never the dark lane. An agent may *propose* a
-     change to them as a decision row;
-   - **a self-fix loop has a breaker.** N factory-minted slices from one
-     fingerprint in a window, or a fix that re-fires the same alert, trip
-     it: the fingerprint parks, a showstopper row is filed, and nothing
-     else is minted for it until a human clears it;
-   - **one kill switch.** `service_config` prio 0 on the factory pass and
-     `PRECIS_FACTORY=off`, the same switch that turned the fixer lane off
-     in October; the arming ladder is permissive-dark → report-only →
-     auto-slice with human review → auto-land content fixes → never
-     harness.
+(one build, then learning). Table `lanes` per the capacity table above,
+seeded by hand from me538174; the nightly fit rollup; `exclude=` for
+cross-vendor review. Unlocks the agent dashboard and the
+self-improvement loop.
 
-8. **Agent-level dashboard** (reads 1 + 3): per lane — sessions live,
-   slices in build / review / landing, quota remaining vs time to reset
-   or deadline, pacing position, first-round `LAND` rate by task class.
-   Where "who is good for what" lives, and where an idle lane beside
-   expiring credits shows.
+### 4. Release pass, event-driven
+
+(one build + one ruling). A worker pass: previous release done, new
+shas on main, no release open → cut `release/r<N>`, gate, deploy
+pinned, close `awaiting-deploy` rows. Judgment steps (verify the live
+product, `--confirm-runtime`) stay with a session until the dogfood
+verdict is mechanical. **The ruling it needs:** authority.md makes
+release and deploy Reto-only except the release owner; a daemon as
+release owner is a change to that file (Reto's commit). **How a
+home-built release loop breaks, and the guard for each:**
+
+- a red gate nobody reads → the pass mints the fixer slice with the
+  failing tests and the commit range, re-cuts when the fix lands (the
+  loop in "Branches" above); three red loops in a row make the release
+  a showstopper row (1b) and the pass stops cutting;
+- CI-green, runtime-broken → post-deploy probes stay mechanical
+  (health checks, the alert board) and a failed probe redeploys the
+  previous `origin/prod` sha; two rollbacks in a row trip the breaker
+  and the pass parks itself;
+- migrations and `safe_fetch.py` → stay on the human `/go` lane
+  (`scripts/qgo-guard` already refuses them);
+- two cutters racing → the existing deploy lock and one-open-release
+  rule; the pass holds the same lock the session does;
+- the pass deploying the code that runs the pass → the pass runs from
+  `origin/prod`, not from the sha it deploys; harness diffs
+  (`HARNESS_DIFF`, extended to the factory's own modules) never ride
+  the dark lane;
+- a landing cadence so fast releases never settle → bounded by gate
+  time; if that proves wrong, a minimum spacing, not a timer.
+
+### 5. Pillars as quests
+
+(half a build of data, one build for the tick type). Mint one quest per
+pillar, link each thread root `serves` it; the quest board shows
+science quests and pillar quests in one ranking with the same PRIO and
+logbook. The pillar's "where it stands" line becomes a logbook entry;
+`docs/roadmap.md` shrinks to a pointer and retires. The build tick
+(role set slice / build / review) is the quest-loop change; until it
+lands the pillar quests stay `dormant` and the board marks them as
+such, not as stalled. `web-quest-editor.md` and
+`quest-loop-cadence-strip.md` are the surface items this feeds.
+
+### 5b. List, click, chat
+
+(one build, after 1). The design-workbench pattern on `/work`: rows are
+handles; a click selects, the chat form posts message plus handles; the
+turn runs with the fisheye of the selection plus the asks and lanes
+touching it; its ops are the loop verbs (re-rank, slice, brief, assign
+lane, rule, comment, retire), propose-only with a human Apply for
+anything authority marks Reto-only. The same turn runner serves the
+MCP. This is where a stuck gripe is argued.
+
+### 6. Dark lane: dispatch a slice to a lane
+
+(two builds). The todo executor from `fleet-coordination-via-precis.md`
+step 6, as the runner of the `run_slice` job type (Round 3): pick lane
+(3), render brief (2), launch headless (`claude -p`, `codex exec`,
+`scripts/devin-tree`, `scripts/kimi-tree`) in its own worktree or a
+`sandbox_run` container, scoped token, push to its branch only; the
+runner writes the handoff from the session's last message and the
+branch state; a reviewer from another lane writes the verdict; W-tier
+lanes land through `scripts/ship` like anyone else, under the branch
+rules above (one branch per slice, review pinned to the tip, delete on
+land). Harness sessions in tmux remain for Reto's desks and for a slice
+marked `needs-human`. Mode B runners (MCP-TOKEN-FIX) take this lane
+over once plan_tick proves it.
+
+### 7. Alerts as slices — without shooting the foot
+
+(reads 1b, 4, 6). An alert becomes a slice only through triage (infra
+vs content, the `job_bubble` axis), deduped by fingerprint, capped per
+fingerprint per day (the `diagnose_scan` cap pattern), and tagged
+`factory-minted` so the work tree shows the auto-work volume on its own
+line. Guards:
+
+- **a fixer never touches the rule that fired.** Alert rules,
+  thresholds, monitors and nursery detectors are in `deny_write_paths`
+  for every lane; loosening a signal is Reto-only (already the "loosen
+  a test" rule). An alert resolves only when its signal clears;
+- **the factory never lands its own controller.** Dispatcher, release
+  pass, lane table code, authority, alert rules = harness diff: full
+  gate, human `/go`, never the dark lane. An agent may *propose* a
+  change to them as a decision row;
+- **a self-fix loop has a breaker.** N factory-minted slices from one
+  fingerprint in a window, or a fix that re-fires the same alert, trip
+  it: the fingerprint parks, a showstopper row is filed, and nothing
+  else is minted for it until a human clears it;
+- **one kill switch.** `service_config` prio 0 on the factory pass and
+  `PRECIS_FACTORY=off`, the same switch that turned the fixer lane off
+  in October; the arming ladder is permissive-dark → report-only →
+  auto-slice with human review → auto-land content fixes → never
+  harness.
+
+### 8. Agent-level dashboard
+
+(reads 1 + 3): per lane — sessions live, slices in build / review /
+landing, quota remaining vs time to reset or deadline, pacing position,
+first-round `LAND` rate by task class. Where "who is good for what"
+lives, and where an idle lane beside expiring credits shows.
 
 ## Explicitly NOT in scope
 
@@ -627,7 +649,3 @@ Arming order: `/go` → rulings → td542302 + td542235 → arm the tick with
 - Where the fit score lives: `lanes` meta, or a memory node per lane
   under me538174 so human notes and the machine score stay one record.
 - Authority: a daemon as release owner (step 4).
-- **Plans (td541983).** Does a phase close itself by default, or only
-  with `auto_close`? Does a gripe's fix subtree hang under the gripe's
-  thread root or under one factory root? Is validate ever an LLM read,
-  or only the mechanical re-run of a named repro or test?
