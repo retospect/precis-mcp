@@ -133,6 +133,24 @@ PARAMS_SCHEMA: dict[str, Any] = {
 COMPATIBLE_EXECUTORS = frozenset({"job_inproc"})
 REQUIRES: frozenset[str] = frozenset()
 
+#: Host-capability token a worker advertises through ``resource_slots``
+#: when ``PRECIS_UPLOAD_STAGING`` is configured there — i.e. when it can
+#: read the staged upload file the ``upload_sha`` leg attaches (the
+#: heartbeat's soft-signal probe, ``capability_probe``). Only the upload
+#: leg needs it; a ``url`` pull fetches remote bytes (gr537770).
+UPLOAD_STAGING_RESOURCE = "upload_staging"
+
+
+def conditional_requires(params: dict[str, Any]) -> frozenset[str]:
+    """``{upload_staging}`` for an upload-carrying pull — the check-only
+    claim gate then holds the job for a host advertising the staging dir
+    instead of letting a staging-less worker claim it and fail the pull
+    with ``no_upload_staging`` (gr537770). A ``url`` pull needs nothing."""
+    if params.get("upload_sha"):
+        return frozenset({UPLOAD_STAGING_RESOURCE})
+    return frozenset()
+
+
 DESCRIPTION = (
     "Fetch an agent-supplied PDF URL into the watch inbox, with a fetch "
     "sidecar naming the paper stub it belongs to."
@@ -409,6 +427,13 @@ def _dispatch(ctx: DispatchContext, spec: JobTypeSpec) -> None:
         f"paper_pull ref {ref_id}: {record['status']}"
         + (f" ({record['reason']})" if record.get("reason") else ""),
     )
+    if record["status"] == "failed":
+        # A quiet 'done' reads as success — failures go through the
+        # terminal-failure path (same ruling as pdf_attach /
+        # paper_reextract; gr537770).
+        ctx.record_failure(
+            f"paper_pull ref {ref_id}: {record.get('reason') or 'failed'}"
+        )
     # Not ``ref_id=``: the executor's set_meta binds the job's own ref_id
     # positionally, so that key collides (TypeError on prod, r24).
     ctx.set_meta(
@@ -427,6 +452,7 @@ SPEC = JobTypeSpec(
     run=None,
     dispatch=_dispatch,
     validate=validate,
+    conditional_requires=conditional_requires,
 )
 
 
@@ -436,8 +462,10 @@ def load() -> JobTypeSpec:
 
 __all__ = [
     "SPEC",
+    "UPLOAD_STAGING_RESOURCE",
     "blocked_host",
     "check_pdf",
+    "conditional_requires",
     "idem_key",
     "load",
     "pull",

@@ -162,6 +162,10 @@ def run_job_inproc_pass(store: Store, *, limit: int = 1) -> dict[str, int]:
     "worker death = compute death" assumption ``claude_inproc`` runs
     under — the epoch/expiry arms + ``poison_guard`` crash-loop cap apply
     uniformly (§H).
+    ``check_job_type_requires=True``: the check-only per-host capability
+    gate (gr537770) — a job_type's declared host capabilities
+    (``paper_pull``'s upload leg needs ``upload_staging``) hold the row
+    queued on a host that doesn't advertise them, for one that does.
     """
     node = os.environ.get("PRECIS_NODE")
     poisoned = 0
@@ -174,6 +178,7 @@ def run_job_inproc_pass(store: Store, *, limit: int = 1) -> dict[str, int]:
             node=node,
             reclaim_stale_running=True,
             respect_reserve=True,
+            check_job_type_requires=True,
         )
         if not rows:
             conn.commit()

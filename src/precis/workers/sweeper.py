@@ -689,13 +689,16 @@ def _alert_unschedulable_jobs(store: Store) -> int:
         ref_id = int(raw_id)
         meta = dict(raw_meta or {})
         requires = effective_requires(meta)
-        if meta.get("executor") == "coordinator":
-            # gr335087: a ``coordinator`` job_type's declared capability
-            # (``quest_tick``'s ``claude_bin``) is checked at CLAIM time
-            # (``claim_executor_jobs(check_job_type_requires=True)``), not
-            # reserved via ``effective_requires``/``resource_slots`` (see
-            # ``_coordinator_capability_ok``'s docstring for why) — so it
-            # would never trip this alert without folding it in here too.
+        if meta.get("executor") in ("coordinator", "job_inproc"):
+            # gr335087/gr537770: a job_type's declared capability on a lane
+            # that opts into the check-only claim gate
+            # (``claim_executor_jobs(check_job_type_requires=True)`` —
+            # ``coordinator`` and ``job_inproc``) is checked at CLAIM time,
+            # not reserved via ``effective_requires``/``resource_slots``
+            # (see ``_coordinator_capability_ok``'s docstring for why) — so
+            # it would never trip this alert without folding it in here
+            # too. ``job_type_requires`` folds in any params-conditional
+            # tokens (``paper_pull``'s ``upload_staging``).
             requires = {**requires, **{tok: 1 for tok in job_type_requires(meta)}}
         if not requires:
             continue

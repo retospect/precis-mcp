@@ -433,8 +433,9 @@ def _queue_typed_job(
     job_type: str,
     target_node: str | None = None,
     requires: dict[str, int] | None = None,
+    params: dict[str, object] | None = None,
 ) -> int:
-    params: dict[str, object] = {}
+    params = dict(params or {})
     if target_node is not None:
         params["target_node"] = target_node
     meta: dict[str, object] = {
@@ -931,4 +932,63 @@ def test_coordinator_capability_gate_respects_target_node_pin(store: Store) -> N
         node="spark_pin",
         check_job_type_requires=True,
     )
+    assert [r[0] for r in rows] == [jid]
+
+
+# ── job_inproc params-conditional capability gate (gr537770) ──────────────
+#
+# ``paper_pull``'s ``conditional_requires`` makes only its ``upload_sha``
+# leg need a host capability: a staged upload can be read only where
+# ``PRECIS_UPLOAD_STAGING`` is configured (the heartbeat's soft
+# ``upload_staging`` signal — see ``capability_probe.probe_soft_signals``).
+# The same check-only gate as the coordinator tests above, reached via
+# ``JobTypeSpec.conditional_requires`` folded into ``job_type_requires`` —
+# a staging-less worker leaves the row queued for a host that can read
+# the file, instead of claiming and failing it.
+
+
+def test_upload_pull_skips_staging_less_host(store: Store) -> None:
+    jid = _queue_typed_job(
+        store,
+        executor="job_inproc",
+        job_type="paper_pull",
+        params={"ref_id": 1, "upload_sha": "ab" * 32},
+    )
+    rows = _claim(store, "job_inproc", "nasless", check_job_type_requires=True)
+    assert rows == []
+    # Untouched: still queued, still no lease — a staging host's next pass
+    # gets a clean claim.
+    with store.pool.connection() as conn:
+        row = conn.execute("SELECT meta FROM refs WHERE ref_id = %s", (jid,)).fetchone()
+    assert row is not None
+    assert not (row[0] or {}).get("lease_until")
+
+
+def test_upload_pull_claimed_on_staging_host(store: Store) -> None:
+    _advertise(store, "nas_host", {"upload_staging": 1})
+    jid = _queue_typed_job(
+        store,
+        executor="job_inproc",
+        job_type="paper_pull",
+        params={"ref_id": 1, "upload_sha": "ab" * 32},
+    )
+    rows = _claim(store, "job_inproc", "nas_host", check_job_type_requires=True)
+    assert [r[0] for r in rows] == [jid]
+    # Check-only: staging is a presence capability, not a counted slot —
+    # no reservation, free untouched.
+    assert "reserved" not in rows[0][2]
+    assert _free(store, "nas_host", "upload_staging") == 1
+
+
+def test_url_pull_needs_no_staging_capability(store: Store) -> None:
+    """``conditional_requires`` keys on ``upload_sha`` — a plain ``url``
+    pull declares nothing and is claimed anywhere, even on the same
+    staging-less host that skipped the upload leg."""
+    jid = _queue_typed_job(
+        store,
+        executor="job_inproc",
+        job_type="paper_pull",
+        params={"ref_id": 1, "url": "https://x/y.pdf"},
+    )
+    rows = _claim(store, "job_inproc", "nasless", check_job_type_requires=True)
     assert [r[0] for r in rows] == [jid]

@@ -166,7 +166,11 @@ EXECUTOR_PROVIDES: dict[str, frozenset[str]] = {
     # per-host truth is enforced dynamically at CLAIM time instead — see
     # ``claim_executor_jobs(check_job_type_requires=True)`` /
     # ``_coordinator_capability_ok`` in ``_common.py``, which the
-    # ``coordinator`` executor opts into.
+    # ``coordinator`` executor opts into. ``job_inproc`` opts into the
+    # same gate (gr537770): a job_type whose params declare a host
+    # capability (``conditional_requires`` — ``paper_pull``'s upload leg
+    # needs ``upload_staging``) is held queued on hosts that don't
+    # advertise it.
     "coordinator": frozenset({"claude_bin"}),
     # ``ssh_node`` runs a job's plugin ``dispatch`` on a remote node
     # (precis-dft's ``gpaw_relax`` shells out to ``ssh spark docker

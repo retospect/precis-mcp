@@ -606,7 +606,13 @@ def job_type_requires(meta: dict[str, Any]) -> frozenset[str]:
     from precis.workers.job_types import get_job_type
 
     spec = get_job_type(str(job_type))
-    return spec.requires if spec is not None else frozenset()
+    if spec is None:
+        return frozenset()
+    requires = spec.requires
+    params = meta.get("params")
+    if spec.conditional_requires is not None and isinstance(params, dict):
+        requires = requires | spec.conditional_requires(params)
+    return requires
 
 
 def _coordinator_capability_ok(
@@ -621,10 +627,12 @@ def _coordinator_capability_ok(
     :func:`claim_executor_jobs`'s reservation path uses) — ``False`` drops
     the row from THIS claim (the lock frees at commit; it stays queued for a
     capable host/worker to pick up next cycle). Opt-in via
-    ``claim_executor_jobs(check_job_type_requires=True)`` — only
-    ``coordinator`` passes that today (gr335087: a claude-less host's
-    coordinator worker was claiming ``quest_tick`` and failing every tick at
-    the LLM stage). If literally no host in the fleet ever advertises a
+    ``claim_executor_jobs(check_job_type_requires=True)`` — passed by
+    ``coordinator`` (gr335087: a claude-less host's coordinator worker was
+    claiming ``quest_tick`` and failing every tick at the LLM stage) and
+    ``job_inproc`` (gr537770: a worker without ``PRECIS_UPLOAD_STAGING``
+    was claiming ``paper_pull`` upload legs and failing them at the
+    staged-file read). If literally no host in the fleet ever advertises a
     declared token, the sweeper's ``_alert_unschedulable_jobs`` pages instead
     of the job silently starving forever.
     """
@@ -1107,7 +1115,7 @@ def claim_executor_jobs(
     reached takes effect within one claim cycle.
 
     **Job-type capability gate (gr335087).** When ``check_job_type_requires``
-    is True (``coordinator`` only), a row whose job_type declares a
+    is True (``coordinator``, ``job_inproc``), a row whose job_type declares a
     :func:`job_type_requires` token not advertised on the host that would run
     it (its ``target_node`` pin, else this claiming host) is dropped from
     THIS claim via :func:`_coordinator_capability_ok` — check-only, no

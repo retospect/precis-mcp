@@ -65,6 +65,14 @@ _MEM_CAP = 2
 _CONTAINER_AGENT_RESOURCE = "container_agent"
 _CONTAINER_AGENT_CAP = 1
 
+#: The soft ``upload_staging`` gauge (gr537770): ``1`` on a host whose
+#: ``PRECIS_UPLOAD_STAGING`` resolves (``pdf_upload.uploads_dir()`` — the
+#: same predicate the ``paper_pull`` upload leg reads at run time), absent
+#: otherwise. It's the capability the claim gate holds an upload-carrying
+#: ``paper_pull`` for — presence, not correctness: a misconfigured share
+#: still advertises and the run path surfaces the read failure.
+_UPLOAD_STAGING_RESOURCE = "upload_staging"
+
 #: Nominal capacity per soft resource, for the heartbeat writer (each soft gauge
 #: has its own — ``mem`` is a multi-bucket headroom, ``container_agent`` is 0/1).
 _SOFT_CAPS = {_MEM_RESOURCE: _MEM_CAP, _CONTAINER_AGENT_RESOURCE: _CONTAINER_AGENT_CAP}
@@ -74,7 +82,10 @@ _SOFT_CAPS = {_MEM_RESOURCE: _MEM_CAP, _CONTAINER_AGENT_RESOURCE: _CONTAINER_AGE
 #: delete-on-absent discipline. ``mem`` is NOT here: its absence is ``None`` =
 #: "unmeasurable, leave the row". ``container_agent`` is reported only on an
 #: opted-in host, so its absence means "opted out → retract the stale chip".
-RETRACTABLE_SOFT_SIGNALS = frozenset({_CONTAINER_AGENT_RESOURCE})
+#: ``upload_staging`` the same: a host whose env went away stops advertising.
+RETRACTABLE_SOFT_SIGNALS = frozenset(
+    {_CONTAINER_AGENT_RESOURCE, _UPLOAD_STAGING_RESOURCE}
+)
 
 
 def capability_vocabulary() -> frozenset[str]:
@@ -538,6 +549,15 @@ def probe_soft_signals() -> dict[str, int | None]:
     container = _container_agent_signal()
     if container is not None:
         signals[_CONTAINER_AGENT_RESOURCE] = container
+    try:
+        from precis.ingest.pdf_upload import uploads_dir
+
+        if uploads_dir() is not None:
+            signals[_UPLOAD_STAGING_RESOURCE] = 1
+    except Exception:
+        # A probe error must not break the (liveness-critical) heartbeat;
+        # not reporting leaves any stale row for the retractable sweep.
+        log.warning("capability_probe: upload_staging probe raised", exc_info=True)
     return signals
 
 

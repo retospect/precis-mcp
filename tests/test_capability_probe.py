@@ -437,6 +437,34 @@ def test_container_agent_degraded_reports_zero(monkeypatch: pytest.MonkeyPatch) 
     assert cap.probe_soft_signals()["container_agent"] == 0
 
 
+# ── the upload_staging presence gauge (gr537770) ────────────────────────────
+
+
+def test_upload_staging_reported_only_when_configured(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    """A host whose ``PRECIS_UPLOAD_STAGING`` resolves advertises the
+    capability the ``paper_pull`` upload leg gates on; an unset (or
+    inbox-nested) value reports nothing at all."""
+    monkeypatch.delenv("PRECIS_UPLOAD_STAGING", raising=False)
+    monkeypatch.delenv("PRECIS_WATCH_INBOX", raising=False)
+    assert "upload_staging" not in cap.probe_soft_signals()
+    staging = tmp_path / "staging"
+    inbox = tmp_path / "inbox"
+    inbox.mkdir()
+    monkeypatch.setenv("PRECIS_UPLOAD_STAGING", str(staging))
+    monkeypatch.setenv("PRECIS_WATCH_INBOX", str(inbox))
+    assert cap.probe_soft_signals()["upload_staging"] == 1
+    # Inside the watched inbox reads as unconfigured — same predicate the
+    # run path uses (pdf_upload.uploads_dir).
+    monkeypatch.setenv("PRECIS_UPLOAD_STAGING", str(inbox / ".uploads"))
+    assert "upload_staging" not in cap.probe_soft_signals()
+
+
+def test_upload_staging_is_retractable() -> None:
+    assert "upload_staging" in cap.RETRACTABLE_SOFT_SIGNALS
+
+
 def test_container_agent_probe_error_reads_degraded(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

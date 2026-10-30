@@ -18,7 +18,14 @@
 # settings reference ($HOME/.claude/hooks/<name>), and every _<helper>.{sh,py}
 # name the live hooks source (helpers like _devin-detect.sh are copied
 # siblings, not settings entries — a missing one breaks the hook that
-# sources it).
+# sources it), PLUS every sibling module a *checked* repo hook imports
+# (`import _x` / `from _x import …`) — Python import names carry no .py
+# suffix for the sourced-helper grep to see, so they need an AST walk
+# (gr537787: bash-reflex-nudge.py's `from _pykind_hits import …` went
+# unreported while _pykind_hits.py was missing live; copying only the
+# listed drift would have broken every Bash call). The scan is
+# transitive (a helper's own imports count) and rooted at checked hooks
+# only — a helper nothing live needs isn't drift.
 #
 # Output is collected and written once at the end, with SIGPIPE ignored and
 # write errors swallowed, so `scripts/hook-sync | head -3` is quiet (EPIPE).
@@ -26,7 +33,8 @@
 # Never writes ~/.claude. Exit 0 always (2 on usage).
 # Test seams: PRECIS_HOOKS_LIVE (live dir), PRECIS_HOOKS_SETTINGS (the
 # settings.json whose $HOME/.claude/hooks/ references define the expected
-# set).
+# set), PRECIS_HOOKS_REPO (the repo-side hook dir the drift compares
+# against and the import scan reads; default this script's scripts/hooks).
 set -uo pipefail
 
 case "${1:-}" in
@@ -37,7 +45,7 @@ esac
 forhook="${1:-}"
 
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-repo_hooks="$root/scripts/hooks"
+repo_hooks="${PRECIS_HOOKS_REPO:-$root/scripts/hooks}"
 live="${PRECIS_HOOKS_LIVE:-$HOME/.claude/hooks}"
 settings="${PRECIS_HOOKS_SETTINGS:-$HOME/.claude/settings.json}"
 
@@ -68,6 +76,58 @@ if [ -f "$settings" ]; then
 fi
 sort -u -o "$names" "$names"
 
+# Repo-side helper imports (gr537787 — see the header's check-set note).
+# ``edges`` holds "helper<TAB>importer" lines for every sibling module a
+# checked repo hook imports, transitively; helpers join the check set,
+# the importers print as "needed by" on a drifted helper's report.
+edges="$(mktemp)" || exit 0
+trap 'rm -f "$names" "$edges"' EXIT
+if command -v python3 >/dev/null 2>&1; then
+    python3 - "$repo_hooks" "$names" >"$edges" 2>/dev/null <<'PY'
+import ast
+import os
+import sys
+
+hooks_dir, names_file = sys.argv[1], sys.argv[2]
+with open(names_file, encoding="utf-8") as fh:
+    checked = {ln.strip() for ln in fh if ln.strip()}
+siblings = {f[:-3]: f for f in os.listdir(hooks_dir) if f.endswith(".py")}
+
+
+def imported_siblings(fname):
+    try:
+        with open(os.path.join(hooks_dir, fname), encoding="utf-8") as fh:
+            tree = ast.parse(fh.read())
+    except (OSError, SyntaxError, ValueError):
+        return set()
+    mods = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            mods.update(a.name.split(".")[0] for a in node.names)
+        elif (
+            isinstance(node, ast.ImportFrom)
+            and node.level == 0
+            and node.module
+        ):
+            mods.add(node.module.split(".")[0])
+    return {siblings[m] for m in mods if m in siblings and siblings[m] != fname}
+
+
+seen, queue = set(), sorted(checked & set(siblings.values()))
+while queue:
+    current = queue.pop(0)
+    if current in seen:
+        continue
+    seen.add(current)
+    for dep in sorted(imported_siblings(current)):
+        print(f"{dep}\t{current}")
+        if dep not in seen:
+            queue.append(dep)
+PY
+    cut -f1 "$edges" >>"$names" || true
+    sort -u -o "$names" "$names"
+fi
+
 drift=0
 ndrift=0
 while IFS= read -r name; do
@@ -76,17 +136,20 @@ while IFS= read -r name; do
     g="$live/$name"
     rs="$(sha "$r")"
     gs="$(sha "$g")"
+    needed="$(awk -F'\t' -v n="$name" '$1==n && !seen[$2]++ {o = o (o ? ", " : "") $2} END {print o}' "$edges")"
     if [ -z "$rs" ]; then
         say "hook-sync: $name has a live copy but NO repo counterpart — investigate before removing or syncing"
         drift=1
         ndrift=$((ndrift + 1))
     elif [ -z "$gs" ]; then
         say "hook-sync: $name MISSING from $live — install with:"
+        [ -z "$needed" ] || say "  needed by: $needed"
         say "  cp \"$r\" \"$g\""
         drift=1
         ndrift=$((ndrift + 1))
     elif [ "$rs" != "$gs" ]; then
         say "hook-sync: $name DIFFERS from the repo copy — sync with:"
+        [ -z "$needed" ] || say "  needed by: $needed"
         say "  cp \"$r\" \"$g\""
         say "$(diff -u "$g" "$r" 2>/dev/null | head -25 | sed 's/^/    /')"
         drift=1

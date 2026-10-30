@@ -153,6 +153,56 @@ def _events(store, ref_id: int, event: str) -> list[dict[str, Any]]:
         ]
 
 
+def _job_ids(store) -> list[int]:
+    with store.pool.connection() as conn:
+        return [
+            int(r[0])
+            for r in conn.execute(
+                "SELECT ref_id FROM refs WHERE kind = 'job' "
+                "AND meta->>'job_type' = 'paper_pull' ORDER BY ref_id"
+            ).fetchall()
+        ]
+
+
+def _job_status(store, ref_id: int) -> str | None:
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            "SELECT t.value FROM ref_tags rt JOIN tags t USING (tag_id) "
+            "WHERE rt.ref_id = %s AND t.namespace = 'STATUS'",
+            (ref_id,),
+        ).fetchone()
+    return str(row[0]) if row else None
+
+
+def _job_summaries(store, ref_id: int) -> list[str]:
+    with store.pool.connection() as conn:
+        return [
+            str(r[0])
+            for r in conn.execute(
+                "SELECT text FROM chunks WHERE ref_id = %s "
+                "AND chunk_kind = 'job_summary' ORDER BY ord",
+                (ref_id,),
+            ).fetchall()
+        ]
+
+
+def _run_job_dispatch(store, jid: int) -> None:
+    """Drive one paper_pull job through the executor's own dispatch +
+    finalize path (the helpers ``job_inproc`` reuses)."""
+    from precis.workers.executors.claude_inproc import (
+        _build_dispatch_context,
+        _finalize_plugin_dispatch,
+    )
+
+    with store.pool.connection() as conn:
+        meta = conn.execute(
+            "SELECT meta FROM refs WHERE ref_id = %s", (jid,)
+        ).fetchone()[0]
+    ctx = _build_dispatch_context(store, jid, "paper_pull", dict(meta or {}))
+    paper_pull._dispatch(ctx, paper_pull.SPEC)
+    _finalize_plugin_dispatch(store, jid)
+
+
 # -- staging dir -------------------------------------------------------
 
 
@@ -661,3 +711,57 @@ def test_sweep_of_abandoned_reupload_keeps_attached_pdf(store, inbox, staging):
 def test_sweep_without_staging_is_noop(store, monkeypatch):
     monkeypatch.delenv("PRECIS_UPLOAD_STAGING", raising=False)
     assert pdf_upload.sweep_stale_uploads() == 0
+
+
+# -- gr537770: failed pull reads failed; retry isn't deduped ----------------
+
+
+def test_failed_pull_marks_job_failed_with_reason(
+    paper, store, inbox, staging, monkeypatch
+):
+    """(b) The pull's recorded failure must drive the JOB to
+    ``STATUS:failed`` too — before this fix the job showed ``succeeded``
+    while the summary read ``failed (no_upload_staging)``."""
+    ref_id = _stub(store)
+    _stage_upload(staging, ref_id)
+    paper.put(id=ref_id, args={"pdf_upload": _SHA, "reason": "r"})
+    jid = _job_ids(store)[-1]
+    # A staging-less worker claims it: the run fails no_upload_staging.
+    monkeypatch.delenv("PRECIS_UPLOAD_STAGING", raising=False)
+    _run_job_dispatch(store, jid)
+    assert _job_status(store, jid) == "failed"
+    assert any("no_upload_staging" in s for s in _job_summaries(store, jid))
+    assert _events(store, ref_id, "pdf_uploaded")[0]["failure"] == ("no_upload_staging")
+
+
+def test_failed_pull_does_not_block_reupload_same_sha(
+    paper, store, inbox, staging, monkeypatch
+):
+    """(c) Re-uploading the same file mints the same ``upload:<sha>``
+    idem_key — a FAILED prior job must not dedupe the fresh pull onto
+    itself (terminal statuses never block; this pins the invariant
+    end-to-end through the real put)."""
+    ref_id = _stub(store)
+    _stage_upload(staging, ref_id)
+    paper.put(id=ref_id, args={"pdf_upload": _SHA, "reason": "r"})
+    jid1 = _job_ids(store)[-1]
+    monkeypatch.delenv("PRECIS_UPLOAD_STAGING", raising=False)
+    _run_job_dispatch(store, jid1)
+    assert _job_status(store, jid1) == "failed"
+    # Same bytes uploaded again → same staged name → same idem_key.
+    monkeypatch.setenv("PRECIS_UPLOAD_STAGING", str(staging))
+    _stage_upload(staging, ref_id)
+    body = paper.put(id=ref_id, args={"pdf_upload": _SHA, "reason": "retry"}).body
+    assert "queued" in body and "already queued" not in body
+    assert len(_job_ids(store)) == 2
+
+
+def test_queued_pull_still_dedupes_same_sha(paper, store, staging):
+    """The other half of the idem contract: a still-active job DOES
+    block a duplicate queue (unchanged behaviour)."""
+    ref_id = _stub(store)
+    _stage_upload(staging, ref_id)
+    paper.put(id=ref_id, args={"pdf_upload": _SHA, "reason": "r"})
+    body = paper.put(id=ref_id, args={"pdf_upload": _SHA, "reason": "r"}).body
+    assert "already queued" in body
+    assert len(_job_ids(store)) == 1

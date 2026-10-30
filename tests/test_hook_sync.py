@@ -148,6 +148,65 @@ def test_sourced_helper_missing_is_reported(rig: dict[str, str]) -> None:
     assert "_devin-detect.sh MISSING" in r.stdout
 
 
+def test_repo_hook_python_import_names_missing_helper(
+    rig: dict[str, str], tmp_path: Path
+) -> None:
+    """gr537787: a repo hook importing a sibling module (`from _x import …`
+    — no .py suffix for the live-grep to see) must name the helper when
+    it's absent live; copying only the drifted hook would break it."""
+    repo = tmp_path / "repo-hooks"
+    repo.mkdir()
+    hook_src = "import sys\nfrom _pykind_hits import pykind_hits\n"
+    (repo / "nudge.py").write_text(hook_src, encoding="utf-8")
+    (repo / "_pykind_hits.py").write_text(
+        "def pykind_hits():\n    return 1\n", encoding="utf-8"
+    )
+    rig["PRECIS_HOOKS_REPO"] = str(repo)
+    # The live copy of the hook is in sync — only the helper drifts.
+    _live(rig).joinpath("nudge.py").write_text(hook_src, encoding="utf-8")
+    r = _run(rig)
+    assert r.returncode == 0
+    assert "nudge.py DIFFERS" not in r.stdout
+    assert "_pykind_hits.py MISSING" in r.stdout
+    assert "needed by: nudge.py" in r.stdout
+    assert f'cp "{repo}/_pykind_hits.py" "{_live(rig)}/_pykind_hits.py"' in r.stdout
+
+
+def test_helper_import_scan_is_transitive(rig: dict[str, str], tmp_path: Path) -> None:
+    """A helper's own sibling import counts too: hook → _a → _b, with
+    only _b absent live, names _b and the helper that needs it."""
+    repo = tmp_path / "repo-hooks"
+    repo.mkdir()
+    (repo / "nudge.py").write_text("import _a\n", encoding="utf-8")
+    (repo / "_a.py").write_text("from _b import thing\n", encoding="utf-8")
+    (repo / "_b.py").write_text("thing = 1\n", encoding="utf-8")
+    rig["PRECIS_HOOKS_REPO"] = str(repo)
+    live = _live(rig)
+    live.joinpath("nudge.py").write_text("import _a\n", encoding="utf-8")
+    live.joinpath("_a.py").write_text("from _b import thing\n", encoding="utf-8")
+    r = _run(rig)
+    assert r.returncode == 0
+    assert "_b.py MISSING" in r.stdout
+    assert "needed by: _a.py" in r.stdout
+
+
+def test_drifted_helper_reports_needed_by(rig: dict[str, str], tmp_path: Path) -> None:
+    """A stale live helper (not just a missing one) names its importer."""
+    repo = tmp_path / "repo-hooks"
+    repo.mkdir()
+    hook_src = "import _a\n"
+    (repo / "nudge.py").write_text(hook_src, encoding="utf-8")
+    (repo / "_a.py").write_text("x = 2\n", encoding="utf-8")
+    rig["PRECIS_HOOKS_REPO"] = str(repo)
+    live = _live(rig)
+    live.joinpath("nudge.py").write_text(hook_src, encoding="utf-8")
+    live.joinpath("_a.py").write_text("x = 1\n", encoding="utf-8")
+    r = _run(rig)
+    assert r.returncode == 0
+    assert "_a.py DIFFERS" in r.stdout
+    assert "needed by: nudge.py" in r.stdout
+
+
 def test_no_live_dir_is_one_line_not_a_report(
     rig: dict[str, str], tmp_path: Path
 ) -> None:

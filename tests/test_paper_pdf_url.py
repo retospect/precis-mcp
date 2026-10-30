@@ -234,6 +234,7 @@ def test_dispatch_set_meta_does_not_collide_with_job_ref_id(store, serve, monkey
     monkeypatch.delenv("PRECIS_WATCH_INBOX", raising=False)
     ref_id = _stub(store)
     written: dict[str, Any] = {}
+    failures: list[str] = []
 
     def _set_meta(job_ref_id: int, **fields: Any) -> None:
         written.update(fields)
@@ -249,10 +250,14 @@ def test_dispatch_set_meta_does_not_collide_with_job_ref_id(store, serve, monkey
         def set_meta(self, **fields: Any) -> None:
             _set_meta(999, **fields)
 
+        def record_failure(self, reason: str, **_kw: Any) -> None:
+            failures.append(reason)
+
     ctx: Any = _Ctx()
     paper_pull._dispatch(ctx, paper_pull.SPEC)
     assert written["paper_ref_id"] == ref_id
     assert written["pull_reason"] == "no_inbox"
+    assert failures == [f"paper_pull ref {ref_id}: no_inbox"]
 
 
 # -- blocklist -------------------------------------------------------------

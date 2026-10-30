@@ -189,14 +189,49 @@ def test_coordinator_job_type_requires_not_flagged_when_advertised(
 def test_non_coordinator_executor_does_not_pick_up_job_type_requires(
     store: Store,
 ) -> None:
-    """The fold-in is scoped to ``executor == 'coordinator'`` — a job_type
-    that happens to declare capability tokens but runs under a DIFFERENT
-    executor (already protected by its own mechanism — e.g. ``claude_inproc``
-    is gated by static pass registration, not this alert) must not gain a
-    NEW alert surface it never had before this change."""
+    """The fold-in is scoped to lanes that pass
+    ``check_job_type_requires=True`` (``coordinator``, ``job_inproc``) — a
+    job_type that happens to declare capability tokens but runs under a
+    DIFFERENT executor (already protected by its own mechanism — e.g.
+    ``claude_inproc`` is gated by static pass registration, not this
+    alert) must not gain a NEW alert surface it never had before this
+    change."""
     jid = _queue(
         store,
         {"job_type": "quest_tick", "executor": "claude_inproc", "params": {}},
+    )
+    _alert_unschedulable_jobs(store)
+    assert _alert_open(store, f"unschedulable:{jid}") is False
+
+
+def test_job_inproc_upload_pull_flagged_when_staging_unadvertised(
+    store: Store,
+) -> None:
+    """gr537770: a ``paper_pull`` upload leg whose ``upload_staging``
+    token no host advertises is unschedulable too — the params-
+    conditional fold reaches it via ``job_type_requires``."""
+    jid = _queue(
+        store,
+        {
+            "job_type": "paper_pull",
+            "executor": "job_inproc",
+            "params": {"ref_id": 1, "upload_sha": "ab" * 32},
+        },
+    )
+    _alert_unschedulable_jobs(store)
+    assert _alert_open(store, f"unschedulable:{jid}") is True
+
+
+def test_job_inproc_url_pull_not_flagged(store: Store) -> None:
+    """``conditional_requires`` keys on ``upload_sha`` — the ``url`` leg
+    declares nothing and earns no alert."""
+    jid = _queue(
+        store,
+        {
+            "job_type": "paper_pull",
+            "executor": "job_inproc",
+            "params": {"ref_id": 1, "url": "https://x/y.pdf"},
+        },
     )
     _alert_unschedulable_jobs(store)
     assert _alert_open(store, f"unschedulable:{jid}") is False

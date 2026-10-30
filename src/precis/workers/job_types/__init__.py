@@ -198,6 +198,18 @@ class JobTypeSpec:
     #: hook owns whatever bounded recovery the job_type wants; keep it
     #: cheap (it runs inside the claiming pass) and never raise.
     on_failed: Callable[[Any], None] | None = None
+    #: Optional params-conditional capability hook,
+    #: ``conditional_requires(params) -> frozenset[str]``. Folded into
+    #: ``job_type_requires`` — the check-only CLAIM-time capability gate
+    #: (``claim_executor_jobs(check_job_type_requires=…)`` /
+    #: ``_coordinator_capability_ok``), NOT the submit-time
+    #: ``requires - EXECUTOR_PROVIDES`` check: its tokens name a *host*
+    #: capability advertised through ``resource_slots`` (the heartbeat's
+    #: probes), not an executor's static PROVIDES. Use when only some
+    #: param shapes need a host capability — ``paper_pull``'s
+    #: ``upload_sha`` leg needs ``upload_staging`` on the claiming host;
+    #: its ``url`` leg needs nothing (gr537770).
+    conditional_requires: Callable[[dict[str, Any]], frozenset[str]] | None = None
     #: Optional queue TTL in seconds (gr506771). A job of this type
     #: still ``STATUS:queued`` past it is *cancelled* by the sweeper with
     #: a reason — a run whose input has rotted (a whole-graph pass
