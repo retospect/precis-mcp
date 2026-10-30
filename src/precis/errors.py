@@ -105,6 +105,19 @@ class Conflict(BadInput):
     """
 
 
+class ResultBudgetExceeded(BadInput):
+    """The rendered result body exceeded the byte budget.
+
+    Raised only by :func:`precis._result_budget.fit_result_body`, as its
+    last resort when not even a head fits under the cap in force
+    (a fitted head+outline result is not an error). Subclasses :class:`BadInput` so callers
+    catching parameter errors keep working, and the envelope renders
+    ``[error:ResultBudgetExceeded]`` — the ``tool_calls.error_type``
+    the sessions roll-up counts as a budget refusal (block-navigation
+    slice 2).
+    """
+
+
 class Gone(PrecisError):
     """Ref existed and was soft-deleted.
 

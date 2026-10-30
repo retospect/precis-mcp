@@ -380,7 +380,7 @@ class AgentLogHandler(NumericRefHandler):
         """``id='/sessions?verb=<v>&session=<prefix>&since=<hrs>&page_size=<n>'``
         — the per-session ``tool_calls`` roll-up (block-navigation slice
         2): one line per session with hops, summed response bytes, calls
-        by verb, pagination continuations (``page>1``) and the wall
+        by verb, result-budget refusals and fits, and the wall
         span. Same posture as ``/calls`` — all params optional, all
         bound."""
         from precis import tool_ledger
@@ -483,7 +483,8 @@ class AgentLogHandler(NumericRefHandler):
             lines.append(
                 f"{r['session_id']} — {r['hops']} hops · "
                 f"{r['resp_bytes']:,} B · {verbs} · "
-                f"{r['continuations']} continuation(s){err_bit} · "
+                f"{r['budget_refusals']} budget refusal(s), "
+                f"{r['budget_fits']} fitted{err_bit} · "
                 f"{window} ({span})"
             )
         lines.append("")

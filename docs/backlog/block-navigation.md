@@ -92,8 +92,10 @@ which TOC line quality sets, not block size.
   length, 0209), `result_count` (`Response.result_count`), and
   `session_id`/`seq` per MCP session; `tool_ledger.sessions_rollup` —
   `get(kind='agentlog', id='/sessions?…')` — is the per-session
-  roll-up (hops, summed bytes, calls by verb, `page>1` continuations,
-  wall span).
+  roll-up (hops, summed bytes, calls by verb, budget refusals and fits, wall
+  span). A budget refusal reads `error_type='ResultBudgetExceeded'`
+  (`_result_budget.py`'s `BadInput` subclass, last resort only); a fit
+  (head + outline) is an `ok` row with `error_type='ResultBudgetFitted'`.
 
 ## Evidence (lit search 2026-10-28)
 

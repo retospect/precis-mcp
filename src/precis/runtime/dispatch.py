@@ -1314,6 +1314,7 @@ class DispatchMixin(RuntimeShape):
                 if verb == "search":
                     response = _with_categorizer_filter_notes(self, args, response)
                 body = self._render(response)
+                rendered = body
                 body = fit_result_body(
                     body,
                     verb=verb,
@@ -1330,7 +1331,13 @@ class DispatchMixin(RuntimeShape):
                         args.get("id"), store=self.store, explicit_kind=args.get("kind")
                     )
                 self._record_tool_call(
-                    verb, args, body, False, started, response.result_count
+                    verb,
+                    args,
+                    body,
+                    False,
+                    started,
+                    response.result_count,
+                    budget_fitted=body != rendered,
                 )
                 return body, False
             except PrecisError as e:
@@ -1377,8 +1384,14 @@ class DispatchMixin(RuntimeShape):
         is_error: bool,
         started: float,
         result_count: int | None = None,
+        *,
+        budget_fitted: bool = False,
     ) -> None:
         """Best-effort tool-call ledger write (migration 0133).
+
+        ``budget_fitted`` marks an ``ok`` row whose body the result
+        budget cut to head + outline (``error_type`` carries
+        ``tool_ledger.BUDGET_FITTED`` — the roll-up's fit counter).
 
         Fires after the verb has already fully run and its body is
         rendered — the one extra INSERT never gates the caller's
@@ -1402,6 +1415,7 @@ class DispatchMixin(RuntimeShape):
             from precis import serve_ledger
             from precis.agentlog import current_from_env, current_source_from_env
             from precis.tool_ledger import (
+                BUDGET_FITTED,
                 ToolCallRecord,
                 _mint_session_key,
                 arg_sample,
@@ -1414,6 +1428,8 @@ class DispatchMixin(RuntimeShape):
             if is_error:
                 m = _ERROR_TYPE_RE.match(body)
                 error_type = m.group(1) if m else "Unknown"
+            elif budget_fitted:
+                error_type = BUDGET_FITTED
             kind = args.get("kind")
             session_id, seq = _mint_session_key()
             # The raw wire arguments (CallToolRequest params.arguments,

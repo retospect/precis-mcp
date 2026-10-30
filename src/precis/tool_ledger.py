@@ -95,6 +95,7 @@ from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
 from precis import worktree_server
+from precis.errors import ResultBudgetExceeded
 
 if TYPE_CHECKING:
     from precis.store import Store
@@ -125,6 +126,12 @@ _GC_BATCH = 50_000
 #: failure mode ``route_log.gc`` and ``sweeper._gc_worker_logs`` were both
 #: fixed for. Xact-scoped: released at commit/rollback.
 _GC_LOCK = 0x746F6F6C6763
+
+
+#: ``error_type`` marker on an ``ok`` row whose body the result budget cut
+#: to a head + outline (``_result_budget.fit_result_body``). Not an error:
+#: every error-mining query filters ``outcome = 'error'``.
+BUDGET_FITTED = "ResultBudgetFitted"
 
 
 @dataclass(frozen=True, slots=True)
@@ -632,15 +639,19 @@ def sessions_rollup(
     limit: int = CALLS_DEFAULT_LIMIT,
 ) -> dict[str, Any]:
     """Per-session roll-up of the ledger — the block-navigation slice-2
-    meter ("hops, bytes and ``more`` calls per session",
+    meter ("hops, bytes and budget refusals per session",
     ``docs/backlog/block-navigation.md``).
 
     One row per ``session_id`` (0209's key; NULL-session rows — CLI,
     inproc — correlate by ``agentlog_id`` instead and stay out): call
     count (``hops``), summed ``result_bytes`` (``resp_bytes``), error
-    count, calls by verb, the count of *pagination continuations* —
-    a ``page`` arg sampled > 1, the only continuation signal the
-    ledger can see — and the wall span ``first_ts``→``last_ts``.
+    count, calls by verb, the count of *budget refusals* — calls
+    :func:`precis._result_budget.fit_result_body` could not fit at all, carried
+    on the row as ``error_type='ResultBudgetExceeded'`` — the count of
+    *budget fits* — ``ok`` calls whose body was cut to head + outline,
+    carried as ``error_type='ResultBudgetFitted'`` (:data:`BUDGET_FITTED`;
+    the block-navigation signal now that refusals are last-resort) —
+    and the wall span ``first_ts``→``last_ts``.
     Ordered most-recently-active first, capped at ``limit`` sessions.
     ``session`` is an exact prefix match (session ids are long);
     ``verb`` narrows both which sessions appear and what is counted.
@@ -651,7 +662,14 @@ def sessions_rollup(
 
     cutoff = datetime.now(UTC) - timedelta(hours=since_hours)
     where = ["session_id IS NOT NULL", "ts >= %(cutoff)s"]
-    sql_params: dict[str, Any] = {"cutoff": cutoff, "limit": int(limit)}
+    sql_params: dict[str, Any] = {
+        "cutoff": cutoff,
+        "limit": int(limit),
+        # Bound, not literal — a rename of the error class can't drift
+        # from what the roll-up counts.
+        "budget_err": ResultBudgetExceeded.__name__,
+        "budget_fit": BUDGET_FITTED,
+    }
     if verb:
         where.append("verb = %(verb)s")
         sql_params["verb"] = verb
@@ -671,9 +689,10 @@ def sessions_rollup(
             "SELECT session_id, count(*) AS hops, "
             "sum(result_bytes) AS resp_bytes, "
             "count(*) FILTER (WHERE outcome = 'error') AS errors, "
-            "count(*) FILTER (WHERE CASE WHEN arg_sample->>'page' "
-            "~ '^[0-9]{1,9}$' THEN (arg_sample->>'page')::int "
-            "END > 1) AS continuations, "
+            "count(*) FILTER (WHERE error_type = %(budget_err)s) "
+            "AS budget_refusals, "
+            "count(*) FILTER (WHERE outcome = 'ok' "
+            "AND error_type = %(budget_fit)s) AS budget_fits, "
             "min(ts) AS first_ts, max(ts) AS last_ts, "
             "EXTRACT(EPOCH FROM max(ts) - min(ts))::int AS span_seconds "
             f"FROM tool_calls WHERE {where_sql} "
@@ -695,7 +714,8 @@ def sessions_rollup(
         for r in rows:
             r["calls_by_verb"] = verb_counts[r["session_id"]]
             r["resp_bytes"] = int(r["resp_bytes"] or 0)
-            r["continuations"] = int(r["continuations"])
+            r["budget_refusals"] = int(r["budget_refusals"])
+            r["budget_fits"] = int(r["budget_fits"])
     return {
         "total": int(total_row["n"]) if total_row else 0,
         "rows": rows,

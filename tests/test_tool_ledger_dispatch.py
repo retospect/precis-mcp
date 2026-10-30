@@ -182,6 +182,70 @@ def test_dispatch_ledger_records_error_outcome(
     assert row[1] is not None  # a PrecisError subclass name, e.g. NotFound/BadInput
 
 
+def test_dispatch_budget_signals_count_in_sessions_rollup(
+    runtime_with_store: PrecisRuntime, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Block-navigation slice 2: an over-cap get fitted to head + outline
+    is an ``ok`` row marked ``error_type='ResultBudgetFitted'`` and counts
+    as a fit; the last-resort refusal (not even a head fits) is recorded
+    as ``error_type='ResultBudgetExceeded'`` and counts as a refusal; an
+    ordinary BadInput in the same session is an error, neither."""
+    from precis import tool_ledger
+
+    tag = uuid4().hex[:8]
+    bogus = f"bogus-verb-{tag}"  # unknown verb -> BadInput
+    req = {"kind": "skill", "id": "precis-search-help"}
+
+    class _FakeSession:  # weakrefable stand-in for ctx.session
+        pass
+
+    with serve_ledger.session_scope(_FakeSession()):
+        monkeypatch.setenv("PRECIS_TOOL_RESULT_CONTEXT_BYTES", "2000")
+        body, is_error = runtime_with_store.dispatch_with_status(
+            "get", dict(req), fold=True
+        )
+        assert is_error is False
+        assert "… truncated: showing" in body
+        # Nothing fits: the trailer alone is wider than the cap.
+        monkeypatch.setenv("PRECIS_TOOL_RESULT_CONTEXT_BYTES", "5")
+        body, is_error = runtime_with_store.dispatch_with_status(
+            "get", dict(req), fold=True
+        )
+        assert is_error is True
+        assert "even a head will not fit" in body
+        _, is_error = runtime_with_store.dispatch_with_status(bogus, {})
+        assert is_error is True
+
+    store = runtime_with_store.store
+    assert store is not None
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            "SELECT session_id FROM tool_calls WHERE verb=%s "
+            "AND ts > now() - interval '1 minute' "
+            "ORDER BY call_id DESC LIMIT 1",
+            (bogus,),
+        ).fetchone()
+        assert row is not None and row[0] is not None
+        sid = row[0]
+        rows = conn.execute(
+            "SELECT verb, outcome, error_type FROM tool_calls "
+            "WHERE session_id=%s ORDER BY call_id",
+            (sid,),
+        ).fetchall()
+    assert [(r[1], r[2]) for r in rows] == [
+        ("ok", "ResultBudgetFitted"),
+        ("error", "ResultBudgetExceeded"),
+        ("error", "BadInput"),
+    ]
+
+    out = tool_ledger.sessions_rollup(store, session=sid, since_hours=1)
+    (rolled,) = out["rows"]
+    assert rolled["hops"] == 3 and rolled["errors"] == 2
+    assert rolled["budget_refusals"] == 1
+    assert rolled["budget_fits"] == 1
+    assert "continuations" not in rolled
+
+
 def test_dispatch_ledger_0209_session_seq_sample(
     runtime_with_store: PrecisRuntime,
 ) -> None:

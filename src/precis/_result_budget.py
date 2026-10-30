@@ -26,6 +26,14 @@ refusal. The context cap ``PRECIS_TOOL_RESULT_CONTEXT_BYTES`` is opt-in
 * **single** — a whole-ref read: the head, the ref's outline (handler
   ``budget_outline`` when it supplies one, else the body's own
   headings), and ``next:`` the targeted read.
+
+Two ledger signals, both counted per session by
+``tool_ledger.sessions_rollup`` (block-navigation slice 2): a **fitted**
+result (the dispatch chokepoint sees the body change, and records the
+row ``error_type='ResultBudgetFitted'`` on an ``ok`` outcome) and the
+last-resort **refusal** — nothing fits, so :func:`fit_result_body`
+raises ``ResultBudgetExceeded`` (a ``BadInput``) and the row reads
+``error_type='ResultBudgetExceeded'``.
 """
 
 from __future__ import annotations
@@ -35,7 +43,7 @@ import re
 from collections.abc import Callable
 from typing import Any
 
-from precis.errors import BadInput
+from precis.errors import ResultBudgetExceeded
 
 #: Not a default cap any more — the size budget handlers pre-trim to, and
 #: the value opt-in context limiting is usually set to.
@@ -344,7 +352,7 @@ def fit_result_body(
         head, dropped = _fit_head(body, max(0, cap - len(tail.encode("utf-8"))))
         shown = len(head.encode("utf-8"))
     if not shown:
-        raise BadInput(
+        raise ResultBudgetExceeded(
             f"{verb}: result is {size} bytes and even a head will not fit "
             f"under {cap_name}",
             next=_next_call(),
@@ -365,7 +373,7 @@ def fit_result_body(
         head, dropped = _fit_head(body, max(0, cap - len(tail.encode("utf-8"))))
         shown = len(head.encode("utf-8"))
         if not shown:
-            raise BadInput(
+            raise ResultBudgetExceeded(
                 f"{verb}: result is {size} bytes and even a head will not fit "
                 f"under {cap_name}",
                 next=_next_call(),

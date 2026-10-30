@@ -492,12 +492,13 @@ class TestCallsRead:
 
 class TestSessionsRollup:
     """Block-navigation slice 2 — the per-session meter: hops, summed
-    response bytes, calls by verb, pagination continuations, wall span."""
+    response bytes, calls by verb, budget refusals, wall span."""
 
     def _session_rows(self, store: Any, tag: str) -> tuple[str, str]:
-        """Two tagged sessions. ``sess-<tag>-a``: get×2 (100+200 B, one
-        page=2 continuation) + search×1 (50 B); ``sess-<tag>-b``: one
-        get (10 B, page=1 — NOT a continuation) plus a NULL-bytes row."""
+        """Two tagged sessions. ``sess-<tag>-a``: get ok (100 B) + a get
+        refused by the result budget (120 B error body) + search×1
+        (50 B); ``sess-<tag>-b``: get ok (10 B) + an ordinary BadInput
+        refusal (80 B) plus a NULL-bytes row."""
         sid_a, sid_b = f"sess-{tag}-a", f"sess-{tag}-b"
         tool_ledger.record_call(
             store,
@@ -515,8 +516,10 @@ class TestSessionsRollup:
                 verb="get",
                 session_id=sid_a,
                 seq=2,
-                result_bytes=200,
-                arg_sample='{"kind":"paper","id":"pa1","page":2}',
+                outcome="error",
+                error_type="ResultBudgetExceeded",
+                result_bytes=120,
+                arg_sample='{"kind":"paper","id":"pa1"}',
             ),
         )
         tool_ledger.record_call(
@@ -535,12 +538,25 @@ class TestSessionsRollup:
                 verb="get",
                 session_id=sid_b,
                 seq=1,
+                error_type=tool_ledger.BUDGET_FITTED,  # ok row, cut to head+outline
                 result_bytes=10,
-                arg_sample='{"kind":"job","page":1}',
+                arg_sample='{"kind":"job"}',
             ),
         )
         tool_ledger.record_call(
-            store, _rec(verb="get", session_id=sid_b, seq=2, result_bytes=None)
+            store,
+            _rec(
+                verb="get",
+                session_id=sid_b,
+                seq=2,
+                outcome="error",
+                error_type="BadInput",
+                result_bytes=80,
+                arg_sample='{"kind":"job","id":"x"}',
+            ),
+        )
+        tool_ledger.record_call(
+            store, _rec(verb="get", session_id=sid_b, seq=3, result_bytes=None)
         )
         # An unrelated session — must stay out of the tagged totals.
         tool_ledger.record_call(
@@ -548,19 +564,23 @@ class TestSessionsRollup:
         )
         return sid_a, sid_b
 
-    def test_rollup_hops_bytes_verbs_continuations(self, store: Any) -> None:
+    def test_rollup_hops_bytes_verbs_budget_refusals(self, store: Any) -> None:
         tag = uuid4().hex[:8]
         sid_a, sid_b = self._session_rows(store, tag)
         out = tool_ledger.sessions_rollup(store, session=f"sess-{tag}-", since_hours=1)
         assert out["total"] == 2
         rows = {r["session_id"]: r for r in out["rows"]}
         a, b = rows[sid_a], rows[sid_b]
-        assert a["hops"] == 3 and a["resp_bytes"] == 350
+        assert a["hops"] == 3 and a["resp_bytes"] == 270
         assert a["calls_by_verb"] == {"get": 2, "search": 1}
-        assert a["continuations"] == 1  # page=2 counts, page=1 does not
-        assert b["hops"] == 2 and b["resp_bytes"] == 10
-        assert b["calls_by_verb"] == {"get": 2}
-        assert b["continuations"] == 0
+        assert a["errors"] == 1 and a["budget_refusals"] == 1
+        # An ordinary refusal is an error, never a budget refusal.
+        assert b["hops"] == 3 and b["resp_bytes"] == 90
+        assert b["calls_by_verb"] == {"get": 3}
+        assert b["errors"] == 1 and b["budget_refusals"] == 0
+        # A fitted (ok) row is its own counter, never a refusal or error.
+        assert a["budget_fits"] == 0 and b["budget_fits"] == 1
+        assert "continuations" not in a
         assert a["first_ts"] is not None and a["last_ts"] is not None
         assert isinstance(a["span_seconds"], int)
 
@@ -605,11 +625,12 @@ class TestSessionsRollup:
         out = tool_ledger.sessions_rollup(store, session=sid, since_hours=1)
         assert out["total"] == 0 and out["rows"] == []
 
-    def test_rollup_page_cast_cannot_overflow(self, store: Any) -> None:
-        """A ``page`` sampled beyond int4 range (``99999999999``) or
-        non-numeric (``"abc"``) must not poison the roll-up — the
-        FILTER's CASE bounds the digits before the cast; one bad ledger
-        row used to break ``/sessions`` for the whole window."""
+    def test_rollup_page_arg_is_no_longer_a_signal(self, store: Any) -> None:
+        """``page`` in ``arg_sample`` fed the old ``continuations``
+        count; with pagination gone the roll-up reads only
+        ``error_type`` — a page-shaped sample is neither counted nor
+        able to poison the read (a malformed ``page`` once broke
+        ``/sessions`` for the whole window)."""
         tag = uuid4().hex[:8]
         sid = f"sess-{tag}"
         tool_ledger.record_call(
@@ -633,7 +654,8 @@ class TestSessionsRollup:
         out = tool_ledger.sessions_rollup(store, session=sid, since_hours=1)
         (row,) = out["rows"]
         assert row["session_id"] == sid
-        assert row["hops"] == 2 and row["continuations"] == 0
+        assert row["hops"] == 2 and row["budget_refusals"] == 0
+        assert "continuations" not in row
 
 
 def test_gc_single_flight_skips_when_lock_held(store: Any) -> None:

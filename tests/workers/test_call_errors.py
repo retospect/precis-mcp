@@ -422,11 +422,38 @@ def test_lookup_and_fault_classes_cluster(
     assert f"failed with {error_type}" in _gripe_body(store, filed[0][0])
 
 
+def test_result_budget_exceeded_clusters_as_reject(store: Any) -> None:
+    # ResultBudgetExceeded is recorded under its own error_type, not
+    # 'BadInput' — the scan must still pick it up or budget refusals go
+    # silent. ResultBudgetFitted stays out: those are ok rows.
+    tag = uuid4().hex[:8]
+    head = f"[error:ResultBudgetExceeded] result body over budget for 'zz{tag}'"
+    _seed_calls(
+        store,
+        verb="get",
+        kind=f"zz{tag}",
+        head=head,
+        sessions=["a", "b", "c"],
+        error_type="ResultBudgetExceeded",
+    )
+    call_errors.run_call_errors_pass(store, skill_texts={})
+    filed = _cluster_gripes(store, _fp("get", f"zz{tag}", head))
+    assert len(filed) == 1
+    body = _gripe_body(store, filed[0][0])
+    assert "failed with ResultBudgetExceeded" in body
+    assert "(rejected before real work)" in body
+
+
 def test_fingerprint_separates_error_types_but_keeps_reject_hash() -> None:
     head = "thing #"
     assert call_errors._fingerprint("get", "x", head) == call_errors._fingerprint(
         "get", "x", head, "Unsupported"
     )
+    # Reject classes hash identically — a ResultBudgetExceeded cluster keeps
+    # the fingerprint its rows had when they recorded 'BadInput'.
+    assert call_errors._fingerprint(
+        "get", "x", head, "ResultBudgetExceeded"
+    ) == call_errors._fingerprint("get", "x", head, "BadInput")
     assert call_errors._fingerprint("get", "x", head, "NotFound") != (
         call_errors._fingerprint("get", "x", head, "Internal")
     )

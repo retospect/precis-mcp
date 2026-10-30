@@ -3,8 +3,9 @@
 Fired from the daily host-agnostic ``call_errors`` scheduler cadence.
 Reads the last :data:`LOOKBACK_HOURS` of ``tool_calls`` rows that were
 failed in a clusterable class (``error_type`` in :data:`_CLUSTER_CLASSES` —
-``BadInput``/``Unsupported`` the schema/param-validation class, plus
-``NotFound``/``Gone`` lookup misses and ``Internal`` faults),
+``BadInput``/``Unsupported``/``ResultBudgetExceeded`` the
+schema/param-validation class, plus ``NotFound``/``Gone`` lookup misses
+and ``Internal`` faults),
 clusters them by ``(verb, kind, normalised error head)``, and for each
 cluster over threshold (:data:`MIN_CALLS` calls or :data:`MIN_SESSIONS`
 distinct sessions) files ONE gripe — or bumps the live one it already
@@ -91,7 +92,10 @@ CLEAR_SCAN_HOURS = 7 * 24
 #: Rejected-before-real-work error classes (typed envelope, before the
 #: verb's real work ran). NotFound/Gone did real lookups; Upstream/
 #: Internal/RateLimited are runtime faults, not call-shape errors.
-_REJECT_CLASSES = ("BadInput", "Unsupported")
+#: ``ResultBudgetExceeded`` is a ``BadInput`` subclass the ledger records
+#: under its own ``error_type`` — the ``ResultBudgetFitted`` marker stays
+#: out because those are ``ok`` rows, not refusals.
+_REJECT_CLASSES = ("BadInput", "Unsupported", "ResultBudgetExceeded")
 #: Lookup-miss and fault classes clustered alongside the rejects (M3,
 #: gr494831): NotFound/Gone are the agent guessing ids (the error should
 #: carry options), Internal is a server fault every occurrence of which is
