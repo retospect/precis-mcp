@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import pytest
 
@@ -344,8 +344,8 @@ def test_se_print_key_is_uncacheable_on_a_transient_cad_sha_failure(
     monkeypatch.setattr(bv, "_validation_identity", lambda *_a: "ident")
     shas = {"d1": ("abc", False), "d2": (None, True)}
     monkeypatch.setattr(bv, "_bound_cad_sha", lambda _s, slug: shas[slug])
-    key, cacheable = bv._se_print_key(None, 7, tree, 3)  # type: ignore[arg-type]
+    key, cacheable = bv._se_print_key(cast(Any, None), 7, tree, 3)
     assert cacheable is False
     assert key == (7, "ident", (("d1", "abc"), ("d2", None)))
     shas["d2"] = (None, False)  # unresolved binding is stable: cacheable
-    assert bv._se_print_key(None, 7, tree, 3)[1] is True  # type: ignore[arg-type]
+    assert bv._se_print_key(cast(Any, None), 7, tree, 3)[1] is True
