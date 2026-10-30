@@ -123,7 +123,7 @@ agent-facing copy.
 | tex | `tx` | `xc` | | agentlog | `ag` | — |
 | python | `py` | — | | message | `ms` | `mb` |
 | gripe | `gr` | `gc` | | tag | `tg` | — |
-| skill | `sk` | — | | | | |
+| skill | `sk` | — | | alias | `as` | — |
 
 - **`skill`** anchors round-trip as `sk<ref_id>` in `get` and `link`; the
   canonical `skill:<slug>` form also works. **`python` / `tag`** keep their
@@ -135,6 +135,12 @@ agent-facing copy.
 - **Providers** (`web`, `youtube`, `wikipedia`, `semanticscholar`, `websearch`,
   `perplexity-*`) and **stateless tools** (`calc`, `math`, `provenance`,
   `random`) have **no handle** — addressed by URL / query / compute.
+- **A string with no handle** (a long URL, an external id, a path you keep
+  re-sending) can get a durable short name through `kind='alias'`:
+  `put(kind='alias', args={'a': 'crossref-x', 'b': '<url>', 'rel':
+  'short-for'})`, then `get(kind='alias', id='crossref-x')` returns the URL
+  and `get(kind='alias', id='<url>')` returns the short name. See
+  `precis-alias-help`.
 
 ## The `[[…]]` wikilink — skill-to-skill links
 

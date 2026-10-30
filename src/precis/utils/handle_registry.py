@@ -143,6 +143,9 @@ KIND_CODES: dict[str, str] = {
     # named, versioned check ledger (checklist-kind slice 1) — an
     # artifact-placement slug entity, never exported.
     "checklist": "ck",
+    # bidirectional string map (a ⇄ b, payload in meta.alias) — a plain
+    # numeric ref like profile. ``al`` is alert's, so ``as``.
+    "alias": "as",
 }
 
 # --- chunk codes (kinds that expose addressable body chunks) --------------

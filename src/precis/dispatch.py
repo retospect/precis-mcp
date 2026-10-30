@@ -1125,6 +1125,9 @@ def boot(
         from precis.handlers.profile import ProfileHandler
 
         _gated(ProfileHandler)
+        from precis.handlers.alias import AliasHandler
+
+        _gated(AliasHandler)
         _gated(TodoHandler)
         _gated(FolderHandler)
         _gated(GripeHandler)

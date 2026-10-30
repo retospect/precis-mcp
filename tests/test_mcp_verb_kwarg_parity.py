@@ -134,6 +134,19 @@ _ARGS_ONLY: frozenset[tuple[str, str, str]] = frozenset(
         # precis-checklist-help).
         ("checklist", "put", "default_for"),
         ("checklist", "edit", "anchors"),
+        # -- alias: pair fields ride args= by design (precis-alias-help
+        # documents args={'a':…, 'b':…}); rel/scope already have
+        # verb-level doors, the rest stay off the shared put/edit schema.
+        ("alias", "put", "a"),
+        ("alias", "put", "b"),
+        ("alias", "put", "expires"),
+        ("alias", "put", "gripe"),
+        ("alias", "put", "note"),
+        ("alias", "edit", "expires"),
+        ("alias", "edit", "gripe"),
+        ("alias", "edit", "note"),
+        ("alias", "edit", "rel"),
+        ("alias", "edit", "scope"),
         # -- fleet: collector report + coordinator fields, args= by design
         # (2026-10-09, fleet step 2): a script and the coordinator are the
         # only callers, both reading precis-fleet-help; declaring them would

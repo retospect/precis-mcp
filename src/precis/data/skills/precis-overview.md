@@ -110,6 +110,7 @@ name/path.
 | `rxn` | `rx7` | Reaction-fact store — one transformation plus every reported yield/condition, each sourced to a paper or patent. MANY rows per (reaction, property) is the point: the spread IS the answer, never an average. `search(property='yield', reaction_class=)` is the precedent read. Distinct from `route` (a planned synthesis) and `pathway` (a computed surface network). See `precis-rxn-help`. | store |
 | `component` | `cp7` | General procurable-part store (bolt/hose/pipe/beam/gasket/bearing/adhesive/electronic part) — sourced per-spec values, canonical-units-only. Distinct from `part` (the JLCPCB/LCSC ingest-only catalog). See `precis-component-help`. | store |
 | `measure` | `mx12` (the `measures.id`) | One sourced number per row, about any subject — printed literal, value stored in SI and shown in the measurand's display unit, the run's input conditions, tier, anchor, reviews. `search(kind='measure', property='measurand/…', min=, max=, unit='Å', q='product=NH3 potential<-0.5 V')` is the range-and-conditions search; `get(kind='quest', id=Q, view='measures')` the best value per measurand. Read-only. See `precis-measure-help`. | store |
+| `alias` | `as12` | Bidirectional string map `a ⇄ b` (short names for long strings, id crosswalks, gripe-tied provisional mappings); `get(id='<either side>')` returns the other side. See `precis-alias-help`. | store |
 ## The ref kinds, continued — operational and reasoning kinds
 
 | Kind | Example id | What | Needs |

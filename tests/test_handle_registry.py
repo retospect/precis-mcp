@@ -75,6 +75,7 @@ EXPECTED_PERSISTENT_KINDS = frozenset(
         "mermaid",
         "checklist",
         "profile",
+        "alias",
     }
 )
 

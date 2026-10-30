@@ -73,6 +73,7 @@ _NUMERIC_KINDS_FALLBACK: frozenset[str] = frozenset(
         "taxon",
         "llm",
         "profile",
+        "alias",
     }
 )
 
