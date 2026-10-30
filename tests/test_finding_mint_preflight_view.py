@@ -237,3 +237,49 @@ def test_non_dict_payload_is_refused(store: Store) -> None:
             view="mint-preflight",
             payload="nope",  # type: ignore[arg-type]
         )
+
+
+def test_quote_verbatim_block_names_the_first_differing_span(store: Store) -> None:
+    """gr530995 comment 6, through the dispatch view: the BLOCKED body
+    names the first differing span — the quote's lone ``*`` — not just
+    the verdict, so the author doesn't chase the H<sub>2</sub>/H₂
+    rendering as the cause."""
+    from tests.test_nanopub_gates_mint import _seed_paper
+
+    paper, chunk, _sha = _seed_paper(
+        store,
+        chunk_text=(
+            "Intro text that runs before. We obtain $\\Delta G_{H}$ on "
+            "PdH/Pd(111), verified. Trailing remarks after."
+        ),
+    )
+    hub = mint_hub(store, CanonicalClaim(sentence=_CLEAN, scope={}))
+    attach_evidence(
+        store,
+        hub_ref_id=hub,
+        paper_ref_id=paper,
+        role="corroborates",
+        meta={"source_handle": f"pc{chunk}"},
+        check_retraction=False,
+    )
+    resp = _handler(store).get(
+        id=hub,
+        view="mint-preflight",
+        payload={
+            "passages": [
+                {
+                    "chunk_id": chunk,
+                    "doi": f"10.1103/PhysRevLett.109.{paper}",
+                    "quote": "we obtain $\\Delta G_{H^*}$ on PdH/Pd(111)",
+                    "snip": "verified",
+                    "role": "corroborates",
+                }
+            ],
+            "fields": {},
+        },
+    )
+    assert "BLOCKED" in resp.body
+    assert "quote-verbatim" in resp.body
+    assert "first differing span" in resp.body
+    assert "g_{h^*}" in resp.body  # the quote's lone *, normalized
+    assert "g_{h}" in resp.body  # what the chunk actually holds

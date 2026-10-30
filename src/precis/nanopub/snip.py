@@ -23,6 +23,7 @@ signature covers and the snip is merely re-derivable.
 
 from __future__ import annotations
 
+import difflib
 import re
 import unicodedata
 
@@ -83,6 +84,9 @@ _SUB_MAP = dict(
 _SCRIPT_CHARS = sorted(set(_SUP_MAP.values()) | set(_SUB_MAP.values()))
 _PROTECT = {c: chr(0xE000 + i) for i, c in enumerate(_SCRIPT_CHARS)}
 _PROTECT_TABLE = str.maketrans(_PROTECT)
+#: Reverse of :data:`_PROTECT`, for excerpts shown to humans — the private
+#: stand-ins must never leak into a gate message (``10\ue000\ue000``).
+_UNPROTECT_TABLE = str.maketrans({v: k for k, v in _PROTECT.items()})
 
 
 def merge_adjacent_scripts(text: str) -> str:
@@ -214,3 +218,60 @@ def contains_verbatim(quote: str, chunk_text: str, *, legacy: bool = False) -> b
         q = normalize_text(fold_markup(quote).translate(_PROTECT_TABLE))
         c = normalize_text(fold_markup(chunk_text).translate(_PROTECT_TABLE))
     return bool(q) and q in c
+
+
+def _window(text: str, lo: int, hi: int, context: int) -> str:
+    """``text`` clipped to ``[lo, hi)`` plus ``context`` chars each side,
+    ``…``-marked at a truncated end."""
+    start = max(0, lo - context)
+    end = min(len(text), hi + context)
+    return ("…" if start else "") + text[start:end] + ("…" if end < len(text) else "")
+
+
+#: Shortest common substring worth aligning a divergence report on —
+#: under this, a shared run is coincidence (a common word fragment), and
+#: the honest diagnosis is "no contiguous run matches".
+_MIN_ANCHOR = 8
+
+
+def first_divergence(quote: str, chunk_text: str, *, context: int = 40) -> str | None:
+    """Where a non-verbatim ``quote`` first stops matching ``chunk_text``,
+    rendered for the ``quote-verbatim`` violation message (gr530995: the
+    bare "not verbatim" hid that a lone ``*`` was the whole difference —
+    the only span shown pointed at an ``H<sub>2</sub>``/``H₂`` rendering
+    instead). ``None`` when the quote IS verbatim — nothing to diagnose.
+    Compared on the same normalized forms :func:`contains_verbatim`
+    checks, so the span it names is the one the gate saw; script
+    stand-ins are un-protected for display.
+
+    The quote is diffed against the chunk window its longest matching
+    run anchors — a quote sitting mid-chunk must not report the chunk's
+    prefix/suffix as the divergence."""
+    # protect script characters from NFKD, exactly as contains_verbatim
+    q = normalize_text(fold_markup(quote).translate(_PROTECT_TABLE))
+    c = normalize_text(fold_markup(chunk_text).translate(_PROTECT_TABLE))
+    if not q or q in c:
+        return None
+    anchor = difflib.SequenceMatcher(None, q, c, autojunk=False).find_longest_match(
+        0, len(q), 0, len(c)
+    )
+    if anchor.size < _MIN_ANCHOR:
+        qw = _window(q, anchor.a, anchor.a + anchor.size, context).translate(
+            _UNPROTECT_TABLE
+        )
+        cw = _window(c, anchor.b, anchor.b + anchor.size, context).translate(
+            _UNPROTECT_TABLE
+        )
+        return (
+            f"no contiguous run matches — closest match: quote {qw!r} vs chunk {cw!r}"
+        )
+    window = c[max(0, anchor.b - anchor.a) : anchor.b - anchor.a + len(q)]
+    for tag, i1, i2, j1, j2 in difflib.SequenceMatcher(
+        None, q, window, autojunk=False
+    ).get_opcodes():
+        if tag == "equal":
+            continue
+        qw = _window(q, i1, i2, context).translate(_UNPROTECT_TABLE)
+        cw = _window(window, j1, j2, context).translate(_UNPROTECT_TABLE)
+        return f"quote {qw!r} vs chunk {cw!r} (quote char {i1})"
+    return None

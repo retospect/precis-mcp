@@ -1480,12 +1480,18 @@ def _check_passage(
         # frozen: a payload approved under the pre-fold rule still passes
         or (frozen and sniplib.contains_verbatim(quote, chunk.text, legacy=True))
     ):
+        # Name the first differing span (gr530995): a bare refusal hid
+        # that a lone '*' was the whole difference — the message showed
+        # only the H<sub>2</sub>/H₂ rendering and hid the cause.
+        divergence = sniplib.first_divergence(quote, chunk.text)
         out.append(
             GateViolation(
                 "quote-verbatim",
                 f"{label}: quote is not verbatim in chunk pc{chunk.chunk_id} "
                 "(compared on extraction-normalized text) — a paraphrase "
-                "cannot be signed as a quotation",
+                "cannot be signed as a quotation; edit the quote to match "
+                "the chunk text exactly, or ground a different chunk"
+                + (f"; first differing span: {divergence}" if divergence else ""),
             )
         )
 

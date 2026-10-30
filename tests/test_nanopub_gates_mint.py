@@ -649,6 +649,33 @@ def test_paraphrase_quote_fails_verbatim_gate(store: Any) -> None:
     assert "quote-verbatim" in _gate_slugs(store, hub, payload)
 
 
+def test_quote_verbatim_violation_names_the_first_differing_span(
+    store: Any,
+) -> None:
+    """gr530995 (comment 6): a lone ``*`` in the quote was the whole
+    difference on pc1295795, yet the bare "not verbatim" message showed
+    only the H<sub>2</sub>/H₂ rendering and the fixer chased the wrong
+    side — the violation now names the first differing span."""
+    paper, chunk, sha = _seed_paper(
+        store,
+        chunk_text="We obtain $\\Delta G_{H}$ on PdH/Pd(111), verified.",
+    )
+    hub = _seed_hub(store, "DFT shows the adsorption energy is ideal.", paper, chunk)
+    payload = _payload(chunk, sha)
+    payload["passages"][0]["quote"] = "we obtain $\\Delta G_{H^*}$ on PdH/Pd(111)"
+    payload["passages"][0]["snip"] = "verified"
+    payload["fields"] = {}
+    violations = gates.run_mint_gates(store, evidence.load_bundle(store, hub), payload)
+    verbatim = [v for v in violations if v.gate == "quote-verbatim"]
+    assert verbatim, violations
+    assert "first differing span" in verbatim[0].message
+    # both sides of the divergence, normalized as the gate compared them
+    assert "g_{h^*}" in verbatim[0].message
+    assert "g_{h}" in verbatim[0].message
+    # the refusal carries its corrective next step
+    assert "edit the quote to match the chunk text" in verbatim[0].message
+
+
 def test_ambiguous_snip_fails_uniqueness(store: Any) -> None:
     text = f"First: {_QUOTE}. Later restated: {_QUOTE}."
     paper, chunk, _sha = _seed_paper(store, chunk_text=text)

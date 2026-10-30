@@ -994,3 +994,33 @@ def test_contains_verbatim_keeps_math_and_escaped_asterisks() -> None:
     assert not cv("To obtain $\\Delta G_{H^}$", chunk)
     assert cv("the *onset* moved", "the onset moved")
     assert cv("the onset moved", "(*the* onset moved)")
+
+
+def test_first_divergence_names_the_differing_span() -> None:
+    """gr530995 comment 6: the quote-verbatim message names where the
+    quote first stops matching — the lone ``*`` here, not the H₂ the
+    reviewer chased. Chunk text around the quote's own span is ignored:
+    a quote mid-chunk must not report the chunk's prefix."""
+    from precis.nanopub.snip import first_divergence
+
+    chunk = (
+        "Intro text that runs before. We obtain $\\Delta G_{H}$ on "
+        "PdH/Pd(111), verified. Trailing remarks after."
+    )
+    assert first_divergence(chunk, chunk) is None  # verbatim: no diagnosis
+    out = first_divergence(
+        "we obtain $\\Delta G_{H^*}$ on PdH/Pd(111), verified.", chunk
+    )
+    assert out is not None
+    assert "*" in out
+    assert "g_{h^*}" in out and "g_{h}" in out
+    assert "intro text" not in out
+
+    # script stand-ins are un-protected for display, never \ue0xx
+    out = first_divergence("rate is 10-4 A", "rate is 10<sup>−</sup><sup>4</sup> A")
+    assert out is not None and "⁻⁴" in out
+    # nothing of the quote matches: the message says so, and shows the
+    # quote's own text so the author can see what failed
+    out = first_divergence("totally absent", "unrelated text")
+    assert out is not None
+    assert "no contiguous run" in out and "totally" in out
