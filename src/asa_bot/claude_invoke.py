@@ -68,6 +68,7 @@ from __future__ import annotations
 
 import asyncio
 import dataclasses
+import hashlib
 import logging
 import os
 import re
@@ -289,7 +290,12 @@ _run_store_lock = threading.Lock()
 #: ``time.monotonic()`` of the last failed connect; a down DB is retried only
 #: after :data:`_RUN_STORE_RETRY_S` so turns don't each pay the open timeout.
 _run_store_failed_at: float | None = None
-_RUN_STORE_RETRY_S = 300.0
+_RUN_STORE_RETRY_S = 60.0
+
+#: The mint's connect budget — far under ``create_pool``'s 10 s default
+#: open wait: a chat turn fails fast to unattributed instead of stalling
+#: the reply on a dead DB.
+_RUN_STORE_CONNECT_S = 3.0
 
 
 def _attribution_store() -> Any:
@@ -309,14 +315,44 @@ def _attribution_store() -> Any:
         ):
             return None
         from precis.store import Store
+        from precis.store.pool import create_pool
 
         try:
-            _run_store = Store.connect(dsn, min_size=1, max_size=2)
+            _run_store = Store(
+                create_pool(
+                    dsn,
+                    min_size=1,
+                    max_size=2,
+                    open_timeout=_RUN_STORE_CONNECT_S,
+                    kwargs={"connect_timeout": int(_RUN_STORE_CONNECT_S)},
+                ),
+                dsn=dsn,
+            )
         except Exception:
             _run_store_failed_at = now
             raise
         _run_store_failed_at = None
         return _run_store
+
+
+def shutdown_attribution_store() -> None:
+    """Close the lazily-bound attribution Store pool on bot shutdown.
+
+    Called from ``asa_bot.bot.run``'s ``finally`` — alongside
+    :func:`shutdown_chain_executor` — so the pool is closed
+    deterministically on a clean exit rather than left to its atexit
+    finalizer. Idempotent: a no-op when no turn ever minted, safe to call
+    twice.
+    """
+    global _run_store, _run_store_failed_at
+    with _run_store_lock:
+        store, _run_store = _run_store, None
+        _run_store_failed_at = None
+    if store is not None:
+        try:
+            store.close()
+        except Exception:
+            log.warning("asa agentlog: store close failed", exc_info=True)
 
 
 def _open_turn_log(turn_model: str, conv_slug: str, user_message: str) -> int | None:
@@ -329,24 +365,39 @@ def _open_turn_log(turn_model: str, conv_slug: str, user_message: str) -> int | 
         return None
     if store is None:
         return None
+    # Discord chat text stays out of the run record: a fingerprint — conv
+    # slug + sha256/byte length of the user message — not meta.prompt (the
+    # internal doctor_tick/review prompts still keep theirs; gr540852
+    # review).
+    prompt_bytes = user_message.encode("utf-8")
     return agentlog.open_run(
         store,
         source="asa_bot",
         title=f"asa turn {conv_slug}",
         model=turn_model,
-        prompt=user_message,
-        meta_extra={"conv_slug": conv_slug},
+        meta_extra={
+            "conv_slug": conv_slug,
+            "prompt_sha256": hashlib.sha256(prompt_bytes).hexdigest()[:16],
+            "prompt_bytes": len(prompt_bytes),
+        },
     )
 
 
-def _close_turn_log(log_id: int | None, result: ClaudeResult) -> None:
-    """Finalize the turn's agentlog; best-effort, blocking."""
+def _close_turn_log(
+    log_id: int | None, result: ClaudeResult | None, *, status: str | None = None
+) -> None:
+    """Finalize the turn's agentlog; best-effort, blocking.
+
+    ``status`` overrides the result-derived stamp on the paths where no
+    result exists — ``"cancelled"`` on task cancel, ``"failed"`` when a
+    lane raised through :func:`invoke`'s never-raise contract.
+    """
     if log_id is None or _run_store is None:
         return
     agentlog.close_run(
         _run_store,
         log_id,
-        status="error" if result.error else "ok",
+        status=status or ("error" if result is not None and result.error else "ok"),
     )
 
 
@@ -442,13 +493,28 @@ async def invoke(
         max_turns=max_turns,
         agentlog_id=log_id,
     )
-    result = await _run_turn(turn, model=model, pinned=pinned)
-    if log_id is not None:
-        try:
-            await asyncio.to_thread(_close_turn_log, log_id, result)
-        except Exception:
-            log.warning("asa agentlog: finalize failed", exc_info=True)
-    return result
+    result: ClaudeResult | None = None
+    status: str | None = None
+    try:
+        result = await _run_turn(turn, model=model, pinned=pinned)
+        return result
+    except asyncio.CancelledError:
+        # Task teardown (shutdown / the per-turn supervisor) — the run
+        # record still gets its end-state stamp on the way out.
+        status = "cancelled"
+        raise
+    except BaseException:
+        # invoke() is contractually never-raise, so reaching here is a bug
+        # above the lanes — stamp 'failed' so the agentlog doesn't stay
+        # open until the reaper finds it.
+        status = "failed"
+        raise
+    finally:
+        if log_id is not None:
+            try:
+                await asyncio.to_thread(_close_turn_log, log_id, result, status=status)
+            except Exception:
+                log.warning("asa agentlog: finalize failed", exc_info=True)
 
 
 async def _run_turn(turn: _Turn, *, model: str, pinned: bool) -> ClaudeResult:

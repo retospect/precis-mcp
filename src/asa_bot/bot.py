@@ -41,7 +41,10 @@ from asa_bot import attachments, identity, preamble, slash
 from asa_bot.briefing_buffer import BriefingBuffer
 from asa_bot.capture_shim import CaptureShim
 from asa_bot.claude_invoke import invoke as claude_invoke
-from asa_bot.claude_invoke import shutdown_chain_executor
+from asa_bot.claude_invoke import (
+    shutdown_attribution_store,
+    shutdown_chain_executor,
+)
 from asa_bot.config import Config, LLMConfig, load_discord_token
 from asa_bot.conv_slug import compute_slug
 from asa_bot.pg_listen import PgListener
@@ -954,6 +957,10 @@ async def run(cfg: Config) -> None:
         # on a clean exit rather than leaving its threads dangling — cheap
         # (max_workers=4) but was previously never shut down at all.
         shutdown_chain_executor()
+        # Close the lazily-bound attribution Store pool
+        # (claude_invoke._run_store) with the process instead of leaving
+        # it to the pool's atexit finalizer.
+        shutdown_attribution_store()
 
 
 async def _start_shim_inline(cfg: Config, precis: PrecisClient) -> Any:

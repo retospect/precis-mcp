@@ -6,7 +6,12 @@ precis MCP server (an ``mcp_config=`` keyword that is not the literal
 ``None``) — the runs whose ``tool_calls`` rows need ``agentlog_id`` and
 ``source``. ``source`` rides ``LlmRequest.source`` (the router adds
 ``PRECIS_CURRENT_SOURCE``); the agentlog id must be put in the request's
-env by the runner, via ``agentlog.run_env(...)`` or ``agentlog.ENV_VAR``.
+env by the runner — the evidence the ratchet demands is AST-level, in the
+site's enclosing function: a ``Call`` to ``open_log`` / ``open_run`` /
+``run_env``, or a reference to ``ENV_VAR`` / ``agentlog_id``. A comment,
+docstring or bare ``env_overlay`` keyword that carries no run id does not
+count, and a ``<module>``-level site sees only the module's own top-level
+code — not a sibling def's binding.
 
 A launch site in a file that does neither fails here unless it is listed in
 :data:`PENDING`. ``PENDING`` only shrinks: an entry that now binds an
@@ -16,7 +21,7 @@ agentlog, or no longer launches an agent, fails too, so the list stays true.
 from __future__ import annotations
 
 import ast
-import re
+from collections.abc import Iterable, Iterator
 from pathlib import Path
 from typing import Any
 
@@ -38,15 +43,21 @@ _TRANSPORT_FILES = frozenset(
     }
 )
 
-#: The env binding a runner uses to hand its agentlog id to the child.
-_BINDS_AGENTLOG = re.compile(r"agentlog\.(run_env\(|ENV_VAR\b)")
+#: Calls that mint a run record or build its env binding.
+_MINT_CALLS = frozenset({"open_log", "open_run", "run_env"})
+
+#: Identifier/attribute/keyword references that carry the minted id.
+_BIND_NAMES = frozenset({"ENV_VAR", "agentlog_id"})
 
 #: Agent launch sites that do not mint an agentlog yet. Shrink-only: fix one
 #: (``agentlog.open_run`` + ``env_overlay=agentlog.run_env(log_id)``) and
 #: delete its line.
 PENDING: dict[str, str] = {
+    # Slack bridge — separate daemon; asa_bot's mint pattern is a follow-up.
     "src/asa_slack/bot.py": "Slack bridge turn; mirror asa_bot.claude_invoke",
+    # mermaid/figure helper — no Store in scope to mint against.
     "src/precis/diagram/agent.py": "diagram agent turn",
+    # Interactive web follow-up — its deferred path drops env_overlay.
     "src/precis_web/ask.py": "web follow-up chat",
 }
 
@@ -79,8 +90,111 @@ def _launches_agent(node: ast.Call) -> bool:
     return False
 
 
-def _launch_sites() -> dict[str, list[int]]:
-    sites: dict[str, list[int]] = {}
+class _Site:
+    """One launch site plus the scope the evidence check runs on."""
+
+    def __init__(self, rel: str, call: ast.Call, qualname: str, scope: ast.AST) -> None:
+        self.rel = rel
+        self.call = call
+        self.qualname = qualname
+        # The enclosing FunctionDef/AsyncFunctionDef, or the whole Module
+        # for a <module>-level site.
+        self.scope = scope
+
+    @property
+    def attributed(self) -> bool:
+        """Whether the enclosing scope mints or threads an agentlog."""
+        if isinstance(self.scope, ast.Module):
+            return _attribution_evidence(_module_level_nodes(self.scope))
+        return _attribution_evidence(ast.walk(self.scope))
+
+
+def _attribution_evidence(nodes: Iterable[ast.AST]) -> bool:
+    """The ratchet's evidence grammar: a ``Call`` to ``open_log`` /
+    ``open_run`` / ``run_env`` (mint or env binding), or an ``ENV_VAR`` /
+    ``agentlog_id`` name, attribute or call keyword — the mechanisms that
+    put ``PRECIS_CURRENT_AGENTLOG`` on the run.
+
+    AST-only, so a comment, docstring or bare ``env_overlay`` keyword
+    carrying no run id cannot satisfy it.
+    """
+    for node in nodes:
+        if isinstance(node, ast.Call) and _call_name(node) in _MINT_CALLS:
+            return True
+        if isinstance(node, ast.Name) and node.id in _BIND_NAMES:
+            return True
+        if isinstance(node, ast.Attribute) and node.attr in _BIND_NAMES:
+            return True
+        if isinstance(node, ast.keyword) and node.arg in _BIND_NAMES:
+            return True
+    return False
+
+
+def _module_level_nodes(tree: ast.Module) -> Iterator[ast.AST]:
+    """Nodes of the module's own top-level code, never descending into a
+    ``def`` / ``class`` body — a ``<module>``-scoped site must not bind on
+    a sibling function's internals (the old whole-file regex in AST form)."""
+    stack: list[ast.AST] = list(tree.body)
+    while stack:
+        node = stack.pop()
+        yield node
+        if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef):
+            continue
+        stack.extend(ast.iter_child_nodes(node))
+
+
+def _encloses(fn: ast.AST, node: ast.AST) -> bool:
+    return getattr(fn, "lineno", -1) <= getattr(node, "lineno", -1) and getattr(
+        fn, "end_lineno", -1
+    ) >= getattr(node, "end_lineno", -1)
+
+
+def _qualname(tree: ast.AST, target: ast.AST) -> str:
+    """``outer.inner`` dotted name for a (possibly nested) function def."""
+    names: list[str] = []
+
+    def visit(node: ast.AST, path: list[str]) -> None:
+        for child in ast.iter_child_nodes(node):
+            if child is target:
+                names.extend(path + [getattr(child, "name", "?")])
+                return
+            if isinstance(child, ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef):
+                visit(child, path + [child.name])
+            else:
+                visit(child, path)
+
+    visit(tree, [])
+    return ".".join(names) or getattr(target, "name", "?")
+
+
+def _sites_in_source(rel: str, text: str) -> list[_Site]:
+    """Launch sites in one source string — the seam the fixture tests
+    drive without touching real files."""
+    tree = ast.parse(text, filename=rel)
+    sites: list[_Site] = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call) or not _launches_agent(node):
+            continue
+        # The OUTERMOST function enclosing the call — a mint/threading in
+        # any ancestor scope counts (helpers thread the id in via
+        # parameters or closures). ast.walk is breadth-first, so the
+        # first enclosing def is the outermost.
+        outer: ast.AST | None = None
+        for anc in ast.walk(tree):
+            if isinstance(anc, ast.FunctionDef | ast.AsyncFunctionDef) and _encloses(
+                anc, node
+            ):
+                outer = anc
+                break
+        if outer is None:
+            sites.append(_Site(rel, node, "<module>", tree))
+        else:
+            sites.append(_Site(rel, node, _qualname(tree, outer), outer))
+    return sites
+
+
+def _launch_sites() -> list[_Site]:
+    sites: list[_Site] = []
     for path in sorted(SRC.rglob("*.py")):
         rel = path.relative_to(ROOT).as_posix()
         if rel in _TRANSPORT_FILES:
@@ -88,17 +202,23 @@ def _launch_sites() -> dict[str, list[int]]:
         text = path.read_text(encoding="utf-8")
         if not any(name + "(" in text for name in _LAUNCH_CALLS):
             continue
-        for node in ast.walk(ast.parse(text)):
-            if isinstance(node, ast.Call) and _launches_agent(node):
-                sites.setdefault(rel, []).append(node.lineno)
+        sites.extend(_sites_in_source(rel, text))
     return sites
 
 
+SITE_LIST = _launch_sites()
+SITES: dict[str, list[int]] = {}
+for _s in SITE_LIST:
+    SITES.setdefault(_s.rel, []).append(_s.call.lineno)
+
+
+def _unbound_sites(rel: str) -> list[_Site]:
+    return [s for s in SITE_LIST if s.rel == rel and not s.attributed]
+
+
 def _binds(rel: str) -> bool:
-    return bool(_BINDS_AGENTLOG.search((ROOT / rel).read_text(encoding="utf-8")))
-
-
-SITES = _launch_sites()
+    """Every launch site in ``rel`` carries AST-level attribution evidence."""
+    return not _unbound_sites(rel)
 
 
 def test_scan_finds_the_known_runners() -> None:
@@ -107,15 +227,15 @@ def test_scan_finds_the_known_runners() -> None:
 
 
 def test_every_launch_site_binds_an_agentlog() -> None:
-    offenders = {
-        rel: lines
-        for rel, lines in SITES.items()
-        if rel not in PENDING and not _binds(rel)
-    }
+    offenders = [
+        f"{s.rel}::{s.qualname}:{s.call.lineno}"
+        for s in SITE_LIST
+        if s.rel not in PENDING and not s.attributed
+    ]
     assert not offenders, (
-        "agent launch sites with no agentlog (their tool_calls rows get no "
-        "agentlog_id): "
-        + ", ".join(f"{rel}:{lines}" for rel, lines in offenders.items())
+        "agent launch sites with no agentlog in scope (their tool_calls "
+        "rows get no agentlog_id): "
+        + ", ".join(offenders)
         + ". Mint one with agentlog.open_run(...) and pass "
         "env_overlay=agentlog.run_env(log_id) (gr540852)."
     )
@@ -238,7 +358,7 @@ def test_asa_invoke_mints_one_log_per_turn(
 
     monkeypatch.setattr(claude_invoke, "_open_turn_log", fake_open)
     monkeypatch.setattr(
-        claude_invoke, "_close_turn_log", lambda lid, res: closed.append(lid)
+        claude_invoke, "_close_turn_log", lambda lid, res, **kw: closed.append(lid)
     )
     seen: list[Any] = []
 
@@ -265,3 +385,247 @@ def test_container_allowlist_carries_agentlog_and_source() -> None:
         {ENV_VAR: "5", SOURCE_ENV_VAR: "asa_bot", "CLAUDE_CODE_OAUTH_TOKEN": "s"}
     )
     assert env == {ENV_VAR: "5", SOURCE_ENV_VAR: "asa_bot"}
+
+
+# ── the evidence grammar is AST-level (gr540852 review) ─────────────────
+
+
+def test_comment_or_docstring_mention_is_not_attribution() -> None:
+    """Negative fixture: a function that only *mentions* agentlog in a
+    comment or docstring fails the ratchet — evidence must be an AST
+    mint call or a bind name in the enclosing function."""
+    src = (
+        "def run():\n"
+        '    """Mint the agentlog for this pass."""\n'
+        "    # agentlog.open_run(store, source='x') would go here\n"
+        "    return LlmRequest(tools_needed=True, mcp_config='m.json')\n"
+    )
+    (site,) = _sites_in_source("fixture.py", src)
+    assert site.qualname == "run"
+    assert not site.attributed
+
+
+def test_mint_call_and_bind_name_count_as_attribution() -> None:
+    """Positive fixtures, one per evidence form."""
+    minted = (
+        "def run():\n"
+        "    log_id = agentlog.open_run(store, source='x', title='t')\n"
+        "    return LlmRequest(tools_needed=True, mcp_config='m.json')\n"
+    )
+    (site,) = _sites_in_source("fixture.py", minted)
+    assert site.attributed
+
+    threaded = (
+        "def run():\n"
+        "    return LlmRequest(\n"
+        "        tools_needed=True,\n"
+        "        mcp_config='m.json',\n"
+        "        env_overlay=agentlog.run_env(log_id),\n"
+        "    )\n"
+    )
+    (site,) = _sites_in_source("fixture.py", threaded)
+    assert site.attributed
+
+    contextvar = (
+        "def run():\n"
+        "    ctx = TickContext(agentlog_id=agentlog_id)\n"
+        "    with tick_context(ctx):\n"
+        "        return LlmRequest(tools_needed=True, mcp_config='m.json')\n"
+    )
+    (site,) = _sites_in_source("fixture.py", contextvar)
+    assert site.attributed
+
+
+def test_bare_env_overlay_keyword_is_not_attribution() -> None:
+    """An ``env_overlay`` carrying no run id (the asa_slack shape —
+    ``PRECIS_KINDS_DISABLED`` only) is not evidence of a minted agentlog."""
+    src = (
+        "def run():\n"
+        "    return LlmRequest(\n"
+        "        tools_needed=True,\n"
+        "        mcp_config='m.json',\n"
+        "        env_overlay={'PRECIS_KINDS_DISABLED': 'x'},\n"
+        "    )\n"
+    )
+    (site,) = _sites_in_source("fixture.py", src)
+    assert not site.attributed
+
+
+def test_module_level_site_cannot_borrow_a_sibling_def() -> None:
+    """A ``<module>``-level site must not get the whole file as its
+    scope: a sibling function's ``ENV_VAR`` is not the module's."""
+    src = (
+        "req = LlmRequest(tools_needed=True, mcp_config='m.json')\n"
+        "\n"
+        "def helper():\n"
+        "    env = {ENV_VAR: '1'}\n"
+    )
+    (site,) = _sites_in_source("fixture.py", src)
+    assert site.qualname == "<module>"
+    assert not site.attributed
+
+
+# ── asa_bot attribution store / turn-log behavior (gr540852 review) ──────
+
+
+@pytest.fixture
+def _run_store_state(monkeypatch: pytest.MonkeyPatch) -> Any:
+    """Isolate the module-level attribution pool state per test — a prior
+    test's bound Store or connect-failure timestamp mustn't leak in."""
+    import asa_bot.claude_invoke as ci
+
+    monkeypatch.setattr(ci, "_run_store", None)
+    monkeypatch.setattr(ci, "_run_store_failed_at", None)
+    return ci
+
+
+def test_attribution_store_backs_off_after_connect_failure(
+    monkeypatch: pytest.MonkeyPatch, _run_store_state: Any
+) -> None:
+    """A failed connect is cached for ``_RUN_STORE_RETRY_S``: two turns
+    inside the window pay ONE connect attempt, and that attempt runs on
+    the short connect budget (gr540852 review: DB-down latency)."""
+    ci = _run_store_state
+    import precis.store.pool as pool_mod
+
+    monkeypatch.setenv("PRECIS_DATABASE_URL", "postgresql://unused.invalid/x")
+    seen: dict[str, Any] = {}
+    attempts = 0
+
+    def fake_create_pool(*args: Any, **kwargs: Any) -> Any:
+        nonlocal attempts
+        attempts += 1
+        seen.update(kwargs)
+        raise OSError("db is down")
+
+    monkeypatch.setattr(pool_mod, "create_pool", fake_create_pool)
+
+    assert ci._open_turn_log("m", "c1", "u") is None
+    assert ci._open_turn_log("m", "c2", "u") is None
+    assert attempts == 1
+    assert seen["open_timeout"] == ci._RUN_STORE_CONNECT_S
+    assert seen["kwargs"]["connect_timeout"] == int(ci._RUN_STORE_CONNECT_S)
+
+
+def test_open_turn_log_stores_fingerprint_not_prompt(
+    monkeypatch: pytest.MonkeyPatch, _run_store_state: Any
+) -> None:
+    """Privacy (gr540852 review): the asa agentlog meta carries the conv
+    slug + a sha256/byte-length fingerprint of the user message — never
+    ``meta.prompt``; Discord chat text is not persisted per turn."""
+    ci = _run_store_state
+    import hashlib
+
+    from precis import agentlog
+
+    monkeypatch.setattr(ci, "_run_store", object())
+    captured: dict[str, Any] = {}
+
+    def fake_open_run(store: Any, **kwargs: Any) -> int:
+        captured.update(kwargs)
+        return 42
+
+    monkeypatch.setattr(agentlog, "open_run", fake_open_run)
+
+    assert ci._open_turn_log("m", "conv-x", "hello?") == 42
+    assert "prompt" not in captured
+    extra = captured["meta_extra"]
+    assert extra["conv_slug"] == "conv-x"
+    assert extra["prompt_sha256"] == hashlib.sha256(b"hello?").hexdigest()[:16]
+    assert extra["prompt_bytes"] == len(b"hello?")
+
+
+def test_shutdown_attribution_store_closes_pool(
+    monkeypatch: pytest.MonkeyPatch, _run_store_state: Any
+) -> None:
+    """bot.run's finally path: the lazily-bound pool is closed instead of
+    left to the atexit finalizer — and the hook is idempotent."""
+    ci = _run_store_state
+    from types import SimpleNamespace
+
+    closed: list[bool] = []
+    monkeypatch.setattr(
+        ci, "_run_store", SimpleNamespace(close=lambda: closed.append(True))
+    )
+
+    ci.shutdown_attribution_store()
+    ci.shutdown_attribution_store()
+
+    assert closed == [True]
+
+
+def test_invoke_finalizes_failed_on_raise(
+    monkeypatch: pytest.MonkeyPatch, _run_store_state: Any
+) -> None:
+    """invoke()'s try/finally stamps the minted agentlog ``failed`` when a
+    lane raises through its never-raise contract (gr540852 review)."""
+    ci = _run_store_state
+    import asyncio
+
+    from precis import agentlog
+
+    monkeypatch.setattr(ci, "_run_store", object())
+    monkeypatch.setattr(ci, "_open_turn_log", lambda *a: 7)
+    stamped: dict[str, Any] = {}
+
+    def fake_close_run(store: Any, lid: int, **kwargs: Any) -> None:
+        stamped["log_id"] = lid
+        stamped.update(kwargs)
+
+    monkeypatch.setattr(agentlog, "close_run", fake_close_run)
+
+    async def boom(*args: Any, **kwargs: Any) -> Any:
+        raise RuntimeError("lane exploded")
+
+    monkeypatch.setattr(ci, "_run_turn", boom)
+
+    from asa_bot.config import LLMConfig
+
+    with pytest.raises(RuntimeError):
+        asyncio.run(ci.invoke(LLMConfig(), "sys", "hi", conv_slug="c-raise"))
+
+    assert stamped["log_id"] == 7
+    assert stamped["status"] == "failed"
+
+
+def test_invoke_finalizes_cancelled_on_cancel(
+    monkeypatch: pytest.MonkeyPatch, _run_store_state: Any
+) -> None:
+    """A cancelled turn stamps ``cancelled`` — the run record still gets
+    its end-state instead of staying open for the reaper to find."""
+    ci = _run_store_state
+    import asyncio
+
+    from precis import agentlog
+
+    monkeypatch.setattr(ci, "_run_store", object())
+    monkeypatch.setattr(ci, "_open_turn_log", lambda *a: 9)
+    stamped: dict[str, Any] = {}
+
+    def fake_close_run(store: Any, lid: int, **kwargs: Any) -> None:
+        stamped["log_id"] = lid
+        stamped.update(kwargs)
+
+    monkeypatch.setattr(agentlog, "close_run", fake_close_run)
+
+    async def hang(*args: Any, **kwargs: Any) -> Any:
+        await asyncio.sleep(3600)
+        raise AssertionError("unreachable")
+
+    monkeypatch.setattr(ci, "_run_turn", hang)
+
+    from asa_bot.config import LLMConfig
+
+    async def main() -> None:
+        task = asyncio.create_task(
+            ci.invoke(LLMConfig(), "sys", "hi", conv_slug="c-cx")
+        )
+        await asyncio.sleep(0)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    asyncio.run(main())
+
+    assert stamped["log_id"] == 9
+    assert stamped["status"] == "cancelled"
