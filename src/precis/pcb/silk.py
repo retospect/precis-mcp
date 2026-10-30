@@ -13,13 +13,15 @@ already applies to copper.
 1. a **reference-designator label** (:mod:`precis.pcb.stroke_font`), sized
    from ``height_mm``. **Outside the part's outline, always** (gr495394,
    Reto 2026-10-17: "label outside white line, say to the bottom left
-   corner of the component. Unless unavailable."; gr496552, Reto
+   corner of the component. Unless unavailable." — the default moved to
+   the centred bottom edge 2026-10-30, Reto: "center labels near part and
+   pick a pref direction (below center)"; gr496552, Reto
    2026-10-18: "it still should not be printed under parts, on vias."):
-   the bottom-left corner by default, then a fixed order of corners and
+   the bottom side's centre by default, then a fixed order of corners and
    sides (:data:`LABEL_SPOT_ORDER`, :func:`_outline_spot_candidates`),
    each two clear line widths off the outline; then the radial ladder
    further out (:data:`_CANDIDATES`, a ring sweep that walks outward
-   from bottom-left). **There is no centred candidate and no inside
+   from bottom-left). **There is no inside
    last resort** — a label under the assembled part is invisible ink,
    so a part with no clear outside spot gets its label DROPPED (the
    ``silk_missing`` error names it), not hidden. "We can move it": a
@@ -395,9 +397,11 @@ def _refdes_candidates(
 
     Order is each ring outward, and within a ring the directions nearest
     the bottom-left diagonal (angle -3*pi/4 — gr496552: the ladder walks
-    outward from the bottom-left default spot, and there is NO centred
-    candidate — a label on the part origin prints under the package and
-    the assembled part hides it), then nearest BELOW (-y, angle -pi/2),
+    outward from the bottom-left bearing, and none of its rungs is centred
+    — a label on the part origin prints under the package and the
+    assembled part hides it; the centred bottom EDGE leads the named-spot
+    pass instead, :data:`LABEL_SPOT_ORDER` since 2026-10-30), then nearest
+    BELOW (-y, angle -pi/2),
     then everything else. A single "up is where a reader expects a
     refdes" preference is superseded by this side-consistency rule: a
     repeated part in an array relocates its label to the SAME relative
@@ -489,12 +493,16 @@ def refdes_label_slot_mm(
 
 #: A refdes label's spots around its part's outline, in try order
 #: (gr495394, Reto 2026-10-17: "label outside white line, say to the bottom
-#: left corner of the component. Unless unavailable."). Board frame, read
-#: as the board is viewed from the top on either side. A corner spot sits
-#: just outside that side of the outline, flush with the outline's own
-#: left or right edge; a side spot is centred on that side. The skill
-#: precis-pcb-fab-help documents this order; keep the two in step.
+#: left corner of the component. Unless unavailable." — superseded
+#: 2026-10-30, Reto: "center labels near part and pick a pref direction
+#: (below center)": the centred bottom edge leads, corners follow, "top"
+#: stays last). Board frame, read as the board is viewed from the top on
+#: either side. A corner spot sits just outside that side of the outline,
+#: flush with the outline's own left or right edge; a side spot is centred
+#: on that side. The skill precis-pcb-fab-help documents this order; keep
+#: the two in step.
 LABEL_SPOT_ORDER: tuple[str, ...] = (
+    "bottom",
     "bottom-left",
     "bottom-right",
     "top-left",
@@ -502,7 +510,6 @@ LABEL_SPOT_ORDER: tuple[str, ...] = (
     "left",
     "right",
     "top",
-    "bottom",
 )
 
 

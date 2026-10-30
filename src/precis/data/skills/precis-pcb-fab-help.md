@@ -66,17 +66,18 @@ the board edge gets one clean gap at the edge. A routed via on an
 outline breaks it there (silk never prints on copper). The refdes label
 goes **outside** the outline, two line widths clear of every outline and
 never on a pad, via or other label.
-Spots are tried in this fixed order, in board orientation (corners sit
-just past that side of the outline, flush with its left or right edge):
+Spots are tried in this fixed order, in board orientation (a side spot is
+centred on that side of the outline; a corner spot sits just past that
+side, flush with the outline's left or right edge):
 
-1. bottom-left (the default)
-2. bottom-right
-3. top-left
-4. top-right
-5. left
-6. right
-7. top
-8. bottom
+1. bottom (the default — centred below the part)
+2. bottom-left
+3. bottom-right
+4. top-left
+5. top-right
+6. left
+7. right
+8. top
 
 Past those it tries spots further out, walking outward from bottom-left.
 A label never goes inside the outline — ink under the assembled part is

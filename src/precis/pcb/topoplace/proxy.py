@@ -371,7 +371,10 @@ def _label_spot_boxes(
     w = text_width_mm(refdes, _LBL_HEIGHT_MM)
     h = _LBL_HEIGHT_MM
     # (anchor, h_align, v_align) — silk LABEL_SPOT_ORDER, board frame.
+    # Keep in exact lockstep with silk._outline_spot_candidates: the
+    # greedy zips these boxes with silk.LABEL_SPOT_ORDER by position.
     spots = (
+        ((xc, y0 - g), "center", "top"),  # bottom
         ((x0, y0 - g), "left", "top"),  # bottom-left
         ((x1, y0 - g), "right", "top"),  # bottom-right
         ((x0, y1 + g), "left", "baseline"),  # top-left
@@ -379,7 +382,6 @@ def _label_spot_boxes(
         ((x0 - g, yc), "right", "middle"),  # left
         ((x1 + g, yc), "left", "middle"),  # right
         ((xc, y1 + g), "center", "baseline"),  # top
-        ((xc, y0 - g), "center", "top"),  # bottom
     )
     out = []
     for (ax, ay), ha, va in spots:

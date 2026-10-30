@@ -336,7 +336,7 @@ def test_side_routes_to_the_bottom_bucket():
     assert result.draws["bottom"]
 
 
-# ── refdes lands just off its outline (the default bottom-left spot) ────
+# ── refdes lands just off its outline (the default bottom spot) ─────────
 def test_refdes_lands_outside_its_outline_when_unobstructed():
     """gr495394: the default spot is OUTSIDE the outline (bottom-left
     corner), never over the part that will cover it, and the label keeps
@@ -364,18 +364,25 @@ def test_refdes_lands_outside_its_outline_when_unobstructed():
 
 # ── suppression: relocate, then drop ──────────────────────────────────────
 def test_refdes_relocates_when_the_default_spot_overlaps_a_pad():
-    ir = from_graph(_graph("U3", 16, x=0.0, y=0.0), stackup=DEFAULT_STACKUP)
-    # a pad sitting on the default (bottom-left) spot -- the label cannot
-    # land there and takes the next spot in the documented order.
-    pads = [_pad_on(_spot_boxes(ir, 0, "U3")["bottom-left"])]
+    ir = from_graph(_graph("R1", 4, x=0.0, y=0.0), stackup=DEFAULT_STACKUP)
+    # Wide pads merge the pin row into one bar (the crowded-test fixture):
+    # the outline then spans the bar and the bottom spot's box has room of
+    # its own between the two corner spots — on a narrow part the three
+    # bottom boxes are contiguous and any pad on the bottom also prices
+    # out both corners.
+    for pid in range(ir.n_pins):
+        ir.pin_w[pid] = 1.4
+    # a small pad centred on the default (bottom) spot's box -- the label
+    # cannot land there and takes the next spot in the documented order.
+    pads = [_pad_on(_spot_boxes(ir, 0, "R1")["bottom"], size=0.3)]
     result = build_silk(ir, pads=pads)
     assert not result.dropped
     assert result.relocated
-    assert any("U3" in msg for msg in result.relocated)
-    row = next(c for c in result.census if c.refdes == "U3" and c.kind == "refdes")
-    assert row.reason is not None and "drawn at bottom-right" in row.reason
+    assert any("R1" in msg for msg in result.relocated)
+    row = next(c for c in result.census if c.refdes == "R1" and c.kind == "refdes")
+    assert row.reason is not None and "drawn at bottom-left" in row.reason
     refdes_draws = [
-        d for d in result.draws["top"] if d["role"] == "refdes" and d["refdes"] == "U3"
+        d for d in result.draws["top"] if d["role"] == "refdes" and d["refdes"] == "R1"
     ]
     assert refdes_draws
     assert not _draws_hit_any_pad(refdes_draws, pads)
@@ -443,8 +450,8 @@ def _via_as_pad(via: dict) -> dict:
 
 def test_refdes_relocates_or_drops_when_a_via_sits_where_it_would_land():
     ir = from_graph(_graph("U9", 16, x=0.0, y=0.0), stackup=DEFAULT_STACKUP)
-    # a through via right on the default (bottom-left) spot.
-    cx, cy = _box_centre(_spot_boxes(ir, 0, "U9")["bottom-left"])
+    # a through via right on the default (bottom, centred) spot.
+    cx, cy = _box_centre(_spot_boxes(ir, 0, "U9")["bottom"])
     via = {"x": cx, "y": cy, "dia_mm": 1.0, "drill_mm": 0.3, "span": ["F.Cu", "B.Cu"]}
     result = build_silk(ir, pads=[], vias=[via])
     assert result.dropped or result.relocated
@@ -495,8 +502,8 @@ def test_via_blocks_silk_only_on_the_side_its_barrel_reaches():
     )
     ir = from_graph(graph, stackup=DEFAULT_STACKUP)
     # Same span (reaches only the TOP layer, F.Cu -> In1.Cu) sitting under
-    # each instance's default (bottom-left) label spot.
-    tx, ty = _box_centre(_spot_boxes(ir, 0, "UT")["bottom-left"])
+    # each instance's default (bottom, centred) label spot.
+    tx, ty = _box_centre(_spot_boxes(ir, 0, "UT")["bottom"])
     via_under_top = {
         "x": tx,
         "y": ty,
@@ -1411,9 +1418,9 @@ def test_bottom_side_text_still_mirrors():
     ]
     assert bottom_segs
     bottom_xs = sorted(p[0] for seg in bottom_segs for p in (seg["start"], seg["end"]))
-    # Both labels take the same board-frame spot (the bottom-left corner,
-    # gr495394), so the bottom one is the top one mirrored about the
-    # vertical centreline of that spot's text box.
+    # Both labels take the same board-frame spot (the centred bottom spot,
+    # the default since 2026-10-30), so the bottom one is the top one
+    # mirrored about the vertical centreline of that spot's text box.
     row = next(c for c in top.census if c.kind == "refdes")
     bottom_row = next(c for c in bottom.census if c.kind == "refdes")
     assert bottom_row.x_mm == pytest.approx(row.x_mm, abs=1e-6)
@@ -2631,12 +2638,13 @@ def _outline_bbox(result, refdes: str) -> tuple[float, float, float, float]:
 
 
 @pytest.mark.parametrize("shifted", [False, True])
-def test_refdes_default_is_flush_left_below_the_outlines_literal_bottom_left(shifted):
-    """gr495394's default spot, keyed to the outline's LITERAL bounding box
-    (not a support reach from the part origin): the label's box is flush
-    with the outline's left edge and hangs two clear line widths below its
-    bottom edge. ``shifted`` moves one pin column right so the outline is
-    no longer centred on the origin (a connector/TO-220-shaped part)."""
+def test_refdes_default_is_centred_below_the_outlines_literal_bbox(shifted):
+    """The default spot (bottom — centred below the part, 2026-10-30),
+    keyed to the outline's LITERAL bounding box (not a support reach from
+    the part origin): the label's box is centred on the outline's
+    horizontal centre and hangs two clear line widths below its bottom
+    edge. ``shifted`` moves one pin column right so the outline is no
+    longer centred on the origin (a connector/TO-220-shaped part)."""
     ir = from_graph(_graph("J1", 8, x=0.0, y=0.0), stackup=DEFAULT_STACKUP)
     if shifted:
         for pid in (4, 5, 6, 7):
@@ -2645,25 +2653,29 @@ def test_refdes_default_is_flush_left_below_the_outlines_literal_bottom_left(shi
     row = next(c for c in result.census if c.kind == "refdes")
     assert row.outcome == "placed"
     x0, y0, x1, _y1 = _outline_bbox(result, "J1")
+    xc = (x0 + x1) / 2.0
     if shifted:
-        assert (x0 + x1) / 2.0 != pytest.approx(0.0, abs=0.5)  # genuinely off-centre
+        assert xc != pytest.approx(0.0, abs=0.5)  # genuinely off-centre
     gap = (1.0 + silk.OUTLINE_GAP_STROKES) * gerber.DEFAULT_SILK_WIDTH_MM
     # the census anchor is the label box's lower-left corner
-    assert row.x_mm == pytest.approx(x0, abs=1e-6)
+    w = stroke_font.text_width_mm("J1", silk.DEFAULT_REFDES_HEIGHT_MM)
+    assert row.x_mm == pytest.approx(xc - w / 2.0, abs=1e-6)
     pts = _label_points(result, "J1")
     assert max(p[1] for p in pts) <= y0 - gap + 1e-6
     assert max(p[1] for p in pts) >= y0 - gap - gerber.DEFAULT_SILK_WIDTH_MM
-    assert min(p[0] for p in pts) >= x0 - 1e-6
-    assert min(p[0] for p in pts) < (x0 + x1) / 2.0  # left-flush, not centred
+    assert min(p[0] for p in pts) >= xc - w / 2.0 - 1e-6
+    assert max(p[0] for p in pts) <= xc + w / 2.0 + 1e-6
 
 
 def test_a_crowded_label_falls_back_in_the_documented_order():
-    """gr495394's fixed order: bottom-left, bottom-right, top-left,
-    top-right, left, right, top, bottom; past all eight the radial ladder,
-    still outside. Each spot is blocked in turn by a small foreign pad
-    that sits in that spot's box and no other's, and the label must take
-    the next spot of :data:`silk.LABEL_SPOT_ORDER` every time."""
+    """The fixed order (gr495394, default moved to the centred bottom edge
+    2026-10-30): bottom, bottom-left, bottom-right, top-left, top-right,
+    left, right, top; past all eight the radial ladder, still outside.
+    Each spot is blocked in turn by a small foreign pad that sits in that
+    spot's box and no other's, and the label must take the next spot of
+    :data:`silk.LABEL_SPOT_ORDER` every time."""
     assert silk.LABEL_SPOT_ORDER == (
+        "bottom",
         "bottom-left",
         "bottom-right",
         "top-left",
@@ -2671,7 +2683,6 @@ def test_a_crowded_label_falls_back_in_the_documented_order():
         "left",
         "right",
         "top",
-        "bottom",
     )
     # A wide, short single-row part (and an R, so no pin-1 dot competes for
     # the spots): the top and bottom side spots then have room of their own
