@@ -162,12 +162,17 @@
   }
 
   // gr519469: a stale shown token answers board.svg with a 409 whose text
-  // body the <object> paints raw. When the loaded document isn't the svg
-  // and its text says the board changed, offer a page reload — reloading
-  // just the object would leave the embedded selection manifest stale.
+  // body the <object> paints raw — or hides behind its fallback content
+  // when the engine gives an error response no readable document. Sniff
+  // the loaded document when there is one; when a settled load leaves
+  // nothing readable, probe the route — a real 409 earns the reload
+  // control regardless of what the body says. It must be a page reload:
+  // re-requesting just the object would leave the embedded selection
+  // manifest stale.
   const stale = el('pcb-board-stale');
   if (stale && boardObj) {
     const staleText = /changed|reload/i;
+    const mark = (yes) => stale.classList.toggle('hidden', !yes);
     const check = () => {
       let doc = null;
       try {
@@ -177,11 +182,34 @@
       }
       const root = doc && doc.documentElement;
       const text = (doc && doc.body && doc.body.textContent) || '';
-      const bad = !(root && root.localName === 'svg') && staleText.test(text);
-      stale.classList.toggle('hidden', !bad);
+      if (root && root.localName === 'svg') {
+        mark(false);
+        return 'svg';
+      }
+      const bad = staleText.test(text);
+      mark(bad);
+      return bad ? 'stale' : 'other';
+    };
+    const probe = () => {
+      const url = boardObj.getAttribute('data');
+      if (!url) return;
+      fetch(url, { cache: 'no-store' })
+        .then((res) => {
+          // A data swap since the probe went out owns the pane now.
+          if (res.status === 409 && boardObj.getAttribute('data') === url) {
+            mark(true);
+          }
+        })
+        .catch(() => {});
+    };
+    // The probe only fires for a settled load/error — an in-flight object
+    // has no document yet, and probing then would race the render.
+    const settled = () => {
+      if (check() === 'other') probe();
     };
     check();
-    boardObj.addEventListener('load', check);
+    boardObj.addEventListener('load', settled);
+    boardObj.addEventListener('error', probe);
     const reloadBtn = el('pcb-board-reload');
     if (reloadBtn) {
       reloadBtn.addEventListener('click', () => window.location.reload());

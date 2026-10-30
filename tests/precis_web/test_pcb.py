@@ -1098,7 +1098,8 @@ def test_pcb_selection_chat_explicit_apply_and_readonly_history(
     stale_svg = pcb_client.get(f"/pcb/{slug}/board.svg?shown=stale")
     assert stale_svg.status_code == 409
     # gr519469: pcb-workbench.js keys its stale-board reload control on the
-    # 409 body saying the board changed — the text is part of the contract.
+    # status, sniffing the 409 body only as a fast path — a body saying the
+    # board changed still earns the control without a second request.
     assert "changed" in stale_svg.text
     assert calls == []
     out = pcb_client.post(
