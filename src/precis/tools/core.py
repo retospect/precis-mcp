@@ -521,21 +521,20 @@ def get(
 
     `id=` is the canonical handle (`pa5`, `mc42`), a slug, or a numeric
     id — a bare number is a paper's cite_key, not its id; papers also
-    accept a DOI. `view=` picks a display variant
-    (kind-specific, e.g. 'abstract', 'bibtex'). `q=` is a free-text
-    query for compute-style kinds. `args=` is a dict of typed extras
-    for views that need them (callgraph, runtrace, ...); an unknown
-    key fails the call with `[error:BadInput]` listing the kind's
-    accepted keys — reserved keys (`kind`, `id`, `view`, `q`) are
-    rejected outright.
-    `extent=` selects a fisheye rung (see precis-fisheye-help).
-    `project=`: draft's owning todo, instead of `id=`.
-    `spec=` (component only) picks the spec for `view='bom'`'s consistency
-    query. `full=` (skill only) forces a full re-serve past the
-    `args={'have': <rev>}` stub; `tag=`/`kinds=` (skill only) filter `id='toc'`.
+    accept a DOI. `view=` picks a display variant (kind-specific, e.g.
+    'abstract', 'bibtex'). `q=` is a free-text query for compute-style
+    kinds. `args=` holds typed extras for views that need them; an
+    unknown key fails the call with `[error:BadInput]` listing the keys.
+    `extent=` is a fisheye rung: 'fisheye' (node + surroundings),
+    'fisheye+1hop' (linked neighbours), 'fisheye+2hop' (second hop as
+    counts; expand with `q='<kind>:<label>'`); any rung + '+recall'
+    (similar unlinked refs).
+    `project=`: draft's owning todo. `spec=`: component bom. `full=`,
+    `tag=`, `kinds=`: skill. NotFound "unknown kind: X" whose next= says "routes
+    through host(s)": the kind exists, just not on this host.
 
     Full reference: get(kind='skill', id='precis-get-help'), or
-    search(kind='skill', q='reading a paper') for a topical lookup.
+    search(kind='skill', q='fisheye extent ladder') for a topical lookup.
     """
     session = _ctx_session(ctx)
     token = serve_ledger.bind(session, _ctx_raw_args(ctx))
@@ -1907,12 +1906,14 @@ def edit(
     `append` / `replace` need `text=`.
     `replace` with `id='slug~selector'` rewrites one chunk.
 
-    `mode=` is kind-specific: todo uses `text=`/`body=`, memory also takes
-    `ops=[{find,text,...}]`; quest requires explicit `mode='replace'`.
+    `mode=` defaults to `find-replace`; kinds whose edit_modes
+    exclude it refuse with options. todo uses `text=`/`body=`, memory also
+    takes `ops=[{find,text,...}]`; quest requires `mode='replace'`; draft
+    takes `'replace-content'`; paper, structure ignore it.
 
     Anchors: `before=` / `after=` / `match='unique'|'first'|'all'|'nth'`
-    / `nth=`. `base_sha=` guards the read's content. `dry_run=True` previews;
-    `reason=` records why.
+    / `nth=`. `base_sha=` (python `~L` ranges: the read's `sha=`) refuses
+    the edit if content changed. `dry_run=True` previews; `reason=` why.
     Unsupported modes/fields raise `BadInput` with accepted options.
 
     Full reference: get(kind='skill', id='precis-edit-help').
@@ -2059,10 +2060,13 @@ def delete(
     exact-hash run still lands.
 
     Cache-backed / read-only kinds (calc, math, web, youtube,
-    research, think, websearch, paper, patent): Unsupported.
+    research, think, websearch, patent): Unsupported. Paper takes
+    only `args={'comment': K}`. Other
+    kinds (draft, skill, alert, conv, citation, tag, quest, ...) take
+    their own door or refuse as Unsupported naming the supported verbs.
 
     Full reference: get(kind='skill', id='precis-delete-help'), or
-    search(kind='skill', q='removing a ref') for a topical lookup.
+    search(kind='skill', q='delete a ref or region') for a topical lookup.
     """
     payload: dict[str, Any] = {
         "kind": kind,
