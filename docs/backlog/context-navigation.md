@@ -182,9 +182,15 @@ compaction handoff, every §1 meter, autoskill fetch rates, the Mode B render,
 rut lints. Exact for our bytes between resets; blind to what the agent typed or
 read through other tools.
 
-**`_ctx`**: a reserved argument the dispatcher pops before validation. Never in
-the tool schema the model reads, never typed, remembered or passed by a model.
-Deterministic: `{session_id, agent_id}`, plain, not hashed.
+**`_ctx`**: a reserved key inside `args` (`args={'_ctx': {...}}`), popped by the
+dispatcher before the per-kind unknown-key check. It rides in `args` because
+FastMCP drops undeclared top-level keys before our code runs (hook probe
+2026-10-30, gr540853 comment 1), and declaring it on every verb would put it in
+the schema the model reads. Never typed, remembered or passed by a model.
+Deterministic: `{session_id, agent_id or 'main'}`, plain, not hashed. Probe
+results: `session_id` is constant across parent and subagents; `agent_id` is
+present only inside a subagent; the hook fires under `claude -p`; parent and
+subagents share one MCP session id server-side.
 
 | source | how `_ctx` gets there | grain |
 |---|---|---|
