@@ -10,6 +10,11 @@ directly while also sitting inside another served root renders once, in
 the larger tree. Dark-factory step 1 (td540840,
 ``docs/backlog/dark-factory.md``): every later step reads this tree.
 
+:func:`work_model` computes the hierarchy once as frozen dataclasses
+(:class:`WorkModel`); :func:`render_work` formats it as MCP text and the
+``/work`` web page (``precis_web.routes.work``) formats the same model as
+HTML, so the two surfaces cannot drift (td540843).
+
 :func:`render_tree_ring` is the todo tree as an eye ring — parent,
 siblings, children off ``refs.parent_id`` — appended by
 :meth:`precis.handlers.todo.TodoHandler.eye` at ``fisheye+1hop`` and up,
@@ -18,12 +23,12 @@ a column (gr541348).
 
 Row grammar (MCP-TOKEN-FIX rulings, 2026-10-30): one header line per
 block, bare values, every row starts with its handle so it is a click or
-a ``get``. Gripes join the tree in slice td540842; the web page is
-td540843.
+a ``get``. Gripes join the tree in slice td540842.
 """
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
@@ -107,6 +112,84 @@ def agents_on(
     return out
 
 
+# ── the model: computed once, formatted by each surface ───────────
+
+
+@dataclass(frozen=True)
+class WorkRow:
+    """One todo in the hierarchy. ``depth`` is 1 for a served root."""
+
+    ref_id: int
+    kind: str
+    handle: str
+    title: str
+    status: str
+    icon: str
+    prio: int | None
+    agents: int
+    jobs: int
+    jobs_live: int
+    depth: int
+    claimed_by: str | None
+    waiting_for: str | None
+    #: ``updated_at`` falling back to ``created_at`` — the web age column.
+    updated_at: datetime | None
+
+    @property
+    def stage(self) -> str:
+        """The web page's stage column: a todo's STATUS value. The gripe
+        loop stage joins here with td540842."""
+        return self.status
+
+
+@dataclass(frozen=True)
+class RootBlock:
+    """One served root's rows; ``hidden`` counts rows past the row cap.
+    ``gripe_lines`` are the root's open-gripe rows as MCP text
+    (:mod:`precis.todo.work_gripes`, td540842) — structured gripe rows
+    for the web page are a follow-up."""
+
+    root_id: int
+    rows: tuple[WorkRow, ...]
+    hidden: int
+    gripe_lines: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
+class QuestBlock:
+    ref_id: int
+    handle: str
+    status: str
+    prio: int | None
+    title: str
+    roots: tuple[RootBlock, ...]
+
+
+@dataclass(frozen=True)
+class UnassignedRoot:
+    ref_id: int
+    handle: str
+    status: str
+    title: str
+
+
+@dataclass(frozen=True)
+class HostRow:
+    host: str
+    reported_at: str | None
+    age: str
+
+
+@dataclass(frozen=True)
+class WorkModel:
+    quests: tuple[QuestBlock, ...]
+    unassigned: tuple[UnassignedRoot, ...]
+    hosts: tuple[HostRow, ...]
+    n_agents: int
+    #: The "unplaced gripes" bucket as MCP text (td540842).
+    unplaced_lines: tuple[str, ...] = ()
+
+
 # ── the view ──────────────────────────────────────────────────────
 
 
@@ -129,6 +212,10 @@ def _todo_servers(store: Store, quest_id: int) -> list[Ref]:
     )
 
 
+def _tag_value(tags: list[str], prefix: str) -> str | None:
+    return next((t[len(prefix) :] for t in tags if t.startswith(prefix)), None)
+
+
 def _row(
     node: dict[str, Any],
     *,
@@ -136,28 +223,48 @@ def _row(
     statuses: dict[int, str],
     tags_by_ref: dict[int, list[str]],
     prios: dict[int, int | None],
+    stamps: dict[int, datetime | None],
     agents: list[dict[str, Any]],
     jobs: tuple[int, int] = (0, 0),
-) -> str:
+) -> WorkRow:
     rid = int(node["id"])
     tags = tags_by_ref.get(rid, [])
     status = statuses.get(rid, "open")
     claimed = next((t for t in tags if t.startswith("claimed-by:")), None)
     waiting = next((t for t in tags if t.startswith("waiting-for:")), None)
     asking = any(t == "ask-user" or t.startswith("ask-user:") for t in tags)
-    icon = views._status_icon(status, claimed=claimed, waiting=waiting, asking=asking)
-    n_agents = len(agents_on(agents, rid, tags))
-    prio = prios.get(rid)
-    cells = [_h(node.get("kind") or "todo", rid), icon]
-    if prio is not None:
-        cells.append(f"prio={prio}")
-    if n_agents:
-        cells.append(f"agents={n_agents}")
-    n_jobs, n_live = jobs
-    if n_jobs:
-        cells.append(f"jobs={n_jobs}" + (f"({n_live} live)" if n_live else ""))
-    indent = "  " * depth
-    return f"{indent}{' '.join(cells)} — {_first_line(node['title'])}"
+    kind = node.get("kind") or "todo"
+    return WorkRow(
+        ref_id=rid,
+        kind=kind,
+        handle=_h(kind, rid),
+        title=_first_line(node["title"]),
+        status=status,
+        icon=views._status_icon(
+            status, claimed=claimed, waiting=waiting, asking=asking
+        ),
+        prio=prios.get(rid),
+        agents=len(agents_on(agents, rid, tags)),
+        jobs=jobs[0],
+        jobs_live=jobs[1],
+        depth=depth,
+        claimed_by=_tag_value(tags, "claimed-by:"),
+        waiting_for=_tag_value(tags, "waiting-for:"),
+        updated_at=stamps.get(rid),
+    )
+
+
+def _format_row(r: WorkRow) -> str:
+    cells = [r.handle, r.icon]
+    if r.prio is not None:
+        cells.append(f"prio={r.prio}")
+    if r.agents:
+        cells.append(f"agents={r.agents}")
+    if r.jobs:
+        cells.append(
+            f"jobs={r.jobs}" + (f"({r.jobs_live} live)" if r.jobs_live else "")
+        )
+    return f"{'  ' * r.depth}{' '.join(cells)} — {r.title}"
 
 
 #: Job STATUS values that count as live in the ``jobs=N(M live)`` cell.
@@ -170,18 +277,21 @@ def _render_root(
     rows: list[dict[str, Any]],
     *,
     agents: list[dict[str, Any]],
-    out: list[str],
-) -> None:
-    """Append the rows for one served root; ``rows`` is its
+) -> RootBlock | None:
+    """The rows for one served root; ``rows`` is its
     :func:`views._fetch_subtree` result (todos and their child jobs)."""
     if not rows:
-        return
+        return None
     ids = [r["id"] for r in rows]
     statuses = views._status_of_many(store, ids)
     tags_by_ref = views._all_open_tags(store, ids)
     todo_ids = [r["id"] for r in rows if r["kind"] != "job"]
     refs = store.fetch_refs_by_ids(set(todo_ids))
     prios = {i: (refs[i].prio if i in refs else None) for i in todo_ids}
+    stamps = {
+        i: ((refs[i].updated_at or refs[i].created_at) if i in refs else None)
+        for i in todo_ids
+    }
     by_parent: dict[int | None, list[dict[str, Any]]] = {}
     job_counts: dict[int, tuple[int, int]] = {}
     for r in rows:
@@ -198,54 +308,56 @@ def _render_root(
                 c["id"],
             )
         )
-    shown = 0
+    shown: list[WorkRow] = []
     hidden = 0
 
     def walk(node: dict[str, Any], depth: int) -> None:
-        nonlocal shown, hidden
-        if shown >= MAX_ROWS_PER_ROOT:
+        nonlocal hidden
+        if len(shown) >= MAX_ROWS_PER_ROOT:
             hidden += 1
         else:
-            out.append(
+            shown.append(
                 _row(
                     node,
                     depth=depth,
                     statuses=statuses,
                     tags_by_ref=tags_by_ref,
                     prios=prios,
+                    stamps=stamps,
                     agents=agents,
                     jobs=job_counts.get(node["id"], (0, 0)),
                 )
             )
-            shown += 1
         for c in by_parent.get(node["id"], []):
             walk(c, depth + 1)
 
     root_row = next(r for r in rows if r["id"] == root.id)
     walk(root_row, 1)
-    if hidden:
-        out.append(
-            f"    … +{hidden} more — get(kind='todo', id={root.id}, view='tree')"
-        )
-    work_gripes.append_root_gripes(store, tags_by_ref.get(root.id, []), out)
+    gripe_lines: list[str] = []
+    work_gripes.append_root_gripes(store, tags_by_ref.get(root.id, []), gripe_lines)
+    return RootBlock(
+        root_id=root.id,
+        rows=tuple(shown),
+        hidden=hidden,
+        gripe_lines=tuple(gripe_lines),
+    )
 
 
-def render_work(store: Store, *, now: datetime | None = None) -> Response:
-    """``search(kind='todo', view='work')`` — the hierarchy, read-only."""
+def work_model(store: Store, *, now: datetime | None = None) -> WorkModel:
+    """The hierarchy as data: quests (active first, then by prio) with
+    their served roots' rows, the unassigned roots, the fleet hosts."""
     now = now or datetime.now(UTC)
     agents, hosts = _fleet_rows(store)
     quests = [
         q for q in store.list_refs(kind="quest", limit=500) if q.retired_at is None
     ]
     served: set[int] = set()
-    blocks: list[tuple[tuple[int, int], list[str]]] = []
+    blocks: list[tuple[tuple[int, int], QuestBlock]] = []
     for q in quests:
         roots = _todo_servers(store, q.id)
         if not roots:
             continue
         status = _quest_status(store, q.id)
-        prio = f" prio={q.prio}" if q.prio is not None else ""
-        lines = [f"◆ {_h('quest', q.id)} [{status}]{prio} — {_first_line(q.title)}"]
         served.update(r.id for r in roots)
         # A served todo that also sits inside another served root's
         # subtree renders once, in the containing tree.
@@ -256,45 +368,94 @@ def render_work(store: Store, *, now: datetime | None = None) -> Response:
             for row in rows
             if row["id"] != rid
         }
+        root_blocks: list[RootBlock] = []
         for root in roots:
             if root.id in nested:
                 continue
-            _render_root(store, root, subtrees[root.id], agents=agents, out=lines)
+            block = _render_root(store, root, subtrees[root.id], agents=agents)
+            if block is not None:
+                root_blocks.append(block)
         rank = 0 if status == "active" else 1
-        blocks.append(((rank, q.prio if q.prio is not None else 5), lines))
+        quest_block = QuestBlock(
+            ref_id=q.id,
+            handle=_h("quest", q.id),
+            status=status,
+            prio=q.prio,
+            title=_first_line(q.title),
+            roots=tuple(root_blocks),
+        )
+        blocks.append(((rank, q.prio if q.prio is not None else 5), quest_block))
     blocks.sort(key=lambda b: b[0])
 
-    out: list[str] = [
-        f"# work — {len(blocks)} quest{'' if len(blocks) == 1 else 's'} with "
-        f"work in service · {len(agents)} live agent{'' if len(agents) == 1 else 's'}"
-    ]
-    for _k, lines in blocks:
-        out.append("")
-        out.extend(lines)
-
-    unassigned = [
-        r
-        for r in store.list_refs(kind="todo", limit=2000)
-        if r.parent_id is None
-        and (r.meta or {}).get("rotation_root")
-        and r.id not in served
-    ]
-    if unassigned:
-        out += ["", f"unassigned roots ({len(unassigned)}) — serve no quest"]
-        st = views._status_of_many(store, [r.id for r in unassigned])
-        for r in sorted(unassigned, key=lambda r: r.id):
-            out.append(
-                f"  {_h('todo', r.id)} [{st.get(r.id, 'open')}] — {_first_line(r.title)}"
+    unassigned = sorted(
+        (
+            r
+            for r in store.list_refs(kind="todo", limit=2000)
+            if r.parent_id is None
+            and (r.meta or {}).get("rotation_root")
+            and r.id not in served
+        ),
+        key=lambda r: r.id,
+    )
+    st = views._status_of_many(store, [r.id for r in unassigned])
+    unplaced_lines: list[str] = []
+    work_gripes.append_unplaced(store, served, unplaced_lines)
+    return WorkModel(
+        quests=tuple(b for _k, b in blocks),
+        unassigned=tuple(
+            UnassignedRoot(
+                ref_id=r.id,
+                handle=_h("todo", r.id),
+                status=st.get(r.id, "open"),
+                title=_first_line(r.title),
             )
+            for r in unassigned
+        ),
+        hosts=tuple(
+            HostRow(
+                host=str(hm.get("host")),
+                reported_at=hm.get("reported_at"),
+                age=_age(hm.get("reported_at"), now),
+            )
+            for hm in sorted(hosts, key=lambda m: str(m.get("host")))
+        ),
+        n_agents=len(agents),
+        unplaced_lines=tuple(unplaced_lines),
+    )
 
-    work_gripes.append_unplaced(store, served, out)
+
+def render_work(store: Store, *, now: datetime | None = None) -> Response:
+    """``search(kind='todo', view='work')`` — the hierarchy, read-only."""
+    model = work_model(store, now=now)
+    n_q = len(model.quests)
+    n_a = model.n_agents
+    out: list[str] = [
+        f"# work — {n_q} quest{'' if n_q == 1 else 's'} with "
+        f"work in service · {n_a} live agent{'' if n_a == 1 else 's'}"
+    ]
+    for q in model.quests:
+        prio = f" prio={q.prio}" if q.prio is not None else ""
+        out += ["", f"◆ {q.handle} [{q.status}]{prio} — {q.title}"]
+        for root in q.roots:
+            out.extend(_format_row(r) for r in root.rows)
+            if root.hidden:
+                out.append(
+                    f"    … +{root.hidden} more — "
+                    f"get(kind='todo', id={root.root_id}, view='tree')"
+                )
+            out.extend(root.gripe_lines)
+
+    if model.unassigned:
+        out += ["", f"unassigned roots ({len(model.unassigned)}) — serve no quest"]
+        for u in model.unassigned:
+            out.append(f"  {u.handle} [{u.status}] — {u.title}")
+
+    out.extend(model.unplaced_lines)
 
     out += ["", "hosts"]
-    if hosts:
-        for hm in sorted(hosts, key=lambda m: str(m.get("host"))):
-            out.append(
-                f"  {hm.get('host')} reported {_age(hm.get('reported_at'), now)}"
-            )
+    if model.hosts:
+        for h in model.hosts:
+            out.append(f"  {h.host} reported {h.age}")
     else:
         out.append("  none reported — install scripts/fleet-report (fleet-help)")
     out.append("release: not reported by any host (dark-factory step 4)")

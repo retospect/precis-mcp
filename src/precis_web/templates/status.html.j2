@@ -18,6 +18,11 @@
     {{ label }}
   </a>
   {% endfor %}
+  {# Not a ?tab= sub-tab: /work is its own page (td540843). #}
+  <a href="/work"
+     class="px-3 py-1.5 -mb-px border-b-2 font-medium transition border-transparent text-fg-subtle hover:text-fg-secondary hover:border-line-strong">
+    Work
+  </a>
 </div>
 
 {% if tab == 'health' %}

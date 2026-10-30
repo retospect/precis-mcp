@@ -209,6 +209,7 @@ def create_app(
         structure_package,
         tags,
         todo,
+        work,
     )
 
     app.include_router(todo.router)
@@ -261,6 +262,7 @@ def create_app(
     app.include_router(budget.router)
     app.include_router(env.router)
     app.include_router(factory.router)
+    app.include_router(work.router)
     app.include_router(secrets.router)
     app.include_router(settings.router)
     app.include_router(manual.router)

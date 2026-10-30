@@ -162,6 +162,11 @@ cards + live-routing header, budget cap/pause controls, and **Now**
 ``/factory`` and ``/budget`` GETs redirect into their sub-tab; POST
 routes unchanged.
 
+**Work (`/work`)** — ``routes/work.py``: read-only quest → root → slices
+hierarchy off ``precis.todo.work_view.work_model`` (the data the MCP
+``view='work'`` formats as text); rows carry ``data-handle`` and link to
+``/eye/<handle>``; linked from the System sub-tab bar.
+
 **Gripes (`/gripes`)** — ``routes/gripes.py``: list by ``STATUS``
 (``open → triaged → ready_for_fix → in_review → verify → done/wontfix``),
 filing,

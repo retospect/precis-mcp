@@ -1,0 +1,129 @@
+{% extends "base.html.j2" %}
+{% block title %}Work{% endblock %}
+{% block content %}
+{# /work — the read-only quest → root → slices hierarchy, the same
+   ``precis.todo.work_view.work_model`` the MCP ``view='work'`` formats as
+   text. Every row carries ``data-handle`` so the step-5b list/click/chat
+   surface can select rows later; every handle links to /eye/<handle>. #}
+{% set sc = {'done':'bg-success-muted text-success-strong','doing':'bg-warning-muted text-warning-strong','blocked':'bg-danger-muted text-danger-strong','paused':'bg-surface-emphasis text-fg-muted',"won't-do":'bg-surface-emphasis text-fg-subtle'} %}
+<h1 class="text-lg font-semibold mb-1">Work</h1>
+<p class="text-sm text-fg-subtle mb-3">
+  What is in flight: each quest, the strategic roots that serve it, and their
+  slices. {{ model.quests | length }} quest{{ '' if model.quests | length == 1 else 's' }}
+  with work in service · {{ model.n_agents }} live agent{{ '' if model.n_agents == 1 else 's' }}.
+  Read-only; same data as <code>search(kind='todo', view='work')</code>.
+</p>
+
+{# ── sub-tab nav (mirrors /status) ─────────────────────────────── #}
+<div class="mb-5 flex gap-1 text-sm border-b border-line">
+  {% for key, label in [('health', 'Health'), ('services', 'Services'), ('models', 'Models'), ('budget', 'Budget'), ('now', 'Now'), ('setup', 'Setup')] %}
+  <a href="/status?tab={{ key }}"
+     class="px-3 py-1.5 -mb-px border-b-2 font-medium transition border-transparent text-fg-subtle hover:text-fg-secondary hover:border-line-strong">
+    {{ label }}
+  </a>
+  {% endfor %}
+  <a href="/work"
+     class="px-3 py-1.5 -mb-px border-b-2 font-medium transition border-success-solid text-success-strong">
+    Work
+  </a>
+</div>
+
+{% macro cols_header() %}
+<div class="flex items-center gap-3 px-3 py-1 text-xs uppercase tracking-wide text-fg-faint border-b border-line">
+  <div class="flex-1 min-w-0">Item</div>
+  <div class="w-40 shrink-0">Status</div>
+  <div class="w-14 shrink-0 text-right">Agents</div>
+  <div class="w-20 shrink-0">Stage</div>
+  <div class="w-20 shrink-0 text-right">Age</div>
+</div>
+{% endmacro %}
+
+{% for q in model.quests %}
+<section class="mb-6 rounded-lg border border-line bg-surface" data-handle="{{ q.handle }}" data-kind="quest">
+  <div class="flex items-baseline gap-2 px-3 py-2 border-b border-line">
+    <span class="text-fg-faint">◆</span>
+    <a href="/eye/{{ q.handle }}" class="font-mono text-xs font-semibold hover:underline">{{ q.handle }}</a>
+    <span class="text-xs px-1.5 py-0.5 rounded {{ sc.get(q.status, 'bg-info-muted text-info-strong') }}">{{ q.status }}</span>
+    {% if q.prio is not none %}<span class="text-xs text-fg-faint">prio {{ q.prio }}</span>{% endif %}
+    <span class="font-semibold text-sm truncate">{{ q.title }}</span>
+  </div>
+  {{ cols_header() }}
+  <ul class="divide-y divide-line">
+    {% for root in q.roots %}
+    {% for r in root.rows %}
+    <li class="flex items-baseline gap-3 px-3 py-1.5 text-sm"
+        data-handle="{{ r.handle }}" data-kind="{{ r.kind }}" data-depth="{{ r.depth }}"
+        data-status="{{ r.status }}" data-root="{{ root.root_id }}">
+      <div class="flex-1 min-w-0 truncate" style="padding-left: {{ (r.depth - 1) * 1.25 }}rem">
+        <a href="/eye/{{ r.handle }}" class="font-mono text-xs text-fg-subtle hover:underline">{{ r.handle }}</a>
+        <span title="{{ r.title }}">{{ r.title }}</span>
+        {% if r.prio is not none %}<span class="text-xs text-fg-faint">prio {{ r.prio }}</span>{% endif %}
+        {% if r.jobs %}<span class="text-xs text-fg-faint">jobs {{ r.jobs }}{% if r.jobs_live %} ({{ r.jobs_live }} live){% endif %}</span>{% endif %}
+      </div>
+      <div class="w-40 shrink-0 text-xs text-fg-secondary truncate" title="{{ r.icon }}">{{ r.icon }}</div>
+      <div class="w-14 shrink-0 text-right text-xs">{% if r.agents %}<span class="text-success-strong font-semibold">{{ r.agents }}</span>{% else %}<span class="text-fg-ghost">0</span>{% endif %}</div>
+      <div class="w-20 shrink-0"><span class="text-xs px-1.5 py-0.5 rounded {{ sc.get(r.stage, 'bg-info-muted text-info-strong') }}">{{ r.stage }}</span></div>
+      <div class="w-20 shrink-0 text-right text-xs text-fg-faint" title="{{ r.updated_at | abs_ts }}">{{ r.updated_at | ago }}</div>
+    </li>
+    {% endfor %}
+    {% if root.hidden %}
+    <li class="px-3 py-1.5 text-xs text-fg-faint">
+      … +{{ root.hidden }} more under <a href="/eye/td{{ root.root_id }}" class="font-mono hover:underline">td{{ root.root_id }}</a>
+    </li>
+    {% endif %}
+    {# Open gripes hung under the root by thread: tag (td540842) — MCP
+       text rows for now; structured rows with stage/lane are a follow-up. #}
+    {% if root.gripe_lines %}
+    <li class="px-3 py-1.5">
+      <pre class="font-mono text-xs text-fg-subtle whitespace-pre-wrap">{{ root.gripe_lines | join('\n') }}</pre>
+    </li>
+    {% endif %}
+    {% endfor %}
+  </ul>
+</section>
+{% else %}
+<p class="text-sm text-fg-subtle rounded-lg border border-line bg-surface px-4 py-3 mb-6">
+  No quest has work in service.
+</p>
+{% endfor %}
+
+{% if model.unassigned %}
+<section class="mb-6">
+  <h2 class="text-sm font-semibold mb-2">Unassigned roots ({{ model.unassigned | length }}) — serve no quest</h2>
+  <ul class="rounded-lg border border-line bg-surface divide-y divide-line">
+    {% for u in model.unassigned %}
+    <li class="flex items-baseline gap-3 px-3 py-1.5 text-sm" data-handle="{{ u.handle }}" data-kind="todo" data-status="{{ u.status }}">
+      <a href="/eye/{{ u.handle }}" class="font-mono text-xs text-fg-subtle hover:underline">{{ u.handle }}</a>
+      <span class="flex-1 min-w-0 truncate">{{ u.title }}</span>
+      <span class="text-xs px-1.5 py-0.5 rounded {{ sc.get(u.status, 'bg-info-muted text-info-strong') }}">{{ u.status }}</span>
+    </li>
+    {% endfor %}
+  </ul>
+</section>
+{% endif %}
+
+{% if model.unplaced_lines %}
+<section class="mb-6">
+  <pre class="rounded-lg border border-line bg-surface px-3 py-2 font-mono text-xs text-fg-subtle whitespace-pre-wrap">{{ model.unplaced_lines | join('\n') | trim }}</pre>
+</section>
+{% endif %}
+
+<section class="mb-6">
+  <h2 class="text-sm font-semibold mb-2">Hosts</h2>
+  {% if model.hosts %}
+  <ul class="rounded-lg border border-line bg-surface divide-y divide-line">
+    {% for h in model.hosts %}
+    <li class="flex items-baseline gap-3 px-3 py-1.5 text-sm">
+      <span class="font-mono text-xs font-semibold">{{ h.host }}</span>
+      <span class="text-xs text-fg-faint">reported {{ h.age }}</span>
+    </li>
+    {% endfor %}
+  </ul>
+  {% else %}
+  <p class="text-xs text-fg-subtle rounded-lg border border-line bg-surface px-4 py-3">
+    None reported — install <code>scripts/fleet-report</code> (fleet-help).
+  </p>
+  {% endif %}
+  <p class="text-xs text-fg-faint mt-2">release: not reported by any host (dark-factory step 4)</p>
+</section>
+{% endblock %}
