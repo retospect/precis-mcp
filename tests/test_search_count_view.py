@@ -111,10 +111,11 @@ def _sql_job_cell(store: Store, job_type: str | None, status: str | None) -> int
 
 
 def _facet_counts(body: str) -> dict[str, int]:
-    """Parse ``  <v1> | <v2>: N`` group lines out of a count response."""
+    """Parse ``  <v1> | <v2>: N`` group lines out of a count response
+    (a job row may trail a ``— newest/oldest`` span after the count)."""
     out: dict[str, int] = {}
     for line in body.splitlines():
-        m = re.match(r"^  (.+): (\d+)$", line)
+        m = re.match(r"^  (.+?): (\d+)", line)
         if m:
             out[m.group(1)] = int(m.group(2))
     return out
@@ -338,6 +339,52 @@ class TestJobErrorHeads:
         _job(store, job_type="sweep", status="succeeded")
         resp = jobs.search(view="count", status="*")
         assert "error heads" not in resp.body
+
+
+class TestCountGroupByteBudget:
+    """gr536316 fix round 1: a span-annotated job facet row runs ~110
+    bytes, so the full ``_COUNT_GROUP_LIMIT`` rendered ~20 KB — several
+    times the 4096-byte session-MCP result cap, which refused the whole
+    call. Rows now stop at a byte budget and the remainder collapses
+    into one "N more groups" line carrying a working ``next:``."""
+
+    def test_200_groups_stay_under_context_cap(
+        self, jobs: JobHandler, store: Store
+    ) -> None:
+        for i in range(240):
+            _job(store, job_type=f"type_{i:03d}", status="succeeded")
+
+        resp = jobs.search(view="count", group_by="meta.job_type", status="*")
+
+        assert resp.body.startswith("# 240 job entries"), resp.body
+        size = len(resp.body.encode("utf-8"))
+        assert size <= 4096, size
+        m = re.search(
+            r"… (\d+) more groups; narrow with job_type= or since=", resp.body
+        )
+        assert m is not None, resp.body
+        assert int(m.group(1)) > 0
+        assert "next: search(kind='job', view='count', since='24h'" in resp.body
+
+    def test_overflow_next_call_executes(self, jobs: JobHandler, store: Store) -> None:
+        """The advertised ``next:`` must be a working call, not a
+        placeholder — same kwargs dispatched directly."""
+        for i in range(240):
+            _job(store, job_type=f"type_{i:03d}", status="succeeded")
+        resp = jobs.search(
+            view="count",
+            since="24h",
+            group_by="meta.job_type",
+            status="*",
+        )
+        assert resp.body.startswith("# 240 job entries"), resp.body
+
+    def test_few_groups_no_overflow_line(self, jobs: JobHandler, store: Store) -> None:
+        _job(store, job_type="sweep", status="succeeded")
+        _job(store, job_type="fix_gripe", status="failed")
+        resp = jobs.search(view="count", group_by="meta.job_type", status="*")
+        assert "more groups" not in resp.body
+        assert "type_" in resp.body or "sweep" in resp.body
 
 
 class TestPassthroughKinds:

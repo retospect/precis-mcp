@@ -94,6 +94,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Iterable
+from datetime import datetime
 from typing import TYPE_CHECKING, Any, ClassVar
 
 import psycopg
@@ -1478,8 +1479,8 @@ class FindingHandler(NumericRefHandler):
         # ``refs.created_at`` on it.
         view: str | None = None,
         group_by: str | list[str] | None = None,
-        since: str | None = None,
-        until: str | None = None,
+        since: str | datetime | None = None,
+        until: str | datetime | None = None,
         **_kw: Any,
     ) -> Response:
         """Hybrid search across findings with a status-axis default.
@@ -1769,8 +1770,8 @@ class FindingHandler(NumericRefHandler):
         trust: str | None,
         tags: list[str],
         group_by: Any,
-        since: str | None,
-        until: str | None,
+        since: str | datetime | None,
+        until: str | datetime | None,
     ) -> Response:
         """``search(kind='finding', view='count')`` — filtered total +
         the live claim-graph census (gr518170).
@@ -1861,7 +1862,7 @@ class FindingHandler(NumericRefHandler):
         if facets:
             parts.append("")
             parts.append(" × ".join(_count_facet_label(f) for f in facets) + ":")
-            for vals, n in groups:
+            for vals, n, _span in groups:
                 label = " | ".join(v if v is not None else "(none)" for v in vals)
                 parts.append(f"  {label}: {n}")
             if len(groups) == _COUNT_GROUP_LIMIT:

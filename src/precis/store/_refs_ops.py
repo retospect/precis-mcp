@@ -32,7 +32,7 @@ import re
 from collections.abc import Callable, Iterable
 from contextlib import nullcontext
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING, Any, ClassVar, Literal, cast
+from typing import TYPE_CHECKING, Any, ClassVar, Literal, NamedTuple, cast
 
 from psycopg import Connection, errors
 from psycopg.types.json import Jsonb
@@ -187,6 +187,22 @@ def _si_cite_slug(
 
     parent = supplement_parent(conn, ref_id)
     return parent[1] if parent is not None else None
+
+
+class FacetSpan(NamedTuple):
+    """The id/created_at span behind one ``count_refs_facets`` group —
+    the "newest/oldest ref in this bucket" drill a bare count can't
+    answer (gr536316's per-job_type span). ``*_ref_id`` is min/max in
+    mint order (serial ids); ``*_created`` is min/max ``created_at`` —
+    the two orders agree unless ``created_at`` was rewritten after the
+    fact. ``None`` bounds only on an empty group, which never ships a
+    row.
+    """
+
+    min_ref_id: int
+    max_ref_id: int
+    min_created: Any
+    max_created: Any
 
 
 def _paper_author_row_to_dict(row: tuple[Any, ...]) -> dict[str, Any]:
@@ -4497,7 +4513,7 @@ class RefsMixin:
         meta_eq: tuple[str, str] | None = None,
         id_min: int | None = None,
         id_max: int | None = None,
-    ) -> tuple[int, list[tuple[tuple[str | None, ...], int]]]:
+    ) -> tuple[int, list[tuple[tuple[str | None, ...], int, FacetSpan]]]:
         """Filtered ``COUNT(*)`` + optional ``GROUP BY`` over one kind.
 
         Backs ``search(kind=K, view='count')`` (gr472990): the "how many"
@@ -4540,9 +4556,11 @@ class RefsMixin:
         Tag facets LEFT-JOIN so refs with no tag in the axis still count
         under a NULL label (rendered ``(untagged)``). Returns ``(total,
         groups)`` — ``total`` is the filtered ref count, ``groups`` the
-        ``(value tuple, count)`` rows ordered by count desc then label,
-        capped at ``group_limit`` (``COUNT(DISTINCT ref_id)`` per group:
-        a ref carrying several tags in one open axis lands in each).
+        ``(value tuple, count, FacetSpan)`` rows ordered by count desc
+        then label, capped at ``group_limit`` (``COUNT(DISTINCT ref_id)``
+        per group: a ref carrying several tags in one open axis lands in
+        each). The span is each group's min/max ``ref_id`` + ``created_at``
+        — the newest/oldest member handles a count alone can't name.
         """
         clauses, params = filtered_ref_clauses(
             kind=kind,
@@ -4621,13 +4639,15 @@ class RefsMixin:
             ).fetchone()
             assert row is not None
             total = int(row[0])
-            groups: list[tuple[tuple[str | None, ...], int]] = []
+            groups: list[tuple[tuple[str | None, ...], int, FacetSpan]] = []
             if select_exprs:
                 n = len(select_exprs)
                 ordinals = ", ".join(str(i + 1) for i in range(n))
                 sql = (
                     f"SELECT {', '.join(select_exprs)}, "
-                    "COUNT(DISTINCT r.ref_id) "
+                    "COUNT(DISTINCT r.ref_id), "
+                    "min(r.ref_id), max(r.ref_id), "
+                    "min(r.created_at), max(r.created_at) "
                     f"FROM refs r {' '.join(joins)} WHERE {where} "
                     f"GROUP BY {ordinals} "
                     f"ORDER BY {n + 1} DESC, {ordinals} LIMIT %s"
@@ -4637,7 +4657,14 @@ class RefsMixin:
                 rows = conn.execute(
                     sql, [*select_params, *join_params, *params, group_limit]
                 ).fetchall()
-                groups = [(tuple(r[:n]), int(r[n])) for r in rows]
+                groups = [
+                    (
+                        tuple(r[:n]),
+                        int(r[n]),
+                        FacetSpan(int(r[n + 1]), int(r[n + 2]), r[n + 3], r[n + 4]),
+                    )
+                    for r in rows
+                ]
         return total, groups
 
     def count_body_chunks(

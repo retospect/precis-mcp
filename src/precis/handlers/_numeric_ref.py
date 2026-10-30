@@ -138,6 +138,16 @@ _COUNT_MAX_FACETS = 3
 #: a count. The store caps the GROUP BY at the same bound.
 _COUNT_GROUP_LIMIT = 200
 
+#: Byte budget for the rendered facet-row block on ``view='count'``
+#: (gr536316 fix round 1). A kind whose ``_count_group_line`` carries
+#: span handles + timestamps emits ~110 bytes/row, so the full
+#: ``_COUNT_GROUP_LIMIT`` would render ~20 KB — several times the
+#: 4096-byte session-MCP result cap (``DEFAULT_CONTEXT_BODY_BYTES``).
+#: Sized well under the cap so the header, filter annotations and a
+#: per-kind trailer keep their room; rows past the budget collapse
+#: into :meth:`NumericRefHandler._count_groups_overflow`.
+_COUNT_GROUPS_BUDGET = 2560
+
 #: A universal handle token (``me474312``, ``td12``) inside free text —
 #: the delete ``reason='merged into me474312'`` breadcrumb the Gone
 #: tombstone read follows (gr503546).
@@ -971,8 +981,11 @@ class NumericRefHandler(Handler):
         # they route to the cross-kind source-search primitive upstream.
         view: str | None = None,
         group_by: str | list[str] | None = None,
-        since: str | None = None,
-        until: str | None = None,
+        # ``str`` parses via ``_parse_window_bound`` (ISO); kinds that
+        # resolve their own bound spellings (job's hours/days age,
+        # gr536316) pass the already-parsed datetime through.
+        since: str | datetime | None = None,
+        until: str | datetime | None = None,
         # dispatch-injected (runtime.dispatch._resolve_uncited_exclude /
         # ._resolve_cited_include — ``search(uncited=<draft>)`` /
         # ``search(cited=<draft>)``), pre-resolved. Declared explicitly
@@ -1524,8 +1537,8 @@ class NumericRefHandler(Handler):
         sort: str | None,
         exclude_ref_ids: list[int] | None,
         include_ref_ids: list[int] | None,
-        since: str | None = None,
-        until: str | None = None,
+        since: str | datetime | None = None,
+        until: str | datetime | None = None,
         meta_eq: tuple[str, str] | None = None,
         id_min: int | None = None,
         id_max: int | None = None,
@@ -1617,13 +1630,23 @@ class NumericRefHandler(Handler):
         if facets:
             parts.append("")
             parts.append(" × ".join(_count_facet_label(f) for f in facets) + ":")
-            for vals, n in groups:
-                label = " | ".join(
-                    v if v is not None else _count_facet_null_label(spec)
-                    for v, spec in zip(vals, facets, strict=True)
-                )
-                parts.append(f"  {label}: {n}")
-            if len(groups) == _COUNT_GROUP_LIMIT:
+            used = 0
+            shown = 0
+            for row in groups:
+                line = self._count_group_line(row, facets)
+                # +1 for the newline join; the first row always renders
+                # so the facet block is never an empty stub.
+                if (
+                    shown
+                    and used + len(line.encode("utf-8")) + 1 > _COUNT_GROUPS_BUDGET
+                ):
+                    break
+                parts.append(line)
+                used += len(line.encode("utf-8")) + 1
+                shown += 1
+            if shown < len(groups):
+                parts.append(self._count_groups_overflow(len(groups) - shown, group_by))
+            elif len(groups) == _COUNT_GROUP_LIMIT:
                 parts.append(f"  … (top {_COUNT_GROUP_LIMIT} groups by count)")
         else:
             parts.append("")
@@ -1662,6 +1685,40 @@ class NumericRefHandler(Handler):
             parts.append("")
             parts.append(extra)
         return Response(body="\n".join(parts), result_count=total)
+
+    def _count_group_line(
+        self,
+        row: tuple[tuple[str | None, ...], int, Any],
+        facets: list[tuple[str, str]],
+    ) -> str:
+        """One facet row of ``view='count'`` — ``label: n`` by default.
+
+        ``row`` is a ``count_refs_facets`` group ``(values, count,
+        FacetSpan)``; a kind can override to render the span too (the
+        job kind's newest/oldest member per group, gr536316).
+        """
+        vals, n = row[0], row[1]
+        label = " | ".join(
+            v if v is not None else _count_facet_null_label(spec)
+            for v, spec in zip(vals, facets, strict=True)
+        )
+        return f"  {label}: {n}"
+
+    def _count_groups_overflow(self, hidden: int, group_by: Any) -> str:
+        """One-line stand-in for facet rows the byte budget cut
+        (:data:`_COUNT_GROUPS_BUDGET`, gr536316 fix round 1).
+
+        Carries a working ``next:`` — the same count by a narrower
+        axis — so an agent that hit the wall has a real call to make,
+        not a dead end. Kinds with their own narrowing filters (the
+        job kind's ``job_type=``/``since=``) override the wording.
+        """
+        del group_by  # the default next= re-facets instead of echoing it
+        return (
+            f"  … {hidden} more groups — next: "
+            f"search(kind={self.kind!r}, view='count', "
+            "args={'group_by': 'state'})"
+        )
 
     def _count_view_extra(
         self,

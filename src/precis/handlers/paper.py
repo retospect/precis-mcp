@@ -3402,7 +3402,7 @@ class PaperHandler(Handler):
         if facets:
             parts.append("")
             parts.append(" × ".join(_count_facet_label(f) for f in facets) + ":")
-            for vals, n in groups:
+            for vals, n, _span in groups:
                 label = " | ".join(v if v is not None else "(none)" for v in vals)
                 parts.append(f"  {label}: {n}")
             if len(groups) == _COUNT_GROUP_LIMIT:

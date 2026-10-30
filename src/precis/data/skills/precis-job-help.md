@@ -271,6 +271,12 @@ get(kind="job", id=101)
 get(id="jo101")  # the job's universal handle resolves the same way
 ```
 
+A `STATUS:failed` card leads with `error:` — the one-line failure
+reason (`meta.error`, else the newest `job_event` head; `retry_after:`
+beside it when a transient backoff was stamped) — printed right under
+`status:` so the card cap can't cut it on jobs with long event
+timelines. The full reason stays in the `job_event` chunks below.
+
 The `job_summary` chunk is the human-readable account ("Fix
 landed on main at <remote> as abc123 (squash of gripe_42 onto
 def456), confirmed by ls-remote. 3 files changed, 47 insertions(+),
@@ -280,6 +286,9 @@ commit_made markers) are forensic; default search excludes them.
 A `job_result` chunk (a job's structured deliverable — a ranking or
 proposal JSON) shows as a capped head on the card;
 `get(kind='job', id=<job>, view='result')` returns it in full.
+`view='transcript'` is the compact forensic read (one line per tool
+call + the final report); a paged full-transcript view is not
+implemented — `view='raw'` is the only uncapped transcript read today.
 
 ## A finished topo pcb job's run files — view='run-files'
 
@@ -337,6 +346,8 @@ status facets ("minted/finished/failed since <t>"):
 
 ```python
 search(kind="job", args={"job_type": "graph_garden"})                 # list, recency
+search(kind="job", args={"since": "24"})                              # minted last 24h, any type
+search(kind="job", args={"job_type": "graph_garden", "since": "48h"}) # one type, age spelling
 search(kind="job", view="count",
        args={"job_type": "graph_garden", "group_by": "state"})        # counts by status
 search(kind="job", view="count", status="*",
@@ -346,14 +357,25 @@ search(kind="job", under="qu459585", args={"job_type": "graph_garden"})
 ```
 
 `status=` narrows to one STATUS; `since=`/`until=` bound `created_at`
-(mint time). `q=` is title-lexical on this path; `sort=`/`mode=` are
-rejected — they belong to the unfiltered ranked path. This is the MCP
-answer for what used to need `refs.meta->>'job_type'` SQL.
+(mint time) — an ISO timestamp or an age (`'24'`/`'6h'`/`'7d'` =
+hours/days ago). A window with no `job_type=` and no view lists jobs
+of every type minted in it — "what ran in the last day". `q=` is
+title-lexical on this path; `sort=`/`mode=` are rejected — they belong
+to the unfiltered ranked path. This is the MCP answer for what used
+to need `refs.meta->>'job_type'` SQL.
 
 Top-level `since=`/`until=` also work on the queryless plain listing —
 `search(kind='job', since='2026-10-20', status='*')` is the same
 recency-ordered listing without a `job_type=` filter (adding `q=` makes
 it a ranked search and `sort=`/`mode=` legal again).
+
+`view='count'` facet rows also name each group's newest/oldest member
+(`jo<N>` + created bounds) — "when did the last <type> run, how far
+back does the streak reach". The bare `group_by='job_type'` spelling
+reads as `meta.job_type`, so
+`args={'group_by': 'job_type,state'}` is the one-call diagnosis table
+(counts by type × status, per-group span, error-heads trailer for the
+failed rows).
 
 ## When does a cadence fire next? — [[precis-job-observe-help]]
 

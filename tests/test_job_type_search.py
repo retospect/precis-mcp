@@ -53,7 +53,7 @@ def _backdate(store: Store, ref_id: int, when: datetime) -> None:
 def _facet_counts(body: str) -> dict[str, int]:
     out: dict[str, int] = {}
     for line in body.splitlines():
-        m = re.match(r"^  (.+): (\d+)$", line)
+        m = re.match(r"^  (.+?): (\d+)", line)
         if m:
             out[m.group(1)] = int(m.group(2))
     return out
@@ -281,6 +281,34 @@ class TestJobTypeCount:
             assert "job_type-filtered" not in str(exc_info.value), exc_info.value
             assert want_next in str(exc_info.value.next or ""), exc_info.value
 
+    def test_bare_job_type_facet_alias(self, jobs: JobHandler, store: Store) -> None:
+        """``group_by='job_type'`` — the spelling agents reach for —
+        reads as ``meta.job_type`` (gr536316)."""
+        _job(store, job_type="sweep", status="succeeded")
+        _job(store, job_type="sweep", status="failed")
+        _job(store, job_type="fix_gripe", status="failed")
+
+        resp = jobs.search(view="count", group_by="job_type,state", status="*")
+        assert _facet_counts(resp.body) == {
+            "sweep | STATUS:succeeded": 1,
+            "sweep | STATUS:failed": 1,
+            "fix_gripe | STATUS:failed": 1,
+        }
+
+    def test_group_rows_carry_newest_oldest(
+        self, jobs: JobHandler, store: Store
+    ) -> None:
+        """Each facet row names its newest/oldest member + created
+        bounds — the "last run / how far back" half of the count."""
+        old = _job(store, job_type="sweep", status="failed")
+        _backdate(store, old, datetime.now(UTC) - timedelta(days=10))
+        new = _job(store, job_type="sweep", status="failed")
+
+        resp = jobs.search(view="count", group_by="job_type", status="*")
+        line = next(l for l in resp.body.splitlines() if "sweep" in l and "newest" in l)
+        assert f"newest jo{new}" in line
+        assert f"oldest jo{old}" in line
+
     def test_dispatch_end_to_end(
         self, runtime_with_store: PrecisRuntime, store: Store
     ) -> None:
@@ -317,6 +345,68 @@ class TestJobTypeCount:
             },
         )
         assert "with job_type 'sweep'" in body, body
+
+
+class TestJobWindowListing:
+    """``args={'since': …}`` with no ``job_type=`` — the same filtered
+    listing over all types (gr536316); bounds take ISO or an age
+    (``'24'``/``'6h'``/``'7d'``)."""
+
+    def test_since_hours_lists_all_types(self, jobs: JobHandler, store: Store) -> None:
+        old = _job(store, job_type="sweep", status="succeeded")
+        _backdate(store, old, datetime.now(UTC) - timedelta(days=10))
+        _job(store, job_type="fix_gripe", status="failed")
+
+        resp = jobs.search(status="*", since="24")
+        assert resp.body.startswith("# 1 job entry"), resp.body
+        assert " created [" in resp.body
+
+    def test_age_spellings(self, jobs: JobHandler, store: Store) -> None:
+        old = _job(store, job_type="sweep", status="succeeded")
+        _backdate(store, old, datetime.now(UTC) - timedelta(days=10))
+        _job(store, job_type="sweep", status="succeeded")
+
+        day = jobs.search(job_type="sweep", status="*", since="24h")
+        assert day.body.startswith("# 1 job entry"), day.body
+        fortnight = jobs.search(job_type="sweep", status="*", since="14d")
+        assert fortnight.body.startswith("# 2 job entries"), fortnight.body
+
+    def test_bad_since_rejected(self, jobs: JobHandler) -> None:
+        with pytest.raises(BadInput, match="ISO date"):
+            jobs.search(job_type="sweep", since="yesterday-ish")
+
+    def test_bare_year_rejected(self, jobs: JobHandler) -> None:
+        """gr536316 fix round 1: ``since='2026'`` is a mistyped ISO
+        year, not "2026 hours ago" — the bare-number reading silently
+        scoped to ~84 days back. Refused, with ``next=`` showing both
+        spellings."""
+        with pytest.raises(BadInput, match="ambiguous") as exc:
+            jobs.search(job_type="sweep", since="2026")
+        assert "2026h" in str(exc.value.next)
+        assert "2026-01-01" in str(exc.value.next)
+
+    def test_bare_over_year_rejected(self, jobs: JobHandler) -> None:
+        with pytest.raises(BadInput, match="ambiguous"):
+            jobs.search(job_type="sweep", since="9000")
+
+    def test_suffixed_and_iso_spellings_still_parse(self, jobs: JobHandler) -> None:
+        # An explicit h/d unit says "I meant an age" — unbounded; an
+        # ISO year arrives as a full date.
+        assert "job entr" in jobs.search(job_type="sweep", since="2026h").body
+        assert "job entr" in jobs.search(job_type="sweep", since="2026-01-01").body
+        assert "job entr" in jobs.search(job_type="sweep", since="8760").body
+
+    def test_since_with_other_view_rejected(self, jobs: JobHandler) -> None:
+        with pytest.raises(BadInput, match="since"):
+            jobs.search(view="ids", since="24")
+
+    def test_count_takes_age_spelling(self, jobs: JobHandler, store: Store) -> None:
+        old = _job(store, job_type="sweep", status="failed")
+        _backdate(store, old, datetime.now(UTC) - timedelta(days=10))
+        _job(store, job_type="sweep", status="failed")
+
+        resp = jobs.search(view="count", status="*", since="24")
+        assert resp.body.startswith("# 1 job entry"), resp.body
 
 
 class TestJobTypeUnder:

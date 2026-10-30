@@ -823,3 +823,125 @@ def test_job_view_aliases_announce_the_reading(jobs: JobHandler, store: Store) -
     )
     with pytest.raises(Unsupported, match="unknown view 'attention'"):
         jobs.get(id=ref.id, view="attention")
+
+
+# ── failed job's card: the error line rides under status: (gr536316) ──
+
+
+def _insert_job(store: Store, *, meta: dict, status: str) -> int:
+    ref = store.insert_ref(kind="job", slug=None, title="t", meta=meta)
+    store.add_tag(ref.id, Tag.closed("STATUS", status), set_by="system")
+    return ref.id
+
+
+class TestJobCardErrorLine:
+    """The failure reason used to sit at the END of the event timeline —
+    the card's byte cap cut it on exactly the jobs that needed it. A
+    failed job now leads with ``error:`` under ``status:``."""
+
+    def test_meta_error_wins(self, jobs: JobHandler, store: Store) -> None:
+        job_id = _insert_job(
+            store,
+            meta={
+                "job_type": "fix_gripe",
+                "error": "budget: claude subscription quota reached",
+            },
+            status="failed",
+        )
+        lines = jobs.get(id=job_id).body.splitlines()
+        i = lines.index("status: failed")
+        assert lines[i + 1] == "error: budget: claude subscription quota reached"
+
+    def test_event_head_fallback_keeps_digits(
+        self, jobs: JobHandler, store: Store
+    ) -> None:
+        from precis.workers.executors._common import append_chunk
+
+        job_id = _insert_job(store, meta={"job_type": "fix_gripe"}, status="failed")
+        append_chunk(
+            store,
+            job_id,
+            "job_event",
+            "runner: reached 3 run attempts — giving up\nsecond detail line",
+        )
+        lines = jobs.get(id=job_id).body.splitlines()
+        i = lines.index("status: failed")
+        assert lines[i + 1] == "error: runner: reached 3 run attempts — giving up"
+
+    def test_meta_error_beats_event(self, jobs: JobHandler, store: Store) -> None:
+        from precis.workers.executors._common import append_chunk
+
+        job_id = _insert_job(store, meta={"error": "meta reason wins"}, status="failed")
+        append_chunk(store, job_id, "job_event", "event reason loses")
+        lines = jobs.get(id=job_id).body.splitlines()
+        assert "error: meta reason wins" in lines
+
+    def test_event_away_from_failure_boundary_ignored(
+        self, jobs: JobHandler, store: Store
+    ) -> None:
+        """gr536316 fix round 1: the event timeline mixes in progress
+        notes and later comments — an event far from ``finished_at``
+        is not the failure reason; show nothing."""
+        from precis.workers.executors._common import append_chunk
+
+        job_id = _insert_job(store, meta={"job_type": "fix_gripe"}, status="failed")
+        append_chunk(store, job_id, "job_event", "launched container c-xyz")
+        # Move the failure stamp outside the event's skew window, as if
+        # the newest event had been written long after the job failed.
+        with store.pool.connection() as conn:
+            conn.execute(
+                "UPDATE refs SET meta = meta || %s::jsonb WHERE ref_id = %s",
+                (
+                    json.dumps(
+                        {
+                            "finished_at": (
+                                datetime.now(UTC) - timedelta(hours=3)
+                            ).isoformat()
+                        }
+                    ),
+                    job_id,
+                ),
+            )
+            conn.commit()
+        assert "\nerror:" not in f"\n{jobs.get(id=job_id).body}"
+
+    def test_no_finished_stamp_no_event_fallback(
+        self, jobs: JobHandler, store: Store
+    ) -> None:
+        """No ``meta.finished_at`` = no verifiable failure boundary —
+        better silent than a wrong reason."""
+        from precis.workers.executors._common import append_chunk
+
+        job_id = _insert_job(store, meta={"job_type": "fix_gripe"}, status="failed")
+        append_chunk(store, job_id, "job_event", "runner: giving up")
+        with store.pool.connection() as conn:
+            conn.execute(
+                "UPDATE refs SET meta = meta - 'finished_at' WHERE ref_id = %s",
+                (job_id,),
+            )
+            conn.commit()
+        assert "\nerror:" not in f"\n{jobs.get(id=job_id).body}"
+
+    def test_retry_after_shown(self, jobs: JobHandler, store: Store) -> None:
+        job_id = _insert_job(
+            store,
+            meta={"error": "rate limited", "retry_after": "2026-11-01T00:00:00Z"},
+            status="failed",
+        )
+        body = jobs.get(id=job_id).body
+        assert "retry_after: 2026-11-01T00:00:00Z" in body
+
+    def test_no_reason_no_line(self, jobs: JobHandler, store: Store) -> None:
+        job_id = _insert_job(store, meta={}, status="failed")
+        assert "\nerror:" not in f"\n{jobs.get(id=job_id).body}"
+
+    def test_succeeded_job_no_error_line(self, jobs: JobHandler, store: Store) -> None:
+        job_id = _insert_job(store, meta={"error": "stale crumb"}, status="succeeded")
+        assert "\nerror:" not in f"\n{jobs.get(id=job_id).body}"
+
+    def test_long_reason_capped_one_line(self, jobs: JobHandler, store: Store) -> None:
+        job_id = _insert_job(store, meta={"error": "x" * 1000}, status="failed")
+        lines = jobs.get(id=job_id).body.splitlines()
+        err = next(l for l in lines if l.startswith("error: "))
+        assert len(err) <= 310
+        assert err.endswith("…")

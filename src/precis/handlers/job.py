@@ -24,6 +24,7 @@ from precis.errors import BadInput, NotFound
 from precis.handlers._interpret import interpreted
 from precis.handlers._numeric_ref import (
     NumericRefHandler,
+    _count_facet_null_label,
     _parse_id_range,
     _parse_window_bound,
 )
@@ -31,7 +32,7 @@ from precis.protocol import KindSpec
 from precis.response import Response
 from precis.store import Tag
 from precis.store._mappers import _REFS_COLS_ALIASED, _row_to_ref
-from precis.store._refs_ops import filtered_ref_clauses
+from precis.store._refs_ops import FacetSpan, filtered_ref_clauses
 from precis.store._salience import current_background_actor
 from precis.store.types import Ref
 from precis.todo import guards as todo_guards
@@ -142,6 +143,27 @@ _COUNT_FAILED_CLAUSE = (
     "AND (rt.expires_at IS NULL OR rt.expires_at > now()))"
 )
 
+#: Largest bare ``since=``/``until=`` number read as an age in hours —
+#: one year (365 × 24). Past it a unitless value is far more likely a
+#: mistyped ISO year than a real window (gr536316 fix round 1).
+_JOB_WINDOW_BARE_HOURS_MAX = 8760.0
+
+#: A bare number that *looks like an ISO year* is refused outright:
+#: ``since='2026'`` read as "2026 hours ago" silently scopes to ~84
+#: days when the caller almost surely meant 2026-01-01 (gr536316 fix
+#: round 1). An explicit ``h``/``d`` suffix still says "I meant an
+#: age" and parses unbounded.
+_JOB_YEAR_LIKE = re.compile(r"(?:19|20|21)\d{2}")
+
+#: Seconds either side of ``meta.finished_at`` a ``job_event`` chunk
+#: may sit and still count as the failure's reason in
+#: ``_job_error_head``: the reason is appended in the same transaction
+#: as the terminal ``STATUS:`` flip, which is also what stamps
+#: ``finished_at``. The ``job_event`` timeline mixes in progress notes
+#: and later comments, so an event far from that boundary is not the
+#: reason (gr536316 fix round 1).
+_JOB_ERROR_EVENT_SKEW_S = 60.0
+
 # ── under=: hierarchical job scope (mcp-introspection gap closures
 # 2026-10-14, ruling: jobs for a quest/board/structure include sub-jobs
 # and jobs under its todo tree) ──────────────────────────────────────
@@ -186,8 +208,8 @@ def _job_search_call(
     tags: Any = None,
     link: Any = None,
     status: str | None = None,
-    since: str | None = None,
-    until: str | None = None,
+    since: str | datetime | None = None,
+    until: str | datetime | None = None,
     id_min: Any = None,
     id_max: Any = None,
     view: str | None = None,
@@ -214,6 +236,8 @@ def _job_search_call(
         ("view", view),
     ):
         if v is not None:
+            if isinstance(v, datetime):
+                v = v.isoformat()
             parts.append(f"{k}={v!r}")
     extras = {
         k: v
@@ -402,6 +426,11 @@ _TRANSCRIPT_FINAL_CAP = 2000
 #: the full JSON (a ranking, a proposal payload) can run to tens of KB;
 #: ``view='result'`` returns every ``job_result`` chunk uncapped.
 _JOB_RESULT_HEAD_CAP = 4000
+
+#: Cap on the ``error:`` line a failed job's status card prints under
+#: ``status:`` (gr536316) — one line, sized so it always lands well
+#: above the card's 4096-byte cut.
+_CARD_ERROR_CHARS = 300
 
 #: Cap on one run file's rendered content in ``view='run-files'``
 #: (gr524274) — placement.svg runs to tens of KB; the capped head is
@@ -2751,6 +2780,16 @@ class JobHandler(NumericRefHandler):
         if status is not None:
             lines.append(f"status: {status}")
         meta = ref.meta or {}
+        blocks = self.store.chunks.list_chunks_for_ref(ref.id)
+        if status == "failed":
+            # ``error:`` rides under ``status:`` — gr536316: the reason
+            # used to sit at the END of the event timeline, where the
+            # card's byte cap cut it on exactly the jobs that needed it.
+            reason = _job_error_head(meta, blocks)
+            if reason is not None:
+                lines.append(f"error: {reason}")
+                if meta.get("retry_after"):
+                    lines.append(f"retry_after: {meta['retry_after']}")
         if meta.get("job_type"):
             lines.append(f"job_type: {meta['job_type']}")
         if meta.get("executor"):
@@ -2799,7 +2838,6 @@ class JobHandler(NumericRefHandler):
         if ref.title:
             lines.append(ref.title)
 
-        blocks = self.store.chunks.list_chunks_for_ref(ref.id)
         for block in blocks:
             kind = block.chunk_kind
             if kind == _JOB_SUMMARY_KIND:
@@ -3000,6 +3038,43 @@ class JobHandler(NumericRefHandler):
 
     # ── view='count' trailer: top error heads per failing job_type ──
 
+    def _count_group_line(
+        self,
+        row: tuple[tuple[str | None, ...], int, FacetSpan],
+        facets: list[tuple[str, str]],
+    ) -> str:
+        """Job facet rows append the group's newest/oldest member —
+        ``jo<max>/<min>`` handles with their ``created_at`` bounds —
+        the "when did the last <type> run, and how far back does the
+        streak reach" half of the count question (gr536316)."""
+        vals, n, span = row
+        label = " | ".join(
+            v if v is not None else _count_facet_null_label(spec)
+            for v, spec in zip(vals, facets, strict=True)
+        )
+        newest = handle_registry.try_format("job", span.max_ref_id) or (
+            f"job:{span.max_ref_id}"
+        )
+        oldest = handle_registry.try_format("job", span.min_ref_id) or (
+            f"job:{span.min_ref_id}"
+        )
+        return (
+            f"  {label}: {n} — newest {newest} "
+            f"({_fmt_utc(span.max_created)}), "
+            f"oldest {oldest} ({_fmt_utc(span.min_created)})"
+        )
+
+    def _count_groups_overflow(self, hidden: int, group_by: Any) -> str:
+        """Jobs narrow by ``job_type=``/``since=`` — the filters that
+        actually produced a 200-group page (gr536316 fix round 1). The
+        ``next:`` re-runs the same facet under a 24h window; it must
+        stay a literal-working call (no ``<placeholders>``)."""
+        gb = f", args={{'group_by': {group_by!r}}}" if group_by is not None else ""
+        return (
+            f"  … {hidden} more groups; narrow with job_type= or since= "
+            f"— next: search(kind='job', view='count', since='24h'{gb})"
+        )
+
     def _count_view_extra(
         self,
         *,
@@ -3101,8 +3176,8 @@ class JobHandler(NumericRefHandler):
         page_size: int = 10,
         page: int = 1,
         group_by: str | list[str] | None = None,
-        since: str | None = None,
-        until: str | None = None,
+        since: str | datetime | None = None,
+        until: str | datetime | None = None,
         exclude_ref_ids: list[int] | None = None,
         include_ref_ids: list[int] | None = None,
         job_type: str | None = None,
@@ -3114,6 +3189,13 @@ class JobHandler(NumericRefHandler):
                 "job_type= must be a non-empty job_type name",
                 next="search(kind='job', args={'job_type': 'fix_gripe'})",
             )
+        # ``since=``/``until=`` take the /logs spellings — an ISO
+        # timestamp or an age in hours/days (``'24'``, ``'6h'``,
+        # ``'7d'``; gr536316) — resolved once here so every path below
+        # (under, job_type, windowed listing, count) sees datetimes.
+        since_dt = _job_window_bound(since, "since")
+        until_dt = _job_window_bound(until, "until")
+        group_by = _job_group_by(group_by)
         if under is not None or depth is not None or axis is not None:
             for bad in ("q", "tags", "link", "mode", "sort"):
                 v = kw.get(bad)
@@ -3132,8 +3214,8 @@ class JobHandler(NumericRefHandler):
                 page_size=page_size,
                 page=page,
                 group_by=group_by,
-                since=since,
-                until=until,
+                since=since_dt,
+                until=until_dt,
                 exclude_ref_ids=exclude_ref_ids,
                 include_ref_ids=include_ref_ids,
                 job_type=job_type,
@@ -3173,8 +3255,8 @@ class JobHandler(NumericRefHandler):
                 page_size=page_size,
                 page=page,
                 group_by=group_by,
-                since=since,
-                until=until,
+                since=since_dt,
+                until=until_dt,
                 exclude_ref_ids=exclude_ref_ids,
                 include_ref_ids=include_ref_ids,
                 sort=forwarded.get("sort"),
@@ -3182,7 +3264,7 @@ class JobHandler(NumericRefHandler):
                 id_min=id_min,
                 id_max=id_max,
             )
-        if (since is not None or until is not None) and view != "count":
+        if (since_dt is not None or until_dt is not None) and view != "count":
             # A queryless top-level since=/until= stays on the job
             # listing path (dispatch routes a q=-bearing call to the
             # source-search primitive instead), but the base listing
@@ -3223,8 +3305,8 @@ class JobHandler(NumericRefHandler):
                 page_size=page_size,
                 page=page,
                 group_by=group_by,
-                since=since,
-                until=until,
+                since=since_dt,
+                until=until_dt,
                 exclude_ref_ids=exclude_ref_ids,
                 include_ref_ids=include_ref_ids,
                 sort=forwarded.get("sort"),
@@ -3232,14 +3314,20 @@ class JobHandler(NumericRefHandler):
                 id_min=id_min,
                 id_max=id_max,
             )
+        if (since_dt is not None or until_dt is not None) and view != "count":
+            raise BadInput(
+                f"view={view!r} doesn't take since=/until= on job search",
+                next="drop view= for the windowed listing, or view='count' "
+                "to aggregate the window",
+            )
         return super().search(
             view=view,
             status=status,
             page_size=page_size,
             page=page,
             group_by=group_by,
-            since=since,
-            until=until,
+            since=since_dt,
+            until=until_dt,
             exclude_ref_ids=exclude_ref_ids,
             include_ref_ids=include_ref_ids,
             **kw,
@@ -3256,8 +3344,8 @@ class JobHandler(NumericRefHandler):
         page_size: int,
         page: int,
         group_by: str | list[str] | None,
-        since: str | None,
-        until: str | None,
+        since: str | datetime | None,
+        until: str | datetime | None,
         exclude_ref_ids: list[int] | None,
         include_ref_ids: list[int] | None,
         job_type: str | None = None,
@@ -3430,8 +3518,8 @@ class JobHandler(NumericRefHandler):
         member_ids: list[int],
         *,
         status: str | None,
-        since: str | None,
-        until: str | None,
+        since: str | datetime | None,
+        until: str | datetime | None,
         job_type: str | None = None,
     ) -> list[tuple[int, int | None, int | None, str, str, str | None, str]]:
         """Live jobs attached to the member set: ``(ref_id, parent_id,
@@ -3523,8 +3611,8 @@ class JobHandler(NumericRefHandler):
         page_size: int,
         page: int,
         group_by: str | list[str] | None,
-        since: str | None,
-        until: str | None,
+        since: str | datetime | None,
+        until: str | datetime | None,
         exclude_ref_ids: list[int] | None,
         include_ref_ids: list[int] | None,
         sort: Any,
@@ -3653,16 +3741,20 @@ class JobHandler(NumericRefHandler):
             frag = f"{shown} of {total}"
         else:
             frag = str(total)
-        head = f"# {frag} job entr{'y' if total == 1 else 'ies'}" + (
-            f" with job_type {job_type!r}" if job_type is not None else ""
-        )
+        scope = f" with job_type {job_type!r}" if job_type is not None else ""
+        since_d = _parse_window_bound(since, "since")
+        until_d = _parse_window_bound(until, "until")
+        window = ""
+        if since_d is not None or until_d is not None:
+            lo = since_d.strftime("%Y-%m-%dT%H:%M:%SZ") if since_d else "…"
+            hi = until_d.strftime("%Y-%m-%dT%H:%M:%SZ") if until_d else "…"
+            window = f" created [{lo}, {hi})"
+        head = f"# {frag} job entr{'y' if total == 1 else 'ies'}{scope}{window}"
         parts = [head]
         if status_note:
             parts.append(status_note)
         if not refs:
-            parts[0] = "no job entries" + (
-                f" with job_type {job_type!r}" if job_type is not None else ""
-            )
+            parts[0] = f"no job entries{scope}{window}"
             parts.append(
                 render_next_section(
                     [
@@ -3906,6 +3998,99 @@ def _parse_logs_int(
             if m:
                 return int(m.group(1)) * (24 if m.group(2).lower() == "d" else 1)
         raise BadInput(f"{field}={raw!r} is not an integer", next=example) from exc
+
+
+def _job_group_by(group_by: Any) -> Any:
+    """The bare ``job_type`` facet spelling — agents reach for
+    ``group_by='job_type,state'`` before ``meta.job_type`` (gr536316).
+    Rewrite the one alias to the ``meta.`` grammar the shared facet
+    parser knows; everything else passes through unchanged."""
+    if group_by is None:
+        return None
+    raw = group_by if isinstance(group_by, list) else str(group_by).split(",")
+    return ["meta.job_type" if str(t).strip() == "job_type" else t for t in raw]
+
+
+def _job_window_bound(value: Any, field: str) -> datetime | None:
+    """``since=``/``until=`` on job search: an ISO timestamp OR an age
+    spelling — ``'24'`` / ``'6h'`` / ``'7d'`` mean "that many
+    hours/days ago", the same shorthand ``/logs`` and ``/delta``
+    already take (gr536316: the diagnosis windows agents actually
+    write). Anything else defers to :func:`_parse_window_bound`'s ISO
+    contract; a value matching neither gets a rejection naming both.
+
+    A *bare* number is refused when it's year-shaped
+    (:data:`_JOB_YEAR_LIKE`) or past
+    :data:`_JOB_WINDOW_BARE_HOURS_MAX`: ``since='2026'`` is almost
+    always a mistyped ISO year, not "2026 hours ago", and silently
+    reading it as an age returns a wrong but plausible-looking window
+    (gr536316 fix round 1). An explicit ``h``/``d`` suffix stays
+    unbounded — the unit says the caller meant an age.
+    """
+    if value is None or isinstance(value, datetime):
+        return _parse_window_bound(value, field)
+    text = str(value).strip()
+    m = re.fullmatch(r"(\d+(?:\.\d+)?)\s*([hd])?", text, re.IGNORECASE)
+    if m:
+        hours = float(m.group(1)) * (24 if (m.group(2) or "").lower() == "d" else 1)
+        if m.group(2) is None and (
+            hours > _JOB_WINDOW_BARE_HOURS_MAX or _JOB_YEAR_LIKE.fullmatch(m.group(1))
+        ):
+            num = m.group(1)
+            iso = f"{num}-01-01" if _JOB_YEAR_LIKE.fullmatch(num) else "2026-01-01"
+            raise BadInput(
+                f"{field}={value!r} is ambiguous — a bare number reads "
+                f"as {hours:g} hours ago; an ISO year needs a full date, "
+                "an age needs a unit suffix",
+                next=f"{field}='{num}h' (that many hours ago) · "
+                f"{field}='{iso}' (an ISO date)",
+            )
+        return datetime.now(UTC) - timedelta(hours=hours)
+    try:
+        return _parse_window_bound(value, field)
+    except BadInput:
+        raise BadInput(
+            f"{field}={value!r} must be an ISO date/timestamp or an age in hours/days",
+            next=f"{field}='24' · {field}='7d' · {field}='2026-10-01T00:00:00Z'",
+        ) from None
+
+
+def _job_error_head(meta: dict[str, Any], blocks: list[Any]) -> str | None:
+    """The one-line failure reason a failed job's card leads with
+    (gr536316). ``meta.error`` wins — the ≤500-char breadcrumb
+    ``record_failure`` / the sweeper stamp on the row itself; when meta
+    stayed bare, the ``job_event`` chunk written at the failure
+    boundary stands in (every failure path writes one in the same
+    transaction as the terminal ``STATUS:`` flip, which is also what
+    stamps ``meta.finished_at``). "At the boundary" = ``created_at``
+    within :data:`_JOB_ERROR_EVENT_SKEW_S` of ``finished_at`` — the
+    event timeline mixes in progress notes and later comments, so the
+    *newest* event alone can be unrelated to the failure (gr536316
+    fix round 1); no boundary, no line. First line only, whitespace
+    collapsed — unlike ``_norm_error_head`` the digits stay: this names
+    *this* job's attempts and quotas, not a folded failure family.
+    """
+    raw = meta.get("error")
+    if not isinstance(raw, str) or not raw.strip():
+        raw = ""
+        finished = as_utc(meta.get("finished_at"))
+        if finished is not None:
+            for block in reversed(blocks):
+                at = as_utc(block.created_at)
+                if (
+                    block.chunk_kind == _JOB_EVENT_KIND
+                    and (block.text or "").strip()
+                    and at is not None
+                    and abs((at - finished).total_seconds()) <= _JOB_ERROR_EVENT_SKEW_S
+                ):
+                    raw = str(block.text)
+                    break
+    if not raw:
+        return None
+    line = _COUNT_HEAD_WS.sub(" ", raw.split("\n", 1)[0]).strip()
+    if len(line) > _CARD_ERROR_CHARS:
+        line = line[: _CARD_ERROR_CHARS - 1] + "…"
+    return line or None
 
 
 def _status_of(tags: list[Tag]) -> str | None:
