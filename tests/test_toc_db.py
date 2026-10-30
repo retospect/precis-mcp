@@ -18,16 +18,18 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from itertools import pairwise
 
-from precis.utils.toc_db import build_toc_segments, render_from_store
+from precis.utils.toc_db import build_toc_segments, cluster_blocks, render_from_store
 
 
 @dataclass
 class _Stub:
     """Minimal stand-in for ``ChunkRow`` — the renderer reads ``ord`` +
     ``keywords`` always, ``meta``/``text``/``chunk_kind`` only for the
-    section-path fallback and the pending note."""
+    section-path fallback and the pending note, ``id`` for the meta
+    line's link/tag reads."""
 
     ord: int
+    id: int | None = None
     keywords: list[str] = field(default_factory=list)
     meta: dict = field(default_factory=dict)
     text: str = ""
@@ -39,8 +41,17 @@ class _StubStore:
         lambda self: self
     )  # chunks carve: flat fake doubles as its own sub-store
 
-    def __init__(self, blocks: list[_Stub]) -> None:
+    def __init__(
+        self,
+        blocks: list[_Stub],
+        *,
+        link_counts: tuple[int, dict[int, int]] = (0, {}),
+        tag_counts: list[tuple[str, str, int]] | None = None,
+    ) -> None:
         self._blocks = blocks
+        self._link_counts = link_counts
+        self._tag_counts = tag_counts or []
+        self.meta_queries: list[str] = []
 
     def list_chunks_for_ref(
         self, ref_id: int, *, pos_range: tuple[int, int] | None = None
@@ -49,6 +60,16 @@ class _StubStore:
             return list(self._blocks)
         lo, hi = pos_range
         return [b for b in self._blocks if lo <= b.ord <= hi]
+
+    def count_links_for_chunks(
+        self, chunk_ids: list[int]
+    ) -> tuple[int, dict[int, int]]:
+        self.meta_queries.append("links")
+        return self._link_counts
+
+    def chunk_tag_counts(self, chunk_ids: list[int]) -> list[tuple[str, str, int]]:
+        self.meta_queries.append("tags")
+        return self._tag_counts
 
 
 def _render(blocks: list[_Stub], *, scope: tuple[int, int] | None = None) -> str:
@@ -428,17 +449,17 @@ class TestCopyrightFold:
         chunks is one TOC entry, not a row apiece."""
         blocks = [
             _Stub(ord=0, keywords=["intro"], text="introduction text"),
-            _Stub(ord=1, text="© 2024 Elsevier Ltd.\n" * 40),
-            _Stub(ord=2, text="All rights reserved.\n" * 40),
-            _Stub(ord=3, text="Licensed under CC-BY 4.0\n" * 40),
+            _Stub(ord=1, text="© 2024 Elsevier Ltd. " + "x" * 350),
+            _Stub(ord=2, text="All rights reserved. " + "y" * 350),
+            _Stub(ord=3, text="Licensed under CC-BY 4.0 " + "z" * 350),
             _Stub(ord=4, keywords=["methods"], text="methods text"),
         ]
         out = _render(blocks)
         assert "pa1~1..3" in out
         # Folded row carries the summed bytes of the run (size column):
-        # 40*(22+21+25) = 2720 bytes -> "3kB"; sub-kB neighbours stay empty.
+        # (372+371+375) = 1118 bytes -> "1kB"; sub-kB neighbours stay empty.
         fold_row = next(ln for ln in out.splitlines() if ln.startswith("pa1~1..3"))
-        assert fold_row.split("\t")[1] == "3kB"
+        assert fold_row.split("\t")[1] == "1kB"
         assert "copyright / licence boilerplate" in out
         assert "pa1~1\t" not in out
         assert "pa1~2\t" not in out
@@ -455,3 +476,267 @@ class TestCopyrightFold:
         out = _render(blocks)
         assert "pa1~0\t" in out
         assert "pa1~1\t" in out
+
+    def test_real_content_mentioning_licence_is_not_folded(self) -> None:
+        blocks = [
+            _Stub(ord=0, keywords=["a"], text="We obtained a licence for the dataset."),
+            _Stub(ord=1, keywords=["b"], text="Under copyright law, reuse is limited."),
+            _Stub(ord=2, keywords=["c"], text="Licence"),
+            _Stub(ord=3, keywords=["d"], text="Copyright law differs by country."),
+        ]
+        out = _render(blocks)
+        assert "boilerplate" not in out
+        for i in range(4):
+            assert f"pa1~{i}\t" in out
+
+    def test_long_notice_chunk_is_not_folded(self) -> None:
+        blocks = [
+            _Stub(ord=0, keywords=["a"], text="© 2024 Foo. " + "x" * 500),
+            _Stub(ord=1, keywords=["b"], text="more content"),
+        ]
+        out = _render(blocks)
+        assert "boilerplate" not in out
+        assert "pa1~0\t" in out
+
+    def test_boilerplate_folds_in_keywords_mode(self) -> None:
+        blocks = [_Stub(ord=i, keywords=["topic"], text="body text") for i in range(10)]
+        blocks += [
+            _Stub(ord=10, text="© 2024 Elsevier Ltd."),
+            _Stub(ord=11, text="All rights reserved."),
+        ]
+        blocks += [
+            _Stub(ord=i, keywords=["other"], text="more body") for i in range(12, 22)
+        ]
+        groups = cluster_blocks(blocks)
+        folded = [g for g in groups if g[1] == ["copyright / licence boilerplate"]]
+        assert len(folded) == 1
+        assert [b.ord for b in folded[0][0]] == [10, 11]
+
+    def test_boilerplate_folds_in_sections_mode(self) -> None:
+        """No keywords anywhere -> sections mode; a notice-only section
+        still folds."""
+        blocks = [_sec(i, "1. Intro", text="body") for i in range(10)]
+        blocks += [
+            _sec(10, "References", text="© 2024 Elsevier Ltd."),
+            _sec(11, "References", text="All rights reserved."),
+        ]
+        blocks += [_sec(i, "2. Methods", text="body") for i in range(12, 22)]
+        groups = cluster_blocks(blocks)
+        folded = [g for g in groups if g[1] == ["copyright / licence boilerplate"]]
+        assert len(folded) == 1
+        assert [b.ord for b in folded[0][0]] == [10, 11]
+
+
+# ── aggregate meta line (WU6, fable-review design call b / R7) ───────
+
+
+class TestMetaLine:
+    def test_meta_line_reports_count_bytes_tags_links_hubs(self) -> None:
+        blocks = [_Stub(ord=i, id=i + 1, text="x" * 2000) for i in range(4)]
+        store = _StubStore(
+            blocks,
+            link_counts=(6, {1: 4, 2: 2, 3: 1}),
+            tag_counts=[
+                ("OPEN", "important", 3),
+                ("TOPIC", "catalysis", 2),
+                ("OPEN", "review", 1),
+            ],
+        )
+        out = render_from_store(store=store, ref_id=1, handle="pa1", kind="paper")
+        meta = next(ln for ln in out.splitlines() if ln.startswith("pa1:"))
+        assert "4 chunks" in meta
+        assert "8kB" in meta
+        assert "tags [important, TOPIC:catalysis, review]" in meta
+        assert "↔6 chunk links" in meta
+        assert "hubs: pa1~0 ↔4, pa1~1 ↔2, pa1~2 ↔1" in meta
+
+    def test_hubs_ranked_by_degree_then_id_with_toc_handles(self) -> None:
+        """Hardcoded order: degree 4 > 3 > tie at 2 (lower chunk id wins),
+        a degree-1 chunk is cut by the 3-hub cap. Chunk 9 has no loaded
+        block so it falls back to its pc<id> handle."""
+        blocks = [_Stub(ord=i + 10, id=i + 1, text="x") for i in range(4)]
+        store = _StubStore(
+            blocks,
+            link_counts=(7, {1: 2, 2: 4, 3: 3, 4: 2, 9: 1}),
+        )
+        out = render_from_store(store=store, ref_id=1, handle="pa1", kind="paper")
+        meta = next(ln for ln in out.splitlines() if ln.startswith("pa1:"))
+        assert "hubs: pa1~11 ↔4, pa1~12 ↔3, pa1~10 ↔2" in meta
+        store = _StubStore(blocks, link_counts=(1, {9: 5}))
+        out = render_from_store(store=store, ref_id=1, handle="pa1", kind="paper")
+        assert "hubs: pc9 ↔5" in out
+
+    def test_meta_line_stays_short_with_long_tags(self) -> None:
+        blocks = [_Stub(ord=i, id=i + 1, text="x" * 2000) for i in range(4)]
+        tags = [
+            ("OPEN", "a-very-long-free-form-tag-number-" + str(i), 1) for i in range(10)
+        ]
+        store = _StubStore(blocks, link_counts=(6, {1: 4, 2: 2, 3: 1}), tag_counts=tags)
+        out = render_from_store(store=store, ref_id=1, handle="pa1", kind="paper")
+        meta = next(ln for ln in out.splitlines() if ln.startswith("pa1:"))
+        assert len(meta.encode("utf-8")) < 400
+        assert "a-very-long-free-form-t…" in meta
+        assert "a-very-long-free-form-ta" not in meta
+
+    def test_meta_line_uses_scoped_range_label(self) -> None:
+        blocks = [_Stub(ord=i, id=i + 1, text="x") for i in range(5)]
+        out = render_from_store(
+            store=_StubStore(blocks),
+            ref_id=1,
+            handle="pa1",
+            kind="paper",
+            scope=(0, 4),
+        )
+        assert "pa1~0..4: 5 chunks" in out
+
+    def test_meta_line_caps_tag_union_at_eight_with_remainder(self) -> None:
+        blocks = [_Stub(ord=0, id=1, text="x")]
+        tags = [("OPEN", f"tag{i}", 1) for i in range(10)]
+        out = render_from_store(
+            store=_StubStore(blocks, tag_counts=tags),
+            ref_id=1,
+            handle="pa1",
+            kind="paper",
+        )
+        meta = next(ln for ln in out.splitlines() if ln.startswith("pa1:"))
+        assert "tags [tag0, tag1, tag2, tag3, tag4, tag5, tag6, tag7 +2]" in meta
+
+    def test_meta_line_runs_one_links_and_one_tags_query(self) -> None:
+        """WU6 query budget: one grouped links read + one grouped tags
+        read per render, never per row."""
+        blocks = [_Stub(ord=i, id=i + 1, text="x") for i in range(20)]
+        store = _StubStore(blocks)
+        render_from_store(store=store, ref_id=1, handle="pa1", kind="paper")
+        assert store.meta_queries == ["links", "tags"]
+
+    def test_meta_line_survives_failed_bulk_reads(self) -> None:
+        """A failed links/tags read degrades its segment, never the row."""
+
+        class _FlakyStore(_StubStore):
+            def count_links_for_chunks(self, chunk_ids):
+                raise RuntimeError("pool down")
+
+            def chunk_tag_counts(self, chunk_ids):
+                raise RuntimeError("pool down")
+
+        blocks = [_Stub(ord=0, id=1, text="x")]
+        out = render_from_store(
+            store=_FlakyStore(blocks), ref_id=1, handle="pa1", kind="paper"
+        )
+        meta = next(ln for ln in out.splitlines() if ln.startswith("pa1:"))
+        assert "1 chunks" in meta
+        assert "links" not in meta
+        assert "tags" not in meta
+
+    def test_meta_line_present_in_every_mode(self) -> None:
+        """Top-level, scoped and per-chunk renders all carry the line."""
+        blocks = [_Stub(ord=i, id=i + 1, text="x" * 200) for i in range(40)]
+        out = _render(blocks)
+        assert any(ln.startswith("pa1:") for ln in out.splitlines())
+
+
+# ── meta line against real SQL (WU6: line equals SQL truth) ──────────
+
+
+class _CountingStore:
+    """``TocStore``-shaped wrapper counting the meta-line reads."""
+
+    def __init__(self, inner) -> None:
+        self._inner = inner
+        self.calls: list[str] = []
+
+    @property
+    def chunks(self):
+        return self._inner.chunks
+
+    def count_links_for_chunks(self, chunk_ids):
+        self.calls.append("links")
+        return self._inner.count_links_for_chunks(chunk_ids)
+
+    def chunk_tag_counts(self, chunk_ids):
+        self.calls.append("tags")
+        return self._inner.chunk_tag_counts(chunk_ids)
+
+
+class TestMetaLineDbTruth:
+    def test_meta_line_matches_sql_truth(self, store) -> None:
+        """Fixture: 4 chunks, 3 links (one intra-range), 3 chunk tags.
+
+        The line must equal an independent SQL computation of the same
+        quantities — distinct links touching the range, tag union by
+        in-range frequency, per-chunk degree."""
+        from precis.store.types import ChunkInsert, Tag
+
+        ref = store.insert_ref(kind="paper", slug="metapaper", title="M")
+        blocks = store.chunks.insert_chunks(
+            ref.id,
+            [ChunkInsert(ord=i, text=("word " * 300).strip()) for i in range(4)],
+        )
+        other = store.insert_ref(kind="memory", slug=None, title="m")
+        store.add_link(
+            src_ref_id=ref.id,
+            dst_ref_id=other.id,
+            relation="supports",
+            src_pos=0,
+        )
+        store.add_link(
+            src_ref_id=ref.id,
+            dst_ref_id=other.id,
+            relation="supports",
+            src_pos=1,
+        )
+        # Intra-range edge: block 2 → block 3. Counted once in the
+        # total, once per endpoint in the degrees.
+        store.add_link(
+            src_ref_id=ref.id,
+            dst_ref_id=ref.id,
+            relation="supports",
+            src_pos=2,
+            dst_pos=3,
+        )
+        store.add_tag(ref.id, Tag.open("important"), pos=0)
+        store.add_tag(ref.id, Tag.open("important"), pos=1)
+        store.add_tag(ref.id, Tag.closed("TOPIC", "catalysis"), pos=2)
+
+        chunk_ids = [b.id for b in blocks]
+        with store.pool.connection() as conn:
+            sql_total = int(
+                conn.execute(
+                    "SELECT COUNT(DISTINCT link_id) FROM links "
+                    "WHERE src_chunk_id = ANY(%s) "
+                    "   OR dst_chunk_id = ANY(%s)",
+                    (chunk_ids, chunk_ids),
+                ).fetchone()[0]
+            )
+            sql_degrees = {
+                int(r[0]): int(r[1])
+                for r in conn.execute(
+                    "SELECT cid, COUNT(*) FROM ("
+                    "  SELECT src_chunk_id AS cid FROM links "
+                    "    WHERE src_chunk_id = ANY(%s)"
+                    "  UNION ALL"
+                    "  SELECT dst_chunk_id FROM links "
+                    "    WHERE dst_chunk_id = ANY(%s)"
+                    ") s GROUP BY cid",
+                    (chunk_ids, chunk_ids),
+                ).fetchall()
+            }
+        assert sql_total == 3
+        assert sql_degrees[blocks[2].id] == 1
+        assert sql_degrees[blocks[3].id] == 1
+
+        wrapped = _CountingStore(store)
+        out = render_from_store(
+            store=wrapped, ref_id=ref.id, handle=f"pa{ref.id}", kind="paper"
+        )
+        assert wrapped.calls == ["links", "tags"]
+        meta = next(ln for ln in out.splitlines() if ln.startswith(f"pa{ref.id}:"))
+        assert "4 chunks" in meta
+        assert f"↔{sql_total} chunk links" in meta
+        assert "tags [important, TOPIC:catalysis]" in meta
+        top = sorted(sql_degrees.items(), key=lambda kv: (-kv[1], kv[0]))[:3]
+        ord_of = {b.id: b.ord for b in blocks}
+        assert (
+            "hubs: " + ", ".join(f"pa{ref.id}~{ord_of[cid]} ↔{n}" for cid, n in top)
+            in meta
+        )

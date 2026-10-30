@@ -479,6 +479,32 @@ class TagsMixin:
             out.setdefault(int(ref_id), []).append((str(ns), str(val)))
         return out
 
+    def chunk_tag_counts(self, chunk_ids: list[int]) -> list[tuple[str, str, int]]:
+        """``[(namespace, value, chunk_count)]`` over a chunk batch,
+        most-frequent first.
+
+        The chunk-granular counterpart of :meth:`ref_tags_bulk` for
+        aggregate surfaces — the toc meta line's tag union (WU6). One
+        grouped query over ``chunk_tags``+``tags`` for the whole range,
+        no per-row reads. ``COUNT(*)`` per tag equals the number of
+        in-range chunks carrying it (``chunk_tags`` is keyed
+        ``(chunk_id, tag_id)``). ``chunk_tags`` has no expiry column,
+        so nothing is filtered.
+        """
+        if not chunk_ids:
+            return []
+        with self.pool.connection() as conn:
+            rows = conn.execute(
+                "SELECT t.namespace, t.value, COUNT(*)::int "
+                "FROM chunk_tags ct "
+                "JOIN tags t ON t.tag_id = ct.tag_id "
+                "WHERE ct.chunk_id = ANY(%s) "
+                "GROUP BY t.namespace, t.value "
+                "ORDER BY 3 DESC, t.namespace, t.value",
+                (list(chunk_ids),),
+            ).fetchall()
+        return [(str(ns), str(val), int(n)) for ns, val, n in rows]
+
     def tags_for_with_expiry(
         self,
         ref_id: int,

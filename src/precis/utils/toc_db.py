@@ -12,15 +12,17 @@ renderer entirely. The new model:
   resulting cluster from the union of its constituent chunks'
   keywords.
 
-Output shape — TOON table, always ``(handle, keywords)``::
+Output shape — TOON table, always ``(handle, size, keywords)``, preceded
+by one aggregate meta line (WU6 / R7)::
 
     # pa5 TOC — N chunks, K clusters
+    pa5: N chunks · 61kB · tags […] · ↔300 links · hubs: pc1 ↔41, pc2 ↔27
 
     Topics: shared keywords across ≥75% of clusters    (optional)
 
-    {handle	keywords}
-    pa5~0..14	keyword phrases for cluster 0
-    pa5~15..29	keyword phrases for cluster 1
+    {handle	size	keywords}
+    pa5~0..14	4kB	keyword phrases for cluster 0
+    pa5~15..29	6kB	keyword phrases for cluster 1
     …
 
     Next: drill a cluster for finer structure           (optional)
@@ -57,6 +59,7 @@ call ``get(...)`` without ``view='toc'``.
 
 from __future__ import annotations
 
+import logging
 import math
 import re
 from collections import Counter
@@ -65,11 +68,14 @@ from typing import TYPE_CHECKING, Any
 
 from precis._result_budget import size_cell
 from precis.format import render_agent_table
+from precis.utils import handle_registry
 from precis.utils.segmentation import Segment, segment_dp
 from precis.utils.text import strip_emphasis
 
 if TYPE_CHECKING:
-    from precis.store.protocols import ChunkListingStore
+    from precis.store.protocols import ChunkListingStore, TocStore
+
+log = logging.getLogger(__name__)
 
 #: Below this chunk count, a *top-level* TOC (no scope) renders per-chunk
 #: keywords directly instead of clustering — a short paper is scannable
@@ -128,6 +134,14 @@ _KEYWORD_COVERAGE_MIN = 0.25
 #: A section title's display cap in the keywords column.
 _SECTION_TITLE_CAP = 80
 
+#: Tag chips the meta line's union shows before ``+N`` (WU6 / R7).
+_META_TAG_CAP = 8
+
+#: Highest-degree members the meta line names ("star connectors").
+_META_STAR_CAP = 3
+#: Longest tag chip in the meta line, ellipsis included.
+_META_TAG_CHIP_MAX = 24
+
 #: Leading section number — ``2.``, ``4.3.4.`` — grouping subsections
 #: under their top-level number.
 _SECTION_NUM_RE = re.compile(r"^(\d+)\.")
@@ -140,7 +154,7 @@ _SECTION_DEPTH_RE = re.compile(r"^((?:\d+\.)+)")
 
 def render_from_store(
     *,
-    store: ChunkListingStore,
+    store: TocStore,
     ref_id: int,
     handle: str,
     kind: str,
@@ -160,24 +174,33 @@ def render_from_store(
     through into the header. Computed by the caller (typically only for
     the top-level, unscoped call — see ``PaperHandler._render_toc``) since
     this module's own store access is deliberately limited to
-    ``ChunkListingStore`` (:mod:`precis.store.protocols`), which has no
+    ``TocStore`` (:mod:`precis.store.protocols`), which has no
     embed/summarize backlog query surface.
 
     Returns Markdown. First line is the kind-aware headline; the second
-    (when ``readiness_line`` is given) is the readiness line; the rest is
-    the TOON table, optionally preceded by a ``Topics:`` line and followed
-    by a ``Next:`` drill-in block.
+    (when ``readiness_line`` is given) is the readiness line; then the
+    :func:`_meta_line` aggregate (n chunks, bytes, tag union, links,
+    star members); the rest is the TOON table, optionally preceded by a
+    ``Topics:`` line and followed by a ``Next:`` drill-in block.
     """
     pos_range = scope
     blocks = store.chunks.list_chunks_for_ref(ref_id, pos_range=pos_range)
     if not blocks:
         return _empty_body(handle=handle, kind=kind, scope=scope)
 
+    meta_line = _meta_line(
+        store=store, handle=handle, kind=kind, scope=scope, blocks=blocks
+    )
     n = len(blocks)
     groups, mode = _clusters(blocks, scope=scope)
     if mode == "per-chunk":
         return _render_per_chunk(
-            handle=handle, blocks=blocks, scope=scope, readiness_line=readiness_line
+            handle=handle,
+            groups=groups,
+            n_total=n,
+            scope=scope,
+            readiness_line=readiness_line,
+            meta_line=meta_line,
         )
 
     rows: list[dict[str, str]] = []
@@ -224,6 +247,7 @@ def render_from_store(
             )
         else:
             parts.append("_(labels: section headings)_")
+    parts.append(meta_line)
     parts.append("")
     # The Topics line is keyword-summary machinery — a section-label
     # column would only echo a heading that survived the merge.
@@ -319,47 +343,72 @@ def cluster_blocks(
 
 
 #: A TOC line is copyright boilerplate when every non-empty line of its
-#: chunk is a copyright / licence / "all rights reserved" notice —
+#: chunk has boilerplate *shape* — an anchored ``©`` / ``copyright ©|(c)|
+#: <year>`` opener, or an "all rights reserved" / "licensed under" notice —
 #: journal page furniture that says nothing about the paper's shape.
 #: Consecutive chunks of it fold into one TOC entry (gr531128, item 2 of
-#: gr524226) instead of a row apiece.
+#: gr524226) instead of a row apiece. A bare ``licence`` / ``copyright``
+#: word is not enough: "We obtained a licence for the dataset" is content.
 _COPYRIGHT_LINE_RE = re.compile(
-    r"©|\bcopyright\b|\blicen[cs]e[ds]?\b|\ball\s+rights\s+reserved\b",
+    r"^\s*(?:©|copyright\s*(?:©|\(c\)|\d))"
+    r"|\ball\s+rights\s+reserved\b|\blicensed\s+under\b",
     re.IGNORECASE,
 )
+
+#: Boilerplate is short; a longer chunk is prose that happens to open
+#: with a notice and must keep its row.
+_COPYRIGHT_MAX_BYTES = 400
 
 #: The folded row's label.
 _COPYRIGHT_LABEL = ["copyright / licence boilerplate"]
 
 
 def _is_copyright_block(block: Any) -> bool:
-    """True when the chunk is wholly copyright/licence notice lines.
+    """True when the chunk is a short run of copyright/licence notice lines.
 
     A mixed chunk (a notice plus real text) stays its own row — the
-    fold must never swallow content, so every non-empty line has to
-    match."""
+    fold must never swallow content, so the chunk must be under
+    ``_COPYRIGHT_MAX_BYTES`` and every non-empty line has to match."""
     text = str(getattr(block, "text", "") or "")
+    if len(text.encode("utf-8")) >= _COPYRIGHT_MAX_BYTES:
+        return False
     lines = [ln for ln in text.splitlines() if ln.strip()]
     return bool(lines) and all(_COPYRIGHT_LINE_RE.search(ln) for ln in lines)
 
 
 def _fold_copyright_singles(
-    singles: list[tuple[list[Any], list[str]]],
+    groups: list[tuple[list[Any], list[str]]],
 ) -> list[tuple[list[Any], list[str]]]:
-    """Merge runs of :func:`_is_copyright_block` singletons into one entry."""
+    """Merge adjacent all-boilerplate buckets into one entry.
+
+    The single fold point: :func:`_clusters` applies it to the result of
+    every mode (per-chunk, keywords, sections), so no render path shows
+    a row per notice chunk."""
     out: list[tuple[list[Any], list[str]]] = []
-    for bucket, label in singles:
-        if _is_copyright_block(bucket[0]):
-            if out and _is_copyright_block(out[-1][0][-1]):
+    prev_folded = False
+    for bucket, label in groups:
+        if all(_is_copyright_block(b) for b in bucket):
+            if prev_folded:
                 out[-1][0].extend(bucket)
                 continue
             out.append((list(bucket), list(_COPYRIGHT_LABEL)))
+            prev_folded = True
         else:
             out.append((bucket, label))
+            prev_folded = False
     return out
 
 
 def _clusters(
+    blocks: Sequence[Any], *, scope: tuple[int, int] | None = None
+) -> tuple[list[tuple[list[Any], list[str]]], str]:
+    """:func:`_group_blocks` with the copyright fold applied once, in
+    every mode (gr531128)."""
+    groups, mode = _group_blocks(blocks, scope=scope)
+    return _fold_copyright_singles(groups), mode
+
+
+def _group_blocks(
     blocks: Sequence[Any], *, scope: tuple[int, int] | None = None
 ) -> tuple[list[tuple[list[Any], list[str]]], str]:
     """``([(bucket, label_terms)], mode)`` — one grouping pass shared by
@@ -371,8 +420,7 @@ def _clusters(
     * ``"per-chunk"`` — a range that shouldn't cluster
       (:func:`_should_cluster`), or the fallback when neither signal
       yields structure: one singleton bucket per block, labelled by its
-      own keywords. A run of all-copyright/licence chunks folds into one
-      row first (gr531128) — page furniture, not a topic boundary.
+      own keywords.
     * ``"keywords"`` — the F20 adjacent-Jaccard DP, trusted once at
       least ``_KEYWORD_COVERAGE_MIN`` of the range carries keywords.
     * ``"sections"`` — below that floor (the ``chunk_keywords`` backlog
@@ -382,9 +430,7 @@ def _clusters(
       to per-chunk rather than render one unlabelled mega-row.
     """
     n = len(blocks)
-    singles = _fold_copyright_singles(
-        [([b], _top_keywords([b], top_k=_LABEL_TOP_K)) for b in blocks]
-    )
+    singles = [([b], _top_keywords([b], top_k=_LABEL_TOP_K)) for b in blocks]
     if not _should_cluster(n, scope):
         return singles, "per-chunk"
     if _keyword_coverage(blocks) < _KEYWORD_COVERAGE_MIN:
@@ -688,6 +734,96 @@ def _topics_line(row_keyword_sets: Sequence[Sequence[str]]) -> str:
 # ── helpers: rendering ──────────────────────────────────────────────
 
 
+def _bytes_label(n_bytes: int) -> str:
+    """Total-size label for the meta line: ``size_cell``'s kB at ≥1 kB,
+    raw bytes below — the aggregate must name a size even when every
+    individual row sits under the kB floor."""
+    return size_cell(n_bytes) or f"{n_bytes}B"
+
+
+def _tag_label(ns: str, value: str) -> str:
+    """Chip text in the meta union: the bare value for the sentinel
+    namespaces (``OPEN``/``FLAG``), ``NS:value`` otherwise — the same
+    rule :mod:`precis.utils.tag_chips` uses for row chips. Capped at
+    ``_META_TAG_CHIP_MAX`` chars (ellipsis) so a long free-form tag
+    cannot blow the line's budget."""
+    chip = value if ns in ("OPEN", "FLAG") else f"{ns}:{value}"
+    if len(chip) > _META_TAG_CHIP_MAX:
+        return chip[: _META_TAG_CHIP_MAX - 1] + "…"
+    return chip
+
+
+def _meta_line(
+    *,
+    store: TocStore,
+    handle: str,
+    kind: str,
+    scope: tuple[int, int] | None,
+    blocks: Sequence[Any],
+) -> str:
+    """The R7 aggregate line every toc render carries (WU6, fable-review
+    design call b)::
+
+        pa5~5..50: 46 chunks · 61kB · tags [important, catalysis +2] ·
+            ↔300 chunk links · hubs: pa5~12 ↔41, pa5~30 ↔27
+
+    All members are the render's *chunks*: bytes come from the already
+    loaded texts, the tag union is one grouped ``chunk_tag_counts`` read
+    (top ``_META_TAG_CAP`` by in-range frequency, ``+N`` for the rest),
+    and links/degree come from a single ``count_links_for_chunks`` —
+    one links query per render, no per-row queries. ``hubs:`` names the
+    ``_META_STAR_CAP`` highest-degree members as ``<handle>~<ord>``.
+
+    A failed bulk read degrades its own segment only — the count/bytes
+    head always renders; a stub block without an ``id`` narrows the
+    queried set but never breaks the line.
+    """
+    target = f"{handle}~{scope[0]}..{scope[1]}" if scope else handle
+    n_bytes = sum(len((b.text or "").encode("utf-8")) for b in blocks)
+    parts = [f"{target}: {len(blocks)} chunks · {_bytes_label(n_bytes)}"]
+    chunk_ids = [b.id for b in blocks if isinstance(getattr(b, "id", None), int)]
+    if not chunk_ids:
+        return " · ".join(parts)
+    try:
+        total_links, degrees = store.count_links_for_chunks(chunk_ids)
+    except Exception:
+        log.warning("toc meta link read failed", exc_info=True)
+        total_links, degrees = None, {}
+    try:
+        tag_counts = store.chunk_tag_counts(chunk_ids)
+    except Exception:
+        log.warning("toc meta tag read failed", exc_info=True)
+        tag_counts = []
+    if tag_counts:
+        shown = [_tag_label(ns, v) for ns, v, _n in tag_counts[:_META_TAG_CAP]]
+        more = len(tag_counts) - len(shown)
+        parts.append(f"tags [{', '.join(shown)}{f' +{more}' if more else ''}]")
+    if total_links is not None:
+        parts.append(f"↔{total_links} chunk links")
+        # Hubs are named in the toc's own addressing (pa5~12) when the
+        # loaded block carries its ord; pc<id> is the fallback.
+        hub_names = {
+            b.id: f"{handle}~{b.ord}"
+            for b in blocks
+            if isinstance(getattr(b, "id", None), int)
+            and isinstance(getattr(b, "ord", None), int)
+        }
+        stars = [
+            (cid, deg)
+            for cid, deg in sorted(degrees.items(), key=lambda kv: (-kv[1], kv[0]))
+            if deg > 0
+        ][:_META_STAR_CAP]
+        if stars:
+            parts.append(
+                "hubs: "
+                + ", ".join(
+                    f"{hub_names.get(cid) or handle_registry.try_format(kind, cid, chunk=True) or cid} ↔{deg}"
+                    for cid, deg in stars
+                )
+            )
+    return " · ".join(parts)
+
+
 def _headline(
     *,
     handle: str,
@@ -706,22 +842,22 @@ def _headline(
 def _render_per_chunk(
     *,
     handle: str,
-    blocks: Sequence[Any],
+    groups: Sequence[tuple[list[Any], list[str]]],
+    n_total: int,
     scope: tuple[int, int] | None,
     readiness_line: str | None = None,
+    meta_line: str | None = None,
 ) -> str:
     """Short-range path: one row per chunk, per-chunk keywords as label.
 
-    Same ``(handle, keywords)`` schema as the bucketed path — agents
-    get a uniform contract regardless of range size. A run of
-    all-copyright/licence chunks folds into one ``~lo..hi`` row
-    (gr531128). For the actual chunk text, use ``get(...)`` without
-    ``view='toc'``.
+    Same ``(handle, size, keywords)`` schema as the bucketed path —
+    agents get a uniform contract regardless of range size. A run of
+    all-copyright/licence chunks arrives already folded into one
+    ``~lo..hi`` group (:func:`_clusters`, gr531128). For the actual
+    chunk text, use ``get(...)`` without ``view='toc'``.
     """
     rows: list[dict[str, str]] = []
-    for bucket, label in _fold_copyright_singles(
-        [([b], _top_keywords([b], top_k=_LABEL_TOP_K)) for b in blocks]
-    ):
+    for bucket, label in groups:
         lo_pos, hi_pos = bucket[0].ord, bucket[-1].ord
         row_handle = (
             f"{handle}~{lo_pos}" if lo_pos == hi_pos else f"{handle}~{lo_pos}..{hi_pos}"
@@ -735,13 +871,14 @@ def _render_per_chunk(
                 "keywords": ", ".join(label),
             }
         )
-    n_total = len(blocks)
     if scope is not None:
         head = f"# {handle} sub-TOC ~{scope[0]}..{scope[1]} — {n_total} chunks"
     else:
         head = f"# {handle} TOC — {n_total} chunks"
     if readiness_line:
         head = f"{head}\n{readiness_line}"
+    if meta_line:
+        head = f"{head}\n{meta_line}"
     table = render_agent_table(rows, schema=["handle", "size", "keywords"])
     return f"{head}\n\n{table}"
 

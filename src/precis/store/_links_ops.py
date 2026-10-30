@@ -33,6 +33,7 @@ Mixin assumes the concrete Store provides ``self.pool``.
 from __future__ import annotations
 
 import json
+from collections import Counter
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from contextvars import ContextVar
@@ -1910,6 +1911,38 @@ class LinksMixin:
         with self.pool.connection() as conn:
             rows = conn.execute(sql, (ref_ids, ref_ids)).fetchall()
         return {int(r[0]): int(r[1]) for r in rows}
+
+    def count_links_for_chunks(
+        self, chunk_ids: list[int]
+    ) -> tuple[int, dict[int, int]]:
+        """Return ``(distinct_link_count, {chunk_id: degree})`` for a batch.
+
+        Chunk-granular twin of :meth:`count_links_for_refs` — the toc meta
+        line's link read (fable-review design call b, WU6). One UNION ALL
+        round-trip carries ``link_id`` so the caller gets both numbers it
+        renders from a single query: the row-distinct total of links
+        touching the set (an intra-range edge counts once, not twice) and
+        each member's in+out degree (the same link counts once per
+        endpoint). Backed by the partial ``links_{src,dst}_chunk_idx``
+        indexes; missing chunk ids in the degree dict mean zero links.
+        """
+        if not chunk_ids:
+            return 0, {}
+        sql = (
+            "SELECT link_id, chunk_id FROM ("
+            "  SELECT link_id, src_chunk_id AS chunk_id FROM links "
+            "    WHERE src_chunk_id = ANY(%s)"
+            "  UNION ALL"
+            "  SELECT link_id, dst_chunk_id AS chunk_id FROM links "
+            "    WHERE dst_chunk_id = ANY(%s)"
+            ") sub"
+        )
+        with self.pool.connection() as conn:
+            rows = conn.execute(sql, (list(chunk_ids), list(chunk_ids))).fetchall()
+        return (
+            len({int(r[0]) for r in rows}),
+            dict(Counter(int(r[1]) for r in rows)),
+        )
 
     def link_rel_summary_for_refs(
         self, ref_ids: list[int]

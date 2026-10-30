@@ -120,6 +120,17 @@ class ChunkListingStore(Protocol):
     def chunks(self) -> _ChunksAccessor: ...
 
 
+class TocStore(ChunkListingStore, Protocol):
+    """``render_from_store``'s surface: chunk listing plus the two bulk
+    reads its meta line needs — one links query and one chunk-tag query
+    per render, never per row (fable-review design call b, WU6)."""
+
+    def count_links_for_chunks(
+        self, chunk_ids: list[int]
+    ) -> tuple[int, dict[int, int]]: ...
+    def chunk_tag_counts(self, chunk_ids: list[int]) -> list[tuple[str, str, int]]: ...
+
+
 # ── long-tail, export/reading/taproot/pathway/backfill/pcb batch ───────
 
 
