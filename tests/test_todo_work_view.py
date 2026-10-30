@@ -130,6 +130,51 @@ def test_work_view_counts_agents_by_handle_and_lease(
     assert "melchior reported" in out
 
 
+def test_work_view_folds_child_jobs_into_a_cell(handler: TodoHandler, hub: Hub) -> None:
+    from precis.store.types import Tag
+
+    store = hub.live_store
+    t = _tree(handler, store)
+    jobs = [
+        store.insert_ref(
+            kind="job", slug=None, title=f"plan_tick {i}", parent_id=t["a"]
+        )
+        for i in range(3)
+    ]
+    store.add_tag(
+        jobs[0].id, Tag.parse_strict("STATUS:running", kind="job"), set_by="system"
+    )
+    store.add_tag(
+        jobs[1].id, Tag.parse_strict("STATUS:succeeded", kind="job"), set_by="system"
+    )
+    store.add_tag(
+        jobs[2].id, Tag.parse_strict("STATUS:failed", kind="job"), set_by="system"
+    )
+    out = handler.search(view="work").body
+
+    a_line = next(ln for ln in out.splitlines() if f"td{t['a']}" in ln)
+    assert "jobs=3(1 live)" in a_line
+    # no job gets a row of its own
+    assert "plan_tick" not in out
+    assert f"jo{jobs[0].id}" not in out
+    b_line = next(ln for ln in out.splitlines() if f"td{t['b']}" in ln)
+    assert "jobs=" not in b_line
+
+
+def test_work_view_renders_a_nested_served_todo_once(
+    handler: TodoHandler, hub: Hub
+) -> None:
+    store = hub.live_store
+    t = _tree(handler, store)
+    # the slice serves the quest directly *and* sits under the served root
+    store.add_link(src_ref_id=t["a"], dst_ref_id=t["quest"], relation="serves")
+    out = handler.search(view="work").body
+
+    assert sum(1 for ln in out.splitlines() if f"td{t['a']}" in ln) == 1
+    assert "unassigned roots" in out  # the lone strategic still lands there
+    assert f"td{t['a']}" not in out.split("unassigned roots")[1]
+
+
 def test_work_view_empty_store(handler: TodoHandler) -> None:
     out = handler.search(view="work").body
     assert "0 quests with work in service" in out

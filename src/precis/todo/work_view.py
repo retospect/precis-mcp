@@ -1,10 +1,13 @@
 """The work view — one read-only hierarchy of what is in flight.
 
 ``search(kind='todo', view='work')`` renders quest → the todos that
-``serves`` it → their subtrees, one row per node with STATUS, prio, the
-``claimed-by:`` lease and the number of fleet agents on it; then the
-strategic roots that serve no quest ("unassigned"); then the fleet hosts
-and when they last reported. Dark-factory step 1 (td540840,
+``serves`` it → their subtrees, one row per todo with STATUS, prio, the
+``claimed-by:`` lease, the number of fleet agents on it and its child jobs
+folded into one ``jobs=N`` cell (a job is execution detail, not a row);
+then the strategic roots that serve no quest ("unassigned"); then the
+fleet hosts and when they last reported. A todo that serves the quest
+directly while also sitting inside another served root renders once, in
+the larger tree. Dark-factory step 1 (td540840,
 ``docs/backlog/dark-factory.md``): every later step reads this tree.
 
 :func:`render_tree_ring` is the todo tree as an eye ring — parent,
@@ -134,6 +137,7 @@ def _row(
     tags_by_ref: dict[int, list[str]],
     prios: dict[int, int | None],
     agents: list[dict[str, Any]],
+    jobs: tuple[int, int] = (0, 0),
 ) -> str:
     rid = int(node["id"])
     tags = tags_by_ref.get(rid, [])
@@ -149,27 +153,43 @@ def _row(
         cells.append(f"prio={prio}")
     if n_agents:
         cells.append(f"agents={n_agents}")
+    n_jobs, n_live = jobs
+    if n_jobs:
+        cells.append(f"jobs={n_jobs}" + (f"({n_live} live)" if n_live else ""))
     indent = "  " * depth
     return f"{indent}{' '.join(cells)} — {_first_line(node['title'])}"
+
+
+#: Job STATUS values that count as live in the ``jobs=N(M live)`` cell.
+_LIVE_JOB = frozenset({"queued", "running"})
 
 
 def _render_root(
     store: Store,
     root: Ref,
+    rows: list[dict[str, Any]],
     *,
     agents: list[dict[str, Any]],
     out: list[str],
 ) -> None:
-    rows = views._fetch_subtree(store, root.id)
+    """Append the rows for one served root; ``rows`` is its
+    :func:`views._fetch_subtree` result (todos and their child jobs)."""
     if not rows:
         return
     ids = [r["id"] for r in rows]
     statuses = views._status_of_many(store, ids)
     tags_by_ref = views._all_open_tags(store, ids)
-    refs = store.fetch_refs_by_ids(set(ids))
-    prios = {i: (refs[i].prio if i in refs else None) for i in ids}
+    todo_ids = [r["id"] for r in rows if r["kind"] != "job"]
+    refs = store.fetch_refs_by_ids(set(todo_ids))
+    prios = {i: (refs[i].prio if i in refs else None) for i in todo_ids}
     by_parent: dict[int | None, list[dict[str, Any]]] = {}
+    job_counts: dict[int, tuple[int, int]] = {}
     for r in rows:
+        if r["kind"] == "job":
+            n, live = job_counts.get(r["parent_id"], (0, 0))
+            is_live = statuses.get(r["id"], "open") in _LIVE_JOB
+            job_counts[r["parent_id"]] = (n + 1, live + int(is_live))
+            continue
         by_parent.setdefault(r["parent_id"], []).append(r)
     for children in by_parent.values():
         children.sort(
@@ -194,6 +214,7 @@ def _render_root(
                     tags_by_ref=tags_by_ref,
                     prios=prios,
                     agents=agents,
+                    jobs=job_counts.get(node["id"], (0, 0)),
                 )
             )
             shown += 1
@@ -224,9 +245,20 @@ def render_work(store: Store, *, now: datetime | None = None) -> Response:
         status = _quest_status(store, q.id)
         prio = f" prio={q.prio}" if q.prio is not None else ""
         lines = [f"◆ {_h('quest', q.id)} [{status}]{prio} — {_first_line(q.title)}"]
+        served.update(r.id for r in roots)
+        # A served todo that also sits inside another served root's
+        # subtree renders once, in the containing tree.
+        subtrees = {r.id: views._fetch_subtree(store, r.id) for r in roots}
+        nested = {
+            row["id"]
+            for rid, rows in subtrees.items()
+            for row in rows
+            if row["id"] != rid
+        }
         for root in roots:
-            served.add(root.id)
-            _render_root(store, root, agents=agents, out=lines)
+            if root.id in nested:
+                continue
+            _render_root(store, root, subtrees[root.id], agents=agents, out=lines)
         rank = 0 if status == "active" else 1
         blocks.append(((rank, q.prio if q.prio is not None else 5), lines))
     blocks.sort(key=lambda b: b[0])
