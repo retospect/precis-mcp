@@ -233,7 +233,7 @@ put(
     kind="finding",
     title="gate-bias 2.4 kV / 30 s on Si/SiO2",
     body="2.4 kV across the 50 nm gate oxide for 30 s, Cu top contact, N2.",
-    cited_in="miller23a~42",
+    args={"cited_in": "miller23a~42"},
 )  # the chunk where YOU read it (corpus handle)
 # → cite [fi<id>] inline; the chase grounds it on the primary once found
 ```

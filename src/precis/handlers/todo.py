@@ -95,6 +95,7 @@ from precis.utils.edit_resolve import (
     render_dry_run_header,
 )
 from precis.utils.eye_render import parse_extent
+from precis.utils.match_all import fold_match_all_q
 from precis.utils.next_block import render_next_section
 from precis.utils.secret_scan import mask_secrets
 from precis.workers.working_set import Extent
@@ -527,6 +528,7 @@ class TodoHandler(NumericRefHandler):
         under: str | int | None = None,
         **_kw: Any,
     ) -> Response:
+        q = fold_match_all_q(q)
         # ``view='count'`` is the shared numeric-ref aggregate (total +
         # group_by facets) — it takes no tree args, so under= (todo's
         # own subtree scope) is refused rather than silently dropped.

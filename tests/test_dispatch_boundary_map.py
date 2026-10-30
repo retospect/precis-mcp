@@ -7,11 +7,17 @@ a case here fails ``test_every_row_has_a_case``.
 
 from __future__ import annotations
 
+import email.message
+import urllib.error
+
+import anthropic
 import httpx
+import openai
 import psycopg
 import psycopg.errors as pge
 import psycopg_pool
 import pytest
+import requests.exceptions
 
 from precis.errors import Upstream
 from precis.runtime import PrecisRuntime
@@ -34,6 +40,15 @@ _CASES: dict[type[BaseException], BaseException] = {
         _SECRET, request=_REQ, response=httpx.Response(503, request=_REQ)
     ),
     httpx.TransportError: httpx.ConnectError(_SECRET, request=_REQ),
+    urllib.error.URLError: urllib.error.URLError(_SECRET),
+    requests.exceptions.Timeout: requests.exceptions.ReadTimeout(_SECRET),
+    requests.exceptions.ConnectionError: requests.exceptions.ConnectionError(_SECRET),
+    openai.APITimeoutError: openai.APITimeoutError(_REQ),
+    openai.APIConnectionError: openai.APIConnectionError(message=_SECRET, request=_REQ),
+    anthropic.APITimeoutError: anthropic.APITimeoutError(_REQ),
+    anthropic.APIConnectionError: anthropic.APIConnectionError(
+        message=_SECRET, request=_REQ
+    ),
     TimeoutError: TimeoutError(_SECRET),
     ConnectionError: ConnectionError(_SECRET),
 }
@@ -55,6 +70,54 @@ def test_row_maps_to_upstream_with_retry_hint(cls: type[BaseException]) -> None:
     assert isinstance(mapped, Upstream)
     assert mapped.next and "retry" in str(mapped.next)
     assert "hunter2" not in mapped.cause and "10.9.8.7" not in mapped.cause
+
+
+def _http_error(code: int) -> urllib.error.HTTPError:
+    return urllib.error.HTTPError(
+        "https://example.invalid/x",
+        code,
+        f"HTTP {code} {_SECRET}",
+        email.message.Message(),
+        None,
+    )
+
+
+def test_http_error_4xx_is_non_retry_not_unreachable() -> None:
+    # HTTPError subclasses URLError — without the status-code branch it
+    # maps to "could not be reached" + retry hint.
+    mapped = d.map_boundary_exception(_http_error(404))
+    assert isinstance(mapped, Upstream)
+    assert "rejected" in mapped.cause and "404" in mapped.cause
+    assert "could not be reached" not in mapped.cause
+    assert "retry the same call once" not in str(mapped.next)
+    assert "hunter2" not in mapped.cause
+
+
+def test_http_error_5xx_maps_to_upstream_with_retry() -> None:
+    mapped = d.map_boundary_exception(_http_error(503))
+    assert isinstance(mapped, Upstream)
+    assert "503" in mapped.cause and "retry" in str(mapped.next)
+
+
+def test_http_error_429_maps_to_rate_limited() -> None:
+    from precis.errors import RateLimited
+
+    mapped = d.map_boundary_exception(_http_error(429))
+    assert isinstance(mapped, RateLimited)
+    assert "429" in mapped.cause and "retry" in str(mapped.next)
+
+
+def test_wrapped_http_error_maps_through_cause_chain() -> None:
+    try:
+        try:
+            raise _http_error(404)
+        except urllib.error.URLError as inner:
+            raise RuntimeError("wrapper") from inner
+    except RuntimeError as outer:
+        mapped = d.map_boundary_exception(outer)
+    assert isinstance(mapped, Upstream)
+    assert "rejected" in mapped.cause
+    assert "retry the same call once" not in str(mapped.next)
 
 
 def test_unmapped_exception_stays_none() -> None:

@@ -48,6 +48,7 @@ from precis.utils.link_tag_ops import (
     require_tag_ops,
     validate_link_mode,
 )
+from precis.utils.match_all import fold_match_all_q
 from precis.utils.next_block import render_next_section
 from precis.utils.search_header import format_search_headline
 from precis.utils.search_merge import SearchHit, block_hits_to_search_hits
@@ -168,6 +169,7 @@ class ConversationHandler(Handler):
         page_size: int = 10,
         **_kw: Any,
     ) -> Response:
+        q = fold_match_all_q(q)
         if q is None or not q.strip():
             raise BadInput(
                 "search requires q=",

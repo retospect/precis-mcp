@@ -50,6 +50,7 @@ from precis.store import SEMANTIC_DISTANCE_FLOOR, SEMANTIC_ONLY_FOLD_DISTANCE, R
 from precis.store._mappers import _REFS_COLS_ALIASED, _row_to_ref
 from precis.utils import handle_registry
 from precis.utils.embed_query import embed_query
+from precis.utils.match_all import fold_match_all_q
 from precis.utils.search_merge import (
     SearchHit,
     block_hits_to_search_hits,
@@ -299,6 +300,7 @@ class PatentHandler(Handler):
         mode: str | None = None,
         **_kw: Any,
     ) -> Response:
+        q = fold_match_all_q(q)
         # Tag normalisation. Per-kind axis enforcement: closed tags
         # outside ``{SRC, CACHE}`` raise BadInput at the agent boundary.
         normalized_tags = Tag.normalize_filter(tags, kind="patent")

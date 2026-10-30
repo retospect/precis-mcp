@@ -69,6 +69,7 @@ from precis.taxonomy.nodes import (
 from precis.utils import handle_registry
 from precis.utils.embed_query import query_vec_for
 from precis.utils.lexical import lexical_overlap
+from precis.utils.match_all import fold_match_all_q
 
 log = logging.getLogger(__name__)
 
@@ -580,6 +581,7 @@ class TaxonHandler(NumericRefHandler):
         (excluding it), ``axis=`` to edges with that ``meta.axis``,
         ``depth=N`` to <= N hops. With ``q=`` the ranked hits are intersected
         with that set; without it the set is listed by depth then name."""
+        q = fold_match_all_q(q)
         if under is not None and _kw.get("view") == "count":
             raise BadInput(
                 "under= is not supported with view='count' on taxon search",

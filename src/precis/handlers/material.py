@@ -53,6 +53,7 @@ from precis.handlers._value_entity import (
 from precis.protocol import KindSpec
 from precis.response import Response
 from precis.utils import handle_registry
+from precis.utils.match_all import fold_match_all_q
 
 #: ``material_values.method`` (migration 0092's comment: "measured |
 #: datasheet | dft | estimated | ..."). The column carries no DB CHECK
@@ -516,6 +517,7 @@ class MaterialHandler(ValueEntityHandler):
         page_size: int = 20,
         **_kw: Any,
     ) -> Response:
+        q = fold_match_all_q(q)
         if property is not None:
             return self._search_values(
                 property=str(property).strip(),

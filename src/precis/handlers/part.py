@@ -82,6 +82,7 @@ from precis.pcb.datasheets import enqueue_one as queue_pull
 from precis.protocol import Handler, KindSpec
 from precis.response import Response
 from precis.utils import handle_registry
+from precis.utils.match_all import fold_match_all_q
 
 log = logging.getLogger(__name__)
 
@@ -655,6 +656,7 @@ class PartHandler(Handler):
         page_size: int = 20,
         **_kw: Any,
     ) -> Response:
+        q = fold_match_all_q(q)
         if q is None or not str(q).strip():
             raise BadInput(
                 "search(kind='part') requires q=",

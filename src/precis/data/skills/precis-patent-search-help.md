@@ -116,7 +116,7 @@ Next:
   get(kind='patent', id='ep4123456a1')
     → fetch this patent from OPS directly
   put(kind='finding', title='<short claim>', body='<claim + setup>',
-      cited_in='patent:ep4123456a1', scope={'...': '...'})
+      args={'cited_in': 'patent:ep4123456a1', 'scope': {'...': '...'}})
     → register as a chase target if OPS doesn't have it
 ```
 

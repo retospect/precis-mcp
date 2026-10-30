@@ -35,6 +35,7 @@ import random
 import re
 import textwrap
 import time
+import urllib.error
 from collections import OrderedDict
 from dataclasses import replace
 from typing import TYPE_CHECKING, Any
@@ -48,6 +49,7 @@ from precis.errors import (
     Internal,
     NotFound,
     PrecisError,
+    RateLimited,
     Unsupported,
     Upstream,
 )
@@ -82,6 +84,7 @@ from precis.store.revision_context import (
     revision_context,
 )
 from precis.utils import handle_registry
+from precis.utils.match_all import fold_match_all_q
 
 if TYPE_CHECKING:
     from precis.store.types import ResolvedHandle
@@ -1043,6 +1046,72 @@ def _boundary_rows() -> list[tuple[type[BaseException], str, str]]:
         ]
     except ImportError:  # pragma: no cover — httpx is a hard dependency
         pass
+    # urllib is stdlib — always present (embedder, openai_tools, fixer,
+    # liveness probes all urlopen); a URLError is an OSError, not the
+    # builtin ConnectionError the rows below already cover.
+    import urllib.error
+
+    rows += [
+        (
+            urllib.error.URLError,
+            "an upstream service could not be reached",
+            _RETRY_NEXT,
+        ),
+    ]
+    try:
+        import requests.exceptions
+
+        rows += [
+            (
+                requests.exceptions.Timeout,
+                "an upstream service timed out",
+                _RETRY_NEXT,
+            ),
+            (
+                requests.exceptions.ConnectionError,
+                "an upstream service could not be reached",
+                _RETRY_NEXT,
+            ),
+        ]
+    except ImportError:  # pragma: no cover — optional dependency
+        pass
+    # The LLM SDKs raise their own transport hierarchy — a model-endpoint
+    # fault inside a handler (dedup judge, router call) is the same
+    # transient upstream class as the HTTP rows above (gr538412).
+    try:
+        import openai
+
+        rows += [
+            (
+                openai.APITimeoutError,
+                "the model endpoint timed out",
+                _RETRY_NEXT,
+            ),
+            (
+                openai.APIConnectionError,
+                "the model endpoint could not be reached",
+                _RETRY_NEXT,
+            ),
+        ]
+    except ImportError:  # pragma: no cover — optional dependency
+        pass
+    try:
+        import anthropic
+
+        rows += [
+            (
+                anthropic.APITimeoutError,
+                "the model endpoint timed out",
+                _RETRY_NEXT,
+            ),
+            (
+                anthropic.APIConnectionError,
+                "the model endpoint could not be reached",
+                _RETRY_NEXT,
+            ),
+        ]
+    except ImportError:  # pragma: no cover — optional dependency
+        pass
     rows += [
         (TimeoutError, "an upstream call timed out", _RETRY_NEXT),
         (ConnectionError, "an upstream connection failed", _RETRY_NEXT),
@@ -1050,14 +1119,50 @@ def _boundary_rows() -> list[tuple[type[BaseException], str, str]]:
     return rows
 
 
-def map_boundary_exception(exc: BaseException) -> Upstream | None:
-    """Map a library exception to ``Upstream`` + retry hint, else ``None``
-    (the caller then falls back to ``Internal``). Walks the cause chain."""
+def _map_http_error(err: urllib.error.HTTPError) -> PrecisError:
+    """Map a urllib ``HTTPError`` by its status code.
+
+    ``HTTPError`` subclasses ``URLError``, so the table's generic
+    URLError row would mislabel a 4xx "could not be reached" and advise
+    a retry the upstream already refused. A 429 is throttle — the
+    ``RateLimited`` envelope tells the agent exactly that; another 4xx
+    is the request being rejected (retrying verbatim changes nothing),
+    a 5xx is the transient class the table is for.
+    """
+    code = err.code if isinstance(err.code, int) else None
+    if code == 429:
+        return RateLimited(
+            "an upstream service throttled the request (HTTP 429)",
+            next="wait a minute, then retry the call once; "
+            "if it 429s again, file a gripe naming it",
+        )
+    if code is not None and 400 <= code < 500:
+        return Upstream(
+            f"an upstream service rejected the request (HTTP {code})",
+            next="the same call will fail again — fix the arguments "
+            "or file a gripe naming it",
+        )
+    status = f"HTTP {code}" if code is not None else type(err).__name__
+    return Upstream(
+        f"an upstream service answered with an error status ({status})",
+        next=_RETRY_NEXT,
+    )
+
+
+def map_boundary_exception(exc: BaseException) -> PrecisError | None:
+    """Map a library exception to ``Upstream``/``RateLimited`` + retry
+    hint, else ``None`` (the caller then falls back to ``Internal``).
+    Walks the cause chain."""
     rows = _boundary_rows()
     seen: set[int] = set()
     cur: BaseException | None = exc
     while cur is not None and id(cur) not in seen:
         seen.add(id(cur))
+        # Checked before the rows: HTTPError subclasses URLError, and
+        # the table row can't see the status code that picks the
+        # answer (see _map_http_error).
+        if isinstance(cur, urllib.error.HTTPError):
+            return _map_http_error(cur)
         for cls, cause, nxt in rows:
             if isinstance(cur, cls):
                 return Upstream(f"{cause} ({type(cur).__name__})", next=nxt)
@@ -1663,6 +1768,10 @@ class DispatchMixin(RuntimeShape):
         if verb == "search":
             self._hoist_spray_args(args)
             self._hoist_source_facet_args(args)
+            # ``q='*'`` is the match-all spelling (gr538071): fold
+            # before any routing decision (under= listing,
+            # source-search gate) reads it as a real query.
+            args["q"] = fold_match_all_q(args.get("q"))
             note, listing_kinds = self._resolve_under(args)
         if verb == "search" and (
             args.get("uncited") is not None

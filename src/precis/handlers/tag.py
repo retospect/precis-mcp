@@ -35,6 +35,7 @@ from precis.format import render_agent_table
 from precis.protocol import Handler, KindSpec
 from precis.response import Response
 from precis.store.types import _CLOSED_VOCAB
+from precis.utils.match_all import fold_match_all_q
 from precis.utils.next_block import render_next_section
 from precis.utils.search_header import format_search_headline
 
@@ -120,6 +121,7 @@ class TagHandler(Handler):
         with a divider — the cosine distance is a hint, not the
         relevance signal.
         """
+        q = fold_match_all_q(q)
         # Empty-q list-mode delegates to the get-list renderer so the
         # body shape stays uniform.
         if q is None or not q.strip():

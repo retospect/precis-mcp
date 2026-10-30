@@ -61,6 +61,7 @@ from precis.utils.link_tag_ops import (
     require_tag_ops,
     validate_link_mode,
 )
+from precis.utils.match_all import fold_match_all_q
 
 # Soft staleness TTL. A node older than this still renders (cached), but
 # carries a "may be stale — refresh" hint; the model decides whether to
@@ -412,6 +413,7 @@ class OrcidHandler(Handler):
         mode: str | None = None,
         **_kw: Any,
     ) -> Response:
+        q = fold_match_all_q(q)
         if q is None or not q.strip():
             raise BadInput(
                 "search requires q=",

@@ -57,6 +57,7 @@ from precis.utils.http import (
     policy_for,
     polite_user_agent,
 )
+from precis.utils.match_all import fold_match_all_q
 from precis.utils.next_block import render_next_section
 from precis.utils.optional_deps import require_optional
 from precis.utils.search_header import format_search_headline
@@ -432,6 +433,7 @@ class YouTubeHandler(CacheBackedHandler):
         ``per_paper`` (default 1) chunks per video so one long talk
         can't flood the page. ``page=`` pages the merged video list.
         """
+        q = fold_match_all_q(q)
         if q is None or not q.strip():
             raise BadInput(
                 "search requires q= for kind='youtube'",

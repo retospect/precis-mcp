@@ -127,6 +127,7 @@ from precis.utils import handle_registry
 from precis.utils.glyph_health import glyph_caveat
 from precis.utils.link_tag_ops import apply_tag_ops
 from precis.utils.link_target import LinkTarget, parse_link_target
+from precis.utils.match_all import fold_match_all_q
 from precis.utils.ref_hybrid import fused_ref_hits
 from precis.utils.search_merge import SearchHit, ref_hits_to_search_hits
 from precis.utils.url import canonical_url, is_http_url
@@ -791,7 +792,19 @@ class FindingHandler(NumericRefHandler):
             # Collision on pub_id: this finding already exists.
             # Look up the existing ref_id and return it so the
             # caller sees a deterministic "exists" result.
-            return self._collision_response(pub_id)
+            resp = self._collision_response(pub_id)
+            if meta:
+                from dataclasses import replace
+
+                resp = replace(
+                    resp,
+                    body=resp.body
+                    + (
+                        "\nnote: meta= dropped — the put converged on the "
+                        "existing row; no new ref was minted"
+                    ),
+                )
+            return resp
         if extra_target is not None and extra_target.kind == "part":
             self._enqueue_part_datasheet(extra_target.ref_id)
 
@@ -826,6 +839,13 @@ class FindingHandler(NumericRefHandler):
                     ref.id,
                 )
 
+        meta_line = ""
+        if meta:
+            stored = ", ".join(f"{k}={meta[k]!r}" for k in sorted(meta))
+            meta_line = (
+                f"meta: stored {stored} — verify with "
+                f"get(id='fi{ref.id}', view='raw')\n"
+            )
         return self._facts_note(
             Response(
                 body=(
@@ -833,6 +853,7 @@ class FindingHandler(NumericRefHandler):
                     f"title: {title_clean}\n"
                     f"frontier: {target.raw if target is not None else target_handle}\n"
                     f"status: STATUS:{initial_status}\n"
+                    f"{meta_line}"
                     f"placeholder: [{pub_id}] (use in text; precis resolve "
                     f"substitutes the primary cite_key once STATUS:established)"
                 )
@@ -1521,6 +1542,7 @@ class FindingHandler(NumericRefHandler):
         ``state | support | flags`` once any hit is a claim hub);
         ``get(kind='finding', id=N)`` for the full begat chain.
         """
+        q = fold_match_all_q(q)
         base_tags: list[str] = list(tags) if tags else []
         resolved_trust = (trust or "").strip().lower() or None
         if resolved_trust is not None and resolved_trust not in FINDING_TRUST_TIERS:
@@ -2261,6 +2283,23 @@ class FindingHandler(NumericRefHandler):
             for k in sorted(scope):
                 lines.append(f"  {k}: {scope[k]}")
 
+        # The machine-writer annotation (meta.{model,prompt_version,
+        # run_id,why} — gr538466): surfaced on the default view so
+        # provenance is checkable without dropping to view='raw' (which
+        # still shows the full meta dump).
+        writer = {
+            k: meta[k]
+            for k in ("model", "prompt_version", "run_id", "why")
+            if meta.get(k)
+        }
+        if writer:
+            lines.append("")
+            lines.append(
+                "written by: "
+                + ", ".join(f"{k}={v}" for k, v in sorted(writer.items()))
+                + "  (full meta: view='raw')"
+            )
+
         if primary_cite:
             lines.append("")
             lines.append(f"primary: {primary_cite}")
@@ -2452,8 +2491,12 @@ class FindingHandler(NumericRefHandler):
         original input string (useful for diagnostics + the
         create-ack message).
         """
-        if ":" not in raw:
-            # Bare handle → assume paper kind, the dominant case.
+        if ":" not in raw and handle_registry.parse(raw) is None:
+            # Bare cite_key → assume paper kind, the dominant case. A
+            # well-formed universal handle (``pc<N>``, ``pk<N>``,
+            # ``pt<N>``, …) resolves directly instead — prefixing
+            # ``paper:`` would misread a patent chunk handle as a paper
+            # cite_key (gr538358).
             qualified = f"paper:{raw}"
         else:
             qualified = raw
@@ -2464,7 +2507,8 @@ class FindingHandler(NumericRefHandler):
                 f"cited_in={raw!r} could not be resolved: {exc}",
                 next=(
                     "cited_in accepts cite_key (bare or 'paper:<key>') "
-                    "with optional '~<ord>' chunk selector"
+                    "with optional '~<ord>' chunk selector, or a chunk "
+                    "handle ('pc42', 'pk42')"
                 ),
             ) from exc
 

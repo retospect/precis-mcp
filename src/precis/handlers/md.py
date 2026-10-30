@@ -75,6 +75,7 @@ from precis.md_index import (
 from precis.protocol import Handler, KindSpec
 from precis.response import Response
 from precis.utils.embed_query import embed_query
+from precis.utils.match_all import fold_match_all_q
 from precis.utils.next_block import render_next_section
 from precis.utils.search_header import format_search_headline
 
@@ -427,6 +428,7 @@ class MdHandler(Handler):
         - alias/path-prefix (``'docs/backlog'``) — restrict to a
           subtree or single file of one root
         """
+        q = fold_match_all_q(q)
         if q is None or not q.strip():
             raise BadInput(
                 "search requires q=",

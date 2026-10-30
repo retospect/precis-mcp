@@ -50,7 +50,7 @@ put(
     kind="finding",
     title="<claim> vs code default mismatch",
     body="paper states <X>; repo default is <Y>",
-    cited_in="pc<id>",
+    args={"cited_in": "pc<id>"},
 )
 link(kind="finding", id=<finding-id>, target="pa<id>", rel="disputes")
 ```

@@ -41,6 +41,7 @@ from precis.utils.link_tag_ops import (
     validate_relation,
 )
 from precis.utils.link_target import parse_link_target
+from precis.utils.match_all import fold_match_all_q
 from precis.utils.next_block import render_next_section
 from precis.utils.timeutil import as_utc
 from precis.workers._mint import active_job_id
@@ -3107,6 +3108,7 @@ class JobHandler(NumericRefHandler):
         job_type: str | None = None,
         **kw: Any,
     ) -> Response:
+        kw["q"] = fold_match_all_q(kw.get("q"))
         if job_type is not None and not str(job_type).strip():
             raise BadInput(
                 "job_type= must be a non-empty job_type name",

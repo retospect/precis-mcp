@@ -115,7 +115,7 @@ def test_mixed_distances_omit_only_weak_uncorroborated(store: Store) -> None:
     assert "(0.10)" in body
     assert "(rank=" in body
     assert "1 weak match(es) omitted (distance > 0.42)" in body
-    assert "view='ids'" in body
+    assert "view='index'" in body
     assert "more(cursor=" not in body
 
 

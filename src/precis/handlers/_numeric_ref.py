@@ -84,6 +84,7 @@ from precis.utils.link_tag_ops import (
     validate_relation,
 )
 from precis.utils.link_target import mint_lazy_link_target, parse_link_target
+from precis.utils.match_all import fold_match_all_q
 from precis.utils.next_block import render_next_section
 from precis.utils.ref_hybrid import fused_ref_hits
 from precis.utils.search_header import format_search_headline
@@ -459,6 +460,11 @@ class NumericRefHandler(Handler):
     spec: ClassVar[KindSpec]
     kind: ClassVar[str]
     corpus_slug: ClassVar[str] = "default"
+    #: The ``search`` view that renders the complete top-N handle list on
+    #: this kind — the weak-match fold hint names it, so a kind that
+    #: refuses ``view='ids'`` (memory accepts ``'index'``/``'count'``)
+    #: points the caller at a view its search accepts (gr538076).
+    search_ids_view: ClassVar[str] = "ids"
     #: ``get``/``tag`` accept ``id=[...]`` (one call, many refs). Opt-in per
     #: kind; the base ``_coerce_id`` refuses a list everywhere else with a
     #: ``BadInput`` that names this form, so the one shape agents try after
@@ -988,6 +994,10 @@ class NumericRefHandler(Handler):
         id_max: int | str | None = None,
         **_kw: Any,
     ) -> Response:
+        # Fold the ``q='*'`` match-all spelling before any view dispatch
+        # (gr538071) — the shared helper's docstring says why. One door
+        # for every numeric-ref kind that funnels through this search.
+        q = fold_match_all_q(q)
         # ``view='ids'`` renders the same filtered set as one bare handle
         # per line — compact enough that a full page never mid-elides
         # behind a more() cursor (gr514477). ``view='list'`` is the same
@@ -2495,7 +2505,8 @@ class NumericRefHandler(Handler):
         if weak:
             lines.append(
                 f"── {len(weak)} weak match(es) omitted "
-                f"(distance > {fold_distance}); refine q= or use view='ids' "
+                f"(distance > {fold_distance}); refine q= or use "
+                f"view={self.search_ids_view!r} "
                 "for the complete top-N handle list ──"
             )
         if not shown:

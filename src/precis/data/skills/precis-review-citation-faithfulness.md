@@ -168,7 +168,7 @@ pc1843's actual text reads:
 
 Severity: SUBSTANTIVE — the cited chunk supports ~10%, not 12%. The
 claim's quantitative core breaks.""",
-    cited_in="pc1843",
+    args={"cited_in": "pc1843"},
     tags=["AUDIT:cited-without-support"],
 )
 ```

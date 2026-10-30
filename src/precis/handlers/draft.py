@@ -76,6 +76,7 @@ from precis.utils.link_tag_ops import (
     require_link_target,
     validate_link_mode,
 )
+from precis.utils.match_all import fold_match_all_q
 from precis.utils.record_cite import record_cite_handles, record_type_of
 from precis.utils.search_merge import (
     SearchHit,
@@ -1131,6 +1132,7 @@ class DraftHandler(Handler):
         section, or just the chunk if a leaf), a draft slug searches that
         whole draft, nothing searches every draft. ``headings_only=True``
         restricts hits to section headings (a semantic TOC jump)."""
+        q = fold_match_all_q(q)
         if q is None or not str(q).strip():
             raise BadInput(
                 "search(kind='draft') requires q=",

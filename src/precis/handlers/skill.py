@@ -66,6 +66,7 @@ from precis.skill_index import (
     chunk_by_h2,
 )
 from precis.store import _refs_ops
+from precis.utils.match_all import fold_match_all_q
 from precis.utils.skill_common import (
     VALID_TAGS,
     WIKILINK_RE,
@@ -1147,6 +1148,7 @@ class SkillHandler(Handler):
         mode: str | None = None,
         **_kw: Any,
     ) -> Response:
+        q = fold_match_all_q(q)
         # ``mode=`` (gr488917, silently ignored before): ``hybrid`` (the
         # default) merges both streams; ``semantic`` drops the lexical
         # ones; ``lexical`` drops the embedder; ``verbatim`` keeps only

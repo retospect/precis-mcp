@@ -73,18 +73,24 @@ put(
         "for 30 s on Si/SiO2 MOSCAPs with a Cu top contact "
         "(sputtered), N2 ambient, room temp."
     ),
-    scope={
-        "electrode": "Cu",
-        "ambient": "N2",
-        "technique": "DC ramp",
-        "substrate": "Si/SiO2",
+    args={
+        "scope": {
+            "electrode": "Cu",
+            "ambient": "N2",
+            "technique": "DC ramp",
+            "substrate": "Si/SiO2",
+        },
+        "cited_in": "pc42",
     },
-    cited_in="pc42",
 )
 # → created finding id=42  pub_id=ab12c3
 #   placeholder: [ab12c3]   (the base32 pub_id; precis resolve
 #                            substitutes the cite_key once established)
 ```
+
+Kind-specific fields go inside `args={...}` — top-level `scope=`/
+`cited_in=`/`wants=`/`provenance=`/`supporters=` still work but answer
+with a deprecation note.
 
 For an ordinary chase finding, required: `title`, `body`, `cited_in`.
 Recommended: `scope` (dict —
@@ -113,8 +119,10 @@ For an ordinary chase, `cited_in=` takes a **handle** — the chunk
 where you read the claim (`pc<id>`, copied from search/get output):
 
 ```python
-cited_in = "pc42"  # chunk handle — what output hands you back
-cited_in = "patent:ep1234567b1"  # patent source, by DOCDB
+args={"cited_in": "pc42"}  # paper chunk handle — what output hands you back
+args={"cited_in": "pk42"}  # patent chunk handle (pk<id> from patent output)
+args={"cited_in": "patent:ep1234567b1"}  # patent source, by DOCDB
+args={"cited_in": "patent:ep1234567b1~7"}  # patent source, one chunk
 ```
 
 **A bare `doi:`/`arxiv:` is NOT accepted** — `cited_in='doi:10.1234/xyz'`
@@ -185,8 +193,10 @@ put(
         "Device prep: 2.4 kV applied across the 50 nm gate oxide "
         "for 30 s on Si/SiO2 MOSCAPs, N2 ambient."
     ),
-    wants=[{"doi": "10.1234/xyz"}],  # or {'arxiv':…} or {'title':…,'url':…}
-    provenance="pc17",  # the research note / hunt todo / citing chunk
+    args={
+        "wants": [{"doi": "10.1234/xyz"}],  # or {'arxiv':…} or {'title':…,'url':…}
+        "provenance": "pc17",  # the research note / hunt todo / citing chunk
+    },
 )
 # → created finding id=43  pub_id=de45f6
 #   status: STATUS:acquiring
@@ -271,9 +281,9 @@ to file) doesn't move a hub off `'verified'` or into this tier; it
 surfaces instead as the `open-questions:<n>` flag below.
 
 ```python
-search(kind="finding", q="amine CO2 capacity", trust="verified")  # lean-on-able
-search(kind="finding", q="amine CO2 capacity", trust="disputed")  # what's opposed?
-search(kind="finding", q="amine CO2 capacity", trust="signed")  # rare: 4 hubs
+search(kind="finding", q="amine CO2 capacity", args={"trust": "verified"})  # lean-on-able
+search(kind="finding", q="amine CO2 capacity", args={"trust": "disputed"})  # what's opposed?
+search(kind="finding", q="amine CO2 capacity", args={"trust": "signed"})  # rare: 4 hubs
 ```
 
 An ordinary chase finding has no publish posture and never will, so it
@@ -448,8 +458,8 @@ unicode ⏳ for `*` on non-xetex/luatex engines.
 multi-cites the chase can't disambiguate. Pick the right one:
 
 ```python
-edit(kind="finding", id=42, pick_candidate="miller23a")
-edit(kind="finding", id=42, pick_candidate=42)  # or by ref_id
+edit(kind="finding", id=42, args={"pick_candidate": "miller23a"})
+edit(kind="finding", id=42, args={"pick_candidate": 42})  # or by ref_id
 ```
 
 If the chase stalls with `STATUS:dead_chain`, the frontier chunk had
@@ -463,8 +473,8 @@ why (stored as `meta.close_out_reason`):
 edit(
     kind="finding",
     id=42,
-    pick_candidate="self",
     reason="held paper chunk states the figure; dead_chain stale",
+    args={"pick_candidate": "self"},
 )
 ```
 
@@ -515,12 +525,14 @@ undigitized source is legitimately citeable despite no digital copy being
 obtainable:
 
 ```python
-edit(kind="finding", id=42, unacquirable_note="print-only 1962 monograph")
+edit(kind="finding", id=42, args={"unacquirable_note": "print-only 1962 monograph"})
 edit(
     kind="finding",
     id=42,
-    unacquirable_note="abstract states the figure",
-    unacquirable_mode="abstract",
+    args={
+        "unacquirable_note": "abstract states the figure",
+        "unacquirable_mode": "abstract",
+    },
 )
 ```
 

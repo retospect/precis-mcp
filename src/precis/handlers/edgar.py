@@ -50,6 +50,7 @@ from precis.response import Response
 from precis.store import SEMANTIC_DISTANCE_FLOOR, Ref, Tag
 from precis.utils import handle_registry
 from precis.utils.embed_query import embed_query
+from precis.utils.match_all import fold_match_all_q
 from precis.utils.search_merge import (
     SearchHit,
     block_hits_to_search_hits,
@@ -205,6 +206,7 @@ class EdgarHandler(Handler):
         **_kw: Any,
     ) -> Response:
         normalized_tags = Tag.normalize_filter(tags, kind="edgar")
+        q = fold_match_all_q(q)
         if reach not in ("both", "local", "remote"):
             raise BadInput(
                 f"invalid reach={reach!r} - expected 'both', 'local', or 'remote'",

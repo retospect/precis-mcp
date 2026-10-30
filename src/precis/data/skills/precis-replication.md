@@ -87,7 +87,7 @@ put(
     kind="finding",
     title="<mismatch summary>",
     body="paper claims <X>; the check found <Y>",
-    cited_in="pc<id>",
+    args={"cited_in": "pc<id>"},
 )
 ```
 

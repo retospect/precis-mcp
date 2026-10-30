@@ -106,6 +106,7 @@ from precis.utils.link_tag_ops import (
     validate_link_mode,
 )
 from precis.utils.link_target import parse_link_target
+from precis.utils.match_all import fold_match_all_q
 
 #: ``component_spec_values.method`` (migration 0093's comment: "measured |
 #: datasheet | estimated | ..."), plus ``standard`` — already written
@@ -1664,6 +1665,7 @@ class ComponentHandler(ValueEntityHandler):
         page_size: int = 20,
         **_kw: Any,
     ) -> Response:
+        q = fold_match_all_q(q)
         if spec is not None:
             return self._search_values(
                 spec=str(spec).strip(),

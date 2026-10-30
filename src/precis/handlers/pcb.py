@@ -196,6 +196,7 @@ from precis.utils.link_tag_ops import (
     require_link_target,
     validate_link_mode,
 )
+from precis.utils.match_all import fold_match_all_q
 from precis.utils.next_block import render_next_section
 from precis.utils.search_merge import SearchHit
 from precis.utils.units import parse_angle_deg
@@ -8877,6 +8878,7 @@ class PcbHandler(Handler):
         page_size: int = 20,
         **_kw: Any,
     ) -> Response:
+        q = fold_match_all_q(q)
         if q is None or not str(q).strip():
             raise BadInput(
                 "search(kind='pcb') requires q=",

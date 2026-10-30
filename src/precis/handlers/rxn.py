@@ -71,6 +71,7 @@ from precis.utils.link_tag_ops import (
     validate_relation,
 )
 from precis.utils.link_target import mint_lazy_link_target, parse_link_target
+from precis.utils.match_all import fold_match_all_q
 from precis.utils.slug_ref import resolve_live_slug_ref
 
 _MATURITIES: tuple[str, ...] = ("commercial", "lab", "speculative")
@@ -1208,6 +1209,7 @@ class RxnHandler(Handler):
         page_size: int = 20,
         **_kw: Any,
     ) -> Response:
+        q = fold_match_all_q(q)
         if property is not None:
             return self._search_values(
                 property_id=str(property).strip(),

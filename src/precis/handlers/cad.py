@@ -88,6 +88,7 @@ from precis.store._cad_ops import cad_source_sha
 from precis.store._mappers import SEMANTIC_DISTANCE_FLOOR
 from precis.utils import handle_registry
 from precis.utils.embed_query import embed_query
+from precis.utils.match_all import fold_match_all_q
 from precis.utils.search_merge import SearchHit
 from precis.utils.units import (
     Dimension,
@@ -1798,6 +1799,7 @@ class CadHandler(Handler):
         """Find designs by intent. Searches each design's one summary card
         (title + components + node names + description/use); ``mode=`` is the
         usual lexical / semantic / hybrid axis."""
+        q = fold_match_all_q(q)
         if q is None or not str(q).strip():
             raise BadInput(
                 "search(kind='cad') requires q=",

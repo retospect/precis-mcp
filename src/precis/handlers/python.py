@@ -93,6 +93,7 @@ from precis.utils.edit_resolve import (
 )
 from precis.utils.env import env_int
 from precis.utils.eye_render import parse_extent
+from precis.utils.match_all import fold_match_all_q
 from precis.utils.next_block import render_next_section
 from precis.utils.search_header import format_search_headline
 from precis.workers.working_set import Extent
@@ -786,6 +787,7 @@ class PythonHandler(Handler):
         - alias/path (`'myrepo/src/precis/registry.py'`) — restrict to
           one file
         """
+        q = fold_match_all_q(q)
         if q is None or not q.strip():
             raise BadInput(
                 "search requires q=",

@@ -71,6 +71,7 @@ from precis.utils.link_tag_ops import (
     require_tag_ops,
     validate_link_mode,
 )
+from precis.utils.match_all import fold_match_all_q
 from precis.utils.md_parse import (
     file_slug_from_path,
     is_valid_file_slug,
@@ -707,6 +708,7 @@ class PlaintextHandler(Handler):
         tags: list[str] | None = None,
         **_kw: Any,
     ) -> Response:
+        q = fold_match_all_q(q)
         if q is None or not q.strip():
             raise BadInput(
                 "search requires q=",

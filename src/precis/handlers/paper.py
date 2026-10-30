@@ -129,6 +129,7 @@ from precis.utils.link_tag_ops import (
     require_tag_ops,
     validate_link_mode,
 )
+from precis.utils.match_all import fold_match_all_q
 from precis.utils.next_block import render_next_section
 from precis.utils.record_cite import RECORD_TYPES, is_record_cite, record_type_of
 from precis.utils.search_merge import SearchHit, block_hits_to_search_hits
@@ -2500,6 +2501,7 @@ class PaperHandler(Handler):
         :mod:`precis.handlers._paper_search`.
         """
         kind = self.spec.kind
+        q = fold_match_all_q(q)
         linked_from_kind = (
             self._link_scope_kind(linked_from, "linked_from")
             if linked_from is not None

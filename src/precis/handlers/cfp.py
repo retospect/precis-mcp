@@ -42,6 +42,7 @@ from typing import TYPE_CHECKING, Any, ClassVar
 from precis.errors import BadInput
 from precis.handlers.paper import PaperHandler
 from precis.protocol import ArgsSpec, KindSpec
+from precis.utils.match_all import fold_match_all_q
 
 if TYPE_CHECKING:
     from precis.response import Response
@@ -187,6 +188,7 @@ class CfpHandler(PaperHandler):
         ``'recency'``. With ``q=`` ranking owns the order and ``sort=``
         is rejected. ``search(kind='cfp')`` bare enumerates the corpus.
         """
+        kw["q"] = fold_match_all_q(kw.get("q"))
         if (
             (kw.get("q") and str(kw["q"]).strip())
             or kw.get("title")

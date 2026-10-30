@@ -360,8 +360,10 @@ silently becoming a thin-air hub:
 put(
     kind="finding",
     title="Pd/C catalyzes Suzuki coupling at room temperature.",
-    scope={"catalyst": "Pd/C"},
-    supporters=[{"paper": "pa5", "source_handle": "pc293"}],
+    args={
+        "scope": {"catalyst": "Pd/C"},
+        "supporters": [{"paper": "pa5", "source_handle": "pc293"}],
+    },
 )  # -> "claim hub fi<id> …" — cite it as [fi<id>]
 ```
 

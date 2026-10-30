@@ -62,6 +62,7 @@ from precis.taxonomy.measure_units import (
 )
 from precis.taxonomy.money import MoneyTables, row_currency, split_currency
 from precis.utils import handle_registry
+from precis.utils.match_all import fold_match_all_q
 from precis.utils.slug_ref import resolve_live_slug_ref
 
 _DEFAULT_PAGE_SIZE = 20
@@ -630,6 +631,7 @@ class MeasureHandler(Handler):
         args: dict[str, Any] | None = None,
         **_kw: Any,
     ) -> Response:
+        q = fold_match_all_q(q)
         if status not in (None, "all", "live"):
             raise BadInput(
                 f"status {status!r} is not 'all' or 'live'",

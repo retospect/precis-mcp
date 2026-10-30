@@ -64,6 +64,7 @@ from precis.utils.link_tag_ops import (
     require_tag_ops,
     validate_link_mode,
 )
+from precis.utils.match_all import fold_match_all_q
 from precis.utils.next_block import render_next_section
 from precis.utils.oracle_lens import draw_lens_entry
 from precis.utils.search_header import format_search_headline
@@ -208,6 +209,7 @@ class OracleHandler(Handler):
         ``scope=<tradition-slug>`` narrows the search to a single
         tradition's entries.
         """
+        q = fold_match_all_q(q)
         if q is None or not q.strip():
             raise BadInput(
                 "search requires q=",

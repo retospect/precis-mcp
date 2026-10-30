@@ -58,6 +58,7 @@ from precis.utils.link_tag_ops import (
     require_tag_ops,
     validate_link_mode,
 )
+from precis.utils.match_all import fold_match_all_q
 from precis.utils.md_parse import block_meta, parse_markdown
 from precis.utils.mentions import LINKIFY_KINDS
 from precis.utils.next_block import render_next_section
@@ -1413,6 +1414,7 @@ class CacheBackedHandler(Handler):
         :meth:`_blocks_from_report`) will land lexical hits only —
         still useful for URL / title grep.
         """
+        q = fold_match_all_q(q)
         if q is None or not q.strip():
             raise BadInput(
                 f"search requires q= for kind={self.spec.kind!r}",

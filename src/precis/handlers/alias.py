@@ -45,6 +45,7 @@ from precis.protocol import KindSpec
 from precis.response import Response
 from precis.store.types import Ref
 from precis.utils import handle_registry
+from precis.utils.match_all import fold_match_all_q
 from precis.utils.next_block import render_next_section
 
 META_KEY = "alias"
@@ -417,6 +418,7 @@ class AliasHandler(NumericRefHandler):
         page: int = 1,
         **_kw: Any,
     ) -> Response:
+        q = fold_match_all_q(q)
         needle = (q or "").strip()
         if not needle:
             return self._recent()

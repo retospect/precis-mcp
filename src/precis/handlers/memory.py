@@ -126,6 +126,7 @@ from precis.utils.edit_resolve import (
     render_dry_run_full,
     render_dry_run_header,
 )
+from precis.utils.match_all import fold_match_all_q
 from precis.utils.memory_hubs import (
     link_hints,
     narrowing_hints,
@@ -387,6 +388,10 @@ class MemoryHandler(NumericRefHandler):
     search_body_chunks: ClassVar[bool] = True
     heat_salience_on_body_search: ClassVar[bool] = True
 
+    #: ``view='index'`` is this kind's complete-handle-list render —
+    #: ``view='ids'``/``'list'`` are refused by ``_search_inner``, so the
+    #: weak-match fold hint must name 'index' (gr538076).
+    search_ids_view: ClassVar[str] = "index"
     # get/tag/link take id=[...]; get is overridden below to render each memory in
     # full (memories are short — the point of batching them is to read them).
     batch_ids: ClassVar[bool] = True
@@ -2364,6 +2369,11 @@ class MemoryHandler(NumericRefHandler):
         ``<hook>`` is ``meta.hook`` else the body's first line). Any other
         ``view`` is refused; ``None`` is the unchanged default render.
         """
+        # ``q='*'`` is the match-all spelling (gr538071) — fold before
+        # the index view's tag-filtered listing path runs; the
+        # count/default path normalizes the same way inside
+        # super().search.
+        q = fold_match_all_q(q)
         chunk_scope = scope.strip().lower() if isinstance(scope, str) else None
         if chunk_scope == "":
             chunk_scope = None

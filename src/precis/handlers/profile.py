@@ -40,6 +40,7 @@ from precis.response import Response
 from precis.store import Tag
 from precis.store.types import Ref
 from precis.utils import handle_registry
+from precis.utils.match_all import fold_match_all_q
 from precis.utils.next_block import render_next_section
 
 
@@ -209,6 +210,7 @@ class ProfileHandler(NumericRefHandler):
         owner-scoped ``list_refs``; a q-less ``link=`` listing pages the
         link table unscoped, so it is refused (pass ``q=`` with it)."""
         login = profiles.acting_login(self.store)
+        q = fold_match_all_q(q)
         has_q = bool(q and q.strip())
         if login is not None:
             owned = [r.id for r in profiles.profiles_for_owner(self.store, login)]

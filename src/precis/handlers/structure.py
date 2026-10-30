@@ -123,6 +123,7 @@ from precis.structure.relax import (
 )
 from precis.utils import handle_registry
 from precis.utils.embed_query import embed_query
+from precis.utils.match_all import fold_match_all_q
 from precis.utils.next_block import render_next_section
 from precis.utils.search_merge import SearchHit
 
@@ -5465,6 +5466,7 @@ class StructureHandler(Handler):
     ) -> Response:
         """Find structures by intent over each design's one summary card
         (title + composition + description); ``mode=`` is lexical/semantic/hybrid."""
+        q = fold_match_all_q(q)
         if q is None or not str(q).strip():
             raise BadInput(
                 "search(kind='structure') requires q=",

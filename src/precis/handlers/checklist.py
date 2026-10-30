@@ -53,6 +53,7 @@ from precis.errors import BadInput, NotFound
 from precis.format import render_agent_table
 from precis.protocol import Handler, KindSpec
 from precis.response import Response
+from precis.utils.match_all import fold_match_all_q
 from precis.utils.notes import (
     NOTE_KINDS,
     NoteError,
@@ -959,6 +960,7 @@ class ChecklistHandler(Handler):
         page_size: int = 20,
         **_kw: Any,
     ) -> Response:
+        q = fold_match_all_q(q)
         if q is None or not str(q).strip():
             raise BadInput(
                 "search(kind='checklist') needs q=",
