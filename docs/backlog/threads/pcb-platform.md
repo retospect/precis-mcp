@@ -7,7 +7,7 @@ effort: medium
 
 ## Resume
 
-- **Next:** The lazy-netlist item's open slices (Do next 2: Slice 1's Reto decision and the `ewod-dogfood-2` re-run, then Slice 6).
+- **Next:** The lazy-netlist item's open slices (Do next 3: Slice 1's Reto decision and the `ewod-dogfood-2` re-run, then Slice 6).
 - **Blocked by:** Sequence shared generator and DRC work behind the active PCB threads.
 - **Unblocks:** A coherent component model and agent PCB interface.
 - **Acceptance:** Use [pcb-lazy-netlist-and-checks](../pcb-lazy-netlist-and-checks.md) and the verification steps in [Do next](#do-next); check current deployment and worktree state before acting.
@@ -35,11 +35,17 @@ owner on 2026-09-30, 10 prio high; this file gives them one.
 1. **backlog/pcb-workspace-code.md** — `status: ready` (Reto 2026-10-22,
    Q1–Q6 approved); construction moves to a Python script in a workspace,
    place/route/move/rip/import_epro/views/DRC stay in MCP. Ranked first
-   because it retires or reshapes items 5 and 6 and constrains 3 and 4. Its
+   because it retires or reshapes items 6 and 7 and constrains 4 and 5. Its
    ordered slices live in thread [structure-workspaces](structure-workspaces.md);
    this thread owns only the pcb-side checks (DRC `frame` column, request
    lanes) when they touch `drc.py`/`realize.py`.
-2. **backlog/pcb-lazy-netlist-and-checks.md** — `status: ready`; the
+2. **backlog/source-bundles.md** — `draft/normal`, filed 2026-10-29 from
+   gr520323 (Reto 2026-10-26): a design owns an immutable, hash-keyed
+   source snapshot via the signed upload door. Unblocks the 36 KB inline
+   batch now and answers the storage half structure-workspaces §1b still
+   has open; ranked under 1 because its shape must stay compatible with
+   the workspace run contract 1 owns.
+3. **backlog/pcb-lazy-netlist-and-checks.md** — `status: ready`; the
    netlist/role/one-check-surface model the rest of this list assumes
    exists. **Slices 2–3 shipped 2026-10-13** (one commit on worktree
    `bl-pcb-netlist-s23`, committed not landed): every footprint pad is a
@@ -56,44 +62,44 @@ owner on 2026-09-30, 10 prio high; this file gives them one.
    `ewod-dogfood-2`; Slice 6's open list (congestion cost,
    rip-up-and-reassign, spare channels) and Slice 7. Slices 9 and 6 core
    shipped 2026-10-15.
-3. **backlog/pcb-component-model.md** — `draft/high`; the
+4. **backlog/pcb-component-model.md** — `draft/high`; the
    Component/LandPattern/Instance reframe that agent-interface-gaps and
    pinout-view-and-connector-intake build on. Check against the workspace
    builder API (`pcb.part`/`pcb.Footprint`) before building.
-4. **backlog/pcb-pinout-view-and-connector-intake.md** — `draft/high`;
-   consumes 3's port/pad contract for prose-to-connector capture; also
+5. **backlog/pcb-pinout-view-and-connector-intake.md** — `draft/high`;
+   consumes 4's port/pad contract for prose-to-connector capture; also
    feeds the paper (its own §CONSIDER FOR THE PAPER cross-ref). Check
    against the workspace builder API before building.
-5. **backlog/pcb-agent-interface-gaps.md** — `draft/high`; the removal path
+6. **backlog/pcb-agent-interface-gaps.md** — `draft/high`; the removal path
    (Gap 5) is superseded by the workspace (removal = delete the script
    line; `op='remove'`/`'disconnect'` stay unbuilt). The other gaps stay,
    re-read against the workspace surface before building.
-6. **backlog/pcb-meta-blocks.md** — superseded by the workspace (meta
+7. **backlog/pcb-meta-blocks.md** — superseded by the workspace (meta
    blocks = a `@pcb.module`; `op='instantiate_block'` stays unbuilt);
    level 2 (pre-routed bundles) is pcb-workspace-code slice 3.
-7. **backlog/pcb-card-edge-outline.md** — `draft/medium`; footprint-driven
+8. **backlog/pcb-card-edge-outline.md** — `draft/medium`; footprint-driven
    outline modification, buildable now on today's footprint dict (Reto
-   2026-10-21), independent of 3's split.
-8. **backlog/pcb-usb-c-pd-nano-testboard.md** — `draft/normal`;
+   2026-10-21), independent of 4's split.
+9. **backlog/pcb-usb-c-pd-nano-testboard.md** — `draft/normal`;
    deliberately filed to be built only after the engine gaps close —
    waits on ewod-pcb's routing work, not on anything in this file.
-9. **backlog/pcb-paper-benchmark-selection.md** — `draft/normal`;
-   sequenced after 8 by the item's own stated order.
-10. **backlog/pcb-guided-place-route.md** §From pcb-0042-implementation —
+10. **backlog/pcb-paper-benchmark-selection.md** — `draft/normal`;
+   sequenced after 9 by the item's own stated order.
+11. **backlog/pcb-guided-place-route.md** §From pcb-0042-implementation —
     ADR 0042 web ratsnest/BOM, the phase machine and the deploy binaries
     (merged 2026-10-21; the rest of that file is ewod-pcb's).
-11. **backlog/pcb-graph-routing-fattens-traces.md** — `draft/normal`,
+12. **backlog/pcb-graph-routing-fattens-traces.md** — `draft/normal`,
     filed 2026-10-23 (Reto's no-flood-fill ruling, me507871): the
     pour-removal half landed in `g4-pours-off`; the survey inside says
     what "fatten traces by net property" already has (current→width
     via IPC-2221) and lacks (impedance→width, return-path→geometry,
     per-edge widths). Do not build without a further ruling.
-12. **backlog/pcb-design-flow.md** — `ready/high`, filed 2026-10-26 from
+13. **backlog/pcb-design-flow.md** — `ready/high`, filed 2026-10-26 from
     gr519925 + gr519924 (TAZ leaf dogfood): the requirements-to-fab
     skill, selection record (graph memory, selects/rejects, ruled
     2026-10-26), budget convention, consigned BOM lines, mech/coating
     checklist. Slice 1 is a skill with no code and can go now; it is
-    independent of items 1–11.
+    independent of items 1–12.
 
 ## Horizon
 
@@ -155,7 +161,7 @@ owner on 2026-09-30, 10 prio high; this file gives them one.
   intent in graph memory, re-derivable verdicts, review job, shortlist
   selection with lifecycle, design from facts, human review. Absorbed
   `pcb-design-source-provenance.md`, the ratings-validation part of
-  Do-next 2 and the checklist lifecycle TTL. **Slices 2–4 shipped
+  Do-next 3 and the checklist lifecycle TTL. **Slices 2–4 shipped
   2026-10-14** (`ds-review`): `op='pins'` annotation + `max_current_a` +
   `over_current`; `passive_rating` — catalog-description parse, the
   `fixed-derating` margin policy, pin-declared `min_dielectric`; and the
@@ -170,7 +176,7 @@ owner on 2026-09-30, 10 prio high; this file gives them one.
   missing is a pin-level link target (links are
   `kind:identifier[~selector]` and pcb has no pin selector), an extraction
   pass, and the cross-check between the footprint's pad->function and the
-  datasheet's. Sequenced behind Do-next 3 (`pcb-component-model.md`), which
+  datasheet's. Sequenced behind Do-next 4 (`pcb-component-model.md`), which
   owns pin roles/capabilities and already rules that the pass only unlocks
   "with provenance"; this is WHERE that provenance lives. Extend
   `pcb-argue-with-design.md`'s existing anchor grammar, do not mint a second
@@ -199,4 +205,4 @@ owner on 2026-09-30, 10 prio high; this file gives them one.
 - **backlog/pcb-flexboard.md** — that thread's Horizon 9.
 - **backlog/pcb-engine-plan.md** §5 — that thread's Horizon 7 (2-layer and
   n-layer stackups specifically; the rest of the file is unclaimed and
-  folds into this thread's Do-next 11).
+  folds into this thread's Do-next 12).
