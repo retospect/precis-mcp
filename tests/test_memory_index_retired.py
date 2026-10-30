@@ -30,7 +30,6 @@ import os
 import re
 import subprocess
 import sys
-import time
 from pathlib import Path
 
 import pytest
@@ -222,15 +221,19 @@ def test_hook_rotates_node_sets_keeps_newest_seven_and_skips_failures(
     first = _run_hook(tmp_path, _active_dsn())
     assert first.returncode == 0, first.stderr
     assert rotated() == []  # nothing existed to rotate on the first export
-    for i in range(9):
-        proc = _run_hook(tmp_path, _active_dsn())
-        assert proc.returncode == 0, proc.stderr
-        if i == 0:
-            assert len(rotated()) == 1
-        time.sleep(1.05)  # stamps are per second
+    # Each real hook run costs a CLI start (~10 s), so older sets are seeded
+    # directly instead of looping the hook with per-second sleeps.
+    for n in range(8):
+        old = cache / f"memory-nodes.2020010{n}T000000Z"
+        old.mkdir()
+        (old / "_sections.tsv").write_text("", encoding="utf-8")
+    second = _run_hook(tmp_path, _active_dsn())
+    assert second.returncode == 0, second.stderr
     kept = rotated()
-    assert len(kept) == 7
-    assert (kept[0] / "_sections.tsv").is_file()
+    assert len(kept) == 7  # 8 seeded + 1 rotated, pruned to the newest 7
+    assert kept[-1].name > "memory-nodes.2021"  # the fresh rotation survived
+    assert (kept[-1] / "_sections.tsv").is_file()
+    assert not (cache / "memory-nodes.20200100T000000Z").exists()
     # a failed export never rotates or prunes
     dead = _run_hook(tmp_path, "postgresql://nobody@localhost:1/none?connect_timeout=3")
     assert dead.returncode == 0, dead.stderr
