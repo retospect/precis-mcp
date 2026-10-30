@@ -221,8 +221,24 @@ This is a compare-and-set lease: if another handle already holds a
 live lease the call raises `BadInput` naming the holder — pull a
 different leaf from `search(kind="todo", view="doable")` instead.
 The lease expires 4h after the last claim; re-issuing the same
-`claimed-by:` tag refreshes it, and tagging `STATUS:done` or
-`STATUS:won't-do` releases it.
+`claimed-by:` tag refreshes it.
+
+Release it one of three ways:
+
+```python
+tag(kind="todo", id=67, add=["STATUS:done"], remove=["claimed-by:asa-worker-3"])
+tag(kind="todo", id=67, add=["STATUS:won't-do"])
+tag(kind="todo", id=67, remove=["claimed-by:asa-worker-3"])  # hand it back unfinished
+```
+
+A lease left to expire releases itself after 4h and the leaf
+returns to `view='doable'`. Removing the `claimed-by:` tag drops
+the row the lease lives on, so it releases at once — and removal
+is not holder-checked: the CAS guard above only refuses a second
+*claim*, so any caller may lift another's live lease (an owner
+source may also take one over by re-claiming). Clear someone
+else's claim only for a dead claimer you cannot wait out, not to
+poach live work.
 
 ## Pausing a subtree
 

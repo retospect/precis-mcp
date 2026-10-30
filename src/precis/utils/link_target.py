@@ -36,6 +36,7 @@ from typing import TYPE_CHECKING, Any
 from precis.errors import BadInput, NotFound
 from precis.hints import merged_redirect_hint
 from precis.utils import handle_registry
+from precis.utils.relations import _VALID_RELATIONS
 
 if TYPE_CHECKING:
     from precis.store import Store
@@ -158,6 +159,23 @@ def _parse_link_target(
         raise BadInput(
             f"link target {target!r} has empty identifier after ':'",
             next="link='kind:identifier'",
+        )
+
+    # A relation slug in the kind slot (``link='part-of:me538195'``,
+    # gr540979): the caller conflated this arg's ``kind:identifier``
+    # grammar with the link tool's ``rel=``. Name the conflation and
+    # hand back the corrected call — the kinds list the unknown-kind
+    # error dumps cannot help, because the prefix was never a kind.
+    if kind in _VALID_RELATIONS or kind in store.valid_relations():
+        raise BadInput(
+            f"link target {target!r}: {kind!r} is a relation, not a kind — "
+            "relations go in the link tool's rel=; link= takes "
+            "'kind:identifier' and applies the default rel 'related-to'",
+            next=[
+                f"link(kind=<kind>, id=<id>, target={rest!r}, rel={kind!r})",
+                "a create-time put takes the same pair: "
+                f"put(kind=..., link={rest!r}, rel={kind!r})",
+            ],
         )
 
     # Validate kind against the live kinds table. We intentionally

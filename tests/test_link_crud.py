@@ -152,6 +152,22 @@ class TestParseLinkTarget:
             "options must filter to kinds with at least one live ref"
         )
 
+    def test_relation_slug_in_kind_slot_points_at_rel(self, store: Store) -> None:
+        """gr540979: ``put(link='part-of:me538195')`` read ``part-of``
+        as the relation it is, but ``link=`` takes ``kind:identifier``
+        only — the unknown-kind error dumped the kinds list, which
+        cannot help because the prefix was never a kind. A relation
+        slug in the kind slot now names the conflation and hands back
+        the corrected ``link(...)`` call."""
+        with pytest.raises(BadInput, match="is a relation, not a kind") as exc:
+            parse_link_target("part-of:me538195", store=store)
+        msg = str(exc.value)
+        assert "rel=" in msg
+        assert "kind:identifier" in msg
+        assert "link(" in msg
+        assert "target='me538195'" in msg
+        assert "rel='part-of'" in msg
+
     def test_numeric_kind_rejects_slug_id(self, store: Store) -> None:
         with pytest.raises(BadInput, match="numeric - identifier must be an integer"):
             parse_link_target("memory:not-an-int", store=store)
@@ -906,6 +922,16 @@ class TestMemoryHandlerLink:
             "memory was created despite bad link target — should have "
             "rejected before insert"
         )
+
+    def test_put_link_relation_prefix_names_rel_not_kinds(
+        self, memory_handler: MemoryHandler
+    ) -> None:
+        """gr540979's reported call end to end: the error points at the
+        link tool's ``rel=`` (and create-put's own ``rel=``) instead of
+        listing kinds."""
+        with pytest.raises(BadInput, match="is a relation, not a kind") as exc:
+            memory_handler.put(text="m", link="part-of:me1")
+        assert "rel='part-of'" in str(exc.value)
 
 
 # ── handler: view='links' ──────────────────────────────────────────
