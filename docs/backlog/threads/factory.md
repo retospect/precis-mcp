@@ -57,6 +57,10 @@ quality-of-life and container items.
 
 ## Horizon
 
+0. **backlog/dark-factory.md** — the frame for this thread's end state
+   (Reto 2026-10-30): precis holds work state, picks the builder lane,
+   keeps the build cadence, shows one hierarchy. Draft; its step 1 (the
+   read-only work tree) is the first slice to ready.
 1. **backlog/worker-rotation-starves-rescue-passes.md** — the rescue
    starvation shipped (overdue rescue passes age to the front of the
    rotation); left is the one unbounded job pass still inside the wait.
