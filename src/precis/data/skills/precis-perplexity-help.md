@@ -97,15 +97,25 @@ remain explicit escapes for handle-shaped query text.
 
 ## A long answer exceeds the result budget
 
-Oversized answers refuse without partial content and name a narrower
-question to try. There is no `more()` continuation. `view='body'` is
-read-only (`no_fetch`) but follows the same complete-result budget:
+Oversized answers refuse without partial content; the refusal's
+`next=` names the first chunk-range call. There is no `more()`
+continuation — walk the stored report in chunk ranges instead
+(`~N` one chunk, `~N..M` an inclusive range; each page fits the
+result budget):
+
+```python
+get(kind="perplexity-research", id="<slug>~0..3")   # first chunk range
+get(kind="perplexity-research", id="<slug>~4..7")   # next page
+```
+
+`view='body'` is read-only (`no_fetch`) but follows the same
+complete-result budget:
 
 ```python
 get(kind="perplexity-reasoning", id="<slug>", view="body")
 ```
 
-Ask a focused question when the full report is too large for one result.
+Ask a focused question instead when you only need part of the answer.
 
 New refs mint `<60-char slug>-<sha8>` — the tail is a hash of the full
 `model:query` key, so two queries that share a long lead-in now get

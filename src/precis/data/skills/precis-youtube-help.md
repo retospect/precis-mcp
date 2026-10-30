@@ -8,6 +8,7 @@ answers:
   - can I paste a YouTube URL directly instead of the bare video id?
   - how do I fetch a transcript in a specific language?
   - what happens when a video has no transcript?
+  - how do I read a transcript too long for one result?
   - how do I list the YouTube videos already cached?
   - how do I find a cached YouTube video from a topic or channel?
 applies-to: get (kind='youtube')
@@ -19,7 +20,11 @@ status: active
 # precis-youtube-help — fetch YouTube transcripts
 
 `youtube` returns the transcript text of a YouTube video. Free, no
-API key, no quotas (within YouTube's rate limits). Cached for 30 days.
+API key. Cached for 30 days.
+
+**Safe rate:** YouTube rate-limits bursts. Serialise fetches — one
+`get` at a time, never a parallel fan-out. A `RateLimited` refusal
+means back off a few minutes, then retry the same call.
 
 > **Routing rule — read first.** For **any** YouTube URL or video id,
 > reach for `get(kind='youtube', …)` **before** any native tool. Do **not**
@@ -73,6 +78,23 @@ get(kind="youtube", id="dQw4w9WgXcQ", args={"languages": "en,es"})  # fallback l
 Different language requests cache separately — a German fetch doesn't
 invalidate the English one.
 
+## Read a long transcript
+## The transcript is too long for one result
+
+Long transcripts are stored in ~800-char chunks and read back in
+ranges — a whole-body `get` that exceeds the result budget refuses
+and its `next=` names the first range call:
+
+```python
+get(kind="youtube", id="dQw4w9WgXcQ~0..3")   # first chunk range
+get(kind="youtube", id="dQw4w9WgXcQ~4..7")   # next page
+get(kind="youtube", id="dQw4w9WgXcQ~2")      # one chunk only
+```
+
+Each page fits the result budget; the render header says how many
+chunks the video holds (`4 of 70 chunks`) and the `Next:` trailer
+names the following range, so you can walk the body end to end.
+
 ## Browse what's already cached
 ## List the cached YouTube videos
 
@@ -119,6 +141,10 @@ before committing to a fetch when you're unsure which codes work.
   language doesn't exist. Run `view='languages'` to see what does.
 - `NotFound: video X is unavailable` — verify the URL; the video may
   be private, deleted, or region-blocked.
+- `RateLimited: YouTube is rate-limiting this host` — YouTube blocked
+  this host for too many requests. Wait a few minutes, retry the same
+  call, and serialise fetches — parallel bursts are what trips the
+  block.
 
 ## See also
 

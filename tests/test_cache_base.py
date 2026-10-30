@@ -12,9 +12,10 @@ from typing import ClassVar
 import pytest
 
 from precis.dispatch import Hub
-from precis.errors import BadInput
+from precis.errors import BadInput, NotFound
 from precis.handlers._cache_base import (
     _MIN_SEAM_OVERLAP,
+    _RANGE_PAGE_CHUNKS,
     CacheBackedHandler,
     FetchResult,
     _seam_overlap,
@@ -873,3 +874,147 @@ class TestNoFetchServesCache:
         h = _FakeCacheKindAsMath(hub=hub)
         resp = h.search(q="no such thing matches this")
         assert f"id='<{h.example_query}>'" in resp.body
+
+
+# ── Chunk-selector range reads (gr533135) ────────────────────────────
+#
+# ``slug~N`` reads ONE stored chunk; ``slug~N..M`` (or ``~N-M``) reads an
+# inclusive range, one page at a time, every page under the context
+# result budget. A whole-body render that exceeds the budget advertises
+# the literal first-range call via ``result_budget_hint`` — before this
+# the refusal only offered a narrower search, leaving long cached bodies
+# (45-min transcripts, deep-research reports) unreadable.
+
+
+class _FakeSelectorKind(_FakeCacheKindAsMath):
+    """Math-stub that opts into the ``slug~N`` / ``~N..M`` selector
+    grammar — the same opt-in youtube / the perplexity tiers / web /
+    wikipedia / news declare (gr533135)."""
+
+    spec: ClassVar[KindSpec] = KindSpec(
+        kind="math",
+        title="Fake selector kind",
+        description="Test-only.",
+        supports_get=True,
+        supports_chunk_selectors=True,
+    )
+
+
+def _cache_multi_chunk(h: _FakeCacheKindAsMath, *, query: str) -> tuple[int, str, int]:
+    """Fetch one >4 KB canned answer (multi-chunk after the base
+    splitter); return ``(ref_id, slug, n_chunks)``."""
+    h.canned[query] = FetchResult(
+        title=f"long answer for {query}",
+        body_blocks=[
+            ChunkInsert(
+                ord=0,
+                text="\n".join(
+                    f"line {i:03d} of the {query} transcript body" for i in range(200)
+                ),
+            )
+        ],
+    )
+    h.get(q=query)
+    ref = h.store.list_refs(kind="math", limit=1)[0]
+    assert ref.slug
+    n = h.store.chunks.count_chunks(ref.id)
+    assert n > _RANGE_PAGE_CHUNKS, "test needs several range pages"
+    return ref.id, ref.slug, n
+
+
+def test_chunk_selector_reads_one_chunk(hub: Hub) -> None:
+    h = _FakeSelectorKind(hub=hub)
+    ref_id, slug, total = _cache_multi_chunk(h, query="chunk selector talk")
+    blocks = h.store.chunks.list_chunks_for_ref(ref_id)
+    resp = h.get(id=f"{slug}~1")
+    assert blocks[1].text in resp.body
+    assert blocks[0].text not in resp.body  # the ONE chunk, not the doc
+    assert f"1 of {total} chunks" in resp.body
+
+
+def test_chunk_range_selector_joins_inclusive_range(hub: Hub) -> None:
+    h = _FakeSelectorKind(hub=hub)
+    ref_id, slug, total = _cache_multi_chunk(h, query="range reading talk")
+    blocks = h.store.chunks.list_chunks_for_ref(ref_id)
+    resp = h.get(id=f"{slug}~0..2")
+    for b in blocks[:3]:
+        assert b.text in resp.body
+    assert blocks[3].text not in resp.body
+    assert f"3 of {total} chunks" in resp.body
+    # The ``-`` separator form lands the same inclusive range.
+    resp_dash = h.get(id=f"{slug}~0-2")
+    for b in blocks[:3]:
+        assert b.text in resp_dash.body
+
+
+def test_chunk_range_render_advertises_next_page(hub: Hub) -> None:
+    h = _FakeSelectorKind(hub=hub)
+    _ref_id, slug, total = _cache_multi_chunk(h, query="paged talk")
+    resp = h.get(id=f"{slug}~0..{_RANGE_PAGE_CHUNKS - 1}")
+    nxt_hi = (
+        _RANGE_PAGE_CHUNKS + min(_RANGE_PAGE_CHUNKS, total - _RANGE_PAGE_CHUNKS) - 1
+    )
+    assert f"{slug}~{_RANGE_PAGE_CHUNKS}..{nxt_hi}" in resp.body
+
+
+def test_chunk_selector_out_of_range_names_first_range(hub: Hub) -> None:
+    h = _FakeSelectorKind(hub=hub)
+    _ref_id, slug, total = _cache_multi_chunk(h, query="past the end talk")
+    with pytest.raises(NotFound) as ei:
+        h.get(id=f"{slug}~{total + 5}")
+    # The recovery names the literal first-range call (gr533135 ask 2).
+    last_page = min(_RANGE_PAGE_CHUNKS - 1, total - 1)
+    assert f"id='{slug}~0..{last_page}'" in str(ei.value)
+
+
+def test_chunk_selector_reversed_range_is_bad_input(hub: Hub) -> None:
+    h = _FakeSelectorKind(hub=hub)
+    with pytest.raises(BadInput, match="empty chunk range"):
+        h.get(id="anything~3..1")
+
+
+def test_over_budget_body_hint_names_first_range_call(hub: Hub) -> None:
+    """The whole-body render of a >4 KB cached body carries the literal
+    first-range call in ``result_budget_hint`` — what the dispatcher's
+    over-cap refusal prints as ``next=`` (gr533135 ask 2)."""
+    h = _FakeSelectorKind(hub=hub)
+    _ref_id, slug, total = _cache_multi_chunk(h, query="huge whole body")
+    resp = h.get(id=slug, no_fetch=True)
+    hint = resp.result_budget_hint or ""
+    assert f"id='{slug}~0..{_RANGE_PAGE_CHUNKS - 1}'" in hint
+    assert f"of {total} chunks" in hint
+
+
+def test_small_body_carries_no_range_hint(hub: Hub) -> None:
+    """A body that fits in one chunk needs no range read — the hint
+    must stay None so an over-cap refusal falls back to the generic
+    narrower-search hint, not a selector on a one-chunk ref."""
+    h = _FakeSelectorKind(hub=hub)
+    resp = h.get(q="population of Ireland")
+    assert resp.result_budget_hint is None
+
+
+def test_walking_ranges_reads_the_whole_body(hub: Hub) -> None:
+    """End-to-end for the reported failure: a body too big for one
+    result is fully readable by walking ``~lo..hi`` pages."""
+    h = _FakeSelectorKind(hub=hub)
+    ref_id, slug, total = _cache_multi_chunk(h, query="marathon transcript")
+    blocks = h.store.chunks.list_chunks_for_ref(ref_id)
+    pages: list[str] = []
+    lo = 0
+    while lo < total:
+        hi = min(lo + _RANGE_PAGE_CHUNKS - 1, total - 1)
+        pages.append(h.get(id=f"{slug}~{lo}..{hi}").body)
+        lo = hi + 1
+    for b in blocks:
+        assert any(b.text in page for page in pages)
+
+
+def test_non_opted_kind_treats_tilde_suffix_as_query(
+    handler: _FakeCacheKindAsMath,
+) -> None:
+    """Kinds that never declared ``supports_chunk_selectors`` keep
+    treating a literal ``~digits``-suffixed id as an ordinary query —
+    the grammar is opt-in, not ambient."""
+    handler.get(id="compute ~2")
+    assert handler.fetch_calls == ["compute ~2"]

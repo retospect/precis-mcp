@@ -387,7 +387,11 @@ class NewsHandler(CacheBackedHandler):
         resp = super()._render(ref, cache, hit=hit)
         url = (cache.meta or {}).get("url") or ""
         footer = f"  Article: {url}\n  Cache:   {_format_cache_footer(cache)}"
-        return Response(body=resp.body + "\n" + footer, cost=resp.cost)
+        return Response(
+            body=resp.body + "\n" + footer,
+            cost=resp.cost,
+            result_budget_hint=resp.result_budget_hint,
+        )
 
 
 __all__ = [

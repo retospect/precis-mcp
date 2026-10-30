@@ -27,7 +27,7 @@ from datetime import UTC, datetime
 from typing import Any, ClassVar
 from urllib.parse import parse_qs, urlparse
 
-from precis.errors import BadInput, NotFound, Upstream
+from precis.errors import BadInput, NotFound, RateLimited, Upstream
 from precis.handlers._cache_base import CacheBackedHandler, FetchResult
 from precis.protocol import KindSpec
 from precis.response import Response
@@ -128,7 +128,8 @@ class YouTubeHandler(CacheBackedHandler):
             "Fetch a YouTube video transcript by id or URL. "
             "Use view='languages' to list available transcript languages. "
             "id='/recent' lists cached videos; search matches title, "
-            "channel and transcript."
+            "channel and transcript. Long transcripts read back in "
+            "chunk ranges: id='<video_id>~N' or id='<video_id>~N..M'."
         ),
         supports_get=True,
         supports_search=True,
@@ -136,6 +137,10 @@ class YouTubeHandler(CacheBackedHandler):
         is_numeric=False,
         id_required=True,
         views=("languages", "body"),
+        # gr533135: a long transcript over the context result budget is
+        # unreadable whole — the base's ``slug~N`` / ``slug~N..M`` range
+        # read is the targeted read the refusal's next= names.
+        supports_chunk_selectors=True,
     )
 
     provider: ClassVar[str] = "youtube"
@@ -636,6 +641,16 @@ class YouTubeHandler(CacheBackedHandler):
         TranscriptsDisabled = errs.TranscriptsDisabled
         NoTranscriptFound = errs.NoTranscriptFound
         VideoUnavailable = errs.VideoUnavailable
+        # The client's own rate-limit surface — YouTube blocking this
+        # host's IP for too many requests (gr531240). Looked up by name
+        # so a stubbed ``_errors`` module without them stays importable.
+        blocked_errors = tuple(
+            cls
+            for name in ("RequestBlocked", "IpBlocked")
+            if isinstance(cls := getattr(errs, name, None), type)
+            and issubclass(cls, BaseException)
+        )
+        from precis.utils.rate_limit import RateLimited as _LimiterRefused
 
         api = yt.YouTubeTranscriptApi()
         try:
@@ -663,6 +678,39 @@ class YouTubeHandler(CacheBackedHandler):
             raise NotFound(
                 f"video {video_id} is unavailable",
                 next="verify the URL; the video may be private, deleted, or region-blocked",
+            ) from exc
+        except blocked_errors as exc:
+            # YouTube blocked this host's IP (RequestBlocked/IpBlocked —
+            # the client's "too many requests" surface). The client
+            # exposes no Retry-After; a conservative wait goes in the
+            # next= unless the exception carries one (gr531240).
+            hinted = getattr(exc, "retry_after_s", None) or getattr(
+                exc, "retry_after", None
+            )
+            when = (
+                f"~{hinted:g} s"
+                if isinstance(hinted, (int, float))
+                else "a few minutes"
+            )
+            raise RateLimited(
+                f"YouTube is rate-limiting this host "
+                f"({exc.__class__.__name__} for video {video_id})",
+                next=(
+                    f"wait {when} and retry the same call; serialise "
+                    "youtube fetches — one at a time, parallel bursts "
+                    "are what trips the block"
+                ),
+            ) from exc
+        except _LimiterRefused as exc:
+            # The shared limiter refused a host:www.youtube.com token —
+            # quota spent or the paced wait ran out (gr531240).
+            raise RateLimited(
+                f"youtube fetch paced out for {video_id}: {exc}",
+                next=(
+                    "wait ~60 s and retry the same call; serialise "
+                    "youtube fetches — one at a time, parallel bursts "
+                    "spend the shared rate bucket"
+                ),
             ) from exc
         except Exception as exc:
             raise Upstream(
@@ -731,6 +779,7 @@ class YouTubeHandler(CacheBackedHandler):
         return Response(
             body=body + "\n" + deep_link,
             cost=resp.cost,
+            result_budget_hint=resp.result_budget_hint,
         )
 
 

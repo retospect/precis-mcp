@@ -117,6 +117,10 @@ class WikipediaHandler(CacheBackedHandler):
         supports_link=True,
         is_numeric=False,
         id_required=True,
+        # gr533135: a long article over the context result budget
+        # refuses whole-body — the base's ``slug~N`` / ``slug~N..M``
+        # range read is the targeted read the refusal's next= names.
+        supports_chunk_selectors=True,
     )
 
     provider: ClassVar[str] = "wikipedia"
@@ -289,7 +293,11 @@ class WikipediaHandler(CacheBackedHandler):
         url = (cache.meta or {}).get("url") or ""
         cache_state = _format_cache_footer(cache)
         footer = f"  Article: {url}\n  Cache:   {cache_state}"
-        return Response(body=resp.body + "\n" + footer, cost=resp.cost)
+        return Response(
+            body=resp.body + "\n" + footer,
+            cost=resp.cost,
+            result_budget_hint=resp.result_budget_hint,
+        )
 
 
 # ---------------------------------------------------------------------------

@@ -37,6 +37,7 @@ from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, ClassVar
 
+from precis._result_budget import DEFAULT_CONTEXT_BODY_BYTES
 from precis.dispatch import Hub, InitError
 from precis.embedder import EmbedderUnavailable
 from precis.errors import BadInput, NotFound, Upstream
@@ -195,22 +196,68 @@ class FetchResult:
 
 
 # ---------------------------------------------------------------------------
-# Chunk-selector grammar (gr311336)
+# Chunk-selector grammar (gr311336; range form gr533135)
 # ---------------------------------------------------------------------------
 #
 # The dispatcher (``DispatchMixin._maybe_infer_kind_from_handle``) resolves a
 # chunk handle (``nc<chunk_id>``) to its owning ref's slug and rewrites the
 # call to ``get(id='<slug>~<ord>')`` — the same ``slug~ord`` grammar the
 # corpus kinds (paper/patent/edgar/…) hand-implement. A subclass that
-# declares ``KindSpec.supports_chunk_selectors=True`` (news does) must be
-# able to parse that shape and return the ONE chunk it names — not the whole
-# document (a search hit's ``nc<id>`` used to route to a URL-validation
-# BadInput because the base ``get`` had zero selector grammar).
+# declares ``KindSpec.supports_chunk_selectors=True`` (news, youtube, the
+# perplexity tiers) must be able to parse that shape and return the ONE
+# chunk it names — not the whole document (a search hit's ``nc<id>`` used
+# to route to a URL-validation BadInput because the base ``get`` had zero
+# selector grammar).
+#
+# Since 04ef78736 the whole-body render of a long cached body (a 45-minute
+# talk's transcript, a deep-research report) refuses over the agent-context
+# result budget with no partial body — so a single-chunk grammar alone left
+# the body unreadable. The range form ``<slug>~<lo>..<hi>`` (also
+# ``<slug>~<lo>-<hi>``, matching the paper kind's ``_RANGE_RE``) returns the
+# inclusive chunk range, one "page" at a time; every hinted page is sized to
+# fit under the context budget (``_RANGE_PAGE_CHUNKS``).
 
 #: ``<anything>~<digits>`` at the end of the string — the base's slugs never
 #: contain ``~`` (``_slug_for`` sanitises to alnum/``-``/``_``), so this
 #: can't collide with a real query/slug.
 _CHUNK_SELECTOR_RE = re.compile(r"^(.+)~(\d+)$")
+
+#: ``<anything>~<lo>..<hi>`` or ``<anything>~<lo>-<hi>`` — the inclusive
+#: range form, same ``..``/``-`` separator pair the paper kind accepts.
+_CHUNK_RANGE_SELECTOR_RE = re.compile(r"^(.+)~(\d+)(?:\.\.|-)(\d+)$")
+
+#: Chunks per hinted range page. Sized against the 4096-byte default
+#: agent-context result budget: 4 × the 800-char ``chunk_target_chars``
+#: (3200) leaves ~400 bytes of headroom for the title / attribution / cite
+#: frame; 5 chunks (4000 + frame) would not. A range render that is still
+#: over budget after this narrowing sets its own hint down to a single
+#: chunk (``_render_chunk_selector``).
+_RANGE_PAGE_CHUNKS = 4
+
+
+def _parse_chunk_selector(raw: str) -> tuple[str, int, int] | None:
+    """Split ``raw`` into ``(slug, lo, hi)`` for a chunk-selector id.
+
+    Accepts the single-block form (``slug~3`` → ``(slug, 3, 3)``) and the
+    inclusive range forms (``slug~3..7``, ``slug~3-7``). Returns ``None``
+    when ``raw`` carries no selector suffix. A reversed range is a
+    :class:`BadInput` naming the paper-grammar convention, not an empty
+    result later.
+    """
+    m = _CHUNK_RANGE_SELECTOR_RE.match(raw)
+    if m is not None:
+        lo, hi = int(m.group(2)), int(m.group(3))
+        if lo > hi:
+            raise BadInput(
+                f"empty chunk range: {raw!r}",
+                next="ranges run lo..hi inclusive (e.g. '~3..7')",
+            )
+        return m.group(1), lo, hi
+    m = _CHUNK_SELECTOR_RE.match(raw)
+    if m is not None:
+        n = int(m.group(2))
+        return m.group(1), n, n
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -394,18 +441,21 @@ class CacheBackedHandler(Handler):
                 ),
             )
 
-        # Chunk selector: ``get(id='<slug>~<ord>')`` — the shape the
-        # dispatcher rewrites a resolved chunk handle (``nc<id>``) into for
-        # any kind declaring ``supports_chunk_selectors=True`` (gr311336).
+        # Chunk selector: ``get(id='<slug>~<ord>')`` or ``get(id='<slug>~<lo>..<hi>')``
+        # — the shape the dispatcher rewrites a resolved chunk handle
+        # (``nc<id>``) into for any kind declaring
+        # ``supports_chunk_selectors=True`` (gr311336; ranges gr533135).
         # Gated on the explicit opt-in so kinds that never declared it
-        # (math/web/youtube/perplexity today) keep treating a literal
-        # ``~digits``-suffixed string as an ordinary query, unchanged.
+        # (math/web today) keep treating a literal ``~digits``-suffixed
+        # string as an ordinary query, unchanged.
         if self.spec.supports_chunk_selectors and isinstance(id, str):
-            sel = _CHUNK_SELECTOR_RE.match(id.strip())
-            if sel is not None:
+            parsed = _parse_chunk_selector(id.strip())
+            if parsed is not None:
+                slug, lo, hi = parsed
                 return self._render_chunk_selector(
-                    sel.group(1),
-                    int(sel.group(2)),
+                    slug,
+                    lo,
+                    hi,
                     tags=tags,
                     untags=untags,
                     view=view,
@@ -706,18 +756,23 @@ class CacheBackedHandler(Handler):
     def _render_chunk_selector(
         self,
         slug: str,
-        ord_: int,
+        lo: int,
+        hi: int,
         *,
         tags: list[str] | None,
         untags: list[str] | None,
         view: str | None = None,
     ) -> Response:
-        """Render ONE stored chunk of a cached ref — the ``slug~ord``
-        chunk-selector target (gr311336).
+        """Render a range of stored chunks of a cached ref — the
+        ``slug~ord`` single-chunk target (gr311336) and the inclusive
+        ``slug~lo..hi`` range form (gr533135).
 
         Never triggers a fetch: the slug must already be cached (a chunk
         handle only exists for a chunk that's already in ``chunks``), so a
         miss here is a clean ``NotFound`` rather than an upstream call.
+        Consecutive overlapping chunks (a youtube transcript split for the
+        embedder) are re-joined with the seam de-overlap so the reader sees
+        the original text, not the ~150-char echoes.
         """
         cached = self.store.get_cache_entry_by_slug(kind=self.spec.kind, slug=slug)
         if cached is None:
@@ -727,29 +782,73 @@ class CacheBackedHandler(Handler):
             )
         ref, _cache = cached
         self._apply_tag_ops_if_any(ref.id, tags, untags)
-        blocks = self.store.chunks.list_chunks_for_ref(ref.id)
-        block = next((b for b in blocks if b.ord == ord_), None)
-        if block is None:
+        blocks = self.store.chunks.list_chunks_for_ref(ref.id, pos_range=(lo, hi))
+        total = self.store.chunks.count_chunks(ref.id)
+        if not blocks:
+            last = max(total - 1, 0)
             raise NotFound(
-                f"{self.spec.kind} {slug!r} has no chunk at ord={ord_}",
+                f"{self.spec.kind} {slug!r} has no chunks in ~{lo}..{hi} "
+                f"(stored chunks run 0..{last})",
                 next=(
-                    f"get(kind={self.spec.kind!r}, id={slug!r}, no_fetch=True) "
-                    "for the whole document"
+                    f"get(kind={self.spec.kind!r}, id='{slug}~0.."
+                    f"{min(_RANGE_PAGE_CHUNKS - 1, last)}') reads the first chunk range"
                 ),
             )
-        handle = (
-            handle_registry.try_format(self.spec.kind, block.id, chunk=True)
-            or f"{slug}~{ord_}"
-        )
+        body_text = dedupe_overlap_join([b.text for b in blocks])
+        n_shown = len(blocks)
+        label = f"~{lo}" if lo == hi else f"~{lo}..{hi}"
         lines = [
             f"# {ref.title}",
-            f"_chunk {handle} of `{slug}` (ord={ord_})_",
+            f"_chunks {label} of `{slug}` ({n_shown} of {total} chunks)_",
             "",
-            block.text,
+            body_text,
             "",
             f"- {self.attribution}",
         ]
-        return Response(body="\n".join(lines))
+        cite = _cite_pointer(self.spec.kind, ref.id)
+        if cite:
+            lines.append(cite)
+
+        # The page itself must fit under the agent-context result budget.
+        # A wider-than-page request gets a hint down to its first
+        # ``_RANGE_PAGE_CHUNKS`` window; a request already that narrow
+        # whose chunks are simply huge gets a hint down to its first
+        # single chunk. Either way the refusal's next= stays a smaller
+        # call of the same shape, never a dead end.
+        hint: str | None = None
+        frame = "\n".join(lines)
+        if len(frame.encode("utf-8")) > DEFAULT_CONTEXT_BODY_BYTES - 512:
+            if hi - lo + 1 > 1:
+                page_hi = min(hi, lo + _RANGE_PAGE_CHUNKS - 1)
+                if page_hi < hi:
+                    hint = (
+                        f"get(kind={self.spec.kind!r}, id='{slug}~{lo}..{page_hi}') "
+                        f"— first {page_hi - lo + 1} of the {hi - lo + 1} "
+                        f"chunks in range"
+                    )
+                else:
+                    hint = (
+                        f"get(kind={self.spec.kind!r}, id='{slug}~{lo}') "
+                        f"— single chunk of the ~{lo}..{hi} range"
+                    )
+
+        # Forward navigation: the next page-sized window, never a bare
+        # ~N+1 (same anti-linear-scan rule as the paper kind's trailer).
+        nav: list[tuple[str, str]] = []
+        if hi + 1 < total:
+            span = min(_RANGE_PAGE_CHUNKS, total - 1 - hi)
+            nxt_lo, nxt_hi = hi + 1, hi + span
+            nxt = (
+                f"{slug}~{nxt_lo}" if nxt_hi == nxt_lo else f"{slug}~{nxt_lo}..{nxt_hi}"
+            )
+            nav.append(
+                (
+                    f"get(kind={self.spec.kind!r}, id='{nxt}')",
+                    f"next {span} chunk{'s' if span > 1 else ''}",
+                )
+            )
+        body = frame + render_next_section(nav)
+        return Response(body=body, result_budget_hint=hint)
 
     def _attribute_touch(self, ref_id: int) -> None:
         """Attribute a freshly-created cache ref's chunks to the current
@@ -982,7 +1081,42 @@ class CacheBackedHandler(Handler):
             lines.append(cite)
 
         cost = self._cost_str(cache, hit=hit)
-        return Response(body="\n".join(lines), cost=cost)
+        return Response(
+            body="\n".join(lines),
+            cost=cost,
+            result_budget_hint=self._range_read_hint(ref, total_blocks=len(blocks)),
+        )
+
+    def _range_read_hint(self, ref: Ref, *, total_blocks: int) -> str | None:
+        """The targeted read to offer when this whole-body render exceeds
+        the agent-context result budget (gr533135).
+
+        A multi-chunk cached body (a long transcript, a deep-research
+        report) refuses over the context cap with no partial body; the
+        recovery is the chunk-range read this kind's ``get`` understands
+        (``supports_chunk_selectors`` kinds only — other cache kinds fall
+        back to the dispatcher's generic narrower-search hint). The hint
+        names the literal first-range call plus the chunk count so the
+        refusal's next= is copy-pasteable. Only consumed when the render
+        actually exceeds the budget; ignored for results that fit.
+        """
+        if not self.spec.supports_chunk_selectors or total_blocks <= 1:
+            return None
+        slug = ref.slug
+        if not slug:
+            return None
+        k = min(_RANGE_PAGE_CHUNKS, total_blocks)
+        if k > 1 and k < total_blocks:
+            sel = f"~0..{k - 1}"
+        else:
+            # A page covers the whole stored body — the only smaller unit
+            # is the first single chunk.
+            sel = "~0"
+            k = 1
+        return (
+            f"get(kind={self.spec.kind!r}, id='{slug}{sel}') "
+            f"— first {k} of {total_blocks} chunks"
+        )
 
     def _render_view(
         self, ref: Ref, cache: CacheEntry, *, hit: bool, view: str | None

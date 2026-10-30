@@ -19,7 +19,7 @@ from typing import Any
 import pytest
 
 from precis.dispatch import Hub
-from precis.errors import BadInput, NotFound, Unsupported, Upstream
+from precis.errors import BadInput, NotFound, RateLimited, Unsupported, Upstream
 from precis.handlers.youtube import (
     YouTubeHandler,
     _extract_video_id,
@@ -106,9 +106,19 @@ def _patch_yt(monkeypatch: pytest.MonkeyPatch) -> None:
         def __init__(self, video_id: str = "") -> None:
             super().__init__(video_id)
 
+    class RequestBlocked(_Boom):
+        def __init__(self, video_id: str = "") -> None:
+            super().__init__(video_id)
+
+    class IpBlocked(_Boom):
+        def __init__(self, video_id: str = "") -> None:
+            super().__init__(video_id)
+
     fake_errors.TranscriptsDisabled = TranscriptsDisabled  # type: ignore[attr-defined]
     fake_errors.NoTranscriptFound = NoTranscriptFound  # type: ignore[attr-defined]
     fake_errors.VideoUnavailable = VideoUnavailable  # type: ignore[attr-defined]
+    monkeypatch.setattr(fake_errors, "RequestBlocked", RequestBlocked, raising=False)
+    monkeypatch.setattr(fake_errors, "IpBlocked", IpBlocked, raising=False)
 
     monkeypatch.setitem(sys.modules, "youtube_transcript_api", fake_yt)
     monkeypatch.setitem(sys.modules, "youtube_transcript_api._errors", fake_errors)
@@ -713,3 +723,147 @@ class TestEyeRefusal:
         assert "not a stored ref" not in exc.value.cause
         assert "handle" in exc.value.cause
         assert "/recent" in str(exc.value.next)
+
+
+# ── rate-limit error mapping (gr531240) ──────────────────────────────
+
+
+def test_request_blocked_maps_to_rate_limited(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """YouTube's "too many requests" surface (``RequestBlocked``) is a
+    ``RateLimited``, not a generic ``Upstream`` — the next= carries a
+    conservative wait and tells the caller to serialise fetches."""
+    import sys
+
+    from youtube_transcript_api._errors import RequestBlocked
+
+    class Bad(_StubApi):
+        def fetch(self, video_id: str, languages: list[str]) -> Any:
+            raise RequestBlocked(video_id)
+
+    monkeypatch.setattr(
+        sys.modules["youtube_transcript_api"], "YouTubeTranscriptApi", Bad
+    )
+    h = YouTubeHandler(hub=Hub(store=store))
+    with pytest.raises(RateLimited) as ei:
+        h.get(id="dQw4w9WgXcQ")
+    text = str(ei.value)
+    assert "rate-limiting" in text
+    assert "serialise" in text
+    assert "wait" in text
+
+
+def test_ip_blocked_maps_to_rate_limited(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import sys
+
+    from youtube_transcript_api._errors import IpBlocked
+
+    class Bad(_StubApi):
+        def fetch(self, video_id: str, languages: list[str]) -> Any:
+            raise IpBlocked(video_id)
+
+    monkeypatch.setattr(
+        sys.modules["youtube_transcript_api"], "YouTubeTranscriptApi", Bad
+    )
+    h = YouTubeHandler(hub=Hub(store=store))
+    with pytest.raises(RateLimited) as ei:
+        h.get(id="dQw4w9WgXcQ")
+    assert "serialise" in str(ei.value)
+
+
+def test_shared_limiter_refusal_maps_to_rate_limited(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A shared-limiter token refusal for ``host:www.youtube.com`` also
+    surfaces as ``RateLimited`` with the serialise next=, not a bare
+    ``Upstream`` the caller can't distinguish from an outage."""
+    import precis.handlers.youtube as yt_mod
+    from precis.utils.rate_limit import RateLimited as _LimiterRefused
+
+    def _refuse(*a: Any, **kw: Any) -> Any:
+        raise _LimiterRefused("host:www.youtube.com")
+
+    monkeypatch.setattr(yt_mod, "call_with_backoff", _refuse)
+    h = YouTubeHandler(hub=Hub(store=store))
+    with pytest.raises(RateLimited) as ei:
+        h.get(id="dQw4w9WgXcQ")
+    assert "serialise" in str(ei.value)
+
+
+# ── chunk-range reads for long transcripts (gr533135) ────────────────
+
+
+def _long_transcript() -> str:
+    return "\n".join(
+        f"segment {i:03d}: the speaker explains the mechanism in detail"
+        for i in range(200)
+    )
+
+
+def _patch_long_transcript(monkeypatch: pytest.MonkeyPatch) -> None:
+    import sys
+
+    body = _long_transcript()
+
+    class Long(_StubApi):
+        def fetch(self, video_id: str, languages: list[str]) -> Any:
+            return [_Snippet(body)]
+
+    monkeypatch.setattr(
+        sys.modules["youtube_transcript_api"], "YouTubeTranscriptApi", Long
+    )
+
+
+def test_long_transcript_walkable_in_chunk_ranges(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr533135: a >4 KB transcript — unreadable whole under the context
+    budget — pages in full by walking ``<vid>~lo..hi`` ranges."""
+    _patch_long_transcript(monkeypatch)
+    h = YouTubeHandler(hub=Hub(store=store))
+    resp = h.get(id="dQw4w9WgXcQ")
+    # Whole-body render exceeds the context cap; the response carries
+    # the literal first-range call the refusal prints as next=.
+    assert len(resp.body.encode("utf-8")) > 4096
+    assert "id='dQw4w9WgXcQ~0..3'" in (resp.result_budget_hint or "")
+
+    ref = h.store.list_refs(kind="youtube", limit=1)[0]
+    total = h.store.chunks.count_chunks(ref.id)
+    assert total > 4
+
+    seen = ""
+    lo = 0
+    while lo < total:
+        hi = min(lo + 3, total - 1)
+        page = h.get(id=f"dQw4w9WgXcQ~{lo}..{hi}")
+        seen += page.body
+        lo = hi + 1
+    assert "segment 000" in seen
+    assert "segment 199" in seen
+
+    # Past-the-end refuses with the first-range call as next=.
+    with pytest.raises(NotFound) as ei:
+        h.get(id=f"dQw4w9WgXcQ~{total + 5}")
+    assert "id='dQw4w9WgXcQ~0..3'" in str(ei.value)
+
+
+def test_over_cap_get_refusal_names_range_call(
+    runtime_with_store: PrecisRuntime, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr533135 end-to-end: the over-budget whole-body refusal's next=
+    IS the first chunk-range call — previously it offered only a
+    narrower search, so the body was unreachable."""
+    # The suite disables the context cap by default
+    # (``PRECIS_TOOL_RESULT_CONTEXT_BYTES=0`` in conftest) — restore the
+    # prod default so the over-cap path runs.
+    monkeypatch.setenv("PRECIS_TOOL_RESULT_CONTEXT_BYTES", "4096")
+    _patch_long_transcript(monkeypatch)
+    out, is_error = runtime_with_store.dispatch_with_status(
+        "get", {"kind": "youtube", "id": "dQw4w9WgXcQ"}, fold=True
+    )
+    assert is_error
+    assert "exceeds" in out
+    assert "dQw4w9WgXcQ~0..3" in out

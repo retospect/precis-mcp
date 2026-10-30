@@ -71,6 +71,10 @@ class WebHandler(CacheBackedHandler):
         supports_link=True,
         is_numeric=False,
         id_required=True,
+        # gr533135: a long extracted page over the context result budget
+        # refuses whole-body — the base's ``slug~N`` / ``slug~N..M``
+        # range read is the targeted read the refusal's next= names.
+        supports_chunk_selectors=True,
     )
 
     provider: ClassVar[str] = "web"
@@ -293,7 +297,11 @@ class WebHandler(CacheBackedHandler):
         # across every cache-backed kind. (Critic MINOR #11.)
         cache_state = _format_cache_footer(cache)
         deep_link = f"  Source: {url}\n  Fetched: {fetched}\n  Cache:  {cache_state}"
-        return Response(body=resp.body + "\n" + deep_link, cost=resp.cost)
+        return Response(
+            body=resp.body + "\n" + deep_link,
+            cost=resp.cost,
+            result_budget_hint=resp.result_budget_hint,
+        )
 
 
 # ---------------------------------------------------------------------------

@@ -513,9 +513,17 @@ class _PerplexityBase(CacheBackedHandler):
         return Response(
             body=body,
             cost=resp.cost,
+            # The base render's targeted read: a multi-chunk report over
+            # the context budget refuses whole-body, and the recovery is
+            # this kind's own chunk-range read (``id='<slug>~0..3'``),
+            # not a hardcoded search on another tier (gr534654). A
+            # single-chunk answer can't page — narrowing the question is
+            # still the recovery there.
             result_budget_hint=(
-                "search(kind='perplexity-research', q='<a narrower question>', "
-                "page_size=1) requests a focused answer"
+                resp.result_budget_hint
+                or f"search(kind={self.spec.kind!r}, "
+                "q='<a narrower question>', page_size=1) requests a "
+                "focused answer"
             ),
         )
 
@@ -791,6 +799,10 @@ class WebsearchHandler(_PerplexityBase):
         id_required=False,
         modes=("import",),
         views=("body",),
+        # gr533135 / gr534654: a long report over the context result
+        # budget refuses whole-body reads — the base's ``slug~N..M``
+        # chunk-range read is the targeted recovery the refusal names.
+        supports_chunk_selectors=True,
     )
 
     TIER: ClassVar[_SonarTier] = _SonarTier(
@@ -825,6 +837,7 @@ class ThinkHandler(_PerplexityBase):
         id_required=False,
         modes=("import",),
         views=("body",),
+        supports_chunk_selectors=True,
     )
 
     # Cache forever by default. The pollution failure mode (a wrong
@@ -868,6 +881,7 @@ class ResearchHandler(_PerplexityBase):
         id_required=False,
         modes=("import",),
         views=("body",),
+        supports_chunk_selectors=True,
     )
 
     TIER: ClassVar[_SonarTier] = _SonarTier(
