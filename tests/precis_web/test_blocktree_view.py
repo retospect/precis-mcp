@@ -1546,3 +1546,398 @@ def test_view3d_page_renders_the_meshes_toggle_only_with_a_cad_binding(
     assert 'id="bt3d-meshes"' in blocktree_client.get("/se/mesh_web").text
     _seed_se(runtime_with_store)
     assert 'id="bt3d-meshes"' not in blocktree_client.get("/se/unicycle_web").text
+
+
+# ── bounded realized meshes + visible degrade notes (gr529551 rebase) ─────
+
+
+def test_viewer_mesh_budget_counts_cells_and_stops_remaining_blocks() -> None:
+    from precis_web.routes import blocktree_view as bv
+
+    budget = bv._ViewerMeshBudget(remaining=10)
+    assert budget.take(4)
+    assert budget.take(6)
+    assert not budget.take(1)  # exhausted: over-budget blocks keep envelopes
+    assert budget.exhausted
+    assert budget.remaining == 0
+    assert budget.fallback_blocks == 1
+    assert not budget.take(0)  # a cheaper candidate must not restart meshing
+    assert budget.fallback_blocks == 2
+    assert (
+        budget.note
+        == "2 blocks fell back to envelope: realized scene budget exhausted."
+    )
+    assert bv._ViewerMeshBudget().note is None  # nothing fell back: no note
+
+
+def test_bounded_viewer_pitch_coarsens_until_the_padded_grids_fit() -> None:
+    import numpy as np
+
+    from precis.cad.fieldmesh import field_grid
+    from precis_web.routes import blocktree_view as bv
+
+    lo = np.array([0.0, 0.0, 0.0])
+    hi = np.array([1.0, 1.0, 1.0])
+    start = 0.001  # a fine pitch: the padded grid is far over the cap
+    assert field_grid(lo, hi, start).cells > bv._VIEWER_MESH_CELL_CAP
+    got = bv._bounded_viewer_pitch([(lo, hi)], start)
+    assert got is not None
+    pitch, cells = got
+    assert pitch > start
+    # The count is the ACTUAL padded grid (rounding included), and the
+    # check itself allocated no samples.
+    assert cells == field_grid(lo, hi, pitch).cells
+    assert cells <= bv._VIEWER_MESH_CELL_CAP
+
+
+def test_bounded_viewer_pitch_sums_every_box_the_mesher_will_allocate() -> None:
+    import numpy as np
+
+    from precis.cad.fieldmesh import field_grid
+    from precis_web.routes import blocktree_view as bv
+
+    # Two unit boxes at a pitch where each fits the cap alone but the
+    # sum does not — the count must be the SUM, not any one grid.
+    boxes = [
+        (np.array([0.0, 0.0, 0.0]), np.array([1.0, 1.0, 1.0])),
+        (np.array([2.0, 0.0, 0.0]), np.array([3.0, 1.0, 1.0])),
+    ]
+    start = 0.02
+    single = field_grid(*boxes[0], start).cells
+    assert single <= bv._VIEWER_MESH_CELL_CAP < 2 * single
+    got = bv._bounded_viewer_pitch(boxes, start)
+    assert got is not None
+    pitch, cells = got
+    assert pitch > start
+    assert cells == sum(field_grid(lo, hi, pitch).cells for lo, hi in boxes)
+    assert cells <= bv._VIEWER_MESH_CELL_CAP
+
+
+def test_scene3d_meshes_clean_renders_carry_no_notes(
+    blocktree_client, runtime_with_store
+) -> None:
+    _seed_mesh_design(runtime_with_store)
+    off = blocktree_client.get("/se/mesh_web/scene3d.json?level=realized").json()
+    assert off["notes"] == []
+    on = blocktree_client.get("/se/mesh_web/scene3d.json?level=realized&meshes=1")
+    assert on.status_code == 200
+    assert on.json()["notes"] == []
+
+
+def test_scene3d_meshes_failure_keeps_envelope_and_reports_block(
+    blocktree_client, runtime_with_store, monkeypatch
+) -> None:
+    """A bound design whose mesh backend refuses degrades that block to its
+    envelope — never a 500 — and says so in the payload's notes."""
+    from precis_web.routes import blocktree_view as bv
+
+    def broken(spec: Any, *, pitch: Any = None, lattice: Any = None) -> Any:
+        raise RuntimeError("test extraction is not watertight")
+
+    monkeypatch.setattr(bv, "_component_meshes", broken)
+    _seed_mesh_design(runtime_with_store)
+    bv._MESH_CACHE.clear()  # an earlier test cached this design's meshes
+    baseline = blocktree_client.get("/se/mesh_web/scene3d.json?level=realized").json()
+    on = blocktree_client.get("/se/mesh_web/scene3d.json?level=realized&meshes=1")
+    assert on.status_code == 200
+    body = on.json()
+    assert body["shapes"] == baseline["shapes"]  # byte-level envelope fallback
+    assert any(
+        "encl" in note and "envelope" in note and "watertight" in note
+        for note in body["notes"]
+    )
+
+
+def test_scene3d_meshes_impossible_grid_never_meshes_and_explains(
+    blocktree_client, runtime_with_store, monkeypatch
+) -> None:
+    """A padded grid that can never fit the cap degrades to the envelope
+    with a visible note — the mesher must not run at all."""
+    from precis_web.routes import blocktree_view as bv
+
+    def forbidden(spec: Any, *, pitch: Any = None, lattice: Any = None) -> Any:
+        pytest.fail("the mesher must not run when the grid can never fit")
+
+    monkeypatch.setattr(bv, "_VIEWER_MESH_CELL_CAP", 1)
+    monkeypatch.setattr(bv, "_component_meshes", forbidden)
+    _seed_mesh_design(runtime_with_store)
+    bv._MESH_CACHE.clear()  # an earlier test cached this design's meshes
+    baseline = blocktree_client.get("/se/mesh_web/scene3d.json?level=realized").json()
+    on = blocktree_client.get("/se/mesh_web/scene3d.json?level=realized&meshes=1")
+    assert on.status_code == 200
+    body = on.json()
+    assert body["shapes"] == baseline["shapes"]
+    assert any("encl" in note and "envelope" in note for note in body["notes"])
+
+
+def test_scene3d_meshes_budget_exhaustion_falls_back_with_one_counted_note(
+    blocktree_client, runtime_with_store, monkeypatch
+) -> None:
+    """Every realized-rung block spends its own admission against the
+    per-request budget — warm cache hits count, so a warm scene shows the
+    same visible limit as a cold one — and the render reports exactly one
+    counted notice, not one line per block."""
+    import numpy as np
+
+    from precis.handlers.cad import CadHandler
+    from precis_web.routes import blocktree_view as bv
+
+    CadHandler(hub=runtime_with_store.hub).put(id="box3_web", text=_MESH_CAD)
+    ops: list[dict[str, Any]] = [
+        {
+            "op": "add_block",
+            "name": f"encl_{i}",
+            "pose": f"[{i * 0.3} 0 0] m",
+            "envelope": "box:w0.2d0.15h0.1",
+        }
+        for i in range(4)
+    ] + [
+        {"op": "set_binding", "block": f"encl_{i}", "kind": "cad", "design": "box3_web"}
+        for i in range(4)
+    ]
+    SeHandler(hub=runtime_with_store.hub).put(
+        id="budget_web", text=json.dumps({"ops": ops})
+    )
+    bv._MESH_CACHE.clear()  # an earlier test cached this design's meshes
+
+    def cheap_mesh(spec: Any, *, pitch: Any = None, lattice: Any = None) -> Any:
+        return [("shell", np.zeros((3, 3)), np.array([[0, 1, 2]]))]
+
+    monkeypatch.setattr(bv, "_component_meshes", cheap_mesh)
+    # One admission costs 10k padded cells; the render may afford two.
+    monkeypatch.setattr(
+        bv, "_bounded_viewer_pitch", lambda boxes, pitch: (0.01, 10_000)
+    )
+    monkeypatch.setattr(bv, "_VIEWER_SCENE_CELL_BUDGET", 20_000)
+    on = blocktree_client.get("/se/budget_web/scene3d.json?level=realized&meshes=1")
+    assert on.status_code == 200
+    body = on.json()
+    assert body["notes"] == [
+        "2 blocks fell back to envelope: realized scene budget exhausted."
+    ]
+    ids = _all_ids(body["shapes"])
+    meshed = [i for i in range(4) if any(x.endswith(f"/encl_{i}/shell") for x in ids)]
+    assert len(meshed) == 2
+    for i in set(range(4)) - set(meshed):
+        assert f"/Structural envelopes/encl_{i}" in ids  # plain envelope leaf
+
+
+# ── the cap counts the mesher's own grids (gr529551) ─────────────────────
+
+#: A modest part whose cutter inflates the mesher's grid far past the
+#: positive-material box — the exact case a cap sized on positive bounds
+#: under-counted.
+_CUTTER_CAD = """\
+component part
+body add box:w300mmd300mmh100mm
+mill cut cyl:r600mmh150mm @600mm,0mm,0mm
+"""
+
+#: Three identical co-located components: one union box ≈ one component
+#: box, so a cap that counted ONE box under-counts the real work by 3×.
+_TRIO_CAD = """\
+component a
+body_a add box:w30mmd30mmh30mmrd1mm
+component b
+body_b add box:w30mmd30mmh30mmrd1mm
+component c
+body_c add box:w30mmd30mmh30mmrd1mm
+"""
+
+#: A blended union: the mesher pads its grid by half the widest blend —
+#: the cap must count the same padding, not a re-derived estimate.
+_BLEND_CAD = """\
+component part
+a add box:w40mmd40mmh40mm
+b add box:w40mmd40mmh40mm @20mm,0mm,0mm blend:8mm
+"""
+
+
+def _load_expanded_design(store: Any, slug: str) -> tuple[Any, Any]:
+    """``(expanded_spec, design)`` for a stored cad design, expanded the
+    same way the viewer expands it."""
+    from precis.cad.scene import build_design, expand_instances
+    from precis.cad_resolve import design_resolver
+
+    ref = store.get_ref(kind="cad", id=slug)
+    assert ref is not None
+    spec, _handles = store.cad_load(ref.id)
+    expanded = expand_instances(spec, design_resolver(store))
+    return expanded, build_design(expanded)
+
+
+def _mesher_grid_boxes(expanded: Any, design: Any) -> list[tuple[Any, Any]]:
+    """The padded ``(lo, hi)`` the field mesher allocates per component —
+    re-derived here from each expr's own ``_bounds`` (cutters included)
+    grown by half the widest node blend, the mesher's documented
+    convention, so these tests pin the convention end to end rather than
+    trusting the viewer's copy of it."""
+    from precis.cad.relate import _bounds
+
+    boxes = []
+    for comp in expanded.components:
+        expr = design.components.get(comp)
+        if expr is None:
+            continue
+        box = _bounds(design, expr)
+        if box is None:
+            continue
+        pad = 0.5 * max(
+            (n.blend for n in expanded.nodes if n.component == comp), default=0.0
+        )
+        boxes.append((box[0] - pad, box[1] + pad))
+    return boxes
+
+
+def _viewer_start_pitch(design: Any) -> float:
+    import numpy as np
+
+    from precis.cad.relate import _positive_bounds
+    from precis_web.routes import blocktree_view as bv
+
+    box = _positive_bounds(design, design.whole())
+    assert box is not None
+    return float(np.linalg.norm(box[1] - box[0])) * bv._VIEWER_PITCH_DIAG_FRACTION
+
+
+def test_scene3d_meshes_cap_counts_the_cutter_inflated_grid(
+    runtime_with_store, store
+) -> None:
+    """A part whose cutting cylinder is far bigger than the part: the
+    positive-material box fits the cap at the start pitch but the grid
+    the mesher allocates — cutter bounds included — does not. The
+    counted cells must be the real grid's, coarsened under the cap."""
+    from types import SimpleNamespace
+
+    from precis.cad.fieldmesh import field_grid
+    from precis.handlers.cad import CadHandler
+    from precis_web.routes import blocktree_view as bv
+
+    CadHandler(hub=runtime_with_store.hub).put(id="cutter_web", text=_CUTTER_CAD)
+    bv._MESH_CACHE.clear()
+    expanded, design = _load_expanded_design(store, "cutter_web")
+    start = _viewer_start_pitch(design)
+    boxes = _mesher_grid_boxes(expanded, design)
+    assert len(boxes) == 1
+    # The premise: the real grid at the start pitch is over the cap (the
+    # positive-material grid the old code counted was not).
+    assert field_grid(*boxes[0], start).cells > bv._VIEWER_MESH_CELL_CAP
+    expected = bv._bounded_viewer_pitch(boxes, start)
+    assert expected is not None and expected[0] > start
+
+    meshes, cells, note = bv._se_realized_component_meshes(
+        store, SimpleNamespace(bound="cutter_web", name="blk")
+    )
+    assert note is None and meshes is not None
+    assert cells == expected[1]
+    assert cells <= bv._VIEWER_MESH_CELL_CAP
+
+
+def test_scene3d_meshes_budget_is_summed_across_components(
+    runtime_with_store, store, monkeypatch
+) -> None:
+    """N components = N padded grids: each fits the (patched-down) cap
+    alone but the sum does not — the count must be the sum, coarsened
+    until the real total fits."""
+    from types import SimpleNamespace
+
+    from precis.cad.fieldmesh import field_grid
+    from precis.handlers.cad import CadHandler
+    from precis_web.routes import blocktree_view as bv
+
+    monkeypatch.setattr(bv, "_VIEWER_MESH_CELL_CAP", 40_000)
+    CadHandler(hub=runtime_with_store.hub).put(id="trio_web", text=_TRIO_CAD)
+    bv._MESH_CACHE.clear()
+    expanded, design = _load_expanded_design(store, "trio_web")
+    start = _viewer_start_pitch(design)
+    boxes = _mesher_grid_boxes(expanded, design)
+    assert len(boxes) == 3
+    # The premise: one component's grid fits the cap; the three-grid sum
+    # the mesher actually allocates does not.
+    single = field_grid(*boxes[0], start).cells
+    assert single <= 40_000 < 3 * single
+    expected = bv._bounded_viewer_pitch(boxes, start)
+    assert expected is not None and expected[0] > start
+
+    meshes, cells, note = bv._se_realized_component_meshes(
+        store, SimpleNamespace(bound="trio_web", name="blk")
+    )
+    assert note is None and meshes is not None
+    assert cells == expected[1]
+    assert cells <= 40_000
+
+
+def test_scene3d_meshes_smooth_union_counts_the_meshers_padding(
+    runtime_with_store, store
+) -> None:
+    """A blended union: the capped grid must be padded by HALF the widest
+    blend — the mesher's own convention — not a re-derived estimate."""
+    from types import SimpleNamespace
+
+    import numpy as np
+
+    from precis.cad.relate import _bounds
+    from precis.handlers.cad import CadHandler
+    from precis_web.routes import blocktree_view as bv
+
+    CadHandler(hub=runtime_with_store.hub).put(id="blend_web", text=_BLEND_CAD)
+    bv._MESH_CACHE.clear()
+    expanded, design = _load_expanded_design(store, "blend_web")
+    boxes = _mesher_grid_boxes(expanded, design)
+    assert len(boxes) == 1
+    # The convention itself: blend:8mm pads the counted box by 4mm each
+    # side, exactly what _field_mesh_of samples.
+    raw = _bounds(design, design.components["part"])
+    assert raw is not None
+    np.testing.assert_allclose(boxes[0][0], raw[0] - 0.004)
+    np.testing.assert_allclose(boxes[0][1], raw[1] + 0.004)
+    expected = bv._bounded_viewer_pitch(boxes, _viewer_start_pitch(design))
+    assert expected is not None
+
+    meshes, cells, note = bv._se_realized_component_meshes(
+        store, SimpleNamespace(bound="blend_web", name="blk")
+    )
+    assert note is None and meshes is not None
+    assert cells == expected[1]
+
+
+def test_scene3d_meshes_expand_failure_logs_once_then_serves_the_cache(
+    runtime_with_store, store, caplog
+) -> None:
+    """A bound design whose expand raises gets its degrade note cached
+    under a pre-expand key: the failed step still retries on every
+    request (a ``use:`` design appearing heals it) but the traceback is
+    logged once, not once per render."""
+    import logging
+    from types import SimpleNamespace
+
+    from precis.cad.scene import NodeSpec, SceneSpec
+    from precis_web.routes import blocktree_view as bv
+
+    # cad_save writes without the put path's eager expand, so a dangling
+    # use: reaches the viewer's expand step itself.
+    store.cad_save(
+        slug="broken_web",
+        title="broken",
+        spec=SceneSpec(
+            nodes=[
+                NodeSpec(
+                    name="inst",
+                    op="add",
+                    config="use:no_such_design",
+                    component="part",
+                )
+            ],
+            components=["part"],
+        ),
+        card_text="broken",
+    )
+    bv._MESH_CACHE.clear()
+    node = SimpleNamespace(bound="broken_web", name="blk")
+    with caplog.at_level(logging.ERROR, logger="precis_web.routes.blocktree_view"):
+        first = bv._se_realized_component_meshes(store, node)
+        second = bv._se_realized_component_meshes(store, node)
+    assert first == second
+    assert first[0] is None and first[1] == 0
+    assert first[2] is not None and "envelope" in first[2]
+    assert sum("expand failed" in r.getMessage() for r in caplog.records) == 1

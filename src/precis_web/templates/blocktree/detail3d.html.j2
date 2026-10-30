@@ -84,6 +84,7 @@
    swaps the scene in place (blocktree-3d.js's live-scene seam) instead of
    reloading the page and resetting the camera. They keep their `name`
    attributes only as labels — nothing submits them. #}
+<div id="bt3d-geometry-notes" role="status" aria-live="polite" class="hidden mb-3 text-sm text-fg-subtle"></div>
 <div class="flex flex-wrap items-end gap-3 mb-4 text-sm">
   <div>
     <label class="block text-xs text-fg-subtle mb-1" for="bt3d-level">abstraction level</label>
@@ -417,6 +418,7 @@
     connectionsToggle: document.getElementById("bt3d-connections"),
     toolVolumesToggle: document.getElementById("bt3d-tool-volumes"),
     meshesToggle: document.getElementById("bt3d-meshes"),
+    geometryNotesEl: document.getElementById("bt3d-geometry-notes"),
     axesToggle: document.getElementById("bt3d-axes"),
     containerModeSelect: document.getElementById("bt3d-container-mode"),
     levelSelect: document.getElementById("bt3d-level"),

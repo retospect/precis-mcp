@@ -476,6 +476,29 @@ def _field_pitch(design: Design, pitch: float | None) -> float:
     return float(np.linalg.norm(box[1] - box[0])) * FIELD_PITCH_DIAG_FRACTION
 
 
+def _field_grid_box(
+    design: Design, spec: SceneSpec, comps: list[str]
+) -> tuple[Vec3, Vec3] | None:
+    """The ``(lo, hi)`` box :func:`_field_mesh_of` samples for ``comps``:
+    the fold's full :func:`_bounds` — Diff cutters and Inter parts
+    included, because the field IS evaluated out to the cutter's extent —
+    grown by half the widest blend among the comps' nodes (a smooth-min
+    adds material only inside the seam, never more than k/4 beyond the
+    hard union; pad by k/2 so the band sees all of it). ``None`` when no
+    named component resolves or the fold is unbounded — the cases
+    :func:`_field_mesh_of` refuses; a caller sizing a grid ahead of
+    meshing (the se viewer's cell cap) just gets no box."""
+    exprs = [design.components[c] for c in comps if c in design.components]
+    if not exprs:
+        return None
+    expr = exprs[0] if len(exprs) == 1 else Union(parts=tuple(exprs))
+    box = _bounds(design, expr)
+    if box is None:
+        return None
+    pad = 0.5 * max((n.blend for n in spec.nodes if n.component in comps), default=0.0)
+    return box[0] - pad, box[1] + pad
+
+
 def _field_mesh_of(
     design: Design,
     spec: SceneSpec,
@@ -493,13 +516,10 @@ def _field_mesh_of(
     if not exprs:
         raise ExportError(f"{name}: no solid geometry to export")
     expr = exprs[0] if len(exprs) == 1 else Union(parts=tuple(exprs))
-    box = _bounds(design, expr)
+    box = _field_grid_box(design, spec, comps)
     if box is None:
         raise ExportError(f"{name}: unbounded — nothing finite to mesh")
-    # A smooth-min adds material only inside the seam, never more than
-    # k/4 beyond the hard union; pad by k/2 so the band sees all of it.
-    pad = 0.5 * max((n.blend for n in spec.nodes if n.component in comps), default=0.0)
-    lo, hi = box[0] - pad, box[1] + pad
+    lo, hi = box
     if lattice is not None:
         origin = lo.copy()
         origin[lattice[0]] = lattice[1]

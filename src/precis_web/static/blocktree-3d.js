@@ -941,6 +941,10 @@ export async function blocktreeViewer3D({
   // design's per-component meshes; OFF (the default) is the plain
   // envelope render. Absent = the design has nothing realized to draw.
   meshesToggle,
+  // Where scene3d.json's `notes` land (a status line): per-block realized
+  // mesh failures and the counted budget notice. Optional — nothing
+  // renders when the payload carries no notes.
+  geometryNotesEl,
   axesToggle,
   containerModeSelect,
   // The three scene-shaping controls. They were a plain GET form until
@@ -2059,6 +2063,13 @@ export async function blocktreeViewer3D({
   }
 
   function renderScene(shapes, { camera = null, refit = true, atomicPayload = null } = {}) {
+    if (geometryNotesEl) {
+      // The payload's visible degrade notes (realized-mesh failures, the
+      // budget notice) — joined into one status line, hidden when clean.
+      const notes = Array.isArray(data.notes) ? data.notes : [];
+      geometryNotesEl.textContent = notes.join(" ");
+      geometryNotesEl.classList.toggle("hidden", notes.length === 0);
+    }
     clearValidationSelection();
     validationStatus("");
     shownShapes = shapes;

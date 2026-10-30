@@ -1364,6 +1364,12 @@ class Scene3D:
     #: container envelope never hides what's inside it. ``[]`` for a flat
     #: design with no such block.
     container_paths: list[str] = field(default_factory=list)
+    #: User-visible degrade notes for this render (the routes module's
+    #: realized-mesh budget/fallback seam): one line per realized block
+    #: whose mesh failed and one counted line when the per-request mesh
+    #: budget exhausted — a realized-mesh degrade is honest, never silent.
+    #: ``[]`` when nothing fell back (including every meshes-off render).
+    notes: list[str] = field(default_factory=list)
 
 
 def build_scene(

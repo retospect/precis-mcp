@@ -35,7 +35,9 @@ through it.
   realized meshes (:func:`_se_realized_mesh_fn`) instead of the
   envelope — byte/pixel-identical to the plain render when absent, and
   the envelope stays the fallback for any block whose mesh does not
-  resolve.
+  resolve. A meshes-on render answers to a per-request mesh-cell
+  budget, and every degrade (a failed mesh, an over-budget block)
+  lands in the payload's ``notes`` for the page's status line.
 * ``GET  /se/{slug}/2d`` — the 2D SVG reader
   page, still reachable via a link off the 3D page: axis/level/colour/
   isolate selectors (a plain GET form — no client JS needed) over an
@@ -114,7 +116,7 @@ import re
 import threading
 from collections import OrderedDict
 from collections.abc import Callable
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from typing import TYPE_CHECKING, Any
 from urllib.parse import quote
 
@@ -129,7 +131,8 @@ from fastapi.responses import (
 )
 
 from precis.blocktree.types import BlockNode, Tree
-from precis.cad.export import _component_meshes
+from precis.cad.export import _component_meshes, _field_grid_box
+from precis.cad.fieldmesh import field_grid
 from precis.cad.relate import _positive_bounds
 from precis.cad.scene import build_design, expand_instances
 from precis.cad.tessellate import apply_rigid
@@ -267,7 +270,10 @@ class _Adapter:
     #: The realized-rung mesh resolver factory (se-3d-viewer realized
     #: meshes): ``store -> RealizedMeshFn`` — ``None`` for a kind whose
     #: blocks never have realized geometry to draw, which keeps
-    #: ``scene3d.json`` byte-identical to the envelope-only render.
+    #: ``scene3d.json`` byte-identical to the envelope-only render. The
+    #: factory optionally accepts ``budget``/``notes`` (the per-request
+    #: mesh-cell budget and the render's degrade-note list) — only the
+    #: realized-meshes route passes them.
     realized_meshes: Any = None  # Callable[[Store], RealizedMeshFn] | None
 
 
@@ -567,9 +573,13 @@ _ROLE_NEUTRAL = "#64748b"
 # toggle off is byte-identical to before this seam existed.
 
 #: Bumped when the mesh payload's derivation changes (pitch fraction,
-#: component naming, …) so a stale cache entry can never outlive a code
-#: change that would have produced different bytes.
-REALIZED_MESH_PAYLOAD_VERSION = 1
+#: component naming, the cached value's shape, …) so a stale cache entry
+#: can never outlive a code change that would have produced different
+#: bytes. 2 added the padded-cell count every entry now carries (the
+#: per-request budget admits cache hits too — gr529551 rebase); 3 made
+#: that count the SUM of the per-component grids the mesher actually
+#: allocates, and started caching load/expand failures (gr529551).
+REALIZED_MESH_PAYLOAD_VERSION = 3
 
 #: Field-backend pitch for viewer meshes: deliberately coarse (the export
 #: default is 1/256 of the positive-material AABB diagonal — print
@@ -577,18 +587,107 @@ REALIZED_MESH_PAYLOAD_VERSION = 1
 #: analytic route (sharp designs) ignores pitch entirely.
 _VIEWER_PITCH_DIAG_FRACTION = 1.0 / 48.0
 
+#: Padded-field-grid cap for ONE design's viewer mesh (gr529551 rebase):
+#: the mesh fn coarsens the pitch until the SUM of the per-component
+#: grids fits — the very grids the mesher allocates (each component's
+#: own cutter-inclusive box grown by half its widest blend), so a huge
+#: cutting tool or an N-component design cannot slip an unbounded field
+#: grid past a cap that counted a different box. A grid that can never
+#: fit degrades that block to its envelope. Sized so the default diag/48
+#: pitch of a balanced design (~50 samples along its longest axis, well
+#: under the cap) passes unchanged.
+_VIEWER_MESH_CELL_CAP = 250_000
+
+#: Per-request budget of padded grid cells across every block a meshes-on
+#: render admits, cache hits included, so a warm scene shows the same
+#: visible limit as a cold one. Exhaustion falls back to envelopes and
+#: reports one counted notice (never one line per block).
+_VIEWER_SCENE_CELL_BUDGET = 2_000_000
+
+
+@dataclass
+class _ViewerMeshBudget:
+    """Per-request admission budget for realized meshes; after exhaustion
+    every remaining block falls back to its envelope."""
+
+    remaining: int = field(default_factory=lambda: _VIEWER_SCENE_CELL_BUDGET)
+    fallback_blocks: int = 0
+    exhausted: bool = False
+
+    def take(self, cells: int) -> bool:
+        if self.exhausted or self.remaining <= 0 or cells > self.remaining:
+            self.exhausted = True
+            self.fallback_blocks += 1
+            return False
+        self.remaining -= cells
+        return True
+
+    @property
+    def note(self) -> str | None:
+        if not self.fallback_blocks:
+            return None
+        noun = "block" if self.fallback_blocks == 1 else "blocks"
+        return (
+            f"{self.fallback_blocks} {noun} fell back to envelope: "
+            "realized scene budget exhausted."
+        )
+
+
+def _bounded_viewer_pitch(
+    boxes: list[tuple[np.ndarray, np.ndarray]], pitch: float
+) -> tuple[float, int] | None:
+    """``(pitch, summed_padded_grid_cells)`` coarsened from ``pitch`` until
+    the grids the mesher will actually allocate — one padded
+    :func:`field_grid` per ``(lo, hi)`` box — fit
+    :data:`_VIEWER_MESH_CELL_CAP` in total, or ``None`` when no pitch can
+    (the block then keeps its envelope). ``field_grid.cells`` includes
+    padding and lattice rounding, so a volume estimate cannot admit an
+    over-cap mesh — and no samples are allocated by this check itself."""
+    for _ in range(12):
+        cells = sum(field_grid(lo, hi, pitch).cells for lo, hi in boxes)
+        if cells <= _VIEWER_MESH_CELL_CAP:
+            return pitch, cells
+        pitch *= max(1.1, (cells / _VIEWER_MESH_CELL_CAP) ** (1 / 3))
+    return None
+
+
 #: Server-side cache of one cad design's realized component meshes,
 #: content-hash addressed (:func:`cad_source_sha` of the EXPANDED spec —
 #: inlined ``use:`` sub-designs included, so an edit anywhere in the
 #: instance chain invalidates). Meshing is the expensive step of a
 #: meshes-on render and the design changes rarely; LRU-capped, and a
 #: resolution FAILURE is cached as ``None`` too — a design that does not
-#: mesh today will not mesh on the next request either.
+#: mesh today will not mesh on the next request either. Each hit carries
+#: its padded grid's cell count so the per-request budget can admit warm
+#: entries at the same visible limit as cold ones.
 _MESH_CACHE_CAP = 64
-_MESH_CACHE: OrderedDict[tuple[int, int, str], list[tuple[str, Any, Any]] | None] = (
-    OrderedDict()
-)
+_MESH_CACHE: OrderedDict[
+    tuple[int, int, str], tuple[list[tuple[str, Any, Any]] | None, int, str | None]
+] = OrderedDict()
 _MESH_CACHE_LOCK = threading.Lock()
+
+
+def _mesh_cache_get(
+    key: tuple[int, int, str],
+) -> tuple[list[tuple[str, Any, Any]] | None, int, str | None] | None:
+    """One LRU-recency-marking read of :data:`_MESH_CACHE` under its lock."""
+    with _MESH_CACHE_LOCK:
+        hit = _MESH_CACHE.get(key)
+        if hit is not None:
+            _MESH_CACHE.move_to_end(key)
+        return hit
+
+
+def _mesh_cache_put(
+    key: tuple[int, int, str],
+    entry: tuple[list[tuple[str, Any, Any]] | None, int, str | None],
+) -> None:
+    """Store ``entry`` as most-recent under the lock, evicting past the cap."""
+    with _MESH_CACHE_LOCK:
+        _MESH_CACHE[key] = entry
+        _MESH_CACHE.move_to_end(key)
+        while len(_MESH_CACHE) > _MESH_CACHE_CAP:
+            _MESH_CACHE.popitem(last=False)
 
 
 def _se_template_resolved(tree: Tree[BlockNode, Any], node: Any) -> Any:
@@ -628,34 +727,83 @@ def _se_component_leaf_names(names: list[str]) -> list[str]:
 
 def _se_realized_component_meshes(
     store: Store, node: Any
-) -> list[tuple[str, Any, Any]] | None:
-    """One ``(component, verts, tris)`` triple per component of the
-    block's bound cad design, in the design's LOCAL frame (the block's
-    own pose/rot positions it — the same convention the envelope mesh
-    uses), or ``None`` for honest absence: dangling binding, a design
-    that fails to expand/build, or a mesh backend that refuses. Cached
-    by content hash (:data:`_MESH_CACHE`)."""
+) -> tuple[list[tuple[str, Any, Any]] | None, int, str | None]:
+    """``(meshes, cells, note)`` for one block's bound cad design:
+    ``meshes`` is one ``(component, verts, tris)`` triple per component,
+    in the design's LOCAL frame (the block's own pose/rot positions it —
+    the same convention the envelope mesh uses), or ``None`` for honest
+    absence: dangling binding, a design that fails to expand/build, a
+    mesh backend that refuses, or a padded grid that can never fit the
+    cell cap. ``cells`` is the SUM of the padded per-component grid
+    counts the mesher actually allocates — the per-request budget admits
+    cache hits on it too. ``note`` carries one visible per-block degrade
+    line when the design resolved but its realized geometry could not be
+    drawn (the caller's list, when it passes one). Cached by content hash
+    (:data:`_MESH_CACHE`)."""
     ref = store.get_ref(kind="cad", id=str(node.bound))
     if ref is None:
-        return None  # a dangling binding is the validator's finding
+        return None, 0, None  # a dangling binding is the validator's finding
+    load_note = (
+        f"{node.name}: showing envelope; realized geometry unavailable "
+        "(the bound design failed to load)."
+    )
+    # A load/expand failure is cached under a PRE-expand key (an expanded
+    # sha is unavailable — expanding is what failed) so a polling viewer
+    # doesn't re-log the same traceback on every request. The failed step
+    # still RUNS on every request — the cache is consulted only after it
+    # raises — so a ``use:`` design appearing or a transient resolver
+    # fault heals itself; the cached entry just dedups the log and
+    # replays the degrade note.
     try:
         spec, _handles = store.cad_load(ref.id)
+    except Exception:
+        key = (REALIZED_MESH_PAYLOAD_VERSION, ref.id, f"load:{ref.updated_at}")
+        hit = _mesh_cache_get(key)
+        if hit is not None:
+            return hit
+        log.exception("realized meshes: cad load failed for cad %s", node.bound)
+        _mesh_cache_put(key, (None, 0, load_note))
+        return None, 0, load_note
+    try:
         expanded = expand_instances(spec, design_resolver(store))
     except Exception:
+        key = (
+            REALIZED_MESH_PAYLOAD_VERSION,
+            ref.id,
+            f"expand:{cad_source_sha(spec)}",
+        )
+        hit = _mesh_cache_get(key)
+        if hit is not None:
+            return hit
         log.exception("realized meshes: expand failed for cad %s", node.bound)
-        return None
+        _mesh_cache_put(key, (None, 0, load_note))
+        return None, 0, load_note
     key = (REALIZED_MESH_PAYLOAD_VERSION, ref.id, cad_source_sha(expanded))
-    with _MESH_CACHE_LOCK:
-        if key in _MESH_CACHE:
-            _MESH_CACHE.move_to_end(key)
-            return _MESH_CACHE[key]
+    hit = _mesh_cache_get(key)
+    if hit is not None:
+        return hit
     meshes: list[tuple[str, Any, Any]] | None = None
+    cells = 0
+    note: str | None = None
     try:
         design = build_design(expanded)
         box = _positive_bounds(design, design.whole())
         if box is not None:
-            diag = float(np.linalg.norm(box[1] - box[0]))
-            pitch = diag * _VIEWER_PITCH_DIAG_FRACTION
+            # Pitch SIZES on positive material — a huge cutting tool must
+            # not starve the silhouette of resolution — but the cap
+            # counts the grids the mesher actually allocates: one padded
+            # box per component (the mesher's own helper — cutter bounds
+            # and half the widest blend included), summed.
+            start = float(np.linalg.norm(box[1] - box[0])) * _VIEWER_PITCH_DIAG_FRACTION
+            boxes = [
+                b
+                for comp in expanded.components
+                if (b := _field_grid_box(design, expanded, [comp])) is not None
+            ]
+            bounded = _bounded_viewer_pitch(boxes, start) if boxes else None
+            if bounded is None:
+                raise ValueError("preview exceeds the viewer mesh cell cap")
+            pitch, cells = bounded
             found = _component_meshes(expanded, pitch=pitch)
             named = _se_component_leaf_names([c for c, _v, _t in found])
             meshes = [
@@ -663,24 +811,34 @@ def _se_realized_component_meshes(
                 for leaf, (_comp, verts, tris) in zip(named, found, strict=True)
                 if len(tris)
             ]
-    except Exception:
+    except Exception as exc:
         # Honest absence: the viewer falls back to the envelope — never
         # a 500 because a design's mesh backend refused.
+        cells = 0
+        note = f"{node.name}: showing envelope; realized geometry unavailable ({exc})."
         log.exception("realized meshes: meshing failed for cad %s", node.bound)
-    with _MESH_CACHE_LOCK:
-        _MESH_CACHE[key] = meshes
-        _MESH_CACHE.move_to_end(key)
-        while len(_MESH_CACHE) > _MESH_CACHE_CAP:
-            _MESH_CACHE.popitem(last=False)
-    return meshes
+    _mesh_cache_put(key, (meshes, cells, note))
+    return meshes, cells, note
 
 
-def _se_realized_mesh_fn(store: Store) -> RealizedMeshFn:
+def _se_realized_mesh_fn(
+    store: Store,
+    *,
+    budget: _ViewerMeshBudget | None = None,
+    notes: list[str] | None = None,
+) -> RealizedMeshFn:
     """The se adapter's :data:`_Adapter.realized_meshes` factory: the
     returned fn answers a block's realized component meshes, resolving
     template indirection first. Only a ``cad`` binding qualifies —
     structure/component/part/pcb bindings have no per-component mesh
-    this view knows how to draw, so they keep the envelope."""
+    this view knows how to draw, so they keep the envelope.
+
+    ``budget`` (the per-request mesh-cell budget) admits each block's
+    mesh — warm cache hits count at the same visible limit as cold
+    meshes; a block over budget keeps its envelope with NO per-block
+    note (the budget's one counted notice covers the whole render).
+    ``notes`` receives the per-block line when meshing itself failed; a
+    budget rejection is not a failure and adds nothing."""
 
     def _meshes(tree: Tree[BlockNode, Any], node: Any) -> Any:
         owner = _se_template_resolved(tree, node)
@@ -690,7 +848,14 @@ def _se_realized_mesh_fn(store: Store) -> RealizedMeshFn:
             or not getattr(owner, "bound", None)
         ):
             return None
-        return _se_realized_component_meshes(store, owner)
+        meshes, cells, note = _se_realized_component_meshes(store, owner)
+        if meshes is None:
+            if note is not None and notes is not None:
+                notes.append(note)
+            return None
+        if budget is not None and not budget.take(cells):
+            return None
+        return meshes
 
     return _meshes
 
@@ -1513,7 +1678,11 @@ def _build_scene3d(
     the adapter offers a mesh resolver, blocks whose governing ladder
     level is ``realized`` draw per-component realized meshes and the
     topology rows carry the realized rung flag; OFF (or no resolver) is
-    byte-identical to the envelope-only render.
+    byte-identical to the envelope-only render. When ON, the meshes
+    answer to :data:`_VIEWER_SCENE_CELL_BUDGET` per request (warm cache
+    hits count) and every degrade — a failed mesh, an over-budget block —
+    falls back to the envelope with a visible line in
+    :attr:`~precis_web.blocktree_3d.Scene3D.notes`.
 
     ``rev`` (the scrubber) renders the ``rev-N`` snapshot instead of the
     live rows, with the blocks that changed between N−1 and N tinted
@@ -1552,9 +1721,14 @@ def _build_scene3d(
     )
     if plan is None:
         return None, {}, {}, [], err
-    realized_fn = (
-        adapter.realized_meshes(store) if meshes and adapter.realized_meshes else None
-    )
+    realized_fn = None
+    mesh_budget: _ViewerMeshBudget | None = None
+    mesh_notes: list[str] = []
+    if meshes and adapter.realized_meshes:
+        mesh_budget = _ViewerMeshBudget()
+        realized_fn = adapter.realized_meshes(
+            store, budget=mesh_budget, notes=mesh_notes
+        )
     has_realized = _se_has_realized(store, tree) if realized_fn is not None else None
     scene = build_scene(
         tree,
@@ -1578,6 +1752,12 @@ def _build_scene3d(
         realized_meshes=realized_fn,
         has_realized=has_realized,
     )
+    # Visible degrade notes (gr529551 rebase): one line per realized block
+    # whose mesh failed, then the budget's single counted notice — a
+    # realized-mesh degrade is honest, never silent.
+    scene.notes.extend(mesh_notes)
+    if mesh_budget is not None and mesh_budget.note:
+        scene.notes.append(mesh_budget.note)
     tint_blocks(scene.shapes, changed, CHANGED_COLOUR)
     facts: dict[str, dict[str, Any]] = {}
     findings: dict[str, list[dict[str, Any]]] = {}
@@ -1766,6 +1946,11 @@ async def _scene3d_response(
             # it. The client defaults these to translucent. ``[]`` for a
             # flat design with no such block.
             "container_paths": scene.container_paths,
+            # Visible degrade notes for this render — per-block realized
+            # mesh failures and the one counted budget notice (gr529551
+            # rebase). ``[]`` whenever nothing fell back, including every
+            # meshes-off render.
+            "notes": scene.notes,
         },
         headers={"Cache-Control": "no-store"},
     )
