@@ -8,6 +8,9 @@ prio: high
 
 # NEB structure builder (gr512126)
 
+Source gripes: gr512126 (filed); gr524426, gr540517 (repeat sightings,
+folded 2026-10-30 — see §Repeat sightings).
+
 Status 2026-10-25: slices 1–3 shipped (slice 1 in 49cae7c94; slice 2 —
 `view='pair'`; slice 3 in 28b75f86d). Slices 4 (quest harvest lane +
 generic tick block) and 5 (saddle frequency check) built on
@@ -403,3 +406,38 @@ pathway kind are untouched. Post-deploy look: one real `mode='neb'` run,
    `precis_pathway` plugin job? Proposed: core, because the run record,
    the handler and the calculator factory are all core. (Decision for the
    builder unless Reto objects.)
+
+## Repeat sightings — gr524426, gr540517 (folded 2026-10-30)
+
+Quest ticks kept filing
+`needs-tool: neb-compatible-structure-builder-preflight-accepting-…`
+against qu509651 after slices 1–3 shipped; gr540517 is the same
+capability filed again. Evidence from the comments:
+
+- Hand-built atom placement for the Cu(111) bridging-O CH₄ TS/FS
+  endpoints failed `atom_overlap` preflight 8 times across Ni/Pd/Ag
+  dopant variants; later comments count seven consecutive blind
+  adatom proposals (Rh, Pt, Ag, Fe, Co, Zn, Ir), six rejected at
+  geometry/validation before reaching simulation, with no feedback on
+  acceptable adatom–surface spacing.
+- Root cause (GRIPE_FIX pass, 2026-10-29): not a missing tool. st510794,
+  st520247 and st524427 were authored directly ("no generator record")
+  with atoms at guessed fractional z — O sits ~1.9 Å inside the slab
+  (Cu20–O 0.746 Å vs the 1.188 Å floor), and st520247 put Ni on top of
+  Cu instead of substituting (Ni–Cu 1.498 Å, ×3). The 0.6×covalent floor
+  is right; a real TS bond is ~1.9–2.1 Å. The covered path is
+  `add_atom_site` on a bridge/hollow anchor, element substitution for
+  dopants, `derive_from` + `displace`/`transfer`/`move_group` for the
+  TS/FS, then `struct_neb` / `view='pair'`.
+- Would unblock: all four Cu(111) bridging-O methane-activation
+  candidates, stalled with only st511725's non-barrier energy on the
+  frontier.
+
+Proposed shape (the gripe's retriage is `fix:skill`, so this item's
+skill work absorbs it): a worked bridging-O Cu(111) CH₄ TS example in
+`precis-structure-slab-help` — this is slice 1's "Reaction endpoints"
+section extended into the slab skill — and an `atom_overlap` preflight
+hint that points at `add_atom_site` and element substitution when the
+overlap is far below the floor, adjacent to slice 1's four stale-hint
+rewrites. Ticks build endpoints from derived structures rather than
+authoring fresh `put`s.

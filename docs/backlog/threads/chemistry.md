@@ -131,6 +131,13 @@ paper needs.
    confirmation reruns whose verdict is already stored (st336035's
    pw512178/pw513347 were already blocked). Below 4 because Reto ordered 4
    first; its core `gate_rows` is what 4's slice 3 `view='neb'` reuses.
+6. **backlog/neb-trust-gate-methodology.md** (gr536970/gr541116) — Reto
+   decision, not a build: qu164903's barrier credits have flipped 6-for-6
+   across three fault families, so no barrier-axis conclusion until the
+   multi-seed-at-dispatch methodology is ruled. Below 5 because it is an
+   ask over assembled pieces — item 5's shipped slice 1 is its
+   inspectable half — and a ruling here may re-rank the endpoint items
+   it gates.
 
 ## Horizon
 
