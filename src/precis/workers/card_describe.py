@@ -51,6 +51,12 @@ claim transaction): this pass's only "done" marker is the success-written
 chunk, so without the brake a persistently-failing ref — e.g. a model
 reply whose JSON never carries ``description`` (gr508688) — is re-claimed
 and re-billed every sweep instead of once per cooldown.
+
+The lease's value counts consecutive attempts (gr523669): once a ref
+reaches :data:`_PARSE_FAIL_BENCH` failed attempts with no success since,
+the pass re-stamps it under :data:`_BENCH_COOLDOWN_MIN` — the repeat-
+offender stops re-claiming for a day instead of an hour, so a reply
+shape the parser can never accept stops burning the daily spend cap.
 """
 
 from __future__ import annotations
@@ -59,6 +65,7 @@ import base64
 import hashlib
 import logging
 import os
+import re
 from typing import TYPE_CHECKING, Any
 
 from psycopg import Connection
@@ -129,6 +136,23 @@ _SOURCE = "card_describe"
 #: A generation shorter than this is a model miss (refusal fragment,
 #: stray whitespace) — count it failed rather than indexing junk.
 _MIN_DESC_CHARS = 40
+
+#: How much of a bad reply's text reaches the ValueError/log reason —
+#: enough to name the wrong shape (truncated JSON, a wrong key, an
+#: envelope) straight off the log line (gr523669).
+_REPLY_EXCERPT_CHARS = 200
+
+#: Consecutive failed attempts after which a ref is benched: its attempt
+#: lease is re-stamped at the same ordinal with
+#: :data:`_BENCH_COOLDOWN_MIN` instead of the per-attempt
+#: ``ref_lease.ATTEMPT_COOLDOWN_MIN`` — one retry a day, not one an hour.
+#: Without it a ref whose reply never carries ``description`` re-bills an
+#: LLM call every cooldown forever (gr523669: 123+37 failures/24 h
+#: burning the $25 daily cap).
+_PARSE_FAIL_BENCH = 3
+
+#: The benched ref's brake window.
+_BENCH_COOLDOWN_MIN = 24 * 60
 
 #: Hard cap on the stored description. The prompt asks for ~3 sentences;
 #: this only guards against a runaway completion.
@@ -314,24 +338,54 @@ def claimable_counts(conn: Connection) -> dict[str, int]:
     return counts
 
 
+#: A reply that is exactly one code fence — the fence wraps the answer
+#: (JSON or prose), it isn't part of it. Anything less clean (two fences,
+#: prose around the fence, a truncated closer) is left alone.
+_WHOLE_FENCE_RE = re.compile(r"```[^\n]*\n(.*?)```\s*", re.DOTALL)
+
+
+def _reply_excerpt(text: str) -> str:
+    """The reply's head flattened to ONE printable line — whitespace runs
+    collapse and remaining control chars drop, so the excerpt can't break
+    the shipped log line's shape."""
+    flat = re.sub(r"\s+", " ", text)
+    return "".join(ch for ch in flat if ch.isprintable()).strip()[:_REPLY_EXCERPT_CHARS]
+
+
 def _extract_description(res: Any) -> str:
     """Pull the narrative out of the reply. ``CLAUDE_P`` demands a JSON
     block (``res.data``); the local/OpenAI wires return the same JSON as
     text, which is parsed here. A reply with no JSON at all is taken as
     plain prose (a model that ignored the JSON instruction); one that looks
     like JSON but yields no ``description`` (truncated, malformed, another
-    shape) raises so the card is retried rather than storing junk."""
-    from precis.utils.claude_p import _parse_last_json_block
+    shape) raises so the card is retried rather than storing junk — and
+    the reason carries the reply's head so the log names the wrong shape
+    (gr523669).
 
-    text = (res.text or "").strip()
+    Loose only where the strictness was incidental (gr523669): a whole-
+    reply code fence is unwrapped, ``res.data`` that parsed but lacks the
+    field falls back to the text, and the text parse is the shared
+    tolerant one — a fenced block, extra keys alongside ``description``,
+    and a raw (unescaped) control char inside a string all still yield
+    the field. A wrong key or truncated JSON still fails."""
+    from precis.utils.llm.json_reply import extract_json_object
+
+    raw = (res.text or "").strip()
+    m = _WHOLE_FENCE_RE.fullmatch(raw)
+    text = (m.group(1) if m else raw).strip()
     data = getattr(res, "data", None)
-    if not isinstance(data, dict):
-        data = _parse_last_json_block(text)
+    if not (isinstance(data, dict) and isinstance(data.get("description"), str)):
+        alt = extract_json_object(text)
+        if isinstance(alt, dict):
+            data = alt
     desc = data.get("description") if isinstance(data, dict) else None
     if isinstance(desc, str):
         return desc.strip()
     if data is not None or "{" in text:
-        raise ValueError("card_describe reply carried no usable 'description' field")
+        raise ValueError(
+            "card_describe reply carried no usable 'description' field; "
+            f"reply={_reply_excerpt(raw or repr(data))}"
+        )
     return text
 
 
@@ -492,9 +546,15 @@ def _run_card_describe_batch(
         # Stamp the claim-time attempt lease for every claimed ref in the
         # SAME transaction as the claim SELECT, before it commits (the
         # bib_parse shape — gripe 202116) — the lease is the durable
-        # brake, the FOR UPDATE row lock dies with this commit.
+        # brake, the FOR UPDATE row lock dies with this commit. The stamp
+        # carries the consecutive-attempt ordinal (the lease's value —
+        # gr523669): a success's clear_attempt resets it, so it counts
+        # failed attempts back to back across cooldown windows.
+        attempts: dict[int, int] = {}
         for claimed_id, *_ in rows:
-            ref_lease.stamp_attempt(store, claimed_id, _LEASE_NS, conn=conn)
+            n = ref_lease.attempt_count(conn, claimed_id, _LEASE_NS) + 1
+            attempts[claimed_id] = n
+            ref_lease.stamp_attempt(store, claimed_id, _LEASE_NS, conn=conn, attempts=n)
         conn.commit()
     claimed = len(rows)
 
@@ -590,6 +650,33 @@ def _run_card_describe_batch(
                 str(exc)[:300],
             )
             failed += 1
+            n = attempts.get(ref_id, 0)
+            if n >= _PARSE_FAIL_BENCH:
+                # Nth consecutive failure with no success since — a repeat
+                # offender (gr523669: an unparseable-shape reply re-billed
+                # an LLM call every cooldown and ate the daily cap).
+                # Re-stamp the SAME ordinal with the bench window: the ref
+                # stays out of the claim set for a day, not an hour.
+                with store.pool.connection() as conn:
+                    ref_lease.stamp_attempt(
+                        store,
+                        ref_id,
+                        _LEASE_NS,
+                        conn=conn,
+                        attempts=n,
+                        ttl_minutes=_BENCH_COOLDOWN_MIN,
+                    )
+                    conn.commit()
+                if n == _PARSE_FAIL_BENCH:
+                    # Log the bench once — on the transition; a re-bench
+                    # after the window is implied by the failure line.
+                    log.warning(
+                        "card_describe: ref_id=%s benched after %d "
+                        "consecutive failures; backing off %d min",
+                        ref_id,
+                        n,
+                        _BENCH_COOLDOWN_MIN,
+                    )
     return {"claimed": claimed, "ok": ok, "failed": failed}
 
 

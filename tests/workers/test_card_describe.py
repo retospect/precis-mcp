@@ -8,8 +8,11 @@ worker never touches an embedder.
 from __future__ import annotations
 
 import json
+from datetime import timedelta
 from types import SimpleNamespace
 from typing import Any
+
+import pytest
 
 from precis.dispatch import Hub
 from precis.handlers.cad import CadHandler
@@ -398,7 +401,8 @@ def test_failed_ref_error_line_carries_class_and_reason(
     lines = [rec.getMessage() for rec in caplog.records if rec.levelno >= logging.ERROR]
     assert lines == [
         f"card_describe: ref_id={ref_id} failed: ValueError: "
-        "card_describe reply carried no usable 'description' field"
+        "card_describe reply carried no usable 'description' field; "
+        'reply={"narrative": "..."}'
     ]
 
 
@@ -450,6 +454,149 @@ def test_dispatch_failure_error_line_carries_class_and_reason(
         f"card_describe: ref_id={ref_id} dispatch failed: "
         "DispatchError: all BIG rungs declined"
     ]
+
+
+@pytest.mark.parametrize(
+    ("reply", "stored"),
+    [
+        pytest.param(
+            '{"description": "A PdO slab, plausibly a cat',
+            None,
+            id="truncated-json",
+        ),
+        pytest.param(
+            '{"narrative": "A PdO slab, plausibly a catalyst surface model."}',
+            None,
+            id="wrong-key",
+        ),
+        pytest.param(_DESC, _DESC, id="plain-prose"),
+        pytest.param(
+            f'```json\n{{"description": "{_DESC}"}}\n```',
+            _DESC,
+            id="fenced-json",
+        ),
+        pytest.param(
+            f'{{"description": "{_DESC}", "confidence": 0.9, "lang": "en"}}',
+            _DESC,
+            id="extra-keys",
+        ),
+        pytest.param(f"```\n{_DESC}\n```", _DESC, id="fenced-prose"),
+        pytest.param(
+            '{"description": "A palladium oxide slab with in-plane\n'
+            'periodicity, likely a model catalyst surface."}',
+            "A palladium oxide slab with in-plane\nperiodicity, likely a "
+            "model catalyst surface.",
+            id="raw-newline-in-json",
+        ),
+    ],
+)
+def test_reply_shapes_parse_or_fail_with_reason(
+    store: Any, hub: Any, caplog: Any, reply: str, stored: str | None
+) -> None:
+    """gr523669: reply shapes the prod failures hid behind a bare reason.
+    The incidental-strictness shapes (a wrapping fence, extra keys, a raw
+    control char inside the string) parse; a wrong key and a truncated
+    object still fail — and the ERROR line carries the reply's head."""
+    import logging
+
+    ref_id = _put_structure(hub)
+
+    with caplog.at_level(logging.ERROR, logger="precis.workers.card_describe"):
+        r = run_card_describe_pass(store, client=_FakeClient(reply), batch_size=10)
+
+    if stored is not None:
+        assert (r["claimed"], r["ok"], r["failed"]) == (1, 1, 0)
+        assert _desc_chunks(store, ref_id)[0][1] == stored
+        return
+
+    assert (r["claimed"], r["ok"], r["failed"]) == (1, 0, 1)
+    assert _desc_chunks(store, ref_id) == []
+    lines = [rec.getMessage() for rec in caplog.records if rec.levelno >= logging.ERROR]
+    assert len(lines) == 1
+    assert lines[0].startswith(
+        f"card_describe: ref_id={ref_id} failed: ValueError: "
+        "card_describe reply carried no usable 'description' field; reply="
+    )
+    # the reason names the reply's head, flattened to one line
+    assert " ".join(reply.split())[:40] in lines[0]
+    assert "\n" not in lines[0]
+
+
+def test_consecutive_failures_bench_the_ref(store: Any, hub: Any, caplog: Any) -> None:
+    """gr523669: after ``_PARSE_FAIL_BENCH`` consecutive failures the lease
+    is re-stamped under the bench window — the ref stops re-claiming for a
+    day instead of re-billing an LLM call every cooldown, and the bench is
+    logged once (on the transition, not on every re-bench)."""
+    import logging
+
+    import precis.workers.card_describe as cd
+    from precis.workers import ref_lease
+
+    ref_id = _put_structure(hub)
+    bad_reply = '{"narrative": "a shape the parser cannot use"}'
+
+    def _expire_lease() -> None:
+        with store.pool.connection() as conn:
+            conn.execute(
+                "UPDATE ref_tags SET expires_at = now() - interval '1 minute' "
+                "WHERE ref_id = %s",
+                (ref_id,),
+            )
+            conn.commit()
+
+    def _lease() -> tuple[str, Any]:
+        with store.pool.connection() as conn:
+            row = conn.execute(
+                "SELECT t.value, rt.expires_at - now() FROM ref_tags rt "
+                "JOIN tags t ON t.tag_id = rt.tag_id "
+                "WHERE rt.ref_id = %s AND t.namespace = %s",
+                (ref_id, ref_lease.attempt_ns(cd._LEASE_NS)),
+            ).fetchone()
+        assert row is not None
+        return str(row[0]), row[1]
+
+    def _fail_pass() -> dict[str, Any]:
+        r = run_card_describe_pass(store, client=_FakeClient(bad_reply), batch_size=10)
+        assert (r["claimed"], r["ok"], r["failed"]) == (1, 0, 1)
+        assert _desc_chunks(store, ref_id) == []
+        return r
+
+    with caplog.at_level(logging.WARNING, logger="precis.workers.card_describe"):
+        # attempts 1..N-1: fail, burn the cooldown, re-claim, fail again —
+        # the per-attempt lease only ever brakes for its own cooldown.
+        for _ in range(cd._PARSE_FAIL_BENCH - 1):
+            _fail_pass()
+            _expire_lease()
+        # attempt N: fails AND benches — the lease jumps to the long window.
+        _fail_pass()
+
+    value, ttl = _lease()
+    assert value == str(cd._PARSE_FAIL_BENCH)
+    assert ttl > timedelta(minutes=ref_lease.ATTEMPT_COOLDOWN_MIN)
+
+    assert [
+        rec.getMessage() for rec in caplog.records if "benched" in rec.getMessage()
+    ] == [
+        f"card_describe: ref_id={ref_id} benched after "
+        f"{cd._PARSE_FAIL_BENCH} consecutive failures; "
+        f"backing off {cd._BENCH_COOLDOWN_MIN} min"
+    ]
+
+    # Benched: the next pass does not re-claim — no re-bill, no ERROR.
+    again = _FakeClient(bad_reply)
+    r = run_card_describe_pass(store, client=again, batch_size=10)
+    assert (r["claimed"], r["ok"], r["failed"]) == (0, 0, 0)
+    assert again.calls == []
+
+    # The bench window itself expiring re-claims exactly once; another
+    # failure re-benches at the next ordinal without a second bench line.
+    caplog.clear()
+    _expire_lease()
+    _fail_pass()
+    value, ttl = _lease()
+    assert value == str(cd._PARSE_FAIL_BENCH + 1)
+    assert ttl > timedelta(minutes=ref_lease.ATTEMPT_COOLDOWN_MIN)
+    assert [rec for rec in caplog.records if "benched" in rec.getMessage()] == []
 
 
 # ── gr500371: emptied chain defers the batch, log names cli_unavailable ──

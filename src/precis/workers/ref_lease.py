@@ -51,6 +51,13 @@ re-stamping refreshes it. There is no reaper and no renewal loop: a pass
 whose work outlasts the cooldown must re-stamp mid-work. Chunk-level passes
 use ``chunk_claims``; whole-corpus recompute passes (``paper_rank``) need no
 lease.
+
+The row's VALUE is a free counter slot: a pass that stamps the
+consecutive-attempt ordinal (``stamp_attempt(..., attempts=n)``) reads it
+back with :func:`attempt_count` — expired rows persist, so the count
+survives the cooldown and only :func:`clear_attempt` (a success) resets
+it. card_describe uses it to bench a ref that fails N consecutive
+attempts under a longer TTL (gr523669).
 """
 
 from __future__ import annotations
@@ -76,7 +83,15 @@ def attempt_ns(marker_ns: str) -> str:
     return f"{marker_ns}ATTEMPT"
 
 
-def stamp_attempt(store: Store, ref_id: int, marker_ns: str, *, conn: Any) -> None:
+def stamp_attempt(
+    store: Store,
+    ref_id: int,
+    marker_ns: str,
+    *,
+    conn: Any,
+    attempts: int = 1,
+    ttl_minutes: float | None = None,
+) -> None:
     """Write/refresh the claim-time attempt lease for ``ref_id``.
 
     Call BEFORE the LLM call, in its own short committed transaction ahead
@@ -84,22 +99,69 @@ def stamp_attempt(store: Store, ref_id: int, marker_ns: str, *, conn: Any) -> No
     ordering) — so a raise, or a hard crash mid-call, still leaves the brake
     in place. Idempotent: a re-stamp within the cooldown just refreshes
     ``expires_at``.
+
+    ``attempts`` is the consecutive-attempt ordinal a counting pass
+    records as the lease's VALUE (``<NS>ATTEMPT:N`` — read back with
+    :func:`attempt_count`; default ``1`` keeps the historical plain
+    ``"1"`` row for passes that don't count). ``ttl_minutes`` overrides
+    :data:`ATTEMPT_COOLDOWN_MIN` — card_describe's bench stamps the SAME
+    ordinal with a much longer window so a persistently-failing ref
+    stops re-claiming (gr523669). ``replace_prefix`` keeps at most one
+    lease row per namespace, so a re-stamp never leaves a stale ordinal
+    behind.
     """
+    if ttl_minutes is None:
+        ttl_minutes = ATTEMPT_COOLDOWN_MIN
     store.add_tag(
         ref_id,
-        Tag.closed(attempt_ns(marker_ns), "1"),
+        Tag.closed(attempt_ns(marker_ns), str(attempts)),
         set_by="agent",
-        expires_at=datetime.now(UTC) + timedelta(minutes=ATTEMPT_COOLDOWN_MIN),
+        replace_prefix=True,
+        expires_at=datetime.now(UTC) + timedelta(minutes=ttl_minutes),
         conn=conn,
     )
+
+
+def attempt_count(conn: Any, ref_id: int, marker_ns: str) -> int:
+    """The lease's recorded attempt ordinal — ``stamp_attempt`` writes it
+    as the tag VALUE, so the highest digit value under the namespace is
+    the count of consecutive attempts since the last :func:`clear_attempt`
+    (a success). An expired-but-present row still counts: expiry relaxes
+    the brake, it does not reset history. ``0`` when no lease row exists.
+    """
+    rows = conn.execute(
+        "SELECT t.value FROM ref_tags rt JOIN tags t ON t.tag_id = rt.tag_id "
+        "WHERE rt.ref_id = %s AND t.namespace = %s",
+        (ref_id, attempt_ns(marker_ns)),
+    ).fetchall()
+    vals = [int(str(r[0])) for r in rows if str(r[0]).isdigit()]
+    return max(vals, default=0)
 
 
 def clear_attempt(store: Store, ref_id: int, marker_ns: str, *, conn: Any) -> None:
     """Drop the attempt lease — call as part of the pass's own success write
     (same transaction) so a later legitimate re-trigger (version bump,
     toggled enabled-set) is never blocked by a stale lease left over from an
-    earlier successful run. A no-op if no lease is present."""
-    store.remove_tag(ref_id, Tag.closed(attempt_ns(marker_ns), "1"), conn=conn)
+    earlier successful run. A no-op if no lease is present.
+
+    Clears the whole ``<NS>ATTEMPT`` namespace whatever ordinal the value
+    carries — the value is the attempt counter, and a success resets the
+    count along with the brake (gr523669)."""
+    namespace = attempt_ns(marker_ns)
+
+    def _do(c: Any) -> None:
+        c.execute(
+            "DELETE FROM ref_tags rt USING tags t "
+            "WHERE rt.tag_id = t.tag_id "
+            "  AND rt.ref_id = %s AND t.namespace = %s",
+            (ref_id, namespace),
+        )
+
+    if conn is not None:
+        _do(conn)
+    else:
+        with store.pool.connection() as c:
+            _do(c)
 
 
 def exclude_clause(ref_col: str, param: str) -> str:
@@ -118,6 +180,7 @@ def exclude_clause(ref_col: str, param: str) -> str:
 
 __all__ = [
     "ATTEMPT_COOLDOWN_MIN",
+    "attempt_count",
     "attempt_ns",
     "clear_attempt",
     "exclude_clause",
