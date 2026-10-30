@@ -238,6 +238,12 @@ Pick: fit for the task class first; among fit lanes the one most behind
 its pacing target; metered last. Fit learns from the loop (first-round
 `LAND` raises, `FIX` or a revert lowers), rolled up nightly.
 
+Definition (Reto 2026-10-30, td541982): a lane is an adapter plus a
+credential pool plus a concurrency cap — a scheduler slot. Model, effort
+and temperature are per-job choices inside a lane, picked by task class.
+A lane is a field on the job (`meta.lane`), never prose on a todo or a
+gripe brief.
+
 ## Branches: who merges what, how
 
 Reto, 2026-10-30 (Round 3): squash merges, reviews, deploys, automatic,
@@ -338,28 +344,113 @@ like the others; the grace period for stranded branches (three builds
 proposed). Answered: the lander lands everything the moment it is done,
 with the seconds-cheap checks only.
 
+## Plans: the job lifecycle and the plan graph (step 3 design, td541983)
+
+Reto 2026-10-30: every gripe goes triage → fix → validate, each action
+an LLM call (triage picks the model and may ask; fix may be a frontier
+model writing the brief for a cheaper builder; validate waits for the
+sha to reach prod, checked on a schedule). The same list type must
+express "five in parallel, then 6 and 7 in sequence, then three in
+parallel, then dogfood and cycle a few times", a coordinator sets it up,
+spec writers are generated on demand, and the PCB generator runs on the
+same machinery. The design adds no kind: a plan is a todo subtree, and
+the dispatcher is one schedule tick over it.
+
+### Node kinds, on existing fields
+
+| node | how it is written | what completes it |
+|---|---|---|
+| task | a leaf todo with a brief (step 2 chunks); `meta.op` = job_type + params, default `run_slice` for LLM work | its job ends: a land writes STATUS:done (ship, td541978); a mechanical job writes it on success |
+| phase | a todo with children and `meta.auto_close` | every child done or won't-do; the tick closes it |
+| gate | `meta.gate = {kind, args}`; kinds `sha-in-prod {sha}`, `tests-green {range}`, `answer` (an ask-user todo is a gate), `not-before {ts}` | the tick evaluates the predicate; nothing is dispatched for a gate |
+| loop | `meta.loop = {max, until: <gate spec>, body: <template>}` | the tick re-mints the body when every current child is done, `until` is false and count < max; exit closes it |
+| generator | `meta.generate = {role: slicer \| spec-writer \| triage, from: <md section \| gripe \| board>}` | its job is an LLM turn whose output is child todos; afterwards it behaves as a phase |
+
+Edges: containment is `parent_id`, sequence is a `blocked-by` link
+(`view='doable'` already honours it), service is `serves`. The example
+reads: phase A holds five tasks with no links among them; phase B is
+blocked-by A and holds 6 and 7 with 7 blocked-by 6; phase C is blocked-by
+B and holds three tasks; loop L is blocked-by C, its body is [a dogfood
+task, a fixer generator over gripes tagged `plan:<L>`] and its `until`
+is "no open gripe carries that tag", max 3. The `plan:<id>` tag is how a
+cycle keeps its own findings together.
+
+### Job lifecycle per task
+
+The job substrate stands as it is: queued → running → succeeded |
+failed | cancelled, with `waiting_*` for parks (coordinator `Yield`
+checkpoints, `defer_on_pause`). The todo mirrors it: `doing` while a
+live job or lease exists; on failure the runner posts the handoff chunk
+and the todo returns to `open` with `attempt:<n>`; past `meta.retries`
+(default 2) the tick mints an ask-user todo that blocks it — a
+showstopper row — and stops. A lease older than 4 h with no live job is
+released. Lane, model and effort are fields on the job.
+
+### Templates
+
+A template is a function in `src/precis/plans/templates.py` that mints
+a subtree; `put(kind='todo', mode='plan', args={'template': …})` or the
+coordinator turn calls it.
+
+- **gripe-fix(gripe):** triage (generator, cheapest model: task class,
+  model, and an ask gate when the report is unusable) → brief (task,
+  frontier model writes the builder's brief chunk) → build (task,
+  `run_slice` on the picked lane; the land writes `resolved: <sha>` +
+  verify on the gripe) → gate sha-in-prod → validate (task: re-run the
+  named repro or test when the gripe names one, an LLM read otherwise)
+  → done on the gripe. The gripe keeps the ticket state (gr541800
+  ladder); the subtree does the work and is `related-to` the gripe.
+- **slice-tree(spec section):** spec-writer generator when the section
+  is thin → slicer generator → N tasks each with a declared file set,
+  overlapping sets sequenced by blocked-by at mint (gr541684) → review
+  task on another lane → phase auto-close.
+- **release-pass:** cut → gate tests-green → fixer generator on red →
+  re-cut; the loop from "Branches".
+- **pcb-pipeline(board):** place (`pcb_place`) → route (a job_type to
+  add) → drc (`pcb_review`'s check leg) → review generator over the DRC
+  report minting fix tasks → loop until the DRC is clean, max N. The
+  workbench ops that are not job_types yet become ones; nothing else
+  changes for the PCB code.
+
+### The dispatcher tick
+
+One schedule pass (a `plan_tick`-shaped job, `dedupe_pending`, the
+step 7 kill switch): (1) evaluate gates; (2) advance loops; (3)
+auto-close phases; (4) for each doable task with no live job, pick the
+lane (fit, then pacing), mint the job with the rendered brief, launch
+through the lane's adapter (step 6); (5) hygiene: expired leases, retry
+caps, stuck jobs → asks. Concurrency is the lane cap. The work view
+shows gates and loops as rows with their predicate and count.
+
+### What exists, what is missing
+
+Exists: the todo tree with `doable` and leases; blocked-by; `plan_tick`
+(a parented put already synthesizes a planner tick from
+`meta.llm_tier`); the coordinator executor's `Yield` with checkpoint
+and wake condition; `quest_tick` as a perpetual loop; `good_search` as
+a fan-out with triage children; `pcb_place`, `pcb_review`, `pcb_argue`;
+`deferred_llm_call`.
+
+Missing (wave 3 slices, in order): `meta.gate / loop / generate /
+auto_close / op` validation in the todo handler; the gate evaluators
+(sha-in-prod needs origin/prod's head reported, by `scripts/release` or
+the fleet host row); phase auto-close; the template module and
+`mode='plan'`; the `run_slice` job type (step 6) with `meta.lane`; the
+tick; gate and loop rows in the work view.
+
 ## Next steps, by unlock value
 
-1. **One work tree, read-only first** (one build). `get(kind='todo',
-   view='work')` + web `/work`: quest (pillar or science) → thread/spec
-   (md frontmatter: `status`, `claimed-by`) → slice/gripe (loop queue)
-   → builders (fleet rows per tree, count and vendor) → landed/deployed
-   (round refs). Gripes hang where their `thread:` tag puts them,
-   untagged ones in one bucket. Columns: status, agents on it, age in
-   builds, the open release and its gate. Unlocks 2–8. Same build:
-   install the fleet reporter so the tree has agents in it.
+1. **One work tree** — landed 2026-10-30: `view='work'` + `/work`
+   (0a2ccce22, 28da3be4b, 7c77ffd98, 6e5f8c796), gripes under their
+   thread root, jobs folded per row, the eye tree ring (gr541348).
+   Open: the fleet reporter reinstall (td540844), gripes as structured
+   web rows (td541980), the stage cell from STATUS (td541982).
 
-1b. **The asks list** (small, reads 1). One view and page with three
-   classes — showstopper (a lane is stopped on it), decision (a next
-   slice waits on it), discussion (a shape question) — grouped by quest,
-   fed by `ask-user:` todos, `waiting-for:reto`, review-queue files,
-   gripes tagged `needs:ruling`, red releases and tripped breakers.
-   Replaces the review session's gather step. Argument = comments on the
-   row; `all users see all` for now. **Built (td540847):** `view='asks'`,
-   `/asks`, Needs-you; ask-user, `waiting-for:reto`, `needs:ruling`,
-   `discussion` and review-queue files are sources. **Open:** red
-   releases and tripped breakers (no source until step 4), mindmeld
-   questions (Round 3's turn), live tmux dialogs.
+1b. **The asks list** — landed 2026-10-30 (a437ceb1b): `view='asks'`,
+   `/asks`, Needs-you; three classes grouped by quest then thread.
+   Open: a question is an ask-user todo with `meta.ask`, review-queue
+   files retire (td541979); red releases and tripped breakers (no
+   source until step 4); mindmeld questions (Round 3's turn).
 
 2. **Loop chunks on slices, not only gripes** (one to two builds).
    `edit(kind='todo', mode='fix', args={brief|handoff|review|landed})`
@@ -517,3 +608,7 @@ with the seconds-cheap checks only.
 - Where the fit score lives: `lanes` meta, or a memory node per lane
   under me538174 so human notes and the machine score stay one record.
 - Authority: a daemon as release owner (step 4).
+- **Plans (td541983).** Does a phase close itself by default, or only
+  with `auto_close`? Does a gripe's fix subtree hang under the gripe's
+  thread root or under one factory root? Is validate ever an LLM read,
+  or only the mechanical re-run of a named repro or test?
