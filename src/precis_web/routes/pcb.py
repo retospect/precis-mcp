@@ -16,7 +16,7 @@ same data:
 * ``GET  /pcb/{slug}/export.epro2`` — the EasyEDA Pro file, rebuilt on
   request by the MCP view's own ``PcbHandler.epro_build`` (deterministic
   bytes, nothing stored); ``?sha=`` from the MCP response turns a stale
-  link into a 409.
+  link into a 409, a mangled one into a 400 (gr540873).
 * ``GET  /pcb/{slug}/fab.zip`` — the ``view='fab'`` production package as
   one download (gr496699): the gerber+drill zip plus the JLC BOM and CPL,
   assembled in memory by ``PcbHandler.fab_package_zip`` off the same
@@ -83,7 +83,7 @@ from precis.design import history
 from precis.dispatch import Hub
 from precis.errors import BadInput, NotFound
 from precis.handlers._slug_ref_shared import resolve_live_slug_ref
-from precis.handlers.pcb import PcbHandler
+from precis.handlers.pcb import EPRO_SHA_PREFIX, PcbHandler
 from precis.pcb import argue
 from precis.utils.text import slugify
 from precis_web import (
@@ -633,7 +633,8 @@ async def pcb_export_epro(
     is stored or read from disk (gr495289, Reto's ruling: option 1a).
     ``sha`` is the prefix the MCP response printed; a board edited since
     then rebuilds to different bytes and answers 409 rather than handing
-    over a file the agent never saw."""
+    over a file the agent never saw. A value that is not the link's
+    16-hex prefix is a mangled paste, not an edit — 400 (gr540873)."""
     store = get_store(request)
     try:
         ref = resolve_live_slug_ref(store, kind="pcb", id=slug)
@@ -652,6 +653,22 @@ async def pcb_export_epro(
             status_code=422, content="no board yet", media_type="text/plain"
         )
     want = (sha or "").strip().lower()
+    if want and (
+        len(want) != EPRO_SHA_PREFIX or any(c not in "0123456789abcdef" for c in want)
+    ):
+        # A mangled value (typo, wrapped paste) is not a changed board —
+        # the caller fixes the link, not re-runs view='epro'. The
+        # asked-for value is caller text and is still not echoed; the
+        # answer names the format and the current prefix instead.
+        return RawResponse(
+            status_code=400,
+            content=(
+                f"malformed sha — the link carries the {EPRO_SHA_PREFIX}-hex "
+                f"sha256 prefix (now {build.sha256[:EPRO_SHA_PREFIX]}); copy "
+                "it from the view='epro' download line"
+            ),
+            media_type="text/plain",
+        )
     if want and not build.sha256.startswith(want):
         # The asked-for value is not echoed: it is caller text.
         return RawResponse(

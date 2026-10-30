@@ -1298,11 +1298,24 @@ def test_epro_download_refuses_a_link_to_an_edited_board(
 
 def test_epro_download_refuses_a_stale_sha(pcb_client, runtime_with_store) -> None:
     _seed_placed(runtime_with_store, "web_epro_stale")
-    r = pcb_client.get("/pcb/web_epro_stale/export.epro2?sha=<b>0000</b>")
+    stale = "0" * 16
+    r = pcb_client.get(f"/pcb/web_epro_stale/export.epro2?sha={stale}")
     assert r.status_code == 409
     assert "run view='epro' again" in r.text
-    assert "<b>" not in r.text
+    assert stale not in r.text  # caller text is not echoed
     assert r.headers["content-type"].startswith("text/plain")
+
+
+def test_epro_download_rejects_a_malformed_sha(pcb_client, runtime_with_store) -> None:
+    # gr540873 — a typo'd or paste-mangled sha is a 400 'malformed sha',
+    # not the 409 'board changed' a real edit answers.
+    _seed_placed(runtime_with_store, "web_epro_bad")
+    for bad in ("<b>0000</b>", "0" * 15, "0" * 17, "z" * 16):
+        r = pcb_client.get(f"/pcb/web_epro_bad/export.epro2?sha={bad}")
+        assert r.status_code == 400, (bad, r.text)
+        assert "malformed sha" in r.text
+        assert "<b>" not in r.text  # caller text is not echoed
+        assert r.headers["content-type"].startswith("text/plain")
 
 
 def test_epro_download_404(pcb_client) -> None:
