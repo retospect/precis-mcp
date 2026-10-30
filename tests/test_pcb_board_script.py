@@ -45,7 +45,24 @@ def _tiny_batch() -> dict[str, Any]:
                 "refdes": "J1",
                 "label": "HDR-2",
                 "footprint": "HDR-2.54-1x2",
-                "pins": [{"name": "1", "pad": "1"}, {"name": "2", "pad": "2"}],
+                "pins": [
+                    {
+                        "name": "1",
+                        "pad": "1",
+                        "etype": "power_in",
+                        "meta": {
+                            "max_current_a": 0.5,
+                            "max_voltage_v": 5.0,
+                            "assume": "gnd pin",
+                        },
+                    },
+                    {
+                        "name": "2",
+                        "pad": "2",
+                        "etype": "bidi",
+                        "meta": {"fmax_hz": 0.0, "assume": "sig pin"},
+                    },
+                ],
                 "x": 1.0,
                 "y": 2.0,
                 "rot": 90.0,
@@ -55,7 +72,18 @@ def _tiny_batch() -> dict[str, Any]:
             {
                 "refdes": "R1",
                 "part": "C25804",
-                "pins": [{"name": "1"}, {"name": "2"}],
+                "pins": [
+                    {
+                        "name": "1",
+                        "etype": "passive",
+                        "meta": {"fmax_hz": 0.0, "assume": "resistor"},
+                    },
+                    {
+                        "name": "2",
+                        "etype": "passive",
+                        "meta": {"fmax_hz": 0.0, "assume": "resistor"},
+                    },
+                ],
                 "value": "10k",
             },
         ],
@@ -188,9 +216,55 @@ def test_named_nets_once_no_line_over_100() -> None:
 def test_module_blocks_for_prefixed_refdes() -> None:
     batch = {
         "components": [
-            {"refdes": "P.U1", "part": "C1", "pins": []},
-            {"refdes": "P.C1", "pins": [{"name": "1"}, {"name": "2"}]},
-            {"refdes": "J1", "pins": [{"name": "1"}]},
+            {
+                "refdes": "P.U1",
+                "part": "C1",
+                "pins": [
+                    {
+                        "name": "GND",
+                        "etype": "power_in",
+                        "meta": {
+                            "max_current_a": 0.1,
+                            "max_voltage_v": 3.6,
+                            "assume": "ic gnd",
+                        },
+                    },
+                    {
+                        "name": "FB",
+                        "etype": "input",
+                        "meta": {"fmax_hz": 0.0, "assume": "feedback"},
+                    },
+                ],
+            },
+            {
+                "refdes": "P.C1",
+                "pins": [
+                    {
+                        "name": "1",
+                        "etype": "passive",
+                        "meta": {"fmax_hz": 0.0, "assume": "cap"},
+                    },
+                    {
+                        "name": "2",
+                        "etype": "passive",
+                        "meta": {"fmax_hz": 0.0, "assume": "cap"},
+                    },
+                ],
+            },
+            {
+                "refdes": "J1",
+                "pins": [
+                    {
+                        "name": "1",
+                        "etype": "power_in",
+                        "meta": {
+                            "max_current_a": 0.1,
+                            "max_voltage_v": 5.0,
+                            "assume": "gnd pin",
+                        },
+                    }
+                ],
+            },
         ],
         "nets": [{"name": "GND"}, {"name": "P/FB"}],
         "connections": [
@@ -211,7 +285,17 @@ def test_group_and_edge_and_leash() -> None:
     batch["components"] = [
         {
             "refdes": "J1",
-            "pins": [],
+            "pins": [
+                {
+                    "name": "1",
+                    "etype": "power_in",
+                    "meta": {
+                        "max_current_a": 0.1,
+                        "max_voltage_v": 5.0,
+                        "assume": "gnd pin",
+                    },
+                }
+            ],
             "x": 0.0,
             "y": 0.0,
             "rot": 0.0,
@@ -220,7 +304,17 @@ def test_group_and_edge_and_leash() -> None:
         },
         {
             "refdes": "J2",
-            "pins": [],
+            "pins": [
+                {
+                    "name": "1",
+                    "etype": "power_in",
+                    "meta": {
+                        "max_current_a": 0.1,
+                        "max_voltage_v": 5.0,
+                        "assume": "gnd pin",
+                    },
+                }
+            ],
             "x": 5.0,
             "y": 0.0,
             "rot": 90.0,
@@ -355,7 +449,42 @@ def test_readback_epro_fixture(store) -> None:
     with zipfile.ZipFile(buf, "w") as zf:
         zf.writestr("project2.json", (_FIXTURE / "project2.json").read_bytes())
         zf.writestr("board.epru", (_FIXTURE / "board.epru").read_bytes())
-    pcb_epro.import_epro(store, buf.getvalue(), slug="epro-bs", title="Tiny")
+    imported = pcb_epro.import_epro(store, buf.getvalue(), slug="epro-bs", title="Tiny")
+    # gr520810: an imported board's pins arrive unclassified and the
+    # emitted script's ``tie()`` refuses them — ``op='pins'`` is the
+    # classify-first door for a legacy board.
+    store.pcb_patch_pins(
+        imported.ref_id,
+        "R1",
+        [
+            {
+                "name": "1",
+                "etype": "passive",
+                "fmax_hz": 0.0,
+                "assume": "epro import",
+            }
+        ],
+    )
+    store.pcb_patch_pins(
+        imported.ref_id,
+        "U1",
+        [
+            {
+                "name": "VDD",
+                "etype": "power_in",
+                "max_current_a": 0.1,
+                "max_voltage_v": 5.0,
+                "assume": "epro import",
+            },
+            {
+                "name": "GND",
+                "etype": "power_in",
+                "max_current_a": 0.1,
+                "max_voltage_v": 5.0,
+                "assume": "epro import",
+            },
+        ],
+    )
     batch, _annotations = board_batch(store, "epro-bs")
     assert _exec(emit(batch, "epro-bs", "epro")).build().to_batch() == batch
 

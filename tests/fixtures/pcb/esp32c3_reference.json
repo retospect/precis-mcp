@@ -5,46 +5,120 @@
       "label": "ESP32-C3-MINI-1",
       "pins": [
         {
-          "name": "3V3"
+          "name": "3V3",
+          "meta": {
+            "max_current_a": 0.5,
+            "max_voltage_v": 3.3,
+            "assume": "esp32 vdd"
+          },
+          "etype": "power_in"
         },
         {
-          "name": "GND1"
+          "name": "GND1",
+          "meta": {
+            "max_current_a": 0.5,
+            "max_voltage_v": 3.3,
+            "assume": "esp32 gnd"
+          },
+          "etype": "power_in"
         },
         {
-          "name": "GND2"
+          "name": "GND2",
+          "meta": {
+            "max_current_a": 0.5,
+            "max_voltage_v": 3.3,
+            "assume": "esp32 gnd"
+          },
+          "etype": "power_in"
         },
         {
-          "name": "GND3"
+          "name": "GND3",
+          "meta": {
+            "max_current_a": 0.5,
+            "max_voltage_v": 3.3,
+            "assume": "esp32 gnd"
+          },
+          "etype": "power_in"
         },
         {
-          "name": "EN"
+          "name": "EN",
+          "meta": {
+            "fmax_hz": 0.0,
+            "assume": "chip enable"
+          },
+          "etype": "input"
         },
         {
-          "name": "BOOT"
+          "name": "BOOT",
+          "meta": {
+            "fmax_hz": 0.0,
+            "assume": "boot strap"
+          },
+          "etype": "input"
         },
         {
-          "name": "SDA"
+          "name": "SDA",
+          "meta": {
+            "fmax_hz": 400000.0,
+            "assume": "i2c sda"
+          },
+          "etype": "bidi"
         },
         {
-          "name": "SCL"
+          "name": "SCL",
+          "meta": {
+            "fmax_hz": 400000.0,
+            "assume": "i2c scl"
+          },
+          "etype": "output"
         },
         {
-          "name": "GPIO2"
+          "name": "GPIO2",
+          "meta": {
+            "fmax_hz": 1000000.0,
+            "assume": "gpio"
+          },
+          "etype": "bidi"
         },
         {
-          "name": "GPIO3"
+          "name": "GPIO3",
+          "meta": {
+            "fmax_hz": 1000000.0,
+            "assume": "gpio"
+          },
+          "etype": "bidi"
         },
         {
-          "name": "GPIO8"
+          "name": "GPIO8",
+          "meta": {
+            "fmax_hz": 1000000.0,
+            "assume": "gpio"
+          },
+          "etype": "bidi"
         },
         {
-          "name": "GPIO9"
+          "name": "GPIO9",
+          "meta": {
+            "fmax_hz": 1000000.0,
+            "assume": "gpio"
+          },
+          "etype": "bidi"
         },
         {
-          "name": "TXD"
+          "name": "TXD",
+          "meta": {
+            "fmax_hz": 1000000.0,
+            "assume": "uart tx"
+          },
+          "etype": "output"
         },
         {
-          "name": "RXD"
+          "name": "RXD",
+          "meta": {
+            "fmax_hz": 1000000.0,
+            "assume": "uart rx"
+          },
+          "etype": "input"
         }
       ]
     },
@@ -53,16 +127,38 @@
       "label": "BME280",
       "pins": [
         {
-          "name": "VDD"
+          "name": "VDD",
+          "meta": {
+            "max_current_a": 0.5,
+            "max_voltage_v": 3.3,
+            "assume": "bme280 vdd"
+          },
+          "etype": "power_in"
         },
         {
-          "name": "GND"
+          "name": "GND",
+          "meta": {
+            "max_current_a": 0.5,
+            "max_voltage_v": 3.3,
+            "assume": "bme280 gnd"
+          },
+          "etype": "power_in"
         },
         {
-          "name": "SDA"
+          "name": "SDA",
+          "meta": {
+            "fmax_hz": 400000.0,
+            "assume": "i2c sda"
+          },
+          "etype": "bidi"
         },
         {
-          "name": "SCL"
+          "name": "SCL",
+          "meta": {
+            "fmax_hz": 400000.0,
+            "assume": "i2c scl"
+          },
+          "etype": "input"
         }
       ]
     },
@@ -71,13 +167,31 @@
       "label": "AMS1117-3.3",
       "pins": [
         {
-          "name": "VIN"
+          "name": "VIN",
+          "meta": {
+            "max_current_a": 0.5,
+            "max_voltage_v": 5.0,
+            "assume": "ldo vin (usb 5v)"
+          },
+          "etype": "power_in"
         },
         {
-          "name": "GND"
+          "name": "GND",
+          "meta": {
+            "max_current_a": 0.5,
+            "max_voltage_v": 5.0,
+            "assume": "ldo gnd"
+          },
+          "etype": "power_in"
         },
         {
-          "name": "VOUT"
+          "name": "VOUT",
+          "meta": {
+            "max_current_a": 0.5,
+            "max_voltage_v": 3.3,
+            "assume": "ldo 3v3"
+          },
+          "etype": "power_out"
         }
       ]
     },
@@ -86,10 +200,20 @@
       "label": "LED-0603",
       "pins": [
         {
-          "name": "A"
+          "name": "A",
+          "meta": {
+            "fmax_hz": 0.0,
+            "assume": "led anode"
+          },
+          "etype": "input"
         },
         {
-          "name": "K"
+          "name": "K",
+          "meta": {
+            "fmax_hz": 0.0,
+            "assume": "led cathode"
+          },
+          "etype": "input"
         }
       ]
     },
@@ -98,28 +222,70 @@
       "label": "HDR-2.54-1x8",
       "pins": [
         {
-          "name": "P1"
+          "name": "P1",
+          "meta": {
+            "max_current_a": 0.5,
+            "max_voltage_v": 3.3,
+            "assume": "hdr 3v3"
+          },
+          "etype": "power_out"
         },
         {
-          "name": "P2"
+          "name": "P2",
+          "meta": {
+            "max_current_a": 0.5,
+            "max_voltage_v": 3.3,
+            "assume": "hdr gnd"
+          },
+          "etype": "power_in"
         },
         {
-          "name": "P3"
+          "name": "P3",
+          "meta": {
+            "fmax_hz": 400000.0,
+            "assume": "i2c sda"
+          },
+          "etype": "bidi"
         },
         {
-          "name": "P4"
+          "name": "P4",
+          "meta": {
+            "fmax_hz": 400000.0,
+            "assume": "i2c scl"
+          },
+          "etype": "output"
         },
         {
-          "name": "P5"
+          "name": "P5",
+          "meta": {
+            "fmax_hz": 1000000.0,
+            "assume": "hdr gpio"
+          },
+          "etype": "bidi"
         },
         {
-          "name": "P6"
+          "name": "P6",
+          "meta": {
+            "fmax_hz": 1000000.0,
+            "assume": "hdr gpio"
+          },
+          "etype": "bidi"
         },
         {
-          "name": "P7"
+          "name": "P7",
+          "meta": {
+            "fmax_hz": 1000000.0,
+            "assume": "hdr gpio"
+          },
+          "etype": "bidi"
         },
         {
-          "name": "P8"
+          "name": "P8",
+          "meta": {
+            "fmax_hz": 1000000.0,
+            "assume": "hdr gpio"
+          },
+          "etype": "bidi"
         }
       ]
     },
@@ -128,16 +294,38 @@
       "label": "HDR-UART-1x4",
       "pins": [
         {
-          "name": "VCC"
+          "name": "VCC",
+          "meta": {
+            "max_current_a": 0.5,
+            "max_voltage_v": 3.3,
+            "assume": "hdr 3v3"
+          },
+          "etype": "power_out"
         },
         {
-          "name": "TXD"
+          "name": "TXD",
+          "meta": {
+            "fmax_hz": 1000000.0,
+            "assume": "uart tx"
+          },
+          "etype": "output"
         },
         {
-          "name": "RXD"
+          "name": "RXD",
+          "meta": {
+            "fmax_hz": 1000000.0,
+            "assume": "uart rx"
+          },
+          "etype": "input"
         },
         {
-          "name": "GND"
+          "name": "GND",
+          "meta": {
+            "max_current_a": 0.5,
+            "max_voltage_v": 3.3,
+            "assume": "hdr gnd"
+          },
+          "etype": "power_in"
         }
       ]
     },
@@ -146,10 +334,20 @@
       "label": "RES-0402",
       "pins": [
         {
-          "name": "1"
+          "name": "1",
+          "meta": {
+            "fmax_hz": 0.0,
+            "assume": "i2c pullup"
+          },
+          "etype": "passive"
         },
         {
-          "name": "2"
+          "name": "2",
+          "meta": {
+            "fmax_hz": 0.0,
+            "assume": "i2c pullup"
+          },
+          "etype": "passive"
         }
       ]
     },
@@ -158,10 +356,20 @@
       "label": "RES-0402",
       "pins": [
         {
-          "name": "1"
+          "name": "1",
+          "meta": {
+            "fmax_hz": 0.0,
+            "assume": "i2c pullup"
+          },
+          "etype": "passive"
         },
         {
-          "name": "2"
+          "name": "2",
+          "meta": {
+            "fmax_hz": 0.0,
+            "assume": "i2c pullup"
+          },
+          "etype": "passive"
         }
       ]
     },
@@ -170,10 +378,20 @@
       "label": "RES-0402",
       "pins": [
         {
-          "name": "1"
+          "name": "1",
+          "meta": {
+            "fmax_hz": 0.0,
+            "assume": "en pullup"
+          },
+          "etype": "passive"
         },
         {
-          "name": "2"
+          "name": "2",
+          "meta": {
+            "fmax_hz": 0.0,
+            "assume": "en pullup"
+          },
+          "etype": "passive"
         }
       ]
     },
@@ -182,10 +400,20 @@
       "label": "RES-0402",
       "pins": [
         {
-          "name": "1"
+          "name": "1",
+          "meta": {
+            "fmax_hz": 0.0,
+            "assume": "led series"
+          },
+          "etype": "passive"
         },
         {
-          "name": "2"
+          "name": "2",
+          "meta": {
+            "fmax_hz": 0.0,
+            "assume": "led series"
+          },
+          "etype": "passive"
         }
       ]
     },
@@ -194,10 +422,20 @@
       "label": "RES-0402",
       "pins": [
         {
-          "name": "1"
+          "name": "1",
+          "meta": {
+            "fmax_hz": 0.0,
+            "assume": "power led series"
+          },
+          "etype": "passive"
         },
         {
-          "name": "2"
+          "name": "2",
+          "meta": {
+            "fmax_hz": 0.0,
+            "assume": "power led series"
+          },
+          "etype": "passive"
         }
       ]
     },
@@ -206,10 +444,20 @@
       "label": "RES-0402",
       "pins": [
         {
-          "name": "1"
+          "name": "1",
+          "meta": {
+            "fmax_hz": 0.0,
+            "assume": "boot pulldown"
+          },
+          "etype": "passive"
         },
         {
-          "name": "2"
+          "name": "2",
+          "meta": {
+            "fmax_hz": 0.0,
+            "assume": "boot pulldown"
+          },
+          "etype": "passive"
         }
       ]
     },
@@ -218,10 +466,20 @@
       "label": "LED-0603-PWR",
       "pins": [
         {
-          "name": "A"
+          "name": "A",
+          "meta": {
+            "fmax_hz": 0.0,
+            "assume": "led anode"
+          },
+          "etype": "input"
         },
         {
-          "name": "K"
+          "name": "K",
+          "meta": {
+            "fmax_hz": 0.0,
+            "assume": "led cathode"
+          },
+          "etype": "input"
         }
       ]
     },
@@ -230,10 +488,20 @@
       "label": "CAP-0402-100nF",
       "pins": [
         {
-          "name": "1"
+          "name": "1",
+          "meta": {
+            "fmax_hz": 0.0,
+            "assume": "100nf cap"
+          },
+          "etype": "passive"
         },
         {
-          "name": "2"
+          "name": "2",
+          "meta": {
+            "fmax_hz": 0.0,
+            "assume": "100nf cap"
+          },
+          "etype": "passive"
         }
       ]
     },
@@ -242,10 +510,20 @@
       "label": "CAP-0402-100nF",
       "pins": [
         {
-          "name": "1"
+          "name": "1",
+          "meta": {
+            "fmax_hz": 0.0,
+            "assume": "100nf cap"
+          },
+          "etype": "passive"
         },
         {
-          "name": "2"
+          "name": "2",
+          "meta": {
+            "fmax_hz": 0.0,
+            "assume": "100nf cap"
+          },
+          "etype": "passive"
         }
       ]
     },
@@ -254,10 +532,20 @@
       "label": "CAP-0603-10uF",
       "pins": [
         {
-          "name": "1"
+          "name": "1",
+          "meta": {
+            "fmax_hz": 0.0,
+            "assume": "10uf bulk"
+          },
+          "etype": "passive"
         },
         {
-          "name": "2"
+          "name": "2",
+          "meta": {
+            "fmax_hz": 0.0,
+            "assume": "10uf bulk"
+          },
+          "etype": "passive"
         }
       ]
     },
@@ -266,10 +554,20 @@
       "label": "CAP-0402-100nF",
       "pins": [
         {
-          "name": "1"
+          "name": "1",
+          "meta": {
+            "fmax_hz": 0.0,
+            "assume": "100nf cap"
+          },
+          "etype": "passive"
         },
         {
-          "name": "2"
+          "name": "2",
+          "meta": {
+            "fmax_hz": 0.0,
+            "assume": "100nf cap"
+          },
+          "etype": "passive"
         }
       ]
     },
@@ -278,10 +576,20 @@
       "label": "CAP-0402-100nF",
       "pins": [
         {
-          "name": "1"
+          "name": "1",
+          "meta": {
+            "fmax_hz": 0.0,
+            "assume": "100nf cap"
+          },
+          "etype": "passive"
         },
         {
-          "name": "2"
+          "name": "2",
+          "meta": {
+            "fmax_hz": 0.0,
+            "assume": "100nf cap"
+          },
+          "etype": "passive"
         }
       ]
     },
@@ -290,10 +598,20 @@
       "label": "CAP-0603-1uF",
       "pins": [
         {
-          "name": "1"
+          "name": "1",
+          "meta": {
+            "fmax_hz": 0.0,
+            "assume": "1uf cap"
+          },
+          "etype": "passive"
         },
         {
-          "name": "2"
+          "name": "2",
+          "meta": {
+            "fmax_hz": 0.0,
+            "assume": "1uf cap"
+          },
+          "etype": "passive"
         }
       ]
     },
@@ -302,10 +620,20 @@
       "label": "CAP-0603-10uF",
       "pins": [
         {
-          "name": "1"
+          "name": "1",
+          "meta": {
+            "fmax_hz": 0.0,
+            "assume": "10uf bulk"
+          },
+          "etype": "passive"
         },
         {
-          "name": "2"
+          "name": "2",
+          "meta": {
+            "fmax_hz": 0.0,
+            "assume": "10uf bulk"
+          },
+          "etype": "passive"
         }
       ]
     },
@@ -314,10 +642,20 @@
       "label": "CAP-0603-10uF",
       "pins": [
         {
-          "name": "1"
+          "name": "1",
+          "meta": {
+            "fmax_hz": 0.0,
+            "assume": "10uf bulk"
+          },
+          "etype": "passive"
         },
         {
-          "name": "2"
+          "name": "2",
+          "meta": {
+            "fmax_hz": 0.0,
+            "assume": "10uf bulk"
+          },
+          "etype": "passive"
         }
       ]
     },
@@ -326,10 +664,20 @@
       "label": "CAP-0402-100nF",
       "pins": [
         {
-          "name": "1"
+          "name": "1",
+          "meta": {
+            "fmax_hz": 0.0,
+            "assume": "100nf cap"
+          },
+          "etype": "passive"
         },
         {
-          "name": "2"
+          "name": "2",
+          "meta": {
+            "fmax_hz": 0.0,
+            "assume": "100nf cap"
+          },
+          "etype": "passive"
         }
       ]
     },
@@ -338,10 +686,20 @@
       "label": "CAP-0402-100nF",
       "pins": [
         {
-          "name": "1"
+          "name": "1",
+          "meta": {
+            "fmax_hz": 0.0,
+            "assume": "100nf cap"
+          },
+          "etype": "passive"
         },
         {
-          "name": "2"
+          "name": "2",
+          "meta": {
+            "fmax_hz": 0.0,
+            "assume": "100nf cap"
+          },
+          "etype": "passive"
         }
       ]
     },
@@ -350,10 +708,20 @@
       "label": "CAP-0603-1uF",
       "pins": [
         {
-          "name": "1"
+          "name": "1",
+          "meta": {
+            "fmax_hz": 0.0,
+            "assume": "1uf cap"
+          },
+          "etype": "passive"
         },
         {
-          "name": "2"
+          "name": "2",
+          "meta": {
+            "fmax_hz": 0.0,
+            "assume": "1uf cap"
+          },
+          "etype": "passive"
         }
       ]
     },
@@ -362,10 +730,20 @@
       "label": "CAP-0402-100nF",
       "pins": [
         {
-          "name": "1"
+          "name": "1",
+          "meta": {
+            "fmax_hz": 0.0,
+            "assume": "100nf cap"
+          },
+          "etype": "passive"
         },
         {
-          "name": "2"
+          "name": "2",
+          "meta": {
+            "fmax_hz": 0.0,
+            "assume": "100nf cap"
+          },
+          "etype": "passive"
         }
       ]
     },
@@ -374,10 +752,20 @@
       "label": "CAP-0402-100nF",
       "pins": [
         {
-          "name": "1"
+          "name": "1",
+          "meta": {
+            "fmax_hz": 0.0,
+            "assume": "100nf cap"
+          },
+          "etype": "passive"
         },
         {
-          "name": "2"
+          "name": "2",
+          "meta": {
+            "fmax_hz": 0.0,
+            "assume": "100nf cap"
+          },
+          "etype": "passive"
         }
       ]
     },
@@ -386,10 +774,20 @@
       "label": "CAP-0402-100nF",
       "pins": [
         {
-          "name": "1"
+          "name": "1",
+          "meta": {
+            "fmax_hz": 0.0,
+            "assume": "100nf cap"
+          },
+          "etype": "passive"
         },
         {
-          "name": "2"
+          "name": "2",
+          "meta": {
+            "fmax_hz": 0.0,
+            "assume": "100nf cap"
+          },
+          "etype": "passive"
         }
       ]
     },
@@ -398,10 +796,20 @@
       "label": "CAP-0603-1uF",
       "pins": [
         {
-          "name": "1"
+          "name": "1",
+          "meta": {
+            "fmax_hz": 0.0,
+            "assume": "1uf cap"
+          },
+          "etype": "passive"
         },
         {
-          "name": "2"
+          "name": "2",
+          "meta": {
+            "fmax_hz": 0.0,
+            "assume": "1uf cap"
+          },
+          "etype": "passive"
         }
       ]
     },
@@ -410,10 +818,20 @@
       "label": "CAP-0402-100nF",
       "pins": [
         {
-          "name": "1"
+          "name": "1",
+          "meta": {
+            "fmax_hz": 0.0,
+            "assume": "1uf cap"
+          },
+          "etype": "passive"
         },
         {
-          "name": "2"
+          "name": "2",
+          "meta": {
+            "fmax_hz": 0.0,
+            "assume": "1uf cap"
+          },
+          "etype": "passive"
         }
       ]
     }
@@ -421,15 +839,18 @@
   "nets": [
     {
       "name": "VBUS",
-      "current": 0.5
+      "current": 0.5,
+      "working_voltage_v": 5.0
     },
     {
       "name": "VCC3V3",
-      "current": 0.5
+      "current": 0.5,
+      "working_voltage_v": 3.3
     },
     {
       "name": "GND",
-      "current": 0.5
+      "current": 0.5,
+      "working_voltage_v": 0.0
     },
     {
       "name": "SDA",

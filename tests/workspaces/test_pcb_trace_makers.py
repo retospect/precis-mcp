@@ -34,6 +34,8 @@ def test_wire_counts_its_new_net_once_and_preserves_reused_maker(
     with trace.run(work_root=tmp_path) as tr:
         board = Board("wire-makers")
         a, b = board.part("U1"), board.part("U2")
+        for pin in (a["1"], b["1"], a["2"], b["2"]):
+            pin.etype("bidi", fmax_hz=0.0, assume="signal pin")
         net = board.wire(a["1"], b["1"], name="signal")
         maker = net.maker
         assert board.wire(a["2"], b["2"], name="signal") is net

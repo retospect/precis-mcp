@@ -68,7 +68,12 @@ to ask:
 - **The board script.** It is the source of truth for the netlist
   ([pcb-workspace-code](pcb-workspace-code.md)). The cite-the-DB comment
   convention is `# <handle> (<why>)`, documented in
-  `precis-workspace-help` §Cite the DB.
+  `precis-workspace-help` §Cite the DB. Its pins are classified at first
+  use (gr520810): `net.tie`/`b.wire` refuse a pin or slot without an
+  `etype`, that etype's facts (`fmax_hz`; `max_current_a`+`max_voltage_v`
+  on `power_in`/`power_out`) and a provenance key — `source=` is where
+  step 5's chunk handles (`part:C#~pin`, `datasheet:<slug>~N`) land on
+  the pin, `assume=` records the honest guess when no fact exists.
 - **Layout.** The topo router is the only router; vroute was deleted
   2026-10-25 (gr515107), and the topo realiser is pcb-topo-place slice 5.
   There are no pours: copper comes from traces widened by net property,

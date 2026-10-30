@@ -1938,6 +1938,9 @@ def _tiny_board() -> pcb.Board:
     j4 = b.part("J4", footprint=f, pins=["1", "2"]).at(10.0, 3.0, side="bottom")
     j5 = b.part("J5", footprint=f, pins=["1", "2"]).at(12.0, 3.0, side="bottom")
     j6 = b.part("J6", footprint=f, pins=["1", "2"]).at(14.0, 3.0)
+    for part in (j1, j2, j3, j4, j5, j6):
+        for num in ("1", "2"):
+            part[num].etype("bidi", fmax_hz=0.0, assume="connector pin")
     b.wire(j1["1"], j2["1"], name="FREE")
     b.wire(j1["2"], j2["2"], name="BOTONLY")
     b.wire(j3["1"], j3["2"], name="INNERONLY")

@@ -19,7 +19,16 @@ kinds: [pcb, job]
 `placer='topo'` on `op='place'` swaps the default anneal for the phase-0
 topological placer (`precis.pcb.topoplace`) — an anneal over the
 incremental straight-airwire proxy (crossings + length) with side flips
-among the moves, plus solver-side pin assignment for `any_of` slots.
+among the moves, plus solver-side pin assignment for `any_of` slots. A
+slot carries its electrical class (`part.pin(any_of=…, etype=,
+fmax_hz=, max_current_a=/max_voltage_v=, source=/assume=)`, gr520810 —
+the same first-use class `tie()` gates on), and assignment only picks a
+candidate whose `pin_functions` table and ratings satisfy it:
+`analog_in`/`analog_out` slots land only on pins the table marks
+analog-capable, a digital-etype slot never lands on an all-analog pin,
+and the class's `max_current_a`/`max_voltage_v` (plus a `tie` current
+requirement) keeps only adequately rated candidates — each filter
+applying only where the part has the table or rating to answer it.
 Topological routing is the only router: the old vector router was
 deleted 2026-10-25 (tag `vroute-final`) and `op='route'` refuses. Place
 and route are ONE job when you opt in — `route=True` on `placer='topo'`

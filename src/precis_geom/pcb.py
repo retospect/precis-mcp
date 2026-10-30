@@ -91,6 +91,164 @@ _PIN_MARKERS = ("unused", "nc", "must_terminate")
 #: the paper/datasheet handlers resolve.
 _SOURCE_HANDLE_RE = re.compile(r"^ds:([^\s~]+)~([^\s~]+)$")
 
+#: Mirror of ``precis.pcb.PIN_ETYPES`` / ``PIN_POWER_ETYPES`` (the
+#: authority) — this module is stdlib-only and cannot read them, so keep
+#: in sync (same contract as ``_PRESET_LAYER_COUNTS``; gr520810 added
+#: ``analog_in``/``analog_out``).
+_PIN_ETYPES: tuple[str, ...] = (
+    "power_in",
+    "power_out",
+    "input",
+    "output",
+    "bidi",
+    "passive",
+    "open_drain",
+    "tristate",
+    "analog_in",
+    "analog_out",
+    "nc",
+)
+_POWER_ETYPES = frozenset({"power_in", "power_out"})
+
+#: The facts a first-use classification must carry per etype
+#: (gr520810): supply pins take current + voltage, never ``fmax_hz``;
+#: every other used pin takes ``fmax_hz`` — the highest significant
+#: frequency COMPONENT of the signal (knee ≈ 0.35 / t_rise), where 0 is
+#: explicit DC and an absent value is "unstated", i.e. unclassified.
+#: ``nc`` is exempt: the marker IS the electrical fact.
+_CLASS_FACT_FIELDS = ("fmax_hz", "max_current_a", "max_voltage_v")
+
+#: A slot's classification keys as serialized in ``pin_decls.slots[]``
+#: (gr520810) — provenance is ``class_source``/``class_assume`` so the
+#: tie requirement's own ``source`` keeps its meaning.
+_CLASS_DECL_KEYS = (
+    "etype",
+    "fmax_hz",
+    "max_current_a",
+    "max_voltage_v",
+    "class_source",
+    "class_assume",
+)
+
+
+def _class_gap(etype: Any, fields: Mapping[str, Any]) -> str | None:
+    """``None`` when the pin/slot is fully classified for first use,
+    else a short reason (gr520810 — ``Net.tie`` refuses on it). A class
+    is: a known ``etype``, the facts that etype carries (power pins:
+    ``max_current_a`` + ``max_voltage_v``, never ``fmax_hz``; other
+    used pins: ``fmax_hz`` where 0 is explicit DC — only ``nc`` is
+    exempt), and provenance (``source`` chunk handle or an explicit
+    ``assume`` note)."""
+    et = str(etype or "").strip()
+    if not et:
+        return "no etype"
+    if et not in _PIN_ETYPES:
+        return f"etype {et!r} is not in {sorted(_PIN_ETYPES)}"
+    if et in _POWER_ETYPES:
+        if fields.get("fmax_hz") is not None:
+            return "a power etype takes max_current_a/max_voltage_v, not fmax_hz"
+        missing = [
+            k for k in ("max_current_a", "max_voltage_v") if fields.get(k) is None
+        ]
+    elif et == "nc":
+        missing = []
+    else:
+        missing = ["fmax_hz"] if fields.get("fmax_hz") is None else []
+    if not (
+        str(fields.get("source") or "").strip()
+        or str(fields.get("assume") or "").strip()
+    ):
+        missing.append("source= or assume=")
+    return "missing " + ", ".join(missing) if missing else None
+
+
+def _check_class_kwargs(
+    fn: Callable[..., Any],
+    owner: str,
+    *,
+    etype: str | None,
+    fmax_hz: float | None,
+    max_current_a: float | None,
+    max_voltage_v: float | None,
+    source: str | None,
+    assume: str | None,
+) -> None:
+    """Per-value validation for a classification call (``Part.pin`` /
+    ``Pin.etype``). Completeness is NOT checked here — it is a first-use
+    rule, enforced by :meth:`Net.tie` via :func:`_class_gap`, so a pin
+    declared-but-never-tied may carry a partial class."""
+    et = str(etype).strip() if etype is not None else ""
+    if etype is not None:
+        if et not in _PIN_ETYPES:
+            raise _bad_kwarg(
+                fn,
+                "etype",
+                f"{owner}: etype {etype!r} is not in {sorted(_PIN_ETYPES)}",
+            )
+        if et in _POWER_ETYPES and fmax_hz is not None:
+            raise _bad_kwarg(
+                fn,
+                "fmax_hz",
+                f"{owner}: {et} pins carry max_current_a/max_voltage_v, not fmax_hz",
+            )
+    for k, v in (
+        ("fmax_hz", fmax_hz),
+        ("max_current_a", max_current_a),
+        ("max_voltage_v", max_voltage_v),
+    ):
+        if v is not None and (
+            isinstance(v, bool) or not isinstance(v, int | float) or v < 0
+        ):
+            raise _bad_kwarg(
+                fn, k, f"{owner}: {k} must be a non-negative number, got {v!r}"
+            )
+    for pk, pv in (("source", source), ("assume", assume)):
+        if pv is not None and not str(pv).strip():
+            raise _bad_kwarg(fn, pk, f"{owner}: {pk} must be a non-empty string")
+
+
+def _apply_class(
+    target: Any,
+    *,
+    etype: str | None,
+    fmax_hz: float | None,
+    max_current_a: float | None,
+    max_voltage_v: float | None,
+    source: str | None,
+    assume: str | None,
+) -> None:
+    """Write a classification onto a :class:`Pin` (``extra`` etype +
+    ``meta`` facts — the same cells ``pins=`` dict rows fill, so the
+    first-use predicate reads one shape) or a :class:`FlexPin` slot
+    (attributes — the class rides ``pin_decls.slots[]``)."""
+    if isinstance(target, Pin):
+        if etype is not None:
+            target.extra["etype"] = str(etype).strip()
+        store = target.meta
+        pairs = (
+            ("fmax_hz", fmax_hz),
+            ("max_current_a", max_current_a),
+            ("max_voltage_v", max_voltage_v),
+            ("source", source),
+            ("assume", assume),
+        )
+        for k, v in pairs:
+            if v is not None:
+                store[k] = v
+    else:
+        if etype is not None:
+            target.etype = str(etype).strip()
+        for k, v in (
+            ("fmax_hz", fmax_hz),
+            ("max_current_a", max_current_a),
+            ("max_voltage_v", max_voltage_v),
+            ("class_source", source),
+            ("class_assume", assume),
+        ):
+            if v is not None:
+                setattr(target, k, v)
+
+
 MANIFEST_SCHEMA = 1
 
 
@@ -390,6 +548,17 @@ class FlexPin:
         self.tie_site: str | None = None
         #: ``file:line`` of the :meth:`Net.tie` that set ``source``.
         self.source_site: str | None = None
+        #: The slot's first-use classification (gr520810): the class
+        #: lives on the SLOT and travels to whichever pin the solver
+        #: assigns — ``class_source``/``class_assume`` are the class's
+        #: provenance, kept apart from ``source`` (the tie requirement's
+        #: provenance).
+        self.etype: str | None = None
+        self.fmax_hz: float | None = None
+        self.max_current_a: float | None = None
+        self.max_voltage_v: float | None = None
+        self.class_source: str | None = None
+        self.class_assume: str | None = None
 
     @property
     def handle(self) -> str:
@@ -408,7 +577,26 @@ class FlexPin:
             d["requirement"] = self.requirement.text
         if self.source is not None:
             d["source"] = self.source
+        for k in _CLASS_DECL_KEYS:
+            v = getattr(self, k)
+            if v is not None:
+                d[k] = v
         return d
+
+    def class_gap(self) -> str | None:
+        """``None`` when the slot is classified for first use, else a
+        short reason — same predicate as :meth:`Pin.class_gap`
+        (gr520810)."""
+        return _class_gap(
+            self.etype,
+            {
+                "fmax_hz": self.fmax_hz,
+                "max_current_a": self.max_current_a,
+                "max_voltage_v": self.max_voltage_v,
+                "source": self.class_source,
+                "assume": self.class_assume,
+            },
+        )
 
 
 #: Layer counts of the named stackup presets, for index→name resolution
@@ -476,17 +664,84 @@ class Pin:
         #: verb writes it here: the store tags only a top-level etype).
         self.extra: dict[str, Any] = {}
 
-    def etype(self, kind: str) -> Pin:
-        """Set the pin's electrical type — the store's top-level
-        ``etype`` key, which is what earns a tag at write time.
+    def etype(
+        self,
+        kind: str,
+        *,
+        fmax_hz: float | None = None,
+        max_current_a: float | None = None,
+        max_voltage_v: float | None = None,
+        source: str | None = None,
+        assume: str | None = None,
+    ) -> Pin:
+        """Set the pin's electrical class (gr520810 — every USED pin is
+        classified at first use; :meth:`Net.tie` refuses a gap). The
+        store's top-level ``etype`` key is what earns a tag at write
+        time; the facts ride ``meta``. Completeness is checked at the
+        tie, not here — a declared-but-untied pin may carry a partial
+        class; a TIED pin needs: a known ``kind``;
+        ``power_in``/``power_out`` take ``max_current_a`` +
+        ``max_voltage_v`` (never ``fmax_hz``); other etypes take
+        ``fmax_hz`` — the highest significant frequency component
+        (knee ≈ ``0.35 / t_rise``), 0 = explicit DC; ``nc`` needs no
+        facts. Every class carries ``source`` (a datasheet chunk handle
+        like ``"pa…~pc…"``) or an explicit ``assume`` note.
 
         Args:
             kind (str): Electrical type, e.g. ``"power_in"``.
+            fmax_hz (float | None): Highest significant frequency
+                component, Hz; 0 = explicit DC. Not on power etypes.
+            max_current_a (float | None): Pin's current bound, amps —
+                required on ``power_in``/``power_out``, a drive
+                requirement elsewhere.
+            max_voltage_v (float | None): Pin's voltage bound, volts —
+                required on ``power_in``/``power_out``.
+            source (str | None): Datasheet evidence for the class —
+                a chunk handle or table+row.
+            assume (str | None): Explicit assumption note — required
+                when no datasheet ``source`` exists.
         """
+        _check_class_kwargs(
+            Pin.etype,
+            self.handle,
+            etype=kind,
+            fmax_hz=fmax_hz,
+            max_current_a=max_current_a,
+            max_voltage_v=max_voltage_v,
+            source=source,
+            assume=assume,
+        )
         # The store's top-level key — an etype under `meta` rides meta
         # verbatim and earns no tag (store rule; gr514460 seam review).
-        self.extra["etype"] = kind
+        _apply_class(
+            self,
+            etype=kind,
+            fmax_hz=fmax_hz,
+            max_current_a=max_current_a,
+            max_voltage_v=max_voltage_v,
+            source=source,
+            assume=assume,
+        )
         return self
+
+    def class_gap(self) -> str | None:
+        """``None`` when the pin is fully classified for first use,
+        else a short "missing …"-style reason naming what
+        :meth:`Net.tie` needs (gr520810). Reads ``extra`` + ``meta`` so
+        a pin declared through ``Board.part(pins=[{...}])`` batch dicts
+        answers the same predicate as one classified via
+        :meth:`etype`. The etype may also arrive as an etype-vocabulary
+        ``tags`` entry — that is the store's canonical write (``op='pins'``
+        and a batch ``"etype"`` both land it in ``pcb_pins.tags``), so a
+        store-read-back pin answers classified too."""
+        fields = {
+            k: self.meta.get(k, self.extra.get(k))
+            for k in ("fmax_hz", "max_current_a", "max_voltage_v", "source", "assume")
+        }
+        et = self.extra.get("etype")
+        if et is None:
+            et = next((t for t in self.tags if t in _PIN_ETYPES), None)
+        return _class_gap(et, fields)
 
     def current_role(self, kind: str) -> Pin:
         """Declare the pin's role in a current path
@@ -681,6 +936,12 @@ class Part:
         *,
         name: str | None = None,
         any_of: Iterable[str | int] | None = None,
+        etype: str | None = None,
+        fmax_hz: float | None = None,
+        max_current_a: float | None = None,
+        max_voltage_v: float | None = None,
+        source: str | None = None,
+        assume: str | None = None,
     ) -> Pin | FlexPin:
         """Declare how this part's pin is chosen (pcb-topo-place
         Decision 11). ``part.pin(5)`` fixes pin 5 — the plain
@@ -690,12 +951,38 @@ class Part:
         :class:`PinConflict` naming both claim sites; the same name
         again is a no-op.
 
+        The class kwargs are the pin's first-use classification
+        (gr520810 — every tied pin/slot is classified; :meth:`Net.tie`
+        refuses a gap): ``etype`` plus the facts that etype carries
+        (``fmax_hz`` — the signal's highest significant component, knee
+        ≈ ``0.35 / t_rise``, 0 = explicit DC — on signal etypes;
+        ``max_current_a`` + ``max_voltage_v`` on ``power_in``/
+        ``power_out``, which never take ``fmax_hz``), and provenance
+        (``source`` chunk handle or an ``assume`` note). On an
+        ``any_of`` slot the class attaches to the SLOT — it travels to
+        the pin the solver assigns and filters the candidates
+        (an ``analog_in`` slot lands only on a pin whose
+        :meth:`pin_functions` entry shows AIN/ADC; a ``max_current_a``
+        need lands only on a candidate rated for it).
+
         Args:
             number (str | int | None): Pin to fix outright — pass this
                 OR ``any_of=``, not both.
             name (str | None): Firmware pin-map name for the claim.
             any_of (Iterable[str | int] | None): Candidate pins (≥1, no
                 repeats) — a flexible slot the solver picks one of.
+            etype (str | None): Electrical type — the closed
+                ``PIN_ETYPES`` vocabulary, e.g. ``"analog_in"``.
+            fmax_hz (float | None): Highest significant frequency
+                component, Hz; 0 = explicit DC. Not on power etypes.
+            max_current_a (float | None): Current bound/need, amps —
+                required on power etypes.
+            max_voltage_v (float | None): Voltage bound, volts —
+                required on power etypes.
+            source (str | None): Datasheet evidence for the class
+                (a chunk handle like ``"pa…~pc…"`` or table+row).
+            assume (str | None): Explicit assumption note — required
+                when no datasheet ``source`` exists.
         """
         site = _caller_site()
         if any_of is not None:
@@ -716,12 +1003,31 @@ class Part:
                     "any_of",
                     f"{self.refdes}.pin(any_of={pins}) repeats a pin",
                 )
+            _check_class_kwargs(
+                Part.pin,
+                f"{self.refdes} slot",
+                etype=etype,
+                fmax_hz=fmax_hz,
+                max_current_a=max_current_a,
+                max_voltage_v=max_voltage_v,
+                source=source,
+                assume=assume,
+            )
             # Candidates are live pins: the solver picks one, so each
             # must reach the IR (a declared pin with no wire lands in
             # `unconnected` with a real pad position).
             for cand in pins:
                 self._declared_pins.add(self[cand].name)
             fp = FlexPin(part=self, pins=pins, name=name, site=site)
+            _apply_class(
+                fp,
+                etype=etype,
+                fmax_hz=fmax_hz,
+                max_current_a=max_current_a,
+                max_voltage_v=max_voltage_v,
+                source=source,
+                assume=assume,
+            )
             self._flex_slots.append(fp)
             return fp
         if number is None:
@@ -731,6 +1037,25 @@ class Part:
                 f"{self.refdes}.pin() needs a pin number or any_of=",
             )
         p = self[number]
+        _check_class_kwargs(
+            Part.pin,
+            f"{self.refdes}.{p.name}",
+            etype=etype,
+            fmax_hz=fmax_hz,
+            max_current_a=max_current_a,
+            max_voltage_v=max_voltage_v,
+            source=source,
+            assume=assume,
+        )
+        _apply_class(
+            p,
+            etype=etype,
+            fmax_hz=fmax_hz,
+            max_current_a=max_current_a,
+            max_voltage_v=max_voltage_v,
+            source=source,
+            assume=assume,
+        )
         self._declared_pins.add(p.name)
         if name is not None:
             prev = self._pin_claims.get(p.name)
@@ -1063,6 +1388,12 @@ class Net:
         plus ``source="ds:…~chunk…"`` attach a checkable requirement
         with provenance to the connection (Decision 15).
 
+        Every pin/slot must be CLASSIFIED at first use (gr520810):
+        :meth:`Part.pin` or :meth:`Pin.etype` with ``etype`` + the
+        facts the etype carries + a ``source``/``assume`` provenance.
+        An unclassified argument refuses the whole call, naming each
+        pin and what its class lacks.
+
         Args:
             pins (Pin | FlexPin): Pins (or flex slots) to wire onto this
                 net.
@@ -1079,6 +1410,20 @@ class Net:
                 f"net {self.name!r}: current= takes pcb.Max/pcb.Min, got {current!r}",
             )
         site = _script_site()
+        # First-use classification is a hard gate (gr520810, Reto
+        # 2026-10-26): a pin the board connects must carry its class —
+        # etype, that etype's facts and a source/assume provenance — set
+        # on the same call or earlier. Nothing is emitted until every
+        # argument is classified.
+        uncl = [f"{p.handle} ({g})" for p in pins if (g := p.class_gap()) is not None]
+        if uncl:
+            raise PcbBuilderError(
+                f"net {self.name!r}: unclassified pin(s) {'; '.join(uncl)} — "
+                "classify at first use: part.pin(<pin>, etype=…, "
+                "fmax_hz=… (max_current_a=/max_voltage_v= on "
+                "power_in/power_out, which take no fmax_hz), "
+                "source=<chunk handle> or assume=<note>)"
+            )
         for p in pins:
             if isinstance(p, FlexPin):
                 if p.net is not None and p.net != self.name:

@@ -37,6 +37,11 @@ def _led_board(*, series: bool) -> Board:
     asks for."""
     b = Board("t")
     u1, r1, d1 = b.part("U1"), b.part("R1"), b.part("D1")
+    u1["PA1"].etype("output", fmax_hz=0.0, assume="gpio")
+    r1["1"].etype("passive", fmax_hz=0.0, assume="jellybean")
+    r1["2"].etype("passive", fmax_hz=0.0, assume="jellybean")
+    d1["A"].etype("input", fmax_hz=0.0, assume="led anode")
+    d1["K"].etype("input", fmax_hz=0.0, assume="led cathode")
     d1.pin_functions({"A": ["LED"]})
     n1, n2, gnd = b.net("N1"), b.net("N2"), b.net("GND")
     n1.tie(u1["PA1"], r1["1"], current=pcb.Max("20mA"), source="ds:9~c4")
@@ -138,7 +143,13 @@ def test_flex_pin_tie_records_net_and_conflicts() -> None:
     connection is emitted; a second net raises PinConflict."""
     b = Board("t")
     u1 = b.part("U1")
-    fp = u1.pin(any_of=["PA1", "PA2"], name="RED_LED")
+    fp = u1.pin(
+        any_of=["PA1", "PA2"],
+        name="RED_LED",
+        etype="output",
+        fmax_hz=0.0,
+        assume="gpio",
+    )
     assert isinstance(fp, FlexPin)
     n1, n2 = b.net("N1"), b.net("N2")
     n1.tie(fp, current=pcb.Max("20mA"), source="ds:9~c4")
@@ -155,6 +166,9 @@ def test_tie_emits_current_and_source() -> None:
     checkable fields, not a comment."""
     b = Board("t")
     u1, r1 = b.part("U1"), b.part("R1")
+    u1["PA1"].etype("output", fmax_hz=0.0, assume="gpio")
+    u1["PA2"].etype("output", fmax_hz=0.0, assume="gpio")
+    r1["1"].etype("passive", fmax_hz=0.0, assume="jellybean")
     b.net("N").tie(u1["PA1"], r1["1"], current=pcb.Max("20mA"), source="ds:9~c4")
     b.net("M").tie(u1["PA2"], current=pcb.Min(0.1))
     assert b.to_batch()["connections"] == [
@@ -199,7 +213,13 @@ def test_pin_decls_batch_emission() -> None:
     )
     assert u1.pins_with("GPIO") == ["PA1", "PA2"]
     assert u1.pins_with("INT1") == ["PA1"]
-    fp = u1.pin(any_of=u1.pins_with("GPIO"), name="RED_LED")
+    fp = u1.pin(
+        any_of=u1.pins_with("GPIO"),
+        name="RED_LED",
+        etype="output",
+        fmax_hz=0.0,
+        source="ds:9~c3",
+    )
     b.net("SIG").tie(fp, current=pcb.Max("20mA"), source="ds:9~c4")
     rn1 = b.part("RN1")
     rn1.swap_group([(1, 8), (2, 7), (3, 6), (4, 5)], tuple=True)
@@ -232,11 +252,142 @@ def test_pin_decls_batch_emission() -> None:
     ]
 
 
+def test_pin_classification_fields() -> None:
+    """gr520810: ``pin(...)`` class kwargs land on the batch row —
+    ``etype`` top-level, facts in ``meta`` — and on a flex slot's
+    ``pin_decls.slots[]`` row as ``etype``/facts/``class_*``
+    provenance."""
+    b = Board("t")
+    u1 = b.part("U1")
+    u1.pin("P0.02", etype="analog_in", fmax_hz=1e3, source="pa5~pc7")
+    u1.pin(
+        "VDD",
+        etype="power_in",
+        max_current_a=0.02,
+        max_voltage_v=3.6,
+        assume="datasheet absolute-maximum table",
+    )
+    fp = u1.pin(
+        any_of=["PA1", "PA2"],
+        name="LED",
+        etype="output",
+        fmax_hz=1e3,
+        max_current_a=0.015,
+        assume="drive from the gpio table",
+    )
+    (comp,) = b.to_batch()["components"]
+    pins = {p["name"]: p for p in comp["pins"]}
+    assert pins["P0.02"]["etype"] == "analog_in"
+    assert pins["P0.02"]["meta"] == {"fmax_hz": 1e3, "source": "pa5~pc7"}
+    assert pins["VDD"]["meta"]["max_current_a"] == 0.02
+    assert pins["VDD"]["meta"]["assume"] == "datasheet absolute-maximum table"
+    (slot,) = comp["pin_decls"]["slots"]
+    assert slot["etype"] == "output"
+    assert slot["fmax_hz"] == 1e3
+    assert slot["max_current_a"] == 0.015
+    assert slot["class_assume"] == "drive from the gpio table"
+    assert fp.class_gap() is None
+
+
+def test_pin_classification_validation() -> None:
+    """Per-value checks fire at the call: a closed vocabulary, no
+    ``fmax_hz`` on power etypes, non-negative numbers, non-empty
+    provenance strings."""
+    b = Board("t")
+    u1 = b.part("U1")
+    with pytest.raises(PcbBuilderError, match="not in"):
+        u1.pin(1, etype="tri-state")
+    with pytest.raises(PcbBuilderError, match="not fmax_hz"):
+        u1.pin(2, etype="power_in", fmax_hz=10.0, source="ds:x")
+    with pytest.raises(PcbBuilderError, match="non-negative"):
+        u1.pin(3, etype="input", fmax_hz=-5.0)
+    with pytest.raises(PcbBuilderError, match="non-empty"):
+        u1.pin(4, etype="input", fmax_hz=0.0, source="  ")
+
+
+def test_pin_class_gap() -> None:
+    """The first-use predicate: a tied pin needs a known etype, the
+    facts that etype carries and a provenance key; ``fmax_hz=0`` is a
+    valid explicit DC, only ``nc`` carries no facts."""
+    b = Board("t")
+    u1 = b.part("U1")
+    assert u1["1"].class_gap() == "no etype"
+    p_in = u1.pin(2, etype="input", assume="gpio")
+    assert p_in.class_gap() == "missing fmax_hz"
+    p_pwr = u1.pin(3, etype="power_in", max_current_a=1.0, source="ds:x")
+    assert p_pwr.class_gap() == "missing max_voltage_v"
+    p_dc = u1.pin(4, etype="output", fmax_hz=0.0, source="ds:x")
+    assert p_dc.class_gap() is None
+    p_nc = u1.pin(5, etype="nc", source="ds:x")
+    assert p_nc.class_gap() is None
+    p_noprov = u1.pin(6, etype="input", fmax_hz=0.0)
+    assert p_noprov.class_gap() == "missing source= or assume="
+    # A batch-shaped ``pins=`` dict answers the same predicate — and so
+    # does a tag-carried etype (the store's canonical write: ``op='pins'``
+    # and a batch ``"etype"`` both land it in ``pcb_pins.tags``).
+    r1 = b.part(
+        "R1",
+        pins=[
+            {
+                "name": "1",
+                "etype": "passive",
+                "meta": {"fmax_hz": 0.0, "assume": "jellybean"},
+            }
+        ],
+    )
+    assert r1["1"].class_gap() is None
+    r2 = b.part(
+        "R2",
+        pins=[
+            {
+                "name": "1",
+                "tags": ["passive"],
+                "meta": {"fmax_hz": 0.0, "assume": "jellybean"},
+            }
+        ],
+    )
+    assert r2["1"].class_gap() is None
+    assert r2["2"].class_gap() == "no etype"
+
+
+def test_tie_refuses_unclassified() -> None:
+    """gr520810: first use is a hard gate — ``net.tie`` refuses an
+    unclassified pin AND an unclassified slot, naming each gap; a fully
+    classified call passes."""
+    b = Board("t")
+    u1, r1 = b.part("U1"), b.part("R1")
+    n = b.net("N")
+    with pytest.raises(PcbBuilderError, match=r"U1\.PA1 \(no etype\)"):
+        n.tie(u1["PA1"])
+    u1["PA1"].etype("output", assume="gpio")
+    with pytest.raises(PcbBuilderError, match=r"U1\.PA1 \(missing fmax_hz"):
+        n.tie(u1["PA1"])
+    u1["PA1"].etype("output", fmax_hz=0.0, assume="gpio")
+    n.tie(u1["PA1"])  # classified now — same-call classify also works:
+    m = b.net("M")
+    with pytest.raises(PcbBuilderError, match=r"R1\.1 \(no etype\)"):
+        m.tie(r1["1"])
+    m.tie(
+        u1.pin(
+            any_of=["PA1", "PA2"],
+            name="S",
+            etype="output",
+            fmax_hz=0.0,
+            assume="gpio",
+        )
+    )
+    fp = u1.pin(any_of=["PB0", "PB1"], name="UNCL")
+    with pytest.raises(PcbBuilderError, match=r"U1\.<UNCL>"):
+        b.net("P").tie(fp)
+
+
 def test_over_current_wired_pin() -> None:
     """A wired pin whose declared ``max_current_a`` sits under the net's
     ``current=Max`` requirement is ``over_current``."""
     b = Board("t")
     u1, r1 = b.part("U1"), b.part("R1")
+    u1["PA1"].etype("output", fmax_hz=0.0, assume="gpio")
+    r1["1"].etype("passive", fmax_hz=0.0, assume="jellybean")
     u1.pin_functions({"PA1": {"functions": ["GPIO"], "max_current_a": 0.005}})
     n = b.net("LED")
     n.tie(u1["PA1"], current=pcb.Max("20mA"), source="ds:9~c4")
@@ -254,7 +405,11 @@ def test_slot_bound_net_is_not_unconnected() -> None:
     declared net with no tie at all still floats."""
     b = Board("t")
     u1 = b.part("U1")
-    b.net("SIG").tie(u1.pin(any_of=["PA1", "PA2"], name="BTN"))
+    b.net("SIG").tie(
+        u1.pin(
+            any_of=["PA1", "PA2"], name="BTN", etype="input", fmax_hz=0.0, assume="btn"
+        )
+    )
     b.net("DANGLING")
     assert [(f.code, f.net) for f in b.check().findings] == [
         ("net.unconnected", "DANGLING")
@@ -274,6 +429,9 @@ def test_over_current_dedupes_per_net() -> None:
     bound — the finding is per pin per net, not per connection."""
     b = Board("t")
     u1, r1 = b.part("U1"), b.part("R1")
+    u1["PA1"].etype("output", fmax_hz=0.0, assume="gpio")
+    r1["1"].etype("passive", fmax_hz=0.0, assume="jellybean")
+    r1["2"].etype("passive", fmax_hz=0.0, assume="jellybean")
     u1.pin_functions({"PA1": {"functions": ["GPIO"], "max_current_a": 0.005}})
     n = b.net("LED")
     n.tie(u1["PA1"], r1["1"], current=pcb.Max("20mA"), source="ds:9~c4")
@@ -295,7 +453,16 @@ def test_over_current_slot_all_candidates_rated_low() -> None:
             "PA2": {"functions": ["GPIO"], "max_current_a": 0.004},
         }
     )
-    b.net("N").tie(u1.pin(any_of=["PA1", "PA2"], name="PWR"), current=pcb.Max("20mA"))
+    b.net("N").tie(
+        u1.pin(
+            any_of=["PA1", "PA2"],
+            name="PWR",
+            etype="output",
+            fmax_hz=0.0,
+            assume="gpio",
+        ),
+        current=pcb.Max("20mA"),
+    )
     # (the slot tie emits no connection row but binds the net — it is no
     # longer net.unconnected, gr516695.)
     (f,) = [f for f in b.check().findings if f.code == "over_current"]
@@ -304,7 +471,16 @@ def test_over_current_slot_all_candidates_rated_low() -> None:
     b2 = Board("t2")
     u2 = b2.part("U1")
     u2.pin_functions({"PA1": {"functions": ["GPIO"], "max_current_a": 0.005}})
-    b2.net("N").tie(u2.pin(any_of=["PA1", "PB0"], name="PWR"), current=pcb.Max("20mA"))
+    b2.net("N").tie(
+        u2.pin(
+            any_of=["PA1", "PB0"],
+            name="PWR",
+            etype="output",
+            fmax_hz=0.0,
+            assume="gpio",
+        ),
+        current=pcb.Max("20mA"),
+    )
     assert not [f for f in b2.check().findings if f.code == "over_current"]
 
 
@@ -314,6 +490,9 @@ def test_led_without_limit_on_requirement_net() -> None:
     ``led_without_limit``."""
     b = Board("t")
     u1, d1 = b.part("U1"), b.part("D1")
+    u1["PA1"].etype("output", fmax_hz=0.0, assume="gpio")
+    d1["A"].etype("input", fmax_hz=0.0, assume="led anode")
+    d1["K"].etype("input", fmax_hz=0.0, assume="led cathode")
     d1.pin_functions({"A": ["LED"]})
     b.net("LED_N").tie(u1["PA1"], d1["A"], current=pcb.Max("20mA"))
     b.net("GND").tie(d1["K"])

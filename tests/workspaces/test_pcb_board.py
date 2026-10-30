@@ -215,15 +215,68 @@ def test_part_pins_connections_shape() -> None:
     gnd = b.net("GND", cls="ground")
     vbus = b.net("VBUS", cls="power", current=0.5, voltage=5.0)
     j1 = b.part("J1", lcsc="C165948", roles={"connector"})
+    j1["VBUS"].etype(
+        "power_in", max_current_a=3.0, max_voltage_v=20.0, assume="usb-c vbus"
+    )
+    j1["GND"].etype(
+        "power_in", max_current_a=3.0, max_voltage_v=20.0, assume="usb-c gnd"
+    )
+    j1["CC1"].etype("input", fmax_hz=0.0, assume="cc line")
     vbus.tie(j1["VBUS"])
     gnd.tie(j1["GND"], note="shell")
     r1 = b.part("R1", value="5.1k", pins=["1", "2"])
+    r1["1"].etype("passive", fmax_hz=0.0, assume="resistor")
+    r1["2"].etype("passive", fmax_hz=0.0, assume="resistor")
     b.wire(j1["CC1"], r1["1"], name="CC1")
     gnd.tie(r1[2])
     batch = b.to_batch()
     assert batch["components"] == [
-        {"refdes": "J1", "part": "C165948", "roles": ["connector"], "pins": []},
-        {"refdes": "R1", "value": "5.1k", "pins": [{"name": "1"}, {"name": "2"}]},
+        {
+            "refdes": "J1",
+            "part": "C165948",
+            "roles": ["connector"],
+            "pins": [
+                {
+                    "name": "VBUS",
+                    "etype": "power_in",
+                    "meta": {
+                        "max_current_a": 3.0,
+                        "max_voltage_v": 20.0,
+                        "assume": "usb-c vbus",
+                    },
+                },
+                {
+                    "name": "GND",
+                    "etype": "power_in",
+                    "meta": {
+                        "max_current_a": 3.0,
+                        "max_voltage_v": 20.0,
+                        "assume": "usb-c gnd",
+                    },
+                },
+                {
+                    "name": "CC1",
+                    "etype": "input",
+                    "meta": {"fmax_hz": 0.0, "assume": "cc line"},
+                },
+            ],
+        },
+        {
+            "refdes": "R1",
+            "value": "5.1k",
+            "pins": [
+                {
+                    "name": "1",
+                    "etype": "passive",
+                    "meta": {"fmax_hz": 0.0, "assume": "resistor"},
+                },
+                {
+                    "name": "2",
+                    "etype": "passive",
+                    "meta": {"fmax_hz": 0.0, "assume": "resistor"},
+                },
+            ],
+        },
     ]
     assert batch["connections"] == [
         {"net": "VBUS", "refdes": "J1", "pin": "VBUS"},
@@ -474,6 +527,19 @@ def test_module_namespacing_and_refusals() -> None:
         u = board.part("U")
         cin = board.part("CIN")
         fb = board.net("FB")
+        u["VIN"].etype(
+            "power_in", max_current_a=0.3, max_voltage_v=40.0, assume="ldo vin"
+        )
+        u["VOUT"].etype(
+            "power_out", max_current_a=0.3, max_voltage_v=40.0, assume="ldo vout"
+        )
+        u["GND"].etype(
+            "power_in", max_current_a=0.3, max_voltage_v=40.0, assume="ldo gnd"
+        )
+        u["FB"].etype("input", fmax_hz=0.0, assume="feedback divider")
+        u["X"].etype("output", fmax_hz=0.0, assume="ldo testpoint")
+        cin["1"].etype("passive", fmax_hz=0.0, assume="input cap")
+        cin["2"].etype("passive", fmax_hz=0.0, assume="input cap")
         vin.tie(u["VIN"])
         vout.tie(u["VOUT"])
         gnd.tie(u["GND"], cin["2"])
@@ -496,6 +562,7 @@ def test_module_namespacing_and_refusals() -> None:
     @module
     def bad(board: Board, *, vin: pcb.Net) -> pcb.Part:
         u = board.part("X")
+        u["A"].etype("input", fmax_hz=0.0, assume="stray test pin")
         stray.tie(u["A"])
         return u
 
@@ -508,7 +575,11 @@ def test_check_findings() -> None:
     u1 = b.part("U1", lcsc="C1")
     b.part("R1", pins=["1", "2"])
     b.net("FLOAT")
-    b.net("GND").tie(u1["GND"])
+    b.net("GND", voltage=0.0).tie(
+        u1["GND"].etype(
+            "power_in", max_current_a=0.1, max_voltage_v=5.0, assume="ic gnd"
+        )
+    )
     result = b.check()
     assert result.not_checked == ["R1"]
     assert [(f_.code, f_.net) for f_ in result.findings] == [
@@ -529,6 +600,12 @@ def test_nets_of_pin_nets_and_pins_on() -> None:
     b = Board("t15")
     gnd, vcc = b.net("GND"), b.net("VCC")
     u1, r1, c1 = b.part("U1"), b.part("R1"), b.part("C1")
+    u1["VDD"].etype("power_in", max_current_a=0.05, max_voltage_v=3.6, assume="ic vdd")
+    u1["VSS"].etype("power_in", max_current_a=0.05, max_voltage_v=3.6, assume="ic vss")
+    u1["OUT"].etype("output", fmax_hz=1e3, assume="gpio")
+    r1["1"].etype("passive", fmax_hz=1e3, assume="resistor")
+    r1["2"].etype("passive", fmax_hz=0.0, assume="resistor")
+    c1["1"].etype("passive", fmax_hz=0.0, assume="cap")
     vcc.tie(u1["VDD"])
     gnd.tie(u1["VSS"], r1["2"], c1["1"])
     b.wire(u1["OUT"], r1["1"], name="SIG")

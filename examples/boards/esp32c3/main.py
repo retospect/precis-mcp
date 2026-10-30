@@ -17,9 +17,9 @@ def build() -> pcb.Board:
     b.outline({"path": [[0, 0], [300, 0], [300, 300], [0, 300], [0, 0]]})
 
     # nets
-    vbus = b.net("VBUS", current=0.5)
-    vcc3v3 = b.net("VCC3V3", current=0.5)
-    gnd = b.net("GND", current=0.5)
+    vbus = b.net("VBUS", current=0.5, voltage=5.0)
+    vcc3v3 = b.net("VCC3V3", current=0.5, voltage=3.3)
+    gnd = b.net("GND", current=0.5, voltage=0.0)
     sda = b.net("SDA", cls="i2c")
     scl = b.net("SCL", cls="i2c")
     en = b.net("EN")
@@ -91,6 +91,69 @@ def build() -> pcb.Board:
     c14 = b.part("C14", label="CAP-0402-100nF", pins=["1", "2"])
     c15 = b.part("C15", label="CAP-0603-1uF", pins=["1", "2"])
     c16 = b.part("C16", label="CAP-0402-100nF", pins=["1", "2"])
+
+    # pin classes (gr520810 — every tied pin is classified; no datasheets,
+    # so each class carries an explicit assume note)
+    u1["3V3"].etype(
+        "power_in", max_current_a=0.5, max_voltage_v=3.3, assume="esp32 vdd"
+    )
+    for p in u1.pins("GND1", "GND2", "GND3"):
+        p.etype("power_in", max_current_a=0.5, max_voltage_v=3.3, assume="esp32 gnd")
+    u1["EN"].etype("input", fmax_hz=0.0, assume="chip enable")
+    u1["BOOT"].etype("input", fmax_hz=0.0, assume="boot strap")
+    u1["SDA"].etype("bidi", fmax_hz=400e3, assume="i2c sda")
+    u1["SCL"].etype("output", fmax_hz=400e3, assume="i2c scl")
+    for p in u1.pins("GPIO2", "GPIO3", "GPIO8", "GPIO9"):
+        p.etype("bidi", fmax_hz=1e6, assume="gpio")
+    u1["TXD"].etype("output", fmax_hz=1e6, assume="uart tx")
+    u1["RXD"].etype("input", fmax_hz=1e6, assume="uart rx")
+    u2["VDD"].etype(
+        "power_in", max_current_a=0.5, max_voltage_v=3.3, assume="bme280 vdd"
+    )
+    u2["GND"].etype(
+        "power_in", max_current_a=0.5, max_voltage_v=3.3, assume="bme280 gnd"
+    )
+    u2["SDA"].etype("bidi", fmax_hz=400e3, assume="i2c sda")
+    u2["SCL"].etype("input", fmax_hz=400e3, assume="i2c scl")
+    u3["VIN"].etype(
+        "power_in", max_current_a=0.5, max_voltage_v=5.0, assume="ldo vin (usb 5v)"
+    )
+    u3["GND"].etype("power_in", max_current_a=0.5, max_voltage_v=5.0, assume="ldo gnd")
+    u3["VOUT"].etype(
+        "power_out", max_current_a=0.5, max_voltage_v=3.3, assume="ldo 3v3"
+    )
+    for led in (d1, d2):
+        led["A"].etype("input", fmax_hz=0.0, assume="led anode")
+        led["K"].etype("input", fmax_hz=0.0, assume="led cathode")
+    j1["P1"].etype("power_out", max_current_a=0.5, max_voltage_v=3.3, assume="hdr 3v3")
+    j1["P2"].etype("power_in", max_current_a=0.5, max_voltage_v=3.3, assume="hdr gnd")
+    j1["P3"].etype("bidi", fmax_hz=400e3, assume="i2c sda")
+    j1["P4"].etype("output", fmax_hz=400e3, assume="i2c scl")
+    for p in j1.pins("P5", "P6", "P7", "P8"):
+        p.etype("bidi", fmax_hz=1e6, assume="hdr gpio")
+    j2["VCC"].etype("power_out", max_current_a=0.5, max_voltage_v=3.3, assume="hdr 3v3")
+    j2["TXD"].etype("output", fmax_hz=1e6, assume="uart tx")
+    j2["RXD"].etype("input", fmax_hz=1e6, assume="uart rx")
+    j2["GND"].etype("power_in", max_current_a=0.5, max_voltage_v=3.3, assume="hdr gnd")
+    for r, note in (
+        (r1, "i2c pullup"),
+        (r2, "i2c pullup"),
+        (r3, "en pullup"),
+        (r4, "led series"),
+        (r5, "power led series"),
+        (r6, "boot pulldown"),
+    ):
+        for p in r.pins("1", "2"):
+            p.etype("passive", fmax_hz=0.0, assume=note)
+    for cap in (c1, c2, c4, c5, c9, c10, c12, c13, c14):
+        for p in cap.pins("1", "2"):
+            p.etype("passive", fmax_hz=0.0, assume="100nf cap")
+    for cap in (c3, c7, c8):
+        for p in cap.pins("1", "2"):
+            p.etype("passive", fmax_hz=0.0, assume="10uf bulk")
+    for cap in (c6, c11, c15, c16):
+        for p in cap.pins("1", "2"):
+            p.etype("passive", fmax_hz=0.0, assume="1uf cap")
 
     # connections (authored order)
     vcc3v3.tie(u1["3V3"])

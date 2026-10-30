@@ -68,6 +68,15 @@ def _sanity_board() -> pcb.Board:
     e2 = b.part("E2", footprint=f, pins=["1", "2"]).at(25.0, 15.0)
     # inner pins: the wire must not pass the part's unwired outer pad
     # (a bottom-side part mirrors pin x — C2's inner pad is "2")
+    for part, num in (
+        (a1, "2"),
+        (a2, "1"),
+        (c1, "2"),
+        (c2, "2"),
+        (e1, "1"),
+        (e2, "1"),
+    ):
+        part[num].etype("bidi", fmax_hz=0.0, assume="sanity wire end")
     b.wire(a1["2"], a2["1"], name="N1")
     b.wire(c1["2"], c2["2"], name="N2")
     b.wire(e1["1"], e2["1"], name="N3")
@@ -137,9 +146,13 @@ def test_route_planes_admits_plane_class_nets() -> None:
     f = b.footprint(fp)
     g1 = b.part("G1", footprint=f, pins=["1", "2"]).at(5.0, 5.0)
     g2 = b.part("G2", footprint=f, pins=["1", "2"]).at(15.0, 5.0)
+    for g in (g1["1"], g2["1"]):
+        g.etype("power_in", max_current_a=0.1, max_voltage_v=5.0, assume="plane pin")
     b.net("GND", cls="gnd").tie(g1["1"], g2["1"])
     s1 = b.part("S1", footprint=f, pins=["1", "2"]).at(5.0, 8.0)
     s2 = b.part("S2", footprint=f, pins=["1", "2"]).at(15.0, 8.0)
+    s1["2"].etype("bidi", fmax_hz=0.0, assume="sig end")
+    s2["1"].etype("bidi", fmax_hz=0.0, assume="sig end")
     b.wire(s1["2"], s2["1"], name="SIG")
 
     design = kernel._design(b, None)
@@ -171,9 +184,13 @@ def _plane_board() -> pcb.Board:
     f = b.footprint(fp)
     g1 = b.part("G1", footprint=f, pins=["1", "2"]).at(8.0, 5.0)
     g2 = b.part("G2", footprint=f, pins=["1", "2"]).at(22.0, 5.0)
+    for g in (g1["2"], g2["1"]):
+        g.etype("power_in", max_current_a=0.1, max_voltage_v=5.0, assume="plane pin")
     b.net("GND", cls="gnd").tie(g1["2"], g2["1"])
     s1 = b.part("S1", footprint=f, pins=["1", "2"]).at(5.0, 8.5)
     s2 = b.part("S2", footprint=f, pins=["1", "2"]).at(15.0, 8.5)
+    s1["2"].etype("bidi", fmax_hz=0.0, assume="sig end")
+    s2["1"].etype("bidi", fmax_hz=0.0, assume="sig end")
     # inner pins — the wire must not cross the part's unwired outer pad
     b.wire(s1["2"], s2["1"], name="SIG")
     return b
@@ -225,11 +242,15 @@ def test_widen_oracle_judges_class_min_clearance(tmp_path) -> None:
     f = b.footprint(fp)
     g1 = b.part("G1", footprint=f, pins=["1", "2"]).at(8.0, 5.0)
     g2 = b.part("G2", footprint=f, pins=["1", "2"]).at(22.0, 5.0)
+    for g in (g1["2"], g2["1"]):
+        g.etype("power_in", max_current_a=0.1, max_voltage_v=5.0, assume="plane pin")
     b.net("GND", cls="gnd").tie(g1["2"], g2["1"])
     # hv class: a hard 0.8 mm floor — the pad NEAREST the rail is the
     # classed copper the widened track's gap is judged against.
     s1 = b.part("S1", footprint=f, pins=["1", "2"]).at(15.0, 6.44)
     s2 = b.part("S2", footprint=f, pins=["1", "2"]).at(27.0, 6.44)
+    s1["2"].etype("bidi", fmax_hz=0.0, assume="sig end")
+    s2["1"].etype("bidi", fmax_hz=0.0, assume="sig end")
     b.net_class("hv", min_clearance_mm=0.8)
     b.net("SIG", cls="hv").tie(s1["2"], s2["1"])
 
@@ -557,6 +578,8 @@ def test_widen_power_refuses_step_that_trades_connectivity_for_clearance() -> No
         ),
         pins=["1"],
     ).at(14.15, 5.5)
+    for p in (a1["2"], a2["1"]):
+        p.etype("power_in", max_current_a=1.0, max_voltage_v=5.0, assume="net a")
     b.net("A").tie(a1["2"], a2["1"])
 
     design = kernel._design(b, None)

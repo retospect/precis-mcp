@@ -304,6 +304,7 @@ def test_out_run_emits_a_pcb_manifest(tmp_path: Path) -> None:
     b = pcb.Board("t")
     gnd = b.net("GND")
     j1 = b.part("J1", lcsc="C1")
+    j1["1"].etype("power_in", max_current_a=0.1, max_voltage_v=5.0, assume="header gnd")
     gnd.tie(j1["1"])
     out_dir = tmp_path / "out" / "b1"
     with out.run(out_dir, work_root=tmp_path) as o:

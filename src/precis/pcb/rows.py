@@ -904,7 +904,21 @@ def pin_tags_meta(
             )
         if etype not in tags:
             tags.append(etype)
-    for key in ("max_voltage_v", "vih", "vil", "rail"):
+    # gr520810: the first-use classification keys ride meta verbatim
+    # (``fmax_hz``/``assume`` are new here; ``max_current_a``/
+    # ``est_current_a``/``source`` already existed for ``op='pins'``
+    # but a batch-authored top-level copy was silently dropped).
+    for key in (
+        "max_voltage_v",
+        "vih",
+        "vil",
+        "rail",
+        "max_current_a",
+        "est_current_a",
+        "fmax_hz",
+        "source",
+        "assume",
+    ):
         if p.get(key) is not None:
             meta[key] = p[key]
     if p.get("client_of") is not None:

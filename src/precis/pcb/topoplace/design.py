@@ -135,17 +135,27 @@ class FlexSlot:
     :attr:`TopoDesign.decl_nets` — the net the slot's wire belongs to,
     filled by ``net.tie`` at declaration time. ``site`` is the
     ``file:line`` claim site the wheel records for conflict messages;
-    ``requirement_a`` the tie's ``current=Max`` bound in amps (Decision
-    15 — ``Min`` is not a pin filter); ``pin_max_a`` is the per-candidate
-    drive rating the ``pin_functions`` table carries, NaN = unrated."""
+    ``requirement_a`` the tie's ``current=Max`` bound in amps merged
+    with the slot's own classified ``max_current_a`` (Decision 15 —
+    ``Min`` is not a pin filter); ``pin_max_a``/``pin_max_v`` are the
+    per-candidate drive/voltage ratings the ``pin_functions`` table
+    carries, NaN = unrated. ``etype`` is the slot's first-use
+    classification (gr520810): the class lives on the slot, and
+    ``pins._effective`` drops candidates whose pin_functions cannot
+    satisfy it — an ``analog_in`` slot keeps only AIN/ADC-marked pins,
+    a ``requirement_v`` (the class's ``max_voltage_v``) keeps only
+    adequately rated ones."""
 
     part: int
     pins: tuple[int, ...]
     net: int
     name: str | None = None
     site: str | None = None
+    etype: str | None = None
     requirement_a: float | None = None
+    requirement_v: float | None = None
     pin_max_a: tuple[float, ...] = ()
+    pin_max_v: tuple[float, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -1430,12 +1440,34 @@ def _decls(
                 net_id_of.get(str(net_name_s)) if net_name_s else None,
                 str(net_name_s or ""),
             )
-            ratings = tuple(
+            ratings_a = tuple(
                 float(v)
                 if (v := (funcs.get(p) or {}).get("max_current_a")) is not None
                 else math.nan
                 for p in labels
             )
+            ratings_v = tuple(
+                float(v)
+                if (v := (funcs.get(p) or {}).get("max_voltage_v")) is not None
+                else math.nan
+                for p in labels
+            )
+            # gr520810: the slot's own class facts are requirements too —
+            # a slot classified max_current_a needs a candidate rated for
+            # it, exactly like a tie's current=Max bound.
+            req_a = (
+                float(s["requirement_a"])
+                if s.get("requirement_kind") == "max"
+                and s.get("requirement_a") is not None
+                else None
+            )
+            cls_a = (
+                float(s["max_current_a"])
+                if s.get("max_current_a") is not None
+                else None
+            )
+            if cls_a is not None:
+                req_a = max(req_a, cls_a) if req_a is not None else cls_a
             flex.append(
                 FlexSlot(
                     part=i,
@@ -1443,13 +1475,15 @@ def _decls(
                     net=j,
                     name=s.get("name"),
                     site=s.get("site"),
-                    requirement_a=(
-                        float(s["requirement_a"])
-                        if s.get("requirement_kind") == "max"
-                        and s.get("requirement_a") is not None
+                    etype=str(s["etype"]) if s.get("etype") is not None else None,
+                    requirement_a=req_a,
+                    requirement_v=(
+                        float(s["max_voltage_v"])
+                        if s.get("max_voltage_v") is not None
                         else None
                     ),
-                    pin_max_a=ratings,
+                    pin_max_a=ratings_a,
+                    pin_max_v=ratings_v,
                 )
             )
         for g in decl.get("swap_groups") or []:

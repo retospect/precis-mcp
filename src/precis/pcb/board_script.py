@@ -369,23 +369,26 @@ def _emit_part(
     pins: list[Any] = []
     for p in c.get("pins") or []:
         pins.append(p["name"] if set(p) == {"name"} else p)
-    kw_parts = [
-        f"{k}={v!r}"
-        for k, v in (
-            ("label", c.get("label")),
-            ("lcsc", None if catalog_ref else c.get("part") or c.get("part_lcsc")),
-            ("footprint", c.get("footprint")),
-            ("value", c.get("value")),
-            ("height_mm", c.get("height_mm")),
-            ("roles", c.get("roles") or None),
-            ("pins", pins or None),
-            ("note", c.get("note")),
-            ("part_meta", c.get("part_meta")),
-            ("supplies", c.get("supplies")),
-            ("pin_swap_groups", c.get("pin_swap_groups")),
-        )
-        if v is not None
-    ]
+    kw_parts = []
+    for k, v in (
+        ("label", c.get("label")),
+        ("lcsc", None if catalog_ref else c.get("part") or c.get("part_lcsc")),
+        ("footprint", c.get("footprint")),
+        ("value", c.get("value")),
+        ("height_mm", c.get("height_mm")),
+        ("roles", c.get("roles") or None),
+        ("pins", pins or None),
+        ("note", c.get("note")),
+        ("part_meta", c.get("part_meta")),
+        ("supplies", c.get("supplies")),
+        ("pin_swap_groups", c.get("pin_swap_groups")),
+    ):
+        if v is None:
+            continue
+        # pins rows carry the gr520810 class facts (etype + meta) and can
+        # bust the limit as one repr — wrap through _value like the other
+        # big literals; the split-call branch re-indents the extra lines.
+        kw_parts.append(f"{k}={_value(v, indent=9) if k == 'pins' else repr(v)}")
     if catalog_ref:
         kw_parts.insert(0, f"part={catalog_ref}")
     head = f"{var} = {board}.part("
@@ -422,18 +425,22 @@ def _emit_part(
     if comment is not None and len("    " + one) + 3 + len(comment) > _LIMIT:
         # Put provenance/fallback on the part call even when its args wrap.
         out.append(head + f"  # {comment}")
-        out += [f"    {a}," for a in [repr(refdes), *kw_parts]]
+        out += [
+            "    " + a.replace("\n", "\n    ") + "," for a in [repr(refdes), *kw_parts]
+        ]
         out.append(")")
         out += _tail_statements(var, c)
         for key in ("pattern", "pattern_instance"):
             if c.get(key) is not None:
                 out.append(f"{var}.{key} = {c[key]!r}")
         return out
-    if len("    " + one) <= _LIMIT:
+    if "\n" not in one and len("    " + one) <= _LIMIT:
         out.append(one + (f"  # {comment}" if comment else ""))
     else:
         out.append(head)
-        out += [f"    {a}," for a in [repr(refdes), *kw_parts]]
+        out += [
+            "    " + a.replace("\n", "\n    ") + "," for a in [repr(refdes), *kw_parts]
+        ]
         out.append(")")
         if tail:
             out += _tail_statements(var, c)

@@ -9,45 +9,11 @@ Hierarchy: flat; source carries no schematic sheets or blocks.
 
 from __future__ import annotations
 
-from pathlib import Path
-
 import precis_geom.pcb as pcb
 
 
 def build() -> pcb.Board:
     b = pcb.Board("nano-usb-pd-test")
-    catalog = {
-        "C165948": pcb.catalog_part(
-            "C165948",
-            Path(__file__).parent / "footprints.json",
-            sha256="a89a200a975f2e734a8c17e51650ce8362484e68ecff3a203faaad06334d5cd1",
-        ),
-        "C2678061": pcb.catalog_part(
-            "C2678061",
-            Path(__file__).parent / "footprints.json",
-            sha256="79b687804ed95a463a28fa6c26fa7d2bee6ae5010912e17323f9bd4bb51e3c56",
-        ),
-        "C44377": pcb.catalog_part(
-            "C44377",
-            Path(__file__).parent / "footprints.json",
-            sha256="b8df2a44147a201acc3f84b50e45a304868c454f0ed051932b46450e826e366c",
-        ),
-        "C14877": pcb.catalog_part(
-            "C14877",
-            Path(__file__).parent / "footprints.json",
-            sha256="58829385c0554b2ccfad3ba794e6fe4c457457b6085afd367b7a96a0bb62fb0f",
-        ),
-        "C621942": pcb.catalog_part(
-            "C621942",
-            Path(__file__).parent / "footprints.json",
-            sha256="f213b1c20dc37ddcd4781679e13a5a87b46617cbd46168f44949286931dc75bd",
-        ),
-        "C919581": pcb.catalog_part(
-            "C919581",
-            Path(__file__).parent / "footprints.json",
-            sha256="693c01c6cfa7c2ada854c5ddbc48f5535bff01668eb7720ae61f7df39acfc53f",
-        ),
-    }
 
     # synthesized footprint: 'HDR-2.54-1x15' (source pads)
     _pads_hdr_2_54_1x15 = [
@@ -346,495 +312,2227 @@ def build() -> pcb.Board:
     # parts
     j_usb = b.part(  # board='nano-usb-pd-test' lcsc:C165948
         "J_USB",
-        part=catalog["C165948"],
         label="USB-C receptacle TYPE-C-31-M-12",
+        lcsc="C165948",
+        pins=[
+            {
+                "name": "VBUS",
+                "meta": {
+                    "max_current_a": 5.0,
+                    "max_voltage_v": 20.0,
+                    "assume": "usb-c vbus",
+                },
+                "etype": "power_in",
+            },
+            {
+                "name": "GND",
+                "meta": {
+                    "max_current_a": 5.0,
+                    "max_voltage_v": 20.0,
+                    "assume": "usb-c gnd",
+                },
+                "etype": "power_in",
+            },
+            {
+                "name": "S1",
+                "meta": {
+                    "max_current_a": 5.0,
+                    "max_voltage_v": 20.0,
+                    "assume": "usb-c gnd",
+                },
+                "etype": "power_in",
+            },
+            {
+                "name": "S2",
+                "meta": {
+                    "max_current_a": 5.0,
+                    "max_voltage_v": 20.0,
+                    "assume": "usb-c gnd",
+                },
+                "etype": "power_in",
+            },
+            {
+                "name": "S3",
+                "meta": {
+                    "max_current_a": 5.0,
+                    "max_voltage_v": 20.0,
+                    "assume": "usb-c gnd",
+                },
+                "etype": "power_in",
+            },
+            {
+                "name": "S4",
+                "meta": {
+                    "max_current_a": 5.0,
+                    "max_voltage_v": 20.0,
+                    "assume": "usb-c gnd",
+                },
+                "etype": "power_in",
+            },
+            {
+                "name": "CC1",
+                "meta": {"fmax_hz": 300000.0, "assume": "usb-c cc"},
+                "etype": "bidi",
+            },
+            {
+                "name": "CC2",
+                "meta": {"fmax_hz": 300000.0, "assume": "usb-c cc"},
+                "etype": "bidi",
+            },
+        ],
     )
     j_usb.on_edge("S", require="required")
     u_pd = b.part(  # board='nano-usb-pd-test' lcsc:C2678061
         "U_PD",
-        part=catalog["C2678061"],
         label="STUSB4500QTR PD sink controller",
+        lcsc="C2678061",
+        pins=[
+            {
+                "name": "VDD",
+                "meta": {
+                    "max_current_a": 5.0,
+                    "max_voltage_v": 20.0,
+                    "assume": "stusb4500 vdd",
+                },
+                "etype": "power_in",
+            },
+            {
+                "name": "DISCH",
+                "meta": {"fmax_hz": 0.0, "assume": "vbus discharge"},
+                "etype": "open_drain",
+            },
+            {
+                "name": "GND",
+                "meta": {
+                    "max_current_a": 5.0,
+                    "max_voltage_v": 20.0,
+                    "assume": "stusb4500 gnd",
+                },
+                "etype": "power_in",
+            },
+            {
+                "name": "CC1",
+                "meta": {"fmax_hz": 300000.0, "assume": "usb-c cc"},
+                "etype": "bidi",
+            },
+            {
+                "name": "CC2",
+                "meta": {"fmax_hz": 300000.0, "assume": "usb-c cc"},
+                "etype": "bidi",
+            },
+            {
+                "name": "VSYS",
+                "meta": {
+                    "max_current_a": 3.0,
+                    "max_voltage_v": 5.0,
+                    "assume": "stusb4500 vsys",
+                },
+                "etype": "power_in",
+            },
+            {
+                "name": "VREG_1V2",
+                "meta": {
+                    "max_current_a": 0.05,
+                    "max_voltage_v": 1.2,
+                    "assume": "1v2 ldo out",
+                },
+                "etype": "power_out",
+            },
+            {
+                "name": "VREG_2V7",
+                "meta": {
+                    "max_current_a": 0.05,
+                    "max_voltage_v": 2.7,
+                    "assume": "2v7 ldo out",
+                },
+                "etype": "power_out",
+            },
+            {
+                "name": "SDA",
+                "meta": {"fmax_hz": 400000.0, "assume": "i2c sda"},
+                "etype": "bidi",
+            },
+            {
+                "name": "SCL",
+                "meta": {"fmax_hz": 400000.0, "assume": "i2c scl"},
+                "etype": "input",
+            },
+            {
+                "name": "INT_N",
+                "meta": {"fmax_hz": 0.0, "assume": "irq out"},
+                "etype": "open_drain",
+            },
+        ],
     )
     c_pd = b.part(  # board='nano-usb-pd-test'; synthesized footprint
         "C_PD",
         label="CAP-1206-10uF-35V",
         footprint="CAP-1206",
+        pins=[
+            {
+                "name": "1",
+                "meta": {"fmax_hz": 0.0, "assume": "vbus cap"},
+                "etype": "passive",
+            },
+            {
+                "name": "2",
+                "meta": {"fmax_hz": 0.0, "assume": "vbus cap"},
+                "etype": "passive",
+            },
+        ],
     )
     c_bulk = b.part(  # board='nano-usb-pd-test'; synthesized footprint
         "C_BULK",
         label="CAP-ELEC-100uF-35V-THT",
         footprint="CAP-ELEC-5P",
+        pins=[
+            {
+                "name": "1",
+                "meta": {"fmax_hz": 0.0, "assume": "vbus bulk cap"},
+                "etype": "passive",
+            },
+            {
+                "name": "2",
+                "meta": {"fmax_hz": 0.0, "assume": "vbus bulk cap"},
+                "etype": "passive",
+            },
+        ],
     )
     c_vreg12 = b.part(  # board='nano-usb-pd-test'; synthesized footprint
         "C_VREG12",
         label="CAP-0402-1uF",
-        pins=["1", "2"],
+        pins=[
+            {
+                "name": "1",
+                "meta": {"fmax_hz": 0.0, "assume": "vreg cap"},
+                "etype": "passive",
+            },
+            {
+                "name": "2",
+                "meta": {"fmax_hz": 0.0, "assume": "vreg cap"},
+                "etype": "passive",
+            },
+        ],
         note="synthesized landpattern bound (no catalog part / no authored footprint)",
     )
     c_vreg27 = b.part(  # board='nano-usb-pd-test'; synthesized footprint
         "C_VREG27",
         label="CAP-0402-1uF",
-        pins=["1", "2"],
+        pins=[
+            {
+                "name": "1",
+                "meta": {"fmax_hz": 0.0, "assume": "vreg cap"},
+                "etype": "passive",
+            },
+            {
+                "name": "2",
+                "meta": {"fmax_hz": 0.0, "assume": "vreg cap"},
+                "etype": "passive",
+            },
+        ],
         note="synthesized landpattern bound (no catalog part / no authored footprint)",
     )
     u_b15 = b.part(  # board='nano-usb-pd-test' lcsc:C44377
         "U_B15",
-        part=catalog["C44377"],
         label="TPS54360 60V/3.5A buck",
+        lcsc="C44377",
+        pins=[
+            {
+                "name": "VIN",
+                "meta": {
+                    "max_current_a": 3.5,
+                    "max_voltage_v": 20.0,
+                    "assume": "buck vin",
+                },
+                "etype": "power_in",
+            },
+            {
+                "name": "GND",
+                "meta": {
+                    "max_current_a": 3.5,
+                    "max_voltage_v": 20.0,
+                    "assume": "buck gnd",
+                },
+                "etype": "power_in",
+            },
+            {
+                "name": "EN",
+                "meta": {"fmax_hz": 0.0, "assume": "buck enable"},
+                "etype": "input",
+            },
+            {
+                "name": "BOOT",
+                "meta": {"fmax_hz": 600000.0, "assume": "bootstrap pin"},
+                "etype": "output",
+            },
+            {
+                "name": "SW",
+                "meta": {
+                    "max_current_a": 3.5,
+                    "max_voltage_v": 20.0,
+                    "assume": "buck sw",
+                },
+                "etype": "power_out",
+            },
+            {
+                "name": "FB",
+                "meta": {"fmax_hz": 0.0, "assume": "fb divider"},
+                "etype": "input",
+            },
+            {
+                "name": "COMP",
+                "meta": {"fmax_hz": 50000.0, "assume": "comp network"},
+                "etype": "analog_out",
+            },
+        ],
         note="VBUS -> V15 buck",
     )
     l15 = b.part(  # board='nano-usb-pd-test'; synthesized footprint
         "L15",
         label="IND-SMD-10uH",
         footprint="IND-7x7",
+        pins=[
+            {
+                "name": "1",
+                "meta": {"fmax_hz": 600000.0, "assume": "buck inductor"},
+                "etype": "passive",
+            },
+            {
+                "name": "2",
+                "meta": {"fmax_hz": 600000.0, "assume": "buck inductor"},
+                "etype": "passive",
+            },
+        ],
     )
     c_in15 = b.part(  # board='nano-usb-pd-test'; synthesized footprint
         "C_IN15",
         label="CAP-1206-10uF-35V",
         footprint="CAP-1206",
+        pins=[
+            {
+                "name": "1",
+                "meta": {"fmax_hz": 600000.0, "assume": "buck input cap"},
+                "etype": "passive",
+            },
+            {
+                "name": "2",
+                "meta": {"fmax_hz": 600000.0, "assume": "buck input cap"},
+                "etype": "passive",
+            },
+        ],
     )
     c_o15 = b.part(  # board='nano-usb-pd-test'; synthesized footprint
         "C_O15",
         label="CAP-1206-22uF-25V",
         footprint="CAP-1206",
+        pins=[
+            {
+                "name": "1",
+                "meta": {"fmax_hz": 600000.0, "assume": "buck output cap"},
+                "etype": "passive",
+            },
+            {
+                "name": "2",
+                "meta": {"fmax_hz": 600000.0, "assume": "buck output cap"},
+                "etype": "passive",
+            },
+        ],
     )
     c_b15 = b.part(  # board='nano-usb-pd-test'; synthesized footprint
         "C_B15",
         label="CAP-0402-100nF",
-        pins=["1", "2"],
+        pins=[
+            {
+                "name": "1",
+                "meta": {"fmax_hz": 600000.0, "assume": "bootstrap cap"},
+                "etype": "passive",
+            },
+            {
+                "name": "2",
+                "meta": {"fmax_hz": 600000.0, "assume": "bootstrap cap"},
+                "etype": "passive",
+            },
+        ],
         note="synthesized landpattern bound (no catalog part / no authored footprint)",
     )
     c_comp15 = b.part(  # board='nano-usb-pd-test'; synthesized footprint
         "C_COMP15",
         label="CAP-0402-10nF",
-        pins=["1", "2"],
+        pins=[
+            {
+                "name": "1",
+                "meta": {"fmax_hz": 50000.0, "assume": "comp cap"},
+                "etype": "passive",
+            },
+            {
+                "name": "2",
+                "meta": {"fmax_hz": 50000.0, "assume": "comp cap"},
+                "etype": "passive",
+            },
+        ],
         note="synthesized landpattern bound (no catalog part / no authored footprint)",
     )
     r_fbt15 = b.part(  # board='nano-usb-pd-test'; synthesized footprint
         "R_FBT15",
         label="RES-0402-FBT",
-        pins=["1", "2"],
+        pins=[
+            {
+                "name": "1",
+                "meta": {"fmax_hz": 0.0, "assume": "fb divider"},
+                "etype": "passive",
+            },
+            {
+                "name": "2",
+                "meta": {"fmax_hz": 0.0, "assume": "fb divider"},
+                "etype": "passive",
+            },
+        ],
         note="synthesized landpattern bound (no catalog part / no authored footprint)",
     )
     r_fbb15 = b.part(  # board='nano-usb-pd-test'; synthesized footprint
         "R_FBB15",
         label="RES-0402-FBB",
-        pins=["1", "2"],
+        pins=[
+            {
+                "name": "1",
+                "meta": {"fmax_hz": 0.0, "assume": "fb divider"},
+                "etype": "passive",
+            },
+            {
+                "name": "2",
+                "meta": {"fmax_hz": 0.0, "assume": "fb divider"},
+                "etype": "passive",
+            },
+        ],
         note="synthesized landpattern bound (no catalog part / no authored footprint)",
     )
     r_en15 = b.part(  # board='nano-usb-pd-test'; synthesized footprint
         "R_EN15",
         label="RES-0402-100k",
-        pins=["1", "2"],
+        pins=[
+            {
+                "name": "1",
+                "meta": {"fmax_hz": 0.0, "assume": "en pullup"},
+                "etype": "passive",
+            },
+            {
+                "name": "2",
+                "meta": {"fmax_hz": 0.0, "assume": "en pullup"},
+                "etype": "passive",
+            },
+        ],
         note="synthesized landpattern bound (no catalog part / no authored footprint)",
     )
     u_b9 = b.part(  # board='nano-usb-pd-test' lcsc:C44377
         "U_B9",
-        part=catalog["C44377"],
         label="TPS54360 60V/3.5A buck",
+        lcsc="C44377",
+        pins=[
+            {
+                "name": "VIN",
+                "meta": {
+                    "max_current_a": 3.5,
+                    "max_voltage_v": 20.0,
+                    "assume": "buck vin",
+                },
+                "etype": "power_in",
+            },
+            {
+                "name": "GND",
+                "meta": {
+                    "max_current_a": 3.5,
+                    "max_voltage_v": 20.0,
+                    "assume": "buck gnd",
+                },
+                "etype": "power_in",
+            },
+            {
+                "name": "EN",
+                "meta": {"fmax_hz": 0.0, "assume": "buck enable"},
+                "etype": "input",
+            },
+            {
+                "name": "BOOT",
+                "meta": {"fmax_hz": 600000.0, "assume": "bootstrap pin"},
+                "etype": "output",
+            },
+            {
+                "name": "SW",
+                "meta": {
+                    "max_current_a": 3.5,
+                    "max_voltage_v": 20.0,
+                    "assume": "buck sw",
+                },
+                "etype": "power_out",
+            },
+            {
+                "name": "FB",
+                "meta": {"fmax_hz": 0.0, "assume": "fb divider"},
+                "etype": "input",
+            },
+            {
+                "name": "COMP",
+                "meta": {"fmax_hz": 50000.0, "assume": "comp network"},
+                "etype": "analog_out",
+            },
+        ],
         note="VBUS -> V9 buck",
     )
     l9 = b.part(  # board='nano-usb-pd-test'; synthesized footprint
         "L9",
         label="IND-SMD-10uH",
         footprint="IND-7x7",
+        pins=[
+            {
+                "name": "1",
+                "meta": {"fmax_hz": 600000.0, "assume": "buck inductor"},
+                "etype": "passive",
+            },
+            {
+                "name": "2",
+                "meta": {"fmax_hz": 600000.0, "assume": "buck inductor"},
+                "etype": "passive",
+            },
+        ],
     )
     c_in9 = b.part(  # board='nano-usb-pd-test'; synthesized footprint
         "C_IN9",
         label="CAP-1206-10uF-35V",
         footprint="CAP-1206",
+        pins=[
+            {
+                "name": "1",
+                "meta": {"fmax_hz": 600000.0, "assume": "buck input cap"},
+                "etype": "passive",
+            },
+            {
+                "name": "2",
+                "meta": {"fmax_hz": 600000.0, "assume": "buck input cap"},
+                "etype": "passive",
+            },
+        ],
     )
     c_o9 = b.part(  # board='nano-usb-pd-test'; synthesized footprint
         "C_O9",
         label="CAP-1206-22uF-25V",
         footprint="CAP-1206",
+        pins=[
+            {
+                "name": "1",
+                "meta": {"fmax_hz": 600000.0, "assume": "buck output cap"},
+                "etype": "passive",
+            },
+            {
+                "name": "2",
+                "meta": {"fmax_hz": 600000.0, "assume": "buck output cap"},
+                "etype": "passive",
+            },
+        ],
     )
     c_b9 = b.part(  # board='nano-usb-pd-test'; synthesized footprint
         "C_B9",
         label="CAP-0402-100nF",
-        pins=["1", "2"],
+        pins=[
+            {
+                "name": "1",
+                "meta": {"fmax_hz": 600000.0, "assume": "bootstrap cap"},
+                "etype": "passive",
+            },
+            {
+                "name": "2",
+                "meta": {"fmax_hz": 600000.0, "assume": "bootstrap cap"},
+                "etype": "passive",
+            },
+        ],
         note="synthesized landpattern bound (no catalog part / no authored footprint)",
     )
     c_comp9 = b.part(  # board='nano-usb-pd-test'; synthesized footprint
         "C_COMP9",
         label="CAP-0402-10nF",
-        pins=["1", "2"],
+        pins=[
+            {
+                "name": "1",
+                "meta": {"fmax_hz": 50000.0, "assume": "comp cap"},
+                "etype": "passive",
+            },
+            {
+                "name": "2",
+                "meta": {"fmax_hz": 50000.0, "assume": "comp cap"},
+                "etype": "passive",
+            },
+        ],
         note="synthesized landpattern bound (no catalog part / no authored footprint)",
     )
     r_fbt9 = b.part(  # board='nano-usb-pd-test'; synthesized footprint
         "R_FBT9",
         label="RES-0402-FBT",
-        pins=["1", "2"],
+        pins=[
+            {
+                "name": "1",
+                "meta": {"fmax_hz": 0.0, "assume": "fb divider"},
+                "etype": "passive",
+            },
+            {
+                "name": "2",
+                "meta": {"fmax_hz": 0.0, "assume": "fb divider"},
+                "etype": "passive",
+            },
+        ],
         note="synthesized landpattern bound (no catalog part / no authored footprint)",
     )
     r_fbb9 = b.part(  # board='nano-usb-pd-test'; synthesized footprint
         "R_FBB9",
         label="RES-0402-FBB",
-        pins=["1", "2"],
+        pins=[
+            {
+                "name": "1",
+                "meta": {"fmax_hz": 0.0, "assume": "fb divider"},
+                "etype": "passive",
+            },
+            {
+                "name": "2",
+                "meta": {"fmax_hz": 0.0, "assume": "fb divider"},
+                "etype": "passive",
+            },
+        ],
         note="synthesized landpattern bound (no catalog part / no authored footprint)",
     )
     r_en9 = b.part(  # board='nano-usb-pd-test'; synthesized footprint
         "R_EN9",
         label="RES-0402-100k",
-        pins=["1", "2"],
+        pins=[
+            {
+                "name": "1",
+                "meta": {"fmax_hz": 0.0, "assume": "en pullup"},
+                "etype": "passive",
+            },
+            {
+                "name": "2",
+                "meta": {"fmax_hz": 0.0, "assume": "en pullup"},
+                "etype": "passive",
+            },
+        ],
         note="synthesized landpattern bound (no catalog part / no authored footprint)",
     )
     u_b5 = b.part(  # board='nano-usb-pd-test' lcsc:C44377
         "U_B5",
-        part=catalog["C44377"],
         label="TPS54360 60V/3.5A buck",
+        lcsc="C44377",
+        pins=[
+            {
+                "name": "VIN",
+                "meta": {
+                    "max_current_a": 3.5,
+                    "max_voltage_v": 20.0,
+                    "assume": "buck vin",
+                },
+                "etype": "power_in",
+            },
+            {
+                "name": "GND",
+                "meta": {
+                    "max_current_a": 3.5,
+                    "max_voltage_v": 20.0,
+                    "assume": "buck gnd",
+                },
+                "etype": "power_in",
+            },
+            {
+                "name": "EN",
+                "meta": {"fmax_hz": 0.0, "assume": "buck enable"},
+                "etype": "input",
+            },
+            {
+                "name": "BOOT",
+                "meta": {"fmax_hz": 600000.0, "assume": "bootstrap pin"},
+                "etype": "output",
+            },
+            {
+                "name": "SW",
+                "meta": {
+                    "max_current_a": 3.5,
+                    "max_voltage_v": 20.0,
+                    "assume": "buck sw",
+                },
+                "etype": "power_out",
+            },
+            {
+                "name": "FB",
+                "meta": {"fmax_hz": 0.0, "assume": "fb divider"},
+                "etype": "input",
+            },
+            {
+                "name": "COMP",
+                "meta": {"fmax_hz": 50000.0, "assume": "comp network"},
+                "etype": "analog_out",
+            },
+        ],
         note="VBUS -> V5 buck",
     )
     l5 = b.part(  # board='nano-usb-pd-test'; synthesized footprint
         "L5",
         label="IND-SMD-10uH",
         footprint="IND-7x7",
+        pins=[
+            {
+                "name": "1",
+                "meta": {"fmax_hz": 600000.0, "assume": "buck inductor"},
+                "etype": "passive",
+            },
+            {
+                "name": "2",
+                "meta": {"fmax_hz": 600000.0, "assume": "buck inductor"},
+                "etype": "passive",
+            },
+        ],
     )
     c_in5 = b.part(  # board='nano-usb-pd-test'; synthesized footprint
         "C_IN5",
         label="CAP-1206-10uF-35V",
         footprint="CAP-1206",
+        pins=[
+            {
+                "name": "1",
+                "meta": {"fmax_hz": 600000.0, "assume": "buck input cap"},
+                "etype": "passive",
+            },
+            {
+                "name": "2",
+                "meta": {"fmax_hz": 600000.0, "assume": "buck input cap"},
+                "etype": "passive",
+            },
+        ],
     )
     c_o5 = b.part(  # board='nano-usb-pd-test'; synthesized footprint
         "C_O5",
         label="CAP-1206-22uF-25V",
         footprint="CAP-1206",
+        pins=[
+            {
+                "name": "1",
+                "meta": {"fmax_hz": 600000.0, "assume": "buck output cap"},
+                "etype": "passive",
+            },
+            {
+                "name": "2",
+                "meta": {"fmax_hz": 600000.0, "assume": "buck output cap"},
+                "etype": "passive",
+            },
+        ],
     )
     c_b5 = b.part(  # board='nano-usb-pd-test'; synthesized footprint
         "C_B5",
         label="CAP-0402-100nF",
-        pins=["1", "2"],
+        pins=[
+            {
+                "name": "1",
+                "meta": {"fmax_hz": 600000.0, "assume": "bootstrap cap"},
+                "etype": "passive",
+            },
+            {
+                "name": "2",
+                "meta": {"fmax_hz": 600000.0, "assume": "bootstrap cap"},
+                "etype": "passive",
+            },
+        ],
         note="synthesized landpattern bound (no catalog part / no authored footprint)",
     )
     c_comp5 = b.part(  # board='nano-usb-pd-test'; synthesized footprint
         "C_COMP5",
         label="CAP-0402-10nF",
-        pins=["1", "2"],
+        pins=[
+            {
+                "name": "1",
+                "meta": {"fmax_hz": 50000.0, "assume": "comp cap"},
+                "etype": "passive",
+            },
+            {
+                "name": "2",
+                "meta": {"fmax_hz": 50000.0, "assume": "comp cap"},
+                "etype": "passive",
+            },
+        ],
         note="synthesized landpattern bound (no catalog part / no authored footprint)",
     )
     r_fbt5 = b.part(  # board='nano-usb-pd-test'; synthesized footprint
         "R_FBT5",
         label="RES-0402-FBT",
-        pins=["1", "2"],
+        pins=[
+            {
+                "name": "1",
+                "meta": {"fmax_hz": 0.0, "assume": "fb divider"},
+                "etype": "passive",
+            },
+            {
+                "name": "2",
+                "meta": {"fmax_hz": 0.0, "assume": "fb divider"},
+                "etype": "passive",
+            },
+        ],
         note="synthesized landpattern bound (no catalog part / no authored footprint)",
     )
     r_fbb5 = b.part(  # board='nano-usb-pd-test'; synthesized footprint
         "R_FBB5",
         label="RES-0402-FBB",
-        pins=["1", "2"],
+        pins=[
+            {
+                "name": "1",
+                "meta": {"fmax_hz": 0.0, "assume": "fb divider"},
+                "etype": "passive",
+            },
+            {
+                "name": "2",
+                "meta": {"fmax_hz": 0.0, "assume": "fb divider"},
+                "etype": "passive",
+            },
+        ],
         note="synthesized landpattern bound (no catalog part / no authored footprint)",
     )
     r_en5 = b.part(  # board='nano-usb-pd-test'; synthesized footprint
         "R_EN5",
         label="RES-0402-100k",
-        pins=["1", "2"],
+        pins=[
+            {
+                "name": "1",
+                "meta": {"fmax_hz": 0.0, "assume": "en pullup"},
+                "etype": "passive",
+            },
+            {
+                "name": "2",
+                "meta": {"fmax_hz": 0.0, "assume": "en pullup"},
+                "etype": "passive",
+            },
+        ],
         note="synthesized landpattern bound (no catalog part / no authored footprint)",
     )
     u1 = b.part(  # board='nano-usb-pd-test' lcsc:C14877
         "U1",
-        part=catalog["C14877"],
         label="ATMEGA328P-AU",
+        lcsc="C14877",
+        pins=[
+            {
+                "name": "VCC",
+                "meta": {
+                    "max_current_a": 3.0,
+                    "max_voltage_v": 5.0,
+                    "assume": "328p vcc",
+                },
+                "etype": "power_in",
+            },
+            {
+                "name": "AVCC",
+                "meta": {
+                    "max_current_a": 3.0,
+                    "max_voltage_v": 5.0,
+                    "assume": "328p avcc",
+                },
+                "etype": "power_in",
+            },
+            {
+                "name": "GND",
+                "meta": {
+                    "max_current_a": 3.0,
+                    "max_voltage_v": 5.0,
+                    "assume": "328p gnd",
+                },
+                "etype": "power_in",
+            },
+            {
+                "name": "AREF",
+                "meta": {"fmax_hz": 0.0, "assume": "adc ref"},
+                "etype": "analog_in",
+            },
+            {
+                "name": "PC6",
+                "meta": {"fmax_hz": 0.0, "assume": "reset"},
+                "etype": "input",
+            },
+            {
+                "name": "PB6",
+                "meta": {"fmax_hz": 16000000.0, "assume": "xtal osc in"},
+                "etype": "analog_in",
+            },
+            {
+                "name": "PB7",
+                "meta": {"fmax_hz": 16000000.0, "assume": "xtal osc out"},
+                "etype": "analog_out",
+            },
+            {
+                "name": "PC4",
+                "meta": {"fmax_hz": 400000.0, "assume": "i2c sda"},
+                "etype": "bidi",
+            },
+            {
+                "name": "PC5",
+                "meta": {"fmax_hz": 400000.0, "assume": "i2c scl"},
+                "etype": "output",
+            },
+            {
+                "name": "PD1",
+                "meta": {"fmax_hz": 1000000.0, "assume": "uart tx"},
+                "etype": "output",
+            },
+            {
+                "name": "PD0",
+                "meta": {"fmax_hz": 1000000.0, "assume": "uart rx"},
+                "etype": "input",
+            },
+            {
+                "name": "PD3",
+                "meta": {"fmax_hz": 0.0, "assume": "irq sense"},
+                "etype": "input",
+            },
+            {
+                "name": "PD2",
+                "meta": {"fmax_hz": 1000000.0, "assume": "gpio"},
+                "etype": "bidi",
+            },
+            {
+                "name": "PD4",
+                "meta": {"fmax_hz": 1000000.0, "assume": "gpio"},
+                "etype": "bidi",
+            },
+            {
+                "name": "PD5",
+                "meta": {"fmax_hz": 1000000.0, "assume": "gpio"},
+                "etype": "bidi",
+            },
+            {
+                "name": "PD6",
+                "meta": {"fmax_hz": 1000000.0, "assume": "gpio"},
+                "etype": "bidi",
+            },
+            {
+                "name": "PD7",
+                "meta": {"fmax_hz": 1000000.0, "assume": "gpio"},
+                "etype": "bidi",
+            },
+            {
+                "name": "PB0",
+                "meta": {"fmax_hz": 0.0, "assume": "hs ch1 enable"},
+                "etype": "output",
+            },
+            {
+                "name": "PB1",
+                "meta": {"fmax_hz": 0.0, "assume": "hs ch2 enable"},
+                "etype": "output",
+            },
+            {
+                "name": "PB2",
+                "meta": {"fmax_hz": 0.0, "assume": "hs ch3 enable"},
+                "etype": "output",
+            },
+            {
+                "name": "PB3",
+                "meta": {"fmax_hz": 8000000.0, "assume": "gpio + icsp mosi"},
+                "etype": "bidi",
+            },
+            {
+                "name": "PB4",
+                "meta": {"fmax_hz": 8000000.0, "assume": "gpio + icsp miso"},
+                "etype": "output",
+            },
+            {
+                "name": "PB5",
+                "meta": {"fmax_hz": 8000000.0, "assume": "gpio + icsp sck"},
+                "etype": "bidi",
+            },
+            {
+                "name": "PC0",
+                "meta": {"fmax_hz": 1000000.0, "assume": "gpio/adc"},
+                "etype": "bidi",
+            },
+            {
+                "name": "PC1",
+                "meta": {"fmax_hz": 1000000.0, "assume": "gpio/adc"},
+                "etype": "bidi",
+            },
+            {
+                "name": "PC2",
+                "meta": {"fmax_hz": 1000000.0, "assume": "gpio/adc"},
+                "etype": "bidi",
+            },
+            {
+                "name": "PC3",
+                "meta": {"fmax_hz": 1000000.0, "assume": "gpio/adc"},
+                "etype": "bidi",
+            },
+            {
+                "name": "ADC6",
+                "meta": {"fmax_hz": 1000000.0, "assume": "gpio/adc"},
+                "etype": "bidi",
+            },
+            {
+                "name": "ADC7",
+                "meta": {"fmax_hz": 1000000.0, "assume": "gpio/adc"},
+                "etype": "bidi",
+            },
+        ],
     )
     y1 = b.part(  # board='nano-usb-pd-test'; synthesized footprint
         "Y1",
         label="XTAL-3225-16MHz",
         footprint="XTAL-3225",
+        pins=[
+            {
+                "name": "1",
+                "meta": {"fmax_hz": 16000000.0, "assume": "16mhz crystal"},
+                "etype": "passive",
+            },
+            {
+                "name": "2",
+                "meta": {"fmax_hz": 16000000.0, "assume": "16mhz crystal"},
+                "etype": "passive",
+            },
+        ],
     )
     c_x1 = b.part(  # board='nano-usb-pd-test'; synthesized footprint
         "C_X1",
         label="CAP-0402-22pF",
-        pins=["1", "2"],
+        pins=[
+            {
+                "name": "1",
+                "meta": {"fmax_hz": 16000000.0, "assume": "xtal load cap"},
+                "etype": "passive",
+            },
+            {
+                "name": "2",
+                "meta": {"fmax_hz": 16000000.0, "assume": "xtal load cap"},
+                "etype": "passive",
+            },
+        ],
         note="synthesized landpattern bound (no catalog part / no authored footprint)",
     )
     c_x2 = b.part(  # board='nano-usb-pd-test'; synthesized footprint
         "C_X2",
         label="CAP-0402-22pF",
-        pins=["1", "2"],
+        pins=[
+            {
+                "name": "1",
+                "meta": {"fmax_hz": 16000000.0, "assume": "xtal load cap"},
+                "etype": "passive",
+            },
+            {
+                "name": "2",
+                "meta": {"fmax_hz": 16000000.0, "assume": "xtal load cap"},
+                "etype": "passive",
+            },
+        ],
         note="synthesized landpattern bound (no catalog part / no authored footprint)",
     )
     c_vcc = b.part(  # board='nano-usb-pd-test'; synthesized footprint
         "C_VCC",
         label="CAP-0402-100nF",
-        pins=["1", "2"],
+        pins=[
+            {
+                "name": "1",
+                "meta": {"fmax_hz": 0.0, "assume": "vcc cap"},
+                "etype": "passive",
+            },
+            {
+                "name": "2",
+                "meta": {"fmax_hz": 0.0, "assume": "vcc cap"},
+                "etype": "passive",
+            },
+        ],
         note="synthesized landpattern bound (no catalog part / no authored footprint)",
     )
     c_avcc = b.part(  # board='nano-usb-pd-test'; synthesized footprint
         "C_AVCC",
         label="CAP-0402-100nF",
-        pins=["1", "2"],
+        pins=[
+            {
+                "name": "1",
+                "meta": {"fmax_hz": 0.0, "assume": "avcc cap"},
+                "etype": "passive",
+            },
+            {
+                "name": "2",
+                "meta": {"fmax_hz": 0.0, "assume": "avcc cap"},
+                "etype": "passive",
+            },
+        ],
         note="synthesized landpattern bound (no catalog part / no authored footprint)",
     )
     c_aref = b.part(  # board='nano-usb-pd-test'; synthesized footprint
         "C_AREF",
         label="CAP-0402-100nF",
-        pins=["1", "2"],
+        pins=[
+            {
+                "name": "1",
+                "meta": {"fmax_hz": 0.0, "assume": "aref cap"},
+                "etype": "passive",
+            },
+            {
+                "name": "2",
+                "meta": {"fmax_hz": 0.0, "assume": "aref cap"},
+                "etype": "passive",
+            },
+        ],
         note="synthesized landpattern bound (no catalog part / no authored footprint)",
     )
     c_rst = b.part(  # board='nano-usb-pd-test'; synthesized footprint
         "C_RST",
         label="CAP-0402-100nF",
-        pins=["1", "2"],
+        pins=[
+            {
+                "name": "1",
+                "meta": {"fmax_hz": 0.0, "assume": "reset cap"},
+                "etype": "passive",
+            },
+            {
+                "name": "2",
+                "meta": {"fmax_hz": 0.0, "assume": "reset cap"},
+                "etype": "passive",
+            },
+        ],
         note="synthesized landpattern bound (no catalog part / no authored footprint)",
     )
     r_rst = b.part(  # board='nano-usb-pd-test'; synthesized footprint
         "R_RST",
         label="RES-0402-10k",
-        pins=["1", "2"],
+        pins=[
+            {
+                "name": "1",
+                "meta": {"fmax_hz": 0.0, "assume": "reset pullup"},
+                "etype": "passive",
+            },
+            {
+                "name": "2",
+                "meta": {"fmax_hz": 0.0, "assume": "reset pullup"},
+                "etype": "passive",
+            },
+        ],
         note="synthesized landpattern bound (no catalog part / no authored footprint)",
     )
     r_pu_scl = b.part(  # board='nano-usb-pd-test'; synthesized footprint
         "R_PU_SCL",
         label="RES-0402-4k7",
-        pins=["1", "2"],
+        pins=[
+            {
+                "name": "1",
+                "meta": {"fmax_hz": 0.0, "assume": "i2c pullup"},
+                "etype": "passive",
+            },
+            {
+                "name": "2",
+                "meta": {"fmax_hz": 0.0, "assume": "i2c pullup"},
+                "etype": "passive",
+            },
+        ],
         note="synthesized landpattern bound (no catalog part / no authored footprint)",
     )
     r_pu_sda = b.part(  # board='nano-usb-pd-test'; synthesized footprint
         "R_PU_SDA",
         label="RES-0402-4k7",
-        pins=["1", "2"],
+        pins=[
+            {
+                "name": "1",
+                "meta": {"fmax_hz": 0.0, "assume": "i2c pullup"},
+                "etype": "passive",
+            },
+            {
+                "name": "2",
+                "meta": {"fmax_hz": 0.0, "assume": "i2c pullup"},
+                "etype": "passive",
+            },
+        ],
         note="synthesized landpattern bound (no catalog part / no authored footprint)",
     )
     j_n1 = b.part(  # board='nano-usb-pd-test'; synthesized footprint
         "J_N1",
         label="HDR-2.54-1x15 Nano J1",
         footprint="HDR-2.54-1x15",
+        pins=[
+            {
+                "name": "1",
+                "meta": {"fmax_hz": 1000000.0, "assume": "nano tx"},
+                "etype": "output",
+            },
+            {
+                "name": "2",
+                "meta": {"fmax_hz": 1000000.0, "assume": "nano rx"},
+                "etype": "input",
+            },
+            {
+                "name": "3",
+                "meta": {"fmax_hz": 0.0, "assume": "nano rst"},
+                "etype": "input",
+            },
+            {
+                "name": "4",
+                "meta": {
+                    "max_current_a": 3.0,
+                    "max_voltage_v": 5.0,
+                    "assume": "hdr gnd",
+                },
+                "etype": "power_in",
+            },
+            {
+                "name": "5",
+                "meta": {"fmax_hz": 1000000.0, "assume": "nano gpio"},
+                "etype": "bidi",
+            },
+            {
+                "name": "6",
+                "meta": {"fmax_hz": 1000000.0, "assume": "nano gpio"},
+                "etype": "bidi",
+            },
+            {
+                "name": "7",
+                "meta": {"fmax_hz": 1000000.0, "assume": "nano gpio"},
+                "etype": "bidi",
+            },
+            {
+                "name": "8",
+                "meta": {"fmax_hz": 1000000.0, "assume": "nano gpio"},
+                "etype": "bidi",
+            },
+            {
+                "name": "9",
+                "meta": {"fmax_hz": 1000000.0, "assume": "nano gpio"},
+                "etype": "bidi",
+            },
+            {
+                "name": "10",
+                "meta": {"fmax_hz": 1000000.0, "assume": "nano gpio"},
+                "etype": "bidi",
+            },
+            {
+                "name": "11",
+                "meta": {"fmax_hz": 1000000.0, "assume": "nano gpio"},
+                "etype": "bidi",
+            },
+            {
+                "name": "12",
+                "meta": {"fmax_hz": 1000000.0, "assume": "nano gpio"},
+                "etype": "bidi",
+            },
+            {
+                "name": "13",
+                "meta": {"fmax_hz": 1000000.0, "assume": "nano gpio"},
+                "etype": "bidi",
+            },
+            {
+                "name": "14",
+                "meta": {"fmax_hz": 8000000.0, "assume": "nano gpio/icsp"},
+                "etype": "bidi",
+            },
+            {
+                "name": "15",
+                "meta": {"fmax_hz": 8000000.0, "assume": "nano gpio/icsp"},
+                "etype": "bidi",
+            },
+        ],
     )
     j_n2 = b.part(  # board='nano-usb-pd-test'; synthesized footprint
         "J_N2",
         label="HDR-2.54-1x15 Nano J2",
         footprint="HDR-2.54-1x15",
-        pins=[{"name": "2", "unused": True}],
+        pins=[
+            {"name": "2", "unused": True},
+            {
+                "name": "1",
+                "meta": {"fmax_hz": 8000000.0, "assume": "nano gpio/icsp"},
+                "etype": "bidi",
+            },
+            {
+                "name": "3",
+                "meta": {"fmax_hz": 0.0, "assume": "nano aref"},
+                "etype": "bidi",
+            },
+            {
+                "name": "4",
+                "meta": {"fmax_hz": 1000000.0, "assume": "nano gpio/adc"},
+                "etype": "bidi",
+            },
+            {
+                "name": "5",
+                "meta": {"fmax_hz": 1000000.0, "assume": "nano gpio/adc"},
+                "etype": "bidi",
+            },
+            {
+                "name": "6",
+                "meta": {"fmax_hz": 1000000.0, "assume": "nano gpio/adc"},
+                "etype": "bidi",
+            },
+            {
+                "name": "7",
+                "meta": {"fmax_hz": 1000000.0, "assume": "nano gpio/adc"},
+                "etype": "bidi",
+            },
+            {
+                "name": "10",
+                "meta": {"fmax_hz": 1000000.0, "assume": "nano gpio/adc"},
+                "etype": "bidi",
+            },
+            {
+                "name": "11",
+                "meta": {"fmax_hz": 1000000.0, "assume": "nano gpio/adc"},
+                "etype": "bidi",
+            },
+            {
+                "name": "8",
+                "meta": {"fmax_hz": 400000.0, "assume": "i2c sda"},
+                "etype": "bidi",
+            },
+            {
+                "name": "9",
+                "meta": {"fmax_hz": 400000.0, "assume": "i2c scl"},
+                "etype": "bidi",
+            },
+            {
+                "name": "12",
+                "meta": {
+                    "max_current_a": 3.0,
+                    "max_voltage_v": 5.0,
+                    "assume": "nano 5v",
+                },
+                "etype": "power_out",
+            },
+            {
+                "name": "13",
+                "meta": {"fmax_hz": 0.0, "assume": "nano rst"},
+                "etype": "input",
+            },
+            {
+                "name": "14",
+                "meta": {
+                    "max_current_a": 3.0,
+                    "max_voltage_v": 5.0,
+                    "assume": "hdr gnd",
+                },
+                "etype": "power_in",
+            },
+            {
+                "name": "15",
+                "meta": {
+                    "max_current_a": 5.0,
+                    "max_voltage_v": 20.0,
+                    "assume": "nano vin",
+                },
+                "etype": "power_out",
+            },
+        ],
         note="pin 2 is Nano 3V3 — no 3.3 V rail exists; left unconnected rather than tying it to 5 V",
     )
     j_isp = b.part(  # board='nano-usb-pd-test'; synthesized footprint
         "J_ISP",
         label="ICSP-HDR-2.54-2x3",
         footprint="ICSP-2.54-2x3",
+        pins=[
+            {
+                "name": "1",
+                "meta": {"fmax_hz": 8000000.0, "assume": "icsp miso"},
+                "etype": "output",
+            },
+            {
+                "name": "2",
+                "meta": {
+                    "max_current_a": 3.0,
+                    "max_voltage_v": 5.0,
+                    "assume": "icsp vcc",
+                },
+                "etype": "power_out",
+            },
+            {
+                "name": "3",
+                "meta": {"fmax_hz": 8000000.0, "assume": "icsp sck"},
+                "etype": "input",
+            },
+            {
+                "name": "4",
+                "meta": {"fmax_hz": 8000000.0, "assume": "icsp mosi"},
+                "etype": "input",
+            },
+            {
+                "name": "5",
+                "meta": {"fmax_hz": 0.0, "assume": "icsp reset"},
+                "etype": "input",
+            },
+            {
+                "name": "6",
+                "meta": {
+                    "max_current_a": 3.0,
+                    "max_voltage_v": 5.0,
+                    "assume": "icsp gnd",
+                },
+                "etype": "power_in",
+            },
+        ],
     )
     j_r15 = b.part(  # board='nano-usb-pd-test'; synthesized footprint
         "J_R15",
         label="SCREW-TERM-5.08-2P",
         footprint="SCREW-5.08-2P",
+        pins=[
+            {
+                "name": "1",
+                "meta": {
+                    "max_current_a": 2.0,
+                    "max_voltage_v": 15.0,
+                    "assume": "rail terminal",
+                },
+                "etype": "power_out",
+            },
+            {
+                "name": "2",
+                "meta": {
+                    "max_current_a": 2.0,
+                    "max_voltage_v": 15.0,
+                    "assume": "gnd terminal",
+                },
+                "etype": "power_in",
+            },
+        ],
         note="exposes V15",
     )
     j_r9 = b.part(  # board='nano-usb-pd-test'; synthesized footprint
         "J_R9",
         label="SCREW-TERM-5.08-2P",
         footprint="SCREW-5.08-2P",
+        pins=[
+            {
+                "name": "1",
+                "meta": {
+                    "max_current_a": 2.0,
+                    "max_voltage_v": 9.0,
+                    "assume": "rail terminal",
+                },
+                "etype": "power_out",
+            },
+            {
+                "name": "2",
+                "meta": {
+                    "max_current_a": 2.0,
+                    "max_voltage_v": 9.0,
+                    "assume": "gnd terminal",
+                },
+                "etype": "power_in",
+            },
+        ],
         note="exposes V9",
     )
     j_r5 = b.part(  # board='nano-usb-pd-test'; synthesized footprint
         "J_R5",
         label="SCREW-TERM-5.08-2P",
         footprint="SCREW-5.08-2P",
+        pins=[
+            {
+                "name": "1",
+                "meta": {
+                    "max_current_a": 3.0,
+                    "max_voltage_v": 5.0,
+                    "assume": "rail terminal",
+                },
+                "etype": "power_out",
+            },
+            {
+                "name": "2",
+                "meta": {
+                    "max_current_a": 3.0,
+                    "max_voltage_v": 5.0,
+                    "assume": "gnd terminal",
+                },
+                "etype": "power_in",
+            },
+        ],
         note="exposes V5",
     )
     r_l20 = b.part(  # board='nano-usb-pd-test'; synthesized footprint
         "R_L20",
         label="RES-0603-1k",
-        pins=["1", "2"],
+        pins=[
+            {
+                "name": "1",
+                "meta": {"fmax_hz": 0.0, "assume": "led series"},
+                "etype": "passive",
+            },
+            {
+                "name": "2",
+                "meta": {"fmax_hz": 0.0, "assume": "led series"},
+                "etype": "passive",
+            },
+        ],
         note="synthesized landpattern bound (no catalog part / no authored footprint)",
     )
     led_v20_2 = b.part(  # board='nano-usb-pd-test'; synthesized footprint
         "LED_V20",
         label="LED-0603",
-        pins=["A", "K"],
+        pins=[
+            {
+                "name": "A",
+                "meta": {"fmax_hz": 0.0, "assume": "led anode"},
+                "etype": "input",
+            },
+            {
+                "name": "K",
+                "meta": {"fmax_hz": 0.0, "assume": "led cathode"},
+                "etype": "input",
+            },
+        ],
         note="synthesized landpattern bound (no catalog part / no authored footprint)",
     )
     r_l15 = b.part(  # board='nano-usb-pd-test'; synthesized footprint
         "R_L15",
         label="RES-0603-1k",
-        pins=["1", "2"],
+        pins=[
+            {
+                "name": "1",
+                "meta": {"fmax_hz": 0.0, "assume": "led series"},
+                "etype": "passive",
+            },
+            {
+                "name": "2",
+                "meta": {"fmax_hz": 0.0, "assume": "led series"},
+                "etype": "passive",
+            },
+        ],
         note="synthesized landpattern bound (no catalog part / no authored footprint)",
     )
     led_v15_2 = b.part(  # board='nano-usb-pd-test'; synthesized footprint
         "LED_V15",
         label="LED-0603",
-        pins=["A", "K"],
+        pins=[
+            {
+                "name": "A",
+                "meta": {"fmax_hz": 0.0, "assume": "led anode"},
+                "etype": "input",
+            },
+            {
+                "name": "K",
+                "meta": {"fmax_hz": 0.0, "assume": "led cathode"},
+                "etype": "input",
+            },
+        ],
         note="synthesized landpattern bound (no catalog part / no authored footprint)",
     )
     r_l9 = b.part(  # board='nano-usb-pd-test'; synthesized footprint
         "R_L9",
         label="RES-0603-1k",
-        pins=["1", "2"],
+        pins=[
+            {
+                "name": "1",
+                "meta": {"fmax_hz": 0.0, "assume": "led series"},
+                "etype": "passive",
+            },
+            {
+                "name": "2",
+                "meta": {"fmax_hz": 0.0, "assume": "led series"},
+                "etype": "passive",
+            },
+        ],
         note="synthesized landpattern bound (no catalog part / no authored footprint)",
     )
     led_v9_2 = b.part(  # board='nano-usb-pd-test'; synthesized footprint
         "LED_V9",
         label="LED-0603",
-        pins=["A", "K"],
+        pins=[
+            {
+                "name": "A",
+                "meta": {"fmax_hz": 0.0, "assume": "led anode"},
+                "etype": "input",
+            },
+            {
+                "name": "K",
+                "meta": {"fmax_hz": 0.0, "assume": "led cathode"},
+                "etype": "input",
+            },
+        ],
         note="synthesized landpattern bound (no catalog part / no authored footprint)",
     )
     r_l5 = b.part(  # board='nano-usb-pd-test'; synthesized footprint
         "R_L5",
         label="RES-0603-1k",
-        pins=["1", "2"],
+        pins=[
+            {
+                "name": "1",
+                "meta": {"fmax_hz": 0.0, "assume": "led series"},
+                "etype": "passive",
+            },
+            {
+                "name": "2",
+                "meta": {"fmax_hz": 0.0, "assume": "led series"},
+                "etype": "passive",
+            },
+        ],
         note="synthesized landpattern bound (no catalog part / no authored footprint)",
     )
     led_v5_2 = b.part(  # board='nano-usb-pd-test'; synthesized footprint
         "LED_V5",
         label="LED-0603",
-        pins=["A", "K"],
+        pins=[
+            {
+                "name": "A",
+                "meta": {"fmax_hz": 0.0, "assume": "led anode"},
+                "etype": "input",
+            },
+            {
+                "name": "K",
+                "meta": {"fmax_hz": 0.0, "assume": "led cathode"},
+                "etype": "input",
+            },
+        ],
         note="synthesized landpattern bound (no catalog part / no authored footprint)",
     )
     r_ec = b.part(  # board='nano-usb-pd-test'; synthesized footprint
         "R_EC",
         label="RES-0603-1k",
-        pins=["1", "2"],
+        pins=[
+            {
+                "name": "1",
+                "meta": {"fmax_hz": 0.0, "assume": "led series"},
+                "etype": "passive",
+            },
+            {
+                "name": "2",
+                "meta": {"fmax_hz": 0.0, "assume": "led series"},
+                "etype": "passive",
+            },
+        ],
         note="synthesized landpattern bound (no catalog part / no authored footprint)",
     )
     led_ec = b.part(  # board='nano-usb-pd-test'; synthesized footprint
         "LED_EC",
         label="LED-0603",
-        pins=["A", "K"],
+        pins=[
+            {
+                "name": "A",
+                "meta": {"fmax_hz": 0.0, "assume": "led anode"},
+                "etype": "input",
+            },
+            {
+                "name": "K",
+                "meta": {"fmax_hz": 0.0, "assume": "led cathode"},
+                "etype": "input",
+            },
+        ],
         note="synthesized landpattern bound (no catalog part / no authored footprint)",
     )
     r_es = b.part(  # board='nano-usb-pd-test'; synthesized footprint
         "R_ES",
         label="RES-0603-1k",
-        pins=["1", "2"],
+        pins=[
+            {
+                "name": "1",
+                "meta": {"fmax_hz": 0.0, "assume": "led series"},
+                "etype": "passive",
+            },
+            {
+                "name": "2",
+                "meta": {"fmax_hz": 0.0, "assume": "led series"},
+                "etype": "passive",
+            },
+        ],
         note="synthesized landpattern bound (no catalog part / no authored footprint)",
     )
     led_es = b.part(  # board='nano-usb-pd-test'; synthesized footprint
         "LED_ES",
         label="LED-0603",
-        pins=["A", "K"],
+        pins=[
+            {
+                "name": "A",
+                "meta": {"fmax_hz": 0.0, "assume": "led anode"},
+                "etype": "input",
+            },
+            {
+                "name": "K",
+                "meta": {"fmax_hz": 0.0, "assume": "led cathode"},
+                "etype": "input",
+            },
+        ],
         note="synthesized landpattern bound (no catalog part / no authored footprint)",
     )
     tp20 = b.part(  # board='nano-usb-pd-test'; synthesized footprint
         "TP20",
         label="TEST-POINT-THT",
         footprint="TP-THT",
+        pins=[
+            {
+                "name": "1",
+                "meta": {
+                    "max_current_a": 5.0,
+                    "max_voltage_v": 20.0,
+                    "assume": "test point",
+                },
+                "etype": "power_out",
+            }
+        ],
     )
     tp15 = b.part(  # board='nano-usb-pd-test'; synthesized footprint
         "TP15",
         label="TEST-POINT-THT",
         footprint="TP-THT",
+        pins=[
+            {
+                "name": "1",
+                "meta": {
+                    "max_current_a": 2.0,
+                    "max_voltage_v": 15.0,
+                    "assume": "test point",
+                },
+                "etype": "power_out",
+            }
+        ],
     )
     tp9 = b.part(  # board='nano-usb-pd-test'; synthesized footprint
         "TP9",
         label="TEST-POINT-THT",
         footprint="TP-THT",
+        pins=[
+            {
+                "name": "1",
+                "meta": {
+                    "max_current_a": 2.0,
+                    "max_voltage_v": 9.0,
+                    "assume": "test point",
+                },
+                "etype": "power_out",
+            }
+        ],
     )
     tp5 = b.part(  # board='nano-usb-pd-test'; synthesized footprint
         "TP5",
         label="TEST-POINT-THT",
         footprint="TP-THT",
+        pins=[
+            {
+                "name": "1",
+                "meta": {
+                    "max_current_a": 3.0,
+                    "max_voltage_v": 5.0,
+                    "assume": "test point",
+                },
+                "etype": "power_out",
+            }
+        ],
     )
     u_hs1 = b.part(  # board='nano-usb-pd-test' lcsc:C621942
         "U_HS1",
-        part=catalog["C621942"],
         label="MIC5019YFT high-side driver",
+        lcsc="C621942",
+        pins=[
+            {
+                "name": "VDD",
+                "meta": {
+                    "max_current_a": 3.0,
+                    "max_voltage_v": 5.0,
+                    "assume": "mic5019 vdd",
+                },
+                "etype": "power_in",
+            },
+            {
+                "name": "GND",
+                "meta": {
+                    "max_current_a": 3.0,
+                    "max_voltage_v": 5.0,
+                    "assume": "mic5019 gnd",
+                },
+                "etype": "power_in",
+            },
+            {
+                "name": "IN",
+                "meta": {"fmax_hz": 0.0, "assume": "gate enable"},
+                "etype": "input",
+            },
+            {
+                "name": "GATE",
+                "meta": {"fmax_hz": 0.0, "assume": "fet gate drive"},
+                "etype": "output",
+            },
+            {
+                "name": "SRC",
+                "meta": {"fmax_hz": 0.0, "assume": "src sense"},
+                "etype": "input",
+            },
+        ],
         note="PROVISIONAL part for the switched high-side outputs — driver topology is resolved at netlist review (docs/backlog/pcb-usb-c-pd-nano-testboard.md); this choice is geometry, not validation",
     )
     q1 = b.part(  # board='nano-usb-pd-test' lcsc:C919581
         "Q1",
-        part=catalog["C919581"],
         label="YJD40N04A N-FET 40V/40A TO-252",
+        lcsc="C919581",
+        pins=[
+            {
+                "name": "G",
+                "meta": {"fmax_hz": 0.0, "assume": "fet gate"},
+                "etype": "input",
+            },
+            {
+                "name": "D",
+                "meta": {
+                    "max_current_a": 5.0,
+                    "max_voltage_v": 20.0,
+                    "assume": "fet drain",
+                },
+                "etype": "power_in",
+            },
+            {
+                "name": "S",
+                "meta": {
+                    "max_current_a": 5.0,
+                    "max_voltage_v": 20.0,
+                    "assume": "fet source",
+                },
+                "etype": "power_out",
+            },
+        ],
         note="PROVISIONAL part for the switched high-side outputs — driver topology is resolved at netlist review (docs/backlog/pcb-usb-c-pd-nano-testboard.md); this choice is geometry, not validation",
     )
     r_gs1 = b.part(  # board='nano-usb-pd-test'; synthesized footprint
         "R_GS1",
         label="RES-0603-10k gate-source",
-        pins=["1", "2"],
+        pins=[
+            {
+                "name": "1",
+                "meta": {"fmax_hz": 0.0, "assume": "gate-source"},
+                "etype": "passive",
+            },
+            {
+                "name": "2",
+                "meta": {"fmax_hz": 0.0, "assume": "gate-source"},
+                "etype": "passive",
+            },
+        ],
         note="synthesized landpattern bound (no catalog part / no authored footprint)",
     )
     j_o1 = b.part(  # board='nano-usb-pd-test'; synthesized footprint
         "J_O1",
         label="SCREW-TERM-5.08-2P",
         footprint="SCREW-5.08-2P",
+        pins=[
+            {
+                "name": "1",
+                "meta": {
+                    "max_current_a": 5.0,
+                    "max_voltage_v": 20.0,
+                    "assume": "out terminal",
+                },
+                "etype": "power_out",
+            },
+            {
+                "name": "2",
+                "meta": {
+                    "max_current_a": 5.0,
+                    "max_voltage_v": 20.0,
+                    "assume": "gnd terminal",
+                },
+                "etype": "power_in",
+            },
+        ],
     )
     d_f1 = b.part(  # board='nano-usb-pd-test'; synthesized footprint
         "D_F1",
         label="DIODE-SMA-40V flyback",
         footprint="DIODE-SMA",
+        pins=[
+            {
+                "name": "A",
+                "meta": {"fmax_hz": 0.0, "assume": "flyback diode"},
+                "etype": "passive",
+            },
+            {
+                "name": "K",
+                "meta": {"fmax_hz": 0.0, "assume": "flyback diode"},
+                "etype": "passive",
+            },
+        ],
         note="flyback: populate only if the load is inductive (doc §Open questions); footprint authored regardless",
     )
     u_hs2 = b.part(  # board='nano-usb-pd-test' lcsc:C621942
         "U_HS2",
-        part=catalog["C621942"],
         label="MIC5019YFT high-side driver",
+        lcsc="C621942",
+        pins=[
+            {
+                "name": "VDD",
+                "meta": {
+                    "max_current_a": 3.0,
+                    "max_voltage_v": 5.0,
+                    "assume": "mic5019 vdd",
+                },
+                "etype": "power_in",
+            },
+            {
+                "name": "GND",
+                "meta": {
+                    "max_current_a": 3.0,
+                    "max_voltage_v": 5.0,
+                    "assume": "mic5019 gnd",
+                },
+                "etype": "power_in",
+            },
+            {
+                "name": "IN",
+                "meta": {"fmax_hz": 0.0, "assume": "gate enable"},
+                "etype": "input",
+            },
+            {
+                "name": "GATE",
+                "meta": {"fmax_hz": 0.0, "assume": "fet gate drive"},
+                "etype": "output",
+            },
+            {
+                "name": "SRC",
+                "meta": {"fmax_hz": 0.0, "assume": "src sense"},
+                "etype": "input",
+            },
+        ],
         note="PROVISIONAL part for the switched high-side outputs — driver topology is resolved at netlist review (docs/backlog/pcb-usb-c-pd-nano-testboard.md); this choice is geometry, not validation",
     )
     q2 = b.part(  # board='nano-usb-pd-test' lcsc:C919581
         "Q2",
-        part=catalog["C919581"],
         label="YJD40N04A N-FET 40V/40A TO-252",
+        lcsc="C919581",
+        pins=[
+            {
+                "name": "G",
+                "meta": {"fmax_hz": 0.0, "assume": "fet gate"},
+                "etype": "input",
+            },
+            {
+                "name": "D",
+                "meta": {
+                    "max_current_a": 5.0,
+                    "max_voltage_v": 20.0,
+                    "assume": "fet drain",
+                },
+                "etype": "power_in",
+            },
+            {
+                "name": "S",
+                "meta": {
+                    "max_current_a": 5.0,
+                    "max_voltage_v": 20.0,
+                    "assume": "fet source",
+                },
+                "etype": "power_out",
+            },
+        ],
         note="PROVISIONAL part for the switched high-side outputs — driver topology is resolved at netlist review (docs/backlog/pcb-usb-c-pd-nano-testboard.md); this choice is geometry, not validation",
     )
     r_gs2 = b.part(  # board='nano-usb-pd-test'; synthesized footprint
         "R_GS2",
         label="RES-0603-10k gate-source",
-        pins=["1", "2"],
+        pins=[
+            {
+                "name": "1",
+                "meta": {"fmax_hz": 0.0, "assume": "gate-source"},
+                "etype": "passive",
+            },
+            {
+                "name": "2",
+                "meta": {"fmax_hz": 0.0, "assume": "gate-source"},
+                "etype": "passive",
+            },
+        ],
         note="synthesized landpattern bound (no catalog part / no authored footprint)",
     )
     j_o2 = b.part(  # board='nano-usb-pd-test'; synthesized footprint
         "J_O2",
         label="SCREW-TERM-5.08-2P",
         footprint="SCREW-5.08-2P",
+        pins=[
+            {
+                "name": "1",
+                "meta": {
+                    "max_current_a": 5.0,
+                    "max_voltage_v": 20.0,
+                    "assume": "out terminal",
+                },
+                "etype": "power_out",
+            },
+            {
+                "name": "2",
+                "meta": {
+                    "max_current_a": 5.0,
+                    "max_voltage_v": 20.0,
+                    "assume": "gnd terminal",
+                },
+                "etype": "power_in",
+            },
+        ],
     )
     d_f2 = b.part(  # board='nano-usb-pd-test'; synthesized footprint
         "D_F2",
         label="DIODE-SMA-40V flyback",
         footprint="DIODE-SMA",
+        pins=[
+            {
+                "name": "A",
+                "meta": {"fmax_hz": 0.0, "assume": "flyback diode"},
+                "etype": "passive",
+            },
+            {
+                "name": "K",
+                "meta": {"fmax_hz": 0.0, "assume": "flyback diode"},
+                "etype": "passive",
+            },
+        ],
         note="flyback: populate only if the load is inductive (doc §Open questions); footprint authored regardless",
     )
     u_hs3 = b.part(  # board='nano-usb-pd-test' lcsc:C621942
         "U_HS3",
-        part=catalog["C621942"],
         label="MIC5019YFT high-side driver",
+        lcsc="C621942",
+        pins=[
+            {
+                "name": "VDD",
+                "meta": {
+                    "max_current_a": 3.0,
+                    "max_voltage_v": 5.0,
+                    "assume": "mic5019 vdd",
+                },
+                "etype": "power_in",
+            },
+            {
+                "name": "GND",
+                "meta": {
+                    "max_current_a": 3.0,
+                    "max_voltage_v": 5.0,
+                    "assume": "mic5019 gnd",
+                },
+                "etype": "power_in",
+            },
+            {
+                "name": "IN",
+                "meta": {"fmax_hz": 0.0, "assume": "gate enable"},
+                "etype": "input",
+            },
+            {
+                "name": "GATE",
+                "meta": {"fmax_hz": 0.0, "assume": "fet gate drive"},
+                "etype": "output",
+            },
+            {
+                "name": "SRC",
+                "meta": {"fmax_hz": 0.0, "assume": "src sense"},
+                "etype": "input",
+            },
+        ],
         note="PROVISIONAL part for the switched high-side outputs — driver topology is resolved at netlist review (docs/backlog/pcb-usb-c-pd-nano-testboard.md); this choice is geometry, not validation",
     )
     q3 = b.part(  # board='nano-usb-pd-test' lcsc:C919581
         "Q3",
-        part=catalog["C919581"],
         label="YJD40N04A N-FET 40V/40A TO-252",
+        lcsc="C919581",
+        pins=[
+            {
+                "name": "G",
+                "meta": {"fmax_hz": 0.0, "assume": "fet gate"},
+                "etype": "input",
+            },
+            {
+                "name": "D",
+                "meta": {
+                    "max_current_a": 5.0,
+                    "max_voltage_v": 20.0,
+                    "assume": "fet drain",
+                },
+                "etype": "power_in",
+            },
+            {
+                "name": "S",
+                "meta": {
+                    "max_current_a": 5.0,
+                    "max_voltage_v": 20.0,
+                    "assume": "fet source",
+                },
+                "etype": "power_out",
+            },
+        ],
         note="PROVISIONAL part for the switched high-side outputs — driver topology is resolved at netlist review (docs/backlog/pcb-usb-c-pd-nano-testboard.md); this choice is geometry, not validation",
     )
     r_gs3 = b.part(  # board='nano-usb-pd-test'; synthesized footprint
         "R_GS3",
         label="RES-0603-10k gate-source",
-        pins=["1", "2"],
+        pins=[
+            {
+                "name": "1",
+                "meta": {"fmax_hz": 0.0, "assume": "gate-source"},
+                "etype": "passive",
+            },
+            {
+                "name": "2",
+                "meta": {"fmax_hz": 0.0, "assume": "gate-source"},
+                "etype": "passive",
+            },
+        ],
         note="synthesized landpattern bound (no catalog part / no authored footprint)",
     )
     j_o3 = b.part(  # board='nano-usb-pd-test'; synthesized footprint
         "J_O3",
         label="SCREW-TERM-5.08-2P",
         footprint="SCREW-5.08-2P",
+        pins=[
+            {
+                "name": "1",
+                "meta": {
+                    "max_current_a": 5.0,
+                    "max_voltage_v": 20.0,
+                    "assume": "out terminal",
+                },
+                "etype": "power_out",
+            },
+            {
+                "name": "2",
+                "meta": {
+                    "max_current_a": 5.0,
+                    "max_voltage_v": 20.0,
+                    "assume": "gnd terminal",
+                },
+                "etype": "power_in",
+            },
+        ],
     )
     d_f3 = b.part(  # board='nano-usb-pd-test'; synthesized footprint
         "D_F3",
         label="DIODE-SMA-40V flyback",
         footprint="DIODE-SMA",
+        pins=[
+            {
+                "name": "A",
+                "meta": {"fmax_hz": 0.0, "assume": "flyback diode"},
+                "etype": "passive",
+            },
+            {
+                "name": "K",
+                "meta": {"fmax_hz": 0.0, "assume": "flyback diode"},
+                "etype": "passive",
+            },
+        ],
         note="flyback: populate only if the load is inductive (doc §Open questions); footprint authored regardless",
     )
     u_hs4 = b.part(  # board='nano-usb-pd-test' lcsc:C621942
         "U_HS4",
-        part=catalog["C621942"],
         label="MIC5019YFT high-side driver",
+        lcsc="C621942",
+        pins=[
+            {
+                "name": "VDD",
+                "meta": {
+                    "max_current_a": 3.0,
+                    "max_voltage_v": 5.0,
+                    "assume": "mic5019 vdd",
+                },
+                "etype": "power_in",
+            },
+            {
+                "name": "GND",
+                "meta": {
+                    "max_current_a": 3.0,
+                    "max_voltage_v": 5.0,
+                    "assume": "mic5019 gnd",
+                },
+                "etype": "power_in",
+            },
+            {
+                "name": "IN",
+                "meta": {"fmax_hz": 0.0, "assume": "gate enable"},
+                "etype": "input",
+            },
+            {
+                "name": "GATE",
+                "meta": {"fmax_hz": 0.0, "assume": "fet gate drive"},
+                "etype": "output",
+            },
+            {
+                "name": "SRC",
+                "meta": {"fmax_hz": 0.0, "assume": "src sense"},
+                "etype": "input",
+            },
+        ],
         note="PROVISIONAL part for the switched high-side outputs — driver topology is resolved at netlist review (docs/backlog/pcb-usb-c-pd-nano-testboard.md); this choice is geometry, not validation",
     )
     q4 = b.part(  # board='nano-usb-pd-test' lcsc:C919581
         "Q4",
-        part=catalog["C919581"],
         label="YJD40N04A N-FET 40V/40A TO-252",
+        lcsc="C919581",
+        pins=[
+            {
+                "name": "G",
+                "meta": {"fmax_hz": 0.0, "assume": "fet gate"},
+                "etype": "input",
+            },
+            {
+                "name": "D",
+                "meta": {
+                    "max_current_a": 5.0,
+                    "max_voltage_v": 20.0,
+                    "assume": "fet drain",
+                },
+                "etype": "power_in",
+            },
+            {
+                "name": "S",
+                "meta": {
+                    "max_current_a": 5.0,
+                    "max_voltage_v": 20.0,
+                    "assume": "fet source",
+                },
+                "etype": "power_out",
+            },
+        ],
         note="PROVISIONAL part for the switched high-side outputs — driver topology is resolved at netlist review (docs/backlog/pcb-usb-c-pd-nano-testboard.md); this choice is geometry, not validation",
     )
     r_gs4 = b.part(  # board='nano-usb-pd-test'; synthesized footprint
         "R_GS4",
         label="RES-0603-10k gate-source",
-        pins=["1", "2"],
+        pins=[
+            {
+                "name": "1",
+                "meta": {"fmax_hz": 0.0, "assume": "gate-source"},
+                "etype": "passive",
+            },
+            {
+                "name": "2",
+                "meta": {"fmax_hz": 0.0, "assume": "gate-source"},
+                "etype": "passive",
+            },
+        ],
         note="synthesized landpattern bound (no catalog part / no authored footprint)",
     )
     j_o4 = b.part(  # board='nano-usb-pd-test'; synthesized footprint
         "J_O4",
         label="SCREW-TERM-5.08-2P",
         footprint="SCREW-5.08-2P",
+        pins=[
+            {
+                "name": "1",
+                "meta": {
+                    "max_current_a": 5.0,
+                    "max_voltage_v": 20.0,
+                    "assume": "out terminal",
+                },
+                "etype": "power_out",
+            },
+            {
+                "name": "2",
+                "meta": {
+                    "max_current_a": 5.0,
+                    "max_voltage_v": 20.0,
+                    "assume": "gnd terminal",
+                },
+                "etype": "power_in",
+            },
+        ],
     )
     d_f4 = b.part(  # board='nano-usb-pd-test'; synthesized footprint
         "D_F4",
         label="DIODE-SMA-40V flyback",
         footprint="DIODE-SMA",
+        pins=[
+            {
+                "name": "A",
+                "meta": {"fmax_hz": 0.0, "assume": "flyback diode"},
+                "etype": "passive",
+            },
+            {
+                "name": "K",
+                "meta": {"fmax_hz": 0.0, "assume": "flyback diode"},
+                "etype": "passive",
+            },
+        ],
         note="flyback: populate only if the load is inductive (doc §Open questions); footprint authored regardless",
     )
 

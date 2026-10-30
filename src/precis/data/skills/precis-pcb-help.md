@@ -171,7 +171,9 @@ Field notes:
   has no internal connection: never a complaint), `unused: true` (this
   board does not use a real pin: full geometry, no `unconnected_pin`
   finding), `must_terminate: true` (must not float: DRC **error** while
-  netless, even if `unused`)), placement `x`/`y`/`rot`/`layer` (`top`/`bottom`),
+  netless, even if `unused`)), the first-use class keys — `etype` +
+  facts + `source`/`assume`, [[precis-pcb-pins-help]] — placement
+  `x`/`y`/`rot`/`layer` (`top`/`bottom`),
   `fixed` (`'xy'` or `'both'` — pins it against autoplace, for connectors /
   mounting / status LEDs), `roles` (free tags like `sensitive`/`noisy` that
   drive class-based measures), `note`. **Silk pin-1 marks**: a resistor,
@@ -231,7 +233,9 @@ Field notes:
   datasheet.
 - **connection**: the `(net, refdes, pin)` triple. One physical pin is on **at
   most one net** (re-connecting moves it). A pin named in a connection but not
-  declared on the component is **created on the fly**.
+  declared on the component is **created on the fly**. In the workspace
+  builder the write is also the first-use class gate —
+  [[precis-pcb-pins-help]].
 - A connection to an unknown **net** auto-creates the net; an unknown
   **refdes** is an error (declare the component first).
 - Optional `measures` and `features` arrays — measures below; `features`
@@ -389,9 +393,8 @@ get(
 )  # logical hop through 2-pin series R/C
 get(
     kind="pcb", id="s", view="frames", args={"refdes": "U2.CIN"}
-)  # which script line made it — the workspace run's construction
-# trace; also args={"net": "<name>"}, args={"frame": "<key|id>"} (the
-# frame card: what it made), no args = the run summary
+)  # which script line made it; also args={"net": "<name>"} /
+# args={"frame": "<key|id>"} (frame card), none = the run summary
 get(kind="pcb", id="s", view="measures")  # evaluate the design's measuring tapes
 get(kind="pcb", id="s", view="schematic")  # net-label schematic SVG — works
 # before any placement (matching labels ARE the connections; also on the
@@ -404,12 +407,11 @@ get(kind="pcb", id="s", view="schematic")  # net-label schematic SVG — works
 - **trace** walks series 2-pin parts (a resistor/cap in line) automatically; a
   multi-pin part terminates the auto-walk — you supply the next hop from the
   datasheet ([[precis-datasheet-help]]).
-- **frames** is the construction trace, not routing: it answers "which
-  script line made U1" for a workspace-built board. Its bindings come
-  from a batch put carrying the run's `trace.json` (`args={'trace': ...,
-  'run_job': <job ref|omit>}` → `meta.generated.trace` on the board,
-  `meta.frame` on the rows, the trace as a `ws_trace` chunk) — a hand-put
-  or epro-imported board has none and the view says so.
+- **frames** is the construction trace, not routing: "which script line
+  made U1" on a workspace-built board. The bindings ride a batch put's
+  `trace.json` (`args={'trace': ..., 'run_job': <job ref|omit>}` →
+  `meta.generated.trace`, `meta.frame` on rows, a `ws_trace` chunk) — a
+  hand-put or epro-imported board has none and the view says so.
 - **Peeking at a rendered board** (`tests/test_pcb_render_fixture.py` → SVG →
   `qlmanage`) is an occasional human confirmation, not the iteration loop —
   the numeric views above are cheaper and are what the placer scores

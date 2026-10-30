@@ -211,7 +211,9 @@ ROUTE_RETIRED_NEXT = (
 #: The closed §1i electrical-role vocabulary a pin may declare (Slice 5 of
 #: docs/backlog/pcb-lazy-netlist-and-checks.md): ``power_in``/``power_out``
 #: (supply pins), ``input``/``output``, ``bidi``, ``passive`` (two-pin
-#: passives), ``open_drain``/``tristate`` (drive-shareable), ``nc``.
+#: passives), ``open_drain``/``tristate`` (drive-shareable),
+#: ``analog_in``/``analog_out`` (gr520810 — direction stays one axis, so
+#: analog joins it rather than a parallel signal-kind field), ``nc``.
 #: Validated at ``_pcb_apply``, lands in ``pcb_pins.tags`` — ``nc`` doubles
 #: as the §1j marker since a no-connect IS the electrical fact. It lives
 #: here, not in ``drc.py``, because ``ir.py`` reads it too and
@@ -225,8 +227,27 @@ PIN_ETYPES: tuple[str, ...] = (
     "passive",
     "open_drain",
     "tristate",
+    "analog_in",
+    "analog_out",
     "nc",
 )
+
+#: The etypes whose electrical facts are current/voltage ratings — they
+#: carry ``max_current_a`` + ``max_voltage_v`` and never ``fmax_hz``
+#: (Reto, gr520810 comment 4: a supply pin's AC content is a decoupling
+#: question, not a bandwidth). Every other etype carries ``fmax_hz``
+#: (``nc`` carries no facts at all). Mirrored in
+#: ``precis_geom.pcb._POWER_ETYPES`` — that module is stdlib-only.
+PIN_POWER_ETYPES: tuple[str, ...] = ("power_in", "power_out")
+
+#: ``pin_functions`` tokens that prove a candidate pin satisfies a flex
+#: slot's analog class (gr520810): ``analog_in`` slots land only on pins
+#: the table marks AIN/ADC-capable, ``analog_out`` only on DAC-capable
+#: ones; a digital-etype slot never lands on a pin whose listed functions
+#: are all analog. Read by ``topoplace.pins._effective``; authored-side
+#: (builder) etypes are in ``precis_geom.pcb``.
+PIN_FN_ANALOG_IN = "ain|adc|analog"
+PIN_FN_ANALOG_OUT = "dac|aout|analog_out"
 
 #: The closed ``current_role`` vocabulary a pin may declare
 #: (``pcb_pins.meta``, via ``op='pins'`` — docs/backlog/

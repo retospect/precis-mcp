@@ -25,6 +25,8 @@ def _traced_batch(tmp_path: Path) -> tuple[dict[str, Any], dict[str, Any], Board
         board = Board("frames-board")
         u1 = board.part("U1", pins=["1"])
         u2 = board.part("U2", pins=["1"])
+        u1["1"].etype("bidi", fmax_hz=0.0, assume="fixture pin")
+        u2["1"].etype("bidi", fmax_hz=0.0, assume="fixture pin")
         vcc = board.wire(u1["1"], u2["1"], name="VCC")
         board.hole(1, 1, drill=2.0, ring=3.0)
         doc = tr.dump()
@@ -127,6 +129,8 @@ def build():
     b = pcb.Board("e2e")
     u1 = b.part("U1", pins=["1"])
     u2 = b.part("U2", pins=["1"])
+    u1["1"].etype("bidi", fmax_hz=0.0, assume="fixture pin")
+    u2["1"].etype("bidi", fmax_hz=0.0, assume="fixture pin")
     b.wire(u1["1"], u2["1"], name="VCC")
     return b
 """

@@ -96,8 +96,9 @@ import precis_geom.pcb as pcb
 | role | `b.role(name, voltage=)`; `part.supplies(role, pins=[...])`; `pin.client_of(role)` | `roles`, component `supplies`, pin tags | [pcb-lazy-netlist-and-checks](pcb-lazy-netlist-and-checks.md) §1 unchanged |
 | part | `b.part(refdes, *, lcsc=None, label=, footprint=None, value=, height_mm=, roles=set(), pins=[...], note=)` → `Part` | `components[]` | `lcsc` → `part_lcsc`; `footprint=` names an authored `pcb.Footprint`; neither → `landpattern` synthesized bound, flagged as today |
 | pin access | `part['VBUS']`, `part[1]`, `part.pins('A1','B1')` → `Pin`s | — | pad numbers map to names at import (`mapped`) |
+| pin class | `part.pin(num|any_of=[…], name=, etype=, fmax_hz=, max_current_a=, max_voltage_v=, source=, assume=)` or `pin.etype(…)` same kwargs | `pins[].etype` + `meta`, slot `pin_decls.slots[]` | the first-use class (gr520810): `power_in`/`power_out` take current+voltage, never `fmax_hz`; other etypes take `fmax_hz` (highest significant component, knee ≈ 0.35/t_rise, 0 = explicit DC); `nc` none; every class carries `source=` (chunk handle) or `assume=` (note) |
 | pin facts | `pin.etype('power_in')`, `pin.current_role('shunt')`, `pin.nc()`, `pin.unused()`, `pin.must_terminate()` | `pins[].tags`/`meta` (`op='pins'` shape, `PIN_ETYPES`, `PIN_CURRENT_ROLES`) | |
-| connect | `net.tie(*pins)`; `b.wire(pin_a, pin_b, name=None)` | `connections[]` | `wire` without a name mints the free-ended-net name per §1d and records it |
+| connect | `net.tie(*pins)`; `b.wire(pin_a, pin_b, name=None)` | `connections[]` | `wire` without a name mints the free-ended-net name per §1d and records it. Both **refuse an unclassified pin or slot** — the class is an error at first use, so classify before or in the same call that connects |
 | footprint | `pcb.Footprint(name, pads=[pcb.pad(pin, shape, x, y, w=, h=, poly=, drill=, role=, mask=, paste=)], pin_map=, courtyard=, centroid=)` | `footprints[]` | authored/local footprints (EWOD) |
 | catalog part | `pcb.catalog(lcsc)` | — | read MCP `get(kind='part', id=, view='facts')`: pin table, package; a miss returns a stub and the importer queues the pull (as the batch put queues datasheets) |
 | mechanical | `b.hole(x, y, drill=, ring=, plated=)`, `b.fiducial(x, y)`, `b.testpoint(net, x=, y=)`, `b.corner_nuts()` | `features[]` (`mounting_hole`, `fiducial`, `testpoint`; `op='corner_nuts'` shape) | |
@@ -142,11 +143,24 @@ b.net_class("usb", width_mm=0.2, clearance_mm=0.2, pairs=[["D+", "D-"]])
 b.net_class("power", width_mm=0.4)
 
 # USB-C receptacle: 5.1 k CC pull-downs make it a UFP sink.
+# Every pin a net touches is classified at first use — etype plus its
+# facts and a `source=` chunk handle or an `assume=` note (gr520810);
+# `tie`/`wire` refuse the gap and name the missing keys.
 j1 = b.part("J1", lcsc="C165948", roles={"connector"})
+for p in j1.pins("A4", "A9", "B4", "B9"):
+    p.etype("power_in", max_current_a=3.0, max_voltage_v=20.0,
+            assume="usb-c vbus")
+for p in j1.pins("A1", "A12", "B1", "B12", "SHELL"):
+    p.etype("power_in", max_current_a=3.0, max_voltage_v=20.0,
+            assume="usb-c gnd")
+j1["A5"].etype("input", fmax_hz=0.0, assume="cc line")
+j1["B5"].etype("input", fmax_hz=0.0, assume="cc line")
 vbus.tie(*j1.pins("A4", "A9", "B4", "B9"))
 gnd.tie(*j1.pins("A1", "A12", "B1", "B12", "SHELL"))
 for i, cc in ((1, "A5"), (2, "B5")):
     r = b.part(f"R{i}", lcsc="C25905", value="5.1k")
+    r[1].etype("passive", fmax_hz=0.0, assume="cc pull-down")
+    r[2].etype("passive", fmax_hz=0.0, assume="cc pull-down")
     b.wire(j1[cc], r[1], name=f"CC{i}")
     gnd.tie(r[2])
 j1.on_edge("left")
@@ -158,6 +172,16 @@ def ldo_3v3(b, *, vin, vout, gnd):
     u = b.part("U", lcsc="C82942")
     cin = b.part("CIN", lcsc="C15849", value="1u")
     cout = b.part("COUT", lcsc="C15849", value="1u")
+    u["VIN"].etype("power_in", max_current_a=0.3, max_voltage_v=6.5,
+                   assume="ldo vin")
+    u["CE"].etype("input", fmax_hz=0.0, assume="chip enable")
+    u["VOUT"].etype("power_out", max_current_a=0.3, max_voltage_v=3.6,
+                    assume="ldo vout")
+    u["GND"].etype("power_in", max_current_a=0.3, max_voltage_v=6.5,
+                   assume="ldo gnd")
+    for cap in (cin, cout):
+        for n in (1, 2):
+            cap[n].etype("passive", fmax_hz=0.0, assume="bypass cap")
     vin.tie(u["VIN"], u["CE"], cin[1])
     vout.tie(u["VOUT"], cout[1])
     gnd.tie(u["GND"], cin[2], cout[2])
@@ -168,18 +192,33 @@ def ldo_3v3(b, *, vin, vout, gnd):
 u2 = b.use(ldo_3v3, prefix="U2", vin=vbus, vout=v33, gnd=gnd)   # U2.U, U2.CIN, U2.COUT
 
 u1 = b.part("U1", lcsc="C168022", roles={"mcu"})            # ATtiny1616-SNR, SOIC-20
+u1["VDD"].etype("power_in", max_current_a=0.05, max_voltage_v=5.5,
+                assume="attiny vdd")
+u1["GND"].etype("power_in", max_current_a=0.05, max_voltage_v=5.5,
+                assume="attiny gnd")
 v33.tie(u1["VDD"]); gnd.tie(u1["GND"])
 c3 = b.part("C3", lcsc="C1525", value="100n")
+c3[1].etype("passive", fmax_hz=0.0, assume="bypass cap")
+c3[2].etype("passive", fmax_hz=0.0, assume="bypass cap")
 v33.tie(c3[1]); gnd.tie(c3[2])
 c3["1"].current_role("shunt")
 b.near(u1, c3, within_mm=1.5)
 
 j2 = b.part("J2", lcsc="C2337", label="UPDI 1x3")            # UPDI header
+j2[1].etype("bidi", fmax_hz=100e3, assume="updi line")
+j2[2].etype("power_in", max_current_a=0.05, max_voltage_v=5.5, assume="vcc pin")
+j2[3].etype("power_in", max_current_a=0.05, max_voltage_v=5.5, assume="gnd pin")
+u1["PA0"].etype("bidi", fmax_hz=100e3, assume="updi")
 b.wire(j2[1], u1["PA0"], name="UPDI"); v33.tie(j2[2]); gnd.tie(j2[3])
 j2.on_edge("right")
 
 led = b.part("D1", lcsc="C2286", value="LED green")
 r3 = b.part("R3", lcsc="C25744", value="1k")
+u1["PA7"].etype("output", fmax_hz=0.0, assume="led gpio")
+r3[1].etype("passive", fmax_hz=0.0, assume="led resistor")
+r3[2].etype("passive", fmax_hz=0.0, assume="led resistor")
+led["A"].etype("passive", fmax_hz=0.0, assume="led anode")
+led["K"].etype("passive", fmax_hz=0.0, assume="led cathode")
 b.wire(u1["PA7"], r3[1], name="LED"); b.wire(r3[2], led["A"]); gnd.tie(led["K"])
 
 for pin in ("PA1", "PA2", "PA3", "PB0", "PB1"):

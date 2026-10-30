@@ -70,6 +70,8 @@ def build(
         ("J_R", far, mid, 90.0),
     ):
         part = b.part(refdes, label="HDR-SMT-1x10", footprint=fp)
+        for i in range(1, 11):
+            part[f"P{i}"].etype("bidi", fmax_hz=0.0, assume="header pin")
         if refdes not in free:
             part.at(x, y, rot=rot, fixed="both")
         headers[refdes] = part

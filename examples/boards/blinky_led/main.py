@@ -31,6 +31,9 @@ def build() -> pcb.Board:
     vin = b.net("VIN", cls="power", voltage=5.0)
     r1 = b.part("R1", value="330", footprint=fp, pins=["1", "2"]).at(6.0, 7.5)
     d1 = b.part("D1", label="LED", footprint=fp, pins=["1", "2"]).at(14.0, 7.5)
+    r1["1"].etype("passive", fmax_hz=0.0, assume="resistor")
+    r1["2"].etype("passive", fmax_hz=0.0, assume="resistor")
+    d1["1"].etype("input", fmax_hz=0.0, assume="led anode")
     vin.tie(r1["1"])
     b.wire(r1["2"], d1["1"], name="LED_A")
     d1["2"].nc()  # cathode open — a connector would land here

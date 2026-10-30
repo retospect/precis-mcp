@@ -303,6 +303,8 @@ def build():
     b = pcb.Board("e2e")
     u1 = b.part("U1", pins=["1"])
     u2 = b.part("U2", pins=["1"])
+    u1["1"].etype("bidi", fmax_hz=0.0, assume="fixture pin")
+    u2["1"].etype("bidi", fmax_hz=0.0, assume="fixture pin")
     b.wire(u1["1"], u2["1"], name="VCC")
     return b
 """

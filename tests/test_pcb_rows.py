@@ -59,10 +59,29 @@ def _parity_board() -> Any:
         label="uC",
         roles={"vbat"},
         pins=[
-            {"name": "VDD", "tags": ["power_in"], "meta": {"note": "rail pin"}},
+            {
+                "name": "VDD",
+                "tags": ["power_in"],
+                "etype": "power_in",
+                "meta": {
+                    "note": "rail pin",
+                    "max_current_a": 0.5,
+                    "max_voltage_v": 3.3,
+                    "assume": "vdd rail",
+                },
+            },
             {"name": "GPIO1", "etype": "bidi"},
             {"name": "NC1", "nc": True},
-            {"name": "SW1", "client_of": {"role": "vbat", "min_voltage_v": 2.7}},
+            {
+                "name": "SW1",
+                "client_of": {"role": "vbat", "min_voltage_v": 2.7},
+                "etype": "power_in",
+                "meta": {
+                    "max_current_a": 0.5,
+                    "max_voltage_v": 3.3,
+                    "assume": "vbat switch",
+                },
+            },
             {"name": "HS", "max_voltage_v": 3.6, "rail": "3v3"},
         ],
     )
@@ -71,6 +90,9 @@ def _parity_board() -> Any:
     gnd = b.net("GND")
     sig = b.net("SIG", function="reset")
     b.role("vbat", voltage=3.3)
+    u1["GND1"].etype("power_in", max_current_a=0.5, max_voltage_v=3.3, assume="ic gnd")
+    u1["GPIO2"].etype("input", fmax_hz=0.0, assume="reset line")
+    r1["1"].etype("passive", fmax_hz=0.0, assume="resistor")
     vbat.tie(u1["VDD"], u1["SW1"])
     gnd.tie(u1["GND1"], r1["1"])  # GND1 is the completed pin_map name for pad 8
     sig.tie(u1["GPIO2"])  # GPIO2 = completed name for pad 3

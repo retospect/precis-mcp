@@ -27,6 +27,7 @@ plane-class nets mint none.
 from __future__ import annotations
 
 import math
+import re
 from collections.abc import Iterable
 from dataclasses import dataclass
 from typing import Any
@@ -36,6 +37,7 @@ from scipy.optimize import linear_sum_assignment
 from scipy.sparse import csr_matrix
 from scipy.sparse.csgraph import maximum_bipartite_matching
 
+from precis.pcb import PIN_FN_ANALOG_IN, PIN_FN_ANALOG_OUT
 from precis.pcb.topoplace import proxy as _proxy
 from precis.pcb.topoplace.design import TopoDesign
 from precis.pcb.topoplace.proxy import ProxyState, all_pin_world
@@ -45,6 +47,19 @@ from precis_geom.pcb import PinConflict
 #: after the Hall check passes a feasible matching exists and no BIG
 #: entry is ever chosen (Decision 11).
 BIG = 1e9
+
+#: Slot-etypes whose candidates must prove a function (gr520810): the
+#: slot's class is satisfied only by a candidate whose ``pin_functions``
+#: entry lists a matching capability — an ``analog_in`` slot lands on
+#: AIN/ADC pins only. ``_ANALOG_ANY`` covers both directions for the
+#: digital check: a digital-etype slot never lands on a pin whose
+#: listed functions are all analog.
+_ANALOG_NEED: dict[str, re.Pattern[str]] = {
+    "analog_in": re.compile(PIN_FN_ANALOG_IN, re.IGNORECASE),
+    "analog_out": re.compile(PIN_FN_ANALOG_OUT, re.IGNORECASE),
+}
+_ANALOG_ANY = re.compile(f"{PIN_FN_ANALOG_IN}|{PIN_FN_ANALOG_OUT}", re.IGNORECASE)
+_DIGITAL_ETYPES = frozenset({"input", "output", "bidi", "open_drain", "tristate"})
 
 
 @dataclass(frozen=True)
@@ -101,13 +116,18 @@ def _effective(d: TopoDesign) -> list[tuple[int, ...]]:
     """Each slot's candidates minus the pins already committed —
     Decision 12's "fixed pins leave every ``any_of`` set": a pin wired
     to a different net or carrying a named claim is out. Decision 15's
-    drive-rating filter drops candidates RATED under the slot's
-    ``current=Max`` bound (unrated pins stay — the rule applies only
-    where the library has a rating)."""
+    drive-rating filter drops candidates RATED under the slot's current
+    or voltage bound (unrated pins stay — the rule applies only where
+    the library has a rating). gr520810's class filter drops candidates
+    whose ``pin_functions`` entry cannot satisfy the slot's etype — an
+    analog slot keeps only function-proven pins, a digital slot drops
+    analog-only ones; a part with no functions table is unchecked, as
+    with ratings."""
     claimed = {p for p, _ in d.claims}
     out: list[tuple[int, ...]] = []
     for i, s in enumerate(d.flex):
         net_ir = int(d.decl_net_ir[s.net])
+        funcs = d.pin_functions[s.part] if s.part < len(d.pin_functions) else {}
         eff = []
         for k, p in enumerate(s.pins):
             if p in claimed:
@@ -119,12 +139,25 @@ def _effective(d: TopoDesign) -> list[tuple[int, ...]]:
                 rating = s.pin_max_a[k]
                 if not math.isnan(rating) and rating < s.requirement_a:
                     continue
+            if s.requirement_v is not None and k < len(s.pin_max_v):
+                rating = s.pin_max_v[k]
+                if not math.isnan(rating) and rating < s.requirement_v:
+                    continue
+            cand_funcs = funcs.get(p)
+            if funcs and s.etype in _ANALOG_NEED:
+                need = _ANALOG_NEED[s.etype]
+                if not any(need.search(f) for f in (cand_funcs or ())):
+                    continue
+            elif cand_funcs and s.etype in _DIGITAL_ETYPES:
+                if all(_ANALOG_ANY.search(f) for f in cand_funcs):
+                    continue
             eff.append(p)
         if not eff:
             raise PinConflict(
                 f"{d.parts[s.part]} slot {_slot_tag(d, i)}: no feasible pin "
                 f"of {_labels(d, s.pins)} — every candidate is claimed, "
-                "wired to another net, or rated under the requirement"
+                "wired to another net, rated under the requirement, or "
+                "lacking the slot's required function"
             )
         out.append(tuple(eff))
     return out

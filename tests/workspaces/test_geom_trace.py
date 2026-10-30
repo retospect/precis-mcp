@@ -534,7 +534,9 @@ def test_out_board_writes_pcb_manifest(tmp_path: Path, monkeypatch) -> None:
     out._reset()
     b = pcb.Board("t")
     gnd = b.net("GND")
-    gnd.tie(b.part("J1")["1"])
+    j1 = b.part("J1")
+    j1["1"].etype("power_in", max_current_a=0.1, max_voltage_v=5.0, assume="header gnd")
+    gnd.tie(j1["1"])
     with trace.run(work_root=_WORK_ROOT):
         out.block("board", b)  # a Board routes to out.board
         with pytest.raises(ValueError, match="kind='pcb'"):

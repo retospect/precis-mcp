@@ -2688,12 +2688,14 @@ class PcbMixin:
             "vil",
             "max_current_a",
             "est_current_a",
+            "fmax_hz",
             "current_role",
             "nc",
             "unused",
             "must_terminate",
             "min_dielectric",
             "source",
+            "assume",
         }
     )
 
@@ -2704,13 +2706,16 @@ class PcbMixin:
         "vil",
         "max_current_a",
         "est_current_a",
+        "fmax_hz",
     )
 
     #: ``op='pins'`` keys stored verbatim in ``pcb_pins.meta``.
     #: ``min_dielectric`` (slice 3) is the design-layer stand-in for the
     #: part fact's ``dielectric ≥`` — declared on the CONSUMER's pin
     #: (e.g. an IC's ``power_in``), ``drc.check_passive_rating`` binds it
-    #: to every parsed capacitor on the pin's rail.
+    #: to every parsed capacitor on the pin's rail. ``fmax_hz`` +
+    #: ``assume`` (gr520810) are the first-use classification's
+    #: frequency fact and its datasheet-less provenance.
     _PIN_PATCH_META = (
         "rail",
         "max_voltage_v",
@@ -2718,9 +2723,11 @@ class PcbMixin:
         "vil",
         "max_current_a",
         "est_current_a",
+        "fmax_hz",
         "current_role",
         "min_dielectric",
         "source",
+        "assume",
     )
 
     def pcb_patch_pins(

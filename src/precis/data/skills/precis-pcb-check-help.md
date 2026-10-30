@@ -235,9 +235,14 @@ connection goes too) and re-put the connection.
 
 A re-`put` never edits pins (create-or-extend only), so the pin facts the
 ERC rules read — `etype`, `rail`, `max_voltage_v`, `vih`, `vil`,
-`max_current_a`, `current_role` (`series`|`shunt`|`signal`), `nc`,
-`unused`, `must_terminate`, `min_dielectric` — are annotated after the
-fact, one refdes per call:
+`max_current_a`, `est_current_a`, `fmax_hz`, `current_role`
+(`series`|`shunt`|`signal`), `nc`, `unused`, `must_terminate`,
+`min_dielectric`, `assume` — are annotated after the
+fact, one refdes per call. `fmax_hz` + `assume` (with `source`) are also
+the **first-use classification** a workspace `tie()`/`wire()` requires
+(gr520810): classifying a stored board's pins here is how an imported or
+batch-authored board is made scriptable — a `board_batch` → `emit`
+script runs only when every tied pin answers its class.
 
 ```python
 put(kind="pcb", id="s", args={
