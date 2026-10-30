@@ -217,7 +217,7 @@ def test_transcripts_disabled_raises_not_found(
         def fetch(self, video_id: str, languages: list[str]) -> Any:
             raise TranscriptsDisabled("disabled")
 
-    sys.modules["youtube_transcript_api"].YouTubeTranscriptApi = Bad  # type: ignore[attr-defined]
+    sys.modules["youtube_transcript_api"].__dict__["YouTubeTranscriptApi"] = Bad
     h = YouTubeHandler(hub=Hub(store=store))
     with pytest.raises(NotFound, match="disabled"):
         h.get(id="dQw4w9WgXcQ")
@@ -238,7 +238,7 @@ def test_no_transcript_raises_not_found(
                 video_id, requested_language_codes=languages, transcript_data=[]
             )
 
-    sys.modules["youtube_transcript_api"].YouTubeTranscriptApi = Bad  # type: ignore[attr-defined]
+    sys.modules["youtube_transcript_api"].__dict__["YouTubeTranscriptApi"] = Bad
     h = YouTubeHandler(hub=Hub(store=store))
     with pytest.raises(NotFound, match="no transcript"):
         h.get(id="dQw4w9WgXcQ")
@@ -257,7 +257,7 @@ def test_video_unavailable_raises_not_found(
         def fetch(self, video_id: str, languages: list[str]) -> Any:
             raise VideoUnavailable("private")
 
-    sys.modules["youtube_transcript_api"].YouTubeTranscriptApi = Bad  # type: ignore[attr-defined]
+    sys.modules["youtube_transcript_api"].__dict__["YouTubeTranscriptApi"] = Bad
     h = YouTubeHandler(hub=Hub(store=store))
     with pytest.raises(NotFound, match="unavailable"):
         h.get(id="dQw4w9WgXcQ")
@@ -272,7 +272,7 @@ def test_generic_exception_raises_upstream(
         def fetch(self, video_id: str, languages: list[str]) -> Any:
             raise RuntimeError("yt boom")
 
-    sys.modules["youtube_transcript_api"].YouTubeTranscriptApi = Bad  # type: ignore[attr-defined]
+    sys.modules["youtube_transcript_api"].__dict__["YouTubeTranscriptApi"] = Bad
     h = YouTubeHandler(hub=Hub(store=store))
     with pytest.raises(Upstream, match="YouTube API error"):
         h.get(id="dQw4w9WgXcQ")

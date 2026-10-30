@@ -380,6 +380,46 @@ def _topo_route(
         min_via_dia=None if min_via_dia is None else float(min_via_dia),
     )
 
+    # Failure-driven shove (Reto 2026-10-30: "should just cause shove, and
+    # vias to be generated, and things to be pushed — don't log it, make it
+    # work"): nets the plan failed for "no via site" or "short-risk" name
+    # their blockers — shove the pose apart and re-route, bounded rounds,
+    # keep the best realization. A board that routes clean the first time
+    # takes the zero-cost path (failed empty -> break before any shove);
+    # a shove that stops moving, overflows the mesh, or stops improving
+    # gives up and keeps the best plan so far.
+    from precis.pcb.topoplace import shove as _tpshove
+
+    route_shove_mm = 0.0
+    route_shove_rounds = 0
+    pose = td_route.pose0
+    best_plan, best_rres = plan, rres
+    best_failed = len(plan.no_via) + len(plan.guarded)
+    for _round in range(2):
+        if best_failed == 0:
+            break
+        shoved = _tpshove.shove_pose(td_route, pose, rounds=3)
+        route_shove_mm += shoved.moved_mm
+        if shoved.moved_mm <= 1e-6:
+            break
+        route_shove_rounds += 1
+        pose = shoved.pose
+        try:
+            plan, rres = _tprealise.route_design(
+                td_route,
+                ir,
+                pose=pose,
+                net_rules=net_rules,
+                min_via_dia=None if min_via_dia is None else float(min_via_dia),
+            )
+        except _tprealise.CorridorOverflow:
+            break
+        failed = len(plan.no_via) + len(plan.guarded)
+        if failed >= best_failed:
+            break
+        best_plan, best_rres, best_failed = plan, rres, failed
+    plan, rres = best_plan, best_rres
+
     # The widen oracle's own map — the FULL clearance resolution (per-net
     # class floors included), not the route map's signal-width variant.
     drc_net_rules = pcb_session.clearance_net_rules(loaded, capability)
@@ -532,6 +572,8 @@ def _topo_route(
         "vias": len(rres.vias),
         "crossings": len(plan.crossings),
         "unreachable": len(plan.unreachable),
+        "route_shove_rounds": route_shove_rounds,
+        "route_shove_mm": round(route_shove_mm, 3),
         # the corridor column is the REFUSAL count — a route that ran
         # had no over-capacity cut (a nonzero record raises instead)
         "corridor_overflow": 0,
