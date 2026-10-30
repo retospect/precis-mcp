@@ -9,6 +9,8 @@ the MCP on an older engine until the image is rebuilt.
   scripts/mcp-image-refresh              refresh if stale, else "up to date"
   scripts/mcp-image-refresh --dry-run    print the plan, the install decision
                                          and the diff; change nothing
+  scripts/mcp-image-refresh --force      rebuild and recreate even when the
+                                         image labels match the served uv.lock
 
 Steps (stops at the first failure):
   1. compare the image's autocatpath and uv.lock SHA256 labels with the
@@ -336,6 +338,11 @@ def main(argv: list[str] | None = None) -> int:
         help="print plan, decision and diff; change nothing",
     )
     ap.add_argument(
+        "--force",
+        action="store_true",
+        help="rebuild and recreate even when the image labels match",
+    )
+    ap.add_argument(
         "--timeout",
         type=float,
         default=180.0,
@@ -371,7 +378,24 @@ def main(argv: list[str] | None = None) -> int:
     print(f"image uv.lock: {baked_lock or 'unlabelled'}")
 
     installed = installed_ensure()
-    stale = baked_lock != wanted_lock or not is_current(baked, pinned)
+    # Name which part is stale (gr529876): a same-pin dependency bump shows as
+    # a lock-hash mismatch, an engine bump as a rev mismatch — both can move.
+    stale_parts: list[str] = []
+    if baked_lock != wanted_lock:
+        stale_parts.append(
+            f"uv.lock sha256 (image {baked_lock or 'unlabelled'} "
+            f"!= served {wanted_lock})"
+        )
+    if not is_current(baked, pinned):
+        stale_parts.append(
+            f"autocatpath rev (image {baked or 'unlabelled'} "
+            f"!= pin {pinned or 'none'})"
+        )
+    stale = bool(stale_parts) or args.force
+    if stale_parts:
+        print("stale: " + "; ".join(stale_parts))
+    elif args.force:
+        print("image labels match the served uv.lock; --force rebuilds anyway")
     history = history_hashes()
     decision = install_decision(REPO_ENSURE, installed, history)
     reason = "local edits matching no revision of the repo script, or missing"

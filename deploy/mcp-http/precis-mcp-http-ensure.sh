@@ -20,6 +20,8 @@
 #                                               # (bearer = ${PRECIS_MCP_TOKEN}
 #                                               # env ref, never the value)
 #   precis-mcp-http-ensure.sh --recreate        # force a blue-green backend swap
+#                                                 (refuses while another run
+#                                                 holds the ensure lock)
 #   precis-mcp-http-ensure.sh --restart         # respawn the server child in place
 #   precis-mcp-http-ensure.sh --status          # report without changing anything
 #   precis-mcp-http-ensure.sh --migrate         # one-time cutover from the single-container layout
@@ -367,29 +369,122 @@ if [ "$MODE" = status ]; then
     exit 0
 fi
 
-# --- serialise concurrent SessionStart hooks -------------------------------
-# Twelve sessions can start within the same second; without a lock they race to
-# `docker run` the same name and eleven fail noisily. mkdir is the atomic
-# primitive available everywhere (macOS ships no flock(1)).
+# --- serialise concurrent runs ---------------------------------------------
+# Twelve sessions can start within the same second; without a lock they race
+# to `docker run` the same name and eleven fail noisily. mkdir is the atomic
+# primitive available everywhere (macOS ships no flock(1)). The holder file
+# records pid+host: a DEAD holder's lock is reclaimed at once, a LIVE one is
+# never touched no matter how long it holds — a recreate keeps the lock for
+# minutes (READY_TIMEOUT + the drain), which is exactly the window the old
+# 2-minute mtime break fired inside, and the two concurrent --recreate runs
+# it let through tore down each other's new colour (gr529876). The rules and
+# holder format mirror scripts/lib/lock-holder.sh; inlined because the
+# installed copy of this script is standalone.
 LOCK="${TMPDIR:-/tmp}/${NAME}-ensure.lock"
+# The age bound covers only what the pid check cannot judge: a holder written
+# from another host, or a run killed between mkdir and the holder write.
+LOCK_MAX_AGE_MIN=10
+
+_lock_pid() {
+    sed -n 's/.*pid=\([0-9][0-9]*\).*/\1/p' "$1/holder" 2>/dev/null || true
+}
+# `kill -0` alone reads a live pid owned by another user as dead (EPERM);
+# EPERM means the process exists, only ESRCH means it is gone.
+_lock_pid_alive() {
+    local err
+    if err="$(LC_ALL=C kill -0 "$1" 2>&1)"; then return 0; fi
+    case "$err" in *"not permitted"*) return 0 ;; *) return 1 ;; esac
+}
+# 0 = the lock may be reclaimed, 1 = a live holder: wait it out.
+_lock_reclaimable() {
+    local pid host
+    pid="$(_lock_pid "$1")"
+    host="$(sed -n 's/.*host=\([^[:space:]][^[:space:]]*\).*/\1/p' "$1/holder" \
+        2>/dev/null || true)"
+    if [ -n "$host" ] && [ "$host" != "$(hostname -s 2>/dev/null || echo unknown)" ]; then
+        # A foreign pid means nothing here; age is the only signal.
+        [ -n "$(find "$1" -maxdepth 0 -mmin "+$LOCK_MAX_AGE_MIN" 2>/dev/null)" ]
+        return
+    fi
+    if [ -n "$pid" ]; then
+        ! _lock_pid_alive "$pid"
+        return
+    fi
+    [ -n "$(find "$1" -maxdepth 0 -mmin "+$LOCK_MAX_AGE_MIN" 2>/dev/null)" ]
+}
+# Restore <aside> at <dir> only while the path is free. `mv` onto an existing
+# dir NESTS rather than fails, so a mkdir that lands between the free check
+# and the move is answered by pulling the nested dir back out.
+_lock_put_back() {
+    local aside="$1" dir="$2" inner="$2/${1##*/}"
+    [ -e "$dir" ] && return 1
+    mv "$aside" "$dir" 2>/dev/null || true
+    [ -d "$inner" ] && mv "$inner" "$aside" 2>/dev/null || true
+    [ ! -d "$aside" ]
+}
+# Remove a held lock dir — only the exact instance inspected, and only when
+# it is still reclaimable. `rm -rf "$LOCK"` between the staleness read and the
+# next mkdir deletes the lock a racing run just took; `mv` pins the instance,
+# the re-judge decides under the same rule, a live one goes back.
+_lock_steal() {
+    local aside="${1%/}.stale.$$" stray
+    # A stealer killed between its mv and re-judge leaves the dir it pinned
+    # under <dir>.stale.<pid>: restore a live one, reap a reclaimable one.
+    for stray in "${1%/}.stale."*; do
+        [ -d "$stray" ] || continue
+        if _lock_reclaimable "$stray"; then
+            rm -rf "$stray" 2>/dev/null || true
+        else
+            _lock_put_back "$stray" "$1" || true
+        fi
+    done
+    mv "$1" "$aside" 2>/dev/null || return 1
+    if _lock_reclaimable "$aside"; then
+        rm -rf "$aside" 2>/dev/null || true
+        return 0
+    fi
+    _lock_put_back "$aside" "$1" \
+        || note "lock: $1 held a LIVE run after all; it survives displaced at $aside"
+    return 1
+}
+
+tries=200   # a SessionStart hook waits out an in-flight swap, then yields
+case "$MODE" in
+    # A destructive mode gets seconds — long enough for a finishing hook —
+    # then a named refusal: proceeding is how the two --recreate collided.
+    recreate|recreate_proxy|migrate) tries=30 ;;
+esac
+tries="${PRECIS_MCP_ENSURE_LOCK_TRIES:-$tries}"   # rig hook
 got_lock=false
-for _ in $(seq 1 200); do
+for _ in $(seq 1 "$tries"); do
     if mkdir "$LOCK" 2>/dev/null; then
-        trap 'rmdir "$LOCK" 2>/dev/null || true' EXIT
+        printf '%s pid=%s host=%s mode=%s\n' "$PWD" "$$" \
+            "$(hostname -s 2>/dev/null || echo unknown)" "$MODE" \
+            > "$LOCK/holder" 2>/dev/null || true
+        # Release only our own lock: a displaced-then-retaken dir is not ours.
+        trap '[ "$(_lock_pid "$LOCK")" = "$$" ] && rm -rf "$LOCK" 2>/dev/null || true' EXIT
         got_lock=true
         break
     fi
-    # Break a lock orphaned by a killed hook (older than 2 minutes).
-    if [ -d "$LOCK" ] && [ -z "$(find "$LOCK" -maxdepth 0 -mmin -2 2>/dev/null)" ]; then
-        rmdir "$LOCK" 2>/dev/null || true
-    fi
+    _lock_reclaimable "$LOCK" && _lock_steal "$LOCK" || true
     sleep 0.3
 done
 if ! $got_lock; then
-    # Another hook is mid-recreate (a drain can take STOP_TIMEOUT). Proceeding
-    # unlocked would race it to recreate the same container; it will finish.
-    echo "precis-mcp: another ensure holds ${LOCK}; leaving it to that run" >&2
-    exit 0
+    held_by="$(cat "$LOCK/holder" 2>/dev/null || true)"
+    case "$MODE" in
+        recreate|recreate_proxy|migrate)
+            cat >&2 <<EOF
+precis-mcp: --$(printf '%s' "$MODE" | tr '_' '-') refused: ${LOCK} is held by a live run
+  (${held_by:-holder unknown}); a second swap would tear down its new colour.
+  Re-run once it exits — the lock releases on its own.
+EOF
+            exit 3 ;;
+        *)  # Another hook is mid-recreate (a drain can take STOP_TIMEOUT).
+            # Proceeding unlocked would race it; it will finish.
+            echo "precis-mcp: another ensure holds ${LOCK}" \
+                "(${held_by:-holder unknown}); leaving it to that run" >&2
+            exit 0 ;;
+    esac
 fi
 
 # A non-canonical run must not even move the served clone: the guard goes

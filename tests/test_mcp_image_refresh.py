@@ -701,3 +701,64 @@ def test_build_refusal_reports_unreadable_lock(
     monkeypatch.setattr(real, "ROOT", tmp_path / "build")
     reason = real.build_refusal(tmp_path / "served")
     assert str(tmp_path / missing / "uv.lock") in reason
+
+
+@pytest.mark.parametrize(
+    "rev,lock,wanted,unwanted",
+    [
+        # Same lock hash, wrong engine: only the rev moved.
+        ("deadbeef", _h(LOCK), "autocatpath rev", "uv.lock sha256"),
+        # gr529876: same engine pin, a new dependency — only the hash moved.
+        (PIN, "f" * 64, "uv.lock sha256", "autocatpath rev"),
+        ("deadbeef", "f" * 64, None, None),
+    ],
+)
+def test_stale_report_names_which_part_differs(
+    mod: ModuleType,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    rev: str,
+    lock: str,
+    wanted: str | None,
+    unwanted: str | None,
+) -> None:
+    _labels(mod, monkeypatch, rev, lock=lock)
+    _installed(mod, "new\n")
+    _no_run(mod, monkeypatch)
+    assert mod.main(["--dry-run"]) == 0
+    line = next(
+        ln for ln in capsys.readouterr().out.splitlines() if ln.startswith("stale:")
+    )
+    if unwanted is None:
+        assert "autocatpath rev" in line and "uv.lock sha256" in line
+    else:
+        assert wanted is not None
+        assert wanted in line and unwanted not in line
+
+
+def test_force_rebuilds_even_when_labels_match(
+    mod: ModuleType, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _labels(mod, monkeypatch, PIN)
+    inst = _installed(mod, "new\n")
+    calls = _no_run(mod, monkeypatch)
+    monkeypatch.setattr(mod, "wait_serving", lambda *_a, **_k: True)
+    assert mod.main(["--force"]) == 0
+    assert calls == [
+        ["scripts/build-image", "precis-dev"],
+        ["docker", "tag", "precis-dev", "precis-mcp:dev"],
+        [str(inst), "--recreate"],
+    ]
+
+
+def test_force_dry_run_plans_the_build_and_changes_nothing(
+    mod: ModuleType, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _labels(mod, monkeypatch, PIN)
+    _installed(mod, "new\n")
+    calls = _no_run(mod, monkeypatch)
+    assert mod.main(["--force", "--dry-run"]) == 0
+    out = capsys.readouterr().out
+    assert "--force rebuilds anyway" in out
+    assert "scripts/build-image precis-dev" in out
+    assert calls == []

@@ -354,9 +354,12 @@ the operator-side `precis-mcp:dev` image, which bakes autocatpath at build
 time; a deploy that moves the `uv.lock` autocatpath pin does not update it
 (gr493148). The release owner runs `scripts/mcp-image-refresh` after such a
 deploy (`--dry-run` first: plan, both versions, installed-script diff, no
-changes). It compares the image's `precis.autocatpath_rev` label with the
-lock pin and the installed ensure script with the repo copy; "up to date"
-when both match. Otherwise (before building anything) it decides on the
+changes). It compares the image's `precis.autocatpath_rev` and
+`precis.uv_lock_sha256` labels with the served lock — a dependency bump
+that leaves the autocatpath pin alone still shows stale — names which
+part differs, and compares the installed ensure script with the repo
+copy; "up to date" when everything matches. `--force` rebuilds and
+recreates regardless of the labels. Otherwise (before building anything) it decides on the
 installed script: byte-identical to a past revision of
 `deploy/mcp-http/precis-mcp-http-ensure.sh` in git history means no local
 edits, so it auto-applies (`scripts/mcp-http-install --apply`, which backs up
