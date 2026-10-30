@@ -570,6 +570,42 @@ def _run_memory_thread_sweep(store: Store, batch_size: int) -> None:
     )
 
 
+def _run_ref_body_bytes(store: Store, batch_size: int) -> None:
+    """One incremental ``ref_body_bytes`` recompute (migration 0266),
+    fired from the ``ref_body_bytes`` cadence — refs whose body chunks
+    changed since the stored watermark, recomputed into the side table
+    in small batches. ``batch_size`` is unused — the pass bounds itself
+    (BATCH refs per short transaction). See workers/ref_body_bytes.py;
+    pure local SQL, no LLM."""
+    del batch_size
+    from precis.workers.ref_body_bytes import run_ref_body_bytes_pass
+
+    result = run_ref_body_bytes_pass(store)
+    log.info(
+        "scheduler: ref_body_bytes inner result claimed=%d ok=%d failed=%d",
+        result.claimed,
+        result.ok,
+        result.failed,
+    )
+
+
+def _run_ref_body_bytes_verify(store: Store, batch_size: int) -> None:
+    """The daily full-verification sibling of ``ref_body_bytes``: re-walks
+    every ref so a pure chunk DELETE (no timestamp records one) still
+    lands in the side table. ``batch_size`` is unused — the pass pages
+    refs itself. workers/ref_body_bytes.py; pure local SQL, no LLM."""
+    del batch_size
+    from precis.workers.ref_body_bytes import run_ref_body_bytes_pass
+
+    result = run_ref_body_bytes_pass(store, verify=True)
+    log.info(
+        "scheduler: ref_body_bytes_verify inner result claimed=%d ok=%d failed=%d",
+        result.claimed,
+        result.ok,
+        result.failed,
+    )
+
+
 def _run_memory_recall(store: Store, batch_size: int) -> None:
     """One P4 recall-set score (``precis.workers.memory_recall``),
     fired from the weekly host-agnostic ``memory_recall`` cadence — any
@@ -1128,6 +1164,23 @@ CADENCES: tuple[Cadence, ...] = (
         name="revisions_unrecorded",
         interval_s=24 * 3600 + 67 * 60,
         run=_run_unrecorded_revisions,
+    ),
+    # Migration 0266's async half: keep the ref_body_bytes side table
+    # current without a chunk write trigger (writers must not pay — see
+    # workers/ref_body_bytes.py). Two cadences: the 15-minute
+    # incremental (chunks created_at/retired_at past a stored
+    # watermark) and the daily full verify (+89m, clear of the other
+    # daily fires) that catches pure deletes. Host-agnostic; pure local
+    # SQL, no `eligible` check. spends=False.
+    Cadence(
+        name="ref_body_bytes",
+        interval_s=15 * 60,
+        run=_run_ref_body_bytes,
+    ),
+    Cadence(
+        name="ref_body_bytes_verify",
+        interval_s=24 * 3600 + 89 * 60,
+        run=_run_ref_body_bytes_verify,
     ),
 )
 

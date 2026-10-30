@@ -778,10 +778,20 @@ def _render_ring(
         },
         ring=ring,
     )
+    # Row sizes from one grouped read on the ref_body_bytes side table
+    # (migration 0266) — a ref with no row yet renders no size; never a
+    # body_byte_counts fallback here, a ring isn't page-bounded.
+    sizes = {
+        rid: size_cell(n)
+        for rid, n in store.chunks.stored_body_byte_counts(
+            [n.ref_id for ns in hop1.values() for n in ns if n.ref_id in refs]
+        ).items()
+    }
     return _render_first_hop(
         hop1,
         refs,
         chips=chips,
+        sizes=sizes,
         hub_members=notes,
         more_hint=_more_hint_factory(store, ref_id, hop1),
         hub_handle=handle_registry.format_handle("memory", ref_id)
@@ -1257,9 +1267,15 @@ def _expand_first_hop(
     chips = _row_chips(
         store, {n.ref_id: refs[n.ref_id] for n in ns if n.ref_id in refs}, ring=ring
     )
+    sizes = {
+        rid: size_cell(n)
+        for rid, n in store.chunks.stored_body_byte_counts(
+            [n.ref_id for n in ns if n.ref_id in refs]
+        ).items()
+    }
     lines = [f"— linked (1 hop) · {label} ({len(ns)}) —"]
     lines.extend(
-        f"    {_ring_row(refs[n.ref_id], n, chips=chips.get(n.ref_id, ''))}"
+        f"    {_ring_row(refs[n.ref_id], n, chips=chips.get(n.ref_id, ''), size=sizes.get(n.ref_id, ''))}"
         for n in ns[:_FIRST_HOP_EXPAND_CAP]
     )
     if len(ns) > _FIRST_HOP_EXPAND_CAP:
@@ -1287,9 +1303,9 @@ def _passage_suffix(n: _RingNeighbour, kind: str) -> str:
     return f"  ({listed})" if listed else ""
 
 
-def _ring_row(ref: Any, n: _RingNeighbour, *, chips: str = "") -> str:
+def _ring_row(ref: Any, n: _RingNeighbour, *, chips: str = "", size: str = "") -> str:
     """One ring row: the neighbour label plus its collapsed-edge tail."""
-    return _neighbor_label(ref, n.ref_id, chips=chips) + _passage_suffix(
+    return _neighbor_label(ref, n.ref_id, chips=chips, size=size) + _passage_suffix(
         n, str(getattr(ref, "kind", "") or "")
     )
 
@@ -1298,11 +1314,13 @@ def _render_first_hop(
     by_label: dict[tuple[str, str], list[_RingNeighbour]],
     refs: dict[int, Any],
     chips: dict[int, str] | None = None,
+    sizes: dict[int, str] | None = None,
     hub_members: dict[int, str] | None = None,
     more_hint: Any = None,
     hub_handle: str | None = None,
 ) -> str:
     chips = chips or {}
+    sizes = sizes or {}
     order = {group: i for i, group in enumerate(RING_GROUPS)}
     lines = ["— linked (1 hop) —"]
     heading = None
@@ -1317,7 +1335,9 @@ def _render_first_hop(
             if len(live_ids) == 1:
                 oid = live_ids[0].ref_id
                 hook = hub_members.get(oid, "")
-                row = _neighbor_label(refs[oid], oid, chips=chips.get(oid, ""))
+                row = _neighbor_label(
+                    refs[oid], oid, chips=chips.get(oid, ""), size=sizes.get(oid, "")
+                )
                 lines.append(
                     f"  {label}: {row} — {hook}" if hook else f"  {label}: {row}"
                 )
@@ -1325,7 +1345,12 @@ def _render_first_hop(
                 lines.append(f"  {label} ({len(live_ids)}):")
                 for oid in listed:
                     hook = hub_members.get(oid, "")
-                    row = _neighbor_label(refs[oid], oid, chips=chips.get(oid, ""))
+                    row = _neighbor_label(
+                        refs[oid],
+                        oid,
+                        chips=chips.get(oid, ""),
+                        size=sizes.get(oid, ""),
+                    )
                     lines.append(f"    {row} — {hook}" if hook else f"    {row}")
                 if len(live_ids) > len(listed):
                     lines.append(
@@ -1338,13 +1363,13 @@ def _render_first_hop(
             n = live_ids[0]
             lines.append(
                 f"  {label}: "
-                f"{_ring_row(refs[n.ref_id], n, chips=chips.get(n.ref_id, ''))}"
+                f"{_ring_row(refs[n.ref_id], n, chips=chips.get(n.ref_id, ''), size=sizes.get(n.ref_id, ''))}"
             )
             continue
         lines.append(f"  {label} ({len(live_ids)}):")
         for n in live_ids[:_NEIGHBOR_GROUP_CAP]:
             lines.append(
-                f"    {_ring_row(refs[n.ref_id], n, chips=chips.get(n.ref_id, ''))}"
+                f"    {_ring_row(refs[n.ref_id], n, chips=chips.get(n.ref_id, ''), size=sizes.get(n.ref_id, ''))}"
             )
         if len(live_ids) > _NEIGHBOR_GROUP_CAP:
             more = more_hint(label, live_ids) if more_hint is not None else ""
@@ -1357,7 +1382,7 @@ def _render_first_hop(
     return "\n".join(lines) if heading is not None else ""
 
 
-def _neighbor_label(ref: Any, ref_id: int, *, chips: str = "") -> str:
+def _neighbor_label(ref: Any, ref_id: int, *, chips: str = "", size: str = "") -> str:
     oh = _handle_with_file(getattr(ref, "kind", "?"), ref, ref_id)
     title = " ".join((getattr(ref, "title", None) or "").split())
     if getattr(ref, "kind", None) == "part":
@@ -1376,6 +1401,8 @@ def _neighbor_label(ref: Any, ref_id: int, *, chips: str = "") -> str:
     age = _row_age(ref)
     if age:
         label = f"{label} · {age}"
+    if size:
+        label = f"{label} · {size}"
     return f"{label}  {chips}" if chips else label
 
 

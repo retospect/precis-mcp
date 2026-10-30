@@ -90,6 +90,11 @@ class FakeStore(_FakeStoreBase):
         lambda self: self
     )  # chunks carve: flat fake doubles as its own sub-store
 
+    def stored_body_byte_counts(self, ref_ids: Any) -> dict[int, int]:
+        """The ring's stored-size read (``ref_body_bytes``): the fake has
+        no side table, so every ref is "not yet computed" (no size)."""
+        return {}
+
     def __init__(self) -> None:
         super().__init__()
         self.pool = _FakePool()

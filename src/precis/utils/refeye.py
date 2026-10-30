@@ -42,6 +42,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Literal, Protocol
 
+from precis._result_budget import size_cell
 from precis.store.si_links import ATTENTION_WALK_CAP, queue_si_on_attention_many
 from precis.taproot.seniority import (
     ClaimLinks,
@@ -363,8 +364,9 @@ def _subtree(chunks: Sequence[_Chunk], target: _Chunk) -> list[_Chunk]:
     return [c for c in chunks if in_section(c)]
 
 
-def _label(ref: Any) -> str:
-    """A ``<handle> — <title>`` line for a referenced ref, rendered by kind."""
+def _label(ref: Any, *, size: str = "") -> str:
+    """A ``<handle> — <title>`` line for a referenced ref, rendered by kind.
+    ``size`` (a rendered ``size_cell``) appends ``· <n>kB`` when given."""
     kind = getattr(ref, "kind", "?")
     try:
         handle = handle_registry.format_handle(kind, int(ref.id))
@@ -375,7 +377,8 @@ def _label(ref: Any) -> str:
     title = " ".join((getattr(ref, "title", None) or "").split())
     if len(title) > 90:
         title = title[:89].rstrip() + "…"
-    return f"{lead} — {title}" if title else lead
+    label = f"{lead} — {title}" if title else lead
+    return f"{label} · {size}" if size else label
 
 
 def _group_for(kind: str) -> str:
@@ -457,6 +460,7 @@ def _claim_block(
     pin_labels: dict[int, str] | None = None,
     claim_links: ClaimLinks | None = None,
     falsification: dict[str, str] | None = None,
+    size: str = "",
 ) -> str:
     """The Claims explosion for one cited hub — the claim line plus its
     derived evidence, capped like the rest of the ring (no silent
@@ -509,7 +513,7 @@ def _claim_block(
     pinned_set = set(pinned_ref_ids)
     pin_labels = pin_labels or {}
 
-    lines = [_label(ref)]
+    lines = [_label(ref, size=size)]
 
     known_ref_ids = {
         e.paper_ref_id
@@ -722,6 +726,9 @@ def _render_claims_group(
 
     from precis.handlers._finding_hypothesis import hypothesis_prose
 
+    # Stored body bytes ride one grouped read on the ref_body_bytes side
+    # table (0266) — a hub with no row yet renders no size.
+    body_sizes = store.chunks.stored_body_byte_counts(hub_ref_ids)
     entries: list[tuple[int, str]] = []
     for hub_ref_id, op, _handles in hub_cites:
         ref = refs.get(hub_ref_id)
@@ -741,6 +748,7 @@ def _render_claims_group(
                     pin_labels=pin_labels,
                     claim_links=claim_links,
                     falsification=hypothesis_prose(store, ref),
+                    size=size_cell(body_sizes.get(hub_ref_id, 0)),
                 ),
             )
         )
@@ -836,11 +844,18 @@ def collect_ring(
     touched_papers: list[int] = []
     if all_ids:
         refs = store.fetch_refs_by_ids(list(all_ids))
+        # Stored body bytes ride one grouped read on the ref_body_bytes
+        # side table (0266) — a ref with no row yet renders no size;
+        # never a per-row fallback.
+        body_sizes = store.chunks.stored_body_byte_counts(list(all_ids))
         for rid in all_ids:
             ref = refs.get(rid)
             if ref is None or getattr(ref, "retired_at", None) is not None:
                 continue
-            groups[_group_for(getattr(ref, "kind", "?"))].append((rid, _label(ref)))
+            sz = size_cell(body_sizes.get(rid, 0))
+            groups[_group_for(getattr(ref, "kind", "?"))].append(
+                (rid, _label(ref, size=sz))
+            )
             if getattr(ref, "kind", None) == "paper":
                 touched_papers.append(rid)
     # Walker touch: the fisheye+1hop ring visiting a paper is attention; queue

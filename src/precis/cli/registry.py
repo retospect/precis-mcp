@@ -212,6 +212,11 @@ COMMANDS: tuple[Command, ...] = (
         "embedding_kind_backfill",
         "Fill chunk_embeddings.ref_id/kind after migration 0226.",
     ),
+    _c(
+        "backfill-ref-bytes",
+        "ref_bytes_backfill",
+        "Fill the ref_body_bytes side table from live chunk text (0266).",
+    ),
     _c("podcast", "podcast", "Publish/list private audio-feed episodes."),
     _c("gripes", "gripe", "Dump all filed gripes for human triage."),
     _c(

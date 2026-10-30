@@ -125,7 +125,9 @@ what the section *points at*, one edge out:
   atoms are not in the ring — `get(id='fi<id>', view='links')`.
 
 Edges only, both directions, each group capped with a visible
-`+N more — focus to expand` line. A memory merely *about* the section
+`+N more — focus to expand` line. Each row ends `· <n>kB` when the
+neighbour's body is 1 kB or more (the stored `ref_body_bytes` row;
+an uncomputed ref shows none). A memory merely *about* the section
 but never linked is a `search` hit, not a hop.
 
 ## The link neighborhood — one heading per ring, one line per neighbour
@@ -136,14 +138,14 @@ focus, either direction, under one heading per ring group, each
 reads from the focus's side: an edge it is the source of keeps its name
 (`serves: qu12`), an edge pointing at it reads as the inverse
 (`served-by: qu7`, `contradicted-by: pa3`), and an inbound edge with no
-inverse reads `<-establishes: pa5` ("pa5 establishes this"). A neighbour
-carrying `AUDIT:ungrounded-number` is flagged on its line. A memory with
-a mirrored file reads `me4641 (worker_busy_vs_starved_diagnosis.md)`.
+inverse reads `<-establishes: pa5` ("pa5 establishes this"). Each row
+carries the stored body size (`· <n>kB` from 1 kB; none while
+recompute is pending). `AUDIT:ungrounded-number` neighbours are flagged.
+A memory with a mirrored file reads `me4641 (diagnosis.md)`.
 
-Parallel edges to the **same** neighbour collapse into one row — chunk-
-grounded evidence reads `<-corroborates: pa5 — …  ×4 (pc11 ~29 · pc12
-~28 · +2 more)`, not four identical rows. `×N` counts edges; handles are
-the passages to `get`.
+Parallel edges to the **same** neighbour collapse into one row:
+`<-corroborates: pa5 — …  ×4 (pc11 ~29 · pc12 ~28 · +2 more)`. `×N`
+counts edges; the handles are passages to `get`.
 
 | Ring | Relations | Worked example |
 |---|---|---|

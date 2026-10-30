@@ -52,6 +52,9 @@ _SIZED_SITES: frozenset[str] = frozenset(
         "handlers/draft.py::_render_outline",
         "utils/eye_render.py::_cluster_label",
         "utils/eye_render.py::_fisheye_split",
+        "utils/eye_render.py::_render_ring",
+        "utils/eye_render.py::_expand_first_hop",
+        "utils/refeye.py::collect_ring",
         "utils/fisheye.py::_render_fidelity_span",
         "utils/search_merge.py::_render_hit",
         "utils/search_merge.py::_render_toon_table",
@@ -80,9 +83,6 @@ _NEVER_SIZED: dict[str, str] = {
         "bare handles per line, fed back as id= — enforced by "
         "test_ids_view_stays_bare_handles_list_view_carries_size"
     ),
-    "utils/eye_render.py::_render_ring": "ring rows have no loaded body",
-    "utils/eye_render.py::_expand_first_hop": "ring rows have no loaded body",
-    "utils/refeye.py::collect_ring": "ring rows have no loaded body",
 }
 _NEVER_QUERY: frozenset[str] = frozenset(
     s.split()[0] for s in _NEVER_SIZED if "view='ids'" not in s

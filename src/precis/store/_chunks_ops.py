@@ -3108,29 +3108,67 @@ class ChunkStore:
             ).fetchall()
         return {int(r[0]): int(r[1]) for r in rows}
 
+    def stored_body_byte_counts(self, ref_ids: Any) -> dict[int, int]:
+        """``{ref_id: stored body bytes}`` read straight off
+        ``ref_body_bytes`` (migration 0266's side table) — one grouped
+        query, refs with no row yet simply absent. The ring/hub-row
+        read: a missing row means "not yet computed" and renders no
+        size — never a per-row aggregate fallback (a ring isn't
+        page-bounded)."""
+        ids = [int(r) for r in ref_ids]
+        if not ids:
+            return {}
+        with self.pool.connection() as conn:
+            rows = conn.execute(
+                "SELECT ref_id, body_bytes FROM ref_body_bytes WHERE ref_id = ANY(%s)",
+                (ids,),
+            ).fetchall()
+        return {int(r): int(n) for r, n in rows}
+
     def body_byte_counts(self, ref_ids: Any) -> dict[int, int]:
-        """``{ref_id: stored body bytes}`` for a page of refs, one query.
+        """``{ref_id: stored body bytes}`` for a page of refs.
 
         The size column every fetchable-row listing shows
         (:func:`precis._result_budget.size_cell`): the ref's live body
         chunks (``ord >= 0``) summed as ``octet_length`` — the same
-        byte unit the result-budget caps count in. Lengths only, no
-        text column, so a result page costs one aggregate read, not a
-        body fetch per row. Refs with no chunks are absent (caller
-        defaults to 0).
+        byte unit the result-budget caps count in, now stored in the
+        ``ref_body_bytes`` side table (migration 0266; the worker pass
+        keeps it current) so a page costs one PK-lookup read, not an
+        aggregate scan of the chunk text. Refs with no row yet fall
+        back to the old aggregate over their ids only — page-bounded,
+        and shrinking to zero as the recompute fills. A row-less ref
+        with no chunks maps to 0.
         """
         ids = [int(r) for r in ref_ids]
         if not ids:
             return {}
         with self.pool.connection() as conn:
             rows = conn.execute(
-                "SELECT ref_id, COALESCE(SUM(octet_length(text)), 0)::bigint "
-                "FROM chunks "
-                "WHERE ref_id = ANY(%s) AND ord >= 0 AND retired_at IS NULL "
-                "GROUP BY ref_id",
+                "SELECT r.ref_id, b.body_bytes FROM refs r "
+                "LEFT JOIN ref_body_bytes b ON b.ref_id = r.ref_id "
+                "WHERE r.ref_id = ANY(%s)",
                 (ids,),
             ).fetchall()
-        return {int(r[0]): int(r[1]) for r in rows}
+            out: dict[int, int] = {}
+            pending: list[int] = []
+            for rid, n in rows:
+                if n is None:
+                    pending.append(int(rid))
+                else:
+                    out[int(rid)] = int(n)
+            if pending:
+                filled = conn.execute(
+                    "SELECT ref_id, COALESCE(SUM(octet_length(text)), 0)::bigint "
+                    "FROM chunks "
+                    "WHERE ref_id = ANY(%s) AND ord >= 0 AND retired_at IS NULL "
+                    "GROUP BY ref_id",
+                    (pending,),
+                ).fetchall()
+                for rid, n in filled:
+                    out[int(rid)] = int(n)
+                for rid in pending:
+                    out.setdefault(rid, 0)
+        return out
 
     def select_salient(
         self,
