@@ -431,12 +431,31 @@ and wake condition; `quest_tick` as a perpetual loop; `good_search` as
 a fan-out with triage children; `pcb_place`, `pcb_review`, `pcb_argue`;
 `deferred_llm_call`.
 
-Missing (wave 3 slices, in order): `meta.gate / loop / generate /
-auto_close / op` validation in the todo handler; the gate evaluators
-(sha-in-prod needs origin/prod's head reported, by `scripts/release` or
-the fleet host row); phase auto-close; the template module and
-`mode='plan'`; the `run_slice` job type (step 6) with `meta.lane`; the
-tick; gate and loop rows in the work view.
+Landed 2026-10-30 (wave 3, all `--quick`, untested until the next
+`/go`): `precis.plans.nodes` — the five shapes validated on todo put
+and edit (d81a33bb7); `precis.plans.gates` — the four evaluators, with
+`scripts/release` recording `{head, deployed_at, landed}` into
+`app_settings` key `release.prod_head` after a deploy (9a68887b0);
+`precis.plans.lanes` + the `run_slice` job type — static lane table,
+detached submit/poll on `ssh_node`, `claude -p` in a `slice-td<id>`
+worktree, handoff from the last message, `attempt:<n>` on failure
+(db4ff2754); `precis.plans.templates` — the four templates behind
+`put(kind='todo', mode='plan')`, no `llm_tier` default on gate / loop /
+generator / phase nodes (02fb10926); the `plan_dispatch` tick — gates →
+loops (`BODIES` registry) → auto-close → dispatch → hygiene, kill switch
+`PRECIS_FACTORY=off` or `service_config` prio 0, **not armed in prod**
+(d36ca88f1; the arming `put` is in `precis-job-help`).
+
+Open before the first real dispatch: gate and loop rows in the work
+view (td542097, after td541982); the fixes the tick's first pass found
+(td542302: `loop.count`, generators close via the tick, no `llm_tier`
+on any plan node); `run_slice` hardening — branch `slice/<id>`, env
+allowlist, attribution, reaper-safe handle (td542235), blocked by the
+permission-mode ruling (ask td542236); a CI verdict record so
+`tests-green` holds before a deploy (td542230); the pcb-pipeline gaps
+(td542269: drc-clean gate, board → `pcb_ref_id`, a route job type).
+Arming order: `/go` → rulings → td542302 + td542235 → arm the tick with
+`dry_run` → one gripe-fix plan on a real gripe → arm for real.
 
 ## Next steps, by unlock value
 
