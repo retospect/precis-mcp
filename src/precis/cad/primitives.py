@@ -53,8 +53,9 @@ import numpy as np
 from numpy.typing import NDArray
 
 # Shared dimension-free wrap mapping (se-cylinder-wrap-mold slice 4); the
-# leaf's point query inverts ``θ`` back to a map column through it.
-from hexfold.wrap import WrapSpec
+# leaf's point query inverts ``θ`` back to a map column through it. Bound
+# via the ``precis.cad._hexfold`` fail-soft shim (gr524633).
+from precis.cad._hexfold import WrapSpec
 
 if TYPE_CHECKING:
     from precis.cad.hmap import HeightMap

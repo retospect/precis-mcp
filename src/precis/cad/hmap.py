@@ -57,7 +57,10 @@ from numpy.typing import NDArray
 # hexfold's roll-up (se-cylinder-wrap-mold slice 4): ``θ = (2π·u − twist·v)/
 # repeat`` and the seam residual live in ``hexfold.wrap``, imported down into
 # the cad kernel (hexfold stays precis-free, the macro side depends on it).
-from hexfold.wrap import WrapSpec, seam_error
+# Bound through the ``precis.cad._hexfold`` fail-soft shim: this module is on
+# every store import path, so a vendored hexfold too old to carry ``wrap``
+# must degrade to a call-time refusal, not an import crash (gr524633).
+from precis.cad._hexfold import WrapSpec, seam_error
 
 #: Wire-format magic of an encoded height map (:func:`encode_hmap`).
 HMAP_MAGIC = b"PHMP"

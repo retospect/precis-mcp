@@ -47,7 +47,7 @@ from typing import Any
 import numpy as np
 from numpy.typing import NDArray
 
-from hexfold.wrap import WrapSpec
+from precis.cad._hexfold import WrapSpec
 from precis.cad.bulk import expr_aabb
 from precis.cad.dsl import ShapeSpec, format_spec, scale_config
 from precis.cad.graph import Design

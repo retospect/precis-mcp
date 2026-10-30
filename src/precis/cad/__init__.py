@@ -27,7 +27,11 @@ swappable behind the same node-list. The one outward edge is *down* into
 ``relief:`` leaf shares with hexfold's nano roll-up (one ``WrapSpec``,
 realised as a macro relief here or as lattice sites there;
 se-cylinder-wrap-mold slice 4). hexfold is a vendored numpy-only package
-that imports no precis, so the isolation holds. The kernel is unit-agnostic
+that imports no precis, so the isolation holds. That edge is bound
+lazily through :mod:`precis.cad._hexfold`: this package is on every
+store import path (``precis ingest``/``watch``, the worker), so a
+vendored hexfold too old to carry ``wrap`` degrades to a call-time
+refusal instead of an import crash (gr524633). The kernel is unit-agnostic
 ``float64`` throughout — callers pick the length unit; every internal
 tolerance is scale-relative (:data:`~precis.cad.vec.LINEAR_REL_EPS`), not
 tuned for one magnitude.
