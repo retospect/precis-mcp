@@ -41,9 +41,8 @@ from datetime import UTC
 from typing import Any, ClassVar, cast
 
 from precis._result_budget import (
-    DEFAULT_CONTEXT_BODY_BYTES,
-    _env_cap,
     body_bytes,
+    result_context_cap,
     size_cell,
 )
 from precis.dispatch import Hub, InitError
@@ -5271,11 +5270,7 @@ class DraftHandler(Handler):
         # the scope's direct children, each row a ``~dc<N>`` selector with
         # its subtree size and sub-heading count. An explicit slice
         # (offset/limit/page) is an addressed part-read and stays flat.
-        context_cap = _env_cap(
-            "PRECIS_TOOL_RESULT_CONTEXT_BYTES",
-            DEFAULT_CONTEXT_BODY_BYTES,
-            zero_disables=True,
-        )
+        context_cap = result_context_cap()
         if (
             context_cap
             and body_bytes(flat_body) > context_cap
@@ -5328,11 +5323,7 @@ class DraftHandler(Handler):
         sibling runs merge to ``N headings, X kB, expand ~dc<N>`` rows,
         and a final row-prefix trim guarantees the result never goes
         over the context cap."""
-        context_cap = _env_cap(
-            "PRECIS_TOOL_RESULT_CONTEXT_BYTES",
-            DEFAULT_CONTEXT_BODY_BYTES,
-            zero_disables=True,
-        )
+        context_cap = result_context_cap()
 
         # Auto-descend a one-child chain: a draft whose only top-level
         # chunk is the title heading shows the title's children — the

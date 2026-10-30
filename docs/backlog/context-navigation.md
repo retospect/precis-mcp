@@ -15,13 +15,12 @@ Thread: `threads/context-navigation.md`. Supersedes `mcp-seen-state-dedup.md`,
 carried below). Builds on `block-navigation.md` (rulings 2026-10-28) and
 `autoskill.md`.
 
-## 0. First fix, before anything else
+## 0. Size is a meter, not an error
 
-Drop the size refusal. `get`/`search` return up to the 24 kB transport cap
-(`_result_budget.DEFAULT_MAX_BODY_BYTES`); above it, head + outline (the
-head-outline branch). `DEFAULT_CONTEXT_BODY_BYTES` stops being an error and
-becomes a meter. Big alone is not bad: a later auto-gripe fires on "rendered at
-full, never cited" (visible in the twin, §7), never on size. Two-line change.
+Shipped (gr540851): results return whole up to the 24 kB transport cap, head +
+outline above it; `tool_calls.result_bytes` is the meter. Ruling that stands:
+big alone is not bad — a later auto-gripe fires on "rendered at full, never
+cited" (visible in the twin, §7), never on size.
 
 ## 1. Goal and measures
 
@@ -295,7 +294,6 @@ What exists: Level 1 (`workers/working_set.py`, `utils/working_set_render.py`,
 
 ## 10. Order
 
-0. First fix (§0).
 1. Deploy autoskill + container fix; verify `agentlog_id`/`source` on new dream
    and plan_tick rows and `autoskill_sessions.used IS NOT NULL`; close gr537773.
 2. A0 attribution on every runner.

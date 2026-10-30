@@ -8,12 +8,12 @@ design-review: yes
 
 ## Resume
 
-- **Next:** [context-navigation](../context-navigation.md) §0 first fix (drop the size refusal), then the autoskill deploy verification and A0 (§2). Stop after A0 until the afternoon of hook logging (§7) is done.
-- **Blocked by:** Nothing for Do-next 1–3. The twin (Do-next 4) waits on the hook-logging check.
+- **Next:** the autoskill deploy verification, then A0 ([context-navigation](../context-navigation.md) §2). Stop after A0 until the afternoon of hook logging (§7) is done.
+- **Blocked by:** Nothing for Do-next 1–2. The twin (Do-next 3) waits on the hook-logging check.
 - **Unblocks:** Every agent read on the MCP: seen-stubs, sets, the compaction handoff, the N1 meters, autoskill pointers, Mode B.
 - **Acceptance:** §1 meters exist and move; the eval baseline is recorded before targets are set.
 - **Worktree:** `context-navigation`
-- **Builds:** §0 half a build; A0 one; twin two; readers one each; Mode B B1–B4 about one each. Unknown for the eval bank.
+- **Builds:** A0 one; twin two; readers one each; Mode B B1–B4 about one each. Unknown for the eval bank.
 - **Detail:** [Ranked work](#do-next) · [Horizon](#horizon) · [Coordination map](INDEX.md).
 
 ## Thread context
@@ -25,11 +25,10 @@ design-review: yes
 
 ## Do next
 
-1. **backlog/context-navigation.md §0** — drop the over-cap refusal, head + outline above the transport cap; the top failure in the 2026-10-30 census and it blocks nothing.
-2. **backlog/autoskill.md** deploy verification — new dream/plan_tick `tool_calls` rows carry `agentlog_id` and `source`, `autoskill_sessions.used` not null; closes gr537773. First because the meters read these columns.
-3. **backlog/context-navigation.md §2 A0** — code landed (gr540852); verify after deploy that doctor_tick/review/asa_bot `tool_calls` rows carry `agentlog_id` and `source`, then close the gripe.
-4. **backlog/context-navigation.md §7 twin** — `context_items` + `_ctx` pop + hooks; replaces four stores; everything below reads it. Waits on the hook-logging check.
-5. **backlog/context-navigation.md §4 + §7 readers** — stubs, `rs` sets, compaction handoff, meters, eval bank, baseline.
+1. **backlog/autoskill.md** deploy verification — new dream/plan_tick `tool_calls` rows carry `agentlog_id` and `source`, `autoskill_sessions.used` not null; closes gr537773. First because the meters read these columns.
+2. **backlog/context-navigation.md §2 A0** — code landed (gr540852); verify after deploy that doctor_tick/review/asa_bot `tool_calls` rows carry `agentlog_id` and `source`, then close the gripe.
+3. **backlog/context-navigation.md §7 twin** — `context_items` + `_ctx` pop + hooks; replaces four stores; everything below reads it. Waits on the hook-logging check.
+4. **backlog/context-navigation.md §4 + §7 readers** — stubs, `rs` sets, compaction handoff, meters, eval bank, baseline.
 
 ## Horizon
 

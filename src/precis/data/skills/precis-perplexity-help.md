@@ -97,11 +97,10 @@ remain explicit escapes for handle-shaped query text.
 
 ## A long answer exceeds the result budget
 
-Oversized answers refuse without partial content; the refusal's
-`next=` names the first chunk-range call. There is no `more()`
-continuation — walk the stored report in chunk ranges instead
-(`~N` one chunk, `~N..M` an inclusive range; each page fits the
-result budget):
+An answer returns whole up to the 24 kB transport cap. Over it you get
+the head, an outline and a `next:` line naming the first chunk-range
+call. There is no `more()` continuation — walk the stored report in
+chunk ranges instead (`~N` one chunk, `~N..M` an inclusive range):
 
 ```python
 get(kind="perplexity-research", id="<slug>~0..3")   # first chunk range

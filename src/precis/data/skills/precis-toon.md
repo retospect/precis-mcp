@@ -69,8 +69,8 @@ further.
 
 ## Recovering an oversized table
 
-A response that exceeds the complete-result budget refuses without
-returning a partial table. Its `next:` line names a targeted TOC,
+A response returns whole up to the 24 kB transport cap. Over it you get
+the leading rows that fit and a `next:` line naming a targeted TOC,
 section, or more-specific search call. Use that call to retrieve only
 the rows you need; there is no `more()` continuation.
 

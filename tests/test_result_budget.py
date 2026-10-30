@@ -29,6 +29,58 @@ def test_small_result_passes() -> None:
     )
 
 
+def test_unset_context_cap_returns_13kb_whole(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """gr540851: a ~13 kB body is under the transport cap — returned whole,
+    no 4 kB context cut, even on a folded agent-facing read."""
+    monkeypatch.delenv("PRECIS_TOOL_RESULT_CONTEXT_BYTES", raising=False)
+    monkeypatch.delenv("PRECIS_MAX_BODY_BYTES", raising=False)
+    body = "\n".join(f"line {i:05d} of prose, padded out" for i in range(400))
+    assert 12_000 < len(body.encode("utf-8")) < 14_000
+    for read in ("single", "list", "extent"):
+        out = fit_result_body(
+            body,
+            verb="get",
+            kind="memory",
+            context_limited=True,
+            targeted_hint=None,
+            read=read,
+        )
+        assert out == body
+
+
+def test_unset_context_cap_over_transport_cap_returns_head_outline(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """gr540851: above DEFAULT_MAX_BODY_BYTES (24576) the read returns the
+    head + outline + next:, never an error."""
+    from precis._result_budget import DEFAULT_MAX_BODY_BYTES
+
+    monkeypatch.delenv("PRECIS_TOOL_RESULT_CONTEXT_BYTES", raising=False)
+    monkeypatch.delenv("PRECIS_MAX_BODY_BYTES", raising=False)
+    sections = [
+        f"## part {n}\n" + "\n".join(f"row {n}.{i} text" for i in range(150))
+        for n in range(12)
+    ]
+    body = "\n\n".join(sections)
+    assert len(body.encode("utf-8")) >= DEFAULT_MAX_BODY_BYTES + 1
+    out = fit_result_body(
+        body,
+        verb="get",
+        kind="memory",
+        context_limited=True,
+        targeted_hint="get(kind='memory', id='me1~part-11')",
+        read="single",
+    )
+    assert len(out.encode("utf-8")) <= DEFAULT_MAX_BODY_BYTES
+    assert out.startswith("## part 0\nrow 0.0 text")
+    assert "… truncated: showing" in out
+    assert "outline:" in out
+    assert "part 11" in out
+    assert "next: get(kind='memory', id='me1~part-11')" in out
+
+
 def test_single_read_returns_head_outline_and_footer(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

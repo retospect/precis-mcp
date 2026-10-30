@@ -1258,9 +1258,11 @@ class DispatchMixin(RuntimeShape):
         for the rendering. (MCP critic MAJOR — errors silently masked
         as content because ``isError`` was never set.)
 
-        ``fold`` opts into the agent-context result budget. Agent-serving
-        surfaces pass it explicitly; direct in-process callers leave it off.
-        An oversized open-ended result returns a fitted body — head,
+        ``fold`` opts into the agent-context result budget, which binds
+        only when ``PRECIS_TOOL_RESULT_CONTEXT_BYTES`` is set (gr540851);
+        by default a result returns whole up to ``PRECIS_MAX_BODY_BYTES``.
+        Agent-serving surfaces pass it explicitly; direct in-process
+        callers leave it off. An oversized open-ended result returns a fitted body — head,
         outline, and the targeted-read footer — never a refusal, never a
         continuation cursor; explicit part-reads (a ``~`` selector, a
         list of ids) skip the context cap and only

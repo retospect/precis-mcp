@@ -82,8 +82,8 @@ invalidate the English one.
 ## The transcript is too long for one result
 
 Long transcripts are stored in ~800-char chunks and read back in
-ranges — a whole-body `get` that exceeds the result budget refuses
-and its `next=` names the first range call:
+ranges — a whole-body `get` over the 24 kB transport cap returns the
+head plus an outline, and its `next:` line names the first range call:
 
 ```python
 get(kind="youtube", id="dQw4w9WgXcQ~0..3")   # first chunk range
