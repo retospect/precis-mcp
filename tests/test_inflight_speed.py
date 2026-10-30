@@ -267,3 +267,78 @@ def test_git_calls_do_not_scale_with_tree_count(tmp_path: Path) -> None:
     assert n_calls <= 2 * n_trees + 15, (
         f"{n_calls} git calls for {n_trees} clean trees — per-tree spawning is back"
     )
+
+
+def test_status_walk_never_takes_index_lock(tmp_path: Path) -> None:
+    """gr541144 — the per-tree `git status` (and `diff --stat` on a dirty
+    tree) refreshes the index, so the probe took index.lock in every
+    worktree it walked; a SessionStart hook killed mid-scan left stale
+    0-byte locks behind that then blocked each tree's own writes (13 piled
+    up under .git/worktrees). With --no-optional-locks the probe must run
+    fine while another process holds that tree's index.lock — never
+    failing on, removing or replacing it — and leave no lock of its own."""
+    primary = tmp_path / "primary"
+    primary.mkdir()
+    _git(primary, "init", "-q", "-b", "main")
+    scripts_dir = primary / "scripts"
+    scripts_dir.mkdir()
+    shutil.copy2(INFLIGHT_SRC, scripts_dir / "inflight")
+    (scripts_dir / "inflight").chmod(0o755)
+    (primary / "README.md").write_text("root\n", encoding="utf-8")
+    _git(primary, "add", "-A")
+    _git(primary, "commit", "-q", "-m", "initial")
+
+    held_tree = tmp_path / "held"
+    _git(primary, "worktree", "add", "-q", "-b", "worktree-held", str(held_tree))
+    clean_tree = tmp_path / "clean"
+    _git(primary, "worktree", "add", "-q", "-b", "worktree-clean", str(clean_tree))
+    # dirty + untracked so the --json walk also pays the `diff --stat`
+    # probe on the lock-held tree.
+    (held_tree / "wip.txt").write_text("uncommitted\n", encoding="utf-8")
+
+    def git_dir(tree: Path) -> Path:
+        out = _git(
+            tree, "rev-parse", "--path-format=absolute", "--git-dir"
+        ).stdout.strip()
+        return Path(out)
+
+    # A git shim on PATH pins the mechanism, not just the outcome: every
+    # status/diff the walk spawns must carry --no-optional-locks.
+    shim_dir = tmp_path / "shim"
+    shim_dir.mkdir()
+    git_bin = shutil.which("git")
+    assert git_bin is not None
+    (shim_dir / "git").write_text(
+        f'#!/bin/sh\nprintf \'%s\\n\' "$*" >> "$GIT_ARGV_LOG"\nexec "{git_bin}" "$@"\n',
+        encoding="utf-8",
+    )
+    (shim_dir / "git").chmod(0o755)
+    argv_log = tmp_path / "git-argv.log"
+    env = _test_env()
+    env.update(
+        {
+            "PATH": f"{shim_dir}{os.pathsep}{os.environ['PATH']}",
+            "GIT_ARGV_LOG": str(argv_log),
+        }
+    )
+
+    sentinel = b"sentinel - held by another process\n"
+    lock = git_dir(held_tree) / "index.lock"
+    lock.write_bytes(sentinel)
+
+    inflight = primary / "scripts" / "inflight"
+    _run([str(inflight), "--json"], primary, env=env)
+    assert lock.read_bytes() == sentinel, (
+        "the walk removed or replaced a lock it does not own"
+    )
+
+    calls = argv_log.read_text(encoding="utf-8").splitlines()
+    probes = [c for c in calls if re.search(r"(?:^| )(?:status|diff)(?: |$)", c)]
+    assert probes, f"expected the walk to run status/diff probes:\n{calls}"
+    for c in probes:
+        assert "--no-optional-locks" in c, c
+
+    lock.unlink()
+    _run([str(inflight), "--json"], primary, env=env)
+    for tree in (primary, held_tree, clean_tree):
+        assert not (git_dir(tree) / "index.lock").exists(), f"index.lock left in {tree}"

@@ -41,7 +41,7 @@ BRANCH=$(git -C "$PRIMARY" symbolic-ref --quiet --short HEAD 2>/dev/null)
 [ "$BRANCH" = "$BASE" ] && exit 0   # already healthy, nothing to do
 
 # clean tree only — never switch branches under uncommitted work.
-[ -n "$(git -C "$PRIMARY" status --porcelain 2>/dev/null)" ] && exit 0
+[ -n "$(git --no-optional-locks -C "$PRIMARY" status --porcelain 2>/dev/null)" ] && exit 0
 
 # fully merged into base (ancestor OR squash-absorbed — the same two tests
 # scripts/inflight uses for its 'merged'/'in-main' verdicts).

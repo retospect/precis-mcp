@@ -396,7 +396,7 @@ probe_worktree() {
   # One status call for both counts (the old code paid this plus an
   # `ls-files --others` plus a second identical status inside purpose).
   local st
-  st=$(git -C "$path" status --porcelain --untracked-files=all 2>/dev/null)
+  st=$(git --no-optional-locks -C "$path" status --porcelain --untracked-files=all 2>/dev/null)
   while IFS= read -r line; do
     [ -z "$line" ] && continue
     case "$line" in
@@ -455,7 +455,7 @@ probe_worktree() {
     elif [ "$agent_tree" = 1 ]; then bucket='needs_judgment'
     elif [ "$dirtyf" != 'clean' ]; then
       bucket='needs_judgment'
-      ds=$(git -C "$path" diff --stat 2>/dev/null | head -10)
+      ds=$(git --no-optional-locks -C "$path" diff --stat 2>/dev/null | head -10)
       ds=${ds//$'\036'/ }; ds=${ds//$'\037'/ }
     elif [ "$verd" = 'merged' ] || [[ "$verd" == in-main* ]]; then bucket='safe_remove'
     else bucket='has_unmerged_work'
