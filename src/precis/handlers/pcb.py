@@ -1061,12 +1061,12 @@ class PcbHandler(Handler):
                 "pin",
                 "to",
                 # op='pad' (gr520149): per-pad footprint-local move
-                # (dx/dy), absolute resize (w/h) and per-override revert
-                # on one pad of one placed part. `add`/`remove`/`hole`/
-                # `drill` are ACCEPTED here so _op_pad can refuse them
-                # with a next= — adding/removing pads or holes and
-                # changing a drill are slice-2+ (docs/backlog/
-                # pcb-pad-overrides.md).
+                # (dx/dy), absolute resize (w/h), plated re-drill
+                # (drill), footprint NPTH add/remove (hole + x/y/drill/
+                # remove) and per-override revert on one placed part.
+                # `add` is ACCEPTED here so _op_pad can refuse it with a
+                # next= — pad add/remove is the remaining out-of-scope
+                # arg (docs/backlog/pcb-pad-overrides.md).
                 "pad",
                 "dx",
                 "dy",
@@ -3517,10 +3517,13 @@ class PcbHandler(Handler):
 
     def _op_pad(self, ref: Any, args: dict[str, Any]) -> Response:
         """``put(args={'op':'pad','refdes':'J1','pad':'3','dx':…,'dy':…,
-        'w':…,'h':…}})`` — gr520149, docs/backlog/pcb-pad-overrides.md
-        slice 1: a per-pad, per-INSTANCE footprint-local override. ``dx``/
-        ``dy`` shift the pad's stored centre (mm); ``w``/``h`` replace its
-        extent (mm, absolute). Stored as a design-local delta on
+        'w':…,'h':…,'drill':…}})`` — gr520149, docs/backlog/
+        pcb-pad-overrides.md: a per-pad, per-INSTANCE footprint-local
+        override. ``dx``/``dy`` shift the pad's stored centre (mm);
+        ``w``/``h`` replace its extent (mm, absolute); ``drill`` re-drills
+        a PLATED through-hole pad to an absolute diameter (mm — slice 2;
+        refused on a pad that carries no drill, an SMD land has no plated
+        hole to resize). Stored as a design-local delta on
         ``pcb_instances.meta['pad_overrides']`` — the shared footprint row
         is never written — and applied at the one footprint join
         (:func:`precis.pcb.session.footprints_by_refdes`), so the board's
@@ -3530,26 +3533,39 @@ class PcbHandler(Handler):
         ``revert=true`` drops the override: with ``pad``, that pad's entry
         only; without, the whole map for the refdes. Runs inside
         :meth:`_judged_mutation` at its default refuse=True: a delta that
-        adds or deepens a validity error stores nothing, and stored routed
-        copper it collides with is ripped (the same report as every other
-        judged edit)."""
-        for key in ("add", "remove", "hole", "drill"):
-            if args.get(key) is not None:
-                raise BadInput(
-                    f"op='pad' does not {key!r} in this slice — only dx/dy "
-                    "moves and w/h resizes on an existing pad",
-                    next="adding/removing pads and holes and drill edits are "
-                    "tracked in docs/backlog/pcb-pad-overrides.md",
-                )
+        adds or deepens a validity error stores nothing (a drill that
+        breaks the annular-ring floor refuses like any other), and stored
+        routed copper it collides with is ripped (the same report as
+        every other judged edit). ``hole='add'``/``hole='<n>' remove``
+        (slice 3) is :meth:`_op_pad_holes` — footprint NPTH edits, their
+        own call."""
+        if args.get("add") is not None:
+            raise BadInput(
+                "op='pad' does not 'add' in this slice — pads move/resize/"
+                "re-drill in place only",
+                next="adding or removing a pad is tracked in "
+                "docs/backlog/pcb-pad-overrides.md",
+            )
+        hole = args.get("hole")
+        if args.get("remove") is not None and not (
+            hole is not None and str(hole).strip() not in ("", "add")
+        ):
+            raise BadInput(
+                "op='pad': 'remove' belongs on a footprint hole — "
+                "hole='<n>' plus remove=true",
+                next="args={'op':'pad','refdes':'J1','hole':'2','remove':true}",
+            )
         refdes = str(args.get("refdes") or "").strip()
         if not refdes:
             raise BadInput(
                 "op='pad' needs args.refdes",
                 next="args={'op':'pad','refdes':'J1','pad':'3','dx':0.2}",
             )
+        if hole is not None:
+            return self._op_pad_holes(ref, args, refdes, str(hole).strip())
         revert = bool(args.get("revert"))
         patch: dict[str, float] = {}
-        for key in ("dx", "dy", "w", "h"):
+        for key in ("dx", "dy", "w", "h", "drill"):
             value = args.get(key)
             if value is None:
                 continue
@@ -3557,21 +3573,22 @@ class PcbHandler(Handler):
                 f = float(value) if not isinstance(value, bool) else math.nan
             except (TypeError, ValueError):
                 f = math.nan
-            if not math.isfinite(f) or (key in ("w", "h") and f <= 0):
+            label = (
+                "a positive mm diameter"
+                if key == "drill"
+                else "a positive mm extent"
+                if key in ("w", "h")
+                else "a finite number of mm"
+            )
+            if not math.isfinite(f) or (key in ("w", "h", "drill") and f <= 0):
                 raise BadInput(
-                    f"op='pad': {key} must be "
-                    + (
-                        "a positive mm extent"
-                        if key in ("w", "h")
-                        else "a finite number of mm"
-                    )
-                    + f" (got {value!r})",
+                    f"op='pad': {key} must be {label} (got {value!r})",
                     next="args={'op':'pad','refdes':'J1','pad':'3','dx':0.2}",
                 )
             patch[key] = f
         if revert and patch:
             raise BadInput(
-                "op='pad': give revert=true OR dx/dy/w/h, not both",
+                "op='pad': give revert=true OR dx/dy/w/h/drill, not both",
                 next="args={'op':'pad','refdes':'J1','pad':'3','revert':true}",
             )
         pad = str(args.get("pad") or "").strip()
@@ -3583,7 +3600,8 @@ class PcbHandler(Handler):
             )
         if not revert and not patch:
             raise BadInput(
-                "op='pad' needs at least one of dx / dy / w / h (or revert=true)",
+                "op='pad' needs at least one of dx / dy / w / h / drill "
+                "(or revert=true)",
                 next="args={'op':'pad','refdes':'J1','pad':'3','dx':0.2}",
             )
 
@@ -3645,6 +3663,17 @@ class PcbHandler(Handler):
                     next=f"get(kind='pcb', id='{ref.slug}#{refdes}', "
                     "view='pinout') lists pad numbers",
                 )
+            if "drill" in patch:
+                pad_row = next(p for p in fp["pads"] if str(p.get("number")) == pad)
+                if not pad_row.get("drill"):
+                    raise BadInput(
+                        f"op='pad': {refdes} pad {pad} has no plated hole — "
+                        "drill re-drills a plated through-hole pad only; an "
+                        "SMD land has no drill to resize",
+                        next="a NEW non-plated footprint hole is hole='add': "
+                        "args={'op':'pad','refdes':'<refdes>','hole':'add',"
+                        "'x':<mm>,'y':<mm>,'drill':<mm>}",
+                    )
             merged = {**(current.get(pad) or {}), **patch}
             if current.get(pad) == merged:
                 return {"status": "unchanged", "pad": pad, "n": len(current)}
@@ -3688,6 +3717,212 @@ class PcbHandler(Handler):
                     (
                         f"get(kind='pcb', id='{ref.slug}#{refdes}', view='pinout')",
                         "the pad's row and head reflect the stored overrides",
+                    )
+                ]
+            )
+        )
+
+    def _op_pad_holes(
+        self, ref: Any, args: dict[str, Any], refdes: str, hole: str
+    ) -> Response:
+        """``op='pad'``'s non-plated-hole half (gr520149 slice 3):
+        ``hole='add'`` with ``x``/``y``/``drill`` in footprint-local mm
+        appends an NPTH to this instance's footprint; ``hole='<n>'``
+        with ``remove=true`` drops one — ``<n>`` is the 1-based
+        ``hole_index`` ``view='pinout'`` prints over the CURRENT resolved
+        hole list, so it names a catalog hole or an earlier add alike.
+
+        Stored on the same ``pcb_instances.meta['pad_overrides']`` map
+        under :data:`precis.pcb.padplace.HOLES_OVERRIDE_KEY`, applied by
+        the same :func:`~precis.pcb.padplace.apply_pad_overrides` seam —
+        the holes then ride ``footprint["holes"]`` into the IR's
+        ``mounting_holes`` (``npth_clearance``, the router's keep-out)
+        and the drill files — and judged inside
+        :meth:`_judged_mutation` like every other override. Revert needs
+        no hole-specific form: whole-map ``revert`` drops it with the
+        rest."""
+        for bad in ("pad", "dx", "dy", "w", "h"):
+            if args.get(bad) is not None:
+                raise BadInput(
+                    f"op='pad': {bad} does not combine with 'hole' — a hole "
+                    "edit is its own call",
+                    next="args={'op':'pad','refdes':'J1','hole':'add','x':0.5,"
+                    "'y':0.0,'drill':1.0} or {'op':'pad','refdes':'J1',"
+                    "'hole':'2','remove':true}",
+                )
+        if args.get("revert"):
+            raise BadInput(
+                "op='pad': revert does not combine with 'hole' — it already "
+                "drops every override on the part, holes included",
+                next="args={'op':'pad','refdes':'J1','revert':true}",
+            )
+        hole_add: dict[str, float] | None = None
+        hole_index = 0
+        if hole == "add":
+            hole_add = {}
+            for key in ("x", "y", "drill"):
+                value = args.get(key)
+                try:
+                    f = (
+                        float(value)
+                        if value is not None and not isinstance(value, bool)
+                        else math.nan
+                    )
+                except (TypeError, ValueError):
+                    f = math.nan
+                label = (
+                    "a positive mm diameter"
+                    if key == "drill"
+                    else "a finite number of mm"
+                )
+                if not math.isfinite(f) or (key == "drill" and f <= 0):
+                    raise BadInput(
+                        f"op='pad': hole='add' needs {key} as {label} (got {value!r})",
+                        next="args={'op':'pad','refdes':'J1','hole':'add',"
+                        "'x':0.5,'y':0.0,'drill':1.0}",
+                    )
+                hole_add[key] = f
+        else:
+            for key in ("x", "y", "drill"):
+                if args.get(key) is not None:
+                    raise BadInput(
+                        f"op='pad': hole={hole!r} remove takes no {key}",
+                        next="args={'op':'pad','refdes':'J1','hole':'<n>',"
+                        "'remove':true}",
+                    )
+            if not args.get("remove"):
+                raise BadInput(
+                    f"op='pad': hole={hole!r} needs remove=true — moving a "
+                    "hole is out of scope",
+                    next="args={'op':'pad','refdes':'J1','hole':'<n>',"
+                    "'remove':true} — <n> is the hole_index view='pinout' "
+                    "prints",
+                )
+            try:
+                hole_index = int(hole)
+            except (TypeError, ValueError):
+                hole_index = 0
+            if hole_index < 1:
+                raise BadInput(
+                    f"op='pad': hole must be 'add' or a 1-based hole_index "
+                    f"(got {hole!r})",
+                    next=f"get(kind='pcb', id='{ref.slug}#{refdes}', "
+                    "view='pinout') lists footprint holes",
+                )
+
+        def apply(conn: Any) -> dict[str, Any]:
+            graph = self.store.pcb_graph(ref.id)
+            instance = next(
+                (
+                    i
+                    for i in graph.get("instances") or []
+                    if str(i.get("refdes")) == refdes
+                ),
+                None,
+            )
+            if instance is None:
+                raise NotFound(
+                    f"pcb instance {refdes!r} not found in {ref.slug!r}",
+                    next=f"get(kind='pcb', id='{ref.slug}') lists this design's refdes",
+                )
+            _key, fp, _source = self._footprint_of_instance(ref, instance)
+            if not fp:
+                raise BadInput(
+                    f"pcb: {refdes} has no stored footprint to edit holes on — "
+                    "its pads are a synthesized bound, not real geometry",
+                    next="put(args={'op':'footprint','part':'<C-number>'}) "
+                    "first, or author a design-local footprint",
+                )
+            current = dict(instance.get("pad_overrides") or {})
+            hole_ov = dict(current.get(padplace.HOLES_OVERRIDE_KEY) or {})
+            add_list = [dict(h) for h in (hole_ov.get("add") or [])]
+            removed = {int(i) for i in (hole_ov.get("remove") or [])}
+            catalog = fp.get("holes") or []
+            live_catalog = [i for i in range(len(catalog)) if i + 1 not in removed]
+            added: dict[str, float] | None = None
+            if hole_add is not None:
+                target = {
+                    "x": round(hole_add["x"], 4),
+                    "y": round(hole_add["y"], 4),
+                    "dia_mm": round(hole_add["drill"], 4),
+                }
+                live = [
+                    h for i, h in enumerate(catalog) if i + 1 not in removed
+                ] + add_list
+                if any(
+                    h.get("x") == target["x"]
+                    and h.get("y") == target["y"]
+                    and h.get("dia_mm") == target["dia_mm"]
+                    for h in live
+                ):
+                    return {"status": "unchanged", "hole": hole, "n": len(live)}
+                add_list.append(target)
+                status = "hole_added"
+                added = target
+            else:
+                n_total = len(live_catalog) + len(add_list)
+                if not 1 <= hole_index <= n_total:
+                    raise BadInput(
+                        f"pcb: {refdes} has {n_total} footprint hole(s) — "
+                        f"hole {hole_index} is out of range",
+                        next=f"get(kind='pcb', id='{ref.slug}#{refdes}', "
+                        "view='pinout') lists hole_index",
+                    )
+                if hole_index <= len(live_catalog):
+                    removed.add(live_catalog[hole_index - 1] + 1)
+                else:
+                    del add_list[hole_index - len(live_catalog) - 1]
+                status = "hole_removed"
+            hole_ov = {}
+            if add_list:
+                hole_ov["add"] = add_list
+            if removed:
+                hole_ov["remove"] = sorted(removed)
+            if hole_ov:
+                current[padplace.HOLES_OVERRIDE_KEY] = hole_ov
+            else:
+                current.pop(padplace.HOLES_OVERRIDE_KEY, None)
+            ok = self.store.pcb_move_instance(
+                ref.id, refdes, meta={"pad_overrides": current or None}, conn=conn
+            )
+            if not ok:
+                raise NotFound(
+                    f"pcb instance {refdes!r} went away mid-edit",
+                    next=f"get(kind='pcb', id='{ref.slug}') lists this "
+                    "design's live refdes",
+                )
+            return {
+                "status": status,
+                "hole": hole,
+                "added": added if status == "hole_added" else None,
+                "n": len(live_catalog) + len(add_list),
+            }
+
+        result, judged = self._judged_mutation(ref.id, apply)
+        status = result["status"]
+        if status == "unchanged":
+            head = f"# {refdes}: no change — that hole is already on the footprint"
+        elif status == "hole_added":
+            added = result["added"]
+            head = (
+                f"# {refdes}: non-plated hole added at ({added['x']}, "
+                f"{added['y']}) dia {added['dia_mm']}mm — "
+                f"{result['n']} footprint hole(s) on this part"
+            )
+        else:
+            head = (
+                f"# {refdes}: footprint hole {result['hole']} removed — "
+                f"{result['n']} left on this part"
+            )
+        return Response(
+            body=head
+            + "\n"
+            + judged.lines()
+            + render_next_section(
+                [
+                    (
+                        f"get(kind='pcb', id='{ref.slug}#{refdes}', view='pinout')",
+                        "the footprint holes table reflects the stored overrides",
                     )
                 ]
             )
@@ -5527,6 +5762,12 @@ class PcbHandler(Handler):
             if fp is None:
                 lcsc = str(i.get("part_lcsc") or "")
                 fp = footprints.get(lcsc) if lcsc else None
+            ov = i.get("pad_overrides")
+            if fp and isinstance(ov, dict) and ov:
+                # gr520149 — the instance's op='pad' deltas ride the same
+                # seam here: an authored NPTH (or a removed catalog one)
+                # must export too.
+                fp = padplace.apply_pad_overrides(fp, ov)
             if fp and fp.get("holes"):
                 holes_by_refdes[str(i["refdes"])] = list(fp["holes"])
         if holes_by_refdes:
@@ -6641,6 +6882,7 @@ class PcbHandler(Handler):
                 tally[0] += 1
         rows = []
         n_cached = 0
+        dead_notes: list[str] = []
         for i in sorted(catalog, key=lambda x: str(x["refdes"])):
             lcsc = str(i["part_lcsc"]).strip().upper()
             row = rows_by_lcsc.get(lcsc)
@@ -6654,19 +6896,46 @@ class PcbHandler(Handler):
                 synthesized = "no"
             else:
                 synthesized = f"{n_synth}/{n_pins} pins"
+            refdes = str(i["refdes"])
+            # gr520149 — op='pad' deltas on THIS instance
+            # (pcb_instances.meta['pad_overrides']), one entry per
+            # overridden pad number. A stored key no pad on the resolved
+            # row claims is dead (apply_pad_overrides names it): marked
+            # '(dead)' here and spelled out under the table — never
+            # silently listed as live. The '#holes' meta entry is not a
+            # pad number — it renders as its own 'holes+N-M' token.
+            dead = set((footprints.get(refdes) or {}).get("dead_pad_overrides") or [])
+            for pad_num in sorted(dead):
+                dead_notes.append(
+                    f"{refdes}: override on pad {pad_num}: pad not on footprint"
+                )
+            ov = i.get("pad_overrides") or {}
+            keys = sorted(str(k) for k in ov if not str(k).startswith("#"))
+            hole_ov = ov.get(padplace.HOLES_OVERRIDE_KEY)
+            if isinstance(hole_ov, dict) and hole_ov:
+                keys.append(
+                    "holes"
+                    + (
+                        f"+{len(hole_ov.get('add') or [])}"
+                        if hole_ov.get("add")
+                        else ""
+                    )
+                    + (
+                        f"-{len(hole_ov.get('remove') or [])}"
+                        if hole_ov.get("remove")
+                        else ""
+                    )
+                )
             rows.append(
                 {
-                    "refdes": str(i["refdes"]),
+                    "refdes": refdes,
                     "lcsc": lcsc,
                     "cached": summary["cached"],
                     "source": summary["source"],
                     "n_pads": summary["n_pads"],
                     "synthesized": synthesized,
-                    # gr520149 — op='pad' deltas on THIS instance
-                    # (pcb_instances.meta['pad_overrides']), one entry per
-                    # overridden pad number.
                     "overrides": ",".join(
-                        sorted(str(k) for k in (i.get("pad_overrides") or {}))
+                        str(k) + ("(dead)" if str(k) in dead else "") for k in keys
                     )
                     or "-",
                 }
@@ -6696,6 +6965,7 @@ class PcbHandler(Handler):
                     "overrides",
                 ],
             )
+            + ("\n" + "\n".join(dead_notes) if dead_notes else "")
         )
 
     def _render_availability(self, ref_id: int) -> Response:
@@ -8392,7 +8662,22 @@ class PcbHandler(Handler):
         overrides = instance.get("pad_overrides") or {}
         if overrides and footprint:
             footprint = padplace.apply_pad_overrides(footprint, overrides)
-            source += f"; {len(overrides)} authored pad override(s)"
+            n_ov = sum(1 for k in overrides if not str(k).startswith("#"))
+            dead = footprint.get("dead_pad_overrides") or []
+            bits = []
+            if n_ov:
+                bits.append(
+                    f"{n_ov} authored pad override(s)"
+                    + (f" ({len(dead)} dead)" if dead else "")
+                )
+            hole_ov = overrides.get(padplace.HOLES_OVERRIDE_KEY)
+            if isinstance(hole_ov, dict) and hole_ov:
+                bits.append(
+                    f"{len(hole_ov.get('add') or [])} added/"
+                    f"{len(hole_ov.get('remove') or [])} removed footprint hole(s)"
+                )
+            if bits:
+                source += "; " + ", ".join(bits)
         preview = proposals is not None
         view = "pinout-preview" if preview else "pinout"
         head = (
@@ -8518,6 +8803,8 @@ class PcbHandler(Handler):
                 else []
             ),
         )
+        for dead_pad in footprint.get("dead_pad_overrides") or []:
+            body += f"\noverride on pad {dead_pad}: pad not on footprint"
         if result["holes"]:
             body += "\nfootprint holes (non-plated):\n" + render_agent_table(
                 [

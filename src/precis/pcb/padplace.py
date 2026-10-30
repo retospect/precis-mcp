@@ -379,6 +379,14 @@ def place_footprint_pads(
     return out_pads, out_drills
 
 
+#: The ``pad_overrides`` map's non-pad meta entry (slice 3): its value is
+#: ``{"add": [{x, y, dia_mm}], "remove": [<1-based catalog hole_index>]}``
+#: — the instance's authored non-plated-hole edits, applied to
+#: ``fp["holes"]`` at the same seam. The ``#`` prefix keeps it out of pad
+#: numbering and out of :func:`apply_pad_overrides`' dead-override tally.
+HOLES_OVERRIDE_KEY = "#holes"
+
+
 def apply_pad_overrides(
     fp: dict[str, Any], overrides: dict[str, Any] | None
 ) -> dict[str, Any]:
@@ -392,13 +400,35 @@ def apply_pad_overrides(
     stored centre in footprint-local mm; ``w``/``h`` REPLACE the pad's
     extent in mm. On a ``shape='polygon'`` pad the vertex ring is
     translated by the same delta and then scaled about the ring's own
-    bbox centre so the outline and ``w``/``h`` stay one fact. ``shape``,
-    ``rot``, ``layer``, ``drill``/``slot``, ``mask``/``paste`` and a pad
+    bbox centre so the outline and ``w``/``h`` stay one fact. ``drill``
+    REPLACES the pad's plated-hole diameter (mm, absolute — slice 2).
+    ``shape``, ``rot``, ``layer``, ``slot``, ``mask``/``paste`` and a pad
     the map doesn't name all pass through untouched — those are
-    slice-2+ fields the op refuses at the door.
+    slice-3+ fields the op refuses at the door.
+
+    An override whose pad number is NOT on the resolved row (an
+    ``op='footprint'`` re-pull renumbered the pads out from under it)
+    applies to nothing — it stays in the stored map (``revert`` drops
+    it) but is reported on the copy as ``dead_pad_overrides`` so the
+    views can mark it dead instead of listing it as live (slice 2).
+    ``#``-prefixed keys are meta entries, not pad numbers, and never
+    count as dead.
+
+    The ``#holes`` meta entry (slice 3) edits the row's non-plated
+    ``holes``: ``remove`` drops catalog holes by the 1-based index
+    ``view='pinout'`` prints, ``add`` appends authored ``{x, y, dia_mm}``
+    entries after the live catalog ones — so the removed/added holes
+    ride ``footprint["holes"]`` into DRC (``mounting_holes`` →
+    ``npth_clearance``), the drill files and the pinout table exactly
+    like catalog-authored ones.
     """
     if not overrides:
         return fp
+    live = {
+        str(p.get("number"))
+        for p in fp.get("pads") or []
+        if p.get("number") is not None
+    }
     pads: list[dict[str, Any]] = []
     for pad in fp.get("pads") or []:
         ov = overrides.get(str(pad.get("number") or ""))
@@ -431,9 +461,34 @@ def apply_pad_overrides(
                 p["w"] = round(float(ov["w"]), 4)
             if "h" in ov:
                 p["h"] = round(float(ov["h"]), 4)
+        # Slice 2 — an absolute re-drill of a plated through-hole pad (the
+        # op refuses it on a pad that carried none); ``shape``, ``rot``,
+        # ``layer``, ``mask``/``paste`` still pass through untouched.
+        if "drill" in ov:
+            p["drill"] = round(float(ov["drill"]), 4)
         p["x"], p["y"] = round(cx, 4), round(cy, 4)
         pads.append(p)
-    return {**fp, "pads": pads, "pad_overrides": dict(overrides)}
+    hole_ov = overrides.get(HOLES_OVERRIDE_KEY)
+    holes = fp.get("holes") or []
+    if isinstance(hole_ov, dict) and hole_ov:
+        removed = {int(i) for i in (hole_ov.get("remove") or [])}
+        holes = [dict(h) for i, h in enumerate(holes) if i + 1 not in removed] + [
+            {
+                "x": round(float(h["x"]), 4),
+                "y": round(float(h["y"]), 4),
+                "dia_mm": round(float(h["dia_mm"]), 4),
+            }
+            for h in (hole_ov.get("add") or [])
+        ]
+    return {
+        **fp,
+        "pads": pads,
+        "holes": holes,
+        "pad_overrides": dict(overrides),
+        "dead_pad_overrides": sorted(
+            k for k in overrides if not str(k).startswith("#") and k not in live
+        ),
+    }
 
 
 def board_pads(

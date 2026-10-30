@@ -261,9 +261,14 @@ designs and other instances keep catalog geometry while this part's
 rendered pads, DRC and gerber use the override.
 `args={'op':'pad','refdes':'J1','pad':'3','dx':0.2,'dy':-0.1}` shifts the
 pad's centre in footprint-local mm; `'w'`/`'h'` resize to an absolute
-extent. `revert:true` drops that pad's override — without `pad`, all of
-the part's. Judged like every inline edit: a delta that adds or deepens
-an error stores nothing. `view='pinout'` marks each overridden pad
-`authored pad override`; `view='footprints'` lists their numbers.
-Adding/removing pads or holes and `drill` edits refuse with a `next=`
-that names the tracking design note (slice-2+).
+extent; `'drill'` re-drills a plated through-hole pad to an absolute
+diameter (refused on an SMD land). `revert:true` drops that pad's
+override — without `pad`, all of the part's. Non-plated holes are
+their own call: `'hole':'add'` with `x`/`y`/`drill` appends an NPTH to
+that part's footprint, `'hole':'<n>'` + `'remove':true` drops one by
+its `view='pinout'` `hole_index`. Judged like every inline edit: a
+delta that adds or deepens an error stores nothing. `view='pinout'`
+marks each overridden pad `authored pad override` and names dead ones
+(pad no longer on the resolved footprint); `view='footprints'` lists
+their numbers. Adding/removing PADS still refuses with a `next=` that
+names the tracking design note.

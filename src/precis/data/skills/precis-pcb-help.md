@@ -470,14 +470,14 @@ explicit `paste` always wins.
 
 `op='pad'` edits ONE pad of ONE placed part — a delta on the instance,
 never the shared footprint row, so other designs and other instances
-keep catalog geometry while this part's rendered pads, DRC and gerber
-use the override: `args={'op':'pad','refdes':'J1','pad':'3','dx':0.2}`
+keep catalog geometry: `args={'op':'pad','refdes':'J1','pad':'3','dx':0.2}`
 shifts the pad's centre in footprint-local mm (the `view='pinout'`
-frame); `'w'`/`'h'` resize to an absolute extent; `revert:true` drops
-that pad's override — without `pad`, all of the part's. `view='pinout'`
-marks each overridden pad; `view='footprints'` lists their numbers.
-`add`/`remove`/`hole`/`drill` refuse with a `next=` that names the
-tracking design note (slice-2+).
+frame); `'w'`/`'h'` resize to an absolute extent; `'drill'` re-drills a
+plated through-hole pad (refused on SMD). `revert:true` drops that
+pad's override — without `pad`, all of the part's. Non-plated holes:
+`'hole':'add'` + `x`/`y`/`drill`, `'hole':'<n>'` + `'remove':true` by
+`view='pinout'` `hole_index`. Views mark overridden and dead pads; pad
+`add` refuses with a `next=`.
 
 ## Place it — `put(args={'op':'place', …})`
 

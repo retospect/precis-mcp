@@ -52,21 +52,28 @@ geometry (rendered pads, DRC, gerber), and must be revertible per pad.
   overridden pad and says so in the head; `view='footprints'` gains a
   per-part override column.
 
+## Shipped so far
+
+- Slice 1 (8649f93e9): move (`dx`/`dy`), resize (`w`/`h`), `revert`,
+  judged-mutation gating, `view='pinout'`/`view='footprints'` marks.
+- Slice 2: dead overrides — a stored key no pad on the resolved row
+  claims is surfaced (`dead_pad_overrides` on the applied copy;
+  `view='pinout'`/`view='footprints'` print "override on pad <n>: pad
+  not on footprint", revert drops it). `drill` re-drills a plated pad
+  to an absolute diameter (refused on SMD lands; judged like
+  move/resize). Non-plated holes: `hole='add'` + footprint-local
+  `x`/`y`/`drill` appends an NPTH; `hole='<n>'` + `remove=true` drops
+  one by its resolved `hole_index` (catalog or added) — stored under
+  the map's `#holes` meta key, applied at the same seam, judged the
+  same way.
+
 ## Explicitly NOT in scope (later slices)
 
-- Adding or removing a pad; adding, moving or removing a non-plated hole
-  (`holes[]`). `op='pad'` refuses `add`/`remove`/`hole` args with a
-  `next=` pointing at this note.
-- Changing a pad's `drill`/`slot` (annulus), `shape`, `layer`, `rot`,
-  `mask` or `paste` — `drill` is refused the same way.
+- Adding or removing a pad; moving a non-plated hole. `op='pad'`
+  refuses `add` with a `next=` pointing at this note.
+- Changing a pad's `slot`, `shape`, `layer`, `rot`, `mask` or `paste`.
 - Sugar addressing `'<slug>#J1.pad:3'`; per-field revert
   (`revert_fields=['dx']`); board-wide override listing.
-- Slice 2: `apply_pad_overrides` silently drops an override whose pad
-  number no longer exists on the resolved footprint (e.g. after
-  `op='footprint'` swaps the cache row for one numbered differently)
-  while `view='footprints'` still lists the stale pad number in the
-  overrides column — the stored delta should be surfaced as dead or
-  pruned, not left listing.
 
 ## Acceptance criteria
 

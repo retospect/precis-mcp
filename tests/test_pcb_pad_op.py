@@ -258,13 +258,14 @@ def test_op_pad_revert_restores_catalog_geometry(pcb):
 # ── refusals and the judged gate ─────────────────────────────────────────
 
 
-@pytest.mark.parametrize("key", ["add", "remove", "hole", "drill"])
-def test_op_pad_refuses_slice2_args_with_next_naming_the_note(pcb, key):
+def test_op_pad_refuses_pad_add_with_next_naming_the_note(pcb):
+    """``add`` stays refused — adding or removing a PAD is the remaining
+    out-of-scope half (hole add/remove is slice 3, tested below)."""
     _seed(pcb)
     with pytest.raises(BadInput) as exc:
         pcb.put(
             id="pad-op",
-            args={"op": "pad", "refdes": "U1", "pad": "1", key: True, "dx": 0.1},
+            args={"op": "pad", "refdes": "U1", "pad": "1", "add": True, "dx": 0.1},
         )
     assert "pcb-pad-overrides.md" in (exc.value.next or "")
 
@@ -348,6 +349,394 @@ def test_op_pad_move_onto_router_copper_rips_the_net_and_stores(pcb, store):
     assert status["N2"] != "realized"
     # The override stored — the collision was answered by ripping, not refusing.
     assert _instance(pcb, ref, "U1")["pad_overrides"] == {"1": {"dy": 1.0}}
+
+
+def _fp_tht() -> dict:
+    """A two-pad PLATED through-hole variant: 1.6mm round pads drilled
+    0.8mm (a 0.4mm annular ring, clear of the fab floor and the house
+    margin) at (0,0) and (3,0) — a 1.4mm edge gap, comfortably clean
+    until a re-drill eats the ring."""
+    fp = _fp()
+    for pad, x in zip(fp["pads"], (0.0, 3.0), strict=True):
+        pad.update({"shape": "CIRCLE", "x": x, "w": 1.6, "h": 1.6, "drill": 0.8})
+    fp["courtyard"] = {"bbox": [-1.0, -1.0, 4.0, 1.0]}
+    fp["centroid"] = {"x": 1.5, "y": 0.0}
+    return fp
+
+
+# ── drill: re-drill a plated pad (slice 2) ───────────────────────────────
+
+
+def test_op_pad_drill_redrills_a_plated_pad_and_reaches_drc(pcb):
+    """Slice 2: ``drill`` is an absolute plated-hole diameter on the pad
+    — it rides the same seam, so the DRC's drilled-pad model sees the
+    new bore while the other pad and the shared cache row keep 0.8."""
+    ref = _seed(pcb, placed=True)
+    pcb.store.part_footprint_put(_LCSC, _fp_tht())
+
+    resp = pcb.put(
+        id="pad-op",
+        args={"op": "pad", "refdes": "U1", "pad": "1", "drill": 1.0},
+    )
+    assert "override stored" in resp.body
+    assert _instance(pcb, ref, "U1")["pad_overrides"] == {"1": {"drill": 1.0}}
+
+    graph = pcb.store.pcb_graph(ref.id)
+    layers = [str(layer["name"]) for layer in graph["board"]["stackup"]]
+    pads = pcb._drc_pads(ref.id, layers)
+    drilled = {(p["refdes"], p["pin"]): p["drill"] for p in pads if p.get("drill")}
+    assert drilled[("U1", "A")] == pytest.approx(1.0)
+    assert drilled[("U1", "B")] == pytest.approx(0.8)
+    # The shared cache row is never rewritten.
+    assert pcb.store.part_footprint_get(_LCSC)["pads"][0]["drill"] == 0.8
+
+    # Per-pad revert restores the catalog bore.
+    pcb.put(
+        id="pad-op",
+        args={"op": "pad", "refdes": "U1", "pad": "1", "revert": True},
+    )
+    assert not _instance(pcb, ref, "U1").get("pad_overrides")
+
+
+def test_op_pad_drill_refuses_on_an_smd_pad(pcb):
+    """``drill`` on a surface pad — no plated hole to resize."""
+    _seed(pcb)
+    with pytest.raises(BadInput, match="no plated hole"):
+        pcb.put(
+            id="pad-op",
+            args={"op": "pad", "refdes": "U1", "pad": "1", "drill": 0.6},
+        )
+
+
+def test_op_pad_drill_past_the_annular_floor_is_judged_and_stores_nothing(pcb):
+    """Judged like move/resize: re-drilling 0.8→1.4 leaves a 0.10mm
+    annular ring, under the fab floor — the call refuses and the
+    override is never stored."""
+    ref = _seed(pcb, placed=True)
+    pcb.store.part_footprint_put(_LCSC, _fp_tht())
+    with pytest.raises(BadInput, match="invalid board"):
+        pcb.put(
+            id="pad-op",
+            args={"op": "pad", "refdes": "U1", "pad": "1", "drill": 1.4},
+        )
+    assert not _instance(pcb, ref, "U1").get("pad_overrides")
+
+
+def _fp_holed() -> dict:
+    """``_fp()`` plus two catalog non-plated holes (``holes[0]``/``[1]`` —
+    ``view='pinout'``'s ``hole_index`` 1 and 2)."""
+    fp = _fp()
+    fp["holes"] = [
+        {"x": -1.0, "y": 0.0, "dia_mm": 1.0},
+        {"x": 2.0, "y": 0.0, "dia_mm": 1.0},
+    ]
+    return fp
+
+
+# ── non-plated holes: add / remove / revert (slice 3) ───────────────────
+
+
+def test_op_pad_hole_add_rides_the_same_seam(pcb):
+    """``hole='add'`` stores under the map's ``#holes`` meta key and the
+    resolved footprint carries it: the pinout holes table, the DRC's
+    unplated drills and the footprints-view token all see it — the
+    shared cache row does not."""
+    ref = _seed(pcb, placed=True)
+    pcb.store.part_footprint_put(_LCSC, _fp_holed())
+
+    resp = pcb.put(
+        id="pad-op",
+        args={
+            "op": "pad",
+            "refdes": "U1",
+            "hole": "add",
+            "x": 0.5,
+            "y": 1.0,
+            "drill": 0.6,
+        },
+    )
+    assert "non-plated hole added" in resp.body
+    assert _instance(pcb, ref, "U1")["pad_overrides"] == {
+        "#holes": {"add": [{"x": 0.5, "y": 1.0, "dia_mm": 0.6}]}
+    }
+    # The shared cache row is never rewritten.
+    assert len(pcb.store.part_footprint_get(_LCSC)["holes"]) == 2
+
+    pinout = pcb.get(id="pad-op#U1", view="pinout")
+    assert "footprint holes (non-plated)" in pinout.body
+    assert "0.6000" in pinout.body  # the added hole's dia_mm row
+
+    graph = pcb.store.pcb_graph(ref.id)
+    ir = pcb._build_ir(ref.id, graph)
+    drills = [d for d in pcb._drc_drills(ir) if not d.get("plated")]
+    assert {(round(d["x"], 4), round(d["y"], 4), d["dia_mm"]) for d in drills} == {
+        (-1.0, 0.0, 1.0),
+        (2.0, 0.0, 1.0),
+        (0.5, 1.0, 0.6),
+    }
+
+    view = pcb.get(id="pad-op", view="footprints")
+    u1_row = next(line for line in view.body.splitlines() if line.startswith("U1"))
+    assert u1_row.split()[-1] == "holes+1"
+
+    # Re-sending the same add is a no-op, not a second hole.
+    again = pcb.put(
+        id="pad-op",
+        args={
+            "op": "pad",
+            "refdes": "U1",
+            "hole": "add",
+            "x": 0.5,
+            "y": 1.0,
+            "drill": 0.6,
+        },
+    )
+    assert "no change" in again.body
+
+
+def test_op_pad_hole_remove_drops_catalog_and_added_holes(pcb):
+    """``hole='<n>'`` + ``remove=true`` — ``<n>`` is the resolved
+    ``hole_index``: a CATALOG index records ``remove`` against the
+    catalog list; one naming an ADDED hole pops it back off."""
+    ref = _seed(pcb, placed=True)
+    pcb.store.part_footprint_put(_LCSC, _fp_holed())
+
+    resp = pcb.put(
+        id="pad-op",
+        args={"op": "pad", "refdes": "U1", "hole": "2", "remove": True},
+    )
+    assert "hole 2 removed" in resp.body
+    assert _instance(pcb, ref, "U1")["pad_overrides"] == {"#holes": {"remove": [2]}}
+
+    graph = pcb.store.pcb_graph(ref.id)
+    ir = pcb._build_ir(ref.id, graph)
+    drills = [d for d in pcb._drc_drills(ir) if not d.get("plated")]
+    assert {(d["x"], d["dia_mm"]) for d in drills} == {(-1.0, 1.0)}
+
+    # An index naming an added hole pops it off the add list: after the
+    # add the resolved holes are [catalog#1, added#2].
+    pcb.put(
+        id="pad-op",
+        args={
+            "op": "pad",
+            "refdes": "U1",
+            "hole": "add",
+            "x": 0.5,
+            "y": 1.0,
+            "drill": 0.6,
+        },
+    )
+    resp = pcb.put(
+        id="pad-op",
+        args={"op": "pad", "refdes": "U1", "hole": "2", "remove": True},
+    )
+    assert "hole 2 removed" in resp.body
+    assert _instance(pcb, ref, "U1")["pad_overrides"] == {"#holes": {"remove": [2]}}
+
+
+def test_op_pad_hole_edits_revert_with_the_whole_map(pcb):
+    """Whole-map ``revert`` drops hole overrides with the pad ones; the
+    catalog holes come back."""
+    ref = _seed(pcb, placed=True)
+    pcb.store.part_footprint_put(_LCSC, _fp_holed())
+    pcb.put(
+        id="pad-op",
+        args={
+            "op": "pad",
+            "refdes": "U1",
+            "hole": "add",
+            "x": 0.5,
+            "y": 1.0,
+            "drill": 0.6,
+        },
+    )
+    pcb.put(
+        id="pad-op",
+        args={"op": "pad", "refdes": "U1", "hole": "1", "remove": True},
+    )
+    resp = pcb.put(id="pad-op", args={"op": "pad", "refdes": "U1", "revert": True})
+    assert "all pad overrides reverted" in resp.body
+    assert not _instance(pcb, ref, "U1").get("pad_overrides")
+
+    graph = pcb.store.pcb_graph(ref.id)
+    ir = pcb._build_ir(ref.id, graph)
+    drills = [d for d in pcb._drc_drills(ir) if not d.get("plated")]
+    assert {(d["x"], d["dia_mm"]) for d in drills} == {
+        (-1.0, 1.0),
+        (2.0, 1.0),
+    }
+
+
+def test_op_pad_hole_edits_are_per_instance(pcb, store):
+    """A second instance of the same C-number keeps catalog holes —
+    the override lives on U1's instance row only."""
+    ref = _seed(pcb, placed=True, two=True)
+    pcb.store.part_footprint_put(_LCSC, _fp_holed())
+    pcb.put(
+        id="pad-op",
+        args={
+            "op": "pad",
+            "refdes": "U1",
+            "hole": "add",
+            "x": 0.5,
+            "y": 1.0,
+            "drill": 0.6,
+        },
+    )
+    assert not _instance(pcb, ref, "U2").get("pad_overrides")
+
+    ir = pcb._build_ir(ref.id, pcb.store.pcb_graph(ref.id))
+    fps = pcb_session.footprints_by_refdes(ir, pcb.store.pcb_footprints_for(ref.id))
+    assert len(fps["U1"]["holes"]) == 3
+    assert len(fps["U2"]["holes"]) == 2
+    u2_view = pcb.get(id="pad-op#U2", view="pinout")
+    assert "0.6000" not in u2_view.body
+
+
+def test_op_pad_hole_onto_router_copper_rips_the_net_and_stores(pcb, store):
+    """Judged like the pad half: an added NPTH that lands on stored
+    routed copper does not refuse — the colliding net yields, is ripped
+    and reported, and the override IS stored. The new hole's edge and
+    the N2 track's edge overlap (a negative gap, under the 0.45mm NPTH
+    floor)."""
+    ref = _seed(pcb, placed=True)
+    board_id = int(store.pcb_graph(ref.id)["board"]["board_id"])
+    nets = store.pcb_net_ids(ref.id)
+    store.pcb_routes_write(ref.id, board_id, {"N2": {"status": "realized"}})
+    store.pcb_copper_replace(
+        board_id,
+        [
+            {
+                "ctype": "track",
+                "layer": "F.Cu",
+                "net_id": nets["N2"],
+                "geom": {
+                    "segments": [
+                        {"shape": "line", "start": [-3.0, 1.0], "end": [3.0, 1.0]}
+                    ],
+                    "width_mm": 0.2,
+                },
+            }
+        ],
+    )
+    assert store.pcb_nets_with_router_copper(board_id) == {"N2"}
+
+    resp = pcb.put(
+        id="pad-op",
+        args={
+            "op": "pad",
+            "refdes": "U1",
+            "hole": "add",
+            "x": 0.5,
+            "y": 1.0,
+            "drill": 0.6,
+        },
+    )
+    assert "N2 ripped" in resp.body
+    assert store.pcb_nets_with_router_copper(board_id) == set()
+    assert _instance(pcb, ref, "U1")["pad_overrides"] == {
+        "#holes": {"add": [{"x": 0.5, "y": 1.0, "dia_mm": 0.6}]}
+    }
+
+
+def test_op_pad_hole_arg_validation(pcb):
+    _seed(pcb)
+    with pytest.raises(BadInput, match="needs remove=true"):
+        pcb.put(id="pad-op", args={"op": "pad", "refdes": "U1", "hole": "1"})
+    with pytest.raises(BadInput, match="does not combine"):
+        pcb.put(
+            id="pad-op",
+            args={
+                "op": "pad",
+                "refdes": "U1",
+                "hole": "add",
+                "x": 0.5,
+                "y": 1.0,
+                "drill": 0.6,
+                "pad": "1",
+            },
+        )
+    with pytest.raises(BadInput, match="revert does not combine"):
+        pcb.put(
+            id="pad-op",
+            args={
+                "op": "pad",
+                "refdes": "U1",
+                "hole": "add",
+                "x": 0.5,
+                "y": 1.0,
+                "drill": 0.6,
+                "revert": True,
+            },
+        )
+    with pytest.raises(BadInput, match="out of range"):
+        pcb.put(
+            id="pad-op",
+            args={"op": "pad", "refdes": "U1", "hole": "9", "remove": True},
+        )
+    with pytest.raises(BadInput, match="'remove' belongs"):
+        pcb.put(id="pad-op", args={"op": "pad", "refdes": "U1", "remove": True})
+
+
+# ── dead overrides (slice 2) ─────────────────────────────────────────────
+
+
+def test_dead_override_is_marked_in_both_views_and_revert_drops_it(pcb):
+    """Slice 2, docs/backlog/pcb-pad-overrides.md: an override whose pad
+    number no longer exists on the resolved footprint (an
+    ``op='footprint'``-style cache-row swap renumbered the pads) must not
+    drop silently — ``view='pinout'`` and ``view='footprints'`` say
+    "override on pad 1: pad not on footprint" and ``revert`` still drops
+    the stored entry."""
+    ref = _seed(pcb)
+    pcb.put(id="pad-op", args={"op": "pad", "refdes": "U1", "pad": "1", "dx": 0.2})
+    assert _instance(pcb, ref, "U1")["pad_overrides"] == {"1": {"dx": 0.2}}
+
+    # The cache row is re-pulled renumbered: pads '1'/'2' become '9'/'10',
+    # so the stored override on pad 1 applies to nothing.
+    renumbered = _fp()
+    for pad, number in zip(renumbered["pads"], ("9", "10"), strict=True):
+        pad["number"] = number
+    renumbered["pin_map"] = {
+        "9": {"name": "A", "tags": []},
+        "10": {"name": "B", "tags": []},
+    }
+    pcb.store.part_footprint_put(_LCSC, renumbered)
+
+    pinout = pcb.get(id="pad-op#U1", view="pinout")
+    assert "override on pad 1: pad not on footprint" in pinout.body
+    assert "1 dead" in pinout.body
+
+    view = pcb.get(id="pad-op", view="footprints")
+    assert "override on pad 1: pad not on footprint" in view.body
+    u1_row = next(line for line in view.body.splitlines() if line.startswith("U1"))
+    assert u1_row.split()[-1] == "1(dead)"
+
+    # Revert removes the dead entry like any other.
+    resp = pcb.put(
+        id="pad-op",
+        args={"op": "pad", "refdes": "U1", "pad": "1", "revert": True},
+    )
+    assert "pad 1 override reverted" in resp.body
+    assert not _instance(pcb, ref, "U1").get("pad_overrides")
+    view = pcb.get(id="pad-op", view="footprints")
+    assert "pad not on footprint" not in view.body
+
+
+def test_apply_pad_overrides_reports_the_unclaimed_keys():
+    """The seam itself: keys no pad on the row claims land on
+    ``dead_pad_overrides``; geometry is untouched."""
+    out = pcb_padplace.apply_pad_overrides(_fp(), {"7": {"dx": 0.5}, "2": {"dy": 0.1}})
+    assert out["dead_pad_overrides"] == ["7"]
+    assert out["pads"][0]["x"] == 0.0  # pad '1' has no override
+    assert out["pads"][1]["y"] == pytest.approx(0.1)
+    # A clean map reports no dead keys.
+    assert (
+        pcb_padplace.apply_pad_overrides(_fp(), {"1": {"dx": 1.0}})[
+            "dead_pad_overrides"
+        ]
+        == []
+    )
 
 
 # ── the pure seam ────────────────────────────────────────────────────────
