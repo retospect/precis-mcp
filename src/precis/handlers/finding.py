@@ -17,6 +17,11 @@ This handler owns the **write door** for findings:
   ``finding_body`` chunk that holds claim + setup as flowing prose,
   the initial ``derived-from`` link to the cited frontier, and
   tags it ``STATUS:tracing``.
+- ``put(tags=['STATUS:staged'], cited_in=<URL or web handle>)`` keeps an
+  unimported source and quote in ``meta.draft_source``; optional verifier
+  metadata is preserved without granting trust. Paper import promotes to
+  tracing only after source identity and a body quote match
+  (:mod:`precis.finding_drafts`).
 - ``put(hypothesis=True, motivation, testable_by, motivated_by)``
   proposes a nanopub **hypothesis** — a conjecture, which by type
   carries no evidence at all and stands on the artifacts that
@@ -91,6 +96,7 @@ import logging
 from collections.abc import Iterable
 from typing import TYPE_CHECKING, Any, ClassVar
 
+import psycopg
 from psycopg.errors import UniqueViolation
 
 from precis.errors import BadInput, NotFound, Unsupported
@@ -123,6 +129,7 @@ from precis.utils.link_tag_ops import apply_tag_ops
 from precis.utils.link_target import LinkTarget, parse_link_target
 from precis.utils.ref_hybrid import fused_ref_hits
 from precis.utils.search_merge import SearchHit, ref_hits_to_search_hits
+from precis.utils.url import canonical_url, is_http_url
 from precis.workers.embed import nudge_fresh_embed
 
 if TYPE_CHECKING:
@@ -351,11 +358,25 @@ class FindingHandler(NumericRefHandler):
         # A3 covers the ``tag`` verb; the same refusal applies to the
         # create-time ``tags=`` shortcut — otherwise ``put`` would mint
         # the grounded-cohort marker ``tag`` refuses to write (gr496191).
-        if tags:
+        parsed_tags = [Tag.parse_strict(t, kind=self.kind) for t in tags or []]
+        staged_mode = Tag.closed("STATUS", "staged") in parsed_tags
+        if parsed_tags:
             _refuse_hand_set_established(
-                [Tag.parse_strict(t, kind=self.kind) for t in tags],
+                parsed_tags,
                 pre_tags=set(),
                 where="a new finding",
+            )
+        if staged_mode and (
+            hypothesis
+            or supporters is not None
+            or wants is not None
+            or any(t.prefix == "STATUS" and t.value != "staged" for t in parsed_tags)
+        ):
+            raise BadInput(
+                "STATUS:staged requires only cited_in=, without another creation "
+                "mode or STATUS tag",
+                next="put(kind='finding', title='claim', body='quoted text', "
+                "cited_in='https://example.org/source', tags=['STATUS:staged'])",
             )
 
         body_text = body if body is not None else text
@@ -557,7 +578,11 @@ class FindingHandler(NumericRefHandler):
                         "source not in the corpus yet? "
                         "put(kind='paper', doi='10.1/x') or "
                         "put(kind='paper', arxiv='2401.00001') mints the "
-                        "stub — cite the resulting handle once ingested"
+                        "stub — cite the resulting handle once ingested; "
+                        "or save a staged (draft) finding with "
+                        "tags=['STATUS:staged'], "
+                        "cited_in='https://doi.org/10.1234/xyz', "
+                        "meta={'quote': '<verbatim source text>'}"
                     ),
                     (
                         "a canonical cross-paper claim mints a hub instead: "
@@ -618,21 +643,31 @@ class FindingHandler(NumericRefHandler):
         # Resolve the cited target. parse_link_target handles
         # kind:identifier and kind:identifier~N forms; bare handles
         # (no kind prefix) default to 'paper:'.
-        target = self._resolve_cited_in(str(cited_in).strip())
+        draft_source: dict[str, Any] | None = None
+        if staged_mode:
+            draft_source, target = self._resolve_draft_source(
+                str(cited_in).strip(), meta or {}, body_text
+            )
+        else:
+            target = self._resolve_cited_in(str(cited_in).strip())
 
         # Use the target ref's stable handle (cite_key, falls back
         # to ref_id) as the deterministic input to make_finding_paper_id.
         # Two agents citing the same source chunk under the same setup
         # collide on the resulting pub_id — that's the design intent.
-        target_ref = (
-            self.store.get_ref_by_id(target.ref_id)
-            if hasattr(self.store, "get_ref_by_id")
-            else None
-        )
-        # Fall back to a direct query when the helper isn't available.
-        if target_ref is None:
-            target_ref = self._fetch_ref_any_kind(target.ref_id)
-        target_handle = target_ref.slug or f"ref:{target.ref_id}"
+        if draft_source is not None:
+            target_handle = draft_source["url"]
+        else:
+            assert target is not None
+            target_ref = (
+                self.store.get_ref_by_id(target.ref_id)
+                if hasattr(self.store, "get_ref_by_id")
+                else None
+            )
+            # Fall back to a direct query when the helper isn't available.
+            if target_ref is None:
+                target_ref = self._fetch_ref_any_kind(target.ref_id)
+            target_handle = target_ref.slug or f"ref:{target.ref_id}"
 
         paper_id = make_finding_paper_id(
             body_text=body_text,
@@ -664,8 +699,13 @@ class FindingHandler(NumericRefHandler):
                     "chunk_id": None,  # ord is resolved at chase time
                     "ord": target.pos,
                 }
-            ],
+            ]
+            if target is not None
+            else [],
         }
+        if draft_source is not None:
+            ref_meta["draft_source"] = draft_source
+        initial_status = "staged" if staged_mode else _STATUS_TRACING
 
         # Insert ref + identifiers + body chunk + initial link +
         # status tag all inside one transaction. If anything fails
@@ -709,12 +749,12 @@ class FindingHandler(NumericRefHandler):
                 # Embed the body within seconds so a paraphrase search
                 # (and the next mint's dedup) can find it.
                 nudge_fresh_embed(self.store, conn=conn, reason="put finding")
-                # STATUS:tracing — closed namespace, one value per
+                # STATUS:staged or :tracing — one value per
                 # ref. Replace any existing STATUS tag (defensive;
                 # shouldn't exist on a fresh ref).
                 self.store.add_tag(
                     ref.id,
-                    Tag.closed(_STATUS_NAMESPACE, _STATUS_TRACING),
+                    Tag.closed(_STATUS_NAMESPACE, initial_status),
                     set_by="agent",
                     replace_prefix=True,
                     conn=conn,
@@ -724,13 +764,14 @@ class FindingHandler(NumericRefHandler):
                 )
                 # Initial derived-from link to the cited frontier.
                 # This is the chase worker's starting point.
-                self.store.add_link(
-                    src_ref_id=ref.id,
-                    dst_ref_id=target.ref_id,
-                    dst_pos=target.pos,
-                    relation=_DERIVED_FROM,
-                    conn=conn,
-                )
+                if target is not None:
+                    self.store.add_link(
+                        src_ref_id=ref.id,
+                        dst_ref_id=target.ref_id,
+                        dst_pos=target.pos,
+                        relation=_DERIVED_FROM,
+                        conn=conn,
+                    )
                 # Optional extra link from link= kwarg (D3 shortcut).
                 if extra_target is not None:
                     self.store.add_link(
@@ -754,13 +795,44 @@ class FindingHandler(NumericRefHandler):
         if extra_target is not None and extra_target.kind == "part":
             self._enqueue_part_datasheet(extra_target.ref_id)
 
+        if draft_source is not None:
+            # The source paper may already be in the corpus — a draft
+            # minted after the import finished still promotes, via the
+            # same source+quote check ingest completion runs. Best
+            # effort: the staged finding exists either way.
+            from precis.finding_drafts import promote_drafts_for_source
+
+            try:
+                promote_drafts_for_source(self.store, draft_source["url"])
+                # The promoted count spans every staged draft on this
+                # source — a sibling's promotion says nothing about THIS
+                # finding, whose own quote may still miss. Report the
+                # tag the row actually carries (live tags only, so an
+                # expired STATUS row can't leak in).
+                current = [
+                    value
+                    for ns, value in self.store.ref_tags_bulk([ref.id]).get(ref.id, [])
+                    if ns == _STATUS_NAMESPACE
+                ]
+                if current:
+                    initial_status = current[0]
+            except psycopg.OperationalError:
+                # Transient DB fault — the caller's retry depends on
+                # seeing it, not on a logged swallow.
+                raise
+            except Exception:
+                log.exception(
+                    "draft promotion on create failed for finding ref_id=%s",
+                    ref.id,
+                )
+
         return self._facts_note(
             Response(
                 body=(
                     f"created finding id={ref.id} pub_id={pub_id}\n"
                     f"title: {title_clean}\n"
-                    f"frontier: {target.raw}\n"
-                    f"status: STATUS:{_STATUS_TRACING}\n"
+                    f"frontier: {target.raw if target is not None else target_handle}\n"
+                    f"status: STATUS:{initial_status}\n"
                     f"placeholder: [{pub_id}] (use in text; precis resolve "
                     f"substitutes the primary cite_key once STATUS:established)"
                 )
@@ -1254,6 +1326,37 @@ class FindingHandler(NumericRefHandler):
     ) -> list[Tag]:
         """Refuse a hand-set ``STATUS:established`` on the ``tag`` verb."""
         _refuse_hand_set_established(added, pre_tags, where=f"finding id={ref_id}")
+        new_status = {
+            t.value
+            for t in added
+            if t.namespace == "closed" and t.prefix == _STATUS_NAMESPACE
+        }
+        if "staged" in new_status:
+            ref = self.store.get_ref(kind=self.kind, id=ref_id)
+            source = (ref.meta or {}).get("draft_source") if ref else None
+            if not isinstance(source, dict):
+                raise BadInput(
+                    f"finding id={ref_id}: STATUS:staged is minted by put() "
+                    "with a URL cited_in= — it needs meta.draft_source",
+                    next="put(kind='finding', title='<claim>', "
+                    "body='<verbatim quote>', "
+                    "cited_in='https://example.org/article', "
+                    "tags=['STATUS:staged'])",
+                )
+        staged = Tag.closed(_STATUS_NAMESPACE, "staged") in pre_tags
+        if staged and new_status & {"tracing", "established"}:
+            anchored = bool(
+                self.store.links_for(ref_id, direction="out", relation=_DERIVED_FROM)
+            )
+            if not anchored:
+                raise BadInput(
+                    f"finding id={ref_id}: a staged finding with no source "
+                    "anchor cannot jump to STATUS:tracing — promotion "
+                    "re-anchors the quote on a paper chunk first",
+                    next="import the source paper "
+                    "(put(kind='paper', doi='10.1/x')) so promotion "
+                    "re-anchors the quote, then the chase worker moves it",
+                )
         return added
 
     def search_hits(  # type: ignore[override]
@@ -1823,6 +1926,10 @@ class FindingHandler(NumericRefHandler):
             return Response(body="no finding entries match")
 
         postures = self._postures([int(r.id) for r in refs])
+        statuses = {
+            rid: next((value for ns, value in pairs if ns == "STATUS"), "")
+            for rid, pairs in self.store.ref_tags_bulk([r.id for r in refs]).items()
+        }
         rows: list[dict[str, str]] = []
         for r in refs:
             meta = r.meta or {}
@@ -1834,6 +1941,7 @@ class FindingHandler(NumericRefHandler):
                 "title": r.title,
                 "setup": setup_str,
                 "primary": primary,
+                "status": statuses.get(r.id, ""),
             }
             row.update(_posture_cells(postures.get(int(r.id))))
             rows.append(row)
@@ -1841,6 +1949,8 @@ class FindingHandler(NumericRefHandler):
         schema = ["id", "title", "setup", "primary"]
         if postures:
             schema = ["id", "title", "state", "support", "flags", "setup", "primary"]
+        if "staged" in statuses.values():
+            schema.insert(2, "status")
         if query is not None:
             header = f"# {len(refs)} finding match(es) for {query!r}"
         else:
@@ -2124,6 +2234,10 @@ class FindingHandler(NumericRefHandler):
             lines.append(f"_pub_id: {pub_id}  (placeholder for precis resolve)_")
         lines.append("")
         lines.append(f"title: {ref.title}")
+        source = meta.get("draft_source")
+        if isinstance(source, dict):
+            lines.append(f"source: {source.get('url', '')}")
+            lines.append(f"quote: {source.get('quote', '')}")
 
         # The claim body lives in the finding_body chunk; pull it
         # via the standard chunks API so we don't duplicate it on
@@ -2252,6 +2366,71 @@ class FindingHandler(NumericRefHandler):
     # ──────────────────────────────────────────────────────────────────
     # private helpers
     # ──────────────────────────────────────────────────────────────────
+
+    def _resolve_draft_source(
+        self, raw: str, meta: dict[str, Any], body: str
+    ) -> tuple[dict[str, Any], LinkTarget | None]:
+        """Resolve a draft's citation without fetching an external source."""
+        target = None
+        url: str | None
+        if is_http_url(raw):
+            url = raw
+        else:
+            target = parse_link_target(raw, store=self.store)
+            if target.kind != "web" or target.pos is not None:
+                raise BadInput(
+                    "STATUS:staged cited_in must be an HTTP(S) URL or web ref",
+                    next="put(kind='finding', title='<claim>', "
+                    "body='<verbatim quote>', "
+                    "cited_in='https://example.org/article', "
+                    "tags=['STATUS:staged'])",
+                )
+            cached = self.store.get_cache_entry_by_ref_id(
+                kind="web", ref_id=target.ref_id
+            )
+            if cached is not None:
+                url = (cached[1].meta or {}).get("url")
+            else:
+                web = self._fetch_ref_any_kind(target.ref_id)
+                url = (web.meta or {}).get("url")
+        if not isinstance(url, str) or not is_http_url(url):
+            raise BadInput(
+                "the staged source needs an HTTP(S) URL",
+                next="put(kind='finding', title='<claim>', body='<quote>', "
+                "cited_in='https://example.org/article', "
+                "tags=['STATUS:staged']) — the web ref's meta carries no "
+                "http(s) url, so pass the URL itself",
+            )
+        try:
+            url = canonical_url(url)
+        except ValueError as exc:
+            raise BadInput(
+                f"invalid staged source URL: {exc}",
+                next="cited_in='https://example.org/article' — an absolute "
+                "http(s) URL with a host",
+            ) from exc
+        quote = meta.get("quote", body)
+        if not isinstance(quote, str) or not quote.strip():
+            raise BadInput(
+                "meta.quote must be non-empty quoted source text",
+                next="put(kind='finding', title='<claim>', "
+                "body='<verbatim quote>', cited_in='<https url>', "
+                "tags=['STATUS:staged'], meta={'quote': '<verbatim quote>'})",
+            )
+        verdict_keys = ("verdict", "verifier", "checked_at")
+        if any(key in meta for key in verdict_keys) and not all(
+            isinstance(meta.get(key), str) and meta[key].strip() for key in verdict_keys
+        ):
+            raise BadInput(
+                "a verifier verdict needs verdict, verifier and checked_at in meta",
+                next="meta={'quote': '<verbatim quote>', 'verdict': "
+                "'supports', 'verifier': '<name>', 'checked_at': '2026-10-28'} "
+                "— all three, or none",
+            )
+        source: dict[str, Any] = {"url": url, "quote": quote}
+        if target is not None:
+            source["web_ref_id"] = target.ref_id
+        return source, target
 
     def _resolve_cited_in(self, raw: str) -> LinkTarget:
         """Parse ``cited_in=`` into a :class:`LinkTarget`.

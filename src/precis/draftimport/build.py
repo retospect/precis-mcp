@@ -42,6 +42,8 @@ from precis.draftimport.tex import (
     parse_bib,
     walk_document,
 )
+from precis.utils.quote_match import _match_quote as _match_quote
+from precis.utils.quote_match import _norm as _norm
 
 #: A LaTeX control sequence (command or active escape).
 _CMD = re.compile(r"\\[a-zA-Z@]+\*?|\\[^a-zA-Z\s]")
@@ -104,12 +106,6 @@ def _id_of(body: str) -> int:
     return int(body.split("id=")[1].split()[0].rstrip(",.()"))
 
 
-def _norm(s: str) -> str:
-    """Lowercase, collapse whitespace, drop non-alphanumerics — for matching a
-    verbatim quote against ingested paper text despite hyphenation/OCR drift."""
-    return re.sub(r"[^a-z0-9 ]", "", re.sub(r"\s+", " ", (s or "").lower()))
-
-
 def _tag_chunk(store: Any, chunk_id: int, pairs: list[tuple[str, str]]) -> None:
     """Tag a draft chunk (block-level via ``chunk_tags``) with ``(namespace,
     value)`` pairs — so e.g. ``flag:issue`` / ``note:techq`` blocks are
@@ -130,30 +126,6 @@ _NOTE_SENTINEL = re.compile(r"⟦note:(\d+)⟧")
 #: an unresolved citation marker that survived phase 2 (no backing reference
 #: anywhere) — the block carrying it is flagged ``flag:issue``/``note:missing-citation``.
 _DANGLING_CITE = re.compile(r"\[§([^\]]+)\]")
-
-
-def _match_quote(
-    store: Any, ref_id: int, quote: str, cache: dict[int, list]
-) -> int | None:
-    """Find the paper chunk whose text contains the verbatim quote and return
-    its chunk_id (-> ``[pc<id>]``), or None. Matches a distinctive normalized
-    prefix; the paper's chunks are cached per ref_id (papers are cited often)."""
-    needle = _norm(quote).strip()[:50]
-    if len(needle) < 15:
-        return None
-    chunks = cache.get(ref_id)
-    if chunks is None:
-        with store.pool.connection() as conn:
-            rows = conn.execute(
-                "SELECT chunk_id, text FROM chunks WHERE ref_id = %s AND ord >= 0 ORDER BY ord",
-                (ref_id,),
-            ).fetchall()
-        chunks = [(int(cid), _norm(txt)) for cid, txt in rows]
-        cache[ref_id] = chunks
-    for cid, hay in chunks:
-        if needle in hay:
-            return cid
-    return None
 
 
 class _PinnedPool:

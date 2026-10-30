@@ -11,6 +11,13 @@ Public surface mirrors the pipeline stages:
   :func:`precis.ingest.blocks.fill_embeddings` — reusable block
   helpers shared by paper and patent ingest pipelines.
 
+After every successful paper result, including a duplicate retry,
+``precis_add`` attempts staged (URL-backed draft) finding promotion against
+the committed
+body. A matching source and quote enter ordinary citation chase; retained
+verifier metadata never establishes trust. Bodyless papers safely leave staged
+findings untouched (``finding_drafts.py``).
+
 The legacy ``.acatome`` bundle parser that this package re-exported
 through B6 was deleted in B7. Callers that still need bundle
 parsing should pin to ``precis<0.7``; otherwise migrate to the

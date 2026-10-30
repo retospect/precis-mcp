@@ -50,9 +50,9 @@ priority lives in one sortable place. Prefer the direct kwarg —
 `tag(kind='todo', id=48, prio=3)` / `put(..., prio=3)`. Don't filter
 by `tags=['PRIO:...']`; nothing stores it.
 
-Closed prefixes are **kind-gated** — `PRIO:` and `STATUS:` only apply
-to workflow kinds (`todo`, `gripe`, `job`, `quest`); `memory` and other
-free-form kinds reject them. `STATUS:` is one closed axis but each kind
+Closed prefixes are **kind-gated** — `PRIO:` applies to workflow kinds;
+`STATUS:` applies to workflow kinds and findings. `memory` and other
+free-form kinds reject both. `STATUS:` is one closed axis but each kind
 accepts only its own lifecycle subset (a `quest` is active / dormant /
 abandoned; a `todo` open / done / …); the union (34 values) is what
 `get(kind='tag', id='STATUS:done')` lists as siblings. See the per-kind
@@ -236,14 +236,14 @@ the union (34 values). Pick the row that matches the ref you're tagging:
 |---|---|---|
 | Workflow (enforced) | `todo` | `open`, `doing`, `blocked`, `done`, `won't-do`, `paused`, `auto-timeout` |
 | Gripe (DB-checked) | `gripe` | `open`, `triaged`, `ready_for_fix`, `in_review`, `verify`, `done`, `wontfix` — never `won't-do`. `in_review` = a fix is in flight (claimed through landing and deploy); `verify` = deployed, awaiting the probe verdict — both non-terminal |
-| Citation chase | `finding` | `tracing`, `established`, `multi_candidate`, `dead_chain`, `refuted`, `acquiring` |
+| Citation chase | `finding` | `staged` (finding-only — not in the union; a staged (draft) finding awaiting source import + quote anchoring), `tracing`, `established`, `multi_candidate`, `dead_chain`, `refuted`, `acquiring` |
 | Taproot claim hub | `finding` | `canonical` |
 | Job queue | `job` | `queued`, `submitted`, `running`, `succeeded`, `failed`, `cancelled`, `cancel_requested` |
 | Coordinator yield/resume | `job` | also: `waiting_children`, `waiting_time`, `waiting_ask_user`, `waiting_manual_kick` |
 | Quest (perpetual striving — no `done`; enforced) | `quest` | `active`, `dormant`, `abandoned` |
 
 The runtime rejects unknown values at write time with the options list
-for that kind (for `todo`/`gripe`/`quest`) or the union (34 values)
+for that kind (for `todo`/`gripe`/`quest`/`job`/`finding`) or the union (34 values)
 for other kinds. To see the live set without triggering a write, `get(kind='tag',
 id='STATUS:open')` — the `sibling values` line surfaces the full closed
 vocabulary for the axis (`precis-status-help` is unrelated — build/DB
@@ -262,7 +262,7 @@ axes and suggests the lowercase rewrite.
 | `todo` | `STATUS`, `PRIO`, `AUDIT` (content-QA category), `SPACE` — the dispatch tier is `meta.llm_tier`, not a closed axis (§M facet normalization) |
 | `gripe` | `STATUS`, `PRIO`, `SPACE` |
 | `quest` | `STATUS` (perpetual lifecycle — `active`/`dormant`/`abandoned`, never `done`), `PRIO` (striving weight) |
-| `finding` | unrestricted — in practice `STATUS` (lifecycle subsets — see table above), `AUDIT` (content-QA category), `TAPROOT` (claim-hub discriminator), `SPACE` |
+| `finding` | unrestricted — in practice `STATUS` (lifecycle subsets — see table above; `staged` is URL-backed and finding-only), `AUDIT` (content-QA category), `TAPROOT` (claim-hub discriminator), `SPACE` |
 | `job` | `STATUS` (lifecycle subsets — see table above) |
 | `paper`, `patent` | `SRC`, `CACHE` (`paper` also `DREAM` + the ref-level categorizer axes: `DOMAIN`, `MATERIAL`, `PROPERTY`, `DIM`, `SCALE`, `STUDYTYPE`, `TRANSPORT`) |
 | `perplexity-research`, `perplexity-reasoning`, `websearch`, `web`, `youtube` | `CACHE`, `WATCH` |

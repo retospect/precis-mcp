@@ -5,6 +5,9 @@ declares its verb surface via :class:`precis.protocol.KindSpec`; handlers
 register with the :class:`precis.dispatch.Hub` at boot (contract + failure
 modes: :mod:`precis.dispatch`). Shared shapes live in underscore-prefixed
 sibling modules (``_numeric_ref``, ``_todo_views``, ``_job_bubble``, ...).
+Staged (URL-backed draft) findings preserve a URL and verbatim quote
+without fetching; paper import promotes only a source-and-quote match to
+the ordinary chase (:mod:`precis.finding_drafts`).
 Superseded-handle resolution and restoration: :mod:`precis.handlers.paper`.
 Python-only navigation provenance precedes content so pagination retains
 checkout identity. Call-local collection covers empty searches and cross-root

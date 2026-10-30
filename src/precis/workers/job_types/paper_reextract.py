@@ -39,6 +39,7 @@ import logging
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+import psycopg
 from psycopg.types.json import Jsonb
 
 from precis.utils.timeutil import now_iso
@@ -499,6 +500,20 @@ def reextract(
         len(chunk_rows),
         path,
     )
+    # The new body may satisfy staged findings waiting on this paper's
+    # quote (pdf_attach reaches here via the reextract job it mints).
+    # Best effort — a promotion fault must not fail the swap's record.
+    from precis.finding_drafts import promote_drafts_for_paper
+
+    try:
+        promote_drafts_for_paper(store, ref_id)
+    except psycopg.OperationalError:
+        # Transient DB fault — let the job surface it so the retry
+        # re-runs the swap's promotion, rather than logging the outage
+        # away as a finished record.
+        raise
+    except Exception:
+        log.exception("paper_reextract: draft promotion failed for ref_id=%s", ref_id)
     return _record(
         store,
         ref_id,

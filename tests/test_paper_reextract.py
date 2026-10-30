@@ -439,6 +439,32 @@ class TestReextractJob:
         assert rec["status"] == "extracted"
         assert _ords(store, rid) == [0, 1]
 
+    def test_extracted_body_is_a_draft_promotion_opportunity(
+        self, store: Store, tmp_path: Any
+    ) -> None:
+        """A swapped-in body can satisfy staged findings waiting on this
+        paper's quote — the swap runs the same promotion ingest does."""
+        from unittest.mock import patch
+
+        from precis.workers.job_types import paper_reextract
+
+        pdf = tmp_path / "promote.pdf"
+        _write_pdf(pdf, text="Title of rex-promote — body text.")
+        rid = _seed(store, "rex-promote")
+        sha = f"{rid:064d}"
+        _pdf(store, rid, sha, storage_path=str(pdf))
+        with patch(
+            "precis.finding_drafts.promote_drafts_for_paper", return_value=0
+        ) as promote:
+            rec = paper_reextract.reextract(
+                store,
+                rid,
+                corpus_dirs=(tmp_path,),
+                extractor=lambda p, c: _fake_body(2),
+            )
+        assert rec["status"] == "extracted"
+        promote.assert_called_once_with(store, rid)
+
     def test_chunk_links_removed_counted(self, store: Store, tmp_path: Any) -> None:
         """Links anchored on the outgoing chunks die with the DELETE —
         the count lands on the record and the body_replaced event

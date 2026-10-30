@@ -107,12 +107,12 @@ def test_parse_strict_accepts_refuted_on_finding_and_in_review_on_gripe() -> Non
 
 def test_parse_strict_accepts_verify_on_gripe_and_full_vocab() -> None:
     """pipeline v2 slice 1: ``verify`` joins the gripe vocabulary
-    (migration 0247) — accepted on gripe and on kinds that take the
-    full STATUS union (``finding``, like ``in_review`` today), refused
-    on the kinds carrying their own subset."""
+    (migration 0247) — accepted on gripe and unscoped (the full STATUS
+    union), refused on the kinds carrying their own subset — including
+    ``finding``, which gr520907 scoped to the chase lifecycle."""
     assert Tag.parse_strict("STATUS:verify", kind="gripe").value == "verify"
-    assert Tag.parse_strict("STATUS:verify", kind="finding").value == "verify"
-    for kind in ("todo", "job", "quest"):
+    assert Tag.parse_strict("STATUS:verify").value == "verify"
+    for kind in ("todo", "job", "quest", "finding"):
         with pytest.raises(BadInput, match=f"invalid STATUS value for kind '{kind}'"):
             Tag.parse_strict("STATUS:verify", kind=kind)
 

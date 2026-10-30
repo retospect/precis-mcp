@@ -31,6 +31,8 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
+import psycopg
+
 from precis.identity import make_pdf_sha256, normalize_doi
 from precis.ingest.article_spread import mark_article_start
 from precis.ingest.claim import Claim
@@ -330,6 +332,51 @@ def precis_add(
     metadata-only inputs (``DoiInput``/``ArxivInput``), which are cheap
     and need no cross-host claim coordination.
     """
+    result = _precis_add(
+        input,
+        store=store,
+        use_pdf2doi=use_pdf2doi,
+        crossref_mailto=crossref_mailto,
+        s2_api_key=s2_api_key,
+        marker_timeout_s=marker_timeout_s,
+    )
+    _promote_draft_findings(store, result)
+    return result
+
+
+def _promote_draft_findings(store: Store, result: IngestResult | None) -> None:
+    """Best-effort staged-finding promotion after a paper result.
+
+    The paper is already committed; a promotion fault must not move it
+    to ``errors/`` — log and swallow.
+    """
+    from precis.finding_drafts import promote_drafts_for_paper
+
+    if result is None or result.kind != "paper":
+        return
+    try:
+        promote_drafts_for_paper(store, result.ref_id)
+    except psycopg.OperationalError:
+        # Transient DB fault, not a promotion miss — the watcher's
+        # ingest retry re-runs the idempotent add and promotion with
+        # it, but only if the error reaches it.
+        raise
+    except Exception:
+        log.exception(
+            "draft-finding promotion failed for paper ref_id=%s", result.ref_id
+        )
+
+
+def _precis_add(
+    input: PrecisAddInput,
+    *,
+    store: Store,
+    use_pdf2doi: bool = False,
+    crossref_mailto: str = "",
+    s2_api_key: str = "",
+    marker_timeout_s: float | None = None,
+) -> IngestResult | None:
+    """Dispatch ingest; the public wrapper runs post-commit finding promotion."""
     # Fast path: PDF inputs get a pre-Marker probe on pdf_sha256.
     # The hash is bytes-cheap (~1 ms/PDF); the probe is one round
     # trip. A hit here skips both extraction and the slow-path
@@ -2614,7 +2661,7 @@ def _recover_markup_parse_failure(input: MarkupInput, *, store: Store) -> None:
         fold_ref_id=input.fold_ref_id,
     )
     if store.dsn is None:
-        _ingest_pdf(
+        result = _ingest_pdf(
             pdf_input,
             store=store,
             pdf_sha256=stored_sha256,
@@ -2622,6 +2669,7 @@ def _recover_markup_parse_failure(input: MarkupInput, *, store: Store) -> None:
             crossref_mailto="",
             s2_api_key="",
         )
+        _promote_draft_findings(store, result)
         return
     with Claim(store.dsn, stored_sha256) as claim:
         if not claim.acquired:
@@ -2631,7 +2679,7 @@ def _recover_markup_parse_failure(input: MarkupInput, *, store: Store) -> None:
                 input.fold_ref_id,
             )
             return
-        _ingest_pdf(
+        result = _ingest_pdf(
             pdf_input,
             store=store,
             pdf_sha256=stored_sha256,
@@ -2639,6 +2687,7 @@ def _recover_markup_parse_failure(input: MarkupInput, *, store: Store) -> None:
             crossref_mailto="",
             s2_api_key="",
         )
+        _promote_draft_findings(store, result)
 
 
 def _with_kind(result: IngestResult, *, kind: str) -> IngestResult:

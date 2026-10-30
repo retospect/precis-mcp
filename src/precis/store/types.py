@@ -978,6 +978,12 @@ class Tag:
                                 f"search(kind={kind!r}, status='*')"
                             ),
                         )
+                    # The kind's own subset is authoritative — a value
+                    # scoped to one kind (``staged`` is finding-only)
+                    # deliberately stays out of the shared union, so an
+                    # in-subset value returns here, before the union
+                    # check below.
+                    return cls.closed(prefix, value)
                 if prefix == "PRIO" and re.fullmatch(r"[pP]?\d+", value):
                     # Not mapped: callers mean a 1..5, P0..P4 or 1..10
                     # scale (see ``PRIO_TAG_ALIASES``); the numeric
@@ -992,6 +998,18 @@ class Tag:
                         ),
                     )
                 if value not in allowed:
+                    # A STATUS value scoped to one kind (finding's
+                    # ``staged``) is not in the union but is a valid
+                    # unscoped spelling — kind=None parses serve
+                    # cross-kind filters. Concrete kinds still refuse
+                    # it (their subset check above, or this union check
+                    # when they are unrestricted).
+                    if (
+                        prefix == "STATUS"
+                        and kind is None
+                        and value in _STATUS_VALUES_ANY_KIND
+                    ):
+                        return cls.closed(prefix, value)
                     close = difflib.get_close_matches(
                         value, sorted(allowed), n=3, cutoff=0.6
                     )
@@ -1163,6 +1181,28 @@ _KIND_STATUS_VALUES: dict[str, frozenset[str]] = {
     # 0065; also guarded in ``QuestHandler.tag`` via ``_LIFECYCLE``,
     # which reads this entry).
     "quest": frozenset({"active", "dormant", "abandoned"}),
+    # Finding citation-chase lifecycle (chase worker transitions plus
+    # ``canonical`` for the taproot claim hub — ``mint_hub`` is its sole
+    # writer). ``staged`` is deliberately finding-only and NOT in the
+    # shared union: a bare ``staged`` open tag stays legal on other
+    # kinds, and kinds that accept the union (``plan``, ``markdown``, …)
+    # still refuse ``STATUS:staged``.
+    "finding": frozenset(
+        {
+            "staged",
+            "tracing",
+            "established",
+            "multi_candidate",
+            "dead_chain",
+            "refuted",
+            "acquiring",
+            "canonical",
+            # Legacy terminal value — prod findings carry it from the
+            # pre-subset unrestricted era (gr520907); it must stay
+            # addable/removable/searchable, no migration.
+            "won't-do",
+        }
+    ),
     # Job lifecycle (executors/_common.py WAITING_* + claim/finish). The
     # tag verb only moves jobs along the agent-allowed edges in
     # ``JobHandler._AGENT_TRANSITIONS``; this set is the vocabulary.
@@ -1183,6 +1223,16 @@ _KIND_STATUS_VALUES: dict[str, frozenset[str]] = {
         }
     ),
 }
+
+#: Every STATUS value valid on *some* kind — a superset of the shared
+#: union when a value is scoped to one kind (finding's ``staged``).
+#: Unscoped parses (cross-kind tag filters run ``parse_strict`` with
+#: ``kind=None``) accept these so ``search(status='staged')`` and
+#: ``tags=['STATUS:staged']`` still work; a concrete ``kind=`` still
+#: enforces its own subset or the union — writes always carry one.
+_STATUS_VALUES_ANY_KIND: frozenset[str] = frozenset(
+    {v for vals in _KIND_STATUS_VALUES.values() for v in vals}
+)
 
 _CLOSED_VOCAB: dict[str, frozenset[str]] = {
     # STATUS hosts two distinct workflows on the same axis:

@@ -19,12 +19,46 @@ status: active
 # precis-finding-help — register a citation target and let the chase pull it
 
 A `finding` is a citation target: a claim you want sourced plus a
-pointer to where you read it. The worker fetches the cited paper
-(via Unpaywall / arXiv / S2 for DOIs, or OPS for patents) and walks
-the chain back toward the primary source. You get a numeric `id`
+pointer to where you read it. An ordinary chase finding points to an
+in-corpus source; a `STATUS:staged` finding can hold a URL-backed quote
+until its paper is imported. For ordinary chase findings, the worker
+fetches the cited paper (via Unpaywall / arXiv / S2 for DOIs, or OPS for
+patents) and walks the chain back toward the primary source. You get a numeric `id`
 back; drop it in your draft as a placeholder and run
 `precis resolve` at finalisation to substitute the primary
 `cite_key`.
+
+## Keep a finding as a cited draft until its source is imported
+## Record a URL-backed finding without fetching the source
+
+Create a draft against an HTTP(S) URL or an existing ref-level web
+handle; web chunk handles are not accepted. The quoted source text is
+`meta.quote` (defaults to `body`). Verifier metadata is optional; when
+present, `verdict`, `verifier`, and `checked_at` must all be nonempty
+strings:
+
+```python
+put(kind="finding", title="<claim>", body="<verbatim source quote>",
+    cited_in="https://example.org/article", tags=["STATUS:staged"],
+    meta={"quote": "<verbatim source quote>", "verdict": "supports",
+          "verifier": "<name>", "checked_at": "2026-10-28"})
+# Or cited_in="web:example-article" / the web ref handle.
+```
+
+Creation stores `meta.draft_source` and does not fetch. Paper import
+matches its canonical URL or normalized DOI, then the normalized first
+50 quote characters (minimum 15) against paper chunks. A missing source
+or quote match leaves the finding staged; a match replaces a web
+frontier with the paper chunk and moves it to `STATUS:tracing`. The saved
+source metadata remains as provenance after promotion. Tracing follows
+the ordinary chase; a saved verifier verdict does not establish or
+upgrade trust.
+
+Find staged (draft) findings with `search(kind='finding', status='staged')`;
+the default
+search cohort remains established findings plus claim hubs. `get(kind='finding',
+id='/recent')` shows `STATUS:staged` in its tags column; `search` results add
+a `status` column only when a staged row is present.
 
 ## Register a finding so the worker can chase its source
 ## Create a finding to track an empirical claim
@@ -52,27 +86,31 @@ put(
 #                            substitutes the cite_key once established)
 ```
 
-Required: `title`, `body`, `cited_in`. Recommended: `scope` (dict —
+For an ordinary chase finding, required: `title`, `body`, `cited_in`.
+Recommended: `scope` (dict —
 filters search and dedups identical `(body, scope, cited_in)`
 re-submissions so two agents writing the same claim collapse). A
 stale `scope` is part of that key: re-submitting or retitling with a
 different scope mints a second hub, and nothing merges them. Copy the
 existing finding's scope exactly.
 
-**`cited_in=` is the SOURCE you read the claim in — a paper/patent
-chunk handle — never the plan/deck/project you're writing into.**
+**For an ordinary chase finding, `cited_in=` is the SOURCE you read
+the claim in — a paper/patent chunk handle — never the plan/deck/project
+you're writing into.** Draft mode accepts an HTTP(S) URL or web handle
+as described above.
 `cited_in='deck-hook'` (a plan slug) is wrong and fails with
 `requires cited_in=…`; so does omitting `title=`. `finding` is not a
 free-text note tied to your current plan the way `memory`/`gripe`
 are — both `title=` and a source-chunk `cited_in=` are mandatory on
-every `put`. Patent sources work the same way: `cited_in='patent:ep1234567b1'`.
+ordinary chase `put`s. Patent sources work the same way:
+`cited_in='patent:ep1234567b1'`.
 
 ## What `cited_in=` accepts
 ## Pointer formats for the source of the claim
 ## How do I reference the paper or patent I'm citing?
 
-`cited_in=` takes a **handle** — the chunk where you read the claim
-(`pc<id>`, copied straight from search/get output):
+For an ordinary chase, `cited_in=` takes a **handle** — the chunk
+where you read the claim (`pc<id>`, copied from search/get output):
 
 ```python
 cited_in = "pc42"  # chunk handle — what output hands you back
@@ -81,15 +119,18 @@ cited_in = "patent:ep1234567b1"  # patent source, by DOCDB
 
 **A bare `doi:`/`arxiv:` is NOT accepted** — `cited_in='doi:10.1234/xyz'`
 fails with `unknown kind 'doi' in link target`. `cited_in` resolves
-through the link parser, which only knows corpus kinds. If the source
-isn't in the corpus yet, stub it and wait for ingest first
+through the link parser, which only knows corpus kinds. Draft mode
+instead accepts an HTTP(S) URL or web handle; it does not accept a bare
+DOI. For ordinary chase, if the source isn't in the corpus yet, stub
+it and wait for ingest first
 (`put(kind='paper', doi='10.1234/xyz')` + a `paper_ingested` waiting
 todo — see precis-cite-paper-help), then point `cited_in=` at the
 resulting paper's chunk.
 
 ## When to create a finding
 
-A claim you can trace to a corpus chunk (`cited_in`, below) **and**
+A claim you can trace to a corpus chunk (`cited_in`, below), or a
+URL-backed draft awaiting import, **and**
 that meets one of two grounds:
 
 - **Contestable** — a later reader could disagree or a later paper
@@ -117,9 +158,11 @@ is identical: 2.4 kV on Cu / N₂ is not the same finding as 2.4 kV on
 Ag / Ar.
 
 **`cited_in` is mandatory — a finding is not a free-standing note.**
-Every finding must point at the corpus chunk you read the claim in.
-If you have a claim but **no `cited_in` handle**, do *not* retry the
-same `put` — it will keep failing. Instead:
+An ordinary chase finding points at the corpus chunk you read the claim
+in. For an unimported web source, create a `STATUS:staged` finding as
+above. If neither source form is available, do *not* retry the same
+ordinary `put` — use acquisition mode or record synthesis in a
+draft/memory:
 
 - source in the corpus → cite it (`cited_in='pc42'`);
 - source not ingested yet → `search(kind='paper', q='…')` to find it,
@@ -305,8 +348,9 @@ status: STATUS:established
 ```
 
 ```python
-search(kind="finding", q="...")  # default: established only
+search(kind="finding", q="...")  # default: established findings + claim hubs
 search(kind="finding", q="...", status="tracing")
+search(kind="finding", status="staged")  # URL-backed, awaiting paper import
 search(kind="finding", q="...", status="*")  # all states
 ```
 
