@@ -51,6 +51,16 @@ readers accept every older version (the laptop wheel lags the server)
 and refuse only newer ones, with a next step — :func:`diag_from_dict` /
 :func:`run_result_from_dict` raise ``ValueError`` naming the upgrade;
 the importer maps that to ``BadInput``.
+
+``probe`` (S1c — :mod:`precis_diag.probe` re-exports) is the other core
+entry point: ``probe(selector, label=None) -> {count, digest, sample}``
+dispatching through per-domain :class:`~precis_diag.probe.ProbeResolver`
+adapters (``resolve`` + ``digest``). An unresolvable selector raises
+:class:`~precis_diag.probe.ProbeError`, which carries the Diag
+(``core.probe-unresolved``, ``next`` naming the fix); the CAD adapter
+(``precis_geom.out.Run.probe``) and the pcb adapter
+(``precis.pcb.probe`` + ``pcb.local.probe``) are the first registrants,
+and ``tests/test_diag_conformance.py`` walks every registered adapter.
 """
 
 from __future__ import annotations
@@ -349,17 +359,36 @@ def run_result_from_dict(raw: Any) -> RunResult:
 
 
 __all__ = [
+    "IDS_SAMPLE_CAP",
     "SCHEMA_VERSION",
     "SCHEMA_VERSIONS",
     "Anchor",
     "Diag",
     "FrameSite",
+    "ProbeError",
+    "ProbeResolver",
     "RunResult",
     "Status",
     "diag_from_dict",
     "diag_from_finding",
     "diag_to_dict",
+    "probe",
+    "probe_resolvers",
+    "register_probe",
     "render",
     "run_result_from_dict",
     "run_result_to_dict",
 ]
+
+
+# Imported at the bottom on purpose: ``precis_diag.probe`` builds Diags,
+# so it needs Diag/Status defined above — the submodule import after the
+# value types keeps the package import one-pass.
+from precis_diag.probe import (
+    IDS_SAMPLE_CAP,
+    ProbeError,
+    ProbeResolver,
+    probe,
+    probe_resolvers,
+    register_probe,
+)

@@ -8,9 +8,14 @@ design-review: yes
 
 ## Resume
 
-- **Next:** S1a: `precis_diag` core types, renderer, Finding conversion, wheel packaging, and the CAD run-failure adapter (Do next 1). It is on the GRIPE_FIX lane (devin-bugs-z), and stage 1 is committed at be01e5d26.
-- **Blocked by:** Nothing. trace-b landed in r114 (71121bd36).
-- **Unblocks:** Structured run failures and probes for cad, pcb and hex (gr522025–gr522028, gr522031, gr522032), and the laminar-common stackup for EWOD, flex and cartridge kinds.
+- **Next:** S2: the hex run-failure Diag and the hex selector probe
+  (gr522031, gr522032), in `hexfold` itself.
+- **Blocked by:** Nothing. S1 (S1a core + CAD run failure, S1b pcb
+  adapter, S1c probes) shipped 2026-10-29 on `worktree-diag-probe`
+  (8514c4333, 744ff91e1 and the S1c pcb adapter commit).
+- **Unblocks:** Structured run failures and probes for hex (gr522031,
+  gr522032), and the laminar-common stackup for EWOD, flex and
+  cartridge kinds.
 - **Acceptance:** Per slice in [shared-core-layers](../shared-core-layers.md) §Slices.
 - **Worktree:** per slice, on the GRIPE_FIX builder lanes.
 - **Builds:** Not estimated here; use the spec's slice list.
@@ -37,18 +42,17 @@ Rulings (gr522030 c2):
 
 ## Do next
 
-1. **S1a: core types, renderer, conformance, CAD run failure** (gr522030,
-   gr522025). The builder runs it in three stages: core package, then
-   packaging and linter contract, then the CAD adapter plus the conformance
-   suite and the `precis-diag-help` skill.
-2. **S1b: pcb adapter and DrcFinding round trip** (gr522027).
-3. **S1c: probes** (gr522026, gr522028).
+1. **S2: hex run failure + probe** (gr522031, gr522032). The run-failure
+   half already passes the shared adapter (hexfold `BuildError` carries a
+   serialized report); S2 freezes the Diag field set after the third
+   domain fits and adds the hex selector probe.
+2. **S3: stable handles and selector core.**
+3. **S4: checks harness, with DRC as the proof.**
 
 ## Horizon
 
-1. **S2: hex run failure and probe** (gr522031, gr522032).
-2. **S3: stable handles and selector core.**
-3. **S4: checks harness, with DRC as the proof.**
+1. **S3: stable handles and selector core.**
+2. **S4: checks harness, with DRC as the proof.**
 4. **S5: laminar-common extraction.** Moves the stackup model out of pcb
    before EWOD, flex or cartridge kinds grow their own.
 5. **S6: typed params, units adoption, run diff.**

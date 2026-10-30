@@ -198,6 +198,23 @@ Acceptance: `probe` on a CAD selector and a PCB selector each return
 count + digest + sample; an unresolvable selector yields a Diag with
 `next`.
 
+Status: **shipped 2026-10-29.** The core protocol
+(`precis_diag.probe` through `ProbeResolver` adapters, the conformance
+suite's probe contract over every registered adapter) plus both
+resolvers: CAD — `o.probe(selector, label=None)` in `precis_geom.out`
+resolves a pg object (bbox via positions) or a live `frame:<key>` at
+script time, records `{label, count, kind, digest}` on the calling
+trace frame (the trace schema's additive optional `probes` field) and
+the `view='trace'` frame card lists it; pcb — `precis.pcb.probe`'s
+resolver (`pads_of('U3')`, `nets:` globs over the batch, handle
+spellings in the digest's ids) exposed to scripts as
+`pcb.local.probe(board, selector)`, with the `view='frames'` card
+listing probes too. An unresolvable selector raises `ProbeError`
+carrying the Diag (`core.probe-unresolved`, `next` names the fix).
+What is left: the S2 hex probe, S3's selector algebra (union,
+intersect, `made_by`), and the Q7 ruling on a Diag section in the trace
+view.
+
 ### S2 — hex run failure + probe (gr522031, gr522032)
 
 The hex->se finding adapter exists (`precis_se.atomic.join` consumes

@@ -147,6 +147,18 @@ _KNOWN_UNWIRED: dict[str, str] = {
         "gr522027 S1b: the structured-readback surface for "
         "view='check'/'drc' consumers; no handler renders Diags yet"
     ),
+    "src/precis/pcb/probe.py::PcbProbeResolver.can_resolve": (
+        "gr522028 S1c: exists only to satisfy the ProbeResolver protocol "
+        "— local.probe always passes resolver= so the board-bound "
+        "resolver never registers and precis_diag's registry dispatch "
+        "never calls it"
+    ),
+    "src/precis/pcb/probe.py::PcbProbeResolver.digest": (
+        "gr522028 S1c: ProbeResolver protocol member — precis_diag.probe "
+        "calls it on the resolver= override local.probe passes; the "
+        "domain-agnostic core can't import this module, so no in-src "
+        "call site can name it"
+    ),
     "src/precis/pcb/clearance.py::outward_circle": (
         "pcb-vector-router slice 2: the circumscribed polygon for consumers "
         "that only take polygons; its first caller is slice 5's CDT input"

@@ -24,7 +24,8 @@ artifacts.
 Every public function is ``@traced`` — the ``block``/``instance``/
 ``connect`` calls are themselves ``core`` frames in the run's trace, and
 each stamps its manifest row with the calling frame's id unless an
-explicit ``frame=`` is given.
+explicit ``frame=`` is given — except :func:`probe`, which records on
+the calling frame rather than minting a frame of its own.
 """
 
 from __future__ import annotations
@@ -367,6 +368,26 @@ def scenario(scenario_id: str) -> None:
     _scenario = str(scenario_id)
 
 
+def probe(board: Any, selector: str, *, label: str | None = None) -> dict[str, Any]:
+    """Resolve a design-time selector against ``board`` — no op runs
+    (gr522028, shared-core-layers S1c): the pcb probe grammar,
+    ``pads_of('<refdes>')`` for one instance's pads or ``nets:<glob>``
+    for the matching nets, through :func:`precis.pcb.local.probe` (the
+    ``precis-geom[pcb-kernel]`` extra).
+
+    A board script's ``out.probe`` is the same door the CAD lane's
+    ``o.probe`` is: it prints one ``probe <label>: resolves to N
+    <kind>`` line, records ``{"label", "count", "kind", "digest"}`` on
+    the calling trace frame — deliberately NOT ``@traced``, so the
+    record lands on the caller and a probe never places anything of its
+    own — and returns ``{"count", "digest", "sample"}``. An
+    unresolvable selector raises :class:`precis_diag.ProbeError`
+    carrying the refusal Diag."""
+    from precis.pcb import local as _local
+
+    return _local.probe(board, selector, label=label)
+
+
 def finish() -> Path:
     """Write ``manifest.json`` + ``trace.json`` under the out dir. Idempotent."""
     global _finished
@@ -444,6 +465,7 @@ __all__ = [
     "finish",
     "instance",
     "note",
+    "probe",
     "ray",
     "scenario",
 ]

@@ -8,6 +8,7 @@ answers:
   - what is a Diag / RunResult and how do they map to hexfold Findings?
   - how does a run failure name the failing op's trace frame?
   - how do I read the failure the import_workspace refusal carried?
+  - how do I ask what a selector resolves to without running anything?
 applies-to: workspace script runs that fail (out.run / import_workspace), and any adapter turning domain failures into Diags
 status: active
 tags: [design]
@@ -89,6 +90,25 @@ one Diag per finding instead of the single `cad.run-failed`.
 - The live-object direction is `hexfold.diag.diags_from_report(report,
   *, anchor)` — the mirror of `finding_from_diag` for callers holding
   the `Report` object rather than the manifest.
+
+## Probes (S1c)
+
+`precis_diag.probe(selector, label=None)` answers "what does this
+selector resolve to" — nothing runs. It returns
+`{"count", "digest", "sample"}`; the digest is
+`{"count", "kind", "ids" | "bbox"}` and a per-domain resolver
+(`can_resolve` / `resolve` / `digest`) does the work. In a workspace
+script, `o.probe(scene_or_selector, label=...)` resolves a pg object
+(structure scene, flattened `pga.Geom`, hexfold `Net`) or a
+`frame:<key>` selector against the live trace, prints one
+`probe <label>: resolves to N <kind>` line and records
+`{label, count, kind, digest}` on the calling trace frame — the
+`view='trace'` frame card lists it there. On a board design,
+`pcb.local.probe(board, "pads_of('U3')")` or a `nets:` pattern resolves
+through `precis.pcb.probe`, also with no op run. An unresolvable
+selector raises `precis_diag.ProbeError`, which carries the refusal
+Diag (`core.probe-unresolved`, `next` names the fix); inside
+`out.run` the failed run's record picks the Diag's code up.
 
 ## See also
 

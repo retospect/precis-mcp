@@ -1274,6 +1274,52 @@ def diags(placement: LocalPlacement) -> list[Diag]:
     return [pcb_diag.drc_to_diag(f) for f in drc(placement)]
 
 
+def probe(board: Any, selector: str, *, label: str | None = None) -> dict[str, Any]:
+    """Resolve a design-time selector against the board — no op runs
+    (gr522028, shared-core-layers S1c).
+
+    ``selector`` is the pcb probe grammar: ``pads_of('<refdes>')`` for
+    one instance's pads, or ``nets:<pattern>`` (a ``*``/``?`` glob) for
+    the matching nets. Prints one ``probe <label>: resolves to N
+    <kind>`` line (label defaults to the selector), records
+    ``{"label", "count", "kind", "digest"}`` on the calling trace frame
+    when a tracer is live — the ``view='frames'`` card lists it, the
+    same shape as the CAD lane's ``out.probe`` — and returns the core
+    mapping ``{"count", "digest", "sample"}`` — the digest's ids use the
+    handle spellings (``U3.1``, ``net:LED_A``). The board may be a
+    :class:`precis_geom.pcb.Board` or its ``to_batch()`` dict, exactly
+    like :func:`place`. An unknown refdes raises
+    :class:`precis_diag.ProbeError` carrying the refusal Diag, as does a
+    selector outside the grammar; a net pattern that matches nothing is
+    not an error — it resolves to zero nets and the result carries a
+    ``hint`` naming the pattern and the nets that do exist."""
+    from precis.pcb import probe as pcb_probe
+    from precis_diag import probe as _probe
+    from precis_geom import trace as _trace
+
+    resolver = pcb_probe.resolver_for(_batch_of(board))
+    text = label or str(selector)
+    result = _probe(selector, label=label, resolver=resolver)
+    kind = result["digest"]["kind"]
+    if result["count"] == 0 and kind == "nets":
+        names = resolver.net_names()
+        look = ", ".join(names[:3]) + (", …" if len(names) > 3 else "")
+        result["hint"] = (
+            f"no nets match {selector.removeprefix('nets:')!r}; "
+            f"nets look like {look or '(none)'}"
+        )
+    _trace.record_probe(
+        {
+            "label": str(text),
+            "count": result["count"],
+            "kind": kind,
+            "digest": result["digest"],
+        }
+    )
+    print(f"probe {text}: resolves to {result['count']} {kind}")
+    return result
+
+
 def findings_text(findings: list[Any], *, header: str = "") -> str:
     """The ``drc.txt`` rendering — one ``rule  severity  where  detail``
     line per finding, errors first. Accepts ``Diag`` items too: a
@@ -1522,6 +1568,7 @@ __all__ = [
     "netlist_net",
     "place",
     "placement_json",
+    "probe",
     "ratsnest_svg",
     "route",
     "run",

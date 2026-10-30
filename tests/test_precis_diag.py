@@ -4,6 +4,9 @@ newer with a next step)."""
 
 from __future__ import annotations
 
+from collections.abc import Iterator
+from typing import Any
+
 import pytest
 
 import precis_diag
@@ -209,3 +212,194 @@ def test_precis_diag_is_stdlib_only() -> None:
                     assert mod.split(".")[0] in sys.stdlib_module_names | {
                         "precis_diag"
                     }, f"{path.name}: import of {mod}"
+
+
+# ── probe (S1c) ─────────────────────────────────────────────────────────
+
+
+def _drop_resolvers(domain: str) -> None:
+    """Drop one domain from the probe registry — test teardown only."""
+    import sys
+
+    mod = sys.modules["precis_diag.probe"]
+    mod._REGISTRY[:] = [r for r in mod._REGISTRY if r.domain != domain]
+
+
+class _ToyResolver:
+    """The conformance shape every domain resolver follows: can_resolve,
+    resolve, digest over a tiny in-memory entity set."""
+
+    domain = "toy"
+
+    def __init__(self, entities: dict[str, list[str]] | None = None) -> None:
+        self._entities = entities or {
+            "pins": ["U3.1", "U3.2", "U3.3"],
+            "nets": ["net:A", "net:B"],
+        }
+
+    def can_resolve(self, selector: Any) -> bool:
+        return isinstance(selector, str) and selector in self._entities
+
+    def resolve(self, selector: Any) -> list[str]:
+        if selector not in self._entities:
+            raise ValueError(f"toy: unknown selector {selector!r}")
+        return list(self._entities[selector])
+
+    def digest(self, entities: list[str]) -> dict[str, Any]:
+        kind = "nets" if entities and entities[0].startswith("net:") else "pins"
+        return {"count": len(entities), "kind": kind, "ids": list(entities)}
+
+
+@pytest.fixture()
+def toy_resolver() -> Iterator[_ToyResolver]:
+    """A registered toy resolver, dropped on teardown so the global
+    registry never leaks between tests."""
+    resolver = _ToyResolver()
+    precis_diag.register_probe(resolver)
+    yield resolver
+    _drop_resolvers("toy")
+
+
+def test_probe_returns_count_digest_sample(toy_resolver: _ToyResolver) -> None:
+    result = precis_diag.probe("pins", label="u3")
+    assert result["count"] == 3
+    assert result["digest"] == {
+        "count": 3,
+        "kind": "pins",
+        "ids": ["U3.1", "U3.2", "U3.3"],
+    }
+    assert result["sample"] == "U3.1, U3.2, U3.3"
+
+
+def test_probe_sample_truncates_ids(toy_resolver: _ToyResolver) -> None:
+    toy_resolver._entities["many"] = [f"x{i}" for i in range(10)]
+    result = precis_diag.probe("many")
+    assert result["count"] == 10
+    assert result["sample"] == "x0, x1, x2 (+7 more)"
+
+
+def test_probe_bbox_digest_samples_the_extent() -> None:
+    class _BBox:
+        domain = "bbox-toy"
+
+        def can_resolve(self, selector: Any) -> bool:
+            return selector == "box"
+
+        def resolve(self, selector: Any) -> list[Any]:
+            return [(0.0, 0.0), (4.0, 2.0)]
+
+        def digest(self, entities: list[Any]) -> dict[str, Any]:
+            xs = [p[0] for p in entities]
+            ys = [p[1] for p in entities]
+            return {
+                "count": len(entities),
+                "kind": "points",
+                "bbox": [min(xs), min(ys), max(xs), max(ys)],
+            }
+
+    result = precis_diag.probe("box", resolver=_BBox())
+    assert result["count"] == 2
+    assert result["digest"]["bbox"] == [0.0, 0.0, 4.0, 2.0]
+    assert result["sample"] == "[0, 0, 4, 2]"
+
+
+def test_probe_sample_renders_a_3d_bbox() -> None:
+    """The CAD resolver emits 6-number 3D extents — the sample must
+    render them, not fall through to "" (gr522030 review round 1)."""
+
+    class _BBox3D:
+        domain = "bbox3d-toy"
+
+        def can_resolve(self, selector: Any) -> bool:
+            return selector == "box3"
+
+        def resolve(self, selector: Any) -> list[Any]:
+            return [(0.0, 0.0, 0.0), (1.0, 2.0, 3.0)]
+
+        def digest(self, entities: list[Any]) -> dict[str, Any]:
+            return {
+                "count": len(entities),
+                "kind": "points",
+                "bbox": [0.0, 0.0, 0.0, 1.0, 2.0, 3.0],
+            }
+
+    result = precis_diag.probe("box3", resolver=_BBox3D())
+    assert result["sample"] == "[0, 0, 0, 1, 2, 3]"
+
+
+def test_probe_unresolvable_raises_probe_error(
+    toy_resolver: _ToyResolver,
+) -> None:
+    with pytest.raises(precis_diag.ProbeError) as exc_info:
+        precis_diag.probe("unowned")
+    d = exc_info.value.diag
+    assert d.code == "core.probe-unresolved"
+    assert d.status is Status.ERROR
+    assert d.next
+    assert exc_info.value.diag_code == d.code
+    assert exc_info.value.diag_refs == d.refs
+
+
+def test_probe_resolve_raise_becomes_probe_error(
+    toy_resolver: _ToyResolver,
+) -> None:
+    with pytest.raises(precis_diag.ProbeError) as exc_info:
+        precis_diag.probe("pins", resolver=_RaisingResolver())
+    assert exc_info.value.diag.code == "core.probe-unresolved"
+    assert "boom" in exc_info.value.diag.message
+    assert "nothing ran" in exc_info.value.diag.next
+
+
+class _RaisingResolver:
+    domain = "raising"
+
+    def can_resolve(self, selector: Any) -> bool:
+        return True
+
+    def resolve(self, selector: Any) -> Any:
+        raise ValueError("boom")
+
+    def digest(self, entities: Any) -> dict[str, Any]:
+        return {"count": 0, "kind": "none", "ids": []}
+
+
+@pytest.mark.parametrize(
+    "bad",
+    [
+        {"count": 1, "kind": "pins"},  # neither ids nor bbox
+        {"count": 1, "kind": "pins", "ids": ["a"], "bbox": [0, 0, 1, 1]},  # both
+        {"count": "1", "kind": "pins", "ids": ["a"]},  # count not int
+        {"count": 1, "kind": "", "ids": ["a"]},  # empty kind
+        {"count": 1, "kind": "pins", "ids": [1]},  # ids not str
+        {"count": 1, "kind": "pins", "bbox": [0, 0, 1]},  # bbox not 4
+    ],
+)
+def test_probe_malformed_digest_refuses(bad: dict[str, Any]) -> None:
+    class _Bad:
+        domain = "bad"
+
+        def can_resolve(self, selector: Any) -> bool:
+            return True
+
+        def resolve(self, selector: Any) -> list[str]:
+            return ["a"]
+
+        def digest(self, entities: list[str]) -> dict[str, Any]:
+            return dict(bad)
+
+    with pytest.raises(precis_diag.ProbeError) as exc_info:
+        precis_diag.probe("x", resolver=_Bad())
+    assert exc_info.value.diag.code == "core.probe-digest"
+
+
+def test_probe_register_replaces_same_domain() -> None:
+    class _A(_ToyResolver):
+        domain = "dup"
+
+    precis_diag.register_probe(_A())
+    replacement = _ToyResolver()
+    replacement.domain = "dup"
+    precis_diag.register_probe(replacement)
+    domains = [r.domain for r in precis_diag.probe_resolvers()]
+    assert domains.count("dup") == 1
+    _drop_resolvers("dup")

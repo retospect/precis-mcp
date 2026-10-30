@@ -712,6 +712,45 @@ class Run:
         self._vet_not_board("scenario")
         self._scenario = str(scenario_id)
 
+    def probe(self, selector: Any, label: str | None = None) -> dict[str, Any]:
+        """Resolve a selector or pg object at script time, without running
+        anything (gr522026, shared-core-layers S1c).
+
+        ``selector`` is whatever the CAD resolver accepts — a
+        ``frame:<key>`` string against the live trace, or a pg object
+        carrying ``.atoms`` (a structure scene, a flattened ``pga.Geom``,
+        a hexfold ``Net``). Prints one line — ``probe <label>: resolves
+        to N <kind>`` — and records ``{"label", "count", "kind",
+        "digest"}`` on the calling trace frame, so ``view='trace'``'s
+        frame card lists it under the frame that asked. ``label``
+        defaults to the selector string or the object's type name.
+
+        Returns the core mapping ``{"count", "digest", "sample"}``. An
+        unresolvable selector raises :class:`precis_diag.ProbeError`
+        carrying the refusal Diag — inside ``out.run`` the failure record
+        picks the Diag's code up like any stamped domain exception, so a
+        failed probe still names what to fix. Deliberately NOT
+        ``@traced``: the record belongs on the calling frame, and a
+        probe never places geometry of its own."""
+        import precis_geom.probe  # noqa: F401  (import registers the CAD resolver)
+        from precis_diag import probe as _probe
+
+        text = label or (
+            selector if isinstance(selector, str) else type(selector).__name__
+        )
+        result = _probe(selector, label=label)
+        kind = result["digest"]["kind"]
+        _trace.record_probe(
+            {
+                "label": str(text),
+                "count": result["count"],
+                "kind": kind,
+                "digest": result["digest"],
+            }
+        )
+        print(f"probe {text}: resolves to {result['count']} {kind}")
+        return result
+
     # -- serialisation ------------------------------------------------------
 
     def manifest(self) -> dict[str, Any]:

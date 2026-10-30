@@ -154,6 +154,52 @@ def test_card_subtree_sums_made_per_frame() -> None:
     assert "subtree 3" in card(Trace(doc), "a")
 
 
+def test_frame_card_lists_probe_records_under_the_frame() -> None:
+    """S1c: probes a script's ``out.probe`` recorded on this frame list
+    in the card, one ``probe <label>: resolves to N <kind>`` line each,
+    after the children block."""
+    from precis_se.traceview import Trace, card
+
+    doc: dict[str, Any] = {
+        "schema": 3,
+        "frames": [
+            {"id": 0, "key": "r", "qual": "run", "kind": "root", "parent": None},
+            {
+                "id": 1,
+                "key": "a",
+                "qual": "main.build",
+                "kind": "user",
+                "parent": "r",
+                "probes": [
+                    {
+                        "label": "triad",
+                        "count": 3,
+                        "kind": "atoms",
+                        "digest": {
+                            "count": 3,
+                            "kind": "atoms",
+                            "bbox": [0, 0, 0, 1, 1, 1],
+                        },
+                    },
+                    {
+                        "label": "strip-frame",
+                        "count": 16,
+                        "kind": "entities",
+                        "digest": {
+                            "count": 16,
+                            "kind": "entities",
+                            "ids": ["atoms:16"],
+                        },
+                    },
+                ],
+            },
+        ],
+    }
+    text = card(Trace(doc), "a")
+    assert "  probe triad: resolves to 3 atoms" in text
+    assert "  probe strip-frame: resolves to 16 entities" in text
+
+
 def _add_stale_measure(store: Store, se: SeHandler, slug: str) -> None:
     ref = store.get_ref(kind="se", id=slug)
     assert ref is not None

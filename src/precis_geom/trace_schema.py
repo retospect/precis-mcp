@@ -66,6 +66,11 @@ Frame fields (all present unless noted)::
              a successful None return is explicitly null.
     made     ``{entity_type: int}`` — what this frame alone placed.
     touched  ``{entity_type: int | [[lo, hi], ...]}`` — what it changed.
+    probes   optional (S1c, gr522026) — ``[{"label", "count", "kind",
+             "digest"}]`` probe records a script's ``out.probe`` call
+             attached to the frame that made it. Additive and optional
+             the way ``error`` is: writers omit it when empty, readers
+             accept older docs that lack it.
     error    optional — the exception type name (``ValueError``) when
              the call raised; only the innermost traced frame the
              exception left carries it. Absent on success.

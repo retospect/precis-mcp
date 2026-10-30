@@ -107,6 +107,10 @@ class _Frame:
     #: ``{key, hit}`` on a build-step frame (:mod:`precis_geom.steps`) —
     #: ``dump`` emits it as the frame's optional ``step`` field.
     step: dict[str, Any] | None = None
+    #: Probe records (``{"label", "count", "kind", "digest"}``) a script's
+    #: ``out.probe`` call attached to this frame (S1c, gr522026) — empty
+    #: when the frame made no probes; ``dump`` omits the key then.
+    probes: list[dict[str, Any]] = field(default_factory=list)
 
 
 class Tracer:
@@ -561,6 +565,8 @@ class Tracer:
                 d["error"] = fr.error
             if fr.step is not None:
                 d["step"] = dict(fr.step)
+            if fr.probes:
+                d["probes"] = [dict(p) for p in fr.probes]
             _emit_dict(d)
             groups: dict[str, list[_Frame]] = {}
             order: list[str] = []
@@ -602,6 +608,11 @@ class Tracer:
                             "returns": _fold_returns(rest),
                             "made": _sum_counts(c.made for c in rest),
                             "touched": _sum_counts(c.touched for c in rest),
+                            **(
+                                {"probes": [dict(p) for c in rest for p in c.probes]}
+                                if any(c.probes for c in rest)
+                                else {}
+                            ),
                         }
                     )
                 else:
@@ -969,6 +980,17 @@ def record(
             fr.touched.setdefault(k, []).extend(v)
 
 
+def record_probe(record: dict[str, Any]) -> None:
+    """Attach one probe record (``{"label", "count", "kind", "digest"}``)
+    to the innermost live frame — the calling script frame when a probe
+    runs inside ``out.run``. No-op when no tracer is active (the probe
+    line still prints; the record just has nowhere to live)."""
+    tr = _ACTIVE.get()
+    if tr is None:
+        return
+    tr.stack[-1].probes.append(dict(record))
+
+
 def leaf_id() -> int | None:
     """The innermost live frame's run-local id — the ``maker`` stamp."""
     tr = _ACTIVE.get()
@@ -1091,6 +1113,7 @@ __all__ = [
     "dump",
     "leaf_id",
     "record",
+    "record_probe",
     "run",
     "start",
     "steps_digest",

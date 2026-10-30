@@ -20,6 +20,7 @@ from __future__ import annotations
 import json
 from dataclasses import replace
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -29,6 +30,7 @@ from precis_diag import (
     Status,
     diag_from_dict,
     diag_to_dict,
+    probe,
     render,
 )
 from precis_geom import out as geom_out
@@ -144,6 +146,162 @@ ADAPTERS = {
     "hex-run-failure": (_hex_run_failure, "port.unknown"),
     "pcb-run-failure": (_pcb_run_failure, "pcb.builder-error"),
 }
+
+
+# ── probes (S1c) ─────────────────────────────────────────────────────────
+#
+# ``PROBES`` maps adapter name → ``(tmp_path -> (callable, kind))``: the
+# fixture drives the domain's real probe path and returns a zero-arg
+# callable producing the ``{"count", "digest", "sample"}`` mapping plus
+# the entity kind the digest must name. The contract every registered
+# adapter meets: count + digest + sample, ``count == digest["count"]``,
+# and a non-empty kind.
+
+
+def _drop_resolvers(domain: str) -> None:
+    """Drop one domain from the probe registry — test teardown only."""
+    import sys
+
+    mod = sys.modules["precis_diag.probe"]
+    mod._REGISTRY[:] = [r for r in mod._REGISTRY if r.domain != domain]
+
+
+class _ToyProbeResolver:
+    """The registry-shape stand-in until each domain adapter lands: a
+    resolver registered for the duration of the toy fixture only."""
+
+    domain = "toy"
+
+    def can_resolve(self, selector: Any) -> bool:
+        return selector == "toy:pins"
+
+    def resolve(self, selector: Any) -> list[str]:
+        return ["U3.1", "U3.2", "U3.3"]
+
+    def digest(self, entities: list[str]) -> dict[str, Any]:
+        return {"count": len(entities), "kind": "pins", "ids": list(entities)}
+
+
+def _toy_probe(tmp_path: Path) -> tuple[Any, str]:
+    from precis_diag import register_probe
+
+    register_probe(_ToyProbeResolver())
+    return (lambda: probe("toy:pins"), "pins")
+
+
+#: ``build(o)`` blocks a three-atom scene and probes it — the CAD slice's
+#: script-time probe path (gr522026).
+_CAD_PROBE_SCRIPT = (
+    "import numpy as np\n"
+    "from precis.structure.cell import Cell\n"
+    "from precis.structure.scene import Atom, Scene\n"
+    "\n"
+    "\n"
+    "def build(o):\n"
+    "    cell = Cell(np.eye(3) * 50.0, (False, False, False))\n"
+    "    atoms = {}\n"
+    "    for i, cart in enumerate([(0, 0, 0), (10, 0, 0), (0, 10, 5)]):\n"
+    "        la = f'aC{i + 1}'\n"
+    "        atoms[la] = Atom(label=la, element='C', frac=np.asarray(cart) / 50.0)\n"
+    "    scene = Scene(cell=cell, atoms=atoms)\n"
+    "    o.block('triad', scene)\n"
+    "    o.probe(scene, label='triad')\n"
+)
+
+
+def _cad_probe(tmp_path: Path) -> tuple[Any, str]:
+    """The real CAD path: a script probes its scene inside ``out.run``
+    (printing the line + recording on the calling frame), and the same
+    registered resolver answers the contract check for a fresh scene."""
+    import numpy as np
+
+    from precis.structure.cell import Cell
+    from precis.structure.scene import Atom, Scene
+
+    mod = load_script(tmp_path, _CAD_PROBE_SCRIPT)
+    out_dir = tmp_path / "out" / "x"
+    with geom_out.run(out_dir, work_root=tmp_path) as o:
+        mod.build(o)
+    doc = trace_schema.loads((out_dir / "trace.json").read_text(encoding="utf-8"))
+    frame = next(f for f in doc["frames"] if f.get("probes"))
+    (record,) = frame["probes"]
+
+    cell = Cell(np.eye(3) * 50.0, (False, False, False))
+    atoms = {
+        f"aC{i + 1}": Atom(label=f"aC{i + 1}", element="C", frac=np.asarray(c) / 50.0)
+        for i, c in enumerate([(0, 0, 0), (10, 0, 0), (0, 10, 5)])
+    }
+    scene = Scene(cell=cell, atoms=atoms)
+
+    def run_probe() -> dict[str, Any]:
+        result = probe(scene, label="triad")
+        # the dispatch and the script-time record agree
+        assert result["count"] == record["count"]
+        return result
+
+    return run_probe, "atoms"
+
+
+def _pcb_board() -> Any:
+    """A tiny two-part board: U3 declares 3 pins, LED1 ties two nets."""
+    import precis_geom.pcb as geom_pcb
+
+    b = geom_pcb.Board("probe-demo")
+    b.part("U3").declare(1, 2, 3)
+    led = b.part("LED1")
+    led.declare(1, 2)
+    b.net("LED_A").tie(led[1])
+    b.net("LED_K").tie(led[2])
+    return b
+
+
+def _pcb_probe_pads(tmp_path: Path) -> tuple[Any, str]:
+    """The real pcb path: ``pcb.local.probe`` resolves pads_of('U3')
+    against the batch with no op run (gr522028)."""
+    from precis.pcb import local as pcb_local
+
+    board = _pcb_board()
+
+    def run_probe() -> dict[str, Any]:
+        return pcb_local.probe(board, "pads_of('U3')")
+
+    return run_probe, "pads"
+
+
+def _pcb_probe_nets(tmp_path: Path) -> tuple[Any, str]:
+    from precis.pcb.probe import resolver_for
+
+    board = _pcb_board()
+
+    def run_probe() -> dict[str, Any]:
+        return probe("nets:LED_*", resolver=resolver_for(board))
+
+    return run_probe, "nets"
+
+
+PROBES = {
+    "cad-pg-object": (_cad_probe, "atoms"),
+    "pcb-net-pattern": (_pcb_probe_nets, "nets"),
+    "pcb-pads-of": (_pcb_probe_pads, "pads"),
+    "toy-adapter": (_toy_probe, "pins"),
+}
+
+
+@pytest.mark.parametrize("name", sorted(PROBES))
+def test_probe_returns_count_digest_sample(name: str, tmp_path: Path) -> None:
+    """S1c conformance: every registered adapter's probe answers count +
+    digest + sample; the digest's own count agrees and names its kind."""
+    fixture, kind = PROBES[name]
+    run_probe, expected_kind = fixture(tmp_path)
+    try:
+        result = run_probe()
+    finally:
+        _drop_resolvers("toy")
+    assert set(result) == {"count", "digest", "sample"}
+    assert result["count"] == result["digest"]["count"]
+    assert result["digest"]["kind"] == expected_kind
+    assert result["digest"]["count"] > 0
+    assert "ids" in result["digest"] or "bbox" in result["digest"]
 
 
 @pytest.mark.parametrize("name", sorted(ADAPTERS))

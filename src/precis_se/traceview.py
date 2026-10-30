@@ -367,8 +367,9 @@ def creator_text(trace: Trace, frame: dict[str, Any]) -> str:
 
 def card(trace: Trace, key: str, *, samples: list[str] | None = None) -> str:
     """The ``{'frame': key}`` ask: the frame line, own+subtree counts,
-    children one line each, up to three sample atom paths, and the
-    ``frame:<key>`` selector — never an atom list."""
+    children one line each, the frame's probe records (S1c) one line
+    each, up to three sample atom paths, and the ``frame:<key>``
+    selector — never an atom list."""
     fr = trace.frame(key)
     if fr is None:
         return f"frame {key} not in this trace"
@@ -389,6 +390,14 @@ def card(trace: Trace, key: str, *, samples: list[str] | None = None) -> str:
         )
         if len(kids) > 8:
             out.append(f"  … {len(kids) - 8} more")
+    probes = [p for p in (fr.get("probes") or ()) if isinstance(p, dict)]
+    for p in probes[:5]:
+        out.append(
+            f"  probe {p.get('label', '?')}: resolves to "
+            f"{p.get('count', '?')} {p.get('kind', '')}".rstrip()
+        )
+    if len(probes) > 5:
+        out.append(f"  … {len(probes) - 5} more probes")
     for s in (samples or [])[:3]:
         out.append(f"  e.g. {s}")
     out.append(f"selector: frame:{key}")
