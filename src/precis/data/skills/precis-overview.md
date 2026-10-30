@@ -79,6 +79,9 @@ name/path.
 |---|---|---|---|
 | `paper` | `pa5` | Ingested research paper | store |
 | `patent` | `pt40` | EPO OPS patent record | store |
+| `edgar` | `eg7` | SEC filing (EDGAR accession) — full-text over the filing's documents; `reach=` picks the local cache vs a live fetch. See `precis-edgar-help`. | store |
+| `news` | `nw7` | RSS/Atom news article, fetched live from the `news_sources` registry. | store |
+| `datasheet` | `da7` | Ingested component-datasheet PDF (the paper pipeline with `as_kind='datasheet'`) — the part catalog's documents, read like papers (`dk` chunks). See `precis-datasheet-help`. | store |
 | `cfp` | `cf3` | Call-for-proposal / requirements doc — read-only, spec role only, never cited as evidence. Link a proposal with `link(rel='has-requirement')`. See `precis-proposal-help`. | store |
 | `skill` | `precis-overview` | Agent how-to (you're reading one) | — |
 | `oracle` | `or7` | Curated wisdom-tradition entry | store |
@@ -99,6 +102,7 @@ name/path.
 | `cad` | `cd7` | Parametric solid-model design — a boolean DAG of placed analytic primitives authored as a text node-list (`cyl:r3mmh12mm`, `box:w40mmd20mmh10mm`); no meshing in the design loop. See `precis-cad-help`. | store |
 | `structure` | `st7` | Atomistic cell + bond-graph design for DFT / molecular modelling — typed ops (`add_atom`, `add_bond`, `constrain`, `relax`), relaxed across fidelity levels, exported POSCAR/extXYZ/CIF. See `precis-structure-help`. | store |
 | `pcb` | `pb7` | Electronics/PCB design — netlist + placement graph, read as a traversable graph, never pixels. Parts via `kind='part'`, datasheets via `kind='datasheet'`. See `precis-pcb-help`. | store |
+| `part` | `pn7` | LCSC/JLCPCB parts catalog — ingest-only, addressed by C-number (`C25804`); a linked part lazily mints its `pn` ref. See `precis-part-select-help`. | store |
 | `checklist` | `ck7` | Argued, invalidating check ledgers — a named set of items (each stating the failure it prevents), assigned to a target (every `pcb` gets `pcb-tapeout`), per-target verdicts that go stale when the item or the anchored part of the design changes; tool items read DRC/route/netlist state live, judgment items you decide and argue. See `precis-checklist-help`. | store |
 | `se` | `switch1` | Structural/mechanical design in metres — block tree with envelopes, ports, joints (incl. prestressed `axial` members), measures, BOM; views check what you claimed (validate/drc/stability/fasten/freedom). Its ATOMIC mode is the merged nanomachine kind: blocks realized as chemistry, bound into `structure` designs (rotaxanes, molecular motors). See `precis-se-help` (surface, incl. atomic mode) + `precis-se-design-help` (workflow) + `precis-se-fasten-help` (screwing it together: ISO screws, threaded holes, printed bosses) + `precis-se-dtree-help` (the design knowledge graph: function trees walked to leaves, axis and principles sweeps, `joint.params.leaf`) + `precis-se-print-help` (`realize` → build orientation → process DRC → STL/3MF, plus `view='fab'`'s whole-design table) + `precis-se-states-help` (discrete states, transitions, `view='kinematics'`/`'sweep'`) + `precis-se-fret-help` (FRET links, `view='fret'`) + `precis-se-flatpack-help` (flat-pack boxes from one sheet: finger joints, nesting, laser SVG / DXF) + `precis-se-chain-help` (DNA/RNA: helix/strand/domain, derived pairing, chain_* DRC) + `precis-se-regions-help` (properties on part of a block: taxonomy measurands, patch/ring/sites/atoms selectors, pockets) + `precis-se-fit-help` (`view='fit'`: mesh interference/fit check on real cad + import diff). | store |
 
@@ -108,6 +112,7 @@ name/path.
 |---|---|---|---|
 | `material` | `ma7` | Engineering material properties store — sourced values per property, canonical-units-only; `search(property=, min=, max=)` filters by range. See `precis-material-help`. | store |
 | `rxn` | `rx7` | Reaction-fact store — one transformation plus every reported yield/condition, each sourced to a paper or patent. MANY rows per (reaction, property) is the point: the spread IS the answer, never an average. `search(property='yield', reaction_class=)` is the precedent read. Distinct from `route` (a planned synthesis) and `pathway` (a computed surface network). See `precis-rxn-help`. | store |
+| `pathway` | `pw7` | Computed catalyst reaction network — intermediates + NEB barriers with pooled uncertainty; addressed by slug (`pw<id>` handles and bare ref ids also resolve), the methods paragraph citable. **Host-gated**: registered on the GPU-lane host, so off-host get/search return `NotFound` (`routes through host(s): …`). See `precis-pathway-help`. | pathway provider host |
 | `component` | `cp7` | General procurable-part store (bolt/hose/pipe/beam/gasket/bearing/adhesive/electronic part) — sourced per-spec values, canonical-units-only. Distinct from `part` (the JLCPCB/LCSC ingest-only catalog). See `precis-component-help`. | store |
 | `measure` | `mx12` (the `measures.id`) | One sourced number per row, about any subject — printed literal, value stored in SI and shown in the measurand's display unit, the run's input conditions, tier, anchor, reviews. `search(kind='measure', property='measurand/…', min=, max=, unit='Å', q='product=NH3 potential<-0.5 V')` is the range-and-conditions search; `get(kind='quest', id=Q, view='measures')` the best value per measurand. Read-only. See `precis-measure-help`. | store |
 | `alias` | `as12` | Bidirectional string map `a ⇄ b` (short names for long strings, id crosswalks, gripe-tied provisional mappings); `get(id='<either side>')` returns the other side. See `precis-alias-help`. | store |
@@ -156,6 +161,8 @@ Pass `q=` (or `id=`), get text back. No agent-side slugs.
 | `web` | Fetch + extract a URL | `https://example.com/page` | free |
 | `wikipedia` | Resolve + fetch one Wikipedia article (on-demand; fenced from default search via `ORIGIN:wikipedia`) | `CRISPR gene editing` | free |
 | `chem` | Chemical name / CAS / abbreviation → canonical SMILES + InChIKey, source named; ambiguous names refused with candidates. See `precis-chem-help`. | `aspirin` · `50-78-2` · `DCM` | free |
+| `semanticscholar` | Semantic Scholar Graph API — paper search by `id='<query>'`, or a known paper's citation graph via `id='refs:<s2-id>'` / `id='cites:<s2-id>'` (every row carries a DOI / arXiv id for a `put(kind='paper', doi=…)` stub). | `MoS2 band gap` | free |
+| `estimate` | Local composition panel for an element set (`q='Pd Zr H'`) or geometry lint / symmetry / BEP scaling for a held `structure` — cache-pinned, deterministic. See `precis-estimate-help`. | `Pd Zr H` | free |
 | `websearch` | Perplexity Sonar: fast factual | `latest perovskite results` | paid |
 | `perplexity-reasoning` | Perplexity Sonar Reasoning Pro | `compare DAC and BECCS` | paid |
 | `perplexity-research` | Perplexity Sonar Deep Research | `mechanism of NOxRR` | paid |
@@ -205,6 +212,11 @@ get(kind="skill")  # list every active skill
 Too many hits? Narrow skill search/toc with `args={'family': 'se'}` or
 `args={'tag': 'workflow'}`; narrow memory search with `args={'under': 'me<hub>'}`
 (a hub's subtree) or `tags=['section:gotchas']`. Responses suggest these when they'd help.
+
+Slug exceptions: `kind='part'` is documented under `precis-part-select-help`
+— there is no `precis-part-help`. A `NotFound` on a guessed help slug is
+not a dead end: describe the goal instead —
+`search(kind='skill', q='<what you want to do>')`.
 
 ## The todo tree — task substrate
 

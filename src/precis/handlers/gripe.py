@@ -510,7 +510,7 @@ class GripeHandler(NumericRefHandler):
             id_max=id_max,
         )
         if past_page > 0:
-            line += f" · {past_page} more past this page (page=N)"
+            line += f" · {past_page} more past this page"
         return line
 
     def _list_row_marks(self, refs: list[Ref]) -> dict[int, str]:

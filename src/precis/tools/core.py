@@ -13,6 +13,7 @@ import threading
 from typing import TYPE_CHECKING, Any
 
 from precis import serve_ledger
+from precis.handlers._interpret import PREFIX as _INTERPRETED_PREFIX
 from precis.runtime.handle_deref import TEXT_PAYLOAD_MAX_BYTES
 
 if TYPE_CHECKING:
@@ -518,15 +519,17 @@ def get(
 ) -> str:
     """Read a ref or compute a value.
 
-    `id=` is the slug / numeric id. `view=` picks a display variant
+    `id=` is the canonical handle (`pa5`, `mc42`), a slug, or a numeric
+    id — a bare number is a paper's cite_key, not its id; papers also
+    accept a DOI. `view=` picks a display variant
     (kind-specific, e.g. 'abstract', 'bibtex'). `q=` is a free-text
     query for compute-style kinds. `args=` is a dict of typed extras
-    for views that need them (callgraph, runtrace, ...); reserved
-    keys (`kind`, `id`, `view`, `q`) inside `args=` are rejected.
-    `extent=` (every kind) selects the fisheye ladder's rung — `fisheye`,
-    `fisheye+1hop`, `fisheye+2hop`, optionally `+recall` — rendering the
-    node with its neighbourhood (get(kind='skill', id='precis-fisheye-help')).
-    `project=` (draft only) looks up by owning project todo instead of id=.
+    for views that need them (callgraph, runtrace, ...); an unknown
+    key fails the call with `[error:BadInput]` listing the kind's
+    accepted keys — reserved keys (`kind`, `id`, `view`, `q`) are
+    rejected outright.
+    `extent=` selects a fisheye rung (see precis-fisheye-help).
+    `project=`: draft's owning todo, instead of `id=`.
     `spec=` (component only) picks the spec for `view='bom'`'s consistency
     query. `full=` (skill only) forces a full re-serve past the
     `args={'have': <rev>}` stub; `tag=`/`kinds=` (skill only) filter `id='toc'`.
@@ -582,6 +585,20 @@ def search(
     kind: str | None = None,
     scope: str | None = None,
     page_size: int | None = None,
+    # ``k=`` / ``limit=`` are the two spellings agents reach for out of
+    # habit (top-k retrieval, SQL LIMIT) — declared here rather than left
+    # to gr334695's strict unknown-kwarg rejection, and normalised to
+    # ``page_size`` (the canonical name) just below. Real parameters, not
+    # ``**kw`` tolerance, so the slim layer can promote them.
+    k: int | None = None,
+    limit: int | None = None,
+    # ``offset=`` is the third legacy spelling — an item count into a
+    # paging model that no longer exists (gr530420): ``offset=0`` is an
+    # accepted no-op on the ``interpreted:`` line, anything past it
+    # refuses like ``page=2`` does. Declared for the same reason as
+    # k=/limit=: the slim schema doesn't advertise it, so mcp_slim
+    # promotes it here.
+    offset: int | None = None,
     tags: list[str] | None = None,
     reach: str | None = None,
     exclude: list[str] | None = None,
@@ -736,9 +753,10 @@ def search(
 ) -> str:
     """Hybrid lexical + semantic search across kinds.
 
-    `page_size` ≤ 100 selects the top-N hits. Omit `kind` (or `'*'`) for
-    cross-kind fan-out; `exclude=` skips slugs; `reach=`
-    ('local'|'remote'|'both'; patent/edgar); `folder=` scopes.
+    `page_size` ≤ 100 selects the top-N hits (`k=`/`limit=` read as it).
+    Omit `kind` (or `'*'`) for cross-kind fan-out; `exclude=` skips
+    slugs; `reach=` ('local'|'remote'|'both'; patent/edgar); `folder=`
+    scopes.
 
     `mode=` 'hybrid' (default) / 'lexical' (exact) / 'semantic' /
     'verbatim' (all query words as chunk keywords). `angle=`+`like=`
@@ -759,13 +777,52 @@ def search(
     # ``_validation_error`` so the MCP ``isError`` flag survives.
     from precis.errors import BadInput
 
+    # Refusal ``next=`` calls echo the caller's kind so a non-paper
+    # caller isn't sent to a kind it never searched; 'paper' is the
+    # fallback only when no kind was given (gr536312).
+    _next_kind = kind or "paper"
+
+    # k=/limit= are aliases for page_size= (gr338443, gr530420). Collect
+    # whichever of {page_size, k, limit} were actually given a value (all
+    # three default to None, so an explicit page_size=10 still counts as
+    # given). Agreeing values (including a caller passing the same
+    # number twice under different names) are fine; disagreeing ones
+    # are BadInput naming page_size as the one true spelling.
+    _psize_given: list[tuple[str, int]] = []
+    if page_size is not None:
+        _psize_given.append(("page_size", page_size))
+    if k is not None:
+        _psize_given.append(("k", k))
+    if limit is not None:
+        _psize_given.append(("limit", limit))
+    if len({v for _, v in _psize_given}) > 1:
+        runtime = _get_runtime()
+        return _validation_error(
+            runtime.render_error(
+                BadInput(
+                    "search() got conflicting page_size/k/limit values: "
+                    + ", ".join(f"{name}={value}" for name, value in _psize_given),
+                    next="pass one — page_size= is the canonical name",
+                )
+            )
+        )
+    # A deprecated spelling names its reading on the interpreted: first
+    # line (gr514469) — one release, then k=/limit= go away.
+    _psize_reading = (
+        f"'{_psize_given[0][0]}' read as 'page_size' — the deprecated "
+        "alias; 'page_size' is canonical"
+        if _psize_given and _psize_given[0][0] != "page_size"
+        else None
+    )
+    page_size = _psize_given[0][1] if _psize_given else None
+
     if page_size is not None and (not isinstance(page_size, int) or page_size <= 0):
         runtime = _get_runtime()
         return _validation_error(
             runtime.render_error(
                 BadInput(
                     f"page_size must be a positive integer, got {page_size!r}",
-                    next="search(kind='paper', q='...', page_size=10)",
+                    next=f"search(kind={_next_kind!r}, q='...', page_size=10)",
                 )
             )
         )
@@ -776,11 +833,46 @@ def search(
                 BadInput(
                     f"page_size={page_size} exceeds maximum {_SEARCH_PAGE_SIZE_MAX}",
                     next=(
-                        f"narrow with scope= or paginate; "
+                        f"narrow with scope= or refine q=; "
                         f"max page_size is {_SEARCH_PAGE_SIZE_MAX}"
                     ),
                 )
             )
+        )
+
+    # offset= counted *items* in the paging model main removed
+    # (gr530420): there is no page for it to land on. offset=0 is an
+    # accepted no-op announced on the interpreted: line; anything past
+    # it refuses the way page= does — next= names page_size= and how to
+    # narrow the query.
+    _offset_reading = None
+    if offset is not None:
+        runtime = _get_runtime()
+        if not isinstance(offset, int) or offset < 0:
+            return _validation_error(
+                runtime.render_error(
+                    BadInput(
+                        f"offset must be a non-negative integer, got {offset!r}",
+                        next=f"search(kind={_next_kind!r}, q='…', page_size=10)",
+                    )
+                )
+            )
+        if offset:
+            return _validation_error(
+                runtime.render_error(
+                    BadInput(
+                        f"offset={offset} asks for results past the "
+                        "bounded top-N set — search no longer paginates",
+                        next=(
+                            f"search(kind={_next_kind!r}, "
+                            "q='<more specific terms>', page_size=10)"
+                        ),
+                    )
+                )
+            )
+        _offset_reading = (
+            "'offset=0' is a no-op — search returns a bounded "
+            "top-N set, not continuation pages"
         )
 
     # Validate the ranking mode at the boundary so an unknown value
@@ -1041,7 +1133,11 @@ def search(
     session = _ctx_session(ctx)
     token = serve_ledger.bind(session, _ctx_raw_args(ctx))
     try:
-        return _dispatch("search", payload, ctx=ctx)
+        result = _dispatch("search", payload, ctx=ctx)
+        _readings = [r for r in (_psize_reading, _offset_reading) if r is not None]
+        if _readings and isinstance(result, str):
+            result = f"{_INTERPRETED_PREFIX}{'; '.join(_readings)}\n{result}"
+        return result
     finally:
         serve_ledger.unbind(token)
 
@@ -1387,9 +1483,14 @@ def put(
 ) -> str:
     """Write or annotate. Creates new refs; for region rewrites use `edit`.
 
-    put(kind='gripe'|'todo', id=N, text=...) appends a comment to an existing one.
-    `mode=`: file kinds use 'create'; paid-import kinds use 'import';
-    numeric-ref kinds omit it. `tags=`/`untags=` add/remove; `link=`/`unlink=`
+    put(kind='gripe'|'todo', id=N, text=...) appends a comment to an existing
+    one. Omit `id=` to mint a new ref — required fields are per kind
+    (precis-put-help). `mode=`: file kinds use 'create'; paid-import kinds
+    use 'import'; numeric-ref kinds omit it. `text=`/`body=` alias on a
+    kind with a single prose field (finding says `body=`; both at once
+    errors there); `todo` declares both — `text=` the title, `body=` the
+    details — and takes either or both. `tags=`/`untags=` add/remove;
+    `link=`/`unlink=`
     use `kind:identifier[~selector]`, `rel=` defaults to `related-to`.
 
     Full reference: get(kind='skill', id='precis-put-help').
@@ -1806,13 +1907,12 @@ def edit(
     `append` / `replace` need `text=`.
     `replace` with `id='slug~selector'` rewrites one chunk.
 
-    todo: `replace` accepts `text=` (title) and/or `body=` (details).
-    quest: `replace` only. memory: `replace`, `find-replace`, `insert`,
-    or `ops=[{find,text,...}]` for several anchored ops in one call.
-    Structural or metadata ops use their kind-specific fields.
+    `mode=` is kind-specific: todo uses `text=`/`body=`, memory also takes
+    `ops=[{find,text,...}]`; quest requires explicit `mode='replace'`.
 
     Anchors: `before=` / `after=` / `match='unique'|'first'|'all'|'nth'`
-    / `nth=`. `dry_run=True` previews; `reason=` records why.
+    / `nth=`. `base_sha=` guards the read's content. `dry_run=True` previews;
+    `reason=` records why.
     Unsupported modes/fields raise `BadInput` with accepted options.
 
     Full reference: get(kind='skill', id='precis-edit-help').
@@ -1947,14 +2047,16 @@ def delete(
 ) -> str:
     """Delete a ref or addressed region.
 
-    Numeric-ref kinds (memory, todo, gripe, anki, conv):
-    soft-delete the ref (recoverable at SQL layer).
+    Numeric-ref kinds soft-delete; design kinds use their own delete doors.
 
     File kinds with selector in `id=` (markdown, plaintext, tex,
     python): delete the addressed chunk/symbol/line range.
     Without a selector → BadInput. Use `edit(mode='replace', text='')`
     to clear a whole file, or `edit(mode='find-replace', find='…',
-    text='')` to delete a matched span.
+    text='')` to delete a matched span. `base_sha=` (python line
+    ranges, the `range:` line's `sha=`) pins the delete to the read's
+    content — the call refuses if the lines changed, but a relocated
+    exact-hash run still lands.
 
     Cache-backed / read-only kinds (calc, math, web, youtube,
     research, think, websearch, paper, patent): Unsupported.
@@ -2080,7 +2182,11 @@ def link(
     """Add or remove a typed link between two refs.
 
     `target=` uses canonical `kind:identifier[~selector]` form
-    (kind prefix required). `mode='add'` (default) creates;
+    (kind prefix required). A bare handle (`pa5`, `td158`) works
+    wherever the kind is self-identifying; the `kind:` form is
+    required for file-backed kinds (markdown/plaintext/tex), which
+    have no handle — get/edit/delete take that same handle in `id=`.
+    `mode='add'` (default) creates;
     `mode='remove'` with `rel=` removes one (target, rel) pair,
     without `rel=` removes every link to the target. `rel=` defaults
     to `related-to` on add.
@@ -2131,19 +2237,24 @@ _GET_HELP: dict[str, str] = {
 }
 
 _SEARCH_HELP: dict[str, str] = {
-    "q": "Free-text query (lexical + semantic, hybrid-fused).",
+    "q": "Free-text query (lexical + semantic, hybrid-fused). Result rows: "
+    "handle, summary, remaining_words (body words past the summary: a "
+    "dive signal, not a quota), link counts, tags; legend in "
+    "precis-search-help.",
     "mode": "Ranking: 'hybrid' (default) | 'lexical' (exact keyword/"
     "phrase/identifier, embedder-independent) | 'semantic' | 'verbatim' "
     "(chunks whose KeyBERT keywords contain ALL query words; GIN, exact).",
     "kind": "Restrict to a kind (or comma-list, '*', omit for fan-out).",
     "scope": "Restrict to one ref's blocks (slug or numeric id).",
-    "page_size": "Max results per page. Positive int ≤ 100 (default 10).",
-    "page": "Page number (default 1). Pass page=2 to see results "
-    "page_size..2*page_size-1, etc.",
+    "page_size": "Max results returned. Positive int ≤ 100 (default 10).",
+    "page": "Removed — search returns a bounded top-N set, not pages. "
+    "page=2 refuses; refine q= or raise page_size= instead.",
+    "status": "Status filter for kinds that carry STATUS: tags "
+    "(e.g. 'open', 'triaged'); see the kind's skill for values.",
     "tags": "Per-kind tag filters (closed-vocab axes + open tags).",
     "reach": "Patent/EDGAR only: 'both' (default) | 'local' | 'remote'.",
-    "exclude": "Ref slugs to drop from results (hand-skip; page= is "
-    "usually preferable).",
+    "exclude": "Ref slugs to drop from results (hand-skip; raise "
+    "page_size= or refine q= to reach more hits).",
     "uncited": "Drop every source a draft (handle/slug/id) already cites, "
     "directly or via a cited claim hub's supporters.",
 }

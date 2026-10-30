@@ -17,9 +17,18 @@ scope: write
 # precis-put-help — create a new ref
 
 `put` is the create verb. It mints new refs and attaches tags or
-links on the same call. Kind-specific options go inside args={...}; an unknown key returns the kind's accepted args= keys. Rewriting an existing ref's body lives on
+links on the same call. Kind-specific options go inside args={...}; an
+unknown key fails the call, returning the kind's accepted args= keys.
+Rewriting an existing ref's body lives on
 `edit`; flipping tags or links on an existing ref lives on `tag`
 and `link`.
+
+Create by omitting `id=`: the response returns the new ref's handle
+(`me<N>`). Required fields are per kind — each `precis-<kind>-help`
+lists them. `mode=` picks the creation door: file kinds
+(markdown/plaintext/tex/python) take `'create'`; the paid-import kinds
+(`websearch`, `perplexity-reasoning`, `perplexity-research`) take
+`'import'`; numeric-ref kinds omit `mode=` — an explicit one is rejected.
 
 `put(kind='gripe'|'todo', id=N, text=...)` appends a comment to an existing
 one (no `args=`); older comments are shown as one-liners, `view='comments'`
@@ -29,8 +38,9 @@ transaction — comment-then-close is one call.
 
 `text=` and `body=` are the same prose slot spelled two ways across
 kinds (finding says `body=`, memory/gripe/files say `text=`). On a kind
-that declares only one spelling the other is accepted as an alias;
-passing both at once is an error.
+that declares only one spelling the other is accepted as an alias, and
+passing both at once errors. `todo` declares both — `text=` is the
+title, `body=` the details — and takes either or both.
 
 ## Write content you already read without retransmitting it
 

@@ -62,6 +62,28 @@ UNCITED_UNSUPPORTED_KINDS: frozenset[str] = frozenset({"patent", "edgar"})
 #: kwargs gate. Shape: ``{channel: [(orig_key, orig_value), ...]}``.
 RESOLVED_FACETS_KEY = "__resolved_facets__"
 
+#: ``search``'s legacy paging spellings (gr530420) — verb-level aliases
+#: the ``tools/core.py::search`` wrapper consumes, never kind args. An
+#: intercepted shape must not file them under "keys not applied": the
+#: refusal names the canonical spelling instead (``k``/``limit`` →
+#: ``page_size``; ``offset`` counted items in a paging model that no
+#: longer exists).
+_PAGING_SPELLINGS: frozenset[str] = frozenset({"k", "limit", "offset"})
+
+
+def _paging_spelling_hint(key: str) -> str:
+    """The corrected call for a legacy paging spelling (gr530420)."""
+    if key == "offset":
+        return (
+            "'offset' counted items in the removed paging model — search "
+            "returns a bounded top-N set: page_size= sizes it (max 100), "
+            "refine q= for more"
+        )
+    return (
+        f"'{key}' is a search-level spelling of 'page_size' — pass "
+        "page_size= top-level, not inside args="
+    )
+
 
 def refuse_unapplied_args(
     args: dict[str, Any],
@@ -93,6 +115,10 @@ def refuse_unapplied_args(
     (top-level and ``args=`` alike) and returning the hint(s) — for a
     call site whose corrected call depends on which keys were refused
     (mcp-authoring rule 2: ``next=`` is a call that works).
+    ``k``/``limit``/``offset`` are search-level paging spellings, not
+    kind args (gr530420): they are pulled out of the unapplied list and
+    refused with the canonical-spelling hint instead — a paging-only
+    call gets its own message rather than "not applied by <shape>".
     """
     tolerated = tolerated or {}
     stray = sorted(
@@ -110,10 +136,20 @@ def refuse_unapplied_args(
         if isinstance(extras, dict)
         else []
     )
-    if not stray and not stray_extras:
+    # gr530420: k/limit/offset are verb-level spellings, not kind args —
+    # refuse them with the canonical spelling named, never under the
+    # generic "not applied" list (which reads as a dropped kind arg).
+    paging = sorted(k for k in (*stray, *stray_extras) if k in _PAGING_SPELLINGS)
+    stray = [k for k in stray if k not in _PAGING_SPELLINGS]
+    stray_extras = [k for k in stray_extras if k not in _PAGING_SPELLINGS]
+    if not stray and not stray_extras and not paging:
         return
     names = stray + [f"args[{k!r}]" for k in stray_extras]
-    built = next(stray + stray_extras) if callable(next) else next
+    # The ``next`` callable re-renders the corrected call from the
+    # refused names — give it the paging spellings too, or a
+    # "drop the refused keys" hint would re-suggest the same failing
+    # ``args={'limit': …}``.
+    built = next(stray + stray_extras + paging) if callable(next) else next
     hints: list[str] = [built] if isinstance(built, str) else list(built)
     if "kinds" in stray:
         # The most-misread name (gr524663): on a kind-less call the
@@ -128,6 +164,15 @@ def refuse_unapplied_args(
         hints.append(
             "search returns a bounded top-N set — page_size= sizes it "
             "(max 100); refine q= for more, there is no page=2"
+        )
+    hints.extend(_paging_spelling_hint(k) for k in paging)
+    if not names:
+        # Only legacy paging spellings were refused — the message names
+        # what they are rather than implying a dropped kind arg.
+        raise BadInput(
+            f"{paging!r} {'is' if len(paging) == 1 else 'are'} search-level "
+            f"paging spellings, not {shape} args",
+            next=hints,
         )
     raise BadInput(
         f"{names!r} {'is' if len(names) == 1 else 'are'} not applied by "

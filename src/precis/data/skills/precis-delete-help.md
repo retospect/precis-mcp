@@ -34,6 +34,14 @@ delete(kind="anki", id=204)
 delete(kind="citation", id=18)
 ```
 
+The examples above are the common cases, not the full set —
+soft-delete is what `delete` does for **every** store-backed numeric
+kind (finding, quest, alert, job, taxon, concept, ...). Design kinds
+delete through their own doors — a draft/plan heading retires with
+`mode='cascade'` or `'promote'`; pcb/make/cad/structure delete the
+design — and a kind with no delete door refuses as `Unsupported`,
+naming the supported verbs.
+
 Soft-delete only. The ref disappears from list views and search;
 the row is retained for audit. Links pointing at the soft-deleted
 ref persist — resolve via the link table if you need them.
@@ -91,7 +99,11 @@ delete(kind="python", id="r::pkg.module.OldClass")
 ```
 
 The symbol's source span is removed; the rest of the module stays.
-`r::` is the repo prefix — see `precis-python-help`.
+`r::` is the repo prefix — see `precis-python-help`. Line-range
+deletes (`~L<a>-<b>`) accept `base_sha=` — the `sha=` of the read's
+`range:` line. The delete refuses if the lines changed, but a run that
+merely *moved* still lands: the guard accepts a relocated exact-hash
+run, same as `edit`.
 
 ## Clear an entire file
 ## I want to empty this file, not delete a region

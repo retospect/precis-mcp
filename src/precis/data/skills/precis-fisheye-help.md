@@ -61,7 +61,7 @@ Each rung **strictly contains** the previous one:
 | `fisheye+2hop` | `fisheye+1hop` **+ the second hop as counts** (not on draft/plan) |
 
 Any rung takes a **`+recall` suffix** (`fisheye+1hop+recall`; bare
-`+recall` means that one): the k=8 nearest refs of the same kind and
+`+recall` means that one): up to 8 nearest refs of the same kind and
 `finding` by embedding, each with a gist line and a similarity score —
 what is *about* the same thing but was never linked. A recall line is
 a lead to check, not a connection. Not on draft/plan sections. On a
@@ -204,7 +204,9 @@ get(kind="finding", id="fi42", extent="fisheye+2hop")  # counts
 get(kind="finding", id="fi42", extent="fisheye+2hop", q="paper:cites")  # that group, ≤40 refs
 ```
 
-`more()` does not expand a group; it only pages a body that was too long.
+`more()` is gone with the pages — a `+N more` fold is a render cap,
+not a page; expand a folded group by narrowing (`q=` here,
+`args={'ring': …}` on the ring), not by asking for a next page.
 
 ## Read the same neighborhood in a browser
 

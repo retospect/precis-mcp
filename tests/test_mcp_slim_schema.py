@@ -21,8 +21,10 @@ import pytest
 from mcp.types import CallToolResult
 
 from precis import server
+from precis.store import Store
 from precis.tools import core as tools_core
 from precis.tools.mcp_slim import CORE_PARAMS
+from tests._refs import insert_gripe
 
 #: Total advertised chars (inputSchema JSON + description) across all seven
 #: verbs. Measured 2026-10-08 after the diet (see test output on failure);
@@ -100,6 +102,62 @@ def test_moved_kwarg_inside_args_has_no_note(mcp_runtime: None) -> None:
     assert "deprecated" not in out
 
 
+def test_legacy_paging_alias_runs_with_interpreted_line(
+    mcp_runtime: None, store: Store
+) -> None:
+    """gr530420: ``limit``/``k``/``offset`` are verb-level aliases the
+    full search function consumes — the slim layer must promote them,
+    never route them into the kind's ``args=`` (where they die on the
+    unknown-key gate)."""
+    for i in range(5):
+        insert_gripe(store, f"zzq alias probe {i}")
+        store.insert_ref(kind="todo", slug=None, title=f"zzq alias probe {i}")
+
+    for kind in ("gripe", "todo"):
+        out = _call("search", {"kind": kind, "limit": 3})
+        assert "[error" not in out, out
+        assert out.startswith("interpreted: 'limit' read as 'page_size'"), out
+        hits = [ln for ln in out.splitlines() if "zzq alias probe" in ln]
+        assert len(hits) == 3, out
+
+    # offset=0 is an accepted no-op under the bounded top-N model.
+    out = _call("search", {"kind": "gripe", "offset": 0, "page_size": 3})
+    assert "[error" not in out, out
+    assert out.startswith("interpreted: 'offset=0' is a no-op"), out
+    hits = [ln for ln in out.splitlines() if "zzq alias probe" in ln]
+    assert len(hits) == 3, out
+
+
+def test_positive_offset_refuses_before_dispatch(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """offset>0 asks for results past the bounded top-N set — the same
+    refusal shape as page=2 (gr530420)."""
+
+    def unexpected(*_args: Any, **_kwargs: Any) -> str:
+        raise AssertionError("offset>0 reached dispatch")
+
+    monkeypatch.setattr(tools_core, "_dispatch", unexpected)
+    out = _call("search", {"kind": "gripe", "offset": 3})
+    assert "[error:BadInput]" in out, out
+    assert "no longer paginates" in out
+    assert "page_size" in out
+
+
+def test_args_nested_paging_alias_refuses_naming_page_size(
+    mcp_runtime: None,
+) -> None:
+    """``args={'limit': 3}`` names no kind arg — the refusal's ``next:``
+    names the canonical top-level spelling (gr530420)."""
+    out = _call("search", {"kind": "gripe", "args": {"limit": 3}})
+    assert "[error:BadInput]" in out, out
+    next_line = next(
+        (ln for ln in out.splitlines() if ln.strip().startswith("next:")), ""
+    )
+    assert "page_size" in next_line, out
+    assert "args=" not in next_line.split("page_size")[0], out
+
+
 def test_unknown_top_level_key_is_not_silently_dropped(mcp_runtime: None) -> None:
     out = _call("put", {"kind": "gripe", "text": "x", "zzz_bogus": 1})
     assert "[error:BadInput]" in out, out
@@ -116,6 +174,19 @@ def test_unknown_args_key_lists_typed_accepted_keys(mcp_runtime: None) -> None:
     assert "text: " not in out, out
     # the accepted list is printed once (options:), not again under next:
     assert out.count("prio: ") == 1, out
+
+
+@pytest.mark.parametrize("verb", ["get", "put", "edit", "search"])
+def test_description_says_unknown_args_key_fails(verb: str) -> None:
+    """gr524246: the accepted-keys listing is the FAILURE path — a call
+    with an unknown key errors with BadInput. The advertised description
+    must say the call fails, or an agent can't tell discovery from success."""
+    tool = server.mcp._tool_manager.get_tool(verb)
+    assert tool is not None
+    # descriptions wrap mid-sentence — collapse whitespace before matching
+    desc = " ".join((tool.description or "").split())
+    assert "unknown key fails the call" in desc, desc
+    assert "BadInput" in desc, desc
 
 
 def test_title_on_a_text_kind_points_at_text(mcp_runtime: None) -> None:
@@ -274,23 +345,37 @@ def test_handler_declared_args_key_is_still_lifted(mcp_runtime: None) -> None:
     assert seen[0]["args"]["source"] == "s"
 
 
+@pytest.mark.parametrize("key", ["k", "limit"])
+def test_top_level_size_alias_promotes_to_page_size(
+    key: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Top-level ``k``/``limit`` are verb-consumed: the slim layer
+    promotes them to the full function (never into ``args=``), which
+    maps them onto ``page_size`` (gr530420)."""
+    seen: dict[str, Any] = {}
+
+    def capture(verb: str, payload: dict[str, Any], ctx: object = None) -> str:
+        seen.update(payload)
+        return "ok"
+
+    monkeypatch.setattr(tools_core, "_dispatch", capture)
+    out = _call("search", {"kind": "finding", "q": "nanobuds", key: 3})
+    assert seen["page_size"] == 3
+    assert "__extras__" not in seen or key not in seen["__extras__"]
+    assert f"interpreted: '{key}' read as 'page_size'" in out
+
+
 @pytest.mark.parametrize("key", ["k", "limit", "offset"])
-@pytest.mark.parametrize("nested", [False, True])
-def test_removed_search_size_aliases_refuse_before_dispatch(
-    key: str, nested: bool, monkeypatch: pytest.MonkeyPatch
+def test_args_nested_size_alias_refuses_before_dispatch(
+    key: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     def unexpected(*_args: Any, **_kwargs: Any) -> str:
-        raise AssertionError("removed alias reached dispatch")
+        raise AssertionError("args-nested alias reached dispatch")
 
     monkeypatch.setattr(tools_core, "_dispatch", unexpected)
-    arguments: dict[str, Any] = {"kind": "finding", "q": "nanobuds"}
-    if nested:
-        arguments["args"] = {key: 3}
-    else:
-        arguments[key] = 3
-    out = _call("search", arguments)
+    out = _call("search", {"kind": "finding", "q": "nanobuds", "args": {key: 3}})
     assert "[error:BadInput]" in out, out
-    assert "page_size= is the only result-size spelling" in out
+    assert "page_size" in out
 
 
 def test_non_skill_kinds_refuses_before_dispatch(

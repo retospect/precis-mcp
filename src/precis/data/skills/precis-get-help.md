@@ -5,7 +5,6 @@ title: precis — the get verb (read or compute)
 summary: the get verb — read existing refs by id, or compute fresh results via q=
 answers:
   - how do I browse a kind's listing when I don't have a slug yet?
-  - how do I page through a listing that has more entries than fit on one page?
   - what does slug~N mean when addressing a chunk range?
   - what's the difference between id='slug/view' and passing view= directly?
   - how do I address a paper by DOI instead of slug?
@@ -41,16 +40,35 @@ get(kind="math", q="population of Ireland")  # compute
 | Arg | Type | Meaning |
 |---|---|---|
 | `kind` | str | Required. Which kind to read from. |
-| `id` | str | Identifier — the **handle** (`<2-char code><id>`, e.g. `pa5`, `me47`) is canonical; copy it with its prefix. Some kinds accept `id` *or* `q`. |
+| `id` | str | Identifier — the **handle** (`<2-char code><id>`, e.g. `pa5`, `me47`) is canonical; copy it with its prefix. Papers also accept a DOI (`id='10.x/y'`). Some kinds accept `id` *or* `q`. |
 | `view` | str | Display variant. Kind-specific (`'abstract'`, `'toc'`, `'bibtex'`, `'cite/bib'`, …). |
 | `q` | str | Free-text query for compute-style kinds. |
-| `extent` | str | The fisheye ladder's rung on any kind — `fisheye`, `fisheye+1hop`, `fisheye+2hop`, optionally `+recall` — the node with its neighborhood (`precis-fisheye-help`). |
-| `args` | dict | Typed extras for views that need them. Reserved keys (`kind`, `id`, `view`, `q`) are rejected. |
+| `extent` | str | The fisheye ladder's rung on any kind — `fisheye`, `fisheye+1hop`, `fisheye+2hop`, optionally `+recall` (up to 8 nearest same-kind + finding refs by embedding, inside the focus's `SPACE:` when it has one — no `SPACE:` tag recalls unrestricted; a ring `space=` filter overrides) — the node with its neighborhood (`precis-fisheye-help`). |
+| `args` | dict | Typed extras for views that need them. An unknown key fails the call with `BadInput` listing the kind's accepted keys; reserved keys (`kind`, `id`, `view`, `q`) are rejected. |
 
 Per-kind views are listed by the kind's own skill
 (`get(kind='skill', id='precis-<kind>-help')`) or by the `options=` of
 an unknown-view refusal — a view name valid on one kind does not carry
 to another.
+
+## Render a ref with its neighbourhood and recall
+
+`extent=` (every kind) selects the fisheye ladder's rung — `fisheye`,
+`fisheye+1hop`, `fisheye+2hop`, optionally `+recall` (adds up to 8
+nearest same-kind + finding refs by embedding — inside the focus's
+`SPACE:` when it has one; no `SPACE:` tag recalls unrestricted) —
+rendering the node with its neighbourhood
+(get(kind='skill', id='precis-fisheye-help')).
+
+## Read a host-gated kind
+
+Some kinds are host-gated: `NotFound` with `routes through host(s):
+…` means the kind exists but this process lacks its provider — retry
+from a host that has it; it is not a missing kind.
+
+## Read a draft by its owning project
+
+`project=` (draft only) looks up by owning project todo instead of id=.
 
 ## Pass typed extras to a view
 ## Some views need more than a slug and a name

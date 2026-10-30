@@ -16,6 +16,7 @@ from precis.fixer.intake import _render_gripe_spec, _TimelineEntry
 from precis.handlers.skill import SkillHandler, _list_skills, _skill_family_of
 from precis.runtime import PrecisRuntime
 from precis.store import Store
+from precis.utils import handle_registry as hr
 
 SKILL = "precis-gripe-help"
 
@@ -74,6 +75,46 @@ def test_mint_on_link_and_unknown_skill_refused(
             "SELECT count(*) FROM ref_identifiers WHERE id_value = 'no-such-skill-xyz'"
         ).fetchone()
     assert c is not None and c[0] == 0
+
+
+def test_sk_handle_resolves_for_get_and_link(
+    runtime: PrecisRuntime, store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr530422: ``sk<N>`` is a real decimal handle over the skill's
+    ``refs`` anchor row — the form edge readbacks render — so it
+    round-trips into ``get`` and ``link=`` like ``pa``/``gr``/``qu``."""
+    monkeypatch.setenv("PRECIS_MAX_BODY_BYTES", "200000")
+    anchor = store.ensure_skill_ref(SKILL)
+    handle = hr.format_handle("skill", anchor)
+
+    # get — with an explicit kind= and by self-identification; the
+    # ``family:`` header line proves the whole-skill file serve ran
+    # (the misled promo dedupes per session and an open-concern banner
+    # can lead, so no body equality / no startswith).
+    for payload in ({"kind": "skill", "id": handle}, {"id": handle}):
+        out = runtime.dispatch("get", payload)
+        assert "[error" not in out, out
+        assert "family: work" in out, out
+
+    # a chunk selector rides along (slug/~N on the resolved public id)
+    out = runtime.dispatch("get", {"kind": "skill", "id": handle, "view": "toc"})
+    assert "[error" not in out, out
+
+    # link= — the rendered edge target is reusable without re-deriving
+    # the canonical skill:<slug> form
+    out = _gripe(runtime, "edge via sk handle", link=handle, rel="raises-concern-about")
+    assert "created gripe" in out, out
+    with store.pool.connection() as conn:
+        n = conn.execute(
+            "SELECT count(*) FROM links WHERE dst_ref_id = %s "
+            "AND relation = 'raises-concern-about'",
+            (anchor,),
+        ).fetchone()
+    assert n is not None and n[0] >= 1  # other tests may share the anchor
+
+    # no anchor row behind the digits → honest NotFound, not a slug miss
+    out = runtime.dispatch("get", {"kind": "skill", "id": "sk999999999"})
+    assert "[error:NotFound]" in out, out
 
 
 def test_read_mints_and_section_and_toc_reads_stamp_parent(

@@ -123,8 +123,8 @@ search(kind="youtube", q="Veritasium")          # channel names match too
 
 Hits come back **grouped per video** (best transcript chunk per
 video, one row each) — a long talk can't flood the page.
-`per_paper=N` raises the chunks shown per video; `page=` pages the
-video list. When nothing matches, the empty state lists the closest
+`per_paper=N` raises the chunks shown per video; `page_size=` sets how
+many videos come back (there is no page 2 — refine `q=`). When nothing matches, the empty state lists the closest
 cached titles instead of a dead end.
 
 ## See what languages a video has

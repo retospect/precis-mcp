@@ -160,7 +160,7 @@ get(kind="gripe", id="/open")  # the live cohort (all non-terminal), 20 per page
 Queryless gripe browse sorts by PRIO, oldest first within a PRIO
 (unset PRIO counts as 5), so the longest-waiting gripe is on page 1.
 Under the header one line reads `N open · M older than 3d · oldest grX
-(D days) · K more past this page (page=N)`. `sort='recency'` gives the
+(D days) · K more past this page`. `sort='recency'` gives the
 newest-touched order instead.
 
 Need every id in a filtered set — a triage pass, a batch `get`?

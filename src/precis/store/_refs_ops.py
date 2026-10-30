@@ -600,7 +600,7 @@ class RefsMixin:
         e.g. ``td5`` must really be a todo). Returns ``None`` for anything
         not a well-formed, live, kind-matching handle — the caller falls
         through to legacy id resolution untouched (file-backed
-        ``sk``/``py``, other-table ``tg``, legacy draft ``¶`` chunk
+        ``py``/``mi``, other-table ``tg``, legacy draft ``¶`` chunk
         handles, plain slugs, bare numerics). One exception to the
         kind-match: a ref stamped ``meta.converted_from_kind`` (the
         paper → datasheet convert door) resolves under its NEW kind

@@ -1862,7 +1862,10 @@ class NumericRefHandler(Handler):
             elif more_call:
                 line += f"\nnext page: {more_call.format(next=page + 1)}"
             else:
-                line += " · page=N for more"
+                line += (
+                    " · narrow with tags=/status=, or bound the range with "
+                    "args={'id_min': N, 'id_max': M}"
+                )
             parts.append(line)
         return Response(body="\n".join(parts), result_count=len(refs))
 

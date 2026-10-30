@@ -196,10 +196,13 @@ _CODE_TO_KIND: dict[str, tuple[str, bool]] = {
     **{c: (k, True) for k, c in CHUNK_CODES.items()},
 }
 
-# Codes that are NOT refs-backed: file-backed (slug/path body) or
-# other-table. They keep their existing ``kind`` + id addressing, so
-# ``resolve_handle`` / :func:`parse` don't treat them as decimal handles.
-# Skill anchors are refs rows and therefore round-trip as ``sk<ref_id>``.
+# Codes that are NOT refs-backed: file-backed (slug/path body, no
+# ``refs`` row) or other-table. They keep their existing ``kind`` + id
+# addressing, so ``resolve_handle`` / :func:`parse` don't treat them as
+# decimal handles (yet). The codes still exist for registry completeness
+# + the totality test. ``skill`` left this set in gr530422: its
+# file-backed body is irrelevant to resolution — every linked/read skill
+# carries a real ``refs`` anchor row, so ``sk<N>`` decodes and resolves.
 _FILE_BACKED_KINDS = frozenset({"python", "md"})
 # ``part`` is NOT here: its catalog rows live in ``parts`` (addressed by
 # C-number), but a linked part has a lazy ref, so ``pn<ref_id>`` is a live

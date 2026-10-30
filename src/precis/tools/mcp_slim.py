@@ -38,17 +38,34 @@ from precis.runtime.dispatch import CORE_PARAMS, coerce_json_container
 _INJECTED = ("ctx",)
 
 _ARGS_LINE = (
-    "Kind-specific fields go in `args={...}`; an unknown key lists the "
-    "kind's accepted ones."
+    "Kind-specific fields go in `args={...}`; an unknown key fails the "
+    "call with `[error:BadInput]` listing the kind's accepted ones."
 )
+
+#: Full-verb parameters the wrapper itself consumes — they never reach a
+#: kind handler, so the ``accepted_top`` handler-kwargs gate must not keep
+#: them in ``args``. ``search``'s legacy paging spellings are the case
+#: that bites (gr530420): ``limit=3`` top-level was filed into ``args``,
+#: died on the kind's unknown-key gate, and the deprecation note aimed
+#: the caller at ``args={'limit': 3}`` — a second failing form. Nested
+#: inside ``args=`` they still refuse (the args= slot is for kind keys);
+#: the dispatcher's refusal names the canonical spelling in ``next:``.
+_VERB_CONSUMED_PARAMS: dict[str, frozenset[str]] = {
+    "search": frozenset({"k", "limit", "offset"}),
+}
 
 _SEARCH_DOC = """Hybrid lexical + semantic search across kinds.
 
-`page_size` ≤ 100; `page=N` paginates. Omit `kind` (or `'*'`) for cross-kind
-fan-out. `mode=` 'hybrid' (default) / 'lexical' / 'semantic' / 'verbatim'.
-Kind-specific fields (`exclude`, `reach`, `folder`, `queries`, `per_paper`,
-`trust`, `wants`, `compose`, `property`/`min`/`max`/`unit`, ...) go in
-`args={...}`; an unknown key lists the kind's accepted ones.
+`page_size` ≤ 100 bounds the top-N set (`k=`/`limit=` read as it). Omit
+`kind` (or `'*'`) for cross-kind fan-out. `mode=` 'hybrid' (default) /
+'lexical' / 'semantic' / 'verbatim'.
+`scope=` searches inside one ref (handle or slug); `status=` filters by
+`STATUS:` tag on kinds that carry that axis. Some kinds are host-gated:
+`NotFound` with `routes through host(s): …` means the kind exists but
+this process lacks its provider. Kind-specific fields (`exclude`, `reach`,
+`folder`, `queries`, `per_paper`, `trust`, `wants`, `compose`,
+`property`/`min`/`max`/`unit`, ...) go in `args={...}`; an unknown key
+fails the call with `[error:BadInput]` listing the kind's accepted ones.
 
 Full docs: get(kind='skill', id='precis-search-help').
 """
@@ -97,19 +114,36 @@ def _removed_search_arg_error(
     if verb != "search":
         return None
     supplied = set(kwargs) | set(args)
-    removed = sorted(supplied & {"k", "limit", "offset"})
-    if removed:
+    # Refusal ``next=`` calls echo the caller's kind; 'paper' is the
+    # fallback only when no kind was given (gr536312).
+    kind_name = kind if isinstance(kind, str) and kind else "paper"
+    # Top-level k/limit/offset are verb-consumed — _VERB_CONSUMED_PARAMS
+    # promotes them to the full function, which maps k=/limit= onto
+    # page_size= and owns the offset= value check (offset=0 no-ops,
+    # offset>0 refuses). Only an args=-nested spelling refuses here: it
+    # names no kind arg.
+    nested = sorted(set(args) & {"k", "limit", "offset"})
+    if nested:
         from precis.errors import BadInput
         from precis.tools.core import _get_runtime, _validation_error
 
-        return _validation_error(
-            _get_runtime().render_error(
-                BadInput(
-                    f"search no longer accepts {', '.join(removed)}; "
-                    "page_size= is the only result-size spelling",
-                    next="search(kind='paper', q='…', page_size=10)",
-                )
+        key = "offset" if "offset" in nested else nested[0]
+        if key == "offset":
+            message = (
+                "'offset' counted items in the removed paging model — "
+                "search returns a bounded top-N set, not pages"
             )
+            next_call = (
+                f"search(kind={kind_name!r}, q='<more specific terms>', page_size=10)"
+            )
+        else:
+            message = (
+                f"'{key}' is a search-level spelling of 'page_size' — "
+                f"pass page_size={args[key]!r} top-level, not inside args="
+            )
+            next_call = f"search(kind={kind_name!r}, q='…', page_size={args[key]!r})"
+        return _validation_error(
+            _get_runtime().render_error(BadInput(message, next=next_call))
         )
     if "kinds" in supplied and kind != "skill":
         from precis.errors import BadInput
@@ -133,7 +167,10 @@ def _removed_search_arg_error(
                 BadInput(
                     "search no longer paginates; refine the query or reduce "
                     "page_size instead of requesting another page",
-                    next="search(kind='paper', q='<more specific terms>', page_size=10)",
+                    next=(
+                        f"search(kind={kind_name!r}, "
+                        "q='<more specific terms>', page_size=10)"
+                    ),
                 )
             )
         )
@@ -187,6 +224,12 @@ def make_slim_verb(verb: str, full: Callable[..., Any]) -> Callable[..., Any]:
         for key, value in kwargs.items():
             if key in slim_names:
                 call[key] = value
+            elif key in _VERB_CONSUMED_PARAMS.get(verb, ()):
+                # Verb-level alias (search's k=/limit=/offset=): the full
+                # function consumes it — never a kind's args= key.
+                call[key] = coerce_json_container(
+                    value, full_sig.parameters[key].annotation
+                )
             else:
                 # Undeclared top-level key (legacy call shape): treat it as
                 # if it had been passed inside ``args``.

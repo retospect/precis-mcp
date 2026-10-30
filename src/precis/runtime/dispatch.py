@@ -124,6 +124,42 @@ _WRAPPER_DEFAULTED_KWARGS: dict[str, frozenset[str]] = {
 }
 _DROPPABLE_TOP_LEVEL_KWARGS = frozenset({"mode", "verdict", "page", "page_size"})
 
+#: ``search``'s one-release legacy paging spellings (gr530420). The verb
+#: wrapper reads ``k``/``limit`` as ``page_size`` aliases and no-ops
+#: ``offset=0`` (an item count into a paging model that no longer
+#: exists — ``offset>0`` refuses). Nested inside ``args=`` all three
+#: name no kind arg, so the extras gate refuses and points at the
+#: working call.
+_SEARCH_PAGING_ALIASES: dict[str, str] = {
+    "k": "page_size",
+    "limit": "page_size",
+}
+_SEARCH_PAGING_SPELLINGS: frozenset[str] = frozenset(_SEARCH_PAGING_ALIASES) | {
+    "offset"
+}
+
+
+def _search_paging_alias_next(alias: str, value: Any) -> str:
+    """``next=`` for a legacy paging spelling nested in ``args=``.
+
+    ``k``/``limit`` map 1:1 onto ``page_size``; ``offset`` counted items
+    under the removed paging model, so its working call is the bounded
+    top-N one — same refusal shape as a top-level ``offset>0``
+    (``tools/core.py::search``).
+    """
+    if alias in _SEARCH_PAGING_ALIASES:
+        canon = _SEARCH_PAGING_ALIASES[alias]
+        return (
+            f"'{alias}' is a search-level spelling of '{canon}' — pass "
+            f"{canon}={value!r} top-level, not inside args="
+        )
+    return (
+        "'offset' counted items in the removed paging model — search "
+        "returns a bounded top-N set: page_size= sizes it (max 100), "
+        "refine q= for more; pass it top-level, not inside args="
+    )
+
+
 #: ``tools/core.py::edit``'s own non-``None`` default for ``mode=``
 #: (``"find-replace"``, the file-kind idiom) — the specific value
 #: behind the comment above: every MCP ``edit()`` call carries this in
@@ -1878,7 +1914,7 @@ class DispatchMixin(RuntimeShape):
         )
         lines = [f"{total} instance{'s' if total != 1 else ''}, newest first"]
         if total > page_size:
-            lines[0] += f" (page {page}; page=N for more, or add q= to rank)"
+            lines[0] += f" (page {page}; add q= to rank, or narrow with status=/tags=)"
         for rid, kd, title in rows:
             lines.append(f"{handle_registry.format_handle(kd, rid)} {title}".rstrip())
         return Response(body="\n".join(lines))
@@ -3148,6 +3184,14 @@ class DispatchMixin(RuntimeShape):
                     accepted_kwargs = _typed_kwargs(
                         type(handler), verb, {k for k in accepted if k not in core}
                     )
+                    # gr530420: a legacy verb-level paging spelling nested
+                    # in args= names no kind arg — say which canonical
+                    # top-level kwarg to pass instead, not just that the
+                    # args= key is unknown.
+                    alias = next(
+                        (k for k in unknown if k in _SEARCH_PAGING_SPELLINGS),
+                        None,
+                    )
                     raise BadInput(
                         f"keys {unknown!r} not accepted by {kind}.{verb}; "
                         f"its args= keys are listed below",
@@ -3158,7 +3202,11 @@ class DispatchMixin(RuntimeShape):
                             "with no args"
                             if verb == "put"
                             and getattr(handler, "supports_comment", False)
-                            else None
+                            else (
+                                _search_paging_alias_next(alias, extras[alias])
+                                if verb == "search" and alias is not None
+                                else None
+                            )
                         ),
                     )
                 args.update(_coerce_extras(type(handler), verb, extras))

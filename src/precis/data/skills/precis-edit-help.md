@@ -48,6 +48,24 @@ bytes at execution, enforces the same receipt and size rules as `put`, and
 prepends the handle/length/SHA-256 ack. `dry_run=True` resolves and reports
 without writing. Other fields and nested reference shapes are not supported.
 
+## Guard the content read before an edit
+
+`base_sha=` pins the edit to the content you read —
+draft chunks accept a ≥8-hex prefix of the read's `sha:`, python
+line ranges the `range:` line's `sha=`. The call refuses if the
+content changed; a python range whose lines merely moved still
+lands (relocated exact-hash run). Omit it to edit regardless.
+
+## Select modes and fields for non-file edits
+
+todo: `replace` accepts `text=` (title) and/or `body=` (details).
+quest: `replace` only — the declared default `find-replace` is rejected
+there, so pass `replace` explicitly; metadata-patch kinds
+(paper/draft/structure) ignore `mode=` entirely. memory: `replace`,
+`find-replace`, `insert`, or `ops=[{find,text,...}]` for several
+anchored ops in one call. Structural or metadata ops use their
+kind-specific fields.
+
 ## Change one token, cite, or literal in a file
 ## Replace a string somewhere I know exists
 ## Swap a word inside a paragraph

@@ -20,14 +20,34 @@ tags: orientation, verbs, troubleshooting
 
 # precis-search-help — search across kinds
 
-Kind-specific options go inside args={...}; an unknown key returns the kind's accepted args= keys.
+Kind-specific options go inside args={...}; an unknown key fails the call, returning the kind's accepted args= keys.
 
 Hybrid lexical + semantic search. Returns ranked handles (`pc<chunk_id>`,
 e.g. `pc40`) you paste straight into `get(id=…)` to drill in — the handle's
 prefix infers the kind. Order is the relevance signal — a fused
 result has no honest numeric score to sort by. `kind='conv'` is the one exception: it's lexical-only (no
 semantic leg yet), so its hits carry a real `(score=0.1234)` — a raw
-lexical rank, comparable within that one response only.
+lexical rank, comparable within one response only.
+
+## What does each column in a result row mean?
+## Read a cross-kind or list-view row
+
+Cross-kind pages and per-kind list views render one table row per ref:
+
+| Column | Meaning |
+|---|---|
+| `id` | The universal handle (`fi176423`) — paste into `get(id=…)`; the prefix infers the kind. Hits with no handle fall back to `kind:slug`. |
+| `summary` | The ref's first line (else first sentence within budget; a hard cut shows `…`). Prefixes can ride here: `⚠ …` retraction notices (below) and `◆ …` claim-hub postures (below). |
+| `remaining_words` | Words of body past the summary — how much more the ref holds: a dive signal, not a quota. Small ≈ the summary is nearly the whole ref; large ≈ `get(id=…)` has much more. |
+| `links` | Cross-kind: total typed links plus the salient relation — `4 · part-of` outbound, `17 · <-part-of` inbound (that many refs are part of this one), `4 · cited` = four refs cite it. Per-kind list views show the bare count. |
+| `tags` | Only when some row on the page carries tags. Per-kind list views also add `status` (the `STATUS:` value) and `age` (whole days since last update). |
+
+The paper default view is its own shape — one row per paper: best-chunk
+handle, `+N` other hits, keywords (below). Claim-hub postures: `◆ 4✓
+unopposed` (verified support, no live objection) / `◆ refuted` (all
+judged edges negative) / `◆ disputed` (a live objection is on file) /
+`◆ unverified` (nothing judged yet); a composite hub shows
+`◆ atoms 2/3✓ unopposed`.
 
 ## What knobs does search have?
 ## Quick reference for search arguments
@@ -56,32 +76,29 @@ search(
 )  # broad / high-recall (see below)
 ```
 
-A few more args, in brief: `args={'title': …}`/`args={'author': …}` run a byline-record
-lookup on paper search (`precis-paper-help`). `args={'folder': …}` restricts hits
-to one folder's live subtree — id, `folder:N`, `fo<N>` handle, or name
-— and forces the cross-kind fan-out (`precis-folder-help`).
-`under=` is one scope whose target picks the tree. A taxon (`tn42`,
-`technique/afm`, or a list) selects its `instance-of` members (next section).
-Any other handle (`args={'under': 'me5'}`) restricts hits to the descendants
-of that ref on the `part-of` tree (a memory hub or summary node); `'depth': 1`
-keeps direct members only. It combines with `q=`, `tags=` and `view='index'`;
-without `q=` memory hits list newest-touched first. Todo and taxon keep their
-own `under=` (todo subtree, concept descendants).
+A few more args, in brief: `args={'title': …}`/`args={'author': …}` run a
+byline-record lookup (`precis-paper-help`). `args={'folder': …}` restricts
+hits to one folder's live subtree — id, `folder:N`, `fo<N>` handle, or
+name — and forces the cross-kind fan-out (`precis-folder-help`).
+`under=` picks the tree by target: a taxon (`tn42`, `technique/afm`, or a
+list) selects its `instance-of` members (next section); any other handle
+(`args={'under': 'me5'}`) restricts hits to that ref's `part-of` subtree
+(`'depth': 1` keeps direct members only). Combines with `q=`/`tags=`;
+without `q=` memory hits list newest-first. Todo and taxon keep their
+own `under=` meanings (todo subtree, concept descendants).
 `angle=`/`like=`/`n=` run the diverse-cone salience spray seeded from a ref
-handle or `q=` — `search(angle=0.5, like='quest:164903', n=8)`.
-They are **verb-level params**, not a kind's `args=` keys — pass them
-top-level like `page_size=` (nested in `args={…}` the spray keys are
-hoisted back out, so either spelling works; a bare `args={'n': 5}` with
-no spray trigger is still refused). Omit `kind=` for the default target set
-(paper+memory+draft), or pass a comma-list (`kind='memory,draft'`) or a
-single kind (`kind='paper'`) to aim the spray. `view='dreamable'` / `'stubs'` / `'chase-queue'` swap in a
-different result shape and ignore `q=` — a salience pick, or the
-paper-acquisition backlog (`precis-stubs-help`). `view='count'` on a
-numeric-ref kind returns the
-filtered total plus `group_by` facet counts instead of hits — see
-"Count and facet a filtered search" below. `status=` is shorthand for
-`tags=['STATUS:<value>']` on kinds with that axis — see "Enumerating a
-tag" below for the per-kind defaults.
+handle or `q=` — `search(angle=0.5, like='quest:164903', n=8)`. They are
+**verb-level params**, not a kind's `args=` keys — pass them top-level
+like `page_size=` (nested in `args={…}` they hoist back out; a bare
+`args={'n': 5}` with no spray trigger is still refused). Omit `kind=` for
+the default target set (paper+memory+draft); a comma-list
+(`'memory,draft'`) or single kind aims the spray. `view='dreamable'` /
+`'stubs'` / `'chase-queue'` swap in a shape that ignores `q=` — a salience
+pick, or the acquisition backlog (`precis-stubs-help`). `view='count'` on a
+numeric-ref kind returns the filtered total plus `group_by` facet counts
+instead of hits (below). `status=` is shorthand for
+`tags=['STATUS:<value>']` on kinds with that axis (per-kind defaults
+below).
 
 ## Paper search returns one row per paper
 ## Drill into a paper's individual hits
@@ -100,14 +117,15 @@ and is implied by the doors that already ask for it: `scope='pa…'`
 per paper *there*; with paper rows it's redundant and `per_paper>1`
 errors — the collapse already shows one row each.
 Page size follows the shape: default 25 rows in paper mode, 10 in chunk
-mode, and `page=` walks *papers* in the default view.
+mode, capped by `page_size=` (max 100).
 
-Refine before you page. When the counter says `87 papers`, fetching
-page 2 is usually the wrong next call — tighten `q=` with a term from a
-`more`-heavy row's keywords, `scope=` into the promising paper (that
-flips to chunk rows inside it), or add `queries=`/`answers=` to move the
-gold to the top instead of reading the tail. Page when you want the
-*breadth* — a survey sweep — not when you want the one right hit.
+Refine before you widen. When the counter says `87 papers`, a bigger
+`page_size=` is usually the wrong next call — tighten `q=` with a term
+from a `more`-heavy row's keywords, `scope=` into the promising paper
+(that flips to chunk rows inside it), or add `queries=`/`answers=` to
+move the gold to the top instead of reading the tail. Widen when you
+want the *breadth* — a survey sweep — not when you want the one right
+hit.
 
 ## Ranking mode — hybrid (default), lexical, semantic, or verbatim
 
@@ -260,13 +278,11 @@ When `kind=` is omitted (or `'*'` / `'all'` / `'any'` / `''`), search
 fans out across every kind whose handler supports it. Each hit is
 tagged with its source kind. Streams merge by rank, so a strong hit in
 `memory` can out-rank a weaker hit in `paper`. This is also where a
-settled claim surfaces: a live claim hub (`finding` handler, minted
-via `supporters=`) rides in the same merge, its summary cell prefixed
-`◆ 4✓ unopposed` / `◆ refuted` / `◆ disputed` / `◆ unverified` — verified
-support, no live objection; every judged edge came back negative;
-a live objection is on file; nothing judged yet. A refuted hub sinks in
-the ranking, a verified-unopposed one rises modestly — the chase-tree
-finding underneath a hub never appears on its own, only the hub itself.
+settled claim surfaces: a live claim hub rides the same merge, its
+summary cell carrying the `◆ …` posture prefix (legend above). A
+refuted hub sinks in the ranking, a verified-unopposed one rises
+modestly — the chase-tree finding underneath a hub never appears on
+its own, only the hub itself.
 
 `kind='source'` is a fixed two-kind fan-out — `paper` plus live claim
 hubs, nothing else — the same merge and the same posture prefix as the
@@ -304,14 +320,16 @@ descendants, one node only.
 search(kind="paper", q="photocatalysis water splitting", page_size=20)
 ```
 
-`page_size=` is the only result-size spelling (default 10; 25 on paper
+`page_size=` is the result-size spelling (default 10; 25 on paper
 kind's default one-row-per-paper view, max 100) — *not* a quality cutoff
 despite the name. Search returns a bounded top-N set, not continuation
 pages; a page over 24 kB returns the top rows that fit plus a
-`N more matches not shown` line — narrow `q` or lower `page_size`. Add distinctive terms, narrow `scope=`, or use
-`args={'exclude': …}` to remove known-irrelevant refs. Removed
-spellings `k=`, `limit=`, `offset=`, and `page=` refuse with a canonical
-next call instead of executing a broad default.
+`N more matches not shown` line — narrow `q` or lower `page_size`. Add
+distinctive terms, narrow `scope=`, or use
+`args={'exclude': …}` to remove known-irrelevant refs. `k=`/`limit=`
+still read as `page_size=` on an `interpreted:` line; `offset=0` is a
+no-op, `offset>0` and `page=` refuse with a canonical next call —
+there is no page 2.
 
 `skill` searches trim the default menu when one hit clearly outscores the
 tail. An explicit `page_size=` shows the full bounded set; `mode='verbatim'`
@@ -332,11 +350,12 @@ result ends with a count and a targeted alternative:
 
 All-weak results say `no strong match` ahead of the same line. A
 partial-term (OR) lexical match counts as corroboration, so a long query is
-never judged on distance alone. Only `memory` has a measured cut; other
-kinds list all hits until measured.
+never judged on distance alone. Only `memory` has a measured cut
+(gr514956, prod 2026-10-25); other kinds list all hits until measured.
 
-`search(kind='memory', view='index')` applies 0.42 as a hard cut with no
-hint. `mode='semantic'` uses the same omission rule.
+`search(kind='memory', view='index')` (the session-start recall shape)
+applies 0.42 as a hard cut with no hint. `mode='semantic'` uses the same
+omission rule.
 
 ## Filter search results by tag
 ## Find refs tagged with topic:X
@@ -344,12 +363,12 @@ hint. `mode='semantic'` uses the same omission rule.
 
 ```python
 search(kind="paper", q="photocatalysis", tags=["topic:noxrr"])
-
 search(kind="patent", tags=["cpc:B01J27/24", "country:ep"])
-
-search(kind="todo", tags=["STATUS:open", "PRIO:high"])
-
 search(kind="memory", q="", tags=["pinned"])
+```
+
+```python
+search(kind="gripe", tags=["STATUS:open", "PRIO:high"])
 ```
 
 AND semantics — `tags=['A', 'B']` matches refs carrying *both* tags.
@@ -370,11 +389,6 @@ questions. Reach for `q=` only when you mean "the tagged refs that mention
 X". Numeric-ref kinds flag a `q=`-induced drop in the header (`⚠ N of M …
 entries tagged […] also match q`) — but that only helps if you read it;
 prefer no-`q` when you want the whole set.
-
-```python
-search(kind="gripe")  # ✅ how many are open
-search(kind="gripe", q="timeout")  # …mentioning "timeout" (a subset!)
-```
 
 Some kinds fold a **default status** into this: `gripe` defaults to
 `status='open'` (live — every non-terminal STATUS; `tags=['STATUS:open']`
@@ -414,11 +428,9 @@ bounded "error heads" section — the top normalized first-line errors per
 failing job_type — so "what's failing, and how" is one call. One kind
 per call — no cross-kind or `sort=` on this shape.
 
-Jobs of ONE `job_type` (the "how many `graph_garden` jobs ran/failed
-since <t>" question): `args={'job_type': '<type>'}` filters listing and
-count alike — `view='count'` + `group_by='state'` is the status-facet
-answer; on the listing `q=`/`status=`/`since=`/`link=` all still narrow
-(see `precis-job-help`).
+`args={'job_type': '<type>'}` filters listing and count alike — the
+"how many `graph_garden` jobs failed" question is `view='count'` +
+`group_by='state'`; listing knobs still narrow (`precis-job-help`).
 
 ## What keys/tags does a kind actually carry? (view='meta' / 'tags')
 ## Inventory a kind's meta fields or tag values — no raw SQL
@@ -435,9 +447,8 @@ search(kind="gripe", view="tags", status="open")   # counts over live only
 ```
 
 `view='plan'` answers "which route/index *would* this search take?" without
-running it — mode, embedder, the vector index (the per-kind one or the global
-fallback) and *why*, the lexical leg, and the candidate caps.
-Use it to tell a slow search (global fallback) from a wrong one:
+running it — mode, embedder, the vector index and *why*, the lexical leg,
+the caps. Use it to tell a slow search (global fallback) from a wrong one:
 
 ```python
 search(kind="memory", q="deploy", view="plan")   # one kind
@@ -452,13 +463,9 @@ sections), expired rows excluded. Both are single-kind, like count.
 ## Where does this paper mention X?
 ## Scope a search to one ref's contents
 
-```python
-search(kind="paper", q="Z-scheme", scope="pa1")  # handle from get/search output
-search(kind="patent", q="heterojunction", scope="ep3501631a1")
-```
-
-`scope=` restricts to one ref's blocks. Useful for "where in this
-paper does X come up?"
+`scope=<handle-or-slug>` restricts to one ref's blocks — the "where in
+this paper does X come up?" read. Implied `unique_per='chunk'` rows
+inside it.
 
 ## Drop specific refs from results
 ## Hand-skip known-irrelevant papers
@@ -473,8 +480,8 @@ the underlying ref. A stale/unknown **slug** is silently dropped; a
 well-formed but dead **handle** (`pa<id>` naming no live ref) is instead
 named in a `⚠ exclude=: …` line in the response — you copy-pasted a
 specific id, so a silent drop would hide the mistake. `args={'exclude': …}` is the
-skip-list for known-irrelevant refs, not a paging mechanism — use `page=`
-for that.
+skip-list for known-irrelevant refs — there is no paging mechanism to
+replace it with; raise `page_size=` or refine `q=` for the tail.
 
 ## Best chunks, one per paper, about X, excluding what a draft already cites
 ## Skip papers a draft (or one section of it) already cites
@@ -494,9 +501,9 @@ search(kind="paper", q="wang tile guided self assembly",
 
 A `dr…`/`dc…` entry that doesn't resolve raises `BadInput` naming it
 (unlike a stale bare slug, which is silently dropped — you named this
-container explicitly). See `precis-stubs-help` for the twin external-
-discovery form (`get(kind='semanticscholar', exclude=[…])`), which also
-flags every hit `held:`/`stub:`/`NEW` against the corpus.
+container explicitly). See `precis-stubs-help` for the twin
+external-discovery form, which flags each hit `held:`/`stub:`/`NEW`
+against the corpus.
 
 ## Find sources a draft hasn't cited yet — query-driven discovery
 ## uncited= — search for sources you missed, by keyword
@@ -544,9 +551,9 @@ on?" or composing with `hubbed=` below). Response:
 _(cited=dr173020: restricted to 4 already-cited sources)_
 ```
 
-`cited=` and `uncited=` are mutually exclusive — passing both raises
-`BadInput`. A closure of zero sources restricts to zero hits (never
-falls through to an unfiltered search).
+`cited=`/`uncited=` are mutually exclusive (both → `BadInput`); a
+zero-source closure restricts to zero hits, never an unfiltered
+fallback.
 
 ## Papers that already back a claim hub, or don't
 ## hubbed=true/false — paper-only
@@ -616,7 +623,6 @@ Natural-language queries work — phrase your query the way you'd ask
 it. Skill hits whose kind or required tool isn't available in the current
 build carry `[not configured: <why>]` so you don't follow them to no-op
 recipes; add `args={'configured_only': True}` to drop them.
-This is the standard first move on any non-trivial task.
 
 ## Find patents not yet in the local store
 ## Search EPO directly via OPS
@@ -624,7 +630,6 @@ This is the standard first move on any non-trivial task.
 
 ```python
 search(kind="patent", q="photocatalysis", args={"reach": "remote"})
-search(kind="patent", tags=["cpc:B01J27/24"], args={"reach": "remote"})
 ```
 
 `args={'reach': …}` is patent/EDGAR-only. `'both'` (default) merges local + remote;
@@ -651,8 +656,8 @@ search(kind='gripe', status='open', page_size=20, args={'sort': 'prio'})
 search(kind='todo', tags=['waiting-for:reto'], args={'sort': 'recency'})
 ```
 
-Queryless lifecycle browse (`todo`, `gripe`, `quest`, `alert`) defaults to live
-rows, shows their status and reports terminal entries hidden by your tag scope.
-Pass `status='*'`, a specific status, or an explicit lifecycle tag to include
-terminal history. Dormant quests remain live; abandoned quests do not. Alerts
-use `alert-state:` tags; `status='resolved'` (or `'closed'`) reads their history.
+Queryless lifecycle browse (`todo`, `gripe`, `quest`, `alert`) defaults
+to live rows and reports terminal entries hidden by your scope — pass
+`status='*'` or an explicit lifecycle tag to include history. Dormant
+quests stay live, abandoned ones don't; alerts read history via
+`alert-state:` (`status='resolved'`).

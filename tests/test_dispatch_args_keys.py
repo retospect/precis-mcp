@@ -121,6 +121,32 @@ def test_cross_kind_search_page_gt_one_refused(
     assert "page" in out and "bounded top-N" in out, out
 
 
+def test_intercepted_search_paging_spellings_refuse_as_aliases(
+    runtime_with_store: PrecisRuntime,
+) -> None:
+    """gr530420: ``k``/``limit``/``offset`` are verb-level spellings the
+    ``search`` wrapper consumes, not kind args — an intercepted shape
+    refuses them naming the canonical call, never under the generic
+    "not applied" list."""
+    out = runtime_with_store.dispatch(
+        "search", {"q": "x", "__extras__": {"limit": 5, "offset": 10}}
+    )
+    assert "[error:BadInput]" in out, out
+    assert "not applied by" not in out, out
+    assert "search-level paging spelling" in out, out
+    assert "page_size" in out, out
+    # mixed with a genuine unapplied key, the spelling gets the alias
+    # hint while the stray keeps the unapplied report
+    out = runtime_with_store.dispatch(
+        "search",
+        {"q": "x", "status": "open", "__extras__": {"k": 5}},
+    )
+    assert "[error:BadInput]" in out, out
+    assert "'status'" in out and "not applied by" in out, out
+    assert "'k'" not in out.split("not applied by")[0], out
+    assert "page_size" in out, out
+
+
 def test_cross_kind_search_still_runs_when_args_apply(
     runtime_with_store: PrecisRuntime,
 ) -> None:
