@@ -179,6 +179,83 @@ _PLAN_PE_RE = re.compile(r"^pe(\d+)(.*)$")
 #: match rather than a second code path.
 _ERROR_TYPE_RE = re.compile(r"^\[error:(\w+)\]")
 
+#: Kwargs that carry an id/handle-shaped address — the slots a pasted
+#: list row pollutes. ``id`` (scalar or batch list) is gated by the
+#: call's ``kind=``; the link endpoints and the ``like`` seed are always
+#: ``kind:id``/handle-shaped, so they clean under any kind.
+_ID_JUNK_ID_KEYS = ("id",)
+_ID_JUNK_TARGET_KEYS = ("target", "link", "unlink", "like")
+#: Tombstone-door targets arrive inside ``args=`` (``merge_into`` /
+#: ``redirect_to``) alongside any of the above.
+_ID_JUNK_EXTRAS_KEYS = (
+    _ID_JUNK_ID_KEYS
+    + _ID_JUNK_TARGET_KEYS
+    + (
+        "merge_into",
+        "redirect_to",
+    )
+)
+
+#: Kinds whose ``id=`` legitimately contains whitespace — a URL, file
+#: path, free-text query or expression — where a pasted tail could be
+#: real content. For these kinds ``id=`` is never trimmed.
+_ID_JUNK_KEEP_KINDS = frozenset(
+    {
+        # stateless compute / lookups — expression or query ids
+        "calc",
+        "math",
+        "time",
+        "provenance",
+        "random",
+        # providers — URL or free-text query ids
+        "web",
+        "websearch",
+        "perplexity-reasoning",
+        "perplexity-research",
+        "semanticscholar",
+        "wikipedia",
+        "youtube",
+        "chem",
+        "email",
+        # file/path kinds — paths carry spaces
+        "markdown",
+        "md",
+        "plaintext",
+        "tex",
+        "python",
+        # word-shaped slug ids
+        "skill",
+        "folder",
+    }
+)
+
+#: ``<2-char code><digits>`` universal-handle head — the row portion a
+#: pasted size/title tail can follow. The code must be a real handle
+#: code (``handle_registry.kind_for_code``); a trailing ``~selector``,
+#: ``/view`` or relative operator stays part of the head.
+_ID_HANDLE_HEAD = re.compile(r"^([a-zA-Z]{2})(\d+)(.*)$")
+
+#: A pasted size cell — ``5k``, ``5kB``, ``8kB``, ``512B``, ``1.2MB``.
+_ID_SIZE = re.compile(r"\d+(?:\.\d+)?\s*(?:[kKmMgG][bB]?|[bB])")
+#: The same wrapped — ``(5k)`` / ``(5kB)`` / ``[3kB]`` — plus a bare
+#: parenthesised count ``(12)``.
+_ID_SIZE_WRAPPED = re.compile(r"[(\[]\s*\d+(?:\.\d+)?\s*[kKmMgG]?[bB]?\s*[)\]]")
+
+#: Punctuation pasted with the handle — a trailing ``,``, ``.`` or
+#: closing quote is never part of an id.
+_ID_PUNCT_TAIL = ".,'\"`"
+
+
+def _kind_has_handle_code(kind: str) -> bool:
+    """Whether ``kind`` has a universal-handle record code — the
+    refs-backed kinds whose bare digits are real ref ids."""
+    try:
+        handle_registry.code_for_kind(kind)
+    except KeyError:
+        return False
+    return True
+
+
 #: Per-(kind, verb) recovery hints for "kind does not support verb" — a
 #: generic "try get(kind=…)" is a dead-end when the right move is a
 #: *different shape entirely*. Drafts are the case that bites: an agent
@@ -1192,6 +1269,10 @@ class DispatchMixin(RuntimeShape):
         started = time.monotonic()
         from precis._result_budget import fit_result_body, read_shape
 
+        # Trim pasted list-row tails off the address kwargs before
+        # anything parses them — a ``~`` selector under the junk still
+        # counts as an explicit read for the shape classifier below.
+        id_junk_rewrites = self._strip_id_junk(args)
         # Classified before dispatch — _invoke_handler pops extent=/ring=
         # from args, and the shape is a property of the caller's spelling.
         shape = read_shape(verb, args)
@@ -1202,6 +1283,21 @@ class DispatchMixin(RuntimeShape):
                         f"unknown verb: {verb}",
                         options=list(_VERBS),
                     )
+                if id_junk_rewrites:
+                    from precis.hints import Hint
+
+                    for slot, original, cleaned in id_junk_rewrites:
+                        note = f"{slot} {original!r} read as {cleaned!r}"
+                        self.hub.emit_hint(
+                            Hint(
+                                text=note,
+                                topic=f"id.junk.{slot}.{original}",
+                                level="info",
+                                cooldown=0,
+                                required=True,
+                                read_text=note,
+                            )
+                        )
                 dispatch_args, deref_ack = self._dereference_write_args(verb, args)
                 _refuse_envelope_denied_verb(verb, dispatch_args, self.hub)
                 _refuse_agent_secrets(verb, dispatch_args, self.hub)
@@ -4056,6 +4152,161 @@ class DispatchMixin(RuntimeShape):
             )
         args["kind"] = distinct[0]
         args["id"] = rewritten
+
+    def _strip_id_junk(self, args: dict[str, Any]) -> list[tuple[str, str, str]]:
+        """Trim pasted list-row tails off the address kwargs.
+
+        Sized list/outline rows carry size cells and annotations
+        (``pa259454~4..11\\t8kB``, ``gr537833 · 8kB``, ``me474312 ·
+        3kB``, ``pc1232 (5k)``) that agents copy back wholesale as
+        ``id=`` / ``target=``. Runs at the one boundary every verb
+        passes through, so get/edit/tag/link/delete and batch
+        ``id=[...]`` all get the same treatment per element. Returns
+        ``(kwarg, original, cleaned)`` per rewrite so the caller can
+        note what was actually read.
+        """
+        kind = args.get("kind")
+        kind_s = str(kind).strip() if kind is not None else None
+        rewrites: list[tuple[str, str, str]] = []
+        slots: list[tuple[dict[str, Any], str, str | None]] = [
+            (args, key, kind_s) for key in _ID_JUNK_ID_KEYS
+        ] + [(args, key, None) for key in _ID_JUNK_TARGET_KEYS]
+        extras = args.get(_EXTRAS_KEY)
+        if isinstance(extras, dict):
+            slots += [
+                (extras, key, kind_s if key in _ID_JUNK_ID_KEYS else None)
+                for key in _ID_JUNK_EXTRAS_KEYS
+            ]
+        for slot_args, key, slot_kind in slots:
+            value = slot_args.get(key)
+            if isinstance(value, str):
+                if (cleaned := self._id_junk_stripped(value, slot_kind)) is not None:
+                    slot_args[key] = cleaned
+                    label = key if slot_args is args else f"args[{key}]"
+                    rewrites.append((label, value, cleaned))
+            elif isinstance(value, (list, tuple)):
+                rewritten: list[Any] = []
+                changed = False
+                for item in value:
+                    if (
+                        isinstance(item, str)
+                        and (cleaned := self._id_junk_stripped(item, slot_kind))
+                        is not None
+                    ):
+                        rewritten.append(cleaned)
+                        label = key if slot_args is args else f"args[{key}]"
+                        rewrites.append((label, item, cleaned))
+                        changed = True
+                    else:
+                        rewritten.append(item)
+                if changed:
+                    slot_args[key] = rewritten
+        return rewrites
+
+    def _id_junk_stripped(self, raw: str, kind: str | None) -> str | None:
+        """``'pc1232 (5k)'`` → ``'pc1232'`` when the head self-identifies;
+        ``None`` when nothing safe trims.
+
+        The head must still name an address after the cut — a universal
+        handle, a ``kind:id`` prefix, ref-id digits, or a resolvable slug
+        — so a tail that leaves garbage (``'me1 extra words'``) and
+        free-text ids (URLs, paths, queries, expressions) pass through
+        untouched.
+        """
+        if kind is not None and any(
+            k.strip() in _ID_JUNK_KEEP_KINDS for k in kind.split(",")
+        ):
+            return None
+        s = raw.strip()
+        if not s:
+            return None
+        m = re.search(r"\s", s)
+        if m is not None:
+            head = s[: m.start()].strip(_ID_PUNCT_TAIL)
+            if (
+                head
+                and self._id_junk_tail(s[m.start() :])
+                and self._id_junk_head_ok(head, kind)
+            ):
+                return head
+            return None
+        head = s.strip(_ID_PUNCT_TAIL)
+        if head and head != s and self._id_junk_head_ok(head, kind):
+            return head
+        return None
+
+    @staticmethod
+    def _id_junk_tail(tail: str) -> bool:
+        """Whether ``tail`` — which starts on whitespace — is a pasted
+        size/annotation tail rather than part of the id."""
+        sep_end = len(tail) - len(tail.lstrip())
+        if "\t" in tail[:sep_end]:
+            return True  # a pasted TSV row — the tab ends the id
+        rest = tail[sep_end:]
+        if rest[:1] in ("·", "—", "–"):
+            return True  # the '· 3kB' size column / '— title' annotation
+        # A bare '-' never counts: '42 - x' could be arithmetic text, and
+        # the spaced relative op 'pc12 -1' must fall through to its own
+        # (currently unresolvable) error rather than silently reading pc12.
+        return bool(_ID_SIZE.fullmatch(rest) or _ID_SIZE_WRAPPED.fullmatch(rest))
+
+    def _id_junk_head_ok(self, head: str, kind: str | None) -> bool:
+        """Whether ``head`` alone still names an address — the gate
+        keeping free-text ids (which legitimately contain spaces) whole."""
+        sigil = head[:1]
+        if sigil in _SIGIL_KIND:
+            return self._id_junk_inner_ok(head[1:], _SIGIL_KIND[sigil][0])
+        if ":" in head:
+            prefix, _, rest = head.partition(":")
+            live = set(self.hub.kinds) if self.hub is not None else set()
+            return (
+                prefix in live
+                and prefix not in _ID_JUNK_KEEP_KINDS
+                and bool(rest)
+                and self._id_junk_inner_ok(rest, prefix)
+            )
+        return self._id_junk_inner_ok(head, kind)
+
+    def _id_junk_inner_ok(self, ident: str, kind: str | None) -> bool:
+        """The per-kind check behind :meth:`_id_junk_head_ok`: a
+        universal handle, bare ref-id digits, or a slug that resolves
+        to ``kind`` (or to any kind when ``kind`` is unset — the
+        self-identifying shape ``_infer_slug_kind`` consumes)."""
+        m = _ID_HANDLE_HEAD.match(ident)
+        if m:
+            try:
+                handle_registry.kind_for_code(m.group(1))
+            except KeyError:
+                pass
+            else:
+                tail = m.group(3)
+                if not tail or tail.startswith(("~", "/")):
+                    return True
+                if handle_registry.parse_relative(ident) is not None:
+                    return True
+                # 'pc10garbage' — fall through, may still slug-resolve
+        if ident.isdigit():
+            # A bare ref-id only means something for a kind that has a
+            # handle code — the refs-backed kinds (paper, memory, …).
+            # A codeless kind's numeric-looking arg (a calc expression's
+            # leading term, …) stays whole. kind=None self-infers the
+            # kind from the resolved row, which is coded by definition.
+            return kind is None or any(
+                _kind_has_handle_code(k.strip()) for k in kind.split(",") if k.strip()
+            )
+        if self.store is None:
+            return False
+        base = re.split(r"[~/?]", ident, maxsplit=1)[0].strip()
+        if not base:
+            return False
+        try:
+            found = self.store.kind_for_slug(base)
+        except Exception:  # pragma: no cover — store outage etc.
+            log.debug("kind_for_slug probe failed", exc_info=True)
+            return False
+        if found is None:
+            return False
+        return kind is None or found in {k.strip() for k in kind.split(",")}
 
     def _maybe_split_prefixed_id(
         self, args: dict[str, Any], *, verb: str | None = None
