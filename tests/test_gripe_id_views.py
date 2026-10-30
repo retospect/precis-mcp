@@ -67,6 +67,26 @@ def test_ids_view_ranked_search_too(handler: GripeHandler) -> None:
     assert "rank=" not in body
 
 
+def test_ids_view_stays_bare_handles_list_view_carries_size(
+    handler: GripeHandler,
+) -> None:
+    """``view='ids'`` is one bare handle per line — callers feed the
+    lines back as ``id=`` (precis-gripe-help's contract), so it carries
+    no size column even for a >1 kB body. ``view='list'`` is the human
+    browse view and does carry it as a tab-separated last field."""
+    gid = id_of(handler.put(text="sized probe\n" + "detail " * 200).body)
+    ids_body = handler.search(tags=["STATUS:open"], view="ids", page_size=100).body
+    id_lines = [ln for ln in ids_body.splitlines() if ln.startswith("gr")]
+    assert f"gr{gid}" in id_lines
+    assert all("\t" not in ln for ln in id_lines)
+    assert all("kB" not in ln for ln in id_lines)
+
+    list_body = handler.search(tags=["STATUS:open"], view="list", page_size=100).body
+    line = next(ln for ln in list_body.splitlines() if ln.startswith(f"gr{gid}"))
+    assert "\t" in line
+    assert line.rstrip().endswith("kB")
+
+
 # ── view='list': the compact id + title listing (gr515522) ──────────
 
 

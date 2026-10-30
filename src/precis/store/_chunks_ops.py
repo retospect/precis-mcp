@@ -3108,6 +3108,30 @@ class ChunkStore:
             ).fetchall()
         return {int(r[0]): int(r[1]) for r in rows}
 
+    def body_byte_counts(self, ref_ids: Any) -> dict[int, int]:
+        """``{ref_id: stored body bytes}`` for a page of refs, one query.
+
+        The size column every fetchable-row listing shows
+        (:func:`precis._result_budget.size_cell`): the ref's live body
+        chunks (``ord >= 0``) summed as ``octet_length`` — the same
+        byte unit the result-budget caps count in. Lengths only, no
+        text column, so a result page costs one aggregate read, not a
+        body fetch per row. Refs with no chunks are absent (caller
+        defaults to 0).
+        """
+        ids = [int(r) for r in ref_ids]
+        if not ids:
+            return {}
+        with self.pool.connection() as conn:
+            rows = conn.execute(
+                "SELECT ref_id, COALESCE(SUM(octet_length(text)), 0)::bigint "
+                "FROM chunks "
+                "WHERE ref_id = ANY(%s) AND ord >= 0 AND retired_at IS NULL "
+                "GROUP BY ref_id",
+                (ids,),
+            ).fetchall()
+        return {int(r[0]): int(r[1]) for r in rows}
+
     def select_salient(
         self,
         actor: str,

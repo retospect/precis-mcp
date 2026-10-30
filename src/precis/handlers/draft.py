@@ -5116,6 +5116,7 @@ class DraftHandler(Handler):
         collapsed = 0
         skip_below: int | None = None
         rows: list[str] = []
+        heading_rows: list[str] = []
         for c in chunks:
             if skip_below is not None:
                 if c.depth > skip_below:
@@ -5136,7 +5137,10 @@ class DraftHandler(Handler):
             cell = c.dc
             if sz := size_cell(len((c.text or "").encode("utf-8"))):
                 cell = f"{c.dc}\t{sz}"
-            rows.append(f"{'  ' * c.depth}{cell}  [{c.chunk_kind}] {gloss}")
+            row_line = f"{'  ' * c.depth}{cell}  [{c.chunk_kind}] {gloss}"
+            rows.append(row_line)
+            if c.chunk_kind == "heading":
+                heading_rows.append(row_line)
 
         # Slice window: canonical page/page_size; limit → page_size and
         # offset → an absolute row index stay as one-release aliases
@@ -5177,7 +5181,23 @@ class DraftHandler(Handler):
             )
         lines.extend(self._work_lines(ref.id))
         lines.extend(self._hygiene_lines(ref.id, chunks))
-        return interpreted(Response(body="\n".join(lines)), readings)
+        return interpreted(
+            Response(
+                body="\n".join(lines),
+                # Over cap the body is itself the map: the fitter shows
+                # the leading rows, this heading skeleton is the outline
+                # of what was cut (already in hand — no extra read), and
+                # the hint names the row-window continuation.
+                budget_outline="\n".join(heading_rows) or None,
+                result_budget_hint=(
+                    f"get(kind='draft', id={slug!r}, args={{'offset': <row>}})"
+                    " continues the outline · "
+                    f"get(kind='draft', id={slug!r}, view='toc') is the "
+                    "heading skeleton"
+                ),
+            ),
+            readings,
+        )
 
     def _hygiene_lines(
         self, ref_id: int, chunks: list[Any], *, elide: bool = True

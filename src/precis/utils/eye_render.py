@@ -66,6 +66,7 @@ from typing import TYPE_CHECKING, Any
 
 import psycopg
 
+from precis._result_budget import size_cell
 from precis.errors import NotFound
 from precis.store.types import _CLOSED_VOCAB
 from precis.utils import handle_registry
@@ -460,7 +461,9 @@ def _cluster_label(kind: str, bucket: list[Any], kws: list[str]) -> str:
     lead = _chunk_handle(kind, bucket[0])
     span = f" +{len(bucket) - 1}" if len(bucket) > 1 else ""
     label = ", ".join(kws) or _chunk_summary(bucket[0]) or "…"
-    return f"  · {lead}{span}  {_cap(label, _CHUNK_SUMMARY_CAP)}"
+    sz = size_cell(sum(len((b.text or "").encode("utf-8")) for b in bucket))
+    row = f"  · {lead}{span}  {_cap(label, _CHUNK_SUMMARY_CAP)}"
+    return f"{row} · {sz}" if sz else row
 
 
 def _cluster_map(kind: str, clusters: list[tuple[list[Any], list[str]]]) -> str:
@@ -518,7 +521,9 @@ def _fisheye_split(
             else:
                 lines.append(f"▸ {h} [{b.chunk_kind}]\n{_cap(b.text, _VERBATIM_CAP)}")
         else:
-            lines.append(f"  · {h}  {_chunk_summary(b)}")
+            sz = size_cell(len((b.text or "").encode("utf-8")))
+            row = f"  · {h}  {_chunk_summary(b)}"
+            lines.append(f"{row} · {sz}" if sz else row)
     if hi < len(home_bucket):
         lines.append(f"  ⋯ {len(home_bucket) - hi} more ⋯")
 

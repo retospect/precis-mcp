@@ -17,6 +17,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
+from precis._result_budget import size_cell
 from precis.errors import BadInput, NotFound
 from precis.response import Response
 from precis.store._todo_sql import (  # noqa: F401  (re-export)
@@ -1245,10 +1246,13 @@ def render_status_flat(
         )
         return Response(body=body)
     lines = [f"# {len(rows)} todo ({label})"]
+    sizes = store.chunks.body_byte_counts([r[0] for r in rows])
     for ref_id, status, title in rows:
         first_line = (title or "").split("\n", 1)[0]
         preview = (first_line[:80] + "…") if len(first_line) > 80 else first_line
-        lines.append(f"  {int(ref_id):>4}  [{status:<7}]  {preview}")
+        cell = size_cell(sizes.get(int(ref_id), 0))
+        sz = f" · {cell}" if cell else ""
+        lines.append(f"  {int(ref_id):>4}  [{status:<7}]  {preview}{sz}")
     body = "\n".join(lines)
     first_id = int(rows[0][0])
     body += render_next_section(
@@ -1295,13 +1299,22 @@ def render_flat(store: Store, *, limit: int = 200) -> Response:
         ).fetchall()
     if not rows:
         return Response(body="no live todos")
-    lines = [f"# {len(rows)} todo (flat)", "", "  id | status | parent | title"]
+    lines = [
+        f"# {len(rows)} todo (flat)",
+        "",
+        "  id | status | parent | title | size",
+    ]
+    sizes = store.chunks.body_byte_counts([r[0] for r in rows])
     for ref_id, status, parent_id, title in rows:
         first_line = (title or "").split("\n", 1)[0]
         preview = (first_line[:80] + "…") if len(first_line) > 80 else first_line
+        cell = size_cell(sizes.get(int(ref_id), 0))
+        # No trailing " | " on an empty size — the column only shows
+        # when the row actually carries a ≥1 kB body.
+        sz = f" | {cell}" if cell else ""
         lines.append(
             f"  {int(ref_id)} | {status} | {int(parent_id) if parent_id else '—'} "
-            f"| {preview}"
+            f"| {preview}{sz}"
         )
     return Response(body="\n".join(lines))
 
@@ -1342,10 +1355,13 @@ def render_waiting(store: Store) -> Response:
     if not rows:
         return Response(body="no waiting-for leaves")
     lines = [f"# {len(rows)} waiting"]
+    sizes = store.chunks.body_byte_counts([r[0] for r in rows])
     for ref_id, title, waits in rows:
         first_line = (title or "").split("\n", 1)[0]
         wait_str = ", ".join(sorted(w for w in waits))
-        lines.append(f"{_h(ref_id):<6} {first_line:<60}  {wait_str}")
+        cell = size_cell(sizes.get(int(ref_id), 0))
+        sz = f" · {cell}" if cell else ""
+        lines.append(f"{_h(ref_id):<6} {first_line:<60}  {wait_str}{sz}")
     return Response(body="\n".join(lines))
 
 
@@ -1406,6 +1422,7 @@ def render_blocked(store: Store) -> Response:
     if not rows:
         return Response(body="no blocked leaves")
     lines = [f"# {len(rows)} blocked"]
+    sizes = store.chunks.body_byte_counts([r[0] for r in rows])
     for ref_id, title, blockers in rows:
         first_line = (title or "").split("\n", 1)[0]
         blocker_ids = (
@@ -1413,7 +1430,9 @@ def render_blocked(store: Store) -> Response:
             if blockers
             else "(nothing recorded — add a blocked-by link)"
         )
-        lines.append(f"{_h(ref_id):<6} {first_line:<60}  blocked-by {blocker_ids}")
+        cell = size_cell(sizes.get(int(ref_id), 0))
+        sz = f" · {cell}" if cell else ""
+        lines.append(f"{_h(ref_id):<6} {first_line:<60}  blocked-by {blocker_ids}{sz}")
     return Response(body="\n".join(lines))
 
 

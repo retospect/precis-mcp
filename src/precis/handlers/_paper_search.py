@@ -44,6 +44,7 @@ import time
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
+from precis._result_budget import size_cell
 from precis.errors import BadInput, NotFound
 from precis.format import render_agent_table
 from precis.handlers._exclude_closure import resolve_exclude_paper_ids
@@ -445,6 +446,7 @@ class BylineSearch:
             return Response(body=body + render_next_section(fallback))
 
         refs_map = self.store.fetch_refs_by_ids(page_ids)
+        ref_sizes = self.store.chunks.body_byte_counts(page_ids)
         rows: list[dict[str, str]] = []
         for rid in page_ids:
             ref = refs_map.get(rid)
@@ -463,6 +465,7 @@ class BylineSearch:
                     "handle": handle,
                     "held": "held" if ref.pdf_sha256 is not None else "want",
                     "citation": f"{authors} ({year}). {title_disp}",
+                    "size": size_cell(ref_sizes.get(rid, 0)),
                 }
             )
 
@@ -472,7 +475,7 @@ class BylineSearch:
             noun="paper",
             query=f"{field}={q!r}",
         )
-        table = render_agent_table(rows, schema=["handle", "held", "citation"])
+        table = render_agent_table(rows, schema=["handle", "held", "citation", "size"])
         body = head + "\n\n" + table
 
         top = rows[0]["handle"]
@@ -579,6 +582,11 @@ class BlockSearchResult:
     #: resolved paper has no readable chunk) must say the paper
     #: exists and name it, never "not in the local corpus".
     doi_resolved_id: str | None = None
+    #: Stored body bytes per ref — one bulk ``octet_length`` read in
+    #: ``FusedBlockSearch.run`` (the only leg holding ``store``), keyed
+    #: by ref_id. The renderer's ``size`` column reads this for
+    #: whole-paper rows; chunk rows size off their already-loaded text.
+    ref_sizes: dict[int, int] = field(default_factory=dict)
 
 
 @dataclass
@@ -1357,6 +1365,9 @@ class FusedBlockSearch:
             # DOES resolve, but whose filtered/real search still came
             # back empty, never says "not in the local corpus" (fix 2).
             doi_resolved_id=doi_resolved_id,
+            ref_sizes=self.store.chunks.body_byte_counts(
+                {ref.id for _b, ref, s in hits if s == float("inf")}
+            ),
         )
 
 
@@ -1574,6 +1585,7 @@ class PaperSearchResultRenderer:
         # earlier segment-level excerpt sub-line had to go via a
         # central-sentence picker that produced too much noise.
         table_rows: list[dict[str, str]] = []
+        ref_sizes = result.ref_sizes
         for block, ref, score in hits:
             slug = ref.slug or "???"
             if score == float("inf"):
@@ -1636,6 +1648,11 @@ class PaperSearchResultRenderer:
             row = {
                 "handle": handle,
                 "chunk_keywords": kw_display,
+                "size": (
+                    size_cell(ref_sizes.get(ref.id, 0))
+                    if score == float("inf")
+                    else size_cell(len((block.text or "").encode("utf-8")))
+                ),
             }
             if paper_rows:
                 # ``more`` counts the paper's additional hits in the fused
@@ -1652,9 +1669,9 @@ class PaperSearchResultRenderer:
         rendered_table = render_agent_table(
             table_rows,
             schema=(
-                ["handle", "more", "chunk_keywords"]
+                ["handle", "more", "chunk_keywords", "size"]
                 if paper_rows
-                else ["handle", "chunk_keywords"]
+                else ["handle", "chunk_keywords", "size"]
             ),
         )
         body = (

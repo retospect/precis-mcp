@@ -186,7 +186,19 @@ def _render_fidelity_span(
         elif dist <= _FIDELITY_FULL:
             out.append(f"{indent}{c.dc} [{c.chunk_kind}]\n{c.text}")
         elif dist <= _FIDELITY_SUMMARY:
-            out.append(f"{indent}· {c.dc}  {_summary_text(c, views)}")
+            out.append(
+                f"{indent}· {c.dc}  {_summary_text(c, views)}{_chunk_size_cell(c)}"
+            )
         else:
-            out.append(f"{indent}· {c.dc}  {_summary_line(c, views)}")
+            out.append(
+                f"{indent}· {c.dc}  {_summary_line(c, views)}{_chunk_size_cell(c)}"
+            )
     return out
+
+
+def _chunk_size_cell(c: _Chunk) -> str:
+    """`` · <n>kB`` — the chunk's own text size at ≥1 kB (text is loaded)."""
+    from precis._result_budget import size_cell
+
+    sz = size_cell(len((c.text or "").encode("utf-8")))
+    return f" · {sz}" if sz else ""

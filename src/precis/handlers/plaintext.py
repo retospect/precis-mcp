@@ -1814,7 +1814,10 @@ class PlaintextHandler(Handler):
         lines = [f"# {len(seen)} {self._KIND} file(s) in workspace"]
         max_w = max(len(s) for s in seen)
         for slug in sorted(seen):
-            lines.append(f"  {slug:<{max_w}}  {seen[slug]}")
+            row = f"  {slug:<{max_w}}  {seen[slug]}"
+            if sz := self._file_size_cell(slug, seen[slug]):
+                row = f"{row} · {sz}"
+            lines.append(row)
         body = "\n".join(lines)
         if truncated:
             body += _listing_truncation_notice(
@@ -1831,6 +1834,20 @@ class PlaintextHandler(Handler):
             ]
         )
         return Response(body=body)
+
+    def _file_size_cell(self, slug: str, rel: str) -> str:
+        """``<n>kB`` for the file on disk at ≥1 kB, ``""`` below or on a
+        stat miss (the listing walks real paths; a vanish between walk
+        and stat is a race, not an error). ``stat()`` reads no body —
+        the size is the stored length itself."""
+        from precis._result_budget import size_cell
+
+        alias, _, _sep = slug.partition("/")
+        root = self.mirrors[alias].path if alias in self.mirrors else self.root
+        try:
+            return size_cell((root / rel).stat().st_size)
+        except OSError:
+            return ""
 
     def _render_overview(self, ref: Ref) -> Response:
         meta = ref.meta or {}

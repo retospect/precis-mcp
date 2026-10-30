@@ -1652,6 +1652,7 @@ class GripeHandler(NumericRefHandler):
         rank: float,
         dist: float | None = None,
         chips: str = "",
+        size: str = "",
     ) -> str:
         """One result line: header + chunk-kind context + matched text.
 
@@ -1669,6 +1670,8 @@ class GripeHandler(NumericRefHandler):
             label = f"{self._sense()} {ref.id} ({kind})"
         metric = f"({dist:.2f})" if dist is not None else f"(rank={rank:.2f})"
         suffix = f"  {chips}" if chips else ""
+        if size:
+            suffix = f"{suffix} · {size}"
         return f"\n## {label}  {metric}{suffix}\n{self._snippet(block.text)}"
 
     # ── rendering: body + comment timeline ──────────────────────────

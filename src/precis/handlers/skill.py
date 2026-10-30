@@ -1531,6 +1531,7 @@ class SkillHandler(Handler):
                     "section": row.section,
                     "more": more,
                     "keywords": keyword_summary(row.snippet, top_k=5),
+                    "size": _skill_size_cell(row.slug),
                 }
             )
 
@@ -1546,7 +1547,7 @@ class SkillHandler(Handler):
                 + "\n\n"
                 + render_agent_table(
                     table_rows,
-                    schema=["slug", "section", "more", "keywords"],
+                    schema=["slug", "section", "more", "keywords", "size"],
                 )
             )
         elif page > 1:
@@ -2132,10 +2133,11 @@ class SkillHandler(Handler):
                         {
                             "slug": _slug_with_aliases(slug),
                             "title": self._index_title_for(slug),
+                            "size": _skill_size_cell(slug),
                         }
                         for slug in slugs
                     ],
-                    schema=["slug", "title"],
+                    schema=["slug", "title", "size"],
                 )
             )
 
@@ -2148,10 +2150,11 @@ class SkillHandler(Handler):
                         {
                             "slug": _slug_with_aliases(slug),
                             "title": self._index_title_for(slug),
+                            "size": _skill_size_cell(slug),
                         }
                         for slug in uncategorised
                     ],
-                    schema=["slug", "title"],
+                    schema=["slug", "title", "size"],
                 )
             )
 
@@ -2353,7 +2356,7 @@ class SkillHandler(Handler):
 
         usage = self._usage_map()
         now = datetime.now(UTC)
-        toc_schema = ["slug", "title", "synopsis"] + (
+        toc_schema = ["slug", "title", "synopsis", "size"] + (
             ["read"] if usage is not None else []
         )
 
@@ -2407,6 +2410,7 @@ class SkillHandler(Handler):
                 "slug": _slug_with_aliases(slug),
                 "title": title,
                 "synopsis": synopsis,
+                "size": _skill_size_cell(slug),
             }
             if usage is not None:
                 row["read"] = (
@@ -4094,6 +4098,17 @@ _FM_TITLE_RE = re.compile(r"^title:\s*(.+?)\s*$", re.MULTILINE)
 _FM_SUMMARY_RE = re.compile(r"^summary:\s*(.+?)\s*$", re.MULTILINE)
 _H1_RE = re.compile(r"^#\s+(.+?)\s*$", re.MULTILINE)
 _H2_RE = re.compile(r"^##\s+(.+?)\s*$", re.MULTILINE)
+
+
+def _skill_size_cell(slug: str) -> str:
+    """``<n>kB`` for a file-backed skill's stored body, ``""`` below 1 kB
+    or for a synthesized slug (no stored text). The corpus text is the
+    process-wide ``_load_skills_map`` cache — already loaded, so no
+    render just to measure."""
+    from precis._result_budget import size_cell
+
+    text = _load_skill(slug)
+    return size_cell(len(text.encode("utf-8"))) if text is not None else ""
 
 
 def _skill_title_text(slug: str) -> str:

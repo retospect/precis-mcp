@@ -89,6 +89,7 @@ from psycopg import Connection
 from psycopg.errors import DeadlockDetected, LockNotAvailable
 from psycopg.pq import TransactionStatus
 
+from precis._result_budget import size_cell
 from precis.errors import (
     BadInput,
     Gone,
@@ -608,8 +609,6 @@ class MemoryHandler(NumericRefHandler):
         )
 
     def _outline_text(self, id: Any) -> str | None:
-        from precis._result_budget import size_cell
-
         ref = self._resolve_live_ref(self._coerce_id(id))
         body = self._body_text(ref)
         handle = handle_registry.try_format(self.kind, ref.id) or str(ref.id)
@@ -2207,6 +2206,7 @@ class MemoryHandler(NumericRefHandler):
         ref_ids = [r.id for r in refs]
         link_counts = self.store.count_links_for_refs(ref_ids)
         body_words = self.store.chunks.chunk_word_counts(ref_ids, chunk_kind=_BODY_KIND)
+        sizes = self.store.chunks.body_byte_counts(ref_ids)
         now = datetime.now(UTC)
         rows: list[dict[str, str]] = []
         for r in refs:
@@ -2219,9 +2219,10 @@ class MemoryHandler(NumericRefHandler):
                     "body_words": str(body_words.get(r.id, 0)),
                     "links": str(link_counts.get(r.id, 0)),
                     "age": str(age_days),
+                    "size": size_cell(sizes.get(r.id, 0)),
                 }
             )
-        schema = ["kind", "id", "summary", "body_words", "links", "age"]
+        schema = ["kind", "id", "summary", "body_words", "links", "age", "size"]
         return render_agent_table(rows, schema=schema)
 
     # ── search: body-chunk search + cross-kind hits come from the base
@@ -2361,12 +2362,19 @@ class MemoryHandler(NumericRefHandler):
         )
         lines = []
         for _block, ref, _rank in hits:
+            body_text = self._body_text(ref)
             first = next(
-                (ln.strip() for ln in self._body_text(ref).splitlines() if ln.strip()),
+                (ln.strip() for ln in body_text.splitlines() if ln.strip()),
                 "",
             )
             lines.append(
-                bullet_line(ref, cut_hooks=False, filename=True, fallback_hook=first)
+                bullet_line(
+                    ref,
+                    cut_hooks=False,
+                    filename=True,
+                    fallback_hook=first,
+                    size=size_cell(len(body_text.encode("utf-8"))),
+                )
             )
         return Response(body="\n".join(lines))
 
@@ -2402,12 +2410,19 @@ class MemoryHandler(NumericRefHandler):
         start = (max(page, 1) - 1) * page_size
         lines = []
         for ref in refs[start : start + page_size]:
+            body_text = self._body_text(ref)
             first = next(
-                (ln.strip() for ln in self._body_text(ref).splitlines() if ln.strip()),
+                (ln.strip() for ln in body_text.splitlines() if ln.strip()),
                 "",
             )
             lines.append(
-                bullet_line(ref, cut_hooks=False, filename=True, fallback_hook=first)
+                bullet_line(
+                    ref,
+                    cut_hooks=False,
+                    filename=True,
+                    fallback_hook=first,
+                    size=size_cell(len(body_text.encode("utf-8"))),
+                )
             )
         if not lines:
             return Response(body=f"no {self._sense()} entries on page {page}")

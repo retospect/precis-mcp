@@ -33,6 +33,7 @@ from __future__ import annotations
 from collections.abc import Sequence
 from typing import Any, ClassVar
 
+from precis._result_budget import size_cell
 from precis.handlers._paper_toc import build_toc, render_toc
 from precis.handlers.plaintext import (
     FILE_WALK_BUDGET_S,
@@ -190,10 +191,20 @@ class MarkdownHandler(PlaintextHandler):
                     flat.append(child)
         if not flat:
             return []
+        blocks_by_pos = {b.ord: b for b in blocks}
         lines: list[str] = ["", "## Headings"]
         for entry in flat[:10]:
             indent = "  " * max(entry.level - 1, 0)
-            lines.append(f"{indent}- ~{entry.start} {entry.title}")
+            n_bytes = sum(
+                len((b.text or "").encode("utf-8"))
+                for b in (
+                    blocks_by_pos.get(p) for p in range(entry.start, entry.end + 1)
+                )
+                if b is not None
+            )
+            sz = size_cell(n_bytes)
+            row = f"{indent}- ~{entry.start} {entry.title}"
+            lines.append(f"{row} · {sz}" if sz else row)
         if len(flat) > 10:
             lines.append(f"  … and {len(flat) - 10} more (see /toc)")
         return lines
@@ -280,7 +291,10 @@ class MarkdownHandler(PlaintextHandler):
         lines = [f"# {len(seen)} markdown file(s) in workspace"]
         max_w = max(len(s) for s in seen)
         for slug in sorted(seen):
-            lines.append(f"  {slug:<{max_w}}  {seen[slug]}")
+            row = f"  {slug:<{max_w}}  {seen[slug]}"
+            if sz := self._file_size_cell(slug, seen[slug]):
+                row = f"{row} · {sz}"
+            lines.append(row)
         body = "\n".join(lines)
         if truncated:
             body += _listing_truncation_notice(

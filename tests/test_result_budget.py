@@ -384,6 +384,54 @@ def test_draft_get_over_cap_returns_head_not_error(
     assert "… truncated: showing" in body
 
 
+def test_draft_outline_over_cap_fits_with_rest_not_refusal(
+    runtime_with_store: PrecisRuntime, store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr537833: ``view='outline'`` on a draft whose outline rows exceed
+    the 4 KB context cap returns a fitted outline — leading rows, the
+    heading skeleton as the map of what was cut, and a rest line naming
+    the continuation — never ``BadInput``, never a bare truncation."""
+    monkeypatch.setenv("PRECIS_TOOL_RESULT_CONTEXT_BYTES", "4096")
+    todo = store.insert_ref(kind="todo", slug=None, title="P")
+    runtime_with_store.dispatch(
+        "put", {"kind": "draft", "id": "d1", "title": "Dossier", "project": todo.id}
+    )
+    dref = store.get_ref(kind="draft", id="d1")
+    assert dref is not None
+    tail_dc = store.drafts.reading_order(dref.id)[-1].dc
+    # Heading + paragraph rows: glosses long enough that the outline
+    # alone clears 4 KB of context.
+    for i in range(40):
+        runtime_with_store.dispatch(
+            "put",
+            {
+                "kind": "draft",
+                "id": "d1",
+                "chunk_kind": "heading" if i % 8 == 0 else "paragraph",
+                "text": f"section {i} " + "word " * 20,
+                "at": {"after": tail_dc},
+            },
+        )
+        tail_dc = store.drafts.reading_order(dref.id)[-1].dc
+    outline = runtime_with_store.hub.handlers["draft"]._render_outline("d1", dref).body
+    assert len(outline.encode("utf-8")) > 4096
+    body, is_error = runtime_with_store.dispatch_with_status(
+        "get", {"kind": "draft", "id": "d1", "view": "outline"}, fold=True
+    )
+    assert is_error is False
+    assert "… truncated: showing" in body
+    # The fitted map is the heading skeleton — dc handles with sizes —
+    # and the footer names how to continue instead of refusing.
+    assert "outline:" in body
+    assert re.search(r"next: get\(kind='draft', id='d1'", body), body
+    heading_dc = next(
+        c.dc
+        for c in reversed(store.drafts.reading_order(dref.id))
+        if c.chunk_kind == "heading"
+    )
+    assert re.search(rf"\b{re.escape(heading_dc)}\b", body)
+
+
 def test_quest_get_over_cap_returns_head_not_error(
     runtime_with_store: PrecisRuntime, monkeypatch: pytest.MonkeyPatch
 ) -> None:

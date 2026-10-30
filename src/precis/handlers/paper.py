@@ -55,6 +55,7 @@ from typing import Any, ClassVar, NamedTuple
 import psycopg
 
 from precis import settings
+from precis._result_budget import size_cell as _size_cell
 from precis.dispatch import Hub, InitError
 from precis.errors import BadInput, Gone, NotFound, Unsupported, Upstream
 from precis.format import render_agent_table
@@ -8163,11 +8164,22 @@ class PaperHandler(Handler):
                     "The chunker hasn't produced any body chunks for this paper."
                 )
             )
+        # Row size = the chunk's stored text bytes — one bulk length
+        # read per view, keyed by ord.
+        chunk_sizes: dict[int, int] = {}
+        with self.store.pool.connection() as conn:
+            for o, n in conn.execute(
+                "SELECT ord, octet_length(text) FROM chunks "
+                "WHERE ref_id = %s AND ord >= 0 AND retired_at IS NULL",
+                (ref.id,),
+            ).fetchall():
+                chunk_sizes[int(o)] = int(n)
         rows = [
             {
                 "handle": f"{_pa(ref)}~{g['ord']}",
                 "summary": g["summary"] or "—",
                 "keywords": g["keywords"] or "—",
+                "size": _size_cell(chunk_sizes.get(int(g["ord"]), 0)),
             }
             for g in summaries
         ]
@@ -8175,7 +8187,9 @@ class PaperHandler(Handler):
         head = (
             f"# {_pa(ref)} summaries — {len(rows)} chunks, {n_summ} with an llm summary"
         )
-        table = render_agent_table(rows, schema=["handle", "summary", "keywords"])
+        table = render_agent_table(
+            rows, schema=["handle", "summary", "keywords", "size"]
+        )
         body = f"{head}\n\n{table}"
         banner = _paper_banner(ref, store=self.store)
         if banner:

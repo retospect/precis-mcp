@@ -56,6 +56,7 @@ from psycopg import Connection
 from psycopg.errors import QueryCanceled
 
 from precis import worktree_server
+from precis._result_budget import size_cell
 from precis.dispatch import Hub, InitError
 from precis.errors import BadInput, Gone, NotFound, PrecisError, Unsupported
 from precis.handlers._eye import is_eye_view
@@ -1709,6 +1710,13 @@ class NumericRefHandler(Handler):
             if titles
             else {}
         )
+        # ``view='ids'`` (``titles=False``) is one bare handle per line —
+        # callers feed the lines back as ``id=``, so no size column
+        # (precis-gripe-help's contract). ``view='list'`` is the human
+        # browse view and does carry it.
+        sizes = (
+            self.store.chunks.body_byte_counts([r.id for r in refs]) if titles else {}
+        )
         lines = []
         for r in refs:
             handle = handle_registry.try_format(self.kind, r.id) or str(r.id)
@@ -1719,6 +1727,8 @@ class NumericRefHandler(Handler):
                 chips = chip_map.get(int(r.id))
                 if chips:
                     handle = f"{handle}  {chips}"
+                if sz := size_cell(sizes.get(int(r.id), 0)):
+                    handle = f"{handle}\t{sz}"
             lines.append(handle)
         return "\n".join(lines)
 
@@ -2442,17 +2452,21 @@ class NumericRefHandler(Handler):
                 self.store,
                 {int(ref.id): self.kind for _, ref, _ in [*shown, *weak]},
             )
+            sizes = self.store.chunks.body_byte_counts([ref.id for _, ref, _ in shown])
 
             def _render_hit(block: Any, ref: Ref, rank: float) -> str:
                 chips = chip_map.get(int(ref.id), "")
+                size = size_cell(sizes.get(int(ref.id), 0))
                 sem_d = fold_info.get(block.id, (None, True))[0]
                 if fold_distance is not None:
                     # ``dist`` shows only on folding kinds — every other
                     # kind's ``(rank=…)`` render stays byte-identical.
                     return self._render_body_search_hit(
-                        ref, block, rank, dist=sem_d, chips=chips
+                        ref, block, rank, dist=sem_d, chips=chips, size=size
                     )
-                return self._render_body_search_hit(ref, block, rank, chips=chips)
+                return self._render_body_search_hit(
+                    ref, block, rank, chips=chips, size=size
+                )
 
             lines.extend(_render_hit(*hit) for hit in shown)
         if weak:
@@ -2482,6 +2496,7 @@ class NumericRefHandler(Handler):
         rank: float,
         dist: float | None = None,
         chips: str = "",
+        size: str = "",
     ) -> str:
         """One result line for a body-chunk hit.
 
@@ -2502,6 +2517,8 @@ class NumericRefHandler(Handler):
             label += f": {title}"
         metric = f"({dist:.2f})" if dist is not None else f"(rank={rank:.2f})"
         suffix = f"  {chips}" if chips else ""
+        if size:
+            suffix = f"{suffix} · {size}"
         return (
             f"\n## {label}  {metric}{suffix}\n"
             f"{self._snippet(self._hit_text(ref, block))}"
@@ -2543,6 +2560,7 @@ class NumericRefHandler(Handler):
         chip_map = tag_chips.chips_bulk(
             self.store, {int(ref.id): self.kind for _, ref, _ in ordered}
         )
+        sizes = self.store.chunks.body_byte_counts([ref.id for _, ref, _ in ordered])
         return [
             SearchHit(
                 score=rank,
@@ -2552,6 +2570,7 @@ class NumericRefHandler(Handler):
                 preview=self._snippet(self._hit_text(ref, block)),
                 ref_id=ref.id,
                 tags=chip_map.get(int(ref.id), ""),
+                n_bytes=sizes.get(int(ref.id)),
             )
             for block, ref, rank in ordered
         ]
@@ -3580,6 +3599,7 @@ class NumericRefHandler(Handler):
         live = [r.id for r in refs.values() if r.kind == self.kind and not r.retired_at]
         tag_rows = self.store.ref_tags_bulk(live)
         link_counts = self.store.count_links_for_refs(live)
+        sizes = self.store.chunks.body_byte_counts(live)
         blocks: list[str] = []
         for rid in ref_ids:
             handle = handle_registry.try_format(self.kind, rid) or str(rid)
@@ -3599,6 +3619,8 @@ class NumericRefHandler(Handler):
             if ref.prio is not None:
                 bits.append(f"prio={ref.prio}")
             bits.append(f"links={link_counts.get(rid, 0)}")
+            if sz := size_cell(sizes.get(rid, 0)):
+                bits.append(sz)
             summary, _rest = _extract_summary(ref.title or "")
             blocks.append("  ".join(bits) + "\n" + summary)
         body = f"# {len(ref_ids)} {self._sense()} (batch)\n\n" + "\n\n".join(blocks)
@@ -3996,6 +4018,7 @@ class NumericRefHandler(Handler):
         if not refs:
             return ""
         link_counts = self.store.count_links_for_refs([r.id for r in refs])
+        sizes = self.store.chunks.body_byte_counts([r.id for r in refs])
         lifecycle = self.kind in _BROWSE_TERMINALS
         tag_rows = self.store.ref_tags_bulk([r.id for r in refs])
         chip_rows = tag_rows
@@ -4041,10 +4064,11 @@ class NumericRefHandler(Handler):
                     "remaining_words": str(remaining_words),
                     "links": str(link_counts.get(r.id, 0)),
                     "age": str(age_days),
+                    "size": size_cell(sizes.get(int(r.id), 0)),
                     **({"stale": marks.get(r.id, "")} if marks else {}),
                 }
             )
-        schema = ["kind", "id", "summary", "remaining_words", "links", "age"]
+        schema = ["kind", "id", "summary", "remaining_words", "links", "age", "size"]
         if lifecycle:
             schema.insert(2, "status")
         if any_chips:

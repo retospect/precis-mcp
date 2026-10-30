@@ -57,6 +57,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, ClassVar
 
+from precis._result_budget import size_cell
 from precis.dispatch import Hub
 from precis.errors import BadInput, NotFound, Unsupported
 from precis.handlers._python_worktrees import WorktreeRegistry
@@ -489,7 +490,11 @@ class MdHandler(Handler):
         for score, alias, f, b in hits:
             anchor = f"{alias}/{f}~{b.slug}"
             crumb = " > ".join(b.heading_path)
-            lines.append(f"\n## {anchor}  (score={score:.4f}, {f}:{b.line_start})")
+            sz = size_cell(len((b.text or "").encode("utf-8")))
+            size_suffix = f" · {sz}" if sz else ""
+            lines.append(
+                f"\n## {anchor}  (score={score:.4f}, {f}:{b.line_start}){size_suffix}"
+            )
             if crumb:
                 lines.append(f"  {crumb}")
             lines.append(f"  {_oneline(b.text)}")
@@ -744,7 +749,17 @@ def _render_file_outline(alias: str, file_entry: MdFileEntry) -> str:
     if headings:
         for b in headings:
             indent = "  " * max((b.heading_level or 1) - 1, 0)
-            lines.append(f"{indent}{b.title}  (~{b.slug}, L{b.line_start})")
+            # Section size = this heading plus its nested blocks, all
+            # already in memory — the size of a ``~<slug>`` fetch.
+            n_bytes = sum(
+                len((s.text or "").encode("utf-8"))
+                for s in _section_blocks(file_entry, b)
+            )
+            sz = size_cell(n_bytes)
+            size_suffix = f" · {sz}" if sz else ""
+            lines.append(
+                f"{indent}{b.title}  (~{b.slug}, L{b.line_start}){size_suffix}"
+            )
     else:
         lines.append("  (no headings)")
 

@@ -532,6 +532,7 @@ def bullet_line(
     cut_hooks: bool,
     filename: bool = False,
     fallback_hook: str = "",
+    size: str = "",
 ) -> str:
     """One index bullet: ``- <Title> (<handle>[, <filename>]) — <hook>``.
 
@@ -539,6 +540,8 @@ def bullet_line(
     renders (``--q`` and ``search(view='index')``) pass ``filename=True`` so a
     hit matches the topic file the harness may also have recalled, and
     ``fallback_hook`` (the body's first line) for a node with no ``meta.hook``.
+    ``size`` (a ``size_cell`` label) appends `` · <n>kB`` when the body
+    is big enough to matter — its caller already holds the text.
     """
     from precis.utils import handle_registry
 
@@ -552,7 +555,9 @@ def bullet_line(
     if cut_hooks and len(hook) > HOOK_CUT_CHARS:
         hook = hook[: HOOK_CUT_CHARS - 1].rstrip() + "…"
     line = f"- {ref.title} ({handle})"
-    return f"{line} — {hook}" if hook else line
+    if hook:
+        line = f"{line} — {hook}"
+    return f"{line} · {size}" if size else line
 
 
 def _bullet_line(

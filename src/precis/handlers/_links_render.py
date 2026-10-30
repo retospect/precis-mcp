@@ -28,6 +28,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from precis import profiles
+from precis._result_budget import size_cell
 from precis.handlers._capped_section import DEFAULT_CHILD_ROW_CAP, render_capped_section
 from precis.response import Response
 from precis.utils import handle_registry
@@ -195,6 +196,26 @@ def render_links_section(
 
     combined = [(lnk, "out") for lnk in out_links] + [(lnk, "in") for lnk in in_links]
 
+    # Row sizes from stored lengths only — one bulk read over the
+    # endpoint refs' body bytes plus one over the chunk-handle rows'
+    # own text (the fetchable thing each "how to get" names).
+    ref_sizes = store.chunks.body_byte_counts(endpoint_ids)
+    chunk_ids = {
+        c
+        for lnk, d in combined
+        for c in ((lnk.dst_chunk_id if d == "out" else lnk.src_chunk_id),)
+        if c is not None
+    }
+    chunk_sizes: dict[int, int] = {}
+    if chunk_ids:
+        with store.pool.connection() as conn:
+            for cid, nbytes in conn.execute(
+                "SELECT chunk_id, octet_length(text) FROM chunks "
+                "WHERE chunk_id = ANY(%s)",
+                (list(chunk_ids),),
+            ).fetchall():
+                chunk_sizes[int(cid)] = int(nbytes)
+
     def render(selected: list[tuple[Link, str]], total: int) -> str:
         rows: list[dict[str, str]] = []
         truncated = len(selected) < total
@@ -217,11 +238,17 @@ def render_links_section(
                 pos=other_pos,
                 chunk_id=other_chunk_id,
             )
+            n_bytes = (
+                chunk_sizes.get(other_chunk_id, 0)
+                if other_chunk_id is not None
+                else ref_sizes.get(other_id, 0)
+            )
             rows.append(
                 {
                     "related to": f"{rel_marker} {target}".strip(),
                     "keywords": teaser,
                     "how to get": get_call,
+                    "size": size_cell(n_bytes),
                 }
             )
 
@@ -229,7 +256,7 @@ def render_links_section(
 
         header = f"Links ({limit} of {total}):" if truncated else "Links:"
         out = f"\n\n{header}\n" + render_agent_table(
-            rows, schema=["related to", "keywords", "how to get"]
+            rows, schema=["related to", "keywords", "how to get", "size"]
         )
         return out
 

@@ -40,6 +40,7 @@ import re
 from dataclasses import dataclass, replace
 from typing import Any, Literal
 
+from precis._result_budget import size_cell as _size_cell
 from precis.response import Response
 from precis.utils import handle_registry
 from precis.utils.search_header import format_search_headline
@@ -311,6 +312,13 @@ class SearchHit:
     # merge renders it verbatim — ``_render_hit`` on the ``##`` line,
     # ``_render_toon_table`` as a column only when any hit carries one.
     tags: str = ""
+    # Stored byte size of the fetchable thing the row names — the
+    # chunk's ``octet_length(text)`` for block hits, the ref's summed
+    # body bytes for ref-level hits. Rendered via
+    # :func:`precis._result_budget.size_cell` (shows only at ≥1 kB).
+    # ``None`` when the producer has no cheap size source — never fetch
+    # a body just to fill this.
+    n_bytes: int | None = None
 
     @property
     def handle(self) -> str:
@@ -643,6 +651,7 @@ def _render_toon_table(
     # The tags column exists only when some hit carries chips — an
     # all-empty column is a per-row token tax for the common case.
     any_tags = any(h.tags for h in hits)
+    any_size = any(h.n_bytes is not None and h.n_bytes >= 1024 for h in hits)
     rows: list[dict[str, str]] = []
     for hit in hits:
         summary, remaining_words = _derive_toon_summary(hit)
@@ -691,11 +700,14 @@ def _render_toon_table(
                 "remaining_words": str(remaining_words),
                 "links": links_cell,
                 **({"tags": hit.tags} if any_tags else {}),
+                **({"size": _size_cell(hit.n_bytes or 0)} if any_size else {}),
             }
         )
     schema = ["id", "summary", "remaining_words", "links"]
     if any_tags:
         schema.append("tags")
+    if any_size:
+        schema.append("size")
     return render_agent_table(rows, schema=schema)
 
 
@@ -716,6 +728,7 @@ def _render_keywords_table(hits: list[SearchHit]) -> str:
     """
     from precis.format import render_agent_table
 
+    any_size = any(h.n_bytes is not None and h.n_bytes >= 1024 for h in hits)
     rows: list[dict[str, str]] = []
     for hit in hits:
         if hit.uhandle:
@@ -736,9 +749,12 @@ def _render_keywords_table(hits: list[SearchHit]) -> str:
                 "id": ident,
                 "kind": hit.kind,
                 "keywords": ", ".join(hit.keywords) if hit.keywords else "",
+                **({"size": _size_cell(hit.n_bytes or 0)} if any_size else {}),
             }
         )
     schema = ["id", "kind", "keywords"]
+    if any_size:
+        schema.append("size")
     return render_agent_table(rows, schema=schema)
 
 
@@ -752,7 +768,9 @@ def _render_hit(rank: int, hit: SearchHit, *, show_label: bool) -> str:
     # slug~pos / ref_id form (still resolves on input; un-backfilled rows).
     ident = hit.uhandle or hit.handle
     tag_suffix = f"  {hit.tags}" if hit.tags else ""
-    parts = [f"\n## {rank}. {ident}{label}{tag_suffix}"]
+    size = _size_cell(hit.n_bytes or 0)
+    size_suffix = f" · {size}" if size else ""
+    parts = [f"\n## {rank}. {ident}{label}{tag_suffix}{size_suffix}"]
     if hit.title:
         parts.append(f"_{hit.title}_")
     prefix = _annotation_prefix(hit)
@@ -861,6 +879,9 @@ def block_hits_to_search_hits(
                 # (always carries the column, ``None`` when unchecked),
                 # but the block-level fakes used in some tests don't.
                 retraction_status=getattr(ref, "retraction_status", None),
+                # the row names the chunk handle — its stored text is
+                # already loaded, so its byte size is free.
+                n_bytes=len(text.encode("utf-8")),
             )
         )
     return out
