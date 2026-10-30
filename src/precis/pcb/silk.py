@@ -1559,6 +1559,17 @@ class PartOutline:
     side: str
     ring: list[Point]
     runs: list[list[Point]]
+    #: The ring the refdes label's spots key off: the un-settled
+    #: ``hull.buffer(target)`` the drawn ``ring`` starts from, before the
+    #: neighbour cell, shared walls, the board edge and the via bends
+    #: settle it. Identical for identical parts however their drawn
+    #: outlines then bent (the aligned-group sharing depends on that),
+    #: and carrying the same decimate growth
+    #: (:data:`precis.pcb.ir.COURTYARD_SIMPLIFY_MM`) the drawn ring does —
+    #: keying the spots off the exact analytic offset priced every named
+    #: spot out under the label-gap check, which reads the drawn ring
+    #: (gr537483).
+    key_ring: list[Point]
     edge_cut: bool = False
     #: Length of ring the board-edge cut left open (mm).
     edge_open_mm: float = 0.0
@@ -2138,6 +2149,7 @@ def part_outlines(
         exclusive[inst] = cell.difference(rest) if not rest.is_empty else cell
 
     rings: dict[int, tuple[str, list[Point]]] = {}
+    key_rings: dict[int, list[Point]] = {}
     shared_with: dict[int, tuple[str, ...]] = {}
     for inst, side, hull in hulls:
         grown = hull.buffer(target, join_style=2, mitre_limit=COURTYARD_MITRE_LIMIT)
@@ -2200,6 +2212,18 @@ def part_outlines(
         )
         exterior = _shapely_orient(_ShapelyPolygon(poly.exterior), 1.0).exterior
         rings[inst] = (side, [(float(x), float(y)) for x, y in exterior.coords])
+        # The ring the label spots key off (gr537483): ``grown``, the
+        # un-settled target-offset ring, BEFORE the cell, walls, edge and
+        # bends reshape it — identical for identical parts whatever their
+        # drawn outlines became, and grown by the same decimate slack the
+        # drawn ring carries, so the gap check can never disagree with
+        # the candidate anchors about where the outline sits.
+        key_rings[inst] = [
+            (float(x), float(y))
+            for x, y in _shapely_orient(
+                _ShapelyPolygon(grown.exterior), 1.0
+            ).exterior.coords
+        ]
         if shared:
             shared_with[inst] = tuple(sorted(shared, key=_refdes_sort_key))
 
@@ -2311,6 +2335,7 @@ def part_outlines(
             side=side,
             ring=ring,
             runs=runs,
+            key_ring=key_rings[inst],
             edge_cut=edge_cut,
             edge_open_mm=edge_open,
             buried_mm=buried,
@@ -3876,13 +3901,17 @@ def _aligned_label_groups(
         ).append(inst)
 
     runs: list[tuple[int, tuple[int, ...]]] = []
-    for (axis, *_), members in by_key.items():
+    for (axis, _side, shape_key, _bucket), members in by_key.items():
         if len(members) < 2:
             continue
         # A column (axis 0, shared x) runs along y; a row along x.
         along = 1 - axis
-        box = shapes[members[0]][2]
-        extent = max(p[along] for p in box) - min(p[along] for p in box)
+        # The pitch limit is read off the shared shape_key, never a
+        # member's raw ring: ``shapes`` arrives in the caller's instance
+        # order, so ``shapes[members[0]]`` let ir order pick whose ring —
+        # and whose epsilon-different extent — set the boundary a pitch
+        # can sit exactly on (gr537483).
+        extent = max(p[along] for p in shape_key) - min(p[along] for p in shape_key)
         limit = _LABEL_GROUP_MAX_PITCH_EXTENTS * extent
         members.sort(key=lambda i: (shapes[i][1][along], shapes[i][1][axis]))
         run = [members[0]]
@@ -4267,20 +4296,15 @@ def _build_silk_pass(
             # group would pick (`build_silk`'s own docstring): the member
             # neither shapes the group's choice nor takes it first.
             continue
-        rot = float(ir.inst_rot[inst])
         side_name = courtyard_ring[inst][0]
+        ox, oy = float(ir.inst_x[inst]), float(ir.inst_y[inst])
+        # The un-settled key ring, back in this part's origin-centred
+        # board frame — the SAME geometry the per-part `box_board` below
+        # uses, so a group's candidate indexes match its members' lists.
         label_shapes[inst] = (
             side_name,
-            (float(ir.inst_x[inst]), float(ir.inst_y[inst])),
-            _place(
-                instance_courtyard_polygon(
-                    ir, inst, clearance_mm=target_mm, pins=pins_of_inst.get(inst, [])
-                ),
-                cx=0.0,
-                cy=0.0,
-                rot=0.0 if math.isnan(rot) else rot,
-                mirror=side_name == "bottom",
-            ),
+            (ox, oy),
+            [(px - ox, py - oy) for px, py in outlines[inst].key_ring],
         )
     seed_obstacles = {
         side: _SideObstacles(list(obs)) for side, obs in obstacles_by_side.items()
@@ -4349,9 +4373,15 @@ def _build_silk_pass(
         pins = pins_of_inst.get(inst, [])
         # Empty for a pinless instance (mounting hole, fiducial) — no land
         # pattern, so no courtyard, rather than an invented size. The
-        # undeformed target-offset polygon: it sizes and keys the pin-1 dot
-        # and label searches, so identical parts get identical offsets
-        # however their neighbours bent their drawn outlines.
+        # undeformed target-offset polygon sizes and keys the pin-1 dot
+        # search, so identical parts get identical dot offsets however
+        # their neighbours bent their drawn outlines. The refdes label's
+        # spot boxes key off `part_outline.key_ring` instead — the ring
+        # the drawn outline was settled from, grown by the same decimate
+        # slack (`instance_courtyard_polygon`'s) the drawn ring carries:
+        # keying them off this exact analytic ring left every named spot
+        # inside the drawn ring's label gap whenever the drawn ring sat
+        # COURTYARD_SIMPLIFY_MM proud of it (gr537483).
         box_local = instance_courtyard_polygon(
             ir, inst, clearance_mm=target_mm, pins=pins
         )
@@ -4786,9 +4816,17 @@ def _build_silk_pass(
         # needs folding into `side_obstacles` as a solid bounding box -- a
         # box that, on a rotated or neighbour-bent outline, blocked label
         # spots the outline itself leaves free.
+        # The spots anchor off `part_outlines`' un-settled key ring
+        # (translated back to this part's origin-centred board frame),
+        # never `box_local`: the two differ by the decimate slack the
+        # drawn ring carries, which is exactly the skew that priced every
+        # named spot out. `_label_blocked` measures the gap against the
+        # settled `ring` — where the two differ (a wall it extended to,
+        # a via it bent around), the blocked spot simply walks on, same
+        # as before.
         box_board = (
-            _place(box_local, cx=0.0, cy=0.0, rot=rot, mirror=mirror)
-            if box_local
+            [(px - cx, py - cy) for px, py in part_outline.key_ring]
+            if part_outline is not None
             else []
         )
         candidates = _label_candidates(

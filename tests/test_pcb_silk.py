@@ -247,16 +247,12 @@ def _spot_boxes(
 ) -> dict[str, list[tuple[float, float]]]:
     """Each :data:`silk.LABEL_SPOT_ORDER` spot's text box for one top-side,
     unrotated part, in board mm -- where a fixture puts an obstacle to
-    block exactly that spot."""
+    block exactly that spot. Keyed off the same ring the builder keys off
+    (:attr:`silk.PartOutline.key_ring`, gr537483)."""
     stroke = gerber.DEFAULT_SILK_WIDTH_MM
-    target = silk.outline_offsets_mm(None, stroke_width_mm=stroke)[1]
-    local = instance_courtyard_polygon(
-        ir,
-        inst,
-        clearance_mm=target,
-        pins=[p for p in range(ir.n_pins) if int(ir.pin_instance[p]) == inst],
-    )
+    outlines = silk.part_outlines(ir, capability=None, stroke_width_mm=stroke)
     cx, cy = float(ir.inst_x[inst]), float(ir.inst_y[inst])
+    box_board = [(px - cx, py - cy) for px, py in outlines[inst].key_ring]
     return {
         spot: stroke_font.text_bbox_corners(
             refdes,
@@ -265,7 +261,7 @@ def _spot_boxes(
             h_align=h,
             v_align=v,
         )
-        for (ax, ay), h, v, spot in silk._outline_spot_candidates(local, stroke)
+        for (ax, ay), h, v, spot in silk._outline_spot_candidates(box_board, stroke)
     }
 
 
@@ -2688,12 +2684,10 @@ def test_a_crowded_label_falls_back_in_the_documented_order():
     # the spots): the top and bottom side spots then have room of their own
     # between the two corner spots.
     ir = from_graph(_graph("R1", 4, x=0.0, y=0.0), stackup=DEFAULT_STACKUP)
-    # Fixture moved: the synthesized 0.325mm pads (1.3mm pitch) stay
-    # disjoint at zero clearance, so the corridor-bridged union ring is
-    # drawn COURTYARD_SIMPLIFY_MM proud of the ring the label spots key
-    # off, which priced every named spot out (the label always laddered);
-    # widening the pads past the pitch merges the row into one bar, no
-    # bridge is needed, and the fallback-ladder premise holds again.
+    # Widened past the pitch so the pads merge into one bar at zero
+    # clearance: the disjoint-pad (corridor-bridged, decimated) ring has
+    # its own test below; this one keeps the order walk on a single
+    # cluster's exact ring.
     for pid in range(ir.n_pins):
         ir.pin_w[pid] = 1.4
     boxes = _spot_boxes(ir, 0, "R1")
@@ -2724,6 +2718,54 @@ def test_a_crowded_label_falls_back_in_the_documented_order():
             # all eight spots blocked -> a quarter-edge anchor or a ring
             assert "edge" in str(row.reason) or "ring" in str(row.reason), row.reason
         assert f"R1: {row.reason}" in result.relocated
+
+
+def test_a_disjoint_pad_part_labels_its_default_spot_not_the_ladder():
+    """gr537483: the label spots key off the same ring the outline pass
+    draws. A part whose pads stay disjoint at zero clearance gets the
+    corridor-bridged courtyard ring (ir.py's ``_bridge_pad_clusters``),
+    which the decimate pass draws COURTYARD_SIMPLIFY_MM proud of the
+    exact analytic offset the spots used to anchor on -- every named
+    spot then sat inside the drawn ring's label gap, so an unobstructed
+    label always fell to the radial ladder."""
+    from shapely.ops import unary_union
+
+    ir = from_graph(_graph("R1", 4, x=0.0, y=0.0), stackup=DEFAULT_STACKUP)
+    # Fixture premise: the synthesized pads really are disjoint at zero
+    # clearance, so the courtyard is the bridged (dense -> decimated)
+    # ring this bug needed.
+    pads = realize.pads_for_ir(ir, [layer["name"] for layer in DEFAULT_STACKUP])
+    assert unary_union([_pad_shape(p) for p in pads]).geom_type == "MultiPolygon"
+    result = build_silk(ir, pads=[])
+    row = next(c for c in result.census if c.kind == "refdes")
+    # bottom-left -- the FIRST LABEL_SPOT_ORDER spot -- not a ladder ring.
+    assert row.outcome == "placed", row
+    # ...and it sits the label gap clear of the DRAWN outline's box,
+    # which is what the buggy keying could never manage.
+    pts = _label_points(result, "R1")
+    x0, y0, _x1, _y1 = _outline_bbox(result, "R1")
+    gap = (1.0 + silk.OUTLINE_GAP_STROKES) * gerber.DEFAULT_SILK_WIDTH_MM
+    assert max(p[1] for p in pts) <= y0 - gap + 1e-6
+    assert min(p[0] for p in pts) >= x0 - 1e-6
+
+
+def test_a_dense_single_cluster_part_labels_its_default_spot_too():
+    """The other decimate trigger, same gr537483 skew: ONE cluster whose
+    ring is dense enough to decimate (a shaped electrode's many-vertex
+    pad) must also land its label on the first named spot, not the
+    ladder."""
+    ir = from_graph(_graph("R1", 1, x=0.0, y=0.0), stackup=DEFAULT_STACKUP)
+    n = 96
+    ir.pin_poly[0] = [
+        (
+            2.0 * math.cos(2.0 * math.pi * k / n),
+            2.0 * math.sin(2.0 * math.pi * k / n),
+        )
+        for k in range(n)
+    ]
+    result = build_silk(ir, pads=[])
+    row = next(c for c in result.census if c.kind == "refdes")
+    assert row.outcome == "placed", row
 
 
 def test_a_per_part_label_spot_override_wins():
