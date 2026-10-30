@@ -437,10 +437,15 @@ class TestGripe:
         self._age(gripe, ids[0], 9)
         self._age(gripe, ids[1], 5)
         body = gripe.search(tags=["STATUS:open"], page_size=3).body
+        # page= hints were removed in 26eab85d4: the summary still says
+        # more rows exist, and the footer names a refine step — nothing
+        # in the view prints page=.
         assert (
             f"4 open · 2 older than 3d · oldest gr{ids[0]} (9 days) · "
-            "1 more past this page (page=N)"
+            "1 more past this page"
         ) in body
+        assert "narrow with tags=/status=" in body
+        assert "page=" not in body
         # No rows past the page → no hidden-rows clause.
         assert "past this page" not in gripe.get(id="/open").body
 

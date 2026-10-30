@@ -494,30 +494,37 @@ def test_report_resource_slots_threads_per_resource_soft_capacity(monkeypatch) -
 
 def test_report_resource_slots_retracts_dropped_soft_gauge(monkeypatch) -> None:
     """A retractable soft gauge absent from the probe (container_agent once a
-    host opts out) is DELETEd, so the console stops showing a stale chip. mem,
-    always present, is never retracted."""
+    host opts out, upload_staging once PRECIS_UPLOAD_STAGING stops resolving)
+    is DELETEd, so the console stops showing a stale chip. mem, always
+    present, is never retracted."""
     from precis.workers import capability_probe
 
     monkeypatch.setattr(capability_probe, "probe_host_resources", lambda: {})
-    # container_agent has dropped out (host opted back out); only mem remains.
+    # container_agent + upload_staging have dropped out; only mem remains.
     monkeypatch.setattr(capability_probe, "probe_soft_signals", lambda: {"mem": 2})
     store = _RecordingStore()
     heartbeat._report_resource_slots(store, "melchior")
-    assert store.deleted == [("melchior", "container_agent")]
+    # Retraction iterates the RETRACTABLE_SOFT_SIGNALS frozenset — order
+    # is hash-dependent, not part of the contract.
+    assert sorted(store.deleted) == [
+        ("melchior", "container_agent"),
+        ("melchior", "upload_staging"),
+    ]
     # mem was synced, not deleted.
     assert ("melchior", "mem") not in store.deleted
 
 
 def test_report_resource_slots_no_retract_when_gauge_present(monkeypatch) -> None:
-    """When container_agent IS reported (host still opted in), nothing is
-    retracted — the row is synced, not deleted."""
+    """When the retractable gauges ARE reported (host still opted into
+    containers, upload-staging dir still resolving), nothing is retracted —
+    the rows are synced, not deleted."""
     from precis.workers import capability_probe
 
     monkeypatch.setattr(capability_probe, "probe_host_resources", lambda: {})
     monkeypatch.setattr(
         capability_probe,
         "probe_soft_signals",
-        lambda: {"mem": 2, "container_agent": 1},
+        lambda: {"mem": 2, "container_agent": 1, "upload_staging": 1},
     )
     store = _RecordingStore()
     heartbeat._report_resource_slots(store, "melchior")
