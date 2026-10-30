@@ -1,5 +1,5 @@
 ---
-description: "Quick-land: commit your work, sync, ruff only (mypy and pytest run at the release gate), squash-merge without pytest. For burst-landing many worktrees; finish with one /go."
+description: "Quick-land: commit your work, sync, ruff + secret scan (mypy, import contracts and all pytest run at the release gate), squash-merge without pytest. For burst-landing many worktrees; finish with one /go."
 argument-hint: "[optional commit/ship message]"
 allowed-tools: Bash(scripts/ship:*), Bash(git:*), Agent
 ---
@@ -10,23 +10,24 @@ for the same Docker VM turns each ship into a queue. `/qland` defers the
 suite: qland the burst one by one, then run **one** `/go` (release cut
 from the integrated `main`, CI-gated, deployed).
 
-`scripts/ship --quick` runs its own **pre-qland lint** (ruff autofix ·
-import contracts · DB-free hygiene tests such as the `type: ignore` ratchet
-and the posix/encoding guards) before the squash-merge — no mypy (Reto 2026-10-30: easy to fix later, together with a full test; the release gate runs it), faster than ~3 min in the warm container, no
-test DB, and no fleet gate slot, so it never queues behind a sibling's suite.
+`scripts/ship --quick`: ruff + secret scan; mypy, import contracts and all
+pytest run at the release gate (Reto 2026-10-30: "Don't even bother with
+python checks, we'll do it all as a batch in the release branch"). The
+**pre-qland lint** (ruff autofix · the secret-tree scan, kept because the
+repo is public) runs before the squash-merge, no test DB, and no fleet gate slot, so it never queues behind a sibling's suite.
 Do NOT run ruff, mypy or tests yourself beforehand: the ship does ruff for
-you, mypy and pytest run at the release gate, and running the suite is the congestion this command exists to
+you, mypy, import contracts and pytest run at the release gate, and running the suite is the congestion this command exists to
 avoid. If the pre-qland lint goes red, fix it — it does not get deferred,
 because a lint failure that lands reddens the *next* tree's gate for a
 reason its author did not write.
 
 **The trade you are making, say it out loud in the confirm block:** after a
-`/qland`, `main` may be red *at the test level and the type level* — no pytest or mypy ran. That is
+`/qland`, `main` may be red *at the test, type and import-contract level* — no pytest, mypy or lint-imports ran. That is
 accepted and temporary; the debt is settled by the next full gate.
 
 **Prefer `scripts/ship --checked` when the tree carries more than docs.**
 The checked mode is the recommended burst lane (gr485791): same machinery
-as `--quick`, but after the lint it also runs mypy and a selected pytest — the
+as `--quick`, but its lint adds mypy, import contracts and the hygiene tests, and it runs a selected pytest — the
 contract invariants (audited tables, closed registries, ratchets,
 vocab/secret scans) plus corpus-coupled tests for data files and the
 index/testmon set for Python changes — all selected by
@@ -71,12 +72,12 @@ Optional ship message from the user: `$ARGUMENTS`
    `Gate: lint only` trailer on the squash) → squash-merge to `main` via
    `commit-tree` + CAS push → fast-forward the local `main` → release the lock →
    reset the branch to the shipped `main`. The migration-number and backlog advisories
-   still print, and the pre-qland lint (ruff autofix · import
-   contracts · DB-free hygiene tests) runs and is blocking; mypy, pytest and the diff-coverage gate do not (the release gate runs them).
+   still print, and the pre-qland lint (ruff autofix · secret scan) runs and is
+   blocking; mypy, import contracts, the other hygiene tests, pytest and the
+   diff-coverage gate do not (the release gate runs them).
 
 4. **Handle failures** — merge machinery, plus the pre-qland lint:
-   - **Pre-qland lint RED** — ruff, import contracts or a hygiene
-     test (ratchet, posix/encoding guard, doc pointer, secret scan). Fix the
+   - **Pre-qland lint RED** — ruff or the secret scan. Fix the
      failure printed above the `✖` and re-run `scripts/ship --quick`. Do not
      reach for `PRECIS_QLAND_LINT=0` to get past it; that override is for a
      broken toolchain, not a red check.
@@ -100,7 +101,7 @@ Optional ship message from the user: `$ARGUMENTS`
    `git rev-parse origin/main`, don't assume):
    ```
    Merged to main:  ✓ <sha> on origin/main   (or ✗ — ship failed above)
-   Gated:           ~ ruff passed; mypy and pytest deferred to the release gate — main is untested
+   Gated:           ~ ruff + secret scan passed; mypy, import contracts and pytest deferred to the release gate — main is untested
    Deployed:        — not deployed (run /go after the burst: gated release + deploy)
    ```
    Then one line summarizing what shipped.

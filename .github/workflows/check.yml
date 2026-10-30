@@ -302,6 +302,9 @@ jobs:
       # via the `autocatpath.*` ignore_missing_imports override; real-type
       # coverage still happens in the ship gate's dev image.
       - run: uv run --all-extras --no-extra catalyst --no-extra catalyst-gpu mypy src tests
+      # Import contracts moved here from the --quick pre-qland lint
+      # (Reto 2026-10-30: --quick is ruff + secret scan only).
+      - run: uv run lint-imports
 
   # Failures first (release-train §3): on release/** pushes where `plan`
   # recovered the prior red run's node ids, re-run exactly those — same legs

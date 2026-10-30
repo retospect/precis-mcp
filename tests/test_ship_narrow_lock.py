@@ -1115,27 +1115,41 @@ def test_gate_extras_keep_the_web_extra_in_the_locked_env() -> None:
     assert re.search(r"^fastapi==", r.stdout, re.MULTILINE)
 
 
-def test_quick_lint_skips_mypy_but_checked_and_release_keep_it() -> None:
-    """Reto 2026-10-30: --quick runs ruff only (mypy errors are easy to fix
-    later, together with a full test); mypy lives at the release gate
-    (check.yml lint job). --checked and --release keep it in the pre-qland
-    lint. Pin all three so neither direction drifts silently."""
+def test_quick_lint_is_ruff_and_secret_scan_only() -> None:
+    """Reto 2026-10-30: "Don't even bother with python checks, we'll do it
+    all as a batch in the release branch". Plain --quick runs ruff + the
+    secret-tree scan (the repo is public; a qland push publishes at once).
+    mypy, lint-imports and the full hygiene batch are --checked/--release
+    only, and the release gate (check.yml) runs them. Pin every direction."""
     ship = _SHIP_SRC.read_text(encoding="utf-8")
     cmds = re.findall(r'QLAND_CMD="([^"]+)"', ship)
     assert cmds, "scripts/ship lost its QLAND_CMD lint commands"
-    # the code-diff command carries mypy only through ${QLAND_MYPY} ...
+    # No literal command carries mypy / lint-imports / the full batch: they
+    # reach the code-diff command only through ${QLAND_MYPY} / ${QLAND_TAIL}.
     assert not any("uv run mypy" in c for c in cmds), cmds
-    assert any("${QLAND_MYPY}" in c for c in cmds), cmds
-    # ... which is empty by default and set for --checked / --release.
+    assert not any("lint-imports" in c for c in cmds), cmds
+    assert not any("CODE_HYGIENE" in c for c in cmds), cmds
+    assert any("${QLAND_MYPY}" in c and "${QLAND_TAIL}" in c for c in cmds), cmds
+    # plain --quick defaults: no mypy, tail = the secret scan alone
     assert 'QLAND_MYPY=""' in ship
+    assert 'QLAND_TAIL="$SECRET_SCAN"' in ship
+    m = re.search(r"^\s*SECRET_SCAN='([^']+)'", ship, re.MULTILINE)
+    assert m, "SECRET_SCAN definition missing"
+    assert "tests/test_deploy_tree_no_secrets.py" in m.group(1)
+    assert "lint-imports" not in m.group(1) and "mypy" not in m.group(1)
+    # docs/config-only plain --quick: secret scan only
+    assert 'QLAND_CMD="$SECRET_SCAN"' in ship
+    # --checked / --release keep mypy, import contracts and the full batch
     assert re.search(
         r'if \[\[ "\$CHECKED" == 1 \|\| "\$RELEASE" == 1 \]\]; then\s+'
-        r'QLAND_MYPY="uv run mypy src tests && "',
+        r'QLAND_MYPY="uv run mypy src tests && "\s+'
+        r'QLAND_TAIL="uv run lint-imports && \$HYGIENE \$CODE_HYGIENE"',
         ship,
     )
-    # the release gate still type-checks
+    # the release gate still type-checks and checks import contracts
     check = (REPO / ".github/workflows/check.yml").read_text(encoding="utf-8")
     assert "mypy src tests" in check
+    assert "uv run lint-imports" in check
 
 
 def _expanded_sync_flags(machine: str, tmp_path: Path) -> list[str]:

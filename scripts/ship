@@ -35,7 +35,7 @@
 #                             pointer gate instead). Red gate aborts (never red).
 #                             --impacted (/land) narrows pytest to testmon's
 #                             affected-tests set; full suite otherwise (/go);
-#                             --quick (/qland) skips pytest (ruff still runs; mypy waits for the release gate);
+#                             --quick (/qland) runs ruff + the secret scan only (mypy, import contracts, all pytest wait for the release gate);
 #                             --checked runs lint + a cheap selected pytest
 #                             (scripts/impacted-tests) — the middle rung.
 #                    · ship   (under the lock) squash `commit-tree` onto
@@ -185,12 +185,13 @@ IMPACTED="${PRECIS_SHIP_IMPACTED:-0}"
 # sqlite, so a follow-up scripts/mutate-diff can run each mutant against just
 # its covering tests. /go opts in; meaningless with --impacted (no coverage
 # runs there).
-# --quick (/qland): skip PYTEST and the diff-coverage gate. ruff + mypy +
-# import contracts + DB-free hygiene tests still run — the pre-qland lint, ~3 min in the warm gate
-# container, no test DB and no fleet gate slot, so it does not queue behind a
-# sibling's suite. They run because their failures are not this ship's problem
-# but the NEXT tree's: a burst that qlands ruff-format drift or a mypy error
-# reddens every gate downstream of it, which is what actually cost hours on
+# --quick (/qland): skip PYTEST and the diff-coverage gate. Only ruff and the
+# secret-tree scan run (Reto 2026-10-30) — the pre-qland lint; mypy, import
+# contracts and the hygiene batch are --checked/--release and the release gate.
+# No test DB and no fleet gate slot, so it does not queue behind a
+# sibling's suite. Ruff runs because its failures are not this ship's problem
+# but the NEXT tree's: a burst that qlands ruff-format drift (or, formerly, a
+# mypy error) reddens every gate downstream of it, which cost hours on
 # 2026-09-25 (the qland drift guard, scripts/last-gated-main-sha). PRECIS_QLAND_LINT=0 is the
 # deliberate escape. Everything else (sync/merge, the narrow ship lock around
 # the squash CAS push + local-main ff, branch reset) runs unchanged, so the
@@ -627,7 +628,7 @@ compose() { env UID="$(id -u)" GID="$(id -g)" docker compose -f "$INFRA_COMPOSE"
 # Falls back to whatever PRECIS_TEST_PG_URL the container already carries (the
 # host DB) if the service can't start, so a broken test-db never blocks a ship.
 TEST_DB_ENV=()
-# The test DB exists for pytest. --quick runs ruff+mypy only (the pre-qland
+# The test DB exists for pytest. --quick runs ruff + the secret scan only (the pre-qland
 # lint below), so starting a RAM-backed pgvector for it is pure waste.
 # --checked runs a selected pytest — it needs the DB.
 if [[ "$QUICK" != 1 || "$CHECKED" == 1 ]]; then
@@ -662,7 +663,7 @@ fi
 if [[ "$CHECKED" == 1 ]]; then
     say "checked ship (--checked) — pre-qland lint + a selected pytest (contract/corpus/import); merge machinery same as --quick"
 elif [[ "$QUICK" == 1 ]]; then
-    say "quick ship (--quick) — no pytest, no gate slot; ruff still runs; mypy waits for the release gate (pre-qland lint, below)"
+    say "quick ship (--quick) — no pytest, no gate slot; ruff + secret scan still run; the rest waits for the release gate (pre-qland lint, below)"
 elif [[ "$REMOTE" == 1 && "$IMPACTED" != 1 ]]; then
     # Pure remote gate: no local containers on the quiet path — GitHub's
     # matrix is the gate. The hybrid race fallback calls setup_gate_infra
@@ -2136,7 +2137,7 @@ for (( attempt = 1; attempt <= MAX_ATTEMPTS; attempt++ )); do
             fi
         fi
 
-        # Pre-qland lint: ruff + import contracts (+ mypy on --checked/--release), NO pytest. /qland
+        # Pre-qland lint: ruff + secret scan (+ mypy, import contracts, hygiene tests on --checked/--release). /qland
         # exists so a burst of trees doesn't each pay the pytest suite, and
         # that trade stands — but the failures that actually cost hours are
         # not test failures. On 2026-09-25 a burst left main red four
@@ -2170,6 +2171,13 @@ for (( attempt = 1; attempt <= MAX_ATTEMPTS; attempt++ )); do
         # DB-free and seconds, so the qland lane pays it like the ratchets.
         HYGIENE='uv run pytest -q -n0 tests/test_doc_pointers.py tests/test_skill_prose.py tests/test_deploy_tree_no_secrets.py tests/test_vocab_lint.py tests/test_paper_text_gate.py'
         CODE_HYGIENE='tests/test_type_ignore_ratchet.py tests/test_posix_only_guards.py tests/test_text_io_encoding.py tests/test_extra_only_import_guards.py tests/test_store_mixin_guard.py tests/test_utc_time_convention.py tests/test_skill_ingest.py::test_shipped_skill_corpus_has_zero_gate_findings tests/test_skill_size.py tests/test_pcb_dead_exports.py tests/test_startup_skills.py tests/test_token_budget.py tests/test_baseline_seed_tables.py::test_every_seeded_table_is_classified'
+        # Plain --quick runs only ruff and this secret scan (Reto 2026-10-30:
+        # "don't even bother with python checks, we'll do it all as a batch in
+        # the release branch"). The repo is PUBLIC and a qland push to main
+        # publishes at once, so the secret-tree scan cannot wait for the
+        # release gate. Import contracts, mypy and the rest of the hygiene
+        # batch run in --checked / --release and at the release gate.
+        SECRET_SCAN='uv run pytest -q -n0 -p no:cacheprovider tests/test_deploy_tree_no_secrets.py'
         if [[ "${PRECIS_QLAND_LINT:-1}" == 0 ]]; then
             say "quick ship — pre-qland lint OFF (PRECIS_QLAND_LINT=0)"
         else
@@ -2185,21 +2193,28 @@ for (( attempt = 1; attempt <= MAX_ATTEMPTS; attempt++ )); do
             fi
             setup_gate_infra
             if [[ "$DOCS_ONLY" == 1 ]]; then
-                say "pre-qland lint (docs/config-only: doc-pointer · skill-prose · secret-scan · vocab · paper-text tests) — ${GATE_MODE} gate, no gate slot"
-                QLAND_CMD="$HYGIENE"
+                if [[ "$CHECKED" == 1 || "$RELEASE" == 1 ]]; then
+                    say "pre-qland lint (docs/config-only: doc-pointer · skill-prose · secret-scan · vocab · paper-text tests) — ${GATE_MODE} gate, no gate slot"
+                    QLAND_CMD="$HYGIENE"
+                else
+                    say "pre-qland lint (docs/config-only: secret-scan only; the rest runs at the release gate) — ${GATE_MODE} gate, no gate slot"
+                    QLAND_CMD="$SECRET_SCAN"
+                fi
             else
-                # mypy is the slow leg of the lint and plain --quick skips it
-                # (Reto 2026-10-30: easy to fix later, together with a full
-                # test); the release gate (check.yml lint job) runs it.
-                # --checked and --release keep it.
+                # Plain --quick = ruff + secret scan only. mypy, import
+                # contracts and the hygiene batch (~5:45) are the slow legs;
+                # the release gate (check.yml lint job + full pytest) runs
+                # them. --checked and --release keep all of them.
                 QLAND_MYPY=""
-                QLAND_MYPY_WHAT="ruff autofix"
+                QLAND_TAIL="$SECRET_SCAN"
+                QLAND_WHAT="ruff autofix · secret-scan; mypy, import contracts and the other tests run at the release gate"
                 if [[ "$CHECKED" == 1 || "$RELEASE" == 1 ]]; then
                     QLAND_MYPY="uv run mypy src tests && "
-                    QLAND_MYPY_WHAT="ruff autofix · mypy"
+                    QLAND_TAIL="uv run lint-imports && $HYGIENE $CODE_HYGIENE"
+                    QLAND_WHAT="ruff autofix · mypy · import contracts · hygiene tests: type-ignore ratchet, posix/encoding/extra-only guards, docs, secret-scan"
                 fi
-                say "pre-qland lint (${QLAND_MYPY_WHAT} · import contracts · hygiene tests: type-ignore ratchet, posix/encoding/extra-only guards, docs, secret-scan) — ${GATE_MODE} gate, no gate slot"
-                QLAND_CMD="uv run ruff check --fix . && uv run ruff format . && uv run ruff check . && uv run ruff format --check . && ${QLAND_MYPY}uv run lint-imports && $HYGIENE $CODE_HYGIENE"
+                say "pre-qland lint (${QLAND_WHAT}) — ${GATE_MODE} gate, no gate slot"
+                QLAND_CMD="uv run ruff check --fix . && uv run ruff format . && uv run ruff check . && uv run ruff format --check . && ${QLAND_MYPY}${QLAND_TAIL}"
             fi
             run_gate "$QLAND_CMD" \
                 || die "pre-qland lint is RED — not shipping. This is the class of failure that reddens the NEXT tree's gate, so it does not get deferred (deliberate override: PRECIS_QLAND_LINT=0). Fix it and re-run scripts/ship --quick."
@@ -2632,7 +2647,7 @@ else
         elif [[ "$QLAND_LINT_RAN" != 1 ]]; then
             printf '\n\033[33m⚡ UNTESTED ship — no lint and no pytest ran on this merge. main is unvalidated\n  until the next full gate: run /go (full suite + deploy) after the qland burst.\033[0m\n'
         else
-            printf '\n\033[33m⚡ UNTESTED ship — ruff/import contracts and the DB-free hygiene tests passed; the\n  suite did NOT run. main is untested until its CI verdict or the next full gate.\033[0m\n'
+            printf '\n\033[33m⚡ UNTESTED ship — only ruff and the secret scan passed; mypy, import contracts and\n  all pytest did NOT run. main is untested until the release gate (/go).\033[0m\n'
         fi
     fi
 fi
