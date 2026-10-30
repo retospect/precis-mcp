@@ -42,7 +42,11 @@ Steps, in order:
      gate (deploy/redeploy-precis.yml, "Verify every managed precis venv")
      fails the run unless the running precis-web reports the pinned sha in
      /healthz's X-Precis-Boot-Sha header, so a web left on the previous build
-     (gr496849) is a failed deploy, not a green one.
+     (gr496849) is a failed deploy, not a green one. After a rollout (exit 0
+     or 3) the deployed head is recorded in prod as the `release.prod_head`
+     setting, `{head, deployed_at, landed}` (best-effort, through
+     scripts/prod-precis); the plan gates `sha-in-prod` / `tests-green` read
+     it (src/precis/plans/gates.py).
 
 Re-running after any partial state resumes: a recorded release containing S
 skips the cut (owner only; the marker is removed after `round close`
@@ -65,10 +69,12 @@ import json
 import math
 import os
 import re
+import shlex
 import signal
 import subprocess
 import sys
 import time
+from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -524,6 +530,154 @@ def note_gripes(prev: str, head: str, text: str) -> None:
         say(out.strip())
 
 
+#: The prod record of the deployed head: an ``app_settings`` row, registered
+#: in ``precis.settings.REGISTRY`` (this script cannot import precis; a test
+#: pins the two literals equal). ``precis.plans.gates`` reads it for the
+#: ``sha-in-prod`` / ``tests-green`` gates — the server has no git.
+PROD_HEAD_KEY = "release.prod_head"
+#: Abbreviation length of the recorded ``landed`` shas (gates match by prefix).
+LANDED_SHA_LEN = 12
+#: Most shas kept in ``landed``; the oldest fall off first. 2000 x 12 chars is
+#: about 26 KB, comfortably inside an argv slot.
+MAX_LANDED = 2000
+#: Cap on each of the two prod calls (read the old record, write the new).
+RECORD_TIMEOUT_S = 40.0
+
+#: Runs ``scripts/prod-precis <args>``; returns (returncode, stdout, stderr).
+#: Tests pass a fake; a real call raises OSError/TimeoutExpired.
+Transport = Callable[[list[str]], tuple[int, str, str]]
+
+
+def _prod_precis(args: list[str]) -> tuple[int, str, str]:
+    """The real transport: scripts/prod-precis from a tree that may write.
+
+    A deploy moves origin/prod past this checkout, and prod-precis refuses a
+    write from a tree behind it, so reuse scripts/gripe-note's tree choice
+    (this one, else the prod clone) and its process-group-safe timeout.
+    """
+    import importlib.machinery
+    import importlib.util
+
+    path = HERE / "gripe-note"
+    loader = importlib.machinery.SourceFileLoader("gripe_note", str(path))
+    spec = importlib.util.spec_from_loader("gripe_note", loader)
+    if spec is None:
+        raise OSError("cannot load scripts/gripe-note")
+    gn = importlib.util.module_from_spec(spec)
+    exec(compile(path.read_text(encoding="utf-8"), str(path), "exec"), gn.__dict__)
+    cli = os.environ.get("PRECIS_GRIPE_NOTE_CLI", "").strip()
+    base = (
+        shlex.split(cli)
+        if cli
+        else [str(gn.write_tree(HERE.parent) / "scripts" / "prod-precis")]
+    )
+    cp = gn.run_capped([*base, *args], RECORD_TIMEOUT_S)
+    return cp.returncode, cp.stdout, cp.stderr
+
+
+def _record_skip_reason() -> str | None:
+    """Why the real transport must not run, or None. Same seams as
+    scripts/gripe-note: PRECIS_GRIPE_NOTE=0, no prod DSN on this host
+    (PRECIS_GRIPE_NOTE_CLI replaces the check). A PRECIS_ROUND_ROOT override
+    means a test rig or a foreign checkout, never the repo that deploys."""
+    if os.environ.get("PRECIS_GRIPE_NOTE", "1") == "0":
+        return "PRECIS_GRIPE_NOTE=0"
+    if HERE.parent != ROOT:
+        return "PRECIS_ROUND_ROOT names another checkout"
+    dsn = Path.home() / ".secrets" / "pw" / "PRECIS_DATABASE_URL"
+    if not os.environ.get("PRECIS_GRIPE_NOTE_CLI", "").strip() and not dsn.is_file():
+        return "no prod DSN on this host"
+    return None
+
+
+def landed_shas(prev: str, head: str) -> list[str]:
+    """Abbreviated shas in ``prev..head`` (``head`` alone with no ``prev``),
+    newest first; empty when git cannot read the range."""
+    rng = f"{prev}..{head}" if prev else head
+    out = git("rev-list", "--abbrev-commit", f"--abbrev={LANDED_SHA_LEN}", rng)
+    return [s[:LANDED_SHA_LEN] for s in (out or "").split()]
+
+
+_GET_RE = re.compile(
+    rf"^{re.escape(PROD_HEAD_KEY)} = (.*) \(layer=(\w+)\)$", re.MULTILINE
+)
+
+
+def parse_prod_head(stdout: str) -> dict[str, Any] | None:
+    """The record from ``precis settings get`` output, or None (unset,
+    unparsable, not the DB layer)."""
+    m = _GET_RE.search(stdout)
+    if m is None or m.group(2) != "db":
+        return None
+    try:
+        rec = json.loads(m.group(1))
+    except ValueError:
+        return None
+    return rec if isinstance(rec, dict) else None
+
+
+def prod_head_record(
+    head: str,
+    landed: list[str],
+    previous: dict[str, Any] | None,
+    now: datetime,
+) -> dict[str, Any]:
+    """``{head, deployed_at (UTC Z), landed}``; ``landed`` is this deploy's
+    shas, then the previous record's head and landed (so a sha that rode an
+    earlier release still reads as in prod), deduped and capped. A rollback
+    keeps the rolled-back-over shas; only a new deploy ever trims."""
+    merged: list[str] = []
+    seen: set[str] = set()
+    old = [str(previous["head"])[:LANDED_SHA_LEN]] if previous else []
+    old += [str(s) for s in (previous or {}).get("landed") or []]
+    for s in [*landed, *old]:
+        key = s[:LANDED_SHA_LEN]
+        if key and key not in seen:
+            seen.add(key)
+            merged.append(key)
+    return {
+        "head": head,
+        "deployed_at": now.strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "landed": merged[:MAX_LANDED],
+    }
+
+
+def record_prod_head(
+    prev: str,
+    head: str,
+    *,
+    transport: Transport | None = None,
+    now: datetime | None = None,
+    landed: list[str] | None = None,
+) -> str:
+    """Write the deployed-head record into prod; returns one status line.
+
+    ``prev`` is origin/prod before the deploy. Reads the old record through
+    the same ``scripts/prod-precis settings get`` call path, merges, and
+    writes with ``settings set``. Best-effort like :func:`note_gripes`: the
+    rollout already happened, so any fault is reported, never raised.
+    """
+    if not head:
+        return "prod head not recorded: no head sha"
+    if transport is None and (why := _record_skip_reason()):
+        return f"prod head not recorded: {why}"
+    send = transport or _prod_precis
+    when = now or datetime.now(UTC)
+    shas = landed if landed is not None else landed_shas(prev, head)
+    try:
+        rc, out, _err = send(["settings", "get", PROD_HEAD_KEY])
+        previous = parse_prod_head(out) if rc == 0 else None
+        rec = prod_head_record(head, shas, previous, when)
+        value = json.dumps(rec, separators=(",", ":"))
+        rc, _out, err = send(["settings", "set", PROD_HEAD_KEY, value])
+    except (OSError, subprocess.SubprocessError) as e:
+        return f"prod head not recorded: {type(e).__name__}"
+    if rc != 0:
+        tail = re.sub(r"[a-z]+://\S+", "<url>", (err.strip().splitlines() or [""])[-1])
+        return f"prod head not recorded (exit {rc}): {tail[:200]}"
+    return f"prod head recorded: {head[:9]} (+{len(shas)} landed)"
+
+
 def pending_sha(rel: dict[str, Any], default: str) -> str:
     dep = rel.get("deployment") or {}
     return str(dep.get("sha") or default)
@@ -661,12 +815,15 @@ def deploy_and_close(args: argparse.Namespace, sha: str) -> int:
         # The rollout ran, so its migrate play did too — name whatever
         # post-migration steps it left pending (gr514955). Best-effort.
         warn_post_migration()
+        # Tell prod what is deployed (the server has no git): the
+        # sha-in-prod / tests-green gates read this. Best-effort.
+        cur = round_state() or {}
+        head = pending_sha(_release_by_state(cur, DEPLOYING_STATES), sha)
+        say(record_prod_head(prev, head))
     if rc == 3:
         # The release owner's path: rollout done, runtime confirmed later by
         # `scripts/round deploy --confirm-runtime`. The deploy note posts
         # here, the one exit of this script a deploy takes in practice.
-        cur = round_state() or {}
-        head = pending_sha(_release_by_state(cur, DEPLOYING_STATES), sha)
         note_gripes(
             prev, head, f"deployed {label} ({{sha}}); runtime confirmation pending"
         )

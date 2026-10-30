@@ -275,6 +275,16 @@ REGISTRY: dict[str, SettingSpec] = {
             "unaffected.",
         ),
         SettingSpec(
+            key="release.prod_head",
+            type="str",
+            env_var=None,
+            default=None,
+            doc="The deployed prod head as JSON {head, deployed_at, landed}, "
+            "written by scripts/release after a deploy (the server has no "
+            "git); read by precis.plans.gates for sha-in-prod / tests-green. "
+            "DB-only — no env fallback.",
+        ),
+        SettingSpec(
             key="contact.edgar_user_agent",
             type="str",
             env_var="PRECIS_EDGAR_USER_AGENT",
