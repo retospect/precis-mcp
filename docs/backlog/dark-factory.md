@@ -241,7 +241,13 @@ its pacing target; metered last. Fit learns from the loop (first-round
 ## Branches: who merges what, how
 
 Reto, 2026-10-30 (Round 3): squash merges, reviews, deploys, automatic,
-and no detritus branches. What exists: `scripts/ship` already squashes
+and no detritus branches. **Ruling, same evening: land the moment a tree
+is feature-complete and reasonable; all checking happens on the batch at
+the release.** Per-tree gating serialises N full runs on one Docker VM;
+a batch costs one run plus two or three fix rounds whatever N is;
+nobody deploys `main`, prod comes from `release/r<N>`, so a red `main`
+hurts no one, while an unmerged finished tree drifts and is forgotten.
+What exists: `scripts/ship` already squashes
 (`commit-tree` + CAS push, one message), merges `origin/main` forward
 first, then resets the branch to the shipped `main`; worktrees that are
 merged, clean and sessionless auto-reap; `*-pin` branches with no
@@ -261,30 +267,48 @@ factory keeps the machinery and adds an owner to every branch.
   lander's credential. Devin's pull request is just its branch; the
   lander lands the branch and closes the PR, nobody presses the GitHub
   merge button.
-- **Review before land, from another lane.** The reviewer (lane table
-  `exclude=` the builder's vendor) reads the branch diff against
-  `origin/main` and the brief, and writes a `review` chunk on the slice:
-  `LAND`, `FIX` (with the list) or `REJECT` (with why), pinned to the
-  tip sha it read. `FIX` is a fix round on the same branch by the same
-  lane; `REJECT` deletes the branch and requeues the slice with the
-  verdict in its handoff. Reto reviews only what authority marks
-  Reto-only (harness diffs, migrations, `safe_fetch.py`, authority,
-  loosened tests); those land as decision rows in the asks list, with
-  the diff handle, never in his inbox.
-- **Landing is `scripts/ship`, run by the lander.** The lander is the
-  release-owner daemon of step 4 (or a W-tier runner until the daemon
-  exists). It lands a branch only when the newest `review` chunk says
-  `LAND` *and* its sha equals the branch tip; a push after the review
-  invalidates it. `--checked` by default, `--quick` for docs-only diffs,
-  the squash message from the slice title and brief. A merge conflict on
-  the forward merge is a fix round for the builder lane, not a human.
-  After the land the lander writes the `landed` chunk and **deletes the
-  branch and its worktree or container**, instead of ship's reset to
-  `main`: the slice is done, so the branch has no owner left. Human
-  trees keep the reset.
-- **Deploy is the release pass** (step 4): previous release done, new
-  shas on `main`, cut, gate, deploy pinned, close `awaiting-deploy`
-  rows. Migrations and `safe_fetch.py` stay on the human `/go`.
+- **Landing is immediate: builder done → `scripts/ship`.** The lander
+  (the release-owner daemon of step 4, a W-tier runner until it exists)
+  lands the branch as soon as the handoff says done, with no verdict to
+  wait for. Checks at land are the ones that cost seconds and run
+  locally: the subject check and ruff format. mypy, import contracts,
+  the hygiene tests and pytest all move to the batch; that needs a ship
+  mode rawer than today's `--quick`, whose blocking lint took over ten
+  minutes on a prose-only diff on 2026-10-30 (Tailwind rebuild
+  included). The squash message is the slice title and brief. A merge
+  conflict on the forward merge is a fix round for the builder lane, not
+  a human. After the land the lander writes the `landed` chunk and
+  **deletes the branch and its worktree or container**, instead of
+  ship's reset to `main`: the slice is done, so the branch has no owner
+  left. Human trees keep the reset.
+- **Review after land, non-blocking, from another lane.** The reviewer
+  (lane table `exclude=` the builder's vendor) reads the slice's squash
+  diff on `main` against the brief and writes a `review` chunk: `LAND`
+  (clean), `FIX` (with the list) or `REVERT` (with why). `FIX` mints a
+  fix slice in the same batch; `REVERT` mints a revert slice, the
+  original slice requeues with the verdict in its handoff. Landing never
+  waits on the review; attribution per slice stays. Reto reviews only
+  what authority marks Reto-only (harness diffs, migrations,
+  `safe_fetch.py`, authority, loosened tests); those are the one class
+  that still waits before land, as decision rows in the asks list with
+  the diff handle.
+- **The batch gate is the release pass, and it loops** (step 4):
+  previous release done, new shas on `main` → cut `release/r<N>` at the
+  head, run the full gate once for the whole batch. Red → the fixer
+  slice gets the failing test list and the commit range (ten squashes
+  bisect in minutes, each names its slice), its fix lands on `main`,
+  the pass re-cuts r<N> at the new head and gates again. Two or three
+  loops is the expected cost; three red loops in a row park the release
+  as a showstopper. No long-lived release branch, no cherry-picks.
+  Green → deploy pinned, close `awaiting-deploy` rows. Migrations and
+  `safe_fetch.py` stay on the human `/go`.
+- **The drift guard must follow the cadence.** `scripts/ship` refuses
+  qlands once `main`'s last green matrix is 48 h old. Under batch landing
+  that fires whenever two days pass without a release, so either the
+  release pass runs often enough that it never trips (the intent), or
+  the threshold is expressed in builds, not hours, like the review
+  protocol's distances. Code change in `scripts/ship` (harness diff,
+  Reto's lane), not a prompt.
 - **Detritus has one rule: no owner, no branch.** The reaper runs with
   the release pass: a `slice/*` branch whose slice is `landed`,
   `abandoned` or missing is deleted (local and remote); a stranded
@@ -300,17 +324,19 @@ factory keeps the machinery and adds an owner to every branch.
   go.
 
 **How it breaks, and the guard:** a builder with the lander's
-credential → separate tokens, drift-tested like authority; a review
-read on sha A landing sha B → the equality check above; reviewer and
-builder from one vendor → `exclude=` is mandatory for the review role,
-a missing lane table entry refuses the launch; the reaper deleting a
-human's branch → it touches `slice/*` and stranded `*-pin` only, never
-a branch with a live worktree or session; a `REJECT` loop → the
-fingerprint breaker of step 7 (three rejects park the slice as a
-showstopper). **Open:** whether to keep Devin on pull requests at all
-or give it a branch credential like the others; the grace period for
-stranded branches (three builds proposed); whether `--checked` is the
-default even for prose-only diffs.
+credential → separate tokens, drift-tested like authority; a red batch
+nobody can attribute → every squash names its slice, the fixer gets the
+range and the failing tests, bisect is cheap; reviewer and builder from
+one vendor → `exclude=` is mandatory for the review role, a missing lane
+table entry refuses the launch; the reaper deleting a human's branch →
+it touches `slice/*` and stranded `*-pin` only, never a branch with a
+live worktree or session; a `REVERT` loop → the fingerprint breaker of
+step 7 (three reverts park the slice as a showstopper); a batch that
+never goes green → three red loops park the release. **Open:** whether
+to keep Devin on pull requests at all or give it a branch credential
+like the others; the grace period for stranded branches (three builds
+proposed). Answered: the lander lands everything the moment it is done,
+with the seconds-cheap checks only.
 
 ## Next steps, by unlock value
 
@@ -356,8 +382,10 @@ default even for prose-only diffs.
    Reto-only except the release owner; a daemon as release owner is a
    change to that file (Reto's commit). **How a home-built release loop
    breaks, and the guard for each:**
-   - a red gate nobody reads → a red release is a showstopper row (1b)
-     and the pass stops cutting until it is cleared, never retries;
+   - a red gate nobody reads → the pass mints the fixer slice with the
+     failing tests and the commit range, re-cuts when the fix lands
+     (the loop in "Branches" above); three red loops in a row make the
+     release a showstopper row (1b) and the pass stops cutting;
    - CI-green, runtime-broken → post-deploy probes stay mechanical
      (health checks, the alert board) and a failed probe redeploys the
      previous `origin/prod` sha; two rollbacks in a row trip the breaker
