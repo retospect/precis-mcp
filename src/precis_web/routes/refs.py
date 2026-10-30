@@ -486,6 +486,59 @@ def _quest_draft_url(store: RefsByIdStore, draft_ref_id: int) -> str:
     return f"/smartdraft/{ident or draft_ref_id}"
 
 
+def _quest_todos_url(store: Store, qid: int, serving_todos: list[Any]) -> str:
+    """``/todo`` scoped to the todos serving this quest (gr541347).
+
+    ``?focus=<served root>`` when a single serving todo holds them all —
+    the drill-down shows exactly that subtree. Otherwise the dashboard's
+    ``?serves=<qid>`` filter (every served root's subtree at once). A
+    "served root" is a serving todo with no *serving* ancestor — the same
+    nesting rule ``work_view`` applies (a served todo inside another
+    served root's tree renders in the larger tree).
+    """
+    serving = {s.id: s for s in serving_todos}
+    ancestors: dict[int, Any] = {}
+    want = {
+        p for s in serving.values() if (p := getattr(s, "parent_id", None)) is not None
+    }
+    while want:
+        fetched = store.fetch_refs_by_ids(want)
+        ancestors.update(fetched)
+        want = {
+            p
+            for r in fetched.values()
+            if (p := getattr(r, "parent_id", None)) is not None
+        } - set(ancestors)
+
+    def nested(todo: Any) -> bool:
+        pid = getattr(todo, "parent_id", None)
+        while pid is not None:
+            if pid in serving:
+                return True
+            pid = getattr(ancestors.get(pid), "parent_id", None)
+        return False
+
+    roots = [s for s in serving.values() if not nested(s)]
+    if len(roots) == 1:
+        return f"/todo?focus={roots[0].id}"
+    return f"/todo?serves={qid}"
+
+
+def _quest_server_kind_url(
+    kind: str, qid: int, quest_papers_url: str, quest_todos_url: str
+) -> str | None:
+    """The retinue count's target for ``kind`` — the serving items of that
+    kind, never the unfiltered list (gr541347). ``None`` renders the count
+    as plain text (a kind with no browse surface at all)."""
+    if kind == "paper":
+        return quest_papers_url
+    if kind == "todo":
+        return quest_todos_url
+    if kind == "quest" or kind in _FOLDED_TO_DRIVE:
+        return f"/refs/{kind}"
+    return f"/refs/{kind}?serves={qid}"
+
+
 def _quest_last_agentlog_id(store: Store, qid: int) -> int | None:
     """The most recent ``quest_tick`` agentlog run for this quest, or
     ``None`` if the quest has never ticked. Mirrors the "latest job by
@@ -511,14 +564,15 @@ async def _quest_detail(request: Request, store: Store, ref: Any) -> HTMLRespons
     Replaces the generic ``refs/detail.html.j2`` render (which, for a
     quest, was just the striving statement + tags + a ~150-line raw
     ``pa…``/``st…`` handle dump of every ``serves`` link) with a proper
-    dashboard: header (status/prio/momentum/tote), links to the dossier +
-    reader-facing paper (when either exists) + the frontier/gaps panels
-    below, a "happening now" recent-activity callout, the dossier
-    narrative+ledger, a logbook tail, the frontier + gaps views (the same
-    markdown a ``get(view=…)`` call would return, rendered inline via the
-    same ``linkify_toon`` filter the generic detail body uses), and a
-    servers-lite kind-count footer. Entirely read-only — no verb beyond
-    the two ``get(view=…)`` reads below is dispatched.
+    dashboard: header (status/prio/momentum/tote), links to the
+    reader-facing paper (when one exists) + the frontier/gaps panels
+    below, a "happening now" recent-activity callout, the quest's graph
+    neighbourhood (the ``fisheye+1hop`` eye — the same render the MCP
+    returns, gr541346), a logbook tail, the frontier + gaps views (the
+    same markdown a ``get(view=…)`` call would return, rendered inline
+    via the same ``linkify_toon`` filter the generic detail body uses),
+    and a servers-lite kind-count footer. Entirely read-only — no verb
+    beyond the ``get`` reads below is dispatched.
     """
     from precis.quest import dossier as dossier_mod
     from precis.quest import frontier as frontier_mod
@@ -594,11 +648,17 @@ async def _quest_detail(request: Request, store: Store, ref: Any) -> HTMLRespons
 
     log_tail = [_quest_log_row(b) for b in reversed(entries[-10:])]
 
-    # Dossier — the internal living synthesis (a draft, ``dossier-of``).
-    did = dossier_mod.dossier_ref_id(store, qid)
-    dossier_url = _quest_draft_url(store, did) if did is not None else None
-    narrative_text = dossier_mod.read_narrative(store, qid) if did is not None else ""
-    ledger_text = dossier_mod.read_ledger(store, qid) if did is not None else ""
+    # Neighbourhood — the retired dossier's replacement (gr541346): the
+    # quest's own graph node plus its ``fisheye+1hop`` ring, dispatched
+    # through ``get`` so the panel renders exactly what the MCP returns —
+    # no second renderer. ``linkify_handles`` (the ``/eye`` page's own
+    # helper) turns every handle in the text into a focus-page link.
+    from precis_web.routes.eye import linkify_handles
+
+    eye_text, eye_error = await await_dispatch(
+        request, "get", {"kind": "quest", "id": qid, "extent": "fisheye+1hop"}
+    )
+    eye_body = linkify_handles(eye_text) if not eye_error else ""
 
     # Paper — the SEPARATE reader-facing draft (``paper-of``), when one
     # exists. Nothing mints it yet (docs/backlog/paper-writing-pipeline.md);
@@ -764,11 +824,17 @@ async def _quest_detail(request: Request, store: Store, ref: Any) -> HTMLRespons
         by_kind[s.kind] = by_kind.get(s.kind, 0) + 1
     # Papers get a Drive-scoped link (this quest's serving papers only, via
     # the ``quest:<id>`` tag every serves-link stamps — see
-    # ``precis.quest.tagging``); every other browsable kind keeps the
-    # generic ``/refs/<kind>`` tab (no equivalent tag-scoped browse exists
-    # for them yet).
+    # ``precis.quest.tagging``). Todos scope to ``/todo`` — the served
+    # root's subtree when one holds them all, else the ``?serves=<qid>``
+    # filter (gr541347). Every other kind goes to ``/refs/<kind>?serves=``
+    # — the same "the serving items" scope — except the kinds folded to
+    # Drive (no serves facet there) and quest itself (its index is already
+    # the serves DAG).
     quest_papers_url = "/drive?" + urlencode(
         [("submitted", "1"), ("k", "paper"), ("tag", quest_tag)]
+    )
+    quest_todos_url = _quest_todos_url(
+        store, qid, [s for s in live_servers if s.kind == "todo"]
     )
     # Exploration queue → Drive stubs: this quest's serving papers that
     # haven't been chunked yet (acquired but not ingested), so a human can
@@ -785,11 +851,7 @@ async def _quest_detail(request: Request, store: Store, ref: Any) -> HTMLRespons
         {
             "kind": k,
             "count": n,
-            "url": (
-                quest_papers_url
-                if k == "paper"
-                else (f"/refs/{k}" if k in _REFS_BROWSABLE_KINDS else None)
-            ),
+            "url": _quest_server_kind_url(k, qid, quest_papers_url, quest_todos_url),
         }
         for k, n in sorted(by_kind.items(), key=lambda kv: (-kv[1], kv[0]))
     ]
@@ -826,10 +888,9 @@ async def _quest_detail(request: Request, store: Store, ref: Any) -> HTMLRespons
             "momentum": momentum,
             "tote": tote,
             "log_entry_count": len(entries),
-            "dossier_url": dossier_url,
-            "dossier_seeded": did is not None,
-            "narrative_text": narrative_text,
-            "ledger_text": ledger_text,
+            "eye_text": eye_text,
+            "eye_error": eye_error,
+            "eye_body": eye_body,
             "last_agentlog_id": last_agentlog_id,
             "paper_url": paper_url,
             "paper_docx_url": paper_docx_url,
@@ -2779,8 +2840,12 @@ async def index(
     since: str = "any",
     sort: str = "updated_desc",
     page: int = 1,
+    serves: int | None = None,
 ) -> HTMLResponse | RedirectResponse:
-    """List / search one ref kind with date + tag filters and sort."""
+    """List / search one ref kind with date + tag filters and sort.
+
+    ``serves=<quest_id>`` narrows to the refs that ``serves`` that quest —
+    the retinue link target off ``/refs/quest/<id>`` (gr541347)."""
     if kind in _FOLDED_TO_DRIVE:
         params: list[tuple[str, str]] = [("k", kind), ("submitted", "1")]
         if q and q.strip():
@@ -2800,6 +2865,17 @@ async def index(
     page = max(1, page)
     offset = (page - 1) * _PAGE_SIZE
 
+    # ``?serves=<qid>`` — ids that serve that quest (live servers, one
+    # hop). A bogus/dead quest id narrows to the empty set, never 500s.
+    serve_ids: list[int] | None = None
+    if serves is not None:
+        serve_ids = sorted(
+            {
+                ln.src_ref_id
+                for ln in store.links_for(serves, direction="in", relation="serves")
+            }
+        )
+
     query = (q or "").strip()
     if query:
         # Ranked title search; date / sort don't apply to a relevance
@@ -2807,7 +2883,7 @@ async def index(
         hits = store.search_refs_lexical(
             q=query, kind=kind, tags=tags or None, limit=_PAGE_SIZE
         )
-        refs = [ref for ref, _score in hits]
+        refs = [ref for ref, _score in hits if serve_ids is None or ref.id in serve_ids]
         has_next = False
     else:
         updated_after: datetime | None = None
@@ -2819,6 +2895,7 @@ async def index(
             tags=tags or None,
             updated_after=updated_after,
             order_by=sort,
+            include_ref_ids=serve_ids,
             limit=_PAGE_SIZE + 1,  # one extra row probes "has next page"
             offset=offset,
         )
@@ -2839,6 +2916,7 @@ async def index(
             "sort": sort,
             "page": page,
             "has_next": has_next,
+            "serves": serves,
             "date_presets": [(k, label) for k, label, _ in DATE_PRESETS],
             "sort_choices": SORT_CHOICES,
         },

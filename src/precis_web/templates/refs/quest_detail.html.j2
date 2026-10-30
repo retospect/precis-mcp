@@ -46,11 +46,7 @@
 
 {# ── Hub nav row ──────────────────────────────────────────────────── #}
 <div class="mb-4 flex flex-wrap items-center gap-2">
-  {% if dossier_url %}
-  <a href="{{ dossier_url }}" class="rounded-md border border-line-strong bg-surface text-sm px-3 py-1.5 text-fg-secondary hover:bg-surface-subtle">📓 Dossier</a>
-  {% else %}
-  <span class="rounded-md border border-line bg-surface-subtle text-sm px-3 py-1.5 text-fg-faint" title="no dossier yet — a quest tick creates + fills it">📓 Dossier</span>
-  {% endif %}
+  <a href="#neighbourhood" class="rounded-md border border-line-strong bg-surface text-sm px-3 py-1.5 text-fg-secondary hover:bg-surface-subtle">🌐 Neighbourhood</a>
   {% if paper_url %}
   <a href="{{ paper_url }}" class="rounded-md border border-line-strong bg-surface text-sm px-3 py-1.5 text-fg-secondary hover:bg-surface-subtle">📄 Paper</a>
   <a href="{{ paper_docx_url }}" class="rounded-md border border-line bg-surface text-xs px-2 py-1.5 text-fg-subtle hover:bg-surface-subtle">.docx</a>
@@ -362,17 +358,14 @@
   {% endif %}
 </section>
 
-{# ── Two-column: Dossier | Logbook tail ──────────────────────────── #}
+{# ── Two-column: Neighbourhood | Logbook tail ────────────────────── #}
 <div class="mb-6 grid grid-cols-1 lg:grid-cols-2 gap-4">
-  <section class="rounded-lg border border-line bg-surface p-4">
-    <h2 class="text-sm font-semibold text-fg-secondary mb-2">Dossier — living synthesis</h2>
-    {% if dossier_seeded %}
-    <h3 class="text-xs font-semibold uppercase text-fg-faint mb-1">Narrative</h3>
-    <div class="text-sm text-fg-secondary mb-3">{{ narrative_text | linkify_toon }}</div>
-    <h3 class="text-xs font-semibold uppercase text-fg-faint mb-1">Ledger</h3>
-    <div class="text-sm text-fg-secondary">{{ ledger_text | linkify_toon }}</div>
+  <section id="neighbourhood" class="rounded-lg border border-line bg-surface p-4">
+    <h2 class="text-sm font-semibold text-fg-secondary mb-2">Neighbourhood — the quest's graph</h2>
+    {% if eye_error %}
+    <p class="text-sm text-danger-strong whitespace-pre-wrap">{{ eye_text }}</p>
     {% else %}
-    <p class="text-sm text-fg-faint italic">no dossier yet — a quest tick creates + fills it.</p>
+    <pre class="whitespace-pre-wrap text-xs text-fg-secondary overflow-x-auto">{{ eye_body | safe }}</pre>
     {% endif %}
   </section>
 

@@ -20,6 +20,7 @@
   {%- for x in exclude_tags -%}{%- set _ = parts.append('exclude=' ~ x|urlencode) -%}{%- endfor -%}
   {%- if exclude_add and exclude_add not in exclude_tags -%}{%- set _ = parts.append('exclude=' ~ exclude_add|urlencode) -%}{%- endif -%}
   {%- if new_focus -%}{%- set _ = parts.append('focus=' ~ new_focus) -%}{%- endif -%}
+  {%- if serves_id -%}{%- set _ = parts.append('serves=' ~ serves_id) -%}{%- endif -%}
   {%- set sj = show_jobs_override if show_jobs_override is not none else show_jobs -%}
   {%- if sj and sj != 'active' -%}{%- set _ = parts.append('show_jobs=' ~ sj) -%}{%- endif -%}
   {%- set td = tree_override if tree_override != -1 else tree_depth -%}
@@ -52,6 +53,7 @@
   {# Hidden so the operator's tag input doesn't drop the focus / show_jobs
      state when they apply the form. #}
   {% if focus_id %}<input type="hidden" name="focus" value="{{ focus_id }}"/>{% endif %}
+  {% if serves_id %}<input type="hidden" name="serves" value="{{ serves_id }}"/>{% endif %}
   {% if show_jobs and show_jobs != 'active' %}<input type="hidden" name="show_jobs" value="{{ show_jobs }}"/>{% endif %}
   {% if filter_active %}
   {%- set clear_parts = [] -%}
@@ -126,6 +128,13 @@
        the final entry is the focused node itself (rendered as plain
        text since it's the current scope). The "All todos" link drops
        focus entirely but keeps the tag filter. #}
+    {% if serves_id %}
+    <nav class="mb-3 flex flex-wrap items-center gap-1 text-xs text-fg-subtle">
+      <a href="/todo" class="hover:text-success-strong underline">All todos</a>
+      <span class="text-fg-ghost">›</span>
+      <span class="text-fg font-medium">serving qu{{ serves_id }}</span>
+    </nav>
+    {% endif %}
     {% if focus_id %}
     <nav class="mb-3 flex flex-wrap items-center gap-1 text-xs text-fg-subtle">
       <a href="/todo{{ focus_qs(none) }}" class="hover:text-success-strong underline">All todos</a>

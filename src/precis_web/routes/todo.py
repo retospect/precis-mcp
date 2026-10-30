@@ -495,6 +495,53 @@ def _filter_rows(
     ]
 
 
+def _serves_rows(
+    rows: list[dict[str, Any]], serving_ids: set[int]
+) -> list[dict[str, Any]]:
+    """Keep the subtree under each todo ``serves``-linked to a quest
+    (gr541347, ``/todo?serves=<qid>``): every serving node plus its
+    descendants, depth rebased so each *served root* (a serving node with
+    no serving ancestor — ``work_view``'s nesting rule) renders at
+    depth 0 and ``_paginate_roots`` groups its subtree as one root."""
+    by_id = {r["id"]: r for r in rows}
+    children_of: dict[int | None, list[int]] = {}
+    for r in rows:
+        children_of.setdefault(r.get("parent_id"), []).append(r["id"])
+    keep: set[int] = set()
+    stack = [i for i in serving_ids if by_id.get(i, {}).get("kind") == "todo"]
+    while stack:
+        nid = stack.pop()
+        if nid in keep:
+            continue
+        keep.add(nid)
+        stack.extend(children_of.get(nid, []))
+    base: dict[int, int] = {}
+    out: list[dict[str, Any]] = []
+    for r in rows:
+        if r["id"] not in keep:
+            continue
+        top = r["id"]
+        while by_id[top].get("parent_id") in keep:
+            top = by_id[top]["parent_id"]
+        d0 = base.setdefault(top, by_id[top]["depth"])
+        r2 = dict(r)
+        r2["depth"] = r["depth"] - d0
+        out.append(r2)
+    return out
+
+
+_SERVES_RE = re.compile(r"(?:qu)?(\d+)")
+
+
+def _parse_serves(raw: str | None) -> int | None:
+    """``?serves=`` accepts ``<qid>`` or the ``qu<qid>`` handle form; an
+    unparseable value degrades to no filter rather than 422ing."""
+    if not raw:
+        return None
+    m = _SERVES_RE.fullmatch(raw.strip())
+    return int(m.group(1)) if m else None
+
+
 def _split_tags(raw: str) -> list[str]:
     """Split a comma/space separated tag string into a clean list."""
     if not raw:
@@ -1254,13 +1301,17 @@ async def dashboard(
     show_jobs: str = Query(default="active"),
     tree: int | None = Query(default=None),
     page: int = Query(default=1),
+    serves: str | None = Query(default=None),
 ) -> HTMLResponse:
     """Strategic tree + doable queue.
 
-    Four orthogonal narrowing controls:
+    Five orthogonal narrowing controls:
 
     * ``focus=<id>`` — drill down to one node's subtree (with an
       ancestor breadcrumb back to the root).
+    * ``serves=<qid>`` (``qu<qid>`` handle form accepted) — keep the
+      subtree of each todo serving that quest; the quest hub's retinue
+      link lands here (gr541347).
     * ``require`` / ``exclude`` repeating params — tag filter, AND
       within each list, evaluated *after* focus.
     * ``show_jobs=active|all`` — default ``active`` hides job rows
@@ -1279,6 +1330,15 @@ async def dashboard(
     require = [r for r in require if r]
     exclude = [x for x in exclude if x]
     rows = _hide_inactive_jobs(rows, show_all=(show_jobs == "all"))
+    serves_id = _parse_serves(serves)
+    if serves_id is not None:
+        rows = _serves_rows(
+            rows,
+            {
+                ln.src_ref_id
+                for ln in store.links_for(serves_id, direction="in", relation="serves")
+            },
+        )
     focused_rows, breadcrumb = _focus_rows(rows, focus)
     filtered = _filter_rows(focused_rows, require=require, exclude=exclude)
     filtered_count = len(filtered)  # full count before paginating, for the header
@@ -1337,6 +1397,7 @@ async def dashboard(
             "exclude_tags": exclude,
             "focus_id": focus,
             "focus_row": focus_row,
+            "serves_id": serves_id,
             "breadcrumb": breadcrumb,
             "show_jobs": show_jobs,
             "tree_depth": tree_depth,

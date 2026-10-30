@@ -34,11 +34,18 @@ def test_quest_detail_renders_dashboard_not_generic(client, runtime) -> None:
     views = [
         a.get("view")
         for v, a in runtime.calls
-        if v == "get" and a.get("kind") == "quest"
+        if v == "get" and a.get("kind") == "quest" and "extent" not in a
     ]
     assert "frontier" in views
     assert "gaps" in views
     assert None not in views  # never the plain logbook-card get()
+    # …and the neighbourhood panel's extent= read rides the same door.
+    extents = [
+        a.get("extent")
+        for v, a in runtime.calls
+        if v == "get" and a.get("kind") == "quest"
+    ]
+    assert "fisheye+1hop" in extents
 
 
 def test_quest_detail_empty_states_no_500(client, runtime) -> None:
@@ -46,9 +53,10 @@ def test_quest_detail_empty_states_no_500(client, runtime) -> None:
     empty-state copy in every panel — never a 500."""
     resp = client.get("/refs/quest/97")
     assert resp.status_code == 200
-    assert "no dossier yet" in resp.text
-    # The neighbourhood link is the quest's, not the dossier's — it
-    # renders even when no dossier is seeded yet.
+    # The dossier block is retired (gr541346) — the Neighbourhood panel
+    # (the quest's fisheye+1hop, the MCP's own render) replaces it.
+    assert "Dossier" not in resp.text
+    assert "Neighbourhood" in resp.text
     assert 'href="/eye/qu97"' in resp.text
     assert "no reader-facing paper yet" in resp.text
     assert "no logbook entries yet" in resp.text
@@ -60,23 +68,12 @@ def test_quest_detail_empty_states_no_500(client, runtime) -> None:
 def test_quest_detail_panels_render_with_data(client, runtime, monkeypatch) -> None:
     store = runtime.store
 
-    # A dossier draft (id=501) + a separate reader-facing paper draft
-    # (id=502), each resolved via the quest.dossier module's read-only
-    # helpers — monkeypatched here rather than faking the raw-SQL
-    # `links` lookup those helpers use directly (bypassing `Store`).
-    monkeypatch.setattr("precis.quest.dossier.dossier_ref_id", lambda s, qid: 501)
-    monkeypatch.setattr(
-        "precis.quest.dossier.read_narrative",
-        lambda s, qid: "MOF linkers look like the best lead so far.",
-    )
-    monkeypatch.setattr(
-        "precis.quest.dossier.read_ledger",
-        lambda s, qid: "## Ruled out\n- zeolite Y\n",
-    )
+    # A reader-facing paper draft (id=502), resolved via the
+    # quest.dossier module's read-only helper — monkeypatched here rather
+    # than faking the raw-SQL `links` lookup it uses (bypassing `Store`).
     monkeypatch.setattr("precis.quest.dossier.paper_ref_id", lambda s, qid: 502)
 
     draft_refs = {
-        501: SimpleNamespace(id=501, slug="quest-97-dossier"),
         502: SimpleNamespace(id=502, slug="quest-97-paper"),
     }
     original_fetch = store.fetch_refs_by_ids
@@ -143,16 +140,13 @@ def test_quest_detail_panels_render_with_data(client, runtime, monkeypatch) -> N
     resp = client.get("/refs/quest/97")
     assert resp.status_code == 200
 
-    # Dossier panel. The old "Open dossier (draft · fisheye)" link opened
-    # the plain draft; it now opens the quest's eye neighbourhood instead
-    # (gr510505). The 📓 nav button keeps the draft URL.
-    assert "MOF linkers look like the best lead so far." in resp.text
-    assert "zeolite Y" in resp.text
-    assert "/smartdraft/quest-97-dossier" in resp.text
+    # No Dossier block (gr541346) — the Neighbourhood panel renders the
+    # quest's fisheye+1hop as dispatched, handles linkified to /eye/*.
+    assert "Dossier" not in resp.text
+    assert "Neighbourhood" in resp.text
     assert 'href="/eye/qu97"' in resp.text
     # Exactly one eye link: the page-wide partial (_eye_link.html.j2).
     assert resp.text.count('href="/eye/qu97"') == 1
-    assert "Open dossier" not in resp.text
 
     # Paper hub links.
     assert "/smartdraft/quest-97-paper" in resp.text
@@ -173,17 +167,102 @@ def test_quest_detail_panels_render_with_data(client, runtime, monkeypatch) -> N
 
     # Servers-lite counts, grouped + linked. The papers count is
     # Drive-scoped to this quest's serving papers (tag=quest:<id>), not
-    # the generic /refs/paper browse — every other kind keeps its
-    # generic tab.
+    # the generic /refs/paper browse; the todos count is /todo-scoped to
+    # the serving roots (gr541347), not the unfiltered list. Two serving
+    # todos with no serving ancestor ⇒ the multi-root ?serves= form.
     assert "2 todos" in resp.text
     assert "1 paper" in resp.text
-    assert 'href="/refs/todo"' in resp.text
+    assert 'href="/todo?serves=97"' in resp.text
     assert "/drive?submitted=1&amp;k=paper&amp;tag=quest%3A97" in resp.text
     assert 'href="/refs/paper"' not in resp.text
 
     # Frontier + gaps render the dispatched view text.
     assert "candidate Fe-N4 — energy=-4.2" in resp.text
     assert "low-mastery: served concept at mastery 0.20" in resp.text
+
+
+def test_quest_hub_neighbourhood_replaces_dossier_and_todo_link_scoped(
+    client, runtime, monkeypatch
+) -> None:
+    """gr541346 + gr541347: the Dossier heading is gone; the Neighbourhood
+    panel renders the ``fisheye+1hop`` dispatch inline (a ``td`` handle in
+    it becomes an /eye link); the Retinue todo count links to ``/todo``
+    filtered to this quest's serving roots, never the unfiltered list."""
+    servers = [
+        SimpleNamespace(
+            id=1, kind="todo", retired_at=None, title="Build the rig", parent_id=None
+        ),
+        SimpleNamespace(id=10, kind="concept", retired_at=None, title="MOF"),
+    ]
+    monkeypatch.setattr("precis.quest.gaps._live_servers", lambda s, qid: list(servers))
+
+    def fake_dispatch(verb: str, args: dict[str, Any], **_kw: Any) -> tuple[str, bool]:
+        runtime.calls.append((verb, dict(args)))
+        if verb == "get" and args.get("extent") == "fisheye+1hop":
+            return ("qu97 — the striving\nserved-by: td1 — Build the rig", False)
+        return (f"[{verb}] ok", False)
+
+    monkeypatch.setattr(runtime, "dispatch_with_status", fake_dispatch)
+
+    resp = client.get("/refs/quest/97")
+    assert resp.status_code == 200
+    assert "Dossier" not in resp.text
+    assert 'id="neighbourhood"' in resp.text
+    # The eye body is the dispatched fisheye text; its td1 handle is a
+    # focus-page link, not dead text.
+    assert "the striving" in resp.text
+    # linkify_handles targets /eye/<handle>?extent=<rung> like /eye itself.
+    assert 'href="/eye/td1?extent=' in resp.text
+    # One serving todo (parent_id=None) ⇒ the ?focus=<served root> form;
+    # the count never links the unfiltered /refs/todo list.
+    assert 'href="/todo?focus=1"' in resp.text
+    assert 'href="/refs/todo"' not in resp.text
+    # The other retinue kinds scope to /refs/<kind>?serves=<qid> the same way.
+    assert 'href="/refs/concept?serves=97"' in resp.text
+
+
+def test_todo_dashboard_serves_filter_keeps_served_subtrees(
+    client, runtime, monkeypatch
+) -> None:
+    """``/todo?serves=<qid>`` keeps only the subtrees under the todos that
+    ``serves`` that quest — a sibling root and a nested non-serving branch
+    are both dropped (gr541347)."""
+    store = runtime.store
+    store.todos.extend(
+        [
+            SimpleNamespace(
+                id=500,
+                title="served root",
+                parent_id=None,
+                meta={},
+                created_at=None,
+                prio=None,
+            ),
+            SimpleNamespace(
+                id=501,
+                title="served child",
+                parent_id=500,
+                meta={},
+                created_at=None,
+                prio=None,
+            ),
+            SimpleNamespace(
+                id=600,
+                title="unrelated root",
+                parent_id=None,
+                meta={},
+                created_at=None,
+                prio=None,
+            ),
+        ]
+    )
+    store.serves_links.append(SimpleNamespace(src_ref_id=500, dst_ref_id=97))
+    resp = client.get("/todo?serves=97")
+    assert resp.status_code == 200
+    assert "served root" in resp.text
+    assert "served child" in resp.text
+    assert "unrelated root" not in resp.text
+    assert "serving qu97" in resp.text
 
 
 def test_quest_hub_links_serving_structures_to_pourbaix(
