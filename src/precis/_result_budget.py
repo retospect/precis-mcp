@@ -9,6 +9,11 @@ context-management surface.
 Policy, once, in :func:`fit_result_body` — classified by the dispatch
 chokepoint (:func:`read_shape`):
 
+Default: every read comes back whole up to ``PRECIS_MAX_BODY_BYTES``
+(24576); size is a logged meter (``tool_calls.result_bytes``), never a
+refusal. The context cap ``PRECIS_TOOL_RESULT_CONTEXT_BYTES`` is opt-in
+(unset or 0 = off); when set it binds the open-ended shapes below.
+
 * **explicit** — the caller named exactly what it wanted (a ``~``
   selector, a ``/<view>`` id suffix, a list of ids). Skips the context
   cap; only ``PRECIS_MAX_BODY_BYTES`` bounds it, and over that the
@@ -32,6 +37,8 @@ from typing import Any
 
 from precis.errors import BadInput
 
+#: Not a default cap any more — the size budget handlers pre-trim to, and
+#: the value opt-in context limiting is usually set to.
 DEFAULT_CONTEXT_BODY_BYTES = 4096
 DEFAULT_MAX_BODY_BYTES = 24576
 
@@ -234,12 +241,12 @@ def fit_result_body(
     honest head to show).
     """
     size = len(body.encode("utf-8"))
+    # Unset = no context cap: the transport cap is the only default
+    # bound (gr540851 — size is a meter, not a refusal). An explicit
+    # positive PRECIS_TOOL_RESULT_CONTEXT_BYTES still binds; 0 or unset
+    # or unparseable means off.
     context_cap = (
-        _env_cap(
-            "PRECIS_TOOL_RESULT_CONTEXT_BYTES",
-            DEFAULT_CONTEXT_BODY_BYTES,
-            zero_disables=True,
-        )
+        _env_cap("PRECIS_TOOL_RESULT_CONTEXT_BYTES", 0, zero_disables=True)
         if context_limited
         else 0
     )

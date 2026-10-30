@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from uuid import uuid4
+
 import pytest
 
 from precis.hints import Hint, HintBus
@@ -855,3 +857,55 @@ def test_transient_live_response_also_fits_oversize(runtime, monkeypatch):
     )
     assert is_error is False
     assert "… truncated: showing" in out
+
+
+# ── gr540851: whole up to the transport cap, size is a meter ─────────
+
+
+def _ledger_result_bytes(store: Store, marker: str) -> int | None:
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            "SELECT result_bytes FROM tool_calls WHERE verb='get' "
+            "AND arg_sample::text LIKE %s ORDER BY ts DESC LIMIT 1",
+            (f"%{marker}%",),
+        ).fetchone()
+    return row[0] if row else None
+
+
+def test_default_get_13kb_returns_whole_and_logs_bytes(
+    runtime_with_store: PrecisRuntime, store: Store, monkeypatch
+) -> None:
+    """No 4096 refusal by default: ~13 kB comes back whole; the size is
+    the ledger's result_bytes meter."""
+    monkeypatch.delenv("PRECIS_TOOL_RESULT_CONTEXT_BYTES", raising=False)
+    monkeypatch.delenv("PRECIS_MAX_BODY_BYTES", raising=False)
+    body = "\n".join(f"line {i} of prose padding" for i in range(500))
+    assert 12_000 < len(body.encode("utf-8")) < 14_000
+    monkeypatch.setattr(runtime_with_store, "_render", lambda response: body)
+    marker = str(uuid4().int % 10**9)
+    out, is_error = runtime_with_store.dispatch_with_status(
+        "get", {"kind": "calc", "id": f"2+3+0*{marker}"}, fold=True
+    )
+    assert is_error is False
+    assert out == body
+    assert _ledger_result_bytes(store, marker) == len(body.encode("utf-8"))
+
+
+def test_default_get_over_transport_cap_returns_head_and_outline(
+    runtime_with_store: PrecisRuntime, store: Store, monkeypatch
+) -> None:
+    monkeypatch.delenv("PRECIS_TOOL_RESULT_CONTEXT_BYTES", raising=False)
+    monkeypatch.delenv("PRECIS_MAX_BODY_BYTES", raising=False)
+    body = "# Top\n" + "\n".join(f"line {i} of prose padding" for i in range(1400))
+    assert len(body.encode("utf-8")) > 30_000
+    monkeypatch.setattr(runtime_with_store, "_render", lambda response: body)
+    marker = str(uuid4().int % 10**9)
+    out, is_error = runtime_with_store.dispatch_with_status(
+        "get", {"kind": "calc", "id": f"2+3+0*{marker}"}, fold=True
+    )
+    assert is_error is False
+    assert "… truncated: showing" in out
+    assert "outline:" in out
+    assert "next:" in out
+    assert len(out.encode("utf-8")) <= 24576
+    assert _ledger_result_bytes(store, marker) == len(out.encode("utf-8"))
