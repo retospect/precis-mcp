@@ -753,6 +753,56 @@ class CacheBackedHandler(Handler):
             untags=untags,
         )
 
+    def _chunk_label(self, slug: str, block: Any) -> str | None:
+        """Optional label line printed before ``block`` in a range read
+        (youtube: ``slug~n`` plus its time window). ``None`` — the
+        default — leaves the plain overlap-joined text."""
+        return None
+
+    def _join_range_chunks(self, slug: str, blocks: list[Any]) -> str:
+        """Join the chunks of a range read. Unlabelled kinds re-join the
+        embedder's overlap seams; a labelled kind prints each chunk under
+        its label line, one blank line apart (chunks start on line
+        boundaries)."""
+        labels = [self._chunk_label(slug, b) for b in blocks]
+        if not any(labels):
+            return dedupe_overlap_join([b.text for b in blocks])
+        return "\n\n".join(
+            f"{lab}\n{b.text}" if lab else b.text
+            for lab, b in zip(labels, blocks, strict=True)
+        )
+
+    def _first_chunk_cut(
+        self,
+        slug: str,
+        lines: list[str],
+        blocks: list[Any],
+        hint_bytes: int,
+    ) -> int | None:
+        """``ord`` of the first chunk the explicit-read cap would not show
+        in full, or ``None`` when the whole range fits. Runs the fitter's
+        own ``_fit_head`` (whole lines only) over the same frame, so a
+        newline-free or seam-joined body that keeps no line yields the
+        range's first ``ord`` (no continuation to name). ``lines`` is the
+        page frame with the joined body at index 3; the cap and trailer
+        (``hint_bytes`` of ``rest:`` call plus ~130 bytes of marker)
+        mirror ``fit_result_body``'s ``read='explicit'`` branch."""
+        from precis._result_budget import DEFAULT_MAX_BODY_BYTES, _env_cap, _fit_head
+
+        budget = (
+            _env_cap("PRECIS_MAX_BODY_BYTES", DEFAULT_MAX_BODY_BYTES) - hint_bytes - 130
+        )
+        head, dropped = _fit_head("\n".join(lines), budget)
+        if not dropped:
+            return None
+        prefix = len("\n".join(lines[:3]).encode("utf-8")) + 1
+        kept = max(0, len(head.encode("utf-8")) - prefix)
+        for k in range(1, len(blocks) + 1):
+            joined = self._join_range_chunks(slug, blocks[:k])
+            if len(joined.encode("utf-8")) > kept:
+                return blocks[k - 1].ord
+        return None
+
     def _render_chunk_selector(
         self,
         slug: str,
@@ -794,7 +844,7 @@ class CacheBackedHandler(Handler):
                     f"{min(_RANGE_PAGE_CHUNKS - 1, last)}') reads the first chunk range"
                 ),
             )
-        body_text = dedupe_overlap_join([b.text for b in blocks])
+        body_text = self._join_range_chunks(slug, blocks)
         n_shown = len(blocks)
         label = f"~{lo}" if lo == hi else f"~{lo}..{hi}"
         lines = [
@@ -818,7 +868,21 @@ class CacheBackedHandler(Handler):
         hint: str | None = None
         frame = "\n".join(lines)
         if len(frame.encode("utf-8")) > DEFAULT_CONTEXT_BODY_BYTES - 512:
-            if hi - lo + 1 > 1:
+            # The explicit-read cap may cut this range mid-way: the
+            # continuation starts at the first chunk not wholly shown and
+            # keeps the caller's own upper bound.
+            def _continue(at: int) -> str:
+                return (
+                    f"get(kind={self.spec.kind!r}, id='{slug}~{at}..{hi}') "
+                    f"— the rest of the ~{lo}..{hi} range"
+                )
+
+            cut_at = self._first_chunk_cut(
+                slug, lines, blocks, len(_continue(hi).encode("utf-8"))
+            )
+            if cut_at is not None and cut_at > lo:
+                hint = _continue(cut_at)
+            elif hi - lo + 1 > 1:
                 page_hi = min(hi, lo + _RANGE_PAGE_CHUNKS - 1)
                 if page_hi < hi:
                     hint = (

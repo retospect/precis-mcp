@@ -7,7 +7,7 @@ own HTTP mocks.
 
 from __future__ import annotations
 
-from typing import ClassVar
+from typing import Any, ClassVar
 
 import pytest
 
@@ -957,6 +957,40 @@ def test_chunk_range_render_advertises_next_page(hub: Hub) -> None:
     assert f"{slug}~{_RANGE_PAGE_CHUNKS}..{nxt_hi}" in resp.body
 
 
+def test_over_cap_range_rest_names_the_continuation(
+    hub: Hub, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An explicit ``~lo..hi`` range cut by the explicit-read cap points
+    ``rest:`` at ``~<first chunk not shown>..hi`` — not the first page
+    ``~lo..lo+3`` the reader already has."""
+    import re
+
+    from precis._result_budget import fit_result_body
+
+    monkeypatch.setenv("PRECIS_MAX_BODY_BYTES", "3000")
+    h = _FakeSelectorKind(hub=hub)
+    ref_id, slug, total = _cache_multi_chunk(h, query="cut range talk")
+    blocks = h.store.chunks.list_chunks_for_ref(ref_id)
+    resp = h.get(id=f"{slug}~1..{total - 1}")
+    m = re.search(rf"id='{slug}~(\d+)\.\.{total - 1}'", resp.result_budget_hint or "")
+    assert m, resp.result_budget_hint
+    cut = int(m.group(1))
+    assert 1 < cut < total - 1
+    fitted = fit_result_body(
+        resp.body,
+        verb="get",
+        kind="math",
+        context_limited=True,
+        targeted_hint=resp.result_budget_hint,
+        read="explicit",
+    )
+    rest = next(ln for ln in fitted.split("\n") if ln.startswith("rest:"))
+    assert f"id='{slug}~{cut}..{total - 1}'" in rest
+    assert blocks[cut - 1].text.strip() in fitted
+    # No gap: nothing past the named chunk is shown.
+    assert blocks[cut + 1].text.strip() not in fitted
+
+
 def test_chunk_selector_out_of_range_names_first_range(hub: Hub) -> None:
     h = _FakeSelectorKind(hub=hub)
     _ref_id, slug, total = _cache_multi_chunk(h, query="past the end talk")
@@ -1018,3 +1052,83 @@ def test_non_opted_kind_treats_tilde_suffix_as_query(
     the grammar is opt-in, not ambient."""
     handler.get(id="compute ~2")
     assert handler.fetch_calls == ["compute ~2"]
+
+
+def _first_unshown(blocks: list[Any], fitted: str) -> int:
+    """Index of the first chunk whose full text is absent from ``fitted``."""
+    for i, b in enumerate(blocks):
+        if b.text.strip() not in fitted:
+            return i
+    return len(blocks)
+
+
+def test_over_cap_hint_never_skips_newline_free_chunks(
+    hub: Hub, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Newline-free chunks are one giant line to the fitter, which keeps
+    whole lines only — it shows ZERO chunks. The continuation hint must
+    come from that real fit: it may never name a chunk past the first
+    unshown one (chunks 0..k-1 silently skipped)."""
+    import re
+
+    from precis._result_budget import fit_result_body
+
+    monkeypatch.setenv("PRECIS_MAX_BODY_BYTES", "3000")
+    h = _FakeSelectorKind(hub=hub)
+    h.canned["flat talk"] = FetchResult(
+        title="flat talk",
+        body_blocks=[
+            ChunkInsert(
+                ord=0,
+                text=" ".join(f"word{i:05d}" for i in range(2500)),
+            )
+        ],
+    )
+    h.get(q="flat talk")
+    ref = h.store.list_refs(kind="math", limit=1)[0]
+    assert ref.slug
+    blocks = h.store.chunks.list_chunks_for_ref(ref.id)
+    total = len(blocks)
+    assert total > _RANGE_PAGE_CHUNKS + 1
+    resp = h.get(id=f"{ref.slug}~0..{total - 1}")
+    fitted = fit_result_body(
+        resp.body,
+        verb="get",
+        kind="math",
+        context_limited=True,
+        targeted_hint=resp.result_budget_hint,
+        read="explicit",
+    )
+    assert _first_unshown(blocks, fitted) == 0  # the fitter shows no chunk
+    m = re.search(rf"id='{ref.slug}~(\d+)", resp.result_budget_hint or "")
+    assert m, resp.result_budget_hint
+    assert int(m.group(1)) <= _first_unshown(blocks, fitted)
+
+
+def test_first_chunk_cut_on_overlap_joined_seam(hub: Hub) -> None:
+    """A seam joined by overlap removal puts the end of chunk 0 and the
+    start of chunk 1 on ONE line; the cut is derived from whole lines, so
+    that shared line is not 'wholly shown' unless it fits."""
+    from types import SimpleNamespace
+
+    h = _FakeSelectorKind(hub=hub)
+    seam = "S" * 150
+    c0 = "head line\n" + "a" * 300 + seam
+    c1 = seam + "b" * 300 + "\ntail line"
+    c2 = "z" * 2000
+    blocks = [
+        SimpleNamespace(ord=0, text=c0),
+        SimpleNamespace(ord=1, text=c1),
+        SimpleNamespace(ord=2, text=c2),
+    ]
+    joined = h._join_range_chunks("x", blocks)
+    assert "b" * 300 + "\ntail line" in joined and joined.count(seam) == 1
+    lines = ["# t", "_h_", "", joined, "", "- attr"]
+    # Budget leaves room for "head line" only: the seam line (a..S..b) is
+    # one line that no longer fits, so chunk 0 is not wholly shown.
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setenv("PRECIS_MAX_BODY_BYTES", str(len("\n".join(lines[:3])) + 50 + 130))
+        assert h._first_chunk_cut("x", lines, blocks, 0) == 0
+        # Room for chunks 0 and 1 (through "tail line") but not the z-run.
+        mp.setenv("PRECIS_MAX_BODY_BYTES", str(len("\n".join(lines)) + 130 - 1500))
+        assert h._first_chunk_cut("x", lines, blocks, 0) == 2

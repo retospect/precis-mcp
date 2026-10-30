@@ -81,11 +81,14 @@ invalidate the English one.
 ## Read a long transcript
 ## The transcript is too long for one result
 
-Long transcripts are stored in ~800-char chunks and read back in
-ranges — a whole-body `get` over the 24 kB transport cap returns the
-head plus an outline, and its `next:` line names the first range call:
+Long transcripts are stored in time-windowed chunks (~1-2 kB, each with
+its start/end time) and read back in ranges — a whole-body `get` over
+the 24 kB transport cap returns the head plus a chunk outline, and its
+`next:` line names the first range call. `view='toc'` maps every chunk
+with its time window and size:
 
 ```python
+get(kind="youtube", id="dQw4w9WgXcQ", view="toc")  # chunk map
 get(kind="youtube", id="dQw4w9WgXcQ~0..3")   # first chunk range
 get(kind="youtube", id="dQw4w9WgXcQ~4..7")   # next page
 get(kind="youtube", id="dQw4w9WgXcQ~2")      # one chunk only

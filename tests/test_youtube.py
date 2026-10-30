@@ -536,7 +536,7 @@ class TestRecentListing:
     ) -> None:
         with pytest.raises(BadInput, match="unknown view") as exc:
             handler.get(id="dQw4w9WgXcQ", view="bogus")
-        assert exc.value.options == ["languages", "body"]
+        assert exc.value.options == ["languages", "toc", "body"]
 
     def test_no_fetch_reads_without_fetching(
         self, handler: YouTubeHandler, store: Store

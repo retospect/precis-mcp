@@ -13,6 +13,16 @@ Discovery over what's already cached (gr498108): ``id='/recent'``
 channel, duration, cache state — and ``search`` fuses a
 title/channel leg with transcript-chunk hits, grouped one row per
 video, so a vague topic description finds the video without SQL.
+
+Chunked transcripts (gr540142, gr533135): a transcript lands as
+time-windowed chunks (~1–2 kB each, stamped ``start_s``/``end_s``
+from the caption track) instead of one unaddressable blob — before
+this, any transcript over the 4 kB context cap was cached but
+unreadable through the tool. ``view='toc'`` lists the chunks with
+sizes and timestamps, and ``id='<video>~A..B'`` reads a range.
+Transcripts cached before this change are re-windowed lazily on
+first read (timestamps are unrecoverable from the stored blob, so
+legacy chunks carry no ``start_s``).
 """
 
 from __future__ import annotations
@@ -27,12 +37,18 @@ from datetime import UTC, datetime
 from typing import Any, ClassVar
 from urllib.parse import parse_qs, urlparse
 
+import psycopg
+
 from precis.errors import BadInput, NotFound, RateLimited, Upstream
-from precis.handlers._cache_base import CacheBackedHandler, FetchResult
+from precis.handlers._cache_base import (
+    CacheBackedHandler,
+    FetchResult,
+    _parse_chunk_selector,
+)
 from precis.protocol import KindSpec
 from precis.response import Response
 from precis.store import SEMANTIC_DISTANCE_FLOOR
-from precis.store.types import CacheEntry, ChunkInsert, Ref
+from precis.store.types import CacheEntry, ChunkInsert, ChunkRow, Ref
 from precis.utils.embed_query import embed_query, query_vec_for
 from precis.utils.http import (
     Policy,
@@ -51,6 +67,21 @@ log = logging.getLogger(__name__)
 
 
 _VIDEO_ID_RE = re.compile(r"^[\w-]{11}$")
+
+#: Target size of one transcript chunk (~1–2 kB per the read-surface
+#: contract — every chunk must fit the 4 kB context cap with room for
+#: the header/attribution chrome around it).
+_TRANSCRIPT_CHUNK_TARGET = 1500
+
+#: A stored body that is ONE blob bigger than this is a pre-chunking
+#: transcript; it is re-windowed on first read. Below this the single
+#: chunk is itself a valid ``~0`` read.
+_LEGACY_BLOB_MIN = 3072
+
+#: Byte budget for the rows of ``view='toc'`` — the map itself must fit
+#: the 4 kB context cap, so rows stop here and a ``rest:`` line names
+#: the range the omitted rows point at.
+_TOC_ROW_BUDGET = 3000
 
 
 # Per-request language preference, threaded from the public ``get`` to
@@ -148,7 +179,8 @@ class YouTubeHandler(CacheBackedHandler):
         title="YouTube transcripts",
         description=(
             "Fetch a YouTube video transcript by id or URL. "
-            "Use view='languages' to list available transcript languages. "
+            "Use view='languages' to list available transcript languages, "
+            "view='toc' to map a cached transcript's chunks. "
             "id='/recent' lists cached videos; search matches title, "
             "channel and transcript. Long transcripts read back in "
             "chunk ranges: id='<video_id>~N' or id='<video_id>~N..M'."
@@ -156,16 +188,20 @@ class YouTubeHandler(CacheBackedHandler):
         supports_get=True,
         supports_search=True,
         supports_search_hits=True,
+        # Long transcripts are unreadable whole — the ``slug~N`` /
+        # ``slug~N..M`` range read (base, gr533135) is the targeted read.
+        supports_chunk_selectors=True,
         is_numeric=False,
         id_required=True,
-        views=("languages", "body"),
-        # gr533135: a long transcript over the context result budget is
-        # unreadable whole — the base's ``slug~N`` / ``slug~N..M`` range
-        # read is the targeted read the refusal's next= names.
-        supports_chunk_selectors=True,
+        views=("languages", "body", "toc"),
     )
 
     provider: ClassVar[str] = "youtube"
+    # The handler emits its own time-windowed chunks in ``_fetch``
+    # (~1–2 kB, timestamped); the base's generic overlap splitter
+    # would re-cut them and strand the per-window ``start_s``/``end_s``
+    # meta, so it is opted out here.
+    chunk_target_chars: ClassVar[int] = 0
     # Transcripts very rarely change after upload — 30-day TTL is a
     # generous balance between freshness and cost (which is zero
     # anyway). The agent can force a refresh by deleting the ref.
@@ -202,14 +238,14 @@ class YouTubeHandler(CacheBackedHandler):
             video_id = _extract_video_id(video_input)
             return _list_languages(video_id)
 
-        if view is not None and view != "body":
+        if view is not None and view not in ("body", "toc"):
             # The eye-ladder labels in view= are intercepted by the
             # dispatcher before this method runs, so any view reaching
-            # here other than the base's ``body`` read is genuinely
-            # unknown — refuse, don't silently ignore.
+            # here other than the base's ``body`` read or ``toc`` is
+            # genuinely unknown — refuse, don't silently ignore.
             raise BadInput(
                 f"unknown view={view!r} for kind='youtube'",
-                options=["languages", "body"],
+                options=["languages", "toc", "body"],
                 next=(
                     "extent= picks an eye-ladder rung (kwd|summary|verbatim|fisheye|…)"
                 ),
@@ -224,6 +260,32 @@ class YouTubeHandler(CacheBackedHandler):
                 "page=/page_size= page the /recent listing, not a transcript read",
                 next="get(kind='youtube', id='/recent', args={'page': 2})",
             )
+
+        # ``view='toc'`` — the chunk map of a cached transcript
+        # (gr540142). Read-only, like ``view='body'``: it never fires a
+        # provider fetch.
+        if view == "toc":
+            return self._render_toc(id=id, q=q)
+
+        # Chunk selector: ``id='<video>~N'`` / ``'<video>~A..B'`` — the
+        # shape the dispatcher synthesizes for a resolved chunk handle on
+        # kinds that mint one (youtube chunks mint no handle; ``<video>~N``
+        # IS the address, resolved by the dispatcher's bare-slug kind
+        # inference). Intercepted here rather than left to the base's
+        # selector branch so a URL prefix resolves to the bare-video-id
+        # slug via ``_extract_video_id``.
+        if isinstance(id, str) and "~" in id:
+            parsed = _parse_chunk_selector(id.strip())
+            if parsed is not None:
+                prefix, lo, hi = parsed
+                return self._render_chunk_selector(
+                    self._selector_slug(prefix),
+                    lo,
+                    hi,
+                    tags=tags,
+                    untags=untags,
+                    view=view,
+                )
 
         # Plug `languages=` kwarg into the cache key so distinct
         # language preferences cache separately. Default to English.
@@ -621,6 +683,17 @@ class YouTubeHandler(CacheBackedHandler):
         try:
             video_id = _extract_video_id(query)
         except BadInput as exc:
+            if "~" in query:
+                # A ``~`` tail that isn't a valid selector (``~abc``,
+                # ``~1..``): name the real grammar rather than leaving
+                # the caller at "cannot extract video id".
+                raise BadInput(
+                    exc.cause,
+                    next=(
+                        "get(kind='youtube', id='<video_id>~A..B') reads a "
+                        "chunk range; view='toc' lists the chunks"
+                    ),
+                ) from exc
             if any(c.isspace() for c in query.strip()):
                 safe_q = " ".join(query.split())
                 search_hint = (
@@ -742,7 +815,10 @@ class YouTubeHandler(CacheBackedHandler):
                 retry_call=f"get(kind='youtube', id='{video_id}')",
             ) from exc
 
-        text = "\n".join(s.text for s in snippets).strip()
+        # Time-windowed chunks (gr540142): a single unaddressable blob
+        # used to leave any transcript over the context cap unreadable.
+        snippet_list = list(snippets)
+        blocks = _window_snippets(snippet_list) or [ChunkInsert(ord=0, text="")]
         # Best-effort scrape of the watch page for channel / title /
         # description / duration. If the scrape fails for any reason
         # (network, format drift, rate limit, SSRF guard) we still
@@ -752,13 +828,13 @@ class YouTubeHandler(CacheBackedHandler):
         meta: dict[str, Any] = {
             "video_id": video_id,
             "languages": languages,
-            "snippet_count": len(snippets),
+            "snippet_count": len(snippet_list),
         }
         meta.update(scraped_meta)
         title = scraped_meta.get("title") or f"YouTube transcript: {video_id}"
         return FetchResult(
             title=title,
-            body_blocks=[ChunkInsert(ord=0, text=text)],
+            body_blocks=blocks,
             cost_usd=None,  # free
             meta=meta,
         )
@@ -766,6 +842,7 @@ class YouTubeHandler(CacheBackedHandler):
     # ── render: append per-video deep-link below attribution ──────────
 
     def _render(self, ref, cache, *, hit):
+        self._maybe_rechunk(ref)
         resp = super()._render(ref, cache, hit=hit)
         meta = cache.meta or {}
         video_id = meta.get("video_id") or ref.slug
@@ -802,8 +879,212 @@ class YouTubeHandler(CacheBackedHandler):
         return Response(
             body=body + "\n" + deep_link,
             cost=resp.cost,
+            # The base's first-range hint (gr533135) is the one recovery.
             result_budget_hint=resp.result_budget_hint,
+            # Thunk: the chunk map is loaded by the fitter only when the
+            # context cap actually binds.
+            budget_outline=lambda: self._budget_outline(ref),
         )
+
+    # ── chunk selectors, toc, lazy re-chunk (gr540142) ────────────────
+
+    @staticmethod
+    def _selector_slug(prefix: str) -> str:
+        """``~`` selector prefix → the ref slug (the bare video id)."""
+        try:
+            return _extract_video_id(prefix)
+        except BadInput:
+            return prefix.strip()
+
+    def _render_chunk_selector(
+        self,
+        slug: str,
+        lo: int,
+        hi: int,
+        *,
+        tags: list[str] | None = None,
+        untags: list[str] | None = None,
+        view: str | None = None,
+    ) -> Response:
+        """Re-window a legacy one-blob transcript BEFORE the selector
+        resolves its chunk (gr540142), then defer to the base's range
+        read (gr533135). The re-chunk commits before the base re-reads
+        the entry by slug, so the second lookup sees the new chunks."""
+        cached = self.store.get_cache_entry_by_slug(kind=self.spec.kind, slug=slug)
+        if cached is not None:
+            self._maybe_rechunk(cached[0])
+        return super()._render_chunk_selector(
+            slug, lo, hi, tags=tags, untags=untags, view=view
+        )
+
+    def _chunk_label(self, slug: str, block: Any) -> str | None:
+        """``slug~n`` plus the chunk's video time window, printed before
+        each chunk of a range read so agents can cite video times."""
+        meta = block.meta or {}
+        if meta.get("start_s") is None:
+            return None
+        label = f"`{slug}~{block.ord}` {_fmt_ts(meta['start_s'])}"
+        if meta.get("end_s") is not None:
+            label += f"–{_fmt_ts(meta['end_s'])}"
+        return label
+
+    def _maybe_rechunk(self, ref: Ref) -> None:
+        """Re-window a legacy one-blob transcript on first read.
+
+        Transcripts cached before chunk selectors exist sit as a single
+        unaddressable chunk; split it once so ``~`` selectors, the toc
+        and the context cap all work. ``insert_chunks(replace=True)``
+        is the sanctioned DELETE+INSERT replace — chunk rows are never
+        UPDATEd. Timestamps can't be recovered from the stored text, so
+        re-windowed chunks carry no ``start_s``.
+
+        The replace is destructive to per-chunk identity: the legacy
+        blob's ``chunks`` row — and with it the chunk id any
+        ``<code><id>`` handle was minted from, plus its chunk tags and
+        summaries — goes away (ON DELETE CASCADE); ``<video>~0`` then
+        names the first re-windowed chunk, not the blob. Embeddings are
+        refilled by the worker, which picks the fresh chunks up like any
+        new ingest.
+
+        Race discipline: two concurrent readers can both see the legacy
+        blob, so check-and-replace runs in ONE transaction that locks
+        the ``refs`` row (FOR UPDATE, ~2s ``lock_timeout``) and re-verifies
+        the still-legacy predicate before replacing. A loser of that
+        wait — or a unique violation that slips through anyway — serves
+        whatever chunks are stored; this lazy path never raises to the
+        caller. The leading ``count_chunks`` probe keeps already-chunked
+        transcripts off this code entirely (one indexed count, not a
+        full body load, per render).
+        """
+        if self.store.chunks.count_chunks(ref.id) != 1:
+            return
+        blocks = self.store.chunks.list_chunks_for_ref(ref.id)
+        if not blocks:
+            return
+        blob = blocks[0]
+        if blob.chunk_kind != "paragraph":
+            return
+        if (blob.meta or {}).get("start_s") is not None:
+            return
+        if len(blob.text.encode("utf-8")) <= _LEGACY_BLOB_MIN:
+            return
+        try:
+            with self.store.tx() as conn:
+                conn.execute("SET LOCAL lock_timeout = '2s'")
+                conn.execute(
+                    "SELECT 1 FROM refs WHERE ref_id = %s FOR UPDATE", (ref.id,)
+                )
+                # Re-check under the lock: a sibling reader may have
+                # committed its own re-window while we waited.
+                still = conn.execute(
+                    "SELECT count(*) FROM chunks "
+                    "WHERE ref_id = %s AND ord >= 0 "
+                    "AND chunk_kind = 'paragraph' "
+                    "AND meta->>'start_s' IS NULL "
+                    "AND NOT (meta ? 'legacy_rechunk')",
+                    (ref.id,),
+                ).fetchone()
+                if still is None or int(still[0]) != 1:
+                    return
+                self.store.chunks.insert_chunks(
+                    ref.id, _split_blob_window(blob.text), replace=True, conn=conn
+                )
+        except psycopg.Error:
+            log.warning(
+                "youtube: lazy re-chunk of ref %d abandoned "
+                "(lock wait or concurrent replace); serving stored chunks",
+                ref.id,
+                exc_info=True,
+            )
+
+    def _render_toc(self, *, id: str | int | None, q: str | None) -> Response:
+        """Chunk map of a cached transcript — selector, time window and
+        size per row (gr540142). Read-only: never fetches."""
+        video_input = self._coerce_query(id, q)
+        slug = self._selector_slug(video_input)
+        cached = self.store.get_cache_entry_by_slug(kind=self.spec.kind, slug=slug)
+        if cached is None:
+            raise NotFound(
+                f"youtube {slug!r} is not cached yet — nothing to outline",
+                next=(
+                    f"get(kind='youtube', id='{slug}') to fetch the transcript first"
+                ),
+            )
+        ref, _cache = cached
+        self._maybe_rechunk(ref)
+        blocks = self.store.chunks.list_chunks_for_ref(ref.id)
+        if not blocks:
+            raise NotFound(
+                f"youtube {slug!r} has no stored transcript chunks",
+                next=f"get(kind='youtube', id='{slug}', refresh=True)",
+            )
+        total = sum(len(b.text.encode("utf-8")) for b in blocks)
+        first_meta = blocks[0].meta or {}
+        last = blocks[-1]
+        span = ""
+        if first_meta.get("start_s") is not None:
+            span = (
+                f" · {_fmt_ts(first_meta['start_s'])}"
+                f"–{_fmt_ts((last.meta or {}).get('end_s'))}"
+            )
+        lines = [
+            f"# {ref.title} — transcript map",
+            f"_{len(blocks)} chunks · {total} bytes{span}_",
+            "",
+        ]
+        # Keep the map itself under the context cap: emit rows until a
+        # byte budget, then a ``rest:`` line naming the exact range the
+        # omitted rows point at (the map is an index of ``~`` reads).
+        used = 0
+        cut_at: int | None = None
+        for b in blocks:
+            row = self._toc_row(slug, b)
+            cost = len(row.encode("utf-8")) + 3
+            if used + cost > _TOC_ROW_BUDGET:
+                cut_at = b.ord
+                break
+            lines.append(f"  {row}")
+            used += cost
+        if cut_at is not None:
+            lines.append("")
+            lines.append(f"rest: get(kind='youtube', id='{slug}~{cut_at}..{last.ord}')")
+        body = "\n".join(lines) + render_next_section(
+            [
+                (
+                    f"get(kind='youtube', id='{slug}~A..B')",
+                    "read a chunk range",
+                ),
+                (
+                    f"get(kind='youtube', id='{slug}', view='body')",
+                    "read the whole transcript (cut to the cap)",
+                ),
+            ]
+        )
+        return Response(body=body)
+
+    @staticmethod
+    def _toc_row(slug: str, b: ChunkRow) -> str:
+        """One toc/outline row: ``slug~ord``, time window, size."""
+        from precis._result_budget import size_cell
+
+        meta = b.meta or {}
+        ts = ""
+        if meta.get("start_s") is not None:
+            end = meta.get("end_s")
+            ts = f"  {_fmt_ts(meta['start_s'])}"
+            if end is not None:
+                ts += f"–{_fmt_ts(end)}"
+        sz = size_cell(len(b.text.encode("utf-8")))
+        return f"`{slug}~{b.ord}`{ts}" + (f"  {sz}" if sz else "")
+
+    def _budget_outline(self, ref: Ref) -> str:
+        """``slug~N`` selector lines for the budget fitter's outline
+        block — the map a truncated whole-transcript serve prints."""
+        slug = ref.slug or str(ref.id)
+        blocks = self.store.chunks.list_chunks_for_ref(ref.id)
+        if len(blocks) <= 1:
+            return ""
+        return "\n".join(self._toc_row(slug, b) for b in blocks)
 
 
 # ---------------------------------------------------------------------------
@@ -954,6 +1235,125 @@ def _parse_languages(raw: str) -> list[str]:
         return ["en"]
     langs = [c.strip() for c in raw.split(",") if c.strip()]
     return langs or ["en"]
+
+
+# ---------------------------------------------------------------------------
+# Transcript windowing (gr540142)
+# ---------------------------------------------------------------------------
+
+
+def _fmt_ts(sec: float | None) -> str:
+    """Seconds → ``m:ss`` (``h:mm:ss`` past the hour)."""
+    s = int(sec or 0)
+    h, r = divmod(s, 3600)
+    m, s = divmod(r, 60)
+    return f"{h}:{m:02d}:{s:02d}" if h else f"{m}:{s:02d}"
+
+
+def _window_snippets(snippets: list[Any]) -> list[ChunkInsert]:
+    """Group caption snippets into ~``_TRANSCRIPT_CHUNK_TARGET``-byte
+    chunks, each stamped with the time window it covers.
+
+    Cuts happen only on snippet boundaries — a caption line is never
+    split mid-sentence — and each chunk carries ``start_s``/``end_s``
+    meta so the toc rows and the range-read label lines (``_chunk_label``)
+    can name the video position the chunk covers.
+    """
+    out: list[ChunkInsert] = []
+    cur: list[str] = []
+    cur_bytes = 0
+    win_start: float | None = None
+    win_end: float | None = None
+
+    def _flush() -> None:
+        nonlocal cur, cur_bytes, win_start, win_end
+        if not cur:
+            return
+        meta: dict[str, Any] = {}
+        if win_start is not None:
+            meta["start_s"] = round(win_start, 1)
+        if win_end is not None:
+            meta["end_s"] = round(win_end, 1)
+        out.append(ChunkInsert(ord=len(out), text="\n".join(cur), meta=meta))
+        cur = []
+        cur_bytes = 0
+        win_start = None
+        win_end = None
+
+    for s in snippets:
+        t = (getattr(s, "text", None) or "").strip()
+        if not t:
+            continue
+        st = getattr(s, "start", None)
+        du = getattr(s, "duration", 0) or 0
+        cost = len(t.encode("utf-8")) + 1
+        if cur and cur_bytes + cost > _TRANSCRIPT_CHUNK_TARGET:
+            _flush()
+        if win_start is None and st is not None:
+            win_start = st
+        cur.append(t)
+        cur_bytes += cost
+        if st is not None:
+            win_end = st + du
+    _flush()
+    return out
+
+
+def _split_long_line(ln: str, limit: int) -> list[str]:
+    """One input line → segments each ≤ ``limit`` bytes, cut on spaces.
+
+    A legacy blob can hold a whole un-wrapped paragraph on one line
+    (auto-captions arrive without newlines); leaving it whole would mint
+    a chunk that itself blows the context cap. A single word longer than
+    ``limit`` stays whole — there is no boundary to cut at.
+    """
+    if len(ln.encode("utf-8")) <= limit:
+        return [ln]
+    out: list[str] = []
+    cur = ""
+    for word in ln.split(" "):
+        cand = word if not cur else f"{cur} {word}"
+        if cur and len(cand.encode("utf-8")) > limit:
+            out.append(cur)
+            cur = word
+        else:
+            cur = cand
+    if cur:
+        out.append(cur)
+    return out
+
+
+def _split_blob_window(text: str) -> list[ChunkInsert]:
+    """Time-less fallback for a legacy single-blob transcript: split on
+    newline boundaries into ~``_TRANSCRIPT_CHUNK_TARGET``-byte chunks.
+    ``legacy_rechunk`` marks the windowing pass that produced them."""
+    out: list[ChunkInsert] = []
+    cur: list[str] = []
+    cur_bytes = 0
+    for ln in text.split("\n"):
+        for seg in _split_long_line(ln, _TRANSCRIPT_CHUNK_TARGET):
+            cost = len(seg.encode("utf-8")) + 1
+            if cur and cur_bytes + cost > _TRANSCRIPT_CHUNK_TARGET:
+                out.append(
+                    ChunkInsert(
+                        ord=len(out),
+                        text="\n".join(cur),
+                        meta={"legacy_rechunk": True},
+                    )
+                )
+                cur = []
+                cur_bytes = 0
+            cur.append(seg)
+            cur_bytes += cost
+    if cur:
+        out.append(
+            ChunkInsert(
+                ord=len(out),
+                text="\n".join(cur),
+                meta={"legacy_rechunk": True},
+            )
+        )
+    return out or [ChunkInsert(ord=0, text=text)]
 
 
 # ---------------------------------------------------------------------------
