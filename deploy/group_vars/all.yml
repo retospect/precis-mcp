@@ -63,7 +63,7 @@ precis_suspended_job_types: ""
 # precis_web/install.yml refuses the install when no wheel at this version
 # sits in the wheelhouse (gr489600). The one place a pin bump edits besides
 # pyproject.toml/uv.lock.
-autocatpath_min_version: "0.40.0"
+autocatpath_min_version: "0.42.0"
 
 # Verify-tier autocatpath seed wall (PRECIS_AUTOCATPATH_VERIFY_WALL_SECONDS): 24 h, the code clamp ceiling (gr493237, Reto 2026-10-17). 20 verify successes ran 4.6-8.9 h, but that tail is censored: 7 solo seeds died at the old 9 h bound and one solo seed was still running at 14.1 h when OOM-killed; three 3-way-contended seeds died at the 19 h bound (al480803 history). Omit to fall back to max(PRECIS_AUTOCATPATH_WALL_SECONDS, 86400).
 precis_autocatpath_verify_wall_seconds: 86400

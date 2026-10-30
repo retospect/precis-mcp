@@ -172,7 +172,7 @@ class PathwayHandler(Handler):
     ARGS: ClassVar[dict[str, ArgsSpec]] = {
         "get": ArgsSpec({"U", "pH", "point"}),
         # kinetics v2 D1 blocks, overlaid onto the YAML body (_env_overlay)
-        "put": ArgsSpec({"environment", "objective", "manifest"}),
+        "put": ArgsSpec({"environment", "objective", "manifest", "sweep"}),
     }
 
     spec: ClassVar[KindSpec] = KindSpec(
@@ -209,7 +209,9 @@ class PathwayHandler(Handler):
         # relax/NEB. Re-put without it to run.
         # 'revalidate' (kinetics v2 D10) mints autocatpath_revalidate for a
         # stored result's validation manifest — no config body needed.
-        modes=("preview", "revalidate"),
+        # 'recompute_kinetics' mints autocatpath_kinetics for a stored
+        # pathway, optionally under an overriding environment/objective/sweep.
+        modes=("preview", "revalidate", "recompute_kinetics"),
         views=(
             "analysis",
             "compare",
@@ -260,6 +262,8 @@ class PathwayHandler(Handler):
     ) -> Response:
         if mode == "revalidate":  # engine-free: the job checks the host
             return self._revalidate(id, args)
+        if mode == "recompute_kinetics":  # engine-free: the job checks the host
+            return self._recompute_kinetics(id, args)
         from . import runner
 
         if not text or not text.strip():
@@ -496,6 +500,106 @@ class PathwayHandler(Handler):
             body=(
                 f"re-validation of manifest {str(stored)[:12]} queued. {job.body}\n"
                 f"Verdict: get(kind='pathway', id={str(ident)!r}, view='manifest')"
+            )
+        )
+
+    def _recompute_kinetics(
+        self, ident: str | int | None, args: dict[str, Any] | None
+    ) -> Response:
+        """``mode='recompute_kinetics'``: mint ``autocatpath_kinetics`` for a
+        stored pathway so its ``kinetics_v2`` (and sweep) are re-solved on the
+        current engine — optionally under an overriding ``environment`` /
+        ``objective`` / ``sweep`` laid over the stored config. The environment
+        and objective are validated here through the engine's own
+        ``from_dict``; the sweep block's full validation is the engine's, at
+        job time, where a refusal lands as ``kinetics_sweep_error`` on the
+        pathway and fails the job."""
+        store = self.hub.live_store
+        example = (
+            "put(kind='pathway', id='pw123', mode='recompute_kinetics', "
+            f"args={{'environment': {{...}}}}) — {_ENV_EXAMPLE}"
+        )
+        if ident is None:
+            raise BadInput(
+                "mode='recompute_kinetics' needs the pathway handle (id=)",
+                next=example,
+            )
+        ref = _lookup(store, str(ident))
+        if ref is None:
+            raise BadInput(
+                f"no pathway '{ident}'", next="get(kind='pathway') lists all"
+            )
+        meta = dict(ref.meta or {})
+        config = meta.get("config")
+        results = meta.get("results") or {}
+        if not isinstance(config, dict) or not config:
+            raise BadInput(
+                f"pathway '{ident}' stores no config to recompute from",
+                next=f"get(kind='pathway', id={str(ident)!r}, view='config')",
+            )
+        if not results.get("nodes") or not results.get("edges"):
+            raise BadInput(
+                f"pathway '{ident}' has no aggregated results yet "
+                f"(status {meta.get('status')!r})",
+                next="wait for the aggregate, or re-run the pathway first",
+            )
+        given = dict(args or {})
+        env = given.get("environment")
+        obj = given.get("objective")
+        sweep = given.get("sweep")
+        for name, val in (("environment", env), ("objective", obj), ("sweep", sweep)):
+            if val is not None and not isinstance(val, dict):
+                raise BadInput(
+                    f"args['{name}'] must be a mapping, got {type(val).__name__}",
+                    next=example,
+                )
+        try:
+            if env is not None or obj is not None:
+                from autocatpath.environment import Environment, Objective
+
+                if env is not None:
+                    Environment.from_dict(env)
+                if obj is not None:
+                    Objective.from_dict(obj)
+        except Exception as e:
+            env_key = _env_key(str(e))
+            raise BadInput(
+                f"pathway environment/objective refused: {e}",
+                next=_env_next(env_key or "environment"),
+            ) from e
+        from .aggregate_job import kinetics_idem_key
+        from .kinetics_job import overlay_recompute_config
+
+        new_config = overlay_recompute_config(
+            config, environment=env, objective=obj, sweep=sweep
+        )
+        from precis.handlers.job import JobHandler
+
+        job = JobHandler(hub=self.hub).put(
+            job_type="autocatpath_kinetics",
+            executor="ssh_node",
+            parent_id=ref.id,
+            idem_key=kinetics_idem_key(ref.id, new_config, results),
+            requires={},
+            params={
+                "pathway_ref_id": ref.id,
+                "pathway_slug": ref.slug or str(ident),
+                "config": new_config,
+                "content_key": meta.get("content_key"),
+            },
+        )
+        overlaid = [
+            k
+            for k, v in (("environment", env), ("objective", obj), ("sweep", sweep))
+            if v is not None
+        ]
+        return Response(
+            body=(
+                f"kinetics recompute queued for '{ident}'"
+                + (f" under overriding {', '.join(overlaid)}" if overlaid else "")
+                + f". {job.body}\n"
+                f"Result: get(kind='pathway', id={str(ident)!r}, view='kinetics') "
+                "and view='kinetics-sweep'"
             )
         )
 

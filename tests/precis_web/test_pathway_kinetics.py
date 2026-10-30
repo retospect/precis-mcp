@@ -442,3 +442,85 @@ def test_payload_healthy_v2_solve_names_its_rung() -> None:
     assert s["mf_failure"] is None
     assert s["positive"] is True
     assert s["headline"] == "TOF from the mf rung"
+    assert s["unsettled"] is False and s["failed_observables"] == []
+
+
+def _solve(**status: Any) -> dict[str, Any]:
+    rec = _v2_record()
+    rec["mf_status"] = {
+        "ok": True,
+        "stage": "steady",
+        "reason": None,
+        "state_err": 0.0,
+        "failed_observables": [],
+        **status,
+    }
+    out = kinetics_payload({"kinetics_v2": rec, "score": {"target": "NH3"}})
+    assert out is not None
+    return next(iter(out.values()))["v2_solve"]
+
+
+def test_unsettled_state_is_surfaced_and_not_the_green_box() -> None:
+    s = _solve(state_err=0.42)
+    assert s["unsettled"] is True and s["state_err"] == 0.42
+    assert "state not fully settled (ln-coverage step 0.42)" in s["headline"]
+    assert "order-of-magnitude" in s["headline"]
+    assert s["mf_failure"] is None and s["positive"] is True  # not "dead" either
+    # settled to round-off: nothing to say
+    assert _solve(state_err=1e-12)["unsettled"] is False
+    assert _solve(state_err=None)["unsettled"] is False
+
+
+def test_failed_observables_come_from_mf_status() -> None:
+    s = _solve(
+        failed_observables=[
+            {"name": "drc", "reason": "singular Jacobian"},
+            {"name": "orders"},
+            {"reason": "nameless"},
+        ]
+    )
+    assert s["failed_observables"] == [
+        {"name": "drc", "reason": "singular Jacobian"},
+        {"name": "orders", "reason": ""},
+    ]
+
+
+def test_mf_status_beats_the_warning_and_the_warning_is_the_fallback() -> None:
+    warn = ["kinetics: mean-field MKM failed (MKMError: mkm: from the warning)"]
+    rec = _failed_mf_record()
+    rec["warnings"] = warn + ["kinetics: mean-field observable trc failed (no solve)"]
+    rec["mf_status"] = {
+        "ok": False,
+        "stage": "newton",
+        "reason": "MKMError: mkm: from the status",
+        "state_err": None,
+        "failed_observables": [],
+    }
+    out = kinetics_payload({"kinetics_v2": rec, "score": {"target": "NH3"}})
+    assert out is not None
+    s = next(iter(out.values()))["v2_solve"]
+    assert s["mf_failure"] == "from the status" and s["mf_stage"] == "newton"
+    assert s["failed_observables"] == []  # the status is authoritative
+    # a stored record without mf_status: both come from the warnings
+    del rec["mf_status"]
+    out = kinetics_payload({"kinetics_v2": rec, "score": {"target": "NH3"}})
+    assert out is not None
+    s = next(iter(out.values()))["v2_solve"]
+    assert s["mf_failure"] == "from the warning"
+    assert s["failed_observables"] == [{"name": "trc", "reason": "no solve"}]
+
+
+def test_js_never_renders_unsettled_as_ok() -> None:
+    """The panel script picks the box tone from these flags; an unsettled or
+    observable-losing solve must take the amber branch before 'ok'."""
+    from pathlib import Path
+
+    import precis_web
+
+    js = (
+        Path(precis_web.__file__).parent / "static" / "pathway-kinetics.js"
+    ).read_text(encoding="utf-8")
+    assert '(bad ? "dead" : caution ? "warn" : "ok")' in js
+    assert "const caution = S.unsettled || FO.length > 0;" in js
+    assert "state not fully settled: ln-coverage step" in js
+    assert "failed observables: " in js

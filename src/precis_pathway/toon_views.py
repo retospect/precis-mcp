@@ -744,6 +744,57 @@ def _rate_str(x: float) -> str:
     return "—" if math.isnan(x) else f"{x:.2e}"
 
 
+#: ``mf_status.state_err`` above this (ln-coverage step of the last
+#: iteration) = the steady state did not settle — the engine's own
+#: ``autocatpath.mkm._STATE_TOL``, where it warns. Mirrors
+#: ``precis_web.pathway_kinetics._STATE_SETTLED_TOL``.
+_STATE_SETTLED_TOL = 1e-4
+
+
+def _mf_reading(
+    v2: dict[str, Any],
+) -> tuple[str | None, float | None, list[tuple[str, str]]]:
+    """``(failure, state_err, failed_observables)`` of the record's
+    mean-field solve: ``v2['mf_status']`` when the engine stamped it, else
+    the warnings (``mean-field MKM failed (…)`` / ``mean-field observable
+    <name> failed (…)``) of a stored record. ``state_err`` is ``None``
+    unless the solve returned unsettled."""
+
+    def _clean(msg: str) -> str:
+        return re.sub(r"^\w*Error:\s*(?:mkm:\s*)?", "", msg).strip()
+
+    st = v2.get("mf_status")
+    if isinstance(st, dict):
+        failure = None
+        if st.get("ok") is False:
+            failure = _clean(str(st.get("reason") or "")) or "unknown error"
+        err = st.get("state_err")
+        state_err = (
+            float(err)
+            if isinstance(err, (int, float))
+            and math.isfinite(err)
+            and err > _STATE_SETTLED_TOL
+            else None
+        )
+        listed = st.get("failed_observables")
+        found = [
+            (str(o["name"]), str(o.get("reason") or ""))
+            for o in (listed if isinstance(listed, list) else [])
+            if isinstance(o, dict) and o.get("name")
+        ]
+        return failure, state_err, found
+    warned: str | None = None
+    parsed: list[tuple[str, str]] = []
+    for w in v2.get("warnings") or []:
+        if warned is None and (
+            m := re.search(r"mean-field MKM failed \((.*)\)", str(w))
+        ):
+            warned = _clean(m.group(1))
+        elif m := re.search(r"mean-field observable (\S+) failed \((.*)\)", str(w)):
+            parsed.append((m.group(1), m.group(2).strip()))
+    return warned, None, parsed
+
+
 def _v2_status_lines(v2: dict[str, Any], product: str | None) -> list[str]:
     """The v2 solve's status ahead of any v1 detail: which rung of the ranked
     ladder (KMC median > MF > chain) produced the TOF, the mean-field
@@ -765,12 +816,7 @@ def _v2_status_lines(v2: dict[str, Any], product: str | None) -> list[str]:
         rung, tof = "chain", chain
     else:
         rung, tof = "none", None
-    failure = None
-    for w in v2.get("warnings") or []:
-        m = re.search(r"mean-field MKM failed \((.*)\)", str(w))
-        if m:
-            failure = re.sub(r"^\w*Error:\s*(?:mkm:\s*)?", "", m.group(1)).strip()
-            break
+    failure, state_err, failed_obs = _mf_reading(v2)
     if failure is not None and rung != "mf":
         head = f"mean-field solve failed: {failure or 'unknown error'}" + (
             f" — showing {rung} estimate" if rung != "none" else " — no TOF estimate"
@@ -782,6 +828,16 @@ def _v2_status_lines(v2: dict[str, Any], product: str | None) -> list[str]:
         out.append(
             f"TOF ({rung}) = {_num_str(tof)}"
             + ("" if tof > 0 else " — no positive steady state, not a rate")
+        )
+    if state_err is not None:
+        out.append(
+            f"state not fully settled: ln-coverage step {state_err:.2g} — "
+            "treat TOF as order-of-magnitude"
+        )
+    if failed_obs:
+        out.append(
+            "failed observables: "
+            + "; ".join(f"{n} ({r})" if r else n for n, r in failed_obs)
         )
     if (v2.get("environment") or {}).get("legacy"):
         out.append("no pressures stated — gases priced at 1 bar reference")

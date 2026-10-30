@@ -266,6 +266,51 @@ _MF_FAILED = re.compile(r"mean-field MKM failed \((.*)\)")
 _ERR_PREFIX = re.compile(r"^\w*Error:\s*(?:mkm:\s*)?")
 
 
+_OBS_FAILED = re.compile(r"mean-field observable (\S+) failed \((.*)\)")
+
+#: ``mf_status.state_err`` (the ln-coverage step of the last Newton/
+#: relaxation iteration) above this means the steady state did not settle —
+#: the engine's own ``autocatpath.mkm._STATE_TOL``, where it warns.
+#: Mirrored in ``precis_pathway.toon_views`` (the web side never imports
+#: the pathway side).
+_STATE_SETTLED_TOL = 1e-4
+
+
+def _mf_reading(
+    v2: dict[str, Any],
+) -> tuple[str | None, float | None, list[dict[str, str]], str | None]:
+    """``(failure, state_err, failed_observables, stage)`` of the record's
+    mean-field solve. ``v2['mf_status']`` (engine >= the one that stamps it)
+    wins; a stored record without it falls back to parsing the warnings
+    (``mean-field MKM failed (…)`` / ``mean-field observable <name> failed
+    (…)``). ``state_err`` is ``None`` unless the solve returned but its
+    state is not settled (> :data:`_STATE_SETTLED_TOL`)."""
+    st = v2.get("mf_status")
+    if isinstance(st, dict):
+        failure = None
+        if st.get("ok") is False:
+            failure = _ERR_PREFIX.sub("", str(st.get("reason") or "")).strip()
+            failure = failure or "unknown error"
+        err = _fin(st.get("state_err"))
+        state_err = err if math.isfinite(err) and err > _STATE_SETTLED_TOL else None
+        listed = st.get("failed_observables")
+        found: list[dict[str, str]] = [
+            {"name": str(o["name"]), "reason": str(o.get("reason") or "")}
+            for o in (listed if isinstance(listed, list) else [])
+            if isinstance(o, dict) and o.get("name")
+        ]
+        stage = st.get("stage")
+        return failure, state_err, found, stage if isinstance(stage, str) else None
+    warned: str | None = None
+    parsed: list[dict[str, str]] = []
+    for w in _strlist(v2.get("warnings")):
+        if warned is None and (m := _MF_FAILED.search(w)):
+            warned = _ERR_PREFIX.sub("", m.group(1)).strip() or "unknown error"
+        elif m := _OBS_FAILED.search(w):
+            parsed.append({"name": m.group(1), "reason": m.group(2).strip()})
+    return warned, None, parsed, None
+
+
 def _v2_solve(v2: dict[str, Any], product: Any) -> dict[str, Any]:
     """The v2 solve status the panel headlines: which rung of the ranked
     ladder produced the TOF (``kmc``/``mf``/``chain``/``none``), the
@@ -285,11 +330,8 @@ def _v2_solve(v2: dict[str, Any], product: Any) -> dict[str, Any]:
         rung, tof = "chain", chain
     else:
         rung, tof = "none", None
-    failure = None
-    for w in _strlist(v2.get("warnings")):
-        if m := _MF_FAILED.search(w):
-            failure = _ERR_PREFIX.sub("", m.group(1)).strip() or "unknown error"
-            break
+    failure, state_err, failed_obs, stage = _mf_reading(v2)
+    unsettled = state_err is not None
     sel = _dict(v2.get("selectivity"))
     target = product if isinstance(product, str) and product else None
     positive = tof is not None and tof > 0
@@ -302,11 +344,20 @@ def _v2_solve(v2: dict[str, Any], product: Any) -> dict[str, Any]:
         head = f"TOF from the {rung} rung" if rung != "none" else "no TOF on record"
     if tof is not None and not positive:
         head += "; no positive steady state (TOF ≤ 0, not a rate)"
+    if unsettled and failure is None:
+        head += (
+            f"; state not fully settled (ln-coverage step {state_err:.2g}) "
+            "— order-of-magnitude TOF"
+        )
     return {
         "rung": rung,
         "tof": tof,
         "positive": positive,
         "mf_failure": failure,
+        "mf_stage": stage,
+        "state_err": state_err,
+        "unsettled": unsettled,
+        "failed_observables": failed_obs,
         "legacy": bool(_dict(v2.get("environment")).get("legacy")),
         "bep_flux_share": (
             share if math.isfinite(share := _fin(v2.get("bep_flux_share"))) else None

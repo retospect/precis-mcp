@@ -211,7 +211,10 @@ def _kinetics_scalars(results: dict[str, Any]) -> dict[str, Any]:
     excluded is BEP-priced on the record and covered by the
     ``bep_flux_share`` gate) AND no ``sticking uncited: <gas>`` warning on
     either record (the kinetics v2 environment-block rule; the note names
-    the gases). Every solve also surfaces ``q_over_k`` and
+    the gases) AND the ranked number is not a chain TOF standing in for a
+    failed mean-field solve (``mf_status.ok`` false) AND it is not flagged
+    inside its round-off noise (``mf_status.tof_near_noise`` /
+    ``tof_chain_near_noise``). Every solve also surfaces ``q_over_k`` and
     ``environment_basis`` when reported (the basis hash is v1-only — the
     record carries the resolved environment verbatim, not the hash). An
     untrusted solve still surfaces its raw ``tof`` (never
@@ -277,8 +280,23 @@ def _kinetics_scalars(results: dict[str, Any]) -> dict[str, Any]:
     if share is not None:
         out["bep_flux_share"] = share
     bep_heavy = share is not None and share > _BEP_FLUX_SHARE_MAX
+    # a chain TOF standing in for a failed mean-field solve ignores the site
+    # blocking that failed it (a poisoned surface reads as a healthy rate),
+    # and a TOF inside its round-off noise has no resolved sign or size
+    mf_status = v2.get("mf_status")
+    mf_status = mf_status if isinstance(mf_status, dict) else {}
+    mf_failed = method == "chain" and mf_status.get("ok") is False
+    near_noise = (method == "mf" and mf_status.get("tof_near_noise") is True) or (
+        method == "chain" and v2.get("tof_chain_near_noise") is True
+    )
     trusted = (
-        tof is not None and tof > 0.0 and bracket_ok and not uncited and not bep_heavy
+        tof is not None
+        and tof > 0.0
+        and bracket_ok
+        and not uncited
+        and not bep_heavy
+        and not mf_failed
+        and not near_noise
     )
     out["kinetics_trusted"] = trusted
     # D8: a BEP-heavy run's note names the share first — the share is the
@@ -296,6 +314,20 @@ def _kinetics_scalars(results: dict[str, Any]) -> dict[str, Any]:
         out["kinetics_note"] = note + ("; " + "; ".join(uncited) if uncited else "")
     elif uncited:
         out["kinetics_note"] = "; ".join(uncited)
+    elif mf_failed:
+        diagnosis = mf_status.get("diagnosis")
+        diagnosis = diagnosis if isinstance(diagnosis, dict) else {}
+        covering = diagnosis.get("covering")
+        out["kinetics_note"] = (
+            "poisoned surface: "
+            + ", ".join(str(c) for c in covering)
+            + " hold the sites; chain TOF not ranked"
+            if diagnosis.get("kind") == "poisoned_surface"
+            and isinstance(covering, list)
+            else f"mean-field failed at {mf_status.get('stage')}; chain TOF not ranked"
+        )
+    elif near_noise:
+        out["kinetics_note"] = f"{method} TOF inside round-off noise"
     else:
         out["log_tof"] = math.log10(max(tof, 1e-30))
         unc_band = v2.get("uncertainty")

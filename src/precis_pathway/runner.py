@@ -1282,13 +1282,6 @@ def submit_seed_partial_detached(
     identity is captured on the spawning node; an unavailable identity
     leaves the handle ineligible for orphan reaping.
     """
-    import json as _json
-    import os
-    import subprocess
-    import tempfile
-    import time
-    from pathlib import Path
-
     request = {
         "config": config,
         "seed": seed,
@@ -1297,7 +1290,50 @@ def submit_seed_partial_detached(
         "slab_extxyz": slab_extxyz,
         "only_steps": list(only_steps) if only_steps else None,
     }
-    scratch = work_dir or tempfile.mkdtemp(prefix="autocatpath-seed-")
+    return _spawn_detached(
+        request, prefix="autocatpath-seed-", work_dir=work_dir, cpuset=cpuset
+    )
+
+
+def submit_kinetics_job_detached(
+    config: dict[str, Any],
+    results: dict[str, Any],
+    *,
+    work_dir: str | None = None,
+    cpuset: str | None = None,
+) -> DetachedHandle:
+    """Launch the ``autocatpath_kinetics`` compute (TPD check, kinetics
+    re-solve, (T, p_total) sweep — :func:`precis_pathway.kinetics_job.compute`)
+    in a DETACHED child, the same protocol as
+    :func:`submit_seed_partial_detached`: the handle goes to
+    ``meta.compute_handle``, :func:`poll_seed_partial_detached` reads the
+    ``result.json`` envelope (``{"results": <kinetics_* keys>, "notes":
+    [<job_event lines>]}``). ``results`` carries only the inputs the engine
+    reads (``nodes``/``edges``/``score``/``thermo``)."""
+    request = {"mode": "kinetics_job", "config": config, "results": results}
+    return _spawn_detached(
+        request, prefix="autocatpath-kinjob-", work_dir=work_dir, cpuset=cpuset
+    )
+
+
+def _spawn_detached(
+    request: dict[str, Any],
+    *,
+    prefix: str,
+    work_dir: str | None,
+    cpuset: str | None,
+) -> DetachedHandle:
+    """Write ``request`` to a persistent scratch dir and spawn the child
+    entrypoint (:func:`_child_cmd`) in its own session; shared by the seed
+    and kinetics-job submits. Returns the handle without waiting."""
+    import json as _json
+    import os
+    import subprocess
+    import tempfile
+    import time
+    from pathlib import Path
+
+    scratch = work_dir or tempfile.mkdtemp(prefix=prefix)
     req_path = os.path.join(scratch, "request.json")
     out_path = os.path.join(scratch, "result.json")
     with open(req_path, "w", encoding="utf-8") as fh:
@@ -2464,6 +2500,10 @@ def _subprocess_main(argv: list[str]) -> int:
                     force_backend=req.get("force_backend"),
                 )
             )
+        elif req.get("mode") == "kinetics_job":
+            from precis_pathway import kinetics_job
+
+            result = kinetics_job.run_compute(req["config"], req["results"])
         elif req.get("mode") == "coverage":
             result = dict(
                 run_coverage_scan(

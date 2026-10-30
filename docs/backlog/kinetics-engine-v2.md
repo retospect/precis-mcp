@@ -382,7 +382,10 @@ the bracket guard, never as a rate. Excluded steps disappear: every step
 gets a rate and a provenance. Outputs add `bep_flux_share` = fraction of
 the target's net production that passes through a non-NEB transition at
 steady state; `_kinetics_scalars` marks `kinetics_trusted=False` with note
-`bep_flux_share > 0.5` (threshold a quest knob). Fast-process rescaling
+`bep_flux_share > 0.5` (threshold a quest knob); the same gate refuses a
+chain TOF standing in for a failed MF solve (`mf_status.ok` false, e.g. a
+poisoned surface) and a TOF flagged inside its round-off noise, so neither
+reaches `log_tof`. Fast-process rescaling
 stays what `_capped` does (one common factor per pair, K untouched) and
 stays unconditional as the `K_CAP` overflow guard until slice 4's
 quasi-equilibrium detector exists; from slice 4 the MF solve applies it
@@ -849,9 +852,9 @@ per-edge Eyring table.
 |---|---|---|
 | `environment.py`, `provider.py`, `mkm.py`, `kmc.py`, `amc.py`, `consistency.py`, `tpd.py`, `records.py`, `manifest.py`, tests | catpath (wheel bump through chemistry) | — |
 | environment block + objective in `put(kind='pathway')` params and `_prep`; config snapshot; manifest fields | `precis_pathway/runner.py`, `types.py` | — |
-| `autocatpath_kinetics` job (new): inputs = pathway handle + environment (+ objective, sweep, tpd); reads `results_json`, writes `meta.kinetics_v2` (the D8 record), `meta.validation_manifest` and a `kinetics_sweep` artifact | `precis_pathway/kinetics_job.py` (new), registered via `precis.job_types` | CPU worker pool, never the GPU seed lane; 1 core per replica, wall 1 h default, own `PRECIS_AUTOCATPATH_KINETICS_SECONDS`; no LLM executor (D10) |
+| `autocatpath_kinetics` job (new): inputs = pathway handle + environment (+ objective, sweep, tpd); reads `results_json`, writes `meta.kinetics_v2` (the D8 record), `meta.validation_manifest` and a `kinetics_sweep` artifact | `precis_pathway/kinetics_job.py` (new), registered via `precis.job_types` | Detached submit/poll job on `ssh_node` (the seed job's protocol): the compute (TPD check, kinetics re-solve on the current engine under `params.config`, sweep) runs as a detached child, so it holds no worker thread (`ssh_node` claims `limit=1`) and, with `requires={}`, no gpu slot; it may run on the seed hosts. Wall 1 h default; with `PRECIS_AUTOCATPATH_KINETICS_SECONDS` = N set (the per-step ceiling) the job's wall is 3N + 300 s, and `ssh_node` derives lease and kill deadline from it (+1 h margin). The re-solve needs the config's MLIP backend on the host (`ledger_refs` re-measures gas references). `put(kind='pathway', mode='recompute_kinetics', args={environment, objective, sweep})` requests it by hand; no LLM executor (D10) |
 | `autocatpath_revalidate` job (new): input = a manifest id; re-runs the manifest and writes the drift report | `precis_pathway/revalidate_job.py` (new) | CPU pool for kinetics/TPD/sweep; the GPU seed lane for the min-energy-path leg |
-| aggregate keeps the cheap MF+chain solve in-process (replaces today's call, same 900 s cap); KMC, the sweep and TPD never run inside the aggregate — the tier ladder mints one `autocatpath_kinetics` job (MF + sweep + TPD) after every verify-tier aggregate — the auto-mint sits behind `pathway.kinetics_mint_enabled` (`precis settings`, default off), gated until the CPU-lane ruling lands — and the quest requests the KMC rung per frontier candidate (Q6) | `aggregate_job.py`, the ladder | as today |
+| aggregate keeps the cheap MF+chain solve in-process (replaces today's call, same 900 s cap); KMC, the sweep and TPD never run inside the aggregate — the tier ladder mints one `autocatpath_kinetics` job (MF + sweep + TPD) after every verify- or neb-tier aggregate (screening never; Reto 2026-10-30) — the auto-mint sits behind `pathway.kinetics_mint_enabled` (`precis settings`), its `idem_key` is `autocatpath_kinetics:<pathway>:<engine>:<environment fingerprint>` and an unchanged re-aggregate mints nothing — and the quest requests the KMC rung per frontier candidate (Q6) | `aggregate_job.py`, the ladder | as today |
 | quest harvest: new scalars as `meta.rubric_objectives` candidates; promotion gate unchanged | `precis.quest.compute` | — |
 | views: `view='kinetics'` (record), `view='kinetics-sweep'` (TOON rows), `view='tpd'` (the comparison table), `view='manifest'` | `handler.py`, `toon_views.py` | — |
 

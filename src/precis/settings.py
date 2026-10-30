@@ -261,13 +261,18 @@ REGISTRY: dict[str, SettingSpec] = {
             type="bool",
             env_var="PRECIS_PATHWAY_KINETICS_MINT_ENABLED",
             default=False,
-            doc="Auto-mint an autocatpath_kinetics sweep job after each "
-            "verify-tier autocatpath_aggregate (precis_pathway."
-            "aggregate_job, kinetics-engine-v2.md D9). Default off — "
-            "gated until the CPU-lane ruling lands: the sweep must never "
-            "reach the GPU seed lane and no routing mechanism exists "
-            "yet. Explicit, human-requested autocatpath_kinetics jobs "
-            "are unaffected.",
+            doc="Auto-mint an autocatpath_kinetics job (kinetics re-solve + "
+            "TPD + (T, p_total) sweep) after each verify- or neb-tier "
+            "autocatpath_aggregate (precis_pathway.aggregate_job, "
+            "kinetics-engine-v2.md D9); screening never mints. The job "
+            "runs as a detached child (submit/poll), so it holds no "
+            "ssh_node worker thread and no gpu slot and may run on the "
+            "seed hosts; wall budget PRECIS_AUTOCATPATH_KINETICS_SECONDS. "
+            "The idem_key carries engine version + environment "
+            "fingerprint, so an unchanged re-aggregate mints nothing. "
+            "Default off. Explicit autocatpath_kinetics jobs "
+            "(put(kind='pathway', mode='recompute_kinetics')) are "
+            "unaffected.",
         ),
         SettingSpec(
             key="contact.edgar_user_agent",

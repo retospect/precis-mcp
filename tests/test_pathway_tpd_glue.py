@@ -193,10 +193,12 @@ def _run_job(
 
     def _kin(config, artifact, *, timeout=None, tpd=None):
         calls.append(tpd)
+        # the compute starts from the inputs only: a stale record is never seen
+        assert "kinetics_v2" not in artifact["results_json"]
         artifact["results_json"]["kinetics_v2"] = {
             "tof_mf": 3.0,
-            "provider": "vacuum+tpd",
-            "tpd": tpd["tpd"],
+            "provider": "vacuum+tpd" if tpd else "vacuum",
+            "tpd": tpd["tpd"] if tpd else None,
         }
 
     def _sweep(config, res, *, timeout=None):
@@ -245,9 +247,12 @@ def test_job_resolves_on_the_corrected_states_when_an_offset_applies(
 def test_job_folds_an_uncorrected_check_without_resolving(monkeypatch) -> None:
     p = {**_payload(), "offsets": {}, "tpd_set_sha256": None, "provider": "vacuum"}
     _ctx, store, calls = _run_job(monkeypatch, p)
-    assert calls == [("sweep", True)]  # no re-solve
+    # one plain re-solve (no tpd=) ahead of the sweep, then the check folds on
+    assert calls == [None, ("sweep", True)]
     v2 = store.ref.meta["results"]["kinetics_v2"]
-    assert v2["tof_mf"] == 1.0 and v2["tpd"]["NO"]["status"] == "refused"
+    # refreshed (the stored 1.0 is replaced), uncorrected provider, check folded
+    assert v2["tof_mf"] == 3.0 and v2["provider"] == "vacuum"
+    assert v2["tpd"]["NO"]["status"] == "refused"
 
 
 # --- the validation manifest leg ------------------------------------------------------

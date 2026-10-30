@@ -87,13 +87,15 @@ the retry seed still computes the whole network and precis narrows what it
 records — the evidence and replacement semantics are step-scoped, the
 compute saving waits on an engine step filter.
 
-The verify-tier aggregate's ``autocatpath_kinetics`` auto-mint is dark by
-default: D9 says the sweep never runs on the GPU seed lane, and no
-mechanism pins it to a CPU node yet — until that ruling lands the mint
-sits behind the ``pathway.kinetics_mint_enabled`` setting
-(``precis settings``, default off; ``PRECIS_PATHWAY_KINETICS_MINT_ENABLED``
-for env-only boots). Explicit, human-requested ``autocatpath_kinetics``
-jobs never touch the flag.
+The verify- and neb-tier aggregate's ``autocatpath_kinetics`` auto-mint sits
+behind the ``pathway.kinetics_mint_enabled`` setting (``precis settings``;
+``PRECIS_PATHWAY_KINETICS_MINT_ENABLED`` for env-only boots). The job is a
+detached submit/poll job (``kinetics_job``): it re-solves the kinetics on the
+current engine, runs TPD and the sweep in a child process, holds no
+``ssh_node`` worker thread and takes no gpu slot, so it may share the seed
+hosts. Its ``idem_key`` carries the engine version and the config's
+environment fingerprint. Explicit ``autocatpath_kinetics`` jobs
+(``put(kind='pathway', mode='recompute_kinetics')``) never touch the flag.
 
 Validation (kinetics v2 D10, ``manifest.py``): from engine 0.38 every
 persisted result carries ``meta.validation_manifest`` + ``meta.manifest_id``

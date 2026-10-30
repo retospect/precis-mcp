@@ -108,9 +108,24 @@
   const S = (K.ml && K.ml.v2_solve) || (K.dft && K.dft.v2_solve);
   if (S) {
     const bad = S.mf_failure || !S.positive || S.rung === "none";
-    h += "<div class='verdict " + (bad ? "dead" : "ok") + "'><span class='vhead'>" +
+    const FO = S.failed_observables || [];
+    // a solve that returned but did not settle, or lost observables, is
+    // never the green box: amber, with the reason spelled out below
+    const caution = S.unsettled || FO.length > 0;
+    h += "<div class='verdict " +
+         (bad ? "dead" : caution ? "warn" : "ok") + "'><span class='vhead'>" +
          "v2 solve: " + esc2(S.headline) + "</span><ul>" +
          "<li>TOF rung: " + esc2(S.rung) + "</li>" +
+         (S.unsettled
+           ? "<li>state not fully settled: ln-coverage step " +
+             esc2(Number(S.state_err).toPrecision(2)) +
+             " &mdash; treat TOF as order-of-magnitude</li>" : "") +
+         (S.mf_failure && S.mf_stage
+           ? "<li>failed at stage: " + esc2(S.mf_stage) + "</li>" : "") +
+         (FO.length
+           ? "<li>failed observables: " + FO.map(o => esc2(o.name) +
+             (o.reason ? " (" + esc2(o.reason) + ")" : "")).join("; ") +
+             "</li>" : "") +
          (S.legacy
            ? "<li>no pressures stated &mdash; gases priced at 1 bar " +
              "reference</li>" : "") +

@@ -790,6 +790,78 @@ def test_bep_flux_share_gates_trust():
     assert out["kinetics_trusted"] is True and "bep_flux_share" not in out
 
 
+def test_failed_mean_field_keeps_the_chain_tof_off_the_ranking():
+    """A poisoned surface has no steady state: its chain TOF ignores the site
+    blocking, so it surfaces raw and never reaches log_tof."""
+    out = _kinetics_scalars(
+        {
+            "kinetics_v2": {
+                "tof_mf": None,
+                "tof_chain": 1e-13,
+                "mf_status": {
+                    "ok": False,
+                    "stage": "bdf[seed]",
+                    "diagnosis": {
+                        "kind": "poisoned_surface",
+                        "covering": ["NH2OH", "NO@N"],
+                    },
+                },
+            }
+        }
+    )
+    assert out["tof"] == 1e-13 and out["kinetics_method"] == "chain"
+    assert out["kinetics_trusted"] is False
+    assert out["kinetics_note"] == (
+        "poisoned surface: NH2OH, NO@N hold the sites; chain TOF not ranked"
+    )
+    assert "log_tof" not in out
+    # any other failure names the stage
+    out = _kinetics_scalars(
+        {
+            "kinetics_v2": {
+                "tof_chain": 1e-13,
+                "mf_status": {"ok": False, "stage": "deadline"},
+            }
+        }
+    )
+    assert out["kinetics_trusted"] is False
+    assert out["kinetics_note"] == "mean-field failed at deadline; chain TOF not ranked"
+    # a record from before mf_status ranks its chain TOF as it always did
+    out = _kinetics_scalars({"kinetics_v2": {"tof_chain": 1e-13}})
+    assert out["kinetics_trusted"] is True and out["log_tof"] == pytest.approx(-13.0)
+
+
+def test_tof_inside_round_off_noise_is_not_ranked():
+    out = _kinetics_scalars(
+        {
+            "kinetics_v2": {
+                "tof_mf": 1e-20,
+                "mf_status": {"ok": True, "tof_near_noise": True},
+            }
+        }
+    )
+    assert out["kinetics_trusted"] is False
+    assert out["kinetics_note"] == "mf TOF inside round-off noise"
+    assert "log_tof" not in out
+    out = _kinetics_scalars(
+        {"kinetics_v2": {"tof_chain": 1e-20, "tof_chain_near_noise": True}}
+    )
+    assert out["kinetics_trusted"] is False
+    assert out["kinetics_note"] == "chain TOF inside round-off noise"
+    # the chain's noise flag says nothing about a resolved mean-field rate
+    out = _kinetics_scalars(
+        {
+            "kinetics_v2": {
+                "tof_mf": 1e-6,
+                "tof_chain": 1e-20,
+                "tof_chain_near_noise": True,
+                "mf_status": {"ok": True},
+            }
+        }
+    )
+    assert out["kinetics_trusted"] is True and out["log_tof"] == pytest.approx(-6.0)
+
+
 def test_pw455722_correlated_band_and_pairing(fx, monkeypatch):
     """Slice-3 acceptance on the pw455722 replay: on paired candidate-vs-
     reference draws the correlated band is narrower than the independent

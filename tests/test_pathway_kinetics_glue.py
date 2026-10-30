@@ -333,8 +333,13 @@ def test_kinetics_job_reports_kmc_points(monkeypatch):
     import precis_pathway
 
     # an engine without the slice-9 TPD check: the job goes straight to the sweep
+    def _fake_solve(config, artifact, *, timeout=None, tpd=None):
+        artifact["results_json"]["kinetics_v2"] = {"tof_mf": 2.0}
+
     fake_runner = SimpleNamespace(
-        run_kinetics_sweep_subprocess=_fake_sweep, has_tpd=lambda: False
+        run_kinetics_sweep_subprocess=_fake_sweep,
+        run_kinetics_subprocess=_fake_solve,
+        has_tpd=lambda: False,
     )
     monkeypatch.setitem(sys.modules, "precis_pathway.runner", fake_runner)
     monkeypatch.setattr(precis_pathway, "runner", fake_runner, raising=False)
@@ -960,3 +965,435 @@ def test_kinetics_view_leads_with_the_v2_solve_status():
     assert "bep_flux_share = 1" in body
     assert "selectivity to NH3: unknown" in body
     assert body.index("v2 solve:") < body.index("microkinetics (Eyring TST")
+
+
+# --- mf_status display (engine >= the one stamping it) ----------------------------
+
+
+def _mf_v2(**status: Any) -> dict[str, Any]:
+    return {
+        "tof_mf": 2.5e-3,
+        "tof_kmc": None,
+        "tof_chain": 1.0e-3,
+        "environment": {},
+        "selectivity": {"NH3": 0.9},
+        "mf_status": {
+            "ok": True,
+            "stage": "steady",
+            "reason": None,
+            "state_err": 0.0,
+            "failed_observables": [],
+            **status,
+        },
+        "warnings": [],
+    }
+
+
+def test_toon_status_names_an_unsettled_state_and_failed_observables() -> None:
+    from precis_pathway.toon_views import _v2_status_lines
+
+    v2 = _mf_v2(
+        state_err=0.37,
+        failed_observables=[{"name": "drc", "reason": "singular Jacobian"}],
+    )
+    lines = _v2_status_lines(v2, "NH3")
+    assert (
+        "state not fully settled: ln-coverage step 0.37 — "
+        "treat TOF as order-of-magnitude" in lines
+    )
+    assert "failed observables: drc (singular Jacobian)" in lines
+    # a settled, clean record says neither
+    clean = _v2_status_lines(_mf_v2(state_err=1e-12), "NH3")
+    assert not any("not fully settled" in x or "failed observables" in x for x in clean)
+
+
+def test_toon_status_prefers_mf_status_over_the_warning() -> None:
+    from precis_pathway.toon_views import _v2_status_lines
+
+    v2 = _mf_v2(ok=False, stage="newton", reason="MKMError: mkm: stalled")
+    v2["tof_mf"] = None
+    v2["warnings"] = ["kinetics: mean-field MKM failed (MKMError: mkm: other)"]
+    head = _v2_status_lines(v2, None)[0]
+    assert "stalled" in head and "other" not in head
+
+
+def test_toon_status_falls_back_to_the_warnings_for_stored_records() -> None:
+    from precis_pathway.toon_views import _v2_status_lines
+
+    v2 = _mf_v2()
+    del v2["mf_status"]
+    v2["warnings"] = [
+        "kinetics: mean-field observable drc failed (singular)",
+    ]
+    assert "failed observables: drc (singular)" in _v2_status_lines(v2, None)
+
+
+# --- the job: tiers, idempotency, detached protocol, recompute -------------------------
+
+
+def _mint_capture(monkeypatch: pytest.MonkeyPatch) -> list[dict]:
+    import precis.handlers.job as jh_mod
+
+    minted: list[dict] = []
+
+    class _JH:
+        def __init__(self, hub=None):
+            pass
+
+        def put(self, **kw):
+            minted.append(kw)
+            return MagicMock(ref_id=777, body="queued")
+
+    monkeypatch.setattr(jh_mod, "JobHandler", _JH)
+    monkeypatch.setenv("PRECIS_PATHWAY_KINETICS_MINT_ENABLED", "1")
+    return minted
+
+
+@pytest.mark.parametrize(
+    ("tier", "mints"), [("verify", True), ("neb", True), ("screen", False)]
+)
+def test_mint_tiers(monkeypatch, tier: str, mints: bool) -> None:
+    from precis_pathway import aggregate_job
+
+    minted = _mint_capture(monkeypatch)
+    out = aggregate_job._mint_kinetics_job(_mint_ctx(tier), {"config": {}}, 42)
+    assert (out == 777) is mints
+    assert len(minted) == (1 if mints else 0)
+
+
+def test_idem_key_tracks_engine_environment_and_aggregate() -> None:
+    from precis_pathway.aggregate_job import kinetics_idem_key
+
+    env_a = {"environment": {"T": 300.0, "gases": {"inputs": {"NO": 0.1}}}}
+    env_b = {"environment": {"T": 300.0, "gases": {"inputs": {"NO": 0.2}}}}
+    base = kinetics_idem_key(42, env_a, engine="0.40.0")
+    assert base == kinetics_idem_key(42, dict(env_a), engine="0.40.0")  # unchanged
+    assert base != kinetics_idem_key(42, env_a, engine="0.41.0")  # new engine
+    assert base != kinetics_idem_key(42, env_b, engine="0.40.0")  # new environment
+    assert base != kinetics_idem_key(43, env_a, engine="0.40.0")
+    sweep = {"kinetics": {"sweep": {"n": 4}}}
+    assert kinetics_idem_key(42, {**env_a, **sweep}, engine="0.40.0") != base
+    assert base.startswith("autocatpath_kinetics:42:0.40.0:")
+    # a promoted aggregate is new work; a re-solve's kinetics blocks are not
+    neb = {"nodes": [1], "edges": [{"tier": "neb"}], "kinetics": {"tof": 1.0}}
+    verify = {**neb, "edges": [{"tier": "verify"}]}
+    key = kinetics_idem_key(42, env_a, neb, engine="0.40.0")
+    assert key != kinetics_idem_key(42, env_a, verify, engine="0.40.0")
+    assert key == kinetics_idem_key(
+        42, env_a, {**neb, "kinetics": {"tof": 2.0}}, engine="0.40.0"
+    )
+
+
+def test_mint_skips_when_the_same_key_already_succeeded(monkeypatch) -> None:
+    from precis_pathway import aggregate_job
+
+    minted = _mint_capture(monkeypatch)
+    seen: list[str] = []
+    monkeypatch.setattr(aggregate_job, "_engine_version", lambda: "0.42.0")
+    monkeypatch.setattr(
+        aggregate_job, "_succeeded_job_id", lambda store, k: seen.append(k) or 5
+    )
+    out = aggregate_job._mint_kinetics_job(_mint_ctx(), {"config": {}}, 42)
+    assert out is None and not minted and seen[0].startswith("autocatpath_kinetics:42:")
+
+
+def test_mint_without_a_named_engine_always_mints(monkeypatch) -> None:
+    from precis_pathway import aggregate_job
+
+    minted = _mint_capture(monkeypatch)
+    monkeypatch.setattr(aggregate_job, "_engine_version", lambda: "unknown")
+    monkeypatch.setattr(aggregate_job, "_succeeded_job_id", lambda store, k: 5)
+    aggregate_job._mint_kinetics_job(_mint_ctx(), {"config": {}}, 42)
+    assert len(minted) == 1
+
+
+def test_job_is_detached_and_sized_from_the_kinetics_env(monkeypatch) -> None:
+    from precis_pathway import kinetics_job
+
+    spec = kinetics_job.SPEC
+    assert spec.submit and spec.poll and spec.kill and spec.reap and spec.dispatch
+    assert spec.requires == frozenset()
+    assert spec.wall_seconds is not None
+    monkeypatch.delenv("PRECIS_AUTOCATPATH_KINETICS_SECONDS", raising=False)
+    assert spec.wall_seconds() == 3600.0
+    monkeypatch.setenv("PRECIS_AUTOCATPATH_KINETICS_SECONDS", "2400")
+    assert spec.wall_seconds() == 3 * 2400 + 300  # three steps, each <= 2400 s
+    monkeypatch.setenv("PRECIS_AUTOCATPATH_KINETICS_SECONDS", "0")
+    assert spec.wall_seconds() == 3600.0  # unbounded steps: the deadline bounds it
+    monkeypatch.setenv("PRECIS_AUTOCATPATH_KINETICS_SECONDS", "junk")
+    assert spec.wall_seconds() == 3600.0
+
+
+def test_overlay_replaces_environment_and_drops_its_priced_views() -> None:
+    from precis_pathway.kinetics_job import overlay_recompute_config
+
+    stored = {
+        "environment": {"T": 300.0},
+        "conditions": {"temperature": 300.0, "pressures": {"NO": 0.1}},
+        "kinetics": {"sticking": {"NO": 0.5}, "n_samples": 50},
+        "objective": {"maximise": "tof"},
+    }
+    new_env = {"T": 300.0, "gases": {"inputs": {"NO": 0.5}}}
+    out = overlay_recompute_config(stored, environment=new_env, sweep={"n": 6})
+    assert out["environment"] == new_env
+    assert "pressures" not in out["conditions"]
+    assert out["conditions"]["temperature"] == 300.0
+    assert "sticking" not in out["kinetics"] and out["kinetics"]["n_samples"] == 50
+    assert out["kinetics"]["sweep"] == {"n": 6}
+    assert out["objective"] == {"maximise": "tof"}  # untouched
+    assert stored["conditions"]["pressures"] == {"NO": 0.1}  # input not mutated
+    # no overrides: the stored config as it was
+    assert overlay_recompute_config(stored) == stored
+
+
+def _fake_runner(monkeypatch: pytest.MonkeyPatch, **fns: Any) -> Any:
+    import sys
+    from types import SimpleNamespace
+
+    import precis_pathway
+
+    fake = SimpleNamespace(**fns)
+    monkeypatch.setitem(sys.modules, "precis_pathway.runner", fake)
+    monkeypatch.setattr(precis_pathway, "runner", fake, raising=False)
+    return fake
+
+
+def test_run_compute_drops_a_stale_record_and_returns_an_envelope(monkeypatch) -> None:
+    from precis_pathway import kinetics_job
+
+    def _solve(config, artifact, *, timeout=None, tpd=None):
+        rj = artifact["results_json"]
+        assert "kinetics_v2" not in rj  # the stale record never reaches the engine
+        assert config == {"environment": {"T": 300.0}}  # params.config rides through
+        rj["kinetics_v2"] = {"tof_mf": 9.0}
+
+    def _sweep(config, res, *, timeout=None):
+        res["kinetics_sweep"] = {"points": []}
+
+    _fake_runner(
+        monkeypatch,
+        has_tpd=lambda: False,
+        run_kinetics_subprocess=_solve,
+        run_kinetics_sweep_subprocess=_sweep,
+    )
+    out = kinetics_job.run_compute(
+        {"environment": {"T": 300.0}},
+        {"nodes": {"A": 0}, "edges": [], "kinetics_v2": {"tof_mf": 1.0}},
+    )
+    assert out["results"] == {
+        "kinetics_v2": {"tof_mf": 9.0},
+        "kinetics_sweep": {"points": []},
+    }
+    assert any("kinetics solved (tof_mf=9.0)" in n for n in out["notes"])
+
+
+def _job_ctx(store: _MetaStore, config: dict | None = None) -> MagicMock:
+    ctx = MagicMock()
+    ctx.meta = {"params": {"pathway_ref_id": store.ref.id, "config": config or {}}}
+    ctx.store = store
+    return ctx
+
+
+def _stored_pathway() -> _MetaStore:
+    return _MetaStore(
+        {
+            "results": {
+                "nodes": {"A": -1.0},
+                "edges": [{"a": "A", "b": "A"}],
+                "kinetics_v2": {"tof_mf": 1.0},
+                "kinetics_error": "old solve error",
+            }
+        }
+    )
+
+
+def test_submit_launches_the_child_with_inputs_only(monkeypatch) -> None:
+    from precis_pathway import kinetics_job
+
+    launched: list[tuple] = []
+
+    def _launch(cfg, res, **kw):
+        launched.append((cfg, res))
+        return {"pid": 1, "pgid": 1, "dir": "/tmp/x", "started_at": 0.0}
+
+    _fake_runner(monkeypatch, submit_kinetics_job_detached=_launch)
+    store = _stored_pathway()
+    ctx = _job_ctx(store, {"environment": {"T": 300.0}})
+    handle = kinetics_job._submit(ctx, kinetics_job.SPEC)
+    assert handle and handle["pid"] == 1
+    cfg, res = launched[0]
+    assert cfg == {"environment": {"T": 300.0}}
+    assert set(res) == {"nodes", "edges", "score", "thermo"}  # no stale kinetics_v2
+    ctx.set_status.assert_not_called()
+    ctx.record_failure.assert_not_called()
+    # a pathway with nothing aggregated fails the job instead of launching
+    store.ref.meta = {"results": {}}
+    ctx2 = _job_ctx(store)
+    assert kinetics_job._submit(ctx2, kinetics_job.SPEC) is None
+    ctx2.record_failure.assert_called_once()
+
+
+def test_poll_persists_on_done_and_refreshes_the_record(monkeypatch) -> None:
+    from precis_pathway import kinetics_job, seed_job
+
+    store = _stored_pathway()
+    envelope = {
+        "results": {"kinetics_v2": {"tof_mf": 9.0}, "kinetics_sweep": {"points": []}},
+        "notes": ["autocatpath_kinetics: kinetics solved (tof_mf=9.0)"],
+    }
+    states = iter([{"state": "running"}, {"state": "done", "result": envelope}])
+    reaped: list[bool] = []
+    _fake_runner(monkeypatch, poll_seed_partial_detached=lambda h, **kw: next(states))
+    monkeypatch.setattr(
+        seed_job, "_reap_scratch", lambda ctx, h, *, failed: reaped.append(failed)
+    )
+    ctx = _job_ctx(store)
+    assert kinetics_job._poll(ctx, {"dir": "/tmp/x"}) is False
+    ctx.set_status.assert_not_called()
+    assert kinetics_job._poll(ctx, {"dir": "/tmp/x"}) is True
+    res = store.ref.meta["results"]
+    assert res["kinetics_v2"]["tof_mf"] == 9.0  # the stale 1.0 is replaced
+    assert "kinetics_error" not in res  # the fresh success retires the old error
+    ctx.set_status.assert_called_once_with("succeeded")
+    ctx.record_failure.assert_not_called()
+    assert reaped == [False]
+    events = [c.args[1] for c in ctx.append_chunk.call_args_list]
+    assert "autocatpath_kinetics: kinetics solved (tof_mf=9.0)" in events
+
+
+def test_poll_manifest_names_the_overriding_environment(monkeypatch) -> None:
+    from precis_pathway import kinetics_job, seed_job
+    from precis_pathway import manifest as vm
+
+    store = _stored_pathway()
+    store.ref.meta["config"] = {"name": "stored"}
+    store.ref.meta["config_snapshot_yaml"] = "name: stored\n"
+    seen: list[dict] = []
+
+    def _build(**kw):
+        seen.append(kw["config"])
+
+    monkeypatch.setattr(vm, "build_safely", _build)
+    envelope = {"results": {"kinetics_v2": {"tof_mf": 9.0}}, "notes": []}
+    _fake_runner(
+        monkeypatch,
+        poll_seed_partial_detached=lambda h, **kw: {
+            "state": "done",
+            "result": envelope,
+        },
+    )
+    monkeypatch.setattr(seed_job, "_reap_scratch", lambda ctx, h, *, failed: None)
+    env = {"T": 298.15, "gases": {"inputs": {"NO": 1e-3}}}
+    ctx = _job_ctx(store, {"name": "stored", "environment": env})
+    assert kinetics_job._poll(ctx, {"dir": "/tmp/x"}) is True
+    assert seen == [{"name": "stored", "environment": env}]
+    assert "environment" not in store.ref.meta["config"]  # stored config untouched
+
+
+def test_poll_fails_the_job_when_the_resolve_failed(monkeypatch) -> None:
+    from precis_pathway import kinetics_job, seed_job
+
+    store = _stored_pathway()
+    envelope = {
+        "results": {"kinetics_error": "mkm: Newton did not converge"},
+        "notes": [],
+    }
+    _fake_runner(
+        monkeypatch,
+        poll_seed_partial_detached=lambda h, **kw: {
+            "state": "done",
+            "result": envelope,
+        },
+    )
+    monkeypatch.setattr(seed_job, "_reap_scratch", lambda *a, **k: None)
+    ctx = _job_ctx(store)
+    assert kinetics_job._poll(ctx, {"dir": "/tmp/x"}) is True
+    ctx.set_status.assert_not_called()
+    ctx.record_failure.assert_called_once()
+    assert "Newton did not converge" in ctx.record_failure.call_args.args[0]
+    # the stored record is untouched, the error rides on it
+    assert store.ref.meta["results"]["kinetics_v2"]["tof_mf"] == 1.0
+    assert store.ref.meta["results"]["kinetics_error"] == "mkm: Newton did not converge"
+
+
+def test_poll_records_a_child_that_died(monkeypatch) -> None:
+    from precis_pathway import kinetics_job, seed_job
+
+    _fake_runner(
+        monkeypatch,
+        poll_seed_partial_detached=lambda h, **kw: {
+            "state": "failed",
+            "error": "child process exited without writing result.json",
+            "infra": True,
+        },
+    )
+    monkeypatch.setattr(seed_job, "_reap_scratch", lambda *a, **k: None)
+    ctx = _job_ctx(_stored_pathway())
+    assert kinetics_job._poll(ctx, {"dir": "/tmp/x"}) is True
+    ctx.record_failure.assert_called_once()
+    assert ctx.record_failure.call_args.kwargs["failure_class"] == "infra"
+
+
+class _Jobs:
+    calls: list[dict[str, Any]] = []
+
+    def __init__(self, *, hub: Any) -> None:
+        pass
+
+    def put(self, **kw: Any) -> Any:
+        self.calls.append(kw)
+        return MagicMock(body="job #99 queued", ref_id=99)
+
+
+def _recompute_handler(meta: dict[str, Any]) -> Any:
+    from types import SimpleNamespace
+
+    from precis_pathway.handler import PathwayHandler
+
+    ref = SimpleNamespace(id=11, slug="pw-a", meta=meta)
+    store = SimpleNamespace(get_ref=lambda *, kind, id: ref)
+    h = PathwayHandler.__new__(PathwayHandler)
+    setattr(h, "hub", SimpleNamespace(live_store=store))  # noqa: B010 - a stub hub
+    return h
+
+
+def test_recompute_kinetics_mode_mints_with_overridden_sweep(monkeypatch) -> None:
+    import precis.handlers.job as job_mod
+
+    _Jobs.calls = []
+    monkeypatch.setattr(job_mod, "JobHandler", _Jobs)
+    h = _recompute_handler(
+        {
+            "config": {"name": "x", "kinetics": {"n_samples": 50}},
+            "results": {"nodes": {"A": 0}, "edges": [{"a": "A"}]},
+            "content_key": "ck",
+        }
+    )
+    resp = h.put(id="pw-a", mode="recompute_kinetics", args={"sweep": {"n": 6}})
+    assert "overriding sweep" in resp.body
+    (kw,) = _Jobs.calls
+    assert kw["job_type"] == "autocatpath_kinetics" and kw["requires"] == {}
+    assert kw["params"]["config"]["kinetics"] == {"n_samples": 50, "sweep": {"n": 6}}
+    assert kw["params"]["pathway_ref_id"] == 11
+    assert kw["params"]["pathway_slug"] == "pw-a"
+    assert kw["idem_key"].startswith("autocatpath_kinetics:11:")
+
+
+def test_recompute_kinetics_refusals_name_the_next_step() -> None:
+    from precis.errors import BadInput
+
+    h = _recompute_handler({"config": {"name": "x"}, "results": {}})
+    with pytest.raises(BadInput, match="needs the pathway handle"):
+        h.put(mode="recompute_kinetics")
+    with pytest.raises(BadInput, match="no aggregated results") as e:
+        h.put(id="pw-a", mode="recompute_kinetics")
+    assert e.value.next
+    h2 = _recompute_handler({"results": {"nodes": {"A": 0}, "edges": [1]}})
+    with pytest.raises(BadInput, match="stores no config"):
+        h2.put(id="pw-a", mode="recompute_kinetics")
+    h3 = _recompute_handler(
+        {"config": {"a": 1}, "results": {"nodes": {"A": 0}, "edges": [1]}}
+    )
+    with pytest.raises(BadInput, match="must be a mapping") as e:
+        h3.put(id="pw-a", mode="recompute_kinetics", args={"sweep": "n=4"})
+    assert e.value.next

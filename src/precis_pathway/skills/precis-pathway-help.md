@@ -133,6 +133,31 @@ objective:                        # stored now; the (T, p_total) sweep acts on i
   (folded into the network basis: measures compare only on an equal
   environment) and per-step reversibility in `view='kinetics'`.
 
+## Recompute the kinetics of a stored pathway
+
+Verify- and neb-tier aggregates mint an `autocatpath_kinetics` job
+automatically (screening never does; operators can switch the mint off with
+the `pathway.kinetics_mint_enabled` setting). For an older pathway, or to
+price it under another environment, ask for it by hand:
+
+```python
+put(kind="pathway", id="no-nh3-pd", mode="recompute_kinetics",
+    args={"environment": {...}, "objective": {...}, "sweep": {...}})  # all optional
+```
+
+With no args it re-solves under the stored config on the current engine.
+`environment` and `objective` replace the stored blocks (validated at `put`);
+a new `environment` must keep the run temperature, and replaces the stored
+gas table. `sweep` replaces `kinetics.sweep` (the engine checks it when the
+job runs; a refusal lands as `kinetics_sweep_error` and fails the job). The
+job runs detached (no gpu slot, no worker thread held), refreshes
+`kinetics`/`kinetics_v2` (the old `tof_mf` is replaced, not kept), then the
+sweep. It re-measures gas references with the config's MLIP backend, so it
+needs a host that has it. A solve that returned but did not settle shows as
+"state not fully settled" in `view='kinetics'`: treat that TOF as
+order-of-magnitude. The result overwrites the pathway's stored kinetics
+record; the stored `config` is not changed.
+
 ## Reproducible validation (manifest + re-validate)
 
 A result aggregated on autocatpath >= 0.38 carries a validation manifest:

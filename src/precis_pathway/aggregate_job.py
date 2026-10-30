@@ -66,10 +66,15 @@ log = logging.getLogger(__name__)
 
 NAME = "autocatpath_aggregate"
 
-#: The ``precis.settings`` key arming the verify-tier kinetics auto-mint
-#: — default off until the CPU-lane ruling lands (D9 says the sweep
-#: never runs on the GPU seed lane; no mechanism keeps it off yet).
+#: The ``precis.settings`` key arming the verify/neb-tier kinetics auto-mint.
+#: The job is detached (``kinetics_job``: submit/poll, no worker thread held
+#: and no gpu slot), so it may share the seed hosts; the flag stays as the
+#: operator's off switch.
 KINETICS_MINT_KEY = "pathway.kinetics_mint_enabled"
+
+#: Tiers whose aggregate feeds the kinetics job (Reto 2026-10-30): the
+#: screening tier never mints.
+KINETICS_MINT_TIERS = frozenset({"verify", "neb"})
 
 #: Mint seam for the step retry: ``(parent_seed_todo_id, idem_key, params)
 #: -> job ref id`` (``None`` when the mint was refused). The default goes
@@ -297,11 +302,11 @@ def _dispatch(ctx: Any, spec: Any) -> None:
     )
     if not ok:
         return
-    # Verify-tier aggregates mint the kinetics sweep job — only when
-    # pathway.kinetics_mint_enabled is on (dark until the CPU-lane
-    # ruling; D9: the autocatpath_kinetics lane runs the MF (T, p_total)
-    # grid on a CPU worker). Isolated so a mint fault can never fail a
-    # finished aggregate — the job is a diagnostic bonus, not the verdict.
+    # Verify/neb-tier aggregates mint the kinetics job (re-solve + TPD +
+    # (T, p_total) sweep) while pathway.kinetics_mint_enabled is on. The job
+    # runs as a detached child (submit/poll), so it holds no worker thread
+    # and no gpu slot. Isolated so a mint fault can never fail a finished
+    # aggregate — the job is a diagnostic bonus, not the verdict.
     try:
         _mint_kinetics_job(ctx, params, pathway_ref_id)
     except Exception:
@@ -351,17 +356,100 @@ def _mint_seed_job_via_handler(
     return int(resp.ref_id) if resp.ref_id is not None else None
 
 
+def _engine_version() -> str:
+    """Installed autocatpath version, engine-free (package metadata, no
+    import); ``"unknown"`` when the minting host lacks the engine."""
+    from importlib import metadata
+
+    try:
+        return metadata.version("autocatpath")
+    except metadata.PackageNotFoundError:
+        return "unknown"
+
+
+def kinetics_fingerprint(
+    config: dict[str, Any], results: dict[str, Any] | None = None
+) -> str:
+    """12-hex digest of what the kinetics job prices: the config's
+    ``environment`` and ``objective`` blocks, its ``kinetics.sweep``, and the
+    aggregate's ``nodes`` and ``edges``. Absent parts hash as null, so a
+    legacy config has a stable value."""
+    import hashlib
+    import json
+
+    kin = config.get("kinetics")
+    res = results or {}
+    blob = {
+        "environment": config.get("environment"),
+        "objective": config.get("objective"),
+        "sweep": kin.get("sweep") if isinstance(kin, dict) else None,
+        "nodes": res.get("nodes"),
+        "edges": res.get("edges"),
+    }
+    canon = json.dumps(blob, sort_keys=True, separators=(",", ":"), default=str)
+    return hashlib.sha256(canon.encode("utf-8")).hexdigest()[:12]
+
+
+def kinetics_idem_key(
+    pathway_ref_id: int,
+    config: dict[str, Any],
+    results: dict[str, Any] | None = None,
+    *,
+    engine: str | None = None,
+) -> str:
+    """``autocatpath_kinetics:<pathway>:<engine>:<fingerprint>``. A new
+    engine, environment or aggregate (a neb result promoted to verify) is a
+    new key; re-aggregating to the same result is the same key."""
+    eng = engine if engine is not None else _engine_version()
+    fingerprint = kinetics_fingerprint(config, results)
+    return f"autocatpath_kinetics:{pathway_ref_id}:{eng}:{fingerprint}"
+
+
+def _succeeded_job_id(store: Any, idem_key: str) -> int | None:
+    """Newest SUCCEEDED job carrying ``meta.idem_key``. ``JobHandler``'s idem
+    check only blocks while a job is active, so on its own it would re-mint
+    an identical job after the first one finished; this is the "already
+    done" half. ``None`` on any store fault (the mint then proceeds)."""
+    try:
+        with store.pool.connection() as conn:
+            row = conn.execute(
+                """
+                SELECT r.ref_id
+                  FROM refs r
+                 WHERE r.kind = 'job' AND r.retired_at IS NULL
+                   AND r.meta->>'idem_key' = %s
+                   AND EXISTS (
+                         SELECT 1 FROM ref_tags rt JOIN tags t USING (tag_id)
+                          WHERE rt.ref_id = r.ref_id
+                            AND t.namespace = 'STATUS' AND t.value = 'succeeded')
+                 ORDER BY r.ref_id DESC
+                 LIMIT 1
+                """,
+                (idem_key,),
+            ).fetchone()
+    except Exception:
+        return None
+    return int(row[0]) if row else None
+
+
 def _mint_kinetics_job(
     ctx: Any, params: dict[str, Any], pathway_ref_id: int
 ) -> int | None:
     """Mint the ``autocatpath_kinetics`` job for a just-aggregated
-    verify-tier pathway (D9: every verify-tier aggregate feeds the MF
-    (T, p_total) sweep). Dark unless ``pathway.kinetics_mint_enabled``
-    resolves on — gated until the CPU-lane ruling lands — and non-verify
-    tiers never mint; the call is a no-op otherwise so an aggregate can
-    never fail on the mint. Explicit, human-requested
-    ``autocatpath_kinetics`` jobs don't come through here and are
-    unaffected."""
+    verify- or neb-tier pathway (D9: the job re-solves the kinetics on the
+    current engine, then runs TPD and the MF (T, p_total) sweep). Dark
+    unless ``pathway.kinetics_mint_enabled`` resolves on; the screening
+    tier never mints; the call is a no-op otherwise so an aggregate can
+    never fail on the mint.
+
+    The job is detached (``kinetics_job`` submit/poll), so ``requires={}``
+    reserves no gpu slot and the worker thread is free while it runs.
+    ``idem_key`` carries the engine version and a fingerprint of the
+    environment and the aggregate: a new engine, environment or aggregate
+    mints a new job, and an unchanged re-aggregate finds the finished one
+    and mints nothing. A host that cannot name its engine cannot tell a bump
+    from a repeat, so it always mints. Explicit, human-requested ``autocatpath_kinetics`` jobs
+    (``put(kind='pathway', mode='recompute_kinetics')``) are unaffected."""
     from precis.dispatch import Hub
     from precis.handlers.job import JobHandler
 
@@ -371,22 +459,31 @@ def _mint_kinetics_job(
     if pathway is None:
         return None
     meta = dict(pathway.meta or {})
-    if meta.get("tier") != "verify":
+    if meta.get("tier") not in KINETICS_MINT_TIERS:
+        return None
+    config = params.get("config") or {}
+    results = meta.get("results")
+    idem = kinetics_idem_key(
+        pathway_ref_id, config, results if isinstance(results, dict) else None
+    )
+    if (
+        _engine_version() != "unknown"
+        and _succeeded_job_id(ctx.store, idem) is not None
+    ):
         return None
     resp = JobHandler(hub=Hub(store=ctx.store)).put(
         job_type="autocatpath_kinetics",
         executor="ssh_node",
         parent_id=pathway_ref_id,
-        idem_key=f"autocatpath_kinetics:{pathway_ref_id}",
-        requires={},  # no CPU-lane mechanism exists (kin-s4 needs ruling)
+        idem_key=idem,
+        requires={},  # detached job: no worker thread, no gpu slot
         params={
             "pathway_ref_id": pathway_ref_id,
             "pathway_slug": params.get("pathway_slug"),
-            "config": params.get("config") or {},
+            "config": config,
             "content_key": params.get("content_key"),
-            # no target_node: D9 says the sweep never lands on the GPU
-            # seed lane the parent aggregate ran on — ssh_node's
-            # target_node claim would pin it there.
+            # no target_node: the sweep need not land on the seed host the
+            # parent aggregate ran on
         },
     )
     return int(resp.ref_id) if resp.ref_id is not None else None

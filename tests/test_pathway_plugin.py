@@ -1300,7 +1300,7 @@ def test_put_typo_mode_raises_and_mints_no_job(
 
     with pytest.raises(BadInput) as exc_info:
         h.put(id="typo_mode_test", text=SMOKE, mode="previw")
-    assert exc_info.value.options == ["preview", "revalidate"]
+    assert exc_info.value.options == ["preview", "revalidate", "recompute_kinetics"]
 
     assert pathway_store.get_ref(kind="pathway", id="typo-mode-test") is None
     with pathway_store.pool.connection() as c:
