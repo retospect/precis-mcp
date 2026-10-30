@@ -1559,6 +1559,37 @@ def test_peer_marks_attach_to_the_open_release(rig: Rig) -> None:
     )
 
 
+def test_supersede_retires_open_release_without_remote_delete(rig: Rig) -> None:
+    """gr531127: a red release whose commits are all on main is retired in the
+    record only; the next cut lands at origin/main and origin keeps r1."""
+    head = _cut(rig)
+    newer = _commit(rig.root, "src/c4.py", "c4 code")
+    _git(rig.root, "push", "-q", "origin", "main")
+    refused = rig.round("cut")
+    assert refused.returncode == 1
+    assert "--supersede" in refused.stderr
+    dry = rig.round("cut", "--supersede", "--dry-run")
+    assert dry.returncode == 0, dry.stderr
+    assert "would mark release/r1 superseded" in dry.stdout
+    assert _rel(_round_json(rig), 1)["state"] == "cut"
+    both = rig.round("cut", "--supersede", "--abandon")
+    assert both.returncode == 2
+    assert "not allowed with" in both.stderr
+    out = rig.round("cut", "--supersede")
+    assert out.returncode == 0, out.stderr
+    assert _rel(_round_json(rig), 1)["state"] == "superseded"
+    assert _rel(_round_json(rig), 2)["state"] == "cut"
+    assert rig.origin_ref("release/r1") == head
+    assert rig.origin_ref("release/r2") == newer
+
+
+def test_supersede_refuses_without_an_open_release(rig: Rig) -> None:
+    _open_round(rig)
+    out = rig.round("cut", "--supersede")
+    assert out.returncode == 1
+    assert "nothing to supersede" in out.stderr
+
+
 def test_deploy_resumes_the_journal_record_with_an_open_release(rig: Rig) -> None:
     """`round deploy` acts on the deploying record, not the open one."""
     head = _deploying(rig)

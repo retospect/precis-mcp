@@ -27,6 +27,8 @@ and nothing is tracked or pushed.
                                       lagging set — the pin never moves
   scripts/round cut [--sha S] [--dry-run]   coordinator: cut release/r<N> at the candidate (or S)
   scripts/round cut --abandon         coordinator: delete the open release branch (every commit on main)
+  scripts/round cut --supersede [--dry-run]  coordinator: mark the open release superseded in the
+                                      record (no remote delete) and cut the next at origin/main
 
 A peer is named by its worktree directory (`PRECIS_ROUND_PEER` overrides).
 Marks carry the open release's number (the round number when no release is
@@ -59,7 +61,8 @@ runs the full gate shape on every `release/**` push. Each record carries a
 state (release-train §5): open while it can take fixes (cut, gating, fixing,
 green), deploying/deployed while a rollout journal is live, then terminal
 (confirmed, superseded, abandoned). `cut` refuses while an open release is
-recorded or an unrecorded release branch exists on origin, off main's
+recorded (`cut --supersede` retires a red one whose every commit is on main:
+the record only, origin's branch stays for Reto to prune) or an unrecorded release branch exists on origin, off main's
 first-parent line, or when the cut tree carries a new duplicate migration
 number. Once release N is deploying or later, `cut` may append r<N+1> at
 origin/main — only when main contains N's head and its tree differs, so the
@@ -1772,9 +1775,23 @@ def cmd_cut(state: Path, args: argparse.Namespace) -> int:
             _write(state / "round.json", cur)
             print(f"{rel['branch']} pending cut reconciled at {rel['base'][:9]}")
             return 0
+        if not args.supersede:
+            return _cut_refuse(
+                f"round.json already records an open release ({open_rel['branch']})"
+                " — `scripts/round cut --supersede` (record only, next cut at"
+                " origin/main) or `--abandon` (deletes it on origin) first"
+            )
+        why = _supersede_check(root, open_rel)
+        if why:
+            return _cut_refuse(why)
+        # In memory only: the cut record's write below persists it, so a
+        # refused or dry-run cut leaves the open release open.
+        open_rel["state"] = "superseded"
+        open_rel.pop("cut_pending", None)
+        records = _releases(cur)
+    elif args.supersede:
         return _cut_refuse(
-            f"round.json already records an open release ({open_rel['branch']})"
-            " — `scripts/round cut --abandon` first"
+            "no open release is recorded in round.json — nothing to supersede"
         )
     _fetch(root)
     prev = max(records, key=lambda r: r["n"], default=None)
@@ -1867,6 +1884,8 @@ def cmd_cut(state: Path, args: argparse.Namespace) -> int:
     for line in _late(root, state, _mark_scope(cur), sha):
         print(line)
     if args.dry_run:
+        if open_rel is not None and open_rel["state"] == "superseded":
+            print(f"dry-run: would mark {open_rel['branch']} superseded")
         print(f"dry-run: would push {sha[:9]} to origin as {branch}")
         return 0
     rel = {
@@ -1908,6 +1927,30 @@ def cmd_cut(state: Path, args: argparse.Namespace) -> int:
         f' main for round {n_new + 1}"'
     )
     return 0
+
+
+def _supersede_check(root: Path, rel: dict[str, Any]) -> str:
+    """Why `rel` cannot be superseded, or "" when every commit is on main."""
+    branch = rel["branch"]
+    if rel.get("deployment"):
+        return "deployment journal exists — resume `scripts/round deploy`, do not supersede a partial rollout"
+    head = _remote(root, f"refs/heads/{branch}")
+    if head is None:
+        return "could not read origin's branches (git ls-remote failed)"
+    if _rgit(root, "fetch", "-q", "origin", "main") is None or (
+        head and _rgit(root, "fetch", "-q", "origin", f"refs/heads/{branch}") is None
+    ):
+        return f"could not fetch {branch} and main from origin"
+    main = _ref(root, "refs/remotes/origin/main")
+    if not main:
+        return "could not resolve origin/main after fetch"
+    if head and not _ancestor(root, head, main):
+        unforwarded = _rgit(root, "log", "--oneline", f"origin/main..origin/{branch}")
+        return (
+            f"{branch} carries commits not on origin/main — forward them to main"
+            f" before superseding:\n{unforwarded or '(could not list them)'}"
+        )
+    return ""
 
 
 def _cut_abandon(root: Path, state: Path, args: argparse.Namespace) -> int:
@@ -2012,7 +2055,9 @@ def main(argv: list[str] | None = None) -> int:
     p_cut = sub.add_parser("cut")
     p_cut.add_argument("--sha", default="")
     p_cut.add_argument("--dry-run", action="store_true")
-    p_cut.add_argument("--abandon", action="store_true")
+    cut_mode = p_cut.add_mutually_exclusive_group()
+    cut_mode.add_argument("--abandon", action="store_true")
+    cut_mode.add_argument("--supersede", action="store_true")
     p_good = sub.add_parser(
         "good",
         help="mark a deployed release good/r<N> after 24h clean runtime",

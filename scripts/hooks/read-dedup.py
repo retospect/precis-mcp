@@ -12,7 +12,8 @@ Read-matcher hook can see (~2.5M tokens/day).
 
 What this does, per session (state: one JSON file under the temp dir keyed by
 ``session_id`` — ``PRECIS_READ_DEDUP_DIR`` overrides the dir, tests use that;
-a call carrying ``agent_id`` is skipped outright — a subagent's serves land
+a call carrying ``agent_id`` (or a transcript under
+``/subagents/``) is skipped outright — a subagent's serves land
 in its own context, never the parent's transcript):
 
 * A repeat Read of the same file with the same ``offset``/``limit`` whose
@@ -573,6 +574,20 @@ def _session_start(payload: dict) -> int:
     return 0
 
 
+def _is_subagent(payload: dict) -> bool:
+    """A subagent's call: ``agent_id`` on the payload, or a
+    transcript under a ``subagents`` directory (gr531241: fresh subagents were
+    refused with a phantom "still in your context" on payloads that reached
+    the hook without ``agent_id``)."""
+    # ``agent_type`` alone is not a signal: `claude --agent X` mains carry it.
+    if payload.get("agent_id"):
+        return True
+    transcript = payload.get("transcript_path")
+    return isinstance(transcript, str) and "/subagents/" in transcript.replace(
+        "\\", "/"
+    )
+
+
 def hook_output(payload: dict) -> dict | None:
     """The ``hookSpecificOutput`` fields for a PreToolUse call, or None.
 
@@ -584,7 +599,7 @@ def hook_output(payload: dict) -> dict | None:
         return None
     if not isinstance(payload, dict):
         return None
-    if payload.get("agent_id"):
+    if _is_subagent(payload):
         # A subagent's serves land in the SUBAGENT's context — recording them
         # under the session ledger then denies the parent's first read with a
         # phantom "still in your context" (gr514450). Skip tracking and

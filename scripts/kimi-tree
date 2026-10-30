@@ -11,7 +11,11 @@
 # tree is locked `pid <N>` to the Kimi process — scripts/inflight and the
 # reaper read that as liveness (session-start-lock.sh only finds Claude), so
 # a merged+clean tree auto-reaps after Kimi exits.
-# Runs scripts/kimi-setup first (precis MCP entry, hook adapter, skills).
+# Runs scripts/kimi-setup --check first and refuses when ~/.kimi-code is stale
+# (gr536407): it never rewrites your Kimi config at launch; run
+# scripts/kimi-setup yourself, then relaunch. The kimi binary is KIMI_BIN, else
+# PATH, else ~/.kimi-code/bin/kimi, else the deploy account's install; if none
+# exists the window stays open on a shell with the error, not a vanished pane.
 # --mode: yolo (default; Kimi's "Ask When Needed", the analogue of Claude's
 # auto mode), auto (Never Ask, builder waves), manual. --prompt runs one
 # prompt non-interactively (`kimi -p`; --mode is ignored). --tmux opens a window in SESSION
@@ -61,6 +65,17 @@ if [[ ${1:-} == --exec ]]; then
 		# pty — only a direct no-tty launch lands here.
 		kimi_tree_no_tty "$tree" "$@"
 	fi
+	kimi_bin=""
+	for cand in "${KIMI_BIN:-}" "$(command -v kimi || true)" \
+		"$HOME/.kimi-code/bin/kimi" /Users/deploy/.kimi-code/bin/kimi; do
+		if [[ -n $cand && -x $cand ]]; then kimi_bin=$cand; break; fi
+	done
+	if [[ -z $kimi_bin ]]; then
+		echo "kimi-tree: no kimi binary found (tried KIMI_BIN, PATH, ~/.kimi-code/bin," >&2
+		echo "  /Users/deploy/.kimi-code/bin); next= set KIMI_BIN=/path/to/kimi and relaunch." >&2
+		echo "kimi-tree: leaving a shell in $tree so this window stays open." >&2
+		exec "${SHELL:-/bin/bash}"
+	fi
 	runner=()
 	if ((prompt_mode)); then
 		# A one-shot launch gets a bounded run: even without a trust
@@ -71,7 +86,7 @@ if [[ ${1:-} == --exec ]]; then
 			runner=(gtimeout "${KIMI_TREE_TIMEOUT:-1800}")
 		fi
 	fi
-	exec ${runner[@]+"${runner[@]}"} kimi "$@"
+	exec ${runner[@]+"${runner[@]}"} "$kimi_bin" "$@"
 fi
 
 usage() { sed -n '4,6p' "$0" | sed 's/^# *//' >&2; exit 2; }
@@ -119,7 +134,13 @@ if ((!use_tmux)) && [[ -z $prompt ]] && [[ ! -t 0 ]]; then
 	kimi_tree_no_tty "$tree" ${kimi_args[@]+"${kimi_args[@]}"}
 fi
 
-"$at_here/kimi-setup" || { echo "kimi-tree: kimi-setup failed; fix it first" >&2; exit 1; }
+# --check only reports drift; rewriting the user's Kimi config on every launch
+# once left it unable to start (gr536407). A stale config is the user's call.
+"$at_here/kimi-setup" --check || {
+	echo "kimi-tree: ~/.kimi-code is stale or kimi-setup failed;" >&2
+	echo "  next= run scripts/kimi-setup (backs up to *.bak), then relaunch" >&2
+	exit 1
+}
 
 at_ensure_tree "$name" "$tree" "$branch" "$purpose"
 at_launch "$self" "$name" "$tree" "$use_tmux" "$tmux_session" ${kimi_args[@]+"${kimi_args[@]}"}

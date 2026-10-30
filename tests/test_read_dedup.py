@@ -431,6 +431,30 @@ def test_subagent_serves_never_reach_the_ledger(tmp_path: Path) -> None:
     assert out is not None and out["permissionDecision"] == "deny"
 
 
+def test_subagent_detected_without_agent_id(tmp_path: Path) -> None:
+    """gr531241: a ``/subagents/`` transcript marks a subagent even without
+    ``agent_id`` — never denied, never recorded."""
+    f = tmp_path / "brief.md"
+    _write(f, "brief\n")
+    assert _run(tmp_path, _read(f)) is None  # the parent's own serve
+    for tool_call in (_read(f), _bash(f"cat {f}")):
+        tool_call["transcript_path"] = "/x/sess/subagents/agent-1.jsonl"
+        assert _run(tmp_path, tool_call) is None
+
+
+def test_agent_type_alone_keeps_dedup_on(tmp_path: Path) -> None:
+    """`claude --agent X` mains carry ``agent_type`` with no ``agent_id``."""
+    f = tmp_path / "brief.md"
+    _write(f, "brief\n")
+    first = _read(f)
+    first["agent_type"] = "X"
+    assert _run(tmp_path, first) is None
+    again = _read(f)
+    again["agent_type"] = "X"
+    out = _run(tmp_path, again)
+    assert out is not None and out["permissionDecision"] == "deny"
+
+
 def test_same_bash_call_twice_on_tool_use_id_is_allowed(tmp_path: Path) -> None:
     """Registered twice (global + project / nudge-delegate + direct), the
     second fire of the same Bash call must pass."""
