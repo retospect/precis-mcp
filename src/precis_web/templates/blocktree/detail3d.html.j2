@@ -341,22 +341,13 @@
   </div>
 </div>
 
-{% if print_files %}
-{# Print files (routes/se_print.py): links only — the cheap report decided
-   printability, the full print check runs when a link is clicked. #}
-<div id="bt3d-print-files" class="mt-4 rounded-lg border border-line bg-surface p-3 text-sm">
-  <h2 class="text-sm font-semibold text-fg-secondary mb-2">Print files</h2>
-  <ul class="space-y-1">
-    {% for pf in print_files %}
-    <li>
-      <span class="font-mono text-xs text-fg-secondary">{{ pf.block }}</span>
-      <a class="text-info hover:underline ml-2" href="{{ pf.url }}" download>Download 3MF</a>
-      <span class="text-xs text-fg-subtle ml-2">{{ pf.errors }} error{{ '' if pf.errors == 1 else 's' }}, {{ pf.warns }} warning{{ '' if pf.warns == 1 else 's' }} (before the mesh check)</span>
-    </li>
-    {% endfor %}
-  </ul>
-  <p class="text-[11px] text-fg-faint mt-2">The download runs the full print check; its findings are in the agent's <code>view='print'</code> report.</p>
-</div>
+{% if print_panel_url %}
+{# gr537832 — the print-files report can cost minutes on a realized
+   design (printsolid's ray-cast volume), so the page renders only this
+   empty slot; the blocktree/_print_files.html.j2 fragment arrives from
+   its own fetch after first paint, the same contract as bt3d-validate.
+   Nothing printable -> the fragment is empty and the slot stays so. #}
+<div id="bt3d-print-files" data-url="{{ print_panel_url }}"></div>
 {% endif %}
 
 {# ── design chat (design-workbench build, slice 3) — the shared partial;
@@ -406,6 +397,22 @@
       const s = el.querySelector("summary");
       if (s) s.textContent = "validate: unavailable";
     });
+  })();
+</script>
+{% endif %}
+{% if print_panel_url %}
+<script>
+  // gr537832 — same after-paint contract as bt3d-validate: the print
+  // report's geometry read can run minutes on a realized design, so it
+  // never comes from the page request. An empty fragment just leaves
+  // the slot empty; a failure drops the slot entirely.
+  (() => {
+    const el = document.getElementById("bt3d-print-files");
+    if (!el) return;
+    fetch(el.dataset.url).then(async (r) => {
+      if (!r.ok) throw new Error(String(r.status));
+      el.innerHTML = await r.text();
+    }).catch(() => { el.remove(); });
   })();
 </script>
 {% endif %}

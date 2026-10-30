@@ -107,6 +107,7 @@ job).
 from __future__ import annotations
 
 import asyncio
+import functools
 import gzip
 import hashlib
 import json
@@ -1541,11 +1542,17 @@ async def _view3d_page(
         else None
     )
     # Print-file downloads (routes/se_print.py): se only, current revision
-    # only (the download exports the live tree). Cheap report, no mesh build.
-    printable = (
-        await asyncio.to_thread(se_print.print_files, store, tree, str(ref.slug))
+    # only (the download exports the live tree).
+    # gr537832 — the "cheap" report is NOT cheap on a realized design:
+    # print_files -> printed_solid pays precis.cad.bulk.volume's ray-cast
+    # integration per block (>9 min on box3-fdm), so the page can never
+    # call it. Same contract as the validate panel below: the shell
+    # carries an empty slot and fetches ``/se/<slug>/print-panel`` after
+    # first paint. Live design only.
+    print_panel_url = (
+        f"/se/{quote(str(ref.slug), safe='')}/print-panel"
         if kind == "se" and not axis.read_only
-        else []
+        else ""
     )
     # gr470909 — the validate digest + findings table is NOT computed here
     # (the validator can run for seconds): the shell carries an empty slot
@@ -1594,7 +1601,7 @@ async def _view3d_page(
             "has_record": axis.has_record,
             "revision": revision,
             "chat": chat,
-            "print_files": printable,
+            "print_panel_url": print_panel_url,
             "structures": structures,
             "structures_summary": (
                 relax_provenance.summary_line(structures) if structures else ""
@@ -2634,6 +2641,124 @@ async def se_detail(
     return await _view3d_page(
         request, "se", slug, level=level, isolate=isolate, overrides=overrides, rev=rev
     )
+
+
+#: Server-side cache of one design's "Print files" panel rows, keyed on
+#: :func:`_se_print_key`. ``se_print.print_files`` runs printsolid's
+#: ray-cast volume per printable block — the gr537832 faulthandler caught
+#: it at >9 min on box3-fdm — so the panel is fetched after first paint
+#: and an unchanged design's repeat views cost a dict lookup. LRU-capped
+#: like ``_MESH_CACHE``; entries are a handful of small rows.
+_PRINT_PANEL_CAP = 64
+_PRINT_PANEL: OrderedDict[tuple[Any, ...], list[se_print.PrintFile]] = OrderedDict()
+_PRINT_PANEL_LOCK = threading.Lock()
+
+
+#: Computes in flight, by :func:`_se_print_key`. The first miss owns the
+#: task; later requests for the same key await it instead of starting
+#: another multi-minute ``print_files``. Touched on the event loop only.
+_PRINT_INFLIGHT: dict[tuple[Any, ...], asyncio.Task[list[se_print.PrintFile]]] = {}
+
+
+def _bound_cad_sha(store: Store, slug: str) -> tuple[str | None, bool]:
+    """``(sha, transient)``: content sha of a block's bound cad design —
+    ``use:`` sub-designs expanded, the same content key :data:`_MESH_CACHE`
+    is addressed by. ``sha`` is ``None`` when the binding does not
+    resolve (stable, ``transient`` False) or fails to expand (``transient``
+    True: the key must not be cached on)."""
+    ref = store.get_ref(kind="cad", id=slug)
+    if ref is None:
+        return None, False
+    try:
+        spec, _handles = store.cad_load(ref.id)
+        expanded = expand_instances(spec, design_resolver(store))
+    except Exception:
+        return None, True
+    return cad_source_sha(expanded), False
+
+
+def _se_print_key(
+    store: Store, ref_id: int, tree: Any, revision: int
+) -> tuple[tuple[Any, ...], bool]:
+    """``(key, cacheable)``. The key is what the print-files report is a
+    pure function of: the loaded snapshot's validation identity (tree,
+    revision, structure bindings, resolved ports) plus the content of
+    every block's bound cad design — ``printed_solid`` reads those through
+    the store, so a cad edit that never touches the se tree must still
+    invalidate. Over-inclusive on purpose: a cad-bound block the report
+    skips still keys the entry — one needless recompute beats a stale
+    count. ``cacheable`` is False when a bound design's sha failed
+    transiently, so the result is served but not remembered."""
+    identity = _validation_identity(tree, ref_id, revision, store)
+    deps: list[tuple[str, str | None]] = []
+    cacheable = True
+    for node in tree.blocks.values():
+        if getattr(node, "bound_kind", None) == "cad" and node.bound:
+            sha, transient = _bound_cad_sha(store, str(node.bound))
+            deps.append((str(node.bound), sha))
+            cacheable = cacheable and not transient
+    return (ref_id, identity, tuple(sorted(deps))), cacheable
+
+
+@router.get("/se/{slug}/print-panel")
+async def se_print_panel(request: Request, slug: str) -> Response:
+    """The page's "Print files" download list as an HTML fragment, fetched
+    after first paint (gr537832) so the report's geometry read never
+    blocks the shell — the same contract as ``se_validate_panel``. Live
+    design only: the page omits the slot on a past revision. Concurrent
+    requests for one key share a single compute (:data:`_PRINT_INFLIGHT`)."""
+    store = get_store(request)
+    try:
+        ref = _require_ref(store, "se", slug)
+    except NotFound:
+        return PlainTextResponse("not found", status_code=404)
+
+    def _prep() -> tuple[Any, tuple[Any, ...], bool, list[se_print.PrintFile] | None]:
+        axis = _revision_axis(store, ref.id, None)
+        tree = _tree_at(store, "se", ref.id, axis)
+        key, cacheable = _se_print_key(store, ref.id, tree, axis.shown)
+        with _PRINT_PANEL_LOCK:
+            hit = _PRINT_PANEL.get(key)
+            if hit is not None:
+                _PRINT_PANEL.move_to_end(key)
+        return tree, key, cacheable, hit
+
+    def _compute(tree: Any, key: tuple[Any, ...], cacheable: bool):
+        files = se_print.print_files(store, tree, str(ref.slug))
+        if cacheable:
+            with _PRINT_PANEL_LOCK:
+                _PRINT_PANEL[key] = files
+                _PRINT_PANEL.move_to_end(key)
+                while len(_PRINT_PANEL) > _PRINT_PANEL_CAP:
+                    _PRINT_PANEL.popitem(last=False)
+        return files
+
+    def _release(key: tuple[Any, ...], task: asyncio.Task[Any]) -> None:
+        if _PRINT_INFLIGHT.get(key) is task:
+            del _PRINT_INFLIGHT[key]
+        if not task.cancelled():
+            task.exception()  # retrieved: waiters may all have gone
+
+    try:
+        tree, key, cacheable, files = await asyncio.to_thread(_prep)
+        if files is None:
+            task = _PRINT_INFLIGHT.get(key)
+            if task is None:
+                task = asyncio.ensure_future(
+                    asyncio.to_thread(_compute, tree, key, cacheable)
+                )
+                _PRINT_INFLIGHT[key] = task
+                task.add_done_callback(functools.partial(_release, key))
+            # shield: one client dropping must not cancel the shared compute
+            files = await asyncio.shield(task)
+    except Exception:
+        log.exception("print panel failed for se %s", slug)
+        return PlainTextResponse("print report unavailable", status_code=500)
+    resp = templates.TemplateResponse(
+        request, "blocktree/_print_files.html.j2", {"print_files": files}
+    )
+    resp.headers["Cache-Control"] = "no-store"
+    return resp
 
 
 @router.get("/se/{slug}/validate-panel")

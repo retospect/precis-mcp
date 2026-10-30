@@ -12,9 +12,13 @@
   print-group root, unrealized, net-empty, no ``manifold3d``) -> 409 with
   the reason as plain text.
 
-:func:`print_files` is the page-render half: the reader page lists the
-printable blocks from the CHEAP report (``mesh_checks=False``, no mesh
-slice), so the heavy check runs only when a link is clicked.
+:func:`print_files` is the page half: the reader page's
+``/se/{slug}/print-panel`` fragment lists the printable blocks from the
+CHEAP report (``mesh_checks=False``, no mesh slice), so the heavy check
+runs only when a link is clicked. Even the cheap report pays printsolid's
+ray-cast volume per realized block — the route caches by the design's
+validation identity and the page fetches it after first paint
+(gr537832).
 
 Scaled files: ``?scale=<f>`` (and ``&model=vdw|ballstick``, atom blocks
 only) prints at ``f`` times the real size, judged at that size
