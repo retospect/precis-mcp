@@ -3114,6 +3114,12 @@ class Board:
         lcsc = None
         try:
             status = client.call("search", kind="datasheet", view="status", ids=[ref])
+            # A converted handle can redirect get to another kind. The
+            # kind-scoped status read must still recognise a datasheet.
+            if re.search(r"^datasheet status\s+—\s+0 of 1 ids resolved:", str(status)):
+                out = ("unresolvable", None)
+                self._source_cache[key] = out
+                return out
             m = re.search(r"^\s+part\s+(C\d+)", str(status), re.M)
             lcsc = m.group(1) if m else None
         except Exception:
@@ -3131,9 +3137,8 @@ class Board:
         making the claim it is ``source.wrong_part``. Existence and
         kind are checked; whether the chunk supports the claim stays
         manual. A clear not-found reply is ``source.unresolvable``;
-        every other read failure (a kind refusal — the sandbox
-        read-only MCP never serves ``datasheet`` — a transport or
-        import failure, an empty reply) is ``source.unchecked``
+        every other read failure (a refusal from an older sandbox,
+        a transport or import failure, an empty reply) is ``source.unchecked``
         cannot-check, never a false unresolvable. With no client
         staged (a laptop run) the well-formed handles report ONE
         ``not_checked`` row — cannot-check, not clean."""

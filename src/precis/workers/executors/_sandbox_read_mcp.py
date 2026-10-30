@@ -72,10 +72,13 @@ log = logging.getLogger(__name__)
 #: Kinds the read-only serve answers (deny by default, gr496511). Corpus,
 #: file and pure-local compute kinds only. Excluded on purpose: every kind
 #: that fetches live on a cache miss (web, youtube, wikipedia, news,
-#: datasheet, paper, patent, edgar, chem, protein, taxon, ...) — a
+#: paper, patent, edgar, chem, protein, taxon, ...) — a
 #: ``--network none`` script must not get public egress or a data-out
 #: channel through the host — and every paid kind (perplexity-*, websearch,
-#: llm, oracle). A fetch kind joins only with a cache-hit-only handler path.
+#: llm, oracle). Datasheets read stored chunks/status only; their inherited
+#: live DOI health check and signed image/PDF links are refused in read scope.
+#: Pulls remain write verbs.
+#: A fetch kind joins only with a cache-hit-only handler path.
 READ_KIND_ALLOWLIST = frozenset(
     {
         "calc",
@@ -84,6 +87,7 @@ READ_KIND_ALLOWLIST = frozenset(
         "citation",
         "component",
         "concept",
+        "datasheet",
         "draft",
         "figure",
         "finding",

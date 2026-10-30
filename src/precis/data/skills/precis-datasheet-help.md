@@ -39,6 +39,15 @@ the crop was stored, else `page N of <da>` — naming the
 mints a signed URL to the image, which is how a schematic or land pattern
 that ingested caption-only stays retrievable.
 
+Sandbox scripts with `precis_access='read'` can read stored datasheets via
+`precis_client.call('get', kind='datasheet', id='da123~7')` and inspect
+`search(kind='datasheet', view='status', ids=['da123'])`. PCB `source=` takes
+`ds:da123~7` (the suffix is a chunk ordinal). `Board.check()` reports missing
+chunks as `source.unresolvable` and another catalog part's sheet as
+`source.wrong_part`; transport failures remain `source.unchecked`.
+Reads do not pull a missing PDF. Writes, the live DOI `health` check, and
+signed image/PDF URLs (`page_image` / `pdf_link`) must run outside the sandbox.
+
 ## What to pull (and where it goes)
 
 | From the datasheet | Into the design |

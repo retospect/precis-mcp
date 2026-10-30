@@ -254,9 +254,8 @@ def test_source_read_failures_classify_as_unchecked(
 ) -> None:
     """gr521603 — only a clear not-found reply is ``source.unresolvable``;
     a kind refusal, HTTP error, empty reply or timeout is a
-    ``source.unchecked`` cannot-check row naming the reason (the sandbox
-    read-only MCP refuses ``kind='datasheet'`` outright, so every valid
-    handle lands here inside a sandbox run). The fake mimics the staged
+    ``source.unchecked`` cannot-check row naming the reason (including a
+    sandbox still running an older allowlist). The fake mimics the staged
     ``precis_client.call``: RuntimeError on every tool/transport error."""
     import importlib
 

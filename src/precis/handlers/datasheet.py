@@ -43,7 +43,7 @@ from __future__ import annotations
 from typing import Any, ClassVar
 
 from precis.dispatch import Hub
-from precis.errors import BadInput, NotFound
+from precis.errors import BadInput, NotFound, Unsupported
 from precis.handlers.paper import _STATUS_MAX_IDS, PaperHandler, _args_truthy
 from precis.ingest.kind_convert import DATASHEET_SUBTYPES as _DATASHEET_SUBTYPES
 from precis.pcb import jlc_api
@@ -188,6 +188,34 @@ class DatasheetHandler(PaperHandler):
     def __init__(self, *, hub: Hub) -> None:
         super().__init__(hub=hub)
         self.hub = hub
+
+    def _render_view(
+        self, ref: Ref, view: str, *, args: dict[str, Any] | None = None
+    ) -> Response:
+        """Keep signing credentials out of the sandbox's stored-read path."""
+        from precis.runtime.scope import current_scope
+
+        if view in {"page_image", "pdf_link"} and current_scope() == "read":
+            raise Unsupported(
+                f"datasheet view={view!r} mints a signed URL and is not "
+                "served by the read-only MCP",
+                next="get(kind='datasheet', id='<handle>', view='toc') "
+                "to read stored evidence; request image/PDF links outside the sandbox",
+            )
+        return super()._render_view(ref, view, args=args)
+
+    def _render_health(self, ref: Ref) -> Response:
+        """The inherited DOI check needs egress; stored sandbox reads don't."""
+        from precis.runtime.scope import current_scope
+
+        if current_scope() == "read":
+            raise Unsupported(
+                "datasheet health checks require live DOI lookup and are not "
+                "served by the read-only MCP",
+                next="get(kind='datasheet', id='<handle>', view='toc') "
+                "to read stored evidence; check health outside the sandbox",
+            )
+        return super()._render_health(ref)
 
     def put(
         self,

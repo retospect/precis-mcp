@@ -11,6 +11,13 @@ Oversized responses refuse with targeted-read recovery rather than partial
 content or continuation cursors. Exact-handle write substitution uses current
 stored bytes and same-session read receipts held only in process memory. The
 tool ledger retains the caller's reference envelope, never expanded content.
+
+Licensed live responses opt out of pagination caching while retaining the
+frame limit. The tool ledger already stores only call metadata, not content.
+
+Read-scope handle redirects recheck the resolved kind against the sandbox
+allowlist before rewriting dispatch arguments: the server's earlier gate
+only saw the caller's kind, which a conversion can change.
 """
 
 from __future__ import annotations

@@ -112,6 +112,14 @@ a permanently-unschedulable child that never reaches a terminal STATUS.
 Every spawned job container splices ``container_limit_flags()``
 (``utils/container_limits.py``) so heavy compute stays off reserved
 system cores — a container does not inherit the worker's ``nice``.
+
+The sandbox read callback uses one ``READ_KIND_ALLOWLIST`` in
+``_sandbox_read_mcp``, consulted by the serving process. Stored datasheets
+are included so PCB ``source=`` handles can resolve chunks and part identity;
+their live DOI health and signed image/PDF URL views are refused in read scope.
+Converted handles recheck the resolved kind against the same policy before
+dispatch rewrites the kind, so redirects cannot bypass it. Pulls and edits remain
+behind the removed write verbs and the callback's ``agent_ro`` database role.
 """
 
 from __future__ import annotations
