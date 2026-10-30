@@ -52,7 +52,9 @@ Worker-health detectors (daemon liveness, not the todo graph) — all
 * **dispatch-stall** — ``claude_inproc`` jobs queued past
   ``DISPATCH_STALL_MINUTES`` with nothing running — symptom-level, so it
   catches both a stalled and a never-started agent-profile executor,
-  freezing the planner cluster-wide either way.
+  freezing the planner cluster-wide either way. Debounced by
+  ``DISPATCH_STALL_DEBOUNCE_S``: a lane that showed life inside that
+  window (a gate reconnect's nothing-running gap) doesn't page.
 * **nas-denied** — a process attests EPERM reading the NAS in a fresh
   ``host_heartbeat.meta.nas_ok_by_process`` entry (web/serve/worker each
   attest themselves — Full Disk Access is per binary); one symptom per
@@ -232,6 +234,15 @@ HOST_DARK_SILENCE_MIN = 10
 #: this is symptom-level (work not flowing) and so also catches an agent
 #: worker that never started — which has no log rows for dead-worker to age.
 DISPATCH_STALL_MINUTES = 15
+
+#: Debounce for ``dispatch-stall`` (gr536350): the executor's claude-gate
+#: reconnects take ~7s, and between the last job finishing and the next
+#: claim the lane shows old queued work + zero live leases — on one pass
+#: indistinguishable from a dead executor (4 self-resolving criticals in
+#: ~4h on 2026-10-29). A lane that showed *any* life inside this window —
+#: an executor-side status stamp, or a ``running`` row's ``lease_until``
+#: lapsing only now — is mid-reconnect, not dead. ~9x the observed gap.
+DISPATCH_STALL_DEBOUNCE_S = 60
 
 #: A window with at least one ``embed_batch`` job ``STATUS:queued`` and
 #: zero ``STATUS:succeeded`` transitions is a stalled embed lane —
@@ -1856,14 +1867,25 @@ def _detect_dispatch_stalls(store: Store) -> list[Symptom]:
     with no ``child-failed`` bubble, and other nodes' dispatch skips those
     parents (they already have a live child) — silent freeze (gripe 55748).
 
-    Fire iff **work is waiting and nothing is running**: at least one
-    ``claude_inproc`` job queued past :data:`DISPATCH_STALL_MINUTES` while
-    zero jobs hold a live lease. The "nothing running" gate is what
-    distinguishes a dead executor from a healthy-but-backlogged one — a
-    live executor grinding a long tick shows a running job with an unexpired
-    ``meta.lease_until``, so a deep queue behind it does **not** alarm. A
-    single non-ref-scoped critical alert (one page, not one per stuck job);
-    it auto-resolves the moment the queue drains.
+    Fire iff **work is waiting, nothing is running, and the lane has been
+    quiet**: at least one ``claude_inproc`` job queued past
+    :data:`DISPATCH_STALL_MINUTES`, zero jobs holding a live lease, and no
+    sign of executor life inside :data:`DISPATCH_STALL_DEBOUNCE_S`. The
+    "nothing running" gate is what distinguishes a dead executor from a
+    healthy-but-backlogged one — a live executor grinding a long tick
+    shows a running job with an unexpired ``meta.lease_until``, so a deep
+    queue behind it does **not** alarm. The debounce gate (gr536350) is
+    what distinguishes a dead lane from a *reconnecting* one: the gate
+    reconnects in ~7s, and between the last job finishing and the next
+    claim the lane reads "old queue, zero running" for seconds — four
+    self-resolving criticals in ~4h. "Life" is the newest executor-side
+    status stamp (``STATUS:*`` ``ref_tags.created_at`` for any value but
+    ``queued`` — a mint or re-queue isn't the executor moving — or
+    ``running``, whose claim stamp is covered by the lease check instead)
+    or the newest ``running`` row's ``lease_until``: a lease that lapsed
+    seconds ago was being renewed moments ago. A single non-ref-scoped
+    critical alert (one page, not one per stuck job); it auto-resolves
+    the moment the queue drains.
     """
     with store.pool.connection() as conn:
         row = conn.execute(
@@ -1873,7 +1895,11 @@ def _detect_dispatch_stalls(store: Store) -> list[Symptom]:
                        (SELECT t.value
                           FROM ref_tags rt JOIN tags t ON t.tag_id = rt.tag_id
                          WHERE rt.ref_id = j.ref_id AND t.namespace = 'STATUS'
-                         LIMIT 1) AS status
+                         LIMIT 1) AS status,
+                       (SELECT rt.created_at
+                          FROM ref_tags rt JOIN tags t ON t.tag_id = rt.tag_id
+                         WHERE rt.ref_id = j.ref_id AND t.namespace = 'STATUS'
+                         LIMIT 1) AS status_at
                   FROM refs j
                  WHERE j.kind = 'job'
                    AND j.retired_at IS NULL
@@ -1892,17 +1918,34 @@ def _detect_dispatch_stalls(store: Store) -> list[Symptom]:
                     WHERE status = 'running'
                       AND (meta->>'lease_until') IS NOT NULL
                       AND (meta->>'lease_until')::timestamptz > now()
-                )::int AS n_running
+                )::int AS n_running,
+                COALESCE(
+                    GREATEST(
+                        max(status_at) FILTER (
+                            WHERE status NOT IN ('queued', 'running')
+                        ),
+                        max((meta->>'lease_until')::timestamptz) FILTER (
+                            WHERE status = 'running'
+                              AND (meta->>'lease_until') IS NOT NULL
+                        )
+                    ) > now() - (%(debounce)s || ' seconds')::interval,
+                    false
+                ) AS recent_life
               FROM inproc
             """,
-            {"mins": DISPATCH_STALL_MINUTES},
+            {"mins": DISPATCH_STALL_MINUTES, "debounce": DISPATCH_STALL_DEBOUNCE_S},
         ).fetchone()
 
     if row is None:
         return []
     n_stalled, oldest, n_running = int(row[0]), row[1], int(row[2])
+    recent_life = bool(row[3])
     # Work is waiting (queued past threshold) AND nothing is executing.
     if n_stalled == 0 or n_running > 0:
+        return []
+    # …but the lane moved inside the debounce window: a reconnect gap,
+    # not a dead executor — don't page.
+    if recent_life:
         return []
     oldest_h = _hours_since(oldest)
     return [
@@ -1914,7 +1957,9 @@ def _detect_dispatch_stalls(store: Store) -> list[Symptom]:
             detail=(
                 f"{n_stalled} claude_inproc job(s) stuck STATUS:queued (oldest "
                 f"{oldest_h:.1f}h, > {DISPATCH_STALL_MINUTES}min) with zero live "
-                "claims — the agent-profile executor (melchior) is not claiming: "
+                "claims and no lane activity for "
+                f">{DISPATCH_STALL_DEBOUNCE_S}s "
+                "— the agent-profile executor (melchior) is not claiming: "
                 "dead/culled worker, OAuth-401, or the agent profile never "
                 "started on any node. Minting is cluster-wide but execution is "
                 "melchior-only, so the planner is frozen cluster-wide. Recover: "

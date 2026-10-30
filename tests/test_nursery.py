@@ -35,6 +35,7 @@ from precis.workers.nursery import (
     CHILD_FAILED_PARKED_HOURS,
     DEAD_WORKER_LOOKBACK_DAYS,
     DEAD_WORKER_SILENCE_MIN,
+    DISPATCH_STALL_DEBOUNCE_S,
     DISPATCH_STALL_MINUTES,
     EMBED_LANE_STALL_WINDOW_MIN,
     HOST_DARK_SILENCE_MIN,
@@ -1763,11 +1764,14 @@ def _mint_inproc_job(
     *,
     status: str,
     age_hours: float = 0.0,
+    status_age_seconds: float = 0.0,
     lease_until: datetime | None = None,
     job_type: str = "plan_tick",
 ) -> int:
-    """Mint a ``claude_inproc`` job with a ``STATUS`` tag, optional lease, and
-    a backdated ``created_at`` (jobs sit ``queued`` from mint time)."""
+    """Mint a ``claude_inproc`` job with a ``STATUS`` tag, optional lease,
+    and a backdated ``created_at`` (jobs sit ``queued`` from mint time);
+    ``status_age_seconds`` backdates the STATUS tag's own ``created_at`` —
+    the detector's lane-lifetime stamp."""
     meta: dict[str, object] = {"job_type": job_type, "executor": "claude_inproc"}
     if lease_until is not None:
         meta["lease_until"] = lease_until.isoformat()
@@ -1777,6 +1781,8 @@ def _mint_inproc_job(
     store.add_tag(ref.id, Tag.closed("STATUS", status), set_by="agent")
     if age_hours:
         _backdate_ref(store, ref.id, age_hours)
+    if status_age_seconds:
+        _backdate_status_tag(store, ref.id, status_age_seconds / 3600.0)
     return ref.id
 
 
@@ -1839,6 +1845,62 @@ def test_dispatch_stall_fires_when_running_lease_expired(store: Store) -> None:
     findings = _detect_dispatch_stalls(store)
     assert len(findings) == 1
     assert findings[0].category == "dispatch-stall"
+
+
+def test_dispatch_stall_debounced_during_reconnect_gap(store: Store) -> None:
+    """gr536350: a ~7s claude-gate reconnect reads as 'old queue, zero
+    running' — the last job just stamped ``STATUS:succeeded`` and the next
+    isn't claimed yet. Lane life inside the debounce window suppresses."""
+    parent = store.insert_ref(kind="todo", slug=None, title="LLM planner")
+    _mint_inproc_job(store, parent.id, status="queued", age_hours=_STALL_H)
+    _mint_inproc_job(store, parent.id, status="succeeded", status_age_seconds=7)
+
+    assert _detect_dispatch_stalls(store) == []
+
+
+def test_dispatch_stall_debounced_by_just_expired_lease(store: Store) -> None:
+    """A running row whose lease lapsed *seconds* ago was being renewed
+    moments ago — a renewal stalled mid-reconnect, not a dead executor."""
+    parent = store.insert_ref(kind="todo", slug=None, title="LLM planner")
+    _mint_inproc_job(store, parent.id, status="queued", age_hours=_STALL_H)
+    _mint_inproc_job(
+        store,
+        parent.id,
+        status="running",
+        lease_until=datetime.now(UTC) - timedelta(seconds=7),
+    )
+
+    assert _detect_dispatch_stalls(store) == []
+
+
+def test_dispatch_stall_fires_once_lane_life_ages_out(store: Store) -> None:
+    """The debounce only delays the page: once the lane's last sign of
+    life is older than ``DISPATCH_STALL_DEBOUNCE_S`` a real stall still
+    goes critical."""
+    parent = store.insert_ref(kind="todo", slug=None, title="LLM planner")
+    _mint_inproc_job(store, parent.id, status="queued", age_hours=_STALL_H)
+    _mint_inproc_job(
+        store,
+        parent.id,
+        status="succeeded",
+        status_age_seconds=DISPATCH_STALL_DEBOUNCE_S + 30,
+    )
+
+    findings = _detect_dispatch_stalls(store)
+    assert len(findings) == 1
+    assert findings[0].category == "dispatch-stall"
+
+
+def test_dispatch_stall_queued_stamp_is_not_lane_life(store: Store) -> None:
+    """A fresh ``STATUS:queued`` stamp is a mint/re-queue, not the executor
+    moving — minting is cluster-wide and must not mask a dead lane."""
+    parent = store.insert_ref(kind="todo", slug=None, title="LLM planner")
+    _mint_inproc_job(
+        store, parent.id, status="queued", age_hours=_STALL_H, status_age_seconds=5
+    )
+
+    findings = _detect_dispatch_stalls(store)
+    assert len(findings) == 1
 
 
 def test_run_nursery_pass_raises_critical_for_dispatch_stall(store: Store) -> None:
