@@ -169,7 +169,7 @@ def _stub_tblite(monkeypatch: pytest.MonkeyPatch, calc: type) -> None:
     fake ``tblite.ase`` module so the stub lands whether or not the real
     wheel is installed on this platform."""
     fake = types.ModuleType("tblite.ase")
-    setattr(fake, "TBLite", calc)  # noqa: B010 — a ModuleType has no TBLite attr
+    setattr(fake, "TBLite", calc)  # a ModuleType has no TBLite attr
     monkeypatch.setitem(sys.modules, "tblite.ase", fake)
 
 

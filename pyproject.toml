@@ -1089,6 +1089,10 @@ ignore = [
     "SIM117",  # multiple-with-statements
     "B007",    # unused-loop-control-variable
     "B905",    # zip-without-explicit-strict
+    # B010's autofix rewrites `setattr(module, "attr", v)` — the standard
+    # mypy-quiet way to monkeypatch module attributes missing from stubs —
+    # back into `module.attr = v`, which needs a type-ignore (gr541674).
+    "B010",    # setattr-constant
     "RUF005",  # collection-literal-concatenation
     "RUF006",  # asyncio-dangling-task
     "RUF013",  # implicit-optional

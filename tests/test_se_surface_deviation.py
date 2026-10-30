@@ -1037,7 +1037,7 @@ def public_get(monkeypatch: pytest.MonkeyPatch) -> Any:
     tree.blocks["tube"] = node(uid=41)
     monkeypatch.setattr(persist, "load_tree", lambda *_args: tree)
     runtime = object.__new__(DispatchMixin)
-    setattr(runtime, "default_tags_resolved", [])  # noqa: B010
+    setattr(runtime, "default_tags_resolved", [])
     store = VersionedReadStore()
     handler = SeHandler(hub=cast(Hub, SimpleNamespace(store=store, embedder=None)))
     monkeypatch.setattr(

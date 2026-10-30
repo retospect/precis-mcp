@@ -579,7 +579,7 @@ def mounted_runtime(
         SeHandler(hub=runtime_with_store.hub)._register_with(runtime_with_store.hub)
     # ``_runtime`` is declared ``= None`` at module level (mypy infers
     # ``None``); the other runtime-swapping fixtures go through setattr too.
-    setattr(tools_core, "_runtime", runtime_with_store)  # noqa: B010
+    setattr(tools_core, "_runtime", runtime_with_store)
     try:
         yield runtime_with_store
     finally:

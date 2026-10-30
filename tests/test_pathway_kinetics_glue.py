@@ -1353,7 +1353,7 @@ def _recompute_handler(meta: dict[str, Any]) -> Any:
     ref = SimpleNamespace(id=11, slug="pw-a", meta=meta)
     store = SimpleNamespace(get_ref=lambda *, kind, id: ref)
     h = PathwayHandler.__new__(PathwayHandler)
-    setattr(h, "hub", SimpleNamespace(live_store=store))  # noqa: B010 - a stub hub
+    setattr(h, "hub", SimpleNamespace(live_store=store))
     return h
 
 

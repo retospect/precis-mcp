@@ -664,7 +664,7 @@ def mounted_runtime(
     # plugin is registered directly when entry-point discovery lagged.
     if "se" not in runtime_with_store.hub.handlers:
         SeHandler(hub=runtime_with_store.hub)._register_with(runtime_with_store.hub)
-    setattr(tools_core, "_runtime", runtime_with_store)  # noqa: B010
+    setattr(tools_core, "_runtime", runtime_with_store)
     try:
         yield runtime_with_store
     finally:

@@ -59,7 +59,7 @@ def relax_child_emt_xtb(*args: Any) -> Any:
     from precis_se import hexfold_relax_job
 
     fake = types.ModuleType("tblite.ase")
-    setattr(fake, "TBLite", lambda **kw: EMT())  # noqa: B010 — ModuleType has no attr
+    setattr(fake, "TBLite", lambda **kw: EMT())  # ModuleType has no attr
     sys.modules["tblite.ase"] = fake
     return hexfold_relax_job._relax_child(*args)
 

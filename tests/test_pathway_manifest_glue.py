@@ -132,7 +132,7 @@ class _Store:
 
 def _handler(refs: dict[str, Any]) -> PathwayHandler:
     h = PathwayHandler.__new__(PathwayHandler)  # __init__ probes the engine
-    setattr(h, "hub", SimpleNamespace(live_store=_Store(refs)))  # noqa: B010 - a stub hub
+    setattr(h, "hub", SimpleNamespace(live_store=_Store(refs)))  # a stub hub
     return h
 
 

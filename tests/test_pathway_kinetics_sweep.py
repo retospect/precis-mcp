@@ -184,7 +184,7 @@ def test_recompute_kinetics_validates_environment_and_objective_with_the_engine(
         meta={"config": {"name": "x"}, "results": {"nodes": {"A": 0}, "edges": [1]}},
     )
     h = PathwayHandler.__new__(PathwayHandler)
-    setattr(  # noqa: B010 - a stub hub
+    setattr(
         h, "hub", SimpleNamespace(live_store=SimpleNamespace(get_ref=lambda **k: ref))
     )
     with pytest.raises(BadInput, match="refused") as e:

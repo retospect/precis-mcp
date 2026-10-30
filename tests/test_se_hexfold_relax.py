@@ -67,7 +67,7 @@ def _stub_xtb_with_emt(monkeypatch: pytest.MonkeyPatch) -> None:
     from ase.calculators.emt import EMT
 
     fake = types.ModuleType("tblite.ase")
-    setattr(fake, "TBLite", lambda **kw: EMT())  # noqa: B010 — ModuleType has no attr
+    setattr(fake, "TBLite", lambda **kw: EMT())  # ModuleType has no attr
     monkeypatch.setitem(sys.modules, "tblite.ase", fake)
 
 

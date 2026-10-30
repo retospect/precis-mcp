@@ -264,9 +264,7 @@ def _undercut_op_error(exc: MoldUndercut, key: str) -> OpError:
     )
     # Picked up by the dispatch's ``next=getattr(exc, 'next', None)``;
     # setattr because the shared OpError type declares no ``next``.
-    setattr(  # noqa: B010
-        err, "next", "run view='mold' on the part, then re-cut the mold"
-    )
+    setattr(err, "next", "run view='mold' on the part, then re-cut the mold")
     return err
 
 

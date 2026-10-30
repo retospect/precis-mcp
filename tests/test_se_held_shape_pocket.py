@@ -94,7 +94,7 @@ class _HarmonicTBLite(Calculator):
 
 def _stub_tblite(monkeypatch: pytest.MonkeyPatch) -> None:
     fake = types.ModuleType("tblite.ase")
-    setattr(fake, "TBLite", _HarmonicTBLite)  # noqa: B010
+    setattr(fake, "TBLite", _HarmonicTBLite)
     monkeypatch.setitem(sys.modules, "tblite.ase", fake)
     monkeypatch.setattr(_HarmonicTBLite, "seen", [])
 
