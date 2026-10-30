@@ -17,8 +17,9 @@ Every minted todo
 - is sequenced by ``blocked-by`` links (``src`` is the blocked node).
 
 The whole subtree is minted in one transaction. A loop's ``body``
-('release-fix', 'pcb-fix') names the iteration the tick re-mints; it is not a
-key of :data:`TEMPLATES`.
+('release-fix', 'pcb-fix') names the iteration the tick re-mints; it is a
+key of :data:`BODIES`, not of :data:`TEMPLATES`. :func:`mint_body` mints one
+iteration under the loop todo, tagged with the loop's own ``plan:<root>``.
 """
 
 from __future__ import annotations
@@ -79,6 +80,9 @@ class _Minter:
         self.conn = conn
         self.parent_id = parent_id
         self.root_id: int | None = None
+        #: The ``plan:<id>`` tag value when it is not ``root_id`` (a loop
+        #: body mints under the loop but belongs to the loop's plan).
+        self.plan_root: int | None = None
         self.ids: dict[str, int] = {}
         #: ``(todo id, text)`` comments to append once the tx has committed.
         self.comments: list[tuple[int, str]] = []
@@ -111,7 +115,7 @@ class _Minter:
         )
         if is_root:
             self.root_id = ref.id
-        tags = ["STATUS:open", f"plan:{self.root_id}"]
+        tags = ["STATUS:open", f"plan:{self.plan_root or self.root_id}"]
         for tag in tags:
             self.store.add_tag(
                 ref.id,
@@ -161,16 +165,22 @@ def _run(
                 relation="related-to",
                 conn=conn,
             )
-    if m.comments:
-        from precis.handlers import _comment_timeline as tl
-
-        for todo_id, text in m.comments:
-            ref = store.get_ref(kind="todo", id=todo_id)
-            assert ref is not None
-            tl.append_comment(
-                store, ref, kind="todo", comment_kind="todo_comment", text=text
-            )
+    _post_comments(store, m.comments)
     return m.result()
+
+
+def _post_comments(store: Store, comments: list[tuple[int, str]]) -> None:
+    """Append the minter's deferred ``(todo id, text)`` comments."""
+    if not comments:
+        return
+    from precis.handlers import _comment_timeline as tl
+
+    for todo_id, text in comments:
+        ref = store.get_ref(kind="todo", id=todo_id)
+        assert ref is not None
+        tl.append_comment(
+            store, ref, kind="todo", comment_kind="todo_comment", text=text
+        )
 
 
 def _phase() -> dict[str, Any]:
@@ -440,3 +450,153 @@ TEMPLATES: dict[str, Template] = {
         ),
     )
 }
+
+
+# -- loop bodies -------------------------------------------------------------
+
+
+def _loop_context(store: Store, loop_todo_id: int) -> tuple[dict[str, Any], int]:
+    """``(meta.loop, plan root id)`` of a loop todo. The root is the id in
+    the loop's ``plan:<id>`` tag; a hand-made loop without one is its own
+    root."""
+    ref = store.get_ref(kind="todo", id=loop_todo_id)
+    if ref is None:
+        raise BadInput(
+            f"loop todo {loop_todo_id} not found",
+            next="pass the id of a live todo carrying meta.loop",
+        )
+    loop = (ref.meta or {}).get("loop")
+    if not isinstance(loop, dict):
+        raise BadInput(
+            f"td{loop_todo_id} carries no meta.loop",
+            next="mint a body only under a loop node (meta.loop = {max, until, body})",
+        )
+    root = loop_todo_id
+    for tag in store.tags_for(loop_todo_id):
+        value = str(tag.value)
+        if value.startswith("plan:") and value[5:].isdigit():
+            root = int(value[5:])
+            break
+    return loop, root
+
+
+def _run_body(
+    store: Store, loop_todo_id: int, plan_root: int, build: Callable[[_Minter], None]
+) -> PlanMint:
+    """Mint one loop iteration under ``loop_todo_id`` in one transaction."""
+    with store.tx() as conn:
+        m = _Minter(store, conn, loop_todo_id)
+        m.root_id = loop_todo_id  # every node parents to the loop
+        m.plan_root = plan_root
+        build(m)
+    _post_comments(store, m.comments)
+    return PlanMint(root_id=loop_todo_id, ids=dict(m.ids))
+
+
+def _iteration_suffix(iteration: Any) -> str:
+    return f" (iteration {iteration})" if iteration else ""
+
+
+def mint_release_fix(
+    store: Store, loop_todo_id: int, *, iteration: int | None = None, **_ctx: Any
+) -> PlanMint:
+    """triage (generator over gripes tagged ``plan:<root>``) -> fix -> re-cut."""
+    _loop, root = _loop_context(store, loop_todo_id)
+    tag = f"plan:{root}"
+    suffix = _iteration_suffix(iteration)
+
+    def build(m: _Minter) -> None:
+        m.node(
+            "triage",
+            f"Triage the red release's gripes{suffix}",
+            _generate("triage", f"gripes tagged {tag}"),
+            body=(
+                f"Read the open gripes tagged {tag} and the red check output; "
+                "mint one fix task per independent failure, or an ask gate when "
+                "a report is unusable."
+            ),
+        )
+        m.node(
+            "fix",
+            f"Fix what triage found{suffix}",
+            _task(),
+            body=(
+                f"Fix the failures triage named for {tag}; land each fix with "
+                "'resolved: <sha>' on its gripe."
+            ),
+            blocked_by=("triage",),
+        )
+        m.node(
+            "recut",
+            f"Re-cut the release{suffix}",
+            _task(),
+            body="Cut release/r<N> from main with scripts/release.",
+            blocked_by=("fix",),
+        )
+
+    return _run_body(store, loop_todo_id, root, build)
+
+
+def mint_pcb_fix(
+    store: Store, loop_todo_id: int, *, iteration: int | None = None, **_ctx: Any
+) -> PlanMint:
+    """fix -> drc -> review generator, for the board the loop's ``until``
+    gate names (``tests-green {range: 'drc:<board>'}``)."""
+    loop, root = _loop_context(store, loop_todo_id)
+    until = loop.get("until") if isinstance(loop.get("until"), dict) else {}
+    rng = str(((until or {}).get("args") or {}).get("range") or "")
+    board = rng[4:].strip() if rng.startswith("drc:") else ""
+    if not board:
+        raise BadInput(
+            f"pcb-fix on td{loop_todo_id}: meta.loop.until names no board "
+            f"(want args.range 'drc:<board>', got {rng!r})",
+            next="mint the loop with the pcb-pipeline template",
+        )
+    suffix = _iteration_suffix(iteration)
+
+    def build(m: _Minter) -> None:
+        m.node(
+            "fix",
+            f"Fix the DRC violations of {board}{suffix}",
+            _task(),
+            body=(
+                f"Fix the violations the last DRC review of {board} listed; "
+                "re-route where a fix needs it."
+            ),
+        )
+        m.node(
+            "drc",
+            f"DRC {board}{suffix}",
+            _task({"type": "pcb_review", "params": {"board": board}}),
+            body=f"Run the DRC check leg of pcb_review on {board}.",
+            blocked_by=("fix",),
+        )
+        m.node(
+            "review",
+            f"Review the DRC report of {board}{suffix}",
+            _generate("triage", board),
+            body="Read the DRC report; mint a fix task per violation.",
+            blocked_by=("drc",),
+        )
+
+    return _run_body(store, loop_todo_id, root, build)
+
+
+#: Loop body name -> minter ``(store, loop_todo_id, **ctx) -> PlanMint``. The
+#: tick passes ``iteration=<n>``; a body ignores context it does not use.
+BODIES: dict[str, Callable[..., PlanMint]] = {
+    "release-fix": mint_release_fix,
+    "pcb-fix": mint_pcb_fix,
+}
+
+
+def mint_body(store: Store, loop_todo_id: int, name: str, **ctx: Any) -> PlanMint:
+    """Mint one iteration of loop body ``name`` under ``loop_todo_id``."""
+    minter = BODIES.get(name)
+    if minter is None:
+        raise BadInput(
+            f"no loop body named {name!r}",
+            next="name a body registered in precis.plans.templates.BODIES",
+            options=sorted(BODIES),
+        )
+    return minter(store, loop_todo_id, **ctx)
