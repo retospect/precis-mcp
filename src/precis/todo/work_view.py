@@ -28,7 +28,7 @@ from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
 from precis.response import Response
-from precis.todo import views
+from precis.todo import views, work_gripes
 from precis.utils import handle_registry
 from precis.utils.next_block import render_next_section
 
@@ -227,6 +227,7 @@ def _render_root(
         out.append(
             f"    … +{hidden} more — get(kind='todo', id={root.id}, view='tree')"
         )
+    work_gripes.append_root_gripes(store, tags_by_ref.get(root.id, []), out)
 
 
 def render_work(store: Store, *, now: datetime | None = None) -> Response:
@@ -285,6 +286,8 @@ def render_work(store: Store, *, now: datetime | None = None) -> Response:
             out.append(
                 f"  {_h('todo', r.id)} [{st.get(r.id, 'open')}] — {_first_line(r.title)}"
             )
+
+    work_gripes.append_unplaced(store, served, out)
 
     out += ["", "hosts"]
     if hosts:
