@@ -214,12 +214,13 @@ def first_line(text: str) -> str:
     return next((ln.strip() for ln in text.splitlines() if ln.strip()), "")
 
 
-def _cut(text: str, limit: int) -> str:
+def cut_at_word_boundary(text: str, limit: int) -> str:
     """``text`` cut at the last word boundary within ``limit`` chars.
 
     A word-boundary cut additionally drops trailing function words —
     ``"…returns stale source on"`` ends mid-phrase where
-    ``"…returns stale source"`` reads complete.
+    ``"…returns stale source"`` reads complete. Shared beyond gripe:
+    finding ``put`` caps its title with the same cut (gr538410).
     """
     text = text.strip().rstrip(_TRIM)
     if len(text) <= limit:
@@ -286,9 +287,9 @@ def _derive(text: str, *, mark_truncation: bool = False) -> str | None:
     prefix = f"{area}: " if area else ""
     limit = TITLE_MAX - len(prefix)
     marker = "…" if mark_truncation and len(clause) > limit else ""
-    title = prefix + _cut(clause, limit - len(marker))
+    title = prefix + cut_at_word_boundary(clause, limit - len(marker))
     if not title.strip(_TRIM):
-        title = _cut(line, TITLE_MAX - len(marker))
+        title = cut_at_word_boundary(line, TITLE_MAX - len(marker))
     return title + marker
 
 

@@ -17,6 +17,7 @@ from typing import TYPE_CHECKING, Any
 from psycopg.errors import UniqueViolation
 
 from precis.errors import BadInput
+from precis.handlers._finding_common import cap_finding_title
 from precis.identity import make_finding_paper_id, make_pub_id
 from precis.response import Response
 from precis.store.types import ChunkInsert, Tag
@@ -191,8 +192,9 @@ def put_acquiring(
     if link is not None:
         extra_target = parse_link_target(link, store=store)
 
-    body_clean = body_text.strip()
-    title_clean = title.strip()
+    # Same silent title cap as the ordinary path (gr538410) — applied
+    # before the deterministic key so pub_id covers the stored body.
+    title_clean, body_clean = cap_finding_title(title, body_text)
 
     # Deterministic dedup key: same (body, scope, wants) → same pub_id,
     # mirroring the ordinary mode's cited_in-keyed collapse.

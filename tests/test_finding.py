@@ -226,6 +226,64 @@ class TestPutHappy:
                 meta=cast(Any, "not-a-dict"),
             )
 
+    def test_over_long_title_is_cut_and_kept_in_body(self, store) -> None:
+        # gr538410 (Reto's gripe-title ruling — silently cut, put it
+        # inside): a title over FINDING_TITLE_MAX (80) is cut at a word
+        # boundary — a plain finding has no title-edit door, so an
+        # uncapped title could never be fixed — and the full original
+        # is kept at the top of the body.
+        from precis.handlers._finding_common import (
+            FINDING_TITLE_MAX,
+            cap_finding_title,
+        )
+
+        _seed_paper(store)
+        h = _make_handler(store)
+        long_title = (
+            "gate-bias 2.4 kV applied for 30 s on Si/SiO2 MOSCAPs "
+            "with a Cu top contact under N2 ambient"
+        )
+        assert len(long_title) > FINDING_TITLE_MAX
+        resp = h.put(title=long_title, body="claim body", cited_in="miller23a~0")
+        ref_id = int(_search(r"id=(\d+)", resp.body).group(1))
+
+        ref = store.get_ref(kind="finding", id=ref_id)
+        assert ref is not None
+        assert len(ref.title) <= FINDING_TITLE_MAX
+        # Cut at a word boundary: the stored title is a prefix of the
+        # original that ends on a word (the next char is a space) —
+        # and the ack echoes the cut title, not the original.
+        assert long_title.startswith(ref.title)
+        assert long_title[len(ref.title)] == " " or ref.title.split()[-1] not in (
+            "a",
+            "the",
+            "with",
+            "on",
+            "under",
+            "for",
+        )
+        assert f"title: {ref.title}" in resp.body
+        assert long_title not in resp.body
+
+        # The full original text leads the stored body chunk.
+        with store.pool.connection() as conn:
+            row = conn.execute(
+                "SELECT text FROM chunks "
+                "WHERE ref_id = %s AND chunk_kind = 'finding_body'",
+                (ref_id,),
+            ).fetchone()
+        assert row is not None
+        assert row[0].startswith(long_title)
+
+        # The cap is deterministic — a repeat put collapses on pub_id.
+        again = h.put(title=long_title, body="claim body", cited_in="miller23a~0")
+        assert "existing finding" in again.body
+
+        # A body that already leads with the title isn't duplicated.
+        capped, body = cap_finding_title(long_title, f"{long_title}\n\ndetails")
+        assert body.count(long_title) == 1
+        assert len(capped) <= FINDING_TITLE_MAX
+
     def test_creates_ref_chunk_link_and_status(self, store) -> None:
         paper_id = _seed_paper(store)
         h = _make_handler(store)

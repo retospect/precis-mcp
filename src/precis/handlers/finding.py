@@ -109,6 +109,7 @@ from precis.handlers import (
     _finding_nanopub,
 )
 from precis.handlers._finding_common import (
+    cap_finding_title,
     fetch_ref_any_kind,
     multi_article_advisory,
 )
@@ -301,8 +302,10 @@ class FindingHandler(NumericRefHandler):
         """Create a finding — trimodal.
 
         **Ordinary (chase) mode.** Required: ``title`` (the claim
-        sentence — it carries all the meaning and is stored full-length,
-        never truncated), ``body`` (claim text + setup envelope as
+        sentence — it carries all the meaning; over
+        :data:`._finding_common.FINDING_TITLE_MAX` chars it is cut at a
+        word boundary and the full original is kept at the top of the
+        body, gr538410), ``body`` (claim text + setup envelope as
         flowing prose), ``cited_in`` (the starting frontier of the
         chase, in ``<cite_key>[~<ord>]`` or ``kind:identifier[~<ord>]``
         form).
@@ -670,6 +673,16 @@ class FindingHandler(NumericRefHandler):
             if target_ref is None:
                 target_ref = self._fetch_ref_any_kind(target.ref_id)
             target_handle = target_ref.slug or f"ref:{target.ref_id}"
+
+        # gr538410 (Reto's gripe-title ruling — silently cut, put it
+        # inside): an over-long title is cut at a word boundary and the
+        # full original text goes to the top of the body — a plain
+        # finding's title has no edit door (``edit(title=)`` is
+        # hub-only), so a >80-char title could never be fixed. Applied
+        # after ``_resolve_draft_source`` so a staged ``meta.quote``
+        # stays the verbatim source text, before ``pub_id`` so the
+        # deterministic id keys on what is actually stored.
+        title, body_text = cap_finding_title(title, body_text)
 
         paper_id = make_finding_paper_id(
             body_text=body_text,

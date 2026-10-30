@@ -11,10 +11,36 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from precis.errors import BadInput
+from precis.handlers._gripe_title import cut_at_word_boundary
 from precis.store.types import Ref
 
 if TYPE_CHECKING:
     from precis.store import Store
+
+#: ``refs.title`` cap for a finding. ``put`` silently cuts an over-long
+#: ``title=`` at a word boundary — Reto's gripe-title ruling ("silently
+#: cut, put it inside", gr538410): the full original text goes to the
+#: top of the finding body, so nothing is lost and ``edit(title=)``
+#: (hub-only anyway) is never the fix door.
+FINDING_TITLE_MAX = 80
+
+
+def cap_finding_title(title: str, body: str) -> tuple[str, str]:
+    """Cap a finding title at :data:`FINDING_TITLE_MAX`; returns
+    ``(title, body)``, both stripped.
+
+    An over-long title is cut at a word boundary and the full original
+    text is kept at the top of ``body`` when the body doesn't already
+    lead with it — the gripe-title ruling applied to findings
+    (gr538410). A title at or under the cap passes through.
+    """
+    title = title.strip()
+    body = body.strip()
+    if len(title) <= FINDING_TITLE_MAX:
+        return title, body
+    if not body.startswith(title):
+        body = f"{title}\n\n{body}" if body else title
+    return cut_at_word_boundary(title, FINDING_TITLE_MAX), body
 
 
 def fetch_ref_any_kind(store: Store, ref_id: int) -> Ref:
