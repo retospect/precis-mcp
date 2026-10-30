@@ -125,6 +125,7 @@ next section.
 | `remarkable_send`   | `claude_inproc` | Export a draft in reMarkable mode and upload the PDF to the tablet — siblings `remarkable_papers_send` (cited-source PDFs) and `remarkable_reading_send` (per-source reading edition) |
 | `embed_batch`       | `job_inproc`    | Bounded work order draining the derived embed queue — minted by the `materialize` cadence above the backlog high-water mark |
 | `derived_drain`     | `job_inproc`    | Bounded work order draining a SMALL-tier derived LLM queue (summarize/classify) — cloud-only lane |
+| `run_slice`         | `ssh_node`      | Dark factory: launch one slice (a todo with a brief) headless on a lane — `claude -p` in worktree `slice-td<id>` cut from `origin/main`; `meta.lane`/`model`/`effort` on the job; the session's last message lands as a `handoff:` comment on the todo; a failure returns the todo to `STATUS:open` with `attempt:<n>`. Params `todo_id`, optional `lane`, `model`, `effort`, `target_node`. Refused while `PRECIS_FACTORY=off` |
 
 ## Which job types run compute or code? — [[precis-job-observe-help]]
 

@@ -567,6 +567,26 @@ def _load_sandbox_run() -> JobTypeSpec:
     )
 
 
+def _load_run_slice() -> JobTypeSpec:
+    # Dark factory step 6: one slice headless on a lane (claude -p in its
+    # own worktree), the detached submit/poll pair under ssh_node. Registers
+    # unconditionally; PRECIS_FACTORY=off refuses at validate_submit.
+    from precis.workers.job_types import run_slice
+
+    return JobTypeSpec(
+        name="run_slice",
+        params_schema=run_slice.PARAMS_SCHEMA,
+        compatible_executors=run_slice.COMPATIBLE_EXECUTORS,
+        requires=run_slice.REQUIRES,
+        description=run_slice.DESCRIPTION,
+        validate_submit=run_slice.validate_submit,
+        submit=run_slice.submit,
+        poll=run_slice.poll,
+        kill=run_slice.kill,
+        wall_seconds=run_slice.wall_seconds,
+    )
+
+
 def _load_diagnose_gripe() -> JobTypeSpec:
     # Read-only root-cause diagnosis appended to a gripe as a
     # gripe_comment (see precis.workers.job_types.diagnose_gripe) — never fixes,
@@ -892,6 +912,9 @@ def get_job_type(name: str) -> JobTypeSpec | None:
     if name == "sandbox_run":
         _REGISTRY["sandbox_run"] = _load_sandbox_run()
         return _REGISTRY["sandbox_run"]
+    if name == "run_slice":
+        _REGISTRY["run_slice"] = _load_run_slice()
+        return _REGISTRY["run_slice"]
     if name == "diagnose_gripe":
         _REGISTRY["diagnose_gripe"] = _load_diagnose_gripe()
         return _REGISTRY["diagnose_gripe"]
@@ -1012,6 +1035,7 @@ def known_job_types() -> list[str]:
         "diagram_propose",
         "cad_discuss",
         "sandbox_run",
+        "run_slice",
         "diagnose_gripe",
         "graph_garden",
         "secret_status",
