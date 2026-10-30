@@ -23,9 +23,16 @@ from typing import Any
 import numpy as np
 import pytest
 
+import precis.cad.inspect as ci
 from precis.cad.dsl import build_config
 from precis.cad.graph import Design
-from precis.cad.inspect import _loop_distance, cad_field, ray, ray_field
+from precis.cad.inspect import (
+    _loop_distance,
+    cad_field,
+    ray,
+    ray_field,
+    thickness,
+)
 from precis.dispatch import Hub
 from precis.errors import BadInput
 from precis.handlers.structure import StructureHandler
@@ -420,3 +427,99 @@ def test_se_view_inspect_on_a_bound_block(store: Store) -> None:
     with pytest.raises(BadInput) as e2:
         se.get(id="insp-se", view="inspect", args={"probe": "ray"})
     assert "block" in str(e2.value) and e2.value.next
+
+
+def test_view_inspect_ray_stall_renders_not_a_clean_miss(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A march that spent its step budget used to read as a clean miss —
+    the shared render names the bail on both kinds' ``view='inspect'``.
+    A 1-step budget forces the stall (``parse_spec`` reads the constant
+    live, so the monkeypatch reaches both legs)."""
+    monkeypatch.setattr(ci, "_MAX_RAY_STEPS", 1)
+    sh = _put_structure(
+        store, "bz-stall", [{"op": "from_smiles", "smiles": "c1ccccc1"}]
+    )
+    ref = store.get_ref(kind="structure", id="bz-stall")
+    assert ref is not None
+    scene, _h = store.structure_load(ref.id)
+    c, n = _ring_plane(scene)
+    body = sh.get(
+        id="bz-stall",
+        view="inspect",
+        args={
+            "probe": "ray",
+            "origin": (c - 4.0 * n).tolist(),
+            "axis": n.tolist(),
+        },
+    ).body
+    assert "stalled at step budget" in body, body
+    # the se kind's macro block view — the same shared render, in mm
+    se = SeHandler(hub=Hub(store=store))
+    se.put(
+        id="stall-se",
+        text=json.dumps(
+            {
+                "ops": [
+                    {
+                        "op": "add_block",
+                        "name": "m",
+                        "envelope": "box:w0.01d0.01h0.01",
+                    }
+                ]
+            }
+        ),
+    )
+    mbody = se.get(
+        id="stall-se",
+        view="inspect",
+        args={
+            "block": "m",
+            "probe": "ray",
+            "origin": [0, 0, -0.02],
+            "axis": [0, 0, 1],
+            "length": 0.05,
+        },
+    ).body
+    assert "stalled at step budget" in mbody, mbody
+
+
+def test_thickness_render_reports_nudged_and_refused_nodes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The stall retry's bookkeeping renders beside the column count —
+    ``N nudged, M refused`` plus the refused nodes' coordinates, so a
+    node dropped by an unrecoverable stall is never silent."""
+    d = Design()
+    wall = d.prim("wall", build_config("box:w50d98h10"))
+    kw: dict[str, Any] = {
+        "origin_m": (0, 0, 10),
+        "normal_m": (0, 0, 1),
+        "pitch_m": 4.0,
+    }
+    ok = thickness(d, wall, **kw)
+    assert ok.nudged_m and ok.refused_m == ()
+    body = iv.render("thickness", ok, head="wall")
+    assert f"{len(ok.nudged_m)} nudged, 0 refused" in body, body
+    # a one-step retry budget leaves the stall unrecovered → refused
+    monkeypatch.setattr(ci, "_STALL_RETRY_MAX_STEPS", 1)
+    t = thickness(d, wall, **kw)
+    assert t.refused_m and t.nudged_m == ()
+    body = iv.render("thickness", t, head="wall")
+    assert f"0 nudged, {len(t.refused_m)} refused" in body, body
+    assert "refused nodes" in body and iv._v(t.refused_m[0]) in body, body
+    # the coordinate list caps at four with a "+N more" overflow
+    many = ci.ThicknessInspection(
+        plane_origin_m=(0.0, 0.0, 0.0),
+        plane_normal_m=(0.0, 0.0, 1.0),
+        frame_u_m=(0.0, 1.0, 0.0),
+        frame_v_m=(-1.0, 0.0, 0.0),
+        pitch_m=1.0,
+        nominal_m=None,
+        ratio=1.5,
+        samples=(),
+        refused_m=tuple((float(i), 0.0, 0.0) for i in range(6)),
+        nudged_m=((9.0, 0.0, 0.0),),
+    )
+    body = iv.render("thickness", many, head="x")
+    assert "1 nudged, 6 refused" in body and "+2 more" in body, body

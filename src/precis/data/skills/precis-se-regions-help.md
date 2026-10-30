@@ -483,9 +483,16 @@ get(kind='structure', id='<slug>', view='inspect',
 ```
 
 `origin`, `pitch`, `radius`, `length`: metres or unit strings on se,
-bare Å on structure; `axis`/`normal` are directions. Omitted, the origin
-is the target's centroid (a ray starts 2 Å before it) and the direction
-its principal axis. `target` narrows to `frame:<key>`, `pi:<id>`,
+bare Å on structure; `axis`/`normal` are directions. `max_steps`
+(ray only, default 4096, capped at 65536) raises the march budget when a
+long grazing ray stalls — the report prints `stalled at step budget —
+open tail dropped` instead of fabricating the tail. A `thickness`
+report prints `N nudged, M refused` beside the column count when grid
+nodes needed the stall retry, plus the refused nodes' coordinates (the
+boss-design skill reads them before trusting edge rows). Omitted, the
+origin is the target's centroid (a ray starts 2 Å before it) and the
+direction its principal axis. `target` narrows to `frame:<key>`,
+`pi:<id>`,
 `find:element=C` or atom labels (se only for `frame:`). Atoms are
 van der Waals spheres (Bondi; `radii={'C': 0.9}` overrides), so a benzene
 ring-plane section is one loop — the ring centre is inside the carbon

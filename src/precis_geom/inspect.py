@@ -163,11 +163,14 @@ def ray(
     charges: dict[str, float] | None = None,
     component: str | None = None,
     frames: Any = None,
+    max_steps: int = _ci._MAX_RAY_STEPS,
 ) -> RayInspection:
     """Sphere-trace ``geom`` along a ray (module docstring). ``origin`` and
     ``t_max`` are metres or unit strings, ``axis`` a direction; ``radius``
     sweeps a cylinder (``.swept``); ``events`` and ``charges`` are the
-    atomic observation fields; ``component`` picks one macro component."""
+    atomic observation fields; ``component`` picks one macro component;
+    ``max_steps`` raises the march budget when a long grazing ray stalls
+    (``.stalled``)."""
     g = _pga.geom(geom)
     d = _dir(axis, "ray axis")
     if g.atomic:
@@ -183,6 +186,7 @@ def ray(
             events=events,
             charges=charges,
             frame_key=_frame_keys(frames),
+            max_steps=max_steps,
         )
         return _atomic_scale(res)
     design, expr = _macro(g, component)
@@ -197,6 +201,7 @@ def ray(
         profile_samples=profile_samples,
         feature=feature,
         role=role,
+        max_steps=max_steps,
     )
     if radius is None:
         return res

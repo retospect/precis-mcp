@@ -48,6 +48,7 @@ INSPECT_ARGS = frozenset(
         "radius",
         "length",
         "profile_samples",
+        "max_steps",
         "events",
         "nominal",
         "ratio",
@@ -90,6 +91,7 @@ class InspectSpec:
     radius: float | None = None
     length: float | None = None
     profile_samples: int | None = None
+    max_steps: int = ci._MAX_RAY_STEPS
     events: tuple[str, ...] = DEFAULT_EVENTS
     nominal: float | None = None
     ratio: float = 1.5
@@ -207,6 +209,9 @@ def parse_spec(
         profile_samples=(
             int(args["profile_samples"]) if args.get("profile_samples") else None
         ),
+        # a long grazing ray can ask for more march iterations; still
+        # bounded — the cap is the sanity bound, not the default
+        max_steps=max(1, min(int(args.get("max_steps") or ci._MAX_RAY_STEPS), 65536)),
         events=ev,
         nominal=pos("nominal"),
         ratio=float(args.get("ratio") or 1.5),
@@ -333,13 +338,15 @@ def atomic_ray(
     labels: Sequence[str] | None = None,
     radii: dict[str, float] | None = None,
     frame_key: Callable[[int | None], str | None] | None = None,
+    max_steps: int = ci._MAX_RAY_STEPS,
 ) -> ci.RayInspection:
     """Sphere-trace the vdW union along a ray (:func:`ci.ray_field`); with
     ``profile_samples`` the profile minimum is the channel bottleneck and
     ``pinch_features`` names the frame that pinches it; with ``radius`` the
     swept cylinder is intersected with the part (``swept``); ``events`` are
     :func:`~precis.structure.probe.ray_hits` fields merged onto the report
-    (``events`` field, ``s`` in Å)."""
+    (``events`` field, ``s`` in Å). ``max_steps`` is the march budget — a
+    long grazing ray that stalls at the default cap can raise it."""
     fld = st_probe.vdw_field(scene, labels=labels, radii=radii, frame_key=frame_key)
     o, d, tmax, _diag = ci.ray_extent(fld, origin, axis, t_max)
     res = ci.ray_field(
@@ -350,6 +357,7 @@ def atomic_ray(
         profile_samples=profile_samples,
         feature=feature,
         role=role,
+        max_steps=max_steps,
     )
     swept = None
     if radius:
@@ -516,6 +524,7 @@ def run(
             radius=spec.radius,
             events=spec.events,
             pi_data=pi_data,
+            max_steps=spec.max_steps,
             **kw,
         )
     elif spec.probe == "section":
@@ -633,6 +642,11 @@ def render(
     if probe == "ray":
         lines = [f"inspect ray · {head}"]
         lines.append(f"runs {len(res.hits)} (material along the ray)")
+        if res.stalled:
+            lines.append(
+                "stalled at step budget — open tail dropped "
+                "(raise max_steps for a longer march)"
+            )
         for h in res.hits[:_CAP]:
             lines.append(
                 f"  {_g(h.t_entry_m, scale)}–{_g(h.t_exit_m, scale)} {u}  in "
@@ -676,11 +690,18 @@ def render(
             lines.append(f"frames {_names(res.features, 6)}")
         return "\n".join(lines)
     ts = [s.thickness_m for s in res.samples]
+    cols = f"{len(ts)} columns"
+    if res.nudged_m or res.refused_m:
+        cols += f" · {len(res.nudged_m)} nudged, {len(res.refused_m)} refused"
     lines = [
         f"inspect thickness · {head}",
         f"plane o={_v(res.plane_origin_m, scale)} n={_v(res.plane_normal_m)} {u}"
-        f" · pitch {_g(res.pitch_m, scale)} {u} · {len(ts)} columns",
+        f" · pitch {_g(res.pitch_m, scale)} {u} · {cols}",
     ]
+    if res.refused_m:
+        coords = ", ".join(_v(p, scale) for p in res.refused_m[:4])
+        more = f" +{len(res.refused_m) - 4} more" if len(res.refused_m) > 4 else ""
+        lines.append(f"refused nodes (ray stalled): {coords}{more}")
     if ts:
         top = max(res.samples, key=lambda s: s.thickness_m)
         lines.append(

@@ -199,6 +199,16 @@ _EXEMPT_SITES = frozenset(
         # component). It is the spec's author-stated absolute, not a
         # missed derivation — same carve-out as ``CONTACT_TOL_MM``.
         "precis/cad/fit.py::TOL_FLOOR_M",
+        # `precis/cad/inspect.py`'s ray-march budgets (gr530414): iteration
+        # COUNTS, not lengths — ``*STEPS`` trips the gate only because the
+        # name contains the ``EPS`` substring. A wrong value costs
+        # evaluations (too small: false stalls; too large: a riding ray
+        # burns budget before bailing), never the silent length culling
+        # this gate exists to catch — site-pinned so a future ``*_STEPS``
+        # length elsewhere still gets flagged.
+        "precis/cad/inspect.py::_MAX_RAY_STEPS",
+        "precis/cad/inspect.py::_MAX_CREEP_STEPS",
+        "precis/cad/inspect.py::_STALL_RETRY_MAX_STEPS",
     }
 )
 

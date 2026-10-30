@@ -243,7 +243,9 @@ makes the fit check strict. `mol.check(geom)` runs the same check mid-script.
 are plain data a script can assert on. `profile_samples=` on a ray along the
 channel axis gives the free radius to the nearest wall: its minimum
 (`.pinch_m`) is the bottleneck and `.pinch_features[i].label` the maker frame
-of the wall that pinches it. From `examples/hexfold/cnt-guest/main.py`:
+of the wall that pinches it. `max_steps=` raises the march budget (default
+4096) when a long grazing ray stalls — a bail sets `.stalled` and the kept
+hits are partial. From `examples/hexfold/cnt-guest/main.py`:
 
 ```python
 prof = pgi.ray(

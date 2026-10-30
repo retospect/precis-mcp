@@ -172,6 +172,7 @@ def _macro(tree: Any, slug: str, base: str, node: Any, args: dict[str, Any]) -> 
             axis_m=ci._vec3f(d),
             t_max_m=spec.length,
             profile_samples=spec.profile_samples,
+            max_steps=spec.max_steps,
         )
         if spec.radius:
             beam = ci.cylinder_field(o, d, spec.radius, spec.length or 2.0 * diag)

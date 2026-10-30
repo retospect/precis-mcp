@@ -25,7 +25,13 @@ kernel picks the algorithm.
   sink-mark risks — a boss or rib fused to a cosmetic skin freezes a mass
   behind it and pulls the skin inward (:meth:`ThicknessInspection.
   sink_risks`). Each sample carries the column's attribution, so the risk
-  names its cause (``boss-1``), direct or indirect.
+  names its cause (``boss-1``), direct or indirect. A node sitting exactly
+  on a surface plane makes its ray *ride* that plane (the sdf stays ~0
+  along the march, so every step is the floor — hours on field-backed
+  leaves, gr530414); the march is bounded (step budget + creep guard),
+  the node is retried once from a laterally nudged origin, and a stall
+  after the retry becomes a *refused* node on the report — never silent,
+  never unbounded.
 
 Everything here evaluates the folded SDF (:func:`~precis.cad.fold.expr_sdf_np`),
 so all three probes work identically on sharp designs and on field-routed
@@ -106,6 +112,39 @@ _HIT_VOLUME_REL = 1e-6
 #: Plane-grid sanity cap: above this many samples the caller should be
 #: passing an explicit coarser pitch_m.
 _MAX_GRID_SAMPLES = 64 * 1024 * 1024
+
+#: Ray-march sanity caps (gr530414). ``_MAX_RAY_STEPS`` bounds the
+#: sphere-trace loop; a healthy ray crosses a part in tens of steps.
+#: ``_MAX_CREEP_STEPS`` bounds consecutive floor-steps — ``|sdf| < min_step``,
+#: the ray riding a surface plane, where every step is the floor and the
+#: march would otherwise cost span/min_step evaluations.
+_MAX_RAY_STEPS = 4096
+_MAX_CREEP_STEPS = 64
+
+#: thickness() stall retry: a node whose ray stalls (sdf ~ 0 along the
+#: march — the node rides a surface plane) is retried once from an origin
+#: nudged laterally in the face plane, perpendicular to the ray, by
+#: ``pitch_m * _STALL_NUDGE_REL * _STALL_NUDGE_UV`` on the frame's two
+#: in-plane axes; a lateral offset leaves the plane, an axial one does
+#: not. Still stalling → the node is listed in ``refused_m``.
+#: Pitch-relative keeps the offset small at any part scale while the
+#: retried march — which crawls at the offset's distance from the wall —
+#: stays affordable: the crawl costs span/offset steps, and an absolute
+#: micro-offset (µm) would need millions of them.
+_STALL_NUDGE_REL = 0.01
+
+#: The lateral retry offset direction in the (u, v) face frame — a small
+#: fixed offset on BOTH in-plane axes with an asymmetric ratio (mirroring
+#: the manual box3 workaround, gr530414), so the retried ray lands off
+#: every exact grid/feature plane. The signs recover the outer-wall
+#: nodes of the grid's AABB-margin rows and columns.
+_STALL_NUDGE_UV = (-0.31, -0.17)
+
+#: The retried ray marches at the lateral offset's distance from the
+#: wall it just left — span/offset steps (a 10-unit wall at a 1%-of-pitch
+#: offset is 0.8-1.5k) — so the retry gets a bigger budget than the
+#: generic march. It is one node, retried once, not the whole grid.
+_STALL_RETRY_MAX_STEPS = 8192
 
 
 @dataclass(frozen=True)
@@ -194,6 +233,12 @@ class RayInspection:
     #: ``pi``/``frame``/``charge``/``relax``/``pass`` hits, ``s`` in metres)
     #: in ``s`` order, beside the SDF runs — empty on a cad field.
     events: tuple[Any, ...] = ()
+    #: True when the march bailed before ``t_max_m`` — the step budget ran
+    #: out or the creep guard tripped (many consecutive floor-steps: the
+    #: ray rides a surface, sdf ~ 0 along the march). Hits already found
+    #: are kept, but no open run is fabricated to ``t_max_m`` and the
+    #: march is incomplete — treat the report as partial.
+    stalled: bool = False
 
 
 @dataclass(frozen=True)
@@ -359,8 +404,12 @@ def ray(
     profile_samples: int | None = None,
     feature: str | None = None,
     role: str | None = None,
+    max_steps: int = _MAX_RAY_STEPS,
 ) -> RayInspection:
-    """:func:`ray_field` over the folded cad SDF (module docstring)."""
+    """:func:`ray_field` over the folded cad SDF (module docstring).
+    ``max_steps`` raises the march budget for a long grazing ray that
+    stalls at the default cap — the report flags the bail as
+    ``stalled``."""
     return ray_field(
         cad_field(design, expr),
         origin_m=origin_m,
@@ -369,6 +418,7 @@ def ray(
         profile_samples=profile_samples,
         feature=feature,
         role=role,
+        max_steps=max_steps,
     )
 
 
@@ -398,6 +448,7 @@ def ray_field(
     profile_samples: int | None = None,
     feature: str | None = None,
     role: str | None = None,
+    max_steps: int = _MAX_RAY_STEPS,
 ) -> RayInspection:
     """Sphere-trace the SDF along a ray; report material runs and the
     closest approach. ``axis_m`` is normalized internally, so every ``t``
@@ -410,6 +461,13 @@ def ray_field(
     feature tuples: the filter selects runs, it does not rewrite their
     attribution. ``min_distance_m`` and ``profile`` describe the whole
     solid along the beam and are computed before any filter applies.
+
+    The march is bounded: at most ``max_steps`` sphere-trace iterations,
+    and more than ``_MAX_CREEP_STEPS`` consecutive floor-steps
+    (``|sdf| < min_step``) — the signature of a ray *riding* a surface
+    plane, where sdf stays ~0 and every step is the floor. A bail sets
+    ``stalled=True`` on the report and keeps the hits found before it;
+    it never loops forever.
     """
     o, d, t_max_m, diag = ray_extent(fld, origin_m, axis_m, t_max_m)
 
@@ -446,8 +504,9 @@ def ray_field(
     inside = v_prev < 0.0
     span_start = 0.0 if inside else None
     stuck = 0
+    stalled = False
 
-    for _ in range(100_000):
+    for _ in range(max_steps):
         p = o + t * d
         v = float(fld.sdf(p[None, :])[0])
         min_abs = min(min_abs, abs(v))
@@ -491,9 +550,10 @@ def ray_field(
             # surface that never crosses (gr530414 — thickness-map
             # nodes on a wall plane crawled min_step to the iteration
             # cap, ~1 s per ray on field designs). Give the tangent
-            # up: the report is no run and min_distance ≈ 0.
+            # up: the report is no run, min_distance ≈ 0, stalled.
             stuck += 1
-            if stuck > 64:
+            if stuck > _MAX_CREEP_STEPS:
+                stalled = True
                 break
         else:
             stuck = 0
@@ -506,9 +566,15 @@ def ray_field(
         # phantom run-split there would break the thickness columns.
         # Landing exactly on a REAL surface creeps one min_step
         # inside/outside and the strict tests still fire on the next
-        # sample; the iteration cap is the last bailout.
+        # sample; the step budget is the last bailout.
+    else:
+        # The step budget ran out without reaching t_max_m — the march
+        # is incomplete, so distrust it exactly like a creep-guard bail
+        # (a slow near-wall crawl can burn the whole budget without ever
+        # tripping the consecutive-floor-steps guard).
+        stalled = True
 
-    if inside and span_start is not None:
+    if not stalled and inside and span_start is not None:
         entry = o + span_start * d
         n_e = _normal_at(fld, entry, eps)
         hits.append(
@@ -543,6 +609,7 @@ def ray_field(
         pinch_t_m=pinch_t,
         pinch_m=pinch_v,
         pinch_features=pinch_refs,
+        stalled=stalled,
     )
 
 
@@ -867,6 +934,8 @@ def rescale(res: Any, k: float) -> Any:
                 )
                 for sm in res.samples
             ),
+            refused_m=tuple(v3(p) for p in res.refused_m),
+            nudged_m=tuple(v3(p) for p in res.nudged_m),
         )
     raise TypeError(f"rescale: not an inspection result: {type(res).__name__}")
 
@@ -911,6 +980,12 @@ class ThicknessInspection:
     nominal_m: float | None
     ratio: float
     samples: tuple[ThicknessSample, ...]
+    #: Grid nodes whose ray stalled even after the nudged retry — no
+    #: sample exists for them (``len(refused_m)`` is the refused count).
+    refused_m: tuple[tuple[float, float, float], ...] = ()
+    #: Grid nodes whose first ray stalled but the nudged retry converged —
+    #: their samples are in ``samples`` (``len(nudged_m)`` is the count).
+    nudged_m: tuple[tuple[float, float, float], ...] = ()
 
     def sink_risks(self) -> tuple[ThicknessSample, ...]:
         """Samples whose material column exceeds ``ratio × nominal_m`` —
@@ -1030,7 +1105,8 @@ def _march_rays(
     d: np.ndarray,
     t_max: float,
     eps: float,
-) -> list[list[tuple[float, float, bool]]]:
+    max_steps: int = _MAX_RAY_STEPS,
+) -> tuple[list[list[tuple[float, float, bool]]], np.ndarray]:
     """:func:`ray_field`'s sphere-trace for N parallel rays at once
     (gr531239): every ray shares the unit axis ``d`` and ``t_max``; one
     ``fld.sdf`` call per march round evaluates every still-marching ray,
@@ -1039,7 +1115,10 @@ def _march_rays(
     the crossing/step decisions are the scalar loop's, so the run lists
     ``[(t_in, t_out, open)]`` — one per origin, ``open`` marking a run
     still inside at ``t_max`` — are identical to marching each origin on
-    its own."""
+    its own. Also returns the ``(n,)`` ``stalled`` mask — rays that spent
+    ``max_steps`` visits or tripped the creep guard, exactly where
+    :func:`ray_field` reports ``stalled``; a stalled ray's open tail is
+    not appended, as in the scalar loop."""
     min_step = 4.0 * eps
     n_rays = len(origins)
     t = np.zeros(n_rays)
@@ -1048,9 +1127,10 @@ def _march_rays(
     span_start = np.where(inside, 0.0, np.nan)
     stuck = np.zeros(n_rays, dtype=np.int64)
     active = np.ones(n_rays, dtype=bool)
+    stalled = np.zeros(n_rays, dtype=bool)
     runs: list[list[tuple[float, float, bool]]] = [[] for _ in range(n_rays)]
 
-    for _ in range(100_000):
+    for _ in range(max_steps):
         idx = np.flatnonzero(active)
         if idx.size == 0:
             break
@@ -1082,15 +1162,20 @@ def _march_rays(
             stuck[sub] = np.where(creep, stuck[sub] + 1, 0)
             # a bailed ray stops before advancing, like the scalar break;
             # the rest advance and check t_max after the step
-            dead = creep & (stuck[sub] > 64)
+            dead = creep & (stuck[sub] > _MAX_CREEP_STEPS)
             adv = sub[~dead]
             t[adv] += stride[~dead]
             active[sub[dead]] = False
+            stalled[sub[dead]] = True
             active[adv[t[adv] > t_max]] = False
+    else:
+        # every visit spent with rays still marching: the scalar loop's
+        # for/else — an incomplete march, distrusted like a creep bail.
+        stalled |= active
 
-    for i in np.flatnonzero(inside).tolist():
+    for i in np.flatnonzero(inside & ~stalled).tolist():
         runs[i].append((float(span_start[i]), float(t_max), True))
-    return runs
+    return runs, stalled
 
 
 def thickness(
@@ -1156,6 +1241,16 @@ def thickness_field(
     thickness on oblique walls, but blind to a tall boss's column
     mass, so keep ``'ray'`` for the sink gate.
 
+    A grid node sitting exactly on a surface plane (a grid row phased
+    onto a wall, say) fires a ray whose march *rides* that plane — the
+    sdf stays ~0 and every step is the floor. The march is bounded, so
+    such a node stalls instead of hanging; the probe then retries the
+    ray once from a laterally nudged origin — moved in the face plane,
+    perpendicular to the ray, by ``pitch_m * _STALL_NUDGE_REL`` ×
+    :data:`_STALL_NUDGE_UV` — and if it still stalls it is listed in
+    ``refused_m`` (recovered nodes in ``nudged_m``), so the report always
+    says how many nodes were nudged or refused.
+
     Raises ``ValueError`` for any other ``method``.
     """
     if method not in ("ray", "ball"):
@@ -1201,11 +1296,38 @@ def thickness_field(
     t_max = span + 2.0 * pitch_m
     eps = LINEAR_REL_EPS * max(diag, t_max, 1e-3)
 
+    nudge = (
+        pitch_m * _STALL_NUDGE_REL * (_STALL_NUDGE_UV[0] * u + _STALL_NUDGE_UV[1] * v)
+    )
+    nudged: list[tuple[float, float, float]] = []
+    refused: list[tuple[float, float, float]] = []
     samples: list[ThicknessSample] = []
     for c0 in range(0, len(origins), _RAY_MARCH_CHUNK):
         c1 = min(c0 + _RAY_MARCH_CHUNK, len(origins))
         corigins = origins[c0:c1]
-        runs = _march_rays(fld, corigins, d, t_max, eps)
+        runs, stalled = _march_rays(fld, corigins, d, t_max, eps)
+        if stalled.any():
+            # The march rode a surface — the node sits on a leaf's plane
+            # (sdf ~ 0 along the march). Retry those rays once, batched,
+            # from origins nudged laterally in the face plane (perpendicular
+            # to the ray, so the retry leaves the plane); a stall again
+            # refuses the node (reported, never silently dropped) —
+            # partial hits from a stalled march are not trusted.
+            sidx = np.flatnonzero(stalled)
+            rorigins = corigins[sidx] + nudge[None, :]
+            rruns, rstalled = _march_rays(
+                fld, rorigins, d, t_max, eps, max_steps=_STALL_RETRY_MAX_STEPS
+            )
+            corigins = corigins.copy()
+            for k, i in enumerate(sidx.tolist()):
+                node = _vec3f(plane_pts[c0 + i])
+                if rstalled[k]:
+                    refused.append(node)
+                    runs[i] = []
+                    continue
+                nudged.append(node)
+                runs[i] = rruns[k]
+                corigins[i] = rorigins[k]
         # every crossing of the batch at once → all normals in one call
         cross_pts = [
             corigins[i] + tt * d
@@ -1275,6 +1397,8 @@ def thickness_field(
         nominal_m=nominal_m,
         ratio=float(ratio),
         samples=tuple(samples),
+        refused_m=tuple(refused),
+        nudged_m=tuple(nudged),
     )
 
 

@@ -386,8 +386,9 @@ def _serial_thickness_samples(
     role: str | None = None,
 ) -> tuple[ThicknessSample, ...]:
     """The pre-gr531239 thickness() — one :func:`ray_field` per grid node
-    over the grid ``thickness_field`` builds. The batched march's
-    equivalence oracle: identical node order, rays, runs, filters."""
+    over the grid ``thickness_field`` builds, plus its stall policy
+    (nudged retry, then refuse). The batched march's equivalence oracle:
+    identical node order, rays, runs, filters."""
     fld = cad_field(d, expr)
     n = np.asarray(as_vec3(normal_m), dtype=np.float64)
     n = n / np.linalg.norm(n)
@@ -418,6 +419,26 @@ def _serial_thickness_samples(
                 feature=feature,
                 role=role,
             )
+            if r.stalled:
+                # the policy under test: one lateral-nudge retry on the
+                # bigger budget, a second stall refuses the node
+                r = ray_field(
+                    fld,
+                    origin_m=_vec3f(
+                        p
+                        + n * pitch_m
+                        + pitch_m
+                        * ci._STALL_NUDGE_REL
+                        * (ci._STALL_NUDGE_UV[0] * u + ci._STALL_NUDGE_UV[1] * v)
+                    ),
+                    axis_m=_vec3f(-n),
+                    t_max_m=span + 2.0 * pitch_m,
+                    feature=feature,
+                    role=role,
+                    max_steps=ci._STALL_RETRY_MAX_STEPS,
+                )
+                if r.stalled:
+                    continue
             if not r.hits:
                 continue
             h = r.hits[0]
@@ -580,3 +601,116 @@ def test_ray_tangent_slide_gives_up_instead_of_crawling() -> None:
     assert r.hits == ()
     assert r.min_distance_m == pytest.approx(0.0, abs=1e-6)
     assert elapsed < 5.0
+    assert r.stalled
+
+
+@pytest.mark.timeout(60)  # pre-fix this hung ~90 s on 37 stalled rays; fixed <10 s
+def test_thickness_node_on_a_wall_plane_is_nudged_not_hung() -> None:
+    """A grid node exactly on a wall plane fires a ray that RIDES the wall:
+    sdf ~ 0 at every march step, so every step is the floor and the march
+    creeps span/min_step micro-evaluations per node — hours on field-backed
+    leaves (gr530414). The bounded march stalls, the node is retried once
+    from a laterally nudged origin, measures the wall and lands in
+    nudged_m — never hung, never silent, and refused_m stays empty."""
+    d = Design()
+    wall = d.prim("wall", build_config("box:w50d98h10"))
+    # d98 phases the pitch-4 grid so a row lands exactly on y = +49, the
+    # outer wall plane (98 mm = 24.5 pitches), and a column on x = -25.
+    t = thickness(
+        d, wall, origin_m=(0, 0, 10), normal_m=(0, 0, 1), pitch_m=4.0, nominal_m=10.0
+    )
+    assert t.samples
+    assert t.nudged_m
+    assert t.refused_m == ()
+    # every recovered node sits on a wall plane (the +y row or the -x
+    # column) and still carries the node's finite wall measurement
+    by_node = {s.position_m: s for s in t.samples}
+    for p in t.nudged_m:
+        assert min(abs(abs(p[0]) - 25.0), abs(abs(p[1]) - 49.0)) < 1e-9
+        assert by_node[p].thickness_m == pytest.approx(10.0, abs=1e-3)
+    # ordinary interior nodes still map the 10 mm column
+    mid = _nearest_xy(t.samples, 0, 0)
+    assert mid.thickness_m == pytest.approx(10.0, abs=1e-6)
+    assert mid.position_m[2] == pytest.approx(10.0, abs=1e-9)
+
+
+def test_thickness_unrecoverable_stall_is_refused_and_reported(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A node whose retry stalls too is listed in ``refused_m`` with no
+    sample — never silently dropped. A one-step retry budget forces it."""
+    d = Design()
+    wall = d.prim("wall", build_config("box:w50d98h10"))
+    kw: dict[str, Any] = {
+        "origin_m": (0, 0, 10),
+        "normal_m": (0, 0, 1),
+        "pitch_m": 4.0,
+    }
+    ok = thickness(d, wall, **kw)
+    assert ok.nudged_m and ok.refused_m == ()
+    monkeypatch.setattr(ci, "_STALL_RETRY_MAX_STEPS", 1)
+    t = thickness(d, wall, **kw)
+    assert t.refused_m
+    assert t.nudged_m == ()
+    assert not {s.position_m for s in t.samples} & set(t.refused_m)
+    assert len(t.samples) + len(t.refused_m) == len(ok.samples)
+
+
+def test_ray_riding_a_wall_plane_stalls_instead_of_creeping() -> None:
+    """The bounded march: a ray whose path slides along a wall plane
+    (sdf ~ 0 every step) bails with ``stalled=True`` after a handful of
+    evaluations, not span/min_step of them."""
+    d = Design()
+    wall = d.prim("wall", build_config("box:w50d98h10"))
+    r = ray(d, wall, origin_m=(0, 49, 14), axis_m=(0, 0, -1), t_max_m=26.0)
+    assert r.stalled
+    assert r.hits == ()
+    # a healthy ray is not flagged
+    d2, plate = plate_design()
+    assert not ray(d2, plate, origin_m=(0, 0, -5), axis_m=(0, 0, 1)).stalled
+
+
+def test_march_rays_stall_matches_scalar_ray_field() -> None:
+    """The batched march reports ``stalled`` where ray_field does — a
+    wall-plane rider, its healthy neighbours, and tiny step budgets that
+    run out (a crossing opened on the last visit is still recorded)."""
+    d = Design()
+    wall = d.prim("wall", build_config("box:w50d98h10"))
+    fld = cad_field(d, wall)
+    lo, hi = fld.aabb
+    diag = float(np.linalg.norm(np.asarray(hi) - np.asarray(lo)))
+    t_max = 26.0
+    eps = ci.LINEAR_REL_EPS * max(diag, t_max, 1e-3)
+    dvec = np.array([0.0, 0.0, -1.0])
+    origins = [(0.0, 49.0, 14.0), (0.0, 48.0, 14.0), (0.0, 0.0, 14.0)]
+    for max_steps in (ci._MAX_RAY_STEPS, 2, 3):
+        runs, stalled = ci._march_rays(
+            fld, np.array(origins), dvec, t_max, eps, max_steps=max_steps
+        )
+        for i, o in enumerate(origins):
+            s = ray_field(
+                fld,
+                origin_m=o,
+                axis_m=(0.0, 0.0, -1.0),
+                t_max_m=t_max,
+                max_steps=max_steps,
+            )
+            assert bool(stalled[i]) == s.stalled, (max_steps, o)
+            assert [(a, b) for a, b, _o in runs[i]] == [
+                (h.t_entry_m, h.t_exit_m) for h in s.hits
+            ], (max_steps, o)
+    # the riding ray stalls at the default budget; the centre ray does not
+    _, stalled = ci._march_rays(fld, np.array(origins), dvec, t_max, eps)
+    assert stalled.tolist() == [True, False, False]
+
+
+def test_thickness_grid_missing_the_solid_is_empty() -> None:
+    """A grid whose rays all miss the solid returns an empty result, not
+    an error, and reports no nudged or refused nodes."""
+    d, box = plate_design()
+    t = thickness(
+        d, box, origin_m=(0, 0, 100), normal_m=(0, 0, 1), pitch_m=4.0, nominal_m=10.0
+    )
+    assert t.samples == ()
+    assert t.refused_m == ()
+    assert t.nudged_m == ()
