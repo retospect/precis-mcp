@@ -42,6 +42,8 @@ import re
 import socket
 import subprocess
 import sys
+import threading
+import time
 from collections import Counter
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -55,6 +57,7 @@ from urllib.parse import urlparse
 from precis.dispatch import Hub
 from precis.errors import BadInput, NotFound
 from precis.format import render_agent_table
+from precis.handlers._python_worktrees import WorktreeRegistry
 from precis.protocol import _ALL_VERBS, Handler, KindSpec
 from precis.response import Response
 from precis.runtime.scope import current_scope
@@ -115,13 +118,20 @@ def _parse_skill_id(
     """
     m = _SKILL_ID_RE.match(raw)
     if m is None:
-        raise BadInput(
-            f"unparseable skill id: {raw!r}",
-            next=(
-                "skill ids are slug, slug~N, slug~A..B, "
-                "or slug/toc — letters/digits/hyphens only"
-            ),
+        # A ``~`` followed by anything but digits is usually a docs
+        # placeholder pasted into a call (``slug~N`` read literally) —
+        # name that case so the fix is obvious (gr541511).
+        hint = (
+            "skill ids are slug, slug~N, slug~A..B, "
+            "or slug/toc — letters/digits/hyphens only"
         )
+        if "~" in raw:
+            hint = (
+                "the ~ selector takes digits — slug~2 or slug~1..3; "
+                "N is only the docs placeholder (write ~<n> in prose, "
+                "a real chunk number in a call)"
+            )
+        raise BadInput(f"unparseable skill id: {raw!r}", next=hint)
     slug = m.group("slug")
     lo = m.group("lo")
     hi = m.group("hi")
@@ -679,7 +689,7 @@ class SkillHandler(Handler):
     #: new code paths consult ``_SYNTHESIZED_SKILLS`` directly.
     _SYNTHESIZED_SLUG: ClassVar[str] = "precis-help"
 
-    def __init__(self, *, hub: Hub) -> None:
+    def __init__(self, *, hub: Hub, worktrees: WorktreeRegistry | None = None) -> None:
         # The skill handler is file-backed: markdown under
         # ``precis.data.skills`` plus synthesised meta-skills. The
         # hub itself is only needed for ``precis-help`` / ``precis-
@@ -689,6 +699,27 @@ class SkillHandler(Handler):
         # no work here. Accepting ``hub=`` keeps the boot-loop
         # kw-args shape uniform across every handler.
         _ = hub
+
+        # Git-worktree roots for previewing unlanded skills
+        # (gr541511): the same ``WorktreeRegistry`` discovery the
+        # ``python``/``md`` kinds use (shared
+        # ``PRECIS_PYTHON_WORKTREES`` spec). ``None`` when the spec is
+        # unset — ``wt-<tree>`` ids then fail with a clear NotFound.
+        self.worktrees = worktrees
+
+        # TTL cache for the ``precis-status`` sections that cost DB
+        # round-trips, subprocesses or imports on a cold process
+        # (gr541005: the first get measured 82 s server-side).
+        # ``_status_lock`` guards only ``_status_locks`` and
+        # ``_status_warm_started`` — computes run under one lock per
+        # section key, so a slow cold probe never blocks a section
+        # that is already warm.
+        self._status_cache: dict[str, tuple[float, Any]] = {}
+        self._status_lock = threading.Lock()
+        self._status_locks: dict[str, threading.Lock] = {}
+        self._status_warm_started = False
+        # Injectable for tests; cache expiry is measured against it.
+        self._status_clock: Callable[[], float] = time.monotonic
 
         # Lazy-built embedded index over ``precis.data.skills/*.md``
         # — populated on the first ``search()`` call so cold start
@@ -709,7 +740,11 @@ class SkillHandler(Handler):
         # gr512233: the cache key gained the connection scope —
         # ``(slug, chunk_scope, 'read'|'write')``. Without it a toc
         # rendered under one scope would serve under the other.
-        self._toc_cache: dict[tuple[str, tuple[int, int] | None, str], str] = {}
+        # gr541511: and the worktree root — a ``wt-x/`` corpus's toc
+        # must not serve as the same slug's packaged toc.
+        self._toc_cache: dict[
+            tuple[str, tuple[int, int] | None, str, str | None], str
+        ] = {}
 
     # ── get ────────────────────────────────────────────────────────
 
@@ -741,6 +776,11 @@ class SkillHandler(Handler):
             return self.search(q=str(q).strip())
         find_preflight(kind="skill", id=id, view=view, q=q)
         s = str(id).strip()
+        head, sep, rest = s.partition("/")
+        corpus: dict[str, str] | None = None
+        if sep and self._worktree_alias_claimed(head):
+            corpus = self._worktree_corpus(head)
+            s = rest
         slug = s.split("~", 1)[0].split("/", 1)[0]
         if s != slug:
             raise BadInput(
@@ -753,11 +793,11 @@ class SkillHandler(Handler):
                 f"invalid skill slug: {slug!r}",
                 next="skill slugs are lowercase letters/digits/hyphens",
             )
-        text = _load_skill(slug)
+        text = _load_skill(slug, corpus=corpus)
         if text is None:
             alias_target = f"precis-{slug}-help"
-            if skill_exists(alias_target):
-                text = _load_skill(alias_target)
+            if _corpus_has(corpus, alias_target):
+                text = _load_skill(alias_target, corpus=corpus)
                 slug = alias_target
         if text is None and slug in self._SYNTHESIZED_SKILLS:
             # Synthesized skills have no file body; scan what get renders.
@@ -844,6 +884,22 @@ class SkillHandler(Handler):
             return self._render_index(tag=tag, kinds=kinds, family=family)
 
         raw_id = str(id).strip()
+        # Worktree root prefix (gr541511): ``<wt-alias>/<slug>`` serves
+        # the skill corpus of a git worktree's checkout — the md kind's
+        # ``<alias>/<file>`` grammar applied to skills, so an unlanded
+        # skill's served render (body, ``~N`` blocks, ``/toc``) is
+        # previewable before it ships. ``corpus`` below is ``None`` for
+        # the packaged corpus and that tree's ``{slug: raw}`` map under
+        # a root. A bare ``wt-<tree>`` id lists the tree's slugs.
+        corpus: dict[str, str] | None = None
+        root_alias: str | None = None
+        head, sep, rest = raw_id.partition("/")
+        if sep and self._worktree_alias_claimed(head):
+            corpus = self._worktree_corpus(head)
+            root_alias = head
+            raw_id = rest
+        elif not sep and self.worktrees is not None and self.worktrees.owns(raw_id):
+            return self._render_worktree_index(raw_id)
         # Parse the id for skill-chunk selector syntax: ``slug~N``,
         # ``slug~A..B``, ``slug/toc``. Same shape as the paper
         # handler's address grammar so the agent's mental model
@@ -880,12 +936,16 @@ class SkillHandler(Handler):
         # connection gets a stub (title + summary + pointer), on every
         # path (body, ``~N``, ``/toc``, find-in-ref covered below).
         conn_scope = current_scope()
-        if conn_scope == "read" and _skill_is_write_only(slug):
-            return Response(body=_write_only_stub(slug))
+        if conn_scope == "read" and _skill_is_write_only(slug, corpus=corpus):
+            return Response(body=_write_only_stub(slug, corpus=corpus))
         if effective_view == "toc":
-            return self._render_skill_toc(slug, scope=chunk_spec)
+            return self._render_skill_toc(
+                slug, scope=chunk_spec, corpus=corpus, root=root_alias
+            )
         if chunk_spec is not None:
-            return self._render_skill_chunks(slug, chunk_spec)
+            return self._render_skill_chunks(
+                slug, chunk_spec, corpus=corpus, root=root_alias
+            )
 
         # Synthesised meta-skills: enumerate active kinds, probe
         # optional deps, …  Each entry in ``_SYNTHESIZED_SKILLS``
@@ -921,7 +981,7 @@ class SkillHandler(Handler):
                 )
             return Response(body=renderer())
 
-        text = _load_skill(slug)
+        text = _load_skill(slug, corpus=corpus)
         if text is None:
             # gr338442: a caller often reasons "there's a `se` kind, so
             # there's a `precis-se-help`" and passes the bare kind/verb
@@ -929,14 +989,17 @@ class SkillHandler(Handler):
             # exists, serve it (with a banner naming the redirect) rather
             # than making the caller retry with the fuller slug.
             alias_target = f"precis-{slug}-help"
-            if skill_exists(alias_target):
-                text = _load_skill(alias_target)
-                assert text is not None  # skill_exists just confirmed it
+            if _corpus_has(corpus, alias_target):
+                text = _load_skill(alias_target, corpus=corpus)
+                assert text is not None  # _corpus_has just confirmed it
                 text = f"(aliased from {slug!r} → {alias_target})\n\n" + text
                 slug = alias_target
         if text is None:
-            available = sorted(_list_skills())
-            available.extend(self._SYNTHESIZED_SKILLS)
+            if corpus is not None:
+                available = sorted(corpus)
+            else:
+                available = sorted(_list_skills())
+                available.extend(self._SYNTHESIZED_SKILLS)
             # A guessed slug is the common case here (an agent reasons
             # "there's an `se` kind, so there's a `precis-se-help`"), and
             # the useful reply is "did you mean X, else go search" — not
@@ -979,6 +1042,10 @@ class SkillHandler(Handler):
         # sections, write strips the markers so the serve is
         # byte-identical to the unmarked file.
         text, _dropped = scope_render(text, conn_scope)
+        # ``display`` is the id prefix every minted handle in this serve
+        # must carry — a worktree-rooted render points its ``~N`` /
+        # ``/toc`` / have= lines back at the same root.
+        display = f"{root_alias}/{slug}" if root_alias else slug
         body_sha = hashlib.sha256(text.encode("utf-8")).hexdigest()
         rev = body_sha[:8]
         have_s = have.strip() if isinstance(have, str) else ""
@@ -990,20 +1057,20 @@ class SkillHandler(Handler):
             outcome = "stale"
         log.info("skill serve slug=%s rev=%s have=%s", slug, rev, outcome)
         if outcome == "matched" and not full:
-            return self._render_serve_stub(slug, text, rev)
+            return self._render_serve_stub(display, text, rev)
 
         # Banner if this skill is filtered from the index — the agent
         # asked for it explicitly, so we serve it, but we want them
         # to know the recipes inside may not all run on this build.
         # See CRITICAL #3 and MAJOR #6 in the MCP critique.
-        gap = _availability_gap(slug, hub=self.hub)
+        gap = _availability_gap(slug, hub=self.hub, corpus=corpus)
         if gap is not None:
             text = f"> **Heads up:** {gap}\n\n" + text
         # ``[[slug]]`` wikilinks render as their full serve command in a
         # whole-skill serve (docs/backlog/skill-graph.md slice 1;
         # documented in precis-addressing-help).
         text = _expand_wikilinks(text)
-        header = _family_header(slug)
+        header = _family_header(slug, corpus=corpus)
         if header:
             text = header + "\n\n" + text
         banner = self._concern_banner(slug)
@@ -1013,7 +1080,7 @@ class SkillHandler(Handler):
         # gone — ~450 B of the same list on every serve, and the verb
         # table it pointed at lives on get(kind='skill', id='precis-help')
         # already. The graph footer below keeps per-skill navigation.
-        graph_footer = self._graph_footer(slug)
+        graph_footer = self._graph_footer(slug, corpus=corpus)
         if graph_footer:
             text = text.rstrip() + "\n\n" + graph_footer
         # The misled promo asks once per session per skill — a repeat
@@ -1036,8 +1103,8 @@ class SkillHandler(Handler):
         text += f"\n\nskill rev {rev}"
         return Response(
             body=text,
-            result_budget_hint=_result_budget_hint(slug),
-            budget_outline=_budget_outline(slug, text),
+            result_budget_hint=_result_budget_hint(display),
+            budget_outline=_budget_outline(display, text),
         )
 
     def _render_serve_stub(self, slug: str, text: str, rev: str) -> Response:
@@ -1062,7 +1129,7 @@ class SkillHandler(Handler):
         )
         return Response(body="\n".join(lines))
 
-    def _graph_footer(self, slug: str) -> str:
+    def _graph_footer(self, slug: str, *, corpus: dict[str, str] | None = None) -> str:
         """Four-line "Next:" footer over the skill graph (slice 1
         surfacing): linked skills, tags, kinds, tree siblings.
 
@@ -1073,7 +1140,7 @@ class SkillHandler(Handler):
         stay out of toc/footer surfacing — ``invokes_personas`` already
         covers their edge type) or a skill with nothing on any axis.
         """
-        raw = _load_skill(slug)
+        raw = _load_skill(slug, corpus=corpus)
         fm = parse_frontmatter(raw or "")
         if fm.flavor == "persona":
             return ""
@@ -1132,6 +1199,88 @@ class SkillHandler(Handler):
             )
 
         return render_next_section(rows)
+
+    # ── worktree roots (gr541511) ──────────────────────────────────
+
+    def _worktree_alias_claimed(self, head: str) -> bool:
+        """Whether ``head`` names a worktree root position in an id.
+
+        The registry's own ``owns`` decides when one is wired (its
+        configured prefix needn't be ``wt``); with no registry a
+        ``wt-``-shaped head still claims the slot so the error names
+        the missing wiring instead of "unknown skill view".
+        """
+        if self.worktrees is not None:
+            return self.worktrees.owns(head)
+        return head.startswith("wt-")
+
+    def _worktree_corpus(self, alias: str) -> dict[str, str]:
+        """``{slug: raw markdown}`` for ``alias``'s checkout skill dir.
+
+        Built fresh per call — the point of the root is previewing
+        edits in flight, so a cached map would serve the very staleness
+        the caller is checking for. Resolution mirrors
+        :meth:`MdHandler._resolve_alias`: live ``WorktreeRegistry``
+        listing, NotFound naming the known aliases when the tree isn't
+        registered, never part of any index or search fan-out.
+        """
+        wts = self.worktrees
+        if wts is None:
+            raise NotFound(
+                f"skill root {alias!r} needs worktree aliases — "
+                "PRECIS_PYTHON_WORKTREES is not configured on this server",
+                next="get(kind='skill') reads the shipped corpus",
+            )
+        listing, _gone = wts.listing()
+        wt = listing.get(alias)
+        if wt is None:
+            raise NotFound(
+                f"worktree {alias!r} not configured: its directory does "
+                "not exist (or is not a registered git worktree under "
+                "the mapped prefix)",
+                options=sorted(listing) or None,
+                next="get(kind='skill') reads the shipped corpus",
+            )
+        skills_dir = wt.path / "src" / "precis" / "data" / "skills"
+        if not skills_dir.is_dir():
+            raise NotFound(
+                f"worktree {alias!r} has no skill corpus at {skills_dir}",
+                next="get(kind='skill') reads the shipped corpus",
+            )
+        corpus: dict[str, str] = {}
+        try:
+            _walk_skill_root(skills_dir, corpus)
+        except OSError as exc:
+            raise NotFound(
+                f"worktree {alias!r} skill corpus unreadable: "
+                f"{skills_dir} ({type(exc).__name__})",
+                next="get(kind='skill') reads the shipped corpus",
+            ) from exc
+        return corpus
+
+    def _render_worktree_index(self, alias: str) -> Response:
+        """A bare ``wt-<tree>`` id: the tree's skill slugs, sorted."""
+        corpus = self._worktree_corpus(alias)
+        lines = [f"# skill — worktree {alias} ({len(corpus)} skills)", ""]
+        for slug in sorted(corpus):
+            title = _skill_title_in(corpus, slug)
+            lines.append(f"  {slug}" + (f" — {title}" if title else ""))
+        body = "\n".join(lines)
+        if corpus:
+            first = sorted(corpus)[0]
+            body += render_next_section(
+                [
+                    (
+                        f"get(kind='skill', id='{alias}/{first}')",
+                        "preview a skill from this worktree",
+                    ),
+                    (
+                        f"get(kind='skill', id='{alias}/{first}/toc')",
+                        "or its TOC / ~N blocks",
+                    ),
+                ]
+            )
+        return Response(body=body)
 
     # ── search ─────────────────────────────────────────────────────
 
@@ -1852,7 +2001,12 @@ class SkillHandler(Handler):
     # ── smart-TOC + chunk rendering (Phase B integration) ─────────
 
     def _render_skill_toc(
-        self, slug: str, *, scope: tuple[int, int] | None
+        self,
+        slug: str,
+        *,
+        scope: tuple[int, int] | None,
+        corpus: dict[str, str] | None = None,
+        root: str | None = None,
     ) -> Response:
         """Render the smart-TOC for a skill, optionally scoped."""
         # The connection scope is part of the key — read scope renders
@@ -1860,18 +2014,23 @@ class SkillHandler(Handler):
         # under one scope must not serve under the other. It rides into
         # render_for_ref's own LRU too: that cache is module-level and
         # keyed without it would return this scope's sibling rendering.
+        # ``root`` joins the key for the same reason (gr541511): a
+        # worktree-corpus toc must not serve as the packaged slug's.
         conn_scope = current_scope()
-        cache_key = (slug, scope, conn_scope)
+        cache_key = (slug, scope, conn_scope, root)
         cached = self._toc_cache.get(cache_key)
         if cached is not None:
             return Response(body=cached)
 
         from precis.utils.toc import render_for_ref
 
-        adapter = self.chunks_for_toc(slug)
+        # The rendered ``~N`` handles carry the root prefix so they
+        # resolve straight back through ``get`` (``wt-x/slug~2``).
+        display = f"{root}/{slug}" if root else slug
+        adapter = self.chunks_for_toc(slug, corpus=corpus)
         body = render_for_ref(
-            ref_id=slug,
-            slug=slug,
+            ref_id=display,
+            slug=display,
             kind="skill",
             adapter=adapter,
             scope=scope,
@@ -1885,11 +2044,11 @@ class SkillHandler(Handler):
         body += render_next_section(
             [
                 (
-                    f"get(kind='skill', id={slug!r})",
+                    f"get(kind='skill', id={display!r})",
                     "read the skill's card + chunk overview",
                 ),
                 (
-                    f"get(kind='skill', id='{slug}~{first_pos}')",
+                    f"get(kind='skill', id='{display}~{first_pos}')",
                     "read a specific chunk (use any handle from above)",
                 ),
             ]
@@ -1900,17 +2059,25 @@ class SkillHandler(Handler):
         self._toc_cache[cache_key] = body
         return Response(body=body)
 
-    def _render_skill_chunks(self, slug: str, chunk_spec: tuple[int, int]) -> Response:
+    def _render_skill_chunks(
+        self,
+        slug: str,
+        chunk_spec: tuple[int, int],
+        *,
+        corpus: dict[str, str] | None = None,
+        root: str | None = None,
+    ) -> Response:
         """Render one or more H2 chunks of a skill (selector ``~N`` /
         ``~A..B``). Single-chunk requests show the H2 heading + the
         chunk body verbatim; range requests concatenate the body of
         every chunk in the range with H2 markers preserved."""
         from precis.skill_index.chunker import chunk_by_h2
 
-        text = _load_skill(slug)
+        display = f"{root}/{slug}" if root else slug
+        text = _load_skill(slug, corpus=corpus)
         if text is None:
             raise NotFound(
-                f"skill {slug!r} not found",
+                f"skill {display!r} not found",
                 next="get(kind='skill') for the catalogue",
             )
         # gr512233: chunks run on the scope-filtered body — read keeps
@@ -1922,19 +2089,19 @@ class SkillHandler(Handler):
         lo, hi = chunk_spec
         if hi >= len(chunks) or lo < 0 or lo > hi:
             raise BadInput(
-                f"skill {slug!r} has {len(chunks)} chunks; "
+                f"skill {display!r} has {len(chunks)} chunks; "
                 f"range ~{lo}..{hi} is out of bounds",
-                next=(f"get(kind='skill', id='{slug}/toc') for valid handles"),
+                next=(f"get(kind='skill', id='{display}/toc') for valid handles"),
             )
 
         trailer = render_next_section(
             [
                 (
-                    f"get(kind='skill', id='{slug}/toc')",
+                    f"get(kind='skill', id='{display}/toc')",
                     "table of contents for this skill",
                 ),
                 (
-                    f"get(kind='skill', id={slug!r})",
+                    f"get(kind='skill', id={display!r})",
                     "skill card + chunk overview",
                 ),
             ]
@@ -1946,12 +2113,12 @@ class SkillHandler(Handler):
         # .md slice 1).
         if lo == hi:
             chunk = chunks[lo]
-            header = f"# {slug}~{lo}"
+            header = f"# {display}~{lo}"
             if chunk.heading:
                 header += f" — {chunk.heading}"
             body = f"{header}\n\n{_expand_wikilinks(chunk.text)}"
         else:
-            parts = [f"# {slug}~{lo}..{hi}\n"]
+            parts = [f"# {display}~{lo}..{hi}\n"]
             for i in range(lo, hi + 1):
                 parts.append(_expand_wikilinks(chunks[i].text))
             body = "\n\n".join(parts)
@@ -1990,7 +2157,7 @@ class SkillHandler(Handler):
 
     # ── chunks_for_toc adapter ─────────────────────────────────────
 
-    def chunks_for_toc(self, ref: Any) -> Any:
+    def chunks_for_toc(self, ref: Any, *, corpus: dict[str, str] | None = None) -> Any:
         """Adapter for the generic TOC renderer.
 
         ``ref`` here is the skill slug (string) rather than a Ref
@@ -2008,7 +2175,7 @@ class SkillHandler(Handler):
         from precis.utils.toc import ChunksForToc
 
         slug = str(ref)
-        text = _load_skill(slug)
+        text = _load_skill(slug, corpus=corpus)
         if text is None:
             raise NotFound(
                 f"skill {slug!r} not found",
@@ -2586,7 +2753,7 @@ class SkillHandler(Handler):
         if last_exit is not None:
             lines.append(f"**{last_exit}**")
             lines.append("")
-        staleness = _staleness()
+        staleness = self._status_cached("staleness", _staleness_for_status)
         stale_warnings = staleness.warnings()
         prepare_warnings = _prepare_status_warnings()
         lines += [
@@ -2621,7 +2788,7 @@ class SkillHandler(Handler):
             "",
         ]
         store = getattr(self.hub, "store", None) if self.hub is not None else None
-        db_info = _collect_database_info(store)
+        db_info = self._status_cached("db_info", lambda: _collect_database_info(store))
         if isinstance(db_info, str):
             lines.append(f"_{db_info}_")
         else:
@@ -2636,13 +2803,23 @@ class SkillHandler(Handler):
         lines.extend(["", "**Introspection (no SQL needed)**", ""])
         lines.extend(_INTROSPECTION_POINTERS)
         lines.extend(["", "**Dark switches**", ""])
-        lines.extend(_render_dark_switches(store))
+        lines.extend(
+            self._status_cached("dark_switches", lambda: _render_dark_switches(store))
+        )
         lines.extend(["", "**Fleet utilisation (last hour)**", ""])
-        lines.extend(_render_fleet_utilisation(store))
+        lines.extend(
+            self._status_cached(
+                "fleet_utilisation", lambda: _render_fleet_utilisation(store)
+            )
+        )
         lines.extend(["", "**Tool-call latency (last hour, all processes)**", ""])
-        lines.extend(_render_tool_latency(store))
+        lines.extend(
+            self._status_cached("tool_latency", lambda: _render_tool_latency(store))
+        )
         lines.extend(["", "**Indexes**", ""])
-        lines.extend(_render_ann_indexes(store))
+        lines.extend(
+            self._status_cached("ann_indexes", lambda: _render_ann_indexes(store))
+        )
         lines.extend(["", "**Embedder**", ""])
         embedder = getattr(self.hub, "embedder", None) if self.hub is not None else None
         if embedder is None:
@@ -2651,7 +2828,9 @@ class SkillHandler(Handler):
                 "(every search runs lexical-only)_"
             )
         else:
-            embedder_rows = _collect_embedder_info(embedder)
+            embedder_rows = self._status_cached(
+                "embedder_info", lambda: _collect_embedder_info(embedder)
+            )
             lines.append(
                 render_agent_table(
                     [{"field": f, "value": v} for f, v in embedder_rows],
@@ -2690,41 +2869,18 @@ class SkillHandler(Handler):
             ]
         )
 
-        rows: list[tuple[str, str, str, str]] = []  # (label, status, kind, hint)
-        worst = "OK"
-        # gr519660: ``sentence_transformers`` backs ONLY the in-process
-        # ``bge-m3`` embedder — every kind's semantic search runs on
-        # whatever backend is live, and a ``remote`` backend (prod)
-        # embeds via the service, so the local module is unneeded.
-        # Probing it unconditionally flagged prod DEGRADED for a dep
-        # nothing here imports. Probe it only when the live backend is
-        # the local bge-m3 one; otherwise report it n/a.
-        _inner = getattr(embedder, "inner", embedder)
-        needs_local_st = getattr(_inner, "backend", None) == "bge-m3"
-        for module, label, backs, hint in _OPTIONAL_DEP_PROBES:
-            if module == "sentence_transformers" and not needs_local_st:
-                backend = getattr(_inner, "backend", "none")
-                rows.append(
-                    (
-                        label,
-                        f"n/a (embedder backend is {backend}, not local bge-m3)",
-                        backs,
-                        "",
-                    )
-                )
-                continue
-            try:
-                mod = importlib.import_module(module)
-            except ImportError:
-                rows.append((label, "MISSING", backs, hint))
-                worst = "DEGRADED"
-                continue
-            except Exception as exc:  # pragma: no cover — import-side bug
-                rows.append((label, f"ERROR: {exc}", backs, hint))
-                worst = "DEGRADED"
-                continue
-            version = getattr(mod, "__version__", None) or "(unknown)"
-            rows.append((label, f"OK {version}", backs, ""))
+        # The import probes are themselves cold cost (gr541005: a cold
+        # ``sentence_transformers`` import alone is seconds) — cached
+        # like the DB sections; dep availability is process-stable.
+        rows = self._status_cached("dep_probes", lambda: _optional_dep_rows(embedder))
+        worst = (
+            "DEGRADED"
+            if any(
+                not (status.startswith("OK") or status.startswith("n/a"))
+                for _l, status, _b, _h in rows
+            )
+            else "OK"
+        )
 
         lines.append(
             render_agent_table(
@@ -2784,10 +2940,99 @@ class SkillHandler(Handler):
                 lines.append(f"**{unavailable}**")
         return "\n".join(lines)
 
+    def _status_cached(self, key: str, compute: Callable[[], Any]) -> Any:
+        """One ``precis-status`` section behind the TTL cache (gr541005).
+
+        A cold render serialises several DB round-trips, a second
+        migrator connection, git probes and dep imports — measured 82 s
+        server-side on the first get after a restart. Caching each
+        section for :data:`_STATUS_CACHE_TTL_S` keeps a repeat render
+        sub-second while every fact still ages within a minute.
+
+        Only a successful compute is stored: a probe that reports its
+        failure by raising :class:`_ProbeUnavailable` has its rendered
+        fallback returned to the caller but never cached — a boot warm
+        that ran before the DB was up would otherwise pin
+        "unreachable" for the whole TTL past recovery. Concurrent cold
+        renders of the same key single-flight behind one per-key lock;
+        a warm key pays only a dict read, so a slow probe never blocks
+        a section that is already warm.
+        """
+        ttl = _status_cache_ttl_s()
+        hit = self._status_cache.get(key)
+        if hit is not None and self._status_clock() - hit[0] < ttl:
+            return hit[1]
+        with self._status_lock:
+            lock = self._status_locks.setdefault(key, threading.Lock())
+        with lock:
+            hit = self._status_cache.get(key)
+            if hit is not None and self._status_clock() - hit[0] < ttl:
+                return hit[1]
+            try:
+                value = compute()
+            except _ProbeUnavailable as exc:
+                return exc.rendered
+            self._status_cache[key] = (self._status_clock(), value)
+            return value
+
+    def warm_status(self) -> None:
+        """Fill the status cache on a daemon thread — gr541005.
+
+        Called by ``server._warm_skill_status_background`` right before
+        the transport takes over so the first request-path
+        ``precis-status`` reads sections a boot-time pass already paid
+        for, rather than paying them inside a tool call. Runs once;
+        the TTL keeps the sections fresh afterwards.
+        """
+        with self._status_lock:
+            if self._status_warm_started:
+                return
+            self._status_warm_started = True
+
+        def _warm() -> None:
+            try:
+                self._render_status()
+            except Exception:  # pragma: no cover — a warm must not break boot
+                log.exception("precis-status background warm failed")
+
+        threading.Thread(target=_warm, name="precis-status-warmup", daemon=True).start()
+
 
 # ---------------------------------------------------------------------------
 # Build / runtime / DB collectors — used by ``precis-status``
 # ---------------------------------------------------------------------------
+
+
+#: Seconds a ``precis-status`` section may serve from the handler's TTL
+#: cache (gr541005). Long enough that a status call is sub-second under
+#: polling, short enough that the facts (drift, fleet busy share,
+#: latency percentiles — all "last hour" aggregates anyway) stay honest.
+#: ``PRECIS_STATUS_CACHE_TTL_S`` overrides; ``0`` disables caching.
+_STATUS_CACHE_TTL_S = 60.0
+
+
+def _status_cache_ttl_s() -> float:
+    raw = (os.environ.get("PRECIS_STATUS_CACHE_TTL_S") or "").strip()
+    try:
+        return float(raw) if raw else _STATUS_CACHE_TTL_S
+    except ValueError:
+        return _STATUS_CACHE_TTL_S
+
+
+class _ProbeUnavailable(Exception):
+    """A status probe's transient-failure signal (gr541005).
+
+    Probes raise it carrying the rendered fallback (``unreachable: …``,
+    a ``_Staleness`` whose tree read failed) so ``_status_cached``
+    hands the caller exactly what a success would have produced — but
+    stores nothing. A cached failure would pin "down" for the whole
+    TTL: the boot warm that ran before the DB came up reported it
+    unreachable for a minute after it recovered.
+    """
+
+    def __init__(self, rendered: Any) -> None:
+        super().__init__()
+        self.rendered = rendered
 
 
 #: Process start time. Captured at module import so ``uptime_seconds``
@@ -3247,7 +3492,9 @@ class _Staleness:
     ``build_age``) and the WARN lines under them, so the two cannot
     disagree. ``drift`` is one of ``none`` / ``moved`` / ``unknown``;
     ``why_unknown`` names what could not be compared when it is
-    ``unknown``.
+    ``unknown``. ``probe_failed`` marks an ``unknown`` that came from a
+    failed read rather than from there being nothing to compare — a
+    transient result the status cache must not store.
     """
 
     served_from: str
@@ -3258,6 +3505,7 @@ class _Staleness:
     why_unknown: str | None = None
     build_time: str | None = None
     build_age: timedelta | None = None
+    probe_failed: bool = False
 
     @property
     def drift_row(self) -> str:
@@ -3373,12 +3621,27 @@ def _staleness() -> _Staleness:
             drift="unknown",
             booted=booted,
             why_unknown=f"the served tree's .git at {root} could not be read",
+            probe_failed=True,
         )
     if now == booted:
         return mk(drift="none", booted=booted, now=now)
     return mk(
         drift="moved", booted=booted, now=now, behind=_commits_behind(root, booted, now)
     )
+
+
+def _staleness_for_status() -> _Staleness:
+    """``_staleness`` adapted for the status TTL cache (gr541005).
+
+    ``drift="unknown"`` from an unreadable ``.git`` is a failed probe,
+    not a verdict: raised as :class:`_ProbeUnavailable` it renders the
+    same WARN but is never stored, so a mount that is briefly absent
+    does not pin "unknown" for the TTL after it comes back.
+    """
+    st = _staleness()
+    if st.probe_failed:
+        raise _ProbeUnavailable(st)
+    return st
 
 
 def _source_drift() -> str:
@@ -3576,7 +3839,9 @@ def _render_dark_switches(store: Store | None) -> list[str]:
     try:
         rows = dark_switch_states(store)
     except Exception as exc:
-        return [f"_unreachable: {type(exc).__name__}: {exc}_"]
+        raise _ProbeUnavailable(
+            [f"_unreachable: {type(exc).__name__}: {exc}_"]
+        ) from exc
     return [
         "`dark` = no priority set (not broken); `lit` = priority >= 1; "
         "`off` = priority 0. Ask a human operator to set a priority.",
@@ -3600,7 +3865,9 @@ def _render_fleet_utilisation(store: Store | None) -> list[str]:
             util = health_checks.loop_utilisation(conn)
             lanes = health_checks.idle_lanes(conn)
     except Exception as exc:
-        return [f"_unreachable: {type(exc).__name__}: {exc}_"]
+        raise _ProbeUnavailable(
+            [f"_unreachable: {type(exc).__name__}: {exc}_"]
+        ) from exc
     out: list[str] = []
     if util:
         out.append(
@@ -3681,7 +3948,9 @@ def _render_tool_latency(store: Store | None) -> list[str]:
         with store.pool.connection() as conn:
             rows = health_checks.tool_latency(conn)
     except Exception as exc:
-        return [f"_unreachable: {type(exc).__name__}: {exc}_"]
+        raise _ProbeUnavailable(
+            [f"_unreachable: {type(exc).__name__}: {exc}_"]
+        ) from exc
     if not rows:
         return ["_no tool calls in the last hour_"]
     total = sum(t.calls for t in rows)
@@ -3729,7 +3998,9 @@ def _render_ann_indexes(store: Store | None) -> list[str]:
                 "ORDER BY ic.relname"
             ).fetchall()
     except Exception as exc:
-        return [f"_unreachable: {type(exc).__name__}: {exc}_"]
+        raise _ProbeUnavailable(
+            [f"_unreachable: {type(exc).__name__}: {exc}_"]
+        ) from exc
     if not rows:
         return ["_no hnsw indexes on chunk_embeddings_"]
     return [
@@ -3758,8 +4029,11 @@ def _collect_database_info(store: Store | None) -> list[tuple[str, str]] | str:
 
     Wraps the DB roundtrip in a broad ``except`` — this is the *first*
     surface called when something is wrong, so it must not die when the
-    DB is the thing wrong. Returns ``"unreachable: <type>: <msg>"`` so
-    the operator sees the failure mode without a traceback.
+    DB is the thing wrong. Signals ``"unreachable: <type>: <msg>"`` via
+    :class:`_ProbeUnavailable` so the operator sees the failure mode
+    without a traceback and the status TTL cache renders it but never
+    stores it (a down DB must not read down for the TTL after it is
+    back, gr541005).
     """
     if store is None:
         return "stateless build — no DB configured"
@@ -3789,8 +4063,10 @@ def _collect_database_info(store: Store | None) -> list[tuple[str, str]] | str:
     except Exception as exc:
         # Broad except is intentional: this is the *first* surface
         # called when something is wrong. A traceback here masks the
-        # real signal; render the failure mode in-band instead.
-        return f"unreachable: {type(exc).__name__}: {exc}"
+        # real signal; render the failure mode in-band instead — via
+        # the probe-failure signal so the status cache never stores a
+        # transient outage.
+        raise _ProbeUnavailable(f"unreachable: {type(exc).__name__}: {exc}") from exc
 
     if row is None:
         return "DB returned no rows"
@@ -3834,6 +4110,45 @@ def _collect_database_info(store: Store | None) -> list[tuple[str, str]] | str:
     return rows
 
 
+def _optional_dep_rows(embedder: Any) -> list[tuple[str, str, str, str]]:
+    """``(label, status, backs, hint)`` rows for the **Optional dependencies** table.
+
+    gr519660: ``sentence_transformers`` backs ONLY the in-process
+    ``bge-m3`` embedder — every kind's semantic search runs on
+    whatever backend is live, and a ``remote`` backend (prod)
+    embeds via the service, so the local module is unneeded.
+    Probing it unconditionally flagged prod DEGRADED for a dep
+    nothing here imports. Probe it only when the live backend is
+    the local bge-m3 one; otherwise report it n/a.
+    """
+    _inner = getattr(embedder, "inner", embedder)
+    needs_local_st = getattr(_inner, "backend", None) == "bge-m3"
+    rows: list[tuple[str, str, str, str]] = []
+    for module, label, backs, hint in _OPTIONAL_DEP_PROBES:
+        if module == "sentence_transformers" and not needs_local_st:
+            backend = getattr(_inner, "backend", "none")
+            rows.append(
+                (
+                    label,
+                    f"n/a (embedder backend is {backend}, not local bge-m3)",
+                    backs,
+                    "",
+                )
+            )
+            continue
+        try:
+            mod = importlib.import_module(module)
+        except ImportError:
+            rows.append((label, "MISSING", backs, hint))
+            continue
+        except Exception as exc:  # pragma: no cover — import-side bug
+            rows.append((label, f"ERROR: {exc}", backs, hint))
+            continue
+        version = getattr(mod, "__version__", None) or "(unknown)"
+        rows.append((label, f"OK {version}", backs, ""))
+    return rows
+
+
 def _collect_embedder_info(embedder: Any) -> list[tuple[str, str]]:
     """Return ``(field, value)`` rows for the **Embedder** section.
 
@@ -3860,6 +4175,9 @@ def _collect_embedder_info(embedder: Any) -> list[tuple[str, str]]:
         model = str(inner.model)
     except Exception as exc:  # pragma: no cover — defensive, mirrors DB probe
         model = f"(unreachable: {type(exc).__name__}: {exc})"
+        probe_failed = True
+    else:
+        probe_failed = False
     rows: list[tuple[str, str]] = [
         ("backend", str(backend)),
         ("model", model),
@@ -3868,6 +4186,10 @@ def _collect_embedder_info(embedder: Any) -> list[tuple[str, str]]:
     url = getattr(inner, "url", None)
     if url:
         rows.append(("url", str(url)))
+    # A failed ``/model`` fetch is a transient outage, not a verdict:
+    # render the rows but keep them out of the TTL cache (gr541005).
+    if probe_failed:
+        raise _ProbeUnavailable(rows)
     return rows
 
 
@@ -4403,7 +4725,7 @@ def _fence_lexical_hits(
     return kept, hidden
 
 
-def _skill_is_write_only(slug: str) -> bool:
+def _skill_is_write_only(slug: str, *, corpus: dict[str, str] | None = None) -> bool:
     """Whether ``slug``'s front matter declares ``scope: write``
     (gr512233 — the whole-skill write fence).
 
@@ -4412,26 +4734,26 @@ def _skill_is_write_only(slug: str) -> bool:
     body serve would. ``False`` for an unknown slug — the NotFound path
     handles those downstream.
     """
-    text = _load_skill(slug)
+    text = _load_skill(slug, corpus=corpus)
     if text is None:
         alias_target = f"precis-{slug}-help"
-        if skill_exists(alias_target):
-            text = _load_skill(alias_target)
+        if _corpus_has(corpus, alias_target):
+            text = _load_skill(alias_target, corpus=corpus)
     if text is None:
         return False
     return parse_frontmatter(text).scope == "write"
 
 
-def _write_only_stub(slug: str) -> str:
+def _write_only_stub(slug: str, *, corpus: dict[str, str] | None = None) -> str:
     """The read-scope stub for a ``scope: write`` skill — title +
     ``summary:`` + the omitted-recipes pointer, never a NotFound
     (the skill exists; this connection just can't use it)."""
-    text = _load_skill(slug)
+    text = _load_skill(slug, corpus=corpus)
     if text is None:
         alias_target = f"precis-{slug}-help"
-        if skill_exists(alias_target):
+        if _corpus_has(corpus, alias_target):
             slug = alias_target
-            text = _load_skill(slug)
+            text = _load_skill(slug, corpus=corpus)
     fm = parse_frontmatter(text or "")
     lines = [f"# {fm.title or slug}", ""]
     if fm.summary:
@@ -4456,10 +4778,10 @@ def _tree_siblings(slug: str) -> list[str]:
     return []
 
 
-def _family_header(slug: str) -> str:
+def _family_header(slug: str, *, corpus: dict[str, str] | None = None) -> str:
     """``family: f · tags: a, b`` (+ a sibling-list call when the family has
     other members) prepended to a whole-skill render."""
-    fm = parse_frontmatter(_load_skill(slug) or "")
+    fm = parse_frontmatter(_load_skill(slug, corpus=corpus) or "")
     if fm.flavor == "persona":  # personas stay out of toc/footer surfacing
         return ""
     fam = skill_family(slug, fm)
@@ -4698,12 +5020,23 @@ def _list_skills() -> list[str]:
     return list(_load_skills_map().keys())
 
 
-def _load_skill(slug: str) -> str | None:
+def _corpus_has(corpus: dict[str, str] | None, slug: str) -> bool:
+    """``slug`` exists in ``corpus`` (a worktree map) or the packaged corpus."""
+    return slug in corpus if corpus is not None else skill_exists(slug)
+
+
+def _load_skill(slug: str, *, corpus: dict[str, str] | None = None) -> str | None:
     """Return the skill body with ``{{include doc:…}}`` directives resolved.
 
     Returns ``None`` if the slug is unknown. Frontmatter is preserved
     through expansion (includes only live in body content), so
     callers that parse frontmatter on the result continue to work.
+
+    ``corpus`` substitutes for the packaged map — a worktree root's
+    ``{slug: raw}`` from :meth:`SkillHandler._worktree_corpus`
+    (gr541511). Include expansion resolves against the same corpus:
+    a worktree render sees that tree's includes, exactly what the
+    file will serve once landed.
 
     Includes that fail to resolve are **logged and the raw content
     is returned** so the skill stays viewable rather than disappearing
@@ -4712,7 +5045,7 @@ def _load_skill(slug: str) -> str | None:
     boot-time scanner (``precis.ingest.skill_ingest``); SkillHandler
     is the lenient runtime path.
     """
-    skills = _load_skills_map()
+    skills = _load_skills_map() if corpus is None else corpus
     text = skills.get(slug)
     if text is None:
         return None
@@ -4797,7 +5130,9 @@ def _kinds_referenced_by_skill(slug: str, fm: SkillFrontmatter) -> list[str]:
     return kinds
 
 
-def _availability_gap(slug: str, *, hub: Any) -> str | None:
+def _availability_gap(
+    slug: str, *, hub: Any, corpus: dict[str, str] | None = None
+) -> str | None:
     """Return a human-readable reason why this skill is filtered, or None.
 
     Long form for banners; :func:`_availability_gap_parts` also yields the
@@ -4835,7 +5170,7 @@ def _availability_gap(slug: str, *, hub: Any) -> str | None:
 
     Returns ``None`` if the skill is fully available.
     """
-    parts = _availability_gap_parts(slug, hub=hub)
+    parts = _availability_gap_parts(slug, hub=hub, corpus=corpus)
     return None if parts is None else parts[1]
 
 
@@ -4867,12 +5202,14 @@ def _unmet_requirements(fm: SkillFrontmatter) -> list[str]:
     return unmet
 
 
-def _availability_gap_parts(slug: str, *, hub: Any) -> tuple[str, str] | None:
+def _availability_gap_parts(
+    slug: str, *, hub: Any, corpus: dict[str, str] | None = None
+) -> tuple[str, str] | None:
     """``(short_label, long_reason)`` for an unavailable skill, else None."""
     if slug in SkillHandler._SYNTHESIZED_SKILLS:
         return None
 
-    text = _load_skill(slug)
+    text = _load_skill(slug, corpus=corpus)
     if text is None:
         return None  # caller handles 'not found'
 
@@ -5014,6 +5351,26 @@ def _skill_synopsis(slug: str) -> str:
     return ""
 
 
+def _title_of_text(text: str) -> str:
+    """YAML front-matter ``title:`` or first ``# H1`` in ``text`` (``""`` if none)."""
+    if text.startswith("---"):
+        end = text.find("\n---", 3)
+        if end != -1:
+            for line in text[3:end].splitlines():
+                line = line.strip()
+                if line.lower().startswith("title:"):
+                    return line.split(":", 1)[1].strip().strip("\"'")
+    for line in text.splitlines():
+        if line.startswith("# "):
+            return line[2:].strip()
+    return ""
+
+
+def _skill_title_in(corpus: dict[str, str], slug: str) -> str:
+    """Title of ``slug`` inside an explicit corpus map (a worktree root's)."""
+    return _title_of_text(corpus.get(slug) or "")
+
+
 def _skill_title(slug: str) -> str:
     """Pull the YAML front-matter ``title:`` field from a skill, if any.
 
@@ -5022,16 +5379,4 @@ def _skill_title(slug: str) -> str:
     text = _load_skill(slug)
     if text is None:
         return ""
-    # Front-matter block.
-    if text.startswith("---"):
-        end = text.find("\n---", 3)
-        if end != -1:
-            for line in text[3:end].splitlines():
-                line = line.strip()
-                if line.lower().startswith("title:"):
-                    return line.split(":", 1)[1].strip().strip("\"'")
-    # First H1.
-    for line in text.splitlines():
-        if line.startswith("# "):
-            return line[2:].strip()
-    return ""
+    return _title_of_text(text)

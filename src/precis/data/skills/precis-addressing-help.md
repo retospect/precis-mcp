@@ -155,6 +155,25 @@ slug or a synthesised meta-skill (`precis-help`/`precis-status`/
 `precis-toc`/`toc`) — a dangling link is a static ingest-gate finding
 (see `precis.ingest.skill_ingest`).
 
+## Skill ids can name a worktree root — `wt-<tree>/<slug>`
+
+When the server has `PRECIS_PYTHON_WORKTREES` (the spec is shared with
+the `python`/`md` kinds), prefixing a skill id with a git-worktree alias
+serves that checkout's corpus instead of the shipped one:
+
+```python
+get(kind="skill", id="wt-<tree>")                      # list the tree's skill slugs
+get(kind="skill", id="wt-<tree>/precis-foo-help")      # body
+get(kind="skill", id="wt-<tree>/precis-foo-help/toc")  # toc
+get(kind="skill", id="wt-<tree>/precis-foo-help~3")    # one block
+```
+
+This is the preview lane for an unlanded skill: the shipped
+`get(kind='skill', id='<slug>')` only shows the file once it
+is merged, released and deployed. Worktree serves are read-only and
+never enter the search fan-out. If the alias does not resolve, fall
+back to reading the file directly.
+
 ## Skill revisions — `have=`
 
 Every whole-skill serve ends with one line, `skill rev <sha8>`. To

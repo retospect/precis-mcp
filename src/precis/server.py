@@ -1235,6 +1235,22 @@ def _warm_python_semantic_background(runtime: PrecisRuntime) -> None:
         warm()
 
 
+def _warm_skill_status_background(runtime: PrecisRuntime) -> None:
+    """Start the skill handler's ``precis-status`` warm (own daemon thread).
+
+    Same shape as :func:`_warm_python_semantic_background`: the handler
+    spawns the thread, fills its per-section TTL cache once, and boot /
+    MCP connect never wait (gr541005 — a cold ``precis-status`` get
+    measured 82 s server-side). No-op when the kind isn't registered.
+    """
+    hub = getattr(runtime, "hub", None)
+    handler_for = getattr(hub, "handler_for", None)
+    handler = handler_for("skill") if handler_for is not None else None
+    warm = getattr(handler, "warm_status", None)
+    if warm is not None:
+        warm()
+
+
 def _warm_md_index_background(runtime: PrecisRuntime) -> None:
     """Best-effort: fill the `md` kind's vector cache in a background thread.
 
@@ -1840,6 +1856,7 @@ def main(
     _warm_embedder_background(runtime)
     _warm_md_index_background(runtime)
     _warm_python_semantic_background(runtime)
+    _warm_skill_status_background(runtime)
 
     if transport == "stdio":
         mcp.run(transport="stdio")

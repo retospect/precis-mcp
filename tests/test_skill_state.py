@@ -364,6 +364,196 @@ def test_status_renders_dark_switches_table(
     assert "**Dark switches**" in skill.get(id="precis-status").body
 
 
+# ── precis-status: per-section TTL cache (gr541005) ─────────────────────
+
+
+def test_status_slow_sections_run_once_per_ttl(
+    skill: SkillHandler, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Two renders inside the TTL run each cold-cost probe at most once —
+    the 82 s first-get had every section paying serially per call."""
+    from precis import install_watchdog
+    from precis.handlers import skill as skill_mod
+
+    monkeypatch.setattr(install_watchdog, "consume_last_exit_breadcrumb", lambda: None)
+    calls: dict[str, int] = {}
+    for name in (
+        "_staleness",
+        "_collect_database_info",
+        "_render_dark_switches",
+        "_render_fleet_utilisation",
+        "_render_tool_latency",
+        "_render_ann_indexes",
+        "_collect_embedder_info",
+        "_optional_dep_rows",
+    ):
+        orig = getattr(skill_mod, name)
+
+        def counted(*a, _o=orig, _n=name, **kw):
+            calls[_n] = calls.get(_n, 0) + 1
+            return _o(*a, **kw)
+
+        monkeypatch.setattr(skill_mod, name, counted)
+    skill.get(id="precis-status")
+    skill.get(id="precis-status")
+    # Embedder rows only compute when a hub embedder exists.
+    called = {k: v for k, v in calls.items() if k != "_collect_embedder_info"}
+    assert called and all(n == 1 for n in called.values()), calls
+    assert calls.get("_collect_embedder_info", 1) <= 1
+
+
+def test_status_cache_expires_after_ttl(
+    skill: SkillHandler, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """TTL=0 disables caching: every section recomputes per render."""
+    from precis import install_watchdog
+    from precis.handlers import skill as skill_mod
+
+    monkeypatch.setattr(install_watchdog, "consume_last_exit_breadcrumb", lambda: None)
+    monkeypatch.setattr(skill_mod, "_status_cache_ttl_s", lambda: 0.0)
+    calls = {"n": 0}
+    orig = skill_mod._staleness
+
+    def counted():
+        calls["n"] += 1
+        return orig()
+
+    monkeypatch.setattr(skill_mod, "_staleness", counted)
+    skill.get(id="precis-status")
+    skill.get(id="precis-status")
+    assert calls["n"] == 2
+
+
+def test_status_cache_drops_a_failed_probe(
+    skill: SkillHandler, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A probe signalling failure via ``_ProbeUnavailable`` renders its
+    fallback but is never cached — the boot warm that ran before the DB
+    was up must not pin "unreachable" for the whole TTL past recovery
+    (gr541005)."""
+    from precis.handlers import skill as skill_mod
+
+    monkeypatch.setattr(skill_mod, "_status_cache_ttl_s", lambda: 60.0)
+    calls = {"n": 0}
+
+    def compute() -> object:
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise skill_mod._ProbeUnavailable("unreachable: DB down")
+        return "up"
+
+    assert skill._status_cached("db_info", compute) == "unreachable: DB down"
+    # Inside the TTL the recovered probe re-runs rather than serving stale.
+    assert skill._status_cached("db_info", compute) == "up"
+    assert calls["n"] == 2
+    # The recovered value then caches like any success.
+    assert skill._status_cached("db_info", compute) == "up"
+    assert calls["n"] == 2
+
+
+def test_status_db_section_recovers_inside_the_ttl(
+    skill: SkillHandler, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """End to end (gr541005): a render during a DB outage shows the
+    unreachable line; the next render inside the TTL shows the
+    recovered rows — before this fix the outage was cached for a
+    minute past recovery."""
+    from precis import install_watchdog
+    from precis.handlers import skill as skill_mod
+
+    monkeypatch.setattr(install_watchdog, "consume_last_exit_breadcrumb", lambda: None)
+    monkeypatch.setattr(skill_mod, "_status_cache_ttl_s", lambda: 60.0)
+    state = {"down": True}
+
+    def probe(store: object) -> object:
+        if state["down"]:
+            raise skill_mod._ProbeUnavailable("unreachable: OperationalError: down")
+        return [("name", "recovered-db")]
+
+    monkeypatch.setattr(skill_mod, "_collect_database_info", probe)
+    assert "unreachable: OperationalError: down" in skill.get(id="precis-status").body
+    state["down"] = False
+    body = skill.get(id="precis-status").body
+    assert "unreachable: OperationalError: down" not in body
+    assert "recovered-db" in body
+
+
+def test_status_cache_raised_probe_is_not_cached(skill: SkillHandler) -> None:
+    """A compute that raises propagates and leaves nothing cached."""
+    calls = {"n": 0}
+
+    def compute() -> str:
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise RuntimeError("boom")
+        return "ok"
+
+    with pytest.raises(RuntimeError, match="boom"):
+        skill._status_cached("k", compute)
+    assert skill._status_cached("k", compute) == "ok"
+    assert calls["n"] == 2
+
+
+def test_status_cache_expires_on_the_injected_clock(
+    skill: SkillHandler, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Expiry is measured against ``_status_clock``: a warm entry serves
+    until the clock passes the TTL, then recomputes."""
+    from precis.handlers import skill as skill_mod
+
+    monkeypatch.setattr(skill_mod, "_status_cache_ttl_s", lambda: 60.0)
+    now = {"t": 1_000.0}
+    skill._status_clock = lambda: now["t"]
+    calls = {"n": 0}
+
+    def compute() -> str:
+        calls["n"] += 1
+        return f"v{calls['n']}"
+
+    assert skill._status_cached("k", compute) == "v1"
+    now["t"] += 59.0
+    assert skill._status_cached("k", compute) == "v1"
+    now["t"] += 2.0
+    assert skill._status_cached("k", compute) == "v2"
+    assert calls["n"] == 2
+
+
+def test_status_cold_section_never_blocks_a_warm_one(skill: SkillHandler) -> None:
+    """A handler-wide lock made one slow cold probe stall every section,
+    warm ones included. Computes single-flight per key now: while a cold
+    section is parked mid-probe, a warm read and a second cold section
+    both answer without waiting on it."""
+    import threading
+
+    assert skill._status_cached("warm", lambda: "w") == "w"
+    entered = threading.Event()
+    release = threading.Event()
+
+    def slow_cold() -> str:
+        entered.set()
+        release.wait(timeout=5)
+        return "cold-value"
+
+    cold = threading.Thread(
+        target=skill._status_cached, args=("cold", slow_cold), daemon=True
+    )
+    cold.start()
+    try:
+        assert entered.wait(timeout=5)
+        assert skill._status_cached("warm", lambda: "recomputed") == "w"
+        assert skill._status_cached("other", lambda: "o") == "o"
+    finally:
+        release.set()
+        cold.join(timeout=5)
+    assert skill._status_cache["cold"][1] == "cold-value"
+
+
+def test_warm_status_starts_background_fill(skill: SkillHandler) -> None:
+    skill.warm_status()
+    assert skill._status_warm_started
+    skill.warm_status()  # second call is a no-op, no extra thread
+
+
 def test_fleet_utilisation_renders_seeded_pass_durations(store) -> None:
     """precis-status shows busy/polling shares from worker_logs duration_ms."""
     import json

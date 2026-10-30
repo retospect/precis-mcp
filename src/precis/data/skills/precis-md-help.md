@@ -49,6 +49,12 @@ They are NOT in the default cross-root search; name one with
 `scope='wt-x'` or `scope='wt-x/docs/backlog'`. If the alias does not
 resolve, fall back to Grep/Read.
 
+The same aliases work on `kind='skill'` as a corpus root:
+`get(kind='skill', id='wt-<tree>/precis-foo-help')` (or
+`wt-<tree>/precis-foo-help~N`, `/toc`) renders that worktree's
+`src/precis/data/skills/` — the preview for a skill that is written
+but not yet landed and deployed.
+
 ## Search workspace prose by topic
 
 ```python

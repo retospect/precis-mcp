@@ -1245,7 +1245,7 @@ def boot(
                     name="precis-oracle-sync",
                     daemon=True,
                 ).start()
-        _gated(SkillHandler)
+        _gated(SkillHandler, worktrees=_worktree_registry())
         _gated(PaperHandler)
         # CFP — spec-role sibling of paper (same ingest + reader core,
         # non-citable). Imported lazily after PaperHandler since it

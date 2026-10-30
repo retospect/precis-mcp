@@ -71,7 +71,8 @@ _ID_ARG_RE = re.compile(r"\bid\s*=\s*['\"]([^'\"]+)['\"]")
 _SKILL_HANDLE_RE = re.compile(r"(?<![\w-])skill:([a-z0-9][a-z0-9-]*)")
 _CHUNK_REF_RE = re.compile(r"(?<![\w-])([a-z0-9][a-z0-9-]*)~(\d+)(?:\.\.(\d+))?")
 _SKILL_ID_GRAMMAR_RE = re.compile(
-    r"^(?P<slug>[a-z0-9][a-z0-9-]*)"
+    r"^(?:(?P<root>wt-[a-z0-9][a-z0-9_.-]*)/)?"
+    r"(?P<slug>[a-z0-9][a-z0-9-]*)"
     r"(?:~(?P<lo>\d+)(?:\.\.(?P<hi>\d+))?)?"
     r"(?:/(?P<view>[a-z]+))?$"
 )
@@ -325,7 +326,17 @@ def _id_problems(text: str) -> list[str]:
             continue
         g = _SKILL_ID_GRAMMAR_RE.match(rid)
         if g is None:
-            problems.append(f"unparseable skill id {rid!r}")
+            if "~" in rid:
+                problems.append(
+                    f"unparseable skill id {rid!r} — ~ takes digits "
+                    "(slug~2); ~<n> is the placeholder spelling"
+                )
+            else:
+                problems.append(f"unparseable skill id {rid!r}")
+            continue
+        if g.group("root") is not None:
+            # A worktree corpus isn't lint-verifiable — the alias and
+            # the slug it holds are runtime facts (gr541511).
             continue
         slug = g.group("slug")
         if slug not in valid:
