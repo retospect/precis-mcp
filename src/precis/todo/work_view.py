@@ -28,12 +28,13 @@ a ``get``. Gripes join the tree in slice td540842.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
 from precis.response import Response
 from precis.todo import views, work_gripes
+from precis.todo.work_gripes import GripeBlock
 from precis.utils import handle_registry
 from precis.utils.next_block import render_next_section
 
@@ -145,14 +146,13 @@ class WorkRow:
 @dataclass(frozen=True)
 class RootBlock:
     """One served root's rows; ``hidden`` counts rows past the row cap.
-    ``gripe_lines`` are the root's open-gripe rows as MCP text
-    (:mod:`precis.todo.work_gripes`, td540842) — structured gripe rows
-    for the web page are a follow-up."""
+    ``gripes`` are the root's open-gripe rows
+    (:mod:`precis.todo.work_gripes`, td540842 / td541980)."""
 
     root_id: int
     rows: tuple[WorkRow, ...]
     hidden: int
-    gripe_lines: tuple[str, ...] = ()
+    gripes: GripeBlock = field(default_factory=GripeBlock)
 
 
 @dataclass(frozen=True)
@@ -186,8 +186,8 @@ class WorkModel:
     unassigned: tuple[UnassignedRoot, ...]
     hosts: tuple[HostRow, ...]
     n_agents: int
-    #: The "unplaced gripes" bucket as MCP text (td540842).
-    unplaced_lines: tuple[str, ...] = ()
+    #: The "unplaced gripes" bucket (td540842 / td541980).
+    unplaced_gripes: GripeBlock = field(default_factory=GripeBlock)
 
 
 # ── the view ──────────────────────────────────────────────────────
@@ -333,13 +333,11 @@ def _render_root(
 
     root_row = next(r for r in rows if r["id"] == root.id)
     walk(root_row, 1)
-    gripe_lines: list[str] = []
-    work_gripes.append_root_gripes(store, tags_by_ref.get(root.id, []), gripe_lines)
     return RootBlock(
         root_id=root.id,
         rows=tuple(shown),
         hidden=hidden,
-        gripe_lines=tuple(gripe_lines),
+        gripes=work_gripes.root_gripes(store, tags_by_ref.get(root.id, [])),
     )
 
 
@@ -398,8 +396,6 @@ def work_model(store: Store, *, now: datetime | None = None) -> WorkModel:
         key=lambda r: r.id,
     )
     st = views._status_of_many(store, [r.id for r in unassigned])
-    unplaced_lines: list[str] = []
-    work_gripes.append_unplaced(store, served, unplaced_lines)
     return WorkModel(
         quests=tuple(b for _k, b in blocks),
         unassigned=tuple(
@@ -420,7 +416,7 @@ def work_model(store: Store, *, now: datetime | None = None) -> WorkModel:
             for hm in sorted(hosts, key=lambda m: str(m.get("host")))
         ),
         n_agents=len(agents),
-        unplaced_lines=tuple(unplaced_lines),
+        unplaced_gripes=work_gripes.unplaced_gripes(store, served),
     )
 
 
@@ -443,14 +439,14 @@ def render_work(store: Store, *, now: datetime | None = None) -> Response:
                     f"    … +{root.hidden} more — "
                     f"get(kind='todo', id={root.root_id}, view='tree')"
                 )
-            out.extend(root.gripe_lines)
+            out.extend(work_gripes.render_root_gripes(root.gripes))
 
     if model.unassigned:
         out += ["", f"unassigned roots ({len(model.unassigned)}) — serve no quest"]
         for u in model.unassigned:
             out.append(f"  {u.handle} [{u.status}] — {u.title}")
 
-    out.extend(model.unplaced_lines)
+    out.extend(work_gripes.render_unplaced(model.unplaced_gripes))
 
     out += ["", "hosts"]
     if model.hosts:

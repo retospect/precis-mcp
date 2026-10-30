@@ -38,6 +38,24 @@
 </div>
 {% endmacro %}
 
+{# One open gripe as a row (td541980): the columns of a todo row, with the
+   derived loop stage in the status and stage cells and no agents. ``pad``
+   is the item cell's left padding in rem. #}
+{% macro gripe_row(g, pad, root_id=none) %}
+<li class="flex items-baseline gap-3 px-3 py-1.5 text-sm"
+    data-handle="{{ g.handle }}" data-kind="gripe" data-status="{{ g.stage }}"{% if root_id is not none %} data-root="{{ root_id }}"{% endif %}>
+  <div class="flex-1 min-w-0 truncate" style="padding-left: {{ pad }}rem">
+    <a href="/eye/{{ g.handle }}" class="font-mono text-xs text-fg-subtle hover:underline">{{ g.handle }}</a>
+    <span title="{{ g.title }}">{{ g.title.split('\n', 1)[0] | truncate(120) }}</span>
+    {% if g.lane %}<span class="text-xs text-fg-faint">[{{ g.lane }}]</span>{% endif %}
+  </div>
+  <div class="w-40 shrink-0 text-xs text-fg-secondary truncate">{{ g.stage }}</div>
+  <div class="w-14 shrink-0 text-right text-xs"><span class="text-fg-ghost">–</span></div>
+  <div class="w-20 shrink-0"><span class="text-xs px-1.5 py-0.5 rounded bg-info-muted text-info-strong">{{ g.stage }}</span></div>
+  <div class="w-20 shrink-0 text-right text-xs text-fg-faint" title="{{ g.created_at | abs_ts }}">{{ g.created_at | ago }}</div>
+</li>
+{% endmacro %}
+
 {% for q in model.quests %}
 <section class="mb-6 rounded-lg border border-line bg-surface" data-handle="{{ q.handle }}" data-kind="quest">
   <div class="flex items-baseline gap-2 px-3 py-2 border-b border-line">
@@ -71,11 +89,13 @@
       … +{{ root.hidden }} more under <a href="/eye/td{{ root.root_id }}" class="font-mono hover:underline">td{{ root.root_id }}</a>
     </li>
     {% endif %}
-    {# Open gripes hung under the root by thread: tag (td540842) — MCP
-       text rows for now; structured rows with stage/lane are a follow-up. #}
-    {% if root.gripe_lines %}
-    <li class="px-3 py-1.5">
-      <pre class="font-mono text-xs text-fg-subtle whitespace-pre-wrap">{{ root.gripe_lines | join('\n') }}</pre>
+    {# Open gripes hung under the root by thread: tag (td540842). #}
+    {% for g in root.gripes.rows %}
+    {{ gripe_row(g, 1.25, root.root_id) }}
+    {% endfor %}
+    {% if root.gripes.hidden %}
+    <li class="px-3 py-1.5 text-xs text-fg-faint">
+      … +{{ root.gripes.hidden }} more gripes — <code>{{ root.gripes.more }}</code>
     </li>
     {% endif %}
     {% endfor %}
@@ -102,9 +122,22 @@
 </section>
 {% endif %}
 
-{% if model.unplaced_lines %}
-<section class="mb-6">
-  <pre class="rounded-lg border border-line bg-surface px-3 py-2 font-mono text-xs text-fg-subtle whitespace-pre-wrap">{{ model.unplaced_lines | join('\n') | trim }}</pre>
+{% if model.unplaced_gripes.rows %}
+<section class="mb-6" data-kind="unplaced-gripes">
+  <h2 class="text-sm font-semibold mb-2">Unplaced gripes ({{ model.unplaced_gripes.rows | length + model.unplaced_gripes.hidden }}) — open, thread matches no root</h2>
+  <div class="rounded-lg border border-line bg-surface">
+    {{ cols_header() }}
+    <ul class="divide-y divide-line">
+      {% for g in model.unplaced_gripes.rows %}
+      {{ gripe_row(g, 0) }}
+      {% endfor %}
+      {% if model.unplaced_gripes.hidden %}
+      <li class="px-3 py-1.5 text-xs text-fg-faint">
+        … +{{ model.unplaced_gripes.hidden }} newer — <code>{{ model.unplaced_gripes.more }}</code>
+      </li>
+      {% endif %}
+    </ul>
+  </div>
 </section>
 {% endif %}
 

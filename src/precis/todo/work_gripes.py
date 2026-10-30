@@ -18,9 +18,12 @@ at the end of the view — the count plus the five oldest — so
 the same definition as ``get(kind='gripe', id='/open')``. A gripe that
 carries two thread tags hangs under both roots.
 
-Two entry points, called from :mod:`precis.todo.work_view`:
-:func:`append_root_gripes` (one root's rows) and :func:`append_unplaced`
-(the closing bucket).
+Rows are data first (td541980): :func:`root_gripes` (one root's rows) and
+:func:`unplaced_gripes` (the closing bucket) return a :class:`GripeBlock`
+of frozen :class:`GripeRow`, carried by :mod:`precis.todo.work_view`'s
+model; :func:`render_root_gripes` / :func:`render_unplaced` format a block
+as the MCP text above and the ``/work`` page formats the same rows as
+HTML (``data-handle``, ``/eye`` link), so the two cannot drift.
 """
 
 from __future__ import annotations
@@ -50,12 +53,30 @@ _STAGE_RANK = {q: i for i, q in enumerate(gf.QUEUES)}
 
 @dataclass(frozen=True)
 class GripeRow:
+    """One open gripe. ``stage`` is the derived loop queue and ``lane`` the
+    builder lane (module docstring); ``created_at`` is the web age column;
+    ``threads`` every ``thread:`` slug it carries (a row hung under one
+    root may carry others)."""
+
     ref_id: int
     title: str
     stage: str
     lane: str | None
     created_at: datetime
     threads: tuple[str, ...]
+    #: ``gr<id>`` — the click / ``get`` handle.
+    handle: str = ""
+
+
+@dataclass(frozen=True)
+class GripeBlock:
+    """The rows one view section shows, plus what the cap left out.
+    ``hidden`` rows are not in ``rows``; ``more`` is the call that lists
+    them."""
+
+    rows: tuple[GripeRow, ...] = ()
+    hidden: int = 0
+    more: str = ""
 
 
 def thread_slugs(tags: list[str]) -> tuple[str, ...]:
@@ -109,6 +130,7 @@ def _rows(store: Store, refs: list[Ref]) -> list[GripeRow]:
         out.append(
             GripeRow(
                 ref_id=ref.id,
+                handle=_handle(ref.id),
                 title=ref.title or "",
                 stage=state.queue or "unbriefed",
                 lane=_lane(state),
@@ -146,19 +168,20 @@ def render_gripe_rows(rows: list[GripeRow], *, indent: str = _INDENT) -> list[st
     """One ``gr<id> <stage> [lane] — title`` line per row."""
     out = []
     for r in rows:
-        cells = [_handle(r.ref_id), r.stage]
+        cells = [r.handle, r.stage]
         if r.lane:
             cells.append(f"[{r.lane}]")
         out.append(f"{indent}{' '.join(cells)} — {_first_line(r.title)}")
     return out
 
 
-def append_root_gripes(store: Store, root_tags: list[str], out: list[str]) -> None:
-    """Append the open gripes tagged with any of the root's ``thread:``
-    slugs, under the root's rows."""
+def root_gripes(store: Store, root_tags: list[str]) -> GripeBlock:
+    """The open gripes tagged with any of the root's ``thread:`` slugs
+    (``root_tags`` are the root's open tags), by loop stage then id, capped
+    at :data:`MAX_GRIPES_PER_ROOT`."""
     slugs = thread_slugs(root_tags)
     if not slugs:
-        return
+        return GripeBlock()
     seen: set[int] = set()
     refs: list[Ref] = []
     for slug in slugs:
@@ -167,15 +190,22 @@ def append_root_gripes(store: Store, root_tags: list[str], out: list[str]) -> No
                 seen.add(ref.id)
                 refs.append(ref)
     if not refs:
-        return
+        return GripeBlock()
     rows = _rows(store, refs)
     rows.sort(key=lambda r: (_STAGE_RANK.get(r.stage, 99), r.ref_id))
-    out.extend(render_gripe_rows(rows[:MAX_GRIPES_PER_ROOT]))
-    if len(rows) > MAX_GRIPES_PER_ROOT:
-        out.append(
-            f"{_INDENT}… +{len(rows) - MAX_GRIPES_PER_ROOT} more gripes — "
-            f"search(kind='gripe', tags=['{THREAD_PREFIX}{slugs[0]}'])"
-        )
+    return GripeBlock(
+        rows=tuple(rows[:MAX_GRIPES_PER_ROOT]),
+        hidden=max(0, len(rows) - MAX_GRIPES_PER_ROOT),
+        more=f"search(kind='gripe', tags=['{THREAD_PREFIX}{slugs[0]}'])",
+    )
+
+
+def render_root_gripes(block: GripeBlock) -> list[str]:
+    """A root's gripe rows as MCP text lines (empty for an empty block)."""
+    out = render_gripe_rows(list(block.rows))
+    if block.hidden:
+        out.append(f"{_INDENT}… +{block.hidden} more gripes — {block.more}")
+    return out
 
 
 def _rendered_root_ids(store: Store, served: set[int]) -> set[int]:
@@ -199,9 +229,10 @@ def _rendered_root_ids(store: Store, served: set[int]) -> set[int]:
     return rendered
 
 
-def append_unplaced(store: Store, served: set[int], out: list[str]) -> None:
-    """Append the "unplaced" bucket: open gripes whose thread matches no
-    rendered root, the count plus the :data:`UNPLACED_SHOWN` oldest."""
+def unplaced_gripes(store: Store, served: set[int]) -> GripeBlock:
+    """The "unplaced" bucket: open gripes whose thread matches no rendered
+    root — the :data:`UNPLACED_SHOWN` oldest as rows, the rest as
+    ``hidden`` (so ``len(rows) + hidden`` is the bucket's count)."""
     roots = store.fetch_refs_by_ids(_rendered_root_ids(store, served))
     root_tags = views._all_open_tags(store, list(roots))
     placed_threads: set[str] = set()
@@ -217,22 +248,36 @@ def append_unplaced(store: Store, served: set[int], out: list[str]) -> None:
         )
     ]
     if not unplaced:
-        return
-    out += ["", f"unplaced gripes ({len(unplaced)}) — open, thread matches no root"]
-    out.extend(render_gripe_rows(_rows(store, unplaced[:UNPLACED_SHOWN]), indent="  "))
-    if len(unplaced) > UNPLACED_SHOWN:
-        out.append(
-            f"  … +{len(unplaced) - UNPLACED_SHOWN} newer — get(kind='gripe', id='/open')"
-        )
+        return GripeBlock()
+    return GripeBlock(
+        rows=tuple(_rows(store, unplaced[:UNPLACED_SHOWN])),
+        hidden=max(0, len(unplaced) - UNPLACED_SHOWN),
+        more="get(kind='gripe', id='/open')",
+    )
+
+
+def render_unplaced(block: GripeBlock) -> list[str]:
+    """The unplaced bucket as MCP text lines (empty for an empty block)."""
+    if not block.rows:
+        return []
+    count = len(block.rows) + block.hidden
+    out = ["", f"unplaced gripes ({count}) — open, thread matches no root"]
+    out.extend(render_gripe_rows(list(block.rows), indent="  "))
+    if block.hidden:
+        out.append(f"  … +{block.hidden} newer — {block.more}")
+    return out
 
 
 __all__ = [
     "MAX_GRIPES_PER_ROOT",
     "UNPLACED_SHOWN",
+    "GripeBlock",
     "GripeRow",
-    "append_root_gripes",
-    "append_unplaced",
     "gripes_by_thread",
     "render_gripe_rows",
+    "render_root_gripes",
+    "render_unplaced",
+    "root_gripes",
     "thread_slugs",
+    "unplaced_gripes",
 ]
