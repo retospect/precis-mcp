@@ -531,6 +531,30 @@ def test_mode_present_in_the_evidence_still_applies(store: Any) -> None:
     assert _hub_state(store, hub)[0] == _ADMISSIBLE
 
 
+def test_tafel_synonyms_ground_each_other() -> None:
+    """gr530995: "Tafel plots" and "Tafel analysis" are one method — a
+    claim using one spelling must not warn ungrounded against a pinned
+    passage using the other, while an unrelated method still warns."""
+    assert (
+        _ungrounded_modes(
+            "Tafel analysis gives a slope of 40 mV/dec.",
+            ["We recorded Tafel plots between 1 and 100 mA/cm²."],
+        )
+        == []
+    )
+    assert (
+        _ungrounded_modes(
+            "Tafel plots give a slope of 40 mV/dec.",
+            ["Our Tafel analysis gives 40 mV/dec."],
+        )
+        == []
+    )
+    assert _ungrounded_modes(
+        "Tafel plots give a slope of 40 mV/dec.",
+        ["We recorded polarization curves."],
+    ) == ["Tafel plots"]
+
+
 def test_the_motivating_defect_a_number_from_another_paper() -> None:
     """fi189543: the sentence said 19 degrees; its own paper says 20."""
     assert _ungrounded_quantities(

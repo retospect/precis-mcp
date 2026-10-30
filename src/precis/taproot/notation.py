@@ -229,6 +229,28 @@ _DENOMINATOR_RUN_RE = re.compile(f"/([A-Za-zµμΩ]+[{_SUPERSCRIPT_DIGITS}]*)")
 #: of the accepted-unit set rather than an entry in it.
 _DIFFERENTIAL_DENOMINATOR_RE = re.compile(r"^d[A-Z]$")
 
+#: One formula unit: an element symbol, optionally followed by
+#: stoichiometric digits (`Pd`, `Ni5`).
+_FORMULA_UNIT_RE = re.compile(r"[A-Z][a-z]?(?:\d+)?")
+
+
+def _is_chemistry_run(run: str) -> bool:
+    """A chemical-formula run (`PdH`, `LaNi5`, `Fe3O4`): the whole run is
+    element symbols with stoichiometric digits and nothing else — every
+    Miller-index surface (`Pd(111)`) starts with one. Composed against
+    the shared :data:`_ELEMENT_SYMBOLS` table, whose Bi bound is the
+    corpus dry run's, so a post-Bi formula run would still warn (nothing
+    in the corpus needs it today). A coincidental unit spelled from
+    element symbols is not protected — the accepted-unit set is checked
+    first — but no unit table entry is."""
+    pieces = _FORMULA_UNIT_RE.findall(run)
+    return (
+        bool(pieces)
+        and "".join(pieces) == run
+        and all(piece.rstrip("0123456789") in _ELEMENT_SYMBOLS for piece in pieces)
+    )
+
+
 _DIGIT_GROUPING_RE = re.compile(r"\d,\d{3}(?!\d)")
 _ASCII_MULT_RE = re.compile(r"\d\s*x\s*10")
 
@@ -416,7 +438,10 @@ _RANGE_UNIT_REPEATED_RE = re.compile(
 #: `formula-ascii-subscript` (`lint_notation` only -- see module
 #: docstring "canon v3" for why this is never auto-rewritten): a closed,
 #: case-sensitive periodic-table symbol list, so a match requires a real
-#: element spelling, not any letter. `(?<![-A-Za-z])` before the symbol
+#: element spelling, not any letter. The list stops at Bi because the
+#: corpus dry run found nothing past it -- the same bounded table also
+#: backs the `two-denominator-solidus` carve-out (`_is_chemistry_run`),
+#: so one extension serves both. `(?<![-A-Za-z])` before the symbol
 #: keeps it from matching mid-acronym (the `S` in `ZSM-5` is preceded by
 #: `Z`, so it's excluded even though `S` alone is a real symbol);
 #: `(?![+-])` after the digits excludes the one *unambiguous* false-
@@ -575,10 +600,13 @@ def lint_notation(sentence: str) -> list[str]:
             continue
         if _DIFFERENTIAL_DENOMINATOR_RE.fullmatch(stripped):
             continue
+        if _is_chemistry_run(stripped):
+            continue
         warnings.append(
             f"two-denominator-solidus: '/{run}' found -- a solidus is fine "
             "for a single recognised unit ('mA/µm', 'S/cm') but ambiguous "
-            "with two denominators ('cm²/Vs' -> 'cm² V⁻¹ s⁻¹')."
+            "with two denominators ('cm²/Vs' -> 'cm² V⁻¹ s⁻¹'); a chemical "
+            "formula or Miller-index facet ('PdH/Pd(111)') is not a unit."
         )
 
     # ── canon v2: ASCII -> UTF-8 symbol respellings ─────────────────────

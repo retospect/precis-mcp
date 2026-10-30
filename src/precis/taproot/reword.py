@@ -127,6 +127,7 @@ from precis.taproot.sentence_lint import (
     _OVER_LONG_CHARS,
     GENERIC_EPISTEMIC_HEADS,
     find_epistemic_modes,
+    normalize_method_tokens,
 )
 from precis.utils.llm.router import LlmRequest, Tier, route
 from precis.utils.numerics import extract_numerics
@@ -597,11 +598,14 @@ def _is_grounded(run: str, passage_runs: set[str]) -> bool:
 
 def _mode_probes(token: str) -> tuple[str, ...]:
     """What counts as a passage naming this mode: the token as written,
-    plus a word-prefix stem of its last word when that word is long
-    enough to stem safely."""
+    its canonical spelling when the token is a known synonym (gr530995:
+    "Tafel analysis" and "Tafel plots" are one method), plus a
+    word-prefix stem of its last word when that word is long enough to
+    stem safely."""
     lowered = token.lower()
-    probes = {lowered}
-    last = lowered.rsplit(" ", 1)[-1].strip("-")
+    canonical = normalize_method_tokens(lowered)
+    probes = {lowered} if canonical == lowered else {lowered, canonical}
+    last = canonical.rsplit(" ", 1)[-1].strip("-")
     if len(last) > _MODE_STEM_CHARS:
         probes.add(last[:_MODE_STEM_CHARS])
     return tuple(sorted(probes))
@@ -616,10 +620,14 @@ def _ungrounded_modes(new: str, evidence: Sequence[str]) -> list[str]:
     the passage — "calculations" against "the SCC-DFTB algorithm" is not
     a gap. Not the reverse: a claim naming molecular dynamics still warns
     against a passage that only says "simulations", because *which*
-    method is the part a reader is being asked to trust."""
+    method is the part a reader is being asked to trust.
+
+    The haystack passes through :func:`~precis.taproot.sentence_lint.
+    normalize_method_tokens` first so a passage's synonym spelling
+    ("Tafel plots" for a claim's "Tafel analysis") grounds the mode too."""
     if not evidence:
         return []
-    haystack = " \n".join(evidence).lower()
+    haystack = normalize_method_tokens(" \n".join(evidence).lower())
     passage_has_specific = any(
         token.lower() not in GENERIC_EPISTEMIC_HEADS
         for token in find_epistemic_modes(haystack)

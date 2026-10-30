@@ -35,7 +35,7 @@ from precis.taproot.hub import (
     run_retraction_checks,
 )
 from precis.taproot.notation import lint_notation
-from precis.taproot.sentence_lint import lint_scope
+from precis.taproot.sentence_lint import lint_claim_sentence, lint_scope
 from precis.utils.mentions import resolve_handle_ref, resolve_handle_target
 
 if TYPE_CHECKING:
@@ -59,6 +59,32 @@ __all__ = [
 #: for why the set is hand-maintained rather than ``KindSpec.corpus_role``-
 #: derived.
 _SUPPORTER_KINDS: frozenset[str] = EVIDENCE_SRC_KINDS
+
+#: Sentence-lint codes that HARD-block at mint-preflight — a copy of the
+#: two entries of ``nanopub.gates._BLOCKING_LINT_CODES`` an author can
+#: still fix cheaply at put time. Surfaced on the put response (gr530995)
+#: so a hub that would fail every preflight is warned about at write
+#: time instead of surviving to mint-preflight. A copy, not an import:
+#: taproot must not depend on nanopub (layering), and the put surface is
+#: advisory either way — the blocking decision stays single-sourced in
+#: gates. If gates drops a code from its blocking set, the worst case
+#: here is a stale advisory line.
+_MINT_BLOCKING_SENTENCE_CODES: frozenset[str] = frozenset(
+    {"no-epistemic-mode", "over-long"}
+)
+
+
+def mint_blocking_sentence_lint(sentence: str) -> list[str]:
+    """The :func:`~precis.taproot.sentence_lint.lint_claim_sentence`
+    warnings whose codes hard-block at mint-preflight. Advisory at put —
+    never raises, never blocks the mint; every other sentence code stays
+    out of the put response on purpose (the asymmetry policy: lint
+    advises at authoring, blocks at approve)."""
+    return [
+        warning
+        for warning in lint_claim_sentence(sentence)
+        if warning.split(":", 1)[0] in _MINT_BLOCKING_SENTENCE_CODES
+    ]
 
 
 def resolve_paper_ref_id(store: Store, paper: int | str) -> int:
@@ -431,6 +457,13 @@ def seed_claim_hub(
     detector, which is why it is wired into the mint response and not just
     the retrospective ``precis taproot lint`` pass.
 
+    ``sentence_lint`` is :func:`mint_blocking_sentence_lint` — the
+    sentence-admissibility warnings that hard-block at mint-preflight
+    (``no-epistemic-mode``, ``over-long``), so an author learns at put
+    time that the hub can never pass preflight as written (gr530995).
+    Same advisory contract as ``notation``/``scope_lint``: never raises,
+    never blocks the mint.
+
     Validates **every** supporter (missing/unresolvable ``paper``, an
     invalid ``role``, or ``contradicts``) before writing anything — a bad
     supporter anywhere in ``supporters`` must never leave a durable
@@ -581,4 +614,5 @@ def seed_claim_hub(
         "ungrounded": ungrounded,
         "notation": lint_notation(sentence),
         "scope_lint": lint_scope(scope),
+        "sentence_lint": mint_blocking_sentence_lint(sentence),
     }

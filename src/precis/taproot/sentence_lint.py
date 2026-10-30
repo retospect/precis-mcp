@@ -122,10 +122,12 @@ from precis.taproot.numeral_audit import absent_numerals
 __all__ = [
     "EPISTEMIC_MODE_TOKENS",
     "GENERIC_EPISTEMIC_HEADS",
+    "METHOD_TOKEN_SYNONYMS",
     "SCOPE_KEYS",
     "find_epistemic_modes",
     "lint_claim_sentence",
     "lint_scope",
+    "normalize_method_tokens",
 ]
 
 #: Method/instrument/technique tokens that count as an epistemic mode.
@@ -230,13 +232,41 @@ EPISTEMIC_MODE_TOKENS: frozenset[str] = frozenset(
         "proof",
         "proofs",
         "theorem",
+        # 2026-10-29: electrochemistry methods (gr530995, macatamo pilot).
+        # "voltammetry" / "impedance spectroscopy" were already in; the
+        # pilot's Butler–Volmer / Tafel / polarization vocabulary was
+        # rejected as unknown modes. The "-isation" spelling rides along
+        # (the corpus's electrochemistry papers write "polarisation").
+        # The Tafel spellings all name one method — matching treats them
+        # alike via METHOD_TOKEN_SYNONYMS below. Both spellings of the
+        # curve head (singular and plural) count; Butler–Volmer is stored
+        # en-dash, but the regex below makes every dash spelling match
+        # either way (gr530995 fix round 1).
+        "Butler–Volmer fits",
+        "polarization curve",
+        "polarization curves",
+        "polarisation curve",
+        "polarisation curves",
+        "Tafel plot",
+        "Tafel plots",
+        "Tafel analysis",
     }
 )
+
+
+def _dash_tolerant(token: str) -> str:
+    """Escape a mode token for the vocabulary regex, letting every dash
+    be either an ASCII hyphen or an en dash — ``Butler-Volmer`` and
+    ``Butler–Volmer`` are one name. En dash first: the replacement class
+    itself contains an en dash, and an escaped hyphen (``\\-``) never
+    occurs inside it, so the two replacements cannot re-collide."""
+    return re.escape(token).replace("\u2013", "[-\u2013]").replace("\\-", "[-\u2013]")
+
 
 _EPISTEMIC_MODE_RE = re.compile(
     r"\b(?:"
     + "|".join(
-        re.escape(t) for t in sorted(EPISTEMIC_MODE_TOKENS, key=len, reverse=True)
+        _dash_tolerant(t) for t in sorted(EPISTEMIC_MODE_TOKENS, key=len, reverse=True)
     )
     # `proof-of-concept` is a maturity label for a device, not a way of
     # knowing (2026-10-03 corpus pass: 2 of 2 "proof" hits were this).
@@ -292,6 +322,42 @@ def find_epistemic_modes(text: str) -> list[str]:
         token = match.group(0)
         seen.setdefault(token.lower(), token)
     return list(seen.values())
+
+
+#: Method-token synonyms (gr530995): "Tafel plots" and "Tafel analysis"
+#: name the same method, and mode grounding must not flag one against a
+#: passage using the other. Whole-token rewrite to one canonical
+#: spelling, applied to the claim's probes AND the passage haystack alike
+#: by :func:`~precis.taproot.reword._ungrounded_modes`, so either spelling
+#: grounds the other. Deliberately qualifier-keyed and closed -- a tiny
+#: table, not a stemmer.
+METHOD_TOKEN_SYNONYMS: dict[str, str] = {
+    "tafel plots": "tafel plot",
+    "tafel analyses": "tafel plot",
+    "tafel analysis": "tafel plot",
+}
+
+_METHOD_SYNONYM_RE = re.compile(
+    r"\b("
+    + "|".join(
+        r"\s+".join(re.escape(word) for word in key.split())
+        for key in sorted(METHOD_TOKEN_SYNONYMS, key=len, reverse=True)
+    )
+    + r")\b",
+    re.IGNORECASE,
+)
+
+
+def normalize_method_tokens(text: str) -> str:
+    """Rewrite method-token synonym spellings to their canonical form, so
+    matching treats them as one method. Matching-surface only: the lint
+    token set still carries every spelling a sentence may use, and this
+    never rewrites a sentence."""
+    if not text:
+        return ""
+    return _METHOD_SYNONYM_RE.sub(
+        lambda m: METHOD_TOKEN_SYNONYMS[m.group(1).lower()], text
+    )
 
 
 #: Controlled evidence verbs (canon: "claim admissibility", test
@@ -1462,9 +1528,20 @@ def lint_claim_sentence(
 #: Controlled scope-key vocabulary (`docs/backlog/nanopub-corpus-
 #: remediation.md`, "Why dedup never fired" #2 -- 372 free-text values
 #: across 1,527 hubs). Deliberately small; adding a key is a deliberate
-#: act, not a drive-by.
+#: act, not a drive-by. `pH` joined 2026-10-29 (gr530995): the macatamo
+#: pilot scopes electrochemistry claims by it, and it is an enumerated
+#: axis, not prose (`scope-free-text` still guards the value).
 SCOPE_KEYS: frozenset[str] = frozenset(
-    {"material", "method", "regime", "system", "quantity", "substrate", "temperature"}
+    {
+        "material",
+        "method",
+        "pH",
+        "regime",
+        "system",
+        "quantity",
+        "substrate",
+        "temperature",
+    }
 )
 
 _TRAILING_PREPOSITIONS: frozenset[str] = frozenset(

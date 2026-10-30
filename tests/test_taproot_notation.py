@@ -510,6 +510,32 @@ def test_single_denominator_solidus_units_do_not_fire() -> None:
         )
 
 
+def test_chemical_formula_and_miller_surface_do_not_fire_solidus() -> None:
+    """gr530995: `PdH/Pd(111)` names a hydride over a Miller-index facet --
+    chemistry, not a compound unit. The lint must still fire on a real
+    two-denominator unit and on a non-formula letter run."""
+    for sentence in [
+        "XAS on PdH/Pd(111) shows the hydride phase.",
+        "HER activity is reported for MoS2/Pt(111).",
+        "Oxidation proceeds on Fe3O4/Au(110).",
+    ]:
+        warnings = lint_notation(sentence)
+        assert not any("two-denominator-solidus" in w for w in warnings), (
+            sentence,
+            warnings,
+        )
+    # the real ambiguity still fires...
+    assert any(
+        "two-denominator-solidus" in w
+        for w in lint_notation("Mobility reaches 10 cm²/Vs at 300 K.")
+    )
+    # ...and a letter run that is no unit and no formula still fires
+    assert any(
+        "two-denominator-solidus" in w
+        for w in lint_notation("The rate reaches 5 widgets/sprocket.")
+    )
+
+
 def test_nomenclature_hyphens_do_not_fire_ascii_minus_exponent() -> None:
     warnings = lint_notation(
         "The 5-8-5 defect pair is observed in the graphene lattice."

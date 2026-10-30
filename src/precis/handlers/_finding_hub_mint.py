@@ -907,6 +907,16 @@ def _mint_response_body(result: dict[str, Any], sentence: str) -> str:
         if lints
         else ""
     )
+    # gr530995: these two codes hard-block at mint-preflight, so the put
+    # response says so in approval terms — the hub exists, but approve
+    # will refuse it as written.
+    mint_blockers = result.get("sentence_lint") or []
+    blocker_note = (
+        "\nmint-preflight will REFUSE these (reword before approve):\n"
+        + "\n".join(f"  - {w}" for w in mint_blockers)
+        if mint_blockers
+        else ""
+    )
     hub_handle = handle_registry.format_handle("finding", result["hub_ref_id"])
     return (
         f"claim hub {hub_handle}\n"
@@ -915,5 +925,5 @@ def _mint_response_body(result: dict[str, Any], sentence: str) -> str:
         + (f", {ungrounded} ref-level (ungrounded)" if ungrounded else "")
         + "\n"
         f"cite it inline as [{hub_handle}] — resolves to the current derived "
-        "originator(s) on every render" + lint_note
+        "originator(s) on every render" + blocker_note + lint_note
     )

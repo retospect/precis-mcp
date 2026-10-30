@@ -276,6 +276,51 @@ def test_no_epistemic_mode_ignores_proof_of_concept() -> None:
     assert any("no-epistemic-mode" in w for w in warnings)
 
 
+def test_no_epistemic_mode_accepts_electrochemistry_methods() -> None:
+    """gr530995: the macatamo pilot's method vocabulary — Butler-Volmer
+    fits and polarization curves were rejected as unknown modes."""
+    for sentence in [
+        "Butler–Volmer fits show a Tafel slope of 40 mV/dec.",
+        "Polarization curves show the overpotential drops by 100 mV.",
+        "Polarisation curves show the overpotential drops by 100 mV.",
+        "Tafel analysis gives a slope of 40 mV/dec.",
+        "Tafel plots give a slope of 40 mV/dec.",
+        # fix round 1: the hyphen spelling and the singular curve head
+        # must match exactly like the en-dash plural forms.
+        "Butler-Volmer fits show a Tafel slope of 40 mV/dec.",
+        "The polarization curve shows a Tafel slope of 40 mV/dec.",
+        "The polarisation curve shows a Tafel slope of 40 mV/dec.",
+    ]:
+        warnings = lint_claim_sentence(sentence)
+        assert not any("no-epistemic-mode" in w for w in warnings), sentence
+
+
+def test_find_epistemic_modes_matches_either_dash_spelling() -> None:
+    from precis.taproot.sentence_lint import find_epistemic_modes
+
+    # one name, two dash spellings — both match. find_epistemic_modes
+    # reports the token as written (its contract), so the two results
+    # differ only in the dash character.
+    hyphen = find_epistemic_modes("Butler-Volmer fits")
+    en_dash = find_epistemic_modes("Butler–Volmer fits")
+    assert len(hyphen) == len(en_dash) == 1
+    assert hyphen[0].replace("-", "\u2013") == en_dash[0]
+
+
+def test_normalize_method_tokens_rewrites_tafel_synonyms() -> None:
+    from precis.taproot.sentence_lint import normalize_method_tokens
+
+    # matching surfaces arrive lowercased (reword lowercases haystack and
+    # probes before matching); the canonical spelling is lowercase too
+    assert (
+        normalize_method_tokens("tafel plots and tafel analysis agree.")
+        == "tafel plot and tafel plot agree."
+    )
+    assert normalize_method_tokens("Tafel plots") == "tafel plot"
+    assert normalize_method_tokens("nothing to rewrite") == "nothing to rewrite"
+    assert normalize_method_tokens("") == ""
+
+
 def test_multi_assertion_fires_on_and_join() -> None:
     warnings = lint_claim_sentence(
         "DFT shows the band gap increases under strain, and Raman confirms "
@@ -574,6 +619,7 @@ def test_scope_unknown_key_does_not_fire_on_enumerated_keys() -> None:
         {
             "material": "graphene",
             "method": "DFT",
+            "pH": "13.6",
             "regime": "low-temperature",
             "system": "MoS2 monolayer",
             "quantity": "band gap",
@@ -582,6 +628,13 @@ def test_scope_unknown_key_does_not_fire_on_enumerated_keys() -> None:
         }
     )
     assert not any("scope-unknown-key" in w for w in warnings)
+
+
+def test_scope_ph_key_is_known_and_value_still_checked() -> None:
+    """gr530995: pH scopes an electrochemistry claim; the key is enumerated,
+    a prose value under it still trips scope-free-text."""
+    assert not any("scope-unknown-key" in w for w in lint_scope({"pH": "13.6"}))
+    assert any("scope-free-text" in w for w in lint_scope({"pH": "measured at"}))
 
 
 def test_scope_free_text_fires_on_prose_fragment() -> None:

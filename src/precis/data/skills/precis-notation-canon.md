@@ -45,7 +45,7 @@ to `−` U+2212, **not** to ASCII `-`); digit grouping (`4,600` vs `4600`).
 |---|---|
 | exponents | UTF-8 superscript — `cm²`, `10⁻¹⁰`. Never `cm^2`, never TeX `$\mathrm{cm}^2$`. |
 | compound units | negative exponents, space-separated: `cm² V⁻¹ s⁻¹`. |
-| single denominator | solidus is fine and preferred: `mA/µm`, `mV/dec`, `S/cm`, `dI/dV`. Never a solidus with two denominators (`cm²/Vs` is ambiguous). |
+| single denominator | solidus is fine and preferred: `mA/µm`, `mV/dec`, `S/cm`, `dI/dV`. Never a solidus with two denominators (`cm²/Vs` is ambiguous). Chemistry is not a unit: a formula or Miller-index facet after the slash (`PdH/Pd(111)`, `MoS2/Pt`, `Fe3O4/Au(110)`) never draws the warning. |
 | minus | `⁻` U+207B inside superscripts, `−` U+2212 standalone. Never ASCII hyphen as a minus. |
 | digit grouping | **none** — `4600`, not `4,600`. Grouping is locale-dependent and is the single largest hash-splitter. |
 | order of magnitude | SI prefix when one exists and the mantissa lands in 0.1–1000 (`4.6 nm`, `250 µm`); power of ten otherwise (`10¹¹ cm⁻²`, `1.0×10⁻⁶ S`). Never both (`10⁻⁶ µm`). |

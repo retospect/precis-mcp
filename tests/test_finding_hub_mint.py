@@ -135,6 +135,66 @@ class TestPutHubDedupWiring:
         assert "pub_id" not in resp.body
 
 
+class TestPutHubMintBlockingLint:
+    """gr530995: the two sentence codes that hard-block at mint-preflight
+    (no-epistemic-mode, over-long) surface on the put response — advisory,
+    the hub still mints, but the author learns at write time that approve
+    will refuse the sentence as written."""
+
+    def test_modeless_claim_warns_it_will_fail_preflight(self, store) -> None:
+        _seed_paper(store, cite_key="miller23a")
+        h = _make_handler(store, embedder=None)
+        resp = h.put(
+            title="a fresh claim nobody has minted",
+            supporters=[{"paper": "miller23a"}],
+            dedup=False,
+        )
+        assert "mint-preflight will REFUSE these" in resp.body
+        assert "no-epistemic-mode" in resp.body
+
+    def test_over_long_claim_warns_it_will_fail_preflight(self, store) -> None:
+        _seed_paper(store, cite_key="miller23a")
+        h = _make_handler(store, embedder=None)
+        sentence = "DFT finds a fresh claim " + "nobody has minted anywhere " * 13 + "."
+        assert len(sentence) > 250
+        resp = h.put(
+            title=sentence,
+            supporters=[{"paper": "miller23a"}],
+            dedup=False,
+        )
+        assert "mint-preflight will REFUSE these" in resp.body
+        assert "over-long" in resp.body
+
+    def test_clean_claim_carries_no_preflight_blocker_note(self, store) -> None:
+        _seed_paper(store, cite_key="miller23a")
+        h = _make_handler(store, embedder=None)
+        resp = h.put(
+            title="DFT finds a fresh claim nobody has minted.",
+            supporters=[{"paper": "miller23a"}],
+            dedup=False,
+        )
+        assert "mint-preflight will REFUSE" not in resp.body
+
+
+class TestMintBlockingSentenceCodesSync:
+    """gr530995 fix round 1: authoring's copy of the gates blocking set
+    must not drift. Literal equality with the full set is not the
+    contract — the put door deliberately surfaces only the two codes an
+    author can fix at write time — so the test pins the exact pair and
+    asserts it stays inside the gates blocking set: if gates drops one,
+    the put response would over-promise a refusal preflight no longer
+    gives, and the subset assertion fails."""
+
+    def test_authoring_codes_match_the_gates_blocking_set(self) -> None:
+        from precis.nanopub.gates import _BLOCKING_LINT_CODES
+        from precis.taproot import authoring
+
+        assert frozenset({"no-epistemic-mode", "over-long"}) == (
+            authoring._MINT_BLOCKING_SENTENCE_CODES
+        )
+        assert authoring._MINT_BLOCKING_SENTENCE_CODES <= _BLOCKING_LINT_CODES
+
+
 # ── dedup-gate contention: capacity is not absence (gripe #450123) ───────
 
 

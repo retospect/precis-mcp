@@ -52,6 +52,11 @@ A sentence earns `TAPROOT:claim` only if it passes all four:
    sentence. Write to [[precis-nanopub-claim-grammar-help]]
    (evidence verb + epistemic mode) at authoring time — it governs the
    sentence's shape from the moment it's written, not just at approve.
+   Electrochemistry modes are recognized vocabulary: "Butler–Volmer
+   fits", "polarization curves" (and "polarisation"), and "Tafel
+   analysis" / "Tafel plots" all count — the last two are one method,
+   so either spelling grounds the other when rewording checks the
+   pinned passages.
 4. **Single assertion** — see [[precis-notation-canon]]'s terseness rule.
 
 An unfalsifiable entry can never be corroborated or contradicted, so it's
@@ -333,7 +338,11 @@ the `scope` object, so an identical sentence under paraphrased scope
 values mints two hubs, not one claim with metadata drift. A scope value
 is a short controlled term naming the regime — never a paraphrase or
 restatement of the sentence; a `scope-free-text` lint warns (advisory)
-when one reads like prose instead.
+when one reads like prose instead. The enumerated keys are deliberately
+few — `material`, `method`, `pH`, `regime`, `system`, `quantity`,
+`substrate`, `temperature` — and an unknown key draws a
+`scope-unknown-key` advisory. `pH` scopes an electrochemistry claim by
+its measurement conditions (a bare number like `"13.6"`, not prose).
 
 ## Mint a claim hub from a claim I've already sourced {write}
 
@@ -369,6 +378,16 @@ content-hash `pub_id`) and attaches each supporter's evidence edge
 idempotently — a re-`put` of the same spec attaches nothing twice (the
 dedup key includes the grounding chunk). Cite the resulting `[fi<id>]`
 afterward.
+
+**Read the mint response's lint blocks — the top one is a promise, not
+a suggestion.** A fresh mint appends
+`mint-preflight will REFUSE these (reword before approve)` whenever the
+sentence names no epistemic mode (`no-epistemic-mode`) or runs past 250
+chars (`over-long`): both hard-block approve, so reword immediately
+(`edit(kind='finding', id='fi<id>', title=...')`) instead of leaving a
+hub that fails every preflight as written. The
+`lint (advisory, hub already minted)` block beneath is softer —
+notation and scope flags the reviewer also sees, nothing more.
 
 **Don't have a chunk handle? Search for one — don't fall back to
 ref-level.** Whatever paper you happen to be holding is not the corpus.
