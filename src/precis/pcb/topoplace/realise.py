@@ -53,9 +53,10 @@ from __future__ import annotations
 
 import dataclasses
 import itertools
+import logging
 import math
 from collections import Counter
-from collections.abc import Callable, Iterable, Mapping, Sequence
+from collections.abc import Callable, Container, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
 
@@ -72,7 +73,10 @@ from precis.pcb.topoplace.wires import (
     Unreachable,
     WirePath,
     Wires,
+    obstacle_vertices,
 )
+
+log = logging.getLogger(__name__)
 
 _DEFAULT = NetRules(track_width_mm=0.15, clearance_mm=0.15)
 
@@ -234,7 +238,10 @@ def _pair_sign(
 
 
 def _crossing_pairs(
-    wires: Wires, cdirs: Sequence[Sequence[float]]
+    wires: Wires,
+    cdirs: Sequence[Sequence[float]],
+    obstacles: Container[int] | None = None,
+    edge_ends: Sequence[tuple[int, int]] | None = None,
 ) -> set[tuple[int, int]]:
     """Branch pairs whose relative order flips between two shared edges
     (Decision 3's list comparison — NORMALIZED by corridor direction:
@@ -242,9 +249,20 @@ def _crossing_pairs(
     between edges of different orientation without a single wire ever
     crossing another). Same-net pairs are kept — the caller filters, a
     braid of the same net is not a short but two same-net wires can
-    still cross on the board's geometry."""
+    still cross on the board's geometry.
+
+    gr536410: a flip is a real braid only if the side choice is LOCKED.
+    When ``obstacles`` is given, a flip whose shared run between the two
+    witness edges passes only through FREE ring vertices (a vertex that
+    is neither a pad/pin vertex nor a keepout/outline corner — see
+    :func:`precis.pcb.topoplace.wires.obstacle_vertices`) is a fan, not
+    a crossing: the two wires passed opposite sides of a vertex that
+    blocks nothing and can be slid apart. A flip with no shared vertex
+    between the witnesses (disjoint edges or a wedge) stays a crossing —
+    the corridors genuinely interleave there."""
     epos = [{int(e): i for i, e in enumerate(b.edges)} for b in wires.branches]
     seen: dict[tuple[int, int], int] = {}
+    witness: dict[tuple[int, int], int] = {}
     crossed: set[tuple[int, int]] = set()
     for e, seq in enumerate(wires.order):
         pos = {b: i for i, b in enumerate(seq)}
@@ -255,10 +273,59 @@ def _crossing_pairs(
                 cdir = cdirs[b][epos[b][e]] if cdirs else 1.0
                 sign = (pos[a] - pos[b]) * int(cdir)
                 if key in seen and seen[key] * sign < 0:
-                    crossed.add(key)
+                    if (
+                        obstacles is None
+                        or edge_ends is None
+                        or _flip_is_locked(
+                            wires, obstacles, a, b, witness[key], e, edge_ends
+                        )
+                    ):
+                        crossed.add(key)
                 else:
                     seen[key] = sign
+                    witness[key] = e
     return crossed
+
+
+def _flip_is_locked(
+    wires: Wires,
+    obstacles: Container[int],
+    a: int,
+    b: int,
+    e_from: int,
+    e_to: int,
+    edge_ends: Sequence[tuple[int, int]],
+) -> bool:
+    """Whether the order flip of pair ``(a, b)`` between witness edges
+    ``e_from``/``e_to`` is locked by an obstacle (gr536410). BOTH
+    branches' runs between the witnesses are scanned for the mesh
+    vertices they pass through (endpoints shared by consecutive run
+    edges) — a pad on either side of the wedge locks the side choice.
+    A flip with NO shared vertex on either run stays a crossing — the
+    corridors genuinely interleave there (the _span_fixture shape). A
+    flip AT shared vertices is a braid only if ANY of them is an
+    obstacle; all-free means the wires passed opposite sides of vertices
+    that block nothing and can be slid apart — a fan, not a crossing."""
+    shared_vs: list[int] = []
+    scanned = False
+    for br in (wires.branches[a], wires.branches[b]):
+        pos = {int(e): i for i, e in enumerate(br.edges)}
+        if e_from not in pos or e_to not in pos:
+            continue
+        scanned = True
+        i_from, i_to = sorted((pos[e_from], pos[e_to]))
+        span = [int(e) for e in br.edges[i_from : i_to + 1]]
+        for j in range(len(span) - 1):
+            u, v = edge_ends[span[j]]
+            x, y = edge_ends[span[j + 1]]
+            shared_vs.extend({u, v} & {x, y})
+    if not scanned:
+        # the order lists name a witness edge neither branch itself
+        # crosses (inconsistent synth fixtures) — legacy verdict.
+        return True
+    if not shared_vs:
+        return True
+    return any(w in obstacles for w in shared_vs)
 
 
 def _yield_rank(d: TopoDesign, b: Any, n_layers: int) -> tuple[int, int]:
@@ -297,7 +364,15 @@ def assign_layers(
     ties."""
     branches = wires.branches
     layers = _initial_layers(d, wires, n_layers)
-    cross = _crossing_pairs(wires, _cdirs(mesh, wires) if mesh is not None else [])
+    if mesh is not None:
+        cross = _crossing_pairs(
+            wires,
+            _cdirs(mesh, wires),
+            obstacle_vertices(mesh, d, n_layers),
+            [(int(u), int(v)) for u, v in mesh.edges],
+        )
+    else:
+        cross = _crossing_pairs(wires, [])
 
     def live(ls: list[int]) -> set[tuple[int, int]]:
         return {
@@ -1099,7 +1174,12 @@ def _spoke_offsets(
     # ONLY if no leg intersects a foreign pad polygon and no
     # non-braided pair of polylines crosses — otherwise that cluster's
     # pre-relaxation output stands; the emit guard remains the judge.
-    braided = _crossing_pairs(wires, _cdirs(mesh, wires))
+    braided = _crossing_pairs(
+        wires,
+        _cdirs(mesh, wires),
+        obstacle_vertices(mesh, d, n_layers),
+        [(int(u), int(v)) for u, v in mesh.edges],
+    )
     pads_poly = [
         Polygon(
             np.asarray(
@@ -1279,6 +1359,19 @@ def _spoke_offsets(
             # cost evaluation must only hinge, never filter.
             free = [(bi, j) for bi, j in interior if bi in cluster]
             if not free or len(free) > _RELAX_FREE_VERTEX_CAP:
+                if len(free) > _RELAX_FREE_VERTEX_CAP:
+                    # gr536410 review nit: a skipped cluster used to be
+                    # silent — the relaxation quietly left its violations
+                    # in the output. The emit guard still judges the
+                    # result; this line is the trace that a cluster was
+                    # over the solve budget.
+                    log.info(
+                        "topo S2 relaxation: skipping cluster of %d free "
+                        "vertices (cap %d); violations left for the emit "
+                        "guard",
+                        len(free),
+                        _RELAX_FREE_VERTEX_CAP,
+                    )
                 continue  # oversized cluster: the old output stands
             cluster_pad = {bi: near_pads[bi] for bi in cluster}
             cluster_pairs = [

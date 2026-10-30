@@ -1040,6 +1040,27 @@ def _edge_param_at(ctx: _Ctx, e: int, p: tuple[float, float]) -> float:
     return min(1.0, max(0.0, ((p[0] - ux) * ex + (p[1] - uy) * ey) / dd))
 
 
+def obstacle_vertices(mesh: TopoMesh, d: TopoDesign, n_layers: int) -> frozenset[int]:
+    """The mesh vertices around which a wire side choice can LOCK —
+    gr536410's braid-obstacle definition, the same predicate
+    :func:`_shortcut` uses to keep wraps: pin vertices plus endpoints of
+    board (outline) edges and zone (keepout) edges. Every other ring
+    vertex is FREE — two wires may pass on opposite sides of it without
+    a topological crossing, so an order flip localised to free vertices
+    is a fan, not a braid."""
+    obs = {int(v) for v in mesh.pin_vertex}
+    edge_owner = getattr(mesh, "edge_owner", None)
+    if edge_owner is None or len(edge_owner) != len(mesh.edges):
+        # hand-built mesh (synth fixtures): no board/zone edge ownership
+        # was ever recorded — pin vertices are the only obstacles.
+        return frozenset(obs)
+    ctx = _make_ctx(mesh, d, n_layers)
+    for e in range(len(mesh.edges)):
+        if ctx.board[e] or e in ctx.zone_contrib:
+            obs.update(ctx.edge_ends[e])
+    return frozenset(obs)
+
+
 def _shortcut(
     ctx: _Ctx,
     mesh: TopoMesh,
