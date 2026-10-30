@@ -219,7 +219,7 @@ cadence is due, not broken (any live worker may claim it).
 ## See also
 
 - [[precis-job-help]] — submit, poll, cancel; the parent-todo contract
-- [[precis-pathway-help]] — the coverage-scan recipe and pathway lane
+- `precis-pathway-help` — the coverage-scan recipe and pathway lane
 - [[precis-pcb-help]] — the pcb place lane
 - [[precis-rxn-help]] — the retrosynthesis lane
 - [[precis-status-help]] — the build serving *your own* process

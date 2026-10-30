@@ -616,6 +616,43 @@ def test_shipped_skill_corpus_has_zero_gate_findings(
     assert failures == (), "\n".join(str(f) for f in failures)
 
 
+def test_builtin_corpus_scans_clean_without_plugin_roots(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The built-in tree alone is a self-contained link graph.
+
+    ``precis.skills`` entry points are optional — a deployment may lack
+    a plugin's skill root, so a built-in must not ``[[wikilink]]`` a
+    plugin-contributed slug (plain-text mentions are the convention —
+    see the other ``precis-pathway-help`` references corpus-wide). The
+    merged-corpus test above can't see this: a built-in→plugin link
+    resolves there yet flags ``dangling`` when the built-in root is
+    scanned on its own (gr: Devin lane report, precis-job-observe-help).
+    """
+    from precis.utils import handle_registry as hr
+    from precis_bio import handles as bio_handles
+    from precis_chem import handles as chem_handles
+    from precis_estimate import handles as estimate_handles
+    from precis_pathway import handles as pathway_handles
+    from precis_se import handles as se_handles
+    from tests._skill_roots import BUILTIN_SKILLS_DIR
+
+    plugin_kind_codes: dict[str, str] = {}
+    for mod in (
+        pathway_handles,
+        estimate_handles,
+        se_handles,
+        chem_handles,
+        bio_handles,
+    ):
+        plugin_kind_codes.update(mod.RECORD_CODES)
+    monkeypatch.setattr(hr, "_plugins_loaded", True)
+    monkeypatch.setattr(hr, "_plugin_kind_codes", plugin_kind_codes)
+
+    failures = scan_skill_dir(BUILTIN_SKILLS_DIR).failures
+    assert failures == (), "\n".join(str(f) for f in failures)
+
+
 def test_link_to_gate_failed_file_does_not_cascade(tmp_path: Path) -> None:
     """A file that fails a prior gate is still a valid wikilink target —
     one bad file must not turn an unrelated ``[[link]]`` dangling."""
