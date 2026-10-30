@@ -709,9 +709,19 @@ def _label_room_legal(
     the outline (the DRC's ``outline_containment`` measures pad RECTS —
     a pin whose centre is inside but whose pad overhangs still fails;
     run 42's repair committed 4 such errors before this check), its
-    ring gains NO same-side overlap, and its body stays out of every
-    hole keep-out — the same three rules the placement DRC enforces, so
-    a repaired pose cannot fail the gate the anneal pose passed."""
+    ring gains NO same-side overlap, its body stays out of every
+    hole keep-out, and its courtyard never moves further OUT along the
+    edge line the anneal enforces — the overhang past the outline
+    (``outline_containment`` on the part) and the
+    :data:`_EDGE_CLEAR_MM` shortfall (:func:`_ring_edge_violation`,
+    the same measure the overlap term prices; the DRC's
+    ``board_edge_clearance``/``courtyard_edge_clearance`` tier) may not
+    grow. gr538618, esp32c3-s2's C7: a label-freeing nudge pushed the
+    ring to 0.29 mm off the top edge — the acceptance tuple let the
+    walk term dominate the edge axis, so the legality gate now owns the
+    line instead. A complying part stays inside; an edge offender's
+    only legal direction is inboard, which is the repair the edge axis
+    asks for."""
     if outline is not None:
         pins = np.nonzero(d.pin_part == part)[0]
         centers = pin_world(d, row, part)
@@ -746,6 +756,20 @@ def _label_room_legal(
     gi = _ring_geom(d, row, part)
     if gi is None:
         return False
+    if outline is not None:
+        em = d.part_edge_mate
+        cur = rings[part]
+        if (
+            not (len(em) == len(d.parts) and bool(em[part]))
+            and cur is not None
+            and (
+                float(gi.difference(outline).area)
+                > float(cur.difference(outline).area) + _EPS
+                or _ring_edge_violation(outline, gi)
+                > _ring_edge_violation(outline, cur) + _EPS
+            )
+        ):
+            return False
     for j, gj in enumerate(rings):
         if j == part or gj is None or not _collides(sides, th, part, j):
             continue

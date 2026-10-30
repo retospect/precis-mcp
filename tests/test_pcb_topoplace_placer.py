@@ -469,6 +469,59 @@ def test_settle_label_room_nudges_walkers_and_edge_parts() -> None:
     assert rep_e[0, 0] > de.pose0[0, 0]
 
 
+def test_settle_label_room_never_pushes_past_edge_clearance() -> None:
+    """gr538618: a settle move must never take a part's courtyard
+    outside the board outline minus the edge line the anneal enforces
+    (``_EDGE_CLEAR_MM`` off the exterior). esp32c3-s2's C7 was nudged
+    outward to 0.29 mm off the top edge — the acceptance tuple let the
+    walk term dominate the edge axis — minting board_edge_clearance
+    x4, courtyard_edge_clearance x1 and outline_containment x1 where
+    the anneal's pose had none. Here the ONLY label-freeing nudge goes
+    north over the line: it must be refused, the part keeps its
+    compliant pose, and the label conflict stays honestly reported."""
+    import dataclasses
+
+    from precis.pcb.topoplace import label_room_walks, settle_label_room
+    from precis.pcb.topoplace.proxy import (
+        _outline_geom,
+        _ring_edge_violation,
+        _ring_geom,
+    )
+
+    spec = [
+        ("A1", 15.0, 27.75, 0.9),  # ring top 28.65 — compliant, edge axis 0
+        ("B1", 15.0, 25.6, 0.9),  # covers every bottom canonical spot
+        ("L1", 12.0, 28.4, 0.9),  # covers left; blocks west moves
+        ("R1", 18.0, 28.4, 0.9),  # covers right; blocks east moves
+        ("W1", 11.5, 26.0, 0.9),  # cages the southwest escape
+        ("E1", 18.5, 26.0, 0.9),  # cages the southeast escape
+    ]
+    d = _margin_label_fixture(spec)
+    # The blockers are pinned so the repair cannot free a spot by moving
+    # THEM — A1's own nudges are the only lever. The cage leaves no
+    # legal out: southward moves overlap B1 (0.35mm gap), lateral and
+    # diagonal ones overlap L1/R1/W1/E1, and the first nudge that frees
+    # a bottom label box is N+2.0 — which hangs the ring 0.65mm past
+    # the y=30 edge while the part's pin stays inside, the exact
+    # overhang shape the pads-only check missed on s2.
+    d = dataclasses.replace(d, fixed=np.asarray([False, True, True, True, True, True]))
+    walk0, _edge0 = label_room_walks(d, d.pose0)
+    assert walk0[0] > 0.0
+
+    repaired = settle_label_room(d, d.pose0)
+    walk1, _edge1 = label_room_walks(d, repaired)
+    outline = _outline_geom(d)
+    ring = _ring_geom(d, repaired[0], 0)
+    assert outline is not None and ring is not None
+    assert _ring_edge_violation(outline, ring) == 0.0
+    assert outline.covers(ring)
+    # no legal move exists — the part keeps its pose and the conflict
+    # is left reported, not repaired into a DRC finding
+    assert repaired[0, 0] == pytest.approx(15.0)
+    assert repaired[0, 1] == pytest.approx(27.75)
+    assert walk1[0] > 0.0
+
+
 def test_placer_beats_autoplace_at_equal_evals_median() -> None:
     """On the synthetic board, best proxy crossings ≤ autoplace's at
     equal eval count — printed per seed, hard on the median."""
