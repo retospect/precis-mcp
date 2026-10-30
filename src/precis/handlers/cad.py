@@ -417,6 +417,10 @@ class CadHandler(Handler):
                 "tol",
                 "z",
                 "prefunits",
+                "layout",
+                "relief_fit",
+                "phi",
+                "alpha",
             }
         ),
     }

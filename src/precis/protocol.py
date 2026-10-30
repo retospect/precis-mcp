@@ -265,8 +265,15 @@ class KindSpec:
         return getattr(self, f"supports_{verb}")
 
 
-class UndeclaredArgsKey(KeyError):
-    """A handler read an ``args=`` key its :class:`ArgsSpec` does not declare."""
+class UndeclaredArgsKey(BadInput, KeyError):
+    """A handler read an ``args=`` key its :class:`ArgsSpec` does not declare.
+
+    A declaration gap is a handler bug, but the envelope a caller sees
+    was ``[error:Internal]`` — a dead end that read as a server fault and
+    invited the identical retry (gr531204). Surfacing as
+    :class:`BadInput` with the declared keys in ``options`` names the
+    vocabulary that *is* accepted. ``KeyError`` stays in the MRO for the
+    tests and callers that already catch it."""
 
 
 class ArgsSpec:
@@ -310,8 +317,14 @@ class ArgsView(dict[str, Any]):
     def _check(self, key: object) -> None:
         if key not in self._declared:
             raise UndeclaredArgsKey(
-                f"{self._label} read of undeclared key {key!r}; add it to the "
-                f"handler's ARGS spec (declared: {sorted(self._declared)})"
+                f"{self._label} read of undeclared key {key!r} — the "
+                "handler's ARGS spec does not declare it",
+                options=sorted(self._declared),
+                next=(
+                    f"retry without relying on {key!r} (accepted keys are "
+                    "listed), and gripe the spec gap — the key the handler "
+                    "read must be declared"
+                ),
             )
 
     def __getitem__(self, key: str) -> Any:

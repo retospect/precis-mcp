@@ -29,7 +29,7 @@ from precis.taproot.hub import mint_hub
 from precis.taproot.seniority import derive_evidence
 from precis.utils import handle_registry
 from tests.conftest import _active_dsn
-from tests.workers._helpers import seed_ref
+from tests.workers._helpers import seed_chunk, seed_ref
 
 
 def _ref_tag(store: Any, ref_id: int, ns: str) -> str | None:
@@ -1100,3 +1100,64 @@ def test_seed_claim_hub_mint_cap_refuses_overmined_chunk(store: Any) -> None:
     assert _seed("Pd/C catalyzes Negishi coupling at 40 C.", "pc778")["attached"] == 1
     again = _seed("Pd/C catalyzes Suzuki coupling at 25 C.")
     assert again["hub_ref_id"] == first["hub_ref_id"]
+
+
+def test_link_evidence_accepts_paper_prefixed_chunk_handle(store: Any) -> None:
+    """gr534655: ``paper:pc<N>`` — the ``kind:`` spelling agents know from
+    ``id=`` — is a natural evidence target; the Taproot door normalises
+    it to the bare ``pc<N>`` handle instead of refusing."""
+    paper = seed_ref(store, title="Suzuki evidence", kind="paper")
+    chunk_id = seed_chunk(
+        store, ref_id=paper, text="the coupling proceeds at room temperature"
+    )
+    hub_id = seed_claim_hub(
+        store,
+        sentence="Suzuki coupling proceeds at room temperature.",
+        scope={},
+        supporters=[],
+    )["hub_ref_id"]
+    handler = FindingHandler(hub=Hub(store=store))
+
+    resp = handler.link(
+        id=hub_id,
+        target=f"paper:pc{chunk_id}",
+        rel="corroborates",
+        mode="add",
+    )
+
+    assert "evidence attached" in resp.body
+    assert f"pc{chunk_id}" in resp.body
+    edges = _edges(store, src=paper, dst=hub_id)
+    assert any(rel == "corroborates" for rel, _m in edges)
+
+
+def test_link_evidence_remove_accepts_paper_prefixed_chunk_handle(
+    store: Any,
+) -> None:
+    """The remove door takes the same ``paper:pc<N>`` spelling."""
+    paper = seed_ref(store, title="Suzuki evidence", kind="paper")
+    chunk_id = seed_chunk(
+        store, ref_id=paper, text="the coupling proceeds at room temperature"
+    )
+    hub_id = seed_claim_hub(
+        store,
+        sentence="Suzuki coupling proceeds at room temperature.",
+        scope={},
+        supporters=[],
+    )["hub_ref_id"]
+    handler = FindingHandler(hub=Hub(store=store))
+    handler.link(
+        id=hub_id,
+        target=f"paper:pc{chunk_id}",
+        rel="corroborates",
+        mode="add",
+    )
+
+    resp = handler.link(
+        id=hub_id,
+        target=f"paper:pc{chunk_id}",
+        rel="corroborates",
+        mode="remove",
+    )
+
+    assert "removed" in resp.body

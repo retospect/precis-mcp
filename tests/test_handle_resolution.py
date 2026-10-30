@@ -641,3 +641,34 @@ def test_surface_get_zero_step_routes_to_the_chunk(
     via_handle = runtime_with_store.dispatch("get", {"kind": "paper", "id": h})
     via_selector = runtime_with_store.dispatch("get", {"id": "uh36-zero-surface~0"})
     assert via_zero == via_handle == via_selector
+
+
+@_NEEDS_PAPER_EXTRA
+def test_unresolved_record_handle_names_other_kinds_id_space(
+    runtime_with_store: PrecisRuntime, store: Store
+) -> None:
+    """gr534656: ``pa<N>`` where N is a live ref of another kind must
+    say so — the recovery is the real kind's handle, not a blind
+    re-try of the same id."""
+    ref = insert_gripe(store, "id space probe", meta={})
+    out, is_error = runtime_with_store.dispatch_with_status(
+        "get", {"kind": "paper", "id": f"pa{ref.id}"}
+    )
+    assert is_error
+    assert "[error:NotFound]" in out
+    assert "gripe" in out
+    assert f"gr{ref.id}" in out
+
+
+@_NEEDS_PAPER_EXTRA
+def test_unresolved_chunk_handle_names_the_chunk_space(
+    runtime_with_store: PrecisRuntime,
+) -> None:
+    """gr534656: ``pc<N>`` is a chunk handle — the miss must say that,
+    not read it as a paper slug."""
+    out, is_error = runtime_with_store.dispatch_with_status(
+        "get", {"kind": "paper", "id": "pc999999999"}
+    )
+    assert is_error
+    assert "[error:NotFound]" in out
+    assert "chunk handle" in out

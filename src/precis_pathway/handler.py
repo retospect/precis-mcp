@@ -172,7 +172,7 @@ class PathwayHandler(Handler):
     ARGS: ClassVar[dict[str, ArgsSpec]] = {
         "get": ArgsSpec({"U", "pH", "point"}),
         # kinetics v2 D1 blocks, overlaid onto the YAML body (_env_overlay)
-        "put": ArgsSpec({"environment", "objective"}),
+        "put": ArgsSpec({"environment", "objective", "manifest"}),
     }
 
     spec: ClassVar[KindSpec] = KindSpec(

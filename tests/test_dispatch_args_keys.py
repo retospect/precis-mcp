@@ -21,6 +21,7 @@ from typing import Any
 import pytest
 
 import precis.handlers as handlers_pkg
+from precis.errors import BadInput
 from precis.protocol import ArgsSpec, Handler, UndeclaredArgsKey
 from precis.runtime import PrecisRuntime
 from precis.store import Store
@@ -686,16 +687,46 @@ def test_args_view_rejects_undeclared_reads() -> None:
             read()
 
 
+def _is_args_expr(node: ast.AST, names: set[str]) -> bool:
+    """Whether ``node`` evaluates to the args dict or an ``x or {}`` fallback
+    on it — ``(args or {}).get('k')`` reads the same vocabulary
+    (gr531204)."""
+    if isinstance(node, ast.Name):
+        return node.id in names
+    if isinstance(node, ast.BoolOp) and isinstance(node.op, ast.Or):
+        return any(_is_args_expr(v, names) for v in node.values)
+    return False
+
+
+def _args_names(fn: ast.AST, name: str) -> set[str]:
+    """``name`` plus locals bound to it or to ``name or {}`` —
+    ``a = args or {}`` then ``'k' in a`` is a read all the same."""
+    names = {name}
+    for node in ast.walk(fn):
+        if isinstance(node, ast.Assign) and _is_args_expr(node.value, names):
+            for t in node.targets:
+                if isinstance(t, ast.Name):
+                    names.add(t.id)
+        elif (
+            isinstance(node, ast.AnnAssign)
+            and node.value is not None
+            and _is_args_expr(node.value, names)
+            and isinstance(node.target, ast.Name)
+        ):
+            names.add(node.target.id)
+    return names
+
+
 def _literal_args_reads(fn: ast.AST, name: str = "args") -> set[str]:
     """String literals a function body reads from its ``name`` parameter."""
+    names = _args_names(fn, name)
     out: set[str] = set()
     for node in ast.walk(fn):
         if (
             isinstance(node, ast.Call)
             and isinstance(node.func, ast.Attribute)
             and node.func.attr in ("get", "pop")
-            and isinstance(node.func.value, ast.Name)
-            and node.func.value.id == name
+            and _is_args_expr(node.func.value, names)
             and node.args
             and isinstance(node.args[0], ast.Constant)
             and isinstance(node.args[0].value, str)
@@ -703,8 +734,7 @@ def _literal_args_reads(fn: ast.AST, name: str = "args") -> set[str]:
             out.add(node.args[0].value)
         elif (
             isinstance(node, ast.Subscript)
-            and isinstance(node.value, ast.Name)
-            and node.value.id == name
+            and _is_args_expr(node.value, names)
             and isinstance(node.slice, ast.Constant)
             and isinstance(node.slice.value, str)
         ):
@@ -714,7 +744,7 @@ def _literal_args_reads(fn: ast.AST, name: str = "args") -> set[str]:
             and isinstance(node.left, ast.Constant)
             and isinstance(node.left.value, str)
             and any(isinstance(op, ast.In | ast.NotIn) for op in node.ops)
-            and any(isinstance(c, ast.Name) and c.id == name for c in node.comparators)
+            and any(_is_args_expr(c, names) for c in node.comparators)
         ):
             out.add(node.left.value)
     return out
@@ -761,13 +791,12 @@ def _reads_following_helpers(
             continue
         params = list(inspect.signature(callee).parameters)
         passed: list[str] = []
+        names = _args_names(node, name)
         for i, a in enumerate(call.args):
-            if isinstance(a, ast.Name) and a.id == name and i + offset < len(params):
+            if _is_args_expr(a, names) and i + offset < len(params):
                 passed.append(params[i + offset])
         passed += [
-            kw.arg
-            for kw in call.keywords
-            if kw.arg and isinstance(kw.value, ast.Name) and kw.value.id == name
+            kw.arg for kw in call.keywords if kw.arg and _is_args_expr(kw.value, names)
         ]
         for p in passed:
             out |= _reads_following_helpers(cls, callee, p, seen)
@@ -783,3 +812,14 @@ def test_verb_body_reads_only_declared_keys(kind: str, verb: str) -> None:
     reads = _reads_following_helpers(cls, cls.__dict__[verb], "args", set())
     undeclared = reads - cls.ARGS_KEYS[verb]
     assert not undeclared, f"{kind}.{verb} reads undeclared args keys {undeclared}"
+
+
+def test_undeclared_args_key_is_badinput_envelope() -> None:
+    """gr531204: an ARGS-spec gap renders ``[error:BadInput]`` naming the
+    accepted keys, not ``[error:Internal]``."""
+    assert issubclass(UndeclaredArgsKey, BadInput)
+    assert issubclass(UndeclaredArgsKey, KeyError)
+    err = UndeclaredArgsKey("probe", options=["level", "layers"], next="retry")
+    assert isinstance(err, KeyError)
+    s = str(err)
+    assert "probe" in s and "level" in s and "retry" in s

@@ -978,6 +978,8 @@ class StructureHandler(Handler):
                 "method",
                 "grid",
                 "radii",
+                "name",
+                "fs",
             }
         ),
     }

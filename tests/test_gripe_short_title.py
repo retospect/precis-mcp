@@ -424,3 +424,16 @@ def test_gardening_pass_skips_and_reports_a_refused_row(
     assert _title(gripe, bad) == LONG
     assert _comments(gripe, bad) == []
     assert _title(gripe, good) == short_title(LONG + " and a second one")
+
+
+def test_a_short_explicit_title_files_and_leads_the_stored_title(
+    gripe: GripeHandler,
+) -> None:
+    """gr534653: ``title='<≤60 chars>'`` is the retry recipe — the put
+    files with no title-length refusal and the given title leads the
+    stored title (``file_gripe_readonly`` stores the body as the title;
+    the cutter only rewrites over-limit first lines)."""
+    body = gripe.put(title="pcb: pours vanish on reroute", text="detail " * 30).body
+    gid = _latest(gripe)
+    assert "created gripe" in body
+    assert _title(gripe, gid).startswith("pcb: pours vanish on reroute")

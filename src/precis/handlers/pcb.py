@@ -1117,6 +1117,9 @@ class PcbHandler(Handler):
                 "smt_stencil",
                 "tax_or_vat",
                 "thickness_mm",
+                # list/digest ops paginate inside args=.
+                "page",
+                "offset",
             }
         ),
         "get": ArgsSpec(
@@ -1130,12 +1133,18 @@ class PcbHandler(Handler):
                 "level",
                 "layers",
                 "include",
+                "flip",
                 "name",
                 "format",
                 "pins",
                 "phase",
                 "rule",
                 "severity",
+                # view='schematic': focus/sheet pick the rendered region,
+                # only=1 drops dimmed non-focus content (gr520807).
+                "focus",
+                "sheet",
+                "only",
                 # view='topo' drill-down (topo-place spec §1c, Decision
                 # 20): run=<job ref_id|'latest'>, part=summary|pairs|
                 # elites|svg, against=<job ref_id> for a run-vs-run diff.
@@ -1149,17 +1158,6 @@ class PcbHandler(Handler):
                 # view='check'/'drc': force the inline run past reuse
                 # (gr496242).
                 "fresh",
-                # gr531204: the AST audit of the get-path subtree found
-                # these reads missing from the spec — view='svg' fab level
-                # (flip the bottom-side render) and view='schematic'
-                # (focus/sheet pick the region, only=1 drops dimmed parts,
-                # gr520807). Undeclared here they die as
-                # UndeclaredArgsKey on the slim/tools path even though
-                # the handler implements them.
-                "flip",
-                "focus",
-                "sheet",
-                "only",
             }
         ),
     }

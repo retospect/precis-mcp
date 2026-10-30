@@ -199,6 +199,22 @@ def _refuse_hand_set_established(
                 )
 
 
+def _evidence_target_handle(tgt: str) -> str:
+    """Normalise an evidence ``target=`` to a bare universal handle.
+
+    Agents spell a chunk target ``paper:pc<N>`` — the ``kind:`` prefix
+    grammar they know from ``id=`` — which ``resolve_handle`` cannot
+    parse, so the Taproot door refused a natural spelling (gr534655).
+    Strip a redundant ``paper:`` prefix when the rest already parses
+    as a paper/paper-chunk handle; anything else passes through so the
+    caller gets the resolver's own refusal.
+    """
+    rest = tgt[6:] if tgt.startswith("paper:") else None
+    if rest is not None and handle_registry.parse(rest) is not None:
+        return rest
+    return tgt
+
+
 class FindingHandler(NumericRefHandler):
     #: Agent-authored assertions (graph-node-trust-state slice 1).
     trust_origin: ClassVar[str | None] = "generated"
@@ -826,7 +842,7 @@ class FindingHandler(NumericRefHandler):
                             else f"target='fi<id>' (the claim hub {rel} points at)"
                         ),
                     )
-                tgt = str(target).strip()
+                tgt = _evidence_target_handle(str(target).strip())
                 if rel in hub.HUB_ROLES:
                     if rel == "contradicts":
                         # Same door policy as the generic link()s
@@ -903,7 +919,7 @@ class FindingHandler(NumericRefHandler):
                         f"fi{hub_ref_id} needs the evidence target",
                         next="target='pc<id>' / 'pa<id>' (the supporting paper)",
                     )
-                tgt = str(target).strip()
+                tgt = _evidence_target_handle(str(target).strip())
                 resolved = self.store.resolve_handle(tgt)
                 if resolved is None:
                     raise BadInput(

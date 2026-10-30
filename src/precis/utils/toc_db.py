@@ -309,6 +309,47 @@ def cluster_blocks(
     return groups
 
 
+#: A TOC line is copyright boilerplate when every non-empty line of its
+#: chunk is a copyright / licence / "all rights reserved" notice —
+#: journal page furniture that says nothing about the paper's shape.
+#: Consecutive chunks of it fold into one TOC entry (gr531128, item 2 of
+#: gr524226) instead of a row apiece.
+_COPYRIGHT_LINE_RE = re.compile(
+    r"©|\bcopyright\b|\blicen[cs]e[ds]?\b|\ball\s+rights\s+reserved\b",
+    re.IGNORECASE,
+)
+
+#: The folded row's label.
+_COPYRIGHT_LABEL = ["copyright / licence boilerplate"]
+
+
+def _is_copyright_block(block: Any) -> bool:
+    """True when the chunk is wholly copyright/licence notice lines.
+
+    A mixed chunk (a notice plus real text) stays its own row — the
+    fold must never swallow content, so every non-empty line has to
+    match."""
+    text = str(getattr(block, "text", "") or "")
+    lines = [ln for ln in text.splitlines() if ln.strip()]
+    return bool(lines) and all(_COPYRIGHT_LINE_RE.search(ln) for ln in lines)
+
+
+def _fold_copyright_singles(
+    singles: list[tuple[list[Any], list[str]]],
+) -> list[tuple[list[Any], list[str]]]:
+    """Merge runs of :func:`_is_copyright_block` singletons into one entry."""
+    out: list[tuple[list[Any], list[str]]] = []
+    for bucket, label in singles:
+        if _is_copyright_block(bucket[0]):
+            if out and _is_copyright_block(out[-1][0][-1]):
+                out[-1][0].extend(bucket)
+                continue
+            out.append((list(bucket), list(_COPYRIGHT_LABEL)))
+        else:
+            out.append((bucket, label))
+    return out
+
+
 def _clusters(
     blocks: Sequence[Any], *, scope: tuple[int, int] | None = None
 ) -> tuple[list[tuple[list[Any], list[str]]], str]:
@@ -321,7 +362,8 @@ def _clusters(
     * ``"per-chunk"`` — a range that shouldn't cluster
       (:func:`_should_cluster`), or the fallback when neither signal
       yields structure: one singleton bucket per block, labelled by its
-      own keywords.
+      own keywords. A run of all-copyright/licence chunks folds into one
+      row first (gr531128) — page furniture, not a topic boundary.
     * ``"keywords"`` — the F20 adjacent-Jaccard DP, trusted once at
       least ``_KEYWORD_COVERAGE_MIN`` of the range carries keywords.
     * ``"sections"`` — below that floor (the ``chunk_keywords`` backlog
@@ -331,7 +373,9 @@ def _clusters(
       to per-chunk rather than render one unlabelled mega-row.
     """
     n = len(blocks)
-    singles = [([b], _top_keywords([b], top_k=_LABEL_TOP_K)) for b in blocks]
+    singles = _fold_copyright_singles(
+        [([b], _top_keywords([b], top_k=_LABEL_TOP_K)) for b in blocks]
+    )
     if not _should_cluster(n, scope):
         return singles, "per-chunk"
     if _keyword_coverage(blocks) < _KEYWORD_COVERAGE_MIN:
@@ -660,17 +704,20 @@ def _render_per_chunk(
     """Short-range path: one row per chunk, per-chunk keywords as label.
 
     Same ``(handle, keywords)`` schema as the bucketed path — agents
-    get a uniform contract regardless of range size. For the actual
-    chunk text, use ``get(...)`` without ``view='toc'``.
+    get a uniform contract regardless of range size. A run of
+    all-copyright/licence chunks folds into one ``~lo..hi`` row
+    (gr531128). For the actual chunk text, use ``get(...)`` without
+    ``view='toc'``.
     """
     rows: list[dict[str, str]] = []
-    for block in blocks:
-        rows.append(
-            {
-                "handle": f"{handle}~{block.ord}",
-                "keywords": ", ".join(_top_keywords([block], top_k=_LABEL_TOP_K)),
-            }
+    for bucket, label in _fold_copyright_singles(
+        [([b], _top_keywords([b], top_k=_LABEL_TOP_K)) for b in blocks]
+    ):
+        lo_pos, hi_pos = bucket[0].ord, bucket[-1].ord
+        row_handle = (
+            f"{handle}~{lo_pos}" if lo_pos == hi_pos else f"{handle}~{lo_pos}..{hi_pos}"
         )
+        rows.append({"handle": row_handle, "keywords": ", ".join(label)})
     n_total = len(blocks)
     if scope is not None:
         head = f"# {handle} sub-TOC ~{scope[0]}..{scope[1]} — {n_total} chunks"

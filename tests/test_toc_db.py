@@ -420,3 +420,34 @@ class TestReadinessLine:
             store=_StubStore(blocks), ref_id=1, handle="pa1", kind="paper"
         )
         assert "readiness:" not in out
+
+
+class TestCopyrightFold:
+    def test_consecutive_copyright_chunks_fold_into_one_entry(self) -> None:
+        """gr531128 (gr524226 item 2): a run of all-copyright/licence
+        chunks is one TOC entry, not a row apiece."""
+        blocks = [
+            _Stub(ord=0, keywords=["intro"], text="introduction text"),
+            _Stub(ord=1, text="© 2024 Elsevier Ltd."),
+            _Stub(ord=2, text="All rights reserved."),
+            _Stub(ord=3, text="Licensed under CC-BY 4.0"),
+            _Stub(ord=4, keywords=["methods"], text="methods text"),
+        ]
+        out = _render(blocks)
+        assert "pa1~1..3" in out
+        assert "copyright / licence boilerplate" in out
+        assert "pa1~1\t" not in out
+        assert "pa1~2\t" not in out
+        assert "pa1~3\t" not in out
+        assert "pa1~0\t" in out
+        assert "pa1~4\t" in out
+
+    def test_mixed_chunk_is_not_folded(self) -> None:
+        """A chunk carrying a notice line plus real text keeps its row."""
+        blocks = [
+            _Stub(ord=0, keywords=["x"], text="© 2024 Foo\n\nreal content here"),
+            _Stub(ord=1, keywords=["y"], text="more content"),
+        ]
+        out = _render(blocks)
+        assert "pa1~0\t" in out
+        assert "pa1~1\t" in out

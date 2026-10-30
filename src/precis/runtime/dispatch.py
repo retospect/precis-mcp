@@ -44,6 +44,7 @@ import psycopg
 from precis.errors import (
     BadInput,
     Denied,
+    Gone,
     Internal,
     NotFound,
     PrecisError,
@@ -3890,11 +3891,17 @@ class DispatchMixin(RuntimeShape):
         if parsed is None:
             return False
         kind, is_chunk, pk = parsed
-        if is_chunk:
-            return False
         explicit = args.get("kind")
         if explicit is not None and explicit != kind:
             return False
+        if is_chunk:
+            # gr534656: a ``pc<N>``-style handle that resolve_handle
+            # missed fell through to the slug path, producing "paper
+            # slug 'pc617977' not found" — misleading, since the input
+            # was a *chunk* handle, not a slug. Name the three real
+            # causes (never existed / another kind's chunk space / a
+            # soft-deleted owner) off one indexed chunks lookup.
+            raise self._unresolved_chunk_handle_error(normalized + suffix, kind, pk)
         handler = self.hub.handler_for(kind) if self.hub is not None else None
         if handler is None:
             return False
@@ -3914,13 +3921,96 @@ class DispatchMixin(RuntimeShape):
             args["id"] = str(pk) + suffix
             return True
         if not handler.spec.is_numeric:
-            raise NotFound(
-                f"{kind} {normalized + suffix!r} not found",
-                next=f"search(kind={kind!r}, q='...') to find existing",
-            )
+            raise self._unresolved_record_handle_error(kind, normalized + suffix, pk)
         args["kind"] = kind
         args["id"] = str(pk) + suffix
         return True
+
+    def _unresolved_record_handle_error(
+        self, kind: str, handle: str, pk: int
+    ) -> PrecisError:
+        """The error for a record handle ``resolve_handle`` missed.
+
+        gr534656: the decimal body is one global sequence across kinds,
+        so ``pa513234`` can name a live memory — the recovery then is
+        the other kind's handle, not a blind search. One indexed
+        ``refs`` lookup (the gripe's "keep it cheap" budget) tells the
+        three cases apart: another kind's id space (name it + the real
+        handle), a soft-deleted ref of the *same* kind (``Gone`` — slug
+        kinds had no Gone-detection before this lookup), or a
+        never-existed id (the plain search hint).
+        """
+        other = None
+        if self.store is not None:
+            try:
+                other = self.store.fetch_refs_by_ids([pk], include_deleted=True).get(pk)
+            except Exception:  # pragma: no cover — advisory lookup
+                log.exception("unresolved-handle id-space lookup failed")
+        if other is not None and other.kind != kind:
+            real = handle_registry.try_format(other.kind, pk)
+            state = "live" if other.retired_at is None else "deleted"
+            return NotFound(
+                f"{kind} {handle!r} not found — ref {pk} is a {state} "
+                f"{other.kind!r} ref, not a {kind!r}"
+                + (f" (its handle is {real})" if real else ""),
+                next=(
+                    f"get(id={real!r}) for the {other.kind} that id "
+                    "actually names, or "
+                    f"search(kind={kind!r}, q='...') to find a {kind}"
+                ),
+            )
+        if other is not None and other.retired_at is not None:
+            return Gone(
+                f"{kind} {handle!r} was soft-deleted",
+                next=f"search(kind={kind!r}, q='...') to find existing",
+            )
+        return NotFound(
+            f"{kind} {handle!r} not found",
+            next=f"search(kind={kind!r}, q='...') to find existing",
+        )
+
+    def _unresolved_chunk_handle_error(
+        self, handle: str, kind: str, chunk_id: int
+    ) -> PrecisError:
+        """The error for a chunk handle ``resolve_handle`` missed.
+
+        gr534656: ``pc617977`` reads like a slug to the fallback below,
+        which is how agents got "paper slug 'pc617977' not found" and
+        kept re-issuing the same call. The input was a chunk handle, so
+        name the space. One indexed ``chunks`` lookup
+        (``chunk_owner_kind``, which includes retired owners) splits
+        the cases: another kind's chunk space (``dc<N>`` on a paper
+        chunk — mint the right code), a chunk whose owner was deleted
+        (``Gone``), or a chunk that never existed."""
+        owner = None
+        if self.store is not None:
+            try:
+                owner = self.store.chunks.chunk_owner_kind(chunk_id)
+            except Exception:  # pragma: no cover — advisory lookup
+                log.exception("unresolved-chunk owner lookup failed")
+        if owner is not None and owner != kind:
+            real = handle_registry.try_format(owner, chunk_id, chunk=True)
+            return NotFound(
+                f"{handle!r} is a {kind}-chunk handle, but chunk "
+                f"{chunk_id} belongs to a {owner!r}"
+                + (f" — its handle is {real}" if real else ""),
+                next=(
+                    f"get(id={real!r})" if real else f"search(kind={owner!r}, q='...')"
+                ),
+            )
+        if owner is not None:
+            return Gone(
+                f"{handle!r} is a {kind}-chunk handle; chunk {chunk_id} "
+                "exists but its owning ref was deleted",
+                next=f"search(kind={kind!r}, q='...') for a live {kind}",
+            )
+        return NotFound(
+            f"{handle!r} is a {kind}-chunk handle; no chunk {chunk_id} exists",
+            next=(
+                f"for the {kind} itself pass its slug or record handle, "
+                f"or search(kind={kind!r}, q='...') to find one"
+            ),
+        )
 
     def _infer_batch_kind(
         self, args: dict[str, Any], idents: Any, *, verb: str | None = None
