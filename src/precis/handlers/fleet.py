@@ -408,6 +408,15 @@ class FleetHandler(NumericRefHandler):
                 f"  ({hidden} hidden: dead or quiet >{_RECENT_H}h; "
                 "args={'state':'all'} shows all)"
             )
+        # Folded agent-* isolation trees, one count line per reporting host
+        # (gr541291; the collector's subagent_trees counts).
+        for name, hm in sorted(hosts.items()):
+            st = hm.get("subagent_trees") or {}
+            if isinstance(st, dict) and st.get("count"):
+                lines.append(
+                    f"  {name}: {st['count']} subagent trees, "
+                    f"{st.get('dirty') or 0} dirty"
+                )
 
         # A plan % is per account, so the newest host wins; a usage count
         # covers only the host that measured it, so it keeps vendor@host.

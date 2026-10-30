@@ -21,6 +21,12 @@ working and has been silent for DEAD_SILENT_MIN (a session outside tmux that
 is actively writing is therefore not flagged). Usage: scripts/fleet-report
 [--repo PATH]... [--json] [--quiet-min N] [--since-min N].
 
+`agent-*` worktrees (the Agent tool's isolation trees under
+.claude/worktrees, gr541291) fold into one `N subagent trees, M dirty`
+count line unless plainly live — a pane on the tree, a live worktree lock,
+or a transcript/session touched inside --quiet-min. `--json` keeps the
+counts under `subagent_trees`.
+
 Step 2 collector: `--push` POSTs the report to the local precis HTTP MCP as
 `put(kind='fleet', mode='report')` (URL from PRECIS_FLEET_MCP_URL, default
 http://127.0.0.1:8765/mcp; bearer from PRECIS_MCP_TOKEN). `--remote HOST`
@@ -100,7 +106,7 @@ CLAUDE_MODEL_WINDOWS = {
 }
 DEAD_SILENT_MIN = 5.0
 RECENT_WORKING_S = 120
-REPORT_VERSION = 2
+REPORT_VERSION = 3
 DEFAULT_MCP_URL = "http://127.0.0.1:8765/mcp"
 TAIL_BYTES = 262_144
 
@@ -783,8 +789,42 @@ def collect(
         vendor = vendor_of(p["command"])
         seen.add((vendor, key))
         rows.append(make_row(vendor, key, p))
-    # sessions with no pane: recent transcripts / rollouts / live locks
+    # sessions with no pane: recent transcripts / rollouts / live locks.
+    # `agent-*` trees (the Agent tool's isolation worktrees — basename
+    # convention, same as scripts/test and scripts/take-agent) fold into
+    # the subagent_trees count unless plainly live: a pane on the tree, a
+    # live worktree lock, or a transcript/session touched inside
+    # --quiet-min (gr541291: dozens of dead ones flooded AGENTS as idle
+    # rows and pushed the real sessions out of the fisheye window).
+    subagents = {"count": 0, "dirty": 0}
+    pane_keys = {k for k in pane_tree.values() if k}
+    recent_s = quiet_min * 60
     for key, wt in trees.items():
+        if wt["tree"].startswith("agent-"):
+            if key in pane_keys:
+                continue  # a live pane keeps the tree out of the fold
+            n_rows = len(rows)
+            cl = newest(claude_dir(wt["path"]).glob("*.jsonl"))
+            try:
+                cl_fresh = cl is not None and t - cl.stat().st_mtime < recent_s
+            except OSError:
+                cl_fresh = False
+            if cl_fresh or wt["lock_alive"]:
+                rows.append(make_row("claude", key, None))
+            for vend, sess_by_tree in (
+                ("codex", codex_by_tree),
+                ("kimi", kimi_by_tree),
+            ):
+                s = sess_by_tree.get(key)
+                if (
+                    s is not None
+                    and t - (s.get("last_event") or s["mtime"]) < recent_s
+                ):
+                    rows.append(make_row(vend, key, None))
+            if len(rows) == n_rows:
+                subagents["count"] += 1
+                subagents["dirty"] += 1 if wt["dirty"] else 0
+            continue
         if ("claude", key) not in seen:
             c = claude_session(wt["path"], window)
             if (c and t - c["mtime"] < since_min * 60) or wt["lock_alive"]:
@@ -809,6 +849,7 @@ def collect(
         "version": REPORT_VERSION,
         "generated": iso(t),
         "rows": rows,
+        "subagent_trees": subagents,
         "exceptions": exceptions(rows, quiet_min),
         "quota": quota,
     }
@@ -1044,6 +1085,9 @@ def render(rep: dict) -> str:
         lines.append(f"  {who(r)} · {r['state']} · {q} · {purpose} · {ctx}{done}")
     if not rep["rows"]:
         lines.append("  none")
+    sub = rep.get("subagent_trees") or {}
+    if sub.get("count"):
+        lines.append(f"  {sub['count']} subagent trees, {sub['dirty']} dirty")
     quota: dict[tuple[str, str], str] = {}
     limit_sets = [(v, lim) for v, lim in (rep.get("quota") or {}).items()]
     limit_sets += [(r["vendor"], r.get("rate_limits")) for r in rep["rows"]]

@@ -659,6 +659,7 @@ def test_json_shape(env):
         "version",
         "generated",
         "rows",
+        "subagent_trees",
         "exceptions",
         "quota",
     }
@@ -679,6 +680,79 @@ def test_json_shape(env):
         rep["rows"][0]
     )
     assert rep["rows"][0]["tmux"]["pane_id"] == "%7"
+
+
+def worktree(e, name: str) -> Path:
+    """A real worktree under .claude/worktrees/ (the subagent layout)."""
+    p = e.repo / ".claude" / "worktrees" / name
+    subprocess.run(
+        ["git", "-C", str(e.repo), "worktree", "add", "-q", "--detach", str(p)],
+        check=True,
+    )
+    return p
+
+
+def transcript_dir_for(e, path: Path) -> Path:
+    """The claude_dir() for an arbitrary cwd, keyed the same as the script
+    (realpath — git may report the unresolved worktree path)."""
+    return (
+        e.tmp_path
+        / "home"
+        / ".claude"
+        / "projects"
+        / re.sub(r"[^A-Za-z0-9]", "-", os.path.realpath(path))
+    )
+
+
+def test_agent_worktrees_fold_into_one_count_line(env):
+    """gr541291: dead agent-* isolation trees are one count line, not
+    dozens of idle rows pushing the real sessions out of AGENTS."""
+    trees = [worktree(env, f"agent-{i:016x}") for i in range(30)]
+    for p in trees[:3]:
+        (p / "dirty.txt").write_text("x\n", encoding="utf-8")
+    # Older than --quiet-min but inside --since-min: an idle row before the
+    # fold, now only counted.
+    write_jsonl(
+        transcript_dir_for(env, trees[0]) / "s.jsonl",
+        [assistant([{"type": "text"}], "end_turn", 3600)],
+        age_s=3600,
+    )
+    # Two real sessions: the main checkout and a sibling session tree.
+    side = worktree(env, "side")
+    write_jsonl(
+        env.transcript_dir / "a.jsonl",
+        [assistant([{"type": "text"}], "end_turn", 5)],
+    )
+    write_jsonl(
+        transcript_dir_for(env, side) / "b.jsonl",
+        [assistant([{"type": "text"}], "end_turn", 5)],
+    )
+    rep = report(env)
+    assert sorted(r["tree"] for r in rep["rows"]) == ["proj", "side"]
+    assert rep["subagent_trees"] == {"count": 30, "dirty": 3}
+    fold = [ln for ln in run_script(env).splitlines() if "subagent trees" in ln]
+    assert fold == ["  30 subagent trees, 3 dirty"]
+
+
+def test_agent_tree_live_pane_or_recent_transcript_keeps_its_row(env):
+    """gr541291: the fold spares plainly-live agent trees — a pane on the
+    tree or a transcript touched inside the quiet window keeps the row."""
+    trees = [worktree(env, f"agent-{i:016x}") for i in range(3)]
+    write_jsonl(
+        transcript_dir_for(env, trees[0]) / "s.jsonl",
+        [assistant([{"type": "tool_use"}], "tool_use", 10)],
+        age_s=10,
+    )
+    env.panes.write_text(
+        f"main\t4\tag\t%9\t321\tclaude\t{os.path.realpath(trees[1])}\t"
+        f"{int(time.time())}\n",
+        encoding="utf-8",
+    )
+    rep = report(env)
+    rows = {r["tree"]: r for r in rep["rows"]}
+    assert set(rows) == {trees[0].name, trees[1].name}
+    assert rows[trees[0].name]["state"] == "working"
+    assert rep["subagent_trees"] == {"count": 1, "dirty": 0}
 
 
 def test_text_output_blocks(env):

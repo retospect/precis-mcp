@@ -209,6 +209,9 @@ def apply_report(
     if not partial:
         host_fields["quota"] = report.get("quota") or {}
         host_fields["exceptions_hash"] = exceptions_hash(report)
+        # Folded agent-* isolation trees (gr541291): the count survives the
+        # push on the host row; a partial report never measured it.
+        host_fields["subagent_trees"] = report.get("subagent_trees")
     elif report.get("quota"):
         host_fields["quota"] = report["quota"]
     with store.tx() as conn:

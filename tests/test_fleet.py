@@ -554,6 +554,23 @@ def test_hook_row_survives_a_full_report(h: FleetHandler) -> None:
     assert agent(h, KEY).meta["state"] == "working"  # not dead-marked
 
 
+def test_subagent_tree_counts_land_on_the_host_row(h: FleetHandler) -> None:
+    """gr541291: the collector's agent-* fold counts ride the report onto
+    the host row and print as one count line per host in AGENTS."""
+    send(h, rep([row()], subagent_trees={"count": 30, "dirty": 3}))
+    assert agent(h, f"host:{HOST}").meta["subagent_trees"] == {
+        "count": 30,
+        "dirty": 3,
+    }
+    assert f"  {HOST}: 30 subagent trees, 3 dirty" in h.get().body
+    # A hook-mode partial report never measured the fold and keeps it.
+    send(h, rep([row()], partial=True))
+    assert agent(h, f"host:{HOST}").meta["subagent_trees"] == {
+        "count": 30,
+        "dirty": 3,
+    }
+
+
 def test_full_report_claims_a_seen_hook_row(h: FleetHandler) -> None:
     send(h, rep([row(via="hook")]))
     send(h, rep([row(state="idle")]))  # the collector sees the same key
