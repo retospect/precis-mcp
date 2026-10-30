@@ -138,14 +138,20 @@ def test_capped_prism_has_no_open_valence(prism: tuple) -> None:
     assert [f for f in chem.check(capped) if f.rule == "open_valence"] == []
 
 
-def test_decorated_then_capped_prism_has_no_skips_or_open_valence(
-    prism: tuple,
-) -> None:
+def test_decorated_then_capped_prism_checks_clean(prism: tuple) -> None:
+    """Decorate skips the five pocket sites (bond range of the opposite
+    rim's cap H), cap H-caps them through the Net path: no error finding —
+    no open_valence, over_valence or atom_overlap — only the pi_twist
+    advisory at the fin junctions."""
     _net, _xyz, g = prism
     decorated = mol.decorate(g, "open & face:out & every:3", group="COOH")
     capped = mol.cap(decorated)
-    assert [f for f in capped.findings if "site_skipped" in f] == []
+    skipped = [f for f in capped.findings if "site_skipped" in f]
+    assert len(skipped) == 5  # the pockets, named in test_mol_decorate
     assert _open_labels(capped) == []
+    found = chem.check(capped)
+    assert [f.rule for f in found if f.severity == "error"] == []
+    assert {f.rule for f in found} == {"pi_twist"}
 
 
 def test_benzene_has_no_open_valence() -> None:

@@ -4,7 +4,9 @@
 picks them). The torsion about each new bond is scanned — 12 turns of 30°,
 the one with the largest minimum non-bonded distance wins, exact ties
 broken by ``seed`` — and a site whose best torsion still overlaps under
-``validate.OVERLAP_FRACTION`` (the one clash rule) is skipped with a
+``validate.OVERLAP_FRACTION`` or puts a group atom inside bonding range
+(``elements.bond_cutoff``, the distance ``validate`` reads as a bond) of
+a host atom it is not bonded to is skipped with a
 ``decorate.site_skipped`` finding; a site with no open valence (and no H
 to replace) gets ``decorate.valence``. The counts ride the trace frame's
 ``made``.
@@ -18,6 +20,7 @@ from __future__ import annotations
 
 import copy
 import random
+from collections.abc import Sequence
 from dataclasses import replace
 from typing import Any
 
@@ -106,12 +109,20 @@ def _scan(
     torsions: tuple[float, ...],
     seed: int,
     index: int,
-) -> tuple[float, float, bool]:
-    """``(torsion, min non-bonded distance, overlaps)`` of the best
+    obstacles: Sequence[tuple[str, str, np.ndarray]] = (),
+) -> tuple[float, float, bool, str | None]:
+    """``(torsion, min non-bonded distance, clashes, why)`` of the best
     candidate. Non-bonded: every fragment/host pair except the new bond's
-    own 1-2 and 1-3 pairs; ``overlaps`` is the validator's rule
-    (distance under ``OVERLAP_FRACTION`` × covalent radii) on those
-    pairs."""
+    own 1-2 and 1-3 pairs. A torsion clashes when such a pair is under
+    ``OVERLAP_FRACTION`` × covalent radii (the validator's overlap rule)
+    or inside ``elements.bond_cutoff`` — the distance ``validate`` and
+    ``detect_bonds`` read as a bond, which is what surfaces later as
+    ``over_valence``. ``why`` is the clash in words (overlap first, else
+    ``bond-range contact with <host atom>``), ``None`` when none. A
+    torsion that does not clash always beats one that does; among either
+    kind the largest minimum distance wins. ``obstacles`` are ``(name,
+    element, xyz)`` atoms not in the scene yet but certain to be — the H a
+    later ``cap`` places — and count as host atoms."""
     from scipy.spatial import cKDTree
 
     hs = plan.h_scene
@@ -119,6 +130,10 @@ def _scan(
     host_labels = [la for la in hs.atoms if la not in removed]
     host_pts = np.asarray([_valence.cart(hs, la) for la in host_labels], dtype=float)
     host_el = [hs.atoms[la].element for la in host_labels]
+    if obstacles:
+        host_labels += [name for name, _el, _p in obstacles]
+        host_el += [el for _name, el, _p in obstacles]
+        host_pts = np.vstack([host_pts, [p for _n, _e, p in obstacles]])
     tree = cKDTree(host_pts)
     site = plan.label
     near_site = {site} | {
@@ -132,10 +147,11 @@ def _scan(
     }
     rcov = elements.covalent_radius
     reach = 2.0 * max(rcov(e) for e in set(host_el) | {"C"}) + 3.0
-    scored: list[tuple[float, float, bool]] = []
+    scored: list[tuple[float, float, bool, str | None]] = []
     for t in torsions:
         carts = plan.f_carts(t)
-        best, hit = np.inf, False
+        best, hit, overlap = np.inf, False, False
+        contact: tuple[float, str] | None = None
         for fl, p in carts.items():
             f_el = plan.fg_scene.atoms[fl].element
             for k in tree.query_ball_point(p, reach):
@@ -145,10 +161,23 @@ def _scan(
                 d = float(np.linalg.norm(host_pts[k] - p))
                 best = min(best, d)
                 if d < OVERLAP_FRACTION * (rcov(f_el) + rcov(host_el[k])):
+                    hit = overlap = True
+                if d <= elements.bond_cutoff(f_el, host_el[k]):
                     hit = True
-        scored.append((t, float(best), hit))
-    top = max(s[1] for s in scored)
-    tied = [s for s in scored if s[1] >= top - _TIE_A]
+                    if contact is None or d < contact[0]:
+                        contact = (d, hl)
+        why = None
+        if overlap:
+            why = (
+                f"non-bonded pair at {best:.2f} Å, under "
+                f"{OVERLAP_FRACTION:g} × covalent radii"
+            )
+        elif contact:
+            why = f"bond-range contact with {contact[1]}"
+        scored.append((t, float(best), hit, why))
+    pool = [s for s in scored if not s[2]] or scored
+    top = max(s[1] for s in pool)
+    tied = [s for s in pool if s[1] >= top - _TIE_A]
     pick = _tie_pick([s[0] for s in tied], seed, index)
     chosen = next(s for s in tied if s[0] == pick)
     return chosen
@@ -177,7 +206,8 @@ def decorate(
     one with the largest minimum non-bonded distance (``seed`` breaks exact
     ties); a number fixes it (degrees). Findings on the result:
     ``decorate.site_skipped`` (the best torsion still overlaps under
-    ``validate.OVERLAP_FRACTION`` — nothing placed there) and
+    ``validate.OVERLAP_FRACTION`` or sits in bond range of a host atom —
+    nothing placed there) and
     ``decorate.valence`` (the site is saturated). Their counts, and the
     groups and atoms placed, are the frame's ``made``."""
     if (group is None) == (pattern is None):
@@ -204,6 +234,20 @@ def decorate(
     g = _sites.bake(pga.geom(geom))
     rows = _sites.sites(g, sites) if isinstance(sites, str) else list(sites)
     cur = g
+    # on a Net-built Geom the edge atoms no site selects will be capped:
+    # their H are space a group may not take (bond range of a later cap H
+    # is the over_valence a cap would otherwise mint)
+    obstacles: list[tuple[str, str, np.ndarray]] = []
+    ref = _sites.net_ref(g)
+    if ref is not None:
+        chosen = {r.atom for r in rows}
+        labels = list(ref.scene.atoms)
+        hosts, positions = _prospective_caps(g, ref)
+        obstacles = [
+            (f"the cap H of {labels[h]}", "H", np.asarray(p, dtype=float))
+            for h, p in zip(hosts, positions)
+            if labels[h] not in chosen
+        ]
     findings: list[str] = []
     placed = skipped = saturated = n_atoms = 0
     for k, row in enumerate(rows):
@@ -237,14 +281,14 @@ def decorate(
             cur, site, (grp, grp.ports[pname]), bond=_CH_A if is_h_on_c else None
         )
         # a single atom has nothing to turn
-        t, best, hit = _scan(plan, scan if len(plan.f_labels) > 1 else (0.0,), seed, k)
+        t, _best, hit, why = _scan(
+            plan, scan if len(plan.f_labels) > 1 else (0.0,), seed, k, obstacles
+        )
         if hit:
             skipped += 1
             findings.append(
                 f"decorate.site_skipped: {row.atom} ({row.ring_class}, "
-                f"face {row.face}): best torsion {t:g}° still leaves a "
-                f"non-bonded pair at {best:.2f} Å, under {OVERLAP_FRACTION:g} × "
-                "covalent radii"
+                f"face {row.face}): best torsion {t:g}° still leaves a {why}"
             )
             continue
         cur = attachment.attach_planned(plan, t)
@@ -281,19 +325,25 @@ def _untouched_hosts(g: Geom, ref: Any) -> frozenset[int]:
     return frozenset(o for o, la in enumerate(labels) if count.get(la, 0) == degree[o])
 
 
-def _cap_net(g: Geom, ref: Any) -> Geom:
-    """The Net path: ``hexfold_spec.terminate_open_edges`` places the H,
-    exactly as the ``terminate`` op does — on the hosts nothing has been
-    bonded to since the Net was exported (all of them, on a pristine
-    Geom)."""
+def _prospective_caps(g: Geom, ref: Any) -> tuple[list[int], list[np.ndarray]]:
+    """The Net path's H (host ordinals, positions) on the hosts nothing has
+    been bonded to yet — what ``cap`` would place on ``g`` right now."""
     from precis_se.atomic.generators.hexfold_spec import terminate_open_edges
 
-    hosts, positions = terminate_open_edges(
+    return terminate_open_edges(
         ref.net,
         ref.xyz,
         "H",
         eligible_hosts=None if g.scene is ref.scene else _untouched_hosts(g, ref),
     )
+
+
+def _cap_net(g: Geom, ref: Any) -> Geom:
+    """The Net path: ``hexfold_spec.terminate_open_edges`` places the H,
+    exactly as the ``terminate`` op does — on the hosts nothing has been
+    bonded to since the Net was exported (all of them, on a pristine
+    Geom)."""
+    hosts, positions = _prospective_caps(g, ref)
     scene = copy.deepcopy(g.scene)
     labels = list(ref.scene.atoms)  # ordinal → label (Net ordinals are scene order)
     maker = pga._leaf()

@@ -852,9 +852,9 @@ def _fuse_copies(g: Geom, n: int, step: np.ndarray) -> Geom:
     flat = _flatten_atomic(g)
     labels, elements, carts = _scene_carts(flat)
     bonds = _scene_bonds(flat, labels)
-    source_bond_makers = [
-        b.maker for b in flat.bonds if b.i in flat.atoms and b.j in flat.atoms
-    ]
+    live = [b for b in flat.bonds if b.i in flat.atoms and b.j in flat.atoms]
+    source_bond_makers = [b.maker for b in live]
+    source_bond_kinds = [b.kind for b in live]
 
     order: list[int] = []  # source atom index per kept merged atom
     merged_pos: list[np.ndarray] = []
@@ -872,13 +872,13 @@ def _fuse_copies(g: Geom, n: int, step: np.ndarray) -> Geom:
                 merged_pos.append(p)
                 order.append(i)
             remap[(k, i)] = hit
-    new_bonds: dict[tuple[int, int, float], int | None] = {}
+    new_bonds: dict[tuple[int, int, float, str], int | None] = {}
     for k in range(n):
-        for (i, j, o), maker in zip(bonds, source_bond_makers):
+        for (i, j, o), maker, kind in zip(bonds, source_bond_makers, source_bond_kinds):
             a, b = remap[(k, i)], remap[(k, j)]
             if a == b:
                 continue
-            new_bonds.setdefault((min(a, b), max(a, b), o), maker)
+            new_bonds.setdefault((min(a, b), max(a, b), o, kind), maker)
     atoms_el = [elements[i] for i in order]
     pos = np.asarray(merged_pos, dtype=np.float64)
     new_scene = _scene_from_parts(

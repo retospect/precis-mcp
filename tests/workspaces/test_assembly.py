@@ -147,6 +147,10 @@ def test_fused_tile_equals_longer_prism() -> None:
     flat = fused.flatten()
     assert structure_sha(flat) == structure_sha(g6.scene)
     assert len(flat.bonds) == len(g6.scene.bonds)
+    # the Net's sp2 bonds are aromatic 4/3; the fuse keeps order and kind
+    want = {(4.0 / 3.0, "aromatic")}
+    assert {(b.order, b.kind) for b in g6.scene.bonds} == want
+    assert {(b.order, b.kind) for b in flat.bonds} == want
 
 
 def _carts(scene: Scene) -> np.ndarray:

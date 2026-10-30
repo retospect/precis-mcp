@@ -266,10 +266,10 @@ def test_torsion_scan_never_loses_to_a_fixed_torsion() -> None:
     cooh = mol.lib("COOH")
     site = Port(name="site", atom=row.atom, direction=row.direction)
     plan = attachment._plan(ph, site, cooh.port("a1"))
-    _t, best, hit = decorator._scan(plan, decorator._SCAN, 0, 0)
+    _t, best, hit, _why = decorator._scan(plan, decorator._SCAN, 0, 0)
     assert not hit
     for t in decorator._SCAN:
-        _t2, fixed, _hit = decorator._scan(plan, (t,), 0, 0)
+        _t2, fixed, _hit, _w = decorator._scan(plan, (t,), 0, 0)
         assert fixed <= best + 1e-9
     # a number fixes the torsion: 0 and 90 degrees put the carboxyl O elsewhere
     a = mol.decorate(ph, "open", "COOH", torsion=0.0)
@@ -359,6 +359,17 @@ def test_net_cap_atoms_carry_the_cap_frame(prism: tuple, tmp_path: Path) -> None
     assert all(b.maker == frame.id for b in capped.scene.bonds[-144:])
 
 
+#: The sites ``decorate('open & face:out & every:3', 'COOH')`` skips on the
+#: prism fixture -- measured, and named by their findings.
+_POCKETS = {"aC192", "aC230", "aC251", "aC336", "aC395"}
+
+
+def _skipped(g: Geom) -> set[str]:
+    return {
+        f.split()[1].rstrip(":") for f in g.findings if f.startswith("decorate.site_s")
+    }
+
+
 def test_decorate_cooh_every_third_open_out_site(prism: tuple) -> None:
     _net, _xyz, g = prism
     out_sites = mol.sites(g, "open & face:out")
@@ -368,28 +379,34 @@ def test_decorate_cooh_every_third_open_out_site(prism: tuple) -> None:
     assert len(chosen) == math.ceil(n / 3) == 19
     assert [s.atom for s in chosen] == [s.atom for s in out_sites][::3]
     out = mol.decorate(g, "open & face:out & every:3", group="COOH")
-    skipped = [f for f in out.findings if f.startswith("decorate.site_skipped")]
-    assert skipped == [] and out.findings == ()
+    # the converging-rim pockets: a group there would sit in bonding range of
+    # the opposite rim (or of the H its cap puts there) -- skipped, not placed
+    assert _skipped(out) == _POCKETS
+    assert len(out.findings) == len(_POCKETS)
+    placed = len(chosen) - len(_POCKETS)
+    assert placed == 14  # ceil(56 / 3) = 19 sites, 5 of them pockets
     els = Counter(a.element for a in out.scene.atoms.values())
     base = Counter(a.element for a in g.scene.atoms.values())
-    assert els["C"] - base["C"] == 19 and els["O"] == 2 * 19 and els["H"] == 19
+    assert els["C"] - base["C"] == placed and els["O"] == 2 * placed
+    assert els["H"] == placed
     # every placed carboxyl carbon is bonded to a chosen host at 1.52 A
-    hosts = {s.atom for s in chosen}
+    hosts = {s.atom for s in chosen} - _POCKETS
     old = set(g.scene.atoms)
     joins = [
         b
         for b in out.scene.bonds
         if (b.i in hosts and b.j not in old) or (b.j in hosts and b.i not in old)
     ]
-    assert len(joins) == 19
+    assert len(joins) == placed
     for b in joins:
         d = float(np.linalg.norm(_cart(out.scene, b.i) - _cart(out.scene, b.j)))
         assert d == pytest.approx(1.52, abs=1e-6)
     # a one-valence site that holds a group has nothing left to take
-    full = [s for s in chosen if s.free == 1][:2]
+    full = [s for s in chosen if s.free == 1 and s.atom not in _POCKETS][:2]
     assert len(full) == 2
     again = mol.decorate(out, full, "OH")
-    assert [f.split(":")[0] for f in again.findings] == ["decorate.valence"] * 2
+    new = again.findings[len(out.findings) :]  # findings accumulate on a Geom
+    assert [f.split(":")[0] for f in new] == ["decorate.valence"] * 2
 
 
 def test_cap_after_decorate_keeps_sp2_chemistry(prism: tuple) -> None:
@@ -409,16 +426,17 @@ def test_cap_after_decorate_keeps_sp2_chemistry(prism: tuple) -> None:
 
 def test_cap_after_decorate_takes_the_net_path_on_what_is_left(prism: tuple) -> None:
     """The Net survives decoration: ``cap`` places ``terminate_open_edges``'
-    H on every edge atom the decoration did not bond to (no skipped
-    converging-rim sites, nothing left open), and none on the hosts that
-    hold a group."""
+    H on every edge atom the decoration did not bond to -- the skipped
+    pocket hosts included -- nothing left open, and none beyond the one
+    valence a group took."""
     net, xyz, g = prism
     decorated = mol.decorate(g, "open & face:out & every:3", group="COOH")
     capped = mol.cap(decorated)
-    assert [f for f in capped.findings if "site_skipped" in f] == []
+    # cap adds no skips of its own: only decorate's pocket sites are named
+    assert _skipped(capped) == _POCKETS
     assert mol.sites(capped, "open") == []
     labels = list(g.scene.atoms)
-    holds_group = {s.atom for s in mol.sites(g, "open & face:out & every:3")}
+    holds_group = {s.atom for s in mol.sites(g, "open & face:out & every:3")} - _POCKETS
     hosts, _pos = hexfold_spec.terminate_open_edges(net, xyz, "H")
     wanted = Counter(labels[h] for h in hosts)  # 2 on a one-bond strip corner
     expect = Counter(
@@ -442,6 +460,26 @@ def test_cap_after_decorate_takes_the_net_path_on_what_is_left(prism: tuple) -> 
         deg[b.i] += 1
         deg[b.j] += 1
     assert max(deg[labels[a.ord]] for a in net.atoms) <= 3
+    # every pocket host was capped through the Net path
+    assert all(got[la] >= 1 for la in _POCKETS)
+
+
+def test_skipped_pocket_reports_its_bond_range_contact(prism: tuple) -> None:
+    _net, _xyz, g = prism
+    out = mol.decorate(g, "open & face:out & every:3", group="COOH")
+    notes = {f.split()[1].rstrip(":"): f for f in out.findings}
+    # aC230's group would sit 1.1 A from the H the cap puts on aC49
+    assert "bond-range contact with the cap H of aC49" in notes["aC230"]
+    assert all("still leaves a" in f for f in notes.values())
+
+
+def test_decorated_capped_prism_checks_clean(prism: tuple) -> None:
+    from precis.structure import check as chem
+
+    _net, _xyz, g = prism
+    capped = mol.cap(mol.decorate(g, "open & face:out & every:3", group="COOH"))
+    errors = [f.rule for f in chem.check(capped) if f.severity == "error"]
+    assert errors == []
 
 
 # -- the wheel ----------------------------------------------------------------
