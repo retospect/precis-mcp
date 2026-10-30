@@ -504,8 +504,9 @@ separate from the propagated/model-form bands.
 - **Slice 8 (-30):** footing = `mace:medium` plus one spin-polarised DFT
   check on an Fe anchor (a separate item, not in this slice); scans
   hand-minted, no demo quest; subject set = st202238 (A) and st463208 (B)
-  against baseline st203306. The November paper collision (td462597 vs
-  td459589) is still open.
+  against baseline st203306. The November paper collision was ruled on
+  2026-10-30: td459589 (the validation paper) holds November; this paper
+  (td462597) has no month yet.
 
 ## Slice 8 contract (DRAFT v4 2026-10-30, design review folded in, second-vet fixes applied; not `ready` until a third look; footing, path and subjects ruled 2026-10-29)
 
@@ -832,9 +833,9 @@ The void condition is the item's: the spin effect on `gamma0`, not a
 DFT-vs-MACE gap (coordinator, 2026-10-30).
 One Fe geometry says nothing about Fe–Pd alloys in general.
 
-**Open.** The November paper collision: td462597 (this paper, cited in
-§Rulings 2026-10-29) against td459589 (the catpath pathway paper); it does
-not block the build. Footing, path and subject set are ruled (§Rulings
+**Open.** The paper's month: November went to td459589 (Reto, 2026-10-30;
+the validation paper, draft:validation-paper, cases A–D), so this paper
+(td462597) has none yet; it does not block the build. Footing, path and subject set are ruled (§Rulings
 2026-10-29). Design review: approve-with-changes 2026-10-30, changes folded
 in, stage 4 re-looked and approved. Second vet 2026-10-30: NOT READY with 7
 fixes, applied in v4 (B's H check demoted to `blocked: no final geometry`

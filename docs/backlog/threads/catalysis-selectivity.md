@@ -83,7 +83,10 @@ the dated detail is in `git log` and the owning items):**
   `che_affine` export; slices 2, 4, 5), wave B (anchors rung, staircase
   panel, window/Shapley/HER objectives) and wave C slice 7 are built; the
   item `backlog/surface-pourbaix-staircase-optimizer.md` owns the status.
-  The paper-date collision is its §Rulings 2026-10-13 and `td462597`.
+  The paper-date collision is ruled (Reto, 2026-10-30): November is
+  `td459589` (draft:validation-paper, "Reproducing published catalysis
+  results with autocatpath", cases A–D); the SPSO paper (`td462597`) has no
+  month yet.
 - **Operating point.** qu164903 (NO→NH₃ selectivity): −0.3 V_RHE, window
   −0.2 to −0.4 V, pH 7 (logbook decision entry 626; both source SIs state
   V vs RHE).
