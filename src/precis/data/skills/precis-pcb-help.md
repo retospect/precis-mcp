@@ -474,13 +474,13 @@ explicit `paste` always wins.
 `op='pad'` edits ONE pad of ONE placed part — a delta on the instance,
 never the shared footprint row, so other designs and other instances
 keep catalog geometry: `args={'op':'pad','refdes':'J1','pad':'3','dx':0.2}`
-shifts the pad's centre in footprint-local mm (the `view='pinout'`
-frame); `'w'`/`'h'` resize to an absolute extent; `'drill'` re-drills a
-plated through-hole pad (refused on SMD). `revert:true` drops that
-pad's override — without `pad`, all of the part's. Non-plated holes:
-`'hole':'add'` + `x`/`y`/`drill`, `'hole':'<n>'` + `'remove':true` by
-`view='pinout'` `hole_index`. Views mark overridden and dead pads; pad
-`add` refuses with a `next=`.
+moves a pad's centre, `'w'`/`'h'` resize it, `'drill'` re-drills a
+plated pad (mm, footprint-local; refused on SMD). `add:true` +
+`pad:'9'` + `x`/`y`/`w`/`h` authors a pad; `remove:true` suppresses one
+(refused while it carries a net). Non-plated holes: `'hole':'add'` +
+`x`/`y`/`drill`, `'hole':'<n>'` + `'remove':true` by `view='pinout'`
+`hole_index`; `restore_hole:<catalog index>` brings a removed one back.
+`revert:true` undoes one pad/hole or the whole map.
 
 ## Place it — `put(args={'op':'place', …})`
 

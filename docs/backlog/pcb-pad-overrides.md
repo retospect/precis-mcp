@@ -66,14 +66,34 @@ geometry (rendered pads, DRC, gerber), and must be revertible per pad.
   one by its resolved `hole_index` (catalog or added) — stored under
   the map's `#holes` meta key, applied at the same seam, judged the
   same way.
+- Slice 2 continued: pad add/remove — `add:true` + `pad:'9'` +
+  `x`/`y`/`w`/`h` (+ `shape`/`rot`/`layer`/`drill`/`role`/`mask`/
+  `paste`/`slot`/`poly`, validated by `normalize_pad`) authors a pad
+  the catalog lacks; `remove:true` suppresses one, refused while it
+  carries a net (`next=` names `pin_remove` / re-netting). Re-adding a
+  REMOVED catalog number stores `{"remove": true, "add": <pad>}` — the
+  replace `apply_pad_overrides` documents — so one pad <n> exists and
+  `revert` restores the catalog pad. `revert` + `hole:'<n>'` is
+  effective-indexed like `remove` (it drops an ADDED hole; a standing
+  catalog hole is `unchanged`); a suppressed catalog hole comes back
+  via `restore_hole:<catalog index>`, its own call that refuses any
+  sibling arg, and `view='pinout'` lists removed catalog holes with
+  their catalog indices. Sugar addressing `'<slug>#J1.pad:3'` /
+  `'<slug>#J1.hole:2'` folds refdes/pad/hole out of the id into args
+  (a disagreeing explicit arg refuses). Views: pinout marks authored
+  pads `authored pad add` and gives hole rows an `origin` column;
+  `view='footprints'` tokens show `+9`/`-3`/`holes+N-M` beside
+  `(dead)` marks.
 
 ## Explicitly NOT in scope (later slices)
 
-- Adding or removing a pad; moving a non-plated hole. `op='pad'`
-  refuses `add` with a `next=` pointing at this note.
-- Changing a pad's `slot`, `shape`, `layer`, `rot`, `mask` or `paste`.
-- Sugar addressing `'<slug>#J1.pad:3'`; per-field revert
-  (`revert_fields=['dx']`); board-wide override listing.
+- Moving a non-plated hole (`dx`/`dy` on holes — remove + re-add is
+  the move).
+- Changing an EXISTING pad's `slot`, `shape`, `layer`, `rot`, `mask`
+  or `paste` (the `add` path takes all of them).
+- Per-field revert (`revert_fields=['dx']`); board-wide override
+  listing; `drill` on an SMD land (add-or-suppress a plated hole is
+  not a land edit).
 
 ## Acceptance criteria
 
@@ -85,8 +105,6 @@ geometry (rendered pads, DRC, gerber), and must be revertible per pad.
   with stored routed copper rips the net and says so.
 - `revert` removes the named pad's override (or the part's whole map);
   the views read catalog geometry again.
-- Args asking to add/remove a pad or touch a hole/drill refuse with
-  `next=` naming this note.
 - `view='footprints'` shows a per-part override count; `view='pinout'`
   marks each overridden pad.
 

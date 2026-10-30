@@ -2,7 +2,7 @@
 id: precis-pcb-check-help
 family: pcb
 title: precis — the PCB check surface (view='check', phases, finding delta, ERC, footprint and pin fixes)
-summary: one check surface for a pcb design — view='check' filters findings by rule/severity/phase; the board phase (netlist/placed/routed/fab) gates which rules run and tiers severities; op='phase' records the authored claim; ERC rules (pin_conflict, no_driver, over_voltage, rail_crossing, no_decoupling, over_current) join the geometric DRC on the same table; the get views are read-only and delta against the last recorded run of the same phase; put op='check' records a run; fixes: op='footprint' for synthesized_footprint, pads vs pins, op='pin_rename'/'pin_remove', op='pins' for ERC pin facts, op='pad' for a per-instance pad move/resize
+summary: one check surface for a pcb design — view='check' filters findings by rule/severity/phase; the board phase (netlist/placed/routed/fab) gates which rules run and tiers severities; op='phase' records the authored claim; ERC rules (pin_conflict, no_driver, over_voltage, rail_crossing, no_decoupling, over_current) join the geometric DRC on the same table; the get views are read-only and delta against the last recorded run of the same phase; put op='check' records a run; fixes: op='footprint' for synthesized_footprint, pads vs pins, op='pin_rename'/'pin_remove', op='pins' for ERC pin facts, op='pad' for a per-instance pad move/resize/drill or pad/hole add/remove
 answers:
   - how do I check a pcb design — DRC, netlist checks, ERC?
   - how do I see only errors, or only one rule's findings?
@@ -252,7 +252,7 @@ every capacitor on the pin's rail to it. The rating side needs no
 annotation — a part carrying a C-number gets value/dielectric/rating
 parsed from its catalog description, shown as `derived:` on `#REFDES`.
 
-## Move or resize one pad on one placed part — `op='pad'`
+## Move, resize, add or remove one pad or hole on one placed part — `op='pad'`
 
 A pad that needs a nudge or a new extent on ONE placed part (a vendor
 land revision, a hand-solder enlargement) is a per-instance override,
@@ -262,13 +262,17 @@ rendered pads, DRC and gerber use the override.
 `args={'op':'pad','refdes':'J1','pad':'3','dx':0.2,'dy':-0.1}` shifts the
 pad's centre in footprint-local mm; `'w'`/`'h'` resize to an absolute
 extent; `'drill'` re-drills a plated through-hole pad to an absolute
-diameter (refused on an SMD land). `revert:true` drops that pad's
-override — without `pad`, all of the part's. Non-plated holes are
-their own call: `'hole':'add'` with `x`/`y`/`drill` appends an NPTH to
-that part's footprint, `'hole':'<n>'` + `'remove':true` drops one by
-its `view='pinout'` `hole_index`. Judged like every inline edit: a
-delta that adds or deepens an error stores nothing. `view='pinout'`
-marks each overridden pad `authored pad override` and names dead ones
-(pad no longer on the resolved footprint); `view='footprints'` lists
-their numbers. Adding/removing PADS still refuses with a `next=` that
-names the tracking design note.
+diameter (refused on an SMD land). `add:true` + `pad:'9'` +
+`x`/`y`/`w`/`h` authors a pad the catalog lacks; `remove:true`
+suppresses one — refused while the pad carries a net (`pin_remove` or
+re-net first). `revert:true` drops that pad's override — without
+`pad`, all of the part's. Non-plated holes are their own call:
+`'hole':'add'` with `x`/`y`/`drill` appends an NPTH to that part's
+footprint, `'hole':'<n>'` + `'remove':true` drops one by its
+`view='pinout'` `hole_index`, `revert` + `'hole':'<n>'` drops an added
+hole the same way, and `restore_hole:<catalog index>` restores a
+removed catalog hole (pinout's removed-holes table lists the indices).
+Judged like every inline edit: a delta that adds or deepens an error
+stores nothing. `view='pinout'` marks each overridden pad
+`authored pad override` and names dead ones (pad no longer on the
+resolved footprint); `view='footprints'` lists their numbers.

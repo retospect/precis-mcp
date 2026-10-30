@@ -530,7 +530,8 @@ class PcbIR:
 
     #: object[n_inst] -> dict | None — the instance's authored
     #: ``pad_overrides`` (gr520149, ``op='pad'``): ``{pad_number:
-    #: {dx, dy, w?, h?}}``, a per-pad footprint-local delta stored on
+    #: {dx, dy, w?, h?, drill?, add?, remove?}, "#holes": {add, remove}}``,
+    #: a per-pad footprint-local delta stored on
     #: ``pcb_instances.meta`` (hoisted by :meth:`Store.pcb_graph` like
     #: ``label_spot``). Read by :func:`precis.pcb.session.
     #: footprints_by_refdes`, which applies it to a COPY of the resolved
