@@ -908,6 +908,65 @@ class SynthesizedPadError(RuntimeError):
     """A pad in the model is a synthesized BOUND, not a real footprint."""
 
 
+def synthesized_pad_reasons(model: dict[str, Any]) -> list[str]:
+    """One line per part carrying a synthesized pad — which FOOTPRINT
+    explains it and which fix closes it (gr536876).
+
+    The refusal used to name only the affected nets, which read as a
+    board defect; the real defect is on the footprint side. A catalog
+    pad carries ``part_lcsc`` (its ``part_footprints`` key): absent a
+    ``pin_unmatched`` flag the row is simply uncached — ``op='footprint'``
+    pulls or authors it. ``pin_unmatched`` means the row IS cached but
+    its ``pin_map`` names none of the design's declared pins for it (a
+    row authored off a pin_map-less export stores ``pin_map=NULL`` —
+    the taz-leaf-f failure): re-authoring the row *with* ``pin_map`` is
+    the fix, not a re-fetch and not a board change. A pad with neither
+    is design-local copper the landpattern sized by construction.
+    Shared by :func:`export_fab` and
+    :func:`precis.pcb.epro_write.epro_files` so both refusals name the
+    same cause."""
+    by_refdes: dict[str, dict[str, Any]] = {}
+    for pad in model.get("pads") or []:
+        if not pad.get("synthesized"):
+            continue
+        refdes = str(pad.get("refdes") or "?")
+        info = by_refdes.setdefault(refdes, {"lcsc": "", "unmatched": set()})
+        if pad.get("part_lcsc"):
+            info["lcsc"] = str(pad["part_lcsc"])
+        if pad.get("pin_unmatched"):
+            info["unmatched"].add(str(pad.get("pin") or "?"))
+    lines: list[str] = []
+    for refdes in sorted(by_refdes):
+        info = by_refdes[refdes]
+        lcsc = info["lcsc"]
+        head = f"{lcsc} ({refdes})" if lcsc else refdes
+        if info["unmatched"]:
+            names = sorted(info["unmatched"])
+            shown = ", ".join(names[:5]) + (", …" if len(names) > 5 else "")
+            lines.append(
+                f"{head}: footprint cached but its pin_map joins none of "
+                f"{len(names)} declared pin(s) ({shown}) — re-author the "
+                "row with pin_map via op='footprint' args.footprint"
+            )
+        elif lcsc:
+            lines.append(
+                f"{head}: no cached footprint — op='footprint' pulls or authors it"
+            )
+        else:
+            lines.append(f"{refdes}: design-local pad — synthesized by construction")
+    return lines
+
+
+#: The closing line of either synthesized-pad refusal: the op that fixes
+#: the rows :func:`synthesized_pad_reasons` named, then the preview
+#: escape.
+SYNTHESIZED_PAD_FIX = (
+    "Fix: put(kind='pcb', args={'op':'footprint','part':'<lcsc>'}) pulls or "
+    "authors the real footprint (args.footprint takes a {pads, pin_map} "
+    "row); or pass allow_synthesized=True for a preview-only export."
+)
+
+
 def export_fab(
     model: dict[str, Any], *, name: str = "design", allow_synthesized: bool = False
 ) -> dict[str, str]:
@@ -938,8 +997,9 @@ def export_fab(
                 f"{len(bad)} net(s) carry synthesized pad geometry "
                 f"({', '.join(bad[:5])}{'...' if len(bad) > 5 else ''}) — these "
                 "are land-pattern BOUNDS, not the real footprint, and must not "
-                "be fabricated. Cache real footprints, or pass "
-                "allow_synthesized=True for a preview-only export."
+                "be fabricated:"
+                + "".join(f"\n  {line}" for line in synthesized_pad_reasons(model))
+                + f"\n{SYNTHESIZED_PAD_FIX}"
             )
     out = export_gerbers(model, name=name)
     out.update(excellon_files(model, name=name))
@@ -964,6 +1024,7 @@ __all__ = [
     "DWGS_TEXT_HEIGHT_MM",
     "EDGE_CUT_WIDTH_MM",
     "SOLDERMASK_EXPANSION_MM",
+    "SYNTHESIZED_PAD_FIX",
     "SynthesizedPadError",
     "adhesive_gerber",
     "copper_gerber",
@@ -978,5 +1039,6 @@ __all__ = [
     "soldermask_gerber",
     "solderpaste_gerber",
     "stiffener_gerber",
+    "synthesized_pad_reasons",
     "zip_fab",
 ]

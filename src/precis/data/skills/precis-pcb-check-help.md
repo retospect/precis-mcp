@@ -189,6 +189,8 @@ synthesized bound. Re-pulling cannot fix it; rename the pin. A design
 footprint's own (`U_TEMP: declared VDD; the footprint names ADD0, ALERT,
 GND, SCL, SDA, V+`).
 
+## Author a footprint the vendor lacks — `args.footprint`
+
 When the vendor has nothing for a C-number, author the footprint directly
 instead — same pad shape as `footprints:[...]` in `put`'s design-authoring
 args:
@@ -208,11 +210,18 @@ frame as the pads): they move, rotate and flip with their part, and reach
 the drill file and DRC at the part's current pose. A
 `put footprints` entry replaces the whole footprint: omit `holes` (or the
 courtyard) and the stored ones are cleared, so re-send them with every edit.
+Pad `shape` is `circle`/`rect`/`obround`/`polygon`; vendor spellings map
+on input (`oval` → `obround`, `ellipse` → `circle`), so a
+`view='footprints' args={'format':'json'}` row — or a vendor-decoded one —
+authors back through `args.footprint` verbatim.
 
 `view='footprints'` lists every catalog-part instance on the board
 (refdes, C-number, cached?, source, pad count, authored `op='pad'`
 overrides) — the read-side counterpart, and where to check before
-trusting a `view='drc'` pass on that part.
+trusting a `view='drc'` pass on that part. Its `args={'format':'json'}`
+export emits each cached row already normalized for authoring (canonical
+shapes, `pin_map` always populated), so export → `op='footprint'` →
+export round-trips byte-identically.
 
 ## Fix a wrong pin name — `op='pin_rename'` / `op='pin_remove'`
 

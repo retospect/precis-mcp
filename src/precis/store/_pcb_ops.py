@@ -759,7 +759,10 @@ class PcbMixin:
         part): ``name`` (req, the join key a component's own
         ``footprint`` field then names), ``pads`` (req, ``[{pin, shape:
         'circle'|'rect'|'obround'|'polygon', x, y, w?, h?, poly?, role?,
-        mask?, paste?, drill?}]`` — see :func:`_normalize_local_footprint`
+        mask?, paste?, drill?}]`` — vendor spellings ``oval``/``ellipse``
+        map to ``obround``/``circle`` on input (gr536876), so a
+        ``view='footprints'`` export row re-authors; see
+        :func:`_normalize_local_footprint`
         for the full per-field contract), optional ``pin_map``
         (``{pad_number: 'PIN'}`` or ``{pad_number: {name, tags?}}`` —
         identity for any pad it omits, and every key must be a real pad

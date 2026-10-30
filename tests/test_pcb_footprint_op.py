@@ -25,6 +25,7 @@ from precis.handlers.pcb import PcbHandler
 from precis.pcb import drc as pcb_drc
 from precis.pcb import footprint as pcb_footprint_mod
 from precis.pcb import realize as pcb_realize
+from precis.pcb import rows as pcb_rows
 from precis.pcb import session as pcb_session
 from tests.test_pcb_ewod_dogfood import (
     _HV507_LCSC,
@@ -334,20 +335,143 @@ def test_view_footprints_shows_uncached_on_a_design_seeded_without_footprints(pc
 
 
 def test_view_footprints_format_json_exports_the_cache_rows(pcb):
-    """gr520330: ``args={'format':'json'}`` is the offline export door —
-    one JSON document whose ``footprints`` map carries the same
-    ``part_footprints`` rows the sandbox's ``view='footprint'`` read
-    returns."""
+    """gr520330 + gr536876: ``args={'format':'json'}`` is the offline
+    export door — one JSON document whose ``footprints`` map carries the
+    cache rows in their AUTHORING-canonical form
+    (:func:`precis.pcb.rows.export_footprint_row`): canonical pad shapes
+    and an explicit ``pin_map``, so a row feeds ``op='footprint'``'s
+    ``args.footprint`` verbatim and re-exports identically."""
     slug = _seed(pcb)  # caches both C639448 and C28927
     doc = json.loads(pcb.get(id=slug, view="footprints", args={"format": "json"}).body)
 
     assert doc["board"] == slug
     assert set(doc["footprints"]) == {_HV507_LCSC, _TEMP_SENSOR_LCSC}
-    for lcsc in doc["footprints"]:
+    for lcsc, exported in doc["footprints"].items():
         row = pcb.store.part_footprint_get(lcsc)
-        assert doc["footprints"][lcsc]["pads"] == row["pads"]
-        assert doc["footprints"][lcsc]["pin_map"] == row["pin_map"]
+        assert exported == pcb_rows.export_footprint_row(lcsc, row)
+        assert exported["pin_map"] == row["pin_map"]
+        for pad in exported["pads"]:
+            assert pad["shape"] in ("circle", "rect", "obround", "polygon")
     assert "missing" not in doc
+
+
+def test_view_footprints_json_rows_author_back_through_op_footprint(pcb):
+    """gr536876 FIX: the export document must be exactly what
+    ``args.footprint`` accepts. Export, feed each row back through
+    ``op='footprint'``, export again — the two exports are identical and
+    every ``pin_map`` is populated (the taz-leaf-f failure: the dropped
+    ``pin_map`` authored as NULL, so board_pads joined nothing and ~48
+    pads fell back to synthesized geometry)."""
+    slug = _seed(pcb)
+    doc = json.loads(pcb.get(id=slug, view="footprints", args={"format": "json"}).body)
+
+    for lcsc, row in doc["footprints"].items():
+        assert row["pin_map"], f"{lcsc}: export must carry a populated pin_map"
+        resp = pcb.put(
+            id=slug,
+            args={"op": "footprint", "part": lcsc, "footprint": row},
+        )
+        assert "authored" in resp.body
+
+    doc2 = json.loads(pcb.get(id=slug, view="footprints", args={"format": "json"}).body)
+    assert doc2["footprints"] == doc["footprints"]
+    for lcsc in doc["footprints"]:
+        assert pcb.store.part_footprint_get(lcsc)["pin_map"]
+
+
+def test_view_footprints_json_export_fills_a_null_pin_map(pcb):
+    """A cache row written without ``pin_map`` still exports one — the
+    identity map ``normalize_footprint`` completes — so the exported
+    document re-authors into the same row instead of storing NULL."""
+    pcb.put(
+        id="fp-nullmap",
+        args={
+            "components": [
+                {
+                    "refdes": "U1",
+                    "label": "t",
+                    "part": "C555555",
+                    "pins": [{"name": "1"}],
+                }
+            ],
+            "nets": [],
+            "connections": [],
+        },
+    )
+    pcb.store.part_footprint_put(
+        "C555555",
+        {
+            "pads": [
+                {
+                    "number": "1",
+                    "shape": "OVAL",
+                    "x": 0.0,
+                    "y": 0.0,
+                    "w": 1.0,
+                    "h": 0.5,
+                    "rot": 0.0,
+                    "layer": "F.Cu",
+                    "drill": None,
+                }
+            ],
+            "pin_map": None,
+        },
+    )
+
+    doc = json.loads(
+        pcb.get(id="fp-nullmap", view="footprints", args={"format": "json"}).body
+    )
+    row = doc["footprints"]["C555555"]
+    assert row["pin_map"] == {"1": {"name": "1", "tags": []}}
+    assert row["pads"][0]["shape"] == "obround"
+
+    resp = pcb.put(
+        id="fp-nullmap",
+        args={"op": "footprint", "part": "C555555", "footprint": row},
+    )
+    assert "authored" in resp.body
+    doc2 = json.loads(
+        pcb.get(id="fp-nullmap", view="footprints", args={"format": "json"}).body
+    )
+    assert doc2["footprints"] == doc["footprints"]
+
+
+def test_op_footprint_authoring_accepts_vendor_shape_spellings(pcb):
+    """gr536876 FIX: an export written before the export-side
+    normalisation carries vendor shape tokens — ``normalize_pad`` maps
+    ``oval``/``ellipse`` (any case) onto the canonical vocabulary."""
+    pcb.put(id="fp-vendor", args=_minimal_design(lcsc="C900004"))
+
+    resp = pcb.put(
+        id="fp-vendor",
+        args={
+            "op": "footprint",
+            "part": "C900004",
+            "footprint": {
+                "pads": [
+                    {
+                        "number": "1",
+                        "shape": "OVAL",
+                        "x": 0.0,
+                        "y": 0.0,
+                        "w": 1.0,
+                        "h": 0.5,
+                    },
+                    {
+                        "number": "2",
+                        "shape": "ellipse",
+                        "x": 1.0,
+                        "y": 0.0,
+                        "w": 0.4,
+                        "h": 0.4,
+                    },
+                ]
+            },
+        },
+    )
+    assert "authored" in resp.body
+    row = pcb.store.part_footprint_get("C900004")
+    assert [p["shape"] for p in row["pads"]] == ["obround", "circle"]
 
 
 def test_view_footprints_format_json_names_the_uncached_parts(pcb):

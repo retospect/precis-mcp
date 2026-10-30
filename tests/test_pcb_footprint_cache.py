@@ -22,6 +22,7 @@ import pytest
 from precis.dispatch import Hub
 from precis.handlers.pcb import PcbHandler
 from precis.pcb import local as kernel
+from precis.pcb import rows as pcb_rows
 from precis.pcb import session as pcb_session
 
 _ROW = {
@@ -168,7 +169,10 @@ def test_export_document_round_trips_to_the_same_pads(pcb, tmp_path, monkeypatch
     """The view's JSON document, saved verbatim as ``footprints.json``,
     feeds the local resolver the same row the store-side join hands
     ``pad_geometry`` — the sandbox path and the laptop path read the
-    same bytes."""
+    same pads. The document is the authoring-canonical row
+    (:func:`precis.pcb.rows.export_footprint_row`, gr536876 — vendor
+    shapes mapped, ``pin_map`` completed), so the comparison is against
+    the stored row's own normalised form."""
     pcb.put(id="cache-rt", args=_batch())
     pcb.store.part_footprint_put("CREAL1", _ROW)
     doc = json.loads(
@@ -186,8 +190,9 @@ def test_export_document_round_trips_to_the_same_pads(pcb, tmp_path, monkeypatch
     local_fp = pcb_session.footprints_by_refdes(
         ir, design.by_lcsc, local_footprints_by_name=design.local_by_name
     )["U1"]
-    assert local_fp["pads"] == store_fp["pads"]
-    assert local_fp["pin_map"] == store_fp["pin_map"]
+    canonical = pcb_rows.export_footprint_row("CREAL1", store_fp)
+    assert local_fp["pads"] == canonical["pads"]
+    assert local_fp["pin_map"] == canonical["pin_map"]
 
 
 # ── the miss/hit messages ─────────────────────────────────────────────

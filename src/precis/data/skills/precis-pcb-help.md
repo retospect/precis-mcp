@@ -270,7 +270,10 @@ a landpattern bound. Export the real rows once —
 save the body as `footprints.json` next to the script (or point
 `PRECIS_FOOTPRINT_CACHE` at the file or a directory holding it), and the
 run places and checks the real pads. A part the file doesn't cover still
-synthesizes, but its warning names this export call.
+synthesizes, but its warning names this export call. Each exported row
+is also exactly what `op='footprint'`'s `args.footprint` takes
+(canonical pad shapes, `pin_map` populated), so the export authors
+back verbatim and re-exports identically.
 
 ## Read it as a graph — `get`
 

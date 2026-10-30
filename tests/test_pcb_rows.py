@@ -154,6 +154,81 @@ def test_pad_pin_alias_normalizes_to_number() -> None:
     assert by_pin["number"] == "7" and "pin" not in by_pin
 
 
+def test_pad_vendor_shape_spellings_map_to_canonical() -> None:
+    """gr536876: a stored EasyEDA pad (``OVAL``/``ELLIPSE`` tokens) or an
+    export row written before export-side normalisation re-authors —
+    the vendor dialect maps onto the canonical shape vocabulary."""
+    for spelling, canonical in (
+        ("OVAL", "obround"),
+        ("oval", "obround"),
+        ("ELLIPSE", "circle"),
+        ("ellipse", "circle"),
+        ("RECT", "rect"),
+        ("polygon", "polygon"),
+    ):
+        pad = {"number": "1", "shape": spelling, "x": 0.0, "y": 0.0, "w": 1.0}
+        if canonical == "polygon":
+            pad["poly"] = [[0, 0], [1, 0], [0, 1]]
+        assert pcb_rows.normalize_pad(pad)["shape"] == canonical
+    with pytest.raises(ValueError, match="shape must be one of"):
+        pcb_rows.normalize_pad(
+            {"number": "1", "shape": "trapezoid", "x": 0.0, "y": 0.0, "w": 1.0}
+        )
+
+
+def test_export_footprint_row_is_the_authoring_document() -> None:
+    """gr536876: ``export_footprint_row`` turns a stored cache row —
+    vendor shape tokens, NULL ``pin_map``, unrounded vendor floats,
+    ``drill: null`` — into the exact dict ``args.footprint`` accepts,
+    and the output is a fixed point of ``normalize_footprint`` so
+    export -> author -> export is byte-identical."""
+    stored = {
+        "pads": [
+            {
+                "number": "1",
+                "shape": "OVAL",
+                "x": 1.2000000000000002,
+                "y": 0.0,
+                "w": 1.0,
+                "h": 0.5,
+                "rot": 0.0,
+                "layer": "F.Cu",
+                "drill": None,
+            },
+            {
+                "number": "2",
+                "shape": "RECT",
+                "x": 0.0,
+                "y": 0.0,
+                "w": 0.5,
+                "h": 0.5,
+                "rot": 0.0,
+                "layer": "F.Cu",
+                "drill": None,
+            },
+        ],
+        "pin_map": {"2": {"name": "GND", "tags": ["gnd"]}},
+        "courtyard": {"bbox": [-0.5, -0.5, 1.5, 0.5]},
+        "centroid": {"x": 0.5, "y": 0.0},
+        "holes": [],
+        "graphics": [],
+    }
+    exported = pcb_rows.export_footprint_row("C1", stored)
+    assert set(exported) == set(pcb_rows.EXPORT_FOOTPRINT_KEYS)
+    assert exported["pads"][0]["shape"] == "obround"
+    assert exported["pads"][0]["x"] == 1.2
+    # pin_map is completed, never NULL: the authored entry rides through,
+    # the pad it doesn't name gets the identity entry.
+    assert exported["pin_map"] == {
+        "1": {"name": "1", "tags": []},
+        "2": {"name": "GND", "tags": ["gnd"]},
+    }
+    # Feeding the export back through the authoring normaliser yields
+    # exactly the same document — the round-trip the MCP test asserts.
+    _name, reauthored = pcb_rows.normalize_footprint({"name": "C1", **exported})
+    assert {k: reauthored[k] for k in pcb_rows.EXPORT_FOOTPRINT_KEYS} == exported
+
+
 def test_local_has_no_row_shaping_mirror() -> None:
     """local.py imports precis.pcb.rows and defines none of the deleted
     mirror functions (the AST check the spec asks for)."""

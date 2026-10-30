@@ -17,6 +17,8 @@ Contents, by seam:
   :func:`normalize_pad`, :func:`normalize_footprint_holes`,
   :func:`normalize_footprint`, plus the helpers :func:`rot_deg` /
   :func:`first_present` and the pad vocabulary consts.
+  :func:`export_footprint_row` is the read-side counterpart: the stored
+  row -> the authoring document (the ``view='footprints'`` JSON export).
 - **:func:`lcsc_id`** — the C-number canonicaliser, moved out of
   ``catalog.py`` (which the wheel excludes); ``catalog.py`` re-exports it.
 - **Graph-row emitters** — the ``pcb_graph`` dict shape computed without
@@ -307,6 +309,18 @@ _LOCAL_PAD_MASKS = ("open", "covered")
 _LOCAL_PAD_PASTES = ("none", "full")
 _LOCAL_PAD_SHAPES = ("circle", "rect", "obround", "polygon")
 
+#: Vendor spellings a stored or re-imported pad may carry -> the
+#: canonical ``_LOCAL_PAD_SHAPES`` word (gr536876). EasyEDA ``PAD``
+#: primitives are stored in this dialect — ``padplace._SHAPE_MAP`` is the
+#: same translation on the uppercase tokens — so a ``view='footprints'``
+#: export or a ``footprints.json`` row authored back through
+#: ``op='footprint'`` must read it, or the round-trip refuses on
+#: ``'oval'``. Keyed on the post-``lower()`` spelling.
+_VENDOR_PAD_SHAPES = {
+    "ellipse": "circle",
+    "oval": "obround",
+}
+
 
 def normalize_pad(p: dict[str, Any]) -> dict[str, Any]:
     """One authored footprint pad -> the exact dict
@@ -315,7 +329,10 @@ def normalize_pad(p: dict[str, Any]) -> dict[str, Any]:
     ``rot``/``layer``/``drill``), plus the ``role``/``mask``/``paste``
     intent and, for ``shape: "polygon"``, the vertex ``poly`` ring
     (footprint-local mm — same frame as ``x``/``y`` on every other shape).
-    The authored alias ``pin`` normalises to the canonical ``number``.
+    The authored alias ``pin`` normalises to the canonical ``number``;
+    ``shape`` takes the vendor spellings in :data:`_VENDOR_PAD_SHAPES` as
+    aliases for the canonical vocabulary (``oval`` -> ``obround``,
+    ``ellipse`` -> ``circle``), so an exported cache row re-authors.
 
     ``paste`` defaults to ``"none"`` for an ``electrode`` or
     ``tape_land`` pad and ``"full"`` otherwise when the author omits it —
@@ -330,6 +347,7 @@ def normalize_pad(p: dict[str, Any]) -> dict[str, Any]:
     if not pin_name:
         raise ValueError("pcb footprint pad needs a 'pin' name")
     shape = str(p.get("shape") or "rect").strip().lower()
+    shape = _VENDOR_PAD_SHAPES.get(shape, shape)
     if shape not in _LOCAL_PAD_SHAPES:
         raise ValueError(
             f"pcb footprint pad {pin_name!r}: shape must be one of "
@@ -752,6 +770,55 @@ def normalize_footprint(f: dict[str, Any]) -> tuple[str, dict[str, Any]]:
         "graphics": normalize_footprint_graphics(name, f.get("graphics")),
     }
     return name, data
+
+
+#: The keys the ``view='footprints'`` JSON export carries per row — the
+#: authoring surface of ``op='footprint'``'s ``args.footprint`` (which adds
+#: ``name`` itself off ``args.part``), minus ``note`` (a
+#: ``part_footprints`` row has no note column to export).
+EXPORT_FOOTPRINT_KEYS = (
+    "pads",
+    "pin_map",
+    "courtyard",
+    "centroid",
+    "holes",
+    "graphics",
+)
+
+
+def export_footprint_row(name: str, row: dict[str, Any]) -> dict[str, Any]:
+    """A stored ``part_footprints`` row -> the exact document
+    ``put(args={'op':'footprint','footprint': ...})`` accepts
+    (gr536876): ``{pads, pin_map, courtyard, centroid, holes,
+    graphics}``, run through :func:`normalize_footprint` itself so the
+    export IS an authoring row, not a look-alike.
+
+    That is the round-trip contract ``view='footprints',
+    args={'format':'json'}`` needs twice over. A verbatim cache row
+    fails authoring in two ways: its pads speak the vendor shape dialect
+    (``OVAL`` — :data:`_VENDOR_PAD_SHAPES` now maps it, but the export
+    must still EMIT the canonical word), and its ``pin_map`` may be
+    NULL, which re-authors as the identity map — so authoring the export
+    must not store something different from what the export said. And
+    only a row emitted already-normalised re-exports byte-identically:
+    ``normalize_pad`` adds the explicit ``role``/``mask``/``paste``
+    defaults and rounds every coordinate, so an unnormalised export
+    would differ from the export of the row it just authored. ``name``
+    names the footprint in a validation error (the lcsc at the one call
+    site); it is not emitted — ``args.footprint`` takes no ``name``.
+    """
+    _, data = normalize_footprint(
+        {
+            "name": name,
+            "pads": row.get("pads"),
+            "pin_map": row.get("pin_map"),
+            "courtyard": row.get("courtyard"),
+            "centroid": row.get("centroid"),
+            "holes": row.get("holes"),
+            "graphics": row.get("graphics"),
+        }
+    )
+    return {k: data[k] for k in EXPORT_FOOTPRINT_KEYS}
 
 
 # ── the C-number canonicaliser (moved from catalog.py) ──────────────────

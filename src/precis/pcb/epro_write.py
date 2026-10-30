@@ -127,7 +127,11 @@ from typing import Any
 
 from precis.pcb import padplace, pose
 from precis.pcb.epro import FIDUCIAL_PAD_PREFIX
-from precis.pcb.gerber import SynthesizedPadError
+from precis.pcb.gerber import (
+    SYNTHESIZED_PAD_FIX,
+    SynthesizedPadError,
+    synthesized_pad_reasons,
+)
 
 #: 1 mil = 0.0254 mm — the ``.epru`` body unit. Pinned equal to the
 #: reader's own constant by the test suite rather than imported (private).
@@ -1908,8 +1912,9 @@ def epro_files(
             f"{len(synthesized)} part(s) carry synthesized pad geometry "
             f"({', '.join(synthesized[:5])}{'...' if len(synthesized) > 5 else ''})"
             " — these are land-pattern BOUNDS, not the real footprint, and "
-            "must not be fabricated. Cache real footprints, or pass "
-            "allow_synthesized=True for a preview-only export."
+            "must not be fabricated:"
+            + "".join(f"\n  {line}" for line in synthesized_pad_reasons(model))
+            + f"\n{SYNTHESIZED_PAD_FIX}"
         )
 
     warnings: list[str] = []

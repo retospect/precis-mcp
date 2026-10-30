@@ -58,7 +58,9 @@ pixels. The verbs map onto the seven-verb surface:
   — which catalog-part instances have a cached footprint, the read-side
   counterpart to ``op='footprint'`` (``args={'format':'json'}`` exports
   the cached rows as one JSON document — the offline runner's
-  ``footprints.json``, gr520330); ``view='svg'`` — a
+  ``footprints.json``, gr520330; each row is the authoring-canonical
+  ``args.footprint`` document, so it re-authors verbatim, gr536876);
+  ``view='svg'`` — a
   publication-quality vector figure (``args={'level':'board'|'sketch'|'fab'}``,
   see :mod:`precis.pcb.svg`); ``view='capability'`` — a generator's
   capability map (usable/reserved pads, plaza slots, pin names, computed
@@ -173,6 +175,7 @@ from precis.pcb.capabilities import (
 )
 from precis.pcb.footprint import fetch_footprint
 from precis.pcb.landpattern import rotate_offset
+from precis.pcb.rows import export_footprint_row
 from precis.pcb.rows import (
     normalize_footprint as normalize_local_footprint,
 )
@@ -7284,7 +7287,12 @@ class PcbHandler(Handler):
         "missing": [lcsc]}`` whose ``footprints`` map is the
         ``meta.catalog_footprints``/``footprints.json`` shape
         :mod:`precis.pcb.local` reads — an agent saves the body verbatim
-        as the laptop's footprint cache."""
+        as the laptop's footprint cache. Each row is the
+        authoring-canonical document
+        (:func:`precis.pcb.rows.export_footprint_row`, gr536876) — what
+        ``op='footprint'``'s ``args.footprint`` accepts: canonical pad
+        shapes, an explicit ``pin_map`` and the normalised pad fields,
+        so a row exports, re-authors and re-exports byte-identically."""
         design = self.store.pcb_load(ref_id)
         catalog = [i for i in design["instances"] if i.get("part_lcsc")]
         if not catalog:
@@ -7299,21 +7307,20 @@ class PcbHandler(Handler):
         fmt = str((args or {}).get("format") or "").strip().lower()
         if fmt == "json":
             ref = self.store.fetch_refs_by_ids([ref_id]).get(ref_id)
-            hits = {
-                lcsc: {
-                    k: row.get(k)
-                    for k in (
-                        "pads",
-                        "pin_map",
-                        "courtyard",
-                        "centroid",
-                        "holes",
-                        "graphics",
-                    )
-                }
-                for lcsc, row in sorted(rows_by_lcsc.items())
-                if row is not None
-            }
+            hits: dict[str, Any] = {}
+            for lcsc, row in sorted(rows_by_lcsc.items()):
+                if row is None:
+                    continue
+                try:
+                    hits[lcsc] = export_footprint_row(lcsc, row)
+                except ValueError as exc:
+                    raise BadInput(
+                        f"view='footprints': cached row {lcsc} cannot "
+                        f"round-trip through op='footprint' — {exc}",
+                        next=f"re-author it directly: put(kind='pcb', "
+                        f"args={{'op':'footprint','part':{lcsc!r},"
+                        f"'footprint':{{'pads':[...]}}}})",
+                    ) from exc
             missing = [
                 lcsc for lcsc, row in sorted(rows_by_lcsc.items()) if row is None
             ]

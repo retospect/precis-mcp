@@ -372,8 +372,13 @@ def test_export_fab_refuses_a_mixed_design_with_one_uncached_part(pcb, tmp_path)
     exported successfully with J1's copper simply missing -- the
     naive all-or-nothing failure mode the task brief calls out."""
     slug = _seed(pcb, skip=frozenset({"CTHT1"}))
-    with pytest.raises(BadInput, match="synthesized"):
+    with pytest.raises(BadInput, match="synthesized") as exc_info:
         pcb.get(id=slug, view="gerber", args={"dir": str(tmp_path)})
+    # gr536876: the refusal names the missing FOOTPRINT and the op that
+    # caches it — not just the board's nets.
+    text = str(exc_info.value)
+    assert "CTHT1 (J1)" in text and "no cached footprint" in text
+    assert "op='footprint'" in text
 
 
 def test_export_fab_refuses_a_cached_footprint_whose_pin_name_does_not_join(
@@ -406,8 +411,13 @@ def test_export_fab_refuses_a_cached_footprint_whose_pin_name_does_not_join(
         ("CTHT1", _THT_FOOTPRINT),
     ):
         pcb.store.part_footprint_put(lcsc, fp)
-    with pytest.raises(BadInput, match="synthesized"):
+    with pytest.raises(BadInput, match="synthesized") as exc_info:
         pcb.get(id="fabtest-misnamed", view="gerber", args={"dir": str(tmp_path)})
+    # gr536876: a cached-but-unjoined row is a pin_map defect, and the
+    # refusal says so — re-author the row with pin_map via
+    # op='footprint', not "cache the footprint" (it IS cached).
+    text = str(exc_info.value)
+    assert "C2838500 (U1)" in text and "pin_map" in text
     # The footprints view counts the same gap per pin — not "no" just
     # because the cache row exists.
     view = pcb.get(id="fabtest-misnamed", view="footprints").body
