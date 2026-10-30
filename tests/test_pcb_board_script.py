@@ -489,6 +489,164 @@ def test_readback_epro_fixture(store) -> None:
     assert _exec(emit(batch, "epro-bs", "epro")).build().to_batch() == batch
 
 
+_RULE = '{"type":"RULE","ticket":49,"id":"[\\"RULE\\",\\"%s\\",\\"%s\\"]"}||%s|\n'
+#: The spliced keepout ring, mils: a 100 mil square, closing vertex repeated.
+_KEEPOUT_PATH = [-50, -50, "L", 50, -50, 50, 50, -50, 50, -50, -50]
+
+
+def _rules_board() -> bytes:
+    """The tiny fixture's board with a rule table, a RULE_SELECTOR and a
+    board-level keepout region spliced in (fixture derived by copying —
+    the originals stay read-only)."""
+    stream = (_FIXTURE / "board.epru").read_text(encoding="utf-8")
+    records = "".join(
+        [
+            _RULE
+            % (
+                "SAFE",
+                "Default",
+                '{"ruleState":"DEFAULT","ruleContext":{"unit":"mm",'
+                '"safeSpacing":[{"layerId":1,"content":[[6.0,0],[0,6.0]]}]}}',
+            ),
+            _RULE
+            % (
+                "TRACK",
+                "Default",
+                '{"ruleState":"DEFAULT","ruleContext":{"unit":"mm","track":'
+                '{"isOpen":true,"content":[{"layerId":1,"stroMin":8,'
+                '"stroDef":11.811,"stroMax":1000}]}}}',
+            ),
+            _RULE
+            % (
+                "TRACK",
+                "Wide",
+                '{"ruleState":"NORMAL","ruleContext":{"unit":"mm","track":'
+                '{"isOpen":true,"content":[{"layerId":1,"stroMin":16,'
+                '"stroDef":20,"stroMax":1000}]}}}',
+            ),
+            _RULE
+            % (
+                "OTHER",
+                "otherClearance",
+                '{"ruleState":"DEFAULT","ruleContext":{"unit":"mm",'
+                '"holeClearance":11.8}}',
+            ),
+            '{"type":"RULE_SELECTOR","ticket":56,"id":"s1"}||{"nets":["SIG"]}|\n',
+            '{"type":"PROHIBITEDREGION","ticket":57,"id":"ko1"}||{"layerId":1,'
+            f'"path":{json.dumps(_KEEPOUT_PATH)}}}|\n',
+        ]
+    )
+    stream = stream.replace(
+        '{"type":"COMPONENT","ticket":60,"id":"c1"}',
+        records + '{"type":"COMPONENT","ticket":60,"id":"c1"}',
+    )
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as zf:
+        zf.writestr("project2.json", (_FIXTURE / "project2.json").read_bytes())
+        zf.writestr("board.epru", stream.encode("utf-8"))
+    return buf.getvalue()
+
+
+def test_epro_rules_survive_script_roundtrip(store) -> None:
+    """gr539992: the design rules a .epro2 carries — net classes with their
+    widths/clearances, a board keepout, the derived stackup — used to be
+    dropped between import and script, leaving the rebuild on defaults.
+    The rules that still have no binding (RULE_SELECTOR assignments,
+    unmapped categories, the passthrough board records) are reported as
+    ``# not mapped:`` instead of silently dropped."""
+    pcb_epro.import_epro(store, _rules_board(), slug="epro-rules-bs", title="Rules")
+    batch, _annotations = board_batch(store, "epro-rules-bs")
+
+    assert batch["net_classes"]["Default"]["track_width_mm"] == pytest.approx(
+        0.3, abs=1e-4
+    )
+    assert batch["net_classes"]["Default"]["clearance_mm"] == pytest.approx(
+        0.1524, abs=1e-4
+    )
+    assert "Wide" in batch["net_classes"]
+    assert {n.get("class") for n in batch["nets"]} == {"Default"}
+    keepouts = [f for f in batch["features"] if f["ftype"] == "keepout"]
+    # pcb_features folds authored top-level layers/reason into geom
+    assert len(keepouts) == 1 and keepouts[0]["geom"]["layers"] == ["F.Cu"]
+    # the spliced ring is 100 mil square = 2.54 mm per axis; extents are
+    # frame-independent, so compare spans rather than absolute corners
+    poly = keepouts[0]["geom"]["poly"]
+    assert poly[0] != poly[-1]
+    nums = [v for v in _KEEPOUT_PATH if isinstance(v, int | float)]
+    xs, ys = nums[0::2], nums[1::2]
+    span_x = (max(xs) - min(xs)) * 0.0254
+    span_y = (max(ys) - min(ys)) * 0.0254
+    assert span_x == pytest.approx(2.54, abs=1e-6)
+    assert span_y == pytest.approx(2.54, abs=1e-6)
+    assert max(p[0] for p in poly) - min(p[0] for p in poly) == pytest.approx(
+        span_x, abs=1e-6
+    )
+    assert max(p[1] for p in poly) - min(p[1] for p in poly) == pytest.approx(
+        span_y, abs=1e-6
+    )
+    # the derived stackup differs from DEFAULT_STACKUP (all-signal inner
+    # layers): it must reach the batch, else the rebuild silently reverts
+    assert [e["name"] for e in batch["meta"]["stackup_layers"]] == [
+        "F.Cu",
+        "In1.Cu",
+        "In2.Cu",
+        "B.Cu",
+    ]
+
+    text = emit(batch, "epro-rules-bs", "epro")
+    rebuilt = _exec(text).build().to_batch()
+    assert rebuilt == batch
+    assert "b.net_class(" in text
+    assert "keepout" in text
+    assert "# not mapped:" in text
+    assert "RULE_SELECTOR" in text
+    assert "not mapped" in text.split('"""')[1]
+
+
+def test_readback_carries_stackup_and_plane_assignments(store) -> None:
+    """The stored stackup (board row) and pcb_planes rows reach the batch:
+    an .epro2 import writes both outside ``meta``, so without reading them
+    the script silently rebuilt on the default stackup and no planes."""
+    batch = _tiny_batch()
+    store.pcb_apply(
+        slug="bs-rules",
+        title="Rules",
+        components=batch["components"],
+        nets=batch["nets"],
+        connections=batch["connections"],
+        features=batch["features"],
+        footprints=batch["footprints"],
+    )
+    ref = store.get_ref(kind="pcb", id="bs-rules")
+    board_id = store.pcb_ensure_board(ref.id)
+    store.pcb_set_stackup(
+        board_id,
+        [
+            {"name": "F.Cu", "role": "signal"},
+            {"name": "B.Cu", "role": "signal", "pourable": False},
+        ],
+    )
+    store.pcb_assign_plane(ref.id, "B.Cu", "GND")
+    store.pcb_assign_plane(ref.id, "F.Cu", "SIG", priority=2)
+    got, _annotations = board_batch(store, "bs-rules")
+    assert got["meta"]["stackup_layers"] == [
+        {"name": "F.Cu", "role": "signal"},
+        {"name": "B.Cu", "role": "signal", "pourable": False},
+    ]
+    assert got["planes"] == [
+        {"net": "GND", "layer": "B.Cu"},
+        {"net": "SIG", "layer": "F.Cu", "priority": 2},
+    ]
+    text = emit(got, "bs-rules", "store:bs-rules")
+    rebuilt = _exec(text).build().to_batch()
+    assert rebuilt["planes"] == [
+        {"net": "GND", "layer": "B.Cu"},
+        {"net": "SIG", "layer": "F.Cu"},
+    ]
+    assert "# not mapped: plane assignment 'SIG'@'F.Cu'" in text
+    assert "dropped keys" in text
+
+
 def _row_set(rows: list[dict[str, Any]]) -> set[str]:
     """Compare unordered batch rows with sub-micrometre float noise removed."""
 
@@ -688,18 +846,24 @@ def test_plane_assignment_refuses_invalid_layer(layer: Any) -> None:
     assert "planes" not in board.to_batch()
 
 
-@pytest.mark.parametrize(
-    "plane",
-    [
-        {"net": "MISSING", "layer": "F.Cu"},
-        {"net": "GND", "layer": "F.Cu", "priority": 2},
-    ],
-)
+@pytest.mark.parametrize("plane", [{"net": "MISSING", "layer": "F.Cu"}])
 def test_unexpressible_plane_assignment_refused(plane: dict[str, Any]) -> None:
     batch = _tiny_batch()
     batch["planes"] = [plane]
     with pytest.raises(BoardScriptError):
         emit(batch, "tiny", "plane fixture")
+
+
+def test_plane_assignment_extras_are_not_mapped_not_refused() -> None:
+    """pcb_planes storage detail (region/priority/source) has no
+    ``plane_assignment`` field — the pair still binds, the extras land in
+    the not-mapped report rather than refusing or dropping silently."""
+    batch = _tiny_batch()
+    batch["planes"] = [{"net": "GND", "layer": "F.Cu", "priority": 2}]
+    text = emit(batch, "tiny", "plane fixture")
+    assert "# not mapped: plane assignment 'GND'@'F.Cu'" in text
+    rebuilt = _exec(text).build().to_batch()
+    assert rebuilt["planes"] == [{"net": "GND", "layer": "F.Cu"}]
 
 
 def test_synthesized_pad_geometry_roundtrip(tmp_path: Path) -> None:

@@ -973,7 +973,10 @@ def extract_rules(board: EproDocument) -> RuleTable:
             if isinstance(inner, int | float):
                 cls["via_drill_mm"] = 2.0 * Frame.length(float(inner))
         else:
-            unmapped.add(category)
+            # Keep-out areas are regions, not net rules — extract_keepouts
+            # owns them (the record still rides the passthrough above).
+            if category not in _KEEPOUT_RULE_CATEGORIES:
+                unmapped.add(category)
             continue
         if rec.body.get("ruleState") == "DEFAULT":
             defaults.add(name)
@@ -2558,6 +2561,145 @@ def extract_mounting_holes(
     return out, warnings
 
 
+#: Board-document record types decoded as ``ftype='keepout'`` features —
+#: the board-level half of the region family ``_FP_REGION_TYPES`` decodes
+#: inside footprints. ``REGION``/``SOLIDREGION``/``SLOTREGION``/
+#: ``FILLREGIEN``/``CONSTRAINT`` are fills, cutouts and constraints rather
+#: than keep-outs — they stay unimported, but the drop is warned, not
+#: silent (the same contract ``_footprint_graphics`` keeps).
+_BOARD_KEEPOUT_TYPES = frozenset(
+    {"PROHIBIT", "PROHIBITEDREGION", "KEEPOUT", "RULE_AREA"}
+)
+_BOARD_REGION_TYPES = _BOARD_KEEPOUT_TYPES | frozenset(
+    {"REGION", "SOLIDREGION", "SLOTREGION", "FILLREGIEN", "CONSTRAINT"}
+)
+
+#: RULE categories that name a keep-out AREA rather than a net rule —
+#: their ``ruleContext`` carries the region, decoded by
+#: :func:`extract_keepouts`, so ``extract_rules`` leaves them out of the
+#: unmapped-category report.
+_KEEPOUT_RULE_CATEGORIES = frozenset(
+    {"KEEPOUT", "RULE_AREA", "PROHIBIT", "PROHIBITEDREGION"}
+)
+
+
+def extract_keepouts(
+    board: EproDocument, frame: Frame
+) -> tuple[list[dict[str, Any]], list[str]]:
+    """Board-level keep-out/rule areas -> ``ftype='keepout'`` feature
+    rows, in the shape ``session.keepouts_from_features`` reads
+    (``geom.poly`` in board-frame mm; ``layers`` lists the layer names
+    the area scopes to — absent means every copper layer; ``reason``
+    carries the area's name).
+
+    A keepout feature DOES bind once stored — ``check_keepout_copper``
+    flags copper inside its polygon on the scoped layers and the topo
+    router treats it as an obstacle — so importing the region is how the
+    .epro2 board keeps the rule it was authored with, where before this
+    it was dropped silently (docs/backlog/pcb-keepout-does-not-bind.md).
+    Region-family records that are NOT keep-outs (fills, cutouts,
+    constraints) and keepout records with no decodable polygon are
+    warned about, never guessed at."""
+    features: list[dict[str, Any]] = []
+    warnings: list[str] = []
+    skipped: dict[str, int] = {}
+    undecoded: dict[str, int] = {}
+    layers = layer_map(board)
+    try:
+        copper = copper_layers(board)
+    except EproError:
+        copper = {}
+
+    def lname(lid: Any) -> str | None:
+        if lid is None:
+            return None
+        try:
+            lid_i = int(lid)
+        except (TypeError, ValueError):
+            return None
+        if lid_i == _FP_MULTI_LAYER:
+            return None  # the multi layer: the keepout scopes everywhere
+        if lid_i in copper:
+            return copper[lid_i]
+        entry = layers.get(lid_i)
+        return str(entry[1]) if entry is not None else f"layer-{lid_i}"
+
+    def poly_of(body: dict[str, Any]) -> list[list[float]] | None:
+        path = body.get("path")
+        if not isinstance(path, list):
+            path = (body.get("ruleContext") or {}).get("path")
+        if not isinstance(path, list) or _outline_opcodes(path) - {"L"}:
+            return None
+        pts = _poly_points(path)
+        # A closed ring repeats its first vertex at the end; the feature
+        # stores the ring open, so the closing duplicate goes.
+        if len(pts) >= 2 and pts[0] == pts[-1]:
+            pts = pts[:-1]
+        if len(pts) < 3:
+            return None
+        return [[x, y] for x, y in (frame.xy(px, py) for px, py in pts)]
+
+    def layer_names(body: dict[str, Any]) -> list[str]:
+        lids: list[Any] = []
+        for src in (body, body.get("ruleContext") or {}):
+            if not isinstance(src, dict):
+                continue
+            lid = src.get("layerId")
+            if lid is not None:
+                lids.append(lid)
+            for key in ("layerIds", "layers"):
+                val = src.get(key)
+                if isinstance(val, list):
+                    lids += val
+        return [n for n in (lname(l) for l in lids) if n is not None]
+
+    for rec in board.records:
+        b = rec.body or {}
+        if rec.type in _BOARD_KEEPOUT_TYPES:
+            poly = poly_of(b)
+            if poly is None:
+                undecoded[rec.type] = undecoded.get(rec.type, 0) + 1
+                continue
+            f: dict[str, Any] = {"ftype": "keepout", "geom": {"poly": poly}}
+            names = layer_names(b)
+            if names:
+                f["layers"] = names
+            reason = b.get("name") or b.get("ruleName") or rec.id
+            if isinstance(reason, str) and reason:
+                f["reason"] = reason
+            features.append(f)
+        elif rec.type in _BOARD_REGION_TYPES:
+            skipped[rec.type] = skipped.get(rec.type, 0) + 1
+        elif rec.type == "RULE":
+            named = _rule_name(rec)
+            if named is None or named[0] not in _KEEPOUT_RULE_CATEGORIES:
+                continue
+            poly = poly_of(b)
+            if poly is None:
+                undecoded["RULE(keepout)"] = undecoded.get("RULE(keepout)", 0) + 1
+                continue
+            f = {"ftype": "keepout", "geom": {"poly": poly}}
+            names = layer_names(b)
+            if names:
+                f["layers"] = names
+            f["reason"] = named[1]
+            features.append(f)
+
+    for rtype, count in sorted(skipped.items()):
+        warnings.append(
+            f"{count} {rtype} region record(s) are NOT imported — fills, "
+            "cutouts and constraint regions have no precis feature type; "
+            "kept-out areas decode as keepout features"
+        )
+    for rtype, count in sorted(undecoded.items()):
+        warnings.append(
+            f"{count} {rtype} keepout/rule-area record(s) carry no "
+            "decodable polygon — NOT imported; the kept-out area binds "
+            "nothing"
+        )
+    return features, warnings
+
+
 def placed_footprint_hole_count(
     components: list[dict[str, Any]], footprints: list[dict[str, Any]]
 ) -> int:
@@ -2647,9 +2789,12 @@ def build_design(
 
     holes, hole_warnings = extract_mounting_holes(board, frame)
     design.warnings += hole_warnings
+    keepouts, keepout_warnings = extract_keepouts(board, frame)
+    design.warnings += keepout_warnings
     design.features = [
         {"ftype": "outline", "geom": {"path": [[x, y] for x, y in outline]}},
         *holes,
+        *keepouts,
     ]
 
     design.stats = {
@@ -2662,5 +2807,6 @@ def build_design(
         "outline_vertices": len(outline),
         "rule_records": len(rules.records),
         "rule_classes": len(rules.classes),
+        "keepouts": len(keepouts),
     }
     return design, frame

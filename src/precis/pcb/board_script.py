@@ -59,6 +59,7 @@ carry their single-line annotation on the opening call line.
 
 from __future__ import annotations
 
+import json
 import keyword
 import os
 import pprint
@@ -333,6 +334,17 @@ def _emit_feature(f_: dict[str, Any]) -> str:
     f_ = dict(f_)
     ftype = f_.pop("ftype")
     note = f_.pop("note", None)
+    if (
+        ftype == "keepout"
+        and set(f_) <= {"geom", "reason"}
+        and set(f_.get("geom") or {}) == {"poly"}
+    ):
+        # b.keepout's ``layers`` takes copper INDEXES resolved against the
+        # Board's ctor stackup — a stored row carries resolved layer NAMES,
+        # which a meta-authored stackup would misresolve, so a layered
+        # keepout stays on the verbatim ``b.feature`` path below.
+        kw = _kw(reason=f_.get("reason"))
+        return f"b.keepout({_value(f_['geom']['poly'])}{', ' + kw if kw else ''})"
     if ftype == "outline" and set(f_) == {"geom"}:
         return f"b.outline({_value(f_['geom'])}{', ' + _kw(note=note) if note else ''})"
     geom = f_.get("geom") or {}
@@ -466,6 +478,77 @@ def _tail_statements(var: str, c: dict[str, Any]) -> list[str]:
             + (f", at={em['at']!r}" if "at" in em else "")
             + (f", require={em['require']!r}" if "require" in em else "")
             + ")"
+        )
+    return out
+
+
+#: RULE categories a script rebuild binds: the mapped net-class slice.
+#: Keep-out categories bind through ``ftype='keepout'`` features (the
+#: parser already decoded them), so they are not unbound either.
+_EPRO_BOUND_RULES = frozenset({"TRACK", "SAFE", "RADIUS"})
+_EPRO_KEEPOUT_RULES = frozenset(
+    {"KEEPOUT", "RULE_AREA", "PROHIBIT", "PROHIBITEDREGION"}
+)
+
+
+def _epro_unbound(meta: dict[str, Any]) -> list[str]:
+    """Rules the ``meta.epro_*`` passthroughs carry verbatim but nothing
+    binds on a rebuild — each becomes a ``# not mapped:`` comment and a
+    report entry, so a converted board never silently runs on defaults
+    for a rule its source authored."""
+    out: list[str] = []
+    records = meta.get("epro_rules") or []
+    selectors = sum(1 for r in records if r.get("type") == "RULE_SELECTOR")
+    undecoded = 0
+    unmapped: dict[str, list[str]] = {}
+    for r in records:
+        if r.get("type") != "RULE":
+            continue
+        named = None
+        rid = r.get("id")
+        if isinstance(rid, str):
+            try:
+                parts = json.loads(rid)
+            except json.JSONDecodeError:
+                parts = None
+            if isinstance(parts, list) and len(parts) >= 3 and parts[0] == "RULE":
+                named = (str(parts[1]), str(parts[2]))
+        if named is None:
+            undecoded += 1
+        elif named[0] not in _EPRO_BOUND_RULES | _EPRO_KEEPOUT_RULES:
+            unmapped.setdefault(named[0], []).append(named[1])
+    if selectors:
+        out.append(
+            f"{selectors} RULE_SELECTOR record(s) — per-net/per-area rule "
+            "assignments have no precis binding; preserved verbatim in "
+            "meta.epro_rules"
+        )
+    if undecoded:
+        out.append(
+            f"{undecoded} RULE record(s) whose id is not the "
+            "[RULE, category, name] shape — preserved verbatim in "
+            "meta.epro_rules; binds nothing"
+        )
+    for cat, names in sorted(unmapped.items()):
+        label = ", ".join(names) if len(names) <= 3 else f"{len(names)} rules"
+        out.append(
+            f"RULE {label} (category {cat}) — no precis constraint class; "
+            "preserved verbatim in meta.epro_rules"
+        )
+    board_recs = meta.get("epro_board") or []
+    if board_recs:
+        types = ", ".join(sorted({str(r.get("type")) for r in board_recs}))
+        out.append(
+            f"board settings record(s) {types} — the physical stackup "
+            "(LAYER_PHYS), canvas and preference state have no precis "
+            "fields; preserved verbatim in meta.epro_board"
+        )
+    pours = meta.get("epro_pours") or []
+    if pours:
+        out.append(
+            f"{len(pours)} authored pour outline(s) — preserved verbatim in "
+            "meta.epro_pours; a plane pours from its assignment, the "
+            "polygon is not reconstructed"
         )
     return out
 
@@ -754,6 +837,7 @@ def emit(
     if unknown:
         raise BoardScriptError(f"batch: unknown top-level keys {sorted(unknown)}")
     loss: list[str] = []
+    dropped: list[str] = []
     net_names = {n["name"] for n in batch["nets"]}
     for plane in batch.get("planes") or []:
         if not isinstance(plane, dict) or not {"net", "layer"} <= plane.keys():
@@ -762,10 +846,12 @@ def emit(
             raise BoardScriptError(f"plane assignment: unknown net {plane['net']!r}")
         if not isinstance(plane["layer"], str) or not plane["layer"].strip():
             raise BoardScriptError("plane assignment: layer must be a nonempty name")
-        extra = set(plane) - {"net", "layer"}
-        if extra:
-            loss.append(
-                f"plane assignment {plane['net']!r}: unknown keys {sorted(extra)}"
+        extra_keys = sorted(set(plane) - {"net", "layer"})
+        if extra_keys:
+            dropped.append(
+                f"plane assignment {plane['net']!r}@{plane['layer']!r}: keys "
+                f"{extra_keys} are pcb_planes storage detail with no builder "
+                "field — the net/layer pair still binds"
             )
     for g in batch.get("generators") or []:
         extra = set(g) - {"name", "generator", "params"}
@@ -1008,8 +1094,17 @@ def emit(
         body.append("")
         body.append("# rigid groups")
         body += groups
-    for name, rules in (batch.get("net_classes") or {}).items():
-        body.append(f"b.net_class({name!r}, **{_value(rules)})")
+    unbound = _epro_unbound(batch.get("meta") or {})
+    not_mapped = [*dropped, *unbound]
+    net_class_lines = [
+        f"b.net_class({name!r}, **{_value(rules)})"
+        for name, rules in (batch.get("net_classes") or {}).items()
+    ]
+    if net_class_lines or not_mapped:
+        body.append("")
+        body.append("# design rules")
+        body += net_class_lines
+        body += [f"# not mapped: {m}" for m in not_mapped]
     body.append("")
     body.append("# connections (authored order)")
     body += _emit_connections(batch["connections"], net_var, part_var)
@@ -1076,11 +1171,17 @@ Generated by ``scripts/{writer}`` (``precis.pcb.board_script``);
 documentation; this file is the construction.
 {hierarchy}
 '''
-    if loss:
+    if loss or dropped:
         header += (
             "\nNOT byte-equal — dropped keys (precis_geom.pcb cannot express them):\n"
         )
-        header += "".join(f"#   - {l}\n" for l in loss)
+        header += "".join(f"#   - {l}\n" for l in [*loss, *dropped])
+    if unbound:
+        header += (
+            "\nRules kept verbatim but binding nothing "
+            "(a rebuild runs defaults for them):\n"
+        )
+        header += "".join(f"#   - not mapped: {u}\n" for u in unbound)
     # Source labels are data even when they contain quotes or backslashes.
     header = (
         '"""' + header[3:].replace("\\", "\\\\").replace('"""', r"\"\"\"") + '"""\n'
@@ -1291,6 +1392,19 @@ def board_batch(store: Any, slug: str) -> tuple[dict[str, Any], dict[str, Any]]:
         batch["net_classes"] = {
             str(k): dict(v) for k, v in graph["net_classes"].items()
         }
+    planes = []
+    for row in store.pcb_planes_list(ref_id):
+        p: dict[str, Any] = {"net": str(row["net"]), "layer": str(row["layer"])}
+        for key in ("region_hint", "region"):
+            if row.get(key) is not None:
+                p[key] = row[key]
+        if row.get("priority"):
+            p["priority"] = row["priority"]
+        if str(row.get("source") or "authored") != "authored":
+            p["source"] = row["source"]
+        planes.append(p)
+    if planes:
+        batch["planes"] = planes
     if graph.get("roles"):
         batch["roles"] = {
             str(k): (
@@ -1317,9 +1431,24 @@ def board_batch(store: Any, slug: str) -> tuple[dict[str, Any], dict[str, Any]]:
             for m in measures
         ]
     meta = dict(ref.meta or {})
+    board = graph.get("board") or {}
+    stackup = board.get("stackup")
+    if (
+        isinstance(stackup, list)
+        and stackup
+        and "stackup_layers" not in meta
+        and "stackup_preset" not in meta
+    ):
+        from precis.pcb import DEFAULT_STACKUP
+
+        # The stored stackup rides meta.stackup_layers — the same batch key
+        # an authored Board(stackup=…) writes — so a converted board keeps
+        # its own layers instead of silently reverting to DEFAULT_STACKUP.
+        # A board already on the default needs no key at all.
+        if stackup != DEFAULT_STACKUP:
+            meta["stackup_layers"] = [dict(e) for e in stackup]
     if meta:
         batch["meta"] = meta
-    board = graph.get("board") or {}
     profile = (board.get("meta") or {}).get("profile")
     if profile is not None:
         batch["profile"] = profile
