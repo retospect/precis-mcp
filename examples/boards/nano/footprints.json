@@ -1,0 +1,1513 @@
+{
+  "footprints": {
+    "C14877": {
+      "pads": [
+        {
+          "drill": null,
+          "h": 0.45,
+          "layer": "F.Cu",
+          "number": "1",
+          "rot": 0.0,
+          "shape": "RECT",
+          "w": 1.5,
+          "x": -4.35,
+          "y": 2.8000000000000003
+        },
+        {
+          "drill": null,
+          "h": 0.45,
+          "layer": "F.Cu",
+          "number": "2",
+          "rot": 0.0,
+          "shape": "RECT",
+          "w": 1.5,
+          "x": -4.35,
+          "y": 2.0
+        },
+        {
+          "drill": null,
+          "h": 0.45,
+          "layer": "F.Cu",
+          "number": "3",
+          "rot": 0.0,
+          "shape": "RECT",
+          "w": 1.5,
+          "x": -4.35,
+          "y": 1.2000000000000002
+        },
+        {
+          "drill": null,
+          "h": 0.45,
+          "layer": "F.Cu",
+          "number": "4",
+          "rot": 0.0,
+          "shape": "RECT",
+          "w": 1.5,
+          "x": -4.35,
+          "y": 0.3999999999999999
+        },
+        {
+          "drill": null,
+          "h": 0.45,
+          "layer": "F.Cu",
+          "number": "5",
+          "rot": 0.0,
+          "shape": "RECT",
+          "w": 1.5,
+          "x": -4.35,
+          "y": -0.3999999999999999
+        },
+        {
+          "drill": null,
+          "h": 0.45,
+          "layer": "F.Cu",
+          "number": "6",
+          "rot": 0.0,
+          "shape": "RECT",
+          "w": 1.5,
+          "x": -4.35,
+          "y": -1.1999999999999997
+        },
+        {
+          "drill": null,
+          "h": 0.45,
+          "layer": "F.Cu",
+          "number": "7",
+          "rot": 0.0,
+          "shape": "RECT",
+          "w": 1.5,
+          "x": -4.35,
+          "y": -2.0000000000000004
+        },
+        {
+          "drill": null,
+          "h": 0.45,
+          "layer": "F.Cu",
+          "number": "8",
+          "rot": 0.0,
+          "shape": "RECT",
+          "w": 1.5,
+          "x": -4.35,
+          "y": -2.8000000000000003
+        },
+        {
+          "drill": null,
+          "h": 1.5,
+          "layer": "F.Cu",
+          "number": "9",
+          "rot": 0.0,
+          "shape": "RECT",
+          "w": 0.45,
+          "x": -2.8000000000000003,
+          "y": -4.35
+        },
+        {
+          "drill": null,
+          "h": 1.5,
+          "layer": "F.Cu",
+          "number": "10",
+          "rot": 0.0,
+          "shape": "RECT",
+          "w": 0.45,
+          "x": -2.0,
+          "y": -4.35
+        },
+        {
+          "drill": null,
+          "h": 1.5,
+          "layer": "F.Cu",
+          "number": "11",
+          "rot": 0.0,
+          "shape": "RECT",
+          "w": 0.45,
+          "x": -1.2000000000000002,
+          "y": -4.35
+        },
+        {
+          "drill": null,
+          "h": 1.5,
+          "layer": "F.Cu",
+          "number": "12",
+          "rot": 0.0,
+          "shape": "RECT",
+          "w": 0.45,
+          "x": -0.3999999999999999,
+          "y": -4.35
+        },
+        {
+          "drill": null,
+          "h": 1.5,
+          "layer": "F.Cu",
+          "number": "13",
+          "rot": 0.0,
+          "shape": "RECT",
+          "w": 0.45,
+          "x": 0.3999999999999999,
+          "y": -4.35
+        },
+        {
+          "drill": null,
+          "h": 1.5,
+          "layer": "F.Cu",
+          "number": "14",
+          "rot": 0.0,
+          "shape": "RECT",
+          "w": 0.45,
+          "x": 1.1999999999999997,
+          "y": -4.35
+        },
+        {
+          "drill": null,
+          "h": 1.5,
+          "layer": "F.Cu",
+          "number": "15",
+          "rot": 0.0,
+          "shape": "RECT",
+          "w": 0.45,
+          "x": 2.0000000000000004,
+          "y": -4.35
+        },
+        {
+          "drill": null,
+          "h": 1.5,
+          "layer": "F.Cu",
+          "number": "16",
+          "rot": 0.0,
+          "shape": "RECT",
+          "w": 0.45,
+          "x": 2.8000000000000003,
+          "y": -4.35
+        },
+        {
+          "drill": null,
+          "h": 0.45,
+          "layer": "F.Cu",
+          "number": "17",
+          "rot": 0.0,
+          "shape": "RECT",
+          "w": 1.5,
+          "x": 4.35,
+          "y": -2.8000000000000003
+        },
+        {
+          "drill": null,
+          "h": 0.45,
+          "layer": "F.Cu",
+          "number": "18",
+          "rot": 0.0,
+          "shape": "RECT",
+          "w": 1.5,
+          "x": 4.35,
+          "y": -2.0
+        },
+        {
+          "drill": null,
+          "h": 0.45,
+          "layer": "F.Cu",
+          "number": "19",
+          "rot": 0.0,
+          "shape": "RECT",
+          "w": 1.5,
+          "x": 4.35,
+          "y": -1.2000000000000002
+        },
+        {
+          "drill": null,
+          "h": 0.45,
+          "layer": "F.Cu",
+          "number": "20",
+          "rot": 0.0,
+          "shape": "RECT",
+          "w": 1.5,
+          "x": 4.35,
+          "y": -0.3999999999999999
+        },
+        {
+          "drill": null,
+          "h": 0.45,
+          "layer": "F.Cu",
+          "number": "21",
+          "rot": 0.0,
+          "shape": "RECT",
+          "w": 1.5,
+          "x": 4.35,
+          "y": 0.3999999999999999
+        },
+        {
+          "drill": null,
+          "h": 0.45,
+          "layer": "F.Cu",
+          "number": "22",
+          "rot": 0.0,
+          "shape": "RECT",
+          "w": 1.5,
+          "x": 4.35,
+          "y": 1.1999999999999997
+        },
+        {
+          "drill": null,
+          "h": 0.45,
+          "layer": "F.Cu",
+          "number": "23",
+          "rot": 0.0,
+          "shape": "RECT",
+          "w": 1.5,
+          "x": 4.35,
+          "y": 2.0000000000000004
+        },
+        {
+          "drill": null,
+          "h": 0.45,
+          "layer": "F.Cu",
+          "number": "24",
+          "rot": 0.0,
+          "shape": "RECT",
+          "w": 1.5,
+          "x": 4.35,
+          "y": 2.8000000000000003
+        },
+        {
+          "drill": null,
+          "h": 1.5,
+          "layer": "F.Cu",
+          "number": "25",
+          "rot": 0.0,
+          "shape": "RECT",
+          "w": 0.45,
+          "x": 2.8000000000000003,
+          "y": 4.35
+        },
+        {
+          "drill": null,
+          "h": 1.5,
+          "layer": "F.Cu",
+          "number": "26",
+          "rot": 0.0,
+          "shape": "RECT",
+          "w": 0.45,
+          "x": 2.0,
+          "y": 4.35
+        },
+        {
+          "drill": null,
+          "h": 1.5,
+          "layer": "F.Cu",
+          "number": "27",
+          "rot": 0.0,
+          "shape": "RECT",
+          "w": 0.45,
+          "x": 1.2000000000000002,
+          "y": 4.35
+        },
+        {
+          "drill": null,
+          "h": 1.5,
+          "layer": "F.Cu",
+          "number": "28",
+          "rot": 0.0,
+          "shape": "RECT",
+          "w": 0.45,
+          "x": 0.3999999999999999,
+          "y": 4.35
+        },
+        {
+          "drill": null,
+          "h": 1.5,
+          "layer": "F.Cu",
+          "number": "29",
+          "rot": 0.0,
+          "shape": "RECT",
+          "w": 0.45,
+          "x": -0.3999999999999999,
+          "y": 4.35
+        },
+        {
+          "drill": null,
+          "h": 1.5,
+          "layer": "F.Cu",
+          "number": "30",
+          "rot": 0.0,
+          "shape": "RECT",
+          "w": 0.45,
+          "x": -1.1999999999999997,
+          "y": 4.35
+        },
+        {
+          "drill": null,
+          "h": 1.5,
+          "layer": "F.Cu",
+          "number": "31",
+          "rot": 0.0,
+          "shape": "RECT",
+          "w": 0.45,
+          "x": -2.0000000000000004,
+          "y": 4.35
+        },
+        {
+          "drill": null,
+          "h": 1.5,
+          "layer": "F.Cu",
+          "number": "32",
+          "rot": 0.0,
+          "shape": "RECT",
+          "w": 0.45,
+          "x": -2.8000000000000003,
+          "y": 4.35
+        }
+      ],
+      "pin_map": {
+        "1": {
+          "name": "PD3",
+          "tags": []
+        },
+        "10": {
+          "name": "PD6",
+          "tags": []
+        },
+        "11": {
+          "name": "PD7",
+          "tags": []
+        },
+        "12": {
+          "name": "PB0",
+          "tags": []
+        },
+        "13": {
+          "name": "PB1",
+          "tags": []
+        },
+        "14": {
+          "name": "PB2",
+          "tags": []
+        },
+        "15": {
+          "name": "PB3",
+          "tags": []
+        },
+        "16": {
+          "name": "PB4",
+          "tags": []
+        },
+        "17": {
+          "name": "PB5",
+          "tags": []
+        },
+        "18": {
+          "name": "AVCC",
+          "tags": []
+        },
+        "19": {
+          "name": "ADC6",
+          "tags": []
+        },
+        "2": {
+          "name": "PD4",
+          "tags": []
+        },
+        "20": {
+          "name": "AREF",
+          "tags": []
+        },
+        "21": {
+          "name": "GND",
+          "tags": []
+        },
+        "22": {
+          "name": "ADC7",
+          "tags": []
+        },
+        "23": {
+          "name": "PC0",
+          "tags": []
+        },
+        "24": {
+          "name": "PC1",
+          "tags": []
+        },
+        "25": {
+          "name": "PC2",
+          "tags": []
+        },
+        "26": {
+          "name": "PC3",
+          "tags": []
+        },
+        "27": {
+          "name": "PC4",
+          "tags": []
+        },
+        "28": {
+          "name": "PC5",
+          "tags": []
+        },
+        "29": {
+          "name": "PC6",
+          "tags": []
+        },
+        "3": {
+          "name": "GND",
+          "tags": []
+        },
+        "30": {
+          "name": "PD0",
+          "tags": []
+        },
+        "31": {
+          "name": "PD1",
+          "tags": []
+        },
+        "32": {
+          "name": "PD2",
+          "tags": []
+        },
+        "4": {
+          "name": "VCC",
+          "tags": []
+        },
+        "5": {
+          "name": "GND",
+          "tags": []
+        },
+        "6": {
+          "name": "VCC",
+          "tags": []
+        },
+        "7": {
+          "name": "PB6",
+          "tags": []
+        },
+        "8": {
+          "name": "PB7",
+          "tags": []
+        },
+        "9": {
+          "name": "PD5",
+          "tags": []
+        }
+      },
+      "source": "fixture"
+    },
+    "C165948": {
+      "pads": [
+        {
+          "drill": null,
+          "h": 0.8,
+          "layer": "F.Cu",
+          "number": "1",
+          "rot": 0.0,
+          "shape": "RECT",
+          "w": 0.3,
+          "x": -1.75,
+          "y": 0.55
+        },
+        {
+          "drill": null,
+          "h": 0.8,
+          "layer": "F.Cu",
+          "number": "2",
+          "rot": 0.0,
+          "shape": "RECT",
+          "w": 0.3,
+          "x": -1.25,
+          "y": 0.55
+        },
+        {
+          "drill": null,
+          "h": 0.8,
+          "layer": "F.Cu",
+          "number": "3",
+          "rot": 0.0,
+          "shape": "RECT",
+          "w": 0.3,
+          "x": -0.75,
+          "y": 0.55
+        },
+        {
+          "drill": null,
+          "h": 0.8,
+          "layer": "F.Cu",
+          "number": "4",
+          "rot": 0.0,
+          "shape": "RECT",
+          "w": 0.3,
+          "x": -0.25,
+          "y": 0.55
+        },
+        {
+          "drill": null,
+          "h": 0.8,
+          "layer": "F.Cu",
+          "number": "5",
+          "rot": 0.0,
+          "shape": "RECT",
+          "w": 0.3,
+          "x": 0.25,
+          "y": 0.55
+        },
+        {
+          "drill": null,
+          "h": 0.8,
+          "layer": "F.Cu",
+          "number": "6",
+          "rot": 0.0,
+          "shape": "RECT",
+          "w": 0.3,
+          "x": 0.75,
+          "y": 0.55
+        },
+        {
+          "drill": null,
+          "h": 0.8,
+          "layer": "F.Cu",
+          "number": "7",
+          "rot": 0.0,
+          "shape": "RECT",
+          "w": 0.3,
+          "x": 1.25,
+          "y": 0.55
+        },
+        {
+          "drill": null,
+          "h": 0.8,
+          "layer": "F.Cu",
+          "number": "8",
+          "rot": 0.0,
+          "shape": "RECT",
+          "w": 0.3,
+          "x": 1.75,
+          "y": 0.55
+        },
+        {
+          "drill": null,
+          "h": 0.8,
+          "layer": "F.Cu",
+          "number": "9",
+          "rot": 0.0,
+          "shape": "RECT",
+          "w": 0.3,
+          "x": -1.75,
+          "y": -0.55
+        },
+        {
+          "drill": null,
+          "h": 0.8,
+          "layer": "F.Cu",
+          "number": "10",
+          "rot": 0.0,
+          "shape": "RECT",
+          "w": 0.3,
+          "x": -1.25,
+          "y": -0.55
+        },
+        {
+          "drill": null,
+          "h": 0.8,
+          "layer": "F.Cu",
+          "number": "11",
+          "rot": 0.0,
+          "shape": "RECT",
+          "w": 0.3,
+          "x": -0.75,
+          "y": -0.55
+        },
+        {
+          "drill": null,
+          "h": 0.8,
+          "layer": "F.Cu",
+          "number": "12",
+          "rot": 0.0,
+          "shape": "RECT",
+          "w": 0.3,
+          "x": -0.25,
+          "y": -0.55
+        },
+        {
+          "drill": null,
+          "h": 0.8,
+          "layer": "F.Cu",
+          "number": "13",
+          "rot": 0.0,
+          "shape": "RECT",
+          "w": 0.3,
+          "x": 0.25,
+          "y": -0.55
+        },
+        {
+          "drill": null,
+          "h": 0.8,
+          "layer": "F.Cu",
+          "number": "14",
+          "rot": 0.0,
+          "shape": "RECT",
+          "w": 0.3,
+          "x": 0.75,
+          "y": -0.55
+        },
+        {
+          "drill": null,
+          "h": 0.8,
+          "layer": "F.Cu",
+          "number": "15",
+          "rot": 0.0,
+          "shape": "RECT",
+          "w": 0.3,
+          "x": 1.25,
+          "y": -0.55
+        },
+        {
+          "drill": null,
+          "h": 0.8,
+          "layer": "F.Cu",
+          "number": "16",
+          "rot": 0.0,
+          "shape": "RECT",
+          "w": 0.3,
+          "x": 1.75,
+          "y": -0.55
+        },
+        {
+          "drill": 0.9,
+          "h": 1.6,
+          "layer": "F.Cu",
+          "number": "S1",
+          "rot": 0.0,
+          "shape": "ELLIPSE",
+          "w": 1.6,
+          "x": -3.6,
+          "y": 2.2
+        },
+        {
+          "drill": 0.9,
+          "h": 1.6,
+          "layer": "F.Cu",
+          "number": "S2",
+          "rot": 0.0,
+          "shape": "ELLIPSE",
+          "w": 1.6,
+          "x": 3.6,
+          "y": 2.2
+        },
+        {
+          "drill": 0.9,
+          "h": 1.6,
+          "layer": "F.Cu",
+          "number": "S3",
+          "rot": 0.0,
+          "shape": "ELLIPSE",
+          "w": 1.6,
+          "x": -3.6,
+          "y": -2.2
+        },
+        {
+          "drill": 0.9,
+          "h": 1.6,
+          "layer": "F.Cu",
+          "number": "S4",
+          "rot": 0.0,
+          "shape": "ELLIPSE",
+          "w": 1.6,
+          "x": 3.6,
+          "y": -2.2
+        }
+      ],
+      "pin_map": {
+        "1": {
+          "name": "GND",
+          "tags": []
+        },
+        "10": {
+          "name": "SBU2",
+          "tags": [
+            "unused"
+          ]
+        },
+        "11": {
+          "name": "DN2",
+          "tags": [
+            "unused"
+          ]
+        },
+        "12": {
+          "name": "DP2",
+          "tags": [
+            "unused"
+          ]
+        },
+        "13": {
+          "name": "VBUS",
+          "tags": []
+        },
+        "14": {
+          "name": "VBUS",
+          "tags": []
+        },
+        "15": {
+          "name": "CC2",
+          "tags": []
+        },
+        "16": {
+          "name": "GND",
+          "tags": []
+        },
+        "2": {
+          "name": "SBU1",
+          "tags": [
+            "unused"
+          ]
+        },
+        "3": {
+          "name": "DN1",
+          "tags": [
+            "unused"
+          ]
+        },
+        "4": {
+          "name": "DP1",
+          "tags": [
+            "unused"
+          ]
+        },
+        "5": {
+          "name": "VBUS",
+          "tags": []
+        },
+        "6": {
+          "name": "VBUS",
+          "tags": []
+        },
+        "7": {
+          "name": "CC1",
+          "tags": []
+        },
+        "8": {
+          "name": "GND",
+          "tags": []
+        },
+        "9": {
+          "name": "GND",
+          "tags": []
+        },
+        "S1": {
+          "name": "S1",
+          "tags": []
+        },
+        "S2": {
+          "name": "S2",
+          "tags": []
+        },
+        "S3": {
+          "name": "S3",
+          "tags": []
+        },
+        "S4": {
+          "name": "S4",
+          "tags": []
+        }
+      },
+      "source": "fixture"
+    },
+    "C2678061": {
+      "pads": [
+        {
+          "drill": null,
+          "h": 0.22,
+          "layer": "F.Cu",
+          "number": "1",
+          "rot": 0.0,
+          "shape": "RECT",
+          "w": 0.6,
+          "x": -2.2,
+          "y": 1.25
+        },
+        {
+          "drill": null,
+          "h": 0.22,
+          "layer": "F.Cu",
+          "number": "2",
+          "rot": 0.0,
+          "shape": "RECT",
+          "w": 0.6,
+          "x": -2.2,
+          "y": 0.75
+        },
+        {
+          "drill": null,
+          "h": 0.22,
+          "layer": "F.Cu",
+          "number": "3",
+          "rot": 0.0,
+          "shape": "RECT",
+          "w": 0.6,
+          "x": -2.2,
+          "y": 0.25
+        },
+        {
+          "drill": null,
+          "h": 0.22,
+          "layer": "F.Cu",
+          "number": "4",
+          "rot": 0.0,
+          "shape": "RECT",
+          "w": 0.6,
+          "x": -2.2,
+          "y": -0.25
+        },
+        {
+          "drill": null,
+          "h": 0.22,
+          "layer": "F.Cu",
+          "number": "5",
+          "rot": 0.0,
+          "shape": "RECT",
+          "w": 0.6,
+          "x": -2.2,
+          "y": -0.75
+        },
+        {
+          "drill": null,
+          "h": 0.22,
+          "layer": "F.Cu",
+          "number": "6",
+          "rot": 0.0,
+          "shape": "RECT",
+          "w": 0.6,
+          "x": -2.2,
+          "y": -1.25
+        },
+        {
+          "drill": null,
+          "h": 0.6,
+          "layer": "F.Cu",
+          "number": "7",
+          "rot": 0.0,
+          "shape": "RECT",
+          "w": 0.22,
+          "x": -1.25,
+          "y": -2.2
+        },
+        {
+          "drill": null,
+          "h": 0.6,
+          "layer": "F.Cu",
+          "number": "8",
+          "rot": 0.0,
+          "shape": "RECT",
+          "w": 0.22,
+          "x": -0.75,
+          "y": -2.2
+        },
+        {
+          "drill": null,
+          "h": 0.6,
+          "layer": "F.Cu",
+          "number": "9",
+          "rot": 0.0,
+          "shape": "RECT",
+          "w": 0.22,
+          "x": -0.25,
+          "y": -2.2
+        },
+        {
+          "drill": null,
+          "h": 0.6,
+          "layer": "F.Cu",
+          "number": "10",
+          "rot": 0.0,
+          "shape": "RECT",
+          "w": 0.22,
+          "x": 0.25,
+          "y": -2.2
+        },
+        {
+          "drill": null,
+          "h": 0.6,
+          "layer": "F.Cu",
+          "number": "11",
+          "rot": 0.0,
+          "shape": "RECT",
+          "w": 0.22,
+          "x": 0.75,
+          "y": -2.2
+        },
+        {
+          "drill": null,
+          "h": 0.6,
+          "layer": "F.Cu",
+          "number": "12",
+          "rot": 0.0,
+          "shape": "RECT",
+          "w": 0.22,
+          "x": 1.25,
+          "y": -2.2
+        },
+        {
+          "drill": null,
+          "h": 0.22,
+          "layer": "F.Cu",
+          "number": "13",
+          "rot": 0.0,
+          "shape": "RECT",
+          "w": 0.6,
+          "x": 2.2,
+          "y": -1.25
+        },
+        {
+          "drill": null,
+          "h": 0.22,
+          "layer": "F.Cu",
+          "number": "14",
+          "rot": 0.0,
+          "shape": "RECT",
+          "w": 0.6,
+          "x": 2.2,
+          "y": -0.75
+        },
+        {
+          "drill": null,
+          "h": 0.22,
+          "layer": "F.Cu",
+          "number": "15",
+          "rot": 0.0,
+          "shape": "RECT",
+          "w": 0.6,
+          "x": 2.2,
+          "y": -0.25
+        },
+        {
+          "drill": null,
+          "h": 0.22,
+          "layer": "F.Cu",
+          "number": "16",
+          "rot": 0.0,
+          "shape": "RECT",
+          "w": 0.6,
+          "x": 2.2,
+          "y": 0.25
+        },
+        {
+          "drill": null,
+          "h": 0.22,
+          "layer": "F.Cu",
+          "number": "17",
+          "rot": 0.0,
+          "shape": "RECT",
+          "w": 0.6,
+          "x": 2.2,
+          "y": 0.75
+        },
+        {
+          "drill": null,
+          "h": 0.22,
+          "layer": "F.Cu",
+          "number": "18",
+          "rot": 0.0,
+          "shape": "RECT",
+          "w": 0.6,
+          "x": 2.2,
+          "y": 1.25
+        },
+        {
+          "drill": null,
+          "h": 0.6,
+          "layer": "F.Cu",
+          "number": "19",
+          "rot": 0.0,
+          "shape": "RECT",
+          "w": 0.22,
+          "x": 1.25,
+          "y": 2.2
+        },
+        {
+          "drill": null,
+          "h": 0.6,
+          "layer": "F.Cu",
+          "number": "20",
+          "rot": 0.0,
+          "shape": "RECT",
+          "w": 0.22,
+          "x": 0.75,
+          "y": 2.2
+        },
+        {
+          "drill": null,
+          "h": 0.6,
+          "layer": "F.Cu",
+          "number": "21",
+          "rot": 0.0,
+          "shape": "RECT",
+          "w": 0.22,
+          "x": 0.25,
+          "y": 2.2
+        },
+        {
+          "drill": null,
+          "h": 0.6,
+          "layer": "F.Cu",
+          "number": "22",
+          "rot": 0.0,
+          "shape": "RECT",
+          "w": 0.22,
+          "x": -0.25,
+          "y": 2.2
+        },
+        {
+          "drill": null,
+          "h": 0.6,
+          "layer": "F.Cu",
+          "number": "23",
+          "rot": 0.0,
+          "shape": "RECT",
+          "w": 0.22,
+          "x": -0.75,
+          "y": 2.2
+        },
+        {
+          "drill": null,
+          "h": 0.6,
+          "layer": "F.Cu",
+          "number": "24",
+          "rot": 0.0,
+          "shape": "RECT",
+          "w": 0.22,
+          "x": -1.25,
+          "y": 2.2
+        },
+        {
+          "drill": null,
+          "h": 2.6,
+          "layer": "F.Cu",
+          "number": "25",
+          "rot": 0.0,
+          "shape": "RECT",
+          "w": 2.6,
+          "x": 0.0,
+          "y": 0.0
+        }
+      ],
+      "pin_map": {
+        "1": {
+          "name": "CC1",
+          "tags": []
+        },
+        "10": {
+          "name": "NC2",
+          "tags": [
+            "nc"
+          ]
+        },
+        "11": {
+          "name": "SCL",
+          "tags": []
+        },
+        "12": {
+          "name": "SDA",
+          "tags": []
+        },
+        "13": {
+          "name": "INT_N",
+          "tags": []
+        },
+        "14": {
+          "name": "NC3",
+          "tags": [
+            "nc"
+          ]
+        },
+        "15": {
+          "name": "POWER_OK2",
+          "tags": [
+            "unused"
+          ]
+        },
+        "16": {
+          "name": "POWER_OK3",
+          "tags": [
+            "unused"
+          ]
+        },
+        "17": {
+          "name": "A_B_SIDE",
+          "tags": [
+            "unused"
+          ]
+        },
+        "18": {
+          "name": "VBUS_EN_SNK",
+          "tags": [
+            "unused"
+          ]
+        },
+        "19": {
+          "name": "CTL0",
+          "tags": [
+            "unused"
+          ]
+        },
+        "2": {
+          "name": "CC2",
+          "tags": []
+        },
+        "20": {
+          "name": "CTL1",
+          "tags": [
+            "unused"
+          ]
+        },
+        "21": {
+          "name": "CTL2",
+          "tags": [
+            "unused"
+          ]
+        },
+        "22": {
+          "name": "NC4",
+          "tags": [
+            "nc"
+          ]
+        },
+        "23": {
+          "name": "NC5",
+          "tags": [
+            "nc"
+          ]
+        },
+        "24": {
+          "name": "VDD",
+          "tags": []
+        },
+        "25": {
+          "name": "GND",
+          "tags": []
+        },
+        "3": {
+          "name": "NC1",
+          "tags": [
+            "nc"
+          ]
+        },
+        "4": {
+          "name": "VSYS",
+          "tags": []
+        },
+        "5": {
+          "name": "DISCH",
+          "tags": []
+        },
+        "6": {
+          "name": "GND",
+          "tags": []
+        },
+        "7": {
+          "name": "VREG_2V7",
+          "tags": []
+        },
+        "8": {
+          "name": "VREG_1V2",
+          "tags": []
+        },
+        "9": {
+          "name": "GND",
+          "tags": []
+        }
+      },
+      "source": "fixture"
+    },
+    "C44377": {
+      "pads": [
+        {
+          "drill": null,
+          "h": 0.6,
+          "layer": "F.Cu",
+          "number": "1",
+          "rot": 0.0,
+          "shape": "RECT",
+          "w": 2.2,
+          "x": -2.9,
+          "y": 1.905
+        },
+        {
+          "drill": null,
+          "h": 0.6,
+          "layer": "F.Cu",
+          "number": "2",
+          "rot": 0.0,
+          "shape": "RECT",
+          "w": 2.2,
+          "x": -2.9,
+          "y": 0.635
+        },
+        {
+          "drill": null,
+          "h": 0.6,
+          "layer": "F.Cu",
+          "number": "3",
+          "rot": 0.0,
+          "shape": "RECT",
+          "w": 2.2,
+          "x": -2.9,
+          "y": -0.635
+        },
+        {
+          "drill": null,
+          "h": 0.6,
+          "layer": "F.Cu",
+          "number": "4",
+          "rot": 0.0,
+          "shape": "RECT",
+          "w": 2.2,
+          "x": -2.9,
+          "y": -1.905
+        },
+        {
+          "drill": null,
+          "h": 0.6,
+          "layer": "F.Cu",
+          "number": "5",
+          "rot": 0.0,
+          "shape": "RECT",
+          "w": 2.2,
+          "x": 2.9,
+          "y": -1.905
+        },
+        {
+          "drill": null,
+          "h": 0.6,
+          "layer": "F.Cu",
+          "number": "6",
+          "rot": 0.0,
+          "shape": "RECT",
+          "w": 2.2,
+          "x": 2.9,
+          "y": -0.635
+        },
+        {
+          "drill": null,
+          "h": 0.6,
+          "layer": "F.Cu",
+          "number": "7",
+          "rot": 0.0,
+          "shape": "RECT",
+          "w": 2.2,
+          "x": 2.9,
+          "y": 0.635
+        },
+        {
+          "drill": null,
+          "h": 0.6,
+          "layer": "F.Cu",
+          "number": "8",
+          "rot": 0.0,
+          "shape": "RECT",
+          "w": 2.2,
+          "x": 2.9,
+          "y": 1.905
+        },
+        {
+          "drill": null,
+          "h": 2.4,
+          "layer": "F.Cu",
+          "number": "9",
+          "rot": 0.0,
+          "shape": "RECT",
+          "w": 3.4,
+          "x": 0.0,
+          "y": 0.0
+        }
+      ],
+      "pin_map": {
+        "1": {
+          "name": "BOOT",
+          "tags": []
+        },
+        "2": {
+          "name": "VIN",
+          "tags": []
+        },
+        "3": {
+          "name": "EN",
+          "tags": []
+        },
+        "4": {
+          "name": "RTCLK",
+          "tags": [
+            "unused"
+          ]
+        },
+        "5": {
+          "name": "FB",
+          "tags": []
+        },
+        "6": {
+          "name": "COMP",
+          "tags": []
+        },
+        "7": {
+          "name": "GND",
+          "tags": []
+        },
+        "8": {
+          "name": "SW",
+          "tags": []
+        },
+        "9": {
+          "name": "GND",
+          "tags": []
+        }
+      },
+      "source": "fixture"
+    },
+    "C621942": {
+      "pads": [
+        {
+          "drill": null,
+          "h": 0.55,
+          "layer": "F.Cu",
+          "number": "1",
+          "rot": 0.0,
+          "shape": "RECT",
+          "w": 0.95,
+          "x": -1.5,
+          "y": 0.95
+        },
+        {
+          "drill": null,
+          "h": 0.55,
+          "layer": "F.Cu",
+          "number": "2",
+          "rot": 0.0,
+          "shape": "RECT",
+          "w": 0.95,
+          "x": -1.5,
+          "y": 0.0
+        },
+        {
+          "drill": null,
+          "h": 0.55,
+          "layer": "F.Cu",
+          "number": "3",
+          "rot": 0.0,
+          "shape": "RECT",
+          "w": 0.95,
+          "x": -1.5,
+          "y": -0.95
+        },
+        {
+          "drill": null,
+          "h": 0.55,
+          "layer": "F.Cu",
+          "number": "4",
+          "rot": 0.0,
+          "shape": "RECT",
+          "w": 0.95,
+          "x": 1.5,
+          "y": -0.95
+        },
+        {
+          "drill": null,
+          "h": 0.55,
+          "layer": "F.Cu",
+          "number": "5",
+          "rot": 0.0,
+          "shape": "RECT",
+          "w": 0.95,
+          "x": 1.5,
+          "y": 0.0
+        },
+        {
+          "drill": null,
+          "h": 0.55,
+          "layer": "F.Cu",
+          "number": "6",
+          "rot": 0.0,
+          "shape": "RECT",
+          "w": 0.95,
+          "x": 1.5,
+          "y": 0.95
+        }
+      ],
+      "pin_map": {
+        "1": {
+          "name": "VDD",
+          "tags": []
+        },
+        "2": {
+          "name": "IN",
+          "tags": []
+        },
+        "3": {
+          "name": "GND",
+          "tags": []
+        },
+        "4": {
+          "name": "CS",
+          "tags": [
+            "nc"
+          ]
+        },
+        "5": {
+          "name": "SRC",
+          "tags": []
+        },
+        "6": {
+          "name": "GATE",
+          "tags": []
+        }
+      },
+      "source": "fixture"
+    },
+    "C919581": {
+      "pads": [
+        {
+          "drill": null,
+          "h": 2.0,
+          "layer": "F.Cu",
+          "number": "1",
+          "rot": 0.0,
+          "shape": "RECT",
+          "w": 1.1,
+          "x": -2.286,
+          "y": 3.4
+        },
+        {
+          "drill": null,
+          "h": 4.6,
+          "layer": "F.Cu",
+          "number": "2",
+          "rot": 0.0,
+          "shape": "RECT",
+          "w": 5.8,
+          "x": 0.0,
+          "y": -1.5
+        },
+        {
+          "drill": null,
+          "h": 2.0,
+          "layer": "F.Cu",
+          "number": "3",
+          "rot": 0.0,
+          "shape": "RECT",
+          "w": 1.1,
+          "x": 2.286,
+          "y": 3.4
+        }
+      ],
+      "pin_map": {
+        "1": {
+          "name": "G",
+          "tags": []
+        },
+        "2": {
+          "name": "D",
+          "tags": []
+        },
+        "3": {
+          "name": "S",
+          "tags": []
+        }
+      },
+      "source": "fixture"
+    }
+  },
+  "provenance": "Hand-authored stand-in geometry; not vendor land patterns.",
+  "source": "tests/fixtures/pcb/nano_usb_pd_testboard.py:CATALOG_FOOTPRINTS"
+}

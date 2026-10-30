@@ -218,7 +218,9 @@ for _row, _y in ((0, 0.55), (1, -0.55)):
             _USBC_PIN_MAP[_num] = {"name": _name, "tags": list(_tags)}
 for _i, (_x, _y) in enumerate(((-3.6, 2.2), (3.6, 2.2), (-3.6, -2.2), (3.6, -2.2))):
     _num = f"S{_i + 1}"
-    _USBC_PADS.append(_pad(_num, _x, _y, 1.6, 1.6, shape="ELLIPSE", drill=0.9))
+    # Use the authored circle spelling so these stand-in rows also validate
+    # when copied into a design-local footprint.
+    _USBC_PADS.append(_pad(_num, _x, _y, 1.6, 1.6, shape="CIRCLE", drill=0.9))
     _USBC_PIN_MAP[_num] = {"name": _num, "tags": []}
 
 # STUSB4500QTR stand-in: QFN-24 4x4, 0.5 mm pitch + exposed pad. Pin names

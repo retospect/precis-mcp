@@ -89,6 +89,9 @@ file).
 The batch `put` keys and the construction ops (`class_rules`, `stackup`, `plane_net`, `profile`, `pins`, `pin_rename`, `pin_remove`, `corner_nuts`) still work but are being retired when pcb workspace slice 1 ships; new construction capability goes to workspaces (a Python script builds the design), not new ops.
 
 Plane assignments, pours and the stackup: `get(kind='skill', id='precis-pcb-planes-help')`.
+The writer also carries legacy proximity measures: `strength` becomes the
+builder's `hard` flag, `{'instance': refdes}` operands become refdes strings,
+and `reason` remains one provenance comment on the emitted measure call.
 
 **Batch, re-runnable.** One `put` lays down components (with pins), nets, and
 connections in one transaction; re-`put`ting the same slug **extends** it

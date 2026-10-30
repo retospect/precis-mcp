@@ -259,9 +259,13 @@ def test_annotation_handle_and_lcsc_fallback() -> None:
     )
     assert "pn777 — thick film" in text
     assert "fp42" in text
-    # J1 has no handle and no lcsc -> no invented comment on its own line
+    # J1 has no handle: its fallback label must not invent one.
     j1_lines = [l for l in text.splitlines() if "'J1'" in l]
     assert j1_lines and all("#" not in l for l in j1_lines)
+    assert any(
+        "j1 = b.part(" in line and "synthesized footprint" in line
+        for line in text.splitlines()
+    )
     # without a handle the lcsc fallback fires instead
     text2 = _roundtrip(batch)
     assert "lcsc:C25804" in text2
@@ -375,6 +379,25 @@ def _assert_board_rows_equal(actual: dict[str, Any], expected: dict[str, Any]) -
     for key in ("components", "nets", "connections"):
         assert _row_set(actual[key]) == _row_set(expected[key]), key
     assert _row_set(actual.get("planes", [])) == _row_set(expected.get("planes", []))
+    expected_measures = []
+    for source in expected.get("measures", []):
+        measure = {
+            key: value
+            for key, value in source.items()
+            if key not in {"reason", "strength"}
+        }
+        measure["operands"] = [
+            operand["instance"] if isinstance(operand, dict) else operand
+            for operand in source["operands"]
+        ]
+        measure["hard"] = (
+            source["strength"] == "hard"
+            if "strength" in source
+            else source.get("hard", False)
+        )
+        measure.setdefault("weight", 1.0)
+        expected_measures.append(measure)
+    assert _row_set(actual.get("measures", [])) == _row_set(expected_measures)
     actual_footprints = {fp["name"]: fp for fp in actual.get("footprints", [])}
     expected_footprints = {fp["name"]: fp for fp in expected.get("footprints", [])}
     assert actual_footprints.keys() == expected_footprints.keys()
@@ -398,16 +421,83 @@ def test_reference_batch_to_workspace(tmp_path: Path, fixture: str) -> None:
         if source.suffix == ".py"
         else json.loads(source.read_text(encoding="utf-8"))
     )
-    if fixture == "nano_oc_switch.json":
-        # Legacy strength/reason measure rows are separately unsupported.
-        # This round trip covers the netlist, pads and plane assignments.
-        batch.pop("measures")
     script = tmp_path / "main.py"
     script.write_text(emit(batch, source.stem, str(source)), encoding="utf-8")
     rebuilt = load_module(script).build().to_batch()
     _assert_board_rows_equal(rebuilt, batch)
     assert rebuilt.get("features", []) == batch.get("features", [])
     assert str(source) in script.read_text(encoding="utf-8")
+
+
+@pytest.mark.parametrize(
+    "strength,hard", [("hard", True), ("soft", False), (None, False)]
+)
+def test_legacy_measure_strength_and_instance_operands(
+    strength: str | None, hard: bool
+) -> None:
+    batch = _tiny_batch()
+    measure: dict[str, Any] = {
+        "metric": "proximity",
+        "operands": [{"instance": "J1"}, {"instance": "R1"}],
+        "bound": 10.0,
+        "goal": 5.0,
+        "weight": 2.5,
+        "reason": "keep the connector close\npreserve short leads",
+    }
+    if strength is not None:
+        measure["strength"] = strength
+    batch["measures"] = [measure]
+    original = deepcopy(batch)
+    text = emit(batch, "tiny", "measure fixture")
+    rebuilt = _exec(text).build().to_batch()
+    assert rebuilt["measures"] == [
+        {
+            "metric": "proximity",
+            "operands": ["J1", "R1"],
+            "bound": 10.0,
+            "goal": 5.0,
+            "hard": hard,
+            "weight": 2.5,
+        }
+    ]
+    comments = [
+        line for line in text.splitlines() if "# keep the connector close" in line
+    ]
+    assert len(comments) == 1
+    assert "b.measure(" in comments[0]
+    assert comments[0].endswith("# keep the connector close preserve short leads")
+    assert batch == original
+
+
+def test_normalized_measure_roundtrips_with_existing_hard_flag() -> None:
+    batch = _tiny_batch()
+    batch["measures"] = [
+        {
+            "metric": "proximity",
+            "operands": ["J1", "R1"],
+            "hard": True,
+            "weight": 1.0,
+            "goal": 8.0,
+        }
+    ]
+    _roundtrip(batch)
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {"strength": "required"},
+        {"strength": "hard", "hard": False},
+        {"strength": "soft", "hard": True},
+        {"operands": [{"instance": "J1", "pin": "1"}]},
+        {"operands": [{"instance": "MISSING"}]},
+    ],
+)
+def test_unexpressible_legacy_measure_refused(overrides: dict[str, Any]) -> None:
+    batch = _tiny_batch()
+    batch["measures"] = [{"metric": "proximity", "operands": ["J1", "R1"], **overrides}]
+    with pytest.raises(BoardScriptError):
+        emit(batch, "tiny", "measure fixture")
 
 
 def test_plane_assignments_are_rows_without_pour_features() -> None:

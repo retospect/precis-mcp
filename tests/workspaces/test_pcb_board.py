@@ -44,6 +44,7 @@ GOLDEN = Path(__file__).resolve().parent / "data" / "pcb_goldens.json"
 
 #: example dir → the fixture whose dict it must reproduce byte for byte
 CONVERTED = {
+    "nano": "nano_usb_pd_testboard.py:build_design",
     "nano_usb_pd": "nano_usb_pd_testboard.py:build_design",
     "nano_usb_pd_r2": "nano_usb_pd_testboard_r2.py:build_design",
     "esp32c3": "esp32c3_reference.json",

@@ -1458,6 +1458,38 @@ def sch_component_attrs(project: EproProject) -> dict[str, dict[str, str]]:
     return out
 
 
+def _sch_component_sheets(
+    project: EproProject,
+) -> tuple[dict[str, dict[str, str]], set[str]]:
+    """Unique refdes-to-sheet identities and ambiguous refdes.
+
+    A sheet UUID is identity; its own META title is only a display name.
+    Repeated symbol units within one page still belong to that page, but a
+    designator on several pages cannot establish hierarchy for a PCB part.
+    Pages without UUIDs contribute to ambiguity without inventing identity.
+    """
+    occurrences: dict[str, list[dict[str, str] | None]] = {}
+    for doc in project.by_type("SCH_PAGE"):
+        metas = doc.bodies("META")
+        title = metas[0].get("title") if metas else None
+        title = title.strip() if isinstance(title, str) else ""
+        sheet = {"id": doc.uuid, "name": title or doc.uuid} if doc.uuid else None
+        refdes_in_page = {
+            refdes
+            for attrs in component_attrs(doc).values()
+            if (refdes := (attrs.get("Designator") or "").strip())
+        }
+        for refdes in refdes_in_page:
+            occurrences.setdefault(refdes, []).append(sheet)
+    ambiguous = {refdes for refdes, sheets in occurrences.items() if len(sheets) > 1}
+    unique = {
+        refdes: sheets[0]
+        for refdes, sheets in occurrences.items()
+        if len(sheets) == 1 and sheets[0] is not None
+    }
+    return unique, ambiguous
+
+
 def sch_no_connects(project: EproProject) -> dict[str, set[str]]:
     """``{refdes: {pad numbers}}`` — the schematic's ``NO_CONNECT``
     markers. Each is an ``ATTR`` whose ``parentId`` is
@@ -2291,10 +2323,15 @@ def extract_components(
     Pins carry the symbol's electrical type (``Pin Type`` -> ``etype``)
     and the schematic's ``NO_CONNECT`` markers (``nc``) — the ERC half
     of pcb-datasheet-review.md slice 1.
+
+    An unambiguous schematic page lands as ``part_meta.source_sheet``
+    (UUID plus its actual title, or UUID again when untitled). A refdes on
+    several pages carries no sheet identity and reports the ambiguity.
     """
     warnings: list[str] = []
     attrs = component_attrs(pcb)
     sch_attrs = sch_component_attrs(project)
+    sch_sheets, ambiguous_sheets = _sch_component_sheets(project)
     nc_by_refdes = sch_no_connects(project)
     symbols = {d.uuid: d for d in project.by_type("SYMBOL") if d.uuid}
     devices = {d.uuid: d for d in project.by_type("DEVICE") if d.uuid}
@@ -2359,6 +2396,12 @@ def extract_components(
             comp["label"] = label
         if ident:
             comp["part_meta"] = {k: v for k, v in ident.items() if k != "lcsc"}
+        if refdes in sch_sheets:
+            comp.setdefault("part_meta", {})["source_sheet"] = dict(sch_sheets[refdes])
+        elif refdes in ambiguous_sheets:
+            warnings.append(
+                f"{refdes}: appears in multiple schematic sheets; source_sheet omitted"
+            )
 
         doc = fp_docs.get(fp_uuid)
         # Distinct pad numbers: several pads may share one (a split thermal

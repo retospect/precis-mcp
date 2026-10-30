@@ -28,7 +28,7 @@ record — the wheel version may differ from the server's).
 
 Footprints: a laptop has no ``part_footprints`` cache, so a part with
 ``lcsc=`` and no authored ``footprint=`` falls to the ``landpattern``
-synthesized bound exactly as the fixtures flag it. Three ways to supply
+synthesized bound exactly as the fixtures flag it. Four ways to supply
 real pads offline, lowest precedence first: a ``footprints.json`` cache
 file — ``$PRECIS_FOOTPRINT_CACHE`` (a JSON file, or a directory holding
 ``footprints.json``), else ``footprints.json`` next to the running script
@@ -36,8 +36,9 @@ file — ``$PRECIS_FOOTPRINT_CACHE`` (a JSON file, or a directory holding
 args={'format':'json'})`` export document (gr520330);
 ``meta.catalog_footprints[lcsc]`` may carry the cache row verbatim
 (``{pads, pin_map, courtyard, centroid, holes}`` — the shape a design
-export embeds); and every ``place`` call takes ``catalog={lcsc: row}``
-for the rows a caller already holds.
+export embeds); resolved references bound to Board parts supply the same rows
+through ``Board.catalog_footprints()``; and every ``place`` call takes
+``catalog={lcsc: row}`` for the rows a caller already holds.
 """
 
 from __future__ import annotations
@@ -589,7 +590,9 @@ def _batch_of(board: Any) -> dict[str, Any]:
 
 def _design(board: Any, catalog: dict[str, dict[str, Any]] | None) -> _Design:
     batch = _batch_of(board)
-    by_lcsc = _catalog_footprints(batch, catalog)
+    bound_catalog = getattr(board, "catalog_footprints", None)
+    bound_rows = bound_catalog() if callable(bound_catalog) else {}
+    by_lcsc = _catalog_footprints(batch, {**bound_rows, **(catalog or {})})
     graph = batch_to_graph(batch, footprints=by_lcsc)
     features = copy.deepcopy(batch.get("features") or [])
     outline = pcb_session.outline_from_features(features)

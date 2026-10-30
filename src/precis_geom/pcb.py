@@ -40,6 +40,17 @@ authors wrote.
 layer/net assignments in ``planes``. They contain no copper geometry and
 remain separate from :meth:`Board.plane`, the existing whole-layer pour
 feature API, so importing assignment rows cannot create copper pours.
+
+**Pinned local footprints.** :func:`catalog_footprint` loads one cached LCSC
+row and verifies its SHA256 before converting pads. Generated scripts can
+reference library geometry without embedding pad lists or contacting the
+catalog; a missing or changed cache refuses instead of changing the board.
+Source footprint metadata is supplied explicitly because a shared catalog
+row may describe different pin names or mechanical annotations. A part that
+only names an LCSC key can instead use :func:`catalog_part`: its pinned raw
+geometry stays attached to the part without adding package or height fields
+that the source component never authored. :meth:`Board.catalog_footprints`
+passes that bound geometry to the local kernel without another cache lookup.
 """
 
 from __future__ import annotations
@@ -1230,6 +1241,75 @@ class Footprint:
         return d
 
 
+def _cached_catalog_row(lcsc: str, cache: str | Path, sha256: str) -> dict[str, Any]:
+    """Read and verify the selected raw cache row before using its geometry."""
+    path = Path(cache)
+    context = f"catalog footprint {lcsc!r} in {path}"
+    try:
+        doc = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        raise PcbBuilderError(f"{context}: unreadable cache ({exc})") from exc
+    if not isinstance(doc, dict):
+        raise PcbBuilderError(f"{context}: expected a JSON object")
+    rows = doc.get("footprints", doc)
+    if not isinstance(rows, dict):
+        raise PcbBuilderError(f"{context}: expected LCSC-keyed rows")
+    row = rows.get(lcsc)
+    if not isinstance(row, dict):
+        raise PcbBuilderError(f"{context}: missing footprint row")
+    digest = hashlib.sha256(canonical_json(row).encode()).hexdigest()
+    if digest != sha256:
+        raise PcbBuilderError(
+            f"{context}: SHA256 mismatch (expected {sha256}, got {digest})"
+        )
+    raw_pads = row.get("pads")
+    if not isinstance(raw_pads, list) or any(
+        not isinstance(pad_row, dict) for pad_row in raw_pads
+    ):
+        raise PcbBuilderError(f"{context}: expected a list of pad objects")
+    return row
+
+
+def catalog_footprint(
+    name: str,
+    lcsc: str,
+    cache: str | Path,
+    *,
+    sha256: str,
+    **fields: Any,
+) -> Footprint:
+    """Load a pinned footprint from a local cache without catalog access.
+
+    The digest covers the selected raw row, including metadata, before pad
+    conversion. Missing or changed geometry raises :class:`PcbBuilderError`;
+    there is no network lookup or synthesized fallback.
+
+    Args:
+        name (str): Design-local footprint name used by the board's parts.
+        lcsc (str): LCSC key selecting a row from the cache.
+        cache (str | Path): JSON file containing LCSC-keyed rows, optionally
+            under a ``footprints`` key.
+        sha256 (str): SHA256 hex digest of ``canonical_json(row).encode()``.
+        fields (Any): Source metadata passed to :class:`Footprint`, such as
+            ``pin_map``, ``courtyard``, ``centroid``, ``note``, ``holes`` and
+            ``graphics``. Cache metadata is not substituted for these fields.
+    """
+    row = _cached_catalog_row(lcsc, cache, sha256)
+    context = f"catalog footprint {lcsc!r} in {Path(cache)}"
+    pads: list[dict[str, Any]] = []
+    for raw_pad in row["pads"]:
+        converted = {key: value for key, value in raw_pad.items() if value is not None}
+        number = converted.pop("number", None)
+        if "pin" not in converted and number is not None:
+            converted["pin"] = number
+        if "shape" in converted:
+            if not isinstance(converted["shape"], str):
+                raise PcbBuilderError(f"{context}: pad shape must be a string")
+            converted["shape"] = converted["shape"].lower()
+        pads.append(copy.deepcopy(converted))
+    return Footprint(name, pads, **copy.deepcopy(fields))
+
+
 # --------------------------------------------------------------------------
 # Module frames (b.use)
 # --------------------------------------------------------------------------
@@ -1357,6 +1437,45 @@ class CatalogPart:
     #: there was no read path at all (Decision 25 — no client is not an
     #: error).
     error: str | None = None
+
+
+def catalog_part(lcsc: str, cache: str | Path, *, sha256: str) -> CatalogPart:
+    """Load a pinned local catalog reference while preserving component fields.
+
+    The raw geometry is available through ``Board.part(part=...)`` for local
+    placement. Package and height stay unset even if the cache supplies them:
+    copying those fields would change source components that only named an
+    LCSC part. Explicit component pins remain authored by ``Board.part``.
+    Missing or changed cache rows raise :class:`PcbBuilderError`; this helper
+    never contacts the catalog or substitutes synthesized geometry.
+
+    Args:
+        lcsc (str): LCSC key selecting a row from the local cache.
+        cache (str | Path): JSON file containing LCSC-keyed rows, optionally
+            under a ``footprints`` key.
+        sha256 (str): SHA256 hex digest of ``canonical_json(row).encode()``.
+    """
+    row = _cached_catalog_row(lcsc, cache, sha256)
+    part = CatalogPart(
+        lcsc=lcsc,
+        resolved=True,
+        pads=copy.deepcopy(row["pads"]),
+        pin_map=copy.deepcopy(row.get("pin_map") or {}),
+        courtyard=copy.deepcopy(row.get("courtyard")),
+        centroid=copy.deepcopy(row.get("centroid")),
+        holes=copy.deepcopy(row.get("holes") or []),
+        part_id=row.get("part_id"),
+        footprint_sha=sha256,
+    )
+    part.pins = [
+        str(value.get("name") or key) if isinstance(value, dict) else str(value or key)
+        for key, value in sorted(part.pin_map.items(), key=lambda item: str(item[0]))
+    ] or [
+        str(name)
+        for pad_row in part.pads
+        if (name := pad_row.get("pin") or pad_row.get("number")) is not None
+    ]
+    return part
 
 
 #: Pending :func:`catalog` reads made with no board to bind to, keyed by
@@ -1641,6 +1760,34 @@ class Board:
         if part.resolved or part.error is not None:
             self._catalog_reads[part.lcsc] = _manifest_entry(part)
         return part
+
+    def catalog_footprints(self) -> dict[str, dict[str, Any]]:
+        """Snapshot resolved catalog geometry already bound to this board.
+
+        This reads only the parts' attached references; unresolved references
+        stay absent and no catalog fetch occurs. The local kernel consumes
+        these rows independently of the filename used to load a pinned part.
+        Conflicting geometry for one LCSC key refuses instead of choosing
+        whichever part was visited last. Returned nested data is copied.
+        """
+        rows: dict[str, dict[str, Any]] = {}
+        for refdes in self._part_order:
+            part = self._parts[refdes]._catalog
+            if part is None or not part.resolved:
+                continue
+            row = {
+                "pads": part.pads,
+                "pin_map": part.pin_map,
+                "courtyard": part.courtyard,
+                "centroid": part.centroid,
+                "holes": part.holes,
+            }
+            if part.lcsc in rows and rows[part.lcsc] != row:
+                raise PcbBuilderError(
+                    f"conflicting catalog geometry for {part.lcsc!r} on board {self.slug!r}"
+                )
+            rows[part.lcsc] = row
+        return copy.deepcopy(rows)
 
     # -- naming (module frames) ------------------------------------------
 
@@ -3839,6 +3986,8 @@ __all__ = [
     "box",
     "canonical_json",
     "catalog",
+    "catalog_footprint",
+    "catalog_part",
     "content_hash",
     "enclosure",
     "fit",
