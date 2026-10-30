@@ -99,7 +99,8 @@
 #      go stale for a month after its 2026-07-19 retirement (docs/runbooks/
 #      memory-sibling-repos.md). Fully deterministic (`[[ -e ]]`), so unlike
 #      token-review/db-thrash-review it needs no judgment pass — it runs
-#      itself when due and appends its own log line.
+#      itself when due and appends its own stamp to an untracked log in the
+#      per-user cache (never a repo file, gr536400).
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
@@ -922,11 +923,16 @@ else
             expanded="${root/#\~/$HOME}"
             [[ "$root" == ../* ]] && expanded="$MAIN_ROOT/$root"
             [[ -e "$expanded" ]] || sib_findings+=("$(ident "$b"): $root — no longer on disk (repo retired/renamed? fix or drop the ref)")
-        # The ../<name> extraction: the sibling-repo convention (check 11)
-        # names sibling checkouts relative to this one. `\.\./name(/seg)*`
-        # bounded by a non-path char (or EOL) — `../x.md` links don't match
-        # (the `.` fails the bound) — and the first component is the repo.
-        done < <( { grep -ohE '~/work/projects/code/[A-Za-z0-9_-]+|~/work/[A-Za-z0-9_-]+|/Users/[A-Za-z0-9_-]+/work/projects/code/[A-Za-z0-9_-]+|/Users/[A-Za-z0-9_-]+/work/[A-Za-z0-9_-]+' "$tf" 2>/dev/null \
+        # `~/work/project/code/<name>` (where the checkouts live since the
+        # `~/work/projects/code/` move) must match in full — left to the bare
+        # `~/work/<name>` alternative it collapses to `~/work/project`, which
+        # always exists, and a dead sibling under the current layout would
+        # never be flagged. The ../<name> extraction: the sibling-repo
+        # convention (check 11) names sibling checkouts relative to this one.
+        # `\.\./name(/seg)*` bounded by a non-path char (or EOL) — `../x.md`
+        # links don't match (the `.` fails the bound) — and the first
+        # component is the repo.
+        done < <( { grep -ohE '~/work/projects/code/[A-Za-z0-9_-]+|~/work/project/code/[A-Za-z0-9_-]+|~/work/[A-Za-z0-9_-]+|/Users/[A-Za-z0-9_-]+/work/projects/code/[A-Za-z0-9_-]+|/Users/[A-Za-z0-9_-]+/work/project/code/[A-Za-z0-9_-]+|/Users/[A-Za-z0-9_-]+/work/[A-Za-z0-9_-]+' "$tf" 2>/dev/null \
                         | sed -E 's#^/Users/[A-Za-z0-9_-]+/work/#~/work/#';
                     grep -ohE '(^|[^A-Za-z0-9_.~-])\.\./[A-Za-z0-9_-]+(/[A-Za-z0-9_-]+)*([^A-Za-z0-9_./~-]|$)' "$tf" 2>/dev/null \
                         | grep -oE '\.\./[A-Za-z0-9_-]+'; } | sort -u )

@@ -128,7 +128,7 @@ Live repo hygiene — migration collisions ⋅ code anchors ⋅ memory index ⋅
      today", skip the heavy pass (**once/day at most** — constant re-auditing
      churns without benefit). The same `scripts/memory-lint` call also runs a
      **sibling-repo path check** (weekly, self-gated, no judgment pass needed —
-     `~/work/<name>` / `~/work/projects/code/<name>` paths memory cites,
+     `~/work/<name>` / `~/work/project(s)/code/<name>` paths memory cites,
      verified to still exist on disk) and self-stamps its own log
      (`~/.cache/precis/memory-sibling-repos.log`, untracked; procedure in
      `docs/runbooks/memory-sibling-repos.md`); a finding there is a suspect

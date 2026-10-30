@@ -72,9 +72,8 @@ def _git(cwd: Path, *args: str) -> subprocess.CompletedProcess[str]:
 @pytest.fixture
 def lint_repo(tmp_path: Path) -> Path:
     """A throwaway repo carrying the REAL scripts/memory-lint at its real
-    relative path, plus an in-window sibling-repo weekly-gate stamp (check 6
-    always runs and self-stamps; giving it a fresh stamp keeps these tests
-    from tripping that unrelated append)."""
+    relative path, plus the tracked runbook check 6 used to stamp — gr536400
+    pins that nothing ever writes it again."""
     repo = tmp_path / "repo"
     repo.mkdir()
     _git(repo, "init", "-q", "-b", "main")
@@ -472,6 +471,71 @@ def test_sibling_check_falls_back_to_runbook_when_no_cache_log(
 
     assert "sibling-repo check: ok (last " + _today() in res.stdout, res.stdout
     assert not _sib_state(home).exists()  # in-window: nothing stamped
+
+
+def test_sibling_check_stamps_the_cache_log_never_the_tracked_runbook(
+    lint_repo: Path, home_and_mem: tuple[Path, Path]
+) -> None:
+    """gr536400: findings print on stdout like every other lint line and the
+    stamp appends to the untracked per-user cache log — the tracked runbook
+    is never opened for writing, so the run leaves the worktree clean even
+    when DUE. The read-only runbook makes an append attempt fail loudly."""
+    home, mem = home_and_mem
+    runbook = lint_repo / "docs" / "runbooks" / "memory-sibling-repos.md"
+    runbook.chmod(0o444)
+    state = _sib_state(home)
+    state.parent.mkdir(parents=True)
+    state.write_text("**2020-01-01** — old\n", encoding="utf-8")  # DUE
+    (mem / "MEMORY.md").write_text("- flat\n", encoding="utf-8")
+    (mem / "env.md").write_text(
+        "prod clone ~/work/long-retired-sibling-repo\n", encoding="utf-8"
+    )
+
+    res = _run(lint_repo, home)
+
+    assert res.returncode == 0
+    assert "sibling-repo check: DUE" in res.stdout, res.stdout
+    assert (
+        "env.md: ~/work/long-retired-sibling-repo — no longer on disk" in res.stdout
+    ), res.stdout
+    stamp = state.read_text(encoding="utf-8")
+    assert "1 stale path(s): env.md:" in stamp
+    runbook.chmod(0o644)
+    assert not _git(lint_repo, "status", "--porcelain").stdout.strip()
+
+
+def test_sibling_check_verifies_the_project_code_layout_verbatim(
+    lint_repo: Path, home_and_mem: tuple[Path, Path]
+) -> None:
+    """`~/work/project/code/<name>` — where the sibling checkouts live since
+    the `~/work/projects/code/` move — must be existence-checked in full:
+    left to the bare `~/work/<name>` alternative the match collapsed to
+    `~/work/project`, which always exists, so a dead sibling under the
+    current layout was never flagged. The finding quotes the path verbatim
+    (the gr536400 plural-path report was real text, not a mis-parse)."""
+    home, mem = home_and_mem
+    state = _sib_state(home)
+    state.parent.mkdir(parents=True)
+    state.write_text("**2020-01-01** — old\n", encoding="utf-8")  # DUE
+    (mem / "MEMORY.md").write_text("- flat\n", encoding="utf-8")
+    live = home / "work" / "project" / "code" / "real-sibling"
+    live.mkdir(parents=True)
+    # one line: check 11's home-path scan reports the first token per line,
+    # keeping the live path out of that finding too
+    (mem / "env.md").write_text(
+        "prod clone ~/work/project/code/gone-sibling-repo and dev clone "
+        "~/work/project/code/real-sibling\n",
+        encoding="utf-8",
+    )
+
+    res = _run(lint_repo, home)
+
+    assert "sibling-repo check: DUE" in res.stdout, res.stdout
+    assert (
+        "env.md: ~/work/project/code/gone-sibling-repo — no longer on disk"
+        in res.stdout
+    ), res.stdout
+    assert "real-sibling" not in res.stdout, res.stdout
 
 
 def test_graph_mode_with_a_missing_or_empty_node_cache_skips_with_one_line(
