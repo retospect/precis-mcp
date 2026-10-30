@@ -134,6 +134,70 @@ put(kind="structure", id="cu_fs", args={
   ]})
 ```
 
+## Worked example — bridging-O Cu(111) CH4 TS
+
+The hand-build failure this recipe prevents (gr524426): endpoints typed
+at guessed fractional z — the O sat ~1.9 Å inside the slab (Cu–O 0.75 Å
+against a 1.19 Å floor, `atom_overlap` eight times) and the Ni dopant
+was added on top of a Cu instead of substituting for it (Ni–Cu 1.50 Å).
+Site ops carry the geometry; you never type a z.
+
+1. Seed the slab, substitute the dopant, and place both adsorbates in
+   ONE op list. `set_element` REPLACES a top-layer Cu with the Ni — it
+   is not an adatom on one. `aCu31` is the top site beside the
+   aCu28–aCu29 bridge, so CH4 and the bridging O start as neighbours
+   (C···O ~2.3 Å) and the reacting pair is adjacent before anything
+   moves. The O takes its default height (the anchors' covalent-radius
+   sum, ~1.9 Å) and NO declared bond to the slab — a surface contact is
+   inferred, never declared; its first declared bond is the O–H the FS
+   mints in step 3:
+
+```python
+put(kind="structure", id="cu_ch4o_is", text='{"ops":[
+  {"op":"slab","element":"Cu","size":[3,3,4],"fix_layers":2},
+  {"op":"set_element","atom":"aCu28","element":"Ni"},
+  {"op":"add_atom_site","element":"O","site":{"type":"bridge","anchors":["aCu28","aCu29"]}},
+  {"op":"add_adsorbate","species":"CH4","site":{"type":"top","anchors":["aCu31"]},"height":2.5}]}')
+```
+
+2. TS: derive from the IS (`derive_from` keeps labels — the NEB
+   interpolates by label) and walk CH4's down-H (`aH1`) toward the O
+   with `displace` (Å Cartesian). Keep it outside ~1.16 Å of the O:
+   closer and the validator infers an O–H bond, and H's valence budget
+   is one (`over_valence` fires). About half-way along the transfer
+   path is a clean starting guess:
+
+```python
+put(kind="structure", id="cu_ch4o_ts", args={
+  "derive_from": "cu_ch4o_is",
+  "ops": [{"op":"displace","atom":"aH1","vector":[-0.24,-1.0,0.6]}]})
+```
+
+3. FS: CH4 + O* → CH3* + OH*. `transfer` moves `aH1` onto `aO1`, drops
+   the aC1–aH1 bond and mints aO1–aH1 at the covalent-radius sum,
+   pointing along the O's open direction (away from its inferred slab
+   neighbours — up and off the bridge), so no declared C–H remains to
+   trip `bond_too_long`:
+
+```python
+put(kind="structure", id="cu_ch4o_fs", args={
+  "derive_from": "cu_ch4o_is",
+  "ops": [{"op":"transfer","atom":"aH1","to":"aO1","direction":[0.0,0.0,1.0]}]})
+```
+
+4. Run `view="validate"` on each endpoint BEFORE the NEB — the
+   `atom_overlap` gate above is what rejected the original hand build:
+
+```python
+get(kind="structure", id="cu_ch4o_ts", view="validate")
+```
+
+A flagged distance far below its floor means a guessed position: redo
+the placement with a site anchor, not a fractional-z tweak. Clean
+endpoints → `view="pair"`, then `put(mode="neb", …)` as below.
+
+## Check the endpoint pair, then read the NEB verdict
+
 The derive ack reports the pair verdict: `labels preserved …
 NEB-pairable` when the atom set survives, `atom set changed (+a/-r): not
 NEB-pairable` when an op added or removed atoms. `transfer`'s `from:`

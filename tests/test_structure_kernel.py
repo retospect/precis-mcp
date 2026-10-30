@@ -531,6 +531,45 @@ def test_validate_flags_overlap() -> None:
     assert any(f.rule == "atom_overlap" for f in findings)
 
 
+def test_validate_gross_overlap_names_site_anchor_ops() -> None:
+    # gr524426: O stacked 0.75 Å from Cu — below half the 1.98 Å covalent
+    # radii sum — is a guessed-coordinate placement (a hand-typed fractional
+    # z), not a strained bond: the hint names the site-anchor ops.
+    scene = Scene(cell=_cubic())
+    apply_ops(
+        scene,
+        [
+            {"op": "add_atom", "element": "Cu", "frac": [0.5, 0.5, 0.5]},
+            {"op": "add_atom", "element": "O", "frac": [0.575, 0.5, 0.5]},  # 0.75 Å
+        ],
+    )
+    findings = [f for f in validate(scene) if f.rule == "atom_overlap"]
+    assert findings
+    fix = findings[0].suggested_fix
+    assert "guessed position" in fix
+    assert "add_atom_site" in fix
+    assert "set_element" in fix
+
+
+def test_validate_mild_overlap_keeps_the_displace_hint() -> None:
+    # Just below the 1.19 Å hard-sphere floor but above half the covalent
+    # radii sum — a strained geometry, not a guessed position: the generic
+    # displace/check-the-coords hint stays.
+    scene = Scene(cell=_cubic())
+    apply_ops(
+        scene,
+        [
+            {"op": "add_atom", "element": "Cu", "frac": [0.5, 0.5, 0.5]},
+            {"op": "add_atom", "element": "O", "frac": [0.61, 0.5, 0.5]},  # 1.10 Å
+        ],
+    )
+    findings = [f for f in validate(scene) if f.rule == "atom_overlap"]
+    assert findings
+    fix = findings[0].suggested_fix
+    assert "displace one" in fix and "fractional coordinates" in fix
+    assert "guessed position" not in fix
+
+
 def test_validate_flags_over_valence() -> None:
     scene = Scene(cell=_cubic())
     ops: list[dict[str, object]] = [

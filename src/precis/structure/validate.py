@@ -29,6 +29,16 @@ from .scene import Scene
 #: are treated as overlapping (unphysical).
 OVERLAP_FRACTION = 0.6
 
+#: Gross-overlap band, as a fraction of the covalent-radii sum (gr524426):
+#: below half the sum the pair is not a strained bond but a coordinate
+#: mistake. A hand-typed fractional z lands well inside the hard-sphere
+#: floor — the incident: O at 0.746 Å from Cu, 0.63× of the 1.188 Å floor
+#: (= 0.38× of the 1.98 Å radii sum; the floor is OVERLAP_FRACTION × the
+#: sum, so this 0.5× band reaches 0.5/0.6 ≈ 0.83× of the floor). The fix
+#: hint names the site-anchor ops for this band instead of the generic
+#: displace advice.
+GROSS_OVERLAP_FRACTION = 0.5
+
 #: Declared-bond length ceiling: a bond longer than this multiple of the
 #: element-pair covalent-radii sum is implausible as an order-1 bond. Looser
 #: than :func:`elements.bond_cutoff`'s 1.2× auto-detection slack (which only
@@ -84,20 +94,39 @@ def validate(scene: Scene) -> list[ValidationIssue]:
     for ai, bj, dist in zip(oi.tolist(), oj.tolist(), od.tolist(), strict=True):
         a = scene.atoms[labels[ai]]
         b = scene.atoms[labels[bj]]
-        floor = (
-            elements.covalent_radius(a.element) + elements.covalent_radius(b.element)
-        ) * OVERLAP_FRACTION
+        radii_sum = elements.covalent_radius(a.element) + elements.covalent_radius(
+            b.element
+        )
+        floor = radii_sum * OVERLAP_FRACTION
+        if dist < GROSS_OVERLAP_FRACTION * radii_sum:
+            # Gross band (gr524426): closer than half the covalent-radii sum,
+            # this is a guessed position, not a strained bond — point at the
+            # site-anchor ops. A dopant belongs ON an existing site via
+            # substitution, never added on top of another atom.
+            fix = (
+                f"{a.label}/{b.label} are {dist:.2f} Å apart — under half the "
+                f"{radii_sum:.2f} Å covalent-radii sum (the {floor:.2f} Å "
+                "hard-sphere floor is 0.6× that) — so one was likely placed "
+                "at a guessed position. Place it with add_atom_site on a "
+                "named site ({'type': 'top'|'bridge'|'hollow', "
+                "'anchors': [labels]}) instead of hand-typed fractional "
+                "coordinates; a dopant substitutes for an existing atom "
+                "({'op': 'set_element', 'atom': <label>, 'element': <el>}), "
+                "it is not added on top of one."
+            )
+        else:
+            fix = (
+                f"{a.label}/{b.label} are {dist:.2f} Å apart, below the "
+                f"{floor:.2f} Å hard-sphere floor — displace one, or check "
+                f"the fractional coordinates (a 0.05 vs 0.5 typo?)."
+            )
         findings.append(
             ValidationIssue(
                 rule="atom_overlap",
                 atoms=[a.label, b.label],
                 measured=round(dist, 3),
                 expected=round(floor, 3),
-                suggested_fix=(
-                    f"{a.label}/{b.label} are {dist:.2f} Å apart, below the "
-                    f"{floor:.2f} Å hard-sphere floor — displace one, or check "
-                    f"the fractional coordinates (a 0.05 vs 0.5 typo?)."
-                ),
+                suggested_fix=fix,
             )
         )
 
