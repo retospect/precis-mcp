@@ -36,6 +36,13 @@ package — the pieces that are *the script's own surface*:
   retaining creator stamps, so frame selection still reaches the source.
   Fusion retains source/placement makers; coincident atoms and duplicate
   bonds use the earliest copy's representative rather than a tile stamp.
+- :mod:`precis_geom.steps` — the build-step cache (molecular-workspace-code
+  slice 0): ``@steps.step`` memoises a pure function returning a ``Geom``,
+  a cad ``SceneSpec`` or a pcb ``Board`` under ``sha256(name, params,
+  parent step keys, version, function source)``; ``scratch/cache/`` on the
+  host (LRU, 2 GB), in-process on the sandbox lane. A hit grafts the
+  stored trace subtree under the live step frame and remaps every
+  ``maker``; ``steps.load/ls/recipe/clear`` read it back.
 - :mod:`precis_geom.inspect` (``pg.inspect``) — ``ray`` / ``section`` /
   ``overlap`` / ``thickness`` of a :class:`Geom` at either scale (vdW
   spheres for atomic, the folded SDF for macro), SI metres, plain-data

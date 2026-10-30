@@ -138,6 +138,7 @@ from precis.structure.importers.extxyz import bonds_from_json, extxyz_to_scene
 from precis.utils.md_parse import _normalize_segment
 from precis.utils.units import UnitRequiredError, parse_quantity
 from precis_geom import run_diag, trace_schema
+from precis_geom.trace import steps_line
 from precis_se import persist, traceview
 from precis_se.atomic.generate import (
     PendingGenerate,
@@ -959,6 +960,10 @@ class ImportResult:
             )
         if self.moved:
             lines.append("poses moved: " + ", ".join(self.moved))
+        steps = (self.trace.run or {}).get("steps") if self.trace is not None else None
+        if isinstance(steps, dict):
+            # the run's build-step cache digest (precis_geom.steps)
+            lines.append(steps_line(steps))
         for r in self.retired:
             lines.append(
                 f"retired: {r['name']} ({r['kind']} {r['slug']}) — "

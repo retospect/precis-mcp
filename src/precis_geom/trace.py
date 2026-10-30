@@ -104,6 +104,9 @@ class _Frame:
     t0: float = field(default_factory=lambda: time.perf_counter())
     dur_ms: float | None = None
     ret: Any = _NO_RETURN
+    #: ``{key, hit}`` on a build-step frame (:mod:`precis_geom.steps`) —
+    #: ``dump`` emits it as the frame's optional ``step`` field.
+    step: dict[str, Any] | None = None
 
 
 class Tracer:
@@ -132,6 +135,14 @@ class Tracer:
         )
         self.stack: list[_Frame] = [self.root]
         self._next_id = 1
+        #: Every frame by run-local id / by key — the lookups a step-cache
+        #: hit remaps makers through (:mod:`precis_geom.steps`).
+        self.by_id: dict[int, _Frame] = {0: self.root}
+        self.by_key: dict[str, _Frame] = {self.root.key: self.root}
+        #: One record per ``@steps.step`` call this run made
+        #: (``{name, key, occ, hit, wall_s, saved_s}``) — the source of the
+        #: run header's ``steps`` digest.
+        self.steps_log: list[dict[str, Any]] = []
         self.started_utc = _utcnow()
         self.run_meta: dict[str, Any] = {}
         #: Exceptions that already marked a deeper frame. The objects
@@ -234,6 +245,8 @@ class Tracer:
         )
         self._next_id += 1
         parent.children.append(fr)
+        self.by_id[fr.id] = fr
+        self.by_key.setdefault(fr.key, fr)
         self.stack.append(fr)
         return fr
 
@@ -372,6 +385,126 @@ class Tracer:
         )
         return u_at, d_at
 
+    # -- build-step subtrees (precis_geom.steps) ----------------------------
+
+    def export_subtree(self, root: _Frame) -> tuple[list[dict[str, Any]], list[int]]:
+        """``(nodes, ids)``: ``root`` and its descendants as relative
+        nodes in pre-order, and each node's live id. Node 0 is ``root``
+        itself (only its counts/return digest are meaningful), node
+        ``i``'s ``p`` the index of its parent. Nothing run-local survives
+        in the nodes except through the indices: no ``id``, ``key`` or
+        ``parent`` — :meth:`graft` re-mints those under a live parent."""
+        order: list[_Frame] = []
+        parent_of: dict[int, int] = {}
+        todo = [root]
+        while todo:
+            fr = todo.pop()
+            order.append(fr)
+            for ch in reversed(fr.children):
+                todo.append(ch)
+        index = {fr.id: i for i, fr in enumerate(order)}
+        for fr in order:
+            for ch in fr.children:
+                parent_of[ch.id] = index[fr.id]
+        now = time.perf_counter()
+        nodes: list[dict[str, Any]] = []
+        for fr in order:
+            node: dict[str, Any] = {
+                "p": parent_of.get(fr.id),
+                "qual": fr.qual,
+                "file": fr.file,
+                "line": fr.line,
+                "line_in_def": fr.line_in_def,
+                "src": fr.src,
+                "kind": fr.kind,
+                "args": fr.args,
+                "made": fr.made,
+                "touched": fr.touched,
+                "dur_ms": fr.dur_ms if fr.dur_ms is not None else (now - fr.t0) * 1000,
+            }
+            if fr.ret is not _NO_RETURN:
+                node["ret"] = fr.ret
+            if fr.error is not None:
+                node["error"] = fr.error
+            if fr.step is not None:
+                node["step"] = dict(fr.step)
+            nodes.append(node)
+        return nodes, [fr.id for fr in order]
+
+    def graft(
+        self,
+        root: _Frame,
+        nodes: list[dict[str, Any]],
+        *,
+        user_qual: str | None = None,
+        def_line: int | None = None,
+    ) -> list[int]:
+        """Mint :meth:`export_subtree`'s nodes under the live ``root``
+        (the new step frame): fresh ids, ``frame_key(parent.key, qual,
+        occ)`` keys from the live parent chain, ``occ`` from the live
+        counters. Returns the live id of each relative node (index 0 is
+        ``root``). Node 0's counts and return digest are copied onto
+        ``root``; grafted ``step`` records read ``hit: true``.
+
+        ``user_qual``/``def_line`` re-anchor the step function's own
+        ``user`` frame (its ``def`` line) and the calls directly inside
+        it (``def_line + line_in_def``) — an edit above the function
+        shifts its lines but not its source, so a hit would otherwise
+        cite the stored build's lines."""
+        n0 = nodes[0]
+        root.made.update(n0.get("made") or {})
+        for k, v in (n0.get("touched") or {}).items():
+            root.touched[k] = list(v) if isinstance(v, list) else v
+        if "ret" in n0:
+            root.ret = n0["ret"]
+        frames: list[_Frame] = [root]
+        ids = [root.id]
+        fn_idx = -1
+        for i, n in enumerate(nodes[1:], start=1):
+            parent = frames[n["p"]]
+            qual = n["qual"]
+            occ = parent._occ_next.get(qual, 0)
+            parent._occ_next[qual] = occ + 1
+            line, line_in_def = n["line"], n["line_in_def"]
+            if def_line is not None and n["p"] == 0 and n["kind"] == "user":
+                if qual == user_qual:
+                    fn_idx, line = i, def_line
+            elif def_line is not None and n["p"] == fn_idx and n["src"] is not None:
+                line = def_line + line_in_def
+            fr = _Frame(
+                id=self._next_id,
+                key=ts.frame_key(parent.key, qual, occ),
+                parent_key=parent.key,
+                qual=qual,
+                file=n["file"],
+                line=line,
+                line_in_def=line_in_def,
+                src=n["src"],
+                occ=occ,
+                kind=n["kind"],
+                args=dict(n["args"]),
+                made=dict(n["made"]),
+                touched={
+                    k: (list(v) if isinstance(v, list) else v)
+                    for k, v in n["touched"].items()
+                },
+                py=None,
+            )
+            self._next_id += 1
+            fr.dur_ms = float(n["dur_ms"])
+            if "ret" in n:
+                fr.ret = n["ret"]
+            if "error" in n:
+                fr.error = n["error"]
+            if "step" in n:
+                fr.step = {**n["step"], "hit": True}
+            parent.children.append(fr)
+            self.by_id[fr.id] = fr
+            self.by_key.setdefault(fr.key, fr)
+            frames.append(fr)
+            ids.append(fr.id)
+        return ids
+
     # -- serialization ------------------------------------------------------
 
     def dump(self, run: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -426,6 +559,8 @@ class Tracer:
                 d["ret"] = fr.ret
             if fr.error is not None:
                 d["error"] = fr.error
+            if fr.step is not None:
+                d["step"] = dict(fr.step)
             _emit_dict(d)
             groups: dict[str, list[_Frame]] = {}
             order: list[str] = []
@@ -478,7 +613,7 @@ class Tracer:
         if len(frames) > ts.MAX_FRAMES:
             frames = frames[: ts.MAX_FRAMES]
             truncated = True
-        meta = {
+        meta: dict[str, Any] = {
             "workspace": None,
             "job": None,
             "script_sha": None,
@@ -488,11 +623,40 @@ class Tracer:
             "collapsed": collapsed,
             "truncated": truncated,
         }
+        if any(r["hit"] is not None for r in self.steps_log):
+            meta["steps"] = steps_digest(self.steps_log)
         meta.update(self.run_meta)
         if run:
             meta.update(run)
         meta["key_collisions"] = key_collisions
         return {"schema": ts.SCHEMA_VERSION, "run": meta, "frames": frames}
+
+
+def steps_digest(log: list[dict[str, Any]]) -> dict[str, Any]:
+    """The run header's ``steps`` field from a tracer's ``steps_log``:
+    ``hits``/``rebuilt`` counts, ``first_miss`` (``<name>#<n>`` of the
+    first rebuilt step in call order, ``None`` when all hit) and
+    ``wall_saved_s`` (the hits' stored build time — what they skipped)."""
+    done = [r for r in log if r["hit"] is not None]  # skip steps still running
+    misses = [r for r in done if not r["hit"]]
+    return {
+        "hits": len(done) - len(misses),
+        "rebuilt": len(misses),
+        "first_miss": f"{misses[0]['name']}#{misses[0]['occ']}" if misses else None,
+        "wall_saved_s": round(sum(r["saved_s"] for r in done if r["hit"]), 3),
+    }
+
+
+def steps_line(digest: dict[str, Any]) -> str:
+    """The one-line echo of a ``steps`` digest: ``steps: 1 hit · 3
+    rebuilt (from decorate#0) · saved 4.2s``."""
+    hits = int(digest["hits"])
+    line = f"steps: {hits} hit{'' if hits == 1 else 's'} · {digest['rebuilt']} rebuilt"
+    if digest.get("first_miss"):
+        line += f" (from {digest['first_miss']})"
+    if digest.get("wall_saved_s"):
+        line += f" · saved {digest['wall_saved_s']:.1f}s"
+    return line
 
 
 def _fold_returns(frames: list[_Frame]) -> dict[str, Any]:
@@ -929,6 +1093,8 @@ __all__ = [
     "record",
     "run",
     "start",
+    "steps_digest",
+    "steps_line",
     "stop",
     "trace",
     "traced",

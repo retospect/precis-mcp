@@ -295,6 +295,11 @@ def line(fr: dict[str, Any], ws: str | None = None) -> str:
             base += f"#{occ}..{occ_end}"
         elif occ > 0:
             base += f"#{occ}"
+    st = fr.get("step")
+    if isinstance(st, dict) and st.get("key"):
+        # a build-step frame (precis_geom.steps): the cache key + whether
+        # this run served it from the cache
+        base += f" · step {str(st['key'])[:8]}… ({'hit' if st.get('hit') else 'built'})"
     return base
 
 

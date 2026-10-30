@@ -69,6 +69,12 @@ Frame fields (all present unless noted)::
     error    optional — the exception type name (``ValueError``) when
              the call raised; only the innermost traced frame the
              exception left carries it. Absent on success.
+    step     optional — ``{"key": <sha256>, "hit": <bool>}`` on a build-
+             step frame (``precis_geom.steps``): the step's cache key and
+             whether this run served it from the cache. A hit's
+             descendants are the stored subtree, re-minted under the
+             live parent; the run header's ``steps`` is
+             ``{hits, rebuilt, first_miss, wall_saved_s}``.
 
 Collapsed sibling form: past ``COLLAPSE_SIBLINGS`` (64) same-``qual``
 *childless* siblings under one parent, occurrences 64..N fold into one

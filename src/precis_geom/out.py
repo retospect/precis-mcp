@@ -278,15 +278,39 @@ def _write_atomic(root: Path, name: str, scene: Any) -> tuple[str, str, str | No
     verification (gr514248/gr517643)."""
     rel = f"blocks/{name}.extxyz"
     p = root / rel
-    body = _extxyz.to_extxyz(scene)
+    body, bonds_body = _atomic_texts(scene)
     p.write_text(body, encoding="utf-8")
-    bonds = list(getattr(scene, "bonds", None) or [])
     bonds_sha: str | None = None
-    if bonds:
-        bonds_body = _extxyz.bonds_to_json(bonds)
+    if bonds_body is not None:
         (root / f"blocks/{name}.bonds.json").write_text(bonds_body, encoding="utf-8")
         bonds_sha = hashlib.sha256(bonds_body.encode("utf-8")).hexdigest()
     return rel, hashlib.sha256(body.encode("utf-8")).hexdigest(), bonds_sha
+
+
+def _atomic_texts(scene: Any) -> tuple[str, str | None]:
+    """``(extxyz text, bonds.json text or None)`` — the bytes
+    :func:`_write_atomic` writes, shared with the step cache
+    (:mod:`precis_geom.steps`) so a cached scene stores exactly them."""
+    bonds = list(getattr(scene, "bonds", None) or [])
+    return (
+        _extxyz.to_extxyz(scene),
+        _extxyz.bonds_to_json(bonds) if bonds else None,
+    )
+
+
+def _macro_doc(geom: Any) -> dict[str, Any]:
+    """The ``.cad.json`` document of a SceneSpec (shared with the step
+    cache, like :func:`_atomic_texts`)."""
+    nodes = []
+    for n in geom.nodes:
+        node = {"name": n.name, **n.to_meta()}
+        nodes.append(node)
+    return {
+        "schema": 1,
+        "nodes": nodes,
+        "components": list(getattr(geom, "components", None) or ["part"]),
+        "meta": dict(getattr(geom, "meta", None) or {"units": "mm"}),
+    }
 
 
 def _write_macro(root: Path, name: str, geom: Any) -> tuple[str, str]:
@@ -297,17 +321,7 @@ def _write_macro(root: Path, name: str, geom: Any) -> tuple[str, str]:
         (root / rel).write_text(geom, encoding="utf-8")
         return rel, hashlib.sha256(geom.encode("utf-8")).hexdigest()
     rel = f"blocks/{name}.cad.json"
-    nodes = []
-    for n in geom.nodes:
-        node = {"name": n.name, **n.to_meta()}
-        nodes.append(node)
-    doc = {
-        "schema": 1,
-        "nodes": nodes,
-        "components": list(getattr(geom, "components", None) or ["part"]),
-        "meta": dict(getattr(geom, "meta", None) or {"units": "mm"}),
-    }
-    body = json.dumps(doc, indent=1) + "\n"
+    body = json.dumps(_macro_doc(geom), indent=1) + "\n"
     (root / rel).write_text(body, encoding="utf-8")
     return rel, hashlib.sha256(body.encode("utf-8")).hexdigest()
 
@@ -736,6 +750,9 @@ class Run:
         if line is not None:
             print(f"{self.root}: {line}")
         if trace_doc is not None:
+            digest = (trace_doc.get("run") or {}).get("steps")
+            if digest:
+                print(f"{self.root}: {_trace.steps_line(digest)}")
             if rotate is not None:
                 rotate.replace(self.root / "trace.prev.json")
             (self.root / "trace.json").write_text(

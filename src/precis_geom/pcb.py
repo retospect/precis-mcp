@@ -54,7 +54,7 @@ import re
 import warnings
 from collections.abc import Callable, Iterable, Mapping
 from contextvars import ContextVar
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, fields
 from datetime import UTC, datetime
 from pathlib import Path
 from types import TracebackType
@@ -3414,6 +3414,193 @@ class Board:
         if self.profile is not None:
             out["profile"] = self.profile
         return out
+
+    # -- step-cache round trip (precis_geom.steps) ---------------------------
+
+    def cache_state(self) -> dict[str, Any]:
+        """What :meth:`to_batch` leaves out and a rebuilt board still
+        needs — the JSON-safe sidecar of a cached board step
+        (:mod:`precis_geom.steps`): ``slug``/``stackup``/``sides``, every
+        ``file:line`` site (``check`` findings cite them), the catalog
+        reads (the manifest's ``parts``) and the resolved
+        :class:`CatalogPart` behind each part (``check`` reads its pin
+        universe). :meth:`from_batch` is the inverse; the pair is lossless
+        for ``to_batch()`` (the pinned guarantee) and for ``check()``."""
+        parts: dict[str, Any] = {}
+        for refdes, p in self._parts.items():
+            cp = p._catalog
+            parts[refdes] = {
+                "site": p.site,
+                "pins": {n: p._pins[n].site for n in p._pin_order},
+                "fn_sites": dict(p._pin_function_sites),
+                "fn_source_site": p._pin_functions_source_site,
+                "catalog": (
+                    {f_.name: getattr(cp, f_.name) for f_ in fields(cp)}
+                    if cp is not None
+                    else None
+                ),
+                "slots": [
+                    {"tie_site": s.tie_site, "source_site": s.source_site}
+                    for s in p._flex_slots
+                ],
+            }
+        return {
+            "slug": self.slug,
+            "stackup": self.stackup,
+            "sides": self.sides,
+            "parts": parts,
+            "nets": {n: self._nets[n].site for n in self._net_order},
+            "conn_sites": list(self._conn_sites),
+            "catalog_reads": copy.deepcopy(self._catalog_reads),
+            "used_prefixes": sorted(self._used_prefixes),
+        }
+
+    @classmethod
+    def from_batch(
+        cls, batch: dict[str, Any], state: dict[str, Any] | None = None
+    ) -> Board:
+        """Rebuild a board from a :meth:`to_batch` document (+ the
+        :meth:`cache_state` sidecar) — the load half of a cached board
+        step. ``to_batch()`` of the result equals ``batch`` (key order and
+        values; JSON turns tuples into lists, so compare canonical JSON).
+        A row's ``frame`` becomes the part/net ``maker``. Without a
+        ``state`` the slug is ``"board"`` and every site is ``"?:0"``."""
+        st = state or {}
+        sites_p: dict[str, Any] = st.get("parts") or {}
+        b = cls(str(st.get("slug") or "board"), profile=batch.get("profile"))
+        b.stackup = st.get("stackup")
+        b.sides = st.get("sides", "both")
+        b.meta = copy.deepcopy(batch.get("meta") or {})
+        for row in batch.get("components", ()):
+            ps = sites_p.get(row["refdes"]) or {}
+            p = Part(
+                board=b,
+                refdes=row["refdes"],
+                lcsc=row.get("part"),
+                label=row.get("label"),
+                footprint=row.get("footprint"),
+                value=row.get("value"),
+                height_mm=row.get("height_mm"),
+                roles=row.get("roles", ()),
+                note=row.get("note"),
+                part_meta=copy.deepcopy(row.get("part_meta")),
+                supplies=copy.deepcopy(row.get("supplies")),
+                pin_swap_groups=copy.deepcopy(row.get("pin_swap_groups")),
+                site=ps.get("site") or "?:0",
+            )
+            p.maker = row.get("frame")
+            cat = ps.get("catalog")
+            if cat is not None:
+                p._catalog = CatalogPart(**cat)
+            for prow in row.get("pins", ()):
+                pin = Pin(
+                    part=p,
+                    name=str(prow["name"]),
+                    site=(ps.get("pins") or {}).get(str(prow["name"])) or "?:0",
+                )
+                for marker in _PIN_MARKERS:
+                    if prow.get(marker):
+                        pin.markers[marker] = True
+                pin.tags = list(prow.get("tags", ()))
+                pin.meta = copy.deepcopy(prow.get("meta") or {})
+                pin.extra = copy.deepcopy(
+                    {
+                        k: v
+                        for k, v in prow.items()
+                        if k not in ("name", "tags", "meta", *_PIN_MARKERS)
+                    }
+                )
+                p._pins[pin.name] = pin
+                p._pin_order.append(pin.name)
+                p._declared_pins.add(pin.name)
+            if "x" in row:
+                p.x, p.y = row["x"], row.get("y")
+                p.rot = row.get("rot", 0.0)
+                p.side = row.get("layer", "top")
+            p.fixed = row.get("fixed")
+            p.max_travel_mm = row.get("max_travel_mm")
+            p.edge_mate = copy.deepcopy(row.get("edge_mate"))
+            p.group = row.get("group")
+            p.group_offset = copy.deepcopy(row.get("group_offset"))
+            p.pattern = row.get("pattern")
+            p.pattern_instance = row.get("pattern_instance")
+            decls = row.get("pin_decls") or {}
+            for c in decls.get("claims", ()):
+                p._pin_claims[str(c["pin"])] = {"name": c["name"], "site": c["site"]}
+            slot_sites = ps.get("slots") or []
+            for i, slot in enumerate(decls.get("slots", ())):
+                extra = slot_sites[i] if i < len(slot_sites) else {}
+                fp = FlexPin(
+                    part=p,
+                    pins=tuple(slot["pins"]),
+                    name=slot.get("name"),
+                    site=slot.get("site") or "?:0",
+                )
+                fp.net = slot.get("net")
+                if "requirement_kind" in slot:
+                    fp.requirement = Bound(
+                        slot["requirement_kind"],
+                        slot["requirement_a"],
+                        slot["requirement"],
+                    )
+                fp.source = slot.get("source")
+                fp.tie_site = extra.get("tie_site")
+                fp.source_site = extra.get("source_site")
+                p._flex_slots.append(fp)
+            p._swap_groups = copy.deepcopy(decls.get("swap_groups") or [])
+            p._pin_functions = copy.deepcopy(decls.get("pin_functions") or {})
+            p._pin_functions_source = decls.get("pin_functions_source")
+            p._pin_function_sites = dict(ps.get("fn_sites") or {})
+            p._pin_functions_source_site = ps.get("fn_source_site")
+            b._parts[p.refdes] = p
+            b._part_order.append(p.refdes)
+        sites_n: dict[str, Any] = st.get("nets") or {}
+        for row in batch.get("nets", ()):
+            n = Net(
+                board=b,
+                name=row["name"],
+                cls=row.get("class"),
+                current=row.get("current"),
+                voltage=row.get("working_voltage_v"),
+                impedance=row.get("impedance"),
+                edge_rate=row.get("edge_rate"),
+                function=row.get("function"),
+                note=row.get("note"),
+                domain=row.get("domain"),
+                width_mm=row.get("width_mm"),
+                meta=copy.deepcopy(row.get("meta")),
+                site=sites_n.get(row["name"]) or "?:0",
+            )
+            n.maker = row.get("frame")
+            b._nets[n.name] = n
+            b._net_order.append(n.name)
+        b._connections = [dict(c) for c in batch.get("connections", ())]
+        conn_sites = list(st.get("conn_sites") or [])
+        conn_sites += ["?:0"] * (len(b._connections) - len(conn_sites))
+        b._conn_sites = conn_sites[: len(b._connections)]
+        b._features = copy.deepcopy(batch.get("features") or [])
+        b._planes = [dict(pl) for pl in batch.get("planes", ())]
+        for row in batch.get("footprints", ()):
+            fpr = Footprint(
+                row["name"],
+                copy.deepcopy(row["pads"]),
+                pin_map=copy.deepcopy(row.get("pin_map")),
+                courtyard=copy.deepcopy(row.get("courtyard")),
+                centroid=copy.deepcopy(row.get("centroid")),
+                note=row.get("note"),
+                holes=copy.deepcopy(row.get("holes")),
+                graphics=copy.deepcopy(row.get("graphics")),
+            )
+            b._footprints[fpr.name] = fpr
+            b._footprint_order.append(fpr.name)
+        b._net_classes = copy.deepcopy(batch.get("net_classes") or {})
+        for name, rrow in (batch.get("roles") or {}).items():
+            b._roles[name] = Role(name=rrow["name"], voltage=rrow.get("voltage"))
+        b._generators = copy.deepcopy(batch.get("generators") or [])
+        b._measures = copy.deepcopy(batch.get("measures") or [])
+        b._catalog_reads = copy.deepcopy(st.get("catalog_reads") or {})
+        b._used_prefixes = set(st.get("used_prefixes") or ())
+        return b
 
     def manifest(
         self,
