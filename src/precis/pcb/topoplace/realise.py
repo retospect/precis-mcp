@@ -162,6 +162,12 @@ class RoutePlan:
     #: them ``failed: short-risk``. The plan's own ``pieces`` keep the
     #: withdrawn geometry for the record, exactly like ``crossings``.
     guarded: tuple[int, ...] = ()
+    #: Nets whose emitted copper is not one connected piece joining all
+    #: their pads — the emit-connectivity check (gr537831) withdraws
+    #: them whole like ``guarded``; ``sketch_rows`` reports them
+    #: ``failed: unconnected``. A falsely realized broken net must never
+    #: reach DRC.
+    severed: tuple[int, ...] = ()
 
     @property
     def n_routed_nets(self) -> int:
@@ -446,6 +452,20 @@ def _cdirs(mesh: TopoMesh, wires: Wires) -> list[list[float]]:
             row.append(-1.0 if cr < -1e-12 else 1.0)
         out.append(row)
     return out
+
+
+def _pair_sign(
+    wires: Wires, cdirs: Sequence[Sequence[float]], e: int, a: int, b: int
+) -> int:
+    """Pair ``(a, b)``'s normalized relative side on edge ``e`` — the
+    seam convention (``_pair_regions``' sign): position in ``order[e]``
+    signed by the SECOND branch's corridor direction."""
+    seq = wires.order[e]
+    s = 1 if seq.index(a) < seq.index(b) else -1
+    eb = {int(x): i for i, x in enumerate(wires.branches[b].edges)}
+    if not cdirs or int(e) not in eb:
+        return s
+    return s * int(cdirs[b][eb[int(e)]])
 
 
 def _crossing_pairs(
@@ -1339,6 +1359,18 @@ _RELAX_FREE_VERTEX_CAP = 60
 #: could run effectively forever; maxfev caps the work directly.
 _RELAX_MAXFEV_PER_COORD = 200
 _RELAX_MAXFEV_ABS = 20000
+#: The relax aims a hair ABOVE each hinge's strict bound — the emit
+#: guard measures a strict ``<``, and fp noise plus the octilinear
+#: redraw can dip a boundary-exact solve inside it (gr537726: the
+#: 3-pair slit relaxed to 0.2998/0.2248 against 0.3/0.225 and was
+#: withdrawn whole).
+_RELAX_SLACK_MM = 0.005
+#: The shared-gap unwind's displacement cap, as a multiple of the
+#: pair's gap — a vertex whose slot-side target sits further than this
+#: is a weave, not a fan the unwind can lift; the move is skipped and
+#: the relax/emit guard owns the vertex instead (gr537831 review: an
+#: unbounded push could drag a leg across the board).
+_UNWIND_MOVE_CAP = 4.0
 
 
 def _spoke_offsets(
@@ -1792,6 +1824,236 @@ def _spoke_offsets(
                 ):
                     pair_gap[(i, j)] = gap
 
+        # ── shared-gap unwind (gr537726) ─────────────────────────────
+        # The spread + bend seed can still interleave a NON-braided
+        # pair: the taut funnel wraps FREE mesh vertices, so a wire's
+        # interior vertices land on the far side of a peer's lane and
+        # the polylines cross. The bounded cluster solve cannot cross
+        # that barrier — escaping means moving a vertex THROUGH the
+        # peer's polyline, which the hinge cost never rewards — so the
+        # relax stalls touching (the 3-pair slit fan ended
+        # 0.0/0.105/0.0) and the emit guard withdraws the nets. Unwind
+        # globally before the local relax: the plan's order gives each
+        # pair a slot side (majority normalized sign over the shared
+        # edges both cross — a lone free-vertex wedge flip does not
+        # outvote it); the +side wire is pushed outward, re-placing
+        # every interior vertex on the wrong side of the peer's
+        # polyline at the peer's closest point plus the gap along the
+        # slot-side normal — a vertex already on its slot side is the
+        # local relax's own remit, not the unwind's. A pair whose
+        # own endpoints straddle the peer is a real weave, not a fan
+        # the unwind can lift — it is left to the relax/guard. Two
+        # sweeps: a pushed vertex can newly crowd the next pair.
+        def _nearest(
+            p: tuple[float, float], pts: list[tuple[float, float]]
+        ) -> tuple[tuple[float, float], tuple[float, float], float]:
+            """The polyline point nearest ``p`` — (point, host leg
+            direction, distance). The leg direction is what the slot
+            side is measured against."""
+            q_out, d_out, dir_out = pts[0], math.inf, (1.0, 0.0)
+            for k in range(len(pts) - 1):
+                a_, b_ = pts[k], pts[k + 1]
+                dx, dy = b_[0] - a_[0], b_[1] - a_[1]
+                l2 = dx * dx + dy * dy
+                u = (
+                    0.0
+                    if l2 <= 1e-12
+                    else min(
+                        max(
+                            ((p[0] - a_[0]) * dx + (p[1] - a_[1]) * dy) / l2,
+                            0.0,
+                        ),
+                        1.0,
+                    )
+                )
+                dd = math.dist(p, (a_[0] + u * dx, a_[1] + u * dy))
+                if dd < d_out:
+                    d_out = dd
+                    q_out = (a_[0] + u * dx, a_[1] + u * dy)
+                    dir_out = (dx, dy)
+            return q_out, dir_out, d_out
+
+        def _pad_intr(pnt: tuple[float, float], bi: int) -> float:
+            """Deepest foreign-pad margin intrusion of a POINT — the
+            unwind never pushes a vertex deeper into a pad than it
+            already sits (the relax's pad hinges own those cases)."""
+            req = pad_req[bi]
+            worst = 0.0
+            for pi in near_pads[bi]:
+                dx = max(
+                    float(pads.lo[pi][0]) - pnt[0],
+                    pnt[0] - float(pads.hi[pi][0]),
+                    0.0,
+                )
+                dy = max(
+                    float(pads.lo[pi][1]) - pnt[1],
+                    pnt[1] - float(pads.hi[pi][1]),
+                    0.0,
+                )
+                worst = max(worst, req - math.hypot(dx, dy))
+            return worst
+
+        def _end_side(m: int, peer: int) -> int:
+            """+1/-1 — the side of the peer's polyline the mover's two
+            endpoints agree on (left of each nearest leg's travel
+            direction), or 0 when they straddle it."""
+            side = 0
+            for p_end in (pts_out[m][0], pts_out[m][-1]):
+                q, ld, _d = _nearest(p_end, pts_out[peer])
+                cr = ld[0] * (p_end[1] - q[1]) - ld[1] * (p_end[0] - q[0])
+                if abs(cr) <= 1e-9:
+                    continue  # endpoint sits on the line — no vote
+                s = 1 if cr > 0.0 else -1
+                if side != 0 and s != side:
+                    return 0
+                side = s
+            return side
+
+        edge_sets = [set(ep) for ep in edge_pos]
+        unwind_cdirs = _cdirs(mesh, wires)
+        # the displaced-vertex checks' statics: blocking keep-out rings
+        # (same-net exempt, layer-masked like the wire builder's
+        # zone_block) and the board outline.
+        unwind_zones: list[tuple[Any, Any]] = []
+        for z in d.zones:
+            ring = np.asarray(topo_proxy.zone_world_ring(d, z, pose_a))
+            if len(ring) < 3:
+                continue
+            zp = Polygon(ring)
+            if not zp.is_empty and zp.area > 0.0:
+                unwind_zones.append((z, zp))
+        outline_poly = (
+            Polygon(np.asarray(d.outline, dtype=float)) if len(d.outline) >= 3 else None
+        )
+
+        def _unwind_ok(bi: int, jj: int, cand: tuple[float, float]) -> bool:
+            """The accept()-style pass a displaced vertex's two NEW legs
+            must clear before the unwind may commit them — foreign pad
+            margins, blocking keep-out rings, the board outline and
+            every non-braided other polyline (``accept``'s own terms). A
+            move that fails keeps its old vertex."""
+            mpts = pts_out[bi]
+            own = wires.branches[bi].net
+            own_name = str(d.net_name[own]) if own < len(d.net_name) else ""
+            cand_layers = (
+                set(wires.net_layers[own])
+                if own < len(wires.net_layers)
+                else set(range(n_layers))
+            )
+            legs = (
+                LineString([mpts[jj - 1], cand]),
+                LineString([cand, mpts[jj + 1]]),
+            )
+            old_legs = (
+                LineString([mpts[jj - 1], mpts[jj]]),
+                LineString([mpts[jj], mpts[jj + 1]]),
+            )
+            # every check compares against the OLD legs: a move may
+            # keep a violation it already carried (another pair's sweep
+            # or the relax owns it — a leg lifting OFF a pad corner is
+            # exactly the move the unwind exists for) but never mints a
+            # fresh one — and never DEEPENS one: per foreign pad the new
+            # legs' margin intrusion (clearance + half-width minus
+            # leg-to-pad distance, clamped at 0 — a leg still outside
+            # the ring carries no intrusion, so merely approaching a pad
+            # is legal) must stay at or under the old legs'. A leg
+            # ending a hair inside a margin ring the old legs already
+            # grazed passes and the relax polishes it; a leg that
+            # crosses a pad the old legs never touched is refused
+            # outright — the polygon-touch test waved both through.
+            req = pad_req[bi]
+            for pi in foreign_pads(bi):
+                plo = (float(pads.lo[pi][0]), float(pads.lo[pi][1]))
+                phi = (float(pads.hi[pi][0]), float(pads.hi[pi][1]))
+                was = max(
+                    0.0,
+                    req
+                    - min(
+                        _seg_aabb_dist(mpts[jj - 1], mpts[jj], plo, phi),
+                        _seg_aabb_dist(mpts[jj], mpts[jj + 1], plo, phi),
+                    ),
+                )
+                now = max(
+                    0.0,
+                    req
+                    - min(
+                        _seg_aabb_dist(mpts[jj - 1], cand, plo, phi),
+                        _seg_aabb_dist(cand, mpts[jj + 1], plo, phi),
+                    ),
+                )
+                if now > was + 1e-9:
+                    return False
+            for leg in legs:
+                for z, zp in unwind_zones:
+                    if z.net and z.net == own_name:
+                        continue
+                    if z.layers and not (set(z.layers) & cand_layers):
+                        continue
+                    if leg.intersects(zp) and not any(
+                        old.intersects(zp) for old in old_legs
+                    ):
+                        return False
+                if (
+                    outline_poly is not None
+                    and not outline_poly.covers(leg)
+                    and any(outline_poly.covers(old) for old in old_legs)
+                ):
+                    return False
+                for j in range(len(pts_out)):
+                    if j == bi or (min(bi, j), max(bi, j)) in braided:
+                        continue
+                    other = LineString(pts_out[j])
+                    if leg.crosses(other) and not any(
+                        old.crosses(other) for old in old_legs
+                    ):
+                        return False
+            return True
+
+        for _sweep in range(2):
+            for (i, j), gap in sorted(pair_gap.items()):
+                signs = [
+                    _pair_sign(wires, unwind_cdirs, e, i, j)
+                    for e in sorted(edge_sets[i] & edge_sets[j])
+                    if len(wires.order[e]) >= 2
+                ]
+                sig = sum(1 if s > 0 else -1 for s in signs)
+                if sig > 0:
+                    mover, peer = j, i
+                elif sig < 0:
+                    mover, peer = i, j
+                else:
+                    # no order signal (no common shared edge, or a tie)
+                    # — push the higher-index wire to ITS endpoint side
+                    mover, peer = j, i
+                m_pts = pts_out[mover]
+                side = _end_side(mover, peer)
+                if side == 0:
+                    continue  # straddling ends: a weave, not a fan
+                for jj in range(1, len(m_pts) - 1):
+                    pv = m_pts[jj]
+                    q, ld, _dd = _nearest(pv, pts_out[peer])
+                    ln = math.hypot(*ld)
+                    if ln <= 1e-9:
+                        continue
+                    s = ((ld[0] * (pv[1] - q[1]) - ld[1] * (pv[0] - q[0])) / ln) * side
+                    if s >= 0.0:
+                        continue  # slot side held — crowding is the
+                        # local relax's own remit, not the unwind's
+                    cand = (
+                        q[0] + (gap + 0.05) * (-ld[1] / ln) * side,
+                        q[1] + (gap + 0.05) * (ld[0] / ln) * side,
+                    )
+                    # the move is bounded — a far-side vertex is a weave,
+                    # not a fan the unwind can lift — and both new legs
+                    # must clear the accept()-style check, not just the
+                    # point its old pad intrusion compared against
+                    if math.dist(pv, cand) > _UNWIND_MOVE_CAP * gap:
+                        continue
+                    if _pad_intr(cand, mover) <= _pad_intr(pv, mover) + 1e-9 and (
+                        _unwind_ok(mover, jj, cand)
+                    ):
+                        m_pts[jj] = cand
+
         def accept(q: list[list[tuple[float, float]]]) -> bool:
             lines = {
                 bi: LineString([(float(x), float(y)) for x, y in q[bi]])
@@ -1935,7 +2197,7 @@ def _spoke_offsets(
                 c = 0.0
                 for bi in _cluster:
                     pts = cur.get(bi, pts_out[bi])
-                    req = pad_req[bi]
+                    req = pad_req[bi] + _RELAX_SLACK_MM
                     for k in range(len(pts) - 1):
                         a_, b_ = pts[k], pts[k + 1]
                         for pi in _cluster_pad[bi]:
@@ -1950,6 +2212,7 @@ def _spoke_offsets(
                 for (i, j), gap in _cluster_pairs:
                     qi = cur.get(i, pts_out[i])
                     qj = cur.get(j, pts_out[j])
+                    gap = gap + _RELAX_SLACK_MM
                     for k in range(len(qi) - 1):
                         a_, b_ = qi[k], qi[k + 1]
                         for m in range(len(qj) - 1):
@@ -2114,6 +2377,17 @@ def plan_route(
             pieces.append(
                 RoutePiece(b.net, bi, run_layers[0], tuple(bpts), b.pin_a, b.pin_b)
             )
+            lb = _pin_forced(d, b.pin_b, n_layers)
+            if lb is not None and lb != run_layers[0]:
+                # An edgeless hop (``n_e == 0`` — the whole wire sits
+                # inside pad territory) carries no mesh edge a join
+                # could site on, so no cut was planned and the piece
+                # lands on its run's layer while the far pad's mount
+                # side needs ``lb`` — an island (gr537831's s5 BOOT).
+                # Report the join as unsited like a walk that found
+                # nothing rather than emitting copper that cannot
+                # connect.
+                no_via.append(bi)
             continue
         name = str(d.net_name[b.net]) if b.net < len(d.net_name) else str(b.net)
         nr = rules.get(name, _DEFAULT)
@@ -2154,9 +2428,12 @@ def plan_route(
                 # keep the split at the intended crossing: the pieces
                 # still describe where the join was wanted — it is the
                 # via that is not minted.
-                e = int(b.edges[min(ei, len(b.edges) - 1)])
-                t = float(b.t[ei]) if ei < len(b.t) else 0.5
-                cut_xy.append(_edge_xy(mesh, e, t))
+                if b.edges:
+                    e = int(b.edges[min(ei, len(b.edges) - 1)])
+                    t = float(b.t[ei]) if ei < len(b.t) else 0.5
+                    cut_xy.append(_edge_xy(mesh, e, t))
+                else:
+                    cut_xy.append(pts[len(pts) // 2])
                 continue
             e, t, x, y, via_d = site
             site_edges.add(e)
@@ -2344,43 +2621,79 @@ def realize_result(
 
 def _pad_polys(
     d: TopoDesign, ir: Any, n_layers: int, pose: np.ndarray
-) -> dict[int, list[tuple[str, Polygon]]]:
-    """World-frame pad polygons per layer, tagged by net name — the
-    SAME pad set the DRC flashes: each pin's pad plus every non-primary
-    footprint land (``pad_extra_*``: a pin's second same-named pad, a
-    split slug half, an unpinned land — gr524239; the pin-only roster
-    passed a track through copper the checker then errored on).
-    ``NO_NET``/unpinned lands carry the empty name — foreign to every
-    net. SMD pads live on their mount side, TH on all layers."""
+) -> dict[int, list[tuple[str, Any, int]]]:
+    """World-frame pad geometry per layer, tagged ``(net name, geom,
+    pin id)`` — the SAME pad set the DRC flashes: each pin's pad plus
+    every non-primary footprint land (``pad_extra_*``: a pin's second
+    same-named pad, a split slug half, an unpinned land — gr524239; the
+    pin-only roster passed a track through copper the checker then
+    errored on). ``NO_NET``/unpinned lands carry the empty name (foreign
+    to every net) and pin ``-1``. SMD pads live on their mount side, TH
+    on all layers.
+
+    Geometry follows :func:`precis.pcb.connectivity._pad_primitives`'s
+    shape convention — a ``'circle'`` pad is its inscribed disk, a
+    ``'polygon'`` pad its authored ring (a missing ring falls back to
+    the circumscribed disk), everything else the ``*_wh`` rect — exact
+    where the design carries the shape, so the same set serves both the
+    foreign-copper guard and the emit-join check (a corner touch on a
+    round land is not a join — gr537831 review)."""
     from precis.pcb.ir import NO_NET
 
-    pad_polys: dict[int, list[tuple[str, Polygon]]] = {i: [] for i in range(n_layers)}
+    pad_polys: dict[int, list[tuple[str, Any, int]]] = {i: [] for i in range(n_layers)}
 
     def add_pad(
-        part: int, px: float, py: float, hw: float, hh: float, pname: str, side: int
+        part: int,
+        px: float,
+        py: float,
+        hw: float,
+        hh: float,
+        pname: str,
+        side: int,
+        pin: int,
+        shape: str,
+        ring: Any,
     ) -> None:
         if part >= len(pose) or not np.isfinite(pose[part, :2]).all():
             return
         if hw <= 0.0 or hh <= 0.0:
             return
-        corners = np.asarray(
-            [
-                [px - hw, py - hh],
-                [px + hw, py - hh],
-                [px + hw, py + hh],
-                [px - hw, py + hh],
-            ]
-        )
-        poly = Polygon(
-            np.asarray(topo_proxy.local_to_world(corners, pose[part]), float)
-        )
+        if shape == "circle":
+            (cx, cy) = topo_proxy.local_to_world(
+                np.asarray([[px, py]], dtype=float), pose[part]
+            )[0]
+            poly: Any = Point(float(cx), float(cy)).buffer(min(hw, hh))
+        elif ring:
+            pts = np.asarray(ring, dtype=np.float64) + np.asarray([px, py])
+            poly = Polygon(
+                np.asarray(topo_proxy.local_to_world(pts, pose[part]), float)
+            )
+        elif shape == "polygon":
+            # the authored ring is unresolvable — connectivity's
+            # circumscribed-disk fallback for the same case.
+            (cx, cy) = topo_proxy.local_to_world(
+                np.asarray([[px, py]], dtype=float), pose[part]
+            )[0]
+            poly = Point(float(cx), float(cy)).buffer(math.hypot(hw, hh))
+        else:
+            corners = np.asarray(
+                [
+                    [px - hw, py - hh],
+                    [px + hw, py - hh],
+                    [px + hw, py + hh],
+                    [px - hw, py + hh],
+                ]
+            )
+            poly = Polygon(
+                np.asarray(topo_proxy.local_to_world(corners, pose[part]), float)
+            )
         if poly.is_empty or poly.area <= 0.0:
             return
         layers: Iterable[int] = (
             range(n_layers) if side == 2 else (0,) if side == 0 else (n_layers - 1,)
         )
         for lay in layers:
-            pad_polys[lay].append((pname, poly))
+            pad_polys[lay].append((pname, poly, pin))
 
     for p in range(len(d.pin_xy)):
         pnet = int(d.pin_net[p])
@@ -2393,6 +2706,9 @@ def _pad_polys(
             float(d.pin_wh[p, 1]) / 2.0 if len(d.pin_wh) > p else 0.0,
             pname,
             int(d.pin_side[p]),
+            p,
+            str(d.pin_shape[p]) if p < len(d.pin_shape) else "",
+            d.pin_poly[p] if p < len(d.pin_poly) else None,
         )
     for k in range(len(d.pad_extra_xy)):
         xpin = int(d.pad_extra_pin[k])
@@ -2406,13 +2722,16 @@ def _pad_polys(
             float(d.pad_extra_wh[k, 1]) / 2.0,
             pname,
             int(d.pad_extra_side[k]),
+            xpin,
+            str(d.pad_extra_shape[k]) if k < len(d.pad_extra_shape) else "",
+            d.pad_extra_poly[k] if k < len(d.pad_extra_poly) else None,
         )
     return pad_polys
 
 
 def _piece_corner_clear(
     piece: RoutePiece,
-    pad_polys: dict[int, list[tuple[str, Polygon]]],
+    pad_polys: dict[int, list[tuple[str, Polygon, int]]],
     nm: Callable[[int], str],
     nrules: Callable[[str], NetRules],
     others: Iterable[tuple[LineString, float, float]] = (),
@@ -2439,7 +2758,7 @@ def _piece_corner_clear(
                 (float(q[0]), float(q[1])),
             ]
         )
-        for pname, poly in pad_polys.get(piece.layer, []):
+        for pname, poly, _pin in pad_polys.get(piece.layer, []):
             if pname and pname == own:
                 continue
             cp = float(nrules(pname).clearance_mm) if pname else ci
@@ -2517,7 +2836,7 @@ def _guarded_nets(
                 continue
             nri = nrules(nm(pi.net))
             wi, ci = float(nri.track_width_mm), float(nri.clearance_mm)
-            for pname, poly in pad_polys.get(lay, []):
+            for pname, poly, _pin in pad_polys.get(lay, []):
                 if pname and pname == nm(pi.net):
                     continue  # own-net pads are where terminals land
                 cp = float(nrules(pname).clearance_mm) if pname else ci
@@ -2551,7 +2870,7 @@ def _guarded_nets(
         pt = Point(v.x, v.y)
         hit = False
         for lay in range(n_layers):
-            for pname, poly in pad_polys[lay]:
+            for pname, poly, _pin in pad_polys[lay]:
                 if pname and pname == nm(v.net):
                     continue
                 cp = float(nrules(pname).clearance_mm) if pname else cv
@@ -2573,6 +2892,132 @@ def _guarded_nets(
         if hit:
             guarded.add(v.net)
     return guarded
+
+
+#: Same-layer touch slack for the emit-connectivity check — the pieces'
+#: join points are constructed coincident (a cut point is appended to both
+#: runs, a branch end sits inside its pad), so a nanometre of fp slack is
+#: all this needs; a real gap must never be rescued by it.
+_SEVER_EPS_MM = 1e-6
+
+
+def _severed_nets(
+    emit: RoutePlan,
+    d: TopoDesign,
+    ir: Any,
+    n_layers: int,
+    pose: np.ndarray,
+    net_rules: Mapping[str, NetRules] | None,
+) -> dict[int, tuple[frozenset[int], frozenset[int]]]:
+    """The emit-connectivity check (gr537831): net indices whose committed
+    copper — pieces, vias and the pads they must reach — is not ONE
+    connected piece. The crossing detector and the anti-short guard ask
+    foreign-copper questions; nothing asked whether a net's OWN copper is
+    whole, so an edgeless F↔B hop could end at the far pad's coordinates
+    on the wrong layer and still read ``realized`` (s5's BOOT). A severed
+    net is withdrawn whole like ``guarded``: committed copper that cannot
+    connect is worse than an honest failure. Joins are geometric, not
+    by-construction: a piece touches a same-layer piece, a pad on its
+    layer or a via barrel (spans every layer) within its swept radius —
+    the same gap arithmetic :mod:`precis.pcb.connectivity` judges the
+    committed board by, over the same pad shapes :func:`_pad_polys`
+    flashes (a corner touch on a round land is not a join).
+
+    Review fix: withdrawal is per-component — a component joining at
+    least two of the net's pads is real copper and STAYS (a stranded net
+    keeps the branches it did route); only components joining fewer than
+    two pads — floating or dangling copper — are dropped. A net whose
+    every component is broken loses its copper whole, as before. Returns
+    ``{net: (drop piece indices, drop via indices)}`` covering every
+    severed net so ``plan.severed`` still reports them all —
+    ``sketch_rows`` writes ``unrouted`` and ``unconnected`` as
+    appropriate."""
+    rules = net_rules or {}
+    names = [str(n) for n in d.net_name]
+
+    def nm(k: int) -> str:
+        return names[k] if 0 <= k < len(names) else str(k)
+
+    def nrules(name: str) -> NetRules:
+        return rules.get(name, _DEFAULT)
+
+    pad_polys = _pad_polys(d, ir, n_layers, pose)
+    lines = {
+        i: LineString([(float(x), float(y)) for x, y in pc.points])
+        for i, pc in enumerate(emit.pieces)
+    }
+    severed: dict[int, tuple[frozenset[int], frozenset[int]]] = {}
+    for net in {pc.net for pc in emit.pieces}:
+        nrm = nrules(nm(net))
+        wi = float(nrm.track_width_mm)
+        # members: (layer set, geometry, reach, pin key, kind, emit index)
+        # — pads of one pin union internally (the part joins its own
+        # lands), which the pin key asserts like connectivity's
+        # _union_same_pin_pads; the kind/index pair is the drop record
+        # ("piece"/"via" is committed copper, "pad" a terminal).
+        members: list[tuple[frozenset[int], Any, float, int, str, int]] = []
+        for i, pc in enumerate(emit.pieces):
+            if pc.net == net:
+                members.append(
+                    (frozenset({pc.layer}), lines[i], wi / 2.0, -1, "piece", i)
+                )
+        for vi, v in enumerate(emit.vias):
+            if v.net == net:
+                dia = float(v.dia_mm or nrm.via_dia_mm or _VIA_DIA_MM)
+                members.append(
+                    (
+                        frozenset(range(n_layers)),
+                        Point(v.x, v.y),
+                        dia / 2.0,
+                        -1,
+                        "via",
+                        vi,
+                    )
+                )
+        own = nm(net)
+        for lay, entries in pad_polys.items():
+            for pname, poly, pin in entries:
+                if pname == own:
+                    members.append((frozenset({lay}), poly, 0.0, pin, "pad", -1))
+        parent = list(range(len(members)))
+
+        def find(a: int, parent: list[int] = parent) -> int:
+            while parent[a] != a:
+                parent[a] = parent[parent[a]]
+                a = parent[a]
+            return a
+
+        for a in range(len(members)):
+            la, ga, ra, ka_, _knd_a, _i_a = members[a]
+            for b in range(a + 1, len(members)):
+                lb, gb, rb, kb_, _knd_b, _i_b = members[b]
+                joined = (ka_ >= 0 and ka_ == kb_) or (
+                    bool(la & lb) and ga.distance(gb) <= ra + rb + _SEVER_EPS_MM
+                )
+                if joined:
+                    ra_, rb_ = find(a), find(b)
+                    if ra_ != rb_:
+                        parent[rb_] = ra_
+        comps: dict[int, tuple[set[int], set[int], set[int]]] = {}
+        for i, (_l, _g, _r, k, kind, idx) in enumerate(members):
+            pins_, pieces_, vias_ = comps.setdefault(find(i), (set(), set(), set()))
+            if kind == "pad":
+                if k >= 0:
+                    pins_.add(k)
+            elif kind == "piece":
+                pieces_.add(idx)
+            else:
+                vias_.add(idx)
+        if len(comps) <= 1:
+            continue
+        drop_p: set[int] = set()
+        drop_v: set[int] = set()
+        for pins_, pieces_, vias_ in comps.values():
+            if len(pins_) < 2:
+                drop_p |= pieces_
+                drop_v |= vias_
+        severed[net] = (frozenset(drop_p), frozenset(drop_v))
+    return severed
 
 
 def route_design(
@@ -2660,6 +3105,25 @@ def route_design(
             vias=tuple(v for v in emit.vias if v.net not in guarded),
         )
         plan = dataclasses.replace(plan, guarded=tuple(sorted(guarded)))
+    # gr537831: a net is "realized" only when its committed copper —
+    # pieces, vias and the pads they must reach — is ONE connected
+    # piece. A severed emit (the edgeless F↔B hop ending on the wrong
+    # layer) is withdrawn whole like the anti-short guard, never
+    # committed as a falsely routed net.
+    severed = _severed_nets(emit, d, ir, ir.n_layers, np.asarray(mesh_pose), net_rules)
+    if severed:
+        # per-component withdrawal: the copper that joins >=2 of the
+        # net's pads is real and stays — a stranded net keeps its routed
+        # branches; only floating/dangling components are dropped. A net
+        # whose every component is broken loses its copper whole.
+        drop_p = {i for dp, _dv in severed.values() for i in dp}
+        drop_v = {i for _dp, dv in severed.values() for i in dv}
+        emit = dataclasses.replace(
+            emit,
+            pieces=tuple(p for i, p in enumerate(emit.pieces) if i not in drop_p),
+            vias=tuple(v for i, v in enumerate(emit.vias) if i not in drop_v),
+        )
+        plan = dataclasses.replace(plan, severed=tuple(sorted(severed)))
     return plan, realize_result(
         emit, d, ir, ir.n_layers, net_rules=net_rules, pose=mesh_pose
     )
@@ -2773,6 +3237,14 @@ def sketch_rows(
                 {
                     "reason": "short-risk",
                     "message": "copper withdrawn: would short another net (emit guard)",
+                }
+            )
+        if k in getattr(plan, "severed", ()):
+            problems.append(
+                {
+                    "reason": "unconnected",
+                    "message": "copper withdrawn: emitted copper is not one "
+                    "connected piece (emit check)",
                 }
             )
         if problems:

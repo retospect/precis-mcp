@@ -728,17 +728,18 @@ def _real_pin_offsets(fp: dict[str, Any]) -> dict[str, tuple[float, float]]:
     return out
 
 
-_PinPad = tuple[float, float, list[tuple[float, float]] | None]
+_PinPad = tuple[float, float, list[tuple[float, float]] | None, str | None]
 
 
 def _real_pin_pads(fp: dict[str, Any]) -> dict[str, _PinPad]:
     """One footprint's REAL per-pin pad, keyed by netlist pin name:
-    ``(w, h, poly)`` in footprint-local mm, unrotated by the instance pose
-    (:attr:`~precis.pcb.ir.PcbIR.pin_w`'s frame). The first pad per pin
-    supplies it — the same pad :func:`_real_pin_offsets` takes the centre
-    from. Every later pad with the same pin name (a split-tab connector
-    numbers four tabs ``1``) is a pad in its own right in the IR's pad
-    set (:func:`~precis.pcb.ir.footprint_pad_set`), not this pin's size."""
+    ``(w, h, poly, shape)`` in footprint-local mm, unrotated by the
+    instance pose (:attr:`~precis.pcb.ir.PcbIR.pin_w`'s frame). The first
+    pad per pin supplies it — the same pad :func:`_real_pin_offsets`
+    takes the centre from. Every later pad with the same pin name (a
+    split-tab connector numbers four tabs ``1``) is a pad in its own
+    right in the IR's pad set
+    (:func:`~precis.pcb.ir.footprint_pad_set`), not this pin's size."""
     pin_map = fp.get("pin_map") or {}
     out: dict[str, _PinPad] = {}
     for pad in fp.get("pads") or []:
@@ -749,7 +750,7 @@ def _real_pin_pads(fp: dict[str, Any]) -> dict[str, _PinPad]:
         if ext is None:
             continue
         w, h, ring = ext[2], ext[3], ext[4]
-        out[name] = (w, h, ring)
+        out[name] = (w, h, ring, str(pad.get("shape") or "") or None)
     return out
 
 
@@ -888,7 +889,7 @@ def apply_real_pin_offsets(
         # synthesized size hulls the wrong pad.
         pad = pads_by_inst[int(ir.pin_instance[pid])].get(str(ir.pin_label[pid]))
         if pad is not None:
-            ir.set_pin_pad(pid, pad[0], pad[1], pad[2])
+            ir.set_pin_pad(pid, pad[0], pad[1], pad[2], pad[3])
         changed += 1
     return changed
 

@@ -538,6 +538,21 @@ class TopoDesign:
     pad_extra_part: np.ndarray = field(default_factory=lambda: np.zeros(0, np.int64))
     pad_extra_pin: np.ndarray = field(default_factory=lambda: np.zeros(0, np.int64))
     pad_extra_side: np.ndarray = field(default_factory=lambda: np.zeros(0, np.int8))
+    #: Per-pin pad shape (``ir.pin_shape`` verbatim — 'circle'/'rect'/
+    #: 'obround'/'polygon', ``""`` where the IR carries none) and the
+    #: ``shape == 'polygon'`` pin's vertex ring, footprint-local relative
+    #: to the pin centre (``ir.pin_poly`` verbatim, ``None`` elsewhere).
+    #: The emit-side checks read them so a round or outlined land is its
+    #: real shape to them, never its ``pin_wh`` bounding box (gr537831
+    #: review: a corner touch is not a join).
+    pin_shape: np.ndarray = field(default_factory=lambda: np.zeros(0, object))
+    pin_poly: np.ndarray = field(default_factory=lambda: np.zeros(0, object))
+    #: Same for the non-primary lands — the raw pad's ``shape`` and its
+    #: ``poly`` ring (relative to the pad's own centre, like
+    #: :func:`precis.pcb.ir.footprint_pad_extent` returns), ``None`` for
+    #: every non-polygon extra.
+    pad_extra_shape: np.ndarray = field(default_factory=lambda: np.zeros(0, object))
+    pad_extra_poly: np.ndarray = field(default_factory=lambda: np.zeros(0, object))
 
 
 def qrot(v: np.ndarray, q: int) -> np.ndarray:
@@ -603,6 +618,15 @@ def _pin_roles(ir: PcbIR, footprints: Mapping[str, Mapping[str, Any]]) -> np.nda
     return out
 
 
+def _pad_field(src: Any, n: int, fill: Any) -> np.ndarray:
+    """One per-pin object field — ``src`` verbatim when it covers every
+    pin, else a uniform ``fill`` row (an IR hydrated without the field
+    reads as shapeless, never as a shorter array)."""
+    if src is not None and len(src) == n:
+        return np.asarray(src, dtype=object)
+    return np.asarray([fill] * n, dtype=object)
+
+
 def _extra_pads(
     ir: PcbIR, footprints: Mapping[str, Mapping[str, Any]]
 ) -> dict[str, np.ndarray]:
@@ -622,6 +646,8 @@ def _extra_pads(
     part: list[int] = []
     pin: list[int] = []
     side: list[int] = []
+    shape: list[str] = []
+    poly: list[Any] = []
     for pad in footprint_pad_set(
         ir, {k: dict(v) for k, v in footprints.items()} if footprints else None
     ):
@@ -630,7 +656,7 @@ def _extra_pads(
         ext = footprint_pad_extent(pad.raw)
         if ext is None:
             continue
-        cx, cy, w, h, _ring = ext
+        cx, cy, w, h, ring = ext
         xy.append([cx, cy])
         wh.append([w, h])
         part.append(int(pad.instance))
@@ -640,12 +666,16 @@ def _extra_pads(
             if pad.raw.get("drill") is not None
             else int(bool(ir.inst_bottom[pad.instance]))
         )
+        shape.append(str(pad.raw.get("shape") or ""))
+        poly.append(ring)
     return {
         "xy": np.asarray(xy, dtype=np.float64).reshape(-1, 2),
         "wh": np.asarray(wh, dtype=np.float64).reshape(-1, 2),
         "part": np.asarray(part, dtype=np.int64),
         "pin": np.asarray(pin, dtype=np.int64),
         "side": np.asarray(side, dtype=np.int8),
+        "shape": np.asarray(shape, dtype=object),
+        "poly": np.asarray(poly, dtype=object),
     }
 
 
@@ -1294,6 +1324,10 @@ def design_from_ir(
         pad_extra_part=extras["part"],
         pad_extra_pin=extras["pin"],
         pad_extra_side=extras["side"],
+        pin_shape=_pad_field(getattr(ir, "pin_shape", None), len(ir.pin_dx), ""),
+        pin_poly=_pad_field(getattr(ir, "pin_poly", None), len(ir.pin_dx), None),
+        pad_extra_shape=extras["shape"],
+        pad_extra_poly=extras["poly"],
     )
 
 

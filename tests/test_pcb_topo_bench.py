@@ -685,3 +685,52 @@ def test_drain_strict_still_raises_on_stray_claims(
 
     with pytest.raises(AssertionError, match="expected a queued job"):
         tb._drain(store, parent_id, target_job_id=target_id)
+
+
+def test_topo_route_all_withdrawn_writes_failed_rows_and_not_run(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr537831 review: an emit set withdrawn whole produced no
+    copper, and the route stage used to skip BOTH writes — no
+    ``pcb_routes`` rows meant every net read 'unrouted' by default and
+    the bench's unrecorded DRC counted as a clean 0. Now the run's
+    failed rows land even with empty copper (stored copper is still
+    never wiped), and ``_measure`` reports a missing DRC run as
+    'DRC not run'."""
+    import types
+
+    from precis.pcb import realize as pcb_realize
+    from precis.pcb.topoplace import realise as _tprealise
+
+    pcb = PcbHandler(hub=Hub(store=store))
+    assert "created" in pcb.put(id="tiny-topo-severed", args=_TINY).body
+    severed_plan = types.SimpleNamespace(
+        pieces=(),
+        vias=(),
+        layers=(),
+        crossings=(),
+        unreachable=(),
+        stranded=(),
+        no_via=(),
+        guarded=(),
+        severed=(0, 1),
+    )
+    monkeypatch.setattr(
+        _tprealise,
+        "route_design",
+        lambda *a, **k: (severed_plan, pcb_realize.RealizeResult((), (), ())),
+    )
+    side, _stage = tb._topo_side(
+        store, pcb, "tiny-topo-severed", seed=1, effort=200, force=True
+    )
+    ref = store.get_ref(kind="pcb", id="tiny-topo-severed")
+    assert ref is not None
+    board_id = store.pcb_ensure_board(ref.id)
+    assert store.pcb_copper_list(board_id) == []
+    # the run's verdict landed: every multi-member net is failed, not
+    # 'unrouted' by default.
+    status = {r["name"]: r["status"] for r in store.pcb_route_status(ref.id)}
+    assert status == {"N1": "failed", "N2": "failed"}
+    # the bench never reads a missing DRC run as a clean 0.
+    assert side.drc_errors is None
+    assert side.note == "DRC not run"

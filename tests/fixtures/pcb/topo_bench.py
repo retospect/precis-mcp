@@ -617,9 +617,13 @@ def _measure(store: Store, pcb: PcbHandler, slug: str, wall: float) -> PipeSide:
             via_per_net[str(item["net"])] += 1
         elif item["ctype"] == "track":
             per_net[str(item["net"])] += _track_length(item.get("segments") or ())
-    pcb._drc_run(ref.id, store.pcb_load(ref.id), record=True)
+    run = pcb._drc_run(ref.id, store.pcb_load(ref.id), record=True)
     _run, findings = store.pcb_drc_findings_latest(ref.id)
     errors, _warns, _keys = _split_findings(findings)
+    # A run that never happened is a measurement hole, not a clean
+    # board — report it, never 0 (gr537831: an all-withdrawn s4 read
+    # "0 DRC" because the run recorded nothing).
+    drc_not_run = run is None
     lengths = [v for v in per_net.values() if v > 0]
     sig_lengths = [v for k, v in per_net.items() if v > 0 and k not in power]
     pow_lengths = [v for k, v in per_net.items() if v > 0 and k in power]
@@ -627,8 +631,8 @@ def _measure(store: Store, pcb: PcbHandler, slug: str, wall: float) -> PipeSide:
     return PipeSide(
         routed=sum(1 for s in status.values() if s == "realized"),
         nets=len(multi),
-        drc_errors=sum(errors.values()),
-        drc_rules=dict(errors),
+        drc_errors=None if drc_not_run else sum(errors.values()),
+        drc_rules=None if drc_not_run else dict(errors),
         median_mm=(round(statistics.median(lengths), 2) if lengths else 0.0),
         vias=vias,
         vias_signal=vias - vias_power,
@@ -640,6 +644,7 @@ def _measure(store: Store, pcb: PcbHandler, slug: str, wall: float) -> PipeSide:
             round(statistics.median(pow_lengths), 2) if pow_lengths else 0.0
         ),
         wall_s=round(wall, 1),
+        note="DRC not run" if drc_not_run else "",
     )
 
 

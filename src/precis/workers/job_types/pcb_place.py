@@ -486,10 +486,15 @@ def _topo_route(
             }
         )
     # ONE transaction: a raise between the copper replace and the route
-    # rows must never strand copper without route status. And an empty
-    # route result never wipes stored copper — both writes are skipped
-    # together, so view='route-status' still matches the copper that
-    # stays on the board.
+    # rows must never strand copper without route status. An empty route
+    # result never wipes stored copper — the replace is skipped so the
+    # copper that stays keeps matching view='route-status' — but the
+    # run's FAILED rows still land (gr537831 review: an all-withdrawn
+    # board wrote nothing at all — no route rows meant every net read
+    # 'unrouted' by default and the check surface saw no verdict, which
+    # the bench then counted as a clean 0). Non-failure rows stay put:
+    # a 'sketched'/'realized' overwrite would contradict the kept copper.
+    failed_rows = {k: r for k, r in rows.items() if r["status"] == "failed"}
     with ctx.store.tx() as conn:
         n_copper = (
             ctx.store.pcb_copper_replace(int(board_id), copper_rows, conn=conn)
@@ -499,7 +504,13 @@ def _topo_route(
         n_routes = (
             ctx.store.pcb_routes_write(pcb_ref_id, int(board_id), rows, conn=conn)
             if copper_rows
-            else 0
+            else (
+                ctx.store.pcb_routes_write(
+                    pcb_ref_id, int(board_id), failed_rows, conn=conn
+                )
+                if failed_rows
+                else 0
+            )
         )
 
     n_realized = sum(1 for r in rows.values() if r["status"] == "realized")

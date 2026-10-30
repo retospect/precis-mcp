@@ -33,6 +33,7 @@ from precis.pcb.topoplace.realise import (
     RoutePlan,
     _guarded_nets,
     _run_bounds,
+    _severed_nets,
     _site_via,
     assign_layers,
     plan_route,
@@ -1427,19 +1428,17 @@ def test_spoke_offsets_fan_shared_gap_and_shared_corner() -> None:
     findings = _drc_findings(res, ir, layers, footprints=footprints)
     track_hits = [f for f in findings if f.rule == "clearance" and "track" in f.where]
     assert track_hits == [], [f"{f.rule}: {f.where}" for f in track_hits]
-    # gr536410: the spurious braid is gone — the plan puts every net on
-    # one layer with no unneeded vias. The bounded cluster relaxation
-    # cannot yet unwind the coupled three-pair squeeze on this seed, so
-    # the geometric anti-short guard withdraws the touching nets rather
-    # than committing shorts — the gr520900 invariant this test exists
-    # for (no coincident copper committed) is the DRC assertion above,
-    # and it still holds.
+    # gr536410/gr537726: the spurious braid is gone and the shared-gap
+    # unwind seeds the coupled three-pair squeeze untangled, so every
+    # net routes on one layer with no vias and nothing is withdrawn —
+    # the routed count did not drop, every net still emits copper.
     assert plan.crossings == ()
     assert plan.vias == ()
     assert {p.layer for p in plan.pieces} == {0}
     assert {p.net for p in plan.pieces} == set(
         td.net_name.index(n) for n in ("N1", "N2", "N3")
     )
+    assert not getattr(plan, "guarded", ())
 
 
 def test_fan_slit_fixture_is_planar_no_braid_no_vias() -> None:
@@ -1622,19 +1621,15 @@ def _assert_slit_margins(paths, pair_idxs) -> None:
 
 
 def test_spoke_offsets_slit_3wires_direct_margins() -> None:
-    """gr520900/gr536410: direct check on ``_spoke_offsets`` for the
-    3-wire slit — every leg holds s+w/2=0.225 off the gate pads. The
-    pair-slot half of the old assertion covered (0,2)/(1,2) with (0,1)
-    excluded as 'the known spurious braid'; gr536410 removed the
-    phantom, so (0,1) is now a live fan pair and the bounded cluster
-    solve must unwind all three pairs at once — a coupled local
-    minimum it does not currently escape (the wires end touching, at
-    distance 0.0/0.105/0.0). The pad margins the relaxation does hold
-    stay asserted here; the pair separation needs a stronger solver
-    (tracked as the fan-fix follow-up)."""
+    """gr520900/gr537726: direct check on ``_spoke_offsets`` for the
+    3-wire slit — every leg holds s+w/2=0.225 off the gate pads and the
+    non-braided pairs keep the 0.3 slot. The pair-slot half covers
+    (0,2)/(1,2) as before; gr537726's shared-gap unwind lifts the
+    coupled local minimum that used to leave the wires touching at
+    0.0/0.105/0.0."""
     paths = _slit_spoke_paths([("A1", "C3"), ("A2", "C2"), ("A3", "C1")])
     assert len(paths) == 3
-    _assert_slit_margins(paths, [])
+    _assert_slit_margins(paths, [(0, 2), (1, 2)])
 
 
 def test_spoke_offsets_slit_2wires_control() -> None:
@@ -2098,3 +2093,368 @@ def test_all_th_k3_resolves_by_a_free_whole_branch_flip() -> None:
 
     assert plan.crossings == ()
     assert plan.vias == ()
+
+
+def test_via_site_is_the_shared_endpoint_of_both_runs() -> None:
+    """gr537831's join contract: a minted via IS the shared endpoint of
+    the two runs it brackets — the piece split and the via site are the
+    same point, so committed copper can never leave a barrel beside the
+    break it was meant to bridge."""
+    d, mesh, wires = _via_fixture(
+        pin_side=(0, 1, 0, 1), constrained=(True, False, False, False)
+    )
+    plan = plan_route(d, mesh, _decrowd_b1(wires), 4)
+
+    assert len(plan.vias) == 2
+    for v in plan.vias:
+        joined = [
+            p
+            for p in plan.pieces
+            if p.branch == v.branch
+            and (
+                math.dist(p.points[0], (v.x, v.y)) <= 1e-6
+                or math.dist(p.points[-1], (v.x, v.y)) <= 1e-6
+            )
+        ]
+        assert len(joined) == 2
+        assert {p.layer for p in joined} == {0, 3}
+
+
+def test_edgeless_flip_branch_reports_no_via() -> None:
+    """gr537831 (s5's BOOT): an F↔B hop with NO crossed mesh edge —
+    ``edges == ()``, the whole wire inside pad territory — can never
+    site a join, so the target block mints no cut. The piece must not
+    emit on pin_a's side and read ``realized`` with the far pad an
+    island; the branch lands on ``no_via`` like a walk that found
+    nothing."""
+    n_layers = 4
+    mesh = TopoMesh(
+        verts=np.asarray([[0.0, 0.0], [1.0, 0.0]]),
+        tris=np.zeros((0, 3), np.int32),
+        edges=np.asarray([[0, 1]], np.int32),
+        tri_edges=np.zeros((0, 3), np.int32),
+        edge_tris=np.zeros((1, 2), np.int32),
+        constrained=np.zeros(1, dtype=bool),
+        pad_vertex={},
+    )
+    b = WirePath(
+        net=0,
+        pin_a=0,
+        pin_b=1,
+        tris=(),
+        edges=(),
+        t=(),
+        points=((0.0, 0.0), (0.04, 0.02)),
+    )
+    wires = Wires(
+        branches=(b,),
+        order=((),),
+        capacity_mm=np.zeros(1),
+        net_layers=(frozenset({0, n_layers - 1}),),
+        unreachable=(),
+        gap_free_mm=np.full((1, n_layers), -1.0),
+        gap_cap=np.full((1, n_layers), -1),
+    )
+    d = TopoDesign(
+        parts=("P1", "P2"),
+        pin_xy=np.zeros((2, 2)),
+        pin_part=np.asarray([0, 1]),
+        pin_side=np.asarray([1, 0], dtype=np.int8),
+        pin_label=np.asarray(["1"] * 2, dtype=object),
+        pin_net=np.asarray([0, 0], dtype=np.int32),
+        net_pins=(np.asarray([0, 1]),),
+        flex=(),
+        swap_groups=(),
+        fixed=np.zeros(2, dtype=bool),
+        freedoms=np.full(2, 3, dtype=np.uint8),
+        outline=np.asarray([[-1.0, -1.0], [2.0, -1.0], [2.0, 1.0], [-1.0, 1.0]]),
+        pose0=np.zeros((2, 4)),
+        net_name=("N0",),
+        pin_wh=np.zeros((2, 2)),
+    )
+    plan = plan_route(d, mesh, wires, n_layers)
+
+    # honest geometry stays — one piece on pin_a's (bottom) side — but
+    # the join is reported unsited, never silently realized.
+    assert plan.no_via == (0,)
+    assert [p.layer for p in plan.pieces] == [n_layers - 1]
+
+
+def _sever_fixture() -> tuple[TopoDesign, SimpleNamespace]:
+    """Two pins of net N0 on top-SMD pads: P1's at world (15, 0), P2's
+    at world (0, 0). Copper that reaches both is one component; copper
+    that misses either — or sits on the wrong layer — is severed."""
+    d = TopoDesign(
+        parts=("P1", "P2"),
+        pin_xy=np.asarray([[5.0, 0.0], [0.0, 0.0]]),
+        pin_part=np.asarray([0, 1]),
+        pin_side=np.asarray([0, 0], dtype=np.int8),
+        pin_label=np.asarray(["1"] * 2, dtype=object),
+        pin_net=np.asarray([0, 0], dtype=np.int32),
+        net_pins=(np.asarray([0, 1]),),
+        flex=(),
+        swap_groups=(),
+        fixed=np.zeros(2, dtype=bool),
+        freedoms=np.full(2, 3, dtype=np.uint8),
+        outline=np.asarray([[-5.0, -5.0], [25.0, -5.0], [25.0, 5.0], [-5.0, 5.0]]),
+        pose0=np.asarray([[10.0, 0.0, 0.0, 0.0], [0.0, 0.0, 0.0, 0.0]]),
+        net_name=("N0", "N1"),
+        pin_wh=np.asarray([[0.8, 1.0], [0.8, 1.0]]),
+    )
+    ir = SimpleNamespace(
+        n_pins=2,
+        n_nets=2,
+        pin_net=np.asarray([0, 0]),
+        pin_instance=np.asarray([0, 1]),
+        pin_label=np.asarray(["1"] * 2, dtype=object),
+        instance_refdes=np.asarray(list(d.parts), dtype=object),
+        net_name=np.asarray(list(d.net_name), dtype=object),
+        net_plane_layers=np.zeros(2, dtype=np.uint16),
+    )
+    return d, ir
+
+
+def test_severed_net_is_withdrawn_and_reported_unconnected() -> None:
+    """gr537831's defence: before a net may report ``realized`` its
+    committed copper — pieces, vias and the pads they must reach — must
+    be ONE connected piece. A piece on the WRONG layer at the far pad's
+    coordinates (the s5 BOOT shape) is severed and withdrawn whole like
+    ``guarded``, and ``sketch_rows`` reports the net ``failed``."""
+    d, ir = _sever_fixture()
+    pose = np.asarray(d.pose0)
+
+    # joined emit: one piece reaching both pads — not severed
+    ok = RoutePlan(
+        pieces=(
+            RoutePiece(net=0, branch=0, layer=0, points=((-1.0, 0.0), (16.0, 0.0))),
+        ),
+        vias=(),
+        layers=(0,),
+    )
+    assert _severed_nets(ok, d, ir, 4, pose, {}) == {}
+
+    # the BOOT shape: a single piece on the wrong layer at the pad's XY —
+    # both F.Cu pads are islands and the piece joins nothing.
+    wrong_layer = RoutePlan(
+        pieces=(
+            RoutePiece(net=0, branch=0, layer=3, points=((14.0, 0.0), (16.0, 0.0))),
+        ),
+        vias=(),
+        layers=(3,),
+    )
+    assert set(_severed_nets(wrong_layer, d, ir, 4, pose, {})) == {0}
+
+    # two pieces on the right layer that never join — also severed.
+    split = RoutePlan(
+        pieces=(
+            RoutePiece(net=0, branch=0, layer=0, points=((14.0, 0.0), (16.0, 0.0))),
+            RoutePiece(net=0, branch=1, layer=0, points=((-1.0, 0.0), (1.0, 0.0))),
+        ),
+        vias=(),
+        layers=(0, 0),
+    )
+    assert set(_severed_nets(split, d, ir, 4, pose, {})) == {0}
+
+    # the report: severed reads as a failed net, like short-risk.
+    rows = sketch_rows(
+        dataclasses.replace(wrong_layer, severed=(0,)),
+        d,
+        ir,
+        ["F.Cu", "In1.Cu", "In2.Cu", "B.Cu"],
+    )
+    assert rows["N0"]["status"] == "failed"
+    assert rows["N0"]["fail"]["problems"][-1]["reason"] == "unconnected"
+
+
+def test_severed_circle_pad_corner_touch_counts_severed() -> None:
+    """gr537831 review: the emit check reads a round pad as its
+    inscribed disk — a piece that reaches only the pad's bounding-box
+    CORNER joins nothing, the same geometry
+    ``connectivity._pad_primitives`` flashes. The pads are 1x1 circles
+    at world (15,0)/(0,0): the piece ends at the right pad's (15.5,0.5)
+    bbox corner but stays outside the r=0.5 disk — severed, where the
+    old rect convention read the corner touch as a join."""
+    d, ir = _sever_fixture()
+    d = dataclasses.replace(
+        d,
+        pin_wh=np.asarray([[1.0, 1.0], [1.0, 1.0]]),
+        pin_shape=np.asarray(["circle", "circle"], dtype=object),
+    )
+    pose = np.asarray(d.pose0)
+    corner_only = RoutePlan(
+        pieces=(
+            RoutePiece(
+                net=0,
+                branch=0,
+                layer=0,
+                points=((-1.0, 0.0), (1.0, 0.0), (15.5, 1.5), (15.5, 0.5)),
+            ),
+        ),
+        vias=(),
+        layers=(0,),
+    )
+    severed = _severed_nets(corner_only, d, ir, 4, pose, {})
+    assert set(severed) == {0}
+    # the piece joins just the one pad at (0,0) — floating copper, dropped
+    assert severed[0][0] == frozenset({0})
+
+
+def test_severed_stranded_net_keeps_joined_branch() -> None:
+    """gr537831 review rule: a copper component joining >=2 of the
+    net's pads STAYS — a stranded net keeps the branch it did route.
+    Three pads on net N0: one piece joins pads 1+2, a second floats,
+    pad 3 is unreachable. The good component's copper is kept, the
+    floater is dropped, and the net still reports severed."""
+    d = TopoDesign(
+        parts=("P1", "P2", "P3"),
+        pin_xy=np.asarray([[5.0, 0.0], [0.0, 0.0], [0.0, 0.0]]),
+        pin_part=np.asarray([0, 1, 2]),
+        pin_side=np.asarray([0, 0, 0], dtype=np.int8),
+        pin_label=np.asarray(["1"] * 3, dtype=object),
+        pin_net=np.asarray([0, 0, 0], dtype=np.int32),
+        net_pins=(np.asarray([0, 1, 2]),),
+        flex=(),
+        swap_groups=(),
+        fixed=np.zeros(3, dtype=bool),
+        freedoms=np.full(3, 3, dtype=np.uint8),
+        outline=np.asarray([[-5.0, -5.0], [40.0, -5.0], [40.0, 5.0], [-5.0, 5.0]]),
+        pose0=np.asarray(
+            [[10.0, 0.0, 0.0, 0.0], [0.0, 0.0, 0.0, 0.0], [30.0, 0.0, 0.0, 0.0]]
+        ),
+        net_name=("N0",),
+        pin_wh=np.asarray([[0.8, 1.0]] * 3),
+    )
+    ir = SimpleNamespace(
+        n_pins=3,
+        n_nets=1,
+        pin_net=np.asarray([0, 0, 0]),
+        pin_instance=np.asarray([0, 1, 2]),
+        pin_label=np.asarray(["1"] * 3, dtype=object),
+        instance_refdes=np.asarray(list(d.parts), dtype=object),
+        net_name=np.asarray(list(d.net_name), dtype=object),
+        net_plane_layers=np.zeros(1, dtype=np.uint16),
+    )
+    emit = RoutePlan(
+        pieces=(
+            RoutePiece(net=0, branch=0, layer=0, points=((-1.0, 0.0), (15.0, 0.0))),
+            RoutePiece(net=0, branch=1, layer=0, points=((36.0, 3.0), (38.0, 3.0))),
+        ),
+        vias=(),
+        layers=(0, 0),
+    )
+    severed = _severed_nets(emit, d, ir, 4, np.asarray(d.pose0), {})
+    assert set(severed) == {0}
+    drop_p, drop_v = severed[0]
+    assert drop_p == frozenset({1})  # the floater goes, branch 0 stays
+    assert drop_v == frozenset()
+    rows = sketch_rows(
+        dataclasses.replace(emit, severed=(0,)),
+        d,
+        ir,
+        ["F.Cu", "In1.Cu", "In2.Cu", "B.Cu"],
+    )
+    assert rows["N0"]["status"] == "failed"
+    assert rows["N0"]["fail"]["problems"][-1]["reason"] == "unconnected"
+
+
+def _unwind_fixture(
+    interior: tuple[float, float], extra_pads: list[tuple[float, float, float, float]]
+) -> tuple[TopoDesign, TopoMesh, Wires]:
+    """Two branches crossing shared mesh edge 0: the peer b0 runs
+    straight along y=0, the mover b1 keeps both endpoints below it
+    (slot side -1) with one interior vertex. ``wires.order`` puts b0
+    first so the unwind pushes b1's wrong-side vertex back below the
+    peer — unless the move is refused."""
+    n_layers = 4
+    pin_xy = [(0.0, 0.0), (10.0, 0.0), (0.0, -1.0), (10.0, -1.0)]
+    mesh = TopoMesh(
+        verts=np.asarray(pin_xy, dtype=float),
+        tris=np.zeros((0, 3), np.int32),
+        edges=np.asarray([[0, 1]], np.int32),
+        tri_edges=np.zeros((0, 3), np.int32),
+        edge_tris=np.zeros((1, 2), np.int32),
+        constrained=np.zeros(1, dtype=bool),
+        pad_vertex={},
+    )
+    wires = Wires(
+        branches=(
+            WirePath(
+                net=0,
+                pin_a=0,
+                pin_b=1,
+                tris=(),
+                edges=(0,),
+                t=(0.0,),
+                points=((0.0, 0.0), (10.0, 0.0)),
+            ),
+            WirePath(
+                net=1,
+                pin_a=2,
+                pin_b=3,
+                tris=(),
+                edges=(0,),
+                t=(0.0,),
+                points=((0.0, -1.0), interior, (10.0, -1.0)),
+            ),
+        ),
+        order=((0, 1),),
+        capacity_mm=np.zeros(1),
+        net_layers=(frozenset({0, n_layers - 1}),) * 2,
+        unreachable=(),
+        gap_free_mm=np.full((2, n_layers), -1.0),
+        gap_cap=np.full((2, n_layers), -1),
+    )
+    d = TopoDesign(
+        parts=("P",),
+        pin_xy=np.asarray(pin_xy, dtype=float),
+        pin_part=np.zeros(4, dtype=np.int64),
+        pin_side=np.zeros(4, dtype=np.int8),
+        pin_label=np.asarray(["1"] * 4, dtype=object),
+        pin_net=np.asarray([0, 0, 1, 1], dtype=np.int32),
+        net_pins=(np.asarray([0, 1]), np.asarray([2, 3])),
+        flex=(),
+        swap_groups=(),
+        fixed=np.zeros(1, dtype=bool),
+        freedoms=np.full(1, 3, dtype=np.uint8),
+        outline=np.asarray([[-1.0, -2.0], [11.0, -2.0], [11.0, 12.0], [-1.0, 12.0]]),
+        pose0=np.zeros((1, 4)),
+        net_name=("N0", "N1"),
+        pin_wh=np.zeros((4, 2)),
+        pad_extra_xy=np.asarray([[x, y] for x, y, _w, _h in extra_pads] or []).reshape(
+            -1, 2
+        ),
+        pad_extra_wh=np.asarray([[w, h] for _x, _y, w, h in extra_pads] or []).reshape(
+            -1, 2
+        ),
+        pad_extra_part=np.zeros(len(extra_pads), dtype=np.int64),
+        pad_extra_pin=np.full(len(extra_pads), -1, dtype=np.int64),
+        pad_extra_side=np.zeros(len(extra_pads), dtype=np.int8),
+    )
+    return d, mesh, wires
+
+
+def test_unwind_far_side_move_is_rejected() -> None:
+    """gr537831 review: the unwind's push is bounded — an interior
+    vertex whose slot-side target sits more than the cap's few gaps
+    away is a weave, not a fan, and keeps its old position instead of
+    being dragged across the board."""
+    from precis.pcb.topoplace.realise import _spoke_offsets
+
+    d, mesh, wires = _unwind_fixture((5.0, 10.0), [])
+    paths = _spoke_offsets(d, mesh, wires, 4)
+    assert (5.0, 10.0) in paths[1]
+
+
+def test_unwind_move_leading_through_foreign_pad_is_rejected() -> None:
+    """gr537831 review: the moved vertex's TWO new legs are checked —
+    a candidate point can be clean while its leg crosses a foreign
+    pad. The unpinned land sits under only the pushed leg's path: the
+    old legs pass 0.31 mm clear of it while the new leg crosses it, so
+    the point intrusion tie alone (the old check) accepts the move and
+    the leg margin check refuses it — the vertex stays on its wrong
+    side."""
+    from precis.pcb.topoplace.realise import _spoke_offsets
+
+    d, mesh, wires = _unwind_fixture((5.0, 0.2), [(4.35, -0.475, 0.7, 0.25)])
+    paths = _spoke_offsets(d, mesh, wires, 4)
+    assert (5.0, 0.2) in paths[1]

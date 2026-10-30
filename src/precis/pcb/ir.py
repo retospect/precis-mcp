@@ -310,11 +310,13 @@ class PcbIR:
     #: same cached geometry for router/DRC/gerber-preview.
     pin_w: np.ndarray
     pin_h: np.ndarray
-    #: object[n_pins] -> str ('circle'|'rect') — real SMD pads are not
-    #: circles (module docstring's "non-circular pads" note); a synthesized
-    #: bound picks the shape its own package family would plausibly have
-    #: (round for a THT header/testpoint, rectangular otherwise). Nothing
-    #: downstream may assume 'circle' — :func:`precis.pcb.realize.
+    #: object[n_pins] -> str ('circle'|'rect'|'obround'|'polygon') — real
+    #: SMD pads are not circles (module docstring's "non-circular pads"
+    #: note); a synthesized bound picks the shape its own package family
+    #: would plausibly have (round for a THT header/testpoint,
+    #: rectangular otherwise), and :meth:`set_pin_pad` replaces it with
+    #: the real pad's declared shape when the footprint join runs.
+    #: Nothing downstream may assume 'circle' — :func:`precis.pcb.realize.
     #: pads_for_ir`'s consumers read this field rather than hardcoding one.
     pin_shape: np.ndarray
     #: bool[n_pins] — same discipline as ``pin_offsets_synthesized``, but
@@ -958,23 +960,31 @@ class PcbIR:
         w: float,
         h: float,
         poly: list[tuple[float, float]] | None = None,
+        shape: str | None = None,
     ) -> None:
         """L3 mutator: replace one pin's SYNTHESIZED pad size with the real
         footprint pad's extent (footprint-local mm, unrotated by the
-        instance pose — :attr:`pin_w`'s own frame), and its outline ring
+        instance pose — :attr:`pin_w`'s own frame), its outline ring
         when the pad is a polygon (relative to the pin centre, as
-        :attr:`pin_poly` stores it). The size half of
-        :meth:`set_pin_offset`: gr460567 — real positions with synthesized
-        sizes made :func:`instance_courtyard_polygon` union undersized
-        pads at real coordinates, so courtyards cut through real pads and
-        the placer reserved too little. A pin's OTHER same-labelled pads
-        are not this pin's size; they live in :attr:`footprint_pads`. Same
-        dirty cascade as :meth:`set_pin_offset`."""
+        :attr:`pin_poly` stores it), and its declared ``shape`` —
+        without it the synthesized guess survives on the real pad
+        (gr537831: a THT-bound 'circle' left standing on a rect 1.4x1.2
+        land made ``_pad_polys`` flash the inscribed disk, and the emit
+        corner check admitted legs inside the real pad's margin). The
+        size half of :meth:`set_pin_offset`: gr460567 — real positions
+        with synthesized sizes made :func:`instance_courtyard_polygon`
+        union undersized pads at real coordinates, so courtyards cut
+        through real pads and the placer reserved too little. A pin's
+        OTHER same-labelled pads are not this pin's size; they live in
+        :attr:`footprint_pads`. Same dirty cascade
+        as :meth:`set_pin_offset`."""
         self.pin_w[pin_id] = w
         self.pin_h[pin_id] = h
         if poly:
             self.pin_poly[pin_id] = list(poly)
             self.pin_shape[pin_id] = "polygon"
+        elif shape:
+            self.pin_shape[pin_id] = shape
         self.pin_pad_synthesized[pin_id] = False
         self._dirty_pin_geometry(pin_id)
 
