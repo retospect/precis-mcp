@@ -4,21 +4,20 @@
 <div class="flex items-baseline justify-between mb-4">
   <h1 class="text-lg font-semibold">Asks</h1>
   <span class="text-sm text-fg-subtle">
-    {{ asks|length }} todo{{ '' if asks|length == 1 else 's' }} waiting on you
+    {{ total }} row{{ '' if total == 1 else 's' }} waiting on you
   </span>
 </div>
 
-{% if not asks %}
+{% if not groups %}
 <p class="text-sm text-fg-subtle">
   Nothing's waiting on you. Open todos carrying an
-  <span class="font-mono">ask-user</span> tag will appear here.
+  <span class="font-mono">ask-user</span> tag, claimed slices
+  <span class="font-mono">waiting-for:reto</span>, and gripes tagged
+  <span class="font-mono">needs:ruling</span> or
+  <span class="font-mono">discussion</span> will appear here.
 </p>
 {% else %}
-<ul class="space-y-3">
-  {% for a in asks %}
-  {% include "asks/_row.html.j2" %}
-  {% endfor %}
-</ul>
+{% with next_path = "/asks" %}{% include "asks/_groups.html.j2" %}{% endwith %}
 
 {% if page > 1 or has_next %}
 <div class="mt-4 flex items-center gap-3 text-sm">

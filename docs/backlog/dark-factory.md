@@ -355,7 +355,11 @@ with the seconds-cheap checks only.
    fed by `ask-user:` todos, `waiting-for:reto`, review-queue files,
    gripes tagged `needs:ruling`, red releases and tripped breakers.
    Replaces the review session's gather step. Argument = comments on the
-   row; `all users see all` for now.
+   row; `all users see all` for now. **Built (td540847):** `view='asks'`,
+   `/asks`, Needs-you; ask-user, `waiting-for:reto`, `needs:ruling`,
+   `discussion` and review-queue files are sources. **Open:** red
+   releases and tripped breakers (no source until step 4), mindmeld
+   questions (Round 3's turn), live tmux dialogs.
 
 2. **Loop chunks on slices, not only gripes** (one to two builds).
    `edit(kind='todo', mode='fix', args={brief|handoff|review|landed})`

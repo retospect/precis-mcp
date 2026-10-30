@@ -2,9 +2,11 @@
 
 Folds the two queues where *you* must act into one landing:
 
-* **Asks** — open ``kind='todo'`` refs carrying an ``ask-user`` tag
-  (the planner is paused on a question). Rendered fully interactive:
-  answer inline to unlock the todo. The answer / dismiss forms POST to
+* **Asks** — everything waiting on a human, in three classes
+  (showstopper / decision / discussion) grouped by quest and thread
+  (:mod:`precis.todo.asks_view`). Open ``kind='todo'`` refs carrying an
+  ``ask-user`` tag (the planner is paused on a question) render fully
+  interactive: answer inline to unlock the todo. The answer / dismiss forms POST to
   ``/asks/...`` — the standalone Asks page is kept for those deep links
   and for its own pager.
 * **Needs triage** — ``kind='paper'`` refs tagged ``needs-triage``
@@ -32,7 +34,7 @@ from fastapi import APIRouter, Request
 from fastapi.responses import HTMLResponse
 
 from precis_web.deps import get_store, templates
-from precis_web.routes.asks import _load_asks
+from precis_web.routes.asks import CLASS_HINTS, _load_asks, class_groups
 from precis_web.routes.papers import _TRIAGE_TAG
 
 router = APIRouter(prefix="/needs-you", tags=["needs-you"])
@@ -49,6 +51,7 @@ async def index(request: Request) -> HTMLResponse:
     """Combined asks + needs-triage landing."""
     store = get_store(request)
     asks = _load_asks(store, limit=_ASK_CAP)
+    groups, ask_by_id = class_groups(store, asks)
 
     triage_total = store.count_refs(kind="paper", tags=[_TRIAGE_TAG])
     triage_refs = store.list_refs(
@@ -71,6 +74,10 @@ async def index(request: Request) -> HTMLResponse:
         {
             "active_tab": "needs-you",
             "asks": asks,
+            "groups": groups,
+            "ask_by_id": ask_by_id,
+            "class_hints": CLASS_HINTS,
+            "total": sum(g.count for g in groups),
             "triage": triage,
             "triage_total": triage_total,
             "triage_more": max(0, triage_total - len(triage)),

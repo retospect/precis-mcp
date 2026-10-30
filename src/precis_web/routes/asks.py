@@ -28,6 +28,14 @@ the re-ticked agent to judge the answer and re-yield a follow-up
 ``ask-user:`` when it's inadequate — then (2) strips every
 ``ask-user`` tag on the todo so the doable rotation can pick it up
 again.
+
+Rows are grouped by class (showstopper / decision / discussion) and then
+by quest and thread — the web mirror of ``search(kind='todo',
+view='asks')`` (:mod:`precis.todo.asks_view`). Ask-user todos keep the
+answer form; the other rows (a ``waiting-for:reto`` slice, a gripe
+tagged ``needs:ruling``, a ``discussion`` row, a review-queue file) are
+compact lines whose handle opens the row, where the argument happens as
+comments. :func:`class_groups` is shared with the Needs-you landing.
 """
 
 from __future__ import annotations
@@ -38,6 +46,14 @@ from typing import TYPE_CHECKING, Any
 from fastapi import APIRouter, Form, Request, Response
 from fastapi.responses import HTMLResponse, RedirectResponse
 
+from precis.todo.asks_view import (
+    CLASS_HINTS,
+    DECISION,
+    AskRow,
+    AsksModel,
+    ClassGroup,
+    asks_model,
+)
 from precis.utils import handle_registry
 from precis_web.deps import await_dispatch, get_store, redirect_or_error, templates
 from precis_web.linkify import popover_chip
@@ -360,6 +376,45 @@ def _load_asks(
     return out
 
 
+def class_groups(
+    store: Store, asks: list[dict[str, Any]], *, first_page: bool = True
+) -> tuple[list[ClassGroup], dict[int, dict[str, Any]]]:
+    """Class → quest → thread groups for the page, plus ``ask_by_id``.
+
+    ``asks`` are the answerable ``ask-user`` rows (:func:`_load_asks`);
+    each takes its class and quest from the model, falling back to a
+    quest-less decision. The model's other rows (no answer form) join on
+    ``first_page`` only, so paging the asks never repeats them.
+    """
+    model = asks_model(store)
+    by_id = {r.ref_id: r for r in model.rows if r.kind == "todo"}
+    rows: list[AskRow] = []
+    for a in asks:
+        rid = int(a["id"])
+        found = by_id.get(rid)
+        rows.append(
+            found
+            or AskRow(
+                klass=DECISION,
+                kind="todo",
+                ref_id=rid,
+                handle=handle_registry.try_format("todo", rid) or f"todo:{rid}",
+                title=str(a.get("title") or ""),
+                reasons=("ask-user",),
+            )
+        )
+    if first_page:
+        ask_ids = {int(a["id"]) for a in asks}
+        rows += [
+            r
+            for r in model.rows
+            if not (
+                r.kind == "todo" and ("ask-user" in r.reasons or r.ref_id in ask_ids)
+            )
+        ]
+    return AsksModel(rows=tuple(rows)).groups(), {int(a["id"]): a for a in asks}
+
+
 #: Rows per page on the asks queue.
 _PAGE_SIZE = 50
 
@@ -374,12 +429,17 @@ async def index(request: Request, page: int = 1) -> HTMLResponse:
     asks = _load_asks(store, limit=_PAGE_SIZE + 1, offset=offset)
     has_next = len(asks) > _PAGE_SIZE
     asks = asks[:_PAGE_SIZE]
+    groups, ask_by_id = class_groups(store, asks, first_page=page == 1)
     return templates.TemplateResponse(
         request,
         "asks/index.html.j2",
         {
             "active_tab": "asks",
             "asks": asks,
+            "groups": groups,
+            "ask_by_id": ask_by_id,
+            "class_hints": CLASS_HINTS,
+            "total": sum(g.count for g in groups),
             "page": page,
             "has_next": has_next,
         },

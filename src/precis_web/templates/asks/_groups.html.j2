@@ -1,0 +1,53 @@
+{# The asks by class -> quest -> thread. Shared by the Asks queue and the
+   Needs-you landing. Expects: groups (ClassGroup list from
+   routes.asks.class_groups), ask_by_id (id -> answerable ask dict),
+   class_hints, next_path (where an answer returns the operator). An
+   ask-user todo renders the full _row partial with its answer form; any
+   other row is one compact line whose handle opens the row — the
+   argument happens as comments there. #}
+{% for g in groups %}
+<section class="mb-8" data-ask-class="{{ g.klass }}">
+  <h2 class="text-xs font-semibold uppercase tracking-wide {{ 'text-danger' if g.klass == 'showstopper' else 'text-fg-faint' }} mb-3">
+    {{ g.klass }} <span class="text-fg-ghost normal-case">— {{ class_hints[g.klass] }} ({{ g.count }})</span>
+  </h2>
+  {% for qg in g.quests %}
+  <div class="mb-4">
+    <div class="text-xs font-medium text-fg-subtle mb-2">
+      {% if qg.quest_id %}
+      &#9670; <a href="/r/quest/{{ qg.quest_id }}" class="hover:text-success-strong hover:underline">{{ qg.title or ('quest #' ~ qg.quest_id) }}</a>
+      {% else %}
+      <span class="text-fg-faint">no quest</span>
+      {% endif %}
+    </div>
+    {% for tg in qg.threads %}
+    {% if tg.thread %}
+    <div class="ml-4 mb-1 text-[11px] font-mono text-fg-faint">thread:{{ tg.thread }}</div>
+    {% endif %}
+    <ul class="space-y-3 mb-3">
+      {% for r in tg.rows %}
+      {% set a = ask_by_id.get(r.ref_id) if r.kind == 'todo' else none %}
+      {% if a %}
+      {% with next_path = next_path | default('/asks') %}{% include "asks/_row.html.j2" %}{% endwith %}
+      {% else %}
+      <li class="rounded-lg border border-line bg-surface px-4 py-2" data-ask-row="{{ r.handle }}">
+        <div class="flex items-baseline gap-2">
+          {% if r.kind == 'review' %}
+          <span class="text-xs text-fg-faint shrink-0 font-mono">{{ r.handle }}</span>
+          {% else %}
+          <a href="/r/{{ r.kind }}/{{ r.ref_id }}" class="text-xs text-fg-faint hover:text-success-strong shrink-0 font-mono">{{ r.handle }}</a>
+          {% endif %}
+          <div class="min-w-0 flex-1 text-sm text-fg break-words">{{ r.title | linkify_refs }}</div>
+          <span class="shrink-0 text-[11px] font-mono text-fg-faint">{{ r.reasons | join(' ') }}</span>
+        </div>
+        {% if r.question %}
+        <div class="mt-1 ml-14 text-xs text-fg-secondary break-words">{{ r.question | linkify_refs }}</div>
+        {% endif %}
+      </li>
+      {% endif %}
+      {% endfor %}
+    </ul>
+    {% endfor %}
+  </div>
+  {% endfor %}
+</section>
+{% endfor %}

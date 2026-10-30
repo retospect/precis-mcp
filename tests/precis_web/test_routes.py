@@ -6231,6 +6231,98 @@ def test_asks_page_renders_data(client, monkeypatch) -> None:
     assert 'name="remove"' in resp.text
 
 
+def _asks_model_with_classes():
+    """A model with a stopped slice, a quest-less gripe and the ask-user
+    todo the monkeypatched ``_load_asks`` rows describe (td14634)."""
+    from precis.todo.asks_view import AskRow, AsksModel
+
+    def row(klass, kind, rid, handle, title, reasons, **kw):
+        return AskRow(
+            klass=klass,
+            kind=kind,
+            ref_id=rid,
+            handle=handle,
+            title=title,
+            reasons=reasons,
+            **kw,
+        )
+
+    return AsksModel(
+        rows=(
+            row(
+                "showstopper",
+                "todo",
+                77,
+                "td77",
+                "Claimed slice stopped on Reto",
+                ("waiting-for:reto", "claimed-by:slice-x"),
+                quest_id=5,
+                quest_title="Precis runs its own work",
+                thread="factory",
+            ),
+            row(
+                "decision",
+                "todo",
+                14634,
+                "td14634",
+                "Write the technical section",
+                ("ask-user",),
+                quest_id=5,
+                quest_title="Precis runs its own work",
+            ),
+            row(
+                "decision",
+                "gripe",
+                88,
+                "gr88",
+                "Ruling on lane rule",
+                ("needs:ruling",),
+            ),
+        )
+    )
+
+
+_ASK_14634 = {
+    "id": 14634,
+    "title": "Write the technical section",
+    "created_at": None,
+    "questions": ["which venue?"],
+    "tags": ["ask-user:which venue?"],
+}
+
+
+@pytest.mark.parametrize("path", ["/asks", "/needs-you"])
+def test_asks_pages_group_rows_by_class_and_quest(client, monkeypatch, path) -> None:
+    """Showstopper / decision classes head the page, quest-grouped; the
+    ask-user todo keeps its answer form, the other rows are compact lines
+    that open the row (where the argument is a comment)."""
+    from precis_web.routes import asks as asks_mod
+    from precis_web.routes import needs_you as needs_you_mod
+
+    model = _asks_model_with_classes()
+    monkeypatch.setattr(asks_mod, "asks_model", lambda store: model)
+    monkeypatch.setattr(asks_mod, "_load_asks", lambda store, **kw: [_ASK_14634])
+    monkeypatch.setattr(needs_you_mod, "_load_asks", lambda store, **kw: [_ASK_14634])
+    resp = client.get(path)
+    assert resp.status_code == 200
+    text = resp.text
+    assert text.index('data-ask-class="showstopper"') < text.index(
+        'data-ask-class="decision"'
+    )
+    assert "Precis runs its own work" in text
+    assert 'href="/r/quest/5"' in text
+    assert "thread:factory" in text
+    # compact rows: handle opens the row, reasons are bare values
+    assert 'href="/r/todo/77"' in text
+    assert "waiting-for:reto claimed-by:slice-x" in text
+    assert 'href="/r/gripe/88"' in text
+    assert "no quest" in text
+    # the ask-user todo is rendered once, with its form
+    assert text.count('action="/asks/14634/answer"') == 1
+    assert 'data-ask-row="td14634"' not in text
+    assert "which venue?" in text
+
+
 # ── needs-you (unified asks + needs-triage queue) ──────────────────
 
 

@@ -4,12 +4,12 @@
 <div class="flex items-baseline justify-between mb-4" data-tour="needs-you-queue">
   <h1 class="text-lg font-semibold">Needs you</h1>
   <span class="text-sm text-fg-subtle">
-    {{ asks|length }} ask{{ '' if asks|length == 1 else 's' }} ·
+    {{ total }} ask{{ '' if total == 1 else 's' }} ·
     {{ triage_total }} to triage
   </span>
 </div>
 
-{% if not asks and not triage %}
+{% if not groups and not triage %}
 <p class="text-sm text-fg-subtle">
   Nothing's waiting on you — no open
   <span class="font-mono">ask-user</span> todos, and no papers flagged <span class="font-mono">needs-triage</span>.
@@ -17,16 +17,12 @@
 {% endif %}
 
 {# ── Asks ───────────────────────────────────────────────────────── #}
-{% if asks %}
+{% if groups %}
 <section class="mb-8">
   <h2 class="text-xs font-semibold uppercase tracking-wide text-fg-faint mb-3">
-    Asks <span class="text-fg-ghost">— answer to unlock the planner</span>
+    Asks <span class="text-fg-ghost">— by class, then quest; answer to unlock the planner</span>
   </h2>
-  <ul class="space-y-3">
-    {% for a in asks %}
-    {% with next_path = "/needs-you" %}{% include "asks/_row.html.j2" %}{% endwith %}
-    {% endfor %}
-  </ul>
+  {% with next_path = "/needs-you" %}{% include "asks/_groups.html.j2" %}{% endwith %}
 </section>
 {% endif %}
 

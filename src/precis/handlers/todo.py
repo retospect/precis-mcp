@@ -41,7 +41,7 @@ shape with four first-class extensions:
 Views via ``view='<name>'`` on search / get (the canonical surface):
     search(kind='todo', view='roots'|'projects'|'strategic'|'doable'
                               |'waiting'|'blocked'|'ask-user'|'attention'
-                              |'active'|'doing'|'done'|'work')
+                              |'active'|'doing'|'done'|'work'|'asks')
     get(kind='todo', id=N, view='tree')
 
 ``view='work'`` (dark-factory step 1) is the cross-kind hierarchy: quest →
@@ -49,6 +49,12 @@ the roots that ``serves`` it → subtrees, with lease and fleet agents per
 row. The eye (``extent='fisheye+1hop'``) on a todo appends the tree ring
 — parent, peers, children off ``parent_id`` — since the link
 neighbourhood never sees that column (gr541348).
+
+``view='asks'`` (dark-factory step 1b) is everything that waits on the
+human in three classes (showstopper / decision / discussion), grouped by
+quest then thread — ``ask-user:`` todos, ``waiting-for:reto``, gripes
+tagged ``needs:ruling`` or ``discussion``, review-queue files
+(:mod:`precis.todo.asks_view`); the web ``/asks`` shows the same.
 ``id='/<view>'`` paths (/open /queue /doing /blocked /done) are
 deprecated aliases — same render, plus a pointer at the ``view=``
 spelling ('/open' and '/queue' land on ``view='active'``).
@@ -78,7 +84,7 @@ from precis.protocol import ArgsSpec, KindSpec
 from precis.response import Response
 from precis.store import Ref, Tag
 from precis.store.types import TODO_BODY_KIND, ChunkInsert
-from precis.todo import guards, views, work_view
+from precis.todo import asks_view, guards, views, work_view
 from precis.utils import handle_registry
 from precis.utils.edit_resolve import (
     EditOp,
@@ -184,6 +190,9 @@ class TodoView(StrEnum):
     # with lease and fleet agents per row; the one read every later
     # factory step makes (:mod:`precis.todo.work_view`).
     WORK = "work"
+    # Dark-factory step 1b (td540847): the asks list in three classes,
+    # grouped by quest (:mod:`precis.todo.asks_view`).
+    ASKS = "asks"
 
 
 def _view_doable(store: Store, args: dict[str, Any] | None, page_size: int) -> Response:
@@ -234,6 +243,7 @@ _TREE_SEARCH_VIEWS: dict[
     TodoView.FLAT: lambda store, args, ps: views.render_flat(store, limit=ps or 200),
     TodoView.INDEX: lambda store, args, ps: views.render_flat(store, limit=ps or 200),
     TodoView.WORK: lambda store, args, ps: work_view.render_work(store),
+    TodoView.ASKS: lambda store, args, ps: asks_view.render_asks(store),
 }
 
 #: Single-source-of-truth guard: every view in the vocabulary must have
