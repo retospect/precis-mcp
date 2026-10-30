@@ -578,7 +578,24 @@ def _topo_route(
         # had no over-capacity cut (a nonzero record raises instead)
         "corridor_overflow": 0,
         "widened": {str(k): v for k, v in widths.items()},
+        # Whether the numbers above actually landed: an empty route
+        # result skips BOTH writes, so pcb_routes/pcb_copper keep an
+        # earlier run's rows — a reader comparing this meta against the
+        # stored rows must not read the keep as this run's truth
+        # (gr540907: meta said {realized: 7, tracks: 0} while the stored
+        # rows held a previous attempt's {realized: 10, tracks: 3}).
+        "persisted": bool(copper_rows),
     }
+    if not copper_rows:
+        stored = ctx.store.pcb_route_status(pcb_ref_id)
+        meta["stored"] = {
+            "realized": sum(1 for r in stored if r["status"] == "realized"),
+            "tracks": sum(
+                1
+                for c in ctx.store.pcb_copper_list(int(board_id))
+                if c.get("ctype") == "track" and not c.get("fixed")
+            ),
+        }
     widened_line = ""
     if widths:
         widened_line = "; widened " + ", ".join(

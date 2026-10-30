@@ -937,3 +937,25 @@ def test_two_pad_net_without_copper_stays_unrouted(pcb: PcbHandler, store: Any) 
     assert ran is not None
     unrouted = [f for f in ran.findings if f.rule == "unrouted"]
     assert [f.severity for f in unrouted if f.where == "net SIG"] == ["error"]
+
+
+def test_check_run_derives_phase_from_live_route_rows(
+    pcb: PcbHandler, store: Any
+) -> None:
+    """gr540907: a caller-held design dict's ``route_status`` snapshot
+    predates the route stage's write-back (the topo place job's own
+    in-proc check derived ``phase placed`` over committed track rows);
+    the run derives its phase off the LIVE rows, not the snapshot."""
+    from precis.pcb import check_run
+
+    pcb.put(id="chk-stale", args=_mini_design())
+    ref = store.get_ref(kind="pcb", id="chk-stale")
+    assert ref is not None
+    stale = store.pcb_load(ref.id)  # snapshot: every net still unrouted
+    board_id = int(stale["board"]["board_id"])
+    # The route stage's write-back lands after the snapshot was read.
+    store.pcb_routes_write(ref.id, board_id, {"SIG": {"status": "realized"}})
+    ran = check_run.run(store, ref.id, stale, record=True)
+    assert ran is not None
+    run_id, _rows = store.pcb_drc_previous_run(board_id, phase="routed")
+    assert run_id == ran.run_id

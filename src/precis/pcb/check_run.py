@@ -406,6 +406,23 @@ def rule_inputs(
     return courtyards, courtyard_bottom, net_rules, net_voltages, bodies
 
 
+def _fresh_route_status(
+    store: Store, ref_id: int, design: dict[str, Any]
+) -> dict[str, Any]:
+    """``design`` with its ``route_status`` snapshot re-read from the
+    store. A caller-held design dict can predate the last route
+    write-back (gr540907: a check in the same process right after the
+    place job's route stage derived ``phase placed`` off the stale
+    snapshot while the rows were already committed); the phase a run
+    judges at reads the live rows instead."""
+    if design.get("board") is None:
+        return design
+    return {
+        **design,
+        "route_status": pcb_route_state.summarize(store.pcb_route_status(ref_id)),
+    }
+
+
 def design_phase(design: dict[str, Any]) -> str:
     """The phase the check surface judges at (Slice 8): the author's
     claim (``pcb_boards.meta['phase']`` via ``op='phase'``) when one is
@@ -611,6 +628,7 @@ def reuse(
     board = design.get("board")
     if board is None:
         return None
+    design = _fresh_route_status(store, ref_id, design)
     phase = eval_phase or design_phase(design)
     authored = str((board.get("meta") or {}).get("phase") or "")
     if authored not in pcb_drc.PHASES:
@@ -709,6 +727,7 @@ def run(
 
     # The phase this board is judged at: an explicit ``eval_phase``,
     # the authored claim, or the derived default — in that order.
+    design = _fresh_route_status(store, ref_id, design)
     phase = eval_phase or design_phase(design)
     undeclared_unchecked = [
         str(i.get("refdes"))

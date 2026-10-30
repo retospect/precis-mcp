@@ -493,6 +493,15 @@ def test_topo_route_empty_result_keeps_stored_copper(
     job_id = _latest_job(store, ref.id)
     route_meta = (tb._job_meta(store, job_id).get("topo_run") or {}).get("route")
     assert route_meta is not None and route_meta.get("nets") == 2
+    # gr540907: the meta may not silently disagree with the stored rows —
+    # a skipped write-back says so and names the kept tallies.
+    assert route_meta["persisted"] is False
+    assert route_meta["stored"]["realized"] == sum(
+        1 for r in seeded_routes.values() if r.get("status") == "realized"
+    )
+    assert route_meta["stored"]["tracks"] == sum(
+        1 for r in seeded if r["ctype"] == "track"
+    )
     assert "route produced nothing; stored copper kept" in tb.job_summary_text(
         store, job_id
     )
