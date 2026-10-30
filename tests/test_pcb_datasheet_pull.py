@@ -50,7 +50,34 @@ def _design(*parts: str | None) -> dict[str, Any]:
         if part is not None:
             c["part"] = part
         comps.append(c)
-    return {"components": comps}
+    # gr524240: a partless component's `footprint` names a row this board
+    # carries — author the '0402' every component above references.
+    return {
+        "components": comps,
+        "footprints": [
+            {
+                "name": "0402",
+                "pads": [
+                    {
+                        "pin": "1",
+                        "shape": "rect",
+                        "x": -0.5,
+                        "y": 0.0,
+                        "w": 0.8,
+                        "h": 0.9,
+                    },
+                    {
+                        "pin": "2",
+                        "shape": "rect",
+                        "x": 0.5,
+                        "y": 0.0,
+                        "w": 0.8,
+                        "h": 0.9,
+                    },
+                ],
+            }
+        ],
+    }
 
 
 @pytest.fixture
