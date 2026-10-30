@@ -57,23 +57,82 @@
 # Escape hatches: PRECIS_NO_AUTOREAP=1 → no-op. PRECIS_NO_CI_REF_REAP=1 →
 # worktrees still reaped, remote refs left alone (also the switch for a
 # machine that should never touch the remote).
-# Usage: scripts/reap-worktrees [--dry-run] [--for-hook]
+# Usage: scripts/reap-worktrees [--dry-run] [--for-hook] [--report] [--full]
+#
+# --report is the READ-ONLY census /workspace-cleanup runs first: it prints
+# the buckets below with counts plus name lists (first 8, then "+N more";
+# --report --full prints every name) and exits. It never removes, unlocks,
+# prunes or deletes anything, never waits out the grace period, and ignores
+# PRECIS_NO_AUTOREAP (that hatch gates reaping, not reading).
+#
+#   Worktrees (primary excluded):
+#     missing dir (prunable)   the git admin entry outlives its checkout
+#     locked (holder live)     session field live#<pid>/live-task#<id>, or a
+#                              lock with no parseable `pid <N>` — never
+#                              assumed dead (incident 2026-08-15, defect 2)
+#     locked (holder dead)     dead-lock#<pid>
+#     dirty                    tracked changes, or untracked files only —
+#                              either way content dies with the tree
+#     dirty (<runbook> only)   every TRACKED change is the shared runbook
+#                              docs/runbooks/memory-sibling-repos.md, which
+#                              every session edits locally; untracked files
+#                              do not disqualify
+#     clean+merged             head is an ancestor of origin/main, PLUS a
+#                              `landed` sub-count (below)
+#     clean+unmerged           real commits not yet on origin/main
+#   Branches with no worktree:
+#     merged                   tip is an ancestor of origin/main
+#     landed                   the squash-landed case (below)
+#     unique                   real unlanded commits
+#
+# `landed` is what a plain ancestor or `git cherry` check cannot see: a
+# squash-merged branch is no ancestor, and cherry's per-commit patch-ids
+# never match one multi-commit squash. It is tested in two tiers. First,
+# `git merge-tree --write-tree origin/main <rev>` yielding exactly
+# origin/main's tree (the same content-equality test inflight's
+# squash_absorbed uses). That fails — with a conflict, not a different
+# tree — the moment main touches one of the squashed files again, so a
+# second tier runs `git diff --raw <merge-base> <rev>` and counts the head
+# landed when every changed path proves landed: its dst blob exists in
+# origin/main's history at that path, or — the squash-time-fixup case, a
+# landing that adapted a file — the base touched the same path in the
+# window (at least one exact blob match required). Deletions require the
+# path absent from the base tree; an empty diff is merged. Blob-matched
+# heads print as their own
+# sub-count, "landed (content on main, since overtaken)". For clean
+# worktrees both landed tiers count inside clean+merged; for branchless
+# branches each is its own bucket.
+#
+# Cost shape (the >10 min scratch classifier this replaces): ONE
+# `scripts/inflight --json` for every tree's dirty/lock/liveness AND every
+# head's landed verdict (never a git status per tree — only the handful of
+# tracked-dirty trees get one, for the runbook-only check), ONE `git branch
+# --merged origin/main` for the whole ancestor set, and merge-tree only
+# when the local base tree differs from origin/main's (or a verdict is
+# missing) — a rare path, run in a parallel pool of 12. The report's wall
+# time is then essentially inflight's own scan.
 #
 # Wired in .claude/settings.json (SessionStart), after `inflight --for-hook`.
 set -uo pipefail
 
-[ -n "${PRECIS_NO_AUTOREAP:-}" ] && exit 0
-
 DRY_RUN=0
 FOR_HOOK=0
+REPORT=0
+FULL=0
 for a in "$@"; do
     case "$a" in
         --dry-run) DRY_RUN=1 ;;
         # gr499042: SessionStart output is carried every turn — a reaper that
         # found nothing prints nothing under --for-hook.
         --for-hook) FOR_HOOK=1 ;;
+        # Read-only census (see header): no removal, no grace sleep, and the
+        # autoreap escape hatch does not gate it.
+        --report) REPORT=1 ;;
+        --full) FULL=1 ;;
     esac
 done
+
+[ -n "${PRECIS_NO_AUTOREAP:-}" ] && [ "$REPORT" = 0 ] && exit 0
 
 GRACE_SECONDS="${PRECIS_REAP_GRACE_SECONDS:-60}"
 PURPOSE_FRESH_SECONDS="${PRECIS_REAP_PURPOSE_FRESH_SECONDS:-21600}"  # 6h
@@ -107,6 +166,340 @@ fi
 # lands in (inflight already buckets it `base`, but a destructive op earns its
 # own guard — git refuses anyway, we just don't rely on that).
 PRIMARY=$(git worktree list --porcelain 2>/dev/null | awk '/^worktree /{print $2; exit}')
+
+# report — the read-only census the header documents. One inflight --json
+# supplies every tree's session/dirty state AND the branchless-branch list
+# (worktree: null); `git branch --merged origin/<base>` supplies the whole
+# ancestor set in one call; merge-tree runs only for heads still
+# unresolved, in a parallel pool. Prints and exits — nothing is removed,
+# unlocked, pruned or deleted and the grace period is never slept through.
+report() {
+    local json
+    json=$(scripts/inflight --json 2>/dev/null) || return 0
+    [ -z "$json" ] && return 0
+    printf '%s' "$json" | PRIMARY="$PRIMARY" REPORT_FULL="$FULL" python3 -c '
+import json
+import os
+import subprocess
+import sys
+from concurrent.futures import ThreadPoolExecutor
+
+PRIMARY = os.environ.get("PRIMARY", "")
+CAP = None if os.environ.get("REPORT_FULL") == "1" else 8
+RUNBOOK = "docs/runbooks/memory-sibling-repos.md"
+POOL = 12
+
+
+def g(*args, cwd=None):
+    return subprocess.run(
+        ["git", *args], cwd=cwd,
+        capture_output=True, text=True, encoding="utf-8")
+
+
+def gout(*args, cwd=None):
+    return g(*args, cwd=cwd).stdout.strip()
+
+
+data = json.load(sys.stdin)
+base = data.get("base", "main")
+ref = "origin/" + base
+base_tree = gout("rev-parse", ref + "^{tree}")
+if not base_tree:
+    print("reap-worktrees --report: no " + ref + " ref, landed checks "
+          "skipped", file=sys.stderr)
+
+# The inflight verdict already encodes the merge-tree landed test against the
+# LOCAL base (merged / in-main / up-arrows). When local base and <ref> have
+# the same tree — the normal state after a fetch — that verdict IS the
+# answer against <ref> too, and no merge-tree call is needed. Only when the
+# trees differ (or a verdict is absent/unknown) does the merge-tree pool
+# below run, once per still-unresolved head.
+same_tree = bool(base_tree) and gout("rev-parse", base + "^{tree}") == base_tree
+
+merged = set()
+for ln in gout("branch", "--merged", ref,
+               "--format=%(refname:short)").splitlines():
+    ln = ln.strip().lstrip("*+").strip()
+    if ln:
+        merged.add(ln)
+
+missing, lk_live, lk_dead = [], [], []
+dirty, dirty_rb = [], []
+clean_anc, clean_landed, clean_blob, clean_unmerged = [], [], [], []
+br_merged, br_landed, br_blob, br_unique = [], [], [], []
+mt_rev, mt_kind, mt_name = [], [], []
+dirty_pending = []
+blob_rev, blob_kind, blob_name = [], [], []
+
+
+def enqueue(rev, kind, name):
+    mt_rev.append(rev)
+    mt_kind.append(kind)
+    mt_name.append(name)
+
+
+def enqueue_blob(rev, kind, name):
+    blob_rev.append(rev)
+    blob_kind.append(kind)
+    blob_name.append(name)
+
+
+def landed_bucket(kind):
+    return clean_landed if kind == "w" else br_landed
+
+
+def classify(rev, kind, name, verdict):
+    # Route a non-ancestor head toward merged vs unique. With same-tree
+    # bases the inflight verdict is authoritative and free: merged/in-main
+    # means merge-tree-equal (landed); up-arrows means merge-tree differs
+    # and the head goes straight to the blob-history test (a squash land
+    # that main later touched conflicts in merge-tree but still counts —
+    # see blob_set below). Else merge-tree decides first.
+    if same_tree:
+        if verdict == "merged" or verdict.startswith("in-main"):
+            landed_bucket(kind).append(name)
+            return
+        if verdict.startswith("↑"):
+            enqueue_blob(rev, kind, name)
+            return
+    enqueue(rev, kind, name)
+
+
+for w in data.get("worktrees", []):
+    if not w.get("worktree"):
+        # Branchless branch: inflight already filtered out base, ci/* and
+        # anything checked out anywhere (worktree: null is the tell).
+        b = w.get("branch") or w.get("name") or ""
+        if not b:
+            continue
+        if b in merged:
+            br_merged.append(b)
+        else:
+            classify(b, "b", b, w.get("verdict") or "")
+        continue
+    path = w.get("path") or ""
+    name = w.get("name") or os.path.basename(path)
+    if w.get("bucket") == "base" or path == PRIMARY:
+        continue
+    if not os.path.isdir(path):
+        missing.append(name)
+        continue
+    sess = w.get("session") or "—"
+    if sess.startswith("dead-lock"):
+        lk_dead.append(name)
+        continue
+    if sess == "locked" or sess.startswith("live"):
+        lk_live.append(name)
+        continue
+    dirtyf = w.get("dirty") or ""
+    if dirtyf != "clean":
+        # Tracked count is the leading number before any "+<N>u"; empty
+        # means untracked-only, which is plain dirty (cannot be runbook) —
+        # skip the status call entirely there. Tracked-dirty trees queue
+        # for the parallel status pass after the loop.
+        tracked = dirtyf.split("+", 1)[0]
+        if not tracked:
+            dirty.append(name)
+        else:
+            dirty_pending.append((name, path))
+        continue
+    branch = w.get("branch") or ""
+    verdict = w.get("verdict") or ""
+    if branch and branch != "(detached)":
+        if branch in merged:
+            clean_anc.append(name)
+        else:
+            classify(branch, "w", name, verdict)
+        continue
+    # Detached head: no branch name to look up in the merged set.
+    if g("merge-base", "--is-ancestor", "HEAD", ref,
+         cwd=path).returncode == 0:
+        clean_anc.append(name)
+        continue
+    head = gout("rev-parse", "HEAD", cwd=path)
+    if head:
+        classify(head, "w", name, verdict)
+    else:
+        clean_unmerged.append(name)
+
+
+def dirty_files(item):
+    # Raw stdout, not gout: a porcelain line leads with its status column
+    # (" M path"), so stripping the whole output would eat the leading
+    # status chars of the first entry and corrupt its path.
+    name, path = item
+    st = g("status", "--porcelain", "--untracked-files=no",
+           cwd=path).stdout
+    return name, [l[3:] for l in st.splitlines() if l.strip()]
+
+
+def absorbed(rev):
+    # Landed = merging <rev> into <ref> produces exactly the tree <ref> has,
+    # i.e. <rev> contributes no content the base lacks (squash_absorbed in
+    # inflight, same test). Exit 1 is a conflicted merge — the printed tree
+    # still cannot equal the base tree, so one read covers both exits.
+    if not base_tree:
+        return False
+    r = subprocess.run(
+        ["git", "merge-tree", "--write-tree", ref, rev],
+        capture_output=True, text=True, encoding="utf-8")
+    if r.returncode not in (0, 1):
+        return False
+    return r.stdout.split("\n", 1)[0].strip() == base_tree
+
+
+if dirty_pending:
+    with ThreadPoolExecutor(max_workers=POOL) as pool:
+        for name, paths in pool.map(dirty_files, dirty_pending):
+            if paths and all(p == RUNBOOK for p in paths):
+                dirty_rb.append(name)
+            else:
+                dirty.append(name)
+
+flags = []
+if mt_rev:
+    with ThreadPoolExecutor(max_workers=POOL) as pool:
+        flags = list(pool.map(absorbed, mt_rev))
+for rev, kind, name, ok in zip(mt_rev, mt_kind, mt_name, flags):
+    if ok:
+        landed_bucket(kind).append(name)
+    else:
+        # Not merge-tree-equal — the branch may still be a squash land that
+        # main has since touched (merge-tree conflicts then). Blob history
+        # decides.
+        enqueue_blob(rev, kind, name)
+
+# --- blob-history landed test -------------------------------------------
+# A squash-landed branch stops being merge-tree-equal the moment main
+# touches one of its files again (land-wu1-paging: squash 26eab85d4, main
+# changed src/precis/tools/core.py after -> merge-tree conflicts). What
+# still holds: every blob the branch leaves at a path exists in the
+# base history at that path (written by the squash commit). So: every
+# (path, dst-blob) in `git diff --raw <merge-base> <head>` must appear in
+# the base history; a deletion (all-zero dst) must leave the path absent
+# from the base tree; an empty diff is merged.
+ZERO = "0" * 40
+blob_items = []          # (rev, kind, name, merge-base)
+if blob_rev:
+    with ThreadPoolExecutor(max_workers=POOL) as pool:
+        mbs = list(pool.map(lambda r: gout("merge-base", ref, r), blob_rev))
+    for rev, kind, name, mb in zip(blob_rev, blob_kind, blob_name, mbs):
+        if mb:
+            blob_items.append((rev, kind, name, mb))
+        else:
+            (clean_unmerged if kind == "w" else br_unique).append(name)
+
+blob_set = set()
+history_paths = set()
+base_paths = set()
+if blob_items:
+    dates = gout("show", "-s", "--format=%ct",
+                 *[mb for *_, mb in blob_items]).split()
+    since = min((int(d) for d in dates if d.isdigit()), default=0)
+    # A squash commit could carry a date older than the merge-base (clock
+    # skew, a rebased landing) — a day of margin keeps the bound cheap
+    # without losing it.
+    if since:
+        since -= 86400
+        for ln in g("log", ref, "--since=@" + str(since), "--format=",
+                    "--raw", "--no-abbrev", "--no-renames").stdout.splitlines():
+            if not ln.startswith(":"):
+                continue
+            meta, _, p = ln.partition("\t")
+            f = meta.split()
+            if len(f) >= 5:
+                history_paths.add(p)
+                if f[3] != ZERO:
+                    blob_set.add((p, f[3]))
+    base_paths = set(
+        gout("ls-tree", "-r", ref, "--name-only").splitlines())
+
+
+def blob_landed(item):
+    rev, kind, name, mb = item
+    st = g("diff", "--raw", "--no-abbrev", "--no-renames", mb,
+           rev).stdout
+    lines = [l for l in st.splitlines() if l.startswith(":")]
+    if not lines:
+        return "merged"
+    # A path proves landed two ways: its dst blob is in the base history at
+    # that path (the squash wrote the content verbatim), or — the
+    # squash-time-fixup case, e.g. land-wu1-paging where the landing adapted
+    # dispatch.py / precis-youtube-help.md — the same path was at least
+    # touched by the base in the window. Proofs need at least one exact
+    # match, else a branch that merely touched a hot file would pass.
+    exact = 0
+    for l in lines:
+        meta, _, p = l.partition("\t")
+        f = meta.split()
+        if len(f) < 5:
+            return "unique"
+        dst = f[3]
+        if dst == ZERO:
+            if p in base_paths:
+                return "unique"
+            exact += 1
+        elif (p, dst) in blob_set:
+            exact += 1
+        elif p not in history_paths:
+            return "unique"
+    return "landed" if exact else "unique"
+
+
+if blob_items:
+    with ThreadPoolExecutor(max_workers=POOL) as pool:
+        verdicts = list(pool.map(blob_landed, blob_items))
+    for (rev, kind, name, mb), v in zip(blob_items, verdicts):
+        if v == "merged":
+            (clean_anc if kind == "w" else br_merged).append(name)
+        elif v == "landed":
+            (clean_blob if kind == "w" else br_blob).append(name)
+        else:
+            (clean_unmerged if kind == "w" else br_unique).append(name)
+
+
+def shown(names):
+    names = sorted(names)
+    if CAP is None or len(names) <= CAP:
+        return ", ".join(names)
+    return ", ".join(names[:CAP]) + " +" + str(len(names) - CAP) + " more"
+
+
+def line(label, names, indent="    "):
+    print(indent + str(len(names)) + "  " + label
+          + (": " + shown(names) if names else ""))
+
+
+merged_wt = len(clean_anc) + len(clean_landed) + len(clean_blob)
+total_wt = (len(missing) + len(lk_live) + len(lk_dead) + len(dirty)
+            + len(dirty_rb) + merged_wt + len(clean_unmerged))
+print("worktrees (excl. primary): " + str(total_wt))
+line("missing dir (prunable)", missing)
+line("locked (holder live)", lk_live)
+line("locked (holder dead)", lk_dead)
+line("dirty", dirty)
+line("dirty (" + RUNBOOK + " only)", dirty_rb)
+print("    " + str(merged_wt) + "  clean+merged"
+      + (": " + shown(clean_anc + clean_landed + clean_blob)
+         if merged_wt else ""))
+line("of which landed (tree == " + ref + ")", clean_landed, "       ")
+line("of which landed (content on main, since overtaken)",
+     clean_blob, "       ")
+line("clean+unmerged", clean_unmerged)
+print("branches with no worktree: "
+      + str(len(br_merged) + len(br_landed) + len(br_blob)
+              + len(br_unique)))
+line("merged (ancestor of " + ref + ")", br_merged)
+line("landed (merge-tree == " + ref + ")", br_landed)
+line("landed (content on main, since overtaken)", br_blob)
+line("unique", br_unique)
+'
+}
+
+if [ "$REPORT" = 1 ]; then
+    report
+    exit 0
+fi
 
 # fresh_purpose <path> — true (exit 0) if <path>/.claude/purpose exists and
 # its mtime is younger than PURPOSE_FRESH_SECONDS. Proposal 2: a fresh

@@ -1,50 +1,48 @@
 ---
 description: "Review all worktrees/branches in flight and clean up the safe ones; ambiguous dirty trees come back for judgment."
-allowed-tools: Bash(scripts/inflight:*), Bash(git:*), Agent
+allowed-tools: Bash(scripts/inflight:*), Bash(scripts/reap-worktrees:*), Bash(git:*), Agent
 ---
 
-You are auditing this machine's worktrees for cleanup. **The data collection
-is a script, not LLM steps** — `scripts/inflight --json` already computes,
-per worktree: session liveness (a live pid vs. a dead lock), dirty status, and
-merge verdict (cherry-pick-aware — squash-merges don't fool it), and buckets
-each one into `base` / `self` / `live_session` / `live_subagent` /
-`needs_judgment` / `safe_remove` / `has_unmerged_work`. Your job is to route
-the buckets to the right place, not to re-derive any of this by hand.
+You are auditing this machine's worktrees for cleanup. **The census is a
+script, not LLM steps** — `scripts/reap-worktrees --report` buckets every
+worktree and every branch with no worktree (missing-dir / locked live /
+locked dead / dirty / runbook-only / clean+merged incl. the `landed`
+sub-count / clean+unmerged, then merged / landed / unique branches),
+prints counts plus name lists, and removes nothing. Re-run it with
+`--full` when a "+N more" tail needs naming. Your job is to bring each
+printed list to Reto for a per-list removal go, then look closer only
+where a bucket can't decide.
 
-Live state at invocation:
-!`scripts/inflight --json`
+Live census at invocation:
+!`scripts/reap-worktrees --report`
 
 ## Procedure
 
-1. **Nothing to do.** If every worktree above is `base`, `self`,
-   `live_session`, or `live_subagent` (no `safe_remove`, no
-   `needs_judgment`, no `has_unmerged_work`), say so in one line and stop.
+1. **Nothing to do.** If the report shows no removal candidates (no
+   missing-dir, no dead-lock, no runbook-only, no clean+merged, no
+   merged/landed branchless branches), say so in one line and stop.
 
-2. **Delegate the clear-cut cases.** If there's at least one `safe_remove`
-   entry, spawn the `housekeeper` agent (Sonnet tier) with the full JSON
-   payload above. It will `AskUserQuestion` the user on which `safe_remove`
-   worktrees to reap, execute the unlock/remove/branch-delete for confirmed
-   ones, and report back what it removed plus every `needs_judgment` /
-   `has_unmerged_work` entry it left untouched (verbatim, with diffstats).
-   If there's no `safe_remove` entry but there IS a `needs_judgment` or
-   `has_unmerged_work` one, skip the agent — there's nothing for it to do —
-   and go straight to step 3 with the live JSON.
+2. **Per-list go for the removal candidates.** For each non-empty
+   candidate list — `missing dir`, `locked (holder dead)`, `dirty
+   (runbook only)`, `clean+merged` (including its `landed` sub-count),
+   and the `merged` / `landed` branchless-branch lists — show the names
+   and `AskUserQuestion` whether that whole list goes. A yes removes
+   every entry in it: `git worktree remove <path>` for worktrees
+   (`git worktree unlock` first for the dead-lock list — `remove`
+   unconditionally refuses a locked tree), `git branch -D` for
+   branchless branches. A no leaves the whole list untouched. Per-list
+   means per-list — never cherry-pick entries out of a list silently,
+   and never touch the live-lock, dirty, clean+unmerged or unique
+   buckets this way.
 
-3. **Judge the ambiguous ones yourself.** For each `needs_judgment` worktree
-   (from the housekeeper's report, or directly from the JSON if you skipped
-   step 2), look at its `diffstat`. If it's not obviously enough to decide,
-   read the real diff (`git -C <path> diff`) and form a view: disposable
-   scratch vs. real unshipped work. This is the one judgment call in this
-   flow that stays here — don't ask the housekeeper agent to make it, and
-   don't guess without looking. An `agent-*` tree with no live task marker is
-   still ambiguous; have the coordinator confirm that its subagent task ended
-   before offering any cleanup. Tell the user what's in there and your read,
-   then `AskUserQuestion` how they want to proceed. Never discard uncommitted
-   changes without an explicit yes.
+3. **Judge what the report can't.** `locked (holder live)`, `dirty`
+   (real tracked changes), `clean+unmerged` worktrees and `unique`
+   branches are informational, not candidates: a live lock means a
+   session is in there, and unique commits are unshipped work. If Reto
+   asks about a dirty tree, look at the real diff (`git -C <path>
+   diff`) and form a view — disposable scratch vs. real unshipped work
+   — before offering anything. Never discard uncommitted changes
+   without an explicit yes.
 
-4. **Note `has_unmerged_work` entries** (real commits ahead of base, not
-   merged) as informational only — these are active branches, not cleanup
-   candidates, unless the user says otherwise.
-
-5. **Summarize.** One short list: removed / left-live / resolved-ambiguous /
-   still-ahead. Don't re-print the full JSON back at the user.
+4. **Summarize.** One short list: removed / left-live / still-open.
+   Don't re-print the full report back at the user.

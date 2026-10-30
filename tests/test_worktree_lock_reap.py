@@ -66,6 +66,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -2737,3 +2738,281 @@ def test_inflight_reads_another_users_live_pid_as_live(
     )
     assert bucket["session"] == "live#1", bucket
     assert bucket["bucket"] != "safe_remove", bucket
+
+
+# --- reap-worktrees --report: the read-only census --------------------------
+# A dedicated fixture (not repo_trio/guard_repo): the report reads
+# `origin/main`, so this repo fakes the remote-tracking ref by hand
+# (git update-ref — no remote needed) and populates EVERY bucket the census
+# prints: one worktree per row, plus branchless branches covering
+# merged / landed / unique.
+
+
+@pytest.fixture
+def report_repo(tmp_path: Path) -> dict[str, Path | int]:
+    """A throwaway repo exercising every ``--report`` bucket.
+
+    Worktrees (all under ``primary/.claude/worktrees``, ``.claude``
+    gitignored):
+
+      wt-gone      dir deleted after add        -> missing dir (prunable)
+      wt-lock-live locked ``pid 1``             -> locked (holder live)
+      wt-lock-dead locked ``pid <dead>``        -> locked (holder dead)
+      wt-dirty     tracked edit on README       -> dirty
+      wt-runbook   edits only the shared runbook -> dirty (runbook only)
+      wt-untracked untracked file only          -> dirty
+      wt-merged    tip is an ancestor of main   -> clean+merged
+      wt-landed    2 commits, squash-landed     -> clean+merged (landed)
+      wt-unmerged  1 unique commit              -> clean+unmerged
+
+    Branchless branches: ``merged-br`` + ``m0..m8`` (ancestors — 10 total,
+    over the report's 8-name list cap so the ``+N more`` tail shows),
+    ``landed-br`` (a multi-commit squash ``git cherry`` can never see) and
+    ``unique-br``. ``refs/remotes/origin/main`` is pinned at the final main
+    tip AFTER every squash lands, so ancestor vs landed is unambiguous.
+    """
+    primary = tmp_path / "primary"
+    primary.mkdir()
+    _git(primary, "init", "-q", "-b", "main")
+
+    scripts_dir = primary / "scripts"
+    hooks_dir = scripts_dir / "hooks"
+    hooks_dir.mkdir(parents=True)
+    shutil.copy2(INFLIGHT_SRC, scripts_dir / "inflight")
+    shutil.copy2(REAP_SRC, scripts_dir / "reap-worktrees")
+    shutil.copy2(SUBAGENT_TASK_STATE_SRC, hooks_dir / "subagent-task-state.py")
+    (scripts_dir / "inflight").chmod(0o755)
+    (scripts_dir / "reap-worktrees").chmod(0o755)
+
+    runbook = primary / "docs" / "runbooks" / "memory-sibling-repos.md"
+    runbook.parent.mkdir(parents=True)
+    runbook.write_text("sibling repos\n", encoding="utf-8")
+    (primary / ".gitignore").write_text(".claude/*\n", encoding="utf-8")
+    (primary / "README.md").write_text("root\n", encoding="utf-8")
+    _git(primary, "add", "-A")
+    _git(primary, "commit", "-q", "-m", "initial")
+
+    wt_root = primary / ".claude" / "worktrees"
+
+    def wt_add(name: str) -> Path:
+        p = wt_root / name
+        _git(primary, "worktree", "add", "-q", "-b", name, str(p), "main")
+        return p
+
+    def commit_file(tree: Path, rel: str, msg: str) -> None:
+        (tree / rel).write_text(msg + "\n", encoding="utf-8")
+        _git(tree, "add", "-A")
+        _git(tree, "commit", "-q", "-m", msg)
+
+    # Branchless ancestors, planted at the initial commit so they stay
+    # ancestors once main advances.
+    initial = _git(primary, "rev-parse", "HEAD").stdout.strip()
+    _git(primary, "branch", "merged-br", initial)
+    for i in range(9):
+        _git(primary, "branch", f"m{i}", initial)
+
+    # Worktree rows first (created at the pre-squash tip where the bucket
+    # needs it), landings interleaved.
+    wt_add("wt-merged")
+    wt_landed = wt_add("wt-landed")
+    commit_file(wt_landed, "l1.txt", "landed part 1")
+    commit_file(wt_landed, "l2.txt", "landed part 2")
+    _git(primary, "merge", "-q", "--squash", "wt-landed")
+    _git(primary, "commit", "-q", "-m", "wt-landed work (squashed)")
+
+    # A branchless squash-landed branch: multi-commit so `git cherry`
+    # reports both commits unmerged forever — only the merge-tree
+    # content-equality test can see it landed.
+    tmp_landed = wt_root / "tmp-landed"
+    _git(primary, "worktree", "add", "-q", "-b", "landed-br", str(tmp_landed), "main")
+    commit_file(tmp_landed, "a1.txt", "landed-br part 1")
+    commit_file(tmp_landed, "a2.txt", "landed-br part 2")
+    _git(primary, "merge", "-q", "--squash", "landed-br")
+    _git(primary, "commit", "-q", "-m", "landed-br work (squashed)")
+    _git(primary, "worktree", "remove", str(tmp_landed))
+
+    tmp_unique = wt_root / "tmp-unique"
+    _git(primary, "worktree", "add", "-q", "-b", "unique-br", str(tmp_unique), "main")
+    commit_file(tmp_unique, "u.txt", "unique work")
+    _git(primary, "worktree", "remove", str(tmp_unique))
+
+    # Overtaken squash lands (the land-wu1-paging case): multi-commit
+    # branches squash-landed, one file ADAPTED at squash time (the landing
+    # writes a version the branch never had — the weak, touched-path proof)
+    # and edited again on main after. Cherry can never match a multi-commit
+    # squash and merge-tree conflicts rather than reproducing the base
+    # tree, so only the blob-history tier can still see these as landed.
+    # (A SINGLE-commit squash would already read in-main via cherry's
+    # patch-id, never reaching this tier.)
+    tmp_over = wt_root / "tmp-over"
+    _git(primary, "worktree", "add", "-q", "-b", "overtaken-br", str(tmp_over), "main")
+    commit_file(tmp_over, "over1.txt", "overtaken branch part 1")
+    commit_file(tmp_over, "over.txt", "overtaken branch part 2")
+    _git(primary, "merge", "-q", "--squash", "overtaken-br")
+    (primary / "over.txt").write_text("adapted during the squash\n", encoding="utf-8")
+    _git(primary, "add", "over.txt")
+    _git(primary, "commit", "-q", "-m", "overtaken-br work (squashed)")
+    _git(primary, "worktree", "remove", str(tmp_over))
+    (primary / "over.txt").write_text(
+        "overtaken, then edited on main\n", encoding="utf-8"
+    )
+    _git(primary, "add", "-A")
+    _git(primary, "commit", "-q", "-m", "main edits over.txt after the land")
+
+    wt_overtaken = wt_add("wt-overtaken")
+    commit_file(wt_overtaken, "over3.txt", "overtaken worktree part 1")
+    commit_file(wt_overtaken, "over2.txt", "overtaken worktree part 2")
+    _git(primary, "merge", "-q", "--squash", "wt-overtaken")
+    (primary / "over2.txt").write_text("adapted during the squash\n", encoding="utf-8")
+    _git(primary, "add", "over2.txt")
+    _git(primary, "commit", "-q", "-m", "wt-overtaken work (squashed)")
+    (primary / "over2.txt").write_text(
+        "overtaken, then edited on main\n", encoding="utf-8"
+    )
+    _git(primary, "add", "-A")
+    _git(primary, "commit", "-q", "-m", "main edits over2.txt after the land")
+
+    wt_unmerged = wt_add("wt-unmerged")
+    commit_file(wt_unmerged, "unmerged.txt", "unmerged work")
+
+    wt_dirty = wt_add("wt-dirty")
+    (wt_dirty / "README.md").write_text("dirty\n", encoding="utf-8")
+    wt_runbook = wt_add("wt-runbook")
+    (wt_runbook / "docs" / "runbooks" / "memory-sibling-repos.md").write_text(
+        "edited locally\n", encoding="utf-8"
+    )
+    wt_untracked = wt_add("wt-untracked")
+    (wt_untracked / "scratch-notes.txt").write_text("loose\n", encoding="utf-8")
+
+    wt_lock_live = wt_add("wt-lock-live")
+    _git(primary, "worktree", "lock", str(wt_lock_live), "--reason", "pid 1")
+    dead = subprocess.Popen(["true"], env=_test_env())
+    dead.wait(timeout=10)
+    dead_pid = dead.pid
+    assert _wait_for(lambda: not _pid_alive(dead_pid), timeout=5.0)
+    wt_lock_dead = wt_add("wt-lock-dead")
+    _git(
+        primary,
+        "worktree",
+        "lock",
+        str(wt_lock_dead),
+        "--reason",
+        f"pid {dead_pid}",
+    )
+
+    wt_gone = wt_add("wt-gone")
+    shutil.rmtree(wt_gone)
+
+    # Pin the remote-tracking ref the report reads, after every squash has
+    # landed on main.
+    _git(primary, "update-ref", "refs/remotes/origin/main", "main")
+
+    return {"primary": primary, "wt_root": wt_root, "dead_pid": dead_pid}
+
+
+def test_reap_worktrees_report_buckets_and_removes_nothing(
+    report_repo: dict[str, Path | int],
+) -> None:
+    """``--report`` prints every bucket with the right counts and names, and
+    changes nothing: same worktree list, same branches, same locks, every
+    checkout dir still on disk — including wt-merged, which a real reap
+    WOULD remove (clean + merged + unlocked), proving the report path never
+    reaches the reap machinery.
+    """
+    primary = report_repo["primary"]
+    wt_root = report_repo["wt_root"]
+    dead_pid = report_repo["dead_pid"]
+
+    wt_before = _git(primary, "worktree", "list", "--porcelain").stdout
+    br_before = _git(
+        primary, "for-each-ref", "refs/heads", "--format=%(refname)"
+    ).stdout
+
+    # PRECIS_NO_AUTOREAP=1 gates reaping, not reading; the huge grace
+    # seconds would make an accidental grace sleep show up as a hang, not a
+    # wrong count.
+    result = subprocess.run(
+        ["bash", str(primary / "scripts" / "reap-worktrees"), "--report"],
+        cwd=str(primary),
+        env=_reap_env(PRECIS_NO_AUTOREAP="1", PRECIS_REAP_GRACE_SECONDS="300"),
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+    )
+    assert result.returncode == 0, result.stderr
+    out = result.stdout
+
+    counts: dict[str, int] = {}
+    for ln in out.splitlines():
+        m = re.match(r"^\s*(\d+)\s{2,}([^:]+?)(?::\s.*)?$", ln)
+        if m:
+            counts[m.group(2).strip()] = int(m.group(1))
+
+    assert re.search(r"^worktrees \(excl\. primary\): 10$", out, re.M), out
+    assert counts["missing dir (prunable)"] == 1, out
+    assert counts["locked (holder live)"] == 1, out
+    assert counts["locked (holder dead)"] == 1, out
+    assert counts["dirty"] == 2, out
+    assert counts["dirty (docs/runbooks/memory-sibling-repos.md only)"] == 1, out
+    assert counts["clean+merged"] == 3, out
+    assert counts["of which landed (tree == origin/main)"] == 1, out
+    assert counts["of which landed (content on main, since overtaken)"] == 1, out
+    assert counts["clean+unmerged"] == 1, out
+    assert re.search(r"^branches with no worktree: 13$", out, re.M), out
+    assert counts["merged (ancestor of origin/main)"] == 10, out
+    assert counts["landed (merge-tree == origin/main)"] == 1, out
+    assert counts["landed (content on main, since overtaken)"] == 1, out
+    assert counts["unique"] == 1, out
+
+    for name in (
+        "wt-gone",
+        "wt-landed",
+        "wt-overtaken",
+        "wt-unmerged",
+        "landed-br",
+        "overtaken-br",
+        "unique-br",
+    ):
+        assert name in out, (name, out)
+    # 10 merged branches over the 8-name cap -> a "+2 more" tail.
+    assert "+2 more" in out, out
+    assert "reaped" not in out and "deleted" not in out, out
+
+    full = subprocess.run(
+        [
+            "bash",
+            str(primary / "scripts" / "reap-worktrees"),
+            "--report",
+            "--full",
+        ],
+        cwd=str(primary),
+        env=_test_env(),
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+    )
+    assert full.returncode == 0, full.stderr
+    assert "+2 more" not in full.stdout, full.stdout
+    assert "m8" in full.stdout and "merged-br" in full.stdout, full.stdout
+
+    # Nothing removed, unlocked, pruned or deleted: identical worktree and
+    # branch inventories, both locks intact, every checkout still on disk.
+    assert _git(primary, "worktree", "list", "--porcelain").stdout == wt_before
+    assert (
+        _git(primary, "for-each-ref", "refs/heads", "--format=%(refname)").stdout
+        == br_before
+    )
+    for name in (
+        "wt-merged",
+        "wt-landed",
+        "wt-overtaken",
+        "wt-unmerged",
+        "wt-dirty",
+        "wt-runbook",
+        "wt-untracked",
+        "wt-lock-live",
+        "wt-lock-dead",
+    ):
+        assert (wt_root / name).is_dir(), name
+    assert _lock_reason_for(primary, wt_root / "wt-lock-live") == "pid 1"
+    assert _lock_reason_for(primary, wt_root / "wt-lock-dead") == f"pid {dead_pid}"
