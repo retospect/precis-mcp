@@ -36,10 +36,16 @@ import binascii
 import json
 import logging
 import re
+from collections.abc import Sequence
 from datetime import UTC
 from typing import Any, ClassVar, cast
 
-from precis._result_budget import size_cell
+from precis._result_budget import (
+    DEFAULT_CONTEXT_BODY_BYTES,
+    _env_cap,
+    body_bytes,
+    size_cell,
+)
 from precis.dispatch import Hub, InitError
 from precis.draft import lint as _draft_lint
 from precis.draft.scaffolds import SCAFFOLDS as _SCAFFOLDS
@@ -72,6 +78,7 @@ from precis.utils.link_tag_ops import (
     validate_link_mode,
 )
 from precis.utils.record_cite import record_cite_handles, record_type_of
+from precis.utils.search_merge import SearchHit, block_hits_to_search_hits
 from precis.utils.table_data import (
     TABLE_CTRL_RE,
     cell_next_hint,
@@ -548,6 +555,7 @@ class DraftHandler(Handler):
         ),
         supports_get=True,
         supports_search=True,
+        supports_search_hits=True,
         supports_put=True,
         supports_edit=True,
         supports_delete=True,
@@ -929,13 +937,15 @@ class DraftHandler(Handler):
                 return self._render_table_toon(s, view, args)
             if view == "stats":  # per-column aggregates, computed on read
                 return self._render_table_stats(s)
+            if view == "outline":  # outline of the subtree under this chunk
+                return self._render_scoped_outline(s, args)
             if view is not None:
                 # No silent degrade to the lone-chunk render (was the bug —
                 # an unrecognized view fell through here unnoticed).
                 raise BadInput(
                     f"unknown draft chunk view {view!r}",
-                    next="view ∈ backfill|toc|wordcount|review-diff|history|"
-                    "proposals|stats|toon|table, or a "
+                    next="view ∈ backfill|toc|wordcount|outline|review-diff|"
+                    "history|proposals|stats|toon|table, or a "
                     f"focus-ladder label {'|'.join(EYE_LADDER)}",
                 )
             return self._render_chunk(s)
@@ -1175,6 +1185,39 @@ class DraftHandler(Handler):
             lines.append(f"draft:{draft}  {handle}  [{block.chunk_kind}] {first}")
         lines.append("\nNext: get(id='dc<chunk_id>') to read any hit in full.")
         return Response(body="\n".join(lines))
+
+    def search_hits(
+        self,
+        *,
+        q: str | None = None,
+        page_size: int = 10,
+        query_vec: list[float] | None = None,
+        mode: str | None = None,
+        tags: list[str] | None = None,
+        exclude_ref_ids: list[int] | None = None,
+        include_ref_ids: list[int] | None = None,
+        **_kw: Any,
+    ) -> list[SearchHit]:
+        """Draft chunks as ``SearchHit``\\ s for the cross-kind merge — the
+        same chunk legs as ``search()`` minus the render. gr537833: the
+        wildcard fan-out skipped draft entirely, so a draft an agent
+        names other than by its title ('root CTO plan' vs slug
+        'tech-plan') had no cross-kind reach."""
+        if not (q and q.strip()):
+            return []
+        if query_vec is None:
+            query_vec = query_vec_for(self.embedder, q, mode)
+        triples = self.store.chunks.search_chunks(
+            q=q,
+            query_vec=query_vec,
+            mode=mode,
+            kind="draft",
+            tags=tags,
+            exclude_ref_ids=exclude_ref_ids,
+            include_ref_ids=include_ref_ids,
+            limit=page_size,
+        )
+        return block_hits_to_search_hits(triples, kind="draft")
 
     # ── regex find (grep) + substitute (s///) ────────────────────────
 
@@ -5098,16 +5141,55 @@ class DraftHandler(Handler):
     _OUTLINE_ROW_CAP: ClassVar[int] = 500
 
     def _render_outline(
-        self, slug: str, ref: Any, args: dict[str, Any] | None = None
+        self,
+        slug: str,
+        ref: Any,
+        args: dict[str, Any] | None = None,
+        *,
+        root_handle: str | None = None,
     ) -> Response:
         chunks = self.store.drafts.reading_order(ref.id)
+        scope_root: Any | None = None
+        base_depth = 0
+        if root_handle is not None:
+            scope_root = self.store.drafts.get_draft_chunk(root_handle)
+            if scope_root is None:
+                raise NotFound(
+                    f"draft chunk {root_handle!r} not found",
+                    next="get(kind='draft', id='<slug>', view='toc') lists "
+                    "live chunk handles",
+                )
+            idx = next(
+                (i for i, c in enumerate(chunks) if c.chunk_id == scope_root.chunk_id),
+                None,
+            )
+            if idx is None:
+                raise NotFound(
+                    f"draft chunk {scope_root.dc} is retired — it is not part "
+                    "of the draft's live tree",
+                    next="get(kind='draft', id='<slug>', view='toc') lists "
+                    "live chunk handles",
+                )
+            base_depth = chunks[idx].depth
+            scoped = [chunks[idx]]
+            for c in chunks[idx + 1 :]:
+                if c.depth <= base_depth:
+                    break
+                scoped.append(c)
+            chunks = scoped
         # Per-block gloss preference: the llm-v1 summary, else the keyword
         # set, else the truncated first line. Lets the outline read as
         # *meaning* once the summarize/keyword workers have run, degrading
         # to the raw-text peek for blocks they haven't reached yet.
         views = self.store.drafts.block_views(ref.id)
         n = len(chunks)
-        lines = [f"# {ref.title}  ({slug}) — {n} chunk{'' if n == 1 else 's'}\n"]
+        if scope_root is not None:
+            lines = [
+                f"# {scope_root.dc}: {scope_root.text}  ({slug}) — "
+                f"{n} chunk{'' if n == 1 else 's'}\n"
+            ]
+        else:
+            lines = [f"# {ref.title}  ({slug}) — {n} chunk{'' if n == 1 else 's'}\n"]
         # A list is one outline row, not one row per bullet: a survey whose
         # sections are bullet lists runs to thousands of items, and the
         # outline's job is shape. The row carries the item count and the
@@ -5137,7 +5219,9 @@ class DraftHandler(Handler):
             cell = c.dc
             if sz := size_cell(len((c.text or "").encode("utf-8"))):
                 cell = f"{c.dc}\t{sz}"
-            row_line = f"{'  ' * c.depth}{cell}  [{c.chunk_kind}] {gloss}"
+            row_line = (
+                f"{'  ' * (c.depth - base_depth)}{cell}  [{c.chunk_kind}] {gloss}"
+            )
             rows.append(row_line)
             if c.chunk_kind == "heading":
                 heading_rows.append(row_line)
@@ -5181,9 +5265,29 @@ class DraftHandler(Handler):
             )
         lines.extend(self._work_lines(ref.id))
         lines.extend(self._hygiene_lines(ref.id, chunks))
+        flat_body = "\n".join(lines)
+        # Fit by structure, not by cutting (gr537833): an un-sliced outline
+        # that can't fit the context cap renders one level deep instead —
+        # the scope's direct children, each row a ``~dc<N>`` selector with
+        # its subtree size and sub-heading count. An explicit slice
+        # (offset/limit/page) is an addressed part-read and stays flat.
+        context_cap = _env_cap(
+            "PRECIS_TOOL_RESULT_CONTEXT_BYTES",
+            DEFAULT_CONTEXT_BODY_BYTES,
+            zero_disables=True,
+        )
+        if (
+            context_cap
+            and body_bytes(flat_body) > context_cap
+            and size is None
+            and not offset
+        ):
+            return self._render_level_outline(
+                slug, ref, chunks, views, scope_root=scope_root, readings=readings
+            )
         return interpreted(
             Response(
-                body="\n".join(lines),
+                body=flat_body,
                 # Over cap the body is itself the map: the fitter shows
                 # the leading rows, this heading skeleton is the outline
                 # of what was cut (already in hand — no extra read), and
@@ -5197,6 +5301,278 @@ class DraftHandler(Handler):
                 ),
             ),
             readings,
+        )
+
+    #: Footer budget on the level map: the work/hygiene tail is truncated
+    #: to this many lines plus a ``+N more`` pointer so a long footer
+    #: can't push the map itself over the context cap.
+    _LEVEL_FOOTER_LINES: ClassVar[int] = 6
+
+    def _render_level_outline(
+        self,
+        slug: str,
+        ref: Any,
+        chunks: list[Any],
+        views: dict[str, dict[str, str]],
+        *,
+        scope_root: Any | None,
+        readings: Sequence[str] = (),
+    ) -> Response:
+        """One level of the outline when the flat render can't fit:
+        the scope's direct children, one row each — an expandable child
+        carries ``~dc<N>`` + subtree size + nested-heading count. A
+        single-child chain (the common title-only root) auto-descends so
+        the first call already shows the sections. When one row per
+        child still can't fit, leaf runs coalesce to ``dc<A>-0..K``
+        window rows sized so the inline read they name also fits, then
+        sibling runs merge to ``N headings, X kB, expand ~dc<N>`` rows,
+        and a final row-prefix trim guarantees the result never goes
+        over the context cap."""
+        context_cap = _env_cap(
+            "PRECIS_TOOL_RESULT_CONTEXT_BYTES",
+            DEFAULT_CONTEXT_BODY_BYTES,
+            zero_disables=True,
+        )
+
+        # Auto-descend a one-child chain: a draft whose only top-level
+        # chunk is the title heading shows the title's children — the
+        # actual sections — rather than one row re-naming the title.
+        parent = scope_root.chunk_id if scope_root is not None else None
+        idxs = [i for i, c in enumerate(chunks) if c.parent_chunk_id == parent]
+        descended: Any | None = None
+        while len(idxs) == 1:
+            kids = [
+                k
+                for k, c in enumerate(chunks)
+                if c.parent_chunk_id == chunks[idxs[0]].chunk_id
+            ]
+            if not kids:
+                break
+            descended = chunks[idxs[0]]
+            idxs = kids
+
+        # (start, end, nested-heading count, subtree bytes) per child —
+        # a child's subtree is the contiguous reading-order run until the
+        # next sibling at this level.
+        spans: list[tuple[int, int, int, int]] = []
+        for pos, i in enumerate(idxs):
+            end = idxs[pos + 1] if pos + 1 < len(idxs) else len(chunks)
+            heads = sum(1 for c in chunks[i + 1 : end] if c.chunk_kind == "heading")
+            nbytes = sum(len((c.text or "").encode("utf-8")) for c in chunks[i:end])
+            spans.append((i, end, heads, nbytes))
+
+        def _summary(c: Any) -> str:
+            v = views.get(c.handle, {})
+            g = v.get("summary") or v.get("keywords") or ""
+            if not g:
+                g = c.text.splitlines()[0] if c.text else ""
+            if c.chunk_kind in ("ulist", "olist"):
+                g = _list_gloss(chunks, c)
+            return " ".join(g.split())
+
+        def _row(pos: int) -> str:
+            i, end, heads, nbytes = spans[pos]
+            c = chunks[i]
+            handle = f"~{c.dc}" if end - i > 1 else c.dc
+            if sz := size_cell(nbytes):
+                handle += f"\t{sz}"
+            sub = (
+                f" · {heads} nested heading{'' if heads == 1 else 's'}" if heads else ""
+            )
+            return f"{handle}  [{c.chunk_kind}] {_summary(c)}{sub}"
+
+        def _plain(pos: int) -> bool:
+            i, _end, heads, _nb = spans[pos]
+            return chunks[i].chunk_kind != "heading" and not heads
+
+        def _window_rows(pos: int, last: int, out: list[str]) -> None:
+            """Coalesced leaf run → one ``dc<A>-0..K`` row per
+            cap-fitting window: the inline read a row names must itself
+            fit the context cap, so a long run splits where the
+            accumulated subtree bytes (plus ~96 B/chunk of
+            ``dc … sha:`` render overhead and a 256 B headroom for the
+            window read's own trailing hints) would cross it."""
+            win_cap = max(1024, context_cap - 256)
+            k = pos
+            while k <= last:
+                cost = 0
+                j = k
+                while j <= last:
+                    add = spans[j][3] + 96 * (spans[j][1] - spans[j][0])
+                    if j > k and cost + add > win_cap:
+                        break
+                    cost += add
+                    j += 1
+                span = spans[j - 1][1] - spans[k][0]
+                cell = f"{chunks[spans[k][0]].dc}-0..{span - 1}"
+                nb = sum(spans[m][3] for m in range(k, j))
+                if sz := size_cell(nb):
+                    cell += f"\t{sz}"
+                out.append(f"{cell}  {span} chunks")
+                k = j
+
+        def _merge_rows(pos: int, last: int, out: list[str]) -> None:
+            """Run of expandable siblings → ``N headings, X kB, expand
+            ~dc<N>`` rows of at most 8 members — the last-resort
+            compression when one row per child still can't fit."""
+            k = pos
+            while k <= last:
+                j = min(k + 8, last + 1)
+                if j - k == 1:
+                    out.append(_row(k))
+                    k = j
+                    continue
+                first = chunks[spans[k][0]]
+                tail = chunks[spans[j - 1][0]]
+                nb = sum(spans[m][3] for m in range(k, j))
+                word = (
+                    "headings"
+                    if all(
+                        chunks[spans[m][0]].chunk_kind == "heading" for m in range(k, j)
+                    )
+                    else "chunks"
+                )
+                sz = size_cell(nb)
+                out.append(
+                    f"{first.dc}–{tail.dc}  {j - k} {word}"
+                    f"{', ' + sz if sz else ''} — expand ~{first.dc}"
+                )
+                k = j
+
+        def _rows(mode: str) -> list[str]:
+            out: list[str] = []
+            pos = 0
+            while pos < len(spans):
+                if mode != "each" and _plain(pos):
+                    last = pos
+                    while last + 1 < len(spans) and _plain(last + 1):
+                        last += 1
+                    if last > pos:
+                        _window_rows(pos, last, out)
+                        pos = last + 1
+                        continue
+                elif mode == "merge" and not _plain(pos):
+                    last = pos
+                    while last + 1 < len(spans) and not _plain(last + 1):
+                        last += 1
+                    _merge_rows(pos, last, out)
+                    pos = last + 1
+                    continue
+                out.append(_row(pos))
+                pos += 1
+            return out
+
+        n = len(chunks)
+        scope = (
+            f"{scope_root.dc}: {scope_root.text}"
+            if scope_root is not None
+            else f"{ref.title}  ({slug})"
+        )
+        head = f"# {scope} — {n} chunk{'' if n == 1 else 's'}, top-level map\n"
+        if descended is not None:
+            head += (
+                f"({descended.dc} is the single root — the map shows its children)\n"
+            )
+        foot = [
+            *self._work_lines(ref.id),
+            *self._hygiene_lines(ref.id, chunks),
+        ]
+        if len(foot) > self._LEVEL_FOOTER_LINES:
+            foot = [
+                *foot[: self._LEVEL_FOOTER_LINES],
+                f"(+{len(foot) - self._LEVEL_FOOTER_LINES} more — "
+                f"get(kind='draft', id={slug!r}, view='hygiene') lists "
+                "every hygiene item; get(kind='todo', id=<id>) reads a "
+                "work item)",
+            ]
+        foot.append(
+            f"\n(expand a section: get(kind='draft', id='{slug}~dc<N>', "
+            "view='outline') · a 'dc<N>-0..K' row reads that window "
+            "inline — already sized to fit · every heading: view='toc')"
+        )
+
+        def _over(body: str) -> bool:
+            return bool(context_cap) and body_bytes(body) > context_cap
+
+        def _assemble(rows: list[str]) -> str:
+            return "\n".join([head, *(rows or ["(no sub-chunks)"]), *foot])
+
+        rows = _rows("each")
+        body = _assemble(rows)
+        if _over(body):
+            rows = _rows("windows")
+            body = _assemble(rows)
+        if _over(body):
+            rows = _rows("merge")
+            body = _assemble(rows)
+        if _over(body) and rows:
+            # Never emit over the cap: keep the longest leading run of
+            # map rows that leaves room for the overflow line.
+            keep = len(rows)
+            while keep:
+                keep -= 1
+                trail = [
+                    *rows[:keep],
+                    f"(+{len(rows) - keep} more map rows — view='toc' "
+                    "lists every heading)",
+                ]
+                body = _assemble(trail)
+                if not _over(body):
+                    rows = trail
+                    break
+            else:
+                rows = []
+        if _over(body):
+            # Pathological (head + footer alone can't fit): the scope
+            # line plus the two pointers is the smallest honest map.
+            body = "\n".join(
+                [
+                    head,
+                    f"(map does not fit — get(kind='draft', id={slug!r}, "
+                    "view='toc') lists every heading · get(kind='draft', "
+                    f"id='{slug}~dc<N>', view='outline') expands one "
+                    "section)",
+                ]
+            )
+        return interpreted(
+            Response(
+                body=body,
+                budget_outline="\n".join(rows) or None,
+                result_budget_hint=(
+                    f"get(kind='draft', id='{slug}~dc<N>', view='outline') "
+                    "expands one section"
+                ),
+            ),
+            readings,
+        )
+
+    def _render_scoped_outline(
+        self, handle: str, args: dict[str, Any] | None = None
+    ) -> Response:
+        """``id='dc<chunk>', view='outline'`` — also reached as
+        ``id='<slug>~dc<chunk>', view='outline'`` — the subtree's outline:
+        flat when it fits, the level map when it doesn't."""
+        if handle_registry.parse_relative(handle) is not None:
+            raise BadInput(
+                "an outline scopes one chunk, not a window/relative "
+                f"address ({handle!r})",
+                next="get(kind='draft', id='dc<heading>', view='outline')",
+            )
+        chunk = self.store.drafts.get_draft_chunk(handle)
+        if chunk is None:
+            raise NotFound(
+                f"draft chunk {handle!r} not found",
+                next="get(kind='draft', id='<slug>', view='toc') lists "
+                "live chunk handles",
+            )
+        ref = self.store.get_ref(kind="draft", id=chunk.ref_id)
+        if ref is None:
+            raise NotFound(
+                f"draft chunk {chunk.dc}'s draft is gone",
+                next="get(kind='draft') lists live drafts",
+            )
+        return self._render_outline(
+            str(ref.slug or ref.id), ref, args, root_handle=chunk.dc
         )
 
     def _hygiene_lines(
