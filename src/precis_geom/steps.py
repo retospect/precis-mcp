@@ -1224,19 +1224,75 @@ def _src_sha(fn: Callable[..., Any]) -> str:
     return _sha(src)
 
 
+@functools.cache
+def _module_sha(name: str) -> str:
+    import importlib.util
+
+    h = hashlib.sha256(name.encode("utf-8") + b"\0")
+    try:
+        spec = importlib.util.find_spec(name)
+    except (ImportError, ValueError):
+        spec = None
+    if spec is None:
+        return h.hexdigest()
+    roots = list(spec.submodule_search_locations or ())
+    files: list[Path] = []
+    for r in roots:
+        files += sorted(Path(r).rglob("*.py"))
+    if not roots and spec.origin and spec.origin.endswith(".py"):
+        files.append(Path(spec.origin))
+    for f in files:
+        try:
+            h.update(f.read_bytes() + b"\0")
+        except OSError:
+            continue
+    return h.hexdigest()
+
+
+def code_sha(*modules: str) -> str:
+    """sha256 over the ``.py`` sources of the named modules / packages
+    (``"precis_geom.mol"``, ``"hexfold"``), each read once per process — key
+    material (``step(salt=…)``) for a step whose body calls library code the
+    function's own source does not show. A library step that reads this goes
+    stale-proof against an edit or an upgrade of the code it builds with:
+    changing one source file misses every entry that salted it (a rebuild of
+    seconds, never a wrong hit). Unresolvable names contribute their name."""
+    h = hashlib.sha256()
+    for name in modules:
+        h.update(_module_sha(name).encode("ascii"))
+    return h.hexdigest()[:16]
+
+
 def _warn(msg: str) -> None:
     warnings.warn(f"steps: {msg}", UserWarning, stacklevel=3)
 
 
-def step(fn: Callable[..., Any] | None = None, *, name: str | None = None) -> Any:
+def step(
+    fn: Callable[..., Any] | None = None,
+    *,
+    name: str | None = None,
+    frame: str | None = None,
+    salt: Callable[[], str] | None = None,
+    cache_if: Callable[..., bool] | None = None,
+) -> Any:
     """Cache a pure build function (see the module docstring). ``name``
-    overrides ``fn.__name__`` (the key and the ``step.<name>`` frame)."""
+    overrides ``fn.__name__`` (the key and the ``step.<name>`` frame).
+
+    The rest is for a public primitive (``mol.decorate``) that is both a
+    traced call and a step: ``frame`` names the trace frame itself instead
+    of ``step.<name>`` (it keeps the name callers and ``frame:qual=`` know,
+    and still carries the ``step`` key and hit flag); ``salt`` returns key
+    material the function's source does not show (a library version) —
+    called per call, absent from the key when it returns ``""``;
+    ``cache_if(*args, **kwargs)`` is asked first and, when false, the call
+    runs as a plain traced frame with no key, no parameters check and no
+    store (``mol.frag(scene=...)``: a Scene is not a step parameter)."""
 
     def deco(f: Callable[..., Any]) -> Callable[..., Any]:
         sname = name or f.__name__
         sig = inspect.signature(f)
         src_sha = _src_sha(f)
-        qual = f"step.{sname}"
+        qual = frame or f"step.{sname}"
         stem = os.path.splitext(os.path.basename(f.__code__.co_filename))[0]
         user_qual = f"{stem}.{f.__code__.co_qualname}"
         def_line = f.__code__.co_firstlineno
@@ -1244,6 +1300,8 @@ def step(fn: Callable[..., Any] | None = None, *, name: str | None = None) -> An
 
         @functools.wraps(f)
         def wrapper(*args: Any, **kwargs: Any) -> Any:
+            if cache_if is not None and not cache_if(*args, **kwargs):
+                return _call_plain(f, qual, argnames, args, kwargs)
             return _call(
                 f,
                 sname,
@@ -1255,12 +1313,46 @@ def step(fn: Callable[..., Any] | None = None, *, name: str | None = None) -> An
                 argnames,
                 args,
                 kwargs,
+                salt() if salt is not None else "",
             )
 
         wrapper.__dict__["__step__"] = {"name": sname, "src_sha": src_sha}
         return wrapper
 
     return deco(fn) if fn is not None else deco
+
+
+def _call_plain(
+    f: Callable[..., Any],
+    qual: str,
+    argnames: tuple[str, ...],
+    args: tuple[Any, ...],
+    kwargs: dict[str, Any],
+) -> Any:
+    """``cache_if`` said no: run ``f`` under its trace frame, uncached (the
+    ``traced`` wrapper, with this wrapper's caller as the call site)."""
+    tr = _trace.current()
+    if tr is None:
+        return f(*args, **kwargs)
+    fr = tr._enter(
+        qual,
+        "core",
+        _trace._call_args(argnames, args, kwargs),
+        sys._getframe(2),
+        sys._getframe(1),
+    )
+    try:
+        result = f(*args, **kwargs)
+        tr._finish(fr)
+        fr.ret = _trace._arg_digest(result)
+        return result
+    except BaseException as exc:
+        if exc not in tr._raised:
+            fr.error = type(exc).__name__
+            tr._raised.add(exc)
+        raise
+    finally:
+        tr._leave(fr)
 
 
 def _call(
@@ -1274,15 +1366,17 @@ def _call(
     argnames: tuple[str, ...],
     args: tuple[Any, ...],
     kwargs: dict[str, Any],
+    salt: str = "",
 ) -> Any:
     bound = sig.bind(*args, **kwargs)
     bound.apply_defaults()
     parents: list[_Par] = []
     seen: dict[int, int] = {}
     params = {n: _pcanon(v, parents, seen) for n, v in bound.arguments.items()}
-    key = _sha(
-        _dumps([sname, params, [p.key for p in parents], _pg.__version__, src_sha])
-    )
+    material = [sname, params, [p.key for p in parents], _pg.__version__, src_sha]
+    if salt:
+        material.append(salt)
+    key = _sha(_dumps(material))
     tr = _trace.current()
     be = _backend()
     rec: dict[str, Any] | None = None
@@ -1513,6 +1607,7 @@ __all__ = [
     "Checkpoint",
     "checkpoint",
     "clear",
+    "code_sha",
     "configure",
     "current_key",
     "load",

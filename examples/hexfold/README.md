@@ -1,6 +1,6 @@
 # hexfold workspace examples
 
-Three runnable workspace scripts — the "software driven" dogfoods for
+Five runnable workspace scripts — the "software driven" dogfoods for
 the `import_workspace` se edit op. Each builds a structure with the
 core library and writes the importer's `out/` layout through
 `precis_geom.out.run`:
@@ -10,6 +10,8 @@ core library and writes the importer's `out/` layout through
 | `prism/` | hexagonal prism tube, 6 fin seams, stick-relaxed | `hexfold.prism.prism_tube(4,4,2,'++++++')` → `pga.geom(net, coords=hexfold.stick.stick(net))` |
 | `nanobud/` | C60 bud tangent to a (10,10) armchair SWCNT wall | `sp2.build_cnt` + `sp2.build_fullerene`, placed via `pga.assembly` |
 | `pillar/` | C60-capped (8,8) SWCNT pillar on a graphene sheet | `hexfold.sheetnet.strip` + the sp2 generators, placed via `pga.assembly` |
+| `decorated-prism/` | the prism with COOH on every third open outward edge atom, H-capped, UFF collapse-checked, C60 guest template | `mol.prism` → `mol.decorate` → `mol.cap` → `mol.relax` (all cached steps), knobs in `recipe.json` |
+| `cnt-guest/` | (10,10) SWCNT, OH on every second rim atom, H-capped, C60 guest that must fit (the run fails if the `pg.inspect` ray profile's free radius is below the cage) | `mol.generate('cnt', …)` → `mol.decorate` → `mol.cap`, `pg.inspect.ray(profile_samples=…)` |
 
 Run one from the repo root (each ~1 s):
 
@@ -17,13 +19,20 @@ Run one from the repo root (each ~1 s):
 uv run python examples/hexfold/prism/main.py    # → scratch/out/prism/
 ```
 
-The placements are unrelaxed seeds — relaxing them is the SE side's
+`decorated-prism/` and `cnt-guest/` read their knobs from `recipe.json`
+(`steps.recipe()`) and cache every costly step under `scratch/cache/`: edit one
+number and re-run — the echo's `steps: N hits · M rebuilt (from <step>)` line
+names the first rebuilt step. Their goldens (counts, coordinate SHA, findings,
+trace keys) are `tests/workspaces/data/mol_example_goldens.json`, checked by
+`tests/workspaces/test_mol_examples.py`.
+
+The placements of the first three are unrelaxed seeds — relaxing them is the SE side's
 job after import.
 
 ## Import to prod — the exact steps
 
 One fresh design per script; the slugs below are dated and never
-reused. `<name>` is `prism` / `nanobud` / `pillar`, `<slug>` is
+reused. `<name>` is `prism` / `nanobud` / `pillar` / `decorated-prism` / `cnt-guest`, `<slug>` is
 `hexfold-ws-<name>-20261025`.
 
 1. Run the script (above) → `scratch/out/<name>/`.

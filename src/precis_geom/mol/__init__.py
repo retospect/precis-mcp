@@ -19,10 +19,15 @@ slices 1–2).
 - :func:`relax` — the cached collapse check: ``(Geom, CollapseCheck)``
   from a UFF/EMT/xTB/geo relax judged on the re-perceived bond graph
   (slice 3; :mod:`precis_geom.mol.collapse`).
+- :func:`prism` / :func:`generate` — the hex tiler's prism tube and the
+  ``GENERATORS`` registry's ``hexfold_scene`` / ``cnt`` / ``fullerene`` /
+  ``cyclodextrin`` as cached steps returning a Geom (slice 5).
 - :func:`check` — ``precis.structure.check.check``: the chemistry check
   ``Run.finish()`` and the importer run (slice 4).
 
-Every public call is ``@traced`` (atoms carry ``maker``); the geometry
+``frag`` (the embed), ``lib``, ``decorate``, ``cap``, ``relax``, ``prism``
+and ``generate`` are cached steps (:mod:`precis_geom.steps`); each keeps its
+own trace frame name. Every public call is traced (atoms carry ``maker``); the geometry
 math is :mod:`precis_geom.assembly` (``pga.place``), the site taxonomy is
 :mod:`precis.structure.sites` (what ``view='sites'`` renders) and the
 validator rules are ``precis.structure.validate`` — nothing here
@@ -39,6 +44,7 @@ from precis_geom.mol.collapse import (
 )
 from precis_geom.mol.decorator import cap, decorate
 from precis_geom.mol.fragment import embed_molecule, frag
+from precis_geom.mol.generate import generate, prism
 from precis_geom.mol.library import lib
 from precis_geom.mol.selector import MolSite, sites
 
@@ -53,7 +59,9 @@ __all__ = [
     "decorate",
     "embed_molecule",
     "frag",
+    "generate",
     "lib",
+    "prism",
     "relax",
     "sites",
 ]

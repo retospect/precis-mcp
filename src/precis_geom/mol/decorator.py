@@ -31,10 +31,12 @@ from precis.structure import elements
 from precis.structure.scene import Atom, Bond
 from precis.structure.validate import OVERLAP_FRACTION
 from precis_geom import assembly as pga
+from precis_geom import steps as _steps
 from precis_geom import trace as _trace
 from precis_geom.assembly import Geom, Port
 from precis_geom.mol import _valence, attachment
 from precis_geom.mol import selector as _sites
+from precis_geom.mol.fragment import build_salt
 from precis_geom.mol.library import NAMES as _LIB_NAMES
 from precis_geom.mol.library import lib
 
@@ -183,7 +185,17 @@ def _scan(
     return chosen
 
 
-@_trace.traced(name="decorate")
+def _is_geom(geom: Any, *_a: Any, **_k: Any) -> bool:
+    """Only a Geom is a step parameter; a Net / Scene is wrapped by
+    ``pga.geom`` inside the (then uncached) call."""
+    return isinstance(geom, Geom)
+
+
+def _salt() -> str:
+    return build_salt("hexfold", "precis_se.atomic.generators.hexfold_spec")
+
+
+@_steps.step(name="decorate", frame="decorate", salt=_salt, cache_if=_is_geom)
 def decorate(
     geom: Any,
     sites: Any,
@@ -193,7 +205,9 @@ def decorate(
     seed: int = 0,
     torsion: Any = "scan",
 ) -> Geom:
-    """``geom`` with ``group`` bonded at every one of ``sites``.
+    """``geom`` with ``group`` bonded at every one of ``sites``. A cached
+    step (:mod:`precis_geom.steps`): the same Geom, sites and group again
+    are a hit.
 
     ``sites`` is a selector string (:func:`mol.sites`: ``'open & face:out
     & every:3'``) or a list of :class:`MolSite`. ``group`` is ``'H'``, a
@@ -374,7 +388,7 @@ def _cap_net(g: Geom, ref: Any) -> Geom:
     )
 
 
-@_trace.traced(name="cap")
+@_steps.step(name="cap", frame="cap", salt=_salt, cache_if=_is_geom)
 def cap(geom: Any, group: Any = "H") -> Geom:
     """``geom`` with every open valence capped by ``group`` (default H).
 
@@ -386,7 +400,8 @@ def cap(geom: Any, group: Any = "H") -> Geom:
     decoration bonded to are left out, and ``decorate(sites='open')``
     finishes what is left (an atom a group only half-filled). Any other
     Geom is ``decorate(sites='open', group=group)``, repeated until no
-    open valence is left (one group per open atom per pass)."""
+    open valence is left (one group per open atom per pass). A cached step
+    (:mod:`precis_geom.steps`)."""
     g = _sites.bake(pga.geom(geom))
     ref = _sites.net_ref(g)
     if ref is not None and group == "H":

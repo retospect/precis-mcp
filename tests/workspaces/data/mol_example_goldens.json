@@ -1,0 +1,164 @@
+{
+ "cnt-guest": {
+  "blocks": {
+   "c60": {
+    "atoms": 60,
+    "bonds": 90,
+    "coord_sha256": "2707a950258151f6b4245fa91c49adb01b070a098cf7dd12e8edbd5d4f620aa3",
+    "findings": [],
+    "makers_by_qual": {
+     "lib": 60
+    },
+    "relaxed_by": null,
+    "template": true
+   },
+   "tube": {
+    "atoms": 460,
+    "bonds": 640,
+    "coord_sha256": "06ce5bad4de1b62fb7c9e338e976b9a19c4ba50a64f0fa0d58c9b59824714c9d",
+    "findings": [],
+    "makers_by_qual": {
+     "attach": 20,
+     "frag": 40,
+     "generate": 400
+    },
+    "relaxed_by": null,
+    "template": false
+   }
+  },
+  "check": {
+   "c60": [
+    [
+     "pi_twist",
+     "warn",
+     3
+    ]
+   ],
+   "tube": [
+    [
+     "pi_twist",
+     "warn",
+     40
+    ]
+   ]
+  },
+  "instances": [
+   {
+    "name": "guest",
+    "parent": "tube",
+    "template": "c60"
+   }
+  ],
+  "status": "ok",
+  "trace": {
+   "frames": 94,
+   "keys_sha256": "918eeccaff5087b85855fc17aaa9e27e23a8c252037b2c7533a42b66fc18fabe",
+   "quals": {
+    "": 1,
+    "attach": 40,
+    "cap": 1,
+    "decorate": 2,
+    "frag": 1,
+    "generate": 1,
+    "lib": 2,
+    "out.block": 2,
+    "out.instance": 1,
+    "place": 40,
+    "sites": 3
+   }
+  }
+ },
+ "decorated-prism": {
+  "blocks": {
+   "c60": {
+    "atoms": 60,
+    "bonds": 90,
+    "coord_sha256": "2707a950258151f6b4245fa91c49adb01b070a098cf7dd12e8edbd5d4f620aa3",
+    "findings": [],
+    "makers_by_qual": {
+     "lib": 60
+    },
+    "relaxed_by": null,
+    "template": true
+   },
+   "p": {
+    "atoms": 642,
+    "bonds": 798,
+    "coord_sha256": "9d1634535204ec1d8eb33a834b5c35543f311270dda37bc700314149ab7bd60c",
+    "findings": [
+     "decorate.site_skipped: aC192 (open-edge, face out): best torsion 0\u00b0 still leaves a non-bonded pair at 0.45 \u00c5, under 0.6 \u00d7 covalent radii",
+     "decorate.site_skipped: aC230 (open-edge, face out): best torsion 90\u00b0 still leaves a bond-range contact with the cap H of aC49",
+     "decorate.site_skipped: aC251 (open-edge, face out): best torsion 330\u00b0 still leaves a non-bonded pair at 0.45 \u00c5, under 0.6 \u00d7 covalent radii",
+     "decorate.site_skipped: aC336 (open-edge, face out): best torsion 60\u00b0 still leaves a non-bonded pair at 0.45 \u00c5, under 0.6 \u00d7 covalent radii",
+     "decorate.site_skipped: aC395 (open-edge, face out): best torsion 180\u00b0 still leaves a non-bonded pair at 0.45 \u00c5, under 0.6 \u00d7 covalent radii"
+    ],
+    "makers_by_qual": {
+     "attach": 2,
+     "cap": 128,
+     "frag": 56,
+     "sheetnet.junction": 24,
+     "sheetnet.strip": 432
+    },
+    "relaxed_by": {
+     "rung": "uff",
+     "verdict": "ok"
+    },
+    "template": false
+   }
+  },
+  "check": {
+   "c60": [
+    [
+     "pi_twist",
+     "warn",
+     3
+    ]
+   ],
+   "p": [
+    [
+     "angle_strain",
+     "warn",
+     26
+    ],
+    [
+     "pi_twist",
+     "warn",
+     88
+    ]
+   ]
+  },
+  "instances": [
+   {
+    "name": "guest",
+    "parent": "p",
+    "template": "c60"
+   }
+  ],
+  "status": "ok",
+  "trace": {
+   "frames": 92,
+   "keys_sha256": "23fc10c56982079dd0d0b268bf6231aa1533732b36c0466c4b3324088a9c774b",
+   "quals": {
+    "": 1,
+    "attach": 16,
+    "cap": 1,
+    "decorate": 2,
+    "frag": 1,
+    "lib": 2,
+    "out.block": 2,
+    "out.instance": 1,
+    "place": 21,
+    "prism": 1,
+    "prism.prism_tube": 1,
+    "sheetnet.assemble": 1,
+    "sheetnet.junction": 6,
+    "sheetnet.place": 12,
+    "sheetnet.pore": 6,
+    "sheetnet.strip": 13,
+    "sites": 3,
+    "step.relax": 1,
+    "stick.stick": 1
+   }
+  }
+ }
+}

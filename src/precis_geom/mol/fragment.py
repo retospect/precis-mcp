@@ -25,7 +25,7 @@ import numpy as np
 
 from precis.errors import BadInput
 from precis_geom import assembly as pga
-from precis_geom import trace as _trace
+from precis_geom import steps as _steps
 from precis_geom.assembly import Geom, Port
 from precis_geom.mol import _valence
 
@@ -63,9 +63,45 @@ def embed_molecule(mol: Any, seed: int = 0) -> None:
         pass  # best-effort cleanup only
 
 
-# TODO(molecular-workspace-code slice 0): frag / lib become @steps.step
-# (cached, recoverable) once precis_geom.steps lands.
-@_trace.traced(name="frag")
+def embed_engine() -> str:
+    """What the embed's numbers depend on beyond the step's own source (the
+    step key covers that source, not its callees): the RDKit build. A
+    library upgrade then misses instead of serving a stale conformer."""
+    try:
+        import rdkit
+    except ImportError:  # pragma: no cover - rdkit is a wheel dep
+        return "rdkit absent"
+    return f"rdkit {rdkit.__version__}"
+
+
+#: The code a ``mol`` step builds with: its own package, the Geom algebra
+#: and the structure kernel (sites, validator, valence). An edit to any of
+#: it misses the cached entries (``steps.code_sha``).
+_BUILD_CODE = ("precis_geom.mol", "precis_geom.assembly", "precis.structure")
+
+
+def build_salt(*extra: str) -> str:
+    """Key material for a ``mol`` step beyond the function's own source: the
+    RDKit build plus a digest of :data:`_BUILD_CODE` and ``extra`` modules
+    (a library edit or upgrade then misses instead of serving a stale
+    build)."""
+    return f"{embed_engine()}; code {_steps.code_sha(*_BUILD_CODE, *extra)}"
+
+
+def _frag_cacheable(
+    smiles: str | None = None,
+    *,
+    scene: Any = None,
+    ports: Any = None,
+    ref: str | None = None,
+    **_kw: Any,
+) -> bool:
+    """Only a well-formed ``smiles=`` call is a step: a Scene is not a step
+    parameter, and the other forms are refusals or a cheap wrap."""
+    return bool(smiles) and scene is None and not ports and not ref
+
+
+@_steps.step(name="frag", frame="frag", salt=build_salt, cache_if=_frag_cacheable)
 def frag(
     smiles: str | None = None,
     *,
@@ -77,7 +113,12 @@ def frag(
 ) -> Geom:
     """A fragment :class:`Geom` — give exactly one of ``smiles=``,
     ``scene=`` (+ ``ports=``) or ``ref=``. ``name`` labels the Geom
-    (default: the SMILES). ``conf_seed`` seeds the 3D embed."""
+    (default: the SMILES). ``conf_seed`` seeds the 3D embed.
+
+    The embed (``smiles=``) is a cached step (:mod:`precis_geom.steps`): the
+    same arguments again, from any call site, are a hit. ``scene=`` wraps a
+    built Scene and is not cached (a Scene is not a step parameter, and the
+    wrap is cheap)."""
     given = [k for k, v in (("smiles", smiles), ("scene", scene), ("ref", ref)) if v]
     if len(given) != 1:
         raise BadInput(

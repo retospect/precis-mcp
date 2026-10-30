@@ -1,0 +1,10 @@
+{
+  "periods": 4,
+  "rows": 4,
+  "strip_rows": 2,
+  "seams": "++++++",
+  "every": 3,
+  "group": "COOH",
+  "relax_steps": 200,
+  "guest_nm": 2.0
+}

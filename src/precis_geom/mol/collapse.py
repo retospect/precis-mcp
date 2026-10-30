@@ -14,11 +14,19 @@ CollapseCheck)``:
   where tblite installs) and ``geo`` (a geometry repair on the declared
   graph: it cannot break a bond, so its verdict covers only displacement and
   the ring census, and it takes no ``fmax`` and no early exit). ``auto``:
-  finite -> ``uff``; periodic -> ``xtb`` if installed, else ``emt`` when
-  every element is in ``EMT_ELEMENTS``, else a refusal naming the way out.
-- **Verdict.** ``collapsed`` when a declared bond breaks, a contact forms, a
-  ring of the declared graph is lost, the fragment count changes or the
-  largest atomic move exceeds ``max_disp`` Å (default 2.0); else ``ok``. Each
+  finite -> ``uff``; periodic -> ``xtb`` if installed, else ``emt`` only for
+  a scene with a metal EMT parametrises (Al, Ni, Cu, Pd, Ag, Pt, Au) and no
+  element outside ``EMT_ELEMENTS``, else a refusal naming ``rung='xtb'`` and
+  the service relax. EMT is a metals potential: on an organic periodic
+  scene it breaks intact C-H bonds (measured: 40 on the capped prism), so
+  ``auto`` never falls back to it there, and an explicit ``rung='emt'``
+  carries a ``limits`` note on its :class:`CollapseCheck`.
+- **Verdict.** ``collapsed`` when the *input* already has a non-bonded
+  contact inside the bond-inference window (a build error, whatever the rung
+  then does with it: UFF would only repel it apart), a declared bond breaks,
+  a contact forms, a ring of the declared graph is lost, the fragment count
+  changes or the largest atomic move exceeds ``max_disp`` Å (default 2.0);
+  else ``ok``. Each
   changed bond is named by both atoms' maker frames resolved to the user's
   ``main.py:<line>``, e.g. ``junction#3 <- main.py:9 lost aC12-aC13 (1.42 ->
   2.31 A)``.
@@ -78,7 +86,7 @@ _NAMED = 4
 #: Bump when the relax rungs / verdict change in a way the step's own source
 #: does not show (a force-field parameter, an optimiser setting): old cached
 #: verdicts then miss instead of serving a stale one.
-_REV = 2
+_REV = 3
 
 _relax = importlib.import_module("precis.structure.relax")
 
@@ -98,13 +106,14 @@ class RelaxCollapsed(RuntimeError):
 
 @dataclass(frozen=True)
 class BondChange:
-    """One declared bond that broke, or one contact that formed.
+    """One declared bond that broke, one contact that formed, or (``kind
+    == 'contact'``) one non-bonded contact the input geometry already had.
 
     ``frames`` names the maker frame of each end (``junction#3 <-
     main.py:9``; both ends when they differ); ``at_start`` marks a change
     the input geometry already showed before any relax step."""
 
-    kind: str  # 'broken' | 'formed'
+    kind: str  # 'broken' | 'formed' | 'contact'
     a: str
     b: str
     d_before: float
@@ -113,8 +122,13 @@ class BondChange:
     frames: str = ""
 
     def text(self) -> str:
-        verb = "lost" if self.kind == "broken" else "formed"
         who = f"{self.frames} " if self.frames else ""
+        if self.kind == "contact":
+            return (
+                f"{who}non-bonded contact {self.a}–{self.b} at "
+                f"{self.d_before:.2f} Å in the input"
+            )
+        verb = "lost" if self.kind == "broken" else "formed"
         start = " (already so at step 0)" if self.at_start else ""
         return (
             f"{who}{verb} {self.a}–{self.b} "
@@ -128,7 +142,10 @@ class CollapseCheck:
 
     ``verdict`` is ``'ok'`` or ``'collapsed'``; ``broken`` / ``formed`` the
     :class:`BondChange` lists (empty for ``geo``, whose verdict is limited to
-    displacement and rings); ``rings_lost`` the declared rings (<= 8 atoms)
+    displacement, rings and input contacts); ``input_contacts`` the non-bonded
+    contacts the *input* already had inside the bond window (each one makes
+    the verdict ``collapsed``, under every rung); ``limits`` what bounds the
+    rung's answer (``limited`` = any); ``rings_lost`` the declared rings (<= 8 atoms)
     the relaxed geometry no longer closes; ``max_disp_A`` the largest atomic
     move; ``energy_drop`` the energy fall in eV (``None`` for ``geo`` and
     for a resumed run); ``steps`` the optimiser steps taken; ``early_exit``
@@ -150,6 +167,8 @@ class CollapseCheck:
     resumed_from: int | None = None
     input_mismatch: int = 0
     limited: bool = False
+    input_contacts: tuple[BondChange, ...] = ()
+    limits: tuple[str, ...] = ()
     reasons: tuple[str, ...] = ()
     key: str | None = None
     ring_atoms: tuple[tuple[str, ...], ...] = field(default=(), repr=False)
@@ -168,8 +187,8 @@ class CollapseCheck:
                 else ""
             )
             fixed = (
-                f"; input had {self.input_mismatch} bond-graph mismatch(es) "
-                "(contact or stretched bond), settled by the relax"
+                f"; input had {self.input_mismatch} declared bond(s) outside "
+                "the bond window (stretched), settled by the relax"
                 if self.input_mismatch
                 else ""
             )
@@ -187,8 +206,12 @@ class CollapseCheck:
             lines += [f"  {c.text()}" for c in group[:_NAMED]]
             if len(group) > _NAMED:
                 lines.append(f"  +{len(group) - _NAMED} more {group[0].kind}")
+        lines += [f"  {c.text()}" for c in self.input_contacts[:_NAMED]]
+        if len(self.input_contacts) > _NAMED:
+            lines.append(f"  +{len(self.input_contacts) - _NAMED} more input contacts")
         for ring in self.ring_atoms[:_NAMED]:
             lines.append(f"  ring lost: {'–'.join(ring)}")
+        lines += [f"  limited: {note}" for note in self.limits]
         return "\n".join(lines)
 
     def raise_if_collapsed(self) -> CollapseCheck:
@@ -282,6 +305,37 @@ def _rings(scene: Any) -> list[list[str]]:
     return sorted(found.values(), key=lambda r: (len(r), sorted(r)))
 
 
+#: The adsorbate set of ``EMT_ELEMENTS`` (the rest are the metals EMT is for).
+_EMT_NONMETALS = frozenset({"H", "C", "N", "O"})
+
+
+def _emt_metals(elements: AbstractSet[str]) -> set[str]:
+    return set(elements) & (_relax.EMT_ELEMENTS - _EMT_NONMETALS)
+
+
+def _limits(rung: str, scene: Any) -> list[str]:
+    """What bounds this rung's answer on this scene (``CollapseCheck.limits``)."""
+    if rung == "geo":
+        return [
+            "geo is a geometry repair on the declared graph: it cannot break "
+            "a bond, so its verdict covers displacement, rings and input "
+            "contacts only"
+        ]
+    if rung == "emt" and any(
+        scene.atoms[b.i].element in _EMT_NONMETALS
+        and scene.atoms[b.j].element in _EMT_NONMETALS
+        for b in scene.bonds
+        if b.i in scene.atoms and b.j in scene.atoms
+    ):
+        return [
+            "emt is a metals potential (its H/C/N/O terms are adsorbate "
+            "parameters): on organic bonds it breaks intact C-H bonds "
+            "(measured: 40 on the capped prism), so a collapsed verdict here "
+            "need not be real — prefer rung='uff' (finite) or 'xtb'"
+        ]
+    return []
+
+
 def _dist(scene: Any, a: str, b: str) -> float:
     return float(probe.distance(scene, a, b))
 
@@ -300,12 +354,13 @@ def _judge(
 ) -> dict[str, Any]:
     """The frame-free collapse document for ``before`` (declared graph,
     input positions) vs ``after`` (the same atoms, relaxed positions)."""
-    limited = rung == "geo"
+    geo = rung == "geo"
     declared = {_pair(b) for b in before.bonds if b.i != b.j}
     start = _perceived(before)
     end = _perceived(after)
     perceived_bonds = probe.detect_bonds(after)
     moved = probe.diff(before, after).max_disp
+    limits = _limits(rung, before)
 
     def rows(pairs: AbstractSet[frozenset[str]]) -> list[list[Any]]:
         out = []
@@ -322,8 +377,12 @@ def _judge(
             )
         return out
 
-    broken = rows(declared - end) if not limited else []
-    formed = rows(end - declared) if not limited else []
+    broken = rows(declared - end) if not geo else []
+    formed = rows(end - declared) if not geo else []
+    # a non-bonded contact inside the bond window already in the INPUT is a
+    # build error: UFF would repel it apart and the graph would "hold", so it
+    # is judged on the input, under every rung
+    contacts = rows(start - declared)
     # a declared ring is lost when the relaxed geometry no longer perceives
     # one of its bonds
     rings_before = _rings(before)
@@ -335,13 +394,18 @@ def _judge(
     frag_before = len(probe.fragments(_graph_scene(before, before.bonds)))
     frag_after = len(probe.fragments(_graph_scene(after, perceived_bonds)))
     reasons: list[str] = []
+    if contacts:
+        reasons.append(
+            f"{len(contacts)} non-bonded contact(s) in the input geometry "
+            "(a build error)"
+        )
     if broken:
         reasons.append(f"{len(broken)} declared bond(s) broke")
     if formed:
         reasons.append(f"{len(formed)} contact(s) formed")
     if lost:
         reasons.append(f"{len(lost)} ring(s) lost")
-    if not limited and frag_before != frag_after:
+    if not geo and frag_before != frag_after:
         reasons.append(f"fragments {frag_before} → {frag_after}")
     if moved > max_disp:
         reasons.append(f"max displacement {moved:.2f} Å > {max_disp:g} Å")
@@ -357,12 +421,14 @@ def _judge(
         "rings_before": len(rings_before),
         "rings_lost": len(lost),
         "ring_atoms": [list(r) for r in lost[:_NAMED]],
-        "fragments": [frag_before, frag_after] if not limited else [1, 1],
+        "fragments": [frag_before, frag_after] if not geo else [1, 1],
         "converged": bool(converged),
         "early_exit": early_exit,
         "resumed_from": resumed_from,
-        "input_mismatch": len(start ^ declared) if not limited else 0,
-        "limited": limited,
+        "input_mismatch": len(start ^ declared),
+        "input_contacts": contacts,
+        "limited": bool(limits),
+        "limits": limits,
         "reasons": reasons,
         "pos_sha": _pos_sha(after),
     }
@@ -577,7 +643,7 @@ def _changes(
 def _check_from(geom: Geom, doc: dict[str, Any]) -> CollapseCheck:
     scene = geom.scene
     frames = None
-    if doc.get("broken") or doc.get("formed"):
+    if doc.get("broken") or doc.get("formed") or doc.get("input_contacts"):
         tr = _trace.current()
         frames = (tr.dump({}) or {}).get("frames") if tr is not None else None
     fr = doc.get("fragments") or (1, 1)
@@ -596,6 +662,10 @@ def _check_from(geom: Geom, doc: dict[str, Any]) -> CollapseCheck:
         resumed_from=doc.get("resumed_from"),
         input_mismatch=int(doc.get("input_mismatch") or 0),
         limited=bool(doc.get("limited")),
+        input_contacts=_changes(
+            doc.get("input_contacts") or (), "contact", scene, frames
+        ),
+        limits=tuple(doc.get("limits") or ()),
         reasons=tuple(doc.get("reasons") or ()),
         key=geom.meta.get("step"),
         ring_atoms=tuple(tuple(r) for r in doc.get("ring_atoms") or ()),
@@ -610,14 +680,16 @@ def _auto_rung(scene: Any) -> str:
         return "uff"
     if importlib.util.find_spec("tblite") is not None:
         return "xtb"
-    if {a.element for a in scene.atoms.values()} <= _relax.EMT_ELEMENTS:
+    elements = {a.element for a in scene.atoms.values()}
+    if _emt_metals(elements) and elements <= _relax.EMT_ELEMENTS:
         return "emt"
     raise BadInput(
-        "mol.relax(rung='auto'): a periodic scene needs xtb (tblite is not "
-        "installed) or emt (covers only "
-        f"{sorted(_relax.EMT_ELEMENTS)}), and this scene has other elements",
-        next="install precis-mcp[estimate] for rung='xtb', or relax it on "
-        "the service (a struct_relax job) and check the result there",
+        "mol.relax(rung='auto'): a periodic scene needs xtb, and tblite is "
+        "not installed; EMT is a metals potential (Al, Ni, Cu, Pd, Ag, Pt, "
+        "Au with H/C/N/O adsorbates) and breaks intact C-H bonds on organic "
+        "systems, so auto does not fall back to it for this scene",
+        next="install tblite and pass rung='xtb', or relax it on the service "
+        "(the block's manifest relax: row) and check the result there",
     )
 
 
@@ -634,7 +706,8 @@ def relax(
     an identical second call is a hit.
 
     ``rung`` is ``'auto'`` (finite -> ``uff``; periodic -> ``xtb`` if
-    installed, else ``emt`` for H/C/N/O/fcc-metal scenes, else a refusal),
+    installed, else ``emt`` for a scene with an EMT metal, else a refusal
+    naming ``rung='xtb'`` and the service relax),
     ``'uff'`` (finite only), ``'emt'``, ``'xtb'`` or ``'geo'``. ``steps``
     caps the optimiser; ``fmax`` is the force target in eV/Å (default
     ``0.1`` on an energy rung; ``geo`` has no forces and refuses it);

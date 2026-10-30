@@ -131,23 +131,26 @@ modifier, structure-workspaces §Construction traces).
 ```python
 import precis_geom.assembly as pga
 import precis_geom.mol as mol
-from hexfold.prism import prism_tube
-from hexfold.stick import stick
 from precis_geom import out, steps
 
 R = steps.recipe()                                    # recipe.json
 with out.run("decorated-prism") as o:
-    net, _tube = prism_tube(R["periods"], R["rows"], R["strip_rows"], R["seams"])
-    p = pga.geom(net, coords=stick(net))
+    p = mol.prism(R["periods"], R["rows"], R["strip_rows"], R["seams"])
     p = mol.decorate(p, sites=f"open & face:out & every:{R['every']}",
-                     group="[*:1]C(=O)O")
+                     group=R["group"])                # "COOH" (or a SMILES)
     p = mol.cap(p)                                    # H on the rest
-    p, cc = mol.relax(p)                              # auto: finite → uff
+    p, cc = mol.relax(p, steps=R["relax_steps"])      # auto: finite → uff
     cc.raise_if_collapsed()                           # Run.fail records it
     o.block("p", p, relax={"method": "gfn2"})
     o.block("c60", mol.lib("c60"), template=True)
-    o.instance("guest", template="c60", parent="p", pose="[0 0 2] nm")
+    o.instance("guest", template="c60", parent="p",
+               pose=[0.0, 0.0, R["guest_nm"]], pose_unit="nm")
 ```
+
+As built (slice 5): this is `examples/hexfold/decorated-prism/main.py`
+verbatim modulo the imports and `desc=`; `mol.prism` is `prism_tube` +
+`stick` + `pga.geom` as one step, so the stick relax is the cost a recipe
+edit skips.
 
 `raise_if_collapsed()` raises `RelaxCollapsed`, whose message names the
 broken or formed bonds by maker frame; `out.run`'s `except` writes the
@@ -272,19 +275,30 @@ Reto 2026-10-29: "see if it collapses quickly and caching is good."
   dep; **finite only**, raises `RelaxUnsupported` on a `pbc` scene, as
   structure §Relax already says), `emt` (periodic-capable, H/C/N/O and
   the fcc metals), `xtb` where tblite installs. `rung='auto'`: finite
-  → `uff`; periodic → `xtb` if installed, else `emt` if every element
-  is in `EMT_ELEMENTS`, else refuse with `next=` naming `xtb` or the
-  service relax. `geo` is allowed but is a geometry repair on the
+  → `uff`; periodic → `xtb` if installed, else `emt` only if the scene
+  contains a metal EMT parametrises (Al, Ni, Cu, Pd, Ag, Pt, Au) and no
+  element outside `EMT_ELEMENTS`, else `BadInput` with `next=` naming
+  `rung='xtb'` (install tblite) or the service relax via the manifest
+  `relax:`. EMT is a metals potential: measured on the intact capped
+  prism it breaks 40 C–H bonds, so `auto` never falls back to it for an
+  organic system. An explicit `rung='emt'` stays allowed; its
+  `CollapseCheck` carries a `limits` note (and `limited`) saying EMT is
+  not an organic force field, whenever the scene has an H/C/N/O–H/C/N/O
+  bond. `geo` is allowed but is a geometry repair on the
   declared graph: it cannot break a bond, so its verdict covers only
   displacement and ring census, and it takes no `fmax` and no early
   exit (no `on_step` in the numba loop).
 - **Verdict** (`CollapseCheck`): `probe.detect_bonds` on the relaxed
   positions vs the declared graph (positions move, `scene.bonds` do
   not — `probe.diff` alone sees nothing), plus ring census, fragment
-  count and max displacement (default `2.0 Å`). `collapsed` when a bond
+  count and max displacement (default `2.0 Å`). `collapsed` when the
+  **input** already has a non-bonded contact inside the bond-inference
+  window (`input_mismatch` counts it; this is a build error, so the
+  verdict holds under every rung — UFF repels such a contact apart and
+  the end graph would "hold"; `geo` cannot touch the graph), a bond
   breaks or forms, a ring is lost, the fragment count changes or the
-  displacement bound is exceeded. Each changed bond is named by both
-  atoms' maker frames: `junction#3 ← main.py:9 lost C12–C13 (1.42 →
+  displacement bound is exceeded. Each changed bond — and each input
+  contact — is named by both atoms' maker frames: `junction#3 ← main.py:9 lost C12–C13 (1.42 →
   2.31 Å)`. Otherwise `ok`, with energy drop, steps and displacement.
 - **Early exit.** On energy rungs the check re-perceives bonds every 10
   steps through `on_step` and stops at the first change.
@@ -317,9 +331,11 @@ Reto 2026-10-29: "see if it collapses quickly and caching is good."
   max move 1.07 Å, 200 steps, not converged) and `geo`, `collapsed` under
   `emt` at step 20 (40 bonds broken, 12 contacts formed). A *non-bonded*
   0.9 Å C...C contact between two fragments is `collapsed` under `emt` (the
-  atoms bond, step < 30) and `ok` under `uff` (repelled apart): UFF
-  cannot form bonds, so a UFF `collapsed` means strain broke a declared
-  bond. The check rides `Geom.meta['collapse']` (frame-free JSON; frame
+  atoms bond, step < 30); under `uff` it is repelled apart, so the end graph
+  alone would read `ok` — which is why the verdict also judges the input
+  (slice 5 follow-up, §Collapse check): an input contact is `collapsed`
+  under every rung, naming both frames. A UFF `collapsed` otherwise means
+  strain broke a declared bond or the displacement bound tripped. The check rides `Geom.meta['collapse']` (frame-free JSON; frame
   names resolve per call against the live trace) and
   `meta['relaxed_by']` (`{rung, verdict, key, pos_sha}`); `out.block`
   emits the row's `relaxed_by` only while the coordinates still hash to
@@ -328,6 +344,32 @@ Reto 2026-10-29: "see if it collapses quickly and caching is good."
   versions) so a library upgrade misses. `meta['_net']` is dropped by a
   relax. No GFN2 comparison is recorded: tblite is not installed on the
   build host.
+- **As built (slice 5).** `steps.step` gained three options so a public
+  primitive can *be* its step: `frame=` (the trace frame keeps its name —
+  `frag`, `lib`, `decorate`, `cap`, `prism`, `generate`, with `step: {key,
+  hit}` on it — and its call site is the script's line), `salt=` (key
+  material the source does not show: every library step here keys the RDKit
+  version, as `relax` keys ASE's, and `steps.code_sha(...)`, a digest of the
+  `.py` sources it builds with — `precis_geom.mol`, `precis_geom.assembly`,
+  `precis.structure`, plus `hexfold` / the generators for `prism`, `generate`,
+  `lib` and `decorate`/`cap` — so a pull that edits `sheetnet` or `decorate`'s
+  callee misses instead of serving a stale hit; a helper in the user's own
+  `main.py` is still the §Risks stale-hit case) and `cache_if=` (false → a plain
+  traced frame, no key: `mol.frag(scene=…)`, `mol.decorate`/`cap` on a Net or
+  Scene, which `pga.geom` wraps inside the call). A Geom, a list of
+  `MolSite` rows, strings and numbers are keyable parameters; anything else
+  raises `BadInput` from the key. `mol.generate` returns the generator's
+  atoms with its `hybridization`(s) and bond kinds (`aromatic` for the CNT's
+  4/3 bonds), one `Port` per `GeneratedPort` (`atom` the label, `direction`
+  as given, `annotations` carrying `atoms`/`lattice`/`payload` for a ring
+  port) and `meta` `generator`/`topology`/`provenance`; `cyclodextrin` embeds
+  with RDKit (~1 s warm, ~25 s the first time in a process), `hexfold_scene`
+  is 5–10 s cold. Goldens take the coordinate SHA on a 1e-3 Å grid, not the
+  1e-6 of `pos_sha`: the UFF relax is a 200-step FIRE run and a platform's
+  last digits must not red the gate (generated on the arm64 host, reproduced
+  in the container). The decorated-prism run rebuilds 8 step calls cold (nested
+  ones — `decorate` → `lib` → `frag`, `cap` → `decorate` — count); a late
+  edit rebuilds one, an `every` edit three.
 
 ## Check
 
@@ -395,11 +437,11 @@ the single probe family; the atomic leg plugs in.
 |---|---|---|---|---|
 | 0 | **`precis_geom.steps`, all three scales, host + in-process.** ·landed 2026-10-29 (worktree-agent-af8b2869f3363d021)· `@steps.step`, key (ruling's three parts + version + function source sha), store/load for Geom/SceneSpec/Board, `ls`/`load`/`recipe`, relative trace subtree + re-minted graft + maker remap, `scratch/cache/` LRU, in-process LRU on the lane, `steps` digest in the trace `run` header and the import echo, `step` key on trace frames | `precis_geom/out.py` writers, `precis_geom/trace.py`, `trace_schema.py`, `Board.to_batch` | Two host runs of the §Worked example with one recipe edit: the first miss is the edited step, every step below is a hit, wall time drops by the hits' `wall_s` ± 10 %; a run killed mid-build resumes with every completed step a hit; a hit atom's `view='trace'` equals the fresh build's plus the `step … (hit)` tag; `mol.lib('COOH')` cached from one call site and hit from another grafts keys valid under the second parent; a Board and a cad step round-trip byte-identical; editing a step function's body misses; a trace-schema mismatch is a miss | M, 1–2 builds |
 | 0b | **Persistent step cache on the lane** (open question 1, approved 2026-10-29). `/var/lib/precis-sandbox/ws/<slug>/cache/` mounted `/work/cache`, per-workspace LRU cap | `claude_docker.build_script_argv`, agent-workspace-containers host dirs | Two lane runs of one workspace: the second hits steps from the first; the cap evicts oldest; no trusted-side code reads the dir | S, after structure slice 1 |
-| 1 | **Fragments + attach + library.** ·landed 2026-10-29 (worktree-agent-a78e9756711235299)· `mol.frag` (SMILES with `[*:n]`, Scene, `ref=`), `mol.attach`, `mol.lib`, `_op_from_smiles`' embed moved into `mol` (the op calls it), traced; the step cache arrives with slice 0 (TODOs in `frag`/`lib`) | `structure/ops.py`, `precis_geom/assembly.py::place`, `packaging/geom/` | `mol.frag('[*:1]C(=O)O')` has one port with the C–C bond vector; attaching it to a benzene site gives benzoic acid whose RDKit canonical SMILES matches; `torsion=90` moves only fragment atoms; the `from_smiles` op golden is unchanged | M, 1 build |
+| 1 | **Fragments + attach + library.** ·landed 2026-10-29 (worktree-agent-a78e9756711235299)· `mol.frag` (SMILES with `[*:n]`, Scene, `ref=`), `mol.attach`, `mol.lib`, `_op_from_smiles`' embed moved into `mol` (the op calls it), traced; cached as steps in slice 5 | `structure/ops.py`, `precis_geom/assembly.py::place`, `packaging/geom/` | `mol.frag('[*:1]C(=O)O')` has one port with the C–C bond vector; attaching it to a benzene site gives benzoic acid whose RDKit canonical SMILES matches; `torsion=90` moves only fragment atoms; the `from_smiles` op golden is unchanged | M, 1 build |
 | 2 | **Decorators.** ·landed 2026-10-29 (worktree-agent-a27496041e346c77d)· Site grammar, `mol.sites`/`decorate`/`cap`, pure enumeration + taxonomy moved to `precis.structure.sites` (`sites.py` calls it), `terminate_open_edges` promoted public, `sheetnet.decorate` + `geom.sp3.mismatch` (multicell slice 2) | `precis_se/atomic/sites.py`, `generators/hexfold_spec.py`, `hexfold/sheetnet.py`, `hexfold/check.py` | `mol.cap` on `prism_tube(4, 4, 2, '++++++')` equals the `terminate` op's output (same function, SHA equal); `decorate(sites='open & face:out & every:3', group='COOH')` places ⌈56/3⌉ = 19 minus the 5 pocket sites (aC192, aC230, aC251, aC336, aC395: a group there lands in bonding range of the opposite rim or of its cap H) = 14 groups, each pocket named by a `decorate.site_skipped` finding, and a following `mol.cap` H-caps the pockets through the Net path so `mol.check` reports no error; `view='sites'` output byte-identical before/after the move; the wheel import test covers `precis.structure.sites` | M–L, 2 builds; after 1 |
-| 3 | ·landed 2026-10-30 (worktree-agent-afbde4cd90fc02a32)· **Collapse check.** `uff` rung (finite only), `mol.relax` as a step with `rung='auto'`, `CollapseCheck` on re-perceived bonds + rings + fragments + displacement, early exit via `on_step`, step-local checkpoint, `relaxed_by` in `_BLOCK_KEYS` and on `view='validate'` | `precis/structure/relax.py`, `structure/probe.py::detect_bonds`, `workspace_import.py::_BLOCK_KEYS`, `out.block` | A capped finite prism checks `ok` under `uff` in < 10 s on a laptop; a fixture with a 0.9 Å C–C contact checks `collapsed` before step 30 naming both maker frames; `uff` on a `pbc` scene refuses and `auto` picks `xtb`/`emt`; `geo` refuses `fmax`; an identical second call is a hit; the imported block's `view='validate'` shows `relaxed_by uff ok` | M, 1 build; after 0 |
+| 3 | ·landed 2026-10-30 (worktree-agent-afbde4cd90fc02a32)· **Collapse check.** `uff` rung (finite only), `mol.relax` as a step with `rung='auto'`, `CollapseCheck` on re-perceived bonds + rings + fragments + displacement, early exit via `on_step`, step-local checkpoint, `relaxed_by` in `_BLOCK_KEYS` and on `view='validate'` | `precis/structure/relax.py`, `structure/probe.py::detect_bonds`, `workspace_import.py::_BLOCK_KEYS`, `out.block` | A capped finite prism checks `ok` under `uff` in < 10 s on a laptop; a fixture with a 0.9 Å C–C contact checks `collapsed` before step 30 naming both maker frames under `emt` (its atoms bond); under `uff` — which repels a non-bonded contact apart and cannot "collapse" it — and every other rung the same fixture is `collapsed` from the *input* (`input_mismatch > 0`: a non-bonded contact inside the bond window is a build error), naming both atoms' frames (slice 5 follow-up; pinned in `tests/workspaces/test_mol_relax.py`); `uff` on a `pbc` scene refuses and `auto` picks `xtb` where tblite imports, `emt` only for a scene with an EMT metal, else refuses naming `rung='xtb'` and the service relax; `geo` refuses `fmax`; an identical second call is a hit; the imported block's `view='validate'` shows `relaxed_by uff ok` | M, 1 build; after 0 |
 | 4 | ·landed 2026-10-29 (worktree-agent-ae1b2530db4018763)· Code lives in `precis/structure/check.py::check` (the `precis_geom.mol.check` alias is added with the `mol` package); findings go to `out/check.json` beside `fit.json`; `Run.check_chem`, `check={'strict': True}` raises. **Check at finish + on import.** `mol.check` composing `validate`/`vsepr`/`fragments`/open valences; `Run.finish()` default-on for atomic blocks; the importer calls the same functions; nearest-frame column | `precis/structure/validate.py`, `vsepr.py`, `precis_geom/out.py::finish`, `workspace_import.py` | A block with an under-valent C fails `finish()` with a finding naming `main.py:<line>`; the same block through `import_workspace` yields the same finding text; `view='validate'` on prod fixtures is byte-identical before/after | S–M, 1 build |
-| 5 | **Hex tiler from a recipe.** `GENERATORS` entries (`hexfold_scene`, `cnt`, `fullerene`, `cyclodextrin`) and `prism_tube` wrapped as steps, `steps.recipe()`, examples `examples/hexfold/decorated-prism/` and `examples/hexfold/cnt-guest/` with goldens in `scripts/test` (structure slice 7's pattern) | `precis_se/atomic/generators/`, `examples/hexfold/`, `tests/workspaces/`, `scripts/impacted-tests` | `uv run` on each example reproduces its golden (counts, SHA, findings, trace keys); a `sheetnet` change that alters one fails the selected test naming the example; the decorated-prism example meets the §Core design 7 latency (cold < 10 s, one-late-step re-run < 2 s) | S–M, 1 build; after 2, 3 |
+| 5 | ·landed 2026-10-30 (worktree-agent-a46ffb749c4dbc61c)· **Hex tiler from a recipe.** `mol.frag` (the SMILES embed), `mol.lib`, `mol.decorate`, `mol.cap` cached as steps; `mol.prism` (`prism_tube` + `stick` + `pga.geom`) and `mol.generate(name, **params)` (`hexfold_scene`, `cnt`, `fullerene`, `cyclodextrin`) as Geom-returning steps; `steps.recipe()`; examples `examples/hexfold/decorated-prism/` and `examples/hexfold/cnt-guest/` with goldens in `scripts/test` (`tests/workspaces/test_mol_examples.py`, `data/mol_example_goldens.json`) | `precis_geom/mol/`, `precis_geom/steps.py`, `examples/hexfold/`, `tests/workspaces/`, `scripts/impacted-tests` | `uv run` on each example reproduces its golden (counts, coordinate SHA, findings, trace keys), cold and on a full cache hit; a `sheetnet` change that alters one fails the selected test naming the example; the decorated-prism example meets the §Core design 7 latency (cold < 10 s, one-late-step re-run < 2 s) — measured on the host (arm64 laptop, warm numba cache, in-process wall of `main()`, two quiet-to-loaded runs, load average 1–7): cold 2.8–3.4 s; full re-run 0.04–0.05 s (5 hits); only `relax_steps` edited 1.1–1.2 s (4 hits, first miss `relax#0`; the UFF relax is 1.0–1.2 s of it); `every` edited 1.4–1.5 s (3 hits, first miss `decorate#0`); whole process incl. interpreter and imports 3.0–3.4 s cold and 1.9–2.5 s late-step (the ≈ 0.7 s import floor is outside the loop, and is why the late-step bound is on `main()`) | S–M, 1 build; after 2, 3 |
 | 6 | **One inspect family.** ·landed 2026-10-29 (worktree-agent-ad4de23aa0ee58202)· Field-provider seam in `cad.inspect`, `probe.vdw_sdf` + maker attribution, `pg.inspect` facade, `radius=` + `profile_samples=` bottleneck at Å, atomic events merged into `RayHit`, `view='inspect'` on se and structure | `precis/cad/inspect.py`, `structure/probe.py`, `precis_geom/assembly.py::Ray`, se/structure handlers | Existing `cad.inspect` tests and the `fasten.py` ray golden unchanged; on a (10, 10) tube the axis profile minimum equals tube radius − C vdW within 0.05 Å and names the wall frame; C60 in a too-narrow tube reports `overlap.volume_m3 > 0` naming both frames; a benzene `section` in the ring plane has one loop and `hole_count` 1 (**measured: one loop, `hole_count` 0** — the ring centre is 1.39 Å from each C, inside the 1.70 Å vdW union; `hole_count` 1 needs shrunk `radii` or a tube cross-section, both tested); `view='inspect'` `probe='section'` renders ≤ 400 tokens | M–L, 2 builds; after 1 |
 | 7 | **Skill + glossary.** A molecular section in `precis-workspace-help` (frag, sites, decorate, steps, collapse check, inspect), pointer lines in `precis-se-atomic-help`, glossary (step key, collapse check, fragment port, site grammar) | skills, `docs/glossary.md` | The §Worked example runs from the skill text as written; no skill text contradicts the site grammar | S, 1 build; after 2–6 |
 

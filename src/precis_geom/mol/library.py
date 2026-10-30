@@ -15,9 +15,9 @@ from typing import Any
 
 from precis.errors import BadInput
 from precis_geom import assembly as pga
-from precis_geom import trace as _trace
+from precis_geom import steps as _steps
 from precis_geom.assembly import Geom
-from precis_geom.mol.fragment import frag
+from precis_geom.mol.fragment import build_salt, frag
 
 #: name (as written in the spec) → SMILES for the fixed groups.
 _FIXED: dict[str, str] = {
@@ -53,16 +53,21 @@ def _count(name: str, params: dict[str, Any]) -> int:
     return k
 
 
-# TODO(molecular-workspace-code slice 0): lib becomes a @steps.step so one
-# call site's build is a cache hit at another.
-@_trace.traced(name="lib")
+@_steps.step(
+    name="lib",
+    frame="lib",
+    salt=lambda: build_salt("precis_se.atomic.generators", "hexfold"),
+)
 def lib(name: str, **params: Any) -> Geom:
     """The named library entry as a :class:`Geom`.
 
     ``OH``, ``NH2``, ``CH3``, ``COOH``, ``Ph`` — one-port groups.
     ``PEG`` (``n=`` ethylene-glycol units, ``-(OCH2CH2)n-OH``) — one port.
     ``CH2n`` (``n=``) / ``C2H4`` — two-port spacers. ``c60`` — the
-    fullerene cage. ``conf_seed=`` seeds the embed (default 0)."""
+    fullerene cage. ``conf_seed=`` seeds the embed (default 0).
+
+    A cached step (:mod:`precis_geom.steps`): the entry built from one call
+    site is a hit at another."""
     key = {k.lower(): k for k in NAMES}.get(str(name).lower())
     if key is None:
         raise BadInput(

@@ -5,9 +5,15 @@ Acceptance clauses pinned here:
 
 - a capped finite prism checks ``ok`` under ``uff`` in < 10 s;
 - a fixture with a 0.9 Å C-C contact checks ``collapsed`` before step 30 naming
-  both maker frames (``emt``: its atoms bond; ``uff`` repels a non-bonded
-  contact apart, so there the same fixture is ``ok`` — pinned too);
-- ``uff`` on a ``pbc`` scene refuses and ``auto`` picks ``xtb``/``emt``;
+  both maker frames under ``emt`` (its atoms bond); under ``uff`` — which
+  repels a non-bonded contact apart and so cannot "collapse" it — and under
+  every other rung the verdict is ``collapsed`` from the INPUT: a non-bonded
+  contact inside the bond-inference window is a build error, named by both
+  atoms' frames (slice 5 follow-up);
+- ``uff`` on a ``pbc`` scene refuses; ``auto`` picks ``xtb`` where tblite
+  imports, ``emt`` only for a scene with an EMT metal, and refuses an organic
+  periodic scene naming ``rung='xtb'`` and the service relax (EMT breaks
+  intact C-H bonds);
 - ``geo`` refuses ``fmax``;
 - an identical second call is a step-cache hit;
 - the imported block's ``view='validate'`` shows ``relaxed_by uff ok``.
@@ -184,20 +190,52 @@ def test_contact_collapses_under_emt_before_step_30_naming_both_frames(
     assert f"main.py:{a}" in man["error"]["message"]
 
 
-def test_contact_between_fragments_is_repelled_apart_by_uff(tmp_path: Path) -> None:
-    """UFF has a non-bonded repulsion and no bond formation: the same 0.9 Å
-    contact that EMT bonds is simply pushed out (~1 Å each way) and the
-    graph holds — ``ok``, with the input's mismatch counted, not hidden."""
+def test_input_contact_is_a_build_error_under_every_rung(tmp_path: Path) -> None:
+    """A non-bonded 0.9 Å contact in the INPUT collapses the verdict whatever
+    the rung does with it: UFF repels it apart (so the end graph "holds"),
+    ``geo`` cannot touch the graph — the contact is still the build error,
+    named by both atoms' frames."""
     mod = load_script(tmp_path, _CONTACT)
-    g = mod.build(0.9)
-    _relaxed, cc = mol.relax(g, "uff")
-    assert cc.verdict == "ok" and not cc.formed and not cc.broken, cc.text()
-    assert cc.input_mismatch == 1
-    assert "input had 1 bond-graph mismatch" in cc.summary()
+    a, b = _line("A"), _line("B")
+    with trace.run(work_root=tmp_path):
+        g = mod.build(0.9)
+        for rung in ("uff", "geo", "emt"):
+            _r, cc = mol.relax(g, rung)
+            assert cc.verdict == "collapsed", (rung, cc.text())
+            assert cc.rung == rung
+            [c] = cc.input_contacts
+            assert (c.kind, c.a, c.b, c.d_before) == ("contact", "aC2", "baC1", 0.9)
+            assert f"main.py:{a}" in c.frames and f"main.py:{b}" in c.frames, c.frames
+            assert "non-bonded contact(s) in the input geometry" in cc.reasons[0]
+            assert f"main.py:{a}" in cc.text() and "build error" in cc.summary()
+            with pytest.raises(collapse.RelaxCollapsed, match="input geometry"):
+                cc.raise_if_collapsed()
+    # uff really did push the pair apart (it is the input that is wrong)
+    _r, cc = mol.relax(g, "uff")
+    assert not cc.formed and not cc.broken and cc.input_mismatch == 1
     assert 0.5 < cc.max_disp_A < collapse.MAX_DISP_A
-    # ... and the displacement bound is a verdict of its own
-    _r2, tight = mol.relax(g, "uff", max_disp=0.5)
+    # the same pair 3.2 Å apart (outside the bond window) checks ok
+    _r, fine = mol.relax(mod.build(3.2), "uff")
+    assert fine.verdict == "ok" and fine.input_contacts == ()
+
+
+def test_input_contact_fails_the_run_naming_both_frames_under_uff(
+    tmp_path: Path,
+) -> None:
+    mod = load_script(tmp_path, _CONTACT)
+    out_dir = tmp_path / "out" / "r"
+    with pytest.raises(collapse.RelaxCollapsed) as ei:
+        mod.main(out_dir, "uff")
+    a, b = _line("A"), _line("B")
+    assert f"main.py:{a}" in str(ei.value) and f"main.py:{b}" in str(ei.value)
+    man = json.loads((out_dir / "manifest.json").read_text(encoding="utf-8"))
+    assert man["status"] == "failed" and man["error"]["code"] == "relax.collapsed"
+
+
+def test_displacement_bound_is_a_verdict_of_its_own(prism: Any) -> None:
+    _r, tight = mol.relax(prism, "uff", max_disp=0.5)
     assert tight.verdict == "collapsed" and not tight.broken
+    assert not tight.input_contacts
     assert "max displacement" in tight.summary()
     with pytest.raises(collapse.RelaxCollapsed, match="max displacement"):
         tight.raise_if_collapsed()
@@ -238,25 +276,66 @@ def test_emt_collapse_on_the_prism_exits_early_and_names_the_bonds(prism: Any) -
     assert cc.text().count("\n") >= 4  # the first few changes, "+N more broken"
 
 
-def test_uff_refuses_a_pbc_scene_and_auto_picks_xtb_or_emt() -> None:
-    cell = Cell(np.diag([2.5, 20.0, 20.0]), (True, False, False))
+def _periodic(*elements: str) -> Scene:
+    """A short periodic chain of ``elements`` along x, 2.5 Å apart in a
+    20 Å box, each bonded to the next (and the last to the first, next cell)."""
+    cell = Cell(np.diag([2.5 * len(elements), 20.0, 20.0]), (True, False, False))
+    n = len(elements)
     atoms = {
-        "aC1": Atom("aC1", "C", np.array([0.0, 0.5, 0.5])),
-        "aC2": Atom("aC2", "C", np.array([0.5, 0.5, 0.5]) + np.array([0, 0.04, 0])),
+        f"a{el}{k + 1}": Atom(
+            f"a{el}{k + 1}", el, np.array([k / n, 0.5, 0.5 + 0.002 * k])
+        )
+        for k, el in enumerate(elements)
     }
-    sc = Scene(
-        cell=cell,
-        atoms=atoms,
-        bonds=[Bond("aC1", "aC2", 1.0), Bond("aC2", "aC1", 1.0, image=(1, 0, 0))],
-    )
-    g = pga.geom(sc)
+    labels = list(atoms)
+    bonds = [Bond(labels[k], labels[k + 1], 1.0) for k in range(n - 1)]
+    bonds.append(Bond(labels[-1], labels[0], 1.0, image=(1, 0, 0)))
+    return Scene(cell=cell, atoms=atoms, bonds=bonds)
+
+
+def test_uff_refuses_a_pbc_scene_and_auto_picks_xtb_where_tblite_imports(
+    monkeypatch: Any,
+) -> None:
+    g = pga.geom(_periodic("C", "C"))
     with pytest.raises(RelaxUnsupported) as ei:
         mol.relax(g, "uff")
     assert ei.value.next is not None
     assert "emt" in ei.value.next and "xtb" in ei.value.next
-    _r, cc = mol.relax(g)  # auto
-    want = "xtb" if importlib.util.find_spec("tblite") else "emt"
-    assert cc.rung == want
+    # tblite importable: auto picks xtb (the rung is the answer; none is run)
+    monkeypatch.setattr(importlib.util, "find_spec", lambda name, *a, **k: object())
+    assert collapse._auto_rung(g.scene) == "xtb"
+
+
+def test_auto_never_falls_back_to_emt_for_an_organic_periodic_scene(
+    monkeypatch: Any,
+) -> None:
+    """Measured: EMT breaks 40 C-H bonds on the intact capped prism. Without
+    tblite, ``auto`` on an organic periodic scene refuses naming
+    ``rung='xtb'`` and the service relax; it does not pick ``emt``."""
+    monkeypatch.setattr(importlib.util, "find_spec", lambda name, *a, **k: None)
+    for els in (("C", "C"), ("C", "H"), ("C", "O", "N", "H")):
+        with pytest.raises(BadInput) as ei:
+            mol.relax(pga.geom(_periodic(*els)))
+        err = ei.value
+        assert "tblite" in str(err) and "C-H" in str(err)
+        assert err.next is not None
+        assert "rung='xtb'" in err.next and "relax:" in err.next
+        assert "service" in err.next
+
+
+def test_auto_picks_emt_for_a_periodic_scene_with_an_emt_metal(
+    monkeypatch: Any,
+) -> None:
+    monkeypatch.setattr(importlib.util, "find_spec", lambda name, *a, **k: None)
+    g = pga.geom(_periodic("Cu", "Cu"))
+    _r, cc = mol.relax(g)  # auto -> emt: Cu is what EMT is for
+    assert cc.rung == "emt"
+    assert cc.limits == () and not cc.limited  # a metal-only bond: no organic caveat
+    # a metal plus an adsorbate-set element is still EMT's domain ...
+    assert collapse._auto_rung(_periodic("Cu", "Cu", "O")) == "emt"
+    # ... but a metal next to an element EMT lacks is not
+    with pytest.raises(BadInput, match="tblite"):
+        collapse._auto_rung(_periodic("Cu", "Si"))
 
 
 def test_auto_refuses_a_periodic_scene_neither_rung_covers(monkeypatch: Any) -> None:
@@ -272,14 +351,29 @@ def test_auto_refuses_a_periodic_scene_neither_rung_covers(monkeypatch: Any) -> 
     )
     with pytest.raises(BadInput) as ei:
         mol.relax(pga.geom(sc))
-    assert "xtb" in str(ei.value) and "emt" in str(ei.value)
+    assert "xtb" in str(ei.value)
+    assert ei.value.next is not None and "rung='xtb'" in ei.value.next
+
+
+def test_explicit_emt_on_organic_bonds_carries_the_limited_note(prism: Any) -> None:
+    """Allowed, but the check says EMT is not an organic force field."""
+    _r, cc = mol.relax(prism, "emt")
+    assert cc.limited and len(cc.limits) == 1
+    assert "metals potential" in cc.limits[0] and "C-H" in cc.limits[0]
+    assert "limited: emt is a metals potential" in cc.text()
+    # the note rides the cached document, so a hit says it too
+    _r2, again = mol.relax(prism, "emt")
+    assert again.limits == cc.limits
+    # uff on the same scene has no such caveat
+    _r3, ok = mol.relax(prism, "uff", steps=20)
+    assert ok.limits == () and not ok.limited
 
 
 def test_geo_refuses_fmax_and_judges_only_displacement_and_rings(prism: Any) -> None:
     with pytest.raises(BadInput, match="fmax"):
         mol.relax(prism, "geo", fmax=0.1)
     _r, cc = mol.relax(prism, "geo")
-    assert cc.rung == "geo" and cc.limited
+    assert cc.rung == "geo" and cc.limited and "cannot break a bond" in cc.limits[0]
     assert cc.verdict == "ok" and cc.energy_drop is None
     assert cc.broken == () and cc.formed == () and cc.early_exit is None
     assert cc.max_disp_A < collapse.MAX_DISP_A

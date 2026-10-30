@@ -325,6 +325,34 @@ PATH_MAP: list[tuple[str, list[str]]] = [
         ],
     ),
     ("packaging/geom/**", ["tests/workspaces/test_geom_wheel_imports.py"]),
+    # molecular-workspace-code slice 5: the hexfold examples run end to end
+    # against goldens (counts, coordinate SHA, findings, trace keys). A
+    # sheetnet / tiler / generator / mol / step-cache change that alters one
+    # fails this test naming the example — the examples reach those modules
+    # through runpy and lazy imports, an edge a stale map can miss.
+    (
+        "src/hexfold/**",
+        ["tests/workspaces/test_mol_examples.py"],
+    ),
+    (
+        "src/precis_geom/mol/**",
+        ["tests/workspaces/test_mol_examples.py"],
+    ),
+    (
+        "src/precis_geom/steps.py",
+        ["tests/workspaces/test_mol_examples.py"],
+    ),
+    (
+        "src/precis_se/atomic/generators/**",
+        ["tests/workspaces/test_mol_examples.py"],
+    ),
+    (
+        "examples/hexfold/**",
+        [
+            "tests/workspaces/test_mol_examples.py",
+            "tests/workspaces/test_import_entry.py",
+        ],
+    ),
 ]
 
 # Repo prefixes that are never corpus coupling (git internals are not
