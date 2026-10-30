@@ -46,6 +46,7 @@ from __future__ import annotations
 import heapq
 import itertools
 import math
+from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 
 import numpy as np
@@ -121,7 +122,7 @@ class Wires:
     branches: tuple[WirePath, ...]
     order: tuple[tuple[int, ...], ...]
     capacity_mm: np.ndarray  # (E,) free crossing length per edge
-    net_layers: tuple[frozenset[int], ...]  # candidate outer layers per net
+    net_layers: tuple[frozenset[int], ...]  # candidate layers per net (full stackup)
     unreachable: tuple[Unreachable, ...]
     # slice-4 channel record (round-4): per edge and layer, the stretch
     # left uncovered by ringed pads buffered at the finest resolved rule
@@ -202,22 +203,21 @@ class CorridorOverflow(BadInput):
 
 
 def _net_layers(d: TopoDesign, k: int, n_layers: int) -> frozenset[int]:
-    """The net's candidate OUTER layers {0, n−1} — class rule
-    (``net_layer_force``) ∩ pad sides (``net_pin_force``). An empty set
-    is the inner-only clash the colour pass reports as a certificate;
-    the path builder treats it as free so the wire exists to be
-    diagnosed."""
-    allowed = {0, n_layers - 1}
-    forces = (
-        int(d.net_layer_force[k]) if len(d.net_layer_force) > k else -1,
-        int(d.net_pin_force[k]) if len(d.net_pin_force) > k else -1,
-    )
-    for force in forces:
-        if force >= 0:
-            allowed &= {force}
-        elif force == -2:
-            allowed = set()
-    return frozenset(allowed)
+    """The net's candidate layers — the class ``layers`` rule
+    (``net_layer_force``) over the WHOLE stackup: a forced index, the
+    inners {1..n−2} for an inner-only lock (a piece bracketed by two
+    vias can live there, gr520902), else every layer. Pad sides
+    (``net_pin_force``) are NOT in the and — Decision 6 binds a pad's
+    mount side to the terminal piece only, which ``_pin_forced``
+    enforces at plan time. An empty set stays the inner-only clash the
+    colour pass reports as a certificate; the path builder treats it
+    as free so the wire exists to be diagnosed."""
+    force = int(d.net_layer_force[k]) if len(d.net_layer_force) > k else -1
+    if force >= 0:
+        return frozenset({force})
+    if force == -2:
+        return frozenset(range(1, n_layers - 1))
+    return frozenset(range(n_layers))
 
 
 @dataclass(slots=True)
@@ -1717,7 +1717,7 @@ def _edge_free(
     return free
 
 
-def _blocked_masks(
+def _open_layers(
     ctx: _Ctx,
     d: TopoDesign,
     cand_mask: int,
@@ -1726,17 +1726,12 @@ def _blocked_masks(
     trace_mm: float,
     clearance_mm: float,
 ) -> np.ndarray:
-    """The net's passable mask — an edge is open on a candidate layer
-    unless a pin of ANOTHER net, a foreign-net zone, a too-narrow
-    foreign pad-to-pad gap or the board edge blocks it there (R-a +
-    round-2 ruling: exemption keys on the wire's net; a foreign-net pad
-    on an endpoint part stays a wall. Reto 2026-10-25: a gap between
-    other-net pads passes only where the geometry fits — each pad is
-    buffered by ``trace/2 + clearance`` and an edge survives a layer
-    only where a free stretch remains, so a channel closes exactly when
-    ``gap < trace + 2·clearance``; the closure applies per LAYER — two
-    top-side pads leave the bottom open — and the net's own pads are
-    dropped from the coverage (own-flanked stays open)."""
+    """The net's per-edge OPEN-layer bitmask — ``_blocked_masks`` before
+    the any-layer collapse: bit ``l`` set where the edge is passable on
+    layer ``l`` for this net (own-net pads exempt, board edges always
+    0). The layer assignment reads this as the corridor's per-edge open
+    set (gr520902 FIX): a run may only sit on a layer every one of its
+    edges leaves open."""
     # base blocked layers: every pad wall, then the own-net exemption
     # re-merges only edges an own pin's fan boundary touches (round-4
     # perf — the per-net full contrib scan dominated _blocked_masks);
@@ -1784,7 +1779,32 @@ def _blocked_masks(
                             m |= 1 << ly
                     gap_mask[e] = m
         full_blocked |= gap_mask
-    return ((np.int64(cand_mask) & ~full_blocked) != 0) & ~ctx.board
+    open_ = np.int64(cand_mask) & ~full_blocked
+    open_[ctx.board] = 0
+    return open_
+
+
+def _blocked_masks(
+    ctx: _Ctx,
+    d: TopoDesign,
+    cand_mask: int,
+    net_name: str,
+    own: frozenset[int],
+    trace_mm: float,
+    clearance_mm: float,
+) -> np.ndarray:
+    """The net's passable mask — an edge is open on a candidate layer
+    unless a pin of ANOTHER net, a foreign-net zone, a too-narrow
+    foreign pad-to-pad gap or the board edge blocks it there (R-a +
+    round-2 ruling: exemption keys on the wire's net; a foreign-net pad
+    on an endpoint part stays a wall. Reto 2026-10-25: a gap between
+    other-net pads passes only where the geometry fits — each pad is
+    buffered by ``trace/2 + clearance`` and an edge survives a layer
+    only where a free stretch remains, so a channel closes exactly when
+    ``gap < trace + 2·clearance``; the closure applies per LAYER — two
+    top-side pads leave the bottom open — and the net's own pads are
+    dropped from the coverage (own-flanked stays open)."""
+    return _open_layers(ctx, d, cand_mask, net_name, own, trace_mm, clearance_mm) != 0
 
 
 def _net_tree(
@@ -1796,6 +1816,7 @@ def _net_tree(
     trace_mm: float,
     clearance_mm: float,
     occ: np.ndarray,
+    extra_blocked: np.ndarray | None = None,
 ) -> tuple[list[tuple[int, int, list[int], list[int]]], list[list[int]], np.ndarray]:
     """Geodesic Prim over one net's pins (R-b): per COMPONENT a
     persistent multi-source A* search — the heap carries relax states
@@ -1808,11 +1829,15 @@ def _net_tree(
     lowest unplaced pin — a caged root does not drop the net
     (round-2 finding 4). Under net-level exemption passability is a
     uniform per-net mask, so there is no goal-dependent rescue: a
-    lost pin's flood region is exactly what it can reach. Returns
-    ``(branches, components, base_pass)`` — a branch is
-    ``(pin_a, pin_b, tris, edges)`` and a component is the member pin
-    indices of one separated region (``build_wires`` reports every
-    non-main component once on ``Wires.unreachable``)."""
+    lost pin's flood region is exactly what it can reach.
+    ``extra_blocked`` is an (E,) bool mask of edges closed on top of
+    the net's own passability — the crossing-resolution re-thread masks
+    a wrapped pad's shared corridor so the tree re-grows around its
+    other side (gr520902). Returns ``(branches, components,
+    base_pass)`` — a branch is ``(pin_a, pin_b, tris, edges)`` and a
+    component is the member pin indices of one separated region
+    (``build_wires`` reports every non-main component once on
+    ``Wires.unreachable``)."""
     pins = [int(p) for p in d.net_pins[k]]
     if len(pins) < 2:
         return [], [[j] for j in range(len(pins))], np.zeros(len(ctx.board), bool)
@@ -1823,6 +1848,8 @@ def _net_tree(
     base_pass = _blocked_masks(
         ctx, d, cand_mask, net_name, frozenset(pins), trace_mm, clearance_mm
     )
+    if extra_blocked is not None:
+        base_pass &= ~np.asarray(extra_blocked, dtype=bool)
 
     # A* heuristic: distance from each pin to the NEAREST POINT of each
     # crossed edge (segment distance, not midpoint — round-4 finding 4:
@@ -2020,6 +2047,61 @@ def _make_passable(base_pass: np.ndarray):
     return passable
 
 
+def _build_branch(
+    ctx: _Ctx,
+    mesh: TopoMesh,
+    k: int,
+    pa: int,
+    pb: int,
+    tris: list[int],
+    edges: list[int],
+    passable,
+    pin_vids: frozenset[int],
+) -> tuple[WirePath, tuple[int, ...]]:
+    """One found tree edge → a taut :class:`WirePath`: the funnel, the
+    non-obstacle wrap release, then the corridor re-walk under the taut
+    polyline (the two-pointer on the SEARCH corridor when the re-walk
+    fails). Returns the path plus the RETRACKED crossed-edge ids — what
+    corridor accounting must see, not the search edges. Factored out of
+    :func:`build_wires` so the crossing-resolution re-thread (gr520902)
+    can rebuild a net's branches under an ``extra_blocked`` mask."""
+    va, vb = int(mesh.pin_vertex[pa]), int(mesh.pin_vertex[pb])
+    if not edges:
+        a, b = mesh.verts[va], mesh.verts[vb]
+        points = (
+            (float(a[0]), float(a[1])),
+            (float(b[0]), float(b[1])),
+        )
+        return WirePath(k, pa, pb, (tris[0],), (), (), points), ()
+    pts = _taut(ctx, mesh, tris, edges, va, vb)
+    pts = _shortcut(ctx, mesh, va, vb, pts, passable, pin_vids)
+    try:
+        tris2, edges2, t2 = _retrack(ctx, mesh, va, vb, pts, passable)
+        # the re-walked corridor must not cross a wall either —
+        # a taut segment can run along a blocked mesh edge and
+        # pick the wrong side (round-2 finding 1)
+        if not all(passable(int(e)) for e in edges2):
+            raise ValueError("retrack: blocked edge")
+    except ValueError:
+        tris2, edges2, t2 = (
+            tuple(tris),
+            tuple(edges),
+            _two_pointer_t(ctx, tris, edges, pts),
+        )
+    return (
+        WirePath(
+            net=k,
+            pin_a=pa,
+            pin_b=pb,
+            tris=tuple(tris2),
+            edges=tuple(edges2),
+            t=tuple(t2),
+            points=tuple((float(p[0]), float(p[1])) for p in pts),
+        ),
+        tuple(int(e) for e in edges2),
+    )
+
+
 def _two_pointer_t(
     ctx: _Ctx,
     tris: list[int],
@@ -2083,6 +2165,217 @@ def _portal_t(
     return None
 
 
+@dataclass(slots=True)
+class _Corridor:
+    """The slice-4 channel record as a reusable ledger (gr520904,
+    extracted gr520902): per-edge free stretch and trace capacity under
+    the finest resolved rule, the pins bounding each edge, and the
+    per-net slot weights — everything the routing A*'s occupancy term
+    and the demand-vs-capacity cut price. ``build_wires`` pays it once;
+    the crossing-resolution re-thread reuses it so a regrown tree is
+    priced and cut by the SAME bookkeeping, not a copy."""
+
+    ctx: _Ctx
+    d: TopoDesign
+    rules_used: Sequence[tuple[float, float]]
+    t_ref: float
+    c_ref: float
+    gap_free: np.ndarray
+    gap_cap: np.ndarray
+    capacity_mm: np.ndarray
+    is_channel: np.ndarray
+    cap_total: np.ndarray
+    inv_cap: np.ndarray
+    edge_pins: list[frozenset[int]]
+    edge_pads: dict[int, np.ndarray]  # edge -> pad roster indices (extras incl.)
+    own_pins: list[frozenset[int]]
+    weight: list[float]
+
+    def occ(self, used: np.ndarray) -> np.ndarray:
+        """The A* occupancy term (gr520904): a channel edge at full
+        corridor capacity costs ``1 + _CONGESTION_ALPHA`` times its
+        step length."""
+        return 1.0 + _CONGESTION_ALPHA * used * self.inv_cap
+
+    def add(self, used: np.ndarray, k: int, edges: Iterable[int]) -> None:
+        """Fold one routed branch's retracked edges into ``used`` — a
+        wire squeezing between pads of its OWN net owes no foreign-pad
+        clearance, so it contributes neither occupancy nor demand."""
+        for e_ in edges:
+            if not self.edge_pins[int(e_)] <= self.own_pins[k]:
+                used[int(e_)] += self.weight[k]
+
+    def used_of(self, branches: Iterable[WirePath]) -> np.ndarray:
+        """The ``used`` ledger a set of routed branches reads — the
+        re-thread's occupancy base (the caller passes the KEPT
+        branches: the re-routed net's own wires are being replaced)."""
+        used = np.zeros(len(self.inv_cap))
+        for b in branches:
+            self.add(used, int(b.net), b.edges)
+        return used
+
+    def cut(
+        self, branches: Sequence[WirePath], order: tuple[tuple[int, ...], ...]
+    ) -> tuple[CorridorCut, ...]:
+        """The phase-3 cut on the ROUTED wires (gr520904): per edge
+        the slot-weighted count of crossing branches against the
+        corridor capacity — demand over capacity is recorded for the
+        caller to refuse on, never silently priced through."""
+        ctx, d = self.ctx, self.d
+
+        def _owners(e: int) -> tuple[str, ...]:
+            names = {
+                str(d.parts[int(d.pin_part[p])]) for p in self.edge_pins[e] if p >= 0
+            }
+            # unpinned extra pads (edge_pins -1) still name their part
+            names.update(
+                str(d.parts[int(ctx.pad_part[pi_])])
+                for pi_ in self.edge_pads.get(e, ())
+            )
+            names.update(
+                str(d.zones[z].name or f"zone{z}")
+                for z, _zm in ctx.zone_contrib.get(e, ())
+            )
+            if ctx.board[e]:
+                names.add("outline")
+            return tuple(sorted(names)) or ("free space",)
+
+        demand = np.zeros(len(self.inv_cap))
+        demanders: dict[int, list[int]] = {}
+        for e, seq in enumerate(order):
+            for bi in seq:
+                k = int(branches[bi].net)
+                if not self.edge_pins[e] <= self.own_pins[k]:
+                    demand[e] += self.weight[k]
+                    demanders.setdefault(e, []).append(k)
+
+        def _lone_fits(e: int, k: int) -> bool:
+            """A LONE wire needs a point in the free stretch, not a
+            full slot — the slot ledger reads a single coarser-rule
+            wire as demand > 1 on a one-slot corridor even when its
+            centreline fits, which refused a routed esp32c3 net
+            pre-hardening (gr520904 follow-up). It cuts only when its
+            own rule leaves it no room on any layer (a fat rail
+            through a thin gap: genuine congestion, and exactly the
+            cram the cut exists to name)."""
+            t_k, c_k = self.rules_used[k]
+            if self.is_channel[e]:
+                # gap_free is measured under the ref rule's growth —
+                # the wire fits where a point survives its own growth
+                need = (t_k + 2 * c_k) - (self.t_ref + 2 * self.c_ref)
+                return bool((self.gap_free[e] > need + 1e-9).any())
+            return bool(self.capacity_mm[e] > t_k + 2 * c_k + 1e-9)
+
+        def _cut_nets(e: int) -> tuple[str, ...]:
+            return tuple(
+                sorted(
+                    {
+                        str(d.net_name[k]) if k < len(d.net_name) else str(k)
+                        for k in demanders[int(e)]
+                    }
+                )
+            )
+
+        return tuple(
+            CorridorCut(
+                edge=int(e),
+                demand=float(demand[e]),
+                cap=float(self.cap_total[e]),
+                owners=_owners(int(e)),
+                nets=_cut_nets(int(e)),
+                x=float((ctx.eu[e][0] + ctx.ev[e][0]) / 2.0),
+                y=float((ctx.eu[e][1] + ctx.ev[e][1]) / 2.0),
+            )
+            for e in np.flatnonzero(demand > self.cap_total + 1e-9)
+            if len(demanders[int(e)]) > 1
+            or not _lone_fits(int(e), demanders[int(e)][0])
+        )
+
+
+def _corridor(
+    ctx: _Ctx,
+    mesh: TopoMesh,
+    d: TopoDesign,
+    n_layers: int,
+    rules_used: Sequence[tuple[float, float]],
+    pose: np.ndarray,
+) -> _Corridor:
+    """Price the corridor ledger once (gr520904): the channel record
+    at the finest resolved rule — the most slack a channel ever shows;
+    coarser nets just see less free. Priced BEFORE routing: it feeds
+    both the A* occupancy term and the demand-vs-capacity cut on the
+    routed wires. ``pose`` is the pose the mesh was built at: the
+    capacity reads each endpoint pad's extent through it."""
+    t_ref, c_ref = (
+        min(rules_used, key=lambda rc: rc[0] + rc[1])
+        if rules_used
+        else (_DEFAULT_TRACE_MM, _DEFAULT_CLEAR_MM)
+    )
+    _b, free_ref, edge_pads_ref, _p = _pad_eval(ctx, t_ref / 2.0 + c_ref)
+    n_e = len(mesh.edges)
+    gap_free = np.full((n_e, n_layers), -1.0)
+    gap_cap = np.full((n_e, n_layers), -1, dtype=np.int64)
+    for e in edge_pads_ref:
+        f = free_ref[e]
+        gap_free[e] = f
+        # total traces the free stretch takes, in the free width's own
+        # frame: floor(f / (t + c)) + 1 — a just-passable channel
+        # records 1, a closed one 0 (round-5: the earlier
+        # (f + c) / (t + c) form undercounted by up to one trace and
+        # recorded cap 0 on passable gaps)
+        gap_cap[e] = np.where(
+            f > 1e-9, np.floor(f / (t_ref + c_ref)) + 1.0, 0.0
+        ).astype(np.int64)
+    capacity_mm = _edge_capacity_mm(ctx, mesh, d, np.asarray(pose))
+    # The corridor capacity the occupancy term and the cut share: a pad
+    # channel takes gap_cap traces summed across EVERY layer a wire can
+    # use (an inner signal layer is as good a crossing as an outer);
+    # an edge no pad rings takes its free crossing length's worth on
+    # each of the n_layers. Outer-layers-only pricing undercounted a
+    # 4-layer channel by the inner share and refused boards that fit
+    # (gr520904 follow-up, esp32c3 + nano probes).
+    is_channel = (gap_cap >= 0).any(axis=1)
+    cap_total = np.where(
+        is_channel,
+        np.clip(gap_cap, 0, None).sum(axis=1),
+        (np.floor(capacity_mm / (t_ref + c_ref)) + 1.0) * n_layers,
+    )
+    inv_cap = np.zeros(n_e)
+    np.divide(1.0, cap_total, out=inv_cap, where=cap_total > 0)
+    # The pins bounding each edge — pads ringing it in the gap record
+    # plus pins at its endpoints. A wire squeezing between pads of its
+    # OWN net owes no foreign-pad clearance, so it contributes neither
+    # occupancy nor demand (an own-net pin pair's edge is a legal
+    # crossing even when its capacity reads 0).
+    vid_pin = {int(mesh.pin_vertex[p]): p for p in range(len(mesh.pin_vertex))}
+    edge_pins: list[frozenset[int]] = []
+    for e in range(n_e):
+        pins_e = {int(ctx.pad_pin[pi_]) for pi_ in edge_pads_ref.get(e, ())}
+        pins_e.update(vid_pin[int(v)] for v in mesh.edges[e] if int(v) in vid_pin)
+        edge_pins.append(frozenset(pins_e))
+    own_pins = [
+        frozenset(int(p) for p in d.net_pins[k]) for k in range(len(d.net_pins))
+    ]
+    weight = [(t + c) / (t_ref + c_ref) for t, c in rules_used]
+    return _Corridor(
+        ctx=ctx,
+        d=d,
+        rules_used=rules_used,
+        t_ref=t_ref,
+        c_ref=c_ref,
+        gap_free=gap_free,
+        gap_cap=gap_cap,
+        capacity_mm=capacity_mm,
+        is_channel=is_channel,
+        cap_total=cap_total,
+        inv_cap=inv_cap,
+        edge_pins=edge_pins,
+        edge_pads=edge_pads_ref,
+        own_pins=own_pins,
+        weight=weight,
+    )
+
+
 def build_wires(
     mesh: TopoMesh,
     d: TopoDesign,
@@ -2121,56 +2414,12 @@ def build_wires(
     # slack a channel ever shows; coarser nets just see less free.
     # Priced BEFORE routing (gr520904): it feeds both the A* occupancy
     # term and the demand-vs-capacity cut on the routed wires.
-    t_ref, c_ref = (
-        min(rules_used, key=lambda rc: rc[0] + rc[1])
-        if rules_used
-        else (_DEFAULT_TRACE_MM, _DEFAULT_CLEAR_MM)
+    corridor = _corridor(
+        ctx, mesh, d, n_layers, rules_used, d.pose0 if pose is None else pose
     )
-    _b, free_ref, edge_pads_ref, _p = _pad_eval(ctx, t_ref / 2.0 + c_ref)
-    gap_free = np.full((n_e, n_layers), -1.0)
-    gap_cap = np.full((n_e, n_layers), -1, dtype=np.int64)
-    for e in edge_pads_ref:
-        f = free_ref[e]
-        gap_free[e] = f
-        # total traces the free stretch takes, in the free width's own
-        # frame: floor(f / (t + c)) + 1 — a just-passable channel
-        # records 1, a closed one 0 (round-5: the earlier
-        # (f + c) / (t + c) form undercounted by up to one trace and
-        # recorded cap 0 on passable gaps)
-        gap_cap[e] = np.where(
-            f > 1e-9, np.floor(f / (t_ref + c_ref)) + 1.0, 0.0
-        ).astype(np.int64)
-    capacity_mm = _edge_capacity_mm(ctx, mesh, d, pose_a)
-    # The corridor capacity the occupancy term and the cut share: a pad
-    # channel takes gap_cap traces summed across EVERY layer a wire can
-    # use (an inner signal layer is as good a crossing as an outer);
-    # an edge no pad rings takes its free crossing length's worth on
-    # each of the n_layers. Outer-layers-only pricing undercounted a
-    # 4-layer channel by the inner share and refused boards that fit
-    # (gr520904 follow-up, esp32c3 + nano probes).
-    is_channel = (gap_cap >= 0).any(axis=1)
-    cap_total = np.where(
-        is_channel,
-        np.clip(gap_cap, 0, None).sum(axis=1),
-        (np.floor(capacity_mm / (t_ref + c_ref)) + 1.0) * n_layers,
-    )
-    inv_cap = np.zeros(n_e)
-    np.divide(1.0, cap_total, out=inv_cap, where=cap_total > 0)
-    # The pins bounding each edge — pads ringing it in the gap record
-    # plus pins at its endpoints. A wire squeezing between pads of its
-    # OWN net owes no foreign-pad clearance, so it contributes neither
-    # occupancy nor demand (an own-net pin pair's edge is a legal
-    # crossing even when its capacity reads 0).
-    vid_pin = {int(mesh.pin_vertex[p]): p for p in range(len(mesh.pin_vertex))}
-    edge_pins: list[frozenset[int]] = []
-    for e in range(n_e):
-        pins_e = {int(ctx.pad_pin[pi_]) for pi_ in edge_pads_ref.get(e, ())}
-        pins_e.update(vid_pin[int(v)] for v in mesh.edges[e] if int(v) in vid_pin)
-        edge_pins.append(frozenset(pins_e))
-    own_pins = [
-        frozenset(int(p) for p in d.net_pins[k]) for k in range(len(d.net_pins))
-    ]
-    weight = [(t + c) / (t_ref + c_ref) for t, c in rules_used]
+    gap_free = corridor.gap_free
+    gap_cap = corridor.gap_cap
+    capacity_mm = corridor.capacity_mm
     used = np.zeros(n_e)  # occupied finest-rule slots per edge
 
     def _net_order_key(k: int) -> tuple[bool, float, int]:
@@ -2195,53 +2444,20 @@ def build_wires(
         cand = _net_layers(d, k, n_layers)
         net_layers[k] = cand
         trace_mm, clearance_mm = rules_used[k]
-        occ = 1.0 + _CONGESTION_ALPHA * used * inv_cap
+        occ = corridor.occ(used)
         found, comps, base_pass = _net_tree(
             ctx, mesh, d, k, n_layers, trace_mm, clearance_mm, occ
         )
         passable = _make_passable(base_pass)
         for pa, pb, tris, edges in found:
-            va, vb = int(mesh.pin_vertex[pa]), int(mesh.pin_vertex[pb])
-            if not edges:
-                a, b = mesh.verts[va], mesh.verts[vb]
-                points = (
-                    (float(a[0]), float(a[1])),
-                    (float(b[0]), float(b[1])),
-                )
-                branches.append(WirePath(k, pa, pb, (tris[0],), (), (), points))
-                continue
-            pts = _taut(ctx, mesh, tris, edges, va, vb)
-            pts = _shortcut(ctx, mesh, va, vb, pts, passable, pin_vids)
-            try:
-                tris2, edges2, t2 = _retrack(ctx, mesh, va, vb, pts, passable)
-                # the re-walked corridor must not cross a wall either —
-                # a taut segment can run along a blocked mesh edge and
-                # pick the wrong side (round-2 finding 1)
-                if not all(passable(int(e)) for e in edges2):
-                    raise ValueError("retrack: blocked edge")
-            except ValueError:
-                tris2, edges2, t2 = (
-                    tuple(tris),
-                    tuple(edges),
-                    _two_pointer_t(ctx, tris, edges, pts),
-                )
-            branches.append(
-                WirePath(
-                    net=k,
-                    pin_a=pa,
-                    pin_b=pb,
-                    tris=tuple(tris2),
-                    edges=tuple(edges2),
-                    t=tuple(t2),
-                    points=tuple((float(p[0]), float(p[1])) for p in pts),
-                )
+            branch, edges2 = _build_branch(
+                ctx, mesh, k, pa, pb, tris, edges, passable, pin_vids
             )
+            branches.append(branch)
             # occupancy the next nets' A* prices (gr520904) — the
             # RETRACKED corridor is what capacity sees, so used counts
             # it, not the search edges.
-            for e_ in edges2:
-                if not edge_pins[int(e_)] <= own_pins[k]:
-                    used[int(e_)] += weight[k]
+            corridor.add(used, k, edges2)
         if len(comps) > 1:
             pins_l = [int(p) for p in pins_arr]
             own = frozenset(pins_l)
@@ -2281,72 +2497,7 @@ def build_wires(
                     )
                 )
     order, residual = _order(ctx, mesh, tuple(branches))
-
-    # The phase-3 cut on the ROUTED wires (gr520904): per edge the
-    # slot-weighted count of crossing branches against the corridor
-    # capacity — demand over capacity is recorded for the caller to
-    # refuse on, never silently priced through.
-    def _owners(e: int) -> tuple[str, ...]:
-        names = {str(d.parts[int(d.pin_part[p])]) for p in edge_pins[e] if p >= 0}
-        # unpinned extra pads (edge_pins -1) still name their part
-        names.update(
-            str(d.parts[int(ctx.pad_part[pi_])]) for pi_ in edge_pads_ref.get(e, ())
-        )
-        names.update(
-            str(d.zones[z].name or f"zone{z}") for z, _zm in ctx.zone_contrib.get(e, ())
-        )
-        if ctx.board[e]:
-            names.add("outline")
-        return tuple(sorted(names)) or ("free space",)
-
-    demand = np.zeros(n_e)
-    demanders: dict[int, list[int]] = {}
-    for e, seq in enumerate(order):
-        for bi in seq:
-            k = int(branches[bi].net)
-            if not edge_pins[e] <= own_pins[k]:
-                demand[e] += weight[k]
-                demanders.setdefault(e, []).append(k)
-
-    def _lone_fits(e: int, k: int) -> bool:
-        """A LONE wire needs a point in the free stretch, not a full
-        slot — the slot ledger reads a single coarser-rule wire as
-        demand > 1 on a one-slot corridor even when its centreline
-        fits, which refused a routed esp32c3 net pre-hardening
-        (gr520904 follow-up). It cuts only when its own rule leaves it
-        no room on any layer (a fat rail through a thin gap: genuine
-        congestion, and exactly the cram the cut exists to name)."""
-        t_k, c_k = rules_used[k]
-        if is_channel[e]:
-            # gap_free is measured under the ref rule's growth — the
-            # wire fits where a point survives its own growth
-            need = (t_k + 2 * c_k) - (t_ref + 2 * c_ref)
-            return bool((gap_free[e] > need + 1e-9).any())
-        return bool(capacity_mm[e] > t_k + 2 * c_k + 1e-9)
-
-    def _cut_nets(e: int) -> tuple[str, ...]:
-        return tuple(
-            sorted(
-                {
-                    str(d.net_name[k]) if k < len(d.net_name) else str(k)
-                    for k in demanders[int(e)]
-                }
-            )
-        )
-
-    overflow = tuple(
-        CorridorCut(
-            edge=int(e),
-            demand=float(demand[e]),
-            cap=float(cap_total[e]),
-            owners=_owners(int(e)),
-            nets=_cut_nets(int(e)),
-            x=float((ctx.eu[e][0] + ctx.ev[e][0]) / 2.0),
-            y=float((ctx.eu[e][1] + ctx.ev[e][1]) / 2.0),
-        )
-        for e in np.flatnonzero(demand > cap_total + 1e-9)
-        if len(demanders[int(e)]) > 1 or not _lone_fits(int(e), demanders[int(e)][0])
-    )
+    overflow = corridor.cut(branches, order)
     return Wires(
         branches=tuple(branches),
         order=order,

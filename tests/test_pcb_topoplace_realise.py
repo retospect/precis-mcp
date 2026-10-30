@@ -8,13 +8,14 @@ and the emitted copper passes DRC with 0 errors."""
 from __future__ import annotations
 
 import dataclasses
+import itertools
 import math
 import time
 from types import SimpleNamespace
 
 import numpy as np
 import pytest
-from shapely.geometry import Point, Polygon
+from shapely.geometry import LineString, Point, Polygon
 
 import precis_geom.pcb as pcb
 from precis.pcb import drc
@@ -24,12 +25,14 @@ from precis.pcb.capabilities import capability_for
 from precis.pcb.ir import PcbIR, from_graph
 from precis.pcb.session import clearance_net_rules, route_net_rules
 from precis.pcb.topoplace import design_from_ir
+from precis.pcb.topoplace import wires as wires_mod
 from precis.pcb.topoplace.design import TopoDesign, TopoZone
 from precis.pcb.topoplace.mesh import TopoMesh, build_mesh
 from precis.pcb.topoplace.realise import (
     RoutePiece,
     RoutePlan,
     _guarded_nets,
+    _run_bounds,
     _site_via,
     assign_layers,
     plan_route,
@@ -40,6 +43,7 @@ from precis.pcb.topoplace.realise import (
     widen_targets,
 )
 from precis.pcb.topoplace.wires import WirePath, Wires, build_wires
+from tests.fixtures.pcb.topo_example_a import example_a
 
 
 def _sanity_board() -> pcb.Board:
@@ -593,6 +597,7 @@ def _via_fixture(
     pin_side: tuple[int, ...] = (0, 1, 0, 0),
     constrained: tuple[bool, ...],
     zones: tuple[TopoZone, ...] = (),
+    net_layers: tuple[frozenset[int], ...] | None = None,
 ) -> tuple[TopoDesign, TopoMesh, Wires]:
     """gr520901/gr524239 — a two-branch synthetic: b0 (net 0) crosses
     e0→e2, b1 (net 1) crosses e1→e3, and the two shared edges carry
@@ -652,7 +657,7 @@ def _via_fixture(
         branches=(b0, b1),
         order=tuple(order),
         capacity_mm=np.zeros(n_e),
-        net_layers=(outers, outers),
+        net_layers=net_layers or (outers, outers),
         unreachable=(),
         gap_free_mm=np.full((n_e, n_layers), -1.0),
         gap_cap=np.full((n_e, n_layers), -1),
@@ -677,6 +682,22 @@ def _via_fixture(
     return d, mesh, wires
 
 
+def _decrowd_b1(wires: Wires) -> Wires:
+    """b1's polyline moved 0.6+ mm off b0's candidate via sites — the
+    foreign-track veto (s4d) is exercised by its own tests; tests for a
+    different keepout decrowd so their sites still mint."""
+    return dataclasses.replace(
+        wires,
+        branches=(
+            wires.branches[0],
+            dataclasses.replace(
+                wires.branches[1],
+                points=((1.0, -1.0), (2.0, 0.9), (5.5, 0.9), (9.0, 1.0)),
+            ),
+        ),
+    )
+
+
 def test_end_via_never_sites_on_a_pad_ring_edge() -> None:
     """gr520901's acceptance unit, generalized by gr524239: a branch
     yielded to the other outer layer with BOTH pads top-SMD needs a via
@@ -696,7 +717,10 @@ def test_end_via_never_sites_on_a_pad_ring_edge() -> None:
             ),
         ),
     )
-    plan = plan_route(d, mesh, wires, 4)
+    # b1's polyline decrowded — the foreign-track veto (s4d) has its
+    # own tests; this one exercises the keepout zone, which needs its
+    # sites mintable.
+    plan = plan_route(d, mesh, _decrowd_b1(wires), 4)
 
     assert sorted(v.branch for v in plan.vias) == [0, 0]
     near, _far = sorted(plan.vias, key=lambda v: v.x)
@@ -718,13 +742,82 @@ def test_via_site_rejects_a_spot_crowding_another_via() -> None:
     d, mesh, wires = _via_fixture(
         pin_side=(0, 1, 0, 1), constrained=(True, False, False, False)
     )
+    wires = dataclasses.replace(
+        wires,
+        branches=(
+            wires.branches[0],
+            dataclasses.replace(
+                wires.branches[1],
+                t=(0.4, 0.4, 0.15),
+                points=((1.0, -1.0), (2.0, 1.2), (5.5, 0.9), (9.0, 1.0)),
+            ),
+        ),
+    )
     plan = plan_route(d, mesh, wires, 4)
 
     assert len(plan.vias) == 2
     via0 = next(v for v in plan.vias if v.branch == 0)
     via1 = next(v for v in plan.vias if v.branch == 1)
-    assert (via0.x, via0.y) == pytest.approx((2.0, 1.5))  # b0 keeps its anchor
+    assert not mesh.constrained[via0.edge]
+    # b0's mid via wants the e1 anchor — (2.0, 1.5) sits 0.3 mm off
+    # b1's polyline, inside the 0.525 mm track keep-out — so the point
+    # walk takes the first spot honouring both keep-outs: off the
+    # foreign track AND off the other minted via.
+    b1_line = LineString(wires.branches[1].points)
+    assert b1_line.distance(Point(via0.x, via0.y)) >= 0.525 - 1e-9
+    assert (via0.x, via0.y) != pytest.approx((2.0, 1.5))
     assert math.dist((via0.x, via0.y), (via1.x, via1.y)) >= 0.75 - 1e-9
+
+
+def test_via_site_walks_off_a_track_crowded_edge() -> None:
+    """s4d: the siting walk clears other nets' TRACKS — the via barrel
+    spans every layer, so a candidate within the via clearance of a
+    foreign polyline (any layer, inners included) is refused and the
+    walk continues. b1 crowds b0's e1-adjacent stretch: both joins
+    still mint, each landing somewhere the track keep-out holds."""
+    d, mesh, wires = _via_fixture(
+        pin_side=(0, 0, 0, 0),
+        constrained=(False,) * 4,
+        net_layers=(frozenset({0, 1, 2, 3}),) * 2,
+    )
+    wires = dataclasses.replace(
+        wires,
+        branches=(
+            wires.branches[0],
+            dataclasses.replace(
+                wires.branches[1],
+                points=((1.0, -1.0), (2.0, 1.2), (4.5, 0.8), (9.0, 1.0)),
+            ),
+        ),
+    )
+    plan = plan_route(d, mesh, wires, 4)
+
+    vias = [v for v in plan.vias if v.branch == 0]
+    b1_line = LineString(wires.branches[1].points)
+    assert len(vias) == 2
+    assert all(b1_line.distance(Point(v.x, v.y)) >= 0.525 - 1e-9 for v in vias)
+    assert plan.no_via == ()
+
+
+def test_via_sites_clear_foreign_tracks_or_report_no_via() -> None:
+    """The default fixture crowds BOTH of b0's anchor-adjacent
+    stretches — (2.0, 1.5) sits 0.30 mm and (5.0, 1.75) 0.24 mm off
+    b1's polyline, inside the 0.525 mm via-to-track keep-out. The
+    first join walks back to a clean point (every minted site keeps
+    the track keep-out); the second finds nothing and lands on
+    ``no_via`` — the pieces still split at the intended joins (the
+    failed net's honest geometry)."""
+    d, mesh, wires = _via_fixture(
+        pin_side=(0, 0, 0, 0),
+        constrained=(False,) * 4,
+        net_layers=(frozenset({0, 1, 2, 3}),) * 2,
+    )
+    plan = plan_route(d, mesh, wires, 4)
+
+    b1_line = LineString(wires.branches[1].points)
+    assert all(b1_line.distance(Point(v.x, v.y)) >= 0.525 - 1e-9 for v in plan.vias)
+    assert plan.no_via == (0,)
+    assert len([p for p in plan.pieces if p.branch == 0]) == 3
 
 
 def test_no_clean_point_reports_no_via_site_instead_of_emitting() -> None:
@@ -999,7 +1092,7 @@ def test_forced_crossing_board_commits_no_track_short() -> None:
             assert rows[name]["fail"]["problems"]
 
 
-def _stall_fixture() -> tuple[TopoDesign, Wires]:
+def _stall_fixture() -> tuple[TopoDesign, TopoMesh, Wires]:
     """gr524239 — the yield-stall synthetic: branch A (TH, rank 0) sits
     on F.Cu and inverts with B (also F.Cu), C and D (both B.Cu) on
     disjoint edge pairs. Only (A,B) is live initially; the rank-preferred
@@ -1009,6 +1102,17 @@ def _stall_fixture() -> tuple[TopoDesign, Wires]:
     resolves the live pair and touches nothing else."""
     n_layers = 4
     outers = frozenset({0, n_layers - 1})
+    verts = np.asarray([[float(i), 0.0] for i in range(12)])
+    edges = np.asarray([[0, 1], [2, 3], [4, 5], [6, 7], [8, 9], [10, 11]], np.int32)
+    mesh = TopoMesh(
+        verts=verts,
+        tris=np.zeros((0, 3), np.int32),
+        edges=edges,
+        tri_edges=np.zeros((0, 3), np.int32),
+        edge_tris=np.zeros((len(edges), 2), np.int32),
+        constrained=np.zeros(len(edges), dtype=bool),
+        pad_vertex={},
+    )
     branches = (
         WirePath(
             net=0,
@@ -1087,7 +1191,7 @@ def _stall_fixture() -> tuple[TopoDesign, Wires]:
         pose0=np.zeros((4, 4)),
         net_name=("NA", "NB", "NC", "ND"),
     )
-    return d, wires
+    return d, mesh, wires
 
 
 def test_assign_layers_pass_based_yield_unstalls_the_rank_trap() -> None:
@@ -1097,11 +1201,13 @@ def test_assign_layers_pass_based_yield_unstalls_the_rank_trap() -> None:
     live, so the old loop stalled at 1 live pair. The pass-based yielder
     trials BOTH branches' flips and takes the one that empties the
     live set — B to B.Cu leaves every other pair layer-split."""
-    d, wires = _stall_fixture()
-    layers, crossings = assign_layers(d, wires, 4)
+    d, mesh, wires = _stall_fixture()
+    wires, runs, cuts, crossings = assign_layers(d, mesh, wires, 4)
     assert crossings == ()
-    assert layers[0] == 0  # A stays on F.Cu — the rank-preferred move was refused
-    assert layers[1] == 3  # B yields to B.Cu instead
+    # B yields to B.Cu wholesale — its forced pads are stitched back
+    # to F.Cu, so the flip shows up as a via-bracketed mid-piece.
+    assert runs[0] == [0]
+    assert runs[1] == [0, 3, 0]
 
 
 def test_via_siting_falls_back_to_the_fab_minimum_dia() -> None:
@@ -1245,22 +1351,28 @@ def _span_fixture() -> tuple[TopoDesign, TopoMesh, Wires]:
 
 def test_span_flip_resolves_the_whole_branch_stall() -> None:
     """The pair (A,B) is unresolvable by whole-branch flips (either flip
-    trades it for a new crossing with C or D), so the layer pass leaves
-    it live. The span flip changes A's layer only on the shared,
-    order-inverting run: the pair resolves, nothing else moves, and A
-    emerges via-bracketed with three runs F.Cu -> B.Cu -> F.Cu."""
+    trades it for a new crossing with C or D). The segment model changes
+    A's layer only on the shared, order-inverting run: the pair resolves
+    inside :func:`assign_layers`, nothing else moves, and A emerges
+    via-bracketed with three runs F.Cu -> B.Cu -> F.Cu."""
     d, mesh, wires = _span_fixture()
-    layers, crossings = assign_layers(d, wires, 4)
-    assert crossings == ((0, 1),)  # the whole-branch stall, pinned
+    wires, runs, cuts, crossings = assign_layers(d, mesh, wires, 4)
+    assert crossings == ()
+    # B's bracketed span IS its whole branch (edges 0..1), so the
+    # via-bracketed yield lands on B; A keeps its single F piece.
+    assert runs[1] == [0, 3, 0]
+    assert runs[0] == [0]
     plan = plan_route(d, mesh, wires, 4)
     assert plan.crossings == ()
     assert plan.no_via == ()
-    vias_a = [v for v in plan.vias if v.branch == 0]
-    assert len(vias_a) == 2
-    runs_a = sorted(
-        (p for p in plan.pieces if p.branch == 0), key=lambda p: p.points[0][0]
+    vias_b = [v for v in plan.vias if v.branch == 1]
+    assert len(vias_b) == 2
+    runs_b = sorted(
+        (p for p in plan.pieces if p.branch == 1), key=lambda p: p.points[0][0]
     )
-    assert [p.layer for p in runs_a] == [0, 3, 0]
+    # the forced-end stubs are zero-length copper at the vias — the
+    # emitted pieces are the F run and the via-bracketed B run
+    assert [p.layer for p in runs_b] == [0, 3]
 
 
 def test_spoke_offsets_fan_shared_gap_and_shared_corner() -> None:
@@ -1356,9 +1468,10 @@ def test_fan_slit_fixture_is_planar_no_braid_no_vias() -> None:
         [(int(u), int(v)) for u, v in mesh.edges],
     )
     assert crossed == set()
-    layers, remaining = assign_layers(td, wires, 4, mesh)
+    wires2, runs, cuts, remaining = assign_layers(td, mesh, wires, 4)
     assert remaining == ()
-    assert set(layers) == {0}
+    assert {r for run in runs for r in run} == {0}
+    assert not any(cuts)
     plan = plan_route(td, mesh, wires, 4)
     assert plan.crossings == ()
     assert plan.vias == ()
@@ -1680,3 +1793,308 @@ def test_spoke_offsets_many_branch_slit_cluster_scales() -> None:
     wall_again = time.perf_counter() - t0
     assert paths_again == paths
     assert wall_again < 10.0
+
+
+def test_inner_layer_piece_resolves_a_both_ends_f_crossing() -> None:
+    """gr520902 (a): two both-ends-F branches crossing on a 4-layer
+    board. The whole-branch flip could only send the yielder to B.Cu
+    and pay end vias back to its F-forced pads; the segment model puts
+    the piece bracketed by the two crossing edges on a free layer —
+    inner or B — with TWO vias and both terminal runs still on F."""
+    d, mesh, wires = _via_fixture(
+        pin_side=(0, 0, 0, 0),
+        constrained=(False, False, False, False),
+        net_layers=(frozenset({0, 1, 2, 3}),) * 2,
+    )
+    plan = plan_route(d, mesh, _decrowd_b1(wires), 4)
+
+    assert plan.crossings == ()
+    # the yielder (lowest _yield_rank tie-break — b0) pays two vias
+    assert {v.branch for v in plan.vias} == {0}
+    assert len(plan.vias) == 2
+    pcs = [p for p in plan.pieces if p.branch == 0]
+    assert len(pcs) == 3
+    assert pcs[0].layer == 0 and pcs[2].layer == 0  # forced pads stay on F
+    assert pcs[1].layer != 0  # the bracketed piece left the crossed layer
+    # the other branch keeps its single F piece
+    assert [p.layer for p in plan.pieces if p.branch == 1] == [0]
+
+
+def _straight_branch_fixture() -> tuple[TopoDesign, TopoMesh, Wires]:
+    """s4d: the both-ends-F crossing fixture with b0's taut polyline
+    reduced to the straight two-point run — vertices only at bends is
+    the real case a vertex-nearest split cannot express."""
+    d, mesh, wires = _via_fixture(
+        pin_side=(0, 0, 0, 0),
+        constrained=(False,) * 4,
+        net_layers=(frozenset({0, 1, 2, 3}),) * 2,
+    )
+    b0 = dataclasses.replace(
+        wires.branches[0], t=(0.0, 1.0 / 6.0, 0.3), points=((0.0, 0.0), (8.0, 2.0))
+    )
+    # b1's only meeting with b0's line is at (3.4, 0.85) — arc s = 0.425,
+    # INSIDE the bracket the two via sites cut: the layer-3 piece owns
+    # that stretch, the layer-0 pieces never reach it. The polyline also
+    # keeps 0.57+ mm off both candidate via sites — the foreign-track
+    # veto stays out of THIS test's way.
+    b1 = dataclasses.replace(
+        wires.branches[1], points=((1.0, -1.0), (3.4, 0.85), (9.0, 0.0))
+    )
+    return d, mesh, dataclasses.replace(wires, branches=(b0, b1))
+
+
+def test_pieces_split_at_the_via_point_not_the_nearest_vertex() -> None:
+    """s4d coincident copper: a taut polyline keeps vertices only at
+    bends — a straight branch is TWO points, so splitting a piece at
+    the vertex nearest each via site re-issued the neighbours' geometry
+    on the piece's own layer. The split is at the via's own point on
+    the path: here the bracketed run is the straight segment between
+    its two via sites — ``((2,0.5),(5,1.25))``, never the whole line."""
+    d, mesh, wires = _straight_branch_fixture()
+    plan = plan_route(d, mesh, wires, 4)
+
+    bracket = [p for p in plan.pieces if p.branch == 0 and p.layer != 0]
+    assert len(bracket) == 1
+    # the bracketed run is bounded by its two via sites' own points —
+    # never a neighbouring vertex (a straight branch has none)
+    vs = sorted((v for v in plan.vias if v.branch == 0), key=lambda v: v.x)
+    assert bracket[0].points == ((vs[0].x, vs[0].y), (vs[1].x, vs[1].y))
+
+
+def _arc_s(pts: tuple[tuple[float, ...], ...], xy: tuple[float, float]) -> float:
+    """``xy``'s closest point on the polyline as an arc coordinate —
+    ``i + f`` for fraction ``f`` of segment ``i``."""
+    best = (math.inf, 0.0)
+    for i, (p, q) in enumerate(itertools.pairwise(pts)):
+        dx, dy = q[0] - p[0], q[1] - p[1]
+        d2 = dx * dx + dy * dy
+        f = (
+            0.0
+            if d2 == 0
+            else max(0.0, min(1.0, ((xy[0] - p[0]) * dx + (xy[1] - p[1]) * dy) / d2))
+        )
+        dist = math.dist(xy, (p[0] + f * dx, p[1] + f * dy))
+        if dist < best[0]:
+            best = (dist, i + f)
+    return best[1]
+
+
+def _segs_cross(
+    a: tuple[float, float],
+    b: tuple[float, float],
+    c: tuple[float, float],
+    e: tuple[float, float],
+) -> bool:
+    """Proper segment intersection (endpoint touches count — coincident
+    copper is the defect under test)."""
+
+    def xside(
+        o: tuple[float, float], p: tuple[float, float], q: tuple[float, float]
+    ) -> float:
+        return (p[0] - o[0]) * (q[1] - o[1]) - (p[1] - o[1]) * (q[0] - o[0])
+
+    d1, d2 = xside(c, e, a), xside(c, e, b)
+    d3, d4 = xside(a, b, c), xside(a, b, e)
+    if ((d1 > 0) != (d2 > 0)) and ((d3 > 0) != (d4 > 0)):
+        return True
+    for p, lo, hi in ((a, c, e), (b, c, e), (c, a, b), (e, a, b)):
+        if (
+            min(lo[0], hi[0]) - 1e-9 <= p[0] <= max(lo[0], hi[0]) + 1e-9
+            and min(lo[1], hi[1]) - 1e-9 <= p[1] <= max(lo[1], hi[1]) + 1e-9
+            and abs(xside(lo, hi, p)) <= 1e-9
+        ):
+            return True
+    return False
+
+
+def test_piece_points_stay_inside_their_bracketing_via_sites() -> None:
+    """The general form: each piece's points lie inside the arc-length
+    interval between ITS bracketing via sites — no piece carries a
+    neighbouring run's stretch of the polyline — and no other-net piece
+    on its layer intersects it."""
+    d, mesh, wires = _straight_branch_fixture()
+    plan = plan_route(d, mesh, wires, 4)
+
+    pts = tuple(tuple(p) for p in wires.branches[0].points)
+    pcs = [p for p in plan.pieces if p.branch == 0]
+    assert len(pcs) == 3
+    vias = sorted(
+        (v for v in plan.vias if v.branch == 0),
+        key=lambda v: _arc_s(pts, (v.x, v.y)),
+    )
+    assert len(vias) == 2
+    cuts_s = [_arc_s(pts, (v.x, v.y)) for v in vias]
+    bounds = [0.0, *cuts_s, float(len(pts) - 1)]
+    for pi, piece in enumerate(pcs):
+        for xy in piece.points[1:-1]:
+            s = _arc_s(pts, xy)
+            assert bounds[pi] - 1e-9 <= s <= bounds[pi + 1] + 1e-9, (
+                f"piece {pi} carries {xy} outside its bracket "
+                f"[{bounds[pi]}, {bounds[pi + 1]}]"
+            )
+    foreign = [p for p in plan.pieces if p.branch != 0]
+    for piece in pcs:
+        for other in foreign:
+            if other.layer != piece.layer:
+                continue
+            for a, b in itertools.pairwise(piece.points):
+                for c, e in itertools.pairwise(other.points):
+                    assert not _segs_cross(a, b, c, e), (
+                        f"{piece.layer}: {a}->{b} crosses {c}->{e}"
+                    )
+
+
+def test_net_layer_force_inner_admits_the_inner_layers() -> None:
+    """gr520902 (a): a class ``layers`` rule that resolves to no outer
+    layer is a force to the INNERS — the old ``_net_layers`` ANDed it
+    with pad sides and collapsed it to the uncolourable empty set, so
+    the wire saw outer-only candidates the class never allowed. Pad
+    sides no longer narrow the set: a free net gets the whole stackup
+    (Decision 6 binds only the terminal pieces)."""
+    from precis.pcb.topoplace.wires import _net_layers
+
+    d, _, _ = _via_fixture(constrained=(False,) * 4)
+    d = dataclasses.replace(d, net_layer_force=np.asarray([-2, 0], np.int8))
+    assert _net_layers(d, 0, 4) == frozenset({1, 2})
+    assert _net_layers(d, 1, 4) == frozenset({0})
+    assert _net_layers(d, 0, 2) == frozenset()  # no inners on 2L — the clash
+    d_free = dataclasses.replace(d, net_layer_force=np.asarray([-1, -1], np.int8))
+    assert _net_layers(d_free, 0, 4) == frozenset({0, 1, 2, 3})
+
+
+def test_walked_via_sites_keep_their_own_run_boundary(monkeypatch) -> None:
+    """gr520902 review a.2: a via site walked off its intended edge can
+    invert the join order — the split vertices and the site xys must be
+    sorted TOGETHER or a run gets joined to the wrong via."""
+    from precis.pcb.topoplace import realise as realise_mod
+
+    d, mesh, wires = _via_fixture(pin_side=(0, 0, 0, 0), constrained=(False,) * 4)
+    # b0 (the yielder) mints cuts [0, 2]; make the first join site far
+    # ahead and the second site early — an inverted walk.
+    sites = {0: (2, 0.5, 5.0, 1.75, 0.6), 2: (0, 0.5, 0.6, 0.3, 0.6)}
+    monkeypatch.setattr(realise_mod, "_site_via", lambda *a, **k: sites.get(a[3]))
+    plan = plan_route(d, mesh, wires, 4)
+
+    pcs = [p for p in plan.pieces if p.branch == 0]
+    assert len(pcs) == 3
+    # each piece ends where its bracketing via sits — the EARLY via
+    # joins pieces 0|1, the LATE via pieces 1|2
+    assert pcs[0].points[-1] == (0.6, 0.3)
+    assert pcs[1].points[0] == (0.6, 0.3)
+    assert pcs[1].points[-1] == (5.0, 1.75)
+    assert pcs[2].points[0] == (5.0, 1.75)
+
+
+def test_second_via_site_on_one_edge_is_refused(monkeypatch) -> None:
+    """gr520902 review a.2: two cuts may never mint two vias on one
+    edge — the second join reports ``no via site`` instead."""
+    from precis.pcb.topoplace import realise as realise_mod
+
+    d, mesh, wires = _via_fixture(pin_side=(0, 0, 0, 0), constrained=(False,) * 4)
+    monkeypatch.setattr(
+        realise_mod,
+        "_site_via",
+        lambda *a, **k: (2, 0.5, 5.0, 1.75, 0.6),
+    )
+    plan = plan_route(d, mesh, wires, 4)
+
+    assert len([v for v in plan.vias if v.branch == 0]) == 1
+    assert 0 in plan.no_via
+
+
+def test_run_never_sits_on_a_layer_an_edge_closes() -> None:
+    """gr520902 review a.1: a run may only take a layer on which EVERY
+    edge it covers is open — the corridor's per-edge open mask. A
+    branch routed over an edge a foreign SMD pad closes on F must not
+    get a piece on F — that was the bench's coincident-copper DRC."""
+    board = _sanity_board()
+    design = kernel._design(board, None)
+    ir = kernel._build_ir(design)
+    footprints = kernel._footprints(design, ir)
+    td = design_from_ir(ir, footprints, net_classes=design.graph.get("net_classes"))
+    mesh = build_mesh(td, td.pose0)
+    wires = build_wires(mesh, td, ir.n_layers)
+    ctx = wires_mod._make_ctx(mesh, td, ir.n_layers)
+    k = int(list(td.net_name).index("N1"))
+    open_e = wires_mod._open_layers(
+        ctx,
+        td,
+        wires_mod._cand_mask(wires.net_layers[k], ir.n_layers),
+        "N1",
+        frozenset(int(p) for p in td.net_pins[k]),
+        0.15,
+        0.15,
+    )
+    closed = [e for e in range(len(mesh.edges)) if open_e[e] and not open_e[e] & 1]
+    assert closed, "sanity board must carry an F-closed edge for a foreign net"
+    e0 = int(closed[0])
+    pa, pb = (int(p) for p in td.net_pins[k][:2])
+    u, v = (int(x) for x in mesh.edges[e0])
+    b = WirePath(
+        net=k,
+        pin_a=pa,
+        pin_b=pb,
+        tris=(),
+        edges=(e0,),
+        t=(0.5,),
+        points=(
+            (float(mesh.verts[u][0]), float(mesh.verts[u][1])),
+            (float(mesh.verts[v][0]), float(mesh.verts[v][1])),
+        ),
+    )
+    order = tuple((0,) if e == e0 else () for e in range(len(mesh.edges)))
+    wires2 = dataclasses.replace(wires, branches=(b,), order=order)
+
+    _w2, runs, cuts, _xg = assign_layers(td, mesh, wires2, ir.n_layers)
+
+    for r, c in zip(runs, cuts):
+        for p_, (lo, hi) in enumerate(_run_bounds(c, len(b.edges))):
+            assert all(open_e[int(b.edges[i])] >> r[p_] & 1 for i in range(lo, hi + 1))
+
+
+def test_single_edge_fb_branch_takes_no_mid_cut() -> None:
+    """gr520902 review a.3: the F↔B mid cut needs ``n_edges >= 2`` — on
+    a one-edge branch ``n_edges // 2`` mints a cut at 0 whose second
+    run covers edges ``1..0`` — a zero-edge run that still pays a via.
+    The branch keeps pin_a's forced layer, uncut."""
+    from precis.pcb.topoplace.realise import _initial_segment
+
+    d, _, wires = _via_fixture(pin_side=(0, 1, 0, 0), constrained=(False,) * 4)
+    b0 = wires.branches[0]
+    b = dataclasses.replace(b0, edges=(0,), t=(0.5,), points=b0.points[:2])
+    runs, cuts = _initial_segment(d, wires, b, 4)
+    assert runs == [0]
+    assert cuts == []
+
+
+def test_corridor_cut_reproduces_build_wires_overflow() -> None:
+    """gr520902 review b: the corridor ledger the crossing-resolution
+    re-thread reuses is the SAME bookkeeping ``build_wires`` priced and
+    cut under — on a real board, cutting the routed order reproduces
+    the recorded overflow record exactly."""
+    board = _sanity_board()
+    design = kernel._design(board, None)
+    ir = kernel._build_ir(design)
+    footprints = kernel._footprints(design, ir)
+    td = design_from_ir(ir, footprints, net_classes=design.graph.get("net_classes"))
+    mesh = build_mesh(td, td.pose0)
+    wires = build_wires(mesh, td, ir.n_layers)
+    ctx = wires_mod._make_ctx(mesh, td, ir.n_layers)
+    rules_used = [(0.15, 0.15) for _ in range(len(td.net_pins))]
+    corridor = wires_mod._corridor(ctx, mesh, td, ir.n_layers, rules_used, td.pose0)
+    assert corridor.cut(wires.branches, wires.order) == wires.overflow
+
+
+def test_all_th_k3_resolves_by_a_free_whole_branch_flip() -> None:
+    """gr520902 (b): the all-TH K3 fixture — a through-hole pad sits on
+    every layer, so the yielder can move its WHOLE branch to B.Cu for
+    free. Stage (a)'s span-only greedy could only buy the resolution
+    with a two-via mid-piece; the local search must find the 0-via
+    whole-branch flip."""
+    d = example_a(pin_side=2)
+    mesh = build_mesh(d, d.pose0)
+    wires = build_wires(mesh, d, 2)
+    plan = plan_route(d, mesh, wires, 2)
+
+    assert plan.crossings == ()
+    assert plan.vias == ()

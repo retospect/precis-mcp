@@ -15,9 +15,10 @@ found off the 2b ``order`` lists exactly as Decision 3 defines them —
 two wires on one layer cross iff their relative order differs between
 two edges both cross. The yielder at a crossing follows the Decision-6
 table (TH net, then an F↔B pair, then an SMD-only net): the piece of
-its wire spanning the shared edges flips to the other outer layer and
-two via sites — one at each end's ``(edge_id, t)`` crossing parameter —
-bracket it. A crossing that survives the flip bound is reported on
+its wire spanning the shared edges flips to a free candidate layer —
+an inner or the other outer (gr520902's runs/cuts model: a cut mints
+a via on that edge, a run takes a layer) — and two via sites bracket
+it. A crossing that survives the flip bound is reported on
 :attr:`RoutePlan.crossings` for the caller to count as DRC, not hidden.
 
 Via SITING is keepout-aware (topo S3, gr520901): a site is never minted
@@ -26,8 +27,10 @@ vertex — the walk moves along the branch's crossed edges to the first
 whose pad-channel record (:attr:`Wires.gap_free_mm`) leaves the via plus
 its clearance on both outer layers, clears every pad polygon on those
 layers by the barrel's keep-out (the channel record is trace-buffered —
-a site "free" for a 0.15 mm wire can still drill a solder land), and
-does not crowd an already placed via. A branch with no qualifying edge
+a site "free" for a 0.15 mm wire can still drill a solder land),
+does not crowd an already placed via, and keeps the via clearance off
+every other net's polyline — the barrel spans every layer, so a foreign
+track on any layer vetoes the site (gr520902 s4d). A branch with no qualifying edge
 mints no via; the plan records it on :attr:`RoutePlan.no_via` so the
 caller reports the net ``failed: no via site`` instead of committing
 keepout-breaking copper.
@@ -51,6 +54,7 @@ sub-multiset of the baseline's is kept.
 
 from __future__ import annotations
 
+import bisect
 import dataclasses
 import itertools
 import logging
@@ -66,6 +70,7 @@ from shapely.geometry import LineString, Point, Polygon
 from precis.pcb.ratsnest import PLANE_CLASSES
 from precis.pcb.rules import NetRules
 from precis.pcb.topoplace import proxy as topo_proxy
+from precis.pcb.topoplace import wires as _wires
 from precis.pcb.topoplace.design import TopoDesign, _world_to_local
 from precis.pcb.topoplace.mesh import TopoMesh
 from precis.pcb.topoplace.wires import (
@@ -174,27 +179,247 @@ def _pin_forced(d: TopoDesign, pin: int, n_layers: int) -> int | None:
     return None
 
 
-def _initial_layers(d: TopoDesign, wires: Wires, n_layers: int) -> list[int]:
-    """Per-branch start layer: both ends forcing the same side wins it;
-    an F↔B pair takes pin_a's side (the free via lands mid-branch);
-    anything free takes the lowest candidate the class rule allows."""
-    out: list[int] = []
-    outers = {0, n_layers - 1}
-    for b in wires.branches:
-        la = _pin_forced(d, b.pin_a, n_layers)
-        lb = _pin_forced(d, b.pin_b, n_layers)
-        cand = (
-            set(wires.net_layers[b.net]) & outers
-            if b.net < len(wires.net_layers)
-            else set(outers)
-        )
-        if la is not None:
-            out.append(la)
-        elif lb is not None:
-            out.append(lb)
+def _run_bounds(cuts: list[int], n_edges: int) -> list[tuple[int, int]]:
+    """Inclusive edge-index bounds per run — run p covers
+    ``(cuts[p-1] .. cuts[p]]`` with sentinels −1 / E−1, so a cut at
+    ``E−1`` mints an EMPTY tail run (the pad-side stub past the end
+    via) and a cut at 0 a leading stub covering just ``{0}``."""
+    bounds = []
+    prev = -1
+    for c in cuts:
+        bounds.append((prev + 1, c))
+        prev = c
+    bounds.append((prev + 1, n_edges - 1))
+    return bounds
+
+
+def _span_layers(
+    cuts: list[int], runs: list[int], n_edges: int, lo: int, hi: int
+) -> set[int]:
+    """The layers covering edge indices ``(lo .. hi]`` — the region a
+    flipped shared-edge pair brackets on this branch's own index
+    space."""
+    return {
+        runs[p]
+        for p, (rlo, rhi) in enumerate(_run_bounds(cuts, n_edges))
+        if rlo <= hi and rhi >= lo + 1
+    }
+
+
+def _insort_cut(cuts: list[int], runs: list[int], c: int) -> None:
+    """Insert a new cut (a via on ``edges[c]``): the run it splits
+    keeps its layer on BOTH sides."""
+    i = bisect.bisect_left(cuts, c)
+    if i < len(cuts) and cuts[i] == c:
+        return
+    cuts.insert(i, c)
+    runs.insert(i, runs[i])
+
+
+def _merge_same(cuts: list[int], runs: list[int]) -> None:
+    """Drop cuts between equal-layer runs — a via joining a layer to
+    itself is dead."""
+    p = 0
+    while p < len(cuts):
+        if runs[p] == runs[p + 1]:
+            cuts.pop(p)
+            runs.pop(p + 1)
         else:
-            out.append(min(cand) if cand else 0)
-    return out
+            p += 1
+
+
+def _fix_terminals(
+    d: TopoDesign, b: WirePath, n_layers: int, cuts: list[int], runs: list[int]
+) -> None:
+    """Re-bind the pad-forced sides after a span move (Decision 6): a
+    terminal run whose layer disagrees with its pad's mount side gets
+    a stub run — a cut at 0 for pin_a's end, at E−1 for pin_b's — and
+    where the boundary already exists the stub just relabels. Accepted
+    limitation (gr520902 review): a span move that touches edge 0 or
+    E−1 is undone by this re-bind — the stub cannot tell the move meant
+    to own the terminal edge."""
+    n_edges = len(b.edges)
+    if n_edges < 1:
+        return
+    la = _pin_forced(d, b.pin_a, n_layers)
+    if la is not None and runs[0] != la:
+        if cuts and cuts[0] == 0:
+            runs[0] = la
+        else:
+            cuts.insert(0, 0)
+            runs.insert(0, la)
+    lb = _pin_forced(d, b.pin_b, n_layers)
+    if lb is not None and runs[-1] != lb:
+        if cuts and cuts[-1] == n_edges - 1:
+            runs[-1] = lb
+        else:
+            cuts.append(n_edges - 1)
+            runs.append(lb)
+
+
+def _set_span(
+    d: TopoDesign,
+    b: WirePath,
+    n_layers: int,
+    cuts: list[int],
+    runs: list[int],
+    lo: int,
+    hi: int,
+    layer: int,
+) -> None:
+    """Move edge indices ``lo..hi`` (inclusive) onto ``layer``: bracket
+    the span with cuts at ``lo-1`` and ``hi`` (each a via on that
+    edge), relabel every run covering the span, then re-bind the
+    terminals and drop dead via cuts."""
+    n_edges = len(b.edges)
+    if lo > 0:
+        _insort_cut(cuts, runs, lo - 1)
+    if hi < n_edges - 1:
+        _insort_cut(cuts, runs, hi)
+    for p, (rlo, rhi) in enumerate(_run_bounds(cuts, n_edges)):
+        if rlo <= hi and rhi >= lo:
+            runs[p] = layer
+    _fix_terminals(d, b, n_layers, cuts, runs)
+    _merge_same(cuts, runs)
+
+
+def _run_open(b: WirePath, open_e: np.ndarray | None, lo: int, hi: int) -> int:
+    """Bitmask of layers open on EVERY edge in ``b.edges[lo..hi]`` —
+    the corridor's per-edge open set (:func:`wires._open_layers`)
+    intersected over the run. ``-1`` (all layers) when the mesh carries
+    no corridor data — synthetic fixtures, where the constraint is
+    vacuous."""
+    if open_e is None:
+        return -1
+    m = -1
+    for i in range(lo, hi + 1):
+        m &= int(open_e[int(b.edges[i])])
+    return m
+
+
+def _runs_open(
+    b: WirePath, open_e: np.ndarray | None, cuts: list[int], runs: list[int]
+) -> bool:
+    """The hard layer rule (gr520902 review): every run sits on a layer
+    open on EVERY edge it covers — a run on a closed layer is stacked
+    foreign copper, never a cost to price."""
+    if open_e is None:
+        return True
+    return all(
+        _run_open(b, open_e, lo, hi) >> runs[p] & 1
+        for p, (lo, hi) in enumerate(_run_bounds(cuts, len(b.edges)))
+    )
+
+
+def _legalise_open(
+    d: TopoDesign,
+    b: WirePath,
+    n_layers: int,
+    open_e: np.ndarray,
+    cuts: list[int],
+    runs: list[int],
+) -> None:
+    """Repair a ``(cuts, runs)`` pair in place so every run sits on a
+    layer open on all its edges (gr520902 review): relabel to a layer
+    in the run's open-set intersection when one covers it, else split
+    at the first edge where the open set can no longer extend the run —
+    the cut is a via. Terminal pieces prefer their pad-forced layer."""
+    n = len(b.edges)
+    la = _pin_forced(d, b.pin_a, n_layers)
+    lb = _pin_forced(d, b.pin_b, n_layers)
+
+    def prefer(lo: int, hi: int, mask: int, old: int) -> int:
+        if mask >> old & 1:
+            return old
+        if lo <= 0 and la is not None and mask >> la & 1:
+            return la
+        if hi >= n - 1 and lb is not None and mask >> lb & 1:
+            return lb
+        for layer in (0, n_layers - 1):
+            if mask >> layer & 1:
+                return layer
+        return (mask & -mask).bit_length() - 1
+
+    new_cuts: list[int] = []
+    new_runs: list[int] = []
+    bounds = _run_bounds(cuts, n)
+    for p, (lo, hi) in enumerate(bounds):
+        acc = -1
+        seg_lo = lo
+        for i in range(lo, hi + 1):
+            oe = int(open_e[int(b.edges[i])])
+            if acc & oe:
+                acc &= oe
+            else:
+                new_runs.append(prefer(seg_lo, i - 1, acc, runs[p]))
+                new_cuts.append(i - 1)
+                seg_lo, acc = i, oe
+        new_runs.append(prefer(seg_lo, hi, acc, runs[p]))
+        if p < len(bounds) - 1:
+            # an existing run boundary is a cut too — re-emit it after
+            # any splits the open set forced inside the run
+            new_cuts.append(hi)
+    cuts[:] = new_cuts
+    runs[:] = new_runs
+
+
+def _initial_segment(
+    d: TopoDesign,
+    wires: Wires,
+    b: WirePath,
+    n_layers: int,
+    open_e: np.ndarray | None = None,
+) -> tuple[list[int], list[int]]:
+    """One branch's start ``(runs, cuts)`` — ``_initial_segments``'
+    per-branch case, also used to segment a re-threaded branch. With
+    ``open_e`` (the net's per-edge open-layer mask) the nominal runs
+    are repaired to the corridor's layer rule: relabel where a covering
+    layer exists, split where no layer carries the run."""
+    la = _pin_forced(d, b.pin_a, n_layers)
+    lb = _pin_forced(d, b.pin_b, n_layers)
+    n_edges = len(b.edges)
+    if la is not None and lb is not None and la != lb and n_edges >= 2:
+        runs, cuts = [la, lb], [n_edges // 2]
+    else:
+        if la is not None:
+            layer = la
+        elif lb is not None:
+            layer = lb
+        else:
+            cand = (
+                set(wires.net_layers[b.net]) if b.net < len(wires.net_layers) else set()
+            )
+            layer = min(cand & {0, n_layers - 1} or cand or {0})
+        runs, cuts = [layer], []
+    if open_e is not None and n_edges:
+        _legalise_open(d, b, n_layers, open_e, cuts, runs)
+        _fix_terminals(d, b, n_layers, cuts, runs)
+        _merge_same(cuts, runs)
+        _legalise_open(d, b, n_layers, open_e, cuts, runs)
+    return runs, cuts
+
+
+def _initial_segments(
+    d: TopoDesign,
+    wires: Wires,
+    n_layers: int,
+    open_layers: dict[int, np.ndarray] | None = None,
+) -> tuple[list[list[int]], list[list[int]]]:
+    """Per-branch start runs/cuts — the segment model's form of the old
+    initial layer + join derivation: both ends forcing opposite outers
+    (F↔B) splits mid-branch (cut ``E//2`` — a single-edge branch takes
+    the cut-0 stub form); anything else is one run on the forced end's
+    layer, else the lowest OUTER candidate (inner-only candidates fall
+    back to the inner). ``open_layers`` is the per-net corridor mask —
+    ``None`` on synthetic meshes, where the layer rule is vacuous."""
+    runs: list[list[int]] = []
+    cuts: list[list[int]] = []
+    for b in wires.branches:
+        oe = open_layers.get(int(b.net)) if open_layers is not None else None
+        r, c = _initial_segment(d, wires, b, n_layers, open_e=oe)
+        runs.append(r)
+        cuts.append(c)
+    return runs, cuts
 
 
 def _cdirs(mesh: TopoMesh, wires: Wires) -> list[list[float]]:
@@ -221,20 +446,6 @@ def _cdirs(mesh: TopoMesh, wires: Wires) -> list[list[float]]:
             row.append(-1.0 if cr < -1e-12 else 1.0)
         out.append(row)
     return out
-
-
-def _pair_sign(
-    wires: Wires, cdirs: Sequence[Sequence[float]], e: int, a: int, b: int
-) -> int:
-    """Pair ``(a, b)``'s normalized relative side on edge ``e`` — the
-    seam convention (``_repair_order.norm``): position in ``order[e]``
-    signed by the SECOND branch's corridor direction."""
-    seq = wires.order[e]
-    s = 1 if seq.index(a) < seq.index(b) else -1
-    eb = {int(x): i for i, x in enumerate(wires.branches[b].edges)}
-    if not cdirs:
-        return s
-    return s * int(cdirs[b][eb[int(e)]])
 
 
 def _crossing_pairs(
@@ -285,6 +496,97 @@ def _crossing_pairs(
                     seen[key] = sign
                     witness[key] = e
     return crossed
+
+
+def _pair_regions(
+    wires: Wires,
+    cdirs: Sequence[Sequence[float]] | None = None,
+    obstacles: Container[int] | None = None,
+    edge_ends: Sequence[tuple[int, int]] | None = None,
+) -> dict[tuple[int, int], list[tuple[int, int, int, int]]]:
+    """Crossing pairs and their bracketed regions (Decision 3's list
+    comparison): two wires sharing edges where their relative order
+    flips cross; each flipped shared-edge pair brackets ``(min..max]``
+    on each branch's own edge-index space — the span a mid-piece flip
+    moves. Same-net pairs stay — the caller filters.
+
+    The flip test is the braid-merge's, not the raw list comparison:
+    signs are NORMALIZED by corridor direction like
+    :func:`_crossing_pairs` (raw edge-parameter order inverts on a fan
+    without a single crossing), and when ``obstacles``/``edge_ends``
+    are given a flipped pair whose runs between the witness edges pass
+    only FREE ring vertices is dropped — a fan, not a crossing
+    (:func:`_flip_is_locked`). Synthetic callers with no mesh pass
+    neither and get the raw comparison."""
+    epos = [{int(e): i for i, e in enumerate(b.edges)} for b in wires.branches]
+    shared: dict[tuple[int, int], list[tuple[int, int]]] = {}
+    for e, seq in enumerate(wires.order):
+        pos = {b: i for i, b in enumerate(seq)}
+        items = sorted(pos)
+        for i, a in enumerate(items):
+            for b in items[i + 1 :]:
+                cdir = cdirs[b][epos[b][e]] if cdirs and e in epos[b] else 1.0
+                shared.setdefault((a, b), []).append((e, (pos[a] - pos[b]) * int(cdir)))
+    regions: dict[tuple[int, int], list[tuple[int, int, int, int]]] = {}
+    for (a, b), lst in shared.items():
+        ia_of = epos[a]
+        ib_of = epos[b]
+        regs: list[tuple[int, int, int, int]] = []
+        if obstacles is not None and edge_ends is not None:
+            # Real mesh — the braid convention: each inversion is checked
+            # against the RUNNING witness (the last edge of the prevailing
+            # sign), so only the actual flip point is judged — a longer
+            # span that happens to cover an obstacle elsewhere does not
+            # lock a fan. A flip never becomes the next witness.
+            s_run, w = lst[0]
+            for e, s in lst[1:]:
+                if s * s_run < 0:
+                    if (
+                        w in ia_of
+                        and w in ib_of
+                        and e in ia_of
+                        and e in ib_of
+                        and _flip_is_locked(wires, obstacles, a, b, w, e, edge_ends)
+                    ):
+                        ia1, ia2 = sorted((ia_of[w], ia_of[e]))
+                        ib1, ib2 = sorted((ib_of[w], ib_of[e]))
+                        regs.append((ia1, ia2, ib1, ib2))
+                else:
+                    s_run, w = s, e
+        else:
+            for i, (e1, s1) in enumerate(lst):
+                for e2, s2 in lst[i + 1 :]:
+                    if s1 * s2 >= 0 or not all(
+                        e in ia_of and e in ib_of for e in (e1, e2)
+                    ):
+                        continue
+                    ia1, ia2 = sorted((ia_of[e1], ia_of[e2]))
+                    ib1, ib2 = sorted((ib_of[e1], ib_of[e2]))
+                    regs.append((ia1, ia2, ib1, ib2))
+        if regs:
+            regions[(a, b)] = regs
+    return regions
+
+
+def _pair_live(
+    wires: Wires,
+    runs: list[list[int]],
+    cuts: list[list[int]],
+    regions: list[tuple[int, int, int, int]],
+    a: int,
+    b: int,
+) -> bool:
+    """Whether crossing pair ``(a, b)`` is still live — any flipped
+    shared-edge pair whose bracketed regions still share a layer.
+    Conservative: over-reports partial splits, never misses a real
+    crossing."""
+    ea = len(wires.branches[a].edges)
+    eb = len(wires.branches[b].edges)
+    return any(
+        _span_layers(cuts[a], runs[a], ea, ia1, ia2)
+        & _span_layers(cuts[b], runs[b], eb, ib1, ib2)
+        for ia1, ia2, ib1, ib2 in regions
+    )
 
 
 def _flip_is_locked(
@@ -341,148 +643,307 @@ def _yield_rank(d: TopoDesign, b: Any, n_layers: int) -> tuple[int, int]:
 
 
 def assign_layers(
-    d: TopoDesign, wires: Wires, n_layers: int, mesh: TopoMesh | None = None
-) -> tuple[list[int], tuple[tuple[int, int], ...]]:
-    """Per-branch outer layer after crossing resolution: pass-based
-    yielding — each pass walks every unresolved same-layer pair and
-    yields the lower-ranked branch to the other outer layer, keeping
-    the fewest-crossing state ever seen. Returns ``(layers, remaining
-    crossing branch pairs)``.
+    d: TopoDesign,
+    mesh: TopoMesh,
+    wires: Wires,
+    n_layers: int,
+    *,
+    net_rules: Mapping[str, NetRules] | None = None,
+    pose: Any = None,
+) -> tuple[Wires, list[list[int]], list[list[int]], tuple[tuple[int, int], ...]]:
+    """Segment-aware crossing resolution as a bounded local search
+    (gr520902 stage b). Per branch a runs/cuts model replaces the
+    single outer layer — a cut at edge index ``c`` mints a via on
+    ``edges[c]``, run p covers ``(cuts[p-1] .. cuts[p]]``, so the piece
+    between two vias can take ANY candidate layer, inners included.
 
-    Why passes: the pre-gr524239 loop yielded the single minimum pair
-    and stopped the moment that flip failed to improve the count. On a
-    dense board the first yield almost always worsens before it
-    improves — the flipped branch meets new neighbours on the far side
-    before it clears the old ones — so the loop exited after ONE flip
-    with nearly every crossing still live (taz-leaf: 2 branches
-    flipped, 48 of 50 pairs left). A pass resolves each pair in turn,
-    accepting a locally-worse state mid-pass, and the run ends when a
-    full pass finds no new best (bounded by :data:`_MAX_FLIPS` flips,
-    a cap like shove, not the mechanism). Each pair's yield target is
-    the better of the two branches' trials — the higher-ranked side is
-    not always the cheaper move — with the Decision-6 rank breaking
-    ties."""
-    branches = wires.branches
-    layers = _initial_layers(d, wires, n_layers)
-    if mesh is not None:
-        cross = _crossing_pairs(
-            wires,
-            _cdirs(mesh, wires),
-            obstacle_vertices(mesh, d, n_layers),
-            [(int(u), int(v)) for u, v in mesh.edges],
+    Each round every live pair offers its moves: a whole-branch flip
+    of either side to the other outer (a through-hole branch moves
+    free — no cut, no via), the Decision-6 yielder's bracketed span to
+    each of its net's candidate layers, and — only once every flip
+    stalls, and only on a real mesh — a re-thread of either side's net
+    with the pair's shared corridor masked, so the wire regrows around
+    the wrapped pad's other side. The cheapest move by ``(live pairs,
+    via count)`` wins; a round with no strictly improving move ends the
+    search. Returns ``(wires, runs, cuts, remaining pairs)`` — the
+    wires carry any kept re-thread's new branches and a rebuilt
+    ``order``."""
+    branches = list(wires.branches)
+    cur_wires = wires
+    # Braid merge (gr520900/gr536410): on a real mesh the flip test
+    # normalizes signs by corridor direction and drops flips locked by
+    # nothing — the phantom-fan fix. Synthetic fixtures (no corridor
+    # tris) get the raw comparison.
+    edge_ends = [(int(u), int(v)) for u, v in mesh.edges]
+    obstacles = obstacle_vertices(mesh, d, n_layers) if len(mesh.tris) else None
+    pair_regs = _pair_regions(cur_wires, _cdirs(mesh, cur_wires), obstacles, edge_ends)
+    rules = net_rules or {}
+    outers = frozenset((0, n_layers - 1))
+    n_e = len(mesh.edges)
+    tried_thread: set[tuple[int, frozenset[int]]] = set()
+    # The corridor's per-edge open-layer masks (gr520902 review): on a
+    # real mesh a run may only sit on a layer every one of its edges
+    # leaves open — the masks are the passability the routing search
+    # priced, now enforced as a hard rule rather than assumed. Synthetic
+    # fixtures carry no corridor data: the rule is vacuous there
+    # (``open_e=None`` everywhere).
+    ctx: Any = None
+    corridor: Any = None
+    open_layers: dict[int, np.ndarray] = {}
+    if len(mesh.tris) and len(mesh.pin_vertex) == len(d.pin_xy):
+        ctx = _wires._make_ctx(mesh, d, n_layers)
+        # The corridor ledger the wires were priced and cut under —
+        # rebuilt here so a re-thread regrowth pays the SAME occupancy
+        # and faces the SAME demand-vs-capacity cut (gr520902 review).
+        rules_used = [
+            (
+                float(rules[d.net_name[k]].track_width_mm),
+                float(rules[d.net_name[k]].clearance_mm),
+            )
+            if k < len(d.net_name) and d.net_name[k] in rules
+            else (_DEFAULT.track_width_mm, _DEFAULT.clearance_mm)
+            for k in range(len(d.net_pins))
+        ]
+        corridor = _wires._corridor(
+            ctx, mesh, d, n_layers, rules_used, d.pose0 if pose is None else pose
         )
-    else:
-        cross = _crossing_pairs(wires, [])
+        for k in {int(b.net) for b in wires.branches}:
+            cand_k = wires.net_layers[k] if k < len(wires.net_layers) else frozenset()
+            name_k = str(d.net_name[k]) if k < len(d.net_name) else str(k)
+            nr_k = rules.get(name_k, _DEFAULT)
+            open_layers[k] = _wires._open_layers(
+                ctx,
+                d,
+                _wires._cand_mask(cand_k, n_layers),
+                name_k,
+                frozenset(int(p) for p in d.net_pins[k]),
+                float(nr_k.track_width_mm),
+                float(nr_k.clearance_mm),
+            )
+    runs, cuts = _initial_segments(d, wires, n_layers, open_layers or None)
 
-    def live(ls: list[int]) -> set[tuple[int, int]]:
+    def live_pairs(
+        w: Wires,
+        rs: list[list[int]],
+        cs: list[list[int]],
+        regs: dict[tuple[int, int], list[tuple[int, int, int, int]]],
+    ) -> set[tuple[int, int]]:
         return {
             (a, b)
-            for a, b in cross
-            if branches[a].net != branches[b].net and ls[a] == ls[b]
+            for (a, b), rg in regs.items()
+            if w.branches[a].net != w.branches[b].net
+            and _pair_live(w, rs, cs, rg, a, b)
         }
 
-    def flip(ls: list[int], y: int) -> None:
-        ls[y] = n_layers - 1 if ls[y] == 0 else 0
+    def n_vias(cs: list[list[int]]) -> int:
+        return sum(len(c) for c in cs)
 
-    best, best_n = list(layers), len(live(layers))
-    flips = 0
-    for _ in range(_MAX_FLIPS):
-        cur = live(layers)
-        if not cur or flips >= _MAX_FLIPS:
-            break
-        improved_this_pass = False
-        for a, b in sorted(cur):
-            if flips >= _MAX_FLIPS:
-                break
-            if branches[a].net == branches[b].net or layers[a] != layers[b]:
-                continue  # resolved (or same-net) since the pass snapshot
-            rank_a = _yield_rank(d, branches[a], n_layers)
-            rank_b = _yield_rank(d, branches[b], n_layers)
-            y = a if rank_a <= rank_b else b
-            other = b if y == a else a
-            trial_y, trial_o = list(layers), list(layers)
-            flip(trial_y, y)
-            flip(trial_o, other)
-            n_y, n_o = len(live(trial_y)), len(live(trial_o))
-            layers, n = (trial_o, n_o) if n_o < n_y else (trial_y, n_y)
-            flips += 1
-            if n < best_n:
-                best, best_n = list(layers), n
-                improved_this_pass = True
-            if n == 0:
-                break
-        if best_n == 0 or not improved_this_pass:
-            break
-    return best, tuple(sorted(live(best)))
+    def cand_layers(k: int) -> Iterable[int]:
+        c = cur_wires.net_layers[k] if k < len(cur_wires.net_layers) else frozenset()
+        return sorted(c) if c else sorted(outers)
 
-
-def _span_toggles(
-    d: TopoDesign,
-    wires: Wires,
-    layers: list[int],
-    crossings: Sequence[tuple[int, int]],
-    n_layers: int,
-    cdirs: Sequence[Sequence[float]],
-) -> tuple[dict[int, dict[int, int]], set[tuple[int, int]]]:
-    """Crossing-span flips for the pairs the whole-branch yielder left
-    live (gr524239): only the shared, order-inverting run of mesh edges
-    changes layer — bracketed by vias at its ends — never the whole
-    branch. A span flip moves strictly less copper than a whole-branch
-    flip and cannot create a crossing with any branch the shared edges
-    do not already see, so it resolves pairs whose wholesale flip the
-    yielder refused for the new crossings that flip would create.
-
-    Returns ``(branch -> {edge_seq_pos: layer_from_that_pos}, flipped)``
-    — the layer dict feeds :func:`plan_route`'s switch resolver, keyed
-    by edge-sequence position (0 = before the first edge, n = after the
-    last); ``flipped`` is the subset of ``crossings`` resolved here,
-    excluded from the plan's reported crossings. The yielding branch of
-    each pair follows Decision 6's rank, ties to the lower index."""
-
-    def other(layer: int) -> int:
-        return n_layers - 1 if layer == 0 else 0
-
-    out: dict[int, dict[int, int]] = {}
-    flipped: set[tuple[int, int]] = set()
-    for a, b in sorted(crossings):
-        if layers[a] != layers[b]:
-            continue  # resolved since the layer pass
-        if wires.branches[a].net == wires.branches[b].net:
-            continue  # a same-net braid is not a short
-        yielder = (
-            a
-            if _yield_rank(d, wires.branches[a], n_layers)
-            <= _yield_rank(d, wires.branches[b], n_layers)
-            else b
+    def flip_key(
+        bb: int, r2: list[int], c2: list[int]
+    ) -> tuple[int, int, int, float] | None:
+        """The move's ``(live pairs, overflow, vias, length)`` cost —
+        a flip never touches the wires so overflow and length are the
+        current constants — or ``None`` when a run lands on a layer one
+        of its edges closes: the hard open rule, never a cost
+        (gr520902 review)."""
+        if not _runs_open(branches[bb], open_layers.get(int(branches[bb].net)), c2, r2):
+            return None
+        rs2 = list(runs)
+        rs2[bb] = r2
+        cs2 = list(cuts)
+        cs2[bb] = c2
+        return (
+            len(live_pairs(cur_wires, rs2, cs2, pair_regs)),
+            len(cur_wires.overflow),
+            n_vias(cs2),
+            sum(x.length_mm for x in branches),
         )
-        by = wires.branches[yielder]
-        peer_edges = {int(e) for e in wires.branches[b if yielder == a else a].edges}
-        pos_of = {int(e): i for i, e in enumerate(by.edges)}
-        shared = [(pos_of[int(e)], int(e)) for e in by.edges if int(e) in peer_edges]
-        if len(shared) < 2:
-            continue  # Decision 3 needs two shared edges to call a cross
 
-        def sign(e: int, a: int = a, b: int = b) -> int:
-            return _pair_sign(wires, cdirs, e, a, b)
+    def rethread(
+        bb: int, shared: frozenset[int]
+    ) -> tuple[tuple[int, int, int, float], tuple[Any, ...]] | None:
+        """Net ``bb``'s tree regrown with the pair's shared corridor
+        masked — ``None`` when the regrow strands a component, yields
+        no branch, or its demand-vs-capacity cut grows the board's
+        overflow record (gr520902 review: the regrowth pays
+        build_wires' own occupancy and faces the same cut)."""
+        k = int(branches[bb].net)
+        name = str(d.net_name[k]) if k < len(d.net_name) else str(k)
+        nr = rules.get(name, _DEFAULT)
+        mask = np.zeros(n_e, dtype=bool)
+        mask[sorted(shared)] = True
+        occ = corridor.occ(corridor.used_of(x for x in branches if x.net != k))
+        found, comps, base_pass = _wires._net_tree(
+            ctx,
+            mesh,
+            d,
+            k,
+            n_layers,
+            float(nr.track_width_mm),
+            float(nr.clearance_mm),
+            occ,
+            extra_blocked=mask,
+        )
+        if not found or len(comps) > 1:
+            return None
+        passable = _wires._make_passable(base_pass)
+        pin_vids = frozenset(int(v) for v in mesh.pin_vertex)
+        newb = [
+            _wires._build_branch(ctx, mesh, k, pa, pb, t2, e2, passable, pin_vids)[0]
+            for pa, pb, t2, e2 in found
+        ]
+        idx = [i for i, x in enumerate(branches) if x.net == k]
+        lo_i, hi_i = idx[0], idx[-1] + 1
+        # the splice below assumes a net's branches sit contiguously —
+        # a rethread interleaves them only if a caller broke that
+        assert idx == list(range(lo_i, hi_i))
+        cbr = branches[:lo_i] + newb + branches[hi_i:]
+        order2, residual2 = _wires._order(ctx, mesh, tuple(cbr))
+        cut2 = corridor.cut(cbr, order2)
+        if len(cut2) > len(cur_wires.overflow):
+            return None
+        cw = dataclasses.replace(
+            cur_wires,
+            branches=tuple(cbr),
+            order=order2,
+            order_residual=residual2,
+            overflow=cut2,
+        )
+        regs2 = _pair_regions(cw, _cdirs(mesh, cw), obstacles, edge_ends)
+        rs2 = list(runs[:lo_i])
+        cs2 = list(cuts[:lo_i])
+        for nb_ in newb:
+            r0, c0 = _initial_segment(d, cw, nb_, n_layers, open_e=open_layers.get(k))
+            rs2.append(r0)
+            cs2.append(c0)
+        rs2 += runs[hi_i:]
+        cs2 += cuts[hi_i:]
+        key = (
+            len(live_pairs(cw, rs2, cs2, regs2)),
+            len(cut2),
+            n_vias(cs2),
+            sum(x.length_mm for x in cbr),
+        )
+        return key, (cbr, rs2, cs2, cw, regs2)
 
-        ref = sign(shared[0][1])
-        # maximal runs of shared edges whose order inverts the reference
-        runs: list[tuple[int, int]] = []
-        for pos, e in shared:
-            if sign(e) == ref:
-                continue
-            if runs and pos == runs[-1][1]:
-                runs[-1] = (runs[-1][0], pos + 1)
-            else:
-                runs.append((pos, pos + 1))
-        if not runs:
-            continue
-        tgt = out.setdefault(yielder, {})
-        for start, end in runs:
-            tgt[start] = other(layers[yielder])
-            tgt[end] = layers[yielder]
-        flipped.add((a, b))
-    return out, flipped
+    def state_key() -> tuple[int, int, int, float]:
+        return (
+            len(cur_live),
+            len(cur_wires.overflow),
+            n_vias(cuts),
+            sum(x.length_mm for x in branches),
+        )
+
+    cur_live = live_pairs(cur_wires, runs, cuts, pair_regs)
+    best_key = state_key()
+    best = (
+        cur_wires,
+        [list(r) for r in runs],
+        [list(c) for c in cuts],
+        pair_regs,
+    )
+    for _ in range(_MAX_FLIPS):
+        if not cur_live:
+            break
+        cur_key = state_key()
+        chosen_key: tuple[int, int, int, float] | None = None
+        chosen: tuple[str, Any] | None = None
+        for a, b in sorted(cur_live):
+            regs = pair_regs[(a, b)]
+            y = (
+                a
+                if _yield_rank(d, branches[a], n_layers)
+                <= _yield_rank(d, branches[b], n_layers)
+                else b
+            )
+            # whole-branch flips to the other outer — the move that
+            # frees a TH branch's crossing for 0 vias
+            for bb in (a, b):
+                nb = len(branches[bb].edges)
+                if not nb:
+                    continue
+                on = _span_layers(cuts[bb], runs[bb], nb, -1, nb - 1)
+                target = n_layers - 1 if n_layers - 1 not in on else 0
+                c2, r2 = list(cuts[bb]), list(runs[bb])
+                _set_span(d, branches[bb], n_layers, c2, r2, 0, nb - 1, target)
+                key = flip_key(bb, r2, c2)
+                if (
+                    key is not None
+                    and key < cur_key
+                    and (chosen_key is None or key < chosen_key)
+                ):
+                    chosen_key, chosen = key, ("flip", (bb, r2, c2))
+            # the yielder's bracketed span to each candidate layer —
+            # the union of the regions this pair marks on its own
+            # edge-index space
+            k = int(branches[y].net)
+            j = 0 if y == a else 2
+            lo = min(r_[j] for r_ in regs) + 1
+            hi = max(r_[j + 1] for r_ in regs)
+            for ly in cand_layers(k):
+                c2, r2 = list(cuts[y]), list(runs[y])
+                _set_span(d, branches[y], n_layers, c2, r2, lo, hi, ly)
+                key = flip_key(y, r2, c2)
+                if (
+                    key is not None
+                    and key < cur_key
+                    and (chosen_key is None or key < chosen_key)
+                ):
+                    chosen_key, chosen = key, ("flip", (y, r2, c2))
+        if chosen is None and ctx is not None:
+            # flips stalled — regrow either side's tree around the
+            # masked shared corridor (ctx is None only on synthetic
+            # fixtures, which carry no tris/pin_vertex and never reach
+            # here)
+            for a, b in sorted(cur_live):
+                shared: set[int] = set()
+                for ia1, ia2, ib1, ib2 in pair_regs[(a, b)]:
+                    shared |= {int(e) for e in branches[a].edges[ia1 : ia2 + 1]} & {
+                        int(e) for e in branches[b].edges[ib1 : ib2 + 1]
+                    }
+                if not shared:
+                    continue
+                for bb in (a, b):
+                    mark = (int(branches[bb].net), frozenset(shared))
+                    if mark in tried_thread:
+                        continue
+                    tried_thread.add(mark)
+                    got = rethread(bb, frozenset(shared))
+                    if (
+                        got is not None
+                        and got[0] < cur_key
+                        and (chosen_key is None or got[0] < chosen_key)
+                    ):
+                        chosen_key, chosen = got[0], ("thread", got[1])
+        if chosen is None:
+            break
+        kind, payload = chosen
+        if kind == "flip":
+            bb, r2, c2 = payload
+            runs[bb], cuts[bb] = r2, c2
+        else:
+            branches, runs, cuts, cur_wires, pair_regs = payload
+        cur_live = live_pairs(cur_wires, runs, cuts, pair_regs)
+        key = state_key()
+        if key < best_key:
+            best_key = key
+            best = (
+                cur_wires,
+                [list(r) for r in runs],
+                [list(c) for c in cuts],
+                pair_regs,
+            )
+    w_fin, r_fin, c_fin, regs_fin = best
+    return (
+        w_fin,
+        r_fin,
+        c_fin,
+        tuple(sorted(live_pairs(w_fin, r_fin, c_fin, regs_fin))),
+    )
 
 
 def _edge_xy(mesh: TopoMesh, edge: int, t: float) -> tuple[float, float]:
@@ -490,6 +951,72 @@ def _edge_xy(mesh: TopoMesh, edge: int, t: float) -> tuple[float, float]:
     u, v = mesh.edges[edge]
     a, b_ = mesh.verts[int(u)], mesh.verts[int(v)]
     return (float(a[0] + t * (b_[0] - a[0])), float(a[1] + t * (b_[1] - a[1])))
+
+
+def _polyline_arc(
+    pts: Sequence[tuple[float, float]], xy: tuple[float, float]
+) -> tuple[float, tuple[float, float]]:
+    """``xy``'s closest point on the polyline, as ``(s, point)`` — ``s``
+    is the arc coordinate ``i + f`` for fraction ``f`` of segment ``i``
+    (vertex ``j`` sits at ``s = j``). A tied nearest distance takes the
+    earliest arc position."""
+    best = (math.inf, 0.0, (float(pts[0][0]), float(pts[0][1])))
+    for i, (p, q) in enumerate(itertools.pairwise(pts)):
+        dx, dy = q[0] - p[0], q[1] - p[1]
+        d2 = dx * dx + dy * dy
+        f = (
+            0.0
+            if d2 == 0
+            else min(1.0, max(0.0, ((xy[0] - p[0]) * dx + (xy[1] - p[1]) * dy) / d2))
+        )
+        cand = (p[0] + f * dx, p[1] + f * dy)
+        dist = math.dist(xy, cand)
+        if dist < best[0]:
+            best = (dist, i + f, cand)
+    return best[1], best[2]
+
+
+def _seg_dist(
+    xy: tuple[float, float], p: tuple[float, float], q: tuple[float, float]
+) -> float:
+    """Point-to-segment distance — ``xy`` to ``p→q``."""
+    dx, dy = q[0] - p[0], q[1] - p[1]
+    d2 = dx * dx + dy * dy
+    f = (
+        0.0
+        if d2 == 0
+        else min(1.0, max(0.0, ((xy[0] - p[0]) * dx + (xy[1] - p[1]) * dy) / d2))
+    )
+    return math.dist(xy, (p[0] + f * dx, p[1] + f * dy))
+
+
+def _piece_run(
+    pts: Sequence[tuple[float, float]],
+    a: tuple[float, tuple[float, float], tuple[float, float] | None],
+    b: tuple[float, tuple[float, float], tuple[float, float] | None],
+) -> list[tuple[float, float]]:
+    """The polyline run between two attachments ``(s, point, via|None)``
+    — the piece's copper: bracketing via first/last (an off-path via
+    joins by the short stub to its own projection), the path vertices
+    strictly inside the interval between them. Near-coincident
+    neighbours collapse (an on-path via IS its projection)."""
+    sa, pa, va = a
+    sb, pb, vb = b
+    run: list[tuple[float, float]] = []
+    if va is not None:
+        run.append(va)
+    run.append(pa)
+    for j in range(1, len(pts) - 1):
+        if sa < j < sb:
+            run.append(pts[j])
+    run.append(pb)
+    if vb is not None:
+        run.append(vb)
+    out = [run[0]]
+    for p in run[1:]:
+        if math.dist(p, out[-1]) > 1e-9:
+            out.append(p)
+    return out
 
 
 #: A candidate via site's per-outer-layer pad roster: ``(part index,
@@ -588,6 +1115,7 @@ def _site_via(
     outline: Any = None,
     keepouts: Sequence[Any] = (),
     fallback_dia: float | None = None,
+    foreign: Iterable[tuple[Sequence[tuple[float, float]], float]] = (),
 ) -> tuple[int, float, float, float, float] | None:
     """One keepout-clean via site near the branch's join index ``ei``
     (topo S3, gr520901), or ``None`` when no point qualifies.
@@ -599,10 +1127,13 @@ def _site_via(
     and the stage minted zero vias on taz-leaf. The window is a property
     of the POINT: it qualifies when the barrel's keep-out
     (``via_dia/2 + clearance``) clears every pad rect on both outer
-    layers, every already placed via, the board outline, and every
+    layers, every already placed via, the board outline, every
     keepout/mounting-hole zone — the same bodies the mesh keeps wires
     out of, which the old walk never checked (a site could land in a
-    keepout or off the board).
+    keepout or off the board) — and keeps every OTHER net's polyline at
+    its own ``(via+track)/2 + clearance``: the barrel spans every layer,
+    so a foreign track on ANY layer (inners included) vetoes the site
+    (gr520902 s4d).
 
     ``fallback_dia`` (gr524334): when the net-rule via (the comfortable
     house default, 0.75 mm on 4layer) finds no site anywhere on the
@@ -647,7 +1178,26 @@ def _site_via(
                     continue
                 if any(ko.distance(pt) < margin for ko in keepouts):
                     continue
+                if any(
+                    _seg_dist((x, y), p, q) < m
+                    for fpts, m in foreign
+                    for p, q in itertools.pairwise(fpts)
+                ):
+                    continue
                 e, t = _nearest_edge(mesh, (x, y))
+                if mesh.constrained[e]:
+                    continue  # a constrained ring edge never holds a via
+                # the barrel's keep-out off the edge's endpoint
+                # vertices — the graze-at-a-vertex case (gr520901)
+                if any(
+                    math.dist(
+                        (x, y),
+                        (float(mesh.verts[int(v)][0]), float(mesh.verts[int(v)][1])),
+                    )
+                    < margin
+                    for v in mesh.edges[e]
+                ):
+                    continue
                 return e, t, x, y
         return None
 
@@ -710,20 +1260,6 @@ def _free_span(
     if 1.0 - cur > best[1] - best[0]:
         best = (cur, 1.0)
     return best
-
-
-def _seg_dist(
-    p: tuple[float, float], a: tuple[float, float], b: tuple[float, float]
-) -> float:
-    """Distance from ``p`` to segment ``a→b``."""
-    dx, dy = b[0] - a[0], b[1] - a[1]
-    dd = dx * dx + dy * dy
-    t = (
-        0.0
-        if dd <= 1e-12
-        else min(1.0, max(0.0, ((p[0] - a[0]) * dx + (p[1] - a[1]) * dy) / dd))
-    )
-    return math.dist(p, (a[0] + t * dx, a[1] + t * dy))
 
 
 def _seg_seg_dist(
@@ -1463,28 +1999,20 @@ def plan_route(
 ) -> RoutePlan:
     """Layer assignment → pieces + via sites for one routed pose.
 
-    Joins per branch: an F↔B SMD pair splits mid-branch onto its two
-    forced layers (the free via, Decision 6); a forced end that disagrees
-    with the assigned layer (a crossing yielded the branch to the other
-    side) gets an end via at that end's first/last edge so the pad's
-    mount side stays the terminal layer; and a crossing the whole-branch
-    yielder left live is settled by a SPAN flip — only the shared,
-    order-inverting run of edges changes layer, via-bracketed, never the
-    whole branch (gr524239). Each join's site comes from
-    :func:`_site_via`'s keepout walk — ``net_rules`` (net NAME →
-    :class:`NetRules`, as :func:`realize_result` resolves them) sizes
-    the barrel, with ``min_via_dia`` (the fab minimum) as the fallback
-    when the rule via finds no site (gr524334); a join with no
-    qualifying point at either diameter mints no via and lands on
+    Per branch the runs/cuts model drives the joins directly: every
+    cut mints a via site (an F↔B mid-branch join, a crossing's
+    bracketed piece, an end via where a forced pad side must be the
+    terminal layer), every run emits one :class:`RoutePiece` on its
+    layer. Each cut's site comes from :func:`_site_via`'s keepout walk
+    — ``net_rules`` (net NAME → :class:`NetRules`, as
+    :func:`realize_result` resolves them) sizes the barrel, with
+    ``min_via_dia`` (the fab minimum) as the fallback when the rule
+    via finds no site (gr524334); a join with no qualifying point at
+    either diameter mints no via and lands on
     :attr:`RoutePlan.no_via`."""
-    cdirs = _cdirs(mesh, wires)
-    layers, crossings = assign_layers(d, wires, n_layers, mesh)
-    # Span-flip the pairs the whole-branch pass could not take (gr524239)
-    # and report only what survives both.
-    span_toggles, span_flipped = _span_toggles(
-        d, wires, layers, crossings, n_layers, cdirs
+    wires, runs, cuts, crossings = assign_layers(
+        d, mesh, wires, n_layers, net_rules=net_rules, pose=pose
     )
-    crossings = tuple(p for p in crossings if p not in span_flipped)
     rules = net_rules or {}
     pose_a = np.asarray(d.pose0 if pose is None else pose)
     # pad rosters per outer layer: top-SMD pads live on layer 0, bottom
@@ -1558,68 +2086,50 @@ def plan_route(
         g = Polygon(np.asarray(topo_proxy.zone_world_ring(d, z, pose_a), dtype=float))
         if not g.is_empty and g.area > 0.0:
             keepout_geoms.append(g)
+    # every net's polyline rows for the foreign-track veto (gr520902
+    # s4d): the via barrel spans the whole stackup, so a site within
+    # ``(via_dia + track_w)/2 + max clearance`` of another net's copper
+    # — on ANY layer, inners included — is refused.
+    track_rows: dict[
+        int, list[tuple[tuple[tuple[float, float], ...], float, float]]
+    ] = {}
+    for fb in wires.branches:
+        fname = str(d.net_name[fb.net]) if fb.net < len(d.net_name) else str(fb.net)
+        fnr = rules.get(fname, _DEFAULT)
+        track_rows.setdefault(int(fb.net), []).append(
+            (fb.points, float(fnr.track_width_mm), float(fnr.clearance_mm))
+        )
     pieces: list[RoutePiece] = []
     vias: list[ViaSite] = []
     placed: list[tuple[float, float, float]] = []
     no_via: list[int] = []
     for bi, b in enumerate(wires.branches):
-        L = layers[bi]
-        la = _pin_forced(d, b.pin_a, n_layers)
-        lb = _pin_forced(d, b.pin_b, n_layers)
+        joins = cuts[bi]
+        run_layers = runs[bi]
         # ``paths`` carries the spoke-offset polyline (gr520900) for the
         # emitted geometry; via siting and the edge/t bookkeeping stay
         # on ``b``'s corridor-true fields.
         bpts = paths[bi] if paths is not None else b.points
-        # Layer switches along the branch, in edge-sequence positions
-        # (0 = before the first edge, n = after the last). Three sources:
-        # the Decision-6 F<->B mid split; pad-side stitches at the ends
-        # when the assigned layer disagrees with a forced pad (gr524239 —
-        # EVERY disagreeing end gets its via, else the far piece hangs
-        # unconnected); and crossing-span flips, where only the shared
-        # inverting run changes layer, never the whole branch.
-        n_e = len(b.edges)
-        start_layer = la if la is not None else L
-        end_layer = lb if lb is not None else L
-        targets: dict[int, int] = {}
-        if la is not None and lb is not None and la != lb and n_e >= 2:
-            targets[n_e // 2] = lb
-        elif n_e >= 1:
-            if la is not None and la != L:
-                targets[0] = L
-            if lb is not None and lb != L:
-                targets[n_e] = end_layer
-        for pos, tgt in span_toggles.get(bi, {}).items():
-            targets[pos] = tgt
-        if not targets:
+        if not joins:
             pieces.append(
-                RoutePiece(b.net, bi, start_layer, tuple(bpts), b.pin_a, b.pin_b)
+                RoutePiece(b.net, bi, run_layers[0], tuple(bpts), b.pin_a, b.pin_b)
             )
             continue
-        # Resolve switches in position order: a target equal to the
-        # running layer is a no-op, and the branch must END on end_layer,
-        # so a short running layer forces a final stitch at the last edge.
-        layer = start_layer
-        cuts: list[tuple[int, int]] = []
-        for pos in sorted(targets):
-            tgt = targets[pos]
-            if tgt == layer:
-                continue
-            anchor = min(max(pos, 0), n_e - 1)
-            if cuts and cuts[-1][0] == anchor:
-                continue
-            cuts.append((anchor, tgt))
-            layer = tgt
-        if layer != end_layer and (not cuts or cuts[-1][0] != n_e - 1):
-            cuts.append((n_e - 1, end_layer))
         name = str(d.net_name[b.net]) if b.net < len(d.net_name) else str(b.net)
         nr = rules.get(name, _DEFAULT)
         via_dia = float(nr.via_dia_mm or _VIA_DIA_MM)
         clearance = float(nr.clearance_mm)
+        foreign = tuple(
+            (fpts, via_dia / 2.0 + fw / 2.0 + max(clearance, fc))
+            for fk, rows in track_rows.items()
+            if fk != int(b.net)
+            for fpts, fw, fc in rows
+        )
         pts = list(bpts)
         cut_xy: list[tuple[float, float]] = []
-        run_lays = [start_layer, *(t for _, t in cuts)]
         sited = True
-        for ei, _tgt in cuts:
+        site_edges: set[int] = set()
+        for ei in joins:
             site = _site_via(
                 mesh,
                 b,
@@ -1633,7 +2143,12 @@ def plan_route(
                 outline=outline_poly,
                 keepouts=keepout_geoms,
                 fallback_dia=min_via_dia,
+                foreign=foreign,
             )
+            if site is not None and site[0] in site_edges:
+                # refuse two cuts on one edge — the second join gets no
+                # via (gr520902 review a.2)
+                site = None
             if site is None:
                 sited = False
                 # keep the split at the intended crossing: the pieces
@@ -1644,33 +2159,39 @@ def plan_route(
                 cut_xy.append(_edge_xy(mesh, e, t))
                 continue
             e, t, x, y, via_d = site
+            site_edges.add(e)
             vias.append(ViaSite(b.net, bi, e, t, x, y, via_d))
             placed.append((x, y, via_d))
             cut_xy.append((x, y))
         if not sited:
             no_via.append(bi)
-        # split the polyline at the vertex nearest each via site — the
-        # taut path crosses that edge at exactly the via point
-        split = sorted(
-            min(range(len(pts)), key=lambda i: math.dist(pts[i], xy)) for xy in cut_xy
-        )
-        bounds = [0, *split, len(pts) - 1]
-        for pi in range(len(bounds) - 1):
-            lo, hi = bounds[pi], bounds[pi + 1]
-            run = list(pts[lo : hi + 1])
-            if pi > 0:
-                run.insert(0, cut_xy[pi - 1])
-            if pi < len(cut_xy):
-                run.append(cut_xy[pi])
+        # split the polyline at each via's OWN point on the path — the
+        # wire's crossing of the cut edge when the site stayed put, the
+        # walked site's projection otherwise (a short stub joins an
+        # off-path via). Never the nearest vertex: a taut branch keeps
+        # vertices only at bends, so a vertex split re-issued the
+        # neighbouring runs' geometry on the piece's own layer — the
+        # coincident-copper DRC (gr520902 s4d). Sort the (arc, site)
+        # pairs TOGETHER (a.2): a site walked off its intended edge can
+        # invert the join order, and only a pair sorted as one keeps
+        # each run joined to its via.
+        marks = sorted((*_polyline_arc(pts, xy), xy) for xy in cut_xy)
+        attach: list[tuple[float, tuple[float, float], tuple[float, float] | None]] = [
+            (0.0, pts[0], None)
+        ]
+        attach += [(s, p, xy) for s, p, xy in marks]
+        attach.append((float(len(pts) - 1), pts[-1], None))
+        for pi, (a_, b_) in enumerate(itertools.pairwise(attach)):
+            run = _piece_run(pts, a_, b_)
             if len(run) >= 2:
                 pieces.append(
-                    RoutePiece(b.net, bi, run_lays[pi], tuple(run), b.pin_a, b.pin_b)
+                    RoutePiece(b.net, bi, run_layers[pi], tuple(run), b.pin_a, b.pin_b)
                 )
     unrouted = tuple(sorted({u.net for u in wires.unreachable}))
     return RoutePlan(
         pieces=tuple(pieces),
         vias=tuple(vias),
-        layers=tuple(layers),
+        layers=tuple(r[0] for r in runs),
         crossings=crossings,
         unreachable=unrouted,
         stranded=wires.unreachable,
