@@ -158,6 +158,63 @@ def _support_groups_note(groups: tuple[str, ...]) -> str:
     return f"support groups: {'; '.join(groups)}\n\n"
 
 
+def _ir_pose(ir: PcbIR, pose: Any) -> None:
+    """Fold one (N, 4) topo pose into the IR's instance arrays — the
+    write the run tail commits (x/y/rot + side)."""
+    for i in range(len(pose)):
+        x, y, rot_q, side = (float(v) for v in pose[i])
+        if not (math.isfinite(x) and math.isfinite(y)):
+            continue
+        ir.inst_x[i] = x
+        ir.inst_y[i] = y
+        ir.inst_rot[i] = rot_q * 90.0
+        ir.inst_bottom[i] = side >= 0.5
+
+
+def _diverged_pose(
+    td: Any,
+    result: Any,
+    settled_pose: Any,
+    *,
+    gate: Any,
+    errors_before: int,
+) -> tuple[Any, str]:
+    """The pose a diverged anneal commits (gr540612): the settled best
+    pose when the gate counts it at or under the stored board's error
+    count, else the cost-sorted elites (each given the same label-room
+    settle the best pose gets), then the stored pose itself — the first
+    candidate under the line wins. Returns ``(pose, note)``; the note is
+    "" when the anneal's own best stands. Effort stays a safe dial: a
+    run that wandered returns its best committable pose with a 'best
+    pose failed the pre-route gate' note instead of failing with nothing
+    placed."""
+    cands: list[tuple[str, Any, bool]] = [("", settled_pose, False)]
+    cands += [
+        (f"elite {i + 1}/{len(result.elites)}", e.pose, True)
+        for i, e in enumerate(result.elites)
+    ]
+    cands.append(("the stored placement", td.pose0, False))
+    from precis.pcb import topoplace as _tp
+
+    for i, (label, pose, settle) in enumerate(cands):
+        cand = _tp.settle_label_room(td, pose) if settle else pose
+        n = gate(cand)
+        # First-at-or-under, deliberately NOT lowest: the candidate order
+        # (the anneal's own best, elites by cost, the stored pose) IS the
+        # preference — a marginally cleaner later candidate never
+        # preempts the pose the run actually produced.
+        if n is not None and n <= errors_before:
+            note = ""
+            if i:
+                note = (
+                    f"⚠️  the best pose failed the pre-route gate — "
+                    f"committed {label} instead ({n} pre-route DRC "
+                    f"error(s), the stored placement had {errors_before})\n\n"
+                )
+            return cand, note
+    return settled_pose, ""
+
+
 def _topo_run(
     ctx: DispatchContext,
     ir: PcbIR,
@@ -172,7 +229,9 @@ def _topo_run(
     preset: str = "compact",
     capability: Any = None,
     hole_margin_mm: float | None = None,
-) -> tuple[Any, dict[str, Any], str, dict[str, str], dict[str, str]] | None:
+    gate: Any = None,
+    errors_before: int | None = None,
+) -> tuple[Any, dict[str, Any], str, dict[str, str], dict[str, str], str] | None:
     """The ``placer='topo'`` run (topo-place spec §1c, Decision 21):
     ``design_from_ir`` → the proxy placer → ``assign_pins`` → the run
     files, with the winning pose folded back into ``ir`` so the shared
@@ -225,24 +284,39 @@ def _topo_run(
         # deterministic nudges that put every reachable refdes label next
         # to its part and pull edge-squished rings off the outline —
         # the guarantee the anneal's approximate box model cannot give.
-        result = dataclasses.replace(
-            result, best_pose=_tp.settle_label_room(td, result.best_pose)
-        )
+        committed = _tp.settle_label_room(td, result.best_pose)
+        diverged = ""
+        # gr540612: a diverged long anneal must not strand the board at
+        # the commit gate — walk the elites then the stored pose through
+        # the same gate and commit the first candidate at or under the
+        # stored error count. The gate evals mutate ``ir``, so the
+        # pre-run side snapshot is taken first.
+        bottom_before = np.asarray(ir.inst_bottom, dtype=bool).copy()
+        if gate is not None and errors_before is not None:
+            committed, diverged = _diverged_pose(
+                td, result, committed, gate=gate, errors_before=errors_before
+            )
+        result = dataclasses.replace(result, best_pose=committed)
+        if diverged:
+            # A committed fallback must not wear the discarded anneal's
+            # numbers — re-score the pose that actually writes (one
+            # ProxyState eval, cheap next to the run) so best_cost,
+            # crossings and length in the summary, manifest and
+            # meta.last_place describe it.
+            scored = _tp.ProxyState(td, committed, objective)
+            result = dataclasses.replace(
+                result,
+                best_cost=float(scored.cost),
+                crossings=int(scored.crossings),
+                length=float(scored.length),
+            )
         assignment = _tp.assign_pins(td, result.best_pose)
     except PinConflict as exc:
         ctx.record_failure(str(exc))
         return None
     pm = _tp.pair_map(td)
 
-    bottom_before = np.asarray(ir.inst_bottom, dtype=bool).copy()
-    for i in range(len(td.parts)):
-        x, y, rot_q, side = (float(v) for v in result.best_pose[i])
-        if not (math.isfinite(x) and math.isfinite(y)):
-            continue
-        ir.inst_x[i] = x
-        ir.inst_y[i] = y
-        ir.inst_rot[i] = rot_q * 90.0
-        ir.inst_bottom[i] = side >= 0.5
+    _ir_pose(ir, result.best_pose)
     side_changes = {
         str(ir.instance_refdes[i]): ("bottom" if ir.inst_bottom[i] else "top")
         for i in range(len(td.parts))
@@ -284,7 +358,7 @@ def _topo_run(
         ),
     )
     files["label_spots.json"] = dict(sorted(label_spots.items()))
-    return result, files, summary_text, side_changes, label_spots
+    return result, files, summary_text, side_changes, label_spots, diverged
 
 
 def _topo_route(
@@ -877,18 +951,26 @@ def _dispatch(ctx: DispatchContext, spec: JobTypeSpec) -> None:
     ripped: set[int] = set()
     kept_rows = fixed_rows
 
-    def _placement_gate() -> tuple[int, str | None] | tuple[None, None]:
+    def _placement_gate(
+        copper: list[dict[str, Any]] | None = None,
+        ripped_ids: set[int] | None = None,
+    ) -> tuple[int, str | None] | tuple[None, None]:
         """``(n_errors, rendered report)`` over the CURRENT ``ir``, against
         the fixed copper the write would keep (``kept_rows``);
-        ``(None, None)`` when the gate cannot run."""
+        ``(None, None)`` when the gate cannot run. ``copper``/``ripped_ids``
+        override the commit's ``kept_rows``/``ripped`` for the topo
+        candidate gate, which must judge a pose by the copper ITS OWN
+        rip-up would leave (gr540612)."""
         if gate_board_id is None or capability is None:
             return None, None
+        kept = kept_rows if copper is None else copper
+        gone = ripped if ripped_ids is None else ripped_ids
         try:
             placement_findings = pcb_session.placement_drc_findings(
                 ir,
                 capability=capability,
                 footprints=footprints,
-                fixed_copper=kept_rows,
+                fixed_copper=kept,
                 outline=pcb_session.outline_from_features(features),
             )
             # gr345859 §F — violated `strength='invariant'` measures join
@@ -906,7 +988,7 @@ def _dispatch(ctx: DispatchContext, spec: JobTypeSpec) -> None:
                     if row.get("fixed")
                     else {**row, "derived": True}
                     for row in ctx.store.pcb_copper_list(int(gate_board_id))
-                    if row.get("fixed_id") not in ripped
+                    if row.get("fixed_id") not in gone
                 ],
                 layers=layers,
             )
@@ -929,10 +1011,54 @@ def _dispatch(ctx: DispatchContext, spec: JobTypeSpec) -> None:
     label_spots: dict[str, str] = {}
     topo_files: dict[str, Any] | None = None
     topo_text = ""
+    topo_diverged = ""
     topo_result: Any = None
     result: Any = None
     if placer == "topo":
         ref = ctx.store.get_ref(kind="pcb", id=pcb_ref_id)
+        # The stored board's sides, snapped before the first candidate
+        # eval mutates ``ir`` — a candidate's side flips count toward
+        # its moved set like the commit path's ``side_changes``.
+        bottom_before = np.asarray(ir.inst_bottom, dtype=bool).copy()
+
+        def _gate_topo_pose(cand: Any) -> int | None:
+            """The placement-gate error count for one topo candidate
+            pose — applies it to ``ir`` and re-runs the gate the commit
+            faces, INCLUDING the fixed-copper rip-up: the real gate
+            below runs after moved parts shed their branches, so a
+            candidate judged on the full rows reads pad-on-copper shorts
+            its own commit clears, and a good anneal silently fell back
+            to the stored pose on imported boards (gr540612). The
+            rip-up is only COMPUTED here — the DB retire still happens
+            once, in the commit transaction."""
+            _ir_pose(ir, cand)
+            if not branches:
+                n, _report = _placement_gate()
+                return n
+            moved = {
+                r
+                for r, p in pcb_session.positions(ir).items()
+                if pcb_session.pose_moved(pose_before.get(r), p)
+            } | {
+                str(ir.instance_refdes[i])
+                for i in range(ir.n_instances)
+                if bool(ir.inst_bottom[i]) != bool(bottom_before[i])
+            }
+            cand_ripped = pcb_session.fixed_copper_ripup(
+                ir,
+                footprints or {},
+                fixed_rows,
+                branches,
+                moved,
+                capability,
+                shorted_before,
+            )
+            n, _report = _placement_gate(
+                copper=[r for r in fixed_rows if r["fixed_id"] not in cand_ripped],
+                ripped_ids=cand_ripped,
+            )
+            return n
+
         topo_out = _topo_run(
             ctx,
             ir,
@@ -946,10 +1072,21 @@ def _dispatch(ctx: DispatchContext, spec: JobTypeSpec) -> None:
             preset=preset,
             capability=capability,
             hole_margin_mm=hole_fab_clearance_mm(floor_capability),
+            # ``force=True`` is the explicit "commit the anneal's pose
+            # anyway" escape — the elite fallback must not preempt it.
+            gate=_gate_topo_pose if not force else None,
+            errors_before=errors_before,
         )
         if topo_out is None:  # PinConflict already recorded
             return
-        topo_result, topo_files, topo_text, side_changes, label_spots = topo_out
+        (
+            topo_result,
+            topo_files,
+            topo_text,
+            side_changes,
+            label_spots,
+            topo_diverged,
+        ) = topo_out
     else:
         result = optimize(ir, config)
     pose = pcb_session.positions(ir)
@@ -1170,7 +1307,7 @@ def _dispatch(ctx: DispatchContext, spec: JobTypeSpec) -> None:
         )
         ctx.append_chunk(
             "job_summary",
-            f"{placement_summary}"
+            f"{placement_summary}{topo_diverged}"
             f"topo-place: wrote {moved} instance(s) "
             f"(+{len(side_changes)} side flip(s)), "
             f"{topo_result.crossings} proxy crossing(s), airwire "

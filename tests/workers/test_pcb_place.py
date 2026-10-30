@@ -628,12 +628,15 @@ def test_pcb_place_topo_writes_poses_and_stores_the_run(store: Store) -> None:
     assert files["placement.svg"].startswith("<svg")
 
 
-def test_pcb_place_topo_refuses_to_commit_a_worse_placement(
+def test_pcb_place_topo_falls_back_instead_of_refusing(
     store: Store, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The topo branch goes through the SAME pre-route DRC gate as the
-    anneal: a worse error count refuses the write, ``force=True``
-    overrides."""
+    """gr540612: a worse anneal pose no longer refuses — the topo branch
+    goes through the SAME pre-route DRC gate, walking the elites then
+    the stored pose for the first candidate at or under the stored
+    error count and succeeding with a 'failed the pre-route gate' note.
+    ``force=True`` skips the fallback and commits the worse pose with
+    the override note."""
     import dataclasses
 
     from precis.pcb import topoplace as tp
@@ -641,13 +644,13 @@ def test_pcb_place_topo_refuses_to_commit_a_worse_placement(
     ref_id = _seed(
         store, "place-topo-worse", {**_CROSSED, "features": [closed_outline()]}
     )
-    before = {
-        i["refdes"]: (i["x"], i["y"]) for i in store.pcb_graph(ref_id)["instances"]
-    }
     real_topo = tp.topo_place
+    captured: dict[str, Any] = {}
 
     def _collapse(d: Any, **kw: Any) -> Any:
         res = real_topo(d, **kw)
+        captured["td"] = d
+        captured["elites"] = res.elites
         pose = res.best_pose.copy()
         pose[:, 0] = pose[0, 0]
         pose[:, 1] = pose[0, 1]
@@ -659,12 +662,23 @@ def test_pcb_place_topo_refuses_to_commit_a_worse_placement(
         params={"pcb_ref_id": ref_id, "placer": "topo", "iters": 50, "seed": 1},
     )
     _dispatch(ctx)
-    assert ctx.failures and ctx.failures[0][1] == "non-convergence"
-    assert "refusing to commit" in ctx.failures[0][0]
+    assert not ctx.failures
+    assert "failed the pre-route gate" in ctx.summaries[0][1]
+    # The committed pose is the first gate-passing candidate: the
+    # collapsed best fails, so elite 1 must be what wrote — compared
+    # part for part, not merely "not all identical".
+    td = captured["td"]
+    elites = captured["elites"]
+    assert elites
+    assert "committed elite 1/" in ctx.summaries[0][1]
+    expected = tp.settle_label_room(td, elites[0].pose)
     after = {
         i["refdes"]: (i["x"], i["y"]) for i in store.pcb_graph(ref_id)["instances"]
     }
-    assert after == before
+    for i, refdes in enumerate(td.parts):
+        assert after[refdes] == pytest.approx(
+            (float(expected[i, 0]), float(expected[i, 1]))
+        ), refdes
 
     forced = _FakeCtx(
         store,
@@ -714,3 +728,234 @@ def test_pcb_place_topo_pin_conflict_is_an_unclassed_failure(
     assert ctx.failures and ctx.failures[0][1] is None
     assert "3 signals, 2 pins" in ctx.failures[0][0]
     assert "topo_run" not in ctx.meta
+
+
+def test_pcb_place_topo_diverged_falls_back_to_an_elite(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr540612: a diverged long anneal must not strand the board — the
+    job walks the cost-sorted elites (then the stored pose) through the
+    same commit gate and writes the first candidate at or under the
+    stored error count, succeeding with a 'failed the pre-route gate'
+    note rather than failing with nothing placed."""
+    import numpy as np
+
+    from precis.pcb.topoplace.archive import Elite
+    from precis.pcb.topoplace.placer import TopoPlaceResult
+
+    ref_id = _seed(store, "place-diverge", {**_CROSSED, "features": [closed_outline()]})
+
+    def _diverged(td: Any, *, objective: Any, effort: int, seed: int, **_k: Any) -> Any:
+        bad = np.asarray(td.pose0, dtype=float).copy()
+        bad[:, :2] = 999.0  # every part parked outside the board
+        good = np.asarray(td.pose0, dtype=float).copy()
+        good[0, 0] += 0.5  # elite: the stored pose, one part nudged
+        return TopoPlaceResult(
+            best_pose=bad,
+            best_cost=9.9,
+            crossings=0,
+            length=0.0,
+            evals=1,
+            restarts=1,
+            seed=seed,
+            elites=(Elite(good, 0.1),),
+            ladder_scores=(),
+            last_improve_eval=0,
+        )
+
+    monkeypatch.setattr("precis.pcb.topoplace.topo_place", _diverged)
+    monkeypatch.setattr("precis.pcb.topoplace.settle_label_room", lambda td, pose: pose)
+    ctx = _FakeCtx(
+        store,
+        params={"pcb_ref_id": ref_id, "placer": "topo", "iters": 50, "seed": 1},
+    )
+    _dispatch(ctx)
+    assert not ctx.failures
+    assert "failed the pre-route gate" in ctx.summaries[0][1]
+    assert "committed elite 1/1" in ctx.summaries[0][1]
+    placed = {
+        i["refdes"]: (i["x"], i["y"]) for i in store.pcb_graph(ref_id)["instances"]
+    }
+    assert placed["A"] == pytest.approx((0.5, 0.0))
+
+
+def test_pcb_place_topo_diverged_falls_back_to_the_stored_pose(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr540612: when every elite also fails the gate, the stored pose is
+    the last resort — the job still succeeds instead of writing nothing."""
+    import numpy as np
+
+    from precis.pcb.topoplace.archive import Elite
+    from precis.pcb.topoplace.placer import TopoPlaceResult
+
+    ref_id = _seed(
+        store, "place-diverge2", {**_CROSSED, "features": [closed_outline()]}
+    )
+    before = {
+        i["refdes"]: (i["x"], i["y"]) for i in store.pcb_graph(ref_id)["instances"]
+    }
+
+    def _diverged(td: Any, *, objective: Any, effort: int, seed: int, **_k: Any) -> Any:
+        bad = np.asarray(td.pose0, dtype=float).copy()
+        bad[:, :2] = 999.0
+        worse = np.asarray(td.pose0, dtype=float).copy()
+        worse[:, :2] = 888.0  # an elite that is illegal too
+        return TopoPlaceResult(
+            best_pose=bad,
+            best_cost=9.9,
+            crossings=0,
+            length=0.0,
+            evals=1,
+            restarts=1,
+            seed=seed,
+            elites=(Elite(worse, 0.1),),
+            ladder_scores=(),
+            last_improve_eval=0,
+        )
+
+    monkeypatch.setattr("precis.pcb.topoplace.topo_place", _diverged)
+    monkeypatch.setattr("precis.pcb.topoplace.settle_label_room", lambda td, pose: pose)
+    ctx = _FakeCtx(
+        store,
+        params={"pcb_ref_id": ref_id, "placer": "topo", "iters": 50, "seed": 1},
+    )
+    _dispatch(ctx)
+    assert not ctx.failures
+    assert "failed the pre-route gate" in ctx.summaries[0][1]
+    assert "committed the stored placement" in ctx.summaries[0][1]
+    after = {
+        i["refdes"]: (i["x"], i["y"]) for i in store.pcb_graph(ref_id)["instances"]
+    }
+    assert after == before
+
+
+def test_pcb_place_topo_gate_counts_the_copper_the_commit_keeps(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr540612 fix1: the candidate gate must measure the same copper
+    the commit's gate does — moved parts shed their fixed-copper
+    branches BEFORE the error count. Judged on the full rows, R1's best
+    pose reads one pad-on-copper short over the stored board (its pad
+    lands on N2's track); judged after its own rip-up, zero — the best
+    pose must commit, not silently fall back to the stored one and turn
+    the run into a no-op."""
+    import numpy as np
+
+    from precis.pcb.topoplace.placer import TopoPlaceResult
+
+    ref_id = _seed(
+        store, "place-topo-ripup", {**_RIPUP, "features": [closed_outline()]}
+    )
+    board_id = store.pcb_ensure_board(ref_id)
+    store.pcb_fixed_copper_put(
+        ref_id,
+        board_id,
+        "SRC",
+        "epro",
+        "1",
+        [
+            _track("N1", [0.0, 0.0], [2.0, 0.0]),
+            _track("N2", [10.0, 0.0], [20.0, 0.0]),
+        ],
+    )
+
+    def _topo(td: Any, *, objective: Any, effort: int, seed: int, **_k: Any) -> Any:
+        pose = np.asarray(td.pose0, dtype=float).copy()
+        pose[td.parts.index("R1"), 0] = 18.0  # R1's pad lands on the N2 track
+        return TopoPlaceResult(
+            best_pose=pose,
+            best_cost=0.1,
+            crossings=0,
+            length=0.0,
+            evals=1,
+            restarts=1,
+            seed=seed,
+            elites=(),
+            ladder_scores=(),
+            last_improve_eval=0,
+        )
+
+    monkeypatch.setattr("precis.pcb.topoplace.topo_place", _topo)
+    monkeypatch.setattr("precis.pcb.topoplace.settle_label_room", lambda td, pose: pose)
+    ctx = _FakeCtx(
+        store,
+        params={"pcb_ref_id": ref_id, "placer": "topo", "iters": 50, "seed": 1},
+    )
+    _dispatch(ctx)
+    assert not ctx.failures
+    placed = {
+        i["refdes"]: (i["x"], i["y"]) for i in store.pcb_graph(ref_id)["instances"]
+    }
+    assert placed["R1"] == pytest.approx((18.0, 0.0))
+    # Both branches retired in the same commit: N1's (its part moved)
+    # and N2's (a moved pad sat on it) — the kept set the gate counted
+    # zero errors against.
+    assert store.pcb_fixed_copper_list(board_id) == []
+    assert "ripped up 2 fixed-copper row(s)" in ctx.summaries[0][1]
+
+
+def test_pcb_place_topo_refuses_when_the_stored_pose_is_not_recoverable(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr540612: the stored pose is a fallback only while it still gates
+    at or under the stored error count — a board whose pose the topo
+    design cannot reproduce (an imported board's non-quarter rotations
+    snap in ``design_from_ir``; here ``pose0`` is corrupted outright)
+    has no committable candidate. The run's own best is then what the
+    real gate judges, and the job still refuses a worse placement with
+    nothing written."""
+    import dataclasses
+
+    import numpy as np
+
+    from precis.pcb import topoplace as tp
+    from precis.pcb.topoplace.archive import Elite
+    from precis.pcb.topoplace.placer import TopoPlaceResult
+
+    ref_id = _seed(
+        store, "place-topo-refuse", {**_CROSSED, "features": [closed_outline()]}
+    )
+    before = {
+        i["refdes"]: (i["x"], i["y"]) for i in store.pcb_graph(ref_id)["instances"]
+    }
+    real_design = tp.design_from_ir
+
+    def _unrecoverable(*a: Any, **k: Any) -> Any:
+        td = real_design(*a, **k)
+        bad0 = np.asarray(td.pose0, dtype=float).copy()
+        bad0[:, :2] = bad0[0, :2]  # pose0 cannot reproduce the stored pose
+        return dataclasses.replace(td, pose0=bad0)
+
+    def _diverged(td: Any, *, objective: Any, effort: int, seed: int, **_k: Any) -> Any:
+        bad = np.asarray(td.pose0, dtype=float).copy()
+        bad[:, :2] = 999.0
+        worse = np.asarray(td.pose0, dtype=float).copy()
+        worse[:, :2] = 888.0  # an elite that is illegal too
+        return TopoPlaceResult(
+            best_pose=bad,
+            best_cost=9.9,
+            crossings=0,
+            length=0.0,
+            evals=1,
+            restarts=1,
+            seed=seed,
+            elites=(Elite(worse, 0.1),),
+            ladder_scores=(),
+            last_improve_eval=0,
+        )
+
+    monkeypatch.setattr(tp, "design_from_ir", _unrecoverable)
+    monkeypatch.setattr(tp, "topo_place", _diverged)
+    monkeypatch.setattr(tp, "settle_label_room", lambda td, pose: pose)
+    ctx = _FakeCtx(
+        store,
+        params={"pcb_ref_id": ref_id, "placer": "topo", "iters": 50, "seed": 1},
+    )
+    _dispatch(ctx)
+    assert ctx.failures and ctx.failures[0][1] == "non-convergence"
+    assert "refusing to commit" in ctx.failures[0][0]
+    after = {
+        i["refdes"]: (i["x"], i["y"]) for i in store.pcb_graph(ref_id)["instances"]
+    }
+    assert after == before
