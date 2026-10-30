@@ -20,6 +20,7 @@ from __future__ import annotations
 import pytest
 
 from precis.dispatch import Hub
+from precis.errors import NotFound
 from precis.handlers.draft import DraftHandler
 from precis.taproot.canon import CanonicalClaim
 from precis.taproot.hub import attach_evidence, mint_hub
@@ -568,3 +569,118 @@ class TestInclusiveCoverageLine:
         _new_draft(store, draft, "cites-inclusive-empty")
         body = draft.get(id="cites-inclusive-empty", view="citations").body
         assert "coverage:" not in body
+
+
+# ---------------------------------------------------------------------------
+# 8. Diff mode (gr524227) — view='citations' with args={'against': '<draft>'}
+#    diffs the two drafts' inclusive cited-paper sets (direct + one hop
+#    through [fi] hubs), not the direct counts alone.
+# ---------------------------------------------------------------------------
+
+
+class TestCitationsDiff:
+    def test_only_in_lists_and_counts(self, store, draft: DraftHandler) -> None:
+        hub = _hub(store, "A settled claim carrying one evidence paper.")
+        via_only = seed_ref(store, title="Reached Via Hub", kind="paper")
+        attach_evidence(
+            store,
+            hub_ref_id=hub,
+            paper_ref_id=via_only,
+            role="corroborates",
+            check_retraction=False,
+        )
+        shared = seed_ref(store, title="Shared Paper", kind="paper")
+        a_only = seed_ref(store, title="A Only", kind="paper")
+        b_only = seed_ref(store, title="B Only", kind="paper")
+
+        ref_a = _new_draft(store, draft, "diff-a")
+        _add_para(
+            store,
+            draft,
+            "diff-a",
+            ref_a,
+            f"Direct [pa{a_only}] and shared [pa{shared}], settled [fi{hub}].",
+        )
+        ref_b = _new_draft(store, draft, "diff-b")
+        _add_para(
+            store, draft, "diff-b", ref_b, f"Direct [pa{shared}] and [pa{b_only}]."
+        )
+
+        body = draft.get(id="diff-a", view="citations", args={"against": "diff-b"}).body
+
+        # Each side's coverage counts, in the coverage line's own wording:
+        # A = {a_only, shared} direct + {via_only} via 1 hub → 3 inclusive;
+        # B = {shared, b_only} direct, no hubs → 2 inclusive.
+        assert (
+            "diff-a: 3 distinct papers inclusive — 2 cited directly, "
+            "1 reached through 1 cited finding hub(s)" in body
+        )
+        assert (
+            "diff-b: 2 distinct papers inclusive — 2 cited directly, "
+            "0 reached through 0 cited finding hub(s)" in body
+        )
+
+        only_a = _section(body, "only in diff-a (2)")
+        assert f"pa{a_only}" in only_a
+        assert "direct" in only_a
+        assert f"pa{via_only}" in only_a
+        assert f"via fi{hub}" in only_a
+        # the shared paper is not a diff on either side.
+        assert f"pa{shared}" not in only_a
+
+        only_b = _section(body, "only in diff-b (1)")
+        assert f"pa{b_only}" in only_b
+
+        # Reversed direction flips the two lists.
+        flipped = draft.get(
+            id="diff-b", view="citations", args={"against": "diff-a"}
+        ).body
+        assert f"pa{b_only}" in _section(flipped, "only in diff-b (1)")
+        assert f"pa{a_only}" in _section(flipped, "only in diff-a (2)")
+
+    def test_only_in_list_pages_with_a_more_tail(
+        self, store, draft: DraftHandler
+    ) -> None:
+        first = seed_ref(store, title="Paper One", kind="paper")
+        second = seed_ref(store, title="Paper Two", kind="paper")
+        ref_a = _new_draft(store, draft, "diff-page-a")
+        _add_para(
+            store, draft, "diff-page-a", ref_a, f"See [pa{first}] and [pa{second}]."
+        )
+        _new_draft(store, draft, "diff-page-b")
+
+        body = draft.get(
+            id="diff-page-a",
+            view="citations",
+            args={"against": "diff-page-b", "page_size": 1},
+        ).body
+        only_a = _section(body, "only in diff-page-a (2)")
+        # the lower ref_id sorts first; page 2 carries the other.
+        shown, withheld = (first, second) if first < second else (second, first)
+        assert f"pa{shown}" in only_a
+        assert f"pa{withheld}" not in only_a
+        assert "+1 more" in only_a
+        assert "'page': 2, 'page_size': 1" in body
+
+        page2 = draft.get(
+            id="diff-page-a",
+            view="citations",
+            args={"against": "diff-page-b", "page": 2, "page_size": 1},
+        ).body
+        assert f"pa{withheld}" in _section(page2, "only in diff-page-a (2)")
+
+    def test_against_a_non_draft_refuses(self, store, draft: DraftHandler) -> None:
+        paper = seed_ref(store, title="Not A Draft", kind="paper")
+        _new_draft(store, draft, "diff-self")
+        with pytest.raises(NotFound):
+            draft.get(
+                id="diff-self",
+                view="citations",
+                args={"against": f"pa{paper}"},
+            )
+        with pytest.raises(NotFound):
+            draft.get(
+                id="diff-self",
+                view="citations",
+                args={"against": "no-such-draft"},
+            )

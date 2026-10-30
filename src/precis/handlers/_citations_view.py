@@ -59,6 +59,15 @@ deduped union. A draft whose cites run mostly through ``[fi]`` hubs
 otherwise reads as citing far fewer papers than it does — comparing two
 such drafts against the direct count alone invents a mass cite-drop.
 
+**Diff mode** (gr524227's second half): ``args={'against': '<draft>'}``
+on the same view compares two drafts' inclusive cited-paper sets — the
+union the coverage line counts, not direct cites alone. It reports each
+side's coverage counts, then ``only in A`` / ``only in B`` paper lists,
+each row marked ``direct`` or ``via fi<N>`` (which hub reached it).
+Comparing direct counts alone misreads a hub-citing draft: nanobuds
+dr43020 vs its copy dr173020 looked like a 64→24 cite-drop when the
+true inclusive diff was 13 papers.
+
 **Deliberately excluded.** Computational-evidence handles
 (:data:`~precis.utils.mentions.COMPUTED_EVIDENCE_KINDS` — a cited
 simulation structure, calc/math worksheet, or computed pathway) are NOT
@@ -71,7 +80,10 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
+from precis.errors import BadInput
 from precis.format import toon
+from precis.handlers._interpret import interpreted
+from precis.handlers._slice_args import slice_window
 from precis.response import Response
 from precis.taproot.seniority import derive_evidence_bulk
 from precis.utils import handle_registry
@@ -241,6 +253,18 @@ def _partition_of(*, kind: str, is_chunk: bool, block_count: int) -> str:
     return "to-promote" if is_chunk else "to-re-ground"
 
 
+def _coverage_phrase(*, direct: set[int], via_ids: set[int], n_hubs: int) -> str:
+    """The inclusive-coverage count wording, shared between the single-
+    draft coverage line and the diff view's per-draft lines so the two
+    surfaces can't drift on what "inclusive" means."""
+    inclusive = direct | via_ids
+    return (
+        f"{len(inclusive)} distinct papers inclusive — "
+        f"{len(direct)} cited directly, {len(via_ids)} reached "
+        f"through {n_hubs} cited finding hub(s) (one hop, deduped)."
+    )
+
+
 def _evidence_unfetched_paper_ids(
     store: Store, finding_ids: set[int]
 ) -> tuple[dict[int, set[int]], set[int]]:
@@ -369,12 +393,8 @@ def _build_rows(
     coverage_line = ""
     if raw:
         via_hub = {pid for ids in evidence_by_hub.values() for pid in ids}
-        inclusive = paper_ids | via_hub
-        coverage_line = (
-            f"ℹ coverage: {len(inclusive)} distinct papers inclusive — "
-            f"{len(paper_ids)} cited directly, {len(via_hub)} reached "
-            f"through {len(finding_ids)} cited finding hub(s) (one hop, "
-            "deduped)."
+        coverage_line = "ℹ coverage: " + _coverage_phrase(
+            direct=paper_ids, via_ids=via_hub, n_hubs=len(finding_ids)
         )
     return buckets, doi_line, coverage_line
 
@@ -437,4 +457,150 @@ def draft_fetch_ref_ids(store: Store, ref: Ref) -> list[int]:
     return sorted(direct_unfetched | evidence_unfetched)
 
 
-__all__ = ["draft_fetch_ref_ids", "render_citations_view"]
+# ── Diff mode (gr524227) — args={'against': '<draft>'} ─────────────
+
+#: Default row cap per only-in list; ``args={'page','page_size'}``
+#: (the canonical slice pair) pages it.
+_DIFF_ROW_CAP = 50
+
+_DIFF_SCHEMA = ["handle", "title", "reached"]
+
+
+def _cited_paper_reach(
+    store: Store, ref: Ref
+) -> tuple[set[int], dict[int, set[int]], int]:
+    """One draft's inclusive cited-paper reach, for the diff view.
+
+    Returns ``(direct_ids, via, n_hubs)``: the distinct papers cited
+    directly (``[pa]``/``[pc]`` tokens), each paper reached one hop out
+    through a cited ``[fi]`` hub mapped to the hub(s) reaching it, and
+    the count of distinct cited hubs. The same sets the coverage line
+    derives — one token scan plus the single batched evidence walk.
+    """
+    raw = _collect_raw_cites(store, store.drafts.reading_order(ref.id))
+    direct = {c.ref_id for c in raw if c.kind == "paper"}
+    finding_ids = {c.ref_id for c in raw if c.kind == "finding"}
+    evidence_by_hub, _ = _evidence_unfetched_paper_ids(store, finding_ids)
+    via: dict[int, set[int]] = {}
+    for hub_id, hub_paper_ids in evidence_by_hub.items():
+        for pid in hub_paper_ids:
+            via.setdefault(pid, set()).add(hub_id)
+    return direct, via, len(finding_ids)
+
+
+def _reached_label(pid: int, direct: set[int], via: dict[int, set[int]]) -> str:
+    """How a diff-row paper is cited: ``direct``, ``via fi<N>[,fi<M>]``,
+    or both — the through-which-hub detail a direct-count diff hides."""
+    hubs = ",".join(f"fi{h}" for h in sorted(via.get(pid) or ()))
+    if pid in direct:
+        return f"direct + via {hubs}" if hubs else "direct"
+    return f"via {hubs}"
+
+
+def _diff_only_lines(
+    *,
+    label: str,
+    only: set[int],
+    direct: set[int],
+    via: dict[int, set[int]],
+    refs_by_id: dict[int, Any],
+    offset: int,
+    cap: int,
+    next_call: str,
+) -> list[str]:
+    """One ``## only in <draft> (N)`` block: handle + short title + how
+    the paper is reached, windowed by the slice args with a ``+N more``
+    tail pointing at the next page."""
+    lines = [f"## only in {label} ({len(only)})", ""]
+    ordered = sorted(only)
+    shown = ordered[offset : offset + cap]
+    if not shown:
+        lines.append("(none)")
+    else:
+        rows = []
+        for pid in shown:
+            handle = handle_registry.format_handle("paper", pid)
+            found = refs_by_id.get(pid)
+            rows.append(
+                {
+                    "handle": handle,
+                    "title": _title_of(found.title if found else None, handle),
+                    "reached": _reached_label(pid, direct, via),
+                }
+            )
+        lines.append(toon.dump(rows, schema=_DIFF_SCHEMA))
+    withheld = len(ordered) - offset - len(shown)
+    if withheld:
+        lines.append(f"\n(+{withheld} more — next: {next_call})")
+    return lines
+
+
+def render_citations_diff(
+    store: Store,
+    ref: Ref,
+    other: Ref,
+    args: dict[str, Any] | None = None,
+) -> Response:
+    """``view='citations'`` with ``args={'against': '<draft>'}`` — diff two
+    drafts' inclusive cited-paper sets (gr524227). Direct counts alone
+    undercount a draft whose cites run through ``[fi]`` hubs, so the
+    diff runs on each side's union of direct + one-hop-via-hub papers.
+    Read-only — no writes, no LLM call (see module docstring)."""
+    a_direct, a_via, a_hubs = _cited_paper_reach(store, ref)
+    b_direct, b_via, b_hubs = _cited_paper_reach(store, other)
+    slug_a = str(ref.slug or ref.id)
+    slug_b = str(other.slug or other.id)
+
+    offset, size, readings = slice_window(
+        args, where="get(kind='draft', view='citations')", coerce=True
+    )
+    if size is not None and size < 1:
+        raise BadInput(
+            f"args page_size must be ≥ 1, got {size}",
+            next="get(kind='draft', id='<slug>', view='citations', "
+            "args={'against': '<draft>', 'page_size': 50})",
+        )
+    cap = size if size is not None else _DIFF_ROW_CAP
+    nxt_off = offset + cap
+    page_args = (
+        f"'page': {nxt_off // cap + 1}, 'page_size': {cap}"
+        if nxt_off % cap == 0
+        else f"'offset': {nxt_off}, 'limit': {cap}"
+    )
+    next_call = (
+        f"get(kind='draft', id={slug_a!r}, view='citations', "
+        f"args={{'against': {slug_b!r}, {page_args}}})"
+    )
+
+    a_union = a_direct | a_via.keys()
+    b_union = b_direct | b_via.keys()
+    refs_by_id = store.fetch_refs_by_ids((a_union - b_union) | (b_union - a_union))
+
+    lines = [
+        f"# {slug_a} vs {slug_b} — cited-paper diff",
+        "",
+        f"{slug_a}: "
+        + _coverage_phrase(direct=a_direct, via_ids=set(a_via), n_hubs=a_hubs),
+        f"{slug_b}: "
+        + _coverage_phrase(direct=b_direct, via_ids=set(b_via), n_hubs=b_hubs),
+        "",
+    ]
+    for label, only, direct, via in (
+        (slug_a, a_union - b_union, a_direct, a_via),
+        (slug_b, b_union - a_union, b_direct, b_via),
+    ):
+        lines += _diff_only_lines(
+            label=label,
+            only=only,
+            direct=direct,
+            via=via,
+            refs_by_id=refs_by_id,
+            offset=offset,
+            cap=cap,
+            next_call=next_call,
+        )
+        lines.append("")
+    return interpreted(Response(body="\n".join(lines).rstrip() + "\n"), readings)
+
+
+__all__ = ["draft_fetch_ref_ids", "render_citations_diff", "render_citations_view"]

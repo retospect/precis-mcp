@@ -135,6 +135,20 @@ held — cite the in-flight chase `[fi<id>]` until the paper lands and a
 hub is grounded on it. See
 `precis-stubs-help`, `precis-auto-todo-help`, `precis-paper-help`.
 
+## Audit a draft's citations — lifecycle and two-draft diff
+
+```python
+get(kind="draft", id="<slug>", view="citations")  # lifecycle + inclusive coverage
+get(kind="draft", id="<slug>", view="citations", args={"against": "<other-draft>"})
+```
+
+The coverage line counts papers cited directly plus those reached one
+hop through cited `[fi]` hubs. `against=` diffs two drafts on that
+inclusive set — counts for both, then `only in A`/`only in B` lists
+(each paper marked `direct` or `via fi<N>`). Compare inclusively: a
+draft citing through hubs reads as a mass cite-drop under direct counts
+alone.
+
 
 ## See also
 

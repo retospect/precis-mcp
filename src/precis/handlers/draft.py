@@ -495,6 +495,8 @@ class DraftHandler(Handler):
                 "page_size",
                 "rel",
                 "of_kind",
+                # view='citations' diff mode (gr524227)
+                "against",
                 # spreadsheet-tables 1b — view='toon'/'table' filters
                 "cols",
                 "rows",
@@ -1000,10 +1002,25 @@ class DraftHandler(Handler):
             # The draft-citation lifecycle view — the draft's
             # paper/claim citations partitioned into to-fetch /
             # to-re-ground / to-promote / done. Purely derived (token kind
-            # + paper block-count), read-only.
-            from precis.handlers._citations_view import render_citations_view
+            # + paper block-count), read-only. ``args={'against':
+            # '<draft>'}`` instead diffs the two drafts' inclusive
+            # cited-paper sets (gr524227).
+            from precis.handlers._citations_view import (
+                render_citations_diff,
+                render_citations_view,
+            )
 
-            return render_citations_view(self.store, ref)
+            against = (args or {}).get("against")
+            if against is None:
+                return render_citations_view(self.store, ref)
+            other = resolve_live_slug_ref(
+                self.store,
+                kind="draft",
+                id=str(against),
+                next_hint="get(kind='draft') lists drafts; pass one as "
+                "args={'against': '<slug|dr<id>>'}",
+            )
+            return render_citations_diff(self.store, ref, other, args)
         if view == "hygiene":
             # gr192827 item 9 — the complete undefined-abbreviation +
             # whole-paper-cite lists, un-elided, with nothing else. The
