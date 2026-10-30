@@ -27,7 +27,7 @@ design-review: yes
 
 1. **backlog/context-navigation.md §0** — drop the over-cap refusal, head + outline above the transport cap; the top failure in the 2026-10-30 census and it blocks nothing.
 2. **backlog/autoskill.md** deploy verification — new dream/plan_tick `tool_calls` rows carry `agentlog_id` and `source`, `autoskill_sessions.used` not null; closes gr537773. First because the meters read these columns.
-3. **backlog/context-navigation.md §2 A0** — agentlog on doctor_tick, review, asa_bot; without it the baseline undercounts exactly the runners Mode B changes.
+3. **backlog/context-navigation.md §2 A0** — code landed (gr540852); verify after deploy that doctor_tick/review/asa_bot `tool_calls` rows carry `agentlog_id` and `source`, then close the gripe.
 4. **backlog/context-navigation.md §7 twin** — `context_items` + `_ctx` pop + hooks; replaces four stores; everything below reads it. Waits on the hook-logging check.
 5. **backlog/context-navigation.md §4 + §7 readers** — stubs, `rs` sets, compaction handoff, meters, eval bank, baseline.
 

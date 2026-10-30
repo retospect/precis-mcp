@@ -49,6 +49,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from precis import agentlog
 from precis.alerts import raise_alert, resolve_stale_alerts
 from precis.errors import BadInput
 from precis.store import Store
@@ -235,6 +236,15 @@ def run_review_pass(reviewer: Reviewer, store: Store) -> BatchResult:
     # tell "no config offered" (never starved) from "config offered, zero
     # precis calls made" (gr197478) without re-deriving it from the request.
     mcp_config = _mcp_config_path()
+    # Run attribution (gr540852): the agentlog id rides the overlay so the
+    # pass's tool_calls rows carry agentlog_id; ``source`` names the reviewer.
+    log_id = agentlog.open_run(
+        store,
+        source=f"review:{reviewer.name}",
+        title=f"review:{reviewer.name}",
+        model=reviewer.model,
+        prompt=prompt,
+    )
     # Routed through the LLM seam: the reviewer's tier
     # resolves the model at dispatch time, so PRECIS_LLM_BACKEND / PRECIS_MODEL_*
     # can switch it. A per-reviewer PRECIS_<NAME>_MODEL still pins one (None ⇒
@@ -256,11 +266,20 @@ def run_review_pass(reviewer: Reviewer, store: Store) -> BatchResult:
         # digest writer sees the unwrapped plain text.
         output_format="stream-json",
         extra_args=("--verbose",),
+        env_overlay=agentlog.run_env(log_id) or None,
     )
     # The claude_agent rung is MCP-gated (gr463517): ``route`` only sends the
     # prompt once ``precis`` reports connected, so the old "init said precis
     # was still pending, retry once" race (gr245505) can no longer reach here.
     res = route(request)
+    agentlog.close_run(
+        store,
+        log_id,
+        status=(getattr(res, "terminal_reason", None) or "error")
+        if res.error
+        else "ok",
+        res=res,
+    )
     if res.mcp_not_ready:
         # The readiness gate refused to start the pass: ``precis`` was failed /
         # needs-auth / never connected, so NO model turn ran ($0). Retrying the

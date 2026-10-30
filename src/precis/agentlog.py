@@ -118,6 +118,68 @@ def open_log(
         return int(ref.id)
 
 
+def open_run(
+    store: Store,
+    *,
+    source: str,
+    title: str,
+    model: str | None = None,
+    prompt: str | None = None,
+    parent_ref_id: int | None = None,
+    job_ref_id: int | None = None,
+    meta_extra: dict[str, Any] | None = None,
+) -> int | None:
+    """Best-effort :func:`open_log` for a runner about to launch an agent.
+
+    Returns the log id, or ``None`` when the write fails — attribution must
+    never sink the run it records. Pair with :func:`run_env` (the env the
+    child needs) and :func:`close_run`. Every agent launch site carries one
+    (gr540852; ratchet: ``tests/test_agentlog_launch_sites.py``)."""
+    try:
+        return open_log(
+            store,
+            source=source,
+            title=title,
+            model=model,
+            prompt=prompt,
+            parent_ref_id=parent_ref_id,
+            job_ref_id=job_ref_id,
+            meta_extra=meta_extra,
+        )
+    except Exception:
+        log.warning("agentlog: failed to open a %s run log", source, exc_info=True)
+        return None
+
+
+def run_env(log_id: int | None) -> dict[str, str]:
+    """The env entry that binds a launched agent's tool calls to ``log_id``.
+
+    ``{ENV_VAR: "<id>"}``, or ``{}`` for ``None``. Merge it into the
+    request's ``env_overlay``: the router turns it into the in-process tick
+    context, the subprocess env, or (via ``RUN_CONTEXT_ENV_KEYS``) the
+    container env. ``tool_calls.source`` comes from ``LlmRequest.source``."""
+    return {ENV_VAR: str(log_id)} if log_id is not None else {}
+
+
+def close_run(
+    store: Store, log_id: int | None, *, status: str, res: Any = None
+) -> None:
+    """Best-effort :func:`finalize_log` with :func:`run_result_meta` of
+    ``res``. No-op on ``log_id=None``; a write failure is logged, never
+    raised."""
+    if log_id is None:
+        return
+    try:
+        finalize_log(
+            store,
+            log_id=log_id,
+            status=status,
+            meta_extra=run_result_meta(res) if res is not None else None,
+        )
+    except Exception:
+        log.warning("agentlog: failed to finalize run log %s", log_id, exc_info=True)
+
+
 def attach_touch(
     store: Store,
     *,
@@ -447,13 +509,16 @@ __all__ = [
     "RETENTION_DAYS",
     "SOURCE_ENV_VAR",
     "attach_touch",
+    "close_run",
     "current_from_env",
     "current_source_from_env",
     "finalize_log",
     "gc_stale_logs",
     "list_recent",
     "open_log",
+    "open_run",
     "read_checkpoint",
+    "run_env",
     "run_result_meta",
     "stamp_result_meta",
     "stash_checkpoint",

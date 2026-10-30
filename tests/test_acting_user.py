@@ -199,6 +199,8 @@ def test_server_main_passes_its_transport(monkeypatch: pytest.MonkeyPatch) -> No
 def _hermetic_oauth(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.setattr("asa_bot.secrets.reveal_secret", lambda name, **kw: None)
+    # No agentlog write to a real DB from a unit test (gr540852).
+    monkeypatch.setattr("asa_bot.claude_invoke._open_turn_log", lambda *a, **kw: None)
 
 
 def _claude_cfg() -> Any:

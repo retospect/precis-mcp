@@ -209,10 +209,23 @@ def run(
             "via MCP — gather/dedup/gripe-filing won't land"
         )
 
+    # Run attribution (gr540852): the agentlog id rides the overlay so the
+    # doctor's tool_calls rows carry agentlog_id; ``source`` below names the
+    # job. Best-effort — ``None`` on a failed write, the tick runs anyway.
+    from precis import agentlog
+
+    log_id = agentlog.open_run(
+        store,
+        source="doctor_tick",
+        title=f"doctor_tick {date_tag}",
+        prompt=prompt,
+        job_ref_id=job_ref_id,
+    )
     res = route(
         LlmRequest(
             tier=_TIER,
             source="doctor_tick",
+            env_overlay=agentlog.run_env(log_id) or None,
             prompt=prompt,
             tools_needed=True,
             mcp_config=os.path.abspath(mcp_config) if mcp_config else None,
@@ -228,6 +241,14 @@ def run(
             extra_args=("--verbose",),
             ref_id=job_ref_id,
         )
+    )
+    agentlog.close_run(
+        store,
+        log_id,
+        status=(getattr(res, "terminal_reason", None) or "error")
+        if res.error
+        else "ok",
+        res=res,
     )
     duration = (
         res.duration_s if res.duration_s is not None else time.monotonic() - started

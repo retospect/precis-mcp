@@ -68,9 +68,11 @@ cycle budget (§8). Mode A later option: a UserPromptSubmit hook emitting
 pointer rows only. The B4 thread_type registry is dropped; `match_skill` covers
 the <20-neighbour case.
 
-**A0 (shared prerequisite):** an agentlog on every runner (doctor_tick, review,
-asa_bot) through the container allowlist (`RUN_CONTEXT_ENV_KEYS`), with a
-ratchet test enumerating runners. Before any meter is trusted.
+**A0 (shared prerequisite):** doctor_tick, review and asa_bot mint an agentlog
+(gr540852); verify on prod that their new `tool_calls` rows carry `agentlog_id`
+and `source` before any meter is trusted. The ratchet
+`tests/test_agentlog_launch_sites.py` lists the launch sites still without one
+(`PENDING`: asa_slack, diagram agent, web follow-up).
 
 ## 3. Row grammar
 

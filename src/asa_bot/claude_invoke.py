@@ -72,6 +72,7 @@ import logging
 import os
 import re
 import threading
+import time
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from functools import partial
@@ -80,6 +81,7 @@ from typing import Any
 from asa_bot.config import LLMConfig
 from asa_bot.llm_runtime import warm_runtime
 from asa_bot.oauth import ensure_oauth_token
+from precis import agentlog
 from precis.acting_user import ENV_VAR as ACTING_USER_ENV
 from precis.acting_user import actor_for
 from precis.utils.llm.degrade import (
@@ -256,12 +258,18 @@ def _flag_value(argv: list[str], flag: str, default: str) -> str:
 
 
 def _turn_overlay(
-    cfg: LLMConfig, conv_slug: str, acting_user: str | None
+    cfg: LLMConfig,
+    conv_slug: str,
+    acting_user: str | None,
+    agentlog_id: int | None = None,
 ) -> dict[str, str]:
-    """The per-turn env overlay: config env, conv slug, speaker account.
+    """The per-turn env overlay: config env, conv slug, speaker account, run.
 
     :data:`~precis.acting_user.ENV_VAR` is always set, empty when unmapped,
-    so a value in asa's own environment never attributes another turn.
+    so a value in asa's own environment never attributes another turn. The
+    turn's agentlog id (gr540852) rides :func:`precis.agentlog.run_env`; the
+    router turns it into the subprocess env, the container env
+    (``RUN_CONTEXT_ENV_KEYS``) or the chain lane's in-process tick context.
     """
     overlay: dict[str, str] = dict(cfg.env)
     # Hooks read ASA_CONV_SLUG to attach a Stop-hook capture to the right
@@ -269,7 +277,77 @@ def _turn_overlay(
     # router's own llm_call_log write).
     overlay["ASA_CONV_SLUG"] = conv_slug
     overlay[ACTING_USER_ENV] = acting_user or ""
+    overlay.update(agentlog.run_env(agentlog_id))
     return overlay
+
+
+# asa binds no Store in-process (it talks to precis over a subprocess MCP
+# server), so run attribution opens its own small pool on asa's
+# ``PRECIS_DATABASE_URL`` the first time a turn needs it.
+_run_store: Any = None
+_run_store_lock = threading.Lock()
+#: ``time.monotonic()`` of the last failed connect; a down DB is retried only
+#: after :data:`_RUN_STORE_RETRY_S` so turns don't each pay the open timeout.
+_run_store_failed_at: float | None = None
+_RUN_STORE_RETRY_S = 300.0
+
+
+def _attribution_store() -> Any:
+    """asa's process-wide Store for agentlog writes, or ``None`` without a DSN
+    or inside the retry back-off after a failed connect."""
+    global _run_store, _run_store_failed_at
+    with _run_store_lock:
+        if _run_store is not None:
+            return _run_store
+        dsn = os.environ.get("PRECIS_DATABASE_URL")
+        if not dsn:
+            return None
+        now = time.monotonic()
+        if (
+            _run_store_failed_at is not None
+            and now - _run_store_failed_at < _RUN_STORE_RETRY_S
+        ):
+            return None
+        from precis.store import Store
+
+        try:
+            _run_store = Store.connect(dsn, min_size=1, max_size=2)
+        except Exception:
+            _run_store_failed_at = now
+            raise
+        _run_store_failed_at = None
+        return _run_store
+
+
+def _open_turn_log(turn_model: str, conv_slug: str, user_message: str) -> int | None:
+    """Open this turn's agentlog (gr540852). ``None`` on any failure — a
+    Discord reply never waits on attribution. Blocking; run off the loop."""
+    try:
+        store = _attribution_store()
+    except Exception:
+        log.warning("asa agentlog: attribution store unavailable", exc_info=True)
+        return None
+    if store is None:
+        return None
+    return agentlog.open_run(
+        store,
+        source="asa_bot",
+        title=f"asa turn {conv_slug}",
+        model=turn_model,
+        prompt=user_message,
+        meta_extra={"conv_slug": conv_slug},
+    )
+
+
+def _close_turn_log(log_id: int | None, result: ClaudeResult) -> None:
+    """Finalize the turn's agentlog; best-effort, blocking."""
+    if log_id is None or _run_store is None:
+        return
+    agentlog.close_run(
+        _run_store,
+        log_id,
+        status="error" if result.error else "ok",
+    )
 
 
 def _route_as(req: LlmRequest, acting_user: str | None) -> LlmResult:
@@ -347,6 +425,13 @@ async def invoke(
         except Exception:
             log.exception("debug prompt dump failed; continuing")
 
+    # One agentlog per Discord turn (every degrade step shares it), so the
+    # turn's tool_calls rows carry agentlog_id (gr540852).
+    try:
+        log_id = await asyncio.to_thread(_open_turn_log, model, conv_slug, user_message)
+    except Exception:
+        log.warning("asa agentlog: open failed", exc_info=True)
+        log_id = None
     turn = _Turn(
         cfg=cfg,
         system_prompt=system_prompt,
@@ -355,7 +440,19 @@ async def invoke(
         on_progress=on_progress,
         acting_user=acting_user,
         max_turns=max_turns,
+        agentlog_id=log_id,
     )
+    result = await _run_turn(turn, model=model, pinned=pinned)
+    if log_id is not None:
+        try:
+            await asyncio.to_thread(_close_turn_log, log_id, result)
+        except Exception:
+            log.warning("asa agentlog: finalize failed", exc_info=True)
+    return result
+
+
+async def _run_turn(turn: _Turn, *, model: str, pinned: bool) -> ClaudeResult:
+    """Pick the lane for ``model``, then the budget ladder on a pause."""
     is_local = model.strip().lower() == _LOCAL_MODEL_SENTINEL
     start = tier_for_model(model)
     if is_local:
@@ -381,6 +478,7 @@ class _Turn:
     on_progress: Callable[..., Any] | None
     acting_user: str | None
     max_turns: int
+    agentlog_id: int | None = None
 
 
 def _budget_paused(result: ClaudeResult) -> bool:
@@ -491,7 +589,7 @@ async def _invoke_streaming(
     """One turn on the ``claude -p`` streaming lane (a concrete claude id)."""
     cfg = turn.cfg
     result = ClaudeResult()
-    overlay = _turn_overlay(cfg, turn.conv_slug, turn.acting_user)
+    overlay = _turn_overlay(cfg, turn.conv_slug, turn.acting_user, turn.agentlog_id)
     # asa_bot can run as a bare `deploy` user with no ~/.claude state, in
     # which case CLAUDE_CODE_OAUTH_TOKEN comes from the vault over asa's OWN
     # PRECIS_DATABASE_URL connection (asa_bot.secrets.reveal_secret) — NOT
@@ -603,7 +701,7 @@ async def _invoke_via_chain(
     """
     cfg = turn.cfg
     result = ClaudeResult()
-    overlay = _turn_overlay(cfg, turn.conv_slug, turn.acting_user)
+    overlay = _turn_overlay(cfg, turn.conv_slug, turn.acting_user, turn.agentlog_id)
     ensure_oauth_token(overlay)
 
     req = LlmRequest(

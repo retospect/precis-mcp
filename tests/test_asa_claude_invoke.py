@@ -38,6 +38,8 @@ def _sandbox_oauth(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
     connection if PRECIS_DATABASE_URL is set — stub it out)."""
     monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.setattr("asa_bot.secrets.reveal_secret", lambda name, **kw: None)
+    # No agentlog write to a real DB from a unit test (gr540852).
+    monkeypatch.setattr("asa_bot.claude_invoke._open_turn_log", lambda *a, **kw: None)
 
 
 # The default LLMConfig command now pins ``--model local`` — the sentinel
