@@ -46,9 +46,12 @@ search(kind="todo", view="work")
   td540836 ○ prio=3 — Dark factory: precis runs the work
     td540842 ◀ claimed-by:slice-td540842 prio=2 agents=1 — Work view: gripes hang under the root …
     td540848 ◀ claimed-by:slice-td540848 prio=3 agents=1 jobs=2(1 live) — Skill precis-work-help …
+    gr541510 unbriefed — precis-todo-tree-help~8 omits releasing a lease …
 
 unassigned roots (4) — serve no quest
   td98 [open] — Write the nanotrans review.
+
+unplaced gripes (37) — open, thread matches no root
 
 hosts
   mac-a reported 3m ago
@@ -62,6 +65,7 @@ Blocks, top to bottom:
 | `◆ qu<id> [status] prio=N — title` | one quest with at least one todo `serves` it; active quests first, then by prio |
 | indented `td<id>` rows | each served root and its subtree, children ordered by prio; 40 rows per root, then `… +N more` with the `view='tree'` call |
 | `unassigned roots (N)` | strategic roots that serve no quest — work nobody ranked against a quest |
+| `unplaced gripes (N)` | open gripes whose `thread:` tag matches no root (see the gripe section) |
 | `hosts` | each fleet host and when it last reported; `none reported` means no agent counts are real |
 
 A todo that serves a quest directly and also sits inside another served
@@ -168,10 +172,19 @@ tag. td540836 carries `thread:factory`, so a gripe tagged
 tag(kind="gripe", id=540900, add=["thread:factory"])
 ```
 
-Gripes with no `thread:` tag go in one `unplaced` bucket at the end of
-the view: the count plus the five oldest. Each gripe row shows its loop
-stage and, when its brief names one, its builder lane. Gripe rows in the
-work view land with td540842.
+Under the root, after its todo rows, one line per open gripe (15, then
+a `… +N more gripes` line with the search call):
+
+```
+    gr541348 in-build [claude] — Work view: tree ring for a todo eye
+```
+
+`gr<id> <stage> [lane] — title`. The lane is a `lane: <name>` line in
+the newest brief, else the vendor half of the loop's session; absent
+when neither names one. A gripe with two `thread:` tags hangs under both
+roots. Gripes with no `thread:` tag, or one no rendered root carries, go
+in `unplaced gripes (N) — open, thread matches no root` at the end of
+the view: the count plus the five oldest.
 
 The stage is derived from what the gripe carries, never set by hand:
 
