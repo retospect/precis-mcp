@@ -5,6 +5,7 @@ footer (if any) to produce the final agent-facing string."""
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 
 
@@ -33,6 +34,15 @@ class Response:
     #: body exceeds the result budget. No partial body or continuation is
     #: returned; this hint is the recovery path.
     result_budget_hint: str | None = None
+
+    #: Selector-bearing outline the budget fitter appends after a
+    #: truncated head — one ``<selector>\t<size>`` line per addressable
+    #: part (memory ``me<id>~<section>``, skill ``slug~N``), so the
+    #: agent can re-read the rest piece by piece. Set only on
+    #: open-ended whole-ref renders; part-reads need no map. A thunk is
+    #: resolved by the fitter only when a cap actually binds, so the
+    #: outline's body load doesn't tax every under-cap get.
+    budget_outline: str | Callable[[], str | None] | None = None
 
     #: Live licensed data is never retained for later continuation.
     transient: bool = False

@@ -77,8 +77,9 @@ hit a wall of undrillable one-row-per-chunk singletons on the way down.
 
 ## A drilled-in range exceeds the result budget
 
-A wide `~A..B` range can exceed the complete-result budget. It refuses
-without partial content; narrow the range or use a sub-TOC instead.
+A wide `~A..B` range can exceed the transport cap. It then returns
+the leading chunks that fit plus a `rest: <handle>~a..b` line naming
+the exact remaining range to ask for next.
 
 ## Browse the skill catalogue — id='toc'
 

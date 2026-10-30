@@ -290,6 +290,27 @@ def _result_budget_hint(slug: str) -> str:
     )
 
 
+def _budget_outline(slug: str, text: str) -> str:
+    """``slug~N`` selector lines for the budget fitter's outline block.
+
+    One line per structural chunk — the map a truncated whole-skill
+    serve prints so the agent re-reads by section. ``\t<size>`` shows
+    once a section tops 1 kB (same kB unit the caps report).
+    """
+    from precis._result_budget import size_cell
+    from precis.skill_index.chunker import chunk_by_h2
+
+    lines: list[str] = []
+    for i, chunk in enumerate(chunk_by_h2(text)):
+        line = f"{slug}~{i}"
+        if sz := size_cell(len(chunk.text.encode("utf-8"))):
+            line += f"\t{sz}"
+        if chunk.heading:
+            line += f" — {chunk.heading}"
+        lines.append(line)
+    return "\n".join(lines)
+
+
 def _categorise_skills(
     slugs: list[str],
     *,
@@ -1012,7 +1033,11 @@ class SkillHandler(Handler):
         if not was_shown(misled):
             text = text.rstrip() + "\n\n" + misled
         text += f"\n\nskill rev {rev}"
-        return Response(body=text, result_budget_hint=_result_budget_hint(slug))
+        return Response(
+            body=text,
+            result_budget_hint=_result_budget_hint(slug),
+            budget_outline=_budget_outline(slug, text),
+        )
 
     def _render_serve_stub(self, slug: str, text: str, rev: str) -> Response:
         """Stub for a ``have=<rev>`` get() of an unchanged skill (gr477798).
@@ -1025,7 +1050,9 @@ class SkillHandler(Handler):
         lines = [f"# {slug} (unchanged)", ""]
         if headings:
             lines.append("## Sections")
-            lines.extend(f"- {h}" for h in headings)
+            lines.extend(
+                f"- {ln}" for ln in _budget_outline(slug, text).split("\n") if "~" in ln
+            )
             lines.append("")
         lines.append(
             f"you passed have={rev}: unchanged since you read it. "
@@ -1897,6 +1924,19 @@ class SkillHandler(Handler):
                 next=(f"get(kind='skill', id='{slug}/toc') for valid handles"),
             )
 
+        trailer = render_next_section(
+            [
+                (
+                    f"get(kind='skill', id='{slug}/toc')",
+                    "table of contents for this skill",
+                ),
+                (
+                    f"get(kind='skill', id={slug!r})",
+                    "skill card + chunk overview",
+                ),
+            ]
+        )
+
         # Single chunk: heading + body. Range: concatenate. ``[[slug]]``
         # wikilinks expand to their full serve command here too — same
         # convention as the whole-skill serve (docs/backlog/skill-graph
@@ -1912,18 +1952,37 @@ class SkillHandler(Handler):
             for i in range(lo, hi + 1):
                 parts.append(_expand_wikilinks(chunks[i].text))
             body = "\n\n".join(parts)
-        body += render_next_section(
-            [
-                (
-                    f"get(kind='skill', id='{slug}/toc')",
-                    "table of contents for this skill",
-                ),
-                (
-                    f"get(kind='skill', id={slug!r})",
-                    "skill card + chunk overview",
-                ),
-            ]
-        )
+            # Transport-cap fit: an explicit range gets everything it
+            # asked for unless PRECIS_MAX_BODY_BYTES itself binds —
+            # then the leading whole chunks plus the remaining range's
+            # own address (an address, not a cursor). The trailer is
+            # priced into the cut so the chokepoint never truncates a
+            # second time and doubles the rest: line.
+            from precis._result_budget import _env_cap, body_bytes
+
+            frame_cap = _env_cap("PRECIS_MAX_BODY_BYTES", 24576)
+            budget = frame_cap - len(trailer.encode("utf-8"))
+            if body_bytes(body) > budget:
+                kept = parts[:1]
+                used = body_bytes(kept[0])
+                last = lo - 1
+                for i in range(lo, hi + 1):
+                    cost = body_bytes(chunks[i].text) + 2
+                    if used + cost + 120 > budget:
+                        break
+                    kept.append(_expand_wikilinks(chunks[i].text))
+                    used += cost
+                    last = i
+                if last < lo:
+                    kept = parts[:1]
+                    last = lo - 1
+                nxt = last + 1
+                kept.append(
+                    f"… cut at PRECIS_MAX_BODY_BYTES — rest: "
+                    f"get(kind='skill', id='{slug}~{nxt}..{hi}')"
+                )
+                body = "\n\n".join(kept)
+        body += trailer
         return Response(body=body)
 
     # ── chunks_for_toc adapter ─────────────────────────────────────

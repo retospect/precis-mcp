@@ -1183,11 +1183,18 @@ class DispatchMixin(RuntimeShape):
 
         ``fold`` opts into the agent-context result budget. Agent-serving
         surfaces pass it explicitly; direct in-process callers leave it off.
-        An oversized result refuses with a targeted-read next step instead
-        of returning a partial body or continuation cursor. The hard
-        ``PRECIS_MAX_BODY_BYTES`` transport cap applies either way.
+        An oversized open-ended result returns a fitted body — head,
+        outline, and the targeted-read footer — never a refusal, never a
+        continuation cursor; explicit part-reads (a ``~`` selector, a
+        list of ids) skip the context cap and only
+        ``PRECIS_MAX_BODY_BYTES`` bounds them.
         """
         started = time.monotonic()
+        from precis._result_budget import fit_result_body, read_shape
+
+        # Classified before dispatch — _invoke_handler pops extent=/ring=
+        # from args, and the shape is a property of the caller's spelling.
+        shape = read_shape(verb, args)
         with self.hub.request_scope(verb=verb):
             try:
                 if verb not in _VERBS:
@@ -1209,14 +1216,14 @@ class DispatchMixin(RuntimeShape):
                 if verb == "search":
                     response = _with_categorizer_filter_notes(self, args, response)
                 body = self._render(response)
-                from precis._result_budget import check_result_budget
-
-                check_result_budget(
+                body = fit_result_body(
                     body,
                     verb=verb,
                     kind=args.get("kind"),
                     context_limited=fold,
                     targeted_hint=response.result_budget_hint,
+                    read=shape,
+                    outline=response.budget_outline,
                 )
                 if verb == "get" and self.store is not None:
                     from precis.runtime.handle_deref import record_exact_read

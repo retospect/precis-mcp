@@ -39,6 +39,7 @@ import re
 from datetime import UTC
 from typing import Any, ClassVar, cast
 
+from precis._result_budget import size_cell
 from precis.dispatch import Hub, InitError
 from precis.draft import lint as _draft_lint
 from precis.draft.scaffolds import SCAFFOLDS as _SCAFFOLDS
@@ -5132,7 +5133,10 @@ class DraftHandler(Handler):
             # spaces, tabs, \n, \r — so a multi-line gloss stays on a single
             # outline row. No length cap: show the full gloss.
             gloss = " ".join(gloss.split())
-            rows.append(f"{'  ' * c.depth}{c.dc}  [{c.chunk_kind}] {gloss}")
+            cell = c.dc
+            if sz := size_cell(len((c.text or "").encode("utf-8"))):
+                cell = f"{c.dc}\t{sz}"
+            rows.append(f"{'  ' * c.depth}{cell}  [{c.chunk_kind}] {gloss}")
 
         # Slice window: canonical page/page_size; limit → page_size and
         # offset → an absolute row index stay as one-release aliases

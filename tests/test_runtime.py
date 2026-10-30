@@ -817,7 +817,7 @@ def test_in_process_dispatch_skips_context_budget(
     assert out == "x" * 5000
 
 
-def test_agent_context_oversize_refuses_without_partial_body(
+def test_agent_context_oversize_returns_fitted_head(
     runtime: PrecisRuntime, monkeypatch
 ) -> None:
     monkeypatch.setenv("PRECIS_TOOL_RESULT_CONTEXT_BYTES", "1500")
@@ -825,25 +825,23 @@ def test_agent_context_oversize_refuses_without_partial_body(
     out, is_error = runtime.dispatch_with_status(
         "get", {"kind": "calc", "id": "2+3"}, fold=True
     )
-    assert is_error is True
-    assert "no partial result was returned" in out
-    assert "search(kind='calc'" in out
-    assert "xxxx" not in out
-    assert "more(cursor=" not in out
+    assert is_error is False
+    assert "… truncated: showing" in out
+    assert len(out.encode("utf-8")) <= 2000
 
 
-def test_frame_cap_refuses_even_without_context_budget(
+def test_frame_cap_fits_even_without_context_budget(
     runtime: PrecisRuntime, monkeypatch
 ) -> None:
-    monkeypatch.setenv("PRECIS_MAX_BODY_BYTES", "200")
+    monkeypatch.setenv("PRECIS_MAX_BODY_BYTES", "400")
     monkeypatch.setattr(runtime, "_render", lambda response: "x" * 5000)
     out, is_error = runtime.dispatch_with_status("get", {"kind": "calc", "id": "2+3"})
-    assert is_error is True
-    assert "PRECIS_MAX_BODY_BYTES" in out
-    assert "xxxx" not in out
+    assert is_error is False
+    assert "… truncated: showing" in out
+    assert len(out.encode("utf-8")) <= 600
 
 
-def test_transient_live_response_also_refuses_oversize(runtime, monkeypatch):
+def test_transient_live_response_also_fits_oversize(runtime, monkeypatch):
     from precis.response import Response
 
     monkeypatch.setenv("PRECIS_MAX_BODY_BYTES", "1000")
@@ -855,6 +853,5 @@ def test_transient_live_response_also_refuses_oversize(runtime, monkeypatch):
     out, is_error = runtime.dispatch_with_status(
         "get", {"kind": "component", "id": "dogfood"}
     )
-    assert is_error
-    assert "no partial result was returned" in out
-    assert "live supplier fact" not in out
+    assert is_error is False
+    assert "… truncated: showing" in out

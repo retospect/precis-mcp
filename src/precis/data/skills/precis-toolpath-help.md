@@ -79,7 +79,7 @@ their own view set instead, is in `precis-overview`.
 | Soft-delete a ref (a duplicate/spam gripe; fixed gripes close via `STATUS:done`) | `delete(kind='gripe', id=42)` | `precis-delete-help` |
 | Classify / prioritise | `tag(kind='todo', id=122, add=['STATUS:done'])` | `precis-tag-help`, `precis-tags` |
 | Connect two refs | `link(kind='todo', id=141, target='todo:158', rel='blocked-by')` | `precis-link-help`, `precis-relations` |
-| Recover an oversized response | Follow its targeted TOC/section/search `next:` call; no partial body or continuation | `precis-toon` |
+| Recover an oversized response | The result returns a head + outline + `next:`/`rest:` line — read the rest via the targeted section/range calls the outline names | `precis-toon` |
 
 Closed-prefix (`STATUS:`/`PRIO:`/`SRC:`/`CACHE:`) replace-within-axis
 semantics live in `precis-tags`.

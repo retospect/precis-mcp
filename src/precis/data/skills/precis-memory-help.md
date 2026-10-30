@@ -41,6 +41,10 @@ to `get`/`delete`/`tag`/`link` raises `[error:BadInput] memory id must be an int
 If you only have a topic, not the id: `search(kind='memory',
 q='<topic>')` first, then use the integer id from the hit.
 
+A node over the context cap returns a head plus a section outline —
+`get(kind='memory', id='me<N>~<section>')` reads one `##`-headed part,
+`id='me<N>~body'` the whole body.
+
 ## Write a memory that will be found later
 ## Capture a durable fact so recall brings it back
 

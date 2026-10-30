@@ -76,7 +76,7 @@ class TestH2Mode:
         # Headline mentions "H2 sections".
         assert "H2 sections" in out
         # Column header includes heading.
-        assert "{handle\theading\tkeywords}" in out
+        assert "{handle\tsize\theading\tkeywords}" in out
 
     def test_falls_back_to_embedding_when_h2_too_few(self) -> None:
         """One H2 in a 9-chunk body -> embedding clustering."""
@@ -90,7 +90,7 @@ class TestH2Mode:
             h2_boundaries=h2,
         )
         assert "embedding clustering" in out
-        assert "{handle\tkeywords}" in out
+        assert "{handle\tsize\tkeywords}" in out
 
     def test_no_h2_no_embeddings_flat_listing(self) -> None:
         chunks = [f"chunk body {i}" for i in range(5)]
@@ -214,7 +214,7 @@ class TestScope:
 
 
 class TestColumnShape:
-    def test_embedding_mode_uses_two_column_layout(self) -> None:
+    def test_embedding_mode_uses_size_keywords_layout(self) -> None:
         chunks = [f"body {i}" for i in range(6)]
         embeddings = [_unit(math.cos(i), math.sin(i)) for i in range(6)]
         out = render(
@@ -224,10 +224,10 @@ class TestColumnShape:
             embeddings=embeddings,
             h2_boundaries=None,
         )
-        # TOON header is two-column: {handle\tkeywords}.
-        assert "{handle\tkeywords}" in out
+        # TOON header is (handle, size, keywords): {handle\tsize\tkeywords}.
+        assert "{handle\tsize\tkeywords}" in out
 
-    def test_h2_mode_uses_three_column_layout(self) -> None:
+    def test_h2_mode_uses_size_heading_keywords_layout(self) -> None:
         # Long chunks to avoid the boilerplate classifier reclassifying
         # chunk 0 as front-matter (position-0 + len<1500 rule).
         chunks = [
@@ -245,8 +245,8 @@ class TestColumnShape:
             embeddings=[_unit(1.0, 0.0)] * 9,
             h2_boundaries=h2,
         )
-        # TOON header is three-column: {handle\theading\tkeywords}.
-        assert "{handle\theading\tkeywords}" in out
+        # TOON header is (handle, size, heading, keywords): {handle\tsize\theading\tkeywords}.
+        assert "{handle\tsize\theading\tkeywords}" in out
 
 
 # ── caching ──────────────────────────────────────────────────────────

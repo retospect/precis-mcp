@@ -317,7 +317,7 @@ def test_find_kind_via_dispatch(
 # ── oversize result refuses with a targeted query ─────────────────────
 
 
-def test_long_result_refuses_without_partial_matches(
+def test_long_result_fits_with_top_matches(
     runtime_with_store: PrecisRuntime, store: Store, monkeypatch
 ) -> None:
     ref = store.insert_ref(kind="memory", slug=None, title="m")
@@ -327,7 +327,6 @@ def test_long_result_refuses_without_partial_matches(
     body, is_error = runtime_with_store.dispatch_with_status(
         "get", {"kind": "memory", "id": ref.id, "q": "plaza"}
     )
-    assert is_error is True
-    assert "no partial result was returned" in body
-    assert "search(kind='memory'" in body
-    assert "line 1 about plaza" not in body
+    assert is_error is False
+    assert "… truncated: showing" in body
+    assert "more lines not shown" in body

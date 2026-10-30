@@ -6911,7 +6911,13 @@ class PaperHandler(Handler):
         )
         if notes:
             body += "\n\n" + notes
-        return Response(body=body)
+        return Response(
+            body=body,
+            result_budget_hint=(
+                f"get(id='{_pa(ref)}', view='toc') maps this {ref.kind}; "
+                f"get(id='{_pa(ref)}~<a>..<b>') reads a range"
+            ),
+        )
 
     def _render_ops_view(
         self, ref: Ref, args: dict[str, Any] | None = None
@@ -7888,6 +7894,7 @@ class PaperHandler(Handler):
             lines.append(banner)
             lines.append("")
         pointers = self._figure_pointer_lines(ref, blocks)
+        block_spans: list[tuple[int, int]] = []  # (ord, end line index)
         for b in blocks:
             # head each chunk with its computed handle plus the ~ord it
             # hides (``pc<id> ~<ord>``, gr520328); the legacy ``slug~pos``
@@ -7919,6 +7926,7 @@ class PaperHandler(Handler):
                 if cited_by_sidecar:
                     lines.append(cited_by_sidecar.lstrip("\n"))
             lines.append("")
+            block_spans.append((b.ord, len(lines)))
 
         # Next: trailer — adjacent ranges + parent toc + citation.
         # Use the actual block count so the hint never points off the end.
@@ -8013,7 +8021,41 @@ class PaperHandler(Handler):
                     "get the BibTeX entry",
                 )
             )
-        body = "\n".join(lines).rstrip() + render_next_section(nav)
+        trailer = render_next_section(nav)
+
+        # Transport-cap fit: an explicit ~A..B range gets everything it
+        # asked for unless PRECIS_MAX_BODY_BYTES itself binds — then the
+        # leading whole blocks plus the remaining range's own address
+        # (an address, not a cursor). The trailer is priced into the cut
+        # so the chokepoint never truncates a second time and doubles
+        # the rest: line. A lone over-cap block falls through to the
+        # chokepoint's line fit.
+        from precis._result_budget import _env_cap, body_bytes
+
+        frame_cap = _env_cap("PRECIS_MAX_BODY_BYTES", 24576)
+        if len(block_spans) > 1 and body_bytes("\n".join(lines) + trailer) > frame_cap:
+            budget = frame_cap - len(trailer.encode("utf-8")) - 140  # rest: line
+            used, cut_end, next_ord = 0, 0, None
+            prev = 0
+            for ord_, end_idx in block_spans:
+                seg = body_bytes("\n".join(lines[prev:end_idx]))
+                if used and used + seg > budget:
+                    next_ord = ord_
+                    break
+                used += seg
+                cut_end = end_idx
+                prev = end_idx
+            if next_ord is not None:
+                rest = (
+                    f"{_pa(ref)}~{next_ord}..{hi}"
+                    if next_ord != hi
+                    else f"{_pa(ref)}~{next_ord}"
+                )
+                lines = lines[:cut_end] + [
+                    f"… cut at PRECIS_MAX_BODY_BYTES — rest: get(id='{rest}')"
+                ]
+
+        body = "\n".join(lines).rstrip() + trailer
         return Response(body=body)
 
     def accepted_views(self, *, id: Any = None) -> list[str]:

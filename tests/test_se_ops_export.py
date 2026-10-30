@@ -604,7 +604,7 @@ def test_an_offset_past_the_end_is_an_honest_empty_slice(
     assert _fenced_ops(body) == []
 
 
-def test_an_oversize_unsliced_view_refuses_with_the_slice_call(
+def test_an_oversize_unsliced_view_fits_with_the_slice_call(
     runtime_with_store: PrecisRuntime, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setenv("PRECIS_TOOL_RESULT_CONTEXT_BYTES", "4096")
@@ -617,9 +617,8 @@ def test_an_oversize_unsliced_view_refuses_with_the_slice_call(
         {"kind": "se", "id": "big-ops6", "view": "ops"},
         fold=True,
     )
-    assert "no partial result was returned" in body
+    assert "… truncated: showing" in body
     assert "view='ops', args={'page': <n>, 'page_size': <count>}" in body
-    assert '"ops": [' not in body
 
 
 def test_slice_args_are_vetted_not_dropped(handler: SeHandler) -> None:

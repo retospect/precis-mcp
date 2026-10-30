@@ -71,11 +71,11 @@ class TestPerChunkPath:
         # Headline names chunk count, not "(per-chunk preview)".
         assert "4 chunks" in out
         assert "per-chunk preview" not in out
-        # Schema is always (handle, keywords).
-        assert "{handle\tkeywords}" in out
+        # Schema is always (handle, size, keywords).
+        assert "{handle\tsize\tkeywords}" in out
         # One row per chunk, with the chunk's own keyword as the label.
         for i in range(4):
-            assert f"pa1~{i}\t" in out
+            assert f"pa1~{i}\t\tkw{i}" in out
 
     def test_short_range_keywords_never_snippets(self) -> None:
         """Regression: the dropped preview path used to leak chunk
@@ -116,7 +116,7 @@ class TestBucketedPath:
 
     def test_bucketed_schema_is_handle_keywords(self) -> None:
         out = _render(self._two_topic_body(n=60))
-        assert "{handle\tkeywords}" in out
+        assert "{handle\tsize\tkeywords}" in out
         assert "per-chunk preview" not in out
         assert "clusters" in out
 
@@ -428,13 +428,17 @@ class TestCopyrightFold:
         chunks is one TOC entry, not a row apiece."""
         blocks = [
             _Stub(ord=0, keywords=["intro"], text="introduction text"),
-            _Stub(ord=1, text="© 2024 Elsevier Ltd."),
-            _Stub(ord=2, text="All rights reserved."),
-            _Stub(ord=3, text="Licensed under CC-BY 4.0"),
+            _Stub(ord=1, text="© 2024 Elsevier Ltd.\n" * 40),
+            _Stub(ord=2, text="All rights reserved.\n" * 40),
+            _Stub(ord=3, text="Licensed under CC-BY 4.0\n" * 40),
             _Stub(ord=4, keywords=["methods"], text="methods text"),
         ]
         out = _render(blocks)
         assert "pa1~1..3" in out
+        # Folded row carries the summed bytes of the run (size column):
+        # 40*(22+21+25) = 2720 bytes -> "3kB"; sub-kB neighbours stay empty.
+        fold_row = next(ln for ln in out.splitlines() if ln.startswith("pa1~1..3"))
+        assert fold_row.split("\t")[1] == "3kB"
         assert "copyright / licence boilerplate" in out
         assert "pa1~1\t" not in out
         assert "pa1~2\t" not in out

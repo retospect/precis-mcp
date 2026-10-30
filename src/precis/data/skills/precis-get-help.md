@@ -203,8 +203,10 @@ line number — plus a match count, or `no match` when nothing hits.
 Literal `q` is case-insensitive text; `q='re:<pattern>'` is a bounded
 regex (no backrefs or nested quantifiers). `args={'context': N}` widens
 the window (≤25). `~SEL` on the id scopes the find (draft `~dc<N>`,
-file `~<block>` / `~L42-58`, paper `~A..B`). Long results page through
-`more()` like any get. `q=` does not combine with `view=`, a list
+file `~<block>` / `~L42-58`, paper `~A..B`). An over-cap get returns the
+head that fits plus an outline and the targeted `next:`/`rest:` call for
+the remainder — a `~` selector (`slug~N`, `me<id>~<section>`) or a list of
+ids reads its part in full, context cap or not. `q=` does not combine with `view=`, a list
 (`id='/recent'`, `id=[…]`) or a missing `id` — and a kind that can't
 honour `q` refuses it; it is never silently ignored. To rank refs by
 content instead, use `search(kind=…, q=…)`.

@@ -756,21 +756,21 @@ def test_navigation_never_executes_git_filters_or_monitors(tmp_path: Path) -> No
 def test_large_source_budget_refusal_offers_targeted_read(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from precis._result_budget import check_result_budget
-    from precis.errors import BadInput
+    from precis._result_budget import fit_result_body
 
     _source(tmp_path, "value = 1\n" * 2000)
     monkeypatch.setenv("PRECIS_MAX_BODY_BYTES", "4096")
     body = _handler(tmp_path).get(id="r/m.py", view="source").body
-    with pytest.raises(BadInput) as caught:
-        check_result_budget(
-            body,
-            verb="get",
-            kind="python",
-            context_limited=False,
-            targeted_hint="get(kind='python', id='r/m.py::changed')",
-        )
-    assert caught.value.next == "get(kind='python', id='r/m.py::changed')"
+    fitted = fit_result_body(
+        body,
+        verb="get",
+        kind="python",
+        context_limited=False,
+        targeted_hint="get(kind='python', id='r/m.py::changed')",
+        read="single",
+    )
+    assert "get(kind='python', id='r/m.py::changed')" in fitted
+    assert "… truncated: showing" in fitted
     assert "Python content:" in body
 
 

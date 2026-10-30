@@ -36,6 +36,7 @@ from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from typing import Any
 
+from precis._result_budget import size_cell
 from precis.format import render_agent_table
 from precis.utils.abbreviations import find as find_abbreviations
 from precis.utils.abbreviations import substitute as substitute_abbreviations
@@ -421,6 +422,7 @@ def render(
     # Build the TOON rows in reading order: boilerplate head, body
     # segments interleaved with any boilerplate that lives inside the
     # body range, boilerplate tail.
+    sizes = [len(t.encode("utf-8")) for t in chunks_text]
     rows = _build_rows(
         slug=slug,
         boilerplate_segments=boilerplate_segments,
@@ -430,9 +432,14 @@ def render(
         base_offset=base_offset,
         use_h2=use_h2,
         kind=kind,
+        sizes=sizes,
     )
 
-    schema = ["handle", "heading", "keywords"] if use_h2 else ["handle", "keywords"]
+    schema = (
+        ["handle", "size", "heading", "keywords"]
+        if use_h2
+        else ["handle", "size", "keywords"]
+    )
 
     # ``paper_keywords_extra`` — adapter-declared phrases (skill
     # ``answers:``/``summary:`` front matter) merged after the
@@ -457,11 +464,13 @@ def render(
         )
         paper_row: dict[str, str] = {
             "handle": _handle_for(slug, first_pos, last_pos),
+            "size": size_cell(sum(sizes[i] for i in body_indices)),
             "keywords": ", ".join([*paper_keywords, *extras[:5]]),
         }
         if use_h2:
             paper_row = {
                 "handle": paper_row["handle"],
+                "size": paper_row["size"],
                 "heading": "[whole paper]",
                 "keywords": paper_row["keywords"],
             }
@@ -653,6 +662,7 @@ def _build_rows(
     base_offset: int,
     use_h2: bool,
     kind: str = "",
+    sizes: Sequence[int] = (),
 ) -> list[dict[str, str]]:
     """Interleave boilerplate + body segments in reading order, build
     one TOON row per segment."""
@@ -677,6 +687,7 @@ def _build_rows(
             handle_end = end + base_offset
         handle = _handle_for(slug, handle_start, handle_end)
         kw_str = ", ".join(seg_kws) if seg_kws else ""
+        seg_size = size_cell(sum(sizes[start : end + 1])) if sizes else ""
         if use_h2:
             # H2 mode: heading column carries either the H2 text or
             # the boilerplate label.
@@ -691,6 +702,7 @@ def _build_rows(
                 )
             row = {
                 "handle": handle,
+                "size": seg_size,
                 "heading": heading,
                 "keywords": keywords,
             }
@@ -698,7 +710,7 @@ def _build_rows(
             # Embedding mode: no heading column; boilerplate label
             # prepended to keywords so it's visible inline.
             display = f"{label} {kw_str}".strip() if label else kw_str
-            row = {"handle": handle, "keywords": display}
+            row = {"handle": handle, "size": seg_size, "keywords": display}
         rows.append(row)
     return rows
 

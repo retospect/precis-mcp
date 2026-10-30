@@ -63,6 +63,7 @@ from collections import Counter
 from collections.abc import Sequence
 from typing import TYPE_CHECKING, Any
 
+from precis._result_budget import size_cell
 from precis.format import render_agent_table
 from precis.utils.segmentation import Segment, segment_dp
 from precis.utils.text import strip_emphasis
@@ -188,7 +189,15 @@ def render_from_store(
         row_handle = (
             f"{handle}~{lo_pos}" if lo_pos == hi_pos else f"{handle}~{lo_pos}..{hi_pos}"
         )
-        rows.append({"handle": row_handle, "keywords": ", ".join(label_terms)})
+        rows.append(
+            {
+                "handle": row_handle,
+                "size": size_cell(
+                    sum(len((b.text or "").encode("utf-8")) for b in bucket)
+                ),
+                "keywords": ", ".join(label_terms),
+            }
+        )
         row_keyword_sets.append(label_terms)
         # Hint a drill exactly when re-clustering this bucket would yield
         # sub-groups (same predicate the drill-down path uses), so the
@@ -197,7 +206,7 @@ def render_from_store(
             fat_clusters.append(row_handle)
 
     headline = _headline(handle=handle, n_chunks=n, n_clusters=len(rows), scope=scope)
-    table = render_agent_table(rows, schema=["handle", "keywords"])
+    table = render_agent_table(rows, schema=["handle", "size", "keywords"])
 
     parts: list[str] = [headline]
     if readiness_line:
@@ -717,7 +726,15 @@ def _render_per_chunk(
         row_handle = (
             f"{handle}~{lo_pos}" if lo_pos == hi_pos else f"{handle}~{lo_pos}..{hi_pos}"
         )
-        rows.append({"handle": row_handle, "keywords": ", ".join(label)})
+        rows.append(
+            {
+                "handle": row_handle,
+                "size": size_cell(
+                    sum(len((b.text or "").encode("utf-8")) for b in bucket)
+                ),
+                "keywords": ", ".join(label),
+            }
+        )
     n_total = len(blocks)
     if scope is not None:
         head = f"# {handle} sub-TOC ~{scope[0]}..{scope[1]} — {n_total} chunks"
@@ -725,7 +742,7 @@ def _render_per_chunk(
         head = f"# {handle} TOC — {n_total} chunks"
     if readiness_line:
         head = f"{head}\n{readiness_line}"
-    table = render_agent_table(rows, schema=["handle", "keywords"])
+    table = render_agent_table(rows, schema=["handle", "size", "keywords"])
     return f"{head}\n\n{table}"
 
 

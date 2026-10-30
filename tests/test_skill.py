@@ -85,19 +85,20 @@ def test_get_skill_chunk_omits_result_budget_hint(skill: SkillHandler) -> None:
 
 
 def test_skill_result_budget_hint_recovers_oversize_read(skill: SkillHandler) -> None:
-    from precis._result_budget import check_result_budget
-    from precis.errors import BadInput
+    from precis._result_budget import fit_result_body
 
     out = skill.get(id="precis-overview")
-    with pytest.raises(BadInput) as caught:
-        check_result_budget(
-            out.body,
-            verb="get",
-            kind="skill",
-            context_limited=True,
-            targeted_hint=out.result_budget_hint,
-        )
-    assert caught.value.next == out.result_budget_hint
+    fitted = fit_result_body(
+        out.body,
+        verb="get",
+        kind="skill",
+        context_limited=True,
+        targeted_hint=out.result_budget_hint,
+        read="single",
+    )
+    assert out.result_budget_hint is not None
+    assert out.result_budget_hint in fitted
+    assert "… truncated: showing" in fitted
 
 
 def test_get_paper_skill_documents_navigation(skill: SkillHandler) -> None:

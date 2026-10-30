@@ -27,6 +27,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 
+from precis._result_budget import size_cell
 from precis.store.types import ChunkRow
 from precis.utils.next_block import format_next_block
 
@@ -474,7 +475,8 @@ def render_toc(
         lines.append("")
 
     # Compute column widths so ranges line up.
-    rows: list[tuple[int, str, str, str]] = []  # (depth, range, count, label)
+    rows: list[tuple[int, str, str, str, str]] = []
+    # (depth, range, count, size, label)
     for s in toc:
         rows.extend(_collect_rows(s, depth=0, blocks_by_pos=blocks_by_pos))
     if not rows:
@@ -483,10 +485,13 @@ def render_toc(
 
     range_w = max(len(r[1]) for r in rows)
     count_w = max(len(r[2]) for r in rows)
+    size_w = max(len(r[3]) for r in rows)
 
-    for depth, rng, count, label in rows:
+    for depth, rng, count, size, label in rows:
         indent = "  " + ("  " * depth)
-        lines.append(f"{indent}{rng:<{range_w}} {count:<{count_w}}  {label}")
+        lines.append(
+            f"{indent}{rng:<{range_w}} {count:<{count_w}} {size:>{size_w}}  {label}"
+        )
 
     # Drill-down hint trailer — only when there are at least 2 top-
     # level sections to drill into; otherwise a flat paper doesn't
@@ -586,12 +591,19 @@ def _collect_rows(
     *,
     depth: int,
     blocks_by_pos: dict[int, ChunkRow] | None,
-) -> list[tuple[int, str, str, str]]:
+) -> list[tuple[int, str, str, str, str]]:
     """Flatten the section tree into row tuples for column alignment."""
     rng = _format_block_range(s.start, s.end)
     count = f"({s.block_count})"
+    size = ""
+    if blocks_by_pos:
+        parts = [blocks_by_pos.get(p) for p in range(s.start, s.end + 1)]
+        if all(p is not None for p in parts):
+            size = size_cell(
+                sum(len((p.text or "").encode("utf-8")) for p in parts if p)
+            )
     label = _section_label(s, blocks_by_pos=blocks_by_pos)
-    rows: list[tuple[int, str, str, str]] = [(depth, rng, count, label)]
+    rows: list[tuple[int, str, str, str, str]] = [(depth, rng, count, size, label)]
     for child in s.children:
         rows.extend(_collect_rows(child, depth=depth + 1, blocks_by_pos=blocks_by_pos))
     return rows

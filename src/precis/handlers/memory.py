@@ -133,6 +133,10 @@ from precis.utils.memory_hubs import (
 from precis.utils.next_block import render_next_section
 from precis.utils.secret_scan import mask_secrets
 
+#: Heading line that opens a memory-body section — the ``~<slug>``
+#: selector grammar (``me<id>~<section>``) splits on these.
+_SECTION_HEAD_RE = re.compile(r"^#{1,6}\s+(.+?)\s*$", re.M)
+
 log = logging.getLogger(__name__)
 
 #: Derived tag the attribution gate maintains (a number next to a citation
@@ -474,6 +478,8 @@ class MemoryHandler(NumericRefHandler):
         since: str | int | None = None,
         **_kw: Any,
     ) -> Response:
+        if isinstance(id, str) and "~" in id:
+            return self._get_section(id=id, view=view, q=q)
         if (r := self._route_find(id=id, view=view, q=q)) is not None:
             return r
         # view='argument' on a concrete id renders the kind-scoped argument
@@ -505,7 +511,119 @@ class MemoryHandler(NumericRefHandler):
                     "· links, log, raw (generic)"
                 ),
             )
-        return super().get(id=id, view=view, q=q, since=since, **_kw)
+        resp = super().get(id=id, view=view, q=q, since=since, **_kw)
+        if view is None and q is None and id is not None and not isinstance(id, list):
+            resp = self._with_budget_outline(resp, id)
+        return resp
+
+    def _get_section(self, *, id: str, view: str | None, q: str | None) -> Response:
+        """``get(id='<id>~<section>')`` — one headed part of the body.
+
+        The targeted read an over-cap whole-node read advertises: the
+        body's ``#``-headed sections each get a slug, and ``~body``
+        always reads the body prose whole (no links/tags wrapper).
+        """
+        if view is not None or q is not None:
+            raise BadInput(
+                "a memory ~<section> read takes no view= or q=",
+                next="get(kind='memory', id=<id>~<section>)",
+            )
+        base, _, selector = id.partition("~")
+        sel = selector.strip()
+        if not sel:
+            raise BadInput(
+                f"malformed memory id {id!r}: empty selector after '~'",
+                next="get(kind='memory', id=<id>~<section>)",
+            )
+        ref = self._resolve_live_ref(self._coerce_id(base))
+        return self._render_section(ref, sel)
+
+    @staticmethod
+    def _section_slug(title: str) -> str:
+        s = re.sub(r"[^a-z0-9]+", "-", title.strip().lower()).strip("-")
+        return s or "section"
+
+    def _body_sections(self, body: str) -> list[tuple[str, str, str]]:
+        """``(slug, title, text)`` per ``#``-headed section, body order."""
+        matches = list(_SECTION_HEAD_RE.finditer(body))
+        out: list[tuple[str, str, str]] = []
+        for i, m in enumerate(matches):
+            end = matches[i + 1].start() if i + 1 < len(matches) else len(body)
+            title = m.group(1).strip()
+            out.append(
+                (self._section_slug(title), title, body[m.start() : end].rstrip())
+            )
+        return out
+
+    def _render_section(self, ref: Ref, sel: str) -> Response:
+        body = self._body_text(ref)
+        handle = handle_registry.try_format(self.kind, ref.id) or str(ref.id)
+        sections = self._body_sections(body)
+        if sel == "body":
+            text = self._strip_title_echo(body, ref.title or "").strip()
+            return Response(
+                body=f"# memory {ref.id}~body\n\n{text}"
+                + render_next_section(
+                    [(f"get(kind='memory', id={ref.id})", "header + links too")]
+                )
+            )
+        match = next((s for s in sections if s[0] == sel), None)
+        if match is None:
+            match = next((s for s in sections if s[1].lower() == sel.lower()), None)
+        if match is None:
+            legal = [s[0] for s in sections] or ["body"]
+            raise NotFound(
+                f"no section ~{sel!r} in {handle}",
+                options=legal,
+                next=f"get(kind='memory', id='{handle}~{legal[0]}')",
+            )
+        slug, title, text = match
+        out = f"# memory {ref.id}~{slug} — {title}\n\n{text}"
+        out += render_next_section(
+            [
+                (f"get(kind='memory', id={ref.id})", "the whole node"),
+                (
+                    f"get(kind='memory', id={ref.id}, view='fisheye+1hop')",
+                    "read with linked neighbours",
+                ),
+            ]
+        )
+        return Response(body=out)
+
+    def _with_budget_outline(self, resp: Response, id: Any) -> Response:
+        """Attach the ``~<section>`` map an over-cap read prints — lazily.
+
+        The thunk keeps the ref resolve + body load + section parse off
+        every under-cap get; the fitter calls it only when a cap binds.
+        The hint names ``~body`` — always a valid explicit read — so it
+        too costs no body load here.
+        """
+        from dataclasses import replace
+
+        return replace(
+            resp,
+            budget_outline=lambda: self._outline_text(id),
+            result_budget_hint=resp.result_budget_hint
+            or f"get(kind='memory', id='{id}~body') reads the body whole",
+        )
+
+    def _outline_text(self, id: Any) -> str | None:
+        from precis._result_budget import size_cell
+
+        ref = self._resolve_live_ref(self._coerce_id(id))
+        body = self._body_text(ref)
+        handle = handle_registry.try_format(self.kind, ref.id) or str(ref.id)
+        sections = self._body_sections(body)
+        lines = []
+        for slug, title, text in sections:
+            sz = size_cell(len(text.encode("utf-8")))
+            line = f"{handle}~{slug}"
+            if sz:
+                line += f"\t{sz}"
+            lines.append(f"{line} — {title}")
+        body_sz = size_cell(len(body.encode("utf-8")))
+        lines.append(f"{handle}~body" + (f"\t{body_sz}" if body_sz else ""))
+        return "\n".join(lines)
 
     def _get_batch(self, ids: list[Any], *, view: str | None) -> Response:
         """``get(id=[...])``: each memory in full, in the order given.
