@@ -41,8 +41,14 @@ shape with four first-class extensions:
 Views via ``view='<name>'`` on search / get (the canonical surface):
     search(kind='todo', view='roots'|'projects'|'strategic'|'doable'
                               |'waiting'|'blocked'|'ask-user'|'attention'
-                              |'active'|'doing'|'done')
+                              |'active'|'doing'|'done'|'work')
     get(kind='todo', id=N, view='tree')
+
+``view='work'`` (dark-factory step 1) is the cross-kind hierarchy: quest →
+the roots that ``serves`` it → subtrees, with lease and fleet agents per
+row. The eye (``extent='fisheye+1hop'``) on a todo appends the tree ring
+— parent, peers, children off ``parent_id`` — since the link
+neighbourhood never sees that column (gr541348).
 ``id='/<view>'`` paths (/open /queue /doing /blocked /done) are
 deprecated aliases — same render, plus a pointer at the ``view=``
 spelling ('/open' and '/queue' land on ``view='active'``).
@@ -72,7 +78,7 @@ from precis.protocol import ArgsSpec, KindSpec
 from precis.response import Response
 from precis.store import Ref, Tag
 from precis.store.types import TODO_BODY_KIND, ChunkInsert
-from precis.todo import guards, views
+from precis.todo import guards, views, work_view
 from precis.utils import handle_registry
 from precis.utils.edit_resolve import (
     EditOp,
@@ -82,8 +88,10 @@ from precis.utils.edit_resolve import (
     render_dry_run_full,
     render_dry_run_header,
 )
+from precis.utils.eye_render import parse_extent
 from precis.utils.next_block import render_next_section
 from precis.utils.secret_scan import mask_secrets
+from precis.workers.working_set import Extent
 
 if TYPE_CHECKING:
     from precis.store.protocols import PoolStore
@@ -172,6 +180,10 @@ class TodoView(StrEnum):
     # kinds use; both spellings land here.
     FLAT = "flat"
     INDEX = "index"
+    # Dark-factory step 1 (td540840): quest → serving roots → subtrees,
+    # with lease and fleet agents per row; the one read every later
+    # factory step makes (:mod:`precis.todo.work_view`).
+    WORK = "work"
 
 
 def _view_doable(store: Store, args: dict[str, Any] | None, page_size: int) -> Response:
@@ -221,6 +233,7 @@ _TREE_SEARCH_VIEWS: dict[
     ),
     TodoView.FLAT: lambda store, args, ps: views.render_flat(store, limit=ps or 200),
     TodoView.INDEX: lambda store, args, ps: views.render_flat(store, limit=ps or 200),
+    TodoView.WORK: lambda store, args, ps: work_view.render_work(store),
 }
 
 #: Single-source-of-truth guard: every view in the vocabulary must have
@@ -464,6 +477,32 @@ class TodoHandler(NumericRefHandler):
             if extra:
                 resp = Response(body=resp.body + "\n" + extra)
         return interpreted(resp, readings)
+
+    # ── eye: the tree ring ────────────────────────────────────────
+
+    def eye(
+        self,
+        *,
+        id: Any = None,
+        extent: Any = "fisheye",
+        q: str | None = None,
+        ring: Any = None,
+    ) -> Response:
+        """The shared eye, plus the todo tree as a ring at ``fisheye+1hop``
+        and up: parent, peers and children come from ``refs.parent_id``,
+        which the link neighbourhood never walks (gr541348)."""
+        resp = super().eye(id=id, extent=extent, q=q, ring=ring)
+        try:
+            rung, _recall = parse_extent(extent)
+        except ValueError:
+            return resp
+        if rung < Extent.HOP1:
+            return resp
+        ref = self._resolve_live_ref(self._coerce_id(id))
+        tree = work_view.render_tree_ring(self.store, int(ref.id))
+        if not tree:
+            return resp
+        return dataclasses.replace(resp, body=resp.body + "\n\n" + tree)
 
     # ── search: tree-aware view router ────────────────────────────
 
