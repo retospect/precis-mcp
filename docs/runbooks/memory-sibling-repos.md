@@ -20,13 +20,21 @@ actual file had moved in-repo (2026-07-24 incident).
 
 Unlike `token-review`/`db-thrash-review`, this check needs no judgment pass —
 `[[ -e <path> ]]` is fully deterministic — so the script does the check
-itself when due and self-stamps the log below. No human step required.
+itself when due and self-stamps its log (`~/.cache/precis/memory-sibling-repos.log`,
+outside the repo). No human step required.
 
 ## When
 
 `scripts/memory-lint` prints `sibling-repo check: DUE` (and then runs it) when
-the newest dated line in this file's `## Log` is >7 days old (or absent).
+the newest dated line in `~/.cache/precis/memory-sibling-repos.log` is >7 days
+old. If that file has no dated line yet, it falls back to the newest dated
+line in this file's `## Log` below (history from before the log moved).
 Inside the window it just reports the last result.
+
+The log is untracked on purpose: the check used to append here, which dirtied
+every checkout it ran in, including the primary `main` checkout (blocking
+ship's primary fast-forward). A new result is a line in the cache file; read
+it with `tail ~/.cache/precis/memory-sibling-repos.log`.
 
 ## What it checks
 
@@ -42,7 +50,9 @@ or may be a typo; resolve it the same way as any other currency-ledger
 finding (adjust the reference, or if the whole memory is now stale, fold it
 into a durable doc and delete the memory).
 
-## Log
+## Log (history through 2026-10-30)
+
+Frozen: new results go to the cache log named under "When", not here.
 
 **2026-07-24** — check added; `~/work/cluster` references already swept <!-- home-path: allow — names the shape the sibling-path check scans -->
 (this session) across all memory files ahead of the first automated run.
@@ -80,3 +90,5 @@ into a durable doc and delete the memory).
 **2026-10-29** — 1 stale path(s): kimi-builder-lane.md: ~/work/projects — no longer on disk (repo retired/renamed? fix or drop the ref);  <!-- home-path: allow — verbatim scanner findings -->
 
 **2026-10-29** — 1 stale path(s): builder-deploy-env.md: ~/work/projects/code/precis-mcp-prod — no longer on disk (repo retired/renamed? fix or drop the ref);  <!-- home-path: allow — verbatim scanner findings -->
+
+**2026-10-30** — 4 stale path(s): me474386: ~/work/projects — no longer on disk (repo retired/renamed? fix or drop the ref); me474408: ~/work/projects — no longer on disk (repo retired/renamed? fix or drop the ref); me475507: ~/work/projects/code/precis-mcp-prod — no longer on disk (repo retired/renamed? fix or drop the ref); me493601: ~/work/new_papers — no longer on disk (repo retired/renamed? fix or drop the ref);  <!-- home-path: allow — verbatim scanner findings -->

@@ -22,6 +22,8 @@ Not allowed:
 
 Enforced by: a read-only MCP endpoint with no put/edit/delete/tag/link tools, a read-only DB role, and permission rules that deny `scripts/ship`.
 
+How Tier R work lands (Reto 2026-10-30): the builder commits in its own worktree and nothing lands from there. The release owner lands it with `scripts/fleet-wave land <tree>`, which runs that tree's own `scripts/ship` (`--checked`, or `--remote` for a harness diff) in that tree, from the coordinator tree, once the builder's session has exited. A branch lands only by ship run in its own tree. The release owner never cherry-picks a builder's commit onto a new branch, never keeps a `*-pin` copy, and never ships a copy from another branch: the copy lands, the builder's branch stays unmerged forever, and every audit reads it as lost work.
+
 ## Tier W: trusted, revertible (named builders, granted per launch)
 
 Everything in Tier R, plus the following. The test for every grant is that the undo is a soft delete, a revision, a `git revert` or a database restore. The restore floor is the nightly dump: the worst case is redoing one day's work, which Reto accepts (2026-10-17).
@@ -34,7 +36,7 @@ Everything in Tier R, plus the following. The test for every grant is that the u
 ## Roles (on top of a tier)
 
 - **Coordinator:** Tier W. Launches, briefs and closes builders. Never answers another session's permission prompt; Reto does. Gets compacted at ~120k tokens while no subagents are running (self via send-keys to its own pane if it has one, otherwise CHAT does it); bulky reads (logs, transcripts, `scripts/inflight --json`) go to a Haiku digest subagent that returns at most 30 lines.
-- **Release owner:** Tier W, plus `scripts/release`, `scripts/deploy` and `scripts/round`, each pinned to a release sha, and migration ordering.
+- **Release owner:** Tier W, plus `scripts/release`, `scripts/deploy` and `scripts/round`, each pinned to a release sha, migration ordering, and landing Tier R builders' branches with `scripts/fleet-wave land <tree>` (see Tier R).
 - **Catpath agents and the chat desk** (Reto 2026-10-22, first-hand: "authorize you/catpath agents to push as necessary. And to deploy as necessary"): push catpath `main` and release tags, bump the catpath version, bump precis's pinned `autocatpath` rev, and deploy that bump: `scripts/release` + `scripts/deploy` pinned to the release sha when no other release is open, otherwise it rides the release owner's next round. Migrations still go through the release owner.
 - **Host desk:** Tier R on hosts. Any host change goes through `scripts/host-ops/play` from origin/prod after the gates in me493172.
 
@@ -104,7 +106,7 @@ tiers:
     spend_cap_usd: 25
 roles:
   coordinator: {tier: W, allow_exec: ["scripts/fleet-wave launch"]}
-  release_owner: {tier: W, allow_exec: [scripts/release, scripts/deploy, scripts/round]}
+  release_owner: {tier: W, allow_exec: [scripts/release, scripts/deploy, scripts/round, "scripts/fleet-wave land"]}
   host_desk: {tier: R}
 reto_only_exec: [scripts/release, scripts/deploy, scripts/host-ops/play]
 deny_write_paths: [.claude/fleet/authority.md, .claude/fleet/generated/**, .devin/config.json, ~/work/infrastructure/**]

@@ -415,8 +415,10 @@ def test_graph_mode_sibling_check_scans_nodes_and_stamps(
     lint_repo: Path, graph_setup: tuple[Path, Path, Path, Path]
 ) -> None:
     home, _mem, cache, nodes = graph_setup
-    log = lint_repo / "docs" / "runbooks" / "memory-sibling-repos.md"
-    log.write_text("## Log\n\n**2020-01-01** — old\n", encoding="utf-8")  # DUE
+    runbook = lint_repo / "docs" / "runbooks" / "memory-sibling-repos.md"
+    runbook.write_text("## Log\n\n**2020-01-01** — old\n", encoding="utf-8")  # DUE
+    before = runbook.read_text(encoding="utf-8")
+    state = _sib_state(home)
     (nodes / "me464092.md").write_text(
         "# Sibling\n\nSee ~/work/long-retired-sibling-repo for it.\n", encoding="utf-8"
     )
@@ -427,7 +429,49 @@ def test_graph_mode_sibling_check_scans_nodes_and_stamps(
     assert (
         "me464092: ~/work/long-retired-sibling-repo — no longer on disk" in res.stdout
     ), res.stdout
-    assert "1 stale path(s): me464092:" in log.read_text(encoding="utf-8")
+    # The stamp lands in the untracked cache log; the tracked runbook is
+    # never dirtied (the bug this pins: it blocked ship's primary ff).
+    assert f"**{_today()}** — 1 stale path(s): me464092:" in state.read_text(
+        encoding="utf-8"
+    )
+    assert runbook.read_text(encoding="utf-8") == before
+
+
+def _sib_state(home: Path) -> Path:
+    """Where check 6 keeps its weekly-gate log (per-user cache, untracked)."""
+    return home / ".cache" / "precis" / "memory-sibling-repos.log"
+
+
+def test_sibling_check_in_window_cache_stamp_wins_over_stale_runbook(
+    lint_repo: Path, graph_setup: tuple[Path, Path, Path, Path]
+) -> None:
+    home, _mem, cache, nodes = graph_setup
+    runbook = lint_repo / "docs" / "runbooks" / "memory-sibling-repos.md"
+    runbook.write_text("## Log\n\n**2020-01-01** — old\n", encoding="utf-8")
+    state = _sib_state(home)
+    state.parent.mkdir(parents=True)
+    state.write_text(f"**{_today()}** — ✓ clean\n", encoding="utf-8")
+    (nodes / "me464092.md").write_text("# x\n\nbody\n", encoding="utf-8")
+
+    res = _run(lint_repo, home, cache=cache, nodes=nodes)
+
+    assert "sibling-repo check: ok (last " + _today() in res.stdout, res.stdout
+    assert "sibling-repo check: DUE" not in res.stdout, res.stdout
+    assert state.read_text(encoding="utf-8") == f"**{_today()}** — ✓ clean\n"
+
+
+def test_sibling_check_falls_back_to_runbook_when_no_cache_log(
+    lint_repo: Path, graph_setup: tuple[Path, Path, Path, Path]
+) -> None:
+    home, _mem, cache, nodes = graph_setup
+    # lint_repo's runbook carries a fresh stamp (today); no cache log exists.
+    assert not _sib_state(home).exists()
+    (nodes / "me464092.md").write_text("# x\n\nbody\n", encoding="utf-8")
+
+    res = _run(lint_repo, home, cache=cache, nodes=nodes)
+
+    assert "sibling-repo check: ok (last " + _today() in res.stdout, res.stdout
+    assert not _sib_state(home).exists()  # in-window: nothing stamped
 
 
 def test_graph_mode_with_a_missing_or_empty_node_cache_skips_with_one_line(
@@ -448,6 +492,7 @@ def test_graph_mode_with_a_missing_or_empty_node_cache_skips_with_one_line(
         assert "sibling-repo check" not in res.stdout, res.stdout
         assert "hygiene issue" not in res.stdout, res.stdout
         assert log.read_text(encoding="utf-8") == before  # nothing scanned, no stamp
+        assert not _sib_state(home).exists()
 
 
 def test_graph_mode_stray_write_check_compares_to_pre_cutover(

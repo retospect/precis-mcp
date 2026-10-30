@@ -33,7 +33,7 @@ the tier, with its UTC time).
 | watch | `watch-done`, `stuck-watch` under Monitor; `scripts/fleet-wave handoff-wait NAME...` resumes a builder that printed a bare `DONE-HANDOFF` (`/clear` + resume line); `scripts/fleet panes status [--flagged]`; the ctx ceiling nudge is `ctx-guard` once gr515267 lands |
 | handoff | the builder's finish message / handoff → `edit(..., args={'handoff': ...})` on its gripes |
 | review | a `reviewer` agent on the branch; its verdict → `edit(..., args={'review': 'land'\|'fix', 'findings': ...})`; a fix round is the next brief, sent with `send-line` |
-| land | tier R: `landing` rows (tree + sha) to the release owner or a round (`round` skill); tier W: the builder lands; then `edit(..., args={'landed': '<main sha>'})`. `scripts/fleet-wave cites ID...` lists unlanded branch commits naming a gripe (is it already built somewhere?) |
+| land | tier R: the release owner runs `scripts/fleet-wave land <tree>` (ship in the builder's own tree; no cherry-pick), or a round (`round` skill) for migrations; tier W: the builder lands; then `edit(..., args={'landed': '<main sha>'})`. `scripts/fleet-wave cites ID...` lists unlanded branch commits naming a gripe (is it already built somewhere?) |
 | close on deploy | the `awaiting-deploy` rows get `resolved: <sha> (r<N>) — …` + `STATUS:done`; `scripts/fleet-wave close NAME...` reaps the tree |
 | import the old file state | `scripts/prod-precis gripe-fix import DIR` (dry run), `--apply` to write |
 
@@ -65,7 +65,10 @@ name the allowed functions, what a cap measures) are in
 ## Steps (verbatim from the authority-gated text; 1–2 moved to the product skill)
 
 3. **Pick the tier** (`.claude/fleet/authority.md` v2). `R` (default; alias
-   `readonly`): builders commit, nothing lands; the release owner lands.
+   `readonly`): builders commit, nothing lands from their session; the
+   release owner lands the tree with `scripts/fleet-wave land <tree>`
+   (step 6), never by cherry-picking or pinning the commit into another
+   branch.
    `W` (alias `qland`): builders land their own slice with
    `scripts/ship --checked`/`--remote`. Launch applies the tier's
    permissions to the new tree (`scripts/fleet-authority apply`) and appends
@@ -96,10 +99,20 @@ name the allowed functions, what a cap measures) are in
    tmux window for a live coloured view). Wait on a gate only with
    `scripts/ship-wait` in the background. Spot checks: `peek`, `ctx`,
    `prompts`.
-6. **Relay or round.** Read finish messages, pass landed shas to the
-   release owner (or open a round, the `round` skill), and pass review
-   answers back with `scripts/fleet-wave send-line WIN TEXT`. It refuses a
-   window with a dialog open or unsent text in its input box.
+6. **Relay or land.** Read finish messages and pass review answers back
+   with `scripts/fleet-wave send-line WIN TEXT`. It refuses a window with a
+   dialog open or unsent text in its input box. A tier-R builder's work
+   lands from the coordinator tree with `scripts/fleet-wave land <tree>
+   [--checked|--remote] [-m MSG]` (default `--checked`; `--remote` for a
+   harness diff): it runs that tree's own `scripts/ship` with the tree as
+   cwd, so the builder's branch is the one that lands. Run it in the
+   background; it prints the log path under `$FLEET_STATE/land/` and ship's
+   exit code. It refuses a tree whose session is still live (let the builder
+   exit first), a live subagent task, and any run outside
+   `FLEET_COORDINATOR_TREE`. Never cherry-pick a builder's commit onto a
+   new branch or keep a `*-pin` copy: the copy lands, the builder's branch
+   looks unmerged forever. A migration or `safe_fetch.py` change still goes
+   to the release owner (or a round, the `round` skill) as a landing row.
 7. **Approvals.** A builder whose landing needs a one-off grant waits on
    `scripts/fleet-wave approved <tree> <sha>` (exit 0 = granted). Only
    the user grants: in the coordinator window they type

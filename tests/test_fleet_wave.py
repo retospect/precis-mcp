@@ -1423,3 +1423,171 @@ def test_cites_lists_unlanded_commits_naming_a_gripe(env: dict[str, str]) -> Non
     assert proc.returncode == 0, proc.stderr
     assert "== gr514001\n" in proc.stdout and "the thing (gr514001)" in proc.stdout
     assert "== gr999999\nnone" in proc.stdout
+
+
+# ── land: ship run in the builder's own tree ────────────────────────
+
+FAKE_SHIP = f"""#!{sys.executable}
+import json, os, sys
+with open(os.environ["FAKE_SHIP_LOG"], "w", encoding="utf-8") as fh:
+    json.dump({{"argv": sys.argv[1:], "cwd": os.getcwd()}}, fh)
+print("fake ship ran")
+sys.exit(int(os.environ.get("FAKE_SHIP_RC", "0")))
+"""
+
+
+def _ship_tree(env: dict[str, str], name: str) -> Path:
+    """A builder worktree whose scripts/ship is a logging fake."""
+    wt = _worktree(env, name)
+    (wt / "scripts").mkdir()
+    ship = wt / "scripts" / "ship"
+    ship.write_text(FAKE_SHIP, encoding="utf-8")
+    ship.chmod(0o755)
+    return wt
+
+
+def _land_env(env: dict[str, str], tmp_path: Path, rc: int = 0) -> dict[str, str]:
+    return {
+        **_coordinator(env),
+        "FAKE_SHIP_LOG": str(tmp_path / "ship.json"),
+        "FAKE_SHIP_RC": str(rc),
+    }
+
+
+def _ship_call(tmp_path: Path) -> dict[str, object] | None:
+    p = tmp_path / "ship.json"
+    return json.loads(p.read_text(encoding="utf-8")) if p.exists() else None
+
+
+def _all_branches(env: dict[str, str]) -> str:
+    return subprocess.run(
+        ["git", "branch", "--list", "--format=%(refname:short) %(objectname)"],
+        cwd=env["CWD"],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        check=True,
+    ).stdout
+
+
+def test_land_runs_the_trees_own_ship_checked_by_default(
+    env: dict[str, str], tmp_path: Path
+) -> None:
+    wt = _ship_tree(env, "b1")
+    env = _land_env(env, tmp_path)
+    before = _all_branches(env)
+    proc = _run(env, "land", "b1")
+    assert proc.returncode == 0, proc.stderr
+    call = _ship_call(tmp_path)
+    assert call is not None
+    assert call["argv"] == ["--checked"]
+    assert Path(str(call["cwd"])).resolve() == wt.resolve()
+    log = Path(proc.stdout.split("log: ", 1)[1].splitlines()[0])
+    assert log.parent == Path(env["FLEET_STATE"]) / "land"
+    assert log.name.startswith("b1-") and log.suffix == ".log"
+    assert log.read_text(encoding="utf-8") == "fake ship ran\n"
+    assert proc.stdout.splitlines()[-1] == "exit: 0"
+    # No cherry-pick, no pin branch: the ref set is exactly what it was.
+    assert _all_branches(env) == before
+
+
+def test_land_remote_message_and_exit_code_pass_through(
+    env: dict[str, str], tmp_path: Path
+) -> None:
+    wt = _ship_tree(env, "b2")
+    env = _land_env(env, tmp_path, rc=7)
+    # A path resolves like a name.
+    proc = _run(env, "land", str(wt), "--remote", "-m", "fix(x): the thing")
+    assert proc.returncode == 7
+    call = _ship_call(tmp_path)
+    assert call is not None
+    assert call["argv"] == ["--remote", "-m", "fix(x): the thing"]
+    assert proc.stdout.splitlines()[-1] == "exit: 7"
+
+
+def test_land_refuses_outside_the_coordinator_tree(
+    env: dict[str, str], tmp_path: Path
+) -> None:
+    _ship_tree(env, "b3")
+    lenv = _land_env(env, tmp_path)
+    unset = {k: v for k, v in lenv.items() if k != "FLEET_COORDINATOR_TREE"}
+    proc = _run(unset, "land", "b3")
+    assert proc.returncode == 3 and "FLEET_COORDINATOR_TREE" in proc.stderr
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    proc = _run(lenv, "land", "b3", cwd=str(elsewhere))
+    assert proc.returncode == 3 and "coordinator tree" in proc.stderr
+    assert _ship_call(tmp_path) is None
+
+
+def test_land_refuses_a_live_session_but_not_a_dead_lock(
+    env: dict[str, str], tmp_path: Path
+) -> None:
+    wt = _ship_tree(env, "b4")
+    env = _land_env(env, tmp_path)
+    lock = ["git", "worktree", "lock", "--reason"]
+    subprocess.run(
+        [*lock, f"claude agent b4 (pid {os.getpid()})", str(wt)],
+        cwd=env["CWD"],
+        check=True,
+    )
+    proc = _run(env, "land", "b4")
+    assert proc.returncode == 3
+    assert f"live session live#{os.getpid()}" in proc.stderr
+    assert _ship_call(tmp_path) is None
+    # A pid that has exited is a dead lock, not a session.
+    dead = subprocess.Popen([sys.executable, "-c", "pass"])
+    dead.wait()
+    subprocess.run(["git", "worktree", "unlock", str(wt)], cwd=env["CWD"], check=True)
+    subprocess.run(
+        [*lock, f"claude agent b4 (pid {dead.pid})", str(wt)],
+        cwd=env["CWD"],
+        check=True,
+    )
+    proc = _run(env, "land", "b4")
+    assert proc.returncode == 0, proc.stderr
+    assert _ship_call(tmp_path) is not None
+
+
+def test_land_refuses_a_live_subagent_task(env: dict[str, str], tmp_path: Path) -> None:
+    wt = _ship_tree(env, "b5")
+    env = _land_env(env, tmp_path)
+    _subagent_event(env, "start", "task-land", root=wt)
+    try:
+        proc = _run(env, "land", "b5")
+        assert proc.returncode == 3 and "active subagent task" in proc.stderr
+        assert _ship_call(tmp_path) is None
+    finally:
+        _subagent_event(env, "stop", "task-land", root=wt)
+
+
+def test_land_refuses_unknown_primary_and_unregistered_trees(
+    env: dict[str, str], tmp_path: Path
+) -> None:
+    env = _land_env(env, tmp_path)
+    proc = _run(env, "land", "nope")
+    assert proc.returncode == 2 and "no such tree" in proc.stderr
+    proc = _run(env, "land", env["CWD"])
+    assert proc.returncode == 3 and "not a builder tree" in proc.stderr
+    stray = tmp_path / "stray"
+    stray.mkdir()
+    proc = _run(env, "land", str(stray))
+    assert proc.returncode == 2 and "not a registered worktree" in proc.stderr
+    assert _ship_call(tmp_path) is None
+
+
+def test_land_checked_and_remote_are_exclusive(
+    env: dict[str, str], tmp_path: Path
+) -> None:
+    _ship_tree(env, "b6")
+    proc = _run(_land_env(env, tmp_path), "land", "b6", "--checked", "--remote")
+    assert proc.returncode == 2 and "not allowed with" in proc.stderr
+
+
+def test_live_session_marker_matches_inflight() -> None:
+    m = _module()
+    assert m._live_session("") == ""
+    assert m._live_session("locked") == ""  # a Codex lock: no pid
+    assert m._live_session(f"claude agent x (pid {os.getpid()})") == (
+        f"live#{os.getpid()}"
+    )

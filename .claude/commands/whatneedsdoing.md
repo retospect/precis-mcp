@@ -130,7 +130,8 @@ Live repo hygiene — migration collisions ⋅ code anchors ⋅ memory index ⋅
      **sibling-repo path check** (weekly, self-gated, no judgment pass needed —
      `~/work/<name>` / `~/work/projects/code/<name>` paths memory cites,
      verified to still exist on disk) and self-stamps its own log
-     (`docs/runbooks/memory-sibling-repos.md`); a finding there is a suspect
+     (`~/.cache/precis/memory-sibling-repos.log`, untracked; procedure in
+     `docs/runbooks/memory-sibling-repos.md`); a finding there is a suspect
      for the SAME resolve step above (adjust / kill / promote), not a
      separate action.
    - **Skill-eval diff** (`scripts/skill-eval --runner live --diff`) — a

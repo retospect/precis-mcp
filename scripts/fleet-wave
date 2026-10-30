@@ -34,6 +34,10 @@ The thread-session fleet (one window per roadmap thread) is
                                         FORCED HANDOFF line at --hard (85%)
     fleet-wave close NAME...            kill window, remove tree, drop branch;
                                         refuses a tree with unlanded commits
+    fleet-wave land TREE [--checked|--remote] [-m MSG]
+                                        run TREE's own scripts/ship (default
+                                        --checked) in TREE; coordinator tree
+                                        only; refuses a live session
     fleet-wave approve TREE SHA[,SHA...] [--note ".."]   grant landing these shas
     fleet-wave approve --list [TREE]    print the approval ledger
     fleet-wave approve --revoke TREE SHA[,SHA...]        append a revoke line
@@ -87,6 +91,15 @@ with ``{coordinator}`` and ``{release_owner}`` filled. FLEET_LEGACY_FOOTERS=1
 restores the pre-v2 launch for one release: footers/<readonly|qland>.txt
 (which also needs ``{approval}``) and no apply.
 
+Landing (``land``). A branch lands only by ship run in its own tree, so
+a tier-R builder's work is landed by ``fleet-wave land TREE``, which runs
+``TREE/scripts/ship --checked`` (or ``--remote``) with cwd=TREE and the
+output in ``$FLEET_STATE/land/<tree>-<stamp>.log``; it prints the log path
+and ship's exit code and returns it. It never cherry-picks or creates a
+branch (a copy leaves the builder's branch looking unmerged forever), and
+refuses a tree whose lock names a live session pid or that has an active
+subagent task, and any run outside ``FLEET_COORDINATOR_TREE``.
+
 The approval ledger lives in ``$FLEET_STATE/approvals/<tree>.tsv`` (never
 the repo: its lines carry user and session ids, and the repo is public).
 It is append-only TSV — stamp, action, shas, note, approver — and revoke
@@ -136,7 +149,7 @@ Configuration (env, or the matching flag before the subcommand):
   FLEET_STATE                     watcher state + close log + approvals/
                                   (default ~/.claude/fleet-wave)
   FLEET_COORDINATOR_TREE          absolute path of the coordinator tree;
-                                  approve/--revoke refuse anywhere else
+                                  approve/--revoke/land refuse anywhere else
   FLEET_COORDINATOR, FLEET_RELEASE_OWNER, FLEET_APPROVAL   footer fills
   FLEET_LEGACY_FOOTERS=1          pre-v2 footers, no apply (one release)
 """
@@ -1621,6 +1634,112 @@ def cmd_close(f: Fleet, a: argparse.Namespace) -> int:
     return rc
 
 
+# --- land ------------------------------------------------------------------------
+
+
+def _resolve_tree(f: Fleet, ref: str) -> Path | None:
+    """A builder tree from a wave NAME (under the worktrees root) or a path."""
+    named = f.worktrees / ref
+    if not _bad_tree(ref) and named.is_dir():
+        return named.resolve()
+    p = Path(ref).expanduser()
+    return p.resolve() if p.is_absolute() and p.is_dir() else None
+
+
+def _registered_trees(f: Fleet) -> dict[Path, str]:
+    """Registered worktree path -> its ``locked`` reason ('' when unlocked,
+    ``locked`` alone when the lock carries no reason), via
+    ``git worktree list --porcelain``."""
+    out: dict[Path, str] = {}
+    cur: Path | None = None
+    for ln in git("worktree", "list", "--porcelain", cwd=f.main).splitlines():
+        if ln.startswith("worktree "):
+            cur = Path(ln[len("worktree ") :]).resolve()
+            out[cur] = ""
+        elif ln.startswith("locked") and cur is not None:
+            out[cur] = ln[len("locked") :].strip() or "locked"
+    return out
+
+
+def _pid_alive(pid: int) -> bool:
+    """scripts/inflight's pid_alive: EPERM (another user's live pid) is alive."""
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
+def _live_session(reason: str) -> str:
+    """The live-session marker for a worktree lock reason, or "". Same test
+    as scripts/inflight's session_field: ``pid N`` in the lock reason with N
+    alive. A lock with no pid (a Codex tree) or a dead pid is not a session."""
+    m = re.search(r"pid\s+(\d+)", reason)
+    return f"live#{m.group(1)}" if m and _pid_alive(int(m.group(1))) else ""
+
+
+def cmd_land(f: Fleet, a: argparse.Namespace) -> int:
+    """Land a builder tree's own branch by running ship in that tree.
+
+    No cherry-pick, no new branch: a branch lands only by ship run in its
+    own tree, so the builder's branch is the thing that becomes merged.
+    """
+    if why := _coordinator_refusal():
+        print(f"fleet-wave: REFUSED: {why}", file=sys.stderr)
+        return 3
+    tree = _resolve_tree(f, a.tree)
+    if tree is None:
+        print(f"fleet-wave: no such tree {a.tree!r}", file=sys.stderr)
+        return 2
+    trees = _registered_trees(f)
+    if tree not in trees:
+        print(f"fleet-wave: {tree} is not a registered worktree", file=sys.stderr)
+        return 2
+    if tree == f.main.resolve() or tree == Path.cwd().resolve():
+        print(
+            f"fleet-wave: REFUSED: {tree} is the primary or coordinator tree, "
+            "not a builder tree",
+            file=sys.stderr,
+        )
+        return 3
+    if live := _live_session(trees[tree]):
+        print(
+            f"fleet-wave: REFUSED {a.tree}: live session {live} holds the tree; "
+            "let the builder exit first",
+            file=sys.stderr,
+        )
+        return 3
+    if task_id := _active_subagent_task(tree):
+        print(
+            f"fleet-wave: REFUSED {a.tree}: active subagent task {task_id}",
+            file=sys.stderr,
+        )
+        return 3
+    ship = tree / "scripts" / "ship"
+    if not ship.is_file():
+        print(f"fleet-wave: {ship} not found", file=sys.stderr)
+        return 2
+    mode = "--remote" if a.remote else "--checked"
+    argv = [str(ship), mode, *(["-m", a.message] if a.message else [])]
+    logdir = f.state / "land"
+    logdir.mkdir(parents=True, exist_ok=True)
+    log = logdir / f"{tree.name}-{utc_stamp().replace(':', '')}.log"
+    with log.open("w", encoding="utf-8") as fh:
+        proc = subprocess.run(
+            argv,
+            cwd=tree,
+            stdin=subprocess.DEVNULL,
+            stdout=fh,
+            stderr=subprocess.STDOUT,
+            check=False,
+        )
+    print(f"log: {log}")
+    print(f"exit: {proc.returncode}")
+    return proc.returncode
+
+
 def parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         prog="fleet-wave",
@@ -1772,6 +1891,24 @@ def parser() -> argparse.ArgumentParser:
     )
     s.add_argument("names", nargs="+")
     s.set_defaults(fn=cmd_close)
+
+    s = sub.add_parser(
+        "land",
+        help="land a builder tree's own branch: run its scripts/ship in it "
+        "(coordinator tree only; no cherry-pick, no new branch)",
+    )
+    s.add_argument("tree", help="wave NAME under the worktrees root, or a path")
+    mode = s.add_mutually_exclusive_group()
+    mode.add_argument(
+        "--checked", action="store_true", help="scripts/ship --checked (default)"
+    )
+    mode.add_argument(
+        "--remote",
+        action="store_true",
+        help="scripts/ship --remote (harness diffs; GitHub check.yml gate)",
+    )
+    s.add_argument("-m", "--message", default="", help="commit subject for ship")
+    s.set_defaults(fn=cmd_land)
 
     s = sub.add_parser(
         "approve",

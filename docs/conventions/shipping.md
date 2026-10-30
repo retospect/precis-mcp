@@ -442,6 +442,13 @@ and recovers after a crash, with `/fleet` (`scripts/fleet up`); in a fleet
 session a question for Reto is a review-queue item
 (`.claude/fleet/review-protocol.md`), not a stop in the pane.
 
+**A branch lands only by ship run in its own tree** (Reto 2026-10-30).
+Subagent work enters through `scripts/take-agent`; a tier-R fleet builder's
+work lands with `scripts/fleet-wave land <tree>`, which runs that tree's own
+`scripts/ship`. Copying a commit onto another branch (cherry-pick, a `*-pin`
+branch) lands the copy and leaves the original looking unmerged forever —
+the 147 `*-pin` branches this rule retires.
+
 Two fleet-coordination rules (Reto 2026-09-30):
 
 - **The no-deploy window.** Deploys wait out the 03:00–04:20Z nightly
