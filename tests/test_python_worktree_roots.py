@@ -12,6 +12,7 @@ import pytest
 
 from precis.dispatch import Hub
 from precis.errors import BadInput, NotFound
+from precis.handlers._python_provenance import WORKTREE_NOTE
 from precis.handlers._python_worktrees import (
     WorktreeRegistry,
     parse_gitdir_map,
@@ -78,6 +79,95 @@ def test_discovery_and_alias(env):
     assert set(reg.listing()[0]) == {"wt-alpha", "wt-codex-foo"}
     out = h.get(id="wt-alpha::m.f").body
     assert "return 1" in out or "def f" in out
+
+
+@pytest.mark.parametrize("verb", ["get", "search", "search-no-hits"])
+def test_matching_dynamic_worktree_reads_have_no_missing_index_note(env, verb):
+    h, _, _ = _make(env)
+    if verb == "get":
+        body = h.get(id="wt-alpha::m.f").body
+    else:
+        body = h.search(
+            q="f" if verb == "search" else "never_present",
+            scope="wt-alpha",
+            mode="lexical",
+        ).body
+    assert "checkout: wt-alpha@" in body
+    assert WORKTREE_NOTE not in body
+
+
+@pytest.mark.parametrize("verb", ["get", "search"])
+def test_missing_worktree_alias_warns_even_with_another_index(env, verb):
+    h, _, _ = _make(env)
+    h.get(id="wt-alpha::m.f")
+    with pytest.raises(NotFound) as caught:
+        if verb == "get":
+            h.get(id="wt-missing::m.f")
+        else:
+            h.search(q="f", scope="wt-missing", mode="lexical")
+    error = caught.value
+    assert error.cause.count(WORKTREE_NOTE) == 1
+    if verb == "get":
+        assert "worktree 'wt-missing' not configured" in error.cause
+        assert error.options == ["main", "wt-alpha"]
+        assert (
+            error.next
+            == "Grep/Read in your own tree, or get(kind='python') to list roots"
+        )
+    else:
+        assert "no python repo matches scope='wt-missing'" in error.cause
+        assert error.options is None
+        assert error.next == "search(kind='python', q='...') to search all repos"
+
+
+@pytest.mark.parametrize("verb", ["get", "search"])
+def test_registered_but_cold_worktree_note_does_not_scan_or_warm(
+    env, monkeypatch: pytest.MonkeyPatch, verb
+):
+    main, wts, _ = env
+    h, reg, _ = _make(env)
+    h._resolve_alias("wt-alpha")  # Registered, not indexed.
+
+    def forbidden(*args, **kwargs):
+        raise AssertionError("the note must not discover or warm worktrees")
+
+    monkeypatch.setattr(reg, "listing", forbidden)
+    monkeypatch.setattr(h.cache, "warm", forbidden)
+    if verb == "get":
+        body = h.get(id="main::m.f").body
+    else:
+        body = h.search(q="f", scope="main", mode="lexical").body
+    assert WORKTREE_NOTE not in body
+    assert "checkout: main@" in body
+    assert h.cache.known_roots() == [main.resolve()]
+    assert (wts / "alpha").resolve() not in h.cache.known_roots()
+    assert not h._wt_warm_inflight
+
+
+@pytest.mark.parametrize("verb", ["get", "search"])
+def test_empty_worktree_registry_warns_without_scanning_or_warming(
+    env, monkeypatch: pytest.MonkeyPatch, verb
+):
+    h, reg, _ = _make(env, ())
+
+    def forbidden(*args, **kwargs):
+        raise AssertionError("the note must not discover or warm worktrees")
+
+    monkeypatch.setattr(reg, "listing", forbidden)
+    monkeypatch.setattr(h.cache, "warm", forbidden)
+    if verb == "get":
+        body = h.get(id="main::m.f").body
+    else:
+        body = h.search(q="f", scope="main", mode="lexical").body
+    assert body.count(WORKTREE_NOTE) == 1
+    assert not h._wt_warm_inflight
+
+
+def test_missing_symbol_in_registered_worktree_does_not_warn(env):
+    h, _, _ = _make(env)
+    with pytest.raises(NotFound) as caught:
+        h.get(id="wt-alpha::m.missing")
+    assert WORKTREE_NOTE not in caught.value.cause
 
 
 def test_bad_names_main_and_missing_skipped(env):

@@ -11,6 +11,10 @@ checkout identity. Call-local collection covers empty searches and cross-root
 views; Git observations do not attest indexed bytes. Entry metadata and runtrace
 execution remain separate. Root inventory does not index; authorization stays
 in ``PRECIS_PYTHON_ROOTS``.
+Python reads warn when an explicitly requested ``wt-*`` alias is absent,
+or when no worktrees are registered. Static aliases and the worktree registry
+snapshot determine availability without discovery or index warming: a cold
+registered worktree stays quiet, preserving its useful cold-build guidance.
 ``datasheet`` inbox-drop paths and the browser two-pane reader/citation
 detail: ``docs/runbooks/datasheet-ops.md``.
 

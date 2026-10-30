@@ -8,6 +8,7 @@ import shutil
 import subprocess
 from dataclasses import replace
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -29,6 +30,92 @@ def _source(root: Path, text: str = "def hello(): return 1\n") -> Path:
     path = root / "m.py"
     path.write_text(text, encoding="utf-8")
     return path
+
+
+@pytest.mark.parametrize("verb", ["get", "search", "search-no-hits"])
+@pytest.mark.parametrize("empty", [False, True], ids=["with-python", "empty-root"])
+def test_reads_warn_once_when_no_worktree_is_registered(
+    tmp_path: Path, verb: str, empty: bool
+) -> None:
+    if not empty:
+        _source(tmp_path)
+    handler = _handler(tmp_path)
+    if verb == "get":
+        body = handler.get(id="r").body
+    else:
+        body = handler.search(
+            q="hello" if verb == "search" else "never_present",
+            mode="lexical",
+            scope="r",
+        ).body
+    note = "note: your worktree is not indexed by this server; grep uncommitted code."
+    assert body.count(note) == 1
+    assert "checkout: r@" in body
+    assert body.index("checkout:") < body.index(note) < body.index("Python content:")
+    if empty:
+        assert "corpus EMPTY" in body
+
+
+@pytest.mark.parametrize("alias,notes", [("main", 1), ("wt-task", 0)])
+def test_fisheye_get_warns_without_a_matching_worktree(
+    tmp_path: Path, alias: str, notes: int
+) -> None:
+    _source(tmp_path)
+    handler = PythonHandler(hub=Hub(), roots={alias: tmp_path})
+    body = handler.eye(id=f"{alias}::m.hello", extent="fisheye").body
+    assert f"checkout: {alias}@" in body
+    assert body.count(provenance.WORKTREE_NOTE) == notes
+
+
+@pytest.mark.parametrize("verb", ["get", "get-args", "search"])
+def test_expected_root_mismatch_keeps_refusal_without_worktree_note(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, verb: str
+) -> None:
+    _source(tmp_path)
+    handler = _handler(tmp_path)
+
+    def forbidden(root: Path) -> RepoIndex:
+        raise AssertionError("a root mismatch must not build an index")
+
+    monkeypatch.setattr(handler.cache, "get", forbidden)
+    expected = str(tmp_path / "unregistered")
+    with pytest.raises(BadInput, match="root mismatch") as caught:
+        if verb == "get-args":
+            handler.get(id="r", args={"expected_root": expected})
+        elif verb == "get":
+            handler.get(id="r", expected_root=expected)
+        else:
+            handler.search(q="hello", scope="r", expected_root=expected)
+    assert provenance.WORKTREE_NOTE not in caught.value.cause
+    assert "expected_root grants no access or registration" in str(caught.value.next)
+    assert list(handler.roots) == ["r"] and handler.cache.known_roots() == []
+
+
+@pytest.mark.parametrize("verb", ["get", "search"])
+@pytest.mark.parametrize("key", ["cwd", "tree"])
+def test_dispatch_rejects_caller_context_in_args(
+    tmp_path: Path, verb: str, key: str
+) -> None:
+    from precis.config import PrecisConfig
+    from precis.runtime import PrecisRuntime
+
+    _source(tmp_path)
+    hub = Hub()
+    handler = PythonHandler(hub=hub, roots={"r": tmp_path})
+    handler._register_with(hub)
+    runtime = PrecisRuntime(config=PrecisConfig(), hub=hub)
+    target: dict[str, Any] = (
+        {"id": "r::m.hello"}
+        if verb == "get"
+        else {"q": "hello", "scope": "r", "mode": "lexical"}
+    )
+    body, is_error = runtime.dispatch_with_status(
+        verb, {"kind": "python", **target, "__extras__": {key: "wt-unseen"}}
+    )
+    assert is_error, body
+    assert "[error:BadInput]" in body
+    assert key in body
+    assert provenance.WORKTREE_NOTE not in body
 
 
 def test_raw_crlf_digest_and_same_snapshot_source(
@@ -67,7 +154,10 @@ def test_inventory_no_index_and_deleted_root(
         raise AssertionError("inventory must not index")
 
     monkeypatch.setattr(handler.cache, "get", forbidden)
-    assert "corpus not indexed by this call" in handler.get().body
+    inventory = handler.get().body
+    assert "corpus not indexed by this call" in inventory
+    assert inventory.count(provenance.WORKTREE_NOTE) == 1
+    assert handler.cache.known_roots() == []
     root.rmdir()
     assert "root UNAVAILABLE" in handler.get().body
     assert "available=False" in handler.get(view="provenance").body
@@ -129,6 +219,7 @@ def test_views_and_no_hits_include_all_consulted_roots(
     body = handler.search(q="not-present-anywhere").body
     assert "checkout: r@" in body
     assert "checkout: other@" in body
+    assert body.count(provenance.WORKTREE_NOTE) == 1
     detail = handler.get(id="r", view="provenance").body
     assert "Python provenance: alias='r'" in detail
     assert "reused content-not-revalidated" in detail

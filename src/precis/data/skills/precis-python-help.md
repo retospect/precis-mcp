@@ -47,6 +47,12 @@ gives aliases `precis` and `cluster`). The `::` separator is python-
 specific and goes straight to a dotted qualname; `/` introduces a
 file path and `~` introduces a selector inside it.
 
+Sessions using the shared production MCP have no corpus of their local task
+worktree. Its `main`, `precis`, and `catpath` roots expose server code; use local
+grep for uncommitted edits. An explicit `wt-<tree name>` alias is usable only
+on a server that indexes that worktree. The cold-build guidance below applies
+after selecting an available root for the code you intend to read.
+
 Worktree aliases: when the server has `PRECIS_PYTHON_WORKTREES`, every git
 worktree of the main checkout is a root `wt-<tree name>` (e.g.
 `wt-validate-precis-python::pkg.mod.fn`), discovered live (about 5 s lag), no

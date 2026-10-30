@@ -25,6 +25,7 @@ from functools import wraps
 from pathlib import Path
 from typing import Any
 
+from precis.errors import NotFound
 from precis.python_index.types import IndexObservation, ModuleIndex, RepoIndex
 from precis.response import Response
 
@@ -37,6 +38,24 @@ class _Reads:
 
 
 _reads: ContextVar[_Reads | None] = ContextVar("python_provenance", default=None)
+
+WORKTREE_NOTE = (
+    "note: your worktree is not indexed by this server; grep uncommitted code."
+)
+
+
+def _missing_caller_tree(handler: Any, kwargs: dict[str, Any]) -> bool:
+    """Check registered aliases without discovering roots or warming indexes."""
+    registry = getattr(handler, "worktrees", None)
+    registered = registry.snapshot() if registry is not None else {}
+    available = set(handler.roots)
+    available.update(registered)
+    target = str(kwargs.get("scope") or kwargs.get("id") or "")
+    alias = target.split("::", 1)[0].split("/", 1)[0].split("~", 1)[0]
+    if alias.startswith("wt-"):
+        return alias not in available
+    # The server cannot infer the caller's cwd from its own process cwd.
+    return not registered and not any(alias.startswith("wt-") for alias in available)
 
 
 def _utc_now() -> str:
@@ -398,7 +417,17 @@ def with_provenance(method: Callable[..., Response]) -> Callable[..., Response]:
         reads = _Reads()
         token = _reads.set(reads)
         try:
-            response = method(self, **kwargs)
+            try:
+                response = method(self, **kwargs)
+            except NotFound as exc:
+                if (
+                    method.__name__ in ("get", "search", "eye")
+                    and _missing_caller_tree(self, kwargs)
+                    and WORKTREE_NOTE not in exc.cause
+                ):
+                    exc.cause += "\n" + WORKTREE_NOTE
+                    exc.args = (exc.cause,)
+                raise
             roots = {alias: idx.root for alias, idx in reads.indexes.items()}
             if method.__name__ == "get" and kwargs.get("id") in (None, "", "/"):
                 roots = self.roots
@@ -429,6 +458,12 @@ def with_provenance(method: Callable[..., Response]) -> Callable[..., Response]:
                     for alias, root in roots.items()
                 ]
             blocks.extend(reads.external)
+            if (
+                method.__name__ in ("get", "search", "eye")
+                and _missing_caller_tree(self, kwargs)
+                and WORKTREE_NOTE not in response.body
+            ):
+                blocks.append(WORKTREE_NOTE)
             if kwargs.get("view") == "runtrace":
                 blocks.append(
                     "Runtrace: indexed provenance does not attest executed bytes or imported source."
