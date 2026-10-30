@@ -545,6 +545,19 @@ class NumericRefHandler(Handler):
     #: kind that doesn't set it.
     default_search_status: ClassVar[str | None] = None
 
+    #: ``status=`` spellings that mean "the live cohort" — every
+    #: non-terminal STATUS — rather than the literal value. Gripe's
+    #: ``'open'`` is the everyday "what's still open?" spelling, but the
+    #: literal ``STATUS:open`` cohort emptied once triage moved filings
+    #: to ``triaged``/``ready_for_fix`` (gr530682: ``/open`` reported an
+    #: empty tracker while ~175 live gripes sat at later statuses).
+    #: Resolved to the :data:`_BROWSE_TERMINALS` exclusion — the same
+    #: channel ``status='!v'`` rides — so the lifecycle's status list
+    #: stays the single source (adding a non-terminal STATUS value needs
+    #: no change here). The literal value stays reachable via an
+    #: explicit ``tags=['STATUS:open']`` pin.
+    live_status_spellings: ClassVar[frozenset[str]] = frozenset()
+
     #: Queryless browse order when the caller passes no ``sort=``
     #: (``'recency'`` or ``'prio'``). Gripe browses by priority.
     browse_default_sort: ClassVar[str] = "recency"
@@ -1251,7 +1264,9 @@ class NumericRefHandler(Handler):
             if compact
             else self._render_hits_table(hit_refs)
         )
-        trunc = self._tag_truncation_note(normalized_tags, matched_total=total, q=q)
+        trunc = self._tag_truncation_note(
+            normalized_tags, matched_total=total, q=q, exclude_tags=excluded or None
+        )
         parts = [header]
         if status_note:
             parts.append(status_note)
@@ -1281,6 +1296,10 @@ class NumericRefHandler(Handler):
         * ``status='!v'`` (or a list of negations, ``'!a|!b'``) excludes
           those status values — an exclusion is not expressible as a
           positive tag AND, so it bypasses ``tags=`` entirely;
+        * a spelling in :attr:`live_status_spellings` (gripe: ``'open'``)
+          selects the live cohort — every non-terminal value — as a
+          ``_BROWSE_TERMINALS`` exclusion rather than a literal tag pin
+          (gr530682);
         * :attr:`default_search_status` fires only when the caller passed
           no ``status=`` *and* did not already pin a ``STATUS:`` tag — so
           it never fights an explicit choice or silently drops one.
@@ -1392,6 +1411,26 @@ class NumericRefHandler(Handler):
                 effective = [
                     t for t in effective if not t.strip().startswith("STATUS:")
                 ]
+            if (
+                resolved in self.live_status_spellings
+                and self.kind in _BROWSE_TERMINALS
+            ):
+                # 'open' names the live cohort, not the literal tag —
+                # exclusions ride the same channel status='!v' uses.
+                note = (
+                    f"(default status={resolved!r} — live: every non-terminal "
+                    f"STATUS; status='*' for all)"
+                    if not explicit
+                    else (
+                        f"(status={resolved!r}: live — every non-terminal "
+                        f"STATUS; the literal is tags=['STATUS:{resolved}'])"
+                    )
+                )
+                return (
+                    effective or None,
+                    note,
+                    list(_BROWSE_TERMINALS[self.kind]),
+                )
             tag_str = f"STATUS:{resolved}"
             if tag_str not in effective:
                 effective.append(tag_str)
@@ -1402,27 +1441,47 @@ class NumericRefHandler(Handler):
         return (effective or None, note, [])
 
     def _tag_truncation_note(
-        self, tags: list[str] | None, *, matched_total: int, q: str
+        self,
+        tags: list[str] | None,
+        *,
+        matched_total: int,
+        q: str,
+        exclude_tags: list[str] | None = None,
     ) -> str:
-        """Warn when a ``q=`` narrowed a tag-filtered enumeration.
+        """Warn when a ``q=`` narrowed a tag/status-scoped enumeration.
 
-        With ``tags=`` present, ``q=`` is a *filter* over the tagged set —
-        a ref must lexically match ``q`` to appear — not merely an
-        ordering. So the returned count can fall far below the tagged
-        population, silently; this cue makes that visible (the whole
-        point of the fix behind it). Returns ``''`` when there are no
-        tags or ``q`` didn't drop anything.
+        With a scope filter present (``tags=`` and/or ``exclude_tags`` —
+        the latter covering the browse-terminal and ``status='!v'``
+        exclusions), ``q=`` is a *filter* over the scoped set — a ref
+        must lexically match ``q`` to appear — not merely an ordering.
+        So the returned count can fall far below the scoped population,
+        silently; this cue makes that visible (the whole point of the
+        fix behind it). Returns ``''`` when the search is unscoped or
+        ``q`` didn't drop anything.
         """
-        if not tags:
+        if not tags and not exclude_tags:
             return ""
-        tag_total = self.store.count_refs(kind=self.kind, tags=tags)
-        if tag_total <= matched_total:
+        scope_total = self.store.count_refs(
+            kind=self.kind, tags=tags, exclude_tags=exclude_tags
+        )
+        if scope_total <= matched_total:
             return ""
+        scope = f" tagged {tags}" if tags else ""
+        args = f"tags={tags!r}" if tags else ""
+        if exclude_tags and set(exclude_tags) != set(
+            _BROWSE_TERMINALS.get(self.kind, ())
+        ):
+            # An exclusion the plain browse doesn't already apply (a
+            # caller's status='!v' — even a subset of the terminals —
+            # selects a different set than the live browse) must ride
+            # along or the drop-q enumeration would change scope.
+            vals = "|".join(f"!{t.split(':', 1)[1]}" for t in exclude_tags)
+            args = f"{args + ', ' if args else ''}status='{vals}'"
         return (
-            f"⚠ {matched_total} of {tag_total} {self._sense()} entries tagged "
-            f"{tags} also match q={q!r} — here q filters, it does not just "
-            f"order. To enumerate all {tag_total}, drop q: "
-            f"search(kind={self.kind!r}, tags={tags!r})"
+            f"⚠ {matched_total} of {scope_total} {self._sense()} entries{scope} "
+            f"also match q={q!r} — here q filters, it does not just "
+            f"order. To enumerate all {scope_total}, drop q: "
+            f"search(kind={self.kind!r}{', ' + args if args else ''})"
         )
 
     def _count_view(
@@ -1718,33 +1777,36 @@ class NumericRefHandler(Handler):
             note = (
                 note + f"\n{hidden} terminal entries hidden; status='*' to include"
             ).strip()
+        tag_clause = f" tagged {tags}" if tags else ""
         if not refs:
             if page > 1 and total > 0:
                 # Past the last page — total is still positive, so this
                 # is an empty window, not "nothing tagged this way".
                 pages_all = -(-total // page_size) if page_size > 0 else 1
                 body = (
-                    f"page {page}: no {self._sense()} entries tagged {tags} "
+                    f"page {page}: no {self._sense()} entries{tag_clause} "
                     f"— {total} total in {pages_all} page(s)"
                 )
                 if note:
                     body += f"\n{note}"
                 return Response(body=body, result_count=0)
-            body = f"no {self._sense()} entries tagged {tags}"
+            body = f"no {self._sense()} entries{tag_clause}"
             if note:
                 body += f"\n{note}"
-            body += render_next_section(
-                [
-                    (
-                        f"get(kind={self.kind!r}, id='/recent')",
-                        f"recent {self._sense()} entries (no tag filter)",
-                    ),
+            nav = [
+                (
+                    f"get(kind={self.kind!r}, id='/recent')",
+                    f"recent {self._sense()} entries (no tag filter)",
+                )
+            ]
+            if tags:
+                nav.append(
                     (
                         f"search(kind={self.kind!r}, q='topic', tags={tags!r})",
                         "rank within the tagged set",
-                    ),
-                ]
-            )
+                    )
+                )
+            body += render_next_section(nav)
             return Response(body=body, result_count=0)
         shown = len(refs)
         pages = -(-total // page_size) if page_size > 0 else 1
@@ -1761,7 +1823,7 @@ class NumericRefHandler(Handler):
             count_frag = f"{shown}"
         header = (
             f"# {count_frag} {self._sense()} entr"
-            f"{'y' if total == 1 else 'ies'} tagged {tags} "
+            f"{'y' if total == 1 else 'ies'}{tag_clause} "
             f"(by {sort})"
         )
         parts = [header]
@@ -2365,7 +2427,9 @@ class NumericRefHandler(Handler):
         # the q-filtered subset. Flag when the *tagged* population is
         # larger, so a generic q= (e.g. 'open' on STATUS:open) can't
         # silently under-count a triage/inventory sweep.
-        trunc = self._tag_truncation_note(tags, matched_total=total, q=q)
+        trunc = self._tag_truncation_note(
+            tags, matched_total=total, q=q, exclude_tags=exclude_tags
+        )
         if trunc:
             lines.append(trunc)
         if compact:

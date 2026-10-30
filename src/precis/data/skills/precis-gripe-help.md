@@ -122,9 +122,13 @@ every comment chunk are searchable — and `get(kind='gripe', id=N,
 q='…')` finds the matching passages inside one gripe (find-in-ref,
 `precis-get-help`).
 
-**Queryless browse defaults to live statuses** (hiding done/wontfix), with
-status per row and an exact hidden count. Query-based search retains its
-`STATUS:open` default.
+**`status='open'` means the live cohort** — every non-terminal STATUS
+(`open`, `triaged`, `ready_for_fix`, `in_review`, `verify`), not the
+literal `STATUS:open` tag. It's also the implicit default on `q=`
+searches, so a bare `search(kind='gripe', q='…')` searches the backlog,
+not just the untriaged inbox. For the literal `STATUS:open` cohort pin
+`tags=['STATUS:open']` instead. Queryless browse hides terminals the
+same way, with status per row and an exact hidden count.
 The response header names the default so it's never silent. Override it:
 
 ```python
@@ -149,8 +153,8 @@ header flags it (`⚠ N of M … also match q`) so the truncation is visible.
 ## Show me the inbox of new gripes
 
 ```python
-search(kind="gripe", tags=["STATUS:open"])  # complete enumeration (no q)
-get(kind="gripe", id="/open")  # same set, 20 per page
+search(kind="gripe", tags=["STATUS:open"])  # untriaged only — a literal tag pin
+get(kind="gripe", id="/open")  # the live cohort (all non-terminal), 20 per page
 ```
 
 Queryless gripe browse sorts by PRIO, oldest first within a PRIO

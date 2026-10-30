@@ -199,12 +199,14 @@ def run(args: argparse.Namespace) -> None:
 
 def _print_summary(args: argparse.Namespace) -> None:
     from precis.config import load_config
-    from precis.handlers.gripe import age_summary
+    from precis.handlers.gripe import _TERMINAL_STATUS_TAGS, age_summary
     from precis.store import Store
 
     store = Store.connect(resolve_dsn(args.database_url, cfg=load_config()))
     try:
-        line = age_summary(store, ["STATUS:open"])
+        # "open" is the live cohort — every non-terminal STATUS, the
+        # same set get(kind='gripe', id='/open') lists (gr530682).
+        line = age_summary(store, [], exclude_tags=sorted(_TERMINAL_STATUS_TAGS))
         print(f"gripes: {line} — get(kind='gripe', id='/open')")
     finally:
         store.close()

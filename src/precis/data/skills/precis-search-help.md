@@ -360,8 +360,8 @@ open tags (`topic:`, `project:`, `pinned`, ...) are universal. See
 ### Enumerating a tag ≠ searching within it — a counting trap
 
 `tags=` alone is a **bounded recency listing**: `search(kind='gripe',
-tags=['STATUS:open'])` returns the top N open gripes ("N of K" header).
-Add a `q=` and it becomes a **ranked filter**: a ref must *also*
+tags=['STATUS:open'])` returns the top N untriaged gripes ("N of K"
+header). Add a `q=` and it becomes a **ranked filter**: a ref must *also*
 lexically match `q` to appear, so the result is often far fewer. The mode
 switch is real and easy to miss.
 
@@ -372,19 +372,18 @@ entries tagged […] also match q`) — but that only helps if you read it;
 prefer no-`q` when you want the whole set.
 
 ```python
-search(kind="gripe", tags=["STATUS:open"])  # ✅ how many are open (all of them)
-search(
-    kind="gripe", q="timeout", tags=["STATUS:open"]
-)  # open gripes mentioning "timeout" (a subset!)
+search(kind="gripe")  # ✅ how many are open
+search(kind="gripe", q="timeout")  # …mentioning "timeout" (a subset!)
 ```
 
 Some kinds fold a **default status** into this: `gripe` defaults to
-`STATUS:open` and `finding` to `STATUS:established` when you pass no
-`status=`/`STATUS:` tag. Pass `status='*'` to opt out. The default is named
-in the response header, never silent. `status='!wontfix'` *excludes* a
-status — every status but wontfix, untagged refs included; a list of
-negations (`'!done|!wontfix'`) unions them. A positive list still refuses —
-`status=` takes one value; exclusion is the multi-value form.
+`status='open'` (live — every non-terminal STATUS; `tags=['STATUS:open']`
+pins the literal set) and `finding` to `STATUS:established` when you pass
+no `status=`/`STATUS:` tag. Pass `status='*'` to opt out. The default is
+named in the response header, never silent. `status='!wontfix'` *excludes*
+a status, untagged refs included; a list of negations (`'!done|!wontfix'`)
+unions them. A positive list still refuses — `status=` takes one value;
+exclusion is the multi-value form.
 
 ## Count and facet a filtered search (view='count')
 ## How many X are there? Group jobs/gripes/todos by status or tag
@@ -432,7 +431,7 @@ for directly:
 search(kind="job", view="meta")                    # meta keys, types, counts, examples
 search(kind="job", view="meta", args={"key": "params"})   # drill one object level
 search(kind="gripe", view="tags")                  # per axis/value ref counts
-search(kind="gripe", view="tags", status="open")   # counts over open only
+search(kind="gripe", view="tags", status="open")   # counts over live only
 ```
 
 `view='plan'` answers "which route/index *would* this search take?" without

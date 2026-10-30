@@ -50,10 +50,13 @@ Surface (see ``precis-gripe-help``):
   0005 e2e: the plan said comments would be searchable for free
   via the chunk substrate, but the verb itself never reached the
   chunk table.)
-- Queryless browse (``get(id='/open')``, ``search(tags=['STATUS:open'])``)
+- Queryless browse (``get(id='/open')``, ``search(kind='gripe')``)
   sorts by PRIO, oldest first within a PRIO, under an
   ``N open · M older than 3d · oldest grX (D days)`` line
-  (:func:`age_summary`, also the session-start digest line).
+  (:func:`age_summary`, also the session-start digest line). ``/open``
+  and the ``status='open'`` shorthand both mean the live cohort —
+  every non-terminal ``STATUS:`` (gr530682); a literal status cohort
+  is ``search(kind='gripe', tags=['STATUS:open'])``.
 - ``tag`` / ``link`` / ``delete`` behave like every other
   first-class numeric ref kind via :class:`NumericRefHandler`.
 - The gripe-fix loop's working state lives on the gripe (gr519361,
@@ -88,6 +91,7 @@ from precis.handlers._interpret import interpreted
 from precis.handlers._mode_help import require_mode
 from precis.handlers._numeric_ref import (
     _BASE_VIEWS,
+    _BROWSE_TERMINALS,
     NumericRefHandler,
     plain_listing_view,
 )
@@ -111,7 +115,11 @@ log = logging.getLogger(__name__)
 
 _BODY_KIND = "gripe_body"
 _RESOLVED_PREFIX = "resolved:"
-_TERMINAL_STATUS_TAGS = frozenset({"STATUS:done", "STATUS:wontfix"})
+#: The gripe lifecycle's terminal STATUS tags — derived from
+#: ``_BROWSE_TERMINALS`` so "still open" has one definition everywhere
+#: (the /open view, the status='open' live default, theme matching and
+#: the fix-queue prefilters all read this set).
+_TERMINAL_STATUS_TAGS = frozenset(_BROWSE_TERMINALS["gripe"])
 _COMMENT_KIND = "gripe_comment"
 
 #: ``get`` view spellings with one reading on this kind (gr494831 step 2;
@@ -299,8 +307,10 @@ def age_summary(
     Shared by the queryless list header and ``precis gripes --summary``
     (the session-start digest line). ``total`` skips the count when the
     caller already has it. The label is the single ``STATUS:`` value in
-    ``tags`` (``open``), else ``live`` when terminal statuses are excluded,
-    else ``listed``. The ``unpicked`` clause only appears when at least
+    ``tags``, else ``open`` when the exclusion is the terminal set
+    (the live cohort — ``open`` on this kind means "still open",
+    gr530682), else ``live`` under other exclusions, else ``listed``.
+    The ``unpicked`` clause only appears when at least
     one old-enough gripe has no fix state, no live job/todo link and no
     STATUS past ``triaged`` (gr520909).
     """
@@ -314,7 +324,17 @@ def age_summary(
     if total is None:
         total = store.count_refs(kind="gripe", tags=tags, **filters)
     statuses = [t.split(":", 1)[1] for t in tags if t.startswith("STATUS:")]
-    label = statuses[0] if len(statuses) == 1 else "live" if exclude_tags else "listed"
+    label = (
+        statuses[0]
+        if len(statuses) == 1
+        else (
+            "open"
+            if exclude_tags and set(exclude_tags) == _TERMINAL_STATUS_TAGS
+            else "live"
+            if exclude_tags
+            else "listed"
+        )
+    )
     now = datetime.now(UTC)
     stale = store.count_refs(
         kind="gripe", tags=tags, created_before=now - _STALE_AFTER, **filters
@@ -400,6 +420,12 @@ class GripeHandler(NumericRefHandler):
     # 'established'). The default surfaces a one-line hint in the header
     # so it's never a silent filter.
     default_search_status: ClassVar[str] = "open"
+    # 'open' means the whole live cohort — every non-terminal STATUS,
+    # not the literal STATUS:open tag (gr530682: triage moves filings to
+    # triaged/ready_for_fix, so a literal pin emptied the queue while
+    # ~175 gripes sat live). The literal status stays reachable via
+    # tags=['STATUS:open'].
+    live_status_spellings: ClassVar[frozenset[str]] = frozenset({"open"})
 
     # Queryless browse is a triage queue: PRIO first, oldest first within a
     # PRIO, so the long-waiting gripe is on page 1 instead of past it.
@@ -416,11 +442,11 @@ class GripeHandler(NumericRefHandler):
     # ── list-view filters (id='/<view>') ────────────────────────────
 
     def _supported_list_views(self) -> tuple[str, ...]:
-        # /recent (base) + /open and /wontfix (status-shorthand). The
-        # full STATUS axis vocabulary lives in tags; these are the two
-        # the agent reaches for daily ("what's still open?", "what did
-        # I decide not to fix?"). Other STATUS values come via the
-        # explicit tag filter: search(kind='gripe', tags=['STATUS:in_review']).
+        # /recent (base) + /open and /wontfix (status-shorthand). /open
+        # is the live cohort — every non-terminal STATUS (gr530682), not
+        # the literal STATUS:open tag; other single-status cohorts come
+        # via the explicit tag filter:
+        # search(kind='gripe', tags=['STATUS:in_review']).
         # /queue and /batch are the gripe-fix loop views (gr519361),
         # rendered in get() before the base list-view route.
         return ("recent", "open", "wontfix", "queue", "batch")
@@ -434,7 +460,10 @@ class GripeHandler(NumericRefHandler):
         offset = (page - 1) * size
         if view not in self.paged_list_views:
             return super()._list_view(view)
-        tags = ["STATUS:open"] if view == "open" else ["STATUS:wontfix"]
+        # /open selects by exclusion, not by pinning STATUS:open — the
+        # live cohort is every non-terminal status (gr530682).
+        tags = [] if view == "open" else ["STATUS:wontfix"]
+        exclude = sorted(_TERMINAL_STATUS_TAGS) if view == "open" else None
         # The next-page call must repeat a non-default page_size or the
         # continuation silently shrinks back to 20 rows.
         more_args = "'page': {next}"
@@ -446,6 +475,7 @@ class GripeHandler(NumericRefHandler):
             page=page,
             offset=offset,
             sort="prio" if view == "open" else "recency",
+            exclude_tags=exclude,
             more_call=f"get(kind='gripe', id='/{view}', args={{{{{more_args}}}}})",
         )
         if "next page:" in resp.body:

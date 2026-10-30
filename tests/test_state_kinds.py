@@ -154,19 +154,29 @@ class TestGripe:
         assert ref.prio == 1  # PRIO:urgent → 1
 
     def test_search_defaults_to_status_open(self, gripe: GripeHandler) -> None:
-        """A bare gripe search filters to STATUS:open — the everyday
-        'what's still open?' shape — and says so in the header."""
+        """A bare gripe search filters to the live cohort — 'open' means
+        every non-terminal STATUS (gr530682), not the literal
+        STATUS:open tag — and says so in the header."""
         gripe.put(text="alpha fluxcap misfires on cold boot")  # open
         gripe.put(text="beta fluxcap wontfix by design")
-        beta = next(
-            r
-            for r in gripe.store.list_refs(kind="gripe", limit=10)
-            if "beta" in r.title
-        )
-        self._retag_status(gripe, beta.id, "wontfix")
+        gripe.put(text="gamma fluxcap already triaged")
+        gripe.put(text="delta fluxcap ready for a fix")
+        for title, status in (
+            ("beta", "wontfix"),
+            ("gamma", "triaged"),
+            ("delta", "ready_for_fix"),
+        ):
+            ref = next(
+                r
+                for r in gripe.store.list_refs(kind="gripe", limit=10)
+                if title in r.title
+            )
+            self._retag_status(gripe, ref.id, status)
 
         body = gripe.search(q="fluxcap").body
         assert "alpha fluxcap" in body
+        assert "gamma fluxcap" in body  # triaged is live, not hidden
+        assert "delta fluxcap" in body  # ready_for_fix is live too
         assert "beta fluxcap" not in body  # wontfix excluded by the default
         assert "default status='open'" in body
         assert "status='*'" in body  # the widen hint
@@ -304,7 +314,9 @@ class TestGripe:
         assert "2 of 4" in body
         assert "⚠" in body
         assert "drop q" in body
-        assert "tags=['STATUS:open']" in body
+        # The scope is the live cohort, so the drop-q enumeration is the
+        # queryless browse — not a STATUS:open pin (gr530682).
+        assert "search(kind='gripe')" in body
 
     def test_search_no_cue_when_q_matches_whole_tag_set(
         self, gripe: GripeHandler
@@ -452,6 +464,37 @@ class TestGripe:
             gripe.get(id="/open", page=0)
         with pytest.raises(BadInput, match="no pages"):
             gripe.get(id="/recent", page=2)
+
+    def test_open_means_every_nonterminal_status(self, gripe: GripeHandler) -> None:
+        """gr530682: ``/open`` and ``status='open'`` select the live
+        cohort — every non-terminal STATUS — not the literal
+        ``STATUS:open`` tag. Triage moves filings to triaged/
+        ready_for_fix, so a literal pin reported an empty tracker
+        while the backlog was full."""
+        live = ("open", "triaged", "ready_for_fix", "in_review", "verify")
+        for status in (*live, "done", "wontfix"):
+            gripe.put(text=f"lifecycle probe {status}")
+            gid = next(
+                r
+                for r in gripe.store.list_refs(kind="gripe", limit=20)
+                if f"lifecycle probe {status}" in r.title
+            )
+            self._retag_status(gripe, gid.id, status)
+
+        for body in (
+            gripe.get(id="/open").body,
+            gripe.search(status="open").body,
+            gripe.search(q="lifecycle probe").body,
+        ):
+            for status in live:
+                assert f"lifecycle probe {status}" in body, body
+            assert "lifecycle probe done" not in body
+            assert "lifecycle probe wontfix" not in body
+
+        # The literal STATUS:open cohort stays reachable via the tag pin.
+        pinned = gripe.search(tags=["STATUS:open"]).body
+        assert "lifecycle probe open" in pinned
+        assert "lifecycle probe triaged" not in pinned
 
     def test_create_ack_hints_round_trip(self, gripe: GripeHandler) -> None:
         """The ack used to advertise ``link='gripe'+':N'`` — a BinOp
