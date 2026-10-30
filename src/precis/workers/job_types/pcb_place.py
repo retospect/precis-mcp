@@ -468,7 +468,8 @@ def _topo_route(
     route_shove_rounds = 0
     pose = td_route.pose0
     best_plan, best_rres = plan, rres
-    best_failed = len(plan.no_via) + len(plan.guarded)
+    best_pose = pose
+    best_failed = len(plan.no_via) + len(getattr(plan, "guarded", ()))
     for _round in range(2):
         if best_failed == 0:
             break
@@ -488,11 +489,25 @@ def _topo_route(
             )
         except _tprealise.CorridorOverflow:
             break
-        failed = len(plan.no_via) + len(plan.guarded)
+        failed = len(plan.no_via) + len(getattr(plan, "guarded", ()))
         if failed >= best_failed:
             break
-        best_plan, best_rres, best_failed = plan, rres, failed
+        best_plan, best_rres, best_pose, best_failed = plan, rres, pose, failed
     plan, rres = best_plan, best_rres
+
+    # gr541685: the kept plan may come from a SHOVED pose — that pose is
+    # the board the copper was routed for, so it must be committed too or
+    # the stored pads sit ~δ off the wire ends (check then reports
+    # 'connectivity' errors on a freshly routed board). Shove translates
+    # only: an x/y re-stamp, side and rot never change. ``ir`` carries it
+    # from here so the widen oracle's pads (``pads_for_ir``), the
+    # ``pcb_set_pose`` below and the run record's pose map all agree.
+    shoved_kept = best_pose is not td_route.pose0
+    pose0_x, pose0_y = ir.inst_x.copy(), ir.inst_y.copy()
+    if shoved_kept:
+        for i in range(len(td_route.parts)):
+            ir.inst_x[i] = float(best_pose[i, 0])
+            ir.inst_y[i] = float(best_pose[i, 1])
 
     # The widen oracle's own map — the FULL clearance resolution (per-net
     # class floors included), not the route map's signal-width variant.
@@ -614,6 +629,34 @@ def _topo_route(
     # a 'sketched'/'realized' overwrite would contradict the kept copper.
     failed_rows = {k: r for k, r in rows.items() if r["status"] == "failed"}
     with ctx.store.tx() as conn:
+        # The kept shoved pose commits inside the copper transaction
+        # (gr541685): a routes-write raise rolls the pose back with the
+        # copper, and a no-copper run keeps the anneal pose the stored
+        # copper still matches. Only parts the shove actually moved are
+        # written — ``pcb_set_pose``'s per-axis ``fixed`` guard applies
+        # either way, but x/y is all the shove changed.
+        n_pose = (
+            ctx.store.pcb_set_pose(
+                pcb_ref_id,
+                {
+                    str(ir.instance_refdes[i]): (
+                        float(best_pose[i, 0]),
+                        float(best_pose[i, 1]),
+                        float(ir.inst_rot[i]),
+                    )
+                    for i in range(len(td_route.parts))
+                    if math.isfinite(float(best_pose[i, 0]))
+                    and math.isfinite(float(best_pose[i, 1]))
+                    and (
+                        float(best_pose[i, 0]) != float(td_route.pose0[i, 0])
+                        or float(best_pose[i, 1]) != float(td_route.pose0[i, 1])
+                    )
+                },
+                conn=conn,
+            )
+            if shoved_kept and copper_rows
+            else 0
+        )
         n_copper = (
             ctx.store.pcb_copper_replace(int(board_id), copper_rows, conn=conn)
             if copper_rows
@@ -630,6 +673,14 @@ def _topo_route(
                 else 0
             )
         )
+
+    if shoved_kept and not copper_rows:
+        # Nothing persisted — the board keeps the anneal pose its stored
+        # copper matches, so ``ir`` restores pose0 too: the run record
+        # stamped off it must describe what the board actually committed,
+        # not a pose that was only probed.
+        ir.inst_x[:] = pose0_x
+        ir.inst_y[:] = pose0_y
 
     n_realized = sum(1 for r in rows.values() if r["status"] == "realized")
     n_dangling = sum(
@@ -648,6 +699,9 @@ def _topo_route(
         "unreachable": len(plan.unreachable),
         "route_shove_rounds": route_shove_rounds,
         "route_shove_mm": round(route_shove_mm, 3),
+        # instances whose committed x/y the kept shoved pose re-stamped
+        # (0 when the kept plan was routed at pose0 or nothing persisted)
+        "shove_committed": n_pose,
         # the corridor column is the REFUSAL count — a route that ran
         # had no over-capacity cut (a nonzero record raises instead)
         "corridor_overflow": 0,
@@ -680,7 +734,9 @@ def _topo_route(
         f"({n_dangling} dangling), {n_failed} failed, "
         f"{len(plan.crossings)} unresolved crossing(s), "
         f"{len(plan.unreachable)} unreachable net(s); wrote {n_copper} "
-        f"copper row(s), {n_routes} route row(s){widened_line}"
+        f"copper row(s), {n_routes} route row(s)"
+        + (f"; shoved pose committed for {n_pose} part(s)" if n_pose else "")
+        + widened_line
         + (" — route produced nothing; stored copper kept" if not copper_rows else "")
         + "\n"
     )

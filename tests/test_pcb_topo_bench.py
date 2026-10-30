@@ -747,3 +747,176 @@ def test_topo_route_all_withdrawn_writes_failed_rows_and_not_run(
     # the bench never reads a missing DRC run as a clean 0.
     assert side.drc_errors is None
     assert side.note == "DRC not run"
+
+
+def _shove_fakes(
+    monkeypatch: pytest.MonkeyPatch,
+    delta: tuple[float, float],
+    first_plan: Any,
+    later: Any,
+) -> dict[str, Any]:
+    """Monkeypatch the failure-driven shove loop's two seams: a shove
+    that translates every part by ``delta``, and a ``route_design`` that
+    returns ``first_plan`` (a failing plan, so the loop shoves) then
+    ``later`` at the shoved pose. ``calls["poses"]`` records the pose
+    array each route call saw (call 1: ``d.pose0``)."""
+    import numpy as np
+
+    from precis.pcb.topoplace import realise as _tprealise
+    from precis.pcb.topoplace import shove as _tpshove
+
+    calls: dict[str, Any] = {"route": 0, "poses": []}
+    dx, dy = delta
+
+    def _fake_shove(d: Any, pose: Any, *, rounds: int = 10) -> Any:
+        moved = np.asarray(pose, dtype=np.float64).copy()
+        moved[:, 0] += dx
+        moved[:, 1] += dy
+        return _tpshove.ShoveResult(
+            pose=moved,
+            resolved=True,
+            rounds=1,
+            moved_mm=(abs(dx) + abs(dy)) * len(moved),
+            lp_optimum_mm=1.0,
+        )
+
+    def _fake_route(d: Any, ir: Any, **kw: Any) -> Any:
+        calls["route"] += 1
+        pose = np.asarray(kw.get("pose", d.pose0))
+        calls["poses"].append(
+            {
+                str(ir.instance_refdes[i]): (float(pose[i, 0]), float(pose[i, 1]))
+                for i in range(len(pose))
+            }
+        )
+        return first_plan if calls["route"] == 1 else later
+
+    monkeypatch.setattr(_tpshove, "shove_pose", _fake_shove)
+    monkeypatch.setattr(_tprealise, "route_design", _fake_route)
+    return calls
+
+
+def test_topo_route_shove_commits_the_routed_pose(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr541685: a shove-kept plan was routed at a SHOVED pose but the
+    board kept the anneal pose — persisted copper landed ~δ off the
+    committed pads and check reported 'connectivity' errors on a freshly
+    routed board. The kept pose must be stamped onto the instances and
+    the run record's pose map, in the copper write's transaction."""
+    import types
+
+    from precis.pcb import realize as pcb_realize
+
+    pcb = PcbHandler(hub=Hub(store=store))
+    assert "created" in pcb.put(id="tiny-topo-shove", args=_TINY).body
+
+    def _plan(**kw: Any) -> Any:
+        fields = {
+            "pieces": (),
+            "vias": (),
+            "layers": (),
+            "crossings": (),
+            "unreachable": (),
+            "stranded": (),
+            "no_via": (),
+            "guarded": (),
+            "severed": (),
+        }
+        fields.update(kw)
+        return types.SimpleNamespace(**fields)
+
+    marker = pcb_realize.RealizedTrack(
+        seg_id=0,
+        net_id=0,
+        layer=0,
+        segments=({"shape": "line", "start": [0.0, 0.0], "end": [1.0, 1.0]},),
+        length_mm=1.0,
+        blocked_by=None,
+        width_mm=0.2,
+    )
+    calls = _shove_fakes(
+        monkeypatch,
+        (0.5, -0.25),
+        (_plan(no_via=(0,)), pcb_realize.RealizeResult((), (), ())),
+        (_plan(), pcb_realize.RealizeResult((marker,), (), ())),
+    )
+    side, _stage = tb._topo_side(
+        store, pcb, "tiny-topo-shove", seed=1, effort=200, force=True
+    )
+    ref = store.get_ref(kind="pcb", id="tiny-topo-shove")
+    assert ref is not None
+    job_id = _latest_job(store, ref.id)
+    route_meta = (tb._job_meta(store, job_id).get("topo_run") or {}).get("route")
+    assert route_meta is not None and "error" not in route_meta, side.note
+    assert calls["route"] == 2 and route_meta["route_shove_rounds"] == 1
+    board_id = store.pcb_ensure_board(ref.id)
+    assert any(r.get("width_mm") == 0.2 for r in store.pcb_copper_list(board_id))
+    # The routed pose is the committed pose: every stored instance sits
+    # at the (x, y) the second route call ran at for that refdes.
+    routed = calls["poses"][1]
+    stored = {
+        i["refdes"]: (i["x"], i["y"]) for i in store.pcb_graph(ref.id)["instances"]
+    }
+    for refdes, xy in routed.items():
+        assert stored[refdes] == pytest.approx(xy, abs=1e-6)
+    # The run record replays the same pose — stamped off the final ir,
+    # after the route stage decided what actually committed.
+    record = tb._job_meta(store, job_id).get("run_record") or {}
+    poses = record.get("poses") or {}
+    assert set(poses) == set(stored)
+    for refdes, p in poses.items():
+        assert (p["x"], p["y"]) == pytest.approx(stored[refdes], abs=1e-6)
+
+
+def test_topo_route_shove_empty_keeps_committed_pose(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr541685 edge: a shoved plan that wins but emits NO copper
+    persists nothing — the stored pose stays the anneal pose (matching
+    the kept copper), and the run record's poses describe what the board
+    actually committed, not the pose that was only tried."""
+    import types
+
+    from precis.pcb import realize as pcb_realize
+
+    pcb = PcbHandler(hub=Hub(store=store))
+    assert "created" in pcb.put(id="tiny-topo-shove-empty", args=_TINY).body
+
+    def _plan(**kw: Any) -> Any:
+        fields = {
+            "pieces": (),
+            "vias": (),
+            "layers": (),
+            "crossings": (),
+            "unreachable": (),
+            "stranded": (),
+            "no_via": (),
+            "guarded": (),
+            "severed": (),
+        }
+        fields.update(kw)
+        return types.SimpleNamespace(**fields)
+
+    calls = _shove_fakes(
+        monkeypatch,
+        (0.5, -0.25),
+        (_plan(no_via=(0,)), pcb_realize.RealizeResult((), (), ())),
+        (_plan(), pcb_realize.RealizeResult((), (), ())),
+    )
+    tb._topo_side(store, pcb, "tiny-topo-shove-empty", seed=1, effort=200, force=True)
+    ref = store.get_ref(kind="pcb", id="tiny-topo-shove-empty")
+    assert ref is not None
+    assert calls["route"] == 2
+    # Nothing persisted: stored poses keep the pose0 the place stage
+    # committed — the shoved pose was only probed.
+    routed0 = calls["poses"][0]
+    stored = {
+        i["refdes"]: (i["x"], i["y"]) for i in store.pcb_graph(ref.id)["instances"]
+    }
+    for refdes, xy in routed0.items():
+        assert stored[refdes] == pytest.approx(xy, abs=1e-6)
+    job_id = _latest_job(store, ref.id)
+    record = tb._job_meta(store, job_id).get("run_record") or {}
+    for refdes, p in (record.get("poses") or {}).items():
+        assert (p["x"], p["y"]) == pytest.approx(stored[refdes], abs=1e-6)
