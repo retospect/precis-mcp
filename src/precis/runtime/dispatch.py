@@ -3964,9 +3964,17 @@ class DispatchMixin(RuntimeShape):
                 f"{kind} {handle!r} was soft-deleted",
                 next=f"search(kind={kind!r}, q='...') to find existing",
             )
+        from precis.utils.slug_ref import nearest_handles
+
         return NotFound(
             f"{kind} {handle!r} not found",
             next=f"search(kind={kind!r}, q='...') to find existing",
+            options=(
+                nearest_handles(self.store, kind, pk)
+                if self.store is not None
+                else None
+            )
+            or None,
         )
 
     def _unresolved_chunk_handle_error(

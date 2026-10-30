@@ -74,6 +74,28 @@ _LANG_PREF: ContextVar[tuple[str, ...]] = ContextVar(
 )
 
 
+_THROTTLE_RE = re.compile(r"ratelimit|rate limit|\b429\b|too many requests|blocked")
+
+
+def _upstream_error(exc: Exception, *, default_next: str, retry_call: str) -> Upstream:
+    """Map a failed YouTube call to ``Upstream``. A throttle (the limiter's
+    ``RateLimited``, an HTTP 429, an IP/request block) carries a retry
+    hint with a wait and a pacing rule instead of the generic retry line
+    (gr531240)."""
+    probe = f"{type(exc).__name__} {exc}".lower()
+    if _THROTTLE_RE.search(probe):
+        return Upstream(
+            f"YouTube API error: {str(exc) or type(exc).__name__} (YouTube is "
+            "throttling this server's transcript requests)",
+            next=[
+                f"wait about 60 s, then retry: {retry_call}",
+                "bulk fetches: run them one at a time, a few seconds apart; "
+                "parallel callers share one limiter row and trip it together",
+            ],
+        )
+    return Upstream(f"YouTube API error: {exc}", next=default_next)
+
+
 def _paced_call(fn: Callable[..., Any], *args: Any, **kwargs: Any) -> Any:
     with _yt_paced():
         return fn(*args, **kwargs)
@@ -713,10 +735,11 @@ class YouTubeHandler(CacheBackedHandler):
                 ),
             ) from exc
         except Exception as exc:
-            raise Upstream(
-                f"YouTube API error: {exc}",
-                next=f"retry the same call; if it persists, inspect "
+            raise _upstream_error(
+                exc,
+                default_next=f"retry the same call; if it persists, inspect "
                 f"get(kind='youtube', id='{video_id}', view='languages')",
+                retry_call=f"get(kind='youtube', id='{video_id}')",
             ) from exc
 
         text = "\n".join(s.text for s in snippets).strip()
@@ -834,9 +857,10 @@ def _list_languages(video_id: str) -> Response:
             url=_YT_HOST_URL,
         )
     except Exception as exc:
-        raise Upstream(
-            f"YouTube API error: {exc}",
-            next="retry the same call shortly; YouTube may be throttling",
+        raise _upstream_error(
+            exc,
+            default_next="retry the same call shortly; YouTube may be throttling",
+            retry_call=f"get(kind='youtube', id='{video_id}', view='languages')",
         ) from exc
 
     lines = [f"Available transcripts for {video_id}:"]

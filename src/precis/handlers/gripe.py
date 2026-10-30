@@ -1243,8 +1243,6 @@ class GripeHandler(NumericRefHandler):
             self._render_create_ack(
                 created.ref_id,
                 has_thread=created.has_thread,
-                short_title=created.short_title,
-                title_src_len=created.title_src_len,
             ),
             created.readings,
         )
@@ -2149,8 +2147,6 @@ class GripeHandler(NumericRefHandler):
         ref_id: int,
         *,
         has_thread: bool = False,
-        short_title: str | None = None,
-        title_src_len: int | None = None,
     ) -> Response:
         # Unified shape (broad-pass finding #9): kwarg spelling +
         # uppercase STATUS axis + TOON Next: trailer. Previous inline-
@@ -2170,16 +2166,6 @@ class GripeHandler(NumericRefHandler):
                 )
             ]
         )
-        if short_title is not None:
-            # Name the cut (gr514360): a truncation the filer can't see is
-            # a fragment they can't fix — the size of the lost tail says
-            # how much was dropped. The body keeps the full text either way.
-            body += (
-                f'\ntitle shortened to "{short_title}" '
-                f"({title_src_len}→{len(short_title)} chars; the body keeps "
-                f"the full text); edit(kind={self.kind!r}, id={ref_id}, "
-                "args={'title': '<new title>'}) to change it."
-            )
         body += render_next_section(
             [
                 *thread_hint,

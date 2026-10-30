@@ -1,8 +1,8 @@
 """Short gripe titles — gripe system batch F slice 6.
 
 ``put`` files a first line over 60 chars with a derived
-``Area: slogan`` title (the body keeps the full text) and the ack says
-so — a first clause with no boundary inside the cap stores an
+``Area: slogan`` title (the body keeps the full text) and the ack stays
+silent about the cut (Reto 2026-10-30) — a first clause with no boundary inside the cap stores an
 ellipsis-marked cut (gr524014, gr528151), whether it comes from text=
 or an explicit title=. The body keeps the full report in either case.
 ``edit(kind='gripe', title=)`` rewrites the title only. The one-time
@@ -142,8 +142,7 @@ def test_no_boundary_inside_the_limit_still_files(
     want = short_title(text, mark_truncation=True)
     assert want == "agents route around empty paper TOCs silently: no abnormal…"
     assert _title(gripe, gid) == want
-    assert f'title shortened to "{want}"' in body
-    assert "chars" in body  # the N→M cut size is reported
+    assert "title shortened" not in body  # silent cut (Reto 2026-10-30)
 
     # A clause boundary before the limit still files cleanly.
     gripe.put(
@@ -281,6 +280,27 @@ def test_edit_title_via_the_verb_tolerates_the_injected_verdict(
     assert "verdict" in _text(out) and _title(gripe, gid) == "pcb: pours really gone"
 
 
+def test_dispatch_put_63_char_first_line_files_silently(
+    gripe: GripeHandler,
+    runtime_with_store: PrecisRuntime,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Reto 2026-10-30 (gr524257): a first line over 60 chars never
+    refuses; the title is cut at a word boundary and the body keeps the
+    whole line."""
+    monkeypatch.setattr(tools_core, "_runtime", runtime_with_store)
+    line = "agents keep losing the thread when pages reload during long run"
+    assert len(line) == 63
+    out = tools_core.put(kind="gripe", text=line + "\n\nmore detail")
+    assert not isinstance(out, CallToolResult) or not out.isError, _text(out)
+    assert "title shortened" not in _text(out)
+    gid = _latest(gripe)
+    title = _title(gripe, gid)
+    assert len(title) <= TITLE_MAX
+    assert line.startswith(title.rstrip("…"))
+    assert line in gripe.get(id=gid, view="full").body
+
+
 # ── put / ack ─────────────────────────────────────────────────────────────
 
 
@@ -289,8 +309,7 @@ def test_long_put_stores_a_short_title_and_the_full_body(gripe: GripeHandler) ->
     gid = _latest(gripe)
     want = short_title(LONG_BOUNDED)
     assert _title(gripe, gid) == want
-    assert f'title shortened to "{want}"' in body
-    assert f"edit(kind='gripe', id={gid}, args={{'title': '<new title>'}})" in body
+    assert "title shortened" not in body
     full = gripe.get(id=gid, view="full").body
     assert LONG_BOUNDED in full
 

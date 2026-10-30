@@ -16,8 +16,9 @@ sentence end, parenthesis, comma or "because" — but never inside
 expression, and cutting there leaves the title mid-call, gr500645); the
 result is cut at the last word boundary that fits, and a mid-phrase cut
 drops trailing function words so the title ends on a content word
-(``…returns stale source on`` read as a fragment, gr514360). The create
-ack reports the cut size, so the shortening is never silent.
+(``…returns stale source on`` read as a fragment, gr514360). The cut is
+silent: the create ack does not mention it (Reto 2026-10-30, gr524257);
+the body keeps the full first line for triage.
 
 gr524014 (supersedes gr520270): a first *clause* longer than the limit
 has no boundary the title can break at, so even the function-word-tidied

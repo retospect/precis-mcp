@@ -17,6 +17,17 @@ if TYPE_CHECKING:
     from precis.store import Ref, Store
 
 
+def nearest_handles(store: Store, kind: str, ref_id: int, *, n: int = 2) -> list[str]:
+    """Handles of the live ``kind`` refs adjacent to a missing ``ref_id``
+    (the closest one below and above, up to ``n`` total) — the
+    ``options=`` an unresolved ``<code><id>`` handle's NotFound carries so
+    a mistyped digit has a live handle to retry with (gr534656)."""
+    below = store.list_refs(kind=kind, id_max=ref_id - 1, order_by="id_desc", limit=1)
+    above = store.list_refs(kind=kind, id_min=ref_id + 1, order_by="id_asc", limit=1)
+    near = sorted((*below, *above), key=lambda r: abs(int(r.id) - ref_id))[:n]
+    return [h for r in near if (h := handle_registry.try_format(kind, int(r.id)))]
+
+
 def resolve_live_slug_ref(
     store: Store,
     *,
@@ -105,6 +116,9 @@ def resolve_live_slug_ref(
                 store.emit_hint(bare_numeric_hint(kind, slug, handle))
     if ref is None:
         cause = f"{kind} slug {slug!r} not found"
+        if parsed is not None and parsed[0] == kind and not parsed[1]:
+            cause = f"{kind} handle {slug!r} not found"
+            options = [*nearest_handles(store, kind, parsed[2]), *(options or [])]
         if slug.isdigit():
             # The digits were already tried as a ref_id fallback (the A1
             # branch above) and that also missed — say so, or the bare
