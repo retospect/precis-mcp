@@ -31,7 +31,11 @@ pixels. The verbs map onto the seven-verb surface:
   (:data:`precis.pcb.ROUTE_RETIRED` — vroute deleted, topo is the only
   router and unshipped); ``op='move'``/
   ``'rip'``/``'pin_side'``/``'plane_net'``/``'class_rules'`` are cheap inline
-  edits. ``op='footprint'`` (gr341532 fix 3) pulls a catalog part's real pad
+  edits. ``op='part'`` (``{'refdes','part'}`` or ``moves=[...]``) binds a
+  SELECTED catalog C-number to an existing generic component — the edit the
+  create-or-extend re-put ruling excludes — re-stamping footprint/height/
+  courtyard from the catalog under the judge. ``op='footprint'`` (gr341532
+  fix 3) pulls a catalog part's real pad
   geometry into the ``part_footprints`` cache (``part='C639448'`` or
   ``parts=[...]``, ``force=True`` to re-pull) through the live EasyEDA/JLC
   clients (:mod:`precis.pcb.footprint`), or authors one directly
@@ -322,6 +326,10 @@ _INLINE_EDIT_OPS = (
     "corner_nuts",
     # gr520149 — pad-level footprint-local overrides on one placed part.
     "pad",
+    # binding a SELECTED catalog part to an existing generic component
+    # (re-put is create-or-extend and never edits identity; judged like
+    # the other geometry-affecting edits).
+    "part",
 )
 #: gr341532 fix 3 — pull/author a catalog part's real footprint into the
 #: ``part_footprints`` cache. A handful of small HTTP calls (EasyEDA), not
@@ -1232,7 +1240,12 @@ class PcbHandler(Handler):
             "args={'autoplace':{...}} is a deprecated alias for op='place'; "
             "put(args={'op':'move'|'rip'|'pin_side'|'plane_net'|'class_rules'|"
             "'phase'|'profile'|'pins'}) "
-            "are cheap inline edits; put(args={'op':'footprint','part':"
+            "are cheap inline edits; put(args={'op':'part','refdes':'R10',"
+            "'part':'C25741'}) (or moves=[...]) binds a selected catalog "
+            "part to an existing generic component — re-put is "
+            "create-or-extend and never edits identity; run "
+            "op='footprint' after for parts whose footprint the cache "
+            "lacks; put(args={'op':'footprint','part':"
             "'C639448'}) (or parts=[...], force=True to re-pull, or "
             "footprint={...} to author one directly under part=) pulls/"
             "authors a catalog part's real pad geometry into the "
@@ -2020,6 +2033,8 @@ class PcbHandler(Handler):
             return self._op_stackup(ref, args)
         if op == "footprint":
             return self._op_footprint(ref, args)
+        if op == "part":
+            return self._op_part(ref, args)
         if op == "order":
             return self._op_order(ref, args)
         if op == "review":
@@ -2468,6 +2483,120 @@ class PcbHandler(Handler):
             body += (
                 f"\nboard still has {len(standing)} pre-existing DRC error(s) the "
                 "move did not add: " + "; ".join(standing[:5])
+            )
+        return Response(body=body)
+
+    def _op_part(self, ref: Any, args: dict[str, Any]) -> Response:
+        """``op='part'`` — bind a catalog C-number to an existing component
+        (the missing edit the create-or-extend ruling excludes: a re-put
+        never changes a stored component's identity, so a SELECTED part
+        needs this op). Single form ``{'refdes','part'}`` or bulk
+        ``{'moves':[{'refdes','part'},...]}`` like op='move'. The catalog
+        must already know the C-number — ``get(kind='part', id='C…')``
+        does the one live lookup and catalogues it. The mutation runs
+        under the judge: a real footprint whose stamped courtyard newly
+        collides refuses and rolls back. Afterwards run
+        ``op='footprint'`` for parts whose footprint the cache lacks."""
+        from precis.pcb.catalog import lcsc_id
+
+        entries: list[tuple[str, str]] = []
+        raw = args.get("moves")
+        if raw is not None:
+            if not isinstance(raw, list) or not raw:
+                raise BadInput(
+                    "op='part' args.moves must be a non-empty list of "
+                    "{'refdes','part'}",
+                    next="args={'op':'part','moves':[{'refdes':'R10',"
+                    "'part':'C25741'}]}",
+                )
+            for item in raw:
+                rd = (
+                    str(item.get("refdes") or "").strip()
+                    if isinstance(item, dict)
+                    else ""
+                )
+                pn = (
+                    str(item.get("part") or "").strip()
+                    if isinstance(item, dict)
+                    else ""
+                )
+                if not rd or not pn:
+                    raise BadInput(
+                        f"op='part' moves entry {item!r} needs refdes and part",
+                        next="args={'op':'part','moves':[{'refdes':'R10',"
+                        "'part':'C25741'}]}",
+                    )
+                entries.append((rd, pn))
+        else:
+            rd = str(args.get("refdes") or "").strip()
+            pn = str(args.get("part") or "").strip()
+            if not rd or not pn:
+                raise BadInput(
+                    "op='part' needs args.refdes and args.part (an LCSC C-number)",
+                    next="args={'op':'part','refdes':'R10','part':'C25741'}",
+                )
+            entries.append((rd, pn))
+
+        canon: list[tuple[str, str]] = []
+        for rd, pn in entries:
+            c = lcsc_id(pn)
+            if c is None:
+                raise BadInput(
+                    f"pcb: op='part' part must be an LCSC C-number (got {pn!r})",
+                    next="search(kind='part', q='<value package>') finds one",
+                )
+            canon.append((rd, c))
+
+        with self.store.pool.connection() as conn:
+            known = {
+                str(r[0])
+                for r in conn.execute(
+                    "SELECT lcsc FROM parts WHERE lcsc = ANY(%s)",
+                    ([c for _, c in canon],),
+                ).fetchall()
+            }
+        missing = sorted({c for _, c in canon if c not in known})
+        if missing:
+            raise BadInput(
+                f"pcb: op='part': {', '.join(missing)} not in the catalog — "
+                "get(kind='part', id=…) first (one live lookup, catalogues "
+                "the hit)",
+                next=f"get(kind='part', id='{missing[0]}')",
+            )
+
+        lines: list[str] = []
+
+        def apply(conn: Any) -> bool:
+            for rd, c in canon:
+                out = self.store.pcb_bind_part(ref.id, rd, c, conn=conn)
+                if out is None:
+                    raise NotFound(
+                        f"pcb instance {rd!r} not found in {ref.slug!r}",
+                        next=f"get(kind='pcb', id='{ref.slug}') lists "
+                        "this design's refdes",
+                    )
+                stamp = out["stamp"]
+                note = ""
+                if not stamp.get("courtyard"):
+                    note = f" — footprint not cached yet: run op='footprint' part='{c}'"
+                prev = out["previous_lcsc"] or "—"
+                stamped = ", ".join(sorted(stamp)) if stamp else "no catalog stamp"
+                lines.append(f"{rd}\t{c}\t(prev {prev})\t{stamped}{note}")
+            return True
+
+        _, judged = self._judged_mutation(ref.id, apply)
+        body = (
+            f"# part — {len(canon)} bound\n"
+            "{refdes\tpart\tprevious\tstamped}\n" + "\n".join(lines) + "\n"
+        )
+        if judged.standing:
+            body += (
+                f"board still has {judged.standing} pre-existing DRC error(s) "
+                "the bind did not add\n"
+            )
+        if judged.ripped:
+            body += "ripped: " + "; ".join(
+                f"{net} ({rule})" for net, rule in sorted(judged.ripped.items())
             )
         return Response(body=body)
 

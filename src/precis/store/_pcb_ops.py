@@ -1747,6 +1747,65 @@ class PcbMixin:
             ).rowcount
         return n
 
+    def pcb_bind_part(
+        self,
+        ref_id: int,
+        refdes: str,
+        lcsc: str,
+        *,
+        conn: Connection,
+    ) -> dict[str, Any] | None:
+        """Bind a catalog C-number to one LIVE component (op='part').
+
+        The re-put path is create-or-extend by ruling (an existing refdes
+        keeps its stored fields — ``_reput_ignored_block``), so binding a
+        SELECTED part to a generic component needs its own op. Writes
+        ``part_lcsc`` and re-stamps ``footprint``/``height_mm``/``courtyard``
+        from the catalog snapshot (:meth:`_pcb_resolve_parts`) — the new
+        part's stamp REPLACES the old per field when the catalog has one
+        (a re-bind to a different part must not keep the old geometry),
+        and a catalog field the new part lacks keeps the stored value.
+        Poses, pins and nets are never touched. Returns the previous
+        binding + the applied stamp, or ``None`` when no live instance
+        carries ``refdes`` on this design."""
+        row = conn.execute(
+            "SELECT c.component_id, c.part_lcsc, c.footprint, c.height_mm, "
+            "       c.courtyard "
+            "FROM pcb_components c "
+            "JOIN pcb_instances i ON i.component_id = c.component_id "
+            "WHERE i.ref_id = %s AND i.refdes = %s "
+            "  AND i.retired_at IS NULL AND c.retired_at IS NULL "
+            "LIMIT 1",
+            (ref_id, refdes),
+        ).fetchone()
+        if row is None:
+            return None
+        resolved = self._pcb_resolve_parts(conn, [lcsc]).get(lcsc) or {}
+        conn.execute(
+            "UPDATE pcb_components SET "
+            "  part_lcsc = %s, "
+            "  footprint = COALESCE(%s, footprint), "
+            "  height_mm = COALESCE(%s, height_mm), "
+            "  courtyard = COALESCE(%s, courtyard) "
+            "WHERE component_id = %s",
+            (
+                lcsc,
+                resolved.get("footprint"),
+                resolved.get("height_mm"),
+                Jsonb(resolved["courtyard"]) if resolved.get("courtyard") else None,
+                int(row[0]),
+            ),
+        )
+        return {
+            "component_id": int(row[0]),
+            "previous_lcsc": row[1],
+            "stamp": {
+                k: resolved.get(k)
+                for k in ("footprint", "height_mm", "courtyard")
+                if resolved.get(k) is not None
+            },
+        }
+
     def _pcb_card_text(self, conn: Connection, ref_id: int, title: str) -> str:
         """The one embeddable summary per design — built from the current graph
         (component labels + a few net names) so search lands on intent."""

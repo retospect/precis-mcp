@@ -380,6 +380,45 @@ behind an opt-in `router='field'` until it becomes default (§Slices, slice
 separate module (`src/precis/pcb/field.py`, new) called from the engine's
 move loop, and the engine's per-move delta cost is not touched.
 
+### Copper persistence (2026-10-30, verified — not a slice, the seam exists)
+
+The schema discussion (Reto: "thin wire with spacer", not polygons) ratified
+what the schema of record already is: `pcb_routes` holds the canonical sketch
+per net (tree/topology/layer_assign/status/fail) and `pcb_copper` holds
+DERIVED centerline geometry — `track` = polyline segments + `width_mm`,
+`via` = position + drill/dia + `span`; clearance halos are RULES, never
+stored. All writers already consume it: check (`phase routed` reads and DRCs
+stored copper), the web render, `view='epro'` (tracks/vias ride the round
+trip), `view='gerber'`. The topo place job's route stage writes both tables
+in one transaction (pcb_place.py; an empty result preserves prior copper).
+
+Verified end-to-end on taz-leaf-local-49 (2026-10-30): 3 nets realized → 3
+track rows persisted → fresh `view='check'` derived `phase routed` and
+checked them; 28 failed nets keep their legible `fail` reason ("no via
+site…", "copper withdrawn: would short (emit guard)"). What is NOT landed is
+router SUCCESS — the realise stage realizes 3/38 nets on taz-leaf. That is
+the slices below plus the configuration-space amendment.
+
+### Amendment pending — configuration-space native (transfer task, spec first)
+
+Direction ratified by Reto 2026-10-30: the discrete state gets a
+homotopy-word key — the band's free-group word over obstacle generators
+(plane minus n obstacles has free π₁; adding a part is a fibration, so a new
+net's classes are words over existing obstacles; nets are open arcs: words,
+not braids, except in the two-row channel case; Fadell-Neuwirth pa540828,
+Arnold pa540822, Church-Farb pa540818 justify the data structure only —
+framed by pr496881's bilevel view: strata = fixed topology, Danskin gradient
+inside a stratum, Clarke at ties). Deliverable 2's key module (word
+construction, free reduction, canonical form, hash, generator enumeration)
+lands first with unit tests (word equality ⇔ homotopy; one generator = one
+letter/one adjacent-order change; via insert = two words reducing to the
+original), wired into the annealer as dedup/tabu + inner-solve cache key,
+measured on the replay fixture (51/55 inner vs 42/55 radial, mx456/mx457).
+Tension-driven proposals + stratified descent are a SECOND slice (read the
+`differentiation` skill first; record the derivative route in
+§Derivative route). Router/realizer files are owned by the ewod-pcb thread —
+sequence, don't merge; run scripts/inflight before touching anything.
+
 ## Measures and exit criteria
 
 Per board, every run, written by the vector slice 0 harness
