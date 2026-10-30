@@ -54,6 +54,7 @@ from __future__ import annotations
 
 import math
 import re
+import time
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
@@ -61,6 +62,7 @@ import numpy as np
 
 from precis.cad import bulk as cad_bulk
 from precis.cad import dsl as cad_dsl
+from precis.cad.export import needs_field_backend
 from precis.cad.fold import Expr
 from precis.cad.graph import Design as CadDesign
 from precis.cad.scene import (
@@ -70,7 +72,7 @@ from precis.cad.scene import (
     build_design,
     expand_instances,
 )
-from precis.cad.vec import Transform, euler_rad_from_matrix
+from precis.cad.vec import Transform, Vec3, euler_rad_from_matrix
 from precis.cad.vec import as_vec3 as cad_as_vec3
 from precis.cad.vec import normalize as cad_normalize
 from precis.cad.vec import pose as cad_pose
@@ -173,7 +175,9 @@ def _feature_already_cut(
 
 #: Ray grid for the per-hole "did this cut remove anything" probe —
 #: quadrature over the tool's own (small) AABB, so a coarse grid is exact
-#: enough to tell air from material.
+#: enough to tell air from material. Field-backed designs use
+#: :func:`precis.cad.bulk.volume_field` over the same box instead — see
+#: :func:`_solid_volume`.
 _CUT_PROBE_GRID = 24
 
 #: Floor of the annulus probed just outside a cutter that removed
@@ -196,6 +200,45 @@ _CUT_SHELL_GRID = 48
 #: partial feature, not the stamped one.
 _CUT_VOID_OPEN_M = 1e-6
 
+#: Sign-grid cells for the same probe on a field-backed design:
+#: presence/absence over a hole-sized box needs far less than
+#: :data:`precis.cad.bulk.FIELD_VOLUME_CELLS`' 250k — a design with many
+#: stamped holes would spend its whole wall-clock budget on probes
+#: (gr529278), while 20k still resolves a cut tool's volume.
+PROBE_FIELD_CELLS = 20_000
+
+
+def _solid_volume(
+    design: CadDesign,
+    expr: Expr | None = None,
+    *,
+    field_backend: bool,
+    box: tuple[Vec3, Vec3] | None = None,
+    probe_grid: int | None = None,
+    probe_cells: int | None = None,
+) -> float:
+    """One volume answer for both mesh backends. The ray quadrature
+    (:func:`precis.cad.bulk.volume`) is exact-per-ray and cheap on analytic
+    leaves, but on a field-backed design (``rd``/``blend``/``field``) every
+    ray's hit search iterates the scalar SDF — ~100+ ``distance_local``
+    calls — so its ~58k rays cost minutes no caller-side deadline can
+    interrupt (gr529278's residual ``view='validate'`` hang: the deadline
+    gates which checks *start*, it cannot cut a quadrature in flight).
+    Field-backed designs therefore take
+    :func:`~precis.cad.bulk.volume_field`'s bounded sign grid — the same
+    vectorized ``expr_sdf_np`` the field mesher already pays, sized to the
+    box it is given. ``probe_cells`` shrinks that grid for the per-hole
+    presence probe (:data:`PROBE_FIELD_CELLS`); the reported before/after
+    volumes keep the full :data:`~precis.cad.bulk.FIELD_VOLUME_CELLS`."""
+    if field_backend:
+        return cad_bulk.volume_field(
+            design,
+            expr=expr,
+            box=box,
+            cells=(cad_bulk.FIELD_VOLUME_CELLS if probe_cells is None else probe_cells),
+        ).volume
+    return cad_bulk.volume(design, expr=expr, grid=probe_grid).volume
+
 
 def _components_met(design: CadDesign, cutter: Expr) -> list[str]:
     """The components whose AABB overlaps the cutting tool's — the parts a
@@ -215,6 +258,8 @@ def _apply_cuts(
     holes: list[Hole],
     inv: Transform,
     findings: list[ValidationIssue],
+    field_backend: bool = False,
+    deadline: float | None = None,
 ) -> tuple[list[NodeSpec], list[str], bool]:
     """Subtract every stamped hole from the component(s) it lands in.
 
@@ -229,9 +274,14 @@ def _apply_cuts(
     radial wall, and material standing there means the bound cad already
     carries the void (``feature_already_cut``, an info note — the cut
     node is still emitted, a no-op subtract); only a tool with nothing
-    around it — genuinely in air — stays ``feature_not_cut``. Returns the
-    ``cut`` node specs (one per component actually cut), the names of the
-    holes cut, and whether any component changed.
+    around it — genuinely in air — stays ``feature_not_cut``.
+    ``deadline`` (``time.monotonic()`` — the validate view's budget,
+    gr529278) is checked once per hole *before* it is probed: a hole the
+    budget never reached is reported "not run: budget exceeded" — still
+    an uncut stamped feature, so the same error receipt as the geometry
+    cases — never probed anyway. Returns the ``cut`` node specs (one per
+    component actually cut), the names of the holes cut, and whether any
+    component changed.
     """
     cutters_by_component: dict[str, list[Expr]] = {}
     cut_nodes: list[NodeSpec] = []
@@ -240,6 +290,16 @@ def _apply_cuts(
         # A stamped hole that cannot be cut is never dropped silently: the
         # solid would leave without a screw hole and nobody would know —
         # exactly what process DRC exists to catch (pre-ship review).
+        if deadline is not None and time.monotonic() >= deadline:
+            findings.append(
+                _feature_not_cut(
+                    block_name,
+                    hole,
+                    "not run: budget exceeded — the view's wall-clock "
+                    "budget was spent before this hole could be probed",
+                )
+            )
+            continue
         if hole.diameter_m <= 0.0 or hole.depth_m <= 0.0:
             findings.append(
                 _feature_not_cut(
@@ -260,15 +320,19 @@ def _apply_cuts(
             continue
         xform, loc, rot = _cut_placement(hole, inv)
         cutter = design.prim(_safe_node_name(hole.name), primitive, xform)
+        cutter_box = cad_bulk.expr_aabb(design, cutter)
         met = _components_met(design, cutter)
         removing = [
             name
             for name in met
-            if cad_bulk.volume(
+            if _solid_volume(
                 design,
-                expr=design.intersect(design.components[name], cutter),
-                grid=_CUT_PROBE_GRID,
-            ).volume
+                design.intersect(design.components[name], cutter),
+                field_backend=field_backend,
+                box=cutter_box,
+                probe_grid=_CUT_PROBE_GRID,
+                probe_cells=PROBE_FIELD_CELLS,
+            )
             > 0.0
         ]
         if not removing:
@@ -592,6 +656,7 @@ def printed_solid(
     *,
     cad_store_reader: Store,
     exclude: frozenset[str] = frozenset(),
+    deadline: float | None = None,
 ) -> PrintedSolid | None:
     """The printed solid for ``block_name`` — the bound cad design minus
     every stamped hole it carries — or ``None`` when the block is not an
@@ -599,6 +664,11 @@ def printed_solid(
     ``exclude`` (fastener block names) drops those fasteners' holes from
     the cut set — :func:`precis_se.fasten.features_for`'s parameter, the
     manufacture fuse's elided screws; every other caller passes nothing.
+
+    ``deadline`` (a ``time.monotonic()`` timestamp — the validate view's
+    budget, ``None`` = unbounded) reaches inside the per-hole probe loop
+    (:func:`_apply_cuts`): a hole the budget never reached is reported
+    "not run: budget exceeded" rather than probed.
 
     ``cad_store_reader`` is anything offering the ``cad`` kind's own
     store-level ``get_ref``/``cad_load`` (a plain :class:`~precis.store.
@@ -635,8 +705,9 @@ def printed_solid(
         return None
 
     findings: list[ValidationIssue] = []
+    field_backend = needs_field_backend(expanded)
     base_expr = design.whole()
-    volume_before = cad_bulk.volume(design).volume
+    volume_before = _solid_volume(design, field_backend=field_backend)
     lo, hi = cad_bulk.expr_aabb(design, base_expr)
     diag = float(np.linalg.norm(np.asarray(hi) - np.asarray(lo)))
     mismatch = scale_mismatch_finding(block_name, diag)
@@ -652,8 +723,12 @@ def printed_solid(
         se_fasten.features_for(tree, block_name, exclude=exclude),
         inv,
         findings,
+        field_backend=field_backend,
+        deadline=deadline,
     )
-    volume_after = cad_bulk.volume(design).volume if cut_any else volume_before
+    volume_after = (
+        _solid_volume(design, field_backend=field_backend) if cut_any else volume_before
+    )
 
     if volume_after <= 0.0:
         findings.append(

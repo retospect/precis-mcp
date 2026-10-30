@@ -263,6 +263,7 @@ get(kind='se', id='uni', view='trace', args={'atom': 'p/s1/s1', 'touched': True}
 get(kind='se', id='uni', view='trace', args={'atoms': ['p/a', 'p/b']})  # LCA frame
 get(kind='se', id='uni', view='trace', args={'frame': '<key>'})         # frame card
 get(kind='se', id='uni', view='trace', args={'against': <run_job>})     # run diff
+get(kind='se', id='uni', view='parameterize', args={'frame': '<key>', 'arg': '<name>'})
 ```
 
 `frame:<key>` then doubles as a region selector (datums, pockets, the
@@ -275,6 +276,14 @@ package (the script line that drove it); the atomic leg's
 `blocks/*.extxyz` joins back per atom through its `maker` column,
 which is the frame id that minted the atom (a merged atom keeps the
 earliest frame's stamp).
+
+`view='parameterize'` proposes the literal→parameter rewrite for one
+call argument: a unified diff adding `NAME=<literal>` to the call site
+def's signature (or a module-level assignment), replacing the literal
+and listing (never rewriting) its other occurrences in the def.
+Read-only; apply via `edit(kind='plaintext', id='ws-<ws>--<file>')`
+and re-run. Refuses when the arg is already a name/expression, the call
+moved, or the frame carries no `src`.
 
 **Macro leg.** `view='trace'` answers on cad-bound macro blocks too —
 the summary, `frame` cards, `against` run diffs, and a `made-by:`

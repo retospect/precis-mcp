@@ -45,6 +45,7 @@ solve). In-band designs go through unscaled, bit-identical.
 
 from __future__ import annotations
 
+import math
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -392,11 +393,40 @@ def envelope_overlaps(
     return out, cross, unchecked
 
 
+#: Wall-clock bound for the whole ``view='validate'`` render (gr529278 —
+#: an rd-rounded, field-backend design's mesh-dependent checks held the
+#: call for 7+ minutes). The handler starts one monotonic deadline at the
+#: top of the view and passes it through :func:`validate` (which clamps
+#: this check's own ``budget_s`` to the remaining time), the store-aware
+#: finding stages and the fdm print-status pass; a check the deadline has
+#: already passed is reported as "not run: budget exceeded"
+#: (:func:`not_run_finding`) rather than blocking.
+VALIDATE_VIEW_BUDGET_S = 60.0
+
+
+def not_run_finding(what: str) -> ValidationIssue:
+    """The ``check_not_run`` warn for a check a wall-clock deadline
+    pre-empted — the same honesty rule ``cross_scale_unverifiable`` and
+    ``overlap_budget_exceeded`` already keep: unchecked is reported,
+    never read as clear."""
+    return ValidationIssue(
+        rule="check_not_run",
+        subject=what,
+        detail=(
+            f"{what} not run: budget exceeded — the view's "
+            f"{VALIDATE_VIEW_BUDGET_S:g}s wall-clock budget was spent by "
+            "earlier checks; re-run view='validate' to retry"
+        ),
+        severity="warn",
+    )
+
+
 def validate(
     tree: SeTree,
     *,
     budget_s: float | None = _OVERLAP_BUDGET_S,
     load_cases: list[se_stability.LoadCase] | None = None,
+    deadline: float | None = None,
 ) -> list[ValidationIssue]:
     """Return all findings (empty = clean — but see the handler's
     filled-fraction header: clean-and-empty must render as *unfilled*,
@@ -405,7 +435,9 @@ def validate(
     ``budget_s`` bounds the undeclared-interpenetration check's narrow-phase
     SDF work (:func:`envelope_overlaps`) — the default is generous for
     real designs; callers normally leave it alone (tests use a small value
-    to exercise the partial-result path, gr337045).
+    to exercise the partial-result path, gr337045). ``deadline`` (a
+    ``time.monotonic()`` timestamp — :data:`VALIDATE_VIEW_BUDGET_S` in the
+    view) clamps ``budget_s`` to the time the caller actually has left.
 
     ``load_cases`` is the view-layer named-load-case argument for the
     sign-aware completeness rule (6): each ``(name, {block: [x, y, z]})``
@@ -554,7 +586,17 @@ def validate(
     # connect sanctions (module docstring). A connect between the two
     # blocks — any ports, stored names — declares the contact intended.
     connected_pairs = {frozenset({c.a_block, c.b_block}) for c in tree.connects}
-    overlaps, cross_scale, unchecked_budget = envelope_overlaps(tree, budget_s=budget_s)
+    overlaps, cross_scale, unchecked_budget = envelope_overlaps(
+        tree,
+        budget_s=(
+            budget_s
+            if deadline is None
+            else min(
+                budget_s if budget_s is not None else math.inf,
+                max(0.0, deadline - time.monotonic()),
+            )
+        ),
+    )
     for a_name, b_name, gap in overlaps:
         if frozenset({a_name, b_name}) in connected_pairs:
             continue

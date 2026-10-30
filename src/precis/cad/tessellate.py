@@ -38,7 +38,14 @@ import numpy as np
 from numpy.typing import NDArray
 
 from precis.cad.bulk import expr_aabb
-from precis.cad.dsl import ShapeSpec, build, parse
+from precis.cad.dsl import (
+    DRAFT_KEY,
+    ShapeSpec,
+    build,
+    draft_box_rings,
+    draft_cyl_ends,
+    parse,
+)
 from precis.cad.primitives import HalfSpace
 from precis.cad.scene import (
     NodeSpec,
@@ -247,9 +254,15 @@ def mesh_shape(spec: ShapeSpec, *, chord: float | None = None) -> Mesh:
     tessellation."""
     a, p = spec.alias, spec.params
     if a == "box":
+        if DRAFT_KEY in p:
+            bottom, top = draft_box_rings(p)
+            return _extrude(bottom, top, p["h"])
         return _box_mesh(p["w"], p["d"], p["h"])
     if a == "cyl":
         seg = _FN if chord is None else _circular_seg(chord, p["r"])
+        if DRAFT_KEY in p:
+            rb, rt = draft_cyl_ends(p)
+            return _circular(rb, rt, p["h"], seg=seg)
         return _circular(p["r"], p["r"], p["h"], seg=seg)
     if a == "cone":
         seg = _FN if chord is None else _circular_seg(chord, p["r"])

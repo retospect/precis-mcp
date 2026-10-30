@@ -228,28 +228,49 @@ def validate_findings(
     tree: SeTree,
     ref_id: int,
     load_cases: list[se_stability.LoadCase] | None = None,
+    deadline: float | None = None,
 ) -> list[Any]:
     """Every ``view='validate'`` finding (pure + store-aware + atomic),
     shared with ``view='drc'``'s validate digest, the put/edit reply digest
     and the ``/se/<slug>`` page so none disagree about what validate found.
     ``load_cases`` layers named cases onto the sign-aware completeness
     rule (the complementarity bridge; the stored ``objectives.force``
-    field is always the implicit ``'declared'`` case)."""
-    findings = list(se_validate.validate(tree, load_cases=load_cases))
-    findings.extend(se_validate.port_override_unapplied_findings(store, tree, ref_id))
-    bound_scenes, bound_full_scenes = se_atomic_render.hydrate_bound_scenes(store, tree)
-    generated_records = se_atomic_render.bound_generated_records(store, tree)
-    chain_records = se_atomic_render.bound_chain_records(store, tree)
-    findings.extend(
-        se_atomic_validate.validate_atomic(
-            tree,
-            bound_scenes=bound_scenes,
-            bound_full_scenes=bound_full_scenes,
-            generated_bound=frozenset(generated_records),
-            generated_records=generated_records,
-            chain_records=chain_records,
-        )
+    field is always the implicit ``'declared'`` case). ``deadline`` (a
+    ``time.monotonic()`` timestamp — :data:`precis_se.validate.
+    VALIDATE_VIEW_BUDGET_S` bounds the whole view, gr529278) pre-empts
+    each later stage once it has passed: the stage is reported as
+    ``check_not_run`` ("not run: budget exceeded") rather than started."""
+
+    def expired() -> bool:
+        return deadline is not None and time.monotonic() >= deadline
+
+    findings = list(
+        se_validate.validate(tree, load_cases=load_cases, deadline=deadline)
     )
+    if expired():
+        findings.append(se_validate.not_run_finding("port_override_unapplied"))
+    else:
+        findings.extend(
+            se_validate.port_override_unapplied_findings(store, tree, ref_id)
+        )
+    if expired():
+        findings.append(se_validate.not_run_finding("atomic checks (bound structures)"))
+    else:
+        bound_scenes, bound_full_scenes = se_atomic_render.hydrate_bound_scenes(
+            store, tree
+        )
+        generated_records = se_atomic_render.bound_generated_records(store, tree)
+        chain_records = se_atomic_render.bound_chain_records(store, tree)
+        findings.extend(
+            se_atomic_validate.validate_atomic(
+                tree,
+                bound_scenes=bound_scenes,
+                bound_full_scenes=bound_full_scenes,
+                generated_bound=frozenset(generated_records),
+                generated_records=generated_records,
+                chain_records=chain_records,
+            )
+        )
     return findings
 
 
@@ -342,6 +363,7 @@ class SeHandler(Handler):
                 "n",
                 "nx",
                 "frames",
+                "arg",
                 "profile",
                 "zplane",
                 "seed",
@@ -698,10 +720,12 @@ class SeHandler(Handler):
             "fab",
             "assembly_check",
             "trace",
+            "parameterize",
             "joints",
             "fit",
             "ops",
             "links",
+            "suggest_checks",
         ),
     )
 
@@ -2196,10 +2220,16 @@ class SeHandler(Handler):
             from precis_se.inspect_view import render_inspect
 
             return Response(body=render_inspect(tree, str(ref.slug), args or {}))
+        if v == "suggest_checks":
+            from precis_se import suggest_checks as se_suggest
+
+            return Response(body=se_suggest.render_suggest_checks(tree, str(ref.slug)))
         if v == "validate":
             return Response(body=self._render_validate(tree, ref.id, args))
         if v == "trace":
             return Response(body=self._render_trace(tree, ref.id, args))
+        if v == "parameterize":
+            return Response(body=self._render_parameterize(tree, ref, args))
         if v == "mechanics":
             return Response(body=se_atomic_render.render_mechanics(self.store, tree))
         if v == "literature":
@@ -2244,6 +2274,10 @@ class SeHandler(Handler):
 
             return Response(body=render_flow(self.store, tree, args or {}))
         if v == "drc":
+            # One wall-clock deadline for the whole view (gr529278): the
+            # fdm print-status pass and the validate digest share it —
+            # the pointer does not open a fresh budget of its own.
+            deadline = time.monotonic() + se_validate.VALIDATE_VIEW_BUDGET_S
             body = _render_drc(
                 tree,
                 self.store,
@@ -2254,13 +2288,13 @@ class SeHandler(Handler):
                 args,
             )
             try:
-                body += self._fdm_drc_pointer(tree)
+                body += self._fdm_drc_pointer(tree, deadline=deadline)
             except se_printing.PrintUnsupported as exc:
                 raise Unsupported(
                     str(exc), next="pip install --force-reinstall 'precis-mcp'"
                 ) from exc
             digest, qualifier = self._validate_digest(
-                self._validate_findings(tree, ref.id)
+                self._validate_findings(tree, ref.id, deadline=deadline)
             )
             if qualifier:
                 body = body.replace(
@@ -2388,9 +2422,12 @@ class SeHandler(Handler):
         tree: SeTree,
         ref_id: int,
         load_cases: list[se_stability.LoadCase] | None = None,
+        deadline: float | None = None,
     ) -> list[Any]:
         """Method seam over :func:`validate_findings` (``view='drc'``)."""
-        return validate_findings(self.store, tree, ref_id, load_cases=load_cases)
+        return validate_findings(
+            self.store, tree, ref_id, load_cases=load_cases, deadline=deadline
+        )
 
     def _reply_digest(self, tree: SeTree, ref_id: int) -> str:
         """The one-line validate digest a put/edit reply ends with
@@ -2738,6 +2775,134 @@ class SeHandler(Handler):
         )
         return "\n".join(out)
 
+    def _render_parameterize(
+        self, tree: SeTree, ref: Any, args: dict[str, Any] | None = None
+    ) -> str:
+        """``view='parameterize'`` (gr521589) — a trace ``frame`` plus an
+        ``arg`` name → the parameter-extracting rewrite of the workspace
+        script, as a unified diff. Read-only: the frame's ``args`` digest
+        names the value the arg was bound to and ``src``/``line`` locate
+        the call site; the script text comes from the workspace's folder
+        (the same refs the ``ws-<slug>`` python root materialises —
+        ``WorkspaceRoots._folder``/``._files`` are the DB read half of
+        it). The agent applies the proposal through the normal
+        ``edit(kind='plaintext')`` path and re-runs."""
+        from precis.handlers._python_ws import WorkspaceRoots
+        from precis_se import parameterize as se_parameterize
+        from precis_se import traceview as tv
+
+        a = args or {}
+        frame_sel = str(a.get("frame") or "").strip()
+        arg = str(a.get("arg") or "").strip()
+        if not frame_sel or not arg:
+            raise BadInput(
+                "view='parameterize' needs args={'frame': '<key>', "
+                "'arg': '<arg name>'}",
+                next=_PARAM_NEXT,
+            )
+        key = frame_sel.removeprefix("frame:").strip()
+        ctx = _trace_context(tree)
+        hit: tuple[_BlockTrace, tv.Trace, dict[str, Any]] | None = None
+        for bt in ctx.values():
+            if bt.doc is None:
+                continue
+            tr = tv.Trace(bt.doc)
+            fr = tr.frame(key)
+            if fr is not None:
+                hit = (bt, tr, fr)
+                break
+        if hit is None:
+            docs = [bt.doc for bt in ctx.values() if bt.doc is not None]
+            if not docs:
+                raise BadInput(_NO_TRACE, next=_TRACE_NEXT)
+            top = [
+                f["key"]
+                for tr in {id(d): tv.Trace(d) for d in docs}.values()
+                for f in tr.children.get(None, [])
+            ]
+            raise BadInput(
+                f"frame {key!r} is not in any of this design's traces",
+                next=_PARAM_NEXT,
+                options=top,
+            )
+        bt, tr, fr = hit
+        if not fr.get("src"):
+            raise BadInput(
+                f"frame {key} has no src — it was minted outside the "
+                "workspace script (a driver or library line)",
+                next=f"get(kind='se', id={str(ref.slug)!r}, view='trace', "
+                f"args={{'frame': {key!r}}}) shows the frame's site",
+            )
+        file = str(fr.get("file") or "")
+        fargs = fr.get("args") or {}
+        if arg not in fargs:
+            raise BadInput(
+                f"frame {key}'s args digest has no {arg!r} "
+                f"(args: {', '.join(sorted(fargs)) or 'none'})",
+                next=f"args={{'frame': {key!r}, 'arg': '<digest name>'}}",
+            )
+        ws = str((bt.meta.get("generated") or {}).get("workspace") or tr.ws or "")
+        if not ws:
+            raise BadInput(
+                f"frame {key}'s run names no workspace — no script folder to rewrite",
+                next="parameterize reads workspace runs only — an op "
+                "trace has no script",
+            )
+        roots = WorkspaceRoots(self.store)
+        folder = roots._folder(ws)
+        if folder is None:
+            raise BadInput(
+                f"workspace {ws!r} has no folder ref — its script files "
+                "were never synced",
+                next="re-import with 'files' — edit(kind='se', ops=[{"
+                f"'op': 'import_workspace', 'workspace': {ws!r}, "
+                "'run': {…}, 'files': {…}}])",
+            )
+        folder_id, _ws_meta = folder
+        scripts = roots._files(folder_id)
+        script = scripts.get(file)
+        if script is None:
+            raise BadInput(
+                f"{file!r} is not in workspace {ws!r}'s folder "
+                f"({', '.join(sorted(scripts)) or 'empty'})",
+                next="re-sync 'files' via the import_workspace op — the "
+                "folder is the script's live copy",
+            )
+        rw = se_parameterize.parameterize(
+            script,
+            int(fr.get("line") or 0),
+            arg,
+            value=fargs[arg],
+            src=str(fr.get("src")),
+            filename=file,
+            frame=fr,
+        )
+        body = [rw.summary]
+        if rw.note:
+            body.append(rw.note)
+        body += ["", rw.diff]
+        if rw.candidates:
+            body += [
+                "",
+                f"candidates — the same literal elsewhere in {rw.scope} "
+                "(listed, not rewritten):",
+                *(f"  {file}:{c.line}: {c.text}" for c in rw.candidates),
+            ]
+        file_slug = workspace_import._file_slug(file)
+        body.append(
+            render_next_section(
+                [
+                    (
+                        f"edit(kind='plaintext', id='ws-{ws}--{file_slug}', "
+                        "mode='find-replace', find=…, text=…)",
+                        "apply the diff's hunks — the folder file is the "
+                        "live script; re-run the workspace after",
+                    ),
+                ]
+            )
+        )
+        return "\n".join(body)
+
     def _render_validate(
         self, tree: SeTree, ref_id: int, args: dict[str, Any] | None = None
     ) -> str:
@@ -2762,8 +2927,12 @@ class SeHandler(Handler):
         (:func:`_scenario_line`) — a verdict whose production context isn't
         stated can't be re-read later."""
         previous = se_finding_id.parse_previous(args)
+        deadline = time.monotonic() + se_validate.VALIDATE_VIEW_BUDGET_S
         findings = self._validate_findings(
-            tree, ref_id, load_cases=_load_cases_arg(tree, args)
+            tree,
+            ref_id,
+            load_cases=_load_cases_arg(tree, args),
+            deadline=deadline,
         )
         header_lines = [
             _fill_fraction_line(tree),
@@ -2775,15 +2944,22 @@ class SeHandler(Handler):
             header_lines.append(atomic_line)
             header_lines.extend(se_atomic_render.relaxed_by_lines(self.store, tree))
         try:
-            fdm_status = self._fdm_print_status(tree)
+            fdm_status = self._fdm_print_status(tree, deadline=deadline)
         except se_printing.PrintUnsupported as exc:
             raise Unsupported(
                 str(exc), next="pip install --force-reinstall 'precis-mcp'"
             ) from exc
-        fdm_checked = sum(1 for _, r in fdm_status if r.printed is not None)
+        fdm_checked = sum(
+            1 for _, r in fdm_status if r.printed is not None and r.checks_ran
+        )
         header_lines.append(
             f"{fdm_checked}/{len(fdm_status)} fdm block(s) print-checked"
         )
+        fdm_notes = [
+            f"{name}: {note}" for name, r in fdm_status for note in r.check_notes
+        ]
+        if fdm_notes:
+            header_lines.append("fdm print-check: " + "; ".join(fdm_notes))
         fill_block = "\n".join(header_lines)
         if not findings:
             clean = f"✓ no validator findings\n{fill_block}"
@@ -3193,13 +3369,18 @@ class SeHandler(Handler):
         return total_cost, cost_covered, total_mass, mass_covered, len(totals)
 
     def _fdm_print_status(
-        self, tree: SeTree
+        self, tree: SeTree, *, deadline: float | None = None
     ) -> list[tuple[str, se_printing.BlockPrintReport]]:
         """Every fdm-family (ordinary, template-owning) block's
         :class:`~precis_se.printing.BlockPrintReport`, name-sorted — the
         one store-aware pass ``view='validate'``'s header line and
         ``view='drc'``'s pointer line both read, so the two counts can
-        never drift apart."""
+        never drift apart. ``deadline`` (``time.monotonic()`` — the
+        validate view's :data:`~precis_se.validate.VALIDATE_VIEW_BUDGET_S`)
+        bounds each block's mesh-dependent work: a field-backed solid
+        meshes at a capped pitch and a block the deadline has passed gets
+        a "not run: budget exceeded" note instead of hanging the view
+        (gr529278)."""
         out: list[tuple[str, se_printing.BlockPrintReport]] = []
         for name in sorted(tree.blocks):
             node = tree.blocks[name]
@@ -3208,19 +3389,32 @@ class SeHandler(Handler):
             family = se_modes.family_of(node.mode)
             if family is None or family.key != "fdm":
                 continue
+            budget_s = (
+                None if deadline is None else max(0.0, deadline - time.monotonic())
+            )
             report = se_printing.report_for(
-                tree, name, cad_store_reader=self.store, mesh_checks=False
+                tree,
+                name,
+                cad_store_reader=self.store,
+                mesh_checks=False,
+                budget_s=budget_s,
             )
             assert report is not None  # already gated on family.key == 'fdm'
             out.append((name, report))
         return out
 
-    def _fdm_drc_pointer(self, tree: SeTree) -> str:
+    def _fdm_drc_pointer(self, tree: SeTree, *, deadline: float | None = None) -> str:
         """``view='drc'``'s appended pointer (se-print-implementer.md): one
         line per fdm block naming its process-finding count and
         ``view='print'`` — the design-DRC view stays design-tier, but a red
-        print is never missed."""
-        status = self._fdm_print_status(tree)
+        print is never missed. The pointer reads the same
+        :meth:`_fdm_print_status` ``view='validate'``'s header does, under
+        the caller's ``deadline`` — the ``view='drc'`` branch opens one
+        :data:`~precis_se.validate.VALIDATE_VIEW_BUDGET_S` deadline at its
+        top, shared with the render and the digest, so the view's total
+        stays inside a single budget (gr529278); this never opens a fresh
+        one."""
+        status = self._fdm_print_status(tree, deadline=deadline)
         if not status:
             return ""
         lines = ["", "## fdm print-check (view='print' for the full report)"]
@@ -6373,6 +6567,12 @@ _NO_TRACE = (
 #: the copy-pasteable call that lists the asks and their arg shapes.
 _TRACE_NEXT = "get(kind='se', id='<slug>', view='trace')"
 
+#: The ``view='parameterize'`` call shape — its refusals' ``next=``.
+_PARAM_NEXT = (
+    "get(kind='se', id='<slug>', view='parameterize', "
+    "args={'frame': '<key>', 'arg': '<arg name>'})"
+)
+
 
 class _BlockTrace(NamedTuple):
     """One bound block's trace access for ``view='trace'`` and the
@@ -6890,9 +7090,10 @@ def _render_print_summary(report: se_printing.BlockPrintReport) -> str:
     mode, realized/unrealized, the proposed/pinned frame with its score,
     then findings. The shipped-mesh rules do not run here, and a section
     without findings says so rather than reading as a clean mesh."""
-    lines = [f"## {report.block} — mode {report.mode}"]
+    lines = [f"## {report.block} — mode {report.mode}", *report.check_notes]
     if report.printed is None:
-        lines.append("unrealized — no bound cad design yet")
+        if not report.check_notes:
+            lines.append("unrealized — no bound cad design yet")
     else:
         lines.append(
             f"realized: {report.printed.volume_after_m3 * 1e9:.4g} mm³ "
@@ -6963,11 +7164,15 @@ def _mesh_check_counts_line(report: se_printing.BlockPrintReport) -> str:
 def _render_print_block(report: se_printing.BlockPrintReport) -> str:
     """``view='print' args={'block': ...}`` — one block's full
     orientation-candidate table plus findings."""
-    lines = [f"# view='print' — {report.block} (mode {report.mode})"]
+    lines = [
+        f"# view='print' — {report.block} (mode {report.mode})",
+        *report.check_notes,
+    ]
     if report.printed is None:
         lines.append("")
-        lines.append("unrealized — no bound cad design yet")
-        lines.append("")
+        if not report.check_notes:
+            lines.append("unrealized — no bound cad design yet")
+            lines.append("")
         lines.append(
             _findings_table(report.findings) if report.findings else "no findings"
         )
@@ -8166,6 +8371,7 @@ _VIEW_ARGS: dict[str, frozenset[str]] = {
     ),
     "rays": frozenset(),
     "inspect": frozenset({"block", *_INSPECT_ARGS}),
+    "suggest_checks": frozenset(),
     "validate": frozenset({"previous", "load_cases"}),
     "clearance": frozenset(
         {"a", "b", "state", "previous", "sweep", "pocket_gap_A", "lining", "cargo_A3"}
@@ -8191,6 +8397,7 @@ _VIEW_ARGS: dict[str, frozenset[str]] = {
     ),
     "drc": frozenset({"state", "previous", "load_cases"}),
     "trace": frozenset({"atom", "atoms", "frame", "touched", "against", "block"}),
+    "parameterize": frozenset({"frame", "arg"}),
     "kinematics": frozenset(),
     "joints": frozenset(),
     "bom": frozenset(),
@@ -9451,12 +9658,13 @@ _VIEW_FAMILIES: tuple[tuple[str, str], ...] = (
         "records",
         "completion completion_digest report catalogue measures contracts "
         "provenance revisions branches diff interview freedom ops links "
-        "export cut trace joints",
+        "export cut trace parameterize joints",
     ),
     (
         "checks",
         "validate drc clearance sites sweep stations pick stability "
-        "assembly_check mechanics kinematics surface flow fret fit",
+        "assembly_check mechanics kinematics surface flow fret fit "
+        "suggest_checks",
     ),
     ("build", "bom order fasten print fab ray rays inspect literature"),
 )

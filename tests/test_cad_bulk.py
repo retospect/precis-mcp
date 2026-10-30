@@ -6,7 +6,7 @@ import math
 
 import numpy as np
 
-from precis.cad.bulk import _integrate, expr_aabb, volume
+from precis.cad.bulk import _integrate, expr_aabb, volume, volume_field
 from precis.cad.dsl import build_config
 from precis.cad.fold import Expr, Inter, Leaf, material_intervals
 from precis.cad.graph import Design
@@ -274,3 +274,50 @@ def test_samples_budget_still_maps_through_grid_for() -> None:
     d.add_component("b", d.prim("box", build_config("box:w40d20h10")))
     res = volume(d, samples=200_000)
     assert res.grid == 99  # round(sqrt(200000)/4.5), the legacy mapping
+
+
+# ---------------------------------------------------------------------------
+# volume_field — the bounded sign-grid counterpart used on field-backend
+# designs, where the ray quadrature is unbounded-cost (gr529278)
+# ---------------------------------------------------------------------------
+
+
+def test_volume_field_of_box_matches_analytic() -> None:
+    d = Design()
+    d.add_component("b", d.prim("box", build_config("box:w40d20h10")))
+    res = volume_field(d)
+    assert math.isclose(res.volume, 40 * 20 * 10, rel_tol=0.02)
+    assert math.isclose(res.centroid[2], 5.0, abs_tol=0.2)
+
+
+def test_volume_field_of_rounded_box_matches_steiner() -> None:
+    # A Rounded leaf's ray_hits is a per-ray SDF search, so the ray
+    # quadrature cannot price it in bounded time — the sign grid answers
+    # the same volume from one vectorized expr_sdf_np batch instead.
+    # ``rd`` shrinks the inner box by r on every side, so the solid is
+    # inner ⊕ ball(r): V = abc + 2r(ab+ac+bc) + πr²(a+b+c) + (4/3)πr³.
+    d = Design()
+    d.add_component("r", d.prim("rbox", build_config("box:w40d20h10rd2")))
+    res = volume_field(d)
+    a, b, c, r = 36.0, 16.0, 6.0, 2.0
+    steiner = (
+        a * b * c
+        + 2 * r * (a * b + a * c + b * c)
+        + math.pi * r * r * (a + b + c)
+        + 4.0 / 3.0 * math.pi * r**3
+    )
+    assert math.isclose(res.volume, steiner, rel_tol=0.05)
+
+
+def test_volume_field_box_restricts_the_sampling_region() -> None:
+    # The cut probe samples an intersect over the *cutter's* box — the
+    # region that bounds what the intersect can hold — not the whole
+    # part's additive AABB.
+    d = Design()
+    plate = d.prim("plate", build_config("box:w40d20h10rd2"))
+    bore = d.prim("bore", build_config("cyl:r3h12"), translation(0, 0, -1))
+    d.add_component("part", plate)
+    hole = d.intersect(d.components["part"], bore)
+    bore_lo, bore_hi = expr_aabb(d, bore)
+    res = volume_field(d, expr=hole, box=(bore_lo, bore_hi))
+    assert math.isclose(res.volume, math.pi * 9 * 10, rel_tol=0.1)

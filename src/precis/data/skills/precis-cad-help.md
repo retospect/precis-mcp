@@ -297,6 +297,21 @@ summaries too). v2 (closest-point redistance) changed open/close/round
 results versus v1; a field over `MAX_REDISTANCE_VOXELS` (10M) is refused
 — coarsen the pitch.
 
+## Draft — `draft<deg>`, `pullz±1`
+
+**Draft.** `box` and `cyl` carry an explicit mold draft: `draft<angle>`
+(`box:w40mmd20mmh10mmdraft2deg`) tapers every side face by that angle
+along the pull axis, so the pull-side face is smaller by `h·tan(draft)`
+on each side — a drafted cylinder is exactly the frustum you could spell
+`tcone`, a drafted box a poly frustum. `pullz-1` pulls toward the base
+(default `+z`); pull along x/y is refused (the frustum kernels are
+z-axis — tilt the node's `rot:` instead). `draft` must be `> 0` and
+`< 45°`, and small enough that the drafted end keeps a positive face;
+`rd` and `draft` compose — the round wraps the exact drafted solid. The
+taper family (`cone`/`tcone`/`frustum`/`pyramid`) already drafts through
+`rb`/`rt` and refuses `draft=` saying so. Mold ops carry both payloads
+into the cavity configs verbatim — a mold never derives them.
+
 ## Read the design — `get`
 
 ```python
@@ -379,7 +394,12 @@ get(
 )  # exact B-rep for CAD apps
 ```
 
-- **`scad`** — pure text, zero deps; drop into the OpenSCAD GUI.
+- **`scad`** — pure text, zero deps; drop into the OpenSCAD GUI. Renders
+  the payloads analytically: a drafted `box`/`cyl` via
+  `linear_extrude(scale=…)`/`cylinder(r1≠r2)`, a rounded leaf via
+  `minkowski()` of its shrunk body with a sphere (the exact SDF offset).
+  What it cannot render truthfully stays sharp under a `// WARNING:` header
+  line — never a silently wrong solid.
 - **`stl` / `3mf`** — in-process mesh (manifold3d CSG, a core dependency —
   works with no extra). 3MF carries units/metadata; STL is universal. A
   design with `rd`/`blend:`/`field:` meshes from its signed-distance field

@@ -508,3 +508,89 @@ def volume(
         rel_err=round(rel_err, 5),
         grid=n,
     )
+
+
+#: Cells in the sign-sampling grid :func:`volume_field` integrates over —
+#: the bounded counterpart of the ray quadrature for designs whose leaves
+#: price ``ray_hits`` iteratively (a ``Rounded`` leaf runs a golden-section
+#: minimum plus two bisections per ray, ~100+ scalar ``distance_local``
+#: calls each, so :func:`volume`'s 200² + 134² ray grids cost millions of
+#: SDF evaluations — minutes, and uninterruptible mid-cast: the residual
+#: unbounded work behind gr529278's ``view='validate'`` hang). One
+#: vectorized :func:`~precis.cad.fold.expr_sdf_np` batch is bounded by
+#: construction.
+FIELD_VOLUME_CELLS = 250_000
+
+
+def _sign_integrate(
+    expr: Expr,
+    instances: dict[str, Instance],
+    lo: Vec3,
+    hi: Vec3,
+    cells: int,
+) -> tuple[float, Vec3, int]:
+    """Inside-fraction volume + centroid over ``cells`` sign samples on a
+    uniform grid spanning ``[lo, hi]`` — :func:`volume_field`'s quadrature
+    core, run once at ``cells`` and once coarser for the ``rel_err``
+    estimate."""
+    span = np.asarray(hi, dtype=np.float64) - np.asarray(lo, dtype=np.float64)
+    box_vol = float(np.prod(span))
+    pitch = (box_vol / cells) ** (1.0 / 3.0)
+    n = np.maximum(np.ceil(span / pitch).astype(np.int64), 1)
+    axes = [lo[i] + (np.arange(int(n[i])) + 0.5) * (span[i] / n[i]) for i in range(3)]
+    pts = np.stack(np.meshgrid(*axes, indexing="ij"), axis=-1).reshape(-1, 3)
+    inside = expr_sdf_np(expr, pts, instances) <= 0.0
+    count = int(np.count_nonzero(inside))
+    centroid = as_vec3(pts[inside].mean(axis=0)) if count else vec3(0.0, 0.0, 0.0)
+    return count * (box_vol / len(pts)), centroid, len(pts)
+
+
+def volume_field(
+    design: Design,
+    *,
+    component: str | None = None,
+    expr: Expr | None = None,
+    box: tuple[Vec3, Vec3] | None = None,
+    cells: int = FIELD_VOLUME_CELLS,
+) -> BulkResult:
+    """Volume + centroid by inside-fraction on a bounded sign grid — the
+    field-backend counterpart of :func:`volume`.
+
+    :func:`volume` is exact-per-ray and cheap on analytic leaves, but on a
+    leaf whose ``ray_hits`` is itself a search — ``Rounded`` (golden
+    section + two bisections) or a sampled ``Field`` — each of its ~58k
+    rays costs ~100+ scalar SDF evaluations: minutes of work no
+    caller-side deadline can interrupt (gr529278's residual
+    ``view='validate'`` hang, found after the mesh pitch was capped). This
+    estimator instead samples the folded sign field once, vectorized
+    (:func:`~precis.cad.fold.expr_sdf_np`), at the centres of a uniform
+    ``cells``-capped grid spanning ``box`` — the expr's additive AABB by
+    default, or a tighter caller-chosen region (a cut probe passes the
+    *cutter's* box: it bounds the material the intersect can hold). The
+    volume is the inside fraction times the box volume; the centroid is
+    the inside samples' mean.
+
+    Boundary error is ~half a surface cell — the right tier for
+    "is there material" gates and display volumes, not for micron-exact
+    quadrature. ``rel_err`` is the same fine-vs-coarse estimate
+    :func:`volume` reports. ``expr``/``component`` select as in
+    :func:`volume`."""
+    if expr is not None and component is not None:
+        raise ValueError("volume_field(): pass component= or expr=, not both")
+    if expr is None:
+        expr = design.components[component] if component else design.whole()
+    lo, hi = expr_aabb(design, expr) if box is None else box
+    lo = as_vec3(lo)
+    hi = as_vec3(hi)
+    if float(np.prod(np.asarray(hi) - np.asarray(lo))) <= 0.0:
+        return BulkResult(
+            volume=0.0, centroid=vec3(0.0, 0.0, 0.0), samples=0, rel_err=1.0
+        )
+    vol, centroid, samples = _sign_integrate(expr, design.instances, lo, hi, cells)
+    vol_coarse, _, _ = _sign_integrate(
+        expr, design.instances, lo, hi, max(64, cells // 8)
+    )
+    rel_err = abs(vol - vol_coarse) / vol if vol > 0 else 1.0
+    return BulkResult(
+        volume=vol, centroid=centroid, samples=samples, rel_err=round(rel_err, 5)
+    )

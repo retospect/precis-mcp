@@ -84,18 +84,9 @@ checks are meaningful, so `view='validate'`/`view='drc'` print the
 governing scenario — or `scenario: none chosen`. An unknown name is
 rejected; an *absent* key keeps the earlier choice.
 
-**Every `put`/`edit` reply ends with a `validate:` digest** —
-`validate: clean`, or `validate: N error(s), M warning(s) — first:
-<rule> <detail>; see view='validate'` — and `/se/<slug>` shows it above
-the findings table — a write never refuses, but it no longer stays
-silent. `view='drc'` prints the same digest as its last
-line, and a DRC-clean design with validate warnings reads `no DRC
-findings; validate has N warning(s)` — a clean DRC never implies a clean
-design. For bound structures, `atom_clash` fires per block pair when posed atoms come
-within 2 Å (error under 1 Å, warn in [1, 2) Å — count, min distance,
-closest pair in the text). A `connect` does not excuse it —
-re-pose the block (`set_pose`); blocks left at `[0,0,0]` pile up and
-trip it.
+**Every `put`/`edit` reply ends with a `validate:` digest** — what the
+check views report, the 60 s `view='validate'` budget and suggested
+follow-up checks: `precis-se-checks-help`.
 
 **Blocks are addressed by label or by uid.** A label (the block `name`)
 is unique within a design; a block also carries a stable **uid** (`(uid
@@ -230,7 +221,9 @@ Read one block with `get(kind='se', id='<design>', view='block', args={'block': 
   `phi`. One block per pull `<part>.mold.<i>` = `Inter(sector_i, Diff(box,
   scale(part, 1+shrink)))`, fresh `cad` binding + `sla` mode; part stamped
   `molding`. Refuses a radial layout `mold.undercut` finds undercut for;
-  sprue/gate/vents out (follow-up).
+  sprue/gate/vents out (follow-up). A part's `rd`/`draft` payloads ride
+  into the cavity configs verbatim (shrink scales lengths, never the
+  angle) — the mold never derives them.
 
 ## Ops — BOM, order, notes, formfind
 
@@ -309,7 +302,8 @@ Blocks that talk by Förster resonance energy transfer: `set_chromophore` /
 
 `tree · block · report · ports · connects · topology · chain · measures · revisions · branches · diff · provenance · contracts · datums · validate · clearance · sweep ·
 drc · bom · order · fasten · interview · freedom · stability · mechanics ·
-literature · fret · links · export · cut · ops · assembly_check · trace · joints`
+literature · fret · links · export · cut · ops · assembly_check · trace · joints ·
+suggest_checks`
 (`joints` also serves without an id — the generated joint vocabulary).
 No `mass` view — mass
 goes via `bom`. `interview` elicits what's missing. `assembly_check` is
@@ -366,6 +360,10 @@ target='kind:identifier', rel=…)` — `rel='serves'` for the quest/todo
 the design serves, default `related-to` for a sibling variant,
 `rel='parent'` (with `target='folder:N'`) files it into a folder;
 `mode='remove'` deletes the edge.
+
+`view='suggest_checks'` seeds the verify loop from the design's
+declarations — what it proposes and how to apply it:
+`precis-se-checks-help`.
 
 ## The spatial eye (`~<focus>`)
 

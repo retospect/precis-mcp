@@ -33,8 +33,8 @@ judgment call the caller must make explicitly), so a missing weight or
 from __future__ import annotations
 
 import math
-from collections.abc import Sequence
-from dataclasses import dataclass
+from collections.abc import Callable, Sequence
+from dataclasses import dataclass, replace
 from typing import Any
 
 import numpy as np
@@ -456,13 +456,17 @@ def score(
 class BuildCandidate:
     """One orientation candidate — carries the direction, the ranking
     score (a cost: lower is better), the per-term raw dict, and which
-    terms were skipped for lack of a rules field."""
+    terms were skipped for lack of a rules field. ``partial`` is True
+    only on a search ``should_stop`` cut short: the candidate is the best
+    of what ran, not the full sweep's winner — the caller reports the gap
+    rather than letting it read as the searched answer."""
 
     down: Vec3
     score: float
     terms: dict[str, float]
     skipped: tuple[str, ...]
     index: int
+    partial: bool = False
 
 
 def orient(
@@ -470,6 +474,8 @@ def orient(
     rules: dict[str, Any],
     policy: dict[str, Any],
     loads: Sequence[Vec3] = (),
+    *,
+    should_stop: Callable[[], bool] | None = None,
 ) -> list[BuildCandidate]:
     """Search every candidate build-down direction, score each, and return
     them **best-first** (lowest cost). Ties break by lowest ``height``,
@@ -480,13 +486,29 @@ def orient(
     complete ``weights`` dict (:func:`score`'s requirement) — refuses by
     name otherwise, same as ``score()``, so the very first candidate fails
     fast instead of after 100+ silent scores.
+
+    ``should_stop`` (``None`` = the whole sweep) is polled once per
+    candidate *before* that candidate's :func:`score` — the wall-clock
+    bound ``view='validate'``'s print-status pass needs (gr529278: a
+    ~130-direction sweep over a field mesh held the call for minutes).
+    When it fires, the candidates scored so far come back best-first,
+    each marked ``partial=True`` — the best of what ran, never a
+    fabricated full-sweep answer; ``len(returned)`` vs
+    ``len(candidates(sweep_deg))`` says how far the search got. One
+    ``score()`` call is the atomic unit — bounded by the caller's own
+    mesh cap; a half-scored candidate could not report its terms
+    honestly, so the check is never placed inside it.
     """
     if "sweep_deg" not in policy:
         raise ValueError("policy is missing 'sweep_deg'")
     _require_weights(policy)
     cands = candidates(float(policy["sweep_deg"]))
     scored: list[BuildCandidate] = []
+    stopped = False
     for i, d in enumerate(cands):
+        if should_stop is not None and should_stop():
+            stopped = True
+            break
         s = score(mesh, d, rules, policy, loads)
         scored.append(
             BuildCandidate(
@@ -494,6 +516,8 @@ def orient(
             )
         )
     scored.sort(key=lambda c: (c.score, c.terms.get("height", 0.0), c.index))
+    if stopped:
+        scored = [replace(c, partial=True) for c in scored]
     return scored
 
 

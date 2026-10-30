@@ -52,6 +52,22 @@ would only route the export through the sampled field backend for
 nothing); ``chamfer`` has no extent to shrink and its special grammar
 cannot carry it.
 
+**Draft.** ``box`` and ``cyl`` accept an explicit mold draft:
+``draft<angle>`` (boundary mode: an angle unit, ``deg``/``rad``;
+canonical storage: bare SI radians) tapers every side face by that
+angle along the pull axis, so the face at the pull-side end is smaller
+by ``h·tan(draft)`` on each side — a drafted cylinder is exactly a
+:class:`~precis.cad.primitives.CircularFrustum`, a drafted box a
+:class:`~precis.cad.primitives.PolyFrustum` (:func:`build` reuses both).
+``pullz-1`` pulls toward the base instead of the default ``+z``; pull
+along ``x``/``y`` is refused (the frustum kernels are z-axis — tilt the
+node's ``rot:`` placement instead). ``draft`` must be positive and
+below 45°, and small enough that the drafted end keeps a positive face;
+``rd`` and ``draft`` compose — :func:`shrunk` offsets the drafted solid
+exactly, the round wrapping it the usual way. The taper family
+(``cone``/``tcone``/``frustum``/``pyramid``) already expresses draft
+through ``rb``/``rt`` and refuses ``draft=`` saying so.
+
 Grammar: ``<alias>:<tokens>`` where each token is a ``<key><number><unit>``
 triple (``<key><number>`` for the dimensionless ``n``). Keys are matched
 longest-first so ``rb`` / ``rt`` / ``rd`` win over ``r``; ``R`` (major
@@ -117,6 +133,7 @@ from precis.cad.primitives import (
     CylRelief,
     Field,
     HalfSpace,
+    PolyFrustum,
     Primitive,
     Rounded,
     Sphere,
@@ -193,26 +210,42 @@ HmapLoader = Callable[[str], HeightMap]
 RELIEF_ALIAS = "relief"
 
 
-#: ``<key><number>`` — keys longest-first so ``rb``/``rt``/``rd`` beat ``r``.
-#: Numbers take an optional exponent (``3e-9``) — unambiguous since no
-#: DSL key is ``e``; nm-scale dims are unreadable otherwise (gr332020).
+#: ``<key><number>`` — keys longest-first so ``rb``/``rt``/``rd`` beat ``r``
+#: and the payload keys (``draft``/``pull*``) beat ``d``. Numbers take an
+#: optional exponent (``3e-9``) — unambiguous since no DSL key is ``e``;
+#: nm-scale dims are unreadable otherwise (gr332020).
 #: Canonical/storage-mode grammar (``require_units=False``) — bare
 #: numbers only, unchanged since before the units cutover.
 _NUM = r"-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?"
-_TOKEN_RE = re.compile(rf"(rb|rt|rd|R|r|w|d|h|n)({_NUM})")
+_TOKEN_RE = re.compile(rf"(rb|rt|rd|draft|pullx|pully|pullz|R|r|w|d|h|n)({_NUM})")
 _CHAMFER_RE = re.compile(rf"^({_NUM})x({_NUM})$")
 
 #: Boundary-mode grammar (``require_units=True``) — every key's number
-#: may be immediately followed by one of :data:`LENGTH_UNIT_TOKEN`
-#: (mandatory for every key but ``n``, the dimensionless count; forbidden
-#: for ``n``). The unit is optional *in the regex* so a bare number still
-#: matches (letting :func:`parse` raise the structured
+#: may be immediately followed by a unit from :data:`LENGTH_UNIT_TOKEN`
+#: (mandatory for every length key) or :data:`ANGLE_UNIT_TOKEN`
+#: (mandatory for ``draft``); ``n`` and the ``pull*`` signs are
+#: dimensionless and take none. The unit is optional *in the regex* so a
+#: bare number still matches (letting :func:`parse` raise the structured
 #: :class:`~precis.utils.units.UnitRequiredError` instead of a generic
 #: syntax error).
-_UNIT_TOKEN_RE = re.compile(rf"(rb|rt|rd|R|r|w|d|h|n)({_NUM})({LENGTH_UNIT_TOKEN})?")
+_UNIT_TOKEN_RE = re.compile(
+    rf"(rb|rt|rd|draft|pullx|pully|pullz|R|r|w|d|h|n)({_NUM})"
+    rf"({LENGTH_UNIT_TOKEN}|{ANGLE_UNIT_TOKEN})?"
+)
 _UNIT_CHAMFER_RE = re.compile(
     rf"^({_NUM})({LENGTH_UNIT_TOKEN})?x({_NUM})({ANGLE_UNIT_TOKEN})?$"
 )
+
+#: Unit class per non-length key in the standard shape grammar
+#: (:func:`parse`'s main token loop): ``draft`` is an angle (radians
+#: canonical), the ``pull*`` signs are dimensionless. ``n`` keeps its
+#: own branch in the loop and is deliberately not listed here.
+_SHAPE_KEY_KIND: dict[str, Dimension | Literal["count"]] = {
+    "draft": "angle",
+    "pullx": "count",
+    "pully": "count",
+    "pullz": "count",
+}
 
 #: Required keys per alias, in canonical output order (drives ``format_spec``).
 _ALIAS_KEYS: dict[str, tuple[str, ...]] = {
@@ -247,6 +280,24 @@ ROUNDABLE: frozenset[str] = frozenset(
     {"box", "cyl", "cone", "tcone", "hex", "ngon", "frustum", "pyramid"}
 )
 
+#: The mold-draft payload keys. ``draft`` is the taper angle (SI radians
+#: in canonical storage; boundary mode takes ``deg``/``rad``);
+#: ``pullx``/``pully``/``pullz`` carry the signed pull axis (±1), only
+#: ``pullz`` buildable today — the frustum kernels are z-axis.
+DRAFT_KEY = "draft"
+PULL_KEYS: frozenset[str] = frozenset({"pullx", "pully", "pullz"})
+
+#: Aliases that accept the draft payload — the two prims whose taper is
+#: NOT already expressible in their required dims. The taper family
+#: (``cone``/``tcone``/``frustum``/``pyramid``) already drafts via
+#: ``rb``/``rt`` and refuses :data:`DRAFT_KEY` saying so.
+DRAFTABLE: frozenset[str] = frozenset({"box", "cyl"})
+
+#: The largest draft angle the payload admits (radians) — at 45° the side
+#: face lies down flat and beyond it the "pull" inverts; the ruling caps
+#: the payload below that.
+DRAFT_MAX = math.pi / 4.0
+
 #: Aliases that refuse ``rd`` by name, with the reason the refusal quotes.
 _ROUND_REFUSED: dict[str, str] = {
     "sphere": "a sphere is already round — drop rd (it would be a no-op)",
@@ -260,6 +311,23 @@ _ROUND_REFUSED: dict[str, str] = {
         "rounding a relief leaf is a height-map filter applied before the "
         "map is stored — not rd"
     ),
+}
+
+#: Aliases that refuse the draft payload, with the reason the refusal
+#: quotes — the taper family already expresses draft through its ``rb``/
+#: ``rt`` dims.
+_DRAFT_REFUSED: dict[str, str] = {
+    "cone": "a cone already tapers to its apex — rb/rt IS the draft",
+    "tcone": "a tcone already tapers — set rb/rt (that IS the draft)",
+    "frustum": "a frustum already tapers — set rb/rt (that IS the draft)",
+    "pyramid": "a pyramid already tapers to its apex — rb/rt IS the draft",
+    "hex": "only box and cylinder carry draft= (a regular prism has no rb/rt)",
+    "ngon": "only box and cylinder carry draft= (a regular prism has no rb/rt)",
+    "sphere": "a sphere has no side faces to taper",
+    "torus": "a torus has no side faces to taper",
+    "chamfer": "a chamfer is an unbounded half-space, not a draftable solid",
+    FIELD_ALIAS: "a sampled field cannot carry a draft — taper the grid before storing it",
+    RELIEF_ALIAS: "a relief leaf drafts through its own a= angle",
 }
 
 
@@ -370,6 +438,7 @@ def parse(
         key, num = m.group(1), m.group(2)
         if key in params:
             raise DslError(f"duplicate key {key!r} in config {config!r}")
+        kind = _SHAPE_KEY_KIND.get(key, "length")
         if require_units:
             unit = m.group(3)
             if key == "n":
@@ -379,14 +448,21 @@ def parse(
                         f"no unit allowed (got {m.group(0)!r})"
                     )
                 value = float(num)
+            elif kind == "count":
+                if unit:
+                    raise DslError(
+                        f"{alias}:{key} is a dimensionless axis sign, not a "
+                        f"quantity — no unit allowed (got {m.group(0)!r})"
+                    )
+                value = float(num)
             elif not unit:
                 raise UnitRequiredError(
-                    float(num), "length", arg_name=f"{arg_prefix}{alias}:{key}"
+                    float(num), kind, arg_name=f"{arg_prefix}{alias}:{key}"
                 )
             else:
                 value = parse_quantity(
                     f"{num}{unit}",
-                    "length",
+                    kind,
                     arg_name=f"{arg_prefix}{alias}:{key}",
                     warnings=warnings,
                 )
@@ -403,11 +479,16 @@ def parse(
         raise DslError(
             f"{alias} needs {sorted(required)}, missing {sorted(missing)} in {config!r}"
         )
+    if (DRAFT_KEY in params or PULL_KEYS & params.keys()) and alias not in DRAFTABLE:
+        raise DslError(
+            f"{alias} does not take draft: "
+            f"{_DRAFT_REFUSED.get(alias, 'only box and cylinder carry draft=')}"
+        )
     if ROUND_KEY in params and alias not in ROUNDABLE:
         raise DslError(
             f"{alias} does not take rd: {_ROUND_REFUSED.get(alias, 'not roundable')}"
         )
-    extra = params.keys() - required - {ROUND_KEY}
+    extra = params.keys() - required - {ROUND_KEY, DRAFT_KEY, *PULL_KEYS}
     if extra:
         raise DslError(f"{alias} got unexpected key(s) {sorted(extra)}")
 
@@ -415,6 +496,8 @@ def parse(
         n = params["n"]
         if n != int(n) or int(n) < 3:
             raise DslError(f"n must be an integer >= 3, got {n}")
+    if DRAFT_KEY in params or PULL_KEYS & params.keys():
+        _validate_draft(alias, params)
     if ROUND_KEY in params:
         shrunk(alias, params)  # validates; raises DslError naming the dimension
     return ShapeSpec(alias, params)
@@ -531,15 +614,138 @@ def _validate_relief(p: dict[str, float]) -> None:
             raise DslError(f"relief {key} must lie in [0, 180°], got {p[key]} rad")
 
 
+def _pull_sign(p: dict[str, float]) -> int:
+    """The draft pull direction: ``+1`` toward ``+z`` (the default), ``-1``
+    toward the base. Only ``pullz`` is buildable — parse refuses the other
+    axes before a spec can carry them."""
+    return -1 if p.get("pullz", 1.0) < 0.0 else 1
+
+
+def draft_inset(p: dict[str, float]) -> float:
+    """How far each side face steps inward over the full height:
+    ``h·tan(draft)``."""
+    return p["h"] * math.tan(p[DRAFT_KEY])
+
+
+def draft_box_rings(
+    p: dict[str, float],
+) -> tuple[list[tuple[float, float]], list[tuple[float, float]]]:
+    """``(bottom, top)`` vertex rings of a drafted box — the full-size
+    ``w × d`` ring at the pull-far end, inset by ``h·tan(draft)`` per side
+    at the pull-near end (so the pull-side face is the smaller one)."""
+    hw, hd = p["w"] / 2.0, p["d"] / 2.0
+    ins = draft_inset(p)
+    full = [(-hw, -hd), (hw, -hd), (hw, hd), (-hw, hd)]
+    small = [
+        (-hw + ins, -hd + ins),
+        (hw - ins, -hd + ins),
+        (hw - ins, hd - ins),
+        (-hw + ins, hd - ins),
+    ]
+    return (full, small) if _pull_sign(p) > 0 else (small, full)
+
+
+def draft_cyl_ends(p: dict[str, float]) -> tuple[float, float]:
+    """``(rb, rt)`` of a drafted cylinder — full radius at the pull-far
+    end, ``r - h·tan(draft)`` at the pull-near end."""
+    ins = draft_inset(p)
+    return (p["r"], p["r"] - ins) if _pull_sign(p) > 0 else (p["r"] - ins, p["r"])
+
+
+def _draft_end_limit(alias: str, p: dict[str, float]) -> tuple[float, str]:
+    """The largest side-step :func:`draft_inset` may take before the
+    pull-side face vanishes, and the dimension that sets it."""
+    if alias == "box":
+        lim = min(p["w"], p["d"]) / 2.0
+        return lim, (
+            f"½·min(w, d) = ½·min({format_dsl_number(p['w'])}, "
+            f"{format_dsl_number(p['d'])})"
+        )
+    return p["r"], f"r = {format_dsl_number(p['r'])}"
+
+
+def _validate_draft(alias: str, p: dict[str, float]) -> None:
+    """Refuse a draft payload the geometry cannot honour — bad angles and
+    pull directions with :data:`DRAFT_KEY`'s ``next=`` recovery hints, and
+    an over-deep taper named by the dimension it would erase (the kernel
+    never clamps). Called by :func:`parse` for the draftable aliases."""
+    pulls = sorted(PULL_KEYS & p.keys())
+    if DRAFT_KEY not in p:
+        raise DslError(
+            f"{alias}: {'/'.join(pulls)} sets a draft pull direction, but no "
+            "draft angle was given — the pull only means something with a draft",
+            next=f"add a draft angle, e.g. "
+            f"{alias}:…draft2deg{pulls[0] if pulls else 'pullz-1'}",
+        )
+    if len(pulls) > 1:
+        raise DslError(
+            f"{alias}: at most one pull key, got {pulls} — pick one pull axis",
+            next="drop the extra pull key (pullz1 = up the +z face, "
+            "pullz-1 = down toward the base)",
+        )
+    if pulls and pulls[0] in ("pullx", "pully"):
+        raise DslError(
+            f"{alias}: draft pull along {pulls[0][-1]} is not supported — the "
+            "draft kernels (CircularFrustum/PolyFrustum) are z-axis only",
+            next="author the prim with pullz±1 and tilt the pull direction "
+            "with the node's rot: placement instead",
+        )
+    if "pullz" in p and p["pullz"] not in (-1.0, 1.0):
+        raise DslError(
+            f"{alias}: pullz is the signed z axis — pullz1 (up, the default) "
+            f"or pullz-1 (down toward the base), got pullz={format_dsl_number(p['pullz'])}",
+            next="use pullz1 or pullz-1",
+        )
+    draft = p[DRAFT_KEY]
+    if not draft > 0.0:
+        raise DslError(
+            f"{alias}: draft must be a positive taper angle below 45° "
+            f"(got {format_dsl_number(draft)}) — drop draft= for vertical sides",
+            next="set draft to the taper angle in degrees, e.g. draft2deg "
+            "(must be > 0 and < 45°)",
+        )
+    if draft >= DRAFT_MAX:
+        deg = format_dsl_number(math.degrees(draft))
+        raise DslError(
+            f"{alias}: draft={deg}° >= 45° — at that slant the side face lies "
+            "down flat and the payload stops meaning a draft",
+            next="use a draft below 45° (mold draft is typically 0.5–5°)",
+        )
+    lim, who = _draft_end_limit(alias, p)
+    ins = draft_inset(p)
+    if ins >= lim:
+        deg = format_dsl_number(math.degrees(draft))
+        raise DslError(
+            f"{alias}: draft={deg}° insets each side by {format_dsl_number(ins)} "
+            f"over h — that reaches {who}, erasing the pull-side face",
+            next="reduce draft or enlarge the cross-section it tapers",
+        )
+
+
 def _round_limit(alias: str, params: dict[str, float]) -> tuple[float, str]:
     """The largest ``rd`` the ½·min-dimension rule allows and the name of
-    the dimension that sets it (``"h"``, ``"r"``, ``"w"`` …)."""
+    the dimension that sets it (``"h"``, ``"r"``, ``"w"`` …). A drafted
+    prim measures its min at the pull-side (small) end."""
     p = params
     limits: list[tuple[float, str]] = []
     if alias == "box":
-        limits = [(p["w"] / 2, "w"), (p["d"] / 2, "d"), (p["h"] / 2, "h")]
+        if DRAFT_KEY in p:
+            ins = draft_inset(p)
+            limits = [
+                (p["w"] / 2 - ins, "w at the drafted end"),
+                (p["d"] / 2 - ins, "d at the drafted end"),
+                (p["h"] / 2, "h"),
+            ]
+        else:
+            limits = [(p["w"] / 2, "w"), (p["d"] / 2, "d"), (p["h"] / 2, "h")]
     elif alias in ("cyl", "cone"):
-        limits = [(p["r"], "r (the diameter 2r)"), (p["h"] / 2, "h")]
+        if alias == "cyl" and DRAFT_KEY in p:
+            limits = [
+                (p["r"] - draft_inset(p), "r at the drafted end"),
+                (p["h"] / 2, "h"),
+            ]
+        else:
+            limits = [(p["r"], "r (the diameter 2r)"), (p["h"] / 2, "h")]
     elif alias == "tcone":
         limits = [(p["rb"], "rb"), (p["rt"], "rt"), (p["h"] / 2, "h")]
     elif alias in ("hex", "ngon", "pyramid"):
@@ -603,9 +809,41 @@ def shrunk(alias: str, params: dict[str, float]) -> dict[str, float]:
     p = params
     out: dict[str, float]
     if alias == "box":
-        out = {"w": p["w"] - 2 * rd, "d": p["d"] - 2 * rd, "h": p["h"] - 2 * rd}
+        if DRAFT_KEY in p:
+            # Exact inward offset of the drafted box: the full-end faces
+            # move in by rd·(√(1+k²) + k) per side (the side plane's own
+            # normal carries the k term), the caps by rd, and the slope k
+            # is preserved — so the shrunk body is the drafted box with
+            # smaller full-end dims and height h − 2·rd.
+            k = math.tan(p[DRAFT_KEY])
+            corr = rd * (math.sqrt(1.0 + k * k) + k)
+            out = {
+                "w": p["w"] - 2.0 * corr,
+                "d": p["d"] - 2.0 * corr,
+                "h": p["h"] - 2.0 * rd,
+                DRAFT_KEY: p[DRAFT_KEY],
+            }
+            if "pullz" in p:
+                out["pullz"] = p["pullz"]
+        else:
+            out = {"w": p["w"] - 2 * rd, "d": p["d"] - 2 * rd, "h": p["h"] - 2 * rd}
     elif alias == "cyl":
-        out = {"r": p["r"] - rd, "h": p["h"] - 2 * rd}
+        if DRAFT_KEY in p:
+            # Same exact offset through _shrunk_slant's arithmetic: a
+            # drafted cylinder is a circular frustum, whose offset keeps
+            # the slope and moves the full-end radius in by the same
+            # rd·(√(1+k²) + k).
+            k = math.tan(p[DRAFT_KEY])
+            corr = rd * (math.sqrt(1.0 + k * k) + k)
+            out = {
+                "r": p["r"] - corr,
+                "h": p["h"] - 2.0 * rd,
+                DRAFT_KEY: p[DRAFT_KEY],
+            }
+            if "pullz" in p:
+                out["pullz"] = p["pullz"]
+        else:
+            out = {"r": p["r"] - rd, "h": p["h"] - 2 * rd}
     elif alias == "cone":
         rb2, _rt2, h2 = _shrunk_slant(p["r"], 0.0, p["h"], rd)
         out = {"r": rb2, "h": h2}
@@ -635,11 +873,25 @@ def shrunk(alias: str, params: dict[str, float]) -> dict[str, float]:
     # rb', rt' > 0 for every slant), but a cone/pyramid's offset lateral
     # line can meet the axis below z = rd, leaving no shrunk body at all.
     for key, value in out.items():
-        if key != "n" and not value > 0.0 and key != "rt":
+        if key != "n" and key not in PULL_KEYS and not value > 0.0 and key != "rt":
             raise DslError(
                 f"{alias}: rd={format_dsl_number(rd)} closes the shrunk shape "
                 f"up at its slant ({key} would be {format_dsl_number(value)}) "
                 "— use a smaller rd"
+            )
+    if DRAFT_KEY in out:
+        # The drafted end shrinks by the same caps step AND keeps the full
+        # end's correction — its half-extent must stay positive.
+        k = math.tan(out[DRAFT_KEY])
+        if alias == "box":
+            small = min(out["w"], out["d"]) / 2.0 - out["h"] * k
+        else:
+            small = out["r"] - out["h"] * k
+        if not small > 0.0:
+            raise DslError(
+                f"{alias}: rd={format_dsl_number(rd)} closes the drafted end "
+                f"up (its half-extent would be {format_dsl_number(small)}) — "
+                "use a smaller rd or draft"
             )
     return out
 
@@ -718,27 +970,40 @@ def build(
         # Every roundable shape is base-at-z=0; lift the shrunk body by rd
         # so the rounded solid's base plane stays at z=0 (contract).
         return Rounded(inner=inner, r=rd, lift=rd)
-    if a == "box":
+    return _build_sharp(a, p)
+
+
+def _build_sharp(alias: str, p: dict[str, float]) -> Primitive:
+    """The un-rounded primitive for a parsed spec (which may still carry
+    the draft payload — a drafted box/cyl builds as the frustum whose ends
+    :func:`draft_box_rings`/:func:`draft_cyl_ends` describe)."""
+    if alias == "box":
+        if DRAFT_KEY in p:
+            bottom, top = draft_box_rings(p)
+            return PolyFrustum(bottom, top, p["h"])
         return box(p["w"], p["d"], p["h"])
-    if a == "cyl":
+    if alias == "cyl":
+        if DRAFT_KEY in p:
+            rb, rt = draft_cyl_ends(p)
+            return CircularFrustum(rb=rb, rt=rt, h=p["h"])
         return CircularFrustum(rb=p["r"], rt=p["r"], h=p["h"])
-    if a == "cone":
+    if alias == "cone":
         return CircularFrustum(rb=p["r"], rt=0.0, h=p["h"])
-    if a == "tcone":
+    if alias == "tcone":
         return CircularFrustum(rb=p["rb"], rt=p["rt"], h=p["h"])
-    if a == "sphere":
+    if alias == "sphere":
         return Sphere(r=p["r"])
-    if a == "torus":
+    if alias == "torus":
         return Torus(R=p["R"], r=p["r"])
-    if a == "hex":
+    if alias == "hex":
         return regular_prism(6, p["r"], p["h"])
-    if a == "ngon":
+    if alias == "ngon":
         return regular_prism(int(p["n"]), p["r"], p["h"])
-    if a == "frustum":
+    if alias == "frustum":
         return regular_frustum(int(p["n"]), p["rb"], p["rt"], p["h"])
-    if a == "pyramid":
+    if alias == "pyramid":
         return pyramid(int(p["n"]), p["r"], p["h"])
-    if a == "chamfer":
+    if alias == "chamfer":
         angle = p["angle"]
         size = p["size"]
         sa, ca = math.sin(angle), math.cos(angle)
@@ -746,7 +1011,7 @@ def build(
             point=vec3(-size * sa, 0.0, -size * ca), normal=vec3(-sa, 0.0, -ca)
         )
     raise DslError(
-        f"{a!r} is not a buildable shape"
+        f"{alias!r} is not a buildable shape"
     )  # pragma: no cover - parse guards alias
 
 
@@ -806,10 +1071,14 @@ def format_spec(spec: ShapeSpec, *, units: bool = False) -> str:
             f"x{format_dsl_number(spec.params['angle'])}{angle_suffix}"
         )
     keys: tuple[str, ...] = _ALIAS_KEYS[spec.alias]
+    for opt in (DRAFT_KEY, *PULL_KEYS):
+        if opt in spec.params:
+            keys = (*keys, opt)
     if ROUND_KEY in spec.params:
         keys = (*keys, ROUND_KEY)
     parts = "".join(
-        f"{key}{format_dsl_number(spec.params[key])}{'' if key == 'n' else suffix}"
+        f"{key}{format_dsl_number(spec.params[key])}"
+        f"{'rad' if units and key == DRAFT_KEY else ('' if key in ('n', *PULL_KEYS) else suffix)}"
         for key in keys
     )
     return f"{spec.alias}:{parts}"
@@ -817,13 +1086,14 @@ def format_spec(spec: ShapeSpec, *, units: bool = False) -> str:
 
 def _is_length_key(alias: str, key: str) -> bool:
     """Whether ``key`` carries a length under a uniform scale — the keys
-    :func:`scale_config` multiplies. Counts (``n``) and angles (chamfer's
-    ``angle``, a ``relief``'s draft/parting/twist) are scale-invariant."""
+    :func:`scale_config` multiplies. Counts (``n``, the ``pull*`` signs) and
+    angles (chamfer's ``angle``, a prim's ``draft``, a ``relief``'s
+    draft/parting/twist) are scale-invariant."""
     if alias == RELIEF_ALIAS:
         return _RELIEF_KEY_KIND.get(key) == "length"
     if alias == "chamfer":
         return key == "size"
-    return key != "n"
+    return key not in ("n", *PULL_KEYS, DRAFT_KEY)
 
 
 def scale_config(config: str, factor: float) -> str:

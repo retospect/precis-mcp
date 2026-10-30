@@ -72,6 +72,7 @@ own handle; it never exports itself.
 from __future__ import annotations
 
 import math
+import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -85,13 +86,16 @@ from precis.cad.export import (
     _MM_PER_M,
     ExportError,
     _component_meshes,
+    _field_pitch,
     _scaled_for_export,
     _solid_mesh,
     _write_3mf,
     _write_binary_stl,
     manifold_available,
+    needs_field_backend,
 )
 from precis.cad.fieldops import flat_bed
+from precis.cad.graph import Design
 from precis.cad.mesh_check import (
     CANTILEVER_WARN_MM,
     Cantilever,
@@ -104,6 +108,7 @@ from precis.cad.mesh_check import (
     weld_and_drop_degenerate,
 )
 from precis.cad.printability import BuildCandidate, rotate_to_frame
+from precis.cad.relate import _bounds, _positive_bounds
 from precis.cad.scene import NodeSpec, SceneSpec
 from precis.cad.vec import Vec3, as_vec3
 from precis.cad.vec import pose as cad_pose
@@ -142,6 +147,18 @@ SLICER_LINE_WIDTH_MM = 0.42
 #: ``floating_island`` findings listed individually per block; the rest are
 #: summarised in one line (the total is always stated).
 MAX_LISTED_ISLANDS = 10
+
+#: Total grid-cell cap for the field-backend mesh a *bounded* report
+#: (``budget_s`` set on :func:`report_for`) builds. The status callers
+#: (``view='validate'``'s header, ``view='drc'``'s pointer) must return in
+#: bounded time even on an ``rd``/``blend``/``field`` design, where the
+#: house ``layer_height`` pitch can mean tens of millions of marching-cubes
+#: cells and a ~130-candidate orientation search over a million-triangle
+#: mesh — the unbounded work that held ``view='validate'`` for 7+ minutes
+#: on box3-fdm (gr529278). :func:`_bounded_field_pitch` trades resolution
+#: for the bound, loudly (:attr:`BlockPrintReport.check_notes`); the
+#: per-block ``view='print'`` report keeps the exact pitch.
+BOUNDED_MESH_CELLS = 250_000
 
 
 def check_scale(scale: float) -> None:
@@ -199,6 +216,15 @@ class BlockPrintReport:
     #: Print scale factor the report was judged at: every size above is the
     #: printed (source x scale) size; ``1.0`` is an unscaled print.
     scale: float = 1.0
+    #: ``False`` when a bounded report (``budget_s``) expired before any
+    #: mesh-dependent check ran — ``view='validate'``'s header must not
+    #: count the block as print-checked.
+    checks_ran: bool = True
+    #: Bounded-run receipts, rendered verbatim like ``search_skipped``:
+    #: one line per check that was coarsened (field-backend mesh judged at
+    #: a :data:`BOUNDED_MESH_CELLS`-capped pitch) or reported as
+    #: "not run: budget exceeded". Empty on every unbounded report.
+    check_notes: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -561,6 +587,21 @@ def source_field_pitch(
     return True, (pitch if pitch > 0.0 else None)
 
 
+def _bounded_field_pitch(design: Design, natural_pitch: float) -> float:
+    """``natural_pitch`` raised until the field-backend fine grid fits
+    :data:`BOUNDED_MESH_CELLS` cells over the design's positive-material
+    AABB — the coarsening a bounded report trades for its wall-clock
+    guarantee. ``natural_pitch`` unchanged when it already fits (small
+    parts pay nothing). The grid's cell count is ``prod(span)/pitch³``
+    asymptotically, so ``pitch >= (volume / cap)^(1/3)`` bounds it."""
+    box = _positive_bounds(design, design.whole()) or _bounds(design, design.whole())
+    if box is None:
+        return natural_pitch
+    lo, hi = box
+    volume = float(np.prod(np.asarray(hi) - np.asarray(lo)))
+    return max(natural_pitch, (volume / BOUNDED_MESH_CELLS) ** (1.0 / 3.0))
+
+
 def report_for(
     tree: SeTree,
     block: str,
@@ -568,6 +609,7 @@ def report_for(
     cad_store_reader: Store,
     mesh_checks: bool = True,
     scale: float = 1.0,
+    budget_s: float | None = None,
 ) -> BlockPrintReport | None:
     """Everything ``view='print'`` needs for one block, or ``None`` when
     the block's resolved mode family isn't ``fdm`` at all — not this
@@ -589,7 +631,16 @@ def report_for(
     check judges the geometry at its PRINTED size (source x ``scale``) while
     the process rules (layer height, line width, min wall) stay physical —
     the mesh the report judged is the mesh :func:`export_block_mesh` ships.
-    Raises :class:`ValueError` for a nonfinite or nonpositive ``scale``."""
+    Raises :class:`ValueError` for a nonfinite or nonpositive ``scale``.
+
+    ``budget_s`` (``None`` = unbounded, the per-block report's behaviour)
+    is a wall-clock bound for the mesh-dependent section — the
+    ``view='validate'`` status pass (gr529278). Under it, a field-backed
+    solid meshes at the :func:`_bounded_field_pitch`-capped pitch and a
+    check the budget does not reach is reported in
+    :attr:`BlockPrintReport.check_notes` as "not run: budget exceeded"
+    rather than blocking; :attr:`BlockPrintReport.checks_ran` says whether
+    the mesh-dependent section ran at all."""
     check_scale(scale)
     node = tree.blocks.get(block)
     if node is None:
@@ -600,7 +651,35 @@ def report_for(
     mode = node.mode or ""
     pin = pinned_down(node)
     pinned = pin is not None
-    printed = printed_solid(tree, block, cad_store_reader=cad_store_reader)
+    deadline = None if budget_s is None else time.monotonic() + budget_s
+    check_notes: list[str] = []
+
+    def expired() -> bool:
+        return deadline is not None and time.monotonic() >= deadline
+
+    def not_run(what: str) -> str:
+        return (
+            f"{what} not run: budget exceeded — view='print' "
+            f"args={{'block': {block!r}}} runs it unbounded"
+        )
+
+    if expired():
+        return BlockPrintReport(
+            block=block,
+            mode=mode,
+            printed=None,
+            candidates=[],
+            chosen_down=None,
+            chosen_score=None,
+            pinned=pinned,
+            best_other=None,
+            findings=[],
+            checks_ran=False,
+            check_notes=[not_run("print check")],
+        )
+    printed = printed_solid(
+        tree, block, cad_store_reader=cad_store_reader, deadline=deadline
+    )
     findings: list[ValidationIssue] = []
 
     if printed is None:
@@ -662,8 +741,26 @@ def report_for(
     # the resolution the DRC below judges it at; a sharp design's analytic
     # fold ignores the pitch.
     pitch = rules.get("layer_height")
-    mesh = _solid_mesh(printed.spec, pitch=None if pitch is None else pitch / scale)
-    if scale != 1.0:
+    mesh: tuple[np.ndarray, np.ndarray] | None = None
+    mesh_pitch = None if pitch is None else pitch / scale
+    if expired():
+        check_notes.append(
+            not_run("mesh-dependent checks (orientation search, frame findings)")
+        )
+    else:
+        if budget_s is not None and needs_field_backend(printed.spec):
+            natural = _field_pitch(printed.design, mesh_pitch)
+            capped = _bounded_field_pitch(printed.design, natural)
+            if capped > natural:
+                mesh_pitch = capped
+                check_notes.append(
+                    f"mesh judged at a coarsened pitch {capped * 1e3:g} mm "
+                    f"(field backend capped at {BOUNDED_MESH_CELLS:,} grid "
+                    f"cells; the unbounded check uses {natural * 1e3:g} mm)"
+                )
+        mesh = _solid_mesh(printed.spec, pitch=mesh_pitch)
+    checks_ran = mesh is not None
+    if mesh is not None and scale != 1.0:
         mesh = (mesh[0] * scale, mesh[1])
         extent = np.ptp(mesh[0], axis=0) if len(mesh[0]) else np.zeros(3)
         mismatch = scale_mismatch_finding(block, float(np.linalg.norm(extent)))
@@ -683,10 +780,16 @@ def report_for(
         else None
     )
     search_skipped: str | None = None
+    candidates: list[BuildCandidate] = []
     if simp_frame is not None:
-        candidates = []
         build_dir = str(simp_frame.get("build_dir") or "?")
-        voxels = _simp_field_overhangs(printed, build_dir, cad_store_reader)
+        voxels = (
+            None
+            if expired()
+            else _simp_field_overhangs(printed, build_dir, cad_store_reader)
+        )
+        if expired():
+            check_notes.append(not_run("stored-field overhang verification"))
         if voxels is not None:
             rules = {k: v for k, v in rules.items() if k != "max_overhang"}
             if voxels > 0:
@@ -708,85 +811,124 @@ def report_for(
                 )
             verified = f"{voxels} unsupported voxel(s) on the stored field"
         else:
-            verified = "stored field unreadable — mesh overhang rule ran instead"
+            verified = (
+                "stored field unreadable — mesh overhang rule ran instead"
+                if not expired()
+                else "not verified — budget exceeded"
+            )
         search_skipped = (
             f"orientation search skipped: build_dir {build_dir!r} was baked in "
             "by the SIMP AM filter at solve time; verified at that frame — "
             f"{verified}"
         )
-    else:
-        candidates = (
-            cad_printability.orient(mesh, rules, policy, loads) if policy else []
-        )
+    elif mesh is not None:
+        if expired():
+            check_notes.append(not_run("orientation search"))
+        elif policy:
+            # The deadline reaches inside the sweep: ``orient`` polls
+            # ``should_stop`` per candidate and returns the best so far
+            # marked partial — reported loudly, never read as the full
+            # search's answer.
+            candidates = cad_printability.orient(
+                mesh, rules, policy, loads, should_stop=expired
+            )
+            if not candidates or candidates[0].partial:
+                n_total = len(cad_printability.candidates(float(policy["sweep_deg"])))
+                check_notes.append(
+                    f"orient stopped at budget after "
+                    f"{len(candidates)}/{n_total} candidates"
+                )
 
     best_other: str | None = None
     chosen_down: Vec3 | None = None
     chosen_score: cad_printability.Score | None = None
     if pin is not None:
         chosen_down = as_vec3(pin)
-        chosen_score = cad_printability.score(mesh, chosen_down, rules, policy, loads)
-        if candidates and not np.allclose(chosen_down, candidates[0].down, atol=1e-6):
-            best = candidates[0]
-            worse_by = chosen_score.total - best.score
-            best_other = (
-                f"down={format_down(best.down)} scores {best.score:.4g} vs the "
-                f"pinned down={format_down(chosen_down)}'s "
-                f"{chosen_score.total:.4g} ({worse_by:+.4g})"
+        if mesh is not None and not expired():
+            chosen_score = cad_printability.score(
+                mesh, chosen_down, rules, policy, loads
             )
+            if candidates and not np.allclose(
+                chosen_down, candidates[0].down, atol=1e-6
+            ):
+                best = candidates[0]
+                worse_by = chosen_score.total - best.score
+                best_other = (
+                    f"down={format_down(best.down)} scores {best.score:.4g} vs the "
+                    f"pinned down={format_down(chosen_down)}'s "
+                    f"{chosen_score.total:.4g} ({worse_by:+.4g})"
+                )
     elif candidates:
         chosen_down = candidates[0].down
+        assert mesh is not None  # candidates only exist once a mesh was built
         chosen_score = cad_printability.score(mesh, chosen_down, rules, policy, loads)
 
-    if chosen_down is not None:
-        findings.extend(
-            frame_findings(
-                block,
-                mesh,
-                chosen_down,
-                rules,
-                score=chosen_score,
-                best_other=best_other,
+    if chosen_down is not None and mesh is not None:
+        if expired():
+            check_notes.append(
+                not_run("frame findings (overhang, bridge, bed contact)")
             )
-        )
-    print_mesh: PrintMesh | None = None
-    source_pitch: float | None = None
-    if chosen_down is not None and mesh_checks:
-        # The mesh the file will carry, judged the way a slicer will: the
-        # SIMP voxel rule above cannot see a marching-cubes tail, and the
-        # mesh `overhang` rule is blind to a sub-facet one.
-        field_rooted, source_pitch = source_field_pitch(printed, cad_store_reader)
-        if field_rooted and source_pitch is None:
-            findings.append(
-                ValidationIssue(
-                    rule="mesh_cleanup",
-                    subject=block,
-                    detail=(
-                        "the block's root field has no readable pitch, so its "
-                        "solve pitch is unknown — the sub-voxel tail lift fell "
-                        "back to half a layer"
-                    ),
-                    severity="info",
+        else:
+            findings.extend(
+                frame_findings(
+                    block,
+                    mesh,
+                    chosen_down,
+                    rules,
+                    score=chosen_score,
+                    best_other=best_other,
                 )
             )
-        try:
-            print_mesh = build_print_mesh(
-                printed,
-                chosen_down,
-                pitch=pitch,
-                source_pitch=source_pitch,
-                line_width=rules.get("line_width"),
-                scale=scale,
-            )
-            findings.extend(_mesh_findings(block, print_mesh, pitch))
-        except (ExportError, ValueError) as exc:
+    print_mesh: PrintMesh | None = None
+    source_pitch: float | None = None
+    if chosen_down is not None and mesh_checks and mesh is not None:
+        if expired():
+            check_notes.append(not_run("shipped-mesh checks"))
             findings.append(
                 ValidationIssue(
                     rule="floating_island",
                     subject=block,
-                    detail=f"floating-region check skipped: {exc}",
+                    detail="floating-region check skipped: budget exceeded",
                     severity="info",
                 )
             )
+        else:
+            # The mesh the file will carry, judged the way a slicer will: the
+            # SIMP voxel rule above cannot see a marching-cubes tail, and the
+            # mesh `overhang` rule is blind to a sub-facet one.
+            field_rooted, source_pitch = source_field_pitch(printed, cad_store_reader)
+            if field_rooted and source_pitch is None:
+                findings.append(
+                    ValidationIssue(
+                        rule="mesh_cleanup",
+                        subject=block,
+                        detail=(
+                            "the block's root field has no readable pitch, so its "
+                            "solve pitch is unknown — the sub-voxel tail lift fell "
+                            "back to half a layer"
+                        ),
+                        severity="info",
+                    )
+                )
+            try:
+                print_mesh = build_print_mesh(
+                    printed,
+                    chosen_down,
+                    pitch=None if mesh_pitch is None else mesh_pitch * scale,
+                    source_pitch=source_pitch,
+                    line_width=rules.get("line_width"),
+                    scale=scale,
+                )
+                findings.extend(_mesh_findings(block, print_mesh, pitch))
+            except (ExportError, ValueError) as exc:
+                findings.append(
+                    ValidationIssue(
+                        rule="floating_island",
+                        subject=block,
+                        detail=f"floating-region check skipped: {exc}",
+                        severity="info",
+                    )
+                )
     findings.extend(frame_free_findings(tree, node, block, printed, rules, scale=scale))
 
     return BlockPrintReport(
@@ -805,6 +947,8 @@ def report_for(
         source_pitch=source_pitch,
         mesh_checked=print_mesh is not None,
         scale=scale,
+        checks_ran=checks_ran,
+        check_notes=check_notes,
     )
 
 

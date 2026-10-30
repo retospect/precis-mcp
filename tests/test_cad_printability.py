@@ -326,3 +326,32 @@ def test_view_printability_pinned_down(store) -> None:
     )
     assert "pinned" in resp.body
     assert "overhang" in resp.body  # stem-down should surface the finding
+
+
+# ---------------------------------------------------------------------------
+# should_stop — the bounded search (view='validate' print-status, gr529278)
+# ---------------------------------------------------------------------------
+
+
+def test_orient_should_stop_returns_best_so_far_marked_partial() -> None:
+    mesh = _mesh(_TALL_PLATE)
+    checks = {"n": 0}
+
+    def stop_after_two() -> bool:
+        checks["n"] += 1
+        return checks["n"] > 2  # polled BEFORE each score — two get scored
+
+    cands = orient(mesh, _FULL_RULES, _FLAT_POLICY, [], should_stop=stop_after_two)
+    assert len(cands) == 2
+    assert all(c.partial for c in cands)
+    full = orient(mesh, _FULL_RULES, _FLAT_POLICY, [])
+    assert len(cands) < len(full)
+    assert not any(c.partial for c in full)
+    # still sorted best-first — the best of what ran leads the partial list
+    assert cands[0].score == min(c.score for c in cands)
+
+
+def test_orient_should_stop_before_first_score_returns_empty() -> None:
+    mesh = _mesh(_TALL_PLATE)
+    cands = orient(mesh, _FULL_RULES, _FLAT_POLICY, [], should_stop=lambda: True)
+    assert cands == []

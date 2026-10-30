@@ -3,6 +3,11 @@ the analytic IR. Three routes, in order of fidelity vs weight:
 
 1. :func:`to_openscad` — pure text, **zero dependencies**. The agent- and
    human-readable form; drop it into the OpenSCAD GUI. Always available.
+   Honours both prim payloads analytically: a drafted ``box``/``cyl``
+   renders through ``linear_extrude(scale=…)``/``cylinder(r1≠r2)``, and a
+   rounded leaf renders as ``minkowski()`` of its shrunk body with a
+   sphere (the exact SDF offset; a non-convex roundable keeps its sharp
+   leaf under a ``// WARNING:`` header line instead of lying).
 2. :func:`export_mesh` — **printable** STL / 3MF. Tessellates each
    primitive (:mod:`precis.cad.tessellate`), folds the boolean DAG with
    ``manifold3d`` (the same robust CSG kernel OpenSCAD uses, in-process —
@@ -46,11 +51,14 @@ from xml.sax.saxutils import escape, quoteattr
 import numpy as np
 
 from precis.cad.dsl import (
+    DRAFT_KEY,
     FIELD_ALIAS,
+    PULL_KEYS,
     RELIEF_ALIAS,
     ROUND_KEY,
     ROUNDABLE,
     ShapeSpec,
+    draft_cyl_ends,
     format_spec,
     parse,
     shrunk,
@@ -83,8 +91,11 @@ _MM_PER_M = 1000.0
 
 #: Shape-DSL param keys that are never a length — never rescaled.
 #: ``relief:``'s ``s`` (sign), ``k`` (slide count) and ``a``/``p``/``t``
-#: (radians) join ``n`` and chamfer's ``angle``.
-_NON_LENGTH_KEYS = frozenset({"n", "angle", "s", "k", "a", "p", "t"})
+#: (radians) join ``n``, the prim draft payload (``draft`` radians,
+#: ``pull*`` axis signs) and chamfer's ``angle``.
+_NON_LENGTH_KEYS = frozenset(
+    {"n", "angle", "s", "k", "a", "p", "t", DRAFT_KEY, *PULL_KEYS}
+)
 
 #: Field-backend pitch when the caller passes none: this fraction of the
 #: design's AABB diagonal (≈ 0.27 mm on a 40×20×10 mm part). Callers with
@@ -172,13 +183,37 @@ def _cube_scad(w: float, d: float, h: float) -> str:
     return f"translate([{_g(-w / 2)},{_g(-d / 2)},0]) cube([{_g(w)},{_g(d)},{_g(h)}]);"
 
 
+def _drafted_box_scad(p: dict[str, float]) -> str:
+    """OpenSCAD for a drafted box: ``linear_extrude`` scales the square
+    section from full size at the pull-far end to ``w − 2·h·tan(draft)``
+    at the pull-near end (``pullz-1`` extrudes the small square up to
+    full size instead — the same solid, no mirror needed)."""
+    w, d, h = p["w"], p["d"], p["h"]
+    ins = p["h"] * math.tan(p[DRAFT_KEY])
+    if p.get("pullz", 1.0) > 0.0:
+        return (
+            f"linear_extrude(height={_g(h)}, scale=[{_g((w - 2 * ins) / w)},"
+            f"{_g((d - 2 * ins) / d)}]) square([{_g(w)},{_g(d)}], center=true);"
+        )
+    sw, sd = w - 2.0 * ins, d - 2.0 * ins
+    return (
+        f"linear_extrude(height={_g(h)}, scale=[{_g(w / sw)},{_g(d / sd)}]) "
+        f"square([{_g(sw)},{_g(sd)}], center=true);"
+    )
+
+
 def _scad_primitive(config: str) -> str:
     """OpenSCAD primitive for a ``config`` string, in its local frame."""
     spec = parse(config)
     a, p = spec.alias, spec.params
     if a == "box":
+        if DRAFT_KEY in p:
+            return _drafted_box_scad(p)
         return _cube_scad(p["w"], p["d"], p["h"])
     if a == "cyl":
+        if DRAFT_KEY in p:
+            rb, rt = draft_cyl_ends(p)
+            return f"cylinder(h={_g(p['h'])}, r1={_g(rb)}, r2={_g(rt)}, $fn={_FN});"
         return f"cylinder(h={_g(p['h'])}, r={_g(p['r'])}, $fn={_FN});"
     if a == "cone":
         return f"cylinder(h={_g(p['h'])}, r1={_g(p['r'])}, r2=0, $fn={_FN});"
@@ -329,7 +364,8 @@ def to_openscad(spec: SceneSpec, *, name: str = "design") -> str:
     sphere(r=rd) }`` — the exact SDF offset for a convex solid. A rounded
     leaf that is not convex keeps its sharp solid and adds a
     ``// WARNING:`` comment under the header (the scad text is the only
-    channel both callers return)."""
+    channel both callers return). A drafted ``box``/``cyl`` exports through
+    ``linear_extrude(scale=…)``/``cylinder(r1≠r2)`` — exact, analytic."""
     spec = _scaled_for_export(spec)
     warnings: list[str] = []
     # A chamfer node needs the design's AABB to clamp its unbounded
