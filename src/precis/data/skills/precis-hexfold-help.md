@@ -94,22 +94,22 @@ not bond/seam/terminate lines (`opening.combined`) or `fit` (`opening.fit`).
 
 ## Iterating: check, then edit
 
-`fidelity="check"` on a `put` still creates the (empty) design row, and a
-second `put` on the same id is a **full replace** that drops any minted
+`fidelity="check"` on a `put` still creates the (empty) design row, and
+a second `put` on the same id is a **full replace** that drops the minted
 block. Iterate with `edit(kind='se', id=..., ops=[...])` once the design
 exists. A refused spec comes back as `line:col: message` (ParseError —
 including `unknown parameter 'length' for tube — known: hand, len, m, n`
-for an unknown keyword) or as the rendered
-report (ERROR findings); `hexfold internal error …` means a compiler bug —
-file a gripe with the spec.
+for an unknown keyword) or as the rendered report (ERROR findings);
+`hexfold internal error …` is a compiler bug — file a gripe with the
+spec.
 
 After minting, the build report (`extent.snap`, `fit.propagated`,
 `seam.rings`, …) is under `get(kind='se', id=..., view='block',
-args={'block': '<block>'})` → "## generated". The report is build-time
-evidence — the bound structure's CURRENT validator read shows beside it
-(`validator:` in the se tree, `view='block'`, and the `/se/<slug>` page),
-and a clean report does not certify the geometry. Before minting, run the
-same spec with `fidelity="check"`.
+args={'block': '<block>'})` → "## generated". It is build-time evidence —
+the bound structure's CURRENT validator read shows beside it (`validator:`
+in the se tree, `view='block'`, `/se/<slug>`); a clean report does not
+certify the geometry. Before minting, run the same spec with
+`fidelity="check"`.
 
 ## Nanobud menus (attachments)
 
@@ -120,7 +120,7 @@ same spec with `fidelity="check"`.
 | `9-6` | six bonds, C54 (C60 − hexagon) onto intact host; seam {9:3, 6:3} | Zhu & Su 2009, Phys. Rev. B 79, 165401, doi:10.1103/PhysRevB.79.165401 (pa543) |
 | `8-7` | the other C3 registration onto the same six one-sublattice host atoms; seam {8:3, 7:3} | Zhu & Su 2009, Phys. Rev. B 79, 165401, doi:10.1103/PhysRevB.79.165401 (pa543) |
 | `DA-neck` | C60 − pentagon → (5,0) neck ({7:5}) → host `path3` opening | Baowan, Cox & Hill 2010 (pa679, doi:10.1080/15363830903586625) |
-| `DB-neck` | C60 − 3 pentagons → (6,0) neck → hexagon hole + {7×3} collar (needs `k | gcd(n,m)`) | Baowan, Cox & Hill 2010 (pa679, doi:10.1080/15363830903586625) |
+| `DB-neck` | C60 − 3 pentagons → (6,0) neck → hexagon hole + {7×3} collar (needs `k \| gcd(n,m)`) | Baowan, Cox & Hill 2010 (pa679, doi:10.1080/15363830903586625) |
 
 Any other menu name is refused (`menu.unknown` ERROR).
 
@@ -136,17 +136,16 @@ e.g. `(12,12)→(6,6)` (12 + 12), `(18,18)→(6,6)`. Anything else is
 **Rail-tube radius step.** A stepped rail tube in the `tunnel-reservoirs`
 scene (`tube: {rail: [[16,4],[8,4]], rails: 3, rows: 2, pores: [],
 step: cone}`) joins its segments through a solver-stitched `step: washer`
-(flat annulus, default) or `step: cone` (truncated cone with p = rails
-pentagons, one per seam azimuth). `rails >= 6` with `cone` is refused
-`step.cone.symmetry`; an unknown step kind is refused by name.
+(flat annulus, default) or `step: cone` (truncated cone, p = rails
+pentagons). `rails >= 6` with `cone` is refused `step.cone.symmetry`;
+an unknown step kind is refused by name.
 `junction.strain` reads per step as `reducer:seg<w>->seg<n>:outer|inner`
 (`step.overstrained` WARN over 3.0 Å seam bond or 45° face angle), and
 `geom.clash` / `geom.nearest_not_bonded` carry `zone:
 reducer:seg<w>->seg<n>` or `none`; `geom.summary` `zones` counts every
 pair per zone (`{"clash": pairs, "nnb": atoms}`), past the ten-finding
-cap. The cone does not yet clear the
-washer-zone clashes after relax: read the zone-tagged findings before
-trusting a cone step.
+cap. The cone does not clear the washer-zone clashes after relax — read
+the zone findings before trusting a cone step.
 
 ## Check codes (hexfold spec §13, terse)
 
@@ -198,7 +197,7 @@ clash; their rigid washer seeds still carry a `seam.cycle` strain
 warning (gr462075). `tube_ring_closure` remains overlapping:
 106 relaxed pairs under 1.8 Å, minimum 1.39 Å (gr462074).
 `geom.seed_overlap` ERROR: atoms under 0.7 Å in the placed seed, before
-stick. A clean relaxed geometry does not clear it. Of the shipped
+stick — a clean relaxed geometry does not clear it. Of the shipped
 examples on 0.3.5, only `tube_ring_closure` raises it (coincident seed
 atoms); `sheet_sw`, both flanged doughnuts and `sheet_pill_bump` have
 no seed-overlap ERROR. ·
@@ -306,16 +305,12 @@ survives, inherited by the composite; the two-composite case is the
 Both the **stick** and **geo** relax rungs are wired. `rung` picks which
 (default `auto`: both parts' own `meta['last_relax']['rung']` must agree
 — absent means stick, the generator's untouched preview geometry — or
-it's `join.rung` ERROR before anything is minted; an explicit
-`"stick"`/`"geo"` forces one, and forcing `geo` over a still-stick-rung
-part is allowed but logs `join.rung` WARN, since 1.42 vs 1.52 Å rest
-lengths strain the frozen boundary). The geo rung's `seam.leak` checks
-against its own measured thresholds (0.002 Å / 0.15°, uniform across rim
-type — different physics from the stick numbers above, a pinned guard
-band vs. a fully free relax). `meta['generated']['relaxer']` records
-which rung actually ran. Joint placement across a part-graph *cycle* is
-still a later slice (three-or-more-way joins today only chain linearly,
-one pair at a time).
+it's `join.rung` ERROR before anything is minted; `"stick"`/`"geo"`
+forces one, and forcing `geo` over a still-stick-rung part is allowed but logs `join.rung` WARN — 1.42 vs 1.52 Å rest lengths
+strain the frozen boundary). The geo rung's `seam.leak` checks its own
+thresholds (0.002 Å / 0.15°, uniform across rim type).
+`meta['generated']['relaxer']` records which rung ran. Joint placement
+across a part-graph *cycle* is a later slice (joins chain linearly).
 
 ## Relax a block — `fidelity='xtb'`
 
@@ -333,12 +328,13 @@ takes the `hexfold_relax` job (plugin spec, `ssh_node`): mint it with
 params={'structure_ref_id': <id>})` — it polishes the whole block
 (`polish`, `ml` default), relaxes each junction as an H-capped fragment
 with a frozen buffer (`fragment`, `xtb` default — GFN2 only where the
-physics matters), writes the geometry as the next design version, and
-stores `junction.strain`/`seam.strain` before/after on
-`meta.generated.relax`. The relax runs in a child process named on the
-job's `meta.compute_child` (pid, `kill_verified`); a cap overrun, cancel
-or operator kill stops it before the job turns terminal. `meta.ml_device`
-says where the MLIP ran; a `warning` there means it fell back to CPU.
+physics matters), writes the geometry as
+the next design version, and stores `junction.strain`/`seam.strain`
+before/after on `meta.generated.relax`. The relax runs in a child
+process named on the job's `meta.compute_child` (pid, `kill_verified`);
+a cap overrun, cancel or operator kill stops it before the job turns
+terminal. `meta.ml_device` says where the MLIP ran; a `warning` there
+means it fell back to CPU.
 
 ## Options (spec §25.3)
 
@@ -572,6 +568,9 @@ Limits:
 - Fillet `radius` reaches ~3–8 Å at the narrowest frustum; beyond ~12 Å
   bonds stretch past 1.50.
 
+Probe a selector at script time (`sites:`/`atoms:`/`frame:` against a
+built object, no build) — [[precis-hexfold-probe-help]].
+
 ## Rules
 
 - Counting is a diagnostic, not a gate; `geom.*` describes the stick
@@ -584,4 +583,5 @@ Limits:
 ## See also
 
 - [[precis-hexfold-seams-help]] — the equal-120 seam family: Y, seam tube, rail tube, fin
+- [[precis-hexfold-probe-help]] — probe a sites:/atoms:/frame: selector at script time
 - [[precis-se-atomic-help]] — the atomic generate op and its verbs

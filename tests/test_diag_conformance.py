@@ -279,8 +279,24 @@ def _pcb_probe_nets(tmp_path: Path) -> tuple[Any, str]:
     return run_probe, "nets"
 
 
+def _hex_probe(tmp_path: Path) -> tuple[Any, str]:
+    """The real hex path: ``hexfold.probe.probe`` resolves an
+    ``atoms:<inst>[…]`` selector against a built net — no op runs
+    (gr522032, shared-core-layers S2)."""
+    from hexfold.build import build
+    from hexfold.probe import probe as hex_probe
+
+    net = build("hexfold 0.2\norigin t\nt: tube(5,0, len=3)\n")
+
+    def run_probe() -> dict[str, Any]:
+        return hex_probe(net, "atoms:t[0,3,5-9]")
+
+    return run_probe, "atoms"
+
+
 PROBES = {
     "cad-pg-object": (_cad_probe, "atoms"),
+    "hex-atom-set": (_hex_probe, "atoms"),
     "pcb-net-pattern": (_pcb_probe_nets, "nets"),
     "pcb-pads-of": (_pcb_probe_pads, "pads"),
     "toy-adapter": (_toy_probe, "pins"),

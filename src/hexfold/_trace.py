@@ -11,10 +11,20 @@ from __future__ import annotations
 
 import contextlib
 from collections.abc import Callable, Iterator
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from precis_geom.trace import Tracer
 
 try:  # construction-trace frames; absent under a standalone hexfold install
-    from precis_geom.trace import leaf_id, record, trace, traced
+    from precis_geom.trace import (
+        current,
+        leaf_id,
+        record,
+        record_probe,
+        trace,
+        traced,
+    )
 except ImportError:  # pragma: no cover
 
     def traced(
@@ -30,7 +40,13 @@ except ImportError:  # pragma: no cover
     ) -> None:
         return None
 
+    def record_probe(record: dict[str, Any]) -> None:
+        return None
+
     def leaf_id() -> int | None:
+        return None
+
+    def current() -> Tracer | None:
         return None
 
     @contextlib.contextmanager
@@ -40,4 +56,4 @@ except ImportError:  # pragma: no cover
         yield
 
 
-__all__ = ["leaf_id", "record", "trace", "traced"]
+__all__ = ["current", "leaf_id", "record", "record_probe", "trace", "traced"]
