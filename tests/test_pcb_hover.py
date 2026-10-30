@@ -229,10 +229,28 @@ def test_facts_join_catalogue_rows_and_route_state() -> None:
     }
     nets = out["facts"]["nets"]
     assert nets["VBUS"]["current_a"] == 0.5 and nets["VBUS"]["reason"] is None
+    assert nets["CC2"]["current_a"] is None  # unset → no current fact (gr520542)
     assert nets["VBUS"]["net_class"] == "power" and nets["CC2"]["net_class"] is None
     assert nets["CC2"]["pins"] == ["J1.5", "R9.1"]
     assert nets["CC2"]["reason"] == "no path on F.Cu"  # carried verbatim
     assert out["unrouted"] == ["CC2"] and out["failed"] == ["CC2"]
+
+
+def test_facts_net_current_is_the_stored_amps_or_nothing() -> None:
+    """gr520542: ``current_a`` is the stored amps figure verbatim — None
+    only when the net carries no annotation; an explicit 0 (a real
+    annotation) survives instead of reading as unset."""
+    tables = {
+        "pcb_nets": [
+            {"net_id": 1, "name": "SIG", "est_current_a": None},
+            {"net_id": 2, "name": "OFF", "est_current_a": 0},
+            {"net_id": 3, "name": "LED", "est_current_a": 0.02},
+        ],
+    }
+    nets = pcb_hover.facts_from_tables(tables, [])["facts"]["nets"]
+    assert nets["SIG"]["current_a"] is None
+    assert nets["OFF"]["current_a"] == 0
+    assert nets["LED"]["current_a"] == 0.02
 
 
 def test_part_summary_shows_a_readable_package_never_an_easyeda_id() -> None:

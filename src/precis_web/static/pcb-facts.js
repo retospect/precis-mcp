@@ -32,8 +32,11 @@
     } catch (_) { return {parts: {}, nets: {}}; }
   }
 
+  // current_a is amps, a plain number the agent sets explicitly (gr520542):
+  // no hidden default — unset shows nothing, a set value renders in mA
+  // under 1 A, in A otherwise.
   function current(a) {
-    if (typeof a !== 'number' || !isFinite(a) || a <= 0) return null;
+    if (typeof a !== 'number' || !isFinite(a) || a < 0) return null;
     return a < 1 ? Math.round(a * 1000) + 'mA' : +a.toFixed(2) + 'A';
   }
 
@@ -44,39 +47,16 @@
     return '[' + pins.length + ' pins]';
   }
 
-  // The current segment of a net hover; never empty (gr496367). A set value is
-  // "120mA". Otherwise the gap is named: a ground net sums the supply nets that
-  // return through it ("return ≤ 600mA (sum of power nets: VBUS 500mA + 3V3 100mA; cascaded rails counted twice)"), a
-  // signal says "signal, no current set", anything else "current: not set".
-  function currentText(facts, name, net) {
-    const own = current(net.current_a);
-    if (own) return own;
-    if (isGround(facts, name)) {
-      const known = [], unset = [];
-      for (const [other, n] of Object.entries(facts.nets)) {
-        if (other === name || isGround(facts, other)) continue;
-        if (String(n.net_class || '').toLowerCase() !== 'power') continue;
-        const c = current(n.current_a);
-        if (c) known.push({name: other, a: n.current_a, text: c}); else unset.push(other);
-      }
-      if (!known.length) {
-        return 'return current: unknown (no supply net has a current set' +
-          (unset.length ? '; ' + unset.join(', ') : '') + ')';
-      }
-      const total = current(known.reduce((s, k) => s + k.a, 0));
-      return 'return ≤ ' + total + ' (sum of power nets: ' + known.map((k) => k.name + ' ' + k.text).join(' + ') +
-        '; cascaded rails counted twice' +
-        (unset.length ? '; current not set: ' + unset.join(', ') : '') + ')';
-    }
-    return String(net.net_class || '').toLowerCase() === 'signal'
-      ? 'signal, no current set' : 'current: not set';
-  }
-
-  // "Net/<current>/[a:b]"; "[N pins]" for multi-pin nets.
+  // "Net/<current>/[a:b]" — the current segment only when one is set
+  // (gr520542: no "?mA" placeholder); "[N pins]" for multi-pin nets.
   function netText(facts, name) {
     const net = facts.nets[name];
     if (!net) return name;
-    return [name, currentText(facts, name, net), ends(net)].join('/');
+    const parts = [name];
+    const cur = current(net.current_a);
+    if (cur !== null) parts.push(cur);
+    parts.push(ends(net));
+    return parts.join('/');
   }
 
   // "C2/(10uF 0603 6.3V)/Pad 2"; the parenthesis only when something is known.

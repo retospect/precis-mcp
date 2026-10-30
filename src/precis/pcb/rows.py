@@ -952,7 +952,10 @@ def net_row(n: dict[str, Any]) -> dict[str, Any]:
         "name": name,
         "net_class": n.get("net_class") or n.get("class"),
         "domain": str(n.get("domain") or "electrical").strip(),
-        "est_current_a": n.get("est_current_a") or n.get("current"),
+        # PRESENCE, not truthiness — an explicit `current: 0` (a deliberate
+        # "carries nothing" annotation) must not fall through the alias to
+        # NULL (gr520542).
+        "est_current_a": first_present(n, "est_current_a", "current"),
     }
     for column, keys in NET_SPEC_FIELDS:
         row[column] = first_present(n, *keys)

@@ -3044,7 +3044,9 @@ class PcbMixin:
                 ref_id,
                 str(n["name"]).strip(),
                 n.get("net_class") or n.get("class"),
-                n.get("est_current_a") or n.get("current"),
+                # PRESENCE, not truthiness — an explicit `current: 0` must
+                # not fall through the alias to NULL (gr520542).
+                _first_present(n, "est_current_a", "current"),
                 n.get("width_mm") or n.get("width"),
                 n.get("note"),
                 str(n.get("domain") or "electrical").strip(),

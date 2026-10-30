@@ -215,8 +215,9 @@ Field notes:
 
 - **net**: `name` is **required and meaningful** — the name *is* the intent
   (`I2C_SCL`, not `N$7`). `class` drives width / measure defaults
-  ([[precis-net-class-help]]); `current` (amps) sizes the trace; `width` (mm)
-  overrides.
+  ([[precis-net-class-help]]); `current` is amps, a plain number you set on
+  **every** net — `0.001` when you have no better figure; unset refuses
+  place/route. `width` (mm) overrides.
 - **net electrical spec** — where datasheet numbers go: `current` (amps →
   IPC-2221 width), `voltage` (peak working volts), `edge_rate` (V/ns),
   `impedance` (ohms), `function` (`crystal`|`switcher_sw`|`adc_input`|

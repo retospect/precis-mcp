@@ -96,6 +96,18 @@ def test_ipc2221_capacity_a_is_the_exact_inverse_of_track_width():
 # ── resolve_net_rules: resolution order ──────────────────────────────────
 
 
+def test_net_row_stores_current_as_amps_number_and_keeps_explicit_zero():
+    """gr520542: ``current``/``est_current_a`` is amps, a plain number —
+    no unit scaling, and an explicit ``0`` (a real "carries nothing"
+    annotation) is stored, never collapsed to NULL by the alias fold."""
+    from precis.pcb.rows import net_row
+
+    assert net_row({"name": "X", "current": 0.5})["est_current_a"] == 0.5
+    assert net_row({"name": "X", "est_current_a": 0.001})["est_current_a"] == 0.001
+    assert net_row({"name": "X", "current": 0})["est_current_a"] == 0
+    assert net_row({"name": "X"})["est_current_a"] is None
+
+
 def test_resolve_net_rules_no_override_no_current_falls_to_fab_floor():
     rules = resolve_net_rules(
         "signal", layer_is_outer=True, fab_caps=_CAP4, overrides=None, current_a=None

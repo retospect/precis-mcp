@@ -137,7 +137,9 @@ def facts_from_tables(
         out_nets[net["name"]] = {
             "pins": sorted(set(labels.get(net["net_id"], []))),
             "net_class": net.get("net_class") or None,
-            "current_a": cur if isinstance(cur, (int, float)) and cur > 0 else None,
+            # Amps, set by the caller (gr520542); an explicit 0 survives —
+            # only unset/negative reads as "no current".
+            "current_a": cur if isinstance(cur, (int, float)) and cur >= 0 else None,
             "status": status,
             "reason": reason,
         }

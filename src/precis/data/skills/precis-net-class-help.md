@@ -50,11 +50,16 @@ stored and rendered — it just gets generic defaults.
 
 ## Width from current
 
-Give a net `current` (amps) and precis sizes the trace to a sane width (1 oz
-copper, modest temperature rise) and snaps to a conventional step rather than
-an arbitrary value. Override with explicit `width` (mm) when you have a reason
-(impedance, a connector pad). Rule of thumb you can sanity-check against: ~0.5
-mm/A on external 1 oz copper for a ~10 °C rise; bump up for inner layers.
+`current` is **amps, a plain number — set it on every net** (`est_current_a`
+under the hood). No code default exists and none is invented: when you have no
+better figure, write `0.001` yourself rather than leaving it unset — an
+unset net refuses place/route outright. A set current sizes the trace to a
+sane width (1 oz copper, modest temperature rise) snapped to a conventional
+step rather than an arbitrary value; an explicit `0` is a real "carries
+nothing" annotation, not unset. Override with explicit `width` (mm) when you
+have a reason (impedance, a connector pad). Rule of thumb you can
+sanity-check against: ~0.5 mm/A on external 1 oz copper for a ~10 °C rise;
+bump up for inner layers.
 
 ```python
 {"name": "VBUS", "class": "power", "current": 2.0}  # ~1 mm trace, stepped
