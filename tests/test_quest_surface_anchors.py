@@ -658,6 +658,83 @@ def _cov_payload() -> dict[str, Any]:
     }
 
 
+class _PathwayStore:
+    """Just enough store for ``_theta0_check``: pathway ref lookup only."""
+
+    def fetch_refs_by_ids(self, ids: set[int]) -> dict[int, Any]:
+        return {i: SimpleNamespace(meta={"results": {"nodes": {}}}) for i in ids}
+
+
+_PINNED_PARTIAL: dict[str, Any] = {
+    "refs": {"slab": -100.0, "bare": {"O": -105.0}},
+    "states": {"*": -100.0, "OH": -107.0, "O+H": -106.0},
+}
+
+
+def test_theta0_check_pathway_id_skips_newest_lookup(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``pathway_id`` given: ``_candidate_pathway_ref_id`` is never consulted
+    and the given id's partials are the reference."""
+    from precis.quest import window_objectives as wo
+
+    def _no_lookup(*_a: Any, **_k: Any) -> int | None:
+        raise AssertionError("_candidate_pathway_ref_id consulted")
+
+    seen: list[int] = []
+
+    def _partials(_store: Any, pathway_id: int) -> list[dict[str, Any]]:
+        seen.append(pathway_id)
+        return [_PINNED_PARTIAL]
+
+    monkeypatch.setattr(wo, "_candidate_pathway_ref_id", _no_lookup)
+    monkeypatch.setattr(anchors, "_seed_partials", _partials)
+    check, note = anchors._theta0_check(
+        _PathwayStore(), _candidate(), {"coverage": _cov_payload()}, pathway_id=777
+    )
+    assert seen == [777]
+    assert check is not None
+    assert check["n_partials"] == 1
+    assert {r["adsorbate"] for r in check["rows"]} == {"H", "O", "OH"}
+    assert "pathway single-adsorbate" in note
+
+
+def test_theta0_check_default_uses_newest_pathway(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``pathway_id=None`` keeps the old path: the candidate's newest pathway."""
+    from precis.quest import window_objectives as wo
+
+    looked_up: list[int] = []
+
+    def _newest(_store: Any, structure_ref_id: int) -> int | None:
+        looked_up.append(structure_ref_id)
+        return 555
+
+    seen: list[int] = []
+
+    def _partials(_store: Any, pathway_id: int) -> list[dict[str, Any]]:
+        seen.append(pathway_id)
+        return [_PINNED_PARTIAL]
+
+    monkeypatch.setattr(wo, "_candidate_pathway_ref_id", _newest)
+    monkeypatch.setattr(anchors, "_seed_partials", _partials)
+    check, _note = anchors._theta0_check(
+        _PathwayStore(), _candidate(id=42), {"coverage": _cov_payload()}
+    )
+    assert looked_up == [42]
+    assert seen == [555]
+    assert check is not None
+
+    # No pathway for the candidate: the old reasoned refusal.
+    monkeypatch.setattr(wo, "_candidate_pathway_ref_id", lambda *_a, **_k: None)
+    check, note = anchors._theta0_check(
+        _PathwayStore(), _candidate(), {"coverage": _cov_payload()}
+    )
+    assert check is None
+    assert note == "no pathway ref for this candidate"
+
+
 @pytest.mark.db
 def test_harvest_stamps_theta0_check(store: Store, hub: Hub) -> None:
     """End to end: a succeeded scan + a pathway with a seed partial stamps

@@ -421,3 +421,115 @@ def test_render_text_covers_window_ranking_ipr_and_churn() -> None:
     assert text.index("  c:") < text.index("  a:")  # ranked by lost window
     assert "effective bottlenecks 2.00" in text
     assert "ridge churn 0.0%" in text
+
+
+# ── attribution verdict (slice 8, opposed-corner probe) ──────────────────
+
+_VERDICTS = {
+    "ambiguous",
+    "not ambiguous under this probe",
+    "no runner-up",
+    "no lost area: attribution undefined",
+}
+
+
+def _corners(lo, mid, hi):
+    return {-1: lo, 0: mid, 1: hi}
+
+
+def test_verdict_clean_not_ambiguous() -> None:
+    v = sm.attribution_verdict(
+        _corners([0.9, 0.2, 0.1], [1.0, 0.3, 0.1], [1.1, 0.4, 0.1]),
+        ["a", "b", "c"],
+    )
+    assert v.verdict == "not ambiguous under this probe"
+    assert (v.top, v.runner_up) == (0, 1)
+    assert v.order_by_corner == {-1: True, 0: True, 1: True}
+    assert v.ranges[0] == pytest.approx((0.9, 1.1))
+    assert v.ranges[1] == pytest.approx((0.2, 0.4))
+    assert "'a'" in v.reason and "'b'" in v.reason
+
+
+def test_verdict_overlap_without_flip_is_ambiguous_with_order_all_true() -> None:
+    # r* beats r2 at every corner (0.5 > 0.4, 1.0 > 0.2, 0.9 > 0.7), but the
+    # ranges [0.5, 1.0] and [0.2, 0.7] overlap because the two co-move.
+    v = sm.attribution_verdict(_corners([0.5, 0.4], [1.0, 0.2], [0.9, 0.7]))
+    assert v.verdict == "ambiguous"
+    assert (v.top, v.runner_up) == (0, 1)
+    assert v.order_by_corner == {-1: True, 0: True, 1: True}
+    assert "ranges overlap" in v.reason
+
+
+def test_verdict_real_flip_shows_in_order_by_corner() -> None:
+    v = sm.attribution_verdict(_corners([0.3, 0.8], [1.0, 0.5], [1.1, 0.4]))
+    assert v.verdict == "ambiguous"
+    assert v.order_by_corner == {-1: False, 0: True, 1: True}
+    assert "flips at corner -1" in v.reason
+
+
+def test_verdict_empty_shifted_corner_is_ambiguous_and_checked_first() -> None:
+    v = sm.attribution_verdict(_corners([0.9, 0.1], [1.0, 0.1], None))
+    assert v.verdict == "ambiguous"
+    assert "empty at corner +1" in v.reason
+    assert v.order_by_corner == {-1: True, 0: True, 1: None}
+    assert v.ranges[0] == pytest.approx((0.9, 1.0))  # live corners only
+    # Before the single-rung and all-zero outcomes too.
+    assert sm.attribution_verdict(_corners([1.0], [1.0], None)).verdict == "ambiguous"
+    zero = sm.attribution_verdict(_corners(None, [0.0, 0.0], [0.0, 0.0]))
+    assert zero.verdict == "ambiguous"
+    assert zero.top is None
+
+
+def test_verdict_single_rung_claims_nothing() -> None:
+    v = sm.attribution_verdict(_corners([0.5], [1.0], [1.5]))
+    assert v.verdict == "no runner-up"
+    assert v.runner_up is None
+
+
+def test_verdict_all_zero_corner0_is_undefined() -> None:
+    v = sm.attribution_verdict(_corners([0.0, 0.1], [0.0, 0.0], [0.0, 0.2]))
+    assert v.verdict == "no lost area: attribution undefined"
+    assert v.top is None and v.runner_up is None
+
+
+def test_verdict_tie_for_top_at_corner0_is_ambiguous_lowest_index() -> None:
+    v = sm.attribution_verdict(
+        _corners([1.0, 1.0, 0.1], [1.0, 1.0, 0.1], [1.0, 1.0, 0.1])
+    )
+    assert v.verdict == "ambiguous"
+    assert (v.top, v.runner_up) == (0, 1)
+    assert "tie for top" in v.reason
+
+
+def test_verdict_runner_up_tie_takes_lowest_index() -> None:
+    v = sm.attribution_verdict(
+        _corners([2.0, 0.5, 0.5], [2.0, 0.5, 0.5], [2.0, 0.5, 0.5])
+    )
+    assert v.verdict == "not ambiguous under this probe"
+    assert (v.top, v.runner_up) == (0, 1)
+
+
+def test_verdict_rejects_missing_corner_none_corner0_and_shape_mismatch() -> None:
+    with pytest.raises(ValueError, match="missing"):
+        sm.attribution_verdict({0: [1.0, 0.0]})
+    with pytest.raises(ValueError, match="corner 0 is None"):
+        sm.attribution_verdict(_corners([1.0], None, [1.0]))
+    with pytest.raises(ValueError, match="rungs"):
+        sm.attribution_verdict(_corners([1.0], [1.0, 0.5], [1.0, 0.5]))
+    with pytest.raises(ValueError, match="rung_names"):
+        sm.attribution_verdict(_corners([1.0, 0.5], [1.0, 0.5], [1.0, 0.5]), ["a"])
+
+
+def test_verdict_strings_are_the_closed_set_and_never_say_robust() -> None:
+    cases = [
+        _corners([0.9, 0.2, 0.1], [1.0, 0.3, 0.1], [1.1, 0.4, 0.1]),
+        _corners([0.5, 0.4], [1.0, 0.2], [0.9, 0.7]),
+        _corners([0.3, 0.8], [1.0, 0.5], [1.1, 0.4]),
+        _corners([1.0], [1.0], [1.0]),
+        _corners([0.0, 0.1], [0.0, 0.0], [0.0, 0.2]),
+        _corners(None, [1.0, 0.5], [1.0, 0.5]),
+    ]
+    for c in cases:
+        v = sm.attribution_verdict(c)
+        assert v.verdict in _VERDICTS
+        assert "robust" not in f"{v.verdict} {v.reason}".lower()

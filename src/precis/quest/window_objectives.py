@@ -51,6 +51,7 @@ import hashlib
 import importlib
 import json
 import logging
+from dataclasses import dataclass
 from dataclasses import replace as _dc_replace
 from types import ModuleType
 from typing import Any
@@ -123,6 +124,15 @@ def _staircase_routes() -> ModuleType | None:
     has not landed / the plugin is absent — treated as "routes missing"."""
     try:
         return importlib.import_module("precis_pathway.staircase_routes")
+    except ImportError:
+        return None
+
+
+def _surface_pourbaix() -> ModuleType | None:
+    """The plugin's anchor/sweep module (``Anchor``, ``resweep`` …), or
+    ``None`` when the plugin is absent."""
+    try:
+        return importlib.import_module("precis_pathway.surface_pourbaix")
     except ImportError:
         return None
 
@@ -394,7 +404,7 @@ def _wanted_key(
     return _NO_KEY
 
 
-def _resting_map_for(sm: ModuleType, m: dict[str, Any], wanted_key: Any) -> Any | None:
+def resting_map_for(sm: ModuleType, m: dict[str, Any], wanted_key: Any) -> Any | None:
     """Rebuild a ``staircase_masks.RestingMap`` from a ``build_map`` dict:
     the U axis from ``U_RHE_window``×``grid``, a display pH axis over
     ``pH_window``, and ``wanted`` = "the operating point's termination
@@ -572,7 +582,7 @@ def stamp_window_measures(
             "no operating point (meta.operating_conditions.U_RHE or "
             "resting_termination_at_point) — resting mask not applied"
         )
-    resting = _resting_map_for(sm, m, wanted_key)
+    resting = resting_map_for(sm, m, wanted_key)
     if resting is None:
         notes.append("map carries no U_RHE_window/grid — no resting map")
 
@@ -791,9 +801,166 @@ def propose_anchor_scans(
     return proposals
 
 
+# ── attribution sensitivity probe (SPSO slice 8, stage 4) ─────────────────
+
+
+@dataclass(frozen=True)
+class AttributionProbe:
+    """Result of :func:`attribution_probe`.
+
+    ``wanted_key`` is the corner-0 resting termination at the operating
+    point (``[adsorbate, n]``, ``None`` = clean); ``route_index`` /
+    ``route_name`` the pinned ``sr.pcet_routes`` entry; ``rung_names`` the
+    Shapley game's rungs (the order of every φ vector; HER is a mask on
+    the baseline, not a rung). ``window_by_corner[c]`` is
+    :func:`window_measures`' output for corner ``c`` (``window_area_VpH``
+    among it); ``phi_by_corner[c]`` the Shapley lost-area vector, ``None``
+    where the wanted region is empty at that corner. ``verdict`` is
+    ``staircase_masks.attribution_verdict`` over those vectors."""
+
+    wanted_key: Any
+    route_index: int
+    route_name: str
+    rung_names: tuple[str, ...]
+    window_by_corner: dict[int, dict[str, Any]]
+    phi_by_corner: dict[int, tuple[float, ...] | None]
+    verdict: Any
+
+
+def attribution_probe(
+    job: dict[str, Any],
+    sr: Any,
+    u_rhe: float,
+    *,
+    seed: int,
+) -> AttributionProbe:
+    """The opposed-corner sensitivity probe on the Shapley attribution
+    (slice 8 contract, stage 4): the three corners ``-1, 0, +1`` of
+    ``staircase_masks.PROBE_CORNERS`` run end to end, one fixed ``seed`` for
+    all of them.
+
+    ``job`` is one ``pourbaix_map.scan_jobs`` row carrying the stored
+    ``che_sweep`` (a single-model sweep; ``resweep`` refuses more) and the
+    footing fields ``build_map`` reads; it is never mutated, shifted corners
+    build their map from a copy. ``sr`` is ``routes_for_pathway``'s result
+    (``routes`` / ``pcet_routes`` index-aligned, ``her``); ``u_rhe`` the
+    operating point on the RHE scale. The sweep is pH-flat on RHE, so the
+    operating pH enters nowhere and is not an argument. ``eps`` and the HER
+    margin are the defaults (``Rung.eps``, margin 0); the quest-meta stamp
+    path (:func:`stamp_window_measures`) is not involved.
+
+    Corner 0 is the stored sweep (no ``resweep``). It fixes ``wanted_key``
+    (the region at ``u_rhe``, never recomputed at a shifted corner) and pins
+    the route: ``window_measures`` once per ``sr.pcet_routes[i]``, the
+    largest ``window_area_VpH`` wins, ties to the lowest index. Corners ±1
+    shift the anchors rebuilt from the stored sweep
+    (``Anchor.from_dict`` + ``applied_reservoirs`` + ``perturb_anchors``,
+    matching the wanted termination on ``(adsorbate, n)``, never on
+    ``Anchor.key``) and ``resweep`` them. An empty wanted region at a
+    shifted corner gives ``phi = None`` there (an ambiguous verdict).
+
+    Raises ``ValueError`` when the probe has nothing to run on: no
+    ``che_sweep`` / regions / wanted termination, no usable route, or an
+    empty wanted region at corner 0."""
+    from precis.quest import pourbaix_map
+
+    sm = _staircase_masks()
+    sp = _surface_pourbaix()
+    if sm is None or sp is None:
+        raise ValueError(
+            "attribution_probe: precis_pathway is not importable — install the plugin"
+        )
+    che = job.get("che_sweep")
+    if not isinstance(che, dict):
+        raise ValueError(
+            "attribution_probe: the job carries no che_sweep — pass a "
+            "succeeded surface_coverage_scan row from pourbaix_map.scan_jobs"
+        )
+    pcets = [p for p in (getattr(sr, "pcet_routes", None) or [])]
+    if not pcets:
+        raise ValueError(
+            "attribution_probe: sr.pcet_routes is empty — the pathway has no "
+            "scored route (routes_for_pathway(...).missing says what)"
+        )
+    routes = list(getattr(sr, "routes", None) or [])
+    her = getattr(sr, "her", None)
+
+    def measures(resting: Any, i: int) -> dict[str, Any]:
+        main = routes[i] if i < len(routes) else pcets[i]
+        return window_measures(
+            resting, [main], her, her_margin_eV=0.0, pcet_routes=[pcets[i]]
+        )
+
+    # Corner 0: the stored sweep, no resweep.
+    m0 = pourbaix_map.build_map([job])
+    wanted_key = _wanted_key(m0, float(u_rhe), None)
+    if wanted_key is _NO_KEY:
+        raise ValueError(
+            f"attribution_probe: the map has no region at U_RHE={u_rhe:+.3f} V "
+            "— the sweep carries no envelope (re-run the scan)"
+        )
+    resting0 = resting_map_for(sm, m0, wanted_key)
+    if resting0 is None:
+        raise ValueError("attribution_probe: map carries no U_RHE_window/grid")
+    if not bool(resting0.wanted.any()):
+        raise ValueError(
+            "attribution_probe: the wanted region is empty on the stored sweep"
+        )
+    per_route = [measures(resting0, i) for i in range(len(pcets))]
+    areas = [
+        float("-inf") if w["window_area_VpH"] is None else w["window_area_VpH"]
+        for w in per_route
+    ]
+    pinned = max(range(len(pcets)), key=lambda i: (areas[i], -i))
+    if areas[pinned] == float("-inf"):
+        raise ValueError(
+            "attribution_probe: no route produced a window area (routes without rungs?)"
+        )
+    pcet = pcets[pinned]
+
+    def field_of(resting: Any) -> Any:
+        return sm.shapley_field(resting, pcet, her=her, her_margin=0.0, seed=seed)
+
+    def phi_of(sf: Any) -> tuple[float, ...]:
+        return tuple(float(v) for v in sf.global_values)
+
+    window: dict[int, dict[str, Any]] = {0: per_route[pinned]}
+    sf0 = field_of(resting0)
+    phi: dict[int, tuple[float, ...] | None] = {0: phi_of(sf0)}
+    # the game's own rung names (one per φ entry)
+    rung_names = tuple(str(n) for n in sf0.rungs)
+
+    # Corners ±1: anchors from the stored sweep, shifted, re-swept.
+    model = (che.get("models") or [None])[0]
+    applied = sp.applied_reservoirs(che, str(model))
+    anchors = [sp.Anchor.from_dict(d, applied) for d in che.get("anchors") or []]
+    key = None if wanted_key is None else tuple(wanted_key)
+    for sign in (-1, 1):
+        shifted = sp.perturb_anchors(anchors, key, sign)
+        m = pourbaix_map.build_map([{**job, "che_sweep": sp.resweep(che, shifted)}])
+        resting = resting_map_for(sm, m, wanted_key)
+        if resting is None:
+            raise ValueError("attribution_probe: map carries no U_RHE_window/grid")
+        window[sign] = measures(resting, pinned)
+        phi[sign] = phi_of(field_of(resting)) if bool(resting.wanted.any()) else None
+
+    verdict = sm.attribution_verdict(phi, rung_names)
+    return AttributionProbe(
+        wanted_key=wanted_key,
+        route_index=pinned,
+        route_name=str(getattr(pcet, "name", "")),
+        rung_names=rung_names,
+        window_by_corner={c: window[c] for c in sm.PROBE_CORNERS},
+        phi_by_corner={c: phi[c] for c in sm.PROBE_CORNERS},
+        verdict=verdict,
+    )
+
+
 __all__ = [
     "WINDOW_INPUTS_KEY",
     "WINDOW_MEASURE_KEYS",
+    "AttributionProbe",
+    "attribution_probe",
     "propose_anchor_scans",
     "stamp_window_measures",
     "window_measures",

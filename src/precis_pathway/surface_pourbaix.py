@@ -70,9 +70,10 @@ scan already wrote, so it is testable on a host without the engine.
 
 from __future__ import annotations
 
+import copy
 import math
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any
 
 #: Boltzmann constant (eV/K) and the CHE reference temperature — the same two
@@ -335,6 +336,34 @@ class Anchor:
             "model": self.model,
             **({"counts": dict(self.counts)} if self.counts else {}),
         }
+
+    @classmethod
+    def from_dict(
+        cls, d: dict[str, Any], reservoirs: tuple[Reservoir, ...] | list[Reservoir]
+    ) -> Anchor:
+        """Inverse of :meth:`as_dict`. ``as_dict`` drops ``reservoirs`` and
+        stores ``counts`` as a mapping, so both are rebuilt here: ``counts``
+        becomes ``(species, n_i)`` pairs in the mapping's order, and
+        ``reservoirs`` is what the caller passes, which must be the *applied*
+        subset (:func:`applied_reservoirs`): a reservoir the scan could not
+        price changes ``nu`` and ``slope``. ``slope`` and ``nu`` are derived
+        properties; the stored values are ignored."""
+        raw_counts = d.get("counts") or {}
+        return cls(
+            adsorbate=str(d["adsorbate"]),
+            n=int(d["n"]),
+            theta=float(d["theta"]),
+            energy=float(d["energy"]),
+            gamma0=float(d["gamma0"]),
+            area=float(d["area"]),
+            site=d.get("site"),
+            converged=bool(d["converged"]),
+            detached=bool(d["detached"]),
+            sigma_gamma=float(d["sigma_gamma"]),
+            model=str(d["model"]),
+            reservoirs=tuple(reservoirs),
+            counts=tuple((str(sp), int(k)) for sp, k in raw_counts.items()),
+        )
 
 
 def _element_mu(payload: dict[str, Any]) -> dict[str, float]:
@@ -937,6 +966,85 @@ def sweep(
             "winner": None if w is None else w.brief(),
             "gamma": g,
         }
+    return out
+
+
+def applied_reservoirs(che_sweep: dict[str, Any], model: str) -> list[Reservoir]:
+    """The reservoirs the scan of ``model`` actually applied, from a stored
+    ``sweep`` output: ``che_sweep["reservoirs"]`` rows (parsed by
+    :func:`reservoirs_from`) whose ``element`` is a key of
+    ``che_sweep["reservoir_shift_eV"][model]``. This is the subset an
+    :class:`Anchor` carries; pass it to :meth:`Anchor.from_dict`."""
+    shifts = (che_sweep.get("reservoir_shift_eV") or {}).get(model) or {}
+    return [
+        r for r in reservoirs_from(che_sweep.get("reservoirs")) if r.element in shifts
+    ]
+
+
+def perturb_anchors(
+    anchors: list[Anchor], wanted_key: tuple[str, int] | None, sign: int
+) -> list[Anchor]:
+    """Opposed-corner shift of ``gamma0`` by each anchor's own bar.
+
+    An anchor with ``(adsorbate, n) == tuple(wanted_key)`` moves by
+    ``+sign * sigma_gamma``, every other anchor by ``-sign * sigma_gamma``
+    (``sign = +1``: the wanted termination loses, the lowest ``gamma`` wins;
+    ``sign = -1`` the reverse; ``sign = 0`` returns the anchors unchanged).
+    A uniform shift would cancel at adsorbate-vs-adsorbate boundaries; the
+    opposed shift moves them.
+
+    The match is on ``(adsorbate, n)``, not :attr:`Anchor.key`, because that
+    is what the map's regions key on; a mixture's key is ``(label, counts)``
+    and would never match. A single-species anchor and a mixture sharing a
+    label and ``n`` are not distinguished (see :func:`_key_order`), so both
+    take the wanted sign. When ``wanted_key`` is the clean surface no anchor
+    can match, so every anchor takes ``-sign * sigma_gamma`` and the clean
+    surface loses at ``sign = +1``: the clean-vs-adsorbate boundary, which
+    moves in full. ``wanted_key=None`` is accepted for the clean surface."""
+    wanted = None if wanted_key is None else tuple(wanted_key)
+    return [
+        replace(
+            a,
+            gamma0=a.gamma0
+            + (1 if (a.adsorbate, a.n) == wanted else -1) * sign * a.sigma_gamma,
+        )
+        for a in anchors
+    ]
+
+
+def resweep(che_sweep: dict[str, Any], anchors: list[Anchor]) -> dict[str, Any]:
+    """A copy of a stored :func:`sweep` output with ``anchors``,
+    ``envelope`` and ``boundaries`` recomputed over ``anchors`` on the
+    sweep's own U grid (``U_RHE_window``, ``grid``). Everything else is left
+    as stored, including ``needs_anchor`` and ``point``, which therefore
+    describe the stored anchors, not these. The input is never mutated.
+
+    Raises ``ValueError`` when the sweep pooled more than one model:
+    :func:`boundaries` takes per-model anchors, which pooled anchors cannot
+    rebuild. With one model the anchors are passed as ``{model: anchors}``."""
+    n_models = int(che_sweep.get("n_models") or 0)
+    if n_models > 1:
+        raise ValueError(
+            f"resweep needs a single-model sweep, got n_models={n_models}: "
+            "boundaries takes per-model anchors, which pooled anchors cannot "
+            "rebuild; build the sweep from one model's scan"
+        )
+    models = list(che_sweep.get("models") or [])
+    if len(models) != 1:
+        raise ValueError(f"resweep needs exactly one model in the sweep, got {models}")
+    u_lo, u_hi = (float(u) for u in che_sweep["U_RHE_window"])
+    grid = int(che_sweep["grid"])
+    step = (u_hi - u_lo) / (grid - 1)
+    u_grid = [u_lo + i * step for i in range(grid)]
+    out = copy.deepcopy(che_sweep)
+    out["anchors"] = [a.as_dict() for a in anchors]
+    out["envelope"] = envelope(anchors, u_grid)
+    out["boundaries"] = [
+        b.as_dict()
+        for b in boundaries(
+            {models[0]: anchors}, anchors, u_window=(u_lo, u_hi), grid=grid
+        )
+    ]
     return out
 
 

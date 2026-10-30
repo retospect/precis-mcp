@@ -842,10 +842,15 @@ fixes, applied in v4 (B's H check demoted to `blocked: no final geometry`
 because the engine returns none; wanted-key match on `(adsorbate, n)`;
 reservoir source named; Shapley route pinned; stage 0 query and conditions
 named; theta0 reference path named; orchestration and verdict placed and
-tested). Before `ready`: a third look at v4. Part A is unwritten:
-`Anchor.from_dict`, `perturb_anchors`, `resweep`, `attribution_verdict`,
-`attribution_probe`, the `resting_map_for` rename and the `_theta0_check`
-argument. Filed with this contract: gr540871 (no MCP listing of a slab's
+tested). No third look on v4 is needed (coordinator,
+2026-10-30). Part A is built and landed (code verdict: land, 2026-10-30):
+`Anchor.from_dict` (with `applied_reservoirs`), `perturb_anchors`,
+`resweep`, `attribution_verdict`, `attribution_probe`, the
+`resting_map_for` rename and the `_theta0_check` argument. Built choices
+beyond the text above: `attribution_probe(job, sr, u_rhe, *, seed)` takes
+one `scan_jobs` row and no pH (the sweep is pH-flat on the RHE scale);
+HER is a baseline mask, not a Shapley rung; the probe passes `sr.routes[i]`
+beside `sr.pcet_routes[i]` to `window_measures`. Filed with this contract: gr540871 (no MCP listing of a slab's
 pathways) and gr540872 (the engine returns no final structures from the
 coverage scan).
 

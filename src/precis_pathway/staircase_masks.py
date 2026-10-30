@@ -64,7 +64,7 @@ from __future__ import annotations
 
 import math
 import warnings
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
 
@@ -821,13 +821,189 @@ def render_text(sf: ShapleyField, red: Reductions) -> str:
     return "\n".join(lines)
 
 
+#: The corners of the attribution sensitivity probe: ``0`` the stored sweep,
+#: ``-1``/``+1`` the opposed anchor shifts (slice 8 contract, stage 4).
+PROBE_CORNERS = (-1, 0, 1)
+
+#: The verdict strings :func:`attribution_verdict` can return — exactly these.
+VERDICT_AMBIGUOUS = "ambiguous"
+VERDICT_NOT_AMBIGUOUS = "not ambiguous under this probe"
+VERDICT_NO_RUNNER_UP = "no runner-up"
+VERDICT_NO_LOST_AREA = "no lost area: attribution undefined"
+
+#: Two Shapley values this close are the same value (float noise from the
+#: subset sums), for the corner-0 tie and all-zero tests.
+_PHI_RTOL = 1e-9
+_PHI_ATOL = 1e-12
+
+
+@dataclass(frozen=True)
+class AttributionVerdict:
+    """Outcome of :func:`attribution_verdict`.
+
+    ``verdict`` is one of :data:`VERDICT_AMBIGUOUS`,
+    :data:`VERDICT_NOT_AMBIGUOUS`, :data:`VERDICT_NO_RUNNER_UP`,
+    :data:`VERDICT_NO_LOST_AREA`. ``top`` / ``runner_up`` are rung indices
+    at corner 0 (``None`` where undefined). ``ranges[r]`` is rung ``r``'s
+    ``(min, max)`` φ across the corners that had a wanted region (``()``
+    when corner 0 is unusable). ``order_by_corner[c]`` is whether
+    ``φ_c[top] > φ_c[runner_up]`` (``None`` for a corner with an empty
+    wanted region): all True with ``ambiguous`` means the ranges overlap
+    without the order ever flipping; a False is a real top-rung flip."""
+
+    verdict: str
+    reason: str
+    top: int | None
+    runner_up: int | None
+    ranges: tuple[tuple[float, float], ...]
+    order_by_corner: dict[int, bool | None]
+
+
+def attribution_verdict(
+    phi_by_corner: Mapping[int, Sequence[float] | None],
+    rung_names: Sequence[str] | None = None,
+) -> AttributionVerdict:
+    """Is the top Shapley rung's attribution ambiguous under the opposed-
+    corner anchor probe (slice 8 contract, stage 4 "Verdict rule")?
+
+    ``phi_by_corner`` maps the corners ``-1``, ``0``, ``+1`` to the per-rung
+    Shapley lost-area vector (one value per rung, same rung order at every
+    corner); ``None`` means the wanted region was empty at that corner.
+    ``rung_names`` only words the ``reason``.
+
+    Rule, with ``R_r = [min_c φ_c[r], max_c φ_c[r]]``, ``r*`` the top rung at
+    corner 0 and ``r2`` the runner-up: **ambiguous** if the wanted region is
+    empty at corner ``-1`` or ``+1`` (checked first, before any other
+    outcome), or if ``min R_{r*} <= max R_{r2}``; otherwise "not ambiguous
+    under this probe". Degenerate inputs, in this order after the empty
+    check: a single rung gives "no runner-up" (no verdict claimed); corner-0
+    φ all zero gives "no lost area: attribution undefined"; a tie for top at
+    corner 0 gives ambiguous. Ties (to float noise) for runner-up take the
+    lowest index; ``top`` on a tie is also the lowest tied index. The
+    overlap rule is conservative: ``order_by_corner`` says whether ``r*``
+    really lost to ``r2`` anywhere.
+
+    A sensitivity probe over the propagated anchor bars, not a confidence
+    interval. Raises ``ValueError`` when a corner is missing, corner 0 is
+    ``None`` or empty, or vector lengths / ``rung_names`` disagree."""
+    missing = [c for c in PROBE_CORNERS if c not in phi_by_corner]
+    if missing:
+        raise ValueError(
+            f"attribution_verdict: corner(s) {missing} missing from "
+            f"phi_by_corner (need {list(PROBE_CORNERS)})"
+        )
+    if phi_by_corner[0] is None:
+        raise ValueError(
+            "attribution_verdict: corner 0 is None — the unshifted wanted "
+            "region is empty, so there is no attribution to probe"
+        )
+    phi: dict[int, np.ndarray | None] = {
+        c: (None if phi_by_corner[c] is None else np.asarray(phi_by_corner[c], float))
+        for c in PROBE_CORNERS
+    }
+    p0 = phi[0]
+    assert p0 is not None
+    n = int(p0.size)
+    if p0.ndim != 1 or n == 0:
+        raise ValueError("attribution_verdict: corner 0 needs a non-empty 1-D vector")
+    for c, p in phi.items():
+        if p is not None and (p.ndim != 1 or p.size != n):
+            raise ValueError(
+                f"attribution_verdict: corner {c} has shape {p.shape}, "
+                f"corner 0 has {n} rungs"
+            )
+    if rung_names is not None and len(rung_names) != n:
+        raise ValueError(
+            f"attribution_verdict: {len(rung_names)} rung_names for {n} rungs"
+        )
+
+    def name(i: int | None) -> str:
+        if i is None:
+            return "none"
+        return f"{rung_names[i]!r}" if rung_names is not None else f"rung {i}"
+
+    stack = np.stack([p for p in (phi[c] for c in PROBE_CORNERS) if p is not None])
+    ranges = tuple(
+        (float(stack[:, r].min()), float(stack[:, r].max())) for r in range(n)
+    )
+
+    top: int | None = None
+    runner_up: int | None = None
+    order: dict[int, bool | None] = {c: None for c in PROBE_CORNERS}
+
+    def done(verdict: str, reason: str) -> AttributionVerdict:
+        return AttributionVerdict(verdict, reason, top, runner_up, ranges, order)
+
+    def lowest_at(v: float, among: list[int]) -> int:
+        return next(
+            i for i in among if np.isclose(p0[i], v, rtol=_PHI_RTOL, atol=_PHI_ATOL)
+        )
+
+    if not np.allclose(p0, 0.0, rtol=0.0, atol=_PHI_ATOL):
+        everyone = list(range(n))
+        top = lowest_at(float(p0.max()), everyone)
+        if n > 1:
+            rest = [i for i in everyone if i != top]
+            v2 = float(max(p0[i] for i in rest))
+            # A tie for top leaves a tied rung in ``rest``, so v2 == p0[top].
+            runner_up = lowest_at(v2, rest)
+            for c in PROBE_CORNERS:
+                p = phi[c]
+                if p is not None:
+                    order[c] = bool(p[top] > p[runner_up])
+
+    empty = [c for c in (-1, 1) if phi[c] is None]
+    if empty:
+        return done(
+            VERDICT_AMBIGUOUS,
+            f"the wanted region is empty at corner {', '.join(f'{c:+d}' for c in empty)}",
+        )
+    if n == 1:
+        return done(VERDICT_NO_RUNNER_UP, "a single rung: nothing to rank it against")
+    if top is None:
+        return done(
+            VERDICT_NO_LOST_AREA,
+            "corner-0 φ is zero for every rung: the window loses no area",
+        )
+    assert runner_up is not None
+    if np.isclose(p0[top], p0[runner_up], rtol=_PHI_RTOL, atol=_PHI_ATOL):
+        return done(
+            VERDICT_AMBIGUOUS,
+            f"{name(top)} and {name(runner_up)} tie for top at corner 0",
+        )
+    lo_top = ranges[top][0]
+    hi_run = ranges[runner_up][1]
+    flipped = [c for c in PROBE_CORNERS if order[c] is False]
+    if lo_top <= hi_run:
+        how = (
+            f"the order flips at corner {', '.join(f'{c:+d}' for c in flipped)}"
+            if flipped
+            else "the order holds at every corner but the ranges overlap"
+        )
+        return done(
+            VERDICT_AMBIGUOUS,
+            f"min φ({name(top)}) = {lo_top:.4g} <= max φ({name(runner_up)}) = "
+            f"{hi_run:.4g}; {how}",
+        )
+    return done(
+        VERDICT_NOT_AMBIGUOUS,
+        f"min φ({name(top)}) = {lo_top:.4g} > max φ({name(runner_up)}) = {hi_run:.4g}",
+    )
+
+
 __all__ = [
     "DEFAULT_EPS_ELECTRO_EV",
     "DEFAULT_EPS_EV",
     "DEFAULT_SHAPLEY_SAMPLES",
     "EXACT_SHAPLEY_MAX_RUNGS",
     "PREFAC_V",
+    "PROBE_CORNERS",
     "RUNG_KINDS",
+    "VERDICT_AMBIGUOUS",
+    "VERDICT_NOT_AMBIGUOUS",
+    "VERDICT_NO_LOST_AREA",
+    "VERDICT_NO_RUNNER_UP",
+    "AttributionVerdict",
     "Reductions",
     "RestingMap",
     "Route",
@@ -836,6 +1012,7 @@ __all__ = [
     "RungMask",
     "ShapleyField",
     "Window",
+    "attribution_verdict",
     "her_mask",
     "operating_window",
     "pcet_route",

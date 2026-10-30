@@ -712,13 +712,20 @@ def _theta0_reference(
 
 
 def _theta0_check(
-    store: Any, candidate: Any, job_meta: dict[str, Any]
+    store: Any,
+    candidate: Any,
+    job_meta: dict[str, Any],
+    pathway_id: int | None = None,
 ) -> tuple[dict[str, Any] | None, str]:
     """The θ→0 acceptance check: the scan's lowest-coverage per-adsorbate
     formation energies against the candidate pathway's own
     single-adsorbate energies (succeeded seed partials), on the scan's
     reservoir gauge. ``(check, note)`` — ``check`` is ``None`` with a
-    reasoned note whenever an input is missing; nothing is fabricated."""
+    reasoned note whenever an input is missing; nothing is fabricated.
+
+    ``pathway_id`` pins the pathway whose seed partials are the reference;
+    ``None`` takes the candidate's newest pathway
+    (``_candidate_pathway_ref_id``, no ready/che_affine filter)."""
     cov = job_meta.get("coverage")
     cov = cov if isinstance(cov, dict) else {}
     try:
@@ -739,9 +746,10 @@ def _theta0_check(
             if isinstance(v, dict) and v.get("mu") is not None
         }
     c_ads = {str(k): v.get("c_ads") for k, v in ads_rec.items() if isinstance(v, dict)}
-    from precis.quest.window_objectives import _candidate_pathway_ref_id
+    if pathway_id is None:
+        from precis.quest.window_objectives import _candidate_pathway_ref_id
 
-    pathway_id = _candidate_pathway_ref_id(store, int(candidate.id))
+        pathway_id = _candidate_pathway_ref_id(store, int(candidate.id))
     if pathway_id is None:
         return None, "no pathway ref for this candidate"
     partials = _seed_partials(store, pathway_id)
