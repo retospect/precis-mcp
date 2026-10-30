@@ -36,7 +36,10 @@ except ImportError:  # pragma: no cover
         return fn if fn is not None else (lambda f: f)
 
     def record(
-        *, made: dict[str, int] | None = None, touched: dict[str, Any] | None = None
+        *,
+        made: dict[str, int] | None = None,
+        touched: dict[str, Any] | None = None,
+        frame: int | None = None,
     ) -> None:
         return None
 

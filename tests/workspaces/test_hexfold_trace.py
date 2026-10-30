@@ -38,6 +38,28 @@ def _by_id(doc: dict) -> dict[int, dict]:
     return {f["id"]: f for f in doc["frames"]}
 
 
+def _extxyz_maker_counts(scene: object) -> dict[int, int]:
+    """maker id → atom count, parsed back out of the written extxyz
+    column (the join ``out/`` hands a script author)."""
+    rows = extxyz.to_extxyz(scene).split("\n")
+    assert "maker:I:1" in rows[1]
+    counts: dict[int, int] = {}
+    for row in rows[2:]:
+        if row.strip():
+            maker = int(row.split()[-1])
+            counts[maker] = counts.get(maker, 0) + 1
+    return counts
+
+
+def _assert_extxyz_joins(doc: dict, scene: object) -> None:
+    """Every extxyz row's maker is a live trace frame, and each cited
+    frame's ``made.atoms`` equals the atoms citing it."""
+    frames = _by_id(doc)
+    for fid, n in _extxyz_maker_counts(scene).items():
+        assert fid in frames, f"maker {fid} has no trace frame"
+        assert frames[fid]["made"].get("atoms", 0) == n, frames[fid]["qual"]
+
+
 def test_prism_tube_frames_parent_children_and_stamp_makers() -> None:
     from hexfold.prism import prism_tube
 
@@ -144,6 +166,115 @@ def test_geom_and_extxyz_carry_the_maker_column() -> None:
 
     header = extxyz.to_extxyz(scene).split("\n")[1]
     assert "maker:I:1" in header
+
+
+def test_library_frames_carry_the_script_call_site() -> None:
+    """gr514054(a): a frame minted inside hexfold keeps its internal
+    ``file``/``line`` and gains ``caller_file``/``caller_line`` — the
+    script line that drove the build. A frame minted at the script's
+    own call site carries no ``caller_*`` (its ``file``/``line`` are
+    the citation already)."""
+    from hexfold.prism import prism_tube
+
+    with trace.run(work_root=_WORK_ROOT) as tr:
+        call_line = sys._getframe().f_lineno + 1
+        net, _pt = prism_tube(4, 4, 2, "++++++")
+        doc = tr.dump()
+
+    prism = next(f for f in doc["frames"] if f["qual"] == "prism.prism_tube")
+    assert (prism["file"], prism["line"]) == (
+        "workspaces/test_hexfold_trace.py",
+        call_line,
+    )
+    assert "caller_file" not in prism
+
+    strip = next(f for f in doc["frames"] if f["qual"] == "sheetnet.strip")
+    assert strip["file"] == "hexfold.prism"  # the internal call site stays
+    assert (strip["caller_file"], strip["caller_line"]) == (
+        "workspaces/test_hexfold_trace.py",
+        call_line,
+    )
+
+
+def test_hx_with_frames_cite_the_script_line() -> None:
+    """The ``with trace('build.<kind>')`` frames minted inside
+    ``build()`` name the ``with`` line inside hexfold plus the script's
+    ``build(...)`` line as ``caller_*``."""
+    from hexfold.build import build
+
+    spec = (
+        "hexfold 0.2\norigin t\n"
+        "t: tube(5,0, len=3)\n"
+        "u: tube(5,0, len=3)\n"
+        "t.out --fuse k=0--> u.in\n"
+    )
+    with trace.run(work_root=_WORK_ROOT) as tr:
+        call_line = sys._getframe().f_lineno + 1
+        net = build(spec)
+        doc = tr.dump()
+
+    build_frame = next(f for f in doc["frames"] if f["qual"] == "build.build")
+    assert (build_frame["file"], build_frame["line"]) == (
+        "workspaces/test_hexfold_trace.py",
+        call_line,
+    )
+    assert "caller_file" not in build_frame
+
+    for qual in ("build.tube", "build.fuse"):
+        fr = next(f for f in doc["frames"] if f["qual"] == qual)
+        assert fr["file"] == "hexfold.build"
+        assert (fr["caller_file"], fr["caller_line"]) == (
+            "workspaces/test_hexfold_trace.py",
+            call_line,
+        )
+
+
+def test_extxyz_maker_column_joins_every_atom_to_a_made_count() -> None:
+    """A small prism and a small .hx tube: the written column resolves
+    every atom to a trace frame whose ``made.atoms`` matches the atoms
+    citing it — through fuse bonds and junction seam columns."""
+    from hexfold.build import build
+    from hexfold.prism import prism_tube
+    from hexfold.stick import stick
+
+    with trace.run(work_root=_WORK_ROOT) as tr:
+        net, _pt = prism_tube(4, 4, 2, "++++++")
+        scene = pga.geom(net, coords=stick(net)).flatten()
+        doc = tr.dump()
+    _assert_extxyz_joins(doc, scene)
+
+    spec = (
+        "hexfold 0.2\norigin t\n"
+        "t: tube(5,0, len=3)\n"
+        "u: tube(5,0, len=3)\n"
+        "t.out --fuse k=0--> u.in\n"
+    )
+    with trace.run(work_root=_WORK_ROOT) as tr:
+        net = build(spec)
+        scene = pga.geom(net, coords=stick(net)).flatten()
+        doc = tr.dump()
+    _assert_extxyz_joins(doc, scene)
+
+
+def test_k2_junction_seam_index_keeps_k3_maker() -> None:
+    """fin120's far-side k2 fuse reuses ``seam=3`` (inert for k2) — the
+    seam column's atoms cite the k3 junction that minted them, and no
+    atom cites the fuse."""
+    from hexfold.fin120 import seam_tube
+
+    with trace.run(work_root=_WORK_ROOT) as tr:
+        net, _st = seam_tube(4, 4, 2, "out")
+        doc = tr.dump()
+    frames = _by_id(doc)
+    junctions = [f for f in doc["frames"] if f["qual"] == "sheetnet.junction"]
+    assert len(junctions) == 2
+    k3, k2 = junctions
+    seam = [a for a in net.atoms if a.instance == "y"]
+    assert len(seam) == 4
+    assert all(a.maker == k3["id"] for a in seam)
+    assert k3["made"]["atoms"] == 4
+    assert k2["made"].get("atoms", 0) == 0
+    assert all(a.maker != k2["id"] for a in net.atoms)
 
 
 def test_untraced_build_leaves_maker_none() -> None:

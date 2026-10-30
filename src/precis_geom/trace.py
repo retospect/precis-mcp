@@ -101,6 +101,11 @@ class _Frame:
     #: Exception type name when the call raised — set on the innermost
     #: traced frame the exception left; ``dump`` omits it when ``None``.
     error: str | None = None
+    #: The nearest call site outside the package ``file`` lives in — set
+    #: only on a library-internal mint, where ``file``/``line`` name the
+    #: internal call site and these name the user frame that drove it.
+    caller_file: str | None = None
+    caller_line: int | None = None
     t0: float = field(default_factory=lambda: time.perf_counter())
     dur_ms: float | None = None
     ret: Any = _NO_RETURN
@@ -138,6 +143,11 @@ class Tracer:
             py=None,
         )
         self.stack: list[_Frame] = [self.root]
+        #: id → frame for ``record(frame=…)`` — retargeted counts (a spec
+        #: call's frame stamped as ``maker`` collects the counts minted
+        #: under a later leaf). Frames stay in the tree once popped, so
+        #: the registry never unmaps a live id.
+        self._frames: dict[int, _Frame] = {self.root.id: self.root}
         self._next_id = 1
         #: Every frame by run-local id / by key — the lookups a step-cache
         #: hit remaps makers through (:mod:`precis_geom.steps`).
@@ -200,6 +210,30 @@ class Tracer:
         src = self._line_at(f.f_code.co_filename, f.f_lineno).strip()
         return f.f_lineno - f.f_code.co_firstlineno, (src[:120] or None)
 
+    def _caller_site(self, f: types.FrameType) -> tuple[str, int] | None:
+        """``(file, line)`` of the nearest call site outside the package
+        the call site itself lives in — the user frame a library-internal
+        mint cites, while ``file``/``line`` keep the internal site (a
+        ``sheetnet.strip`` call inside ``hexfold/prism.py`` points at the
+        script's ``prism_tube`` line). ``None`` when the call site is
+        already user code — its ``file``/``line`` are the citation — or
+        the stack holds no outside-package frame. The walk skips this
+        module's own ``@traced`` wrappers and ``contextlib`` plumbing."""
+        if self._in_work(f):
+            return None
+        pkg = (f.f_globals.get("__name__") or "").partition(".")[0]
+        g = f.f_back
+        while g is not None:
+            name = g.f_globals.get("__name__") or ""
+            if (
+                name != __name__
+                and name != "contextlib"
+                and name.partition(".")[0] != pkg
+            ):
+                return self._file_of(g), g.f_lineno
+            g = g.f_back
+        return None
+
     def _line_at(self, filename: str, lineno: int) -> str:
         """The text of ``filename:lineno`` — contents cached per
         ``(st_mtime_ns, st_size)``; an unreadable file yields ``""``."""
@@ -227,6 +261,7 @@ class Tracer:
         src: str | None,
         args: dict[str, Any],
         py: types.FrameType | None,
+        caller: tuple[str, int] | None = None,
     ) -> _Frame:
         parent = self.stack[-1]
         occ = parent._occ_next.get(qual, 0)
@@ -247,11 +282,14 @@ class Tracer:
             touched={},
             py=py,
         )
+        if caller is not None:
+            fr.caller_file, fr.caller_line = caller
         self._next_id += 1
         parent.children.append(fr)
         self.by_id[fr.id] = fr
         self.by_key.setdefault(fr.key, fr)
         self.stack.append(fr)
+        self._frames[fr.id] = fr
         return fr
 
     def _sync(self, callsite: types.FrameType) -> None:
@@ -331,6 +369,7 @@ class Tracer:
             src=src,
             args=args,
             py=wrapper_frame,
+            caller=self._caller_site(callsite),
         )
 
     # -- failure anchoring ----------------------------------------------------
@@ -567,6 +606,9 @@ class Tracer:
                 d["step"] = dict(fr.step)
             if fr.probes:
                 d["probes"] = [dict(p) for p in fr.probes]
+            if fr.caller_file is not None:
+                d["caller_file"] = fr.caller_file
+                d["caller_line"] = fr.caller_line
             _emit_dict(d)
             groups: dict[str, list[_Frame]] = {}
             order: list[str] = []
@@ -582,39 +624,36 @@ class Tracer:
                         emit(c)
                     rest = grp[ts.COLLAPSE_SIBLINGS :]
                     collapsed += len(rest)
-                    _emit_dict(
-                        {
-                            "id": rest[0].id,
-                            "id_end": rest[-1].id,
-                            "key": ts.frame_key(
-                                fr.key, grp[0].qual, ts.COLLAPSE_SIBLINGS
-                            ),
-                            "parent": fr.key,
-                            "qual": grp[0].qual,
-                            "file": grp[0].file,
-                            "line": grp[0].line,
-                            "line_in_def": grp[0].line_in_def,
-                            "src": grp[0].src,
-                            "occ": ts.COLLAPSE_SIBLINGS,
-                            "occ_end": rest[-1].occ,
-                            "collapsed": len(rest),
-                            "kind": grp[0].kind,
-                            "args": rest[0].args,
-                            "args_last": rest[-1].args,
-                            "args_digest": ts.sha8(
-                                json.dumps([c.args for c in rest], sort_keys=True)
-                            ),
-                            "dur_ms": sum(duration(c) for c in rest),
-                            "returns": _fold_returns(rest),
-                            "made": _sum_counts(c.made for c in rest),
-                            "touched": _sum_counts(c.touched for c in rest),
-                            **(
-                                {"probes": [dict(p) for c in rest for p in c.probes]}
-                                if any(c.probes for c in rest)
-                                else {}
-                            ),
-                        }
-                    )
+                    folded = {
+                        "id": rest[0].id,
+                        "id_end": rest[-1].id,
+                        "key": ts.frame_key(fr.key, grp[0].qual, ts.COLLAPSE_SIBLINGS),
+                        "parent": fr.key,
+                        "qual": grp[0].qual,
+                        "file": grp[0].file,
+                        "line": grp[0].line,
+                        "line_in_def": grp[0].line_in_def,
+                        "src": grp[0].src,
+                        "occ": ts.COLLAPSE_SIBLINGS,
+                        "occ_end": rest[-1].occ,
+                        "collapsed": len(rest),
+                        "kind": grp[0].kind,
+                        "args": rest[0].args,
+                        "args_last": rest[-1].args,
+                        "args_digest": ts.sha8(
+                            json.dumps([c.args for c in rest], sort_keys=True)
+                        ),
+                        "dur_ms": sum(duration(c) for c in rest),
+                        "returns": _fold_returns(rest),
+                        "made": _sum_counts(c.made for c in rest),
+                        "touched": _sum_counts(c.touched for c in rest),
+                    }
+                    if any(c.probes for c in rest):
+                        folded["probes"] = [dict(p) for c in rest for p in c.probes]
+                    if grp[0].caller_file is not None:
+                        folded["caller_file"] = grp[0].caller_file
+                        folded["caller_line"] = grp[0].caller_line
+                    _emit_dict(folded)
                 else:
                     for c in grp:
                         emit(c)
@@ -964,13 +1003,20 @@ def record(
     *,
     made: dict[str, int] | None = None,
     touched: dict[str, Any] | None = None,
+    frame: int | None = None,
 ) -> None:
-    """Count entities placed/changed on the innermost live frame. No-op
-    when no tracer is active (serve path, plain imports)."""
+    """Count entities placed/changed on the innermost live frame — or on
+    ``frame``, a ``leaf_id`` minted earlier, when the spec's frame that
+    atoms cite as ``maker`` is finished while the counting code runs
+    under a later leaf (hexfold ``junction`` frames collecting their
+    ``assemble`` counts). No-op when no tracer is active (serve path,
+    plain imports) or ``frame`` is not an id this run minted."""
     tr = _ACTIVE.get()
     if tr is None:
         return
-    fr = tr.stack[-1]
+    fr = tr.stack[-1] if frame is None else tr._frames.get(frame)
+    if fr is None:
+        return
     for k, v in (made or {}).items():
         fr.made[k] = fr.made.get(k, 0) + int(v)
     for k, v in (touched or {}).items():
@@ -1088,7 +1134,14 @@ def trace(
         raise ValueError(
             f"trace kind must be one of {sorted(ts.FRAME_KINDS)}; got {kind!r}"
         )
-    f = sys._getframe(1)
+    f: types.FrameType | None = sys._getframe(1)
+    # the generator's resumer is ``contextlib.__enter__`` — the real call
+    # site is the ``with`` statement's frame above it
+    while f is not None and f.f_globals.get("__name__") == "contextlib":
+        f = f.f_back
+    if f is None:  # unreachable — something resumed this generator
+        yield
+        return
     tr._sync(f)
     line_in_def, src = tr._site(f)
     fr = tr._push(
@@ -1100,6 +1153,7 @@ def trace(
         src=src,
         args={k: _arg_digest(v) for k, v in (args or {}).items()},
         py=f,
+        caller=tr._caller_site(f),
     )
     try:
         yield

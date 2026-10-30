@@ -854,6 +854,12 @@ def assemble(
                     bonds.append((seam[2 * m], seam[2 * m + 1], 1))
             minted = (tuple((int(i), int(j)) for i, j, _o in sb), tuple(sr))
             minted_seam = seam
+            jmade = {
+                "atoms": len(seam),
+                "bonds": len(sb) + len(seam) // 2
+                if jspec.flavour == "sp3-z"
+                else len(sb),
+            }
         elif jspec.k == 2:
             off_a, off_b = rim_offs
             top_a = tuple(o + off_a for o in rim_segs[0].atoms)
@@ -884,8 +890,14 @@ def assemble(
             rings.extend(fr)
             minted = (tuple((i, j) for i, j, _o in fb), tuple(fr))
             minted_seam = ()
+            jmade = {"bonds": len(fb)}
         else:
             raise ValueError(f"junction k {jspec.k} unsupported")
+        # the junction frame is finished — ``assemble`` mints under its
+        # own leaf — so the count is retargeted onto the frame the minted
+        # atoms cite as ``maker``
+        if jspec.maker is not None:
+            _trace_record(made=jmade, frame=jspec.maker)
         if jspec.record is not None:
             pending.append((jspec.record, minted[0], minted[1], minted_seam))
         if jspec.seam_xy is not None:
@@ -932,8 +944,11 @@ def assemble(
     # per-atom makers (gr514054): a block part's atoms cite the
     # ``strip`` frame that built its sheet, a seam column's the
     # ``junction`` spec that minted it — so the exported extxyz maker
-    # column joins every atom to the builder call that made it.
-    seam_makers = {j.seam: j.maker for j in junctions}
+    # column joins every atom to the builder call that made it.  Only
+    # a k3 junction mints an atom column: a k2 fuse's ``seam`` index is
+    # inert and must not clobber the k3 maker of the seam part it names
+    # (fin120's far-side fuse reuses ``seam=3``).
+    seam_makers = {j.seam: j.maker for j in junctions if j.k == 3}
     for pi, (p, off) in enumerate(zip(parts, offsets)):
         n = len(p.block.elements) if p.block is not None else p.count
         maker = (

@@ -45,6 +45,13 @@ Frame fields (all present unless noted)::
     src      schema 2 — the stripped call-site source line, capped at 120
              chars; ``null`` when the call site is outside ``/work`` or
              the source is unreadable. Re-anchoring, not identity.
+    caller_file
+    caller_line  schema 3 — optional, library-internal mints only: the
+             nearest call site outside the package ``file`` lives in —
+             the user frame that drove the call (a ``sheetnet.strip``
+             frame keeps ``file``/``line`` inside ``hexfold/prism.py``
+             while ``caller_*`` names the script's ``prism_tube`` line).
+             Absent when the call site is already user code.
     occ      occurrence counter of this ``qual`` under the same parent,
              0-based across all call sites: the third ``junction`` a
              parent makes is ``#2`` wherever it was called from.

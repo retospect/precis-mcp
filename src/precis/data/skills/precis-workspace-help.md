@@ -268,7 +268,13 @@ get(kind='se', id='uni', view='trace', args={'against': <run_job>})     # run di
 `frame:<key>` then doubles as a region selector (datums, pockets, the
 eye — [[precis-se-regions-help]]), `view='validate'` finding rows
 carry the script line, and the block eye's `made-by:` names the user
-frame (`ws-<run>::<fn> (main.py:N)`).
+frame (`ws-<run>::<fn> (main.py:N)`). A frame minted inside a library
+keeps its internal `file`/`line` and also carries
+`caller_file`/`caller_line` — the nearest call site outside that
+package (the script line that drove it); the atomic leg's
+`blocks/*.extxyz` joins back per atom through its `maker` column,
+which is the frame id that minted the atom (a merged atom keeps the
+earliest frame's stamp).
 
 **Macro leg.** `view='trace'` answers on cad-bound macro blocks too —
 the summary, `frame` cards, `against` run diffs, and a `made-by:`

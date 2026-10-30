@@ -29,7 +29,14 @@ def to_extxyz(scene: Any) -> str:
     exact bytes :func:`precis.structure.importers.extxyz.extxyz_to_scene`
     reads back. The constraints-preserving ASE variant stays in
     :func:`precis.structure.export.to_extxyz`, which delegates its
-    constraint-free tail here."""
+    constraint-free tail here.
+
+    ``maker`` is the ``trace.json`` frame id that minted the atom
+    (``precis_geom.trace.leaf_id``), so an extxyz row joins back to the
+    builder call that made it. When atoms merge — a fused tile's
+    coincident sites, an assembly dedup — the surviving atom keeps the
+    earliest frame's stamp (``assembly._fuse_copies``: the earlier copy
+    wins); a frame's ``made`` count names what it minted."""
     flat = " ".join(f"{x:.8f}" for row in scene.cell.lattice for x in row)
     pbc = " ".join("T" if p else "F" for p in scene.cell.pbc)
     atoms = list(scene.atoms.items())
