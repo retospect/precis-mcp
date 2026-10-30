@@ -9,7 +9,7 @@ design-review: yes
 ## Resume
 
 - **Next:** a thread session is being brought up (2026-10-26). catpath v0.41.0 (catpath main 8e4b119; local suite 1201 passed, 3 skipped) runs ledger → CHE electrochemical layer (v0.40 ShiftProvider; PCET count ledger-driven, gr515697; U_L sign follows reaction direction so oxidation is covered, gr516530) → `kin.solve` with NEB→BEP rated sources → steady state, TOF, X_RC, paired-draw ratio band, per-route U_L. Open work: (1) real-potential validation on spark, UMA backend only (MACE stopped on Reto's OK 2026-10-26, it starved spark's memory): 17.5 h in, on B3 (full-stack ammonia/Ru), test 3 of 7; C (co_oxidation) and A×3 (orr_pt111) to come, no ETA; B1 and B2 failed on both backends, cause unknown until pytest prints details at session end; zero validation passes so far. (2) gr517976 (test_draws) on catpath branch `fix/gr517976-draws-tests`: test 1 rewritten and passing (cross-checked against an NEB-only solve); test 2 scan shows rho=0.5 narrows the band (width ratio 0.82), no `draws.paired` bug; next multi-seed test 2, full suite, land, close.
-- **Blocked by:** item 25 (no re-runs, incl. the NH₃ neb-tier re-run of pw455722's candidate): Reto, 2026-10-26, "lift 25 after validation" — lifts once the 7-test UMA validation on spark is green; holds until then. Item 23 (no Pd-hydride NEB pilot, Reto 2026-10-02) unchanged; its original lift condition was "the improved catpath": item-19 corrections (shipped in 0.24.0) plus the surface-Pourbaix work, whose optimizer build is unverified. td470248 (BEEF-vdW single points on the PdH geometries) is done. Pending: B1/B2 diagnosis, ordered by Reto 2026-10-26 and run separately off spark by the catpath coordinator.
+- **Blocked by:** item 25 (no re-runs, incl. the NH₃ neb-tier re-run of pw455722's candidate): Reto, 2026-10-26, "lift 25 after validation" — lifts once the 7-test UMA validation on spark is green; holds until then. Item 23 (no Pd-hydride NEB pilot, Reto 2026-10-02) unchanged, and Reto 2026-10-29 keeps it held until SPSO slice 8 has run; its original lift condition was "the improved catpath": item-19 corrections (shipped in 0.24.0) plus the surface-Pourbaix work, whose optimizer build is unverified. td470248 (BEEF-vdW single points on the PdH geometries) is done. Pending: B1/B2 diagnosis, ordered by Reto 2026-10-26 and run separately off spark by the catpath coordinator.
 - **Unblocks:** A ranking against a complete competing network.
 - **Acceptance:** NO→NH₃ answered over a U/pH window on the complete network ([Status](#thread-context)); validation passes on real-potential cases; validation green lifts item 25; no re-run before. Engine-version checks must match the released engine.
 - **Worktree:** `catalysis-selectivity`
@@ -110,9 +110,18 @@ the dated detail is in `git log` and the owning items):**
    and the trap/poison re-check in qu164903's logbook. Held by item 25,
    which lifts when catpath's 7-test real-potential validation (UMA, on
    spark) is green (Reto, 2026-10-26: "lift 25 after validation"). Prepare
-   the plan and a verified <$25 per-run bound now; launch nothing until
-   the validation is green. The restale pass redispatches stale stamps on
-   its own, so confirm it is not the first thing to fire at the lift.
+   the plan now; launch nothing until the validation is green. Bound
+   (Reto, 2026-10-29): owned GPU lanes count as $0 cash for the $25 rule;
+   the stated bound is wall time, ≤1.5 GPU-h per seed (5400 s cap).
+   The hold was prose only. The restale pass (gr510764, on prod since
+   2026-10-24) can re-run stale stamps under it, so Reto ruled
+   2026-10-29 to pause it on qu164903 (`fidelity_restale_cap=0`) until
+   the lift. Not yet set: that key is outside the quest edit allowlist
+   (gr537835), so it is a direct `refs.meta` update Reto runs; whether
+   the tier ladder is on cannot be read over the MCP (gr537834). Seed
+   jobs on spark were running for this quest on 2026-10-29 and cannot be
+   attributed to restale. At the lift, restore the cap (default 2) in the
+   same step as the first re-run.
 2. **backlog/pd-hydride-substrate.md** — Reto, 2026-10-02: under cathodic
    operation Pd is β-PdH, and qu164903's 232 candidates all ran on bare
    Pd(111). Stages 0–2 done. The pilot pair is built
@@ -176,8 +185,9 @@ the dated detail is in `git log` and the owning items):**
    for qu164903; consumes the window scalars from Do-next 5 instead of
    U_L / U_opt alone.
 3. **backlog/surface-pourbaix-staircase-optimizer.md** (Reto, 2026-10-02
-   file only; lifted 2026-10-07, build plan approved 2026-10-13, slices
-   2/4/5 in build) extends the Pourbaix work
+   file only; lifted 2026-10-07, build plan approved 2026-10-13,
+   slices 1–7 built; slice 8, Fe-doped Pd end to end, has a contract that
+   passed design review on 2026-10-30 and awaits a second vet) extends the Pourbaix work
    (Do-next 4, Parts A and B) into a surface validity map, a linked
    reaction staircase, and a Shapley-attribution field that tells the
    slab search where and why a candidate loses its window.

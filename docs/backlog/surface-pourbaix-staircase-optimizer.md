@@ -6,7 +6,7 @@ prio: high
 owner: catalysis session
 ---
 
-Status 2026-10-17: slices 1-7 shipped; slice 8 (Fe-doped Pd end to end) needs its own ready spec. Reto decides: the Nov-2026 paper-date collision under qu459585.
+Status 2026-10-17: slices 1-7 shipped; slice 8 (Fe-doped Pd end to end) has a DRAFT contract below (not `ready`; vetting and Reto's §Slice 8 open questions pending). Reto decides: the Nov-2026 paper-date collision under qu459585.
 
 # Surface-Pourbaix validity map + reaction staircase as a catalyst optimizer
 
@@ -317,7 +317,8 @@ So anchors are computed, not read.
   `job_summary` naming the resting termination at `point_U_RHE`.
 - `compare_lowest_theta` is the θ→0 acceptance check (per-adsorbate
   formation energy at the lowest coverage vs a pathway's single-adsorbate
-  energy); wiring it to a live pathway ref is the next slice-1 step.
+  energy); wired to the quest path as `surface_anchors._theta0_check`.
+Hand-minted scans get no such stamp: call it per subject.
 
 **Slice-1 proof, 2026-10-13 (jo482106, castor, 0.24.1, mace:medium, ~55 s):**
 at −0.30 V_RHE clean Pd(111) rests as H* at 9/9 ML; the one boundary in
@@ -489,8 +490,264 @@ band, never the nominal line; the two bands are never averaged.
 blend). On `/pourbaix` the hysteretic band draws as its own layer,
 separate from the propagated/model-form bands.
 
+## Rulings 2026-10-29 (Reto, review queue items -28, -29, -30)
+
+- **Item 23 stays held until slice 8 has run** (-28 option 1): the Pd-hydride
+  NEB pilot waits for a resting state read off the optimizer on a real
+  candidate, not for the slices merely existing.
+- **$25 rule on owned GPU lanes (-29.1):** owned hardware counts as $0 cash;
+  the bound stated per re-run is wall time (≤1.5 GPU-h per seed, 5400 s
+  cap; median 66 min measured on worker 8.37.x).
+- **Restale paused on qu164903 until item 25 lifts (-29.2):** the item-25
+  hold was prose only; the restale pass (gr510764, on prod) is the path
+  that could re-run stale candidates under it.
+- **Slice 8 (-30):** footing = `mace:medium` plus one spin-polarised DFT
+  check on an Fe anchor (a separate item, not in this slice); scans
+  hand-minted, no demo quest; subject set = st202238 (A) and st463208 (B)
+  against baseline st203306. The November paper collision (td462597 vs
+  td459589) is still open.
+
+## Slice 8 contract (DRAFT v3 2026-10-30, design review approve-with-changes folded in; not `ready` until a second vet; footing, path and subjects ruled 2026-10-29)
+
+The paper's proof of concept (§Paper): the optimizer run end to end on
+Fe-doped Pd(111) reads a candidate's window and says why it wins or loses
+it. Slices 1–7 supply the stages; slice 8 adds one small library function
+(stage 4) and a fixed protocol, one footing, and its deliverables.
+
+**Demonstration set** (qu164903 (NO→NH₃ selectivity) structures, (111) only, q7):
+
+| role | structure | note |
+|---|---|---|
+| baseline | st203306 `Pd111-pristine-baseline` | clean Pd(111); jo496906–jo496909 are on engine 0.31.0, so re-mint on the slice-8 footing |
+| subject A | st202238 `Pd111-Fe-sub-surf-1` | one Fe in the first subsurface layer |
+| subject B | st463208 `Pd111-Fe-subsurf-1-H-subsurf-1` | A plus one subsurface H, held fixed (q6 discrete slabs) |
+
+Prod read 2026-10-26: A and B have no succeeded `surface_coverage_scan`; B
+serves qu164903 and has 8 pathways (pw463210…pw517889), unchecked for
+`che_affine`.
+
+**Footing (one per map, q2).** One model, one engine pin
+(`_autocatpath_pinned_version`), corrections as the engine records them.
+`mace:medium` (ruled 2026-10-29): every stored qu164903 number is on it and
+a scan takes about a minute (jo482106). Stated in the paper's first
+paragraph. Backed by one spin-polarised DFT point on an Fe anchor (its own
+item, not this slice; see deliverable (a) for how it enters the table).
+
+**Path (decided).** Scans are hand-minted by the slice-1 recipe on the three
+structures; no demo quest, and qu164903's `meta.surface_anchors` stays off
+(flipping it mints a scan for every live neb/front candidate, not three).
+Hand-minting skips the quest path's harvest, so the builder replaces each
+piece explicitly: retry by hand per the 2026-10-16 ruling (cap 2, fresh
+seed per try, after a failure only); `compare_lowest_theta` called per
+subject; the resting termination read from the scan's `job_summary`. The
+alternative, a dedicated demo quest with `reaction_config`,
+`operating_conditions` (−0.3 V, pH 7) and `surface_anchors`, would give
+harvest, retry and `theta0_check` for free but is a prod quest creation;
+Reto ruled hand-minted on 2026-10-29.
+
+**Stages.**
+
+0. **Audit** (before any scan is minted). For each of baseline, A and B,
+   list the stored pathways of that slab and check which are `ready` with
+   `meta.results` carrying `che_affine` (what `routes_for_pathway` reads),
+   and that the pathway's slab is the stated one (gr482121). Record the
+   chosen pathway id per surface, or "none". If any surface has none, stop
+   and bring it to Reto before stage 1: stage 3 would be a `blocked` table
+   under item 25, and he decides whether to spend scans on it. Nothing is
+   minted at this stage.
+1. **Anchors** (slice 1). `surface_coverage_scan` on baseline, A, B with
+   `structure_ref`, `point_U_RHE=-0.3`, H/O/OH at 0.25–1.0 ML. First check
+   each structure passes `structure_slab_extxyz` (frozen layers, (111)
+   cell). Acceptance: three `meta.anchor_key` sets on one engine and model,
+   `corrections` recorded; **lowest-θ agreement** against each subject's own
+   pathway single-adsorbate energies (`compare_lowest_theta` compares at the
+   lowest computed coverage, 0.25 ML, not at θ→0, so lateral interaction is
+   inside the gap). Pre-registered as a flag, not a gate: |Δ| ≤ 0.1 eV (the
+   Sn-slab agreement, jo482106, was ≤0.1 eV, one comparison); a larger gap
+   is reported in the table, not hidden, and does not stop the run. The
+   pathway reference must sit on the same corrections footing as the scan,
+   or the comparison is reported "footing differs" and not scored. The
+   baseline H* row may fail honestly: MACE misprices H* on Pd by about
+   0.25 eV (open question 2).
+   For B: the subsurface H must stay below layer 1 on every B anchor
+   configuration, not only the clean relax. Criterion, fixed before the first
+   scan: z(H) lies below the mean z of layer 1 by at least 0.3 Å in the final
+   geometry of each anchor. The aim is to catch H that escaped to the
+   surface, not to police the site: a tetrahedral subsurface H in Pd sits
+   only about 0.5–0.6 Å below layer 1, so a larger margin would false-flag a
+   legitimate site. z(H) − mean layer-1 z is recorded in every cell. First confirm the scan artifacts carry final geometry
+   (`coverage.json` may not); if they do not, the builder adds the final
+   structures to the job's outputs, and until then B's check reads
+   `blocked: no final geometry`. MACE flies subsurface H to the surface next
+   to Ta (pd-hydride-substrate.md §22f); Fe is untested. A B anchor that
+   fails is reported "H migrated, not a B surface" and drops out of B's
+   map; if the resting termination at the operating point is among those
+   dropped, B drops out.
+2. **Map** (slice 2). Resting state at −0.3 V_RHE, pH 7 and the termination
+   map per surface with `band_propagated` (a per-boundary voltage bar). The
+   sweep covers H/O/OH coverage only: it has no β-PdH phase and does not
+   price H absorption. Acceptance: the resting termination at the operating
+   point named per surface, and every `che_sweep.boundaries` crossing in
+   −0.4…−0.2 V listed with its band. B holds its subsurface H fixed; the A
+   vs B thermodynamic preference is not mapped and not claimed.
+3. **Staircase and masks** (slices 3, 4). Precondition per surface: one
+   pathway id, `ready`, `meta.results` carrying `che_affine` (engine
+   ≥ 0.25.0), footing recorded. A stored pathway meeting it needs no run;
+   the version is not required to equal the pin. Use the id chosen in
+   stage 0 and cite it: `_candidate_pathway_ref_id` takes the newest pathway
+   by candidate ref with no `ready` or `che_affine` filter, while
+   `view='staircase'` and the web page take `ranked_pathways`, so the
+   table and figures must sit on the same explicitly chosen pathway, and the
+   builder calls `routes_for_pathway` on it directly. Slab identity was
+   checked in stage 0 (gr482121: pathway structure refs collide on the
+   slab-blind `content_key`). Stage 0 stops the run when a surface has no
+   qualifying pathway, so a `blocked: no che_affine pathway` cell appears
+   only if Reto lets the run go on under item 25 (producing a pathway is a
+   re-run and waits for the lift). Acceptance: route
+   NO→NH₃ staircase with U_L, limiting rung, and operating window
+   (ε = 0.3 eV chemical / 0 electrochemical, HER as a mask rung).
+4. **Objectives and attribution** (slices 5, 6, plus one new function).
+   `window_area_VpH`, HER margin, and the per-rung Shapley vector per
+   surface. The builder calls the pieces directly, not
+   `stamp_window_measures` (hand-minted scans have no quest): the route and
+   HER rung come from `routes_for_pathway` on the stage-0 pathway;
+   `window_measures(resting_map, routes, her, ...)` gives the window scalars;
+   `shapley_field(resting, route, her=..., her_margin=...).global_values`
+   gives the per-rung vector (`window_measures` stamps only
+   `shapley_sumsq_raw`, `shapley_ipr`, `ridge_churn`).
+
+   **Sensitivity probe on the attribution.** Rung ΔG and σ come from the
+   pathway and do not move; what the anchors' bars (`Anchor.sigma_gamma`)
+   can move is the `wanted` region. A uniform ±σ shift of every `gamma0`
+   mostly cancels at adsorbate-vs-adsorbate boundaries (a boundary depends on
+   a `gamma0` difference) and moves only the clean-vs-adsorbate boundary in
+   full, so it would read the top rung as stable when a mixed-sign shift
+   would flip it. The probe therefore uses **opposed corners**: anchors whose
+   key is the wanted termination move by `+σ_i` and all other anchors by
+   `−σ_i` (corner `+1`, wanted loses, since the lowest `gamma` wins), and the
+   reverse (corner `−1`); corner `0` is the unshifted case. When the wanted
+   termination is the clean surface it has no anchor and must lose at corner
+   `+1`, so every anchor moves by `−σ_i` there (and by `+σ_i` at corner
+   `−1`); that is the clean-vs-adsorbate boundary, which moves in full. Per
+   corner, the builder runs the pipeline end to end:
+
+   1. `perturb_anchors(anchors, wanted_key, sign)` → shifted anchors.
+   2. `resweep(che_sweep, anchors)` → a copy of the stored `che_sweep` with
+      `anchors`, `envelope` and `boundaries` recomputed on the sweep's own U
+      grid (`envelope(...)`, `boundaries(...)` over the pooled shifted
+      anchors); `needs_anchor` is left as stored and unused by the probe.
+   3. `build_map` on a copy of the scan job carrying that sweep (regions are
+      read from the envelope).
+   4. `wanted_key` stays the one read from the corner-0 map at the operating
+      point; it is not recomputed per corner, or the probe would follow the
+      shift.
+   5. `window_objectives.resting_map_for(sm, m, wanted_key)` → `RestingMap`
+      (the existing private `_resting_map_for`, renamed; its one caller in the
+      same file is updated).
+   6. `window_measures(...)` and `shapley_field(...).global_values`, with one
+      fixed `seed` for all three corners.
+
+   **New code** (all in `src/precis_pathway/surface_pourbaix.py` except the
+   rename): `Anchor.from_dict(d, reservoirs)`; `perturb_anchors`; `resweep`.
+   - `from_dict` rebuilds what `as_dict` drops or transforms: `counts` (dict →
+     tuple of `(species, count)` pairs) and `reservoirs` (via
+     `reservoirs_from` on the scan job's reservoir spec; the builder finds
+     where it is stored). `slope` and `nu` are derived properties and are not
+     read from the dict.
+   - `perturb_anchors(anchors, wanted_key, sign)` returns
+     `dataclasses.replace(a, gamma0=a.gamma0 + s·sign·a.sigma_gamma)` with
+     `s = +1` for an anchor whose `Anchor.key` equals `wanted_key` (the map's
+     `[adsorbate, n]` list is normalised to the tuple; a mixture's is
+     `(label, counts)`) and `s = −1` otherwise; `sign = 0` returns the anchors
+     unchanged.
+   - Unit tests: (i) round trip: `from_dict(a.as_dict(), reservoirs)` equals
+     `a` on `gamma0`, `slope`, `nu`, `counts` and `sigma_gamma`, and
+     `resweep` at sign 0 reproduces a stored sweep's `envelope` and
+     `boundaries` to a stated tolerance (1e-9, or the stored rounding if
+     coarser), not exactly (this is the test that `slope` and `nu` survived);
+     (ii) shift: wanted +σ / others −σ, sign 0 identity, clean-wanted moves
+     every anchor; (iii) the failure case the opposed corners exist for: two
+     adsorbate anchors bounding the wanted region, where a uniform shift
+     leaves their mutual boundary where it was and the opposed shift moves it.
+
+   **Verdict rule.** For each rung r, let `R_r = [min_c φ_c[r], max_c φ_c[r]]`
+   over the three corners (φ = the Shapley lost-area vector), `r*` the top
+   rung at corner 0 and `r2` the runner-up. The attribution is reported
+   **ambiguous** if `min R_{r*} ≤ max R_{r2}` (the ranges overlap; this also
+   covers the top rung changing in any corner), or if the wanted region is
+   empty at either corner. Otherwise it is "not ambiguous under this probe";
+   the word "robust" is not used. The overlap rule is conservative (it can
+   flag a case where `r*` beats `r2` in every corner but the two co-move), so
+   the table also reports the per-corner order of `r*` and `r2`, which tells a
+   real top-rung flip from overlap alone. Each corner's `window_area_VpH` is
+   reported next to the corner-0 value. The probe is two corners of a 2^n space of
+   per-anchor shifts and covers the propagated bars only, not the model-form
+   band (one model, no ensemble): a sensitivity probe, not a confidence
+   interval. The BEEF-vdW ensemble (td470248, estimate-only) is listed under
+   claims not made.
+
+   Per subject, one sentence names the top rung and its Shapley-area change
+   against the baseline, matched by intermediate name; rungs on only one
+   route are listed unmatched. The sum of Shapley values equalling the lost
+   area is an invariant of `shapley_field` (efficient by construction): a
+   regression check, not evidence.
+5. **Reset contour** (slice 7). No catpath `bep` export exists (spso-c1), so
+   every edge is `overdrive` or `neb`; the paper says so. Acceptance:
+   `reset_window_area` per surface with the limiting edge named; no
+   BEP-grade claim.
+6. **Deliverables.** (a) A comparison table, stored as a section of the
+   paper's draft: baseline vs A vs B on resting state at the operating
+   point, `window_area_VpH`, `reset_window_area`, U_L, limiting rung, top
+   Shapley rung and its ambiguity verdict (opposed-corner probe), every cell
+   either a value with its job/pathway id or `blocked: <reason>`, plus a
+   provenance row "spin check: pending <item id>" for the one
+   spin-polarised Fe DFT point. The row names the anchor checked (A's
+   resting termination at the operating point, its lowest-`gamma` Fe-slab
+   anchor at −0.3 V) and the delta that voids the claim: the spin-polarised
+   `gamma0` differing from the `mace:medium` `gamma0` by more than that
+   anchor's own `sigma_gamma`, in which case the Fe columns are withdrawn
+   and the table is labelled MLIP-only. One point bounds the MLIP error at
+   that site only; the row says so. When the item lands, "pending" becomes
+   its result. (b) Figures from the
+   `/pourbaix/<handle>` layers that exist: resting map with bands, staircase,
+   mask overlay, reset band. The Shapley field has no render in `precis_web`;
+   it ships as the table's numbers, and a render is a separate slice if the
+   paper wants one. (c) Provenance per figure and cell: footing, engine,
+   model, corrections, job and pathway ids. (d) Claims not made: no
+   experimental activity; no kinetics beyond the ladder's labels; nothing
+   outside (111); no Fe magnetism or spin effect beyond the one checked point
+   (above); no A-vs-B stability; no model-form band (one model; the BEEF-vdW
+   ensemble, td470248, is estimate-only and the §5 model-form band is never
+   blended with the propagated band).
+
+**Failure handling.** A scan that fails after its 2 retries: that surface's
+map is `blocked: scan failed`, the others continue. Mixed footings across a
+surface's anchors: reported and partitioned, never blended (q2). A surface
+with a blocked stage drops that cell, not the table.
+
+**Holds.** Stage 1 is new measurement, not a re-run, so item 25 does not hold
+it. Stage 3 may be a re-run (above). Subject B is a coverage-scan surface;
+no NEB runs on it. Item 23 (pd-hydride-substrate.md) holds the Ta/242611
+pilot; ruled 2026-10-29 (-28): it stays held until slice 8 has run, so this
+slice is the condition, and nothing here depends on item 23.
+
+**Risks (unmeasured).** Fe is magnetic and `mace:medium` is not spin-aware;
+the Ta spin check (design note §22i) does not transfer. A spin-polarised DFT
+point on one Fe anchor is ruled (2026-10-29) but is its own item, not part of
+this slice; it still needs a job type, a cost estimate and a filed item.
+One Fe geometry says nothing about Fe–Pd alloys in general.
+
+**Open.** The November paper collision: td462597 (this paper, cited in
+§Rulings 2026-10-29) against td459589 (the catpath pathway paper); it does
+not block the build. Footing, path and subject set are ruled (§Rulings
+2026-10-29). Design review: approve-with-changes 2026-10-30, changes folded
+in; the revised stage 4 goes back to the orchestrator before landing. Before
+`ready`: a second vet of this section. The three new functions
+(`Anchor.from_dict`, `perturb_anchors`, `resweep`) and the
+`resting_map_for` rename are unwritten.
+
 ## Explicitly NOT in scope
 
-- Slice 8: ordered, not scheduled; needs its own `ready`.
+- Slice 8: drafted (§Slice 8 contract); not scheduled until `ready` and its open questions are ruled.
   (Slices 2–7 are built as of 2026-10-14.)
 - The hydride pilot itself (item 23) and any re-run under item 25.
