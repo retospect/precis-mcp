@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import dataclasses
 import math
+import time
 from types import SimpleNamespace
 
 import numpy as np
@@ -1260,3 +1261,297 @@ def test_span_flip_resolves_the_whole_branch_stall() -> None:
         (p for p in plan.pieces if p.branch == 0), key=lambda p: p.points[0][0]
     )
     assert [p.layer for p in runs_a] == [0, 3, 0]
+
+
+def test_spoke_offsets_fan_shared_gap_and_shared_corner() -> None:
+    """gr520900 (topo S2): three wires through one 2-pad gap plus wires
+    wrapping one pad corner — the taut funnel bends every wire at the
+    same ring-corner vertex and threads the shared edges at the same
+    parameter, so the realiser drew coincident copper (0.000 mm
+    track-over-track). The spoke offsets rank each wrap from
+    ``wires.order``, shift each bend off the pad obstacle by its
+    inner-slot sum, and spread interior crossings inside the edge's
+    free stretch — the emitted copper keeps clearance."""
+    fp = pcb.Footprint(
+        "SIP2",
+        [
+            pcb.pad("1", "rect", -0.8, 0.0, w=0.9, h=1.0),
+            pcb.pad("2", "rect", 0.8, 0.0, w=0.9, h=1.0),
+        ],
+    )
+    gap_fp = pcb.Footprint(
+        "GATE",
+        [pcb.pad("1", "rect", 0.0, 0.0, w=1.4, h=1.2, drill=0.6)],
+    )
+    b = pcb.Board("spokes", stackup=4, outline=pcb.rect(30.0, 20.0))
+    f = b.footprint(fp)
+    g = b.footprint(gap_fp)
+    # a keepout strip walls the whole board at y=10 flush with two
+    # unwired gate pads (foreign copper to every net) — the only
+    # passage is the 1.6 mm channel between their facing edges
+    # (14.5..16.1); three 0.15/0.15 tracks need 1.05 of it
+    b.keepout([[0.0, 9.4], [13.1, 9.4], [13.1, 10.6], [0.0, 10.6]])
+    b.keepout([[17.5, 9.4], [30.0, 9.4], [30.0, 10.6], [17.5, 10.6]])
+    g1 = b.part("G1", footprint=g, pins=["1"]).at(13.8, 10.0)
+    g2 = b.part("G2", footprint=g, pins=["1"]).at(16.8, 10.0)
+    # three nets whose straight lines all cross the wall through the
+    # gap — the outer wires wrap the same gate-pad corners
+    a1 = b.part("A1", footprint=f, pins=["1", "2"]).at(8.0, 3.0)
+    a2 = b.part("A2", footprint=f, pins=["1", "2"]).at(8.0, 5.0)
+    a3 = b.part("A3", footprint=f, pins=["1", "2"]).at(8.0, 7.0)
+    c1 = b.part("C1", footprint=f, pins=["1", "2"]).at(22.0, 17.0)
+    c2 = b.part("C2", footprint=f, pins=["1", "2"]).at(22.0, 15.0)
+    c3 = b.part("C3", footprint=f, pins=["1", "2"]).at(22.0, 13.0)
+    b.wire(a1["2"], c3["1"], name="N1")
+    b.wire(a2["2"], c2["1"], name="N2")
+    b.wire(a3["2"], c1["1"], name="N3")
+
+    design = kernel._design(b, None)
+    ir = kernel._build_ir(design)
+    footprints = kernel._footprints(design, ir)
+    td = design_from_ir(ir, footprints, route_planes=True, features=design.features)
+    plan, res = route_design(td, ir)
+    layers = [str(layer.get("name") or "") for layer in ir.stackup]
+    findings = _drc_findings(res, ir, layers, footprints=footprints)
+    track_hits = [f for f in findings if f.rule == "clearance" and "track" in f.where]
+    assert track_hits == [], [f"{f.rule}: {f.where}" for f in track_hits]
+    # the routed count did not drop — every net still emits copper
+    assert {p.net for p in plan.pieces} == set(
+        td.net_name.index(n) for n in ("N1", "N2", "N3")
+    )
+    assert not getattr(plan, "guarded", ())
+
+
+def _slit_board(pairs):
+    """The shared-gap board of ``test_spoke_offsets_fan_shared_gap_and_shared_corner``
+    restricted to ``pairs`` (list of ``(part_a, part_c)`` wire endpoints) —
+    keepout strip + two gate pads leave only the 14.5..16.1 channel."""
+    fp = pcb.Footprint(
+        "SIP2",
+        [
+            pcb.pad("1", "rect", -0.8, 0.0, w=0.9, h=1.0),
+            pcb.pad("2", "rect", 0.8, 0.0, w=0.9, h=1.0),
+        ],
+    )
+    gap_fp = pcb.Footprint(
+        "GATE",
+        [pcb.pad("1", "rect", 0.0, 0.0, w=1.4, h=1.2, drill=0.6)],
+    )
+    b = pcb.Board("spokes", stackup=4, outline=pcb.rect(30.0, 20.0))
+    f = b.footprint(fp)
+    g = b.footprint(gap_fp)
+    b.keepout([[0.0, 9.4], [13.1, 9.4], [13.1, 10.6], [0.0, 10.6]])
+    b.keepout([[17.5, 9.4], [30.0, 9.4], [30.0, 10.6], [17.5, 10.6]])
+    b.part("G1", footprint=g, pins=["1"]).at(13.8, 10.0)
+    b.part("G2", footprint=g, pins=["1"]).at(16.8, 10.0)
+    a1 = b.part("A1", footprint=f, pins=["1", "2"]).at(8.0, 3.0)
+    a2 = b.part("A2", footprint=f, pins=["1", "2"]).at(8.0, 5.0)
+    a3 = b.part("A3", footprint=f, pins=["1", "2"]).at(8.0, 7.0)
+    c1 = b.part("C1", footprint=f, pins=["1", "2"]).at(22.0, 17.0)
+    c2 = b.part("C2", footprint=f, pins=["1", "2"]).at(22.0, 15.0)
+    c3 = b.part("C3", footprint=f, pins=["1", "2"]).at(22.0, 13.0)
+    src = {"A1": a1, "A2": a2, "A3": a3}
+    dst = {"C1": c1, "C2": c2, "C3": c3}
+    for k, (pa, pc) in enumerate(pairs):
+        b.wire(src[pa]["2"], dst[pc]["1"], name=f"N{k + 1}")
+    return b
+
+
+def _slit_spoke_paths(pairs):
+    from precis.pcb.topoplace.realise import _spoke_offsets
+
+    design = kernel._design(_slit_board(pairs), None)
+    ir = kernel._build_ir(design)
+    footprints = kernel._footprints(design, ir)
+    td = design_from_ir(ir, footprints, route_planes=True, features=design.features)
+    mesh = build_mesh(td, td.pose0)
+    wires = build_wires(mesh, td, ir.n_layers)
+    return _spoke_offsets(td, mesh, wires, ir.n_layers)
+
+
+# gate-pad boxes (G1 13.8±0.7 / G2 16.8±0.7, h=1.2 at y=10)
+_GL = Polygon([(13.1, 9.4), (14.5, 9.4), (14.5, 10.6), (13.1, 10.6)])
+_GR = Polygon([(16.1, 9.4), (17.5, 9.4), (17.5, 10.6), (16.1, 10.6)])
+
+
+def _assert_slit_margins(paths, pair_idxs) -> None:
+    from shapely.geometry import LineString
+
+    lines = [LineString(p) for p in paths]
+    for line in lines:
+        for k in range(len(line.coords) - 1):
+            leg = LineString([line.coords[k], line.coords[k + 1]])
+            assert leg.distance(_GL) >= 0.225 - 1e-3
+            assert leg.distance(_GR) >= 0.225 - 1e-3
+    for i, j in pair_idxs:
+        # the relaxer's hinge lands exactly on the 0.3 boundary —
+        # assert the slot is held within fp tolerance
+        assert lines[i].distance(lines[j]) >= 0.3 - 1e-3
+
+
+def test_spoke_offsets_slit_3wires_direct_margins() -> None:
+    """gr520900: direct check on ``_spoke_offsets`` for the 3-wire slit —
+    every leg holds s+w/2=0.225 off the gate pads and the non-braided
+    pairs (0,2) and (1,2) keep the 0.3 slot. Pair (0,1) is the known
+    spurious braid (out of scope here)."""
+    paths = _slit_spoke_paths([("A1", "C3"), ("A2", "C2"), ("A3", "C1")])
+    assert len(paths) == 3
+    _assert_slit_margins(paths, [(0, 2), (1, 2)])
+
+
+def test_spoke_offsets_slit_2wires_control() -> None:
+    """gr520900 control: 2 wires through the same slit — the joint
+    relaxation must not degrade a passage that fits comfortably.
+    (N2+N3: the N1+N3 pair is a real crossing the order lists see, and
+    N1+N2 is the spurious braid — both are the wrong kind of control.)"""
+    paths = _slit_spoke_paths([("A2", "C2"), ("A3", "C1")])
+    assert len(paths) == 2
+    _assert_slit_margins(paths, [(0, 1)])
+
+
+def _many_branch_slit_fixture(n_far: int = 150) -> tuple[TopoDesign, TopoMesh, Wires]:
+    """gr520900 fix round 1 — the scalability synthetic. The 3-wire slit
+    in the same geometry as ``_slit_board`` (A pads at x=8, C pads at
+    x=22, gate boxes G1 13.1..14.5 / G2 16.1..17.5 at y 9.4..10.6), plus
+    ``n_far`` quiet branches in the far field (x >= 26.5). Every far
+    wire carries one COLLINEAR interior vertex, so a whole-board
+    relaxation would face ~n_far free vertices and a per-evaluation
+    sweep over all of them — the minutes-long single solve this fix
+    replaces. The slit wires run from 2 mm-spaced pads, fan in below
+    the gate boxes, and thread a tight slot 0.14 apart before climbing
+    over G2 to their pads — every cross-wire leg sits just inside the
+    0.3 pair gap at the squeeze, the y-order is preserved at every path
+    vertex end to end (nothing crosses), and every leg holds its pad
+    margins. Hand-built like ``_span_fixture``: no tris, empty order
+    lists (no braids — every slit pair is live in the cost), and the
+    gate/own pads land as ``pad_extra_*`` rects, which need no mesh fan
+    (``guard_pad_rects`` reads their placed corners directly)."""
+    n_layers = 4
+    outers = frozenset({0, n_layers - 1})
+    cols = 10
+    pin_xy: list[tuple[float, float]] = [
+        (7.2, 3.0),  # A1.1
+        (8.8, 3.0),  # A1.2
+        (7.2, 5.0),  # A2.1
+        (8.8, 5.0),  # A2.2
+        (7.2, 7.0),  # A3.1
+        (8.8, 7.0),  # A3.2
+        (21.2, 13.0),  # C1.1
+        (22.8, 13.0),  # C1.2
+        (21.2, 15.0),  # C2.1
+        (22.8, 15.0),  # C2.2
+        (21.2, 17.0),  # C3.1
+        (22.8, 17.0),  # C3.2
+    ]
+    pin_net = [0, 0, 1, 1, 2, 2, 0, 0, 1, 1, 2, 2]
+    branches: list[WirePath] = [
+        WirePath(
+            net=i,
+            pin_a=1 + 2 * i,
+            pin_b=6 + 2 * i,
+            tris=(),
+            edges=(i,),
+            t=(0.5,),
+            points=(
+                (8.8, 3.0 + 2.0 * i),
+                (15.3, 8.9 + 0.14 * i),
+                (15.6, 11.2 + 0.2 * i),
+                (21.2, 13.0 + 2.0 * i),
+            ),
+        )
+        for i in range(3)
+    ]
+    for i in range(n_far):
+        col, row = i % cols, i // cols
+        x0, y0 = 26.5 + 3.3 * col, 1.2 + 1.25 * row
+        pin_xy.append((x0, y0))
+        pin_xy.append((x0 + 2.0, y0))
+        pin_net += [3 + i, 3 + i]
+        branches.append(
+            WirePath(
+                net=3 + i,
+                pin_a=12 + 2 * i,
+                pin_b=13 + 2 * i,
+                tris=(),
+                edges=(3 + i,),
+                t=(0.5,),
+                points=((x0, y0), (x0 + 1.0, y0), (x0 + 2.0, y0)),
+            )
+        )
+    n_br = len(branches)
+    n_pins = len(pin_xy)
+    mesh = TopoMesh(
+        verts=np.asarray(pin_xy, dtype=float),
+        tris=np.zeros((0, 3), np.int32),
+        edges=np.asarray([[br.pin_a, br.pin_b] for br in branches], np.int32),
+        tri_edges=np.zeros((0, 3), np.int32),
+        edge_tris=np.zeros((n_br, 2), np.int32),
+        constrained=np.zeros(n_br, dtype=bool),
+        pad_vertex={},
+    )
+    wires = Wires(
+        branches=tuple(branches),
+        order=((),) * n_br,
+        capacity_mm=np.zeros(n_br),
+        net_layers=tuple(outers for _ in range(3 + n_far)),
+        unreachable=(),
+        gap_free_mm=np.full((n_br, n_layers), -1.0),
+        gap_cap=np.full((n_br, n_layers), -1),
+    )
+    net_pins: list[np.ndarray] = [
+        np.asarray([0, 10]),
+        np.asarray([2, 8]),
+        np.asarray([4, 6]),
+    ] + [np.asarray([12 + 2 * k, 13 + 2 * k]) for k in range(n_far)]
+    d = TopoDesign(
+        parts=("SLIT", "FAR"),
+        pin_xy=np.asarray(pin_xy, dtype=float),
+        pin_part=np.asarray([0] * 12 + [1] * (2 * n_far)),
+        pin_side=np.asarray([0] * n_pins, dtype=np.int8),
+        pin_label=np.asarray(["1"] * n_pins, dtype=object),
+        pin_net=np.asarray(pin_net, dtype=np.int32),
+        net_pins=tuple(net_pins),
+        flex=(),
+        swap_groups=(),
+        fixed=np.zeros(2, dtype=bool),
+        freedoms=np.full(2, 3, dtype=np.uint8),
+        outline=np.asarray([[-1.0, -1.0], [60.0, -1.0], [60.0, 20.0], [-1.0, 20.0]]),
+        pose0=np.zeros((2, 4)),
+        net_name=("N1", "N2", "N3") + tuple(f"M{i}" for i in range(n_far)),
+        pin_wh=np.zeros((n_pins, 2)),
+        # pads with no mesh fan must come via pad_extra_*: the two gate
+        # pads (unpinned — foreign to every net) plus the 12 slit pads
+        # (pinned — own-net aware, as on the real board).
+        pad_extra_xy=np.asarray(
+            [(13.8, 10.0), (16.8, 10.0)] + pin_xy[:12], dtype=float
+        ),
+        pad_extra_wh=np.asarray([(1.4, 1.2)] * 2 + [(0.9, 1.0)] * 12, dtype=float),
+        pad_extra_part=np.asarray([0] * 14),
+        pad_extra_pin=np.asarray([-1, -1] + list(range(12)), dtype=np.int32),
+        pad_extra_side=np.asarray([2, 2] + [0] * 12, dtype=np.int8),
+    )
+    return d, mesh, wires
+
+
+def test_spoke_offsets_many_branch_slit_cluster_scales() -> None:
+    """gr520900 fix round 1: 153 branches, one tight slit. The
+    per-cluster relaxation must solve only the slit cluster — finishing
+    in seconds where the single whole-board solve ran one
+    N-in-the-hundreds Powell (minutes) — and must hold the slit margins.
+    A second run pins the fixed cluster order (determinism)."""
+    from precis.pcb.topoplace.realise import _spoke_offsets
+
+    d, mesh, wires = _many_branch_slit_fixture()
+    assert len(wires.branches) == 153
+    t0 = time.perf_counter()
+    paths = _spoke_offsets(d, mesh, wires, 4)
+    wall = time.perf_counter() - t0
+    assert wall < 10.0, f"relaxation took {wall:.1f}s on a 153-branch board"
+    assert len(paths) == 153
+    _assert_slit_margins(paths, [(0, 1), (0, 2), (1, 2)])
+
+    t0 = time.perf_counter()
+    paths_again = _spoke_offsets(d, mesh, wires, 4)
+    wall_again = time.perf_counter() - t0
+    assert paths_again == paths
+    assert wall_again < 10.0

@@ -60,7 +60,7 @@ from dataclasses import dataclass
 from typing import Any
 
 import numpy as np
-from shapely.geometry import Point, Polygon
+from shapely.geometry import LineString, Point, Polygon
 
 from precis.pcb.ratsnest import PLANE_CLASSES
 from precis.pcb.rules import NetRules
@@ -193,20 +193,67 @@ def _initial_layers(d: TopoDesign, wires: Wires, n_layers: int) -> list[int]:
     return out
 
 
-def _crossing_pairs(wires: Wires) -> set[tuple[int, int]]:
+def _cdirs(mesh: TopoMesh, wires: Wires) -> list[list[float]]:
+    """The seam-test's corridor-direction sign per (branch, edge index):
+    ``sign(corridor_travel × edge u→v)`` — the normalization that turns
+    an edge's raw ``t`` order into the wire's TRANSVERSE order. On a
+    fan (edges of different orientations through one vertex field) the
+    raw order inverts without any braid — the phantom pairs that
+    dropped nets mid-branch to via dodges around nothing (gr520900).
+    A branch without corridor tris (synthetic wires) reads +1 — raw
+    order is then the only signal it carries."""
+    cent = [mesh.verts[list(t)].mean(axis=0) for t in mesh.tris]
+    out: list[list[float]] = []
+    for br in wires.branches:
+        row: list[float] = []
+        for i, e in enumerate(br.edges):
+            if i + 1 >= len(br.tris):
+                row.append(1.0)
+                continue
+            ca, cb = cent[br.tris[i]], cent[br.tris[i + 1]]
+            ux, uy = mesh.verts[mesh.edges[e, 0]]
+            vx, vy = mesh.verts[mesh.edges[e, 1]]
+            cr = (cb[0] - ca[0]) * (vy - uy) - (cb[1] - ca[1]) * (vx - ux)
+            row.append(-1.0 if cr < -1e-12 else 1.0)
+        out.append(row)
+    return out
+
+
+def _pair_sign(
+    wires: Wires, cdirs: Sequence[Sequence[float]], e: int, a: int, b: int
+) -> int:
+    """Pair ``(a, b)``'s normalized relative side on edge ``e`` — the
+    seam convention (``_repair_order.norm``): position in ``order[e]``
+    signed by the SECOND branch's corridor direction."""
+    seq = wires.order[e]
+    s = 1 if seq.index(a) < seq.index(b) else -1
+    eb = {int(x): i for i, x in enumerate(wires.branches[b].edges)}
+    if not cdirs:
+        return s
+    return s * int(cdirs[b][eb[int(e)]])
+
+
+def _crossing_pairs(
+    wires: Wires, cdirs: Sequence[Sequence[float]]
+) -> set[tuple[int, int]]:
     """Branch pairs whose relative order flips between two shared edges
-    (Decision 3's list comparison). Same-net pairs are kept — the
-    caller filters, a braid of the same net is not a short but two
-    same-net wires can still cross on the board's geometry."""
+    (Decision 3's list comparison — NORMALIZED by corridor direction:
+    raw edge-parameter order is a spatial axis, and on a fan it inverts
+    between edges of different orientation without a single wire ever
+    crossing another). Same-net pairs are kept — the caller filters, a
+    braid of the same net is not a short but two same-net wires can
+    still cross on the board's geometry."""
+    epos = [{int(e): i for i, e in enumerate(b.edges)} for b in wires.branches]
     seen: dict[tuple[int, int], int] = {}
     crossed: set[tuple[int, int]] = set()
-    for seq in wires.order:
+    for e, seq in enumerate(wires.order):
         pos = {b: i for i, b in enumerate(seq)}
         items = sorted(pos)
         for i, a in enumerate(items):
             for b in items[i + 1 :]:
                 key = (a, b)
-                sign = pos[a] - pos[b]
+                cdir = cdirs[b][epos[b][e]] if cdirs else 1.0
+                sign = (pos[a] - pos[b]) * int(cdir)
                 if key in seen and seen[key] * sign < 0:
                     crossed.add(key)
                 else:
@@ -227,7 +274,7 @@ def _yield_rank(d: TopoDesign, b: Any, n_layers: int) -> tuple[int, int]:
 
 
 def assign_layers(
-    d: TopoDesign, wires: Wires, n_layers: int
+    d: TopoDesign, wires: Wires, n_layers: int, mesh: TopoMesh | None = None
 ) -> tuple[list[int], tuple[tuple[int, int], ...]]:
     """Per-branch outer layer after crossing resolution: pass-based
     yielding — each pass walks every unresolved same-layer pair and
@@ -250,7 +297,7 @@ def assign_layers(
     ties."""
     branches = wires.branches
     layers = _initial_layers(d, wires, n_layers)
-    cross = _crossing_pairs(wires)
+    cross = _crossing_pairs(wires, _cdirs(mesh, wires) if mesh is not None else [])
 
     def live(ls: list[int]) -> set[tuple[int, int]]:
         return {
@@ -300,6 +347,7 @@ def _span_toggles(
     layers: list[int],
     crossings: Sequence[tuple[int, int]],
     n_layers: int,
+    cdirs: Sequence[Sequence[float]],
 ) -> tuple[dict[int, dict[int, int]], set[tuple[int, int]]]:
     """Crossing-span flips for the pairs the whole-branch yielder left
     live (gr524239): only the shared, order-inverting run of mesh edges
@@ -340,10 +388,7 @@ def _span_toggles(
             continue  # Decision 3 needs two shared edges to call a cross
 
         def sign(e: int, a: int = a, b: int = b) -> int:
-            order = wires.order[e]
-            ia = order.index(a)
-            ib = order.index(b)
-            return 1 if ia < ib else -1
+            return _pair_sign(wires, cdirs, e, a, b)
 
         ref = sign(shared[0][1])
         # maximal runs of shared edges whose order inverts the reference
@@ -542,6 +587,776 @@ def _site_via(
     return e, t, x, y, dia
 
 
+def _seg_box_interval(
+    a: tuple[float, float],
+    b: tuple[float, float],
+    lo: np.ndarray,
+    hi: np.ndarray,
+) -> tuple[float, float] | None:
+    """Parameter interval of segment ``a→b`` inside the AABB ``[lo, hi]``."""
+    ent, ext = 0.0, 1.0
+    for ax in (0, 1):
+        dax = b[ax] - a[ax]
+        if abs(dax) <= 1e-12:
+            if a[ax] < lo[ax] - 1e-12 or a[ax] > hi[ax] + 1e-12:
+                return None
+            continue
+        t0 = (lo[ax] - a[ax]) / dax
+        t1 = (hi[ax] - a[ax]) / dax
+        ent = max(ent, min(t0, t1))
+        ext = min(ext, max(t0, t1))
+        if ent >= ext - 1e-12:
+            return None
+    return (ent, ext)
+
+
+def _free_span(
+    a: tuple[float, float],
+    b: tuple[float, float],
+    boxes: list[tuple[np.ndarray, np.ndarray]],
+) -> tuple[float, float]:
+    """The largest parameter interval of ``a→b`` left uncovered by
+    ``boxes`` — the stretch the spoke model may spread crossings over
+    (``gap_free_mm``'s position, recomputed)."""
+    ints = sorted(
+        iv
+        for iv in (_seg_box_interval(a, b, lo, hi) for lo, hi in boxes)
+        if iv is not None
+    )
+    # ``best`` must start EMPTY — seeded at the whole segment it can
+    # never be beaten, and the spread then packs crossings inside the
+    # buffered pad boxes the span was meant to exclude (gr520900).
+    best, cur = (0.0, 0.0), 0.0
+    for ent, ext in ints:
+        ent = max(ent, cur)
+        if ent > cur and ent - cur > best[1] - best[0]:
+            best = (cur, ent)
+        cur = max(cur, ext)
+    if 1.0 - cur > best[1] - best[0]:
+        best = (cur, 1.0)
+    return best
+
+
+def _seg_dist(
+    p: tuple[float, float], a: tuple[float, float], b: tuple[float, float]
+) -> float:
+    """Distance from ``p`` to segment ``a→b``."""
+    dx, dy = b[0] - a[0], b[1] - a[1]
+    dd = dx * dx + dy * dy
+    t = (
+        0.0
+        if dd <= 1e-12
+        else min(1.0, max(0.0, ((p[0] - a[0]) * dx + (p[1] - a[1]) * dy) / dd))
+    )
+    return math.dist(p, (a[0] + t * dx, a[1] + t * dy))
+
+
+def _seg_seg_dist(
+    p1: tuple[float, float],
+    p2: tuple[float, float],
+    p3: tuple[float, float],
+    p4: tuple[float, float],
+) -> float:
+    """Distance between segments ``p1→p2`` and ``p3→p4`` (closest-points-
+    on-segments, Ericson 5.1.9 — pure floats, no geometry objects: this
+    sits inside the relaxer's per-evaluation cost)."""
+    d1x, d1y = p2[0] - p1[0], p2[1] - p1[1]
+    d2x, d2y = p4[0] - p3[0], p4[1] - p3[1]
+    rx, ry = p1[0] - p3[0], p1[1] - p3[1]
+    a = d1x * d1x + d1y * d1y
+    e = d2x * d2x + d2y * d2y
+    f = d2x * rx + d2y * ry
+    if a <= 1e-12 and e <= 1e-12:
+        return math.hypot(rx, ry)
+    if a <= 1e-12:
+        s, t = 0.0, min(1.0, max(0.0, f / e))
+    elif e <= 1e-12:
+        c_ = d1x * rx + d1y * ry
+        s, t = min(1.0, max(0.0, -c_ / a)), 0.0
+    else:
+        b = d1x * d2x + d1y * d2y
+        c_ = d1x * rx + d1y * ry
+        den = a * e - b * b
+        s = 0.0 if den <= 1e-12 else min(1.0, max(0.0, (b * f - c_ * e) / den))
+        t = (b * s + f) / e
+        if t < 0.0:
+            t = 0.0
+            s = min(1.0, max(0.0, -c_ / a))
+        elif t > 1.0:
+            t = 1.0
+            s = min(1.0, max(0.0, (b - c_) / a))
+    cx = p1[0] + s * d1x - (p3[0] + t * d2x)
+    cy = p1[1] + s * d1y - (p3[1] + t * d2y)
+    return math.hypot(cx, cy)
+
+
+def _seg_aabb_dist(
+    a: tuple[float, float],
+    b: tuple[float, float],
+    lo: tuple[float, float],
+    hi: tuple[float, float],
+) -> float:
+    """Distance between segment ``a→b`` and the axis-aligned box
+    ``[lo, hi]`` — 0 when the segment touches or crosses it."""
+    if (lo[0] <= a[0] <= hi[0] and lo[1] <= a[1] <= hi[1]) or (
+        lo[0] <= b[0] <= hi[0] and lo[1] <= b[1] <= hi[1]
+    ):
+        return 0.0
+    c1 = (lo[0], lo[1])
+    c2 = (hi[0], lo[1])
+    c3 = (hi[0], hi[1])
+    c4 = (lo[0], hi[1])
+    return min(
+        _seg_seg_dist(a, b, c1, c2),
+        _seg_seg_dist(a, b, c2, c3),
+        _seg_seg_dist(a, b, c3, c4),
+        _seg_seg_dist(a, b, c4, c1),
+    )
+
+
+#: gr520900 fix round 1 — per-cluster relaxation caps. The joint
+#: relaxation solves ONE Powell per connected cluster of violating
+#: branches, never the whole board: a cluster with more free interior
+#: vertices than this is skipped entirely (the pre-relaxation output
+#: stands, exactly as a refused acceptance leaves it), because one
+#: unbounded solve over thousands of coordinates was the scalability
+#: bug (minutes on a 200+ branch board with one tight slit).
+_RELAX_FREE_VERTEX_CAP = 60
+#: maxfev budget per cluster solve — 200 per free coordinate, capped
+#: absolutely. maxiter alone never bounded Powell's function
+#: evaluations (each sweep runs 2N line searches), so a tight board
+#: could run effectively forever; maxfev caps the work directly.
+_RELAX_MAXFEV_PER_COORD = 200
+_RELAX_MAXFEV_ABS = 20000
+
+
+def _spoke_offsets(
+    d: TopoDesign,
+    mesh: TopoMesh,
+    wires: Wires,
+    n_layers: int,
+    *,
+    net_rules: Mapping[str, NetRules] | None = None,
+    pose: Any = None,
+) -> list[tuple[tuple[float, float], ...]]:
+    """The SURF spoke model (topo S2, gr520900): per-branch polylines
+    with the wires that share an obstacle vertex or an edge crossing
+    fanned out to legal spacing.
+
+    The taut funnel bends every wire at the SAME mesh vertex (pad
+    centres and pad-ring corners are the obstacles the corridor wraps)
+    and threads every shared edge at whatever parameter the legs
+    happen to take — so two wires through one gap can leave the
+    realiser coincident copper (0.000 mm clearance). For each vertex
+    more than one wire wraps, the wraps are ranked by ``wires.order``
+    on a shared spoke edge — nearest-to-vertex first, the tighter wrap
+    — and each bend is moved out along the bend's bisector by the pad
+    margin plus the sum of the inner wires' ``(width + clearance)``
+    slots (``sum(w+s) + w/2 + s`` off the pad obstacle). Interior
+    crossings of one edge are spread inside the edge's free stretch
+    (``gap_free_mm``'s complement, recomputed) at pairwise
+    ``(w_i+w_j)/2 + clearance`` spacing, in ``wires.order`` order; a
+    moved crossing becomes a polyline vertex on that edge, which keeps
+    the wire's homotopy verbatim — each new leg stays inside the
+    corridor tri it was threaded through. Same-net wires still
+    separate — a braid's copper may not overlap itself."""
+    from precis.pcb.topoplace.wires import guard_pad_rects
+
+    rules = net_rules or {}
+    pose_a = np.asarray(d.pose0 if pose is None else pose)
+
+    def nrules(net: int) -> NetRules:
+        name = str(d.net_name[net]) if net < len(d.net_name) else str(net)
+        return rules.get(name, _DEFAULT)
+
+    def ws(bi: int) -> tuple[float, float]:
+        nr = nrules(wires.branches[bi].net)
+        return float(nr.track_width_mm), float(nr.clearance_mm)
+
+    pads = guard_pad_rects(mesh, d, n_layers, pose_a)
+    vid_of = {
+        (round(float(x), 6), round(float(y), 6)): i
+        for i, (x, y) in enumerate(mesh.verts)
+    }
+    eu = mesh.verts[mesh.edges[:, 0]]
+    ev = mesh.verts[mesh.edges[:, 1]]
+    tri_verts = [tuple(int(v) for v in t) for t in mesh.tris]
+    cent = [tuple(mesh.verts[list(t)].mean(axis=0)) for t in tri_verts]
+    spokes: dict[int, list[int]] = {}
+    for e, (u, v) in enumerate(mesh.edges):
+        spokes.setdefault(int(u), []).append(e)
+        spokes.setdefault(int(v), []).append(e)
+
+    # ---- interior crossings: spread shared-edge crossings over the
+    # free span when their natural parameters violate pairwise spacing
+    # — BEFORE the bend offsets: a moved crossing becomes a polyline
+    # vertex and the bend solve must see the legs it actually splits
+    edge_pos = [{int(e): i for i, e in enumerate(b.edges)} for b in wires.branches]
+    moved: dict[int, dict[int, tuple[float, float]]] = {}
+    for e in range(len(mesh.edges)):
+        inner_hits = [
+            (bi, edge_pos[bi][e], float(wires.branches[bi].t[edge_pos[bi][e]]))
+            for bi in wires.order[e]
+            if e in edge_pos[bi]
+            and 1e-9 < wires.branches[bi].t[edge_pos[bi][e]] < 1.0 - 1e-9
+        ]
+        if not inner_hits:
+            continue
+        a_, b_ = eu[e], ev[e]
+        seglen = float(np.hypot(*(b_ - a_)))
+        if seglen <= 1e-9:
+            continue
+        seq_bi = [h[0] for h in inner_hits]
+        rules_t = [ws(bi) for bi in seq_bi]
+        m_max = max(w / 2.0 + s for w, s in rules_t)
+        boxes = [
+            (pads.lo[pi] - m_max, pads.hi[pi] + m_max)
+            for pi in range(len(pads.lo))
+            if _seg_box_interval(
+                tuple(a_), tuple(b_), pads.lo[pi] - m_max, pads.hi[pi] + m_max
+            )
+            is not None
+            and not (
+                0 <= int(pads.pin[pi]) < len(d.pin_net)
+                and int(d.pin_net[int(pads.pin[pi])])
+                in {wires.branches[bi].net for bi in seq_bi}
+            )
+        ]
+        lo_t, hi_t = _free_span(tuple(a_), tuple(b_), boxes)
+        nat = [h[2] for h in inner_hits]
+        ok = all(lo_t <= t <= hi_t for t in nat)
+        for k in range(len(nat) - 1):
+            need = (rules_t[k][0] + rules_t[k + 1][0]) / 2.0 + max(
+                rules_t[k][1], rules_t[k + 1][1]
+            )
+            if (nat[k + 1] - nat[k]) * seglen < need - 1e-9:
+                ok = False
+        if ok:
+            continue
+        reqs = [
+            (rules_t[k][0] + rules_t[k + 1][0]) / 2.0
+            + max(rules_t[k][1], rules_t[k + 1][1])
+            for k in range(len(seq_bi) - 1)
+        ]
+        p = lo_t * seglen + max(0.0, ((hi_t - lo_t) * seglen - sum(reqs)) / 2.0)
+        for k, (bi, i, _t) in enumerate(inner_hits):
+            t_new = min(max(p / seglen, 0.0), 1.0)
+            moved.setdefault(bi, {})[i] = (
+                float(a_[0] + t_new * (b_[0] - a_[0])),
+                float(a_[1] + t_new * (b_[1] - a_[1])),
+            )
+            if k < len(reqs):
+                p += reqs[k]
+
+    # ---- insert the moved crossings (each inserted point sits on its
+    # edge, so the legs between consecutive vertices stay inside the
+    # corridor's tris — homotopy kept); bends then solve on the REAL
+    # neighbour legs of this polyline.
+    pts_out: list[list[tuple[float, float]]] = []
+    for bi, b in enumerate(wires.branches):
+        mv = moved.get(bi)
+        if not mv:
+            pts_out.append([(float(x), float(y)) for x, y in b.points])
+            continue
+        by_leg: dict[int, list[tuple[float, tuple[float, float], int]]] = {}
+        for i, pt in mv.items():
+            e = int(b.edges[i])
+            t = float(b.t[i])
+            q = (
+                float(eu[e][0] + t * (ev[e][0] - eu[e][0])),
+                float(eu[e][1] + t * (ev[e][1] - eu[e][1])),
+            )
+            bj, bs, bd = 0, 0.0, math.inf
+            for j in range(len(b.points) - 1):
+                dd = _seg_dist(q, b.points[j], b.points[j + 1])
+                if dd < bd:
+                    bd, bj = dd, j
+                    dx = b.points[j + 1][0] - b.points[j][0]
+                    dy = b.points[j + 1][1] - b.points[j][1]
+                    bs = (
+                        (q[0] - b.points[j][0]) * dx + (q[1] - b.points[j][1]) * dy
+                    ) / max(dx * dx + dy * dy, 1e-12)
+            by_leg.setdefault(bj, []).append((bs, pt, e))
+        newp = [(float(b.points[0][0]), float(b.points[0][1]))]
+        for j in range(len(b.points) - 1):
+            for _s, pt, e in sorted(by_leg.get(j, [])):
+                newp.append(pt)
+            newp.append((float(b.points[j + 1][0]), float(b.points[j + 1][1])))
+        pts_out.append(newp)
+
+    # ---- bend offsets: wires wrapping one obstacle vertex fan by rank
+    wraps: dict[int, list[tuple[int, int]]] = {}
+    bend_tasks: list[
+        tuple[int, int, np.ndarray, np.ndarray, float, list[tuple[Any, Any, float]]]
+    ] = []
+    for bi, mid in enumerate(pts_out):
+        for j in range(1, len(mid) - 1):
+            v = vid_of.get((round(mid[j][0], 6), round(mid[j][1], 6)))
+            if v is not None:
+                wraps.setdefault(v, []).append((bi, j))
+
+    def tightness(bi: int, j: int) -> float:
+        pts = pts_out[bi]
+        a = np.asarray(pts[j - 1]) - np.asarray(pts[j])
+        bb = np.asarray(pts[j + 1]) - np.asarray(pts[j])
+        la, lb = float(np.hypot(*a)), float(np.hypot(*bb))
+        if la <= 1e-9 or lb <= 1e-9:
+            return 0.0
+        return float(np.hypot(*(a / la + bb / lb)))
+
+    for vid, lst in wraps.items():
+        if not lst:
+            continue
+        bis = {bi for bi, _ in lst}
+        seq: list[int] = []
+        for e in spokes.get(vid, ()):
+            hits = [bi for bi in wires.order[e] if bi in bis]
+            if len(hits) >= 2:
+                seq = hits if int(mesh.edges[e, 0]) == vid else hits[::-1]
+                break
+        if not seq:
+            seq = [
+                bi
+                for bi, _ in sorted(
+                    lst, key=lambda k: (tightness(k[0], k[1]), k[0], k[1])
+                )
+            ]
+        # a vertex wrapped by one wire once or by a braid keeps the
+        # taut bend — offsets only fan COINCIDENT wraps of distinct
+        # branches; a lone wrap still needs its pad margin (the bend
+        # sits ON the pad vertex) so it always shifts out.
+        rank = {
+            bi: r for r, bi in enumerate(dict.fromkeys(seq + [bi for bi, _ in lst]))
+        }
+        w = np.asarray(mesh.verts[vid], dtype=float)
+        for bi, j in lst:
+            r = rank.get(bi, 0)
+            w_k, s_k = ws(bi)
+            inner = sum(
+                float(nrules(wires.branches[ob].net).track_width_mm)
+                + max(s_k, float(nrules(wires.branches[ob].net).clearance_mm))
+                for ob in seq[:r]
+                if ob != bi
+            )
+            need = s_k + w_k / 2.0 + inner
+            own_net = wires.branches[bi].net
+            # The foreign pads this vertex sits on (a pad corner, a
+            # ring-edge vertex, a pad centre) — the spoke direction
+            # pushes AWAY from each — plus the foreign pads the bend
+            # could drift toward, which claim only the plain margin.
+            # The legs' bisector of a convex-corner wrap points INTO
+            # the pad face: the wire's corridor wedges on the reflex
+            # side.
+            cands: list[tuple[Any, Any, float]] = []
+            pushes: list[np.ndarray] = []
+            for pi in range(len(pads.lo)):
+                pin = int(pads.pin[pi])
+                if 0 <= pin < len(d.pin_net) and int(d.pin_net[pin]) == own_net:
+                    continue  # the wire's own copper — never an obstacle
+                plo, phi = pads.lo[pi], pads.hi[pi]
+                on_box = (
+                    plo[0] - 1e-9 <= w[0] <= phi[0] + 1e-9
+                    and plo[1] - 1e-9 <= w[1] <= phi[1] + 1e-9
+                )
+                near = (
+                    plo[0] - need - 0.6 <= w[0] <= phi[0] + need + 0.6
+                    and plo[1] - need - 0.6 <= w[1] <= phi[1] + need + 0.6
+                )
+                if not near:
+                    continue
+                inside = plo[0] < w[0] < phi[0] and plo[1] < w[1] < phi[1]
+                # a pad holding the vertex claims the full spoke margin;
+                # another pad the bend may drift toward needs only the
+                # plain centreline clearance — and only the held pads
+                # steer the push, a pad merely nearby must not bend the
+                # spoke off its arc
+                cands.append((plo, phi, need if on_box else s_k + w_k / 2.0))
+                if on_box and not inside:
+                    v = w - (plo + phi) / 2.0
+                    nv = float(np.hypot(*v))
+                    if nv > 1e-9:
+                        pushes.append(v / nv)
+            bpts = pts_out[bi]
+            a = np.asarray(bpts[j - 1], dtype=float) - w
+            bb = np.asarray(bpts[j + 1], dtype=float) - w
+            la, lb = float(np.hypot(*a)), float(np.hypot(*bb))
+            dirv = None
+            if pushes:
+                s_ = np.sum(np.asarray(pushes), axis=0)
+                ns = float(np.hypot(*s_))
+                if ns > 1e-9:
+                    dirv = s_ / ns
+            if dirv is None and la > 1e-9 and lb > 1e-9:
+                dv = a / la + bb / lb
+                dn = float(np.hypot(*dv))
+                if dn > 1e-9:
+                    dirv = dv / dn
+            if dirv is None:
+                leg = bb / lb if lb > 1e-9 else np.asarray([1.0, 0.0])
+                perp = np.asarray([-leg[1], leg[0]])
+                cents = [
+                    cent[t] for t in wires.branches[bi].tris if vid in tri_verts[t]
+                ]
+                if cents:
+                    c = np.mean(np.asarray(cents), axis=0) - w
+                    s = float(perp @ c)
+                    if abs(s) > 1e-12:
+                        perp = perp * math.copysign(1.0, s)
+                dirv = perp
+            bend_tasks.append((bi, j, w, dirv, need, cands))
+
+    # the smallest step along each bend's direction that puts the bend
+    # AND both adjacent legs clear of its candidate pads — offsetting
+    # the vertex alone can leave a leg grazing the box, and a moved
+    # neighbour changes a leg, so the pass runs twice
+    for _pass in range(2):
+        for bi, j, w, dirv, need, cands in bend_tasks:
+            if not cands:
+                pts_out[bi][j] = (
+                    float(w[0] + need * dirv[0]),
+                    float(w[1] + need * dirv[1]),
+                )
+                continue
+            boxes = [
+                (
+                    Polygon(
+                        np.asarray(
+                            [
+                                [plo[0], plo[1]],
+                                [phi[0], plo[1]],
+                                [phi[0], phi[1]],
+                                [plo[0], phi[1]],
+                            ]
+                        )
+                    ),
+                    req,
+                )
+                for plo, phi, req in cands
+            ]
+
+            def clears(
+                t: float,
+                bi: int = bi,
+                j: int = j,
+                w: np.ndarray = w,
+                dirv: np.ndarray = dirv,
+                boxes: list = boxes,
+            ) -> bool:
+                q = (float(w[0] + t * dirv[0]), float(w[1] + t * dirv[1]))
+                legs = (
+                    LineString([pts_out[bi][j - 1], q]),
+                    LineString([q, pts_out[bi][j + 1]]),
+                )
+                for bx, req in boxes:
+                    if legs[0].distance(bx) < req - 1e-9:
+                        return False
+                    if legs[1].distance(bx) < req - 1e-9:
+                        return False
+                return True
+
+            t_found = None
+            for t in np.linspace(0.0, need * 8.0 + 1.0, 96):
+                if clears(float(t)):
+                    t_found = float(t) + 0.01
+                    break
+            dist = t_found if t_found is not None else need
+            pts_out[bi][j] = (
+                float(w[0] + dist * dirv[0]),
+                float(w[1] + dist * dirv[1]),
+            )
+
+    # ---- joint relaxation (topo S2, gr520900): the spread and the bend
+    # pass only ever asked a leg to clear PADS; a moved crossing can
+    # still sit inside a pad's margin ring or on another wire's slot —
+    # both emit shorting copper. The former one-vertex-at-a-time leg
+    # sweep against frozen neighbours stuck in local minima (it shoved
+    # b2 over the slit top on the shared-gap/shared-corner fixture —
+    # proven local minimum, hinge cost 14.65). gr520900 fix round 1:
+    # the first joint cut ran ONE Powell pass over ALL interior
+    # vertices, so a single violating leg paid for every branch on the
+    # board — each cost evaluation rebuilt every polyline and swept
+    # every pad/pair candidate, and with maxiter the only cap each
+    # sweep ran 2N line searches with maxfev unset. A 200+ branch
+    # board with one tight slit was one N-in-the-thousands solve for
+    # minutes. Now: find the legs whose hinge terms violate at the
+    # seed, grow each into the connected component of the interaction
+    # graph seeded there (pair_gap adjacency — a pad margin or pair
+    # gap's reach), and run ONE small bounded Powell per cluster with
+    # only that cluster's vertices free; everything else stays frozen.
+    # Clusters process in a fixed order (least branch id first) and
+    # per-cluster pad/pair candidate lists are precomputed once,
+    # outside the cost closure. Cost = sum of squared hinge terms —
+    # leg→foreign pad against s+w/2; leg→leg for different nets
+    # against (w_i+w_j)/2+max(s), braided pairs skipped (real
+    # crossings, resolved by layer assignment — no slide can separate
+    # them) — plus 0.01·|x−x0|² to stay near the seed. Bounds ±0.8 mm
+    # per coordinate keep each vertex inside corridor reach (±0.6 was
+    # tested and stalls a hair short of the 0.3 pair gap on this
+    # fixture); Powell is deterministic, and each solve is bounded by
+    # maxfev (200 per free coordinate, capped absolutely). A cluster
+    # past :data:`_RELAX_FREE_VERTEX_CAP` free vertices is skipped and
+    # keeps the old output. Each cluster's relaxed result is accepted
+    # ONLY if no leg intersects a foreign pad polygon and no
+    # non-braided pair of polylines crosses — otherwise that cluster's
+    # pre-relaxation output stands; the emit guard remains the judge.
+    braided = _crossing_pairs(wires, _cdirs(mesh, wires))
+    pads_poly = [
+        Polygon(
+            np.asarray(
+                [
+                    [pads.lo[pi][0], pads.lo[pi][1]],
+                    [pads.hi[pi][0], pads.lo[pi][1]],
+                    [pads.hi[pi][0], pads.hi[pi][1]],
+                    [pads.lo[pi][0], pads.hi[pi][1]],
+                ]
+            )
+        )
+        for pi in range(len(pads.lo))
+    ]
+
+    def foreign_pads(bi: int) -> list[int]:
+        own = wires.branches[bi].net
+        return [
+            pi
+            for pi in range(len(pads.lo))
+            if not (
+                0 <= int(pads.pin[pi]) < len(d.pin_net)
+                and int(d.pin_net[int(pads.pin[pi])]) == own
+            )
+        ]
+
+    interior = [
+        (bi, j) for bi, pts in enumerate(pts_out) for j in range(1, len(pts) - 1)
+    ]
+    if interior:
+        from scipy.optimize import Bounds, minimize
+
+        bound = 0.8
+        # bbox reach prefilters — a leg endpoint can move at most
+        # bound·sqrt(2); a pad or another branch beyond the inflated
+        # hull can never be violated and is left out of the cost
+        max_move = bound * math.sqrt(2.0) + 0.05
+        hull = [
+            (
+                min(p[0] for p in pts),
+                min(p[1] for p in pts),
+                max(p[0] for p in pts),
+                max(p[1] for p in pts),
+            )
+            for pts in pts_out
+        ]
+        pad_req = {bi: ws(bi)[1] + ws(bi)[0] / 2.0 for bi in range(len(pts_out))}
+        near_pads = {}
+        for bi in range(len(pts_out)):
+            infl = pad_req[bi] + max_move
+            near_pads[bi] = [
+                pi
+                for pi in foreign_pads(bi)
+                if not (
+                    pads.hi[pi][0] < hull[bi][0] - infl
+                    or pads.lo[pi][0] > hull[bi][2] + infl
+                    or pads.hi[pi][1] < hull[bi][1] - infl
+                    or pads.lo[pi][1] > hull[bi][3] + infl
+                )
+            ]
+        pair_gap: dict[tuple[int, int], float] = {}
+        for i in range(len(pts_out)):
+            w_i, s_i = ws(i)
+            for j in range(i + 1, len(pts_out)):
+                if wires.branches[i].net == wires.branches[j].net or (i, j) in braided:
+                    continue
+                w_j, s_j = ws(j)
+                gap = (w_i + w_j) / 2.0 + max(s_i, s_j)
+                infl = gap + 2.0 * max_move
+                if not (
+                    hull[i][2] < hull[j][0] - infl
+                    or hull[j][2] < hull[i][0] - infl
+                    or hull[i][3] < hull[j][1] - infl
+                    or hull[j][3] < hull[i][1] - infl
+                ):
+                    pair_gap[(i, j)] = gap
+
+        def accept(q: list[list[tuple[float, float]]]) -> bool:
+            lines = {
+                bi: LineString([(float(x), float(y)) for x, y in q[bi]])
+                for bi in range(len(q))
+            }
+            for bi in range(len(q)):
+                for k in range(len(q[bi]) - 1):
+                    leg = LineString([q[bi][k], q[bi][k + 1]])
+                    for pi in foreign_pads(bi):
+                        if leg.intersects(pads_poly[pi]):
+                            return False
+            for i in range(len(q)):
+                for j in range(i + 1, len(q)):
+                    if (i, j) in braided:
+                        continue
+                    if lines[i].crosses(lines[j]):
+                        return False
+            return True
+
+        # ── cluster the violations (gr520900 fix round 1) ──────────────
+        def seed_violators() -> set[int]:
+            """Branches with a hinge violation at the seed — a leg inside
+            a foreign pad's margin ring, or a non-braided pair closer
+            than its pair gap. This is ONE hinge sweep at the seed,
+            the same terms the cost uses; a clean board returns empty
+            and skips the optimizer entirely."""
+
+            def pad_v(bi: int, k: int) -> float:
+                a_, b_ = pts_out[bi][k], pts_out[bi][k + 1]
+                req = pad_req[bi]
+                return max(
+                    (
+                        req
+                        - _seg_aabb_dist(
+                            a_,
+                            b_,
+                            (float(pads.lo[pi][0]), float(pads.lo[pi][1])),
+                            (float(pads.hi[pi][0]), float(pads.hi[pi][1])),
+                        )
+                        for pi in near_pads[bi]
+                    ),
+                    default=0.0,
+                )
+
+            def pair_v(i: int, j: int, gap: float) -> float:
+                return max(
+                    (
+                        gap
+                        - _seg_seg_dist(
+                            pts_out[i][k],
+                            pts_out[i][k + 1],
+                            pts_out[j][m],
+                            pts_out[j][m + 1],
+                        )
+                        for k in range(len(pts_out[i]) - 1)
+                        for m in range(len(pts_out[j]) - 1)
+                    ),
+                    default=0.0,
+                )
+
+            bad: set[int] = set()
+            for bi in range(len(pts_out)):
+                if any(pad_v(bi, k) > 0.0 for k in range(len(pts_out[bi]) - 1)):
+                    bad.add(bi)
+            for (i, j), gap in pair_gap.items():
+                if pair_v(i, j, gap) > 0.0:
+                    bad.add(i)
+                    bad.add(j)
+            return bad
+
+        # Union–find over the pair_gap interaction graph; a pad-margin-
+        # only violation has no pair edges and stays a singleton. Each
+        # violating branch's component is its cluster: every branch a
+        # violating leg could interact with (pair-gap reach), grown
+        # transitively. find/union order is deterministic, so the
+        # components are too.
+        parent = list(range(len(pts_out)))
+
+        def find(a: int) -> int:
+            while parent[a] != a:
+                parent[a] = parent[parent[a]]
+                a = parent[a]
+            return a
+
+        for i, j in pair_gap:
+            ri, rj = find(i), find(j)
+            if ri != rj:
+                parent[max(ri, rj)] = min(ri, rj)
+
+        clusters: dict[int, set[int]] = {}
+        for bi in sorted(seed_violators()):
+            clusters.setdefault(find(bi), set()).add(bi)
+        ordered = sorted(
+            ({b for b in range(len(pts_out)) if find(b) == root} for root in clusters),
+            key=min,
+        )
+
+        for cluster in ordered:
+            # this cluster's free variables and precomputed candidate
+            # lists — built ONCE here, outside the cost closure: the
+            # cost evaluation must only hinge, never filter.
+            free = [(bi, j) for bi, j in interior if bi in cluster]
+            if not free or len(free) > _RELAX_FREE_VERTEX_CAP:
+                continue  # oversized cluster: the old output stands
+            cluster_pad = {bi: near_pads[bi] for bi in cluster}
+            cluster_pairs = [
+                ((i, j), gap)
+                for (i, j), gap in pair_gap.items()
+                if i in cluster or j in cluster
+            ]
+            x0 = np.asarray([pts_out[bi][j] for bi, j in free], dtype=float).ravel()
+
+            def cluster_cost(
+                x: np.ndarray,
+                *,
+                _free: list[tuple[int, int]] = free,
+                _x0: np.ndarray = x0,
+                _cluster: set[int] = cluster,
+                _cluster_pad: dict[int, list[int]] = cluster_pad,
+                _cluster_pairs: list[tuple[tuple[int, int], float]] = cluster_pairs,
+            ) -> float:
+                cur: dict[int, list[tuple[float, float]]] = {}
+                for n, (bi, j) in enumerate(_free):
+                    pts = cur.get(bi)
+                    if pts is None:
+                        pts = cur[bi] = list(pts_out[bi])
+                    pts[j] = (float(x[2 * n]), float(x[2 * n + 1]))
+                c = 0.0
+                for bi in _cluster:
+                    pts = cur.get(bi, pts_out[bi])
+                    req = pad_req[bi]
+                    for k in range(len(pts) - 1):
+                        a_, b_ = pts[k], pts[k + 1]
+                        for pi in _cluster_pad[bi]:
+                            v = req - _seg_aabb_dist(
+                                a_,
+                                b_,
+                                (float(pads.lo[pi][0]), float(pads.lo[pi][1])),
+                                (float(pads.hi[pi][0]), float(pads.hi[pi][1])),
+                            )
+                            if v > 0.0:
+                                c += v * v * 100.0
+                for (i, j), gap in _cluster_pairs:
+                    qi = cur.get(i, pts_out[i])
+                    qj = cur.get(j, pts_out[j])
+                    for k in range(len(qi) - 1):
+                        a_, b_ = qi[k], qi[k + 1]
+                        for m in range(len(qj) - 1):
+                            v = gap - _seg_seg_dist(a_, b_, qj[m], qj[m + 1])
+                            if v > 0.0:
+                                c += v * v * 100.0
+                return c + 0.01 * float(np.sum((x - _x0) ** 2))
+
+            # only worth solving when this cluster still violates at the
+            # seed — an earlier cluster's commit may have cleared it
+            if cluster_cost(x0) <= 0.0:
+                continue
+            bounds = Bounds(x0 - bound, x0 + bound)
+            res = minimize(
+                cluster_cost,
+                x0,
+                method="Powell",
+                bounds=bounds,
+                options={
+                    "maxiter": 400,
+                    "maxfev": min(_RELAX_MAXFEV_PER_COORD * len(x0), _RELAX_MAXFEV_ABS),
+                    "xtol": 1e-4,
+                    "ftol": 1e-9,
+                },
+            )
+            if res.fun < cluster_cost(x0):
+                trial = [list(p) for p in pts_out]
+                for n, (bi, j) in enumerate(free):
+                    trial[bi][j] = (float(res.x[2 * n]), float(res.x[2 * n + 1]))
+                if accept(trial):
+                    for n, (bi, j) in enumerate(free):
+                        pts_out[bi][j] = trial[bi][j]
+
+    return [tuple(p) for p in pts_out]
+
+
 def plan_route(
     d: TopoDesign,
     mesh: TopoMesh,
@@ -551,6 +1366,7 @@ def plan_route(
     net_rules: Mapping[str, NetRules] | None = None,
     pose: Any = None,
     min_via_dia: float | None = None,
+    paths: Sequence[Sequence[tuple[float, float]]] | None = None,
 ) -> RoutePlan:
     """Layer assignment → pieces + via sites for one routed pose.
 
@@ -568,10 +1384,13 @@ def plan_route(
     when the rule via finds no site (gr524334); a join with no
     qualifying point at either diameter mints no via and lands on
     :attr:`RoutePlan.no_via`."""
-    layers, crossings = assign_layers(d, wires, n_layers)
+    cdirs = _cdirs(mesh, wires)
+    layers, crossings = assign_layers(d, wires, n_layers, mesh)
     # Span-flip the pairs the whole-branch pass could not take (gr524239)
     # and report only what survives both.
-    span_toggles, span_flipped = _span_toggles(d, wires, layers, crossings, n_layers)
+    span_toggles, span_flipped = _span_toggles(
+        d, wires, layers, crossings, n_layers, cdirs
+    )
     crossings = tuple(p for p in crossings if p not in span_flipped)
     rules = net_rules or {}
     pose_a = np.asarray(d.pose0 if pose is None else pose)
@@ -654,6 +1473,10 @@ def plan_route(
         L = layers[bi]
         la = _pin_forced(d, b.pin_a, n_layers)
         lb = _pin_forced(d, b.pin_b, n_layers)
+        # ``paths`` carries the spoke-offset polyline (gr520900) for the
+        # emitted geometry; via siting and the edge/t bookkeeping stay
+        # on ``b``'s corridor-true fields.
+        bpts = paths[bi] if paths is not None else b.points
         # Layer switches along the branch, in edge-sequence positions
         # (0 = before the first edge, n = after the last). Three sources:
         # the Decision-6 F<->B mid split; pad-side stitches at the ends
@@ -676,7 +1499,7 @@ def plan_route(
             targets[pos] = tgt
         if not targets:
             pieces.append(
-                RoutePiece(b.net, bi, start_layer, b.points, b.pin_a, b.pin_b)
+                RoutePiece(b.net, bi, start_layer, tuple(bpts), b.pin_a, b.pin_b)
             )
             continue
         # Resolve switches in position order: a target equal to the
@@ -699,7 +1522,7 @@ def plan_route(
         nr = rules.get(name, _DEFAULT)
         via_dia = float(nr.via_dia_mm or _VIA_DIA_MM)
         clearance = float(nr.clearance_mm)
-        pts = list(b.points)
+        pts = list(bpts)
         cut_xy: list[tuple[float, float]] = []
         run_lays = [start_layer, *(t for _, t in cuts)]
         sited = True
@@ -764,21 +1587,36 @@ def plan_route(
 
 def _octilinear(
     points: tuple[tuple[float, float], ...],
+    clear: (
+        Callable[[tuple[float, float], tuple[float, float], tuple[float, float]], bool]
+        | None
+    ) = None,
 ) -> tuple[tuple[float, float], ...]:
     """The piece's taut path re-drawn in multiples of 45° — the DRC's
     rectilinear rule admits no other angle (``every drawn wire must be
-    a multiple of 45deg``). Each off-angle leg becomes an L bend
-    (horizontal leg first); the homotopy class is the wire's, not the
-    bend's, so a bend may sit tighter than the straight line — the
-    corridor widths priced that margin."""
+    a multiple of 45deg``). Each off-angle leg becomes an L bend;
+    ``clear`` (gr520900) is called as ``clear(p, c, q)`` and vetoes an
+    L bend whose legs touch copper they must avoid — the
+    horizontal-first corner is preferred, the vertical-first corner is
+    taken when the first's legs are blocked, and when NEITHER clears
+    the leg keeps its authored line rather than minting a bend across
+    a pad (the emit guard remains the judge)."""
     out: list[tuple[float, float]] = [(float(points[0][0]), float(points[0][1]))]
     for p, q in itertools.pairwise(points):
         dx, dy = q[0] - p[0], q[1] - p[1]
         if dx == 0 or dy == 0 or abs(abs(dx) - abs(dy)) <= 1e-9:
             out.append((float(q[0]), float(q[1])))
+            continue
+        c1 = (float(q[0]), float(p[1]))
+        c2 = (float(p[0]), float(q[1]))
+        qq = (float(q[0]), float(q[1]))
+        pp = (float(p[0]), float(p[1]))
+        if clear is None or clear(pp, c1, qq):
+            out.extend((c1, qq))
+        elif clear(pp, c2, qq):
+            out.extend((c2, qq))
         else:
-            out.append((float(q[0]), float(p[1])))
-            out.append((float(q[0]), float(q[1])))
+            out.append(qq)
     return tuple(out)
 
 
@@ -789,10 +1627,15 @@ def realize_result(
     n_layers: int,
     *,
     net_rules: Mapping[str, NetRules] | None = None,
+    pose: Any = None,
 ) -> Any:
     """The plan as a :class:`precis.pcb.realize.RealizeResult` — the one
     shape the store path, ``result_copper_rows`` and the DRC gate all
-    read. ``ir`` maps the design's ``net_name`` back to ir net ids."""
+    read. ``ir`` maps the design's ``net_name`` back to ir net ids.
+    ``pose`` (gr520900) enables the pad-aware octilinear corner choice —
+    a corner only lands where it clears foreign copper; absent, the
+    legacy horizontal-first redraw runs (synthetic callers without a
+    placed pose)."""
     from precis.pcb.realize import (
         RealizedTrack,
         RealizedVia,
@@ -804,10 +1647,43 @@ def realize_result(
     tracks: list[RealizedTrack] = []
     vias: list[RealizedVia] = []
     rules = net_rules or {}
-    for p in plan.pieces:
-        name = str(d.net_name[p.net]) if p.net < len(d.net_name) else str(p.net)
+    pad_polys = (
+        _pad_polys(d, ir, n_layers, np.asarray(pose)) if pose is not None else None
+    )
+
+    def nm(k: int) -> str:
+        return str(d.net_name[k]) if 0 <= k < len(d.net_name) else str(k)
+
+    taut = {
+        i: LineString([(float(x), float(y)) for x, y in pc.points])
+        for i, pc in enumerate(plan.pieces)
+    }
+    for pi_, p in enumerate(plan.pieces):
+        name = nm(p.net)
         nr = rules.get(name, _DEFAULT)
-        pts = _octilinear(p.points)
+        others = [
+            (
+                taut[j],
+                float(rules.get(nm(oc.net), _DEFAULT).track_width_mm),
+                float(rules.get(nm(oc.net), _DEFAULT).clearance_mm),
+            )
+            for j, oc in enumerate(plan.pieces)
+            if j != pi_ and oc.layer == p.layer
+        ]
+        pts = (
+            _octilinear(p.points)
+            if pad_polys is None
+            else _octilinear(
+                p.points,
+                _piece_corner_clear(
+                    p,
+                    pad_polys,
+                    nm,
+                    lambda n: rules.get(n, _DEFAULT),
+                    others,
+                ),
+            )
+        )
         segs = tuple(
             {
                 "shape": "line",
@@ -852,45 +1728,18 @@ def realize_result(
     return RealizeResult(tuple(tracks), tuple(vias), ())
 
 
-def _guarded_nets(
-    emit: RoutePlan,
-    d: TopoDesign,
-    ir: Any,
-    n_layers: int,
-    pose: np.ndarray,
-    net_rules: Mapping[str, NetRules] | None,
-) -> set[int]:
-    """The anti-short guard (gr524239): net indices of the emit set whose
-    copper would violate foreign clearance — a track over a foreign pad,
-    two foreign tracks closer than their widths plus clearance, a via
-    barrel crowding foreign copper. The order-based crossing detector
-    misses these (a taut polyline may cross a foreign pad without an
-    order inversion on shared edges), so the emit set is checked
-    geometrically before it may be realized. ``NO_NET`` pads are foreign
-    to every net — the baseline run's shorts were tracks over unwired
-    pads. A violating net is withdrawn WHOLE (no orphan fragments) and
-    recorded on :attr:`RoutePlan.guarded`. Centerline-vs-centerline
-    distances against both nets' resolved widths and clearances — the
-    same figures the DRC gate measures, so a pass here is a pass there."""
-    from shapely.geometry import LineString
-
+def _pad_polys(
+    d: TopoDesign, ir: Any, n_layers: int, pose: np.ndarray
+) -> dict[int, list[tuple[str, Polygon]]]:
+    """World-frame pad polygons per layer, tagged by net name — the
+    SAME pad set the DRC flashes: each pin's pad plus every non-primary
+    footprint land (``pad_extra_*``: a pin's second same-named pad, a
+    split slug half, an unpinned land — gr524239; the pin-only roster
+    passed a track through copper the checker then errored on).
+    ``NO_NET``/unpinned lands carry the empty name — foreign to every
+    net. SMD pads live on their mount side, TH on all layers."""
     from precis.pcb.ir import NO_NET
 
-    rules = net_rules or {}
-    names = [str(n) for n in d.net_name]
-
-    def nm(k: int) -> str:
-        return names[k] if 0 <= k < len(names) else str(k)
-
-    def nrules(name: str) -> NetRules:
-        return rules.get(name, _DEFAULT)
-
-    # Foreign pads per layer, world frame (SMD top/bottom, TH spans all)
-    # — the SAME pad set the DRC flashes: each pin's pad plus every
-    # non-primary footprint land (``pad_extra_*``: a pin's second
-    # same-named pad, a split slug half, an unpinned land — gr524239;
-    # the pin-only roster passed a track through copper the checker
-    # then errored on).
     pad_polys: dict[int, list[tuple[str, Polygon]]] = {i: [] for i in range(n_layers)}
 
     def add_pad(
@@ -944,8 +1793,104 @@ def _guarded_nets(
             pname,
             int(d.pad_extra_side[k]),
         )
+    return pad_polys
 
-    lines = {i: LineString(_octilinear(pc.points)) for i, pc in enumerate(emit.pieces)}
+
+def _piece_corner_clear(
+    piece: RoutePiece,
+    pad_polys: dict[int, list[tuple[str, Polygon]]],
+    nm: Callable[[int], str],
+    nrules: Callable[[str], NetRules],
+    others: Iterable[tuple[LineString, float, float]] = (),
+) -> Callable[[tuple[float, float], tuple[float, float], tuple[float, float]], bool]:
+    """The octilinear corner test for one piece (gr520900): a candidate
+    L bend ``p → c → q`` clears when BOTH legs keep the track's
+    half-width plus the pairwise clearance off every foreign pad on
+    its layer and the pairwise centreline spacing off every other
+    piece's spoke path on the same layer — a clear corner point is
+    not enough, the stub leg from the corner to ``q`` can still graze
+    a pad, and an L redrawn across a neighbour's channel crosses it
+    even though the taut paths never did."""
+    nr = nrules(nm(piece.net))
+    wi, ci = float(nr.track_width_mm), float(nr.clearance_mm)
+    own = nm(piece.net)
+
+    def clear(
+        p: tuple[float, float], c: tuple[float, float], q: tuple[float, float]
+    ) -> bool:
+        path = LineString(
+            [
+                (float(p[0]), float(p[1])),
+                (float(c[0]), float(c[1])),
+                (float(q[0]), float(q[1])),
+            ]
+        )
+        for pname, poly in pad_polys.get(piece.layer, []):
+            if pname and pname == own:
+                continue
+            cp = float(nrules(pname).clearance_mm) if pname else ci
+            if poly.distance(path) < wi / 2.0 + max(ci, cp) - 1e-9:
+                return False
+        for oline, wo, co in others:
+            if path.distance(oline) < (wi + wo) / 2.0 + max(ci, co) - 1e-9:
+                return False
+        return True
+
+    return clear
+
+
+def _guarded_nets(
+    emit: RoutePlan,
+    d: TopoDesign,
+    ir: Any,
+    n_layers: int,
+    pose: np.ndarray,
+    net_rules: Mapping[str, NetRules] | None,
+) -> set[int]:
+    """The anti-short guard (gr524239): net indices of the emit set whose
+    copper would violate foreign clearance — a track over a foreign pad,
+    two foreign tracks closer than their widths plus clearance, a via
+    barrel crowding foreign copper. The order-based crossing detector
+    misses these (a taut polyline may cross a foreign pad without an
+    order inversion on shared edges), so the emit set is checked
+    geometrically before it may be realized. ``NO_NET`` pads are foreign
+    to every net — the baseline run's shorts were tracks over unwired
+    pads. A violating net is withdrawn WHOLE (no orphan fragments) and
+    recorded on :attr:`RoutePlan.guarded`. Centerline-vs-centerline
+    distances against both nets' resolved widths and clearances — the
+    same figures the DRC gate measures, so a pass here is a pass there."""
+    from shapely.geometry import LineString
+
+    rules = net_rules or {}
+    names = [str(n) for n in d.net_name]
+
+    def nm(k: int) -> str:
+        return names[k] if 0 <= k < len(names) else str(k)
+
+    def nrules(name: str) -> NetRules:
+        return rules.get(name, _DEFAULT)
+
+    pad_polys = _pad_polys(d, ir, n_layers, pose)
+    taut = {
+        i: LineString([(float(x), float(y)) for x, y in pc.points])
+        for i, pc in enumerate(emit.pieces)
+    }
+    lines = {}
+    for i, pc in enumerate(emit.pieces):
+        others = [
+            (
+                taut[j],
+                float(nrules(nm(oc.net)).track_width_mm),
+                float(nrules(nm(oc.net)).clearance_mm),
+            )
+            for j, oc in enumerate(emit.pieces)
+            if j != i and oc.layer == pc.layer
+        ]
+        lines[i] = LineString(
+            _octilinear(
+                pc.points, _piece_corner_clear(pc, pad_polys, nm, nrules, others)
+            )
+        )
     by_layer: dict[int, list[int]] = {}
     for i, pc in enumerate(emit.pieces):
         by_layer.setdefault(pc.layer, []).append(i)
@@ -1063,6 +2008,12 @@ def route_design(
         # honest refusal (gr520904): a channel whose demand exceeds
         # capacity is named with its owners — never silently crammed.
         raise CorridorOverflow(wires.overflow)
+    # gr520900: the taut paths share obstacle vertices and edge
+    # crossings — the spoke offsets fan coincident copper to legal
+    # spacing before the plan freezes it.
+    paths = _spoke_offsets(
+        d, mesh, wires, ir.n_layers, net_rules=net_rules, pose=mesh_pose
+    )
     plan = plan_route(
         d,
         mesh,
@@ -1071,6 +2022,7 @@ def route_design(
         net_rules=net_rules,
         pose=mesh_pose,
         min_via_dia=min_via_dia,
+        paths=paths,
     )
     emit = plan
     if plan.crossings:
@@ -1094,7 +2046,9 @@ def route_design(
             vias=tuple(v for v in emit.vias if v.net not in guarded),
         )
         plan = dataclasses.replace(plan, guarded=tuple(sorted(guarded)))
-    return plan, realize_result(emit, d, ir, ir.n_layers, net_rules=net_rules)
+    return plan, realize_result(
+        emit, d, ir, ir.n_layers, net_rules=net_rules, pose=mesh_pose
+    )
 
 
 def sketch_rows(
