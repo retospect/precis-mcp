@@ -1437,9 +1437,9 @@ def _second_hop(
 
     ``expand='<kind>:<label>'`` (the eye's ``q=``) lists that one group's
     refs instead, capped. The backlog item asked for ``more()`` to expand a
-    group, but ``more()`` only pages an over-long body (``tools/core.py::
-    more``) and has no notion of a named group, so the expansion is the
-    same call with a filter — decided 2026-10-02, recorded in the item.
+    group, but ``more()`` only ever paged an over-long body (removed with
+    the transport pager) and had no notion of a named group, so the
+    expansion is the same call with a filter — decided 2026-10-02.
     """
     hop1_ids = {n.ref_id for ns in hop1.values() for n in ns}
     if not hop1_ids:

@@ -327,8 +327,8 @@ def test_misleading_transcript_turns_a_seed_red(tmp_path: Path) -> None:
                 "forbidden call made: edit(kind='todo'",
             ),
         ),
-        # A misleading search skill confuses transport paging
-        # (more(cursor=)) with result paging (page=/page_size=).
+        # A misleading search skill reaches for a continuation page
+        # (page=) the bounded top-N model removed.
         (
             "precis-search-help",
             "precis-search-help/page-through-hits",
@@ -337,10 +337,10 @@ def test_misleading_transcript_turns_a_seed_red(tmp_path: Path) -> None:
                     VerbCall(
                         "search",
                         "paper",
-                        {"q": "photocatalysis", "cursor": "abc123"},
+                        {"q": "photocatalysis", "page": 3},
                     ),
                 ),
-                answer="Paged with the cursor.",
+                answer="Fetched page 3.",
             ),
             (
                 "expected call not made: search(kind='paper'",

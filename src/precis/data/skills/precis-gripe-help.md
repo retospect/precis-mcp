@@ -165,7 +165,7 @@ newest-touched order instead.
 
 Need every id in a filtered set — a triage pass, a batch `get`?
 `view='ids'` renders one handle per line and nothing else, so a full
-page never mid-elides behind a `more()` cursor:
+page never mid-elides under the result budget:
 
 ```python
 search(kind="gripe", tags=["STATUS:open"], view="ids")  # gr… one per line
@@ -254,7 +254,7 @@ returns one summary block per id (tags, prio, link count, first line; up to
 id — the comment timeline is not included. A batch whose joined view
 would overflow the page returns the whole blocks that fit and names the
 rest verbatim — `next: get(kind='gripe', id=[<unread ids>], view='full')`
-— so re-issuing that call continues without a `more()` cursor.
+— so re-issuing that call continues where the first left off.
 `view='index'` is accepted and equals the default listing; use `view='count'` /
 `'meta'` for aggregates.
 <!-- write -->

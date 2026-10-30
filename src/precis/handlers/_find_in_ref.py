@@ -338,8 +338,9 @@ def find_response(
     overrides the per-chunk header label for kinds whose chunks aren't
     handle-addressable (e.g. the md file index).
 
-    Output pages through the ordinary dispatcher split — a long result
-    returns the head plus a ``more()`` cursor like any oversized get.
+    Output fits through the ordinary result budget — a long result
+    returns the fitted head plus the ``next:`` read like any oversized
+    get.
     """
     ctx = _clamp_context(context)
     match = _compile_matcher(q)

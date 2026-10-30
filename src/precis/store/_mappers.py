@@ -158,7 +158,7 @@ SEMANTIC_ONLY_DISTANCE_FLOOR = 0.45
 # Per-kind fold threshold for rendered search results (gr514956). A hit
 # whose semantic distance clears the kind's value AND that has no lexical
 # corroboration is *folded* out of the rendered page — not dropped, so it
-# stays reachable behind the page's ``more(cursor=…)`` continuation —
+# stays reachable by narrowing q= or via ``view='ids'`` —
 # while the automatic recall path (``view='index'``, cross-kind
 # ``search_hits`` streams) applies the same value as a hard
 # ``semantic_only_max_distance`` cut. Kinds absent from the table (the

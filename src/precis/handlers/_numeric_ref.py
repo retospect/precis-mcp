@@ -1013,7 +1013,7 @@ class NumericRefHandler(Handler):
         q = fold_match_all_q(q)
         # ``view='ids'`` renders the same filtered set as one bare handle
         # per line — compact enough that a full page never mid-elides
-        # behind a more() cursor (gr514477). ``view='list'`` is the same
+        # under the result budget (gr514477). ``view='list'`` is the same
         # one-line-per-hit shape with the summary first line beside the
         # handle (gr515522): the triage listing a folded hit table can't
         # give at page_size=100. Both are intercepted before
@@ -1786,7 +1786,7 @@ class NumericRefHandler(Handler):
         """``view='ids'``/``view='list'`` body: one line per ref.
 
         Compact on purpose (gr514477): a full page of these never
-        mid-elides behind a ``more()`` cursor, so the filtered set is
+        mid-elides under the result budget, so the filtered set is
         enumerable verbatim — e.g. every open gripe's id. ``titles``
         (``view='list'``, gr515522) puts the summary first line beside
         the handle so a triage read sees what each id *is* — still one
@@ -3744,8 +3744,8 @@ class NumericRefHandler(Handler):
         Pages whole blocks under :data:`BATCH_VIEW_PAGE_CHARS`
         (gr515524): a batch whose join would overflow emits the ids that
         fit and names the unread rest as the ``next:`` call's id list —
-        a self-describing cursor, instead of letting the transport fold
-        cut a block mid-text behind a ``more()`` cursor.
+        a self-describing cursor, instead of letting the result budget
+        cut a block mid-text in a fitted body.
         """
         blocks: list[str] = []
         for rid in ref_ids:

@@ -60,7 +60,9 @@ _SEARCH_DOC = """Hybrid lexical + semantic search across kinds.
 `kind` (or `'*'`) for cross-kind fan-out. `mode=` 'hybrid' (default) /
 'lexical' / 'semantic' / 'verbatim'.
 `scope=` searches inside one ref (handle or slug); `status=` filters by
-`STATUS:` tag on kinds that carry that axis. Some kinds are host-gated:
+`STATUS:` tag on kinds that carry that axis. Rows: `id`, `summary`,
+`remaining_words`, `links`, `tags` — the legend is in the skill.
+Some kinds are host-gated:
 `NotFound` with `routes through host(s): …` means the kind exists but
 this process lacks its provider. Kind-specific fields (`exclude`, `reach`,
 `folder`, `queries`, `per_paper`, `trust`, `wants`, `compose`,

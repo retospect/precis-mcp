@@ -347,8 +347,8 @@ It is **final state, not history** — nothing removed or destructive
 appears. Its header lists what the round-trip drops; the two that bite are
 **block uids** (a re-`put` mints fresh ones — re-resolve by label) and
 **declared states/transitions** (in `design_states` keyed by uid, not
-the tree). Exports run bigger than the tool-result fold (and `more()`
-re-folds, so the middle stays unreachable); slice with
+the tree). Exports run bigger than the tool-result budget (a fitted
+result still skips the middle); slice with
 `args={'page': <n>, 'page_size': <count>}` (`page_size=0` =
 everything from the window start; `offset`/`limit` remain as
 deprecated aliases — `interpreted:` names the reading); concatenated

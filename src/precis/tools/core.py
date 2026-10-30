@@ -523,7 +523,8 @@ def get(
     id — a bare number is a paper's cite_key, not its id; papers also
     accept a DOI. `view=` picks a display variant (kind-specific, e.g.
     'abstract', 'bibtex'). `q=` is a free-text query for compute-style
-    kinds. `args=` holds typed extras for views that need them; an
+    kinds — and expands a `fisheye+2hop` group (`extent=` below).
+    `args=` holds typed extras for views that need them; an
     unknown key fails the call with `[error:BadInput]` listing the keys.
     `extent=` is a fisheye rung: 'fisheye' (node + surroundings),
     'fisheye+1hop' (linked neighbours), 'fisheye+2hop' (second hop as
@@ -755,7 +756,8 @@ def search(
     `page_size` ≤ 100 selects the top-N hits (`k=`/`limit=` read as it).
     Omit `kind` (or `'*'`) for cross-kind fan-out; `exclude=` skips
     slugs; `reach=` ('local'|'remote'|'both'; patent/edgar); `folder=`
-    scopes.
+    scopes. `scope=` searches inside one ref (handle or slug);
+    `status=` filters by `STATUS:` tag on kinds that carry that axis.
 
     `mode=` 'hybrid' (default) / 'lexical' (exact) / 'semantic' /
     'verbatim' (all query words as chunk keywords). `angle=`+`like=`
@@ -2048,7 +2050,9 @@ def delete(
 ) -> str:
     """Delete a ref or addressed region.
 
-    Numeric-ref kinds soft-delete; design kinds use their own delete doors.
+    Numeric-ref kinds soft-delete (memory, todo, gripe, finding, alert,
+    citation, quest, job, anki, ...) — hidden from list/search,
+    recoverable. Design kinds use their own delete doors.
 
     File kinds with selector in `id=` (markdown, plaintext, tex,
     python): delete the addressed chunk/symbol/line range.
@@ -2062,8 +2066,8 @@ def delete(
     Cache-backed / read-only kinds (calc, math, web, youtube,
     research, think, websearch, patent): Unsupported. Paper takes
     only `args={'comment': K}`. Other
-    kinds (draft, skill, alert, conv, citation, tag, quest, ...) take
-    their own door or refuse as Unsupported naming the supported verbs.
+    kinds (skill, conv, tag, ...) take their own door or refuse as
+    Unsupported naming the supported verbs.
 
     Full reference: get(kind='skill', id='precis-delete-help'), or
     search(kind='skill', q='delete a ref or region') for a topical lookup.
