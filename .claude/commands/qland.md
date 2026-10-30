@@ -1,5 +1,5 @@
 ---
-description: "Quick-land: commit your work, sync, ruff+mypy only, squash-merge without pytest. For burst-landing many worktrees; finish with one /go."
+description: "Quick-land: commit your work, sync, ruff only (mypy and pytest run at the release gate), squash-merge without pytest. For burst-landing many worktrees; finish with one /go."
 argument-hint: "[optional commit/ship message]"
 allowed-tools: Bash(scripts/ship:*), Bash(git:*), Agent
 ---
@@ -10,23 +10,23 @@ for the same Docker VM turns each ship into a queue. `/qland` defers the
 suite: qland the burst one by one, then run **one** `/go` (release cut
 from the integrated `main`, CI-gated, deployed).
 
-`scripts/ship --quick` runs its own **pre-qland lint** (ruff autofix · mypy ·
+`scripts/ship --quick` runs its own **pre-qland lint** (ruff autofix ·
 import contracts · DB-free hygiene tests such as the `type: ignore` ratchet
-and the posix/encoding guards) before the squash-merge — ~3 min in the warm container, no
+and the posix/encoding guards) before the squash-merge — no mypy (Reto 2026-10-30: easy to fix later, together with a full test; the release gate runs it), faster than ~3 min in the warm container, no
 test DB, and no fleet gate slot, so it never queues behind a sibling's suite.
-Do NOT run ruff, mypy or tests yourself beforehand: the ship does the first
-two for you, and running the suite is the congestion this command exists to
+Do NOT run ruff, mypy or tests yourself beforehand: the ship does ruff for
+you, mypy and pytest run at the release gate, and running the suite is the congestion this command exists to
 avoid. If the pre-qland lint goes red, fix it — it does not get deferred,
-because a lint/type failure that lands reddens the *next* tree's gate for a
+because a lint failure that lands reddens the *next* tree's gate for a
 reason its author did not write.
 
 **The trade you are making, say it out loud in the confirm block:** after a
-`/qland`, `main` may be red *at the test level* — no pytest ran. That is
+`/qland`, `main` may be red *at the test level and the type level* — no pytest or mypy ran. That is
 accepted and temporary; the debt is settled by the next full gate.
 
 **Prefer `scripts/ship --checked` when the tree carries more than docs.**
 The checked mode is the recommended burst lane (gr485791): same machinery
-as `--quick`, but after the lint it also runs a selected pytest — the
+as `--quick`, but after the lint it also runs mypy and a selected pytest — the
 contract invariants (audited tables, closed registries, ratchets,
 vocab/secret scans) plus corpus-coupled tests for data files and the
 index/testmon set for Python changes — all selected by
@@ -71,11 +71,11 @@ Optional ship message from the user: `$ARGUMENTS`
    `Gate: lint only` trailer on the squash) → squash-merge to `main` via
    `commit-tree` + CAS push → fast-forward the local `main` → release the lock →
    reset the branch to the shipped `main`. The migration-number and backlog advisories
-   still print, and the pre-qland lint (ruff autofix · mypy · import
-   contracts · DB-free hygiene tests) runs and is blocking; pytest and the diff-coverage gate do not.
+   still print, and the pre-qland lint (ruff autofix · import
+   contracts · DB-free hygiene tests) runs and is blocking; mypy, pytest and the diff-coverage gate do not (the release gate runs them).
 
 4. **Handle failures** — merge machinery, plus the pre-qland lint:
-   - **Pre-qland lint RED** — ruff, mypy, import contracts or a hygiene
+   - **Pre-qland lint RED** — ruff, import contracts or a hygiene
      test (ratchet, posix/encoding guard, doc pointer, secret scan). Fix the
      failure printed above the `✖` and re-run `scripts/ship --quick`. Do not
      reach for `PRECIS_QLAND_LINT=0` to get past it; that override is for a
@@ -100,7 +100,7 @@ Optional ship message from the user: `$ARGUMENTS`
    `git rev-parse origin/main`, don't assume):
    ```
    Merged to main:  ✓ <sha> on origin/main   (or ✗ — ship failed above)
-   Gated:           ~ ruff+mypy passed; pytest deferred — main is untested
+   Gated:           ~ ruff passed; mypy and pytest deferred to the release gate — main is untested
    Deployed:        — not deployed (run /go after the burst: gated release + deploy)
    ```
    Then one line summarizing what shipped.

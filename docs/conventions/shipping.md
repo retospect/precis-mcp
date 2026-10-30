@@ -249,10 +249,14 @@ the next release.
 
 ## /qland — pytest-ungated burst-land (the default lane)
 
+`--quick` is ruff only; mypy and pytest run at the release gate (Reto
+2026-10-30: "These are easy to fix later, together with a full test").
+`--checked` and `--release` keep mypy in their lint.
+
 `scripts/ship --quick`: refuse a dirty tree → sync → **drift guard** (warns when
 main's last all-green shard matrix is 24h old, refuses at 48h — a burst that
 outran its verdicts wants a `/go`, not another qland; never refuses on an age
-it could not look up) → **pre-qland lint** (ruff · mypy · import contracts ·
+it could not look up) → **pre-qland lint** (ruff · import contracts ·
 DB-free hygiene tests (type-ignore ratchet, posix/encoding guards, doc
 pointers, secret scan) — no full pytest, no gate slot, ~3 min;
 `PRECIS_QLAND_LINT=0` to skip) → squash-merge. For when many trees are in
