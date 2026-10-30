@@ -86,6 +86,7 @@ from precis.handlers._request_state import RequestState
 from precis.handlers._tag_redirect import redirect_long_tag_values
 from precis.handlers.plaintext import _require_find_and_text
 from precis.plans import nodes as plan_nodes
+from precis.plans import templates as plan_templates
 from precis.protocol import ArgsSpec, KindSpec
 from precis.response import Response
 from precis.store import Ref, Tag
@@ -357,6 +358,13 @@ def _inherit_workspace_from_parent(
         return None
     return ws
 
+
+#: Plan node kinds a parented put must not stamp ``meta.llm_tier='opus'`` on:
+#: the plan dispatcher tick drives them (a gate is only evaluated), so a
+#: ``plan_tick`` would be wrong. A task node keeps the parented default.
+_PLAN_KINDS_NOT_DISPATCHED: frozenset[str | None] = frozenset(
+    {"gate", "loop", "generator", "phase"}
+)
 
 #: Shared range check (moved to ``_prio_tag`` so gripe / quest validate
 #: their ``prio=`` kwarg identically).
@@ -666,6 +674,12 @@ class TodoHandler(NumericRefHandler):
         executor: str | None = None,
         job_type: str | None = None,
         params: dict[str, Any] | None = None,
+        # ``mode='plan'`` keys (args={'template': …, …}, td542095): the
+        # template name and its arguments; read only under that mode.
+        template: str | None = None,
+        gripe_id: int | str | None = None,
+        section: str | None = None,
+        board: str | None = None,
         **_kw: Any,
     ) -> Response:
         text, body = mask_secrets(text), mask_secrets(body)
@@ -765,6 +779,24 @@ class TodoHandler(NumericRefHandler):
             guards.check_depth_under(self.store, parent_int)
         else:
             parent_int = None
+        if mode == "plan":
+            return self._put_plan(
+                template=template,
+                template_args={
+                    "gripe_id": gripe_id,
+                    "section": section,
+                    "board": board,
+                },
+                parent_id=parent_int,
+                refused={
+                    "text": text,
+                    "tags": tags,
+                    "link": link,
+                    "meta": meta,
+                    "body": body,
+                    "prio": prio,
+                },
+            )
         # ``meta.tier`` (strategic|tactical|subtask) is the agent-facing
         # spelling of the facet booleans — translated here so the
         # owner-only gate below sees the derived booleans and enforces
@@ -877,6 +909,9 @@ class TodoHandler(NumericRefHandler):
             and not (isinstance(meta, dict) and "auto_check" in meta)
             # a question for the owner is never auto-run (td541979)
             and not (isinstance(meta, dict) and "ask" in meta)
+            # plan nodes that are evaluated or ticked, never dispatched to
+            # a plan_tick (td542095); a task node keeps the default
+            and plan_nodes.node_kind(meta) not in _PLAN_KINDS_NOT_DISPATCHED
         )
         # The flag rides ``_PutState`` so the create ack surfaces the stamp
         # — the default silently arms billed compute (dispatch mints a
@@ -929,6 +964,56 @@ class TodoHandler(NumericRefHandler):
                 rel=rel,
                 auto_refresh_days=auto_refresh_days,
             )
+
+    def _put_plan(
+        self,
+        *,
+        template: str | None,
+        template_args: dict[str, Any],
+        parent_id: int | None,
+        refused: dict[str, Any],
+    ) -> Response:
+        """``put(mode='plan', args={'template': name, …})``: mint a plan
+        subtree (:mod:`precis.plans.templates`) and ack with its tree."""
+        given = sorted(k for k, v in refused.items() if v not in (None, "", [], {}))
+        if given:
+            raise BadInput(
+                f"mode='plan' mints from the template; {given} are not accepted",
+                next="put(kind='todo', mode='plan', args={'template': '<name>', ...})",
+            )
+        names = sorted(plan_templates.TEMPLATES)
+        tpl = plan_templates.TEMPLATES.get(template) if template else None
+        if tpl is None:
+            raise BadInput(
+                f"unknown plan template {template!r}; templates: {names}"
+                if template
+                else f"mode='plan' requires args={{'template': <name>}}; templates: {names}",
+                options=names,
+                next="put(kind='todo', mode='plan', args={'template': "
+                + repr(names[0])
+                + ", ...})",
+            )
+        kwargs = {k: template_args[k] for k in tpl.required if k in template_args}
+        missing = [k for k in tpl.required if template_args.get(k) in (None, "")]
+        if missing:
+            raise BadInput(
+                f"plan template {tpl.name!r} needs args {missing}",
+                next=(
+                    "put(kind='todo', mode='plan', args={'template': "
+                    f"{tpl.name!r}, "
+                    + ", ".join(f"{k!r}: ..." for k in tpl.required)
+                    + "})"
+                ),
+            )
+        mint = tpl.mint(self.store, parent_id, **kwargs)
+        tree = views.render_tree(self.store, mint.root_id)
+        return Response(
+            body=(
+                f"minted plan {tpl.name!r}: root id={mint.root_id}, "
+                f"{len(mint.ids)} nodes, all tagged plan:{mint.root_id}, "
+                "no auto-dispatch (meta.llm_tier unset)\n" + tree.body
+            )
+        )
 
     def _create(
         self,
