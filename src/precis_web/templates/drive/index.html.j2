@@ -680,6 +680,29 @@
     {% endif %}
 
     {% if q %}
+      {% if unmatched_doi %}
+      {# gr540807: a DOI-shaped query that resolves to nothing names a
+         paper the corpus has never seen — offer the acquire door (POST
+         /drive/acquire dispatches the same ``put(kind='paper',
+         identifier='doi:…')`` /papers/{id}/fetch-ref uses) instead of a
+         bare "no matches". #}
+      <div class="mb-3 rounded-md border border-info-strong bg-info-subtle px-4 py-2 text-sm text-info-deep">
+        <p>
+          New paper — <span class="font-medium">{{ unmatched_doi }}</span> is not ingested.
+          <a href="https://doi.org/{{ unmatched_doi }}" target="_blank" rel="noopener" class="underline">check on doi.org ↗</a>
+        </p>
+        <form method="post" action="/drive/acquire" class="mt-1 flex items-center gap-2">
+          <input type="hidden" name="doi" value="{{ unmatched_doi }}">
+          <input type="hidden" name="back" value="{{ return_to }}">
+          <button type="submit"
+                  class="rounded-md bg-info-solid px-3 py-1 text-xs font-medium text-on-solid hover:bg-info-solid-strong"
+                  title="Mint a stub for this DOI and pin it to the front of the fetch queue.">
+            Acquire
+          </button>
+          <span class="text-xs">mints a stub and queues it for fetch — unrecognised DOIs are refused</span>
+        </form>
+      </div>
+      {% endif %}
       {% if not rows %}
       <p class="text-sm text-fg-subtle">
         No matches for <span class="font-medium text-fg-secondary">{{ q }}</span>{% if since or until %} in that date window{% endif %}.

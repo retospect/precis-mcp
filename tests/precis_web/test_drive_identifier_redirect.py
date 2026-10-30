@@ -224,13 +224,62 @@ def test_ambiguous_doi_prefix_is_not_a_redirect(
     # The matching papers are listed first, though no chunk matches the DOI.
     assert "paper twin-a2023" in resp.text
     assert "paper twin-b2023" in resp.text
+    # A prefix with live candidates is not a "new paper" — no acquire panel.
+    assert 'action="/drive/acquire"' not in resp.text
 
 
-def test_unknown_doi_falls_through_to_search(
-    store: Any, drive_client: TestClient
-) -> None:
+def test_unknown_doi_shows_acquire_panel(store: Any, drive_client: TestClient) -> None:
+    """gr540807: a DOI matching nothing falls through to the search page
+    but names a paper the corpus has never seen — the page offers the
+    acquire door (POST /drive/acquire) instead of a bare "not found"."""
     _paper(store, "known2023", doi="10.1021/acscatal.3c01963")
     resp = drive_client.get(
         "/drive", params={"q": "10.9999/does.not.exist"}, follow_redirects=False
     )
     _assert_search_page(resp)
+    assert "not ingested" in resp.text
+    assert 'action="/drive/acquire"' in resp.text
+    assert 'name="doi" value="10.9999/does.not.exist"' in resp.text
+
+
+def test_unknown_doi_org_url_shows_acquire_panel(
+    store: Any, drive_client: TestClient
+) -> None:
+    """The same panel for the pasted ``https://doi.org/<doi>`` form —
+    the resolver unwraps it, so the form posts the bare DOI."""
+    resp = drive_client.get(
+        "/drive",
+        params={"q": "https://doi.org/10.9999/does.not.exist"},
+        follow_redirects=False,
+    )
+    _assert_search_page(resp)
+    assert 'action="/drive/acquire"' in resp.text
+    assert 'name="doi" value="10.9999/does.not.exist"' in resp.text
+
+
+def test_acquire_route_mints_stub(
+    store: Any, drive_client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The panel's form dispatches the existing stub-mint door
+    (``put(kind='paper', identifier='doi:…')``). The S2/registry
+    lookups are patched out — same offline stub test_acquire.py uses."""
+    from precis.handlers import paper as paper_mod
+
+    monkeypatch.setattr(
+        paper_mod, "_lookup_acquire_metadata", lambda *_: {"_resolved": True}
+    )
+    monkeypatch.setattr(paper_mod, "_lookup_doi_registry", lambda *_: None)
+    resp = drive_client.post(
+        "/drive/acquire",
+        data={"doi": "10.9999/brand.new", "back": "/drive?q=10.9999/brand.new"},
+        follow_redirects=False,
+    )
+    assert resp.status_code == 303
+    assert resp.headers["location"] == "/drive?q=10.9999/brand.new"
+    ref_id = store.find_ref_by_identifier("doi", "10.9999/brand.new", kind="paper")
+    assert ref_id is not None
+    # …and the DOI now resolves: the same search 302s to the minted stub.
+    resp = drive_client.get(
+        "/drive", params={"q": "10.9999/brand.new"}, follow_redirects=False
+    )
+    _assert_redirect(resp, "paper", ref_id)

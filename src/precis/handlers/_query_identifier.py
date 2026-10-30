@@ -21,7 +21,9 @@ this lookup does not need):
   paper — exact match first, else a *unique* live prefix match.
 
 An ambiguous DOI prefix resolves to nothing but reports its candidate
-ref ids, so a caller can fall through to the ordinary search.
+ref ids, so a caller can fall through to the ordinary search. A
+DOI-shaped query that matches nothing at all reports ``unmatched_doi``
+so the caller can offer to acquire it (gr540807).
 """
 
 from __future__ import annotations
@@ -64,6 +66,10 @@ class QueryIdentifierMatch:
     #: single-ref page — today only a chunk handle, which the
     #: ``/c/<handle>`` resolver lands in the kind's reader at that chunk.
     redirect: str | None = None
+    #: A DOI-shaped query (bare or unwrapped from a pasted doi.org URL)
+    #: that matched no ref at all — a paper the corpus has never seen.
+    #: The caller can offer the stub-mint door for it (gr540807).
+    unmatched_doi: str | None = None
 
 
 def resolve_query_identifier(store: Store, q: str) -> QueryIdentifierMatch:
@@ -113,7 +119,8 @@ def resolve_query_identifier(store: Store, q: str) -> QueryIdentifierMatch:
             if key_ref is not None:
                 return QueryIdentifierMatch(ref=key_ref)
 
-    if _DOI_RE.match(text) is None:
+    m = _DOI_RE.match(text)
+    if m is None:
         return QueryIdentifierMatch()
     slug = store.find_paper_slug_by_doi(text)
     if slug is not None:
@@ -127,4 +134,8 @@ def resolve_query_identifier(store: Store, q: str) -> QueryIdentifierMatch:
     if len(ids) == 1:
         only = store.fetch_refs_by_ids(ids).get(ids[0])
         return QueryIdentifierMatch(ref=only)
+    if not ids:
+        # group(1) drops the tolerated ``~`` tail so the panel offers
+        # the bare DOI.
+        return QueryIdentifierMatch(unmatched_doi=m.group(1))
     return QueryIdentifierMatch(ambiguous_ref_ids=ids)

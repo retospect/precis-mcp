@@ -836,8 +836,11 @@ async def index(
     # A query that *is* an identifier (a lone record or chunk handle, or a
     # DOI whole or as a unique prefix) goes straight to that item's page
     # instead of the chunk search. Ambiguous prefixes / no match fall
-    # through. Other facets (k/state/folder/…) never affect resolution.
+    # through; a DOI-shaped query matching nothing at all reports
+    # ``unmatched_doi`` so the page can offer to acquire it (gr540807).
+    # Other facets (k/state/folder/…) never affect resolution.
     ambiguous_ids: list[int] = []
+    unmatched_doi: str | None = None
     if q:
         # A pasted URL/site path that this UI actually serves goes
         # straight there (gr484947) — e.g. a ``/c/<handle>`` or
@@ -848,6 +851,7 @@ async def index(
             return RedirectResponse(url=target, status_code=302)
         hit = await asyncio.to_thread(resolve_query_identifier, store, q)
         ambiguous_ids = hit.ambiguous_ref_ids
+        unmatched_doi = hit.unmatched_doi
         # A chunk handle (``dc4417588``, ``pc10`` …) has no ref page of
         # its own — ``/c/<handle>`` lands it in the kind's reader at that
         # chunk (gr517806).
@@ -1398,6 +1402,7 @@ async def index(
             "current": current,
             "crumbs": crumbs,
             "notice": notice,
+            "unmatched_doi": unmatched_doi,
             "rows": rows,
             "recent": recent,
             "result_total": result_total,
@@ -1660,6 +1665,35 @@ async def tag_item(
         {"kind": kind, "id": handler_id, "add": [value]},
         redirect=redirect,
         error_title="Tag",
+    )
+
+
+@router.post("/acquire")
+async def acquire_paper(
+    request: Request,
+    doi: str = Form(""),
+    back: str = Form("/drive"),
+) -> Response:
+    """The unknown-DOI panel's "Acquire" button (gr540807): mint a
+    fetchable stub for a pasted DOI the corpus doesn't hold.
+
+    Dispatches ``put(kind='paper', identifier='doi:…')`` — the same door
+    as ``/papers/{ref_id}/fetch-ref`` and MCP ``put(kind='paper',
+    doi=…)`` — so ``PaperHandler.acquire``'s S2/registry verification
+    (kept on: an operator-typed DOI wants the hallucination guard) and
+    ``upsert_stub_paper`` idempotency stay single-sourced. A blank or
+    malformed value reaches the handler's canonical BadInput rather
+    than a redirect. On success the ``back`` bounce lands on the same
+    ``/drive?q=<doi>`` search, whose identifier resolution now forwards
+    to the minted stub's page.
+    """
+    redirect = _safe_local_redirect(back, "/drive")
+    return await redirect_or_error(
+        request,
+        "put",
+        {"kind": "paper", "identifier": f"doi:{doi.strip()}"},
+        redirect=redirect,
+        error_title="Acquire paper",
     )
 
 
