@@ -287,6 +287,48 @@ class TestEdit:
                 },
             )
 
+    # ── meta.fidelity_* holds (gr537835) ───────────────────────────
+
+    def test_edit_meta_fidelity_hold_stored_and_logged(self, store: Any) -> None:
+        h = _handler(store)
+        qid = _created_id(h.put(text="A NO→NH₃ catalyst"))
+        resp = h.edit(
+            id=qid, meta={"fidelity_restale_cap": 0, "fidelity_promote_neb": 3}
+        )
+        assert "patched meta" in resp.body
+        meta = store.get_ref(kind="quest", id=qid).meta
+        assert meta["fidelity_restale_cap"] == 0
+        assert meta["fidelity_promote_neb"] == 3
+        events = [e for e in store.events_for(qid) if e.event == "meta_patched"]
+        assert events[0].payload["new"]["fidelity_restale_cap"] == 0
+
+    def test_edit_meta_fidelity_bad_values_refused(self, store: Any) -> None:
+        import pytest
+
+        from precis.errors import BadInput
+
+        h = _handler(store)
+        qid = _created_id(h.put(text="A NO→NH₃ catalyst"))
+        for key in (
+            "fidelity_restale_cap",
+            "fidelity_restale_band",
+            "fidelity_promote_neb",
+            "fidelity_promote_verify",
+        ):
+            for bad in (-1, "x", True, 1.5):
+                with pytest.raises(BadInput):
+                    h.edit(id=qid, meta={key: bad})
+        assert "fidelity_restale_cap" not in store.get_ref(kind="quest", id=qid).meta
+
+    def test_get_view_meta_lists_patchable_keys(self, store: Any) -> None:
+        h = _handler(store)
+        qid = _created_id(h.put(text="A NO→NH₃ catalyst"))
+        assert "(none set)" in h.get(id=qid, view="meta").body
+        h.edit(id=qid, meta={"fidelity_restale_cap": 0, "compute_lane": "off"})
+        body = h.get(id=qid, view="meta").body
+        assert "fidelity_restale_cap: 0" in body
+        assert 'compute_lane: "off"' in body
+
     # ── meta.reaction_config (gr489168) ────────────────────────────
 
     def test_edit_meta_reaction_config_shallow_merges_and_logs(

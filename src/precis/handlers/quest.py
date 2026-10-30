@@ -80,6 +80,15 @@ from precis.utils.next_block import render_next_section
 #: alias keeps the friendlier quest-specific error in ``tag()`` below.
 _LIFECYCLE: frozenset[str] = _KIND_STATUS_VALUES["quest"]
 
+#: The fidelity-ladder hold keys (ints >= 0), validated by
+#: :func:`_check_fidelity_meta`.
+_FIDELITY_INT_KEYS: tuple[str, ...] = (
+    "fidelity_restale_cap",
+    "fidelity_restale_band",
+    "fidelity_promote_neb",
+    "fidelity_promote_verify",
+)
+
 #: ``edit(kind='quest', meta=...)``'s closed allowlist (quest-tick-incident-
 #: fix): ``compute_lane`` (the reason-only switch —
 #: :data:`precis.workers.job_types.quest_tick.COMPUTE_LANE_META_KEY`),
@@ -93,6 +102,10 @@ _LIFECYCLE: frozenset[str] = _KIND_STATUS_VALUES["quest"]
 #: :func:`_check_supply_meta`, ``bootstrap-roadmap-quest.md``),
 #: ``reaction_config`` (the autocatpath config the compute lane dispatches —
 #: shallow-merged, :func:`_check_reaction_config`, gr489168).
+#: ``fidelity_restale_cap`` / ``fidelity_restale_band`` /
+#: ``fidelity_promote_neb`` / ``fidelity_promote_verify`` (the ladder's
+#: human-set holds, read by ``quest.compute`` ``promote_tiers``; each a
+#: non-negative int, ``0`` = that pass off — gr537835).
 #: Mirrors ``todo.tag()``'s ``TAG_META_ALLOWED_KEYS`` promotion gate
 #: (``guards.check_meta_keys_promotable``) — a closed set, not a general meta
 #: bag; anything else still goes through ``put()``/create-time meta. Before
@@ -108,6 +121,7 @@ _META_ALLOWED_KEYS: frozenset[str] = frozenset(
         "supply",
         "operating_conditions",
         "reaction_config",
+        *_FIDELITY_INT_KEYS,
     }
 )
 
@@ -379,6 +393,20 @@ def _check_axis_map(
     return value
 
 
+def _check_fidelity_meta(meta: dict[str, Any]) -> None:
+    """Reject a ``fidelity_*`` hold key unless it is an int >= 0 (a bool is
+    not one). ``0`` switches that ladder pass off (gr537835)."""
+    for key in _FIDELITY_INT_KEYS:
+        if key not in meta:
+            continue
+        val = meta[key]
+        if isinstance(val, bool) or not isinstance(val, int) or val < 0:
+            raise BadInput(
+                f"meta.{key} must be an integer >= 0 (0 = pass off), got {val!r}",
+                next=f"edit(kind='quest', id=N, meta={{'{key}': 0}})",
+            )
+
+
 def _check_demand_meta(meta: dict[str, Any]) -> None:
     """Reject ``meta.demand`` unless every axis entry is ``{value, source,
     reason}`` with a non-empty ``source`` (``se:<slug>`` / ``td<id>`` /
@@ -495,6 +523,7 @@ _QUEST_CONCRETE_VIEWS: tuple[str, ...] = (
     "status",
     "rubric",
     "served",
+    "meta",
 )
 
 
@@ -981,6 +1010,7 @@ class QuestHandler(NumericRefHandler):
             _check_supply_meta(meta)
             _check_operating_conditions(meta)
             _check_reaction_config(meta)
+            _check_fidelity_meta(meta)
             patch = dict(meta)
             # ``reaction_config`` is itself a dict: merge the patch into the
             # stored config rather than clobbering its sibling keys — a
@@ -1094,6 +1124,9 @@ class QuestHandler(NumericRefHandler):
         if view == "status" and concrete:
             ref = self._resolve_live_ref(self._coerce_id(id))
             return Response(body=self._render_status(ref))
+        if view == "meta" and concrete:
+            ref = self._resolve_live_ref(self._coerce_id(id))
+            return Response(body=self._render_meta(ref))
         if view == "rubric" and concrete:
             ref = self._resolve_live_ref(self._coerce_id(id))
             return Response(body=self._render_rubric(ref))
@@ -1121,7 +1154,7 @@ class QuestHandler(NumericRefHandler):
                 next=[
                     "quest views: tree, gaps, dossier, frontier, leaderboard, "
                     "results, series, measures, logbook, pourbaix, status, "
-                    "rubric, served (quest-specific) · "
+                    "rubric, served, meta (quest-specific) · "
                     "fisheye ladder (kwd, summary, verbatim, fisheye, "
                     "fisheye+1hop, fisheye+2hop, optionally +recall) · "
                     "links, log, raw (generic)",
@@ -1144,6 +1177,25 @@ class QuestHandler(NumericRefHandler):
             lines.append(f"priority: {ref.prio}")
         if meta.get("horizon"):
             lines.append(f"horizon: {meta['horizon']}")
+        return "\n".join(lines)
+
+    def _render_meta(self, ref: Ref) -> str:
+        """``view='meta'`` — the patchable meta keys
+        (:data:`_META_ALLOWED_KEYS`) as compact JSON, one per line, each
+        value clipped so the body stays well inside the 4 KB cap (gr537834)."""
+        import json
+
+        meta = ref.meta or {}
+        lines = [f"# meta — quest {ref.id} (patchable keys)"]
+        for key in sorted(_META_ALLOWED_KEYS):
+            if key not in meta:
+                continue
+            val = json.dumps(meta[key], separators=(",", ":"), default=str)
+            if len(val) > 300:
+                val = val[:300] + f"... ({len(val)} chars)"
+            lines.append(f"{key}: {val}")
+        if len(lines) == 1:
+            lines.append("(none set)")
         return "\n".join(lines)
 
     def _render_rubric(self, ref: Ref) -> str:
