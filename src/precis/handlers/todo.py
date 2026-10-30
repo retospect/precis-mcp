@@ -85,6 +85,7 @@ from precis.handlers._prio_tag import PRIO_TAG_TO_INT, split_prio, validate_prio
 from precis.handlers._request_state import RequestState
 from precis.handlers._tag_redirect import redirect_long_tag_values
 from precis.handlers.plaintext import _require_find_and_text
+from precis.plans import nodes as plan_nodes
 from precis.protocol import ArgsSpec, KindSpec
 from precis.response import Response
 from precis.store import Ref, Tag
@@ -132,6 +133,32 @@ def _title_holds_details(title: str) -> bool:
         return True
     return any(
         ch in ".!?" and title[i + 1].isspace() for i, ch in enumerate(title[:-1])
+    )
+
+
+def _check_plan_meta(meta: dict[str, Any] | None, *, only: str | None = None) -> None:
+    """Refuse a malformed plan node key (``meta.op`` / ``gate`` / ``loop`` /
+    ``generate`` / ``auto_close``, td542092) with a ``next=`` naming the
+    key and the accepted shape. ``only`` keeps one problem family (the
+    ``'gate/loop/generate'`` at-most-one rule) for the edit path's merged
+    re-check, which must not re-judge keys it is not changing."""
+    problems = [
+        (key, msg)
+        for key, msg in plan_nodes.plan_problems(meta)
+        if only is None or key == only
+    ]
+    if not problems:
+        return
+    keys = list(dict.fromkeys(k for k, _ in problems))
+    shapes = [
+        f"meta.{k}: {plan_nodes.PLAN_SHAPES[k]}"
+        for key in keys
+        for k in key.split("/")
+        if k in plan_nodes.PLAN_SHAPES
+    ]
+    raise BadInput(
+        "; ".join(msg for _, msg in problems),
+        next="accepted shapes — " + " | ".join(dict.fromkeys(shapes)),
     )
 
 
@@ -757,6 +784,7 @@ class TodoHandler(NumericRefHandler):
         guards.check_llm_select_meta(meta)
         guards.check_budget_usd_meta(meta)
         guards.check_rung_meta(meta)
+        _check_plan_meta(meta)
         ask_blocks = guards.check_ask_meta(meta)
         if meta is not None and "ask" in meta and not guards.has_ask_user_tag(tags):
             raise BadInput(
@@ -1087,8 +1115,12 @@ class TodoHandler(NumericRefHandler):
         None}`` deletes the key. A recurring's params follow the
         schedule's owner-only gradient (:func:`check_recurring_params_edit`
         ). The write lands as an ``agent/meta_patched`` ref_events row
-        (view='log'). Every other meta mutation still goes through
-        ``tag(meta=...)``'s allowlisted promotion.
+        (view='log'). ``meta={'op'|'gate'|'loop'|'generate'|'auto_close':
+        ...}`` sets a plan node key (shape-checked by
+        :mod:`precis.plans.nodes`; ``None`` clears it; the merged node may
+        carry at most one of gate / loop / generate). Every other meta
+        mutation still goes through ``tag(meta=...)``'s allowlisted
+        promotion.
 
         ``mode='find-replace'`` / ``'insert'`` (gr478556) edit the details
         body in place: ``find=`` locates literal text (unique unless
@@ -1203,14 +1235,23 @@ class TodoHandler(NumericRefHandler):
         clear_params = False
         ask_value: dict[str, Any] | None = None
         ask_blocks: int | None = None
+        plan_set: dict[str, Any] = {}
+        plan_clear: list[str] = []
         if meta is not None:
-            extra_keys = set(meta) - {"llm_tier", "params", "ask"}
+            extra_keys = set(meta) - {
+                "llm_tier",
+                "params",
+                "ask",
+                *plan_nodes.PLAN_KEYS,
+            }
             if extra_keys:
                 raise BadInput(
                     f"edit(kind='todo', meta=...) only accepts keys 'llm_tier' "
                     "(None parks the leaf's auto-run tier), 'params' (a "
-                    "recurring / executor todo's job config) and 'ask' (a "
-                    f"question for the owner), not {sorted(extra_keys)}",
+                    "recurring / executor todo's job config), 'ask' (a "
+                    "question for the owner) and the plan node keys "
+                    f"{list(plan_nodes.PLAN_KEYS)} (None clears one), "
+                    f"not {sorted(extra_keys)}",
                     next=(
                         f"other meta mutations: tag(kind='todo', id={id}, meta={{...}})"
                     ),
@@ -1242,6 +1283,15 @@ class TodoHandler(NumericRefHandler):
             if "ask" in meta:
                 ask_blocks = guards.check_ask_meta(meta)
                 ask_value = dict(meta["ask"])
+            plan_set = {
+                k: meta[k]
+                for k in plan_nodes.PLAN_KEYS
+                if k in meta and meta[k] is not None
+            }
+            plan_clear = [
+                k for k in plan_nodes.PLAN_KEYS if k in meta and meta[k] is None
+            ]
+            _check_plan_meta(plan_set)
         has_text = text is not None and text.strip()
         has_body = body is not None and body.strip()
         if (
@@ -1252,11 +1302,14 @@ class TodoHandler(NumericRefHandler):
             and params_value is None
             and not clear_params
             and ask_value is None
+            and not plan_set
+            and not plan_clear
         ):
             raise BadInput(
                 "edit(kind='todo', mode='replace') requires text= and/or "
                 "body= (or meta={'llm_tier': None} to park the leaf, or "
-                "meta={'params': {...}} to retune a recurring / executor todo)",
+                "meta={'params': {...}} to retune a recurring / executor todo, "
+                "or a plan node key in meta=)",
                 next="edit(kind='todo', id=N, mode='replace', text='new text')",
             )
         ref_id = self._coerce_id(id)
@@ -1275,6 +1328,15 @@ class TodoHandler(NumericRefHandler):
             guards.check_recurring_params_edit(True, ref.meta)
         if ask_blocks is not None:
             guards.check_ask_blocks_target(self.store, ask_blocks, self_id=ref.id)
+        if plan_set:
+            # At most one of gate / loop / generate -- judged on the node
+            # as it will be, so adding a loop to a gate node is refused.
+            merged = {
+                k: v
+                for k, v in {**(ref.meta or {}), **plan_set}.items()
+                if k not in plan_clear
+            }
+            _check_plan_meta(merged, only="gate/loop/generate")
         if dry_run:
             preview: list[str] = []
             if has_text:
@@ -1307,6 +1369,8 @@ class TodoHandler(NumericRefHandler):
                 preview.append("meta.params would be cleared")
             if ask_value is not None:
                 preview.append("meta.ask would be replaced")
+            preview.extend(f"meta.{k} would be replaced" for k in plan_set)
+            preview.extend(f"meta.{k} would be cleared" for k in plan_clear)
             return Response(
                 body=(
                     f"dry-run (no write) — would replace {' + '.join(preview)} "
@@ -1436,6 +1500,29 @@ class TodoHandler(NumericRefHandler):
                     },
                     conn=conn,
                 )
+            if plan_set or plan_clear:
+                old_plan = {
+                    k: (ref.meta or {}).get(k) for k in (*plan_set, *plan_clear)
+                }
+                if plan_set:
+                    # Whole-key replace (jsonb ||), like params and ask.
+                    self.store.stamp_ref_meta(ref_id, plan_set, conn=conn)
+                for k in plan_clear:
+                    conn.execute(
+                        "UPDATE refs SET meta = meta - %s::text, "
+                        "updated_at = now() WHERE ref_id = %s",
+                        (k, ref_id),
+                    )
+                self.store.append_event(
+                    ref_id,
+                    source="agent",
+                    event="meta_patched",
+                    payload={
+                        "old": old_plan,
+                        "new": {**plan_set, **dict.fromkeys(plan_clear)},
+                    },
+                    conn=conn,
+                )
             if prose_changed:
                 facts_deferred = self._sync_mention_links(
                     ref.id,
@@ -1465,6 +1552,8 @@ class TodoHandler(NumericRefHandler):
             parts.append("meta.params (replaced)")
         if clear_params:
             parts.append("meta.params (cleared)")
+        parts.extend(f"meta.{k} (replaced)" for k in plan_set)
+        parts.extend(f"meta.{k} (cleared)" for k in plan_clear)
         if ask_value is not None:
             parts.append("meta.ask (replaced)")
             if ask_blocks is not None:
