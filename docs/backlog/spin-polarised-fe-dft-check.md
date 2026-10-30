@@ -102,14 +102,17 @@ validate the Fe results in general, and the paper says so.
 
 ## Open questions / decisions log
 
-- **The compared quantity (needs the coordinator/Reto's eye).** The landed
-  slice-8 text voids the Fe columns when the spin-polarised `gamma0` differs
-  from the `mace:medium` `gamma0` by more than `sigma_gamma`. That compares
+- **The compared quantity (decided, coordinator 2026-10-30).** The bar is
+  `Δγ0_spin` (spin-polarised minus spin-paired at fixed geometry and
+  functional) against the anchor's `sigma_gamma`; slice 8's text now says
+  the same. A spin-polarised-DFT-vs-`mace:medium` `gamma0` gap would compare
   two functionals as well as magnetism (MACE misprices H* on Pd by about
-  0.25 eV, open question 2), so it would likely fail for a reason that is not
-  spin. This item proposes `Δγ0_spin` (spin-polarised minus spin-paired at
-  fixed geometry and functional) as the bar instead. The slice-8 text changes
-  only after that is agreed.
+  0.25 eV, open question 2), so it is reported beside the verdict as
+  information only and voids nothing. `Δγ0_spin` itself needs no gas
+  references for a non-magnetic adsorbate (they cancel); the informational
+  gap does, under the same functional, and no code in the repo mints
+  H2O/H2/O2 references today, so that row is reported only if the references
+  are cheap to add, and its absence does not block acceptance.
 - **Which anchor.** Known only after slice-8 stage 1 has scanned A; this item
   can build the machinery first and wait on the choice for the run.
 - **Where it runs.** `PRECIS_DFT_NODE` has no default; a GPU lane with

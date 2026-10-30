@@ -186,8 +186,9 @@ the dated detail is in `git log` and the owning items):**
    U_L / U_opt alone.
 3. **backlog/surface-pourbaix-staircase-optimizer.md** (Reto, 2026-10-02
    file only; lifted 2026-10-07, build plan approved 2026-10-13,
-   slices 1–7 built; slice 8, Fe-doped Pd end to end, has a contract that
-   passed design review on 2026-10-30 and awaits a second vet) extends the Pourbaix work
+   slices 1–7 built; slice 8, Fe-doped Pd end to end, has a contract (v4) that
+   passed design review on 2026-10-30 and the second vet's fixes, split into
+   Part A, library code buildable now, and Part B, the prod run) extends the Pourbaix work
    (Do-next 4, Parts A and B) into a surface validity map, a linked
    reaction staircase, and a Shapley-attribution field that tells the
    slab search where and why a candidate loses its window.
