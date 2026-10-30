@@ -4485,6 +4485,9 @@ class RefsMixin:
         q_in_chunks: bool = False,
         q_card_kinds: tuple[str, ...] | None = None,
         link_ref_id: int | None = None,
+        linked_from_kind: str | None = None,
+        linked_from_tags: list[str] | None = None,
+        lacks_kind: str | None = None,
         include_ref_ids: list[int] | None = None,
         exclude_ref_ids: list[int] | None = None,
         facets: list[tuple[str, str]] | None = None,
@@ -4549,6 +4552,9 @@ class RefsMixin:
             q_in_chunks=q_in_chunks,
             q_card_kinds=q_card_kinds,
             link_ref_id=link_ref_id,
+            linked_from_kind=linked_from_kind,
+            linked_from_tags=linked_from_tags,
+            lacks_kind=lacks_kind,
             include_ref_ids=include_ref_ids,
             exclude_ref_ids=exclude_ref_ids,
             since=since,
@@ -4644,6 +4650,9 @@ class RefsMixin:
         q_in_chunks: bool = False,
         q_card_kinds: tuple[str, ...] | None = None,
         link_ref_id: int | None = None,
+        linked_from_kind: str | None = None,
+        linked_from_tags: list[str] | None = None,
+        lacks_kind: str | None = None,
         include_ref_ids: list[int] | None = None,
         exclude_ref_ids: list[int] | None = None,
         since: Any = None,
@@ -4668,6 +4677,9 @@ class RefsMixin:
             q_in_chunks=q_in_chunks,
             q_card_kinds=q_card_kinds,
             link_ref_id=link_ref_id,
+            linked_from_kind=linked_from_kind,
+            linked_from_tags=linked_from_tags,
+            lacks_kind=lacks_kind,
             include_ref_ids=include_ref_ids,
             exclude_ref_ids=exclude_ref_ids,
             since=since,
@@ -4703,6 +4715,9 @@ def filtered_ref_clauses(
     q_in_chunks: bool = False,
     q_card_kinds: tuple[str, ...] | None = None,
     link_ref_id: int | None = None,
+    linked_from_kind: str | None = None,
+    linked_from_tags: list[str] | None = None,
+    lacks_kind: str | None = None,
     include_ref_ids: list[int] | None = None,
     exclude_ref_ids: list[int] | None = None,
     since: Any = None,
@@ -4720,6 +4735,14 @@ def filtered_ref_clauses(
 
     ``meta_eq`` is a scalar ``meta ->> key = value`` equality filter
     (gr502653: job's ``meta.job_type``).
+
+    The kind-level link filters (gr538073): ``linked_from_kind`` keeps
+    refs with an inbound edge — any relation — from a live ref of that
+    kind, and ``linked_from_tags`` narrows those *source* refs (never
+    ``r``). ``lacks_kind`` keeps refs with no live edge to or from a ref
+    of that kind — written as two single-index ``NOT EXISTS`` probes
+    (``links_src_ref_idx`` / ``links_dst_ref_idx``) so the planner never
+    folds the OR into a scan of ``links``.
     """
     clauses = ["r.retired_at IS NULL", "r.kind = %s"]
     params: list[Any] = [kind]
@@ -4758,6 +4781,32 @@ def filtered_ref_clauses(
             "OR (l.dst_ref_id = %s AND l.src_ref_id = r.ref_id))"
         )
         params.extend([link_ref_id, link_ref_id])
+    if linked_from_kind is not None:
+        params.append(linked_from_kind)
+        src_clauses = ["s.retired_at IS NULL", "s.kind = %s"]
+        src_tag_frag, src_tag_params = build_tag_filter(linked_from_tags, ref_alias="s")
+        if src_tag_frag:
+            src_clauses.append(src_tag_frag)
+            params.extend(src_tag_params)
+        clauses.append(
+            "EXISTS (SELECT 1 FROM links l "
+            "JOIN refs s ON s.ref_id = l.src_ref_id "
+            "WHERE l.dst_ref_id = r.ref_id AND " + " AND ".join(src_clauses) + ")"
+        )
+    if lacks_kind is not None:
+        clauses.append(
+            "NOT EXISTS (SELECT 1 FROM links l "
+            "JOIN refs s ON s.ref_id = l.src_ref_id "
+            "AND s.retired_at IS NULL AND s.kind = %s "
+            "WHERE l.dst_ref_id = r.ref_id)"
+        )
+        clauses.append(
+            "NOT EXISTS (SELECT 1 FROM links l "
+            "JOIN refs d ON d.ref_id = l.dst_ref_id "
+            "AND d.retired_at IS NULL AND d.kind = %s "
+            "WHERE l.src_ref_id = r.ref_id)"
+        )
+        params.extend([lacks_kind, lacks_kind])
     if include_ref_ids is not None:
         clauses.append("r.ref_id = ANY(%s)")
         params.append(list(include_ref_ids))

@@ -846,6 +846,8 @@ class MemoryHandler(NumericRefHandler):
                     f"edit(kind='memory', id={n}, mode='replace', text='<new body>') / "
                     f"edit(kind='memory', id={n}, mode='find-replace', "
                     "find='<old>', text='<new>') / "
+                    f"edit(kind='memory', id={n}, args={{'title': '<title>', "
+                    "'hook': '<one-line index>'}}) to fix title/meta.hook / "
                     f"put(kind='memory', text='...', link='memory:{n}', rel='part-of')"
                 ),
             )
@@ -1118,6 +1120,7 @@ class MemoryHandler(NumericRefHandler):
         rule: str | None = None,
         warrant: str | None = None,
         meta: dict[str, Any] | None = None,
+        hook: str | None = None,
         find: str | None = None,
         before: str = "",
         after: str = "",
@@ -1168,20 +1171,30 @@ class MemoryHandler(NumericRefHandler):
         auditable via ``get(kind='memory', id=N, view='log')``) and
         delete+reinserts the ``memory_body`` chunk so semantic search +
         keywords re-derive from the new prose (an in-place UPDATE would leave
-        a stale embedding).
+        a stale embedding). A body write also re-derives ``refs.title``
+        from the new first line when the stored title still reads as the
+        old body's derivation — a hand-set title is kept, and a same-call
+        ``title=`` always wins (gr538501); the ack says
+        ``title re-derived: '…'`` when it fires.
 
         ``rule=`` / ``warrant=`` patch a ``kind:inference`` memory's
         reasoning-step label / free-text justification without requiring a
         body rewrite — pass either (or both) alone to refine the warrant as
         understanding sharpens, no ``text=`` required. ``meta={'hook': '...'}``
         sets the one-line index text (``refs.meta.hook``), likewise alone or
-        with a body edit. At least one of ``text=``, ``rule=``, ``warrant=``,
-        ``meta=`` must be given.
+        with a body edit; ``args={'hook': '...'}`` is the flat spelling of
+        the same write (gr538472). At least one of ``text=``, ``title=``,
+        ``rule=``, ``warrant=``, ``meta=``, ``hook=`` must be given.
 
         The MCP ``edit`` verb defaults ``mode`` to ``'find-replace'``, so an
         omitted ``mode=`` arrives as that. With ``find=`` it is an anchored
         edit; with neither ``find=`` nor ``text=`` it is the meta / rule /
-        warrant patch; ``text=`` alone is refused — it would otherwise
+        warrant patch — a metadata-only call (``title=`` / ``hook=`` /
+        ``meta=`` / ``rule=`` / ``warrant=``, no ``find=``/``text=``)
+        patches under either no-anchor mode (``'replace'`` or the MCP
+        default ``'find-replace'``; gr538472), while the body modes
+        ``'insert'`` / ``'append'`` / ``'delete'`` still demand their
+        anchors. ``text=`` alone is refused — it would otherwise
         silently overwrite the whole body — and points at ``mode='replace'``.
 
         ``reason=`` is recorded first in the body edit's ``ref_events`` row, so
@@ -1204,6 +1217,7 @@ class MemoryHandler(NumericRefHandler):
                 rule=rule,
                 warrant=warrant,
                 meta=meta,
+                hook=hook,
                 find=find,
                 before=before,
                 after=after,
@@ -1244,6 +1258,7 @@ class MemoryHandler(NumericRefHandler):
             mode, text = "find-replace", ""
         text, title = mask_secrets(text), mask_secrets(title)
         rule, warrant = mask_secrets(rule), mask_secrets(warrant)
+        hook = mask_secrets(hook)
         reason = mask_secrets(reason)
         has_text = text is not None and text.strip()
         rule_clean = rule.strip() if isinstance(rule, str) and rule.strip() else None
@@ -1253,6 +1268,13 @@ class MemoryHandler(NumericRefHandler):
         meta_clean = _validate_meta(meta) if meta is not None else {}
         if "hook" in meta_clean:
             meta_clean["hook"] = mask_secrets(meta_clean["hook"])
+        if hook is not None:
+            if "hook" in meta_clean:
+                raise BadInput(
+                    "the hook was passed twice — hook= and meta={'hook': …}",
+                    next="edit(kind='memory', id=N, args={'hook': 'one-line index text'})",
+                )
+            meta_clean["hook"] = _validate_meta({"hook": hook})["hook"]
         new_title = title.strip() if isinstance(title, str) and title.strip() else None
         dry_mode = normalize_dry_run(dry_run)
         if ops is not None:
@@ -1347,15 +1369,16 @@ class MemoryHandler(NumericRefHandler):
             and not meta_clean
         ):
             raise BadInput(
-                "edit(kind='memory') requires text=, title=, rule=, warrant=, or meta=",
+                "edit(kind='memory') requires text=, title=, hook=, rule=, "
+                "warrant=, or meta=",
                 next=(
                     "edit(kind='memory', id=N, mode='replace', text='new body') "
                     "or edit(kind='memory', id=N, mode='find-replace', "
                     "find='old', text='new') "
+                    "or edit(kind='memory', id=N, args={'title': 'new title', "
+                    "'hook': 'one-line index text'}) "
                     "or edit(kind='memory', id=N, mode='replace', "
-                    "args={'warrant': 'updated justification'}) "
-                    "or edit(kind='memory', id=N, mode='replace', "
-                    "args={'meta': {'hook': 'one-line index text'}})"
+                    "args={'warrant': 'updated justification'})"
                 ),
             )
         ref_id = self._coerce_id(id)
@@ -1393,6 +1416,7 @@ class MemoryHandler(NumericRefHandler):
         assert text is not None
         misses = self._attribution_misses(text)
         deferred: list[int] = []
+        derived_title: list[str] = []
         old_body = self._write_body(
             ref.id,
             text,
@@ -1401,6 +1425,7 @@ class MemoryHandler(NumericRefHandler):
             misses=misses,
             reason=reason,
             deferred_out=deferred,
+            derived_title_out=derived_title,
         )
         nudge = self._first_line_nudge(new_title) if new_title is not None else None
         old_words = len((old_body or "").split())
@@ -1411,6 +1436,8 @@ class MemoryHandler(NumericRefHandler):
         )
         if new_title is not None:
             body += f" title now: {new_title!r}."
+        elif derived_title:
+            body += f" title re-derived: {derived_title[0]!r}."
         body += " view='log' for the full diff."
         if nudge:
             body += f"\n\nhint: {nudge}"
@@ -1502,6 +1529,7 @@ class MemoryHandler(NumericRefHandler):
         reason: str | None = None,
         op: str | None = None,
         deferred_out: list[int] | None = None,
+        derived_title_out: list[str] | None = None,
     ) -> str | None:
         """The one body-write path shared by every edit mode.
 
@@ -1515,6 +1543,15 @@ class MemoryHandler(NumericRefHandler):
         attribution gate's verdict on ``new_text`` (``None`` = not checked):
         it sets or clears ``AUDIT:ungrounded-number`` in the same
         transaction. Returns the old body.
+
+        Title derivation (gr538501): when no explicit ``new_title`` was
+        given and the stored title still reads as the old body's derived
+        title — ``title == _derive_title(old_body)``, i.e. it tracks the
+        first line — a body write re-derives it from the new prose the
+        same way ``put`` does, so a lead-line edit doesn't leave a stale
+        header. A hand-set title (one that never was the derivation) is
+        left alone; the re-derived value goes to ``derived_title_out``
+        for the caller's ack.
         """
 
         def _do() -> str | None:
@@ -1553,13 +1590,27 @@ class MemoryHandler(NumericRefHandler):
                             "anchored edit against the current body"
                         ),
                     )
+                applied_title = new_title
+                if (
+                    applied_title is None
+                    and old_body is not None
+                    and (row[0] or "") == _derive_title(old_body)
+                ):
+                    derived = _derive_title(new_text)
+                    if derived != (row[0] or ""):
+                        applied_title = derived
+                        if derived_title_out is not None:
+                            # ``retry_locked`` can re-invoke this closure —
+                            # assign, never append (same rule as
+                            # ``deferred_out``).
+                            derived_title_out[:] = [derived]
                 if meta_patch:
                     self.store.update_ref(ref_id, meta_patch=meta_patch, conn=conn)
-                if new_title is not None:
+                if applied_title is not None:
                     self.store.chunks.set_ref_title(
-                        ref_id, new_title, source="agent", conn=conn
+                        ref_id, applied_title, source="agent", conn=conn
                     )
-                if meta_patch or new_title is not None:
+                if meta_patch or applied_title is not None:
                     self.store.chunks.sync_header_card(ref_id, conn=conn)
                 # Re-sync auto-mention links to the rewritten body: drop the
                 # old auto links, add the current ones. Hand-added links
@@ -1727,6 +1778,7 @@ class MemoryHandler(NumericRefHandler):
             return Response(body="\n".join([*header, "", body]))
         misses = self._attribution_misses(new_body)
         deferred: list[int] = []
+        derived_title: list[str] = []
         self._write_body(
             ref.id,
             new_body,
@@ -1737,6 +1789,7 @@ class MemoryHandler(NumericRefHandler):
             reason=reason,
             op=op_kind if op_kind == "delete-span" else None,
             deferred_out=deferred,
+            derived_title_out=derived_title,
         )
         verb = (
             "edited"
@@ -1757,6 +1810,8 @@ class MemoryHandler(NumericRefHandler):
             nudge = self._first_line_nudge(new_title)
             if nudge:
                 ack += f"\n\nhint: {nudge}"
+        elif derived_title:
+            ack += f" title re-derived: {derived_title[0]!r}."
         lead = self._thread_lead_hint(ref.id, old_body, new_body)
         if lead:
             ack += f"\n\nhint: {lead}"
@@ -1841,6 +1896,7 @@ class MemoryHandler(NumericRefHandler):
             return Response(body="\n".join([*header, "", body]))
         misses = self._attribution_misses(new_body)
         deferred: list[int] = []
+        derived_title: list[str] = []
         self._write_body(
             ref.id,
             new_body,
@@ -1850,6 +1906,7 @@ class MemoryHandler(NumericRefHandler):
             misses=misses,
             reason=reason,
             deferred_out=deferred,
+            derived_title_out=derived_title,
         )
         ack = (
             f"appended to body of {self._sense()} id={ref.id} "
@@ -1858,6 +1915,8 @@ class MemoryHandler(NumericRefHandler):
         )
         if new_title is not None:
             ack += f" title now: {new_title!r}."
+        elif derived_title:
+            ack += f" title re-derived: {derived_title[0]!r}."
         lead = self._thread_lead_hint(ref.id, old_body, new_body)
         if lead:
             ack += f"\n\nhint: {lead}"
@@ -1958,6 +2017,7 @@ class MemoryHandler(NumericRefHandler):
             return Response(body="\n".join([*header, "", body]))
         misses = self._attribution_misses(new_body)
         deferred: list[int] = []
+        derived_title: list[str] = []
         self._write_retried(
             ref.id,
             "body edit",
@@ -1970,6 +2030,7 @@ class MemoryHandler(NumericRefHandler):
                 misses=misses,
                 reason=reason,
                 deferred_out=deferred,
+                derived_title_out=derived_title,
             ),
         )
         ack = (
@@ -1977,6 +2038,8 @@ class MemoryHandler(NumericRefHandler):
             f"({len(old_body.split())} → {len(new_body.split())} words, "
             f"{len(ops)} ops). view='log' for the full diff."
         )
+        if derived_title:
+            ack += f" title re-derived: {derived_title[0]!r}."
         lead = self._thread_lead_hint(ref.id, old_body, new_body)
         if lead:
             ack += f"\n\nhint: {lead}"

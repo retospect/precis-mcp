@@ -706,6 +706,92 @@ def test_edit_meta_only_sets_the_hook(handler: MemoryHandler, store: Store) -> N
     assert handler._body_text(ref) == "body stays"
 
 
+def test_edit_hook_kwarg_sets_meta_hook(handler: MemoryHandler, store: Store) -> None:
+    """gr538472: ``args={'hook': …}`` is the flat spelling of
+    ``meta={'hook': …}`` — a metadata patch, no body arg needed."""
+    mid = id_of(handler.put(text="body stays").body)
+    out = handler.edit(id=mid, hook="flat hook")
+    assert "meta: hook" in out.body
+    ref = store.get_ref(kind="memory", id=mid)
+    assert ref is not None
+    assert ref.meta["hook"] == "flat hook"
+    assert handler._body_text(ref) == "body stays"
+
+
+def test_edit_hook_kwarg_conflicts_with_meta_hook(handler: MemoryHandler) -> None:
+    mid = id_of(handler.put(text="x").body)
+    with pytest.raises(BadInput, match="passed twice"):
+        handler.edit(id=mid, hook="one", meta={"hook": "two"})
+
+
+@pytest.mark.parametrize("mode", ["replace", "find-replace", None])
+def test_edit_meta_only_patches_in_no_anchor_modes(
+    handler: MemoryHandler, store: Store, mode: str | None
+) -> None:
+    """gr538472: title/hook correct under either no-anchor mode when no
+    find=/text= is given — explicit body modes still demand anchors."""
+    mid = id_of(handler.put(text="body stays").body)
+    kw: dict[str, Any] = {} if mode is None else {"mode": mode}
+    out = handler.edit(id=mid, title="new title", hook="new hook", **kw)
+    assert "meta: hook" in out.body and "new title" in out.body
+    ref = store.get_ref(kind="memory", id=mid)
+    assert ref is not None
+    assert (ref.title, ref.meta["hook"]) == ("new title", "new hook")
+    assert handler._body_text(ref) == "body stays"
+
+
+@pytest.mark.parametrize("mode", ["insert", "append", "delete"])
+def test_edit_body_modes_still_demand_anchors_with_meta(
+    handler: MemoryHandler, store: Store, mode: str
+) -> None:
+    """An anchor-less ``insert``/``append``/``delete`` call is malformed,
+    not a metadata patch — the meta must not land."""
+    mid = _make(handler)
+    with pytest.raises(BadInput):
+        handler.edit(id=mid, mode=mode, title="new title", hook="new hook")
+    ref = store.get_ref(kind="memory", id=mid)
+    assert ref is not None
+    assert ref.title == "anchored" and "hook" not in ref.meta
+
+
+def test_put_on_existing_meta_refusal_names_the_meta_edit(
+    handler: MemoryHandler,
+) -> None:
+    """gr538472: ``put(id=N, meta=…)`` refuses, but the ``next=`` now
+    names the ``edit`` call that does fix title/hook."""
+    mid = id_of(handler.put(text="x").body)
+    with pytest.raises(BadInput, match="put creates new memories") as exc:
+        handler.put(id=mid, meta={"hook": "fix me"})
+    nxt = exc.value.next
+    assert isinstance(nxt, str)
+    assert f"edit(kind='memory', id={mid}, args=" in nxt
+    assert "'hook'" in nxt and "'title'" in nxt
+
+
+def test_runtime_edit_routes_hook_args_to_the_handler(
+    runtime_with_store: PrecisRuntime, store: Store
+) -> None:
+    """gr538472: ``args={'title': …, 'hook': …}`` flattens through the
+    verb layer and lands as a metadata patch."""
+    mid = id_of(
+        runtime_with_store.dispatch(
+            "put", {"kind": "memory", "text": "via the verb layer"}
+        )
+    )
+    out = runtime_with_store.dispatch(
+        "edit",
+        {
+            "kind": "memory",
+            "id": mid,
+            "__extras__": {"title": "verb title", "hook": "verb hook"},
+        },
+    )
+    assert "[error" not in out, out
+    ref = store.get_ref(kind="memory", id=mid)
+    assert ref is not None
+    assert (ref.title, ref.meta["hook"]) == ("verb title", "verb hook")
+
+
 def test_edit_meta_type_is_validated(handler: MemoryHandler, store: Store) -> None:
     mid = id_of(handler.put(text="body").body)
     handler.edit(id=mid, meta={"type": "reference"})
@@ -769,9 +855,13 @@ def test_bad_meta_key_names_the_allowed_keys(handler: MemoryHandler) -> None:
 
 def test_edit_with_nothing_to_change_names_meta(handler: MemoryHandler) -> None:
     mid = id_of(handler.put(text="x").body)
-    with pytest.raises(BadInput, match="text=, title=, rule=, warrant=, or meta="):
+    with pytest.raises(
+        BadInput, match="text=, title=, hook=, rule=, warrant=, or meta="
+    ):
         handler.edit(id=mid)
-    with pytest.raises(BadInput, match="text=, title=, rule=, warrant=, or meta="):
+    with pytest.raises(
+        BadInput, match="text=, title=, hook=, rule=, warrant=, or meta="
+    ):
         handler.edit(id=mid, meta={})
 
 
@@ -957,6 +1047,78 @@ def test_edit_yielding_empty_body_is_bad_input(
     with pytest.raises(BadInput, match="empty body"):
         handler.edit(id=mid, mode="find-replace", find="only this", text="")
     assert _body(handler, store, mid) == "only this"
+
+
+# ---------------------------------------------------------------------------
+# gr538501 — a body edit that moves the first line re-derives a derived title
+# ---------------------------------------------------------------------------
+
+
+def _derived(handler: MemoryHandler, text: str) -> int:
+    return id_of(handler.put(text=text).body)
+
+
+def test_find_replace_first_line_rederives_derived_title(
+    handler: MemoryHandler, store: Store
+) -> None:
+    mid = _derived(handler, "old lead\nkept tail")
+    out = handler.edit(id=mid, mode="find-replace", find="old lead", text="new lead")
+    assert "title re-derived: 'new lead'" in out.body
+    ref = store.get_ref(kind="memory", id=mid)
+    assert ref is not None and ref.title == "new lead"
+
+
+def test_replace_first_line_rederives_derived_title(
+    handler: MemoryHandler, store: Store
+) -> None:
+    mid = _derived(handler, "old lead\nkept tail")
+    out = handler.edit(id=mid, mode="replace", text="new lead\nkept tail")
+    assert "title re-derived: 'new lead'" in out.body
+    ref = store.get_ref(kind="memory", id=mid)
+    assert ref is not None and ref.title == "new lead"
+
+
+def test_explicit_title_in_same_call_wins_over_rederivation(
+    handler: MemoryHandler, store: Store
+) -> None:
+    mid = _derived(handler, "old lead\nkept tail")
+    out = handler.edit(
+        id=mid, mode="replace", text="new lead\nkept tail", title="kept header"
+    )
+    assert "title now: 'kept header'" in out.body
+    assert "re-derived" not in out.body
+    ref = store.get_ref(kind="memory", id=mid)
+    assert ref is not None and ref.title == "kept header"
+
+
+def test_hand_set_title_survives_a_first_line_edit(
+    handler: MemoryHandler, store: Store
+) -> None:
+    """A title that never was the body's derivation isn't stale — a
+    first-line edit leaves it alone (gr538501)."""
+    mid = id_of(handler.put(text="lead line\ntail", title="hand set").body)
+    handler.edit(id=mid, mode="find-replace", find="lead line", text="moved lead")
+    ref = store.get_ref(kind="memory", id=mid)
+    assert ref is not None and ref.title == "hand set"
+
+
+def test_body_edit_below_the_first_line_keeps_derived_title(
+    handler: MemoryHandler, store: Store
+) -> None:
+    mid = _derived(handler, "lead line\nold tail")
+    handler.edit(id=mid, mode="find-replace", find="old tail", text="new tail")
+    ref = store.get_ref(kind="memory", id=mid)
+    assert ref is not None and ref.title == "lead line"
+
+
+def test_ops_edit_first_line_rederives_derived_title(
+    handler: MemoryHandler, store: Store
+) -> None:
+    mid = _derived(handler, "old lead\nkept tail")
+    out = handler.edit(id=mid, ops=[{"find": "old lead", "text": "new lead"}])
+    assert "title re-derived: 'new lead'" in out.body
+    ref = store.get_ref(kind="memory", id=mid)
+    assert ref is not None and ref.title == "new lead"
 
 
 def test_dry_run_writes_nothing(handler: MemoryHandler, store: Store) -> None:

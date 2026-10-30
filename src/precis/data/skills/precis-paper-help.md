@@ -318,6 +318,17 @@ search(kind="paper", q="ammonia", args={"serves": "quest:164903"})
 search(kind="paper", q="ammonia", args={"serves": "quest:164903", "has_fulltext": True})
 ```
 
+To list papers by their link neighbourhood — inbound-linked from a
+kind, or lacking a link to a kind (`tags=` then filters the
+`linked_from` side, not the papers):
+
+```python
+search(kind="paper", args={"linked_from": "memory", "lacks": "finding"},
+       tags=["SPACE:research"])
+```
+
+No `q=` gives a paged listing; `view='count'` the filtered total.
+
 To keep only chunks of one body kind — e.g. table-chunk hits across
 the corpus, the search-side companion to `view='tables'`:
 

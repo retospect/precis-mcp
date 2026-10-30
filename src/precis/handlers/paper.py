@@ -2470,6 +2470,17 @@ class PaperHandler(Handler):
         # cohort without SQL); with ``q=`` it restricts hits via the
         # include channel like ``record_type=``.
         stamp: str | None = None,
+        # ``args={'linked_from': '<kind>'}`` / ``args={'lacks': '<kind>'}``
+        # (gr538073): the link-cohort filter — refs with an inbound edge
+        # (any relation) from a live ref of the ``linked_from`` kind,
+        # and/or with no live edge to or from a ref of the ``lacks``
+        # kind. With ``linked_from`` the ``tags=`` list narrows the
+        # *source* refs (``tags=['SPACE:research']`` filters the
+        # memories), not the hits. No ``q=`` → a paged listing;
+        # ``view='count'`` → the filtered total; with ``q=`` the cohort
+        # restricts hits through the include channel like ``serves=``.
+        linked_from: str | None = None,
+        lacks: str | None = None,
         **_kw: Any,
     ) -> Response:
         """Dispatch to the right search collaborator (see ``_paper_search.py``).
@@ -2483,6 +2494,25 @@ class PaperHandler(Handler):
         :mod:`precis.handlers._paper_search`.
         """
         kind = self.spec.kind
+        linked_from_kind = (
+            self._link_scope_kind(linked_from, "linked_from")
+            if linked_from is not None
+            else None
+        )
+        lacks_kind = (
+            self._link_scope_kind(lacks, "lacks") if lacks is not None else None
+        )
+        link_scope = linked_from_kind is not None or lacks_kind is not None
+        # With ``linked_from`` the ``tags=`` list narrows the *source*
+        # refs — ``tags=['SPACE:research']`` on the memories (gr538073) —
+        # so it is consumed here and the paper-side tag filter stays off.
+        from_tags = (
+            Tag.normalize_filter(tags, kind=linked_from_kind)
+            if tags and linked_from_kind is not None
+            else None
+        )
+        if linked_from_kind is not None:
+            tags = None
         if view is not None and view not in ("index", "ids"):
             if view == "count":
                 return self._count_view(
@@ -2493,6 +2523,9 @@ class PaperHandler(Handler):
                     until=until,
                     exclude_ref_ids=exclude_ref_ids,
                     include_ref_ids=include_ref_ids,
+                    linked_from_kind=linked_from_kind,
+                    linked_from_tags=from_tags,
+                    lacks_kind=lacks_kind,
                 )
             if view == "status":
                 return self._fetch_status_view(ids)
@@ -2557,6 +2590,25 @@ class PaperHandler(Handler):
             raise BadInput(
                 f"args={{'stamp': …}} takes a non-empty meta key, got {stamp!r}",
                 next="search(kind='paper', args={'stamp': 'context_sentence_failed'})",
+            )
+        # The link-cohort listing (gr538073) precedes the stamp door so a
+        # combined ``stamp`` + ``linked_from``/``lacks`` call composes —
+        # the stamp then rides along as one more WHERE clause.
+        if link_scope and (q is None or not q.strip()):
+            return self._render_link_scope_search(
+                linked_from=linked_from_kind,
+                from_tags=from_tags,
+                lacks=lacks_kind,
+                stamp=stamp_norm,
+                include_ref_ids=include_ref_ids,
+                exclude_ref_ids=exclude_ref_ids,
+                exclude=exclude,
+                after=after,
+                before=before,
+                since=since,
+                until=until,
+                page=page,
+                page_size=page_size if page_size is not None else 25,
             )
         if stamp_norm is not None:
             if q is None or not q.strip():
@@ -2765,6 +2817,19 @@ class PaperHandler(Handler):
                 if include_ref_ids is not None
                 else serving
             )
+        # ``linked_from``/``lacks`` with a q= — the link cohort intersects
+        # the include channel, same composition discipline as serves=.
+        if link_scope:
+            scoped = self._resolve_link_scope_ids(
+                linked_from=linked_from_kind,
+                from_tags=from_tags,
+                lacks=lacks_kind,
+            )
+            include_ref_ids = sorted(
+                (set(include_ref_ids) & scoped)
+                if include_ref_ids is not None
+                else scoped
+            )
         if has_fulltext is not None and not isinstance(has_fulltext, bool):
             raise BadInput(
                 f"has_fulltext must be a boolean, got {has_fulltext!r}",
@@ -2879,6 +2944,197 @@ class PaperHandler(Handler):
                 (self.spec.kind, stamp),
             ).fetchall()
         return {int(r[0]) for r in rows}
+
+    def _link_scope_kind(self, value: Any, arg: str) -> str:
+        """``args={'linked_from'|'lacks': '<kind>'}`` — a kind slug.
+
+        Validated against the ``kinds`` catalogue plus the declared
+        spec registry (a kind that only ever existed in another process
+        still filters, same posture as the ``chunk_kind`` catalogue
+        check); an unknown slug refuses with the valid list.
+        """
+        if not isinstance(value, str) or not value.strip():
+            raise BadInput(
+                f"args={{'{arg}': …}} takes a kind slug, got {value!r}",
+                next=f"search(kind='{self.spec.kind}', args={{'{arg}': 'memory'}})",
+            )
+        slug = value.strip()
+        from precis.utils import kind_facts
+
+        known = {s.kind for s in kind_facts.all_declared_specs()}
+        try:
+            with self.store.pool.connection() as conn:
+                known |= {
+                    str(r[0]) for r in conn.execute("SELECT slug FROM kinds").fetchall()
+                }
+        except Exception:  # catalogue table missing — the spec set still stands
+            log.debug("link-scope kind check: kinds table unread", exc_info=True)
+        if slug not in known:
+            raise BadInput(
+                f"unknown kind {slug!r} for args={{'{arg}': …}}",
+                options=sorted(known),
+                next=f"search(kind='{self.spec.kind}', args={{'{arg}': 'memory'}})",
+            )
+        return slug
+
+    def _link_scope_clauses(
+        self,
+        *,
+        linked_from: str | None,
+        from_tags: list[str] | None,
+        lacks: str | None,
+    ) -> tuple[list[str], list[Any]]:
+        """The shared link-cohort WHERE fragments (gr538073) via
+        :func:`filtered_ref_clauses` — the listing, the cohort-id
+        resolution and ``view='count'`` all describe the same set."""
+        from precis.store._refs_ops import filtered_ref_clauses
+
+        return filtered_ref_clauses(
+            kind=self.spec.kind,
+            linked_from_kind=linked_from,
+            linked_from_tags=from_tags,
+            lacks_kind=lacks,
+        )
+
+    def _resolve_link_scope_ids(
+        self,
+        *,
+        linked_from: str | None,
+        from_tags: list[str] | None,
+        lacks: str | None,
+    ) -> set[int]:
+        """The link cohort as a ref-id set, for the ``include_ref_ids``
+        channel (the ``q=`` path's composition, like
+        :meth:`_resolve_serves_scope`)."""
+        clauses, params = self._link_scope_clauses(
+            linked_from=linked_from, from_tags=from_tags, lacks=lacks
+        )
+        with self.store.pool.connection() as conn:
+            rows = conn.execute(
+                "SELECT r.ref_id FROM refs r WHERE " + " AND ".join(clauses),
+                params,
+            ).fetchall()
+        return {int(r[0]) for r in rows}
+
+    def _render_link_scope_search(
+        self,
+        *,
+        linked_from: str | None,
+        from_tags: list[str] | None,
+        lacks: str | None,
+        stamp: str | None,
+        include_ref_ids: list[int] | None,
+        exclude_ref_ids: list[int] | None,
+        exclude: list[str] | None,
+        after: int | str | None,
+        before: int | str | None,
+        since: str | None,
+        until: str | None,
+        page: int,
+        page_size: int,
+    ) -> Response:
+        """The no-``q=`` ``args={'linked_from'/'lacks': '<kind>'}`` door
+        (gr538073): a paged listing of the link cohort — "papers a
+        memory cites that no finding picked up" — with the honest
+        filtered total in the headline. Same rendering discipline as
+        :meth:`_render_stamp_search`: SQL-side filters, page_size-bound,
+        and the other browse filters (id channels, ``exclude=``, year
+        and created windows) still intersect the cohort."""
+        kind = self.spec.kind
+        clauses, params = self._link_scope_clauses(
+            linked_from=linked_from, from_tags=from_tags, lacks=lacks
+        )
+        if stamp is not None:
+            clauses.append("r.meta ? %s")
+            params.append(stamp)
+        for ex_tag in _junk_exclude(None) or []:
+            ex_frag, ex_params = build_tag_filter([ex_tag], ref_alias="r")
+            clauses.append(f"NOT ({ex_frag})")
+            params.extend(ex_params)
+        bf = self._resolve_browse_filters(
+            include_ref_ids=include_ref_ids,
+            exclude_ref_ids=exclude_ref_ids,
+            exclude=exclude,
+            after=after,
+            before=before,
+            since=since,
+            until=until,
+        )
+        if bf["include_ref_ids"] is not None:
+            clauses.append("r.ref_id = ANY(%s)")
+            params.append(list(bf["include_ref_ids"]))
+        if bf["exclude_ref_ids"]:
+            clauses.append("NOT (r.ref_id = ANY(%s))")
+            params.append(bf["exclude_ref_ids"])
+        clauses.extend(_year_range_clauses(bf["year_from"], bf["year_to"]))
+        if bf["since"] is not None:
+            clauses.append("r.created_at >= %s")
+            params.append(bf["since"])
+        if bf["until"] is not None:
+            clauses.append("r.created_at < %s")
+            params.append(bf["until"])
+        where = " AND ".join(clauses)
+        page_size = max(1, int(page_size))
+        offset = max(0, (int(page) - 1) * page_size)
+        with self.store.pool.connection() as conn:
+            total_row = conn.execute(
+                f"SELECT count(*) FROM refs r WHERE {where}", params
+            ).fetchone()
+            total = int((total_row or (0,))[0])
+            rows = conn.execute(
+                "SELECT r.ref_id, r.title, r.meta->>'year' "
+                f"FROM refs r WHERE {where} "
+                "ORDER BY r.updated_at DESC, r.ref_id LIMIT %s OFFSET %s",
+                [*params, page_size, offset],
+            ).fetchall()
+        scope_bits: list[str] = []
+        if linked_from is not None:
+            tag_note = f" tagged {from_tags}" if from_tags else ""
+            scope_bits.append(f"linked from {linked_from}{tag_note}")
+        if lacks is not None:
+            scope_bits.append(f"no {lacks} link")
+        scope = " · ".join(scope_bits)
+        if not rows:
+            body = f"no live {kind} entries ({scope})"
+            body += render_next_section(
+                [
+                    (
+                        f"search(kind='{kind}', q='your topic')",
+                        "drop the link filter and search by topic instead",
+                    ),
+                ]
+            )
+            return Response(body=body, result_count=0)
+        suffix = "" if total <= len(rows) and page == 1 else f" of {total}"
+        noun = "entry" if len(rows) == 1 else "entries"
+        lines = [f"# {len(rows)} {kind} {noun} ({scope}){suffix}"]
+        for ref_id, title, year in rows:
+            handle = handle_registry.format_handle(kind, int(ref_id))
+            preview = _excerpt(title_md(title or ""), limit=80)
+            when = f"  ({year})" if year else ""
+            lines.append(f"  {handle:<30}{when}  {preview}")
+        body = "\n".join(lines)
+        args_bit = ", ".join(
+            f"'{k}': '{v}'"
+            for k, v in (("linked_from", linked_from), ("lacks", lacks))
+            if v is not None
+        )
+        next_ops: list[tuple[str, str]] = []
+        if offset + len(rows) < total:
+            next_ops.append(
+                (
+                    f"search(kind='{kind}', args={{{args_bit}}}, page={page + 1})",
+                    "next page",
+                )
+            )
+        next_ops.append(
+            (
+                f"get(id='{handle_registry.format_handle(kind, int(rows[0][0]))}')",
+                "open one paper from the list (paste any handle above)",
+            )
+        )
+        body += render_next_section(next_ops)
+        return Response(body=body, result_count=len(rows))
 
     def _resolve_browse_filters(
         self,
@@ -3079,6 +3335,9 @@ class PaperHandler(Handler):
         until: str | None,
         exclude_ref_ids: list[int] | None,
         include_ref_ids: list[int] | None,
+        linked_from_kind: str | None = None,
+        linked_from_tags: list[str] | None = None,
+        lacks_kind: str | None = None,
     ) -> Response:
         """``search(kind='paper', view='count')`` — filtered total + facets.
 
@@ -3108,6 +3367,9 @@ class PaperHandler(Handler):
             tags=normalized,
             q=q,
             q_in_chunks=True,
+            linked_from_kind=linked_from_kind,
+            linked_from_tags=linked_from_tags,
+            lacks_kind=lacks_kind,
             include_ref_ids=include_ref_ids,
             exclude_ref_ids=exclude_ref_ids,
             facets=facets,
@@ -3146,6 +3408,9 @@ class PaperHandler(Handler):
                     tags=normalized,
                     q=q,
                     q_in_chunks=True,
+                    linked_from_kind=linked_from_kind,
+                    linked_from_tags=linked_from_tags,
+                    lacks_kind=lacks_kind,
                     include_ref_ids=include_ref_ids,
                     exclude_ref_ids=exclude_ref_ids,
                     since=since_dt,
