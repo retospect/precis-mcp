@@ -1167,6 +1167,11 @@ class PcbHandler(Handler):
                 # maker frame, frame=<key|id> → what the frame made.
                 "refdes",
                 "frame",
+                # view='svg' level='fab' region scope (gr540838): an
+                # explicit mm clip or a refdes/net-extent union + margin.
+                "bbox",
+                "nets",
+                "margin",
                 # view='check'/'drc': force the inline run past reuse
                 # (gr496242).
                 "fresh",
@@ -6279,11 +6284,26 @@ class PcbHandler(Handler):
         pins fall off it. ``op='fork'`` (gr517199) is the lossless copy, so
         the op stays only as the signpost that names it.
 
+        ``args={'report': True}`` (gr540839) is the read side, not a copy:
+        a DRY-RUN import of the same exported bytes that returns the
+        intake census — nets created/matched/merged, parts resolved vs
+        synthesized, orphaned pads, per-layer copper and the outline bbox
+        delta — with nothing written (:meth:`_import_epro_census`).
+
         Reto's ruling (gr495289, option 2a) stands: the only source was
         precis's own export, so no caller-supplied bytes or URLs reach the
         reader — a real EasyEDA ``.epro2`` file still imports, through the
         CLI (``precis pcb import-epro <file>``) or the web UI upload, both
         of which call :func:`precis.ingest.pcb_epro.import_epro` directly."""
+        report = args.get("report")
+        if report is not None and not isinstance(report, bool):
+            raise BadInput(
+                f"op='import_epro' args.report must be a bool, got {report!r}",
+                next=f"put(kind='pcb', id='{slug}', args={{'op':'import_epro', "
+                "'source':'export:<board slug>', 'report':True}}) returns "
+                "the intake census",
+                options=[True],
+            )
         source = str(args.get("source") or "").strip()
         src_slug = source.removeprefix("export:").strip()
         if not source.startswith("export:") or not src_slug:
@@ -6295,6 +6315,8 @@ class PcbHandler(Handler):
                 "'from':'<existing board slug>'}}) copies a board losslessly",
                 options=["export:<board slug>"],
             )
+        if report:
+            return self._import_epro_census(slug, src_slug)
         if src_slug == slug:
             raise BadInput(
                 f"op='import_epro' writes a NEW board; id={slug!r} is its source",
@@ -6309,6 +6331,58 @@ class PcbHandler(Handler):
             next=f"put(kind='pcb', id='{slug}', args={{'op':'fork', "
             f"'from':'{src_slug}'}}) copies the board losslessly",
         )
+
+    def _import_epro_census(self, slug: str, src_slug: str) -> Response:
+        """``op='import_epro' args={'report': True}`` (gr540839): the
+        intake census for a re-import of ``src_slug``'s own export, run
+        as a DRY RUN — the numbers are the importer's own merge decisions
+        and nothing is written, so this stays on the right side of the
+        gr519745 board-copy refusal. On an existing target slug the same
+        call reports what an ``--update`` merge would decide (matched/
+        merged nets, the added parts); on a fresh slug what a fresh
+        import would land."""
+        from precis.ingest.pcb_epro import EproImportError, import_epro
+        from precis.pcb.epro import EproError
+
+        src_ref = resolve_live_slug_ref(self.store, kind="pcb", id=src_slug)
+        build = self.epro_build(int(src_ref.id))
+        if build is None:
+            raise BadInput(
+                f"pcb {src_slug!r} has no board yet; there is nothing to export",
+                next=f"get(kind='pcb', id='{src_slug}') shows what it holds",
+            )
+        existing = self.store.get_ref(kind="pcb", id=slug)
+        try:
+            result = import_epro(
+                self.store,
+                build.blob,
+                slug=slug,
+                title=f"{build.slug} re-import",
+                source_name=f"export:{build.slug}",
+                dry_run=True,
+                update=existing is not None,
+                report=True,
+            )
+        except EproError as exc:
+            raise BadInput(
+                f"the export of {src_slug!r} does not read back: {exc}",
+                next=f"get(kind='pcb', id='{src_slug}', view='epro', "
+                "args={'verify': True}) names what the file loses",
+            ) from exc
+        except EproImportError as exc:
+            # A taken slug, a non-epro target for the update census, or a
+            # board precis cannot hold — the importer's own message says which.
+            raise BadInput(f"op='import_epro': {exc}") from exc
+        lines = [
+            f"# import_epro export:{build.slug} → {slug}: intake census "
+            "(dry run — nothing was written)",
+            *(result.intake.lines() if result.intake else []),
+            f"source sha256: {build.sha256} (the bytes view='epro' writes)",
+            f"Next: op='fork' copies {src_slug} losslessly; a real .epro2 "
+            "file imports with the CLI: precis pcb import-epro <file> "
+            "--slug <slug> --report",
+        ]
+        return Response(body="\n".join(lines))
 
     def _op_fork(
         self,
@@ -8415,7 +8489,10 @@ class PcbHandler(Handler):
             return Response(body=svg_text)
         if level == "fab":
             return self._render_fab_svg(
-                ref_id, slug, flip=bool((args or {}).get("flip"))
+                ref_id,
+                slug,
+                flip=bool((args or {}).get("flip")),
+                scope=self._fab_scope(args),
             )
         if level != "board":
             raise BadInput(
@@ -8681,6 +8758,67 @@ class PcbHandler(Handler):
             raise ValueError("PCB board is not renderable")
         return pcb_selectables.build(assembled[0], **self._selection_rows(manifest))
 
+    @staticmethod
+    def _fab_scope(args: dict[str, Any]) -> dict[str, Any] | None:
+        """Parse ``view='svg' level='fab'`` region args (gr540838) into the
+        ``scope`` dict :func:`precis.pcb.gerber_view.render_fab_svg` takes:
+        ``{"bbox": (x0, y0, x1, y1)}`` clips outright (``margin`` is an
+        explicit box's business, not applied); ``{"refdes": [...],
+        "nets": [...]}`` unions those objects' drawn extents plus
+        ``margin`` mm (default 2) and highlights the named nets.
+        ``bbox`` and ``refdes`` are alternatives — mixing them is refused;
+        ``nets`` may join either (they pick the highlight out wherever the
+        clip came from). ``None`` when no scope key is present, so the
+        whole-board render stays byte-identical."""
+        scope: dict[str, Any] = {}
+        raw_bbox = args.get("bbox")
+        raw_refdes = args.get("refdes")
+        raw_nets = args.get("nets")
+        if raw_bbox is not None:
+            try:
+                vals = [float(v) for v in raw_bbox]
+            except (TypeError, ValueError):
+                raise BadInput(
+                    f"view='svg' args.bbox must be [x0, y0, x1, y1] in mm, "
+                    f"got {raw_bbox!r}"
+                ) from None
+            if len(vals) != 4 or not (vals[0] < vals[2] and vals[1] < vals[3]):
+                raise BadInput(
+                    f"view='svg' args.bbox needs [x0, y0, x1, y1] with "
+                    f"x0<x1 and y0<y1, got {raw_bbox!r}"
+                )
+            scope["bbox"] = tuple(vals)
+            if raw_refdes:
+                raise BadInput(
+                    "view='svg' fab scope: 'bbox' and 'refdes' are "
+                    "alternatives — pass one or the other ('nets' may "
+                    "join either, it only highlights)"
+                )
+        for key, raw in (("refdes", raw_refdes), ("nets", raw_nets)):
+            if raw is None:
+                continue
+            names = [raw] if isinstance(raw, str) else list(raw)
+            names = [str(n).strip() for n in names if str(n).strip()]
+            if not names:
+                raise BadInput(
+                    f"view='svg' args.{key} needs at least one non-empty name"
+                )
+            scope[key] = names
+        margin = args.get("margin")
+        if margin is not None:
+            try:
+                margin = float(margin)
+            except (TypeError, ValueError):
+                raise BadInput(
+                    f"view='svg' args.margin must be a mm number, got {margin!r}"
+                ) from None
+            if margin < 0:
+                raise BadInput(
+                    f"view='svg' args.margin must be >= 0 mm, got {margin!r}"
+                )
+            scope["margin"] = margin
+        return scope or None
+
     def _render_fab_svg(
         self,
         ref_id: int,
@@ -8688,6 +8826,7 @@ class PcbHandler(Handler):
         *,
         selection_manifest: dict[str, Any] | None = None,
         flip: bool = False,
+        scope: dict[str, Any] | None = None,
     ) -> Response:
         """``level='fab'`` — the board rendered FROM ITS GERBERS, with a
         layer selector.
@@ -8754,6 +8893,7 @@ class PcbHandler(Handler):
                     argue.feature_handle("outline") if model.get("outline") else None
                 ),
                 flip=flip,
+                scope=scope,
             )
             # **A dropped fiducial or title block must not be invisible on the
             # surface a human INSPECTS the board with.** This path used to
@@ -8793,6 +8933,26 @@ class PcbHandler(Handler):
                 desc = f"<desc>synthesized footprints (not real geometry):\n{lines}\n</desc>\n"
                 body = body.replace("</svg>", f"{desc}</svg>", 1)
             return Response(body=body)
+        except gerber_view.ScopeError as exc:
+            near = difflib.get_close_matches(exc.name, exc.known, n=4, cutoff=0.4)
+            options = near or exc.known[:6]
+            if options:
+                detail = f" — nearest: {', '.join(options)}"
+            else:
+                # No attributed objects to name at all: offer the scope
+                # arg forms, not an empty "nearest:" clause.
+                detail = " — the render carries no attributed objects"
+                options = [
+                    "bbox=[x0,y0,x1,y1]",
+                    "refdes=[<refdes>, ...]",
+                    "nets=[<net>, ...]",
+                ]
+            raise BadInput(
+                f"view='svg' fab scope: no {exc.kind} {exc.name!r} in the "
+                f"render{detail}",
+                options=options,
+                next=f"get(kind='pcb', id='{slug}') lists the design's refdes and nets",
+            ) from exc
         except gerber_view.UnsupportedGerber as exc:
             raise BadInput(
                 f"pcb: cannot render this fab set — {exc}",

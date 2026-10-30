@@ -132,6 +132,14 @@ def add_parser(sub: argparse._SubParsersAction) -> argparse.ArgumentParser:
         "write nothing. Reports identical counts and warnings.",
     )
     ie.add_argument(
+        "--report",
+        action="store_true",
+        help="Print the intake census after the import: nets "
+        "matched/merged/created, parts footprint-resolved vs synthesized, "
+        "orphaned pads, per-layer source copper and the outline bbox "
+        "delta. Collected during the import, not by a re-read.",
+    )
+    ie.add_argument(
         "--freeze",
         action="store_true",
         help="Import EVERY part locked (fixed='both'), so op='place' keeps "
@@ -280,6 +288,7 @@ def _import_epro(args: argparse.Namespace) -> None:
             dry_run=args.dry_run,
             update=getattr(args, "update", False),
             freeze=getattr(args, "freeze", False),
+            report=getattr(args, "report", False),
         )
         if not args.dry_run and result.ref_id:
             # The import writes through pcb_apply, not put(kind='pcb'), so it
@@ -332,6 +341,9 @@ def _import_epro(args: argparse.Namespace) -> None:
         )
         for refdes, why in result.alignment_candidates:
             print(f"    {refdes}: {why}")
+    if result.intake is not None:
+        for line in result.intake.lines():
+            print(f"  {line}")
     if result.update is not None:
         for line in result.update.lines():
             print(f"  {line}")

@@ -267,6 +267,7 @@ async def pcb_import(
                     slug=want,
                     title=title.strip() or want,
                     source_name=file.filename,
+                    report=True,
                 )
                 queued, facts = _handler(store)._queue_datasheets(result.ref_id)
                 return result, queued, facts
@@ -297,6 +298,7 @@ async def pcb_import(
             "stackup": [str(layer.get("name")) for layer in result.stackup],
             "planes": result.planes,
             "dropped": result.dropped_lines(),
+            "intake": (result.intake.lines() if result.intake else []),
             "warnings": result.warnings,
             "copper": (copper_report.render(result.copper) if result.copper else []),
             "alignment": result.alignment_candidates,

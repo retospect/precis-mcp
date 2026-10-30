@@ -75,6 +75,215 @@ class EproImportError(ValueError):
 
 
 @dataclass
+class IntakeReport:
+    """The intake census (gr540839) — the merge decisions and orphans an
+    import just made, collected while the source design is still in
+    memory rather than re-derived by a re-read of the board.
+
+    Net buckets: ``nets_matched`` names that already had a live net on the
+    board (``--update``); ``nets_merged`` — matched nets this batch wired
+    new members into; ``nets_created`` — minted rows, of which
+    ``nets_copper_only`` carried no NET record at all (folded in from
+    copper/pad mentions). ``parts_resolved`` landed real footprint
+    geometry (a kept local row or a catalog cache hit), ``parts_synthesized``
+    got guessed pads. ``pads_orphaned`` are placed pads whose pin has no
+    net — ``pads_orphaned_intended`` of them were marked ``unused``/``nc``
+    on purpose. ``layers`` is the per-layer source-copper census and
+    ``bbox_source``/``bbox_stored`` the source outline's box beside the
+    stored design's (they differ only when ``--update`` declines to move
+    the outline)."""
+
+    nets_matched: list[str] = field(default_factory=list)
+    nets_merged: list[str] = field(default_factory=list)
+    nets_created: list[str] = field(default_factory=list)
+    nets_copper_only: list[str] = field(default_factory=list)
+    parts_resolved: list[str] = field(default_factory=list)
+    parts_synthesized: list[str] = field(default_factory=list)
+    pads_orphaned: list[str] = field(default_factory=list)
+    pads_orphaned_intended: int = 0
+    layers: list[dict[str, Any]] = field(default_factory=list)
+    bbox_source: tuple[float, float, float, float] | None = None
+    bbox_stored: tuple[float, float, float, float] | None = None
+
+    @staticmethod
+    def _names(items: list[str], cap: int = 10) -> str:
+        shown = ", ".join(items[:cap])
+        if len(items) > cap:
+            shown += f" +{len(items) - cap} more"
+        return shown or "-"
+
+    def lines(self) -> list[str]:
+        out = [
+            "intake census:",
+            f"  nets: {len(self.nets_created)} created "
+            f"({len(self.nets_copper_only)} copper-only), "
+            f"{len(self.nets_matched)} matched, {len(self.nets_merged)} merged",
+        ]
+        for label, items in (
+            ("created", self.nets_created),
+            ("copper-only", self.nets_copper_only),
+            ("matched", self.nets_matched),
+            ("merged", self.nets_merged),
+        ):
+            if items:
+                out.append(f"    {label}: {self._names(items)}")
+        out.append(
+            f"  parts: {len(self.parts_resolved)} footprint-resolved, "
+            f"{len(self.parts_synthesized)} synthesized"
+        )
+        if self.parts_synthesized:
+            out.append(f"    synthesized: {self._names(self.parts_synthesized)}")
+        intent = (
+            f" ({self.pads_orphaned_intended} intended unused/nc)"
+            if self.pads_orphaned_intended
+            else ""
+        )
+        out.append(f"  pads orphaned (no net): {len(self.pads_orphaned)}{intent}")
+        if self.pads_orphaned:
+            out.append(f"    {self._names(self.pads_orphaned)}")
+        for layer in self.layers:
+            out.append(
+                f"  {layer['name']}: {layer['tracks']} track(s), "
+                f"{layer['vias']} via(s), extent {layer['extent']}"
+            )
+        if self.bbox_source is not None:
+            out.append(f"  source bbox: {_fmt_bbox(self.bbox_source)}")
+            if self.bbox_stored is None:
+                out.append("  stored bbox: none (board carried no outline)")
+            elif self.bbox_stored == self.bbox_source:
+                out.append("  stored bbox: matches the source")
+            else:
+                out.append(
+                    f"  stored bbox: {_fmt_bbox(self.bbox_stored)} — "
+                    "differs from the source (--update leaves the outline be)"
+                )
+        return out
+
+
+def _fmt_bbox(b: tuple[float, float, float, float]) -> str:
+    return f"({b[0]:.2f}, {b[1]:.2f}) -> ({b[2]:.2f}, {b[3]:.2f}) mm"
+
+
+def _path_bbox(
+    path: list[list[float]] | None,
+) -> tuple[float, float, float, float] | None:
+    if not path:
+        return None
+    xs = [float(p[0]) for p in path]
+    ys = [float(p[1]) for p in path]
+    return (min(xs), min(ys), max(xs), max(ys))
+
+
+def _copper_layer_census(source_rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Per-layer source-copper counts and extents off the intake rows —
+    tracks by their own layer, vias counted on every layer their span
+    crosses (a via is copper on each)."""
+    layers: dict[str, dict[str, Any]] = {}
+
+    def grow(layer: str, x: float, y: float) -> None:
+        box = layers.setdefault(
+            layer, {"name": layer, "tracks": 0, "vias": 0, "box": None}
+        )
+        b = box["box"]
+        box["box"] = (
+            (x, y, x, y)
+            if b is None
+            else (min(b[0], x), min(b[1], y), max(b[2], x), max(b[3], y))
+        )
+
+    for row in source_rows:
+        if row.get("ctype") == "via":
+            geom = row.get("geom") or {}
+            x, y = float(geom.get("x") or 0.0), float(geom.get("y") or 0.0)
+            for layer in geom.get("span") or [row.get("layer") or "?"]:
+                grow(str(layer), x, y)
+                layers[str(layer)]["vias"] += 1
+            continue
+        layer = str(row.get("layer") or "?")
+        layers.setdefault(layer, {"name": layer, "tracks": 0, "vias": 0, "box": None})
+        layers[layer]["tracks"] += 1
+        for seg in (row.get("geom") or {}).get("segments") or []:
+            for key in ("start", "end"):
+                pt = seg.get(key)
+                if pt:
+                    grow(layer, float(pt[0]), float(pt[1]))
+    out = []
+    for name in sorted(layers):
+        layer = layers[name]
+        box = layer.pop("box")
+        layer["extent"] = _fmt_bbox(box) if box else "—"
+        out.append(layer)
+    return out
+
+
+def _intake_report(
+    *,
+    components: list[dict[str, Any]],
+    connections: list[dict[str, Any]],
+    written_nets: set[str],
+    existing_nets: set[str],
+    copper_only: set[str],
+    catalog: dict[str, dict[str, Any]],
+    local_footprints: dict[str, dict[str, Any]],
+    layer_names: list[str],
+    source_rows: list[dict[str, Any]],
+    source_bbox: tuple[float, float, float, float] | None,
+    stored_bbox: tuple[float, float, float, float] | None,
+) -> IntakeReport:
+    """Assemble the census — see :class:`IntakeReport` for the buckets."""
+    wired = {str(k["net"]) for k in connections}
+    matched = sorted(written_nets & existing_nets)
+    rep = IntakeReport(
+        nets_matched=matched,
+        nets_merged=sorted(set(matched) & wired),
+        nets_created=sorted(written_nets - existing_nets),
+        nets_copper_only=sorted(copper_only & written_nets),
+        layers=_copper_layer_census(source_rows),
+        bbox_source=source_bbox,
+        bbox_stored=stored_bbox,
+    )
+    pin_to_net = {(str(k["refdes"]), str(k["pin"])): str(k["net"]) for k in connections}
+    pin_flags: dict[tuple[str, str], str] = {}
+    for c in components:
+        refdes = str(c.get("refdes") or "")
+        lcsc = str(c.get("part_lcsc") or "").strip().upper()
+        name = str(c.get("footprint") or "")
+        local = local_footprints.get(name)
+        cat = catalog.get(lcsc) if lcsc else None
+        if (local and local.get("pads")) or (cat and cat.get("pads")):
+            rep.parts_resolved.append(refdes)
+        else:
+            rep.parts_synthesized.append(refdes)
+        for p in c.get("pins") or []:
+            if p.get("unused") or p.get("nc"):
+                pin_flags[(refdes, str(p.get("name")))] = (
+                    "unused" if p.get("unused") else "nc"
+                )
+    pads, _drills = padplace.board_pads(
+        components,
+        catalog,
+        layers=layer_names,
+        pin_to_net=pin_to_net,
+        local_footprints=local_footprints,
+    )
+    seen: set[tuple[str, str]] = set()
+    for pad in pads:
+        if str(pad.get("net") or ""):
+            continue
+        key = (str(pad.get("refdes") or ""), str(pad.get("pin") or ""))
+        if key in seen:
+            continue  # a THT pad repeats per copper layer — count it once
+        seen.add(key)
+        rep.pads_orphaned.append(f"{key[0]}.{key[1]}")
+        if key in pin_flags:
+            rep.pads_orphaned_intended += 1
+    rep.pads_orphaned.sort()
+    rep.parts_resolved.sort()
+    rep.parts_synthesized.sort()
+    return rep
+
+
+@dataclass
 class ImportResult:
     """What the import did, for the CLI to print and a test to assert on."""
 
@@ -100,6 +309,9 @@ class ImportResult:
     #: one held, now marked ``unused``.
     dropped_nets: list[str] = field(default_factory=list)
     unused_pins: list[str] = field(default_factory=list)
+    #: The gr540839 intake census — populated only when the caller passes
+    #: ``report=True``; ``None`` means it was never asked for.
+    intake: IntakeReport | None = None
 
     def dropped_lines(self) -> list[str]:
         """The dropped nets and their pins, every name listed (not a warn:
@@ -798,6 +1010,7 @@ def import_epro(
     update: bool = False,
     freeze: bool = False,
     copper: str | None = None,
+    report: bool = False,
 ) -> ImportResult:
     """Import one ``.epro2`` board into the ``pcb`` kind under ``slug``.
 
@@ -900,6 +1113,8 @@ def import_epro(
             warnings=warnings,
             source_name=source_name,
             dry_run=dry_run,
+            source_rows=source_rows,
+            report=report,
         )
         updated.dropped_nets, updated.unused_pins = dropped_nets, unused_pins
         return updated
@@ -931,6 +1146,7 @@ def import_epro(
         r["ctype"] == "track" for r in source_rows
     )
     result.stats["source_vias"] = sum(r["ctype"] == "via" for r in source_rows)
+    copper_only: list[str] = []
     if copper_mode == "fixed":
         # Copper records carry their own explicit netName. Some source files
         # omit the corresponding NET declaration; retain that name rather
@@ -943,9 +1159,10 @@ def import_epro(
             (str(n["net_class"]) for n in design.nets if n.get("net_class")),
             None,
         )
+        copper_only = sorted(copper_nets - known_nets)
         design.nets.extend(
             {"name": n, **({"net_class": default_class} if default_class else {})}
-            for n in sorted(copper_nets - known_nets)
+            for n in copper_only
         )
         result.stats["nets"] = len(design.nets)
     if dry_run:
@@ -964,6 +1181,10 @@ def import_epro(
             _design_pads(design, stackup),
         )
         result.warnings.extend(copper_warnings)
+        if report:
+            result.intake = _fresh_intake(
+                store, design, stackup, source_rows, copper_only
+            )
         return result
 
     # Part lookup (the item's order — mfr+MPN, C-number, parametric) runs
@@ -1075,7 +1296,53 @@ def import_epro(
     # see the pads exactly as every later reader (DRC, route) will.
     result.copper = report_copper(store, data, slug=slug, board_uuid=board_uuid)
     result.warnings.extend(epro.measured_copper(board, frame)[1])
+    if report:
+        result.intake = _fresh_intake(store, design, stackup, source_rows, copper_only)
     return result
+
+
+def _fresh_intake(
+    store: Any,
+    design: epro.Design,
+    stackup: list[dict[str, Any]],
+    source_rows: list[dict[str, Any]],
+    copper_only: list[str],
+) -> IntakeReport:
+    """The :class:`IntakeReport` for a fresh import — shared by the real
+    write and ``--dry-run`` so both answer the same numbers. Every written
+    net is new (the board did not exist), so matched/merged stay empty
+    and the interest is the created split and the orphans. The stored
+    outline IS the source's — ``stored_bbox`` repeats it so the delta
+    line can say "matches". The local-footprint set mirrors the write
+    path's own dedup call, so a synthesized-vs-resolved verdict here
+    agrees with the pads DRC later sees."""
+    dropped_local = _dedupe_local_footprints(
+        store, design.components, design.footprints
+    )
+    local = {
+        name: fp
+        for name, fp in (normalize_local_footprint(f) for f in design.footprints)
+        if name not in dropped_local
+    }
+    return _intake_report(
+        components=design.components,
+        connections=design.connections,
+        written_nets={str(n["name"]) for n in design.nets},
+        existing_nets=set(),
+        copper_only=set(copper_only),
+        catalog=store.part_footprints_many(
+            {
+                str(c.get("part_lcsc") or "").strip().upper()
+                for c in design.components
+                if c.get("part_lcsc")
+            }
+        ),
+        local_footprints=local,
+        layer_names=[str(s["name"]) for s in stackup],
+        source_rows=source_rows,
+        source_bbox=_path_bbox(_outline_path(design)),
+        stored_bbox=_path_bbox(_outline_path(design)),
+    )
 
 
 def _dedupe_local_footprints(
@@ -1391,6 +1658,8 @@ def _update(
     warnings: list[str],
     source_name: str | None,
     dry_run: bool,
+    source_rows: list[dict[str, Any]],
+    report: bool,
 ) -> ImportResult:
     """``--update``: apply the source's moves and new parts to an existing
     import of the same board, report the rest (:class:`UpdatePlan`)."""
@@ -1594,6 +1863,48 @@ def _update(
         else:
             if linked:
                 result.stats["datasheets_linked"] = linked
+    if report:
+        # The census's "existing" roster is the PRE-write graph — this is
+        # the only place it still exists in memory.
+        added = set(plan.added)
+        components = [c for c in design.components if str(c["refdes"]) in added]
+        connections = [k for k in design.connections if str(k["refdes"]) in added]
+        used_names = {str(c.get("footprint") or "") for c in components}
+        local = dict(stored_fps)
+        local.update(
+            normalize_local_footprint(f)
+            for f in design.footprints
+            if str(f["name"]) in used_names
+        )
+        result.intake = _intake_report(
+            components=components,
+            connections=connections,
+            written_nets={str(k["net"]) for k in connections}
+            | {str(n) for n in plan.classed},
+            existing_nets={str(n["name"]) for n in graph["nets"]},
+            copper_only=set(),
+            catalog=store.part_footprints_many(
+                {
+                    str(c.get("part_lcsc") or "").strip().upper()
+                    for c in components
+                    if c.get("part_lcsc")
+                }
+            ),
+            local_footprints=local,
+            layer_names=[str(s["name"]) for s in stackup],
+            source_rows=source_rows,
+            source_bbox=_path_bbox(_outline_path(design)),
+            stored_bbox=_path_bbox(
+                next(
+                    (
+                        f["geom"]["path"]
+                        for f in features
+                        if f.get("ftype") == "outline"
+                    ),
+                    None,
+                )
+            ),
+        )
     # Against the board as it now stands (pre-update on a dry run).
     result.copper = report_copper(store, data, slug=slug, board_uuid=board.uuid)
     result.warnings.extend(epro.measured_copper(board, frame)[1])

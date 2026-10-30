@@ -85,6 +85,7 @@ shape, so hovering a pad's mask opening still tells you which pad it is.
 
 from __future__ import annotations
 
+import itertools
 import json
 import math
 import re
@@ -218,6 +219,20 @@ _ARC_MAX_SEG_DEG = 6.0
 
 class UnsupportedGerber(ValueError):
     """A construct this reader will not guess at."""
+
+
+class ScopeError(ValueError):
+    """A fab-scope name the rendered set does not carry.
+
+    ``kind`` is ``"refdes"`` or ``"net"``, ``name`` the unknown entry and
+    ``known`` the roster the render actually drew — everything a handler
+    needs to answer with nearest matches instead of a bare refusal."""
+
+    def __init__(self, kind: str, name: str, known: list[str]) -> None:
+        self.kind = kind
+        self.name = name
+        self.known = known
+        super().__init__(f"fab scope: no {kind} named {name!r} in the render")
 
 
 @dataclass(frozen=True, slots=True)
@@ -825,6 +840,48 @@ def _edge_cuts_outline(art: LayerArt | None) -> list[tuple[float, float]] | None
     return ring if len(ring) >= 3 else None
 
 
+def _clip_ring(
+    ring: list[tuple[float, float]], clip: tuple[float, float, float, float]
+) -> list[tuple[float, float]]:
+    """The ring intersected with the clip rect — Sutherland–Hodgman
+    against the four edges (convex clip, so a concave outline still comes
+    out right). A mask film built from the UNCLIPPED Edge_Cuts art gets
+    bounded to the view here: a scoped region crossing the board edge
+    keeps the outline's own shape in-view instead of the chord polygon
+    the few surviving clipped strokes would spell."""
+    x0, y0, x1, y1 = clip
+    # (axis, keep-value, edge coord): points on the keep side stay.
+    edges = ((0, min, x0), (0, max, x1), (1, min, y0), (1, max, y1))
+    out = ring
+    for axis, side, edge in edges:
+        inside = (
+            (lambda p, a=axis, e=edge: p[a] >= e)
+            if side is min
+            else (lambda p, a=axis, e=edge: p[a] <= e)
+        )
+
+        def cross(
+            a: tuple[float, float], b: tuple[float, float], _a=axis, _e=edge
+        ) -> tuple[float, float]:
+            d = b[_a] - a[_a]
+            t = (_e - a[_a]) / d if d else 0.0
+            pt = [a[0] + t * (b[0] - a[0]), a[1] + t * (b[1] - a[1])]
+            pt[_a] = _e
+            return (pt[0], pt[1])
+
+        kept: list[tuple[float, float]] = []
+        for i, p in enumerate(out):
+            prev = out[i - 1]
+            if inside(p):
+                if not inside(prev):
+                    kept.append(cross(prev, p))
+                kept.append(p)
+            elif inside(prev):
+                kept.append(cross(prev, p))
+        out = kept
+    return out
+
+
 def _region_mask_shape(region: Region) -> str:
     """One region-shaped soldermask opening, painted BLACK into the mask
     film — the region-ring counterpart to :func:`_flash_mask_shape`
@@ -840,6 +897,7 @@ def _mask_film_els(
     colour: str,
     film_ring: list[tuple[float, float]],
     manifest: dict[str, Any] | None = None,
+    highlight: frozenset[str] = frozenset(),
 ) -> list[str]:
     """A soldermask layer rendered as what it physically is — see the
     module docstring's "a film with holes" note. Openings come from
@@ -871,13 +929,20 @@ def _mask_film_els(
         f'<path d="{_path_d(film_ring, close=True)}" fill="{colour}" '
         f'fill-opacity="0.55" mask="url(#{mask_id})"/>',
     ]
+    out.extend(_flash_hl(f) for f in flash_openings if f.net in highlight)
     out.extend(
         _flash_hit_target(f, _flash_title(layer, f), manifest) for f in flash_openings
     )
     return out
 
 
-def _region_els(regions: list[Region], layer: str, colour: str) -> list[str]:
+def _region_els(
+    regions: list[Region],
+    layer: str,
+    colour: str,
+    *,
+    highlight: frozenset[str] = frozenset(),
+) -> list[str]:
     """SVG for one layer's regions, pairing each solid fill with the
     clear-polarity holes that immediately follow it — exactly how
     :func:`precis.pcb.gerber._emit_region` always writes a pour's antipads:
@@ -928,10 +993,17 @@ def _region_els(regions: list[Region], layer: str, colour: str) -> list[str]:
                 j += 1
             title = f"<title>{_region_title(layer, region)}</title>"
             handle = _handle_attr(_object_handle(region.net, region.refdes, region.pin))
+            hl = (
+                f'<path d="{_path_d(region.ring, close=True)}" '
+                f'fill="{_HL_COLOUR}" fill-opacity="0.4" '
+                'pointer-events="none" class="pcb-hl"/>'
+                if region.net in highlight
+                else ""
+            )
             if len(rings) == 1:
                 out.append(
                     f'<path d="{_path_d(region.ring, close=True)}" '
-                    f'fill="{colour}"{handle}>{title}</path>'
+                    f'fill="{colour}"{handle}>{title}</path>' + hl
                 )
             else:
                 # Unique across the whole document: this function runs once
@@ -956,6 +1028,7 @@ def _region_els(regions: list[Region], layer: str, colour: str) -> list[str]:
                 out.append(
                     f'<path d="{_path_d(region.ring, close=True)}" '
                     f'fill="{colour}" mask="url(#{mask_id})"{handle}>{title}</path>'
+                    + hl
                 )
             i = j
         else:
@@ -1068,7 +1141,13 @@ def _ratsnest_alpha(unrouted: int) -> float:
     return round(1.0 - t * (1.0 - _RS_ALPHA_FLOOR), 3)
 
 
-def _ratsnest_els(arts: dict[str, LayerArt], nets: set[str]) -> list[str]:
+def _ratsnest_els(
+    arts: dict[str, LayerArt],
+    nets: set[str],
+    *,
+    clip: tuple[float, float, float, float] | None = None,
+    highlight: frozenset[str] = frozenset(),
+) -> list[str]:
     """Straight airwires for the nets the router has not realized: the MST
     (:func:`precis.pcb.ratsnest._mst_edges`) over each net's pad positions as
     the gerber drew them (one point per refdes.pin), in board mm. Each wire is
@@ -1076,7 +1155,13 @@ def _ratsnest_els(arts: dict[str, LayerArt], nets: set[str]) -> list[str]:
     :func:`_ratsnest_alpha`) plus a wide invisible one (``rs-hit``) so it is
     hoverable — the page's isolate CSS dims ``rs-line`` only, never the hit
     wire. Which nets count is the caller's: the board page passes
-    :func:`route_state`'s pending set, never a second computation (gr495391)."""
+    :func:`route_state`'s pending set, never a second computation (gr495391).
+
+    ``clip`` (a scoped render's box) keeps only wires that touch the
+    region — pad positions are read off the UNCLIPPED art so an airwire
+    leaving the region still shows the net continues off-frame. A wire on
+    a ``highlight`` net draws solid gold at full opacity instead of the
+    density-scaled red."""
     from precis.pcb.ratsnest import _mst_edges
 
     pads: dict[str, dict[str, tuple[float, float]]] = {}
@@ -1089,12 +1174,23 @@ def _ratsnest_els(arts: dict[str, LayerArt], nets: set[str]) -> list[str]:
     alpha = _ratsnest_alpha(len(nets))
     out = [f'<g id="ratsnest" class="ratsnest" data-pcb-unrouted="{len(nets)}">']
     for net in sorted(pads):
+        hl = net in highlight
         members = sorted(pads[net].items())
         for _a, _b, p1, p2 in _mst_edges(members):
+            if clip is not None and not _seg_hits_rect(
+                p1[0], p1[1], p2[0], p2[1], clip
+            ):
+                continue
             net_attr = esc(net, quote=True)
             coords = (
                 f'x1="{p1[0]:.4f}" y1="{p1[1]:.4f}" x2="{p2[0]:.4f}" y2="{p2[1]:.4f}"'
             )
+            if hl:
+                out.append(
+                    f'<line {coords} stroke="{_HL_COLOUR}" stroke-width="0.18" '
+                    f'class="rs-line pcb-hl" data-pcb-net="{net_attr}" '
+                    'data-pcb-ratsnest="1" pointer-events="none"/>'
+                )
             out.append(
                 f'<line {coords} stroke="#ef4444" stroke-width="0.12" '
                 f'stroke-opacity="{alpha}" stroke-dasharray="0.4 0.3" '
@@ -1165,6 +1261,212 @@ def _path_d(points: list[tuple[float, float]], *, close: bool = False) -> str:
     return " ".join(parts)
 
 
+#: The default expansion a refdes/net scope box gets — the same 2 mm the
+#: whole-board viewBox already pads by.
+_SCOPE_MARGIN_MM = 2.0
+
+#: The named-net highlight tint — ``#facc15`` is also the selection
+#: overlay's colour (``.pcb-select .pcb-selected``), so "this object is the
+#: one you asked about" reads the same across the two treatments.
+_HL_COLOUR = "#facc15"
+
+
+def _flash_box(flash: Flash) -> tuple[float, float, float, float]:
+    w = flash.aperture.sizes[0]
+    h = flash.aperture.sizes[1] if len(flash.aperture.sizes) > 1 else w
+    return (flash.x - w / 2, flash.y - h / 2, flash.x + w / 2, flash.y + h / 2)
+
+
+def _stroke_box(stroke: Stroke) -> tuple[float, float, float, float]:
+    xs = [p[0] for p in stroke.points]
+    ys = [p[1] for p in stroke.points]
+    half = stroke.width / 2
+    return (min(xs) - half, min(ys) - half, max(xs) + half, max(ys) + half)
+
+
+def _region_box(region: Region) -> tuple[float, float, float, float]:
+    xs = [p[0] for p in region.ring]
+    ys = [p[1] for p in region.ring]
+    return (min(xs), min(ys), max(xs), max(ys))
+
+
+def _box_hits(
+    box: tuple[float, float, float, float], clip: tuple[float, float, float, float]
+) -> bool:
+    return (
+        box[0] <= clip[2]
+        and box[2] >= clip[0]
+        and box[1] <= clip[3]
+        and box[3] >= clip[1]
+    )
+
+
+def _seg_hits_rect(
+    ax: float, ay: float, bx: float, by: float, clip: tuple[float, float, float, float]
+) -> bool:
+    """Liang–Barsky: does the segment (a -> b) touch the clip rect at all.
+    A track or airwire can cross a region with both endpoints outside it;
+    an endpoint-membership test would drop exactly the wire the region
+    render exists to show."""
+    x0, y0, x1, y1 = clip
+    dx, dy = bx - ax, by - ay
+    u1, u2 = 0.0, 1.0
+    for p, q in ((-dx, ax - x0), (dx, x1 - ax), (-dy, ay - y0), (dy, y1 - ay)):
+        if abs(p) < 1e-12:
+            if q < 0:
+                return False
+            continue
+        t = q / p
+        if p < 0:
+            u1 = max(u1, t)
+        else:
+            u2 = min(u2, t)
+        if u1 > u2:
+            return False
+    return True
+
+
+def _expand(
+    clip: tuple[float, float, float, float], pad: float
+) -> tuple[float, float, float, float]:
+    return (clip[0] - pad, clip[1] - pad, clip[2] + pad, clip[3] + pad)
+
+
+def _stroke_hits(stroke: Stroke, clip: tuple[float, float, float, float]) -> bool:
+    pad = _expand(clip, stroke.width / 2)
+    pts = stroke.points
+    return any(
+        _seg_hits_rect(a[0], a[1], b[0], b[1], pad) for a, b in itertools.pairwise(pts)
+    )
+
+
+def _drill_hits(
+    hole: tuple[float, ...], clip: tuple[float, float, float, float]
+) -> bool:
+    pad = _expand(clip, hole[2] / 2)
+    if len(hole) == 5:
+        return _seg_hits_rect(hole[0], hole[1], hole[3], hole[4], pad)
+    return _box_hits((hole[0], hole[1], hole[0], hole[1]), pad)
+
+
+def _clip_art(art: LayerArt, clip: tuple[float, float, float, float]) -> LayerArt:
+    """The art's objects that touch ``clip`` — elements wholly outside are
+    dropped so a scoped render is a small file, not a cropped big one.
+    A solid region keeps its trailing clear rings as one group: dropping
+    the holes under a kept pour would refill its antipads."""
+    out = LayerArt()
+    out.strokes = [s for s in art.strokes if _stroke_hits(s, clip)]
+    out.flashes = [f for f in art.flashes if _box_hits(_flash_box(f), clip)]
+    i = 0
+    while i < len(art.regions):
+        region = art.regions[i]
+        if region.solid:
+            group = [region]
+            j = i + 1
+            while j < len(art.regions) and not art.regions[j].solid:
+                group.append(art.regions[j])
+                j += 1
+            if _box_hits(_region_box(region), clip):
+                out.regions.extend(group)
+            i = j
+        else:
+            # An orphan clear ring (foreign gerber) — keep/drop on its own.
+            if _box_hits(_region_box(region), clip):
+                out.regions.append(region)
+            i += 1
+    return out
+
+
+def _identity_boxes(
+    arts: dict[str, LayerArt],
+) -> tuple[dict[str, list[float]], dict[str, list[float]]]:
+    """``{refdes: box}`` and ``{net: box}`` over every attributed object —
+    the extents a ``refdes``/``nets`` scope unions, measured off the same
+    parsed geometry the render draws (a scope box can never disagree with
+    what the picture shows)."""
+
+    def grow(
+        boxes: dict[str, list[float]], name: str | None, box: tuple[float, ...]
+    ) -> None:
+        if not name:
+            return
+        b = boxes.setdefault(name, [math.inf, math.inf, -math.inf, -math.inf])
+        b[0], b[1] = min(b[0], box[0]), min(b[1], box[1])
+        b[2], b[3] = max(b[2], box[2]), max(b[3], box[3])
+
+    refdes: dict[str, list[float]] = {}
+    nets: dict[str, list[float]] = {}
+    for art in arts.values():
+        for f in art.flashes:
+            box = _flash_box(f)
+            grow(refdes, f.refdes, box)
+            grow(nets, f.net, box)
+        for s in art.strokes:
+            box = _stroke_box(s)
+            grow(refdes, s.refdes, box)
+            grow(nets, s.net, box)
+        for r in art.regions:
+            box = _region_box(r)
+            grow(refdes, r.refdes, box)
+            grow(nets, r.net, box)
+    return refdes, nets
+
+
+def _resolve_scope(
+    arts: dict[str, LayerArt], scope: dict[str, Any]
+) -> tuple[tuple[float, float, float, float] | None, frozenset[str]]:
+    """``(clip box, nets to highlight)`` for one scope dict. ``bbox`` is an
+    explicit clip; ``refdes``/``nets`` derive it from the drawn extents
+    plus ``margin`` (mm). Unknown names raise :class:`ScopeError` with the
+    roster. ``nets`` double as the highlight set either way — naming a
+    net means you want it picked out."""
+    highlight = frozenset(str(n) for n in scope.get("nets") or ())
+    bbox = scope.get("bbox")
+    if bbox is not None:
+        return (
+            float(bbox[0]),
+            float(bbox[1]),
+            float(bbox[2]),
+            float(bbox[3]),
+        ), highlight
+    refdes = [str(r) for r in scope.get("refdes") or ()]
+    nets = [str(n) for n in scope.get("nets") or ()]
+    if not refdes and not nets:
+        return None, highlight
+    margin = float(scope.get("margin", _SCOPE_MARGIN_MM))
+    refdes_boxes, net_boxes = _identity_boxes(arts)
+    boxes: list[list[float]] = []
+    for name in refdes:
+        box = refdes_boxes.get(name)
+        if box is None:
+            raise ScopeError("refdes", name, sorted(refdes_boxes))
+        boxes.append(box)
+    for name in nets:
+        box = net_boxes.get(name)
+        if box is None:
+            raise ScopeError("net", name, sorted(net_boxes))
+        boxes.append(box)
+    return (
+        min(b[0] for b in boxes) - margin,
+        min(b[1] for b in boxes) - margin,
+        max(b[2] for b in boxes) + margin,
+        max(b[3] for b in boxes) + margin,
+    ), highlight
+
+
+def _flash_hl(flash: Flash) -> str:
+    """The gold overlay painted over one object on a named (highlighted)
+    net — same outline as :func:`_flash_geometry`, tinted, with
+    ``pointer-events="none"`` so hover still lands on the real element
+    underneath (its ``<title>`` keeps the identity)."""
+    tag, attrs = _flash_geometry(flash)
+    return (
+        f'<{tag} {attrs} fill="{_HL_COLOUR}" fill-opacity="0.45" '
+        f'stroke="{_HL_COLOUR}" stroke-width="0.15" '
+        'pointer-events="none" class="pcb-hl"/>'
+    )
+
+
 def _bounds(
     arts: dict[str, LayerArt], drills: dict[str, list[tuple[float, ...]]]
 ) -> tuple[float, float, float, float]:
@@ -1198,6 +1500,7 @@ def render_fab_svg(
     selection_manifest: dict[str, Any] | None = None,
     outline_handle: str | None = None,
     flip: bool = False,
+    scope: dict[str, Any] | None = None,
 ) -> str:
     """An SVG of a whole fab set, one toggleable group per layer.
 
@@ -1212,6 +1515,14 @@ def render_fab_svg(
     document; selection identity is unchanged — a pad is the same object
     seen from either side.
 
+    ``scope`` (gr540838) renders a REGION instead of the whole board:
+    ``{"bbox": [x0, y0, x1, y1]}`` clips to that box outright, or
+    ``{"refdes": [...], "nets": [...]}`` unions those objects' drawn
+    extents plus ``margin`` mm (default 2). Elements wholly outside the
+    clip are dropped — the file is small, not just cropped — and objects
+    on a ``nets`` name get the gold highlight overlay. ``scope`` with no
+    content (no bbox, no refdes, no nets) clips nothing.
+
     The layer selector is inline: legend rows toggle a CSS class on their
     group. A viewer that does not run script still shows every layer that
     starts visible, so the file is never blank in a static renderer.
@@ -1225,9 +1536,24 @@ def render_fab_svg(
         else:
             arts[key] = parse_gerber(text)
 
-    x0, y0, x1, y1 = _bounds(arts, drills)
-    x0, y0 = x0 - margin_mm, y0 - margin_mm
-    x1, y1 = x1 + margin_mm, y1 + margin_mm
+    clip, highlight = _resolve_scope(arts, scope or {})
+    if clip is not None:
+        # Pad positions for the ratsnest are read off the UNCLIPPED art —
+        # an airwire leaving the region must still draw so the net reads
+        # as continuing off-frame rather than ending at the crop edge.
+        arts_full = arts
+        arts = {k: _clip_art(a, clip) for k, a in arts.items()}
+        drills = {
+            k: [hole for hole in holes if _drill_hits(hole, clip)]
+            for k, holes in drills.items()
+        }
+        x0, y0, x1, y1 = clip
+        title = f"{title} — region ({x0:.2f}, {y0:.2f}) → ({x1:.2f}, {y1:.2f}) mm"
+    else:
+        arts_full = arts
+        x0, y0, x1, y1 = _bounds(arts, drills)
+        x0, y0 = x0 - margin_mm, y0 - margin_mm
+        x1, y1 = x1 + margin_mm, y1 + margin_mm
     w, h = max(1e-6, x1 - x0), max(1e-6, y1 - y0)
 
     stack = _FLIPPED_STACK if flip else _STACK_ORDER
@@ -1236,11 +1562,17 @@ def render_fab_svg(
 
     # The mask FILM's own shape — the real Edge_Cuts outline when this file
     # set parsed one, else the same rect the viewBox itself is built from.
+    # Read off the UNCLIPPED art: a scoped region crossing the board edge
+    # drops the outline strokes wholly outside the clip, and building the
+    # film from what survived would spell a wrong chord polygon. The full
+    # outline is then bounded to the view, as the rest of the render is.
     # Computed once, outside the per-layer loop: F_Mask and B_Mask are the
     # same physical board, so they share one film shape.
-    film_ring = _edge_cuts_outline(arts.get("Edge_Cuts")) or _rect_ring(
+    film_ring = _edge_cuts_outline(arts_full.get("Edge_Cuts")) or _rect_ring(
         (x0, y0, x1, y1)
     )
+    if clip is not None:
+        film_ring = _clip_ring(film_ring, clip) or _rect_ring((x0, y0, x1, y1))
 
     body: list[str] = _part_body_els(arts)
     hover = (selection_manifest or {}).get("hover") or {}
@@ -1251,7 +1583,7 @@ def render_fab_svg(
         # above the airwires and a partially-routed board no longer reads
         # as "nothing routed". Hover is unaffected: the page walks every
         # stacked element at the point, not just the top one.
-        body.extend(_ratsnest_els(arts, rs_nets))
+        body.extend(_ratsnest_els(arts_full, rs_nets, clip=clip, highlight=highlight))
     for key in keys:
         colour, visible = _layer_style(key, flip)
         cls = "layer" if visible else "layer off"
@@ -1280,9 +1612,13 @@ def render_fab_svg(
         if key.endswith("_Mask"):
             # A film with holes, not the holes themselves — see the module
             # docstring's "rendered as what it physically is" note.
-            body.extend(_mask_film_els(art, key, colour, film_ring, selection_manifest))
+            body.extend(
+                _mask_film_els(
+                    art, key, colour, film_ring, selection_manifest, highlight=highlight
+                )
+            )
         elif art is not None:
-            body.extend(_region_els(art.regions, key, colour))
+            body.extend(_region_els(art.regions, key, colour, highlight=highlight))
             for s in art.strokes:
                 body.append(
                     f'<path d="{_path_d(s.points)}" fill="none" stroke="{colour}" '
@@ -1291,10 +1627,20 @@ def render_fab_svg(
                     f"{_hover_attrs(None, None, s.net)}>"
                     f"<title>{_stroke_title(key, s)}</title></path>"
                 )
+                if s.net in highlight:
+                    body.append(
+                        f'<path d="{_path_d(s.points)}" fill="none" '
+                        f'stroke="{_HL_COLOUR}" stroke-width="{s.width + 0.3:.4f}" '
+                        'stroke-opacity="0.6" stroke-linecap="round" '
+                        'stroke-linejoin="round" pointer-events="none" '
+                        'class="pcb-hl"/>'
+                    )
             for f in art.flashes:
                 body.append(
                     _flash_svg(f, colour, _flash_title(key, f), selection_manifest)
                 )
+                if f.net in highlight:
+                    body.append(_flash_hl(f))
         # A drill is a void, not a coloured feature -- see _DRILL_FILL's
         # docstring. Rendered here, on top of the copper/mask stack (this
         # key's position in _STACK_ORDER), so it reads as a hole PUNCHED
@@ -1413,6 +1759,13 @@ def render_fab_svg(
             f' data-pcb-snapshot="{esc(str(selection_manifest["snapshot"]), quote=True)}"'
         )
     side = ' data-side="bottom"' if flip else ""
+    # The resolved clip in board mm, so an agent reading raw SVG can quote
+    # the region it got back without re-deriving it from the transform.
+    scope_attr = (
+        f' data-scope="{clip[0]:.4f} {clip[1]:.4f} {clip[2]:.4f} {clip[3]:.4f}"'
+        if clip is not None
+        else ""
+    )
     # Normal: translate so gerber x0 lands on the gutter edge, then flip y.
     # Bottom view mirrors x around the board's own span — translate so x1
     # lands on the gutter edge and scale x negative; a gerber point at x0
@@ -1420,7 +1773,7 @@ def render_fab_svg(
     board_x = _LEGEND_GUTTER_PX + (x1 if flip else -x0) * px
     board_sx = -px if flip else px
     return f"""<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {doc_w:.1f} {doc_h:.1f}"
- width="{doc_w:.0f}" height="{doc_h:.0f}" role="img"{selection_root}{side} aria-label="{esc(title, quote=True)}">
+ width="{doc_w:.0f}" height="{doc_h:.0f}" role="img"{selection_root}{side}{scope_attr} aria-label="{esc(title, quote=True)}">
 <title>{esc(title, quote=True)}{" — bottom view" if flip else ""} — rendered from gerbers</title>
 <style>
   .layer.off {{ display: none; }}

@@ -67,6 +67,18 @@ the board left unclassed (a class set on the board is kept and reported). Use a 
 slug for a faithful routed copy. Pinout-preview is an unsaved pin proposal
 on an existing board, not a source-board importer; it never adds copper.
 
+`put(kind='pcb', id='<slug>', args={'op':'import_epro',
+'source':'export:<board>', 'report':True})` returns the **intake
+census** as a dry run — nothing is written (on an existing `<slug>` it
+reports the update merge). Also on the CLI (`--report`), on
+`import_epro(..., report=True)`, and always on for the web upload. The
+census is what the import just decided, collected during the import
+itself, ~3 kB: nets created (copper-only
+split out) / matched / merged, parts footprint-resolved vs synthesized,
+pads orphaned (no net) with intended `unused`/`nc` counted separately,
+per-layer source-copper counts and extents, and the source outline bbox
+beside the stored design's. Name lists cap at 10 + "+N more".
+
 ## Copy a board — `op='fork'`
 
 `put(id='<new slug>', args={'op':'fork','from':'<slug or pb<id>>'},
@@ -395,6 +407,18 @@ get(
     kind="pcb", id="s", view="frames", args={"refdes": "U2.CIN"}
 )  # which script line made it; also args={"net": "<name>"} /
 # args={"frame": "<key|id>"} (frame card), none = the run summary
+get(
+    kind="pcb", id="s", view="svg", args={"level": "fab"}
+)  # the fab render — the board read back FROM ITS GERBERS (pads, mask,
+   # drills, silk), with a layer selector. ~300KB on a real board, so
+   # scope it for inspection: args={"bbox": [x0,y0,x1,y1]} clips to that
+   # mm box outright; args={"refdes": ["R23"], "nets": ["GND"],
+   # "margin": 2} unions those objects' drawn extents plus margin mm
+   # (default 2). Elements wholly outside are dropped — the file is
+   # small, not just cropped — the named nets get a gold overlay, and the
+   # root carries data-scope="x0 y0 x1 y1". bbox and refdes are
+   # alternatives; nets may join either (highlight only). An unknown
+   # refdes/net names the nearest matches.
 get(kind="pcb", id="s", view="measures")  # evaluate the design's measuring tapes
 get(kind="pcb", id="s", view="schematic")  # net-label schematic SVG — works
 # before any placement (matching labels ARE the connections; also on the

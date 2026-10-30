@@ -2946,6 +2946,37 @@ def test_import_epro_refuses_a_board_copy_and_names_fork(pcb):
     assert pcb.store.get_ref(kind="pcb", id="epro-file-copy") is not None
 
 
+def test_import_epro_report_returns_the_census_as_a_dry_run(pcb):
+    """gr540839: ``args={'report': True}`` is the read side, not a copy —
+    the op returns the importer's census and writes nothing."""
+    _seed(pcb)
+    resp = pcb.put(
+        id="eprotest-copy",
+        args={
+            "op": "import_epro",
+            "source": "export:eprotest",
+            "report": True,
+        },
+    )
+    assert "intake census:" in resp.body
+    assert "nothing was written" in resp.body
+    assert pcb.store.get_ref(kind="pcb", id="eprotest-copy") is None
+
+
+def test_import_epro_report_rejects_a_non_bool(pcb):
+    _seed(pcb)
+    with pytest.raises(BadInput, match="report") as exc:
+        pcb.put(
+            id="eprotest-copy",
+            args={
+                "op": "import_epro",
+                "source": "export:eprotest",
+                "report": "yes",
+            },
+        )
+    assert exc.value.next and exc.value.options
+
+
 def test_import_epro_refuses_a_bad_source(pcb):
     _seed(pcb)
     for target, source, match in (
