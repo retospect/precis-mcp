@@ -72,6 +72,7 @@ from __future__ import annotations
 import atexit
 import collections
 import functools
+import hashlib
 import inspect
 import logging
 import os
@@ -81,11 +82,12 @@ import sys
 import time
 from collections.abc import Callable
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import anyio
 from mcp.server.fastmcp import Context, FastMCP
 from mcp.server.lowlevel.server import request_ctx
+from mcp.server.streamable_http import MCP_SESSION_ID_HEADER
 
 from precis import calllat, inflight
 from precis.budget.work_class import WorkClass, work_class_scope
@@ -93,6 +95,9 @@ from precis.runtime import PrecisRuntime, build_runtime
 from precis.secrets import mounted_secret
 from precis.tools import TOOL_REGISTRY
 from precis.utils.walk_budget import FILE_WALK_BUDGET_S
+
+if TYPE_CHECKING:
+    from starlette.types import Scope
 
 # mcp 1.27.0's ``FuncMetadata.convert_result`` validates
 # ``CallToolResult.structuredContent`` against the auto-generated output
@@ -740,7 +745,16 @@ log = logging.getLogger(__name__)
 # too; FastMCP 1.x doesn't expose it through the constructor and the
 # attribute path has changed between revisions. Leave unset until the
 # upstream library grows a stable API for it. (Critic MINOR-C A1.)
-mcp: FastMCP = FastMCP("precis-mcp", instructions=_INSTRUCTIONS)
+#: Streamable-HTTP session idle timeout in seconds: 24 h, because the
+#: SDK's 30 min default dropped the shared session server's sessions
+#: mid-conversation and the retry surfaced as a bare 'Error POSTing to
+#: endpoint' (gr538272).
+_SESSION_IDLE_TIMEOUT_S = 24 * 60 * 60
+mcp: FastMCP = FastMCP(
+    "precis-mcp",
+    instructions=_INSTRUCTIONS,
+    session_idle_timeout=_SESSION_IDLE_TIMEOUT_S,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -1569,6 +1583,71 @@ def _install_token_auth(app: Any, *, token: str) -> None:
     app.add_middleware(_TokenAuthMiddleware)
 
 
+#: Status codes the streamable-HTTP session layer answers for the session
+#: failures worth correlating (gr538272): ``404 Session not found`` for an
+#: id the session manager forgot, ``400`` for a request that needed one.
+_SESSION_LOG_STATUSES = frozenset({400, 404})
+
+
+def _session_id_hash(scope: Scope) -> str:
+    """sha256 hex[:8] of the request's ``Mcp-Session-Id``, ``-`` if absent.
+
+    The raw session id never reaches the log — the hash is enough to
+    correlate a 404 with the session's create/teardown lines (gr538272).
+    Absent is the resend-without-id case that answers 400.
+    """
+    from starlette.datastructures import Headers
+
+    session_id = Headers(scope=scope).get(MCP_SESSION_ID_HEADER)
+    if not session_id:
+        return "-"
+    return hashlib.sha256(session_id.encode("utf-8")).hexdigest()[:8]
+
+
+def _install_session_log(app: Any, *, mcp_path: str) -> None:
+    """Add a pure-ASGI observer logging a session-id hash on /mcp 400/404s.
+
+    The SDK's session manager answers ``404 Session not found`` for an id
+    it dropped (idle timeout, restart) and ``400`` for a resend that
+    arrived without one — and neither of its own log lines carries the
+    id, so a client 'Error POSTing to endpoint' can't be matched to a
+    session (gr538272). This middleware only observes: it wraps ``send``,
+    reads the status off ``http.response.start``, and never touches the
+    status or body (the MCP spec requires the 404). The idle-timeout
+    teardown itself logs inside the SDK's session task — not reachable
+    from here; what reaches our code is the 404 on the client's next
+    request.
+    """
+    from starlette.types import Message, Receive, Send
+
+    class _SessionLogMiddleware:
+        def __init__(self, app: Any) -> None:
+            self.app = app
+
+        async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+            if scope["type"] != "http" or scope.get("path") != mcp_path:
+                await self.app(scope, receive, send)
+                return
+
+            async def send_logged(message: Message) -> None:
+                if (
+                    message["type"] == "http.response.start"
+                    and message["status"] in _SESSION_LOG_STATUSES
+                ):
+                    log.warning(
+                        "mcp %s %s -> %d session=%s",
+                        scope["method"],
+                        mcp_path,
+                        message["status"],
+                        _session_id_hash(scope),
+                    )
+                await send(message)
+
+            await self.app(scope, receive, send_logged)
+
+    app.add_middleware(_SessionLogMiddleware)
+
+
 #: The verbs a ``--read-only`` serve keeps (the sandbox_run read MCP).
 #: Every other registered tool is removed before the transport starts.
 READ_ONLY_VERBS = frozenset({"get", "search"})
@@ -1650,7 +1729,8 @@ def _run_network_transport(
     :func:`_install_token_auth` can wrap it BEFORE ``uvicorn`` starts
     serving — ``FastMCP.run()`` gives no hook to inject middleware, so
     this is the "simplest header check the framework allows" without
-    forking the library.
+    forking the library. :func:`_install_session_log` wraps the same way
+    to correlate /mcp 400/404s with a session-id hash (gr538272).
 
     ``fd`` serves on an already-listening socket inherited from
     :mod:`precis.mcp_supervisor` instead of binding ``host:port``, so the
@@ -1668,6 +1748,7 @@ def _run_network_transport(
     mcp.settings.port = port
     app = mcp.streamable_http_app() if transport == "streamable-http" else mcp.sse_app()
     _install_token_auth(app, token=token)
+    _install_session_log(app, mcp_path=mcp.settings.streamable_http_path)
 
     async def _serve() -> None:
         config = uvicorn.Config(

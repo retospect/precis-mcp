@@ -10,6 +10,8 @@ narrowly (not through the full MCP tool-dispatch surface).
 
 from __future__ import annotations
 
+import hashlib
+import logging
 import sys
 from collections.abc import Iterator
 from types import SimpleNamespace
@@ -111,6 +113,105 @@ def test_install_token_auth_accepts_correct_token() -> None:
     resp = client.get("/probe", headers={"Authorization": "Bearer s3cr3t"})
     assert resp.status_code == 200
     assert resp.text == "ok"
+
+
+# ── session idle timeout + /mcp session-id logging (gr538272) ─────
+
+
+def test_session_idle_timeout_reaches_the_session_manager() -> None:
+    """The 24 h override must land on the SDK's session manager, not just
+    ``FastMCP.settings`` — ``streamable_http_app()`` is the conduit that
+    builds ``StreamableHTTPSessionManager`` from the setting."""
+    server.mcp.streamable_http_app()
+    manager = server.mcp.session_manager
+    assert manager.session_idle_timeout == 24 * 60 * 60
+
+
+def _session_status_app() -> Any:
+    """A Starlette app whose /mcp endpoint returns the status the caller
+    asks for via ``x-status``, wrapped in the session-log middleware."""
+    from starlette.applications import Starlette
+    from starlette.responses import PlainTextResponse
+    from starlette.routing import Route
+
+    async def _endpoint(request: Any) -> Any:
+        return PlainTextResponse(
+            "the-body", status_code=int(request.headers["x-status"])
+        )
+
+    app = Starlette(
+        routes=[
+            Route("/mcp", _endpoint, methods=["POST"]),
+            Route("/other", _endpoint, methods=["POST"]),
+        ]
+    )
+    server._install_session_log(app, mcp_path="/mcp")
+    return app
+
+
+def test_session_log_middleware_logs_the_id_hash_on_a_404(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """The 404 carries the sha256[:8] hash of Mcp-Session-Id; status and
+    body pass through untouched (the MCP spec requires the 404)."""
+    from starlette.testclient import TestClient
+
+    raw_id = "deadbeefsessionid0123456789abcdef"
+    client = TestClient(_session_status_app())
+    with caplog.at_level(logging.WARNING, logger="precis.server"):
+        resp = client.post(
+            "/mcp", headers={"x-status": "404", "mcp-session-id": raw_id}
+        )
+
+    expected = hashlib.sha256(raw_id.encode("utf-8")).hexdigest()[:8]
+    messages = [r.getMessage() for r in caplog.records]
+    assert any("404" in m and expected in m for m in messages)
+    assert resp.status_code == 404
+    assert resp.text == "the-body"
+
+
+def test_session_log_middleware_marks_a_missing_id_on_a_400(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """The resend-without-id case answers 400 and logs ``session=-`` —
+    there is no id to hash."""
+    from starlette.testclient import TestClient
+
+    client = TestClient(_session_status_app())
+    with caplog.at_level(logging.WARNING, logger="precis.server"):
+        resp = client.post("/mcp", headers={"x-status": "400"})
+
+    assert any("session=-" in r.getMessage() for r in caplog.records)
+    assert resp.status_code == 400
+    assert resp.text == "the-body"
+
+
+def test_session_log_middleware_never_logs_the_raw_session_id(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    from starlette.testclient import TestClient
+
+    raw_id = "deadbeefsessionid0123456789abcdef"
+    client = TestClient(_session_status_app())
+    with caplog.at_level(logging.DEBUG, logger="precis.server"):
+        client.post("/mcp", headers={"x-status": "404", "mcp-session-id": raw_id})
+        client.post("/mcp", headers={"x-status": "400", "mcp-session-id": raw_id})
+
+    logged = "\n".join(r.getMessage() for r in caplog.records)
+    assert raw_id not in logged
+
+
+def test_session_log_middleware_ignores_ok_and_other_paths(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    from starlette.testclient import TestClient
+
+    client = TestClient(_session_status_app())
+    with caplog.at_level(logging.DEBUG, logger="precis.server"):
+        client.post("/mcp", headers={"x-status": "200"})
+        client.post("/other", headers={"x-status": "404"})
+
+    assert not [r for r in caplog.records if "session=" in r.getMessage()]
 
 
 # ── main()'s transport branching (stdio stays byte-identical) ──────
