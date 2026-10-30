@@ -17,6 +17,12 @@
 # prompt non-interactively (`kimi -p`; --mode is ignored). --tmux opens a window in SESSION
 # (default: the current one) instead of taking over this terminal.
 # PRECIS_CO_AUTHOR is exported so scripts/ship's fallback footer names Kimi.
+# An interactive launch without a tty is refused: kimi has no trust flag
+# (2.3.3 `kimi --help`), so an untrusted folder's "Trust this folder?"
+# prompt would read a stdin that can never answer and hang forever
+# (gr537789). `kimi -p` never shows the prompt, so --prompt launches still
+# run — bounded by KIMI_TREE_TIMEOUT seconds (default 1800) when timeout/
+# gtimeout is on PATH.
 #
 # Internal: `--exec TREE [KIMI ARGS]` re-locks TREE to its own pid, then
 # execs Kimi under that same pid.
@@ -27,13 +33,45 @@ at_label=kimi
 at_init
 self=$(realpath "$0")
 
+# Refuse an interactive launch kimi could never get past: the trust
+# prompt reads stdin, and with no tty nothing can answer it. Prints the
+# manual equivalent so a background caller knows how to validate by hand.
+kimi_tree_no_tty() {
+	local tree=$1
+	shift
+	echo "kimi-tree: stdin is not a tty — kimi's 'Trust this folder?'" >&2
+	echo "  prompt would wait forever; skipping the launch." >&2
+	echo "  To validate by hand, from a terminal:" >&2
+	printf '    cd %q && kimi' "$tree" >&2
+	if (($#)); then printf ' %q' "$@" >&2; fi
+	printf '\n' >&2
+	exit 1
+}
+
 if [[ ${1:-} == --exec ]]; then
 	tree=$2
 	shift 2
 	at_exec_relock "$tree"
 	export PATH="$HOME/.kimi-code/bin:$HOME/.local/bin:$PATH"
 	export PRECIS_CO_AUTHOR="${PRECIS_CO_AUTHOR:-Kimi Code <noreply@moonshot.ai>}"
-	exec kimi "$@"
+	prompt_mode=0
+	for a in "$@"; do case $a in -p | --prompt) prompt_mode=1 ;; esac; done
+	if ((!prompt_mode)) && [[ ! -t 0 ]]; then
+		# Under --tmux this runs inside the window, where stdin is the
+		# pty — only a direct no-tty launch lands here.
+		kimi_tree_no_tty "$tree" "$@"
+	fi
+	runner=()
+	if ((prompt_mode)); then
+		# A one-shot launch gets a bounded run: even without a trust
+		# prompt it must not outlive the caller that spawned it.
+		if command -v timeout >/dev/null 2>&1; then
+			runner=(timeout "${KIMI_TREE_TIMEOUT:-1800}")
+		elif command -v gtimeout >/dev/null 2>&1; then
+			runner=(gtimeout "${KIMI_TREE_TIMEOUT:-1800}")
+		fi
+	fi
+	exec ${runner[@]+"${runner[@]}"} kimi "$@"
 fi
 
 usage() { sed -n '4,6p' "$0" | sed 's/^# *//' >&2; exit 2; }
@@ -73,6 +111,12 @@ if ((dry_run)); then
 	printf 'tree=%s branch=%s tmux=%s kimi=%s\n' "$tree" "$branch" "${tmux_session:--}" \
 		"kimi ${kimi_args[*]:-}"
 	exit 0
+fi
+
+# Fail before cutting a tree an interactive launch could never use;
+# --tmux is exempt (kimi gets the window's pty), as is --prompt.
+if ((!use_tmux)) && [[ -z $prompt ]] && [[ ! -t 0 ]]; then
+	kimi_tree_no_tty "$tree" ${kimi_args[@]+"${kimi_args[@]}"}
 fi
 
 "$at_here/kimi-setup" || { echo "kimi-tree: kimi-setup failed; fix it first" >&2; exit 1; }

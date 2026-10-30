@@ -197,16 +197,23 @@ def test_pads_1024_generates_in_seconds_and_is_closed_form():
     # Closed-form means LINEAR in pad count, so assert the scaling ratio
     # between two sizes measured back-to-back (robust to shared-VM load,
     # which inflates both alike — a flat 5s wall-clock budget flaked at 8s
-    # under sibling gate load while a quiet box measures ~1.1s/1024).
+    # under sibling gate load while a quiet box measures ~1.1s/1024). Each
+    # size is timed as the MIN of 3 repeats so a single load spike can't
+    # fail the gate (gr539611: a one-off 7ms/pad read at 1024 did).
     import time
 
-    start = time.monotonic()
-    small = G.expand("ewod_pad_array", "ARR", {"pads": 256})
-    t_small = time.monotonic() - start
+    def timed(pads: int) -> tuple[G.GeneratorExpansion, float]:
+        exp: G.GeneratorExpansion | None = None
+        best = float("inf")
+        for _ in range(3):
+            start = time.monotonic()
+            exp = G.expand("ewod_pad_array", "ARR", {"pads": pads})
+            best = min(best, time.monotonic() - start)
+        assert exp is not None
+        return exp, best
 
-    start = time.monotonic()
-    exp = G.expand("ewod_pad_array", "ARR", {"pads": 1024})
-    t_big = time.monotonic() - start
+    small, t_small = timed(256)
+    exp, t_big = timed(1024)
 
     assert small.ledger["summary"]["pads_total"] > 200
     assert exp.ledger["summary"]["pads_total"] > 900
