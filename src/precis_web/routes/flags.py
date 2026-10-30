@@ -19,6 +19,8 @@ stay single-sourced — no direct ``ref_tags`` writes here.
 
 from __future__ import annotations
 
+from urllib.parse import urlsplit
+
 from fastapi import APIRouter, Form, Request
 from fastapi.responses import RedirectResponse
 from starlette.responses import Response
@@ -120,12 +122,21 @@ FLAG_VALUE_LIST: list[str] = [d["value"] for defs in FLAG_GROUPS.values() for d 
 def _safe_local_redirect(return_to: str, fallback: str) -> str:
     """Constrain a ``return_to`` to a local path (no open redirect).
 
-    Accepts only a same-origin absolute path (``/…``); a
-    protocol-relative ``//host`` or an absolute URL falls back.
+    Accepts only a same-origin absolute path: exactly one leading
+    ``/`` whose second character is neither ``/`` nor ``\\`` — browsers
+    normalise ``\\`` to ``/``, so ``/\\host`` collapses into the
+    protocol-relative ``//host`` (gr541794). Control characters and
+    anything :func:`urlsplit` reads as carrying a scheme or netloc
+    (checked after that same backslash normalisation) fall back.
     """
-    if return_to.startswith("/") and not return_to.startswith("//"):
-        return return_to
-    return fallback
+    if not return_to.startswith("/") or return_to[1:2] in ("/", "\\"):
+        return fallback
+    if any(ord(c) < 0x20 or ord(c) == 0x7F for c in return_to):
+        return fallback
+    parts = urlsplit(return_to.replace("\\", "/"))
+    if parts.scheme or parts.netloc:
+        return fallback
+    return return_to
 
 
 @router.post("/{kind}/{ref_id}", response_model=None)
