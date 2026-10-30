@@ -365,8 +365,13 @@ class PcbIR:
     net_name: np.ndarray  # object[n_nets] -> str
     net_domain: np.ndarray  # object[n_nets] -> str ('electrical'|'fluidic'|'thermal')
     net_class: np.ndarray  # object[n_nets] -> str
-    #: float64[n_nets], nan = no current annotation (``pcb_nets.est_
-    #: current_a``). This is a real, already-shipped store column -- the
+    #: float64[n_nets], nan = no current annotation at all — the net's own
+    #: ``pcb_nets.est_current_a`` when declared, else the member pins'
+    #: resolved exchanges rolled up to the worst exchange on the net
+    #: (:func:`_seg_currents` — a potential feed carries the residual of
+    #: the declared pins, so the rolled figure is the trunk bound, not
+    #: one pin's draw; gr524239's widen stage reads this). The declared
+    #: column is a real, already-shipped store column -- the
     #: "current annotation" :mod:`precis.pcb.rules`'s resolver reads to
     #: derive an IPC-2221 track width, distinct from the LLM-authored
     #: datasheet :class:`precis.pcb.objectives.NetAnnotation` side-channel
@@ -1318,6 +1323,37 @@ def _seg_currents(
     return currents, resolved
 
 
+def member_current_rollup(members: Sequence[dict[str, Any]]) -> float | None:
+    """The net-level current a net's member ``est_current_a`` rows imply
+    — :func:`_seg_currents`'s exchange resolution collapsed to the worst
+    exchange on the net (a potential feed carries the residual of the
+    declared pins, so the figure is the trunk bound, not one pin's draw).
+    ``None`` when no member declares a current. Design-dict callers
+    (:func:`precis.pcb.session.clearance_net_rules`) roll the same member
+    rows the IR consumed, so the IPC-2221 width they resolve matches the
+    figure :attr:`PcbIR.net_current_a` carries for the same net."""
+    declared: list[float] = []
+    signed = 0.0
+    n_undeclared = 0
+    seen: set[tuple[str, str]] = set()
+    for m in members:
+        key = (str(m.get("refdes") or ""), str(m.get("pin") or ""))
+        if key in seen:
+            continue
+        seen.add(key)
+        pc = (m.get("meta") or {}).get("est_current_a")
+        if pc is None:
+            n_undeclared += 1
+            continue
+        v = float(pc)
+        declared.append(abs(v))
+        tags = {str(t) for t in (m.get("tags") or ())}
+        signed += v if tags & _CURRENT_DRIVER_ETYPES else -v
+    if not declared:
+        return None
+    return max(max(declared), abs(signed) if n_undeclared else 0.0)
+
+
 def from_graph(
     graph: dict[str, Any],
     *,
@@ -1489,6 +1525,13 @@ def from_graph(
         )
         seg_current_a.extend(seg_a)
         pin_resolved_a.update(pin_res)
+        if current is None and pin_res:
+            # A net with no est_current_a of its own still has a figure
+            # when members declare pin currents: the largest resolved
+            # exchange rolls up — a potential feed carries the residual
+            # of the declared pins, so the net figure is the trunk
+            # bound, not one pin's draw (gr524239).
+            net_current_a[-1] = max(pin_res.values())
         for pin_a, pin_b in edges:
             seg_net.append(net_id)
             seg_pin_a.append(pin_a)

@@ -424,7 +424,13 @@ def clearance_net_rules(
     clearance checks, from a :meth:`~precis.store.Store.pcb_load` design:
     what the put judge's ``check_clearance`` judges by, what the seed
     legaliser places against, and (via :func:`net_clearance_floors`) what
-    the place job's anneal keeps lands off authored vias by. One source."""
+    the place job's anneal keeps lands off authored vias by. One source.
+
+    The current a net resolves by is its own ``est_current_a`` when
+    authored, else the member pins' declarations rolled up to the net's
+    worst exchange (:func:`precis.pcb.ir.member_current_rollup`) — the
+    same figure ``ir.net_current_a`` carries, so a pin-annotated rail's
+    widen target prices the current the IR knows (gr524239)."""
     net_classes = design.get("net_classes") or {}
     return {
         str(n["name"]): resolve_net_rules(
@@ -435,7 +441,11 @@ def clearance_net_rules(
             layer_is_outer=True,
             fab_caps=capability,
             overrides=net_classes.get(n.get("net_class") or ""),
-            current_a=n.get("est_current_a"),
+            current_a=(
+                n.get("est_current_a")
+                if n.get("est_current_a") is not None
+                else pcb_ir.member_current_rollup(n.get("members") or ())
+            ),
         )
         for n in design["nets"]
     }

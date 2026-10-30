@@ -58,7 +58,6 @@ from precis.pcb import (
     ROUTE_RETIRED,
     ROUTE_RETIRED_NEXT,
     STACKUP_PRESETS,
-    ratsnest,
 )
 from precis.pcb import diag as pcb_diag
 from precis.pcb import drc as pcb_drc
@@ -1085,30 +1084,13 @@ def topo_place(
 
         # See _topo_route for the rationale: targets are the current-derived
         # IPC-2221 widths (clearance_net_rules) of the current-annotated
-        # nets; the power set is the plane/power rails plus nets whose
-        # target beats their born width. Unannotated nets get no target
-        # and keep the legacy widest-the-oracle-allows ruling (gr520904).
-        targets = {
-            net_id: float(drc_net_rules[name].track_width_mm)
-            for net_id in range(ir.n_nets)
-            if (name := str(ir.net_name[net_id])) in drc_net_rules
-            and not math.isnan(float(ir.net_current_a[net_id]))
-            and float(ir.net_current_a[net_id]) > 0.0
-        }
-        born = {
-            net_id: float(net_rules[name].track_width_mm)
-            for net_id in range(ir.n_nets)
-            if (name := str(ir.net_name[net_id])) in net_rules
-        }
-        power_ids = {
-            net_id
-            for net_id in range(ir.n_nets)
-            if str(ir.net_class[net_id] or "").strip().lower() in ratsnest.PLANE_CLASSES
-            or str(ir.net_domain[net_id] or "") == "power"
-            or targets.get(net_id, 0.0) > born.get(net_id, math.inf)
-        }
+        # nets; the widen set is the plane/power rails plus the nets whose
+        # target beats their born width, an unannotated rail taking the
+        # widest step the oracle accepts (gr524239: a real estimate
+        # outranks the class).
+        power_ids, targets = _tprealise.widen_targets(ir, net_rules, drc_net_rules)
         rres, widths = _tprealise.widen_power(
-            rres, sorted(power_ids), drc_findings=_drc_findings, targets=targets
+            rres, power_ids, drc_findings=_drc_findings, targets=targets
         )
         rows = _tprealise.sketch_rows(plan, td_route, ir, layers)
         route_pair = (plan, rres)

@@ -62,6 +62,7 @@ from typing import Any
 import numpy as np
 from shapely.geometry import Point, Polygon
 
+from precis.pcb.ratsnest import PLANE_CLASSES
 from precis.pcb.rules import NetRules
 from precis.pcb.topoplace import proxy as topo_proxy
 from precis.pcb.topoplace.design import TopoDesign, _world_to_local
@@ -884,16 +885,21 @@ def _guarded_nets(
     def nrules(name: str) -> NetRules:
         return rules.get(name, _DEFAULT)
 
-    # Foreign pads per layer, world frame (SMD top/bottom, TH spans all).
+    # Foreign pads per layer, world frame (SMD top/bottom, TH spans all)
+    # — the SAME pad set the DRC flashes: each pin's pad plus every
+    # non-primary footprint land (``pad_extra_*``: a pin's second
+    # same-named pad, a split slug half, an unpinned land — gr524239;
+    # the pin-only roster passed a track through copper the checker
+    # then errored on).
     pad_polys: dict[int, list[tuple[str, Polygon]]] = {i: [] for i in range(n_layers)}
-    for p in range(len(d.pin_xy)):
-        part = int(d.pin_part[p])
+
+    def add_pad(
+        part: int, px: float, py: float, hw: float, hh: float, pname: str, side: int
+    ) -> None:
         if part >= len(pose) or not np.isfinite(pose[part, :2]).all():
-            continue
-        hw, hh = (float(v) / 2.0 for v in d.pin_wh[p])
+            return
         if hw <= 0.0 or hh <= 0.0:
-            continue
-        px, py = float(d.pin_xy[p][0]), float(d.pin_xy[p][1])
+            return
         corners = np.asarray(
             [
                 [px - hw, py - hh],
@@ -906,15 +912,38 @@ def _guarded_nets(
             np.asarray(topo_proxy.local_to_world(corners, pose[part]), float)
         )
         if poly.is_empty or poly.area <= 0.0:
-            continue
-        pnet = int(d.pin_net[p])
-        pname = "" if pnet == int(NO_NET) else str(ir.net_name[pnet])
-        side = int(d.pin_side[p])
+            return
         layers: Iterable[int] = (
             range(n_layers) if side == 2 else (0,) if side == 0 else (n_layers - 1,)
         )
         for lay in layers:
             pad_polys[lay].append((pname, poly))
+
+    for p in range(len(d.pin_xy)):
+        pnet = int(d.pin_net[p])
+        pname = "" if pnet == int(NO_NET) else str(ir.net_name[pnet])
+        add_pad(
+            int(d.pin_part[p]),
+            float(d.pin_xy[p][0]),
+            float(d.pin_xy[p][1]),
+            float(d.pin_wh[p, 0]) / 2.0 if len(d.pin_wh) > p else 0.0,
+            float(d.pin_wh[p, 1]) / 2.0 if len(d.pin_wh) > p else 0.0,
+            pname,
+            int(d.pin_side[p]),
+        )
+    for k in range(len(d.pad_extra_xy)):
+        xpin = int(d.pad_extra_pin[k])
+        pnet = int(d.pin_net[xpin]) if 0 <= xpin < len(d.pin_net) else int(NO_NET)
+        pname = "" if pnet == int(NO_NET) else str(ir.net_name[pnet])
+        add_pad(
+            int(d.pad_extra_part[k]),
+            float(d.pad_extra_xy[k, 0]),
+            float(d.pad_extra_xy[k, 1]),
+            float(d.pad_extra_wh[k, 0]) / 2.0,
+            float(d.pad_extra_wh[k, 1]) / 2.0,
+            pname,
+            int(d.pad_extra_side[k]),
+        )
 
     lines = {i: LineString(_octilinear(pc.points)) for i, pc in enumerate(emit.pieces)}
     by_layer: dict[int, list[int]] = {}
@@ -1235,6 +1264,63 @@ def _error_keys(findings: Iterable[Any]) -> Counter:
     return keys
 
 
+def widen_targets(
+    ir: Any,
+    route_rules: Mapping[str, NetRules],
+    clearance_rules: Mapping[str, NetRules],
+) -> tuple[tuple[int, ...], dict[int, float]]:
+    """The widen stage's net set and per-net width targets (gr524239) —
+    the ONE selection both ``widen_power`` callers (the ``placer='topo'``
+    job and ``pcb.local.topo_place``) read, so job and kernel cannot
+    drift.
+
+    ``targets`` maps IR net id → the net's current-derived IPC-2221
+    width — the ``clearance_rules`` resolution — for nets carrying a
+    real ``est_current_a`` annotation (the net's own, or the member
+    pin currents rolled up — :attr:`precis.pcb.ir.PcbIR.net_current_a`
+    already carries either). The widen set is the plane/power-class
+    rails (``ratsnest.PLANE_CLASSES`` or ``net_domain == "power"`` —
+    GND and power route as normal nets and widen in the final stage)
+    plus every net whose target beats the width it was BORN at (the
+    ``route_rules`` resolution): a 1 mA signal net asks ~0.09 mm and
+    is never in it, and a plane net WITH an estimate still gets only
+    its current-driven target — the annotation outranks the class.
+    A plane net WITHOUT an estimate enters the set with no target;
+    :func:`widen_power` applies the legacy ruling to it — the widest
+    step the oracle accepts — while a signal net with no estimate
+    keeps its rule width (gr524239: widening follows estimated
+    current, and only a rail class may serve free space). Ids come
+    back sorted so the first rail widened is copper the next must
+    clear, deterministically."""
+    targets: dict[int, float] = {}
+    for net_id in range(ir.n_nets):
+        name = str(ir.net_name[net_id])
+        cur = float(ir.net_current_a[net_id])
+        if name in clearance_rules and math.isfinite(cur) and cur > 0.0:
+            targets[net_id] = float(clearance_rules[name].track_width_mm)
+
+    def born(net_id: int) -> float:
+        name = str(ir.net_name[net_id])
+        return (
+            float(route_rules[name].track_width_mm) if name in route_rules else math.inf
+        )
+
+    def plane_or_power(net_id: int) -> bool:
+        classes = getattr(ir, "net_class", ())
+        domains = getattr(ir, "net_domain", ())
+        return (
+            net_id < len(classes)
+            and str(classes[net_id] or "").strip().lower() in PLANE_CLASSES
+        ) or (net_id < len(domains) and str(domains[net_id] or "") == "power")
+
+    power_ids = tuple(
+        net_id
+        for net_id in range(ir.n_nets)
+        if plane_or_power(net_id) or targets.get(net_id, 0.0) > born(net_id)
+    )
+    return power_ids, targets
+
+
 def widen_power(
     result: Any,
     power_net_ids: Iterable[int],
@@ -1261,16 +1347,19 @@ def widen_power(
     ``targets`` is the per-net width the net's estimated current asks
     for — the IPC-2221 width :func:`precis.pcb.session.
     clearance_net_rules` resolves, keyed by IR net id, carrying ONLY
-    nets with a real current annotation. A rail tries the ladder steps
-    between its rule width and its target (plus the target itself),
-    widest first, and claims the first the oracle accepts; a target at
-    or below the rule width widens nothing — a 1 mA net keeps its rule
-    width instead of eating whatever space is free (gr524239: widening
-    follows estimated current, not available space). A net ABSENT from
-    ``targets`` has no current annotation and keeps the legacy ruling —
-    the widest ladder step the oracle accepts (gr520904's contract).
-    ``targets=None`` legacy-gates the whole stage the same way for
-    synthetic boards that carry no current annotations at all.
+    nets with a real current annotation (the net's own ``est_current_a``
+    or the member pin currents rolled up). A rail tries the ladder
+    steps between its rule width and its target (plus the target
+    itself), widest first, and claims the first the oracle accepts; a
+    target at or below the rule width widens nothing — a 1 mA rail
+    keeps its rule width even when its plane class put it in the set
+    (gr524239: the annotation outranks the class). A net in the set
+    WITHOUT a target — an unannotated plane/power rail, the only kind
+    :func:`widen_targets` admits that way — keeps the legacy ruling:
+    the widest ladder step the oracle accepts (gr520904); a signal net
+    with no estimate is never in the set at all. ``targets=None``
+    legacy-gates the whole stage the same way for synthetic boards
+    that carry no current annotations at all.
 
     Each net's tracks move together — one rail, one width. Accepted
     widths carry into later nets' trials (the first rail widened is
@@ -1289,12 +1378,14 @@ def widen_power(
         widths[net_id] = rule_w
         tgt = None if targets is None else targets.get(net_id)
         if tgt is None:
-            # no current annotation — the legacy ruling: the widest
-            # ladder step the oracle accepts (gr520904's contract)
+            # an unannotated plane/power rail — the only set member
+            # without a target — keeps the legacy ruling: the widest
+            # ladder step the oracle accepts (gr520904's contract,
+            # restored after gr524239's review).
             steps = [w for w in ladder if w > rule_w]
+        elif float(tgt) <= rule_w:
+            continue  # the est current needs no more than the rule width
         else:
-            if float(tgt) <= rule_w:
-                continue  # the est current needs no more than the rule width
             steps = sorted(
                 {w for w in ladder if rule_w < w <= float(tgt)} | {float(tgt)},
                 reverse=True,
@@ -1323,4 +1414,5 @@ __all__ = [
     "route_design",
     "sketch_rows",
     "widen_power",
+    "widen_targets",
 ]

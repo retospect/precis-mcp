@@ -7,6 +7,7 @@ and the emitted copper passes DRC with 0 errors."""
 
 from __future__ import annotations
 
+import dataclasses
 import math
 from types import SimpleNamespace
 
@@ -19,7 +20,8 @@ from precis.pcb import drc
 from precis.pcb import local as kernel
 from precis.pcb import realize as pcb_realize
 from precis.pcb.capabilities import capability_for
-from precis.pcb.ir import PcbIR
+from precis.pcb.ir import PcbIR, from_graph
+from precis.pcb.session import clearance_net_rules, route_net_rules
 from precis.pcb.topoplace import design_from_ir
 from precis.pcb.topoplace.design import TopoDesign, TopoZone
 from precis.pcb.topoplace.mesh import TopoMesh, build_mesh
@@ -34,6 +36,7 @@ from precis.pcb.topoplace.realise import (
     route_design,
     sketch_rows,
     widen_power,
+    widen_targets,
 )
 from precis.pcb.topoplace.wires import WirePath, Wires, build_wires
 
@@ -294,6 +297,193 @@ def test_widen_power_keeps_the_rule_width_when_the_oracle_refuses() -> None:
     )
     assert widths == {0: 1.0, 1: 0.5, 2: 0.15}
     assert {t.net_id: t.width_mm for t in res2.tracks} == widths
+
+
+def test_widen_power_net_without_target_takes_the_oracles_widest() -> None:
+    """gr524239 review: a net in the widen set whose annotation is
+    absent — an unannotated plane-classed rail, the only member
+    :func:`widen_targets` admits without a target — keeps the legacy
+    ruling: the widest ladder step the oracle accepts."""
+    tracks = tuple(
+        pcb_realize.RealizedTrack(
+            seg_id=i,
+            net_id=i,
+            layer=0,
+            segments=(),
+            length_mm=1.0,
+            blocked_by=None,
+            width_mm=0.15,
+        )
+        for i in range(2)
+    )
+    res = pcb_realize.RealizeResult(tracks, (), ())
+
+    def errs(r: pcb_realize.RealizeResult) -> list[drc.DrcFinding]:
+        return [
+            drc.DrcFinding(
+                rule="clearance",
+                severity="error",
+                where=f"synthetic N{t.net_id}",
+                detail="",
+                objects=({"ctype": "track", "net": f"N{t.net_id}", "layer": "F.Cu"},),
+            )
+            for t in r.tracks
+            if t.net_id == 1 and t.width_mm > 0.5
+        ]
+
+    res2, widths = widen_power(res, {0, 1}, drc_findings=errs, targets={0: 0.4})
+    # net 0 claims its annotated target; net 1 (no target) takes the
+    # widest step the oracle accepts — 0.5, under the always-failing
+    # 1.0/0.8/0.6 steps.
+    assert widths == {0: 0.4, 1: 0.5}
+    assert [t.width_mm for t in res2.tracks] == [0.4, 0.5]
+
+
+def test_widen_targets_marks_only_nets_whose_current_needs_more() -> None:
+    """gr524239 selection: the widen set is the plane/power-class rails
+    plus the nets whose current-derived IPC-2221 width beats the width
+    they were born at — a 1 mA signal net asks ~0.09 mm and is never a
+    candidate, an unannotated SIGNAL net is never a candidate, a 1.5 A
+    rail is (a plane net with an estimate gets only its current-driven
+    target — the annotation outranks the class)."""
+    caps = capability_for("4layer")
+    design = {
+        "nets": [
+            {"name": "SIG", "est_current_a": 0.001},
+            {"name": "NC"},
+            {"name": "GND", "net_class": "gnd"},
+            {"name": "PWR", "net_class": "power", "est_current_a": 1.5},
+            {"name": "PWR1MA", "net_class": "power", "est_current_a": 0.001},
+        ],
+        "net_classes": {},
+    }
+    born_rules = route_net_rules(design, caps)
+    target_rules = clearance_net_rules(design, caps)
+    ir = SimpleNamespace(
+        n_nets=5,
+        net_name=np.asarray(["SIG", "NC", "GND", "PWR", "PWR1MA"], dtype=object),
+        net_class=np.asarray(["", "", "gnd", "power", "power"], dtype=object),
+        net_domain=np.asarray(["electrical"] * 5, dtype=object),
+        net_current_a=np.asarray([0.001, math.nan, math.nan, 1.5, 0.001]),
+    )
+    power_ids, targets = widen_targets(ir, born_rules, target_rules)
+    assert power_ids == (2, 3, 4)
+    assert targets[3] > born_rules["PWR"].track_width_mm
+    # the 1 mA net got a target (it IS annotated) but the target is
+    # below its born width — it stays out of the widen set
+    assert targets[0] <= born_rules["SIG"].track_width_mm
+    assert 1 not in targets
+    # the unannotated gnd rail enters the set on class alone — no
+    # target, the legacy ladder ruling applies
+    assert 2 not in targets
+    # the 1 mA power net is in the set on class but its annotated
+    # target is below its born width — it keeps its rule width
+    assert targets[4] <= born_rules["PWR1MA"].track_width_mm
+
+
+def test_widen_unannotated_gnd_rail_still_widens_end_to_end() -> None:
+    """gr524239 review: the standing rule — an unannotated GND rail
+    routes as a normal net and is widened in the final stage, claiming
+    the widest step the DRC oracle accepts (the legacy ruling a
+    plane-class net keeps when it carries no current estimate)."""
+    board = _plane_board()  # GND cls="gnd", no est_current_a
+    design = kernel._design(board, None)
+    ir = kernel._build_ir(design)
+    footprints = kernel._footprints(design, ir)
+    td = design_from_ir(ir, footprints, route_planes=True)
+    born_rules = route_net_rules(design.graph, design.fab_caps)
+    target_rules = clearance_net_rules(design.graph, design.fab_caps)
+    _plan, res = route_design(td, ir, net_rules=born_rules)
+    layers = [str(layer.get("name") or "") for layer in ir.stackup]
+    gnd_ir = int(list(ir.net_name).index("GND"))
+
+    power_ids, targets = widen_targets(ir, born_rules, target_rules)
+    assert gnd_ir in power_ids and gnd_ir not in targets
+    res2, widths = widen_power(
+        res,
+        power_ids,
+        drc_findings=lambda r: _drc_findings(r, ir, layers),
+        targets=targets,
+    )
+    assert widths[gnd_ir] > born_rules["GND"].track_width_mm
+    assert _drc_errors(res2, ir, layers) == 0
+
+
+def test_widen_targets_rolls_pin_currents_up_to_the_net() -> None:
+    """gr524239 review: a net with no ``est_current_a`` of its own still
+    has a figure when member pins declare theirs — the resolved
+    exchanges roll up to the worst exchange on the net (the undeclared
+    source pin carries the residual of the two 1 A draws, so the net
+    reads 2.0 A, not one pin's 1.0). The rail then prices its
+    current-derived widen target off that figure."""
+    members = [
+        {"refdes": "U1", "pin": "2", "tags": ["power_out"]},
+        {"refdes": "L1", "pin": "1", "meta": {"est_current_a": 1.0}},
+        {"refdes": "L2", "pin": "1", "meta": {"est_current_a": 1.0}},
+    ]
+    graph = {
+        "instances": [{"refdes": r} for r in ("U1", "L1", "L2")],
+        "nets": [{"name": "VOUT", "net_class": "power", "members": members}],
+    }
+    ir = from_graph(graph)
+    vout = int(list(ir.net_name).index("VOUT"))
+    assert ir.net_current_a[vout] == pytest.approx(2.0)
+
+    caps = capability_for("4layer")
+    design = {"nets": graph["nets"], "net_classes": {}}
+    born_rules = route_net_rules(design, caps)
+    target_rules = clearance_net_rules(design, caps)
+    power_ids, targets = widen_targets(ir, born_rules, target_rules)
+    assert vout in power_ids
+    # the rolled 2.0 A prices the IPC-2221 target — wider than born
+    assert targets[vout] > born_rules["VOUT"].track_width_mm
+
+
+def test_widen_follows_estimated_current_end_to_end() -> None:
+    """gr524239's reported failure inverted: a board with a 1 mA signal
+    net and a real-current rail — after the widen stage the signal net
+    keeps its born width and the rail is wider. (The report's 1 mA
+    nets reached 1.0 mm because the widen set admitted every net with
+    ANY annotation and the ladder served available space, not the
+    estimated current's need.)"""
+    fp = pcb.Footprint(
+        "SIP2",
+        [
+            pcb.pad("1", "rect", -0.8, 0.0, w=0.9, h=1.0),
+            pcb.pad("2", "rect", 0.8, 0.0, w=0.9, h=1.0),
+        ],
+    )
+    b = pcb.Board("widen-cur", stackup=4, outline=pcb.rect(30.0, 10.0))
+    f = b.footprint(fp)
+    g1 = b.part("G1", footprint=f, pins=["1", "2"]).at(8.0, 5.0)
+    g2 = b.part("G2", footprint=f, pins=["1", "2"]).at(22.0, 5.0)
+    b.net("GND", cls="gnd", current=1.5).tie(g1["2"], g2["1"])
+    s1 = b.part("S1", footprint=f, pins=["1", "2"]).at(5.0, 8.5)
+    s2 = b.part("S2", footprint=f, pins=["1", "2"]).at(15.0, 8.5)
+    b.net("SIG", current=0.001).tie(s1["2"], s2["1"])
+
+    design = kernel._design(b, None)
+    ir = kernel._build_ir(design)
+    footprints = kernel._footprints(design, ir)
+    td = design_from_ir(ir, footprints, route_planes=True)
+    born_rules = route_net_rules(design.graph, design.fab_caps)
+    target_rules = clearance_net_rules(design.graph, design.fab_caps)
+    _plan, res = route_design(td, ir, net_rules=born_rules)
+    layers = [str(layer.get("name") or "") for layer in ir.stackup]
+    gnd_ir = int(list(ir.net_name).index("GND"))
+    sig_ir = int(list(ir.net_name).index("SIG"))
+
+    power_ids, targets = widen_targets(ir, born_rules, target_rules)
+    res2, widths = widen_power(
+        res,
+        power_ids,
+        drc_findings=lambda r: _drc_findings(r, ir, layers),
+        targets=targets,
+    )
+    assert widths[gnd_ir] > born_rules["GND"].track_width_mm
+    assert sig_ir not in widths  # never a candidate
+    assert all(t.width_mm == 0.15 for t in res2.tracks if t.net_id == sig_ir)
+    assert _drc_errors(res2, ir, layers) == 0
 
 
 def test_widen_power_target_at_or_below_rule_skips_widening_and_the_oracle() -> None:
@@ -628,6 +818,184 @@ def test_emit_guard_withdraws_a_piece_through_a_foreign_pad() -> None:
         layers=(0,),
     )
     assert _guarded_nets(plan, d, ir, 2, np.asarray(d.pose0), {}) == {1}
+
+
+def test_emit_guard_sees_nonprimary_lands() -> None:
+    """gr524239: the guard's pad roster must be the SAME pad set the
+    DRC flashes — including the footprint's non-primary lands
+    (:attr:`TopoDesign.pad_extra_*`), which ``pin_xy`` does not
+    describe. An unpinned NC land is foreign to every net; a piece
+    across it (world (17.5, 0)) is committed short copper the pin-only
+    roster passed. A pinned extra keeps its pin's net: an own-net
+    piece across it is legal and stays."""
+    d, ir = _guard_fixture()
+
+    def with_extra(pin: int) -> TopoDesign:
+        return dataclasses.replace(
+            d,
+            pad_extra_xy=np.asarray([[7.5, 0.0]]),  # world (17.5, 0)
+            pad_extra_wh=np.asarray([[1.0, 1.0]]),
+            pad_extra_part=np.asarray([0]),
+            pad_extra_pin=np.asarray([pin]),
+            pad_extra_side=np.asarray([0], dtype=np.int8),
+        )
+
+    piece = RoutePiece(net=1, branch=0, layer=0, points=((16.0, 0.0), (19.0, 0.0)))
+
+    # unpinned land — foreign to every net
+    d_nc = with_extra(-1)
+    plan = RoutePlan(pieces=(piece,), vias=(), layers=(0,))
+    assert _guarded_nets(plan, d_nc, ir, 2, np.asarray(d.pose0), {}) == {1}
+
+    # pinned to a foreign-net pin (pin 0's net is N0) — still foreign to N1
+    d_foreign = with_extra(0)
+    assert _guarded_nets(plan, d_foreign, ir, 2, np.asarray(d.pose0), {}) == {1}
+
+    # same-net extra land — the piece's own copper, not a short
+    own = RoutePiece(net=0, branch=1, layer=0, points=((16.0, 0.0), (19.0, 0.0)))
+    plan = RoutePlan(pieces=(own,), vias=(), layers=(0,))
+    assert _guarded_nets(plan, d_foreign, ir, 2, np.asarray(d.pose0), {}) == set()
+
+
+def test_guard_withdraws_crossing_wires_the_order_lists_never_saw() -> None:
+    """gr524239 — the emit guard's case the order-based crossing
+    detector structurally misses: two branches whose taut polylines
+    cross mid-cell on DISJOINT mesh edges. No shared edge means no
+    order inversion, so ``plan.crossings`` is empty and both pieces
+    are emitted on the same layer — geometrically an X, a real short.
+    The guard must withdraw BOTH nets and ``sketch_rows`` report them
+    ``failed: short-risk``; nothing shorting may be committed."""
+    n_layers = 4
+    outers = frozenset({0, n_layers - 1})
+    verts = np.asarray([[0.0, 0.0], [4.0, 0.0], [0.0, 4.0], [4.0, 4.0]])
+    edges = np.asarray([[0, 1], [2, 3]], np.int32)
+    mesh = TopoMesh(
+        verts=verts,
+        tris=np.zeros((0, 3), np.int32),
+        edges=edges,
+        tri_edges=np.zeros((0, 3), np.int32),
+        edge_tris=np.zeros((2, 2), np.int32),
+        constrained=np.zeros(2, dtype=bool),
+        pad_vertex={},
+    )
+    b0 = WirePath(
+        net=0,
+        pin_a=0,
+        pin_b=1,
+        tris=(),
+        edges=(0,),
+        t=(0.5,),
+        points=((0.0, 0.0), (4.0, 4.0)),
+    )
+    b1 = WirePath(
+        net=1,
+        pin_a=2,
+        pin_b=3,
+        tris=(),
+        edges=(1,),
+        t=(0.5,),
+        points=((0.0, 4.0), (4.0, 0.0)),
+    )
+    wires = Wires(
+        branches=(b0, b1),
+        order=((), ()),
+        capacity_mm=np.zeros(2),
+        net_layers=(outers, outers),
+        unreachable=(),
+        gap_free_mm=np.full((2, n_layers), -1.0),
+        gap_cap=np.full((2, n_layers), -1),
+    )
+    d = TopoDesign(
+        parts=("P1", "P2", "P3", "P4"),
+        pin_xy=np.zeros((4, 2)),
+        pin_part=np.asarray([0, 1, 2, 3]),
+        pin_side=np.asarray([0, 0, 0, 0], dtype=np.int8),
+        pin_label=np.asarray(["1"] * 4, dtype=object),
+        pin_net=np.asarray([0, 0, 1, 1], dtype=np.int32),
+        net_pins=(np.asarray([0, 1]), np.asarray([2, 3])),
+        flex=(),
+        swap_groups=(),
+        fixed=np.zeros(4, dtype=bool),
+        freedoms=np.full(4, 3, dtype=np.uint8),
+        outline=np.asarray([[-1.0, -1.0], [5.0, -1.0], [5.0, 5.0], [-1.0, 5.0]]),
+        pose0=np.zeros((4, 4)),
+        net_name=("N0", "N1"),
+        pin_wh=np.zeros((4, 2)),
+    )
+    plan = plan_route(d, mesh, wires, n_layers)
+    # the order detector saw nothing — the pieces are emitted on the
+    # same layer, physically crossing at (2, 2)
+    assert plan.crossings == ()
+    assert {p.layer for p in plan.pieces} == {0}
+
+    ir = SimpleNamespace(
+        n_pins=4,
+        n_nets=2,
+        pin_net=np.asarray([0, 0, 1, 1]),
+        pin_instance=np.asarray([0, 1, 2, 3]),
+        pin_label=np.asarray(["1"] * 4, dtype=object),
+        instance_refdes=np.asarray(list(d.parts), dtype=object),
+        net_name=np.asarray(list(d.net_name), dtype=object),
+        net_plane_layers=np.zeros(2, dtype=np.uint16),
+    )
+    guarded = _guarded_nets(plan, d, ir, n_layers, np.asarray(d.pose0), {})
+    assert guarded == {0, 1}
+
+    # the route_design emit path: withdraw the flagged nets, then the
+    # emitted copper carries NO track<->track violation
+    emit = dataclasses.replace(
+        plan,
+        pieces=tuple(p for p in plan.pieces if p.net not in guarded),
+        vias=tuple(v for v in plan.vias if v.net not in guarded),
+    )
+    plan = dataclasses.replace(plan, guarded=tuple(sorted(guarded)))
+    res = realize_result(emit, d, ir, n_layers)
+    assert res.tracks == ()  # no short copper committed
+
+    rows = sketch_rows(plan, d, ir, ["F.Cu", "In1.Cu", "In2.Cu", "B.Cu"])
+    for name in ("N0", "N1"):
+        assert rows[name]["status"] == "failed"
+        assert rows[name]["fail"]["problems"][0]["reason"] == "short-risk"
+
+
+def test_forced_crossing_board_commits_no_track_short() -> None:
+    """gr524239 end-to-end: two top-SMD nets whose pads sit in an X —
+    whatever the yielder/span-flip/guard does with them, the committed
+    copper must carry no track<->track clearance error. Where the
+    crossing cannot be resolved the net is withdrawn and reported
+    failed instead."""
+    fp = pcb.Footprint(
+        "SIP2",
+        [
+            pcb.pad("1", "rect", -0.8, 0.0, w=0.9, h=1.0),
+            pcb.pad("2", "rect", 0.8, 0.0, w=0.9, h=1.0),
+        ],
+    )
+    b = pcb.Board("cross", stackup=4, outline=pcb.rect(30.0, 20.0))
+    f = b.footprint(fp)
+    a1 = b.part("A1", footprint=f, pins=["1", "2"]).at(5.0, 3.0)
+    a2 = b.part("A2", footprint=f, pins=["1", "2"]).at(25.0, 17.0)
+    b1 = b.part("B1", footprint=f, pins=["1", "2"]).at(5.0, 17.0)
+    b2 = b.part("B2", footprint=f, pins=["1", "2"]).at(25.0, 3.0)
+    b.wire(a1["2"], a2["1"], name="NA")
+    b.wire(b1["2"], b2["1"], name="NB")
+
+    design = kernel._design(b, None)
+    ir = kernel._build_ir(design)
+    footprints = kernel._footprints(design, ir)
+    td = design_from_ir(
+        ir, footprints, net_classes=design.graph.get("net_classes"), route_planes=True
+    )
+    plan, res = route_design(td, ir)
+    layers = [str(layer.get("name") or "") for layer in ir.stackup]
+    findings = _drc_findings(res, ir, layers, footprints=footprints)
+    track_shorts = [f for f in findings if f.rule == "clearance" and "track" in f.where]
+    assert track_shorts == [], [f"{f.rule}: {f.where}" for f in track_shorts]
+    rows = sketch_rows(plan, td, ir, layers)
+    for name in ("NA", "NB"):
+        assert rows[name]["status"] in ("realized", "failed")
+        if rows[name]["status"] == "failed":
+            assert rows[name]["fail"]["problems"]
 
 
 def _stall_fixture() -> tuple[TopoDesign, Wires]:

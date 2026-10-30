@@ -317,7 +317,6 @@ def _topo_route(
     ``meta.topo_run.route``."""
     from precis.pcb import DANGLING_NET_NOTE_PREFIX
     from precis.pcb import drc as pcb_drc
-    from precis.pcb import ratsnest as pcb_ratsnest
     from precis.pcb import topoplace as _tp
     from precis.pcb.topoplace import realise as _tprealise
 
@@ -409,33 +408,15 @@ def _topo_route(
 
     # The widen targets are the nets' current-derived IPC-2221 widths —
     # clearance_net_rules' resolution, the same map the DRC oracle below
-    # measures against — for nets that carry a real current annotation.
-    # A rail claims its target where the oracle allows; the power set is
-    # the plane/power rails plus any net whose target exceeds the width
-    # it was born at (gr524239: widening follows estimated current, never
-    # free space). Unannotated nets get no target: they keep the legacy
-    # widest-the-oracle-allows ruling (gr520904).
-    targets = {
-        net_id: float(drc_net_rules[name].track_width_mm)
-        for net_id in range(ir.n_nets)
-        if (name := str(ir.net_name[net_id])) in drc_net_rules
-        and not math.isnan(float(ir.net_current_a[net_id]))
-        and float(ir.net_current_a[net_id]) > 0.0
-    }
-    born = {
-        net_id: float(net_rules[name].track_width_mm)
-        for net_id in range(ir.n_nets)
-        if (name := str(ir.net_name[net_id])) in net_rules
-    }
-    power_ids = {
-        net_id
-        for net_id in range(ir.n_nets)
-        if str(ir.net_class[net_id] or "").strip().lower() in pcb_ratsnest.PLANE_CLASSES
-        or str(ir.net_domain[net_id] or "") == "power"
-        or targets.get(net_id, 0.0) > born.get(net_id, math.inf)
-    }
+    # measures against. A rail claims its target where the oracle
+    # allows; the widen set is the plane/power rails plus the nets whose
+    # target exceeds the width they were born at, and an unannotated
+    # rail takes the widest step the oracle accepts (gr524239: a real
+    # current estimate outranks the class — a 1 mA rail keeps its rule
+    # width).
+    power_ids, targets = _tprealise.widen_targets(ir, net_rules, drc_net_rules)
     rres, widths = _tprealise.widen_power(
-        rres, sorted(power_ids), drc_findings=_drc_findings, targets=targets
+        rres, power_ids, drc_findings=_drc_findings, targets=targets
     )
     rows = _tprealise.sketch_rows(plan, td_route, ir, layers)
 
