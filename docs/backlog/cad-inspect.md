@@ -1,5 +1,7 @@
 # cad-inspect — the inspection verb family (ray / section / overlap)
 
+Source gripes: gr526015.
+
 **Status:** kernel module + tests landed in `src/precis/cad/inspect.py`
 (gripe 526015's shaped-beam inspect tool). This spec records the design
 contract and what is deliberately not built.

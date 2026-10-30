@@ -280,6 +280,7 @@ off that gap until it closes.
 
 ## Parked
 
+- **[cad-pattern-ops](../cad-pattern-ops.md)** — DSL mirror/rotate/tile as one motif mechanism (gr536408); unparks on Reto's ruling whether a model-side pattern mechanism beats the Python-generator path.
 - **microfluidic cartridge modelling** — unparked by Reto 2026-09-30 to
   the Horizon only, and lives inside `backlog/cross-scale-single-assembly.md`
   (Do-next 9) rather than as its own entry.

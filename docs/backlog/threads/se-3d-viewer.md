@@ -257,6 +257,7 @@ the region property layer in `backlog/pocket-from-molecule.md`.
 
 ## Parked
 
+- **[se3d-rev-meshes](../se3d-rev-meshes.md)** — `?rev=` on a past revision draws the live cad design's meshes (Do-next 8 residue, gr531335); unparks on Reto's refuse-vs-snapshot ruling.
 - **backlog/se-3d-viewer-ux-batch.md**, colour-channel selector / clip
   plane — unparks with Horizon 2, when a block-selection surface exists.
 - **backlog/se-3d-viewer-ux-batch.md**, hide the picking dropdown + label the
