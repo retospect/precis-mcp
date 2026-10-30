@@ -32,5 +32,33 @@ Still open:
 - EasyEDA's own designator poses (the ATTR records) are not imported, so
   there is no authored label position to fall back on.
 
+## Tip-cluster label walks — shared walls leave no ring gap (gr538005)
+
+After the 2026-10-29 label-room campaign (capability-priced SilkRoom,
+flat edge axis, label axis + `settle_label_room` repair, pins, route
+keepouts — runs 35–45), the taz-leaf far-label count settles at ~28–32
+of 50 (measure: refdes anchor >3 mm off the reservation bbox). The root
+cause is measured, not guessed: 76 % of blocked label candidates fail
+against *shared walls* — between two parts at pair-floor distance the
+settled outline is one wall at the hull midpoint, and a ~2 mm label box
+needs ring gap ≈ anchor + clear + text ≈ 3.5 mm to fit between. Labels
+can only live on a cluster's outer perimeter, and the tip cap array —
+boxed in by the two `fixed='both'` comb electrodes SNS1/SNS2 — has a
+short perimeter. Effort is not the lever (40k evals ≈ 20k). The
+3.1–3.9 mm bucket is mostly corner-spot labels that read adjacent; the
+true walks are the >4.5 mm dozen. R23's original complaint (4.9 mm +
+squished on the outline) is fixed by the campaign; this remainder is
+geometry, not scoring.
+
+Open — Reto's pick (`reto:ask`):
+
+- (a) upgrade the repair-pass oracle from the box model to the real
+  `build_silk` census — the model can never reproduce settled outlines
+  in dense clusters (runs 42/43 proved model-clean poses still walk at
+  draw time);
+- (b) silk-side cluster labelling — one label per shared-wall cluster;
+  a draw feature, not placement;
+- (c) board-script area allocation for the tip cluster.
+
 Thread: threads/ewod-pcb.md (silk was handed over from
 pcb-easyeda-round-trip).

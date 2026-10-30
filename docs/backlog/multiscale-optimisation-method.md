@@ -49,6 +49,12 @@ Section → owner:
 - §6b pcb as second renter — `pcb-guided-place-route.md` /
   `pcb-se-binding.md` own pcb; held here: the term→layer split and the
   seed_placement bridge.
+- §6c agent code edits as the outer move — **new, owned here**
+  (gr513747): the workspace script becomes the annealed variable, with
+  a Bayesian layer over edit classes. Depends on the
+  structure-workspaces surfaces (`script_sha`, run, trace) and on
+  `trace-frame-structural-keys.md` (gr513662) for cross-version
+  comparability.
 
 ---
 
@@ -668,6 +674,55 @@ heuristically meanwhile. The heuristic bridge is `seed_placement`
 SA polishes with its caches untouched. No pcb rewrite is on the
 critical path.
 
+## 6c. Agent code edits as the outer move (added 2026-10-30, gr513747)
+
+The move set so far stops at parameters and layout choices. The
+highest-leverage move — and the one an LLM is actually good at — is
+editing the se/pcb workspace script itself: a different sketch topology,
+routing strategy, net ordering, constraint, block decomposition or
+escape pattern. Reto 2026-10-24: "we were talking about se code
+iterations and bayesian priors and slope descent, specifically for the
+issues like pcb routing." Nothing yet treats the agent's code edit as
+the discrete outer move of the optimiser, with a Bayesian layer choosing
+which edit to try next.
+
+- **Outer move = a code edit** to the workspace script, proposed by an
+  agent. Each version is keyed by its `script_sha` — the workspace
+  import already mints one (structure-workspaces §1b).
+- **Inner loop per code version** = the existing descent + anneal +
+  route loop, returning objective values plus a `ConflictDigest` of
+  binding constraints and marginal prices (the route → penalise →
+  anneal → route loop shipped 8d6f56c59).
+- **Bayesian layer over edits.** A prior over edit classes, informed by
+  earlier boards and earlier digests — which binding constraints a
+  class of edit tends to relieve — updated from outcomes; expected
+  improvement picks the next edit class to try. The house guard holds
+  unchanged: the agent proposes edits, never objective weights or
+  acceptance criteria.
+- **Slope signals.** `ConflictDigest` marginal prices and the
+  congestion map (`RealizeResult.congestion_cells`) act as
+  gradient-like hints for *where* in the code to edit — the block or
+  net group feeding the hottest region.
+- **Comparability across code versions** is the hard prerequisite.
+  Frames and objects must match across edits via structure-based frame
+  keys ([trace-frame-structural-keys](trace-frame-structural-keys.md),
+  gr513662, which also carries the run-to-run diff gr513671), and
+  traces and errors must always end in user code (gr513668/gr513669)
+  so a failure points at the line to edit.
+- **Budget and stopping.** N code versions × inner budget; keep the
+  best-so-far state
+  ([pcb-anneal-best-state-vs-routability](pcb-anneal-best-state-vs-routability.md))
+  and log every edit with its outcome as evidence — that log is the
+  prior for the next board.
+
+First dogfood target: the EWOD four-net congestion case (td472840,
+"routing levers measured; local repair pending"), then the Classic Nano
+(`examples/boards/nano`). The workspace dev loop — build/check/trace in
+~10 ms locally — is what makes the outer loop practical at all. Open:
+the edit-class taxonomy the prior is over, and how a code-version record
+joins the run archive of [design-rerun-pull](design-rerun-pull.md) —
+each `script_sha`'s best inner-loop result is exactly its elite.
+
 ## 7. Scale mapping — what survives downward
 
 | Layer | Macro (parts) | Meso (cube assembly) | Atomic |
@@ -756,3 +811,8 @@ when investigated.
     yet. When one lands it needs the mode-band aggregate and the
     density floor from §2a's spectral rules, not a bare "k-th
     eigenvalue" constraint.
+15. §6c edit-class prior — the taxonomy the Bayesian layer is over
+    (sketch topology / routing strategy / net order / constraint /
+    block decomposition), and where each code-version record joins the
+    design-rerun-pull archive. Sequenced after the workspace lane and
+    trace-frame-structural-keys.

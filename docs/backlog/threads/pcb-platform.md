@@ -39,13 +39,19 @@ owner on 2026-09-30, 10 prio high; this file gives them one.
    ordered slices live in thread [structure-workspaces](structure-workspaces.md);
    this thread owns only the pcb-side checks (DRC `frame` column, request
    lanes) when they touch `drc.py`/`realize.py`.
-2. **backlog/source-bundles.md** — `draft/normal`, filed 2026-10-29 from
+2. **backlog/pcb-topo-place.md** — `draft/high` (gr515107): the topo
+   placer/router campaign — pairwise part map, solver-side pin
+   assignment, corridor shove and its own realiser. `blocked-by` 1 per
+   its front matter (the pcb-ws4 gate), though slices 0–1c are already
+   on main through r107 and it builds on its own worktree; ranked here
+   so the thread sees the engine work its items serve.
+3. **backlog/source-bundles.md** — `draft/normal`, filed 2026-10-29 from
    gr520323 (Reto 2026-10-26): a design owns an immutable, hash-keyed
    source snapshot via the signed upload door. Unblocks the 36 KB inline
    batch now and answers the storage half structure-workspaces §1b still
    has open; ranked under 1 because its shape must stay compatible with
    the workspace run contract 1 owns.
-3. **backlog/pcb-lazy-netlist-and-checks.md** — `status: ready`; the
+4. **backlog/pcb-lazy-netlist-and-checks.md** — `status: ready`; the
    netlist/role/one-check-surface model the rest of this list assumes
    exists. **Slices 2–3 shipped 2026-10-13** (one commit on worktree
    `bl-pcb-netlist-s23`, committed not landed): every footprint pad is a
@@ -62,44 +68,49 @@ owner on 2026-09-30, 10 prio high; this file gives them one.
    `ewod-dogfood-2`; Slice 6's open list (congestion cost,
    rip-up-and-reassign, spare channels) and Slice 7. Slices 9 and 6 core
    shipped 2026-10-15.
-4. **backlog/pcb-component-model.md** — `draft/high`; the
+5. **backlog/pcb-component-model.md** — `draft/high`; the
    Component/LandPattern/Instance reframe that agent-interface-gaps and
    pinout-view-and-connector-intake build on. Check against the workspace
    builder API (`pcb.part`/`pcb.Footprint`) before building.
-5. **backlog/pcb-pinout-view-and-connector-intake.md** — `draft/high`;
+6. **backlog/pcb-pinout-view-and-connector-intake.md** — `draft/high`;
    consumes 4's port/pad contract for prose-to-connector capture; also
    feeds the paper (its own §CONSIDER FOR THE PAPER cross-ref). Check
    against the workspace builder API before building.
-6. **backlog/pcb-agent-interface-gaps.md** — `draft/high`; the removal path
+7. **backlog/pcb-agent-interface-gaps.md** — `draft/high`; the removal path
    (Gap 5) is superseded by the workspace (removal = delete the script
    line; `op='remove'`/`'disconnect'` stay unbuilt). The other gaps stay,
    re-read against the workspace surface before building.
-7. **backlog/pcb-meta-blocks.md** — superseded by the workspace (meta
+8. **backlog/pcb-meta-blocks.md** — superseded by the workspace (meta
    blocks = a `@pcb.module`; `op='instantiate_block'` stays unbuilt);
    level 2 (pre-routed bundles) is pcb-workspace-code slice 3.
-8. **backlog/pcb-card-edge-outline.md** — `draft/medium`; footprint-driven
+9. **backlog/pcb-card-edge-outline.md** — `draft/medium`; footprint-driven
    outline modification, buildable now on today's footprint dict (Reto
    2026-10-21), independent of 4's split.
-9. **backlog/pcb-usb-c-pd-nano-testboard.md** — `draft/normal`;
+10. **backlog/pcb-usb-c-pd-nano-testboard.md** — `draft/normal`;
    deliberately filed to be built only after the engine gaps close —
    waits on ewod-pcb's routing work, not on anything in this file.
-10. **backlog/pcb-paper-benchmark-selection.md** — `draft/normal`;
+11. **backlog/pcb-paper-benchmark-selection.md** — `draft/normal`;
    sequenced after 9 by the item's own stated order.
-11. **backlog/pcb-guided-place-route.md** §From pcb-0042-implementation —
+12. **backlog/pcb-guided-place-route.md** §From pcb-0042-implementation —
     ADR 0042 web ratsnest/BOM, the phase machine and the deploy binaries
     (merged 2026-10-21; the rest of that file is ewod-pcb's).
-12. **backlog/pcb-graph-routing-fattens-traces.md** — `draft/normal`,
+13. **backlog/pcb-graph-routing-fattens-traces.md** — `draft/normal`,
     filed 2026-10-23 (Reto's no-flood-fill ruling, me507871): the
     pour-removal half landed in `g4-pours-off`; the survey inside says
     what "fatten traces by net property" already has (current→width
     via IPC-2221) and lacks (impedance→width, return-path→geometry,
     per-edge widths). Do not build without a further ruling.
-13. **backlog/pcb-design-flow.md** — `ready/high`, filed 2026-10-26 from
+14. **backlog/pcb-design-flow.md** — `ready/high`, filed 2026-10-26 from
     gr519925 + gr519924 (TAZ leaf dogfood): the requirements-to-fab
     skill, selection record (graph memory, selects/rejects, ruled
     2026-10-26), budget convention, consigned BOM lines, mech/coating
     checklist. Slice 1 is a skill with no code and can go now; it is
     independent of items 1–12.
+15. **backlog/design-rerun-pull.md** — `draft/normal` (gr512900): a run
+    archive, content-keyed replay and elite warm starts so a re-run
+    pulls from prior successes. Its record layer feeds 1's §3 request
+    cache and its route leg waits on 2's realiser; every open question
+    in it is Reto's, so it sits at the tail until ruled.
 
 ## Horizon
 
