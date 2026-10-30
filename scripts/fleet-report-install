@@ -11,8 +11,9 @@
 # without it, a PRECIS_MCP_TOKEN in the installer's environment is embedded
 # in the plist (installed mode 600). The token never lands in the repo.
 # Plist: ~/Library/LaunchAgents/com.precis.fleet-report.plist; the agent
-# runs as the installing user (gui/$UID). Reinstalling bootouts the old
-# label first. Logs: ~/Library/Logs/fleet-report.{out,err}.log.
+# runs as the installing user (gui/$UID, falling back to user/$UID on
+# headless hosts). Reinstalling bootouts the old label first.
+# Logs: ~/Library/Logs/fleet-report.{out,err}.log.
 set -u
 
 label="com.precis.fleet-report"
@@ -21,7 +22,27 @@ out_log="$HOME/Library/Logs/fleet-report.out.log"
 err_log="$HOME/Library/Logs/fleet-report.err.log"
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 reporter="$root/scripts/fleet-report"
-domain="gui/$(id -u)"
+uid="$(id -u)"
+
+# gui/$uid exists only during an Aqua login; headless/ssh-only hosts still
+# run user/$uid (launchd creates it for cron/ssh). bootstrap into a missing
+# gui domain fails "Bootstrap failed: 125" (gr540908): prefer gui, fall
+# back to user.
+pick_domain() {
+  for d in "gui/$uid" "user/$uid"; do
+    launchctl print "$d" >/dev/null 2>&1 && { echo "$d"; return; }
+  done
+  return 1
+}
+
+# Domain currently holding the installed label, if any; status and bootout
+# must target the domain the label was installed into.
+label_domain() {
+  for d in "gui/$uid" "user/$uid"; do
+    launchctl print "$d/$label" >/dev/null 2>&1 && { echo "$d"; return; }
+  done
+  return 1
+}
 
 token_file=""
 mcp_url="${PRECIS_FLEET_MCP_URL:-}"
@@ -34,10 +55,11 @@ while [ $# -gt 0 ]; do
     --remote) remotes="$remotes ${2:?--remote needs a host}"; rargs="$rargs --remote $2"; shift 2 ;;
     --status)
       if [ -f "$plist" ]; then echo "installed: $plist"; else echo "not installed: no $plist"; fi
-      if command -v launchctl >/dev/null && launchctl print "$domain/$label" >/dev/null 2>&1; then
-        launchctl print "$domain/$label" | grep -E '^\s+(state|pid|last exit code) =' | sed 's/^ *//'
+      if command -v launchctl >/dev/null && ld="$(label_domain)"; then
+        echo "loaded in $ld"
+        launchctl print "$ld/$label" | grep -E '^\s+(state|pid|last exit code) =' | sed 's/^ *//'
       else
-        echo "not loaded in $domain"
+        echo "not loaded in gui/$uid or user/$uid"
       fi
       for f in "$out_log" "$err_log"; do
         [ -f "$f" ] && echo "-- $f (last 3):" && tail -3 "$f"
@@ -45,11 +67,11 @@ while [ $# -gt 0 ]; do
       exit 0
       ;;
     --uninstall)
-      if launchctl print "$domain/$label" >/dev/null 2>&1; then
-        launchctl bootout "$domain/$label" || exit 1
+      if ld="$(label_domain)"; then
+        launchctl bootout "$ld/$label" || exit 1
         # bootout is asynchronous; wait until the label is actually gone.
         i=0
-        while launchctl print "$domain/$label" >/dev/null 2>&1; do
+        while launchctl print "$ld/$label" >/dev/null 2>&1; do
           i=$((i + 1)); [ "$i" -gt 20 ] && { echo "bootout of $label never finished" >&2; exit 1; }
           sleep 0.5
         done
@@ -112,13 +134,14 @@ mv "$tmp" "$plist"
 
 # bootout is asynchronous; poll until the old label is gone before
 # bootstrapping (deploy/tasks/reload_launchd.yml explains the race).
-if launchctl print "$domain/$label" >/dev/null 2>&1; then
-  launchctl bootout "$domain/$label" || exit 1
+if ld="$(label_domain)"; then
+  launchctl bootout "$ld/$label" || exit 1
   i=0
-  while launchctl print "$domain/$label" >/dev/null 2>&1; do
+  while launchctl print "$ld/$label" >/dev/null 2>&1; do
     i=$((i + 1)); [ "$i" -gt 20 ] && { echo "bootout of $label never finished" >&2; exit 1; }
     sleep 0.5
   done
 fi
+domain="$(pick_domain)" || { echo "no launchd domain for uid $uid (gui/$uid and user/$uid both absent): is a user session running?" >&2; exit 1; }
 launchctl bootstrap "$domain" "$plist" || exit 1
-echo "installed $label: $reporter --push$rargs every 60 s (logs: $out_log)"
+echo "installed $label in $domain: $reporter --push$rargs every 60 s (logs: $out_log)"

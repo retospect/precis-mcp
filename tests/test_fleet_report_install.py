@@ -19,6 +19,8 @@ pytestmark = pytest.mark.skipif(
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "scripts" / "fleet-report-install"
 
+# `state/domains` lists the launchd domain kinds that exist ("gui", "user");
+# `state/loaded` records the "domain/label" the last bootstrap installed into.
 FAKE_LAUNCHCTL = """#!/usr/bin/env python3
 import json, os, sys
 from pathlib import Path
@@ -26,13 +28,17 @@ state = Path(os.environ["FAKE_STATE"])
 with (state / "launchctl.jsonl").open("a", encoding="utf-8") as f:
     f.write(json.dumps(sys.argv[1:]) + "\\n")
 loaded = state / "loaded"
+domains = (state / "domains").read_text(encoding="utf-8").split()
 if sys.argv[1] == "print":
-    if loaded.exists():
+    target = sys.argv[2]
+    if target.count("/") == 1:  # domain probe: gui/$uid or user/$uid
+        raise SystemExit(0 if target.split("/")[0] in domains else 113)
+    if loaded.exists() and target == loaded.read_text(encoding="utf-8").strip():
         print("    state = not running")  # real launchctl indents
         raise SystemExit(0)
     raise SystemExit(113)
 if sys.argv[1] == "bootstrap":
-    loaded.touch()
+    loaded.write_text(f"{sys.argv[2]}/com.precis.fleet-report", encoding="utf-8")
 elif sys.argv[1] == "bootout":
     loaded.unlink(missing_ok=True)
 """
@@ -49,6 +55,7 @@ def env(tmp_path, monkeypatch):
     launchctl = bindir / "launchctl"
     launchctl.write_text(FAKE_LAUNCHCTL, encoding="utf-8")
     launchctl.chmod(0o755)
+    (state / "domains").write_text("gui user\n", encoding="utf-8")
     monkeypatch.setenv("HOME", str(home))
     monkeypatch.setenv("FAKE_STATE", str(state))
     monkeypatch.setenv("PATH", f"{bindir}:{os.environ['PATH']}")
@@ -129,6 +136,28 @@ def test_uninstall_bootouts_and_removes_plist(env):
     assert "bootout" in [c[0] for c in calls(env)]
     out = run("--status")
     assert "not installed" in out.stdout and "not loaded" in out.stdout
+
+
+def test_headless_falls_back_to_user_domain(env):
+    # No Aqua session: gui/$uid is absent, user/$uid still runs (gr540908).
+    (env / "state" / "domains").write_text("user\n", encoding="utf-8")
+    out = run()
+    uid = os.getuid()
+    assert f"in user/{uid}" in out.stdout
+    assert calls(env)[-1] == ["bootstrap", f"user/{uid}", str(plist_path(env))]
+    out = run("--status")
+    assert f"loaded in user/{uid}" in out.stdout
+    assert "state = not running" in out.stdout
+    out = run("--uninstall")
+    assert "uninstalled" in out.stdout
+    assert ["bootout", f"user/{uid}/com.precis.fleet-report"] in calls(env)
+
+
+def test_no_domain_refuses_install(env):
+    (env / "state" / "domains").write_text("", encoding="utf-8")
+    r = run(check=False)
+    assert r.returncode == 1 and "no launchd domain" in r.stderr
+    assert "bootstrap" not in [c[0] for c in calls(env)]
 
 
 def test_missing_token_file_refused(env):
