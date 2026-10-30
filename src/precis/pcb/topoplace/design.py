@@ -356,6 +356,14 @@ class TopoZone:
     #: a part-owned hole moves with its part, matching the DRC, which
     #: recomputes the keep-out from the owner's current pose.
     part_local: bool = False
+    #: ``(cx, cy, r)`` in ``ring``'s frame — the exact keep-out circle a
+    #: mounting hole's legality is judged by (gr529963 fix1): the ring is
+    #: a 16-gon CIRCUMSCRIBING it (vertices at r/cos(pi/16)), so a
+    #: polygon overlap test flags a body that only clips a vertex — the
+    #: taz case, a body at radius 2.985 against a 2.95 keep-out. The ring
+    #: stays for the broad phase, the mesh's constrained edges and
+    #: rendering; ``None`` for every non-circular zone kind.
+    circle: tuple[float, float, float] | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -827,6 +835,7 @@ def _zones(
     fixed_copper: Iterable[Mapping[str, Any]] | None,
     name_to_idx: Mapping[str, int],
     pose0: np.ndarray,
+    hole_margin_mm: float | None = None,
 ) -> tuple[TopoZone, ...]:
     """Every non-part constrained region (Decision 17's keepouts plus the
     board-config bodies the router claims — slice-2a seam item 8):
@@ -855,6 +864,10 @@ def _zones(
         mounting_hole_keepout_polygon,
     )
 
+    # gr529963: the keep-out margin is the caller's fab figure (the
+    # 4-layer row's npth_annular_ring_mm JLC minimum), not the courtyard
+    # constant — a part's BODY is tested against it.
+    margin = COURTYARD_CLEARANCE_MM if hole_margin_mm is None else hole_margin_mm
     for h in ir.mounting_holes:
         if max(float(h.drill_mm), float(h.ring_dia_mm), float(h.head_dia_mm)) <= 0.0:
             continue
@@ -865,14 +878,19 @@ def _zones(
                 local = (float(h.local_x), float(h.local_y))
             elif np.isfinite(pose0[owner, :2]).all():
                 local = _world_to_local(float(h.x), float(h.y), pose0[owner])
+        radius = _hole_keepout_radius_mm(h, margin)
         if local is not None:
             ring = np.asarray(
-                _hole_polygon(local[0], local[1], _hole_keepout_radius_mm(h)),
+                _hole_polygon(local[0], local[1], radius),
                 dtype=np.float64,
             )
+            circle = (local[0], local[1], radius)
             part_local = True
         else:
-            ring = np.asarray(mounting_hole_keepout_polygon(h), dtype=np.float64)
+            ring = np.asarray(
+                mounting_hole_keepout_polygon(h, margin), dtype=np.float64
+            )
+            circle = (float(h.x), float(h.y), radius)
             part_local = False
         zones.append(
             TopoZone(
@@ -881,6 +899,7 @@ def _zones(
                 part=owner,
                 name=f"mounting hole {h.x:g},{h.y:g}",
                 part_local=part_local,
+                circle=circle,
             )
         )
     for v in ir.fixed_vias:
@@ -963,6 +982,7 @@ def design_from_ir(
     placement_sides: str | None = None,
     measures: list[dict[str, Any]] | None = None,
     capability: Any = None,
+    hole_margin_mm: float | None = None,
 ) -> TopoDesign:
     """Build the one immutable placer input from the IR.
 
@@ -987,6 +1007,12 @@ def design_from_ir(
     (track/pour become zones; vias already ride :attr:`PcbIR.fixed_vias`).
     ``None``/empty contributes no zones — mounting holes and authored
     vias come off the IR itself either way.
+
+    ``hole_margin_mm`` is the clearance a part body owes a mounting-hole
+    zone — the caller's fab figure
+    (:func:`precis.pcb.optimize.hole_fab_clearance_mm` of the board's
+    capability row); ``None`` keeps :data:`COURTYARD_CLEARANCE_MM`, the
+    same "no capability row" fallback that function uses.
 
     Conventions the spec leaves to the builder, fixed here:
     - ``net_pins`` keeps every non-plane signal net with ≥2 pins
@@ -1309,7 +1335,7 @@ def design_from_ir(
             ],
             dtype=bool,
         ),
-        zones=_zones(ir, features, fixed_copper, names, pose0),
+        zones=_zones(ir, features, fixed_copper, names, pose0, hole_margin_mm),
         net_name=tuple(net_names),
         silk=SilkRoom.from_capability(capability),
         pin_wh=np.column_stack(

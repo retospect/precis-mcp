@@ -70,6 +70,7 @@ from precis.pcb.optimize import (
     PLACE_ITERS,
     PLACE_ONLY_SCHEDULE,
     OptimizeConfig,
+    hole_fab_clearance_mm,
     optimize,
     resolve_measures,
 )
@@ -920,6 +921,7 @@ def topo_place(
         ),
         measures=design.graph.get("measures"),
         capability=design.fab_caps,
+        hole_margin_mm=hole_fab_clearance_mm(design.fab_caps),
     )
     _tp.check_slots(td)
     if td.measures and not obj.measures:
@@ -1002,6 +1004,7 @@ def topo_place(
             fixed_copper=design.fixed_copper,
             route_planes=True,
             capability=design.fab_caps,
+            hole_margin_mm=hole_fab_clearance_mm(design.fab_caps),
         )
         # The place half's label pins become route-time keep-outs (the
         # same threading the pcb_place job's route stage uses) — the

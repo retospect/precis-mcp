@@ -22,14 +22,17 @@ from typing import Any
 
 import numpy as np
 from shapely import box as shapely_box
-from shapely.geometry import Polygon
+from shapely.geometry import Point, Polygon
+from shapely.ops import nearest_points
 
 from precis.pcb.topoplace.design import TopoDesign, TopoZone
 from precis.pcb.topoplace.proxy import (
     _EPS,
+    _body_geom,
     _ring_geom,
     local_to_world,
     through_hole_parts,
+    zone_world_circle,
     zone_world_ring,
 )
 
@@ -265,7 +268,6 @@ def _legalize_zones(
     pin_names: dict[int, str] | None = None
     pads_of: dict[int, list[tuple[int, Any]]] = {}
     worst: tuple[int, int, float] | None = None
-    worst_area = _EPS
     #: A fixed part's zone violation is reported but must NOT mask the
     #: movable ones — picking the single worst violator and returning
     #: early when it is fixed left every movable part on a keepout in
@@ -294,13 +296,31 @@ def _legalize_zones(
                     continue
             elif z.net and z.net in part_nets[i]:
                 continue
-            area = float(gi.intersection(zg).area)
+            circ = zone_world_circle(d, z, pose) if z.kind == "mounting_hole" else None
+            if circ is not None:
+                # The keep-out is the exact CIRCLE the ring
+                # circumscribes (gr529963 fix1): the DISTANCE test the
+                # mesh and DRC apply decides the violation — a body
+                # inside the 16-gon but outside the circle (the taz
+                # case) is clear, and a sliver bite whose intersection
+                # area underflows the polygon floor still counts. The
+                # area only ranks the hits.
+                bg = _body_geom(d, pose[i], i)
+                gi_z = bg if bg is not None else gi
+                cpt = Point(circ[0], circ[1])
+                if float(gi_z.distance(cpt)) >= circ[2]:
+                    continue
+                area = float(gi_z.intersection(cpt.buffer(circ[2])).area)
+            else:
+                area = float(gi.intersection(zg).area)
+                if area <= _EPS:
+                    continue
             if d.fixed[i]:
                 if fixed_worst is None or area > fixed_worst[2]:
                     fixed_worst = (i, z_i, area)
                 continue
-            if area > worst_area:
-                worst, worst_area = (i, z_i, area), area
+            if worst is None or area > worst[2]:
+                worst = (i, z_i, area)
     if worst is None:
         return (
             0.0,
@@ -309,10 +329,33 @@ def _legalize_zones(
             else None,
         )
     i, z_i, _area = worst
-    vec, _depth = _mtv(
-        np.asarray(zone_geoms[z_i].exterior.coords),
-        np.asarray(geoms[i].exterior.coords),
+    zworst = d.zones[z_i]
+    circ = (
+        zone_world_circle(d, zworst, pose) if zworst.kind == "mounting_hole" else None
     )
+    if circ is not None:
+        # Push the body off the circle: away from its centre by the
+        # penetration depth. A centre inside the body has no "away" —
+        # the ring's polygon MTV gives the direction then.
+        bg = _body_geom(d, pose[i], i)
+        gi_z = bg if bg is not None else geoms[i]
+        cpt = Point(circ[0], circ[1])
+        dist = float(gi_z.distance(cpt))
+        if dist > _EPS:
+            near = nearest_points(gi_z, cpt)[0]
+            axis = np.asarray([near.x - circ[0], near.y - circ[1]]) / dist
+        else:
+            vec0, d0 = _mtv(
+                np.asarray(zone_geoms[z_i].exterior.coords),
+                np.asarray(gi_z.exterior.coords),
+            )
+            axis = vec0 / d0 if d0 > 0.0 else np.asarray([1.0, 0.0])
+        vec = axis * (circ[2] - dist)
+    else:
+        vec, _depth = _mtv(
+            np.asarray(zone_geoms[z_i].exterior.coords),
+            np.asarray(geoms[i].exterior.coords),
+        )
     vec = vec + np.sign(vec + 1e-12) * 1e-3
     moved = float(np.hypot(*vec))
     for mate in _mates(d, i):
@@ -449,6 +492,16 @@ def legalize_pose(
                     continue
             elif z.net and z.net in part_nets[part]:
                 continue
+            circ = zone_world_circle(d, z, pose) if z.kind == "mounting_hole" else None
+            if circ is not None:
+                # Exact-circle legality like the zone sweep (gr529963
+                # fix1): the BODY at the test pose against the hole
+                # centre — clipping a ring vertex is not a hit.
+                bg = _body_geom(d, test_row, part)
+                if bg is None:
+                    bg = geom
+                if float(bg.distance(Point(circ[0], circ[1]))) >= circ[2]:
+                    continue
             return True
         return False
 
@@ -590,6 +643,15 @@ def legalize_pose(
                 if _via_zone_exempt(d, pose[i], i, z, zg, pin_names_fin, pads_fin[i]):
                     continue
             elif z.net and z.net in part_nets[i]:
+                continue
+            circ = zone_world_circle(d, z, pose) if z.kind == "mounting_hole" else None
+            if circ is not None:
+                bg = _body_geom(d, pose[i], i)
+                gi_z = bg if bg is not None else gi
+                cpt = Point(circ[0], circ[1])
+                if float(gi_z.distance(cpt)) < circ[2]:
+                    area = float(gi_z.intersection(cpt.buffer(circ[2])).area)
+                    remaining.append((i, n + z_i, area))
                 continue
             area = float(gi.intersection(zg).area)
             if area > 1e-6:

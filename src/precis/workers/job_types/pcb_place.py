@@ -45,6 +45,7 @@ from precis.pcb.optimize import (
     PLACE_ONLY_SCHEDULE,
     OptimizeConfig,
     digest_toon,
+    hole_fab_clearance_mm,
     optimize,
     resolve_measures,
 )
@@ -170,6 +171,7 @@ def _topo_run(
     fixed_copper: list[dict[str, Any]] | None = None,
     preset: str = "compact",
     capability: Any = None,
+    hole_margin_mm: float | None = None,
 ) -> tuple[Any, dict[str, Any], str, dict[str, str], dict[str, str]] | None:
     """The ``placer='topo'`` run (topo-place spec §1c, Decision 21):
     ``design_from_ir`` → the proxy placer → ``assign_pins`` → the run
@@ -205,6 +207,7 @@ def _topo_run(
             ),
             measures=graph.get("measures"),
             capability=capability,
+            hole_margin_mm=hole_margin_mm,
         )
         _tp.check_slots(td)
         # gr520546: authored near()/separation/align measures steer the
@@ -340,6 +343,7 @@ def _topo_route(
         fixed_copper=fixed_copper,
         route_planes=True,
         capability=capability,
+        hole_margin_mm=hole_fab_clearance_mm(capability),
     )
     # The place half's label pins become route-time keep-outs: the
     # router never sites a via (or threads a wire) through the box the
@@ -882,6 +886,7 @@ def _dispatch(ctx: DispatchContext, spec: JobTypeSpec) -> None:
             fixed_copper=design.fixed_copper,
             preset=preset,
             capability=capability,
+            hole_margin_mm=hole_fab_clearance_mm(floor_capability),
         )
         if topo_out is None:  # PinConflict already recorded
             return

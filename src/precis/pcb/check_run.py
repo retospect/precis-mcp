@@ -967,7 +967,9 @@ def run(
         holes=[
             (
                 f"hole @ ({h.x:g}, {h.y:g})",
-                pcb_optimize.mounting_hole_keepout_polygon(h),
+                pcb_optimize.mounting_hole_keepout_polygon(
+                    h, pcb_optimize.hole_fab_clearance_mm(capability)
+                ),
                 h.part,
             )
             for h in ir.mounting_holes

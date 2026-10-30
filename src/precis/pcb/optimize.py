@@ -190,6 +190,7 @@ import numpy as np
 from precis.format import toon
 from precis.pcb import pose
 from precis.pcb import support_groups as pcb_support_groups
+from precis.pcb.capabilities import CapabilityRow
 from precis.pcb.cost import (
     _BOARD_EDGE_FIELD,
     _BY_NAME,
@@ -1027,6 +1028,7 @@ def _hole_blocking_slot(
     inst: int | None = None,
     *,
     edge: str = "right",
+    margin_mm: float,
 ) -> float | None:
     """The right-hand edge (``hole.x + keepout``) of the first mounting
     hole whose keep-out a part of radius ``r`` centred at ``(x, y)`` would
@@ -1053,15 +1055,15 @@ def _hole_blocking_slot(
         if inst is not None and _hole_owned_by(ir, hole, inst):
             continue
         hx, hy = _hole_world_xy(ir, hole, _hole_owner_index(ir, hole))
-        sep = r + _hole_keepout_radius_mm(hole)
+        sep = r + _hole_keepout_radius_mm(hole, margin_mm)
         if (x - hx) ** 2 + (y - hy) ** 2 >= sep * sep:
             continue
         if edge == "right":
-            bound = hx + _hole_keepout_radius_mm(hole) + r
+            bound = hx + _hole_keepout_radius_mm(hole, margin_mm) + r
             if worst is None or bound > worst:
                 worst = bound
         else:
-            bound = hx - _hole_keepout_radius_mm(hole) - r
+            bound = hx - _hole_keepout_radius_mm(hole, margin_mm) - r
             if worst is None or bound < worst:
                 worst = bound
     return worst
@@ -1107,6 +1109,7 @@ def seed_placement(
     max_cluster_size: int = 6,
     pitch_mm: float = 8.0,
     force: bool = False,
+    hole_margin_mm: float | None = None,
 ) -> None:
     """The constructive seed: connectivity clustering (above), then
     **shelf packing by each part's own size** — clusters are laid out in
@@ -1518,6 +1521,11 @@ def seed_placement(
     # "Mounting holes ARE avoided here" note in this function's
     # docstring for why seeding on a hole is a last resort, never the
     # plan.
+    # The mounting-hole keep-out margin the shelf slide respects: the
+    # caller's fab figure when it has one (``optimize`` threads
+    # ``config.cost.fab_caps``), else the courtyard constant as the
+    # same "no capability row" fallback ``hole_fab_clearance_mm`` uses.
+    hole_mm = COURTYARD_CLEARANCE_MM if hole_margin_mm is None else hole_margin_mm
     unit_positions: dict[int | tuple[str, int], tuple[float, float]] = {}
     carry: list[int | tuple[str, int]] = []
     for k, shelf in enumerate(shelves):
@@ -1538,6 +1546,7 @@ def seed_placement(
                     shelf_ys[k] + r + _SEED_EPSILON_MM,
                     r,
                     inst=unit if isinstance(unit, int) else None,
+                    margin_mm=hole_mm,
                 )
                 if hit is None:
                     placed = True
@@ -1580,7 +1589,7 @@ def seed_placement(
             slot_top = cy + lo_y - _SEED_EPSILON_MM
             bound_x = col_x0 + _SEED_EPSILON_MM - lo_x
             for _ in range(_SEED_HOLE_SLIDE_TRIES):
-                hit = _hole_blocking_slot(ir, cx, cy, r, edge="left")
+                hit = _hole_blocking_slot(ir, cx, cy, r, edge="left", margin_mm=hole_mm)
                 if hit is None or cx <= bound_x:
                     break
                 cx = hit - _SEED_EPSILON_MM
@@ -1857,7 +1866,9 @@ def _stamp_pattern_tiles(
 _RECENTRE_MAX_AREA_RATIO = 9.0
 
 
-def recentre_in_outline(ir: PcbIR) -> tuple[float, float]:
+def recentre_in_outline(
+    ir: PcbIR, *, hole_margin_mm: float | None = None
+) -> tuple[float, float]:
     """Translate the FINISHED placement as one rigid block so its bounding
     box (by part edge: centre ± courtyard-circumscribed radius) shares a
     centre with the authored outline's bbox. Returns the ``(dx, dy)``
@@ -1958,6 +1969,7 @@ def recentre_in_outline(ir: PcbIR) -> tuple[float, float]:
     if abs(shift_x) < 1e-9 and abs(shift_y) < 1e-9:
         return (0.0, 0.0)
     if ir.mounting_holes:
+        hole_mm = COURTYARD_CLEARANCE_MM if hole_margin_mm is None else hole_margin_mm
         for i in placed:
             nx, ny = float(ir.inst_x[i]) + shift_x, float(ir.inst_y[i]) + shift_y
             for hole in ir.mounting_holes:
@@ -1965,7 +1977,7 @@ def recentre_in_outline(ir: PcbIR) -> tuple[float, float]:
                     continue
                 if _hole_owner_index(ir, hole) is not None:
                     continue  # rides the same uniform shift as its owner
-                sep = float(radii[i]) + _hole_keepout_radius_mm(hole)
+                sep = float(radii[i]) + _hole_keepout_radius_mm(hole, hole_mm)
                 if (nx - hole.x) ** 2 + (ny - hole.y) ** 2 < sep * sep:
                     return (0.0, 0.0)
     for i in placed:
@@ -2096,13 +2108,15 @@ _VIA_KEY_BASE = 20_000_000
 #: by ``tests/test_pcb_optimize.py``.
 _FIXED_VIA_CLEARANCE_MM = 0.15
 
-#: How many sides approximate a mounting hole's circular keep-out: the
-#: exact shapely legality test (gr525380) and the exact signed-separation
-#: measure behind the hole margin term
-#: (:func:`~precis.pcb.geom.polygon_signed_separation_mm`, gr536411) read
-#: the same polygon — a circle has no polygon primitive of its own, and
-#: one is not worth adding to ``geom.py`` for a shape this module is the
-#: only user of.
+#: How many sides approximate a mounting hole's circular keep-out where
+#: a polygon is still wanted — the broad phase, the mesh rings and the
+#: render path, plus the hole margin term's signed-separation measure
+#: (:func:`~precis.pcb.geom.polygon_signed_separation_mm`, gr536411).
+#: Legality itself is the exact circle test (gr529963 fix1): the body's
+#: distance to the hole centre against the keep-out radius, so the
+#: circumscribing vertices only over-cover those consumers. A circle
+#: has no polygon primitive of its own, and one is not worth adding to
+#: ``geom.py`` for a shape this module is the only user of.
 _HOLE_POLY_SIDES = 16
 
 #: Area floor (mm²) for the exact concave-courtyard overlap tests in
@@ -2135,25 +2149,43 @@ def _hole_polygon(cx: float, cy: float, r: float) -> list[tuple[float, float]]:
     return pts
 
 
-def _hole_keepout_radius_mm(hole: MountingHole) -> float:
+def hole_fab_clearance_mm(fab_caps: CapabilityRow | None) -> float:
+    """The clearance a part body owes a mounting hole's keep-out — the
+    process row's ``npth_annular_ring_mm`` JLC minimum, the fab's
+    hole-edge-to-copper figure and the bar
+    :func:`precis.pcb.drc.check_courtyard_hole` holds (gr529963: the
+    part-to-part courtyard margin does not stack on it). A row that
+    publishes none (aluminum) keeps
+    :data:`~precis.pcb.ir.COURTYARD_CLEARANCE_MM` — the keep-out still
+    reserves something rather than relaxing to the bare feature edge."""
+    margin = (
+        fab_caps.jlc_min.get("npth_annular_ring_mm") if fab_caps is not None else None
+    )
+    return float(margin) if margin is not None else COURTYARD_CLEARANCE_MM
+
+
+def _hole_keepout_radius_mm(hole: MountingHole, margin_mm: float) -> float:
     """A mounting hole's placement keep-out radius: half its widest
     feature — the plated annulus, the bare drill, or the authored
     hardware envelope (:attr:`~precis.pcb.ir.MountingHole.head_dia_mm`,
     the screw head / solder-nut flange / washer sitting above the board,
-    which can be wider than the copper) — PLUS the same courtyard
-    clearance an instance's own pads get against a neighbour
-    (:data:`~precis.pcb.ir.COURTYARD_CLEARANCE_MM`) — the router needs
-    the identical breathing room around a hole's copper (or bare NPTH
-    edge, or physical hardware) that it needs around any other pad."""
+    which can be wider than the copper) — PLUS ``margin_mm``, the
+    clearance a part body owes it (:func:`hole_fab_clearance_mm`)."""
     widest = max(hole.drill_mm, hole.ring_dia_mm, hole.head_dia_mm)
-    return widest / 2.0 + COURTYARD_CLEARANCE_MM
+    return widest / 2.0 + margin_mm
 
 
-def mounting_hole_keepout_polygon(hole: MountingHole) -> list[tuple[float, float]]:
-    """The keep-out polygon :meth:`OptimizeEngine._placement_is_legal`
-    rejects a courtyard against — public so
-    :func:`precis.pcb.drc.check_courtyard_hole` judges the same shape."""
-    return _hole_polygon(hole.x, hole.y, _hole_keepout_radius_mm(hole))
+def mounting_hole_keepout_polygon(
+    hole: MountingHole, margin_mm: float
+) -> list[tuple[float, float]]:
+    """The keep-out polygon a part BODY is held out of — public so
+    :func:`precis.pcb.drc.check_courtyard_hole` judges the same shape.
+    It CIRCUMSCRIBES the true keep-out circle (vertices at
+    r/cos(pi/16)): since gr529963 fix1 legality on both sides is the
+    body's exact distance to the hole centre against
+    :func:`_hole_keepout_radius_mm`, and this polygon carries the broad
+    phase, the mesh edges and rendering only."""
+    return _hole_polygon(hole.x, hole.y, _hole_keepout_radius_mm(hole, margin_mm))
 
 
 #: How far inside the board outline a component's OUTERMOST PAD must sit
@@ -2373,7 +2405,14 @@ class OptimizeEngine:
         #: (:func:`_hole_polygon`) plus its own keep-out radius
         #: (:func:`_hole_keepout_radius_mm`), computed ONCE (a hole's pose
         #: never moves, unlike an instance's). :meth:`_placement_is_legal`
-        #: hard-rejects any instance courtyard that overlaps one;
+        #: hard-rejects any instance BODY that comes within the keep-out
+        #: radius of a hole's centre — the exact circle the polygon
+        #: circumscribes (gr529963: the keep-out already carries the fab
+        #: minimum, so the 0.4mm part-to-part courtyard margin does not
+        #: stack on it; fix1: the polygon only carries the broad phase,
+        #: the mesh and rendering — its vertices sit at r/cos(pi/16),
+        #: which flagged bodies inside the 16-gon but outside the true
+        #: circle);
         #: :meth:`_refresh_courtyard` folds a graded pressure into the
         #: SAME ``courtyard_overlap`` margin term instance-instance
         #: overlap already uses (see :data:`_HOLE_KEY_BASE`), so the
@@ -2388,11 +2427,16 @@ class OptimizeEngine:
         self._hole_owner: list[int | None] = [
             _hole_owner_index(ir, h) for h in ir.mounting_holes
         ]
+        #: The clearance a part body owes a mounting hole — the fab row's
+        #: ``npth_annular_ring_mm`` JLC minimum via
+        #: :func:`hole_fab_clearance_mm`, NOT the courtyard constant.
+        self._hole_margin_mm = hole_fab_clearance_mm(config.cost.fab_caps)
         self._hole_polys: list[list[tuple[float, float]]] = [
-            mounting_hole_keepout_polygon(h) for h in ir.mounting_holes
+            mounting_hole_keepout_polygon(h, self._hole_margin_mm)
+            for h in ir.mounting_holes
         ]
         self._hole_radius: list[float] = [
-            _hole_keepout_radius_mm(h) for h in ir.mounting_holes
+            _hole_keepout_radius_mm(h, self._hole_margin_mm) for h in ir.mounting_holes
         ]
         self._hole_pose_cache: dict[
             int,
@@ -3899,7 +3943,7 @@ class OptimizeEngine:
         it cannot price (a run with the term active still settled with 10
         overlapping pairs — a penalty is a price, and the search paid it).
         """
-        from shapely.geometry import Polygon
+        from shapely.geometry import Point
 
         ir = self.ir
         keepout = self._keepout_r
@@ -3915,9 +3959,12 @@ class OptimizeEngine:
             x0, y0, x1, y1 = self.bounds_for(inst)
             if not (x0 <= x <= x1 and y0 <= y <= y1):
                 return False
+            # The outline bar applies to the BODY, like DRC's
+            # ``check_outline_containment`` (gr529963 fix1) — a fab whose
+            # edge minimum is under the 0.4mm margin must not re-stack it.
             if in_outline and not _courtyard_in_outline(
                 self._outline_region,
-                self._world_courtyard_exact(inst, x, y, rotations.get(inst)),
+                self._world_body_exact(inst, x, y, rotations.get(inst)),
             ):
                 return False
             t = float(self._soft_pin_mm[inst])
@@ -3960,20 +4007,23 @@ class OptimizeEngine:
                 hole = ir.mounting_holes[hole_idx]
                 if _hole_owned_by(ir, hole, inst):
                     continue
-                hx, hy, hole_poly = self._hole_at(hole_idx, proposed_pose)
+                hx, hy, _hole_poly = self._hole_at(hole_idx, proposed_pose)
+                # The broad phase keeps the courtyard radius: it
+                # over-approximates the body, so it only ever tests the
+                # exact body-vs-keep-out pair extra times, never fewer.
                 sep_h = self._body_r[inst] + self._hole_radius[hole_idx]
                 if (x - hx) ** 2 + (y - hy) ** 2 >= sep_h * sep_h:
                     continue
-                # Exact, on the BODY (gr536411): the keep-out radius
-                # already holds the hole's margin, so a +0.4mm courtyard
-                # bite inside it is legal, the same measure DRC's
-                # ``check_courtyard_hole`` applies.
-                if (
-                    self._world_body_exact(inst, x, y, rotations.get(inst))
-                    .intersection(Polygon(hole_poly))
-                    .area
-                    > _EXACT_OVERLAP_AREA_MM2
-                ):
+                # The keep-out itself is the CIRCLE the 16-gon
+                # circumscribes (gr529963 fix1): its vertices reach
+                # r/cos(pi/16) ~= 1.02r, so a polygon overlap test flags
+                # a body that only clips a vertex — the taz case, a body
+                # at radius 2.985 against a 2.95 keep-out. Legality is
+                # the body's exact distance to the hole centre; the
+                # polygon stays for the broad phase, the mesh and
+                # rendering.
+                body = self._world_body_exact(inst, x, y, rotations.get(inst))
+                if body.distance(Point(hx, hy)) < self._hole_radius[hole_idx]:
                     return False
             if (
                 self._fixed_via_gap(inst, x, y, rotations.get(inst))
@@ -4025,9 +4075,10 @@ class OptimizeEngine:
         notch, and a hull bridges it — a mounting hole sitting inside the
         notch then read as ``courtyard_hole`` here while DRC's exact
         :func:`~precis.pcb.drc.check_courtyard_hole` accepted the pose.
-        A measure-zero touch (shared edge) is clear, matching DRC's
-        ``_EPS`` area floor."""
-        from shapely.geometry import Polygon
+        The hole test is the body's exact distance to the hole centre
+        against the keep-out radius the polygon circumscribes (gr529963
+        fix1) — the same rule DRC applies."""
+        from shapely.geometry import Point
 
         ir = self.ir
         keepout = self._keepout_r
@@ -4052,11 +4103,11 @@ class OptimizeEngine:
             hole = ir.mounting_holes[hole_idx]
             if _hole_owned_by(ir, hole, inst):
                 continue
-            hx, hy, hole_poly = self._hole_at(hole_idx)
+            hx, hy, _hole_poly = self._hole_at(hole_idx)
             sep_h = self._body_r[inst] + self._hole_radius[hole_idx]
             if (x - hx) ** 2 + (y - hy) ** 2 >= sep_h * sep_h:
                 continue
-            if body.intersection(Polygon(hole_poly)).area > _EXACT_OVERLAP_AREA_MM2:
+            if body.distance(Point(hx, hy)) < self._hole_radius[hole_idx]:
                 conflicts.append(("courtyard_hole", f"hole @ ({hx:g}, {hy:g})"))
         gap = self._fixed_via_gap(inst, x, y, rot)
         if gap < _FIXED_VIA_CLEARANCE_MM:
@@ -4078,11 +4129,12 @@ class OptimizeEngine:
         move's delta check compares before and after (``op='move'``: a
         standing conflict may stay or shrink, never appear or deepen).
 
-        Depths: ``courtyard_overlap`` and ``courtyard_hole`` are the
-        intersection area, mm², of the two polygons the placer's legality
-        test judges — the raw courtyard for a neighbour, the zero-
-        clearance BODY for a hole (gr536411); ``outline`` (only when the
-        board has one) is the
+        Depths: ``courtyard_overlap`` is the intersection area, mm², of
+        the two courtyard polygons the placer's legality test judges;
+        ``courtyard_hole`` is the keep-out penetration in mm — the
+        keep-out radius minus the body's exact distance to the hole
+        centre (the circle the keep-out polygon circumscribes, gr529963
+        fix1); ``outline`` (only when the board has one) is the
         part courtyard's area OUTSIDE the outline polygon, mm² — the one
         rule :meth:`pose_conflicts` does not report, listed only here, as
         ``("outline", "board outline", area)`` when the area exceeds
@@ -4091,7 +4143,7 @@ class OptimizeEngine:
         ``("edge_mating", "board edge", mm)`` (outline boards only) is how
         far a ``required`` edge-mated part misses its edge
         (:func:`precis.pcb.edge_mate.required_pose_depth`)."""
-        from shapely.geometry import Polygon
+        from shapely.geometry import Point, Polygon
 
         ir = self.ir
         # The same RAW unions the legality test now judges (gr525380) —
@@ -4099,12 +4151,13 @@ class OptimizeEngine:
         # test just cleared.
         mine = self._world_courtyard_exact(inst, x, y, rot)
         by_name = {str(r): i for i, r in enumerate(ir.instance_refdes)}
-        holes = {
-            f"hole @ ({hx:g}, {hy:g})": hpoly
-            for hx, hy, hpoly in (
-                self._hole_at(i) for i in range(len(ir.mounting_holes))
+        holes: dict[str, tuple[Point, float]] = {}
+        for i in range(len(ir.mounting_holes)):
+            hx, hy, _hpoly = self._hole_at(i)
+            holes[f"hole @ ({hx:g}, {hy:g})"] = (
+                Point(hx, hy),
+                self._hole_radius[i],
             )
-        }
         out: list[tuple[str, str, float]] = []
         for rule, other in self.pose_conflicts(inst, x, y, rot):
             if rule == "courtyard_overlap":
@@ -4112,10 +4165,9 @@ class OptimizeEngine:
                     self._world_courtyard_exact(by_name[other])
                 ).area
             elif rule == "courtyard_hole":
-                depth = (
-                    self._world_body_exact(inst, x, y, rot)
-                    .intersection(Polygon(holes[other]))
-                    .area
+                centre, radius = holes[other]
+                depth = radius - float(
+                    self._world_body_exact(inst, x, y, rot).distance(centre)
                 )
             else:
                 gap = self._fixed_via_gap(inst, x, y, rot)
@@ -4239,14 +4291,13 @@ class OptimizeEngine:
             old = [(m, float(ir.inst_x[m]), float(ir.inst_y[m])) for m in members]
             if any(math.isnan(x) or math.isnan(y) for _m, x, y in old):
                 continue
-            # Containment measures the raw courtyard (the shape DRC's
-            # ``outline_containment`` checks); the edge margin measures
-            # the BODY (gr536411 — the fab bar ``check_courtyard_edge_
-            # clearance`` applies, never the +0.4mm courtyard).
-            courtyards = [(m, self._world_courtyard_exact(m)) for m, _x, _y in old]
+            # Containment and the edge margin both measure the BODY
+            # (gr529963 fix1 — the fab bar ``check_outline_containment``
+            # and ``check_courtyard_edge_clearance`` apply, never the
+            # +0.4mm courtyard skirt).
             bodies = [(m, self._world_body_exact(m)) for m, _x, _y in old]
             if all(
-                _courtyard_in_outline(self._outline_region, g) for _m, g in courtyards
+                _courtyard_in_outline(self._outline_region, g) for _m, g in bodies
             ) and (
                 floor_mm is None
                 or all(
@@ -5459,6 +5510,7 @@ def optimize(
         max_cluster_size=config.max_cluster_size,
         pitch_mm=config.seed_pitch_mm,
         force=reseed,
+        hole_margin_mm=hole_fab_clearance_mm(config.cost.fab_caps),
     )
     # Side-insertion connectors (gr451356) go flush on the outline and are
     # locked BEFORE the engine reads the lock bits, so the anneal neither
@@ -5509,7 +5561,7 @@ def optimize(
         spec.datum is not None and spec.weight > 0.0
         for _a, _b, spec in engine._measure_pairs
     ):
-        recentre_in_outline(ir)
+        recentre_in_outline(ir, hole_margin_mm=engine._hole_margin_mm)
     preferred_snapped: dict[str, dict[str, float]] = {}
     if config.preferred_snap and not hold:
         # Cosmetic, post-measurement like the recentre above — and it
@@ -5673,6 +5725,7 @@ __all__ = [
     "ScheduleStage",
     "TermSummary",
     "digest_toon",
+    "hole_fab_clearance_mm",
     "mounting_hole_keepout_polygon",
     "optimize",
     "recentre_in_outline",

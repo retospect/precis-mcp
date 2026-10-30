@@ -1684,10 +1684,11 @@ def test_check_courtyard_hole_flags_a_courtyard_over_a_plated_hole():
     rule": a part whose courtyard covers a plated solder-nut hole while its
     pads miss it was DRC-clean, though the placer refuses that pose."""
     from precis.pcb.ir import MountingHole
-    from precis.pcb.optimize import mounting_hole_keepout_polygon
+    from precis.pcb.optimize import hole_fab_clearance_mm, mounting_hole_keepout_polygon
 
+    margin = hole_fab_clearance_mm(_CAP4)
     nut = MountingHole(x=0.0, y=0.0, drill_mm=3.2, ring_dia_mm=6.0, plated=True)
-    holes = [("hole @ (0, 0)", mounting_hole_keepout_polygon(nut), None)]
+    holes = [("hole @ (0, 0)", mounting_hole_keepout_polygon(nut, margin), None)]
     on_it = [("U1", _square(2.0, 0.0))]
     findings = drc.check_courtyard_hole(on_it, holes)
     assert [f.rule for f in findings] == ["courtyard_hole"]
@@ -1709,13 +1710,14 @@ def test_check_courtyard_hole_measures_the_body_when_passed():
     and a body that bites the keep-out still errors. ``bodies=None``
     keeps the courtyard measure, byte-identical to before."""
     from precis.pcb.ir import MountingHole
-    from precis.pcb.optimize import mounting_hole_keepout_polygon
+    from precis.pcb.optimize import hole_fab_clearance_mm, mounting_hole_keepout_polygon
 
     nut = MountingHole(x=0.0, y=0.0, drill_mm=3.2, ring_dia_mm=6.0, plated=True)
-    holes = [("hole @ (0, 0)", mounting_hole_keepout_polygon(nut), None)]
-    # keep-out radius = 6.0/2 + 0.4 = 3.4mm. The courtyard at (4.1, 0)
-    # reaches x=3.1 — 0.3mm INSIDE the keep-out; the body at (4.6, 0)
-    # reaches x=3.6 — 0.2mm clear of it.
+    margin = hole_fab_clearance_mm(_CAP4)
+    holes = [("hole @ (0, 0)", mounting_hole_keepout_polygon(nut, margin), None)]
+    # keep-out radius = 6.0/2 + 0.45 = 3.45mm. The courtyard at (4.1, 0)
+    # reaches x=3.1 — 0.35mm INSIDE the keep-out; the body at (4.6, 0)
+    # reaches x=3.6 — 0.15mm clear of it.
     courtyard = [("U1", _square(4.1, 0.0))]
     body = [("U1", _square(4.6, 0.0))]
     # Legacy callers (no bodies) measure the courtyard: still an error.
@@ -1732,16 +1734,22 @@ def test_check_courtyard_hole_measures_the_body_when_passed():
 
 def test_run_geometric_drc_threads_bodies_into_the_courtyard_hole_rule():
     from precis.pcb.ir import MountingHole
-    from precis.pcb.optimize import mounting_hole_keepout_polygon
+    from precis.pcb.optimize import hole_fab_clearance_mm, mounting_hole_keepout_polygon
 
     hole = MountingHole(x=0.0, y=0.0, drill_mm=3.2)
     model = {"layers": ["F.Cu", "B.Cu"], "copper": [], "pads": [], "drills": []}
-    # drill 3.2, no ring/head: keep-out radius 1.6 + 0.4 = 2.0mm.
+    # drill 3.2, no ring/head: keep-out radius 1.6 + 0.45 = 2.05mm.
     findings = drc.run_geometric_drc(
         model,
         capability=_CAP4,
         courtyards=[("U1", _square(2.9, 0.0)), ("U2", _square(20.0, 0.0))],
-        holes=[("hole @ (0, 0)", mounting_hole_keepout_polygon(hole), None)],
+        holes=[
+            (
+                "hole @ (0, 0)",
+                mounting_hole_keepout_polygon(hole, hole_fab_clearance_mm(_CAP4)),
+                None,
+            )
+        ],
         bodies=[("U1", _square(3.2, 0.0)), ("U2", _square(20.0, 0.0))],
     )
     # U1's courtyard reaches x=1.9 (0.1mm inside the keep-out) but its
@@ -1749,7 +1757,7 @@ def test_run_geometric_drc_threads_bodies_into_the_courtyard_hole_rule():
     assert [f for f in findings if f.rule == "courtyard_hole"] == []
 
     from precis.pcb.ir import MountingHole
-    from precis.pcb.optimize import mounting_hole_keepout_polygon
+    from precis.pcb.optimize import hole_fab_clearance_mm, mounting_hole_keepout_polygon
 
     hole = MountingHole(x=0.0, y=0.0, drill_mm=3.2)
     model = {"layers": ["F.Cu", "B.Cu"], "copper": [], "pads": [], "drills": []}
@@ -1757,7 +1765,13 @@ def test_run_geometric_drc_threads_bodies_into_the_courtyard_hole_rule():
         model,
         capability=_CAP4,
         courtyards=[("U1", _square(1.0, 0.0)), ("U2", _square(20.0, 0.0))],
-        holes=[("hole @ (0, 0)", mounting_hole_keepout_polygon(hole), None)],
+        holes=[
+            (
+                "hole @ (0, 0)",
+                mounting_hole_keepout_polygon(hole, hole_fab_clearance_mm(_CAP4)),
+                None,
+            )
+        ],
     )
     assert [f.where for f in findings if f.rule == "courtyard_hole"] == [
         "U1 <-> hole @ (0, 0)"
@@ -1770,13 +1784,149 @@ def test_check_courtyard_hole_skips_a_parts_own_cutout_but_not_a_neighbour():
     courtyard_hole errors on prod). The same hole still errors against any
     other part."""
     from precis.pcb.ir import MountingHole
-    from precis.pcb.optimize import mounting_hole_keepout_polygon
+    from precis.pcb.optimize import hole_fab_clearance_mm, mounting_hole_keepout_polygon
 
     own = MountingHole(x=0.0, y=0.0, drill_mm=6.4, part="CN1")
-    holes = [("hole @ (0, 0)", mounting_hole_keepout_polygon(own), "CN1")]
+    holes = [
+        (
+            "hole @ (0, 0)",
+            mounting_hole_keepout_polygon(own, hole_fab_clearance_mm(_CAP4)),
+            "CN1",
+        )
+    ]
     assert drc.check_courtyard_hole([("CN1", _square(0.0, 0.0))], holes) == []
     findings = drc.check_courtyard_hole([("U9", _square(0.0, 0.0))], holes)
     assert [f.where for f in findings] == ["U9 <-> hole @ (0, 0)"]
+
+
+def test_check_courtyard_hole_measures_the_body_at_the_fab_margin():
+    """gr529963 fix1 acceptance: the keep-out is the exact CIRCLE the
+    16-gon circumscribes — a 5mm hole's bar is drill/2 + 0.45
+    (``npth_annular_ring_mm`` jlc_min, 4layer) = 2.95mm, so a body edge
+    at radius 2.985mm passes (the taz case: the 16-gon's vertices reach
+    2.95/cos(pi/16) ~= 3.008, so a polygon-overlap test still flagged
+    it) while 2.90mm fails — and the verdict is identical under a
+    half-sector-rotated keep-out polygon."""
+    from precis.pcb.ir import MountingHole
+    from precis.pcb.optimize import hole_fab_clearance_mm, mounting_hole_keepout_polygon
+
+    margin = hole_fab_clearance_mm(_CAP4)
+    assert margin == pytest.approx(0.45)
+    hole = MountingHole(x=0.0, y=0.0, drill_mm=5.0)
+    keepout = mounting_hole_keepout_polygon(hole, margin)
+
+    def _rotated(poly: list[tuple[float, float]], angle: float):
+        c, s = math.cos(angle), math.sin(angle)
+        return [(x * c - y * s, x * s + y * c) for x, y in poly]
+
+    # The stock 16-gon plants a vertex on the +x axis (3.008mm out —
+    # that vertex is INSIDE the pass case's body, so the verdict depends
+    # on the recovered circle, not the polygon); the half-sector
+    # rotation swings an edge's tangent midpoint there instead.
+    keepouts = [keepout, _rotated(keepout, math.pi / 16.0)]
+    for poly in keepouts:
+        holes = [("hole @ (0, 0)", poly, None)]
+        # Courtyard half 0.5; the body ``bodies`` carries (the
+        # zero-clearance pad union) is half 0.1 about the same centre,
+        # so centre r+0.1 puts the body's edge at radius r. 3.085 ->
+        # edge at 2.985 >= 2.95: pass (the courtyard at 2.585 still
+        # crossed the OLD stacked rule's bar, and the unrotated polygon
+        # wraps the body outright — both older readings flagged this
+        # pose).
+        passing = [("U1", _square(3.085, 0.0, half=0.5))]
+        passing_body = [("U1", _square(3.085, 0.0, half=0.1))]
+        assert drc.check_courtyard_hole(passing, holes, passing_body) == []
+        # 3.0 -> body edge at 2.90 < 2.95: error, 0.05mm inside.
+        failing = [("U1", _square(3.0, 0.0, half=0.5))]
+        failing_body = [("U1", _square(3.0, 0.0, half=0.1))]
+        findings = drc.check_courtyard_hole(failing, holes, failing_body)
+        assert [f.rule for f in findings] == ["courtyard_hole"]
+        assert findings[0].severity == "error"
+        assert findings[0].margin_mm == pytest.approx(-0.05, abs=1e-6)
+
+
+def test_check_courtyard_edge_clearance_measures_the_body_at_the_fab_bar():
+    """gr529963 acceptance: the edge rule's bar is the fab minimum applied
+    to the part BODY — copper 0.482mm off the edge clears JLC's 0.40mm
+    V-cut minimum (a house-margin warn at most, never the error the old
+    stacked 0.4+0.4 rule raised), copper at 0.35mm fails it."""
+    jlc_min = _CAP4.jlc_min["board_edge_clearance_vcut_mm"]
+    assert jlc_min == pytest.approx(0.40)
+    # Courtyard half 0.5 -> body half 0.1, same
+    # centre: centre g+0.1 puts the body's left edge at x=g off the x=0
+    # outline edge.
+    passing = [("U1", _square(0.482 + 0.1, 10.0, half=0.5))]
+    findings = drc.check_courtyard_edge_clearance(
+        passing,
+        _CAP4,
+        outline=_EDGE_OUTLINE,
+        bodies=[("U1", _square(0.482 + 0.1, 10.0, half=0.1))],
+    )
+    assert findings == [] or all(f.severity == "warn" for f in findings)
+
+    failing = [("U1", _square(0.35 + 0.1, 10.0, half=0.5))]
+    findings = drc.check_courtyard_edge_clearance(
+        failing,
+        _CAP4,
+        outline=_EDGE_OUTLINE,
+        bodies=[("U1", _square(0.35 + 0.1, 10.0, half=0.1))],
+    )
+    assert [f.rule for f in findings] == ["courtyard_edge_clearance"]
+    assert findings[0].severity == "error"
+
+    # The part-to-part margin is untouched by this change: two
+    # courtyards overlapping still grade on the 0.4mm margin exactly as
+    # ``test_courtyard_overlap_grades_on_the_land_hulls_when_the_offset_
+    # is_known`` pins.
+    overlap = [("U1", _square(0.0, 0.0)), ("U2", _square(1.5, 0.0))]
+    assert [f.rule for f in drc.check_courtyard_overlap(overlap)] == [
+        "courtyard_overlap"
+    ]
+
+
+def test_courtyard_edge_rules_take_the_body_on_a_sub_margin_capability():
+    """gr529963 fix1 acceptance: a capability whose board-edge jlc_min
+    sits UNDER the 0.4mm courtyard margin must not re-stack it — a body
+    0.32mm off the edge is legal in BOTH ``check_courtyard_edge_
+    clearance`` and ``check_outline_containment``, even though the same
+    pose's courtyard skirt crosses the outline (a courtyard that only
+    overhangs its own 0.4mm margin is not "off the board")."""
+    import dataclasses
+
+    cap = dataclasses.replace(
+        _CAP4,
+        jlc_min={**_CAP4.jlc_min, "board_edge_clearance_vcut_mm": 0.3},
+    )
+    # Courtyard half 0.5 centred 0.42 off the x=0 edge: the body
+    # ``bodies`` carries is half 0.1 with its edge at 0.32 >= the 0.3mm
+    # fab bar; the courtyard skirt itself reaches -0.08, off the board.
+    courtyards = [("U1", _square(0.42, 10.0, half=0.5))]
+    bodies = [("U1", _square(0.42, 10.0, half=0.1))]
+    findings = drc.check_courtyard_edge_clearance(
+        courtyards, cap, outline=_EDGE_OUTLINE, bodies=bodies
+    )
+    assert all(f.severity != "error" for f in findings)
+    model = {"layers": ["F.Cu", "B.Cu"], "copper": [], "pads": [], "drills": []}
+    assert (
+        drc.check_outline_containment(
+            model,
+            outline=_EDGE_OUTLINE,
+            courtyards=courtyards,
+            bodies=bodies,
+        )
+        == []
+    )
+    # Control — the pre-fix1 reading (the courtyard itself measured)
+    # calls the identical pose an error on both rules.
+    assert drc.check_outline_containment(
+        model, outline=_EDGE_OUTLINE, courtyards=courtyards
+    )
+    assert [
+        f.severity
+        for f in drc.check_courtyard_edge_clearance(
+            courtyards, cap, outline=_EDGE_OUTLINE
+        )
+    ] == ["error"]
 
 
 def test_courtyards_that_merely_touch_are_not_an_overlap():

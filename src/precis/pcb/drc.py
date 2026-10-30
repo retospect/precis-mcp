@@ -2831,13 +2831,15 @@ def check_courtyard_hole(
     holes: Sequence[HoleKeepout],
     bodies: Sequence[Courtyard] | None = None,
 ) -> list[DrcFinding]:
-    """A part's body overlapping a mounting hole's keep-out is a hard
-    error, on either side of the board — the hole and its hardware go
-    through it. ``holes`` are ``(label, polygon, owner)`` triples, the
+    """A part's BODY coming within a mounting hole's keep-out radius is a
+    hard error, on either side of the board — the hole and its hardware
+    go through it. ``holes`` are ``(label, polygon, owner)`` triples, the
     polygon built by
-    :func:`precis.pcb.optimize.mounting_hole_keepout_polygon`, the shape the
-    placer's ``_placement_is_legal`` already rejects against, so the placer
-    and DRC hold the same rule. Without this a part whose body covers a
+    :func:`precis.pcb.optimize.mounting_hole_keepout_polygon`; legality
+    here is the body's exact distance to the hole CENTRE against the
+    keep-out radius the polygon circumscribes — the same rule the
+    placer's ``_placement_is_legal`` applies, so the two cannot drift.
+    Without this a part whose courtyard covers a
     plated solder-nut hole while its pads miss it was DRC-clean:
     :func:`check_npth_clearance` tests copper, and only against unplated
     holes. ``owner`` is the refdes whose footprint the hole is cut from
@@ -2849,33 +2851,51 @@ def check_courtyard_hole(
     measures against the BODY (the zero-clearance pad union, the same
     ``(refdes, poly)`` shape as ``courtyards``) — the keep-out polygon
     already carries the hole's single margin claim in its radius
-    (``widest/2 + COURTYARD_CLEARANCE_MM``), so charging the 0.4mm house
-    courtyard margin on top of it double-stacked the margin and forbade
-    authored near-hole electrodes whose body bite cleared the keep-out.
-    The 0.4mm house margin is between-parts breathing room only. When
-    ``bodies`` is None (the default) the check measures ``courtyards``,
-    exactly as before — the "silent about a thing this module was never
-    told" contract ``census=None`` carries."""
+    (``widest/2 + hole_fab_clearance_mm``, the fab's hole-edge-to-copper
+    minimum), so charging the 0.4mm house courtyard margin on top of it
+    double-stacked the margin and forbade authored near-hole electrodes
+    whose body bite cleared the keep-out. The 0.4mm house margin is
+    between-parts breathing room only. When ``bodies`` is None (the
+    default) the check measures ``courtyards``, exactly as before — the
+    "silent about a thing this module was never told" contract
+    ``census=None`` carries.
+
+    The keep-out itself is the CIRCLE the polygon circumscribes
+    (gr529963 fix1): ``mounting_hole_keepout_polygon`` emits a regular
+    n-gon whose edges are tangent to it, so the centroid is its centre
+    and the centre-to-edge distance its exact radius — recovered from
+    the polygon, so any regular n-gon at any vertex alignment judges
+    identically. The vertices reach r/cos(pi/sides) (~1.02r at 16
+    sides), which is why polygon overlap flagged a body inside the
+    16-gon but outside the true circle — the taz case, a body at
+    radius 2.985 against a 2.95 keep-out. The polygon now carries the
+    STRtree broad phase only."""
     hole_geoms = [
         (label, Polygon(poly), owner) for label, poly, owner in holes if len(poly) >= 3
     ]
     measured = bodies if bodies is not None else courtyards
     if not hole_geoms or not measured:
         return []
+    circles = []
+    for label, gh, owner in hole_geoms:
+        centre = gh.centroid
+        circles.append((label, owner, centre, float(gh.exterior.distance(centre))))
     tree = STRtree([g for _, g, _ in hole_geoms])
     findings: list[DrcFinding] = []
     for refdes, poly in measured:
         if len(poly) < 3:
             continue
         gc = Polygon(poly)
+        if gc.is_empty:
+            continue
         for c in tree.query(gc, predicate="intersects"):
-            label, gh, owner = hole_geoms[int(c)]
+            label, owner, centre, radius = circles[int(c)]
             if owner is not None and owner == refdes:
                 continue
-            overlap = gc.intersection(gh)
-            if overlap.is_empty or overlap.area <= _EPS:
+            dist = float(gc.distance(centre))
+            if dist >= radius:
                 continue
-            depth = _overlap_depth_mm(overlap)
+            depth = radius - dist
             findings.append(
                 DrcFinding(
                     rule="courtyard_hole",
@@ -2884,8 +2904,9 @@ def check_courtyard_hole(
                     detail=(
                         f"{refdes} "
                         f"{'body' if bodies is not None else 'courtyard'} "
-                        f"overlaps the {label} keep-out "
-                        f"over {overlap.area:.4f}mm^2, {depth:.3f}mm deep"
+                        f"comes {dist:.3f}mm from the {label} keep-out "
+                        f"centre — {depth:.3f}mm inside its "
+                        f"{radius:.3f}mm radius"
                     ),
                     objects=({"a": refdes, "b": label},),
                     margin_mm=-depth,
@@ -3041,6 +3062,7 @@ def check_outline_containment(
     *,
     outline: list[list[float]] | None,
     courtyards: list[Courtyard] | None = None,
+    bodies: Sequence[Courtyard] | None = None,
 ) -> list[DrcFinding]:
     """Copper, pads and parts must be ON the board.
 
@@ -3065,6 +3087,16 @@ def check_outline_containment(
     fab images what is inside the profile; copper outside it is not
     marginal, it does not exist on the delivered board. Severity is always
     ``error``.
+
+    **Parts are judged by their BODY** (gr529963 fix1) — ``bodies`` is
+    the zero-clearance pad union in the same ``(refdes, poly)`` shape as
+    ``courtyards``; the 0.4mm margin is a part-to-part reservation, so a
+    courtyard that only overhangs its own 0.4mm skirt is not "off the
+    board", and a capability whose edge minimum sits under that margin
+    must not re-stack it. When ``bodies`` is None (the default) the
+    check measures ``courtyards``, exactly as before — the same "silent
+    about a thing this module was never told" contract
+    :func:`check_courtyard_edge_clearance` carries.
     """
     if not outline or len(outline) < 3:
         return []
@@ -3160,7 +3192,8 @@ def check_outline_containment(
             },
         )
 
-    for refdes, poly in courtyards or []:
+    measured = bodies if bodies is not None else courtyards
+    for refdes, poly in measured or []:
         if len(poly) < 3:
             continue  # a pinless part the caller gave no fallback shape
         outside(Polygon(poly), f"part {refdes}", {"refdes": refdes})
@@ -4916,7 +4949,9 @@ def run_geometric_drc(
     )
     findings += check_octilinear(model)
     findings += check_outline_missing(outline)
-    findings += check_outline_containment(model, outline=outline, courtyards=courtyards)
+    findings += check_outline_containment(
+        model, outline=outline, courtyards=courtyards, bodies=bodies
+    )
     findings += check_keepout_copper(model, keepouts)
     findings += check_board_origin(model, outline)
     findings += check_edge_mating(edge_mates, outline=outline)
@@ -6201,7 +6236,9 @@ def run_placement_drc(
     findings += check_via_pad_keepout(model, capability)
     findings += check_via_via_keepout(model, capability)
     findings += check_outline_missing(outline)
-    findings += check_outline_containment(model, outline=outline, courtyards=courtyards)
+    findings += check_outline_containment(
+        model, outline=outline, courtyards=courtyards, bodies=bodies
+    )
     findings += check_courtyard_edge_clearance(
         courtyards, capability, outline=outline, edge_mates=edge_mates, bodies=bodies
     )

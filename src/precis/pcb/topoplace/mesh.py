@@ -58,7 +58,7 @@ from scipy.spatial import Delaunay, QhullError
 
 from precis.errors import BadInput
 from precis.pcb.topoplace.design import TopoDesign
-from precis.pcb.topoplace.proxy import zone_world_ring
+from precis.pcb.topoplace.proxy import zone_world_circle, zone_world_ring
 
 #: Orientation epsilon (mm²). Courtyard coordinates carry transform dust
 #: at ~1e-13; 1e-9 keeps true collinearities (shared pad rows) exact while
@@ -683,12 +683,16 @@ def _conflict_data(
 
     The zone test (the ``courtyard_hole`` hard gate) measures the part
     BODY (``world_bodies``, the zero-clearance pad union) against the
-    zone polygon — gr529963's ruling (Reto 2026-10-28): the hole's
-    keep-out ring already carries its single margin claim in its radius,
-    so the part's 0.4mm house courtyard margin must not stack on top of
-    it. Part-part conflicts and outline escapes stay on the courtyard
-    rings — the house margin IS between-parts breathing room."""
-    from shapely.geometry import Polygon
+    zone — gr529963's ruling (Reto 2026-10-28): the hole's keep-out
+    already carries its single margin claim in its radius, so the
+    part's 0.4mm house courtyard margin must not stack on top of it.
+    For a ``mounting_hole`` zone the keep-out is the exact CIRCLE the
+    ring circumscribes (fix1) — the body's distance to the hole centre
+    decides it, a body inside the 16-gon but outside the circle (the
+    taz case) is no conflict. Part-part conflicts and outline escapes
+    stay on the courtyard rings — the house margin IS between-parts
+    breathing room."""
+    from shapely.geometry import Point, Polygon
 
     def _poly(ring: np.ndarray | None) -> Polygon | None:
         if ring is None or len(ring) < 4:
@@ -749,6 +753,23 @@ def _conflict_data(
             # exemption, so the placement passes do not shove a
             # connector off its own standoff
             if d.zones[z].part == i:
+                continue
+            circ = (
+                zone_world_circle(d, d.zones[z], pose)
+                if d.zones[z].kind == "mounting_hole"
+                else None
+            )
+            if circ is not None:
+                # The keep-out is the CIRCLE, not its circumscribing
+                # 16-gon (gr529963 fix1): the body's exact distance to
+                # the hole centre decides it — a body inside the ring
+                # but outside the circle (the taz case) does not
+                # conflict. The reported magnitude stays an overlap
+                # area, now of the true disc.
+                cpt = Point(circ[0], circ[1])
+                if float(bi.distance(cpt)) < circ[2]:
+                    area = float(bi.intersection(cpt.buffer(circ[2])).area)
+                    zone_conflicts.append((i, z, area))
                 continue
             if area > _EPS:
                 zone_conflicts.append((i, z, area))

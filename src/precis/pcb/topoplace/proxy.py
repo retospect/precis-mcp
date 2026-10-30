@@ -145,9 +145,30 @@ def zone_world_ring(d: TopoDesign, z, pose: np.ndarray) -> np.ndarray:
     return np.asarray(z.ring, dtype=np.float64)
 
 
+def zone_world_circle(
+    d: TopoDesign, z, pose: np.ndarray
+) -> tuple[float, float, float] | None:
+    """The zone's keep-out ``(cx, cy, r)`` in world mm at ``pose`` — a
+    part-owned hole's centre rides its owner's pose like
+    :func:`zone_world_ring`'s ring does (mirror + quarter-turn preserve
+    the radius). ``None`` for a zone that carries no circle — every kind
+    but ``mounting_hole``, which the placer and DRC judge by exact
+    body-to-centre distance (gr529963 fix1), never by polygon overlap."""
+    if z.circle is None:
+        return None
+    cx, cy, r = z.circle
+    if z.part_local and 0 <= z.part < len(d.parts):
+        cx, cy = (
+            float(v) for v in local_to_world(np.asarray([[cx, cy]]), pose[z.part])[0]
+        )
+    return float(cx), float(cy), float(r)
+
+
 def _ring_geom(d: TopoDesign, row: np.ndarray, part: int):
     """The part's courtyard in board space as a shapely polygon —
-    ``None`` for a part with no ring (synthetic designs)."""
+    ``None`` for a part with no ring (synthetic designs). Body reads go
+    through :func:`_body_geom`, which carries the per-part courtyard
+    fallback a mounting-hole test needs."""
     ring = d.part_outline[part] if part < len(d.part_outline) else ()
     pts = np.asarray(ring, dtype=np.float64).reshape(-1, 2)
     if len(pts) < 4:

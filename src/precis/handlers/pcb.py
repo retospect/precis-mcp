@@ -8095,7 +8095,10 @@ class PcbHandler(Handler):
             *pcb_drc.check_via_via_keepout(model, capability),
             *pcb_drc.check_board_edge_clearance(model, capability, outline=outline),
             *pcb_drc.check_outline_containment(
-                model, outline=outline, courtyards=courtyards
+                model,
+                outline=outline,
+                courtyards=courtyards,
+                bodies=bodies,
             ),
             *pcb_drc.check_courtyard_edge_clearance(
                 courtyards,
@@ -8121,7 +8124,9 @@ class PcbHandler(Handler):
                 [
                     (
                         f"hole @ ({h.x:g}, {h.y:g})",
-                        pcb_optimize.mounting_hole_keepout_polygon(h),
+                        pcb_optimize.mounting_hole_keepout_polygon(
+                            h, pcb_optimize.hole_fab_clearance_mm(capability)
+                        ),
                         h.part,
                     )
                     for h in ir.mounting_holes

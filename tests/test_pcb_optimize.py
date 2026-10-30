@@ -66,6 +66,7 @@ from precis.pcb.optimize import (
     _hole_keepout_radius_mm,
     _hole_polygon,
     digest_toon,
+    hole_fab_clearance_mm,
     optimize,
     recentre_in_outline,
     resolve_measures,
@@ -2231,11 +2232,12 @@ def test_hole_keepout_radius_widens_for_an_authored_hardware_head():
     that is what a part must clear. ``head_dia_mm=0.0`` (the default,
     absent-hardware case) must reproduce the pre-existing ring-only
     value exactly -- no regression for holes with no authored head."""
+    margin = hole_fab_clearance_mm(OptimizeConfig().cost.fab_caps)
     ring_only = MountingHole(x=0.0, y=0.0, drill_mm=5.6, ring_dia_mm=8.0)
-    assert _hole_keepout_radius_mm(ring_only) == 8.0 / 2.0 + COURTYARD_CLEARANCE_MM
+    assert _hole_keepout_radius_mm(ring_only, margin) == 8.0 / 2.0 + margin
 
     with_head = dataclasses.replace(ring_only, head_dia_mm=9.0)
-    assert _hole_keepout_radius_mm(with_head) == 9.0 / 2.0 + COURTYARD_CLEARANCE_MM
+    assert _hole_keepout_radius_mm(with_head, margin) == 9.0 / 2.0 + margin
 
 
 def test_courtyard_overlapping_a_mounting_hole_head_envelope_is_illegal():
@@ -2315,7 +2317,9 @@ def test_a_concave_courtyards_notch_is_not_a_hole_keepout():
     # the exact ring the hole check now judges does not.
     from shapely.geometry import Polygon
 
-    hole_poly = _hole_polygon(10.0, 12.0, _hole_keepout_radius_mm(notch_hole))
+    hole_poly = _hole_polygon(
+        10.0, 12.0, _hole_keepout_radius_mm(notch_hole, engine._hole_margin_mm)
+    )
     courtyard = engine._world_courtyard(0, 10.0, 10.0)
     assert convex_polygons_overlap(courtyard, hole_poly)
     assert (
@@ -2363,10 +2367,10 @@ def test_courtyard_biting_a_hole_keepout_is_legal_when_the_body_clears():
     2.556mm² courtyard bite on the zip keep-out).
 
     A 2x2mm pad: body reaches 1mm off-centre, courtyard 1.4mm. The hole's
-    keep-out (radius 1.4mm) is a circumscribed 16-gon, vertex reach
-    ~1.4275mm. At x=2.75 the courtyard bites the keep-out while the body
-    clears it by ~0.32mm — also past the graded corridor (0.3mm), so the
-    hole margin prices nothing."""
+    keep-out (radius 1.45mm — drill/2 + the 0.45mm fab margin) is a
+    circumscribed 16-gon, vertex reach ~1.478mm. At x=2.80 the courtyard
+    bites the keep-out while the body clears it by ~0.32mm — also past
+    the graded corridor (0.3mm), so the hole margin prices nothing."""
     from shapely.geometry import Polygon
 
     from precis.pcb.drc import check_courtyard_hole
@@ -2384,7 +2388,7 @@ def test_courtyard_biting_a_hole_keepout_is_legal_when_the_body_clears():
         mounting_holes=(hole,),
     )
     ir.footprint_pads = _square_pad_instance(0)
-    ir.inst_x[0], ir.inst_y[0] = 2.75, 0.0
+    ir.inst_x[0], ir.inst_y[0] = 2.80, 0.0
     engine = OptimizeEngine(ir, OptimizeConfig(seed=1))
     engine._placement_bounds = (-50.0, -50.0, 100.0, 100.0)
 
@@ -2400,11 +2404,11 @@ def test_courtyard_biting_a_hole_keepout_is_legal_when_the_body_clears():
     body = engine._world_body_exact(0)
     assert body.intersection(Polygon(hole_poly)).area <= _EXACT_OVERLAP_AREA_MM2
     assert body.distance(Polygon(hole_poly)) > engine.config.cost.default_pitch_mm
-    assert engine._placement_is_legal(((0, 2.75, 0.0),))
-    assert engine.pose_conflicts(0, 2.75, 0.0) == []
-    assert engine.pose_conflict_depths(0, 2.75, 0.0) == []
+    assert engine._placement_is_legal(((0, 2.80, 0.0),))
+    assert engine.pose_conflicts(0, 2.80, 0.0) == []
+    assert engine.pose_conflict_depths(0, 2.80, 0.0) == []
     assert ("courtyard_overlap", _pair_key(0, _HOLE_KEY_BASE)) not in engine._margin
-    # ...and slid 0.75mm onto the hole the body DOES bite it.
+    # ...and slid 0.80mm onto the hole the body DOES bite it.
     assert not engine._placement_is_legal(((0, 2.0, 0.0),))
     assert [r for r, _ in engine.pose_conflicts(0, 2.0, 0.0)] == ["courtyard_hole"]
 
@@ -2420,7 +2424,13 @@ def test_courtyard_biting_a_hole_keepout_is_legal_when_the_body_clears():
         clearance_mm=0.0,
         fallback_half_extent_mm=COURTYARD_MIN_SEPARATION_MM / 2.0,
     )[0]
-    holes = [("hole @ (0, 0)", mounting_hole_keepout_polygon(hole), None)]
+    holes = [
+        (
+            "hole @ (0, 0)",
+            mounting_hole_keepout_polygon(hole, engine._hole_margin_mm),
+            None,
+        )
+    ]
     assert check_courtyard_hole([("U1", courtyard)], holes, [("U1", body_ring)]) == []
     assert check_courtyard_hole([("U1", courtyard)], holes)
 
@@ -2681,13 +2691,37 @@ def test_real_pipeline_shape_nano_fixture_ends_fully_legal_and_congruent():
                 "outside the board outline"
             )
 
-    # (b) no courtyard overlaps a mounting hole
-    for i, poly in enumerate(world_polys):
+    # (b) no part BODY comes within a mounting hole's keep-out radius —
+    # gr529963: legality is body-vs-keepout at the fab margin now (the
+    # courtyard's 0.4mm no longer stacks on it), and fix1 made the
+    # keep-out the exact CIRCLE its polygon circumscribes, so the
+    # assertion measures centre distance, not polygon overlap.
+    body_polys = [
+        place_points(
+            poly,
+            cx=float(ir.inst_x[i]),
+            cy=float(ir.inst_y[i]),
+            rot_deg=float(ir.inst_rot[i]),
+        )
+        for i, poly in enumerate(
+            instance_courtyard_polygons(
+                ir,
+                clearance_mm=0.0,
+                fallback_half_extent_mm=COURTYARD_MIN_SEPARATION_MM / 2.0,
+            )
+        )
+    ]
+    from shapely.geometry import Point, Polygon
+
+    hole_margin = hole_fab_clearance_mm(OptimizeConfig().cost.fab_caps)
+    for i, poly in enumerate(body_polys):
+        body = Polygon(poly)
         for hole in ir.mounting_holes:
-            hole_poly = _hole_polygon(hole.x, hole.y, _hole_keepout_radius_mm(hole))
-            assert not convex_polygons_overlap(poly, hole_poly), (
-                f"{ir.instance_refdes[i]}'s courtyard overlaps the mounting "
-                f"hole at ({hole.x}, {hole.y})"
+            radius = _hole_keepout_radius_mm(hole, hole_margin)
+            assert body.distance(Point(hole.x, hole.y)) >= radius, (
+                f"{ir.instance_refdes[i]}'s body comes within the "
+                f"{radius:.3f}mm keep-out of the mounting hole at "
+                f"({hole.x}, {hole.y})"
             )
 
     # (c) J1/J2 (the ICSP + FTDI programming-header pair): still EXACTLY
@@ -3046,18 +3080,28 @@ def test_settle_moves_a_courtyard_off_a_cut_corner_and_leaves_the_rest():
     """gr496151: the anneal bounds a centre by the outline's BBOX, so a
     part can settle over a rounded or cut corner and the route job then
     refuses the placement on ``outline_containment``. The settle moves
-    only that part, to a pose that is legal and inside the outline."""
-    from precis.pcb.optimize import _courtyard_in_outline
+    only that part, to a pose that is legal and inside the outline.
+    Since gr529963 fix1 the edge bar is the BODY's (the courtyard here
+    still pokes — the settle's margin arm catches the body's <0.4mm
+    clearance it leaves)."""
+    from precis.pcb.optimize import _courtyard_edge_gap_mm, _courtyard_in_outline
 
     ir = _chamfered_corner_ir()
     engine = OptimizeEngine(ir, OptimizeConfig(seed=3))
     region = engine._outline_region
     assert engine._placement_is_legal([(0, float(ir.inst_x[0]), float(ir.inst_y[0]))])
+    # The authored defect: the courtyard pokes past the chamfer while
+    # the body sits inside but inside the JLC floor — both are poses
+    # the bbox bounds call legal.
     assert not _courtyard_in_outline(region, engine._world_courtyard(0))
+    assert _courtyard_in_outline(region, engine._world_body_exact(0))
+    assert _courtyard_edge_gap_mm(region, engine._world_body_exact(0)) < 0.4
     u1 = (float(ir.inst_x[1]), float(ir.inst_y[1]))
 
     assert engine.settle_into_outline() == ("U0",)
-    assert _courtyard_in_outline(region, engine._world_courtyard(0))
+    poly = engine._world_body_exact(0)
+    assert _courtyard_in_outline(region, poly)
+    assert _courtyard_edge_gap_mm(region, poly) >= 0.6
     assert engine._placement_is_legal([(0, float(ir.inst_x[0]), float(ir.inst_y[0]))])
     assert (float(ir.inst_x[1]), float(ir.inst_y[1])) == u1
     assert engine.settle_into_outline() == ()  # idempotent
@@ -3101,7 +3145,7 @@ def test_settle_pulls_a_body_out_of_the_edge_margin_too():
     u1 = (float(ir.inst_x[1]), float(ir.inst_y[1]))
 
     assert engine.settle_into_outline() == ("U0",)
-    assert _courtyard_in_outline(region, engine._world_courtyard_exact(0))
+    assert _courtyard_in_outline(region, engine._world_body_exact(0))
     assert _courtyard_edge_gap_mm(region, engine._world_body_exact(0)) >= 0.6
     assert engine._placement_is_legal([(0, float(ir.inst_x[0]), float(ir.inst_y[0]))])
     assert (float(ir.inst_x[1]), float(ir.inst_y[1])) == u1
@@ -3110,9 +3154,9 @@ def test_settle_pulls_a_body_out_of_the_edge_margin_too():
 
 def test_settle_leaves_a_courtyard_in_the_warn_band_untouched():
     """Negative control for the margin arm: the trigger is the JLC floor,
-    not the house figure — a part inside at 0.45mm off the edge owes a
-    warn to DRC, not a move. Only an ERROR-class shortfall earns the
-    nudge."""
+    not the house figure — a part whose BODY (the bar since gr529963
+    fix1, same as DRC's) sits inside at 0.45mm off the edge owes a warn
+    to DRC, not a move. Only an ERROR-class shortfall earns the nudge."""
     from precis.pcb.optimize import _courtyard_edge_gap_mm, _courtyard_in_outline
 
     ir = _chamfered_corner_ir()
@@ -3121,7 +3165,7 @@ def test_settle_leaves_a_courtyard_in_the_warn_band_untouched():
     placed = False
     for t in (i * 0.05 for i in range(1, 80)):
         ir.inst_x[0] = ir.inst_y[0] = t
-        poly = engine._world_courtyard(0)
+        poly = engine._world_body_exact(0)
         if _courtyard_in_outline(region, poly):
             gap = _courtyard_edge_gap_mm(region, poly)
             if 0.4 <= gap < 0.6:
@@ -3131,6 +3175,49 @@ def test_settle_leaves_a_courtyard_in_the_warn_band_untouched():
     pose = (float(ir.inst_x[0]), float(ir.inst_y[0]))
     assert engine.settle_into_outline() == ()
     assert (float(ir.inst_x[0]), float(ir.inst_y[0])) == pose
+
+
+def test_the_edge_bar_reads_the_body_on_a_sub_margin_capability():
+    """gr529963 fix1: on a capability whose board-edge minimum sits UNDER
+    the 0.4mm courtyard margin the placer and DRC must hold the SAME bar
+    — the body (``drc.check_courtyard_edge_clearance`` /
+    ``check_outline_containment``). A part whose BODY sits 0.32mm off
+    the edge while its courtyard skirt crosses the outline is legal to
+    ``_placement_is_legal(in_outline=True)`` and ``settle_into_outline``
+    leaves it where it is."""
+    from precis.pcb.capabilities import capability_for
+    from precis.pcb.optimize import _courtyard_in_outline
+
+    cap30 = dataclasses.replace(
+        capability_for("4layer"),
+        jlc_min={
+            **capability_for("4layer").jlc_min,
+            "board_edge_clearance_vcut_mm": 0.3,
+        },
+    )
+    ir = _two_part_ir(second_layer="bottom")
+    ir.outline = [[0.0, 0.0], [40.0, 0.0], [40.0, 40.0], [0.0, 40.0]]
+    # U0's body is its one pin's land: a 1x1 pad at the part origin makes
+    # the body a square half 0.5 (the courtyard is that + 0.4). Centre
+    # x=0.82 puts the body edge 0.32mm off the x=0 edge while the
+    # courtyard reaches -0.08, off the board.
+    pid = int((ir.pin_instance == 0).nonzero()[0][0])
+    ir.set_pin_offset(pid, 0.0, 0.0)
+    ir.set_pin_pad(pid, 1.0, 1.0)
+    ir.inst_x[0], ir.inst_y[0] = 0.82, 20.0
+    ir.inst_x[1], ir.inst_y[1] = 30.0, 30.0
+    engine = OptimizeEngine(ir, OptimizeConfig(seed=3, cost=CostConfig(fab_caps=cap30)))
+    # Roomy domain, so the verdicts below are about the outline, not the
+    # seed-derived bounds (which shrink the centre by the keep-out
+    # radius — 0.82mm off the edge is inside no part's domain).
+    engine._placement_bounds = (-50.0, -50.0, 100.0, 100.0)
+    region = engine._outline_region
+    # The courtyard really does cross the edge — the pre-fix1 reading
+    # refused this exact pose.
+    assert not _courtyard_in_outline(region, engine._world_courtyard(0))
+    assert engine._placement_is_legal([(0, 0.82, 20.0)], in_outline=True)
+    assert engine.settle_into_outline() == ()
+    assert (float(ir.inst_x[0]), float(ir.inst_y[0])) == (0.82, 20.0)
 
 
 def test_a_part_wider_than_the_nominal_canvas_is_not_pinned_to_its_centre():

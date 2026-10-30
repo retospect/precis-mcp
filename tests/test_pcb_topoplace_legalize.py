@@ -328,6 +328,48 @@ def test_zones_derives_local_xy_for_a_legacy_part_owned_hole() -> None:
     )
 
 
+def test_hole_sliver_bite_is_a_violation() -> None:
+    """gr529963 fix1 round: the zone sweep counted a hole hit only when
+    the body∩disc AREA beat ``_EPS``, so a body grazing the keep-out
+    circle by a sliver — which the mesh's and DRC's distance test flags
+    — read as clean. The distance test now decides the violation and
+    the area only ranks, so a free part's 1e-6 mm bite is shoved off
+    and a fixed part's is reported. The bodies bite corner-first so
+    the intersection (~1e-12 mm²) underflows the area floor a flat
+    edge's bite (~1e-9) would still clear."""
+    import dataclasses
+
+    from precis.pcb.optimize import _hole_polygon
+
+    a, r, bite = 0.3, 1.0, 1e-6
+    cx, cy = 10.0, 10.0
+    body = np.asarray([[a, 0.0], [0.0, a], [-a, 0.0], [0.0, -a], [a, 0.0]])
+    zone = TopoZone(
+        kind="mounting_hole",
+        ring=np.asarray(_hole_polygon(cx, cy, r)),
+        circle=(cx, cy, r),
+        name="MH1",
+    )
+    d = _design(
+        parts=("U1", "U2"),
+        pin_part=[],
+        pin_net=[],
+        part_outline=(_RING, _RING),
+        zones=(zone,),
+        pose0=[
+            [cx - (r - bite + a), cy, 0, 0],  # U1 fixed, corner just inside
+            [cx + r - bite + a, cy, 0, 0],  # U2 free, mirror image
+        ],
+    )
+    d = dataclasses.replace(d, fixed=np.asarray([True, False]), part_body=(body, body))
+    res = legalize_pose(d, d.pose0)
+    np.testing.assert_allclose(res.pose[0], d.pose0[0])  # fixed never moves
+    assert not np.allclose(res.pose[1, :2], d.pose0[1, :2])  # sliver shoved off
+    n = len(d.parts)
+    assert any(a_ == 0 and b >= n for a_, b, _ in res.remaining)  # U1 reported
+    assert not any(a_ == 1 and b >= n for a_, b, _ in res.remaining)
+
+
 # ── S5: fixed vias as anchors + the per-pad exemption (gr520903) ────
 
 

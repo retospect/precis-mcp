@@ -97,6 +97,40 @@ def test_shove_pushes_part_off_keepout() -> None:
     assert not end.zone_conflicts
 
 
+def test_shove_degenerate_body_ring_falls_back_to_courtyard() -> None:
+    """gr529963 fix1 round: the hole check read ``_ring_geom(body=
+    True)``, which falls back to the courtyard only when the whole
+    ``part_body`` table is absent — a table carrying a DEGENERATE ring
+    for one part produced ``None`` and the zone scan skipped that part
+    entirely, so a real hole intrusion (which the mesh reports — it
+    has the same per-part fallback ``_body_geom`` does) never became
+    an LP want. A1 with an EMPTY body ring, its courtyard grazing the
+    hole circle, must take the push."""
+    from precis.pcb.optimize import _hole_polygon
+
+    d = example_a()
+    zone = TopoZone(
+        kind="mounting_hole",
+        ring=np.asarray(_hole_polygon(0.0, 2.0, 1.0)),
+        circle=(0.0, 2.0, 1.0),
+        name="MH1",
+    )
+    bodies = tuple(
+        np.empty((0, 2)) if i == 0 else np.asarray(d.part_outline[i])
+        for i in range(len(d.parts))
+    )
+    d = dataclasses.replace(d, zones=(zone,), part_body=bodies)
+    pose = d.pose0.copy()
+    # A1's courtyard (±0.4) reaches x=0.95 — 0.05mm inside the circle.
+    pose[0] = [1.35, 2.0, 0.0, 0.0]
+    mesh = build_mesh(d, pose)
+    assert mesh.zone_conflicts
+    res = shove_pose(d, pose)
+    assert res.resolved and res.moved_mm > 0.0
+    end = build_mesh(d, res.pose)
+    assert not end.zone_conflicts
+
+
 def test_shove_centres_stay_on_board() -> None:
     """Outline containment: part centres stay inside their legal box —
     the LP bounds — so no new outline escapes are created."""

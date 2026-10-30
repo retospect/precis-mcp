@@ -48,6 +48,7 @@ import numpy as np
 from scipy.optimize import linprog
 from scipy.sparse import csr_matrix, lil_matrix
 from shapely.geometry import Point, Polygon
+from shapely.ops import nearest_points
 
 from precis.pcb.topoplace.design import TopoDesign
 from precis.pcb.topoplace.legalize import (
@@ -62,8 +63,10 @@ from precis.pcb.topoplace.legalize import (
 from precis.pcb.topoplace.mesh import MeshConflictError, TopoMesh, build_mesh
 from precis.pcb.topoplace.proxy import (
     _EPS,
+    _body_geom,
     _ring_geom,
     through_hole_parts,
+    zone_world_circle,
     zone_world_ring,
 )
 
@@ -200,6 +203,16 @@ def shove_pose(d: TopoDesign, pose: np.ndarray, *, rounds: int = 10) -> ShoveRes
         sides = pose[:, 3] >= 0.5
         th = through_hole_parts(d)
         geoms = [_ring_geom(d, pose[i], i) for i in range(n)]
+        #: gr529963: a mounting-hole zone is tested against the part
+        #: BODY — its keep-out already carries the fab margin, so the
+        #: courtyard's 0.4mm does not stack on it. Courtyard geoms as
+        #: the stand-in when no hole zone exists (index parity, never
+        #: read).
+        body_geoms = (
+            [_body_geom(d, pose[i], i) for i in range(n)]
+            if any(z.kind == "mounting_hole" for z in d.zones)
+            else geoms
+        )
         # re-derived each round — a part-owned hole's ring rides its
         # owner's pose, which the last step may have moved
         zone_geoms = [
@@ -265,7 +278,25 @@ def shove_pose(d: TopoDesign, pose: np.ndarray, *, rounds: int = 10) -> ShoveRes
                     bx0, by0, bx1, by1 = zg.bounds
                     if x1 < bx0 or bx1 < x0 or y1 < by0 or by1 < y0:
                         continue
-                    if float(gi.intersection(zg).area) <= _EPS:
+                    gi_z = body_geoms[i] if z.kind == "mounting_hole" else gi
+                    if gi_z is None:
+                        continue
+                    circ = (
+                        zone_world_circle(d, z, pose)
+                        if z.kind == "mounting_hole"
+                        else None
+                    )
+                    if circ is not None:
+                        # The keep-out is the exact CIRCLE the zone ring
+                        # circumscribes (gr529963 fix1): the body's
+                        # distance to the hole centre decides it — a
+                        # body inside the 16-gon but outside the circle
+                        # (the taz case) is not a violation.
+                        cpt = Point(circ[0], circ[1])
+                        dist = float(gi_z.distance(cpt))
+                        if dist >= circ[2]:
+                            continue
+                    elif float(gi_z.intersection(zg).area) <= _EPS:
                         continue
                     if z.kind == "fixed_via":
                         if pin_names is None:
@@ -280,9 +311,28 @@ def shove_pose(d: TopoDesign, pose: np.ndarray, *, rounds: int = 10) -> ShoveRes
                         continue
                     if var_of[i] < 0:
                         continue
+                    if circ is not None:
+                        # Push the body off the circle: away from its
+                        # centre by the penetration depth. A centre
+                        # inside the body has no "away" — the ring's
+                        # polygon MTV gives the direction then.
+                        depth = circ[2] - dist
+                        if dist > _EPS:
+                            near = nearest_points(gi_z, cpt)[0]
+                            axis = (
+                                np.asarray([near.x - circ[0], near.y - circ[1]]) / dist
+                            )
+                        else:
+                            vec0, d0 = _mtv(
+                                np.asarray(zg.exterior.coords),
+                                np.asarray(gi_z.exterior.coords),
+                            )
+                            axis = vec0 / d0 if d0 > 0.0 else np.asarray([1.0, 0.0])
+                        wants.append(([(i, -axis)], -(depth + _CLR_MM)))
+                        continue
                     vec, depth = _mtv(
                         np.asarray(zg.exterior.coords),
-                        np.asarray(gi.exterior.coords),
+                        np.asarray(gi_z.exterior.coords),
                     )
                     if depth > 0.0:
                         wants.append(([(i, -vec / depth)], -(depth + _CLR_MM)))
