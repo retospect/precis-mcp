@@ -226,7 +226,7 @@ def geometry(
 
     **The shape is not computed here, and since 2026-08-30 there is
     only one of it.** :func:`precis.pcb.ir.instance_courtyard_polygon`
-    — the convex hull of the part's own pad outlines, offset outward —
+    — the union of the part's own pad outlines, offset outward —
     is what the placer reserves
     (``OptimizeEngine._keepout_poly``/``seed_placement``), what
     ``courtyard_overlap`` and ``outline_containment`` check, and what

@@ -300,6 +300,31 @@ def test_operating_temperature_needs_facts_even_for_generic_passive(
             {"net": "VCC", "refdes": "R1", "pin": "1"},
             {"net": "GND", "refdes": "R1", "pin": "2"},
         ],
+        # gr524240: a partless component's `footprint` is a reference to
+        # a row this board carries — R1's '0402' must be authored here.
+        footprints=[
+            {
+                "name": "0402",
+                "pads": [
+                    {
+                        "pin": "1",
+                        "shape": "rect",
+                        "x": -0.5,
+                        "y": 0.0,
+                        "w": 0.8,
+                        "h": 0.9,
+                    },
+                    {
+                        "pin": "2",
+                        "shape": "rect",
+                        "x": 0.5,
+                        "y": 0.0,
+                        "w": 0.8,
+                        "h": 0.9,
+                    },
+                ],
+            }
+        ],
     )
     store.pcb_merge_board_meta(ref.id, {"environment": {"max_c": 85}})
     _install(

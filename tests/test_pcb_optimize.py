@@ -56,6 +56,7 @@ from precis.pcb.ir import (
 )
 from precis.pcb.landpattern import place_points, rotate_offset
 from precis.pcb.optimize import (
+    _EXACT_OVERLAP_AREA_MM2,
     MOVE_GENERATORS,
     Move,
     MoveKind,
@@ -2268,6 +2269,246 @@ def test_courtyard_overlapping_a_mounting_hole_head_envelope_is_illegal():
     assert engine._placement_is_legal(((0, 18.5, 18.5),))  # well clear of it
 
 
+def test_a_concave_courtyards_notch_is_not_a_hole_keepout():
+    """gr525380: since the courtyard became the union of pad outlines
+    (gr524238) it can be concave, and SAT has no edge normal separating a
+    hole parked inside a courtyard notch — so the keep-out read overlap
+    where DRC's shapely ``courtyard_hole`` check (and the board itself)
+    saw none. The notch must be legal; a hole on the pads must not."""
+    from precis.pcb.ir import FootprintPad
+
+    # A 10x6 U opening upward: two 3mm arms and a base bar, a 4mm mouth —
+    # the same ring test_pcb_ir's concave-courtyard test uses.
+    u = [
+        (-5.0, -3.0),
+        (5.0, -3.0),
+        (5.0, 3.0),
+        (2.0, 3.0),
+        (2.0, -1.0),
+        (-2.0, -1.0),
+        (-2.0, 3.0),
+        (-5.0, 3.0),
+    ]
+    notch_hole = MountingHole(x=10.0, y=12.0, drill_mm=1.0, ring_dia_mm=2.0)
+    ir = from_graph(
+        {"instances": [{"refdes": "U1"}], "nets": []},
+        stackup=LEGACY_V1_STACKUP,
+        mounting_holes=(notch_hole,),
+    )
+    ir.footprint_pads = (
+        FootprintPad(
+            instance=0,
+            number="1",
+            label="1",
+            pin=-1,
+            primary=False,
+            raw={"x": 0.0, "y": 0.0, "poly": u},
+        ),
+    )
+    ir.inst_x[0] = 5.0
+    ir.inst_y[0] = 5.0
+    engine = OptimizeEngine(ir, OptimizeConfig(seed=1))
+
+    # The premise, pinned so the test cannot go vacuous: with the U at
+    # (10,10) the notch hole's keep-out sits fully inside the mouth —
+    # the hulled pair-test ring (SAT) still calls that overlapping, and
+    # the exact ring the hole check now judges does not.
+    from shapely.geometry import Polygon
+
+    hole_poly = _hole_polygon(10.0, 12.0, _hole_keepout_radius_mm(notch_hole))
+    courtyard = engine._world_courtyard(0, 10.0, 10.0)
+    assert convex_polygons_overlap(courtyard, hole_poly)
+    assert (
+        engine._world_courtyard_exact(0, 10.0, 10.0)
+        .intersection(Polygon(hole_poly))
+        .area
+        <= _EXACT_OVERLAP_AREA_MM2
+    )
+    # Legal for the placer, and no conflict report — matching DRC.
+    assert engine._placement_is_legal(((0, 10.0, 10.0),))
+    assert engine.pose_conflicts(0, 10.0, 10.0) == []
+    # The same hole under the left arm itself is still a real overlap.
+    assert not engine._placement_is_legal(((0, 13.5, 10.0),))
+    assert [rule for rule, _ in engine.pose_conflicts(0, 13.5, 10.0)] == [
+        "courtyard_hole"
+    ]
+
+
+def _square_pad_instance(inst: int, w: float = 2.0, h: float = 2.0) -> tuple:
+    """One instance whose whole footprint is a single ``w`` x ``h`` pad
+    centred on the origin — so its BODY (zero-clearance pad union,
+    gr529963) is exactly that pad and its courtyard the same square grown
+    by ``COURTYARD_CLEARANCE_MM``: any obstacle in the 0.4mm band between
+    them is a courtyard-only bite, the shape the gr536411 tests need."""
+    from precis.pcb.ir import FootprintPad
+
+    return (
+        FootprintPad(
+            instance=inst,
+            number="1",
+            label="p",
+            pin=-1,
+            primary=False,
+            raw={"x": 0.0, "y": 0.0, "w": w, "h": h},
+        ),
+    )
+
+
+def test_courtyard_biting_a_hole_keepout_is_legal_when_the_body_clears():
+    """gr536411 (ruling gr529963): the hole keep-out rule measures the
+    BODY — the keep-out ring already carries the hole's own margin in its
+    radius (``widest/2 + COURTYARD_CLEARANCE_MM``), so intersecting the
+    +0.4mm courtyard double-stacked the margin and refused poses DRC's
+    body-measured ``check_courtyard_hole`` accepts (the taz combs'
+    2.556mm² courtyard bite on the zip keep-out).
+
+    A 2x2mm pad: body reaches 1mm off-centre, courtyard 1.4mm. The hole's
+    keep-out (radius 1.4mm) is a circumscribed 16-gon, vertex reach
+    ~1.4275mm. At x=2.75 the courtyard bites the keep-out while the body
+    clears it by ~0.32mm — also past the graded corridor (0.3mm), so the
+    hole margin prices nothing."""
+    from shapely.geometry import Polygon
+
+    from precis.pcb.drc import check_courtyard_hole
+    from precis.pcb.ir import world_courtyard_polygons
+    from precis.pcb.optimize import (
+        _HOLE_KEY_BASE,
+        _pair_key,
+        mounting_hole_keepout_polygon,
+    )
+
+    hole = MountingHole(x=0.0, y=0.0, drill_mm=2.0, ring_dia_mm=2.0, plated=True)
+    ir = from_graph(
+        {"instances": [{"refdes": "U1"}], "nets": []},
+        stackup=LEGACY_V1_STACKUP,
+        mounting_holes=(hole,),
+    )
+    ir.footprint_pads = _square_pad_instance(0)
+    ir.inst_x[0], ir.inst_y[0] = 2.75, 0.0
+    engine = OptimizeEngine(ir, OptimizeConfig(seed=1))
+    engine._placement_bounds = (-50.0, -50.0, 100.0, 100.0)
+
+    hole_poly = engine._hole_at(0)[2]
+    # The premise: the COURTYARD really does bite the keep-out — the
+    # overlap the pre-fix legality test (and DRC's courtyard measure)
+    # flags — while the BODY stays clear, and clear by more than the
+    # graded corridor, so the hole margin term prices nothing.
+    assert (
+        engine._world_courtyard_exact(0).intersection(Polygon(hole_poly)).area
+        > _EXACT_OVERLAP_AREA_MM2
+    )
+    body = engine._world_body_exact(0)
+    assert body.intersection(Polygon(hole_poly)).area <= _EXACT_OVERLAP_AREA_MM2
+    assert body.distance(Polygon(hole_poly)) > engine.config.cost.default_pitch_mm
+    assert engine._placement_is_legal(((0, 2.75, 0.0),))
+    assert engine.pose_conflicts(0, 2.75, 0.0) == []
+    assert engine.pose_conflict_depths(0, 2.75, 0.0) == []
+    assert ("courtyard_overlap", _pair_key(0, _HOLE_KEY_BASE)) not in engine._margin
+    # ...and slid 0.75mm onto the hole the body DOES bite it.
+    assert not engine._placement_is_legal(((0, 2.0, 0.0),))
+    assert [r for r, _ in engine.pose_conflicts(0, 2.0, 0.0)] == ["courtyard_hole"]
+
+    # DRC parity: same pose, the body-measured rule is clean where the
+    # courtyard measure still errors.
+    courtyard = world_courtyard_polygons(
+        ir,
+        clearance_mm=COURTYARD_CLEARANCE_MM,
+        fallback_half_extent_mm=COURTYARD_MIN_SEPARATION_MM / 2.0,
+    )[0]
+    body_ring = world_courtyard_polygons(
+        ir,
+        clearance_mm=0.0,
+        fallback_half_extent_mm=COURTYARD_MIN_SEPARATION_MM / 2.0,
+    )[0]
+    holes = [("hole @ (0, 0)", mounting_hole_keepout_polygon(hole), None)]
+    assert check_courtyard_hole([("U1", courtyard)], holes, [("U1", body_ring)]) == []
+    assert check_courtyard_hole([("U1", courtyard)], holes)
+
+
+def test_part_bodies_0_3mm_apart_still_conflict():
+    """gr536411, the other arm: only the edge/hole rules moved to the
+    body — part-vs-part still measures the +0.4mm courtyard. Two 2x2mm
+    pads 0.3mm edge-to-edge have bodies that CLEAR but courtyards that
+    bite 0.5mm deep: still a ``courtyard_overlap`` conflict, still
+    illegal — the house margin applies between parts."""
+    ir = from_graph(
+        {"instances": [{"refdes": "U1"}, {"refdes": "U2"}], "nets": []},
+        stackup=LEGACY_V1_STACKUP,
+    )
+    ir.footprint_pads = _square_pad_instance(0) + _square_pad_instance(1)
+    ir.inst_x[:], ir.inst_y[:] = [0.0, 2.3], [0.0, 0.0]
+    engine = OptimizeEngine(ir, OptimizeConfig(seed=1))
+    engine._placement_bounds = (-50.0, -50.0, 100.0, 100.0)
+
+    # Bodies 0.3mm edge-to-edge: clear by every zero-clearance measure.
+    assert engine._world_body_exact(0).distance(
+        engine._world_body_exact(1)
+    ) == pytest.approx(0.3)
+    # Courtyards overlap (+0.4mm each side): still a conflict.
+    assert [r for r, _ in engine.pose_conflicts(1, 2.3, 0.0)] == ["courtyard_overlap"]
+    assert not engine._placement_is_legal(((1, 2.3, 0.0),))
+    # And far enough apart it is legal again (the test is not vacuous).
+    assert engine._placement_is_legal(((1, 3.5, 0.0),))
+
+
+def test_settle_leaves_a_body_clear_of_the_fab_bar_alone():
+    """gr536411: the edge margin prices the BODY. A part whose body sits
+    0.7mm off the board edge — clear of BOTH the jlc_min floor (0.4mm)
+    and the house default (0.6mm) — keeps its pose even though its
+    +0.4mm courtyard crowds to 0.3mm of the edge, inside DRC's error
+    tier measured the old way. Same pose: settle quiet, DRC clean."""
+    from precis.pcb import drc as pcb_drc
+    from precis.pcb.ir import world_courtyard_polygons
+    from precis.pcb.optimize import _courtyard_edge_gap_mm
+
+    outline = [[0.0, 0.0], [40.0, 0.0], [40.0, 20.0], [0.0, 20.0]]
+    ir = from_graph(
+        {"instances": [{"refdes": "U1"}], "nets": []},
+        stackup=LEGACY_V1_STACKUP,
+    )
+    ir.footprint_pads = _square_pad_instance(0)
+    ir.outline = [(float(x), float(y)) for x, y in outline]
+    # Body [37.3, 39.3]: 0.7mm off the x=40 edge — clear of both tiers.
+    # Courtyard [36.9, 39.7]: 0.3mm off — inside the jlc_min error tier.
+    ir.inst_x[0], ir.inst_y[0] = 38.3, 10.0
+    engine = OptimizeEngine(ir, OptimizeConfig(seed=1))
+
+    courtyard = world_courtyard_polygons(
+        ir,
+        clearance_mm=COURTYARD_CLEARANCE_MM,
+        fallback_half_extent_mm=COURTYARD_MIN_SEPARATION_MM / 2.0,
+    )[0]
+    body_ring = world_courtyard_polygons(
+        ir,
+        clearance_mm=0.0,
+        fallback_half_extent_mm=COURTYARD_MIN_SEPARATION_MM / 2.0,
+    )[0]
+    caps = engine.config.cost.fab_caps
+    # The premise: clean under the ruling (body), an error without it
+    # (courtyard) — same pose, and the placer leaves it alone.
+    assert (
+        pcb_drc.check_courtyard_edge_clearance(
+            [("U1", courtyard)], caps, outline=outline, bodies=[("U1", body_ring)]
+        )
+        == []
+    )
+    assert pcb_drc.check_courtyard_edge_clearance(
+        [("U1", courtyard)], caps, outline=outline
+    )
+    assert engine.settle_into_outline() == ()
+
+    # Control: a body crowding the edge (0.3mm < the 0.4 jlc floor)
+    # still gets settled inboard.
+    ir.inst_x[0] = 38.7
+    assert engine.settle_into_outline() == ("U1",)
+    floor_mm = caps.jlc_min["board_edge_clearance_vcut_mm"]
+    assert floor_mm is not None
+    assert (
+        _courtyard_edge_gap_mm(engine._outline_region, engine._world_body_exact(0))
+        >= floor_mm
+    )
+
+
 def test_short_anneal_on_nano_like_fixture_clears_mounting_hole_overlap():
     """The user-observed defect: Q3 landing on the top-left M4 solder-nut
     hole, R1 almost fully under it, C1 clipping it. A seeded part is
@@ -2832,40 +3073,36 @@ def test_settle_leaves_a_board_with_no_overhang_untouched():
     assert (float(ir.inst_x[0]), float(ir.inst_y[0])) == (20.0, 20.0)
 
 
-def test_settle_pulls_a_courtyard_out_of_the_edge_margin_too():
-    """gr520793 follow-on: the same bbox-vs-curve gap that lets a
-    courtyard overhang a cut corner also lets one sit INSIDE the outline
-    but within the fab's edge floor of it — nano seed 1 parked C_AREF
-    0.354mm off a 3mm fillet, an error under
-    ``drc.check_courtyard_edge_clearance`` while every legality check
-    called the pose fine. The settle treats the shortfall like the
-    overhang it already owned, and lands the part at or past the house
-    margin when one exists in radius, so the finding does not survive at
-    any tier."""
+def test_settle_pulls_a_body_out_of_the_edge_margin_too():
+    """gr520793 follow-on, re-measured under gr536411 (ruling gr529963):
+    the margin arm now prices the BODY — a courtyard inside-but-marginal
+    is DRC-legal (the 0.4mm house margin is between-parts only), while a
+    body inside the jlc floor necessarily puts its +0.4mm courtyard over
+    the edge. The settle treats the shortfall like the overhang it
+    already owned, and lands the part at or past the house margin when
+    one exists in radius, so the finding does not survive at any tier."""
     from precis.pcb.optimize import _courtyard_edge_gap_mm, _courtyard_in_outline
 
     ir = _chamfered_corner_ir()
     engine = OptimizeEngine(ir, OptimizeConfig(seed=3))
     region = engine._outline_region
-    # Walk U0 along the cut corner's bisector until its courtyard is
-    # inside but within the JLC floor (0.4mm) of the chamfer — the pose
-    # the bbox bounds call legal and the real edge does not.
+    # Walk U0 along the cut corner's bisector until its BODY is inside
+    # the outline but within the JLC floor (0.4mm) of the chamfer — its
+    # courtyard necessarily reaches past the edge too, so every rule
+    # agrees the pose is bad.
     placed = False
     for t in (i * 0.05 for i in range(1, 80)):
         ir.inst_x[0] = ir.inst_y[0] = t
-        poly = engine._world_courtyard(0)
-        if _courtyard_in_outline(region, poly) and (
-            _courtyard_edge_gap_mm(region, poly) < 0.4
-        ):
+        gap = _courtyard_edge_gap_mm(region, engine._world_body_exact(0))
+        if 0.0 < gap < 0.4:
             placed = True
             break
-    assert placed, "no inside-but-marginal pose found on the bisector"
+    assert placed, "no inside-but-marginal body pose found on the bisector"
     u1 = (float(ir.inst_x[1]), float(ir.inst_y[1]))
 
     assert engine.settle_into_outline() == ("U0",)
-    poly = engine._world_courtyard(0)
-    assert _courtyard_in_outline(region, poly)
-    assert _courtyard_edge_gap_mm(region, poly) >= 0.6
+    assert _courtyard_in_outline(region, engine._world_courtyard_exact(0))
+    assert _courtyard_edge_gap_mm(region, engine._world_body_exact(0)) >= 0.6
     assert engine._placement_is_legal([(0, float(ir.inst_x[0]), float(ir.inst_y[0]))])
     assert (float(ir.inst_x[1]), float(ir.inst_y[1])) == u1
     assert engine.settle_into_outline() == ()  # idempotent

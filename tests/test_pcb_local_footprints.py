@@ -43,8 +43,16 @@ _ELECTRODE_FOOTPRINT = {
     ],
 }
 
+_TP_FOOTPRINT = {
+    "name": "tp_pad",
+    "pads": [{"pin": "1", "shape": "circle", "x": 0.0, "y": 0.0, "w": 1.0}],
+}
+
 _DESIGN = {
-    "footprints": [_ELECTRODE_FOOTPRINT],
+    # gr524240: a partless component's ``footprint`` is a REFERENCE to a
+    # row this board carries — both names are authored up front (a
+    # second ``put`` in ``_seed`` re-upserts ``tp_pad``).
+    "footprints": [_ELECTRODE_FOOTPRINT, _TP_FOOTPRINT],
     "components": [
         {
             "refdes": "E1",
@@ -80,11 +88,6 @@ _DESIGN = {
     ],
 }
 
-_TP_FOOTPRINT = {
-    "name": "tp_pad",
-    "pads": [{"pin": "1", "shape": "circle", "x": 0.0, "y": 0.0, "w": 1.0}],
-}
-
 
 @pytest.fixture
 def pcb(store):
@@ -100,7 +103,130 @@ def _seed(pcb) -> str:
 # ── authoring + persistence ─────────────────────────────────────────────
 def test_put_footprints_block_is_reported_in_the_response(pcb):
     resp = pcb.put(id="ewod-1", args=_DESIGN)
-    assert "+1 footprint(s)" in resp.body
+    assert "+2 footprint(s)" in resp.body
+
+
+def test_partless_component_with_unknown_footprint_is_refused(pcb):
+    """gr524240 — a partless component's ``footprint`` names a
+    ``pcb_local_footprints`` row; a name nothing carries used to store a
+    part with no pads and no warning."""
+    with pytest.raises(BadInput) as exc:
+        pcb.put(
+            id="dangling-fp",
+            args={
+                "components": [
+                    {
+                        "refdes": "SNS1",
+                        "label": "sensor electrode",
+                        "footprint": "taz_comb_s1_c",
+                        "pins": [{"name": "A"}],
+                    }
+                ]
+            },
+        )
+    assert "taz_comb_s1_c" in str(exc.value)
+
+
+def test_footprint_authored_in_an_earlier_put_still_resolves(pcb):
+    """The name lookup is against the board's stored rows, not the
+    batch's — an incremental put may reference a footprint an earlier
+    one authored."""
+    pcb.put(id="seq", args={"footprints": [_TP_FOOTPRINT]})
+    resp = pcb.put(
+        id="seq",
+        args={
+            "components": [
+                {
+                    "refdes": "T1",
+                    "footprint": "tp_pad",
+                    "pins": [{"name": "1"}],
+                }
+            ]
+        },
+    )
+    assert "+1 part(s)" in resp.body
+
+
+def test_catalog_part_footprint_label_is_not_a_reference(pcb):
+    """A catalog part's ``footprint`` is a label — its pads come from the
+    ``part_footprints`` cache by C-number — so an unknown name does not
+    refuse."""
+    resp = pcb.put(
+        id="cat-label",
+        args={
+            "components": [
+                {
+                    "refdes": "U1",
+                    "part": "C_UNCACHED",
+                    "footprint": "UNCACHED-1",
+                    "pins": [{"name": "1"}],
+                }
+            ]
+        },
+    )
+    assert "+1 part(s)" in resp.body
+
+
+def test_lcsc_alias_counts_as_a_catalog_part(pcb):
+    """The refusal's "has a catalog part" test reads the same three
+    aliases :mod:`precis.pcb.rows` and ``local.py`` do —
+    ``part_lcsc``/``part``/``lcsc`` — so an ``lcsc``-keyed part's
+    ``footprint`` is a label, not a reference."""
+    resp = pcb.put(
+        id="lcsc-alias",
+        args={
+            "components": [
+                {
+                    "refdes": "U1",
+                    "lcsc": "C_UNCACHED",
+                    "footprint": "UNCACHED-1",
+                    "pins": [{"name": "1"}],
+                }
+            ]
+        },
+    )
+    assert "+1 part(s)" in resp.body
+
+
+def test_empty_footprint_string_is_a_dangling_name(pcb):
+    """``footprint=""`` is a present name nothing can carry —
+    ``normalize_footprint`` refuses an empty name — not an unset field,
+    so the put refuses it exactly as an unknown name (``is not None``,
+    matching ``batch_to_graph``; the board-script path refuses
+    identically below)."""
+    with pytest.raises(BadInput):
+        pcb.put(
+            id="empty-fp",
+            args={
+                "components": [
+                    {"refdes": "J1", "footprint": "", "pins": [{"name": "1"}]}
+                ]
+            },
+        )
+
+
+def test_batch_to_graph_refuses_the_same_dangling_name():
+    """gr524240 — the offline board-script path
+    (:func:`precis.pcb.local.batch_to_graph`) refuses identically."""
+    from precis.pcb import local as pcb_local
+
+    batch = {
+        "components": [
+            {"refdes": "S1", "footprint": "ghost_fp", "pins": [{"name": "A"}]}
+        ]
+    }
+    with pytest.raises(pcb_local.LocalError, match="ghost_fp"):
+        pcb_local.batch_to_graph(batch)
+
+
+def test_batch_to_graph_refuses_blank_footprint():
+    """The same blank on the offline path — ``""`` is a dangling name
+    there too, so the two paths agree."""
+    from precis.pcb import local as pcb_local
+
+    batch = {"components": [{"refdes": "S1", "footprint": "", "pins": [{"name": "A"}]}]}
+    with pytest.raises(pcb_local.LocalError, match="not registered"):
+        pcb_local.batch_to_graph(batch)
 
 
 def test_footprints_block_persists_and_is_readable_back(pcb):

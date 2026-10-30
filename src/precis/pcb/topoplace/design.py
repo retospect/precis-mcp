@@ -404,8 +404,8 @@ class TopoDesign:
     #: Slice 2 (mesh): each part's courtyard polygon as a CLOSED ring
     #: ``(K, 2)`` in the part's own footprint frame (first point repeated
     #: last), the same shape the placer reserves and placement DRC checks
-    #: (:func:`precis.pcb.ir.instance_courtyard_polygons`, pad hull +
-    #: ``COURTYARD_CLEARANCE_MM``). The mesh constrains its edges so no
+    #: (:func:`precis.pcb.ir.instance_courtyard_polygons`, pad-outline
+    #: union + ``COURTYARD_CLEARANCE_MM``). The mesh constrains its edges so no
     #: wire threads a part body. ``()``/empty = no outline (synthetic
     #: designs, pinless parts without a fallback).
     part_outline: tuple[np.ndarray, ...] = ()

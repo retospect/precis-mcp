@@ -3269,6 +3269,72 @@ def test_batch_put_hole_under_a_placed_part_is_refused(pcb, store):
     assert store.pcb_features_list(ref.id) == []
 
 
+_SNS_COMB = {
+    "name": "sns-comb",
+    # Two teeth sharing an edge — the union is one 1.0 x 1.6 mm body.
+    "pads": [
+        {"pin": "1", "shape": "rect", "x": 0.0, "y": -0.4, "w": 1.0, "h": 0.8},
+        {"pin": "2", "shape": "rect", "x": 0.0, "y": 0.4, "w": 1.0, "h": 0.8},
+    ],
+}
+#: Hole at (10, 0), drill 3.2 mm -> keep-out radius 1.6 + 0.4 = 2.0 mm,
+#: circumscribed ~2.04 mm. At x=12.7 the comb's BODY (a 1.0 mm-wide pad
+#: union, near edge at 12.2) sits ~0.16 mm clear of it while the
+#: 0.4 mm-margined courtyard (near edge 11.8) bites it — the
+#: taz-leaf-g geometry (gr537717).
+_SNS_HOLE = {"ftype": "mounting_hole", "x": 10.0, "y": 0.0, "geom": {"diameter": 3.2}}
+
+
+def _sns_board_args(x: float) -> dict[str, Any]:
+    return {
+        "footprints": [_SNS_COMB],
+        "components": [
+            {
+                "refdes": "SNS1",
+                "label": "comb",
+                "footprint": "sns-comb",
+                "x": x,
+                "y": 0.0,
+                "pins": [{"name": "1"}, {"name": "2"}],
+            }
+        ],
+        "features": [dict(_SNS_HOLE)],
+        "nets": [],
+        "connections": [],
+    }
+
+
+def test_create_and_move_judge_the_hole_rule_on_the_body(pcb, store):
+    """gr537717: the keep-out polygon already carries the hole's single
+    margin claim, so the part is measured by its zero-clearance BODY —
+    the 0.4 mm courtyard margin must not stack on top (gr529963). The
+    create-time pose seam measured courtyards: the SNS bodies cleared
+    the keep-out yet put reported ``courtyard_hole`` and a later
+    op='move' called it a pre-existing DRC error the move did not add,
+    while ``_validity_findings`` on the same board found nothing."""
+    resp = pcb.put(id="sns-hole", args=_sns_board_args(12.7))
+    assert "created" in resp.body and "courtyard_hole" not in resp.body
+    # A move that stays courtyard-overlapping but body-clear is legal,
+    # and has no standing hole finding to report — there is none.
+    resp = pcb.put(id="sns-hole", args={"op": "move", "refdes": "SNS1", "x": 12.75})
+    assert "moved" in resp.body
+    assert _STANDING not in resp.body and "courtyard_hole" not in resp.body
+
+
+def test_create_and_move_still_refuse_a_body_on_the_hole_keepout(pcb, store):
+    """The other half of gr537717: a BODY that truly bites the keep-out
+    is an error on both judged seams — the creating put refuses it and
+    a move onto it refuses, the same rule ``_validity_findings`` and
+    DRC report."""
+    with pytest.raises(BadInput, match="courtyard_hole"):
+        pcb.put(id="sns-hole-bad", args=_sns_board_args(12.0))
+    ref = store.get_ref(kind="pcb", id="sns-hole-bad")
+    assert ref is None or store.pcb_features_list(ref.id) == []
+    pcb.put(id="sns-hole-ok", args=_sns_board_args(12.7))
+    with pytest.raises(BadInput, match=r"courtyard_hole with hole @ \(10, 0\)"):
+        pcb.put(id="sns-hole-ok", args={"op": "move", "refdes": "SNS1", "x": 12.0})
+
+
 def test_legal_class_rules_and_batch_put_are_not_refused_or_ripped(pcb, store):
     """Negative control: without it the refusal and the rip could both be
     vacuously always-on."""
@@ -4092,14 +4158,12 @@ def test_roles_supplies_client_of_round_trip(pcb, store):
                 {
                     "refdes": "U1",
                     "label": "drv",
-                    "footprint": "X",
                     "pins": [{"name": "A"}, {"name": "B"}],
                     "supplies": {"role": "pad_driver", "blocks": [["A"], ["B"]]},
                 },
                 {
                     "refdes": "P1",
                     "label": "pad",
-                    "footprint": "Y",
                     "pins": [
                         {"name": "1", "client_of": "pad_driver"},
                         {
@@ -4144,14 +4208,12 @@ def test_put_echoes_supply_roles_and_netlist_summary(pcb):
                 {
                     "refdes": "U1",
                     "label": "drv",
-                    "footprint": "X",
                     "pins": [{"name": "A"}, {"name": "B"}, {"name": "C"}],
                     "supplies": {"role": "pad_driver", "blocks": [["A"], ["B"]]},
                 },
                 {
                     "refdes": "P1",
                     "label": "pad",
-                    "footprint": "Y",
                     "pins": [
                         {"name": "1", "client_of": "pad_driver"},
                         {"name": "2", "client_of": "pad_driver"},
@@ -4197,14 +4259,12 @@ def test_tuple_client_of_reaches_the_matching_model(pcb, store):
                 {
                     "refdes": "U1",
                     "label": "bridge",
-                    "footprint": "X",
                     "pins": [{"name": "D+"}, {"name": "D-"}],
                     "supplies": {"role": "usb", "blocks": [["D+", "D-"]]},
                 },
                 {
                     "refdes": "J1",
                     "label": "conn",
-                    "footprint": "Y",
                     "pins": [
                         {
                             "name": "DP",
@@ -4277,17 +4337,13 @@ def test_tuple_client_of_refuses_bad_members(pcb, pins, match):
     with pytest.raises(BadInput, match=match):
         pcb.put(
             id="tuple-bad",
-            args={
-                "components": [
-                    {"refdes": "J1", "label": "c", "footprint": "Y", "pins": pins}
-                ]
-            },
+            args={"components": [{"refdes": "J1", "label": "c", "pins": pins}]},
         )
 
 
 def test_channel_map_view(pcb):
     def comp(refdes, pins, **kw):
-        return {"refdes": refdes, "label": "x", "footprint": "X", "pins": pins, **kw}
+        return {"refdes": refdes, "label": "x", "pins": pins, **kw}
 
     pcb.put(
         id="chmap",
@@ -4323,7 +4379,7 @@ def test_channel_map_two_suppliers_one_net(pcb):
     channels) bind deterministically instead of reading unbound."""
 
     def comp(refdes, pins, **kw):
-        return {"refdes": refdes, "label": "x", "footprint": "X", "pins": pins, **kw}
+        return {"refdes": refdes, "label": "x", "pins": pins, **kw}
 
     pcb.put(
         id="chmap-par",
@@ -4352,7 +4408,7 @@ def test_channel_map_two_suppliers_one_net(pcb):
 
 def _client_state_design(*, with_unmatched: bool) -> dict:
     def comp(refdes, pins, **kw):
-        return {"refdes": refdes, "label": "x", "footprint": "X", "pins": pins, **kw}
+        return {"refdes": refdes, "label": "x", "pins": pins, **kw}
 
     comps = [
         comp(

@@ -61,6 +61,24 @@ def test_digest_lines_empty_when_nothing_failed() -> None:
 # ── the view: last_route.digest rendered on route-status ─────────────
 
 _DESIGN: dict[str, Any] = {
+    # gr524240: a partless component's `footprint` is a reference to a
+    # row this board carries — author the names the components use.
+    "footprints": [
+        {
+            "name": "QFN-32",
+            "pads": [
+                {"pin": "VDD", "shape": "rect", "x": -1.0, "y": 0.0, "w": 0.4},
+                {"pin": "GND", "shape": "rect", "x": 1.0, "y": 0.0, "w": 0.4},
+            ],
+        },
+        {
+            "name": "0402",
+            "pads": [
+                {"pin": "1", "shape": "rect", "x": -0.5, "y": 0.0, "w": 0.8},
+                {"pin": "2", "shape": "rect", "x": 0.5, "y": 0.0, "w": 0.8},
+            ],
+        },
+    ],
     "components": [
         {
             "refdes": "U1",

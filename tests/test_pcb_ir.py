@@ -463,6 +463,41 @@ def test_instance_courtyard_polygon_is_empty_for_a_pinless_instance():
     assert instance_courtyard_polygon(ir, 0, clearance_mm=0.3, pins=[]) == []
 
 
+def _pad(raw: dict[str, Any]) -> FootprintPad:
+    return FootprintPad(
+        instance=0, number="1", label="1", pin=NO_PIN, primary=False, raw=raw
+    )
+
+
+def test_instance_courtyard_polygon_keeps_a_concave_pads_mouth_open():
+    """gr524238: the courtyard is the UNION of pad outlines, not their
+    convex hull — a U-shaped pad's mouth flashes no copper, so the gap
+    is not keep-out and a point inside it must fall OUTSIDE the ring.
+    The clearance offset narrows the mouth but cannot close a gap wider
+    than twice the clearance."""
+    from shapely.geometry import Point, Polygon
+
+    ir = from_graph(_star_graph(), stackup=DEFAULT_STACKUP)
+    # A 10x6 U opening upward: two 3mm arms and a base bar, 4mm mouth.
+    u = [
+        (-5.0, -3.0),
+        (5.0, -3.0),
+        (5.0, 3.0),
+        (2.0, 3.0),
+        (2.0, -1.0),
+        (-2.0, -1.0),
+        (-2.0, 3.0),
+        (-5.0, 3.0),
+    ]
+    ring = instance_courtyard_polygon(
+        ir, 0, clearance_mm=0.4, pads=[_pad({"x": 0.0, "y": 0.0, "poly": u})]
+    )
+    courtyard = Polygon(ring)
+    assert not courtyard.covers(Point(0.0, 1.0))  # inside the mouth
+    assert not courtyard.covers(Point(0.0, 4.0))  # above the mouth
+    assert courtyard.covers(Point(-3.5, 0.0))  # the left arm is keep-out
+
+
 def test_from_graph_leaves_l1_l2_l3_unset():
     ir = from_graph(_star_graph(), stackup=DEFAULT_STACKUP)
     assert (ir.seg_layer == -1).all()

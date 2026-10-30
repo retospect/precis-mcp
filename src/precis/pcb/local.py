@@ -196,6 +196,23 @@ def batch_to_graph(
     components = batch.get("components") or []
     local_fps = _local_footprints(batch)
     cat_fps = {str(k).strip().upper(): v for k, v in (footprints or {}).items()}
+    # ``_pcb_apply``'s gr524240 refusal, mirrored: on a component with no
+    # catalog part, ``footprint`` references a design-local footprint —
+    # a name the batch's own ``footprints`` block does not author leaves
+    # the part with no pads, which used to pass silently.
+    for c in components:
+        name = c.get("footprint")
+        if name is None:
+            continue
+        if c.get("part_lcsc") or c.get("part") or c.get("lcsc"):
+            continue  # a catalog part's footprint field is a label
+        if str(name) not in local_fps:
+            raise LocalError(
+                f"component {c.get('refdes')!r}: footprint {name!r} is not "
+                "registered on this board — the part would get no pads; "
+                "register it with b.footprint(pcb.Footprint(...)) before "
+                "b.part(), or give the part a catalog lcsc"
+            )
     pin_decls: dict[str, dict[str, dict[str, Any]]] = {}
     declared: dict[str, set[str]] = {}
     fp_by_refdes: dict[str, dict[str, Any]] = {}

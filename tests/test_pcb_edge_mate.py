@@ -174,6 +174,32 @@ def _board(*, mate: dict | None, x: float, y: float) -> dict:
     if mate is not None:
         j1["edge_mate"] = mate
     return {
+        # gr524240: a partless component's `footprint` must resolve to a
+        # row this board carries — author the two-pad '0402' the tests
+        # name (a J2 put later resolves the same stored row).
+        "footprints": [
+            {
+                "name": "0402",
+                "pads": [
+                    {
+                        "pin": "1",
+                        "shape": "rect",
+                        "x": -0.5,
+                        "y": 0.0,
+                        "w": 0.8,
+                        "h": 0.9,
+                    },
+                    {
+                        "pin": "2",
+                        "shape": "rect",
+                        "x": 0.5,
+                        "y": 0.0,
+                        "w": 0.8,
+                        "h": 0.9,
+                    },
+                ],
+            }
+        ],
         "components": [j1],
         "nets": [],
         "connections": [],

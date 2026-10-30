@@ -53,6 +53,31 @@ def _board(store: Store, slug: str = "rv-board") -> int:
             {"net": "GND", "refdes": "U1", "pin": "2"},
             {"net": "GND", "refdes": "R1", "pin": "2"},
         ],
+        # gr524240: a partless component's `footprint` is a reference to
+        # a row this board carries — R1's '0402' must be authored here.
+        footprints=[
+            {
+                "name": "0402",
+                "pads": [
+                    {
+                        "pin": "1",
+                        "shape": "rect",
+                        "x": -0.5,
+                        "y": 0.0,
+                        "w": 0.8,
+                        "h": 0.9,
+                    },
+                    {
+                        "pin": "2",
+                        "shape": "rect",
+                        "x": 0.5,
+                        "y": 0.0,
+                        "w": 0.8,
+                        "h": 0.9,
+                    },
+                ],
+            }
+        ],
     )
     return int(ref.id)
 
@@ -502,6 +527,11 @@ def test_whole_board_fingerprint_ignores_recorded_check_run(
     from precis.pcb import check_run
 
     bridge = PcbBridge()
+    # A placed instance makes R1's authored pads REAL — the run records
+    # instead of answering "nothing to check yet" (gr524240: the
+    # authored '0402' resolves, so no undeclared_pad finding forces a
+    # recording the way the unresolvable name once did).
+    assert store.pcb_move_instance(board, "R1", x=3.0, y=2.0)
     before = bridge.fingerprint(store, board, []).digest
 
     design = store.pcb_load(board)

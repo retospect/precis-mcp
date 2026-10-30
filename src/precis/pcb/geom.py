@@ -119,32 +119,23 @@ def convex_hull_ring(ring: list[Point]) -> list[Point]:
 
 
 def convex_polygons_overlap(poly_a: list[Point], poly_b: list[Point]) -> bool:
-    """Separating Axis Theorem for two CONVEX polygons — exact, and the ONE
-    polygon-overlap primitive in this package.
-
-    Three consumers ask the same question about the same shapes and must
-    not answer it differently: :mod:`precis.pcb.silk` (does this silk
-    stroke's box hit that pad), :mod:`precis.pcb.optimize` (may these two
-    parts' courtyards be placed here) and :mod:`precis.pcb.drc` (do any two
-    courtyards on the finished board overlap). A placer that thought a
-    placement legal while DRC called it a violation is the drift
-    the courtyard-polygon work existed to close, and two
-    implementations of one predicate is how that drift starts.
+    """Separating Axis Theorem for two CONVEX polygons — exact.
 
     **Convex only, and the name says so.** SAT tests the edge normals of
     both polygons as candidate separating axes, which is complete for
     convex shapes and silently WRONG for a concave one (two shapes can be
     disjoint while no edge normal separates them, and vice versa). Every
-    caller here must pass something convex — a rotated rectangle, a pad,
-    or a courtyard HULLED first: since gr524238 a courtyard is the UNION
-    of a part's pad outlines offset outward, which can be CONCAVE (a
-    shaped electrode's ring hugs its teeth). SAT consumers of courtyards
-    hull at their own boundary — :func:`precis.pcb.topoplace.legalize.
-    _mtv` does. The legacy engine (``optimize``/``cost``) DID feed these
-    rings raw until gr525380 switched its legality tests to exact
-    shapely intersections over the raw concave unions; what remains on
-    SAT there is graded-margin terms only, which read conservative
-    hull-ish answers by design.
+    caller here must pass something convex — a rotated rectangle, a pad
+    (what :mod:`precis.pcb.silk` feeds it), or a courtyard HULLED first:
+    since gr524238 a courtyard is the UNION of a part's pad outlines
+    offset outward, which can be CONCAVE (a shaped electrode's ring hugs
+    its teeth). SAT consumers of courtyards hull at their own boundary —
+    :func:`precis.pcb.topoplace.legalize._mtv` does. The legacy engine
+    (``optimize``/``cost``) no longer asks this of courtyards at all:
+    gr525380 moved its legality tests to exact shapely intersections over
+    the raw concave unions, and gr536411 moved its graded margin terms to
+    :func:`polygon_signed_separation_mm` — exact over the same unions —
+    so no SAT predicate reads a courtyard here any more.
 
     Touching counts as overlapping: the test is a strict ``<`` on the
     projection gap, so two polygons sharing exactly one edge or vertex
@@ -197,7 +188,14 @@ def convex_polygons_signed_separation(
     plateau that jumps at contact. Zero-length edges (closed rings repeat
     their first vertex) contribute no axis, matching the boolean's
     treatment. Two degenerate (single-point) inputs yield no axis at all
-    and report 0.0 — coincident points touch."""
+    and report 0.0 — coincident points touch.
+
+    A concave input (post-gr524238 courtyards) keeps the sign rule —
+    real overlap can only read negative — and a positive magnitude
+    stays a LOWER bound on the true gap, a per-axis gap never exceeding
+    the Euclidean distance. The one inexactness is a disjoint
+    interlocked pair reading negative like a true overlap (the
+    spreading pressure pushes them apart, the safe direction)."""
     best = -math.inf
     for poly in (poly_a, poly_b):
         n = len(poly)
@@ -215,6 +213,49 @@ def convex_polygons_signed_separation(
             if gap > best:
                 best = gap
     return 0.0 if best == -math.inf else best
+
+
+def polygon_signed_separation_mm(a: Any, b: Any) -> float:
+    """Signed separation between two shapes, mm — the EXACT counterpart of
+    :func:`convex_polygons_signed_separation`, valid on possibly-CONCAVE
+    geometry (gr536411: the graded ``courtyard_overlap`` and hole-margin
+    terms measure the raw pad unions / bodies now, which SAT cannot).
+
+    ``a``/``b`` may each be a shapely geometry or a closed vertex ring
+    (normalized here, so a caller holding either pays no conversion).
+
+    - **Positive when disjoint**: the true Euclidean clearance
+      (``distance``), not the SAT lower bound — a pair sitting
+      corner-to-corner reads its real diagonal gap, no longer priced as
+      closer than it is.
+    - **Zero at a measure-zero touch** (shared edge or vertex), the same
+      boundary the exact legality tests and DRC's ``_EPS`` floor put on
+      the clear side.
+    - **Negative when they overlap in area**: minus the shorter side of
+      the intersection's bounding box — the same lower-bound depth
+      :func:`precis.pcb.drc._overlap_depth_mm` reports, so "how deep"
+      means one thing across the graded cost and the finding text. Exact
+      MTD is deliberately not paid for here: the number only has to be
+      monotone in the overlap for the anneal's slope, and this one is
+      continuous through the boundary.
+
+    An empty input reports ``0.0`` — coincident with nothing, which is
+    the SAT version's own degenerate-input answer."""
+    from shapely.geometry import Polygon
+    from shapely.geometry.base import BaseGeometry
+
+    ga = a if isinstance(a, BaseGeometry) else Polygon(a)
+    gb = b if isinstance(b, BaseGeometry) else Polygon(b)
+    if ga.is_empty or gb.is_empty:
+        return 0.0
+    sep = float(ga.distance(gb))
+    if sep > 0.0:
+        return sep
+    overlap = ga.intersection(gb)
+    if overlap.is_empty:
+        return 0.0
+    x0, y0, x1, y1 = overlap.bounds
+    return -min(x1 - x0, y1 - y0)
 
 
 def bbox(p1: Point, p2: Point) -> tuple[float, float, float, float]:

@@ -66,8 +66,13 @@ disqualified regardless of cost. This module never calls
   pair interaction distance makes the 3x3-neighbourhood query
   (:meth:`OptimizeEngine._courtyard_candidates_near`) exact. The graded
   term reads the SAME pose-keyed world polygons ``_placement_is_legal``
-  tests (passed through ``courtyard_overlap_pair_term``'s ``poly_a``/
-  ``poly_b``), so steering and legality share one geometry.
+  tests — the raw pad unions, not hulls (passed through
+  ``courtyard_overlap_pair_term``'s ``poly_a``/``poly_b``), so steering
+  and legality share one geometry. The hole and board-edge rules measure
+  a different shape deliberately: the zero-clearance BODY
+  (``_world_body_exact``, gr529963/gr536411), since the keep-out ring
+  and the fab bar already carry their own margins — charging the house
+  0.4mm on top double-stacked it.
   :meth:`OptimizeEngine._refresh_courtyard` is the bounded delta (discard
   cached partnerships, relocate in grid, retest 3x3 neighbourhood) —
   call-order-independent for a multi-instance move (SWAP). Only
@@ -217,7 +222,7 @@ from precis.pcb.eyes import (
 )
 from precis.pcb.geom import (
     convex_hull_ring,
-    convex_polygons_signed_separation,
+    polygon_signed_separation_mm,
     segments_cross,
 )
 from precis.pcb.ir import (
@@ -2092,11 +2097,12 @@ _VIA_KEY_BASE = 20_000_000
 _FIXED_VIA_CLEARANCE_MM = 0.15
 
 #: How many sides approximate a mounting hole's circular keep-out: the
-#: exact shapely legality test (gr525380) and the convex SAT predicates
-#: (:func:`~precis.pcb.geom.convex_polygons_overlap` and its graded
-#: sibling, still used by the margin terms) all read the same polygon —
-#: a circle has no SAT primitive of its own, and one is not worth adding
-#: to ``geom.py`` for a shape this module is the only user of.
+#: exact shapely legality test (gr525380) and the exact signed-separation
+#: measure behind the hole margin term
+#: (:func:`~precis.pcb.geom.polygon_signed_separation_mm`, gr536411) read
+#: the same polygon — a circle has no polygon primitive of its own, and
+#: one is not worth adding to ``geom.py`` for a shape this module is the
+#: only user of.
 _HOLE_POLY_SIDES = 16
 
 #: Area floor (mm²) for the exact concave-courtyard overlap tests in
@@ -2324,6 +2330,27 @@ class OptimizeEngine:
             fallback_half_extent_mm=COURTYARD_MIN_SEPARATION_MM / 2.0,
         )
         self._keepout_poly = [convex_hull_ring(poly) for poly in self._keepout_poly_raw]
+        #: The same pad-union shape at ZERO clearance — the BODY the
+        #: edge-clearance and hole keep-out rules measure (gr529963,
+        #: ruling Reto 2026-10-28: the fab bar prices the body; the 0.4mm
+        #: house courtyard margin applies only between parts). Same call
+        #: shape, same fallback, only the offset differs — one body
+        #: definition, shared with ``check_run.rule_inputs``'s
+        #: ``body_local`` and the topo placer's ``part_body``, so the
+        #: placer and DRC cannot answer the same rule from different
+        #: geometry. Until gr536411 the hole/edge tests measured
+        #: ``_keepout_poly_raw`` and double-stacked the house margin onto
+        #: margins already inside the keep-out radius / fab bar — the
+        #: placer refused notch poses DRC accepted (taz combs).
+        self._body_poly = instance_courtyard_polygons(
+            ir,
+            clearance_mm=0.0,
+            fallback_half_extent_mm=COURTYARD_MIN_SEPARATION_MM / 2.0,
+        )
+        #: Rotation-invariant circumscribed radius of each body — the
+        #: hole legality test's broad phase, ``_keepout_r``'s twin for
+        #: the smaller shape (see its own comment).
+        self._body_r = courtyard_bound_radius_mm(self._body_poly)
         #: The broad phase for :meth:`_placement_is_legal`, derived FROM
         #: the polygon rather than independently: a rotation-invariant
         #: circumscribed radius (:func:`~precis.pcb.ir.
@@ -2484,6 +2511,9 @@ class OptimizeEngine:
         #: (unhulled, possibly concave) courtyard as a shapely ``Polygon``
         #: — what the exact legality tests intersect (gr525380).
         self._world_poly_raw: dict[int, tuple[tuple[float, float, float], Any]] = {}
+        #: Same again for the zero-clearance BODY — what the hole
+        #: keep-out and board-edge rules intersect since gr536411.
+        self._world_poly_body: dict[int, tuple[tuple[float, float, float], Any]] = {}
         self._placement_bounds = self._derive_placement_bounds()
         self._outline_region = _outline_region(ir.outline)
         #: ``t0`` and TRANSLATE's step both scale off ``board_side``. It is
@@ -2895,15 +2925,19 @@ class OptimizeEngine:
 
     def _refresh_hole_margin(self, inst: int, hole_idx: int) -> None:
         """Set/clear ``inst``'s graded ``courtyard_overlap`` pressure
-        against mounting hole ``hole_idx`` at the hole's CURRENT position."""
+        against mounting hole ``hole_idx`` at the hole's CURRENT position.
+        Measured against the BODY (gr536411): the keep-out ring already
+        carries the hole's own margin claim in its radius, so pricing the
+        +0.4mm courtyard against it double-stacked the margin the legality
+        test (and DRC) no longer charges."""
         ir, cfg = self.ir, self.config
         hole_key = ("courtyard_overlap", _pair_key(inst, _HOLE_KEY_BASE + hole_idx))
         if _hole_owned_by(ir, ir.mounting_holes[hole_idx], inst):
             self._margin.pop(hole_key, None)
             return
         corridor_mm = cfg.cost.default_pitch_mm
-        separation_mm = convex_polygons_signed_separation(
-            self._world_courtyard(inst), self._hole_at(hole_idx)[2]
+        separation_mm = polygon_signed_separation_mm(
+            self._world_body_exact(inst), self._hole_at(hole_idx)[2]
         )
         fraction = max(0.0, (corridor_mm - separation_mm) / corridor_mm)
         if fraction <= 0.0:
@@ -2953,16 +2987,18 @@ class OptimizeEngine:
 
         for other in self._courtyard_candidates_near(inst):
             # The engine's pose-keyed world polygons ride along so the term
-            # never recomputes a hull on the per-move path (same shape as
-            # the term's own IR-derived fallback — see its docstring).
+            # never recomputes a union on the per-move path — the RAW
+            # (possibly-concave) unions legality intersects, not the hulls
+            # (gr536411): hulls interlocking across a notch priced an
+            # overlap the exact legality test just cleared.
             t = courtyard_overlap_pair_term(
                 ir,
                 inst,
                 other,
                 self.level,
                 cfg.cost,
-                poly_a=self._world_courtyard(inst),
-                poly_b=self._world_courtyard(other),
+                poly_a=self._world_courtyard_exact(inst),
+                poly_b=self._world_courtyard_exact(other),
                 through_hole=self._through_hole,
             )
             if t.raw <= 0.0:
@@ -3525,7 +3561,20 @@ class OptimizeEngine:
 
     # -- board-edge-clearance delta (O(1) per instance) -------------------
     def _refresh_board_edge(self, inst: int) -> None:
-        t = board_edge_clearance_term(self.ir, inst, self.level, self.config.cost)
+        ir = self.ir
+        # The term measures the BODY (gr536411); the pose-keyed cache rides
+        # along so the per-move path never recomputes a union. An unplaced
+        # instance gets no body — the term's own NaN branch is its bound.
+        placed = not (
+            math.isnan(float(ir.inst_x[inst])) or math.isnan(float(ir.inst_y[inst]))
+        )
+        t = board_edge_clearance_term(
+            ir,
+            inst,
+            self.level,
+            self.config.cost,
+            body=self._world_body_exact(inst) if placed else None,
+        )
         key = ("board_edge_clearance", inst)
         if t is None:
             self._margin.pop(key, None)
@@ -3835,6 +3884,14 @@ class OptimizeEngine:
         through-hole part (:meth:`_sides_clear`): its pads stand on both
         outer layers.
 
+        **The hole test measures the BODY** (gr536411, the gr529963
+        ruling): the keep-out ring already carries the hole's own margin
+        claim in its radius (``widest/2 + COURTYARD_CLEARANCE_MM``), so
+        intersecting the +0.4mm courtyard double-stacked the margin and
+        refused notch poses DRC's body-measured
+        :func:`~precis.pcb.drc.check_courtyard_hole` accepts (the taz
+        combs' zip-tie holes). Part-vs-part stays the courtyard.
+
         Placement move generators call this and return ``None`` rather
         than offering the annealer an illegal state. The graded
         ``courtyard_overlap`` cost term stays: it steers the search away
@@ -3848,10 +3905,6 @@ class OptimizeEngine:
         keepout = self._keepout_r
         moving = [inst for inst, _, _ in proposals]
         rotations = rotations or {}
-        proposed_poly = {
-            inst: self._world_courtyard(inst, x, y, rotations.get(inst))
-            for inst, x, y in proposals
-        }
         # Proposed poses, so a moving owner's holes are judged where they
         # WOULD be (rotation unchanged unless the move names one).
         proposed_pose = {
@@ -3863,7 +3916,8 @@ class OptimizeEngine:
             if not (x0 <= x <= x1 and y0 <= y <= y1):
                 return False
             if in_outline and not _courtyard_in_outline(
-                self._outline_region, proposed_poly[inst]
+                self._outline_region,
+                self._world_courtyard_exact(inst, x, y, rotations.get(inst)),
             ):
                 return False
             t = float(self._soft_pin_mm[inst])
@@ -3907,13 +3961,15 @@ class OptimizeEngine:
                 if _hole_owned_by(ir, hole, inst):
                     continue
                 hx, hy, hole_poly = self._hole_at(hole_idx, proposed_pose)
-                sep_h = keepout[inst] + self._hole_radius[hole_idx]
+                sep_h = self._body_r[inst] + self._hole_radius[hole_idx]
                 if (x - hx) ** 2 + (y - hy) ** 2 >= sep_h * sep_h:
                     continue
-                # Exact for the same reason: a hole inside a courtyard
-                # notch clears the pad union but never the hull.
+                # Exact, on the BODY (gr536411): the keep-out radius
+                # already holds the hole's margin, so a +0.4mm courtyard
+                # bite inside it is legal, the same measure DRC's
+                # ``check_courtyard_hole`` applies.
                 if (
-                    self._world_courtyard_exact(inst, x, y, rotations.get(inst))
+                    self._world_body_exact(inst, x, y, rotations.get(inst))
                     .intersection(Polygon(hole_poly))
                     .area
                     > _EXACT_OVERLAP_AREA_MM2
@@ -3991,15 +4047,16 @@ class OptimizeEngine:
                 conflicts.append(
                     ("courtyard_overlap", str(ir.instance_refdes[int(other)]))
                 )
+        body = self._world_body_exact(inst, x, y, rot)
         for hole_idx in range(len(self._hole_polys)):
             hole = ir.mounting_holes[hole_idx]
             if _hole_owned_by(ir, hole, inst):
                 continue
             hx, hy, hole_poly = self._hole_at(hole_idx)
-            sep_h = keepout[inst] + self._hole_radius[hole_idx]
+            sep_h = self._body_r[inst] + self._hole_radius[hole_idx]
             if (x - hx) ** 2 + (y - hy) ** 2 >= sep_h * sep_h:
                 continue
-            if poly.intersection(Polygon(hole_poly)).area > _EXACT_OVERLAP_AREA_MM2:
+            if body.intersection(Polygon(hole_poly)).area > _EXACT_OVERLAP_AREA_MM2:
                 conflicts.append(("courtyard_hole", f"hole @ ({hx:g}, {hy:g})"))
         gap = self._fixed_via_gap(inst, x, y, rot)
         if gap < _FIXED_VIA_CLEARANCE_MM:
@@ -4023,7 +4080,9 @@ class OptimizeEngine:
 
         Depths: ``courtyard_overlap`` and ``courtyard_hole`` are the
         intersection area, mm², of the two polygons the placer's legality
-        test judges; ``outline`` (only when the board has one) is the
+        test judges — the raw courtyard for a neighbour, the zero-
+        clearance BODY for a hole (gr536411); ``outline`` (only when the
+        board has one) is the
         part courtyard's area OUTSIDE the outline polygon, mm² — the one
         rule :meth:`pose_conflicts` does not report, listed only here, as
         ``("outline", "board outline", area)`` when the area exceeds
@@ -4053,7 +4112,11 @@ class OptimizeEngine:
                     self._world_courtyard_exact(by_name[other])
                 ).area
             elif rule == "courtyard_hole":
-                depth = mine.intersection(Polygon(holes[other])).area
+                depth = (
+                    self._world_body_exact(inst, x, y, rot)
+                    .intersection(Polygon(holes[other]))
+                    .area
+                )
             else:
                 gap = self._fixed_via_gap(inst, x, y, rot)
                 depth = max(0.0, _FIXED_VIA_CLEARANCE_MM - gap)
@@ -4144,7 +4207,10 @@ class OptimizeEngine:
         The margin tiers are the SAME field and precedence
         :func:`~precis.pcb.cost.board_edge_clearance_term` prices and
         :func:`precis.pcb.drc.check_courtyard_edge_clearance` enforces
-        (V-cut while the panelization is unknown): the ring search tries
+        (V-cut while the panelization is unknown), measured against the
+        BODY since gr536411 — the fab bar the DRC rule applies, not the
+        +0.4mm courtyard (a body 0.5mm off the edge clears JLC's 0.4mm
+        bar even though its courtyard crosses it): the ring search tries
         the house figure first — a nudge that lands there leaves no
         finding at all — then the JLC floor, then plain inside, so an
         overhang still gets in when the margin is unreachable in radius.
@@ -4173,14 +4239,19 @@ class OptimizeEngine:
             old = [(m, float(ir.inst_x[m]), float(ir.inst_y[m])) for m in members]
             if any(math.isnan(x) or math.isnan(y) for _m, x, y in old):
                 continue
-            polys = [(m, self._world_courtyard(m)) for m, _x, _y in old]
+            # Containment measures the raw courtyard (the shape DRC's
+            # ``outline_containment`` checks); the edge margin measures
+            # the BODY (gr536411 — the fab bar ``check_courtyard_edge_
+            # clearance`` applies, never the +0.4mm courtyard).
+            courtyards = [(m, self._world_courtyard_exact(m)) for m, _x, _y in old]
+            bodies = [(m, self._world_body_exact(m)) for m, _x, _y in old]
             if all(
-                _courtyard_in_outline(self._outline_region, poly) for _m, poly in polys
+                _courtyard_in_outline(self._outline_region, g) for _m, g in courtyards
             ) and (
                 floor_mm is None
                 or all(
-                    _courtyard_edge_gap_mm(self._outline_region, poly) >= floor_mm
-                    for _m, poly in polys
+                    _courtyard_edge_gap_mm(self._outline_region, g) >= floor_mm
+                    for _m, g in bodies
                 )
             ):
                 continue
@@ -4217,10 +4288,12 @@ class OptimizeEngine:
         lattice that makes every member of ``old`` legal (and inside the
         outline when ``in_outline``), searched ring by ring outward;
         ``None`` when no lattice point is. ``edge_clearance_mm``
-        additionally requires every member's courtyard at the proposed
+        additionally requires every member's BODY at the proposed
         pose to sit at least that far off the real outline boundary —
-        :meth:`settle_into_outline`'s margin-aware bar; the plain
-        ``in_outline`` test asks only that it is inside."""
+        :meth:`settle_into_outline`'s margin-aware bar, measured on the
+        BODY (gr536411 — the fab bar prices the body); the plain
+        ``in_outline`` test asks only that the raw courtyard is inside,
+        the shape ``drc.check_outline_containment`` checks."""
         step = _LEGALIZE_STEP_MM
         for ring in range(1, max_rings + 1):
             offsets = [
@@ -4237,7 +4310,7 @@ class OptimizeEngine:
                     continue
                 if edge_clearance_mm is not None and not all(
                     _courtyard_edge_gap_mm(
-                        self._outline_region, self._world_courtyard(m, x2, y2)
+                        self._outline_region, self._world_body_exact(m, x2, y2)
                     )
                     >= edge_clearance_mm
                     for m, x2, y2 in moved
@@ -4324,6 +4397,44 @@ class OptimizeEngine:
             )
         )
         self._world_poly_raw[inst] = (pose, poly)
+        return poly
+
+    def _world_body_exact(
+        self,
+        inst: int,
+        x: float | None = None,
+        y: float | None = None,
+        rot: float | None = None,
+    ):
+        """``inst``'s zero-clearance pad-union BODY (:attr:`_body_poly`)
+        in BOARD coordinates as a shapely ``Polygon``, at the current
+        pose or a proposed ``(x, y)`` / ``rot`` — the shape the hole
+        keep-out and board-edge rules intersect since gr536411 (the
+        gr529963 ruling: the fab bar prices the body; the 0.4mm house
+        courtyard margin is between-parts only). Same affine path and
+        pose-keyed caching as :meth:`_world_courtyard_exact`, so the
+        body and the courtyard cannot travel by different conventions."""
+        from shapely.geometry import Polygon
+
+        ir = self.ir
+        px = float(ir.inst_x[inst]) if x is None else x
+        py = float(ir.inst_y[inst]) if y is None else y
+        prot = float(ir.inst_rot[inst]) if rot is None else rot
+        prot = 0.0 if math.isnan(prot) else prot
+        pose = (px, py, prot)
+        cached = self._world_poly_body.get(inst)
+        if cached is not None and cached[0] == pose:
+            return cached[1]
+        poly = Polygon(
+            place_points(
+                self._body_poly[inst],
+                cx=px,
+                cy=py,
+                rot_deg=prot,
+                mirrored=bool(ir.inst_bottom[inst]),
+            )
+        )
+        self._world_poly_body[inst] = (pose, poly)
         return poly
 
     def _rescan_after_move(self, moved_inst: int) -> None:
@@ -4788,42 +4899,58 @@ def _outline_region(outline: Any) -> tuple[Any, bool] | None:
     return board, convex
 
 
-def _courtyard_in_outline(
-    region: tuple[Any, bool] | None, poly: list[tuple[float, float]]
-) -> bool:
+def _courtyard_in_outline(region: tuple[Any, bool] | None, poly: Any) -> bool:
     """True iff the courtyard ``poly`` lies inside the outline, boundary
     included — the test ``drc.check_outline_containment`` applies to a
-    part. On a convex outline the vertices decide it (their hull, which
-    contains the polygon, is then inside too); a concave outline also
-    takes the full ``covers``."""
+    part. ``poly`` is a vertex ring or a shapely geometry (the pose-keyed
+    cache hands the latter — its own ``exterior.coords`` ring is the same
+    vertices). On a convex outline the vertices decide it (their hull,
+    which contains the polygon, is then inside too); a concave outline
+    also takes the full ``covers``."""
     if region is None:
         return True
     import shapely
     from shapely.geometry import Polygon
+    from shapely.geometry.base import BaseGeometry
 
     board, convex = region
-    xs = np.fromiter((p[0] for p in poly), dtype=float)
-    ys = np.fromiter((p[1] for p in poly), dtype=float)
-    if not bool(shapely.intersects_xy(board, xs, ys).all()):
+    geom = poly if isinstance(poly, BaseGeometry) else Polygon(poly)
+    if geom.is_empty:
         return False
-    return convex or bool(board.covers(Polygon(poly)))
+    for g in getattr(geom, "geoms", (geom,)):
+        ring = getattr(g, "exterior", g).coords
+        xs = np.fromiter((p[0] for p in ring), dtype=float)
+        ys = np.fromiter((p[1] for p in ring), dtype=float)
+        if not bool(shapely.intersects_xy(board, xs, ys).all()):
+            return False
+    return convex or bool(board.covers(geom))
 
 
-def _courtyard_edge_gap_mm(
-    region: tuple[Any, bool] | None, poly: list[tuple[float, float]]
-) -> float:
+def _courtyard_edge_gap_mm(region: tuple[Any, bool] | None, poly: Any) -> float:
     """``poly``'s clearance to the outline's boundary — the SAME quantity
     ``drc.check_courtyard_edge_clearance`` measures against the same
     polygonized ring (0 once the polygon touches or crosses the edge, so
     it separates nothing by itself: pair it with
-    :func:`_courtyard_in_outline` when inside-vs-outside matters). A
-    courtyard of fewer than three points reserves no area — ``inf``."""
-    if region is None or len(poly) < 3:
+    :func:`_courtyard_in_outline` when inside-vs-outside matters). What
+    the rule prices is the caller's choice — the BODY since gr536411
+    (``_world_body_exact``); a vertex ring is normalized here too. An
+    empty polygon reserves no area — ``inf``."""
+    if region is None:
         return math.inf
     from shapely.geometry import Polygon
+    from shapely.geometry.base import BaseGeometry
 
     board, _convex = region
-    return float(board.boundary.distance(Polygon(poly)))
+    geom = (
+        poly
+        if isinstance(poly, BaseGeometry)
+        else Polygon(poly)
+        if len(poly) >= 3
+        else Polygon()
+    )
+    if geom.is_empty:
+        return math.inf
+    return float(board.boundary.distance(geom))
 
 
 #: How many draws a placement generator makes before conceding that this

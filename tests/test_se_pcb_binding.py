@@ -33,6 +33,27 @@ from precis_se.ops import SeBlock, SeTree, effective_envelope, effective_ports
 # (0.9 mm); X1 top, footprint no row matches → the table fallback
 # (its largest value). Two mounting holes.
 _BOARD: dict[str, Any] = {
+    # gr524240: a partless component's `footprint` is a reference to a
+    # row this board carries — author the three names below. Height
+    # lookup still reads the package-name table (never these rows), so
+    # X1's unknown package keeps its fallback height.
+    "footprints": [
+        {
+            "name": "CUSTOM-IC",
+            "pads": [{"pin": "VDD", "shape": "rect", "x": 0.0, "y": 0.0, "w": 1.0}],
+        },
+        {
+            "name": "C0603",
+            "pads": [
+                {"pin": "1", "shape": "rect", "x": -0.5, "y": 0.0, "w": 0.8},
+                {"pin": "2", "shape": "rect", "x": 0.5, "y": 0.0, "w": 0.8},
+            ],
+        },
+        {
+            "name": "TOTALLY-UNKNOWN-PKG",
+            "pads": [{"pin": "A", "shape": "rect", "x": 0.0, "y": 0.0, "w": 1.0}],
+        },
+    ],
     "components": [
         {
             "refdes": "U1",

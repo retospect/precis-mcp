@@ -154,7 +154,16 @@ def board(store):
                     "name": "ASYM6",
                     "pads": [{**p, "pin": p["number"]} for p in fp["pads"]],
                     "pin_map": fp["pin_map"],
-                }
+                },
+                # gr524240: the put refuses a partless footprint name
+                # nothing authored — author it, then drop the row below
+                # to leave the pre-rule dangling state J_MISSING needs.
+                {
+                    "name": "NO_GEOMETRY",
+                    "pads": [
+                        {"pin": "1", "shape": "circle", "x": 0.0, "y": 0.0, "w": 1.0}
+                    ],
+                },
             ],
             "components": [
                 {
@@ -181,6 +190,13 @@ def board(store):
             ],
         },
     )
+    ref = store.get_ref(kind="pcb", id="preview-test")
+    assert ref is not None
+    with store._pcb_tx() as conn:
+        conn.execute(
+            "DELETE FROM pcb_local_footprints WHERE ref_id = %s AND name = %s",
+            (ref.id, "NO_GEOMETRY"),
+        )
     return pcb
 
 

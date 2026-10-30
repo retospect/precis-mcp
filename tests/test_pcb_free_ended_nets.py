@@ -18,6 +18,21 @@ def pcb(store):
 
 def _free_end_args(conns: list[tuple[str, str, str]]) -> dict[str, Any]:
     return {
+        # gr524240: a partless component's `footprint` is a reference to
+        # a row this board carries — author the names the components use.
+        "footprints": [
+            {
+                "name": "X",
+                "pads": [
+                    {"pin": "A", "shape": "rect", "x": -0.5, "y": 0.0, "w": 1.0},
+                    {"pin": "B", "shape": "rect", "x": 0.5, "y": 0.0, "w": 1.0},
+                ],
+            },
+            {
+                "name": "Y",
+                "pads": [{"pin": "1", "shape": "rect", "x": 0.0, "y": 0.0, "w": 1.0}],
+            },
+        ],
         "components": [
             {
                 "refdes": "U1",

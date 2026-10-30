@@ -193,6 +193,14 @@ _KNOWN_UNWIRED: dict[str, str] = {
         "INDEPENDENT sagitta formula -- deleting it would leave the cap "
         "with only its own math to agree with"
     ),
+    "src/precis/pcb/geom.py::convex_polygons_signed_separation": (
+        "gr536411: the graded courtyard/margin terms moved to "
+        "polygon_signed_separation_mm — exact over concave pad unions, "
+        "which SAT cannot measure — taking this one's last production "
+        "caller. Kept as the tested SAT oracle: test_pcb_geom.py pins its "
+        "sign/zero/lower-bound contract and test_pcb_optimize.py prices a "
+        "known overlap through it"
+    ),
     "src/precis/pcb/drc.py::clearance_violations_naive": (
         "own docstring: 'the O(n^2) reference oracle (backlog, verbatim)' "
         "-- a test oracle by design, not a production checker (see this "

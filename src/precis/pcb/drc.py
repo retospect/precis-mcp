@@ -2641,23 +2641,24 @@ def check_courtyard_overlap(
     routing-corridor margin is short.
 
     ``pads`` (``model["pads"]``, each carrying ``refdes``) refines the
-    error tier further: a courtyard is the CONVEX hull of a part's pads,
-    an over-approximation of what the part occupies, so two hulls
-    intersecting proves nothing about the lands (docs/backlog/
+    error tier further: a courtyard is the union of a part's pad
+    outlines, an over-approximation of what the part occupies, so two
+    courtyards intersecting proves nothing about the lands (docs/backlog/
     pcb-lazy-netlist-and-checks.md §1g-bis — an over-approximation is
     sound for proving a collision ABSENT, not present). With pads given,
     the error is kept only when a real land of one part intersects a real
-    land of the other; hulls that overlap with every land clear are a
-    warning naming the land gap (taz15's L2 inductor pad reaching into
-    the TO-263's hull between its leads, 1.06 mm "deep" by hull, 0 mm by
-    land). Bodies are not modelled; that is said in the finding.
+    land of the other; courtyards that overlap with every land clear are
+    a warning naming the land gap (taz15's L2 inductor pad reaching into
+    the TO-263's courtyard between its leads, 1.06 mm "deep" by
+    courtyard, 0 mm by land). Bodies are not modelled; that is said in
+    the finding.
 
     ``clearance_mm`` is the offset the caller inflated each courtyard by
     (:data:`precis.pcb.ir.COURTYARD_CLEARANCE_MM` for every placer/DRC
     caller). Given, the rule deflates both polygons by it to recover the
-    pad hulls and grades the pair on THOSE: hulls that intersect are two
-    parts physically on top of each other (error); hulls that clear each
-    other are two parts closer than the placer's reservation, which is a
+    pad outlines and grades the pair on THOSE: outlines that intersect are
+    two parts physically on top of each other (error); outlines that clear
+    each other are two parts closer than the placer's reservation, which is a
     tuning pin for the router's escape corridor (that constant's own
     docstring: "a pin, not an optimum"), not a fab figure. taz15 (2026-10-15)
     is the case: the manufactured source board has 30 neighbour pairs with
@@ -2758,10 +2759,10 @@ def check_courtyard_overlap(
                 if pad_gap is not None and pad_gap > _EPS:
                     severity = "warn"
                     detail += (
-                        f" — the pad hulls overlap but no land touches another "
-                        f"(nearest lands {pad_gap:.3f}mm apart); the hull is a "
-                        "convex over-approximation and part bodies are not "
-                        "modelled, so this is not a proven collision"
+                        f" — the pad outlines overlap but no land touches "
+                        f"another (nearest lands {pad_gap:.3f}mm apart); the "
+                        "union is an over-approximation and part bodies are "
+                        "not modelled, so this is not a proven collision"
                     )
             findings.append(
                 DrcFinding(
@@ -2779,12 +2780,14 @@ def check_courtyard_overlap(
 def _land_hull_gap_mm(
     gi: Polygon, gj: Polygon, clearance_mm: float | None
 ) -> float | None:
-    """The edge-to-edge gap between two courtyards' LAND hulls — each
+    """The edge-to-edge gap between two courtyards' LAND outlines — each
     polygon deflated by the ``clearance_mm`` it was inflated by (mitred,
-    the inverse of :func:`precis.pcb.ir.instance_courtyard_polygon`'s
-    offset). ``None`` when no clearance is known or a deflated hull
+    the approximate inverse of :func:`precis.pcb.ir.instance_courtyard_
+    polygon`'s offset — erosion does not exactly undo a dilated union,
+    but it lands close enough to grade on). ``None`` when no clearance is
+    known or a deflated outline
     vanishes (a pinless fallback square smaller than the offset): the
-    caller then keeps the categorical reading. ``0.0`` when the hulls
+    caller then keeps the categorical reading. ``0.0`` when the outlines
     touch or overlap."""
     if clearance_mm is None or clearance_mm <= 0:
         return None

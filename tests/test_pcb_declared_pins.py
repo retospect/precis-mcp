@@ -659,6 +659,23 @@ def test_gerber_banner_reports_not_checked_for_uncached_footprint(pcb, store) ->
                     "pins": [{"name": "P1"}],
                 }
             ],
+            # gr524240: the put refuses a partless footprint name nothing
+            # authored — author it, then drop the row below to leave the
+            # pre-rule dangling state this test exercises.
+            "footprints": [
+                {
+                    "name": "GHOST-FP",
+                    "pads": [
+                        {
+                            "pin": "P1",
+                            "shape": "circle",
+                            "x": 0.0,
+                            "y": 0.0,
+                            "w": 1.0,
+                        }
+                    ],
+                }
+            ],
             "nets": [{"name": "N1"}],
             "connections": [{"net": "N1", "refdes": "U1", "pin": "P1"}],
             "features": [_outline()],
@@ -666,6 +683,11 @@ def test_gerber_banner_reports_not_checked_for_uncached_footprint(pcb, store) ->
     )
     ref = store.get_ref(kind="pcb", id="d-banner")
     assert ref is not None
+    with store._pcb_tx() as conn:
+        conn.execute(
+            "DELETE FROM pcb_local_footprints WHERE ref_id = %s AND name = %s",
+            (ref.id, "GHOST-FP"),
+        )
     banner, _n = pcb._gerber_drc_banner(ref.id, "d-banner")
     assert "not fully checked" in banner
     assert "1 footprint(s) uncached" in banner

@@ -43,7 +43,8 @@ already applies to copper.
    per side" is the rule, not "bottom silk reads from the top".
 2. a **courtyard/body outline** — the POLYGON
    :func:`precis.pcb.ir.instance_courtyard_polygon` derives from this
-   instance's OWN pad outlines (their convex hull, offset outward), never
+   instance's OWN pad outlines (their union, offset outward — concavity
+   kept since gr524238), never
    a fixed constant tuned to nothing and, since 2026-08-30, never a
    square either: a square sized by a pin-offset RADIUS over-reserves a
    1x20 edge connector 8-fold while UNDER-reserving a SOIC-8, and no
@@ -2034,7 +2035,7 @@ def part_outlines(
     :attr:`~precis.pcb.ir.PcbIR.inst_bottom` (the router's view). Uses
     shapely: a hull clipped to its Voronoi cell is a polygon boolean, and
     :func:`precis.pcb.ir.instance_courtyard_polygon` already builds the
-    hull with it."""
+    ring with it."""
     floor, target = outline_offsets_mm(capability, stroke_width_mm=stroke_width_mm)
     spacing = (1.0 + OUTLINE_GAP_STROKES) * stroke_width_mm
     pins_of_inst: dict[int, list[int]] = {}
@@ -2063,6 +2064,8 @@ def part_outlines(
             rot=0.0 if math.isnan(rot) else rot,
             mirror=side == "bottom",
         )
+        # The courtyard union can be concave (gr524238); the Voronoi
+        # split below wants one ring per part, so this pass still hulls.
         hull = _ShapelyMultiPoint(world).convex_hull
         hulls.append((inst, side, hull))
 

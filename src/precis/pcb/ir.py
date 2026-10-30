@@ -959,11 +959,11 @@ class PcbIR:
         when the pad is a polygon (relative to the pin centre, as
         :attr:`pin_poly` stores it). The size half of
         :meth:`set_pin_offset`: gr460567 — real positions with synthesized
-        sizes made :func:`instance_courtyard_polygon` hull tiny pads at real
-        coordinates, so courtyards cut through real pads and the placer
-        reserved too little. A pin's OTHER same-labelled pads are not this
-        pin's size; they live in :attr:`footprint_pads`. Same dirty cascade
-        as :meth:`set_pin_offset`."""
+        sizes made :func:`instance_courtyard_polygon` union undersized
+        pads at real coordinates, so courtyards cut through real pads and
+        the placer reserved too little. A pin's OTHER same-labelled pads
+        are not this pin's size; they live in :attr:`footprint_pads`. Same
+        dirty cascade as :meth:`set_pin_offset`."""
         self.pin_w[pin_id] = w
         self.pin_h[pin_id] = h
         if poly:

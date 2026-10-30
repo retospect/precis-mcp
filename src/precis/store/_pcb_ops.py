@@ -1023,6 +1023,50 @@ class PcbMixin:
         inst_by_refdes = self._pcb_instance_map(conn, ref.id)
         net_by_name = self._pcb_net_map(conn, ref.id)
 
+        # gr524240 — on a component with no catalog part, `footprint`
+        # is a REFERENCE to a `pcb_local_footprints` row (the batch's own
+        # `footprints` block landed above, so a same-put reference
+        # resolves), and a name that matches nothing leaves the part
+        # with no pads: refuse at write time rather than storing a
+        # silently padless part. A catalog part keeps its label
+        # semantics — its footprint name is informational and the pads
+        # come from the `part_footprints` cache by C-number — and a
+        # reput of an existing refdes drops the field anyway (gr520369),
+        # so both stay outside this check. The test is `is not None`,
+        # matching `local.batch_to_graph`: an authored `footprint=""` is
+        # a name nothing can carry (`normalize_footprint` refuses an
+        # empty name), not an unset field — both paths refuse the same
+        # blank.
+        dangling_fp = [
+            (str(c.get("refdes") or ""), str(c["footprint"]))
+            for c in components
+            if c.get("footprint") is not None
+            and not (c.get("part_lcsc") or c.get("part") or c.get("lcsc"))
+            and str(c.get("refdes") or "").strip() not in inst_by_refdes
+        ]
+        if dangling_fp:
+            known = {
+                str(r[0])
+                for r in conn.execute(
+                    "SELECT name FROM pcb_local_footprints "
+                    "WHERE ref_id = %s AND name = ANY(%s)",
+                    (ref.id, [name for _refdes, name in dangling_fp]),
+                ).fetchall()
+            }
+            missing = [(r, n) for r, n in dangling_fp if n not in known]
+            if missing:
+                refdes, name = missing[0]
+                raise BadInput(
+                    f"pcb component {refdes!r}: footprint {name!r} names no "
+                    "footprint on this board — the part would get no pads",
+                    next=f"author it in the same put — args={{'footprints': "
+                    f"[{{'name': {name!r}, 'pads': [...]}}]}} — or, in a "
+                    "board script, register it with b.footprint("
+                    f"pcb.Footprint({name!r}, [...])) before b.part(); "
+                    "footprint rows are per-board — re-author one carried "
+                    "by another board under this put",
+                )
+
         # Canonicalise ``part``/``part_lcsc`` once per batch (gr485250): a
         # lowercase C-number or a pasted lcsc.com/jlcpcb.com product URL
         # resolves to its ``C<n>`` here so every downstream read

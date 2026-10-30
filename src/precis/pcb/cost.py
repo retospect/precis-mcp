@@ -86,16 +86,21 @@ errors only, not near-optimal tuning.
 **``courtyard_overlap``/``board_edge_clearance`` (gr267456)** grade the
 SAME boundary the hard checks enforce, never a re-declared one.
 ``courtyard_overlap`` (since 2026-08-31) reads the real courtyard
-POLYGONS through the one shared SAT primitive family
-(:func:`precis.pcb.geom.convex_polygons_signed_separation`, the graded
-companion of the boolean legality/DRC use) — a relaxation that hits "at
-budget" exactly at contact, the legality/DRC line — with
-:data:`precis.pcb.drc.DEFAULT_COURTYARD_RADIUS_MM` surviving only as the
-pinless-part fallback scale. ``board_edge_clearance`` reads
+POLYGONS, measured exactly since gr536411 by
+:func:`precis.pcb.geom.polygon_signed_separation_mm` over the raw
+(possibly concave) pad unions the legality tests and DRC check — a
+relaxation that hits "at budget" exactly at contact, the legality/DRC
+line — with :data:`precis.pcb.drc.DEFAULT_COURTYARD_RADIUS_MM`
+surviving only as the pinless-part fallback scale.
+``board_edge_clearance`` reads
 :class:`precis.pcb.capabilities.CapabilityRow`'s
-``board_edge_clearance_vcut_mm`` (via :data:`CostConfig.fab_caps`). The
+``board_edge_clearance_vcut_mm`` (via :data:`CostConfig.fab_caps`),
+measured against the zero-clearance pad-union BODY since gr536411 (the
+ruling the DRC applies: the fab bar prices the body; the 0.4mm house
+courtyard margin is between-parts breathing room only). The
 ``cost.py -> drc.py`` import stays one-directional and constant-only (no
-cycle, no shapely/STRtree machinery crosses; ``geom`` is pure math).
+cycle; shapely crosses only through :mod:`precis.pcb.geom`, never as an
+STRtree/spatial index).
 
 **``alignment`` (2026-09-01) is the first "preference field"**
 (``docs/backlog/pcb-global-codesign-north-star.md``'s invariant 3): a
@@ -121,7 +126,7 @@ import numpy as np
 from precis.pcb import objectives as obj
 from precis.pcb.capabilities import CapabilityRow, capability_for
 from precis.pcb.drc import DEFAULT_COURTYARD_RADIUS_MM
-from precis.pcb.geom import convex_polygons_signed_separation
+from precis.pcb.geom import polygon_signed_separation_mm
 from precis.pcb.ir import (
     COURTYARD_CLEARANCE_MM,
     UNSET_LAYER,
@@ -1187,8 +1192,8 @@ def courtyard_overlap_pair_term(
     level: Level,
     config: CostConfig,
     *,
-    poly_a: list[tuple[float, float]] | None = None,
-    poly_b: list[tuple[float, float]] | None = None,
+    poly_a: Any | None = None,
+    poly_b: Any | None = None,
     through_hole: np.ndarray | None = None,
 ) -> TermValue:
     """One instance PAIR's ``courtyard_overlap`` :class:`TermValue` — the
@@ -1196,11 +1201,19 @@ def courtyard_overlap_pair_term(
     since 2026-08-31 a true RELAXATION of it: the same courtyard POLYGONS
     legality tests (``OptimizeEngine._placement_is_legal``) and DRC checks
     (``drc.check_courtyard_overlap``), measured by
-    :func:`precis.pcb.geom.convex_polygons_signed_separation` instead of a
+    :func:`precis.pcb.geom.polygon_signed_separation_mm` instead of a
     boolean. A flat 2.0mm centre-distance circle stood here until then —
     a constant predating every real courtyard in this subsystem, so the
     annealer descended a slope defined by one geometry while legality
     enforced another (the courtyard-polygon work's "disagreement").
+
+    **The polygons are the RAW, possibly-concave pad unions** (gr536411)
+    — the exact shapes legality and DRC intersect. Until then the
+    polygons were hulled at this boundary for the convex-only SAT
+    measure, and a pair whose unions stayed disjoint while their hulls
+    interlocked (a part parked inside a neighbour's notch) was priced as
+    overlapping — a penalty on a placement legality permits, the same
+    hull-bridges-the-notch defect gr525380 removed from legality.
 
     **Why separation shortfall and not overlap depth.** Legality already
     FORBIDS polygon overlap for every generated move, so a term graded on
@@ -1220,9 +1233,10 @@ def courtyard_overlap_pair_term(
     hard rule about where the boundary IS.
 
     ``poly_a``/``poly_b`` accept the caller's already-resolved WORLD-frame
-    courtyard polygons (:meth:`OptimizeEngine._world_courtyard`'s
-    pose-keyed cache) so the per-move path never recomputes a hull; left
-    ``None``, this derives them from the IR via the same
+    courtyard polygons (:meth:`OptimizeEngine._world_courtyard_exact`'s
+    pose-keyed shapely cache; a plain vertex ring is normalized too) so
+    the per-move path never recomputes a union; left ``None``, this
+    derives them from the IR via the same
     ``ir.instance_courtyard_polygon`` + ``landpattern.place_points`` path
     with the same constants, so the two callers cannot diverge.
 
@@ -1291,7 +1305,7 @@ def courtyard_overlap_pair_term(
     if poly_b is None:
         poly_b = _world_courtyard_polygon(ir, ib, xb, yb)
     corridor_mm = config.default_pitch_mm
-    separation_mm = convex_polygons_signed_separation(poly_a, poly_b)
+    separation_mm = polygon_signed_separation_mm(poly_a, poly_b)
     fraction = max(0.0, (corridor_mm - separation_mm) / corridor_mm)
     return TermValue(
         "courtyard_overlap",
@@ -1312,7 +1326,10 @@ def _world_courtyard_polygon(
     same constants :mod:`precis.pcb.optimize` uses for its cached
     keep-outs (``COURTYARD_CLEARANCE_MM`` clearance, the nominal
     half-courtyard floor for a pinless part, ``place_points`` for the
-    affine) so the cached and derived answers are the same shape."""
+    affine) so the cached and derived answers are the same shape. RAW —
+    the possibly-concave pad union, not a hull — since gr536411, matching
+    :meth:`OptimizeEngine._world_courtyard_exact` and the DRC rules that
+    measure it."""
     local = instance_courtyard_polygon(
         ir,
         inst,
@@ -1329,6 +1346,34 @@ def _world_courtyard_polygon(
     )
 
 
+def _world_body_polygon(ir: PcbIR, inst: int, x: float, y: float):
+    """``inst``'s zero-clearance pad-union BODY in BOARD coordinates as a
+    shapely ``Polygon`` — :func:`_world_courtyard_polygon`'s twin at
+    ``clearance_mm=0.0``, the fab-bar geometry the edge/hole rules
+    measure (gr529963, threaded here for ``board_edge_clearance_term``
+    under gr536411). Same constants, same affine path, so the engine's
+    cached :meth:`OptimizeEngine._world_body_exact` and this derivation
+    cannot diverge."""
+    from shapely.geometry import Polygon
+
+    local = instance_courtyard_polygon(
+        ir,
+        inst,
+        clearance_mm=0.0,
+        fallback_half_extent_mm=COURTYARD_MIN_SEPARATION_MM / 2.0,
+    )
+    rot = float(ir.inst_rot[inst])
+    return Polygon(
+        place_points(
+            local,
+            cx=x,
+            cy=y,
+            rot_deg=0.0 if math.isnan(rot) else rot,
+            mirrored=bool(ir.inst_bottom[inst]),
+        )
+    )
+
+
 def _courtyard_overlap(ir: PcbIR, level: Level, config: CostConfig) -> list[TermValue]:
     """Every instance PAIR's ``courtyard_overlap`` value — genuinely
     O(n_instances^2), same carve-out as ``coupling``'s own full double
@@ -1336,7 +1381,7 @@ def _courtyard_overlap(ir: PcbIR, level: Level, config: CostConfig) -> list[Term
     :mod:`precis.pcb.optimize` never calls this full-board version per
     move, it maintains its own grid-bucketed incremental cache instead
     (see that module's docstring). Each placed instance's world polygon is
-    resolved ONCE here, not once per pair — the hull derivation is the
+    resolved ONCE here, not once per pair — the union derivation is the
     expensive half."""
     n = ir.n_instances
     polys: dict[int, list[tuple[float, float]]] = {}
@@ -1413,8 +1458,39 @@ _BOARD_EDGE_JUSTIFICATION = (
 )
 
 
+def _geom_signed_inside_depth_mm(
+    geom: Any, bbox: tuple[float, float, float, float]
+) -> float:
+    """``_signed_inside_depth_mm``'s polygon form (gr536411): how far
+    ``geom`` sits inside ``bbox`` — POSITIVE the clearance to the nearest
+    edge when fully inside, NEGATIVE minus how far its outside part
+    reaches past the box (the farthest outside point's distance back to
+    it), 0 at a boundary touch. Same one-number "clearance available"
+    contract, so a shape drifting further out keeps scoring worse rather
+    than plateauing at the edge."""
+    from shapely.geometry import Point
+    from shapely.geometry import box as shapely_box
+
+    rect = shapely_box(*bbox)
+    if rect.covers(geom):
+        return float(rect.boundary.distance(geom))
+    outside = geom.difference(rect)
+    if outside.is_empty:
+        return 0.0
+    reach = 0.0
+    for part in getattr(outside, "geoms", (outside,)):
+        for c in getattr(part, "exterior", part).coords:
+            reach = max(reach, rect.distance(Point(c)))
+    return -max(reach, 1e-9)
+
+
 def board_edge_clearance_term(
-    ir: PcbIR, inst_id: int, level: Level, config: CostConfig
+    ir: PcbIR,
+    inst_id: int,
+    level: Level,
+    config: CostConfig,
+    *,
+    body: Any | None = None,
 ) -> TermValue | None:
     """One instance's ``board_edge_clearance`` :class:`TermValue`, or
     ``None`` when no board outline is known yet (``ir.outline`` is
@@ -1423,13 +1499,23 @@ def board_edge_clearance_term(
     check" rule ``drc.check_board_edge_clearance`` itself applies, not an
     invented boundary or an invented clearance figure.
 
+    **Measures the zero-clearance pad-union BODY** (gr536411, the
+    gr529963 ruling: the fab bar prices the body; the 0.4mm house
+    courtyard margin applies only between parts) — until then the term
+    saw an instance CENTROID, which priced a part whose pads reached the
+    cut line as though only its origin had. ``body`` accepts the caller's
+    already-resolved WORLD-frame body polygon
+    (:meth:`OptimizeEngine._world_body_exact`'s pose-keyed cache; a
+    vertex ring is normalized too); ``None`` derives it via
+    :func:`_world_body_polygon` with the same constants, so the two
+    callers cannot diverge.
+
     **Approximates the outline by its axis-aligned bounding box**
-    (:func:`outline_bbox`), not the exact polygon boundary ``drc.
-    check_board_edge_clearance`` measures against REALIZED copper — this
-    term only ever sees an instance CENTROID (no footprint/copper geometry
-    exists yet at L3), and every reference board this build targets is
-    rectangular, so the approximation is exact for the common case and
-    still a same-direction (never risk-hiding) proxy elsewhere. Mirrors
+    (:func:`outline_bbox`), not the exact polygon boundary
+    ``drc.check_courtyard_edge_clearance`` measures the same body
+    against — every reference board this build targets is rectangular,
+    so the approximation is exact for the common case and still a
+    same-direction (never risk-hiding) proxy elsewhere. Mirrors
     :mod:`precis.pcb.optimize`'s own TRANSLATE-clamp simplification — one
     approximation of the outline, not two independently invented ones.
 
@@ -1474,8 +1560,21 @@ def board_edge_clearance_term(
             _BOARD_EDGE_JUSTIFICATION,
             is_bound=True,
         )
+    from shapely.geometry import Polygon
+    from shapely.geometry.base import BaseGeometry
+
     bbox = outline_bbox(ir.outline)
-    depth_mm = _signed_inside_depth_mm(x, y, bbox)
+    geom = (
+        body
+        if isinstance(body, BaseGeometry)
+        else Polygon(body)
+        if body is not None
+        else _world_body_polygon(ir, inst_id, x, y)
+    )
+    if geom.is_empty:
+        depth_mm = _signed_inside_depth_mm(x, y, bbox)
+    else:
+        depth_mm = _geom_signed_inside_depth_mm(geom, bbox)
     violation_mm = max(0.0, required_mm - depth_mm)
     fraction = violation_mm / required_mm
     return TermValue(
