@@ -39,7 +39,8 @@
 #                             --checked runs lint + a cheap selected pytest
 #                             (scripts/impacted-tests) — the middle rung.
 #                    · ship   (under the lock) squash `commit-tree` onto
-#                             origin/main + a `--force-with-lease` CAS push,
+#                             origin/main, branch `reset --soft` onto it,
+#                             + a `--force-with-lease` CAS push,
 #                             then the local-main ff, then the lock is released.
 #                             If main advanced during the gate (ancestor check)
 #                             or the lease is rejected: --quick merges origin/main
@@ -161,7 +162,9 @@
 # only thing git-town did here was `fetch + merge main`. Its `ship` does
 # `git checkout main`, which fails from a linked worktree (main is checked out
 # in the primary) — hence the commit-tree + CAS-push plumbing below, the
-# standing worktree-safe workaround.
+# standing worktree-safe workaround. The squash commit it mints is also the
+# branch's tip (`reset --soft` onto it just before the push), so after landing
+# the branch is an ancestor of (equal to) origin/main, dirty tree or not.
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
@@ -2476,6 +2479,15 @@ ${MSG_BODY}
 ${TRAILERS}
 EOF
 )"
+        # Land the branch's own commit: move the branch onto NEW BEFORE the
+        # push, so whatever happens next (dirty tree, a die after the push, a
+        # CAS retry) the branch is NEW or a descendant of it — an ancestor of
+        # main once the push lands. --soft: NEW's tree == HEAD's tree, so the
+        # index and worktree (dirty edits included) are untouched. A lost CAS
+        # goes around the loop: the forward merge folds the new main into HEAD
+        # (== NEW) and a fresh NEW, parented on that main, replaces it.
+        git reset -q --soft "$NEW" \
+            || die "internal: could not move ${BRANCH} onto the squash commit ${NEW:0:8} — lock released, nothing pushed. Re-run scripts/ship."
         push_rc=0
         push_out="$(_locked_net git push --force-with-lease=main:"$OLD_MAIN" origin "${NEW}:refs/heads/main" 2>&1)" || push_rc=$?
         [[ -n "$push_out" ]] && printf '%s\n' "$push_out"
@@ -2561,22 +2573,22 @@ fi
 if [[ "$RELEASE" == 1 ]]; then
     _release_after_landing
 else
-    # ── 6. reset the feature branch to the freshly-shipped main ─────────────
-    # The squash put this branch's tree onto main as a NEW commit that is not an
-    # ancestor of the branch. Left as-is, the next sync sees the branch's commit
-    # AND main's squashed copy of the same lines as divergent → a phantom
-    # conflict on already-shipped work (the squash re-sync artifact).
-    # Resetting the branch to the shipped main gives it zero divergence, so the next
-    # sync is a clean fast-forward and only GENUINE conflicts (our new work vs a
-    # concurrent main change) ever surface. Safe by construction: everything is
-    # committed + shipped here, so the working tree already equals origin/main and
-    # the reset moves pointers, not files. Guard anyway — never reset over a dirty
-    # tree (it would eat uncommitted work).
+    # ── 6. advance the feature branch to the freshly-shipped main ───────────
+    # The branch already sits on the landed squash commit (the in-lock
+    # `reset --soft "$NEW"` before the push), so it is an ancestor of main
+    # whatever happens here — plain `git branch --merged main` sees it merged.
+    # This step only advances it onto a sibling's later main commit: zero
+    # divergence, so the next sync is a clean fast-forward and only GENUINE
+    # conflicts (our new work vs a concurrent main change) ever surface. Safe
+    # by construction: everything is committed + shipped here, so the working
+    # tree already equals origin/main and the reset moves pointers, not files.
+    # Guard anyway — never reset over a dirty tree (it would eat uncommitted
+    # work); the dirty case just stays on the landed sha.
     if [[ -z "$(git status --porcelain)" ]]; then
         git reset --hard origin/main >/dev/null \
             && say "reset ${BRANCH} → $(git rev-parse --short origin/main) (zero divergence; next sync is a clean ff)"
     else
-        echo "WARNING: worktree dirty after ship — skipping branch reset (run 'git reset --hard origin/main' when clean)."
+        say "worktree dirty after ship — ${BRANCH} already sits on the landed ${LANDED_SHA:0:8} (an ancestor of main); left alone. Run 'git reset --hard origin/main' when clean to advance past it."
     fi
 
     _reap_absorbed_agents

@@ -78,9 +78,13 @@ gate validates, never diagnoses. Claim the fix in `.claude/purpose`, fix every
 named cause in one branch, un-red with `--remote`; it skips the local ruff
 autofix, so run `ruff check` and `ruff format --check` before pushing.
 
-Squash-landing mints a new sha, so ancestry checks lie:
-`git merge-base --is-ancestor <sha> origin/main` is permanently false for a
-landed commit, and `rev-list main..branch` / 3-dot `git diff` over-report.
+Squash-landing mints a new sha, so ancestry checks lie for the commits you
+wrote: `git merge-base --is-ancestor <sha> origin/main` is permanently false
+for them, and `rev-list main..branch` / 3-dot `git diff` over-report. The
+branch NAME is different: ship resets it onto the squash commit before the
+push, so a landed branch is an ancestor of main and plain
+`git branch --merged main` lists it (dirty tree or lost CAS race included).
+A branch not listed there holds unlanded work.
 Feature landed? `git cat-file -e origin/main:<path the commit added>`.
 Branch holds unmerged work? `git log --cherry-pick --right-only --no-merges
 --oneline main...<branch>`; non-zero is a candidate (a multi-commit branch
@@ -93,8 +97,11 @@ branch's tree cannot be entered from another session.
 `scripts/ship` squashes with `git commit-tree` plumbing and CAS-pushes
 (`git push origin <new>:main`) because all worktrees share one `.git/index`;
 a hand-rolled `merge --squash` from two sessions co-mingles staged files.
-While ship runs the tree is not yours: it resets the branch to shipped main
-at the end, destroying edits made meanwhile. The squash re-mints author and
+The squash commit is the branch's own: `reset --soft` onto it just before the
+push, so the branch tip is the landed sha. While ship runs the tree is not
+yours: on a clean tree it then `reset --hard`s the branch to shipped main,
+destroying edits made meanwhile; on a dirty tree it leaves them and the
+branch stays on the landed sha. The squash re-mints author and
 trailers under the shipper's identity, so a builder commit's own author is
 not gated — a Devin-authored commit carrying the required
 Co-Authored-By/session trailer is accepted (Reto, gr514432).
