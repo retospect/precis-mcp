@@ -12,15 +12,33 @@ from __future__ import annotations
 
 import math
 import time
+from dataclasses import replace
+from typing import Any
 
+import numpy as np
 import pytest
 
+import precis.cad.inspect as ci
 from precis.cad.dsl import build_config
 from precis.cad.fold import Expr
 from precis.cad.graph import Design
-from precis.cad.inspect import overlap, probe_solid, ray, section, thickness
+from precis.cad.inspect import (
+    ThicknessSample,
+    _aabb_corners,
+    _column_thickness,
+    _vec3f,
+    cad_field,
+    overlap,
+    probe_solid,
+    ray,
+    ray_field,
+    section,
+    thickness,
+    thickness_field,
+)
+from precis.cad.primitives import Field as FieldPrim
 from precis.cad.scene import build_design, parse_source
-from precis.cad.vec import translation
+from precis.cad.vec import as_vec3, translation
 
 
 def plate_design() -> tuple[Design, Expr]:
@@ -354,6 +372,197 @@ def test_thickness_ball_method_measures_the_inscribed_ball() -> None:
         thickness(
             d, part, origin_m=(0, 0, 0), normal_m=(0, 0, -1), pitch_m=2.0, method="x"
         )
+
+
+def _serial_thickness_samples(
+    d: Design,
+    expr: Expr,
+    *,
+    origin_m: Any,
+    normal_m: Any,
+    pitch_m: float,
+    method: str = "ray",
+    feature: str | None = None,
+    role: str | None = None,
+) -> tuple[ThicknessSample, ...]:
+    """The pre-gr531239 thickness() — one :func:`ray_field` per grid node
+    over the grid ``thickness_field`` builds. The batched march's
+    equivalence oracle: identical node order, rays, runs, filters."""
+    fld = cad_field(d, expr)
+    n = np.asarray(as_vec3(normal_m), dtype=np.float64)
+    n = n / np.linalg.norm(n)
+    ref = np.array([1.0, 0.0, 0.0]) if abs(n[0]) < 0.9 else np.array([0.0, 1.0, 0.0])
+    u = np.cross(n, ref)
+    u = u / np.linalg.norm(u)
+    v = np.cross(n, u)
+    origin = np.asarray(as_vec3(origin_m), dtype=np.float64)
+    lo, hi = fld.aabb
+    rel = np.array(_aabb_corners(lo, hi)) - origin
+    us, vs, ws = rel @ u, rel @ v, rel @ n
+    u0 = float(us.min()) - pitch_m
+    u1 = float(us.max()) + pitch_m
+    v0 = float(vs.min()) - pitch_m
+    v1 = float(vs.max()) + pitch_m
+    span = float(ws.max() - ws.min()) + 2.0 * pitch_m
+    nu = max(math.ceil((u1 - u0) / pitch_m) + 1, 2)
+    nv = max(math.ceil((v1 - v0) / pitch_m) + 1, 2)
+    out: list[ThicknessSample] = []
+    for gvy in v0 + (np.arange(nv) + 0.5) * pitch_m:
+        for gux in u0 + (np.arange(nu) + 0.5) * pitch_m:
+            p = origin + gux * u + gvy * v
+            r = ray_field(
+                fld,
+                origin_m=_vec3f(p + n * pitch_m),
+                axis_m=_vec3f(-n),
+                t_max_m=span + 2.0 * pitch_m,
+                feature=feature,
+                role=role,
+            )
+            if not r.hits:
+                continue
+            h = r.hits[0]
+            out.append(
+                ThicknessSample(
+                    position_m=_vec3f(p),
+                    thickness_m=_column_thickness(fld, h, method),
+                    entry_features=h.entry_features,
+                    exit_features=h.exit_features,
+                )
+            )
+    return tuple(out)
+
+
+def field_design() -> tuple[Design, Expr]:
+    """A field-backed design: one sampled-SDF leaf (the trilinear
+    ``distance_np`` evaluator gr531239's cost complaint targets) — a
+    ball of radius 4 sampled on a 0.5-pitch grid."""
+    pitch = 0.5
+    origin = np.array([-6.0, -6.0, -5.0])
+    pts = np.indices((24, 24, 24)).transpose(1, 2, 3, 0) * pitch + origin
+    grid = (np.linalg.norm(pts, axis=-1) - 4.0).astype(np.float32)
+    d = Design()
+    body = d.prim("body", FieldPrim(grid=grid, pitch=pitch, origin=origin))
+    return d, body
+
+
+def test_thickness_batched_march_matches_the_per_node_path(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """gr531239: the batched grid march reports the same samples as one
+    ray_field per node — positions, columns and attribution identical."""
+    d, part = boss_plate_design()
+    kw: dict[str, Any] = {
+        "origin_m": (0, 0, 0),
+        "normal_m": (0, 0, -1),
+        "pitch_m": 2.0,
+    }
+    serial = _serial_thickness_samples(d, part, **kw)
+    assert thickness(d, part, nominal_m=10.0, **kw).samples == serial
+    # a tiny march chunk exercises the multi-chunk c0 offsets — every
+    # comparison below runs chunked
+    monkeypatch.setattr(ci, "_RAY_MARCH_CHUNK", 7)
+    assert thickness(d, part, nominal_m=10.0, **kw).samples == serial
+    # multi-run rays (the bore void splits the column into two runs) and
+    # the feature filter's first-matching-run pick
+    d2, hub = tube_design()
+    kw2: dict[str, Any] = {
+        "origin_m": (24, 0, 0),
+        "normal_m": (1, 0, 0),
+        "pitch_m": 2.0,
+    }
+    assert thickness(d2, hub, **kw2).samples == _serial_thickness_samples(
+        d2, hub, **kw2
+    )
+    assert thickness(
+        d2, hub, feature="bore", **kw2
+    ).samples == _serial_thickness_samples(d2, hub, feature="bore", **kw2)
+    # a sampled-field leaf: the trilinear distance_np path
+    d3, body = field_design()
+    kw3: dict[str, Any] = {
+        "origin_m": (0, 0, -10),
+        "normal_m": (0, 0, -1),
+        "pitch_m": 1.0,
+    }
+    assert thickness(d3, body, **kw3).samples == _serial_thickness_samples(
+        d3, body, **kw3
+    )
+
+
+def test_thickness_evaluates_the_field_once_per_march_round(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """gr531239 timing-free check: every ``fld.sdf`` call lands in one of
+    four buckets — the per-batch init row, one call per march round, one
+    per bisection round inside a crossing episode (≤ 64 rounds each), or
+    the single batched crossing-normals call. Never one call per node."""
+    d, part = boss_plate_design()
+    fld = cad_field(d, part)
+    calls = {"total": 0, "bisect": 0, "normals": 0, "episodes": 0, "marches": 0}
+    in_bisect = False
+    in_normals = False
+
+    def counting(pts: np.ndarray) -> np.ndarray:
+        calls["total"] += 1
+        if in_bisect:
+            calls["bisect"] += 1
+        if in_normals:
+            calls["normals"] += 1
+        return fld.sdf(pts)
+
+    real_bisect, real_normals, real_march = (
+        ci._bisect_np,
+        ci._normals_np,
+        ci._march_rays,
+    )
+
+    def wrapped_bisect(*a: Any, **kw: Any) -> np.ndarray:
+        nonlocal in_bisect
+        calls["episodes"] += 1
+        in_bisect = True
+        try:
+            return real_bisect(*a, **kw)
+        finally:
+            in_bisect = False
+
+    def wrapped_normals(*a: Any, **kw: Any) -> np.ndarray:
+        nonlocal in_normals
+        in_normals = True
+        try:
+            return real_normals(*a, **kw)
+        finally:
+            in_normals = False
+
+    def wrapped_march(*a: Any, **kw: Any) -> Any:
+        calls["marches"] += 1
+        return real_march(*a, **kw)
+
+    monkeypatch.setattr(ci, "_bisect_np", wrapped_bisect)
+    monkeypatch.setattr(ci, "_normals_np", wrapped_normals)
+    monkeypatch.setattr(ci, "_march_rays", wrapped_march)
+    t = thickness_field(
+        replace(fld, sdf=counting),
+        origin_m=(0, 0, 0),
+        normal_m=(0, 0, -1),
+        pitch_m=2.0,
+    )
+    assert t.samples
+    # each march's first call is its init row; the rest are march rounds
+    march_rounds = (
+        calls["total"] - calls["bisect"] - calls["normals"] - calls["marches"]
+    )
+    # at most one batched normals call per march batch
+    assert calls["normals"] <= calls["marches"]
+    assert calls["bisect"] <= 64 * calls["episodes"]
+    # exact decomposition: init + march rounds + bisection rounds + normals
+    assert calls["total"] == (
+        calls["marches"] + march_rounds + calls["bisect"] + calls["normals"]
+    )
+    # measured on this fixture: 182 calls = 1 init + 154 march rounds
+    # + 26 bisection rounds (11 episodes) + 1 normals — the per-node path
+    # would march each of the 484 nodes separately
+    assert calls["total"] <= (
+        calls["marches"] + march_rounds + 64 * calls["episodes"] + calls["normals"]
+    )
 
 
 def test_ray_tangent_slide_gives_up_instead_of_crawling() -> None:

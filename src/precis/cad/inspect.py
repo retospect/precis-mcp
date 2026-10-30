@@ -323,6 +323,13 @@ def cad_field(design: Design, expr: Expr) -> Field:
 
 def _normal_at(fld: Field, p: np.ndarray, eps: float) -> np.ndarray:
     """Central-difference gradient of the SDF — the surface normal."""
+    return _normals_np(fld, np.broadcast_to(p, (1, 3)), eps)[0]
+
+
+def _normals_np(fld: Field, pts: np.ndarray, eps: float) -> np.ndarray:
+    """``(m, 3)`` central-difference gradients of the SDF — :func:`_normal_at`
+    for every crossing point in one ``fld.sdf`` call (same 6-tap stencil
+    per point, so the vectors are identical)."""
     offsets = np.array(
         [
             [eps, 0, 0],
@@ -333,12 +340,13 @@ def _normal_at(fld: Field, p: np.ndarray, eps: float) -> np.ndarray:
             [0, 0, -eps],
         ]
     )
-    g = fld.sdf(np.broadcast_to(p, (6, 3)) + offsets)
-    n = np.array([g[0] - g[1], g[2] - g[3], g[4] - g[5]])
-    norm = float(np.linalg.norm(n))
-    if norm < 1e-30:
-        return np.zeros(3)
-    return n / norm
+    g = fld.sdf((pts[:, None, :] + offsets[None, :, :]).reshape(-1, 3)).reshape(-1, 6)
+    n = np.stack([g[:, 0] - g[:, 1], g[:, 2] - g[:, 3], g[:, 4] - g[:, 5]], axis=1)
+    norm = np.linalg.norm(n, axis=1)
+    out = np.zeros_like(n)
+    ok = norm >= 1e-30
+    out[ok] = n[ok] / norm[ok, None]
+    return out
 
 
 def ray(
@@ -980,6 +988,111 @@ def _column_thickness(fld: Field, hit: RayHit, method: str) -> float:
     return _ball_thickness(fld, hit.entry_m, hit.entry_normal_m)
 
 
+#: Rays marched per batch in :func:`thickness_field` (gr531239) — bounds
+#: the temporary ``(n, 3)`` arrays on big maps; each batch is one
+#: ``fld.sdf`` call per march round regardless of its node count.
+_RAY_MARCH_CHUNK = 16384
+
+
+def _bisect_np(
+    fld: Field,
+    origins: np.ndarray,
+    d: np.ndarray,
+    ta: np.ndarray,
+    tb: np.ndarray,
+    want_inside: bool,
+    eps: float,
+) -> np.ndarray:
+    """The :func:`ray_field` bracket bisection for a subset of rays at
+    once — one ``fld.sdf`` call per bisection round. ``tb`` starts on the
+    wanted side; each ray iterates until its own bracket closes to
+    ``eps`` (max 64 rounds), so the returned ``tb`` array is what the
+    scalar loop would return ray by ray."""
+    ta = ta.copy()
+    tb = tb.copy()
+    open_ = np.abs(tb - ta) > eps
+    for _ in range(64):
+        if not open_.any():
+            break
+        idx = np.flatnonzero(open_)
+        tm = 0.5 * (ta[idx] + tb[idx])
+        vm = fld.sdf(origins[idx] + tm[:, None] * d[None, :])
+        on_side = (vm < 0.0) == want_inside
+        tb[idx[on_side]] = tm[on_side]
+        ta[idx[~on_side]] = tm[~on_side]
+        open_[idx] = np.abs(tb[idx] - ta[idx]) > eps
+    return tb
+
+
+def _march_rays(
+    fld: Field,
+    origins: np.ndarray,
+    d: np.ndarray,
+    t_max: float,
+    eps: float,
+) -> list[list[tuple[float, float, bool]]]:
+    """:func:`ray_field`'s sphere-trace for N parallel rays at once
+    (gr531239): every ray shares the unit axis ``d`` and ``t_max``; one
+    ``fld.sdf`` call per march round evaluates every still-marching ray,
+    and each round's crossing brackets bisect in one batched loop. The
+    per-ray state (inside flag, span start, tangent-slide counter) and
+    the crossing/step decisions are the scalar loop's, so the run lists
+    ``[(t_in, t_out, open)]`` — one per origin, ``open`` marking a run
+    still inside at ``t_max`` — are identical to marching each origin on
+    its own."""
+    min_step = 4.0 * eps
+    n_rays = len(origins)
+    t = np.zeros(n_rays)
+    t_prev = np.zeros(n_rays)
+    inside = fld.sdf(origins) < 0.0
+    span_start = np.where(inside, 0.0, np.nan)
+    stuck = np.zeros(n_rays, dtype=np.int64)
+    active = np.ones(n_rays, dtype=bool)
+    runs: list[list[tuple[float, float, bool]]] = [[] for _ in range(n_rays)]
+
+    for _ in range(100_000):
+        idx = np.flatnonzero(active)
+        if idx.size == 0:
+            break
+        v = fld.sdf(origins[idx] + t[idx, None] * d[None, :])
+
+        enter = (v < 0.0) & ~inside[idx]
+        exit_ = (v > 0.0) & inside[idx]
+        step = ~(enter | exit_)
+        if enter.any():
+            sub = idx[enter]
+            t_in = _bisect_np(fld, origins[sub], d, t_prev[sub], t[sub], True, eps)
+            span_start[sub] = t_in
+            inside[sub] = True
+            t[sub] = t_in + min_step
+            t_prev[sub] = t[sub]
+        if exit_.any():
+            sub = idx[exit_]
+            t_out = _bisect_np(fld, origins[sub], d, t_prev[sub], t[sub], False, eps)
+            for k, s in enumerate(sub.tolist()):
+                runs[s].append((float(span_start[s]), float(t_out[k]), False))
+            inside[sub] = False
+            t[sub] = t_out + min_step
+            t_prev[sub] = t[sub]
+        if step.any():
+            sub = idx[step]
+            t_prev[sub] = t[sub]
+            stride = np.maximum(np.abs(v[step]), min_step)
+            creep = stride <= min_step
+            stuck[sub] = np.where(creep, stuck[sub] + 1, 0)
+            # a bailed ray stops before advancing, like the scalar break;
+            # the rest advance and check t_max after the step
+            dead = creep & (stuck[sub] > 64)
+            adv = sub[~dead]
+            t[adv] += stride[~dead]
+            active[sub[dead]] = False
+            active[adv[t[adv] > t_max]] = False
+
+    for i in np.flatnonzero(inside).tolist():
+        runs[i].append((float(span_start[i]), float(t_max), True))
+    return runs
+
+
 def thickness(
     design: Design,
     expr: Expr,
@@ -1027,11 +1140,13 @@ def thickness_field(
     freezes mass behind it and can sink the cosmetic face opposite;
     :meth:`ThicknessInspection.sink_risks` flags them.
 
-    This is the family's expensive probe — one :func:`ray` per grid node.
-    Keep ``pitch_m`` at wall scale (1–2 mm), not section scale. With
-    ``feature=``/``role=`` the column is the first *matching* run (the
-    filters pass through to :func:`ray`), so ``feature='boss-1'`` maps
-    only the columns behind ``boss-1``.
+    The node rays march in lockstep through the vector evaluator — one
+    ``fld.sdf`` call per march round for the whole batch, not one ray
+    per node (gr531239) — so the map's cost tracks the longest ray, not
+    the node count. Keep ``pitch_m`` at wall scale (1–2 mm), not section
+    scale. With ``feature=``/``role=`` the column is the first *matching*
+    run (the same filters :func:`ray` applies), so ``feature='boss-1'``
+    maps only the columns behind ``boss-1``.
 
     ``method='ray'`` (default) reports the material column — the run's
     length, the thermal-mass view behind sink marks. ``method='ball'``
@@ -1076,24 +1191,76 @@ def thickness_field(
     grid_u = u0 + (np.arange(nu) + 0.5) * pitch_m
     grid_v = v0 + (np.arange(nv) + 0.5) * pitch_m
 
+    # node order stays gv-outer/gu-inner — the old per-node loop's order.
+    gu = np.broadcast_to(grid_u[None, :], (nv, nu)).ravel()
+    gv = np.broadcast_to(grid_v[:, None], (nv, nu)).ravel()
+    plane_pts = origin[None, :] + gu[:, None] * u[None, :] + gv[:, None] * v[None, :]
+    origins = plane_pts + n[None, :] * pitch_m
+    d = -n / np.linalg.norm(n)
+    diag = float(np.linalg.norm(np.asarray(hi) - np.asarray(lo)))
+    t_max = span + 2.0 * pitch_m
+    eps = LINEAR_REL_EPS * max(diag, t_max, 1e-3)
+
     samples: list[ThicknessSample] = []
-    for gv in grid_v:
-        for gu in grid_u:
-            p = origin + gu * u + gv * v
-            r = ray_field(
-                fld,
-                origin_m=_vec3f(p + n * pitch_m),
-                axis_m=_vec3f(-n),
-                t_max_m=span + 2.0 * pitch_m,
-                feature=feature,
-                role=role,
-            )
-            if not r.hits:
+    for c0 in range(0, len(origins), _RAY_MARCH_CHUNK):
+        c1 = min(c0 + _RAY_MARCH_CHUNK, len(origins))
+        corigins = origins[c0:c1]
+        runs = _march_rays(fld, corigins, d, t_max, eps)
+        # every crossing of the batch at once → all normals in one call
+        cross_pts = [
+            corigins[i] + tt * d
+            for i, rlist in enumerate(runs)
+            for t_in, t_out, open_ in rlist
+            for tt in ((t_in,) if open_ else (t_in, t_out))
+        ]
+        nrms = (
+            _normals_np(fld, np.stack(cross_pts), eps)
+            if cross_pts
+            else np.zeros((0, 3))
+        )
+        k = 0
+        for i, rlist in enumerate(runs):
+            hits: list[RayHit] = []
+            for t_in, t_out, open_ in rlist:
+                entry = cross_pts[k]
+                n_e = nrms[k]
+                k += 1
+                if open_:
+                    hits.append(
+                        RayHit(
+                            float(t_in),
+                            float(t_out),
+                            _vec3f(entry),
+                            _vec3f(corigins[i] + t_out * d),
+                            _vec3f(n_e),
+                            (0.0, 0.0, 0.0),
+                            entry_features=fld.features_at(entry, n_e, eps),
+                        )
+                    )
+                    continue
+                exit_ = cross_pts[k]
+                n_x = nrms[k]
+                k += 1
+                hits.append(
+                    RayHit(
+                        float(t_in),
+                        float(t_out),
+                        _vec3f(entry),
+                        _vec3f(exit_),
+                        _vec3f(n_e),
+                        _vec3f(n_x),
+                        entry_features=fld.features_at(entry, n_e, eps),
+                        exit_features=fld.features_at(exit_, n_x, eps),
+                    )
+                )
+            if feature is not None or role is not None:
+                hits = [h for h in hits if h.involves(feature=feature, role=role)]
+            if not hits:
                 continue
-            h = r.hits[0]
+            h = hits[0]
             samples.append(
                 ThicknessSample(
-                    position_m=_vec3f(p),
+                    position_m=_vec3f(plane_pts[c0 + i]),
                     thickness_m=_column_thickness(fld, h, method),
                     entry_features=h.entry_features,
                     exit_features=h.exit_features,
