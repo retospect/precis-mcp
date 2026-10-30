@@ -85,7 +85,7 @@ Stop and ask before:
 Stop and ask before:
 
 - Truncating or rewriting any user-owned data file (`~/work/corpus/`, <!-- home-path: allow — user-owned data dirs -->
-  `~/work/new_papers/`, anything under `~/.acatome/`). The agent's
+  anything under `~/.acatome/`). The agent's
   filesystem mutations are a one-way trip.
 - Wiping the production DB. Even on the user's confirmation: print
   the row counts you are about to destroy, wait for explicit go.
