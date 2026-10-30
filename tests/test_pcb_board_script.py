@@ -576,7 +576,44 @@ def test_epro_rules_survive_script_roundtrip(store) -> None:
     The rules that still have no binding (RULE_SELECTOR assignments,
     unmapped categories, the passthrough board records) are reported as
     ``# not mapped:`` instead of silently dropped."""
-    pcb_epro.import_epro(store, _rules_board(), slug="epro-rules-bs", title="Rules")
+    imported = pcb_epro.import_epro(
+        store, _rules_board(), slug="epro-rules-bs", title="Rules"
+    )
+    # gr520810: an imported board's pins arrive unclassified and the
+    # emitted script's ``tie()`` refuses them — ``op='pins'`` is the
+    # classify-first door for a legacy board.
+    store.pcb_patch_pins(
+        imported.ref_id,
+        "R1",
+        [
+            {
+                "name": "1",
+                "etype": "passive",
+                "fmax_hz": 0.0,
+                "assume": "epro import",
+            }
+        ],
+    )
+    store.pcb_patch_pins(
+        imported.ref_id,
+        "U1",
+        [
+            {
+                "name": "VDD",
+                "etype": "power_in",
+                "max_current_a": 0.1,
+                "max_voltage_v": 5.0,
+                "assume": "epro import",
+            },
+            {
+                "name": "GND",
+                "etype": "power_in",
+                "max_current_a": 0.1,
+                "max_voltage_v": 5.0,
+                "assume": "epro import",
+            },
+        ],
+    )
     batch, _annotations = board_batch(store, "epro-rules-bs")
 
     assert batch["net_classes"]["Default"]["track_width_mm"] == pytest.approx(

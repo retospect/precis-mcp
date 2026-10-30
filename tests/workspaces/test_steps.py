@@ -750,6 +750,12 @@ def board(n: int) -> Any:
     for i in range(n):
         r = b.part(f"R{i + 1}", footprint=fp, value="10k", lcsc=f"C{1000 + i}")
         r["1"].tag("sig").must_terminate()
+        r["1"].etype(
+            "power_in", max_current_a=0.001, max_voltage_v=3.3, assume="3v3 via 10k"
+        )
+        r["2"].etype(
+            "power_in", max_current_a=0.001, max_voltage_v=3.3, assume="gnd return"
+        )
         vcc.tie(r["1"])
         gnd.tie(r["2"], note="return")
         r.at(5.0 * i, 2.0)

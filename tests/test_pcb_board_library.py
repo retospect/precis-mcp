@@ -24,7 +24,18 @@ def _batch() -> dict[str, Any]:
                 "refdes": "J1",
                 "part": "C123",
                 "footprint": "Connector-2",
-                "pins": [{"name": "1"}, {"name": "2"}],
+                "pins": [
+                    {
+                        "name": "1",
+                        "etype": "power_in",
+                        "meta": {
+                            "max_current_a": 0.1,
+                            "max_voltage_v": 5.0,
+                            "assume": "gnd pin",
+                        },
+                    },
+                    {"name": "2"},
+                ],
             }
         ],
         "nets": [{"name": "GND"}],

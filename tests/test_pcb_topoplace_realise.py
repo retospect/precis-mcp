@@ -484,9 +484,13 @@ def test_widen_follows_estimated_current_end_to_end() -> None:
     f = b.footprint(fp)
     g1 = b.part("G1", footprint=f, pins=["1", "2"]).at(8.0, 5.0)
     g2 = b.part("G2", footprint=f, pins=["1", "2"]).at(22.0, 5.0)
+    for g in (g1["2"], g2["1"]):
+        g.etype("power_in", max_current_a=1.5, max_voltage_v=5.0, assume="gnd rail")
     b.net("GND", cls="gnd", current=1.5).tie(g1["2"], g2["1"])
     s1 = b.part("S1", footprint=f, pins=["1", "2"]).at(5.0, 8.5)
     s2 = b.part("S2", footprint=f, pins=["1", "2"]).at(15.0, 8.5)
+    s1["2"].etype("bidi", fmax_hz=0.0, assume="sig end")
+    s2["1"].etype("bidi", fmax_hz=0.0, assume="sig end")
     b.net("SIG", current=0.001).tie(s1["2"], s2["1"])
 
     design = kernel._design(b, None)
@@ -1095,6 +1099,8 @@ def test_forced_crossing_board_commits_no_track_short() -> None:
     a2 = b.part("A2", footprint=f, pins=["1", "2"]).at(25.0, 17.0)
     b1 = b.part("B1", footprint=f, pins=["1", "2"]).at(5.0, 17.0)
     b2 = b.part("B2", footprint=f, pins=["1", "2"]).at(25.0, 3.0)
+    for part, num in ((a1, "2"), (a2, "1"), (b1, "2"), (b2, "1")):
+        part[num].etype("bidi", fmax_hz=0.0, assume="wire end")
     b.wire(a1["2"], a2["1"], name="NA")
     b.wire(b1["2"], b2["1"], name="NB")
 
@@ -1438,6 +1444,15 @@ def test_spoke_offsets_fan_shared_gap_and_shared_corner() -> None:
     c1 = b.part("C1", footprint=f, pins=["1", "2"]).at(22.0, 17.0)
     c2 = b.part("C2", footprint=f, pins=["1", "2"]).at(22.0, 15.0)
     c3 = b.part("C3", footprint=f, pins=["1", "2"]).at(22.0, 13.0)
+    for part, num in (
+        (a1, "2"),
+        (a2, "2"),
+        (a3, "2"),
+        (c1, "1"),
+        (c2, "1"),
+        (c3, "1"),
+    ):
+        part[num].etype("bidi", fmax_hz=0.0, assume="slit wire end")
     b.wire(a1["2"], c3["1"], name="N1")
     b.wire(a2["2"], c2["1"], name="N2")
     b.wire(a3["2"], c1["1"], name="N3")
@@ -1607,6 +1622,8 @@ def _slit_board(pairs):
     src = {"A1": a1, "A2": a2, "A3": a3}
     dst = {"C1": c1, "C2": c2, "C3": c3}
     for k, (pa, pc) in enumerate(pairs):
+        src[pa]["2"].etype("bidi", fmax_hz=0.0, assume="slit wire end")
+        dst[pc]["1"].etype("bidi", fmax_hz=0.0, assume="slit wire end")
         b.wire(src[pa]["2"], dst[pc]["1"], name=f"N{k + 1}")
     return b
 

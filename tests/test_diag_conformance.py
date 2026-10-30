@@ -250,6 +250,8 @@ def _pcb_board() -> Any:
     b.part("U3").declare(1, 2, 3)
     led = b.part("LED1")
     led.declare(1, 2)
+    led[1].etype("passive", fmax_hz=0.0, assume="led anode")
+    led[2].etype("passive", fmax_hz=0.0, assume="led cathode")
     b.net("LED_A").tie(led[1])
     b.net("LED_K").tie(led[2])
     return b

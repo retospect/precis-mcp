@@ -25,7 +25,27 @@ def _batch() -> dict[str, Any]:
     ):
         component: dict[str, Any] = {
             "refdes": refdes,
-            "pins": [{"name": "1"}, {"name": "2"}, {"name": "3"}],
+            "pins": [
+                {
+                    "name": "1",
+                    "etype": "bidi",
+                    "meta": {"fmax_hz": 0.0, "assume": "signal pin"},
+                },
+                {
+                    "name": "2",
+                    "etype": "power_in",
+                    "meta": {
+                        "max_current_a": 0.1,
+                        "max_voltage_v": 5.0,
+                        "assume": "gnd pin",
+                    },
+                },
+                {
+                    "name": "3",
+                    "etype": "bidi",
+                    "meta": {"fmax_hz": 0.0, "assume": "signal pin"},
+                },
+            ],
             "part_meta": {"source_document": "fixture"},
             "note": f"source part {refdes}",
         }

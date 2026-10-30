@@ -34,6 +34,9 @@ def _demo_board() -> Any:
     r1.declare(1, 2)
     led = b.part("LED1")
     led.declare(1, 2)
+    led[1].etype("passive", fmax_hz=0.0, assume="led anode")
+    led[2].etype("passive", fmax_hz=0.0, assume="led cathode")
+    r1[1].etype("passive", fmax_hz=0.0, assume="resistor")
     b.net("LED_A").tie(led[1], r1[1])
     b.net("LED_K").tie(led[2])
     b.net("VCC")
@@ -54,6 +57,7 @@ def test_pads_of_returns_the_pad_count_with_handle_ids(
 def test_pads_of_includes_connection_minted_ghost_pins() -> None:
     b = _demo_board()
     u3 = b.part("U4")  # no declared pins at all
+    u3[7].etype("power_in", max_current_a=0.1, max_voltage_v=3.3, assume="gnd pin")
     b.net("GND").tie(u3[7])
     result = local.probe(b, "pads_of(U4)")  # bare refdes spelling too
     assert result["count"] == 1

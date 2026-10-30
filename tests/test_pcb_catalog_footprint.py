@@ -238,6 +238,10 @@ def _pinned_board(tmp_path: Path) -> tuple[pcb.Board, dict[str, Any]]:
     reference = pcb.catalog_part("C123", cache, sha256=_digest(row))
     board = pcb.Board("pinned", outline=pcb.rect(20.0, 20.0))
     part = board.part("U1", part=reference, pins=["SIG", "GND"]).at(5.0, 5.0)
+    part["SIG"].etype("bidi", fmax_hz=0.0, assume="sig pin")
+    part["GND"].etype(
+        "power_in", max_current_a=0.1, max_voltage_v=5.0, assume="gnd pin"
+    )
     board.net("SIG").tie(part["SIG"])
     board.net("GND").tie(part["GND"])
     return board, row
