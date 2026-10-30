@@ -92,7 +92,13 @@ from precis.ingest.cards import rewrite_cards
 from precis.ingest.text_chunker import CHUNKER_VERSION as _PAPER_CHUNKER_VERSION
 from precis.protocol import ArgsSpec, Handler, KindSpec
 from precis.response import Response
-from precis.store import SEMANTIC_DISTANCE_FLOOR, Ref, Store, Tag
+from precis.store import (
+    SEMANTIC_DISTANCE_FLOOR,
+    SEMANTIC_ONLY_FOLD_DISTANCE,
+    Ref,
+    Store,
+    Tag,
+)
 from precis.store._body_predicate import has_body_sql
 from precis.store._chunks_ops import _year_range_clauses
 from precis.store._identifiers_ops import (
@@ -3618,6 +3624,9 @@ class PaperHandler(Handler):
             tags=normalized_tags,
             limit=page_size,
             max_distance=SEMANTIC_DISTANCE_FLOOR,
+            # gr514956: per-kind hard cut on uncorroborated semantic hits,
+            # cross-kind stream only (no fold renderer here).
+            semantic_only_max_distance=SEMANTIC_ONLY_FOLD_DISTANCE.get(self.spec.kind),
             exclude_ref_ids=sorted(resolved_exclude_ref_ids) or None,
             include_ref_ids=include_ref_ids,
             card_kinds=("card_combined",),

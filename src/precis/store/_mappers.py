@@ -161,15 +161,42 @@ SEMANTIC_ONLY_DISTANCE_FLOOR = 0.45
 # stays reachable behind the page's ``more(cursor=…)`` continuation —
 # while the automatic recall path (``view='index'``, cross-kind
 # ``search_hits`` streams) applies the same value as a hard
-# ``semantic_only_max_distance`` cut. Kinds absent from the table never
-# fold.
+# ``semantic_only_max_distance`` cut. Kinds absent from the table (the
+# default: no floor) never fold or cut.
 #
-# Calibrated on prod distances 2026-10-25 (the measurement on gr514956):
-# memory body-chunk hits split cleanly at 0.42 — relevant chunks landed
-# ≤0.38, noise ≥0.41 — while paper relevant (.13–.63) overlaps paper
-# noise (.29–.45), so no single value separates papers and every other
-# kind stays unmeasured. Add a kind only with a fresh prod measurement.
-SEMANTIC_ONLY_FOLD_DISTANCE: dict[str, float] = {"memory": 0.42}
+# Reto ruling 2026-10-29: per-kind floors, memory 0.42 stays, extended to
+# paper, patent and web. Only memory renders a fold; paper, patent and web
+# apply their value as the hard cut on their cross-kind ``search_hits``
+# stream (their single-kind rendered search is unchanged). Hybrid mode only:
+# ``mode='semantic'`` / ``'lexical'`` never cut.
+#
+# Calibration: bge-m3 cosine distance on prod, read-only, 2026-10-25
+# (memory, gripe, short paper queries) and 2026-10-30 (the rest). No
+# embedder is reachable from SQL, so "queries" are STORED chunk embeddings
+# rather than free text; real queries sit farther from their targets, so
+# the relevant distances below are a lower bound. Relevant = nearest body
+# chunk of the source ref; noise = top-10 body chunks of other refs of the
+# same kind (some legitimately on-topic).
+#   kind    query sample                   rel p50/p90/max  noise p10/p50/p90  floor
+#   memory  card_combined, n=60            .33/.40/.50      .34/.41/.46        0.42
+#           (+30 long, 10-25: rel max .38, noise min .41)
+#   paper   card_title, n=40               .25/.30/.42      .30/.35/.41        0.55
+#           (+21 short 1-3 word, 10-25: rel p90 .44, max .63)
+#   patent  patent_section, n=100          .14/.28/.42      .28/.35/.41        0.50
+#   web     paragraph >200 chars, n=100    .29/.92/.94      .37/.45/.92        0.55
+# Paper and web show no clean separation (noise overlaps relevant), so
+# their floors sit just under the 0.65 corpus floor: in these samples they
+# lose 0-5% of relevant hits and trim only the weakest uncorroborated tail.
+# Web is bimodal: about a quarter of sampled chunks have no neighbour
+# closer than 0.9, which the 0.65 corpus floor already removes. Re-measure
+# with free-text queries once an embedder is reachable. Add a kind only
+# with a fresh prod measurement.
+SEMANTIC_ONLY_FOLD_DISTANCE: dict[str, float] = {
+    "memory": 0.42,
+    "paper": 0.55,
+    "patent": 0.50,
+    "web": 0.55,
+}
 
 
 # Search-time noise filters. Two predicates wrap every block-search

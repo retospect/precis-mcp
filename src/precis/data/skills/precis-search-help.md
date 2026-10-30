@@ -350,12 +350,19 @@ result ends with a count and a targeted alternative:
 
 All-weak results say `no strong match` ahead of the same line. A
 partial-term (OR) lexical match counts as corroboration, so a long query is
-never judged on distance alone. Only `memory` has a measured cut
-(gr514956, prod 2026-10-25); other kinds list all hits until measured.
+never judged on distance alone. Only `memory` renders the omission line
+(gr514956, prod 2026-10-25); other kinds list all hits in their own
+search.
 
 `search(kind='memory', view='index')` (the session-start recall shape)
-applies 0.42 as a hard cut with no hint. `mode='semantic'` uses the same
-omission rule.
+applies 0.42 as a hard cut with no hint. The omission applies to the
+default hybrid mode only: `mode='semantic'` and `mode='lexical'` never
+omit, so a semantic search lists everything within the 0.65 corpus floor.
+
+Cross-kind search (`kind='*'` or a kind list) applies a measured per-kind
+cut to uncorroborated semantic hits: memory 0.42, paper 0.55, patent 0.50,
+web 0.55, in hybrid mode only. Other kinds are not cut, and the single-kind
+`search(kind='paper'|'patent'|'web', ...)` does not apply these cuts.
 
 ## Filter search results by tag
 ## Find refs tagged with topic:X

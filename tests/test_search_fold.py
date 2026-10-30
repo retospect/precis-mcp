@@ -166,7 +166,7 @@ def test_index_view_hard_cuts_without_hint(store: Store) -> None:
 
 
 def test_gripe_never_cuts(store: Store) -> None:
-    assert SEMANTIC_ONLY_FOLD_DISTANCE == {"memory": 0.42}
+    assert "gripe" not in SEMANTIC_ONLY_FOLD_DISTANCE
     dim = store.embedding_dim()
     q_vec = _unit_vec(dim, [(0, 1.0)])
     gh = GripeHandler(hub=Hub(store=store, embedder=_FixedEmbedder(q_vec)))
