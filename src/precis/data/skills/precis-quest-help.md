@@ -169,7 +169,11 @@ get(kind="quest", id=7, view="leaderboard")  # ranked servers by deeds contribut
 get(kind="quest", id=7, view="results")  # lineage-ordered results table (all bands)
 get(kind="quest", id=7, view="series")  # controlled series: one axis varied per block
 get(kind="quest", id=7, view="measures")  # best live measured value per measurand
-get(kind="quest", id=7, view="logbook")  # the FULL lab notebook, every entry
+get(kind="quest", id=7, view="logbook")  # lab notebook — newest 50 entries + next: older page
+get(
+    kind="quest", id=7, view="logbook",
+    args={"since": "7d", "limit": 20}
+)  # bounded window: ISO or relative ('7d','12h','2w') since=/until=, entry limit
 get(kind="quest", id=7, view="pourbaix")  # per-candidate surface-Pourbaix validity maps
 get(
     kind="quest", id=7, view="log"
@@ -192,8 +196,11 @@ per group, see
 `measures`) are in the next section.
 A *deed* is not a view — it is the milestone-typed slice of the log. Bare
 `get(id=N)` digests the logbook **tail** (last 10 entries, cheap even on a
-quest with thousands); `view='logbook'` is the complete append-only
-notebook; `view='log'` is the raw ref-events ledger, a different
+quest with thousands); `view='logbook'` is the append-only
+notebook paged newest-first (default `limit` 50 — `args={'since': '7d',
+'until': '2026-10-01', 'limit': 100}` bounds the window, and each page's
+`next:` names the call for the older page); `view='log'` is the raw
+ref-events ledger, a different
 (generic) thing.
 `view='status'` is the one-line lifecycle read (striving status · priority ·
 horizon) for "is this quest still live"; `view='rubric'` prints just the

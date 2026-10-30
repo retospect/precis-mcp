@@ -29,6 +29,28 @@ def _created_id(resp: Any) -> int:
     return int(m.group(1))
 
 
+def _stamp_entries(store: Any, qid: int, days_ago: list[float]) -> list[Any]:
+    """Set each quest_log chunk's ``created_at`` to ``days_ago`` days in the
+    past, oldest→newest in list order; return the applied datetimes."""
+    from datetime import UTC, datetime, timedelta
+
+    with store.pool.connection() as conn:
+        ids = [
+            r[0]
+            for r in conn.execute(
+                "SELECT chunk_id FROM chunks WHERE ref_id=%s "
+                "AND chunk_kind='quest_log' ORDER BY chunk_id",
+                (qid,),
+            ).fetchall()
+        ]
+        now = datetime.now(UTC)
+        times = [now - timedelta(days=d) for d in days_ago]
+        for cid, ts in zip(ids, times):
+            conn.execute("UPDATE chunks SET created_at=%s WHERE chunk_id=%s", (ts, cid))
+        conn.commit()
+    return times
+
+
 class TestQuestCreate:
     def test_put_creates_striving_with_card_and_active_status(self, store: Any) -> None:
         h = _handler(store)
@@ -92,6 +114,97 @@ class TestLogbook:
         full = h.get(id=qid, view="logbook").body
         assert "entry number 0" in full
         assert "entry number 13" in full
+
+    def test_logbook_entries_carry_utc_z_stamps(self, store: Any) -> None:
+        h = _handler(store)
+        qid = _created_id(h.put(text="Stamps on the lab notebook"))
+        h.put(id=qid, text="stamped", entry="note")
+        body = h.get(id=qid, view="logbook").body
+        assert re.search(r"### note · \d{4}-\d{2}-\d{2} \d{2}:\d{2}Z", body)
+
+    def test_logbook_since_limits_the_window(self, store: Any) -> None:
+        h = _handler(store)
+        qid = _created_id(h.put(text="A windowed lab notebook"))
+        for i in range(6):
+            h.put(id=qid, text=f"entry number {i}", entry="note")
+        times = _stamp_entries(store, qid, [10, 8, 6, 4, 2, 1])
+
+        # relative bound: '7d' keeps only the four newest entries
+        body = h.get(id=qid, view="logbook", args={"since": "7d"}).body
+        for i in (2, 3, 4, 5):
+            assert f"entry number {i}" in body
+        assert "entry number 0" not in body and "entry number 1" not in body
+        assert "window:" in body and "since" in body
+        assert "next:" not in body  # whole window fits the default page
+
+        # ISO bound, inclusive low end — entry 4's own stamp
+        since_iso = times[4].isoformat().replace("+00:00", "Z")
+        body = h.get(id=qid, view="logbook", args={"since": since_iso}).body
+        assert "entry number 5" in body and "entry number 4" in body
+        assert "entry number 3" not in body
+        assert f"since {since_iso}" in body
+
+    def test_logbook_until_is_exclusive(self, store: Any) -> None:
+        h = _handler(store)
+        qid = _created_id(h.put(text="An until-windowed lab notebook"))
+        for i in range(5):
+            h.put(id=qid, text=f"entry number {i}", entry="note")
+        times = _stamp_entries(store, qid, [5, 4, 3, 2, 1])
+        until = times[3].isoformat().replace("+00:00", "Z")
+        body = h.get(id=qid, view="logbook", args={"until": until}).body
+        for i in (0, 1, 2):
+            assert f"entry number {i}" in body
+        assert "entry number 3" not in body and "entry number 4" not in body
+
+    def test_logbook_limit_pages_the_older_window(self, store: Any) -> None:
+        h = _handler(store)
+        qid = _created_id(h.put(text="A paged lab notebook"))
+        for i in range(6):
+            h.put(id=qid, text=f"entry number {i}", entry="note")
+        _stamp_entries(store, qid, [10, 8, 6, 4, 2, 1])
+
+        page1 = h.get(id=qid, view="logbook", args={"limit": 2}).body
+        assert "newest 2 of 6 entries" in page1
+        assert "entry number 5" in page1 and "entry number 4" in page1
+        assert "entry number 3" not in page1
+        # the trailer names the older page — an until= call, never page=
+        m = re.search(
+            r"next: get\(kind='quest', id=\d+, view='logbook', "
+            r"args=\{([^}]*)\}\) — 4 older entries",
+            page1,
+        )
+        assert m is not None, page1
+        assert "page=" not in page1
+        until = re.search(r"'until': '([^']+)'", m.group(1))
+        assert until is not None and "'limit': 2" in m.group(1)
+
+        page2 = h.get(
+            id=qid,
+            view="logbook",
+            args={"until": until.group(1), "limit": 2},
+        ).body
+        assert "entry number 3" in page2 and "entry number 2" in page2
+        assert "entry number 5" not in page2 and "entry number 4" not in page2
+
+    def test_logbook_bad_window_args_rejected(self, store: Any) -> None:
+        from precis.errors import BadInput
+
+        h = _handler(store)
+        qid = _created_id(h.put(text="Bad window args"))
+        h.put(id=qid, text="x", entry="note")
+        for bad in (
+            {"since": "last weekish"},
+            {"until": "eventually"},
+            {"limit": 0},
+            {"limit": -3},
+            {"limit": "two"},
+        ):
+            try:
+                h.get(id=qid, view="logbook", args=bad)
+            except BadInput:
+                pass
+            else:  # pragma: no cover - guard
+                raise AssertionError(f"args={bad} should be rejected")
 
     def test_cost_entries_sum_into_the_tote(self, store: Any) -> None:
         h = _handler(store)

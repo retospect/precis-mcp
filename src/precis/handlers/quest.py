@@ -40,13 +40,19 @@ queue.
 from __future__ import annotations
 
 import math
+import re
 from collections import Counter
+from datetime import UTC, datetime, timedelta
 from typing import Any, ClassVar
 
 from precis.errors import BadInput, Unsupported
 from precis.handlers._eye import EYE_LADDER, is_eye_view
 from precis.handlers._mode_help import require_mode
-from precis.handlers._numeric_ref import _BASE_VIEWS, NumericRefHandler
+from precis.handlers._numeric_ref import (
+    _BASE_VIEWS,
+    NumericRefHandler,
+    _parse_window_bound,
+)
 from precis.handlers._prio_tag import PRIO_TAG_TO_INT, split_prio, validate_prio
 from precis.handlers._request_state import RequestState
 from precis.protocol import ArgsSpec, KindSpec
@@ -552,6 +558,68 @@ def _budget_arg(args: dict[str, Any] | None) -> int:
     return raw
 
 
+#: Default ``view='logbook'`` page size. At the measured ~280 B/entry of
+#: qu164903's 1302-entry, 362 kB notebook (gr537834) fifty entries lands
+#: near 14 kB — well under the 24 kB transport cap; ``args={'limit': N}``
+#: re-sizes and the trailer's ``next:`` names the older page.
+_LOGBOOK_PAGE = 50
+
+#: Compact relative ``since=``/``until=`` — ``30m``/``12h``/``7d``/``2w`` —
+#: read as "<n> <unit> ago" off now (gr537834); anything else defers to
+#: :func:`_parse_window_bound` (ISO).
+_LOGBOOK_REL_RE = re.compile(r"^(\d+)([smhdw])$", re.IGNORECASE)
+_LOGBOOK_REL_UNITS = {
+    "s": "seconds",
+    "m": "minutes",
+    "h": "hours",
+    "d": "days",
+    "w": "weeks",
+}
+
+
+def _logbook_bound(value: Any, field: str, *, now: datetime) -> datetime | None:
+    """``args['since']``/``args['until']`` → an aware datetime.
+
+    ISO date/timestamp via :func:`_parse_window_bound` (naive = UTC), or a
+    compact ``<n><unit>`` duration — ``7d`` — read as "<n> <unit> ago" off
+    ``now``. ``until`` stays exclusive, matching the search contract.
+    """
+    if value is None:
+        return None
+    m = _LOGBOOK_REL_RE.match(str(value).strip())
+    if m is not None:
+        return now - timedelta(
+            **{_LOGBOOK_REL_UNITS[m.group(2).lower()]: int(m.group(1))}
+        )
+    return _parse_window_bound(value, field)
+
+
+def _logbook_limit(value: Any) -> int:
+    """``args['limit']`` as a positive int, default :data:`_LOGBOOK_PAGE`."""
+    if value is None:
+        return _LOGBOOK_PAGE
+    if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+        raise BadInput(
+            f"args={{'limit': {value!r}}}: limit must be a positive int (entries)",
+            next="args={'limit': 50}",
+        )
+    return value
+
+
+def _utc_aware(dt: datetime) -> datetime:
+    """``chunks.created_at`` is ``timestamptz`` — aware out of psycopg; a
+    hand-built fixture may be naive, which the house convention reads as
+    UTC."""
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=UTC)
+    return dt.astimezone(UTC)
+
+
+def _iso_z(dt: datetime) -> str:
+    """Full-precision UTC ISO with the house ``Z`` suffix."""
+    return _utc_aware(dt).isoformat().replace("+00:00", "Z")
+
+
 def _frontier_empty_lines(fr: Any) -> list[str]:
     """Why the confirmed frontier is empty — the headline under the band.
 
@@ -652,7 +720,7 @@ class QuestHandler(NumericRefHandler):
     #: args= keys each verb reads out of ``args`` (gr475332); dispatch
     #: rejects any other key. Keep in step with the verb bodies.
     ARGS: ClassVar[dict[str, ArgsSpec]] = {
-        "get": ArgsSpec({"budget", "has_fulltext"}),
+        "get": ArgsSpec({"budget", "has_fulltext", "limit", "since", "until"}),
     }
 
     #: ``edit(id=[...])`` repeats the same edit per id in one transaction
@@ -1114,7 +1182,7 @@ class QuestHandler(NumericRefHandler):
             return Response(body=self._render_measures(ref))
         if view == "logbook" and concrete:
             ref = self._resolve_live_ref(self._coerce_id(id))
-            return Response(body=self._render_logbook(ref))
+            return Response(body=self._render_logbook(ref, args))
         if view == "pourbaix" and concrete:
             ref = self._resolve_live_ref(self._coerce_id(id))
             return Response(body=self._render_pourbaix(ref))
@@ -1624,10 +1692,15 @@ class QuestHandler(NumericRefHandler):
             bmeta = b.meta or {}
             etype = bmeta.get("entry_type", "note")
             by = bmeta.get("by", "?")
-            # Full timestamp (date + UTC time to the minute) — the logbook
-            # is the quest's append-only lab notebook, so entries want a
-            # real clock, not just a date, to read as a chronological record.
-            stamp = b.created_at.strftime("%Y-%m-%d %H:%M") if b.created_at else "?"
+            # Full timestamp (date + UTC time to the minute, `Z` naming the
+            # zone) — the logbook is the quest's append-only lab notebook,
+            # so entries want a real clock, not just a date, to read as a
+            # chronological record.
+            stamp = (
+                _utc_aware(b.created_at).strftime("%Y-%m-%d %H:%MZ")
+                if b.created_at
+                else "?"
+            )
             cost = bmeta.get("cost")
             cost_s = f" cost={cost:g}" if cost else ""
             lines.append(f"\n### {etype} · {stamp} · {by}{cost_s}")
@@ -1648,14 +1721,67 @@ class QuestHandler(NumericRefHandler):
                 )
         return "\n".join(lines)
 
-    def _render_logbook(self, ref: Ref) -> str:
-        """`view='logbook'` — the full append-only lab notebook (all entries),
-        with no tail truncation.
+    def _render_logbook(self, ref: Ref, args: dict[str, Any] | None) -> str:
+        """`view='logbook'` — the append-only lab notebook, paged
+        newest-first (gr537834).
+
+        ``args={'since': …, 'until': …, 'limit': N}`` bounds the window:
+        the time bounds take an ISO timestamp or a compact ``'7d'``-style
+        duration (``until`` exclusive, matching the search contract);
+        ``limit`` sizes the page (default :data:`_LOGBOOK_PAGE`). When the
+        window holds older entries than the page shows, the trailer's
+        ``next:`` names the call that shows them — the same view with
+        ``until`` pinned at the page's oldest shown entry.
         """
+        args = args if isinstance(args, dict) else {}
+        now = datetime.now(UTC)
+        since_dt = _logbook_bound(args.get("since"), "since", now=now)
+        until_dt = _logbook_bound(args.get("until"), "until", now=now)
+        limit = _logbook_limit(args.get("limit"))
         tags = self.store.tags_for(ref.id)
         entries = self._log_entries(ref.id)
+
+        def _in_window(b: ChunkRow) -> bool:
+            if b.created_at is None:
+                # no clock to bound against — only the unbounded read sees it
+                return since_dt is None and until_dt is None
+            ts = _utc_aware(b.created_at)
+            return (since_dt is None or ts >= since_dt) and (
+                until_dt is None or ts < until_dt
+            )
+
+        window = [b for b in entries if _in_window(b)]
+        shown = window[-limit:]
         lines = self._render_header(ref, tags, entries)
-        lines += self._render_log_entries(entries)
+        spec: list[str] = []
+        if since_dt is not None:
+            spec.append(f"since {_iso_z(since_dt)}")
+        if until_dt is not None:
+            spec.append(f"until {_iso_z(until_dt)}")
+        spec.append(f"limit {limit}")
+        lead = (
+            f"newest {len(shown)} of {len(window)} entries"
+            if len(shown) < len(window)
+            else f"all {len(window)} entries"
+        )
+        lines.append(f"\nwindow: {lead} · {' · '.join(spec)}")
+        lines += self._render_log_entries(shown)
+        if len(shown) < len(window) and shown[0].created_at is not None:
+            older = len(window) - len(shown)
+            call_args: list[str] = []
+            if since_dt is not None:
+                # Echo the resolved instant, not the caller's relative
+                # form — a '7d' re-anchors on every call and the page
+                # would drift under the reader.
+                call_args.append(f"'since': '{_iso_z(since_dt)}'")
+            call_args.append(f"'until': '{_iso_z(_utc_aware(shown[0].created_at))}'")
+            if "limit" in args:
+                call_args.append(f"'limit': {limit}")
+            lines.append(
+                f"\nnext: get(kind='quest', id={ref.id}, view='logbook', "
+                f"args={{{', '.join(call_args)}}}) — {older} older "
+                f"entr{'y' if older == 1 else 'ies'}"
+            )
         return "\n".join(lines)
 
     def _render_pourbaix(self, ref: Ref) -> str:
