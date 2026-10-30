@@ -19,6 +19,7 @@ import pytest
 
 from precis.ingest import pcb_epro
 from precis.pcb.board_script import BoardScriptError, board_batch, emit
+from precis_geom.pcb import Board
 from tests.workspaces._script import load_module
 
 _FIXTURE = Path(__file__).parent / "fixtures" / "pcb_epro_tiny"
@@ -162,6 +163,27 @@ def _tiny_batch() -> dict[str, Any]:
 
 def test_tiny_batch_roundtrips_byte_equal() -> None:
     _roundtrip(_tiny_batch())
+
+
+def test_environment_meta_script_roundtrip_reaches_board(store) -> None:
+    """gr524298: Board metadata survives script emission and the upload path."""
+    meta = {"coating": "parylene", "enclosure": True, "environment": "wet"}
+    batch = Board("environment-script", meta=meta).to_batch()
+    text = _roundtrip(batch)
+    rebuilt = _exec(text).build().to_batch()
+    ref, _, _ = store.pcb_apply(
+        slug="environment-script",
+        title="Environment script",
+        components=rebuilt.get("components", []),
+        nets=rebuilt.get("nets", []),
+        connections=rebuilt.get("connections", []),
+        meta=rebuilt["meta"],
+    )
+    stored = store.pcb_load(ref.id)["board"]["meta"]
+    assert all(stored[key] == value for key, value in meta.items())
+    readback, _ = board_batch(store, "environment-script")
+    assert all(readback["meta"][key] == value for key, value in meta.items())
+    _roundtrip(readback)
 
 
 def test_footprints_share_one_pads_binding() -> None:

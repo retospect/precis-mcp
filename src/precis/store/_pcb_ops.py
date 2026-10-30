@@ -91,6 +91,45 @@ _SNAPSHOT_KEEP = 5
 _BULK_BATCH = 2000  # rows per round trip in parts_bulk_replace
 
 
+def _pcb_environment_meta(meta: dict[str, Any] | None) -> dict[str, Any]:
+    """Validate batch declarations before any reference or board is written."""
+    patch: dict[str, Any] = {}
+    for key, vocabulary in (
+        (
+            "coating",
+            ("none", "parylene", "conformal-acrylic", "conformal-silicone", "potting"),
+        ),
+        ("environment", ("indoor", "outdoor", "wet", "submerged")),
+    ):
+        if meta is not None and key in meta:
+            value = meta[key]
+            if not isinstance(value, str) or value not in vocabulary:
+                raise BadInput(
+                    f"meta.{key} {value!r} is not supported",
+                    next=f"put(kind='pcb', id=..., args={{'meta': {{'{key}': "
+                    f"'{vocabulary[0]}'}}}}); {key} takes one of: "
+                    + ", ".join(vocabulary),
+                )
+            patch[key] = value
+    if meta is not None and "enclosure" in meta:
+        enclosure = meta["enclosure"]
+        if not isinstance(enclosure, bool) and not (
+            isinstance(enclosure, str)
+            and enclosure.strip()
+            and len(enclosure) <= 120
+            and "\n" not in enclosure
+            and "\r" not in enclosure
+        ):
+            raise BadInput(
+                f"meta.enclosure {enclosure!r} is not a bool or short string",
+                next="put(kind='pcb', id=..., args={'meta': {'enclosure': False}}); "
+                "enclosure takes True, False, or a nonblank single-line string "
+                "of at most 120 characters",
+            )
+        patch["enclosure"] = enclosure
+    return patch
+
+
 def _jsonb_or_none(value: Any) -> Jsonb | None:
     """psycopg Jsonb for a nullable JSONB column."""
     return Jsonb(value) if value is not None else None
@@ -867,6 +906,7 @@ class PcbMixin:
         applied: dict[str, list[str]] | None = None,
     ) -> tuple[Any, bool, dict[str, int]]:
         """The body of :meth:`pcb_apply`, given an already-open ``conn``."""
+        environment_meta = _pcb_environment_meta(meta)
         existing = self.get_ref(kind="pcb", id=slug)
         created = existing is None
         counts = {
@@ -904,6 +944,8 @@ class PcbMixin:
                 )
 
         board_id = self.pcb_ensure_board(ref.id, conn=conn)
+        if environment_meta:
+            self.pcb_merge_board_meta(ref.id, environment_meta, conn=conn)
         # A batch-authored stackup (precis_geom's Board(stackup=…) writes
         # these meta keys) reaches the board row here, not stranded on
         # refs.meta — a refusal rolls back the whole put with it. Its
@@ -4091,15 +4133,20 @@ class PcbMixin:
         return profile
 
     def pcb_merge_board_meta(
-        self, ref_id: int, patch: dict[str, Any]
+        self,
+        ref_id: int,
+        patch: dict[str, Any],
+        *,
+        conn: Connection | None = None,
     ) -> dict[str, Any]:
         """Merge ``patch`` into the live ``main`` board's ``meta``
         (``meta || patch`` — top-level keys in the patch win, the rest
-        survive) and return the merged dict. ``op='order'`` records its
-        ``jlc_order`` cart row through here. Raises ``NotFound`` for a
+        survive) and return the merged dict. Batch environmental declarations
+        join the caller's transaction through ``conn``; ``op='order'`` records
+        its ``jlc_order`` cart row through here. Raises ``NotFound`` for a
         design with no board yet — same contract as
         :meth:`pcb_set_board_phase`."""
-        with self._pcb_tx() as conn:
+        with self._pcb_tx() if conn is None else nullcontext(conn) as conn:
             row = conn.execute(
                 "SELECT board_id, meta FROM pcb_boards "
                 "WHERE ref_id = %s AND name = 'main' AND retired_at IS NULL",

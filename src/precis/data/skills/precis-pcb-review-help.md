@@ -79,9 +79,17 @@ To activate `pcb-mech-env`, declare the board's flex process
 features: `bend_zone`, `stiffener`, `coverlay_opening` or `tape_mask`
 (coating keep-off). These declarations are authorable through the MCP today.
 
-Board metadata keys `flex`, `coating`, `enclosure`, `environment`, `outdoor`
-and `wet` are also read if present and trigger the checklist by presence.
-They cannot be set through the MCP yet (gr524298). Plain rigid boards have
+Declare board conditions with
+`put(kind='pcb', id=<slug>, args={'meta': {'coating':'parylene',
+'enclosure':True, 'environment':'outdoor'}})`.
+`coating`: `none`, `parylene`, `conformal-acrylic`, `conformal-silicone`,
+`potting`; `environment`: `indoor`, `outdoor`, `wet`, `submerged`;
+`enclosure`: bool or a nonblank single-line string up to 120 characters.
+Omitted keys keep their values. Board scripts can supply the same dict as
+`Board(<slug>, meta={...})` and upload `to_batch()`.
+Explicit `coating='none'`, `enclosure=False`, `environment='indoor'` do
+not activate review. Legacy `flex`, `outdoor`, `wet` and incomplete
+declarations still trigger it by presence. Plain rigid indoor boards have
 no implicit mechanical checklist; explicit assignment still works.
 
 The eight judgment items ask about bend zones clear of vias/parts, stiffener

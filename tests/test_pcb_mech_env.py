@@ -13,6 +13,7 @@ import pytest
 
 from precis.checklist.pcb import mech_env_applies
 from precis.dispatch import Hub
+from precis.errors import BadInput
 from precis.handlers.checklist import ChecklistHandler
 from precis.handlers.pcb import PcbHandler
 from precis.jobs.checklist_sync import (
@@ -56,6 +57,9 @@ def mech_board(store: Store) -> int:
         ({"board": None}, False),
         ({"board": {"meta": {}}}, False),
         ({"board": {"meta": {"process": "rigid-4layer-35um"}}}, False),
+        ({"board": {"meta": {"coating": "none"}}}, False),
+        ({"board": {"meta": {"enclosure": False}}}, False),
+        ({"board": {"meta": {"environment": "indoor"}}}, False),
         ({"board": {"meta": {"process": "flex-2layer-35um"}}}, True),
         ({"board": {"meta": {"flex": True, "coating": "parylene"}}}, True),
         ({"board": {"meta": {"enclosure": "sealed"}}}, True),
@@ -84,6 +88,108 @@ def mech_board(store: Store) -> int:
 )
 def test_mech_env_declarations(design: dict[str, Any], applies: bool) -> None:
     assert mech_env_applies(design) is applies
+
+
+def test_put_coating_assigns_mechanical_review_and_merges_meta(store: Store) -> None:
+    """gr524298: the public batch writes board metadata, not just ref metadata."""
+    assert sync_all(store, src_dir=bundled_checklists_dir())["status"] == "ok"
+    pcb = PcbHandler(hub=Hub(store=store))
+    pcb.put(id="coated-board", args={"meta": {"spec": "retain me"}})
+    ref = store.get_ref(kind="pcb", id="coated-board")
+    assert ref is not None
+    store.pcb_merge_board_meta(ref.id, {"jlc_order": {"order_id": "saved"}})
+
+    pcb.put(id="coated-board", args={"meta": {"coating": "parylene"}})
+    design = store.pcb_load(ref.id)
+    assert design["board"]["meta"]["coating"] == "parylene"
+    assert mech_env_applies(design)
+    assigned = store.checklist_assignments_for_target(ref.id, target_kind="pcb")
+    assert _CHECKLIST in {row["name"] for row in assigned}
+
+    pcb.put(
+        id="coated-board",
+        args={"meta": {"enclosure": "sealed", "environment": "outdoor"}},
+    )
+    meta = store.pcb_load(ref.id)["board"]["meta"]
+    assert meta["coating"] == "parylene"
+    assert meta["enclosure"] == "sealed"
+    assert meta["environment"] == "outdoor"
+    assert meta["jlc_order"] == {"order_id": "saved"}
+    refreshed = store.get_ref(kind="pcb", id="coated-board")
+    assert refreshed is not None and refreshed.meta["spec"] == "retain me"
+
+
+def test_put_plain_indoor_board_has_no_mechanical_review(store: Store) -> None:
+    assert sync_all(store, src_dir=bundled_checklists_dir())["status"] == "ok"
+    pcb = PcbHandler(hub=Hub(store=store))
+    neutral = {"coating": "none", "enclosure": False, "environment": "indoor"}
+    pcb.put(id="indoor-board", args={"meta": neutral})
+    ref = store.get_ref(kind="pcb", id="indoor-board")
+    assert ref is not None
+    design = store.pcb_load(ref.id)
+    assert all(design["board"]["meta"][key] == value for key, value in neutral.items())
+    assert not mech_env_applies(design)
+    assigned = store.checklist_assignments_for_target(ref.id, target_kind="pcb")
+    names = {row["name"] for row in assigned}
+    assert "pcb-tapeout" in names and _CHECKLIST not in names
+
+
+@pytest.mark.parametrize(
+    "key, value, vocabulary",
+    [
+        (
+            "coating",
+            "unknown-coating",
+            ("none", "parylene", "conformal-acrylic", "conformal-silicone", "potting"),
+        ),
+        ("coating", None, ("none", "parylene")),
+        ("coating", ["parylene"], ("none", "parylene")),
+        ("environment", "space", ("indoor", "outdoor", "wet", "submerged")),
+        ("environment", True, ("indoor", "outdoor", "wet", "submerged")),
+        ("enclosure", 1, ("enclosure",)),
+        ("enclosure", " ", ("enclosure",)),
+        ("enclosure", "x" * 121, ("120",)),
+    ],
+)
+def test_put_invalid_environment_meta_refuses_without_writing(
+    store: Store, key: str, value: Any, vocabulary: tuple[str, ...]
+) -> None:
+    pcb = PcbHandler(hub=Hub(store=store))
+    pcb.put(id="existing-board", title="Original", args={"meta": {"coating": "none"}})
+    original = store.get_ref(kind="pcb", id="existing-board")
+    assert original is not None
+    before = store.pcb_load(original.id)
+    for slug in ("existing-board", "invalid-new-board"):
+        with pytest.raises(BadInput, match=key) as exc:
+            pcb.put(id=slug, title="Must not persist", args={"meta": {key: value}})
+        assert exc.value.next
+        assert all(word in str(exc.value.next) for word in vocabulary)
+    assert store.get_ref(kind="pcb", id="invalid-new-board") is None
+    after_ref = store.get_ref(kind="pcb", id="existing-board")
+    assert after_ref is not None and after_ref.title == "Original"
+    assert after_ref.meta == original.meta
+    assert store.pcb_load(original.id) == before
+
+
+@pytest.mark.parametrize(
+    "meta",
+    [
+        {"coating": "conformal-acrylic"},
+        {"coating": "conformal-silicone"},
+        {"coating": "potting"},
+        {"environment": "wet"},
+        {"environment": "submerged"},
+        {"enclosure": True},
+    ],
+)
+def test_put_supported_environment_meta(store: Store, meta: dict[str, Any]) -> None:
+    pcb = PcbHandler(hub=Hub(store=store))
+    pcb.put(id="declared-environment", args={"meta": meta})
+    ref = store.get_ref(kind="pcb", id="declared-environment")
+    assert ref is not None
+    design = store.pcb_load(ref.id)
+    assert all(design["board"]["meta"][key] == value for key, value in meta.items())
+    assert mech_env_applies(design)
 
 
 def test_shipped_checklist_has_all_eight_judgment_items() -> None:

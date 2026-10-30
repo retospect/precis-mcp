@@ -50,10 +50,19 @@ To activate `pcb-mech-env`, declare the board's flex process
 features: `bend_zone`, `stiffener`, `coverlay_opening` or `tape_mask`
 (coating keep-off). These declarations are authorable through the MCP today.
 
-Board metadata keys `flex`, `coating`, `enclosure`, `environment`, `outdoor`
-and `wet` are also read if present and trigger the checklist by presence,
-including incomplete declarations. They cannot be set through the MCP yet
-(gr524298). A plain rigid board gets only `pcb-tapeout` by default.
+Declare board conditions with
+`put(kind='pcb', id=<slug>, args={'meta': {'coating':'parylene',
+'enclosure':True, 'environment':'outdoor'}})`.
+`coating`: `none`, `parylene`, `conformal-acrylic`, `conformal-silicone`,
+`potting`; `environment`: `indoor`, `outdoor`, `wet`, `submerged`;
+`enclosure`: bool or a nonblank single-line string up to 120 characters.
+These keys merge into board metadata; omitted keys keep their values.
+Board scripts use `Board(<slug>, meta={'coating':'parylene',
+'environment':'outdoor'})`, then upload `to_batch()` through the same put.
+Explicit `coating='none'`, `enclosure=False`, `environment='indoor'` do
+not activate review. Legacy `flex`, `outdoor`, `wet` and incomplete
+declarations still trigger it by presence. A plain rigid indoor board gets
+only `pcb-tapeout` by default.
 
 `put(kind='pcb', id=<slug>, args={'op':'review', 'page_size':60})` works
 both checklists through the same review job; re-run if the summary reports

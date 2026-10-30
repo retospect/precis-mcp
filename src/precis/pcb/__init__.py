@@ -11,6 +11,12 @@ design leaves the relational graph.
 ``pcb-mech-env`` judgment ledgers through the same checklist sync/status/write
 path. Mechanical review is declaration-driven (flex process, fab features or
 board metadata), so a plain rigid board gains no implicit mechanical gate.
+Batch ``put(args={'meta': ...})`` and workspace ``Board(meta=...)`` validate
+``coating``/``enclosure``/``environment`` and merge them into the board row
+in the batch transaction. Reference metadata alone is insufficient because
+checklist applicability and revisions read ``pcb_boards.meta``. Explicit
+``coating='none'``, ``enclosure=False`` and ``environment='indoor'`` do not
+activate the checklist; incomplete legacy declarations still do.
 Mechanical verdicts cover the whole board and consume the ``pcb:mech-env``
 input revision: pcb_graph omits fab polygons, copper and footprint geometry,
 so its fingerprint alone cannot invalidate a mask/coverlay decision. Missing

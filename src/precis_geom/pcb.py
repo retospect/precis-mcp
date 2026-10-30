@@ -2010,7 +2010,11 @@ class Board:
             outline (dict | list | None): Board outline — a :func:`rect`
                 geometry dict or an ``(x, y)`` point list.
             meta (dict | None): Free-form keys for the batch ``meta``
-                dict.
+                dict. ``coating`` (none, parylene, conformal-acrylic,
+                conformal-silicone, potting), ``enclosure`` (bool or a
+                nonblank single-line string up to 120 characters), and
+                ``environment`` (indoor, outdoor, wet, submerged) are
+                validated and merged into board metadata on import.
         """
         self.slug = slug
         self.profile = profile

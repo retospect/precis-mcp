@@ -38,13 +38,22 @@ MECH_ENV_FEATURES = frozenset(
 def mech_env_applies(design: dict[str, Any]) -> bool:
     """Authored flex/fab declarations, or the metadata fallback (gr519925).
 
-    Key presence is deliberate: even an incomplete environment declaration
-    calls for review. A layer count alone says nothing about flexibility.
+    Incomplete legacy declarations still call for review, but explicit no
+    coating/enclosure and indoor declarations do not. A layer count alone
+    says nothing about flexibility.
     """
     board = design.get("board") or {}
     meta = board.get("meta") or {}
     return bool(
-        MECH_ENV_META_KEYS.intersection(meta)
+        any(
+            key in meta
+            and not (
+                (key == "coating" and meta[key] == "none")
+                or (key == "enclosure" and meta[key] is False)
+                or (key == "environment" and meta[key] == "indoor")
+            )
+            for key in MECH_ENV_META_KEYS
+        )
         or str(meta.get("process") or "").startswith("flex-")
         or board.get("fold_lines")
         or any(
