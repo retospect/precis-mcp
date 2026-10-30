@@ -5,11 +5,23 @@ on: pull_request
 permissions:
   contents: write
   pull-requests: write
+  # gh pr checks below reads the PR's check-runs.
+  checks: read
+
+# One poller per PR: a dependabot push fires a new pull_request run, and
+# the wait below reads the PR's CURRENT head — so the superseded run is
+# dead weight and cancel-in-progress reaps it.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
 
 jobs:
   auto-merge:
     if: github.actor == 'dependabot[bot]'
     runs-on: ubuntu-latest
+    # Holds a runner for the length of the check.yml run it waits on
+    # (~15 min gate shape on a PR). The cap is a hang-catcher for the poll.
+    timeout-minutes: 40
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Fetch Dependabot metadata
@@ -17,9 +29,91 @@ jobs:
         uses: dependabot/fetch-metadata@25dd0e34f4fe68f24cc83900b1fe3fe149efef98 # v3.1.0
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
-      - name: Auto-merge minor and patch updates
-        if: steps.metadata.outputs.update-type != 'version-update:semver-major'
-        run: gh pr merge "$PR_URL" --auto --squash
+      # gr530285: pyproject.toml with no uv.lock regen is the exact diff
+      # that stranded main — once merged, every `uv run`/`uv sync`
+      # re-resolves and dies on the private catpath git source. Refuse
+      # early, before paying for the wait below.
+      - name: Refuse a pyproject.toml change with no uv.lock
         env:
           PR_URL: ${{ github.event.pull_request.html_url }}
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          files="$(gh pr view "$PR_URL" --json files --jq '.files[].path')"
+          printf 'changed files:\n%s\n' "$files"
+          if grep -qx 'pyproject.toml' <<<"$files" \
+              && ! grep -qx 'uv.lock' <<<"$files"; then
+            echo "::error::pyproject.toml changed without uv.lock —" \
+              "run 'uv lock' and push the regenerated file"
+            exit 1
+          fi
+      # main has NO required status checks (the ruleset blocks deletion
+      # and non-fast-forward only), so the old `gh pr merge --auto` merged
+      # the moment it was enabled — that is how the pyproject-only bumps
+      # landed while check.yml was still red. Wait instead: poll until
+      # every check-run belonging to the `check` workflow on this PR has
+      # concluded, then merge only on green. `gh pr checks --watch` is
+      # unusable — it waits on ALL checks, including this job's own run.
+      # Skipped/neutral jobs report bucket "skipping" and count as green;
+      # only "fail"/"cancel" block the merge.
+      #
+      # A job with `needs:` gets its check-run only once its dependencies
+      # finish — plan+lint concluded while the shard matrix is still
+      # unexpanded reads as "all concluded" and merged before a single test
+      # ran. So pending==0 alone is not enough: a real (non-skipped)
+      # check-run for the PR's terminal gating job must exist first. On a
+      # pull_request event check.yml's last gate is the `test-linux` shard
+      # matrix (gate shape) or `test-docs` (docs_only lane); `lint_only`,
+      # `test-other`, `coverage-db`, `failed-first` and `publish` never run
+      # on a PR (main push, full/nightly, release/** and tags only), so
+      # one or the other always fires. The merge is pinned to the head the
+      # checks were read for: a push between poll and merge refuses
+      # instead of merging an ungated sha.
+      - name: Wait for check.yml green, then merge
+        if: steps.metadata.outputs.update-type != 'version-update:semver-major'
+        env:
+          PR_URL: ${{ github.event.pull_request.html_url }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # A gh that rejects --json workflow must fail NOW: inside the
+          # loop its empty output is indistinguishable from "no checks
+          # yet" and would burn the whole timeout.
+          gh pr checks "$PR_URL" --json name,workflow,bucket >/dev/null
+          deadline=$(( SECONDS + 1800 ))
+          while :; do
+            head="$(gh pr view "$PR_URL" --json headRefOid --jq .headRefOid || true)"
+            checks="$(gh pr checks "$PR_URL" \
+              --json name,workflow,bucket || true)"
+            checks="${checks:-[]}"
+            # Without .workflow every row drops out of the filter below and
+            # this poll would burn the whole timeout on nothing.
+            if jq -e 'any(.[]; has("workflow") | not)' <<<"$checks" >/dev/null; then
+              echo "::error::gh pr checks JSON has no workflow field —" \
+                "cannot isolate check.yml runs; refusing to merge"
+              exit 1
+            fi
+            checks="$(jq '[.[] | select(.workflow == "check")]' <<<"$checks")"
+            bad="$(jq '[.[] | select(.bucket == "fail" or .bucket == "cancel")] | length' <<<"$checks")"
+            if (( bad > 0 )); then
+              jq -r '.[] | "\(.bucket)\t\(.name)"' <<<"$checks"
+              echo "::error::check.yml is not green on this head — not merging"
+              exit 1
+            fi
+            pending="$(jq '[.[] | select(.bucket == "pending")] | length' <<<"$checks")"
+            terminal="$(jq '[.[]
+              | select(.name | startswith("test-linux") or startswith("test-docs"))
+              | select(.bucket != "skipping")] | length' <<<"$checks")"
+            if (( pending == 0 && terminal > 0 )); then
+              break
+            fi
+            if (( SECONDS >= deadline )); then
+              echo "::error::check.yml did not conclude within 30 min — not merging"
+              exit 1
+            fi
+            sleep 30
+          done
+          jq -r '.[] | "\(.bucket)\t\(.name)"' <<<"$checks"
+          if [[ -z "$head" ]]; then
+            echo "::error::could not read the PR head sha — not merging"
+            exit 1
+          fi
+          gh pr merge "$PR_URL" --squash --match-head-commit "$head"

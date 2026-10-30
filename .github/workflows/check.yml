@@ -176,6 +176,17 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
+      - uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
+      # gr530285: dependabot merged pyproject-only bumps with no uv.lock
+      # regen; the gate's env sync then re-resolved on the spot and died
+      # fetching the private catpath git source (credentials exist only in
+      # the local keychain / image build). `uv lock --check` fails when
+      # pyproject.toml and uv.lock disagree; it lives in `plan` so a stale
+      # lock skips the whole shard fan-out via needs.plan. `--offline` is
+      # the no-credentials guarantee: an in-sync lock checks with zero
+      # fetches (verified against a cold cache), and a stale one exits red
+      # at the would-be catpath fetch instead of prompting for a Username.
+      - run: uv lock --check --offline
       - id: shape
         env:
           EVENT: ${{ github.event_name }}
