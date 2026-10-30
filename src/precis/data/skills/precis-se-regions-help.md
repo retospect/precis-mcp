@@ -490,4 +490,4 @@ its principal axis. `target` narrows to `frame:<key>`, `pi:<id>`,
 van der Waals spheres (Bondi; `radii={'C': 0.9}` overrides), so a benzene
 ring-plane section is one loop — the ring centre is inside the carbon
 spheres. A macro block probes its bound cad design or envelope, in mm.
-From a script: `pg.inspect.ray/section/overlap/thickness(geom, …)`.
+From a script: `pg.inspect.ray/section/overlap/thickness(geom, …)` — a runnable guest-fit check is in [[precis-workspace-mol-help]].

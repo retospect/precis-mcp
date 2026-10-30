@@ -11,6 +11,7 @@ answers:
   - what frame do cyl / box / polar / rot land a cad shape in?
   - why does view='trace' show no frames for my cad blocks?
   - can a workspace script set material, binding or a BOM?
+  - how do I build and decorate a molecule by workspace script (fragments, functional groups, collapse check)?
 applies-to: workspace scripts that build se/cad geometry (precis_geom out.* → the import_workspace op → get(kind='se'))
 status: active
 tags: [design]
@@ -46,6 +47,19 @@ out`.
    op below). The sandbox `run` lane (a workspace ref built by a
    `sandbox_run` job) is not built yet — this host loop is today's
    path.
+
+## Build molecules and decorated nanostructures — `mol.*`
+
+Atomic blocks made from fragments, functional groups and generators use
+`precis_geom.mol`, `precis_geom.steps` and `precis_geom.inspect` inside the
+same `out.run`. The molecular loop is `mol.prism` / `mol.generate` /
+`mol.frag` + `mol.lib` → `mol.decorate` (site grammar `open & face:out &
+every:3`) → `mol.cap` → `mol.relax` (cached collapse check) → `o.block` /
+`o.instance`. Every costly `mol` call is cached in `scratch/cache/`, so a
+re-run after a crash or a recipe edit resumes at the first changed step;
+`out.run` exit runs the chemistry check (`check.json`). The loop, the site
+grammar, the cache, both checks and a runnable decorated-prism example are in
+[[precis-workspace-mol-help]].
 
 ## `out.*` — the manifest calls
 
@@ -379,6 +393,7 @@ directly.
 
 - [[precis-diag-help]] — a failed run's structured record: the Diag anchored on the error-marked trace frame
 - [[precis-workspace-optimize-help]] — `precis_geom.physics.evaluate`: score a script-built shape
+- [[precis-workspace-mol-help]] — molecular builds: fragments, decorators, step cache, collapse check, `pg.inspect`
 - [[precis-se-help]] — the se call surface: ops, views, units, BOM
 - [[precis-se-atomic-help]] — the atomic leg: chemistry over the block tree
 - [[precis-cad-help]] — the cad design kind: DSL grammar, parts catalog, exports

@@ -82,7 +82,7 @@ submit jobs; `next.can_submit` stays false. Legacy run records remain unverified
 
 ## Atomic-mode ops — `generate` (exact parameter list)
 
-`generate`, `join` and `terminate` still work but are being retired when structure workspace slice 1 ships; new construction capability goes to workspaces (a Python script builds the structure — [[precis-workspace-help]]), not new ops.
+`generate`, `join` and `terminate` still work but are being retired when structure workspace slice 1 ships; new construction capability goes to workspaces (a Python script builds the structure — [[precis-workspace-help]]), not new ops. The script equivalents: `generate` → `mol.generate` / `mol.prism`, `terminate` → `mol.cap`, decorating with functional groups → `mol.decorate`; see "Build a decorated prism with a guest" in [[precis-workspace-mol-help]].
 
 - `generate` — **atomic mode.** `generator` `cnt|fullerene|cone|
   cyclodextrin|hexfold|hexfold_scene|tpms|schwarzite|smooth_drum`, `params` (dict), `name` (new block) · `parent`/`pose`/
@@ -159,6 +159,8 @@ above), plus `add_port`'s `expected_element`/`expected_hybridization` and
 `connect`'s `kind='bond'|'interaction'` capability gate.
 
 ### Generate — parametric block factories (deterministic fill)
+
+In a workspace script the same generators are `mol.generate(name, **params)` and `mol.prism(…)`, cached and decoratable — [[precis-workspace-mol-help]].
 
 ```python
 put(kind="se", id="tube1", text='''{"ops": [
@@ -271,6 +273,8 @@ means preview geometry (the spring-relaxed stick model), not a relaxed
 minimum; trust rung `geo`/`ml` numbers for placement decisions.
 
 ## Atomic mode — `view='sites'` (attachment-site enumerator)
+
+In a workspace script `mol.sites(geom, 'open & face:out & every:3')` runs this enumeration with a token grammar, and `mol.decorate` bonds a group at each site — [[precis-workspace-mol-help]].
 
 ```python
 get(kind="se", id="valve", view="sites", args={"block": "pillbox"})
@@ -409,3 +413,4 @@ other).
 
 - [[precis-se-help]] — the call surface: op grammar, units, non-atomic views
 - [[precis-structure-help]] — the atom-level design that `bind_structure` binds into
+- [[precis-workspace-mol-help]] — building and decorating molecules by script (the construction path for atomic blocks)
