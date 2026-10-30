@@ -270,6 +270,12 @@ the dated detail is in `git log` and the owning items):**
 7. **backlog/quest-batch-coverage-scan.md** — a quest-tier op to
    scan a named list of candidates × models; convenience over the documented
    per-candidate put recipe, so it ranks below the experiments that use it.
+8. **backlog/spin-polarised-fe-dft-check.md** (Reto 2026-10-29, review item
+   -30; filed 2026-10-30) — one spin-polarised DFT point on an Fe anchor of
+   slice 8's subject A; the slice-8 table carries "spin check: pending" until
+   it lands. Needs a single-point mode, a `dft` params pass-through and
+   per-species initial magmoms in the GPAW path, and a measured wall time
+   before any run.
 
 ## Parked
 

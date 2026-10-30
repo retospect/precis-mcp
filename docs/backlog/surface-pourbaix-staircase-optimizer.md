@@ -734,7 +734,9 @@ slice is the condition, and nothing here depends on item 23.
 **Risks (unmeasured).** Fe is magnetic and `mace:medium` is not spin-aware;
 the Ta spin check (design note §22i) does not transfer. A spin-polarised DFT
 point on one Fe anchor is ruled (2026-10-29) but is its own item, not part of
-this slice; it still needs a job type, a cost estimate and a filed item.
+this slice: `spin-polarised-fe-dft-check.md` (filed 2026-10-30; it still
+needs a single-point mode, per-species magmoms and a measured wall time).
+The provenance row's "<item id>" is that slug.
 One Fe geometry says nothing about Fe–Pd alloys in general.
 
 **Open.** The November paper collision: td462597 (this paper, cited in
