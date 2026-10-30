@@ -291,10 +291,7 @@ check their state first.
    2026-09-30, not yet wired; prerequisite for every future claim about
    pool headroom, because without it entry 3 cannot tell "pool starved"
    from "something else slow".
-5. **backlog/server-side-session-context.md** — owned by
-   graph-memory-consumers, not this thread; pointer only. Precondition
-   td458385 (sessions moving to this server) is this thread's own
-   Do-next 1.
+5. **backlog/context-navigation.md §7** — the per-session selector is the twin; owned by thread context-navigation.
 7. **Gripe comment cap** — `src/precis/handlers/gripe.py` caps routine
     reads at the newest20 comments; `view='comments'` exposes full history.
     R14 source is prepared; deployed replay remains pending.

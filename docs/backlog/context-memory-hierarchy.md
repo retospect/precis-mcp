@@ -6,6 +6,8 @@ prio: normal
 
 # Context memory hierarchy
 
+See also `context-navigation.md` (2026-10-30): the twin §7 and pointer rows §2 are the runtime side of the resident/discovered split.
+
 Grouped 2026-09-26 from 3 items that are sub-parts of one deliverable (each keeps its own section below; the originals are in the history). Split a section back out only when it becomes independently shippable.
 
 ## Vet against main and slice plan (2026-10-17, memory plan P3)

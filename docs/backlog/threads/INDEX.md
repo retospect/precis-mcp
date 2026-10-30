@@ -240,12 +240,25 @@ plan-tick-context-cut; agent execution lanes, budget and crash recovery) ·
 `ship-gate-ci.md` (gate, CI lanes and worktree reaper) ·
 `deploy-fleet-ops.md` (deploy script and fleet residue) ·
 `security-hardening.md` (credentials, role and sandbox boundaries) ·
-`agent-surface.md` (what an MCP call says and refuses; created 2026-10-17).
+`agent-surface.md` (what an MCP call says and refuses; created 2026-10-17) ·
+`context-navigation.md` (what an agent's context carries: the twin, sets,
+row grammar, Mode B; created 2026-10-30).
 Monitors, ship-gate-ci, deploy-fleet-ops and security-hardening serve the
-operations pillar; plugin-split, factory and agent-surface the platform
-bucket. Code-debt, db-schema and docs-audit items stay unthreaded.
+operations pillar; plugin-split, factory, agent-surface and
+context-navigation the platform bucket. Code-debt, db-schema and docs-audit items stay unthreaded.
 
 Seams:
+- `context-navigation` ↔ `agent-surface` — `backlog/block-navigation.md`
+  (authoring lint and block sizes stay agent-surface's; lists, sets and the
+  row grammar are context-navigation §3–§5) and seen-stubs
+  (`backlog/context-navigation.md` §7, listed in agent-surface Horizon 1).
+- `context-navigation` ↔ `graph-memory-consumers` — fisheye and the Mode B
+  loop (`backlog/context-navigation.md` §7–§8); graph-memory-consumers
+  lists them as a seam only.
+- `context-navigation` ↔ `factory` — plan_tick is Mode B's first adopter
+  (`backlog/plan-tick-context-cut.md` is the cut it generalises).
+- `context-navigation` ↔ `ship-gate-ci` — `backlog/compact-handoff.md`
+  (hook mechanics) merges into the twin reader once it exists.
 - `ship-gate-ci` ↔ `monitors-that-go-quiet` —
   monitors owns signals that lie, ship-gate-ci owns the gate and reaper that
   produce them.

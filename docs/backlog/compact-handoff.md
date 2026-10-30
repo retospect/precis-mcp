@@ -6,6 +6,8 @@ pillar: operations
 
 # /next → /compact handoff loop
 
+2026-10-30: the primary handoff payload is the twin snapshot (context-navigation.md §7) rendered back as pointer rows; the `/next`-written node stays as the intent layer; hook mechanics here unchanged. Merge into the twin reader once it exists (thread context-navigation, Horizon).
+
 Reto 2026-10-24 (chat, relayed by chat-9a): "lets do the /next /compact
 loop with a hook for now". Reto rules on this spec before anyone builds.
 

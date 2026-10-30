@@ -47,10 +47,7 @@ description budgets, then Drive.
 
 ## Horizon
 
-1. **backlog/mcp-seen-state-dedup.md** — the server answers a repeat
-   read with a `^^` back-reference; first in Horizon because tool-result
-   carry is the largest agent token cost, after the M3 error contract
-   because it waits on `multi-user-overhaul.md` S10.0 + S10b.
+1. **backlog/context-navigation.md §7** — seen-stubs are a reader over the twin; owned by thread context-navigation, listed here as the seam.
 2. **backlog/drive-filter-hierarchy.md** — Return and Showcase remain;
    Return needs personal viewing history.
 3. **backlog/drive-my-vs-agent-stuff.md** — separate a user's refs from

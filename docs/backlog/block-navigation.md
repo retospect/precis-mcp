@@ -7,6 +7,8 @@ prio: high
 
 # Block navigation — small addressable blocks, budgets instead of `more`
 
+Superseding spec for lists, sets and the row grammar: `context-navigation.md` §3–§5 (2026-10-30). The authoring lint and block-size rulings here stand; `budget=` refusal-with-outline becomes head + outline (§0) and `rs` sets (§4) replace rest-lines.
+
 Reto 2026-10-28: "For MCP, more is a kind of admission of failure. Skills
 and other designed content should be hierarchical and small, with xrefs to
 other sections. No page in skills should ever have more. Other content
@@ -15,9 +17,8 @@ blocks or sets of blocks that we want." Reviewed the same day by Fable
 (concept) and a Sonnet code-view pass; the rulings below are Reto's
 responses to that review. Thread: `threads/agent-surface.md`.
 
-Related: `mcp-seen-state-dedup.md` (stubs for blocks already sent),
-`server-side-session-context.md` and `context-memory-hierarchy.md`
-(preload), `tool-description-budgets.md` (cold-start bytes).
+Related: `context-navigation.md` (stubs for blocks already sent, preload),
+`context-memory-hierarchy.md`, `tool-description-budgets.md` (cold-start bytes).
 
 ## Why
 
@@ -56,7 +57,7 @@ which TOC line quality sets, not block size.
   compaction ever runs. Generalise it: stable prefix (system + pack),
   then a rolling summary, then the new request. The prefix stays cached;
   only the summary and request are written per turn. Within one long
-  run, fold old tool results to stubs (`mcp-seen-state-dedup.md`,
+  run, fold old tool results to stubs (`context-navigation.md` §7,
   gr499039). The fresh-agent pattern pays when summary + re-fetch costs
   less than carrying the history to the end of the run.
 - **Ingested content gets a derived hierarchy** through `view='toc'`

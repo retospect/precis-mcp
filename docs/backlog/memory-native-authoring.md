@@ -247,8 +247,7 @@ scripts only — nothing reads the graph at that moment.
   - A prod outage at session start left a session with no index at all.
   - `SPACE:` is filtered nowhere, so the imported nodes are visible to
     cluster agents' memory search and to the `clusterize` memory map. That
-    is accepted until `server-side-session-context.md` (graph-memory-consumers
-    Do-next 4) selects on it.
+    is accepted until `context-navigation.md` §7 (the twin) selects on it.
 - **[slice 2, built 2026-10-03]**
   - `meta={'hook': …}` on memory `put`/`edit`.
   - The index renders every node as `- Title (me…) — hook`. The handle,

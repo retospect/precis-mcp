@@ -7,6 +7,8 @@ prio: normal
 
 # ingest Claude Code session history into precis
 
+See also `context-navigation.md` (2026-10-30): the twin §7 records what the server rendered; this item still covers the agent's own output.
+
 Reto, 2026-09-24: "we should ... log all session history _into_ precis somehow."
 
 ## Motivation / why

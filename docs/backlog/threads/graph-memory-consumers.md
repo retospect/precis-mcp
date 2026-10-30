@@ -43,7 +43,7 @@ Current declared activity: the `roster:` front matter above; dated allocation de
 **Status:** ends when an agent never leaves the graph to do its work — no
 temp file for a proposal, no SQL for a write check, no guessing which
 capability exists — and text-file memory it replaces is retired per
-`docs/roadmap.md`. North-star: `backlog/fisheye-level2.md` (the focus verb); the
+`docs/roadmap.md`. North-star: `backlog/context-navigation.md §8`; the
 nanobuds draft evidence (proposal in /tmp, history by SQL, write checks by
 SQL) was closed 2026-10-02 by draft `view='history'`/`'proposals'` and the
 landed-sha edit ack. Both views were dogfooded 2026-10-03 on the live
@@ -150,12 +150,7 @@ and the R17 ruling keeps files and graph coexisting. Kept for the record.
      prod 2026-10-03. The CHECK is validated and allows claim, composite
      and hypothesis; the one `compound` row is now `composite`.
      `nanopub_artifacts` is append-only and was not rewritten.
-5. **backlog/fisheye-level2.md** — the focus verb and the render→act loop;
-   the render side (every kind, the browser focus page) shipped
-   2026-10-12.
-6. **backlog/server-side-session-context.md** — precondition td458385
-   (sessions move to the shared MCP server); the SPACE-axis segregation
-   `file-mirror.md` §"Pillar-review deltas" defines is what it selects on.
+5. **backlog/context-navigation.md §7–§8** — twin + Mode B loop, owned by thread context-navigation; seam only.
 
 ## Horizon
 
@@ -191,8 +186,9 @@ how an agent reaches the graph; `fisheye-*` is how it moves within it):
    shipped; the open item is the executed (dev-DB) runner.
 6. **backlog/skill-bundled-scripts.md**
 7. **backlog/turn-routing-and-context-dsl.md**
-8. **backlog/fisheye-context-eval-study.md** — the measurement tail
-   (the context-audit catalog lives in `scripts/context-audit/`; gr503440,
+8. **Context-audit tail** — the catalog lives in
+   `scripts/context-audit/`; the fisheye study (gr56588) is carried in
+   `backlog/context-navigation.md` §1 measures (gr503440,
    closed — its render residuals: halt-reason + numeric-handle items shipped
    2026-10-21; quest-frontier objective and recency N-of-K items stay
    with `handlers/quest.py` / `runtime/search.py` owners).

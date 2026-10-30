@@ -1,10 +1,12 @@
 ---
 status: draft
-title: Turn-as-job routing (delegate-on-confidence) + context curation — WIP design conversation; decisions recorded in ADR 0051
+title: Turn-as-job routing (delegate-on-confidence) — context curation moved to context-navigation.md
 pillar: local-compute
 ---
 
-# Turn-as-job routing + context curation
+# Turn-as-job routing (delegate-on-confidence)
+
+Context curation: see context-navigation.md §8 (2026-10-30).
 
 > **WIP design conversation.** Settled decisions live in ADR 0051
 > (git-only); the full reasoning is in this file's git history. This
@@ -14,13 +16,12 @@ pillar: local-compute
 
 ## Motivation / why
 
-Model selection is a patchwork and per-turn context assembly is
-hand-built or implicit. Two goals: spend the big model only where it
+Model selection is a patchwork. Goal: spend the big model only where it
 earns its keep, decided by a *reliable* signal (not a weak model
-grading its own homework); and let the model manage its own working
-set with a compact, stateful, addressable surface. Unifying frame:
-**each turn is a job** — persisted (prompt + route + eval + result),
-generalizing `plan_tick` to every turn.
+grading its own homework). Unifying frame: **each turn is a job** —
+persisted (prompt + route + eval + result), generalizing `plan_tick` to
+every turn. The working-set half (model-managed context) moved to
+`context-navigation.md` §8.
 
 ## Conclusions (fuller argument in git history / ADR 0051)
 
@@ -45,17 +46,6 @@ generalizing `plan_tick` to every turn.
   the return; "bail-up" is just the return surfacing. Today's tiers
   are two (Opus drives, Sonnet helps); the vocabulary is
   tier-count-agnostic.
-- **Part 2 — curation is structured tool calls** (`resticky`, `close`,
-  decay-by-neglect), *not* an inline magic-text DSL (ADR 0051 §6
-  superseded the `pc1234:+` prose ops; the `:±` grammar survives only
-  as shorthand for fidelity levels full/summary/keywords/drop).
-  Fisheye is the render primitive (eyes × DOI fidelity; `get` returns
-  a neighborhood, never a bare chunk — needs a derived-compute
-  priority lane). Budget is not a forcing function — collapse is for
-  sharpness; only the context window + runaway cap are hard. Plan ≠
-  dispatchable tree (outline artifact on the chunk substrate, linked
-  to the todo queue by anchors). find-Call auto-docks a provenance
-  region; the synthesis flow is emergent, not a procedure.
 - **Math:** ephemeral by default (`<<2+3=5>>` scratch), promoted on
   cite (`:save` → a durable `calc` ref storing the *expression*, a
   content-addressed derived-lane artifact). No cited number without a
@@ -110,18 +100,14 @@ Same discipline class as the SSRF guard.
 4. **Universal short codes are a hard prerequisite** (stable,
    cross-kind, globally-resolvable handles). Separate backlog item;
    must land first.
-5. **Demotion policy constants** (N, budget ceiling, LRU vs turn-count
-   weighting) are guesses — needs the turn corpus to tune.
-6. **Driver descent has no evaluator above it** — only the audit
+5. **Driver descent has no evaluator above it** — only the audit
    sample covers it.
-7. **Entry-triage predicate** — bootstrap heuristic TBD; a learned
+6. **Entry-triage predicate** — bootstrap heuristic TBD; a learned
    pre-router is the endpoint.
-8. **Fleet-shared vs lineage-hot cache policy** — the affinity-batch
+7. **Fleet-shared vs lineage-hot cache policy** — the affinity-batch
    parameters (bunch size, max wait, fairness vs hit-rate) are
    unspecified and provider-asymmetric (Anthropic TTL cache tolerates
    interleave; local llama.cpp does not).
-9. **Demotion churn vs cache** — batching trigger and its interaction
-   with the warn-at-N-1 ladder unspecified.
 
 ## Ideas / later
 
@@ -131,34 +117,19 @@ Same discipline class as the SSRF guard.
   back.
 - **Learned pre-router** trained on the persisted turn corpus; Opus
   triage becomes the fallback for the uncertain residual.
-- **Handoff-as-context-delta** — express the forward handoff as
-  `+ / s / -` ops + a terse note, unifying it with the DSL.
 
 ## Suggested first slice (nothing committed)
 
 1. **Persist turn-as-job + shadow router** — zero live risk; yields
    the calibration corpus that tells you whether Part 1 is sound.
-2. **Universal short codes**, then the read-only half of Part 2:
-   fidelity levels + auto-demotion with inline warnings. No forks, no
-   Call/Spawn yet.
+2. **Universal short codes** (prerequisite for `context-navigation.md`
+   §8's handles). No forks, no Call/Spawn yet.
 3. Wire **Call / Spawn** onto the existing `requested`→job /
    `derived_job_succeeded` / `dispatch` primitives, with the
    receipt-default return contract.
 
-## Demand confirmed 2026-09-29 — the resticky manager
+## Reto 2026-09-29 — the resticky manager
 
 Reto, in the local-model design session (big-model-manage worktree), asked
 for "an agent or at least a skill to manage what gets unstickied and what
-gets restickied". That is the curation half above — `resticky` / `close` as
-structured tool calls with decay-by-neglect, rather than a magic-text DSL —
-plus `context-memory-hierarchy.md`'s placement rule (resident = fires
-without being asked; discovered = answers a question) and its computed
-ACTIVE/SETTLED/SPENT bands.
-
-What is new in the ask is the *driver*: he wants it run as a standing pass,
-not only as verbs a model may call. Whether that is a skill an agent invokes
-or a scheduled worker pass is undecided. The evidence it should act on is
-now available either way — `mcp-surface-economy.md` §3 reads the
-`tool_calls` ledger for injected-but-never-used, which is exactly the
-unsticky signal, and `friction-reflection-enable.md` supplies the
-self-reported counterpart.
+gets restickied". The curation design is now `context-navigation.md` §8.

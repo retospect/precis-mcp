@@ -26,7 +26,7 @@ identity, RLS phase 2 — decided design, reused here),
 `graph-node-trust-state.md` §2b rulings Q2 (S4), `slullama-hpc-placement.md`
 D1/D2 (S1, S2), thread `threads/security-hardening.md`,
 `out-of-box-setup.md` (the admin users screen needs S3; `setup --roles`
-needs the ownership split), `mcp-seen-state-dedup.md` (needs S10.0 + S10b;
+needs the ownership split), `context-navigation.md` §7 (needs S10.0 + S10b;
 S10b is deferred until that item is scheduled).
 
 ## Motivation / why
@@ -269,7 +269,7 @@ has moved past `0231`/`0234`. As built:
 ## Migration path — independently shippable slices
 
 Order: S1 (db-own) → S3 → S2 → S4 → S10a → S6 → S7 → S9 → S8; S10c at the
-cutover date S10a records; S10b deferred until `mcp-seen-state-dedup.md`
+cutover date S10a records; S10b deferred until `context-navigation.md` §7
 is scheduled (it needs only S10.0 and S10b, not the rest of this spec).
 S1 and S2 close the accepted HPC risks, S4 closes trust Q2; S3 unblocks
 the admin screen. S10.0 (an experiment, no code) can run any time.
@@ -313,7 +313,7 @@ connection, and a subagent shares its parent's connection), and the server
 cannot keep per-agent state. That second gap is why the per-session skill
 serve ledger was removed (gr477798, `serve_ledger.py` docstring): a subagent
 on the parent's connection got stubs for skills only its parent had seen.
-`mcp-seen-state-dedup.md` needs the per-agent key this slice supplies.
+`context-navigation.md` §7 needs the per-agent key this slice supplies.
 
 ### Design
 
@@ -385,7 +385,7 @@ count of write calls in the last 7 days from connections with no
 |---|---|---|
 | **S10.0** experiment (15 min, no code shipped) | In a scratch Claude Code session with a logging PreToolUse hook on `mcp__precis__.*` and one subagent dispatch, record: (a) main-session payloads omit `agent_id`, subagent payloads carry it (`edit-delegation-nudge.py` already assumes this, unverified for MCP tools); (b) `updatedInput` on an MCP tool call reaches the server (see `_caller` in `tool_ledger.arg_sample`); (c) a subagent whose definition has an inline `mcpServers` entry opens its own connection (distinct `tool_ledger.session_id`) with its own headers; (d) whether SessionStart `source=compact` or PreCompact fire for a *subagent's* compaction, and with which `agent_id`. Write the four answers into this section. | Four recorded answers with Claude Code version. Fallback if (b) fails: subagents that need their own key get an inline `mcpServers` entry in `.claude/agents/*.md` (only if (c) holds); built-in subagents (Explore, general-purpose, fork) stay unkeyed and are treated as the parent. |
 | **S10a** credentials | migration `agent_credentials`; `precis.agent_identity` (`mint`, `resolve`, `revoke`); `_install_token_auth` accepts a handle as bearer and binds the principal + role; the install token keeps working as `dev-agent` until the cutover date; `claude_agent.py`, the worker envelope and the fleet launch scripts mint one handle per agent with `ttl` = job budget; per-user tokens minted/revoked at `/account` (`requesting_user()` → `principal()`); `tool_ledger` gains `agent_credential_id`; `scripts/mcp-http-install --rotate/--revoke`; `mcp.install_token_reader_from` written at ship; `precis doctor` bare-token warning; `secrets.scrub` applied in `tool_ledger.record_call` and the `job_summary` writer | Two concurrent launched agents show distinct `agent_credential_id` on every ledger row; two per-user tokens in interleaved sessions never see each other's principal; a revoked handle or a rotated-out install token gets 401 on its next request; the Q5 canary (db-own's test, extended to `tool_ledger.arg_sample` and `job_summary` chunks) never appears in any prompt, transcript, tool result, log or stored row; `mint` above the parent's role refuses; `precis doctor` lists bare-token write counts and the cutover date. |
-| **S10b** subagent stamp — **deferred** until `mcp-seen-state-dedup.md` is scheduled (its only consumer) | `scripts/hooks/mcp-caller-stamp.py` (stdlib, every doubt passes the call unchanged), wired PreToolUse in `.claude/settings.json` and the global copy; `_dispatch` strips `_caller`, binds `caller()`; `tool_ledger` gains `caller_session_id`, `agent_id`, `agent_type` | A main-loop call logs `agent_id=main`; a subagent call logs its `agent_id`; a handler never receives `_caller`; a call whose model-written `_caller` names a wider role runs at the connection's role. |
+| **S10b** subagent stamp — **deferred** until `context-navigation.md` §7 is scheduled (its only consumer) | `scripts/hooks/mcp-caller-stamp.py` (stdlib, every doubt passes the call unchanged), wired PreToolUse in `.claude/settings.json` and the global copy; `_dispatch` strips `_caller`, binds `caller()`; `tool_ledger` gains `caller_session_id`, `agent_id`, `agent_type` | A main-loop call logs `agent_id=main`; a subagent call logs its `agent_id`; a handler never receives `_caller`; a call whose model-written `_caller` names a wider role runs at the connection's role. |
 | **S10c** bare token → `reader` | on and after `mcp.install_token_reader_from` the install token maps to `reader`; interactive Claude Code sessions get a per-machine `dev-agent` handle from `scripts/mcp-http-install`; stdio keeps its env identity | A request with the bare install token can `get`/`search`/`more` and is refused on `put` with a hint naming `scripts/mcp-http-install`; before the date it still writes and `precis doctor` says so. |
 
 ### Not built
@@ -510,7 +510,7 @@ Cuts: `assert_human_actor` (dropped); the `vault.acl` table, name rename
 and compatibility view (one `class` column, built directly in 0231;
 Reto 2026-10-22); the sudo window (Q4 → Basic header verified on every admin POST);
 S5 as a slice (folded into S10a's `agent_credentials`); S10b (deferred
-until `mcp-seen-state-dedup.md` is scheduled); `precis setup --roles`
+until `context-navigation.md` §7 is scheduled); `precis setup --roles`
 creating four roles (two: `precis_ingress`, `agent_rw`).
 
 Names confirmed (Reto 2026-10-22): roles `precis_ingress`, `agent_rw`,

@@ -409,6 +409,7 @@ than leaving it.
 
 Newest first; one line per pass (`/pillar-review` writes it).
 
+- 2026-10-30 — thread context-navigation active (Reto; runway ends after A0 until the subagent hook check).
 - 2026-10-17 — Reto's roadmap rulings (coordinator window), not a full
   pass. The roster moves into thread front matter; the separate roster
   table is retired and model choice moves to launch time (Sonnet by

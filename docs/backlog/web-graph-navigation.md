@@ -43,7 +43,7 @@ Added 2026-10-06 from Reto's "conveniently dive into the graph and back out agai
 
 - Editing links from the graph page (read-only).
 - 3D, WebGL, force-directed layouts.
-- The `focus` verb, render→act loop, fisheye distortion semantics: `fisheye-level2.md`. `/eye/<handle>` is shipped (`precis_web/routes/eye.py`), not an item. Ranking lives in `threads/graph-memory-consumers.md` and `threads/knowledge-mesh.md`, not here.
+- The `focus` verb, render→act loop, fisheye distortion semantics: `context-navigation.md` §8. `/eye/<handle>` is shipped (`precis_web/routes/eye.py`), not an item. Ranking lives in `threads/graph-memory-consumers.md` and `threads/knowledge-mesh.md`, not here.
 - Materialised closure, graph DB, cached neighbourhood (computed on read, as fisheye).
 - New relations.
 

@@ -117,8 +117,8 @@ is the reference ring with pins and claim groups.
 `utils/working_set_render.py::render_working_set` composes N eyes into one
 deduplicated context. Level 1 (policy-chosen eyes) is live on planner +
 dream passes; wired on `draft` (`extent=`) and `finding` (`view=<label>`);
-Level 2 (a `focus` verb, the render→act loop) is `fisheye-level2.md`;
-advertising the affordance on every kind is that item's second section.
+Level 2 (a `focus` verb, the render→act loop) is `context-navigation.md` §8;
+advertising the affordance on every kind shipped (`extent=` on every kind's `get`).
 `precis_web/draft_eyes.py` already renders pens + eyes for drafts.
 
 So the "universal front end" is the eye system, and this item adds rungs
@@ -149,8 +149,7 @@ and widens sets rather than a parallel verb:
   (check `utils/kind_facts.py` first — it may already be this). A registry
   test asserts a non-empty gist per kind on a fixture ref, parallel to
   the every-kind-has-a-help-skill test.
-- **Wire `extent=`/`view=<label>` on every kind's `get`** — the
-  `fisheye-affordance-generalize` section of `fisheye-level2.md`, promoted
+- **Wire `extent=`/`view=<label>` on every kind's `get`** — promoted
   from "mechanical, optional" to a prerequisite here.
 - **Browser focus page** = generalise `precis_web/draft_eyes.py` to any
   handle: pen tray, eyes with extents, click-to-refocus with breadcrumbs.
@@ -286,7 +285,7 @@ The 0-rows `material_values` registry is superseded by `measures` with
 - A graph database. Postgres + recursive CTE + pgvector is the graph.
 - Turning skills into refs. Filed as `file-mirror.md` (2026-09-30).
 - The roadmap tick body itself (`bootstrap-roadmap-quest.md`).
-- The `focus` verb and render→act loop (`fisheye-level2.md`); this item
+- The `focus` verb and render→act loop (`context-navigation.md` §8); this item
   extends the ladder those will drive.
 
 ## Acceptance criteria

@@ -96,7 +96,7 @@ open their own connection, so there is no multi-op transaction.
 - Bulk edits, merges, splits or relinks of many edges — those are
   gardener proposals (`graph-gardener-value.md`, "proposals, not edits"). This
   page could *review* a gardener proposal later; that is a separate item.
-- The agent-side `focus` verb (`fisheye-level2.md`).
+- The agent-side `focus` verb (`context-navigation.md` §8).
 - Chunk-scoped edges (`~N` endpoints) in the add form. Rows that already
   have a chunk endpoint show it and can be removed/retyped, but the form
   adds ref-level edges only.

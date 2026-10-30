@@ -145,3 +145,17 @@ fetched often, drop pointers never fetched.
   the first `search`/`get` response.
 - Backfill `autoskill_sessions` from 30 days of `llm_call_log` blobs plus
   `tool_calls` to skip cold start.
+
+## Revision 2026-10-30 (Reto, session MCP-TOKEN-FIX)
+
+- Deploy as built.
+- Call-taught skills are injected in the result of the first call that needs
+  them. Evidence is the call itself: no injected-credit, and the 80 % core and
+  the 24,000-char block go.
+- Everything else is a pointer row carrying the fetch-rate ladder
+  (summary → hint → gone) and hint-only exposures.
+- Core sorted by slug.
+- The pointer block counts inside the Mode B budget.
+- A0: agentlog on doctor_tick / review / asa_bot.
+- The hold-out comparison starts once pointer rows are on the twin.
+- Design: `context-navigation.md` §2.

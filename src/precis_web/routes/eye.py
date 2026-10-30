@@ -5,7 +5,7 @@ the MCP ``get(id=<handle>, extent=<rung>)`` returns, through the same
 dispatcher (so every kind the ladder covers — and every refusal — is the
 agent's, not a second renderer), with every handle in it linked to its own
 focus page. It renders, it does not act: the ``focus`` verb and the
-render→act loop stay in ``fisheye-level2.md``; the picture (radial SVG,
+render→act loop stay in ``context-navigation.md`` §8; the picture (radial SVG,
 ``/graph/<kind>/<id>``) is ``web-graph-navigation.md``'s and the two
 cross-link.
 

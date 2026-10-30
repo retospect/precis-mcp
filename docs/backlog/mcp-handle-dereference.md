@@ -26,7 +26,7 @@ when the write executes. The earlier `get` permits the substitution; it does not
 pin the bytes. A source edited between the calls yields the new value and a new
 digest in the ack.
 
-Related: `mcp-seen-state-dedup.md` (session identity and the difference between
+Related: `context-navigation.md` §7 (session identity and the difference between
 a shared server and a shared context), `workspace-db-references.md` (lazy handle
 expansion at an export boundary), gr524256 (cursor lifetime/reuse defects).
 

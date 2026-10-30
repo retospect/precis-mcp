@@ -8,6 +8,8 @@ pillar: platform
 
 # plan_tick context cut (P2 of the 2026-08-15 zombie-loop plan)
 
+See also `context-navigation.md` (2026-10-30): Mode B §8 is the general form of this cut; plan_tick is the first adopter.
+
 **Do not start before ~2026-08-24** — the criterion is one healthy baseline
 week of plan_tick cost/turn data *after* the credential fix deployed
 (2026-08-15), so the savings are measured against a real baseline instead of
