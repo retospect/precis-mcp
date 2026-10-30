@@ -68,6 +68,11 @@ _A_PER_M = 1e10
 #: (guard-column overlap) — far below any bond length (σ ≈ 1.42 Å) and
 #: far above the structure_sha rounding (1e-6).
 _MERGE_EPS_A = 1e-3
+#: The bond order a Net's sp2-sp2 bond is exported at: the Pauling
+#: estimate every sp2 generator uses (``hexfold_spec._SP2_BOND_ORDER``),
+#: so an interior atom's three bonds sum to carbon's valence exactly
+#: (``kind="aromatic"``; a bond touching an sp3 atom stays order 1).
+_SP2_BOND_ORDER = 4.0 / 3.0
 
 _FRAME_TILE = "tile"
 _FRAME_INSTANCE = "instance"
@@ -324,7 +329,7 @@ def _mint_labels(elements: list[str]) -> list[str]:
 def _scene_from_parts(
     elements: list[str],
     carts: np.ndarray,
-    bonds: list[tuple[int, int, float]],
+    bonds: list[tuple[Any, ...]],
     *,
     cell: Any = None,
     maker: int | None = None,
@@ -333,7 +338,9 @@ def _scene_from_parts(
     """A ``precis.structure.scene.Scene`` from cartesian parts — atoms
     labelled ``a<El><n>`` in input order. ``makers`` overrides ``maker``
     per atom (a Net's atoms cite the builder frame that minted them);
-    bonds always take the single ``maker``."""
+    bonds always take the single ``maker``. A bond row is ``(i, j,
+    order)`` or ``(i, j, order, kind)`` — ``kind`` defaults to
+    ``"pairwise"``."""
     from precis.structure.scene import Atom, Bond, Scene
 
     cell = cell if cell is not None else _bounds_cell(carts)
@@ -353,8 +360,14 @@ def _scene_from_parts(
         cell=cell,
         atoms=atoms,
         bonds=[
-            Bond(i=labels[int(a)], j=labels[int(b)], order=float(o), maker=maker)
-            for a, b, o in bonds
+            Bond(
+                i=labels[int(row[0])],
+                j=labels[int(row[1])],
+                order=float(row[2]),
+                kind=str(row[3]) if len(row) > 3 else "pairwise",
+                maker=maker,
+            )
+            for row in bonds
         ],
     )
 
@@ -534,7 +547,13 @@ def geom(
             ordered = sorted(atoms, key=lambda a: a.ord)
             elements = [a.element for a in ordered]
             makers = [getattr(a, "maker", None) for a in ordered]
-            bonds = list(getattr(obj, "bonds", ()))
+            hyb = {a.ord: a.hyb for a in ordered}
+            bonds = [
+                (i, j, _SP2_BOND_ORDER, "aromatic")
+                if hyb[i] == "sp2" and hyb[j] == "sp2"
+                else (i, j, float(o), "pairwise")
+                for i, j, o, *_ in getattr(obj, "bonds", ())
+            ]
             census = _net_census(obj, ordered, elements)
             if coords is not None:
                 try:
@@ -575,8 +594,15 @@ def geom(
             list(elements),
             np.asarray(xyz, dtype=np.float64),
             # (i, j, order) or (i, j, order, kind) — GeneratedBlock and
-            # hexfold Block/Net bond rows alike
-            [(int(b_[0]), int(b_[1]), float(b_[2])) for b_ in (bonds or ())],
+            # hexfold Block/Net bond rows alike. Only a Net's rows carry
+            # their kind through (its sp2 bonds are ``aromatic`` 4/3); a
+            # Block's stay as they have always been exported.
+            [
+                (int(b_[0]), int(b_[1]), float(b_[2]), *b_[3:4])
+                if census is not None
+                else (int(b_[0]), int(b_[1]), float(b_[2]))
+                for b_ in (bonds or ())
+            ],
             makers=makers,
         )
         m = {"units": "A", "coords": coord_kind, **dict(meta or {})}
@@ -886,7 +912,7 @@ def _flatten_atomic(g: Geom) -> Any:
     labels_out: list[str] = []
     elements_out: list[str] = []
     carts_out: list[np.ndarray] = []
-    bonds_out: list[tuple[int, int, float]] = []
+    bonds_out: list[tuple[int, int, float, str]] = []
     bond_makers: list[int | None] = []
     makers: list[int | None] = []
     counters: dict[str, int] = {}
@@ -904,7 +930,12 @@ def _flatten_atomic(g: Geom) -> Any:
             for b in sub.scene.bonds:
                 if b.i in idx_map and b.j in idx_map:
                     bonds_out.append(
-                        (base + idx_map[b.i], base + idx_map[b.j], float(b.order))
+                        (
+                            base + idx_map[b.i],
+                            base + idx_map[b.j],
+                            float(b.order),
+                            b.kind,
+                        )
                     )
                     bond_makers.append(maker if maker is not None else b.maker)
             labels_out.extend(labels)
@@ -954,9 +985,10 @@ def _flatten_atomic(g: Geom) -> Any:
                 i=new_labels[a],
                 j=new_labels[b],
                 order=o,
+                kind=k,
                 maker=maker,
             )
-            for (a, b, o), maker in zip(bonds_out, bond_makers)
+            for (a, b, o, k), maker in zip(bonds_out, bond_makers)
         ],
     )
 

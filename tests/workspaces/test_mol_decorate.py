@@ -404,14 +404,44 @@ def test_cap_after_decorate_keeps_sp2_chemistry(prism: tuple) -> None:
     # no lattice carbon exceeds its sp2 three bonds: the Net's hybridization
     # (invisible in the all-single-bond scene) steered the caps
     assert max(deg[labels[a.ord]] for a in net.atoms if a.hyb == "sp2") <= 3
-    # H on every open valence but the ones skipped on a converging rim, which
-    # the findings name
-    skipped = {
-        f.split()[1] for f in capped.findings if f.startswith("decorate.site_skipped")
-    }
-    left = {s.atom for s in mol.sites(capped, "open")}
-    assert left <= skipped
     assert len(capped.scene.atoms) > len(decorated.scene.atoms) + 100
+
+
+def test_cap_after_decorate_takes_the_net_path_on_what_is_left(prism: tuple) -> None:
+    """The Net survives decoration: ``cap`` places ``terminate_open_edges``'
+    H on every edge atom the decoration did not bond to (no skipped
+    converging-rim sites, nothing left open), and none on the hosts that
+    hold a group."""
+    net, xyz, g = prism
+    decorated = mol.decorate(g, "open & face:out & every:3", group="COOH")
+    capped = mol.cap(decorated)
+    assert [f for f in capped.findings if "site_skipped" in f] == []
+    assert mol.sites(capped, "open") == []
+    labels = list(g.scene.atoms)
+    holds_group = {s.atom for s in mol.sites(g, "open & face:out & every:3")}
+    hosts, _pos = hexfold_spec.terminate_open_edges(net, xyz, "H")
+    wanted = Counter(labels[h] for h in hosts)  # 2 on a one-bond strip corner
+    expect = Counter(
+        {
+            la: n - (la in holds_group)  # a group took one of the valences
+            for la, n in wanted.items()
+            if n - (la in holds_group) > 0
+        }
+    )
+    n_new = len(capped.scene.atoms) - len(decorated.scene.atoms)
+    assert n_new == sum(expect.values())
+    added = set(capped.scene.atoms) - set(decorated.scene.atoms)
+    got: Counter[str] = Counter()
+    for b in capped.scene.bonds:
+        if b.j in added and capped.scene.atoms[b.j].element == "H":
+            got[b.i] += 1
+    assert got == expect
+    # the capped, decorated prism's lattice carbons stay at three bonds
+    deg: Counter[str] = Counter()
+    for b in capped.scene.bonds:
+        deg[b.i] += 1
+        deg[b.j] += 1
+    assert max(deg[labels[a.ord]] for a in net.atoms) <= 3
 
 
 # -- the wheel ----------------------------------------------------------------

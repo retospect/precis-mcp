@@ -149,13 +149,18 @@ class Tracer:
     def _file_of(self, f: types.FrameType) -> str:
         """The frame's file — ``work_root``-relative for user code, else
         the caller's module name (library internals: kept for the key,
-        never rendered)."""
+        never rendered). The entry script (``__main__``) is a rendered
+        site, not an internal: a host run of ``python path/main.py``
+        whose script sits outside ``work_root`` still cites ``main.py``,
+        as the sandbox's ``/work/main.py`` does."""
         name = f.f_code.co_filename
         rel = os.path.relpath(name, self.work_root)
         if not rel.startswith("..") and not os.path.isabs(rel):
             return rel.replace(os.sep, "/")
         mod = f.f_globals.get("__name__")
-        return str(mod) if mod else os.path.basename(name)
+        if mod and mod != "__main__":
+            return str(mod)
+        return os.path.basename(name)
 
     def _in_work(self, f: types.FrameType) -> bool:
         """The frame's file lives under ``work_root`` and is not staged

@@ -44,6 +44,11 @@ _FIXED_VALENCE = frozenset({"H", "B", "C", "N", "O", "F", "Si", "Cl", "Br", "I"}
 #: network sums 3 × 4/3), not an open valence.
 _OPEN_EPS = 0.25
 
+#: Sigma-neighbour budget of a delocalized (aromatic / fractional-order)
+#: sp² carbon — the same rule ``precis_geom.mol._valence.open_count`` caps
+#: by.
+_SP2_SIGMA = 3
+
 #: Atoms named in a finding's ``atoms`` / text before "+N more".
 _NAMED = 6
 
@@ -100,9 +105,15 @@ def _open_valence(scene: Scene, ported: set[str]) -> list[tuple[str, str, float]
     if not scene.bonds:
         return []  # no bond graph at all: open valence is unknowable
     used: dict[str, float] = {}
+    count: dict[str, int] = {}
+    deloc: set[str] = set()  # carbons on a fractional-order (sp²) bond
     for b in scene.bonds:
+        frac = b.kind == "aromatic" or abs(b.order - round(b.order)) > 1e-6
         for end in (b.i, b.j):
             used[end] = used.get(end, 0.0) + float(b.order)
+            count[end] = count.get(end, 0) + 1
+            if frac:
+                deloc.add(end)
     out: list[tuple[str, str, float]] = []
     for label, atom in scene.atoms.items():
         if atom.element not in _FIXED_VALENCE or label in ported:
@@ -113,6 +124,12 @@ def _open_valence(scene: Scene, ported: set[str]) -> list[tuple[str, str, float]
         if mv is None or not known:
             continue
         deficit = mv - used.get(label, 0.0)
+        if atom.element == "C" and label in deloc:
+            # a delocalized sp² carbon is full at three sigma neighbours
+            # (H counts): its pi share is spread over the net, so the
+            # order sum alone (3 × 4/3 inside, 2 × 4/3 + 1 at a capped
+            # edge) cannot tell open from closed
+            deficit = min(deficit, _SP2_SIGMA - count.get(label, 0))
         if deficit >= _OPEN_EPS:
             out.append((label, atom.element, deficit))
     return out

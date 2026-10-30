@@ -7,13 +7,22 @@ and the two read the same finding text, each naming the nearest user frame
 from __future__ import annotations
 
 import json
+import subprocess
+import sys
+from collections import Counter
 from pathlib import Path
 from typing import Any
 
+import numpy as np
 import pytest
 
+import precis_geom.assembly as pga
+import precis_geom.mol as mol
+from hexfold.prism import prism_tube
+from hexfold.stick import stick
 from precis.store import Store
 from precis.structure import check as chem
+from precis_se.atomic.generators import hexfold_spec
 from precis_se.workspace_import import import_workspace_run
 from tests.workspaces._script import load_script
 
@@ -87,6 +96,110 @@ def test_port_atom_exempts_open_valence(tmp_path: Path) -> None:
     assert [f.rule for f in chem.check(scene) if f.rule == "open_valence"]
     ported = chem.check(scene, ports=[{"name": "p", "atom": "aC1"}])
     assert not [f for f in ported if f.rule == "open_valence"]
+
+
+@pytest.fixture(scope="module")
+def prism() -> tuple[Any, Any, Any]:
+    net, _tube = prism_tube(4, 4, 2, "++++++")
+    xyz = stick(net)
+    return net, xyz, pga.geom(net, coords=xyz)
+
+
+def _open_labels(geom: Any) -> list[str]:
+    """Labels ``open_valence`` names — read off ``_open_valence`` (the
+    finding text names six), after the same normalising ``check`` does."""
+    scene = chem._normalised(geom.flatten())
+    return [lab for lab, _el, _d in chem._open_valence(scene, set())]
+
+
+def test_uncapped_prism_is_open_only_on_its_edge_atoms(prism: tuple) -> None:
+    """A stick-relaxed prism is a closed sp2 net plus open edges: the
+    interior sp2 carbons (bonds 3 x 4/3) are not under-valent; the open
+    atoms are exactly the hosts ``terminate_open_edges`` caps — 96 two-bond
+    atoms (one H) and 24 one-bond corners (two H): 120 atoms, 144 H."""
+    net, xyz, g = prism
+    hosts, _pos = hexfold_spec.terminate_open_edges(net, xyz, "H")
+    labels = list(g.scene.atoms)
+    assert (len(hosts), len(set(hosts))) == (144, 120)
+    got = _open_labels(g)
+    assert sorted(got) == sorted({labels[h] for h in hosts})
+    # and the deficit is the number of H a host takes (1 or 2)
+    scene = chem._normalised(g.flatten())
+    deficit = {lab: round(d) for lab, _el, d in chem._open_valence(scene, set())}
+    assert Counter(deficit.values()) == {1: 96, 2: 24}
+    texts = [f.text() for f in chem.check(g) if f.rule == "open_valence"]
+    assert len(texts) == 1 and "120 atom(s) below" in texts[0]
+
+
+def test_capped_prism_has_no_open_valence(prism: tuple) -> None:
+    _net, _xyz, g = prism
+    capped = mol.cap(g)
+    assert _open_labels(capped) == []
+    assert [f for f in chem.check(capped) if f.rule == "open_valence"] == []
+
+
+def test_decorated_then_capped_prism_has_no_skips_or_open_valence(
+    prism: tuple,
+) -> None:
+    _net, _xyz, g = prism
+    decorated = mol.decorate(g, "open & face:out & every:3", group="COOH")
+    capped = mol.cap(decorated)
+    assert [f for f in capped.findings if "site_skipped" in f] == []
+    assert _open_labels(capped) == []
+
+
+def test_benzene_has_no_open_valence() -> None:
+    benzene = mol.frag(smiles="c1ccccc1")
+    assert _open_labels(benzene) == []
+    assert _open_labels(mol.cap(benzene)) == []
+
+
+def test_a_bare_sp2_carbon_in_a_net_still_counts_as_open() -> None:
+    """The sigma rule only fills a delocalized carbon to three neighbours:
+    two 4/3 bonds and no H leave one open."""
+    from precis.structure.cell import Cell
+    from precis.structure.scene import Atom, Bond, Scene
+
+    atoms = {
+        la: Atom(la, "C", np.full(3, 0.5) + np.array([k * 0.05, 0.0, 0.0]))
+        for k, la in enumerate(("aC1", "aC2", "aC3"))
+    }
+    bonds = [
+        Bond("aC1", "aC2", 4.0 / 3.0, kind="aromatic"),
+        Bond("aC2", "aC3", 4.0 / 3.0, kind="aromatic"),
+    ]
+    scene = Scene(
+        cell=Cell(np.eye(3) * 20.0, (False, False, False)), atoms=atoms, bonds=bonds
+    )
+    deficits = {lab: round(d) for lab, _e, d in chem._open_valence(scene, set())}
+    assert deficits == {"aC1": 2, "aC2": 1, "aC3": 2}
+
+
+def test_finding_site_is_the_script_file_when_run_as_main(tmp_path: Path) -> None:
+    """``python path/main.py`` outside the run's work root: the trace frame
+    is module ``__main__``, and the site still reads ``main.py:<line>``."""
+    src = tmp_path / "src"
+    src.mkdir()
+    script = src / "main.py"
+    script.write_text(
+        _SCRIPT
+        + "\n\nif __name__ == '__main__':\n    import sys\n    main(sys.argv[1])\n",
+        encoding="utf-8",
+    )
+    out_dir = tmp_path / "work" / "out" / "r"  # work root = tmp_path/work
+    run = subprocess.run(
+        [sys.executable, str(script), str(out_dir)],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        cwd=str(tmp_path),
+        check=False,
+    )
+    assert run.returncode == 0, run.stderr
+    open_valence = [t for t in _texts(out_dir) if "open_valence" in t]
+    assert len(open_valence) == 1, _texts(out_dir)
+    assert open_valence[0].endswith(f"at main.py:{_BLOCK_LINE}"), open_valence[0]
+    assert "__main__" not in open_valence[0]
 
 
 def test_strict_raises_and_check_json_still_written(tmp_path: Path) -> None:

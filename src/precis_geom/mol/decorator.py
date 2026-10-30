@@ -267,12 +267,33 @@ def decorate(
     return out
 
 
+def _untouched_hosts(g: Geom, ref: Any) -> frozenset[int]:
+    """Net ordinals whose scene atom still has exactly the Net's bonds:
+    nothing decorated or capped there yet. A site a group (or an H) was
+    bonded to has consumed that open valence — ``terminate_open_edges``
+    reads the Net's degree alone and would cap it again."""
+    _used, count = _valence.bond_tables(g.scene)
+    degree = [0] * len(ref.net.atoms)
+    for i, j, *_ in ref.net.bonds:
+        degree[i] += 1
+        degree[j] += 1
+    labels = list(ref.scene.atoms)  # ordinal → label
+    return frozenset(o for o, la in enumerate(labels) if count.get(la, 0) == degree[o])
+
+
 def _cap_net(g: Geom, ref: Any) -> Geom:
     """The Net path: ``hexfold_spec.terminate_open_edges`` places the H,
-    exactly as the ``terminate`` op does."""
+    exactly as the ``terminate`` op does — on the hosts nothing has been
+    bonded to since the Net was exported (all of them, on a pristine
+    Geom)."""
     from precis_se.atomic.generators.hexfold_spec import terminate_open_edges
 
-    hosts, positions = terminate_open_edges(ref.net, ref.xyz, "H")
+    hosts, positions = terminate_open_edges(
+        ref.net,
+        ref.xyz,
+        "H",
+        eligible_hosts=None if g.scene is ref.scene else _untouched_hosts(g, ref),
+    )
     scene = copy.deepcopy(g.scene)
     labels = list(ref.scene.atoms)  # ordinal → label (Net ordinals are scene order)
     maker = pga._leaf()
@@ -307,16 +328,22 @@ def _cap_net(g: Geom, ref: Any) -> Geom:
 def cap(geom: Any, group: Any = "H") -> Geom:
     """``geom`` with every open valence capped by ``group`` (default H).
 
-    On a Geom built from a hexfold Net (``pga.geom(net, coords=...)``,
-    untouched since) with ``group='H'`` this is
-    ``hexfold_spec.terminate_open_edges`` — the very function the
-    ``terminate`` op uses, so the two agree by construction. Otherwise it
-    is ``decorate(sites='open', group=group)``, repeated until no open
-    valence is left (one group per open atom per pass)."""
+    On a Geom built from a hexfold Net (``pga.geom(net, coords=...)``)
+    with ``group='H'`` this is ``hexfold_spec.terminate_open_edges`` — the
+    very function the ``terminate`` op uses, so the two agree by
+    construction. After a ``decorate`` the Net still describes the
+    unreached edge atoms: they take the Net path, the sites the
+    decoration bonded to are left out, and ``decorate(sites='open')``
+    finishes what is left (an atom a group only half-filled). Any other
+    Geom is ``decorate(sites='open', group=group)``, repeated until no
+    open valence is left (one group per open atom per pass)."""
     g = _sites.bake(pga.geom(geom))
-    ref = _sites.net_pristine(g)
+    ref = _sites.net_ref(g)
     if ref is not None and group == "H":
-        return _cap_net(g, ref)
+        out = _cap_net(g, ref)
+        if g.scene is ref.scene:  # pristine: the Net path is the whole cap
+            return out
+        g = out
     out = g
     for _ in range(_MAX_CAP_PASSES):
         rows = _sites.sites(out, "open")
