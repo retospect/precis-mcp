@@ -925,13 +925,50 @@ class SearchMixin(RuntimeShape):
         match. ``None`` for anything that is not a well-formed handle,
         resolves to nothing (unknown/retired), or has no store —
         the caller falls through to the ordinary fan-out untouched.
+
+        A non-handle ``q`` that *is* another identifier form — a DOI
+        (bare or pasted doi.org URL) or a cite_key — resolves through
+        the same probe the web /drive box redirects on
+        (:func:`precis.handlers._query_identifier.resolve_query_identifier`)
+        and pins the same record card (gr537783); before this, a bare
+        DOI/cite-key ``search`` fanned out to chunk text the id never
+        appears in and returned nothing.
         """
         store = self.hub.store
         if not isinstance(q, str) or store is None:
             return None
         text = q.strip()
         if not handle_registry.is_well_formed(text):
-            return None
+            # A DOI (bare or pasted doi.org URL) or a cite_key names one
+            # ref too — resolve it through the same identifier probe the
+            # web /drive box redirects on
+            # (:func:`precis.handlers._query_identifier.resolve_query_identifier`)
+            # so both surfaces share the one matcher (gr537783). The
+            # pinned card is the record-handle card's shape; the same
+            # kind/include/exclude gates apply (a handle is an address —
+            # so is a DOI or cite-key).
+            from precis.handlers._query_identifier import (
+                resolve_query_identifier,
+            )
+
+            try:
+                ident_ref = resolve_query_identifier(store, text).ref
+            except Exception:  # a pin is a relevance aid, never fatal
+                log.warning(
+                    "cross-kind: identifier pin probe failed for %r",
+                    text,
+                    exc_info=True,
+                )
+                return None
+            if ident_ref is None:
+                return None
+            return self._pinned_ref_hit(
+                ident_ref,
+                store=store,
+                kinds=kinds,
+                include_ref_ids=include_ref_ids,
+                exclude_ref_ids=exclude_ref_ids,
+            )
         resolved = store.resolve_handle(text)
         if resolved is None:
             return None
@@ -958,30 +995,17 @@ class SearchMixin(RuntimeShape):
         excerpt = 200
 
         if resolved.chunk_id is None:
-            # Record handle → the ref card. Dedupe keyed like the ref-level
-            # producers (kind:slug / kind:#id) so a lexical hit on the same
-            # ref folds into this card instead of duplicating it.
-            dedupe = (
-                f"{resolved.kind}:{resolved.public_id}"
-                if resolved.public_id != str(resolved.ref_id)
-                else f"{resolved.kind}:#{resolved.ref_id}"
-            )
-            preview = title if len(title) <= excerpt else title[: excerpt - 1] + "…"
-            return SearchHit(
-                score=1.0,
-                kind=resolved.kind,
-                title=title,
-                preview=preview,
-                slug=(
-                    resolved.public_id
-                    if resolved.public_id != str(resolved.ref_id)
-                    else None
-                ),
-                ref_id=resolved.ref_id,
-                dedupe_key=dedupe,
+            # Record handle → the ref card — the same pinned identity hit
+            # the identifier (DOI/cite_key) branch emits.
+            if ref is None:
+                return None
+            return self._pinned_ref_hit(
+                ref,
+                store=store,
+                kinds=kinds,
+                include_ref_ids=include_ref_ids,
+                exclude_ref_ids=exclude_ref_ids,
                 uhandle=handle,
-                pinned=True,
-                retraction_status=retraction,
             )
 
         # Chunk handle → the containing ref's card at that chunk.
@@ -1020,6 +1044,64 @@ class SearchMixin(RuntimeShape):
             ),
             pinned=True,
             retraction_status=retraction,
+        )
+
+    def _pinned_ref_hit(
+        self,
+        ref: Any,
+        *,
+        store: Any,
+        kinds: Any = None,
+        include_ref_ids: Any = None,
+        exclude_ref_ids: Any = None,
+        uhandle: str | None = None,
+    ) -> SearchHit | None:
+        """The pinned record card for a ref resolved by identifier —
+        a record handle, DOI, doi.org URL or cite_key
+        (``_handle_query_hit``). Same gates as the handle path: the
+        caller's kind set scopes it, the cited=/uncited= ref-id facets
+        apply, and another owner's ``profile`` row pins nothing. A DOI /
+        cite-key is an address, not a match, so tag/folder filters do
+        NOT apply — mirroring the handle rule. Dedupe keyed like the
+        ref-level producers (``kind:slug`` / ``kind:#id``) so a lexical
+        hit on the same ref folds into this card. ``uhandle`` overrides
+        the computed handle only for the record-handle branch (the
+        normalized query handle); ``None`` asks for
+        ``try_format`` — itself ``None`` for a code-less kind, where the
+        renderers fall back to ``slug~pos``/``#ref_id``.
+        """
+        if kinds is not None and ref.kind not in kinds:
+            return None
+        if exclude_ref_ids and ref.id in exclude_ref_ids:
+            return None
+        if include_ref_ids is not None and ref.id not in include_ref_ids:
+            return None
+        if ref.kind == "profile":
+            # owner-private rows (gr490266): another owner's profile
+            # pins nothing — the card would be an existence oracle plus
+            # a title leak. Same filter the tags-only sweep applies.
+            from precis import profiles
+
+            if not profiles.visible_to(ref, profiles.acting_login(store)):
+                return None
+        title = (getattr(ref, "title", "") or "").strip()
+        excerpt = 200
+        preview = title if len(title) <= excerpt else title[: excerpt - 1] + "…"
+        public_id = getattr(ref, "slug", None) or str(ref.id)
+        slugish = public_id != str(ref.id)
+        return SearchHit(
+            score=1.0,
+            kind=ref.kind,
+            title=title,
+            preview=preview,
+            slug=public_id if slugish else None,
+            ref_id=ref.id,
+            dedupe_key=(
+                f"{ref.kind}:{public_id}" if slugish else f"{ref.kind}:#{ref.id}"
+            ),
+            uhandle=uhandle or handle_registry.try_format(ref.kind, ref.id),
+            pinned=True,
+            retraction_status=getattr(ref, "retraction_status", None),
         )
 
     def _dispatch_source_search(

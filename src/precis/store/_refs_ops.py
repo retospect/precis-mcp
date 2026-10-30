@@ -4096,7 +4096,8 @@ class RefsMixin:
     def find_refs_by_title_similarity(
         self,
         *,
-        kind: str,
+        kind: str | None = None,
+        kinds: Iterable[str] | None = None,
         q: str,
         limit: int = 3,
         min_similarity: float = 0.6,
@@ -4107,15 +4108,23 @@ class RefsMixin:
         like "attention is all you need" to ``'attent' & 'need'``, so the
         exact-title paper loses ``ts_rank`` to content-dense bodies
         mentioning those words — a trigram match on the raw title
-        catches what the lexical leg drops. Returns ``(ref_id,
-        similarity)`` above ``min_similarity``, best first; the high
-        default bar means only a near-title query fires it."""
+        catches what the lexical leg drops. ``kinds`` scopes the match
+        to a *set* of kinds in one query (the web cross-kind search's
+        kind selection — gr537785); ``kind`` is the single-kind form.
+        Returns ``(ref_id, similarity)`` above ``min_similarity``, best
+        first; the high default bar means only a near-title query fires
+        it."""
         clauses = [
             "r.retired_at IS NULL",
-            "r.kind = %s",
             "r.title IS NOT NULL",
         ]
-        params: list[Any] = [q, kind]  # q first: it feeds the SELECT sim
+        params: list[Any] = [q]  # q first: it feeds the SELECT sim
+        if kinds is not None:
+            clauses.append("r.kind = ANY(%s)")
+            params.append(list(kinds))
+        elif kind is not None:
+            clauses.append("r.kind = %s")
+            params.append(kind)
         if exclude_ref_ids:
             clauses.append("r.ref_id <> ALL(%s)")
             params.append(list(exclude_ref_ids))

@@ -26,6 +26,7 @@ from typing import TYPE_CHECKING, Any
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse, RedirectResponse, Response
 
+from precis.handlers._paper_search import _representative_block_for_ref
 from precis.store._mappers import SEMANTIC_DISTANCE_FLOOR
 from precis_web.deps import get_store
 from precis_web.item_view import COMPONENT_BADGE_SPECS, item_row
@@ -229,6 +230,80 @@ def _design_facts_bulk(store: Store, refs: list[Any]) -> dict[int, dict[str, Any
     return out
 
 
+#: Kinds the title pin covers — what the paper title introducer
+#: (``search(kind='paper')``) always covered; other kinds' titles are
+#: not paper titles and are not worth a full ``refs`` scan.
+_TITLE_PIN_KINDS = frozenset({"paper"})
+
+
+def _could_be_title(q: str) -> bool:
+    """A paper title is a phrase: at least 3 words and 15 characters."""
+    q = q.strip()
+    return len(q) >= 15 and len(q.split()) >= 3
+
+
+def _pin_title_matches(
+    store: Store,
+    hits: list[tuple[Any, Any, float]],
+    *,
+    q: str,
+    kinds: list[str],
+) -> tuple[list[tuple[Any, Any, float]], set[int]]:
+    """Pin refs whose *title* nearly is ``q`` ahead of the fused chunk hits.
+
+    The same trigram title-introducer ``search(kind='paper')`` runs via
+    :meth:`FusedBlockSearch._inject_title_matches` — one matcher,
+    ``store.find_refs_by_title_similarity``, here scoped to the whole
+    selected kind set rather than one kind. The cross-kind primitive
+    never reads the title/abstract card (``ord >= 0`` chunks only) and
+    FTS strips a title query down to content words, so an exact-title
+    query can lose its own paper to content-dense bodies of other refs
+    (gr537785).
+
+    Shapes mirror ``_inject_title_matches``: a matched ref already among
+    the hits is *reordered* to the front, not duplicated; one with no
+    hit gets its representative block (the title/abstract card, else the
+    first body chunk — ``_representative_block_for_ref``), and a stub
+    with no block at all still pins — for a title query the record IS
+    the answer. Returns ``(hits, pinned_ref_ids)``; ``pinned_ref_ids``
+    names the refs moved/injected to the front so the row builder can
+    keep their ``has_chunks`` badges honest (a chunk hit is ingested by
+    definition; a pinned stub is not). Best-effort: any lookup hiccup
+    returns ``hits`` unchanged.
+    """
+    paper_kinds = [k for k in kinds if k in _TITLE_PIN_KINDS]
+    # The trigram lookup scans ``refs`` per row (no index), so only pay
+    # for it where a title can plausibly be the query.
+    if not paper_kinds or not _could_be_title(q):
+        return hits, set()
+    try:
+        matches = store.find_refs_by_title_similarity(kinds=paper_kinds, q=q, limit=3)
+        if not matches:
+            return hits, set()
+        match_ids = [rid for rid, _sim in matches]
+        existing = {h[1].id: h for h in hits}
+        refs_map = store.fetch_refs_by_ids(
+            [rid for rid in match_ids if rid not in existing]
+        )
+        front: list[tuple[Any, Any, float]] = []
+        for rid in match_ids:
+            if rid in existing:
+                front.append(existing[rid])
+                continue
+            ref = refs_map.get(rid)
+            if ref is None:
+                continue
+            front.append((_representative_block_for_ref(store, rid), ref, float("inf")))
+        if not front:
+            return hits, set()
+        front_ids = {h[1].id for h in front}
+        rest = [h for h in hits if h[1].id not in front_ids]
+        return front + rest, front_ids
+    except Exception:  # pragma: no cover — relevance aid, never fatal
+        log.warning("drive search: title pin failed for %r", q, exc_info=True)
+        return hits, set()
+
+
 def _run_search(
     store: Store,
     embedder: Any,
@@ -267,6 +342,13 @@ def _run_search(
         offset=offset,
         max_distance=SEMANTIC_DISTANCE_FLOOR,
     )
+    # Title introducer, same gate as the single-kind paper search (first
+    # page, unfiltered): an exact-title query pins the paper's record
+    # first (gr537785) — a tag/date facet is a deliberate filter, so it
+    # bounds the pin the way ``scope=``/``after=`` bound the MCP one.
+    pinned_ids: set[int] = set()
+    if offset == 0 and not tags and since is None and until is None:
+        hits, pinned_ids = _pin_title_matches(store, hits, q=q, kinds=kinds)
     has_next = len(hits) > _PAGE_SIZE
     hits = hits[:_PAGE_SIZE]
     ref_ids = [ref.id for _, ref, _ in hits]
@@ -274,20 +356,25 @@ def _run_search(
     tags_bulk = store.ref_tags_bulk(ref_ids)
     idents = store.paper_identifiers(ref_ids)
     summaries = store.chunks.chunk_summaries_bulk(
-        [(ref.id, block.ord) for block, ref, _ in hits]
+        [(ref.id, block.ord) for block, ref, _ in hits if block is not None]
     )
     design_facts = _design_facts_bulk(store, [ref for _, ref, _ in hits])
-    # A search hit matched a chunk, so the ref is ingested by definition.
+    # A search hit matched a chunk, so the ref is ingested by definition —
+    # except a title-pinned row, whose ref may be a bare stub (or a
+    # card-only ref): probe the pinned ids for a real body chunk.
+    pinned_body = (
+        store.refs_with_body_chunks(sorted(pinned_ids)) if pinned_ids else set()
+    )
     rows = [
         item_row(
             ref,
             block,
             score,
             flag_state.get(ref.id, set()),
-            has_chunks=True,
+            has_chunks=(ref.id in pinned_body if ref.id in pinned_ids else True),
             tags=tags_bulk.get(ref.id),
             identifier=idents.get(ref.id),
-            summary=summaries.get((ref.id, block.ord)),
+            summary=(summaries.get((ref.id, block.ord)) if block is not None else None),
             design=design_facts.get(ref.id),
         )
         for block, ref, score in hits

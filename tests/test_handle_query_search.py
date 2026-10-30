@@ -7,6 +7,11 @@ registry knows) yields the containing ref's card showing that chunk's
 text. The status kinds (gripe/todo/quest) collapse a comment-chunk
 handle to the parent ref's card. An unknown or retired handle falls
 through to the ordinary fan-out untouched.
+
+The other identifier forms pin the same card through the shared probe
+(gr537783): a bare DOI, a pasted ``https://doi.org/<doi>``, or a bare
+cite_key — all resolved by ``handlers._query_identifier``, the same
+resolver the web /drive search box redirects on.
 """
 
 from __future__ import annotations
@@ -188,6 +193,73 @@ def test_pin_does_not_mask_total_fanout_failure(
     assert "[error" in body
     assert "failed in every kind" in body
     assert "pinmask" not in body
+
+
+def test_doi_query_pins_paper_card(
+    runtime_with_store: PrecisRuntime, store: Store
+) -> None:
+    """gr537783: ``search(q=<bare DOI>)`` pins the paper's identity card —
+    the same resolver the web /drive box redirects on, so an identifier
+    query never depends on the DOI appearing in chunk text."""
+    ref_id, _ = _seed(store, "paper", "krishnan97", ["unrelated body text"])
+    with store.pool.connection() as conn:
+        conn.execute(
+            "INSERT INTO ref_identifiers (ref_id, id_kind, id_value) "
+            "VALUES (%s, 'doi', %s)",
+            (ref_id, "10.1038/41284"),
+        )
+    # Decoy quoting the DOI string — a pure lexical hit that must rank
+    # BELOW the pinned card.
+    _, (pcid,) = _seed(store, "paper", "doidcoy", ["see 10.1038/41284."])
+    body = runtime_with_store.dispatch("search", {"q": "10.1038/41284"})
+    assert "[error" not in body
+    assert body.index(f"\npa{ref_id}\t") < body.index(f"\npc{pcid}\t")
+
+
+def test_doi_org_url_query_pins_paper_card(
+    runtime_with_store: PrecisRuntime, store: Store
+) -> None:
+    """A pasted ``https://doi.org/<doi>`` unwraps and pins the same card."""
+    ref_id, _ = _seed(store, "paper", "urlp97", ["unrelated body text"])
+    with store.pool.connection() as conn:
+        conn.execute(
+            "INSERT INTO ref_identifiers (ref_id, id_kind, id_value) "
+            "VALUES (%s, 'doi', %s)",
+            (ref_id, "10.1038/41284"),
+        )
+    body = runtime_with_store.dispatch("search", {"q": "https://doi.org/10.1038/41284"})
+    assert "[error" not in body
+    assert f"\npa{ref_id}\t" in body
+
+
+def test_cite_key_query_pins_paper_card(
+    runtime_with_store: PrecisRuntime, store: Store
+) -> None:
+    """``search(q=<cite_key>)`` pins the paper's identity card."""
+    ref_id, _ = _seed(store, "paper", "krishnan97", ["unrelated body text"])
+    _, (pcid,) = _seed(store, "paper", "keydecoy", ["mentions krishnan97 here"])
+    body = runtime_with_store.dispatch("search", {"q": "krishnan97"})
+    assert "[error" not in body
+    assert body.index(f"\npa{ref_id}\t") < body.index(f"\npc{pcid}\t")
+
+
+def test_identifier_pin_suppressed_outside_requested_kinds(
+    runtime_with_store: PrecisRuntime, store: Store
+) -> None:
+    """An explicit kind list scopes the identifier pin too: a paper DOI
+    in a memory-scoped search pins nothing."""
+    ref_id, _ = _seed(store, "paper", "scopeddoi", ["unrelated body text"])
+    with store.pool.connection() as conn:
+        conn.execute(
+            "INSERT INTO ref_identifiers (ref_id, id_kind, id_value) "
+            "VALUES (%s, 'doi', %s)",
+            (ref_id, "10.1038/41284"),
+        )
+    body = runtime_with_store.dispatch(
+        "search", {"kind": "memory", "q": "10.1038/41284"}
+    )
+    assert "[error" not in body
+    assert f"\npa{ref_id}\t" not in body
 
 
 def test_unknown_handle_falls_through(

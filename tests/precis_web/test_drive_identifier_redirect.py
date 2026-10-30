@@ -180,6 +180,29 @@ def test_whole_doi_redirects(store: Any, drive_client: TestClient) -> None:
     _assert_redirect(resp, "paper", pid)
 
 
+def test_doi_org_url_redirects(store: Any, drive_client: TestClient) -> None:
+    """A pasted ``https://doi.org/<doi>`` unwraps to the DOI and resolves
+    to the paper — the form an operator actually copies from a browser
+    address bar (gr537783)."""
+    pid = _paper(store, "urlpaste2023", doi="10.1038/41284")
+    resp = drive_client.get(
+        "/drive",
+        params={"q": "https://doi.org/10.1038/41284"},
+        follow_redirects=False,
+    )
+    _assert_redirect(resp, "paper", pid)
+
+
+def test_cite_key_redirects(store: Any, drive_client: TestClient) -> None:
+    """A bare cite_key (``krishnan97`` — the slug the operator cites by)
+    resolves straight to the paper, no chunk search (gr537783)."""
+    pid = _paper(store, "krishnan97")
+    resp = drive_client.get(
+        "/drive", params={"q": "krishnan97"}, follow_redirects=False
+    )
+    _assert_redirect(resp, "paper", pid)
+
+
 def test_unique_doi_prefix_redirects(store: Any, drive_client: TestClient) -> None:
     pid = _paper(store, "prefix2023", doi="10.1021/acscatal.3c01963")
     _paper(store, "other2023", doi="10.1038/nature12345")

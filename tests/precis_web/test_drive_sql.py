@@ -575,6 +575,110 @@ def test_conv_chat_turn_surfaces_as_drive_search_hit(store):
     assert "reingest" in hit["preview"]
 
 
+def test_exact_title_query_pins_the_paper_first(store):
+    """gr537785: the "search everything" box on an exact paper title.
+
+    The fused cross-kind chunk search never reads the title/abstract
+    card (``ord >= 0`` only) and FTS strips a title query to its content
+    words, so a content-dense *other* paper quoting the same words could
+    outrank the paper the operator named. The title pin — the same
+    ``find_refs_by_title_similarity`` introducer
+    ``search(kind='paper')`` runs — puts the record first, even when the
+    named paper is a chunk-less stub.
+    """
+    from precis.store import ChunkInsert
+    from precis_web.routes.items import _run_search
+
+    title = "Graphitic cones and the nucleation of curved carbon surfaces"
+    named = store.insert_ref(
+        kind="paper", slug="krishnan97", title=title, meta={}
+    )  # stub: no chunks at all
+    decoy = store.insert_ref(kind="paper", slug="decoy2010", title="unrelated", meta={})
+    store.chunks.insert_chunks(
+        decoy.id,
+        [
+            ChunkInsert(
+                ord=0,
+                text=(
+                    "The nucleation of curved carbon surfaces and graphitic "
+                    "cones has been studied extensively in earlier work."
+                ),
+            )
+        ],
+    )
+
+    rows, _ = _run_search(
+        store,
+        None,
+        kinds=["paper"],
+        q=title,
+        sort="relevance",
+        since=None,
+        until=None,
+        tags=[],
+        offset=0,
+    )
+    assert rows[0]["id"] == named.id
+    assert rows[0]["title"] == title
+
+
+def test_title_pin_respects_kind_selection(store):
+    """A title match outside the selected kind set pins nothing — the
+    kind chips scope the pin the way they scope the search itself."""
+    from precis.store import ChunkInsert
+    from precis_web.routes.items import _run_search
+
+    title = "Graphitic cones and the nucleation of curved carbon surfaces"
+    named = store.insert_ref(kind="paper", slug="krishnan97", title=title, meta={})
+    conv = store.insert_ref(kind="conv", slug="discord/9/9/9", title="#x", meta={})
+    store.chunks.insert_chunks(
+        conv.id, [ChunkInsert(ord=0, text="graphitic cones nucleation")]
+    )
+
+    rows, _ = _run_search(
+        store,
+        None,
+        kinds=["conv"],
+        q=title,
+        sort="relevance",
+        since=None,
+        until=None,
+        tags=[],
+        offset=0,
+    )
+    assert named.id not in [r["id"] for r in rows]
+
+
+def test_free_text_query_ordering_unchanged(store):
+    """A normal free-text query (no near-exact title) returns the fused
+    order as before — the pin only fires on a near-title query."""
+    from precis.store import ChunkInsert
+    from precis_web.routes.items import _run_search
+
+    a = store.insert_ref(kind="paper", slug="free-a", title="alpha", meta={})
+    b = store.insert_ref(kind="paper", slug="free-b", title="beta", meta={})
+    store.chunks.insert_chunks(a.id, [ChunkInsert(ord=0, text="zebra quokka wombat")])
+    store.chunks.insert_chunks(b.id, [ChunkInsert(ord=0, text="zebra quokka")])
+
+    rows, _ = _run_search(
+        store,
+        None,
+        kinds=["paper"],
+        q="zebra quokka",
+        sort="relevance",
+        since=None,
+        until=None,
+        tags=[],
+        offset=0,
+    )
+    # Both matched on body text only; neither title is the query, so the
+    # row order is exactly the fused order the primitive returned.
+    raw = store.chunks.search_chunks_across_kinds(
+        kinds=["paper"], q="zebra quokka", query_vec=None, limit=20
+    )
+    assert [r["id"] for r in rows] == [ref.id for _b, ref, _s in raw]
+
+
 def test_search_with_kind_chip_renders(drive_client, store):
     """A submitted search with a kind chip selected returns 200.
 
@@ -588,3 +692,33 @@ def test_search_with_kind_chip_renders(drive_client, store):
     store.insert_ref(kind="draft", slug="computing-notes", title="computer", meta={})
     resp = drive_client.get("/drive?submitted=1&q=computer&sort=relevance&k=draft")
     assert resp.status_code == 200
+
+
+def test_short_query_skips_title_lookup(store, monkeypatch):
+    """A query too short to be a title never runs the per-row trigram
+    scan, and a non-paper kind selection doesn't either."""
+    from precis_web.routes.items import _run_search
+
+    calls: list[dict] = []
+
+    def spy(**kw):
+        calls.append(kw)
+        return []
+
+    monkeypatch.setattr(store, "find_refs_by_title_similarity", spy)
+    for q, kinds in (
+        ("zebra quokka", ["paper"]),
+        ("a long enough title query", ["conv"]),
+    ):
+        _run_search(
+            store,
+            None,
+            kinds=kinds,
+            q=q,
+            sort="relevance",
+            since=None,
+            until=None,
+            tags=[],
+            offset=0,
+        )
+    assert calls == []

@@ -477,6 +477,47 @@ class FakeStore(_FakeStoreBase):
         # own name rather than aliasing onto the base's attribute.
         return list(self._conv_blocks.get(ref_id, []))
 
+    def get_chunk(self, ref_id: int, *, pos=None, slug=None, **kw: Any):
+        """Single-chunk lookup over ``_conv_blocks`` by ord — backs the
+        Drive title-pin's representative-block probe (the card at
+        ``pos=-1``, else a body chunk). ``slug`` isn't modelled."""
+        for b in self._conv_blocks.get(ref_id, []):
+            if pos is not None and getattr(b, "ord", None) == pos:
+                return b
+            if (
+                slug is not None
+                and (getattr(b, "meta", None) or {}).get("slug") == slug
+            ):
+                return b
+        return None
+
+    def find_refs_by_title_similarity(
+        self,
+        *,
+        kind=None,
+        kinds=None,
+        q,
+        limit=3,
+        min_similarity=0.6,
+        exclude_ref_ids=None,
+    ):
+        """Canned title-similarity matches for the Drive search's title
+        pin — tests seed ``self.title_similarity_hits`` with
+        ``[(ref_id, sim)]``. Kind filtering resolves the seeded ref ids
+        against the fake pools so a scoped search can't pin outside its
+        kind set."""
+        hits = list(getattr(self, "title_similarity_hits", []))
+        pool = {r.id: r for r in self._for_kind(None)}
+        want = set(kinds) if kinds is not None else ({kind} if kind else None)
+        excluded = set(exclude_ref_ids or [])
+        return [
+            (rid, sim)
+            for rid, sim in hits
+            if rid in pool
+            and rid not in excluded
+            and (want is None or pool[rid].kind in want)
+        ][:limit]
+
     def fetch_ref_ids_by_slugs(self, slugs, *, kind: str):
         """Resolve cite_key slugs → ref ids (the slug-addressed detail
         route). Live papers in the fixture pool only."""
