@@ -177,6 +177,7 @@ _VIEWS = (
     "inspect",
     "links",
     "literature",
+    "pathways",
     "pourbaix",
     "staircase",
     *_EXPORT_VIEWS,
@@ -2395,6 +2396,9 @@ class StructureHandler(Handler):
             # meta only — no Scene hydration, so it also answers for a
             # generated design whose atoms never landed (gr514060).
             return self._render_generator(ref)
+        if view == "pathways":
+            # meta only — the pathway list reads refs.meta, not geometry.
+            return self._render_pathways(ref)
         scene, handles = self.store.structure_load(ref.id)
         if view is None:
             return self._toc_response(scene, ref, handles)
@@ -2582,6 +2586,85 @@ class StructureHandler(Handler):
                 f"{body}"
             )
         )
+
+    def _render_pathways(self, ref: Any) -> Response:
+        """``view='pathways'`` — every live pathway that ran on this
+        candidate (``meta.candidate_ref``, stamped by the quest harvest at
+        dispatch — gr540871) with its status and a results-keys summary,
+        so "which ready pathways of stN carry ``che_affine``/``her``"
+        needs no SQL detour. Meta-only like ``view='pourbaix'``: answers
+        for a candidate whose atoms never landed."""
+        with self.store.pool.connection() as conn:
+            rows = conn.execute(
+                "SELECT refs.ref_id, slug_id.id_value, refs.meta, "
+                "refs.updated_at FROM refs "
+                "LEFT JOIN ref_identifiers slug_id "
+                "  ON slug_id.ref_id = refs.ref_id AND slug_id.id_kind = 'cite_key' "
+                "WHERE refs.kind = 'pathway' AND refs.retired_at IS NULL "
+                "  AND refs.meta->>'candidate_ref' = %s "
+                "ORDER BY refs.ref_id DESC",
+                (str(ref.id),),
+            ).fetchall()
+        handle = (
+            handle_registry.try_format("structure", int(ref.id))
+            or f"structure:{ref.id}"
+        )
+        head = (ref.title or "").splitlines()[0] if ref.title else handle
+        if not rows:
+            return Response(
+                body=(
+                    f"# pathways — {handle} {head}\n\n"
+                    "no pathway names this structure as its candidate "
+                    "(meta.candidate_ref) — a quest harvest stamps it when it "
+                    "dispatches an autocatpath run for the candidate."
+                )
+            )
+        table = []
+        for ref_id, slug, meta, updated in rows:
+            meta = meta or {}
+            res = meta.get("results")
+            keys = ", ".join(sorted(res)) if isinstance(res, dict) and res else "-"
+            pw_handle = (
+                handle_registry.try_format("pathway", int(ref_id))
+                or f"pathway:{ref_id}"
+            )
+            table.append(
+                {
+                    "pathway": f"{pw_handle} {slug or ''}".rstrip(),
+                    "status": str(meta.get("status") or "?"),
+                    "tier": str(meta.get("tier") or "-"),
+                    "results": keys,
+                    "updated": f"{updated:%Y-%m-%d %H:%MZ}",
+                }
+            )
+        body = (
+            f"# pathways — {handle} {head}\n"
+            f"{len(table)} pathway(s) ran on this candidate (meta.candidate_ref):\n"
+            + render_agent_table(
+                table,
+                schema=["pathway", "status", "tier", "results", "updated"],
+            )
+        )
+        # The hint names a ready pathway carrying the staircase export
+        # first — view='staircase' on one without che_affine only lists
+        # what's missing.
+        nxt = next(
+            (
+                slug
+                for _id, slug, meta, _u in rows
+                if slug
+                and (meta or {}).get("status") == "ready"
+                and isinstance((meta or {}).get("results"), dict)
+                and (meta["results"]).get("che_affine")
+            ),
+            next((slug for _id, slug, _m, _u in rows if slug), None),
+        )
+        if nxt:
+            body += (
+                f"\n\nnext: get(kind='pathway', id='{nxt}', view='analysis') · "
+                "view='staircase' for the per-rung ΔG(U)"
+            )
+        return Response(body=body)
 
     def _get_external(
         self, *, source: str, q: str | None, args: dict[str, Any]

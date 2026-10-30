@@ -37,9 +37,9 @@ not a bug; retry from a host that has it.
 
 ## Find existing pathways / list what has been run
 
-`pathway` has no `search`. A bare get lists the most recently updated
-pathways with their slugs, status, tier (`screening` or `neb`) and energetic
-span in eV, plus the total per status:
+A bare get lists the most recently updated pathways with their slugs,
+status, tier (`screening` or `neb`) and energetic span in eV, plus the
+total per status:
 
 ```python
 get(kind="pathway")
@@ -47,6 +47,12 @@ get(kind="pathway")
 
 Pass a listed slug back as `id=`. `view='compare'` on one of them ranks
 it against every computed pathway for the same substrate→target.
+
+`search(kind='pathway', q='<reaction|slug words|st/qu handle>')` finds
+one by label or a linked neighbour; `get(kind='structure',
+id='<candidate>', view='pathways')` lists every pathway that ran on that
+candidate (`meta.candidate_ref`) with status and a results-keys summary —
+the "which ready pathways of stN carry `che_affine`/`her`" read.
 
 ## Frame a run without spending compute / sanity-check the network first / preview intermediates
 

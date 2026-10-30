@@ -547,6 +547,18 @@ U_L/U_opt, the HER margin. `no staircase` until a ready pathway is
 linked; `pH` (or `point='U,pH'`) for a state per rung
 (`precis-quest-help`).
 
+### The pathways that ran on it — `get(view='pathways')`
+
+```python
+get(kind="structure", id="pd111", view="pathways")
+```
+
+Every live pathway that names this design as its candidate
+(`meta.candidate_ref`, stamped by the quest harvest at dispatch): handle +
+slug, status, tier, updated — plus a results-keys summary per run, so
+"which ready pathways of stN carry `che_affine` and `her`" is a one-call
+read. `no pathway names this structure` until a harvest dispatches one.
+
 ### The generator record — `get(view='generator')`
 
 ```python
