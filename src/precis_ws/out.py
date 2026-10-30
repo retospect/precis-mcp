@@ -156,7 +156,7 @@ def block(
     :class:`precis_geom.pcb.Board` routes to :func:`board` — the run's
     whole ``kind='pcb'`` manifest, not a block file (gr513754)."""
     from precis_geom import pcb as _pcb
-    from precis_geom.out import _geom_parts
+    from precis_geom.out import _geom_parts, _relaxed_by
 
     if isinstance(obj, _pcb.Board):
         # gr513754 — a Board is the whole run's manifest, not a block;
@@ -165,7 +165,9 @@ def block(
         board(obj)
         return
     _vet_not_board("block")
+    src = obj
     obj, gports, gfindings, gcensus = _geom_parts(obj)
+    relaxed_by = _relaxed_by(src, obj)
     if ports is None:
         ports = gports
     fname, payload, inferred = _block_file(name, obj)
@@ -183,6 +185,8 @@ def block(
         entry["census"] = gcensus
     if relax is not None:
         entry["relax"] = relax
+    if relaxed_by is not None and entry["scale"] == "atomic":
+        entry["relaxed_by"] = relaxed_by
     if desc is not None:
         entry["desc"] = desc
     if mode is not None:

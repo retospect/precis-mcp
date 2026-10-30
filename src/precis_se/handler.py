@@ -2773,6 +2773,7 @@ class SeHandler(Handler):
         atomic_line = se_atomic_render.atomic_fill_line(tree)
         if atomic_line:
             header_lines.append(atomic_line)
+            header_lines.extend(se_atomic_render.relaxed_by_lines(self.store, tree))
         try:
             fdm_status = self._fdm_print_status(tree)
         except se_printing.PrintUnsupported as exc:

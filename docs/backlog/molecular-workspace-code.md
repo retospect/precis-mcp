@@ -299,6 +299,35 @@ Reto 2026-10-29: "see if it collapses quickly and caching is good."
   verdict}` (a new optional key in `_BLOCK_KEYS`, slice 3) and
   `view='validate'` shows it, so a UFF check is never mistaken for
   GFN2. The record is the service relax the row's `relax:` asks for.
+- **As built (slice 3).** `precis_geom.mol.collapse` (`mol.relax`,
+  `CollapseCheck`, `RelaxCollapsed`); the `uff` rung is
+  `precis.structure.relax._relax_uff` (ASE FIRE over an RDKit UFF
+  calculator, `vdwThresh` 3, inter-fragment repulsion on). Hexfold
+  order-4/3 `aromatic` bonds (any order in [1.25, 1.75)) map to RDKit
+  `AROMATIC` (UFF order 1.5, `C_R`); `fmax` defaults to 0.1 eV/Å on the
+  energy rungs and `geo` refuses it. The check is judged on the *relaxed*
+  geometry against the declared graph; the early exit stops only on a
+  change the input did not already show at step 0 (that mismatch count is
+  `input_mismatch`, not hidden). A declared ring is lost when the relaxed
+  geometry no longer perceives one of its bonds; the census uses its own
+  sorted-neighbour ring finder because `probe.rings` breaks ties between
+  equal-length rings by set order, which moves with `PYTHONHASHSEED` (it once
+  called an intact prism "2 rings lost"). Measured: the capped (4, 4, 2, `++++++`)
+  prism — 600 atoms, 756 bonds — is `ok` under `uff` (0 broken, 0 formed,
+  max move 1.07 Å, 200 steps, not converged) and `geo`, `collapsed` under
+  `emt` at step 20 (40 bonds broken, 12 contacts formed). A *non-bonded*
+  0.9 Å C...C contact between two fragments is `collapsed` under `emt` (the
+  atoms bond, step < 30) and `ok` under `uff` (repelled apart): UFF
+  cannot form bonds, so a UFF `collapsed` means strain broke a declared
+  bond. The check rides `Geom.meta['collapse']` (frame-free JSON; frame
+  names resolve per call against the live trace) and
+  `meta['relaxed_by']` (`{rung, verdict, key, pos_sha}`); `out.block`
+  emits the row's `relaxed_by` only while the coordinates still hash to
+  `pos_sha`. `steps.checkpoint()` / `steps.current_key()` are the step-local
+  side-file hook; the step key carries an `engine` string (ASE / RDKit
+  versions) so a library upgrade misses. `meta['_net']` is dropped by a
+  relax. No GFN2 comparison is recorded: tblite is not installed on the
+  build host.
 
 ## Check
 
@@ -368,7 +397,7 @@ the single probe family; the atomic leg plugs in.
 | 0b | **Persistent step cache on the lane** (open question 1, approved 2026-10-29). `/var/lib/precis-sandbox/ws/<slug>/cache/` mounted `/work/cache`, per-workspace LRU cap | `claude_docker.build_script_argv`, agent-workspace-containers host dirs | Two lane runs of one workspace: the second hits steps from the first; the cap evicts oldest; no trusted-side code reads the dir | S, after structure slice 1 |
 | 1 | **Fragments + attach + library.** ·landed 2026-10-29 (worktree-agent-a78e9756711235299)· `mol.frag` (SMILES with `[*:n]`, Scene, `ref=`), `mol.attach`, `mol.lib`, `_op_from_smiles`' embed moved into `mol` (the op calls it), traced; the step cache arrives with slice 0 (TODOs in `frag`/`lib`) | `structure/ops.py`, `precis_geom/assembly.py::place`, `packaging/geom/` | `mol.frag('[*:1]C(=O)O')` has one port with the C–C bond vector; attaching it to a benzene site gives benzoic acid whose RDKit canonical SMILES matches; `torsion=90` moves only fragment atoms; the `from_smiles` op golden is unchanged | M, 1 build |
 | 2 | **Decorators.** ·landed 2026-10-29 (worktree-agent-a27496041e346c77d)· Site grammar, `mol.sites`/`decorate`/`cap`, pure enumeration + taxonomy moved to `precis.structure.sites` (`sites.py` calls it), `terminate_open_edges` promoted public, `sheetnet.decorate` + `geom.sp3.mismatch` (multicell slice 2) | `precis_se/atomic/sites.py`, `generators/hexfold_spec.py`, `hexfold/sheetnet.py`, `hexfold/check.py` | `mol.cap` on `prism_tube(4, 4, 2, '++++++')` equals the `terminate` op's output (same function, SHA equal); `decorate(sites='open & face:out & every:3', group='COOH')` places ⌈56/3⌉ = 19 minus the 5 pocket sites (aC192, aC230, aC251, aC336, aC395: a group there lands in bonding range of the opposite rim or of its cap H) = 14 groups, each pocket named by a `decorate.site_skipped` finding, and a following `mol.cap` H-caps the pockets through the Net path so `mol.check` reports no error; `view='sites'` output byte-identical before/after the move; the wheel import test covers `precis.structure.sites` | M–L, 2 builds; after 1 |
-| 3 | **Collapse check.** `uff` rung (finite only), `mol.relax` as a step with `rung='auto'`, `CollapseCheck` on re-perceived bonds + rings + fragments + displacement, early exit via `on_step`, step-local checkpoint, `relaxed_by` in `_BLOCK_KEYS` and on `view='validate'` | `precis/structure/relax.py`, `structure/probe.py::detect_bonds`, `workspace_import.py::_BLOCK_KEYS`, `out.block` | A capped finite prism checks `ok` under `uff` in < 10 s on a laptop; a fixture with a 0.9 Å C–C contact checks `collapsed` before step 30 naming both maker frames; `uff` on a `pbc` scene refuses and `auto` picks `xtb`/`emt`; `geo` refuses `fmax`; an identical second call is a hit; the imported block's `view='validate'` shows `relaxed_by uff ok` | M, 1 build; after 0 |
+| 3 | ·landed 2026-10-30 (worktree-agent-afbde4cd90fc02a32)· **Collapse check.** `uff` rung (finite only), `mol.relax` as a step with `rung='auto'`, `CollapseCheck` on re-perceived bonds + rings + fragments + displacement, early exit via `on_step`, step-local checkpoint, `relaxed_by` in `_BLOCK_KEYS` and on `view='validate'` | `precis/structure/relax.py`, `structure/probe.py::detect_bonds`, `workspace_import.py::_BLOCK_KEYS`, `out.block` | A capped finite prism checks `ok` under `uff` in < 10 s on a laptop; a fixture with a 0.9 Å C–C contact checks `collapsed` before step 30 naming both maker frames; `uff` on a `pbc` scene refuses and `auto` picks `xtb`/`emt`; `geo` refuses `fmax`; an identical second call is a hit; the imported block's `view='validate'` shows `relaxed_by uff ok` | M, 1 build; after 0 |
 | 4 | ·landed 2026-10-29 (worktree-agent-ae1b2530db4018763)· Code lives in `precis/structure/check.py::check` (the `precis_geom.mol.check` alias is added with the `mol` package); findings go to `out/check.json` beside `fit.json`; `Run.check_chem`, `check={'strict': True}` raises. **Check at finish + on import.** `mol.check` composing `validate`/`vsepr`/`fragments`/open valences; `Run.finish()` default-on for atomic blocks; the importer calls the same functions; nearest-frame column | `precis/structure/validate.py`, `vsepr.py`, `precis_geom/out.py::finish`, `workspace_import.py` | A block with an under-valent C fails `finish()` with a finding naming `main.py:<line>`; the same block through `import_workspace` yields the same finding text; `view='validate'` on prod fixtures is byte-identical before/after | S–M, 1 build |
 | 5 | **Hex tiler from a recipe.** `GENERATORS` entries (`hexfold_scene`, `cnt`, `fullerene`, `cyclodextrin`) and `prism_tube` wrapped as steps, `steps.recipe()`, examples `examples/hexfold/decorated-prism/` and `examples/hexfold/cnt-guest/` with goldens in `scripts/test` (structure slice 7's pattern) | `precis_se/atomic/generators/`, `examples/hexfold/`, `tests/workspaces/`, `scripts/impacted-tests` | `uv run` on each example reproduces its golden (counts, SHA, findings, trace keys); a `sheetnet` change that alters one fails the selected test naming the example; the decorated-prism example meets the §Core design 7 latency (cold < 10 s, one-late-step re-run < 2 s) | S–M, 1 build; after 2, 3 |
 | 6 | **One inspect family.** ·landed 2026-10-29 (worktree-agent-ad4de23aa0ee58202)· Field-provider seam in `cad.inspect`, `probe.vdw_sdf` + maker attribution, `pg.inspect` facade, `radius=` + `profile_samples=` bottleneck at Å, atomic events merged into `RayHit`, `view='inspect'` on se and structure | `precis/cad/inspect.py`, `structure/probe.py`, `precis_geom/assembly.py::Ray`, se/structure handlers | Existing `cad.inspect` tests and the `fasten.py` ray golden unchanged; on a (10, 10) tube the axis profile minimum equals tube radius − C vdW within 0.05 Å and names the wall frame; C60 in a too-narrow tube reports `overlap.volume_m3 > 0` naming both frames; a benzene `section` in the ring plane has one loop and `hole_count` 1 (**measured: one loop, `hole_count` 0** — the ring centre is 1.39 Å from each C, inside the 1.70 Å vdW union; `hole_count` 1 needs shrunk `radii` or a tube cross-section, both tested); `view='inspect'` `probe='section'` renders ≤ 400 tokens | M–L, 2 builds; after 1 |

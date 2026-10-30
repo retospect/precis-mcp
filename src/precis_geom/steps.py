@@ -54,12 +54,19 @@ trace was recorded) is a miss, never a wrong maker. The run header gets
 ``steps: {hits, rebuilt, first_miss, wall_saved_s}``
 (``Tracer.dump`` → ``Run.finish``).
 
+**Checkpoint.** A step body that runs long can :func:`checkpoint` — a JSON
+side file ``<cache>/<key[:2]>/<key>/checkpoint.json`` (in-process on the
+memory backend) it saves as it goes and reads back when the same key runs
+again after a crash. Completing the step drops it (``mol.relax`` resumes its
+optimiser this way).
+
 Stdlib + numpy; the scale-specific classes are imported when needed.
 """
 
 from __future__ import annotations
 
 import contextlib
+import contextvars
 import dataclasses
 import functools
 import hashlib
@@ -405,6 +412,17 @@ class _Mem:
         self.data: OrderedDict[str, tuple[dict[str, bytes], dict[str, Any]]] = (
             OrderedDict()
         )
+        #: step-local side files (:func:`checkpoint`), key → JSON text
+        self.ckpt: dict[str, str] = {}
+
+    def ckpt_get(self, key: str) -> str | None:
+        return self.ckpt.get(key)
+
+    def ckpt_put(self, key: str, text: str) -> None:
+        self.ckpt[key] = text
+
+    def ckpt_drop(self, key: str) -> None:
+        self.ckpt.pop(key, None)
 
     def get(self, key: str) -> dict[str, bytes] | None:
         hit = self.data.get(key)
@@ -450,11 +468,34 @@ class _Disk:
     kind = "disk"
     _USES = "uses.json"
 
+    _CKPT = "checkpoint.json"
+
     def __init__(self, root: Path) -> None:
         self.root = root
 
     def _dir(self, key: str) -> Path:
         return self.root / key[:2] / key
+
+    # A step-local side file lives beside the entry it will become;
+    # ``put`` replaces the whole dir, so finishing the step drops it. A
+    # dir holding only ``checkpoint.json`` has no ``step.json`` — ``get``
+    # reads it as a miss, ``uses`` skips it.
+    def ckpt_get(self, key: str) -> str | None:
+        try:
+            return (self._dir(key) / self._CKPT).read_text(encoding="utf-8")
+        except OSError:
+            return None
+
+    def ckpt_put(self, key: str, text: str) -> None:
+        d = self._dir(key)
+        d.mkdir(parents=True, exist_ok=True)
+        tmp = d / f".{self._CKPT}.{os.getpid()}"
+        tmp.write_text(text, encoding="utf-8")
+        os.replace(tmp, d / self._CKPT)
+
+    def ckpt_drop(self, key: str) -> None:
+        with contextlib.suppress(OSError):
+            (self._dir(key) / self._CKPT).unlink()
 
     def get(self, key: str) -> dict[str, bytes] | None:
         d = self._dir(key)
@@ -575,6 +616,58 @@ def _backend() -> _Mem | _Disk | None:
             return _MEM  # the sandbox lane: in-process only (slice 0b adds the dir)
         root = (Path(tr.work_root) if tr is not None else Path("scratch")) / "cache"
     return _DISKS.setdefault(str(root.resolve()), _Disk(root))
+
+
+#: ``(backend, key)`` of the step whose body is running — what
+#: :func:`checkpoint` binds to.
+_ACTIVE: contextvars.ContextVar[tuple[_Mem | _Disk, str] | None] = (
+    contextvars.ContextVar("precis_geom_steps_active", default=None)
+)
+
+
+class Checkpoint:
+    """A step-local side file: JSON the running step body saves as it goes
+    and a re-run of the same key (same name, params, parents, source) reads
+    back. Dropped when the step completes — it only outlives a crash or a
+    kill. Best-effort: a write that fails is silently skipped."""
+
+    def __init__(self, be: _Mem | _Disk, key: str) -> None:
+        self._be = be
+        self.key = key
+
+    def load(self) -> dict[str, Any] | None:
+        """The last saved document, or ``None`` (none saved, unreadable, or
+        ``PRECIS_STEPS_FRESH`` set — a fresh run resumes nothing)."""
+        if os.environ.get("PRECIS_STEPS_FRESH"):
+            return None
+        text = self._be.ckpt_get(self.key)
+        if text is None:
+            return None
+        try:
+            doc = json.loads(text)
+        except ValueError:
+            return None
+        return doc if isinstance(doc, dict) else None
+
+    def save(self, doc: dict[str, Any]) -> None:
+        with contextlib.suppress(OSError):
+            self._be.ckpt_put(self.key, json.dumps(doc))
+
+
+def current_key() -> str | None:
+    """The key of the step whose body is running (``None`` outside a step
+    or with the cache off) — for a step that cites its own entry."""
+    active = _ACTIVE.get()
+    return active[1] if active is not None else None
+
+
+def checkpoint() -> Checkpoint | None:
+    """The :class:`Checkpoint` of the step whose body is running, or
+    ``None`` outside a step or with the cache off. The collapse check
+    (``mol.relax``) saves its positions every few optimiser steps and
+    resumes from them on a re-run."""
+    active = _ACTIVE.get()
+    return Checkpoint(*active) if active is not None else None
 
 
 # ── the atomic scale: Geom ↔ extxyz + bonds.json + exact sidecars ────────
@@ -1248,7 +1341,13 @@ def _call(
         if fr is not None:
             fr.step = {"key": key, "hit": False}
         t1 = time.perf_counter()
-        result = f(*args, **kwargs)
+        token = _ACTIVE.set((be, key) if be is not None else None)
+        try:
+            result = f(*args, **kwargs)
+        finally:
+            _ACTIVE.reset(token)
+        if be is not None:
+            be.ckpt_drop(key)  # the step completed: nothing left to resume
         wall = time.perf_counter() - t1
         if tr is not None and fr is not None:
             tr._finish(fr)
@@ -1410,4 +1509,14 @@ def recipe(path: str | os.PathLike[str] = "recipe.json") -> dict[str, Any]:
     )
 
 
-__all__ = ["clear", "configure", "load", "ls", "recipe", "step"]
+__all__ = [
+    "Checkpoint",
+    "checkpoint",
+    "clear",
+    "configure",
+    "current_key",
+    "load",
+    "ls",
+    "recipe",
+    "step",
+]

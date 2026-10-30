@@ -173,6 +173,29 @@ def _geom_parts(
     return flat, ports or None, _geom_findings(obj), census
 
 
+def _relaxed_by(obj: Any, flat: Any) -> dict[str, Any] | None:
+    """The block row's ``relaxed_by: {rung, key, verdict}`` for a Geom that
+    went through ``mol.relax`` and whose coordinates are still the relaxed
+    ones (``flat`` is its flattened scene; a later decorate, cap or
+    transform moves or adds atoms, so the digest ``mol.relax`` stamped no
+    longer matches and nothing is claimed). ``None`` otherwise — a UFF
+    check is only ever labelled as what it was, never carried onto
+    geometry it did not see."""
+    from precis_geom import assembly as _pga
+
+    rb = obj.meta.get("relaxed_by") if isinstance(obj, _pga.Geom) else None
+    if not isinstance(rb, dict) or not rb.get("rung") or not rb.get("verdict"):
+        return None
+    from precis_geom.mol.collapse import pos_sha
+
+    if rb.get("pos_sha") != pos_sha(flat):
+        return None
+    row = {"rung": str(rb["rung"]), "verdict": str(rb["verdict"])}
+    if rb.get("key"):
+        row["key"] = str(rb["key"])
+    return row
+
+
 def _array_fields(spec: dict[str, Any]) -> dict[str, Any]:
     """``Geom.array`` (canonical, ``kind``-keyed) → the op vocabulary the
     importer replays: ``linear``/``polar`` minus ``kind`` — the same
@@ -465,13 +488,18 @@ class Run:
         degree/valence summary, run-record only (gr514059).
         ``template=True`` marks a library part:
         instanced by :meth:`instance`, never itself placed in the
-        assembly (gr514241). ``frame`` defaults to this call's own
-        trace-frame id."""
+        assembly (gr514241). A Geom that came out of ``mol.relax`` with its
+        relaxed coordinates intact adds ``relaxed_by: {rung, key, verdict}``
+        so a collapse-check geometry is never mistaken for the service
+        relax (molecular-workspace-code slice 3). ``frame`` defaults to
+        this call's own trace-frame id."""
         n = _vet_name(name)
         if n in self._names:
             raise ValueError(f"out.block: duplicate block name {n!r}")
         self._vet_not_board("block")
+        src = geom
         geom, gports, gfindings, gcensus = _geom_parts(geom)
+        relaxed_by = _relaxed_by(src, geom)
         if ports is None:
             ports = gports
         kind = _block_kind(geom, n, scale)
@@ -499,6 +527,8 @@ class Run:
             entry["census"] = gcensus
         if relax is not None:
             entry["relax"] = dict(relax)
+        if relaxed_by is not None and kind == "atomic":
+            entry["relaxed_by"] = relaxed_by
         if desc is not None:
             entry["desc"] = str(desc)
         if mode is not None:

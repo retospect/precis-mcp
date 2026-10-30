@@ -13,7 +13,12 @@ original cleanup pass, the closed se-nanobud-graph spec §1) — the capability
 sp2 vertex toward 120°, not just sp3's 109.47°), not only lengths. ``emt``
 (rung 1) is also **ours** — a torch-free ASE-EMT relax, always available (ASE is a core
 dependency, no MLIP needed), whose closed element coverage happens
-to be exactly the fcc catalytic metals a Pd/Cu/Ni screen needs. ``xtb``
+to be exactly the fcc catalytic metals a Pd/Cu/Ni screen needs. ``uff``
+(also **ours**, finite scenes only) is RDKit's UFF on the scene's declared
+bond graph — the collapse check's default energy rung
+(:func:`precis_geom.mol.relax`; molecular-workspace-code slice 3): a force
+field keeps the declared bonds, so a bond that breaks under it is a finding,
+not an artefact. ``xtb``
 (GFN2-xTB via tblite's ASE calculator) is a real energy rung wherever the
 tblite wheel installs — the relaxer of record for hexfold blocks (Reto
 2026-10-11, gr472846); the MCP handler treats it as **dispatch-only**,
@@ -106,18 +111,20 @@ def _attach_step_hook(
     opt: Any,
     atoms: Any,
     curve: list[float],
-    on_step: Callable[[int, np.ndarray, list[float]], None] | None,
+    on_step: Callable[[int, np.ndarray, list[float]], bool | None] | None,
 ) -> None:
     """Wire ``relax()``'s ``on_step`` onto an ASE optimiser: every step
     hands over the steps completed, the atoms' current Cartesian
     positions (scene-atom order — the order ``_to_ase`` builds) and the
     convergence trace so far. Attach after the curve recorder so
-    ``curve`` already carries this step's entry."""
+    ``curve`` already carries this step's entry. A truthy return stops
+    the run after this step (the collapse check's early exit)."""
     if on_step is None:
         return
 
     def _step() -> None:
-        on_step(int(opt.get_number_of_steps()), atoms.get_positions(), list(curve))
+        if on_step(int(opt.get_number_of_steps()), atoms.get_positions(), list(curve)):
+            opt.max_steps = opt.nsteps
 
     opt.attach(_step, interval=1)
 
@@ -176,7 +183,13 @@ _CELL_MASKS: dict[str, list[bool]] = {
 
 
 class RelaxUnsupported(RuntimeError):
-    """A relax rung whose backend extra isn't installed."""
+    """A relax rung whose backend extra isn't installed (or that cannot
+    take this scene). ``next`` is the one action that recovers — it is
+    also appended to the message, so ``str(exc)`` carries it."""
+
+    def __init__(self, message: str, *, next: str | None = None) -> None:
+        super().__init__(f"{message}; next: {next}" if next else message)
+        self.next = next
 
 
 def estimate_forces_emt(scene: Scene) -> dict[str, list[float]] | None:
@@ -224,6 +237,9 @@ class RelaxResult:
     max_disp: float  # Å, the last step's largest atomic move (rung-0 force proxy)
     curve: list[float] = field(default_factory=list)
     energy: float | None = None  # eV (None = undefined: clean rung / failure)
+    #: eV at the starting geometry (``uff``/``emt``/``xtb`` only) — the
+    #: collapse check's ``energy_drop`` is ``energy_start - energy``.
+    energy_start: float | None = None
     max_force: float | None = None  # eV/Å (None for the geometry rung)
     model: str | None = None  # the backend that produced it (MLIP name)
     # The force-convergence target the caller explicitly asked for (eV/Å),
@@ -286,7 +302,7 @@ def relax(
     charge: int = 0,
     multiplicity: int | None = None,
     fmax: float | None = None,
-    on_step: Callable[[int, np.ndarray, list[float]], None] | None = None,
+    on_step: Callable[[int, np.ndarray, list[float]], bool | None] | None = None,
     seed: int | None = None,
     sigma: float | None = None,
     die_at_step: int | None = None,
@@ -326,7 +342,9 @@ def relax(
     current Cartesian positions in scene-atom order (a fresh array the
     callback may keep) and the per-step convergence trace so far. The
     ``geo`` kernel runs its whole loop inside numba with no per-step
-    view, so it never calls it.
+    view, so it never calls it. On the ASE-driven energy rungs
+    (``uff``/``emt``/``xtb``/``ml``) a truthy return stops the run after
+    that step — the collapse check's early exit.
 
     ``seed``/``sigma``/``die_at_step`` are ``jiggle``-rung options
     (:func:`_relax_jiggle`) — a seeded Gaussian displacement with a
@@ -345,7 +363,7 @@ def relax(
             "'clean'/'geo' geometry rungs have no stress to relax the cell "
             "against"
         )
-    if cell_mode is not None and fidelity in ("emt", "xtb"):
+    if cell_mode is not None and fidelity in ("emt", "xtb", "uff"):
         raise RelaxUnsupported(
             f"variable-cell relax isn't supported at rung {fidelity!r} — "
             "use fidelity='ml'"
@@ -393,6 +411,8 @@ def relax(
         )
     if fidelity == "emt":
         return _relax_emt(scene, steps=steps, tol=tol, fmax=fmax, on_step=on_step)
+    if fidelity == "uff":
+        return _relax_uff(scene, steps=steps, tol=tol, fmax=fmax, on_step=on_step)
     if fidelity == "xtb":
         return _relax_xtb(
             scene,
@@ -447,7 +467,7 @@ def _relax_clean(
     *,
     steps: int,
     tol: float,
-    on_step: Callable[[int, np.ndarray, list[float]], None] | None = None,
+    on_step: Callable[[int, np.ndarray, list[float]], bool | None] | None = None,
 ) -> RelaxResult:
     """Rung 0: iteratively separate too-close pairs toward their covalent bond
     length. Pure, fixed-aware. Not an energy minimiser — a geometry sanitiser."""
@@ -602,7 +622,7 @@ def _relax_jiggle(
     seed: int | None,
     sigma: float | None,
     die_at_step: int | None,
-    on_step: Callable[[int, np.ndarray, list[float]], None] | None = None,
+    on_step: Callable[[int, np.ndarray, list[float]], bool | None] | None = None,
 ) -> RelaxResult:
     """Rung ``jiggle``: a seeded Gaussian perturbation wearing an energy
     rung's report (dev-loop-scratch spec D0 — Reto's FakeRelaxer: "jiggle
@@ -740,7 +760,7 @@ def _relax_emt(
     steps: int,
     tol: float,
     fmax: float | None = None,
-    on_step: Callable[[int, np.ndarray, list[float]], None] | None = None,
+    on_step: Callable[[int, np.ndarray, list[float]], bool | None] | None = None,
 ) -> RelaxResult:
     """Rung 1: relax on ASE's built-in Effective Medium Theory potential.
 
@@ -785,9 +805,12 @@ def _relax_emt(
     atoms.calc = EMT()
 
     curve: list[float] = []
+    e_start: list[float] = []
 
     def _record() -> None:
         f = atoms.get_forces()
+        if not e_start:
+            e_start.append(float(atoms.get_potential_energy()))
         curve.append(round(float(np.sqrt((f**2).sum(axis=1).max())), 4))
 
     opt = _Optimizer(atoms, logfile=None)
@@ -815,11 +838,226 @@ def _relax_emt(
         curve=curve,
         energy=float(atoms.get_potential_energy()),
         max_force=round(max_force, 4),
+        energy_start=e_start[0] if e_start else None,
         model="emt",
         fmax=fmax,
         forces=per_atom_forces,
         forces_approx=False,
         forces_source="emt",
+    )
+
+
+#: 1 kcal/mol in eV — RDKit's UFF speaks kcal/mol, this module eV.
+_KCAL_MOL_EV = 0.04336410
+
+#: RDKit ``HybridizationType`` names for a declared ``Atom.hybridization``.
+_UFF_HYBRID = {"sp": "SP", "sp2": "SP2", "sp3": "SP3"}
+
+
+def _uff_bond_kind(order: float, kind: str) -> str:
+    """The RDKit bond type name a declared bond maps to.
+
+    A hexfold net writes its sp2 bonds as order 4/3 ``aromatic`` (three
+    bonds per carbon sharing one pi electron pair). RDKit/UFF knows no
+    fractional orders, so any ``aromatic`` bond, and any order in
+    ``[1.25, 1.75)``, becomes an ``AROMATIC`` bond (UFF bond order 1.5, atom
+    type ``C_R``); below 1.25 is ``SINGLE``, ``[1.75, 2.5)`` ``DOUBLE``,
+    from 2.5 ``TRIPLE``. The 4/3 -> 1.5 mapping is the closest UFF has; it
+    shortens a 1.42 Å graphene bond by ~0.01 Å, well inside the check's
+    tolerance."""
+    if kind == "aromatic" or 1.25 <= order < 1.75:
+        return "AROMATIC"
+    if order >= 2.5:
+        return "TRIPLE"
+    if order >= 1.75:
+        return "DOUBLE"
+    return "SINGLE"
+
+
+def _uff_forcefield(scene: Scene, labels: list[str], positions: np.ndarray) -> Any:
+    """RDKit's UFF force field over ``scene``'s declared bond graph, at
+    ``positions`` (Å, scene-atom order). Non-bonded terms act between
+    every pair beyond three bonds — also across fragments (a guest
+    against its host), which RDKit would otherwise skip by default."""
+    try:
+        from rdkit import Chem
+        from rdkit.Chem import rdForceFieldHelpers as ff_helpers
+        from rdkit.Geometry import Point3D
+    except ImportError as exc:  # pragma: no cover - wheel dep
+        raise RelaxUnsupported(
+            "relax rung 'uff' needs RDKit (a precis-geom dependency)",
+            next="relax with fidelity='emt' (H/C/N/O + fcc metals) or 'xtb'",
+        ) from exc
+    rw = Chem.RWMol()
+    index: dict[str, int] = {}
+    for la in labels:
+        atom = scene.atoms[la]
+        try:
+            ra = Chem.Atom(atom.element)
+        except RuntimeError as exc:
+            raise RelaxUnsupported(
+                f"relax rung 'uff': unknown element {atom.element!r} on {la}",
+                next="check the element symbol",
+            ) from exc
+        ra.SetNoImplicit(True)
+        ra.SetFormalCharge(int(atom.charge or 0))
+        index[la] = rw.AddAtom(ra)
+    aromatic: set[int] = set()
+    for b in scene.bonds:
+        i, j = index.get(b.i), index.get(b.j)
+        if i is None or j is None or i == j or rw.GetBondBetweenAtoms(i, j):
+            continue
+        bt = _uff_bond_kind(float(b.order), str(b.kind))
+        rw.AddBond(i, j, getattr(Chem.BondType, bt))
+        if bt == "AROMATIC":
+            rw.GetBondBetweenAtoms(i, j).SetIsAromatic(True)
+            aromatic.update((i, j))
+    for k in aromatic:
+        rw.GetAtomWithIdx(k).SetIsAromatic(True)
+    conf = Chem.Conformer(len(labels))
+    for k, p in enumerate(positions):
+        conf.SetAtomPosition(k, Point3D(float(p[0]), float(p[1]), float(p[2])))
+    m = rw.GetMol()
+    m.AddConformer(conf, assignId=True)
+    # Hybridisation and ring info only: a full sanitise would try to
+    # kekulise an open aromatic flake and reject it.
+    m.UpdatePropertyCache(strict=False)
+    Chem.SanitizeMol(
+        m,
+        sanitizeOps=Chem.SANITIZE_SETHYBRIDIZATION
+        | Chem.SANITIZE_SYMMRINGS
+        | Chem.SANITIZE_SETCONJUGATION,
+        catchErrors=True,
+    )
+    for la in labels:
+        hyb = _UFF_HYBRID.get(str(scene.atoms[la].hybridization or "").lower())
+        if hyb is not None:
+            m.GetAtomWithIdx(index[la]).SetHybridization(
+                getattr(Chem.HybridizationType, hyb)
+            )
+    if not ff_helpers.UFFHasAllMoleculeParams(m):
+        raise RelaxUnsupported(
+            "relax rung 'uff': UFF has no parameters for some atoms "
+            f"(elements {sorted({scene.atoms[la].element for la in labels})})",
+            next="relax with fidelity='emt' (H/C/N/O + fcc metals) or 'xtb'",
+        )
+    # vdwThresh 3.0 = pairs out to 3 x the vdW minimum distance (~11 Å for
+    # C...C, where the LJ tail is < 0.2 % of the well): RDKit's default of
+    # 10 keeps every pair of a molecule this size, ~3x the cost for forces
+    # nothing in a bond-graph verdict reads.
+    return ff_helpers.UFFGetMoleculeForceField(
+        m, vdwThresh=3.0, ignoreInterfragInteractions=False
+    )
+
+
+def _relax_uff(
+    scene: Scene,
+    *,
+    steps: int,
+    tol: float,
+    fmax: float | None = None,
+    on_step: Callable[[int, np.ndarray, list[float]], bool | None] | None = None,
+) -> RelaxResult:
+    """Rung ``uff``: RDKit's UFF force field on the scene's declared bond
+    graph, minimised with ASE FIRE (``maxstep`` 0.1 Å — the ``xtb`` rung's
+    optimiser, so the two are comparable step for step).
+
+    Ours, not rented, and **finite only**: UFF here has no periodic images,
+    so a ``pbc`` scene raises :class:`RelaxUnsupported` naming ``emt`` and
+    ``xtb``. Unlike ``emt``, a force field keeps the declared bonds — bond
+    orders (see :func:`_uff_bond_kind` for the hexfold 4/3 mapping),
+    hybridisations and atom types come from the graph, never from the
+    geometry — so a bond that breaks under UFF is the structure's own
+    strain, not a typing artefact. Covers most of the periodic table (no
+    lanthanides); an element without UFF parameters raises
+    :class:`RelaxUnsupported`. Honours ``fixed`` as the per-axis
+    ``FixCartesian`` constraints ``emt`` uses.
+    """
+    if any(scene.cell.pbc):
+        raise RelaxUnsupported(
+            "relax rung 'uff' is finite-only (the scene has pbc axes)",
+            next="relax with fidelity='emt' (periodic, H/C/N/O + fcc metals) "
+            "or 'xtb' (periodic, any element); mol.relax(rung='auto') picks one",
+        )
+    if not export.ase_available():
+        raise RelaxUnsupported(
+            "relax rung 'uff' needs ASE — pip install 'precis-mcp[dft]'"
+        )
+    from ase.calculators.calculator import Calculator, all_changes
+    from ase.constraints import FixCartesian
+    from ase.optimize import FIRE
+
+    labels = list(scene.atoms)
+    if not labels:
+        return RelaxResult(rung="uff", converged=True, n_steps=0, max_disp=0.0)
+    atoms = export._to_ase(scene)
+    before = atoms.get_positions().copy()
+    ff = _uff_forcefield(scene, labels, before)
+
+    class _UFF(Calculator):
+        implemented_properties = ["energy", "forces"]
+
+        def calculate(
+            self, atoms=None, properties=("energy",), system_changes=all_changes
+        ):
+            super().calculate(atoms, properties, system_changes)
+            assert self.atoms is not None
+            pos = self.atoms.get_positions().ravel().tolist()
+            grad = np.asarray(ff.CalcGrad(pos), dtype=float).reshape(-1, 3)
+            self.results = {
+                "energy": float(ff.CalcEnergy(pos)) * _KCAL_MOL_EV,
+                "forces": -grad * _KCAL_MOL_EV,
+            }
+
+    constraints = []
+    for idx, la in enumerate(labels):
+        fixed = scene.atoms[la].fixed
+        if fixed:
+            mask = [bool((fixed >> ax) & 1) for ax in range(3)]
+            constraints.append(FixCartesian(idx, mask=mask))
+    if constraints:
+        atoms.set_constraint(constraints)
+    atoms.calc = _UFF()
+
+    curve: list[float] = []
+    e_start: list[float] = []
+
+    def _record() -> None:
+        f = atoms.get_forces()
+        if not e_start:
+            e_start.append(float(atoms.get_potential_energy()))
+        curve.append(round(float(np.sqrt((f**2).sum(axis=1).max())), 4))
+
+    opt = FIRE(atoms, maxstep=0.1, logfile=None)
+    opt.attach(_record, interval=1)
+    _attach_progress(opt, rung="uff", n_atoms=len(labels), steps=steps, curve=curve)
+    _attach_step_hook(opt, atoms, curve, on_step)
+    force_tol = fmax if fmax is not None else max(tol, 0.05)
+    converged = bool(opt.run(fmax=force_tol, steps=steps))
+
+    after = atoms.get_positions()
+    for idx, la in enumerate(labels):
+        scene.atoms[la].frac = scene.cell.wrap(scene.cell.cart_to_frac(after[idx]))
+    max_disp = float(np.linalg.norm(after - before, axis=1).max())
+    forces = atoms.get_forces()
+    max_force = float(np.sqrt((forces**2).sum(axis=1).max()))
+    per_atom_forces = {
+        la: [float(x) for x in forces[idx]] for idx, la in enumerate(labels)
+    }
+    return RelaxResult(
+        rung="uff",
+        converged=converged,
+        n_steps=int(opt.get_number_of_steps()),
+        max_disp=round(max_disp, 4),
+        curve=curve,
+        energy=float(atoms.get_potential_energy()),
+        energy_start=e_start[0] if e_start else None,
+        max_force=round(max_force, 4),
+        model="uff",
+        fmax=fmax,
+        forces=per_atom_forces,
+        forces_approx=False,
+        forces_source="uff",
     )
 
 
@@ -986,7 +1224,7 @@ def _relax_xtb(
     multiplicity: int | None = None,
     spin_polarization: bool = False,
     fmax: float | None = None,
-    on_step: Callable[[int, np.ndarray, list[float]], None] | None = None,
+    on_step: Callable[[int, np.ndarray, list[float]], bool | None] | None = None,
 ) -> RelaxResult:
     """Rung ``xtb``: relax on GFN2-xTB via tblite's ASE calculator.
 
@@ -1035,9 +1273,12 @@ def _relax_xtb(
     )
 
     curve: list[float] = []
+    e_start: list[float] = []
 
     def _record() -> None:
         f = atoms.get_forces()
+        if not e_start:
+            e_start.append(float(atoms.get_potential_energy()))
         curve.append(round(float(np.sqrt((f**2).sum(axis=1).max())), 4))
 
     opt = FIRE(atoms, maxstep=0.1, logfile=None)
@@ -1065,6 +1306,7 @@ def _relax_xtb(
         curve=curve,
         energy=float(atoms.get_potential_energy()),
         max_force=round(max_force, 4),
+        energy_start=e_start[0] if e_start else None,
         model="gfn2-xtb",
         fmax=fmax,
         forces=per_atom_forces,
@@ -1369,7 +1611,7 @@ def _relax_ml(
     cell: str | None = None,
     dispersion: bool = False,
     fmax: float | None = None,
-    on_step: Callable[[int, np.ndarray, list[float]], None] | None = None,
+    on_step: Callable[[int, np.ndarray, list[float]], bool | None] | None = None,
 ) -> RelaxResult:
     """Rung 3: relax on a machine-learned interatomic potential (ASE + MLIP).
 

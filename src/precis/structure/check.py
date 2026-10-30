@@ -243,8 +243,12 @@ def site_of(
 ) -> str | None:
     """``file:line`` for run-local trace frame ``frame_id``: the frame's own
     call-site location (a ``core`` leaf already cites the user line that
-    invoked it), else the nearest ``kind='user'`` ancestor's. ``None`` when
-    the id is unknown or no frame in the path carries a location."""
+    invoked it), else the nearest ``kind='user'`` ancestor's. A frame minted
+    by library code (``precis_geom.assembly``'s own ``instance`` frames) cites
+    a module name, not a script, so the walk goes on to the first ancestor
+    whose location is a ``.py`` file — the user line that called into the
+    library. ``None`` when the id is unknown or no frame in the path carries
+    a location."""
     if frame_id is None or not frames:
         return None
     by_id = {f.get("id"): f for f in frames if isinstance(f, dict)}
@@ -253,9 +257,8 @@ def site_of(
     seen: set[Any] = set()
     while fr is not None and id(fr) not in seen:
         seen.add(id(fr))
-        if fr.get("file") and fr.get("line"):
-            if fr is by_id.get(int(frame_id)) or fr.get("kind") == "user":
-                return f"{fr['file']}:{fr['line']}"
+        if fr.get("line") and str(fr.get("file") or "").endswith(".py"):
+            return f"{fr['file']}:{fr['line']}"
         parent = fr.get("parent")
         fr = by_key.get(parent) if parent is not None else None
     return None

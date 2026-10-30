@@ -24,7 +24,8 @@ run's failure, refused naming the key)::
                  "measures"?: [{"name", "value"?|"min"?/"max"?, "unit"?,
                                 "strength"?, "reason"?, "relation"?,
                                 "datum"?, "origin"?}],
-                 "loads"?, "template"?, "findings"?, "census"?}],
+                 "loads"?, "template"?, "findings"?, "census"?,
+                 "relaxed_by"?: {"rung", "verdict", "key"?}}],
      "instances"?: [{"name", "template", "parent"?, "pose"?, "rot"?,
                      "pose_unit"?, "rot_unit"?, "frame"?}],
      "connects"?: [{"a": "blk.port", "b": "blk.port", "kind"?, "joint"?,
@@ -237,10 +238,15 @@ _BLOCK_KEYS = frozenset(
         "template",
         "findings",
         "census",
+        "relaxed_by",
         "sha",
         "bonds_sha",
     }
 )
+#: A ``relaxed_by`` row's keys (``mol.relax``'s collapse check, slice 3 of
+#: molecular-workspace-code): the rung that relaxed the block, the step key
+#: of that check and its verdict.
+_RELAXED_BY_KEYS = frozenset({"rung", "key", "verdict"})
 #: A ``notes`` entry's keys — the ``add_note`` op vocabulary (gr514245).
 _NOTE_KEYS = frozenset({"name", "kind", "text", "re", "about", "origin"})
 _PORT_KEYS = frozenset(
@@ -367,6 +373,9 @@ class BlockEntry:
     findings: list[str]
     sha: str | None
     bonds_sha: str | None
+    #: ``{rung, verdict, key?}`` — the block's coordinates are what the
+    #: ``mol.relax`` collapse check last relaxed, not the service relax.
+    relaxed_by: dict[str, str] | None = None
 
 
 def _vet_manifest(
@@ -519,6 +528,24 @@ def _vet_manifest(
                 "hexfold Net (gr514059); run-record only, the importer "
                 "does not read it"
             )
+        relaxed_by = raw.get("relaxed_by")
+        if relaxed_by is not None:
+            if not isinstance(relaxed_by, dict):
+                raise BadInput(
+                    f"manifest {where}: 'relaxed_by' must be an object "
+                    "{rung, verdict, key?} — what out.block stamps for a "
+                    "geometry that went through mol.relax"
+                )
+            _unknown_keys(relaxed_by, _RELAXED_BY_KEYS, f"{where}.relaxed_by")
+            for rk in ("rung", "verdict"):
+                if not str(relaxed_by.get(rk) or "").strip():
+                    raise BadInput(
+                        f"manifest {where}.relaxed_by: needs {rk!r} "
+                        "(the collapse check's rung and verdict)"
+                    )
+            relaxed_by = {
+                k: str(v).strip() for k, v in relaxed_by.items() if v is not None
+            }
         for sha_key in ("sha", "bonds_sha"):
             sv = raw.get(sha_key)
             if sv is not None and not re.fullmatch(r"[0-9a-fA-F]{64}", str(sv)):
@@ -558,6 +585,7 @@ def _vet_manifest(
                     if raw.get("bonds_sha")
                     else None
                 ),
+                relaxed_by=relaxed_by,
             )
         )
     for field_name, allowed in (
@@ -836,11 +864,15 @@ def _generated_ctx(
     trace_root: str | None,
     frame: int | None,
     relax: dict[str, Any] | None,
+    relaxed_by: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     """The ``meta['generated']`` provenance record — which agent, which
     workspace, which script made the block (spec §Import boundary).
     ``sha`` is the manifest's own sha256 of the block file — the next
-    import's changed/unchanged signal (gr514248/gr514249)."""
+    import's changed/unchanged signal (gr514248/gr514249). ``relaxed_by``
+    is the manifest's ``{rung, verdict, key?}``: the block's coordinates
+    came out of ``mol.relax``'s collapse check, which ``view='validate'``
+    shows so a UFF check is never read as the service's GFN2 relax."""
     ctx: dict[str, Any] = {
         "workspace": workspace,
         "run_job": run_job,
@@ -856,6 +888,8 @@ def _generated_ctx(
         ctx["frame"] = frame
     if relax is not None:
         ctx["relax"] = relax
+    if relaxed_by is not None:
+        ctx["relaxed_by"] = relaxed_by
     return ctx
 
 
@@ -1520,6 +1554,7 @@ def import_workspace_run(
                 trace_root=trace.root_key if trace else None,
                 frame=entry.frame,
                 relax=entry.relax,
+                relaxed_by=entry.relaxed_by,
             )
             ops: list[dict[str, Any]] = []
             if existing is None:

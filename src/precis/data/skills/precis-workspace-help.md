@@ -170,7 +170,7 @@ is refused by name — the vet is the contract, and the key set is:
 
 | entry | keys |
 |---|---|
-| block | `name`, `file`, `scale` (`atomic`\|`macro`), `ports`, `relax`, `desc`, `bonds`, `bonds_sha`, `mode`, `material`, `measures`, `loads`, `notes`, `template`, `findings`, `census`, `frame`, `sha` |
+| block | `name`, `file`, `scale` (`atomic`\|`macro`), `ports`, `relax`, `desc`, `bonds`, `bonds_sha`, `mode`, `material`, `measures`, `loads`, `notes`, `template`, `findings`, `census`, `relaxed_by`, `frame`, `sha` |
 | port (inside `ports`) | `name`, `atom` (atomic only), `roles`, `direction`, `expected_element`, `expected_hybridization`, `pose`, `annotations`, `frame` |
 | instance | `name`, `template`, `parent`, `pose`, `rot`, `pose_unit`, `rot_unit`, `linear`, `polar`, `frame` |
 | connect | `a`, `b`, `kind`, `joint`, `objectives`, `frame` |
@@ -191,7 +191,10 @@ library part that is never itself placed (gr514241). A block's
 `set_material`; it wins over `mode`'s `family/material` half, which
 stays the fallback (gr514245). A block's
 `findings` is a list of strings — the Geom findings `out.block` stamps
-(`chirality.flipped` and the like); `census` is an object — a hexfold Net's junction/seam/valence summary `out.block` stamps (gr514059), run-record only, never imported; import echoes each as
+(`chirality.flipped` and the like); `census` is an object — a hexfold Net's junction/seam/valence summary `out.block` stamps (gr514059), run-record only, never imported; `relaxed_by` is `{rung, verdict, key?}` —
+`out.block` stamps it on a Geom still holding `mol.relax`'s collapse-check
+coordinates, and `view='validate'` shows `relaxed_by uff ok` so that check
+is never read as the service relax; import echoes each finding as
 `block '<name>': <finding>` so a mirrored hand shows in the run record
 (gr514205). `sha` is the writer's sha256 of the geometry file and
 `bonds_sha` the sidecar's — `out.block` stamps both automatically

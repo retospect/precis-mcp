@@ -1078,3 +1078,66 @@ def test_import_echo_prints_the_steps_digest_line() -> None:
     assert "steps: 1 hit · 3 rebuilt (from decorate#0) · saved 4.2s" in res.echo()
     plain = ImportResult(design_slug="d", trace=TraceView(run={}, frames=[]))
     assert "steps:" not in plain.echo()
+
+
+def test_checkpoint_outlives_a_killed_step_and_is_dropped_on_completion(
+    cache: Path,
+) -> None:
+    """A step body's side file: saved as it goes, read back by a re-run of
+    the same key after a kill, gone once the step completes (slice 3: the
+    collapse check's resume)."""
+    state = {"die": True}
+    seen: list[Any] = []
+
+    @steps.step
+    def long_job(n: int) -> Any:
+        ck = steps.checkpoint()
+        assert ck is not None and steps.current_key() == ck.key
+        prior = ck.load()
+        seen.append(prior)
+        for k in range((prior or {}).get("done", 0), n):
+            ck.save({"done": k + 1})
+            if state["die"] and k == 2:
+                raise KeyboardInterrupt
+        return pga.geom(_scene_of(3))
+
+    assert steps.checkpoint() is None and steps.current_key() is None
+    with pytest.raises(KeyboardInterrupt):
+        long_job(5)
+    [saved] = list(cache.glob("*/*/checkpoint.json"))
+    assert json.loads(saved.read_text(encoding="utf-8")) == {"done": 3}
+    assert steps.ls() == []  # a dir with only a checkpoint is no entry
+    state["die"] = False
+    long_job(5)
+    assert seen == [None, {"done": 3}]  # the re-run resumed from step 3
+    assert list(cache.glob("*/*/checkpoint.json")) == []
+    assert [r["name"] for r in steps.ls()] == ["long_job"]
+    long_job(5)  # a hit never enters the body
+    assert len(seen) == 2
+
+
+def test_checkpoint_is_ignored_by_fresh_runs_and_absent_with_the_cache_off(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    got: list[Any] = []
+    die = [True]
+
+    @steps.step
+    def job(n: int) -> Any:
+        ck = steps.checkpoint()
+        got.append(None if ck is None else ck.load())
+        if die[0] and ck is not None:
+            ck.save({"done": n})
+            raise RuntimeError("die")
+        return pga.geom(_scene_of(3))
+
+    with pytest.raises(RuntimeError):
+        job(1)  # leaves checkpoint.json behind
+    die[0] = False
+    monkeypatch.setenv("PRECIS_STEPS_FRESH", "1")
+    job(1)
+    assert got == [None, None]  # FRESH: the saved checkpoint is not read
+    monkeypatch.delenv("PRECIS_STEPS_FRESH")
+    steps.configure("off")
+    job(2)
+    assert got[-1] is None  # no cache, no checkpoint

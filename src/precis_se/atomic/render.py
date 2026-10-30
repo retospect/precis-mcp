@@ -133,6 +133,30 @@ def bound_generated_records(store: Store, tree: SeTree) -> dict[str, dict[str, A
     return out
 
 
+def relaxed_by_lines(store: Store, tree: SeTree) -> list[str]:
+    """``view='validate'``'s ``relaxed_by`` lines — one per bound block whose
+    coordinates came out of ``mol.relax``'s collapse check
+    (``meta['generated']['relaxed_by']``, the manifest row's ``{rung,
+    verdict, key}``): ``p: relaxed_by uff ok (step 3fa9c1d2e4b5) — collapse
+    check, not the service relax``. A UFF check must never be read as the
+    GFN2 relax of record."""
+    generated = bound_generated_records(store, tree)
+    lines: list[str] = []
+    for name in sorted(tree.blocks):
+        node = tree.blocks[name]
+        if node.template is not None or node.bound_kind != "structure":
+            continue
+        rb = (generated.get(node.bound or "") or {}).get("relaxed_by")
+        if not isinstance(rb, dict) or not rb.get("rung") or not rb.get("verdict"):
+            continue
+        key = f" (step {str(rb['key'])[:12]})" if rb.get("key") else ""
+        lines.append(
+            f"{name}: relaxed_by {rb['rung']} {rb['verdict']}{key} — "
+            "collapse check, not the service relax"
+        )
+    return lines
+
+
 def bound_relax_states(store: Store, tree: SeTree) -> dict[str, dict[str, Any] | None]:
     """Every bound ``structure`` slug's recorded last relax
     (``meta['last_relax']``, stamped by ``structure_save(relax_summary=…)``),
