@@ -166,7 +166,7 @@ def _gate_problems(gate: Any, where: str) -> list[str]:
 def _loop_problems(loop: Any) -> list[str]:
     if not isinstance(loop, dict):
         return [f"meta.loop must be a dict, got {type(loop).__name__}"]
-    bad = _unknown_keys(loop, ("max", "until", "body"))
+    bad = _unknown_keys(loop, ("max", "until", "body", "count"))
     if bad:
         return [f"meta.loop: {bad}"]
     out: list[str] = []
@@ -180,6 +180,13 @@ def _loop_problems(loop: Any) -> list[str]:
     body = loop.get("body")
     if not isinstance(body, str) or not body.strip():
         out.append("meta.loop.body must be a template name (non-empty string)")
+    if "count" in loop:
+        n = loop["count"]
+        if isinstance(n, bool) or not isinstance(n, int) or n < 0:
+            out.append(
+                f"meta.loop.count={n!r} must be an integer >= 0 "
+                "(the tick stores the iterations minted so far)"
+            )
     return out
 
 

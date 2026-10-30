@@ -66,8 +66,9 @@ class _Store:
         status: str = "open",
         comments: tuple[str, ...] = (),
         tags: tuple[str, ...] = (),
+        meta: dict[str, Any] | None = None,
     ) -> None:
-        self.refs[ref_id] = _Ref(ref_id, title)
+        self.refs[ref_id] = _Ref(ref_id, title, dict(meta or {}))
         self.tags[ref_id] = [Tag.closed("STATUS", status)] + [Tag.open(t) for t in tags]
         rows = [_Chunk(0, body, TODO_BODY_KIND)] if body else []
         rows += [_Chunk(i + 1, c, "todo_comment") for i, c in enumerate(comments)]
@@ -327,6 +328,41 @@ def test_brief_render_takes_newest_brief_or_handoff(seams: dict[str, Any]) -> No
     assert "put(kind='todo', id=42, text='landed: <sha>" in tail
     assert "tag(kind='todo', id=42, add=['STATUS:done'])" in tail
     assert brief.index("scripts/ship --quick") > brief.index("Do X, then Y.")
+
+
+def test_generator_brief_creates_children_and_never_lands(
+    seams: dict[str, Any], tmp_path: Path
+) -> None:
+    store = _Store()
+    store.add_todo(
+        42,
+        "Slice the work",
+        body="Split it.",
+        meta={"generate": {"role": "slicer", "from": "body"}},
+    )
+    _submit(store, seams)
+    tree = tmp_path / ".claude" / "worktrees" / "slice-td42"
+    brief = (tree / "scratch" / "brief.md").read_text(encoding="utf-8")
+    assert "Split it." in brief
+    assert "put(kind='todo', text=..., body=..., meta={'llm_tier': None" in brief
+    assert "args={'parent_id': 42}" in brief
+    assert "blocked-by" in brief
+    assert "Do not tag this todo done: the dispatcher closes it" in brief
+    # no land steps: no ship, no landed comment, no STATUS:done instruction
+    assert "scripts/ship" not in brief
+    assert "landed:" not in brief
+    assert "add=['STATUS:done']" not in brief
+
+
+def test_task_brief_keeps_the_land_steps(seams: dict[str, Any], tmp_path: Path) -> None:
+    store = _Store()
+    store.add_todo(42, "Do it", body="Do X.", meta={"op": "run_slice"})
+    _submit(store, seams)
+    tree = tmp_path / ".claude" / "worktrees" / "slice-td42"
+    brief = (tree / "scratch" / "brief.md").read_text(encoding="utf-8")
+    assert "scripts/ship --quick" in brief
+    assert "tag(kind='todo', id=42, add=['STATUS:done'])" in brief
+    assert "create the child todos" not in brief
 
 
 # ── submit / poll ──────────────────────────────────────────────────

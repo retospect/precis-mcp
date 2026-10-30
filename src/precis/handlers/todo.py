@@ -361,7 +361,8 @@ def _inherit_workspace_from_parent(
 
 #: Plan node kinds a parented put must not stamp ``meta.llm_tier='opus'`` on:
 #: the plan dispatcher tick drives them (a gate is only evaluated), so a
-#: ``plan_tick`` would be wrong. A task node keeps the parented default.
+#: ``plan_tick`` would be wrong. A task node (``meta.op``) is skipped at the
+#: call site; a plain todo keeps the parented default.
 _PLAN_KINDS_NOT_DISPATCHED: frozenset[str | None] = frozenset(
     {"gate", "loop", "generator", "phase"}
 )
@@ -910,8 +911,11 @@ class TodoHandler(NumericRefHandler):
             # a question for the owner is never auto-run (td541979)
             and not (isinstance(meta, dict) and "ask" in meta)
             # plan nodes that are evaluated or ticked, never dispatched to
-            # a plan_tick (td542095); a task node keeps the default
+            # a plan_tick (td542095)
             and plan_nodes.node_kind(meta) not in _PLAN_KINDS_NOT_DISPATCHED
+            # a task node (meta.op) is driven by plan_dispatch alone, so a
+            # hand-added one gets no second dispatcher (gr542301)
+            and not (isinstance(meta, dict) and "op" in meta)
         )
         # The flag rides ``_PutState`` so the create ack surfaces the stamp
         # — the default silently arms billed compute (dispatch mints a

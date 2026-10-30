@@ -13,7 +13,10 @@ subtree whose nodes are shaped by :mod:`precis.plans.nodes`. One pass:
    the body is re-minted under it (:func:`precis.plans.templates.mint_body`)
    and the count bumped. A body with no minter closes the loop with a
    comment naming the gap.
-3. **phases** — closes every node whose work is finished: a phase
+3. **phases** — first reopens a generator that is ``STATUS:done`` while a
+   child is still open (a generator's session mints children, it does not
+   close the node; counted as ``reopened``). Then closes every node whose work
+   is finished: a phase
    (``meta.auto_close``) or a generator with children, once every child is
    closed; a mechanical task (``meta.op`` other than ``run_slice``) whose
    newest job succeeded. Deepest first, so nested phases cascade in one pass.
@@ -45,7 +48,8 @@ inside another root's subtree is folded into it. Closed roots are skipped.
 in-memory model and counts what it would have done, nothing is written. The
 job summary's first line is
 ``plan_dispatch: roots=N gates=o/c loops=minted/closed phases=closed
-dispatched=N released=N asks=N dry_run=bool``; the actions follow it.
+dispatched=N released=N asks=N dry_run=bool reopened=N``; the actions follow
+it.
 
 **Arming** (an operator write, not done by any deploy) — the recurring todo
 the minter turns into a job every 5 minutes, like ``graph_garden``::
@@ -379,6 +383,7 @@ class PassResult:
     dispatched: int = 0
     released: int = 0
     asks: int = 0
+    reopened: int = 0
     notes: list[str] = field(default_factory=list)
 
     def counts(self) -> dict[str, Any]:
@@ -393,6 +398,7 @@ class PassResult:
             "released": self.released,
             "asks": self.asks,
             "dry_run": self.dry_run,
+            "reopened": self.reopened,
         }
 
     def summary(self) -> str:
@@ -401,7 +407,8 @@ class PassResult:
             f"gates={self.gates_opened}/{self.gates_closed} "
             f"loops={self.loops_minted}/{self.loops_closed} "
             f"phases={self.phases_closed} dispatched={self.dispatched} "
-            f"released={self.released} asks={self.asks} dry_run={self.dry_run}"
+            f"released={self.released} asks={self.asks} dry_run={self.dry_run} "
+            f"reopened={self.reopened}"
         )
 
     def render(self) -> str:
@@ -560,6 +567,24 @@ def _op_type(n: _Node) -> str:
     if isinstance(op, str) and op.strip():
         return op.strip()
     return DEFAULT_OP
+
+
+def _step_reopen(plan: _Plan, w: _Writer, res: PassResult) -> None:
+    """A generator tagged ``STATUS:done`` (its session's own close) while a
+    child todo is open goes back to ``STATUS:open``: it closes as a phase
+    once every child is closed, and until then must keep blocking whatever is
+    ``blocked-by`` it."""
+    for n in plan.todos():
+        if node_kind(n.meta) != "generator" or n.status != "done":
+            continue
+        open_kids = [c for c in plan.child_todos(n) if not _closed(c)]
+        if not open_kids:
+            continue
+        w.set_status(n, "open")
+        res.reopened += 1
+        res.notes.append(
+            f"generator td{n.id} reopened: {len(open_kids)} child(ren) still open"
+        )
 
 
 def _step_phases(plan: _Plan, w: _Writer, res: PassResult) -> None:
@@ -888,6 +913,7 @@ def run_pass(
     w = _Writer(store, dry_run)
     _step_gates(store, plan, w, res, now)
     _step_loops(store, plan, w, res, now)
+    _step_reopen(plan, w, res)
     _step_phases(plan, w, res)
     _step_dispatch(plan, w, res)
     _step_hygiene(plan, w, res, now)

@@ -30,7 +30,9 @@ that holds the lane's credentials with ``params.target_node``):
 
 The land is the slice's own: the brief ends with ``scripts/ship --quick``
 and the ``landed:`` comment + ``STATUS:done``, so the todo closes through
-the ship, not here.
+the ship, not here. A generator node is the exception: its brief ends with
+"create the child todos" and no land, and the plan tick closes it once its
+children are closed (it reopens one a session marked done too early).
 
 Guard: ``PRECIS_FACTORY=off`` refuses every submit (:func:`validate_submit`)
 and every launch (:func:`submit` re-checks). Subprocess, git and process
@@ -51,6 +53,7 @@ from pathlib import Path
 from typing import Any
 
 from precis.plans import lanes as _lanes
+from precis.plans.nodes import node_kind
 from precis.store.types import TODO_BODY_KIND, ChunkInsert, Tag
 
 log = logging.getLogger(__name__)
@@ -312,6 +315,26 @@ def release_todo(store: Any, todo_id: int, lane: str | None) -> int:
 # ── Brief ──────────────────────────────────────────────────────────
 
 
+def _generator_close(todo_id: int) -> list[str]:
+    """Closing steps of a generator brief: mint children, never close."""
+    return [
+        "",
+        "## When done: create the child todos",
+        "",
+        "This todo is a generator: your work is the child todos, not a land.",
+        "",
+        "1. Create each child with `put(kind='todo', text=..., body=..., "
+        "meta={'llm_tier': None, ...}, "
+        f"args={{'parent_id': {todo_id}}})`.",
+        "2. Add `blocked-by` links between the children for any sequence.",
+        "3. Then stop. Do not tag this todo done: the dispatcher closes it "
+        "when its children finish.",
+        "",
+        "Your final message is posted on the todo as the `handoff:` comment: "
+        "the children you created (ids) and anything left open.",
+    ]
+
+
 def render_brief(
     *,
     todo_id: int,
@@ -321,9 +344,11 @@ def render_brief(
     lane: str,
     model: str,
     effort: str,
+    generator: bool = False,
 ) -> str:
     """The prompt a slice session starts from. Ends with the land
-    instruction, so the slice closes its own todo."""
+    instruction, so the slice closes its own todo; a ``generator`` brief
+    ends with the child-todo instruction instead (the plan tick closes it)."""
     name = slice_name(todo_id)
     lines = [
         f"# Slice td{todo_id}: {title.strip()}",
@@ -339,6 +364,9 @@ def render_brief(
     ]
     if latest:
         lines += ["", "## Latest brief / handoff on the todo", "", latest.strip()]
+    if generator:
+        lines += _generator_close(todo_id)
+        return "\n".join(lines) + "\n"
     lines += [
         "",
         "## When done: land it yourself",
@@ -520,6 +548,7 @@ def submit(ctx: Any, spec: Any) -> Any:
         lane=lane.name,
         model=model,
         effort=effort,
+        generator=node_kind(todo.meta) == "generator",
     )
     name = slice_name(todo_id)
     try:

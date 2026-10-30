@@ -270,8 +270,19 @@ def test_parented_put_skips_llm_tier_for_non_task_plan_nodes(
     assert _tier_after_parented_put(handler, store, **meta) is None
 
 
-def test_parented_put_keeps_llm_tier_default_for_task_and_plain(
+@pytest.mark.parametrize(
+    "op",
+    ["run_slice", {"type": "plan_tick"}],
+    ids=["op-name", "op-dict"],
+)
+def test_parented_put_skips_llm_tier_for_task_nodes(
+    handler: TodoHandler, store: Store, op: Any
+) -> None:
+    # gr542301: plan_dispatch alone drives a task node, so no plan_tick
+    assert _tier_after_parented_put(handler, store, op=op) is None
+
+
+def test_parented_put_keeps_llm_tier_default_for_plain(
     handler: TodoHandler, store: Store
 ) -> None:
-    assert _tier_after_parented_put(handler, store, op="run_slice") == "opus"
     assert _tier_after_parented_put(handler, store) == "opus"

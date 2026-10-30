@@ -399,3 +399,63 @@ def test_mechanical_task_closes_when_its_job_succeeds(store: Store) -> None:
     assert _status(store, task) == "done"
     assert _status(store, mint.root_id) == "done"
     assert res.phases_closed == 2
+
+
+def _generator_plan(store: Store, *, with_after: bool = False) -> T.PlanMint:
+    def build(m: T._Minter) -> None:
+        m.node("root", "Plan", {"auto_close": True})
+        gen = m.node(
+            "gen", "Slice it", {"generate": {"role": "slicer", "from": "x.md~H"}}
+        )
+        m.node("kid", "Child", {"op": "run_slice"}, parent=gen, body="Do it.")
+        if with_after:
+            m.node("after", "After", {"op": "run_slice"}, blocked_by=("gen",))
+
+    return T._run(store, None, build)
+
+
+def _mark_done(store: Store, *ids: int) -> None:
+    for ref_id in ids:
+        store.add_tag(
+            ref_id, Tag.closed("STATUS", "done"), set_by="system", replace_prefix=True
+        )
+
+
+def test_done_generator_with_open_child_is_reopened(store: Store) -> None:
+    mint = _generator_plan(store, with_after=True)
+    gen, kid, after = mint.ids["gen"], mint.ids["kid"], mint.ids["after"]
+    # The generator's session closed it (what the old brief told it to do).
+    _mark_done(store, gen)
+
+    res = pd.run_pass(store, now=datetime.now(UTC))
+    assert res.reopened == 1
+    assert res.counts()["reopened"] == 1
+    assert res.summary().endswith("dry_run=False reopened=1")
+    assert _status(store, gen) == "open"
+    # Its dependant stays blocked; the child, not the generator, is dispatched.
+    assert _jobs_under(store, after) == []
+    assert _jobs_under(store, gen) == []
+    assert len(_jobs_under(store, kid)) == 1
+
+    # Children closed: nothing to reopen, the generator closes as a phase.
+    _finish_live_jobs(store)
+    res = pd.run_pass(store)
+    assert res.reopened == 0
+    assert "reopened=0" in res.summary()
+    assert _status(store, gen) == "done"
+
+
+def test_done_generator_without_open_children_is_left_closed(store: Store) -> None:
+    mint = _generator_plan(store)
+    _mark_done(store, mint.ids["gen"], mint.ids["kid"])
+    res = pd.run_pass(store)
+    assert res.reopened == 0
+    assert _status(store, mint.ids["gen"]) == "done"
+
+
+def test_dry_run_counts_the_reopen_without_writing(store: Store) -> None:
+    mint = _generator_plan(store)
+    _mark_done(store, mint.ids["gen"])
+    res = pd.run_pass(store, dry_run=True, reason="params.dry_run")
+    assert res.reopened == 1
+    assert _status(store, mint.ids["gen"]) == "done"
