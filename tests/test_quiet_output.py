@@ -241,3 +241,84 @@ def test_ship_quiet_conflict_lists_files(rig: Rig) -> None:
     gitdir = Path(rig.g(wt, "rev-parse", "--absolute-git-dir"))
     assert (gitdir / "rebase-merge").is_dir() or (gitdir / "rebase-apply").is_dir()
     rig.g(wt, "rebase", "--abort")
+
+
+# --- scripts/ship --await <log> (gr541681) ----------------------------------
+# The wait primitive for a backgrounded ship, modelled on scripts/test's
+# --await: each call blocks up to PRECIS_SHIP_AWAIT_BUDGET and exits 124
+# while the run is still going; once a terminal marker lands it returns
+# the run's verdict (0 shipped / 1 red or conflict). Both log shapes
+# resolve — the caller's quiet capture (SHIP_STATUS token) and a
+# --verbose transcript (landed on main / ✖).
+
+
+def _ship_await(
+    rig: Rig, log: Path, budget: str = "5"
+) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        [_BASH, "scripts/ship", "--await", str(log)],
+        cwd=rig.primary,
+        env={**rig.env, "PRECIS_SHIP_AWAIT_BUDGET": budget},
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        check=False,
+        timeout=60,
+    )
+
+
+def test_ship_await_missing_log_is_an_error(rig: Rig) -> None:
+    cp = _ship_await(rig, rig.root / "nope.log")
+    assert cp.returncode != 0
+    assert "no such ship log" in cp.stderr
+
+
+def test_ship_await_still_running_exits_124(rig: Rig) -> None:
+    wt = rig.worktree("awaitrun", {"a.txt": "a\n"})
+    p, log = rig.ship(wt, "--quick", hold=True)
+    rig.wait_lint_started(wt)
+    cp = _ship_await(rig, log, budget="1")
+    assert cp.returncode == 124, cp.stdout + cp.stderr
+    assert "poll again" in cp.stdout
+    rig.release()
+    _finish(p, log)
+
+
+def test_ship_await_quiet_log_returns_shipped(rig: Rig) -> None:
+    wt = rig.worktree("awaitq", {"q.txt": "q\n"})
+    p, log = rig.ship(wt, "--quick", sleep=1, PRECIS_SHIP_VERBOSE="0")
+    out = _finish(p, log)
+    assert out.rstrip().endswith("SHIP_STATUS: shipped")
+    cp = _ship_await(rig, log)
+    assert cp.returncode == 0, cp.stdout + cp.stderr
+    assert "SHIP_STATUS: shipped" in cp.stdout
+
+
+def test_ship_await_quiet_red_log_exits_one(rig: Rig) -> None:
+    wt = rig.worktree("awaitred", {"r.txt": "r\n"})
+    p, log = rig.ship(
+        wt, "--quick", sleep=1, PRECIS_SHIP_VERBOSE="0", PRECIS_FAKE_LINT_FAIL="1"
+    )
+    assert p.wait(timeout=120) == 1
+    cp = _ship_await(rig, log)
+    assert cp.returncode == 1
+    assert "SHIP_STATUS: error" in cp.stdout
+
+
+def test_ship_await_verbose_transcript_green(rig: Rig) -> None:
+    """A --verbose capture has no epilogue and no SHIP_STATUS token —
+    `landed on main` is the green marker on a raw transcript."""
+    wt = rig.worktree("awaitv", {"v.txt": "v\n"})
+    p, log = rig.ship(wt, "--quick", sleep=1)  # rig defaults VERBOSE=1
+    out = _finish(p, log)
+    assert "SHIP_STATUS" not in out
+    cp = _ship_await(rig, log)
+    assert cp.returncode == 0, cp.stdout + cp.stderr
+
+
+def test_ship_await_verbose_transcript_red(rig: Rig) -> None:
+    wt = rig.worktree("awaitvr", {"r.txt": "r\n"})
+    p, log = rig.ship(wt, "--quick", sleep=1, PRECIS_FAKE_LINT_FAIL="1")
+    assert p.wait(timeout=120) == 1
+    cp = _ship_await(rig, log)
+    assert cp.returncode == 1

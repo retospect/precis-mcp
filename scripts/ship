@@ -152,6 +152,14 @@
 #                                        # log path and a final SHIP_STATUS
 #                                        # token — same gate semantics and exit
 #                                        # codes, only the rendering changes.
+#         scripts/ship --await <log>    # wait on a BACKGROUNDED ship run
+#                                        # (`scripts/ship … >log 2>&1 &`):
+#                                        # blocks up to
+#                                        # PRECIS_SHIP_AWAIT_BUDGET s (480),
+#                                        # exits 124 while still running —
+#                                        # re-run the same command — then
+#                                        # returns the run's verdict
+#                                        # (gr541681).
 #
 # The full-suite path (no --impacted/--quick) also runs the DIFF-COVERAGE gate:
 # pytest runs under pytest-cov in the container, then diff-cover on the HOST
@@ -265,6 +273,55 @@ RELEASE_BRANCH=""
 VERBOSE="${PRECIS_SHIP_VERBOSE:-0}"
 MSG=""
 ORIG_ARGV=("$@")
+
+# --await <log> (gr541681): the wait primitive for a backgrounded ship —
+# scripts/test's --await shape. Each call blocks up to
+# PRECIS_SHIP_AWAIT_BUDGET seconds (default 480, under the ~10 min
+# foreground cap) and exits 124 while the run is still going — re-run the
+# same command until it returns the run's verdict. Two log shapes resolve:
+# the caller's capture file (quiet mode ends it with the epilogue's
+# `SHIP_STATUS: <token>`) and the run's own transcript (the `log:` path, or
+# a --verbose capture — green ends `landed on main` / `release fix landed`,
+# red ends in a ✖ line; every scripts/ship failure path prints one).
+# scripts/ship-wait stays the GATE waiter (verdict markers, gh run ids);
+# --await answers in ship's own exit-code vocabulary. Handled before flag
+# parsing and the quiet re-exec: it is a standalone verb, not a mode.
+if [[ "${1:-}" == "--await" ]]; then
+    AWAIT_LOG="${2:?usage: scripts/ship --await <log>}"
+    # Appear grace: a quiet run prints `log:` a beat before the inner
+    # spawn's redirect creates the file, so a fresh path needs a moment —
+    # a typo must still fail fast.
+    _await_t0=$SECONDS
+    while [[ ! -f "$AWAIT_LOG" && $((SECONDS - _await_t0)) -lt 10 ]]; do
+        sleep 1
+    done
+    [[ -f "$AWAIT_LOG" ]] || { echo "ERR: no such ship log ${AWAIT_LOG}" >&2; exit 1; }
+    BUDGET="${PRECIS_SHIP_AWAIT_BUDGET:-480}"
+    START=$SECONDS
+    while (( SECONDS - START < BUDGET )); do
+        tok="$(grep -o 'SHIP_STATUS: .*' "$AWAIT_LOG" 2>/dev/null | tail -1 || true)"
+        if [[ -n "$tok" ]]; then
+            echo "$tok"
+            [[ "$tok" == "SHIP_STATUS: shipped" ]] && exit 0
+            exit 1
+        fi
+        if grep -qE 'landed on main|release fix landed' "$AWAIT_LOG" 2>/dev/null; then
+            echo "SHIP_STATUS: shipped"
+            exit 0
+        fi
+        if grep -q '✖' "$AWAIT_LOG" 2>/dev/null; then
+            grep '✖' "$AWAIT_LOG" | tail -1
+            echo "SHIP_STATUS: error"
+            exit 1
+        fi
+        sleep 5
+    done
+    echo "ship run STILL RUNNING after ${BUDGET}s — poll again with the same command:"
+    echo "  scripts/ship --await ${AWAIT_LOG}"
+    tail -n 2 "$AWAIT_LOG" 2>/dev/null || true
+    exit 124
+fi
+
 while :; do
     case "${1:-}" in
         --release)  RELEASE=1; QUICK=1; shift ;;
@@ -283,7 +340,7 @@ while :; do
         # get silently dropped (gr209915).
         -m|--message) MSG="${2:-}"; shift 2 ;;
         --) shift; break ;;
-        -*) printf '\033[31m✖ unknown flag %s (known: --impacted --mutate --quick --checked --remote --full --slow --release --release-branch --allow-migration --verbose -m/--message)\033[0m\n' "$1" >&2; exit 2 ;;
+        -*) printf '\033[31m✖ unknown flag %s (known: --await <log> --impacted --mutate --quick --checked --remote --full --slow --release --release-branch --allow-migration --verbose -m/--message)\033[0m\n' "$1" >&2; exit 2 ;;
         *) break ;;
     esac
 done
