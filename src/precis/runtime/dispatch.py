@@ -1932,6 +1932,18 @@ class DispatchMixin(RuntimeShape):
             )
         below = store.part_of_descendants(ref_id, depth=n_depth)
         self._intersect_include_ref_ids(args, below)
+        # Re-hand the caller's under=/depth= spelling to a search handler
+        # that declares them (memory's index listing) — the include filter
+        # above already applied them; the handler only re-renders the
+        # spelling in its next-page hint (gr538490).
+        if kinds is not None and len(kinds) == 1:
+            h = self.hub.handler_for(kinds[0])
+            if h is not None:
+                accepted = self._accepted_kwargs(h.search)
+                if "under" in accepted:
+                    args["under"] = under
+                if "depth" in accepted and depth is not None:
+                    args["depth"] = depth
         name = handle_registry.try_format(
             resolved.kind if resolved is not None else "memory", ref_id
         )

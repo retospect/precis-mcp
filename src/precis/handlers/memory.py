@@ -89,7 +89,7 @@ from psycopg import Connection
 from psycopg.errors import DeadlockDetected, LockNotAvailable
 from psycopg.pq import TransactionStatus
 
-from precis._result_budget import size_cell
+from precis._result_budget import result_context_cap, size_cell
 from precis.errors import (
     BadInput,
     Gone,
@@ -144,6 +144,11 @@ log = logging.getLogger(__name__)
 #: Derived tag the attribution gate maintains (a number next to a citation
 #: that the cited text does not carry). See :mod:`precis.handlers._attribution`.
 _AUDIT_UNGROUNDED = Tag.closed("AUDIT", AUDIT_VALUE)
+
+#: Bytes paged listings (``view='members'``, ``view='index'`` pages)
+#: reserve for the header + ``next:``/note lines the dispatcher may
+#: prepend, so the emitted page itself always fits the binding cap.
+_PAGED_FOOTER_BYTES = 400
 
 #: Max memories that one ``supersede`` call may fold into a survivor.
 #: A guardrail, not a quota — the agent can do several small merges.
@@ -482,8 +487,21 @@ class MemoryHandler(NumericRefHandler):
         # ``view='diff'``'s sha (``args={'since': <sha>}``) — forwarded to
         # the base dispatch; declared so the extras gate accepts it here.
         since: str | int | None = None,
+        # ``view='members'``'s cursor args (``args={'offset': N,
+        # 'depth': D}``) — declared so the extras gate accepts them.
+        offset: int | str | None = None,
+        depth: int | str | None = None,
         **_kw: Any,
     ) -> Response:
+        # offset=/depth= belong to view='members' alone; anywhere else
+        # they would be silently dropped, so refuse with the shape.
+        if (offset is not None or depth is not None) and (
+            view != "members" or q is not None
+        ):
+            raise BadInput(
+                "offset=/depth= only apply to get(kind='memory', view='members')",
+                next="get(kind='memory', id=N, view='members', args={'offset': 0})",
+            )
         if isinstance(id, str) and "~" in id:
             return self._get_section(id=id, view=view, q=q)
         if (r := self._route_find(id=id, view=view, q=q)) is not None:
@@ -494,6 +512,9 @@ class MemoryHandler(NumericRefHandler):
         # (links/log/raw) fall through to NumericRefHandler.get unchanged
         # — same dispatch shape as QuestHandler.get's view='tree'.
         concrete = id is not None and not (isinstance(id, str) and id.startswith("/"))
+        if view == "members" and concrete:
+            ref = self._resolve_live_ref(self._coerce_id(id))
+            return self._render_members(ref, offset=offset, depth=depth)
         if view == "argument" and concrete:
             ref = self._resolve_live_ref(self._coerce_id(id))
             return render_argument_view(self.store, ref)
@@ -505,7 +526,7 @@ class MemoryHandler(NumericRefHandler):
             resp = super().get(id=id, view=canon, q=q, since=since, **_kw)
             return interpreted(resp, [f"view={view!r} read as {shown}"])
         if concrete and view is not None and view not in _BASE_VIEWS:
-            legal = ["argument", *EYE_LADDER, *_BASE_VIEWS]
+            legal = ["argument", "members", *EYE_LADDER, *_BASE_VIEWS]
             close = difflib.get_close_matches(view, legal, n=1)
             raise Unsupported(
                 f"unknown view {view!r} for kind='memory'",
@@ -514,13 +535,137 @@ class MemoryHandler(NumericRefHandler):
                     (f"did you mean {close[0]!r}? " if close else "")
                     + "view='argument' (kind:lemma/kind:inference proof tree) "
                     f"· {'|'.join(EYE_LADDER)}, optionally +recall (the eye) "
-                    "· links, log, raw (generic)"
+                    "· members (paged part-of listing) · links, log, raw (generic)"
                 ),
             )
         resp = super().get(id=id, view=view, q=q, since=since, **_kw)
         if view is None and q is None and id is not None and not isinstance(id, list):
             resp = self._with_budget_outline(resp, id)
         return resp
+
+    def eye(
+        self,
+        *,
+        id: Any = None,
+        extent: Any = "fisheye",
+        q: str | None = None,
+        ring: Any = None,
+    ) -> Response:
+        """Eye render; on a ``section:index`` hub the over-cap trailer also
+        names the paged member listing (``view='members'``) as the way to
+        read every member in cap-sized chunks (gr538449/gr538490)."""
+        ref = self._resolve_live_ref(self._coerce_id(id))
+        resp = super().eye(id=int(ref.id), extent=extent, q=q, ring=ring)
+        from precis.utils.eye_render import _is_hub
+
+        if _is_hub(self.store, ref.id):
+            hint = f"get(kind='memory', id={ref.id}, view='members')"
+            resp = replace(resp, result_budget_hint=resp.result_budget_hint or hint)
+        return resp
+
+    def _render_members(
+        self,
+        ref: Ref,
+        *,
+        offset: int | str | None,
+        depth: int | str | None,
+    ) -> Response:
+        """``view='members'``: the ref's part-of subtree as index bullets.
+
+        Emits whole lines until the context cap (gr538449's "members in
+        chunks under the result cap"); ``args={'offset': N}`` resumes at
+        the member after the last one shown — the footer's ``next:`` line
+        carries the ready-made call. Rows sort by ref_id, not recency:
+        band order shifts when a reader touches a member mid-walk, which
+        would skip or repeat rows between pages. ``args={'depth': D}``
+        bounds the walk (``1`` = direct members); default is the whole
+        subtree, matching ``under=``'s scope.
+        """
+        from precis.cli.memory import bullet_line
+        from precis.utils.eye_render import _first_body_lines
+
+        try:
+            off = int(str(offset)) if offset is not None else 0
+        except (TypeError, ValueError):
+            off = -1
+        if off < 0:
+            raise BadInput(
+                f"offset= must be a non-negative integer, got {offset!r}",
+                next=f"get(kind='memory', id={ref.id}, view='members')",
+            )
+        n_depth: int | None = None
+        if depth is not None:
+            try:
+                n_depth = int(str(depth))
+            except (TypeError, ValueError):
+                n_depth = 0
+            if n_depth < 1:
+                raise BadInput(
+                    f"depth= must be a positive integer, got {depth!r}",
+                    next=(
+                        "depth=1 lists direct members; omit it for the whole subtree"
+                    ),
+                )
+        handle = handle_registry.try_format(self.kind, ref.id) or str(ref.id)
+        found = self.store.fetch_refs_by_ids(
+            sorted(self.store.part_of_descendants(ref.id, depth=n_depth))
+        )
+        ordered = sorted(
+            (r for r in found.values() if r.kind == self.kind),
+            key=lambda r: r.id,
+        )
+        non_memory = len(found) - len(ordered)
+        total = len(ordered)
+        if total == 0:
+            return Response(body=f"{self._sense()} {handle} has no part-of members")
+        if off >= total:
+            return Response(
+                body=(
+                    f"no members past offset {off} — {total} total; "
+                    f"next: get(kind='memory', id={ref.id}, view='members')"
+                )
+            )
+        # Reserve room for the header + the continuation/footer lines so
+        # the emitted page itself always fits the cap that binds reads.
+        budget = max(200, result_context_cap() - _PAGED_FOOTER_BYTES)
+        rest = ordered[off:]
+        firsts = _first_body_lines(
+            self.store, [r.id for r in rest if not (r.meta or {}).get("hook")]
+        )
+        sizes = self.store.chunks.body_byte_counts([r.id for r in rest])
+        lines: list[str] = []
+        used = 0
+        for r in rest:
+            line = bullet_line(
+                r,
+                cut_hooks=True,
+                filename=True,
+                fallback_hook=firsts.get(r.id, ""),
+                size=size_cell(sizes.get(r.id, 0)),
+            )
+            cost = len(line.encode("utf-8")) + 1
+            if lines and used + cost > budget:
+                break
+            lines.append(line)
+            used += cost
+        end = off + len(lines)
+        depth_note = f" (depth ≤ {n_depth})" if n_depth else ""
+        header = f"# memory {handle} — {total} part-of members{depth_note}"
+        body = f"{header}\n" + "\n".join(lines)
+        if end < total:
+            depth_arg = f", 'depth': {n_depth}" if n_depth else ""
+            body += (
+                f"\n… {end} of {total} shown — next: get(kind='memory', "
+                f"id={ref.id}, view='members', "
+                f"args={{'offset': {end}{depth_arg}}})"
+            )
+        if non_memory:
+            body += (
+                f"\n… {non_memory} linked non-memory member"
+                f"{'s' if non_memory != 1 else ''} not listed "
+                f"(view='links' shows them)"
+            )
+        return Response(body=body)
 
     def _get_section(self, *, id: str, view: str | None, q: str | None) -> Response:
         """``get(id='<id>~<section>')`` — one headed part of the body.
@@ -2318,6 +2463,11 @@ class MemoryHandler(NumericRefHandler):
         exclude_ref_ids: list[int] | None = None,
         include_ref_ids: list[int] | None = None,
         scope: str | None = None,
+        # The dispatcher resolves under=/depth= into include_ref_ids and
+        # re-hands the caller's spelling to kinds that declare it — the
+        # index listing re-renders it in its next-page hint (gr538490).
+        under: str | int | None = None,
+        depth: int | str | None = None,
         **kw: Any,
     ) -> Response:
         """Memory search. An unscoped query whose hits cluster in one hub or
@@ -2335,6 +2485,8 @@ class MemoryHandler(NumericRefHandler):
             exclude_ref_ids=exclude_ref_ids,
             include_ref_ids=include_ref_ids,
             scope=scope,
+            under=under,
+            depth=depth,
             **kw,
         )
         if not (q and q.strip()):
@@ -2363,6 +2515,8 @@ class MemoryHandler(NumericRefHandler):
         exclude_ref_ids: list[int] | None = None,
         include_ref_ids: list[int] | None = None,
         scope: str | None = None,
+        under: str | int | None = None,
+        depth: int | str | None = None,
         **_kw: Any,
     ) -> Response:
         """Body-chunk search; ``view='index'`` renders hits as index bullets.
@@ -2376,6 +2530,12 @@ class MemoryHandler(NumericRefHandler):
         ``<filename>`` is ``meta.file_mirror.filename`` when mirrored,
         ``<hook>`` is ``meta.hook`` else the body's first line). Any other
         ``view`` is refused; ``None`` is the unchanged default render.
+
+        Without ``q`` the index listing is a bounded enumeration, not a
+        ranked set — ``args={'page': N}`` walks it, each page bounded by
+        ``page_size`` rows AND the result cap, with a ``next:`` line
+        naming the following page (gr538490). Ranked searches still do
+        not paginate.
         """
         # ``q='*'`` is the match-all spelling (gr538071) — fold before
         # the index view's tag-filtered listing path runs; the
@@ -2414,8 +2574,26 @@ class MemoryHandler(NumericRefHandler):
                 ),
             )
         if not (q and q.strip()):
+            if under is not None and include_ref_ids is None:
+                # under= arrives here resolved (the dispatcher re-hands
+                # the spelling for hint echo); a bare under with no
+                # include set means a direct caller skipped dispatch —
+                # refuse rather than page an unfiltered set while naming
+                # under= in the next call (gr538490).
+                raise BadInput(
+                    "under= reached the handler without a resolved member "
+                    "set — it resolves on the dispatch surface",
+                    next="search(kind='memory', view='index', "
+                    "args={'under': '<handle>'})",
+                )
             return self._index_listing(
-                tags, page_size, page, exclude_ref_ids, include_ref_ids
+                tags,
+                page_size,
+                page,
+                exclude_ref_ids,
+                include_ref_ids,
+                under=under,
+                depth=depth,
             )
         from precis.cli.memory import bullet_line
 
@@ -2466,10 +2644,19 @@ class MemoryHandler(NumericRefHandler):
         page: int,
         exclude_ref_ids: list[int] | None = None,
         include_ref_ids: list[int] | None = None,
+        under: str | int | None = None,
+        depth: int | str | None = None,
     ) -> Response:
         """``view='index'`` without ``q=``: the tag-filtered memories as index
         bullets, most recently touched first (``GREATEST(last_viewed_at,
-        last_recalled_at, updated_at)``)."""
+        last_recalled_at, updated_at)``).
+
+        A page closes at ``page_size`` rows OR the context cap, whichever
+        first — so ``args={'page': N}`` always resumes exactly where the
+        previous page stopped, and each emitted page itself fits the cap
+        (gr538490: a 50-row page used to be cut by the fitter with the
+        rows between the cut and ``page_size`` silently unreachable).
+        """
 
         from precis.cli.memory import bullet_line
         from precis.utils.memory_hubs import recency_stamps
@@ -2488,26 +2675,73 @@ class MemoryHandler(NumericRefHandler):
         stamps = recency_stamps(self.store, [r.id for r in refs])
         oldest = datetime.min.replace(tzinfo=UTC)
         refs = sorted(refs, key=lambda r: stamps.get(r.id) or oldest, reverse=True)
-        start = (max(page, 1) - 1) * page_size
-        lines = []
-        for ref in refs[start : start + page_size]:
+        try:
+            page = max(int(page or 1), 1)
+            page_size = max(int(page_size or 1), 1)
+        except (TypeError, ValueError):
+            raise BadInput(
+                f"page=/page_size= must be integers, got page={page!r} "
+                f"page_size={page_size!r}",
+                next="search(kind='memory', view='index', args={'page': 1})",
+            ) from None
+        budget = max(200, result_context_cap() - _PAGED_FOOTER_BYTES)
+        pages: list[list[str]] = []
+        cur: list[str] = []
+        used = 0
+        for ref in refs:
+            if len(pages) == page:
+                break
             body_text = self._body_text(ref)
             first = next(
                 (ln.strip() for ln in body_text.splitlines() if ln.strip()),
                 "",
             )
-            lines.append(
-                bullet_line(
-                    ref,
-                    cut_hooks=False,
-                    filename=True,
-                    fallback_hook=first,
-                    size=size_cell(len(body_text.encode("utf-8"))),
-                )
+            line = bullet_line(
+                ref,
+                cut_hooks=False,
+                filename=True,
+                fallback_hook=first,
+                size=size_cell(len(body_text.encode("utf-8"))),
             )
-        if not lines:
+            cost = len(line.encode("utf-8")) + 1
+            if cur and (len(cur) >= page_size or used + cost > budget):
+                pages.append(cur)
+                cur, used = [], 0
+                if len(pages) == page:
+                    break
+            cur.append(line)
+            used += cost
+        if cur and len(pages) < page:
+            pages.append(cur)
+        if len(pages) < page:
             return Response(body=f"no {self._sense()} entries on page {page}")
-        return Response(body="\n".join(lines))
+        lines = pages[page - 1]
+        body = "\n".join(lines)
+        shown = sum(len(c) for c in pages)
+        more = len(refs) - shown
+        if more > 0:
+            args_echo = [f"'page': {page + 1}", f"'page_size': {page_size}"]
+            if under is not None:
+                args_echo.append(f"'under': {under!r}")
+                if depth is not None:
+                    args_echo.append(f"'depth': {depth!r}")
+            elif include_ref_ids is not None:
+                # The filter came from a facet the handler can't re-spell
+                # (cited=/raw include_ref_ids=) — echo the resolved ids so
+                # the next call pages the same set.
+                args_echo.append(
+                    f"'include_ref_ids': {sorted({int(i) for i in include_ref_ids})}"
+                )
+            if exclude_ref_ids:
+                args_echo.append(
+                    f"'exclude_ref_ids': {sorted({int(i) for i in exclude_ref_ids})}"
+                )
+            tags_echo = f", tags={[str(t) for t in normalized]!r}" if normalized else ""
+            body += (
+                f"\n… {more} more — next: search(kind='memory'{tags_echo}, "
+                f"view='index', args={{{', '.join(args_echo)}}})"
+            )
+        return Response(body=body)
 
     # ── delete: soft-delete + edge cleanup (gr503031) ───────────────
 

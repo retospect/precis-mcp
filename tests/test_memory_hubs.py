@@ -12,7 +12,9 @@ import pytest
 
 from precis.cli.memory import SPACE_TAG, _created_id, export_memory_nodes
 from precis.dispatch import Hub
+from precis.errors import BadInput
 from precis.handlers.memory import MemoryHandler
+from precis.runtime import PrecisRuntime
 from precis.store import Store
 from precis.utils import handle_registry
 from precis.utils.eye_render import (
@@ -521,3 +523,125 @@ def test_first_hop_shape_does_not_count_supersedes_tombstones(hub: Hub) -> None:
         )
     # the supersedes tombstone is not counted; the related-to dead end is
     assert first_hop_shape(store, [survivor])[survivor] == (0, 0, 1)
+
+
+# ── view='members' paged listing (gr538449/gr538490) ───────────────────
+
+
+def _member_rows(body: str) -> list[str]:
+    return [ln for ln in body.splitlines() if ln.startswith("- ")]
+
+
+def _next_offset(body: str) -> int:
+    m = re.search(r"args=\{'offset': (\d+)", body)
+    assert m is not None, body
+    return int(m.group(1))
+
+
+def test_members_view_pages_under_the_cap_with_a_next_line(
+    hub: Hub, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr538449: a hub's member list must enumerate in cap-sized chunks.
+    Each page ends in ``next:`` with the offset of the first unshown
+    member; pages never overlap or skip, so the walk reaches every
+    member."""
+    monkeypatch.setenv("PRECIS_TOOL_RESULT_CONTEXT_BYTES", "700")
+    store, handler = hub.live_store, MemoryHandler(hub=hub)
+    root = _note(handler, "Root hub", "x", HUB)
+    members = [_note(handler, f"Member {i}", f"body of member {i}") for i in range(12)]
+    for m in members:
+        _part_of(store, m, root)
+
+    seen: list[str] = []
+    body = handler.get(id=root, view="members").body
+    while True:
+        assert len(body.encode("utf-8")) <= 700
+        rows = _member_rows(body)
+        assert rows and not (set(seen) & set(rows))
+        seen += rows
+        if "next:" not in body:
+            break
+        body = handler.get(id=root, view="members", offset=_next_offset(body)).body
+    assert len(seen) == len(members)
+    # ref_id order — stable even when a mid-walk read bumps recency
+    assert seen[0].startswith(f"- Member 0 ({_h(members[0])}")
+    assert seen[-1].startswith(f"- Member {len(members) - 1} ({_h(members[-1])}")
+
+
+def test_members_view_shows_title_hook_and_size(hub: Hub) -> None:
+    store, handler = hub.live_store, MemoryHandler(hub=hub)
+    root = _note(handler, "Root hub", "x", HUB)
+    hooked = _note(handler, "Hooked", "body", hook="the hook text")
+    bodied = _note(handler, "Bodied", "first line of body\nrest")
+    for m in (hooked, bodied):
+        _part_of(store, m, root)
+    out = handler.get(id=root, view="members").body
+    assert "2 part-of members" in out
+    assert "the hook text" in out
+    assert "first line of body" in out
+
+
+def test_members_view_args_are_validated_and_refused_elsewhere(hub: Hub) -> None:
+    store, handler = hub.live_store, MemoryHandler(hub=hub)
+    root = _note(handler, "Root hub", "x", HUB)
+    _part_of(store, _note(handler, "M", "x"), root)
+    with pytest.raises(BadInput, match="non-negative"):
+        handler.get(id=root, view="members", offset=-1)
+    with pytest.raises(BadInput, match="non-negative"):
+        handler.get(id=root, view="members", offset="two")
+    with pytest.raises(BadInput, match="positive integer"):
+        handler.get(id=root, view="members", depth=0)
+    # offset on any other get shape is refused, never silently dropped
+    with pytest.raises(BadInput, match="only apply"):
+        handler.get(id=root, offset=2)
+    with pytest.raises(BadInput, match="only apply"):
+        handler.get(id=root, view="links", offset=2)
+    out = handler.get(id=root, view="members", offset=99).body
+    assert "no members past offset 99" in out
+    assert "next: get(kind='memory'" in out
+    leaf = _note(handler, "Leaf", "x")
+    assert "has no part-of members" in handler.get(id=leaf, view="members").body
+
+
+def test_members_view_depth_bounds_the_subtree(hub: Hub) -> None:
+    store, handler = hub.live_store, MemoryHandler(hub=hub)
+    root = _note(handler, "Root hub", "x", HUB)
+    summary = _note(handler, "Summary", "s")
+    detail = _note(handler, "Detail", "d")
+    direct = _note(handler, "Direct", "d")
+    _part_of(store, summary, root)
+    _part_of(store, detail, summary)
+    _part_of(store, direct, root)
+    whole = handler.get(id=root, view="members").body
+    assert {"- Summary", "- Detail", "- Direct"} == {
+        ln.split(" (")[0] for ln in _member_rows(whole)
+    }
+    top = handler.get(id=root, view="members", depth=1).body
+    assert {"- Summary", "- Direct"} == {ln.split(" (")[0] for ln in _member_rows(top)}
+    assert "depth" in top.splitlines()[0]
+
+
+def test_members_view_offset_past_the_first_page(hub: Hub) -> None:
+    store, handler = hub.live_store, MemoryHandler(hub=hub)
+    root = _note(handler, "Root hub", "x", HUB)
+    _part_of(store, _note(handler, "M", "x"), root)
+    out = handler.get(id=root, view="members", offset=1)
+    assert "no members past offset 1" in out.body
+
+
+def test_hub_eye_over_cap_names_the_members_continuation(
+    runtime_with_store: PrecisRuntime, hub: Hub, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr538449/gr538490: when a hub's fisheye+1hop exceeds the context
+    cap, the fitted tail names the paged member listing as the way to
+    read every member — not just a dead-end 'narrow' marker."""
+    monkeypatch.setenv("PRECIS_TOOL_RESULT_CONTEXT_BYTES", "700")
+    store, handler = hub.live_store, MemoryHandler(hub=hub)
+    root = _note(handler, "Root hub", "x", HUB)
+    for i in range(10):
+        _part_of(store, _note(handler, f"M{i}", f"body {i}"), root)
+    out = runtime_with_store.dispatch(
+        "get", {"kind": "memory", "id": root, "extent": "fisheye+1hop"}, fold=True
+    )
+    assert "… truncated" in out
+    assert f"next: get(kind='memory', id={root}, view='members')" in out

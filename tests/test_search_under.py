@@ -130,6 +130,94 @@ def test_empty_subtree_yields_zero_hits_not_no_filter(tree: _Tree) -> None:
     assert "Pump detail" not in out and "Direct gotcha" not in out
 
 
+def _bullets(body: str) -> list[str]:
+    return [ln for ln in body.splitlines() if ln.startswith("- ")]
+
+
+def test_index_listing_pages_with_a_next_line(tree: _Tree) -> None:
+    """gr538490: ``view='index'`` listings page via ``args={'page': N}`` —
+    each page ends in a ``next:`` call re-rendering the caller's own
+    ``under``/``page_size`` spelling."""
+    p1 = tree.rt.dispatch(
+        "search",
+        {
+            "kind": "memory",
+            "view": "index",
+            "page_size": 2,
+            "__extras__": {"under": _h(tree.hub)},
+        },
+    )
+    assert len(_bullets(p1)) == 2
+    assert "next: search(kind='memory'" in p1
+    assert f"'under': '{_h(tree.hub)}'" in p1
+    assert "'page': 2" in p1 and "'page_size': 2" in p1
+    p2 = tree.rt.dispatch(
+        "search",
+        {
+            "kind": "memory",
+            "view": "index",
+            "page_size": 2,
+            "__extras__": {"under": _h(tree.hub), "page": 2},
+        },
+    )
+    assert len(_bullets(p2)) == 1
+    assert "more — next:" not in p2
+    assert not set(_bullets(p1)) & set(_bullets(p2))
+    # under= is forwarded for the hint echo; the include filter still
+    # holds — the stray outside the hub never appears
+    assert "Stray gotcha" not in p1 + p2
+
+
+def test_index_listing_pages_are_byte_bounded_too(
+    tree: _Tree, store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A page closes at ``page_size`` rows OR the context cap, whichever
+    first — byte-boundary pages mean no member ever falls between the
+    fitted cut and the next count-page (the gripe's skipped-rows bug)."""
+    monkeypatch.setenv("PRECIS_TOOL_RESULT_CONTEXT_BYTES", "700")
+    handler = MemoryHandler(hub=tree.rt.hub)
+    extra = [
+        _created_id(
+            handler.put(text=f"extra {i} body", title=f"Extra {i}", tags=[SPACE_TAG])
+        )
+        for i in range(8)
+    ]
+    for m in extra:
+        store.add_link(src_ref_id=m, dst_ref_id=tree.hub, relation="part-of")
+    seen: list[str] = []
+    page = 1
+    while True:
+        out = tree.rt.dispatch(
+            "search",
+            {
+                "kind": "memory",
+                "view": "index",
+                "page_size": 50,
+                "__extras__": {"under": _h(tree.hub), "page": page},
+            },
+        )
+        rows = _bullets(out)
+        assert rows and not (set(seen) & set(rows))
+        seen += rows
+        if "'page':" not in out:
+            break
+        page += 1
+        assert page <= 10
+    assert len(seen) == 11  # 3 tree members + 8 extras
+
+
+def test_index_listing_page_beyond_end_says_so(tree: _Tree) -> None:
+    out = tree.rt.dispatch(
+        "search",
+        {
+            "kind": "memory",
+            "view": "index",
+            "__extras__": {"under": _h(tree.hub), "page": 9},
+        },
+    )
+    assert "no memory entries on page 9" in out
+
+
 def test_cross_kind_search_leaves_todo_and_taxon_own_under_alone(
     tree: _Tree,
 ) -> None:

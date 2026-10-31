@@ -2,9 +2,11 @@
 
 Over-cap results return a **fitted body** — the head that fits cut at a
 line boundary, then an outline of what remains and a footer naming the
-exact targeted read for it. There is still no pagination and no cursor:
-search, section selectors and targeted views are the
-context-management surface.
+exact targeted read for it. Handlers that can continue a listing in
+cap-sized chunks (memory ``view='members'`` / ``view='index'`` pages)
+set ``result_budget_hint`` to the ready-made next call and the footer
+names it; otherwise search, section selectors and targeted views are
+the context-management surface.
 
 Policy, once, in :func:`fit_result_body` — classified by the dispatch
 chokepoint (:func:`read_shape`):
@@ -326,6 +328,12 @@ def fit_result_body(
         tail_fmt = (
             marker + "\ndropped {more} rows: {dropped} — read one: get(id='{first}')"
         )
+        if targeted_hint:
+            # A handler-supplied hint is a resumable listing call
+            # (memory's paged member listing on a hub — gr538449); the
+            # generic search fallback is not a continuation, so only the
+            # targeted hint earns a ``next:`` line.
+            tail_fmt += "\nnext: {next_call}"
     elif read == "explicit":
         tail_fmt = (
             f"\n\n… truncated: showing {{shown}} of {{total}} bytes; cap {cap_name}\n"

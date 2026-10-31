@@ -441,3 +441,42 @@ def test_search_page_continuation_refuses_before_dispatch(
     assert "[error:BadInput]" in out, out
     assert "search no longer paginates" in out
     assert "more specific terms" in out
+
+
+def test_memory_index_listing_page_arg_reaches_dispatch(
+    mcp_runtime: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr538490: ``args={'page': N}`` on the q-less ``view='index'``
+    listing is a bounded enumeration cursor, not the removed ranked
+    paging — the slim gate lets it through (nested and top-level)."""
+    seen: dict[str, Any] = {}
+
+    def capture(verb: str, payload: dict[str, Any], ctx: object = None) -> str:
+        seen.clear()
+        seen.update(payload)
+        return "ok"
+
+    monkeypatch.setattr(tools_core, "_dispatch", capture)
+    out = _call("search", {"kind": "memory", "view": "index", "args": {"page": 2}})
+    assert out == "ok"
+    assert seen["__extras__"]["page"] == 2
+    # the top-level spelling lands in args without a deprecation note
+    out = _call("search", {"kind": "memory", "view": "index", "page": 3})
+    assert out == "ok"
+    assert seen["__extras__"]["page"] == 3
+
+
+def test_memory_index_listing_page_still_refused_with_a_query(
+    mcp_runtime: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def unexpected(*_args: Any, **_kwargs: Any) -> str:
+        raise AssertionError("page continuation reached dispatch")
+
+    monkeypatch.setattr(tools_core, "_dispatch", unexpected)
+    for call_args in (
+        {"kind": "memory", "view": "index", "q": "x", "args": {"page": 2}},
+        {"kind": "gripe", "view": "index", "args": {"page": 2}},
+        {"kind": "memory", "args": {"page": 2}},
+    ):
+        out = _call("search", call_args)
+        assert "search no longer paginates" in out, out

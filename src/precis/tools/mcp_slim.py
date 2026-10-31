@@ -161,22 +161,45 @@ def _removed_search_arg_error(
             )
         )
     if "page" in supplied:
-        from precis.errors import BadInput
-        from precis.tools.core import _get_runtime, _validation_error
+        # The memory index listing (view='index', no q) is a bounded
+        # enumeration — args={'page': N} pages it (gr538490). Ranked
+        # search and every other kind still refuse.
+        if _index_listing_call(kind, kwargs, args):
+            if "page" in kwargs:
+                args["page"] = kwargs.pop("page")
+        else:
+            from precis.errors import BadInput
+            from precis.tools.core import _get_runtime, _validation_error
 
-        return _validation_error(
-            _get_runtime().render_error(
-                BadInput(
-                    "search no longer paginates; refine the query or reduce "
-                    "page_size instead of requesting another page",
-                    next=(
-                        f"search(kind={kind_name!r}, "
-                        "q='<more specific terms>', page_size=10)"
-                    ),
+            return _validation_error(
+                _get_runtime().render_error(
+                    BadInput(
+                        "search no longer paginates; refine the query or reduce "
+                        "page_size instead of requesting another page",
+                        next=(
+                            f"search(kind={kind_name!r}, "
+                            "q='<more specific terms>', page_size=10)"
+                        ),
+                    )
                 )
             )
-        )
     return None
+
+
+def _index_listing_call(
+    kind: Any, kwargs: dict[str, Any], args: dict[str, Any]
+) -> bool:
+    """True when this call routes to memory's q-less ``view='index'``
+    listing — the one search surface that takes ``args={'page': N}``
+    (gr538490). ``q='*'`` folds to no-q, so it exempts too; a real query
+    stays on the no-paginate refusal."""
+    if not (isinstance(kind, str) and kind.strip().lower() == "memory"):
+        return False
+    view = kwargs.get("view") or args.get("view")
+    if view != "index":
+        return False
+    q = kwargs.get("q") or args.get("q")
+    return not (isinstance(q, str) and q.strip() and q.strip() != "*")
 
 
 def _handler_top_level(verb: str, kind: Any) -> frozenset[str] | None:
