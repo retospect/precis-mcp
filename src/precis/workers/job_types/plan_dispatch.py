@@ -31,7 +31,9 @@ subtree whose nodes are shaped by :mod:`precis.plans.nodes`. One pass:
    does) under the root, reopens each reviewed node ``blocked-by`` that
    revert with a ``handoff: review: REVERT — <why>`` comment (the rebuild's
    brief), and leaves the reviewer open to review the rebuild; both get a
-   fresh retry budget (``meta.rearmed_after_job``). A missing or malformed
+   fresh retry budget (``meta.rearmed_after_job``). Each ``sha-in-prod``
+   gate of the plan on a reverted sha goes back to ``PENDING_SHA`` (reopened
+   if it had opened) with a ``sha reset after review REVERT`` comment. A missing or malformed
    verdict reopens the node for one retry (``meta.retries`` default 2), then
    the hygiene ask-user path. ``meta.review = {verdict, job, at}`` records
    the job judged, so a pass never acts twice on one job.
@@ -821,7 +823,42 @@ def _review_revert(
         f"td{n.id}: requeued {', '.join(f'td{t.id}' for t in requeue) or 'nothing'} "
         f"behind the revert"
     )
+    _reset_gates(plan, w, res, n, shas)
     return revert_id
+
+
+def _reset_gates(
+    plan: _Plan, w: _Writer, res: PassResult, n: _Node, shas: list[str]
+) -> None:
+    """Put every ``sha-in-prod`` gate of ``n``'s plan whose sha is one of the
+    reverted ``shas`` back to :data:`~precis.plans.templates.PENDING_SHA`, so
+    it does not open (or stay open) on a sha that is no longer the fix; a
+    gate already ``done`` is reopened. The rebuild's land fills it again."""
+    for g in plan.todos():
+        spec = g.meta.get("gate")
+        if (
+            g.root != n.root
+            or node_kind(g.meta) != "gate"
+            or not isinstance(spec, dict)
+        ):
+            continue
+        args = spec.get("args")
+        if spec.get("kind") != "sha-in-prod" or not isinstance(args, dict):
+            continue
+        sha = str(args.get("sha") or "").strip().lower()
+        if not sha or sha == _templates.PENDING_SHA:
+            continue
+        if not any(s.startswith(sha) or sha.startswith(s) for s in shas):
+            continue
+        if _closed(g) and g.status != "done":
+            continue
+        w.stamp_meta(
+            g, {"gate": {**spec, "args": {**args, "sha": _templates.PENDING_SHA}}}
+        )
+        w.comment(g, "sha reset after review REVERT")
+        if g.status == "done":
+            w.set_status(g, "open")
+        res.notes.append(f"gate td{g.id}: sha {sha[:9]} reset after review REVERT")
 
 
 def _step_reviews(

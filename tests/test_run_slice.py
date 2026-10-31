@@ -24,6 +24,7 @@ from precis.plans import lanes
 from precis.plans.lanes import ANY_CLASS, Lane, pick_lane
 from precis.store.types import TODO_BODY_KIND, ChunkInsert, Tag
 from precis.workers.job_types import get_job_type, known_job_types, run_slice
+from precis.workers.job_types import plan_dispatch as pd
 
 # ── fakes ──────────────────────────────────────────────────────────
 
@@ -385,6 +386,38 @@ def test_generator_brief_creates_children_and_never_lands(
     assert "scripts/ship --quick" not in brief
     assert "landed:" not in brief
     assert "add=['STATUS:done']" not in brief
+
+
+def test_reviewer_brief_posts_one_verdict_and_mints_nothing(
+    seams: dict[str, Any], tmp_path: Path
+) -> None:
+    store = _Store()
+    store.add_todo(
+        42,
+        "Review the fix after land",
+        body="Review td7.",
+        meta={"generate": {"role": "reviewer", "from": "td7"}},
+    )
+    _submit(store, seams)
+    tree = tmp_path / ".claude" / "worktrees" / "slice-td42"
+    brief = (tree / "scratch" / "brief.md").read_text(encoding="utf-8")
+    tail = brief[brief.index("## When done") :]
+    assert tail.startswith("## When done: post your verdict")
+    for line in ("`review: LAND`", "`review: FIX — <list", "`review: REVERT — <why>`"):
+        assert line in tail
+    assert "Post exactly one comment on td42" in tail
+    assert "Mint nothing" in tail
+    assert "Commit nothing" in tail
+    assert "Do not land" in tail
+    # not the slicer's closing
+    assert "create the child todos" not in brief
+    assert "args={'parent_id': 42}" not in brief
+    assert "scripts/ship --quick" not in brief
+    assert "add=['STATUS:done']" not in brief
+    # the grammar it names is the one the tick parses
+    assert pd.parse_verdict("review: FIX — a.py misses the empty case") is not None
+    assert pd.parse_verdict("review: REVERT — breaks the API") is not None
+    assert pd.parse_verdict("review: LAND") == ("LAND", "")
 
 
 def test_task_brief_commits_and_never_ships(

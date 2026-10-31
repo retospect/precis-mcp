@@ -481,6 +481,13 @@ def release_todo(store: Any, todo_id: int, lane: str | None) -> int:
 # ── Brief ──────────────────────────────────────────────────────────
 
 
+def _generate_role(meta: Any) -> str | None:
+    """``meta.generate.role`` of a todo, else ``None``."""
+    gen = (meta or {}).get("generate")
+    role = gen.get("role") if isinstance(gen, dict) else None
+    return str(role) if role else None
+
+
 def _generator_close(todo_id: int) -> list[str]:
     """Closing steps of a generator brief: mint children, never close."""
     return [
@@ -501,6 +508,34 @@ def _generator_close(todo_id: int) -> list[str]:
     ]
 
 
+def _reviewer_close(todo_id: int) -> list[str]:
+    """Closing steps of a reviewer generator's brief: one verdict comment,
+    nothing minted, nothing committed, nothing landed. The grammar is the
+    one ``plan_dispatch._VERDICT_RE`` parses."""
+    return [
+        "",
+        "## When done: post your verdict",
+        "",
+        "This todo is a reviewer: your work is one verdict, not a land and "
+        "not child todos.",
+        "",
+        f"Post exactly one comment on td{todo_id} (the node you were given), one of:",
+        "",
+        "- `review: LAND`",
+        "- `review: FIX — <list of findings>`",
+        "- `review: REVERT — <why>`",
+        "",
+        "`FIX` and `REVERT` need the list / the why after the dash. Mint "
+        "nothing: no child todos, no fix task, no revert task; the "
+        "dispatcher turns your verdict into those. Commit nothing. Do not "
+        "land, push or ship. Do not tag this todo done: the dispatcher "
+        "closes it on your verdict.",
+        "",
+        "Your final message is posted as the `handoff:` comment: what you "
+        "checked, in a line or two.",
+    ]
+
+
 def render_brief(
     *,
     todo_id: int,
@@ -511,12 +546,14 @@ def render_brief(
     model: str,
     effort: str,
     generator: bool = False,
+    role: str | None = None,
     deny_paths: tuple[str, ...] = _lanes.FACTORY_DENY_WRITE_PATHS,
 ) -> str:
     """The prompt a slice session starts from. Ends with the commit-and-
     hand-off instruction (the ``land_slice`` job lands the branch); a
     ``generator`` brief ends with the child-todo instruction instead (the
-    plan tick closes it). Names the ``deny_paths`` the session may not
+    plan tick closes it), and a generator with ``role='reviewer'`` ends with
+    the one-verdict-comment instruction. Names the ``deny_paths`` the session may not
     write."""
     name = slice_name(todo_id)
     lines = [
@@ -549,7 +586,11 @@ def render_brief(
     if latest:
         lines += ["", "## Latest brief / handoff on the todo", "", latest.strip()]
     if generator:
-        lines += _generator_close(todo_id)
+        lines += (
+            _reviewer_close(todo_id)
+            if role == "reviewer"
+            else _generator_close(todo_id)
+        )
         return "\n".join(lines) + "\n"
     lines += [
         "",
@@ -754,6 +795,7 @@ def submit(ctx: Any, spec: Any) -> Any:
         model=model,
         effort=effort,
         generator=node_kind(todo.meta) == "generator",
+        role=_generate_role(todo.meta),
         deny_paths=lane.deny_write_paths,
     )
     try:

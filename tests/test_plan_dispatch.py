@@ -903,6 +903,82 @@ def test_review_revert_mints_a_revert_and_requeues_the_build(store: Store) -> No
     assert len(_jobs_under(store, build)) == 2
 
 
+def _gated_review_plan(store: Store) -> T.PlanMint:
+    """The gripe-fix shape: build <- review, build <- gate. Two sha-in-prod
+    gates, both already open (done): one on the sha the build landed
+    (``abc1234``), one on an unrelated sha."""
+
+    def build(m: T._Minter) -> None:
+        m.node("root", "Plan", {"auto_close": True})
+        b = m.node("build", "Build it", {"op": "run_slice"}, body="Build it.")
+        m.node(
+            "review",
+            "Review it",
+            T._reviewer(b),
+            body=T._reviewer_brief(b),
+            blocked_by=("build",),
+        )
+        for key, sha in (("gate", "abc1234"), ("other", "deadbee")):
+            m.node(
+                key,
+                f"Wait for {key}",
+                {"gate": {"kind": "sha-in-prod", "args": {"sha": sha}}},
+                blocked_by=("build",),
+            )
+
+    return T._run(store, None, build)
+
+
+def _gate_sha(store: Store, gate: int) -> str:
+    return str(_meta(store, gate)["gate"]["args"]["sha"])
+
+
+def _revert_gated(store: Store) -> T.PlanMint:
+    mint = _gated_review_plan(store)
+    build, review = mint.ids["build"], mint.ids["review"]
+    _job(store, build, lane="claude-sub")
+    # 12-hex sha on the comment, 7-hex prefix on the gate: a prefix match.
+    _todo_comment(store, build, "landed: abc1234def56 — the fix")
+    _mark_done(store, build, mint.ids["gate"], mint.ids["other"])
+    _job(store, review, lane="claude-sub")
+    store.add_tag(review, Tag.open("claimed-by:lane-claude-sub"), set_by="system")
+    store.add_tag(
+        review, Tag.closed("STATUS", "doing"), set_by="system", replace_prefix=True
+    )
+    _todo_comment(store, review, "review: REVERT — breaks the public API")
+    return mint
+
+
+def test_review_revert_resets_the_sha_gate_on_the_reverted_sha(store: Store) -> None:
+    mint = _revert_gated(store)
+    gate, other = mint.ids["gate"], mint.ids["other"]
+    res = pd.run_pass(store)
+    assert res.reviews == 1
+    # The gate that had opened on the reverted sha is pending again and open
+    # for business (not done), with the reason on it.
+    assert _gate_sha(store, gate) == T.PENDING_SHA
+    assert _status(store, gate) == "open"
+    assert _todo_comments(store, gate)[-1] == "sha reset after review REVERT"
+    assert any(f"gate td{gate}" in n and "reset" in n for n in res.notes)
+    # A gate on another sha is left alone.
+    assert _gate_sha(store, other) == "deadbee"
+    assert _status(store, other) == "done"
+    # Idempotent: the judged job is not acted on twice.
+    pd.run_pass(store)
+    assert _gate_sha(store, gate) == T.PENDING_SHA
+    assert len([c for c in _todo_comments(store, gate) if "sha reset" in c]) == 1
+
+
+def test_review_revert_gate_reset_is_read_only_in_a_dry_run(store: Store) -> None:
+    mint = _revert_gated(store)
+    gate = mint.ids["gate"]
+    res = pd.run_pass(store, dry_run=True, reason="params.dry_run")
+    assert res.reviews == 1
+    assert any(f"gate td{gate}" in n for n in res.notes)
+    assert _gate_sha(store, gate) == "abc1234"
+    assert _status(store, gate) == "done"
+
+
 def test_review_without_verdict_retries_once_then_asks(store: Store) -> None:
     mint = _reviewed(store, "review: looks fine to me")
     review = mint.ids["review"]
