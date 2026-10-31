@@ -4,11 +4,16 @@
 <div class="mb-3 flex items-start gap-3" x-data="{ open: false, kind: 'draft', doctype: 'paper' }">
   <div class="min-w-0">
     <h1 class="text-lg font-semibold">Drive</h1>
-    <p class="text-sm text-fg-subtle">
-      Discover newly created work, including findings and filed items.
-      Search across kinds or go straight to a handle or DOI;
-      refine the selection with kinds and filters.
-    </p>
+    {# gr543586: closed in markup (the phone default); wideScreen holds
+       the fold open at md+, where the blurb reads exactly as before. #}
+    <details x-data="wideScreen" :open="wide" x-cloak>
+      <summary class="cursor-pointer text-sm font-medium text-info-deep" x-show="!wide">About Drive</summary>
+      <p class="text-sm text-fg-subtle">
+        Discover newly created work, including findings and filed items.
+        Search across kinds or go straight to a handle or DOI;
+        refine the selection with kinds and filters.
+      </p>
+    </details>
   </div>
   {# Batch tab-opener + its one-time-setup reminder — the whole group stays
      hidden until the JS finds direct-download links (LibKey/arXiv) on the
@@ -169,25 +174,30 @@
     <a href="/drive?task=discover" class="rounded-md border border-line-strong px-3 py-1.5 text-sm">Reset</a>
   </div>
 
-  <div class="flex flex-wrap items-center gap-1.5 text-xs" aria-label="Active filters" data-tour="drive-tags">
-    <span class="text-fg-subtle">Active</span>
-    <button type="button" @click="$refs.picker.open = true" data-picker-opener class="rounded border border-info bg-info-subtle px-2 py-1 text-info-deep"
-            x-text="isDiscoverySelection() ? 'All discovery kinds (' + kinds.length + ')' : kinds.length + ' selected kinds'">{{ selected_kinds | length }} selected kinds</button>
-    <template x-for="kk in (isDiscoverySelection() ? [] : kinds)" :key="kk">
-      <button type="button" @click="removeKind(kk)" :aria-label="'Remove kind ' + kk"
-              class="rounded bg-info-muted px-2 py-1 text-info-deep"><span x-text="kk"></span> ×</button>
-    </template>
-    <template x-for="(t, i) in tags" :key="t">
-      <span class="inline-flex items-center gap-1 rounded bg-accent-muted px-2 py-1 text-accent-deep">
-        <span x-text="t"></span>
-        <button type="button" @click="removeTag(i)" :aria-label="'Remove tag ' + t">×</button>
-        <input type="hidden" name="tag" :value="t" />
-      </span>
-    </template>
-    {% for facet in active_facets %}
-    <a href="{{ facet.url }}" class="rounded border border-line px-2 py-1 text-fg-muted" aria-label="Remove {{ facet.label }}">{{ facet.label }} ×</a>
-    {% endfor %}
-  </div>
+  {# gr543586: on phones the active chips fold behind a disclosure; at
+     md+ the details is held open and the row renders as before. #}
+  <details x-data="wideScreen" :open="wide" x-cloak>
+    <summary class="cursor-pointer text-sm font-medium text-info-deep" x-show="!wide">Active filters</summary>
+    <div class="flex flex-wrap items-center gap-1.5 text-xs" aria-label="Active filters" data-tour="drive-tags">
+      <span class="text-fg-subtle">Active</span>
+      <button type="button" @click="$refs.picker.open = true" data-picker-opener class="rounded border border-info bg-info-subtle px-2 py-1 text-info-deep"
+              x-text="isDiscoverySelection() ? 'All discovery kinds (' + kinds.length + ')' : kinds.length + ' selected kinds'">{{ selected_kinds | length }} selected kinds</button>
+      <template x-for="kk in (isDiscoverySelection() ? [] : kinds)" :key="kk">
+        <button type="button" @click="removeKind(kk)" :aria-label="'Remove kind ' + kk"
+                class="rounded bg-info-muted px-2 py-1 text-info-deep"><span x-text="kk"></span> ×</button>
+      </template>
+      <template x-for="(t, i) in tags" :key="t">
+        <span class="inline-flex items-center gap-1 rounded bg-accent-muted px-2 py-1 text-accent-deep">
+          <span x-text="t"></span>
+          <button type="button" @click="removeTag(i)" :aria-label="'Remove tag ' + t">×</button>
+          <input type="hidden" name="tag" :value="t" />
+        </span>
+      </template>
+      {% for facet in active_facets %}
+      <a href="{{ facet.url }}" class="rounded border border-line px-2 py-1 text-fg-muted" aria-label="Remove {{ facet.label }}">{{ facet.label }} ×</a>
+      {% endfor %}
+    </div>
+  </details>
 
   <details x-ref="picker" @toggle="savePicker()" @click.outside="closePicker($event)" @keydown.escape="$refs.picker.open = false"
            data-picker-persist class="rounded-lg border border-line bg-surface p-3">
@@ -271,6 +281,17 @@
 
 <script>
   document.addEventListener('alpine:init', () => {
+    // gr543586 — one shared "desktop-width" flag for the page's phone
+    // folds: each <details> ships closed in markup (the phone default)
+    // and binds :open to this, so at Tailwind's md (768px) Alpine opens
+    // it and the summary hides. matchMedia tracks live resizes.
+    Alpine.data('wideScreen', () => {
+      const mq = window.matchMedia('(min-width: 768px)');
+      return {
+        wide: mq.matches,
+        init() { mq.addEventListener('change', (e) => { this.wide = e.matches; }); },
+      };
+    });
     Alpine.data('itemsFilter', (allKindDefs, selectedKinds, selectedTags, discoverKinds, sourceKinds, artifactKinds, designKinds, workKinds, machineKinds, derivedKinds) => ({
       allKindDefs, kinds: selectedKinds, tags: selectedTags, discoverKinds,
       sourceKinds, artifactKinds, designKinds, workKinds, machineKinds, derivedKinds,
@@ -591,10 +612,15 @@
 {% endif %}
 {% endmacro %}
 
-<div class="flex gap-6 items-start">
+<div class="flex gap-6 items-start" x-data="wideScreen" :class="{ 'flex-col': !wide }">
 
   {# ── sidebar: the folder tree + create form + drop-zone info ──────── #}
-  <aside class="w-60 shrink-0" data-tour="drive-folders">
+  {# gr543586: on phones the rail stacks above the list (flex-col) inside
+     a closed Folders disclosure; at md+ the details is held open and the
+     aside keeps its w-60 rail. #}
+  <details :open="wide" :class="{ 'w-full': !wide }" x-cloak>
+    <summary class="cursor-pointer text-sm font-medium text-info-deep" x-show="!wide">Folders</summary>
+    <aside class="shrink-0" :class="wide ? 'w-60' : 'w-full'" data-tour="drive-folders">
     <div class="rounded-md border border-line overflow-hidden">
       <div class="px-3 py-2 bg-surface-subtle border-b border-line text-xs font-semibold text-fg-muted">
         Folders
@@ -651,7 +677,8 @@
       </p>
       {% endif %}
     </div>
-  </aside>
+    </aside>
+  </details>
 
   {# ── main pane: the search results / recent list ──────────────────── #}
   <section class="flex-1 min-w-0">
