@@ -761,6 +761,39 @@ def test_red_verdict_recuts_and_a_green_recut_opens_the_approval(
     assert meta["job_type"] == "release_deploy"
 
 
+def test_recut_is_pinned_to_the_first_cut_host(store: Store) -> None:
+    mint = _cut(store, host="node-a", checkout="/srv/repo")
+    ids = mint.ids
+    # The first cut has no meta.release yet: not pinned.
+    fresh = T.mint_release_pass(store)
+    assert rc.validate_submit(store, params={"todo_id": fresh.ids["cut"]}) is None
+
+    _close(store, fresh.root_id)
+    for key in ("cut", "poll"):
+        _close(store, ids[key])
+    T.mint_body(store, ids["loop"], "release-fix", iteration=2)
+    it = _iteration(store, ids["loop"])
+    for key in ("triage", "fix"):
+        _close(store, it[key])
+    pd.run_pass(store)
+    _job, meta = _only_job(store, it["recut"])
+    assert meta["job_type"] == "release_cut"
+    assert meta["params"] == {"todo_id": it["recut"], "target_node": "node-a"}
+
+    for params in (
+        {"todo_id": it["recut"]},
+        {"todo_id": it["recut"], "target_node": "node-b"},
+    ):
+        refusal = rc.validate_submit(store, params=params)
+        assert refusal is not None and "target_node='node-a'" in refusal, refusal
+    assert (
+        rc.validate_submit(
+            store, params={"todo_id": it["recut"], "target_node": "node-a"}
+        )
+        is None
+    )
+
+
 def test_recut_reopens_a_gate_an_earlier_cut_opened(store: Store) -> None:
     mint = _cut(store)
     R.record_ci_verdict(store, SHA, RNG, "green", "31")

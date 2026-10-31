@@ -1191,8 +1191,12 @@ def _step_dispatch(plan: _Plan, w: _Writer, res: PassResult) -> None:
             if not go:
                 continue
             params["lane"] = lane_name
-        if job_type == "release_deploy" and "target_node" not in params:
-            # The deploy runs where the cut ran (meta.release.host, td543856).
+        if (
+            job_type in ("release_deploy", "release_cut")
+            and "target_node" not in params
+        ):
+            # The deploy and a re-cut run where the cut ran (meta.release.host,
+            # td543856, td543855); the first cut has none and stays unpinned.
             host = _release.pinned_host(w.store, n.id)
             if host:
                 params["target_node"] = host

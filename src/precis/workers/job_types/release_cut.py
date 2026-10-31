@@ -213,9 +213,18 @@ def validate_submit(
     store: Any, *, gripe_id: int | None = None, params: dict[str, Any]
 ) -> str | None:
     del gripe_id
-    return factory_refusal(NAME) or todo_refusal(
-        store, NAME, params.get("todo_id"), required=False
+    todo_id = params.get("todo_id")
+    reason = factory_refusal(NAME) or todo_refusal(store, NAME, todo_id, required=False)
+    if reason is not None or store is None or not isinstance(todo_id, int):
+        return reason
+    # A re-cut runs where the plan's first cut ran: the .release-owner marker
+    # is in that checkout, so --cut-only elsewhere cuts nothing (td543855).
+    # The first cut has no meta.release yet and is not pinned.
+    pin = _release.pin_refusal(
+        _release.release_of(store, todo_id),
+        host=str(params.get("target_node") or "").strip() or None,
     )
+    return f"{NAME}: {pin}" if pin is not None else None
 
 
 def submit(ctx: Any, spec: Any) -> Any:
