@@ -139,6 +139,13 @@ failure line, and exits nonzero on red or cancelled. It is the only way
 to wait on a gate (gr515152): no polling subagents, no log-tail loops in
 the main loop.
 
+Wait on a backgrounded `scripts/ship` run itself with `scripts/ship
+--await [--timeout S]` from the same worktree: every run records its
+pid/log/verdict in a per-worktree state file, so no log arg is needed.
+It exits with the run's own code after printing `SHIP_STATUS` and the
+first `✖` block; `124` + the log path on timeout (default 1200 s), `2`
+when no ship is recorded (gr541681).
+
 Under the release train (Reto 2026-10-23) `--remote` is the HARNESS lane:
 required when the diff touches the landing harness, refused otherwise
 ("`--remote` is for harness diffs … Re-run scripts/ship --quick").

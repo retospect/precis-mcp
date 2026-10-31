@@ -152,14 +152,21 @@
 #                                        # log path and a final SHIP_STATUS
 #                                        # token — same gate semantics and exit
 #                                        # codes, only the rendering changes.
-#         scripts/ship --await <log>    # wait on a BACKGROUNDED ship run
-#                                        # (`scripts/ship … >log 2>&1 &`):
-#                                        # blocks up to
+#         scripts/ship --await [--timeout S]
+#                                        # wait on this worktree's latest ship:
+#                                        # reads the run's state record (no arg
+#                                        # needed), blocks until it finishes,
+#                                        # prints the SHIP_STATUS line + the
+#                                        # log's first ✖ block, exits with the
+#                                        # run's own code; 124 + the log path
+#                                        # on --timeout (default 1200 s), 2 when
+#                                        # no ship is recorded (gr541681).
+#         scripts/ship --await <log>    # or watch a BACKGROUNDED run's log
+#                                        # directly (`scripts/ship … >log 2>&1
+#                                        # &`): blocks up to
 #                                        # PRECIS_SHIP_AWAIT_BUDGET s (480),
 #                                        # exits 124 while still running —
-#                                        # re-run the same command — then
-#                                        # returns the run's verdict
-#                                        # (gr541681).
+#                                        # re-run the same command.
 #
 # The full-suite path (no --impacted/--quick) also runs the DIFF-COVERAGE gate:
 # pytest runs under pytest-cov in the container, then diff-cover on the HOST
@@ -274,8 +281,19 @@ VERBOSE="${PRECIS_SHIP_VERBOSE:-0}"
 MSG=""
 ORIG_ARGV=("$@")
 
-# --await <log> (gr541681): the wait primitive for a backgrounded ship —
-# scripts/test's --await shape. Each call blocks up to
+# --await (gr541681): the wait primitive for a backgrounded ship —
+# scripts/test's --await shape, in two forms:
+#   scripts/ship --await [--timeout S]         watch this worktree's latest
+#                                              run through its state record
+#   scripts/ship --await [--timeout S] <log>   watch a capture/transcript log
+# The bare form reads the per-worktree state file every run writes (below):
+# blocks until the run finishes — its `status=done` record, or a dead pid,
+# since a kill never reaches the EXIT trap — then prints the SHIP_STATUS
+# line and the log's first ✖ line with the 10 lines after it, and exits
+# with the run's own exit code. No recorded ship → exit 2; still running
+# at --timeout (default 1200 s) → exit 124 and print the log path. Polls
+# every 5 s, silent but for one "waiting: <elapsed>s" line per minute.
+# The <log> form is the earlier contract: each call blocks up to
 # PRECIS_SHIP_AWAIT_BUDGET seconds (default 480, under the ~10 min
 # foreground cap) and exits 124 while the run is still going — re-run the
 # same command until it returns the run's verdict. Two log shapes resolve:
@@ -285,42 +303,174 @@ ORIG_ARGV=("$@")
 # red ends in a ✖ line; every scripts/ship failure path prints one).
 # scripts/ship-wait stays the GATE waiter (verdict markers, gh run ids);
 # --await answers in ship's own exit-code vocabulary. Handled before flag
-# parsing and the quiet re-exec: it is a standalone verb, not a mode.
+# parsing and the quiet re-exec: it is a standalone verb, not a mode — and
+# it must run BEFORE the state record below, which would clobber the file
+# it watches.
 if [[ "${1:-}" == "--await" ]]; then
-    AWAIT_LOG="${2:?usage: scripts/ship --await <log>}"
-    # Appear grace: a quiet run prints `log:` a beat before the inner
-    # spawn's redirect creates the file, so a fresh path needs a moment —
-    # a typo must still fail fast.
+    shift
+    AWAIT_TIMEOUT=""
+    AWAIT_LOG=""
+    while (( $# )); do
+        case "$1" in
+            --timeout)   AWAIT_TIMEOUT="${2:?usage: scripts/ship --await [--timeout S] [<log>]}"; shift 2 ;;
+            --timeout=*) AWAIT_TIMEOUT="${1#*=}"; shift ;;
+            -*)          printf '\033[31m✖ unknown --await flag %s (known: --timeout S)\033[0m\n' "$1" >&2; exit 2 ;;
+            *)
+                if [[ -n "$AWAIT_LOG" ]]; then
+                    printf '\033[31m✖ usage: scripts/ship --await [--timeout S] [<log>]\033[0m\n' >&2; exit 2
+                fi
+                AWAIT_LOG="$1"; shift ;;
+        esac
+    done
+    if [[ -n "$AWAIT_TIMEOUT" && ! "$AWAIT_TIMEOUT" =~ ^[0-9]+$ ]]; then
+        printf '\033[31m✖ --timeout wants whole seconds (got %s)\033[0m\n' "$AWAIT_TIMEOUT" >&2; exit 2
+    fi
+    if [[ -n "$AWAIT_LOG" ]]; then
+        # Appear grace: a quiet run prints `log:` a beat before the inner
+        # spawn's redirect creates the file, so a fresh path needs a moment —
+        # a typo must still fail fast.
+        _await_t0=$SECONDS
+        while [[ ! -f "$AWAIT_LOG" && $((SECONDS - _await_t0)) -lt 10 ]]; do
+            sleep 1
+        done
+        [[ -f "$AWAIT_LOG" ]] || { echo "ERR: no such ship log ${AWAIT_LOG}" >&2; exit 1; }
+        BUDGET="${AWAIT_TIMEOUT:-${PRECIS_SHIP_AWAIT_BUDGET:-480}}"
+        START=$SECONDS
+        while (( SECONDS - START < BUDGET )); do
+            tok="$(grep -o 'SHIP_STATUS: .*' "$AWAIT_LOG" 2>/dev/null | tail -1 || true)"
+            if [[ -n "$tok" ]]; then
+                echo "$tok"
+                if [[ "$tok" == "SHIP_STATUS: shipped" ]]; then exit 0; fi
+                exit 1
+            fi
+            if grep -qE 'landed on main|release fix landed' "$AWAIT_LOG" 2>/dev/null; then
+                echo "SHIP_STATUS: shipped"
+                exit 0
+            fi
+            if grep -q '✖' "$AWAIT_LOG" 2>/dev/null; then
+                grep '✖' "$AWAIT_LOG" | tail -1
+                echo "SHIP_STATUS: error"
+                exit 1
+            fi
+            sleep 5
+        done
+        echo "ship run STILL RUNNING after ${BUDGET}s — poll again with the same command:"
+        echo "  scripts/ship --await ${AWAIT_LOG}"
+        tail -n 2 "$AWAIT_LOG" 2>/dev/null || true
+        exit 124
+    fi
+    # Bare form — the per-worktree record the writers below maintain.
+    SHIP_STATE="${PRECIS_SHIP_STATE_FILE:-${TMPDIR:-/tmp}/precis-ship-state-$(printf '%s' "$WORKTREE" | cksum | awk '{print $1}')}"
+    _await_field() { grep "^$1=" "$SHIP_STATE" 2>/dev/null | tail -1 | cut -d= -f2- || true; }
+    # Appear grace: a ship launched this instant needs a beat to write its
+    # running record — an idle worktree still fails fast.
     _await_t0=$SECONDS
-    while [[ ! -f "$AWAIT_LOG" && $((SECONDS - _await_t0)) -lt 10 ]]; do
+    while [[ ! -f "$SHIP_STATE" && $((SECONDS - _await_t0)) -lt 5 ]]; do
         sleep 1
     done
-    [[ -f "$AWAIT_LOG" ]] || { echo "ERR: no such ship log ${AWAIT_LOG}" >&2; exit 1; }
-    BUDGET="${PRECIS_SHIP_AWAIT_BUDGET:-480}"
+    if [[ ! -f "$SHIP_STATE" ]]; then
+        echo "scripts/ship --await: no ship recorded in ${WORKTREE}" >&2
+        exit 2
+    fi
+    AWAIT_TIMEOUT="${AWAIT_TIMEOUT:-1200}"
     START=$SECONDS
-    while (( SECONDS - START < BUDGET )); do
-        tok="$(grep -o 'SHIP_STATUS: .*' "$AWAIT_LOG" 2>/dev/null | tail -1 || true)"
-        if [[ -n "$tok" ]]; then
-            echo "$tok"
-            [[ "$tok" == "SHIP_STATUS: shipped" ]] && exit 0
-            exit 1
+    _note=0
+    while :; do
+        _st="$(_await_field status)"
+        _pid="$(_await_field pid)"
+        if [[ "$_st" == "done" ]]; then break; fi
+        # No live pid: the run died before its exit trap wrote `done`, or the
+        # record is corrupt — either way there is nothing left to wait on.
+        if [[ -z "$_pid" ]] || ! kill -0 "$_pid" 2>/dev/null; then break; fi
+        _el=$(( SECONDS - START ))
+        if (( _el >= AWAIT_TIMEOUT )); then
+            _lg="$(_await_field log)"
+            echo "scripts/ship --await: timed out after ${AWAIT_TIMEOUT}s — ship still running (pid ${_pid})"
+            if [[ -n "$_lg" ]]; then echo "log: ${_lg}"; fi
+            exit 124
         fi
-        if grep -qE 'landed on main|release fix landed' "$AWAIT_LOG" 2>/dev/null; then
-            echo "SHIP_STATUS: shipped"
-            exit 0
-        fi
-        if grep -q '✖' "$AWAIT_LOG" 2>/dev/null; then
-            grep '✖' "$AWAIT_LOG" | tail -1
-            echo "SHIP_STATUS: error"
-            exit 1
+        if (( _el - _note >= 60 )); then
+            echo "waiting: ${_el}s"
+            _note="$_el"
         fi
         sleep 5
     done
-    echo "ship run STILL RUNNING after ${BUDGET}s — poll again with the same command:"
-    echo "  scripts/ship --await ${AWAIT_LOG}"
-    tail -n 2 "$AWAIT_LOG" 2>/dev/null || true
-    exit 124
+    _exit="$(_await_field exit)"
+    _sstat="$(_await_field ship_status)"
+    _lg="$(_await_field log)"
+    if [[ -z "$_sstat" && -n "$_lg" && -f "$_lg" ]]; then
+        _sstat="$(grep -o 'SHIP_STATUS: .*' "$_lg" 2>/dev/null | tail -1 || true)"
+    fi
+    if [[ -z "$_sstat" ]]; then
+        if [[ "$_exit" == "0" ]] \
+            || { [[ -n "$_lg" && -f "$_lg" ]] \
+                && grep -qE 'landed on main|release fix landed' "$_lg"; }; then
+            _sstat="SHIP_STATUS: shipped"
+        else
+            _sstat="SHIP_STATUS: error"
+        fi
+    fi
+    echo "$_sstat"
+    # The failure block: the log's first ✖ line and the 10 lines after it.
+    if [[ -n "$_lg" && -f "$_lg" ]]; then
+        awk '/✖/{p=1} p&&c<11{print;c++}' "$_lg"
+    fi
+    if [[ "$_exit" =~ ^[0-9]+$ ]]; then exit "$_exit"; fi
+    if [[ "$_sstat" == "SHIP_STATUS: shipped" ]]; then exit 0; fi
+    exit 1
 fi
+
+# ── per-worktree --await state (gr541681) ────────────────────────────────
+# Every run records itself for `scripts/ship --await`: pid/log/start up
+# front, exit + the derived SHIP_STATUS token on the way out (each EXIT
+# trap finishes the record; a kill -9 leaves status=running and the
+# waiter's dead-pid check ends the wait). The file lives under $TMPDIR,
+# keyed by the worktree path, so it never dirties the tree or rides a
+# commit; PRECIS_SHIP_STATE_FILE overrides it (tests). In quiet mode this
+# record is first written by the outer wrapper (no log yet), then rewritten
+# by the re-exec'd inner run with its own pid and the real transcript path
+# (PRECIS_SHIP_LOG); both finish records agree, so the double write is
+# harmless.
+SHIP_STATE="${PRECIS_SHIP_STATE_FILE:-${TMPDIR:-/tmp}/precis-ship-state-$(printf '%s' "$WORKTREE" | cksum | awk '{print $1}')}"
+_ship_state_field() { grep "^$1=" "$SHIP_STATE" 2>/dev/null | tail -1 | cut -d= -f2- || true; }
+_ship_state_start() {
+    {
+        printf 'pid=%s\n' "$$"
+        printf 'log=%s\n' "${PRECIS_SHIP_LOG:-}"
+        printf 'start=%s\n' "$SHIP_T0"
+        printf 'status=running\n'
+    } > "${SHIP_STATE}.tmp" 2>/dev/null \
+        && mv "${SHIP_STATE}.tmp" "$SHIP_STATE" 2>/dev/null || true
+}
+_ship_state_finish() {
+    # Runs inside an EXIT trap — it must never die and mask the real rc.
+    local _rc="${1:-1}" _tok
+    [[ -f "$SHIP_STATE" ]] || return 0
+    if [[ "$_rc" == "0" ]]; then
+        _tok="shipped"
+    elif [[ -n "$(git diff --name-only --diff-filter=U 2>/dev/null || true)" ]] \
+        || [[ -d "$(git rev-parse --git-path rebase-merge 2>/dev/null || true)" ]] \
+        || [[ -d "$(git rev-parse --git-path rebase-apply 2>/dev/null || true)" ]] \
+        || git rev-parse -q --verify MERGE_HEAD >/dev/null 2>&1; then
+        _tok="conflict"
+    else
+        _tok="error"
+    fi
+    {
+        printf 'pid=%s\n' "$(_ship_state_field pid)"
+        printf 'log=%s\n' "$(_ship_state_field log)"
+        printf 'start=%s\n' "$(_ship_state_field start)"
+        printf 'status=done\n'
+        printf 'exit=%s\n' "$_rc"
+        printf 'ship_status=SHIP_STATUS: %s\n' "$_tok"
+    } > "${SHIP_STATE}.tmp" 2>/dev/null \
+        && mv "${SHIP_STATE}.tmp" "$SHIP_STATE" 2>/dev/null || true
+    return 0
+}
+_ship_state_start
+# Minimal trap until the worktree-lock trap (then _ship_exit_cleanup)
+# re-arms — each re-arm keeps the finish call, so every exit records.
+trap '_ship_state_finish "$?"' EXIT
 
 while :; do
     case "${1:-}" in
@@ -340,7 +490,7 @@ while :; do
         # get silently dropped (gr209915).
         -m|--message) MSG="${2:-}"; shift 2 ;;
         --) shift; break ;;
-        -*) printf '\033[31m✖ unknown flag %s (known: --await <log> --impacted --mutate --quick --checked --remote --full --slow --release --release-branch --allow-migration --verbose -m/--message)\033[0m\n' "$1" >&2; exit 2 ;;
+        -*) printf '\033[31m✖ unknown flag %s (known: --await --impacted --mutate --quick --checked --remote --full --slow --release --release-branch --allow-migration --verbose -m/--message)\033[0m\n' "$1" >&2; exit 2 ;;
         *) break ;;
     esac
 done
@@ -383,7 +533,7 @@ if [[ "$VERBOSE" != 1 && -z "${PRECIS_SHIP_QUIET:-}" && -f "${WORKTREE}/scripts/
     rc=0
     inner=0
     trap 'kill "$inner" 2>/dev/null || true' INT TERM HUP
-    PRECIS_SHIP_QUIET=1 bash "$0" ${ORIG_ARGV[@]+"${ORIG_ARGV[@]}"} >"$SHIP_LOG" 2>&1 &
+    PRECIS_SHIP_QUIET=1 PRECIS_SHIP_LOG="$SHIP_LOG" bash "$0" ${ORIG_ARGV[@]+"${ORIG_ARGV[@]}"} >"$SHIP_LOG" 2>&1 &
     inner=$!
     wait "$inner" || rc=$?
     trap - INT TERM HUP
@@ -548,7 +698,7 @@ source "${WORKTREE}/scripts/lib/lock-holder.sh"
 # shellcheck source=scripts/lib/ship-lock.sh
 source "${WORKTREE}/scripts/lib/ship-lock.sh"
 acquire_worktree_ship_lock "$WORKTREE" || exit 1
-trap _release_worktree_ship_lock EXIT
+trap '_rc=$?; _release_worktree_ship_lock; _ship_state_finish "$_rc"' EXIT
 
 # A lock lost BEFORE this run (a nested `claude -p`, a killed background task)
 # leaves the tree exposed the instant the squash lands; repair it up front
@@ -1167,9 +1317,11 @@ _release_ship_lock() { lock_release "$LOCKDIR"; }
 # if an in-section die/kill left it held, and the per-worktree lock (gr335894 —
 # a script has only one EXIT trap slot). Each release is idempotent.
 _ship_exit_cleanup() {
+    local _rc=$?
     gate_slot_release
     _release_ship_lock
     _release_worktree_ship_lock
+    _ship_state_finish "$_rc"
 }
 trap _ship_exit_cleanup EXIT
 acquire_ship_lock() {
