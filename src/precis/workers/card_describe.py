@@ -16,8 +16,8 @@ was minted after the ``card_description`` kind row landed are claimed —
 existing canvases are the Devin-agent backfill path.
 
 S4 (budget): a per-day dollar cap on this pass's LLM spend —
-``PRECIS_CARD_DESCRIBE_DAILY_USD`` (default per
-``docs/conventions/thresholds.md``'s $25 checkpoint), metered off
+``PRECIS_CARD_DESCRIBE_DAILY_USD`` (default $45, Reto 2026-10-31),
+metered off
 ``llm_call_log`` ``source='card_describe'`` over the last 24 h. Over cap
 the pass defers with ``reason='budget'``, the same shape as a
 ``cli_unavailable`` pause. ``precis card-describe --dry-run`` prints the
@@ -152,11 +152,11 @@ _FIGURE_DRAWABLE_SQL = (
 )
 
 #: Daily LLM spend cap for this pass (S4). Env override
-#: ``PRECIS_CARD_DESCRIBE_DAILY_USD``; the default matches the $25
-#: paid-run checkpoint in ``docs/conventions/thresholds.md`` — the global
+#: ``PRECIS_CARD_DESCRIBE_DAILY_USD``; $45 per Reto 2026-10-31 (the
+#: backlog pass hit $25 and deferred; ceiling under $50) — the global
 #: budget breaker still applies on top (this is a per-pass guard, not a
 #: replacement).
-_DEFAULT_DAILY_USD = 25.0
+_DEFAULT_DAILY_USD = 45.0
 
 #: ``llm_call_log.source`` label the CLI pass registers under — the spend
 #: query keys on it.
@@ -759,7 +759,7 @@ def _source_sha(card_text: str) -> str:
 
 
 def _daily_cap_usd() -> float:
-    """``PRECIS_CARD_DESCRIBE_DAILY_USD`` or the $25 default; a malformed
+    """``PRECIS_CARD_DESCRIBE_DAILY_USD`` or the $45 default; a malformed
     value reads as the default, never as unlimited."""
     raw = os.environ.get("PRECIS_CARD_DESCRIBE_DAILY_USD")
     if not raw:
