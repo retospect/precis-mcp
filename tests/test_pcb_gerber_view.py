@@ -191,6 +191,24 @@ def test_the_svg_carries_one_toggleable_group_per_layer() -> None:
     assert m.group(1) == m.group(2)
 
 
+def test_derived_copper_track_and_via_appear_in_the_rendered_svg() -> None:
+    """gr543696: the board view must show DERIVED ``pcb_copper`` rows, not
+    just the layer groups that would hold them. The fixture's copper list
+    is exactly the shape :meth:`Store.pcb_copper_list` flattens out of the
+    ``pcb_copper`` table (``ctype``/``layer``/``net`` + the geom fields),
+    so this guards the read-model → gerber → SVG chain the web viewer
+    renders, at the document level the parse-only round trips do not."""
+    files = gerber.export_fab(_model(), name="t", allow_synthesized=True)
+    svg = gerber_view.render_fab_svg(files, title="t")
+    groups = dict(re.findall(r'<g id="layer-(\w+)"[^>]*>(.*?)</g>', svg, re.DOTALL))
+    # The track: a stroked path on F_Cu at its own width, net identified.
+    assert 'stroke-width="0.2500"' in groups["F_Cu"]
+    assert "track 0.2500mm · net N" in groups["F_Cu"]
+    # The via: a barrel flash on BOTH spanned layers, titled as a flash.
+    assert "F_Cu · (10.0000, 9.0000) mm · flash · net N" in groups["F_Cu"]
+    assert "B_Cu · (10.0000, 9.0000) mm · flash · net N" in groups["B_Cu"]
+
+
 def test_the_bottom_view_mirrors_and_stacks_b_side_on_top() -> None:
     """The workbench flip button (docs/backlog/pcb-workbench-layout.md):
     ``flip=True`` is a bottom view — mirrored, with the B.* layers drawn

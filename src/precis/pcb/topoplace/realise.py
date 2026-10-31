@@ -72,6 +72,7 @@ from precis.pcb.rules import NetRules
 from precis.pcb.topoplace import proxy as topo_proxy
 from precis.pcb.topoplace import wires as _wires
 from precis.pcb.topoplace.design import TopoDesign, _world_to_local
+from precis.pcb.topoplace.masks import BoardMasks, corridor_score
 from precis.pcb.topoplace.mesh import TopoMesh
 from precis.pcb.topoplace.wires import (
     CorridorOverflow,
@@ -95,6 +96,12 @@ _VIA_DRILL_MM = 0.3
 #: passes is left on :attr:`RoutePlan.crossings` (bounded like shove:
 #: a cap, not the mechanism).
 _MAX_FLIPS = 200
+
+#: Corridor mask cost: one width-aware spine crossing counts like this
+#: fraction of the corridor blocked (pcb-layer-argmin).  Calibrated from
+#: taz-leaf-local-56's wires.json corridor block; tune from data, not
+#: vibes.
+_MASK_CROSS_K = 0.25
 
 #: The widen ladder, descending — the first step the DRC oracle accepts
 #: wins. Uniform per net (a rail's tracks share one width, what the fab
@@ -165,6 +172,9 @@ class RoutePlan:
     #: committed as shorting copper (gr524239). ``sketch_rows`` reports
     #: them ``failed: short-risk``. The plan's own ``pieces`` keep the
     #: withdrawn geometry for the record, exactly like ``crossings``.
+    #: Off-angle emit vetoes (``off_angle``) are ALSO folded in here, so
+    #: the route stage's failure count and shove loop see them without
+    #: a new field to read — ``off_angle`` carries the true reason.
     guarded: tuple[int, ...] = ()
     #: Nets whose emitted copper is not one connected piece joining all
     #: their pads — the emit-connectivity check (gr537831) withdraws
@@ -172,6 +182,14 @@ class RoutePlan:
     #: ``failed: unconnected``. A falsely realized broken net must never
     #: reach DRC.
     severed: tuple[int, ...] = ()
+    #: Nets whose octilinear redraw kept an authored leg no L-bend could
+    #: replace (gr543679): the emit 45° check in ``realize_result``
+    #: refuses the piece's track — never committed, since the DRC's
+    #: octilinear rule would only flag it AFTER commit. The net is
+    #: folded into ``guarded`` for the route stage's accounting; this
+    #: field names the real reason so ``sketch_rows`` reports
+    #: ``failed: non-octilinear`` instead of ``short-risk``.
+    off_angle: tuple[int, ...] = ()
 
     @property
     def n_routed_nets(self) -> int:
@@ -675,6 +693,7 @@ def assign_layers(
     net_rules: Mapping[str, NetRules] | None = None,
     pose: Any = None,
     event: Callable[[str], None] | None = None,
+    masks: BoardMasks | None = None,
 ) -> tuple[Wires, list[list[int]], list[list[int]], tuple[tuple[int, int], ...]]:
     """Segment-aware crossing resolution as a bounded local search
     (gr520902 stage b). Per branch a runs/cuts model replaces the
@@ -695,7 +714,14 @@ def assign_layers(
     ``order``.
 
     ``event`` (gr513870) receives one progress line per search round —
-    ``None`` (the default) keeps the search silent."""
+    ``None`` (the default) keeps the search silent.
+
+    ``masks`` (pcb-layer-argmin) — the two-kernel mask set at the routed
+    pose: move keys gain a fifth element, the corridor mask cost of the
+    moved branch under the proposed runs/cuts (length-weighted
+    route-block share + ``_MASK_CROSS_K`` per width-aware spine
+    crossing).  ``None`` (the default) scores every move 0.0 — the
+    search order is then bit-identical to the four-element key."""
     branches = list(wires.branches)
     cur_wires = wires
     # Braid merge (gr520900/gr536410): on a real mesh the flip test
@@ -750,6 +776,80 @@ def assign_layers(
             )
     runs, cuts = _initial_segments(d, wires, n_layers, open_layers or None)
 
+    # ── Corridor mask cost (pcb-layer-argmin), the fifth lexicographic
+    # key element: a branch's runs scored against the routed pose's mask
+    # set.  0.0 everywhere when the caller passes no masks — the search
+    # then behaves exactly as the four-element key always has.
+    rb_unions: list[Any] = []
+    if masks is not None:
+        from shapely.geometry import Polygon as _RbPoly
+        from shapely.ops import unary_union as _rb_union
+
+        rb_unions = [
+            _rb_union([_RbPoly(r) for r in lm.route_block]) if lm.route_block else None
+            for lm in masks.layers
+        ]
+
+    def _branch_mask_cost(br: WirePath, r_b: list[int], c_b: list[int]) -> float:
+        if masks is None:
+            return 0.0
+        nb = len(br.edges)
+        if nb == 0 or not r_b:
+            return 0.0
+        k = int(br.net)
+        name = str(d.net_name[k]) if k < len(d.net_name) else str(k)
+        width = float(rules.get(name, _DEFAULT).track_width_mm)
+        bpts = [(float(x), float(y)) for x, y in br.points]
+        marks = sorted(
+            (
+                *_polyline_arc(
+                    bpts,
+                    _edge_xy(
+                        mesh,
+                        int(br.edges[min(int(ei), nb - 1)]),
+                        float(br.t[int(ei)]) if int(ei) < len(br.t) else 0.5,
+                    ),
+                ),
+                None,
+            )
+            for ei in c_b
+        )
+        attach: list[tuple[float, tuple[float, float], Any]] = [(0.0, bpts[0], None)]
+        attach += [(s, p, None) for s, p, _via in marks]
+        attach.append((float(len(bpts) - 1), bpts[-1], None))
+        acc = 0.0
+        tot = 0.0
+        cross = 0
+        for pi, (a_, b_) in enumerate(itertools.pairwise(attach)):
+            if pi >= len(r_b):
+                break
+            run = _piece_run(bpts, a_, b_)
+            if len(run) < 2:
+                continue
+            ly = int(r_b[pi])
+            if ly < 0 or ly >= len(masks.layers):
+                continue
+            ln = sum(math.dist(p, q) for p, q in itertools.pairwise(run))
+            if ln <= 0:
+                continue
+            blocked, c_ = corridor_score(
+                masks.layers[ly], run, width, rb_union=rb_unions[ly]
+            )
+            acc += ln * blocked
+            tot += ln
+            cross += c_
+        return (acc / tot if tot else 0.0) + _MASK_CROSS_K * cross
+
+    def _bb_mask_cost(bb: int, r_b: list[int], c_b: list[int]) -> float:
+        return _branch_mask_cost(branches[bb], r_b, c_b)
+
+    def _state_mask_cost(
+        brs: Sequence[WirePath], rs: Sequence[list[int]], cs: Sequence[list[int]]
+    ) -> float:
+        return sum(_branch_mask_cost(b_, rs[i], cs[i]) for i, b_ in enumerate(brs))
+
+    mask_tot = _state_mask_cost(branches, runs, cuts)
+
     def live_pairs(
         w: Wires,
         rs: list[list[int]],
@@ -772,12 +872,13 @@ def assign_layers(
 
     def flip_key(
         bb: int, r2: list[int], c2: list[int]
-    ) -> tuple[int, int, int, float] | None:
-        """The move's ``(live pairs, overflow, vias, length)`` cost —
-        a flip never touches the wires so overflow and length are the
-        current constants — or ``None`` when a run lands on a layer one
-        of its edges closes: the hard open rule, never a cost
-        (gr520902 review)."""
+    ) -> tuple[int, int, int, float, float] | None:
+        """The move's ``(live pairs, overflow, vias, length, mask cost)``
+        cost — a flip never touches the wires so overflow and length are
+        the current constants; the mask element is the board total with
+        this branch's proposed runs/cuts swapped in (0.0 with no masks)
+        — or ``None`` when a run lands on a layer one of its edges
+        closes: the hard open rule, never a cost (gr520902 review)."""
         if not _runs_open(branches[bb], open_layers.get(int(branches[bb].net)), c2, r2):
             return None
         rs2 = list(runs)
@@ -789,11 +890,14 @@ def assign_layers(
             len(cur_wires.overflow),
             n_vias(cs2),
             sum(x.length_mm for x in branches),
+            mask_tot
+            - _bb_mask_cost(bb, runs[bb], cuts[bb])
+            + _bb_mask_cost(bb, r2, c2),
         )
 
     def rethread(
         bb: int, shared: frozenset[int]
-    ) -> tuple[tuple[int, int, int, float], tuple[Any, ...]] | None:
+    ) -> tuple[tuple[int, int, int, float, float], tuple[Any, ...]] | None:
         """Net ``bb``'s tree regrown with the pair's shared corridor
         masked — ``None`` when the regrow strands a component, yields
         no branch, or its demand-vs-capacity cut grows the board's
@@ -855,15 +959,17 @@ def assign_layers(
             len(cut2),
             n_vias(cs2),
             sum(x.length_mm for x in cbr),
+            _state_mask_cost(cbr, rs2, cs2),
         )
         return key, (cbr, rs2, cs2, cw, regs2)
 
-    def state_key() -> tuple[int, int, int, float]:
+    def state_key() -> tuple[int, int, int, float, float]:
         return (
             len(cur_live),
             len(cur_wires.overflow),
             n_vias(cuts),
             sum(x.length_mm for x in branches),
+            mask_tot,
         )
 
     cur_live = live_pairs(cur_wires, runs, cuts, pair_regs)
@@ -883,7 +989,7 @@ def assign_layers(
                 f"{len(cur_live)} live pair(s), {n_vias(cuts)} via site(s)"
             )
         cur_key = state_key()
-        chosen_key: tuple[int, int, int, float] | None = None
+        chosen_key: tuple[int, int, int, float, float] | None = None
         chosen: tuple[str, Any] | None = None
         for a, b in sorted(cur_live):
             regs = pair_regs[(a, b)]
@@ -957,9 +1063,13 @@ def assign_layers(
         kind, payload = chosen
         if kind == "flip":
             bb, r2, c2 = payload
+            mask_tot += _bb_mask_cost(bb, r2, c2) - _bb_mask_cost(
+                bb, runs[bb], cuts[bb]
+            )
             runs[bb], cuts[bb] = r2, c2
         else:
             branches, runs, cuts, cur_wires, pair_regs = payload
+            mask_tot = _state_mask_cost(branches, runs, cuts)
         cur_live = live_pairs(cur_wires, runs, cuts, pair_regs)
         key = state_key()
         if key < best_key:
@@ -2274,6 +2384,7 @@ def plan_route(
     min_via_drill: float | None = None,
     paths: Sequence[Sequence[tuple[float, float]]] | None = None,
     event: Callable[[str], None] | None = None,
+    masks: BoardMasks | None = None,
 ) -> RoutePlan:
     """Layer assignment → pieces + via sites for one routed pose.
 
@@ -2293,7 +2404,14 @@ def plan_route(
     (a 0.45 mm pad over the house 0.25 mm drill leaves a 0.10 mm ring,
     under JLC's 0.15 floor)."""
     wires, runs, cuts, crossings = assign_layers(
-        d, mesh, wires, n_layers, net_rules=net_rules, pose=pose, event=event
+        d,
+        mesh,
+        wires,
+        n_layers,
+        net_rules=net_rules,
+        pose=pose,
+        event=event,
+        masks=masks,
     )
     rules = net_rules or {}
     pose_a = np.asarray(d.pose0 if pose is None else pose)
@@ -2515,7 +2633,9 @@ def _octilinear(
     horizontal-first corner is preferred, the vertical-first corner is
     taken when the first's legs are blocked, and when NEITHER clears
     the leg keeps its authored line rather than minting a bend across
-    a pad (the emit guard remains the judge)."""
+    a pad — the emit 45° check in ``realize_result`` then refuses the
+    piece's track (gr543679); a kept authored leg is the one shape that
+    can leave this redraw off-angle."""
     out: list[tuple[float, float]] = [(float(points[0][0]), float(points[0][1]))]
     for p, q in itertools.pairwise(points):
         dx, dy = q[0] - p[0], q[1] - p[1]
@@ -2535,6 +2655,46 @@ def _octilinear(
     return tuple(out)
 
 
+#: Emit-side vertex dedupe reach (gr543719): the octilinear corner pass
+#: and the piece-split projections can mint near-zero-length stubs
+#: (stored copper carried 0.01 mm segments on taz-leaf-i). Vertices
+#: closer than this to their predecessor coalesce before segments are
+#: built. A vertex whose removal would break the 45° discipline of the
+#: merged segment is KEPT — coalescing may shrink geometry by the
+#: epsilon, never redraw it off-angle.
+_COALESCE_EPS_MM = 1e-3
+
+
+def _seg_off_45(p: tuple[float, float], q: tuple[float, float]) -> bool:
+    """Whether segment ``p→q`` is neither axis-aligned nor a true 45°
+    diagonal — the emit check's strict verdict (fp-exact: the redraw
+    just constructed these points, so no import-rounding tolerance)."""
+    dx, dy = q[0] - p[0], q[1] - p[1]
+    return not (dx == 0 or dy == 0 or abs(abs(dx) - abs(dy)) <= 1e-9)
+
+
+def _coalesce_micro(
+    pts: tuple[tuple[float, float], ...],
+) -> tuple[tuple[float, float], ...]:
+    """Drop interior vertices closer than ``_COALESCE_EPS_MM`` to the
+    last kept vertex (gr543719), keep-first. The endpoints stay verbatim
+    — they are pad joins. A micro-vertex is dropped only when the merged
+    segment stays axis-aligned or 45°: a corner absorbed against the
+    rule would turn one legal sliver into one illegal leg."""
+    if len(pts) < 3:
+        return pts
+    out: list[tuple[float, float]] = [(float(pts[0][0]), float(pts[0][1]))]
+    for i in range(1, len(pts) - 1):
+        v = (float(pts[i][0]), float(pts[i][1]))
+        if math.dist(out[-1], v) < _COALESCE_EPS_MM and not _seg_off_45(
+            out[-1], pts[i + 1]
+        ):
+            continue
+        out.append(v)
+    out.append((float(pts[-1][0]), float(pts[-1][1])))
+    return tuple(out)
+
+
 def realize_result(
     plan: RoutePlan,
     d: TopoDesign,
@@ -2543,6 +2703,7 @@ def realize_result(
     *,
     net_rules: Mapping[str, NetRules] | None = None,
     pose: Any = None,
+    off_angle: list[int] | None = None,
 ) -> Any:
     """The plan as a :class:`precis.pcb.realize.RealizeResult` — the one
     shape the store path, ``result_copper_rows`` and the DRC gate all
@@ -2550,7 +2711,16 @@ def realize_result(
     ``pose`` (gr520900) enables the pad-aware octilinear corner choice —
     a corner only lands where it clears foreign copper; absent, the
     legacy horizontal-first redraw runs (synthetic callers without a
-    placed pose)."""
+    placed pose).
+
+    Two emit-stage geometry vetoes run on the redrawn points (gr543679,
+    gr543719): micro-vertices coalesce (``_coalesce_micro``), and a
+    piece whose redraw still carries an off-angle segment — a kept
+    authored leg no L-bend cleared — has its track REFUSED, never
+    committed for the DRC's octilinear rule to flag after the fact. The
+    piece's net is appended to ``off_angle`` (an out-list the caller
+    turns into the plan's withdrawal record); the rest of the net's
+    pieces still emit, like ``severed``'s per-component withdrawal."""
     from precis.pcb.realize import (
         RealizedTrack,
         RealizedVia,
@@ -2599,6 +2769,14 @@ def realize_result(
                 ),
             )
         )
+        pts = _coalesce_micro(pts)
+        if any(_seg_off_45(a, b) for a, b in itertools.pairwise(pts)):
+            # gr543679: a kept authored leg survived the redraw — refuse
+            # the piece's track rather than commit copper the DRC's
+            # octilinear rule would flag after the fact.
+            if off_angle is not None and p.net not in off_angle:
+                off_angle.append(p.net)
+            continue
         segs = tuple(
             {
                 "shape": "line",
@@ -3053,6 +3231,7 @@ def route_design(
     min_via_dia: float | None = None,
     min_via_drill: float | None = None,
     event: Callable[[str], None] | None = None,
+    masks: BoardMasks | None = None,
 ) -> tuple[RoutePlan, Any]:
     """Mesh → wires → plan → copper for one pose — the route half every
     caller (the ``placer='topo'`` job, ``pcb.local.topo_place``) shares.
@@ -3077,7 +3256,12 @@ def route_design(
     ``event`` (gr513870's per-round progress) receives one line per
     stage plus each of ``assign_layers``' search rounds — ``None``
     keeps the route silent; the job wires it to ``job_event`` chunks,
-    the laptop path exposes it as ``progress=``."""
+    the laptop path exposes it as ``progress=``.
+
+    ``masks`` (pcb-layer-argmin) — the two-kernel mask set at the
+    ROUTED pose; forwarded to ``assign_layers`` as the corridor-cost
+    input.  The caller builds it per route attempt (pose-fixed inside
+    one call); ``None`` keeps the legacy search order."""
     from precis.pcb.currents import require_net_currents
     from precis.pcb.topoplace.mesh import build_mesh
     from precis.pcb.topoplace.wires import build_wires
@@ -3125,6 +3309,7 @@ def route_design(
         min_via_drill=min_via_drill,
         paths=paths,
         event=event,
+        masks=masks,
     )
     if event is not None:
         event(
@@ -3177,7 +3362,32 @@ def route_design(
         plan = dataclasses.replace(plan, severed=tuple(sorted(severed)))
         if event is not None:
             event(f"route: severed — {len(severed)} net(s) trimmed (unconnected emit)")
-    rres = realize_result(emit, d, ir, ir.n_layers, net_rules=net_rules, pose=mesh_pose)
+    off_angle: list[int] = []
+    rres = realize_result(
+        emit,
+        d,
+        ir,
+        ir.n_layers,
+        net_rules=net_rules,
+        pose=mesh_pose,
+        off_angle=off_angle,
+    )
+    if off_angle:
+        # gr543679: the emit 45° check refused pieces whose redraw kept
+        # an off-angle authored leg. Fold the nets into ``guarded`` so
+        # the caller's failure count and shove loop see them through the
+        # existing channel; ``off_angle`` names the real reason for
+        # ``sketch_rows``.
+        plan = dataclasses.replace(
+            plan,
+            guarded=tuple(sorted({*plan.guarded, *off_angle})),
+            off_angle=tuple(sorted(set(off_angle))),
+        )
+        if event is not None:
+            event(
+                f"route: emit guard — {len(set(off_angle))} net(s) "
+                "withdrawn (non-45° leg kept)"
+            )
     if event is not None:
         event(f"route: emit — {len(rres.tracks)} track(s), {len(rres.vias)} via(s)")
     return plan, rres
@@ -3207,7 +3417,9 @@ def sketch_rows(
     that job emitted, so ``note``-reading consumers (the check view's
     ``unrouted`` findings, ``view='route-status'``) parse it unchanged;
     a net the anti-short guard withdrew joins them as ``failed:
-    short-risk`` (gr524239); a net with emitted pieces is ``realized``;
+    short-risk`` (gr524239), and a net whose octilinear redraw kept an
+    off-angle leg as ``failed: non-octilinear`` (gr543679); a net with
+    emitted pieces is ``realized``;
     anything left is ``sketched``. A net absent from the route
     design's ``net_pins`` gets no row — under
     ``design_from_ir(route_planes=True)`` only <2-member nets drop, but
@@ -3285,8 +3497,19 @@ def sketch_rows(
                 }
             )
         # duck-typed plans (the bench tests' SimpleNamespace) predate the
-        # guarded field — absent means nothing was withdrawn.
-        if k in getattr(plan, "guarded", ()):
+        # guarded/off_angle fields — absent means nothing was withdrawn.
+        # off_angle is checked first: its nets sit in ``guarded`` too
+        # (folded in for the route stage's failure count), and the true
+        # reason is the kept off-angle leg, not a short risk.
+        if k in getattr(plan, "off_angle", ()):
+            problems.append(
+                {
+                    "reason": "non-octilinear",
+                    "message": "track withdrawn: no 45° redraw clears "
+                    "neighbouring copper (emit guard)",
+                }
+            )
+        elif k in getattr(plan, "guarded", ()):
             problems.append(
                 {
                     "reason": "short-risk",

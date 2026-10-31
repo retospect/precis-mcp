@@ -109,6 +109,9 @@
     const els = doc.elementsFromPoint
       ? doc.elementsFromPoint(ev.clientX, ev.clientY)
       : [ev.target];
+    // A point on the pinned legend is the legend's (gr543695): no hover,
+    // no click-through to the board beneath it.
+    if (window.PrecisViewport && window.PrecisViewport.overHud(els)) return null;
     for (const n of els) {
       if (!n || !n.dataset) continue;
       const layer = n.closest && n.closest('.layer');

@@ -28,6 +28,14 @@
 //   9. gr531205 — the pcb-workbench.js ratsnest master toggle flips
 //      rs-off on the board document and the legend row, remembers per
 //      user, and disables itself on a fully-routed board.
+//  10. gr543695 — the pinned layer legend is HUD: hovering it shows no
+//      board tooltip, lights no cross-probe and isolates no airwires,
+//      though a board object sits beneath (pcb-hover.js, pcb-crossprobe.js
+//      via viewport.js's overHud).
+//  11. gr543695 — a click on the legend never argues the handle beneath
+//      (pcb-argue.js).
+//  12. gr543695 — a click on the legend never selects the object beneath
+//      (pcb-selection.js); the row's own toggle is a separate handler.
 
 import assert from 'node:assert/strict';
 import { createRequire } from 'node:module';
@@ -78,6 +86,11 @@ function elem(tag) {
     appendChild(c) {
       this.children.push(c);
       return c;
+    },
+    append(...kids) {
+      for (const k of kids) {
+        if (k && typeof k === 'object') this.children.push(k);
+      }
     },
     remove() {},
     querySelectorAll() {
@@ -181,7 +194,7 @@ const facts = {
 };
 const objects = [
   { key: 'outline:220', kind: 'outline' },
-  { key: 'inst:1', kind: 'instance', refdes: 'U1' },
+  { key: 'inst:1', kind: 'instance', refdes: 'U1', footprint: {} },
 ];
 
 const boardDoc = svgDoc({
@@ -212,6 +225,10 @@ const schemObj = ids['pcb-schematic-object'];
 
 // Real modules, load order as detail.html.j2 (facts before consumers).
 globalThis.PcbFacts = require(stat('pcb-facts.js'));
+// viewport.js's overHud is the shared "pointer is over the legend HUD"
+// guard the hover/click handlers consult (gr543695); the page loads it
+// before them, the harness exposes it the same way.
+globalThis.PrecisViewport = require(stat('viewport.js'));
 require(stat('pcb-sheets.js'));
 require(stat('pcb-focus.js'));
 require(stat('pcb-crossprobe.js'));
@@ -371,5 +388,91 @@ fire(ids['pcb-board-object'], 'load');
 assert.equal(rsBtn.disabled, true, 'a fully-routed board disables the toggle');
 assert.equal(rsBtn.textContent, 'ratsnest: none');
 boardDoc.byId['ratsnest'] = rsGroup;
+
+// ── 10. gr543695: hovering the pinned legend never reaches the board ──
+const legendRow = {
+  dataset: {},
+  closest: (sel) => (sel === '.legend' ? legendRow : null),
+};
+const padEl = { dataset: { pcbPart: 'U1', pcbPad: '1', pcbNet: 'SIG' }, closest: () => null };
+boardDoc._els = [padEl];
+fire(boardDoc, 'mousemove', { clientX: 9, clientY: 9 });
+assert.equal(tip.style.display, 'block', 'control: the pad beneath answers hover');
+assert(panel.classList.contains('hovering'), 'control: hover cross-probes the pad');
+boardDoc._els = [legendRow, padEl];
+fire(boardDoc, 'mousemove', { clientX: 9, clientY: 9 });
+assert.equal(tip.style.display, 'none', 'a legend hover shows no board tooltip');
+assert(!panel.classList.contains('hovering'), 'a legend hover lights no cross-probe');
+assert(!boardRoot.classList.contains('rs-isolate'), '…and isolates no airwires');
+assert.equal(readout.textContent, 'x — y — mm', '…and the readout stays idle');
+
+// ── 11. gr543695: a legend click never argues the board beneath ──────
+const argueRoot = elem('div');
+argueRoot.dataset.noteUrl = '/pcb/web_pcb/notes';
+ids['pcb-argue'] = argueRoot;
+const argueBox = elem('textarea');
+argueBox.value = '';
+argueBox.setSelectionRange = () => {};
+argueBox.focus = () => {};
+ids['pcb-argue-text'] = argueBox;
+ids['pcb-argue-submit'] = elem('button');
+require(stat('pcb-argue.js'));
+fire(ids['pcb-board-object'], 'load'); // wires boardDoc
+const arguable = {
+  dataset: {},
+  closest: (sel) => (sel === '[data-handle]' ? handleEl : null),
+};
+boardDoc._els = [arguable];
+fire(boardDoc, 'click', { clientX: 3, clientY: 3 });
+assert(argueBox.value.includes('U1'), 'control: a board click argues its handle');
+argueBox.value = '';
+boardDoc._els = [legendRow, arguable];
+fire(boardDoc, 'click', { clientX: 3, clientY: 3 });
+assert.equal(argueBox.value, '', 'a legend click never argues the board beneath');
+
+// ── 12. gr543695: a legend click never selects the board beneath ─────
+globalThis.MutationObserver = class {
+  observe() {}
+  disconnect() {}
+};
+const selChoice = elem('select');
+selChoice.options = [];
+ids['pcb-object-choice'] = selChoice;
+const chatForm = elem('form');
+chatForm.querySelector = () => elem('button');
+ids['design-chat-form'] = chatForm;
+ids['pcb-chat-context'] = elem('input');
+ids['pcb-selection-facts'] = elem('div');
+ids['pcb-selection-status'] = elem('div');
+ids['pcb-copy-selection'] = elem('button');
+ids['pcb-select-component'] = elem('button');
+ids['pcb-select-net'] = elem('button');
+ids['pcb-deselect'] = elem('button');
+boardDoc.documentElement.dataset.pcbBoard = '7';
+boardDoc.documentElement.dataset.pcbSnapshot = 'snap1';
+ids['pcb-selection-manifest'] = {
+  textContent: JSON.stringify({
+    context: { board: { ref_id: 7 }, shown: { snapshot: 'snap1' } },
+    instances: [],
+    poses: {},
+  }),
+};
+require(stat('pcb-selection.js')); // binds: contentDocument already ready
+const statusEl = ids['pcb-selection-status'];
+const selectable = {
+  dataset: { pcbObject: 'inst:1', pcbKind: 'instance' },
+  closest: () => null,
+};
+boardDoc._els = [selectable];
+fire(boardDoc, 'click', { clientX: 4, clientY: 4 });
+assert(statusEl.textContent.startsWith('Selected U1'), 'control: a board click selects');
+fire(ids['pcb-deselect'], 'click');
+assert.equal(statusEl.textContent, 'Select a board object.', 'deselect resets');
+boardDoc._els = [legendRow, selectable];
+fire(boardDoc, 'click', { clientX: 4, clientY: 4 });
+assert.equal(
+  statusEl.textContent,
+  'Select a board object.',
+  'a legend click never selects the object beneath');
 
 console.log('pcb viewer smoke: ok');

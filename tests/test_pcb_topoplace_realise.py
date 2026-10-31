@@ -1012,6 +1012,124 @@ def test_emit_guard_sees_nonprimary_lands() -> None:
     assert _guarded_nets(plan, d_foreign, ir, 2, np.asarray(d.pose0), {}) == set()
 
 
+def _off45_fixture() -> tuple[TopoDesign, SimpleNamespace]:
+    """gr543679's shape: net N0's piece runs (0,0)->(3,1) — off the 45°
+    grid — and net N1's pad rect covers BOTH L-bend candidates, so the
+    corner veto keeps the authored leg and the emit check is the only
+    thing between it and stored copper."""
+    d = TopoDesign(
+        parts=("P1", "P2", "P3"),
+        pin_xy=np.zeros((3, 2)),
+        pin_part=np.asarray([0, 1, 2]),
+        pin_side=np.asarray([0, 0, 0], dtype=np.int8),
+        pin_label=np.asarray(["1"] * 3, dtype=object),
+        pin_net=np.asarray([0, 0, 1], dtype=np.int32),
+        net_pins=(np.asarray([0, 1]), np.asarray([2])),
+        flex=(),
+        swap_groups=(),
+        fixed=np.zeros(3, dtype=bool),
+        freedoms=np.full(3, 3, dtype=np.uint8),
+        outline=np.asarray([[-5.0, -5.0], [10.0, -5.0], [10.0, 10.0], [-5.0, 10.0]]),
+        pose0=np.asarray(
+            [[0.0, 0.0, 0.0, 0.0], [3.0, 1.0, 0.0, 0.0], [1.5, 0.5, 0.0, 0.0]]
+        ),
+        net_name=("N0", "N1"),
+        pin_wh=np.asarray([[0.8, 1.0], [0.8, 1.0], [8.0, 6.0]]),
+    )
+    ir = SimpleNamespace(
+        n_pins=3,
+        n_nets=2,
+        pin_net=np.asarray([0, 0, 1]),
+        pin_instance=np.asarray([0, 1, 2]),
+        pin_label=np.asarray(["1"] * 3, dtype=object),
+        instance_refdes=np.asarray(list(d.parts), dtype=object),
+        net_name=np.asarray(list(d.net_name), dtype=object),
+        net_plane_layers=np.zeros(2, dtype=np.uint16),
+    )
+    return d, ir
+
+
+def test_emit_guard_refuses_a_kept_off_angle_leg() -> None:
+    """gr543679: when neither L-bend clears, ``_octilinear`` keeps the
+    authored leg — off the 45° grid. The emit check must REFUSE the
+    piece's track (never commit copper the DRC's octilinear rule would
+    flag after the fact) and record the net, so the route stage reports
+    it failed — the ``guarded`` fold-in plus ``off_angle`` naming the
+    real reason."""
+    d, ir = _off45_fixture()
+    piece = RoutePiece(
+        net=0, branch=0, layer=0, points=((0.0, 0.0), (3.0, 1.0)), pin_a=0, pin_b=1
+    )
+    plan = RoutePlan(pieces=(piece,), vias=(), layers=(0,))
+    off_angle: list[int] = []
+    res = realize_result(plan, d, ir, 2, pose=d.pose0, off_angle=off_angle)
+    assert res.tracks == ()  # no off-angle copper committed
+    assert off_angle == [0]
+
+    # the withdrawal surfaces as a failed net with the true reason, not
+    # a silent vanish and not a mislabelled short-risk (route_design
+    # folds off_angle nets into guarded for the failure count).
+    plan = dataclasses.replace(plan, guarded=(0,), off_angle=(0,))
+    rows = sketch_rows(plan, d, ir, ["F.Cu", "B.Cu"])
+    assert rows["N0"]["status"] == "failed"
+    assert rows["N0"]["fail"]["problems"][0]["reason"] == "non-octilinear"
+    assert "non-octilinear" in rows["N0"]["note"]
+
+
+def test_emit_coalesces_micro_vertices() -> None:
+    """gr543719: the corner pass can mint sub-micron stubs (stored
+    copper carried 0.01 mm segments). Consecutive vertices closer than
+    1e-3 mm coalesce before segments are emitted; the endpoints — pad
+    joins — stay verbatim."""
+    d, ir = _off45_fixture()
+    piece = RoutePiece(
+        net=0,
+        branch=0,
+        layer=0,
+        points=((0.0, 0.0), (2.0, 0.0), (2.0005, 0.0), (4.0, 0.0)),
+    )
+    plan = RoutePlan(pieces=(piece,), vias=(), layers=(0,))
+    off_angle: list[int] = []
+    (track,) = realize_result(plan, d, ir, 2, off_angle=off_angle).tracks
+    assert off_angle == []
+    segs = [(tuple(s["start"]), tuple(s["end"])) for s in track.segments]
+    assert segs[0][0] == (0.0, 0.0) and segs[-1][1] == (4.0, 0.0)
+    assert all(math.dist(a, b) >= 1e-3 for a, b in segs), (
+        f"micro-segment survived: {segs}"
+    )
+
+    # a micro-vertex whose removal would redraw the merged segment
+    # off-angle is KEPT — coalescing may shrink by the epsilon, never
+    # break the 45° discipline.
+    corner = RoutePiece(
+        net=0,
+        branch=1,
+        layer=0,
+        points=((0.0, 0.0), (0.0005, 0.0), (0.0005, 2.0)),
+    )
+    plan = RoutePlan(pieces=(corner,), vias=(), layers=(0,))
+    off_angle = []
+    (track,) = realize_result(plan, d, ir, 2, off_angle=off_angle).tracks
+    assert off_angle == []
+    assert len(track.segments) == 2
+
+
+def test_emit_keeps_a_normal_45_piece_untouched() -> None:
+    """The vetoes are silent on legal geometry: an axis/45° piece emits
+    exactly its authored corners, nothing withdrawn, nothing moved."""
+    d, ir = _off45_fixture()
+    piece = RoutePiece(
+        net=0, branch=0, layer=0, points=((0.0, 0.0), (3.0, 0.0), (5.0, 2.0))
+    )
+    plan = RoutePlan(pieces=(piece,), vias=(), layers=(0,))
+    off_angle: list[int] = []
+    (track,) = realize_result(plan, d, ir, 2, off_angle=off_angle).tracks
+    assert off_angle == []
+    segs = [(tuple(s["start"]), tuple(s["end"])) for s in track.segments]
+    assert segs == [((0.0, 0.0), (3.0, 0.0)), ((3.0, 0.0), (5.0, 2.0))]
+    assert track.length_mm == pytest.approx(3.0 + 2.0 * math.sqrt(2.0))
+
+
 def test_guard_withdraws_crossing_wires_the_order_lists_never_saw() -> None:
     """gr524239 — the emit guard's case the order-based crossing
     detector structurally misses: two branches whose taut polylines
@@ -1283,6 +1401,33 @@ def test_assign_layers_event_reports_each_round() -> None:
     rounds = [l for l in lines if l.startswith("route: assign round")]
     assert rounds, lines
     assert "live pair(s)" in rounds[0] and "via site(s)" in rounds[0]
+
+
+def test_assign_layers_empty_masks_preserve_the_search() -> None:
+    """pcb-layer-argmin: the mask cost is a TIE-BREAKER behind the four
+    legacy elements — an all-empty mask set (nothing blocked, no spines)
+    must steer nothing: same wires, runs, cuts, crossings as ``masks=
+    None``.  The assertion doubles as a plumbing check: the mask path
+    executes (branch costs computed, fifth key elements compared)
+    without changing the outcome."""
+    from precis.pcb.topoplace.masks import BoardMasks, LayerMasks
+
+    d, mesh, wires = _stall_fixture()
+    _w0, runs0, cuts0, x0 = assign_layers(d, mesh, wires, 4)
+    empty = BoardMasks(
+        layers=tuple(
+            LayerMasks(
+                route_block=(),
+                spines=(),
+                route_block_free=1.0,
+                via_prevent_free=1.0,
+            )
+            for _ in range(4)
+        ),
+        via_prevent=(),
+    )
+    _w1, runs1, cuts1, x1 = assign_layers(d, mesh, wires, 4, masks=empty)
+    assert runs1 == runs0 and cuts1 == cuts0 and x1 == x0
 
 
 def test_via_siting_falls_back_to_the_fab_minimum_dia() -> None:
@@ -1609,15 +1754,28 @@ def test_spoke_offsets_fan_shared_gap_and_shared_corner() -> None:
     assert track_hits == [], [f"{f.rule}: {f.where}" for f in track_hits]
     # gr536410/gr537726: the spurious braid is gone and the shared-gap
     # unwind seeds the coupled three-pair squeeze untangled, so every
-    # net routes on one layer with no vias and nothing is withdrawn —
-    # the routed count did not drop, every net still emits copper.
+    # net routes on one layer with no vias.
     assert plan.crossings == ()
     assert plan.vias == ()
     assert {p.layer for p in plan.pieces} == {0}
     assert {p.net for p in plan.pieces} == set(
         td.net_name.index(n) for n in ("N1", "N2", "N3")
     )
-    assert not getattr(plan, "guarded", ())
+    # gr543679: the squeeze through the slit leaves diagonal legs no
+    # L-bend can replace (both corners graze the gate pads or the
+    # neighbour's channel), so the emit 45° check refuses those tracks
+    # rather than committing copper the DRC's octilinear rule would
+    # flag — the nets are withdrawn and reported failed, not silently
+    # stored. The anti-short guard itself stays silent (nothing here
+    # shorts).
+    assert set(getattr(plan, "off_angle", ())) == {
+        td.net_name.index(n) for n in ("N1", "N2", "N3")
+    }
+    assert res.tracks == ()
+    rows = sketch_rows(plan, td, ir, layers)
+    for n in ("N1", "N2", "N3"):
+        assert rows[n]["status"] == "failed"
+        assert rows[n]["fail"]["problems"][0]["reason"] == "non-octilinear"
 
 
 def test_fan_slit_fixture_is_planar_no_braid_no_vias() -> None:

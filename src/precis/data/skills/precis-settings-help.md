@@ -26,8 +26,8 @@ registry doesn't know render as `<name>`, and values render only as
 typed scalars (bool, number, timestamp, duration, vetted enum word) —
 a string that doesn't parse as one of those is
 `(withheld: string, N chars)`. `service_config.host` is masked, and
-there is no write verb: writes stay with a human operator — ask them
-to change the setting on the service/settings admin surfaces.
+there is no write verb: writes stay with a human operator (the
+service/settings surfaces and the `/settings`/`/budget` web pages).
 
 ## A kind raised Unsupported because a setting is missing
 

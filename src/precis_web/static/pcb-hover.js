@@ -34,10 +34,11 @@
 
   // Every stacked node carrying board identity (hidden layers skipped; the
   // click overlay is transparent and sits on top), then the most specific wins:
-  // ratsnest > pad > via > silkscreen > bare net.
-  const targetAt = (x, y) => {
+  // ratsnest > pad > via > silkscreen > bare net. Takes the elementsFromPoint
+  // list the mousemove already computed.
+  const targetAt = (els) => {
     const found = {};
-    for (const n of svgDoc.elementsFromPoint(x, y)) {
+    for (const n of els) {
       const d = n.dataset;
       if (!d) continue;
       const layer = n.closest && n.closest('.layer');
@@ -94,8 +95,17 @@
     // Native <title> tooltips would stack under ours; the text is the same facts.
     svgDoc.querySelectorAll('title').forEach((t) => t.remove());
     svgDoc.addEventListener('mousemove', (event) => {
+      const els = svgDoc.elementsFromPoint(event.clientX, event.clientY);
+      // A point on the pinned legend is the legend's (gr543695): no board
+      // tooltip, and the readout (which lives IN the legend) goes idle
+      // instead of quoting board coordinates the pointer isn't over.
+      if (window.PrecisViewport && window.PrecisViewport.overHud(els)) {
+        hide();
+        if (readout) readout.textContent = IDLE;
+        return;
+      }
       showCursor(event);
-      const text = textFor(targetAt(event.clientX, event.clientY));
+      const text = textFor(targetAt(els));
       if (!text) { hide(); return; }
       const box = object.getBoundingClientRect();
       tip.textContent = text;

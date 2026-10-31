@@ -140,11 +140,7 @@ next section.
 | `plan_dispatch`     | `job_inproc`    | Dark factory: one pass over every plan subtree (`plan:<id>` tags, gate/loop/generate/auto_close nodes) — evaluate gates, re-mint loop bodies, close finished phases, mint one job per doable task (`meta.op`, default `run_slice`) in (prio ascending, id) order across every plan root — a node without a prio takes its nearest ancestor's, default 5 — act on a reviewer node's `review: LAND` / `review: FIX — <list>` / `review: REVERT — <why>` comment (close it; mint a fix task; mint a revert task and reopen the build), release claims older than 4 h, file an `ask-user` + `showstopper` todo when a task hits `meta.retries` (default 2). Params: optional `dry_run`. Read-only while the factory kill switch is on or a `service_config` `plan_dispatch` row has prio 0. Armed by one recurring todo — ask a human operator to arm or disarm it (recipe: `docs/runbooks/dark-factory-arming.md`) |
 | `gripe_validate`    | `job_inproc`    | Gripe ladder, last rung: close every `STATUS:verify` gripe whose `resolved: <sha>` comment names a sha in the recorded prod head (head or landed) as `STATUS:done`; one with no sha, or a sha not yet deployed, stays. Params: optional `dry_run`. Armed by one recurring todo — ask a human operator to arm or disarm it (recipe: `docs/runbooks/dark-factory-arming.md`) |
 
-## Dark release pass job types — cut, CI poll, deploy
-
-The three mechanical ops of a `release-pass` plan (`put(kind='todo',
-mode='plan', args={'template': 'release-pass'})`); no LLM runs in any of
-them, and the deploy waits for a human's answer.
+## Dark release-pass job types — the cut/poll/deploy lanes
 
 | `job_type`          | Executor        | What it does                                  |
 |---------------------|-----------------|-----------------------------------------------|

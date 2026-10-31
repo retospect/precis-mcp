@@ -232,10 +232,10 @@ only allowlisted key families render a row at all (the rest are a
 withheld count), unknown key segments render as `<name>`, and values
 render only as typed scalars (bool, number, timestamp, duration,
 vetted enum word — anything else is `(withheld: string, N chars)`).
-`service_config.host` is masked. Read-only — writes stay with a human
-operator on the service/settings admin surfaces. The Dark switches
-table on [[precis-status]] covers only `enable_env` services; this is
-every row.
+`service_config.host` is masked. Read-only — writes stay with
+a human operator (the service/settings surfaces and the web pages).
+The Dark switches table on [[precis-status]] covers only `enable_env`
+services; this is every row.
 
 ## See also
 

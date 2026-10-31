@@ -56,7 +56,6 @@ Reto's (`reto:ask`) — stays `draft`.
   decide whether the opt-in teach mode is wanted.
 - **Carrier.** A served skill (`precis-teach-help`) invoked per task,
   or a standing preference in agent definitions — and whether it
-  composes with the interrogation skill (shipped as
-  `precis-grill-me-help`).
+  composes with the shipped interrogation skill (`precis-grill-me-help`).
 - **Narration scope.** Decisions-with-alternatives only, or also a
   short "why" on the final diff.

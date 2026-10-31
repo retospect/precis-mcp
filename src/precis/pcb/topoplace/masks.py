@@ -29,7 +29,7 @@ from dataclasses import dataclass
 from typing import Any
 
 import numpy as np
-from shapely.geometry import Polygon
+from shapely.geometry import LineString, Polygon
 from shapely.ops import unary_union
 
 from precis.pcb.topoplace.design import TopoDesign
@@ -328,4 +328,52 @@ def masks_svg(
     )
 
 
-__all__ = ["BoardMasks", "LayerMasks", "Spine", "build_masks", "masks_svg"]
+def corridor_score(
+    lm: LayerMasks, pts, width_mm: float, *, rb_union: Any | None = None
+) -> tuple[float, int]:
+    """A corridor centerline (0-width polyline ``pts``) thickened to
+    ``width_mm`` against ONE layer's mask set: ``(blocked_fraction,
+    spine_crossings)``.
+
+    ``blocked_fraction`` is the length share of the thickened corridor
+    that lands inside route_block (vector: intersect, measure area, divide
+    by the corridor width).  ``spine_crossings`` counts width-aware
+    crossings against the immobile pad-bank spines — the same predicate
+    class as the 2b detangler: minimum center distance
+    ``< (w1 + w2)/2`` counts once per bank.  ``rb_union`` accepts a
+    precomputed shapely union of ``lm.route_block`` so callers scoring
+    many corridors against one layer pay the union once.
+    """
+    line = LineString([(float(x), float(y)) for x, y in pts])
+    w = width_mm / 2.0
+    total = line.length
+    if total <= 0:
+        return 0.0, 0
+    blocked = 0.0
+    if lm.route_block:
+        try:
+            rb = (
+                unary_union([Polygon(r) for r in lm.route_block])
+                if rb_union is None
+                else rb_union
+            )
+            inter = line.buffer(w).intersection(rb)
+            blocked = inter.area / (2 * w) if not inter.is_empty else 0.0
+        except Exception:
+            blocked = 0.0
+    crossings = 0
+    for sp in lm.spines:
+        sline = LineString(sp.pts)
+        if line.distance(sline) < (width_mm + sp.width_mm) / 2.0 - 1e-9:
+            crossings += 1
+    return min(1.0, blocked / total), crossings
+
+
+__all__ = [
+    "BoardMasks",
+    "LayerMasks",
+    "Spine",
+    "build_masks",
+    "corridor_score",
+    "masks_svg",
+]

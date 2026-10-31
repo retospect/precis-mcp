@@ -374,6 +374,53 @@ def _plan_failed_count(plan: Any) -> int:
     )
 
 
+def _route_masks(
+    td: Any,
+    pose: Any,
+    n_layers: int,
+    net_rules: Any,
+    min_via_dia: Any,
+) -> Any:
+    """The two-kernel mask set at one pose — shared by the layer-argmin
+    (built fresh per route attempt; the caller passes it into
+    ``route_design``) and the visibility payload (built again at the
+    committed best pose).  Zone handling mirrors the payload's original
+    inline block: keepout/mounting_hole/label_keepout only, silk zones
+    scoped to the outers."""
+    from shapely.geometry import Polygon
+
+    from precis.pcb.topoplace import masks as _tpmasks
+    from precis.pcb.topoplace import proxy as _tpproxy
+
+    zone_polys: list[tuple[Any, tuple[int, ...]]] = []
+    for z in td.zones:
+        if z.kind not in ("keepout", "mounting_hole", "label_keepout"):
+            continue
+        if len(z.ring) < 4:
+            continue
+        zl = tuple(int(l) for l in (z.layers or ()))
+        if z.kind == "label_keepout":
+            # Silkscreen is an OUTER-layer fact: it never blocks an
+            # inner corridor, and only the via annulus on the outers
+            # cares (the siting walk's rule, mirrored here).
+            outers = {0, n_layers - 1}
+            zl = tuple(sorted(set(zl) & outers)) if zl else tuple(sorted(outers))
+        zg = Polygon(np.asarray(_tpproxy.zone_world_ring(td, z, pose), dtype=float))
+        if not zg.is_empty and zg.area > 0.0:
+            zone_polys.append((zg, zl))
+    rule_widths = [float(r.track_width_mm) for r in (net_rules or {}).values()]
+    rule_clrs = [float(r.clearance_mm) for r in (net_rules or {}).values()]
+    return _tpmasks.build_masks(
+        td,
+        pose,
+        n_layers=n_layers,
+        min_wire_mm=min(rule_widths) if rule_widths else 0.15,
+        min_clearance_mm=min(rule_clrs) if rule_clrs else 0.15,
+        via_dia_mm=float(min_via_dia) if min_via_dia else 0.6,
+        zone_polys=tuple(zone_polys),
+    )
+
+
 def _route_failure_pushes(
     td: Any,
     plan: Any,
@@ -635,6 +682,9 @@ def _topo_route(
         min_via_dia=None if min_via_dia is None else float(min_via_dia),
         min_via_drill=None if min_via_drill is None else float(min_via_drill),
         event=event,
+        masks=_route_masks(
+            td_route, td_route.pose0, ir.n_layers, net_rules, min_via_dia
+        ),
     )
 
     # Failure-driven shove (Reto 2026-10-30: "should just cause shove, and
@@ -689,6 +739,7 @@ def _topo_route(
                 net_rules=net_rules,
                 min_via_dia=None if min_via_dia is None else float(min_via_dia),
                 event=event,
+                masks=_route_masks(td_route, pose, ir.n_layers, net_rules, min_via_dia),
             )
         except _tprealise.CorridorOverflow:
             break
@@ -921,11 +972,21 @@ def _topo_route(
     # prohibited" / "pad blocking bars" debug layers, vector throughout.
     if out_files is not None:
         from shapely.geometry import Polygon
+        from shapely.ops import unary_union
 
         from precis.pcb.topoplace import masks as _tpmasks
-        from precis.pcb.topoplace import proxy as _tpproxy
 
-        net_names = [str(ir.net_name[i]) for i in range(len(ir.net_name))]
+        # plan pieces/vias carry the TOPO DESIGN's net index
+        # (WirePath.net is a d.net_pins index); the IR's enumeration can
+        # differ (the flex-pin stage renumbers) — sketch_rows joins the
+        # two BY NAME via name_to_k, and so must this payload, or every
+        # net's pieces/vias/corridor land under another net's name
+        # (taz-leaf-local-55: S2_DRV's real R12.1→R13.1 plan displayed
+        # as an S1_EXA_* piece, and a failed U2-region net's plan as
+        # "S2_DRV" — the web view showed ghost-hunting routes while the
+        # stored pcb_copper, named via realise_result's d.net_name, was
+        # correct all along).
+        net_names = [str(td_route.net_name[i]) for i in range(len(td_route.net_name))]
         pieces_by_net: dict[int, list[dict[str, Any]]] = {}
         for p in plan.pieces:
             pieces_by_net.setdefault(int(p.net), []).append(
@@ -956,36 +1017,8 @@ def _topo_route(
             }
         out_files["wires.json"] = wires_payload
 
-        zone_polys: list[tuple[Any, tuple[int, ...]]] = []
-        for z in td_route.zones:
-            if z.kind not in ("keepout", "mounting_hole", "label_keepout"):
-                continue
-            if len(z.ring) < 4:
-                continue
-            zl = tuple(int(l) for l in (z.layers or ()))
-            if z.kind == "label_keepout":
-                # Silkscreen is an OUTER-layer fact: it never blocks an
-                # inner corridor, and only the via annulus on the outers
-                # cares (the siting walk's rule, mirrored here).
-                outers = {0, ir.n_layers - 1}
-                zl = tuple(sorted(set(zl) & outers)) if zl else tuple(sorted(outers))
-            zg = Polygon(
-                np.asarray(
-                    _tpproxy.zone_world_ring(td_route, z, best_pose), dtype=float
-                )
-            )
-            if not zg.is_empty and zg.area > 0.0:
-                zone_polys.append((zg, zl))
-        rule_widths = [float(r.track_width_mm) for r in (net_rules or {}).values()]
-        rule_clrs = [float(r.clearance_mm) for r in (net_rules or {}).values()]
-        board_masks = _tpmasks.build_masks(
-            td_route,
-            best_pose,
-            n_layers=ir.n_layers,
-            min_wire_mm=min(rule_widths) if rule_widths else 0.15,
-            min_clearance_mm=min(rule_clrs) if rule_clrs else 0.15,
-            via_dia_mm=float(min_via_dia) if min_via_dia else 0.6,
-            zone_polys=tuple(zone_polys),
+        board_masks = _route_masks(
+            td_route, best_pose, ir.n_layers, net_rules, min_via_dia
         )
         out_files["masks.json"] = {
             "layer_names": layers,
@@ -1014,6 +1047,49 @@ def _topo_route(
         out_files["masks.svg"] = _tpmasks.masks_svg(
             board_masks, td_route.outline, tuple(layers)
         )
+
+        # Per-net, per-layer corridor obstruction (the argmin inputs, made
+        # visible BEFORE the layer chooser consumes them): thicken each
+        # piece's centerline to the net's rule width against every layer's
+        # mask set — worst blocked share across the net's pieces + total
+        # spine crossings.  Read-only: no routing behavior changes here.
+        rb_unions = []
+        for lm in board_masks.layers:
+            rb_unions.append(
+                unary_union([Polygon(r) for r in lm.route_block])
+                if lm.route_block
+                else None
+            )
+
+        def _piece_width(name: str) -> float:
+            # widths comes from widen_power keyed by IR net id; meet the
+            # payload's (design-indexed) names by name, never by index.
+            for k_ir, w in widths.items():
+                if str(ir.net_name[k_ir]) == name:
+                    return float(w)
+            mins = [float(r.track_width_mm) for r in (net_rules or {}).values()]
+            return min(mins) if mins else 0.15
+
+        for name, payload in wires_payload["nets"].items():
+            if not payload["pieces"]:
+                continue
+            pw = _piece_width(name)
+            corridor: dict[str, Any] = {}
+            for li, lm in enumerate(board_masks.layers):
+                lname = layers[li] if 0 <= li < len(layers) else f"L{li}"
+                worst_blocked = 0.0
+                crossings = 0
+                for pc in payload["pieces"]:
+                    b, c = _tpmasks.corridor_score(
+                        lm, pc["pts"], pw, rb_union=rb_unions[li]
+                    )
+                    worst_blocked = max(worst_blocked, b)
+                    crossings += c
+                corridor[lname] = {
+                    "blocked_fraction": round(worst_blocked, 4),
+                    "spine_crossings": crossings,
+                }
+            payload["corridor"] = corridor
 
     meta = {
         "nets": len(rows),

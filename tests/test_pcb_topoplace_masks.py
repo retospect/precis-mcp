@@ -105,3 +105,76 @@ def test_opening_absorbs_sub_kernel_necks() -> None:
     assert len(getattr(thin, "geoms", [thin])) == 2
     wide = _opening(joined(0.5), 0.15)  # 0.5 neck survives the opening
     assert len(getattr(wide, "geoms", [wide])) == 1
+
+
+def _square_ring(cx: float, cy: float, half: float):
+    return (
+        (cx - half, cy - half),
+        (cx + half, cy - half),
+        (cx + half, cy + half),
+        (cx - half, cy + half),
+    )
+
+
+def test_corridor_score_empty_layer_is_free() -> None:
+    from precis.pcb.topoplace.masks import LayerMasks, corridor_score
+
+    lm = LayerMasks(
+        route_block=(), spines=(), route_block_free=1.0, via_prevent_free=1.0
+    )
+    assert corridor_score(lm, [(0, 0), (10, 0)], 0.3) == (0.0, 0)
+
+
+def test_corridor_score_zero_length_line() -> None:
+    from precis.pcb.topoplace.masks import LayerMasks, corridor_score
+
+    lm = LayerMasks(
+        route_block=(_square_ring(5, 0, 1),),
+        spines=(),
+        route_block_free=0.9,
+        via_prevent_free=1.0,
+    )
+    assert corridor_score(lm, [(5, 0), (5, 0)], 0.3) == (0.0, 0)
+
+
+def test_corridor_score_blocked_fraction_is_length_share() -> None:
+    from precis.pcb.topoplace.masks import LayerMasks, corridor_score
+
+    # 10 mm corridor, middle 4 mm inside a 2 mm-half square block
+    lm = LayerMasks(
+        route_block=(_square_ring(5, 0, 2),),
+        spines=(),
+        route_block_free=0.9,
+        via_prevent_free=1.0,
+    )
+    frac, _ = corridor_score(lm, [(0, 0), (10, 0)], 0.3)
+    assert frac == pytest.approx(0.4, abs=0.01)
+
+
+def test_corridor_score_spine_crossing_width_aware() -> None:
+    from precis.pcb.topoplace.masks import LayerMasks, Spine, corridor_score
+
+    spine = Spine(pts=((5, 1.0), (5, 3.0)), width_mm=1.0, refdes="U1", layer=0)
+    lm = LayerMasks(
+        route_block=(), spines=(spine,), route_block_free=1.0, via_prevent_free=1.0
+    )
+    # corridor at y=0, 0.3 wide: center distance to spine centerline is 1.0;
+    # threshold is (0.3 + 1.0)/2 = 0.65 -> clear
+    assert corridor_score(lm, [(0, 0), (10, 0)], 0.3)[1] == 0
+    # hugging the spine (y=0.5, distance 0.5 < 0.65) counts once
+    assert corridor_score(lm, [(0, 0.5), (10, 0.5)], 0.3)[1] == 1
+    # perpendicular crossing at the spine's y-range also counts once
+    assert corridor_score(lm, [(5, 0), (5, 4)], 0.3)[1] == 1
+
+
+def test_corridor_score_blocked_capped_at_one() -> None:
+    from precis.pcb.topoplace.masks import LayerMasks, corridor_score
+
+    lm = LayerMasks(
+        route_block=(_square_ring(5, 0, 3),),  # swallows the whole corridor
+        spines=(),
+        route_block_free=0.5,
+        via_prevent_free=1.0,
+    )
+    frac, _ = corridor_score(lm, [(4, 0), (6, 0)], 0.3)
+    assert frac == 1.0

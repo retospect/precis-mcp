@@ -330,8 +330,12 @@
       if (!matchesRoot()) { bound = false; clear('Shown board changed. Reload.'); return; }
       // Every stacked overlay target at this point, minus hidden layers. Never
       // take the first object when two different ones overlap at the top kind.
+      // A point on the pinned legend is the legend's (gr543695): never select
+      // the board object painted beneath it.
+      const els = svgDoc.elementsFromPoint(event.clientX, event.clientY);
+      if (window.PrecisViewport && window.PrecisViewport.overHud(els)) return;
       const found = new Map();
-      svgDoc.elementsFromPoint(event.clientX, event.clientY).forEach((node) => {
+      els.forEach((node) => {
         if (!node.dataset || !node.dataset.pcbObject) return;
         const layer = node.dataset.pcbLayer;
         if (layer && svgDoc.getElementById(`layer-${layer}`)?.classList.contains('off')) return;

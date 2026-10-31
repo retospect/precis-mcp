@@ -95,6 +95,20 @@
   const onObject = (t) =>
     !!(t && t.closest && t.closest('[data-handle],[data-pcb-object],.legend-row'));
 
+  /* The pinned layer legend (.legend) is HUD painted OVER the board: when
+     a hit-test stack holds one of its elements the point is the legend's,
+     and the page's click/hover handlers (pcb-selection, pcb-argue,
+     pcb-hover, pcb-crossprobe) must not resolve the board objects beneath
+     it (gr543695). Takes the elementsFromPoint list the caller already
+     computed; the legend's background rect covers its whole box, so any
+     point over it hits at least that rect. */
+  const overHud = (els) => {
+    for (const el of els || []) {
+      if (el && el.closest && el.closest('.legend')) return true;
+    }
+    return false;
+  };
+
   function Controller(svg, target) {
     this.svg = svg;
     this.target = target || svg;
@@ -384,5 +398,5 @@
     if (opts.active) activate(entry);
   }
 
-  return {attach, Controller, _parseBox: parseBox, _zoomAt: zoomAt, _toBox: toBox, _classifyWheel: classifyWheel, _VP_KEYS: VP_KEYS};
+  return {attach, Controller, overHud, _parseBox: parseBox, _zoomAt: zoomAt, _toBox: toBox, _classifyWheel: classifyWheel, _VP_KEYS: VP_KEYS};
 });

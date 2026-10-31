@@ -885,6 +885,20 @@ channel. After the fab-minimum fallback landed (d68d06558) the board is
 no longer via-size bound; the remaining asks are this item and the
 corridor one below.
 
+Evidence update (taz-leaf-local-56, 2026-10-31, first truthful dataset
+after the wires-payload net-name fix c50228791): the failure taxonomy
+is 32 `no via site` problems and 26 `short-risk` withdrawals (0 vias
+minted, 11/38 nets realized). The 26 short-risk are the same wall seen
+from the other side — the alternative layer exists but needs a via to
+reach. **The via site is THE binding constraint on this board.**
+Recommendation for the siting-domain open question: start with
+neighbouring-mesh-edges candidates (a finite set, keeps the
+wire-on-edges model, no RoutePiece geometry change) — try each crossed
+edge's adjacent triangle circumcenter area against the via-prevent
+mask (masks.py now provides exactly this geometry); only if the finite
+set keeps failing move to free-point jogs (new geometry, priced by
+length + foreign clearance like a re-thread).
+
 Open questions:
 - The siting domain: neighbouring mesh edges (a finite candidate set,
   keeps the wire-on-edges model), or a free point off-edge plus a

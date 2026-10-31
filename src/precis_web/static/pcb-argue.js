@@ -104,6 +104,9 @@
     var els = doc.elementsFromPoint
       ? doc.elementsFromPoint(ev.clientX, ev.clientY)
       : [ev.target];
+    // A point on the pinned legend is the legend's (gr543695): never argue
+    // the board object painted beneath it.
+    if (window.PrecisViewport && window.PrecisViewport.overHud(els)) return null;
     for (var i = 0; i < els.length; i++) {
       var el = els[i];
       var hit = el && el.closest ? el.closest("[data-handle]") : null;
