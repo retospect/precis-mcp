@@ -456,11 +456,12 @@ def test_wait_ci_records_the_verdict_with_range_and_run_id(
         mod, "ci_red", lambda h: {"jobs": ["lint"], "urls": [], "run_id": "666"}
     )
     monkeypatch.setattr(mod.time, "sleep", lambda s: None)
-    monkeypatch.setattr(
-        mod,
-        "record_ci_verdict",
-        lambda sha, rng, v, run_id="": calls.append((sha, rng, v, run_id)) or "ok",
-    )
+
+    def _record(sha: str, rng: str, v: str, run_id: str = "") -> str:
+        calls.append((sha, rng, v, run_id))
+        return "ok"
+
+    monkeypatch.setattr(mod, "record_ci_verdict", _record)
     args = mod.argparse.Namespace(ci_timeout=1.0, poll=0.0)
     rc = mod.wait_ci("release/r1", args)
     assert rc == (0 if verdict == "green" else 2)
