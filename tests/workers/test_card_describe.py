@@ -763,3 +763,162 @@ def test_dry_run_counts_per_kind_and_writes_nothing(
             "SELECT count(*) FROM chunks WHERE chunk_kind = 'card_description'"
         ).fetchone()
     assert n is not None and n[0] == 0
+
+
+# ── gr524231: no transaction spans an LLM call ──────────────────────────
+
+
+def test_llm_call_runs_with_no_lock_or_open_tx(store: Any, hub: Any) -> None:
+    """gr524231: the pass used to hold its single-runner advisory xact
+    lock for the whole pass — a dedicated backend sat idle-in-transaction
+    across every LLM call (the prod 13:20Z block, other lanes queued
+    behind it). The lock now scopes only the decide-and-claim
+    transaction, so inside ``client.complete`` this pass's advisory key
+    has no granted pg_locks row and no backend sits idle-in-transaction."""
+    import precis.workers.card_describe as cd
+
+    ref_id = _put_structure(hub)
+    # pg_locks splits a one-int8 advisory key into two oid halves; compare
+    # the halves separately (the reconstructed 64-bit pattern doesn't fit
+    # a signed bigint).
+    key64 = cd._LOCK_KEY & 0xFFFFFFFFFFFFFFFF
+    key_hi, key_lo = key64 >> 32, key64 & 0xFFFFFFFF
+
+    class _ProbeClient(_FakeClient):
+        def __init__(self) -> None:
+            super().__init__()
+            self.held: list[int] = []
+            self.idle_tx: list[int] = []
+
+        def complete(self, messages: list[dict[str, str]]) -> Any:
+            self.calls.append(messages)
+            with store.pool.connection() as conn:
+                self.held.append(
+                    int(
+                        conn.execute(
+                            "SELECT count(*) FROM pg_locks "
+                            "WHERE locktype = 'advisory' AND granted "
+                            "AND classid = %s AND objid = %s",
+                            (key_hi, key_lo),
+                        ).fetchone()[0]
+                    )
+                )
+                self.idle_tx.append(
+                    int(
+                        conn.execute(
+                            "SELECT count(*) FROM pg_stat_activity "
+                            "WHERE datname = current_database() "
+                            "AND state = 'idle in transaction' "
+                            "AND pid <> pg_backend_pid()"
+                        ).fetchone()[0]
+                    )
+                )
+            return SimpleNamespace(text=self.text, model="fake-sonnet", total_tokens=5)
+
+    client = _ProbeClient()
+    r = run_card_describe_pass(store, client=client, batch_size=10)
+
+    assert (r["claimed"], r["ok"], r["failed"]) == (1, 1, 0)
+    assert client.held == [0]
+    assert client.idle_tx == [0]
+    assert len(_desc_chunks(store, ref_id)) == 1
+
+
+def test_concurrent_passes_never_describe_the_same_ref(store: Any, hub: Any) -> None:
+    """gr524231: with the lock claim-scoped, two overlapping passes both
+    run — per-ref exclusion is now the attempt lease, so both make
+    progress yet never describe the same ref. ``batch_size=1`` forces
+    each pass onto one ref; the barrier inside ``complete`` forces the
+    two LLM phases to overlap (under the old whole-pass hold the second
+    pass skipped at the lock and the barrier starved)."""
+    import threading
+
+    _put_structure(hub, slug="cd-a")
+    _put_structure(hub, slug="cd-b")
+    barrier = threading.Barrier(2)
+    in_llm = threading.Event()
+
+    class _SyncClient(_FakeClient):
+        def __init__(self, text: str = _DESC, *, signal: bool = False) -> None:
+            super().__init__(text)
+            self.signal = signal
+
+        def complete(self, messages: list[dict[str, str]]) -> Any:
+            self.calls.append(messages)
+            if self.signal:
+                in_llm.set()  # past the claim — the lock is already gone
+            barrier.wait(timeout=15)
+            return SimpleNamespace(text=self.text, model="fake-sonnet", total_tokens=5)
+
+    clients = [_SyncClient(signal=True), _SyncClient()]
+    results: list[dict[str, Any]] = []
+
+    def _run(i: int) -> None:
+        results.append(run_card_describe_pass(store, client=clients[i], batch_size=1))
+
+    # Pass 1 first; pass 2 starts only once pass 1 is parked inside its
+    # LLM call — its claim then runs while pass 1 holds nothing, so it
+    # must claim the OTHER ref via the lease, not skip at the lock.
+    t1 = threading.Thread(target=_run, args=(0,), daemon=True)
+    t1.start()
+    assert in_llm.wait(timeout=15)
+    t2 = threading.Thread(target=_run, args=(1,), daemon=True)
+    t2.start()
+    t1.join(timeout=30)
+    t2.join(timeout=30)
+    assert not t1.is_alive() and not t2.is_alive()
+
+    # Each pass described exactly one ref, and the two refs differ — the
+    # lease, not the pass lock, kept them apart.
+    assert sum(len(c.calls) for c in clients) == 2
+    described = {
+        str(c.calls[0][1]["content"]).split(":", 1)[1].split("\n")[0].strip()
+        for c in clients
+        if c.calls
+    }
+    assert described == {"cd-a", "cd-b"}
+    assert sorted(int(r["ok"]) for r in results) == [1, 1]
+
+
+def test_lease_renews_mid_batch_so_second_pass_cannot_reclaim(
+    store: Any, hub: Any
+) -> None:
+    """gr524231 review: the claim stamp brakes only for
+    ``ATTEMPT_COOLDOWN_MIN`` — a batch whose earlier describes outlast
+    it leaves later refs claimable to a second host, which re-bills them.
+    The pass now re-stamps each ref's lease (same ordinal, fresh TTL)
+    just before its LLM call. Simulate the cooldown passing during the
+    first describe; inside the second describe — the ref's lease just
+    renewed — a whole second pass must find nothing claimable."""
+    _put_structure(hub, slug="cd-a")
+    ref_b = _put_structure(hub, slug="cd-b")
+    inner_results: list[dict[str, Any]] = []
+
+    class _ExpireThenRerun(_FakeClient):
+        def complete(self, messages: list[dict[str, str]]) -> Any:
+            self.calls.append(messages)
+            if len(self.calls) == 1:
+                # The cooldown passing mid-batch: every claim stamp ages
+                # out while the batch is still working.
+                with store.pool.connection() as conn:
+                    conn.execute(
+                        "UPDATE ref_tags SET expires_at = now() - interval '1 minute'"
+                    )
+                    conn.commit()
+            elif len(self.calls) == 2:
+                # cd-b's lease was just renewed and cd-a's chunk is
+                # written — a whole second pass must claim nothing.
+                inner = _FakeClient(
+                    "A second host re-describing an already-billed ref."
+                )
+                inner_results.append(
+                    run_card_describe_pass(store, client=inner, batch_size=10)
+                )
+            return SimpleNamespace(text=self.text, model="fake-sonnet", total_tokens=5)
+
+    r = run_card_describe_pass(store, client=_ExpireThenRerun(), batch_size=10)
+
+    assert (r["claimed"], r["ok"], r["failed"]) == (2, 2, 0)
+    assert inner_results == [{"claimed": 0, "ok": 0, "failed": 0}]
+    # cd-b's single description is the first pass's write, not a re-bill.
+    assert [c[1] for c in _desc_chunks(store, ref_b)] == [_DESC]

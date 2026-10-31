@@ -42,15 +42,19 @@ Reto's rulings (gr497688 comment 2) this encodes:
 Embedding is the embed worker's job (``card_description`` is not a skip
 kind there); this worker never touches an embedder.
 
-Claim/write shape mirrors :mod:`precis.workers.chunk_keywords`: a
-single-runner ``pg_try_advisory_xact_lock`` held for the whole pass on a
-dedicated connection, claim-commit-first, per-ref work on pooled
-connections, writes wrapped in :func:`retry_locked`. The claim carries a
-claim-time attempt lease (:mod:`precis.workers.ref_lease`, stamped in the
-claim transaction): this pass's only "done" marker is the success-written
-chunk, so without the brake a persistently-failing ref — e.g. a model
-reply whose JSON never carries ``description`` (gr508688) — is re-claimed
-and re-billed every sweep instead of once per cooldown.
+Claim/write shape mirrors :mod:`precis.workers.chunk_keywords`, minus
+its whole-pass hold: the single-runner ``pg_try_advisory_xact_lock``
+scopes only the decide-and-claim transaction (gr524231 — held for the
+whole pass it kept a backend idle-in-transaction across every LLM call,
+and prod lanes queued behind it). Per-ref mutual exclusion for the rest
+of the pass is the claim-time attempt lease
+(:mod:`precis.workers.ref_lease`, stamped in the claim transaction,
+claim-commit-first): this pass's only "done" marker is the
+success-written chunk, so without the brake a persistently-failing ref —
+e.g. a model reply whose JSON never carries ``description`` (gr508688) —
+is re-claimed and re-billed every sweep instead of once per cooldown.
+Per-ref work runs on pooled connections, writes wrapped in
+:func:`retry_locked`.
 
 The lease's value counts consecutive attempts (gr523669): once a ref
 reaches :data:`_PARSE_FAIL_BENCH` failed attempts with no success since,
@@ -534,33 +538,61 @@ def _daily_spend_usd(conn: Connection) -> float:
     return float(row[0]) if row else 0.0
 
 
-def _run_card_describe_batch(
-    store: Store, client: Any, *, batch_size: int
-) -> dict[str, Any]:
-    """Claim + per-ref describe + write. Runs under the caller's
-    single-runner advisory lock; every DB access goes through ``store``'s
-    pool in short transactions (claim-commit-first, like
-    ``chunk_keywords``)."""
+def _claim_describe_batch(
+    store: Store, *, batch_size: int
+) -> tuple[list[tuple[int, str, str, str]], dict[int, int]]:
+    """Claim up to ``batch_size`` refs and stamp each one's attempt lease
+    in the SAME committed transaction — claim-commit-first (the bib_parse
+    shape, gripe 202116): the lease is the durable brake, the FOR UPDATE
+    row lock dies with this commit. The stamp carries the
+    consecutive-attempt ordinal (the lease's value — gr523669): a
+    success's clear_attempt resets it, so it counts failed attempts back
+    to back across cooldown windows.
+
+    Returns the claimed rows plus the attempt ordinal each was stamped
+    at, for the caller's bench check. Runs inside the caller's
+    single-runner advisory lock (gr524231): the transaction ends here —
+    nothing DB-side stays open into the per-ref LLM work.
+    """
     with store.pool.connection() as conn:
         rows = claim_refs_without_description(conn, limit=batch_size)
-        # Stamp the claim-time attempt lease for every claimed ref in the
-        # SAME transaction as the claim SELECT, before it commits (the
-        # bib_parse shape — gripe 202116) — the lease is the durable
-        # brake, the FOR UPDATE row lock dies with this commit. The stamp
-        # carries the consecutive-attempt ordinal (the lease's value —
-        # gr523669): a success's clear_attempt resets it, so it counts
-        # failed attempts back to back across cooldown windows.
         attempts: dict[int, int] = {}
         for claimed_id, *_ in rows:
             n = ref_lease.attempt_count(conn, claimed_id, _LEASE_NS) + 1
             attempts[claimed_id] = n
             ref_lease.stamp_attempt(store, claimed_id, _LEASE_NS, conn=conn, attempts=n)
         conn.commit()
+    return rows, attempts
+
+
+def _run_card_describe_batch(
+    store: Store,
+    client: Any,
+    rows: list[tuple[int, str, str, str]],
+    attempts: dict[int, int],
+) -> dict[str, Any]:
+    """Per-ref describe + write over already-claimed ``rows``. Runs
+    AFTER the claim lock and transaction have both ended — no backend
+    sits idle-in-transaction across an LLM call (gr524231); per-ref
+    arbitration is the stamped attempt lease, and a concurrent pass
+    claims only refs this one did not. Every DB access is a short pooled
+    transaction; writes go through :func:`retry_locked`."""
     claimed = len(rows)
 
     ok = failed = 0
     for i, (ref_id, kind, title, card_text) in enumerate(rows):
+        n = attempts[ref_id]
         try:
+            # Renew the lease at the SAME ordinal with a fresh TTL in its
+            # own committed tx, just before the LLM call: the claim stamp
+            # only brakes for ATTEMPT_COOLDOWN_MIN, a slow batch can
+            # outlive it, and an expired lease lets a second host
+            # re-claim and re-bill a ref this pass is still working
+            # (ref_lease docstring — a pass whose work outlasts the
+            # cooldown must re-stamp mid-work).
+            with store.pool.connection() as conn:
+                ref_lease.stamp_attempt(store, ref_id, _LEASE_NS, conn=conn, attempts=n)
+                conn.commit()
             if kind == "figure":
                 # S3: describe the RENDERED figure, not its markup — reuse
                 # the export path's rasteriser, never a second one.
@@ -650,7 +682,6 @@ def _run_card_describe_batch(
                 str(exc)[:300],
             )
             failed += 1
-            n = attempts.get(ref_id, 0)
             if n >= _PARSE_FAIL_BENCH:
                 # Nth consecutive failure with no success since — a repeat
                 # offender (gr523669: an unparseable-shape reply re-billed
@@ -683,34 +714,44 @@ def _run_card_describe_batch(
 def run_card_describe_pass(
     store: Store, client: Any, *, batch_size: int = 16
 ) -> dict[str, Any]:
-    """One pass over the card_describe queue, single-runner across the
-    fleet — same lock shape as :func:`run_chunk_keywords_pass` (the
-    pass runs on every system-profile host on the same tick; the
-    transaction-scoped advisory lock keeps the whole pass on one host's
-    backend, pgbouncer-safe). A lock-acquire miss is a graceful
-    ``claimed=0`` skip."""
+    """One pass over the card_describe queue.
+
+    Single-runner gate, claim-scoped (gr524231): the transaction-scoped
+    advisory lock (``try_xact_advisory_lock``, pgbouncer-safe) is held
+    only while this worker decides it runs the pass and stakes its
+    claim — decide + claim + lease-stamp, then the lock and its
+    transaction both end. The pass's earlier shape held it for the whole
+    pass, which pinned one backend idle-in-transaction across every LLM
+    call and blocked other lanes behind a 30-minute holder. Beyond the
+    claim, per-ref exclusion is the stamped attempt lease: a second host
+    that takes the gate after this one's commit claims only refs this
+    pass did not. A lock-acquire miss is a graceful ``claimed=0`` skip.
+    """
     idle: dict[str, Any] = {"claimed": 0, "ok": 0, "failed": 0}
     if not store.dsn:
         return idle
+    # S4 daily cap: read this pass's own 24 h spend first — over cap the
+    # whole pass defers (reason ``budget``, the same defer shape as a
+    # ``cli_unavailable`` pause) rather than claiming rows it must not
+    # spend on. A plain read; it needs no exclusivity.
+    cap = _daily_cap_usd()
+    with store.pool.connection() as conn:
+        spent = _daily_spend_usd(conn)
+    if spent >= cap:
+        log.warning(
+            "card_describe: budget — 24 h spend $%.2f ≥ cap $%.2f "
+            "(PRECIS_CARD_DESCRIBE_DAILY_USD); deferring pass",
+            spent,
+            cap,
+        )
+        return {**idle, "deferred": "budget"}
     with try_xact_advisory_lock(store.dsn, _LOCK_KEY) as got:
         if not got:
             return idle
-        # S4 daily cap: read this pass's own 24 h spend first — over cap
-        # the whole pass defers (reason ``budget``, the same defer shape
-        # as a ``cli_unavailable`` pause) rather than claiming rows it
-        # must not spend on.
-        cap = _daily_cap_usd()
-        with store.pool.connection() as conn:
-            spent = _daily_spend_usd(conn)
-        if spent >= cap:
-            log.warning(
-                "card_describe: budget — 24 h spend $%.2f ≥ cap $%.2f "
-                "(PRECIS_CARD_DESCRIBE_DAILY_USD); deferring pass",
-                spent,
-                cap,
-            )
-            return {**idle, "deferred": "budget"}
-        return _run_card_describe_batch(store, client, batch_size=batch_size)
+        rows, attempts = _claim_describe_batch(store, batch_size=batch_size)
+    # The lock's transaction ended on the block above; the per-ref loop
+    # (LLM calls included) runs holding no transaction and no lock.
+    return _run_card_describe_batch(store, client, rows, attempts)
 
 
 __all__ = [
