@@ -191,28 +191,27 @@ def test_pcb_pipeline_shape(store: Store) -> None:
         "root": "phase",
         "place": "task",
         "loop": "loop",
-        "route": "task",
         "drc": "task",
         "review": "generator",
     }
+    assert "route" not in mint.ids
     assert _blocked_by(store, mint) == {
         ("loop", "place"),
-        ("drc", "route"),
+        ("drc", "place"),
         ("review", "drc"),
     }
     # The handle resolves at mint: the job ops carry what their
     # PARAMS_SCHEMA requires, the gate and generator the pb<id> handle.
-    params = {"pcb_ref_id": pcb}
+    # Place and route are one job (td542269): pcb_place with the topo
+    # placer and route on.
     assert _meta(store, mint.ids["place"])["op"] == {
         "type": "pcb_place",
-        "params": params,
+        "params": {"pcb_ref_id": pcb, "placer": "topo", "route": True},
     }
     assert _meta(store, mint.ids["drc"])["op"] == {
         "type": "pcb_review",
-        "params": params,
+        "params": {"pcb_ref_id": pcb},
     }
-    # No route job_type: op='route' is retired (td542269 report).
-    assert _meta(store, mint.ids["route"])["op"] == "run_slice"
     loop = _meta(store, mint.ids["loop"])["loop"]
     assert loop["until"] == {"kind": "drc-clean", "args": {"board": f"pb{pcb}"}}
     assert loop["body"] == "pcb-fix"
@@ -220,7 +219,7 @@ def test_pcb_pipeline_shape(store: Store) -> None:
         "role": "triage",
         "from": f"pb{pcb}",
     }
-    for key in ("route", "drc", "review"):
+    for key in ("drc", "review"):
         assert _parent_of(store, mint.ids[key]) == mint.ids["loop"]
     _assert_plan_hygiene(store, mint)
 
@@ -253,7 +252,7 @@ def test_pcb_pipeline_op_params_pass_the_job_schemas(store: Store) -> None:
 def test_pcb_pipeline_accepts_board_spellings(store: Store, spell: Any) -> None:
     pcb = _pcb(store)
     mint = TEMPLATES["pcb-pipeline"].mint(store, None, board=spell(pcb))
-    assert _meta(store, mint.ids["place"])["op"]["params"] == {"pcb_ref_id": pcb}
+    assert _meta(store, mint.ids["place"])["op"]["params"]["pcb_ref_id"] == pcb
 
 
 @pytest.mark.parametrize("board", ["no-such-board", "", "pb999999999"])

@@ -381,7 +381,7 @@ def _drc_until(board: str) -> dict[str, Any]:
 def mint_pcb_pipeline(
     store: Store, parent_id: int | None = None, *, board: Any
 ) -> PlanMint:
-    """place -> a loop whose first iteration is route -> drc -> review, until
+    """place+route -> a loop whose first iteration is drc -> review, until
     the DRC is clean (max 5). ``board`` is resolved to its pcb ref at mint:
     the job ops carry ``pcb_ref_id``, the gate and titles the ``pb<id>``
     handle."""
@@ -393,12 +393,19 @@ def mint_pcb_pipeline(
         m.node(
             "place",
             f"Place {handle}",
-            _task({"type": "pcb_place", "params": dict(params)}),
-            body=f"Run pcb_place on {handle}.",
+            # Place and route are one job: the topo router runs only inside
+            # pcb_place (placer='topo', route=True).
+            _task(
+                {
+                    "type": "pcb_place",
+                    "params": {**params, "placer": "topo", "route": True},
+                }
+            ),
+            body=f"Run pcb_place (topo placer, route on) on {handle}.",
         )
         loop = m.node(
             "loop",
-            f"Route and check {handle} until the DRC is clean",
+            f"Check and fix {handle} until the DRC is clean",
             {
                 "loop": {
                     "max": _PCB_LOOP_MAX,
@@ -411,22 +418,12 @@ def mint_pcb_pipeline(
         # First iteration at mint (the worked example's loop L holds its first
         # body); the tick re-mints a body named 'pcb-fix' while the DRC is dirty.
         m.node(
-            "route",
-            f"Route {handle}",
-            # No route job_type: op='route' is retired and the topo router
-            # runs only inside pcb_place (placer='topo', route=True), which
-            # re-places too -- td542269 left this on run_slice.
-            _task(),
-            parent=loop,
-            body=f"Route {handle}.",
-        )
-        m.node(
             "drc",
             f"DRC {handle}",
             _task({"type": "pcb_review", "params": dict(params)}),
             parent=loop,
             body=f"Run the DRC check leg of pcb_review on {handle}.",
-            blocked_by=("route",),
+            blocked_by=("place",),
         )
         m.node(
             "review",
@@ -464,7 +461,7 @@ TEMPLATES: dict[str, Template] = {
         Template(
             "pcb-pipeline",
             ("board",),
-            "place -> route/drc/review loop until the DRC is clean",
+            "place+route -> drc/review loop until the DRC is clean",
             mint_pcb_pipeline,
         ),
     )

@@ -11,9 +11,8 @@ runs.
 
 Placement-only: restricts the move schedule to
 ``TRANSLATE``/``ROTATE``/``SWAP`` for the WHOLE run (no topology/layer/
-plane/pin-swap moves) — those are ``op='route'``'s job
-(:mod:`precis.workers.job_types.pcb_route`), which also re-places jointly
-with the sketch. Positions land via
+plane/pin-swap moves) — those belong to routing (``_topo_route`` in this
+module), which also re-places jointly with the sketch. Positions land via
 :meth:`~precis.store._pcb_ops.PcbMixin.pcb_set_pose`, which never
 overwrites a ``fixed`` instance (belt-and-suspenders: ``optimize.py``'s own
 move generators already respect ``inst_fixed_xy``/``inst_fixed_rot``, so

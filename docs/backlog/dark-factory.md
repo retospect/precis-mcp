@@ -408,9 +408,9 @@ coordinator turn calls it.
   task on another lane → phase auto-close.
 - **release-pass:** cut → gate tests-green → fixer generator on red →
   re-cut; the loop from "Branches".
-- **pcb-pipeline(board):** place (`pcb_place`) → route (a job_type to
-  add) → drc (`pcb_review`'s check leg) → review generator over the DRC
-  report minting fix tasks → loop until the DRC is clean, max N. The
+- **pcb-pipeline(board):** place+route (`pcb_place`, placer topo, route
+  on) → drc (`pcb_review`'s check leg) → review generator over the DRC
+  report minting fix tasks → loop until drc-clean, max N. The
   workbench ops that are not job_types yet become ones; nothing else
   changes for the PCB code.
 
@@ -454,10 +454,7 @@ view (td542097, after td541982); the fixes the tick's first pass found
 on any plan node); `run_slice` hardening — branch `slice/<id>`, env
 allowlist, attribution, reaper-safe handle (td542235), blocked by the
 permission-mode ruling (ask td542236); a CI verdict record so
-`tests-green` holds before a deploy (td542230); a pcb route job type
-(`op='route'` is retired and the topo router runs only inside
-`pcb_place` with `route=True`, which re-places, so the pcb-pipeline's
-route task stays on `run_slice` until a route-only entry exists).
+`tests-green` holds before a deploy (td542230).
 Arming order: `/go` → rulings → td542302 + td542235 → arm the tick with
 `dry_run` → one gripe-fix plan on a real gripe → arm for real.
 
