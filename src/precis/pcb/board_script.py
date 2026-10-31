@@ -71,8 +71,9 @@ from typing import Any
 _LIMIT = 100
 
 #: Script-transport fallback classification (gr520810 first-use): an
-#: emitted board script must rebuild — ``Net.tie`` refuses unclassified
-#: pins — so a pin row the batch carries without a class gets a
+#: emitted board script must rebuild — the builder's finalise gate
+#: refuses unclassified tied pins — so a pin row the batch carries
+#: without a class gets a
 #: name-based synthesized one, the facts deliberately generous and the
 #: guess explicit in the meta's ``assume``.  The batch/store is never
 #: touched by the guess; a real etype always wins, and a rebuilt board
@@ -452,8 +453,9 @@ def _emit_part(
 
     etype_tags = set(PIN_ETYPES)
     for p in c.get("pins") or []:
-        # The emitted script must REBUILD: Net.tie refuses unclassified
-        # pins at first use (gr520810), so a pin row the batch carries
+        # The emitted script must REBUILD: the builder's finalise gate
+        # refuses unclassified pins at first use (gr520810, aggregated
+        # by gr543813), so a pin row the batch carries
         # without a class gets a name-based synthesized one, provenance
         # explicit in the meta's ``assume`` — a real etype always wins,
         # and the batch/store itself is never touched by the guess.  A

@@ -354,23 +354,16 @@ def test_pin_class_gap() -> None:
     assert r2["2"].class_gap() == "no etype"
 
 
-def test_tie_refuses_unclassified() -> None:
-    """gr520810: first use is a hard gate — ``net.tie`` refuses an
-    unclassified pin AND an unclassified slot, naming each gap; a fully
-    classified call passes."""
+def test_tie_defers_unclassified_to_finalise() -> None:
+    """gr543813: ``net.tie`` no longer refuses — the connection lands
+    and the first-use gate runs once at board finalise, so a pin
+    classified BETWEEN the tie and the batch still passes."""
     b = Board("t")
     u1, r1 = b.part("U1"), b.part("R1")
-    n = b.net("N")
-    with pytest.raises(PcbBuilderError, match=r"U1\.PA1 \(no etype\)"):
-        n.tie(u1["PA1"])
-    u1["PA1"].etype("output", assume="gpio")
-    with pytest.raises(PcbBuilderError, match=r"U1\.PA1 \(missing fmax_hz"):
-        n.tie(u1["PA1"])
+    n = b.net("N", current=0.001)
+    n.tie(u1["PA1"])  # unclassified at tie time — lands anyway
     u1["PA1"].etype("output", fmax_hz=0.0, assume="gpio")
-    n.tie(u1["PA1"])  # classified now — same-call classify also works:
-    m = b.net("M")
-    with pytest.raises(PcbBuilderError, match=r"R1\.1 \(no etype\)"):
-        m.tie(r1["1"])
+    m = b.net("M", current=0.001)
     m.tie(
         u1.pin(
             any_of=["PA1", "PA2"],
@@ -380,9 +373,55 @@ def test_tie_refuses_unclassified() -> None:
             assume="gpio",
         )
     )
-    fp = u1.pin(any_of=["PB0", "PB1"], name="UNCL")
-    with pytest.raises(PcbBuilderError, match=r"U1\.<UNCL>"):
-        b.net("P").tie(fp)
+    n.tie(r1["1"].etype("passive", fmax_hz=0.0, assume="jellybean"))
+    assert [c["pin"] for c in b.to_batch()["connections"]] == ["PA1", "1"]
+    assert b.check().findings == []
+
+
+def test_finalise_names_every_net_with_unclassified_pins() -> None:
+    """gr543813: a board whose nets tie unclassified pins and slots
+    yields ONE error naming every offending net with its pins and
+    their gaps — no more one-net-per-run discovery."""
+    b = Board("t")
+    u1, r1, c1 = b.part("U1"), b.part("R1"), b.part("C1")
+    b.net("VDD").tie(u1["VDD"], r1["1"])
+    b.net("GND").tie(r1["2"])
+    b.net("SIG").tie(c1["1"])
+    slot = u1.pin(any_of=["PB0", "PB1"], name="S")
+    b.net("SLOT").tie(slot)
+    with pytest.raises(PcbBuilderError, match="unclassified") as exc:
+        b.to_batch()
+    msg = str(exc.value)
+    for frag in (
+        "net 'VDD': U1.VDD (no etype); R1.1 (no etype)",
+        "net 'GND': R1.2 (no etype)",
+        "net 'SIG': C1.1 (no etype)",
+        "net 'SLOT': U1.<S> (no etype)",
+        "classify at first use",
+    ):
+        assert frag in msg
+    # check() reports the same set as pin.unclassified findings
+    rows = [
+        (f.net, f.refdes, f.pin)
+        for f in b.check().findings
+        if f.code == "pin.unclassified"
+    ]
+    assert rows == [
+        ("VDD", "U1", "VDD"),
+        ("VDD", "R1", "1"),
+        ("GND", "R1", "2"),
+        ("SIG", "C1", "1"),
+        ("SLOT", "U1", "S"),
+    ]
+    # a gap fixed before finalise clears its row — the board batches
+    u1["VDD"].etype("power_in", max_current_a=0.1, max_voltage_v=5.0, assume="vdd")
+    r1["1"].etype("passive", fmax_hz=0.0, assume="jellybean")
+    r1["2"].etype("passive", fmax_hz=0.0, assume="jellybean")
+    c1["1"].etype("input", fmax_hz=0.0, assume="sig")
+    slot.etype = "output"
+    slot.fmax_hz = 0.0
+    slot.class_assume = "gpio"
+    b.to_batch()
 
 
 def test_over_current_wired_pin() -> None:

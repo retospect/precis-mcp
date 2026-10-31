@@ -133,7 +133,8 @@ _CLASS_DECL_KEYS = (
 
 def _class_gap(etype: Any, fields: Mapping[str, Any]) -> str | None:
     """``None`` when the pin/slot is fully classified for first use,
-    else a short reason (gr520810 — ``Net.tie`` refuses on it). A class
+    else a short reason (gr520810 — the board's finalise gate refuses
+    on it, aggregated across nets by gr543813). A class
     is: a known ``etype``, the facts that etype carries (power pins:
     ``max_current_a`` + ``max_voltage_v``, never ``fmax_hz``; other
     used pins: ``fmax_hz`` where 0 is explicit DC — only ``nc`` is
@@ -175,7 +176,8 @@ def _check_class_kwargs(
 ) -> None:
     """Per-value validation for a classification call (``Part.pin`` /
     ``Pin.etype``). Completeness is NOT checked here — it is a first-use
-    rule, enforced by :meth:`Net.tie` via :func:`_class_gap`, so a pin
+    rule, enforced once at board finalise (:meth:`Board.check` /
+    :meth:`Board.to_batch` via :func:`_class_gap`, gr543813), so a pin
     declared-but-never-tied may carry a partial class."""
     et = str(etype).strip() if etype is not None else ""
     if etype is not None:
@@ -675,11 +677,12 @@ class Pin:
         assume: str | None = None,
     ) -> Pin:
         """Set the pin's electrical class (gr520810 — every USED pin is
-        classified at first use; :meth:`Net.tie` refuses a gap). The
+        classified at first use; the board's finalise gate refuses a
+        gap, gr543813). The
         store's top-level ``etype`` key is what earns a tag at write
-        time; the facts ride ``meta``. Completeness is checked at the
-        tie, not here — a declared-but-untied pin may carry a partial
-        class; a TIED pin needs: a known ``kind``;
+        time; the facts ride ``meta``. Completeness is checked at board
+        finalise, not here — a declared-but-untied pin may carry a
+        partial class; a TIED pin needs: a known ``kind``;
         ``power_in``/``power_out`` take ``max_current_a`` +
         ``max_voltage_v`` (never ``fmax_hz``); other etypes take
         ``fmax_hz`` — the highest significant frequency component
@@ -726,8 +729,8 @@ class Pin:
 
     def class_gap(self) -> str | None:
         """``None`` when the pin is fully classified for first use,
-        else a short "missing …"-style reason naming what
-        :meth:`Net.tie` needs (gr520810). Reads ``extra`` + ``meta`` so
+        else a short "missing …"-style reason naming what the
+        finalise gate needs (gr520810). Reads ``extra`` + ``meta`` so
         a pin declared through ``Board.part(pins=[{...}])`` batch dicts
         answers the same predicate as one classified via
         :meth:`etype`. The etype may also arrive as an etype-vocabulary
@@ -952,8 +955,9 @@ class Part:
         again is a no-op.
 
         The class kwargs are the pin's first-use classification
-        (gr520810 — every tied pin/slot is classified; :meth:`Net.tie`
-        refuses a gap): ``etype`` plus the facts that etype carries
+        (gr520810 — every tied pin/slot is classified; the board's
+        finalise gate refuses a gap, gr543813): ``etype`` plus the
+        facts that etype carries
         (``fmax_hz`` — the signal's highest significant component, knee
         ≈ ``0.35 / t_rise``, 0 = explicit DC — on signal etypes;
         ``max_current_a`` + ``max_voltage_v`` on ``power_in``/
@@ -1391,8 +1395,12 @@ class Net:
         Every pin/slot must be CLASSIFIED at first use (gr520810):
         :meth:`Part.pin` or :meth:`Pin.etype` with ``etype`` + the
         facts the etype carries + a ``source``/``assume`` provenance.
-        An unclassified argument refuses the whole call, naming each
-        pin and what its class lacks.
+        The gate runs once at board finalise (gr543813): the tie lands
+        and :meth:`Board.check` reports every net's unclassified pins
+        as ``pin.unclassified`` findings while :meth:`Board.to_batch`
+        refuses with the same aggregate — one error names the whole
+        classification set, so a 50-net board needs one run, not one
+        run per net.
 
         Args:
             pins (Pin | FlexPin): Pins (or flex slots) to wire onto this
@@ -1412,18 +1420,12 @@ class Net:
         site = _script_site()
         # First-use classification is a hard gate (gr520810, Reto
         # 2026-10-26): a pin the board connects must carry its class —
-        # etype, that etype's facts and a source/assume provenance — set
-        # on the same call or earlier. Nothing is emitted until every
-        # argument is classified.
-        uncl = [f"{p.handle} ({g})" for p in pins if (g := p.class_gap()) is not None]
-        if uncl:
-            raise PcbBuilderError(
-                f"net {self.name!r}: unclassified pin(s) {'; '.join(uncl)} — "
-                "classify at first use: part.pin(<pin>, etype=…, "
-                "fmax_hz=… (max_current_a=/max_voltage_v= on "
-                "power_in/power_out, which take no fmax_hz), "
-                "source=<chunk handle> or assume=<note>)"
-            )
+        # etype, that etype's facts and a source/assume provenance — by
+        # the time the board finalises. The check moved out of this
+        # call (gr543813): refusing here surfaced one net per run, so
+        # the tie lands and ``Board._unclassified_tied`` raises the
+        # whole set once at finalise; a pin classified between the tie
+        # and the batch passes.
         for p in pins:
             if isinstance(p, FlexPin):
                 if p.net is not None and p.net != self.name:
@@ -3291,6 +3293,7 @@ class Board:
         ]
         findings += self._pin_name_findings()
         findings += self._unwired_pin_findings()
+        findings += self._unclassified_findings()
         findings += self._pin_requirement_findings()
         from precis_geom.pcb_motifs import motif_findings
 
@@ -3477,6 +3480,82 @@ class Board:
                     )
                 )
         return out
+
+    def _unclassified_tied(
+        self,
+    ) -> dict[str, list[tuple[str, str, str | None, str | None, str | None, str]]]:
+        """The aggregate behind the first-use gate (gr543813):
+        ``{net: [(handle, gap, refdes, pin-or-slot-name, site, ref),
+        …]}`` for every pin or bound flex slot a tie wired while its
+        class still has a gap — nets in first-tie order, pins in tie
+        order, one row per pin per net. ``check`` reports the rows as
+        ``pin.unclassified`` findings; ``to_batch`` refuses with the
+        same set in one error. A connection naming a part or pin this
+        board never made (``part.unknown``/``pin.unknown`` own it) — or
+        an implicit pin a ``from_batch`` row carries without a
+        :class:`Pin` — has no class cell to inspect and is skipped."""
+        out: dict[
+            str, list[tuple[str, str, str | None, str | None, str | None, str]]
+        ] = {}
+        seen: set[tuple[str, str, str]] = set()
+        for c, site in zip(self._connections, self._conn_sites):
+            key = (c["net"], c["refdes"], c["pin"])
+            if key in seen:
+                continue
+            seen.add(key)
+            part = self._parts.get(c["refdes"])
+            pin = part._pins.get(c["pin"]) if part is not None else None
+            if pin is None:
+                continue
+            gap = pin.class_gap()
+            if gap is not None:
+                out.setdefault(c["net"], []).append(
+                    (
+                        pin.handle,
+                        gap,
+                        c["refdes"],
+                        c["pin"],
+                        site,
+                        f"pad:{c['refdes']}/{c['pin']}",
+                    )
+                )
+        for r in self._part_order:
+            for fp in self._parts[r]._flex_slots:
+                if fp.net is None:
+                    continue
+                gap = fp.class_gap()
+                if gap is not None:
+                    out.setdefault(fp.net, []).append(
+                        (
+                            fp.handle,
+                            gap,
+                            r,
+                            fp.name,
+                            fp.tie_site or fp.site,
+                            f"part:{r}",
+                        )
+                    )
+        return out
+
+    def _unclassified_findings(self) -> list[CheckFinding]:
+        """``pin.unclassified`` — the same rows :meth:`to_batch`
+        refuses on, reported per pin so a check pass lists the whole
+        classification set before the hard stop."""
+        return [
+            CheckFinding(
+                code="pin.unclassified",
+                refdes=refdes,
+                pin=name,
+                net=net,
+                site=site,
+                message=(
+                    f"{handle} is tied to net {net!r} but its class "
+                    f"has a gap ({gap}) — classify at first use"
+                ),
+            )
+            for net, rows in self._unclassified_tied().items()
+            for handle, gap, refdes, name, site, _ref in rows
+        ]
 
     def _resolve_source(
         self, ref: str, chunk: str, client: Any
@@ -3928,7 +4007,30 @@ class Board:
     def to_batch(self) -> dict[str, Any]:
         """The ``pcb_apply``-shaped batch dict (see that method's
         docstring for the per-key field contract). Optional sections are
-        present only when the script authored them."""
+        present only when the script authored them. Refuses when any
+        tied pin or bound slot still has a class gap — the gr520810
+        first-use gate aggregated across the whole design (gr543813):
+        one error names every offending net with its pins and their
+        gaps, so regenerating a board learns the full classification
+        set in a single run."""
+        uncl = self._unclassified_tied()
+        if uncl:
+            lines = [
+                f"unclassified pin(s) on {len(uncl)} net(s):",
+                *(
+                    f"  net {net!r}: "
+                    + "; ".join(f"{handle} ({gap})" for handle, gap, *_ in rows)
+                    for net, rows in uncl.items()
+                ),
+                "classify at first use: part.pin(<pin>, etype=…, "
+                "fmax_hz=… (max_current_a=/max_voltage_v= on "
+                "power_in/power_out, which take no fmax_hz), "
+                "source=<chunk handle> or assume=<note>)",
+            ]
+            refs = tuple(f"net:{n}" for n in uncl) + tuple(
+                ref for rows in uncl.values() for *_pre, ref in rows
+            )
+            raise PcbBuilderError("\n".join(lines), refs=refs)
         out: dict[str, Any] = {
             "components": [self._parts[r].to_dict() for r in self._part_order],
             "nets": [self._nets[n].to_dict() for n in self._net_order],

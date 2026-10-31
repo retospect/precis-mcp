@@ -98,7 +98,7 @@ import precis_geom.pcb as pcb
 | pin access | `part['VBUS']`, `part[1]`, `part.pins('A1','B1')` → `Pin`s | — | pad numbers map to names at import (`mapped`) |
 | pin class | `part.pin(num|any_of=[…], name=, etype=, fmax_hz=, max_current_a=, max_voltage_v=, source=, assume=)` or `pin.etype(…)` same kwargs | `pins[].etype` + `meta`, slot `pin_decls.slots[]` | the first-use class (gr520810): `power_in`/`power_out` take current+voltage, never `fmax_hz`; other etypes take `fmax_hz` (highest significant component, knee ≈ 0.35/t_rise, 0 = explicit DC); `nc` none; every class carries `source=` (chunk handle) or `assume=` (note) |
 | pin facts | `pin.etype('power_in')`, `pin.current_role('shunt')`, `pin.nc()`, `pin.unused()`, `pin.must_terminate()` | `pins[].tags`/`meta` (`op='pins'` shape, `PIN_ETYPES`, `PIN_CURRENT_ROLES`) | |
-| connect | `net.tie(*pins)`; `b.wire(pin_a, pin_b, name=None)` | `connections[]` | `wire` without a name mints the free-ended-net name per §1d and records it. Both **refuse an unclassified pin or slot** — the class is an error at first use, so classify before or in the same call that connects |
+| connect | `net.tie(*pins)`; `b.wire(pin_a, pin_b, name=None)` | `connections[]` | `wire` without a name mints the free-ended-net name per §1d and records it. Ties land unconditionally; the first-use class gate (gr520810) fires once at finalise — `check` reports `pin.unclassified` findings and `to_batch` refuses, **aggregating every offending net's pins into one error** (gr543813), so classify before or in the same call that connects |
 | footprint | `pcb.Footprint(name, pads=[pcb.pad(pin, shape, x, y, w=, h=, poly=, drill=, role=, mask=, paste=)], pin_map=, courtyard=, centroid=)` | `footprints[]` | authored/local footprints (EWOD) |
 | catalog part | `pcb.catalog(lcsc)` | — | read MCP `get(kind='part', id=, view='facts')`: pin table, package; a miss returns a stub and the importer queues the pull (as the batch put queues datasheets) |
 | mechanical | `b.hole(x, y, drill=, ring=, plated=)`, `b.fiducial(x, y)`, `b.testpoint(net, x=, y=)`, `b.corner_nuts()` | `features[]` (`mounting_hole`, `fiducial`, `testpoint`; `op='corner_nuts'` shape) | |
@@ -145,7 +145,8 @@ b.net_class("power", width_mm=0.4)
 # USB-C receptacle: 5.1 k CC pull-downs make it a UFP sink.
 # Every pin a net touches is classified at first use — etype plus its
 # facts and a `source=` chunk handle or an `assume=` note (gr520810);
-# `tie`/`wire` refuse the gap and name the missing keys.
+# the board's finalise gate refuses the gap, naming every offending
+# net and pin in one error (gr543813).
 j1 = b.part("J1", lcsc="C165948", roles={"connector"})
 for p in j1.pins("A4", "A9", "B4", "B9"):
     p.etype("power_in", max_current_a=3.0, max_voltage_v=20.0,

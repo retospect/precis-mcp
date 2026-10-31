@@ -2,7 +2,7 @@
 id: precis-pcb-pins-help
 family: pcb
 title: precis — first-use pin classification (etype + facts + provenance)
-summary: every pcb pin a net connects must carry a first-use class — an etype from the closed PIN_ETYPES vocabulary, the facts that etype carries (power pins take max_current_a + max_voltage_v, never fmax_hz; other used pins take fmax_hz, 0 = explicit DC; nc is exempt), and provenance (a source chunk handle or an assume note); the workspace builder's net.tie/board.wire is the gate — it refuses an unclassified pin or any_of slot and names the gaps; on a stored board op='pins' annotates the same fields in place
+summary: every pcb pin a net connects must carry a first-use class — an etype from the closed PIN_ETYPES vocabulary, the facts that etype carries (power pins take max_current_a + max_voltage_v, never fmax_hz; other used pins take fmax_hz, 0 = explicit DC; nc is exempt), and provenance (a source chunk handle or an assume note); the workspace builder's finalise gate (check/to_batch/run) refuses once, aggregating every net's unclassified pins or any_of slots and naming the gaps; on a stored board op='pins' annotates the same fields in place
 answers:
   - what pin classification does net.tie/board.wire require before it connects a pin?
   - which facts does each pin etype carry — fmax_hz vs max_current_a/max_voltage_v?
@@ -17,8 +17,9 @@ kinds: [pcb]
 # precis-pcb-pins-help — first-use pin classification
 
 Every pin a board connects must be **classified at first use**
-(gr520810) — the connection write is the gate, so a pin's class is
-declared at or before the call that ties it, never after.
+(gr520810) — the board's finalise is the gate: declare the class at
+or before the call that ties it (declaring between the tie and the
+batch also passes, but same-call keeps the error away).
 
 ## What a class is
 
@@ -39,15 +40,18 @@ Three parts, all required for a *tied* pin:
   `"pa…~pc…"`, or a table+row) or an explicit `assume` note when no
   datasheet evidence exists.
 
-Completeness is a first-use rule, checked at the tie — a
+Completeness is a first-use rule, checked once at board finalise — a
 declared-but-never-tied pin may carry a partial class.
 
-## The gate — net.tie / board.wire
+## The gate — check / to_batch / run
 
-In the workspace builder the write — `net.tie(...)`/`board.wire(...)` —
-refuses the whole call when any pin or `any_of` slot is unclassified,
-naming each pin and what its class lacks; nothing is emitted until
-every argument answers its class. Classify on the same call or earlier:
+In the workspace builder the tie (`net.tie(...)`/`board.wire(...)`)
+always lands; the gate fires once when the board finalises
+(gr543813). `board.check()` reports every unclassified tied pin or
+`any_of` slot as a `pin.unclassified` finding, and
+`board.to_batch()`/`manifest`/`pcb.run` refuse with ONE error naming
+every offending net, its pins and each gap — not one net per run.
+Classify on the same call or earlier:
 
 ```python
 b = pcb.Board("t")
