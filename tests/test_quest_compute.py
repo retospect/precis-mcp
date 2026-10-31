@@ -4502,13 +4502,36 @@ class TestAutocatpathHarvest:
         assert meta["barrier_low_confidence"] is True
 
     def test_clean_pathway_is_trusted(self, store: Any) -> None:
+        """A pathway with no warnings + the gr543165 credit anchor —
+        ≥2 independent seeds whose gate rows passed — is trusted."""
         qid = _mk_quest(store, "A striving")
         sid = self._candidate(store, qid)
         target = store.insert_ref(
-            kind="job",
-            slug=None,
+            kind="pathway",
+            slug="pw-clean",
             title="pw",
-            meta={"warnings": [], "low_confidence": True},
+            meta={
+                "warnings": [],
+                "low_confidence": True,
+                "autocatpath_version": "0.39.0",
+                "candidate_ref": sid,
+                "results": {
+                    "seeds": [0, 1],
+                    "route_steps": ["R->A"],
+                    "trust": [
+                        {
+                            "id": f"R->A#s{s}#neb_convergence",
+                            "check": "neb_convergence",
+                            "verdict": "pass",
+                            "severity": "fatal",
+                            "seed": s,
+                            "step": "R->A",
+                            "evidence": {},
+                        }
+                        for s in (0, 1)
+                    ],
+                },
+            },
             parent_id=sid,
         ).id
         self._autocatpath_job(
@@ -5777,15 +5800,56 @@ class TestStructNebHarvest:
             parent_id=sid,
         ).id
 
+    _pw_seq = 0
+
     @staticmethod
     def _pathway_ref(store: Any, sid: int, *, trusted: bool) -> int:
         """A pathway-ish ref whose meta drives ``_pathway_quality`` —
-        warnings make the harvested barrier untrusted."""
-        meta: dict[str, Any] = {"warnings": [], "low_confidence": False}
+        warnings make the harvested barrier untrusted. The trusted shape
+        must be a real ``pathway`` ref: the gr543165 credit anchor needs
+        ≥2 independent seeds whose gate rows passed, and a job-kind stub
+        can never anchor credit (``anchor:none`` auto-untrusts)."""
         if not trusted:
-            meta["warnings"] = ["NO->N+O seed=0 NEB not converged"]
+            return store.insert_ref(
+                kind="job",
+                slug=None,
+                title="pw",
+                meta={
+                    "warnings": ["NO->N+O seed=0 NEB not converged"],
+                    "low_confidence": False,
+                },
+                parent_id=sid,
+            ).id
+        from precis.structure.neb import neb_engine_token
+
+        TestStructNebHarvest._pw_seq += 1
         return store.insert_ref(
-            kind="job", slug=None, title="pw", meta=meta, parent_id=sid
+            kind="pathway",
+            slug=f"pw-trusted-{TestStructNebHarvest._pw_seq}",
+            title="pw",
+            meta={
+                "warnings": [],
+                "low_confidence": False,
+                "autocatpath_version": neb_engine_token(),
+                "candidate_ref": sid,
+                "results": {
+                    "seeds": [0, 1],
+                    "route_steps": ["R->A"],
+                    "trust": [
+                        {
+                            "id": f"R->A#s{s}#neb_convergence",
+                            "check": "neb_convergence",
+                            "verdict": "pass",
+                            "severity": "fatal",
+                            "seed": s,
+                            "step": "R->A",
+                            "evidence": {},
+                        }
+                        for s in (0, 1)
+                    ],
+                },
+            },
+            parent_id=sid,
         ).id
 
     def test_autocatpath_lane_writes_its_own_provenance(self, store: Any) -> None:

@@ -183,7 +183,13 @@ def test_revalidate_mints_one_cpu_job(monkeypatch: pytest.MonkeyPatch) -> None:
 
 def test_views_and_modes_are_declared() -> None:
     spec = PathwayHandler.spec
-    assert spec.modes == ("preview", "revalidate", "recompute_kinetics")
+    assert spec.modes == (
+        "preview",
+        "revalidate",
+        "recompute_kinetics",
+        "verify",
+        "measure_modes",
+    )
     # kinetics-sweep (slice 4) was routed but undeclared, so get refused it
     assert {"kinetics-sweep", "manifest", "tpd"} <= set(spec.views)
     assert len(spec.views) == 16
