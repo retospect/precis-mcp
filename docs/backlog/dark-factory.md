@@ -681,6 +681,58 @@ landing, quota remaining vs time to reset or deadline, pacing position,
 first-round `LAND` rate by task class. Where "who is good for what"
 lives, and where an idle lane beside expiring credits shows.
 
+### 9. Inbound pull requests (Reto 2026-10-31, td543749)
+
+Ruling: certified Dependabot PRs just land if they do not break the
+pinned Python; every other PR gets an analysis and a human decision,
+checking threats and the fit with the backlog and threads; a feature is
+a design verdict. "Patch quickly but not idiotically." Ten Dependabot
+PRs sat open on 2026-10-31, three of them major floor bumps.
+
+- **Intake is a poll, the plan is `pr-intake`.** `pr_poll` (job_inproc,
+  15 min, the public API) mints one plan per open PR, tagged `pr:<n>`.
+  The class is decided in code, never by a prompt: `dependabot` —
+  author `dependabot[bot]`, every commit GitHub-verified, files within
+  `pyproject.toml` + `uv.lock`; `harness` — anything in `HARNESS_DIFF`
+  or `.github/**` (Dependabot's actions bumps), an ask for Reto's `/go`
+  and nothing else; `factory` — a known builder's PR whose title names
+  its `(tdN)`: it is a slice, lander plus reviewer, no analysis;
+  `external` — the rest. A fork is never `dependabot`.
+- **Dependabot: resolve, land checked, review the changelog.**
+  `dep_check` resolves the lock under python 3.12 and 3.13 in a
+  throwaway worktree and never imports or runs the dependency; a major
+  bump adds an `answer` gate (land / ignore this major / hold); the
+  lander lands `slice/pr-<n>` with `scripts/ship --checked` — a
+  pyproject diff selects the contract and import-map tests, the cheap
+  insurance against a broken import reddening every later slice; the
+  reviewer reads the changelog between the versions and the diff and
+  writes LAND/FIX/REVERT; the land closes the PR with the squash sha.
+  Security-linked bumps prio 2, routine prio 6.
+- **External: read, never run, then ask.** The `analysis` slice fetches
+  the PR head and reads the diff only — no `uv sync`, no tests, no
+  executing a file from the PR before a human says land. It posts one
+  `analysis:` comment: threats (secrets, network calls outside
+  `safe_fetch`, workflow/deploy/vault/auth changes, new dependencies
+  and typosquats, obfuscation, binaries), fit (which backlog item or
+  `docs/backlog/threads/*`, overlap with in-flight trees, fix or
+  feature), size. The ask is `approval` for a fix and `design-verdict`
+  for a feature: land as is / land after fixes / request changes /
+  close. Comments on the PR and closing it are outward-facing and run
+  only after the answered ask (`pr_action` op).
+- **Priority is the todo's prio**, across all roots: 1 release fixer,
+  2 security bump or revert, 3 gripe fix, 4 feature slice, 6 routine
+  bump, 8 PR analysis.
+
+**How it breaks, and the guard:** a spoofed bot → login and signature
+both, files-touched allowlist; a dependency that resolves but breaks at
+import → `--checked` at land, the release gate for the rest, REVERT by
+the reviewer or the release fixer; untrusted code executed on the
+slice host → the analysis brief forbids execution and runs in the main
+checkout, the deny list covers the harness, nothing runs before the
+answer; a PR comment posted by mistake → `pr_action` only ever follows
+an answered ask; the lander's gh identity is Reto's → gr543694 (the
+attribution gap) covers PR actions too.
+
 ## Explicitly NOT in scope
 
 - Moving backlog spec files into the database.
