@@ -531,6 +531,11 @@ def test_out_of_limits_state_is_bad_input(cad):
         )
 
 
+@pytest.mark.nightly(
+    reason="crashed an xdist worker (OOM on the 16 GB shared runner under "
+    "-n6 + per-context coverage) in the 2026-10-30 coverage-db nightly "
+    "(gr543576); a sweep is the module's heaviest memory profile"
+)
 @pytest.mark.timeout(480)  # CI worst 173s x2.5 for runner variance (gr503084)
 def test_sweep_reports_collision_and_envelope(cad):
     cad.put(id="motor_j", text=_MOTOR_J)
