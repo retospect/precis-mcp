@@ -123,7 +123,7 @@ def test_dry_run_lists_live_and_writes_nothing(
     assert "no sha: gr3" in line
     assert "unknown sha: gr4@deadbeef0" in line
     calls = [json.loads(x) for x in log.read_text(encoding="utf-8").splitlines()]
-    assert calls == [["gripes", "--verify-list"]]
+    assert calls == [["gripes", "--verify-list"], ["gripes", "--spec-list"]]
 
 
 @posix
@@ -132,7 +132,7 @@ def test_run_closes_only_live_ids(tmp_path: Path, repo: dict[str, Any]) -> None:
     line = _run(repo, cli)
     assert ": done gr1 · pending:" in line
     calls = [json.loads(x) for x in log.read_text(encoding="utf-8").splitlines()]
-    assert len(calls) == 2
+    assert len(calls) == 3
     done = calls[1]
     assert done[:2] == ["gripes", "--verify-done"]
     assert done[2].startswith("resolved: {sha} (on prod ")
@@ -144,7 +144,7 @@ def test_nothing_live_makes_no_write(tmp_path: Path, repo: dict[str, Any]) -> No
     cli, log = _fake_cli(tmp_path, [{"id": 2, "sha": repo["c3"]}])
     line = _run(repo, cli)
     assert ": none on prod · pending: gr2@" in line
-    assert len(log.read_text(encoding="utf-8").splitlines()) == 1
+    assert len(log.read_text(encoding="utf-8").splitlines()) == 2
 
 
 # ── the prod halves, in process on the test DB ──────────────────────
@@ -169,12 +169,16 @@ def test_verify_list_and_done(hub: Any, store: Store) -> None:
     h.put(id=a, text="a later chat comment")
     b = _gripe(store, "verify")
     c = _gripe(store, "triaged")
+    u = _gripe(store, "user_verify")
 
-    rows = dict(verify_list(store))
-    assert rows[a] == "abcdef123" and rows[b] is None and c not in rows
+    rows = {g: (st, s) for g, st, s in verify_list(store)}
+    assert rows[a] == ("verify", "abcdef123")
+    assert rows[b] == ("verify", None)
+    assert rows[u] == ("user_verify", None)
+    assert c not in rows
 
-    out = verify_done(store, "resolved: {sha} (on prod p) — test", [a, c, 999999999])
-    assert out == f"done gr{a} · not verify: gr{c} · not found: gr999999999"
+    out = verify_done(store, "resolved: {sha} (on prod p) — test", [a, c, u, 999999999])
+    assert out == (f"done gr{a} · not verify: gr{c} gr{u} · not found: gr999999999")
     tags = {str(t) for t in store.tags_for(a)}
     assert "STATUS:done" in tags
     comments = [
@@ -184,4 +188,4 @@ def test_verify_list_and_done(hub: Any, store: Store) -> None:
     ]
     newest = max(comments, key=lambda x: x.ord)
     assert newest.text == "resolved: abcdef123 (on prod p) — test"
-    assert a not in dict(verify_list(store))
+    assert a not in {g for g, _st, _s in verify_list(store)}

@@ -129,8 +129,8 @@ search(kind="job", link="gripe:42")
 
 Or look at the gripe — it sits at `STATUS:in_review` while a fix is
 in flight (claimed through landing and deploy). Once a confirmed
-deploy carries the fix it moves to `STATUS:verify`, where the probe
-verdict closes it `done` or reopens it `open`.
+deploy carries the fix it moves to `STATUS:auto_verify`, where the
+deploy check closes it `done` or sends it back to `triaged`.
 
 An agent that finds the defect already gone makes no commit and
 ends on an `ALREADY FIXED: <evidence>` line. The job then succeeds

@@ -46,7 +46,17 @@ UNPLACED_SHOWN = 5
 _INDENT = "    "
 #: STATUS values in ladder order, the row sort; a value outside it
 #: (vocabulary drift) sorts last.
-_STAGE_ORDER = ("open", "triaged", "fixing", "ready_for_fix", "in_review", "verify")
+_STAGE_ORDER = (
+    "open",
+    "triaged",
+    "fixing",
+    "ready_for_fix",
+    "in_review",
+    "verify",
+    "auto_verify",
+    "user_verify",
+    "needs_spec",
+)
 _STAGE_RANK = {s: i for i, s in enumerate(_STAGE_ORDER)}
 
 

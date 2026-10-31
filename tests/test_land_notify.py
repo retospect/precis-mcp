@@ -57,16 +57,17 @@ def test_parse_handles(
 def test_payloads_gripe_then_todo(mod: ModuleType) -> None:
     subject = "feat(gripe): ladder (gr7, td8)"
     plan = mod.payloads(SHA, subject)
-    assert [label for label, _ in plan] == ["gr7 verify", "td8 done"]
+    assert [label for label, _ in plan] == ["gr7 auto_verify", "td8 done"]
     (gripe_calls,) = [calls for label, calls in plan if label.startswith("gr7")]
     assert gripe_calls == [
         [
             "tools", "put", "--kind", "gripe", "--id", "7",
             "--text",
             f"resolved: {SHA[:9]} (main, release pending) — landed: {subject}",
-            "--tags", json.dumps(["STATUS:verify"]),
+            "--tags", json.dumps(["STATUS:auto_verify"]),
         ]
     ]  # fmt: skip
+
     (todo_calls,) = [calls for label, calls in plan if label.startswith("td8")]
     assert todo_calls == [
         ["tools", "put", "--kind", "todo", "--id", "8",
@@ -74,6 +75,15 @@ def test_payloads_gripe_then_todo(mod: ModuleType) -> None:
         ["tools", "tag", "--kind", "todo", "--id", "8",
          "--add", json.dumps(["STATUS:done"])],
     ]  # fmt: skip
+
+
+def test_payloads_user_verify_kind(mod: ModuleType) -> None:
+    plan = mod.payloads(SHA, "feat(x): y (gr7)", verify_kind="user")
+    (gripe_calls,) = [calls for _label, calls in plan]
+    assert json.loads(gripe_calls[0][gripe_calls[0].index("--tags") + 1]) == [
+        "STATUS:user_verify"
+    ]
+    assert plan[0][0] == "gr7 user_verify"
 
 
 def test_notify_reports_ok_and_failed_in_one_line(mod: ModuleType) -> None:
@@ -87,7 +97,7 @@ def test_notify_reports_ok_and_failed_in_one_line(mod: ModuleType) -> None:
 
     line = mod.notify(SHA, "x: y (gr7, td8)", base=["cli"], run=run, timeout=1.0)
     assert line == (
-        f"land-notify {SHA[:9]}: gr7 verify · failed: td8 (exit 3: "
+        f"land-notify {SHA[:9]}: gr7 auto_verify · failed: td8 (exit 3: "
         "[error:BadInput] nope)"
     )
     # The todo's failed put stops its tag: no STATUS:done without the note.
@@ -134,7 +144,7 @@ def test_main_posts_through_the_cli(tmp_path: Path) -> None:
     cli, log = _fake_cli(tmp_path, 0)
     out = _main(cli, "feat(x): y (gr7, td8)")
     assert out.returncode == 0, out.stderr
-    assert out.stdout.strip() == f"land-notify {SHA[:9]}: gr7 verify · td8 done"
+    assert out.stdout.strip() == f"land-notify {SHA[:9]}: gr7 auto_verify · td8 done"
     lines = log.read_text(encoding="utf-8").splitlines()
     calls = [json.loads(line) for line in lines]
     assert [c[:2] + c[3:4] + c[5:6] for c in calls] == [

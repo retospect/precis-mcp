@@ -651,10 +651,12 @@ def plan_status(status: str | None, patch: FixPatch) -> str | None:
     A brief or batch takes an ``open``/``triaged`` gripe to
     ``ready_for_fix``; a session, handoff, review or landed sha takes
     anything below ``in_review`` to ``in_review`` (the triage tick leases
-    ``STATUS:open``, so a gripe in the loop must leave it). ``verify``
-    and the terminal values are never touched here.
+    ``STATUS:open``, so a gripe in the loop must leave it). The verify
+    states and the terminal values are never touched here.
     """
-    if status in ("in_review", "verify") or status in _TERMINAL:
+    if status in ("in_review", "verify", "auto_verify", "user_verify") or (
+        status in _TERMINAL
+    ):
         return None
     active = patch.session or patch.handoff or patch.review or patch.landed
     if active and status in (None, "open", "triaged", "ready_for_fix"):

@@ -131,10 +131,21 @@ _PROJECT_SLUG_RE = re.compile(r"[^a-z0-9]+")
 #: (the /open view, the status='open' live default, theme matching and
 #: the fix-queue prefilters all read this set).
 _TERMINAL_STATUS_TAGS = frozenset(_BROWSE_TERMINALS["gripe"])
+#: The verify cohort (gr543584, migration 0268): ``auto_verify`` — the
+#: deploy-time validator checks the resolved sha and closes it;
+#: ``user_verify`` — a human checks (one ask-user todo per deploy).
+#: ``verify`` is the legacy spelling of ``auto_verify`` (pre-0268 rows,
+#: still accepted; new writes use the split pair).
+AUTO_VERIFY_STATUSES = frozenset({"verify", "auto_verify"})
+USER_VERIFY_STATUS = "user_verify"
+VERIFY_STATUSES = AUTO_VERIFY_STATUSES | frozenset({USER_VERIFY_STATUS})
 #: STATUS adds that need a newest ``resolved:`` comment: the terminals
-#: plus ``verify`` — on main with the sha noted, awaiting the gated
-#: release (gr541800 ladder). These also release a ``claimed-by:`` lease.
-_RESOLVED_REQUIRED_TAGS = _TERMINAL_STATUS_TAGS | frozenset({"STATUS:verify"})
+#: plus the verify states — on main with the sha noted, awaiting the
+#: deploy check (gr541800/gr543584 ladder). These also release a
+#: ``claimed-by:`` lease.
+_RESOLVED_REQUIRED_TAGS = _TERMINAL_STATUS_TAGS | {
+    f"STATUS:{s}" for s in VERIFY_STATUSES
+}
 #: STATUS values a ``claimed-by:`` lease moves to ``fixing`` (gr541800).
 _CLAIMABLE_STATUSES = frozenset({"open", "triaged", "ready_for_fix"})
 _COMMENT_KIND = "gripe_comment"
@@ -402,8 +413,8 @@ class GripeHandler(NumericRefHandler):
             "The project's bug tracker. Numeric id assigned on "
             "create. Body + append-only comment timeline live as "
             "chunks. Status tracked via the STATUS: tag (one of: open, "
-            "triaged, fixing, ready_for_fix, in_review, verify, done, "
-            "wontfix)."
+            "triaged, fixing, ready_for_fix, in_review, verify, "
+            "auto_verify, user_verify, needs_spec, done, wontfix)."
         ),
         supports_get=True,
         supports_search=True,
@@ -1306,8 +1317,8 @@ class GripeHandler(NumericRefHandler):
         return add, None
 
     def _require_resolved_comment(self, id: str | int, add: list[str] | None) -> None:
-        """A terminal STATUS — and ``verify`` (on main, sha noted,
-        gr541800) — needs a newest comment starting ``resolved:``."""
+        """A terminal STATUS — and a verify state (on main, sha noted,
+        gr541800/gr543584) — needs a newest comment starting ``resolved:``."""
         if not any(t in _RESOLVED_REQUIRED_TAGS for t in add or ()):
             return
         ref_id = self._coerce_id(id)
@@ -1317,7 +1328,7 @@ class GripeHandler(NumericRefHandler):
         wontfix = "STATUS:wontfix" in (add or ())
         if wontfix:
             example = "resolved: wontfix — <reason>"
-        elif "STATUS:verify" in (add or ()):
+        elif any(f"STATUS:{s}" in (add or ()) for s in VERIFY_STATUSES):
             example = "resolved: <sha> (main, release pending) — <how verified>"
         else:
             example = "resolved: <sha> (r<N>) — <how verified>"
@@ -1343,9 +1354,9 @@ class GripeHandler(NumericRefHandler):
         heard about the close, and ``wontfix`` gripes kept blocking
         todos forever.
 
-        gr541800: a ``claimed-by:`` add gets the todo lease stamp (single
-        holder, ``expires_at``); ``verify`` or a terminal STATUS releases
-        every claim — the builder's work is on main."""
+        gr541800/gr543584: a ``claimed-by:`` add gets the todo lease stamp
+        (single holder, ``expires_at``); a verify state or a terminal
+        STATUS releases every claim — the builder's work is on main."""
         from precis.todo import guards
 
         guards.stamp_claim_lease(conn, ref_id, added)

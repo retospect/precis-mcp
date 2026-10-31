@@ -245,7 +245,10 @@ changes:
 | `open` | reported, not yet looked at |
 | `triaged` | read and judged worth fixing |
 | `fixing` | claimed by a builder who holds a lease |
-| `verify` | fixed on main, waiting for the release check that closes it |
+| `verify` | fixed on main, waiting for the release check that closes it (legacy spelling of `auto_verify`) |
+| `auto_verify` | fixed on main; the deploy check closes it once the sha is on prod |
+| `user_verify` | fixed on main; a human checks it via the per-deploy ask todo |
+| `needs_spec` | ill-specified; parked until a docs/backlog spec names it |
 | `done` | fixed and verified (leaves the view) |
 | `wontfix` | decided against (leaves the view) |
 

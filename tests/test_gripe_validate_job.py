@@ -143,3 +143,132 @@ def test_dispatch_writes_meta_and_summary(hub: Any) -> None:
     assert chunks[0][0] == "job_summary"
     assert chunks[0][1].startswith("gripe_validate (prod head aaaaaaaaa): verify=1")
     assert _status(store, gid) == "done"
+
+
+def _user_verify_gripe(hub: Any, comment: str | None = None) -> int:
+    h = GripeHandler(hub=hub)
+    h.put(text="user check probe")
+    gid = int(hub.store.list_refs(kind="gripe", limit=1)[0].id)
+    if comment is not None:
+        h.put(id=gid, text=comment)
+    hub.store.add_tag(
+        gid, Tag.closed("STATUS", "user_verify"), replace_prefix=True, set_by="agent"
+    )
+    return gid
+
+
+def _asks(store: Store) -> list[Any]:
+    from precis.cli.gripe import _uv_digest_rows
+
+    with store.pool.connection() as conn:
+        return _uv_digest_rows(conn)
+
+
+def test_auto_verify_closes_naming_the_release(hub: Any) -> None:
+    store = hub.store
+    _record(store)
+    # A record carrying the release label → the close names it.
+    import json as _json
+
+    from precis import settings as psettings
+
+    psettings.set_setting(
+        gates.PROD_HEAD_KEY,
+        _json.dumps(
+            {"head": HEAD, "deployed_at": "x", "landed": [], "release": "r160"}
+        ),
+        store=store,
+    )
+    gid = _verify_gripe(hub, f"resolved: {HEAD[:9]} (main, release pending)")
+    res = gv.run_pass(store)
+    assert res.live == [(gid, HEAD[:9])]
+    assert _status(store, gid) == "done"
+    closer = [
+        c.text
+        for c in store.chunks.list_chunks_for_ref(gid)
+        if c.chunk_kind == "gripe_comment"
+    ][-1]
+    assert closer.startswith(
+        f"resolved: {HEAD[:9]} (r160) — auto-verified after deploy"
+    )
+
+
+def test_red_gate_sends_live_gripe_back_to_triaged(hub: Any) -> None:
+    store = hub.store
+    _record(store)
+    import json as _json
+
+    from precis import settings as psettings
+
+    psettings.set_setting(
+        gates.CI_VERDICTS_KEY,
+        _json.dumps([{"sha": HEAD[:12], "verdict": "red", "run_id": "99", "at": "t"}]),
+        store=store,
+    )
+    gid = _verify_gripe(hub, f"resolved: {HEAD[:9]} (main, release pending)")
+    res = gv.run_pass(store)
+    assert res.failed == [gid] and res.live == []
+    assert _status(store, gid) == "triaged"
+    comments = [
+        c.text
+        for c in store.chunks.list_chunks_for_ref(gid)
+        if c.chunk_kind == "gripe_comment"
+    ]
+    assert comments[-1].startswith("validate: the resolved sha is in prod")
+
+
+def test_user_verify_one_ask_todo_across_two_deploys(hub: Any) -> None:
+    store = hub.store
+    _record(store)
+    gid = _user_verify_gripe(hub)
+    res = gv.run_pass(store)
+    assert res.user == 1
+    asks = _asks(store)
+    assert len(asks) == 1
+    tid, meta, _statusv = asks[0]
+    assert meta["verify_gripes"] == [gid]
+    # Second deploy (new head): same todo, refreshed, still exactly one.
+    import json as _json
+
+    from precis import settings as psettings
+
+    psettings.set_setting(
+        gates.PROD_HEAD_KEY,
+        _json.dumps({"head": "f" * 40, "deployed_at": "y", "landed": []}),
+        store=store,
+    )
+    res2 = gv.run_pass(store)
+    asks2 = _asks(store)
+    assert len(asks2) == 1 and asks2[0][0] == tid
+    assert asks2[0][1]["verify_gripes"] == [gid]
+    assert "ask" in res2.ask
+
+
+def test_answered_ask_closes_the_covered_gripes(hub: Any) -> None:
+    store = hub.store
+    _record(store)
+    gid = _user_verify_gripe(hub)
+    gv.run_pass(store)
+    (tid, meta, _st) = _asks(store)[0]
+    # Reto answers: the todo goes STATUS:done.
+    with store.tx() as conn:
+        store.add_tag(
+            tid,
+            Tag.closed("STATUS", "done"),
+            set_by="agent",
+            replace_prefix=True,
+            conn=conn,
+        )
+    res = gv.run_pass(store)
+    assert _status(store, gid) == "done"
+    comments = [
+        c.text
+        for c in store.chunks.list_chunks_for_ref(gid)
+        if c.chunk_kind == "gripe_comment"
+    ]
+    assert f"(td{tid} answered)" in comments[-1]
+    # The cohort counted it at list time; the answered ask closed it.
+    assert res.user == 1
+    # … and a follow-up pass has nothing left to ask about.
+    res2 = gv.run_pass(store)
+    assert res2.user == 0 and res2.ask == ""

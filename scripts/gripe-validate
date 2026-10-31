@@ -82,10 +82,17 @@ def _git(*args: str) -> subprocess.CompletedProcess[str] | None:
         return None
 
 
-def parse_verify_list(out: str) -> list[tuple[int, str | None]]:
-    """``[(id, sha|None)]`` from ``gripes --verify-list`` JSON lines; any
-    non-JSON line (a deprecation notice, a warning) is skipped."""
-    rows: list[tuple[int, str | None]] = []
+#: Statuses the auto-close leg manages — ``verify`` is the legacy
+#: spelling of ``auto_verify`` (gr543584). ``user_verify`` waits on a
+#: human (the --verify-ask sync); ``needs_spec`` waits on a spec.
+_AUTO_STATUSES = frozenset({"verify", "auto_verify"})
+
+
+def parse_verify_list(out: str) -> list[tuple[int, str, str | None]]:
+    """``[(id, status, sha|None)]`` from ``gripes --verify-list`` JSON
+    lines; any non-JSON line (a deprecation notice, a warning) is
+    skipped. A row with no ``status`` reads as ``verify``."""
+    rows: list[tuple[int, str, str | None]] = []
     for line in out.splitlines():
         line = line.strip()
         if not line.startswith("{"):
@@ -95,14 +102,20 @@ def parse_verify_list(out: str) -> list[tuple[int, str | None]]:
         except json.JSONDecodeError:
             continue
         sha = obj.get("sha")
-        rows.append((int(obj["id"]), str(sha) if sha else None))
+        rows.append(
+            (
+                int(obj["id"]),
+                str(obj.get("status") or "verify"),
+                str(sha) if sha else None,
+            )
+        )
     return rows
 
 
 def classify(
-    rows: list[tuple[int, str | None]], prod: str
+    rows: list[tuple[int, str, str | None]], prod: str
 ) -> dict[str, list[tuple[int, str | None]]]:
-    """Split verify gripes by their sha's relation to ``prod``."""
+    """Split auto-cohort verify gripes by their sha's relation to ``prod``."""
     out: dict[str, list[tuple[int, str | None]]] = {
         "live": [],
         "pending": [],
@@ -120,6 +133,51 @@ def classify(
         cp = _git("merge-base", "--is-ancestor", sha, prod)
         on_prod = cp is not None and cp.returncode == 0
         out["live" if on_prod else "pending"].append((gid, sha))
+    return out
+
+
+def spec_close(rows: list[int], prod: str) -> dict[int, str]:
+    """``{gripe_id: close text}`` for needs_spec gripes a prod spec names.
+
+    gr543698: a docs/backlog/*.md file on prod containing ``gr<id>``
+    (the ``Source gripes:`` convention), or a ``docs(...)`` commit
+    subject naming it, means the spec exists — the gripe closes.
+    """
+    if not rows:
+        return {}
+    files: dict[int, str] = {}
+    for gid in rows:
+        cp = _git("grep", "-l", "-w", f"gr{gid}", prod, "--", "docs/backlog")
+        if cp is not None and cp.returncode == 0 and cp.stdout.strip():
+            path = cp.stdout.splitlines()[0].split(":", 1)[-1]
+            files[gid] = path
+    out: dict[int, str] = {}
+    for gid, path in files.items():
+        cp = _git("log", "-1", "--format=%H", prod, "--", path)
+        sha = cp.stdout.strip()[:9] if cp is not None and cp.returncode == 0 else "?"
+        out[gid] = f"resolved: specced in {path} ({sha})"
+    rest = [g for g in rows if g not in files]
+    if rest:
+        cp = _git("log", "--format=%H%x09%s", "-n", "500", prod)
+        subjects = [
+            (ln.split("\t", 1)[0], ln.split("\t", 1)[1])
+            for ln in (cp.stdout.splitlines() if cp is not None else [])
+            if "\t" in ln
+        ]
+        for gid in rest:
+            hit = next(
+                (
+                    (sha, subj)
+                    for sha, subj in subjects
+                    if subj.lower().startswith("docs(")
+                    and re.search(rf"\bgr{gid}\b", subj)
+                ),
+                None,
+            )
+            if hit is not None:
+                out[gid] = (
+                    f"resolved: specced in docs commit {hit[0][:9]} ({hit[1][:60]})"
+                )
     return out
 
 
@@ -170,7 +228,10 @@ def main(argv: list[str] | None = None) -> int:
         print(f"gripe-validate: listing failed (exit {listed.returncode}): {err}")
         return 0
 
-    groups = classify(parse_verify_list(listed.stdout), prod)
+    rows = parse_verify_list(listed.stdout)
+    auto = [(g, s) for g, st, s in rows if st in _AUTO_STATUSES]
+    users = [g for g, st, _s in rows if st == "user_verify"]
+    groups = classify(auto, prod)
     live = groups["live"][:MAX_IDS]
     rest = [
         f"{label}: {_named(items)}"
@@ -181,15 +242,54 @@ def main(argv: list[str] | None = None) -> int:
         rest.append(f"+{len(groups['live']) - MAX_IDS} live next run")
     tail = (" · " + " · ".join(rest)) if rest else ""
     head = f"gripe-validate ({ref} {prod[:9]})"
+
+    def _finish(line: str) -> int:
+        # user_verify: one ask-user todo per deploy (gr519676); the sync
+        # also closes covered gripes once the ask is answered.
+        if users:
+            try:
+                cp = note.run_capped([*base, "gripes", "--verify-ask"], timeout)
+                if cp.returncode == 0:
+                    line += f" · user-verify: {(cp.stdout.strip().splitlines() or [''])[-1]}"
+                else:
+                    line += " · user-verify: ask sync failed"
+            except Exception:
+                line += " · user-verify: ask sync failed"
+        # needs_spec (gr543698): close the ones a prod spec names.
+        try:
+            spec_rows = note.run_capped([*base, "gripes", "--spec-list"], timeout)
+            spec_ids = [int(x) for x in spec_rows.stdout.split() if x.strip().isdigit()]
+        except Exception:
+            spec_ids = []
+        closers = spec_close(spec_ids, prod)
+        if closers:
+            if args.dry_run:
+                line += " · would spec-close: " + " ".join(f"gr{g}" for g in closers)
+            else:
+                # --spec-done takes ONE text; per-gripe texts go one call each.
+                ok: list[str] = []
+                for gid, text in closers.items():
+                    try:
+                        cp = note.run_capped(
+                            [*base, "gripes", "--spec-done", text, "--ids", str(gid)],
+                            timeout,
+                        )
+                        if cp is not None and cp.returncode == 0:
+                            ok.append(f"gr{gid}")
+                    except Exception:
+                        continue
+                if ok:
+                    line += " · spec-closed: " + " ".join(ok)
+        print(line)
+        return 0
+
     if not live:
-        print(f"{head}: none on prod{tail}")
-        return 0
+        return _finish(f"{head}: none on prod{tail}")
     if args.dry_run:
-        print(f"{head}: would flip verify → done: {_named(live)}{tail}")
-        return 0
+        return _finish(f"{head}: would flip verify → done: {_named(live)}{tail}")
     text = (
-        f"resolved: {{sha}} (on prod {prod[:9]}) — gripe-validate: the "
-        "sha is an ancestor of origin/prod"
+        f"resolved: {{sha}} (on prod {prod[:9]}) — auto-verified after "
+        "deploy: the sha is an ancestor of origin/prod"
     )
     ids = ",".join(str(g) for g, _ in live)
     try:
@@ -205,8 +305,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"{head}: closing failed (exit {done.returncode}): {err}")
         return 0
     out = (done.stdout.strip().splitlines() or [""])[-1]
-    print(f"{head}: {out}{tail}")
-    return 0
+    return _finish(f"{head}: {out}{tail}")
 
 
 if __name__ == "__main__":

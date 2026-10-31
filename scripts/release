@@ -627,11 +627,15 @@ def prod_head_record(
     landed: list[str],
     previous: dict[str, Any] | None,
     now: datetime,
+    *,
+    release: str | None = None,
 ) -> dict[str, Any]:
-    """``{head, deployed_at (UTC Z), landed}``; ``landed`` is this deploy's
-    shas, then the previous record's head and landed (so a sha that rode an
-    earlier release still reads as in prod), deduped and capped. A rollback
-    keeps the rolled-back-over shas; only a new deploy ever trims."""
+    """``{head, deployed_at (UTC Z), landed[, release]}``; ``landed`` is
+    this deploy's shas, then the previous record's head and landed (so a
+    sha that rode an earlier release still reads as in prod), deduped and
+    capped. ``release`` is the ``r<N>`` label the deploy ran under —
+    gripe_validate names it in its close comments. A rollback keeps the
+    rolled-back-over shas; only a new deploy ever trims."""
     merged: list[str] = []
     seen: set[str] = set()
     old = [str(previous["head"])[:LANDED_SHA_LEN]] if previous else []
@@ -641,11 +645,14 @@ def prod_head_record(
         if key and key not in seen:
             seen.add(key)
             merged.append(key)
-    return {
+    rec = {
         "head": head,
         "deployed_at": now.strftime("%Y-%m-%dT%H:%M:%SZ"),
         "landed": merged[:MAX_LANDED],
     }
+    if release:
+        rec["release"] = release
+    return rec
 
 
 def record_prod_head(
@@ -655,6 +662,7 @@ def record_prod_head(
     transport: Transport | None = None,
     now: datetime | None = None,
     landed: list[str] | None = None,
+    release: str | None = None,
 ) -> str:
     """Write the deployed-head record into prod; returns one status line.
 
@@ -673,7 +681,7 @@ def record_prod_head(
     try:
         rc, out, _err = send(["settings", "get", PROD_HEAD_KEY])
         previous = parse_prod_head(out) if rc == 0 else None
-        rec = prod_head_record(head, shas, previous, when)
+        rec = prod_head_record(head, shas, previous, when, release=release)
         value = json.dumps(rec, separators=(",", ":"))
         rc, _out, err = send(["settings", "set", PROD_HEAD_KEY, value])
     except (OSError, subprocess.SubprocessError) as e:
@@ -959,7 +967,7 @@ def deploy_and_close(args: argparse.Namespace, sha: str) -> int:
         # sha-in-prod / tests-green gates read this. Best-effort.
         cur = round_state() or {}
         head = pending_sha(_release_by_state(cur, DEPLOYING_STATES), sha)
-        say(record_prod_head(prev, head))
+        say(record_prod_head(prev, head, release=label))
     if rc == 3:
         # The release owner's path: rollout done, runtime confirmed later by
         # `scripts/round deploy --confirm-runtime`. The deploy note posts

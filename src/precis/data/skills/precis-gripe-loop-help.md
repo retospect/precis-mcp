@@ -74,7 +74,8 @@ Queue derivation: no brief → `unbriefed`; newest event a brief → `queued`
 `STATUS:done`/`wontfix` → none. The STATUS axis moves with the loop and
 the ack says so: a brief or batch takes `open`/`triaged` to
 `ready_for_fix`; a session, handoff, review or landed sha takes anything
-below `in_review` to `in_review`. `verify` and the terminal values are
+below `in_review` to `in_review`. The verify states (`auto_verify`,
+`user_verify`, legacy `verify`) and the terminal values are
 never touched; a closed gripe refuses loop edits (reopen first).
 
 ## Step 1 — which gripes go in a batch?
