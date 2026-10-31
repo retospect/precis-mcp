@@ -325,6 +325,7 @@ class SeHandler(Handler):
                 "atom",
                 "token",
                 "fmt",
+                "max_steps",
                 "path",
                 "previous",
                 "scale",

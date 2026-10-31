@@ -659,6 +659,16 @@ async def _quest_detail(request: Request, store: Store, ref: Any) -> HTMLRespons
         request, "get", {"kind": "quest", "id": qid, "extent": "fisheye+1hop"}
     )
     eye_body = linkify_handles(eye_text) if not eye_error else ""
+    # The page already carries the one "Eye navigation" link to this
+    # quest's own focus page (``_eye_link.html.j2``); leave the panel's
+    # self-handle as plain text so there is exactly one.
+    self_handle = handle_registry.format_handle("quest", qid)
+    eye_body = re.sub(
+        r'<a class="eye-handle[^"]*" href="/eye/' + re.escape(self_handle) + r'[^"]*">'
+        r"(" + re.escape(self_handle) + r")</a>",
+        r"\1",
+        eye_body,
+    )
 
     # Paper — the SEPARATE reader-facing draft (``paper-of``), when one
     # exists. Nothing mints it yet (docs/backlog/paper-writing-pipeline.md);

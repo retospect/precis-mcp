@@ -531,8 +531,8 @@ def get(
     counts; expand with `q='<kind>:<label>'`); any rung + '+recall'
     (similar unlinked refs).
     `project=`: draft's owning todo. `spec=`: component bom. `full=`,
-    `tag=`, `kinds=`: skill. NotFound "unknown kind: X" whose next= says "routes
-    through host(s)": the kind exists, just not on this host.
+    `tag=`, `kinds=`: skill. NotFound "unknown kind" with "routes through
+    host(s)": see the full reference.
 
     Full reference: get(kind='skill', id='precis-get-help'), or
     search(kind='skill', q='fisheye extent ladder') for a topical lookup.
@@ -2077,14 +2077,12 @@ def delete(
     to clear a whole file, or `edit(mode='find-replace', find='…',
     text='')` to delete a matched span. `base_sha=` (python line
     ranges, the `range:` line's `sha=`) pins the delete to the read's
-    content — the call refuses if the lines changed, but a relocated
-    exact-hash run still lands.
+    content; it refuses if the lines changed.
 
     Cache-backed / read-only kinds (calc, math, web, youtube,
-    research, think, websearch, patent): Unsupported. Paper takes
-    only `args={'comment': K}`. Other
-    kinds (skill, conv, tag, ...) take their own door or refuse as
-    Unsupported naming the supported verbs.
+    websearch, patent): Unsupported. Paper takes only
+    `args={'comment': K}`. Other kinds (skill, conv, tag, ...) take
+    their own door or refuse as Unsupported.
 
     Full reference: get(kind='skill', id='precis-delete-help'), or
     search(kind='skill', q='delete a ref or region') for a topical lookup.
