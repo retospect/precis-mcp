@@ -4,8 +4,9 @@ router is the only router; the vector router was deleted, tag
 
 ``put(kind='pcb', args={'op':'route'})`` refuses before any job is
 minted — a stored ``pcb_routes`` history stays legible
-(``view='route-status'``) but no NEW run can start until the topological
-realiser lands (``docs/backlog/pcb-topo-place.md`` slice 5).
+(``view='route-status'``) and the only path to NEW routed copper is the
+topo realiser's slice-5 stage: ``placer='topo'`` + ``route=True`` on the
+place job (or ``pcb.local.route`` offline).
 """
 
 from __future__ import annotations
@@ -15,6 +16,7 @@ import pytest
 from precis.dispatch import Hub
 from precis.errors import BadInput
 from precis.handlers.pcb import PcbHandler
+from precis.pcb import ROUTE_RETIRED_NEXT
 from precis.store import Store
 from precis.workers.job_types import get_job_type, known_job_types
 from tests._pcb_outline import closed_outline
@@ -54,6 +56,14 @@ def test_op_route_refuses_with_next_and_mints_no_job(store: Store) -> None:
             (ref.id,),
         ).fetchone()
     assert row == (0,)
+
+
+def test_route_retired_next_names_the_topo_place_route_call() -> None:
+    """gr538473: the refusal's ``next=`` must name the live route path —
+    an agent reading it finds ``placer='topo'`` + ``route=True``, not a
+    dead end."""
+    assert "'placer':'topo'" in ROUTE_RETIRED_NEXT
+    assert "'route':True" in ROUTE_RETIRED_NEXT
 
 
 def test_pcb_route_is_gone_from_the_job_type_registry() -> None:

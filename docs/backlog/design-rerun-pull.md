@@ -76,10 +76,12 @@ Anchors are symbols, not lines.
   per-part footprint shas, `elites.json`/`pairs.json`/`pins.json`) into
   `meta.topo_run.files` — written for `view='topo'`, never consumed as
   input.
-- Routing: **retired 2026-10-25** (`precis.pcb` docstring,
-  `ROUTE_RETIRED`) — the vector router is deleted, the topo realiser is
-  unlanded. `meta.last_route.warm_start` / `format_warm_start` survive
-  only as records on boards routed before the cut (supply-role pin
+- Routing: **standalone `op='route'` retired 2026-10-25** (`precis.pcb`
+  docstring, `ROUTE_RETIRED`) — the vector router is deleted; the topo
+  realiser landed as the slice-5 route stage inside the `placer='topo'`
+  job (`route=True`). `meta.last_route.warm_start` /
+  `format_warm_start` survive only as records on boards routed before
+  the cut (supply-role pin
   matching — narrow).
 - Design versioning exists but does not record runs:
   `design_checkpoints`/`design_branches`/`design_revisions`
