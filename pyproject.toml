@@ -196,7 +196,7 @@ dependencies = [
     # relax rung and slab ops. ase is also (harmlessly) listed by
     # [dft-ml]. The MLIP rung ([dft-ml], torch) stays optional.
     "ase>=3.22",
-    "spglib>=2.1",
+    "spglib>=2.8.0",
     # scipy — already present in every install transitively via ase;
     # promoted to a direct dep for the se atomic clearance path (cKDTree
     # + ConvexHull in precis_se/atomic/clearance.py) so the guarantee is
