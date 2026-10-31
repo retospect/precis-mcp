@@ -189,7 +189,8 @@ def test_inflight_for_hook_is_one_counts_line(tmp_path: Path) -> None:
     lines = proc.stdout.splitlines()
     assert len(lines) == 1
     assert re.fullmatch(
-        r"🌳 \d+ trees in flight \(\d+ live, \d+ dirty, \d+ ahead of \S+\)"
+        r"🌳 \d+ trees in flight \(\d+ live, \d+ dirty, \d+ ahead of \S+"
+        r"( · \d+ worktree-less branches?)?\)"
         r" — scripts/inflight for the overlap table",
         lines[0],
     ), lines[0]

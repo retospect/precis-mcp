@@ -43,7 +43,8 @@
 #                               #   is always shown, the cap only hides the tail
 #   scripts/inflight --all      # the uncapped table, porcelain order
 #   scripts/inflight --for-hook # one counts line + pointer (gr499042); always exits 0
-#                               # (wired as a SessionStart hook in .claude/settings.json)
+#                               # (wired as a SessionStart hook in .claude/settings.json).
+#                               # Implies --skip-branch-probes (gr541365).
 #   scripts/inflight --json     # structured form for /workspace-cleanup: each
 #                               # worktree gets a `bucket` verdict —
 #                               #   base            the primary branch, not a candidate
@@ -58,9 +59,17 @@
 #                               # worktree, so it's reported once, not per-row) and a per-row
 #                               # `purpose` (the full, untruncated first purpose line — the
 #                               # fixer's claim check reads it; the table shows it at 58).
+#   --skip-branch-probes        # with --json or --for-hook: a branch checked out
+#                               # nowhere pays no verdict calls (git cherry /
+#                               # merge-tree / its purpose `git log -1`) — the free
+#                               # ahead-behind pair decides: ahead=0 → `safe_remove`,
+#                               # anything else → `stranded` (report-only, never
+#                               # reaped). The for-hook reapers' mode; a squash-
+#                               # landed branchless branch reads stranded until a
+#                               # full run re-verifies it.
 #
 # Env: INFLIGHT_MAX_ROWS  default-table row cap (0/unset → 40)
-#      INFLIGHT_JOBS      probe fan-out width (default 12)
+#      INFLIGHT_JOBS      probe fan-out width (default 12, capped at the CPU count)
 #
 # See: CLAUDE.md / "Session workflow" (the .claude/purpose protocol).
 set -uo pipefail
@@ -68,13 +77,19 @@ set -uo pipefail
 FOR_HOOK=0
 JSON_MODE=0
 SHOW_ALL=0
+SKIP_BP=0
 for arg in "$@"; do
   case "$arg" in
     --for-hook) FOR_HOOK=1 ;;
     --json)     JSON_MODE=1 ;;
     --all)      SHOW_ALL=1 ;;
+    --skip-branch-probes) SKIP_BP=1 ;;
   esac
 done
+# --for-hook prints only counts, so the branchless-branch verdict work
+# (git cherry / merge-tree / a `git log -1` per stranded pin) is wasted
+# there — the for-hook reapers ask for the same skip on their --json runs.
+[ "$FOR_HOOK" = 1 ] && SKIP_BP=1
 
 # Not a git repo (or git absent) → say nothing, never block a session start.
 command -v git >/dev/null 2>&1 || exit 0
@@ -102,6 +117,12 @@ case $MAX_ROWS in ''|*[!0-9]*) MAX_ROWS=40 ;; esac
 PARALLEL=${INFLIGHT_JOBS:-12}
 case $PARALLEL in ''|*[!0-9]*) PARALLEL=12 ;; esac
 [ "$PARALLEL" -lt 1 ] && PARALLEL=1
+# ... and never wider than the CPU count (gr541365): past it the extra probe
+# subshells only queue on fork/exec — concurrent SessionStarts stacked to
+# load 60+ on a 24-core box.
+NCPU=$(getconf _NPROCESSORS_ONLN 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 0)
+case $NCPU in ''|*[!0-9]*) NCPU=0 ;; esac
+if [ "$NCPU" -ge 1 ] && [ "$PARALLEL" -gt "$NCPU" ]; then PARALLEL=$NCPU; fi
 
 # Live subagent-task markers, once for the whole table (gr513174: markers
 # are per-TREE — a task in tree A must not mark tree B live). Each line is
@@ -415,19 +436,26 @@ probe_worktree() {
 
   verdict_compute "$head" "$branch"; verd=$VERD
 
-  # Full-length purpose once, truncated only for the table — --json carries
-  # the whole first line (a claim check needs the slug wherever it sits).
-  purp=$(purpose_field "$path" "$branch" "$ANCESTOR" "$fa" "$fb" 4000)
-  # \x1f/\x1e/newline in a purpose line would corrupt the record framing.
-  purpj=$(clean_f "$purp")
-
-  # LAST comes free from the for-each-ref pass for a branch checkout; a
-  # detached HEAD is the only row that still pays `git log -1`.
-  j=''; [ "$branch" != '(detached)' ] && j=$(br_index "$branch")
-  if [ -n "$j" ]; then
-    last=$(trunc "$(clean_f "${BR_REL[$j]} — ${BR_SUBJ[$j]}")" 46)
+  if [ "$FOR_HOOK" = 1 ]; then
+    # The hook prints counts, not columns — purpose's `$BASE..$branch` log
+    # and a detached HEAD's `log -1` are per-tree spawns nothing reads
+    # (gr541365).
+    purpj=''; last=''
   else
-    last=$(trunc "$(clean_f "$(git -C "$path" log -1 --format='%cr — %s' 2>/dev/null)")" 46)
+    # Full-length purpose once, truncated only for the table — --json carries
+    # the whole first line (a claim check needs the slug wherever it sits).
+    purp=$(purpose_field "$path" "$branch" "$ANCESTOR" "$fa" "$fb" 4000)
+    # \x1f/\x1e/newline in a purpose line would corrupt the record framing.
+    purpj=$(clean_f "$purp")
+
+    # LAST comes free from the for-each-ref pass for a branch checkout; a
+    # detached HEAD is the only row that still pays `git log -1`.
+    j=''; [ "$branch" != '(detached)' ] && j=$(br_index "$branch")
+    if [ -n "$j" ]; then
+      last=$(trunc "$(clean_f "${BR_REL[$j]} — ${BR_SUBJ[$j]}")" 46)
+    else
+      last=$(trunc "$(clean_f "$(git -C "$path" log -1 --format='%cr — %s' 2>/dev/null)")" 46)
+    fi
   fi
 
   # overlap-relevant: current tree, live session/task, dirty, or ahead of main
@@ -519,6 +547,9 @@ for j in "${!BR_NAME[@]}"; do
   [ -n "${BR_WTPATH[$j]}" ] && continue
   case $LIVE_BRANCHES in *$'\n'"${BR_NAME[$j]}"$'\n'*) continue ;; esac
   BJ_LIST+=("$j")
+  # Skip-mode: no probe at all — the record is built from the batched
+  # for-each-ref pass in the collect loop below (gr541365).
+  [ "$SKIP_BP" = 1 ] && continue
   ( probe_branch "$j" ) >"$PROBE_DIR/b${j}.res" 2>/dev/null &
   _spawned=$((_spawned+1))
   [ $((_spawned % PARALLEL)) -eq 0 ] && wait
@@ -565,6 +596,25 @@ for i in "${!WT_PATH[@]}"; do
   collect_result "$PROBE_DIR/w${i}.res" "${WT_PATH[$i]##*/}"
 done
 for j in "${BJ_LIST[@]+"${BJ_LIST[@]}"}"; do
+  if [ "$SKIP_BP" = 1 ]; then
+    # Cheap stand-in for probe_branch's result file — no git ran for this
+    # branch. Buckets stay conservative: a squash-landed branchless branch
+    # (ahead>0 but content on $BASE) reads `stranded` here — report-only,
+    # never deleted — until a full run re-verifies it (gr541365). With no
+    # %(ahead-behind:) support the verdict is unknown, so report-only too.
+    case "${BR_AHEAD[$j]}" in
+      0)  _bverd='merged'; _bbucket='safe_remove' ;;
+      '') _bverd='—'; _bbucket='stranded' ;;
+      *)  _bverd="↑${BR_AHEAD[$j]}↓${BR_BEHIND[$j]}"; _bbucket='stranded' ;;
+    esac
+    _blast=$(trunc "$(clean_f "${BR_REL[$j]} — ${BR_SUBJ[$j]}")" 46)
+    ROWS+=("(no worktree) ${BR_NAME[$j]}|—|—|${_bverd}||${_blast}")
+    SHOW+=(0)
+    if [ "$JSON_MODE" = 1 ]; then
+      JSONROWS+=("${BR_NAME[$j]}"$'\x1f\x1f'"${BR_NAME[$j]}"$'\x1f'"${_bbucket}"$'\x1f—\x1f—\x1f'"${_bverd}"$'\x1f\x1f')
+    fi
+    continue
+  fi
   collect_result "$PROBE_DIR/b${j}.res" "(no worktree) ${BR_NAME[$j]}"
 done
 
@@ -639,7 +689,14 @@ if [ "$FOR_HOOK" = 1 ]; then
   # in CLAUDE.md; "N removable" pre-announces what reap-worktrees' own
   # SessionStart run then reports as "reaped N"; the gripe digest prints from
   # session-start-memory.sh anyway — fresh there, a session stale here.
-  echo "🌳 ${#ROWS[@]} trees in flight ($LIVE live, $DIRTYF dirty, $AHEAD ahead of $BASE) — scripts/inflight for the overlap table"
+  # Branchless branches are their own segment (gr541365): the counts above
+  # describe worktrees, and skip-mode branch rows keep SHOW=0 out of them.
+  EXTRA=''
+  if [ "${#BJ_LIST[@]}" -gt 0 ]; then
+    _bw='branches'; [ "${#BJ_LIST[@]}" = 1 ] && _bw='branch'
+    EXTRA=" · ${#BJ_LIST[@]} worktree-less ${_bw}"
+  fi
+  echo "🌳 ${#ROWS[@]} trees in flight ($LIVE live, $DIRTYF dirty, $AHEAD ahead of $BASE$EXTRA) — scripts/inflight for the overlap table"
   exit 0
 fi
 

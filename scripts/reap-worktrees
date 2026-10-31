@@ -193,7 +193,8 @@ from concurrent.futures import ThreadPoolExecutor
 PRIMARY = os.environ.get("PRIMARY", "")
 CAP = None if os.environ.get("REPORT_FULL") == "1" else 8
 RUNBOOK = "docs/runbooks/memory-sibling-repos.md"
-POOL = 12
+# Fan-out capped at the CPU count (gr541365): wider only queues on fork/exec.
+POOL = min(12, os.cpu_count() or 12)
 
 
 def g(*args, cwd=None):
@@ -611,20 +612,36 @@ sweep_ci_refs() {
 # `safe_remove` verdict there is immediately safe to `git branch -D`. Any
 # other bucket (currently only `stranded`: real unmerged commits with no
 # worktree left to reclaim them from) is reported and never touched.
+# --for-hook aggregates to counts (gr541365): ~110 stranded pins printed a
+# line each, and every byte of SessionStart output is carried all session.
 reap_branchless_branches() {
     local name branch bucket verdict base
+    local deleted=0 stranded=0 bbase=''
     while IFS=$'\t' read -r name branch bucket verdict base; do
         [ -z "$branch" ] && continue
+        bbase=$base
         case "$bucket" in
             safe_remove)
                 if [ "$DRY_RUN" = 1 ]; then
-                    echo "reap-worktrees --dry-run: would delete branchless branch ${branch} (0 unmerged commits vs ${base}, no worktree)"
+                    if [ "$FOR_HOOK" = 1 ]; then
+                        deleted=$((deleted+1))
+                    else
+                        echo "reap-worktrees --dry-run: would delete branchless branch ${branch} (0 unmerged commits vs ${base}, no worktree)"
+                    fi
                 elif git branch -D "$branch" >/dev/null 2>&1; then
-                    echo "reap-worktrees: deleted branchless branch ${branch} (0 unmerged commits vs ${base}, no worktree)"
+                    if [ "$FOR_HOOK" = 1 ]; then
+                        deleted=$((deleted+1))
+                    else
+                        echo "reap-worktrees: deleted branchless branch ${branch} (0 unmerged commits vs ${base}, no worktree)"
+                    fi
                 fi
                 ;;
             stranded)
-                echo "reap-worktrees: stranded: ${branch} (${verdict} vs ${base}) — no worktree, not removing"
+                if [ "$FOR_HOOK" = 1 ]; then
+                    stranded=$((stranded+1))
+                else
+                    echo "reap-worktrees: stranded: ${branch} (${verdict} vs ${base}) — no worktree, not removing"
+                fi
                 ;;
         esac
     done < <(printf '%s' "$JSON" | python3 -c '
@@ -635,9 +652,26 @@ for wt in data.get("worktrees", []):
     if wt.get("worktree") is None and wt.get("branch"):
         print("\t".join([wt.get("name", ""), wt.get("branch", ""), wt.get("bucket", ""), wt.get("verdict", ""), base]))
 ')
+    if [ "$FOR_HOOK" = 1 ]; then
+        if [ "$deleted" -gt 0 ]; then
+            if [ "$DRY_RUN" = 1 ]; then
+                echo "reap-worktrees --dry-run: would delete ${deleted} worktree-less branch(es) (0 unmerged commits vs ${bbase:-main}, no worktree)"
+            else
+                echo "reap-worktrees: deleted ${deleted} worktree-less branch(es) (0 unmerged commits vs ${bbase:-main}, no worktree)"
+            fi
+        fi
+        [ "$stranded" -gt 0 ] && echo "reap-worktrees: ${stranded} stranded worktree-less branch(es) vs ${bbase:-main} — not removing (scripts/reap-worktrees for the roster)"
+    fi
 }
 
-JSON=$(scripts/inflight --json 2>/dev/null) || exit 0
+# --for-hook counts branchless branches instead of paying a git cherry /
+# merge-tree verdict each (gr541365): inflight buckets them from the free
+# ahead-behind pair (ahead=0 is still a provable safe_remove; anything else
+# is report-only stranded). Full mode keeps the real verdicts.
+INFLIGHT_ARGS=(--json)
+[ "$FOR_HOOK" = 1 ] && INFLIGHT_ARGS+=(--skip-branch-probes)
+
+JSON=$(scripts/inflight "${INFLIGHT_ARGS[@]}" 2>/dev/null) || exit 0
 [ -z "$JSON" ] && exit 0
 
 # First pass: every worktree the bucketing currently calls safe_remove.
@@ -689,7 +723,7 @@ else
     JSON2=""
     if [ "${#FILTERED[@]}" -gt 0 ]; then
         sleep "$GRACE_SECONDS"
-        JSON2=$(scripts/inflight --json 2>/dev/null) || JSON2=""
+        JSON2=$(scripts/inflight "${INFLIGHT_ARGS[@]}" 2>/dev/null) || JSON2=""
     fi
     for rec in "${FILTERED[@]:-}"; do
         [ -z "$rec" ] && continue

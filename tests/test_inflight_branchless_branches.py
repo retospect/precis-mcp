@@ -234,6 +234,75 @@ def test_reap_worktrees_reports_stranded_branch_without_deleting(repo: Path) -> 
     assert "feat/stray" in branches, "a real unmerged branch must never be deleted"
 
 
+def test_for_hook_modes_pay_no_verdict_calls_for_branchless_branches(
+    repo: Path, tmp_path: Path
+) -> None:
+    """gr541365 — ~110 stranded pin branches each paid `git cherry` (plus a
+    merge-base / rev-list / merge-tree / `log -1` on the unmerged path)
+    inside every SessionStart scan, three hooks deep. In --for-hook modes a
+    branchless branch is only ever a COUNT, so those verdict calls must not
+    run at all. A `git` shim on PATH logs argv per call; the full --json run
+    at the end MUST still pay them — the verdict is its product, pinned by
+    the sibling tests above."""
+    _add_unmerged_branch(repo, "feat/stray")
+
+    shim_dir = tmp_path / "shim"
+    shim_dir.mkdir()
+    git_bin = shutil.which("git")
+    assert git_bin is not None
+    (shim_dir / "git").write_text(
+        f'#!/bin/sh\nprintf \'%s\\n\' "$*" >> "$GIT_ARGV_LOG"\nexec "{git_bin}" "$@"\n',
+        encoding="utf-8",
+    )
+    (shim_dir / "git").chmod(0o755)
+
+    argv_log = tmp_path / "git-argv.log"
+    env = _test_env()
+    env.update(
+        {
+            "PATH": f"{shim_dir}{os.pathsep}{os.environ['PATH']}",
+            "GIT_ARGV_LOG": str(argv_log),
+        }
+    )
+    verdict_subcmds = {"cherry", "merge-tree", "merge-base", "rev-list", "log"}
+
+    def run(*argv: str) -> subprocess.CompletedProcess[str]:
+        argv_log.write_text("", encoding="utf-8")
+        result = subprocess.run(
+            ["bash", *argv],
+            cwd=str(repo),
+            env=env,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+        )
+        assert result.returncode == 0, result.stderr
+        return result
+
+    for argv in (
+        ("scripts/inflight", "--for-hook"),
+        ("scripts/inflight", "--json", "--skip-branch-probes"),
+        ("scripts/reap-worktrees", "--for-hook"),
+    ):
+        result = run(*argv)
+        calls = argv_log.read_text(encoding="utf-8").splitlines()
+        bad = [c for c in calls if verdict_subcmds & set(c.split())]
+        assert not bad, f"{argv} paid verdict calls for a count: {bad}"
+        if argv[0].endswith("reap-worktrees"):
+            # --for-hook prints one count, never a per-branch roster.
+            assert "1 stranded worktree-less branch" in result.stdout, result.stdout
+            assert "stranded: feat/stray" not in result.stdout, result.stdout
+
+    out = run("scripts/inflight", "--for-hook").stdout
+    assert "1 worktree-less branch" in out, out
+
+    # Contrast: full --json still computes the real verdict (cherry + the
+    # merge-base/rev-list chain a non-ancestor head pays).
+    run("scripts/inflight", "--json")
+    calls = argv_log.read_text(encoding="utf-8").splitlines()
+    assert any("cherry" in c.split() for c in calls), calls
+
+
 def _primary_with_migrations(tmp_path: Path) -> Path:
     """A primary checkout on `main` with `scripts/migration-check` staged
     and one migration (0010_base.sql) committed."""

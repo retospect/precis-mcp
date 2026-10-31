@@ -267,12 +267,20 @@ if [ -n "$ROOT" ] && [ -f "$ROOT/scripts/lib/compose-project.sh" ] \
     # on `scripts/inflight` existing, since criterion 1 reads its `session`
     # field verbatim and there is no safe way to guess sessionlessness
     # without it.
-    if [ -x "$ROOT/scripts/inflight" ]; then
+    # SEEN empty means no precis-test-* project has any container, so no
+    # worktree below can pass the `proj in SEEN` gate — skip the sweep AND
+    # the fleet-wide inflight --json scan it pays for (gr541365).
+    if [ -x "$ROOT/scripts/inflight" ] && [ -n "$SEEN" ]; then
         DB_MIN_AGE_SECONDS="${PRECIS_REAP_DB_MIN_AGE_SECONDS:-172800}"        # 48h
         AGENT_DB_MIN_AGE_SECONDS="${PRECIS_REAP_AGENT_DB_MIN_AGE_SECONDS:-7200}"  # 2h
         DB_PURPOSE_FRESH_SECONDS="${PRECIS_REAP_DB_PURPOSE_FRESH_SECONDS:-21600}"  # 6h
         PRIMARY_WT="$(git -C "$ROOT" worktree list --porcelain 2>/dev/null | awk '/^worktree /{print $2; exit}')"
-        INFLIGHT_JSON="$("$ROOT/scripts/inflight" --json 2>/dev/null || true)"
+        # Only the per-worktree `session` field is read below — under
+        # --for-hook the branchless-branch verdict work (a git cherry /
+        # merge-tree per stranded pin) is wasted spend (gr541365).
+        INFLIGHT_ARGS=(--json)
+        [ "$FOR_HOOK" = 1 ] && INFLIGHT_ARGS+=(--skip-branch-probes)
+        INFLIGHT_JSON="$("$ROOT/scripts/inflight" "${INFLIGHT_ARGS[@]}" 2>/dev/null || true)"
 
         # session_for <path> — the exact `session` field scripts/inflight
         # --json computed for <path> (live#<pid> / dead-lock#<pid> / locked /
