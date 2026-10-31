@@ -1570,6 +1570,33 @@ def _note_no_live_lane(notes: list[str], what: str, refusal: str) -> None:
         notes.append(f"{what} held, {why}: {refusal}")
 
 
+def _dispatch_landed(note: object) -> bool:
+    """True iff ``note`` is :func:`dispatch_autocatpath`'s success shape —
+    the only return that opens with the backend tag, ``"autocatpath[<be>]
+    dispatched N seed(s) … + aggregate …"``.
+
+    Every other note it returns minted nothing: the ``skipped:`` guards
+    (suspended lane, no config, missing structure, failed preflight), the
+    ``refused`` pair (:func:`is_no_live_lane`), and the ``dispatch failed``
+    catches (export, pathway ref, tree mint). A retry/amnesty caller that
+    counts one of those as a landed attempt spends its budget on a mint
+    that never happened — the next pass then reaches the gripe rung and
+    re-files the SAME stale failed job, repeating every window for a kill
+    that never re-ran (gr521073: four of six gripes filed days after the
+    kills they named)."""
+    return isinstance(note, str) and note.startswith("autocatpath[")
+
+
+def _note_no_mint(notes: list[str], what: str, note: str) -> None:
+    """``_note_no_live_lane``'s sibling for the other nothing-minted notes
+    (:func:`_dispatch_landed` covers what counts as a mint): a ``skipped:``
+    or ``dispatch failed`` return is not a refusal carrying a ``next:``,
+    it is simply a dispatch that produced no work. One line per pass,
+    whichever ``what``/note landed first."""
+    if not any("minted nothing" in n for n in notes):
+        notes.append(f"{what} minted nothing — no retry spent: {note}")
+
+
 def _live_route_nodes(store: Store, nodes: list[str]) -> tuple[list[str], str]:
     """``nodes`` minus those whose ssh_node lane is retired, plus a refusal.
 
@@ -5207,7 +5234,7 @@ def harvest_measures(
                         # Nothing minted: keep the counter where it is (the
                         # amnesty reset waits for a dispatch that lands).
                         _note_no_live_lane(notes, "amnesty re-dispatch", anote)
-                    else:
+                    elif _dispatch_landed(anote):
                         store.stamp_ref_meta(
                             s.id, {"quest_autocatpath_infra_retries": 0}
                         )
@@ -5215,6 +5242,10 @@ def harvest_measures(
                             f"stale-era autocatpath failure for [{handle}] → amnesty "
                             "re-dispatch via seed/aggregate"
                         )
+                    else:
+                        # Skipped/failed dispatch — same nothing-minted
+                        # stand-down, no counter reset (gr521073).
+                        _note_no_mint(notes, "amnesty re-dispatch", anote)
             elif cp_job_meta.get("job_type") == "autocatpath_seed":
                 # The `_stuck_seed_failure` fallback — its own WINDOWED counter
                 # (`quest_seed_infra_retries`), deliberately not
@@ -5251,12 +5282,18 @@ def harvest_measures(
                         )
                         if is_no_live_lane(snote):
                             _note_no_live_lane(notes, "stuck-seed re-dispatch", snote)
-                        else:
+                        elif _dispatch_landed(snote):
                             _bump_seed_infra_retry_count(store, s.id)
                             notes.append(
                                 f"stuck seed for [{handle}] → re-dispatched "
                                 f"(retry {sk_retries + 1})"
                             )
+                        else:
+                            # A skip/dispatch-failure minted nothing — the
+                            # retry was never spent, so the ladder must not
+                            # climb toward a gripe on the stale failed job
+                            # (gr521073).
+                            _note_no_mint(notes, "stuck-seed re-dispatch", snote)
                     elif sk_retries < _MAX_INFRA_RETRIES + 1:
                         _file_infra_gripe(
                             store,
@@ -5299,13 +5336,15 @@ def harvest_measures(
                     )
                     if is_no_live_lane(onote):
                         _note_no_live_lane(notes, "off-lane amnesty re-dispatch", onote)
-                    else:
+                    elif _dispatch_landed(onote):
                         store.stamp_ref_meta(
                             s.id, {"quest_autocatpath_infra_retries": 0}
                         )
                         notes.append(
                             f"off-lane-pin failure for [{handle}] → amnesty re-dispatch"
                         )
+                    else:
+                        _note_no_mint(notes, "off-lane amnesty re-dispatch", onote)
             else:
                 cp_retries = int(
                     (s.meta or {}).get("quest_autocatpath_infra_retries", 0) or 0
@@ -5331,7 +5370,7 @@ def harvest_measures(
                     )
                     if is_no_live_lane(cnote):
                         _note_no_live_lane(notes, "autocatpath retry", cnote)
-                    else:
+                    elif _dispatch_landed(cnote):
                         store.stamp_ref_meta(
                             s.id, {"quest_autocatpath_infra_retries": cp_retries + 1}
                         )
@@ -5339,6 +5378,8 @@ def harvest_measures(
                             f"autocatpath infra failure for [{handle}] → "
                             f"re-dispatched (retry {cp_retries + 1})"
                         )
+                    else:
+                        _note_no_mint(notes, "autocatpath retry", cnote)
                 elif cp_retries < _MAX_INFRA_RETRIES + 1:
                     _file_infra_gripe(
                         store,

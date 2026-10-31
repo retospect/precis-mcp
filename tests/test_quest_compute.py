@@ -1660,6 +1660,103 @@ class TestHarvest:
             assert any("no live lane" in n and "next:" in n for n in step.notes)
         assert gripes == []
 
+    @pytest.mark.parametrize(
+        "note",
+        [
+            "autocatpath skipped: compute lane suspended via "
+            "PRECIS_SUSPENDED_JOB_TYPES (structure 1)",
+            "autocatpath dispatch failed for fe-slab: export (boom)",
+        ],
+    )
+    def test_stuck_seed_non_mint_dispatch_is_not_an_attempt(
+        self, store: Any, monkeypatch: pytest.MonkeyPatch, note: str
+    ) -> None:
+        """gr521073: a dispatch that skipped/failed (suspended lane, export
+        error, mint exception — anything but the ``autocatpath[…]
+        dispatched`` success shape) minted nothing, so it must not spend
+        the seed lane's retry budget. Before the gate, every non-refusal
+        note counted as a landed retry: the next harvest reached the gripe
+        rung and re-filed the SAME stale failed seed job, again each 6h
+        window — the "re-files from stale failure counts" pattern the
+        cluster's gripes showed."""
+        qid = self._reaction_quest(store)
+        sid = compute_mod.ensure_candidate(
+            store, qid, {"name": "Fe", "structure": _SPEC}
+        )
+        assert sid is not None
+        self._stuck_seed(store, sid)
+        calls: list[int] = []
+
+        def _fake(_s: Any, structure_ref_id: int, _config: Any, **_kw: Any) -> str:
+            calls.append(structure_ref_id)
+            return note
+
+        monkeypatch.setattr(compute_mod, "dispatch_autocatpath", _fake)
+        gripes = self._gripe_spy(monkeypatch)
+        for _ in range(3):
+            step = compute_mod.harvest_measures(store, qid, hub=object())
+            meta = store.fetch_refs_by_ids({sid})[sid].meta or {}
+            assert "quest_seed_infra_retries" not in meta  # never burned
+            held = [n for n in step.notes if "minted nothing" in n]
+            assert len(held) == 1 and note in held[0]
+            assert not any("→ re-dispatched" in n for n in step.notes)
+        assert len(calls) == 3  # still tries to repair each pass
+        assert gripes == []
+        assert not any(str(t).startswith("ruled-out:") for t in store.tags_for(sid))
+
+    def test_aggregate_retry_non_mint_dispatch_keeps_counter(
+        self, store: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The aggregate lane's own counter has the same defect shape: a
+        non-minting retry note must leave ``quest_autocatpath_infra_retries``
+        where it is, so the gripe rung never fires on the stale aggregate."""
+        qid = self._reaction_quest(store)
+        sid = compute_mod.ensure_candidate(
+            store, qid, {"name": "Fe", "structure": _SPEC}
+        )
+        assert sid is not None
+        store.stamp_ref_meta(sid, {"quest_autocatpath_infra_retries": 0})
+        self._failed_autocatpath_aggregate(store, sid)
+        monkeypatch.setattr(
+            compute_mod,
+            "dispatch_autocatpath",
+            lambda *_a, **_k: "autocatpath skipped: compute lane suspended",
+        )
+        gripes = self._gripe_spy(monkeypatch)
+        for _ in range(3):
+            step = compute_mod.harvest_measures(store, qid, hub=object())
+            meta = store.fetch_refs_by_ids({sid})[sid].meta or {}
+            assert meta.get("quest_autocatpath_infra_retries") == 0
+            assert any("minted nothing" in n for n in step.notes)
+            assert not any("→ re-dispatched" in n for n in step.notes)
+        assert gripes == []
+
+    def test_stale_explore_amnesty_non_mint_keeps_counter(
+        self, store: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The amnesty reset, too, waits for a dispatch that LANDS: a
+        skip/failure note leaves the counter untouched and claims no
+        re-dispatch."""
+        qid = self._reaction_quest(store)
+        sid = compute_mod.ensure_candidate(
+            store, qid, {"name": "Fe", "structure": _SPEC}
+        )
+        assert sid is not None
+        store.stamp_ref_meta(sid, {"quest_autocatpath_infra_retries": 2})
+        self._failed_autocatpath(store, sid)  # legacy explore job
+        monkeypatch.setattr(
+            compute_mod,
+            "dispatch_autocatpath",
+            lambda *_a, **_k: "autocatpath skipped: compute lane suspended",
+        )
+        gripes = self._gripe_spy(monkeypatch)
+        step = compute_mod.harvest_measures(store, qid, hub=object())
+        meta = store.fetch_refs_by_ids({sid})[sid].meta or {}
+        assert meta.get("quest_autocatpath_infra_retries") == 2  # not reset
+        assert any("minted nothing" in n for n in step.notes)
+        assert not any("amnesty re-dispatch via" in n for n in step.notes)
+        assert gripes == []
+
     def test_stale_explore_failure_amnesty_redispatches_and_resets_counter(
         self, store: Any, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -2120,11 +2217,12 @@ class TestHarvest:
         assert sid is not None
         self._stuck_seed(store, sid, job_meta={"failure_class": "infra"})
         calls: list[int] = []
-        monkeypatch.setattr(
-            compute_mod,
-            "dispatch_autocatpath",
-            lambda _s, structure_ref_id, _c, **_kw: calls.append(structure_ref_id),
-        )
+
+        def _fake_dispatch(_s: Any, structure_ref_id: int, _c: Any, **_kw: Any) -> str:
+            calls.append(structure_ref_id)
+            return "autocatpath[ml]"
+
+        monkeypatch.setattr(compute_mod, "dispatch_autocatpath", _fake_dispatch)
         compute_mod.harvest_measures(store, qid, hub=object())
         assert calls == [sid]
         meta = store.fetch_refs_by_ids({sid})[sid].meta or {}
