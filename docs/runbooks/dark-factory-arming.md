@@ -16,6 +16,26 @@ turns it into a `plan_dispatch` job every 5 minutes:
 
 Disarm: close or pause that todo.
 
+The same tick also returns a `STATUS:fixing` gripe to `triaged` once its
+`claimed-by:` lease has expired (4 h) with no live job under it (gr542086);
+`released=` counts those with the todo claims. Gated by the same kill switch.
+
+## Gripe validation (verify → done)
+
+`scripts/release` runs `scripts/gripe-validate` after a rollout. For a pass
+that needs no release and no git checkout, arm the `gripe_validate` job type:
+it closes every `STATUS:verify` gripe whose `resolved: <sha>` comment names a
+sha in the `release.prod_head` record (the head or its `landed` list). Same
+shape as the tick, every 15 minutes:
+
+    put(kind='todo', text='gripe_validate tick (verify gripes to done)',
+        meta={'schedule': {'every': '15m'}, 'executor': 'job_inproc',
+              'job_type': 'gripe_validate'})
+
+Disarm: close or pause that todo. Dry run by hand: a `gripe_validate` job
+with `params={'dry_run': true}` lists what would flip. Not covered by the
+factory kill switch (it only closes gripes whose fix is already deployed).
+
 ## Kill switch
 
 - `PRECIS_FACTORY=off` in the worker's environment: `run_slice` refuses

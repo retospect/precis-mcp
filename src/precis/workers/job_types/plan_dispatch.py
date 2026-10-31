@@ -30,7 +30,11 @@ subtree whose nodes are shaped by :mod:`precis.plans.nodes`. One pass:
    The tick owns plan retries, so a retry drops the ``child-failed:`` tags
    the failure bubble left.
 5. **hygiene** — a ``claimed-by:`` tag older than 4 h on a todo with no live
-   child job is released (``STATUS:open``); a task whose newest job ended
+   child job is released (``STATUS:open``); the same for a ``STATUS:fixing``
+   gripe (lease past ``expires_at``, no live job under or ``fixes``-linked to
+   it; ``release_claims``, back to ``STATUS:triaged`` with a comment — unless
+   its newest comment is ``resolved:``, then only the lease goes; gr542086);
+   a task whose newest job ended
    (failed, or succeeded without closing it) with attempts at
    ``meta.retries`` (default 2) gets one ask-user todo under the plan root
    (``meta.ask`` kind ``ruling``, tags ``ask-user`` + ``showstopper``) that it
@@ -78,7 +82,7 @@ from precis.plans.nodes import node_kind
 from precis.store._todo_sql import _DOABLE_EXCLUSION_TAGS
 from precis.store.types import TODO_BODY_KIND, ChunkInsert, Tag
 from precis.todo import BLOCKER_TERMINAL_STATUSES, TERMINAL_TODO_STATUSES
-from precis.todo.guards import check_ask_meta
+from precis.todo.guards import check_ask_meta, release_claims
 from precis.todo.views import _fetch_subtree
 from precis.workers.job_types import JobTypeSpec, get_job_type
 
@@ -101,6 +105,8 @@ DEFAULT_OP = "run_slice"
 #: The todo's comment chunk kind (``handlers.todo._COMMENT_KIND``; restated —
 #: workers never import handlers).
 _COMMENT_KIND = "todo_comment"
+#: The gripe comment chunk kind (``handlers.gripe._COMMENT_KIND``; restated).
+_GRIPE_COMMENT_KIND = "gripe_comment"
 
 _JOB_TERMINAL = frozenset({"succeeded", "failed", "cancelled"})
 _JOB_ENDED = frozenset({"succeeded", "failed"})
@@ -854,7 +860,119 @@ def _mint_ask(store: Any, plan: _Plan, n: _Node, attempts: int) -> int:
     return int(ref.id)
 
 
+def _stale_gripe_claims(
+    conn: Any, now: datetime, *, gripe_id: int | None = None
+) -> dict[int, list[str]]:
+    """``{gripe id: [expired claimed-by: values]}`` for live ``STATUS:fixing``
+    gripes with no live job under them (a child, or a ``fixes``-linked job).
+
+    A lease is expired once its ``expires_at`` (stamped at claim and every
+    re-claim, ``stamp_claim_lease``) has passed; a legacy row without one is
+    judged by its tag ``created_at`` against :data:`CLAIM_STALE`.
+    """
+    rows = conn.execute(
+        """
+        SELECT r.ref_id, t.value, rt.created_at, rt.expires_at
+          FROM refs r
+          JOIN ref_tags rt ON rt.ref_id = r.ref_id
+          JOIN tags t ON t.tag_id = rt.tag_id
+         WHERE r.kind = 'gripe' AND r.retired_at IS NULL
+           AND (%s::bigint IS NULL OR r.ref_id = %s::bigint)
+           AND t.namespace = 'OPEN' AND t.value LIKE 'claimed-by:%%'
+           AND EXISTS (SELECT 1 FROM ref_tags s JOIN tags st USING (tag_id)
+                        WHERE s.ref_id = r.ref_id AND st.namespace = 'STATUS'
+                          AND st.value = 'fixing')
+           AND NOT EXISTS (
+                 SELECT 1 FROM refs j
+                  WHERE j.kind = 'job' AND j.retired_at IS NULL
+                    AND (j.parent_id = r.ref_id OR EXISTS (
+                          SELECT 1 FROM links l
+                           WHERE l.src_ref_id = j.ref_id
+                             AND l.dst_ref_id = r.ref_id
+                             AND l.relation = 'fixes'))
+                    AND NOT EXISTS (
+                          SELECT 1 FROM ref_tags js JOIN tags jt USING (tag_id)
+                           WHERE js.ref_id = j.ref_id AND jt.namespace = 'STATUS'
+                             AND jt.value = ANY(%s)))
+         ORDER BY r.ref_id, t.value
+        """,
+        (gripe_id, gripe_id, sorted(_JOB_TERMINAL)),
+    ).fetchall()
+    out: dict[int, list[str]] = {}
+    for ref_id, value, created_at, expires_at in rows:
+        lapsed = (
+            expires_at <= now
+            if expires_at is not None
+            else now - created_at > CLAIM_STALE
+        )
+        if lapsed:
+            out.setdefault(int(ref_id), []).append(str(value))
+    return out
+
+
+def _release_gripe(store: Any, gripe_id: int, now: datetime) -> list[str] | None:
+    """Drop an expired gripe's lease and return it to ``triaged`` — the
+    handler's lease-drop rule (``GripeHandler._claim_status``): a newest
+    ``resolved:`` comment means the work is done, so the status stays.
+    Re-checked under the row lock; ``None`` when the lease was refreshed or
+    the gripe moved on since the scan."""
+    with store.tx() as conn:
+        conn.execute("SELECT 1 FROM refs WHERE ref_id = %s FOR UPDATE", (gripe_id,))
+        held = _stale_gripe_claims(conn, now, gripe_id=gripe_id).get(gripe_id)
+        if not held:
+            return None
+        row = conn.execute(
+            "SELECT c.text FROM chunks c WHERE c.ref_id = %s "
+            "AND c.chunk_kind = %s ORDER BY c.ord DESC LIMIT 1",
+            (gripe_id, _GRIPE_COMMENT_KIND),
+        ).fetchone()
+        resolved = bool(row) and str(row[0]).lstrip().startswith("resolved:")
+        release_claims(conn, gripe_id)
+        if resolved:
+            return held
+        store.add_tag(
+            gripe_id,
+            Tag.closed("STATUS", "triaged"),
+            set_by="system",
+            replace_prefix=True,
+            conn=conn,
+        )
+        (ord_,) = conn.execute(
+            "SELECT coalesce(max(ord), 0) + 1 FROM chunks WHERE ref_id = %s",
+            (gripe_id,),
+        ).fetchone()
+        holder = ", ".join(v.removeprefix("claimed-by:") for v in held)
+        store.chunks.insert_chunks(
+            gripe_id,
+            [
+                ChunkInsert(
+                    ord=int(ord_),
+                    text=(
+                        f"lease expired after {int(CLAIM_STALE.total_seconds() // 3600)}"
+                        f" h; back to triaged (held by {holder})"
+                    ),
+                    meta={"chunk_kind": _GRIPE_COMMENT_KIND},
+                )
+            ],
+            conn=conn,
+        )
+    return held
+
+
+def _step_gripe_leases(store: Any, w: _Writer, res: PassResult, now: datetime) -> None:
+    """gr542086: a ``STATUS:fixing`` gripe whose ``claimed-by:`` lease lapsed
+    with no live job goes back to ``triaged`` (counted in ``released``)."""
+    with store.pool.connection() as conn:
+        stale = _stale_gripe_claims(conn, now)
+    for gripe_id, held in stale.items():
+        if not w.dry_run and _release_gripe(store, gripe_id, now) is None:
+            continue
+        res.released += 1
+        res.notes.append(f"gr{gripe_id}: released expired {', '.join(held)}")
+
+
 def _step_hygiene(plan: _Plan, w: _Writer, res: PassResult, now: datetime) -> None:
+    _step_gripe_leases(w.store, w, res, now)
     for n in plan.todos():
         if _closed(n):
             continue

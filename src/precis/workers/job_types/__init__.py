@@ -923,6 +923,13 @@ def get_job_type(name: str) -> JobTypeSpec | None:
 
         _REGISTRY[name] = SPEC
         return SPEC
+    if name == "gripe_validate":
+        # Gripe ladder's last rung: verify -> done once the resolved sha is in
+        # the recorded prod head. Armed by a recurring todo (see its docstring).
+        from precis.workers.job_types.gripe_validate import SPEC
+
+        _REGISTRY[name] = SPEC
+        return SPEC
     if name == "diagnose_gripe":
         _REGISTRY["diagnose_gripe"] = _load_diagnose_gripe()
         return _REGISTRY["diagnose_gripe"]
@@ -1045,6 +1052,7 @@ def known_job_types() -> list[str]:
         "sandbox_run",
         "run_slice",
         "plan_dispatch",
+        "gripe_validate",
         "diagnose_gripe",
         "graph_garden",
         "secret_status",

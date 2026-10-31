@@ -459,3 +459,126 @@ def test_dry_run_counts_the_reopen_without_writing(store: Store) -> None:
     res = pd.run_pass(store, dry_run=True, reason="params.dry_run")
     assert res.reopened == 1
     assert _status(store, mint.ids["gen"]) == "done"
+
+
+# ── gripe lease expiry (gr542086) ──────────────────────────────────
+
+
+def _gripe(hub: Any, status: str = "triaged") -> int:
+    """A live gripe at ``status`` (the claim-ladder test's recipe)."""
+    from precis.handlers.gripe import GripeHandler
+
+    GripeHandler(hub=hub).put(text=f"lease expiry probe {status}")
+    gid = int(hub.store.list_refs(kind="gripe", limit=1)[0].id)
+    hub.store.add_tag(
+        gid, Tag.closed("STATUS", status), replace_prefix=True, set_by="agent"
+    )
+    return gid
+
+
+def _claim(hub: Any, gid: int, holder: str = "builder-a") -> None:
+    from precis.handlers.gripe import GripeHandler
+
+    GripeHandler(hub=hub).tag(id=gid, add=[f"claimed-by:{holder}"])
+
+
+def _lapse(store: Store, gid: int) -> None:
+    """Age the lease past its expiry (``expires_at`` is the lease clock)."""
+    with store.pool.connection() as conn:
+        conn.execute(
+            "UPDATE ref_tags SET expires_at = now() - interval '1 minute' "
+            "WHERE ref_id = %s AND tag_id IN (SELECT tag_id FROM tags "
+            "WHERE value LIKE 'claimed-by:%%')",
+            (gid,),
+        )
+
+
+def _comments(store: Store, gid: int) -> list[str]:
+    return [
+        c.text
+        for c in sorted(store.chunks.list_chunks_for_ref(gid), key=lambda c: c.ord)
+        if c.chunk_kind == "gripe_comment"
+    ]
+
+
+def test_expired_gripe_lease_returns_to_triaged(hub: Any) -> None:
+    store = hub.store
+    gid = _gripe(hub)
+    _claim(hub, gid)
+    assert _status(store, gid) == "fixing"
+    # A live lease is left alone.
+    assert pd.run_pass(store).released == 0
+    assert _status(store, gid) == "fixing"
+    _lapse(store, gid)
+    res = pd.run_pass(store)
+    assert res.released == 1
+    assert f"gr{gid}: released expired claimed-by:builder-a" in res.notes
+    assert _status(store, gid) == "triaged"
+    assert not any(t.startswith("claimed-by:") for t in _open_tags(store, gid))
+    assert _comments(store, gid)[-1] == (
+        "lease expired after 4 h; back to triaged (held by builder-a)"
+    )
+    # Idempotent: nothing left to release.
+    assert pd.run_pass(store).released == 0
+    assert len(_comments(store, gid)) == 1
+
+
+def test_legacy_gripe_lease_is_aged_by_its_tag_row(hub: Any) -> None:
+    store = hub.store
+    gid = _gripe(hub, "fixing")
+    store.add_tag(gid, Tag.open("claimed-by:legacy"), set_by="agent")
+    assert pd.run_pass(store).released == 0
+    with store.pool.connection() as conn:
+        conn.execute(
+            "UPDATE ref_tags SET created_at = now() - interval '5 hours' "
+            "WHERE ref_id = %s AND tag_id IN (SELECT tag_id FROM tags "
+            "WHERE value = 'claimed-by:legacy')",
+            (gid,),
+        )
+    assert pd.run_pass(store).released == 1
+    assert _status(store, gid) == "triaged"
+
+
+def test_expired_gripe_lease_with_a_live_job_is_kept(hub: Any) -> None:
+    store = hub.store
+    gid = _gripe(hub)
+    _claim(hub, gid)
+    _lapse(store, gid)
+    with store.tx() as conn:
+        mint_background_job(
+            store,
+            conn=conn,
+            job_type="fix_gripe",
+            executor="claude_inproc",
+            title="fix_gripe",
+            params={},
+            parent_id=gid,
+        )
+    assert pd.run_pass(store).released == 0
+    assert _status(store, gid) == "fixing"
+    assert "claimed-by:builder-a" in _open_tags(store, gid)
+
+
+def test_expired_gripe_lease_after_resolved_only_drops_the_lease(hub: Any) -> None:
+    from precis.handlers.gripe import GripeHandler
+
+    store = hub.store
+    gid = _gripe(hub)
+    _claim(hub, gid)
+    GripeHandler(hub=hub).put(id=gid, text="resolved: abc1234 — done by hand")
+    _lapse(store, gid)
+    assert pd.run_pass(store).released == 1
+    assert _status(store, gid) == "fixing"
+    assert not any(t.startswith("claimed-by:") for t in _open_tags(store, gid))
+    assert _comments(store, gid) == ["resolved: abc1234 — done by hand"]
+
+
+def test_dry_run_counts_the_gripe_release_without_writing(hub: Any) -> None:
+    store = hub.store
+    gid = _gripe(hub)
+    _claim(hub, gid)
+    _lapse(store, gid)
+    res = pd.run_pass(store, dry_run=True)
+    assert res.released == 1
+    assert _status(store, gid) == "fixing"
+    assert _comments(store, gid) == []
