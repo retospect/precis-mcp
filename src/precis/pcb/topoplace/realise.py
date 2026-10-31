@@ -2349,27 +2349,71 @@ def _spoke_offsets(
                 continue  # real crossing — layer assignment owns it
             w_j, s_j = ws(bj)
             peer_lines.append((LineString(other), (w_k + w_j) / 2.0 + max(s_k, s_j)))
-        mine = LineString(pts)
-        if any(ol.distance(mine) < 2.0 for ol, _g in peer_lines):
-            # dense field: the redraw's L-corner can bulge past the
-            # 0-width pair gap (measured: the shared-gap squeeze turned
-            # legal chords into short-risk withdrawals) — bends there
-            # are load-bearing, leave them to the relax
-            continue
-        out_ch: list[tuple[float, float]] = [pts[0]]
+
+        def _line_ok(
+            line: LineString,
+            obstacles: list[tuple[Polygon, float]] = obstacles,
+            peer_lines: list[tuple[Any, float]] = peer_lines,
+        ) -> bool:
+            return all(line.distance(ox) >= r - 1e-9 for ox, r in obstacles) and all(
+                line.distance(ol) >= g - 1e-9 for ol, g in peer_lines
+            )
+
+        def _chord(
+            a: tuple[float, float],
+            b: tuple[float, float],
+            _line_ok: Callable[[LineString], bool] = _line_ok,
+        ) -> list[tuple[float, float]] | None:
+            """The points that replace the run a..b, or None. The chord
+            must clear — and so must the shape the octilinear redraw
+            will turn it into: an off-angle chord becomes an L whose
+            corner can bulge past the pair gap (measured on the
+            shared-gap squeeze: legal chords turned into short-risk
+            withdrawals — the reason this pass once skipped every
+            branch with a peer within 2 mm, which on a board of 0402s
+            is every branch, so S2_DRV kept its 5 segments). The vetted
+            corner is spliced in here, so the redraw keeps it verbatim."""
+            if not _line_ok(LineString([a, b])):
+                return None
+            dx, dy = b[0] - a[0], b[1] - a[1]
+            if dx == 0 or dy == 0 or abs(abs(dx) - abs(dy)) <= 1e-9:
+                return [b]
+            for c in ((b[0], a[1]), (a[0], b[1])):
+                if _line_ok(LineString([a, c, b])):
+                    return [c, b]
+            return None
+
+        # Scan from each vertex to the farthest reachable one; a spliced
+        # L corner becomes the next scan origin (its second leg may run
+        # on to a later vertex — the U around a part's other pad is 3
+        # legs, not 4). A lone off-angle leg (j == i+1) is L'd here too
+        # when its corner clears, so the collinear merge below can see
+        # it; the redraw would draw the same L unvetted otherwise.
+        work: list[tuple[float, float]] = list(pts)
         i = 0
-        while i < len(pts) - 1:
-            j = len(pts) - 1
-            while j > i + 1:
-                chord = LineString([pts[i], pts[j]])
-                if all(chord.distance(ox) >= r - 1e-9 for ox, r in obstacles) and all(
-                    chord.distance(ol) >= g - 1e-9 for ol, g in peer_lines
-                ):
+        while i < len(work) - 1:
+            j = len(work) - 1
+            repl: list[tuple[float, float]] | None = None
+            while j > i:
+                repl = _chord(work[i], work[j])
+                if repl is not None and (j > i + 1 or len(repl) == 2):
                     break
+                repl = None
                 j -= 1
-            out_ch.append(pts[j])
-            i = j
-        pts_out[bi] = out_ch
+            if repl is None:
+                i += 1
+                continue
+            work = work[: i + 1] + repl + work[j + 1 :]
+            i += 1
+        merged: list[tuple[float, float]] = [work[0]]
+        for k in range(1, len(work) - 1):
+            a, c, b = merged[-1], work[k], work[k + 1]
+            cross = (c[0] - a[0]) * (b[1] - c[1]) - (c[1] - a[1]) * (b[0] - c[0])
+            dot = (c[0] - a[0]) * (b[0] - c[0]) + (c[1] - a[1]) * (b[1] - c[1])
+            if abs(cross) > 1e-9 or dot <= 0.0:
+                merged.append(c)
+        merged.append(work[-1])
+        pts_out[bi] = merged
 
     pads_poly = [
         Polygon(

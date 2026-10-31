@@ -3258,3 +3258,56 @@ def test_f_b_hop_mints_one_via_with_straight_runs() -> None:
     rows = sketch_rows(plan, td, ir, layers)
     assert rows["N1"]["status"] == "realized"
     assert _drc_findings(res, ir, layers, footprints=footprints) == []
+
+
+def _two_0402_pairs_board() -> pcb.Board:
+    """taz-leaf-local-62's S2_DRV/S2_REF corner, verbatim poses (shifted
+    −70/−10 onto a 40×30 board): three label-only 0402s, R12.1→R13.1
+    (pin 1 is each part's −x pad, so the wire must clear R12's own pin 2
+    — a U, 3 legs) and C41.1→R13.2 (an open L, 2 legs)."""
+    b = pcb.Board("pairs", stackup=4, outline=pcb.rect(40, 30))
+    r13 = b.part("R13", label="R 1M 0402 1%", pins=["1", "2"]).at(
+        15.915, 13.17, rot=0, fixed="both"
+    )
+    c41 = b.part("C41", label="C 47pF C0G", pins=["1", "2"]).at(
+        19.857, 15.301, rot=0, fixed="both"
+    )
+    r12 = b.part("R12", label="R 1M 0402 1%", pins=["1", "2"]).at(
+        11.992, 11.809, rot=0, fixed="both"
+    )
+    for p in (r13["1"], r13["2"], c41["1"], c41["2"], r12["1"], r12["2"]):
+        p.etype("passive", fmax_hz=0.0, assume="0402 end")
+    b.wire(c41["1"], r13["2"], name="S2_REF").current = 0.001
+    b.wire(r12["1"], r13["1"], name="S2_DRV").current = 0.001
+    return b
+
+
+def test_chord_shortcut_works_next_to_a_peer_and_merges_collinear_legs() -> None:
+    """Reto 2026-10-31 (taz-leaf-n): S2_REF stored 6 segments and S2_DRV
+    5 where 2 and 3 are the honest answers. The chord pass skipped every
+    branch with a peer polyline within 2 mm — on a board of 0402s that
+    is every branch. Now a chord is vetted together with the L the
+    octilinear redraw makes of it (corner spliced in), a spliced corner
+    is the next scan origin, and collinear legs merge: S2_REF is one L,
+    S2_DRV the 3-leg U around R12's own pin 2."""
+    td, ir, footprints, plan, res, layers, wall_s = _route_micro(
+        _two_0402_pairs_board()
+    )
+    assert wall_s < 2.0
+    assert plan.vias == () and plan.crossings == () and plan.guarded == ()
+    rows = sketch_rows(plan, td, ir, layers)
+    assert {k: v["status"] for k, v in rows.items()} == {
+        "S2_DRV": "realized",
+        "S2_REF": "realized",
+    }
+    segs = {str(ir.net_name[t.net_id]): t.segments for t in res.tracks}
+    assert len(segs["S2_REF"]) == 2
+    assert len(segs["S2_DRV"]) == 3
+    # every leg axis-aligned or 45°, no sliver
+    for name, ss in segs.items():
+        for s in ss:
+            dx = abs(s["end"][0] - s["start"][0])
+            dy = abs(s["end"][1] - s["start"][1])
+            assert dx < 1e-9 or dy < 1e-9 or abs(dx - dy) < 1e-9, (name, s)
+            assert max(dx, dy) > 0.2, (name, s)
+    assert _drc_findings(res, ir, layers, footprints=footprints) == []
