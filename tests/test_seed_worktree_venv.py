@@ -107,6 +107,30 @@ def test_seed_copies_and_repoints(tmp_path: Path) -> None:
     assert not list(tree.glob(".venv-seed-*"))
 
 
+def test_seed_drops_src_shadowing_copies(tmp_path: Path) -> None:
+    """gr524633: a copied ``site-packages/hexfold`` in the source venv
+    would shadow ``src/hexfold`` in every seeded tree — site-packages
+    precedes the editable .pth's src entry, and a copy with no locked
+    record survives ``uv sync``. The seed strips it."""
+    src, tree, stale = (tmp_path / n for n in ("main", "wt", "third"))
+    venv = _fake_venv(src, stale)
+    sp = venv / "lib" / "python3.13" / "site-packages"
+    (sp / "hexfold").mkdir()
+    (sp / "hexfold" / "__init__.py").write_text("# stale wheel\n", encoding="utf-8")
+    (sp / "hexfold-0.2.0.dist-info").mkdir()
+    (sp / "requests").mkdir()  # a real third-party dep: stays
+    (tree / "src" / "hexfold").mkdir(parents=True)
+    (tree / "src" / "hexfold" / "__init__.py").write_text("", encoding="utf-8")
+
+    outcome = mod.seed_tree(tree, src)
+
+    assert "dropped" in outcome
+    out = tree / ".venv" / "lib" / "python3.13" / "site-packages"
+    assert not (out / "hexfold").exists()
+    assert not list(out.glob("hexfold-*.dist-info"))
+    assert (out / "requests").is_dir()
+
+
 def test_seed_idempotent_on_existing_venv(tmp_path: Path) -> None:
     src, tree, stale = (tmp_path / n for n in ("main", "wt", "third"))
     _fake_venv(src, stale)

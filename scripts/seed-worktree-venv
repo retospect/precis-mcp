@@ -25,6 +25,13 @@ the absolute paths the copy carries:
   on the next sync anyway, this keeps pre-sync direct use right).
 - editable ``*.dist-info/direct_url.json``: ``file://<old>`` →
   ``file://<tree>``.
+- copied ``site-packages/<name>`` packages (and their
+  ``<name>-*.dist-info``/``.egg-info``/``.egg-link``) are dropped when
+  ``<tree>/src/<name>`` exists: the editable .pth puts ``src`` on
+  ``sys.path`` *behind* site-packages, so a stale copied wheel — a
+  ``hexfold`` predating ``hexfold.wrap`` rode one seed into every fresh
+  tree (gr524633) — shadows the tree's own package and uv never prunes
+  a copy it has no record of.
 
 The copy is staged at ``<tree>/.venv-seed-<pid>`` and renamed into place,
 so a failed seed never leaves a half venv that ``uv`` would try to reuse.
@@ -143,6 +150,48 @@ def _fix_site_packages(venv: Path, tree: Path) -> int:
     return changed
 
 
+def _src_top_level(tree: Path) -> set[str]:
+    """Importable top-level names the tree's ``src/`` provides — the
+    editable .pth puts the whole ``src`` dir on ``sys.path``."""
+    src = tree / "src"
+    if not src.is_dir():
+        return set()
+    return {
+        *(p.name for p in src.iterdir() if (p / "__init__.py").is_file()),
+        *(p.stem for p in src.glob("*.py")),
+    }
+
+
+def _drop_src_shadows(venv: Path, tree: Path) -> int:
+    """Remove copied ``site-packages`` entries that shadow ``src/<name>``.
+
+    site-packages precedes the .pth-added ``src`` on ``sys.path``, so a
+    stale copied package wins over the tree's own — and a copy with no
+    dist-info is invisible to ``uv sync``'s prune, so the shadow is
+    permanent (gr524633: an old hexfold wheel). Matching dist-info /
+    egg-info / egg-link goes too so no half-installed dist is left.
+    """
+    names = _src_top_level(tree)
+    dropped = 0
+    for sp in venv.glob("lib/python*/site-packages"):
+        for name in names:
+            victims = [
+                sp / name,
+                sp / f"{name}.py",
+                sp / f"{name}.egg-link",
+                *sp.glob(f"{name}-*.dist-info"),
+                *sp.glob(f"{name}-*.egg-info"),
+            ]
+            for victim in victims:
+                if victim.is_dir() and not victim.is_symlink():
+                    shutil.rmtree(victim)
+                    dropped += 1
+                elif victim.is_symlink() or victim.is_file():
+                    victim.unlink()
+                    dropped += 1
+    return dropped
+
+
 def seed_tree(tree: Path, src: Path) -> str:
     """Seed ``tree/.venv`` from ``src/.venv``; return a one-line outcome."""
     tree = tree.resolve()
@@ -159,6 +208,7 @@ def seed_tree(tree: Path, src: Path) -> str:
     try:
         _copy_venv(src_venv, stage)
         fixes = _fix_bin(stage, dst) + _fix_site_packages(stage, tree)
+        dropped = _drop_src_shadows(stage, tree)
         if dst.exists():  # a sibling won the race — keep theirs
             shutil.rmtree(stage)
             return "present"
@@ -166,7 +216,10 @@ def seed_tree(tree: Path, src: Path) -> str:
     except BaseException:
         shutil.rmtree(stage, ignore_errors=True)
         raise
-    return f"seeded ({fixes} paths repointed)"
+    outcome = f"seeded ({fixes} paths repointed"
+    if dropped:
+        outcome += f", dropped {dropped} src-shadowing site-packages entries"
+    return outcome + ")"
 
 
 def main(argv: list[str]) -> int:
