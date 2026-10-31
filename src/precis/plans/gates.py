@@ -32,7 +32,7 @@ on a release candidate (it has not reached prod, and the server cannot see
 the candidate). Revisit if a verdict row ever lands.
 
 Evaluators never raise: bad args, an unreadable record or a store fault
-return ``GateResult(False, <reason>)`` — a closed gate with its reason
+return ``GateVerdict(False, <reason>)`` — a closed gate with its reason
 beats a tick that dies on one malformed row.
 """
 
@@ -62,15 +62,15 @@ _HEX_RE = re.compile(rf"^[0-9a-f]{{{MIN_SHA_LEN},40}}$")
 
 
 @dataclass(frozen=True, slots=True)
-class GateResult:
+class GateVerdict:
     """A gate's verdict: ``open`` plus a one-line reason for the work view."""
 
     open: bool
     why: str
 
 
-def _closed(why: str) -> GateResult:
-    return GateResult(False, why)
+def _closed(why: str) -> GateVerdict:
+    return GateVerdict(False, why)
 
 
 def _args(gate: dict[str, Any]) -> dict[str, Any] | None:
@@ -87,7 +87,7 @@ def _args(gate: dict[str, Any]) -> dict[str, Any] | None:
 
 def _not_before(
     store: Store, args: dict[str, Any], *, todo_id: int, now: datetime
-) -> GateResult:
+) -> GateVerdict:
     raw = args.get("ts")
     if not isinstance(raw, str) or not raw.strip():
         return _closed("not-before needs args.ts (ISO-8601 timestamp with Z)")
@@ -99,7 +99,7 @@ def _not_before(
     if ts.tzinfo is None:
         return _closed(f"not-before: ts {raw!r} has no Z or offset; UTC is required")
     if now >= ts:
-        return GateResult(True, f"now is past {text}")
+        return GateVerdict(True, f"now is past {text}")
     return _closed(f"waiting until {text}")
 
 
@@ -108,13 +108,13 @@ def _not_before(
 
 def _answer(
     store: Store, args: dict[str, Any], *, todo_id: int, now: datetime
-) -> GateResult:
+) -> GateVerdict:
     ref = store.get_ref(kind="todo", id=todo_id)
     if ref is None:
         return _closed(f"answer: td{todo_id} not found")
     for tag in store.tags_for(todo_id):
         if tag.prefix == "STATUS" and str(tag.value) == "done":
-            return GateResult(True, f"td{todo_id} is STATUS:done")
+            return GateVerdict(True, f"td{todo_id} is STATUS:done")
     comments = [
         c
         for c in store.chunks.list_chunks_for_ref(todo_id)
@@ -123,7 +123,7 @@ def _answer(
     if comments:
         newest = max(comments, key=lambda c: (c.ord, c.id))
         if newest.text.lstrip().lower().startswith("answer:"):
-            return GateResult(True, f"td{todo_id} newest comment is an answer")
+            return GateVerdict(True, f"td{todo_id} newest comment is an answer")
     return _closed(f"waiting for an answer on td{todo_id}")
 
 
@@ -152,7 +152,7 @@ def _prefix_match(a: str, b: str) -> bool:
     return n >= MIN_SHA_LEN and a[:n] == b[:n]
 
 
-def _sha_deployed(store: Store, sha: str) -> GateResult:
+def _sha_deployed(store: Store, sha: str) -> GateVerdict:
     """Whether ``sha`` is in the recorded prod head; the shared core of
     ``sha-in-prod`` and ``tests-green``."""
     rec = read_prod_head(store)
@@ -162,13 +162,13 @@ def _sha_deployed(store: Store, sha: str) -> GateResult:
     landed = [str(s).lower() for s in rec.get("landed") or [] if isinstance(s, str)]
     at = rec.get("deployed_at") or "unknown time"
     if _prefix_match(sha, head):
-        return GateResult(True, f"{sha} is the prod head (deployed {at})")
+        return GateVerdict(True, f"{sha} is the prod head (deployed {at})")
     if any(_prefix_match(sha, s) for s in landed):
-        return GateResult(True, f"{sha} landed in prod by head {head[:9]} ({at})")
+        return GateVerdict(True, f"{sha} landed in prod by head {head[:9]} ({at})")
     return _closed(f"{sha} not in prod yet (head {head[:9]}, deployed {at})")
 
 
-def _clean_sha(raw: object, what: str) -> tuple[str, GateResult | None]:
+def _clean_sha(raw: object, what: str) -> tuple[str, GateVerdict | None]:
     if not isinstance(raw, str):
         return "", _closed(f"{what} needs a hex sha of at least {MIN_SHA_LEN} chars")
     sha = raw.strip().lower()
@@ -181,14 +181,14 @@ def _clean_sha(raw: object, what: str) -> tuple[str, GateResult | None]:
 
 def _sha_in_prod(
     store: Store, args: dict[str, Any], *, todo_id: int, now: datetime
-) -> GateResult:
+) -> GateVerdict:
     sha, bad = _clean_sha(args.get("sha"), "sha-in-prod args.sha")
     return bad or _sha_deployed(store, sha)
 
 
 def _tests_green(
     store: Store, args: dict[str, Any], *, todo_id: int, now: datetime
-) -> GateResult:
+) -> GateVerdict:
     raw = args.get("range")
     if not isinstance(raw, str) or not raw.strip():
         return _closed("tests-green needs args.range (A..B or one sha)")
@@ -198,10 +198,10 @@ def _tests_green(
         return bad
     res = _sha_deployed(store, sha)
     why = res.why.replace("not in prod yet", "no green deploy covers it yet")
-    return GateResult(res.open, why)
+    return GateVerdict(res.open, why)
 
 
-_Evaluator = Callable[..., GateResult]
+_Evaluator = Callable[..., GateVerdict]
 
 #: Gate kind → evaluator. A new kind is one entry here and one in the spec.
 EVALUATORS: dict[str, _Evaluator] = {
@@ -218,7 +218,7 @@ def evaluate(
     *,
     todo_id: int,
     now: datetime | None = None,
-) -> GateResult:
+) -> GateVerdict:
     """Evaluate one gate spec ``{kind, args}`` on todo ``todo_id``.
 
     ``todo_id`` is the todo carrying the gate (the ask itself for
@@ -246,7 +246,7 @@ __all__ = [
     "EVALUATORS",
     "MIN_SHA_LEN",
     "PROD_HEAD_KEY",
-    "GateResult",
+    "GateVerdict",
     "evaluate",
     "read_prod_head",
 ]

@@ -1286,6 +1286,14 @@ def put(
     # structured selection (meta.llm_select.placement); needed when the
     # parent's surviving placement pin is what failed the job (gr516589).
     placement: str | None = None,
+    # todo plan mint (put(kind='todo', mode='plan'), see precis-plan-help):
+    # template= names the plan template, gripe_id=/section=/board= are its
+    # arguments. Declared at the verb level (the gr262482 pattern) so
+    # strict-schema MCP clients don't strip them; read only under mode='plan'.
+    template: str | None = None,
+    gripe_id: int | str | None = None,
+    section: str | None = None,
+    board: str | None = None,
     # presentation (see precis-pres-help):
     pos: int | None = None,
     meta: dict[str, Any] | None = None,
@@ -1573,6 +1581,10 @@ def put(
                 "prio": prio,
                 "model": model,
                 "placement": placement,
+                "template": template,
+                "gripe_id": gripe_id,
+                "section": section,
+                "board": board,
                 "pos": pos,
                 "meta": meta,
                 "ref_meta": ref_meta,
@@ -1711,6 +1723,10 @@ def edit(
     # paper/cfp: supplement_of=<parent slug | paN> declares this record a
     # supplement (SI) of that parent; made alone, no other edit fields.
     supplement_of: str | None = None,
+    # memory (see precis-memory-help): hook= is the one-line index text
+    # (refs.meta.hook), the flat spelling of meta={'hook': …}. Declared at
+    # the verb level so strict-schema MCP clients don't strip it.
+    hook: str | None = None,
     find: str | None = None,
     before: str | None = None,
     after: str | None = None,
@@ -1942,6 +1958,7 @@ def edit(
         "pages": pages,
         "url": url,
         "supplement_of": supplement_of,
+        "hook": hook,
         "find": find,
         "before": before,
         "after": after,
