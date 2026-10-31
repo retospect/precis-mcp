@@ -13,6 +13,8 @@
 #   · on a non-zero exit, the last 5 log lines (the end state, whatever
 #     shape the failure took)
 #   · on a conflict, the conflicted file list — names, never diffs
+#   · every land-notify line (ship's post-land todo/gripe status writes —
+#     result, skip or failure; gr542762)
 #   · "full log: <path>"
 #   · the status token, LAST: the log's own "<NAME>: <token>" line when it
 #     has one (scripts/rebase emits REBASE_STATUS per exit), else derived:
@@ -67,5 +69,11 @@ quiet_epilogue() {
     if [ "$rc" -eq 0 ]; then
         awk '/landed on main/{getline;print;exit}' "$log" 2>/dev/null || true
     fi
+    # ship's post-land status writes (scripts/lib/land_notify.py) print one
+    # land-notify line to the transcript only; a builder reading the short
+    # capture saw no todo close and re-posted it by hand (gr542762). Forward
+    # every land-notify line — result, skip and failure shapes — next to the
+    # status token. A rebase log has none; the grep is a no-op there.
+    grep '^land-notify' "$log" 2>/dev/null || true
     printf 'full log: %s\n%s\n' "$log" "$status"
 }

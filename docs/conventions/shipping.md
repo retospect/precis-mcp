@@ -48,8 +48,11 @@ triaged → fixing → verify → done). After the gripe-note comment,
 `scripts/ship` runs `scripts/lib/land_notify.py`: each `grN` in the
 trailing `(grN, tdM)` list gets `resolved: <sha> (main, release pending)`
 + `STATUS:verify`; each `tdM` gets `landed: <sha>` + `STATUS:done`.
-Same best-effort contract, one `land-notify` line; off switch
-`PRECIS_LAND_NOTIFY=0`. After each rollout `scripts/release` runs
+Same best-effort contract, one `land-notify` line, forwarded to the quiet
+epilogue next to `SHIP_STATUS`; off switch
+`PRECIS_LAND_NOTIFY=0`. Ship owns this close — after a land, check the
+ref's state, not the log, and never post a second `landed:` comment or
+`STATUS:done` by hand (gr542762). After each rollout `scripts/release` runs
 `scripts/gripe-validate`, which flips every verify gripe whose resolved
 sha is an ancestor of `origin/prod` to `done` (`--dry-run` lists them;
 it is safe to run on a schedule; off switch `PRECIS_GRIPE_VALIDATE=0`).
@@ -213,7 +216,8 @@ Hand-run sync has three wrong-base traps:
 
 `scripts/ship` and `scripts/rebase` are quiet by default (gr497896): the
 full transcript goes to a `/tmp` log whose path is printed, and the terminal
-sees only the ✖ lines, a conflict's file list, and the final
+sees only the ✖ lines, a conflict's file list, the landed sha and any
+`land-notify` line, and the final
 `SHIP_STATUS:`/`REBASE_STATUS:` token. `--verbose` (or
 `PRECIS_SHIP_VERBOSE=1`) restores the old full stream. `scripts/branch-audit
 [BRANCH...]` prints each branch's landed/unlanded/partial verdict; the same

@@ -233,10 +233,12 @@ class Rig:
         sleep: float = 4,
         probe: bool = False,
         hold: bool = False,
+        msg: str | None = None,
         **env: str,
     ) -> tuple[subprocess.Popen[str], Path]:
         """Start scripts/ship. ``hold=True`` makes the fake gate wait for
-        ``release()`` rather than for ``sleep`` seconds."""
+        ``release()`` rather than for ``sleep`` seconds; ``msg`` overrides
+        the default ``-m`` squash subject."""
         log = self.root / f"{wt.name}.log"
         full_env = {
             **self.env,
@@ -247,7 +249,13 @@ class Rig:
         }
         fh = log.open("w", encoding="utf-8")
         proc = subprocess.Popen(
-            [_BASH, "scripts/ship", *flags, "-m", f"chore(test): ship {wt.name}"],
+            [
+                _BASH,
+                "scripts/ship",
+                *flags,
+                "-m",
+                msg or f"chore(test): ship {wt.name}",
+            ],
             cwd=wt,
             env=full_env,
             stdout=fh,

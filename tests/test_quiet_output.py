@@ -208,6 +208,50 @@ def test_ship_quiet_success(rig: Rig) -> None:
     )
 
 
+_GRIPENOTE_STUB = """import subprocess
+
+
+def write_tree(root):
+    return root
+
+
+def run_capped(argv, timeout):
+    return subprocess.run(
+        argv, timeout=timeout, capture_output=True, text=True, encoding="utf-8"
+    )
+"""
+
+
+def test_ship_quiet_forwards_land_notify(rig: Rig) -> None:
+    """gr542762: land_notify's result line used to live only in the /tmp
+    transcript, so a builder grepping its short capture concluded the todo
+    close never ran and posted a duplicate `landed:` comment by hand. The
+    epilogue now forwards every land-notify line next to SHIP_STATUS."""
+    wt = rig.worktree(
+        "ln",
+        {
+            "ln.txt": "x\n",
+            # land_notify execs scripts/gripe-note for run_capped/write_tree;
+            # the rig stages no real one. A stub plus PRECIS_LAND_NOTIFY_CLI
+            # (a no-op prod-precis) drives the success path with no DSN.
+            "scripts/gripe-note": _GRIPENOTE_STUB,
+        },
+    )
+    p, log = rig.ship(
+        wt,
+        "--quick",
+        sleep=1,
+        msg="fix(test): land-notify forwarding (td7)",
+        PRECIS_SHIP_VERBOSE="0",
+        PRECIS_LAND_NOTIFY_CLI="/bin/true",
+    )
+    out = _finish(p, log)
+    assert out.rstrip().endswith("SHIP_STATUS: shipped"), out
+    assert re.search(r"^land-notify [0-9a-f]{9}: td7 done$", out, re.M), out
+    # and it is still the transcript's own line, not a re-print
+    assert "land-notify" in _log_path(out).read_text(encoding="utf-8")
+
+
 def test_ship_quiet_red_gate(rig: Rig) -> None:
     wt = rig.worktree("red", {"r.txt": "r\n"})
     p, log = rig.ship(

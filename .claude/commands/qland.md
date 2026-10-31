@@ -106,6 +106,11 @@ Optional ship message from the user: `$ARGUMENTS`
    ```
    Then one line summarizing what shipped.
 
+   If the squash subject named `(grN/tdM)` refs, ship already moved them —
+   the `land-notify` line prints next to `SHIP_STATUS`; check the ref's
+   state, not the log, and never post a second `landed:` comment by hand
+   (gr542762).
+
 6. **Skip the /land ceremony — but carry the debt forward.** No doc-refresh
    pass, no reviewer, no issue-closer here; speed is the point. If this
    branch changed a contract that needs a doc/skill update, or shipped
