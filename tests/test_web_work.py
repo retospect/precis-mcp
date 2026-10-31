@@ -158,13 +158,13 @@ def test_work_page_shows_threaded_and_unplaced_gripes(
     p_handle, o_handle = f"gr{placed}", f"gr{orphan}"
     assert p_handle in tags
     assert 'data-kind="gripe"' in tags[p_handle]
-    assert 'data-status="unbriefed"' in tags[p_handle]
+    assert 'data-status="open"' in tags[p_handle]
     assert f'data-root="{t["root"]}"' in tags[p_handle]
     assert f'href="/eye/{p_handle}"' in html
     start = html.index(tags[p_handle])
     row = html[start : html.index("</li>", start)]
     assert "Factory: the loop stalls" in row
-    assert ">unbriefed</span>" in row
+    assert ">open</span>" in row
     assert re.search(r"\d+[smhd] ago", row)
     assert html.index(f"td{t['root']}") < html.index(tags[p_handle])
     # the unplaced bucket is its own section with the same row shape

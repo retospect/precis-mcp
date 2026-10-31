@@ -9,7 +9,7 @@ answers:
   - what blocks a lane, and what waits on the owner?
   - how do I ask the owner a question, and how is it answered?
   - how do I claim a slice before working it, and how do I release it?
-  - where does a gripe land in the work tree, and what does its loop stage mean?
+  - where does a gripe land in the work tree, and what does its stage mean?
   - what is a pillar quest, and why is a paper a month todo and not a quest?
 applies-to: search(kind='todo', view='work'); get(kind='todo', id=N, extent='fisheye+1hop'); tag(kind='todo', add=['claimed-by:…'])
 tags: [workflow]
@@ -47,7 +47,7 @@ search(kind="todo", view="work")
   td540836 ○ prio=3 — Dark factory: precis runs the work
     td540842 ◀ claimed-by:slice-td540842 prio=2 agents=1 — Work view: gripes hang under the root …
     td540848 ◀ claimed-by:slice-td540848 prio=3 agents=1 jobs=2(1 live) — Skill precis-work-help …
-    gr541510 unbriefed — precis-todo-tree-help~8 omits releasing a lease …
+    gr541510 open — precis-todo-tree-help~8 omits releasing a lease …
 
 unassigned roots (4) — serve no quest
   td98 [open] — Write the nanotrans review.
@@ -213,7 +213,7 @@ put(kind="todo", id=540848, text="landed: a84e0a0d0 — skill served; block lint
 ```
 
 ## Where does a gripe land in the work tree?
-## What does a gripe's loop stage mean on a work-view row?
+## What does a gripe's stage mean on a work-view row?
 
 A gripe hangs under the todo root that carries the same `thread:<slug>`
 tag. td540836 carries `thread:factory`, so a gripe tagged
@@ -227,34 +227,30 @@ Under the root, after its todo rows, one line per open gripe (15, then
 a `… +N more gripes` line with the search call):
 
 ```
-    gr541348 in-build [claude] — Work view: tree ring for a todo eye
+    gr541348 fixing [claude] — Work view: tree ring for a todo eye
 ```
 
-`gr<id> <stage> [lane] — title`. The lane is a `lane: <name>` line in
-the newest brief, else the vendor half of the loop's session; absent
-when neither names one. A gripe with two `thread:` tags hangs under both
-roots. Gripes with no `thread:` tag, or one no rendered root carries, go
-in `unplaced gripes (N) — open, thread matches no root` at the end of
-the view: the count plus the five oldest.
+`gr<id> <stage> [lane] — title`. The stage is the gripe's `STATUS` tag.
+The lane is the lane recorded on the newest job under the gripe; absent
+when the gripe has no job. A gripe with two `thread:` tags hangs under
+both roots. Gripes with no `thread:` tag, or one no rendered root
+carries, go in `unplaced gripes (N) — open, thread matches no root` at
+the end of the view: the count plus the five oldest.
 
-The stage is derived from what the gripe carries, never set by hand:
+The stage is the `STATUS` ladder; a row leaves it only when the status
+changes:
 
-| stage | the gripe has |
+| stage | the gripe is |
 |---|---|
-| `unbriefed` | no brief yet |
-| `queued` | a brief, no builder session |
-| `in-build` | a brief and a session |
-| `in-review` | a handoff after the brief |
-| `landing` / `fix-round` | a review verdict, `LAND` / `FIX` |
-| `awaiting-deploy` | a landed main sha |
+| `open` | reported, not yet looked at |
+| `triaged` | read and judged worth fixing |
+| `fixing` | claimed by a builder who holds a lease |
+| `verify` | fixed on main, waiting for the release check that closes it |
+| `done` | fixed and verified (leaves the view) |
+| `wontfix` | decided against (leaves the view) |
 
-The same stages as queues, available today:
-
-```python
-get(kind="gripe", id="/queue")
-```
-
-Writing brief, handoff, review and landed sha is in
+The older `ready_for_fix` and `in_review` values still show as stored.
+The fix loop's own queues (brief, handoff, review, landed sha) are in
 [[precis-gripe-loop-help]].
 
 ## What is a pillar quest?

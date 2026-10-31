@@ -138,8 +138,8 @@ class WorkRow:
 
     @property
     def stage(self) -> str:
-        """The web page's stage column: a todo's STATUS value. The gripe
-        loop stage joins here with td540842."""
+        """The web page's stage column: the STATUS value (a gripe row's
+        stage is its STATUS too)."""
         return self.status
 
 

@@ -97,6 +97,7 @@ TERMINAL_VALUES: tuple[str, ...] = ("done", "wontfix")
 _RANKED_VALUES: tuple[str, ...] = (
     "open",
     "triaged",
+    "fixing",
     "ready_for_fix",
     "in_review",
     "verify",
@@ -133,6 +134,7 @@ _ROWS_PAGE = 100
 _STATUS_BADGE: dict[str, str] = {
     "open": "bg-surface-muted text-fg border-line-strong",
     "triaged": "bg-info-muted text-info-deep border-info-strong",
+    "fixing": "bg-warning-muted text-warning-deep border-warning-strong",
     "ready_for_fix": "bg-warning-muted text-warning-deep border-warning-strong",
     "in_review": "bg-accent-muted text-accent-deep border-accent-strong",
     "verify": "bg-teal-muted text-teal-deep border-teal-strong",

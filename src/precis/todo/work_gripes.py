@@ -5,12 +5,11 @@ todo root that carries its ``thread:<slug>`` tag, one row each::
 
     gr541348 in-build [claude] — title
 
-``<stage>`` is the loop queue derived by :class:`precis.handlers._gripe_fix.
-FixState` (``unbriefed → queued → in-build → in-review → landing /
-fix-round → awaiting-deploy``); a gripe outside the fix loop has no brief
-yet and reads ``unbriefed``. ``[lane]`` is the builder lane: a ``lane:
-<name>`` line in the newest brief chunk, else the vendor half of the
-loop's ``session`` (``claude:window``); absent when neither names one.
+``<stage>`` is the gripe's STATUS tag as stored (``open → triaged →
+fixing → verify``, plus the older ``ready_for_fix`` / ``in_review``); an
+untagged gripe reads ``open``. ``[lane]`` is ``meta.lane`` of the gripe's
+newest child job (a lane is adapter + credential pool + concurrency cap,
+a field on the job, never prose); absent when the gripe has no job.
 
 Gripes whose thread matches no rendered root go in one "unplaced" bucket
 at the end of the view — the count plus the five oldest — so
@@ -28,12 +27,10 @@ HTML (``data-handle``, ``/eye`` link), so the two cannot drift.
 
 from __future__ import annotations
 
-import re
 from dataclasses import dataclass
 from datetime import datetime
 from typing import TYPE_CHECKING
 
-from precis.handlers import _gripe_fix as gf
 from precis.todo import views
 from precis.utils import handle_registry
 
@@ -47,21 +44,24 @@ MAX_GRIPES_PER_ROOT = 15
 UNPLACED_SHOWN = 5
 #: Indent of a gripe row: one level below the root's children.
 _INDENT = "    "
-_LANE_RE = re.compile(r"^\W*lane\s*[:=]\s*([\w.-]+)", re.IGNORECASE | re.MULTILINE)
-_STAGE_RANK = {q: i for i, q in enumerate(gf.QUEUES)}
+#: STATUS values in ladder order, the row sort; a value outside it
+#: (vocabulary drift) sorts last.
+_STAGE_ORDER = ("open", "triaged", "fixing", "ready_for_fix", "in_review", "verify")
+_STAGE_RANK = {s: i for i, s in enumerate(_STAGE_ORDER)}
 
 
 @dataclass(frozen=True)
 class GripeRow:
-    """One open gripe. ``stage`` is the derived loop queue and ``lane`` the
-    builder lane (module docstring); ``created_at`` is the web age column;
-    ``threads`` every ``thread:`` slug it carries (a row hung under one
-    root may carry others)."""
+    """One open gripe. ``stage`` is its STATUS tag value and ``lane`` the
+    newest child job's ``meta.lane`` (``""`` with no job; module
+    docstring); ``created_at`` is the web age column; ``threads`` every
+    ``thread:`` slug it carries (a row hung under one root may carry
+    others)."""
 
     ref_id: int
     title: str
     stage: str
-    lane: str | None
+    lane: str
     created_at: datetime
     threads: tuple[str, ...]
     #: ``gr<id>`` — the click / ``get`` handle.
@@ -109,31 +109,43 @@ def _open_gripes(store: Store, *, tags: list[str] | None = None) -> list[Ref]:
     )
 
 
-def _lane(state: gf.FixState) -> str | None:
-    brief = state.newest_of(gf.BRIEF_KIND)
-    if brief is not None:
-        m = _LANE_RE.search(brief.text)
-        if m:
-            return m.group(1)
-    if state.session and ":" in state.session:
-        return state.session.split(":", 1)[0] or None
-    return None
+def _lanes(store: Store, gripe_ids: list[int]) -> dict[int, str]:
+    """``{gripe id: lane}`` from each gripe's newest child job's
+    ``meta.lane`` (one query); a gripe with no job, or a job naming no
+    lane, is absent."""
+    if not gripe_ids:
+        return {}
+    with store.pool.connection() as conn:
+        rows = conn.execute(
+            "SELECT DISTINCT ON (parent_id) parent_id, meta->>'lane' "
+            "FROM refs WHERE parent_id = ANY(%s) AND kind = 'job' "
+            "AND retired_at IS NULL "
+            "ORDER BY parent_id, created_at DESC, ref_id DESC",
+            (gripe_ids,),
+        ).fetchall()
+    return {int(pid): str(lane) for pid, lane in rows if lane}
+
+
+def _stage(tags: list[tuple[str, str]]) -> str:
+    """The STATUS tag value; an untagged gripe reads ``open``."""
+    return next((v for ns, v in tags if ns == "STATUS"), "open")
 
 
 def _rows(store: Store, refs: list[Ref]) -> list[GripeRow]:
-    """Rows for ``refs`` in the order given (two queries for the states,
-    one for the thread tags)."""
+    """Rows for ``refs`` in the order given (one query for the tags, one
+    for the lanes)."""
     tag_rows = store.ref_tags_bulk([r.id for r in refs])
+    lanes = _lanes(store, [r.id for r in refs])
     out: list[GripeRow] = []
-    for ref, state in zip(refs, gf.bulk_states(store, refs), strict=True):
+    for ref in refs:
         open_tags = [v for ns, v in tag_rows.get(ref.id, []) if ns == "OPEN"]
         out.append(
             GripeRow(
                 ref_id=ref.id,
                 handle=_handle(ref.id),
                 title=ref.title or "",
-                stage=state.queue or "unbriefed",
-                lane=_lane(state),
+                stage=_stage(tag_rows.get(ref.id, [])),
+                lane=lanes.get(ref.id, ""),
                 created_at=ref.created_at,
                 threads=thread_slugs(open_tags),
             )
@@ -144,7 +156,7 @@ def _rows(store: Store, refs: list[Ref]) -> list[GripeRow]:
 def gripes_by_thread(store: Store) -> dict[str, list[GripeRow]]:
     """``{slug: rows}`` over every open gripe carrying a ``thread:`` tag;
     a gripe with several threads appears under each. Rows are ordered by
-    loop stage, then id."""
+    stage, then id."""
     refs = _open_gripes(store)
     out: dict[str, list[GripeRow]] = {}
     for row in _rows(store, refs):
@@ -177,7 +189,7 @@ def render_gripe_rows(rows: list[GripeRow], *, indent: str = _INDENT) -> list[st
 
 def root_gripes(store: Store, root_tags: list[str]) -> GripeBlock:
     """The open gripes tagged with any of the root's ``thread:`` slugs
-    (``root_tags`` are the root's open tags), by loop stage then id, capped
+    (``root_tags`` are the root's open tags), by stage then id, capped
     at :data:`MAX_GRIPES_PER_ROOT`."""
     slugs = thread_slugs(root_tags)
     if not slugs:

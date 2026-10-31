@@ -1,6 +1,6 @@
 """Dark-factory step 1, slice 2 (td540842): open gripes hang under the todo
 root carrying their ``thread:`` tag in ``search(kind='todo', view='work')``,
-each with its loop stage; the rest land in one "unplaced" bucket."""
+each with its STATUS stage and its newest job's lane; the rest land in one "unplaced" bucket."""
 
 from __future__ import annotations
 
@@ -73,30 +73,62 @@ def test_threaded_gripe_hangs_under_its_root_with_stage(
         lines[root_i].lstrip()
     )
     assert (g_i < other_i) or (other_i < root_i)
-    # not in the loop yet -> unbriefed, no lane; row grammar
-    assert row.strip() == f"gr{g} unbriefed — Factory: the loop stalls"
+    # STATUS open, no job -> no lane; row grammar
+    assert row.strip() == f"gr{g} open — Factory: the loop stalls"
     assert "unplaced gripes" not in out
 
 
-def test_stage_and_lane_follow_the_fix_loop(
+def _status_gripe(gripes: GripeHandler, title: str, status: str) -> int:
+    gid = int(insert_gripe(gripes.store, title, status=status).id)
+    gripes.tag(id=gid, add=["thread:factory"])
+    return gid
+
+
+def _job(store: Store, gripe_id: int, lane: str | None) -> None:
+    meta = {} if lane is None else {"lane": lane}
+    store.insert_ref(kind="job", slug=None, title="fix", parent_id=gripe_id, meta=meta)
+
+
+def test_stage_is_the_status_and_lane_is_the_newest_jobs(
     handler: TodoHandler, gripes: GripeHandler, hub: Hub
 ) -> None:
-    _tree(handler, hub.live_store)
-    queued = _gripe(gripes, "Factory: queued one", "thread:factory")
-    gripes.edit(id=queued, mode="fix", batch="b1", brief="Task: x\nlane: devin")
-    building = _gripe(gripes, "Factory: building", "thread:factory")
-    gripes.edit(id=building, mode="fix", batch="b1", brief="Task: y")
-    gripes.edit(id=building, mode="fix", host="mac-a", session="claude:win-1")
+    store = hub.live_store
+    _tree(handler, store)
+    triaged = _status_gripe(gripes, "Factory: triaged one", "triaged")
+    fixing = _status_gripe(gripes, "Factory: fixing one", "fixing")
+    _job(store, fixing, "devin-a")
+    _job(store, fixing, "claude-b")  # newest job wins
+    verify = _status_gripe(gripes, "Factory: verify one", "verify")
+    _job(store, verify, None)  # a job naming no lane -> no lane cell
     out = handler.search(view="work").body
 
-    # the lane comes from the brief when it names one
-    assert _line(out, f"gr{queued}").strip() == (
-        f"gr{queued} queued [devin] — Factory: queued one"
+    assert _line(out, f"gr{triaged}").strip() == (
+        f"gr{triaged} triaged — Factory: triaged one"
     )
-    # else from the loop session's vendor
-    assert _line(out, f"gr{building}").strip() == (
-        f"gr{building} in-build [claude] — Factory: building"
+    assert _line(out, f"gr{fixing}").strip() == (
+        f"gr{fixing} fixing [claude-b] — Factory: fixing one"
     )
+    assert _line(out, f"gr{verify}").strip() == (
+        f"gr{verify} verify — Factory: verify one"
+    )
+    # ladder order within the root: triaged, fixing, verify
+    ids = [triaged, fixing, verify]
+    pos = [out.index(f"gr{i}") for i in ids]
+    assert pos == sorted(pos)
+
+
+def test_a_brief_lane_line_is_not_a_lane(
+    handler: TodoHandler, gripes: GripeHandler, hub: Hub
+) -> None:
+    """A lane is a field on the job, never prose (ruling 2026-10-30)."""
+    _tree(handler, hub.live_store)
+    gid = _gripe(gripes, "Factory: prose lane", "thread:factory")
+    gripes.edit(id=gid, mode="fix", batch="b1", brief="Task: x\nlane: devin")
+    gripes.edit(id=gid, mode="fix", host="mac-a", session="claude:win-1")
+    out = handler.search(view="work").body
+    row = _line(out, f"gr{gid}")
+    assert "[" not in row
+    assert row.strip() == f"gr{gid} in_review — Factory: prose lane"
 
 
 def test_terminal_gripes_are_not_listed(
@@ -153,5 +185,5 @@ def test_gripes_by_thread_groups_open_gripes(
     assert sorted(by) == ["chemistry", "factory"]
     assert [r.ref_id for r in by["factory"]] == [a, b]
     assert [r.ref_id for r in by["chemistry"]] == [b]
-    assert by["factory"][0].stage == "unbriefed"
-    assert by["factory"][0].lane is None
+    assert by["factory"][0].stage == "open"
+    assert by["factory"][0].lane == ""
