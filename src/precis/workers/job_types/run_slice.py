@@ -15,18 +15,31 @@ that holds the lane's credentials with ``params.target_node``):
   (:func:`precis.plans.lanes.pick_lane`) unless ``params.lane`` names one,
   stamps ``meta.lane``/``meta.model``/``meta.effort`` on the job, takes
   the lease on the todo (``claimed-by:lane-<lane>`` + ``STATUS:doing``),
-  cuts worktree ``slice-td<id>`` from ``origin/main`` under the checkout
-  root (:func:`slice_root`), writes ``scratch/brief.md`` there and
-  launches ``claude -p --output-format json --max-turns <n> --model <m>``
-  detached with the brief on stdin and ``PRECIS_SLICE_ID=td<id>`` in its
-  env. The handle is ``{pid, pgid, worktree, log, exit_file}``.
-* :func:`poll` waits for the exit file (or a dead pid), posts the
-  session's last message as a ``handoff:`` comment on the todo, records
-  the branch state (dirty count, commits ahead of ``origin/main``) in the
-  job summary, and ends the job ``succeeded`` on exit 0, ``failed`` with
-  the log tail otherwise. A failure releases the lease: the claim tag
-  goes, the todo returns to ``STATUS:open`` and gains ``attempt:<n>``.
+  cuts worktree ``slice-td<id>`` on branch ``slice/<id>`` from
+  ``origin/main`` under the checkout root (:func:`slice_root`), writes
+  ``scratch/brief.md`` there and launches ``claude -p --output-format json
+  --max-turns <n> --model <m> --permission-mode bypassPermissions
+  --settings <deny rules>`` detached with the brief on stdin. The env is
+  an allowlist (:func:`slice_env`): no DB DSN, no vault variables reach
+  the session. The handle is ``{pid, pgid, worktree, log, exit_file,
+  started_at}`` plus ``boot_id``/``start_time`` (the Linux process
+  identity ssh_node's orphan reaper checks) when ``/proc`` has them.
+* :func:`poll` waits for the exit file (or a dead pid), checks the branch
+  against the lane's ``deny_write_paths`` (:func:`deny_violations`),
+  posts the session's last message as a ``handoff:`` comment on the todo,
+  records the branch state (dirty count, commits ahead of
+  ``origin/main``) in the job summary, and ends the job ``succeeded`` on
+  exit 0, ``failed`` with the log tail otherwise. A failure (a deny-path
+  hit included) releases the lease: the claim tag goes, the todo returns
+  to ``STATUS:open`` and gains ``attempt:<n>``.
 * :func:`kill` SIGTERMs the session's process group.
+
+Deny paths are enforced twice: the session gets them as ``Edit``/
+``Write``/``MultiEdit``/``NotebookEdit`` deny rules through ``--settings``
+(they hold under ``bypassPermissions``), and :func:`poll` re-checks the
+branch diff and the working tree, which also catches a write made through
+Bash. The poll check runs after the session, so it cannot stop a land the
+session already made; it fails the attempt and reopens the todo.
 
 The land is the slice's own: the brief ends with ``scripts/ship --quick``
 and the ``landed:`` comment + ``STATUS:done``, so the todo closes through
@@ -43,12 +56,14 @@ claude or touch git.
 
 from __future__ import annotations
 
+import fnmatch
 import json
 import logging
 import os
 import re
 import signal
 import subprocess
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -79,6 +94,41 @@ _HANDOFF_CAP = 6000
 _TAIL_CAP = 2000
 
 _ATTEMPT_RE = re.compile(r"^attempt:(\d+)$")
+
+#: The headless session's permission mode (Reto's ruling on td542236:
+#: bypass, as plan_tick runs, bounded by the lane's deny_write_paths).
+PERMISSION_MODE = "bypassPermissions"
+
+#: File-writing tools each deny path is denied for.
+_DENY_TOOLS: tuple[str, ...] = ("Edit", "Write", "MultiEdit", "NotebookEdit")
+
+#: Parent-env names the session inherits; everything else is dropped, so
+#: no ``PRECIS_DB_*``/``PG*``/``DATABASE_URL`` DSN and no vault variable
+#: reaches it. ``PRECIS_MCP_TOKEN`` is how the session reaches the precis
+#: MCP (``.mcp.json``'s ``bearerTokenEnvVar``).
+ENV_ALLOWLIST: tuple[str, ...] = (
+    "PATH",
+    "HOME",
+    "USER",
+    "LOGNAME",
+    "SHELL",
+    "TERM",
+    "LANG",
+    "LC_ALL",
+    "TMPDIR",
+    "TZ",
+    "SSH_AUTH_SOCK",
+    "PRECIS_MCP_TOKEN",
+    "PRECIS_FACTORY",
+    "PRECIS_CLAUDE_BIN",
+    "CLAUDE_CONFIG_DIR",
+    "PRECIS_RUN_SLICE_MODEL",
+    "PRECIS_RUN_SLICE_MAX_TURNS",
+    "PRECIS_RUN_SLICE_WALL_S",
+)
+
+#: Branch name an earlier attempt cut before the ``slice/<id>`` spelling.
+_LEGACY_BRANCH = "slice-td{todo_id}"
 
 
 PARAMS_SCHEMA: dict[str, Any] = {
@@ -113,9 +163,10 @@ REQUIRES: frozenset[str] = frozenset()
 
 DESCRIPTION: str = (
     "Launch one slice (a todo with a brief) headless on a lane: claude -p in "
-    "its own worktree slice-td<id> cut from origin/main, meta.lane/model/effort "
-    "on the job, the session's last message posted as a handoff: comment on "
-    "the todo. Refused while PRECIS_FACTORY=off."
+    "its own worktree slice-td<id> on branch slice/<id> cut from origin/main, "
+    "meta.lane/model/effort on the job, the session's last message posted as "
+    "a handoff: comment on the todo; a branch touching the lane's "
+    "deny_write_paths fails the attempt. Refused while PRECIS_FACTORY=off."
 )
 
 
@@ -185,8 +236,57 @@ def slice_root() -> Path:
 
 
 def slice_name(todo_id: int) -> str:
-    """Branch and worktree name of a slice: ``slice-td<id>``."""
+    """Worktree directory name of a slice: ``slice-td<id>``."""
     return f"slice-td{todo_id}"
+
+
+def slice_branch(todo_id: int) -> str:
+    """Branch of a slice: ``slice/<id>`` (spec § "Branches")."""
+    return f"slice/{todo_id}"
+
+
+def slice_env(todo_id: int, effort: str) -> dict[str, str]:
+    """The session's environment: :data:`ENV_ALLOWLIST` names present in
+    the worker's env, the MCP token (env, else the mounted secret), and
+    ``PRECIS_SLICE_ID``/``PRECIS_SLICE_EFFORT``. Nothing else."""
+    env = {k: os.environ[k] for k in ENV_ALLOWLIST if os.environ.get(k)}
+    if "PRECIS_MCP_TOKEN" not in env:
+        try:
+            from precis.secrets import mounted_secret
+
+            token = mounted_secret("PRECIS_MCP_TOKEN")
+        except Exception:  # pragma: no cover — no secret store on this host
+            token = None
+        if token:
+            env["PRECIS_MCP_TOKEN"] = token
+    env["PRECIS_SLICE_ID"] = f"td{todo_id}"
+    env["PRECIS_SLICE_EFFORT"] = effort
+    return env
+
+
+def deny_settings(deny_paths: tuple[str, ...], tree: Path) -> str:
+    """The ``--settings`` JSON for the session: one deny rule per tool in
+    :data:`_DENY_TOOLS` per path, spelled both cwd-relative (``./<glob>``)
+    and absolute (``//<tree>/<glob>``) so the rule matches whichever base
+    the CLI resolves a flag-supplied setting against."""
+    rules: list[str] = []
+    for path in deny_paths:
+        for spec in (f"./{path}", f"/{tree.as_posix()}/{path}"):
+            rules += [f"{tool}({spec})" for tool in _DENY_TOOLS]
+    return json.dumps({"permissions": {"deny": rules}})
+
+
+def deny_violations(paths: list[str], deny_paths: tuple[str, ...]) -> list[str]:
+    """The ``paths`` (repo-relative, posix) matching any ``deny_paths``
+    glob (``fnmatch``: ``*`` spans ``/``, so ``dir/**`` is the subtree)."""
+    return sorted(
+        {p for p in paths if any(fnmatch.fnmatchcase(p, g) for g in deny_paths)}
+    )
+
+
+def _lane_deny_paths(lane_name: Any) -> tuple[str, ...]:
+    lane = _lanes.get_lane(str(lane_name)) if lane_name else None
+    return lane.deny_write_paths if lane else _lanes.FACTORY_DENY_WRITE_PATHS
 
 
 # ── Seams (tests monkeypatch these) ────────────────────────────────
@@ -254,6 +354,24 @@ def _process_alive(pid: int) -> bool:
 def _signal_group(pgid: int, sig: int) -> None:
     """Send ``sig`` to the process group ``pgid``."""
     os.killpg(pgid, sig)
+
+
+def _process_identity(pid: int) -> tuple[str, int] | None:
+    """``(kernel boot_id, process start ticks)`` of ``pid`` from ``/proc``
+    (the identity ssh_node's orphan reaper matches before a kill, same
+    read as ``precis_pathway.runner._spawn_detached``); ``None`` when
+    ``/proc`` lacks them (not Linux, or the process already exited)."""
+    try:
+        boot_id = (
+            Path("/proc/sys/kernel/random/boot_id").read_text(encoding="utf-8").strip()
+        )
+        # comm (field 2) can contain spaces and ')'; starttime (field 22)
+        # is offset 19 after its final ')'.
+        stat = Path(f"/proc/{pid}/stat").read_text(encoding="utf-8")
+        start_time = int(stat.rsplit(")", 1)[1].split()[19])
+    except (OSError, ValueError, IndexError, UnicodeError):
+        return None
+    return boot_id, start_time
 
 
 # ── Todo reads and writes (store-level; workers never import handlers) ──
@@ -345,18 +463,35 @@ def render_brief(
     model: str,
     effort: str,
     generator: bool = False,
+    deny_paths: tuple[str, ...] = _lanes.FACTORY_DENY_WRITE_PATHS,
 ) -> str:
     """The prompt a slice session starts from. Ends with the land
     instruction, so the slice closes its own todo; a ``generator`` brief
-    ends with the child-todo instruction instead (the plan tick closes it)."""
+    ends with the child-todo instruction instead (the plan tick closes it).
+    Names the ``deny_paths`` the session may not write."""
     name = slice_name(todo_id)
     lines = [
         f"# Slice td{todo_id}: {title.strip()}",
         "",
         f"You are a headless build session on lane `{lane}` (model `{model}`, "
-        f"effort `{effort}`), in git worktree `{name}` on branch `{name}`, cut "
-        "from `origin/main`. Work only in this worktree. Read CLAUDE.md and "
-        "AGENTS.md here before editing; their rules bind you.",
+        f"effort `{effort}`), in git worktree `{name}` on branch "
+        f"`{slice_branch(todo_id)}`, cut from `origin/main`. Work only in this "
+        "worktree. Read CLAUDE.md and AGENTS.md here before editing; their "
+        "rules bind you.",
+    ]
+    if deny_paths:
+        lines += [
+            "",
+            "## Paths you may not write",
+            "",
+            "Do not create, edit or delete these paths by any means (Bash "
+            "included). A branch or working tree that touches one fails this "
+            "attempt and reopens the todo. If the work needs a change there, "
+            "stop and say so in your final message.",
+            "",
+            *[f"- `{p}`" for p in deny_paths],
+        ]
+    lines += [
         "",
         "## Brief",
         "",
@@ -466,20 +601,43 @@ def validate_submit(
 # ── Detached protocol ──────────────────────────────────────────────
 
 
-def _ensure_worktree(root: Path, name: str) -> Path:
-    """Worktree ``<root>/.claude/worktrees/<name>`` on branch ``<name>``,
-    cut from ``origin/main``. A retry reuses an existing tree (the branch
-    stays owned by its slice until it lands or is abandoned)."""
-    tree = root / ".claude" / "worktrees" / name
+def _branch_exists(root: Path, branch: str) -> bool:
+    proc = _git(["rev-parse", "--verify", "--quiet", f"refs/heads/{branch}"], root)
+    return proc.returncode == 0
+
+
+def _adopt_legacy_branch(root: Path, todo_id: int) -> None:
+    """Rename an earlier attempt's ``slice-td<id>`` branch to
+    ``slice/<id>`` (its commits carry over; a checked-out branch renames
+    in place). No-op when ``slice/<id>`` exists or there is no legacy one."""
+    branch = slice_branch(todo_id)
+    legacy = _LEGACY_BRANCH.format(todo_id=todo_id)
+    if _branch_exists(root, branch) or not _branch_exists(root, legacy):
+        return
+    move = _git(["branch", "-m", legacy, branch], root)
+    if move.returncode != 0:
+        raise RuntimeError(
+            f"git branch -m {legacy} {branch} failed: {move.stderr.strip()}"
+        )
+
+
+def _ensure_worktree(root: Path, todo_id: int) -> Path:
+    """Worktree ``<root>/.claude/worktrees/slice-td<id>`` on branch
+    ``slice/<id>``, cut from ``origin/main``. A retry reuses an existing
+    tree and branch (the branch stays owned by its slice until it lands or
+    is abandoned); a legacy ``slice-td<id>`` branch is renamed first."""
+    tree = root / ".claude" / "worktrees" / slice_name(todo_id)
+    branch = slice_branch(todo_id)
+    _adopt_legacy_branch(root, todo_id)
     if tree.exists():
         return tree
     fetch = _git(["fetch", "origin", "main"], root)
     if fetch.returncode != 0:
         raise RuntimeError(f"git fetch origin main failed: {fetch.stderr.strip()}")
-    add = _git(["worktree", "add", "-b", name, str(tree), "origin/main"], root)
+    add = _git(["worktree", "add", "-b", branch, str(tree), "origin/main"], root)
     if add.returncode != 0:
         # The branch outlived its tree (an earlier attempt): re-attach it.
-        add = _git(["worktree", "add", str(tree), name], root)
+        add = _git(["worktree", "add", str(tree), branch], root)
         if add.returncode != 0:
             raise RuntimeError(f"git worktree add failed: {add.stderr.strip()}")
     return tree
@@ -549,10 +707,10 @@ def submit(ctx: Any, spec: Any) -> Any:
         model=model,
         effort=effort,
         generator=node_kind(todo.meta) == "generator",
+        deny_paths=lane.deny_write_paths,
     )
-    name = slice_name(todo_id)
     try:
-        tree = _ensure_worktree(slice_root(), name)
+        tree = _ensure_worktree(slice_root(), todo_id)
         scratch = tree / "scratch"
         scratch.mkdir(parents=True, exist_ok=True)
         brief_path = scratch / "brief.md"
@@ -569,20 +727,21 @@ def submit(ctx: Any, spec: Any) -> Any:
             str(_max_turns()),
             "--model",
             model,
+            "--permission-mode",
+            PERMISSION_MODE,
+            "--settings",
+            deny_settings(lane.deny_write_paths, tree),
         ]
-        env = {
-            **os.environ,
-            "PRECIS_SLICE_ID": f"td{todo_id}",
-            "PRECIS_SLICE_EFFORT": effort,
-        }
         pid = _launch(
             argv,
             cwd=tree,
             stdin=brief_path,
             log=log_path,
             exit_file=exit_path,
-            env=env,
+            env=slice_env(todo_id, effort),
         )
+        started_at = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+        identity = _process_identity(pid)
     except Exception as exc:
         log.warning("run_slice: launch of td%d failed", todo_id, exc_info=True)
         _fail_submit(ctx, todo_id, lane.name, f"launch failed: {exc}")
@@ -593,13 +752,19 @@ def submit(ctx: Any, spec: Any) -> Any:
         f"run_slice: launched td{todo_id} on lane {lane.name} (model {model}, "
         f"effort {effort}) pid {pid} in {tree}",
     )
-    return {
+    handle: dict[str, Any] = {
         "pid": pid,
         "pgid": pid,
         "worktree": str(tree),
         "log": str(log_path),
         "exit_file": str(exit_path),
+        "started_at": started_at,
     }
+    if identity is not None:
+        # ssh_node's orphan reaper kills only a group whose leader still
+        # has this boot_id and start-tick count; without them it skips.
+        handle["boot_id"], handle["start_time"] = identity
+    return handle
 
 
 def _read_exit(handle: dict[str, Any]) -> int | None:
@@ -657,6 +822,47 @@ def _branch_state(tree: Path) -> tuple[int | None, list[str]]:
     return dirty, commits
 
 
+def changed_paths(tree: Path) -> list[str] | None:
+    """Repo-relative paths the slice touched: the branch diff from its
+    merge base with ``origin/main`` (renames split into delete + add) plus
+    every working-tree change, untracked files included. ``None`` when git
+    cannot answer (the deny check then fails closed)."""
+    diff = _git(["diff", "--name-only", "--no-renames", "origin/main...HEAD"], tree)
+    status = _git(["status", "--porcelain", "-z", "--untracked-files=all"], tree)
+    if diff.returncode != 0 or status.returncode != 0:
+        return None
+    paths = {ln.strip() for ln in diff.stdout.splitlines() if ln.strip()}
+    entries = status.stdout.split("\0")
+    i = 0
+    while i < len(entries):
+        entry = entries[i]
+        i += 1
+        if len(entry) < 4:
+            continue
+        paths.add(entry[3:])
+        if entry[0] in "RC" and i < len(entries):
+            # -z puts a rename/copy's source path in the next entry.
+            paths.add(entries[i])
+            i += 1
+    return sorted(p for p in paths if p)
+
+
+def _deny_reason(tree: Path, deny_paths: tuple[str, ...]) -> str | None:
+    """Why the slice's branch breaks its lane's deny paths, or ``None``."""
+    if not deny_paths:
+        return None
+    paths = changed_paths(tree)
+    if paths is None:
+        return (
+            f"deny-path check could not read the branch in {tree} (git failed); "
+            "failing closed"
+        )
+    hits = deny_violations(paths, deny_paths)
+    if not hits:
+        return None
+    return "touched deny_write_paths: " + ", ".join(f"`{p}`" for p in hits[:50])
+
+
 def poll(ctx: Any, handle: Any) -> bool:
     """Detached poll half: ``False`` while the session runs; once it has
     exited, the handoff, the branch state and the terminal status."""
@@ -673,9 +879,15 @@ def poll(ctx: Any, handle: Any) -> bool:
     lane = (ctx.meta or {}).get("lane")
     log_text = _read_log(handle)
     result, is_error = parse_result(log_text)
+    tree = Path(str(handle.get("worktree") or ""))
+    # Server-side deny check, before the handoff lands: independent of
+    # whether the session honoured its deny rules (Bash writes included).
+    denied = _deny_reason(tree, _lane_deny_paths(lane))
 
-    if result:
-        handoff = result.strip()
+    handoff = (result or "").strip()
+    if denied:
+        handoff = f"attempt FAILED, {denied}.\n\n{handoff}".strip()
+    if handoff:
         if len(handoff) > _HANDOFF_CAP:
             handoff = handoff[:_HANDOFF_CAP].rstrip() + " …(clipped)"
         try:
@@ -683,22 +895,23 @@ def poll(ctx: Any, handle: Any) -> bool:
         except Exception:  # pragma: no cover — the job outcome still lands
             log.warning("run_slice: handoff comment on td%d failed", todo_id)
 
-    tree = Path(str(handle.get("worktree") or ""))
     dirty, commits = _branch_state(tree)
     ctx.set_meta(exit_code=exit_code, branch_dirty=dirty, branch_commits=commits[:50])
     summary = [
         f"run_slice td{todo_id} on lane {lane}: exit "
         f"{'unknown (process gone, no exit status)' if exit_code is None else exit_code}"
         f"{', claude reported an error' if is_error and result is not None else ''}.",
-        f"Branch {slice_name(todo_id)} in {tree}: "
+        f"Branch {slice_branch(todo_id)} in {tree}: "
         f"{'?' if dirty is None else dirty} uncommitted path(s), "
         f"{len(commits)} commit(s) ahead of origin/main.",
     ]
+    if denied:
+        summary.append(f"Deny check: {denied}.")
     if commits:
         summary += ["", *commits[:20]]
     ctx.append_chunk("job_summary", "\n".join(summary))
 
-    if exit_code == 0 and not is_error:
+    if exit_code == 0 and not is_error and not denied:
         ctx.set_status("succeeded")
         return True
 
@@ -708,9 +921,10 @@ def poll(ctx: Any, handle: Any) -> bool:
     except Exception:  # pragma: no cover — defensive; the job still fails
         log.warning("run_slice: lease release on td%d failed", todo_id, exc_info=True)
     tail = log_text[-_TAIL_CAP:].strip()
+    what = denied if denied else f"failed (exit {exit_code})"
     reason = (
-        f"run_slice: session for td{todo_id} failed (exit {exit_code}); todo back "
-        f"to open, attempt:{attempt}"
+        f"run_slice: session for td{todo_id} {what}; todo back to open, "
+        f"attempt:{attempt}"
     )
     if tail:
         reason = f"{reason}\n--- log tail ---\n{tail}"
@@ -735,15 +949,22 @@ def kill(ctx: Any, handle: Any) -> None:
 __all__ = [
     "COMPATIBLE_EXECUTORS",
     "DESCRIPTION",
+    "ENV_ALLOWLIST",
     "NAME",
     "PARAMS_SCHEMA",
+    "PERMISSION_MODE",
     "REQUIRES",
+    "changed_paths",
+    "deny_settings",
+    "deny_violations",
     "factory_off",
     "kill",
     "parse_result",
     "poll",
     "release_todo",
     "render_brief",
+    "slice_branch",
+    "slice_env",
     "slice_root",
     "submit",
     "validate_submit",

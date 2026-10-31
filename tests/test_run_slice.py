@@ -7,6 +7,7 @@ no git, no claude is ever spawned.
 from __future__ import annotations
 
 import json
+import re
 import subprocess
 import sys
 from dataclasses import dataclass, field
@@ -154,15 +155,29 @@ def _proc(stdout: str = "", rc: int = 0) -> subprocess.CompletedProcess[str]:
 @pytest.fixture
 def seams(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> dict[str, Any]:
     """Fake git + launcher + process probe; records every call."""
-    calls: dict[str, Any] = {"git": [], "launch": [], "alive": True, "signals": []}
+    calls: dict[str, Any] = {
+        "git": [],
+        "launch": [],
+        "alive": True,
+        "signals": [],
+        "identity": None,
+    }
 
     def fake_git(args: list[str], cwd: Path) -> subprocess.CompletedProcess[str]:
         calls["git"].append((args, Path(cwd)))
         if args[:2] == ["worktree", "add"]:
             tree = args[4] if args[2] == "-b" else args[2]
             Path(tree).mkdir(parents=True, exist_ok=True)
+        if args[:3] == ["rev-parse", "--verify", "--quiet"]:
+            branches = calls.get("branches")
+            if branches is not None:
+                return _proc(rc=0 if args[3] in branches else 1)
         if args == ["status", "--porcelain"]:
             return _proc(calls.get("porcelain", ""))
+        if args[:2] == ["status", "--porcelain"] and "-z" in args:
+            return _proc(calls.get("porcelain_z", ""), rc=calls.get("status_rc", 0))
+        if args[:2] == ["diff", "--name-only"]:
+            return _proc(calls.get("diff", ""))
         if args[:2] == ["log", "--oneline"]:
             return _proc(calls.get("ahead", ""))
         return _proc()
@@ -174,6 +189,7 @@ def seams(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> dict[str, Any]:
     monkeypatch.setattr(run_slice, "_git", fake_git)
     monkeypatch.setattr(run_slice, "_launch", fake_launch)
     monkeypatch.setattr(run_slice, "_process_alive", lambda pid: calls["alive"])
+    monkeypatch.setattr(run_slice, "_process_identity", lambda pid: calls["identity"])
     monkeypatch.setattr(
         run_slice, "_signal_group", lambda pgid, sig: calls["signals"].append(pgid)
     )
@@ -354,7 +370,7 @@ def test_generator_brief_creates_children_and_never_lands(
     assert "blocked-by" in brief
     assert "Do not tag this todo done: the dispatcher closes it" in brief
     # no land steps: no ship, no landed comment, no STATUS:done instruction
-    assert "scripts/ship" not in brief
+    assert "scripts/ship --quick" not in brief
     assert "landed:" not in brief
     assert "add=['STATUS:done']" not in brief
 
@@ -385,6 +401,8 @@ def test_submit_launches_and_claims(seams: dict[str, Any], tmp_path: Path) -> No
     ctx, handle = _submit(store, seams, effort="medium")
 
     tree = tmp_path / ".claude" / "worktrees" / "slice-td42"
+    started_at = handle.pop("started_at")
+    assert re.fullmatch(r"\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ", started_at)
     assert handle == {
         "pid": 4242,
         "pgid": 4242,
@@ -403,12 +421,15 @@ def test_submit_launches_and_claims(seams: dict[str, Any], tmp_path: Path) -> No
 
     git_cmds = [args for args, _cwd in seams["git"]]
     assert ["fetch", "origin", "main"] in git_cmds
-    assert ["worktree", "add", "-b", "slice-td42", str(tree), "origin/main"] in git_cmds
+    assert ["worktree", "add", "-b", "slice/42", str(tree), "origin/main"] in git_cmds
     brief = (tree / "scratch" / "brief.md").read_text(encoding="utf-8")
     assert brief.startswith("# Slice td42: Build the widget")
+    assert "on branch `slice/42`" in brief
+    assert "## Paths you may not write" in brief
+    assert "- `scripts/lib/**`" in brief
 
     [(argv, kw)] = seams["launch"]
-    assert argv[1:] == [
+    assert argv[1:-1] == [
         "-p",
         "--output-format",
         "json",
@@ -416,10 +437,70 @@ def test_submit_launches_and_claims(seams: dict[str, Any], tmp_path: Path) -> No
         str(run_slice._DEFAULT_MAX_TURNS),
         "--model",
         "claude-test-model",
+        "--permission-mode",
+        "bypassPermissions",
+        "--settings",
     ]
+    deny = json.loads(argv[-1])["permissions"]["deny"]
+    for tool in ("Edit", "Write", "MultiEdit", "NotebookEdit"):
+        assert f"{tool}(./scripts/ship)" in deny
+        assert f"{tool}(./src/precis/plans/**)" in deny
+        assert f"{tool}(/{tree.as_posix()}/.github/**)" in deny
+    assert len(deny) == 2 * 4 * len(lanes.FACTORY_DENY_WRITE_PATHS)
     assert kw["cwd"] == tree
     assert kw["stdin"] == tree / "scratch" / "brief.md"
     assert kw["env"]["PRECIS_SLICE_ID"] == "td42"
+
+
+def test_submit_env_is_an_allowlist(
+    seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("PRECIS_DB_DSN", "dbname=precis user=agent_rw")
+    monkeypatch.setenv("DATABASE_URL", "postgresql:///precis")
+    monkeypatch.setenv("PGPASSWORD", "pw")
+    monkeypatch.setenv("VAULT_TOKEN", "v")
+    monkeypatch.setenv("PRECIS_MCP_TOKEN", "mcp-token")
+    monkeypatch.setenv("PATH", "/usr/bin:/bin")
+    store = _Store()
+    store.add_todo(42, "t")
+    _submit(store, seams, effort="low")
+    [(_argv, kw)] = seams["launch"]
+    env = kw["env"]
+    for dropped in ("PRECIS_DB_DSN", "DATABASE_URL", "PGPASSWORD", "VAULT_TOKEN"):
+        assert dropped not in env
+    assert env["PRECIS_MCP_TOKEN"] == "mcp-token"
+    assert env["PATH"] == "/usr/bin:/bin"
+    assert env["PRECIS_SLICE_ID"] == "td42"
+    assert env["PRECIS_SLICE_EFFORT"] == "low"
+    assert set(env) <= set(run_slice.ENV_ALLOWLIST) | {
+        "PRECIS_SLICE_ID",
+        "PRECIS_SLICE_EFFORT",
+    }
+
+
+def test_submit_handle_carries_process_identity(seams: dict[str, Any]) -> None:
+    seams["identity"] = ("b00t", 12345)
+    store = _Store()
+    store.add_todo(42, "t")
+    _ctx, handle = _submit(store, seams)
+    assert handle["boot_id"] == "b00t" and handle["start_time"] == 12345
+    assert handle["pgid"] == handle["pid"] == 4242
+
+
+def test_submit_renames_legacy_branch(seams: dict[str, Any]) -> None:
+    seams["branches"] = {"refs/heads/slice-td42"}
+    store = _Store()
+    store.add_todo(42, "t")
+    _ctx, handle = _submit(store, seams)
+    assert handle is not None
+    git_cmds = [args for args, _cwd in seams["git"]]
+    assert ["branch", "-m", "slice-td42", "slice/42"] in git_cmds
+    # already on the new name → no rename
+    seams["git"].clear()
+    seams["branches"] = {"refs/heads/slice/42", "refs/heads/slice-td42"}
+    _submit(store, seams)
+    assert any(a[:2] == ["rev-parse", "--verify"] for a, _ in seams["git"])
+    assert not any(a[:2] == ["branch", "-m"] for a, _ in seams["git"])
 
 
 def test_submit_parks_when_every_lane_full(seams: dict[str, Any]) -> None:
@@ -517,6 +598,91 @@ def test_poll_dead_process_without_exit_is_failure(seams: dict[str, Any]) -> Non
     assert pctx.status == "failed"
     assert "attempt:1" in store.tag_strings(42)
     assert store.comments(42) == []  # no result → no handoff comment
+
+
+def test_poll_deny_path_in_branch_fails_the_attempt(seams: dict[str, Any]) -> None:
+    store = _Store()
+    store.add_todo(42, "t")
+    ctx, handle = _submit(store, seams)
+    seams["diff"] = "src/precis/foo.py\nscripts/lib/gate.sh\n"
+    seams["porcelain_z"] = "?? .github/workflows/x.yml\0 M docs/a.md\0"
+    _finish(handle, 0, json.dumps({"is_error": False, "result": "Landed it."}) + "\n")
+    pctx = _poll_ctx(store, ctx)
+    assert run_slice.poll(pctx, handle) is True
+    assert pctx.status == "failed"
+    assert pctx.failure is not None and "deny_write_paths" in pctx.failure
+    handoff = store.comments(42)[-1]
+    assert handoff.startswith("handoff: attempt FAILED, touched deny_write_paths:")
+    assert "`.github/workflows/x.yml`" in handoff
+    assert "`scripts/lib/gate.sh`" in handoff
+    assert "src/precis/foo.py" not in handoff and "docs/a.md" not in handoff
+    assert "Landed it." in handoff
+    tags = store.tag_strings(42)
+    assert "STATUS:open" in tags and "attempt:1" in tags
+    assert "claimed-by:lane-claude-sub" not in tags
+
+
+def test_poll_deny_check_fails_closed_when_git_fails(seams: dict[str, Any]) -> None:
+    store = _Store()
+    store.add_todo(42, "t")
+    ctx, handle = _submit(store, seams)
+    seams["status_rc"] = 128
+    _finish(handle, 0, json.dumps({"is_error": False, "result": "ok"}) + "\n")
+    pctx = _poll_ctx(store, ctx)
+    assert run_slice.poll(pctx, handle) is True
+    assert pctx.status == "failed"
+    assert "failing closed" in store.comments(42)[-1]
+
+
+def test_changed_paths_reads_renames_and_untracked(seams: dict[str, Any]) -> None:
+    seams["diff"] = "a.py\n"
+    seams["porcelain_z"] = "R  new/x.py\0scripts/test\0?? u.txt\0"
+    paths = run_slice.changed_paths(Path("/tree"))
+    assert paths == ["a.py", "new/x.py", "scripts/test", "u.txt"]
+    assert run_slice.deny_violations(paths, lanes.FACTORY_DENY_WRITE_PATHS) == [
+        "scripts/test"
+    ]
+
+
+def test_deny_violations_globs() -> None:
+    deny = lanes.FACTORY_DENY_WRITE_PATHS
+    hits = run_slice.deny_violations(
+        [
+            "scripts/ship",
+            "scripts/shipit",
+            "scripts/lib/a/b.sh",
+            "src/precis/plans/nodes.py",
+            "src/precis/workers/job_types/run_slice.py",
+            "src/precis/workers/job_types/other.py",
+            "src/precis/workers/nursery.py",
+            "deploy/roles/monitoring/templates/alert_rules.yml.j2",
+            "tests/test_run_slice.py",
+        ],
+        deny,
+    )
+    assert hits == [
+        "deploy/roles/monitoring/templates/alert_rules.yml.j2",
+        "scripts/lib/a/b.sh",
+        "scripts/ship",
+        "src/precis/plans/nodes.py",
+        "src/precis/workers/job_types/run_slice.py",
+        "src/precis/workers/nursery.py",
+    ]
+
+
+def test_every_seed_lane_carries_the_factory_deny_paths() -> None:
+    for lane in lanes.LANES:
+        assert lane.deny_write_paths == lanes.FACTORY_DENY_WRITE_PATHS
+    for path in (
+        "scripts/ship",
+        "scripts/test",
+        "scripts/lib/**",
+        ".github/**",
+        "src/precis/plans/**",
+        "src/precis/workers/job_types/plan_dispatch.py",
+        "src/precis/workers/job_types/gripe_validate.py",
+    ):
+        assert path in lanes.FACTORY_DENY_WRITE_PATHS
 
 
 def test_exit_zero_with_is_error_fails(seams: dict[str, Any]) -> None:

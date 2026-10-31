@@ -47,7 +47,21 @@ factory kill switch (it only closes gripes whose fix is already deployed).
 ## Slice hosts
 
 - `PRECIS_SLICE_ROOT`: the repo checkout `run_slice` cuts `slice-td<id>`
-  worktrees under. Default: the main checkout of the repo the worker runs
-  from. Set it when the worker has no git checkout around its code.
+  worktrees (branch `slice/<id>`) under. Default: the main checkout of
+  the repo the worker runs from. Set it when the worker has no git
+  checkout around its code. A leftover `slice-td<id>` branch from an
+  earlier attempt is renamed to `slice/<id>`.
 - `PRECIS_CLAUDE_BIN`: the `claude` binary the slice session execs
   (default `claude` on PATH). Point it at a stub in tests.
+- The session runs `--permission-mode bypassPermissions` with the lane's
+  `deny_write_paths` (`FACTORY_DENY_WRITE_PATHS` in
+  `src/precis/plans/lanes.py`: the ship harness, the factory's own
+  modules, alert rules and detectors) passed as `--settings` deny rules.
+  The poll re-checks the branch diff and working tree; a hit fails the
+  attempt and reopens the todo, but it runs after the session, so it
+  does not undo a land the session already made.
+- The session's env is an allowlist (`ENV_ALLOWLIST` in `run_slice.py`):
+  no DB DSN or vault variable reaches it. It needs `PRECIS_MCP_TOKEN`
+  (env or the mounted secret) to reach the precis MCP, and the claude
+  login under `HOME` (or `CLAUDE_CONFIG_DIR`); `ANTHROPIC_API_KEY` is
+  not passed.

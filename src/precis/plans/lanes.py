@@ -35,6 +35,29 @@ RUN_SLICE = "run_slice"
 #: package stays below the workers layer).
 _TERMINAL_STATUSES: tuple[str, ...] = ("succeeded", "failed", "cancelled")
 
+#: Repo paths a slice session may not write (spec § "7. Alerts as slices":
+#: a fixer never touches the rule that fired, the factory never lands its
+#: own controller; Reto's ruling on td542236). Posix globs, repo-relative;
+#: ``**`` spans directories. ``run_slice`` passes them to the session as
+#: deny rules and fails the attempt when the branch touches one anyway.
+FACTORY_DENY_WRITE_PATHS: tuple[str, ...] = (
+    # the ship harness
+    "scripts/ship",
+    "scripts/test",
+    "scripts/lib/**",
+    ".github/**",
+    # the factory's own modules
+    "src/precis/plans/**",
+    "src/precis/workers/job_types/run_slice.py",
+    "src/precis/workers/job_types/plan_dispatch.py",
+    "src/precis/workers/job_types/gripe_validate.py",
+    # alert rules, detectors and monitors
+    "src/precis/alert_ids.py",
+    "src/precis/alerts.py",
+    "src/precis/workers/nursery.py",
+    "deploy/roles/monitoring/**",
+)
+
 
 @dataclass(frozen=True)
 class Lane:
@@ -44,6 +67,8 @@ class Lane:
     ``claude -p`` in a worktree; ``codex_exec``, ``kimi_tree``,
     ``devin_tree`` and ``api`` are declared, not built). ``task_classes``
     is the fit set; :data:`ANY_CLASS` fits every class.
+    ``deny_write_paths`` are the repo globs a slice on this lane may not
+    write (:data:`FACTORY_DENY_WRITE_PATHS` for every seed lane).
     """
 
     name: str
@@ -52,6 +77,7 @@ class Lane:
     cap: int
     task_classes: frozenset[str]
     enabled: bool = True
+    deny_write_paths: tuple[str, ...] = FACTORY_DENY_WRITE_PATHS
 
     def fits(self, task_class: str) -> bool:
         """``True`` when this lane takes ``task_class`` work."""
@@ -167,6 +193,7 @@ def pick_lane(
 
 __all__ = [
     "ANY_CLASS",
+    "FACTORY_DENY_WRITE_PATHS",
     "LANES",
     "RUN_SLICE",
     "Lane",
