@@ -331,6 +331,28 @@ def test_identity_by_doi(store, serve, inbox):
     assert (rec["status"], rec["identity"]) == ("dropped", "doi")
 
 
+def test_related_article_doi_refused(store, serve, inbox):
+    """gr513878: a fetched companion PDF whose page 1 cites the stub's
+    DOI inside a "Related research article" box is not that paper — the
+    cited DOI is a citation, not identity, and the title the box
+    restates cannot carry the title check either."""
+    serve["body"] = _make_pdf(
+        [
+            "A lyophilization-compatible colorimetric LAMP assay\n"
+            "Related research article: Quantum widgets and gadgets, "
+            "J. Microbiol. Methods 156 (2019), https://doi.org/10.1234/stub\n"
+            "journal homepage: www.elsevier.com/locate/mex\n"
+            "DOI 10.1016/j.mex.2026.104138",
+            "x",
+            "y",
+        ]
+    )
+    ref_id = _stub(store, title="Quantum widgets and gadgets", doi="10.1234/stub")
+    rec = paper_pull.pull(store, ref_id, _URL)
+    assert (rec["status"], rec["reason"]) == ("failed", "identity_mismatch")
+    assert list(inbox.glob("*.pdf")) == [] and list(inbox.glob("*.json")) == []
+
+
 def test_identity_by_title(store, serve, inbox):
     serve["body"] = _make_pdf(["Quantum Widgets: a study!", "x", "y"])
     ref_id = _stub(store, title="A Study of quantum widgets", doi="10.9/other")

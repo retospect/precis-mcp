@@ -174,6 +174,32 @@ def doi_in_related_context(
     return bool(_RELATED_ARTICLE_RE.search(text[start:pos]))
 
 
+def related_citation_spans(text: str) -> list[tuple[int, int]]:
+    """``(start, end)`` spans of related-article citations in ``text``.
+
+    Each span runs from the companion-journal label ("Related research
+    article", "Data in Brief", …) to the end of the DOI that closes its
+    citation; the label's reach ends there, as in
+    :func:`doi_in_related_context`, and :data:`_RELATED_CONTEXT_CHARS`
+    bounds the hunt identically. A label with no DOI inside the window
+    opens no citation and yields no span.
+
+    Everything inside a span describes ANOTHER paper — its title as well
+    as its DOI. :func:`precis.ingest.pdf_identity` elides the spans
+    before identity checks so a cited title/DOI can't pass as this
+    PDF's own (gr513878: the MethodsX box restated the cited 2019
+    paper's title verbatim).
+    """
+    spans: list[tuple[int, int]] = []
+    for m in _RELATED_ARTICLE_RE.finditer(text):
+        if spans and m.start() < spans[-1][1]:
+            continue
+        d = DOI_REGEX.search(text, m.end())
+        if d is not None and d.start() <= m.start() + _RELATED_CONTEXT_CHARS:
+            spans.append((m.start(), d.end()))
+    return spans
+
+
 def body_doi_candidates(first_pages: str) -> list[str]:
     """Prefixed DOIs in first-page text, best candidate first.
 

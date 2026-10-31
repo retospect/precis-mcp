@@ -12,6 +12,8 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
+from precis.ingest.pdf_sidecar import related_citation_spans
+
 #: Pages of text the identity check reads.
 IDENTITY_PAGES = 3
 #: Fraction of the stub title's significant words that must occur.
@@ -70,23 +72,43 @@ def read_leading_pages(path: Path) -> tuple[int, list[str]]:
         return n_pages, [doc[i].get_text() for i in range(min(IDENTITY_PAGES, n_pages))]
 
 
+def _evidence_text(text: str) -> str:
+    """``text`` minus its related-article citation spans.
+
+    A companion journal's front page (MethodsX, Data in Brief) typesets
+    a *related* paper's title and DOI inside a "Related research
+    article" box — gr513878's wrong-PDF incident, where the citation
+    carried the stub's own DOI and restated its title verbatim. None of
+    that is this PDF's identity evidence, so neither the DOI substring
+    check nor the title-word overlap may see it.
+    """
+    pieces, last = [], 0
+    for start, end in related_citation_spans(text):
+        pieces.append(text[last:start])
+        last = end
+    pieces.append(text[last:])
+    return "".join(pieces)
+
+
 def identity_verdict(
     texts: list[str], *, title: str, doi: str | None
 ) -> tuple[str, str | None]:
     """``(identity, mismatch_detail)``.
 
-    ``identity`` is ``"doi"`` (stub DOI in the leading pages), ``"title"``
-    (>= :data:`TITLE_OVERLAP` of its significant title words occur),
-    ``"unchecked"`` (nothing to compare) or ``"mismatch"`` with a detail
-    string.
+    ``identity`` is ``"doi"`` (stub DOI in the leading pages, outside a
+    related-article citation), ``"title"`` (>= :data:`TITLE_OVERLAP` of
+    its significant title words occur — likewise outside such a
+    citation), ``"unchecked"`` (nothing to compare) or ``"mismatch"``
+    with a detail string.
     """
     text = "\n".join(texts)
+    evidence = _evidence_text(text)
     first = texts[0] if texts else ""
     sig = sig_words(title)
-    if doi and re.sub(r"\s+", "", doi.lower()) in re.sub(r"\s+", "", text.lower()):
+    if doi and re.sub(r"\s+", "", doi.lower()) in re.sub(r"\s+", "", evidence.lower()):
         return "doi", None
     if len(sig) >= 2:
-        have = set(words(text))
+        have = set(words(evidence))
         overlap = sum(w in have for w in sig) / len(sig)
         if overlap < TITLE_OVERLAP:
             return "mismatch", (
@@ -95,8 +117,11 @@ def identity_verdict(
             )
         return "title", None
     if doi:
-        return (
-            "mismatch",
-            f"DOI {doi} not in first pages; page 1: {first_line(first)!r}",
+        cited_only = re.sub(r"\s+", "", doi.lower()) in re.sub(r"\s+", "", text.lower())
+        where = (
+            "only inside a related-article citation"
+            if cited_only
+            else "not in first pages"
         )
+        return "mismatch", f"DOI {doi} {where}; page 1: {first_line(first)!r}"
     return "unchecked", None
