@@ -1090,9 +1090,12 @@ def test_mint_skips_when_the_same_key_already_succeeded(monkeypatch) -> None:
     minted = _mint_capture(monkeypatch)
     seen: list[str] = []
     monkeypatch.setattr(aggregate_job, "_engine_version", lambda: "0.42.0")
-    monkeypatch.setattr(
-        aggregate_job, "_succeeded_job_id", lambda store, k: seen.append(k) or 5
-    )
+
+    def _succeeded(_store: Any, key: str) -> int:
+        seen.append(key)
+        return 5
+
+    monkeypatch.setattr(aggregate_job, "_succeeded_job_id", _succeeded)
     out = aggregate_job._mint_kinetics_job(_mint_ctx(), {"config": {}}, 42)
     assert out is None and not minted and seen[0].startswith("autocatpath_kinetics:42:")
 
@@ -1127,7 +1130,7 @@ def test_job_is_detached_and_sized_from_the_kinetics_env(monkeypatch) -> None:
 def test_overlay_replaces_environment_and_drops_its_priced_views() -> None:
     from precis_pathway.kinetics_job import overlay_recompute_config
 
-    stored = {
+    stored: dict[str, Any] = {
         "environment": {"T": 300.0},
         "conditions": {"temperature": 300.0, "pressures": {"NO": 0.1}},
         "kinetics": {"sticking": {"NO": 0.5}, "n_samples": 50},
