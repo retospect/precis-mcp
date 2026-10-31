@@ -206,6 +206,22 @@ def test_deleted_module_still_selects_importers(selector: sel.Selector) -> None:
     assert testmon or "tests/test_link_crud.py" in targets
 
 
+def test_pcb_change_selects_workspace_pcb_local(selector: sel.Selector) -> None:
+    """gr543576 / the r159 red: the pcb offline kernel's behavioural
+    contract is tests/workspaces/test_pcb_local.py — a src/precis/pcb
+    change must select it (path-map: the examples reach the engines
+    through importlib, not an import edge). The file is wholly
+    slow-marked, so the '-m not slow' gate lanes still collect 0 tests
+    from it — the slow-lane note is what tells the caller that."""
+    targets, testmon = selector.select(["src/precis/pcb/__init__.py"])
+    assert (
+        testmon
+        or "tests/workspaces/test_pcb_local.py" in targets
+        or any(t.startswith("tests/workspaces/test_pcb_local.py::") for t in targets)
+    )
+    assert sel._all_slow(REPO / "tests/workspaces/test_pcb_local.py")
+
+
 def test_never_selects_everything(selector: sel.Selector) -> None:
     """A leaf-module diff must stay a fraction of the suite — the whole
     point of the mode is that it is cheaper than the full gate."""

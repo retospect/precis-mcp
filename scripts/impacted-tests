@@ -22,6 +22,11 @@ family prints line 1 ``testmon=0|1`` then one pytest target per line (or
 ``ship --checked`` / ``test --selected`` parse it unchanged. ``testmon=1``
 means this worktree has a ``.testmondata`` map AND Python code is in the
 affected set — the caller should additionally run ``pytest --testmon``.
+stderr notes flag a near-suite-wide selection, a missing measured DB,
+and selected targets that are wholly slow-marked — every ``-m 'not
+slow'`` lane (``ship --checked``, default ``test --selected``) collects
+zero tests from them, which is how r159's pcb_local red rode the checked
+lane (gr543576).
 
 Evidence, strongest first:
 
@@ -978,6 +983,56 @@ def _pattern_covers(pattern: str, path: str) -> bool:
     return fnmatch.fnmatch(path + "/x", pattern)
 
 
+# Marks that lift a test out of every -m 'not slow' lane — `nightly`
+# counts because tests/conftest.py auto-tags it slow.
+_HEAVY_MARKS = frozenset({"slow", "nightly"})
+
+
+def _is_heavy_mark(node: ast.expr) -> bool:
+    """A decorator or pytestmark element in the slow cluster —
+    ``pytest.mark.slow``/``nightly``, called or not."""
+    if isinstance(node, ast.Call):
+        node = node.func
+    return isinstance(node, ast.Attribute) and node.attr in _HEAVY_MARKS
+
+
+def _all_slow(path: Path) -> bool:
+    """True when ``pytest -m 'not slow'`` collects zero tests from the
+    file: a module-level ``pytestmark`` carries a heavy mark, or every
+    test function/method is marked (a marked class marks its methods).
+    Unreadable/unparseable and test-free files answer False."""
+    try:
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+    except (OSError, SyntaxError, ValueError):
+        return False
+    for node in tree.body:
+        if isinstance(node, ast.Assign) and any(
+            isinstance(t, ast.Name) and t.id == "pytestmark" for t in node.targets
+        ):
+            marks = (
+                node.value.elts
+                if isinstance(node.value, (ast.List, ast.Tuple))
+                else [node.value]
+            )
+            if any(_is_heavy_mark(e) for e in marks):
+                return True
+    decorators: list[list[ast.expr]] = []
+    for node in tree.body:
+        if isinstance(node, ast.ClassDef):
+            for m in node.body:
+                if isinstance(m, (ast.FunctionDef, ast.AsyncFunctionDef)) and (
+                    m.name.startswith("test_")
+                ):
+                    decorators.append([*node.decorator_list, *m.decorator_list])
+        elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and (
+            node.name.startswith("test_")
+        ):
+            decorators.append(node.decorator_list)
+    return bool(decorators) and all(
+        any(_is_heavy_mark(d) for d in decs) for decs in decorators
+    )
+
+
 def map_targets(changed: str) -> set[str]:
     out: set[str] = set()
     for pat, targets in PATH_MAP:
@@ -1348,6 +1403,24 @@ def _select(
         for f, r in sorted(sel.items())
         if (root / f.split("::", 1)[0]).is_file()
     }
+    # Slow-lane honesty (gr543576): a wholly slow-marked target stays in
+    # the list — the selection is right — but every '-m not slow' lane
+    # that consumes it (the checked gate hardcodes the filter, `test
+    # --selected` defaults to it) executes zero tests from it. r159's
+    # pcb_local red shipped exactly that way. Say so, and name the lane
+    # that runs them.
+    slow_only = [f for f in files if _all_slow(root / f.split("::", 1)[0])]
+    if slow_only:
+        shown = ", ".join(slow_only[:4])
+        if len(slow_only) > 4:
+            shown += f", +{len(slow_only) - 4} more"
+        notes.append(
+            f"slow-lane: {len(slow_only)} selected target(s) are entirely "
+            "slow/nightly-marked — '-m not slow' lanes (ship --checked, "
+            f"default test --selected) collect 0 tests from them: {shown}. "
+            "Exercise them via scripts/test --selected -m 'not nightly' "
+            "or a --slow gate"
+        )
     # Near-suite honesty (gr515323): when static evidence widens the answer
     # to most of the suite the selection stops being a selector — say so and
     # name the narrowing path rather than silently emitting ~400 targets.

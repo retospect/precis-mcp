@@ -435,6 +435,87 @@ def test_branch_new_test_file_is_always_selected(
         _git(toy_repo, "switch", "-q", "main")
 
 
+def test_all_slow_mark_detection(mod: ModuleType, tmp_path: Path) -> None:
+    """``_all_slow`` is the slow-lane note's truth: a module ``pytestmark``,
+    an every-test-decorated file and a marked class all count; one
+    unmarked test — or no tests — does not."""
+
+    def w(name: str, text: str) -> Path:
+        p = tmp_path / name
+        p.write_text(text, encoding="utf-8")
+        return p
+
+    assert mod._all_slow(
+        w(
+            "a.py",
+            "import pytest\npytestmark = pytest.mark.slow\n\ndef test_x():\n    pass\n",
+        )
+    )
+    assert mod._all_slow(
+        w(
+            "b.py",
+            "import pytest\n\n@pytest.mark.slow\ndef test_x():\n    pass\n\n"
+            "@pytest.mark.nightly(reason='r')\ndef test_y():\n    pass\n",
+        )
+    )
+    assert mod._all_slow(
+        w(
+            "c.py",
+            "import pytest\n\n@pytest.mark.slow\nclass TestA:\n"
+            "    def test_x(self):\n        pass\n",
+        )
+    )
+    assert mod._all_slow(
+        w(
+            "c2.py",
+            "import pytest\npytestmark = [pytest.mark.slow, pytest.mark.db]\n\n"
+            "def test_x():\n    pass\n",
+        )
+    )
+    assert not mod._all_slow(
+        w(
+            "d.py",
+            "import pytest\n\n@pytest.mark.slow\ndef test_x():\n    pass\n\n"
+            "def test_y():\n    pass\n",
+        )
+    )
+    assert not mod._all_slow(w("e.py", "def test_x():\n    pass\n"))
+    assert not mod._all_slow(w("f.py", "x = 1\n"))
+
+
+def test_slow_marked_target_is_flagged(mod: ModuleType, toy_repo: Path) -> None:
+    """gr543576 / r159: a selected target whose every test is slow-marked
+    collects 0 tests under the '-m not slow' lanes — the note is the only
+    place the checked lane's caller learns the selection was voided."""
+    _write(
+        toy_repo,
+        "tests/test_slow_core.py",
+        "import pytest\n\npytestmark = pytest.mark.slow\n\n"
+        "from pkg.core import compute\n\n\ndef test_slow():\n    assert compute(1)\n",
+    )
+    _write(
+        toy_repo,
+        "tests/test_partial.py",
+        "import pytest\n\nfrom pkg.core import compute\n\n\n"
+        "@pytest.mark.slow\ndef test_a():\n    assert compute(1)\n\n\n"
+        "def test_b():\n    assert compute(2)\n",
+    )
+    _git(toy_repo, "add", "-A")
+    _git(toy_repo, "commit", "-qm", "slow tests")
+    head = _commit(
+        toy_repo,
+        {
+            "src/pkg/core.py": "def compute(x):\n    return x + 7\n\n\ndef other(y):\n    return y\n"
+        },
+    )
+    res = _sel(mod, toy_repo, f"{head}^", head)
+    assert "tests/test_slow_core.py" in res["files"]
+    assert "tests/test_partial.py" in res["files"]
+    note = next((n for n in res["notes"] if n.startswith("slow-lane")), "")
+    assert "tests/test_slow_core.py" in note
+    assert "tests/test_partial.py" not in note
+
+
 def test_near_suite_selection_is_flagged(
     mod: ModuleType, toy_repo: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
