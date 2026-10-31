@@ -107,6 +107,47 @@ def test_work_page_columns_status_agents_stage_age(
     assert "melchior" in html
 
 
+def test_work_page_plan_node_rows(
+    client: TestClient, handler: TodoHandler, store: Store
+) -> None:
+    """Gate / loop rows carry ``data-node`` and their node_text; a task row
+    shows its lane and attempt (td542097) — all read off the model."""
+    from tests.test_todo_work_view import _plan_subtree
+
+    t = _tree(handler, store)
+    p = _plan_subtree(handler, store, t["root"])
+    html = client.get("/work").text
+    tags = _row_tags(html)
+
+    def row(key: str) -> str:
+        start = html.index(tags[f"td{p[key]}"])
+        return html[start : html.index("</li>", start)]
+
+    assert 'data-node="gate"' in tags[f"td{p['gate']}"]
+    assert 'data-node="loop"' in tags[f"td{p['loop']}"]
+    assert 'data-node="generator"' in tags[f"td{p['gen']}"]
+    assert 'data-node="phase"' in tags[f"td{p['phase']}"]
+    assert "data-node" not in tags[f"td{t['a']}"]
+    model = work_view.work_model(store)
+    rows = {r.ref_id: r for r in model.quests[0].roots[0].rows}
+    gate_row = row("gate")
+    assert rows[p["gate"]].node_text in gate_row
+    assert "gate sha-in-prod abc1234 — sha abc1234 is not an ancestor" in gate_row
+    assert "loop 1/3 until answer" in row("loop")
+    assert "generator slicer from docs/backlog/x.md" in row("gen")
+    task_row = row("task")
+    assert "lane=claude-max" in task_row
+    assert "old-lane" not in task_row
+    assert "attempt:2" in task_row
+    assert "lane=" not in row("gate")
+    assert 'data-node="task"' in tags[f"td{p['task']}"]
+    # a plain slice renders no node line, lane or attempt
+    a_start = html.index(tags[f"td{t['a']}"])
+    a_row = html[a_start : html.index("</li>", a_start)]
+    assert "lane=" not in a_row
+    assert "attempt:" not in a_row
+
+
 def test_work_page_is_read_only(
     client: TestClient, handler: TodoHandler, store: Store
 ) -> None:

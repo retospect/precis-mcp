@@ -32,6 +32,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
+from precis.plans.nodes import node_kind
 from precis.response import Response
 from precis.todo import views, work_gripes
 from precis.todo.work_gripes import GripeBlock
@@ -135,6 +136,18 @@ class WorkRow:
     waiting_for: str | None
     #: ``updated_at`` falling back to ``created_at`` — the web age column.
     updated_at: datetime | None
+    #: Plan node kind off ``meta`` (:func:`precis.plans.nodes.node_kind`):
+    #: ``task`` / ``phase`` / ``gate`` / ``loop`` / ``generator``, ``""`` for
+    #: a plain todo (td542097).
+    node: str = ""
+    #: The node's predicate / count line (``gate sha-in-prod abc1234 — why``,
+    #: ``loop 1/3 until answer``, ``generator slicer from …``; ``phase`` when
+    #: ``auto_close``); ``""`` when there is nothing to say.
+    node_text: str = ""
+    #: ``meta.lane`` of the newest child job, ``""`` with none.
+    lane: str = ""
+    #: ``N`` from an ``attempt:<N>`` tag.
+    attempt: int | None = None
 
     @property
     def stage(self) -> str:
@@ -216,6 +229,52 @@ def _tag_value(tags: list[str], prefix: str) -> str | None:
     return next((t[len(prefix) :] for t in tags if t.startswith(prefix)), None)
 
 
+#: Text-row glyph standing in for the status icon on plan nodes.
+_NODE_GLYPH = {"gate": "⊢", "loop": "↻", "generator": "⇶"}
+#: ``gate_result.why`` is cut to this many characters in ``node_text``.
+_WHY_CAP = 60
+
+
+def _gate_line(spec: Any) -> str:
+    """``<kind> <args one-liner>`` for a gate spec (arg values, in order)."""
+    if not isinstance(spec, dict):
+        return ""
+    args = spec.get("args")
+    vals = [str(v) for v in args.values()] if isinstance(args, dict) else []
+    return " ".join([str(spec.get("kind") or "?"), *vals])
+
+
+def _node_text(node: str, meta: dict[str, Any]) -> str:
+    if node == "gate":
+        text = f"gate {_gate_line(meta.get('gate'))}"
+        res = meta.get("gate_result")
+        why = str(res.get("why") or "").strip() if isinstance(res, dict) else ""
+        if why:
+            if len(why) > _WHY_CAP:
+                why = why[: _WHY_CAP - 1].rstrip() + "…"
+            text += f" — {why}"
+        return text
+    if node == "loop":
+        loop = meta.get("loop")
+        loop = loop if isinstance(loop, dict) else {}
+        return (
+            f"loop {loop.get('count') or 0}/{loop.get('max', '?')} "
+            f"until {_gate_line(loop.get('until'))}"
+        )
+    if node == "generator":
+        gen = meta.get("generate")
+        gen = gen if isinstance(gen, dict) else {}
+        return f"generator {gen.get('role', '?')} from {gen.get('from', '?')}"
+    if node == "phase":
+        return "phase"
+    return ""
+
+
+def _attempt(tags: list[str]) -> int | None:
+    raw = _tag_value(tags, "attempt:")
+    return int(raw) if raw is not None and raw.isdigit() else None
+
+
 def _row(
     node: dict[str, Any],
     *,
@@ -226,6 +285,8 @@ def _row(
     stamps: dict[int, datetime | None],
     agents: list[dict[str, Any]],
     jobs: tuple[int, int] = (0, 0),
+    metas: dict[int, dict[str, Any]] | None = None,
+    lanes: dict[int, str] | None = None,
 ) -> WorkRow:
     rid = int(node["id"])
     tags = tags_by_ref.get(rid, [])
@@ -234,6 +295,8 @@ def _row(
     waiting = next((t for t in tags if t.startswith("waiting-for:")), None)
     asking = any(t == "ask-user" or t.startswith("ask-user:") for t in tags)
     kind = node.get("kind") or "todo"
+    meta = (metas or {}).get(rid) or {}
+    plan = node_kind(meta) or ""
     return WorkRow(
         ref_id=rid,
         kind=kind,
@@ -251,11 +314,18 @@ def _row(
         claimed_by=_tag_value(tags, "claimed-by:"),
         waiting_for=_tag_value(tags, "waiting-for:"),
         updated_at=stamps.get(rid),
+        node=plan,
+        node_text=_node_text(plan, meta),
+        lane=(lanes or {}).get(rid, ""),
+        attempt=_attempt(tags),
     )
 
 
 def _format_row(r: WorkRow) -> str:
-    cells = [r.handle, r.icon]
+    glyph = _NODE_GLYPH.get(r.node)
+    # a gate / loop / generator row leads with its glyph in place of the
+    # status icon, so its STATUS is spelled out as a bracketed cell
+    cells = [r.handle, glyph, f"[{r.status}]"] if glyph else [r.handle, r.icon]
     if r.prio is not None:
         cells.append(f"prio={r.prio}")
     if r.agents:
@@ -264,11 +334,32 @@ def _format_row(r: WorkRow) -> str:
         cells.append(
             f"jobs={r.jobs}" + (f"({r.jobs_live} live)" if r.jobs_live else "")
         )
-    return f"{'  ' * r.depth}{' '.join(cells)} — {r.title}"
+    if r.lane:
+        cells.append(f"lane={r.lane}")
+    if r.attempt is not None:
+        cells.append(f"attempt:{r.attempt}")
+    line = f"{'  ' * r.depth}{' '.join(cells)} — {r.title}"
+    return f"{line} · {r.node_text}" if r.node_text else line
 
 
 #: Job STATUS values that count as live in the ``jobs=N(M live)`` cell.
 _LIVE_JOB = frozenset({"queued", "running"})
+
+
+def _newest_job_lanes(store: Store, job_ids: list[int]) -> dict[int, str]:
+    """``{parent id: lane}`` from the newest of the given jobs per parent
+    (``meta.lane``; one query). A parent whose newest job names no lane is
+    absent."""
+    if not job_ids:
+        return {}
+    with store.pool.connection() as conn:
+        rows = conn.execute(
+            "SELECT DISTINCT ON (parent_id) parent_id, meta->>'lane' "
+            "FROM refs WHERE ref_id = ANY(%s) AND parent_id IS NOT NULL "
+            "ORDER BY parent_id, created_at DESC, ref_id DESC",
+            (job_ids,),
+        ).fetchall()
+    return {int(pid): str(lane) for pid, lane in rows if lane}
 
 
 def _render_root(
@@ -292,6 +383,8 @@ def _render_root(
         i: ((refs[i].updated_at or refs[i].created_at) if i in refs else None)
         for i in todo_ids
     }
+    metas = {i: dict(refs[i].meta or {}) for i in todo_ids if i in refs}
+    lanes = _newest_job_lanes(store, [r["id"] for r in rows if r["kind"] == "job"])
     by_parent: dict[int | None, list[dict[str, Any]]] = {}
     job_counts: dict[int, tuple[int, int]] = {}
     for r in rows:
@@ -326,6 +419,8 @@ def _render_root(
                     stamps=stamps,
                     agents=agents,
                     jobs=job_counts.get(node["id"], (0, 0)),
+                    metas=metas,
+                    lanes=lanes,
                 )
             )
         for c in by_parent.get(node["id"], []):

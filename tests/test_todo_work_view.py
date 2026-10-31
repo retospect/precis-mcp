@@ -43,6 +43,62 @@ def _tree(handler: TodoHandler, store: Store) -> dict[str, Any]:
     return {"quest": quest.id, "root": root_id, "a": a, "b": b, "lone": lone}
 
 
+def _plan_subtree(handler: TodoHandler, store: Store, root_id: int) -> dict[str, int]:
+    """A plan under ``root_id`` (td542097): an auto_close phase holding a gate
+    with a stored evaluation, a loop at 1/3, a generator, and a task with two
+    child jobs (older lane ``old-lane``, newest ``claude-max``) and
+    ``attempt:2``."""
+
+    def todo(title: str, parent: int, meta: dict[str, Any]) -> int:
+        return store.insert_ref(
+            kind="todo", slug=None, title=title, parent_id=parent, meta=meta
+        ).id
+
+    phase = todo("Ship the slice", root_id, {"auto_close": True})
+    gate = todo(
+        "Wait for prod",
+        phase,
+        {
+            "gate": {"kind": "sha-in-prod", "args": {"sha": "abc1234"}},
+            "gate_result": {
+                "open": False,
+                "why": "sha abc1234 is not an ancestor of origin/prod yet, "
+                "deploy is still pending on the release train",
+                "at": "2026-10-31T10:00:00Z",
+            },
+        },
+    )
+    loop = todo(
+        "Review until clean",
+        phase,
+        {
+            "loop": {
+                "max": 3,
+                "count": 1,
+                "until": {"kind": "answer"},
+                "body": "review",
+            }
+        },
+    )
+    gen = todo(
+        "Slice the spec",
+        phase,
+        {"generate": {"role": "slicer", "from": "docs/backlog/x.md"}},
+    )
+    task = todo("Run the slice", phase, {"op": "run_slice"})
+    for lane in ("old-lane", "claude-max"):
+        store.insert_ref(
+            kind="job",
+            slug=None,
+            title="run_slice",
+            parent_id=task,
+            meta={"lane": lane},
+        )
+    handler.tag(id=task, add=["attempt:2"])
+    handler.tag(id=gate, add=["STATUS:doing"])
+    return {"phase": phase, "gate": gate, "loop": loop, "gen": gen, "task": task}
+
+
 def _agent(tree: str, purpose: str, state: str = "working") -> dict[str, Any]:
     now = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
     return {
@@ -173,6 +229,87 @@ def test_work_view_renders_a_nested_served_todo_once(
     assert sum(1 for ln in out.splitlines() if f"td{t['a']}" in ln) == 1
     assert "unassigned roots" in out  # the lone strategic still lands there
     assert f"td{t['a']}" not in out.split("unassigned roots")[1]
+
+
+def test_work_view_plain_rows_carry_no_plan_cells(
+    handler: TodoHandler, hub: Hub
+) -> None:
+    """A tree without plan meta renders exactly the pre-td542097 row shape."""
+    t = _tree(handler, hub.live_store)
+    model = work_view.work_model(hub.live_store)
+    rows = [r for root in model.quests[0].roots for r in root.rows]
+    assert {r.ref_id for r in rows} == {t["root"], t["a"], t["b"]}
+    for r in rows:
+        assert (r.node, r.node_text, r.lane, r.attempt) == ("", "", "", None)
+    out = handler.search(view="work").body
+    for token in ("⊢", "↻", "⇶", "lane=", "attempt:"):
+        assert token not in out
+    handles = tuple(f"td{t[k]} " for k in ("root", "a", "b"))
+    row_lines = [ln for ln in out.splitlines() if ln.lstrip().startswith(handles)]
+    assert len(row_lines) == 3
+    assert all(" · " not in ln for ln in row_lines)
+
+
+def test_work_view_plan_nodes_in_the_model(handler: TodoHandler, hub: Hub) -> None:
+    store = hub.live_store
+    t = _tree(handler, store)
+    p = _plan_subtree(handler, store, t["root"])
+    model = work_view.work_model(store)
+    rows = {r.ref_id: r for r in model.quests[0].roots[0].rows}
+
+    assert rows[p["phase"]].node == "phase"
+    assert rows[p["phase"]].node_text == "phase"
+    gate = rows[p["gate"]]
+    assert gate.node == "gate"
+    # why is cut to 60 characters (59 + the ellipsis)
+    assert gate.node_text.startswith(
+        "gate sha-in-prod abc1234 — sha abc1234 is not an ancestor of origin/prod"
+    )
+    assert gate.node_text.endswith("…")
+    assert len(gate.node_text.split(" — ", 1)[1]) == 60
+    assert rows[p["loop"]].node == "loop"
+    assert rows[p["loop"]].node_text == "loop 1/3 until answer"
+    assert rows[p["gen"]].node == "generator"
+    assert rows[p["gen"]].node_text == "generator slicer from docs/backlog/x.md"
+    task = rows[p["task"]]
+    assert (task.node, task.node_text) == ("task", "")
+    assert task.lane == "claude-max"  # the newest child job's lane
+    assert task.attempt == 2
+    assert task.jobs == 2
+
+
+def test_work_view_plan_nodes_in_the_text(handler: TodoHandler, hub: Hub) -> None:
+    store = hub.live_store
+    t = _tree(handler, store)
+    p = _plan_subtree(handler, store, t["root"])
+    lines = {
+        i: next(
+            ln
+            for ln in handler.search(view="work").body.splitlines()
+            if f"td{i} " in ln
+        )
+        for i in p.values()
+    }
+
+    # no glyph change for a phase; node_text trails the title
+    assert lines[p["phase"]].lstrip().startswith(f"td{p['phase']} ○")
+    assert lines[p["phase"]].endswith("— Ship the slice · phase")
+    # gate: ⊢ replaces the status icon, STATUS stays visible, predicate trails
+    gate = lines[p["gate"]].lstrip()
+    assert gate.startswith(f"td{p['gate']} ⊢ [doing] ")
+    assert "○" not in gate
+    assert " · gate sha-in-prod abc1234 — sha abc1234 is not" in gate
+    loop = lines[p["loop"]].lstrip()
+    assert loop.startswith(f"td{p['loop']} ↻ [open] ")
+    assert loop.endswith(" · loop 1/3 until answer")
+    gen = lines[p["gen"]].lstrip()
+    assert gen.startswith(f"td{p['gen']} ⇶ [open] ")
+    assert gen.endswith(" · generator slicer from docs/backlog/x.md")
+    # task: lane and attempt cells after the jobs cell, no node_text
+    task = lines[p["task"]]
+    assert "jobs=2 lane=claude-max attempt:2 — Run the slice" in task
+    assert " · " not in task
+    assert "old-lane" not in task
 
 
 def test_work_view_empty_store(handler: TodoHandler) -> None:

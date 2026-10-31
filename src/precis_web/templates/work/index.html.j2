@@ -71,16 +71,21 @@
     {% for r in root.rows %}
     <li class="flex items-baseline gap-3 px-3 py-1.5 text-sm"
         data-handle="{{ r.handle }}" data-kind="{{ r.kind }}" data-depth="{{ r.depth }}"
-        data-status="{{ r.status }}" data-root="{{ root.root_id }}">
+        data-status="{{ r.status }}" data-root="{{ root.root_id }}"{% if r.node %} data-node="{{ r.node }}"{% endif %}>
       <div class="flex-1 min-w-0 truncate" style="padding-left: {{ (r.depth - 1) * 1.25 }}rem">
         <a href="/eye/{{ r.handle }}" class="font-mono text-xs text-fg-subtle hover:underline">{{ r.handle }}</a>
         <span title="{{ r.title }}">{{ r.title }}</span>
         {% if r.prio is not none %}<span class="text-xs text-fg-faint">prio {{ r.prio }}</span>{% endif %}
         {% if r.jobs %}<span class="text-xs text-fg-faint">jobs {{ r.jobs }}{% if r.jobs_live %} ({{ r.jobs_live }} live){% endif %}</span>{% endif %}
+        {# plan node line (td542097): gate predicate + last reason, loop count, generator source #}
+        {% if r.node_text %}<div class="text-xs text-fg-faint truncate" title="{{ r.node_text }}">{{ r.node_text }}</div>{% endif %}
       </div>
       <div class="w-40 shrink-0 text-xs text-fg-secondary truncate" title="{{ r.icon }}">{{ r.icon }}</div>
       <div class="w-14 shrink-0 text-right text-xs">{% if r.agents %}<span class="text-success-strong font-semibold">{{ r.agents }}</span>{% else %}<span class="text-fg-ghost">0</span>{% endif %}</div>
-      <div class="w-20 shrink-0"><span class="text-xs px-1.5 py-0.5 rounded {{ sc.get(r.stage, 'bg-info-muted text-info-strong') }}">{{ r.stage }}</span></div>
+      <div class="w-20 shrink-0"><span class="text-xs px-1.5 py-0.5 rounded {{ sc.get(r.stage, 'bg-info-muted text-info-strong') }}">{{ r.stage }}</span>
+        {% if r.lane %}<div class="text-xs text-fg-faint truncate" title="lane {{ r.lane }}">lane={{ r.lane }}</div>{% endif %}
+        {% if r.attempt is not none %}<div class="text-xs text-fg-faint">attempt:{{ r.attempt }}</div>{% endif %}
+      </div>
       <div class="w-20 shrink-0 text-right text-xs text-fg-faint" title="{{ r.updated_at | abs_ts }}">{{ r.updated_at | ago }}</div>
     </li>
     {% endfor %}
