@@ -1,5 +1,5 @@
 ---
-status: draft
+status: ready
 title: Inspectable NEB barrier trust methodology — decide multi-seed-at-dispatch before crediting the barrier axis
 pillar: 3d-design
 thread: chemistry
@@ -121,3 +121,42 @@ surface is `src/precis/utils/trust_gate.py` + `precis_pathway`
    or chemistry, not noise — does the methodology route that to
    endpoint redesign rather than more seeds? Which families get "rerun"
    vs "stop and fix the endpoint"?
+
+## Decisions (Reto 2026-10-31)
+
+1. **Multi-seed at dispatch (answers open question 1).** A neb-tier
+   barrier dispatches ≥2 independent seeds up front — default 3 — not
+   one seed plus rerun-on-fail (option a). Pooled sibling seeds still
+   count toward credit (the gr517804 union rule is unchanged).
+   Implemented: `put(kind='pathway', id=N, mode='verify',
+   args={'seeds': 3})` mints N fresh seed numbers through the rerun
+   machinery in one call, and `dispatch_autocatpath` widens a neb-tier
+   `search.seeds` under 3 with fresh numbers — an explicit rerun seed
+   list still wins.
+2. **Credit anchor (answers open question 2).** A barrier is credited
+   only through a named anchor = pathway id + the gate rows that
+   passed + the seed set (option b). `view='trust'` renders the anchor
+   line; the harvest stamps it as `meta.barrier_anchor` and credits
+   (`barrier_trusted`) only when an anchor exists. A reproducible
+   `endpoint_agreement` second basin is the one creditable fail — its
+   anchor names the override (`over`) — and the credited value stays
+   the stored measure.
+3. **struct_neb binds too (answers open question 3).** The same anchor
+   function applies to `struct_neb_runs` records (same trust record
+   shape). The record carries every field the anchor needs — `trust`,
+   `multistart` (`init_seed` seed set), `engine`; it has no
+   `route_steps` (one edge — every record is on-route) and no pathway,
+   so the anchor names `struct_neb:<run id>`.
+4. **Per-fault-family action (answers open question 4).**
+   - `endpoint_agreement` fails on a reproducible second basin (≥2
+     seeds land there): **credit the lower basin**. Not reproducible:
+     **re-place the endpoints** (no credit).
+   - `saddle_verified` fails: **CI-NEB rerun**, then require exactly
+     one imaginary mode.
+   - `detachment`: **stop** — no rerun, no credit.
+   - Seed-registration failure (the seed-independence gate): a
+     **pipeline bug** — record it as such (a gripe), not a chemistry
+     fault.
+   Thresholds and verdict semantics are unchanged — the NOT-in-scope
+   list stands. The fault families render as `next action (<family>)`
+   lines in `view='trust'`.

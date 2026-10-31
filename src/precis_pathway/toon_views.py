@@ -552,6 +552,50 @@ def trust_toon(
         + (f" · {seed_blk} {seed_execution}" if seed_blk else f" · {seed_execution}")
         + f" · {replay}"
     )
+    # The named credit anchor (gr543165 ruling): pathway id + the gate
+    # rows that passed + the seed set — a barrier is credited only
+    # through it. A reproducible second basin stays creditable
+    # ("credit the lower basin"): the anchor names which gate it
+    # overrides and which seeds stayed in the minimum basin.
+    anchor_run = trust_gate.run_seeds(
+        records, engine=engine, declared=results.get("seeds")
+    )
+    union_seeds = (anchor_run | pooled) if anchor_run is not None else None
+    repro, _basin_detail, lower_seeds = trust_gate.second_basin(
+        [*records, *(pooled_identity or [])], scope, engine=engine
+    )
+    anchor = trust_gate.trust_anchor(
+        rows,
+        pathway=pw_handle or "pathway",
+        seeds=union_seeds,
+        creditable={"endpoint_agreement"} if repro else (),
+    )
+    if anchor is not None:
+        anchor_line = (
+            f"anchor: {anchor['pathway']} · gates "
+            f"{', '.join(anchor['gates'])} · seeds {anchor['seeds']}"
+        )
+        if anchor["over"]:
+            anchor_line += (
+                f" · credited over {', '.join(anchor['over'])} "
+                f"(lower basin, seeds {sorted(lower_seeds)})"
+            )
+        head.append(anchor_line)
+    else:
+        failed_gates = [
+            str(r["gate"])
+            for r in rows
+            if r.get("verdict") == "fail" and r.get("blocking") != "—"
+        ]
+        head.append(
+            "anchor: none — no credit ("
+            + (
+                f"{', '.join(failed_gates)} failed"
+                if failed_gates
+                else "no passing gates / unprovable seed set"
+            )
+            + ")"
+        )
     if rl:
         step_label = str(rl["step"]).replace("→", "->")
         by_seed = sorted(
@@ -591,9 +635,18 @@ def trust_toon(
         head.append(f"({folded} route states agree across seeds — one basin each)")
     if not erows and not folded:
         head.append("no endpoint_identity records on the route.")
-    if (seed_blk and not seed_lookup_failed) or (
-        ea_row is not None and ea_row["verdict"] == "fail"
-    ):
+    # The methodology's prescribed action per failed fault family
+    # (gr543165): reproducible second basin → credit the lower basin,
+    # else re-place endpoints; saddle_verified → CI-NEB rerun + one
+    # imaginary mode; detachment → stop; seed registration → a
+    # pipeline-bug gripe.
+    for fam in trust_gate.failed_families(rows):
+        act = trust_gate.family_action(
+            fam, [*records, *(pooled_identity or [])], scope, engine=engine
+        )
+        if act is not None:
+            head += ["", f"next action ({act['family']}): {act['detail']}"]
+    if seed_blk and not seed_lookup_failed:
         run = (
             trust_gate.run_seeds(records, engine=engine, declared=results.get("seeds"))
             or set()

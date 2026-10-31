@@ -97,6 +97,11 @@ _DEFAULT_TIER_RESTALE_BAND = 3
 #: clear ``insufficient_samples`` but report a spread of two points.
 _VERIFY_MIN_SEEDS = 3
 
+#: Seeds a neb-tier barrier dispatches up front (gr543165 ruling,
+#: 2026-10-31): ≥2 independent seeds at dispatch — default 3 — not one
+#: seed plus a rerun on gate failure.
+_NEB_DISPATCH_SEEDS = 3
+
 
 def _apply_tier_config(config: dict[str, Any], tier: str) -> dict[str, Any]:
     """Overlay a ladder ``tier`` onto a catpath reaction config.
@@ -1367,6 +1372,24 @@ def _autocatpath_search_seeds(config: dict[str, Any]) -> list[int]:
     return [int(s) for s in seeds]
 
 
+def _neb_multiseed_config(config: dict[str, Any]) -> dict[str, Any]:
+    """The gr543165 multi-seed-at-dispatch overlay for a neb-tier run:
+    a declared ``search.seeds`` shorter than :data:`_NEB_DISPATCH_SEEDS`
+    is widened with fresh numbers past its max (the declared list still
+    leads), so every neb dispatch lands ≥2 — default 3 — independent
+    seeds up front. An explicit caller ``seeds`` list (a rerun's) never
+    reaches here — the caller named exactly what it wanted."""
+    declared = list(dict.fromkeys(_autocatpath_search_seeds(config)))
+    if len(declared) >= _NEB_DISPATCH_SEEDS:
+        return config
+    nxt = max(declared, default=-1) + 1
+    declared += list(range(nxt, nxt + _NEB_DISPATCH_SEEDS - len(declared)))
+    return {
+        **config,
+        "search": {**(config.get("search") or {}), "seeds": declared},
+    }
+
+
 def _find_child_todo_by_content_key(
     store: Store, parent_id: int, content_key: str
 ) -> int | None:
@@ -1744,6 +1767,10 @@ def dispatch_autocatpath(
                 "seeds": [int(s) for s in seeds],
             },
         }
+    elif tier == _TIER_NEB:
+        # gr543165: a neb-tier barrier dispatches ≥2 seeds (default 3)
+        # up front, not one seed plus rerun-on-fail.
+        config = _neb_multiseed_config(config)
     refs = store.fetch_refs_by_ids({structure_ref_id})
     ref = refs.get(structure_ref_id)
     if ref is None or ref.slug is None:
@@ -2841,6 +2868,77 @@ def _flag_few_independent_seeds(
     return blk
 
 
+def _barrier_anchor(
+    store: Store,
+    pw_meta: dict[str, Any],
+    *,
+    pathway_ref: int,
+    tier: str,
+    candidate_meta: dict[str, Any],
+    measures: dict[str, Any],
+) -> dict[str, Any] | None:
+    """The named credit anchor for a harvested pathway barrier
+    (gr543165): pathway id + the gate rows that passed + the seed set —
+    built from the same gate table ``view='trust'`` renders (engine
+    checks, the seed-independence row, the precis guards). ``None``
+    when any gate fails outside the creditable set — a reproducible
+    ``endpoint_agreement`` second basin is creditable ("credit the
+    lower basin"), everything else refuses. Called inside the
+    harvest's defensive try/except — never raise."""
+    results = pw_meta.get("results")
+    results = results if isinstance(results, dict) else {}
+    records = [r for r in results.get("trust") or [] if isinstance(r, dict)]
+    engine = pw_meta.get("autocatpath_version")
+    engine = engine if isinstance(engine, str) and engine else None
+    scope = trust_gate.route_scope(results)
+    thresholds = trust_gate.thresholds_from(records, pw_meta.get("config"))
+    pooled, pooled_identity = trust_gate.sibling_evidence(
+        store, meta=pw_meta, exclude_ref_id=pathway_ref
+    )
+    run = trust_gate.run_seeds(records, engine=engine, declared=results.get("seeds"))
+    rows = trust_gate.gate_rows(records, scope, thresholds, results, engine=engine)
+    rows.append(
+        trust_gate.seed_row(
+            records,
+            engine=engine,
+            declared=results.get("seeds"),
+            pooled=pooled,
+            tier=tier,
+        )
+    )
+    merged = {**candidate_meta, **measures}
+    rows += trust_gate.precis_guard_rows(
+        merged,
+        barrier_ea=_num_measure(measures.get("barrier")),
+        rate_limit_std=None,
+        low_confidence=bool(measures.get("barrier_low_confidence")),
+        thresholds=thresholds,
+        engine=engine,
+        current_engine=_autocatpath_current_version(),
+    )
+    creditable: set[str] = set()
+    failing = {
+        str(r.get("gate"))
+        for r in rows
+        if r.get("verdict") == "fail" and r.get("blocking") != "—"
+    }
+    if failing == {"endpoint_agreement"}:
+        repro, _detail, _lower = trust_gate.second_basin(
+            [*records, *pooled_identity], scope, engine=engine
+        )
+        if repro:
+            creditable.add("endpoint_agreement")
+    from precis.utils import handle_registry
+
+    handle = handle_registry.try_format("pathway", pathway_ref) or f"pw{pathway_ref}"
+    return trust_gate.trust_anchor(
+        rows,
+        pathway=handle,
+        seeds=(run | pooled) if run is not None else None,
+        creditable=creditable,
+    )
+
+
 def _fresh_autocatpath_jobs(
     store: Store, structure_ref_id: int, upto: int
 ) -> list[tuple[int, dict[str, Any]]]:
@@ -3138,6 +3236,25 @@ def _struct_neb_measures_from_run(
             )
         else:
             trusted = True
+    # Credit anchor (gr543165): the same named-anchor rule the pathway
+    # lane uses binds struct_neb runs — no anchor, no credit. A
+    # multistart fail the union rescued stays creditable (the pooled
+    # seed set IS the credited evidence).
+    anchor = trust_gate.struct_neb_anchor(
+        run,
+        seeds=(
+            set(union)
+            if union is not None
+            else (set(own_seeds) if own_seeds is not None else None)
+        ),
+        creditable=({"multistart"} if trusted and _fails("multistart") else ()),
+    )
+    if anchor is None and trusted:
+        trusted = False
+        warnings.append(
+            "anchor:none — the run's gates/seed set form no "
+            "trust-passing anchor; auto-untrusted (gr543165)"
+        )
     out: dict[str, Any] = {
         "barrier_source": "struct_neb",
         "neb_run_id": run.get("id"),
@@ -3159,6 +3276,7 @@ def _struct_neb_measures_from_run(
         ),
         "barrier_seed_blocker": seed_blocker
         or ("engine:stale" if stale_demoted else None),
+        "barrier_anchor": anchor,
     }
     barrier = _num_measure(run.get("barrier_fwd_ev"))
     if barrier is not None:
@@ -3184,6 +3302,7 @@ def _neb_edge_entry(run: Mapping[str, Any], measures: dict[str, Any]) -> dict[st
         "barrier_wrong_site": int(measures.get("barrier_wrong_site") or 0),
         "barrier_independent_seeds": measures.get("barrier_independent_seeds"),
         "barrier_seed_blocker": measures.get("barrier_seed_blocker"),
+        "barrier_anchor": measures.get("barrier_anchor"),
     }
     for flag in ("barrier_absurd", "barrier_unrelaxed_geometry"):
         if measures.get(flag):
@@ -3296,6 +3415,7 @@ def _neb_candidate_stamp(
         "barrier_independent_seeds": pick.get("barrier_independent_seeds"),
         "barrier_seed_blocker": pick.get("barrier_seed_blocker"),
         "barrier_blocked_by": blocked_by or None,
+        "barrier_anchor": pick.get("barrier_anchor"),
     }
     for flag in ("barrier_absurd", "barrier_unrelaxed_geometry"):
         stamp[flag] = True if pick.get(flag) else None
@@ -4482,6 +4602,43 @@ def harvest_measures(
                     measures["neb_edge_fs_ref_id"] = None
             tier = _pathway_tier(pw_meta)
             _canonicalize_barrier(candidate_meta, measures, tier)
+            # Credit anchor (gr543165): a barrier is credited only
+            # through a named anchor — pathway id + gates that passed +
+            # the seed set. No anchor → no credit; a reproducible
+            # endpoint_agreement second basin is the one creditable
+            # fail ("credit the lower basin").
+            anchor = None
+            if (
+                not stashed
+                and pw_is_pathway
+                and isinstance(pw_meta, dict)
+                and isinstance(pathway_ref, int)
+                and not isinstance(pathway_ref, bool)
+            ):
+                try:
+                    anchor = _barrier_anchor(
+                        store,
+                        pw_meta,
+                        pathway_ref=pathway_ref,
+                        tier=tier,
+                        candidate_meta=candidate_meta,
+                        measures=measures,
+                    )
+                except Exception:
+                    log.debug(
+                        "harvest_measures: trust anchor failed for %s",
+                        s.id,
+                        exc_info=True,
+                    )
+            if not stashed:
+                measures["barrier_anchor"] = anchor
+                if anchor is not None and anchor.get("over"):
+                    measures["barrier_trusted"] = True
+                    measures["barrier_blocked_by"] = []
+                elif measures.get("barrier_trusted") and anchor is None:
+                    measures["barrier_trusted"] = False
+                    blocked = list(measures.get("barrier_blocked_by") or [])
+                    measures["barrier_blocked_by"] = [*blocked, "anchor:none"]
             if not stashed:
                 # neb-s7: a stashed losing job earns no ladder rung — its
                 # ``meta.tier`` raise would graduate the candidate on an
@@ -6095,6 +6252,7 @@ _AUTOCATPATH_MEASURE_KEYS: tuple[str, ...] = (
     # barrier they annotate
     "barrier_seed_blocker",
     "barrier_independent_seeds",
+    "barrier_anchor",
     "barrier_screen",
     "barrier_fidelity",
     "tier",

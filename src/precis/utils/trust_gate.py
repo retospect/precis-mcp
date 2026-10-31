@@ -33,7 +33,7 @@ from __future__ import annotations
 import dataclasses
 import hashlib
 import json
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from typing import Any
 
 #: Gating checks in display order — autocatpath.trust.CHECKS minus
@@ -1163,3 +1163,247 @@ def endpoint_rows(
         )
     )
     return rows, folded
+
+
+#: Fault families the trust methodology rules on (gr543165, Reto
+#: 2026-10-31): the gate-row ``gate`` value → the family name.
+#: ``seed_registration`` covers the precis-side seed gate — under
+#: multi-seed-at-dispatch a run that can't prove ≥2 independent seeds is
+#: a dispatch/pipeline bug, never a chemistry verdict.
+_FAMILY_OF_GATE: dict[str, str] = {
+    "endpoint_agreement": "endpoint_agreement",
+    "saddle_verified": "saddle_verified",
+    "detachment": "detachment",
+    "seed independence (precis)": "seed_registration",
+}
+
+
+def failed_families(rows: Iterable[dict[str, Any]]) -> list[str]:
+    """Fault-family names of the failed gating rows, in table order.
+    Info rows (``blocking == "—"``) and checks the methodology doesn't
+    cover are skipped; a family appears once."""
+    out: list[str] = []
+    for r in rows:
+        if r.get("verdict") != "fail" or r.get("blocking") == "—":
+            continue
+        fam = _FAMILY_OF_GATE.get(str(r.get("gate")))
+        if fam is not None and fam not in out:
+            out.append(fam)
+    return out
+
+
+def second_basin(
+    records: list[dict[str, Any]],
+    scope: tuple[set[str] | None, set[str]],
+    *,
+    engine: str | None = None,
+) -> tuple[bool, str, set[int]]:
+    """Whether a failed ``endpoint_agreement`` reads as a REPRODUCIBLE
+    second basin (gr543165): every on-route failing state shows ≥2
+    distinct seeds in ONE shared non-minimum fingerprint — the split
+    repeats, so it is a real basin, not endpoint noise.
+
+    Returns ``(reproducible, detail, lower_basin_seeds)`` —
+    ``lower_basin_seeds`` is the seed set that stayed in the minimum
+    basin at every compared failing state (the evidence a lower-basin
+    credit cites); empty when nothing proves it."""
+    failing = {
+        r.get("state")
+        for r in records
+        if r.get("check") == "endpoint_agreement"
+        and r.get("verdict") == "fail"
+        and r.get("state")
+        and _on_route(r, scope)
+        and not is_stale(r, engine)
+    }
+    if not failing:
+        return False, "no on-route endpoint_agreement failures", set()
+    # state → fingerprint → {seed: e_eV}
+    basins: dict[Any, dict[Any, dict[int, float]]] = {}
+    for r in records:
+        if r.get("check") != "endpoint_identity" or not _on_route(r, scope):
+            continue
+        if r.get("state") not in failing or is_stale(r, engine):
+            continue
+        seed = r.get("seed")
+        ev = r.get("evidence") or {}
+        fp, e = ev.get("fingerprint"), ev.get("e_eV")
+        if (
+            not isinstance(seed, int)
+            or isinstance(seed, bool)
+            or not fp
+            or not isinstance(e, int | float)
+            or isinstance(e, bool)
+        ):
+            continue
+        basins.setdefault(r["state"], {}).setdefault(fp, {})[seed] = float(e)
+    reproducible: list[str] = []
+    noisy: list[str] = []
+    lower: set[int] | None = None
+    for state in sorted(str(s) for s in failing):
+        b = basins.get(state) or {}
+        min_fp = min(b, key=lambda f: min(b[f].values()), default=None)
+        min_seeds = set(b[min_fp]) if min_fp is not None else set()
+        lower = min_seeds if lower is None else (lower & min_seeds)
+        if min_fp is not None and any(
+            fp != min_fp and len(seeds) >= 2 for fp, seeds in b.items()
+        ):
+            reproducible.append(state)
+        else:
+            noisy.append(state)
+    if noisy:
+        return (
+            False,
+            "no reproducible second basin on "
+            + ", ".join(noisy + [f"(reproducible: {s})" for s in reproducible]),
+            set(),
+        )
+    return (
+        True,
+        f"≥2 seeds share one higher basin on {', '.join(reproducible)}",
+        lower or set(),
+    )
+
+
+def family_action(
+    family: str,
+    records: list[dict[str, Any]],
+    scope: tuple[set[str] | None, set[str]],
+    *,
+    engine: str | None = None,
+) -> dict[str, str] | None:
+    """The methodology's prescribed next action for a failed fault
+    family (gr543165 ruling): ``{"family", "action", "detail"}``, or
+    ``None`` for a family the ruling doesn't cover.
+
+    * ``endpoint_agreement``: reproducible second basin →
+      ``credit-lower-basin``; otherwise ``re-place-endpoints`` (no
+      credit).
+    * ``saddle_verified``: ``ci-neb-rerun`` — a CI-NEB rerun, then
+      require exactly one imaginary mode.
+    * ``detachment``: ``stop`` — no rerun, no credit.
+    * ``seed_registration``: ``file-gripe`` — a pipeline bug, not a
+      chemistry fault.
+    """
+    if family == "endpoint_agreement":
+        repro, detail, _lower = second_basin(records, scope, engine=engine)
+        if repro:
+            return {
+                "family": family,
+                "action": "credit-lower-basin",
+                "detail": f"reproducible second basin — {detail}; "
+                "credit the lower basin",
+            }
+        return {
+            "family": family,
+            "action": "re-place-endpoints",
+            "detail": f"{detail} — re-place the endpoints; no credit",
+        }
+    if family == "saddle_verified":
+        return {
+            "family": family,
+            "action": "ci-neb-rerun",
+            "detail": "CI-NEB rerun, then require exactly one imaginary mode",
+        }
+    if family == "detachment":
+        return {
+            "family": family,
+            "action": "stop",
+            "detail": "stop — no rerun, no credit",
+        }
+    if family == "seed_registration":
+        return {
+            "family": family,
+            "action": "file-gripe",
+            "detail": "pipeline bug — record it as a gripe, not a chemistry fault",
+        }
+    return None
+
+
+def trust_anchor(
+    rows: Iterable[dict[str, Any]],
+    *,
+    pathway: Any,
+    seeds: Iterable[int] | None,
+    creditable: Iterable[str] = (),
+) -> dict[str, Any] | None:
+    """The named credit anchor (gr543165 ruling): ``pathway`` id + the
+    gate rows that passed + the seed set — the artifact a quest cites
+    when it credits a barrier. ``view='trust'`` renders it.
+
+    ``None`` — no credit — when a gating row fails outside
+    ``creditable`` (the methodology's credit-despite-fail set, e.g. a
+    reproducible ``endpoint_agreement`` second basin), when the seed
+    set is unprovable (``seeds=None`` — never credit what can't be
+    named), or when nothing passed (a record-poor run anchors no
+    credit). Rows with ``blocking == "—"`` are informational (the
+    spread readout) — they never gate and never enter the pass list.
+    ``not-run`` rows are named under ``not_run`` so the credit's
+    coverage stays inspectable."""
+    cred = {str(g) for g in creditable}
+    rows = list(rows)
+    failed = [
+        r for r in rows if r.get("verdict") == "fail" and r.get("blocking") != "—"
+    ]
+    if any(str(r.get("gate")) not in cred for r in failed):
+        return None
+    gates = [
+        str(r.get("gate"))
+        for r in rows
+        if r.get("verdict") == "pass" and r.get("blocking") != "—"
+    ]
+    if seeds is None or not gates:
+        return None
+    return {
+        "pathway": pathway,
+        "gates": gates,
+        "not_run": [str(r.get("gate")) for r in rows if r.get("verdict") == "not-run"],
+        "over": sorted({str(r.get("gate")) for r in failed}),
+        "seeds": sorted({int(s) for s in seeds}),
+    }
+
+
+def struct_neb_anchor(
+    run: Mapping[str, Any],
+    *,
+    seeds: Iterable[int] | None = None,
+    creditable: Iterable[str] = (),
+) -> dict[str, Any] | None:
+    """The named credit anchor for one ``struct_neb_runs`` row — the
+    same rule the pathway lane uses (gr543165: the methodology binds
+    struct_neb too). The anchor names the run (``struct_neb:<id>`` —
+    there is no pathway); the seed set is the run's ``multistart``
+    ``init_seed`` values unless the caller pools same-edge sibling runs
+    (the harvest's union — pass it as ``seeds``).
+
+    ``struct_neb_runs`` carries no ``route_steps`` — one edge, so every
+    record is on-route — and no ``results.seeds``; the seed set comes
+    from ``multistart.starts[].init_seed`` (``None`` stays unprovable:
+    no anchor)."""
+    records = [r for r in (run.get("trust") or []) if isinstance(r, dict)]
+    engine = run.get("engine")
+    engine = engine if isinstance(engine, str) and engine else None
+    rows = gate_rows(
+        records,
+        (None, set()),  # one edge — every record is on-route
+        thresholds_from(records, None),
+        engine=engine,
+    )
+    if seeds is None:
+        ms = run.get("multistart")
+        starts = ms.get("starts") if isinstance(ms, dict) else None
+        if isinstance(starts, list):
+            seeds = {
+                int(st["init_seed"])
+                for st in starts
+                if isinstance(st, dict)
+                and st.get("valid")
+                and isinstance(st.get("init_seed"), int)
+                and not isinstance(st.get("init_seed"), bool)
+            }
+    return trust_anchor(
+        rows,
+        pathway=f"struct_neb:{run.get('id')}",
+        seeds=seeds,
+        creditable=creditable,
+    )

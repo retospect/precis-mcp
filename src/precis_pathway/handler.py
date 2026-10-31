@@ -47,6 +47,12 @@ from .persist import BODY_KIND, pathway_title, persist_result
 #: the GPU node's PRECIS_NODE (e.g. 'spark'); unset → in-process EMT (slice 0).
 _ROUTE_NODE_ENV = "PRECIS_AUTOCATPATH_ROUTE_NODE"
 
+#: mode='verify' seed-count bounds (gr543165): default 3 independent
+#: seeds up front, minimum 2 — the ruling's "≥2 at dispatch (default
+#: 3), not one seed plus rerun-on-fail".
+_VERIFY_DEFAULT_SEEDS = 3
+_VERIFY_MIN_SEEDS = 2
+
 log = logging.getLogger(__name__)
 
 
@@ -171,8 +177,9 @@ class PathwayHandler(Handler):
     #: rejects any other key. Keep in step with :func:`_point_args`.
     ARGS: ClassVar[dict[str, ArgsSpec]] = {
         "get": ArgsSpec({"U", "pH", "point"}),
-        # kinetics v2 D1 blocks, overlaid onto the YAML body (_env_overlay)
-        "put": ArgsSpec({"environment", "objective", "manifest", "sweep"}),
+        # kinetics v2 D1 blocks, overlaid onto the YAML body (_env_overlay);
+        # 'seeds' is mode='verify' only (the multi-seed dispatch count/list).
+        "put": ArgsSpec({"environment", "objective", "manifest", "sweep", "seeds"}),
     }
 
     spec: ClassVar[KindSpec] = KindSpec(
@@ -211,7 +218,9 @@ class PathwayHandler(Handler):
         # stored result's validation manifest — no config body needed.
         # 'recompute_kinetics' mints autocatpath_kinetics for a stored
         # pathway, optionally under an overriding environment/objective/sweep.
-        modes=("preview", "revalidate", "recompute_kinetics"),
+        # 'verify' (gr543165): multi-seed-at-dispatch — one call that
+        # reruns the pathway's candidate NEB on N fresh seeds.
+        modes=("preview", "revalidate", "recompute_kinetics", "verify"),
         views=(
             "analysis",
             "compare",
@@ -260,6 +269,8 @@ class PathwayHandler(Handler):
         args: dict[str, Any] | None = None,
         **_kw: Any,
     ) -> Response:
+        if mode == "verify":  # engine-free: the job checks the host
+            return self._verify(id, args)
         if mode == "revalidate":  # engine-free: the job checks the host
             return self._revalidate(id, args)
         if mode == "recompute_kinetics":  # engine-free: the job checks the host
@@ -447,6 +458,92 @@ class PathwayHandler(Handler):
                 f"(cache_key {key[:12]}). {job.body}\n"
                 f"Track: get(kind='pathway', id='{slug}') — status 'computing' "
                 "until the job writes back."
+            )
+        )
+
+    def _verify(self, ident: str | int | None, args: dict[str, Any] | None) -> Response:
+        """``mode='verify'`` (gr543165 — multi-seed at dispatch): dispatch
+        N independent seeds for the pathway's NEB in one call, through
+        :func:`precis.quest.compute.request_rerun`'s rerun mint (a fresh
+        nonce-salted tree, the prior result kept linked for comparison).
+
+        ``args={'seeds': 3}`` is a COUNT — default 3, minimum 2 — of
+        fresh seed numbers minted past every seed the pathway already
+        registered (a seed an earlier run used counts once for
+        independence, so verify always adds NEW numbers); a list passes
+        verbatim through the rerun's own seed validation. Refuses with
+        ``next=`` when the pathway has no NEB inputs (no
+        ``meta.candidate_ref`` — it wasn't minted by a quest's barrier
+        lane, so there is no candidate whose NEB to re-run); the
+        rerun's own bounds (quest lane off, no reaction config, an eval
+        already in flight) surface their refusals verbatim."""
+        store = self.hub.live_store
+        if ident is None:
+            raise BadInput(
+                "mode='verify' needs the pathway handle (id=)",
+                next="put(kind='pathway', id='pw123', mode='verify', "
+                "args={'seeds': 3})",
+            )
+        ref = _lookup(store, str(ident))
+        if ref is None:
+            raise BadInput(
+                f"no pathway '{ident}'", next="get(kind='pathway') lists all"
+            )
+        meta = ref.meta if isinstance(ref.meta, dict) else {}
+        cand = meta.get("candidate_ref")
+        if isinstance(cand, str) and cand.isdigit():
+            cand = int(cand)
+        if not isinstance(cand, int) or isinstance(cand, bool):
+            raise BadInput(
+                f"pathway '{ident}' has no NEB inputs — it was not minted "
+                "by a quest's barrier lane (no candidate_ref)",
+                next=f"get(kind='pathway', id={str(ident)!r}, view='trust') "
+                "to read its gate; verify reruns a candidate's NEB",
+            )
+        from precis.quest.compute import _validate_rerun_seeds, request_rerun
+        from precis.utils import trust_gate
+
+        raw = (args or {}).get("seeds", _VERIFY_DEFAULT_SEEDS)
+        if isinstance(raw, list | tuple):
+            seed_list = _validate_rerun_seeds(raw)
+        elif isinstance(raw, int) and not isinstance(raw, bool):
+            if raw < _VERIFY_MIN_SEEDS:
+                raise BadInput(
+                    f"mode='verify' needs at least {_VERIFY_MIN_SEEDS} seeds "
+                    f"(got {raw}) — a barrier is credited on ≥2 independent "
+                    "seeds",
+                    next=f"args={{'seeds': {_VERIFY_DEFAULT_SEEDS}}}",
+                )
+            results = meta.get("results")
+            results = results if isinstance(results, dict) else {}
+            known = (
+                trust_gate.run_seeds(
+                    [r for r in results.get("trust") or [] if isinstance(r, dict)],
+                    declared=results.get("seeds"),
+                )
+                or set()
+            )
+            for key in ("requested_seeds", "executed_seeds"):
+                known |= {
+                    int(s)
+                    for s in meta.get(key) or []
+                    if isinstance(s, int) and not isinstance(s, bool)
+                }
+            hi = max(known, default=-1)
+            seed_list = list(range(hi + 1, hi + 1 + raw))
+        else:
+            raise BadInput(
+                f"args={{'seeds': {raw!r}}}: seeds is a count "
+                f"(default {_VERIFY_DEFAULT_SEEDS}, minimum "
+                f"{_VERIFY_MIN_SEEDS}) or an explicit list of seed ints",
+                next=f"args={{'seeds': {_VERIFY_DEFAULT_SEEDS}}}",
+            )
+        ack = request_rerun(store, cand, hub=self.hub, seeds=seed_list)
+        pw_handle = handle_registry.try_format("pathway", int(ref.id)) or f"pw{ref.id}"
+        return Response(
+            body=(
+                f"verify {pw_handle}: dispatched {len(seed_list)} seed(s) "
+                f"{seed_list} for the pathway's NEB — {ack}"
             )
         )
 
