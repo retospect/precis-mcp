@@ -3311,3 +3311,36 @@ def test_chord_shortcut_works_next_to_a_peer_and_merges_collinear_legs() -> None
             assert dx < 1e-9 or dy < 1e-9 or abs(dx - dy) < 1e-9, (name, s)
             assert max(dx, dy) > 0.2, (name, s)
     assert _drc_findings(res, ir, layers, footprints=footprints) == []
+
+
+def test_withdrawn_net_does_not_shape_the_survivors() -> None:
+    """Reto 2026-10-31 (taz-leaf-o): SDA stored 16 segments wrapped
+    around GND's taut polyline — and GND was withdrawn, never committed.
+    A withdrawn net must not shape its neighbours: ``route_design``
+    re-routes the survivors without it. Fixture: a short pair P1–P2 with
+    a clear straight lane, plus a long net Q1–Q2 whose only path crosses
+    that lane on F.Cu and whose far pad sits on a tiny island so it
+    cannot be completed (stranded → withdrawn)."""
+    fp = pcb.Footprint("DOT", [pcb.pad("1", "rect", 0.0, 0.0, w=0.9, h=0.9)])
+    b = pcb.Board("wd", stackup=2, outline=pcb.rect(30, 20))
+    f = b.footprint(fp)
+    p1 = b.part("P1", footprint=f, pins=["1"]).at(5.0, 10.0, fixed="both")
+    p2 = b.part("P2", footprint=f, pins=["1"]).at(25.0, 10.0, fixed="both")
+    q1 = b.part("Q1", footprint=f, pins=["1"]).at(15.0, 3.0, fixed="both")
+    q2 = b.part("Q2", footprint=f, pins=["1"]).at(15.0, 17.0, fixed="both")
+    # wall Q2 in: a keepout ring with no gap — Q1–Q2 can never close
+    b.keepout([[13.0, 15.0], [17.0, 15.0], [17.0, 19.0], [13.0, 19.0]])
+    for p in (p1["1"], p2["1"], q1["1"], q2["1"]):
+        p.etype("bidi", fmax_hz=0.0, assume="end")
+    b.wire(p1["1"], p2["1"], name="SHORT").current = 0.001
+    b.wire(q1["1"], q2["1"], name="LONG").current = 0.001
+    td, ir, footprints, plan, res, layers, wall_s = _route_micro(b)
+    rows = sketch_rows(plan, td, ir, layers)
+    assert rows["SHORT"]["status"] == "realized"
+    assert rows["LONG"]["status"] == "failed"
+    assert plan.withdrawn and set(plan.withdrawn) == {
+        k for k, n in enumerate(td.net_name) if str(n) == "LONG"
+    }
+    (track,) = [t for t in res.tracks if str(ir.net_name[t.net_id]) == "SHORT"]
+    assert len(track.segments) == 1, track.segments
+    assert _drc_findings(res, ir, layers, footprints=footprints) == []

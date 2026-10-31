@@ -190,10 +190,35 @@ class RoutePlan:
     #: field names the real reason so ``sketch_rows`` reports
     #: ``failed: non-octilinear`` instead of ``short-risk``.
     off_angle: tuple[int, ...] = ()
+    #: Nets withdrawn after the FIRST route pass (Reto 2026-10-31: SDA
+    #: carried 16 segments around GND's taut polyline — and GND was
+    #: never committed). A withdrawn net must not shape its neighbours:
+    #: ``route_design`` re-routes the survivors with these nets' pins
+    #: removed and keeps the first pass's geometry and problems for the
+    #: withdrawn set only. ``sketch_rows`` attributes first-pass
+    #: crossings to withdrawn nets alone.
+    withdrawn: tuple[int, ...] = ()
 
     @property
     def n_routed_nets(self) -> int:
         return len({p.net for p in self.pieces})
+
+
+def _plan_failed_nets(plan: RoutePlan) -> set[int]:
+    """The net indices ``sketch_rows`` will report ``failed`` for this
+    plan — every problem family it reads, resolved to nets by the
+    plan's own branch→net map."""
+    net_by_branch = {p.branch: p.net for p in plan.pieces}
+    out: set[int] = set(plan.unreachable) | set(plan.guarded) | set(plan.severed)
+    out |= {u.net for u in plan.stranded}
+    for a, b in plan.crossings:
+        for br in (a, b):
+            if br in net_by_branch:
+                out.add(net_by_branch[br])
+    for br in plan.no_via:
+        if br in net_by_branch:
+            out.add(net_by_branch[br])
+    return out
 
 
 def _pin_forced(d: TopoDesign, pin: int, n_layers: int) -> int | None:
@@ -3935,12 +3960,97 @@ def route_design(
     ``masks`` (pcb-layer-argmin) — the two-kernel mask set at the
     ROUTED pose; forwarded to ``assign_layers`` as the corridor-cost
     input.  The caller builds it per route attempt (pose-fixed inside
-    one call); ``None`` keeps the legacy search order."""
+    one call); ``None`` keeps the legacy search order.
+
+    Two passes (:attr:`RoutePlan.withdrawn`): the first pass's withdrawn
+    nets (crossings, stranded, no via site, short-risk, severed,
+    off-angle) are removed — their ``net_pins`` emptied — and the
+    survivors are routed again without those nets' taut polylines in
+    the corridor, spoke and chord passes. Measured on taz-leaf-local-63:
+    SDA 16 → 2 segments, SCL 12 → 3, LBST 10 → 4, VREF_SAMP 4 → 2, with
+    GND (a 35-branch failed tree) no longer shaping them. The second
+    pass is kept only when it withdraws no survivor; the withdrawn
+    nets keep their first-pass pieces (the record ``wires.json`` draws)
+    and problems, re-indexed behind the second pass's branches."""
     from precis.pcb.currents import require_net_currents
-    from precis.pcb.topoplace.mesh import build_mesh
-    from precis.pcb.topoplace.wires import build_wires
 
     require_net_currents(zip(ir.net_name, ir.net_current_a))
+    kw: dict[str, Any] = dict(
+        pose=pose,
+        net_rules=net_rules,
+        min_via_dia=min_via_dia,
+        min_via_drill=min_via_drill,
+        event=event,
+        masks=masks,
+    )
+    plan, rres = _route_pass(d, ir, **kw)
+    failed = _plan_failed_nets(plan)
+    survivors = {p.net for p in plan.pieces} - failed
+    if not failed or not survivors:
+        return plan, rres
+    if event is not None:
+        event(
+            f"route: pass 2 — {len(failed)} net(s) withdrawn, "
+            f"re-routing {len(survivors)} survivor(s) without them"
+        )
+    d2 = dataclasses.replace(
+        d,
+        net_pins=tuple(
+            np.zeros(0, dtype=np.int64) if k in failed else pins
+            for k, pins in enumerate(d.net_pins)
+        ),
+    )
+    try:
+        plan2, rres2 = _route_pass(d2, ir, **kw)
+    except CorridorOverflow:
+        return plan, rres
+    if _plan_failed_nets(plan2):
+        # a survivor fails without its neighbours — pass 1 stands
+        return plan, rres
+    n2 = len(plan2.layers)
+    shift = n2
+    carried = [
+        dataclasses.replace(p, branch=p.branch + shift)
+        for p in plan.pieces
+        if p.net in failed
+    ]
+    carried_vias = [
+        dataclasses.replace(v, branch=v.branch + shift)
+        for v in plan.vias
+        if v.net in failed
+    ]
+    merged = dataclasses.replace(
+        plan2,
+        pieces=tuple(plan2.pieces) + tuple(carried),
+        vias=tuple(plan2.vias) + tuple(carried_vias),
+        layers=tuple(plan2.layers) + tuple(plan.layers),
+        crossings=tuple(plan2.crossings)
+        + tuple((a + shift, b + shift) for a, b in plan.crossings),
+        unreachable=tuple(sorted(set(plan2.unreachable) | set(plan.unreachable))),
+        stranded=tuple(plan2.stranded) + tuple(plan.stranded),
+        no_via=tuple(plan2.no_via) + tuple(b + shift for b in plan.no_via),
+        guarded=tuple(sorted(set(plan2.guarded) | set(plan.guarded))),
+        severed=tuple(sorted(set(plan2.severed) | set(plan.severed))),
+        off_angle=tuple(sorted(set(plan2.off_angle) | set(plan.off_angle))),
+        withdrawn=tuple(sorted(failed)),
+    )
+    return merged, rres2
+
+
+def _route_pass(
+    d: TopoDesign,
+    ir: Any,
+    *,
+    pose: Any = None,
+    net_rules: Mapping[str, NetRules] | None = None,
+    min_via_dia: float | None = None,
+    min_via_drill: float | None = None,
+    event: Callable[[str], None] | None = None,
+    masks: BoardMasks | None = None,
+) -> tuple[RoutePlan, Any]:
+    """One mesh → wires → plan → copper pass; :func:`route_design`'s body."""
+    from precis.pcb.topoplace.mesh import build_mesh
+    from precis.pcb.topoplace.wires import build_wires
 
     mesh_pose = d.pose0 if pose is None else pose
     mesh = build_mesh(d, mesh_pose)
@@ -4144,8 +4254,13 @@ def sketch_rows(
                     + ", ".join(pin_key(p) for p in pins),
                 }
             )
+        withdrawn = set(getattr(plan, "withdrawn", ()))
         for a, b in plan.crossings:
             if net_by_branch.get(a) != k and net_by_branch.get(b) != k:
+                continue
+            if withdrawn and k not in withdrawn:
+                # a first-pass crossing with a since-withdrawn net — the
+                # survivor was re-routed without it (route_design pass 2)
                 continue
             other_branch = b if net_by_branch.get(a) == k else a
             other = str(d.net_name[net_by_branch[other_branch]])
