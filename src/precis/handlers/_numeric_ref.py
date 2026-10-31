@@ -1481,6 +1481,18 @@ class NumericRefHandler(Handler):
                     "status='!<value>' to exclude a status"
                 ),
             )
+        # A hyphenated spelling resolves to the canonical underscore
+        # value (gr543698's needs_spec, the spelling Reto/agents reach
+        # for) — tried only after the exact match misses, so 'won't-do'
+        # and friends are untouched.
+        if (
+            explicit
+            and resolved
+            and kind_values is not None
+            and resolved not in kind_values
+            and resolved.replace("-", "_") in kind_values
+        ):
+            resolved = resolved.replace("-", "_")
         note = ""
         if (
             explicit

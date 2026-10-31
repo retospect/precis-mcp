@@ -54,6 +54,40 @@ def test_needs_spec_status_commits(store: Store) -> None:
     assert "STATUS:needs_spec" in {str(t) for t in store.tags_for(ref.id)}
 
 
+def test_needs_spec_hyphen_spelling_resolves(runtime_with_store: Any) -> None:
+    """gr543698: ``status='needs-spec'`` (the hyphenated spelling) reads
+    as canonical ``needs_spec`` in the search status filter."""
+    store = runtime_with_store.hub.live_store
+    handler = runtime_with_store.hub.handler_for("gripe")
+    handler.put(text="ill-specified probe")
+    gid = int(store.list_refs(kind="gripe", limit=1)[0].id)
+    with store.tx() as conn:
+        store.add_tag(
+            gid,
+            Tag.closed("STATUS", "needs_spec"),
+            set_by="agent",
+            replace_prefix=True,
+            conn=conn,
+        )
+    body = handler.search(status="needs-spec").body
+    assert f"gr{gid}" in body
+
+
+def test_move_back_to_new_routes_through_put_with_comment() -> None:
+    """The web move-back posts a comment + STATUS in one put (gr543698);
+    every other status change stays a bare tag."""
+    from precis_web.routes.gripes import _move_back_to_new_args
+
+    verb, args = _move_back_to_new_args("needs_spec", "open", gid=7, actor="reto")
+    assert verb == "put"
+    assert args["tags"] == ["STATUS:open"] and "was needs_spec" in args["text"]
+    assert "reto" in args["text"]
+    verb, args = _move_back_to_new_args("needs_spec", "triaged", gid=7, actor="reto")
+    assert verb == "tag" and args["add"] == ["STATUS:triaged"]
+    verb, args = _move_back_to_new_args("triaged", "open", gid=7, actor="reto")
+    assert verb == "tag" and args["add"] == ["STATUS:open"]
+
+
 def test_web_status_template_labels_open_move_back_to_new() -> None:
     """The needs_spec detail control posts ``value=open`` labelled
     "move back to new" — the round-trip to the triage pickup status."""

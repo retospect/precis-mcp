@@ -560,6 +560,23 @@ async def detail(request: Request, id: int) -> HTMLResponse:
     )
 
 
+def _move_back_to_new_args(
+    current: str | None, value: str, *, gid: int, actor: str
+) -> tuple[str, dict[str, Any]]:
+    """gr543698: ``needs_spec`` → ``open`` is "move back to new" — a
+    comment records the human push so triage re-reads the thread (a bare
+    tag would be silent). Comment + STATUS in one ``put`` transaction;
+    everything else stays a bare ``tag``. Returns ``(verb, args)``."""
+    if current == "needs_spec" and value == "open":
+        return "put", {
+            "kind": "gripe",
+            "id": gid,
+            "text": f"move back to new — was needs_spec ({actor})",
+            "tags": ["STATUS:open"],
+        }
+    return "tag", {"kind": "gripe", "id": gid, "add": [f"STATUS:{value}"]}
+
+
 @router.post("/{id}/status", response_model=None)
 async def set_status(request: Request, id: int, value: str = Form(...)) -> Response:
     """Change STATUS via the closed-axis ``tag`` verb (replace-on-add).
@@ -567,20 +584,31 @@ async def set_status(request: Request, id: int, value: str = Form(...)) -> Respo
     An off-vocabulary value is a no-op redirect (never dispatched) —
     mirrors ``flags.py``'s unknown-flag guard. htmx requests get back
     just the re-rendered status fragment (in-place swap); the no-JS
-    fallback redirects to the detail page.
+    fallback redirects to the detail page. A ``needs_spec`` → ``open``
+    click is "move back to new" — it routes through ``put`` so a
+    comment records the push (:func:`_move_back_to_new_args`).
     """
     if value not in STATUS_VALUES:
         return RedirectResponse(url=f"/gripes/{id}", status_code=303)
-    args = {"kind": "gripe", "id": id, "add": [f"STATUS:{value}"]}
+    store = get_store(request)
+    current = next(
+        (str(t) for t in store.tags_for(id) if str(t).startswith("STATUS:")),
+        None,
+    )
+    current = current.split(":", 1)[1] if current else None
+    user = current_user(request)
+    verb, args = _move_back_to_new_args(
+        current, value, gid=id, actor=user.login if user is not None else "web"
+    )
     if request.headers.get("HX-Request") != "true":
         return await redirect_or_error(
             request,
-            "tag",
+            verb,
             args,
             redirect=f"/gripes/{id}",
             error_title="Status error",
         )
-    body, is_error = await await_dispatch(request, "tag", args)
+    body, is_error = await await_dispatch(request, verb, args)
     if is_error:
         return templates.TemplateResponse(
             request,
