@@ -1,0 +1,66 @@
+# Eval cases for precis-grill-me-help (schema: precis.skill_eval.cases).
+skill: precis-grill-me-help
+cases:
+  # The corpus pass runs before any question is asked — a flagged task
+  # searches memory/conv/paper on its keywords first (gr540147).
+  - id: corpus-pass-before-questions
+    prompt: |
+      Task td540848 is flagged "grill me": add a refresh path to the md
+      index. Run the pre-build question round before touching anything —
+      and don't ask me a question the corpus already answers.
+    expect:
+      calls:
+        - {verb: search, kind: memory, args: {q: 're:(?is).+'}}
+        - {verb: search, kind: conv, args: {q: 're:(?is).+'}}
+    fake:
+      calls:
+        - {verb: search, kind: memory, args: {q: "md-index refresh", view: index}}
+        - {verb: search, kind: conv, args: {q: "md-index refresh"}}
+        - {verb: search, kind: paper, args: {q: "incremental index invalidation"}}
+      record: null
+      answer: >
+        Corpus pass first: memory, conv and paper searched on the task's
+        keywords; the trust-boundary question is already decided per
+        co73 — cited, not asked.
+
+  # Unattended: the pass does not block — open questions land on the
+  # item as a grill: comment carrying each assumed default.
+  - id: unanswered-filed-on-item
+    prompt: |
+      Unattended build, nobody in the loop: td540848 is flagged
+      "grill me" — widen the run_slice env allowlist. Run the pass,
+      then get on with the work.
+    expect:
+      calls:
+        - {verb: put, kind: todo, args: {id: 're:(td)?540848', text: 're:(?is).*grill.*'}}
+    fake:
+      calls:
+        - {verb: search, kind: memory, args: {q: "run_slice env allowlist"}}
+        - verb: put
+          kind: todo
+          args:
+            id: 540848
+            text: "grill: unanswered — scope boundary assumed: env allowlist only, no deny-path changes."
+      record: {kind: todo}
+      answer: >
+        Nobody to answer: filed the open question with its assumed
+        default as a grill: comment on td540848, then proceeded.
+
+  # Opt-in per task: an unflagged task runs exactly as today — no
+  # corpus pass, no grill: comment.
+  - id: unflagged-task-gets-no-pass
+    prompt: |
+      Fix td540900: the gripe listing drops the batch column on a
+      filtered queue.
+    expect:
+      calls:
+        - {verb: get, kind: todo, args: {id: 're:(td)?540900'}}
+    forbid:
+      calls:
+        - {verb: put, args: {text: 're:(?is).*grill.*'}}
+    fake:
+      calls:
+        - {verb: get, kind: todo, args: {id: 540900}}
+      record: null
+      answer: >
+        td540900 is unflagged — no grill-me pass; straight to the fix.

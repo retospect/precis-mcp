@@ -279,6 +279,7 @@ flow-down, logbook, ticks) are in [[precis-quest-help]].
 
 - [[precis-todo-tree-help]] — tiers, doable leaves, leases, ask-user
 - [[precis-quest-help]] — quests, `serves`, PRIO flow-down, logbook
+- [[precis-grill-me-help]] — opt-in question round before a flagged build
 - [[precis-gripe-loop-help]] — brief / handoff / review / landed on the gripe
 - [[precis-fleet-help]] — agent rows, hosts, the `slice` field
 - [[precis-job-help]] — the jobs folded into a row's `jobs=` cell
