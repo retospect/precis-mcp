@@ -36,15 +36,36 @@ _DESC = (
 
 
 class _FakeClient:
-    """Records calls; answers with a fixed description."""
+    """Records calls; answers with a fixed description wrapped as the
+    ``{"description": …}`` JSON object the contract demands (gr543828 —
+    a compliant reply, so the describe path parses it). A test that
+    needs raw wire text — the parse-shape cases — uses ``_RawClient``."""
 
     def __init__(self, text: str = _DESC) -> None:
         self.text = text
         self.calls: list[list[dict[str, str]]] = []
 
+    def _result(self) -> Any:
+        return SimpleNamespace(
+            text=json.dumps({"description": self.text}),
+            data={"description": self.text},
+            model="fake-sonnet",
+            total_tokens=5,
+        )
+
     def complete(self, messages: list[dict[str, str]]) -> Any:
         self.calls.append(messages)
-        return SimpleNamespace(text=self.text, model="fake-sonnet", total_tokens=5)
+        return self._result()
+
+
+class _RawClient(_FakeClient):
+    """Answers with the reply text VERBATIM — a fenced block, bare prose,
+    truncated JSON, a wrong key — so the parse-shape cases see the raw
+    wire text, not a wrapped description."""
+
+    def complete(self, messages: list[dict[str, str]]) -> Any:
+        self.calls.append(messages)
+        return SimpleNamespace(text=self.text, model="fake-sonnet")
 
 
 def _desc_chunks(store: Any, ref_id: int) -> list[tuple[int, str, dict]]:
@@ -525,7 +546,7 @@ _TRUNC_MID_STRING_STORED = (
             None,
             id="wrong-key",
         ),
-        pytest.param(_DESC, _DESC, id="plain-prose"),
+        pytest.param(_DESC, None, id="plain-prose-fails"),
         pytest.param(
             f'```json\n{{"description": "{_DESC}"}}\n```',
             _DESC,
@@ -546,7 +567,12 @@ _TRUNC_MID_STRING_STORED = (
             _DESC,
             id="extra-keys",
         ),
-        pytest.param(f"```\n{_DESC}\n```", _DESC, id="fenced-prose"),
+        pytest.param(f"```\n{_DESC}\n```", None, id="fenced-prose-fails"),
+        pytest.param(
+            f'Here is the description.\n\n```json\n{{"description": "{_DESC}"}}\n```',
+            _DESC,
+            id="prose-then-fenced-json",
+        ),
         pytest.param(
             '{"description": "A palladium oxide slab with in-plane\n'
             'periodicity, likely a model catalyst surface."}',
@@ -563,15 +589,16 @@ def test_reply_shapes_parse_or_fail_with_reason(
     The incidental-strictness shapes (a wrapping fence, prose before the
     object, extra keys, a raw control char inside the string) parse, and
     a mid-string truncation salvages the description to the last
-    sentence/word; a wrong key, a reply truncated before the value, and
-    a below-minimum fragment still fail — and the ERROR line carries the
+    sentence/word; a wrong key, a reply truncated before the value, a
+    below-minimum fragment, and bare prose (gr543828 — no longer stored
+    as the description) still fail — and the ERROR line carries the
     reply's head."""
     import logging
 
     ref_id = _put_structure(hub)
 
     with caplog.at_level(logging.ERROR, logger="precis.workers.card_describe"):
-        r = run_card_describe_pass(store, client=_FakeClient(reply), batch_size=10)
+        r = run_card_describe_pass(store, client=_RawClient(reply), batch_size=10)
 
     if stored is not None:
         assert (r["claimed"], r["ok"], r["failed"]) == (1, 1, 0)
@@ -603,7 +630,7 @@ def test_salvaged_description_logs_an_info_line(
 
     with caplog.at_level(logging.INFO, logger="precis.workers.card_describe"):
         r = run_card_describe_pass(
-            store, client=_FakeClient(_TRUNC_MID_STRING_REPLY), batch_size=10
+            store, client=_RawClient(_TRUNC_MID_STRING_REPLY), batch_size=10
         )
 
     assert (r["claimed"], r["ok"], r["failed"]) == (1, 1, 0)
@@ -651,7 +678,7 @@ def test_consecutive_failures_bench_the_ref(store: Any, hub: Any, caplog: Any) -
         return str(row[0]), row[1]
 
     def _fail_pass() -> dict[str, Any]:
-        r = run_card_describe_pass(store, client=_FakeClient(bad_reply), batch_size=10)
+        r = run_card_describe_pass(store, client=_RawClient(bad_reply), batch_size=10)
         assert (r["claimed"], r["ok"], r["failed"]) == (1, 0, 1)
         assert _desc_chunks(store, ref_id) == []
         return r
@@ -678,7 +705,7 @@ def test_consecutive_failures_bench_the_ref(store: Any, hub: Any, caplog: Any) -
     ]
 
     # Benched: the next pass does not re-claim — no re-bill, no ERROR.
-    again = _FakeClient(bad_reply)
+    again = _RawClient(bad_reply)
     r = run_card_describe_pass(store, client=again, batch_size=10)
     assert (r["claimed"], r["ok"], r["failed"]) == (0, 0, 0)
     assert again.calls == []
@@ -908,7 +935,7 @@ def test_llm_call_runs_with_no_lock_or_open_tx(store: Any, hub: Any) -> None:
                         ).fetchone()[0]
                     )
                 )
-            return SimpleNamespace(text=self.text, model="fake-sonnet", total_tokens=5)
+            return self._result()
 
     client = _ProbeClient()
     r = run_card_describe_pass(store, client=client, batch_size=10)
@@ -943,7 +970,7 @@ def test_concurrent_passes_never_describe_the_same_ref(store: Any, hub: Any) -> 
             if self.signal:
                 in_llm.set()  # past the claim — the lock is already gone
             barrier.wait(timeout=15)
-            return SimpleNamespace(text=self.text, model="fake-sonnet", total_tokens=5)
+            return self._result()
 
     clients = [_SyncClient(signal=True), _SyncClient()]
     results: list[dict[str, Any]] = []
@@ -1009,7 +1036,7 @@ def test_lease_renews_mid_batch_so_second_pass_cannot_reclaim(
                 inner_results.append(
                     run_card_describe_pass(store, client=inner, batch_size=10)
                 )
-            return SimpleNamespace(text=self.text, model="fake-sonnet", total_tokens=5)
+            return self._result()
 
     r = run_card_describe_pass(store, client=_ExpireThenRerun(), batch_size=10)
 
@@ -1017,3 +1044,167 @@ def test_lease_renews_mid_batch_so_second_pass_cannot_reclaim(
     assert inner_results == [{"claimed": 0, "ok": 0, "failed": 0}]
     # cd-b's single description is the first pass's write, not a re-bill.
     assert [c[1] for c in _desc_chunks(store, ref_b)] == [_DESC]
+
+
+# ── gr543828: chat-agent replies buy ONE nudge retry, never a loop ─────
+
+#: The three real prod reply heads (gr543828): the ``claude -p`` rung
+#: answering as a chat agent — asking for the file it thinks is missing —
+#: instead of returning the JSON object the contract demands.
+_CHAT_AGENT_HEADS = [
+    "I don't see an actual structure file attached—just the identifier "
+    "and description. Let me check if there's a related file in the "
+    "working directory.",
+    "I don't have any prior context about this structure — no file has "
+    "been provided or shared in this conversation, and I don't have "
+    "access to a database of named atomistic structures…",
+    "I don't see an actual structure file or a specific question "
+    "attached—just the label/card text. Could you clarify what you'd "
+    "like me to do here?",
+]
+
+
+def _chat_then_json(head: str) -> _FakeClient:
+    """A client that answers the first dispatch with a chat-agent prose
+    head, then — nudged — returns the JSON object."""
+
+    class _ChatThenJson(_FakeClient):
+        def complete(self, messages: list[dict[str, str]]) -> Any:
+            self.calls.append(messages)
+            if len(self.calls) == 1:
+                return SimpleNamespace(text=head, model="claude-sonnet-5")
+            return SimpleNamespace(
+                text=json.dumps({"description": _DESC}),
+                data={"description": _DESC},
+                model="claude-sonnet-5",
+            )
+
+    return _ChatThenJson()
+
+
+@pytest.mark.parametrize("head", _CHAT_AGENT_HEADS)
+def test_chat_agent_reply_retries_once_then_parses(
+    store: Any, hub: Any, head: str
+) -> None:
+    """Each prod head parses as unparseable and triggers exactly one
+    retry — the second dispatch carries the JSON-only nudge as a new
+    user turn, and its JSON reply is stored."""
+    ref_id = _put_structure(hub)
+    client = _chat_then_json(head)
+
+    r = run_card_describe_pass(store, client=client, batch_size=10)
+
+    assert (r["claimed"], r["ok"], r["failed"]) == (1, 1, 0)
+    assert len(client.calls) == 2  # exactly one retry
+    nudge = client.calls[1][-1]
+    assert nudge["role"] == "user"
+    assert "only the JSON object" in str(nudge["content"])
+    assert _desc_chunks(store, ref_id)[0][1] == _DESC
+
+
+def test_persistent_prose_fails_after_exactly_one_retry(store: Any, hub: Any) -> None:
+    """A model that stays chatty through the nudge fails the ref — one
+    retry, never a loop, and the prose is never stored."""
+    ref_id = _put_structure(hub)
+    client = _RawClient(_CHAT_AGENT_HEADS[0])
+
+    r = run_card_describe_pass(store, client=client, batch_size=10)
+
+    assert (r["claimed"], r["ok"], r["failed"]) == (1, 0, 1)
+    assert len(client.calls) == 2
+    assert _desc_chunks(store, ref_id) == []
+
+
+def test_unparseable_dispatch_error_retries_once(store: Any, hub: Any) -> None:
+    """The prod shape end-to-end: the ``claude -p`` rung's own JSON
+    extraction rejects the reply, so the failure surfaces as a
+    ``DispatchError`` classified ``unparseable`` — the same nudge retry
+    covers it (the router stamps the class, no message sniffing)."""
+    from precis.utils.llm.router import DispatchError
+
+    ref_id = _put_structure(hub)
+
+    class _UnparseableThenJson(_FakeClient):
+        def complete(self, messages: list[dict[str, str]]) -> Any:
+            self.calls.append(messages)
+            if len(self.calls) == 1:
+                raise DispatchError(
+                    "claude -p returned no parseable JSON block",
+                    reason_class="unparseable",
+                )
+            return SimpleNamespace(
+                text=json.dumps({"description": _DESC}),
+                data={"description": _DESC},
+                model="claude-sonnet-5",
+            )
+
+    client = _UnparseableThenJson()
+    r = run_card_describe_pass(store, client=client, batch_size=10)
+
+    assert (r["claimed"], r["ok"], r["failed"]) == (1, 1, 0)
+    assert len(client.calls) == 2
+    assert _desc_chunks(store, ref_id)[0][1] == _DESC
+
+
+def test_other_dispatch_error_does_not_retry(store: Any, hub: Any) -> None:
+    """A non-``unparseable`` route failure is not nudgeable — a transport
+    or quota miss propagates without a second call."""
+    from precis.utils.llm.router import DispatchError
+
+    ref_id = _put_structure(hub)
+
+    class _BoomClient(_FakeClient):
+        def complete(self, messages: list[dict[str, str]]) -> Any:
+            self.calls.append(messages)
+            raise DispatchError("all BIG rungs declined", paused=False)
+
+    client = _BoomClient()
+    r = run_card_describe_pass(store, client=client, batch_size=10)
+
+    assert (r["claimed"], r["ok"], r["failed"]) == (1, 0, 1)
+    assert len(client.calls) == 1
+    assert _desc_chunks(store, ref_id) == []
+
+
+def test_retry_is_logged_as_a_retry(store: Any, hub: Any, caplog: Any) -> None:
+    """The nudge retry records itself: one warning naming the ref and the
+    retry — the countable prod signal for the residual flake rate."""
+    import logging
+
+    ref_id = _put_structure(hub)
+
+    with caplog.at_level(logging.WARNING, logger="precis.workers.card_describe"):
+        r = run_card_describe_pass(
+            store, client=_chat_then_json(_CHAT_AGENT_HEADS[1]), batch_size=10
+        )
+
+    assert (r["claimed"], r["ok"], r["failed"]) == (1, 1, 0)
+    lines = [
+        rec.getMessage()
+        for rec in caplog.records
+        if "retrying once" in rec.getMessage()
+    ]
+    assert len(lines) == 1
+    assert f"ref_id={ref_id}" in lines[0]
+    assert "JSON-only nudge" in lines[0]
+
+
+def test_prompt_states_self_contained_json_only(store: Any, hub: Any) -> None:
+    """The card-kinds' built prompt carries the whole contract in the
+    USER message — the ``claude_p`` rung drops the system prompt, so the
+    no-file/JSON-only instruction must live where the model reads it:
+    the card is the complete input, and the schema plus a minimal
+    example come last (gr543828)."""
+    _put_structure(hub)
+    client = _FakeClient()
+
+    run_card_describe_pass(store, client=client, batch_size=10)
+
+    user = str(client.calls[0][1]["content"])
+    assert "complete input" in user
+    assert "no file" in user
+    assert "nothing else" in user
+    assert '{"description"' in user
+    # Schema + example are the tail — the last thing the model reads.
+    assert user.index("Card:") < user.index("Example:")
+    assert user.rstrip().endswith("}")

@@ -56,6 +56,22 @@ is re-claimed and re-billed every sweep instead of once per cooldown.
 Per-ref work runs on pooled connections, writes wrapped in
 :func:`retry_locked`.
 
+gr543828 (the ``claude_p`` chat-agent failure, ~50% of calls): the
+``claude_p`` rung drops the system prompt outright —
+:class:`~precis.utils.llm.router.DispatchClient` folds the ``system``
+turns onto ``LlmRequest.system_prompt``, which ``call_claude_p`` never
+sends — so the JSON contract that lived only in :data:`_SYSTEM` never
+reached the model. A bare ``<label>: <title> / Card:`` prompt met
+Claude Code's own agentic persona and the replies came back as chat
+("no file attached", clarification asks) instead of JSON. The contract
+now lives in the user message — the one channel every transport reads —
+with the schema and a minimal example last; :data:`DESCRIBE_EXTRA_ARGS`
+pins ``--max-turns 1`` so the rung stays one-shot; and a reply that
+still yields no usable ``description`` buys exactly one retry with a
+JSON-only nudge (:data:`_JSON_NUDGE`) before the ref fails — never a
+loop. Bare prose is no longer stored as the description: after two
+explicit JSON-only asks it is a contract break, not a narrative.
+
 The lease's value counts consecutive attempts (gr523669): once a ref
 reaches :data:`_PARSE_FAIL_BENCH` failed attempts with no success since,
 the pass re-stamps it under :data:`_BENCH_COOLDOWN_MIN` — the repeat-
@@ -170,6 +186,16 @@ _MIN_SALVAGE_CHARS = 80
 #: largest rung value in ``llm.op.card_describe`` / ``llm.chain.big``.
 DESCRIBE_MAX_TOKENS = 1600
 
+#: CLI flags this source pins on its dispatches
+#: (``DispatchClient.extra_args`` → ``LlmRequest.extra_args`` → the
+#: ``claude_*`` providers; the other transports ignore them).
+#: ``--max-turns`` is the same flag the agentic lane passes
+#: (``utils/claude_agent.py``); ``1`` caps the ``claude -p`` rung at a
+#: single turn so it cannot go agentic (gr543828). ``--disallowedTools *``
+#: already makes a second turn useless, but the cap makes the one-shot
+#: contract a CLI guarantee, not only a prompt hope.
+DESCRIBE_EXTRA_ARGS: tuple[str, ...] = ("--max-turns", "1")
+
 #: How much of a bad reply's text reaches the ValueError/log reason —
 #: enough to name the wrong shape (truncated JSON, a wrong key, an
 #: envelope) straight off the log line (gr523669).
@@ -193,29 +219,72 @@ _MAX_DESC_CHARS = 4000
 
 _SYSTEM = (
     "You write search-index descriptions for a materials knowledge base. "
-    "Given a structure's computed card (title, composition, atom/bond "
-    "counts, periodicity, fragment groups, and any author description), "
-    "write a plain-text narrative of two to four sentences: what the "
-    "structure is, its dimensionality and bonding character, and the "
-    "function or application context it plausibly serves. Ground every "
-    "claim in the card; mark plausible-but-unmeasured interpretation as "
-    "such rather than inventing measured values. No markdown. Respond "
-    "with EXACTLY ONE JSON object, nothing else: "
-    '{"description": "<the narrative>"}'
+    "Each request is self-contained — the card text is the complete input "
+    "and there is no file or tool to consult. Reply with only the "
+    "requested JSON object, never prose or questions."
 )
 
 #: Vision variant for figures (S3): the grounding is the rendered image
 #: itself, with the caption (ref title) + ``figure_notes`` as context.
 _FIGURE_SYSTEM = (
     "You write search-index descriptions for a materials knowledge base. "
-    "Given a figure's rendered image plus its caption and implementation "
-    "notes, write a plain-text narrative of two to four sentences: what "
-    "the figure depicts and communicates (its marks, axes or shapes), and "
-    "the function or application context it plausibly serves. Ground every "
-    "claim in the image and the supplied text; mark plausible-but-unshown "
-    "interpretation as such rather than inventing values. No markdown. "
-    "Respond with EXACTLY ONE JSON object, nothing else: "
-    '{"description": "<the narrative>"}'
+    "Each request is self-contained — the image, caption and notes are "
+    "the complete input and there is no other file or tool to consult. "
+    "Reply with only the requested JSON object, never prose or questions."
+)
+
+#: The describe instruction, carried in the USER message — the one
+#: channel every transport reads. ``claude_p`` drops the system prompt
+#: entirely (:class:`~precis.utils.llm.router.DispatchClient` folds it
+#: onto ``LlmRequest.system_prompt``, which ``call_claude_p`` never
+#: sends), so an instruction living only in :data:`_SYSTEM` never reaches
+#: the model on that rung — gr543828's chat-agent replies ("no file
+#: attached", clarification asks) were a bare ``<label>: <title> /
+#: Card:`` prompt meeting Claude Code's own agentic persona. Keep the
+#: instruction colon-free: the ``<Label>: <title>`` line's colon must
+#: stay the message's first.
+_CARD_INSTRUCTION = (
+    "The card text below is the complete input — there is no file, tool "
+    "or working directory to consult and nothing to clarify. Write a "
+    "plain-text narrative of two to four sentences for a search index — "
+    "what the {label} is, its character (composition, dimensionality, "
+    "structure), and the function or application context it plausibly "
+    "serves. Ground every claim in the card; mark plausible-but-"
+    "unmeasured interpretation as such rather than inventing measured "
+    "values."
+)
+
+#: The output contract — placed LAST in the prompt, right where the
+#: completion begins (gr543828): the schema, then one minimal example.
+_CARD_CONTRACT = (
+    "Reply with a single JSON object of this schema and nothing else\n"
+    '{"description": "<the narrative>"}\n'
+    'Example: {"description": "A palladium oxide slab with in-plane '
+    "periodicity, plausibly a model catalyst surface for oxidation "
+    'chemistry studies."}'
+)
+
+#: The figure variant's instruction — its grounding is the rendered
+#: image, not a card (same self-contained/JSON-only defect class as
+#: :data:`_CARD_INSTRUCTION`, gr543828).
+_FIGURE_INSTRUCTION = (
+    "The image above plus the caption and notes below are the complete "
+    "input — there is no file, tool or working directory to consult. "
+    "Write a plain-text narrative of two to four sentences for a search "
+    "index — what the figure depicts and communicates (its marks, axes "
+    "or shapes) and the function or application context it plausibly "
+    "serves. Ground every claim in the image and the supplied text; "
+    "mark plausible-but-unshown interpretation as such rather than "
+    "inventing values."
+)
+
+#: The one nudge a JSON-contract-broken reply buys (gr543828): appended
+#: as a second user turn on the single retry. Never more than once — a
+#: second failure propagates to the per-ref failure path, it does not
+#: re-nudge.
+_JSON_NUDGE = (
+    "Reply with only the JSON object — "
+    '{"description": "<the narrative>"} — no prose, no questions.'
 )
 
 #: The card-kind claim leg (structure/cad/pcb): grounding is the ref's one
@@ -486,25 +555,25 @@ def _extract_description(res: Any) -> tuple[str, str | None]:
 
     ``CLAUDE_P`` demands a JSON block (``res.data``); the local/OpenAI
     wires return the same JSON as text, which is parsed here. A reply
-    with no JSON at all is taken as plain prose (a model that ignored
-    the JSON instruction); one that looks like JSON but yields no
-    ``description`` and no salvageable value raises so the card is
-    retried rather than storing junk — and the reason carries the
-    reply's head plus its length and stop reason so the log names the
-    wrong shape (gr523669).
+    that yields no usable ``description`` — wrong key, cut before the
+    value, or bare prose — raises so the caller's one nudge retry can
+    take a second sample (gr543828: prose used to be *stored* as the
+    description, which is exactly how a chat-agent clarification ask
+    became index text). The reason carries the reply's head plus its
+    length and stop reason so the log names the wrong shape (gr523669).
 
     ``salvage`` names the recovery path when the strict parse failed but
     the reply still carried a usable ``description`` — a truncated value
-    trimmed to its last complete sentence — or ``None`` on a clean parse
-    or a plain-prose reply.
+    trimmed to its last complete sentence — or ``None`` on a clean parse.
 
     Loose only where the strictness was incidental (gr523669): a whole-
     reply code fence is unwrapped, ``res.data`` that parsed but lacks the
     field falls back to the text, and the text parse is the shared
     tolerant one — a fenced block, prose before the object, extra keys
     alongside ``description``, and a raw (unescaped) control char inside
-    a string all still yield the field. A wrong key or a reply truncated
-    before a usable value still fails."""
+    a string all still yield the field. A wrong key, a reply truncated
+    before a usable value, or a reply with no JSON object at all still
+    fails."""
     from precis.utils.llm.json_reply import extract_json_object
 
     raw = (res.text or "").strip()
@@ -521,12 +590,10 @@ def _extract_description(res: Any) -> tuple[str, str | None]:
     salvage = _salvage_description(text)
     if salvage is not None:
         return salvage
-    if data is not None or "{" in text:
-        raise ValueError(
-            "card_describe reply carried no usable 'description' field; "
-            f"reply={_reply_excerpt(raw or repr(data))}; {_reply_telemetry(res)}"
-        )
-    return text, None
+    raise ValueError(
+        "card_describe reply carried no usable 'description' field; "
+        f"reply={_reply_excerpt(raw or repr(data))}; {_reply_telemetry(res)}"
+    )
 
 
 def _figure_notes(store: Store, ref_id: int) -> str:
@@ -560,9 +627,15 @@ def describe_card(
     Sonnet-class rungs attach it to the wire. ``notes`` is the figure's
     ``figure_notes`` text, grounding context next to the caption.
 
-    ``ref_id`` only names the ref on the info line when a truncated or
-    unterminated reply was salvaged — prod counts those lines
-    (gr523669); ``None`` when the caller has no ref in hand.
+    ``ref_id`` only names the ref on the info/warning lines (a salvaged
+    reply, gr523669; an unparseable one taking its nudge retry,
+    gr543828); ``None`` when the caller has no ref in hand.
+
+    Retry contract (gr543828): a dispatch that fails ``unparseable``
+    outright — the ``claude -p`` rung's own JSON extraction rejecting a
+    prose/chat reply — or a reply that yields no usable ``description``
+    is re-dispatched exactly once with :data:`_JSON_NUDGE` appended. A
+    second failure propagates unchanged — one retry, never a loop.
     """
     if kind == "figure":
         if not image:
@@ -578,7 +651,12 @@ def describe_card(
             },
             {
                 "type": "text",
-                "text": f"Figure: {title}\n\nNotes:\n{notes or '(none)'}",
+                "text": (
+                    f"{_FIGURE_INSTRUCTION}\n\n"
+                    f"Figure: {title}\n\n"
+                    f"Notes:\n{notes or '(none)'}\n\n"
+                    f"{_CARD_CONTRACT}"
+                ),
             },
         ]
         messages: list[dict[str, Any]] = [
@@ -586,18 +664,47 @@ def describe_card(
             {"role": "user", "content": content},
         ]
     else:
+        label = _KIND_LABEL.get(kind, kind)
         messages = [
             {"role": "system", "content": _SYSTEM},
             {
                 "role": "user",
                 "content": (
-                    f"{_KIND_LABEL.get(kind, kind).capitalize()}: {title}\n\n"
-                    f"Card:\n{card_text}"
+                    f"{_CARD_INSTRUCTION.format(label=label)}\n\n"
+                    f"{label.capitalize()}: {title}\n\n"
+                    f"Card:\n{card_text}\n\n"
+                    f"{_CARD_CONTRACT}"
                 ),
             },
         ]
-    res = client.complete(messages)
-    text, salvage = _extract_description(res)
+    nudged = [*messages, {"role": "user", "content": _JSON_NUDGE}]
+    retried = False
+    try:
+        res = client.complete(messages)
+    except DispatchError as exc:
+        if exc.reason_class != "unparseable":
+            raise
+        retried = True
+        log.warning(
+            "card_describe: ref_id=%s dispatch failed unparseable (%s); "
+            "retrying once with a JSON-only nudge",
+            ref_id,
+            str(exc)[:_REPLY_EXCERPT_CHARS],
+        )
+        res = client.complete(nudged)
+    try:
+        text, salvage = _extract_description(res)
+    except ValueError as exc:
+        if retried:
+            raise
+        log.warning(
+            "card_describe: ref_id=%s unparseable reply (%s); "
+            "retrying once with a JSON-only nudge",
+            ref_id,
+            str(exc)[:_REPLY_EXCERPT_CHARS],
+        )
+        res = client.complete(nudged)
+        text, salvage = _extract_description(res)
     if salvage is not None:
         log.info(
             "card_describe: ref_id=%s description salvaged (%s; %s)",
@@ -906,6 +1013,7 @@ def run_card_describe_pass(
 
 __all__ = [
     "CARD_DESCRIBE_VERSION",
+    "DESCRIBE_EXTRA_ARGS",
     "DESCRIBE_MAX_TOKENS",
     "claim_refs_without_description",
     "claimable_counts",

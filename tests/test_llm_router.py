@@ -1786,6 +1786,66 @@ def test_dispatch_client_raises_on_error(monkeypatch: pytest.MonkeyPatch) -> Non
         client.complete([{"role": "user", "content": "x"}])
 
 
+def test_dispatch_client_threads_extra_args_to_claude_p(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``DispatchClient.extra_args`` reaches the ``claude -p`` wire —
+    card_describe pins ``--max-turns 1`` through it so the rung stays
+    one-shot (gr543828)."""
+    from precis.utils.llm.router import DispatchClient
+
+    seen: dict[str, object] = {}
+
+    def fake_p(prompt: str, **kwargs: object) -> ClaudePResult:
+        seen["extra_args"] = kwargs.get("extra_args")
+        return ClaudePResult(
+            data={"ok": True}, raw_stdout='{"ok": true}', cost_usd=0.01
+        )
+
+    monkeypatch.setattr(router, "call_claude_p", fake_p)
+    monkeypatch.setattr(
+        router,
+        "resolve_chain",
+        lambda *a, **kw: [Rung(Transport.CLAUDE_P, model="claude-sonnet-5")],
+    )
+
+    client = DispatchClient(
+        tier=Tier.BIG,
+        source="card_describe",
+        extra_args=("--max-turns", "1"),
+    )
+    client.complete([{"role": "user", "content": "describe this"}])
+
+    assert seen["extra_args"] == ("--max-turns", "1")
+
+
+def test_dispatch_client_error_carries_reason_class(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A route error's ``reason_class`` rides the ``DispatchError`` so a
+    caller can key its retry policy on the class — ``unparseable`` —
+    instead of sniffing the message text (gr543828)."""
+    from precis.utils.claude_p import ClaudePUnparseableError
+    from precis.utils.llm.router import DispatchClient, DispatchError
+
+    def boom(prompt: str, **kwargs: object) -> ClaudePResult:
+        raise ClaudePUnparseableError(
+            "claude -p returned no parseable JSON block", stdout="prose"
+        )
+
+    monkeypatch.setattr(router, "call_claude_p", boom)
+    monkeypatch.setattr(
+        router,
+        "resolve_chain",
+        lambda *a, **kw: [Rung(Transport.CLAUDE_P, model="claude-sonnet-5")],
+    )
+
+    client = DispatchClient(tier=Tier.BIG)
+    with pytest.raises(DispatchError) as ei:
+        client.complete([{"role": "user", "content": "x"}])
+    assert ei.value.reason_class == "unparseable"
+
+
 def test_dispatch_log_call_false_skips_route_log(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

@@ -58,6 +58,7 @@ def run(args: argparse.Namespace) -> None:
         return
     from precis.utils.llm.router import DispatchClient, Tier
     from precis.workers.card_describe import (
+        DESCRIBE_EXTRA_ARGS,
         DESCRIBE_MAX_TOKENS,
         run_card_describe_pass,
     )
@@ -68,6 +69,7 @@ def run(args: argparse.Namespace) -> None:
         source="card_describe",
         log_call=True,
         log_blobs=False,
+        extra_args=DESCRIBE_EXTRA_ARGS,
     )
     r = run_card_describe_pass(store, client=client, batch_size=args.batch_size)
     line = f"claimed={r['claimed']} ok={r['ok']} failed={r['failed']}"

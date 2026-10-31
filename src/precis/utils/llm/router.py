@@ -3970,6 +3970,10 @@ class DispatchError(RuntimeError):
     ``cli_unavailable`` mirrors :attr:`LlmResult.cli_unavailable`: the pause
     is a host-config defect (no claude binary/credential here), not a
     window that rolls off — a batch pass names it in its defer log line.
+    ``reason_class`` mirrors :attr:`LlmResult.reason_class`: the router's
+    structural failure class — ``'unparseable'`` lets a caller retry a
+    format flake with a nudge instead of sniffing the message text
+    (card_describe's JSON-only retry, gr543828).
     """
 
     def __init__(
@@ -3979,11 +3983,13 @@ class DispatchError(RuntimeError):
         paused: bool = False,
         retry_at: datetime | None = None,
         cli_unavailable: bool = False,
+        reason_class: str | None = None,
     ) -> None:
         super().__init__(message)
         self.paused = paused
         self.retry_at = retry_at
         self.cli_unavailable = cli_unavailable
+        self.reason_class = reason_class
 
 
 @dataclass
@@ -4049,6 +4055,11 @@ class DispatchClient:
     placement: str | None = None
     #: Taper work class (see :attr:`LlmRequest.work_class`).
     work_class: str | None = None
+    #: Extra CLI flags forwarded to the ``claude_*`` transports (see
+    #: :attr:`LlmRequest.extra_args`) — card_describe pins
+    #: ``--max-turns 1`` through it so its ``claude -p`` rung stays
+    #: one-shot (gr543828). Ignored by the other transports.
+    extra_args: tuple[str, ...] = ()
 
     def complete(
         self,
@@ -4095,6 +4106,7 @@ class DispatchClient:
                 timeout_s=self.timeout_s,
                 placement=self.placement,
                 work_class=self.work_class,
+                extra_args=self.extra_args,
             )
         )
         if res.error is not None:
@@ -4103,6 +4115,7 @@ class DispatchClient:
                 paused=res.paused,
                 retry_at=res.retry_at,
                 cli_unavailable=res.cli_unavailable,
+                reason_class=res.reason_class,
             )
         return res
 

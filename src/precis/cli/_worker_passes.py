@@ -718,7 +718,10 @@ def build_ref_passes(
     if _register("card_describe"):
         from precis.utils.llm.router import DispatchClient as _CdDispatchClient
         from precis.utils.llm.router import Tier as _CdTier
-        from precis.workers.card_describe import DESCRIBE_MAX_TOKENS
+        from precis.workers.card_describe import (
+            DESCRIBE_EXTRA_ARGS,
+            DESCRIBE_MAX_TOKENS,
+        )
         from precis.workers.runner import BatchResult as _CdBatchResult
 
         # A local/openai-compat rung would otherwise inherit
@@ -731,6 +734,7 @@ def build_ref_passes(
             source="card_describe",
             log_call=True,
             log_blobs=False,
+            extra_args=DESCRIBE_EXTRA_ARGS,
         )
 
         def _card_describe_pass(batch_size: int) -> _CdBatchResult:
