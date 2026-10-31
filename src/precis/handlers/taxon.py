@@ -949,17 +949,27 @@ class TaxonHandler(NumericRefHandler):
         if not rows:
             lines.append("no live refs")
             return Response(body="\n".join(lines), result_count=0)
-        for r in rows:
-            models = (
-                "  ".join(f"{m}: {n}" for m, n in r["by_model"].items())
-                if r["by_model"]
-                else "—"
+        from precis.format import render_agent_table
+
+        lines.append(
+            render_agent_table(
+                [
+                    {
+                        "kind": r["kind"],
+                        "live": r["live"],
+                        "considered": r["considered"],
+                        "share": f"{100 * r['share']:.1f}%",
+                        "models": (
+                            "  ".join(f"{m}: {n}" for m, n in r["by_model"].items())
+                            if r["by_model"]
+                            else "—"
+                        ),
+                    }
+                    for r in rows
+                ],
+                schema=["kind", "live", "considered", "share", "models"],
             )
-            lines.append(
-                f"{r['kind']:<14} live {r['live']:>5}  "
-                f"considered {r['considered']:>4}  "
-                f"{100 * r['share']:5.1f}%  {models}"
-            )
+        )
         return Response(body="\n".join(lines), result_count=len(rows))
 
     def _list_view(self, view: str) -> Response | None:

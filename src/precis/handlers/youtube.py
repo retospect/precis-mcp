@@ -1039,14 +1039,18 @@ class YouTubeHandler(CacheBackedHandler):
         # omitted rows point at (the map is an index of ``~`` reads).
         used = 0
         cut_at: int | None = None
+        kept: list[dict[str, str]] = []
         for b in blocks:
             row = self._toc_row(slug, b)
-            cost = len(row.encode("utf-8")) + 3
+            cost = sum(len(c.encode("utf-8")) for c in row.values()) + 6
             if used + cost > _TOC_ROW_BUDGET:
                 cut_at = b.ord
                 break
-            lines.append(f"  {row}")
+            kept.append(row)
             used += cost
+        from precis.format import render_agent_table
+
+        lines.append(render_agent_table(kept, schema=["block", "time", "size"]))
         if cut_at is not None:
             lines.append("")
             lines.append(f"rest: get(kind='youtube', id='{slug}~{cut_at}..{last.ord}')")
@@ -1065,7 +1069,7 @@ class YouTubeHandler(CacheBackedHandler):
         return Response(body=body)
 
     @staticmethod
-    def _toc_row(slug: str, b: ChunkRow) -> str:
+    def _toc_row(slug: str, b: ChunkRow) -> dict[str, str]:
         """One toc/outline row: ``slug~ord``, time window, size."""
         from precis._result_budget import size_cell
 
@@ -1073,11 +1077,14 @@ class YouTubeHandler(CacheBackedHandler):
         ts = ""
         if meta.get("start_s") is not None:
             end = meta.get("end_s")
-            ts = f"  {_fmt_ts(meta['start_s'])}"
+            ts = _fmt_ts(meta["start_s"])
             if end is not None:
                 ts += f"–{_fmt_ts(end)}"
-        sz = size_cell(len(b.text.encode("utf-8")))
-        return f"`{slug}~{b.ord}`{ts}" + (f"  {sz}" if sz else "")
+        return {
+            "block": f"{slug}~{b.ord}",
+            "time": ts,
+            "size": size_cell(len(b.text.encode("utf-8"))),
+        }
 
     def _budget_outline(self, ref: Ref) -> str:
         """``slug~N`` selector lines for the budget fitter's outline
@@ -1086,7 +1093,12 @@ class YouTubeHandler(CacheBackedHandler):
         blocks = self.store.chunks.list_chunks_for_ref(ref.id)
         if len(blocks) <= 1:
             return ""
-        return "\n".join(self._toc_row(slug, b) for b in blocks)
+        from precis.format import render_agent_table
+
+        return render_agent_table(
+            [self._toc_row(slug, b) for b in blocks],
+            schema=["block", "time", "size"],
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -1146,10 +1158,22 @@ def _list_languages(video_id: str) -> Response:
             retry_call=f"get(kind='youtube', id='{video_id}', view='languages')",
         ) from exc
 
+    from precis.format import render_agent_table
+
     lines = [f"Available transcripts for {video_id}:"]
-    for t in transcripts:
-        mark = "auto" if t.is_generated else "human"
-        lines.append(f"  {t.language_code:<6} {t.language:<30} [{mark}]")
+    lines.append(
+        render_agent_table(
+            [
+                {
+                    "code": t.language_code,
+                    "language": t.language,
+                    "kind": "auto" if t.is_generated else "human",
+                }
+                for t in transcripts
+            ],
+            schema=["code", "language", "kind"],
+        )
+    )
     lines.append("")
     lines.append(f"- {_YT_BASE_ATTRIBUTION}")
     lines.append(f"  Watch: https://www.youtube.com/watch?v={video_id}")

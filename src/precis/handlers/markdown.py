@@ -288,13 +288,22 @@ class MarkdownHandler(PlaintextHandler):
                 )
             )
 
-        lines = [f"# {len(seen)} markdown file(s) in workspace"]
-        max_w = max(len(s) for s in seen)
-        for slug in sorted(seen):
-            row = f"  {slug:<{max_w}}  {seen[slug]}"
-            if sz := self._file_size_cell(slug, seen[slug]):
-                row = f"{row} · {sz}"
-            lines.append(row)
+        from precis.format import render_agent_table
+
+        lines = [
+            f"# {len(seen)} markdown file(s) in workspace",
+            render_agent_table(
+                [
+                    {
+                        "slug": slug,
+                        "path": seen[slug],
+                        "size": self._file_size_cell(slug, seen[slug]),
+                    }
+                    for slug in sorted(seen)
+                ],
+                schema=["slug", "path", "size"],
+            ),
+        ]
         body = "\n".join(lines)
         if truncated:
             body += _listing_truncation_notice(

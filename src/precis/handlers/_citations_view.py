@@ -81,7 +81,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 from precis.errors import BadInput
-from precis.format import toon
+from precis.format import render_agent_table
 from precis.handlers._interpret import interpreted
 from precis.handlers._slice_args import slice_window
 from precis.response import Response
@@ -420,7 +420,7 @@ def _render(
         if not rows:
             lines.append("(none)")
         else:
-            lines.append(toon.dump(rows, schema=_TABLE_SCHEMA))
+            lines.append(render_agent_table(rows, schema=_TABLE_SCHEMA))
         lines.append("")
     return Response(body="\n".join(lines).rstrip() + "\n")
 
@@ -528,7 +528,7 @@ def _diff_only_lines(
                     "reached": _reached_label(pid, direct, via),
                 }
             )
-        lines.append(toon.dump(rows, schema=_DIFF_SCHEMA))
+        lines.append(render_agent_table(rows, schema=_DIFF_SCHEMA))
     withheld = len(ordered) - offset - len(shown)
     if withheld:
         lines.append(f"\n(+{withheld} more — next: {next_call})")

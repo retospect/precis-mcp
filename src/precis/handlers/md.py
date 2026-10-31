@@ -60,6 +60,7 @@ from typing import Any, ClassVar
 from precis._result_budget import size_cell
 from precis.dispatch import Hub
 from precis.errors import BadInput, NotFound, Unsupported
+from precis.format import render_agent_table
 from precis.handlers._python_worktrees import WorktreeRegistry
 from precis.handlers._roots import parse_alias_roots
 from precis.md_index import (
@@ -686,8 +687,8 @@ def _render_index(roots: dict[str, Path]) -> str:
         )
 
     lines = [f"# md - {len(roots)} root{'s' if len(roots) != 1 else ''}\n"]
-    for alias, root in roots.items():
-        lines.append(f"  {alias:<24} {root}")
+    rows = [{"alias": alias, "root": str(root)} for alias, root in roots.items()]
+    lines.append(render_agent_table(rows, schema=["alias", "root"]))
     body = "\n".join(lines)
     first = next(iter(roots))
     body += render_next_section(
@@ -714,8 +715,8 @@ def _render_overview(alias: str, idx: MdRepoIndex) -> str:
     if top_dirs:
         lines.append("")
         lines.append("Top-level dirs:")
-        for d, count in top_dirs.most_common():
-            lines.append(f"  {d:<28} {count} file{'s' if count != 1 else ''}")
+        rows = [{"dir": d, "files": n} for d, n in top_dirs.most_common()]
+        lines.append(render_agent_table(rows, schema=["dir", "files"]))
 
     # ``sample`` below is the real file the drill-down hint names — the
     # overview otherwise only prints top-level dir *counts*, never a

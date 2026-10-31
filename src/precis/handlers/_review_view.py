@@ -21,7 +21,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from precis.errors import NotFound
-from precis.format import toon
+from precis.format import render_agent_table
 from precis.response import Response
 from precis.store._draft_ops import DraftReviewRow
 
@@ -74,7 +74,7 @@ def render_review_view(store: Store, ref: Ref) -> Response:
             line[checker] = _mark(by_checker.get(checker))
         rows.append(line)
 
-    table = toon.dump(rows, schema=["handle", "kind", "text", *checkers])
+    table = render_agent_table(rows, schema=["handle", "kind", "text", *checkers])
     trailer = (
         f"\n\n{len(chunks)} chunk(s), {len(checkers)} checker(s): {', '.join(checkers)}"
     )
