@@ -3577,8 +3577,8 @@ class TestCountView:
         self._graph(store)
         out = _make_handler(store).search(view="count", group_by="state")
         assert "state:" in out.body
-        assert "STATUS:tracing\t1" in out.body
-        assert "STATUS:canonical\t2" in out.body
+        assert "  STATUS:tracing: 1" in out.body
+        assert "  STATUS:canonical: 2" in out.body
 
     def test_count_view_refuses_trust(self, store) -> None:
         with pytest.raises(BadInput, match="trust="):

@@ -15,9 +15,7 @@ from __future__ import annotations
 from collections import Counter
 from pathlib import Path
 
-from precis.format import render_agent_table
 from precis.python_index import ModuleIndex, RepoIndex, Symbol
-from precis.utils.next_block import render_next_section
 
 # ---------------------------------------------------------------------------
 # Index — list configured roots
@@ -36,24 +34,15 @@ def render_index(roots: dict[str, Path]) -> str:
             "register one or more Python repos.\n"
         )
 
-    from precis.format import render_agent_table
-
     lines = [f"# python - {len(roots)} repo{'s' if len(roots) != 1 else ''}\n"]
-    lines.append(
-        render_agent_table(
-            [{"alias": a, "root": str(r)} for a, r in roots.items()],
-            schema=["alias", "root"],
-        )
-    )
+    for alias, root in roots.items():
+        lines.append(f"  {alias:<24} {root}")
+    lines.append("")
+    lines.append("Next:")
     first = next(iter(roots))
-    body = "\n".join(lines)
-    body += render_next_section(
-        [
-            (f"get(kind='python', id={first!r})", "repo overview"),
-            (f"get(kind='python', id={first!r}, view='toc')", "package tree"),
-        ]
-    )
-    return body
+    lines.append(f"  get(kind='python', id={first!r})")
+    lines.append(f"  get(kind='python', id={first!r}, view='toc')")
+    return "\n".join(lines)
 
 
 # ---------------------------------------------------------------------------
@@ -78,39 +67,26 @@ def render_repo_overview(alias: str, idx: RepoIndex) -> str:
     if top_packages:
         lines.append("")
         lines.append("Top-level packages:")
-        lines.append(
-            render_agent_table(
-                [
-                    {"package": pkg, "modules": count}
-                    for pkg, count in top_packages.most_common()
-                ],
-                schema=["package", "modules"],
-            )
-        )
+        for pkg, count in top_packages.most_common():
+            lines.append(f"  {pkg:<28} {count} module{'s' if count != 1 else ''}")
 
     # Surface any modules that failed to parse — agents need to know.
     bad = [m for m in idx.modules.values() if m.parse_error]
     if bad:
         lines.append("")
         lines.append(f"Parse errors ({len(bad)}):")
-        lines.append(
-            render_agent_table(
-                [{"file": m.file, "error": m.parse_error} for m in bad[:10]],
-                schema=["file", "error"],
-            )
-        )
+        for m in bad[:10]:
+            lines.append(f"  {m.file:<40} {m.parse_error}")
         if len(bad) > 10:
             lines.append(f"  … ({len(bad) - 10} more)")
 
-    nxt = [(f"get(kind='python', id={alias!r}, view='toc')", "package tree")]
+    lines.append("")
+    lines.append("Next:")
+    lines.append(f"  get(kind='python', id={alias!r}, view='toc')")
     if top_packages:
         first_pkg = top_packages.most_common(1)[0][0]
-        nxt.append(
-            (f"get(kind='python', id='{alias}::{first_pkg}')", "top package's symbols")
-        )
-    body = "\n".join(lines)
-    body += render_next_section(nxt)
-    return body
+        lines.append(f"  get(kind='python', id='{alias}::{first_pkg}')")
+    return "\n".join(lines)
 
 
 # ---------------------------------------------------------------------------
@@ -135,22 +111,20 @@ def render_toc(alias: str, idx: RepoIndex) -> str:
     # Emit every file in sorted-by-path order, with two-space indent per
     # depth and a 3-column counts line.
     files_sorted = sorted(idx.modules.values(), key=lambda m: m.file)
-    toc_rows: list[dict[str, str]] = []
     for mod in files_sorted:
         depth = mod.file.count("/")
         indent = "  " * depth
         leaf = mod.file.rsplit("/", 1)[-1]
         counts = _counts_for_file(mod)
-        toc_rows.append({"file": f"{indent}{leaf}", "symbols": counts})
-    lines.append(render_agent_table(toc_rows, schema=["file", "symbols"]))
-    nxt = []
+        lines.append(f"{indent}{leaf:<32} {counts}")
+
+    lines.append("")
+    lines.append("Next:")
     sample_file = files_sorted[0].file if files_sorted else None
     if sample_file:
-        nxt.append((f"get(kind='python', id='{alias}/{sample_file}')", "file outline"))
-    nxt.append((f"get(kind='python', id={alias!r}, view='symbols')", "every symbol"))
-    body = "\n".join(lines)
-    body += render_next_section(nxt)
-    return body
+        lines.append(f"  get(kind='python', id='{alias}/{sample_file}')")
+    lines.append(f"  get(kind='python', id={alias!r}, view='symbols')")
+    return "\n".join(lines)
 
 
 def _counts_for_file(mod: ModuleIndex) -> str:
@@ -226,20 +200,15 @@ def render_file_outline(alias: str, mod: ModuleIndex) -> str:
                 lines.append(f"      L{m.start_line:<4} {sig}")
         lines.append("")
 
-    nxt = [(f"get(kind='python', id='{alias}/{mod.file}', view='source')", "source")]
+    lines.append("Next:")
+    lines.append(f"  get(kind='python', id='{alias}/{mod.file}', view='source')")
     if classes:
         sample = classes[0]
-        nxt.append(
-            (f"get(kind='python', id='{alias}::{sample.qualname}')", "class detail")
-        )
+        lines.append(f"  get(kind='python', id='{alias}::{sample.qualname}')")
     elif funcs:
         sample = funcs[0]
-        nxt.append(
-            (f"get(kind='python', id='{alias}::{sample.qualname}')", "symbol detail")
-        )
-    body = "\n".join(lines)
-    body += render_next_section(nxt)
-    return body
+        lines.append(f"  get(kind='python', id='{alias}::{sample.qualname}')")
+    return "\n".join(lines)
 
 
 # ---------------------------------------------------------------------------
@@ -286,19 +255,10 @@ def render_symbol(alias: str, sym: Symbol, idx: RepoIndex) -> str:
     calls_from = _calls_from_symbol(sym, idx)
     if calls_from:
         lines.append("Calls (from this symbol):")
-        lines.append(
-            render_agent_table(
-                [
-                    {
-                        "callee": (callee[4:] if callee.startswith("ext:") else callee),
-                        "ext": "ext" if callee.startswith("ext:") else "",
-                        "hits": f"{hits}×",
-                    }
-                    for callee, hits in calls_from.most_common(10)
-                ],
-                schema=["callee", "ext", "hits"],
-            )
-        )
+        for callee, hits in calls_from.most_common(10):
+            tag = " [ext]" if callee.startswith("ext:") else ""
+            display = callee[4:] if callee.startswith("ext:") else callee
+            lines.append(f"  {display:<48}{tag}  {hits}×")
         if len(calls_from) > 10:
             lines.append(f"  … ({len(calls_from) - 10} more)")
         lines.append("")
@@ -308,29 +268,15 @@ def render_symbol(alias: str, sym: Symbol, idx: RepoIndex) -> str:
     callers = _callers_of_symbol(sym, idx)
     if callers:
         lines.append("Called by:")
-        lines.append(
-            render_agent_table(
-                [
-                    {"caller": caller, "hits": f"{hits}×"}
-                    for caller, hits in callers.most_common(10)
-                ],
-                schema=["caller", "hits"],
-            )
-        )
+        for caller, hits in callers.most_common(10):
+            lines.append(f"  {caller:<48}  {hits}×")
         if len(callers) > 10:
             lines.append(f"  … ({len(callers) - 10} more)")
         lines.append("")
 
-    body = "\n".join(lines).rstrip() + "\n"
-    body += render_next_section(
-        [
-            (
-                f"get(kind='python', id='{alias}::{sym.qualname}', view='source')",
-                "source",
-            )
-        ]
-    )
-    return body
+    lines.append("Next:")
+    lines.append(f"  get(kind='python', id='{alias}::{sym.qualname}', view='source')")
+    return "\n".join(lines).rstrip() + "\n"
 
 
 def _calls_from_symbol(sym: Symbol, idx: RepoIndex) -> Counter[str]:

@@ -2773,7 +2773,7 @@ class PcbHandler(Handler):
                 next=f"get(kind='part', id='{missing[0]}')",
             )
 
-        rows: list[dict[str, str]] = []
+        lines: list[str] = []
 
         def apply(conn: Any) -> bool:
             for rd, c in canon:
@@ -2790,21 +2790,13 @@ class PcbHandler(Handler):
                     note = f" — footprint not cached yet: run op='footprint' part='{c}'"
                 prev = out["previous_lcsc"] or "—"
                 stamped = ", ".join(sorted(stamp)) if stamp else "no catalog stamp"
-                rows.append(
-                    {
-                        "refdes": rd,
-                        "part": c,
-                        "previous": f"(prev {prev})",
-                        "stamped": stamped + note,
-                    }
-                )
+                lines.append(f"{rd}\t{c}\t(prev {prev})\t{stamped}{note}")
             return True
 
         _, judged = self._judged_mutation(ref.id, apply)
         body = (
             f"# part — {len(canon)} bound\n"
-            + render_agent_table(rows, schema=["refdes", "part", "previous", "stamped"])
-            + "\n"
+            "{refdes\tpart\tprevious\tstamped}\n" + "\n".join(lines) + "\n"
         )
         if judged.standing:
             body += (

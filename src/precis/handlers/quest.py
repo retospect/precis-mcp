@@ -1502,7 +1502,7 @@ class QuestHandler(NumericRefHandler):
         both render the same :func:`quest_frontier`, so there is no second
         ranking to drift.
         """
-        from precis.format import render_agent_table
+        from precis.format import toon
         from precis.quest import frontier as frontier_mod
 
         fr = frontier_mod.quest_frontier(self.store, ref.id)
@@ -1519,7 +1519,7 @@ class QuestHandler(NumericRefHandler):
             if any(str(t) == "needs-experiment" for t in self.store.tags_for(c.ref_id))
         }
         rows, schema = frontier_mod.leaderboard(fr, graduated=graduated)
-        body = render_agent_table(rows, schema=schema)
+        body = toon.dump(rows, schema=schema)
         # A TOON cell has no title-attribute equivalent for the glyph's own
         # word, so the legend is printed once here rather than repeated
         # per row.
@@ -1544,7 +1544,7 @@ class QuestHandler(NumericRefHandler):
         = the tick's own 2500; ``args={'budget': N}`` overrides), dropping
         rows from the lineage tail but never the newest ten, and saying how
         many were dropped (gr345353)."""
-        from precis.format import render_agent_table
+        from precis.format import toon
         from precis.quest import frontier as frontier_mod
         from precis.quest.results_table import (
             RESULTS_COLUMNS,
@@ -1564,12 +1564,12 @@ class QuestHandler(NumericRefHandler):
         schema = list(RESULTS_COLUMNS)
 
         def _both(rs: list[dict[str, Any]]) -> str:
-            return render_agent_table(rs, schema=schema) + render_results_table(
+            return toon.dump(rs, schema=schema) + render_results_table(
                 rs, token_budget=budget
             )
 
         kept, omitted = fit_rows_to_budget(rows, token_budget=budget, render=_both)
-        toon_body = render_agent_table(kept, schema=schema)
+        toon_body = toon.dump(kept, schema=schema)
         text_table = render_results_table(kept, token_budget=budget)
         note = (
             f"\n(+{omitted} of {len(rows)} rows omitted for the {budget}-token "

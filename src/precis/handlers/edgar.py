@@ -29,7 +29,6 @@ from typing import Any, ClassVar
 
 from precis.dispatch import Hub, InitError
 from precis.errors import BadInput, NotFound, Unsupported
-from precis.format import render_agent_table
 from precis.handlers._edgar_accession import (
     looks_like_accession,
     parse_accession,
@@ -376,20 +375,13 @@ class EdgarHandler(Handler):
         lines = [
             f"# {len(refs)} filing{'s' if len(refs) != 1 else ''} (recently ingested)"
         ]
-        rows = []
         for r in refs:
             meta = r.meta or {}
-            rows.append(
-                {
-                    "slug": r.slug or "?",
-                    "form": meta.get("form") or "?",
-                    "filed": meta.get("filed_date") or "?",
-                    "company": (meta.get("company") or "")[:40],
-                }
-            )
-        lines.append(
-            render_agent_table(rows, schema=["slug", "form", "filed", "company"])
-        )
+            form = meta.get("form") or "?"
+            filed = meta.get("filed_date") or "?"
+            company = (meta.get("company") or "")[:40]
+            slug = r.slug or "?"
+            lines.append(f"  {slug:<22}  {form:<8}  {filed:<10}  {company}")
         return Response(body="\n".join(lines))
 
     def _render_company_list(self, *, cik: str, ticker: str | None = None) -> Response:
@@ -412,19 +404,9 @@ class EdgarHandler(Handler):
 
         label = subs.company or (ticker or f"CIK {cik_digits}")
         lines = [f"# {label} — {len(subs.filings)} recent filings"]
-        lines.append(
-            render_agent_table(
-                [
-                    {
-                        "accession": f.accession,
-                        "form": f.form,
-                        "filed": f.report_date or f.filed_date or "?",
-                    }
-                    for f in subs.filings[:_LIST_PAGE_LIMIT]
-                ],
-                schema=["accession", "form", "filed"],
-            )
-        )
+        for f in subs.filings[:_LIST_PAGE_LIMIT]:
+            when = f.report_date or f.filed_date or "?"
+            lines.append(f"  {f.accession:<22}  {f.form:<8}  {when:<10}")
         lines.append("")
         lines.append("_get(kind='edgar', id='<accession>') to ingest + read any row_")
         return Response(body="\n".join(lines))

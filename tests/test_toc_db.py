@@ -179,7 +179,7 @@ class TestDrillInHint:
             _Stub(ord=i, keywords=["alpha", "beta", "gamma"]) for i in range(40)
         ] + [_Stub(ord=i, keywords=["delta", "epsilon", "zeta"]) for i in range(40, 70)]
         out = _render(blocks)
-        assert "Next:" in out and "drill a cluster" in out
+        assert "Next: drill" in out
         # The fat cluster's handle appears in a drill-in suggestion.
         next_lines = [
             line for line in out.splitlines() if "view='toc'" in line and "get(" in line

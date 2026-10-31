@@ -830,25 +830,14 @@ def render_impact(alias: str, imp: Impact, *, depth: int, limit: int) -> str:
         + ")\n"
     ]
 
-    from precis.format import render_agent_table
-
     lines.append("Changed symbols:")
     if not imp.changes:
         lines.append("  (no symbol-level changes)")
-    else:
+    for c in real[:limit]:
+        detail = f"  {c.detail}" if c.detail else ""
         lines.append(
-            render_agent_table(
-                [
-                    {
-                        "mark": _GLYPH.get(c.change, "?"),
-                        "change": c.change,
-                        "symbol": f"{alias}::{c.qualname}",
-                        "file": c.file + (f"  {c.detail}" if c.detail else ""),
-                    }
-                    for c in real[:limit]
-                ],
-                schema=["mark", "change", "symbol", "file"],
-            )
+            f"  {_GLYPH.get(c.change, '?')} {c.change:<9} {alias}::{c.qualname}  "
+            f"{c.file}{detail}"
         )
     if len(real) > limit:
         lines.append(f"  … ({len(real) - limit} more)")
@@ -865,24 +854,13 @@ def render_impact(alias: str, imp: Impact, *, depth: int, limit: int) -> str:
     lines.append(f"Callers of changed symbols (depth<={depth}):")
     if not imp.callers:
         lines.append("  (none resolved)")
-    else:
-        lines.append(
-            render_agent_table(
-                [
-                    {
-                        "caller": f"{alias}::{caller}",
-                        "at": f"{file}:{line}",
-                        "how": (
-                            f"reaches {seed} via {' -> '.join(_short(q) for q in via)}"
-                            if via
-                            else f"calls {seed}"
-                        ),
-                    }
-                    for caller, file, line, seed, via in imp.callers
-                ],
-                schema=["caller", "at", "how"],
-            )
+    for caller, file, line, seed, via in imp.callers:
+        how = (
+            f"reaches {seed} via {' -> '.join(_short(q) for q in via)}"
+            if via
+            else f"calls {seed}"
         )
+        lines.append(f"  {alias}::{caller}  {file}:{line}  {how}")
     if imp.n_caller_rows > len(imp.callers):
         lines.append(
             f"  … ({imp.n_caller_rows - len(imp.callers)} more; raise max_results)"

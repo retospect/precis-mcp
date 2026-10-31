@@ -21,9 +21,6 @@ import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from precis.format import render_agent_table
-from precis.utils.next_block import render_next_section
-
 if sys.version_info >= (3, 11):
     import tomllib
 else:  # pragma: no cover — we pin >=3.11
@@ -261,19 +258,9 @@ def render_entries(alias: str, report: EntriesReport) -> str:
             entries = [s for s in report.console_scripts if s.group == group_name]
             if group_name != "scripts":
                 lines.append(f"    [{group_name}]")
-            lines.append(
-                render_agent_table(
-                    [
-                        {
-                            "name": s.name,
-                            "entry": s.entry,
-                            "file": f"{s.file}:{s.line}" if s.file else "-",
-                        }
-                        for s in entries
-                    ],
-                    schema=["name", "entry", "file"],
-                )
-            )
+            for s in entries:
+                file_col = f"file: {s.file}:{s.line}" if s.file else "file: -"
+                lines.append(f"    {s.name:<24}entry: {s.entry:<32}{file_col}")
         lines.append("")
     elif report.pyproject_path is None:
         lines.append("  Console scripts: (no pyproject.toml found)")
@@ -284,42 +271,27 @@ def render_entries(alias: str, report: EntriesReport) -> str:
 
     if report.main_guards:
         lines.append("  __main__ guards:")
-        lines.append(
-            render_agent_table(
-                [
-                    {"file": g.file, "line": g.line, "body": g.body_summary}
-                    for g in report.main_guards
-                ],
-                schema=["file", "line", "body"],
-            )
-        )
+        for g in report.main_guards:
+            lines.append(f"    {g.file}:{g.line:<5} {g.body_summary}")
         lines.append("")
     else:
         lines.append("  __main__ guards: none")
         lines.append("")
 
-    nxt: list[tuple[str, str]] = []
+    lines.append("Next:")
     if report.console_scripts:
         first_script = report.console_scripts[0]
-        nxt.append(
-            (
-                f"get(kind='python', id={alias!r}, view='callgraph', "
-                f"entry={first_script.entry!r})",
-                "call graph from the first entry point",
-            )
+        lines.append(
+            f"  get(kind='python', id={alias!r}, view='callgraph', "
+            f"entry={first_script.entry!r})"
         )
     elif report.main_guards:
         first_guard = report.main_guards[0]
         # Trim the file name to a module guess for the hint.
-        nxt.append(
-            (
-                f"get(kind='python', id='{alias}/{first_guard.file}~L{first_guard.line}')",
-                "read the first guard",
-            )
+        lines.append(
+            f"  get(kind='python', id='{alias}/{first_guard.file}~L{first_guard.line}')"
         )
-    body = "\n".join(lines)
-    body += render_next_section(nxt)
-    return body
+    return "\n".join(lines)
 
 
 def _ordered_groups(scripts) -> list[str]:

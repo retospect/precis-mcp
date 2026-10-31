@@ -307,9 +307,9 @@ def test_impact_transitive_callers_name_their_chain(repo: Path) -> None:
     )
     handler = PythonHandler(hub=Hub(), roots={"r": repo})
     body = handler.get(id="r::pkg.core.target", view="impact", depth=3).body
-    run_row = next(ln for ln in body.splitlines() if "r::pkg.user.run\t" in ln)
+    run_row = next(ln for ln in body.splitlines() if "r::pkg.user.run " in ln)
     assert "calls pkg.core.target" in run_row  # run calls target directly
-    top_row = next(ln for ln in body.splitlines() if "r::pkg.top.top\t" in ln)
+    top_row = next(ln for ln in body.splitlines() if "r::pkg.top.top " in ln)
     assert "reaches pkg.core.target via run" in top_row
     test_row = next(
         ln for ln in body.splitlines() if "tests/test_top.py::test_top " in ln
@@ -345,7 +345,7 @@ def test_impact_line_shift_only_is_one_summary_line(repo: Path) -> None:
     handler = PythonHandler(hub=Hub(), roots={"r": repo})
     body = handler.get(id="r", view="impact", base=base).body
     assert "1 changed symbol + 2 line-shift only" in body
-    assert "~\tbody\tr::pkg.core.target" in body
+    assert "~ body      r::pkg.core.target" in body
     assert "~ shifted   2 symbols moved lines only" in body
     assert "helper" in body and "doomed" in body
 

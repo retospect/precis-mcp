@@ -1660,20 +1660,18 @@ class NumericRefHandler(Handler):
             parts.append(" × ".join(_count_facet_label(f) for f in facets) + ":")
             used = 0
             shown = 0
-            group_rows: list[dict[str, str]] = []
             for row in groups:
-                grow = self._count_group_row(row, facets)
-                cost = sum(len(c.encode("utf-8")) for c in grow.values()) + 3
-                # the first row always renders so the facet block is
-                # never an empty stub.
-                if shown and used + cost > _COUNT_GROUPS_BUDGET:
+                line = self._count_group_line(row, facets)
+                # +1 for the newline join; the first row always renders
+                # so the facet block is never an empty stub.
+                if (
+                    shown
+                    and used + len(line.encode("utf-8")) + 1 > _COUNT_GROUPS_BUDGET
+                ):
                     break
-                group_rows.append(grow)
-                used += cost
+                parts.append(line)
+                used += len(line.encode("utf-8")) + 1
                 shown += 1
-            from precis.format import render_agent_table
-
-            parts.append(render_agent_table(group_rows))
             if shown < len(groups):
                 parts.append(self._count_groups_overflow(len(groups) - shown, group_by))
             elif len(groups) == _COUNT_GROUP_LIMIT:
@@ -1716,26 +1714,23 @@ class NumericRefHandler(Handler):
             parts.append(extra)
         return Response(body="\n".join(parts), result_count=total)
 
-    def _count_group_row(
+    def _count_group_line(
         self,
         row: tuple[tuple[str | None, ...], int, Any],
         facets: list[tuple[str, str]],
-    ) -> dict[str, str]:
-        """One facet row of ``view='count'`` — ``{facet: val, count: n}``.
+    ) -> str:
+        """One facet row of ``view='count'`` — ``label: n`` by default.
 
         ``row`` is a ``count_refs_facets`` group ``(values, count,
         FacetSpan)``; a kind can override to render the span too (the
         job kind's newest/oldest member per group, gr536316).
         """
         vals, n = row[0], row[1]
-        out = {
-            _count_facet_label(spec): (
-                v if v is not None else _count_facet_null_label(spec)
-            )
+        label = " | ".join(
+            v if v is not None else _count_facet_null_label(spec)
             for v, spec in zip(vals, facets, strict=True)
-        }
-        out["count"] = str(n)
-        return out
+        )
+        return f"  {label}: {n}"
 
     def _count_groups_overflow(self, hidden: int, group_by: Any) -> str:
         """One-line stand-in for facet rows the byte budget cut

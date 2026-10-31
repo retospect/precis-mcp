@@ -169,8 +169,8 @@ def test_languages_view_lists_tracks(handler: YouTubeHandler) -> None:
     assert "Available transcripts for dQw4w9WgXcQ" in resp.body
     assert "en" in resp.body and "English" in resp.body
     assert "es" in resp.body and "Spanish" in resp.body
-    assert "\thuman" in resp.body
-    assert "\tauto" in resp.body
+    assert "[human]" in resp.body
+    assert "[auto]" in resp.body
     # Languages query is not cached — fetch_calls untouched.
     assert _StubApi.fetch_calls == []
     assert _StubApi.list_calls == ["dQw4w9WgXcQ"]

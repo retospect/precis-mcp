@@ -49,7 +49,7 @@ from precis.dispatch import Hub, InitError
 from precis.draft import lint as _draft_lint
 from precis.draft.scaffolds import SCAFFOLDS as _SCAFFOLDS
 from precis.errors import BadInput, NotFound, PrecisError, Unsupported
-from precis.format import render_agent_table
+from precis.format import toon
 from precis.handlers._eye import EYE_LADDER, eye_body, is_eye_view
 from precis.handlers._interpret import interpreted
 from precis.handlers._numeric_ref import BATCH_ID_CAP
@@ -6232,9 +6232,7 @@ class DraftHandler(Handler):
                     "prev": first[:120] + "…" if len(first) > 120 else first,
                 }
             )
-        table = render_agent_table(
-            rows, schema=["ts", "event", "source", "sha", "prev"]
-        )
+        table = toon.dump(rows, schema=["ts", "event", "source", "sha", "prev"])
         more = (
             f"\n\nshowing the newest {limit}; args={{'page_size': N}} (≤500) for more"
             if len(events) == limit
@@ -6330,12 +6328,14 @@ class DraftHandler(Handler):
                 if ia is not None and ib is not None:
                     if ia > ib:
                         ia, ib = ib, ia
-                    body = (
-                        table_toon(tbl, rows=sel)
-                        if label == "row"
-                        else table_toon(tbl, cols=sel, rows=[])
-                    )
-                    return Response(body=f"{dc}~{sel}\n{body}" + ids_tail)
+                    if label == "row":
+                        lines = [
+                            f"{rm['id']}\t" + "\t".join(cell_text(c) for c in rows[i])
+                            for i, rm in enumerate(rowmeta[ia : ib + 1])
+                        ]
+                    else:
+                        lines = [f"{c['id']}:{c['name']}" for c in columns[ia : ib + 1]]
+                    return Response(body=f"{dc}~{sel}\n" + "\n".join(lines) + ids_tail)
             raise NotFound(
                 f"~{sel!r} endpoints must both be {label} ids in {dc} "
                 "(or the id is dangling — deleted ids never reappear)",
@@ -6370,10 +6370,11 @@ class DraftHandler(Handler):
         ci = next((i for i, c in enumerate(columns) if c.get("id") == sel), None)
         if ci is not None:
             col = columns[ci]
+            lines = [
+                f"{rm['id']}\t{cell_text(row[ci])}" for rm, row in zip(rowmeta, rows)
+            ]
             return Response(
-                body=f"{dc}~{sel}  ({col['name']})\n"
-                + table_toon(tbl, cols=[sel])
-                + ids_tail
+                body=f"{dc}~{sel}  ({col['name']})\n" + "\n".join(lines) + ids_tail
             )
         raise NotFound(
             f"dangling id {sel!r} in {dc} — no such row or column "
@@ -6706,7 +6707,7 @@ class DraftHandler(Handler):
             }
             for e in entries
         ]
-        table = render_agent_table(rows, schema=["handle", "level", "title", "gist"])
+        table = toon.dump(rows, schema=["handle", "level", "title", "gist"])
         return Response(body=f"{header}\n\n{table}")
 
     def _render_wordcount(
@@ -6807,7 +6808,7 @@ class DraftHandler(Handler):
         schema = ["handle", "title", "words", "target", "verdict"]
         if has_chars:
             schema += ["chars", "char_target", "char_verdict"]
-        table = render_agent_table(rows, schema=schema)
+        table = toon.dump(rows, schema=schema)
         flagged = [s for s in report.sections if s.verdict in ("under", "over")]
         trailer = f"\n\ntotal: {report.total} words, {report.total_chars} chars"
         cflagged = [s for s in report.sections if s.char_verdict in ("under", "over")]

@@ -315,18 +315,11 @@ def render_callgraph(
     elif _tree_uses_tags(root, {"truncated"}):
         next_entry, next_depth = entry, max_depth + 2
     if next_entry is not None:
-        from precis.utils.next_block import render_next_section
-
+        lines.append("")
+        lines.append("Next:")
         lines.append(
-            render_next_section(
-                [
-                    (
-                        f"get(kind='python', id={alias!r}, view='callgraph', "
-                        f"args={{'entry': {next_entry!r}, 'depth': {next_depth}}})",
-                        "expand the graph",
-                    )
-                ]
-            )
+            f"  get(kind='python', id={alias!r}, view='callgraph', "
+            f"args={{'entry': {next_entry!r}, 'depth': {next_depth}}})"
         )
     return "\n".join(lines)
 

@@ -311,15 +311,15 @@ def _budget_outline(slug: str, text: str) -> str:
     from precis._result_budget import size_cell
     from precis.skill_index.chunker import chunk_by_h2
 
-    rows = [
-        {
-            "section": f"{slug}~{i}",
-            "size": size_cell(len(chunk.text.encode("utf-8"))),
-            "heading": chunk.heading or "",
-        }
-        for i, chunk in enumerate(chunk_by_h2(text))
-    ]
-    return render_agent_table(rows, schema=["section", "size", "heading"])
+    lines: list[str] = []
+    for i, chunk in enumerate(chunk_by_h2(text)):
+        line = f"{slug}~{i}"
+        if sz := size_cell(len(chunk.text.encode("utf-8"))):
+            line += f"\t{sz}"
+        if chunk.heading:
+            line += f" — {chunk.heading}"
+        lines.append(line)
+    return "\n".join(lines)
 
 
 def _categorise_skills(
@@ -1262,18 +1262,9 @@ class SkillHandler(Handler):
         """A bare ``wt-<tree>`` id: the tree's skill slugs, sorted."""
         corpus = self._worktree_corpus(alias)
         lines = [f"# skill — worktree {alias} ({len(corpus)} skills)", ""]
-        lines.append(
-            render_agent_table(
-                [
-                    {
-                        "slug": slug,
-                        "title": _skill_title_in(corpus, slug) or "",
-                    }
-                    for slug in sorted(corpus)
-                ],
-                schema=["slug", "title"],
-            )
-        )
+        for slug in sorted(corpus):
+            title = _skill_title_in(corpus, slug)
+            lines.append(f"  {slug}" + (f" — {title}" if title else ""))
         body = "\n".join(lines)
         if corpus:
             first = sorted(corpus)[0]

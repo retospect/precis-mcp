@@ -28,7 +28,6 @@ from typing import Any, ClassVar
 
 from precis.dispatch import Hub, InitError
 from precis.errors import BadInput, NotFound, Unsupported, Upstream
-from precis.format import render_agent_table
 from precis.handlers._patent_cql import build_cql
 from precis.handlers._slug_ref_shared import resolve_live_slug_ref
 from precis.patent.ingest import (
@@ -549,7 +548,6 @@ class PatentHandler(Handler):
             )
 
         lines = [heading]
-        table_rows = []
         for r in refs:
             meta = r.meta or {}
             pub = meta.get("publication_date") or "?"
@@ -561,19 +559,9 @@ class PatentHandler(Handler):
                 )[:40]
                 or "?"
             )
-            table_rows.append(
-                {
-                    "slug": r.slug or "?",
-                    "published": pub,
-                    "applicants": applicants,
-                    "title": (r.title or "")[:80],
-                }
-            )
-        lines.append(
-            render_agent_table(
-                table_rows, schema=["slug", "published", "applicants", "title"]
-            )
-        )
+            title = (r.title or "")[:80]
+            slug = r.slug or "?"
+            lines.append(f"  {slug:<18}  {pub:<10}  {applicants:<40}  {title}")
 
         body = "\n".join(lines)
         return Response(body=body)

@@ -12,7 +12,7 @@ Spec: gr520905 comments 1-2.
 from __future__ import annotations
 
 from precis.errors import NotFound
-from precis.format import render_agent_table
+from precis.format import serialize
 from precis.python_index.docparams import first_sentence
 from precis.python_index.types import ParamDoc, Symbol
 
@@ -34,7 +34,7 @@ def render_params(alias: str, sym: Symbol) -> str:
     ]
     body = (
         f"# {alias}::{sym.qualname} — {sym.file}:{sym.start_line}-{sym.end_line}\n"
-        f"params[{len(rows)}]" + render_agent_table(rows, schema=_PARAMS_SCHEMA)
+        f"params[{len(rows)}]" + serialize(rows, format="toon", schema=_PARAMS_SCHEMA)
     )
     doc_only = [p.name for p in sym.params if p.drift == "doc-only"]
     undocumented = [p.name for p in sym.params if p.drift == "undocumented"]
@@ -62,15 +62,15 @@ def render_param(alias: str, sym: Symbol, selector: str) -> str:
             next=f"get(kind='python', id='{alias}::{sym.qualname}', view='params')",
         )
     lines = [f"# {alias}::{sym.qualname}~{param.name} — {sym.file}:{param.line}"]
-    meta: dict[str, str] = {}
+    meta = []
     if param.hint:
-        meta["hint"] = param.hint
+        meta.append(f"hint: {param.hint}")
     if param.default is not None:
-        meta["default"] = str(param.default)
+        meta.append(f"default: {param.default}")
     if param.drift:
-        meta["drift"] = param.drift
+        meta.append(f"drift: {param.drift}")
     if meta:
-        lines.append(render_agent_table(meta))
+        lines.append("\t".join(meta))
     lines.append("")
     lines.append(param.doc if param.doc else "(no doc entry)")
     return "\n".join(lines)

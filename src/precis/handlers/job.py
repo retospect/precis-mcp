@@ -24,7 +24,6 @@ from precis.errors import BadInput, NotFound
 from precis.handlers._interpret import interpreted
 from precis.handlers._numeric_ref import (
     NumericRefHandler,
-    _count_facet_label,
     _count_facet_null_label,
     _parse_id_range,
     _parse_window_bound,
@@ -3443,32 +3442,31 @@ class JobHandler(NumericRefHandler):
 
     # ── view='count' trailer: top error heads per failing job_type ──
 
-    def _count_group_row(
+    def _count_group_line(
         self,
         row: tuple[tuple[str | None, ...], int, FacetSpan],
         facets: list[tuple[str, str]],
-    ) -> dict[str, str]:
+    ) -> str:
         """Job facet rows append the group's newest/oldest member —
         ``jo<max>/<min>`` handles with their ``created_at`` bounds —
         the "when did the last <type> run, and how far back does the
         streak reach" half of the count question (gr536316)."""
         vals, n, span = row
-        out = {
-            _count_facet_label(spec): (
-                v if v is not None else _count_facet_null_label(spec)
-            )
+        label = " | ".join(
+            v if v is not None else _count_facet_null_label(spec)
             for v, spec in zip(vals, facets, strict=True)
-        }
+        )
         newest = handle_registry.try_format("job", span.max_ref_id) or (
             f"job:{span.max_ref_id}"
         )
         oldest = handle_registry.try_format("job", span.min_ref_id) or (
             f"job:{span.min_ref_id}"
         )
-        out["count"] = str(n)
-        out["newest"] = f"{newest} ({_fmt_utc(span.max_created)})"
-        out["oldest"] = f"{oldest} ({_fmt_utc(span.min_created)})"
-        return out
+        return (
+            f"  {label}: {n} — newest {newest} "
+            f"({_fmt_utc(span.max_created)}), "
+            f"oldest {oldest} ({_fmt_utc(span.min_created)})"
+        )
 
     def _count_groups_overflow(self, hidden: int, group_by: Any) -> str:
         """Jobs narrow by ``job_type=``/``since=`` — the filters that

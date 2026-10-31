@@ -101,7 +101,6 @@ import psycopg
 from psycopg.errors import UniqueViolation
 
 from precis.errors import BadInput, NotFound, Unsupported
-from precis.format import render_agent_table
 from precis.handlers import (
     _finding_acquire,
     _finding_edit,
@@ -1876,17 +1875,9 @@ class FindingHandler(NumericRefHandler):
         if facets:
             parts.append("")
             parts.append(" × ".join(_count_facet_label(f) for f in facets) + ":")
-            group_rows = [
-                {
-                    **{
-                        _count_facet_label(spec): (v if v is not None else "(none)")
-                        for v, spec in zip(vals, facets, strict=True)
-                    },
-                    "count": str(n),
-                }
-                for vals, n, _span in groups
-            ]
-            parts.append(render_agent_table(group_rows))
+            for vals, n, _span in groups:
+                label = " | ".join(v if v is not None else "(none)" for v in vals)
+                parts.append(f"  {label}: {n}")
             if len(groups) == _COUNT_GROUP_LIMIT:
                 parts.append(f"  … (top {_COUNT_GROUP_LIMIT} groups by count)")
 
