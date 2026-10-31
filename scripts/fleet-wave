@@ -1158,7 +1158,18 @@ def cmd_launch(f: Fleet, a: argparse.Namespace) -> int:
         return _launch_codex(
             f, a, name=name, win=win, tier=tier, text=text, codex_flags=codex
         )
-    tmux_argv = ["new-window", "-d", "-n", win, "-c", str(f.main)]
+    # -e lands in the pane env, so the agent AND the hook processes it
+    # spawns inherit: lane read-only gits skip the index refresh (gr541144).
+    tmux_argv = [
+        "new-window",
+        "-d",
+        "-n",
+        win,
+        "-c",
+        str(f.main),
+        "-e",
+        "GIT_OPTIONAL_LOCKS=0",
+    ]
     if f.session:
         tmux_argv[2:2] = ["-t", f"={f.session}:"]
     claude = [
@@ -1206,7 +1217,17 @@ def _launch_codex(
     """Window ``codex-NAME`` over a locked worktree reading
     ``scratch/codex-brief.md`` (the launch-codex.sh recipe)."""
     tree = f.worktrees / name
-    tmux_argv = ["new-window", "-d", "-n", win, "-c", str(tree)]
+    # Same pane-env export as the claude lane above (gr541144).
+    tmux_argv = [
+        "new-window",
+        "-d",
+        "-n",
+        win,
+        "-c",
+        str(tree),
+        "-e",
+        "GIT_OPTIONAL_LOCKS=0",
+    ]
     if f.session:
         tmux_argv[2:2] = ["-t", f"={f.session}:"]
     if a.dry_run:

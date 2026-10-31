@@ -16,6 +16,7 @@ throwaway repo, mirroring tests/test_inflight_branchless_branches.py.
 
 from __future__ import annotations
 
+import json
 import os
 import re
 import shutil
@@ -342,3 +343,100 @@ def test_status_walk_never_takes_index_lock(tmp_path: Path) -> None:
     _run([str(inflight), "--json"], primary, env=env)
     for tree in (primary, held_tree, clean_tree):
         assert not (git_dir(tree) / "index.lock").exists(), f"index.lock left in {tree}"
+
+
+# --- gr541144 ratchet: no hook/timer script may take the index's optional lock
+
+_GIT_READ_RE = re.compile(r"(?:^|[^\w])git\b[^|;&\n]*?\b(?:status|diff)\b")
+_ARGV_HEAD_RE = re.compile(r"""[\[(]\s*["']git["']""")
+_GIT_SUBCMD_TOKEN_RE = re.compile(r"""["'](?:status|diff)["']""")
+
+# Harness files land under the release train and are never in a lane's
+# 1-minute hook budget — allowlisted so a hook command naming one is skipped.
+_HOOK_SCAN_ALLOWLIST = {"scripts/ship", "scripts/test", "scripts/impacted-tests"}
+
+# Lane launchers whose whole pane env must carry GIT_OPTIONAL_LOCKS=0, so the
+# agent AND the hook processes it spawns inherit the no-optional-locks read.
+_LANE_LAUNCHERS = ("scripts/fleet-wave", "scripts/devin-tree", "scripts/kimi-tree")
+
+
+def _hook_and_timer_scripts() -> list[Path]:
+    """Every repo script a hook or timer runs — the ratchet's scan set:
+    the commands wired under ``hooks`` in .claude/settings.json (permission
+    entries elsewhere in the file don't count), all of scripts/hooks/, and
+    the host-ops runners."""
+    found: set[Path] = set()
+    settings = REPO_ROOT / ".claude" / "settings.json"
+    if settings.exists():
+        hooks = json.loads(settings.read_text(encoding="utf-8")).get("hooks", {})
+        for m in re.findall(r"scripts/[A-Za-z0-9_./-]+", json.dumps(hooks)):
+            found.add(REPO_ROOT / m)
+    for sub in ("hooks", "host-ops"):
+        d = REPO_ROOT / "scripts" / sub
+        if d.is_dir():
+            found.update(p for p in d.iterdir() if p.is_file())
+    return sorted(p for p in found if p.is_file() and "__pycache__" not in p.parts)
+
+
+def _optional_lock_violations(path: Path) -> list[str]:
+    """Violation lines in one hook/timer script.
+
+    A file is clean when it either exports GIT_OPTIONAL_LOCKS=0 (covers
+    every git it and its children run, including embedded-Python helpers
+    and `git worktree remove`'s internal clean check), or carries
+    --no-optional-locks on each status/diff call — inline for shell, on
+    the argv head for Python."""
+    text = path.read_text(encoding="utf-8")
+    if "GIT_OPTIONAL_LOCKS" in text:
+        return []
+    bad: list[str] = []
+    first = text.splitlines()[0] if text else ""
+    is_py = path.suffix == ".py" or "python" in first
+    if not is_py:
+        for i, line in enumerate(text.splitlines(), 1):
+            if (
+                not line.lstrip().startswith("#")
+                and _GIT_READ_RE.search(line)
+                and "--no-optional-locks" not in line
+            ):
+                bad.append(f"{path.name}:{i}: {line.strip()}")
+    if _GIT_SUBCMD_TOKEN_RE.search(text):
+        for i, line in enumerate(text.splitlines(), 1):
+            if _ARGV_HEAD_RE.search(line) and "--no-optional-locks" not in line:
+                bad.append(f"{path.name}:{i}: {line.strip()}")
+    return bad
+
+
+def test_hook_scripts_never_take_the_optional_index_lock() -> None:
+    """gr541144, recurrence — a hook killed at its 1-minute budget while a
+    read-only `git status`/`git diff` holds index.lock leaves a stale
+    0-byte lock that then blocks the tree's own writes; lane env can't be
+    the only defence because sessions launched by hand carry no export.
+    Every script a hook or timer runs must flag each status/diff call or
+    export GIT_OPTIONAL_LOCKS=0 for its whole process tree."""
+    violations: list[str] = []
+    scanned: list[str] = []
+    for path in _hook_and_timer_scripts():
+        rel = path.relative_to(REPO_ROOT).as_posix()
+        if rel in _HOOK_SCAN_ALLOWLIST or rel.startswith("scripts/lib/"):
+            continue
+        scanned.append(rel)
+        violations.extend(_optional_lock_violations(path))
+    assert scanned, "the hook/timer script set must not be empty"
+    assert not violations, (
+        "hook/timer git status|diff without --no-optional-locks or "
+        "GIT_OPTIONAL_LOCKS=0 (gr541144):\n" + "\n".join(violations)
+    )
+
+
+def test_lane_launchers_export_no_optional_locks() -> None:
+    """The pane-env half of gr541144: every lane launcher must put
+    GIT_OPTIONAL_LOCKS=0 where the agent — and the hook processes it
+    spawns — inherits it (tmux `-e` for fleet-wave windows, an export in
+    the `--exec` half for the *-tree launchers)."""
+    missing = [
+        name
+        for name in _LANE_LAUNCHERS
+        if "GIT_OPTIONAL_LOCKS=0" not in (REPO_ROOT / name).read_text(encoding="utf-8")
+    ]
+    assert not missing, f"lane launchers without GIT_OPTIONAL_LOCKS=0: {missing}"

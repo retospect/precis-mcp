@@ -67,7 +67,7 @@ if [[ -n "$HOST_LANES_SHA" ]]; then
     echo "REFUSE: prod ${prod:0:9} does not contain host-lanes $HOST_LANES_SHA yet; wait for golden's release." >&2
     exit 1; }
 fi
-[[ -z "$(git -C "$PROD_CHECKOUT" status --porcelain --untracked-files=no)" ]] || {
+[[ -z "$(git --no-optional-locks -C "$PROD_CHECKOUT" status --porcelain --untracked-files=no)" ]] || {
   echo "REFUSE: $PROD_CHECKOUT has local edits." >&2; exit 1; }
 
 OVERLAY="$(resolve_overlay)" || exit 2

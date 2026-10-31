@@ -143,6 +143,12 @@ command -v git >/dev/null 2>&1 || exit 0
 git rev-parse --git-dir >/dev/null 2>&1 || exit 0
 [ -x scripts/inflight ] || exit 0
 
+# This runs as a SessionStart hook and can be killed mid-scan; every git
+# below (incl. the embedded-Python report pass and `worktree remove`'s
+# internal clean check) must not leave a stale index.lock (gr541144).
+# Mandatory locks — fetch, branch -D, worktree lock/remove — are unaffected.
+export GIT_OPTIONAL_LOCKS=0
+
 # Per-worktree compose-project teardown (gr176375): each worktree runs its gate
 # against its OWN precis-test-db project; reaping the tree must also tear that
 # project down or the container/volume leaks. Guarded — an older checkout

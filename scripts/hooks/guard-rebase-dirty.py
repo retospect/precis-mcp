@@ -62,7 +62,7 @@ def _git(cwd: str, *args: str) -> str:
     """Run ``git <args>`` at ``cwd``; empty string on any failure."""
     try:
         out = subprocess.run(
-            ["git", "-C", cwd, *args],
+            ["git", "--no-optional-locks", "-C", cwd, *args],
             capture_output=True,
             text=True,
             encoding="utf-8",
@@ -78,7 +78,7 @@ def _git_rc(cwd: str, *args: str) -> int:
     """Exit code of ``git <args>`` at ``cwd``; -1 when git can't even start."""
     try:
         return subprocess.run(
-            ["git", "-C", cwd, *args],
+            ["git", "--no-optional-locks", "-C", cwd, *args],
             capture_output=True,
             check=False,
             timeout=10,

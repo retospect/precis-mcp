@@ -108,7 +108,7 @@ if [ -n "$apply" ]; then
   # Dirty means the ensure script's own directory only — an untracked file
   # elsewhere in the tree must not mark the stamp dirty.
   dirty="false"
-  [ -n "$(git -C "$root" status --porcelain -- deploy/mcp-http 2>/dev/null)" ] && dirty="true"
+  [ -n "$(git --no-optional-locks -C "$root" status --porcelain -- deploy/mcp-http 2>/dev/null)" ] && dirty="true"
   if [ -n "$inst_sha" ]; then
     diff -u "$installed" "$repo" || true
     cp -p "$installed" "$installed.bak-$(date -u +%Y%m%dT%H%M%SZ)" || exit 1

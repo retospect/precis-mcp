@@ -57,6 +57,10 @@ if [[ ${1:-} == --exec ]]; then
 	shift 2
 	at_exec_relock "$tree"
 	export PATH="$HOME/.kimi-code/bin:$HOME/.local/bin:$PATH"
+	# Same as devin-tree: lane read-only gits (and any hooks the tool
+	# spawns) skip the index refresh — no stale index.lock on kill
+	# (gr541144).
+	export GIT_OPTIONAL_LOCKS=0
 	export PRECIS_CO_AUTHOR="${PRECIS_CO_AUTHOR:-Kimi Code <noreply@moonshot.ai>}"
 	prompt_mode=0
 	for a in "$@"; do case $a in -p | --prompt) prompt_mode=1 ;; esac; done

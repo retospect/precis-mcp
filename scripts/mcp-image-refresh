@@ -190,7 +190,10 @@ def diff_summary(repo: Path, installed: Path) -> str:
 def repo_copy_clean(rel: str = REPO_ENSURE_REL) -> bool:
     """True when the repo copy has no uncommitted edits (else --apply would ship them)."""
     try:
-        r = subprocess.run(["git", "diff", "--quiet", "HEAD", "--", rel], cwd=ROOT)
+        r = subprocess.run(
+            ["git", "--no-optional-locks", "diff", "--quiet", "HEAD", "--", rel],
+            cwd=ROOT,
+        )
     except OSError:
         return False
     return r.returncode == 0
@@ -388,8 +391,7 @@ def main(argv: list[str] | None = None) -> int:
         )
     if not is_current(baked, pinned):
         stale_parts.append(
-            f"autocatpath rev (image {baked or 'unlabelled'} "
-            f"!= pin {pinned or 'none'})"
+            f"autocatpath rev (image {baked or 'unlabelled'} != pin {pinned or 'none'})"
         )
     stale = bool(stale_parts) or args.force
     if stale_parts:

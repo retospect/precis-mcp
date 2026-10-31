@@ -39,4 +39,4 @@ git -C "$PROD_CHECKOUT" fetch -q origin
 git -C "$PROD_CHECKOUT" checkout -q --detach origin/prod
 cd "$PROD_CHECKOUT"
 echo "precis-mcp-prod at $(git rev-parse --short HEAD); origin/prod $(git rev-parse --short origin/prod)"
-git status --porcelain --untracked-files=no | head -5
+git --no-optional-locks status --porcelain --untracked-files=no | head -5

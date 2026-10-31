@@ -75,6 +75,11 @@ PRIMARY=$(dirname "$COMMON_DIR")
 cd "$PRIMARY" 2>/dev/null || exit 0
 command -v git >/dev/null 2>&1 || exit 0
 
+# SessionEnd hook: if killed mid-reap, no read-only git below may leave a
+# stale index.lock behind (gr541144; `worktree remove` runs an internal
+# clean check that otherwise refreshes the target's index).
+export GIT_OPTIONAL_LOCKS=0
+
 # Per-worktree compose-project teardown (gr176375): this is the PRIMARY reap
 # path (SessionStart's scripts/reap-worktrees is only the backstop), so the
 # per-worktree test-DB project must be reclaimed here or it leaks in the common

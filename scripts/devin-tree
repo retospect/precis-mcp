@@ -45,6 +45,10 @@ if [[ ${1:-} == --exec ]]; then
 	at_exec_relock "$tree"
 	# tmux windows do not inherit the login PATH; the Devin CLI lives in ~/.local/bin.
 	export PATH="$HOME/.local/bin:$PATH"
+	# Read-only gits in the lane (and in the hooks Devin spawns) skip the
+	# index refresh, so a killed status/diff leaves no stale index.lock
+	# (gr541144). Commits/adds still take the locks they must.
+	export GIT_OPTIONAL_LOCKS=0
 	exec devin "$@"
 fi
 

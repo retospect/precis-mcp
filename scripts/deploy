@@ -1162,7 +1162,7 @@ if [[ -z "${PRECIS_DEPLOY_ALLOW_STALE:-}" && -z "$_DEPLOY_TREE" ]]; then
                 || echo "NOTE: installing ${_fr_target:0:8} but rendering deploy/ templates from HEAD ${_fr_head:0:8} — fine when the delta touches no template, otherwise check out the target sha first."
         fi
     fi
-    _dirty="$(git -C "$REPO_ROOT" status --porcelain -- deploy/ 2>/dev/null || true)"
+    _dirty="$(git --no-optional-locks -C "$REPO_ROOT" status --porcelain -- deploy/ 2>/dev/null || true)"
     [[ -z "$_dirty" ]] || die "deploy/ tree has uncommitted changes — templates would render unshipped state. Commit/ship first, or set PRECIS_DEPLOY_ALLOW_STALE=1."
 fi
 
@@ -1536,7 +1536,7 @@ Set PRECIS_CATPATH_DIR to a catpath checkout, or PRECIS_DEPLOY_SKIP_CATPATH_WHEE
             # A deploy is the wrong place to be relaxed about that: refuse
             # rather than ship a plausible-looking wheel nobody can identify.
             git -C "$_CATPATH_DIR" fetch -q origin 2>/dev/null || true
-            [[ -z "$(git -C "$_CATPATH_DIR" status --porcelain 2>/dev/null)" ]] \
+            [[ -z "$(git --no-optional-locks -C "$_CATPATH_DIR" status --porcelain 2>/dev/null)" ]] \
                 || die "catpath at ${_CATPATH_DIR} has uncommitted changes — a wheel built from it would be named autocatpath-${_PROJ_V} but contain code no one else has. Commit/stash there, or build the wheel on the release machine and pass -e autocatpath_wheel=<path>. (gr263082)"
 
             # uv.lock already names the exact commit precis resolved against,
