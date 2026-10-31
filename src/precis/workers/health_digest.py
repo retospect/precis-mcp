@@ -16,7 +16,13 @@ import anywhere, enforced by ``tests/workers/test_health_digest.py``.
      ``chunks_keyworded`` are **idle-aware** (empty backlog = healthy
      regardless of last-run age; a non-draining one past budget isn't),
      reusing :func:`precis.health_checks.compute_backlog_counts` — same
-     computation ``/status`` renders. ``chunks_classified`` is idle-aware on
+     computation ``/status`` renders — and **net-rate gated**: a fresh
+     ``last_ts`` only proves writes happen, so pending > 0 with inflow at
+     or above drain, or an ETA past budget, is stale even with writes
+     minutes old (gr506753 for embed via ``embed_backlog_rates``;
+     gr520236 extended the same verdict to chunk_keywords via
+     ``keywords_backlog_rates``, ETA named in days).
+     ``chunks_classified`` is idle-aware on
      the ``service_config`` gate instead: :func:`_classify_gate_enabled`
      (via :func:`_resolve_enabled_somewhere`, shared with Layer-2) reads
      "disabled by config" rather than stale-forever when the default-OFF
@@ -422,11 +428,24 @@ def _freshness_layer1(conn: Any) -> list[CheckResult]:
 #: behind it; ``chunk_keywords`` has no analogous stage chain.
 _EMBED_BACKLOG_KEY = "embed"
 
+#: The backlog key naming the chunk_keywords queue — the second queue the
+#: net-rate gate covers (gr520236); kept named so the verdict can pick its
+#: day-scale ETA rendering and its "keyworded" drain verb.
+_KEYWORDS_BACKLOG_KEY = "chunk_keywords"
+
 #: ``(backlog_key, group, budget_hours, severity, what)``
 _BACKLOG_CHECKS: tuple[tuple[str, str, float, str, str], ...] = (
     (_EMBED_BACKLOG_KEY, "discovery", 2.0, _WARN, "chunks embedded"),
-    ("chunk_keywords", "discovery", 6.0, _WARN, "chunks keyworded"),
+    (_KEYWORDS_BACKLOG_KEY, "discovery", 6.0, _WARN, "chunks keyworded"),
 )
+
+#: Past-tense verb each net-rate-gated backlog's detail line uses for its
+#: drain rate ("N/h <verb> over <window>h") — the worker's own output
+#: word. Keys absent here have no rate probe at all.
+_BACKLOG_DRAIN_VERBS: dict[str, str] = {
+    _EMBED_BACKLOG_KEY: "embedded",
+    _KEYWORDS_BACKLOG_KEY: "keyworded",
+}
 
 
 def _idle_aware_backlog_checks(conn: Any) -> list[CheckResult]:
@@ -464,24 +483,32 @@ def _idle_aware_backlog_checks(conn: Any) -> list[CheckResult]:
             # ``chunk_embeddings.created_at`` minutes-fresh while inflow
             # outpaced drain and the backlog doubled — the recency test
             # alone read that as "draining" and the stall alert never
-            # fired. For the embed queue, gate the ok verdict on the net
-            # rate over the budget window. A probe failure (or no conn —
-            # tests) degrades to the recency verdict, never a false alert.
-            if key == _EMBED_BACKLOG_KEY and conn is not None:
-                rates = health_checks.embed_backlog_rates(
-                    conn, window_hours=budget_hours
+            # fired. Gate the ok verdict on the net rate over the budget
+            # window (gr520236 extends the gate to chunk_keywords: a
+            # ~1.5M-deep backlog at ~7k/day drain keeps a fresh last_ts
+            # while the honest ETA sits months out). A probe failure (or
+            # no conn — tests) degrades to the recency verdict, never a
+            # false alert.
+            rates = (
+                _backlog_rates(key, conn, budget_hours) if conn is not None else None
+            )
+            if rates is not None:
+                net = (rates["drained"] - rates["inflow"]) / budget_hours
+                detail = _net_rate_verdict(
+                    pending,
+                    net,
+                    rates,
+                    age,
+                    budget_hours,
+                    what,
+                    verb=_BACKLOG_DRAIN_VERBS[key],
+                    eta_days=key == _KEYWORDS_BACKLOG_KEY,
                 )
-                if rates is not None:
-                    net = (rates["drained"] - rates["inflow"]) / budget_hours
-                    detail = _embed_net_verdict(
-                        pending, net, rates, age, budget_hours, what
-                    )
-                    if detail is not None:
+                if detail is not None:
+                    if key == _EMBED_BACKLOG_KEY:
                         detail += " — " + _diagnose_embed_pipeline(conn)
-                        out.append(
-                            CheckResult(group, key, "stale", detail, severity, age)
-                        )
-                        continue
+                    out.append(CheckResult(group, key, "stale", detail, severity, age))
+                    continue
             out.append(
                 CheckResult(
                     group,
@@ -508,15 +535,33 @@ def _idle_aware_backlog_checks(conn: Any) -> list[CheckResult]:
     return out
 
 
-def _embed_net_verdict(
+def _backlog_rates(key: str, conn: Any, budget_hours: float) -> dict[str, int] | None:
+    """The drain-vs-inflow probe for a net-rate-gated backlog key.
+
+    ``None`` for ungated keys and on probe failure alike — the caller
+    degrades to the recency verdict in both cases (a broken probe must
+    never mint a false alert). Call-time attribute lookup keeps the
+    probes monkeypatchable in tests.
+    """
+    if key == _EMBED_BACKLOG_KEY:
+        return health_checks.embed_backlog_rates(conn, window_hours=budget_hours)
+    if key == _KEYWORDS_BACKLOG_KEY:
+        return health_checks.keywords_backlog_rates(conn, window_hours=budget_hours)
+    return None
+
+
+def _net_rate_verdict(
     pending: int,
     net_per_h: float,
     rates: dict[str, int],
     age: float,
     budget_hours: float,
     what: str,
+    *,
+    verb: str,
+    eta_days: bool = False,
 ) -> str | None:
-    """The embed backlog's net-rate verdict — a stale ``detail`` string, or
+    """A backlog's net-rate verdict — a stale ``detail`` string, or
     ``None`` when the queue is genuinely on track to empty within budget.
 
     The check's contract ("empty or draining within ``budget_hours``",
@@ -524,19 +569,23 @@ def _embed_net_verdict(
     *growing or flat* (``net <= 0``) means it never drains; a positive net
     whose eta exceeds the budget is the same failure in slow motion.
     Both name the observed rates so the alert carries its own evidence.
+    ``verb`` is the worker's drain word ("embedded"/"keyworded");
+    ``eta_days`` renders the ETA in days for the queue whose honest ETA
+    is months, not hours (gr520236).
     """
     if net_per_h <= 0:
         return (
             f"{what}: {pending} pending and still growing "
             f"(+{rates['inflow'] / budget_hours:.0f}/h inflow vs "
-            f"{rates['drained'] / budget_hours:.0f}/h embedded over "
+            f"{rates['drained'] / budget_hours:.0f}/h {verb} over "
             f"{budget_hours:.0f}h; last batch {age:.1f}h ago)"
         )
     eta = pending / net_per_h
     if eta > budget_hours:
+        eta_text = f"~{eta / 24:.0f}d" if eta_days else f"~{eta:.0f}h"
         return (
             f"{what}: {pending} pending, draining too slowly — "
-            f"net -{net_per_h:.0f}/h puts the queue ~{eta:.0f}h out "
+            f"net -{net_per_h:.0f}/h puts the queue {eta_text} out "
             f"(budget {budget_hours:.0f}h; last batch {age:.1f}h ago)"
         )
     return None

@@ -304,6 +304,75 @@ def _embed_skip_kinds() -> tuple[str, ...]:
     return EmbedHandler.skip_chunk_kinds
 
 
+def keywords_backlog_rates(conn: Any, *, window_hours: float) -> dict[str, int] | None:
+    """chunk_keywords drain vs inflow over the last ``window_hours``.
+
+    ``{"drained": N, "inflow": M}`` — the ``chunk_keywords`` twin of
+    :func:`embed_backlog_rates` (gr520236): its backlog (order ~1.5M
+    pending at a ~7k/day drain) keeps ``last_ts`` permanently fresh while
+    the honest ETA sits months out, so the digest's recency verdict alone
+    can never fire on this queue either.
+
+    **Drain** — the runner's own ok-ledger. The pass's output is an
+    UPDATE onto ``chunks.keywords``/``keywords_meta``, and that envelope
+    carries no write timestamp (version/embedder/keywords/content_sha
+    only), so the windowed drain count is ``SUM(payload->>'ok')`` over
+    the same ``pass='runner'`` handler-split ``worker_logs`` rows the
+    check's ``last_ts`` probe already reads — one ``ok`` is one chunk the
+    pass wrote. A re-derivation counts again, correctly: it re-claimed
+    and re-wrote the chunk.
+
+    **Inflow** — entry into the *claimable* queue, not chunk creation:
+    ``pending`` in :func:`compute_backlog_counts` is emb-ready-gated (a
+    keyword-eligible chunk behind a missing/stale embedding reads
+    ``blocked``, not ``pending``), so the honest inflow count is
+    ``bge-m3`` ``chunk_embeddings`` rows inserted in the window for
+    keyword-eligible chunks — the moment each becomes claimable under
+    :func:`~precis.workers.chunk_keywords.claim_chunks_without_keywords`.
+
+    Returns ``None`` on any error (same degrade contract as
+    :func:`embed_backlog_rates`), after a rollback so later sections on
+    the shared connection still run.
+    """
+    from precis.workers.chunk_keywords import MIN_CHUNK_CHARS, SKIP_KINDS
+
+    try:
+        window = f"{window_hours} hours"
+        drained = conn.execute(
+            "SELECT COALESCE(SUM((payload->>'ok')::int), 0) "
+            "FROM worker_logs "
+            "WHERE pass = 'runner' "
+            "AND split_part(payload->>'handler', ':', 1) = 'chunk_keywords' "
+            "AND ts > now() - %s::interval "
+            "AND payload->>'ok' ~ '^[0-9]+$'",
+            (window,),
+        ).fetchone()
+        inflow = conn.execute(
+            "SELECT count(*) "
+            "FROM chunk_embeddings ce "
+            "JOIN chunks c ON c.chunk_id = ce.chunk_id "
+            "WHERE ce.embedder = %s "
+            "AND ce.status = 'ok' "
+            "AND ce.content_sha IS NOT DISTINCT FROM c.content_sha "
+            "AND ce.created_at > now() - %s::interval "
+            "AND c.chunk_kind <> ALL(%s) "
+            "AND length(c.text) >= %s "
+            "AND (c.meta->>'no_index') IS DISTINCT FROM 'true'",
+            (_EMBED_ARTIFACT, window, list(SKIP_KINDS), MIN_CHUNK_CHARS),
+        ).fetchone()
+        return {
+            "drained": int(drained[0]) if drained else 0,
+            "inflow": int(inflow[0]) if inflow else 0,
+        }
+    except Exception:
+        log.exception("health_checks: keywords backlog rate probe failed")
+        try:
+            conn.rollback()
+        except Exception:
+            log.exception("health_checks: rollback after rate probe failed")
+        return None
+
+
 #: How many drifted ref_ids :func:`paper_authors_drift` surfaces as
 #: examples — enough to spot-check without a second query.
 _PAPER_AUTHORS_DRIFT_EXAMPLES = 5

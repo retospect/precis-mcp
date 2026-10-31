@@ -36,6 +36,7 @@ from precis.store.types import Tag
 from precis.taproot.canon import CanonicalClaim
 from precis.taproot.hub import mint_hub
 from precis.workers import health_digest, nursery
+from precis.workers.chunk_keywords import MIN_CHUNK_CHARS
 from precis.workers.doctor_report import DoctorReport
 from precis.workers.health_digest import (
     CheckResult,
@@ -551,6 +552,115 @@ def test_embed_backlog_draining_within_budget_is_ok(store) -> None:
     embed = next(r for r in results if r.name == "embed")
     assert embed.status == "ok"
     assert "draining" in embed.detail
+
+
+# ── (b2) net-rate gate for the chunk_keywords backlog check ─────────────
+
+
+def _log_runner_batch(store, *, handler: str, ok: int, claimed: int) -> None:
+    """Insert one ``pass='runner'`` worker_logs row, as the runner emits —
+    the ok-ledger ``keywords_backlog_rates`` sums for drain, and the
+    check's ``last_ts`` source."""
+    with store.pool.connection() as conn:
+        conn.execute(
+            """
+            INSERT INTO worker_logs (host, pass, level, message, payload)
+            VALUES ('melchior', 'runner', 'INFO', 'worker: batch',
+                    jsonb_build_object('handler', %s::text, 'claimed', %s::int,
+                                       'ok', %s::int, 'failed', 0::int))
+            """,
+            (handler, claimed, ok),
+        )
+        conn.commit()
+
+
+def _seed_keywords_rows(
+    store, *, old_pending: int, fresh_inflow: int, drained_ok: int
+) -> None:
+    """A real chunk_keywords backlog: ``old_pending`` eligible chunks
+    (paragraph kind, ≥ MIN_CHUNK_CHARS) keyword-pending behind a bge-m3
+    embedding backdated OUT of the rate window; ``fresh_inflow`` eligible
+    chunks whose bge-m3 row landed inside the window — the
+    claimable-queue entries ``keywords_backlog_rates`` counts as inflow;
+    and one ``worker_logs`` runner batch reporting ``ok=drained_ok`` —
+    the drain ledger and the check's fresh last_ts. (The backdate moves
+    ``ce.created_at``, not ``chunks.created_at``: keyword inflow is
+    emb-ready entry, not chunk birth.)"""
+    embedder = make_mock_bge_m3()
+    body = "k" * (MIN_CHUNK_CHARS + 50)  # paragraph → keyword-eligible
+    _r1, old_ids = seed_chunks(store, [f"{body} {i}" for i in range(old_pending)])
+    _r2, new_ids = seed_chunks(store, [f"{body} n{i}" for i in range(fresh_inflow)])
+    with store.pool.connection() as conn:
+        for cid in old_ids:
+            conn.execute(
+                "INSERT INTO chunk_embeddings (chunk_id, embedder, vector, "
+                "status, created_at) VALUES (%s, 'bge-m3', %s, 'ok', "
+                "now() - interval '24 hours')",
+                (cid, embedder.embed_one("x")),
+            )
+        for cid in new_ids:
+            conn.execute(
+                "INSERT INTO chunk_embeddings (chunk_id, embedder, vector, "
+                "status) VALUES (%s, 'bge-m3', %s, 'ok')",
+                (cid, embedder.embed_one("x")),
+            )
+        conn.commit()
+    _log_runner_batch(
+        store, handler="chunk_keywords", ok=drained_ok, claimed=drained_ok
+    )
+
+
+def test_growing_keywords_backlog_with_fresh_writes_is_stale(store) -> None:
+    """gr520236: the ~1.5M-deep chunk_keywords backlog drains ~7k/day —
+    a permanently fresh last_ts the recency test alone read as
+    "draining". The net-rate gate must fire the same verdict embed's
+    does."""
+    _seed_keywords_rows(store, old_pending=40, fresh_inflow=60, drained_ok=10)
+    with store.pool.connection() as conn:
+        results = _idle_aware_backlog_checks(conn)
+    kw = next(r for r in results if r.name == "chunk_keywords")
+    assert kw.status == "stale"
+    assert "growing" in kw.detail
+    assert "keyworded" in kw.detail
+
+
+def test_keywords_backlog_draining_too_slowly_is_stale_eta_in_days(store) -> None:
+    """A positive net rate whose eta exceeds the 6h budget is stale too —
+    and the keywords queue's honest ETA is named in days, not hours."""
+    _seed_keywords_rows(store, old_pending=200, fresh_inflow=5, drained_ok=20)
+    with store.pool.connection() as conn:
+        results = _idle_aware_backlog_checks(conn)
+    kw = next(r for r in results if r.name == "chunk_keywords")
+    assert kw.status == "stale"
+    assert "too slowly" in kw.detail
+    assert "d out" in kw.detail  # ~82h eta rendered as ~3d
+
+
+def test_keywords_backlog_draining_within_budget_is_ok(store) -> None:
+    """Positive control: a keywords backlog on pace to empty inside the
+    budget stays ok — the gate must not cry wolf on a draining queue."""
+    _seed_keywords_rows(store, old_pending=5, fresh_inflow=0, drained_ok=25)
+    with store.pool.connection() as conn:
+        results = _idle_aware_backlog_checks(conn)
+    kw = next(r for r in results if r.name == "chunk_keywords")
+    assert kw.status == "ok"
+    assert "draining" in kw.detail
+
+
+def test_keywords_backlog_rates_probe_failure_is_recency_ok(store, monkeypatch) -> None:
+    """A broken rate probe degrades to the old recency verdict — never a
+    false alert. Fresh last_ts + pending reads 'draining' as before."""
+    monkeypatch.setattr(
+        health_digest.health_checks,
+        "keywords_backlog_rates",
+        lambda conn, *, window_hours: None,
+    )
+    _seed_keywords_rows(store, old_pending=10, fresh_inflow=0, drained_ok=5)
+    with store.pool.connection() as conn:
+        results = _idle_aware_backlog_checks(conn)
+    kw = next(r for r in results if r.name == "chunk_keywords")
+    assert kw.status == "ok"
+    assert "draining" in kw.detail
 
 
 # ── (d) push policy ──────────────────────────────────────────────────────
