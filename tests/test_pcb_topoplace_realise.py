@@ -2807,14 +2807,15 @@ def _dot_board(
     walls: Sequence[Sequence[Sequence[float]]] | None = None,
     wall: Sequence[Sequence[float]] | None = None,
     far_side: str = "top",
+    board: tuple[float, float] = (30.0, 20.0),
 ) -> pcb.Board:
     """Reto's micro-router fixture (2026-10-31): two one-pad parts on a
-    30x20 board, nothing else unless ``walls``/``wall`` is given. The
-    trivial end-to-end cases the realiser must nail in milliseconds:
-    direct run, L bend, S detour, one-wall detour, F↔B via hop.
-    (Single ``wall`` kept for the existing callers.)"""
+    blank board (``board`` = w×h mm), nothing else unless ``walls``/
+    ``wall`` is given. The trivial end-to-end cases the realiser must
+    nail in milliseconds: direct run, L bend, S detour, one-wall detour,
+    F↔B via hop. (Single ``wall`` kept for the existing callers.)"""
     fp = pcb.Footprint("DOT", [pcb.pad("1", "rect", 0.0, 0.0, w=0.9, h=0.9)])
-    b = pcb.Board("micro", stackup=4, outline=pcb.rect(30.0, 20.0))
+    b = pcb.Board("micro", stackup=4, outline=pcb.rect(*board))
     f = b.footprint(fp)
     q1 = b.part("P1", footprint=f, pins=["1"]).at(*p1)
     q2 = b.part("P2", footprint=f, pins=["1"]).at(*p2, side=far_side)
@@ -2917,6 +2918,64 @@ def test_offset_pad_pair_routes_one_l_bend() -> None:
     vert = c[0] == e[0] and c[1] != e[1]
     assert horiz and vert, f"L legs must be axis-aligned: {segs}"
     assert b in ((15.0, 10.0), (5.0, 5.0)), f"corner at either bend: {segs}"
+    rows = sketch_rows(plan, td, ir, layers)
+    assert rows["N1"]["status"] == "realized"
+    assert _drc_findings(res, ir, layers, footprints=footprints) == []
+
+
+def test_diagonal_pad_pair_on_forty_five_is_one_straight_segment() -> None:
+    """Pads at (10,10) and (20,20) sit exactly on a 45° diagonal — which
+    the DRC's octilinear rule admits as-is. The honest route is ONE
+    straight segment, zero corners (Reto's 2026-10-31 ask: a 90° turn
+    here would be wasted geometry; the 90°-turn case is the off-diagonal
+    L test above)."""
+    td, ir, footprints, plan, res, layers, wall_s = _route_micro(
+        _dot_board(p1=(10.0, 10.0), p2=(20.0, 20.0), board=(30.0, 25.0))
+    )
+    assert wall_s < 1.0, f"2-pad 45° route took {wall_s:.2f}s"
+    assert plan.vias == () and plan.crossings == ()
+    assert plan.guarded == () and not getattr(plan, "off_angle", ())
+    assert {p.layer for p in plan.pieces} == {0}
+    (track,) = res.tracks
+    segs = [(tuple(s["start"]), tuple(s["end"])) for s in track.segments]
+    assert len(segs) == 1, f"45° diagonal must stay one segment, got {segs}"
+    (a, b) = segs[0]
+    assert a == (10.0, 10.0) and b == (20.0, 20.0)
+    assert track.length_mm == pytest.approx(math.hypot(10.0, 10.0))
+    rows = sketch_rows(plan, td, ir, layers)
+    assert rows["N1"]["status"] == "realized"
+    assert _drc_findings(res, ir, layers, footprints=footprints) == []
+
+
+def test_small_obstacle_between_aligned_pads_detours_and_realizes() -> None:
+    """A small (2x2 mm) square centred on the lane between aligned pads:
+    the single-layer detour must REALIZE (this fixture caught the
+    boundary-run deadlock — the 0-width path slid along the keepout's
+    bottom edge, the per-bend scan deadlocked on the shared boundary,
+    and the blind fallback slid both bends 0.226 mm INSIDE the keepout;
+    the emit guard withdrew the piece). Geometry note: with the house
+    clearance the octilinear floor for a lane-straddling obstacle is
+    four segments (three corners) via tangent 45°s; the redraw's
+    staircase runs one corner longer, so the honest bound is ≤5
+    segments, full 0.225 mm clearance, single layer, no vias."""
+    obstacle = [[14.0, 9.0], [16.0, 9.0], [16.0, 11.0], [14.0, 11.0]]
+    td, ir, footprints, plan, res, layers, wall_s = _route_micro(
+        _dot_board(p1=(5.0, 10.0), p2=(25.0, 10.0), walls=[obstacle])
+    )
+    assert wall_s < 1.0, f"2-pad small-obstacle route took {wall_s:.2f}s"
+    assert plan.vias == () and plan.crossings == ()
+    assert plan.guarded == () and not getattr(plan, "off_angle", ())
+    assert {p.layer for p in plan.pieces} == {0}
+    (track,) = res.tracks
+    segs = [(tuple(s["start"]), tuple(s["end"])) for s in track.segments]
+    assert 2 <= len(segs) <= 5, (
+        f"small-obstacle detour should realize ≤5 segs, got {segs}"
+    )
+    pts = [segs[0][0]] + [bb for _a, bb in segs]
+    assert pts[0] == (5.0, 10.0) and pts[-1] == (25.0, 10.0)
+    assert Polygon(obstacle).distance(LineString(pts)) >= 0.225 - 1e-3, (
+        f"detour must hold the full house clearance off the obstacle: {segs}"
+    )
     rows = sketch_rows(plan, td, ir, layers)
     assert rows["N1"]["status"] == "realized"
     assert _drc_findings(res, ir, layers, footprints=footprints) == []

@@ -1993,6 +1993,105 @@ def _spoke_offsets(
                 leg_zones.append((zp, req_z))
             bend_tasks.append((bi, j, w, dirv, need, cands, leg_zones))
 
+    # Per-task clearance boxes, built once — the scan below and the
+    # boundary-run pass after it judge against the same set.
+    task_boxes: list[list[tuple[Polygon, float]]] = [
+        [
+            (
+                Polygon(
+                    np.asarray(
+                        [
+                            [plo[0], plo[1]],
+                            [phi[0], plo[1]],
+                            [phi[0], phi[1]],
+                            [plo[0], phi[1]],
+                        ]
+                    )
+                ),
+                req,
+            )
+            for plo, phi, req in cands
+        ]
+        + list(leg_zones)
+        for _bi, _j, _w, _dirv, _need, cands, leg_zones in bend_tasks
+    ]
+
+    # ── boundary-run detection (before the scan) ────────────────────
+    # Two or more CONSECUTIVE bends of one branch, collinear, every
+    # vertex sitting ON the same zone polygon, deadlock the
+    # one-vertex-at-a-time scan: each bend's legs pass through its
+    # neighbour, which still sits on the zone, so neither ray ever
+    # clears — and the legacy need-length fallback then slides each
+    # bend by `need` along the naive bisector, which for a run along a
+    # zone edge points INTO the zone (measured on the centred-keepout
+    # micro board: both bends ended 0.226 mm inside the keepout and
+    # the emit guard withdrew the piece). Members are left verbatim by
+    # the scan; the joint pass after it translates the whole run.
+    runs: list[tuple[int, ...]] = []
+    run_idx_of_task: dict[tuple[int, int], int] = {}
+
+    def _close_run(cur: list[int], zone: Polygon | None) -> None:
+        if len(cur) >= 2 and zone is not None:
+            run_idx_of_task.update(
+                {(bend_tasks[_t][0], bend_tasks[_t][1]): len(runs) for _t in cur}
+            )
+            runs.append(tuple(cur))
+
+    _by_branch: dict[int, dict[int, tuple[int, Any, Any]]] = {}
+    for _ti, (_bi, _j, _w, _dirv, _need, _cands, _lz) in enumerate(bend_tasks):
+        _by_branch.setdefault(_bi, {})[_j] = (_ti, _w, _lz)
+    for _bi, _tasks in _by_branch.items():
+        _js = sorted(_tasks)
+        _cur: list[int] = []
+        _zone: Polygon | None = None
+        _prev_j = -2
+        _prev_w: np.ndarray | None = None
+        _first_w: np.ndarray | None = None
+        for _j in _js:
+            _ti, _w, _lz = _tasks[_j]
+            _pt = Point(float(_w[0]), float(_w[1]))
+            _on = next((zp for zp, _rz in _lz if zp.distance(_pt) < 1e-9), None)
+            if _on is not None and not _cur:
+                _cur, _zone, _first_w = [_ti], _on, np.asarray(_w, dtype=float)
+            elif (
+                _on is not None
+                and _j == _prev_j + 1
+                and _on is _zone
+                and _prev_w is not None
+                and _first_w is not None
+                and abs(
+                    float(
+                        (
+                            np.asarray(_w, dtype=float)
+                            - np.asarray(_prev_w, dtype=float)
+                        )[0]
+                        * (
+                            np.asarray(_prev_w, dtype=float)
+                            - np.asarray(_first_w, dtype=float)
+                        )[1]
+                        - (
+                            np.asarray(_w, dtype=float)
+                            - np.asarray(_prev_w, dtype=float)
+                        )[1]
+                        * (
+                            np.asarray(_prev_w, dtype=float)
+                            - np.asarray(_first_w, dtype=float)
+                        )[0]
+                    )
+                )
+                <= 1e-6
+            ):
+                _cur.append(_ti)
+            else:
+                _close_run(_cur, _zone)
+                if _on is None:
+                    _cur, _zone, _first_w = [], None, None
+                else:
+                    _cur, _zone, _first_w = [_ti], _on, np.asarray(_w, dtype=float)
+            _prev_j = _j
+            _prev_w = np.asarray(_w, dtype=float)
+        _close_run(_cur, _zone)
+
     # the smallest step along each bend's direction that puts the bend
     # AND both adjacent legs clear of every candidate — pads (the
     # near-gate collected them) and zone keepouts (the leg-bbox gate) —
@@ -2004,24 +2103,8 @@ def _spoke_offsets(
     # legacy need-length fallback: the fallback direction is a guess and
     # may be the side the obstacle sits on.
     for _pass in range(2):
-        for bi, j, w, dirv, need, cands, leg_zones in bend_tasks:
-            boxes = [
-                (
-                    Polygon(
-                        np.asarray(
-                            [
-                                [plo[0], plo[1]],
-                                [phi[0], plo[1]],
-                                [phi[0], phi[1]],
-                                [plo[0], phi[1]],
-                            ]
-                        )
-                    ),
-                    req,
-                )
-                for plo, phi, req in cands
-            ]
-            boxes.extend(leg_zones)
+        for _ti, (bi, j, w, dirv, need, _cands, _lz) in enumerate(bend_tasks):
+            boxes = task_boxes[_ti]
             if not boxes:
                 continue
 
@@ -2060,11 +2143,117 @@ def _spoke_offsets(
                     if clears(-float(t)):
                         t_found = -float(t) - 0.01
                         break
+            if t_found is None and run_idx_of_task.get((bi, j)) is not None:
+                # boundary-run member: the blind `need` fallback slides
+                # along the naive bisector, which for a run along a zone
+                # edge points INTO the zone (measured: both bends of the
+                # centred-keepout micro board landed 0.226 mm inside the
+                # keepout). The joint pass below moves the whole run;
+                # until it runs, the bend stays on the zone boundary —
+                # no worse than the fallback's poisoned pose.
+                continue
             dist = t_found if t_found is not None else need
             pts_out[bi][j] = (
                 float(w[0] + dist * dirv[0]),
                 float(w[1] + dist * dirv[1]),
             )
+
+    # ── boundary-run joint move ─────────────────────────────────────
+    # Translate the run's still-verbatim bends perpendicular to the run,
+    # away from the shared zone's interior, by the first step whose
+    # entry leg, run segments and exit leg all clear every member's
+    # boxes at their requirements — the simultaneous move the per-bend
+    # scan cannot synthesize (each per-bend intermediate state fails on
+    # the neighbour it still shares the boundary with). Falls back to
+    # the legacy per-bend shift only when no joint step clears.
+    for _members in runs:
+        _active = [
+            _t
+            for _t in _members
+            if math.dist(
+                pts_out[bend_tasks[_t][0]][bend_tasks[_t][1]],
+                (float(bend_tasks[_t][2][0]), float(bend_tasks[_t][2][1])),
+            )
+            < 1e-6
+        ]
+        if len(_active) < 2:
+            continue
+        _bi = bend_tasks[_active[0]][0]
+        if any(bend_tasks[_t][0] != _bi for _t in _active):
+            continue
+        _jf = min(bend_tasks[_t][1] for _t in _active)
+        _jl = max(bend_tasks[_t][1] for _t in _active)
+        _pts = [np.asarray(pts_out[_bi][_j], dtype=float) for _j in range(_jf, _jl + 1)]
+        _rv = _pts[-1] - _pts[0]
+        _rl = float(np.hypot(_rv[0], _rv[1]))
+        if _rl < 1e-9:
+            continue
+        _rd = _rv / _rl
+        _perp = np.asarray([-_rd[1], _rd[0]])
+        _w0 = bend_tasks[_active[0]][2]
+        _zp = next(
+            zp
+            for zp, _rz in bend_tasks[_active[0]][6]
+            if zp.distance(Point(float(_w0[0]), float(_w0[1]))) < 1e-9
+        )
+        _rep = np.asarray(_zp.representative_point().coords[0], dtype=float)
+        _mid = 0.5 * (_pts[0] + _pts[-1])
+        if float(_perp @ (_mid - _rep)) < 0.0:
+            _perp = -_perp
+        _boxes: list[tuple[Polygon, float]] = []
+        for _t in _active:
+            for _bx in task_boxes[_t]:
+                if all(_bx[0] is not _e[0] or _bx[1] != _e[1] for _e in _boxes):
+                    _boxes.append(_bx)
+        _need = max(bend_tasks[_t][4] for _t in _active)
+
+        def _run_clears(
+            t: float,
+            _bi: int = _bi,
+            _jf: int = _jf,
+            _jl: int = _jl,
+            _pts: list[np.ndarray] = _pts,
+            _perp: np.ndarray = _perp,
+            _boxes: list[tuple[Polygon, float]] = _boxes,
+        ) -> bool:
+            _qs = [_p + t * _perp for _p in _pts]
+            _legs = [LineString([pts_out[_bi][_jf - 1], tuple(_qs[0])])]
+            _legs.extend(
+                LineString([tuple(_qs[_k]), tuple(_qs[_k + 1])])
+                for _k in range(len(_qs) - 1)
+            )
+            _legs.append(LineString([tuple(_qs[-1]), pts_out[_bi][_jl + 1]]))
+            for _bx, _req in _boxes:
+                for _leg in _legs:
+                    if _leg.distance(_bx) < _req - 1e-9:
+                        return False
+            return True
+
+        _t_found = None
+        for _t in np.linspace(0.0, _need * 8.0 + 1.0, 96):
+            if _run_clears(float(_t)):
+                _t_found = float(_t) + 0.01
+                break
+        if _t_found is None:
+            for _t in np.linspace(0.0, _need * 8.0 + 1.0, 96):
+                if _run_clears(-float(_t)):
+                    _t_found = -float(_t) - 0.01
+                    break
+        if _t_found is not None:
+            for _k, _j in enumerate(range(_jf, _jl + 1)):
+                pts_out[_bi][_j] = (
+                    float(_pts[_k][0] + _t_found * _perp[0]),
+                    float(_pts[_k][1] + _t_found * _perp[1]),
+                )
+        else:
+            # no joint step clears: the legacy per-bend shift stands
+            # (a verbatim bend touches the zone at distance 0 — worse).
+            for _t in _active:
+                _bt = bend_tasks[_t]
+                pts_out[_bt[0]][_bt[1]] = (
+                    float(_bt[2][0] + _bt[4] * _bt[3][0]),
+                    float(_bt[2][1] + _bt[4] * _bt[3][1]),
+                )
 
     # ---- joint relaxation (topo S2, gr520900): the spread and the bend
     # pass only ever asked a leg to clear PADS; a moved crossing can
