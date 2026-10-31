@@ -18,6 +18,7 @@ from __future__ import annotations
 import copy
 import json
 import math
+import statistics
 from collections import Counter
 from pathlib import Path
 from types import SimpleNamespace
@@ -864,11 +865,12 @@ def test_tof_inside_round_off_noise_is_not_ranked():
 
 def test_pw455722_correlated_band_and_pairing(fx, monkeypatch):
     """Slice-3 acceptance on the pw455722 replay: on paired candidate-vs-
-    reference draws the correlated band is narrower than the independent
-    (rho=0, sigma_model=0) band on the log-ratio, and draws.paired returns
-    a rank probability.  The absolute-TOF widening and a directed rank are
-    asserted on the engine side — here >60% of draws are censored, so
-    absolute widths and the rank direction are noise."""
+    reference draws the shared z_model/z_c cancel in the log-ratio — so
+    un-pairing the kept draws widens its spread sharply — and draws.paired
+    returns a rank probability.  The absolute-TOF widening and a directed
+    rank are asserted on the engine side — here >60% of draws are
+    censored, so absolute widths, cross-call band comparisons and the
+    rank direction are noise."""
     draws = needs_engine("autocatpath.draws")
     from autocatpath import kinetics as kin
     from autocatpath.config import Config
@@ -923,26 +925,51 @@ def test_pw455722_correlated_band_and_pairing(fx, monkeypatch):
             sigma_model=sigma_model,
         )
 
-    # today's independent band = rho 0 AND sigma_model 0; the correlated
-    # band runs rho 0.5 with an explicit model term (a RunCtx knob — the
-    # single-model solve default is 0).  NOTE on this fixture: >60% of
-    # draws are censored (non-positive TOF — the stored net has multiple
-    # absorbing components and its solve is noise-dominated), so absolute
-    # band widths AND the p_rank direction are not meaningful here — the
-    # "wider absolute band" clause and a directed rank are proven on the
-    # engine side (catpath tests/test_draws.py).  What IS robust on the
-    # real fixture: paired draws share z_model/z_c, which cancel in the
-    # log-ratio, so the correlated ratio band narrows — checked at rho 0.5
-    # and the rho=0.9 sweep end.
+    # the correlated band runs rho>0 with an explicit model term (a RunCtx
+    # knob — the single-model solve default is 0); the rho=0,
+    # sigma_model=0 run is the no-shared-draws control.  NOTE on this
+    # fixture: >60% of draws are censored (non-positive TOF — the stored
+    # net has multiple absorbing components and its solve is
+    # noise-dominated) and each paired() call keeps a DIFFERENT censored
+    # subset, so comparing band widths across calls is noise (gr543677:
+    # w_cor < w_ind flipped under engine 0.42.0 with identical code and
+    # seed) — as are absolute widths and the p_rank direction, proven on
+    # the engine side (catpath tests/test_draws.py).  What IS robust on
+    # the real fixture: paired draws share z_model/z_c, which cancel in
+    # the log-ratio — so un-pairing the SAME kept draws (each candidate
+    # TOF against every other reference TOF; the censoring selection hits
+    # both spreads equally) widens the ratio spread sharply, ~2x at rho
+    # 0.5 and ~3x at the rho=0.9 sweep end.
+    def _log_ratios(out):
+        return [math.log10(c / r) for c, r in zip(out["tof_cand"], out["tof_ref"])]
+
+    def _unpaired_ratios(out):
+        c, r = out["tof_cand"], out["tof_ref"]
+        m = len(c)
+        return [
+            math.log10(c[i] / r[(i + k) % m]) for k in range(1, m) for i in range(m)
+        ]
+
+    n_samples = 400
     ind = draws.paired(
-        ctx_of(0.0, 0.0), ctx_of(0.05, 0.0), n_samples=80, seed=1, rho=0.0
+        ctx_of(0.0, 0.0), ctx_of(0.05, 0.0), n_samples=n_samples, seed=1, rho=0.0
     )
-    assert 0 < ind["bad_draws"] < 80  # the draws run; some get censored
+    assert 0 < ind["bad_draws"] < n_samples  # the draws run; some get censored
+    # control: nothing shared, so un-pairing cannot shrink the comparison —
+    # pins that the rho>0 assertion below is not vacuous
+    assert statistics.pstdev(_log_ratios(ind)) > 0.8 * statistics.pstdev(
+        _unpaired_ratios(ind)
+    )
+    cor_c, cor_r = ctx_of(0.0), ctx_of(0.05)
     for rho in (0.5, 0.9):
-        cor = draws.paired(ctx_of(0.0), ctx_of(0.05), n_samples=80, seed=1, rho=rho)
-        w_ind = ind["band_ratio"]["p95"] - ind["band_ratio"]["p5"]
-        w_cor = cor["band_ratio"]["p95"] - cor["band_ratio"]["p5"]
-        assert w_cor < w_ind, (rho, w_cor, w_ind)
+        cor = draws.paired(cor_c, cor_r, n_samples=n_samples, seed=1, rho=rho)
+        paired_spread = statistics.pstdev(_log_ratios(cor))
+        unpaired_spread = statistics.pstdev(_unpaired_ratios(cor))
+        assert paired_spread < 0.75 * unpaired_spread, (
+            rho,
+            paired_spread,
+            unpaired_spread,
+        )
         assert cor["p_rank"] is not None and 0.0 <= cor["p_rank"] <= 1.0
 
 
