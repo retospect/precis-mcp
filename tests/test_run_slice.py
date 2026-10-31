@@ -559,6 +559,9 @@ def test_submit_launches_and_claims(seams: dict[str, Any], tmp_path: Path) -> No
         assert f"{tool}(./src/precis/plans/**)" in deny
         assert f"{tool}(/{tree.as_posix()}/.github/**)" in deny
     assert len(deny) == 2 * 4 * len(lanes.FACTORY_DENY_WRITE_PATHS)
+    # The service account's clone is never trusted interactively; without
+    # this the checkout's .mcp.json precis server is skipped in -p mode.
+    assert json.loads(argv[-1])["enableAllProjectMcpServers"] is True
     assert kw["cwd"] == tree
     assert kw["stdin"] == tree / "scratch" / "brief.md"
     assert kw["env"]["PRECIS_SLICE_ID"] == "td42"
@@ -588,6 +591,45 @@ def test_submit_env_is_an_allowlist(
         "PRECIS_SLICE_ID",
         "PRECIS_SLICE_EFFORT",
     }
+
+
+def test_submit_env_loads_oauth_token_from_the_vault(
+    seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """jo544333: the launchd ``deploy`` worker exports no subscription login,
+    so the session must get ``CLAUDE_CODE_OAUTH_TOKEN`` from the vault (the
+    only store, ``utils/claude_oauth``); the API key never passes."""
+    from precis import secrets as _secrets
+
+    monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-billed")
+    monkeypatch.setattr(
+        _secrets,
+        "get_secret",
+        lambda name, *a, **k: (
+            "oauth-from-vault" if name == "CLAUDE_CODE_OAUTH_TOKEN" else None
+        ),
+    )
+    store = _Store()
+    store.add_todo(42, "t")
+    _submit(store, seams)
+    [(_argv, kw)] = seams["launch"]
+    assert kw["env"]["CLAUDE_CODE_OAUTH_TOKEN"] == "oauth-from-vault"
+    assert "ANTHROPIC_API_KEY" not in kw["env"]
+
+
+def test_submit_env_oauth_token_from_env_wins(
+    seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from precis import secrets as _secrets
+
+    monkeypatch.setenv("CLAUDE_CODE_OAUTH_TOKEN", "oauth-from-plist")
+    monkeypatch.setattr(_secrets, "get_secret", lambda *a, **k: "oauth-from-vault")
+    store = _Store()
+    store.add_todo(42, "t")
+    _submit(store, seams)
+    [(_argv, kw)] = seams["launch"]
+    assert kw["env"]["CLAUDE_CODE_OAUTH_TOKEN"] == "oauth-from-plist"
 
 
 def test_submit_handle_carries_process_identity(seams: dict[str, Any]) -> None:

@@ -130,6 +130,10 @@ ENV_ALLOWLIST: tuple[str, ...] = (
     "PRECIS_FACTORY",
     "PRECIS_CLAUDE_BIN",
     "CLAUDE_CONFIG_DIR",
+    # The subscription login. A launchd worker has no shell hook to export
+    # it, so :func:`slice_env` fills it from the vault when absent
+    # (``utils/claude_oauth``); an env value wins, as everywhere.
+    "CLAUDE_CODE_OAUTH_TOKEN",
     "PRECIS_RUN_SLICE_MODEL",
     "PRECIS_RUN_SLICE_MAX_TURNS",
     "PRECIS_RUN_SLICE_WALL_S",
@@ -259,9 +263,16 @@ def slice_branch(todo_id: int) -> str:
 
 def slice_env(todo_id: int, effort: str) -> dict[str, str]:
     """The session's environment: :data:`ENV_ALLOWLIST` names present in
-    the worker's env, the MCP token (env, else the mounted secret), and
-    ``PRECIS_SLICE_ID``/``PRECIS_SLICE_EFFORT``. Nothing else."""
+    the worker's env, the MCP token (env, else the mounted secret), the
+    subscription OAuth token (env, else the vault — the only store for it;
+    jo544333 ran as the launchd ``deploy`` user and ``claude`` answered
+    ``Not logged in``), and ``PRECIS_SLICE_ID``/``PRECIS_SLICE_EFFORT``.
+    Nothing else — in particular no ``ANTHROPIC_API_KEY``, so the session
+    cannot fall onto the per-token billed path."""
     env = {k: os.environ[k] for k in ENV_ALLOWLIST if os.environ.get(k)}
+    from precis.utils.claude_oauth import ensure_oauth_token
+
+    ensure_oauth_token(env)
     if "PRECIS_MCP_TOKEN" not in env:
         try:
             from precis.secrets import mounted_secret
@@ -280,12 +291,18 @@ def deny_settings(deny_paths: tuple[str, ...], tree: Path) -> str:
     """The ``--settings`` JSON for the session: one deny rule per tool in
     :data:`_DENY_TOOLS` per path, spelled both cwd-relative (``./<glob>``)
     and absolute (``//<tree>/<glob>``) so the rule matches whichever base
-    the CLI resolves a flag-supplied setting against."""
+    the CLI resolves a flag-supplied setting against. Also approves the
+    checkout's own ``.mcp.json`` servers: the slice host's checkout is a
+    service account's clone no human ever trusted interactively, and an
+    untrusted project's MCP servers (the ``precis`` server the brief relies
+    on) are otherwise skipped in ``-p`` mode."""
     rules: list[str] = []
     for path in deny_paths:
         for spec in (f"./{path}", f"/{tree.as_posix()}/{path}"):
             rules += [f"{tool}({spec})" for tool in _DENY_TOOLS]
-    return json.dumps({"permissions": {"deny": rules}})
+    return json.dumps(
+        {"permissions": {"deny": rules}, "enableAllProjectMcpServers": True}
+    )
 
 
 def deny_violations(paths: list[str], deny_paths: tuple[str, ...]) -> list[str]:
