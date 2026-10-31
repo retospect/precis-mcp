@@ -37,6 +37,7 @@ from pathlib import Path
 from typing import Any
 
 from precis.plans import release as _release
+from precis.workers import factory_git as _factory_git
 from precis.workers.job_types import run_slice as _rs
 
 log = logging.getLogger(__name__)
@@ -82,14 +83,17 @@ def wall_seconds() -> float:
 
 def _launch(argv: list[str], *, cwd: Path, log_path: Path, exit_file: Path) -> int:
     """Seam: start ``argv`` detached (run_slice's launcher, stdin from
-    /dev/null, the worker's own env — the deploy needs its credentials)."""
+    /dev/null, the worker's own env plus the factory git token as git's
+    credential helper — the cut and deploy push ``release/r<N>``, ``gated``
+    and ``prod`` from a service account's checkout; ``scripts/deploy``
+    keeps the worker's own env for the rest)."""
     return _rs._launch(
         argv,
         cwd=cwd,
         stdin=Path(os.devnull),
         log=log_path,
         exit_file=exit_file,
-        env=dict(os.environ),
+        env=_factory_git.git_auth_env(),
     )
 
 

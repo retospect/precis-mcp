@@ -66,6 +66,7 @@ from typing import Any
 
 from precis.plans.templates import PENDING_SHA
 from precis.store.types import Tag
+from precis.workers import factory_git as _factory_git
 from precis.workers.job_types import JobTypeSpec
 from precis.workers.job_types import run_slice as _rs
 
@@ -587,7 +588,9 @@ def submit(ctx: Any, spec: Any) -> Any:
             cwd=tree,
             log=log_path,
             exit_file=exit_path,
-            env={**os.environ, "PRECIS_SHIP_VERBOSE": "1"},
+            # The factory token (vault) as git's credential helper: the slice
+            # host's service account has none of its own (td543734).
+            env={**_factory_git.git_auth_env(), "PRECIS_SHIP_VERBOSE": "1"},
         )
     except Exception as exc:
         log.warning("land_slice: launch for td%d failed", todo_id, exc_info=True)

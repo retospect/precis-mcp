@@ -266,7 +266,12 @@ factory keeps the machinery and adds an owner to every branch.
   `slice/*` refs only; `main`, `release/*`, `gated` and `prod` take the
   lander's credential. Devin's pull request is just its branch; the
   lander lands the branch and closes the PR, nobody presses the GitHub
-  merge button.
+  merge button. *Status 2026-10-31 (Reto):* one fine-grained token for
+  slices and lander alike while the loop closes once — vault
+  `PRECIS_FACTORY_GIT_TOKEN`, installed as git's credential helper by
+  `workers/factory_git` for `land_slice`, the release ops and `gh`; the
+  slice session gets no credential at all. The `slice/*`-only token on a
+  second account plus a ruleset on the protected refs is the next step.
 - **Landing is immediate: builder done → `scripts/ship`.** The lander
   (the release-owner daemon of step 4, a W-tier runner until it exists)
   lands the branch as soon as the handoff says done, with no verdict to
@@ -512,8 +517,9 @@ live host has them all, the tick notes a job queued over ten minutes
 3.13, never building), `pr_action` behind an answered ask, `land_slice`
 closing the PR (70637167c). Four of the ten open Dependabot PRs are
 majors (trafilatura too), so four approval asks will appear when
-`pr_poll` is armed. Open: the builder credential that may push `slice/*`
-only (ask td543734); `scripts/ship` refusing a slice diff on deny paths
+`pr_poll` is armed. The factory's push credential is the vault token
+`PRECIS_FACTORY_GIT_TOKEN` (td543734, one token for now — "Branches").
+Open: `scripts/ship` refusing a slice diff on deny paths
 pre-land (td543697, harness); land-notify losing the ship's note under
 load (gr543833, twice on 2026-10-31); analyst brief close and PR head
 pin / re-intake (td543919, td543920, building).

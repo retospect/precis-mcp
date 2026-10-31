@@ -43,6 +43,7 @@ import subprocess
 from typing import Any
 
 from precis.store.types import Tag
+from precis.workers import factory_git as _factory_git
 from precis.workers.job_types import run_slice as _rs
 
 log = logging.getLogger(__name__)
@@ -102,7 +103,9 @@ def wall_seconds() -> float:
 
 
 def _gh(args: list[str]) -> subprocess.CompletedProcess[str]:
-    """Run ``gh <args>``; never raises on a non-zero exit."""
+    """Run ``gh <args>`` as the factory's GitHub identity (``GH_TOKEN`` from
+    the vault token, ``factory_git``; the host's ``gh auth`` when there is
+    none); never raises on a non-zero exit."""
     try:
         return subprocess.run(
             [os.environ.get("PRECIS_GH_BIN") or "gh", *args],
@@ -111,6 +114,7 @@ def _gh(args: list[str]) -> subprocess.CompletedProcess[str]:
             encoding="utf-8",
             check=False,
             timeout=_GH_TIMEOUT_S,
+            env=_factory_git.git_auth_env(),
         )
     except (OSError, subprocess.SubprocessError) as exc:
         return subprocess.CompletedProcess(args, 127, stdout="", stderr=str(exc))
