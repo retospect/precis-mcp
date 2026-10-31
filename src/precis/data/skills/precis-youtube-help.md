@@ -98,6 +98,29 @@ Each page fits the result budget; the render header says how many
 chunks the video holds (`4 of 70 chunks`) and the `Next:` trailer
 names the following range, so you can walk the body end to end.
 
+## Fetch many transcripts — the bulk path
+## I have a list of YouTube videos to fetch
+
+```python
+put(kind="youtube", args={"op": "fetch_many", "ids": ["dQw4w9WgXcQ", "https://youtu.be/…", …]})
+put(kind="youtube", args={"op": "fetch_many", "ids": […], "languages": "en,de"})
+```
+
+One call enqueues a single `youtube_bulk` job on the worker: it walks
+the ids **serially** through the same cache path as a single `get` —
+each lands cached exactly as if you had fetched it yourself. This is
+the only supported way to fetch a list: **never** run N `get` calls in
+parallel subagents — the burst trips YouTube's host block and every
+caller fails together.
+
+- Already-cached ids are **skipped**; re-submitting a finished list is
+  a no-op for the done ids (a crashed or partial run resumes by
+  resubmitting the same `put`).
+- A throttle backs off ~60 s and retries the id instead of failing the
+  job; an id that stays blocked is recorded `failed: rate_limited`.
+- `get(kind='job', id=N)` shows progress (`meta.progress` tallies);
+  the `job_result` chunk carries the per-id ok/failed/skipped map.
+
 ## Browse what's already cached
 ## List the cached YouTube videos
 

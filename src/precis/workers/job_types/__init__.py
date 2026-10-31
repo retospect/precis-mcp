@@ -664,6 +664,15 @@ def _load_paper_pull() -> JobTypeSpec:
     return paper_pull.SPEC
 
 
+def _load_youtube_bulk() -> JobTypeSpec:
+    # Serialised transcript fetch for a list of video ids — the enqueued
+    # half of put(kind='youtube', args={'op': 'fetch_many'}) (gr531240).
+    # job_inproc plugin dispatch.
+    from precis.workers.job_types import youtube_bulk
+
+    return youtube_bulk.SPEC
+
+
 def _load_paper_reextract() -> JobTypeSpec:
     # Re-extract a paper's body from its stored PDF — the enqueued half
     # of edit(kind='paper', args={'reextract': True}) (gr517423 slice 4).
@@ -1053,6 +1062,9 @@ def get_job_type(name: str) -> JobTypeSpec | None:
     if name == "paper_reextract":
         _REGISTRY["paper_reextract"] = _load_paper_reextract()
         return _REGISTRY["paper_reextract"]
+    if name == "youtube_bulk":
+        _REGISTRY["youtube_bulk"] = _load_youtube_bulk()
+        return _REGISTRY["youtube_bulk"]
     if name == "pdf_attach":
         _REGISTRY["pdf_attach"] = _load_pdf_attach()
         return _REGISTRY["pdf_attach"]
@@ -1147,6 +1159,7 @@ def known_job_types() -> list[str]:
         "pr_poll",
         "dep_check",
         "pr_action",
+        "youtube_bulk",
     ]
     plugin_names = sorted(_get_plugin_specs())
     # Built-ins first so the error-message ordering is stable for

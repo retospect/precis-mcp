@@ -339,6 +339,7 @@ class CacheBackedHandler(Handler):
     def __init__(self, *, hub: Hub) -> None:
         if hub.store is None:
             raise InitError(f"{self.provider}: store required")
+        self.hub = hub
         self.store = hub.store
         # Embedder is optional. Cache-backed kinds that declare
         # ``supports_search`` need it to vectorize the query leg,

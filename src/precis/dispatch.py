@@ -246,6 +246,7 @@ class Hub:
         "conv": ("precis.handlers.conversation", "ConversationHandler"),
         "memory": ("precis.handlers.memory", "MemoryHandler"),
         "profile": ("precis.handlers.profile", "ProfileHandler"),
+        "youtube": ("precis.handlers.youtube", "YouTubeHandler"),
     }
 
     def sibling(self, kind: str) -> Any:

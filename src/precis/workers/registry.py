@@ -878,6 +878,22 @@ SERVICES: tuple[ServiceSpec, ...] = (
         doc_skill="precis-paper-help",
     ),
     ServiceSpec(
+        # gr531240: the enqueued half of
+        # put(kind='youtube', args={'op':'fetch_many','ids':[...]}) — a
+        # serialised paced fetch through the youtube cache path so an
+        # N-video list never fans out N parallel gets against the shared
+        # host:www.youtube.com limiter row. job_inproc, no `requires`:
+        # plain outbound HTTP, no counted slot.
+        name="youtube_bulk",
+        label="YouTube bulk fetch (job)",
+        category="jobs",
+        kind=ServiceKind.JOB,
+        uses_external=("youtube",),
+        one_line="Serialised transcript fetch for a list of video ids — "
+        "minted by put(kind='youtube', args={'op':'fetch_many'}).",
+        doc_skill="precis-youtube-help",
+    ),
+    ServiceSpec(
         # docs/backlog/measures-substrate.md "Next slice": the survey/
         # review numeric-extraction pass — a local reader walks a paper's
         # chunks proposing anchored measure runs, then a spawned

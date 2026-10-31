@@ -35,7 +35,6 @@ from contextvars import ContextVar
 from dataclasses import replace
 from datetime import UTC, datetime
 from typing import Any, ClassVar
-from urllib.parse import parse_qs, urlparse
 
 import psycopg
 
@@ -63,11 +62,14 @@ from precis.utils.optional_deps import require_optional
 from precis.utils.search_header import format_search_headline
 from precis.utils.search_merge import SearchHit, block_hits_to_search_hits
 from precis.utils.text import excerpt as _excerpt
+from precis.utils.youtube_ids import (
+    extract_video_id as _extract_video_id,
+)
+from precis.utils.youtube_ids import (
+    parse_languages as _parse_languages,
+)
 
 log = logging.getLogger(__name__)
-
-
-_VIDEO_ID_RE = re.compile(r"^[\w-]{11}$")
 
 #: Target size of one transcript chunk (~1–2 kB per the read-surface
 #: contract — every chunk must fit the 4 kB context cap with room for
@@ -184,9 +186,14 @@ class YouTubeHandler(CacheBackedHandler):
             "view='toc' to map a cached transcript's chunks. "
             "id='/recent' lists cached videos; search matches title, "
             "channel and transcript. Long transcripts read back in "
-            "chunk ranges: id='<video_id>~N' or id='<video_id>~N..M'."
+            "chunk ranges: id='<video_id>~N' or id='<video_id>~N..M'. "
+            "put(args={'op': 'fetch_many', 'ids': [...]}) enqueues a "
+            "paced background job that fetches many ids serially — "
+            "the answer for a list of videos (never a parallel get "
+            "fan-out; gr531240)."
         ),
         supports_get=True,
+        supports_put=True,
         supports_search=True,
         supports_search_hits=True,
         # Long transcripts are unreadable whole — the ``slug~N`` /
@@ -316,6 +323,151 @@ class YouTubeHandler(CacheBackedHandler):
             )
         finally:
             _LANG_PREF.reset(token)
+
+    # ── put: the bulk-fetch door (gr531240) ───────────────────────────
+
+    def put(
+        self,
+        *,
+        id: str | int | None = None,
+        args: dict[str, Any] | None = None,
+        tags: list[str] | None = None,
+        untags: list[str] | None = None,
+        **_kw: Any,
+    ) -> Response:
+        """Enqueue a paced bulk fetch: ``args={'op': 'fetch_many',
+        'ids': [...]}``.
+
+        The youtube kind's only write verb — an agent needing N
+        transcripts submits ONE background job that walks the ids
+        serially on a worker, instead of fanning out N parallel ``get``
+        calls against the shared ``host:www.youtube.com`` limiter row
+        (the burst that tripped gr531240).
+        """
+        example = (
+            "put(kind='youtube', args={'op': 'fetch_many', "
+            "'ids': ['<video id or URL>', ...]})"
+        )
+        if id is not None and str(id).strip():
+            raise BadInput(
+                "put(kind='youtube') takes no id — args['ids'] carries the list",
+                next=example,
+            )
+        if untags is not None:
+            raise BadInput("untags= is not accepted on a fetch_many put", next=example)
+        op = (args or {}).get("op")
+        if op != "fetch_many":
+            raise BadInput(
+                (
+                    f"unknown put op={op!r} for kind='youtube'"
+                    if op is not None
+                    else "put(kind='youtube') requires "
+                    "args={'op': 'fetch_many', 'ids': [...]}"
+                ),
+                options=["fetch_many"],
+                next=example,
+            )
+        return self._op_fetch_many(args or {}, tags=tags)
+
+    def _op_fetch_many(
+        self, args: dict[str, Any], *, tags: list[str] | None
+    ) -> Response:
+        """Mint an ephemeral parent todo + a ``youtube_bulk`` job under
+        it — the ``_good_search.submit_good_search`` shape for an async
+        campaign with no single subject artifact. The id list is
+        canonicalised here so the submit fails on a bad entry rather
+        than landing as a queued zombie."""
+        from precis.workers.job_types import youtube_bulk
+
+        example = (
+            "put(kind='youtube', args={'op': 'fetch_many', "
+            "'ids': ['<video id or URL>', ...]})"
+        )
+        languages = args.get("languages")
+        if languages is not None and not isinstance(languages, str):
+            raise BadInput(
+                f"languages must be a string like 'en' or 'en,es', got {languages!r}",
+                next=example,
+            )
+        video_ids = youtube_bulk._validated_ids(
+            {"ids": args.get("ids"), "languages": languages}
+        )
+        lang_part = youtube_bulk.lang_part_for(languages)
+        idem = youtube_bulk.idem_key(video_ids, lang_part)
+
+        jobs = self.hub.sibling("job")
+        existing = jobs._lookup_idem(idem)
+        if existing is not None:
+            return Response(
+                body=(
+                    f"already queued: job id={existing} covers this id "
+                    "set — get(kind='job', id="
+                    f"{existing}) shows its progress"
+                ),
+                ref_id=existing,
+                reused=True,
+            )
+
+        # Ephemeral parent todo (intent lane): its only child is the
+        # bulk job, so child_job_succeeded closes it exactly on success.
+        todos = self.hub.sibling("todo")
+        todo_ack = todos.put(
+            text=f"youtube bulk fetch: {len(video_ids)} transcript(s)",
+            tags=["ephemeral"],
+            meta={"auto_check": {"type": "child_job_succeeded"}},
+        )
+        todo_id = todo_ack.ref_id
+
+        params: dict[str, Any] = {"ids": video_ids}
+        if languages is not None and languages.strip():
+            params["languages"] = languages.strip()
+        resp = jobs.put(
+            job_type=youtube_bulk.JOB_TYPE,
+            executor="job_inproc",
+            parent_id=todo_id,
+            params=params,
+            idem_key=idem,
+            tags=tags,
+        )
+        job_id = resp.ref_id
+        if resp.reused:
+            # Lost the idem race between the pre-check and the put —
+            # the fresh todo has no child; soft-delete it (same shape
+            # as _good_search.submit_good_search).
+            with self.store.pool.connection() as conn:
+                conn.execute(
+                    "UPDATE refs SET retired_at = now() "
+                    "WHERE ref_id = %s AND kind = 'todo'",
+                    (todo_id,),
+                )
+                conn.commit()
+            return Response(
+                body=(f"already queued: job id={job_id} covers this id set"),
+                ref_id=job_id,
+                reused=True,
+            )
+        return Response(
+            body=(
+                f"queued: bulk fetch of {len(video_ids)} transcript(s) — "
+                f"job id={job_id} fetches them serially on a worker, "
+                "backing off ~60 s on each throttle instead of failing. "
+                "Already-cached ids are skipped, so re-submitting a "
+                "finished list is a no-op for the done ids."
+            )
+            + render_next_section(
+                [
+                    (
+                        f"get(kind='job', id={job_id})",
+                        "watch progress (meta.progress tallies)",
+                    ),
+                    (
+                        "search(kind='job', args={'job_type': 'youtube_bulk'})",
+                        "list bulk-fetch jobs",
+                    ),
+                ]
+            ),
+            ref_id=job_id,
+        )
 
     # ── /recent listing — one row per cached video ────────────────────
 
@@ -1211,56 +1363,6 @@ def _list_languages(video_id: str) -> Response:
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
-
-
-def _extract_video_id(video: str) -> str:
-    """Extract an 11-character YouTube video ID from URL or bare id.
-
-    Accepts:
-        - ``https://www.youtube.com/watch?v=ID``
-        - ``https://youtu.be/ID``
-        - ``https://www.youtube.com/shorts/ID``
-        - ``https://www.youtube.com/embed/ID``
-        - ``https://www.youtube.com/live/ID``
-        - bare 11-char ID (e.g. ``79-bApI3GIU``)
-
-    Raises :class:`BadInput` when the id can't be determined.
-    """
-    video = video.strip()
-    if _VIDEO_ID_RE.match(video):
-        return video
-
-    parsed = urlparse(video)
-    host = (parsed.hostname or "").lower().removeprefix("www.")
-
-    if host in ("youtube.com", "m.youtube.com"):
-        if parsed.path == "/watch":
-            ids = parse_qs(parsed.query).get("v")
-            if ids:
-                return ids[0]
-        for prefix in ("/shorts/", "/embed/", "/live/"):
-            if parsed.path.startswith(prefix):
-                segment = parsed.path[len(prefix) :].split("/")[0]
-                if segment:
-                    return segment
-    elif host == "youtu.be":
-        segment = parsed.path.lstrip("/").split("/")[0]
-        if segment:
-            return segment
-
-    raise BadInput(
-        f"cannot extract YouTube video id from: {video!r}",
-        next="get(kind='youtube', id='dQw4w9WgXcQ')  # 11-char id or URL",
-    )
-
-
-def _parse_languages(raw: str) -> list[str]:
-    """Parse a comma-separated language list, defaulting to ['en']."""
-    raw = raw.strip()
-    if not raw:
-        return ["en"]
-    langs = [c.strip() for c in raw.split(",") if c.strip()]
-    return langs or ["en"]
 
 
 # ---------------------------------------------------------------------------
