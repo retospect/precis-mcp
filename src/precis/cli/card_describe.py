@@ -57,10 +57,17 @@ def run(args: argparse.Namespace) -> None:
         print(f"total: {sum(counts.values())}")
         return
     from precis.utils.llm.router import DispatchClient, Tier
-    from precis.workers.card_describe import run_card_describe_pass
+    from precis.workers.card_describe import (
+        DESCRIBE_MAX_TOKENS,
+        run_card_describe_pass,
+    )
 
     client = DispatchClient(
-        tier=Tier.BIG, source="card_describe", log_call=True, log_blobs=False
+        tier=Tier.BIG,
+        max_tokens=DESCRIBE_MAX_TOKENS,
+        source="card_describe",
+        log_call=True,
+        log_blobs=False,
     )
     r = run_card_describe_pass(store, client=client, batch_size=args.batch_size)
     line = f"claimed={r['claimed']} ok={r['ok']} failed={r['failed']}"

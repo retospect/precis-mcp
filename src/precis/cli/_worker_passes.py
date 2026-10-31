@@ -718,10 +718,16 @@ def build_ref_passes(
     if _register("card_describe"):
         from precis.utils.llm.router import DispatchClient as _CdDispatchClient
         from precis.utils.llm.router import Tier as _CdTier
+        from precis.workers.card_describe import DESCRIBE_MAX_TOKENS
         from precis.workers.runner import BatchResult as _CdBatchResult
 
+        # A local/openai-compat rung would otherwise inherit
+        # ``LlmConfig``'s 220-token summarizer cap and cut the 2–4-
+        # sentence narrative mid-string — the gr523669 truncated-JSON
+        # failures. Inert on the claude lanes (see the constant).
         _describe_client = _CdDispatchClient(
             tier=_CdTier.BIG,
+            max_tokens=DESCRIBE_MAX_TOKENS,
             source="card_describe",
             log_call=True,
             log_blobs=False,

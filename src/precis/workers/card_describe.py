@@ -61,12 +61,21 @@ reaches :data:`_PARSE_FAIL_BENCH` failed attempts with no success since,
 the pass re-stamps it under :data:`_BENCH_COOLDOWN_MIN` — the repeat-
 offender stops re-claiming for a day instead of an hour, so a reply
 shape the parser can never accept stops burning the daily spend cap.
+The same gripe's remainder: the model *did* emit ``description`` — the
+replies were truncated mid-string (an output cap, or the model's own
+limit on the uncapped claude lane). The pass now pins
+:data:`DESCRIBE_MAX_TOKENS` on its dispatch so a local/openai-compat
+rung stops inheriting the 220-token summarizer cap, and the reply parse
+salvages a truncated ``description`` (recover the string to the cut,
+trim to the last complete sentence, ≥ :data:`_MIN_SALVAGE_CHARS` or
+retry) — each salvage logged at info so prod can count it.
 """
 
 from __future__ import annotations
 
 import base64
 import hashlib
+import json
 import logging
 import os
 import re
@@ -140,6 +149,26 @@ _SOURCE = "card_describe"
 #: A generation shorter than this is a model miss (refusal fragment,
 #: stray whitespace) — count it failed rather than indexing junk.
 _MIN_DESC_CHARS = 40
+
+#: A description recovered from a truncated reply must still read as a
+#: real narrative — a fragment below this (or a value the cut reached
+#: before it started) is refused and the ref retries, never indexed.
+_MIN_SALVAGE_CHARS = 80
+
+#: Completion cap the caller pins on the describe dispatch
+#: (``cli._worker_passes`` / ``cli.card_describe``). Unpinned, a
+#: local/openai-compat rung inherits ``LlmConfig``'s 220-token summarizer
+#: default, which can cut the 2–4-sentence narrative the prompt asks for
+#: mid-string — the truncated-JSON shape prod logged ~5/hour (gr523669).
+#: 1600 leaves the instructed length wide margin plus room for a
+#: reasoning rung's thinking, matching
+#: ``llm_summarize.SUMMARIZE_DISPATCH_MAX_TOKENS``'s fix for the same
+#: defect class (gr489474). Inert on the claude lanes: ``claude -p`` has
+#: no generation-time cap and ``claude_agent`` truncates post-hoc only —
+#: there the salvage below is the mitigation, not the cap. A pinned cap
+#: wins over a chain rung's ``max_tokens``, so keep it at or above the
+#: largest rung value in ``llm.op.card_describe`` / ``llm.chain.big``.
+DESCRIBE_MAX_TOKENS = 1600
 
 #: How much of a bad reply's text reaches the ValueError/log reason —
 #: enough to name the wrong shape (truncated JSON, a wrong key, an
@@ -347,6 +376,15 @@ def claimable_counts(conn: Connection) -> dict[str, int]:
 #: prose around the fence, a truncated closer) is left alone.
 _WHOLE_FENCE_RE = re.compile(r"```[^\n]*\n(.*?)```\s*", re.DOTALL)
 
+#: ``"description": "`` key prefix inside a (possibly truncated) reply —
+#: the salvage anchor once strict parsing has failed.
+_DESC_KEY_RE = re.compile(r'"description"\s*:\s*"')
+
+#: A trailing escape the output cap cut through (a lone ``\`` or a
+#: partial ``\uXXXX``) — dropped before the salvage decode so the tail
+#: doesn't poison ``json.loads``.
+_PARTIAL_ESCAPE_RE = re.compile(r"\\(?:u[0-9a-fA-F]{0,3})?$")
+
 
 def _reply_excerpt(text: str) -> str:
     """The reply's head flattened to ONE printable line — whitespace runs
@@ -356,22 +394,117 @@ def _reply_excerpt(text: str) -> str:
     return "".join(ch for ch in flat if ch.isprintable()).strip()[:_REPLY_EXCERPT_CHARS]
 
 
-def _extract_description(res: Any) -> str:
-    """Pull the narrative out of the reply. ``CLAUDE_P`` demands a JSON
-    block (``res.data``); the local/OpenAI wires return the same JSON as
-    text, which is parsed here. A reply with no JSON at all is taken as
-    plain prose (a model that ignored the JSON instruction); one that looks
-    like JSON but yields no ``description`` (truncated, malformed, another
-    shape) raises so the card is retried rather than storing junk — and
-    the reason carries the reply's head so the log names the wrong shape
-    (gr523669).
+def _reply_telemetry(res: Any) -> str:
+    """``reply_chars=N[ stop=M]`` for the failure/salvage lines: the full
+    reply length (the log excerpt is capped) plus the wire's finish/stop
+    reason when the client reports one — ``length``/``max_tokens`` names
+    an output-cap cut outright (gr523669)."""
+    text = getattr(res, "text", None)
+    out = f"reply_chars={len(text) if isinstance(text, str) else 0}"
+    stop = getattr(res, "stop_reason", None) or getattr(res, "finish_reason", None)
+    return f"{out} stop={stop}" if stop else out
+
+
+def _decode_json_string(src: str) -> str | None:
+    """Decode a raw JSON string body that may end mid-escape (the cap cut
+    it): ``json.loads`` — strict first, control-char-tolerant second,
+    the same two passes :func:`extract_json_object` runs — then, only if
+    both fail, drop a partial trailing escape and retry (a complete
+    ``\\\\`` tail still decodes; a cut ``\\`` or ``\\u12`` doesn't)."""
+    candidates = [src]
+    trimmed = _PARTIAL_ESCAPE_RE.sub("", src)
+    if trimmed != src:
+        candidates.append(trimmed)
+    for candidate in candidates:
+        for strict in (True, False):
+            try:
+                obj = json.loads(f'"{candidate}"', strict=strict)
+            except Exception:
+                continue
+            if isinstance(obj, str):
+                return obj
+    return None
+
+
+def _trim_to_last_sentence(text: str) -> str:
+    """Cut ``text`` back to the end of its last complete sentence; with
+    no sentence boundary at all (the prod cut is usually mid-clause), cut
+    at the last word boundary instead — never mid-word."""
+    stripped = text.rstrip()
+    if not stripped or stripped.endswith((".", "!", "?")):
+        return stripped
+    cut = max(
+        (stripped.rfind(marker) for marker in (". ", "! ", "? ", ".\n", "!\n", "?\n")),
+        default=-1,
+    )
+    if cut > 0:
+        return stripped[: cut + 1]
+    word = stripped.rfind(" ")
+    return stripped[:word] if word > 0 else ""
+
+
+def _salvage_description(text: str) -> tuple[str, str] | None:
+    """Recover a ``description`` value from a reply the strict parse
+    rejected — an output cap cutting the JSON mid-string or a wrapper
+    dropping the closer (gr523669). Take the string up to the cut,
+    decode the escapes that survived, trim to the last complete
+    sentence, and accept only a real narrative (≥ ``_MIN_SALVAGE_CHARS``
+    — a fragment or a value the cut reached before it started is
+    refused). Returns ``(description, reason)`` or ``None``."""
+    m = _DESC_KEY_RE.search(text)
+    if m is None:
+        return None
+    src = text[m.end() :]
+    end = -1
+    i = 0
+    while i < len(src):
+        ch = src[i]
+        if ch == "\\":
+            i += 2
+            continue
+        if ch == '"':
+            end = i
+            break
+        i += 1
+    if end >= 0:
+        reason = "unterminated-object"
+        value_src = src[:end]
+    else:
+        reason = "cut-mid-string"
+        value_src = src
+    decoded = _decode_json_string(value_src)
+    if decoded is None:
+        return None
+    desc = decoded.strip() if end >= 0 else _trim_to_last_sentence(decoded)
+    if len(desc) < _MIN_SALVAGE_CHARS:
+        return None
+    return desc, reason
+
+
+def _extract_description(res: Any) -> tuple[str, str | None]:
+    """Pull the narrative out of the reply; return ``(text, salvage)``.
+
+    ``CLAUDE_P`` demands a JSON block (``res.data``); the local/OpenAI
+    wires return the same JSON as text, which is parsed here. A reply
+    with no JSON at all is taken as plain prose (a model that ignored
+    the JSON instruction); one that looks like JSON but yields no
+    ``description`` and no salvageable value raises so the card is
+    retried rather than storing junk — and the reason carries the
+    reply's head plus its length and stop reason so the log names the
+    wrong shape (gr523669).
+
+    ``salvage`` names the recovery path when the strict parse failed but
+    the reply still carried a usable ``description`` — a truncated value
+    trimmed to its last complete sentence — or ``None`` on a clean parse
+    or a plain-prose reply.
 
     Loose only where the strictness was incidental (gr523669): a whole-
     reply code fence is unwrapped, ``res.data`` that parsed but lacks the
     field falls back to the text, and the text parse is the shared
-    tolerant one — a fenced block, extra keys alongside ``description``,
-    and a raw (unescaped) control char inside a string all still yield
-    the field. A wrong key or truncated JSON still fails."""
+    tolerant one — a fenced block, prose before the object, extra keys
+    alongside ``description``, and a raw (unescaped) control char inside
+    a string all still yield the field. A wrong key or a reply truncated
+    before a usable value still fails."""
     from precis.utils.llm.json_reply import extract_json_object
 
     raw = (res.text or "").strip()
@@ -384,13 +517,16 @@ def _extract_description(res: Any) -> str:
             data = alt
     desc = data.get("description") if isinstance(data, dict) else None
     if isinstance(desc, str):
-        return desc.strip()
+        return desc.strip(), None
+    salvage = _salvage_description(text)
+    if salvage is not None:
+        return salvage
     if data is not None or "{" in text:
         raise ValueError(
             "card_describe reply carried no usable 'description' field; "
-            f"reply={_reply_excerpt(raw or repr(data))}"
+            f"reply={_reply_excerpt(raw or repr(data))}; {_reply_telemetry(res)}"
         )
-    return text
+    return text, None
 
 
 def _figure_notes(store: Store, ref_id: int) -> str:
@@ -410,6 +546,7 @@ def describe_card(
     card_text: str,
     image: bytes | None = None,
     notes: str = "",
+    ref_id: int | None = None,
 ) -> tuple[str, str]:
     """Generate one description; return ``(text, model)``.
 
@@ -422,6 +559,10 @@ def describe_card(
     ``DispatchClient`` lifts it onto ``LlmRequest.images`` so the
     Sonnet-class rungs attach it to the wire. ``notes`` is the figure's
     ``figure_notes`` text, grounding context next to the caption.
+
+    ``ref_id`` only names the ref on the info line when a truncated or
+    unterminated reply was salvaged — prod counts those lines
+    (gr523669); ``None`` when the caller has no ref in hand.
     """
     if kind == "figure":
         if not image:
@@ -456,10 +597,18 @@ def describe_card(
             },
         ]
     res = client.complete(messages)
-    text = _extract_description(res)
+    text, salvage = _extract_description(res)
+    if salvage is not None:
+        log.info(
+            "card_describe: ref_id=%s description salvaged (%s; %s)",
+            ref_id,
+            salvage,
+            _reply_telemetry(res),
+        )
     if len(text) < _MIN_DESC_CHARS:
         raise RuntimeError(
-            f"card_describe: generation too short ({len(text)} chars) for {title!r}"
+            f"card_describe: generation too short ({len(text)} chars) "
+            f"for {title!r}; {_reply_telemetry(res)}"
         )
     return text[:_MAX_DESC_CHARS], str(getattr(res, "model", "") or "")
 
@@ -606,10 +755,11 @@ def _run_card_describe_batch(
                     card_text=card_text,
                     image=png,
                     notes=_figure_notes(store, ref_id),
+                    ref_id=ref_id,
                 )
             else:
                 text, model = describe_card(
-                    client, kind=kind, title=title, card_text=card_text
+                    client, kind=kind, title=title, card_text=card_text, ref_id=ref_id
                 )
 
             def _write(
@@ -756,6 +906,7 @@ def run_card_describe_pass(
 
 __all__ = [
     "CARD_DESCRIBE_VERSION",
+    "DESCRIBE_MAX_TOKENS",
     "claim_refs_without_description",
     "claimable_counts",
     "describe_card",

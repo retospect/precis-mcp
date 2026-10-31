@@ -402,7 +402,39 @@ def test_failed_ref_error_line_carries_class_and_reason(
     assert lines == [
         f"card_describe: ref_id={ref_id} failed: ValueError: "
         "card_describe reply carried no usable 'description' field; "
-        'reply={"narrative": "..."}'
+        'reply={"narrative": "..."}; reply_chars=20'
+    ]
+
+
+def test_failure_line_carries_reply_chars_and_stop_reason(
+    store: Any, hub: Any, caplog: Any
+) -> None:
+    """gr523669: the failure line also carries the reply's full length
+    (the excerpt is capped at 200 chars) and the wire's finish/stop
+    reason when the client exposes one — an output-cap cut reads as
+    ``stop=length`` straight off the line."""
+    import logging
+
+    ref_id = _put_structure(hub)
+
+    class _StopClient(_FakeClient):
+        def complete(self, messages: list[dict[str, str]]) -> Any:
+            return SimpleNamespace(
+                text='{"narrative": "..."}',
+                data=None,
+                model="local",
+                stop_reason="length",
+            )
+
+    with caplog.at_level(logging.ERROR, logger="precis.workers.card_describe"):
+        r = run_card_describe_pass(store, client=_StopClient(), batch_size=10)
+
+    assert (r["claimed"], r["ok"], r["failed"]) == (1, 0, 1)
+    lines = [rec.getMessage() for rec in caplog.records if rec.levelno >= logging.ERROR]
+    assert lines == [
+        f"card_describe: ref_id={ref_id} failed: ValueError: "
+        "card_describe reply carried no usable 'description' field; "
+        'reply={"narrative": "..."}; reply_chars=20 stop=length'
     ]
 
 
@@ -456,13 +488,37 @@ def test_dispatch_failure_error_line_carries_class_and_reason(
     ]
 
 
+#: The prod gr523669 sample verbatim: the model DID emit a
+#: ``description`` key — an output cap cut the reply mid-string, so the
+#: strict JSON parse rejected it. Salvage recovers the value to the cut
+#: and trims at the last word boundary (the fragment has no sentence
+#: break to cut at).
+_TRUNC_MID_STRING_REPLY = (
+    '{"description": "This 38-atom structure, labeled O~n2o, represents '
+    "an intermediate along computational reaction pathway "
+    "q164903cand-69ee52b673-rx-10eb01e369, generated within an "
+    "autocatalytic pathway"
+)
+_TRUNC_MID_STRING_STORED = (
+    "This 38-atom structure, labeled O~n2o, represents an intermediate "
+    "along computational reaction pathway "
+    "q164903cand-69ee52b673-rx-10eb01e369, generated within an "
+    "autocatalytic"
+)
+
+
 @pytest.mark.parametrize(
     ("reply", "stored"),
     [
         pytest.param(
             '{"description": "A PdO slab, plausibly a cat',
             None,
-            id="truncated-json",
+            id="truncated-json-too-short-to-salvage",
+        ),
+        pytest.param(
+            '{"description": ',
+            None,
+            id="truncated-before-value",
         ),
         pytest.param(
             '{"narrative": "A PdO slab, plausibly a catalyst surface model."}',
@@ -474,6 +530,16 @@ def test_dispatch_failure_error_line_carries_class_and_reason(
             f'```json\n{{"description": "{_DESC}"}}\n```',
             _DESC,
             id="fenced-json",
+        ),
+        pytest.param(
+            f'The description follows.\n\n{{"description": "{_DESC}"}}',
+            _DESC,
+            id="prose-before-json",
+        ),
+        pytest.param(
+            _TRUNC_MID_STRING_REPLY,
+            _TRUNC_MID_STRING_STORED,
+            id="truncated-mid-string-salvage",
         ),
         pytest.param(
             f'{{"description": "{_DESC}", "confidence": 0.9, "lang": "en"}}',
@@ -494,9 +560,12 @@ def test_reply_shapes_parse_or_fail_with_reason(
     store: Any, hub: Any, caplog: Any, reply: str, stored: str | None
 ) -> None:
     """gr523669: reply shapes the prod failures hid behind a bare reason.
-    The incidental-strictness shapes (a wrapping fence, extra keys, a raw
-    control char inside the string) parse; a wrong key and a truncated
-    object still fail — and the ERROR line carries the reply's head."""
+    The incidental-strictness shapes (a wrapping fence, prose before the
+    object, extra keys, a raw control char inside the string) parse, and
+    a mid-string truncation salvages the description to the last
+    sentence/word; a wrong key, a reply truncated before the value, and
+    a below-minimum fragment still fail — and the ERROR line carries the
+    reply's head."""
     import logging
 
     ref_id = _put_structure(hub)
@@ -520,6 +589,32 @@ def test_reply_shapes_parse_or_fail_with_reason(
     # the reason names the reply's head, flattened to one line
     assert " ".join(reply.split())[:40] in lines[0]
     assert "\n" not in lines[0]
+
+
+def test_salvaged_description_logs_an_info_line(
+    store: Any, hub: Any, caplog: Any
+) -> None:
+    """gr523669: a truncation the salvage recovered is logged at info —
+    ref id + the salvage reason + the reply telemetry — so prod can
+    count recoveries instead of only counting failures."""
+    import logging
+
+    ref_id = _put_structure(hub)
+
+    with caplog.at_level(logging.INFO, logger="precis.workers.card_describe"):
+        r = run_card_describe_pass(
+            store, client=_FakeClient(_TRUNC_MID_STRING_REPLY), batch_size=10
+        )
+
+    assert (r["claimed"], r["ok"], r["failed"]) == (1, 1, 0)
+    assert _desc_chunks(store, ref_id)[0][1] == _TRUNC_MID_STRING_STORED
+    lines = [
+        rec.getMessage() for rec in caplog.records if "salvaged" in rec.getMessage()
+    ]
+    assert lines == [
+        f"card_describe: ref_id={ref_id} description salvaged "
+        f"(cut-mid-string; reply_chars={len(_TRUNC_MID_STRING_REPLY)})"
+    ]
 
 
 def test_consecutive_failures_bench_the_ref(store: Any, hub: Any, caplog: Any) -> None:
