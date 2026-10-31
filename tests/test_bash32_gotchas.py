@@ -87,6 +87,7 @@ _BARE_ALLOW: dict[tuple[str, str], int] = {
     ("scripts/mine-sessions/run.sh", "SOURCES"): 1,  # defaulted non-empty
     ("scripts/nightly", "suspects"): 2,  # under ${#suspects[@]}
     ("scripts/reap-test-dbs", "REAPED"): 2,  # under ${#REAPED[@]}
+    ("scripts/reap-test-dbs", "STOPPED"): 2,  # under ${#STOPPED[@]}
     ("scripts/reap-worktrees", "REAPED"): 2,  # under ${#REAPED[@]}
     ("scripts/reap-worktrees", "deleted"): 2,  # under ${#deleted[@]}
     ("scripts/render-uml", "container_paths"): 1,  # one per puml file

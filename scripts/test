@@ -494,10 +494,14 @@ ERR_FILTER_PID=""
 # db up, and the teardown also stands down while any other marker's pid is
 # alive (EPERM from kill -0 = alive). The marker scan runs last, right before
 # the `down`, which leaves only that gap open.
+#
+# The marker is written for EVERY tree, not just agent-* (gr544054):
+# scripts/reap-test-dbs's idle-stack stop pass reads it as the
+# "live scripts/test process" signal for the tree — a run in its
+# container-less phases (gate-slot wait, lint) must hold its stack.
 RUN_MARKER_DIR=""
 RUN_MARKER=""
 run_marker_write() {
-    case "${WORKTREE##*/}" in agent-*) ;; *) return 0 ;; esac
     local gd
     gd="$(git -C "$WORKTREE" rev-parse --absolute-git-dir 2>/dev/null)" || return 0
     RUN_MARKER_DIR="$gd/precis-test-runs"

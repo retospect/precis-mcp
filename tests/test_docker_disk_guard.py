@@ -53,6 +53,9 @@ _FAKE_DOCKER = r"""#!/usr/bin/env bash
 #                     df` leg's behaviour (nodf = a distroless container)
 #   FAKE_DF_FREE_KB   Available column the probe reports
 #   FAKE_PRUNE_FLAG   the keep-flag `builder prune --help` advertises ('' = none)
+#   FAKE_BC_FILE      file holding the Build Cache SIZE `system df` reports;
+#                     each `builder prune` call pops the head of FAKE_BC_QUEUE
+#                     into it (queue empty -> "0B")
 # PRECIS_DOCKER_DISK_CLOCK is docker-disk.sh's injected clock file; slowfail
 # advances it by a virtual +2s per attempt so the probe's budget math is
 # exact under wall-clock load.
@@ -109,14 +112,36 @@ case "${args[0]:-}" in
       case " ${args[*]} " in
         *" --help "*)
           echo "Usage:  docker buildx prune"
+          echo "  -a, --all     Include internal/frontend images"
           echo "  -f, --force   Do not prompt for confirmation"
           [ -n "${FAKE_PRUNE_FLAG:-}" ] && echo "      ${FAKE_PRUNE_FLAG} bytes   keep this much"
           exit 0
           ;;
       esac
       echo "prune|${args[*]:2}" >> "$FAKE_DOCKER_LOG"
+      if [ -n "${FAKE_BC_FILE:-}" ]; then
+        nxt=""
+        if [ -n "${FAKE_BC_QUEUE:-}" ] && [ -s "$FAKE_BC_QUEUE" ]; then
+          read -r nxt rest < "$FAKE_BC_QUEUE"
+          printf '%s\n' "$rest" > "$FAKE_BC_QUEUE"
+        fi
+        printf '%s\n' "${nxt:-0B}" > "$FAKE_BC_FILE"
+      fi
       printf 'ID\tRECLAIMABLE\tSIZE\n'
       printf 'Total:\t12.5GB\n'
+      exit 0
+    fi
+    exit 0
+    ;;
+  system)
+    if [ "${args[1]:-}" = df ]; then
+      bc="0B"
+      [ -n "${FAKE_BC_FILE:-}" ] && [ -f "$FAKE_BC_FILE" ] && bc="$(cat "$FAKE_BC_FILE")"
+      printf 'TYPE            TOTAL     ACTIVE    SIZE      RECLAIMABLE\n'
+      printf 'Images          1         0         1GB       0B (0%%)\n'
+      printf 'Containers      0         0         0B        0B\n'
+      printf 'Local Volumes   0         0         0B        0B\n'
+      printf 'Build Cache     1         0         %s       %s\n' "$bc" "$bc"
       exit 0
     fi
     exit 0
@@ -186,6 +211,8 @@ def _env(tmp_path: Path, **extra: str) -> dict[str, str]:
         "FAKE_DOCKER_LOG": str(log),
         "TMPDIR": str(tmp_path),
     }
+    env.pop("FAKE_BC_FILE", None)
+    env.pop("FAKE_BC_QUEUE", None)
     for k in (
         "PRECIS_DOCKER_MIN_FREE_GB",
         "PRECIS_DOCKER_DISK_CHECK",
@@ -444,38 +471,106 @@ def _reap(
     return proc, tree / ".git" / "precis-build-cache-prune.stamp"
 
 
+def _bc_env(tmp_path: Path, before: str, *queue: str) -> dict[str, str]:
+    """State files for the fake's `system df` Build Cache row: `before` is
+    the size reported until the first prune, then each prune pops `queue`."""
+    bc = tmp_path / "build-cache.size"
+    bc.write_text(before + "\n", encoding="utf-8")
+    q = tmp_path / "build-cache.queue"
+    q.write_text(" ".join(queue), encoding="utf-8")
+    return {"FAKE_BC_FILE": str(bc), "FAKE_BC_QUEUE": str(q)}
+
+
 def _prunes(tmp_path: Path) -> list[str]:
     return [ln for ln in _log(tmp_path) if ln.startswith("prune|")]
 
 
 def test_prune_runs_once_and_the_stamp_suppresses_a_second_run(tmp_path: Path) -> None:
-    proc, stamp = _reap(tmp_path, FAKE_PRUNE_FLAG="--reserved-space")
+    proc, stamp = _reap(
+        tmp_path,
+        FAKE_PRUNE_FLAG="--reserved-space",
+        **_bc_env(tmp_path, "75.7GB", "12.5GB"),
+    )
     assert proc.returncode == 0, proc.stderr
-    assert _prunes(tmp_path) == ["prune|-f --reserved-space 30GB"]
-    assert "build cache pruned to a 30GB cap, reclaimed 12.5GB" in proc.stdout
+    assert _prunes(tmp_path) == ["prune|-f --all --reserved-space 30GB"]
+    assert "build cache 75.7GB -> 12.5GB after pruning to a 30GB cap" in proc.stdout
     assert stamp.is_file()
 
-    proc2, _ = _reap(tmp_path, FAKE_PRUNE_FLAG="--reserved-space")
+    proc2, _ = _reap(
+        tmp_path,
+        FAKE_PRUNE_FLAG="--reserved-space",
+        **_bc_env(tmp_path, "75.7GB", "12.5GB"),
+    )
     assert proc2.returncode == 0
     assert len(_prunes(tmp_path)) == 1  # still one: the stamp is fresh
     assert "build cache" not in proc2.stdout
 
 
 def test_stale_stamp_prunes_again(tmp_path: Path) -> None:
-    _, stamp = _reap(tmp_path, FAKE_PRUNE_FLAG="--reserved-space")
+    _, stamp = _reap(
+        tmp_path,
+        FAKE_PRUNE_FLAG="--reserved-space",
+        **_bc_env(tmp_path, "75.7GB", "40GB", "40GB", "10GB"),
+    )
     old = time.time() - 2 * 3600
     os.utime(stamp, (old, old))
-    _reap(tmp_path, FAKE_PRUNE_FLAG="--reserved-space")
-    assert len(_prunes(tmp_path)) == 2
+    _reap(
+        tmp_path,
+        FAKE_PRUNE_FLAG="--reserved-space",
+        **_bc_env(tmp_path, "40GB", "10GB"),
+    )
+    # Run 1: capped prune leaves 40GB > cap -> one warn line, no second
+    # prune; run 2 (stale stamp): still 40GB -> another capped prune.
+    assert _prunes(tmp_path) == [
+        "prune|-f --all --reserved-space 30GB",
+        "prune|-f --all --reserved-space 30GB",
+    ]
+
+
+def test_over_cap_after_a_policy_prune_reports_pinned_and_stops(
+    tmp_path: Path,
+) -> None:
+    """gr544054's root cause: --max-used-space bounds only non-shared
+    records, so image-pinned cache survives a policy prune. The cap is
+    verified on `docker system df`; over it, the sweep says by how much
+    and why, and prunes NO further (a bare `--all` wipe is an operator
+    call, not a hook's)."""
+    proc, _ = _reap(
+        tmp_path,
+        FAKE_PRUNE_FLAG="--max-used-space",
+        **_bc_env(tmp_path, "75.7GB", "75.7GB", "0B"),
+    )
+    assert proc.returncode == 0, proc.stderr
+    assert _prunes(tmp_path) == ["prune|-f --all --max-used-space 30GB"]
+    assert (
+        "build cache still 75.7GB after the 30GB-cap prune — 45.7GB over cap"
+        " is pinned behind images" in proc.stdout
+    )
+    assert "docker buildx prune -a" in proc.stdout
+
+
+def test_cache_already_under_the_cap_is_not_pruned(tmp_path: Path) -> None:
+    proc, stamp = _reap(
+        tmp_path, FAKE_PRUNE_FLAG="--max-used-space", **_bc_env(tmp_path, "5GB")
+    )
+    assert proc.returncode == 0, proc.stderr
+    assert _prunes(tmp_path) == []
+    assert "build cache 5GB is already under the 30GB cap" in proc.stdout
+    assert stamp.is_file()  # claimed before the check, hourly either way
 
 
 @pytest.mark.parametrize(
     "flag", ["--keep-storage", "--reserved-space", "--max-used-space"]
 )
 def test_prune_flag_name_is_probed(tmp_path: Path, flag: str) -> None:
-    proc, _ = _reap(tmp_path, FAKE_PRUNE_FLAG=flag, PRECIS_BUILD_CACHE_KEEP_GB="7")
+    proc, _ = _reap(
+        tmp_path,
+        FAKE_PRUNE_FLAG=flag,
+        PRECIS_BUILD_CACHE_KEEP_GB="7",
+        **_bc_env(tmp_path, "10GB", "1GB"),
+    )
     assert proc.returncode == 0, proc.stderr
-    assert _prunes(tmp_path) == [f"prune|-f {flag} 7GB"]
+    assert _prunes(tmp_path) == [f"prune|-f --all {flag} 7GB"]
 
 
 def test_prune_without_any_known_flag_is_skipped_loudly(tmp_path: Path) -> None:

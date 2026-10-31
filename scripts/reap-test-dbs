@@ -30,11 +30,13 @@
 # Reading the label also makes this robust across clones: a second checkout's
 # projects carry their own root and are judged on their own terms.
 #
-# Safety: a tree that still EXISTS is never touched, so this cannot race a
-# parked session or an in-flight gate — the criterion is absence of the
-# bind-mount source, and a gate cannot run without it. Idle-but-live DBs are
-# deliberately out of scope; stopping those needs a liveness judgment
-# (scripts/inflight), not a file test.
+# Safety: a tree that still EXISTS is never REMOVED by this sweep — the
+# criterion is absence of the bind-mount source, and a gate cannot run
+# without it. Present-tree projects are handed to the idle-stack stop pass
+# below (gr544054), which only ever `compose stop`s them: containers, db
+# and volumes survive, so a parked session's stack is back one `compose
+# up` later. That pass needs a liveness judgment — but a cheap one (run
+# markers, the ship lock, execs and mtimes), not scripts/inflight.
 #
 # A live SubagentStart marker suppresses the sweeps FOR THE TREE IT SCOPES TO
 # (gr513859): an isolation worktree can disappear while its task falls back to
@@ -95,6 +97,18 @@
 # in-progress session's db) is not. Skips outright if `scripts/inflight` is
 # missing/non-executable: no session-liveness signal, no reap.
 #
+# Idle gate-stack stop (gr544054): scripts/ship leaves a warm precis-gate
+# (`sleep infinity`) and the co-located precis-test-db RUNNING in the tree's
+# project after the gate finishes, and nothing above can touch them — the
+# tree exists, the session may even be live, only the WORK has gone quiet.
+# On 2026-10-31 ~139 such projects held ~70 GB and hundreds of live
+# processes. The stop pass below `compose stop`s a present-tree project
+# whose every signal says idle for PRECIS_REAP_IDLE_STACK_SECONDS (default
+# 2h) — never down/-v, so the db and gate-cache volume survive. Because a
+# stopped db-only project no longer shows up in `docker ps`, the
+# abandoned-but-present sweep reads `ps -a` and takes such a project by
+# container age regardless of state.
+#
 # Build cache: also prunes BuildKit's cache to PRECIS_BUILD_CACHE_KEEP_GB (30)
 # at most hourly — see prune_build_cache below.
 #
@@ -145,7 +159,9 @@ subagent_task_clear() {
 }
 
 REAPED=()
+STOPPED=()
 SEEN=""
+PRESENT=""
 
 while IFS='|' read -r proj cfg; do
     [ -z "$proj" ] && continue
@@ -172,7 +188,13 @@ while IFS='|' read -r proj cfg; do
     # kept, but an empty one would test false and reap. Guard explicitly.
     [ -z "$root" ] && continue
 
-    [ -d "$root" ] && continue   # tree still there — not our business
+    if [ -d "$root" ]; then
+        # Tree still there — not this sweep's business. It goes on the
+        # idle-stack list judged after the removal passes (gr544054).
+        PRESENT="${PRESENT}${proj}|${root}
+"
+        continue
+    fi
 
     if ! subagent_task_clear "$root"; then
         [ "$FOR_HOOK" = 1 ] || echo "reap-test-dbs: active subagent task $active_task_id — keeping $proj"
@@ -374,22 +396,25 @@ PY
             # (3) .claude/purpose absent or stale.
             stale_or_absent_purpose "$wt_path" || continue
 
-            # (4) no running container in this project other than the
+            # (4) no RUNNING container in this project other than the
             # test-db service — a gate or `run --rm` container in flight
-            # means real work is happening right now.
+            # means real work is happening right now. Read `ps -a` (not
+            # `ps`): a stack the idle-stop pass below stopped still has to
+            # reach this `down -v` when it later qualifies, and a stopped
+            # non-db container is no proof of work (gr544054).
             other_running=0
             db_cid=""
-            while IFS='|' read -r cid svc; do
+            while IFS='|' read -r cid svc cstate; do
                 [ -z "$cid" ] && continue
                 if [ "$svc" = "precis-test-db" ]; then
                     db_cid="$cid"
-                else
+                elif [ "$cstate" = "running" ]; then
                     other_running=1
                 fi
-            done < <(docker ps --filter "label=com.docker.compose.project=$proj" \
-                --format '{{.ID}}|{{.Label "com.docker.compose.service"}}' 2>/dev/null)
+            done < <(docker ps -a --filter "label=com.docker.compose.project=$proj" \
+                --format '{{.ID}}|{{.Label "com.docker.compose.service"}}|{{.State}}' 2>/dev/null)
             [ "$other_running" = 1 ] && continue
-            [ -z "$db_cid" ] && continue   # no running db either -- nothing to reap here
+            [ -z "$db_cid" ] && continue   # no db container at all -- nothing to reap here
 
             # (5) the db container has been up at least DB_MIN_AGE_SECONDS
             # (AGENT_DB_MIN_AGE_SECONDS for a subagent's `agent-*` tree).
@@ -409,19 +434,224 @@ PY
     fi
 fi
 
+# Idle gate-stack stop (gr544054) — see the header comment for the why.
+# PRESENT holds "<proj>|<tree>" for every precis-test-* project whose tree
+# still exists, collected by the label sweep above. A project is `compose
+# stop`ped — never down/-v, so its db, volumes and warm gate-cache survive
+# for the next run — only when ALL of:
+#   1. at least one container is RUNNING (an all-stopped project needs no
+#      stop; the carve-out above owns its removal), and every running
+#      container is the precis-test-db or precis-gate service — a live
+#      `run --rm` pytest (precis-dev) or dev stack means work in flight;
+#   2. no running container has an exec attached (a gate `compose exec` is
+#      a gate actually running);
+#   3. no live subagent task marker scopes to the tree;
+#   4. the tree's git dir carries neither a live scripts/test run marker
+#      ($gd/precis-test-runs/<pid>) nor a live scripts/ship worktree lock
+#      ($gd/precis-ship-worktree.lock.d holder pid on THIS host) — a run
+#      in its container-less phase (slot wait, lint, sync) is still a
+#      live process and must hold its stack;
+#   5. every readable activity signal — newest container StartedAt, the
+#      git index/HEAD/reflog mtimes, .claude/purpose, the marker/lock
+#      mtimes — is at least PRECIS_REAP_IDLE_STACK_SECONDS old (default
+#      2h).
+# The primary checkout is never touched (same rule as the carve-out). The
+# liveness helpers come from scripts/lib/lock-holder.sh; without it there
+# is no safe pid judgment, so the pass skips outright.
+IDLE_STACK_SECONDS="${PRECIS_REAP_IDLE_STACK_SECONDS:-7200}"
+case "$IDLE_STACK_SECONDS" in '' | *[!0-9]*) IDLE_STACK_SECONDS=7200 ;; esac
+
+_stack_mtime() {  # <path> -> mtime epoch seconds, or nothing (GNU then BSD)
+    stat -c %Y "$1" 2>/dev/null || stat -f %m "$1" 2>/dev/null
+}
+
+_stack_ts_epoch() {  # docker RFC3339 -> epoch seconds, or nothing
+    python3 - "$1" <<'PY'
+import datetime
+import sys
+
+ts = sys.argv[1].strip()
+if ts.endswith("Z"):
+    ts = ts[:-1]
+ts = ts.split(".")[0]
+try:
+    print(int(datetime.datetime.strptime(ts, "%Y-%m-%dT%H:%M:%S")
+              .replace(tzinfo=datetime.timezone.utc).timestamp()))
+except ValueError:
+    pass
+PY
+}
+
+if [ -n "$PRESENT" ] && [ -f "$ROOT/scripts/lib/lock-holder.sh" ]; then
+    # shellcheck source=scripts/lib/lock-holder.sh
+    source "$ROOT/scripts/lib/lock-holder.sh"
+    PRIMARY_WT="$(git -C "$ROOT" worktree list --porcelain 2>/dev/null \
+        | awk '/^worktree /{print $2; exit}')"
+    NOW_S="$(date +%s)"
+    while IFS='|' read -r proj root; do
+        [ -z "$proj" ] && continue
+        [ -n "$PRIMARY_WT" ] && [ "$root" = "$PRIMARY_WT" ] && continue
+
+        # (1) running services limited to the db/gate pair.
+        running=0
+        other_running=0
+        pair_cids=""
+        while IFS='|' read -r cid svc cstate; do
+            [ -z "$cid" ] && continue
+            [ "$cstate" = "running" ] || continue
+            running=1
+            case "$svc" in
+                precis-test-db|precis-gate) pair_cids="$pair_cids $cid" ;;
+                *) other_running=1 ;;
+            esac
+        done < <(docker ps -a --filter "label=com.docker.compose.project=$proj" \
+            --format '{{.ID}}|{{.Label "com.docker.compose.service"}}|{{.State}}' \
+            2>/dev/null)
+        [ "$other_running" = 1 ] && continue
+        [ "$running" = 0 ] && continue
+
+        # (2) no exec in flight; newest StartedAt is the docker-side
+        # activity signal.
+        newest=0
+        exec_live=0
+        for cid in $pair_cids; do
+            info="$(docker inspect -f \
+                '{{.State.StartedAt}}|{{len .ExecIDs}}' "$cid" 2>/dev/null)"
+            [ -n "$info" ] || continue
+            case "${info##*|}" in '' | 0) ;; *) exec_live=1 ;; esac
+            ep="$(_stack_ts_epoch "${info%%|*}")"
+            [ -n "$ep" ] && [ "$ep" -gt "$newest" ] && newest="$ep"
+        done
+        [ "$exec_live" = 1 ] && continue
+
+        # (3) a task marker scoped to this tree.
+        subagent_task_clear "$root" || continue
+
+        # (4) no live scripts/ship or scripts/test process for the tree.
+        gd="$(git -C "$root" rev-parse --absolute-git-dir 2>/dev/null)"
+        [ -n "$gd" ] && [ -d "$gd" ] || continue
+        lockdir="$gd/precis-ship-worktree.lock.d"
+        if [ -d "$lockdir" ]; then
+            hpid="$(lock_holder_pid "$lockdir")"
+            hhost="$(lock_holder_host "$lockdir")"
+            if [ -n "$hhost" ] && [ "$hhost" != "$(lock_holder_hostname)" ]; then
+                continue   # a ship on another host: its pid is unknowable here
+            fi
+            if [ -n "$hpid" ] && lock_pid_alive "$hpid"; then
+                continue
+            fi
+        fi
+        markerdir="$gd/precis-test-runs"
+        if [ -d "$markerdir" ]; then
+            live_marker=0
+            for m in "$markerdir"/*; do
+                [ -e "$m" ] || continue
+                mp="${m##*/}"
+                case "$mp" in '' | *[!0-9]*) continue ;; esac
+                if lock_pid_alive "$mp"; then
+                    live_marker=1
+                    break
+                fi
+                # A dead marker is stale evidence, not cleanup business —
+                # it stays (scripts/test's own scan removes it next run).
+                # Removing it here would bump the dir mtime into "recent
+                # activity" and delay the stop for no gain.
+            done
+            [ "$live_marker" = 1 ] && continue
+        fi
+
+        # (5) every signal older than the TTL.
+        for p in "$gd/index" "$gd/HEAD" "$gd/logs/HEAD" \
+            "$root/.claude/purpose" "$markerdir" "$lockdir"; do
+            mt="$(_stack_mtime "$p")"
+            [ -n "$mt" ] && [ "$mt" -gt "$newest" ] && newest="$mt"
+        done
+        idle=$((NOW_S - newest))
+        [ "$idle" -lt "$IDLE_STACK_SECONDS" ] && continue
+
+        if [ "$DRY_RUN" = 1 ]; then
+            STOPPED+=("$proj")
+            continue
+        fi
+        compose_file=()
+        [ -f "$root/docker/dev/compose.yaml" ] && \
+            compose_file=(-f "$root/docker/dev/compose.yaml")
+        if env UID="$(id -u)" GID="$(id -g)" \
+            docker compose ${compose_file[@]+"${compose_file[@]}"} \
+            -p "$proj" stop >/dev/null 2>&1; then
+            STOPPED+=("$proj")
+            echo "reap-test-dbs: stopped idle stack $proj (idle $((idle / 3600))h$(((idle % 3600) / 60))m)"
+        fi
+    done <<<"$PRESENT"
+fi
+
 # Build-cache cap. Nothing else bounds BuildKit's cache: on 2026-10-03 it had
 # grown to 90 GB (40 GB unused) and filled the VM disk, so every lint, gate and
 # scripts/test died on ENOSPC. Prune down to PRECIS_BUILD_CACHE_KEEP_GB (default
 # 30) at most once an hour, guarded by a stamp in the git common dir (shared by
 # every worktree, so sibling sessions' SessionStart hooks don't each prune).
-# The stamp is claimed BEFORE pruning so two concurrent hooks run it once. The
-# cap flag is probed. --max-used-space (newer buildx) names the cap itself:
-# prune until the cache is at most N. Older docker only has --keep-storage, the
-# same cap under its old name. --reserved-space (a floor the cache may always
-# keep) is the last resort. --dry-run never prunes.
+# The stamp is claimed BEFORE pruning so two concurrent hooks run it once.
+#
+# Why this used to reclaim 0B (gr544054): `docker builder prune` IS
+# `docker buildx prune` on modern docker, and a keep-policy flag
+# (--max-used-space, or --keep-storage/--reserved-space on older dockers)
+# caps only the records BuildKit counts as its own — non-shared cache.
+# Records shared with images still in the store, and internal/frontend
+# records, are skipped by a policy prune entirely, while `docker system
+# df`'s Build Cache row counts them as reclaimable. On this host ~76 GB of
+# the 75.7 GB shown sat behind images, so the policy prune had almost
+# nothing to delete and "reclaimed 0B" while the cap did nothing.
+#
+# So: measure the cap against `docker system df`, not the prune's own
+# "Total:" line, and prune with --all when offered (so the policy sees the
+# shared records too). If the cache still sits over the cap afterwards the
+# excess is pinned behind images — say so in one line and stop. Wiping the
+# whole cache (`docker buildx prune -a`, the only call that reaches those
+# records) is an operator decision, not a SessionStart hook's. --dry-run
+# never prunes.
+
+_df_build_cache() {  # raw SIZE token of `docker system df`'s Build Cache row
+    ${BOUND_DF[@]+"${BOUND_DF[@]}"} docker system df 2>/dev/null \
+        | awk '/^Build Cache/ {print $5}'
+}
+
+_human_bytes() {  # "75.7GB"|"233.5kB"|"0B" -> bytes; empty on failure
+    python3 - "$1" <<'PY'
+import re
+import sys
+
+m = re.fullmatch(r"([0-9]+(?:\.[0-9]+)?)\s*([A-Za-z]*)", sys.argv[1].strip())
+if not m:
+    sys.exit(1)
+mult = {
+    "b": 1, "kb": 1e3, "mb": 1e6, "gb": 1e9, "tb": 1e12,
+    "kib": 2**10, "mib": 2**20, "gib": 2**30, "tib": 2**40,
+}.get((m.group(2) or "b").lower())
+if mult is None:
+    sys.exit(1)
+print(int(float(m.group(1)) * mult))
+PY
+}
+
+_bytes_human() {  # bytes -> "45.7GB"; empty on failure
+    python3 - "$1" <<'PY'
+import sys
+
+n = int(sys.argv[1])
+for unit, mult in (("TB", 1e12), ("GB", 1e9), ("MB", 1e6), ("kB", 1e3)):
+    if n >= mult:
+        print(f"{n / mult:.1f}{unit}")
+        break
+else:
+    print(f"{n}B")
+PY
+}
+
 prune_build_cache() {
     [ "$DRY_RUN" = 1 ] && return 0
-    local keep="${PRECIS_BUILD_CACHE_KEEP_GB:-30}" gitdir stamp help flag f out reclaimed
+    local keep="${PRECIS_BUILD_CACHE_KEEP_GB:-30}" \
+        gitdir stamp help flag f out aflag reclaimed \
+        before before_b after after_b keep_b
     case "$keep" in '' | *[!0-9]*) keep=30 ;; esac
     gitdir="$(git -C "$(dirname "$0")/.." rev-parse --path-format=absolute --git-common-dir 2>/dev/null)" || return 0
     [ -n "$gitdir" ] && [ -d "$gitdir" ] || return 0
@@ -439,24 +669,58 @@ prune_build_cache() {
         echo "reap-test-dbs: build-cache prune skipped: this docker has no --max-used-space, --keep-storage or --reserved-space"
         return 0
     fi
+    aflag=""
+    case "$help" in *"--all"*) aflag="--all" ;; esac
     # Bounded: a prune of tens of GB takes a while, a wedged daemon must not
     # hold the SessionStart hook forever. macOS ships no `timeout`; perl does.
+    # The df probes get their own shorter bound — a 10-15s answer on a loaded
+    # daemon is normal, a hang is not worth 5 minutes.
     local bound=()
     command -v perl >/dev/null 2>&1 && bound=(perl -e 'alarm shift; exec @ARGV' "${PRECIS_BUILD_CACHE_PRUNE_TIMEOUT:-300}")
-    if out="$(${bound[@]+"${bound[@]}"} docker builder prune -f "$flag" "${keep}GB" 2>&1)"; then
+    BOUND_DF=()
+    command -v perl >/dev/null 2>&1 && BOUND_DF=(perl -e 'alarm shift; exec @ARGV' "${PRECIS_BUILD_CACHE_DF_TIMEOUT:-60}")
+    keep_b="$(_human_bytes "${keep}GB" 2>/dev/null || true)"
+    before="$(_df_build_cache)"
+    before_b="$(_human_bytes "$before" 2>/dev/null || true)"
+    if [ -n "$before_b" ] && [ -n "$keep_b" ] && [ "$before_b" -le "$keep_b" ]; then
+        [ "$FOR_HOOK" = 1 ] || \
+            echo "reap-test-dbs: build cache $before is already under the ${keep}GB cap"
+        return 0
+    fi
+    if ! out="$(${bound[@]+"${bound[@]}"} docker builder prune -f ${aflag:+$aflag} "$flag" "${keep}GB" 2>&1)"; then
+        echo "reap-test-dbs: build-cache prune failed (docker builder prune -f${aflag:+ $aflag} $flag ${keep}GB)"
+        return 0
+    fi
+    after="$(_df_build_cache)"
+    after_b="$(_human_bytes "$after" 2>/dev/null || true)"
+    if [ -n "$after_b" ] && [ -n "$keep_b" ] && [ "$after_b" -gt "$keep_b" ]; then
+        # Still over the cap: the excess sits in records pinned behind
+        # images (shared/internal), which a keep-policy can never reach.
+        # Report it and stop — a bare `docker buildx prune -a` wipes the
+        # whole cache, and that is the operator's call, not a hook's.
+        over="$(_bytes_human "$((after_b - keep_b))" 2>/dev/null || true)"
+        echo "reap-test-dbs: build cache still $after after the ${keep}GB-cap prune — ${over:-over} over cap is pinned behind images; needs a deliberate 'docker buildx prune -a', not this sweep"
+    fi
+    if [ -n "$before" ] && [ -n "$after" ]; then
+        echo "reap-test-dbs: build cache ${before} -> ${after} after pruning to a ${keep}GB cap"
+    else
         reclaimed="$(printf '%s\n' "$out" | awk '/^Total:/ { print $2 }' | tail -n 1)"
         echo "reap-test-dbs: build cache pruned to a ${keep}GB cap, reclaimed ${reclaimed:-0B}"
-    else
-        echo "reap-test-dbs: build-cache prune failed (docker builder prune -f ${flag} ${keep}GB)"
     fi
 }
 prune_build_cache
 
-if [ "${#REAPED[@]}" -eq 0 ]; then
+if [ "${#REAPED[@]}" -eq 0 ] && [ "${#STOPPED[@]}" -eq 0 ]; then
     [ "$FOR_HOOK" = 1 ] || echo "reap-test-dbs: nothing to reap"
 elif [ "$DRY_RUN" = 1 ]; then
-    echo "reap-test-dbs --dry-run: would reap ${#REAPED[@]}: ${REAPED[*]}"
+    [ "${#REAPED[@]}" -gt 0 ] && \
+        echo "reap-test-dbs --dry-run: would reap ${#REAPED[@]}: ${REAPED[*]}"
+    [ "${#STOPPED[@]}" -gt 0 ] && \
+        echo "reap-test-dbs --dry-run: would stop ${#STOPPED[@]} idle stack(s): ${STOPPED[*]}"
 else
-    echo "reap-test-dbs: reaped ${#REAPED[@]}: ${REAPED[*]}"
+    [ "${#REAPED[@]}" -gt 0 ] && \
+        echo "reap-test-dbs: reaped ${#REAPED[@]}: ${REAPED[*]}"
+    [ "${#STOPPED[@]}" -gt 0 ] && \
+        echo "reap-test-dbs: stopped ${#STOPPED[@]} idle stack(s): ${STOPPED[*]}"
 fi
 exit 0

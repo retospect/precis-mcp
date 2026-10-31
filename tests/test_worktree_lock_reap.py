@@ -2107,9 +2107,11 @@ exec "{real_git}" "$@"
 _FAKE_DOCKER_SCRIPT = r"""#!/usr/bin/env bash
 # Synthetic docker for scripts/reap-test-dbs tests -- NEVER touches the real
 # daemon. Driven by three files named by env vars:
-#   FAKE_DOCKER_CONTAINERS  rows: project|cid|service|config_files
+#   FAKE_DOCKER_CONTAINERS  rows:
+#       project|cid|service|config_files[|state|started_rfc3339|nexec]
+#       (state defaults to running, started to '', nexec to 0)
 #   FAKE_DOCKER_CREATED     rows: cid|RFC3339-created-timestamp
-#   FAKE_DOCKER_LOG         appended to on every `compose ... down` call
+#   FAKE_DOCKER_LOG         appended to on every `compose ... down|stop` call
 set -u
 CONTAINERS="${FAKE_DOCKER_CONTAINERS:?}"
 CREATED="${FAKE_DOCKER_CREATED:?}"
@@ -2130,13 +2132,27 @@ case "${args[0]:-}" in
                     ;;
             esac
         done
-        awk -F'|' -v p="$proj" '$1==p {print $2"|"$3}' "$CONTAINERS"
+        if [[ "$joined" == *".State"* ]]; then
+            awk -F'|' -v p="$proj" '$1==p {
+                s = ($5 == "" ? "running" : $5)
+                print $2"|"$3"|"s
+            }' "$CONTAINERS"
+        else
+            awk -F'|' -v p="$proj" '$1==p {print $2"|"$3}' "$CONTAINERS"
+        fi
     fi
     exit 0
     ;;
   inspect)
     cid="${args[$((${#args[@]}-1))]}"
-    awk -F'|' -v c="$cid" '$1==c {print $2}' "$CREATED"
+    if [[ "$joined" == *"StartedAt"* ]]; then
+        awk -F'|' -v c="$cid" '$2==c {
+            n = ($7 == "" ? "0" : $7)
+            print $6"|"n
+        }' "$CONTAINERS"
+    else
+        awk -F'|' -v c="$cid" '$1==c {print $2}' "$CREATED"
+    fi
     exit 0
     ;;
   network)
@@ -2144,12 +2160,16 @@ case "${args[0]:-}" in
     ;;
   compose)
     proj=""
+    verb=""
     for i in "${!args[@]}"; do
         if [ "${args[$i]}" = "-p" ]; then
             proj="${args[$((i+1))]}"
         fi
+        case "${args[$i]}" in
+            down|stop|up|rm) [ -z "$verb" ] && verb="${args[$i]}" ;;
+        esac
     done
-    echo "down|$proj" >> "$LOG"
+    echo "${verb:-down}|$proj" >> "$LOG"
     exit 0
     ;;
   *)
@@ -2180,6 +2200,10 @@ def reap_db_repo(tmp_path: Path) -> dict[str, Path]:
     shutil.copy2(INFLIGHT_SRC, scripts_dir / "inflight")
     shutil.copy2(REAP_DB_SRC, scripts_dir / "reap-test-dbs")
     shutil.copy2(COMPOSE_PROJECT_LIB_SRC, lib_dir / "compose-project.sh")
+    shutil.copy2(
+        REPO_ROOT / "scripts" / "lib" / "lock-holder.sh",
+        lib_dir / "lock-holder.sh",
+    )
     shutil.copy2(SUBAGENT_TASK_STATE_SRC, hooks_dir / "subagent-task-state.py")
     (scripts_dir / "inflight").chmod(0o755)
     (scripts_dir / "reap-test-dbs").chmod(0o755)
@@ -2204,6 +2228,7 @@ def _run_reap_test_dbs(
     containers: list[str],
     created: list[str],
     dry_run: bool = False,
+    extra_env: dict[str, str] | None = None,
 ) -> tuple[subprocess.CompletedProcess[str], str]:
     fakebin = tmp_path / "fakebin"
     fakebin.mkdir(exist_ok=True)
@@ -2227,6 +2252,8 @@ def _run_reap_test_dbs(
     env["FAKE_DOCKER_CONTAINERS"] = str(containers_file)
     env["FAKE_DOCKER_CREATED"] = str(created_file)
     env["FAKE_DOCKER_LOG"] = str(log_file)
+    if extra_env:
+        env.update(extra_env)
 
     cmd = [str(primary / "scripts" / "reap-test-dbs")]
     if dry_run:
@@ -2455,6 +2482,295 @@ def test_reap_test_dbs_carve_out_dry_run_lists_without_downing(
     assert log == "", "dry-run must never actually down anything"
     assert "precis-test-b" in result.stdout
     assert "would reap" in result.stdout.lower()
+
+
+# ── gr544054: idle gate-stack stop + build-cache cap verify ──────────────
+#
+# scripts/ship leaves the warm precis-gate and its precis-test-db RUNNING
+# after the gate finishes; the sweeps above never touch a project whose
+# tree exists. The idle-stack pass `compose stop`s such a project once
+# every liveness/activity guard says quiet for PRECIS_REAP_IDLE_STACK_
+# SECONDS (2h default) — never `down`, so the stack survives for the next
+# run. Rows below use the extended container format
+# project|cid|service|config|state|started|nexec.
+
+
+def _iso_started(hours_ago: float) -> str:
+    dt = datetime.now(UTC) - timedelta(hours=hours_ago)
+    return dt.strftime("%Y-%m-%dT%H:%M:%S.000000000Z")
+
+
+def _stack_rows(
+    tree: Path,
+    *,
+    services: tuple[str, ...] = ("precis-test-db", "precis-gate"),
+    state: str = "running",
+    up_h: float = 3.0,
+    nexec: int = 0,
+) -> list[str]:
+    return [
+        "|".join(
+            (
+                "precis-test-b",
+                f"cid-{svc}",
+                svc,
+                f"{tree}/docker/dev/compose.yaml",
+                state,
+                _iso_started(up_h),
+                str(nexec if svc == "precis-gate" else 0),
+            )
+        )
+        for svc in services
+    ]
+
+
+def _age_worktree(tree: Path, hours: float) -> None:
+    """Backdate the git-activity files the idle-stop pass reads."""
+    gd = Path((tree / ".git").read_text(encoding="utf-8").split("gitdir: ")[1].strip())
+    t = time.time() - hours * 3600
+    for p in (gd / "index", gd / "HEAD", gd / "logs" / "HEAD"):
+        if p.exists():
+            os.utime(p, (t, t))
+
+
+def _worktree_gitdir(tree: Path) -> Path:
+    return Path(
+        (tree / ".git").read_text(encoding="utf-8").split("gitdir: ")[1].strip()
+    )
+
+
+def test_reap_test_dbs_stops_an_idle_gate_stack(
+    reap_db_repo: dict[str, Path], tmp_path: Path
+) -> None:
+    """The reported shape: a live session's tree, a gate+db pair up 3h,
+    no run in flight — the project gets `compose stop`, never `down`."""
+    primary, b = reap_db_repo["primary"], reap_db_repo["b"]
+    _age_worktree(b, 3)
+    containers = _stack_rows(b)
+    created = [f"cid-precis-test-db|{_iso_created(3 / 24)}"]
+    result, log = _run_reap_test_dbs(primary, tmp_path, containers, created)
+    assert result.returncode == 0, result.stderr
+    assert "stop|precis-test-b" in log, (result.stdout, log)
+    assert "stopped idle stack precis-test-b" in result.stdout
+    assert "down|precis-test-b" not in log, log
+
+
+def test_reap_test_dbs_stops_an_idle_db_only_stack(
+    reap_db_repo: dict[str, Path], tmp_path: Path
+) -> None:
+    """A bare test-db from a finished scripts/test run is a stack too."""
+    primary, b = reap_db_repo["primary"], reap_db_repo["b"]
+    _age_worktree(b, 3)
+    containers = _stack_rows(b, services=("precis-test-db",))
+    created = [f"cid-precis-test-db|{_iso_created(3 / 24)}"]
+    result, log = _run_reap_test_dbs(primary, tmp_path, containers, created)
+    assert result.returncode == 0, result.stderr
+    assert "stop|precis-test-b" in log, (result.stdout, log)
+    assert "down|precis-test-b" not in log, log
+
+
+def test_stopped_db_only_stack_still_reaches_the_carve_out(
+    reap_db_repo: dict[str, Path], tmp_path: Path
+) -> None:
+    """Regression for the ps -a read: a db-only project already STOPPED
+    would be invisible to `docker ps` — the carve-out must still take it
+    by container age (3d >= the 48h default) with `down -v`."""
+    primary, b = reap_db_repo["primary"], reap_db_repo["b"]
+    _age_worktree(b, 80)
+    containers = _stack_rows(b, services=("precis-test-db",), state="exited")
+    created = [f"cid-precis-test-db|{_iso_created(3)}"]
+    result, log = _run_reap_test_dbs(primary, tmp_path, containers, created)
+    assert result.returncode == 0, result.stderr
+    assert "down|precis-test-b" in log, (result.stdout, log)
+    assert "stop|precis-test-b" not in log, log
+
+
+def test_reap_test_dbs_idle_stop_dry_run_reports_without_stopping(
+    reap_db_repo: dict[str, Path], tmp_path: Path
+) -> None:
+    primary, b = reap_db_repo["primary"], reap_db_repo["b"]
+    _age_worktree(b, 3)
+    containers = _stack_rows(b)
+    created = [f"cid-precis-test-db|{_iso_created(3 / 24)}"]
+    result, log = _run_reap_test_dbs(
+        primary, tmp_path, containers, created, dry_run=True
+    )
+    assert result.returncode == 0, result.stderr
+    assert log == "", "dry-run must never stop anything"
+    assert "would stop" in result.stdout
+    assert "precis-test-b" in result.stdout
+
+
+def test_reap_test_dbs_keeps_a_fresh_stack(
+    reap_db_repo: dict[str, Path], tmp_path: Path
+) -> None:
+    """Idle < TTL: the tree's git mtimes are fresh (worktree just created)
+    and the containers started an hour ago — left alone."""
+    primary, b = reap_db_repo["primary"], reap_db_repo["b"]
+    containers = _stack_rows(b, up_h=1.0)
+    created = [f"cid-precis-test-db|{_iso_created(1 / 24)}"]
+    result, log = _run_reap_test_dbs(primary, tmp_path, containers, created)
+    assert result.returncode == 0, result.stderr
+    assert "stop|precis-test-b" not in log, log
+
+
+def test_reap_test_dbs_idle_ttl_is_configurable(
+    reap_db_repo: dict[str, Path], tmp_path: Path
+) -> None:
+    primary, b = reap_db_repo["primary"], reap_db_repo["b"]
+    _age_worktree(b, 3)
+    containers = _stack_rows(b)
+    created = [f"cid-precis-test-db|{_iso_created(3 / 24)}"]
+    result, log = _run_reap_test_dbs(
+        primary,
+        tmp_path,
+        containers,
+        created,
+        extra_env={"PRECIS_REAP_IDLE_STACK_SECONDS": str(4 * 3600)},
+    )
+    assert result.returncode == 0, result.stderr
+    assert "stop|precis-test-b" not in log, log
+
+
+def test_reap_test_dbs_keeps_stack_with_other_running_service(
+    reap_db_repo: dict[str, Path], tmp_path: Path
+) -> None:
+    """A running `run --rm` pytest (precis-dev) means a run is in flight."""
+    primary, b = reap_db_repo["primary"], reap_db_repo["b"]
+    _age_worktree(b, 3)
+    containers = _stack_rows(
+        b, services=("precis-test-db", "precis-gate", "precis-dev")
+    )
+    created = [f"cid-precis-test-db|{_iso_created(3 / 24)}"]
+    result, log = _run_reap_test_dbs(primary, tmp_path, containers, created)
+    assert result.returncode == 0, result.stderr
+    assert "stop|precis-test-b" not in log, log
+
+
+def test_reap_test_dbs_keeps_stack_with_exec_in_flight(
+    reap_db_repo: dict[str, Path], tmp_path: Path
+) -> None:
+    """An attached `compose exec` on the gate is a gate running right now."""
+    primary, b = reap_db_repo["primary"], reap_db_repo["b"]
+    _age_worktree(b, 3)
+    containers = _stack_rows(b, nexec=1)
+    created = [f"cid-precis-test-db|{_iso_created(3 / 24)}"]
+    result, log = _run_reap_test_dbs(primary, tmp_path, containers, created)
+    assert result.returncode == 0, result.stderr
+    assert "stop|precis-test-b" not in log, log
+
+
+def test_reap_test_dbs_keeps_stack_while_test_run_marker_is_live(
+    reap_db_repo: dict[str, Path], tmp_path: Path
+) -> None:
+    """A live scripts/test pid marker in the tree's git dir — the run is
+    in a container-less phase and must keep its stack."""
+    primary, b = reap_db_repo["primary"], reap_db_repo["b"]
+    _age_worktree(b, 3)
+    marker_dir = _worktree_gitdir(b) / "precis-test-runs"
+    marker_dir.mkdir()
+    marker = marker_dir / str(os.getpid())
+    marker.write_text("", encoding="utf-8")
+    old = time.time() - 3 * 3600
+    os.utime(marker_dir, (old, old))
+    os.utime(marker, (old, old))
+    containers = _stack_rows(b)
+    created = [f"cid-precis-test-db|{_iso_created(3 / 24)}"]
+    result, log = _run_reap_test_dbs(primary, tmp_path, containers, created)
+    assert result.returncode == 0, result.stderr
+    assert "stop|precis-test-b" not in log, log
+
+
+def test_reap_test_dbs_dead_marker_does_not_protect_the_stack(
+    reap_db_repo: dict[str, Path], tmp_path: Path
+) -> None:
+    """A marker whose pid is gone is stale evidence, not a live run: the
+    idle stack still stops (the marker stays for scripts/test's own scan)."""
+    primary, b = reap_db_repo["primary"], reap_db_repo["b"]
+    _age_worktree(b, 3)
+    dead = subprocess.Popen(["true"])
+    dead.wait()
+    marker_dir = _worktree_gitdir(b) / "precis-test-runs"
+    marker_dir.mkdir()
+    dead_marker = marker_dir / str(dead.pid)
+    dead_marker.write_text("", encoding="utf-8")
+    # The marker dir's mtime is an activity signal — a crashed run's
+    # marker dir reads as when it crashed, so backdate it past the TTL.
+    old = time.time() - 3 * 3600
+    os.utime(marker_dir, (old, old))
+    os.utime(dead_marker, (old, old))
+    containers = _stack_rows(b)
+    created = [f"cid-precis-test-db|{_iso_created(3 / 24)}"]
+    result, log = _run_reap_test_dbs(primary, tmp_path, containers, created)
+    assert result.returncode == 0, result.stderr
+    assert "stop|precis-test-b" in log, (result.stdout, log)
+    assert dead_marker.exists()
+
+
+def test_reap_test_dbs_keeps_stack_while_ship_lock_is_live(
+    reap_db_repo: dict[str, Path], tmp_path: Path
+) -> None:
+    """A live scripts/ship worktree lock — holder pid on this host — is a
+    live gate-adjacent process even between compose calls."""
+    primary, b = reap_db_repo["primary"], reap_db_repo["b"]
+    _age_worktree(b, 3)
+    lock_dir = _worktree_gitdir(b) / "precis-ship-worktree.lock.d"
+    lock_dir.mkdir()
+    host = subprocess.run(
+        ["hostname", "-s"],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        check=True,
+    ).stdout.strip()
+    (lock_dir / "holder").write_text(
+        f"{b} pid={os.getpid()} host={host}\n", encoding="utf-8"
+    )
+    # Backdate the lock dir: only the live holder should protect the stack.
+    old = time.time() - 3 * 3600
+    os.utime(lock_dir, (old, old))
+    containers = _stack_rows(b)
+    created = [f"cid-precis-test-db|{_iso_created(3 / 24)}"]
+    result, log = _run_reap_test_dbs(primary, tmp_path, containers, created)
+    assert result.returncode == 0, result.stderr
+    assert "stop|precis-test-b" not in log, log
+
+
+def test_reap_test_dbs_keeps_stack_with_a_foreign_ship_lock(
+    reap_db_repo: dict[str, Path], tmp_path: Path
+) -> None:
+    """A holder naming another host can't be pid-judged here — keep."""
+    primary, b = reap_db_repo["primary"], reap_db_repo["b"]
+    _age_worktree(b, 3)
+    lock_dir = _worktree_gitdir(b) / "precis-ship-worktree.lock.d"
+    lock_dir.mkdir()
+    (lock_dir / "holder").write_text(
+        f"{b} pid=1 host=some-other-host\n", encoding="utf-8"
+    )
+    old = time.time() - 3 * 3600
+    os.utime(lock_dir, (old, old))
+    containers = _stack_rows(b)
+    created = [f"cid-precis-test-db|{_iso_created(3 / 24)}"]
+    result, log = _run_reap_test_dbs(primary, tmp_path, containers, created)
+    assert result.returncode == 0, result.stderr
+    assert "stop|precis-test-b" not in log, log
+
+
+def test_reap_test_dbs_gone_tree_project_still_downs_not_stops(
+    reap_db_repo: dict[str, Path], tmp_path: Path
+) -> None:
+    """The split stays: a project whose tree is gone still gets `down -v`
+    from the label sweep, never `stop`."""
+    primary = reap_db_repo["primary"]
+    gone = primary / ".claude" / "worktrees" / "gone-tree"
+    containers = [
+        f"precis-test-gone-tree|cid1|precis-test-db|{gone}/docker/dev/compose.yaml"
+    ]
+    created = [f"cid1|{_iso_created(3 / 24)}"]
+    result, log = _run_reap_test_dbs(primary, tmp_path, containers, created)
+    assert result.returncode == 0, result.stderr
+    assert "down|precis-test-gone-tree" in log, (result.stdout, log)
+    assert "stop|precis-test-gone-tree" not in log, log
 
 
 # ── orphaned remote gate refs (ci/<branch>) ──────────────────────────────
