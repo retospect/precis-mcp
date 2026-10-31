@@ -404,7 +404,7 @@ def _kinetics_scalars(results: dict[str, Any]) -> dict[str, Any]:
     sweep = results.get("kinetics_sweep")
     if isinstance(sweep, dict):
         opt = sweep.get("optimum")
-        if isinstance(opt, dict):
+        if isinstance(opt, dict) and _finite_num(opt.get("value")) is not None:
             t_opt = _finite_num(opt.get("T"))
             p_opt = _finite_num(opt.get("p_total"))
             if t_opt is not None:
@@ -439,7 +439,7 @@ def _kinetics_scalars(results: dict[str, Any]) -> dict[str, Any]:
                     if isinstance(pt_kmc, dict)
                     else None
                 )
-                if med is not None:
+                if med is not None and med > 0:
                     out["optimum_tof_kmc"] = med
                 effect = _finite_num(pt.get("correlation_effect"))
                 if effect is not None:

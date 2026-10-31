@@ -32,6 +32,17 @@ math is :mod:`precis_geom.assembly` (``pga.place``), the site taxonomy is
 :mod:`precis.structure.sites` (what ``view='sites'`` renders) and the
 validator rules are ``precis.structure.validate`` — nothing here
 re-derives them.
+
+``relax(rung='auto')`` keeps UFF for finite systems; periodic systems use
+xTB when available, otherwise EMT only within its metal-containing domain.
+The finite hexfold comparison (gr543629, 2026-10-31; 200-step cap,
+fmax 0.1 eV/A, 2 A displacement bound) found no broken/formed bonds or lost
+rings under either UFF or GFN2: the H-capped (4,0), len=2 tube (40 atoms)
+settled in 120/30 steps, and the H-capped (6,0), len=5 tube fused k=0 to
+C60-minus-hexagon (180 atoms) in 173/39 steps. Both stayed one fragment
+with verdict ``ok``. These fixtures give no bond-graph reason to switch
+the finite default to xTB; ``tests/workspaces/test_mol_relax.py`` pins the
+small comparison and the system-type selection with/without tblite.
 """
 
 from precis.structure.check import check

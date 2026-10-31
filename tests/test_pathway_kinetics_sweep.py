@@ -9,8 +9,11 @@ the mint, the kinetics-sweep view, the harvest lift — lives in
 
 from __future__ import annotations
 
-from typing import Any
+from types import SimpleNamespace
+from typing import Any, cast
 from unittest.mock import MagicMock
+
+import pytest
 
 from tests._autocatpath import needs_engine
 
@@ -226,6 +229,118 @@ def test_kinetics_child_gets_the_thermo_record(monkeypatch, tmp_path):
     }
     runner._kinetics_child(req, str(out))
     assert seen[0]["thermo"] == {"mode": "vib", "pressures": {}}
+
+
+@pytest.fixture
+def vib_run(monkeypatch):
+    """Measured seed modes deliberately differ from the adsorbate table."""
+    from autocatpath.config import Config
+    from autocatpath.ledger import Ledger
+
+    from precis_pathway import runner
+
+    cfg = Config(name="vib-retemp")
+    cfg.thermo.mode = "vib"
+    cfg.conditions.temperature = 298.15
+    cfg.kinetics.n_samples = 0
+    net = SimpleNamespace(links=[], slab=lambda: None)
+    ledgers = {"*": Ledger(), "NOH": Ledger()}
+    refs: dict[str, dict[str, float]] = {"gas": {}, "mu": {}, "bare": {}}
+    monkeypatch.setattr(runner, "_prep", lambda *a: cfg)
+    monkeypatch.setattr("autocatpath.pipeline._build_net", lambda *a: net)
+    monkeypatch.setattr("autocatpath.ledger.compute_ledgers", lambda *a: (ledgers, []))
+    monkeypatch.setattr("autocatpath.pipeline.ledger_refs", lambda *a, **k: refs)
+    results = {
+        "nodes": {"*": 0.0, "NOH": 0.3},
+        "edges": [],
+        "thermo": {
+            "mode": "vib",
+            "temperature": 298.15,
+            "freq_floor_meV": 12.0,
+            "state_corrections": {"*": 0.0, "NOH": 0.3},
+            "state_modes": {
+                "*": [{"seed": 1, "hnu": []}],
+                "NOH": [
+                    {"seed": 1, "hnu": [0.005, 0.1, 0.2]},
+                    {"seed": 2, "hnu": [0.006, 0.09, 0.21]},
+                ],
+            },
+        },
+    }
+    return cfg, results, net, ledgers, refs
+
+
+def _assert_vib_temperatures(temperatures: dict[float, float], results: dict) -> None:
+    from autocatpath.thermo import harmonic_g
+
+    runs = results["thermo"]["state_modes"]["NOH"]
+    for temperature, correction in temperatures.items():
+        shift = sum(
+            harmonic_g(run["hnu"], temperature, 12.0)[0]
+            - harmonic_g(run["hnu"], 298.15, 12.0)[0]
+            for run in runs
+        ) / len(runs)
+        assert correction == pytest.approx(0.3 + shift, abs=1e-12)
+    assert temperatures[298.15] == pytest.approx(0.3)
+    assert temperatures[400.0] > temperatures[600.0] > temperatures[800.0]
+
+
+def test_solve_retemps_the_measured_modes_not_the_table(vib_run, monkeypatch):
+    """gr543723: the Ea stencil must receive the same modes as the sweep."""
+    from autocatpath import kinetics, mkm
+    from autocatpath.environment import Environment
+
+    from precis_pathway import runner
+    from precis_pathway.types import PathwayArtifact
+
+    cfg, results, net, ledgers, refs = vib_run
+    temperatures: dict[float, float] = {}
+
+    def solve(cfg, nodes, edges, net, refs, *, thermo_record=None, **kw):
+        assert thermo_record is results["thermo"]
+        retemp = mkm.build_reT(cfg, net, ledgers, refs, set(nodes), thermo_record, "*")
+        assert not retemp.vib_states
+        for temperature in (298.15, 400.0, 600.0, 800.0):
+            temperatures[temperature] = retemp.corr_at(
+                Environment(T=temperature), "NOH"
+            )
+        return {"tof": 1.0}
+
+    monkeypatch.setattr(kinetics, "solve", solve)
+    artifact = cast("PathwayArtifact", {"results_json": results})
+    runner.run_kinetics({}, artifact, budget_s=0)
+
+    assert "kinetics_error" not in results
+    _assert_vib_temperatures(temperatures, results)
+
+
+def test_sweep_reprices_measured_modes_at_every_temperature(vib_run, monkeypatch):
+    """gr543723: exercise the real sweep provider, stubbing only the solver."""
+    from autocatpath import kinetics, kmc, mkm
+    from autocatpath.environment import Environment
+
+    from precis_pathway import runner
+
+    _cfg, results, _net, _ledgers, _refs = vib_run
+    temperatures: dict[float, float] = {}
+
+    def transitions(g, edges, links, ledgers, refs, temperature, *a, **kw):
+        temperatures[temperature] = g["NOH"]
+        assert g["*"] == pytest.approx(0.0)
+        return [], []
+
+    def grid(*a, build_at, warnings, **kw):
+        for temperature in (298.15, 400.0, 600.0, 800.0):
+            build_at(Environment(T=temperature))
+        return {"warnings": warnings, "points": []}
+
+    monkeypatch.setattr(kinetics, "build_transitions", transitions)
+    monkeypatch.setattr(mkm, "run_sweep", grid)
+    monkeypatch.setattr(kmc, "sweep_points", lambda *a, **kw: [])
+    runner._run_kinetics_sweep({}, results)
+
+    assert "kinetics_sweep_error" not in results
+    _assert_vib_temperatures(temperatures, results)
 
 
 def test_modes_job_measures_stored_geometry_with_the_engine():

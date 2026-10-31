@@ -164,6 +164,38 @@ def test_capped_prism_checks_ok_under_uff_in_under_ten_seconds(prism: Any) -> No
     assert relaxed.meta["relaxed_by"]["rung"] == "uff"
 
 
+def test_finite_hexfold_uff_and_gfn2_agree_on_the_capped_tube() -> None:
+    """gr543629: pin the bond-graph comparison behind the finite auto rung."""
+    pytest.importorskip("tblite")
+    from hexfold.build import build
+
+    net = build(
+        "hexfold 0.2\norigin t\nt: tube(4,0, len=2)\n"
+        "terminate: t.in = H\nterminate: t.out = H\n",
+        strict=False,
+    )
+    assert not net.report.errors()
+    geom = pga.geom(net, coords=stick(net))
+    assert len(geom.scene.atoms) == 40
+    for rung in ("uff", "xtb"):
+        _relaxed, cc = mol.relax(geom, rung)
+        assert cc.verdict == "ok", (rung, cc.text())
+        assert (cc.broken, cc.formed, cc.rings_lost) == ((), (), 0)
+        assert cc.fragments == (1, 1)
+    assert collapse._auto_rung(geom.scene) == "uff"
+
+
+def test_finite_hexfold_auto_stays_uff_with_or_without_tblite(
+    prism: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The measured finite fixtures agree; no xTB dependency for this rung."""
+    for installed in (None, object()):
+        monkeypatch.setattr(
+            importlib.util, "find_spec", lambda *a, installed=installed, **k: installed
+        )
+        assert collapse._auto_rung(prism.scene) == "uff"
+
+
 def test_contact_collapses_under_emt_before_step_30_naming_both_frames(
     tmp_path: Path,
 ) -> None:

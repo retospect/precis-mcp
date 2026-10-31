@@ -1107,7 +1107,7 @@ def kinetics_sweep_text(meta: dict[str, Any]) -> str:
         toon.dump(rows, schema=["T_K", "p_total", "tof_mf_/s", "min_star"]),
         "",
     ]
-    if optimum:
+    if optimum and optimum.get("value") is not None:
         lines.append(
             f"Optimum: T = {_num_str(optimum.get('T'))} K, "
             f"p_total = {_num_str(optimum.get('p_total'))} bar "
@@ -1139,9 +1139,12 @@ def kinetics_sweep_text(meta: dict[str, Any]) -> str:
     kmc_points = [p for p in (sweep.get("kmc_points") or []) if isinstance(p, dict)]
     if kmc_points:
         k_rows = []
+        no_turnover = False
         for p in kmc_points:
             raw = p.get("tof_kmc")
             kmc: dict[str, Any] = raw if isinstance(raw, dict) else {}
+            unmeasured = all(kmc.get(k) == 0 for k in ("median", "p5", "p95"))
+            no_turnover = no_turnover or unmeasured
             raw_acc = p.get("acceleration")
             acc: dict[str, Any] = raw_acc if isinstance(raw_acc, dict) else {}
             effect = p.get("correlation_effect")
@@ -1151,13 +1154,17 @@ def kinetics_sweep_text(meta: dict[str, Any]) -> str:
                     "T_K": p.get("T"),
                     "p_total": _num_str(p.get("p_total")),
                     "tof_mf_/s": _num_str(p.get("tof_mf")),
-                    "tof_kmc_/s": _num_str(kmc.get("median")),
-                    "kmc_p5": _num_str(kmc.get("p5")),
-                    "kmc_p95": _num_str(kmc.get("p95")),
+                    "tof_kmc_/s": (
+                        "no measurement" if unmeasured else _num_str(kmc.get("median"))
+                    ),
+                    "kmc_p5": _num_str(None if unmeasured else kmc.get("p5")),
+                    "kmc_p95": _num_str(None if unmeasured else kmc.get("p95")),
                     "corr_effect_dec": (
                         f"{effect:+.2f}"
-                        if isinstance(effect, (int, float)) and math.isfinite(effect)
-                        else "—"
+                        if not unmeasured
+                        and isinstance(effect, (int, float))
+                        and math.isfinite(effect)
+                        else "unavailable"
                     ),
                     # slice 6 (D6): which accelerator ran, and its trust
                     # diagnostics (amc_leak, tof_scaling_drift)
@@ -1188,6 +1195,11 @@ def kinetics_sweep_text(meta: dict[str, Any]) -> str:
                 ],
             ),
         ]
+        if no_turnover:
+            lines.append(
+                "KMC no measurement: no net target turnover inside the event budget; "
+                "not a measured zero rate. correlation_effect is unavailable."
+            )
     inhibitors = sweep.get("inhibitors") or []
     if inhibitors:
         lines += ["", "Inhibitors: " + ", ".join(map(str, inhibitors))]

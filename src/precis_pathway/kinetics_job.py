@@ -313,6 +313,10 @@ def _finalize(
     if optimum and optimum.get("value") is None:
         # the objective had no value at any point: that T and p are the first
         # row of the grid, not an optimum
+        sweep["optimum"] = None
+        sweep.setdefault("warnings", []).append(
+            f"objective {optimum.get('objective')} had no value at any point; no optimum"
+        )
         ctx.append_chunk(
             "job_event",
             f"autocatpath_kinetics: {n_pts} points; objective "

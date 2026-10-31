@@ -272,6 +272,57 @@ def test_kinetics_sweep_view_renders_kmc_points():
         assert label in kmc_part
 
 
+def test_sweep_zero_turnover_is_not_a_measured_zero_rate():
+    """gr543723: a spent KMC budget is not evidence of zero activity."""
+    from precis_pathway._dispatch_common import _kinetics_scalars
+    from precis_pathway.toon_views import kinetics_sweep_text
+
+    payload = _kmc_payload()
+    for point in payload["kmc_points"]:
+        point["tof_kmc"].update(median=0.0, p5=0.0, p95=0.0)
+        point["correlation_effect"] = None
+    results = {"kinetics_v2": {"tof_mf": 10.0}, "kinetics_sweep": payload}
+    text = kinetics_sweep_text({"results": results})
+    kmc_part = text.partition("Lattice KMC at kmc_points")[2]
+    assert "no measurement" in kmc_part
+    assert "not a measured zero rate" in kmc_part
+    assert "correlation_effect is unavailable" in kmc_part
+    assert "0.00e+00" not in kmc_part
+    scalars = _kinetics_scalars(results)
+    assert "optimum_tof_kmc" not in scalars
+    assert "optimum_correlation_effect" not in scalars
+
+
+def test_sweep_zero_median_with_a_nonzero_interval_keeps_the_measurement():
+    from precis_pathway.toon_views import kinetics_sweep_text
+
+    payload = _kmc_payload()
+    for point in payload["kmc_points"]:
+        point["tof_kmc"].update(median=0.0, p5=-1.0, p95=1.0)
+        point["correlation_effect"] = None
+    text = kinetics_sweep_text({"results": {"kinetics_sweep": payload}})
+    assert "no measurement" not in text
+    assert "0.00e+00" in text
+    assert "unavailable" in text
+
+
+def test_stored_null_objective_is_not_rendered_or_harvested_as_an_optimum():
+    from precis_pathway._dispatch_common import _kinetics_scalars
+    from precis_pathway.toon_views import kinetics_sweep_text
+
+    payload = _sweep_payload()
+    payload["optimum"]["value"] = None
+    results = {"kinetics_v2": {"tof_mf": 1.0}, "kinetics_sweep": payload}
+    assert "Optimum:" not in kinetics_sweep_text({"results": results})
+    scalars = _kinetics_scalars(results)
+    assert "optimum_T" not in scalars
+    assert "optimum_p_total" not in scalars
+    # An objective value of zero is still a measured objective.
+    payload["optimum"]["value"] = 0.0
+    assert "Optimum:" in kinetics_sweep_text({"results": results})
+    assert _kinetics_scalars(results)["optimum_T"] == payload["optimum"]["T"]
+
+
 def test_kinetics_scalars_lift_kmc():
     """D8: a tof_kmc on the record outranks tof_mf (kinetics_method='kmc',
     its interval and correlation_effect lifted); without one the method is
@@ -1415,6 +1466,10 @@ def test_poll_does_not_call_the_first_grid_row_an_optimum(monkeypatch) -> None:
     events = [c.args[1] for c in ctx.append_chunk.call_args_list]
     assert any("selectivity.NH3 had no value" in e for e in events)
     assert not any("optimum T=" in e for e in events)
+    sweep = store.ref.meta["results"]["kinetics_sweep"]
+    assert sweep["optimum"] is None
+    assert any("no optimum" in w for w in sweep["warnings"])
+    assert "optimum_T" not in ctx.set_meta.call_args.args[0]
 
 
 def test_poll_persists_a_nan_as_null(monkeypatch) -> None:

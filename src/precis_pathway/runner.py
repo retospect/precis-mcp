@@ -1976,6 +1976,7 @@ def run_kinetics(
             refs,
             span=span,
             mari=None,
+            thermo_record=results_json.get("thermo"),
             log=lambda *a, **k: None,
             **extra,
         )

@@ -461,9 +461,11 @@ structure slice 1.
   only the hit/rebuilt counts.
 - **UFF on carbon frameworks.** UFF types strained seams badly and may
   break a bond a GFN2 relax keeps. The verdict is bond-graph based and
-  names the bond; slice 3 records UFF vs GFN2 agreement on the hexfold
-  fixtures, and `auto` switches finite hexfold nets to `xtb` where
-  installed if they disagree.
+  names the bond. The finite capped tube and pillar-neck comparisons
+  agree, so `auto` keeps UFF on finite systems; the measurements and
+  selection rationale live in `src/precis_geom/mol/__init__.py`.
+  Switch finite hexfold nets to `xtb` where installed if a fixture
+  demonstrates a bond-graph disagreement.
 - **Moving `sites.py` code.** A large file with handler imports; a
   careless split changes view output. Acceptance is byte-identical
   `view='sites'` on fixtures.

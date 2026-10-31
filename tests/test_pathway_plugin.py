@@ -357,20 +357,37 @@ def test_run_kinetics_success_folds_solve_result_onto_results_json(
     result folded onto ``results_json["kinetics"]`` verbatim, keyed off the
     SAME ``nodes``/``edges``/``score.activity.span_eV`` the aggregate just
     produced."""
+    from autocatpath.kinetics import reprice
+
     art = _cached_run(SMOKE)
     canned = {"tof": 4.2e-3, "product": "NO3", "drc": {"X_RC": {"NO->NO2": 0.9}}}
     calls: dict[str, Any] = {}
 
     class _FakeKinetics:
         @staticmethod
-        def solve(cfg, nodes, edges, net, refs, *, span, mari, log):
+        def solve(
+            cfg,
+            nodes,
+            edges,
+            net,
+            refs,
+            *,
+            span,
+            mari,
+            thermo_record,
+            log,
+            priced_pressures=None,
+        ):
             calls["nodes"] = nodes
             calls["edges"] = edges
             calls["span"] = span
             calls["mari"] = mari
+            calls["thermo_record"] = thermo_record
+            calls["priced_pressures"] = priced_pressures
             return canned
 
     monkeypatch.setattr(runner, "_import_kinetics", lambda: _FakeKinetics)
+    monkeypatch.setattr(_FakeKinetics, "reprice", staticmethod(reprice), raising=False)
     runner.run_kinetics(art["config"], art)
 
     assert art["results_json"]["kinetics"] == canned
@@ -378,6 +395,10 @@ def test_run_kinetics_success_folds_solve_result_onto_results_json(
     assert calls["nodes"] == art["results_json"]["nodes"]
     assert calls["edges"] == art["results_json"]["edges"]
     assert calls["mari"] is None  # this flow runs no coverage scan
+    assert calls["thermo_record"] == art["results_json"].get("thermo")
+    assert calls["priced_pressures"] == runner._stored_node_pressures(
+        art["results_json"]
+    )
 
 
 def test_run_kinetics_solve_exception_sets_kinetics_error_never_raises(

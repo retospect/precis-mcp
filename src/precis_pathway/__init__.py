@@ -41,6 +41,13 @@ failure → ``results_json.kinetics_error``, never fails the run). It runs in a
 killable child under ``PRECIS_AUTOCATPATH_KINETICS_SECONDS`` (default 900, 0 =
 unbounded in-process): the solve is a diagnostic bonus, and job 449981 showed
 an unbounded one can hold a worker for 11h on work that measures 33s.
+Both the solve and the sweep receive ``results.thermo``: temperature
+perturbations must re-evaluate the stored per-seed vibrational modes, not
+substitute table corrections for measured ones.
+Sweep persistence clears a null-valued optimum rather than storing the
+first grid row as an answer. A zero KMC median with an all-zero interval
+renders as no measurement within the event budget, not a zero rate;
+the correlation diagnostic is explicitly unavailable.
 ``_dispatch_common`` reduces this to the scalar summary quest harvests:
 barrier/span, ``selectivity_margin``/``trap_margin``/``poison_margin``
 (from ``results_json.score``), the CHE route scalars ``U_L``/``U_opt``/
