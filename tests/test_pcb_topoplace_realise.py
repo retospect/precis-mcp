@@ -1938,7 +1938,7 @@ def _slit_spoke_paths(pairs):
     td = design_from_ir(ir, footprints, route_planes=True, features=design.features)
     mesh = build_mesh(td, td.pose0)
     wires = build_wires(mesh, td, ir.n_layers)
-    return _spoke_offsets(td, mesh, wires, ir.n_layers)
+    return _spoke_offsets(td, mesh, wires, ir.n_layers, shortcut=False)
 
 
 # gate-pad boxes (G1 13.8±0.7 / G2 16.8±0.7, h=1.2 at y=10)
@@ -2118,14 +2118,14 @@ def test_spoke_offsets_many_branch_slit_cluster_scales() -> None:
     d, mesh, wires = _many_branch_slit_fixture()
     assert len(wires.branches) == 153
     t0 = time.perf_counter()
-    paths = _spoke_offsets(d, mesh, wires, 4)
+    paths = _spoke_offsets(d, mesh, wires, 4, shortcut=False)
     wall = time.perf_counter() - t0
     assert wall < 10.0, f"relaxation took {wall:.1f}s on a 153-branch board"
     assert len(paths) == 153
     _assert_slit_margins(paths, [(0, 1), (0, 2), (1, 2)])
 
     t0 = time.perf_counter()
-    paths_again = _spoke_offsets(d, mesh, wires, 4)
+    paths_again = _spoke_offsets(d, mesh, wires, 4, shortcut=False)
     wall_again = time.perf_counter() - t0
     assert paths_again == paths
     assert wall_again < 10.0
@@ -2782,7 +2782,7 @@ def test_unwind_far_side_move_is_rejected() -> None:
     from precis.pcb.topoplace.realise import _spoke_offsets
 
     d, mesh, wires = _unwind_fixture((5.0, 10.0), [])
-    paths = _spoke_offsets(d, mesh, wires, 4)
+    paths = _spoke_offsets(d, mesh, wires, 4, shortcut=False)
     assert (5.0, 10.0) in paths[1]
 
 
@@ -2797,7 +2797,7 @@ def test_unwind_move_leading_through_foreign_pad_is_rejected() -> None:
     from precis.pcb.topoplace.realise import _spoke_offsets
 
     d, mesh, wires = _unwind_fixture((5.0, 0.2), [(4.35, -0.475, 0.7, 0.25)])
-    paths = _spoke_offsets(d, mesh, wires, 4)
+    paths = _spoke_offsets(d, mesh, wires, 4, shortcut=False)
     assert (5.0, 0.2) in paths[1]
 
 
@@ -3018,6 +3018,46 @@ def _route_td(board: pcb.Board):
         features=design.features,
     )
     return td, ir, footprints
+
+
+def test_close_pad_pair_threads_its_own_rings_straight() -> None:
+    """The taz-leaf S2_DRV disease in miniature (Reto 2026-10-31: "8
+    corners, 9 segments, where 2 segments should be the maximum"):
+    two real-geometry 0402s at the exact R12/R13 relative pose. With
+    R13 rotated so pin 1 faces R12, the lane is empty — the piece must
+    be the single straight segment. The un-fixed router answered this
+    with an F↔B via hop and an 8-point wobble in an empty lane, because
+    the mesh walk bends at every ring corner it threads (including the
+    terminal pads' own rings) and no pass ever removed a bend."""
+    fp = pcb.Footprint(
+        "R0402",
+        [
+            pcb.pad("1", "rect", 0.5, 0.0, w=0.55, h=0.6),
+            pcb.pad("2", "rect", -0.5, 0.0, w=0.55, h=0.6),
+        ],
+    )
+    b = pcb.Board("wobble", stackup=4, outline=pcb.rect(30.0, 20.0))
+    f = b.footprint(fp)
+    q1 = b.part("R12", footprint=f, pins=["1"]).at(10.0, 10.0)
+    q2 = b.part("R13", footprint=f, pins=["1"]).at(13.497, 10.145, rot=180.0)
+    for p in (q1["1"], q2["1"]):
+        p.etype("bidi", fmax_hz=0.0, assume="micro wire end")
+    b.wire(q1["1"], q2["1"], name="S2_DRV").current = 0.001
+
+    td, ir, footprints, plan, res, layers, wall_s = _route_micro(b)
+    assert wall_s < 1.0, f"close-pad route took {wall_s:.2f}s"
+    assert plan.vias == (), f"an empty lane must not need vias: {plan.vias}"
+    (track,) = res.tracks
+    segs = [(tuple(s["start"]), tuple(s["end"])) for s in track.segments]
+    assert len(segs) == 2, (
+        f"a 3.3°-skewed pair is one L (2 segments) — the wobble was 9: {segs}"
+    )
+    (a, c), (d, e) = segs
+    assert a == (10.5, 10.0) and e == (12.997, 10.145) and c == d
+    assert c[0] == e[0] and a[1] == c[1], f"the L's legs must be axis-aligned: {segs}"
+    rows = sketch_rows(plan, td, ir, layers)
+    assert rows["S2_DRV"]["status"] == "realized"
+    assert _drc_findings(res, ir, layers, footprints=footprints) == []
 
 
 def test_movable_blocker_gets_shoved_off_the_direct_lane() -> None:

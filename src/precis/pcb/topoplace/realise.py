@@ -1677,6 +1677,7 @@ def _spoke_offsets(
     *,
     net_rules: Mapping[str, NetRules] | None = None,
     pose: Any = None,
+    shortcut: bool = True,
 ) -> list[tuple[tuple[float, float], ...]]:
     """The SURF spoke model (topo S2, gr520900): per-branch polylines
     with the wires that share an obstacle vertex or an edge crossing
@@ -1698,7 +1699,15 @@ def _spoke_offsets(
     moved crossing becomes a polyline vertex on that edge, which keeps
     the wire's homotopy verbatim — each new leg stays inside the
     corridor tri it was threaded through. Same-net wires still
-    separate — a braid's copper may not overlap itself."""
+    separate — a braid's copper may not overlap itself.
+
+    ``shortcut`` (default on) runs the corridor chord pass after the
+    bend offsets: a bend the corridor never needed comes out (the mesh
+    walk bends at every ring corner it threads — including the terminal
+    pads' own rings — and no earlier pass ever removed one; S2_DRV
+    carried 4 bends for an empty lane). Multi-wire slit fixtures that
+    pin the fan/unwind geometry verbatim pass ``shortcut=False`` — in a
+    dense corridor the bends are load-bearing."""
     from precis.pcb.topoplace.proxy import zone_world_ring
     from precis.pcb.topoplace.wires import guard_pad_rects
 
@@ -2295,6 +2304,73 @@ def _spoke_offsets(
         obstacle_vertices(mesh, d, n_layers),
         [(int(u), int(v)) for u, v in mesh.edges],
     )
+
+    # ── chord shortcut ──────────────────────────────────────────────
+    # A bend the corridor never needed comes out. The mesh walk bends
+    # at every ring corner it threads — including the TERMINAL pads'
+    # own rings (the slice-1.5 own-ring flaw) — and every pass so far
+    # only ever ADDED margin: S2_DRV carried 4 bends for an empty
+    # lane (taz-leaf-m: 8 corners after the redraw, where 2 segments
+    # are the honest answer — Reto 2026-10-31). A chord replaces the
+    # run between i and j when it holds `req` off every non-terminal
+    # pad and zone; own-net NON-terminal pads stay obstacles (a chord
+    # through another pad of the same net re-threads the topology).
+    pad_polys = [
+        (
+            Polygon(
+                np.asarray(
+                    [
+                        [lo[0], lo[1]],
+                        [hi[0], lo[1]],
+                        [hi[0], hi[1]],
+                        [lo[0], hi[1]],
+                    ]
+                )
+            ),
+            int(pads.pin[pi]),
+        )
+        for pi, (lo, hi) in enumerate(zip(pads.lo, pads.hi))
+    ]
+    for bi, pts in enumerate(pts_out):
+        if len(pts) <= 2 or not shortcut:
+            continue
+        w_k, s_k = ws(bi)
+        req = s_k + w_k / 2.0
+        term = {int(wires.branches[bi].pin_a), int(wires.branches[bi].pin_b)}
+        obstacles: list[tuple[Polygon, float]] = [
+            (pg, req) for pg, pin in pad_polys if pin not in term
+        ]
+        obstacles.extend((zp, req) for zp, _z in zone_polys)
+        peer_lines: list[tuple[Any, float]] = []
+        for bj, other in enumerate(pts_out):
+            if bj == bi or wires.branches[bj].net == wires.branches[bi].net:
+                continue
+            if (min(bi, bj), max(bi, bj)) in braided:
+                continue  # real crossing — layer assignment owns it
+            w_j, s_j = ws(bj)
+            peer_lines.append((LineString(other), (w_k + w_j) / 2.0 + max(s_k, s_j)))
+        mine = LineString(pts)
+        if any(ol.distance(mine) < 2.0 for ol, _g in peer_lines):
+            # dense field: the redraw's L-corner can bulge past the
+            # 0-width pair gap (measured: the shared-gap squeeze turned
+            # legal chords into short-risk withdrawals) — bends there
+            # are load-bearing, leave them to the relax
+            continue
+        out_ch: list[tuple[float, float]] = [pts[0]]
+        i = 0
+        while i < len(pts) - 1:
+            j = len(pts) - 1
+            while j > i + 1:
+                chord = LineString([pts[i], pts[j]])
+                if all(chord.distance(ox) >= r - 1e-9 for ox, r in obstacles) and all(
+                    chord.distance(ol) >= g - 1e-9 for ol, g in peer_lines
+                ):
+                    break
+                j -= 1
+            out_ch.append(pts[j])
+            i = j
+        pts_out[bi] = out_ch
+
     pads_poly = [
         Polygon(
             np.asarray(
