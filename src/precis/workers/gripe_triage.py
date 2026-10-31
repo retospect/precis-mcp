@@ -1952,7 +1952,6 @@ def run_gripe_triage_pass(
     limit: int | None = None,
     llm: Any = None,
     notify: bool = True,
-    queue_dir: Path | None = None,
     repo: Path | None = None,
 ) -> BatchResult:
     """One triage tick. Dark (all zeros) unless
@@ -1965,7 +1964,7 @@ def run_gripe_triage_pass(
 
     ``llm`` injects the model call for tests (``(prompt) -> LlmResult``;
     default :func:`_route_call`). ``notify`` gates the outward side
-    effects — the review-queue digest file and ``scripts/board`` lines —
+    effects — the ask-user digest todo and ``scripts/board`` lines —
     so tests exercise the pass without posting.
     """
     if not gripe_triage_enabled(store):
@@ -2250,7 +2249,7 @@ def run_gripe_triage_pass(
         len(reto),
     )
     if reto and notify:
-        _post_reto_digest(reto, when, queue_dir, overflow=reto_overflow)
+        _post_reto_digest(store, reto, when, overflow=reto_overflow)
     return BatchResult(
         handler=SERVICE_NAME,
         claimed=len(gripes),
@@ -2305,40 +2304,9 @@ def _post_board(state: str, text: str) -> None:
         )
 
 
-def _queue_dir() -> Path | None:
-    """The fleet review-queue ``open/`` dir — ``PRECIS_FLEET_NOTES``
-    override, else ``<main checkout>/fleet-notes/review-queue/open``
-    resolved through this clone's common git dir (the scripts/fleet
-    convention). ``None`` when no checkout resolves."""
-    notes = os.environ.get("PRECIS_FLEET_NOTES")
-    if notes:
-        return Path(notes) / "review-queue" / "open"
-    try:
-        cp = subprocess.run(
-            [
-                "git",
-                "-C",
-                str(_REPO_ROOT),
-                "rev-parse",
-                "--path-format=absolute",
-                "--git-common-dir",
-            ],
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            timeout=10,
-            check=False,
-        )
-    except (OSError, subprocess.SubprocessError):
-        return None
-    if cp.returncode != 0 or not cp.stdout.strip():
-        return None
-    return Path(cp.stdout.strip()).parent / "fleet-notes" / "review-queue" / "open"
-
-
 def _one_line(text: str) -> str:
     """Collapse whitespace — a model-chosen ``recommend`` or an
-    untrusted title can't smuggle extra lines into the digest file a
+    untrusted title can't smuggle extra lines into the digest todo a
     coordinator agent reads."""
     return " ".join(str(text).split())
 
@@ -2350,43 +2318,141 @@ def digest_line(g: ClaimedGripe, v: Verdict) -> str:
     return f"gr{g.ref_id} [{v.fix}] — {_one_line(g.title)} — recommend: {what}"
 
 
+#: ``meta.digest`` marker on the one live reto:ask digest todo —
+#: ``_post_reto_digest`` mints or refreshes it (td541979 retired the
+#: review-queue directory; a question for the owner is an ``ask-user``
+#: todo with ``meta.ask``).
+_DIGEST_META = "gripe_triage:reto"
+#: The digest todo's ``meta.ask`` — a ``ruling`` that ``blocks``
+#: nothing (the per-gripe ``reto:ask`` tags are what wait on the
+#: owner); options run recommended-first.
+_DIGEST_ASK_OPTIONS: tuple[str, ...] = (
+    "reviewed — apply the recommendations",
+    "overridden — see my comments on the gripes",
+)
+
+
+def _live_digest_ids(conn: Any) -> list[int]:
+    """Live ``meta.digest``-marked todos with a non-terminal STATUS,
+    newest first — normally zero or one."""
+    from precis.todo import TERMINAL_TODO_STATUSES
+
+    rows = conn.execute(
+        """
+        SELECT r.ref_id FROM refs r
+         WHERE r.kind = 'todo' AND r.retired_at IS NULL
+           AND r.meta->>'digest' = %s
+           AND COALESCE(
+                 (SELECT t.value FROM ref_tags rt
+                    JOIN tags t ON t.tag_id = rt.tag_id
+                   WHERE rt.ref_id = r.ref_id AND t.namespace = 'STATUS'
+                   LIMIT 1),
+                 'open'
+               ) <> ALL(%s)
+         ORDER BY r.ref_id DESC
+        """,
+        (_DIGEST_META, sorted(TERMINAL_TODO_STATUSES)),
+    ).fetchall()
+    return [int(r[0]) for r in rows]
+
+
 def _post_reto_digest(
+    store: Store,
     items: list[tuple[ClaimedGripe, Verdict]],
     when: datetime,
-    queue_dir: Path | None,
     *,
     overflow: int = 0,
-) -> None:
-    """``reto:ask`` gripes go out as ONE review-queue item (the spec's
-    mechanism: ``.claude/fleet/review-protocol.md``'s ``open/<slug>.md``)
-    plus one board line. All best-effort — a queue fault logs and moves
+) -> int | None:
+    """``reto:ask`` gripes go out as ONE ask-user todo plus one board
+    line. The todo is the td541979 mechanism — ``meta.ask`` a
+    ``ruling`` that ``blocks`` nothing, tagged ``ask-user`` so
+    ``search(kind='todo', view='asks')`` and the web ``/asks`` see it;
+    the review-queue directory it replaces is retired. The mint shape
+    is ``plan_dispatch``'s ``_mint_ask`` — ``insert_ref`` + STATUS +
+    tags + a ``todo_body`` chunk, all inside one ``store.tx()``.
+
+    Idempotent: at most one live digest todo. A new tick rewrites the
+    live one's title/ask/body in place (a doubled ``meta.digest`` row —
+    a racing tick — retires superseded); a closed one stays closed and
+    a fresh todo mints. All best-effort — a store fault logs and moves
     on. ``overflow`` notes ``fix:reto`` verdicts dropped by the
-    :data:`_RETO_CAP` per-tick cap — visible here, not queued."""
+    :data:`_RETO_CAP` per-tick cap — visible here, not queued. Returns
+    the todo id (``None`` when the write failed)."""
+    from precis.store.types import TODO_BODY_KIND, ChunkInsert, Tag
+    from precis.todo.guards import check_ask_meta
+
     lines = [digest_line(g, v) for g, v in items]
     if overflow:
         lines.append(
             f"(+{overflow} more fix:reto verdicts — per-tick cap {_RETO_CAP}; "
             "find them by the fix:reto tag)"
         )
-    target = queue_dir if queue_dir is not None else _queue_dir()
-    name = f"gripe-triage-{when:%Y%m%d-%H%M}.md"
-    if target is not None:
-        try:
-            target.mkdir(parents=True, exist_ok=True)
-            body = (
-                "---\narea: platform\nsource: gripe_triage\nkind: look-at\n"
-                "blocks: nothing\nanswer-via: precis\n"
-                f"filed: {when:%Y-%m-%dT%H:%M:%SZ}\n---\n"
-                "**Question.** Triage flagged these gripes for you.\n\n"
-                "**Items.** Recommended action first per line; the tag on "
-                "each gripe is `reto:ask`.\n\n"
-                + "\n".join(f"- {ln}" for ln in lines)
-                + "\n"
-            )
-            (target / name).write_text(body, encoding="utf-8")
-        except OSError:
-            log.warning("gripe_triage: review-queue write failed", exc_info=True)
-    _post_board(
-        "waiting",
-        f"gripe triage: {len(items)} reto:ask — review-queue open/{name}",
+    title = f"gripe triage: {len(items)} reto:ask need a ruling"
+    body = (
+        "Triage flagged these gripes for you. Recommended action first per "
+        "line; the tag on each gripe is `reto:ask`.\n\n"
+        + "\n".join(f"- {ln}" for ln in lines)
+        + "\n"
     )
+    ask = {
+        "kind": "ruling",
+        "options": list(_DIGEST_ASK_OPTIONS),
+        "blocks": "nothing",
+        "context": (
+            f"{len(items)} reto:ask this tick ({when:%Y-%m-%d %H:%M}Z)"
+            + (f", +{overflow} past the cap" if overflow else "")
+        ),
+    }
+    check_ask_meta({"ask": ask})
+    todo_id: int | None = None
+    try:
+        with store.tx() as conn:
+            live = _live_digest_ids(conn)
+            if live:
+                todo_id = live[0]
+                store.chunks.set_ref_title(todo_id, title, source="system", conn=conn)
+                store.stamp_ref_meta(todo_id, {"ask": ask}, conn=conn)
+                store.chunks.replace_body_chunk(
+                    todo_id,
+                    body,
+                    chunk_kind=TODO_BODY_KIND,
+                    source="system",
+                    conn=conn,
+                )
+                store.add_tag(todo_id, Tag.open("ask-user"), set_by="system", conn=conn)
+                for extra in live[1:]:
+                    store.stamp_ref_meta(extra, {"superseded_by": todo_id}, conn=conn)
+                    store.retire_ref(extra, conn=conn)
+            else:
+                ref = store.insert_ref(
+                    kind="todo",
+                    slug=None,
+                    title=title,
+                    meta={"digest": _DIGEST_META, "ask": ask},
+                    conn=conn,
+                )
+                todo_id = int(ref.id)
+                store.add_tag(
+                    ref.id,
+                    Tag.closed("STATUS", "open"),
+                    set_by="system",
+                    replace_prefix=True,
+                    conn=conn,
+                )
+                store.add_tag(ref.id, Tag.open("ask-user"), set_by="system", conn=conn)
+                store.chunks.insert_chunks(
+                    ref.id,
+                    [
+                        ChunkInsert(
+                            ord=0,
+                            text=body,
+                            meta={"chunk_kind": TODO_BODY_KIND},
+                        )
+                    ],
+                    conn=conn,
+                )
+    except Exception:
+        log.warning("gripe_triage: reto:ask digest write failed", exc_info=True)
+    note = f"ask td{todo_id}" if todo_id is not None else "digest write failed"
+    _post_board("waiting", f"gripe triage: {len(items)} reto:ask — {note}")
+    return todo_id

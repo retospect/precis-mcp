@@ -174,6 +174,29 @@ def _status(store: Store, ref_id: int) -> str | None:
     return next((v for ns, v in _tags(store, ref_id) if ns == "STATUS"), None)
 
 
+def _digest_todos(store: Store) -> list[int]:
+    """Live ``meta.digest``-marked todos, newest first — the reto:ask
+    digest files as ONE ask-user todo, never a queue file."""
+    with store.pool.connection() as conn:
+        rows = conn.execute(
+            "SELECT ref_id FROM refs WHERE kind = 'todo' "
+            "AND retired_at IS NULL "
+            "AND meta->>'digest' = %s ORDER BY ref_id DESC",
+            (gripe_triage._DIGEST_META,),
+        ).fetchall()
+    return [int(r[0]) for r in rows]
+
+
+def _body(store: Store, ref_id: int) -> str:
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            "SELECT text FROM chunks WHERE ref_id = %s "
+            "AND chunk_kind = 'todo_body' ORDER BY ord LIMIT 1",
+            (ref_id,),
+        ).fetchone()
+    return str(row[0]) if row else ""
+
+
 def _run(store: Store, llm: Any, **kw: Any) -> Any:
     kw.setdefault("notify", False)
     kw.setdefault("threads", _index())
@@ -947,14 +970,12 @@ class TestVerdictSemantics:
         gid = _gripe(store, "reto says this is broken")
         store.add_tag(gid, Tag.open("user:reto"), set_by="agent")
         _light(store)
-        queue = tmp_path / "queue" / "open"
         r = gripe_triage.run_gripe_triage_pass(
             store,
             llm=_llm(
                 {"verdicts": [_verdict(gid, verdict="not-a-bug", reason="by design")]}
             ),
             notify=True,
-            queue_dir=queue,
             threads=_index(),
             repo=tmp_path / "norepo",
         )
@@ -965,8 +986,8 @@ class TestVerdictSemantics:
         )
         # …and it went to the owner digest, not to a silent tag.
         assert r.extra["reto"] == 1
-        items = list(queue.glob("gripe-triage-*.md"))
-        assert len(items) == 1 and f"gr{gid}" in items[0].read_text(encoding="utf-8")
+        todos = _digest_todos(store)
+        assert len(todos) == 1 and f"gr{gid}" in _body(store, todos[0])
 
     def test_owner_identity_tag_elmsfeuer_stays_open(
         self, store: Store, monkeypatch: pytest.MonkeyPatch
@@ -1245,14 +1266,17 @@ class TestFlood:
 
 
 class TestRetoBatch:
-    def test_digest_file_and_board_line(
+    def test_digest_todo_and_board_line(
         self, store: Store, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
+        """The reto:ask batch files ONE ask-user todo with ``meta.ask``
+        (td541979 — the review-queue directory is retired) plus the
+        board line; nothing touches the fleet notes dir."""
         board = tmp_path / "board.log"
         monkeypatch.setenv("PRECIS_BOARD", str(board))
+        monkeypatch.setenv("PRECIS_FLEET_NOTES", str(tmp_path / "fleet-notes"))
         gid = _gripe(store, "human decision needed")
         _light(store)
-        queue = tmp_path / "queue" / "open"
         r = gripe_triage.run_gripe_triage_pass(
             store,
             llm=_llm(
@@ -1263,30 +1287,60 @@ class TestRetoBatch:
                 }
             ),
             notify=True,
-            queue_dir=queue,
             threads=_index(),
         )
         assert r.extra["reto"] == 1
-        items = list(queue.glob("gripe-triage-*.md"))
-        assert len(items) == 1
-        text = items[0].read_text(encoding="utf-8")
+        todos = _digest_todos(store)
+        assert len(todos) == 1
+        ask = _meta(store, todos[0]).get("ask")
+        assert isinstance(ask, dict)
+        assert ask["kind"] == "ruling" and ask["blocks"] == "nothing"
+        assert "ask-user" in _open_tag_values(store, todos[0])
+        assert _status(store, todos[0]) == "open"
+        text = _body(store, todos[0])
         assert f"gr{gid}" in text and "keep both surfaces" in text
-        assert "area: platform" in text
         line = board.read_text(encoding="utf-8").strip()
         assert "waiting" in line and "reto:ask" in line
+        assert not (tmp_path / "fleet-notes").exists()
 
-    def test_no_reto_means_no_digest(self, store: Store, tmp_path: Path) -> None:
+    def test_second_tick_refreshes_the_digest_todo(
+        self, store: Store, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Idempotent: a second lit tick rewrites the live digest todo
+        in place — no duplicate ``ask-user`` mint per run."""
+        monkeypatch.setenv("PRECIS_BOARD", str(tmp_path / "board.log"))
+        g1 = _gripe(store, "first ruling")
+        _light(store)
+        gripe_triage.run_gripe_triage_pass(
+            store,
+            llm=_llm({"verdicts": [_verdict(g1, fix="reto", recommend="do A")]}),
+            notify=True,
+            threads=_index(),
+        )
+        first = _digest_todos(store)
+        assert len(first) == 1
+        g2 = _gripe(store, "second ruling")
+        gripe_triage.run_gripe_triage_pass(
+            store,
+            llm=_llm({"verdicts": [_verdict(g2, fix="reto", recommend="do B")]}),
+            notify=True,
+            threads=_index(),
+        )
+        assert _digest_todos(store) == first
+        text = _body(store, first[0])
+        assert f"gr{g2}" in text and "do B" in text
+        assert f"gr{g1}" not in text
+
+    def test_no_reto_means_no_digest(self, store: Store) -> None:
         _gripe(store, "plain bug")
         _light(store)
-        queue = tmp_path / "q"
         gripe_triage.run_gripe_triage_pass(
             store,
             llm=_llm({"verdicts": []}),
             notify=True,
-            queue_dir=queue,
             threads=_index(),
         )
-        assert not queue.exists() or list(queue.iterdir()) == []
+        assert _digest_todos(store) == []
 
 
 # ── PRIO ladder ───────────────────────────────────────────────────────────
@@ -2195,7 +2249,6 @@ class TestCloseOutcomes:
         """A verdict that closes — even ``fix:reto`` — gets no
         ``reto:ask`` tag and no digest entry (Opus review item 7)."""
         monkeypatch.setenv("PRECIS_BOARD", str(tmp_path / "board.log"))
-        queue = tmp_path / "queue" / "open"
         gid = _gripe(store, "uv run python scratch/x.py")
         _light(store)
         r = gripe_triage.run_gripe_triage_pass(
@@ -2214,14 +2267,13 @@ class TestCloseOutcomes:
                 }
             ),
             notify=True,
-            queue_dir=queue,
             threads=_index(),
             repo=tmp_path / "norepo",
         )
         assert _status(store, gid) == "wontfix"
         assert "reto:ask" not in _open_tag_values(store, gid)
         assert r.extra["reto"] == 0
-        assert not list(queue.glob("gripe-triage-*.md"))
+        assert _digest_todos(store) == []
 
     def test_dispute_close_cap_holds_the_overflow(self, store: Store) -> None:
         """At most 5 dispute closes per tick — the 6th+ stays triaged +
