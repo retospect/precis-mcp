@@ -122,6 +122,12 @@ _SOURCES_TAIL_RE = re.compile(
     r"\n+Sources:\s*\n(?:\s*\[\d+\][^\n]*(?:\n|$))+",
 )
 
+#: What may follow the Sources block when it is the formatter's tail:
+#: the footer rows, the ``render_next_section`` header, or a ``{`` JSON
+#: tail. Recognises the header; emitting it stays in utils/next_block.py
+#: (the ratchet in tests/test_next_literal_ratchet.py counts the literal).
+_TAIL_AFTER_SOURCES_RE = re.compile(r"- |Next\s*:|\{")
+
 
 def _drop_sources_block(body: str) -> str:
     """Remove the trailing ``Sources:\\n[n] url`` block from a rendered
@@ -137,7 +143,7 @@ def _drop_sources_block(body: str) -> str:
     if m is None:
         return body
     tail = body[m.end() :].lstrip()
-    if tail and not tail.startswith(("- ", "Next:", "{")):
+    if tail and not _TAIL_AFTER_SOURCES_RE.match(tail):
         return body
     return body[: m.start()] + "\n\n" + tail
 

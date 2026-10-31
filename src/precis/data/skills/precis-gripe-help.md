@@ -101,6 +101,9 @@ an open-concern banner at the top until the gripe closes, and the fixer
 is briefed with the skill file (`src/precis/data/skills/<id>.md`) and your notes.
 <!-- /write -->
 
+## Why was my gripe folded into another one?
+## Recurring friction merges into a keeper gripe
+
 **Recurring themes merge automatically** — filing stays exactly as
 above; the tool does the matching. The text is checked against a
 registry of recurring-friction themes. Exactly one match with a live
