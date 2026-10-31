@@ -674,6 +674,7 @@ def assign_layers(
     *,
     net_rules: Mapping[str, NetRules] | None = None,
     pose: Any = None,
+    event: Callable[[str], None] | None = None,
 ) -> tuple[Wires, list[list[int]], list[list[int]], tuple[tuple[int, int], ...]]:
     """Segment-aware crossing resolution as a bounded local search
     (gr520902 stage b). Per branch a runs/cuts model replaces the
@@ -691,7 +692,10 @@ def assign_layers(
     via count)`` wins; a round with no strictly improving move ends the
     search. Returns ``(wires, runs, cuts, remaining pairs)`` — the
     wires carry any kept re-thread's new branches and a rebuilt
-    ``order``."""
+    ``order``.
+
+    ``event`` (gr513870) receives one progress line per search round —
+    ``None`` (the default) keeps the search silent."""
     branches = list(wires.branches)
     cur_wires = wires
     # Braid merge (gr520900/gr536410): on a real mesh the flip test
@@ -870,9 +874,14 @@ def assign_layers(
         [list(c) for c in cuts],
         pair_regs,
     )
-    for _ in range(_MAX_FLIPS):
+    for _round in range(_MAX_FLIPS):
         if not cur_live:
             break
+        if event is not None:
+            event(
+                f"route: assign round {_round + 1} — "
+                f"{len(cur_live)} live pair(s), {n_vias(cuts)} via site(s)"
+            )
         cur_key = state_key()
         chosen_key: tuple[int, int, int, float] | None = None
         chosen: tuple[str, Any] | None = None
@@ -2264,6 +2273,7 @@ def plan_route(
     min_via_dia: float | None = None,
     min_via_drill: float | None = None,
     paths: Sequence[Sequence[tuple[float, float]]] | None = None,
+    event: Callable[[str], None] | None = None,
 ) -> RoutePlan:
     """Layer assignment → pieces + via sites for one routed pose.
 
@@ -2283,7 +2293,7 @@ def plan_route(
     (a 0.45 mm pad over the house 0.25 mm drill leaves a 0.10 mm ring,
     under JLC's 0.15 floor)."""
     wires, runs, cuts, crossings = assign_layers(
-        d, mesh, wires, n_layers, net_rules=net_rules, pose=pose
+        d, mesh, wires, n_layers, net_rules=net_rules, pose=pose, event=event
     )
     rules = net_rules or {}
     pose_a = np.asarray(d.pose0 if pose is None else pose)
@@ -3042,6 +3052,7 @@ def route_design(
     net_rules: Mapping[str, NetRules] | None = None,
     min_via_dia: float | None = None,
     min_via_drill: float | None = None,
+    event: Callable[[str], None] | None = None,
 ) -> tuple[RoutePlan, Any]:
     """Mesh → wires → plan → copper for one pose — the route half every
     caller (the ``placer='topo'`` job, ``pcb.local.topo_place``) shares.
@@ -3061,12 +3072,19 @@ def route_design(
     same-layer crossing still names (:attr:`RoutePlan.crossings`): that
     copper is a real short, never committable — the plan keeps reporting
     it so the caller can fail the net, but no caller may persist or gate
-    on it."""
+    on it.
+
+    ``event`` (gr513870's per-round progress) receives one line per
+    stage plus each of ``assign_layers``' search rounds — ``None``
+    keeps the route silent; the job wires it to ``job_event`` chunks,
+    the laptop path exposes it as ``progress=``."""
     from precis.pcb.topoplace.mesh import build_mesh
     from precis.pcb.topoplace.wires import build_wires
 
     mesh_pose = d.pose0 if pose is None else pose
     mesh = build_mesh(d, mesh_pose)
+    if event is not None:
+        event(f"route: mesh — {len(mesh.tris)} tris, {len(mesh.edges)} edges")
     rules = net_rules or {}
     rules_t = tuple(
         (
@@ -3082,6 +3100,11 @@ def route_design(
         # honest refusal (gr520904): a channel whose demand exceeds
         # capacity is named with its owners — never silently crammed.
         raise CorridorOverflow(wires.overflow)
+    if event is not None:
+        event(
+            f"route: wires — {len(wires.branches)} branch(es) "
+            f"over {len(d.net_pins)} net(s)"
+        )
     # gr520900: the taut paths share obstacle vertices and edge
     # crossings — the spoke offsets fan coincident copper to legal
     # spacing before the plan freezes it.
@@ -3098,7 +3121,14 @@ def route_design(
         min_via_dia=min_via_dia,
         min_via_drill=min_via_drill,
         paths=paths,
+        event=event,
     )
+    if event is not None:
+        event(
+            f"route: plan — {len(plan.pieces)} piece(s), "
+            f"{len(plan.vias)} via(s), {len(plan.crossings)} unresolved "
+            f"crossing(s), {len(plan.unreachable)} unreachable"
+        )
     emit = plan
     if plan.crossings:
         bad = {b for pair in plan.crossings for b in pair}
@@ -3121,6 +3151,8 @@ def route_design(
             vias=tuple(v for v in emit.vias if v.net not in guarded),
         )
         plan = dataclasses.replace(plan, guarded=tuple(sorted(guarded)))
+        if event is not None:
+            event(f"route: guard — {len(guarded)} net(s) withdrawn (short risk)")
     # gr537831: a net is "realized" only when its committed copper —
     # pieces, vias and the pads they must reach — is ONE connected
     # piece. A severed emit (the edgeless F↔B hop ending on the wrong
@@ -3140,9 +3172,12 @@ def route_design(
             vias=tuple(v for i, v in enumerate(emit.vias) if i not in drop_v),
         )
         plan = dataclasses.replace(plan, severed=tuple(sorted(severed)))
-    return plan, realize_result(
-        emit, d, ir, ir.n_layers, net_rules=net_rules, pose=mesh_pose
-    )
+        if event is not None:
+            event(f"route: severed — {len(severed)} net(s) trimmed (unconnected emit)")
+    rres = realize_result(emit, d, ir, ir.n_layers, net_rules=net_rules, pose=mesh_pose)
+    if event is not None:
+        event(f"route: emit — {len(rres.tracks)} track(s), {len(rres.vias)} via(s)")
+    return plan, rres
 
 
 def sketch_rows(

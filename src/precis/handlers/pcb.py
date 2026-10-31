@@ -866,6 +866,163 @@ def _topo_elites_text(files: dict[str, Any]) -> str:
     return render_agent_table(rows, schema=["elite", "cost", "parts_diff"]) + "\n"
 
 
+# ── view='topo' part='route' — the route-run fisheye (gr513871) ──────
+
+#: Net names a ring lists before collapsing to ``+N more`` — a 50-net
+#: failure wall reads as a toc row plus an overflow count, not a dump
+#: (the "toc-clustered when large" half of Reto's fisheye ask).
+_ROUTE_RING_CAP = 12
+
+
+def _names_cap(names: list[str], keep: int = _ROUTE_RING_CAP) -> str:
+    shown = ", ".join(names[:keep])
+    rest = len(names) - keep
+    return f"{shown} +{rest} more" if rest > 0 else shown
+
+
+def _topo_route_meta(run: Any) -> dict[str, Any]:
+    """``meta.topo_run.route`` — present only when the run's route stage
+    ran (``route=True``); a place-only run has no key."""
+    return dict(((run.meta or {}).get("topo_run") or {}).get("route") or {})
+
+
+def _topo_route_center(run: Any, meta: dict[str, Any]) -> list[str]:
+    """The fisheye center — the run's route counts on one line, widened
+    nets on a second."""
+    if meta.get("error"):
+        return [f"▸ run {run.id}: route stage raised — {meta['error']}"]
+    line = (
+        f"▸ run {run.id}: "
+        f"{meta.get('nets', 0)} net(s) — "
+        f"{meta.get('realized', 0)} realized, {meta.get('failed', 0)} failed; "
+        f"{meta.get('tracks', 0)} track(s), {meta.get('vias', 0)} via(s), "
+        f"{meta.get('crossings', 0)} unresolved crossing(s), "
+        f"{meta.get('unreachable', 0)} unreachable"
+    )
+    extras = []
+    if meta.get("route_shove_rounds"):
+        extras.append(
+            f"shove {meta['route_shove_rounds']} round(s) "
+            f"+{meta.get('route_shove_mm', 0)} mm"
+        )
+    if meta.get("shove_committed"):
+        extras.append(f"{meta['shove_committed']} shoved pose(s) committed")
+    if meta.get("corridor_overflow"):
+        extras.append(f"{meta['corridor_overflow']} corridor overflow(s)")
+    if not meta.get("persisted", True):
+        stored = meta.get("stored") or {}
+        extras.append(
+            "nothing persisted — stored copper kept "
+            f"(stored: {stored.get('realized', '?')} realized, "
+            f"{stored.get('tracks', '?')} track(s))"
+        )
+    if extras:
+        line += " — " + ", ".join(extras)
+    out = [line]
+    widened = meta.get("widened") or {}
+    if widened:
+        out.append(
+            "  widened: " + ", ".join(f"{k}→{v}mm" for k, v in sorted(widened.items()))
+        )
+    return out
+
+
+def _topo_route_diff_lines(run_a: Any, run_b: Any) -> list[str]:
+    """The route-stage diff run A vs run B (``run_a`` is the focus,
+    ``run_b`` the baseline — ``_topo_diff_text``'s order): count deltas,
+    the failed-set moves and per-reason constraint deltas read off the
+    two runs' digests — the run-to-run digest diff gr513871 asks for."""
+    ma, mb = _topo_route_meta(run_a), _topo_route_meta(run_b)
+    if not ma:
+        return [
+            f"run {run_a.id} has no route stage — "
+            "a place-only run (route=True was not passed)"
+        ]
+    if not mb:
+        return [
+            f"run {run_b.id} has no route stage — "
+            "a place-only run (route=True was not passed)"
+        ]
+    lines = [f"route diff — run {run_a.id} vs run {run_b.id}"]
+    deltas = []
+    for key in (
+        "nets",
+        "realized",
+        "failed",
+        "tracks",
+        "vias",
+        "crossings",
+        "unreachable",
+    ):
+        va, vb = ma.get(key), mb.get(key)
+        if isinstance(va, int) and isinstance(vb, int):
+            deltas.append(f"{key} {va} -> {vb} ({vb - va:+d})")
+    if deltas:
+        lines.append("counts: " + ", ".join(deltas))
+    da, db = ma.get("digest") or {}, mb.get("digest") or {}
+    fa = {str(n) for n in da.get("failed") or []}
+    fb = {str(n) for n in db.get("failed") or []}
+    only_a, only_b = sorted(fa - fb), sorted(fb - fa)
+    for run, names in ((run_a, only_a), (run_b, only_b)):
+        if names:
+            lines.append(f"failed only in run {run.id}: {_names_cap(sorted(names))}")
+    if not only_a and not only_b:
+        lines.append("failed set unchanged")
+    ca = {
+        str(c.get("reason")): int(c.get("count") or 0)
+        for c in da.get("constraints") or []
+    }
+    cb = {
+        str(c.get("reason")): int(c.get("count") or 0)
+        for c in db.get("constraints") or []
+    }
+    moves = [
+        f"{r}: ×{ca.get(r, 0)} -> ×{cb.get(r, 0)}"
+        for r in sorted(set(ca) | set(cb))
+        if ca.get(r, 0) != cb.get(r, 0)
+    ]
+    if moves:
+        lines.append("constraints: " + ", ".join(moves))
+    return lines
+
+
+def _topo_route_fisheye(runs: list[Any], run: Any) -> str:
+    """``part='route'`` — one run's route stage in fisheye layout
+    (gr513871, Reto 2026-10-24): the run centered on its counts, rings
+    for the failed nets and the binding constraints (the digest), and
+    the previous run with its diff. ``runs`` is ``_topo_runs``'s
+    newest-first list, so the previous run is the next older one that
+    routed."""
+    meta = _topo_route_meta(run)
+    if not meta:
+        return (
+            f"run {run.id} has no route stage — a place-only "
+            "placer='topo' run (route=True was not passed)\n"
+        )
+    lines = [f"route run — job {run.id}"]
+    lines += _topo_route_center(run, meta)
+    digest = meta.get("digest") or {}
+    failed = sorted(str(n) for n in digest.get("failed") or [])
+    lines.append(f"ring failed nets ({len(failed)}): {_names_cap(failed)}")
+    constraint_lines = pcb_route_digest.digest_lines(digest)
+    if len(constraint_lines) > 1:
+        # digest_lines' first line is the failed-nets header the ring
+        # above already printed — the constraints ring starts at the
+        # per-reason lines.
+        lines.append("ring binding constraints:")
+        lines += [f"  {cl}" for cl in constraint_lines[1:]]
+    idx = next((i for i, r in enumerate(runs) if int(r.id) == int(run.id)), 0)
+    prev = next((r for r in runs[idx + 1 :] if _topo_route_meta(r)), None)
+    if prev is None:
+        lines.append(
+            "ring previous run: none — this is the oldest routed run on the board"
+        )
+    else:
+        lines.append(f"ring previous run {prev.id} — diff:")
+        lines += [f"  {dl}" for dl in _topo_route_diff_lines(run, prev)]
+    return "\n".join(lines) + "\n"
+
+
 _FOOTPRINT_SCHEMA = [
     "lcsc",
     "cached",
@@ -6656,8 +6813,11 @@ class PcbHandler(Handler):
         """Read back a ``placer='topo'`` job's stored run — never runs a
         solve (the job meta IS the store). ``run`` picks a job ref_id or
         'latest' (default); ``part`` is ``summary`` (default) / ``pairs``
-        / ``elites`` / ``svg``; ``against`` diffs this run's best pose
-        and crossing count against another run's."""
+        / ``elites`` / ``svg`` / ``route`` (the run's route stage in
+        fisheye — rings for failed nets, binding constraints and the
+        previous run's diff, gr513871); ``against`` diffs this run's best
+        pose and crossing count against another run's (with
+        ``part='route'`` it diffs the two route digests instead)."""
         args = args or {}
         runs = _topo_runs(self.store, ref_id)
         if not runs:
@@ -6667,12 +6827,17 @@ class PcbHandler(Handler):
                 "read it back here"
             )
         run = _topo_pick(runs, args.get("run"))
-        if args.get("against") is not None:
-            return Response(
-                body=_topo_diff_text(run, _topo_pick(runs, args["against"]))
-            )
-        files = _topo_files(run)
         part = str(args.get("part") or "summary").strip().lower()
+        if args.get("against") is not None:
+            other = _topo_pick(runs, args["against"])
+            if part == "route":
+                return Response(
+                    body="\n".join(_topo_route_diff_lines(run, other)) + "\n"
+                )
+            return Response(body=_topo_diff_text(run, other))
+        if part == "route":
+            return Response(body=_topo_route_fisheye(runs, run))
+        files = _topo_files(run)
         if part == "summary":
             return Response(body=str(files.get("summary.txt") or ""))
         if part == "svg":
@@ -6683,7 +6848,7 @@ class PcbHandler(Handler):
             return Response(body=_topo_elites_text(files))
         raise BadInput(
             f"pcb: topo part {part!r} unknown",
-            options=["summary", "pairs", "elites", "svg"],
+            options=["summary", "pairs", "elites", "svg", "route"],
             next="get(kind='pcb', id='<slug>', view='topo', args={'part':'pairs'})",
         )
 

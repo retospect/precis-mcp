@@ -4522,7 +4522,10 @@ def _topo_files(crossings: int, pose: list[list[float]] | None = None) -> dict:
     }
 
 
-def _topo_job(store, pcb_ref_id: int, files: dict) -> int:
+def _topo_job(store, pcb_ref_id: int, files: dict, route: dict | None = None) -> int:
+    topo_run: dict[str, Any] = {"files": files}
+    if route is not None:
+        topo_run["route"] = route
     ref = store.insert_ref(
         kind="job",
         slug=None,
@@ -4531,10 +4534,44 @@ def _topo_job(store, pcb_ref_id: int, files: dict) -> int:
         meta={
             "executor": "job_inproc",
             "job_type": "pcb_place",
-            "topo_run": {"files": files},
+            "topo_run": topo_run,
         },
     )
     return int(ref.id)
+
+
+def _topo_route_meta(**kw: Any) -> dict:
+    """A minimal ``meta.topo_run.route`` payload — the shape
+    ``_topo_route`` stamps on the job (gr513871's route fisheye)."""
+    meta = {
+        "nets": 4,
+        "realized": 3,
+        "failed": 1,
+        "tracks": 7,
+        "vias": 2,
+        "crossings": 0,
+        "unreachable": 0,
+        "route_shove_rounds": 1,
+        "route_shove_mm": 1.5,
+        "shove_committed": 2,
+        "corridor_overflow": 0,
+        "widened": {"VDD": 0.5},
+        "persisted": True,
+        "digest": {
+            "failed": ["OUT1"],
+            "constraints": [
+                {
+                    "reason": "same-layer-crossing",
+                    "count": 3,
+                    "nets": ["OUT1"],
+                    "target": "CC1 on F.Cu",
+                    "hint": "the crossed net owns the channel",
+                }
+            ],
+        },
+    }
+    meta.update(kw)
+    return meta
 
 
 def test_topo_view_no_runs_points_at_the_enqueue(pcb):
@@ -4608,6 +4645,128 @@ def test_topo_view_against_diffs_two_runs(pcb, store):
     assert "changed poses: 1" in body
     # B rotated a quarter turn and flipped to the bottom side.
     assert "B:" in body and "rot 90 side B" in body
+
+
+def test_topo_view_route_renders_the_run_fisheye(pcb, store):
+    """gr513871: ``part='route'`` renders a run's route stage in fisheye —
+    the run's counts centered, rings for the failed nets and the binding
+    constraints off the digest, and the previous run with its diff."""
+    pcb.put(id="topo-route", args=_CROSSED)
+    ref = store.get_ref(kind="pcb", id="topo-route")
+    assert ref is not None
+    job_id = _topo_job(
+        store, int(ref.id), _topo_files(crossings=0), route=_topo_route_meta()
+    )
+
+    body = pcb.get(
+        id="topo-route", view="topo", args={"run": job_id, "part": "route"}
+    ).body
+    assert f"route run — job {job_id}" in body
+    assert "3 realized, 1 failed" in body
+    assert "7 track(s), 2 via(s)" in body
+    assert "shove 1 round(s) +1.5 mm" in body
+    assert "2 shoved pose(s) committed" in body
+    assert "widened: VDD→0.5mm" in body
+    # ring: the digest's failed nets
+    assert "ring failed nets (1): OUT1" in body
+    # ring: the binding constraints, via digest_lines
+    assert "ring binding constraints:" in body
+    assert "same-layer-crossing ×3" in body
+    assert "CC1 on F.Cu" in body
+    # ring: no older routed run exists
+    assert "ring previous run: none" in body
+
+
+def test_topo_view_route_fisheye_diffs_the_previous_run(pcb, store):
+    """The previous-run ring diffs the focused run against the next older
+    run that routed — place-only runs are skipped over."""
+    pcb.put(id="topo-route-prev", args=_CROSSED)
+    ref = store.get_ref(kind="pcb", id="topo-route-prev")
+    assert ref is not None
+    old_job = _topo_job(
+        store,
+        int(ref.id),
+        _topo_files(crossings=0),
+        route=_topo_route_meta(
+            realized=1,
+            failed=3,
+            tracks=4,
+            digest={
+                "failed": ["OUT1", "GND", "VDD"],
+                "constraints": [
+                    {"reason": "same-layer-crossing", "count": 5, "nets": ["OUT1"]},
+                    {"reason": "no via site", "count": 2, "nets": ["GND"]},
+                ],
+            },
+        ),
+    )
+    # A place-only run sits between them — it has no route stage and is
+    # NOT the "previous routed run".
+    _topo_job(store, int(ref.id), _topo_files(crossings=0))
+    new_job = _topo_job(
+        store,
+        int(ref.id),
+        _topo_files(crossings=0),
+        route=_topo_route_meta(
+            realized=3,
+            failed=1,
+            tracks=7,
+            digest={"failed": ["OUT1"], "constraints": []},
+        ),
+    )
+
+    body = pcb.get(id="topo-route-prev", view="topo", args={"part": "route"}).body
+    assert f"route run — job {new_job}" in body
+    assert f"ring previous run {old_job} — diff:" in body
+    assert "realized 3 -> 1" in body
+    # GND and VDD failed only in the older run.
+    assert f"failed only in run {old_job}: GND, VDD" in body
+    # no via site disappeared; same-layer-crossing shrank.
+    assert "same-layer-crossing: ×0 -> ×5" in body
+    assert "no via site: ×0 -> ×2" in body
+
+
+def test_topo_view_route_against_diffs_two_runs(pcb, store):
+    """``args={'run': a, 'against': b, 'part': 'route'}`` diffs the two
+    runs' route digests — the run-to-run diff of gr513871."""
+    pcb.put(id="topo-route-diff", args=_CROSSED)
+    ref = store.get_ref(kind="pcb", id="topo-route-diff")
+    assert ref is not None
+    job_a = _topo_job(
+        store,
+        int(ref.id),
+        _topo_files(crossings=0),
+        route=_topo_route_meta(digest={"failed": ["GND"], "constraints": []}),
+    )
+    job_b = _topo_job(
+        store,
+        int(ref.id),
+        _topo_files(crossings=0),
+        route=_topo_route_meta(),
+    )
+
+    body = pcb.get(
+        id="topo-route-diff",
+        view="topo",
+        args={"run": job_b, "against": job_a, "part": "route"},
+    ).body
+    assert f"route diff — run {job_b} vs run {job_a}" in body
+    assert "tracks 7 -> 7 (+0)" in body
+    assert f"failed only in run {job_b}: OUT1" in body
+    assert f"failed only in run {job_a}: GND" in body
+
+
+def test_topo_view_route_on_a_place_only_run_says_so(pcb, store):
+    """``part='route'`` on a run that never routed explains the missing
+    stage instead of fabricating counts."""
+    pcb.put(id="topo-route-none", args=_CROSSED)
+    ref = store.get_ref(kind="pcb", id="topo-route-none")
+    assert ref is not None
+    job_id = _topo_job(store, int(ref.id), _topo_files(crossings=0))
+
+    body = pcb.get(id="topo-route-none", view="topo", args={"part": "route"}).body
+    assert f"run {job_id} has no route stage" in body
+    assert "route=True" in body
 
 
 def test_op_place_placer_topo_forwards_and_validates(pcb, store, monkeypatch):

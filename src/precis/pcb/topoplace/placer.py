@@ -210,8 +210,14 @@ def topo_place(
     seed: int,
     archive_size: int = 8,
     ladder: Ladder | None = None,
+    event: Callable[[str], None] | None = None,
 ) -> TopoPlaceResult:
-    """Spec §1a signature — phase-0 placer over the proxy metric."""
+    """Spec §1a signature — phase-0 placer over the proxy metric.
+
+    ``event`` (gr513870's per-round progress) receives one line per
+    anneal restart plus a final line — ``None`` keeps the library
+    silent; the job wires it to ``job_event`` chunks and the laptop
+    path exposes it as ``progress=``."""
     rng = np.random.default_rng(seed)
     n_parts = len(d.parts)
     movable = np.flatnonzero(~d.fixed)
@@ -350,6 +356,8 @@ def topo_place(
         proxy = ProxyState(d, pose, objective)
         anchor_xy = anchor[:, :2] if anchor is not None else None
         budget = per_restart if restart < n_restarts - 1 else max(1, effort - evals)
+        if event is not None:
+            event(f"place: restart {restart + 1}/{n_restarts} ({budget} evals)")
         restart_best_pose = proxy.pose.copy()
         restart_best = (proxy.crossings, proxy.cost)
         #: the committed violation total — the legality floor for every
@@ -531,6 +539,12 @@ def topo_place(
                     archive.admit(proxy.pose, score)
 
         archive.admit(restart_best_pose, restart_best[1])
+        if event is not None:
+            event(
+                f"place: restart {restart + 1} done — "
+                f"{restart_best[0]} crossing(s), cost "
+                f"{restart_best[1]:.4f} ({evals}/{effort} evals)"
+            )
 
     if best_pose is None:
         best_pose = _scatter(d, d.pose0, rng, xy_lo, xy_hi)
@@ -541,6 +555,11 @@ def topo_place(
     # A shoved pose re-enters the archive as an elite (spec §4).
     best_pose, shoved, legal = _settle_pose(d, best_pose)
     final = ProxyState(d, best_pose, objective)
+    if event is not None:
+        event(
+            f"place: done — {final.crossings} crossing(s), cost "
+            f"{final.cost:.4f}, {evals} eval(s)"
+        )
     if shoved.moved_mm > 0:
         archive.admit(best_pose, final.cost)
     best_rank = (final.crossings, final.cost)

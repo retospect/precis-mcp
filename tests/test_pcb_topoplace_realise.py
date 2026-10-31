@@ -133,6 +133,29 @@ def test_returned_plan_carries_no_corridor_overflow_counter() -> None:
     assert not hasattr(plan, "corridor_overflow")
 
 
+def test_route_design_event_reports_each_stage() -> None:
+    """gr513870's per-round progress: ``route_design`` with an ``event``
+    sink emits one line per stage — mesh → wires → plan → emit — and a
+    ``route=`` caller gets the same lines through ``progress=``."""
+    board = _sanity_board()
+    design = kernel._design(board, None)
+    ir = kernel._build_ir(design)
+    footprints = kernel._footprints(design, ir)
+    td = design_from_ir(ir, footprints, net_classes=design.graph.get("net_classes"))
+    lines: list[str] = []
+    route_design(td, ir, event=lines.append)
+    assert any(l.startswith("route: mesh —") for l in lines)
+    assert any(l.startswith("route: wires —") for l in lines)
+    assert any(l.startswith("route: plan —") for l in lines)
+    assert any(l.startswith("route: emit —") for l in lines)
+
+    lines.clear()
+    rt = kernel.route(board, place=False, progress=lines.append)
+    assert any(l.startswith("route: mesh —") for l in lines)
+    assert any(l.startswith("route: emit —") for l in lines)
+    assert rt is not None
+
+
 def test_route_planes_admits_plane_class_nets() -> None:
     """``route_planes=True`` (the slice-5 ruling: GND/power route as
     normal nets) admits a plane-classed net to ``net_pins``; the default
@@ -1240,6 +1263,18 @@ def test_assign_layers_pass_based_yield_unstalls_the_rank_trap() -> None:
     # to F.Cu, so the flip shows up as a via-bracketed mid-piece.
     assert runs[0] == [0]
     assert runs[1] == [0, 3, 0]
+
+
+def test_assign_layers_event_reports_each_round() -> None:
+    """gr513870: an ``event`` sink sees one ``assign round`` line per
+    search round — a stalled-crossing fixture emits at least one, each
+    carrying the live-pair and via-site counts."""
+    d, mesh, wires = _stall_fixture()
+    lines: list[str] = []
+    wires, runs, cuts, crossings = assign_layers(d, mesh, wires, 4, event=lines.append)
+    rounds = [l for l in lines if l.startswith("route: assign round")]
+    assert rounds, lines
+    assert "live pair(s)" in rounds[0] and "via site(s)" in rounds[0]
 
 
 def test_via_siting_falls_back_to_the_fab_minimum_dia() -> None:

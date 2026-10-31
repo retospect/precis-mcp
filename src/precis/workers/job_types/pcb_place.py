@@ -621,12 +621,21 @@ def _topo_route(
     # default) finds no site on a branch.
     min_via_dia = capability.jlc_min.get("via_diameter_mm")
     min_via_drill = capability.jlc_min.get("drill_mm")
+
+    # gr513870: per-round progress lands as job_event chunks — the live
+    # surface a watcher tails while the route runs (phase lines plus
+    # one line per assign_layers round and per shove round).
+    def _route_event(t: str) -> None:
+        ctx.append_chunk("job_event", t)
+
+    event = _route_event
     plan, rres = _tprealise.route_design(
         td_route,
         ir,
         net_rules=net_rules,
         min_via_dia=None if min_via_dia is None else float(min_via_dia),
         min_via_drill=None if min_via_drill is None else float(min_via_drill),
+        event=event,
     )
 
     # Failure-driven shove (Reto 2026-10-30: "should just cause shove, and
@@ -667,6 +676,12 @@ def _topo_route(
             break
         route_shove_rounds += 1
         pose = shoved.pose
+        ctx.append_chunk(
+            "job_event",
+            f"topo-route: shove round {route_shove_rounds} — "
+            f"{best_failed} unresolved, {len(pushes)} push(es), "
+            f"re-routing",
+        )
         try:
             plan, rres = _tprealise.route_design(
                 td_route,
@@ -674,6 +689,7 @@ def _topo_route(
                 pose=pose,
                 net_rules=net_rules,
                 min_via_dia=None if min_via_dia is None else float(min_via_dia),
+                event=event,
             )
         except _tprealise.CorridorOverflow:
             break

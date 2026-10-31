@@ -610,6 +610,17 @@ def test_determinism_same_seed_identical_elites_json() -> None:
     assert (a.best_pose == b.best_pose).all()
 
 
+def test_topo_place_event_reports_restarts() -> None:
+    """gr513870's per-round progress: an ``event`` sink gets one line
+    per anneal restart plus the closing line — a silent default keeps
+    the library quiet."""
+    d, _inst, _nets = synth_design(seed=0)
+    lines: list[str] = []
+    topo_place(d, objective=W, effort=2600, seed=0, event=lines.append)
+    assert any(l.startswith("place: restart 1/") for l in lines)
+    assert any(l.startswith("place: done —") for l in lines)
+
+
 # ── the shove↔legalize post-pass loop (_settle_pose) ────────────────
 
 

@@ -54,6 +54,7 @@ import logging
 import math
 import os
 import sys
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -833,6 +834,7 @@ def _route_stage(
     *,
     pose: Any = None,
     label_spots: dict[str, str] | None = None,
+    event: Callable[[str], None] | None = None,
 ) -> _RouteStage:
     """The shared slice-5 route stage: a routing design that admits the
     rails, the mesh at ``pose`` — ``d.pose0``, the pose ``ir`` already
@@ -894,6 +896,7 @@ def _route_stage(
         net_rules=net_rules,
         min_via_dia=None if _min_via is None else float(_min_via),
         min_via_drill=None if _min_drill is None else float(_min_drill),
+        event=event,
     )
     if pose is not None:
         # The oracle measures the PLACED board — write the routed pose
@@ -1078,6 +1081,7 @@ def route(
     effort: int = 20000,
     out: str = "out/topo",
     catalog: dict[str, dict[str, Any]] | None = None,
+    progress: Callable[[str], None] | None = None,
 ) -> LocalRoute:
     """Route the board through the topological router — the workspace's
     in-script route call (gr513867), DB-free.
@@ -1087,7 +1091,9 @@ def route(
     place-then-route the bench wrapper did. ``place=False`` routes the
     board as authored: every part keeps its ``at()`` pose. Or hand a
     :func:`place` result over as ``placement=`` to route the anneal's
-    pose without a second solve.
+    pose without a second solve. ``progress`` (gr513870) receives one
+    line per route stage and per search round — pass ``print`` for a
+    live bench log; ``None`` stays silent.
 
     Returns a :class:`LocalRoute`. A route-stage refusal (a corridor
     overflow, a design the router cannot read) raises
@@ -1102,7 +1108,12 @@ def route(
         )
     if placement is not None:
         try:
-            stage = _route_stage(placement.design, placement.ir, placement.footprints)
+            stage = _route_stage(
+                placement.design,
+                placement.ir,
+                placement.footprints,
+                event=progress,
+            )
         except CorridorOverflow as exc:
             raise LocalError(str(exc)) from exc
         nets = {
@@ -1128,7 +1139,7 @@ def route(
         ir = _build_ir(design)
         footprints = _footprints(design, ir)
         try:
-            stage = _route_stage(design, ir, footprints)
+            stage = _route_stage(design, ir, footprints, event=progress)
         except CorridorOverflow as exc:
             raise LocalError(str(exc)) from exc
         nets = {
@@ -1156,7 +1167,9 @@ def route(
             ir=ir,
             footprints=footprints,
         )
-    run = topo_place(board, seed=seed, effort=effort, out=out, catalog=catalog)
+    run = topo_place(
+        board, seed=seed, effort=effort, out=out, catalog=catalog, progress=progress
+    )
     route_json = run.files.get("route.json") or {}
     if run.route is None:
         raise LocalError(
@@ -1233,6 +1246,7 @@ def topo_place(
     seed: int = 1,
     out: str = "out/topo",
     catalog: dict[str, dict[str, Any]] | None = None,
+    progress: Callable[[str], None] | None = None,
 ) -> TopoRun:
     """The phase-0 topo-place run, in-process (topo-place spec §1c):
     ``design_from_ir`` → the proxy placer → ``assign_pins`` → the run
@@ -1245,7 +1259,10 @@ def topo_place(
     ``backtrack``/``direction``/``silkroom``/``margin`` — unlisted keys
     default 0).
     ``catalog=`` supplies LCSC-keyed footprint
-    rows, exactly as :func:`place`. A :class:`PinConflict` surfaces
+    rows, exactly as :func:`place`. ``progress`` (gr513870's per-round
+    progress) receives one line per anneal restart plus the route
+    stage's per-phase/per-round lines — pass ``print`` for a live log;
+    ``None`` stays silent. A :class:`PinConflict` surfaces
     unchanged — it is the board script's error, not the run's."""
     from precis.pcb import topoplace as _tp
     from precis.pcb.topoplace import runstore as _runstore
@@ -1292,7 +1309,7 @@ def topo_place(
         # gr520546: authored measures steer the anneal — priced in only
         # when the design carries resolvable specs.
         obj = dataclasses.replace(obj, measures=0.2)
-    result = _tp.topo_place(td, objective=obj, effort=effort, seed=seed)
+    result = _tp.topo_place(td, objective=obj, effort=effort, seed=seed, event=progress)
     # Post-anneal label-room repair — the same deterministic nudge pass
     # the pcb_place job runs (labels adjacent, nothing edge-squished).
     result = dataclasses.replace(
@@ -1357,7 +1374,12 @@ def topo_place(
     route_json: dict[str, Any] = {}
     try:
         stage = _route_stage(
-            design, ir, footprints, pose=result.best_pose, label_spots=label_spots
+            design,
+            ir,
+            footprints,
+            pose=result.best_pose,
+            label_spots=label_spots,
+            event=progress,
         )
         plan, rres = stage.plan, stage.result
         route_pair = (plan, rres)

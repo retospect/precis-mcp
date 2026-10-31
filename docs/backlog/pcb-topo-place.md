@@ -803,3 +803,127 @@ Slices 0–5 above; skills: `precis-pcb-workspace-help` gains the pin forms,
 ## Questions
 
 Only those that block slice 1.
+
+## Gripe remainders (2026-10-31)
+
+Remainders of three shipped-partial pcb gripes, recorded here because
+the topo route engine owns every one of them.
+
+### Route-only-failed-nets / warm start
+
+Source gripes: gr513870.
+
+Problem: every route run rebuilds the whole plan from scratch (mesh →
+wires → plan → guards), ~60–90 s on nano-class boards, even when a
+re-run exists only to recover a handful of failed nets. The gripe asks
+to route only the failed nets and warm-start from the prior copper.
+
+Evidence: `topoplace/realise.py::route_design` always wires every
+`net_pins` net; `pcb_copper` already holds the prior run's realized
+tracks and authored `fixed_copper` is already a first-class obstacle
+input to `design_from_ir` — but there is no path that re-admits stored
+realized copper as fixed and re-wires only the failures. The
+failure-driven shove loop in `pcb_place._topo_route` re-routes the
+whole design per round.
+
+Open questions:
+- Does prior copper re-enter as `fixed_copper` obstacles (with the
+  failed nets wired fresh around it), or does the engine need a
+  seeded-wire start state? The fixed-copper path is the cheap one but
+  treats a re-routable failure's good branches as untouchable.
+- What invalidates the warm start — a pose that moved (the shove loop
+  commits x/y shifts a prior copper edge no longer matches) — and does
+  the fixed-copper rip-up machinery's move detection apply verbatim?
+- The surface: a `pcb_place`/`local` param (`route_only=`) or automatic
+  (always keep realized nets, re-route failures)?
+
+Acceptance: TBD — depends on the re-admission decision. At minimum: a
+run scoped to failed nets leaves stored realized copper bitwise intact,
+reports which nets it attempted in `meta.topo_run.route`, and costs
+measurably less than a full route on a mostly-routed board.
+
+### Route quality — realized-net fraction on real boards
+
+Source gripes: gr513870 (the route-quality half, which this item owns
+via gr515107).
+
+Problem: the topo engine realizes ~14/64 nets on the nano bench board;
+the retired vector router managed 56/64 on the same netlist — a
+different engine, but the gap is the standing dogfood complaint.
+
+Evidence: pcb-dx batch measurement (gr513870 comments, 2026-10-26):
+14/64 realized, 77 tracks, 2 vias, 558 mm, 92 drc_errors; the same 50
+failed nets across seeds. `meta.topo_run.route.digest` + `view='topo',
+part='route'` now report the per-board failure mix — same-layer
+crossings, no via site, unrouted — so the binding class is visible per
+board before the next lever is picked.
+
+Acceptance: TBD — the dogfood verdict sets the bar (Spec §Dogfood
+target: each slice's numbers posted on the standing boards). The topo
+bench's routed fraction is the tracked number.
+
+Open questions:
+- Which failure class binds per standing board (nano, esp32c3,
+  taz-leaf, heater-base) — a per-board triage off the digest precedes
+  choosing between unresolved-odd-cycle work (the known slice-5 gap),
+  corridor opening, and siting.
+
+### 2D via siting off the wire polyline
+
+Source gripes: gr524334.
+
+Problem: `_site_via`'s keepout walk samples candidate sites on the
+wire's corridor only. On dense boards every candidate fails pad
+clearance at both the house and the fab-minimum via diameter — a site
+that exists a jog off the centreline is never tried.
+
+Evidence: taz-leaf-local-10 (gr524334 comments, 2026-10-27): the topo
+route stage minted zero vias; both branches the crossing yielder
+flipped (S2_DRV, ANT) failed siting with every candidate rejected by
+pad clearance — 0.375 mm needed vs 0.25 mm available in a 0.5 mm
+channel. After the fab-minimum fallback landed (d68d06558) the board is
+no longer via-size bound; the remaining asks are this item and the
+corridor one below.
+
+Open questions:
+- The siting domain: neighbouring mesh edges (a finite candidate set,
+  keeps the wire-on-edges model), or a free point off-edge plus a
+  re-joined jog piece (new geometry a `RoutePiece` does not carry
+  today)?
+- Who prices the jog — a jog bends the wire into foreign clearance and
+  length; does the yielder/dodge ordering change?
+
+Acceptance: TBD — depends on the siting-domain decision. At minimum: a
+synthetic channel where centerline siting fails but a legal site exists
+within one triangle's reach must mint a via instead of landing on
+`plan.no_via`.
+
+### Via corridors — pose spreading to open siting room
+
+Source gripes: gr524334.
+
+Problem: on a board packed at class-clearance density, no via diameter
+sites at all — the board itself must open a corridor (parts spread so
+the channel widens past the barrel keep-out need), and the script must
+be able to leave via corridors next to chains like taz-leaf's RF match.
+
+Evidence: gr524334 follow-up comment (2026-10-27): the fab-min fallback
+finds sites the house 0.75 mm could not, but the emit guard then
+withdraws those nets — a 0.45 mm barrel plus the 0.15 mm signal-class
+clearance needs ~0.75 mm of free channel while the 0402 fields sit at
+class-clearance density. The failure-driven shove already targets
+`no_via` branches by pushing their endpoint parts apart by the via
+window (`pcb_place._route_failure_pushes`, landed 2026-10-30) — whether
+that suffices on the dense board is unmeasured.
+
+Open questions:
+- Is the existing `no_via` push enough on taz-leaf once re-measured, or
+  does siting need a declared "via corridor" object (a scripted zone the
+  placer keeps part-free and the router prefers)?
+- If declared: which side declares it — the board script (Reto's "the
+  board script must leave via corridors"), or the engine proposing a
+  corridor the ranked-edits list recommends?
+
+Acceptance: TBD. First measure: re-run taz-leaf-local-10 with the
+failure-driven shove and report whether any `no_via` branch sites after
+≤ 3 rounds; the corridor-object decision waits on that measurement.
