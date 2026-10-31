@@ -1,0 +1,213 @@
+#!/usr/bin/env -S uv run --no-project --python >=3.12 python
+"""scripts/gripe-validate — flip STATUS:verify gripes to done once their sha is live.
+
+    scripts/gripe-validate [--dry-run] [--prod-ref REF]
+
+The last rung of the gripe status ladder (gr541800, td541978): open →
+triaged → fixing (claimed) → verify (on main; scripts/ship wrote
+``resolved: <sha> (main, release pending)``) → done (that sha reached
+origin/prod) | wontfix.
+
+Two prod calls through scripts/prod-precis:
+
+1. ``gripes --verify-list`` — one JSON line ``{id, sha}`` per live verify
+   gripe; sha is from its newest ``resolved: <sha>`` / ``fix-sha: <sha>``
+   comment.
+2. ``gripes --verify-done TEXT --ids …`` — for the gripes whose sha is an
+   ancestor of origin/prod (``git merge-base --is-ancestor``, after a
+   fetch), comment ``resolved: <sha> (on prod <prod9>) — …`` and tag
+   STATUS:done. A gripe that left verify meanwhile is skipped.
+
+``--dry-run`` reads only: it lists what would flip and why the rest stay
+(not on prod yet, no sha, sha unknown to this clone). ``--prod-ref``
+overrides the ref (default origin/prod, fetched first).
+
+scripts/release runs it after the deploy step; it is idempotent and
+non-interactive, so a recurring job (precis schedule, cron) can run it
+too. Best-effort by contract: always exits 0 and prints one summary line;
+a missing DSN, a refusal or a timeout is reported, not retried; it skips
+when PRECIS_GRIPE_VALIDATE=0. Writes run
+from the first tree that contains origin/prod (scripts/gripe-note's
+``write_tree``).
+
+Test seams: PRECIS_GRIPE_VALIDATE_CLI replaces the prod-precis command
+(and skips the DSN check); PRECIS_GRIPE_VALIDATE_TIMEOUT overrides
+TIMEOUT_S.
+"""
+
+from __future__ import annotations
+
+import argparse
+import importlib.machinery
+import importlib.util
+import json
+import os
+import re
+import shlex
+import subprocess
+import sys
+from pathlib import Path
+from types import ModuleType
+
+HERE = Path(__file__).resolve().parent
+DSN_FILE = Path.home() / ".secrets" / "pw" / "PRECIS_DATABASE_URL"
+#: One prod call's ceiling (`uv run` start + one query or a few writes).
+TIMEOUT_S = 90.0
+#: One run closes at most this many; the rest wait for the next run.
+MAX_IDS = 60
+
+
+def _gripe_note() -> ModuleType:
+    """scripts/gripe-note as a module — its ``write_tree`` / ``run_capped``."""
+    path = HERE / "gripe-note"
+    loader = importlib.machinery.SourceFileLoader("_gripe_note", str(path))
+    spec = importlib.util.spec_from_loader("_gripe_note", loader)
+    assert spec is not None
+    mod = importlib.util.module_from_spec(spec)
+    exec(compile(path.read_text(encoding="utf-8"), str(path), "exec"), mod.__dict__)
+    return mod
+
+
+def _git(*args: str) -> subprocess.CompletedProcess[str] | None:
+    try:
+        return subprocess.run(
+            ["git", *args],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            check=False,
+            timeout=30,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+
+
+def parse_verify_list(out: str) -> list[tuple[int, str | None]]:
+    """``[(id, sha|None)]`` from ``gripes --verify-list`` JSON lines; any
+    non-JSON line (a deprecation notice, a warning) is skipped."""
+    rows: list[tuple[int, str | None]] = []
+    for line in out.splitlines():
+        line = line.strip()
+        if not line.startswith("{"):
+            continue
+        try:
+            obj = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        sha = obj.get("sha")
+        rows.append((int(obj["id"]), str(sha) if sha else None))
+    return rows
+
+
+def classify(
+    rows: list[tuple[int, str | None]], prod: str
+) -> dict[str, list[tuple[int, str | None]]]:
+    """Split verify gripes by their sha's relation to ``prod``."""
+    out: dict[str, list[tuple[int, str | None]]] = {
+        "live": [],
+        "pending": [],
+        "no sha": [],
+        "unknown sha": [],
+    }
+    for gid, sha in rows:
+        if not sha:
+            out["no sha"].append((gid, sha))
+            continue
+        known = _git("cat-file", "-e", f"{sha}^{{commit}}")
+        if known is None or known.returncode != 0:
+            out["unknown sha"].append((gid, sha))
+            continue
+        cp = _git("merge-base", "--is-ancestor", sha, prod)
+        on_prod = cp is not None and cp.returncode == 0
+        out["live" if on_prod else "pending"].append((gid, sha))
+    return out
+
+
+def _named(items: list[tuple[int, str | None]]) -> str:
+    return " ".join(f"gr{g}" + (f"@{s[:9]}" if s else "") for g, s in items)
+
+
+def main(argv: list[str] | None = None) -> int:
+    ap = argparse.ArgumentParser(prog="scripts/gripe-validate", description=__doc__)
+    ap.add_argument("--dry-run", action="store_true", help="list, do not write")
+    ap.add_argument(
+        "--prod-ref", default="", help="ref to test (default: origin/prod, fetched)"
+    )
+    args = ap.parse_args(argv)
+
+    ref = args.prod_ref
+    if not ref:
+        _git("fetch", "--quiet", "origin", "prod", "main")
+        ref = "origin/prod"
+    cp = _git("rev-parse", "--verify", "--quiet", f"{ref}^{{commit}}")
+    prod = cp.stdout.strip() if cp is not None and cp.returncode == 0 else ""
+    if not prod:
+        print(f"gripe-validate: cannot resolve {ref} — nothing checked")
+        return 0
+
+    if os.environ.get("PRECIS_GRIPE_VALIDATE", "1") == "0":
+        print("gripe-validate: PRECIS_GRIPE_VALIDATE=0 — skipped")
+        return 0
+    cli = os.environ.get("PRECIS_GRIPE_VALIDATE_CLI", "").strip()
+    if not cli and not DSN_FILE.is_file():
+        print("gripe-validate: no prod DSN on this host — nothing checked")
+        return 0
+    timeout = float(os.environ.get("PRECIS_GRIPE_VALIDATE_TIMEOUT") or TIMEOUT_S)
+    try:
+        note = _gripe_note()
+        base = (
+            shlex.split(cli)
+            if cli
+            else [str(note.write_tree(HERE.parent) / "scripts" / "prod-precis")]
+        )
+        listed = note.run_capped([*base, "gripes", "--verify-list"], timeout)
+    except Exception as e:  # best-effort: never fail the caller
+        print(f"gripe-validate: {type(e).__name__} listing verify gripes")
+        return 0
+    if listed.returncode != 0:
+        err = (listed.stderr.strip().splitlines() or [""])[-1]
+        err = re.sub(r"[a-z]+://\S+", "<url>", err)[:200]
+        print(f"gripe-validate: listing failed (exit {listed.returncode}): {err}")
+        return 0
+
+    groups = classify(parse_verify_list(listed.stdout), prod)
+    live = groups["live"][:MAX_IDS]
+    rest = [
+        f"{label}: {_named(items)}"
+        for label, items in groups.items()
+        if label != "live" and items
+    ]
+    if len(groups["live"]) > MAX_IDS:
+        rest.append(f"+{len(groups['live']) - MAX_IDS} live next run")
+    tail = (" · " + " · ".join(rest)) if rest else ""
+    head = f"gripe-validate ({ref} {prod[:9]})"
+    if not live:
+        print(f"{head}: none on prod{tail}")
+        return 0
+    if args.dry_run:
+        print(f"{head}: would flip verify → done: {_named(live)}{tail}")
+        return 0
+    text = (
+        f"resolved: {{sha}} (on prod {prod[:9]}) — gripe-validate: the "
+        "sha is an ancestor of origin/prod"
+    )
+    ids = ",".join(str(g) for g, _ in live)
+    try:
+        done = note.run_capped(
+            [*base, "gripes", "--verify-done", text, "--ids", ids], timeout
+        )
+    except Exception as e:
+        print(f"{head}: {type(e).__name__} closing {_named(live)} — not retried")
+        return 0
+    if done.returncode != 0:
+        err = (done.stderr.strip().splitlines() or [""])[-1]
+        err = re.sub(r"[a-z]+://\S+", "<url>", err)[:200]
+        print(f"{head}: closing failed (exit {done.returncode}): {err}")
+        return 0
+    out = (done.stdout.strip().splitlines() or [""])[-1]
+    print(f"{head}: {out}{tail}")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

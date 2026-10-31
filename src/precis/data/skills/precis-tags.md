@@ -230,12 +230,12 @@ works; don't write them — the passes own those rows.
 `STATUS:` is the one axis that hosts multiple lifecycles on the same
 prefix. Kinds with their own lifecycle are enforced per-kind at write
 time (the error lists that kind's options); unlisted kinds accept
-the union (34 values). Pick the row that matches the ref you're tagging:
+the union (35 values). Pick the row that matches the ref you're tagging:
 
 | Lifecycle | Kinds | Values |
 |---|---|---|
 | Workflow (enforced) | `todo` | `open`, `doing`, `blocked`, `done`, `won't-do`, `paused`, `auto-timeout` |
-| Gripe (DB-checked) | `gripe` | `open`, `triaged`, `ready_for_fix`, `in_review`, `verify`, `done`, `wontfix` — never `won't-do`. `in_review` = a fix is in flight (claimed through landing and deploy); `verify` = deployed, awaiting the probe verdict — both non-terminal |
+| Gripe (DB-checked) | `gripe` | `open`, `triaged`, `fixing`, `ready_for_fix`, `in_review`, `verify`, `done`, `wontfix` — never `won't-do`. Ladder (gr541800): `triaged` = pick list → `fixing` = a `claimed-by:` lease is held (written on claim) → `verify` = on main, sha in a `resolved:` comment, awaiting a gated release → `done` once the sha is on prod. `ready_for_fix`/`in_review` are legacy, still accepted. All but `done`/`wontfix` are non-terminal |
 | Citation chase | `finding` | `staged` (finding-only — not in the union; a staged (draft) finding awaiting source import + quote anchoring), `tracing`, `established`, `multi_candidate`, `dead_chain`, `refuted`, `acquiring` |
 | Taproot claim hub | `finding` | `canonical` |
 | Job queue | `job` | `queued`, `submitted`, `running`, `succeeded`, `failed`, `cancelled`, `cancel_requested` |
@@ -243,7 +243,7 @@ the union (34 values). Pick the row that matches the ref you're tagging:
 | Quest (perpetual striving — no `done`; enforced) | `quest` | `active`, `dormant`, `abandoned` |
 
 The runtime rejects unknown values at write time with the options list
-for that kind (for `todo`/`gripe`/`quest`/`job`/`finding`) or the union (34 values)
+for that kind (for `todo`/`gripe`/`quest`/`job`/`finding`) or the union (35 values)
 for other kinds. To see the live set without triggering a write, `get(kind='tag',
 id='STATUS:open')` — the `sibling values` line surfaces the full closed
 vocabulary for the axis (`precis-status-help` is unrelated — build/DB

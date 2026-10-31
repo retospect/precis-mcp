@@ -120,6 +120,12 @@ _RESOLVED_PREFIX = "resolved:"
 #: (the /open view, the status='open' live default, theme matching and
 #: the fix-queue prefilters all read this set).
 _TERMINAL_STATUS_TAGS = frozenset(_BROWSE_TERMINALS["gripe"])
+#: STATUS adds that need a newest ``resolved:`` comment: the terminals
+#: plus ``verify`` — on main with the sha noted, awaiting the gated
+#: release (gr541800 ladder). These also release a ``claimed-by:`` lease.
+_RESOLVED_REQUIRED_TAGS = _TERMINAL_STATUS_TAGS | frozenset({"STATUS:verify"})
+#: STATUS values a ``claimed-by:`` lease moves to ``fixing`` (gr541800).
+_CLAIMABLE_STATUSES = frozenset({"open", "triaged", "ready_for_fix"})
 _COMMENT_KIND = "gripe_comment"
 
 #: ``get`` view spellings with one reading on this kind (gr494831 step 2;
@@ -376,7 +382,8 @@ class GripeHandler(NumericRefHandler):
             "The project's bug tracker. Numeric id assigned on "
             "create. Body + append-only comment timeline live as "
             "chunks. Status tracked via the STATUS: tag (one of: open, "
-            "triaged, ready_for_fix, in_review, verify, done, wontfix)."
+            "triaged, fixing, ready_for_fix, in_review, verify, done, "
+            "wontfix)."
         ),
         supports_get=True,
         supports_search=True,
@@ -989,6 +996,9 @@ class GripeHandler(NumericRefHandler):
                     "add=['STATUS:wontfix']) — a STATUS add displaces the old value"
                 ),
             )
+        add, claim_reading = self._claim_status(id, add, remove)
+        if claim_reading:
+            readings = [*readings, claim_reading]
         self._require_resolved_comment(id, add)
         add, prio_from_tag = split_prio(add)
         clear_prio = False
@@ -1153,22 +1163,84 @@ class GripeHandler(NumericRefHandler):
             if c.chunk_kind == _COMMENT_KIND and c.ord not in hidden
         ]
 
+    def _newest_is_resolved(self, ref_id: int) -> bool:
+        comments = self._comments(ref_id)
+        newest = max(comments, key=lambda c: c.ord).text if comments else ""
+        return newest.lstrip().startswith(_RESOLVED_PREFIX)
+
+    def _claim_status(
+        self, id: str | int, add: list[str] | None, remove: list[str] | None
+    ) -> tuple[list[str] | None, str | None]:
+        """The ``claimed-by:`` lease drives STATUS (gr541800 ladder).
+
+        Claiming takes the todo lease's CAS guard (``check_claim_takeover``)
+        and moves a not-yet-claimed gripe (open / triaged / ready_for_fix)
+        to ``fixing``; dropping the lease from a ``fixing`` gripe whose
+        newest comment is not a ``resolved:`` returns it to ``triaged``.
+        An explicit STATUS in ``add`` wins over both. Returns the (maybe
+        extended) add list and the reading that names the rewrite.
+        """
+        from precis.todo import guards
+
+        claims = [t for t in add or () if t.startswith(guards.CLAIM_PREFIX)]
+        drops = [t for t in remove or () if t.startswith(guards.CLAIM_PREFIX)]
+        if not claims and not drops:
+            return add, None
+        ref_id = self._coerce_id(id)
+        self._resolve_live_ref(ref_id)
+        if claims:
+            guards.check_claim_takeover(
+                self.store,
+                ref_id,
+                add,
+                kind=self.kind,
+                elsewhere=(
+                    "pick another gripe from search(kind='gripe', status='triaged')"
+                ),
+            )
+        if any(t.startswith("STATUS:") for t in add or ()):
+            return add, None
+        status = next(
+            (
+                str(t).split(":", 1)[1]
+                for t in self.store.tags_for(ref_id)
+                if str(t).startswith("STATUS:")
+            ),
+            "open",
+        )
+        if claims and status in _CLAIMABLE_STATUSES:
+            return [*(add or []), "STATUS:fixing"], (
+                f"claim: STATUS:{status} → STATUS:fixing (lease "
+                f"{guards.CLAIM_TTL_HOURS}h)"
+            )
+        if (
+            drops
+            and not claims
+            and status == "fixing"
+            and not self._newest_is_resolved(ref_id)
+        ):
+            return [*(add or []), "STATUS:triaged"], (
+                "lease dropped without a resolved: comment: "
+                "STATUS:fixing → STATUS:triaged"
+            )
+        return add, None
+
     def _require_resolved_comment(self, id: str | int, add: list[str] | None) -> None:
-        """A terminal STATUS needs a newest comment starting ``resolved:``."""
-        if not any(t in _TERMINAL_STATUS_TAGS for t in add or ()):
+        """A terminal STATUS — and ``verify`` (on main, sha noted,
+        gr541800) — needs a newest comment starting ``resolved:``."""
+        if not any(t in _RESOLVED_REQUIRED_TAGS for t in add or ()):
             return
         ref_id = self._coerce_id(id)
         self._resolve_live_ref(ref_id)
-        comments = self._comments(ref_id)
-        newest = max(comments, key=lambda c: c.ord).text if comments else ""
-        if newest.lstrip().startswith(_RESOLVED_PREFIX):
+        if self._newest_is_resolved(ref_id):
             return
         wontfix = "STATUS:wontfix" in (add or ())
-        example = (
-            "resolved: wontfix — <reason>"
-            if wontfix
-            else "resolved: <sha> (r<N>) — <how verified>"
-        )
+        if wontfix:
+            example = "resolved: wontfix — <reason>"
+        elif "STATUS:verify" in (add or ()):
+            example = "resolved: <sha> (main, release pending) — <how verified>"
+        else:
+            example = "resolved: <sha> (r<N>) — <how verified>"
         raise BadInput(
             f"closing a {self._sense()} needs a newest comment starting "
             f"{_RESOLVED_PREFIX!r}",
@@ -1189,7 +1261,16 @@ class GripeHandler(NumericRefHandler):
         """gr520237: a terminal STATUS cascades to everything that
         referenced or waited on this gripe — before this hook nothing
         heard about the close, and ``wontfix`` gripes kept blocking
-        todos forever."""
+        todos forever.
+
+        gr541800: a ``claimed-by:`` add gets the todo lease stamp (single
+        holder, ``expires_at``); ``verify`` or a terminal STATUS releases
+        every claim — the builder's work is on main."""
+        from precis.todo import guards
+
+        guards.stamp_claim_lease(conn, ref_id, added)
+        if any(str(t) in _RESOLVED_REQUIRED_TAGS for t in added):
+            guards.release_claims(conn, ref_id)
         terminal = next(
             (str(t).split(":", 1)[1] for t in added if str(t) in _TERMINAL_STATUS_TAGS),
             None,

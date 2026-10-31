@@ -46,7 +46,9 @@ Steps, in order:
      or 3) the deployed head is recorded in prod as the `release.prod_head`
      setting, `{head, deployed_at, landed}` (best-effort, through
      scripts/prod-precis); the plan gates `sha-in-prod` / `tests-green` read
-     it (src/precis/plans/gates.py).
+     it (src/precis/plans/gates.py). Then scripts/gripe-validate flips every
+     STATUS:verify gripe whose resolved sha is now on origin/prod to done
+     (gr541800; best-effort).
 
 Re-running after any partial state resumes: a recorded release containing S
 skips the cut (owner only; the marker is removed after `round close`
@@ -678,6 +680,42 @@ def record_prod_head(
     return f"prod head recorded: {head[:9]} (+{len(shas)} landed)"
 
 
+#: Longest the deploy path waits on scripts/gripe-validate (two prod calls,
+#: each capped at 90 s); past this it is abandoned, the release goes on.
+VALIDATE_TIMEOUT_S = 200.0
+
+
+def validate_gripes() -> None:
+    """Flip verify gripes whose sha is now on origin/prod to done
+    (scripts/gripe-validate, gr541800). Best-effort like :func:`note_gripes`:
+    the rollout already happened, nothing here fails the release."""
+    script = HERE / "gripe-validate"
+    if not script.exists() or HERE.parent != ROOT:
+        return  # a test rig / foreign checkout (PRECIS_ROUND_ROOT) never writes
+    try:
+        proc = subprocess.Popen(
+            [str(script)],
+            cwd=str(ROOT),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
+            encoding="utf-8",
+            start_new_session=True,
+        )
+    except OSError as e:
+        say(f"gripe-validate: {type(e).__name__} — no gripes validated")
+        return
+    try:
+        out, _ = proc.communicate(timeout=VALIDATE_TIMEOUT_S)
+    except subprocess.TimeoutExpired:
+        os.killpg(proc.pid, signal.SIGKILL)
+        proc.communicate()
+        say(f"gripe-validate: TimeoutExpired after {VALIDATE_TIMEOUT_S:g}s")
+        return
+    if out.strip():
+        say(out.strip())
+
+
 def pending_sha(rel: dict[str, Any], default: str) -> str:
     dep = rel.get("deployment") or {}
     return str(dep.get("sha") or default)
@@ -827,6 +865,7 @@ def deploy_and_close(args: argparse.Namespace, sha: str) -> int:
         note_gripes(
             prev, head, f"deployed {label} ({{sha}}); runtime confirmation pending"
         )
+        validate_gripes()
         say(next_line(head))
         return 3
     if rc != 0:
@@ -835,6 +874,7 @@ def deploy_and_close(args: argparse.Namespace, sha: str) -> int:
             "deploy failed — the release pin is retained; fix and re-run "
             "scripts/release (it resumes) or scripts/round deploy",
         )
+    validate_gripes()
     cur = round_state() or {}
     if cur.get("open") and cur.get("deployed") and not live_releases(cur):
         if rnd("close", stream=True).returncode:

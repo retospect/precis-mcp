@@ -76,6 +76,7 @@ _MARKER_PREFIX = "quest-need: "
 _LIVE_GRIPE_STATUSES: tuple[str, ...] = (
     "open",
     "triaged",
+    "fixing",
     "ready_for_fix",
     "in_review",
     "verify",

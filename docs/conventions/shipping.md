@@ -43,6 +43,17 @@ and exits 0. It never fails the ship or the deploy. Off switch:
 refuses writes from a tree behind `origin/prod`, so a stale tree prints a
 failed post and posts nothing.
 
+The handles ending the squash subject also move status (gr541800 ladder:
+triaged → fixing → verify → done). After the gripe-note comment,
+`scripts/ship` runs `scripts/lib/land_notify.py`: each `grN` in the
+trailing `(grN, tdM)` list gets `resolved: <sha> (main, release pending)`
++ `STATUS:verify`; each `tdM` gets `landed: <sha>` + `STATUS:done`.
+Same best-effort contract, one `land-notify` line; off switch
+`PRECIS_LAND_NOTIFY=0`. After each rollout `scripts/release` runs
+`scripts/gripe-validate`, which flips every verify gripe whose resolved
+sha is an ancestor of `origin/prod` to `done` (`--dry-run` lists them;
+it is safe to run on a schedule; off switch `PRECIS_GRIPE_VALIDATE=0`).
+
 Write the commit message to a file and `git commit -F <file>` — never
 `git commit -m "$(cat <<'EOF' …)"`. A commit wrapped in a heredoc or
 `$(…)` substitution is a shape the worktree guard cannot statically

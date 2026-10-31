@@ -322,6 +322,14 @@ factory keeps the machinery and adds an owner to every branch.
   is kept (receipts in `scripts/round`); `main`'s squash commit names
   the slice id and the review verdict in its trailer, so the branch can
   go.
+- **Status follows the land (gr541800, shipped).** Gripe ladder: triaged
+  → fixing (a `claimed-by:` lease writes it) → verify → done. After the
+  CAS push `scripts/ship` moves every `(grN, tdM)` handle ending the
+  squash subject: gripes to verify with `resolved: <sha> (main, release
+  pending)`, todos to done with `landed: <sha>`; after the rollout
+  `scripts/release` runs `scripts/gripe-validate`, which closes the
+  verify gripes whose sha is on `origin/prod`. Still open: the /gripes
+  views and the work-view stage cell reading STATUS (td541982).
 
 **How it breaks, and the guard:** a builder with the lander's
 credential → separate tokens, drift-tested like authority; a red batch

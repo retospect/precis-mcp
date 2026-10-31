@@ -201,7 +201,12 @@ def test_terminal_gripe_refuses_loop_state(handler: GripeHandler) -> None:
 
 def test_status_verify_is_left_alone(handler: GripeHandler) -> None:
     gid = _gripe(handler)
-    handler.tag(id=gid, add=["STATUS:verify"])
+    # gr541800: verify needs a newest resolved: comment, like a close.
+    handler.put(
+        id=gid,
+        text="resolved: abcdef1 (main, release pending) — test",
+        tags=["STATUS:verify"],
+    )
     handler.edit(id=gid, mode="fix", landed="abcdef1")
     assert "STATUS:verify" in _tags(handler, gid)
 

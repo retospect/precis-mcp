@@ -2695,6 +2695,15 @@ else
     if [[ -n "$LANDED_SHA" && "$LANDED_SHA" != "$OLD_MAIN" && -x "${WORKTREE}/scripts/gripe-note" ]]; then
         "${WORKTREE}/scripts/gripe-note" --rev "$LANDED_SHA" --text 'landed {sha} on main' || true
     fi
+    # Status ladder (gr541800): the refs the squash subject names move —
+    # each gripe gets "resolved: <sha> (main, release pending)" + STATUS:verify
+    # (scripts/gripe-validate flips it done once on origin/prod), each todo
+    # "landed: <sha>" + STATUS:done. After gripe-note, so the resolved:
+    # comment is the newest. Best-effort: always exits 0, one log line.
+    if [[ -n "$LANDED_SHA" && "$LANDED_SHA" != "$OLD_MAIN" && -f "${WORKTREE}/scripts/lib/land_notify.py" ]]; then
+        python3 "${WORKTREE}/scripts/lib/land_notify.py" --sha "$LANDED_SHA" \
+            --subject "$(git log -1 --format=%s "$LANDED_SHA")" || true
+    fi
     if [[ "$QUICK" == 1 ]]; then
         # Names what actually ran. The old wording ("no ruff/mypy/pytest") outlived
         # the pre-qland lint by one commit, and a banner that overstates the debt is

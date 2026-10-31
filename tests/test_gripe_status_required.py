@@ -1,8 +1,8 @@
 """Gripe STATUS invariant: migration 0176 deferred triggers.
 
 Every gripe carries exactly one STATUS tag from the gripe vocabulary
-(open, triaged, ready_for_fix, in_review, verify, done, wontfix —
-``verify`` joined under migration 0247). ``refuted`` is a finding status
+(open, triaged, fixing, ready_for_fix, in_review, verify, done, wontfix —
+``verify`` joined under migration 0247, ``fixing`` under 0267).``refuted`` is a finding status
 and must not land on a gripe.
 """
 
@@ -44,6 +44,39 @@ def test_verify_status_commits(store: Store) -> None:
     with store.tx() as conn:
         rid = _insert_gripe(store, conn, status="verify")
     assert any("STATUS:verify" in str(t) for t in store.tags_for(rid))
+
+
+def test_fixing_status_commits(store: Store) -> None:
+    """0267 widened the trigger vocabulary: STATUS:fixing (gr541800, a
+    held ``claimed-by:`` lease) is a valid sole STATUS on a gripe."""
+    with store.tx() as conn:
+        rid = _insert_gripe(store, conn, status="fixing")
+    assert any("STATUS:fixing" in str(t) for t in store.tags_for(rid))
+
+
+def test_newest_trigger_vocab_matches_kind_status_values() -> None:
+    """The newest migration that redefines ``gripe_status_check()`` lists
+    exactly ``_KIND_STATUS_VALUES['gripe']`` — the app check and the
+    commit-time trigger cannot drift apart."""
+    import re
+
+    from precis.store.types import _KIND_STATUS_VALUES
+
+    root = resources.files("precis.migrations")
+    newest = max(
+        (
+            p
+            for p in root.iterdir()
+            if p.name.endswith(".sql")
+            and "FUNCTION public.gripe_status_check()" in p.read_text(encoding="utf-8")
+        ),
+        key=lambda p: p.name,
+    )
+    sql = newest.read_text(encoding="utf-8")
+    m = re.search(r"NOT IN\s*\(([^)]*)\)", sql)
+    assert m is not None, newest.name
+    values = frozenset(re.findall(r"'([^']+)'", m.group(1)))
+    assert values == _KIND_STATUS_VALUES["gripe"], newest.name
 
 
 def test_replace_prefix_status_change_succeeds(store: Store) -> None:

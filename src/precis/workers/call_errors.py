@@ -116,7 +116,14 @@ ORIGIN_TAG = "origin:call-errors"
 #: STATUS values that keep a cluster gripe "live" — duplicates the
 #: health_digest marker-scan convention (non-terminal lifecycle stages);
 #: local copy because workers -> precis_web is a forbidden edge.
-_LIVE_STATUSES = ("open", "triaged", "ready_for_fix", "in_review", "verify")
+_LIVE_STATUSES = (
+    "open",
+    "triaged",
+    "fixing",
+    "ready_for_fix",
+    "in_review",
+    "verify",
+)
 
 # ── error-head normalisation ─────────────────────────────────────────────
 # Same collapse the session miner applies (scripts/mine-sessions/

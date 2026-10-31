@@ -123,7 +123,7 @@ q='…')` finds the matching passages inside one gripe (find-in-ref,
 `precis-get-help`).
 
 **`status='open'` means the live cohort** — every non-terminal STATUS
-(`open`, `triaged`, `ready_for_fix`, `in_review`, `verify`), not the
+(`open`, `triaged`, `fixing`, `ready_for_fix`, `in_review`, `verify`), not the
 literal `STATUS:open` tag. It's also the implicit default on `q=`
 searches, so a bare `search(kind='gripe', q='…')` searches the backlog,
 not just the untriaged inbox. For the literal `STATUS:open` cohort pin
@@ -139,7 +139,7 @@ search(kind="gripe", q="X", status="*")  # every status, no filter
 `status=` takes ONE value — a gripe carries exactly one `STATUS:` tag, so
 `status='open|triaged'` (or a comma list) is an error naming the valid
 values, not a union filter. Run one search per value, or `status='*'`.
-Valid: `open`, `triaged`, `ready_for_fix`, `in_review`, `verify`, `done`, `wontfix`.
+Valid: `open`, `triaged`, `fixing`, `ready_for_fix`, `in_review`, `verify`, `done`, `wontfix`.
 
 **Enumerating vs. searching — a trap.** Adding `q=` to a status/tag
 filter turns a *complete enumeration* into a *ranked filter*: a gripe
@@ -623,10 +623,11 @@ citation audit emits findings and todos, not gripes.
 | Tag                    | Meaning                                 |
 |------------------------|-----------------------------------------|
 | `STATUS:open`          | Just filed, untriaged                   |
-| `STATUS:triaged`       | Human reviewed; real; not yet ready     |
-| `STATUS:ready_for_fix` | Ready for its thread's session to fix   |
-| `STATUS:in_review`     | A fix is in flight (claimed through landing and deploy) |
-| `STATUS:verify`        | Fix deployed; awaiting the probe verdict — non-terminal |
+| `STATUS:triaged`       | Real; the pick list — claim one and fix it |
+| `STATUS:fixing`        | Claimed: `tag(add=['claimed-by:<you>'])` writes it (4 h CAS lease, as on todos); dropping the lease without a `resolved:` comment returns it to `triaged` |
+| `STATUS:ready_for_fix` | Legacy (review-before-merge); new writes use `triaged` |
+| `STATUS:in_review`     | Legacy (review-before-merge); new writes use `verify` |
+| `STATUS:verify`        | On main, waiting for a gated release: needs a newest `resolved: <sha> (main, release pending)` comment (`scripts/ship` writes both for every `grN` ending the squash subject); releases the lease. `scripts/gripe-validate` flips it to `done` once the sha is on origin/prod. The triage worker also parks deployed-pending fixes here (`fix-sha:`) |
 | `STATUS:done`          | Fixed/resolved — terminal; hidden from the live queue |
 | `STATUS:wontfix`       | Decided not to act (kept on record)     |
 | (deleted)              | `delete` — duplicates, spam and gripes filed in error only. A *fixed* gripe is a `resolved: <sha> (r<N>) — <how verified>` comment + `STATUS:done` |

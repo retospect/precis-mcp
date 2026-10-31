@@ -17,7 +17,10 @@ digest (``N open · M older than 3d · oldest grX (D days)``) that the
 session-start hook shows, and nothing else. ``--note TEXT --ids N,M``
 is not deprecated either: it comments TEXT on each listed gripe that
 does not already carry it (scripts/gripe-note's one prod call after a
-landing or deploy) and prints one summary line. ``--shorten-titles``
+landing or deploy) and prints one summary line. ``--verify-list`` /
+``--verify-done TEXT --ids N,M`` are scripts/gripe-validate's two prod
+calls (gr541800): list the STATUS:verify gripes with their resolved sha,
+then close the ones whose sha reached origin/prod. ``--shorten-titles``
 is the one-time short-title gardening pass (:func:`shorten_titles`); it
 only lists unless ``--apply`` is given.
 """
@@ -26,6 +29,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import sys
 from datetime import datetime
 from typing import Any
@@ -84,7 +88,29 @@ def add_parser(sub: argparse._SubParsersAction) -> argparse.ArgumentParser:
     dp.add_argument(
         "--ids",
         default="",
-        help="Comma-separated gripe ids for --note (or to scope --shorten-titles).",
+        help=(
+            "Comma-separated gripe ids for --note / --verify-done "
+            "(or to scope --shorten-titles)."
+        ),
+    )
+    dp.add_argument(
+        "--verify-list",
+        action="store_true",
+        help=(
+            "Print one JSON line {id, sha} per live STATUS:verify gripe; sha "
+            "is from its newest 'resolved: <sha>' / 'fix-sha: <sha>' comment "
+            "(scripts/gripe-validate). Read-only."
+        ),
+    )
+    dp.add_argument(
+        "--verify-done",
+        default=None,
+        metavar="TEXT",
+        help=(
+            "Comment TEXT ({sha} = the gripe's own resolved sha) and tag "
+            "STATUS:done on each --ids gripe still at STATUS:verify "
+            "(scripts/gripe-validate)."
+        ),
     )
     dp.add_argument(
         "--shorten-titles",
@@ -115,6 +141,18 @@ def run(args: argparse.Namespace) -> None:
 
     if args.summary:
         _print_summary(args)
+        return
+    if args.verify_list or args.verify_done is not None:
+        store = Store.connect(resolve_dsn(args.database_url, cfg=load_config()))
+        try:
+            if args.verify_list:
+                for gid, sha in verify_list(store):
+                    print(json.dumps({"id": gid, "sha": sha}))
+            else:
+                ids = [int(i) for i in args.ids.replace(" ", "").split(",") if i]
+                print(verify_done(store, args.verify_done, ids))
+        finally:
+            store.close()
         return
     if args.note is not None:
         ids = [int(i) for i in args.ids.replace(" ", "").split(",") if i]
@@ -251,6 +289,82 @@ def note_gripes(store: Any, text: str, ids: list[int]) -> str:
     return " · ".join(
         f"{label} {' '.join(items)}" for label, items in groups.items() if items
     )
+
+
+#: The sha a verify gripe waits on: ``resolved: <sha>`` (scripts/ship's
+#: land note, a builder's close) or ``fix-sha: <sha>`` (the triage worker).
+_VERIFY_SHA_RE = re.compile(r"^\s*(?:resolved|fix-sha):\s*([0-9a-f]{7,40})\b")
+
+
+def verify_sha(store: Any, gid: int) -> str | None:
+    """The sha in the newest comment of ``gid`` that names one, else None."""
+    comments = sorted(
+        (
+            c
+            for c in store.chunks.list_chunks_for_ref(gid)
+            if c.chunk_kind == "gripe_comment"
+        ),
+        key=lambda c: c.ord,
+        reverse=True,
+    )
+    for c in comments:
+        if m := _VERIFY_SHA_RE.match(c.text):
+            return m.group(1)
+    return None
+
+
+def verify_list(store: Any) -> list[tuple[int, str | None]]:
+    """Every live STATUS:verify gripe with the sha it waits on (gr541800)."""
+    with store.pool.connection() as conn:
+        rows = conn.execute(
+            "SELECT r.ref_id FROM refs r "
+            "JOIN ref_tags rt ON rt.ref_id = r.ref_id "
+            "JOIN tags t ON t.tag_id = rt.tag_id "
+            "AND t.namespace = 'STATUS' AND t.value = 'verify' "
+            "WHERE r.kind = 'gripe' AND r.retired_at IS NULL "
+            "ORDER BY r.ref_id"
+        ).fetchall()
+    return [(int(r[0]), verify_sha(store, int(r[0]))) for r in rows]
+
+
+def verify_done(store: Any, text: str, ids: list[int]) -> str:
+    """Close each ``ids`` gripe still at STATUS:verify: comment ``text``
+    (``{sha}`` → its own verify sha) then STATUS:done, through the handler
+    so the ``resolved:`` guard and the close cascade both run.
+
+    Returns ``done grA grB · not verify: grC · not found: grD · failed: …``
+    (empty groups omitted). A gripe that moved off verify since the list
+    was read is skipped, never re-closed.
+    """
+    from precis.dispatch import Hub
+    from precis.errors import PrecisError
+    from precis.handlers.gripe import GripeHandler
+
+    handler = GripeHandler(hub=Hub(store=store))
+    groups: dict[str, list[str]] = {
+        "done": [],
+        "not verify:": [],
+        "not found:": [],
+        "failed:": [],
+    }
+    for gid in ids:
+        if store.get_ref(kind="gripe", id=gid) is None:
+            groups["not found:"].append(f"gr{gid}")
+            continue
+        if "STATUS:verify" not in {str(t) for t in store.tags_for(gid)}:
+            groups["not verify:"].append(f"gr{gid}")
+            continue
+        sha = verify_sha(store, gid) or "?"
+        try:
+            handler.put(id=gid, text=text.replace("{sha}", sha), tags=["STATUS:done"])
+        except PrecisError as e:
+            groups["failed:"].append(f"gr{gid} ({type(e).__name__})")
+            continue
+        groups["done"].append(f"gr{gid}")
+    line = " · ".join(
+        f"{label} {' '.join(items)}" for label, items in groups.items() if items
+    )
+    return line or "nothing to do"
 
 
 def shorten_titles(

@@ -1957,32 +1957,9 @@ class TodoHandler(NumericRefHandler):
         * A terminal STATUS (done / won't-do) releases every claim —
           finished leaves don't accumulate stale leases.
         """
-        claim_vals = [str(t) for t in added if str(t).startswith(guards.CLAIM_PREFIX)]
-        if claim_vals:
-            holder = claim_vals[-1]
-            conn.execute(
-                "DELETE FROM ref_tags rt USING tags t"
-                " WHERE rt.tag_id = t.tag_id AND rt.ref_id = %s"
-                "   AND t.namespace = 'OPEN'"
-                "   AND t.value LIKE 'claimed-by:%%' AND t.value <> %s",
-                (ref_id, holder),
-            )
-            conn.execute(
-                "UPDATE ref_tags rt"
-                "   SET expires_at = now() + make_interval(hours => %s)"
-                "  FROM tags t"
-                " WHERE rt.tag_id = t.tag_id AND rt.ref_id = %s"
-                "   AND t.namespace = 'OPEN' AND t.value = %s",
-                (guards.CLAIM_TTL_HOURS, ref_id, holder),
-            )
+        guards.stamp_claim_lease(conn, ref_id, added)
         if any(str(t) in ("STATUS:done", "STATUS:won't-do") for t in added):
-            conn.execute(
-                "DELETE FROM ref_tags rt USING tags t"
-                " WHERE rt.tag_id = t.tag_id AND rt.ref_id = %s"
-                "   AND t.namespace = 'OPEN'"
-                "   AND t.value LIKE 'claimed-by:%%'",
-                (ref_id,),
-            )
+            guards.release_claims(conn, ref_id)
 
     # ── link: reserved virtual rel='parent' is the move surface ───
 

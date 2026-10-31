@@ -1350,7 +1350,14 @@ CLAIM_PREFIX = "claimed-by:"
 CLAIM_TTL_HOURS = 4
 
 
-def check_claim_takeover(store: Store, ref_id: int, add: list[str] | None) -> None:
+def check_claim_takeover(
+    store: Store,
+    ref_id: int,
+    add: list[str] | None,
+    *,
+    kind: str = "todo",
+    elsewhere: str = "pick another leaf from view='doable'",
+) -> None:
     """CAS guard: reject claiming a leaf whose live lease another holds.
 
     ``claimed-by:<handle>`` is a *lease*, not a permanent mark — the tag
@@ -1362,7 +1369,8 @@ def check_claim_takeover(store: Store, ref_id: int, add: list[str] | None) -> No
     — two open tags coexisting, both agents believing they own the
     leaf). Expired leases and legacy rows (``expires_at IS NULL`` —
     minted before the lease semantics) are free to take over, and owner
-    sources always may.
+    sources always may. Gripes take the same lease (gr541800):
+    ``kind``/``elsewhere`` only reword the refusal.
     """
     claims = [
         t for t in (add or []) if isinstance(t, str) and t.startswith(CLAIM_PREFIX)
@@ -1387,13 +1395,58 @@ def check_claim_takeover(store: Store, ref_id: int, add: list[str] | None) -> No
     if row is not None and not is_owner():
         current = str(row[0])[len(CLAIM_PREFIX) :]
         raise BadInput(
-            f"todo id={ref_id} is already claimed by {current!r} (live lease)",
+            f"{kind} id={ref_id} is already claimed by {current!r} (live lease)",
             next=(
-                "pick another leaf from view='doable', or retry later — a "
+                f"{elsewhere}, or retry later — a "
                 f"claim lease expires {CLAIM_TTL_HOURS}h after its last "
                 "re-assert; owner sources may take over by re-claiming"
             ),
         )
+
+
+def stamp_claim_lease(conn: Any, ref_id: int, added: list[Any]) -> bool:
+    """Lease upkeep for a freshly-(re)added ``claimed-by:<x>``, run on the
+    tag write's connection (``_after_tag_mutation``).
+
+    The new holder becomes the *only* claim row (other holders' rows —
+    expired, or overridden by an owner source — are dropped) and gets its
+    lease stamped ``expires_at = now() + CLAIM_TTL_HOURS``. ``add_tag``'s
+    ON CONFLICT path resets ``expires_at`` to NULL on a re-add, so this
+    stamp is what makes re-claiming *extend* the lease. Returns whether a
+    claim was in ``added``.
+    """
+    claim_vals = [str(t) for t in added if str(t).startswith(CLAIM_PREFIX)]
+    if not claim_vals:
+        return False
+    holder = claim_vals[-1]
+    conn.execute(
+        "DELETE FROM ref_tags rt USING tags t"
+        " WHERE rt.tag_id = t.tag_id AND rt.ref_id = %s"
+        "   AND t.namespace = 'OPEN'"
+        "   AND t.value LIKE 'claimed-by:%%' AND t.value <> %s",
+        (ref_id, holder),
+    )
+    conn.execute(
+        "UPDATE ref_tags rt"
+        "   SET expires_at = now() + make_interval(hours => %s)"
+        "  FROM tags t"
+        " WHERE rt.tag_id = t.tag_id AND rt.ref_id = %s"
+        "   AND t.namespace = 'OPEN' AND t.value = %s",
+        (CLAIM_TTL_HOURS, ref_id, holder),
+    )
+    return True
+
+
+def release_claims(conn: Any, ref_id: int) -> None:
+    """Drop every ``claimed-by:`` row on ``ref_id`` — a finished ref does
+    not accumulate stale leases."""
+    conn.execute(
+        "DELETE FROM ref_tags rt USING tags t"
+        " WHERE rt.tag_id = t.tag_id AND rt.ref_id = %s"
+        "   AND t.namespace = 'OPEN'"
+        "   AND t.value LIKE 'claimed-by:%%'",
+        (ref_id,),
+    )
 
 
 __all__ = [
@@ -1427,6 +1480,8 @@ __all__ = [
     "has_auto_run_signal",
     "is_owner",
     "normalize_tier_meta",
+    "release_claims",
+    "stamp_claim_lease",
     "strategic_lacks_auto_run",
     "todo_root_sql",
 ]

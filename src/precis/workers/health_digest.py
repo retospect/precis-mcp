@@ -2547,6 +2547,7 @@ def _router_nudge(store: Store, cls: str, fingerprint: str) -> str:
 _MARKER_GRIPE_LIVE_STATUSES: tuple[str, ...] = (
     "open",
     "triaged",
+    "fixing",
     "ready_for_fix",
     "in_review",
     "verify",

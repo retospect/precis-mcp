@@ -1151,6 +1151,10 @@ _KIND_STATUS_VALUES: dict[str, frozenset[str]] = {
         {
             "open",
             "triaged",
+            # ``fixing`` (gr541800, migration 0267): a ``claimed-by:``
+            # lease is held — written on claim, back to triaged on a
+            # lease drop without a ``resolved:`` comment.
+            "fixing",
             "ready_for_fix",
             "in_review",
             "verify",
@@ -1287,11 +1291,15 @@ _CLOSED_VOCAB: dict[str, frozenset[str]] = {
             # take the full union — todo/job/quest carry their own
             # subsets).
             "triaged",
+            # ``fixing`` (gr541800, migration 0267): claimed, in build.
+            "fixing",
             "ready_for_fix",
             "in_review",
             # ``verify`` (pipeline v2, migration 0247): fix deployed,
             # awaiting the probe verdict — non-terminal, sits between
-            # ``in_review`` and ``done``.
+            # ``in_review`` and ``done``. gr541800 widens it: on main
+            # with the sha in a ``resolved:`` comment, awaiting the gated
+            # release that ``scripts/gripe-validate`` flips to done.
             "verify",
             "wontfix",
             # job lifecycle (migration 0005 / fix_gripe substrate).
