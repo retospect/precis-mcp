@@ -98,9 +98,10 @@ def _tiny_board() -> pcb.Board:
     for part in (a1, a2, c1, c2, e1, e2):
         for pin in ("1", "2"):
             part[pin].etype("bidi", fmax_hz=0.0, assume="header pin")
-    b.wire(a1["2"], a2["1"], name="N1")
-    b.wire(c1["2"], c2["2"], name="N2")
-    b.wire(e1["1"], e2["1"], name="N3")
+    # gr520545: place/route refuses a net without a current.
+    b.net("N1", current=0.01).tie(a1["2"], a2["1"])
+    b.net("N2", current=0.01).tie(c1["2"], c2["2"])
+    b.net("N3", current=0.01).tie(e1["1"], e2["1"])
     return b
 
 
