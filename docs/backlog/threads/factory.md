@@ -63,6 +63,7 @@ quality-of-life and container items.
    2026-10-30; its work lives in prod: platform quest qu540835, root
    todo td540836, the six step-1/1b slices under it (work view, gripes
    in the tree, `/work`, fleet reporter, asks list, `precis-work-help`).
+   gr541665, gr541684 and gr541800 are folded into it.
 1. **backlog/worker-rotation-starves-rescue-passes.md** — the rescue
    starvation shipped (overdue rescue passes age to the front of the
    rotation); left is the one unbounded job pass still inside the wait.

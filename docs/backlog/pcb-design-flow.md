@@ -8,10 +8,10 @@ model: opus
 
 # pcb design flow — from requirements to an orderable board
 
-Covers gr519925 (no design-procedure skill, no power-budget convention,
-no mech/coating checklist, no consign BOM field) and gr519924 (no place to
-record why a part was chosen). Both came from the TAZ leaf-node dogfood,
-td485252 / td519926, 2026-10-26.
+Source gripes: gr519925 (no design-procedure skill, no power-budget
+convention, no mech/coating checklist, no consign BOM field), gr519924
+(no place to record why a part was chosen). Both came from the TAZ
+leaf-node dogfood, td485252 / td519926, 2026-10-26.
 
 ## Motivation / why
 

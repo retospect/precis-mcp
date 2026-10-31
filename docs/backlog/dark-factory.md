@@ -482,6 +482,13 @@ review-queue files are sources. **Open:** red releases and tripped
 breakers (no source until step 4), mindmeld questions (Round 3's turn),
 live tmux dialogs.
 
+**Folded gripe gr541665 — review-queue `open/` was invisible to the
+server.** td540847's asks view read `PRECIS_REVIEW_QUEUE_DIR` or a
+checkout's `.claude/fleet/open`; neither exists in the deployed image
+or a worktree (`open/` is not in git), so prod saw zero review rows.
+Decided here: review items persist in prod as ask-user todos with
+`meta.ask` (td541979) and the directory retires.
+
 ### 2. Loop chunks on slices, not only gripes
 
 (one to two builds). `edit(kind='todo', mode='fix',
@@ -531,6 +538,25 @@ home-built release loop breaks, and the guard for each:**
 - a landing cadence so fast releases never settle → bounded by gate
   time; if that proves wrong, a minimum spacing, not a timer.
 
+**Folded gripe gr541800 — the gripe ticket ladder.** Reto, via the
+/gripes web form: work from the `triaged` list without watching the
+big one; wanted a `fixing` state (claimed, in flight) and a
+wait-for-validation state carrying the landed sha. `verify` exists
+since migration 0247, but with pipeline-v2 semantics — fix deployed,
+awaiting the probe verdict — which covers "on prod" rather than "on
+main awaiting release". The WORK_MANAGEMENT proposal maps the rest
+onto this spec: `fixing` = the CAS claim lease written at claim;
+`verify` = on main awaiting the release pass, sha in the `resolved:`
+comment; `done` = flipped by this pass; `ready_for_fix` and
+`in_review` collapse under land-then-review. **Open (Reto):** whether
+`fixing` is a new STATUS value (vocab migration + 0176 trigger +
+every enumeration gripe-pipeline-v2 slice 1 lists) or stays the
+derived `in-build` queue — `gripe-fix-loop-on-the-gripe.md` ruled the
+derived queue suffices for the loop, so the question is what the
+ticket axis itself must show (`/gripes` default filter, a verify
+list, the td541982 stage cell). Either way `verify` needs one
+ruling: on-main-awaiting-release vs deployed-awaiting-probe.
+
 ### 5. Pillars as quests
 
 (half a build of data, one build for the tick type). Mint one quest per
@@ -567,6 +593,19 @@ rules above (one branch per slice, review pinned to the tip, delete on
 land). Harness sessions in tmux remain for Reto's desks and for a slice
 marked `needs-human`. Mode B runners (MCP-TOKEN-FIX) take this lane
 over once plan_tick proves it.
+
+**Folded gripe gr541684 — same-file slices in one wave.** Wave 1 ran
+td540842 and td540843 in parallel, both editing
+`src/precis/todo/work_view.py`; the second lander hit a conflict the
+seam notes could not prevent (~1 hand-resolved round — a guaranteed
+cost, not a risk). The dispatcher's answer: each slice declares a file
+set, and overlapping sets get a `blocked-by` link at mint, released
+when the blocker lands — not refuse-at-dispatch, which would leave a
+ready slice with no owner. The gripe's second ask, a sanctioned way
+to wait on `scripts/ship`, is moot under land-immediately: the
+builder stops at handoff, the lander owns the wait. **Open:** who
+declares the file set — the slicer at mint (proposed) or the builder
+in its first minute.
 
 ### 7. Alerts as slices — without shooting the foot
 

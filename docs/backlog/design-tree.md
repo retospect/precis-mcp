@@ -8,7 +8,7 @@ model: sonnet
 
 # design tree — the design knowledge graph, remaining work
 
-Source: gr516958 (conventions storage) and gr516957 (design skills + DRC).
+Source gripes: gr516958 (conventions storage), gr516957 (design skills + DRC).
 
 The spec of record was `SPEC.md` in DESIGN's drafts dir; it moved here
 2026-10-26, keeping only what is still open. What shipped lives in the

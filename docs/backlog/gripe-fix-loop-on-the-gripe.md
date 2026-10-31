@@ -8,7 +8,9 @@ claimed-by: agent-a48ee681e0f92df42
 
 # Gripe-fix loop state lives on the gripe; one skill runs the loop
 
-gr519361. Reto's ruling (typed, 2026-10-26): the GRIPE_FIX coordinator's
+Source gripes: gr519361.
+
+Reto's ruling (typed, 2026-10-26): the GRIPE_FIX coordinator's
 working state — ~524 loose files under a scratch directory (briefs,
 handoffs, review verdicts, queue/awaiting-deploy/close lists, census and
 triage dumps) — belongs in the DB, **on the gripe itself**, not in todos or

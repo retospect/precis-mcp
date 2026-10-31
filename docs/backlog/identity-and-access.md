@@ -68,6 +68,23 @@ does not approve any of these defaults. Link migration planning to
 (`utils/refeye.py`): repo-dev and
 personal memory need the same enforcement as other working documents.
 
+Source gripes: gr519587.
+
+gr519587 (Reto, 2026-10-26) asks for exactly this spec — permission
+filtering *before/during* retrieval, not after — citing the turbopuffer
+"Vault" talk's failure mode: filter-after-retrieve starves a restricted
+viewer's top-k. The phase-1 design already meets it: the visibility
+predicate is a WHERE clause inside the retrieval query itself, covering
+lexical and pgvector search alike. The talk's known weak spot, nested
+group hierarchies, stays open — groups are deferred out of the MVP
+anyway. Two follow-ons the gripe adds: **permission scoping steers model
+selection and privacy tier** — a restricted source must not route to a
+less-trusted/external model, and derivatives (summaries, embeddings,
+dreams, distilled notes) inherit the source's access tier; the
+derived-artifact rule covers inheritance but not routing — and the spec
+stays dormant until multi-tenant is actually planned, with Reto
+reviewing before any build.
+
 Grouped 2026-09-26 from 2 items that are sub-parts of one deliverable (each keeps its own section below; the originals are in the history). Split a section back out only when it becomes independently shippable.
 
 ## User identity & ask-user routing — design plan
@@ -478,3 +495,7 @@ Extend the `PRECIS_SOURCE` owner-vs-worker classification
   is partially shipped (`PrecisConfig.owner`, `ASKER`); fold its
   remainder into this item or ship it first as-is? (blocked-by set
   provisionally.)
+- **OPEN — model/privacy-tier routing by source tier** (gr519587):
+  does visibility scope constrain which model a synthesis or dream pass
+  may send a restricted ref to, and does the tier ride `owner_id` or a
+  separate label?
