@@ -13,6 +13,8 @@ from typing import Any
 
 import pytest
 
+from precis.errors import BadInput
+from precis.handlers.gripe import GripeHandler
 from precis.store import Store
 from precis.store.types import Tag
 
@@ -77,6 +79,83 @@ def test_newest_trigger_vocab_matches_kind_status_values() -> None:
     assert m is not None, newest.name
     values = frozenset(re.findall(r"'([^']+)'", m.group(1)))
     assert values == _KIND_STATUS_VALUES["gripe"], newest.name
+
+
+def _migration_function_sql(migration: str) -> str:
+    """The ``CREATE OR REPLACE FUNCTION`` block sliced out of a migration
+    file (the same slicing the backfill test uses for its (a2) block)."""
+    sql = (
+        resources.files("precis.migrations")
+        .joinpath(migration)
+        .read_text(encoding="utf-8")
+    )
+    return sql[sql.index("CREATE OR REPLACE FUNCTION") : sql.index("$$;") + 3]
+
+
+def test_status_vocab_drift_refuses_typed(hub: Any) -> None:
+    """gr544215: the app STATUS vocabulary ahead of the DB trigger's.
+
+    land_notify's resolve put — ``resolved: <sha9> (main, release
+    pending) — landed: <subject>`` with ``STATUS:auto_verify`` — ran
+    under code that knew migration 0268's vocabulary while prod's
+    ``gripe_status_check()`` still held 0267's (the migration landed in
+    the same ship, undeployed). ``Tag.parse_strict`` accepted; the
+    deferred trigger raised ``CheckViolation`` at COMMIT and the call
+    surfaced as ``[error:Internal] … file a gripe … server bug``
+    (exit 3). The handler translates that trigger refusal into a typed
+    error naming the database's own vocabulary — never an unhandled
+    raise. Simulated by swapping the 0267-era function in, then the
+    exact incident call shape.
+    """
+    store: Store = hub.store
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            "SELECT pg_get_functiondef(p.oid) FROM pg_proc p "
+            "JOIN pg_namespace n ON n.oid = p.pronamespace "
+            "WHERE p.proname = 'gripe_status_check' AND n.nspname = 'public'"
+        ).fetchone()
+        assert row is not None
+        conn.execute(_migration_function_sql("0267_gripe_status_fixing.sql"))
+        conn.commit()
+    try:
+        h = GripeHandler(hub=hub)
+        h.put(text="drift probe gripe")
+        gid = int(store.list_refs(kind="gripe", limit=1, order_by="id_desc")[0].id)
+        # The exact resolve put land_notify sent and prod refused (gr544215).
+        with pytest.raises(BadInput) as ei:
+            h.put(
+                id=gid,
+                text="resolved: 9ab88a7b5 (main, release pending) — landed: "
+                "fix(ssh_node): live re-adopt is not a crash attempt (gr541147)",
+                tags=["STATUS:auto_verify"],
+            )
+        assert "must have exactly one STATUS" in str(ei.value)
+        # options= the *database's* vocabulary (0267), not the build's.
+        assert ei.value.options == [
+            "open",
+            "triaged",
+            "fixing",
+            "ready_for_fix",
+            "in_review",
+            "verify",
+            "done",
+            "wontfix",
+        ]
+        assert ei.value.next is not None
+        # The whole unit rolled back — no half-landed comment or tag.
+        assert not [
+            c
+            for c in store.chunks.list_chunks_for_ref(gid)
+            if c.chunk_kind == "gripe_comment"
+        ]
+        assert "STATUS:auto_verify" not in {str(t) for t in store.tags_for(gid)}
+        # The bare tag verb refuses the same way.
+        with pytest.raises(BadInput):
+            h.tag(id=gid, add=["STATUS:auto_verify"])
+    finally:
+        with store.pool.connection() as conn:
+            conn.execute(row[0])
+            conn.commit()
 
 
 def test_replace_prefix_status_change_succeeds(store: Store) -> None:

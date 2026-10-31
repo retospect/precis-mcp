@@ -36,6 +36,9 @@ BEFORE they run and deleted only once the handle posted — a notify that
 fails, crashes or is killed mid-run leaves its unsent notes replayable.
 ``--replay`` posts every file in the dir and deletes it on success;
 ``scripts/ship --replay-notes`` is the same thing from the ship driver.
+A failed call also stamps ``failure`` onto its note — the argv tail,
+the exit and the FULL stderr (gr544215: the console's one ``_tail``
+line hid the resolve-put refusal's cause).
 
 Test seams: PRECIS_LAND_NOTIFY_CLI replaces the prod-precis command (and
 skips the DSN check); PRECIS_LAND_NOTIFY_TIMEOUT overrides TIMEOUT_S.
@@ -55,6 +58,7 @@ import sys
 from collections.abc import Callable
 from pathlib import Path
 from types import ModuleType
+from typing import Any
 
 HERE = Path(__file__).resolve().parent
 SCRIPTS = HERE.parent
@@ -150,6 +154,24 @@ def _post(
         return run(cmd, timeout * 2)
 
 
+def _record_failure(path: Path, failure: dict[str, Any] | None) -> None:
+    """Stamp the failed call's detail onto its pending note.
+
+    The console line carries one ``_tail`` line; the note keeps the
+    call's argv tail, exit and FULL stderr for the postmortem
+    (gr544215). Best-effort like the journal itself — a scratch-dir
+    fault loses the detail, not the note.
+    """
+    if failure is None:
+        return
+    try:
+        note = json.loads(path.read_text(encoding="utf-8"))
+        note["failure"] = failure
+        path.write_text(json.dumps(note, indent=2) + "\n", encoding="utf-8")
+    except (OSError, ValueError, TypeError):
+        pass
+
+
 def _journal(
     pending_dir: Path, sha: str, subject: str, label: str, calls: list[list[str]]
 ) -> Path | None:
@@ -204,19 +226,27 @@ def notify(
     for label, calls in plan:
         handle = label.split()[0]
         why = ""
+        failure: dict[str, Any] | None = None
         for call in calls:
             try:
                 cp = _post(run, [*base, *call], timeout)
             except (OSError, subprocess.SubprocessError) as e:
                 why = f"{handle} ({type(e).__name__})"
+                failure = {"call": call, "error": type(e).__name__}
                 break
             if cp.returncode != 0:
                 why = f"{handle} (exit {cp.returncode}: {_tail(cp.stderr)})"
+                failure = {
+                    "call": call,
+                    "exit": cp.returncode,
+                    "stderr": cp.stderr,
+                }
                 break
         p = pending.get(handle)
         if why:
             failed.append(why)
             if p is not None:
+                _record_failure(p, failure)
                 saved.append(p.name)
         else:
             ok.append(label)
@@ -252,16 +282,20 @@ def replay(
             continue
         label = str(note.get("label") or path.stem)
         why = ""
+        failure: dict[str, Any] | None = None
         for call in calls:
             try:
                 cp = _post(run, [*base, *call], timeout)
             except (OSError, subprocess.SubprocessError) as e:
                 why = type(e).__name__
+                failure = {"call": call, "error": why}
                 break
             if cp.returncode != 0:
                 why = f"exit {cp.returncode}: {_tail(cp.stderr)}"
+                failure = {"call": call, "exit": cp.returncode, "stderr": cp.stderr}
                 break
         if why:
+            _record_failure(path, failure)
             print(f"land-notify replay: {label} failed ({why}) — kept {path.name}")
             left += 1
         else:
