@@ -36,7 +36,11 @@ Steps, in order:
      `lint` / `test-linux*` run that is not success/skipped/neutral exits 2
      with job names, URLs and the `scripts/ci-failed` line. The release
      branch stays; fix via `scripts/ship --release` or `round cut --abandon`.
-     --ci-timeout also exits 2.
+     --ci-timeout also exits 2. Either verdict (green or red, with the run id)
+     is recorded in prod before any deploy as a row of the `release.ci_verdicts`
+     setting, `{sha, range: '<prev_prod>..<sha>', verdict, run_id, at}`
+     (best-effort, through scripts/prod-precis); the plan gate `tests-green`
+     reads it first (src/precis/plans/gates.py).
   7. `round deploy`, output streamed. Exit 3 (rollout done, runtime pending)
      prints the `next:` confirm line and exits 3. The deploy playbook's last
      gate (deploy/redeploy-precis.yml, "Verify every managed precis venv")
@@ -680,6 +684,102 @@ def record_prod_head(
     return f"prod head recorded: {head[:9]} (+{len(shas)} landed)"
 
 
+#: The prod record of CI verdicts on release candidates (``app_settings``,
+#: registered in ``precis.settings.REGISTRY``; a test pins the literals
+#: equal). ``precis.plans.gates`` reads it first for ``tests-green`` — the
+#: verdict is known here before the deploy, which is the whole point.
+CI_VERDICTS_KEY = "release.ci_verdicts"
+#: Most verdict rows kept; the oldest fall off first. Rows hold abbreviated
+#: shas (~130 bytes each), so 500 stay near 65 KB, inside one 128 KB argv slot.
+MAX_CI_VERDICTS = 500
+
+_VERDICTS_GET_RE = re.compile(
+    rf"^{re.escape(CI_VERDICTS_KEY)} = (.*) \(layer=(\w+)\)$", re.MULTILINE
+)
+
+
+def parse_ci_verdicts(stdout: str) -> list[dict[str, Any]]:
+    """The rows from ``precis settings get`` output; ``[]`` when unset,
+    unparsable or not the DB layer."""
+    m = _VERDICTS_GET_RE.search(stdout)
+    if m is None or m.group(2) != "db":
+        return []
+    try:
+        rows = json.loads(m.group(1))
+    except ValueError:
+        return []
+    return [r for r in rows if isinstance(r, dict)] if isinstance(rows, list) else []
+
+
+def ci_verdict_rows(
+    sha: str,
+    rng: str,
+    verdict: str,
+    run_id: str,
+    previous: list[dict[str, Any]],
+    now: datetime,
+) -> list[dict[str, Any]]:
+    """``previous`` plus ``{sha, range, verdict, run_id, at (UTC Z)}``,
+    deduped by sha keeping the newest, capped at :data:`MAX_CI_VERDICTS`.
+    Shas are abbreviated to :data:`LANDED_SHA_LEN` (gates match by prefix)."""
+    row = {
+        "sha": sha[:LANDED_SHA_LEN],
+        "range": rng,
+        "verdict": verdict,
+        "run_id": str(run_id or ""),
+        "at": now.strftime("%Y-%m-%dT%H:%M:%SZ"),
+    }
+    kept = [r for r in previous if str(r.get("sha", ""))[:LANDED_SHA_LEN] != row["sha"]]
+    return [*kept, row][-MAX_CI_VERDICTS:]
+
+
+def record_ci_verdict(
+    sha: str,
+    rng: str,
+    verdict: str,
+    run_id: str = "",
+    *,
+    transport: Transport | None = None,
+    now: datetime | None = None,
+) -> str:
+    """Append a CI verdict for candidate ``sha`` to prod; returns one status
+    line. ``rng`` is ``<prev_prod>..<sha>``; ``verdict`` is ``green`` or
+    ``red``. Same path and skip reasons as :func:`record_prod_head`, and the
+    same best-effort contract: a fault is reported, never raised.
+    """
+    if not sha:
+        return "ci verdict not recorded: no sha"
+    if verdict not in ("green", "red"):
+        return f"ci verdict not recorded: verdict {verdict!r} is not green|red"
+    if transport is None and (why := _record_skip_reason()):
+        return f"ci verdict not recorded: {why}"
+    send = transport or _prod_precis
+    when = now or datetime.now(UTC)
+    try:
+        rc, out, _err = send(["settings", "get", CI_VERDICTS_KEY])
+        previous = parse_ci_verdicts(out) if rc == 0 else []
+        rows = ci_verdict_rows(sha, rng, verdict, run_id, previous, when)
+        value = json.dumps(rows, separators=(",", ":"))
+        rc, _out, err = send(["settings", "set", CI_VERDICTS_KEY, value])
+    except (OSError, subprocess.SubprocessError) as e:
+        return f"ci verdict not recorded: {type(e).__name__}"
+    if rc != 0:
+        tail = re.sub(r"[a-z]+://\S+", "<url>", (err.strip().splitlines() or [""])[-1])
+        return f"ci verdict not recorded (exit {rc}): {tail[:200]}"
+    return f"ci verdict recorded: {sha[:9]} {verdict}"
+
+
+def note_ci_verdict(head: str, verdict: str, run_id: str = "") -> None:
+    """Record the verdict on release head ``head`` against origin/prod and
+    say the status line. Best-effort: never raises."""
+    prev = rev("origin/prod")
+    rng = f"{prev[:LANDED_SHA_LEN]}..{head[:LANDED_SHA_LEN]}" if prev else head
+    try:
+        say(record_ci_verdict(head, rng, verdict, run_id))
+    except Exception as e:  # the gate step must not die on bookkeeping
+        say(f"ci verdict not recorded: {type(e).__name__}")
+
+
 #: Longest the deploy path waits on scripts/gripe-validate (two prod calls,
 #: each capped at 90 s); past this it is abandoned, the release goes on.
 VALIDATE_TIMEOUT_S = 200.0
@@ -807,6 +907,7 @@ def wait_ci(branch: str, args: argparse.Namespace) -> int:
             return die(1, f"release {branch} is missing on origin — investigate")
         if head and cand == head and rbranch == branch:
             say(f"CI green on {branch} at {head[:9]}")
+            note_ci_verdict(head, "green", _regate_run_id(head))
             return 0
         if head and rbranch == branch:
             red = ci_red(head)
@@ -819,6 +920,7 @@ def wait_ci(branch: str, args: argparse.Namespace) -> int:
                 time.sleep(args.poll)
                 red = ci_red(head)
             if isinstance(red, dict):
+                note_ci_verdict(head, "red", red["run_id"])
                 print(
                     f"CI red on {branch} at {head[:9]} — failing: {', '.join(red['jobs'])}",
                     file=sys.stderr,

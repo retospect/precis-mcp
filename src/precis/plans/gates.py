@@ -12,8 +12,9 @@ each and nothing is dispatched for it. Kinds:
   :mod:`precis.handlers.todo`).
 - ``sha-in-prod {sha}`` — open once ``sha`` (hex prefix, at least 7 chars) is
   the deployed prod head or one of the commits that deploy brought in.
-- ``tests-green {range}`` — ``range`` is ``A..B`` or one sha; open once its
-  end (``B``) is in prod.
+- ``tests-green {range}`` — ``range`` is ``A..B`` or one sha; open once CI
+  is recorded green on its end (``B``), else (no verdict row) once ``B`` is
+  in prod.
 
 **Where prod's head comes from.** The server has no git. ``scripts/release``
 records ``{head, deployed_at, landed}`` after each deploy into the
@@ -23,13 +24,20 @@ shas of every deploy's ``prev..head`` range, so a sha that rode an earlier
 release stays visible. Reads go through :func:`precis.settings.get_str`, so
 a freshly written record can take up to its 60 s cache TTL to show.
 
-**tests-green is derived, not recorded.** Nothing in prod stores a CI
-verdict, but ``scripts/release`` deploys a head only after check.yml went
-green on exactly that head (``wait_ci``), and a green head covers its
-ancestors. So a range whose end is in the release record has a green gate;
-a range whose end is not yet deployed is closed even if CI is already green
-on a release candidate (it has not reached prod, and the server cannot see
-the candidate). Revisit if a verdict row ever lands.
+**tests-green reads a recorded verdict first.** ``scripts/release`` writes
+``[{sha, range, verdict, run_id, at}]`` into the ``release.ci_verdicts``
+setting when its gate step learns check.yml's verdict on a candidate —
+green or red, before any deploy. The newest row (by ``at``) whose ``sha``
+is the gate range's end, or whose ``range`` equals the gate's range, decides:
+green opens, red closes with the run id. So a green candidate that has not
+deployed reads open, and a red one reads closed with its reason.
+
+**Fallback: the prod-head derivation.** With no verdict row for the range
+(nothing recorded, or the key unreadable) the gate keeps its earlier
+behaviour: ``scripts/release`` deploys a head only after check.yml went
+green on exactly that head, and a green head covers its ancestors, so a
+range whose end is in the ``release.prod_head`` record is green and one that
+is not yet deployed is closed.
 
 Evaluators never raise: bad args, an unreadable record or a store fault
 return ``GateVerdict(False, <reason>)`` — a closed gate with its reason
@@ -51,6 +59,10 @@ if TYPE_CHECKING:
 #: ``app_settings`` key ``scripts/release`` writes (it cannot import this
 #: package, so the literal is repeated there; a test pins them equal).
 PROD_HEAD_KEY = "release.prod_head"
+
+#: ``app_settings`` key holding the recorded CI verdicts (same repeated-
+#: literal arrangement as :data:`PROD_HEAD_KEY`).
+CI_VERDICTS_KEY = "release.ci_verdicts"
 
 #: Shortest sha prefix a gate may name — git's own default abbreviation.
 MIN_SHA_LEN = 7
@@ -146,6 +158,48 @@ def read_prod_head(store: Store) -> dict[str, Any] | None:
     return rec
 
 
+def read_ci_verdicts(store: Store) -> list[dict[str, Any]]:
+    """The well-formed rows of ``release.ci_verdicts``; ``[]`` when the key
+    is absent, unparsable or not a list. A malformed row is skipped."""
+    from precis import settings
+
+    raw = settings.get_str(CI_VERDICTS_KEY, store=store)
+    if not raw:
+        return []
+    try:
+        rows = json.loads(raw)
+    except ValueError:
+        return []
+    if not isinstance(rows, list):
+        return []
+    return [
+        r
+        for r in rows
+        if isinstance(r, dict)
+        and isinstance(r.get("sha"), str)
+        and r.get("verdict") in ("green", "red")
+    ]
+
+
+def _newest_verdict(store: Store, sha: str, rng: str) -> dict[str, Any] | None:
+    """The newest verdict row for the gate's range end ``sha`` (prefix match)
+    or whose recorded range equals ``rng``; ties on ``at`` go to the row
+    later in the list."""
+    want = rng.strip().lower()
+    best: tuple[str, int] | None = None
+    pick: dict[str, Any] | None = None
+    for i, row in enumerate(read_ci_verdicts(store)):
+        hit = _prefix_match(sha, row["sha"].lower()) or (
+            str(row.get("range") or "").strip().lower() == want
+        )
+        if not hit:
+            continue
+        key = (str(row.get("at") or ""), i)
+        if best is None or key >= best:
+            best, pick = key, row
+    return pick
+
+
 def _prefix_match(a: str, b: str) -> bool:
     """Whether one sha is a prefix of the other (either may be abbreviated)."""
     n = min(len(a), len(b))
@@ -196,6 +250,14 @@ def _tests_green(
     sha, bad = _clean_sha(end, "tests-green args.range end")
     if bad:
         return bad
+    row = _newest_verdict(store, sha, raw)
+    if row is not None:
+        at = row.get("at") or "unknown time"
+        run = f"run {row['run_id']}" if row.get("run_id") else "no run id"
+        short = row["sha"][:9]
+        if row["verdict"] == "green":
+            return GateVerdict(True, f"CI green on {short} ({run}, {at})")
+        return _closed(f"CI red on {short} ({run}, {at})")
     res = _sha_deployed(store, sha)
     why = res.why.replace("not in prod yet", "no green deploy covers it yet")
     return GateVerdict(res.open, why)
@@ -243,10 +305,12 @@ def evaluate(
 
 
 __all__ = [
+    "CI_VERDICTS_KEY",
     "EVALUATORS",
     "MIN_SHA_LEN",
     "PROD_HEAD_KEY",
     "GateVerdict",
     "evaluate",
+    "read_ci_verdicts",
     "read_prod_head",
 ]

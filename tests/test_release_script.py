@@ -412,6 +412,63 @@ def _load_release(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> ModuleType
     return mod
 
 
+SKIP_LINE = "ci verdict not recorded: PRECIS_ROUND_ROOT names another checkout"
+
+
+def test_green_gate_reaches_the_verdict_recorder(rig: Rig) -> None:
+    """The rig names another checkout, so the real recorder refuses with its
+    skip reason — the line proves wait_ci called it on the green path."""
+    out = _release(rig, *FAST, **_green(rig))
+    assert out.returncode == 3, out.stdout + out.stderr
+    assert SKIP_LINE in out.stdout
+
+
+def test_red_gate_reaches_the_verdict_recorder(rig: Rig) -> None:
+    s = rig.shas["c3"]
+    url = "https://github.com/o/r/actions/runs/4242/job/9"
+    (rig.gh_dir / s).write_text(
+        f"lint\tcompleted\tsuccess\t{url}\ntest-linux (1)\tcompleted\tfailure\t{url}\n",
+        encoding="utf-8",
+    )
+    out = _release(rig, "--poll", "0.01", "--ci-timeout", "1")
+    assert out.returncode == 2
+    assert SKIP_LINE in out.stdout
+
+
+@pytest.mark.parametrize("verdict", ["green", "red"])
+def test_wait_ci_records_the_verdict_with_range_and_run_id(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, verdict: str
+) -> None:
+    mod = _load_release(tmp_path, monkeypatch)
+    head = "c0ffee" + "1" * 34
+    prod = "9" * 40
+    calls: list[tuple[str, str, str, str]] = []
+    facts = {
+        "release_head": head,
+        "release_branch": "release/r1",
+        "candidate": head if verdict == "green" else "",
+        "candidate_state": "found",
+    }
+    monkeypatch.setattr(mod, "gate_facts", lambda: facts)
+    monkeypatch.setattr(mod, "rev", lambda name: prod)
+    monkeypatch.setattr(mod, "_regate_run_id", lambda sha: "555")
+    monkeypatch.setattr(
+        mod, "ci_red", lambda h: {"jobs": ["lint"], "urls": [], "run_id": "666"}
+    )
+    monkeypatch.setattr(mod.time, "sleep", lambda s: None)
+    monkeypatch.setattr(
+        mod,
+        "record_ci_verdict",
+        lambda sha, rng, v, run_id="": calls.append((sha, rng, v, run_id)) or "ok",
+    )
+    args = mod.argparse.Namespace(ci_timeout=1.0, poll=0.0)
+    rc = mod.wait_ci("release/r1", args)
+    assert rc == (0 if verdict == "green" else 2)
+    n = mod.LANDED_SHA_LEN
+    run_id = "555" if verdict == "green" else "666"
+    assert calls == [(head, f"{prod[:n]}..{head[:n]}", verdict, run_id)]
+
+
 @pytest.mark.parametrize(
     ("cut_out", "claims"),
     [

@@ -285,6 +285,18 @@ REGISTRY: dict[str, SettingSpec] = {
             "DB-only — no env fallback.",
         ),
         SettingSpec(
+            key="release.ci_verdicts",
+            type="str",
+            env_var=None,
+            default=None,
+            doc="CI verdicts for release candidates as a JSON list of "
+            "{sha, range, verdict (green|red), run_id, at}, newest per sha, "
+            "capped; written by scripts/release when its gate step learns a "
+            "verdict, before any deploy; read first by precis.plans.gates "
+            "for tests-green (prod head is the fallback). DB-only — no env "
+            "fallback.",
+        ),
+        SettingSpec(
             key="contact.edgar_user_agent",
             type="str",
             env_var="PRECIS_EDGAR_USER_AGENT",

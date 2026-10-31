@@ -194,6 +194,105 @@ def test_tests_green_closed_when_end_not_deployed(store: Store) -> None:
     assert not res.open and "no green deploy covers it" in res.why
 
 
+CAND = "cafe0123456789abcdef0123456789abcdef0123"
+
+
+def _verdicts(store: Store, *rows: dict[str, Any]) -> None:
+    psettings.set_setting(gates.CI_VERDICTS_KEY, json.dumps(list(rows)), store=store)
+
+
+def _row(
+    verdict: str, at: str, sha: str = CAND, run_id: str = "777", **extra: Any
+) -> dict[str, Any]:
+    return {
+        "sha": sha[:12],
+        "range": f"{HEAD[:12]}..{sha[:12]}",
+        "verdict": verdict,
+        "run_id": run_id,
+        "at": at,
+        **extra,
+    }
+
+
+def _tg(rng: str) -> dict[str, Any]:
+    return {"kind": "tests-green", "args": {"range": rng}}
+
+
+def test_tests_green_opens_on_a_green_verdict_before_deploy(store: Store) -> None:
+    _record(store)  # prod is at HEAD; CAND has not deployed
+    _verdicts(store, _row("green", "2026-10-31T01:00:00Z"))
+    res = evaluate(store, _tg(f"{HEAD[:9]}..{CAND[:9]}"), todo_id=1)
+    assert res.open and "CI green on cafe01234" in res.why and "run 777" in res.why
+
+
+def test_tests_green_closes_on_a_red_verdict_with_the_reason(store: Store) -> None:
+    _verdicts(store, _row("red", "2026-10-31T01:00:00Z", run_id="888"))
+    res = evaluate(store, _tg(CAND[:9]), todo_id=1)
+    assert not res.open and "CI red on cafe01234" in res.why and "run 888" in res.why
+
+
+def test_tests_green_red_verdict_beats_a_deployed_head(store: Store) -> None:
+    """A recorded red on the end wins over the prod-head derivation."""
+    _record(store)
+    _verdicts(store, _row("red", "2026-10-31T01:00:00Z", sha=HEAD))
+    assert not evaluate(store, _tg(HEAD[:9]), todo_id=1).open
+
+
+def test_tests_green_newer_red_beats_older_green(store: Store) -> None:
+    _verdicts(
+        store,
+        _row("green", "2026-10-31T01:00:00Z"),
+        _row("red", "2026-10-31T02:00:00Z"),
+    )
+    assert not evaluate(store, _tg(CAND[:9]), todo_id=1).open
+
+
+def test_tests_green_newer_green_beats_older_red(store: Store) -> None:
+    # list order is not time order: the `at` stamp decides
+    _verdicts(
+        store,
+        _row("green", "2026-10-31T02:00:00Z"),
+        _row("red", "2026-10-31T01:00:00Z"),
+    )
+    assert evaluate(store, _tg(CAND[:9]), todo_id=1).open
+
+
+def test_tests_green_matches_the_recorded_range(store: Store) -> None:
+    # the gate names an end the row's sha does not prefix, but the whole range
+    row = _row("green", "2026-10-31T01:00:00Z")
+    row["sha"] = "0" * 12
+    row["range"] = f"{HEAD[:9]}..{CAND[:9]}"
+    _verdicts(store, row)
+    assert evaluate(store, _tg(f"{HEAD[:9]}..{CAND[:9]}"), todo_id=1).open
+
+
+def test_tests_green_other_sha_verdict_does_not_apply(store: Store) -> None:
+    _record(store)
+    _verdicts(store, _row("green", "2026-10-31T01:00:00Z", sha="d" * 40))
+    res = evaluate(store, _tg(CAND[:9]), todo_id=1)
+    assert not res.open and "no green deploy covers it" in res.why
+
+
+def test_tests_green_falls_back_to_prod_head_without_a_verdict(store: Store) -> None:
+    _record(store)
+    assert evaluate(store, _tg(HEAD[:9]), todo_id=1).open
+    other = "9" * 12
+    _verdicts(store, _row("green", "2026-10-31T01:00:00Z", sha="d" * 40))
+    assert evaluate(store, _tg(HEAD[:9]), todo_id=1).open
+    assert not evaluate(store, _tg(other), todo_id=1).open
+
+
+@pytest.mark.parametrize(
+    "raw", ["{not json", '{"sha":"x"}', '[1,"x",{"sha":"cafe0123","verdict":"?"}]']
+)
+def test_tests_green_garbled_verdicts_fall_back(store: Store, raw: str) -> None:
+    _record(store)
+    psettings.set_setting(gates.CI_VERDICTS_KEY, raw, store=store)
+    assert gates.read_ci_verdicts(store) == []
+    assert evaluate(store, _tg(HEAD[:9]), todo_id=1).open
+    assert not evaluate(store, _tg(CAND[:9]), todo_id=1).open
+
+
 @pytest.mark.parametrize("rng", [None, "", "a..", "..main", "HEAD~3..HEAD", 7])
 def test_tests_green_bad_args_close(store: Store, rng: object) -> None:
     _record(store)
@@ -362,3 +461,105 @@ def test_real_transport_skipped_without_prod_dsn(
     assert release.record_prod_head("p", HEAD, landed=LANDED) == (
         "prod head not recorded: PRECIS_GRIPE_NOTE=0"
     )
+    assert release.record_ci_verdict("a..b", "b", "green") == (
+        "ci verdict not recorded: PRECIS_GRIPE_NOTE=0"
+    )
+
+
+# ── the CI verdict writer ─────────────────────────────────────────
+
+NOW = datetime(2026, 10, 31, 3, 4, 5, tzinfo=UTC)
+
+
+def test_ci_verdicts_key_matches_registry(release: ModuleType) -> None:
+    assert release.CI_VERDICTS_KEY == gates.CI_VERDICTS_KEY
+    assert gates.CI_VERDICTS_KEY in psettings.REGISTRY
+    assert psettings.REGISTRY[gates.CI_VERDICTS_KEY].env_var is None
+
+
+def test_record_ci_verdict_writes_the_row_gates_read(
+    store: Store, release: ModuleType
+) -> None:
+    prod = FakeProd(store)
+    rng = f"{HEAD[:12]}..{CAND[:12]}"
+    line = release.record_ci_verdict(
+        CAND, rng, "green", "4242", transport=prod, now=NOW
+    )
+    assert line == f"ci verdict recorded: {CAND[:9]} green"
+    assert [c[1] for c in prod.calls] == ["get", "set"]
+    assert gates.read_ci_verdicts(store) == [
+        {
+            "sha": CAND[:12],
+            "range": rng,
+            "verdict": "green",
+            "run_id": "4242",
+            "at": "2026-10-31T03:04:05Z",
+        }
+    ]
+    assert evaluate(store, _tg(f"{HEAD[:9]}..{CAND[:9]}"), todo_id=1).open
+
+
+def test_record_ci_verdict_red_closes_the_gate(
+    store: Store, release: ModuleType
+) -> None:
+    prod = FakeProd(store)
+    release.record_ci_verdict(
+        CAND, f"{HEAD[:12]}..{CAND[:12]}", "red", "9", transport=prod
+    )
+    res = evaluate(store, _tg(CAND[:9]), todo_id=1)
+    assert not res.open and "CI red" in res.why and "run 9" in res.why
+
+
+def test_record_ci_verdict_dedupes_by_sha_keeping_newest(
+    store: Store, release: ModuleType
+) -> None:
+    prod = FakeProd(store)
+    other = "e" * 40
+    release.record_ci_verdict(CAND, "r1", "red", "1", transport=prod, now=NOW)
+    release.record_ci_verdict(other, "r2", "green", "2", transport=prod, now=NOW)
+    release.record_ci_verdict(CAND, "r3", "green", "3", transport=prod, now=NOW)
+    rows = gates.read_ci_verdicts(store)
+    assert [(r["sha"], r["verdict"], r["run_id"]) for r in rows] == [
+        (other[:12], "green", "2"),
+        (CAND[:12], "green", "3"),
+    ]
+
+
+def test_record_ci_verdict_caps_the_list(release: ModuleType) -> None:
+    prev = [
+        {"sha": f"{i:012x}", "verdict": "green"} for i in range(release.MAX_CI_VERDICTS)
+    ]
+    rows = release.ci_verdict_rows(CAND, "r", "red", "5", prev, NOW)
+    assert len(rows) == release.MAX_CI_VERDICTS
+    assert rows[-1]["sha"] == CAND[:12]
+    assert rows[0]["sha"] == f"{1:012x}"  # the oldest fell off
+
+
+def test_record_ci_verdict_survives_unreadable_previous(
+    store: Store, release: ModuleType
+) -> None:
+    psettings.set_setting(gates.CI_VERDICTS_KEY, "{garbage", store=store)
+    assert release.parse_ci_verdicts("garbage") == []
+    assert release.parse_ci_verdicts("release.ci_verdicts = [] (layer=default)") == []
+    assert release.parse_ci_verdicts('release.ci_verdicts = {"a":1} (layer=db)') == []
+    release.record_ci_verdict(CAND, "r", "green", "1", transport=FakeProd(store))
+    assert [r["sha"] for r in gates.read_ci_verdicts(store)] == [CAND[:12]]
+
+
+def test_record_ci_verdict_reports_failures_without_raising(
+    store: Store, release: ModuleType
+) -> None:
+    failing = FakeProd(store, fail_set=True)
+    line = release.record_ci_verdict(CAND, "r", "green", "1", transport=failing)
+    assert line.startswith("ci verdict not recorded (exit 1): refused: <url>")
+    assert gates.read_ci_verdicts(store) == []
+
+    def boom(args: list[str]) -> tuple[int, str, str]:
+        raise OSError("no wrapper")
+
+    assert (
+        release.record_ci_verdict(CAND, "r", "red", transport=boom)
+        == "ci verdict not recorded: OSError"
+    )
+    assert release.record_ci_verdict("", "r", "red", transport=boom).endswith("no sha")
+    assert "not green|red" in release.record_ci_verdict(CAND, "r", "?", transport=boom)
