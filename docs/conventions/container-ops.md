@@ -314,7 +314,8 @@ that isn't implemented — this change only surfaces the lag.
   pass), `ctx-guard [NAME…]` (types the handoff instruction once when a
   pane crosses 70% ctx, re-arms when ctx drops below `--rearm`; a FORCED
   HANDOFF line at `--hard`, default 85%), `watch-done NAME…` and
-  `stuck-watch [NAME…]` (Monitor-friendly, one line per transition), and
+  `stuck-watch [NAME…]` (Monitor-friendly: changed states only, settled
+  and batched; `ctx-guard --compact` compacts orchestrator main loops), and
   `close NAME…` (kill the window, `git worktree remove` without `--force`,
   delete the branch only after a clean removal, log it). It calls tmux with
   argument lists only. Session, worktree root and model come from

@@ -30,7 +30,8 @@ the tier, with its UTC time).
 | batch + brief | the session MCP (`edit(mode='fix')`); the file a builder without MCP reads is `scripts/prod-precis gripe-fix brief <batch> --out FILE` (the `/batch` dossier) |
 | assign / launch | `scripts/fleet-wave launch NAME --batch SLUG --tier R\|W [--devin\|--codex]` renders that file, launches, and records `host`/`<vendor>:<window>`/`tree` on every gripe of the batch (`--brief FILE` for a one-off task); `scripts/prod-precis gripe-fix assign SLUG --host H --session S --tree T` by hand |
 | re-point a builder at a new batch | `scripts/fleet-wave reassign NAME --batch SLUG` (or `--brief FILE`): `/clear`, then "Read … and do it", then assign |
-| watch | `watch-done`, `stuck-watch` under Monitor; `scripts/fleet-wave handoff-wait NAME...` resumes a builder that printed a bare `DONE-HANDOFF` (`/clear` + resume line); `scripts/fleet panes status [--flagged]`; the ctx ceiling nudge is `ctx-guard` once gr515267 lands |
+| watch | one `scripts/fleet-wave stuck-watch` under Monitor — its `done:` line carries the finish line, so `watch-done` on top only doubles every wake-up (gr515152); it prints only changed states, batched (`--settle` 2 polls, `--digest-sec` 300, a prompt flushes at once, a quiet pane repeats every `--requiet-min` 60). Never poll with a Monitor `sleep` loop or `tmux capture` in the main loop. `scripts/fleet-wave handoff-wait NAME...` resumes a builder that printed a bare `DONE-HANDOFF` (`/clear` + resume line); `scripts/fleet panes status [--flagged]` for a one-off look |
+| compact | `scripts/fleet-wave ctx-guard NAME... --compact --ceiling C` in a background window sends `/compact` to the orchestrator main loops once ctx reaches C% (C = 120k tokens / window size: 12 on a 1M window, 60 on 200k; re-arms at C/2; skipped while the tree has a live subagent task). Without `--compact` it is the builders' 70% WIP+handoff nudge (gr515267). Bulky reads (queue files, triage outputs, review texts) go to a Haiku digest agent, not into the main loop (gr515153) |
 | handoff | the builder's finish message / handoff → `edit(..., args={'handoff': ...})` on its gripes |
 | review | a `reviewer` agent on the branch; its verdict → `edit(..., args={'review': 'land'\|'fix', 'findings': ...})`; a fix round is the next brief, sent with `send-line` |
 | land | tier R: the release owner runs `scripts/fleet-wave land <tree>` (ship in the builder's own tree; no cherry-pick), or a round (`round` skill) for migrations; tier W: the builder lands; then `edit(..., args={'landed': '<main sha>'})`. `scripts/fleet-wave cites ID...` lists unlanded branch commits naming a gripe (is it already built somewhere?) |
@@ -41,7 +42,7 @@ Retired scratch (GRIPE_FIX's job dir): `launch3.sh`/`launch-codex.sh` →
 `launch --batch`/`--codex`; `peek.sh`/`peekall.sh` → `peek`;
 `handoff-wait.sh` → `handoff-wait`; `reassign.sh` → `reassign`;
 `dupcheck.sh` → `cites`; `idle-watch.sh` → `panes status` + `stuck-watch`;
-`ctx-guard.sh` → `ctx-guard` (gr515267, in flight); `recover_gf.py` —
+`ctx-guard.sh` → `ctx-guard` (gr515267); `recover_gf.py` —
 obsolete, the state is in the DB.
 
 ## Brief rules that bit here

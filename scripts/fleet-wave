@@ -28,10 +28,13 @@ The thread-session fleet (one window per roadmap thread) is
                                         fresh instructions past the ctx ceiling
     fleet-wave watch-done NAME...       emit when <tree>/.claude/purpose finishes
     fleet-wave stuck-watch [NAME...]    emit on prompt / quiet / done / gone
+                                        (done carries the finish line, so it
+                                        also covers watch-done); batched
     fleet-wave ctx-guard [NAME...]      send the WIP+handoff instruction once
                                         when a pane's ctx hits --ceiling
                                         (default 70%), re-arm below --rearm;
-                                        FORCED HANDOFF line at --hard (85%)
+                                        FORCED HANDOFF line at --hard (85%);
+                                        --compact sends /compact instead
     fleet-wave close NAME...            kill window, remove tree, drop branch;
                                         refuses a tree with unlanded commits
     fleet-wave land TREE [--checked|--remote] [-m MSG]
@@ -78,7 +81,17 @@ At or above ``--hard`` (default 85% — where ``send-line`` refuses fresh
 instructions) the guard also prints one FORCED HANDOFF line per episode
 for the coordinator; that marker re-arms on the same ``--rearm`` drop.
 ``--message`` / ``--message-file`` override the default instruction;
-``{name}`` inside it fills with the wave name.
+``{name}`` inside it fills with the wave name. ``--compact`` sends
+``/compact`` instead and re-arms at half the ceiling: the orchestrator
+main loops (any window name, not only ``claude-``/``devin-``) cost most
+in cache reads past ~120k tokens (gr515153).
+
+Watcher output is Monitor input, and every line wakes the coordinator at
+full context (gr515152: 70% of GRIPE_FIX's Opus calls). So
+``stuck-watch``/``watch-done`` print only real changes: a changed state
+must hold ``--settle`` polls, a quiet pane repeats every ``--requiet-min``
+(not every ten minutes), and non-urgent lines wait up to ``--digest-sec``
+to leave in one write; only a permission prompt flushes at once.
 
 Launch tiers are authority v2's R and W (.claude/fleet/authority.md);
 ``readonly`` and ``qland`` are aliases for R and W. Launch creates the
@@ -166,7 +179,7 @@ import socket
 import subprocess
 import sys
 import time
-from collections.abc import Iterable, Sequence
+from collections.abc import Callable, Iterable, Sequence
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -1405,9 +1418,50 @@ def _ticks(a: argparse.Namespace) -> Iterable[int]:
     return range(a.ticks) if a.ticks else itertools.count()
 
 
+class _Digest:
+    """Coalesce watcher events into one write (gr515152).
+
+    Every stdout line a Monitor sees wakes the coordinator loop at full
+    context, so a watcher holds non-urgent events until ``hold_s`` has
+    passed since the first held one and prints them together; an urgent
+    event (a permission prompt) flushes everything held at once. A later
+    event for the same key replaces the held one, and ``drop`` removes it
+    (the state flapped back before anything was printed). ``commit`` runs
+    only once the line is out, so a killed watcher re-reports what it
+    never printed.
+    """
+
+    def __init__(self, hold_s: float) -> None:
+        self.hold_s = hold_s
+        self.held: dict[str, tuple[str, bool, Callable[[], object]]] = {}
+        self.since = 0.0
+
+    def add(
+        self, key: str, line: str, urgent: bool, commit: Callable[[], object]
+    ) -> None:
+        if not self.held:
+            self.since = time.monotonic()
+        self.held[key] = (line, urgent, commit)
+
+    def drop(self, key: str) -> None:
+        self.held.pop(key, None)
+
+    def flush(self, *, final: bool = False) -> None:
+        if not self.held:
+            return
+        urgent = any(u for _, u, _ in self.held.values())
+        if not (final or urgent or time.monotonic() - self.since >= self.hold_s):
+            return
+        items, self.held = list(self.held.values()), {}
+        print("\n".join(line for line, _, _ in items), flush=True)
+        for _, _, commit in items:
+            commit()
+
+
 def cmd_watch_done(f: Fleet, a: argparse.Namespace) -> int:
     seen_dir = f.state / "watch-seen"
     seen_dir.mkdir(parents=True, exist_ok=True)
+    digest = _Digest(a.digest_sec)
     for k, _ in enumerate(_ticks(a)):
         if k:
             time.sleep(a.interval)
@@ -1416,15 +1470,29 @@ def cmd_watch_done(f: Fleet, a: argparse.Namespace) -> int:
             seen = seen_dir / name
             old = seen.read_text(encoding="utf-8") if seen.exists() else ""
             if line and line != old:
-                seen.write_text(line, encoding="utf-8")
-                print(f"DONE {utc_stamp()} {line[:160]}", flush=True)
+                digest.add(
+                    name,
+                    f"DONE {utc_stamp()} {line[:160]}",
+                    False,
+                    lambda s=seen, ln=line: s.write_text(ln, encoding="utf-8"),
+                )
+            else:
+                digest.drop(name)
+        digest.flush()
+    digest.flush(final=True)
     return 0
 
 
-def _stuck_state(f: Fleet, name: str, win: str | None, quiet_s: int) -> str:
+def _stuck_state(
+    f: Fleet, name: str, win: str | None, quiet_s: int, requiet_s: int = 0
+) -> tuple[str, str]:
+    """``(key, text)``: the key decides whether the state changed, the text
+    is what gets printed. A quiet pane keeps one key per ``requiet_s``
+    bucket, so it is reported once and again only that much later — not
+    every ten minutes (gr515152)."""
     pane = f.capture(win) if win else None
     if pane is None:
-        return "gone"
+        return "gone", "gone"
     st_dir = f.state / "stuck-seen"
     digest = hashlib.sha256(pane.encode("utf-8")).hexdigest()[:12]
     hfile, tfile = st_dir / f"{name}.hash", st_dir / f"{name}.t"
@@ -1435,30 +1503,58 @@ def _stuck_state(f: Fleet, name: str, win: str | None, quiet_s: int) -> str:
     since = int(tfile.read_text(encoding="utf-8") or now) if tfile.exists() else now
     age = now - since
     if dialog_type(pane):
-        return "prompt: " + dialog_command(pane)[:80]
-    if _finish_line(f, name):
-        return "done"
+        cmd = "prompt: " + dialog_command(pane)[:80]
+        return cmd, cmd
+    if finish := _finish_line(f, name):
+        return f"done {finish}", f"done: {finish[:160]}"
     if age > quiet_s:
-        return f"quiet{age // 600 * 10}m"
-    return "ok"
+        bucket = age // requiet_s if requiet_s else 0
+        return f"quiet#{bucket}", f"quiet {age // 60}m"
+    return "ok", "ok"
 
 
 def cmd_stuck_watch(f: Fleet, a: argparse.Namespace) -> int:
+    """One line per real change, batched: a state must hold for ``--settle``
+    polls before it counts, quiet panes repeat only every ``--requiet-min``,
+    and everything but a prompt waits up to ``--digest-sec`` to ride in one
+    write with the others. ``done`` already carries the finish line, so
+    this watcher alone covers ``watch-done``."""
     st_dir = f.state / "stuck-seen"
     st_dir.mkdir(parents=True, exist_ok=True)
+    digest = _Digest(a.digest_sec)
+    cand: dict[str, tuple[str, int]] = {}
     for k, _ in enumerate(_ticks(a)):
         if k:
             time.sleep(a.interval)
         names = a.names or [w.split("-", 1)[1] for w in f.wave_windows()]
         for name in names:
             win = f.resolve(name)
-            st = _stuck_state(f, name, win, a.quiet_min * 60)
+            key, text = _stuck_state(
+                f, name, win, a.quiet_min * 60, a.requiet_min * 60
+            )
             sfile = st_dir / f"{name}.st"
             old = sfile.read_text(encoding="utf-8") if sfile.exists() else ""
-            if st != old:
-                sfile.write_text(st, encoding="utf-8")
-                if st != "ok":
-                    print(f"{utc_stamp()} {win or name} {st}", flush=True)
+            if key == old:
+                cand.pop(name, None)
+                digest.drop(name)
+                continue
+            prev = cand.get(name)
+            n = prev[1] + 1 if prev and prev[0] == key else 1
+            cand[name] = (key, n)
+            if n < a.settle:
+                continue
+            if key == "ok":
+                sfile.write_text(key, encoding="utf-8")
+                digest.drop(name)
+                continue
+            digest.add(
+                name,
+                f"{utc_stamp()} {win or name} {text}",
+                key.startswith("prompt"),
+                lambda s=sfile, v=key: s.write_text(v, encoding="utf-8"),
+            )
+        digest.flush()
+    digest.flush(final=True)
     return 0
 
 
@@ -1478,7 +1574,7 @@ _CTX_GUARD_MESSAGE = (
 def _ctx_guard_message(a: argparse.Namespace) -> str:
     if a.message_file:
         return Path(a.message_file).read_text(encoding="utf-8").rstrip("\n")
-    return a.message or _CTX_GUARD_MESSAGE
+    return a.message or ("/compact" if a.compact else _CTX_GUARD_MESSAGE)
 
 
 def cmd_ctx_guard(f: Fleet, a: argparse.Namespace) -> int:
@@ -1496,6 +1592,8 @@ def cmd_ctx_guard(f: Fleet, a: argparse.Namespace) -> int:
     the same ``--rearm`` drop. A pane that jumps straight past the
     ceiling still gets the instruction through ``_send_text``.
     """
+    if a.rearm is None:
+        a.rearm = a.ceiling // 2 if a.compact else 40
     if a.rearm >= a.ceiling:
         print(
             f"fleet-wave: --rearm ({a.rearm}) must be below --ceiling "
@@ -1506,6 +1604,7 @@ def cmd_ctx_guard(f: Fleet, a: argparse.Namespace) -> int:
     st_dir = f.state / "ctx-guard"
     st_dir.mkdir(parents=True, exist_ok=True)
     text = _ctx_guard_message(a)
+    said: dict[str, str] = {}
     for k, _ in enumerate(_ticks(a)):
         if k:
             time.sleep(a.interval)
@@ -1521,10 +1620,14 @@ def cmd_ctx_guard(f: Fleet, a: argparse.Namespace) -> int:
             marker = st_dir / name
             hard = st_dir / f"{name}.hard"
             if pct < a.rearm:
+                said.pop(name, None)
                 marker.unlink(missing_ok=True)
                 hard.unlink(missing_ok=True)
                 continue
             if pct >= a.ceiling and not marker.exists():
+                tree = f.worktrees / name
+                if a.compact and tree.is_dir() and _active_subagent_task(tree):
+                    continue  # /compact under a live subagent loses its result
                 rc, note = _send_text(
                     f,
                     win,
@@ -1538,16 +1641,21 @@ def cmd_ctx_guard(f: Fleet, a: argparse.Namespace) -> int:
                 # the guard neither resends nor nags every poll.
                 if rc in (0, 4):
                     marker.write_text(f"{pct} {utc_stamp()}\n", encoding="utf-8")
+                what = "/compact" if a.compact else "WIP+handoff"
                 if rc == 0:
-                    outcome = "sent WIP+handoff"
+                    outcome = f"sent {what}"
                 elif rc == 4:
-                    outcome = f"sent WIP+handoff, UNVERIFIED ({note})"
+                    outcome = f"sent {what}, UNVERIFIED ({note})"
                 else:
                     outcome = f"send refused ({note})"
-                print(
-                    f"{utc_stamp()} ctx-guard: {win} at {pct}% — {outcome}",
-                    flush=True,
-                )
+                # A refusal retries every poll; say it once per distinct
+                # reason, not once per minute (gr515152).
+                if rc in (0, 4) or said.get(name) != outcome:
+                    print(
+                        f"{utc_stamp()} ctx-guard: {win} at {pct}% — {outcome}",
+                        flush=True,
+                    )
+                said[name] = outcome
             if pct >= a.hard and not hard.exists():
                 hard.write_text(f"{pct} {utc_stamp()}\n", encoding="utf-8")
                 print(
@@ -1835,8 +1943,29 @@ def parser() -> argparse.ArgumentParser:
         s.add_argument("names", nargs=nargs)
         s.add_argument("--interval", type=float, default=60.0)
         s.add_argument("--ticks", type=int, default=0, help="stop after N polls")
+        s.add_argument(
+            "--digest-sec",
+            type=float,
+            default=300.0,
+            help="hold non-urgent lines up to this long and print them in one "
+            "write (a prompt flushes at once; 0 = no holding; default 300)",
+        )
         if cmd == "stuck-watch":
             s.add_argument("--quiet-min", type=int, default=20)
+            s.add_argument(
+                "--requiet-min",
+                type=int,
+                default=60,
+                help="repeat a still-quiet pane's line this often (0 = never; "
+                "default 60)",
+            )
+            s.add_argument(
+                "--settle",
+                type=int,
+                default=2,
+                help="polls a changed state must hold before it is reported "
+                "(default 2; 1 = report at once)",
+            )
         s.set_defaults(fn=fn)
 
     s = sub.add_parser("reassign", help="/clear a builder and point it at a new brief")
@@ -1876,8 +2005,17 @@ def parser() -> argparse.ArgumentParser:
     s.add_argument(
         "--rearm",
         type=int,
-        default=40,
-        help="context %% below which a nudged pane re-arms (default 40)",
+        default=None,
+        help="context %% below which a nudged pane re-arms (default 40; "
+        "half of --ceiling with --compact)",
+    )
+    s.add_argument(
+        "--compact",
+        action="store_true",
+        help="send /compact instead of the WIP+handoff text — for the "
+        "orchestrator main loops (gr515153); pick --ceiling as 120k tokens "
+        "over the window size (12 for a 1M window); skipped while the "
+        "window's tree has a live subagent task",
     )
     s.add_argument(
         "--hard",

@@ -349,6 +349,39 @@ def test_ctx_guard_refusal_never_marks(env: dict[str, str]) -> None:
     assert not [c for c in _tmux_calls(env) if c[0] == "send-keys"]
 
 
+def test_ctx_guard_repeats_a_refusal_only_when_the_reason_changes(
+    env: dict[str, str],
+) -> None:
+    """gr515152: a refused send retried (and printed) every poll."""
+    _windows(env, {"devin-g": PROMPT + "  81% ctx · opus\n"})
+    proc = _run(env, "ctx-guard", "g", "--ticks", "3", "--interval", "0",
+                "--wait", "0", "--poll", "0", "--pause", "0")  # fmt: skip
+    assert proc.stdout.count("send refused") == 1
+
+
+def test_ctx_guard_compact_sends_slash_compact(env: dict[str, str]) -> None:
+    """gr515153: the orchestrator main loops are compacted early; --compact
+    re-arms at half the ceiling, not at the builders' 40%."""
+    _windows(env, {"coordinator": DEVIN_CTX76})
+    args = ("ctx-guard", "coordinator", "--compact", "--ceiling", "60",
+            "--ticks", "1", "--wait", "0", "--poll", "0", "--pause", "0")  # fmt: skip
+    proc = _run(env, *args)
+    assert "at 76% — sent /compact" in proc.stdout
+    sends = [c for c in _tmux_calls(env) if c[0] == "send-keys"]
+    assert sends[0][-1] == "/compact"
+    d = Path(env["FAKE_TMUX_DIR"])
+    (d / "pane-coordinator.txt").write_text(
+        DEVIN_CTX76.replace("(76%)", "(35%)"), encoding="utf-8"
+    )
+    assert _run(env, *args).stdout == ""
+    assert _ctx_guard_marker(env, "coordinator").exists()  # 35 >= 30: not re-armed
+    (d / "pane-coordinator.txt").write_text(
+        DEVIN_CTX76.replace("(76%)", "(12%)"), encoding="utf-8"
+    )
+    assert _run(env, *args).stdout == ""
+    assert not _ctx_guard_marker(env, "coordinator").exists()
+
+
 def test_ctx_guard_message_fills_name(env: dict[str, str]) -> None:
     _windows(env, {"devin-g": DEVIN_CTX76})
     proc = _run(
@@ -711,15 +744,77 @@ def test_watch_done_emits_once_per_finish_line(env: dict[str, str]) -> None:
     assert _run(env, "watch-done", "t1", "--ticks", "1").stdout == ""
 
 
+_STUCK = ("stuck-watch", "--interval", "0")
+
+
 def test_stuck_watch_reports_prompt_and_gone(env: dict[str, str]) -> None:
     _windows(env, {"claude-a": IDLE, "claude-b": PROMPT})
-    out = _run(env, "stuck-watch", "a", "b", "c", "--ticks", "1").stdout
+    out = _run(env, *_STUCK, "a", "b", "c", "--ticks", "2").stdout
     lines = out.splitlines()
     assert any("claude-b prompt: scripts/prod-psql" in ln for ln in lines)
     assert any(ln.endswith(" c gone") for ln in lines)
     assert not any("claude-a" in ln for ln in lines)
     # Unchanged state is not re-emitted.
-    assert _run(env, "stuck-watch", "a", "b", "c", "--ticks", "1").stdout == ""
+    assert _run(env, *_STUCK, "a", "b", "c", "--ticks", "2").stdout == ""
+
+
+def test_stuck_watch_ignores_a_blip_and_coalesces_the_rest(
+    env: dict[str, str],
+) -> None:
+    """gr515152: a state must hold --settle polls, and the non-urgent lines
+    of one poll leave in a single write."""
+    _windows(env, {"claude-a": PROMPT})
+    # One poll of a prompt is a blip (an auto-approved dialog): silent.
+    assert _run(env, *_STUCK, "a", "--ticks", "1").stdout == ""
+    # Two windows gone at once: one write carrying both lines.
+    proc = _run(env, *_STUCK, "x", "y", "--ticks", "2")
+    assert [ln.rsplit(" ", 1)[-1] for ln in proc.stdout.splitlines()] == [
+        "gone",
+        "gone",
+    ]
+
+
+def test_stuck_watch_holds_non_urgent_until_a_prompt_flushes_it(
+    env: dict[str, str],
+) -> None:
+    m = _module()
+    d = m._Digest(3600.0)
+    seen: list[str] = []
+    d.add("a", "quiet line", False, lambda: seen.append("a"))
+    d.flush()
+    assert seen == []  # held: not due, not urgent
+    d.add("b", "prompt line", True, lambda: seen.append("b"))
+    d.add("a", "quiet line again", False, lambda: seen.append("a2"))
+    d.flush()
+    assert sorted(seen) == ["a2", "b"]  # urgent flushed both; a was replaced
+    d.add("c", "late", False, lambda: seen.append("c"))
+    d.drop("c")
+    d.flush(final=True)
+    assert "c" not in seen
+
+
+def test_stuck_watch_reports_a_quiet_pane_once(
+    env: dict[str, str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr515152: quiet fired every 10 min (quiet20m, quiet30m, ...); it now
+    keys on --requiet-min buckets."""
+    m = _module()
+    _windows(env, {"claude-q": IDLE})
+    for k in ("PATH", "FLEET_STATE", "FAKE_TMUX_DIR", "FLEET_WORKTREES"):
+        monkeypatch.setenv(k, env[k])
+    monkeypatch.chdir(env["CWD"])
+    fleet = m.Fleet(m.parser().parse_args(["peek"]))
+    st = fleet.state / "stuck-seen"
+    st.mkdir(parents=True)
+    st.joinpath("q.hash").write_text(
+        m.hashlib.sha256(IDLE.encode()).hexdigest()[:12], encoding="utf-8"
+    )
+    now = int(m.time.time())
+    keys = []
+    for quiet_for in (25 * 60, 35 * 60, 59 * 60, 61 * 60):
+        st.joinpath("q.t").write_text(str(now - quiet_for), encoding="utf-8")
+        keys.append(m._stuck_state(fleet, "q", "claude-q", 20 * 60, 60 * 60)[0])
+    assert keys == ["quiet#0", "quiet#0", "quiet#0", "quiet#1"]
 
 
 def test_close_removes_clean_tree_keeps_dirty(env: dict[str, str]) -> None:
