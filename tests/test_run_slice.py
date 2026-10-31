@@ -186,6 +186,13 @@ def seams(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> dict[str, Any]:
         calls["launch"].append((argv, kw))
         return 4242
 
+    calls["lands"] = []
+
+    def fake_mint_land(ctx: Any, todo_id: int, tree: Path, lane: Any) -> int:
+        calls["lands"].append((todo_id, Path(tree), lane))
+        return 777
+
+    monkeypatch.setattr(run_slice, "_mint_land", fake_mint_land)
     monkeypatch.setattr(run_slice, "_git", fake_git)
     monkeypatch.setattr(run_slice, "_launch", fake_launch)
     monkeypatch.setattr(run_slice, "_process_alive", lambda pid: calls["alive"])
@@ -343,12 +350,17 @@ def test_brief_render_takes_newest_brief_or_handoff(seams: dict[str, Any]) -> No
     assert "Do X, then Y." in brief
     assert "second session stopped at Y" in brief
     assert "first brief" not in brief
-    # ends with the land instruction, so the slice closes itself
+    # ends with commit-and-hand-off: the lander lands, not the session
     tail = brief[brief.index("## When done") :]
-    assert "scripts/ship --quick" in tail
-    assert "put(kind='todo', id=42, text='landed: <sha>" in tail
-    assert "tag(kind='todo', id=42, add=['STATUS:done'])" in tail
-    assert brief.index("scripts/ship --quick") > brief.index("Do X, then Y.")
+    assert "Commit on `slice/42`" in tail
+    assert "(td42)`, at most 72 bytes" in tail
+    assert "git commit -F scratch/commit-msg.txt" in tail
+    assert "Leave the working tree clean" in tail
+    assert brief.index("## When done") > brief.index("Do X, then Y.")
+    # (the deny list names scripts/ship as a path; the steps never do)
+    assert "ship" not in tail
+    assert "add=['STATUS:done']" not in brief
+    assert "put(kind='todo', id=42" not in brief
 
 
 def test_generator_brief_creates_children_and_never_lands(
@@ -375,14 +387,18 @@ def test_generator_brief_creates_children_and_never_lands(
     assert "add=['STATUS:done']" not in brief
 
 
-def test_task_brief_keeps_the_land_steps(seams: dict[str, Any], tmp_path: Path) -> None:
+def test_task_brief_commits_and_never_ships(
+    seams: dict[str, Any], tmp_path: Path
+) -> None:
     store = _Store()
     store.add_todo(42, "Do it", body="Do X.", meta={"op": "run_slice"})
     _submit(store, seams)
     tree = tmp_path / ".claude" / "worktrees" / "slice-td42"
     brief = (tree / "scratch" / "brief.md").read_text(encoding="utf-8")
-    assert "scripts/ship --quick" in brief
-    assert "tag(kind='todo', id=42, add=['STATUS:done'])" in brief
+    tail = brief[brief.index("## When done: commit on the branch and hand off") :]
+    assert "ship" not in tail
+    assert "add=['STATUS:done']" not in brief
+    assert "Do not land, push" in brief
     assert "create the child todos" not in brief
 
 
@@ -564,9 +580,96 @@ def test_poll_running_then_success(seams: dict[str, Any]) -> None:
     assert pctx.meta_set["compute_handle_released"] is True
     [summary] = [t for k, t in pctx.chunks if k == "job_summary"]
     assert "2 uncommitted path(s), 1 commit(s) ahead of origin/main" in summary
-    # success keeps the lease; the slice's own land closes the todo
+    # the clean exit hands the branch to the lander
+    assert seams["lands"] == [(42, Path(handle["worktree"]), "claude-sub")]
+    assert pctx.meta_set["land_job"] == 777
+    assert "Land: land_slice job:777 minted." in summary
+    # success keeps the lease; the land closes the todo
     assert "claimed-by:lane-claude-sub" in store.tag_strings(42)
+    assert "STATUS:doing" in store.tag_strings(42)
     assert not any(t.startswith("attempt:") for t in store.tag_strings(42))
+
+
+def test_poll_clean_exit_without_a_commit_fails(seams: dict[str, Any]) -> None:
+    store = _Store()
+    store.add_todo(42, "t")
+    ctx, handle = _submit(store, seams)
+    _finish(handle, 0, json.dumps({"is_error": False, "result": "Nothing to do."}))
+    pctx = _poll_ctx(store, ctx)
+    assert run_slice.poll(pctx, handle) is True
+    assert pctx.status == "failed"
+    assert pctx.failure is not None and "nothing to land" in pctx.failure
+    assert seams["lands"] == []
+    assert {"STATUS:open", "attempt:1"} <= store.tag_strings(42)
+
+
+def test_poll_generator_clean_exit_mints_no_land(seams: dict[str, Any]) -> None:
+    store = _Store()
+    store.add_todo(42, "Slice it", meta={"generate": {"role": "slicer", "from": "x"}})
+    ctx, handle = _submit(store, seams)
+    _finish(handle, 0, json.dumps({"is_error": False, "result": "Minted td1, td2."}))
+    pctx = _poll_ctx(store, ctx)
+    assert run_slice.poll(pctx, handle) is True
+    assert pctx.status == "succeeded"
+    assert seams["lands"] == []
+    assert "land_job" not in pctx.meta_set
+
+
+def test_poll_failed_land_mint_releases_the_lease(
+    seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def boom(*_a: Any) -> int:
+        raise RuntimeError("db down")
+
+    monkeypatch.setattr(run_slice, "_mint_land", boom)
+    store = _Store()
+    store.add_todo(42, "t")
+    ctx, handle = _submit(store, seams)
+    seams["ahead"] = "abc1234 feat(x): y (td42)\n"
+    _finish(handle, 0, json.dumps({"is_error": False, "result": "done"}))
+    pctx = _poll_ctx(store, ctx)
+    assert run_slice.poll(pctx, handle) is True
+    assert pctx.status == "failed"
+    assert (
+        pctx.failure is not None and "land_slice mint failed (db down)" in pctx.failure
+    )
+    assert "attempt:1" in store.tag_strings(42)
+
+
+class _Tx:
+    def __enter__(self) -> str:
+        return "conn"
+
+    def __exit__(self, *_exc: Any) -> None:
+        return None
+
+
+def test_mint_land_params_and_idem_key(monkeypatch: pytest.MonkeyPatch) -> None:
+    import precis.workers._mint as mint_mod
+
+    minted: list[dict[str, Any]] = []
+
+    def fake_once(store: Any, **kw: Any) -> tuple[int, bool]:
+        minted.append(kw)
+        return 555, False
+
+    monkeypatch.setattr(mint_mod, "mint_job_once", fake_once)
+    store = _Store()
+    store.tx = lambda: _Tx()  # type: ignore[attr-defined]
+    ctx = _Ctx(store, {"todo_id": 42, "target_node": "node-a"}, plan_root=40)
+    assert run_slice._mint_land(ctx, 42, Path("/t/slice-td42"), "claude-sub") == 555
+    [kw] = minted
+    assert kw["job_type"] == "land_slice" and kw["executor"] == "ssh_node"
+    assert kw["idem_key"] == "land_slice:td42" and kw["parent_id"] == 42
+    assert kw["params"] == {
+        "todo_id": 42,
+        "worktree": "/t/slice-td42",
+        "branch": "slice/42",
+        "lane": "claude-sub",
+        "target_node": "node-a",
+    }
+    assert kw["meta_extra"] == {"plan_root": 40}
+    assert kw["conn"] == "conn"
 
 
 def test_poll_failure_releases_lease_and_bumps_attempt(seams: dict[str, Any]) -> None:
@@ -611,6 +714,7 @@ def test_poll_deny_path_in_branch_fails_the_attempt(seams: dict[str, Any]) -> No
     assert run_slice.poll(pctx, handle) is True
     assert pctx.status == "failed"
     assert pctx.failure is not None and "deny_write_paths" in pctx.failure
+    assert seams["lands"] == []  # the check is pre-land: nothing to the lander
     handoff = store.comments(42)[-1]
     assert handoff.startswith("handoff: attempt FAILED, touched deny_write_paths:")
     assert "`.github/workflows/x.yml`" in handoff

@@ -943,6 +943,12 @@ def get_job_type(name: str) -> JobTypeSpec | None:
     if name == "run_slice":
         _REGISTRY["run_slice"] = _load_run_slice()
         return _REGISTRY["run_slice"]
+    if name == "land_slice":
+        # The lander: scripts/ship on a finished slice branch (run_slice mints it).
+        from precis.workers.job_types.land_slice import SPEC
+
+        _REGISTRY[name] = SPEC
+        return SPEC
     if name == "plan_dispatch":
         # Dark-factory plan tick (gates → loops → phases → dispatch →
         # hygiene). Plugin dispatch under job_inproc, minted every 5 min by
@@ -1082,6 +1088,7 @@ def known_job_types() -> list[str]:
         "cad_discuss",
         "sandbox_run",
         "run_slice",
+        "land_slice",
         "plan_dispatch",
         "gripe_validate",
         "diagnose_gripe",

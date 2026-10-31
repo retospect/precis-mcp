@@ -93,8 +93,10 @@ owner). `ci_verdict_poll` needs only the DB and api.github.com; set
   `src/precis/plans/lanes.py`: the ship harness, the factory's own
   modules, alert rules and detectors) passed as `--settings` deny rules.
   The poll re-checks the branch diff and working tree; a hit fails the
-  attempt and reopens the todo, but it runs after the session, so it
-  does not undo a land the session already made.
+  attempt and reopens the todo. The session never lands: a clean exit
+  mints a `land_slice` job on the same host that runs `scripts/ship
+  --quick` in the worktree (`PRECIS_SHIP_BIN` overrides it), so the check
+  is pre-land; that host needs the ship's git push and land_notify DSN.
 - The session's env is an allowlist (`ENV_ALLOWLIST` in `run_slice.py`):
   no DB DSN or vault variable reaches it. It needs `PRECIS_MCP_TOKEN`
   (env or the mounted secret) to reach the precis MCP, and the claude

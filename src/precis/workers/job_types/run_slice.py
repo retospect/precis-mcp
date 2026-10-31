@@ -11,7 +11,8 @@ Detached submit/poll pair under ``ssh_node`` (the protocol
 that holds the lane's credentials with ``params.target_node``):
 
 * :func:`submit` renders the brief (todo title + body + the newest
-  ``brief:``/``handoff:`` comment + the land instruction), picks the lane
+  ``brief:``/``handoff:`` comment + the commit-and-hand-off instruction),
+  picks the lane
   (:func:`precis.plans.lanes.pick_lane`) unless ``params.lane`` names one,
   stamps ``meta.lane``/``meta.model``/``meta.effort`` on the job, takes
   the lease on the todo (``claimed-by:lane-<lane>`` + ``STATUS:doing``),
@@ -28,24 +29,30 @@ that holds the lane's credentials with ``params.target_node``):
   against the lane's ``deny_write_paths`` (:func:`deny_violations`),
   posts the session's last message as a ``handoff:`` comment on the todo,
   records the branch state (dirty count, commits ahead of
-  ``origin/main``) in the job summary, and ends the job ``succeeded`` on
-  exit 0, ``failed`` with the log tail otherwise. A failure (a deny-path
-  hit included) releases the lease: the claim tag goes, the todo returns
-  to ``STATUS:open`` and gains ``attempt:<n>``.
+  ``origin/main``) in the job summary. On a clean exit (0, no claude
+  error, no deny hit) with commits on the branch it mints one
+  ``land_slice`` job (:mod:`precis.workers.job_types.land_slice`; idem key
+  ``land_slice:td<id>``, a child of the todo, params ``{todo_id, worktree,
+  branch, lane, target_node}``) and ends ``succeeded``; the lease stays
+  until the land. Otherwise (non-zero exit, a deny-path hit, no commit to
+  land) it ends ``failed`` with the log tail and releases the lease: the
+  claim tag goes, the todo returns to ``STATUS:open`` and gains
+  ``attempt:<n>``.
 * :func:`kill` SIGTERMs the session's process group.
 
 Deny paths are enforced twice: the session gets them as ``Edit``/
 ``Write``/``MultiEdit``/``NotebookEdit`` deny rules through ``--settings``
 (they hold under ``bypassPermissions``), and :func:`poll` re-checks the
 branch diff and the working tree, which also catches a write made through
-Bash. The poll check runs after the session, so it cannot stop a land the
-session already made; it fails the attempt and reopens the todo.
+Bash. The poll check is pre-land: the session only commits on its branch,
+and nothing is landed until the check passed.
 
-The land is the slice's own: the brief ends with ``scripts/ship --quick``
-and the ``landed:`` comment + ``STATUS:done``, so the todo closes through
-the ship, not here. A generator node is the exception: its brief ends with
-"create the child todos" and no land, and the plan tick closes it once its
-children are closed (it reopens one a session marked done too early).
+The land is the lander's: the brief ends with "commit on the branch, leave
+the tree clean, stop", and ``land_slice`` runs ``scripts/ship``, whose
+land_notify closes the todo. A generator node is the exception: its brief
+ends with "create the child todos", no land job is minted, and the plan
+tick closes it once its children are closed (it reopens one a session
+marked done too early).
 
 Guard: ``PRECIS_FACTORY=off`` refuses every submit (:func:`validate_submit`)
 and every launch (:func:`submit` re-checks). Subprocess, git and process
@@ -165,8 +172,9 @@ DESCRIPTION: str = (
     "Launch one slice (a todo with a brief) headless on a lane: claude -p in "
     "its own worktree slice-td<id> on branch slice/<id> cut from origin/main, "
     "meta.lane/model/effort on the job, the session's last message posted as "
-    "a handoff: comment on the todo; a branch touching the lane's "
-    "deny_write_paths fails the attempt. Refused while PRECIS_FACTORY=off."
+    "a handoff: comment on the todo; a clean exit mints a land_slice job "
+    "that lands the branch, a branch touching the lane's deny_write_paths "
+    "fails the attempt. Refused while PRECIS_FACTORY=off."
 )
 
 
@@ -356,6 +364,41 @@ def _signal_group(pgid: int, sig: int) -> None:
     os.killpg(pgid, sig)
 
 
+def _mint_land(ctx: Any, todo_id: int, tree: Path, lane: Any) -> int:
+    """Mint the ``land_slice`` job for the slice (idem key
+    ``land_slice:td<id>``, a child of the todo, pinned to this run's host so
+    the claimant holds the worktree). Returns its id."""
+    from precis.workers._mint import mint_job_once
+
+    meta = ctx.meta or {}
+    run_params = meta.get("params") or {}
+    params: dict[str, Any] = {
+        "todo_id": todo_id,
+        "worktree": str(tree),
+        "branch": slice_branch(todo_id),
+    }
+    if lane:
+        params["lane"] = str(lane)
+    node = run_params.get("target_node") or os.environ.get("PRECIS_NODE")
+    if node:
+        params["target_node"] = str(node)
+    extra = {"plan_root": meta["plan_root"]} if meta.get("plan_root") else None
+    store = ctx.store
+    with store.tx() as conn:
+        job_id, _reused = mint_job_once(
+            store,
+            conn=conn,
+            job_type="land_slice",
+            executor="ssh_node",
+            title=f"land_slice td{todo_id}: {slice_branch(todo_id)}",
+            params=params,
+            parent_id=todo_id,
+            idem_key=f"land_slice:td{todo_id}",
+            meta_extra=extra,
+        )
+    return int(job_id)
+
+
 def _process_identity(pid: int) -> tuple[str, int] | None:
     """``(kernel boot_id, process start ticks)`` of ``pid`` from ``/proc``
     (the identity ssh_node's orphan reaper matches before a kill, same
@@ -382,6 +425,11 @@ def _todo_status(store: Any, todo_id: int) -> str | None:
         if t.prefix == "STATUS":
             return str(t.value)
     return None
+
+
+def _is_generator(store: Any, todo_id: int) -> bool:
+    ref = store.get_ref(kind="todo", id=todo_id)
+    return ref is not None and node_kind(ref.meta) == "generator"
 
 
 def _open_tag_values(store: Any, todo_id: int) -> list[str]:
@@ -465,10 +513,11 @@ def render_brief(
     generator: bool = False,
     deny_paths: tuple[str, ...] = _lanes.FACTORY_DENY_WRITE_PATHS,
 ) -> str:
-    """The prompt a slice session starts from. Ends with the land
-    instruction, so the slice closes its own todo; a ``generator`` brief
-    ends with the child-todo instruction instead (the plan tick closes it).
-    Names the ``deny_paths`` the session may not write."""
+    """The prompt a slice session starts from. Ends with the commit-and-
+    hand-off instruction (the ``land_slice`` job lands the branch); a
+    ``generator`` brief ends with the child-todo instruction instead (the
+    plan tick closes it). Names the ``deny_paths`` the session may not
+    write."""
     name = slice_name(todo_id)
     lines = [
         f"# Slice td{todo_id}: {title.strip()}",
@@ -504,21 +553,19 @@ def render_brief(
         return "\n".join(lines) + "\n"
     lines += [
         "",
-        "## When done: land it yourself",
+        "## When done: commit on the branch and hand off",
         "",
-        "1. Commit with a conventional subject "
-        f"(`type(scope): what (td{todo_id})`), message via "
-        "`git commit -F scratch/commit-msg.txt`.",
-        '2. Run `scripts/ship --quick "<the subject>" > scratch/ship.log 2>&1` '
-        "and check `SHIP_STATUS: shipped` in the log; on red lint, fix, amend "
-        "and re-run.",
-        "3. Get the sha with `git log origin/main --oneline -1`, then "
-        f"`put(kind='todo', id={todo_id}, text='landed: <sha> — <one line>')`.",
-        f"4. `tag(kind='todo', id={todo_id}, add=['STATUS:done'])`.",
+        f"1. Commit on `{slice_branch(todo_id)}` with a conventional subject "
+        f"(`type(scope): what (td{todo_id})`, at most 72 bytes), message via "
+        "`git commit -F scratch/commit-msg.txt`. One commit is best: the "
+        "lander squashes the branch under that subject.",
+        "2. Leave the working tree clean (`git status --porcelain` prints nothing).",
+        "3. Stop. Do not land, push, comment `landed:` or tag this todo done: "
+        "once you exit cleanly, the lander lands every commit on the branch, "
+        "so commit only work fit to land.",
         "",
-        "If you cannot land, do not mark the todo done: stop, and say why.",
         "Your final message is posted on the todo as the `handoff:` comment the "
-        "next session starts from: what landed (sha), what is left, what you "
+        "next session starts from: what you committed, what is left, what you "
         "would do next.",
     ]
     return "\n".join(lines) + "\n"
@@ -907,11 +954,31 @@ def poll(ctx: Any, handle: Any) -> bool:
     ]
     if denied:
         summary.append(f"Deny check: {denied}.")
+    clean = exit_code == 0 and not is_error and not denied
+    # A clean task run hands its branch to the lander; a generator's work is
+    # its child todos, so it has nothing to land.
+    land = clean and not _is_generator(ctx.store, todo_id)
+    nothing = None
+    if land and not commits:
+        nothing = (
+            f"left no commit on {slice_branch(todo_id)} ahead of origin/main "
+            "(nothing to land)"
+        )
+        summary.append(f"Land: {nothing}.")
+    elif land:
+        try:
+            land_job = _mint_land(ctx, todo_id, tree, lane)
+        except Exception as exc:
+            log.warning("run_slice: land_slice mint for td%d failed", todo_id)
+            nothing = f"exited clean but the land_slice mint failed ({exc})"
+        else:
+            ctx.set_meta(land_job=land_job)
+            summary.append(f"Land: land_slice job:{land_job} minted.")
     if commits:
         summary += ["", *commits[:20]]
     ctx.append_chunk("job_summary", "\n".join(summary))
 
-    if exit_code == 0 and not is_error and not denied:
+    if clean and nothing is None:
         ctx.set_status("succeeded")
         return True
 
@@ -921,7 +988,7 @@ def poll(ctx: Any, handle: Any) -> bool:
     except Exception:  # pragma: no cover — defensive; the job still fails
         log.warning("run_slice: lease release on td%d failed", todo_id, exc_info=True)
     tail = log_text[-_TAIL_CAP:].strip()
-    what = denied if denied else f"failed (exit {exit_code})"
+    what = denied or nothing or f"failed (exit {exit_code})"
     reason = (
         f"run_slice: session for td{todo_id} {what}; todo back to open, "
         f"attempt:{attempt}"

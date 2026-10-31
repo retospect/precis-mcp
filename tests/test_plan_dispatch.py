@@ -285,6 +285,63 @@ def _failed_job(store: Store, task: int, reason: str) -> int:
     return int(ref.id)
 
 
+def _slice_job(store: Store, task: int, job_type: str, status: str) -> int:
+    with store.tx() as conn:
+        ref = mint_background_job(
+            store,
+            conn=conn,
+            job_type=job_type,
+            executor="ssh_node",
+            title=job_type,
+            params={"todo_id": task},
+            parent_id=task,
+            status=status,
+        )
+    return int(ref.id)
+
+
+def _set_job_status(store: Store, job_id: int, status: str) -> None:
+    store.add_tag(
+        job_id, Tag.closed("STATUS", status), set_by="system", replace_prefix=True
+    )
+
+
+def test_build_task_closes_only_after_its_land(store: Store) -> None:
+    mint = _one_task_plan(store)
+    task = mint.ids["task"]
+    store.add_tag(task, Tag.open("claimed-by:lane-claude-sub"), set_by="system")
+    store.add_tag(
+        task, Tag.closed("STATUS", "doing"), set_by="system", replace_prefix=True
+    )
+    _slice_job(store, task, "run_slice", "succeeded")
+    # The build succeeded: no close on that alone, and no redispatch.
+    res = pd.run_pass(store)
+    assert (res.phases_closed, res.dispatched) == (0, 0)
+    assert _status(store, task) == "doing"
+    # run_slice's poll minted the lander; while it runs nothing moves.
+    land = _slice_job(store, task, "land_slice", "queued")
+    res = pd.run_pass(store)
+    assert (res.phases_closed, res.dispatched) == (0, 0)
+    assert _status(store, task) == "doing"
+    # The land succeeded: the newest job is a succeeded land_slice.
+    _set_job_status(store, land, "succeeded")
+    res = pd.run_pass(store)
+    assert _status(store, task) == "done"
+    assert any(f"task td{task} closed: land_slice job:{land}" in n for n in res.notes)
+
+
+def test_a_red_land_is_one_attempt_not_two(store: Store) -> None:
+    mint = _one_task_plan(store)
+    task = mint.ids["task"]
+    _slice_job(store, task, "run_slice", "succeeded")
+    _slice_job(store, task, "land_slice", "failed")
+    store.add_tag(task, Tag.open("attempt:1"), set_by="system")
+    # build + red land = attempt 1 of 2: the tick retries the build.
+    res = pd.run_pass(store)
+    assert (res.dispatched, res.asks) == (1, 0)
+    assert _jobs_under(store, task)[-1][1]["job_type"] == "run_slice"
+
+
 def test_retry_cap_mints_exactly_one_ask(store: Store) -> None:
     mint = _one_task_plan(store)
     task = mint.ids["task"]

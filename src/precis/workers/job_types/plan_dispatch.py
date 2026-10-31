@@ -41,7 +41,10 @@ subtree whose nodes are shaped by :mod:`precis.plans.nodes`. One pass:
    is finished: a phase
    (``meta.auto_close``) or a generator with children, once every child is
    closed; a mechanical task (``meta.op`` other than ``run_slice``) whose
-   newest job succeeded. Deepest first, so nested phases cascade in one pass.
+   newest job succeeded; a ``run_slice`` task whose newest job is a
+   succeeded ``land_slice`` (a succeeded build alone never closes it, and
+   a build plus its red land count as one attempt). Deepest first, so
+   nested phases cascade in one pass.
 4. **dispatch** — each doable task (``node_kind`` task, a generator with no
    children yet, or a plain leaf under a plan root; ``STATUS:open``, no live
    ``blocked-by`` target on it or an ancestor, no doable-exclusion tag other
@@ -929,13 +932,21 @@ def _step_phases(plan: _Plan, w: _Writer, res: PassResult) -> None:
                 w.set_status(n, "done")
                 res.phases_closed += 1
                 res.notes.append(f"{kind} td{n.id} closed: every child is closed")
-        elif kind == "task" and not kids and _op_type(n) != DEFAULT_OP:
+        elif kind == "task" and not kids:
+            # A run_slice task closes through its land: the newest job is
+            # then a succeeded land_slice (its ship closes the todo first;
+            # this is the backstop). A succeeded run_slice alone never does.
             jobs = plan.jobs(n)
+            if _op_type(n) == DEFAULT_OP and not (
+                jobs and jobs[-1].meta.get("job_type") == "land_slice"
+            ):
+                continue
             if jobs and jobs[-1].status == "succeeded":
                 w.set_status(n, "done")
                 res.phases_closed += 1
+                job_type = jobs[-1].meta.get("job_type") or _op_type(n)
                 res.notes.append(
-                    f"task td{n.id} closed: {_op_type(n)} job:{jobs[-1].id} succeeded"
+                    f"task td{n.id} closed: {job_type} job:{jobs[-1].id} succeeded"
                 )
 
 
@@ -990,12 +1001,20 @@ def _attempts(plan: _Plan, n: _Node) -> int:
     asks = [b for b in plan.blockers.get(n.id, []) if b.is_ask]
     since = max((b.created_at for b in asks), default=None)
     floor = _rearm_floor(n)
+    jobs = plan.jobs(n)
     ended = [
         j
-        for j in plan.jobs(n)
+        for i, j in enumerate(jobs)
         if j.status in _JOB_ENDED
         and (since is None or j.created_at > since)
         and (floor is None or j.id > floor)
+        # A build that handed off to the lander is one attempt with its
+        # land_slice, not two.
+        and not (
+            j.status == "succeeded"
+            and j.meta.get("job_type") == DEFAULT_OP
+            and any(k.meta.get("job_type") == "land_slice" for k in jobs[i + 1 :])
+        )
     ]
     if since is None and floor is None:
         return max(len(ended), _attempt_tag(n))
