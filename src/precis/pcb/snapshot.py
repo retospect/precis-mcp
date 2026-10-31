@@ -6,6 +6,13 @@ or running authoring inference. IDs are local fixture keys; geometry is untouche
 No public op, schema, provider, or job is needed. Route parameters travel alongside
 the copy, not as a runnable job. This is a source-version-bound diagnostic fixture,
 not a general database backup or a promise of cross-version router determinism.
+
+Generator re-expansion and authoring inference were refused as clone mechanisms
+because they change the board under diagnosis. Replay creates a fresh slug
+atomically and refuses production targets or conflicting shared caches.
+Source-absent referenced catalog/footprint keys must also stay absent: target
+cache knowledge would otherwise change graph flags or geometry on the replayed
+board. Deleting target data or inventing source placeholders was refused.
 """
 
 from __future__ import annotations

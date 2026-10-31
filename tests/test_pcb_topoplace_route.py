@@ -1405,8 +1405,15 @@ def test_power_net_routes_at_routing_width_not_widen_target() -> None:
         caps,
     )["N0"].track_width_mm == pytest.approx(0.4)
 
+    # pass 3 freezes kept copper by stackup layer name and trims a
+    # still-failed net's partial copper against the IR's pins
     ir = SimpleNamespace(
-        n_layers=2, net_name=list(d.net_name), net_current_a=[5.0] * len(d.net_name)
+        n_layers=2,
+        net_name=list(d.net_name),
+        net_current_a=[5.0] * len(d.net_name),
+        stackup=[{"name": "F.Cu"}, {"name": "B.Cu"}],
+        n_pins=0,
+        pin_net=np.zeros(0, dtype=np.int32),
     )
     # control — the full-resolution map still prices the widen target as
     # a routing demand and the channel refuses: three rails at ~9.7
