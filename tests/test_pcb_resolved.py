@@ -213,10 +213,13 @@ def test_rebound_ir_keeps_every_pins_synthesized_offset() -> None:
         and str(ir.instance_refdes[int(ir.pin_instance[p])]) == "U0"
     )
     assert str(ir.net_name[int(ir.pin_net[p1])]) == "N2"
-    # Without pin_order the creation order (and so the layout) follows the
-    # moved nets - what pin_order exists to prevent.
+    # Synthesized slots are keyed by pin LABEL (ir._pin_label_sort_key),
+    # so the layout is order-proof even without pin_order: creation order
+    # used to decide the slots (what pin_order was added to pin down), and
+    # a part whose pin "2" was listed first got pin 1 on the wrong side
+    # (taz-leaf-local-61 R12 vs R13, tests/test_pcb_ir_pin_label_order.py).
     stripped = {k: v for k, v in rebound.items() if k != "pin_order"}
-    assert _offsets(from_graph(stripped, stackup=DEFAULT_STACKUP)) != _offsets(authored)
+    assert _offsets(from_graph(stripped, stackup=DEFAULT_STACKUP)) == _offsets(authored)
 
 
 def test_apply_without_a_snapshot_is_the_graph() -> None:

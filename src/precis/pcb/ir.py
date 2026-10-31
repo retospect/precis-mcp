@@ -46,6 +46,7 @@ connectivity (:attr:`PcbIR.via_net` ``>= 0``); a keepout connects nothing
 from __future__ import annotations
 
 import math
+import re
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from enum import IntEnum
@@ -101,6 +102,19 @@ def _obj_array(values: list[Any]) -> np.ndarray:
     for i, v in enumerate(values):
         arr[i] = v
     return arr
+
+
+def _pin_label_sort_key(label: str) -> tuple[tuple[int, int, str], ...]:
+    """Natural pin-label order: digit runs compare as numbers, text runs
+    as text, numbers before text — ``"1" < "2" < "10" < "A4" < "A12" <
+    "B1" < "EP"``. The order a synthesized land pattern's slots are
+    handed out in (:func:`from_graph`): pin ``"1"`` is slot 0 on every
+    part, and a connector's ``A1..A12, B1..B12`` rows stay rows, whatever
+    order the netlist created the pins."""
+    return tuple(
+        (0, int(run), "") if run.isdigit() else (1, 0, run)
+        for run in re.findall(r"\d+|\D+", str(label))
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -1480,8 +1494,11 @@ def from_graph(
 
     # A graph rebound by a resolved netlist snapshot (`pcb.resolved.rebind`)
     # carries the AUTHORED pin creation order: pins are created in it first,
-    # so a net moving between pins leaves every synthesized land pattern
-    # where the authored graph put it. The net loop then sets `pin_net`.
+    # so pin ids (and everything keyed by them) follow the authored graph
+    # after a net moves between pins. Synthesized land patterns no longer
+    # depend on it — their slots go by pin LABEL (see the offsets block
+    # below) — but the id stability stands. The net loop then sets
+    # `pin_net`.
     pin_order = graph.get("pin_order")
     if pin_order:
         rows_by_key: dict[tuple[str, str], dict[str, Any]] = {}
@@ -1559,10 +1576,16 @@ def from_graph(
     # pins of the same part draw from different package families and land
     # on top of each other, which is the exact defect this fixes.
     #
-    # Order within an instance is pin-creation order, which is netlist
-    # member order — the same order the author wrote. That is what makes a
-    # pin swap mean something: adjacency in the land pattern follows the
-    # author's pin numbering rather than an arbitrary permutation.
+    # Order within an instance is PIN-LABEL order (numeric-aware: "1" <
+    # "2" < "10" < "A1"), never pin-creation order. Creation order is
+    # netlist member order, i.e. whichever net happened to list the part
+    # first — on taz-leaf-local-61 R12's pin "2" (S2_A) was created before
+    # its pin "1" (S2_DRV), so pin 1 took the +x slot while R13's pin 1,
+    # created first, took −x: the same label pattern, mirrored per part,
+    # purely by net listing order. Every family in landpattern numbers
+    # its slots by pin label ("pin 1 leftmost", DIP counterclockwise), so
+    # the join must be by label too (Reto 2026-10-31: "a pad1 is a pad1
+    # everywhere, and it's the same pad").
     pin_dx = np.zeros(n_pins, dtype=np.float64)
     pin_dy = np.zeros(n_pins, dtype=np.float64)
     pin_synth = np.zeros(n_pins, dtype=bool)
@@ -1583,6 +1606,7 @@ def from_graph(
     for pid, inst_id in enumerate(pin_instance):
         _pins_of_inst.setdefault(int(inst_id), []).append(pid)
     for inst_id, pids in _pins_of_inst.items():
+        pids = sorted(pids, key=lambda p: _pin_label_sort_key(pin_label[p]))
         label = str(instances[inst_id].get("label") or "")
         offsets, synthesized = landpattern.offsets_for(len(pids), label=label)
         for pid, (dx, dy) in zip(pids, offsets, strict=True):

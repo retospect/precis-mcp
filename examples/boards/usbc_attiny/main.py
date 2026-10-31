@@ -35,18 +35,18 @@ def build() -> pcb.Board:
         "J1",
         lcsc="C165948",
         roles={"connector"},
-        pins=["A1", "A4", "A5", "A9", "A12", "B1", "B4", "B5", "B9", "B12", "SHELL"],
+        pins=["1", "5", "6", "7", "8", "9", "13", "14", "15", "16", "S1"],
     )
-    for p in j1.pins("A4", "A9", "B4", "B9"):
+    for p in j1.pins("5", "6", "13", "14"):
         p.etype("power_in", max_current_a=3.0, max_voltage_v=20.0, assume="usb-c vbus")
-    for p in j1.pins("A1", "A12", "B1", "B12"):
+    for p in j1.pins("1", "8", "9", "16"):
         p.etype("power_in", max_current_a=3.0, max_voltage_v=20.0, assume="usb-c gnd")
-    j1["SHELL"].etype(
+    j1["S1"].etype(
         "power_in", max_current_a=1.0, max_voltage_v=20.0, assume="usb-c shell"
     )
-    vbus.tie(*j1.pins("A4", "A9", "B4", "B9"))
-    gnd.tie(*j1.pins("A1", "A12", "B1", "B12", "SHELL"))
-    for i, cc in ((1, "A5"), (2, "B5")):
+    vbus.tie(*j1.pins("5", "6", "13", "14"))
+    gnd.tie(*j1.pins("1", "8", "9", "16", "S1"))
+    for i, cc in ((1, "7"), (2, "15")):
         r = b.part(f"R{i}", lcsc="C25905", value="5.1k", pins=["1", "2"])
         j1[cc].etype("input", fmax_hz=0.0, assume="usb-c cc")
         r["1"].etype("passive", fmax_hz=0.0, assume="5.1k cc pulldown")
