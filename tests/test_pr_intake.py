@@ -483,6 +483,87 @@ def test_pr_poll_mints_once_per_pr(
     assert pp.run_pass(store, repo=REPO).minted == []
 
 
+def _close(store: Store, ref_id: int) -> None:
+    store.add_tag(
+        ref_id, Tag.closed("STATUS", "done"), set_by="agent", replace_prefix=True
+    )
+
+
+def _moved(sha: str) -> dict[str, Any]:
+    pull = _load("pull_dependabot.json")
+    pull["head"]["sha"] = sha
+    return pull
+
+
+NEW_HEAD = "d" * 40
+
+
+@pytest_db
+def test_mint_tags_the_root_with_the_head(store: Store) -> None:
+    mint = T.mint_pr_intake(store, pr=73, facts=_facts())
+    assert f"pr-head:{HEAD[:12]}" in _tags(store, mint.root_id)
+    assert _meta(store, mint.root_id)["pr"]["head_sha"] == HEAD
+
+
+@pytest_db
+def test_pr_poll_reintakes_a_moved_head_after_the_plan_closed(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _fake_github(monkeypatch, [_load("pull_dependabot.json")])
+    [(_n, first, _c)] = pp.run_pass(store, repo=REPO).minted
+
+    # an OPEN root: skipped, even though the head moved meanwhile
+    _fake_github(monkeypatch, [_moved(NEW_HEAD)])
+    res = pp.run_pass(store, repo=REPO)
+    assert res.minted == [] and res.known == 1
+
+    # closed on the same head: done, skipped
+    _close(store, first)
+    _fake_github(monkeypatch, [_load("pull_dependabot.json")])
+    res = pp.run_pass(store, repo=REPO)
+    assert res.minted == [] and res.known == 1
+
+    # closed, head moved: a new plan, tagged with the new head
+    _fake_github(monkeypatch, [_moved(NEW_HEAD)])
+    res = pp.run_pass(store, repo=REPO)
+    [(number, second, cls)] = res.minted
+    assert (number, cls) == (73, P.DEPENDABOT) and second != first
+    assert f"pr-head:{NEW_HEAD[:12]}" in _tags(store, second)
+    assert _meta(store, second)["pr"]["head_sha"] == NEW_HEAD
+    assert f"pr-head:{HEAD[:12]}" in _tags(store, first)  # history stays
+
+    # now the second root is open (skip), then closed on its head (skip)
+    assert pp.run_pass(store, repo=REPO).minted == []
+    _close(store, second)
+    again = pp.run_pass(store, repo=REPO)
+    assert again.minted == [] and again.known == 1
+    # the newest closed root decides: a head back on the older sha moved too
+    _fake_github(monkeypatch, [_load("pull_dependabot.json")])
+    assert len(pp.run_pass(store, repo=REPO).minted) == 1
+    assert P.existing_intake(store, 73) == first  # the oldest root
+
+
+@pytest_db
+def test_needs_intake_rules(store: Store) -> None:
+    assert P.needs_intake(store, 73, HEAD) is True  # no plan at all
+    root = T.mint_pr_intake(store, pr=73, facts=_facts()).root_id
+    assert P.needs_intake(store, 73, NEW_HEAD) is False  # open
+    _close(store, root)
+    assert P.needs_intake(store, 73, HEAD) is False  # closed, same head
+    assert P.needs_intake(store, 73, HEAD.upper()) is False  # case-insensitive
+    assert P.needs_intake(store, 73, NEW_HEAD) is True  # closed, moved
+    assert P.needs_intake(store, 73, "") is False  # no head to compare
+    # a root minted before the pr-head tag falls back to meta.pr.head_sha
+    store.remove_tag(root, Tag.open(f"pr-head:{HEAD[:12]}"))
+    assert P.needs_intake(store, 73, HEAD) is False
+    assert P.needs_intake(store, 73, NEW_HEAD) is True
+    # and mint_pr_intake follows the same rule
+    with pytest.raises(BadInput, match="already has an intake plan"):
+        T.mint_pr_intake(store, pr=73, facts=_facts())
+    moved = T.mint_pr_intake(store, pr=73, facts=_facts(head=_moved(NEW_HEAD)["head"]))
+    assert f"pr-head:{NEW_HEAD[:12]}" in _tags(store, moved.root_id)
+
+
 @pytest_db
 def test_pr_poll_dry_run_and_unreadable(
     store: Store, monkeypatch: pytest.MonkeyPatch
@@ -504,18 +585,28 @@ class FakeRun:
     """git/uv seam: records argv, answers by the command."""
 
     def __init__(
-        self, *, lock_ok: bool = True, fail_py: str = "", head: str = HEAD
+        self,
+        *,
+        lock_ok: bool = True,
+        fail_py: str = "",
+        head: str = HEAD,
+        by_sha: bool = True,
     ) -> None:
         self.calls: list[tuple[list[str], Path, dict[str, str] | None]] = []
         self.lock_ok = lock_ok
         self.fail_py = fail_py
         self.head = head
+        self.by_sha = by_sha  # the server allows `git fetch origin <sha>`
 
     def __call__(
         self, argv: list[str], cwd: Path, env: dict[str, str] | None = None
     ) -> subprocess.CompletedProcess[str]:
         self.calls.append((argv, Path(cwd), env))
         rc, out = 0, ""
+        if argv[:3] == ["git", "fetch", "origin"] and re.fullmatch(
+            r"[0-9a-f]{40}", argv[3]
+        ):
+            rc = 0 if self.by_sha else 1
         if argv[:2] == ["git", "worktree"] and argv[2] == "add":
             Path(argv[3]).mkdir(parents=True, exist_ok=True)
         if argv[:2] == ["git", "rev-parse"]:
@@ -543,7 +634,10 @@ def test_dep_check_resolves_both_pythons_without_building(
     assert res["branch"] == "slice/pr-73"
     assert res["worktree"] == str(tmp_path / ".claude" / "worktrees" / "slice-pr-73")
     git = [a for a, _c, _e in run.calls if a[0] == "git"]
-    assert ["git", "fetch", "origin", "+pull/73/head:refs/heads/slice/pr-73"] in git
+    # the classified head is fetched by sha; the pull ref is not touched
+    assert ["git", "fetch", "origin", HEAD] in git
+    assert ["git", "branch", "-f", "slice/pr-73", HEAD] in git
+    assert not any("pull/73/head" in x for a in git for x in a)
     assert run.uv() == [
         ["uv", "lock", "--check", "--no-build"],
         ["uv", "sync", "--dry-run", "--locked", "--no-build", "--python", "3.12"],
@@ -553,6 +647,31 @@ def test_dep_check_resolves_both_pythons_without_building(
     for _a, _c, env in run.calls:
         if env is not None:
             assert "PRECIS_DB_DSN" not in env and env["UV_NO_BUILD"] == "1"
+
+
+def test_dep_check_falls_back_to_the_pull_ref_then_verifies(tmp_path: Path) -> None:
+    run = FakeRun(by_sha=False)
+    res = dc.run_check(tmp_path, 73, head=HEAD, run=run)
+    assert res["ok"], res
+    git = [a for a, _c, _e in run.calls if a[0] == "git"]
+    assert ["git", "fetch", "origin", HEAD] in git  # tried first, refused
+    assert ["git", "fetch", "origin", "+pull/73/head:refs/heads/slice/pr-73"] in git
+    # the pull ref moved on: the rev-parse check still refuses it
+    moved = FakeRun(by_sha=False, head="e" * 40)
+    res = dc.run_check(tmp_path, 74, head=HEAD, run=moved)
+    assert not res["ok"] and res["failed_step"] == "head moved since intake"
+
+
+def test_dep_check_without_a_sha_uses_the_pull_ref(tmp_path: Path) -> None:
+    run = FakeRun()
+    assert dc.run_check(tmp_path, 73, run=run)["ok"]
+    git = [a for a, _c, _e in run.calls if a[0] == "git"]
+    assert ["git", "fetch", "origin", "+pull/73/head:refs/heads/slice/pr-73"] in git
+    assert not any(a[:3] == ["git", "branch", "-f"] for a in git)
+    # a malformed 'sha' is never handed to git as an argument
+    bad = FakeRun()
+    dc.run_check(tmp_path, 75, head="--upload-pack=x", run=bad)
+    assert not any("--upload-pack=x" in a for a, _c, _e in bad.calls)
 
 
 def test_dep_check_relocks_a_stale_lock(tmp_path: Path) -> None:
@@ -776,13 +895,31 @@ def test_pr_action_land_after_fixes_mints_the_fix_slice(
     m = re.search(r"fix slice td(\d+) and review td(\d+)", summary)
     assert m is not None
     fix, review = int(m.group(1)), int(m.group(2))
-    assert (
-        _meta(store, fix)["pr_close"] == 82 and _meta(store, fix)["op"] == "run_slice"
-    )
+    # the head the intake classified is pinned in the op params and the brief
+    assert _meta(store, fix)["pr_close"] == 82
+    assert _meta(store, fix)["op"] == {
+        "type": "run_slice",
+        "params": {"head_sha": HEAD},
+    }
+    assert validate_plan_meta(_meta(store, fix)) == []
     assert _meta(store, review)["generate"] == {"role": "reviewer", "from": f"td{fix}"}
     assert f"plan:{mint.root_id}" in _tags(store, fix)
     body = "\n".join(str(c.text) for c in store.chunks.list_chunks_for_ref(fix))
-    assert "git fetch origin pull/82/head" in body and "add a test" in body
+    assert f"`git fetch origin {HEAD}`" in body and "add a test" in body
+    assert "pull/82/head" in body  # the fallback when a by-sha fetch is refused
+    assert f"`git merge --no-edit {HEAD}`" in body
+    assert f"`git rev-parse FETCH_HEAD` prints `{HEAD}`" in body
+    assert "merge --no-edit FETCH_HEAD" not in body  # never a bare FETCH_HEAD
+
+
+@pytest_db
+def test_fix_slice_without_a_recorded_head_keeps_the_pull_ref(store: Store) -> None:
+    mint = _external(store)
+    pr = dict(_meta(store, mint.root_id)["pr"], head_sha="")
+    ids = T.mint_pr_fix(store, mint.root_id, pr, "add a test")
+    assert _meta(store, ids["fix"])["op"] == "run_slice"
+    body = "\n".join(str(c.text) for c in store.chunks.list_chunks_for_ref(ids["fix"]))
+    assert "recorded no head sha" in body and "pull/82/head" in body
 
 
 @pytest_db

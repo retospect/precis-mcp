@@ -333,22 +333,80 @@ def builders(store: Store | None = None) -> frozenset[str]:
 # ── the plan's PR ──────────────────────────────────────────────────
 
 
-def existing_intake(store: Store, number: int) -> int | None:
-    """The oldest live todo tagged ``pr:<number>`` (any status), else
-    ``None``: one intake plan per PR, ever."""
+#: A full git object name; the only shape ``git fetch origin <sha>`` is
+#: ever handed (a recorded head that is anything else is not fetched by sha).
+SHA40_RE = re.compile(r"[0-9a-f]{40}")
+
+#: The tag a plan root carries for the PR head it was minted on (12 hex).
+HEAD_TAG_PREFIX = "pr-head:"
+_HEAD_TAG_LEN = 12
+
+
+def head_tag(head_sha: str) -> str | None:
+    """``pr-head:<sha12>`` for a head sha, else ``None`` (no sha known)."""
+    sha = (head_sha or "").strip().lower()
+    return f"{HEAD_TAG_PREFIX}{sha[:_HEAD_TAG_LEN]}" if sha else None
+
+
+def _intake_ids(store: Store, number: int) -> list[int]:
+    """Live todos tagged ``pr:<number>`` (any status), oldest first."""
     with store.pool.connection() as conn:
-        row = conn.execute(
+        rows = conn.execute(
             """
             SELECT r.ref_id FROM refs r
               JOIN ref_tags rt ON rt.ref_id = r.ref_id
               JOIN tags t USING (tag_id)
              WHERE r.kind = 'todo' AND r.retired_at IS NULL
                AND t.namespace = 'OPEN' AND t.value = %s
-             ORDER BY r.ref_id LIMIT 1
+             ORDER BY r.ref_id
             """,
             (f"pr:{int(number)}",),
-        ).fetchone()
-    return int(row[0]) if row else None
+        ).fetchall()
+    return [int(r[0]) for r in rows]
+
+
+def existing_intake(store: Store, number: int) -> int | None:
+    """The oldest live todo tagged ``pr:<number>`` (any status), else
+    ``None``. :func:`needs_intake` is the mint decision."""
+    ids = _intake_ids(store, number)
+    return ids[0] if ids else None
+
+
+def _intake_head(store: Store, root_id: int) -> str:
+    """The 12-char head a plan root was minted on: its ``pr-head:`` tag,
+    else (a root minted before the tag) ``meta.pr.head_sha``."""
+    for t in store.tags_for(root_id):
+        value = str(t.value)
+        if value.startswith(HEAD_TAG_PREFIX):
+            return value[len(HEAD_TAG_PREFIX) :]
+    ref = store.get_ref(kind="todo", id=root_id)
+    pr = (ref.meta or {}).get("pr") if ref is not None else None
+    sha = str(pr.get("head_sha") or "") if isinstance(pr, dict) else ""
+    return sha.strip().lower()[:_HEAD_TAG_LEN]
+
+
+def needs_intake(store: Store, number: int, head_sha: str) -> bool:
+    """Whether PR ``number`` at ``head_sha`` wants a (new) intake plan.
+
+    No plan root tagged ``pr:<n>``: yes. An OPEN root (any non-terminal
+    status): no, it is in flight. Otherwise the newest root is closed: yes
+    only when the PR head moved since that plan (its ``pr-head`` differs
+    from ``head_sha``); a closed root on the same head means done. A closed
+    root with no recorded head, or a PR with no head sha, stays done."""
+    from precis.todo import TERMINAL_TODO_STATUSES
+
+    ids = _intake_ids(store, number)
+    if not ids:
+        return True
+    for rid in ids:
+        status = next(
+            (str(t.value) for t in store.tags_for(rid) if t.prefix == "STATUS"), "open"
+        )
+        if status not in TERMINAL_TODO_STATUSES:
+            return False
+    seen = _intake_head(store, ids[-1])
+    now = (head_sha or "").strip().lower()[:_HEAD_TAG_LEN]
+    return bool(seen and now and seen != now)
 
 
 def pr_of(store: Store, todo_id: int) -> dict[str, Any] | None:
@@ -466,6 +524,8 @@ __all__ = [
     "FACTORY",
     "HARNESS",
     "HARNESS_PATTERNS",
+    "HEAD_TAG_PREFIX",
+    "SHA40_RE",
     "Bump",
     "GitHubUnreadable",
     "PrFacts",
@@ -479,10 +539,12 @@ __all__ = [
     "facts_from_api",
     "fetch_facts",
     "fetch_open_pulls",
+    "head_tag",
     "is_harness",
     "is_major",
     "is_security",
     "land_subject",
+    "needs_intake",
     "pr_of",
     "prio_of",
     "resolve_repo",

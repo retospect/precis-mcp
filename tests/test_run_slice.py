@@ -420,6 +420,69 @@ def test_reviewer_brief_posts_one_verdict_and_mints_nothing(
     assert pd.parse_verdict("review: LAND") == ("LAND", "")
 
 
+def test_analyst_brief_posts_one_analysis_and_mints_nothing(
+    seams: dict[str, Any], tmp_path: Path
+) -> None:
+    store = _Store()
+    store.add_todo(
+        42,
+        "Analyse PR #9 (read-only)",
+        body="Read PR 9.",
+        meta={"generate": {"role": "analyst", "from": "pr:9"}},
+    )
+    _submit(store, seams)
+    tree = tmp_path / ".claude" / "worktrees" / "slice-td42"
+    brief = (tree / "scratch" / "brief.md").read_text(encoding="utf-8")
+    tail = brief[brief.index("## When done") :]
+    assert tail.startswith("## When done: post your analysis")
+    assert "Post exactly one comment on td42" in tail
+    assert "starting with `analysis:`" in tail
+    for part in ("(a) threats", "(b) fit", "(c) size"):
+        assert part in tail
+    assert "Mint nothing" in tail
+    assert "Commit nothing" in tail
+    assert "Never run `uv sync`, tests or any file from the PR" in tail
+    assert "Do not land" in tail
+    # neither the slicer's nor the reviewer's closing
+    assert "create the child todos" not in brief
+    assert "args={'parent_id': 42}" not in brief
+    assert "review: LAND" not in brief
+    assert "scripts/ship --quick" not in brief
+    assert "add=['STATUS:done']" not in brief
+
+
+def test_role_close_table_is_the_only_dispatch() -> None:
+    assert set(run_slice._ROLE_CLOSE) == {"reviewer", "analyst"}
+    # a role outside the table keeps the generic child-todo closing
+    generic = "\n".join(run_slice._generator_close(5))
+    assert "create the child todos" in generic
+    for role in run_slice._ROLE_CLOSE:
+        brief = run_slice.render_brief(
+            todo_id=5,
+            title="t",
+            body="b",
+            latest=None,
+            lane="l",
+            model="m",
+            effort="e",
+            generator=True,
+            role=role,
+        )
+        assert "create the child todos" not in brief, role
+    other = run_slice.render_brief(
+        todo_id=5,
+        title="t",
+        body="b",
+        latest=None,
+        lane="l",
+        model="m",
+        effort="e",
+        generator=True,
+        role="slicer",
+    )
+    assert "create the child todos" in other
+
+
 def test_task_brief_commits_and_never_ships(
     seams: dict[str, Any], tmp_path: Path
 ) -> None:

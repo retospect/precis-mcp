@@ -10,10 +10,12 @@ and :func:`poll` reads its ``DEP_CHECK: {json}`` result line.
 The check (:func:`run_check`), in worktree ``slice-pr-<n>`` on branch
 ``slice/pr-<n>`` under the checkout:
 
-1. ``git fetch origin +pull/<n>/head:refs/heads/slice/pr-<n>`` (a stale
-   worktree of an earlier attempt is removed first) and ``git worktree
-   add``; the fetched head must be the sha the intake classified
-   (``meta.pr.head_sha``) — a head that moved since is refused.
+1. Fetch the PR head into ``slice/pr-<n>`` (a stale worktree of an earlier
+   attempt is removed first) — by the sha the intake classified
+   (``meta.pr.head_sha``: ``git fetch origin <sha>``), falling back to
+   ``+pull/<n>/head:refs/heads/slice/pr-<n>`` (:func:`fetch_pr_head`) — and
+   ``git worktree add``; ``git rev-parse HEAD`` must be that sha — a head
+   that moved since is refused.
 2. ``uv lock --check --no-build``. A stale lock (Dependabot's pip updater
    bumps the ``pyproject.toml`` floor and leaves ``uv.lock`` alone) is
    re-resolved with ``uv lock --no-build`` and committed on the branch as
@@ -48,10 +50,12 @@ import re
 import subprocess
 import sys
 import tempfile
+from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from precis.plans import pr_class as _pr_class
 from precis.workers.job_types import run_slice as _rs
 
 log = logging.getLogger(__name__)
@@ -195,6 +199,28 @@ def _tail(proc: subprocess.CompletedProcess[str]) -> str:
     return text[-_TAIL_CAP:]
 
 
+def fetch_pr_head(
+    git: Callable[[list[str]], subprocess.CompletedProcess[str]],
+    number: int,
+    head: str | None,
+    branch: str,
+) -> subprocess.CompletedProcess[str]:
+    """Fetch PR ``number`` into local ``branch`` (``git`` runs git args in
+    the checkout). With a full ``head`` sha (the one the intake classified)
+    it is fetched by sha (``git fetch origin <sha>``) and the branch set to
+    it; when the server refuses a by-sha fetch it falls back to the pull ref
+    ``pull/<n>/head``. The caller verifies the result with ``git rev-parse``
+    — the pull ref may have moved, a sha cannot."""
+    sha = (head or "").strip().lower()
+    if _pr_class.SHA40_RE.fullmatch(sha):
+        got = git(["fetch", "origin", sha])
+        if got.returncode == 0:
+            made = git(["branch", "-f", branch, sha])
+            if made.returncode == 0:
+                return made
+    return git(["fetch", "origin", f"+pull/{int(number)}/head:refs/heads/{branch}"])
+
+
 def run_check(
     root: Path, number: int, *, head: str | None = None, run: Any = None
 ) -> dict[str, Any]:
@@ -228,10 +254,7 @@ def run_check(
 
     if tree.exists():
         run(["git", "worktree", "remove", "--force", str(tree)], root)
-    fetch = run(
-        ["git", "fetch", "origin", f"+pull/{int(number)}/head:refs/heads/{branch}"],
-        root,
-    )
+    fetch = fetch_pr_head(lambda args: run(["git", *args], root), number, head, branch)
     if fetch.returncode != 0:
         return fail("git fetch", fetch)
     add = run(["git", "worktree", "add", str(tree), branch], root)

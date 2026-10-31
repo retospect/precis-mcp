@@ -9,9 +9,12 @@ GitHub reads under ``job_inproc`` (the ``gripe_validate`` shape). One pass:
    :func:`precis.utils.safe_fetch.safe_get` (public API; ``GH_TOKEN`` sent
    when set). GitHub unreadable (network, rate limit) ends the pass with a
    note and nothing minted; the next tick tries again.
-3. For each open, non-draft PR with no live todo tagged ``pr:<n>`` (any
-   status: one intake per PR, ever): read its files and commits and mint
-   the plan (:func:`precis.plans.templates.mint_pr_intake` — the
+3. For each open, non-draft PR that wants an intake
+   (:func:`precis.plans.pr_class.needs_intake`: no plan root tagged
+   ``pr:<n>``, or no OPEN root and the newest closed root's ``pr-head:``
+   differs from the PR's current head — a closed root on the same head
+   means done, a moved head after a closed plan is looked at again): read
+   its files and commits and mint the plan (:func:`precis.plans.templates.mint_pr_intake` — the
    ``put(kind='todo', mode='plan', args={'template': 'pr-intake', 'pr': n})``
    path, called directly: workers never import handlers). At most
    ``params.max_new`` (default :data:`MAX_NEW`) per pass, so a burst of PRs
@@ -57,7 +60,8 @@ PARAMS_SCHEMA: dict[str, Any] = {
 
 DESCRIPTION: str = (
     "Inbound pull requests: list the repo's open PRs on GitHub and mint one "
-    "pr-intake plan (tagged pr:<n>) for each PR that has none; the class "
+    "pr-intake plan (tagged pr:<n>) for each PR that has none, or whose head "
+    "moved after its plan closed; the class "
     "(dependabot | harness | factory | external) is decided in code."
 )
 
@@ -141,7 +145,8 @@ def run_pass(
         if pull.get("draft"):
             res.drafts += 1
             continue
-        if pr_class.existing_intake(store, number) is not None:
+        head = str((pull.get("head") or {}).get("sha") or "")
+        if not pr_class.needs_intake(store, number, head):
             res.known += 1
             continue
         if len(res.minted) >= max_new:

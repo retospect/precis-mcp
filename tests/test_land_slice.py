@@ -587,7 +587,10 @@ def test_pr_land_fetches_the_head_and_ships_checked(pr_seams: dict[str, Any]) ->
     assert ctx.failure is None, ctx.failure
     tree = pr_seams["pr_tree"]
     git = [a for a, _cwd in pr_seams["git"]]
-    assert ["fetch", "origin", "+pull/73/head:refs/heads/slice/pr-73"] in git
+    # the classified head is fetched by sha and the branch set to it
+    assert ["fetch", "origin", PR_HEAD] in git
+    assert ["branch", "-f", "slice/pr-73", PR_HEAD] in git
+    assert not any(a[:2] == ["fetch", "origin"] and "pull" in a[2] for a in git)
     assert ["worktree", "add", str(tree), "slice/pr-73"] in git
     [(argv, kw)] = pr_seams["launch"]
     subject = "build(deps): update lxml requirement from >=5.0 to >=6.1.3 (td42)"

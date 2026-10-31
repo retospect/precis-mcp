@@ -638,16 +638,19 @@ def mint_pr_intake(
       ask (``approval`` for a fix, ``design-verdict`` for a feature) -> act
       -> land -> review.
 
-    ``facts`` (``pr_poll`` passes them) skips the GitHub read. Refuses a PR
-    that already has an intake plan."""
+    ``facts`` (``pr_poll`` passes them) skips the GitHub read. The root is
+    also tagged ``pr-head:<sha12>`` (the head it was minted on). Refuses a
+    PR that has an open intake plan, or a closed one on the same head
+    (:func:`precis.plans.pr_class.needs_intake`); a head that moved after the
+    plan closed gets a new plan."""
     number = _pr_number(pr)
-    existing = pr_class.existing_intake(store, number)
-    if existing is not None:
+    f = facts if facts is not None else _pr_facts(store, number)
+    if not pr_class.needs_intake(store, number, f.head_sha):
+        existing = pr_class.existing_intake(store, number)
         raise BadInput(
             f"PR #{number} already has an intake plan (td{existing})",
             next=f"get(kind='todo', id={existing})",
         )
-    f = facts if facts is not None else _pr_facts(store, number)
     cls, why = pr_class.classify(f, pr_class.builders(store))
     meta_pr = f.to_meta(cls, why)
     label = _pr_label(f)
@@ -717,6 +720,9 @@ def mint_pr_intake(
     def build(m: _Minter) -> None:
         root = m.node("root", label, {**_phase(), "pr": meta_pr})
         _tag(m, root, f"pr:{number}")
+        head = pr_class.head_tag(f.head_sha)
+        if head:
+            _tag(m, root, head)
         m.store.set_prio(root, pr_class.prio_of(cls, f), conn=m.conn)
         if cls == pr_class.DEPENDABOT:
             m.node(
@@ -780,19 +786,39 @@ def mint_pr_fix(
     """The 'land after fixes' path (``pr_action``): one ``run_slice`` task
     that merges the PR head into its slice branch and fixes ``fixes``
     (``meta.pr_close`` makes its land close the PR), and a reviewer over
-    it. Returns ``{'fix': id, 'review': id}``."""
+    it. The PR head the intake classified (``meta.pr.head_sha``) is pinned:
+    the fix node's op params and brief carry it, and the brief merges that
+    sha, never a bare ``FETCH_HEAD``. Returns ``{'fix': id, 'review': id}``."""
     n = int(pr["number"])
+    sha = str(pr.get("head_sha") or "").strip().lower()
+    pinned = bool(pr_class.SHA40_RE.fullmatch(sha))
+    op: Any = (
+        {"type": "run_slice", "params": {"head_sha": sha}} if pinned else "run_slice"
+    )
+    if pinned:
+        merge = (
+            f"`git fetch origin {sha}`; when that is refused, `git fetch origin "
+            f"pull/{n}/head`. Then check `git rev-parse FETCH_HEAD` prints "
+            f"`{sha}` — if it prints anything else the PR head moved since "
+            "the decision: stop, merge nothing and say so in your final message "
+            f"(a moved head needs a new intake). Then `git merge --no-edit {sha}` "
+            "(that sha, never a bare FETCH_HEAD)"
+        )
+    else:
+        merge = (
+            f"`git fetch origin pull/{n}/head` then `git merge --no-edit "
+            "FETCH_HEAD` (the intake recorded no head sha to pin)"
+        )
 
     def build(m: _Minter) -> None:
         fix = m.node(
             "fix",
             f"Fix PR #{n} before it lands",
-            {**_task(), "pr_close": n},
+            {**_task(op), "pr_close": n},
             body=(
                 f"Pull request #{n} ({pr.get('title')!r} by {pr.get('author')}) "
                 "was approved to land after fixes. First bring it onto your "
-                f"branch: `git fetch origin pull/{n}/head` then `git merge "
-                "--no-edit FETCH_HEAD`. Then make these fixes:\n\n"
+                f"branch: {merge}. Then make these fixes:\n\n"
                 f"{fixes.strip()}\n\nThe lander lands your branch (the PR "
                 f"included) and closes PR #{n} with the squash sha."
             ),

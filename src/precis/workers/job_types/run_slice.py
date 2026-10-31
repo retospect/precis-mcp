@@ -70,6 +70,7 @@ import os
 import re
 import signal
 import subprocess
+from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -152,6 +153,9 @@ PARAMS_SCHEMA: dict[str, Any] = {
         "effort": {"type": "string"},
         # ssh_node's host pin (the host holding the lane's credentials).
         "target_node": {"type": "string"},
+        # The PR head sha the intake classified (the 'land after fixes'
+        # slice); the brief merges that sha. Informational for the job.
+        "head_sha": {"type": "string"},
         # Shared job budget key; sizes the lease and the kill deadline.
         "resources": {
             "type": "object",
@@ -536,6 +540,42 @@ def _reviewer_close(todo_id: int) -> list[str]:
     ]
 
 
+def _analyst_close(todo_id: int) -> list[str]:
+    """Closing steps of an analyst generator's brief (PR analysis): one
+    ``analysis:`` comment, nothing minted, nothing committed, nothing run.
+    The prefix is the one ``plan_dispatch._analysis_posted`` looks for."""
+    from precis.plans.templates import ANALYSIS_PREFIX
+
+    return [
+        "",
+        "## When done: post your analysis",
+        "",
+        "This todo is an analyst: your work is one analysis, not a land and "
+        "not child todos.",
+        "",
+        f"Post exactly one comment on td{todo_id} (the node you were given), "
+        f"starting with `{ANALYSIS_PREFIX}`, with three parts: (a) threats, "
+        "(b) fit, (c) size.",
+        "",
+        "Mint nothing: no child todos, no fix task. Commit nothing. Never "
+        "run `uv sync`, tests or any file from the PR: read it with "
+        "`git fetch` and `git diff` only. Do not land, push or ship. Do not "
+        "tag this todo done: the dispatcher closes it once your comment is "
+        "posted.",
+        "",
+        "Your final message is posted as the `handoff:` comment: what you "
+        "read, in a line or two.",
+    ]
+
+
+#: Generator role -> closing-section builder; a role not listed gets
+#: :func:`_generator_close` (create the child todos). A third role is one line.
+_ROLE_CLOSE: dict[str, Callable[[int], list[str]]] = {
+    "reviewer": _reviewer_close,
+    "analyst": _analyst_close,
+}
+
+
 def render_brief(
     *,
     todo_id: int,
@@ -552,8 +592,9 @@ def render_brief(
     """The prompt a slice session starts from. Ends with the commit-and-
     hand-off instruction (the ``land_slice`` job lands the branch); a
     ``generator`` brief ends with the child-todo instruction instead (the
-    plan tick closes it), and a generator with ``role='reviewer'`` ends with
-    the one-verdict-comment instruction. Names the ``deny_paths`` the session may not
+    plan tick closes it), and a generator whose ``role`` is in ``_ROLE_CLOSE``
+    (reviewer: one verdict comment; analyst: one analysis comment) ends with
+    that role's instruction. Names the ``deny_paths`` the session may not
     write."""
     name = slice_name(todo_id)
     lines = [
@@ -586,11 +627,7 @@ def render_brief(
     if latest:
         lines += ["", "## Latest brief / handoff on the todo", "", latest.strip()]
     if generator:
-        lines += (
-            _reviewer_close(todo_id)
-            if role == "reviewer"
-            else _generator_close(todo_id)
-        )
+        lines += _ROLE_CLOSE.get(role or "", _generator_close)(todo_id)
         return "\n".join(lines) + "\n"
     lines += [
         "",

@@ -448,10 +448,12 @@ def _pr_worktree(
         return None, str(exc)
     tree, branch = _dc.pr_tree(root, number), _dc.pr_branch(number)
     if not tree.is_dir():
-        ref = f"+pull/{number}/head:refs/heads/{branch}"
-        fetch = _git(["fetch", "origin", ref], root)
+        fetch = _dc.fetch_pr_head(lambda args: _git(args, root), number, head, branch)
         if fetch.returncode != 0:
-            return None, f"git fetch origin {ref} failed: {fetch.stderr.strip()[:200]}"
+            return None, (
+                f"git fetch of PR #{number}'s head into {branch} failed: "
+                f"{fetch.stderr.strip()[:200]}"
+            )
         add = _git(["worktree", "add", str(tree), branch], root)
         if add.returncode != 0:
             return None, f"git worktree add {tree} failed: {add.stderr.strip()[:200]}"
