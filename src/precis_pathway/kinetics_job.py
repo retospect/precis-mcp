@@ -318,6 +318,7 @@ def _finalize(
         # config + snapshot — the same inputs the aggregate stamped from, so
         # the id agrees — and folded into the refreshed D8 record.
         from precis_pathway import manifest as vm
+        from precis_pathway.persist import _json_finite
 
         if cur.get("config_snapshot_yaml"):
             # The stored mlip weight pins ride along verbatim — they were
@@ -353,7 +354,8 @@ def _finalize(
                 res_meta.pop(err_key, None)  # a fresh success retires its error
         res_meta.update({k: results[k] for k in _OUTPUT_KEYS if k in results})
         cur["results"] = res_meta
-        ctx.store.stamp_ref_meta(pathway_ref_id, cur)
+        # a failed solve's rate-control sum is NaN, which Jsonb refuses
+        ctx.store.stamp_ref_meta(pathway_ref_id, _json_finite(cur))
     except Exception as exc:  # pragma: no cover - persistence is best-effort
         log.warning("autocatpath_kinetics: meta persist failed", exc_info=True)
         ctx.record_failure(
@@ -370,6 +372,11 @@ def _finalize(
         )
     if "kinetics_sweep_error" in results:
         errors.append(str(results["kinetics_sweep_error"]))
+    elif "kinetics_sweep" in results and not n_pts:
+        # the engine turns each dead point into a warning and returns an
+        # empty sweep: without this the job reads as a success
+        why = next(iter(sweep.get("warnings") or []), "no reason given")
+        errors.append(f"sweep solved no point: {why}")
     if errors:
         # the errors are saved above for the record; the job itself failed
         ctx.record_failure("autocatpath_kinetics: " + "; ".join(errors))

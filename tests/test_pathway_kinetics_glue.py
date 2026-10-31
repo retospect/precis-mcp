@@ -1267,7 +1267,10 @@ def test_poll_persists_on_done_and_refreshes_the_record(monkeypatch) -> None:
 
     store = _stored_pathway()
     envelope = {
-        "results": {"kinetics_v2": {"tof_mf": 9.0}, "kinetics_sweep": {"points": []}},
+        "results": {
+            "kinetics_v2": {"tof_mf": 9.0},
+            "kinetics_sweep": {"points": [{"T": 500.0}]},
+        },
         "notes": ["autocatpath_kinetics: kinetics solved (tof_mf=9.0)"],
     }
     states = iter([{"state": "running"}, {"state": "done", "result": envelope}])
@@ -1288,6 +1291,63 @@ def test_poll_persists_on_done_and_refreshes_the_record(monkeypatch) -> None:
     assert reaped == [False]
     events = [c.args[1] for c in ctx.append_chunk.call_args_list]
     assert "autocatpath_kinetics: kinetics solved (tof_mf=9.0)" in events
+
+
+def test_poll_fails_the_job_when_the_sweep_solved_no_point(monkeypatch) -> None:
+    """Every point refused (542535): the record is saved, the job fails naming
+    the first refusal instead of succeeding with an empty sweep."""
+    from precis_pathway import kinetics_job, seed_job
+
+    store = _stored_pathway()
+    envelope = {
+        "results": {
+            "kinetics_v2": {"tof_mf": 9.0},
+            "kinetics_sweep": {"points": [], "warnings": ["sweep: re-T refuses 400 K"]},
+        },
+        "notes": [],
+    }
+    _fake_runner(
+        monkeypatch,
+        poll_seed_partial_detached=lambda h, **kw: {
+            "state": "done",
+            "result": envelope,
+        },
+    )
+    monkeypatch.setattr(seed_job, "_reap_scratch", lambda ctx, h, *, failed: None)
+    ctx = _job_ctx(store)
+
+    assert kinetics_job._poll(ctx, {"dir": "/tmp/x"}) is True
+
+    assert store.ref.meta["results"]["kinetics_v2"]["tof_mf"] == 9.0
+    ctx.set_status.assert_not_called()
+    assert "re-T refuses 400 K" in ctx.record_failure.call_args.args[0]
+
+
+def test_poll_persists_a_nan_as_null(monkeypatch) -> None:
+    """A solve with no positive TOF reports its rate-control sum as NaN, which
+    a jsonb write refuses (job 543712)."""
+    from precis_pathway import kinetics_job, seed_job
+
+    store = _stored_pathway()
+    envelope = {
+        "results": {"kinetics_v2": {"tof_mf": 1e-21, "drc": {"sum": float("nan")}}},
+        "notes": [],
+    }
+    _fake_runner(
+        monkeypatch,
+        poll_seed_partial_detached=lambda h, **kw: {
+            "state": "done",
+            "result": envelope,
+        },
+    )
+    monkeypatch.setattr(seed_job, "_reap_scratch", lambda ctx, h, *, failed: None)
+
+    assert kinetics_job._poll(_job_ctx(store), {"dir": "/tmp/x"}) is True
+
+    stored = store.ref.meta["results"]["kinetics_v2"]
+    assert stored["tof_mf"] == 1e-21
+    assert stored["drc"]["sum"] is None
+    json.dumps(store.ref.meta, allow_nan=False)
 
 
 def test_poll_manifest_names_the_overriding_environment(monkeypatch) -> None:
