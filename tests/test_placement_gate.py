@@ -20,7 +20,7 @@ from precis.workers.executors import ssh_node
 from precis.workers.registry import SERVICES_BY_NAME, ServiceKind
 from precis.workers.sweeper import _alert_unschedulable_jobs
 
-SLICE_HOST = {"repo_checkout": 1, "claude_bin": 1, "git": 1}
+SLICE_HOST: dict[str, int | None] = {"repo_checkout": 1, "claude_bin": 1, "git": 1}
 
 
 def _queue(store: Store, job_type: str, params: dict[str, Any] | None = None) -> int:
