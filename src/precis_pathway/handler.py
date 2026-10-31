@@ -372,7 +372,7 @@ class PathwayHandler(Handler):
                     kind="pathway",
                     slug=slug,
                     title=pathway_title(artifact),
-                    meta={"status": "computing"},
+                    meta={"status": "computing", "created_by": "put:pathway:emt"},
                     conn=conn,
                 )
             ref_id, verb = ref.id, "created"
@@ -427,7 +427,7 @@ class PathwayHandler(Handler):
                     kind="pathway",
                     slug=slug,
                     title=f"pathway {slug} (computing)",
-                    meta=seed_meta,
+                    meta={**seed_meta, "created_by": "put:pathway:dispatch"},
                     conn=conn,
                 )
                 store.chunks.insert_chunks(
@@ -1350,7 +1350,11 @@ class PathwayHandler(Handler):
         with store.tx() as conn:
             if existing is None:
                 ref = store.insert_ref(
-                    kind="pathway", slug=slug, title=title, meta=seed_meta, conn=conn
+                    kind="pathway",
+                    slug=slug,
+                    title=title,
+                    meta={**seed_meta, "created_by": "put:pathway:preview"},
+                    conn=conn,
                 )
                 store.chunks.insert_chunks(
                     ref.id,

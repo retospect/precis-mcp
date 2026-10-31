@@ -132,7 +132,13 @@ Package-level invariants (detail lives on the named module):
   while an autocatpath pathway re-measures through the restale lane —
   and only when the quest opted into the tier ladder with
   ``fidelity_restale_cap`` > 0, for candidates in the frontier or the
-  top provisional band. ``view='trust'``'s "engine staleness
+  top provisional band. ``fidelity_restale_cap=0`` is a wider hold than
+  the restale pass: it stops every automatic pathway re-mint on the
+  quest — promotes, repair re-dispatches, the loop reconciler's
+  wrongful-kill arm and the tick's ``reruns`` entries
+  (``compute._automatic_rerun_hold``, gr543908) — while the deliberate
+  doors (``request_rerun``, ``redispatch_candidates``) stay open.
+  ``view='trust'``'s "engine staleness
   (precis)" row answers ``engine:stale`` exactly when the harvest does;
   an unstamped engine reads ``not-run``.
 - **One proposal in flight (WIP=1).** ``tick.max_proposals_per_tick``

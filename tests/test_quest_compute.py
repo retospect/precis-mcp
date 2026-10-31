@@ -1460,6 +1460,7 @@ class TestHarvest:
             hub: Any = None,
             force_backend: Any = None,
             tier: str = compute_mod._TIER_NEB,
+            **_kw: Any,
         ) -> str:
             calls.append(
                 {
@@ -1485,6 +1486,32 @@ class TestHarvest:
         assert calls[0]["tier"] == compute_mod._TIER_NEB
         meta = store.fetch_refs_by_ids({sid})[sid].meta or {}
         assert meta.get("quest_autocatpath_infra_retries") == 1
+
+    def test_autocatpath_redispatch_held_by_restale_cap_zero(
+        self, store: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """gr543908: ``fidelity_restale_cap=0`` holds the harvest's automatic
+        re-dispatches too — a failed aggregate is noted as held, nothing is
+        minted and the retry counter is untouched."""
+        qid = self._reaction_quest(store)
+        store.stamp_ref_meta(qid, {"fidelity_restale_cap": 0})
+        sid = compute_mod.ensure_candidate(
+            store, qid, {"name": "Fe", "structure": _SPEC}
+        )
+        assert sid is not None
+        self._failed_autocatpath_aggregate(store, sid)
+
+        calls: list[int] = []
+        monkeypatch.setattr(
+            compute_mod, "dispatch_autocatpath", lambda *a, **k: calls.append(1)
+        )
+
+        step = compute_mod.harvest_measures(store, qid, hub=object())
+        assert calls == []
+        assert step.ruled_out == 0
+        assert any("fidelity_restale_cap=0" in n for n in step.notes)
+        meta = store.fetch_refs_by_ids({sid})[sid].meta or {}
+        assert "quest_autocatpath_infra_retries" not in meta
 
     def test_failed_autocatpath_second_time_files_a_gripe_not_a_third_dispatch(
         self, store: Any, monkeypatch: pytest.MonkeyPatch
@@ -8113,6 +8140,19 @@ class TestDispatchAutocatpath:
         pw = store.get_ref(kind="pathway", id=agg_params["pathway_slug"])
         assert pw is not None and pw.meta.get("candidate_ref") == sid
 
+    def test_mint_stamps_created_by(self, store: Any) -> None:
+        """gr543908: a minted pathway carries ``meta.created_by`` naming the
+        dispatching path; a bare call falls back to the function's own name."""
+        qid = _mk_quest(store, "A striving")
+        sid = self._candidate(store, qid)
+        compute_mod.dispatch_autocatpath(
+            store, sid, self._RX, created_by="promote_tiers:restale"
+        )
+        pid = compute_mod._find_tier_pathway(store, sid, compute_mod._TIER_NEB)
+        assert pid is not None
+        meta = store.fetch_refs_by_ids({pid})[pid].meta
+        assert meta["created_by"] == "promote_tiers:restale"
+
     def test_dispatch_is_idempotent(self, store: Any) -> None:
         qid = _mk_quest(store, "A striving")
         sid = self._candidate(store, qid)
@@ -9598,6 +9638,39 @@ class TestRequestRerun(TestDispatchAutocatpath):
         ]
         assert any("rerun refused" in t and "non-negative ints" in t for t in logs)
 
+    def test_apply_reruns_held_by_restale_cap_zero(self, store: Any) -> None:
+        """gr543908: the tick's ``reruns`` channel is automatic —
+        ``fidelity_restale_cap=0`` drops the whole payload (noted, never
+        silent) while the deliberate ``request_rerun`` door stays open."""
+        qid = self._quest_with_rx(store)
+        store.stamp_ref_meta(qid, {"fidelity_restale_cap": 0})
+        sid = self._candidate(store, qid)
+        self._settle(store, sid)
+        ref = store.fetch_refs_by_ids({sid})[sid]
+        queued = compute_mod.apply_reruns(store, qid, [{"structure": ref.slug}])
+        assert queued == 0
+        assert len(self._seed_jobs(store, sid)) == 3  # nothing new minted
+        logs = [
+            b.text
+            for b in store.chunks.list_chunks_for_ref(qid)
+            if b.chunk_kind == "quest_log"
+        ]
+        assert any("rerun refused" in t and "fidelity_restale_cap" in t for t in logs)
+        # The deliberate door is not automatic — the hold does not reach it.
+        assert compute_mod.request_rerun(store, sid).startswith("autocatpath[")
+
+    def test_rerun_mint_stamps_created_by(self, store: Any) -> None:
+        """gr543908: a rerun pathway names the door + actor in
+        ``meta.created_by`` — 'who made this' is one meta read."""
+        qid = self._quest_with_rx(store)
+        sid = self._candidate(store, qid)
+        self._settle(store, sid)
+        compute_mod.request_rerun(store, sid, by="tester")
+        new_pid = compute_mod._find_tier_pathway(store, sid, compute_mod._TIER_NEB)
+        assert new_pid is not None
+        meta = store.fetch_refs_by_ids({new_pid})[new_pid].meta
+        assert meta["created_by"] == "request_rerun by=tester"
+
     def test_handler_mode_rerun_seeds_arg(self, store: Any) -> None:
         qid = self._quest_with_rx(store)
         sid = self._candidate(store, qid)
@@ -9974,6 +10047,26 @@ class TestTierPromotion:
         assert compute_mod.promote_tiers(store, qid) == []
         assert calls == []
 
+    def test_restale_cap_zero_holds_promote_passes_too(
+        self, store: Any, monkeypatch: Any
+    ) -> None:
+        """gr543908: ``fidelity_restale_cap=0`` is the master hold on every
+        automatic re-mint — the promote passes honour it as well, not just
+        the restale pass, no matter what their own caps say."""
+        calls = self._stub_minting_dispatch(monkeypatch)
+        qid = self._quest(
+            store,
+            fidelity_promote_neb=3,
+            fidelity_promote_verify=3,
+            fidelity_restale_cap=0,
+        )
+        self._screening_candidate(store, qid, "a", 0.1)  # screening→neb eligible
+        neb = self._neb_frontier_candidate(store, qid, "bb", 0.5, -1.0)
+        store.stamp_ref_meta(neb, {"tier": "neb"})  # neb→verify eligible
+        self._stale_candidate(store, qid, "ccc", 0.3)  # restale eligible
+        assert compute_mod.promote_tiers(store, qid) == []
+        assert calls == []
+
     def test_restale_skips_in_flight_and_current_basis_pathways(
         self, store: Any, monkeypatch: Any
     ) -> None:
@@ -10069,7 +10162,10 @@ class TestTierPromotion:
             store,
             fidelity_promote_neb=0,
             fidelity_promote_verify=2,
-            fidelity_restale_cap=0,
+            # restale stays live (cap > 0 — gr543908: cap=0 now holds the
+            # promote passes too); the stale candidates also draw a restale
+            # call, so the assert filters to the verify pass this test pins.
+            fidelity_restale_cap=2,
         )
         store.stamp_ref_meta(
             qid,
@@ -10094,8 +10190,8 @@ class TestTierPromotion:
         compute_mod.promote_tiers(store, qid)
         # merged frontier = {cur (confirmed), stale_best (provisional
         # frontier)}, best-first on merged margins; stale_mid is dominated
-        assert [sid for sid, _t in calls] == [sids["stale_best"], sids["cur"]]
-        assert all(t == compute_mod._TIER_VERIFY for _s, t in calls)
+        verify = [sid for sid, t in calls if t == compute_mod._TIER_VERIFY]
+        assert verify == [sids["stale_best"], sids["cur"]]
 
     def test_restale_never_redispatches_parked_screening(
         self, store: Any, monkeypatch: Any

@@ -291,7 +291,14 @@ neb→verify takes any live neb-tier candidate with a **trusted barrier**
 the rest best-first — a trusted barrier is the evidence that earns the
 authoritative pass, and it is deliberately not gated on the frontier being
 populated (an axis only verify can measure would otherwise deadlock the
-ladder). The verify tier always runs at least three seeds (a pinned
+ladder). `meta.fidelity_restale_cap=0` is the master hold: it stops every
+automatic pathway re-mint on the quest — both promote passes, the restale
+pass, harvest repair re-dispatches, the reconciler's wrongful-kill arm and
+the tick's `reruns` entries — while `put(mode='rerun')` and
+`precis quest redispatch` stay open as the deliberate doors. A minted
+pathway's `meta.created_by` names the pass or door that asked for it.
+
+The verify tier always runs at least three seeds (a pinned
 `search.seeds` shorter than that is widened to `[0, 1, 2]`): a single-seed
 Estimate is `insufficient_samples` and blocks every branch fraction built on
 it, so a one-seed verify would re-measure the barrier and still leave

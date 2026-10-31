@@ -111,7 +111,10 @@ _FIDELITY_INT_KEYS: tuple[str, ...] = (
 #: ``fidelity_restale_cap`` / ``fidelity_restale_band`` /
 #: ``fidelity_promote_neb`` / ``fidelity_promote_verify`` (the ladder's
 #: human-set holds, read by ``quest.compute`` ``promote_tiers``; each a
-#: non-negative int, ``0`` = that pass off — gr537835).
+#: non-negative int, ``0`` = that pass off — gr537835; and
+#: ``fidelity_restale_cap=0`` is wider still — it holds EVERY automatic
+#: pathway re-mint on the quest, promote passes and repair re-dispatches
+#: included — ``compute._automatic_rerun_hold``, gr543908).
 #: Mirrors ``todo.tag()``'s ``TAG_META_ALLOWED_KEYS`` promotion gate
 #: (``guards.check_meta_keys_promotable``) — a closed set, not a general meta
 #: bag; anything else still goes through ``put()``/create-time meta. Before

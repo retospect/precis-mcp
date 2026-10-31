@@ -85,7 +85,10 @@ _DEFAULT_TIER_PROMOTE_NEB = 2
 _DEFAULT_TIER_PROMOTE_VERIFY = 3
 #: Re-dispatches per pass of candidates whose competitor-set measures sit on
 #: an older reaction network (``meta.fidelity_restale_cap``, same human-set
-#: convention) — see :func:`promote_tiers`' third pass.
+#: convention) — see :func:`promote_tiers`' third pass. ``0`` is a wider
+#: hold than the restale pass alone: it stops EVERY automatic pathway
+#: re-mint on the quest (gr543908, :func:`_automatic_rerun_hold`), promote
+#: passes and repair re-dispatches included.
 _DEFAULT_TIER_RESTALE = 2
 #: How far into the provisional band (beyond the merged frontier) the restale
 #: pass looks (``meta.fidelity_restale_band``): a catpath bump re-measures what
@@ -1643,6 +1646,7 @@ def dispatch_autocatpath(
     rerun_nonce: str | None = None,
     rerun_of: int | None = None,
     seeds: Sequence[int] | None = None,
+    created_by: str | None = None,
 ) -> str:
     """Dispatch a autocatpath barrier evaluation on a candidate structure.
 
@@ -1690,6 +1694,13 @@ def dispatch_autocatpath(
     wins over the verify tier's insufficient-samples widening: the caller
     named exactly the seeds it wanted, and the artifact records them
     (``meta.results.seeds``).
+
+    ``created_by`` names the dispatching path (the pass/handler/door that
+    asked for this mint) and lands as ``meta.created_by`` on a freshly
+    minted pathway — the provenance stamp "who made this" reads (gr543908:
+    a reconciler re-dispatch once minted pathways no one could attribute).
+    A dedup hit keeps the existing pathway's own stamp; callers that pass
+    nothing fall back to this function's own name.
 
     §B-1 (gr180096): exports the candidate's relaxed geometry as extxyz,
     ensures a `pathway` ref for the write-back, then mints a **job tree**
@@ -1910,6 +1921,12 @@ def dispatch_autocatpath(
                     title=f"pathway {pslug} (computing)",
                     meta={
                         "content_key": key,
+                        # Provenance: which pass/door asked for this mint
+                        # (gr543908) — read directly off the pathway, no
+                        # log archaeology needed.
+                        "created_by": (
+                            created_by or "quest.compute.dispatch_autocatpath"
+                        ),
                         # The reaction half of the content key — survives
                         # persist_result's meta merge like tier/candidate_ref
                         # do, and is what the ready-prior supersede below
@@ -4419,6 +4436,10 @@ def harvest_measures(
     quest_ref = store.fetch_refs_by_ids({quest_id}).get(quest_id)
     quest_meta = dict(quest_ref.meta or {}) if quest_ref is not None else {}
     anchors_flagged = bool(quest_meta.get("surface_anchors"))
+    # Operator hold (gr543908): fidelity_restale_cap=0 stops every automatic
+    # re-dispatch this pass performs (infra retry, stale-era/off-lane
+    # amnesty, stuck-seed repair) — the same gate promote_tiers honours.
+    rerun_held = _automatic_rerun_hold(store, quest_id, quest_meta)
     for s in structures:
         handle = handle_registry.try_format("structure", s.id) or f"structure:{s.id}"
         name = (s.title or "").splitlines()[0] if s.title else handle
@@ -5168,6 +5189,11 @@ def harvest_measures(
                         f"stale-era autocatpath failure for [{handle}] "
                         "(amnesty-eligible, not ruled out)"
                     )
+                elif rerun_held:
+                    notes.append(
+                        f"stale-era autocatpath failure for [{handle}] "
+                        "(re-dispatch held: fidelity_restale_cap=0)"
+                    )
                 else:
                     anote = dispatch_autocatpath(
                         store,
@@ -5175,6 +5201,7 @@ def harvest_measures(
                         reaction,
                         hub=hub,
                         tier=_retry_tier(store, cp_job_meta),
+                        created_by="harvest_measures:amnesty-explore",
                     )
                     if is_no_live_lane(anote):
                         # Nothing minted: keep the counter where it is (the
@@ -5199,6 +5226,11 @@ def harvest_measures(
                     notes.append(
                         f"stuck seed for [{handle}] (retry-eligible, not re-dispatched)"
                     )
+                elif rerun_held:
+                    notes.append(
+                        f"stuck seed for [{handle}] "
+                        "(re-dispatch held: fidelity_restale_cap=0)"
+                    )
                 elif _seed_timeout_held(store, s, handle, cp_job_meta, notes):
                     # Deadline-killed at a wall the retry would not raise: no
                     # dispatch, no gripe, no counter bump (not an infra fault).
@@ -5215,6 +5247,7 @@ def harvest_measures(
                             reaction,
                             hub=hub,
                             tier=_retry_tier(store, cp_job_meta),
+                            created_by="harvest_measures:stuck-seed",
                         )
                         if is_no_live_lane(snote):
                             _note_no_live_lane(notes, "stuck-seed re-dispatch", snote)
@@ -5250,20 +5283,29 @@ def harvest_measures(
                 # since fixed in dispatch, not a fault of this candidate. Same
                 # shape as the explore amnesty above: re-dispatch bypasses the
                 # ladder; the counter resets only when a dispatch lands.
-                onote = dispatch_autocatpath(
-                    store,
-                    s.id,
-                    reaction,
-                    hub=hub,
-                    tier=_retry_tier(store, cp_job_meta),
-                )
-                if is_no_live_lane(onote):
-                    _note_no_live_lane(notes, "off-lane amnesty re-dispatch", onote)
-                else:
-                    store.stamp_ref_meta(s.id, {"quest_autocatpath_infra_retries": 0})
+                if rerun_held:
                     notes.append(
-                        f"off-lane-pin failure for [{handle}] → amnesty re-dispatch"
+                        f"off-lane-pin failure for [{handle}] "
+                        "(re-dispatch held: fidelity_restale_cap=0)"
                     )
+                else:
+                    onote = dispatch_autocatpath(
+                        store,
+                        s.id,
+                        reaction,
+                        hub=hub,
+                        tier=_retry_tier(store, cp_job_meta),
+                        created_by="harvest_measures:amnesty-off-lane",
+                    )
+                    if is_no_live_lane(onote):
+                        _note_no_live_lane(notes, "off-lane amnesty re-dispatch", onote)
+                    else:
+                        store.stamp_ref_meta(
+                            s.id, {"quest_autocatpath_infra_retries": 0}
+                        )
+                        notes.append(
+                            f"off-lane-pin failure for [{handle}] → amnesty re-dispatch"
+                        )
             else:
                 cp_retries = int(
                     (s.meta or {}).get("quest_autocatpath_infra_retries", 0) or 0
@@ -5273,6 +5315,11 @@ def harvest_measures(
                         f"autocatpath infra failure for [{handle}] "
                         "(retry-eligible, not ruled out)"
                     )
+                elif rerun_held:
+                    notes.append(
+                        f"autocatpath infra failure for [{handle}] "
+                        "(re-dispatch held: fidelity_restale_cap=0)"
+                    )
                 elif cp_retries < _MAX_INFRA_RETRIES:
                     cnote = dispatch_autocatpath(
                         store,
@@ -5280,6 +5327,7 @@ def harvest_measures(
                         reaction,
                         hub=hub,
                         tier=_retry_tier(store, cp_job_meta),
+                        created_by="harvest_measures:infra-retry",
                     )
                     if is_no_live_lane(cnote):
                         _note_no_live_lane(notes, "autocatpath retry", cnote)
@@ -5585,6 +5633,7 @@ def redispatch_candidates(
             minted_by_node=minted_by_node,
             route_nodes=route_nodes,
             load=load,
+            created_by="redispatch_candidates",
         )
         if note.startswith("autocatpath["):
             dispatched.append(tier)
@@ -5789,6 +5838,7 @@ def request_rerun(
         rerun_nonce=nonce,
         rerun_of=prior,
         seeds=seed_list,
+        created_by=f"request_rerun by={by}",
     )
     if not note.startswith("autocatpath["):
         # dispatch's own refusal/skip vocabulary (suspended lane, no live
@@ -5834,8 +5884,11 @@ def apply_reruns(
     ``rerun_cap``), malformed entries, and per-candidate refusals (unknown
     id, in-flight eval, lane off, invalid seeds) each land as an
     ``observation`` logbook note the next tick reads — a dropped or refused
-    rerun is never silent, and a bad entry never fails the tick. Returns
-    the number of reruns actually queued.
+    rerun is never silent, and a bad entry never fails the tick. While the
+    quest sits under ``meta.fidelity_restale_cap=0`` the whole payload is
+    held the same way (:func:`_automatic_rerun_hold` — this channel is
+    automatic; a deliberate rerun goes through ``request_rerun`` directly).
+    Returns the number of reruns actually queued.
     """
     if not isinstance(entries, list):
         return 0
@@ -5844,6 +5897,15 @@ def apply_reruns(
 
     queued = 0
     refused: list[str] = []
+    if _automatic_rerun_hold(store, quest_id):
+        # The tick channel is automatic — the quest's fidelity_restale_cap=0
+        # hold (gr543908) drops every entry this tick; a deliberate rerun
+        # still goes through ``request_rerun`` directly.
+        refused.append(
+            f"{len(entries)} rerun entr(ies) held — quest "
+            "fidelity_restale_cap=0 (automatic re-runs held)"
+        )
+        entries = []
     for e in entries[:cap]:
         if not isinstance(e, dict):
             refused.append("malformed entry (not an object)")
@@ -5930,6 +5992,25 @@ def _restale_scope(fr: Any, band_n: int, sort_key: Callable[[Any], float]) -> se
     return scope | {c.ref_id for c in band[: max(band_n, 0)]}
 
 
+def _automatic_rerun_hold(
+    store: Store, quest_id: int, qmeta: dict[str, Any] | None = None
+) -> bool:
+    """``meta.fidelity_restale_cap`` resolved to 0 — the operator hold on
+    EVERY automatic pathway re-mint on the quest (gr543908): the promote and
+    restale passes (:func:`promote_tiers`), the harvest retry/amnesty
+    re-dispatches (:func:`harvest_measures`), the loop reconciler's
+    wrongful-kill re-dispatch
+    (:func:`precis.quest.loop._reconcile_orphaned_pathways`) and the tick
+    payload's ``reruns`` entries (:func:`apply_reruns`). A NEW candidate's
+    first dispatch and the deliberate doors — ``request_rerun``,
+    ``redispatch_candidates``, a manual ``put(kind='pathway')`` — are not
+    automatic re-runs; the hold does not reach them."""
+    if qmeta is None:
+        qref = store.get_ref(kind="quest", id=quest_id)
+        qmeta = qref.meta or {} if qref is not None else {}
+    return int(qmeta.get("fidelity_restale_cap", _DEFAULT_TIER_RESTALE) or 0) <= 0
+
+
 def promote_tiers(
     store: Store, quest_id: int, *, hub: Any | None = None, by: str = "agent"
 ) -> list[str]:
@@ -5939,7 +6020,10 @@ def promote_tiers(
 
     A no-op unless the quest opted into the ladder (``meta.fidelity_levels``,
     see :func:`_fidelity_levels_enabled`) and declares a reaction
-    (``meta.reaction_config``). Two independent promotions, each a fresh
+    (``meta.reaction_config``), and a no-op whole-cloth while
+    ``meta.fidelity_restale_cap`` is 0 — the operator hold on every
+    automatic re-mint (:func:`_automatic_rerun_hold`, gr543908), not just
+    the restale pass's. Two independent promotions, each a fresh
     :func:`dispatch_autocatpath` call at the next tier — content-addressed
     (the tier folds into the config, hence the idem key), so a promotion
     call that lands on an already-in-flight candidate just collapses onto
@@ -6032,6 +6116,13 @@ def promote_tiers(
         cap_verify = int(
             qmeta.get("fidelity_promote_verify", _DEFAULT_TIER_PROMOTE_VERIFY) or 0
         )
+        cap_restale = int(qmeta.get("fidelity_restale_cap", _DEFAULT_TIER_RESTALE) or 0)
+        if cap_restale <= 0:
+            # Operator hold (gr543908): fidelity_restale_cap=0 stops every
+            # automatic re-mint this pass performs — the two promote passes
+            # mint new evaluations on existing candidates too, not just
+            # restale re-dispatches.
+            return notes
         hub = hub or _hub_for(store)
 
         from precis.quest.frontier import (
@@ -6047,7 +6138,6 @@ def promote_tiers(
         structures = [
             s for s in _live_servers(store, quest_id) if s.kind == "structure"
         ]
-        cap_restale = int(qmeta.get("fidelity_restale_cap", _DEFAULT_TIER_RESTALE) or 0)
         # One current basis per pass: the PINNED engine's when a version
         # resolves (a stamp on any other version is stale, whether or not a
         # current-network measure exists yet — gr510764), else the
@@ -6088,7 +6178,12 @@ def promote_tiers(
             eligible.sort(key=_merged_key)
             for c in eligible[:cap_neb]:
                 note = dispatch_autocatpath(
-                    store, c.ref_id, reaction, hub=hub, tier=_TIER_NEB
+                    store,
+                    c.ref_id,
+                    reaction,
+                    hub=hub,
+                    tier=_TIER_NEB,
+                    created_by="promote_tiers:screening→neb",
                 )
                 if is_no_live_lane(note):
                     _note_no_live_lane(notes, "screening→neb promotion", note)
@@ -6122,7 +6217,12 @@ def promote_tiers(
             )
             for c in eligible_v[:cap_verify]:
                 note = dispatch_autocatpath(
-                    store, c.ref_id, reaction, hub=hub, tier=_TIER_VERIFY
+                    store,
+                    c.ref_id,
+                    reaction,
+                    hub=hub,
+                    tier=_TIER_VERIFY,
+                    created_by="promote_tiers:neb→verify",
                 )
                 if is_no_live_lane(note):
                     _note_no_live_lane(notes, "neb→verify promotion", note)
@@ -6186,7 +6286,12 @@ def promote_tiers(
                     break
                 before = _find_tier_pathway(store, c.ref_id, tier)
                 note = dispatch_autocatpath(
-                    store, c.ref_id, reaction, hub=hub, tier=tier
+                    store,
+                    c.ref_id,
+                    reaction,
+                    hub=hub,
+                    tier=tier,
+                    created_by="promote_tiers:restale",
                 )
                 if is_no_live_lane(note):
                     _note_no_live_lane(notes, "restale re-dispatch", note)
@@ -6463,7 +6568,12 @@ def run_compute_step(
                 dispatched += 1
             if reaction is not None:
                 cnote = dispatch_autocatpath(
-                    store, sid, reaction, hub=hub, tier=initial_tier
+                    store,
+                    sid,
+                    reaction,
+                    hub=hub,
+                    tier=initial_tier,
+                    created_by="run_compute_step:new-candidate",
                 )
                 if is_no_live_lane(cnote):
                     _note_no_live_lane(notes, "barrier dispatch", cnote)

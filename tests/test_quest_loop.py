@@ -1504,7 +1504,13 @@ class TestReconcileOrphanedPathways(_PathwayTreeMixin):
         calls: list[tuple[int, dict[str, Any], str]] = []
 
         def _fake_dispatch(
-            _store: Any, sid: int, reaction: dict[str, Any], *, hub: Any, tier: str
+            _store: Any,
+            sid: int,
+            reaction: dict[str, Any],
+            *,
+            hub: Any,
+            tier: str,
+            **_kw: Any,
         ) -> str:
             calls.append((sid, reaction, tier))
             return "autocatpath[fake] dispatched"
@@ -1519,6 +1525,38 @@ class TestReconcileOrphanedPathways(_PathwayTreeMixin):
         assert calls == [(sid, {"substrate": "NO"}, "verify")]
         # Not stamped by this sweep — a live re-dispatch (or the next
         # harvest) owns moving it forward, not the orphan sweep itself.
+        assert _pathway_meta(store, pw)["status"] == "computing"
+
+    def test_wrongful_kill_held_by_restale_cap_zero(
+        self, store: Store, monkeypatch: Any
+    ) -> None:
+        """gr543908: ``fidelity_restale_cap=0`` holds this arm too — the
+        orphan stub waits for the lift instead of re-minting under the
+        hold (this was the path minting unattributed pathways on qu164903)."""
+        q = _mk_quest(store, "A striving")
+        store.update_ref(
+            q,
+            meta_patch={
+                "reaction_config": {"substrate": "NO"},
+                "fidelity_restale_cap": 0,
+            },
+        )
+        sid = self._candidate(store, q)
+        pw = self._pathway(store, sid)
+        agg = self._agg_todo(store, sid, pw)
+        self._seed(store, agg, pathway_id=pw, job_statuses=["cancelled"])
+
+        calls: list[int] = []
+        monkeypatch.setattr(
+            loop_mod, "dispatch_autocatpath", lambda *a, **k: calls.append(1)
+        )
+
+        failed, redispatched, _partial = loop_mod._reconcile_orphaned_pathways(
+            store, q, hub=None
+        )
+
+        assert (failed, redispatched) == (0, 0)
+        assert calls == []
         assert _pathway_meta(store, pw)["status"] == "computing"
 
     def test_wrongful_kill_held_when_no_live_lane(

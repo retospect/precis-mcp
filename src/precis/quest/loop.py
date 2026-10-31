@@ -109,7 +109,9 @@ pass. A separate, NOT quest-scoped catch-all
 pathway older than a week with no live job anywhere in its tree, active
 quest or not. Neither step re-dispatches without the quest's own
 ``reaction_config`` — a config-less quest's orphans are left for the
-catch-all.
+catch-all — and a wrongful-kill re-dispatch holds entirely while the
+quest's ``meta.fidelity_restale_cap`` is 0, the operator hold on every
+automatic pathway re-mint (gr543908).
 """
 
 from __future__ import annotations
@@ -123,6 +125,7 @@ from precis.alert_ids import RULES_BY_ID
 from precis.quest.allocator import active_quest_ids, cool_stalled
 from precis.quest.compute import (
     _TIER_NEB,
+    _automatic_rerun_hold,
     _candidate_struct_ids,
     _quest_reaction_config,
     dispatch_autocatpath,
@@ -1188,15 +1191,20 @@ def _reconcile_orphaned_pathways(
       bounded to :data:`_MAX_PATHWAY_REDISPATCH_PER_PASS` per quest per pass.
       Skipped entirely (no stamp, no re-dispatch) when the quest carries no
       ``reaction_config`` — nothing to re-dispatch against; the catch-all
-      still eventually reclaims it.
+      still eventually reclaims it. Also skipped while the quest sits under
+      ``meta.fidelity_restale_cap=0`` — this arm is an automatic re-mint,
+      and the operator hold applies to it the same as the restale pass
+      (:func:`~precis.quest.compute._automatic_rerun_hold`, gr543908); the
+      stub waits for the lift instead of minting under it.
 
     Returns ``(failed, redispatched, partial)`` counts for this quest.
     Never raises — a single candidate's/pathway's failure is logged and
     skipped, never aborts the reconcile pass.
     """
     reaction = _quest_reaction_config(store, quest_id)
+    rerun_held = _automatic_rerun_hold(store, quest_id)
     failed = redispatched = partial = 0
-    lane_held = False
+    lane_held = hold_logged = False
     for sid in _candidate_struct_ids(store, quest_id):
         try:
             with store.pool.connection() as conn:
@@ -1266,6 +1274,18 @@ def _reconcile_orphaned_pathways(
                         pathway_id,
                     )
             elif state == "wrongful_kill":
+                if rerun_held:
+                    # fidelity_restale_cap=0 on the quest: the hold covers
+                    # this re-dispatch too (gr543908) — leave the stub for
+                    # after the lift; one log line per quest per pass.
+                    if not hold_logged:
+                        log.info(
+                            "reconcile_quest_loops: quest %s pathway "
+                            "re-dispatch held (fidelity_restale_cap=0)",
+                            quest_id,
+                        )
+                        hold_logged = True
+                    continue
                 if (
                     redispatched >= _MAX_PATHWAY_REDISPATCH_PER_PASS
                     or reaction is None
@@ -1275,7 +1295,14 @@ def _reconcile_orphaned_pathways(
                 try:
                     tier = pmeta.get("tier") or _TIER_NEB
                     dnote = dispatch_autocatpath(
-                        store, sid, reaction, hub=hub, tier=tier
+                        store,
+                        sid,
+                        reaction,
+                        hub=hub,
+                        tier=tier,
+                        created_by=(
+                            f"quest_loop_reconcile:wrongful-kill of pw{pathway_id}"
+                        ),
                     )
                     if is_no_live_lane(dnote):
                         # Nothing minted and nothing to count: one log line

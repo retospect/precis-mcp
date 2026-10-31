@@ -585,7 +585,9 @@ evidence; `barrier_independent_seeds` carries the count), and an older
 engine stamp (`engine:stale`; `engine:unknown` on an unstamped trusted
 edge). A stale edge re-runs on current — struct_neb self-queues,
 autocatpath via restale (opt-in ladder, `fidelity_restale_cap` > 0,
-frontier/top provisional band). Seeds must agree:
+frontier/top provisional band; `=0` is the master hold on every automatic
+pathway re-mint — promotes and repair re-dispatches included — while
+`put(mode='rerun')` stays the deliberate door). Seeds must agree:
 `endpoint:union-disagree` / `endpoint:union-not-run`. **A barrier near
 0 eV carries none of these flags** — a broken/degenerate NEB, not a
 record-low — treat as invalid until checked.
