@@ -2797,3 +2797,123 @@ def test_unwind_move_leading_through_foreign_pad_is_rejected() -> None:
     d, mesh, wires = _unwind_fixture((5.0, 0.2), [(4.35, -0.475, 0.7, 0.25)])
     paths = _spoke_offsets(d, mesh, wires, 4)
     assert (5.0, 0.2) in paths[1]
+
+
+def _dot_board(
+    *, wall: list[list[float]] | None = None, far_side: str = "top"
+) -> pcb.Board:
+    """Reto's micro-router fixture (2026-10-31): two one-pad parts on a
+    30x20 board, pads 20 mm apart on the y=10 centreline — nothing else
+    on the board unless ``wall`` is given. The trivial end-to-end cases
+    the realiser must nail in milliseconds: direct run, one-wall detour,
+    F↔B via hop."""
+    fp = pcb.Footprint("DOT", [pcb.pad("1", "rect", 0.0, 0.0, w=0.9, h=0.9)])
+    b = pcb.Board("micro", stackup=4, outline=pcb.rect(30.0, 20.0))
+    f = b.footprint(fp)
+    p1 = b.part("P1", footprint=f, pins=["1"]).at(5.0, 10.0)
+    p2 = b.part("P2", footprint=f, pins=["1"]).at(25.0, 10.0, side=far_side)
+    if wall is not None:
+        b.keepout(wall)
+    for p in (p1["1"], p2["1"]):
+        p.etype("bidi", fmax_hz=0.0, assume="micro wire end")
+    b.wire(p1["1"], p2["1"], name="N1").current = 0.001
+    return b
+
+
+def _route_micro(board: pcb.Board):
+    """design → ir → topo design → ``route_design``, with the wall clock
+    around the route itself — these boards are 2-pad trivialities and
+    must route in milliseconds."""
+    design = kernel._design(board, None)
+    ir = kernel._build_ir(design)
+    footprints = kernel._footprints(design, ir)
+    td = design_from_ir(
+        ir,
+        footprints,
+        net_classes=design.graph.get("net_classes"),
+        route_planes=True,
+        features=design.features,
+    )
+    t0 = time.perf_counter()
+    plan, res = route_design(td, ir)
+    wall_s = time.perf_counter() - t0
+    layers = [str(layer.get("name") or "") for layer in ir.stackup]
+    return td, ir, footprints, plan, res, layers, wall_s
+
+
+def test_direct_pad_pair_routes_as_one_straight_segment() -> None:
+    """Empty board, two pads, clear lane: ONE segment, pad centre to pad
+    centre, F.Cu, zero vias — the degenerate case every wobble is
+    measured against (taz-leaf-j's S2_DRV argued 0 bends for exactly
+    this shape)."""
+    td, ir, footprints, plan, res, layers, wall_s = _route_micro(_dot_board())
+    assert wall_s < 1.0, f"2-pad direct route took {wall_s:.2f}s"
+    assert plan.vias == () and plan.crossings == ()
+    assert plan.guarded == () and not getattr(plan, "off_angle", ())
+    (piece,) = plan.pieces
+    assert piece.layer == 0
+    assert piece.points == ((5.0, 10.0), (25.0, 10.0))
+    (track,) = res.tracks
+    assert len(track.segments) == 1
+    seg = track.segments[0]
+    assert (tuple(seg["start"]), tuple(seg["end"])) == ((5.0, 10.0), (25.0, 10.0))
+    assert track.length_mm == pytest.approx(20.0)
+    rows = sketch_rows(plan, td, ir, layers)
+    assert rows["N1"]["status"] == "realized"
+    assert _drc_findings(res, ir, layers, footprints=footprints) == []
+
+
+def test_wall_between_pads_detours_on_one_layer_within_four_bends() -> None:
+    """A 10x1.2 mm wall on the centreline between the pads: the router
+    must find the single-layer detour — every piece on F.Cu, no vias,
+    and the copper reaches the far pad with at most four bends (five
+    segments). Pins the detour-wobble class forever; also asserts the
+    copper never enters the wall (≥ half the track width clear)."""
+    wall = [[10.0, 9.4], [20.0, 9.4], [20.0, 10.6], [10.0, 10.6]]
+    td, ir, footprints, plan, res, layers, wall_s = _route_micro(_dot_board(wall=wall))
+    assert wall_s < 1.0, f"2-pad detour route took {wall_s:.2f}s"
+    assert plan.vias == ()
+    assert plan.crossings == ()
+    assert plan.guarded == () and not getattr(plan, "off_angle", ())
+    assert {p.layer for p in plan.pieces} == {0}
+    (track,) = res.tracks
+    segs = [(tuple(s["start"]), tuple(s["end"])) for s in track.segments]
+    assert 2 <= len(segs) <= 5, f"detour should take 1..4 bends, got {segs}"
+    pts = [segs[0][0]] + [b for _a, b in segs]
+    assert pts[0] == (5.0, 10.0) and pts[-1] == (25.0, 10.0)
+    assert Polygon(wall).distance(LineString(pts)) >= 0.15 / 2 - 1e-3, (
+        f"detour enters the wall: {segs}"
+    )
+    rows = sketch_rows(plan, td, ir, layers)
+    assert rows["N1"]["status"] == "realized"
+    assert _drc_findings(res, ir, layers, footprints=footprints) == []
+
+
+def test_f_b_hop_mints_one_via_with_straight_runs() -> None:
+    """The multilayer degenerate case: same geometry, far pad on the
+    bottom side — exactly ONE mid-wire via on the pad line, one straight
+    F.Cu run and one straight B.Cu run sharing the via point (0 bends on
+    both sides), DRC clean."""
+    td, ir, footprints, plan, res, layers, wall_s = _route_micro(
+        _dot_board(far_side="bottom")
+    )
+    assert wall_s < 1.0, f"F<->B hop route took {wall_s:.2f}s"
+    assert plan.crossings == ()
+    assert plan.guarded == () and not getattr(plan, "off_angle", ())
+    assert len(plan.vias) == 1
+    (via,) = plan.vias
+    assert via.branch == 0
+    # the via sits ON the straight pad line, strictly between the pads
+    assert via.y == pytest.approx(10.0)
+    assert 5.0 < via.x < 25.0
+    pcs = sorted(
+        (p for p in plan.pieces if p.branch == 0), key=lambda p: p.points[0][0]
+    )
+    assert [p.layer for p in pcs] == [0, ir.n_layers - 1]
+    assert all(len(p.points) == 2 for p in pcs), "each via side runs straight"
+    # the via is the shared endpoint of both runs
+    assert pcs[0].points[-1] == (via.x, via.y) == pcs[1].points[0]
+    assert pcs[0].points[0] == (5.0, 10.0) and pcs[1].points[-1] == (25.0, 10.0)
+    rows = sketch_rows(plan, td, ir, layers)
+    assert rows["N1"]["status"] == "realized"
+    assert _drc_findings(res, ir, layers, footprints=footprints) == []

@@ -1526,10 +1526,20 @@ def _spoke_offsets(
     the wire's homotopy verbatim — each new leg stays inside the
     corridor tri it was threaded through. Same-net wires still
     separate — a braid's copper may not overlap itself."""
+    from precis.pcb.topoplace.proxy import zone_world_ring
     from precis.pcb.topoplace.wires import guard_pad_rects
 
     rules = net_rules or {}
     pose_a = np.asarray(d.pose0 if pose is None else pose)
+    # Authored keepout/mounting/fixed-copper zones as world-frame
+    # polygons — leg-clearance candidates for the bend scan below.
+    # label_keepout is VIA-only (silk over traces): the mesh already
+    # ignores it and so does the bend pass.
+    zone_polys = [
+        (Polygon(np.asarray(zone_world_ring(d, z, pose_a))), z)
+        for z in d.zones
+        if z.kind != "label_keepout"
+    ]
 
     def nrules(net: int) -> NetRules:
         name = str(d.net_name[net]) if net < len(d.net_name) else str(net)
@@ -1650,10 +1660,26 @@ def _spoke_offsets(
             newp.append((float(b.points[j + 1][0]), float(b.points[j + 1][1])))
         pts_out.append(newp)
 
-    # ---- bend offsets: wires wrapping one obstacle vertex fan by rank
+    # ---- bend offsets: wires wrapping one obstacle vertex fan by rank.
+    # Every bend that coincides with a mesh vertex qualifies for the
+    # clearance scan below — the scan itself, not vertex class, decides
+    # whether anything must move: no candidate pad or zone claims the
+    # bend → it stays verbatim. That replaces the old mandatory
+    # no-candidates shift, which shoved bends around with nothing to
+    # clear — the micro-wall fixture's free-vertex bend slid 0.225 mm
+    # along its bisector INTO a keepout wall (0.042 mm graze, copper
+    # protruding 0.033 mm into the zone).
     wraps: dict[int, list[tuple[int, int]]] = {}
     bend_tasks: list[
-        tuple[int, int, np.ndarray, np.ndarray, float, list[tuple[Any, Any, float]]]
+        tuple[
+            int,
+            int,
+            np.ndarray,
+            np.ndarray,
+            float,
+            list[tuple[Any, Any, float]],
+            list[tuple[Any, float]],
+        ]
     ] = []
     for bi, mid in enumerate(pts_out):
         for j in range(1, len(mid) - 1):
@@ -1689,8 +1715,9 @@ def _spoke_offsets(
             ]
         # a vertex wrapped by one wire once or by a braid keeps the
         # taut bend — offsets only fan COINCIDENT wraps of distinct
-        # branches; a lone wrap still needs its pad margin (the bend
-        # sits ON the pad vertex) so it always shifts out.
+        # branches; the bend scan below then clears each bend of the
+        # pads and zone keepouts its legs actually reach, in whichever
+        # direction clears them.
         rank = {
             bi: r for r, bi in enumerate(dict.fromkeys(seq + [bi for bi, _ in lst]))
         }
@@ -1769,20 +1796,42 @@ def _spoke_offsets(
                     if abs(s) > 1e-12:
                         perp = perp * math.copysign(1.0, s)
                 dirv = perp
-            bend_tasks.append((bi, j, w, dirv, need, cands))
+            # zone keepouts the two LEGS could reach — judged by bbox
+            # overlap with the legs themselves, NOT a vertex-distance
+            # gate: a long leg tilts under a small bend move (~0.2 mm
+            # over 18 mm here), so a wall 4 mm from the bend still
+            # claims the leg. The same-net fixed-copper zone a wire may
+            # pass (TopoZone.net) is never an obstacle.
+            req_z = s_k + w_k / 2.0
+            net_name = (
+                str(d.net_name[own_net]) if own_net < len(d.net_name) else str(own_net)
+            )
+            lx0 = min(float(w[0]), bpts[j - 1][0], bpts[j + 1][0]) - req_z
+            lx1 = max(float(w[0]), bpts[j - 1][0], bpts[j + 1][0]) + req_z
+            ly0 = min(float(w[1]), bpts[j - 1][1], bpts[j + 1][1]) - req_z
+            ly1 = max(float(w[1]), bpts[j - 1][1], bpts[j + 1][1]) + req_z
+            leg_zones: list[tuple[Any, float]] = []
+            for zp, z in zone_polys:
+                if z.net and z.net == net_name:
+                    continue
+                zx0, zy0, zx1, zy1 = zp.bounds
+                if zx1 < lx0 or zx0 > lx1 or zy1 < ly0 or zy0 > ly1:
+                    continue
+                leg_zones.append((zp, req_z))
+            bend_tasks.append((bi, j, w, dirv, need, cands, leg_zones))
 
     # the smallest step along each bend's direction that puts the bend
-    # AND both adjacent legs clear of its candidate pads — offsetting
-    # the vertex alone can leave a leg grazing the box, and a moved
-    # neighbour changes a leg, so the pass runs twice
+    # AND both adjacent legs clear of every candidate — pads (the
+    # near-gate collected them) and zone keepouts (the leg-bbox gate) —
+    # offsetting the vertex alone can leave a leg grazing the box, and a
+    # moved neighbour changes a leg, so the pass runs twice. No
+    # candidate at all: the taut bend stays verbatim — nothing has
+    # claimed it. When the preferred ray never clears (an obstacle
+    # blocks the bisector side), the opposite ray is tried before the
+    # legacy need-length fallback: the fallback direction is a guess and
+    # may be the side the obstacle sits on.
     for _pass in range(2):
-        for bi, j, w, dirv, need, cands in bend_tasks:
-            if not cands:
-                pts_out[bi][j] = (
-                    float(w[0] + need * dirv[0]),
-                    float(w[1] + need * dirv[1]),
-                )
-                continue
+        for bi, j, w, dirv, need, cands, leg_zones in bend_tasks:
             boxes = [
                 (
                     Polygon(
@@ -1799,6 +1848,9 @@ def _spoke_offsets(
                 )
                 for plo, phi, req in cands
             ]
+            boxes.extend(leg_zones)
+            if not boxes:
+                continue
 
             def clears(
                 t: float,
@@ -1825,6 +1877,16 @@ def _spoke_offsets(
                 if clears(float(t)):
                     t_found = float(t) + 0.01
                     break
+            if t_found is None:
+                # the preferred ray is blocked all the way (an obstacle
+                # sits on the bisector side): try the opposite ray
+                # before the legacy need-length fallback — the fallback
+                # direction is a guess and may be the blocked side
+                # (a keepout wall behind the bend's back)
+                for t in np.linspace(0.0, need * 8.0 + 1.0, 96):
+                    if clears(-float(t)):
+                        t_found = -float(t) - 0.01
+                        break
             dist = t_found if t_found is not None else need
             pts_out[bi][j] = (
                 float(w[0] + dist * dirv[0]),
@@ -2186,7 +2248,13 @@ def _spoke_offsets(
                 for k in range(len(q[bi]) - 1):
                     leg = LineString([q[bi][k], q[bi][k + 1]])
                     for pi in foreign_pads(bi):
-                        if leg.intersects(pads_poly[pi]):
+                        # the MARGIN, not just the touch: a relaxed leg
+                        # sitting inside a foreign pad's s+w/2 ring is
+                        # sub-clearance copper — the emit guard would
+                        # withdraw the whole net for it (gr537726's
+                        # 0.2248 lesson). Refuse so the pre-relaxation
+                        # seed stands instead of a polished violation.
+                        if leg.distance(pads_poly[pi]) < pad_req[bi] - 1e-3:
                             return False
             for i in range(len(q)):
                 for j in range(i + 1, len(q)):
@@ -2194,6 +2262,15 @@ def _spoke_offsets(
                         continue
                     if lines[i].crosses(lines[j]):
                         return False
+            # pair gaps, the cost's other hinge: a trial that fixes
+            # pads but lets a non-braided pair close under its gap is
+            # sub-clearance copper too (track-to-track this time) —
+            # refuse it like the pad-margin case so the seed stands.
+            for (i, j), gap in pair_gap.items():
+                if (i, j) in braided:
+                    continue
+                if lines[i].distance(lines[j]) < gap - 1e-3:
+                    return False
             return True
 
         # ── cluster the violations (gr520900 fix round 1) ──────────────
