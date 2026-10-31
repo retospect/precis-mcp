@@ -1598,6 +1598,145 @@ def _board_edge_clearance(
     return out
 
 
+# ── refdes label room (gr537719) ───────────────────────────────────────
+
+
+def _label_room_need_mm(capability: CapabilityRow | None) -> float:
+    """The courtyard-to-cut-edge band a refdes label needs, mm — one
+    label height (:data:`~precis.pcb.silk.DEFAULT_REFDES_HEIGHT_MM`,
+    the text box the draw lays out) plus the existing silk clearance
+    its acceptance test charges: the label's gap off the courtyard
+    ring (:func:`~precis.pcb.silk._label_gap_mm`), the silk edge
+    margin (:func:`~precis.pcb.silk._silk_edge_margin_mm` — the same
+    capability field ``board_edge_clearance`` and the DRC's ink check
+    read), half a stroke, and the glyph overhang the ink may reach
+    past its box (:data:`~precis.pcb.silk._GLYPH_OVERHANG_EM`). A
+    courtyard kept this far off the outline leaves a full label box
+    between them on every side, so an edge-squished side can never be
+    the reason the draw drops the label (``silk_missing``)."""
+    from precis.pcb.gerber import DEFAULT_SILK_WIDTH_MM
+    from precis.pcb.silk import (
+        _GLYPH_OVERHANG_EM,
+        DEFAULT_REFDES_HEIGHT_MM,
+        _label_gap_mm,
+        _silk_edge_margin_mm,
+    )
+
+    sw = DEFAULT_SILK_WIDTH_MM
+    height = DEFAULT_REFDES_HEIGHT_MM
+    return (
+        _label_gap_mm(sw)
+        + height
+        + _silk_edge_margin_mm(capability)
+        + sw / 2.0
+        + _GLYPH_OVERHANG_EM * height
+    )
+
+
+_LABEL_ROOM_JUSTIFICATION = (
+    "a part flush against the outline leaves no room for its refdes label "
+    "between the courtyard and the cut edge -- the draw drops it and the "
+    "silk_missing DRC error lands; the placer holds the courtyard one "
+    "label height plus the silk clearance off the outline so the label "
+    "spots on every side stay inside the board"
+)
+
+
+def label_room_term(
+    ir: PcbIR,
+    inst_id: int,
+    level: Level,
+    config: CostConfig,
+    *,
+    courtyard: Any | None = None,
+) -> TermValue | None:
+    """One instance's ``label_room`` :class:`TermValue` (gr537719 — the
+    motor_power_board anneal parked C1 at the outline's corner and
+    ``build_silk`` dropped its refdes for want of room). ``None`` when
+    no board outline is known (``ir.outline`` absent — the same
+    "nothing to check" rule ``board_edge_clearance_term`` applies), or
+    for an edge-mate instance (authored to sit ON the edge —
+    ``ir.inst_edge_mate`` — the same exemption the topo placer's
+    label-room edge axis applies).
+
+    Measures the COURTYARD's signed inside depth in the outline bbox
+    (:func:`_geom_signed_inside_depth_mm` — the same one-number
+    "clearance available" contract, and the same axis-bbox
+    approximation, as its sibling term) against
+    :func:`_label_room_need_mm`. The graded shortfall fraction gives
+    the anneal the slope :func:`board_edge_clearance_term` gives
+    copper: a part hugging the edge on ANY side pays for the label it
+    squeezes out. ``courtyard`` accepts the caller's already-resolved
+    WORLD-frame courtyard polygon (:meth:`OptimizeEngine.
+    _world_courtyard_exact`'s pose-keyed cache; a vertex ring is
+    normalized too); ``None`` derives it via
+    :func:`_world_courtyard_polygon` with the same constants, so the
+    two callers cannot diverge.
+
+    Before L3 (no committed position), or for an instance with no
+    position yet, the same pre-placement argument as
+    :func:`board_edge_clearance_term`: 0.0 is the tightest
+    LOWER-admissible bound."""
+    if not ir.outline or len(ir.outline) < 3:
+        return None
+    if ir.inst_edge_mate is not None and ir.inst_edge_mate[inst_id] is not None:
+        return None
+    region = str(ir.instance_refdes[inst_id])
+    if level < Level.L3:
+        return TermValue(
+            "label_room",
+            Family.MARGIN,
+            region,
+            0.0,
+            _LABEL_ROOM_JUSTIFICATION,
+            is_bound=True,
+        )
+    x, y = float(ir.inst_x[inst_id]), float(ir.inst_y[inst_id])
+    if math.isnan(x) or math.isnan(y):
+        return TermValue(
+            "label_room",
+            Family.MARGIN,
+            region,
+            0.0,
+            _LABEL_ROOM_JUSTIFICATION,
+            is_bound=True,
+        )
+    from shapely.geometry import Polygon
+    from shapely.geometry.base import BaseGeometry
+
+    bbox = outline_bbox(ir.outline)
+    geom = (
+        courtyard
+        if isinstance(courtyard, BaseGeometry)
+        else Polygon(courtyard)
+        if courtyard is not None
+        else Polygon(_world_courtyard_polygon(ir, inst_id, x, y))
+    )
+    if geom.is_empty:
+        depth_mm = _signed_inside_depth_mm(x, y, bbox)
+    else:
+        depth_mm = _geom_signed_inside_depth_mm(geom, bbox)
+    required_mm = _label_room_need_mm(config.fab_caps)
+    fraction = max(0.0, required_mm - depth_mm) / required_mm
+    return TermValue(
+        "label_room",
+        Family.MARGIN,
+        region,
+        fraction,
+        _LABEL_ROOM_JUSTIFICATION,
+        is_bound=False,
+    )
+
+
+def _label_room(ir: PcbIR, level: Level, config: CostConfig) -> list[TermValue]:
+    out: list[TermValue] = []
+    for i in range(ir.n_instances):
+        t = label_room_term(ir, i, level, config)
+        if t is not None:
+            out.append(t)
+    return out
+
+
 # ── alignment bonus (2026-09-01, first SUMMED "preference field") ───────
 _ALIGNMENT_JUSTIFICATION = (
     "ragged placement assembles/inspects worse -- pick-and-place programming and "
@@ -1869,6 +2008,14 @@ TERMS: list[TermSpec] = [
         Criticality.CATASTROPHIC,
         _BOARD_EDGE_JUSTIFICATION,
         _board_edge_clearance,
+        direction=BoundDirection.LOWER,
+    ),
+    TermSpec(
+        "label_room",
+        Family.MARGIN,
+        Criticality.MARGINAL,
+        _LABEL_ROOM_JUSTIFICATION,
+        _label_room,
         direction=BoundDirection.LOWER,
     ),
 ]

@@ -209,6 +209,7 @@ from precis.pcb.cost import (
     gap_capacity_term,
     hardened_penalty,
     instance_through_hole,
+    label_room_term,
     layer_count_term,
     loop_inductance_term,
     outline_bbox,
@@ -2774,6 +2775,7 @@ class OptimizeEngine:
 
         for i in range(ir.n_instances):
             self._refresh_board_edge(i)
+            self._refresh_label_room(i)
 
         for s_id in range(ir.n_segments):
             self._refresh_routing_area_for_segment(s_id)
@@ -3620,6 +3622,30 @@ class OptimizeEngine:
             body=self._world_body_exact(inst) if placed else None,
         )
         key = ("board_edge_clearance", inst)
+        if t is None:
+            self._margin.pop(key, None)
+        else:
+            self._margin[key] = t
+
+    def _refresh_label_room(self, inst: int) -> None:
+        """The ``label_room`` margin term for one instance — O(1) like
+        :meth:`_refresh_board_edge` (depends only on the moved instance's
+        courtyard + ``ir.outline``). The term prices the COURTYARD (the
+        label hangs off the drawn courtyard outline), so it reads
+        :meth:`_world_courtyard_exact`'s pose-keyed cache, not the pad
+        body."""
+        ir = self.ir
+        placed = not (
+            math.isnan(float(ir.inst_x[inst])) or math.isnan(float(ir.inst_y[inst]))
+        )
+        t = label_room_term(
+            ir,
+            inst,
+            self.level,
+            self.config.cost,
+            courtyard=self._world_courtyard_exact(inst) if placed else None,
+        )
+        key = ("label_room", inst)
         if t is None:
             self._margin.pop(key, None)
         else:
@@ -4497,6 +4523,7 @@ class OptimizeEngine:
         self._refresh_alignment(moved_inst)
         self._refresh_measures(moved_inst)
         self._refresh_board_edge(moved_inst)
+        self._refresh_label_room(moved_inst)
 
         direct = set(ir._segs_of_instance.get(moved_inst, ()))
         reassigned = {
@@ -4804,7 +4831,7 @@ class OptimizeEngine:
             assert isinstance(key, int)
             x, y = self._midpoint(key)
             return self._cell_label(x, y)
-        if term_name == "board_edge_clearance":
+        if term_name in ("board_edge_clearance", "label_room"):
             assert isinstance(key, int)  # an instance id here, not a segment id
             return self._cell_label(
                 float(self.ir.inst_x[key]), float(self.ir.inst_y[key])
