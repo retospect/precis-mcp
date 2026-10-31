@@ -288,3 +288,41 @@ def test_metered_billed_call_is_silent(caplog: Any) -> None:
     with caplog.at_level(logging.WARNING, logger="precis.route_log"):
         route_log.record_call(_rec(cost_usd=0.02))
     assert caplog.text == ""
+
+
+def test_claude_p_unparseable_envelope_keeps_cost_usage_and_flags(
+    monkeypatch: Any,
+) -> None:
+    """The metering envelope's telemetry rides the raised error — a failed
+    call's spend must not be invisible (gr543828)."""
+    import json as _json
+
+    import pytest
+
+    monkeypatch.setenv("PRECIS_CLAUDE_BIN", "claude")
+    envelope = _json.dumps(
+        {
+            "type": "result",
+            "subtype": "success",
+            "is_error": False,
+            "result": "a prose answer, no JSON",
+            "total_cost_usd": 0.0123,
+            "usage": {
+                "input_tokens": 10,
+                "output_tokens": 20,
+                "cache_read_input_tokens": 3,
+                "cache_creation_input_tokens": 4,
+            },
+        }
+    )
+    monkeypatch.setattr(claude_p, "run_claude", _stub_run({}, stdout=envelope))
+
+    with pytest.raises(claude_p.ClaudePUnparseableError) as ei:
+        claude_p.call_claude_p("reply JSON {}")
+
+    exc = ei.value
+    assert exc.reply == "a prose answer, no JSON"
+    assert exc.cost_usd == 0.0123
+    assert exc.usage is not None and exc.usage["output_tokens"] == 20
+    assert exc.is_error is False
+    assert exc.subtype == "success"

@@ -113,7 +113,41 @@ class ClaudePUnparseableError(ClaudePError):
     ``LlmResult.error`` rather than letting it propagate — see
     :func:`precis.taproot.canon.extract_claim_strict_medium` for a
     dispatch-level format-flake guard built on that.
+
+    ``reply`` / ``cost_usd`` / ``usage`` / ``is_error`` / ``subtype`` keep
+    the metering envelope's payload and telemetry that were parsed BEFORE
+    the JSON-block extraction failed — the spend and the model's actual
+    answer must stay visible on the error row even though the call failed
+    (gr543828). ``None``/empty only when raised by a caller that never
+    unwrapped an envelope (tests, legacy constructions).
     """
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        reply: str | None = None,
+        cost_usd: float | None = None,
+        usage: dict[str, int | None] | None = None,
+        is_error: bool | None = None,
+        subtype: str | None = None,
+        **kwargs: Any,
+    ) -> None:
+        super().__init__(message, **kwargs)
+        #: The assistant's answer with the ``--output-format json``
+        #: envelope stripped (what ``result`` carried); ``None`` when the
+        #: envelope was never parsed.
+        self.reply = reply
+        self.cost_usd = cost_usd
+        #: The envelope ``usage`` mapping (the four token fields),
+        #: ``None`` when the envelope carried none.
+        self.usage = usage
+        #: The envelope's own failure flag — ``True`` when the CLI
+        #: returned an API/account-level refusal as a result envelope.
+        self.is_error = is_error
+        #: The envelope's ``subtype`` (``success``,
+        #: ``error_max_budget_usd``, …) when one was stamped.
+        self.subtype = subtype
 
 
 @dataclass(frozen=True)
@@ -365,13 +399,24 @@ def call_claude_p(
         **stdin_kwargs,
     )
 
-    payload, cost, usage, _is_error = unwrap_envelope(res.stdout or "")
+    payload, cost, usage, is_error = unwrap_envelope(res.stdout or "")
     data = _parse_last_json_block(payload)
     if data is None:
+        if cost is None:
+            # Same legacy fallback as the success path below: a stub
+            # binary or an older CLI that printed bare text may still
+            # account on stderr — the failed call's spend stays visible
+            # either way (gr543828).
+            cost = extract_cost_usd(res.stderr or "")
         raise ClaudePUnparseableError(
             "claude -p returned no parseable JSON block",
             stdout=res.stdout,
             stderr=res.stderr,
+            reply=payload,
+            cost_usd=cost,
+            usage=usage,
+            is_error=is_error,
+            subtype=_envelope_subtype(res.stdout or ""),
         )
 
     if cost is None:
@@ -441,6 +486,21 @@ def unwrap_envelope(
     return env["result"], cost, _extract_usage(env), env.get("is_error") is True
 
 
+def _envelope_subtype(stdout: str) -> str | None:
+    """The ``type: "result"`` envelope's ``subtype`` (``success``,
+    ``error_max_budget_usd``, ``error_during_execution``, …) — read on the
+    failure path only, so the normal one pays no second parse. ``None``
+    when stdout isn't a recognizable envelope (stub binary, bare text)."""
+    try:
+        env = json.loads(stdout.strip())
+    except Exception:
+        return None
+    if not isinstance(env, dict) or env.get("type") != "result":
+        return None
+    subtype = env.get("subtype")
+    return subtype if isinstance(subtype, str) else None
+
+
 def _extract_usage(env: dict[str, Any]) -> dict[str, int | None]:
     """Token telemetry from the envelope's ``usage`` object.
 
@@ -479,10 +539,29 @@ def _parse_last_json_block(text: str) -> dict[str, Any] | None:
     parsed object is skipped over, so its *nested* objects are never
     re-offered as candidates. Returns ``None`` when no parseable object
     exists.
+
+    Two passes, mirroring :func:`precis.utils.llm.json_reply.extract_json_object`'s
+    documented tolerance: strict first, then ``strict=False`` — a reply
+    that is otherwise well-formed JSON but carries a raw (unescaped)
+    control character inside a string value (a literal newline instead
+    of ``\\n``, seen in prod quest-tick output, gr345336) is accepted on
+    the second pass. A truncated/unbalanced reply has no complete object
+    on either pass and still returns ``None``.
     """
     if not text:
         return None
-    decoder = json.JSONDecoder()
+    for strict in (True, False):
+        last = _scan_last_json_block(text, strict=strict)
+        if last is not None:
+            return last
+    return None
+
+
+def _scan_last_json_block(text: str, *, strict: bool) -> dict[str, Any] | None:
+    """One :func:`_parse_last_json_block` pass under the given decoder
+    strictness (``strict=False`` permits raw control chars inside
+    strings, nothing else)."""
+    decoder = json.JSONDecoder(strict=strict)
     last: dict[str, Any] | None = None
     i = 0
     while True:

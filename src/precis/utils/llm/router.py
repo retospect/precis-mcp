@@ -1011,8 +1011,10 @@ class LlmResult:
     #: Structured failure class (:mod:`precis.utils.llm.failure`):
     #: ``quota`` (Claude window exhausted), ``budget`` (a spend cap — the
     #: dollar breaker, provider credits, 402), ``rate`` (bare 429 /
-    #: overloaded), ``transport`` (timeout, connection failure, 5xx) or
-    #: ``content`` (the model refused — no rung will do better). Stamped by
+    #: overloaded), ``transport`` (timeout, connection failure, 5xx),
+    #: ``content`` (the model refused — no rung will do better) or
+    #: ``unparseable`` (the reply carried no parseable JSON block — a
+    #: format flake another rung's sample may clear). Stamped by
     #: the router on every classifiable ``error``; a successful result and
     #: an unrecognized failure stay ``None``. Every ``paused`` result
     #: carries a class. :class:`FailoverProvider` falls through on
@@ -3719,6 +3721,12 @@ class DispatchClient:
         return res
 
 
+#: Head of a JSON-contract-broken reply kept in ``features.reply_head``
+#: on a parse-failure route-log row (gr543828) — enough to name the wrong
+#: shape (prose, a cut object, an API refusal) straight off the row.
+_REPLY_HEAD_CHARS = 300
+
+
 def _route_features(req: LlmRequest, result: LlmResult | None = None) -> dict[str, Any]:
     """Cheap, deterministic code features for the route-log (the categorizer's
     first layer). No model call — just what's readable off the request, plus how
@@ -3783,6 +3791,21 @@ def _route_features(req: LlmRequest, result: LlmResult | None = None) -> dict[st
             feats["reason_class"] = result.reason_class
         if result.retry_at is not None:
             feats["retry_at"] = result.retry_at.isoformat()
+        # A parse-failure row keeps a scrubbed head of the reply itself:
+        # on a lite row (``log_blobs=False``) the response blob is never
+        # stored, so this is the only place the model's answer survives —
+        # the next "why did this not parse" needs no code read (gr543828).
+        if (
+            result.error is not None
+            and "no parseable JSON block" in result.error
+            and (result.text or "").strip()
+        ):
+            from precis.utils.secret_scan import mask_secrets
+
+            feats["reply_head"] = mask_secrets(
+                re.sub(r"\s+", " ", result.text).strip()[:_REPLY_HEAD_CHARS],
+                warn=False,
+            )
     return feats
 
 
@@ -4578,9 +4601,12 @@ def _error_result(exc: ClaudeProcessError, *, model: str, tier: Tier) -> LlmResu
 
     Surfaces any partial stdout the wrapper captured as ``text`` so a
     caller keeps a recoverable-exhaustion answer while still seeing the
-    ``error``. A pre-flight refusal (MCP gate not ready, CLI missing) ran no
-    model turn, so its stdout is control-plane traffic only (the gate's
-    ``control_response`` polls) and is never surfaced as ``text`` (gr490201).
+    ``error`` — a :class:`ClaudePUnparseableError` instead surfaces the
+    envelope-stripped reply plus the cost/usage the envelope carried, so
+    a failed call's spend is never invisible (gr543828). A pre-flight
+    refusal (MCP gate not ready, CLI missing) ran no model turn, so its
+    stdout is control-plane traffic only (the gate's ``control_response``
+    polls) and is never surfaced as ``text`` (gr490201).
 
     A signal-terminated child (returncode ≥ 128 = 128 + signum) is flagged
     ``interrupted``: the process was killed by a signal (worker bounce / jetsam),
@@ -4591,9 +4617,37 @@ def _error_result(exc: ClaudeProcessError, *, model: str, tier: Tier) -> LlmResu
     preflight = getattr(exc, "mcp_not_ready", False) or getattr(
         exc, "binary_missing", False
     )
+    text = getattr(exc, "stdout", "") or ""
+    cost_usd: float | None = None
+    usage: dict[str, int | None] = {}
+    env_is_error: bool | None = None
+    if isinstance(exc, ClaudePUnparseableError) and not preflight:
+        # The wrapper unwrapped the metering envelope BEFORE the JSON
+        # extraction failed — the reply, spend and token telemetry ride
+        # the exception so the failed call's cost stays visible
+        # (gr543828). A bare-constructed error (tests) falls back to
+        # re-unwrapping its stdout.
+        reply = exc.reply
+        cost_usd = exc.cost_usd
+        usage = exc.usage or {}
+        env_is_error = exc.is_error
+        if reply is None or env_is_error is None:
+            u_reply, u_cost, u_usage, u_is_error = unwrap_envelope(text)
+            if reply is None:
+                reply = u_reply
+            if cost_usd is None:
+                cost_usd = u_cost
+            if not usage:
+                usage = u_usage
+            if env_is_error is None:
+                env_is_error = u_is_error
+        # The logged ``text`` is the assistant's answer, not the
+        # envelope — ``response_chars`` then measures the reply a caller
+        # would have seen, and the quota check below reads the payload.
+        text = reply
     result = LlmResult(
-        text="" if preflight else (getattr(exc, "stdout", "") or ""),
-        cost_usd=None,
+        text="" if preflight else text,
+        cost_usd=cost_usd,
         turns_used=None,
         model=model,
         tier=tier,
@@ -4611,11 +4665,24 @@ def _error_result(exc: ClaudeProcessError, *, model: str, tier: Tier) -> LlmResu
         cli_unavailable=getattr(exc, "binary_missing", False),
         # gr463517: the MCP readiness gate refused to start the pass.
         mcp_not_ready=getattr(exc, "mcp_not_ready", False),
+        input_tokens=usage.get("input_tokens"),
+        output_tokens=usage.get("output_tokens"),
+        cache_read_tokens=usage.get("cache_read_tokens"),
+        cache_creation_tokens=usage.get("cache_creation_tokens"),
     )
     # A host-config defect (missing binary, MCP not ready) is neither the
     # wire nor the model — leave it unclassified so nothing retries it.
     if result.cli_unavailable or result.mcp_not_ready:
         return result
+    if not isinstance(exc, ClaudePUnparseableError):
+        return _classified(result)
+    subtype = exc.subtype
+    if subtype:
+        # The envelope names *how* the turn ended — keep it on the error
+        # line (the shipped log record is the message, gr523669) so a
+        # budget-cut or API-refusal reads differently from a clean
+        # ``success`` turn that merely failed the JSON contract.
+        result = _replace(result, error=f"{result.error} (envelope subtype={subtype})")
     # An unparseable reply can still BE the account-quota notice: claude
     # answers exhaustion as a plain text turn, so `claude -p`'s caller raises
     # ClaudePUnparseableError ("no parseable JSON block") over it and the
@@ -4626,20 +4693,39 @@ def _error_result(exc: ClaudeProcessError, *, model: str, tier: Tier) -> LlmResu
     # ``is_error`` envelope for "API Error: 529 Overloaded" is a transient,
     # not a quota window, and stamping quota would pause every claude call
     # for ~2h on a seconds-scale blip.
-    if result.text and isinstance(exc, ClaudePUnparseableError):
-        reply, _, _, env_is_error = unwrap_envelope(result.text)
-        if is_quota_notice_strict(reply) or (
-            env_is_error and is_quota_exhaustion_text(reply)
-        ):
-            return _replace(
-                result,
-                paused=True,
-                quota_exhausted=True,
-                reason_class="quota",
-                retry_at=quota_retry_at(reply),
-                error=f"account quota exhausted: {reply.strip()}",
-            )
-    return _classified(result)
+    reply = result.text
+    if reply and (
+        is_quota_notice_strict(reply)
+        or (env_is_error and is_quota_exhaustion_text(reply))
+    ):
+        return _replace(
+            result,
+            paused=True,
+            quota_exhausted=True,
+            reason_class="quota",
+            retry_at=quota_retry_at(reply),
+            error=f"account quota exhausted: {reply.strip()}",
+        )
+    if subtype == "error_max_budget_usd":
+        # The call was cut by its own ``--max-budget-usd`` cap — a spend
+        # stop, grouped with the breaker's other dollar stops, not a
+        # format flake the next rung would resample.
+        return _replace(
+            result,
+            reason_class="budget",
+            retry_at=datetime.now(UTC) + _failure.DEFAULT_HORIZON["budget"],
+        )
+    if env_is_error:
+        # The CLI's own refusal returned as a result envelope (an
+        # API/account-level error — no model answer ever existed to
+        # parse): wire-side and transient, not the ``unparseable`` format
+        # flake a clean ``success`` envelope is.
+        return _replace(
+            result,
+            reason_class="transport",
+            retry_at=datetime.now(UTC) + _failure.DEFAULT_HORIZON["transport"],
+        )
+    return _classified(result, reason_class="unparseable")
 
 
 __all__ = [

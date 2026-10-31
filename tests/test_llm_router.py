@@ -6688,3 +6688,219 @@ def test_route_unparseable_quota_reply_stamps_quota_snapshot(
     assert out.paused is True
     assert out.reason_class == "quota"
     assert stamped == [("quota", Transport.CLAUDE_P, False)]
+
+
+# ── gr543828: claude_p parse failures keep a cause, usage and a reply head ──
+
+
+def test_error_result_unparseable_keeps_envelope_cost_and_tokens() -> None:
+    """A ``claude -p`` call that fails JSON extraction still reports the
+    envelope's spend — ``cost_usd``/``output_tokens`` must not be NULL,
+    and ``text`` is the reply, not the metering wrapper (gr543828)."""
+    from precis.utils.claude_p import ClaudePUnparseableError
+    from precis.utils.llm.router import _error_result
+
+    stdout = json.dumps(
+        {
+            "type": "result",
+            "subtype": "success",
+            "is_error": False,
+            "result": "Here is your description — no JSON.",
+            "total_cost_usd": 0.0123,
+            "usage": {
+                "input_tokens": 1234,
+                "output_tokens": 56,
+                "cache_read_input_tokens": 700,
+                "cache_creation_input_tokens": 80,
+            },
+        }
+    )
+    exc = ClaudePUnparseableError(
+        "claude -p returned no parseable JSON block",
+        stdout=stdout,
+        reply="Here is your description — no JSON.",
+        cost_usd=0.0123,
+        usage={
+            "input_tokens": 1234,
+            "output_tokens": 56,
+            "cache_read_tokens": 700,
+            "cache_creation_tokens": 80,
+        },
+        is_error=False,
+        subtype="success",
+    )
+    res = _error_result(exc, model="claude-sonnet-4-5", tier=Tier.BIG)
+
+    assert res.reason_class == "unparseable"
+    assert res.cost_usd == 0.0123
+    assert res.input_tokens == 1234
+    assert res.output_tokens == 56
+    assert res.cache_read_tokens == 700
+    assert res.cache_creation_tokens == 80
+    assert res.text == "Here is your description — no JSON."
+    assert res.error is not None and "no parseable JSON block" in res.error
+    assert "envelope subtype=success" in res.error
+
+
+def test_error_result_unparseable_bare_exc_unwraps_stdout_telemetry() -> None:
+    """A bare-constructed error (no captured fields) re-unwraps stdout —
+    cost/tokens/class land the same way."""
+    from precis.utils.claude_p import ClaudePUnparseableError
+    from precis.utils.llm.router import _error_result
+
+    stdout = json.dumps(
+        {
+            "type": "result",
+            "subtype": "success",
+            "result": "prose, no JSON",
+            "total_cost_usd": 0.02,
+            "usage": {"input_tokens": 9, "output_tokens": 8},
+        }
+    )
+    exc = ClaudePUnparseableError(
+        "claude -p returned no parseable JSON block", stdout=stdout
+    )
+    res = _error_result(exc, model="claude-sonnet-4-5", tier=Tier.BIG)
+
+    assert res.reason_class == "unparseable"
+    assert res.cost_usd == 0.02
+    assert res.output_tokens == 8
+    assert res.text == "prose, no JSON"
+
+
+def test_error_result_max_budget_subtype_is_a_budget_stop() -> None:
+    """``error_max_budget_usd`` — the call hit its own ``--max-budget-usd``
+    cap — classifies as the spend stop it is, not a format flake."""
+    from precis.utils.claude_p import ClaudePUnparseableError
+    from precis.utils.llm.router import _error_result
+
+    exc = ClaudePUnparseableError(
+        "claude -p returned no parseable JSON block",
+        stdout="",
+        reply="Reached your specified limit of $2.00 USD.",
+        is_error=True,
+        subtype="error_max_budget_usd",
+    )
+    res = _error_result(exc, model="claude-sonnet-4-5", tier=Tier.BIG)
+
+    assert res.reason_class == "budget"
+    assert res.retry_at is not None
+    assert res.paused is False
+
+
+def test_error_result_is_error_refusal_is_transport_class() -> None:
+    """A non-quota ``is_error`` envelope is the CLI's own refusal — the
+    wire, not a model format flake — so it classes ``transport``."""
+    from precis.utils.claude_p import ClaudePUnparseableError
+    from precis.utils.llm.router import _error_result
+
+    exc = ClaudePUnparseableError(
+        "claude -p returned no parseable JSON block",
+        stdout="",
+        reply="API Error: request could not be served",
+        is_error=True,
+        subtype="error_during_execution",
+    )
+    res = _error_result(exc, model="claude-sonnet-4-5", tier=Tier.BIG)
+
+    assert res.reason_class == "transport"
+    assert res.retry_at is not None
+    assert res.quota_exhausted is False
+
+
+def test_route_unparseable_row_has_class_usage_and_reply_head(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Route-level: the logged error row carries ``reason_class``, the
+    envelope's cost/tokens, and a scrubbed head of the reply — the next
+    diagnosis needs no code read (gr543828)."""
+    from precis.utils.claude_p import ClaudePUnparseableError
+
+    reply = "No JSON here — the structure is a layered oxide with..." * 4
+
+    def boom(prompt: str, **kwargs: object) -> ClaudePResult:
+        raise ClaudePUnparseableError(
+            "claude -p returned no parseable JSON block",
+            stdout="",
+            reply=reply,
+            cost_usd=0.011,
+            usage={
+                "input_tokens": 900,
+                "output_tokens": 61,
+                "cache_read_tokens": None,
+                "cache_creation_tokens": None,
+            },
+            is_error=False,
+            subtype="success",
+        )
+
+    monkeypatch.setattr(router, "call_claude_p", boom)
+    recorded = _capture_route_log(monkeypatch)
+
+    out = route(LlmRequest(tier=Tier.MEDIUM, prompt="x"))
+
+    assert out.error is not None
+    assert len(recorded) == 1
+    rec = recorded[0]
+    assert rec.errored is True
+    assert rec.reason_class == "unparseable"
+    assert rec.features["reason_class"] == "unparseable"
+    assert rec.cost_usd == 0.011
+    assert rec.output_tokens == 61
+    assert rec.features["reply_head"] == reply[:300]
+
+
+def test_failover_unparseable_rung_logs_one_error_then_success(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The two-rows-per-call shape, pinned: a failed rung-0 attempt logs
+    exactly ONE error row (its class, usage and reply head filled), then
+    the winning rung's row lands clean — no spurious error on the second
+    call (gr543828)."""
+    from precis.utils.claude_p import ClaudePUnparseableError
+
+    monkeypatch.setattr(
+        "precis.utils.llm.live_config.chain_override",
+        lambda _tier: [
+            {"placement": "cloud", "model": "m-rung0", "transport": "claude_p"},
+            {"placement": "cloud", "model": "m-rung1", "transport": "claude_p"},
+        ],
+    )
+    calls = {"n": 0}
+
+    def flaky(prompt: str, **kwargs: object) -> ClaudePResult:
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise ClaudePUnparseableError(
+                "claude -p returned no parseable JSON block",
+                reply="prose, no JSON",
+                cost_usd=0.01,
+                usage={
+                    "input_tokens": 10,
+                    "output_tokens": 42,
+                    "cache_read_tokens": None,
+                    "cache_creation_tokens": None,
+                },
+                is_error=False,
+                subtype="success",
+            )
+        return ClaudePResult(data={"ok": True}, raw_stdout="", cost_usd=0.02, text="ok")
+
+    monkeypatch.setattr(router, "call_claude_p", flaky)
+    recorded = _capture_route_log(monkeypatch)
+
+    out = route(LlmRequest(tier=Tier.BIG, prompt="x"))
+
+    assert out.error is None
+    assert calls["n"] == 2
+    assert len(recorded) == 2
+    err, ok = recorded
+    assert err.errored is True
+    assert err.model == "m-rung0"
+    assert err.reason_class == "unparseable"
+    assert err.cost_usd == 0.01
+    assert err.output_tokens == 42
+    assert "prose, no JSON" in err.features["reply_head"]
+    assert ok.errored is False
+    assert ok.model == "m-rung1"
+    assert "reply_head" not in ok.features

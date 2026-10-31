@@ -176,3 +176,17 @@ class TestTickLlmMaxUsd:
     def test_bad_env_falls_back(self, monkeypatch) -> None:
         monkeypatch.setenv(tick_mod._TICK_LLM_MAX_USD_ENV, "not-a-number")
         assert tick_mod._tick_llm_max_usd() == tick_mod._TICK_LLM_MAX_USD
+
+
+def test_raw_control_char_inside_string_parses_on_second_pass() -> None:
+    """A literal (unescaped) control char inside a JSON string — the prod
+    gr345336 shape — is tolerated, mirroring ``extract_json_object``'s
+    strict=False pass (gr543828)."""
+    text = '{"description": "line one.\nline two."}'
+    assert _parse_last_json_block(text) == {"description": "line one.\nline two."}
+
+
+def test_truncated_reply_still_unparseable() -> None:
+    """The second pass relaxes control chars only — a cut object still
+    has no complete block."""
+    assert _parse_last_json_block('{"description": "cut mid-str') is None
