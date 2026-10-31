@@ -2953,6 +2953,81 @@ def test_cornered_pad_pair_routes_an_s_detour() -> None:
     assert _drc_findings(res, ir, layers, footprints=footprints) == []
 
 
+def _via2d_board() -> pcb.Board:
+    """The §2D acceptance fixture: an F↔B wire hugging a pad bank so the
+    whole centreline is inside the barrel keep-out (on-line siting fails
+    at BOTH diameters), while a pocket triangle on the open side carries
+    a legal circumcenter one stub away. Must mint a 2D via, not no_via."""
+    fp = pcb.Footprint("DOT", [pcb.pad("1", "rect", 0.0, 0.0, w=0.9, h=0.9)])
+    b = pcb.Board("via2d", stackup=4, outline=pcb.rect(40.0, 20.0))
+    f = b.footprint(fp)
+    q1 = b.part("P1", footprint=f, pins=["1"]).at(5.0, 10.0)
+    q2 = b.part("P2", footprint=f, pins=["1"]).at(35.0, 10.0, side="bottom")
+    # upper bank: bottoms at y=10.05, spanning pin to pin — the wire
+    # corridor squeezes under it and EVERY on-line point sits inside
+    # the barrel keep-out (on-line siting fails at both diameters)
+    for i, x in enumerate(range(6, 35, 2)):
+        b.part(f"U{i}", footprint=f, pins=["1"]).at(float(x), 10.5)
+    # lower row: tops at y=8.45 — shallow pocket triangles between the
+    # wire corridor and this row carry the clean circumcenters
+    for i, x in enumerate(range(9, 32, 2)):
+        b.part(f"L{i}", footprint=f, pins=["1"]).at(float(x), 8.0)
+    for p in (q1["1"], q2["1"]):
+        p.etype("bidi", fmax_hz=0.0, assume="via2d end")
+    b.wire(q1["1"], q2["1"], name="N1").current = 0.001
+    return b
+
+
+def test_via_siting_2d_off_centreline() -> None:
+    """§2D acceptance (pcb-topo-place.md): a channel where centerline
+    siting fails at both diameters but a legal site exists within one
+    triangle's reach MUST mint a via, not land on ``plan.no_via``. The
+    site is off the wire — joined by the short stub the piece machinery
+    already draws — so the via point sits off the branch polyline, the
+    barrel stays at the house diameter (2D tried before the fab-min
+    fallback), both runs share the via endpoint (gr537831), DRC clean,
+    milliseconds."""
+    from precis.pcb.topoplace.mesh import build_mesh as _bm
+    from precis.pcb.topoplace.wires import build_wires as _bw
+
+    board = _via2d_board()
+    design = kernel._design(board, None)
+    ir = kernel._build_ir(design)
+    footprints = kernel._footprints(design, ir)
+    td = design_from_ir(
+        ir,
+        footprints,
+        net_classes=design.graph.get("net_classes"),
+        route_planes=True,
+        features=design.features,
+    )
+    mesh = _bm(td, td.pose0)
+    wires = _bw(mesh, td, ir.n_layers)
+    td2, ir2, footprints2, plan, res, layers, wall_s = _route_micro(board)
+    assert wall_s < 1.0, f"2D-siting route took {wall_s:.2f}s"
+    assert plan.no_via == ()
+    assert plan.crossings == () and plan.guarded == ()
+    assert len(plan.vias) == 1
+    (via,) = plan.vias
+    # the 2D signature: off the branch polyline (1D sites sit ON it),
+    # at the house diameter (2D fired before the fab-min fallback)
+    line = LineString([(float(x), float(y)) for x, y in wires.branches[0].points])
+    assert line.distance(Point(via.x, via.y)) > 0.2, (
+        f"via at ({via.x:.3f},{via.y:.3f}) is not off the polyline — "
+        "the 1D walk found it, 2D untested"
+    )
+    assert via.dia_mm == pytest.approx(0.6)  # house via, not the fallback
+    pcs = sorted(
+        (p for p in plan.pieces if p.branch == 0), key=lambda p: p.points[0][0]
+    )
+    assert [p.layer for p in pcs] == [0, ir2.n_layers - 1]
+    # gr537831's contract: the via is the shared endpoint of both runs
+    assert pcs[0].points[-1] == (via.x, via.y) == pcs[1].points[0]
+    rows = sketch_rows(plan, td2, ir2, layers)
+    assert rows["N1"]["status"] == "realized"
+    assert _drc_findings(res, ir2, layers, footprints=footprints2) == []
+
+
 def test_f_b_hop_mints_one_via_with_straight_runs() -> None:
     """The multilayer degenerate case: same geometry, far pad on the
     bottom side — exactly ONE mid-wire via on the pad line, one straight

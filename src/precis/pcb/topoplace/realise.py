@@ -1168,6 +1168,82 @@ def _piece_run(
 #: the pose transform, so the rect distance is exact, mirror included).
 _Pads = tuple[tuple[int, float, float, float, float], ...]
 
+#: The 2D siting stage's stub-length cap (mm): a via site up to one
+#: triangle's reach off the wire polyline joins through a short stub
+#: the piece runs already draw (:func:`_piece_run`); past this the jog
+#: is a re-thread, not a site, and the branch honestly reports no_via
+#: (pcb-topo-place.md §2D — free-point jogs are a separate slice).
+_VIA_2D_STUB_CAP_MM = 1.0
+
+
+def _tri_circumcenter(
+    a: tuple[float, float], b: tuple[float, float], c: tuple[float, float]
+) -> tuple[float, float] | None:
+    """The triangle's circumcenter, or None for a (near-)collinear
+    triple — the 2D via candidate seeded where the CDT's local Voronoi
+    vertex maximizes clearance from every mesh vertex at once."""
+    ax, ay = float(a[0]), float(a[1])
+    bx, by = float(b[0]), float(b[1])
+    cx, cy = float(c[0]), float(c[1])
+    d = 2.0 * (ax * (by - cy) + bx * (cy - ay) + cx * (ay - by))
+    if abs(d) <= 1e-12:
+        return None
+    a2 = ax * ax + ay * ay
+    b2 = bx * bx + by * by
+    c2 = cx * cx + cy * cy
+    ux = (a2 * (by - cy) + b2 * (cy - ay) + c2 * (ay - by)) / d
+    uy = (a2 * (cx - bx) + b2 * (ax - cx) + c2 * (bx - ax)) / d
+    return ux, uy
+
+
+def _point_in_tri(
+    p: tuple[float, float],
+    a: tuple[float, float],
+    b: tuple[float, float],
+    c: tuple[float, float],
+) -> bool:
+    """Barycentric-side containment (boundary counts) — an obtuse
+    triangle's circumcenter falls outside and is no via site."""
+    px, py = float(p[0]), float(p[1])
+
+    def _cross(
+        o: tuple[float, float], u: tuple[float, float], v: tuple[float, float]
+    ) -> float:
+        return (u[0] - o[0]) * (v[1] - o[1]) - (u[1] - o[1]) * (v[0] - o[0])
+
+    d1 = _cross((px, py), a, b)
+    d2 = _cross((px, py), b, c)
+    d3 = _cross((px, py), c, a)
+    has_neg = (d1 < 0) or (d2 < 0) or (d3 < 0)
+    has_pos = (d1 > 0) or (d2 > 0) or (d3 > 0)
+    return not (has_neg and has_pos)
+
+
+def _seg_rect_clear(
+    a: tuple[float, float],
+    b: tuple[float, float],
+    pads: _Pads,
+    pose: np.ndarray,
+    margin: float,
+) -> bool:
+    """Whether the segment ``a→b`` keeps ``margin`` off every pad rect —
+    the 2D via stub's keep-out: the stub is track copper on both new
+    runs' layers, so it must clear pads exactly like a drawn leg
+    (the pointwise :func:`_pad_clear` alone would let a stub graze a
+    pad its endpoint cleared). Exact segment-to-AABB distance in the
+    part frame, both endpoints transformed."""
+    for part, px, py, hw, hh in pads:
+        lax, lay = _world_to_local(a[0], a[1], pose[part])
+        lbx, lby = _world_to_local(b[0], b[1], pose[part])
+        if (
+            _seg_aabb_dist(
+                (lax, lay), (lbx, lby), (px - hw, py - hh), (px + hw, py + hh)
+            )
+            < margin
+        ):
+            return False
+    return True
+
 
 def _pad_clear(
     x: float, y: float, pads: _Pads, pose: np.ndarray, margin: float
@@ -1259,6 +1335,7 @@ def _site_via(
     keepouts: Sequence[Any] = (),
     fallback_dia: float | None = None,
     foreign: Iterable[tuple[Sequence[tuple[float, float]], float]] = (),
+    track_w: float | None = None,
 ) -> tuple[int, float, float, float, float] | None:
     """One keepout-clean via site near the branch's join index ``ei``
     (topo S3, gr520901), or ``None`` when no point qualifies.
@@ -1283,7 +1360,19 @@ def _site_via(
     branch, the walk retries at the fab-minimum diameter — a signal via
     carries no current, and a smaller legal barrel beats an unconnected
     branch. The returned site carries the diameter it was qualified
-    against so realize and the emit guard measure the same geometry."""
+    against so realize and the emit guard measure the same geometry.
+
+    When the on-wire walk finds nothing at a diameter, the 2D stage
+    (``walk2d`` below — the join edge's adjacent-triangle
+    circumcenters, pcb-topo-place.md §2D) gets the same diameter next:
+    a qualifying site one triangle's reach off the centreline joins by
+    the short stub the piece machinery already draws, before the walk
+    degrades to the smaller barrel. ``track_w`` sizes that stub's
+    clearance (the stub is track copper); callers with the net rule at
+    hand should pass it, the legacy default prices the stub at the
+    barrel radius (conservative).
+    """
+    track_w = float(track_w) if track_w is not None else via_dia / 2.0
     pts = [(float(x), float(y)) for x, y in b.points]
     if len(pts) < 2 or not len(b.edges):
         return None
@@ -1295,6 +1384,49 @@ def _site_via(
         return None
     anchor_d = _poly_project(pts, seg, anchor)
 
+    def qualifies(x: float, y: float, dia: float, margin: float) -> bool:
+        """The barrel keep-out at one point — every body the 1D walk
+        has always checked, shared by the on-wire walk and the 2D
+        stage so both site against identical geometry."""
+        if any(
+            math.dist((x, y), (px, py)) < (dia + pd) / 2.0 + clearance
+            for px, py, pd in placed
+        ):
+            return False
+        if not all(_pad_clear(x, y, pads, pose, margin) for pads in pad_sets):
+            return False
+        pt = Point(x, y)
+        # inside the board AND the barrel keep-out off the outline
+        # — a polygon's distance() to an interior point is 0, so
+        # the boundary is what measures edge clearance.
+        if outline is not None and (
+            not outline.covers(pt) or outline.boundary.distance(pt) < margin
+        ):
+            return False
+        if any(ko.distance(pt) < margin for ko in keepouts):
+            return False
+        if any(
+            _seg_dist((x, y), p, q) < m
+            for fpts, m in foreign
+            for p, q in itertools.pairwise(fpts)
+        ):
+            return False
+        e, _t = _nearest_edge(mesh, (x, y))
+        if mesh.constrained[e]:
+            return False  # a constrained ring edge never holds a via
+        # the barrel's keep-out off the edge's endpoint
+        # vertices — the graze-at-a-vertex case (gr520901)
+        if any(
+            math.dist(
+                (x, y),
+                (float(mesh.verts[int(v)][0]), float(mesh.verts[int(v)][1])),
+            )
+            < margin
+            for v in mesh.edges[e]
+        ):
+            return False
+        return True
+
     def walk(dia: float) -> tuple[int, float, float, float] | None:
         margin = dia / 2.0 + clearance
         step = 0.05
@@ -1304,51 +1436,99 @@ def _site_via(
                 if d < 0.0 or d > total:
                     continue
                 x, y = _poly_point_at(pts, seg, d)
+                if not qualifies(x, y, dia, margin):
+                    continue
+                e, t = _nearest_edge(mesh, (x, y))
+                return e, t, x, y
+        return None
+
+    def walk2d(dia: float) -> tuple[int, float, float, float] | None:
+        """The 2D siting stage (pcb-topo-place.md §2D, gr524334): when
+        the on-wire walk finds nothing, try the finite candidate set
+        off the centreline — the JOIN EDGE's adjacent-triangle
+        circumcenters. A circumcenter is the CDT's local Voronoi
+        vertex: the point farthest from every mesh vertex at once, so
+        in a channel jammed on the wire it is where a legal barrel
+        most likely lives, one triangle's reach from the polyline.
+        The piece machinery already joins an off-path via by its
+        short stub (:func:`_piece_run`), so a qualifying circumcenter
+        mints a site where the 1D walk honestly reported none — the
+        stub itself is vetted like a drawn leg (pad rects on both
+        outers, zones, the outline, foreign tracks, placed vias) at
+        track width, and capped at :data:`_VIA_2D_STUB_CAP_MM`."""
+        margin = dia / 2.0 + clearance
+        stub_margin = track_w / 2.0 + clearance
+
+        def _edge_arc(k: int) -> float:
+            e = int(b.edges[k])
+            t = float(b.t[k]) if k < len(b.t) else 0.5
+            return _poly_project(pts, seg, _edge_xy(mesh, e, t))
+
+        # the crossed edges nearest the join anchor first — a site far
+        # from the join still splits correctly (the piece builder sorts
+        # via arcs, gr520902 a.2) but the nearer site keeps the join
+        # where the yielder wanted it
+        for ek in sorted(
+            range(len(b.edges)), key=lambda k: abs(_edge_arc(k) - anchor_d)
+        ):
+            e0 = int(b.edges[ek])
+            seen: set[int] = set()
+            for t in (int(x) for x in mesh.edge_tris[e0]):
+                if t in seen or t < 0 or t >= len(mesh.tris):
+                    continue
+                seen.add(t)
+                tri = mesh.tris[t]
+                a, bb, c = (
+                    (float(mesh.verts[int(v)][0]), float(mesh.verts[int(v)][1]))
+                    for v in tri
+                )
+                cc = _tri_circumcenter(a, bb, c)
+                if cc is None or not _point_in_tri(cc, a, bb, c):
+                    continue  # collinear, or obtuse — the center falls outside
+                s_arc = _poly_project(pts, seg, cc)
+                proj = _poly_point_at(pts, seg, s_arc)
+                stub = math.dist(cc, proj)
+                if stub > _VIA_2D_STUB_CAP_MM or stub <= 1e-9:
+                    continue
+                if not qualifies(*cc, dia, margin):
+                    continue
+                sline = LineString([cc, proj])
                 if any(
-                    math.dist((x, y), (px, py)) < (dia + pd) / 2.0 + clearance
+                    sline.distance(Point(px, py)) < (dia + pd) / 2.0 + clearance
                     for px, py, pd in placed
                 ):
                     continue
-                if not all(_pad_clear(x, y, pads, pose, margin) for pads in pad_sets):
-                    continue
-                pt = Point(x, y)
-                # inside the board AND the barrel keep-out off the outline
-                # — a polygon's distance() to an interior point is 0, so
-                # the boundary is what measures edge clearance.
-                if outline is not None and (
-                    not outline.covers(pt) or outline.boundary.distance(pt) < margin
+                if not all(
+                    _seg_rect_clear(cc, proj, pads, pose, stub_margin)
+                    for pads in pad_sets
                 ):
                     continue
-                if any(ko.distance(pt) < margin for ko in keepouts):
+                if any(ko.distance(sline) < stub_margin for ko in keepouts):
+                    continue
+                if outline is not None and (
+                    not outline.covers(sline)
+                    or outline.boundary.distance(sline) < stub_margin
+                ):
                     continue
                 if any(
-                    _seg_dist((x, y), p, q) < m
+                    _seg_seg_dist(cc, proj, p, q) < m
                     for fpts, m in foreign
                     for p, q in itertools.pairwise(fpts)
                 ):
                     continue
-                e, t = _nearest_edge(mesh, (x, y))
-                if mesh.constrained[e]:
-                    continue  # a constrained ring edge never holds a via
-                # the barrel's keep-out off the edge's endpoint
-                # vertices — the graze-at-a-vertex case (gr520901)
-                if any(
-                    math.dist(
-                        (x, y),
-                        (float(mesh.verts[int(v)][0]), float(mesh.verts[int(v)][1])),
-                    )
-                    < margin
-                    for v in mesh.edges[e]
-                ):
-                    continue
-                return e, t, x, y
+                e, tt = _nearest_edge(mesh, cc)
+                return e, tt, float(cc[0]), float(cc[1])
         return None
 
-    site = walk(via_dia)
-    dia = via_dia
+    dia = float(via_dia)
+    site = walk(dia)
+    if site is None:
+        site = walk2d(dia)
     if site is None and fallback_dia is not None and fallback_dia < via_dia:
-        site = walk(float(fallback_dia))
         dia = float(fallback_dia)
+        site = walk(dia)
+        if site is None:
+            site = walk2d(dia)
     if site is None:
         return None
     e, t, x, y = site
@@ -2632,6 +2812,7 @@ def plan_route(
                 keepouts=keepout_geoms,
                 fallback_dia=min_via_dia,
                 foreign=foreign,
+                track_w=float(nr.track_width_mm),
             )
             if site is not None and site[0] in site_edges:
                 # refuse two cuts on one edge — the second join gets no
