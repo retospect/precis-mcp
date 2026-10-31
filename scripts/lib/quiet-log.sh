@@ -13,8 +13,9 @@
 #   · on a non-zero exit, the last 5 log lines (the end state, whatever
 #     shape the failure took)
 #   · on a conflict, the conflicted file list — names, never diffs
-#   · every land-notify line (ship's post-land todo/gripe status writes —
-#     result, skip or failure; gr542762)
+#   · the selector's two advisory notes: the coverage "static-only (wide)
+#     selection" warning and the slow-lane note naming selected targets a
+#     '-m not slow' lane collects 0 tests from (gr543576)
 #   · "full log: <path>"
 #   · the status token, LAST: the log's own "<NAME>: <token>" line when it
 #     has one (scripts/rebase emits REBASE_STATUS per exit), else derived:
@@ -42,7 +43,8 @@ quiet_epilogue() {
          /Traceback/{t=1;print;next}
          t&&/^[^ \t]/&&/:/{print;t=0;next}
          t{print;next}
-         /error|Error|FAILED/{print}' "$log" >&2 || true
+         /error|Error|FAILED/{print}
+         /coverage: no measured DB|slow-lane:/{print}' "$log" >&2 || true
     if [ "$rc" -ne 0 ]; then
         files="$(git diff --name-only --diff-filter=U 2>/dev/null || true)"
         if [ -n "$files" ]; then

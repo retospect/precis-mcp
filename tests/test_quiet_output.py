@@ -186,6 +186,49 @@ def test_epilogue_surfaces_crashes_without_cross(tmp_path: Path) -> None:
     assert "noise line" not in ok.stderr
 
 
+def test_epilogue_forwards_selection_notes(tmp_path: Path) -> None:
+    """gr543576: the selector's stderr notes used to live only in the /tmp
+    transcript — a green --checked ship gave no sign the selection was
+    static-only-wide or that slow-marked targets were collected 0-deep.
+    Both advisory shapes reach the short output; other notes stay out."""
+    log = tmp_path / "sel.log"
+    log.write_text(
+        "▶ step\n"
+        "# coverage: absent — no usable coverage DB found\n"
+        "# coverage: no measured DB, so this is a static-only (wide) "
+        "selection — `scripts/impacted-tests --fetch-db` downloads the "
+        "nightly map once (cache dir: PRECIS_COVERAGE_DB_DIR)\n"
+        "# slow-lane: 2 selected target(s) are entirely slow/nightly-marked "
+        "— '-m not slow' lanes collect 0 tests from them: a.py, b.py. "
+        "Exercise them via scripts/test --selected -m 'not nightly' or a "
+        "--slow gate\n"
+        "# widened to smoke: no evidence for src/pkg/x.bin\n"
+        "noise line\n",
+        encoding="utf-8",
+    )
+    proc = subprocess.run(
+        [
+            _BASH,
+            "-c",
+            f'. "{REPO}/scripts/lib/quiet-log.sh"; quiet_epilogue "{log}" 0 SHIP_STATUS shipped',
+        ],
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        check=False,
+    )
+    assert proc.returncode == 0, proc.stderr
+    err = proc.stderr
+    assert "static-only (wide) selection" in err
+    assert "slow-lane: 2 selected target(s)" in err
+    # narrow: other '#' notes and noise stay in the log
+    assert "widened to smoke" not in err
+    assert "coverage: absent" not in err
+    assert "noise line" not in err
+    assert proc.stdout.rstrip().endswith("SHIP_STATUS: shipped")
+
+
 @pytest.fixture
 def rig(tmp_path: Path) -> Rig:
     return Rig(tmp_path)

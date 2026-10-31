@@ -79,10 +79,14 @@ at_launch() {
 	fi
 	tmux new-window -t "=$session:" -n "$at_label-$name" -c "$tree" \
 		"exec $(printf '%q ' "$self" --exec "$tree" "$@")"
-	local _ reason
+	local _ reason list
 	for _ in $(seq 50); do
-		reason=$(git -C "$at_root" worktree list --porcelain |
-			awk -v t="worktree $tree" '$0==t{f=1} f&&/^locked/{print; exit} f&&/^$/{exit}')
+		# Capture, then scan: an early-exit awk reading a live git pipe can
+		# SIGPIPE git under pipefail and kill the launch mid-flight
+		# (gr543576 — the 141 flake in test_launch_registers_trust).
+		list=$(git -C "$at_root" worktree list --porcelain)
+		reason=$(awk -v t="worktree $tree" \
+			'$0==t{f=1} f&&/^locked/{print; exit} f&&/^$/{exit}' <<<"$list")
 		[[ $reason != "locked pid $$" ]] && break
 		sleep 0.2
 	done

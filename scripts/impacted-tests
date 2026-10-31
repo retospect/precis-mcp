@@ -482,23 +482,37 @@ class CoverageDB:
     manifest: dict[str, str] = field(default_factory=dict)
 
 
-def _load_manifest(db: Path) -> tuple[dict[str, str], datetime | None]:
-    """(files map, created_at) from the manifest beside ``db``."""
+def _load_manifest(db: Path) -> tuple[dict[str, str], datetime | None, str | None]:
+    """(files map, created_at, partial-note) from the manifest beside ``db``.
+
+    The coverage-db job uploads the map even when its suite was red — the
+    manifest then carries ``partial: true`` (+ ``failed_tests``), which the
+    caller prints: a partial map's missing edges widen statically, they do
+    not corrupt — but a caller should know it is holding one.
+    """
     man = db.parent / ".coverage.precis.json"
     try:
         raw = json.loads(man.read_text(encoding="utf-8"))
     except (OSError, ValueError):
-        return {}, None
+        return {}, None, None
     files = raw.get("files")
     if not isinstance(files, dict):
-        return {}, None
+        return {}, None, None
     try:
         created = datetime.fromisoformat(
             str(raw.get("created_at")).replace("Z", "+00:00")
         )
     except ValueError:
         created = None
-    return {str(k): str(v) for k, v in files.items()}, created
+    partial = None
+    if raw.get("partial"):
+        n = raw.get("failed_tests")
+        partial = (
+            f"partial map — suite had {n} failed test(s)"
+            if isinstance(n, int)
+            else "partial map — suite did not finish green"
+        )
+    return {str(k): str(v) for k, v in files.items()}, created, partial
 
 
 def load_coverage(root: Path, db: Path | None, base: str) -> CoverageDB:
@@ -511,7 +525,7 @@ def load_coverage(root: Path, db: Path | None, base: str) -> CoverageDB:
     """
     if db is None or not db.is_file():
         return CoverageDB("absent", "no usable coverage DB found")
-    manifest, created = _load_manifest(db)
+    manifest, created, partial = _load_manifest(db)
     if not manifest:
         return CoverageDB(
             "unverified", f"{db.name} has no readable .coverage.precis.json manifest"
@@ -541,9 +555,10 @@ def load_coverage(root: Path, db: Path | None, base: str) -> CoverageDB:
         )
     if not any(ctx.split("|", 1)[0] for ctx in data.measured_contexts()):
         return CoverageDB("no-contexts", f"{db.name} has no per-test contexts")
-    return CoverageDB(
-        "ok", f"coverage DB verified ({age_h:.0f}h old)", data=data, manifest=manifest
-    )
+    note = f"coverage DB verified ({age_h:.0f}h old)"
+    if partial:
+        note += f"; {partial}"
+    return CoverageDB("ok", note, data=data, manifest=manifest)
 
 
 def verify_file(cdb: CoverageDB, root: Path, base: str, rel: str) -> str | None:
@@ -1539,6 +1554,9 @@ def _fetch_db(cache: Path) -> int:
         )
         if dl.returncode == 0 and (cache / ".coverage").is_file():
             print(f"coverage DB for run {run_id} -> {cache}")
+            _f, _c, partial = _load_manifest(cache / ".coverage")
+            if partial:
+                print(f"coverage DB is a {partial}")
             return 0
     print(
         "impacted-tests: no recent run carried a precis-coverage-db artifact",
