@@ -118,9 +118,10 @@ def _op_problems(op: Any) -> list[str]:
         bad = _unknown_keys(op, ("type", "params"))
         if bad:
             return [f"meta.op: {bad}"]
-        name, params = op.get("type"), op.get("params")
-        if not isinstance(name, str):
+        raw_name, params = op.get("type"), op.get("params")
+        if not isinstance(raw_name, str):
             return ["meta.op.type must be a job_type name (string)"]
+        name = raw_name
     else:
         return [f"meta.op must be a string or a dict, got {type(op).__name__}"]
     out: list[str] = []

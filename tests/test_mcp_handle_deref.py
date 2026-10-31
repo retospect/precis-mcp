@@ -279,6 +279,8 @@ def test_audit_retains_envelope_not_expanded_text(
         is_error: bool,
         started: float,
         result_count: int | None = None,
+        *,
+        budget_fitted: bool = False,
     ) -> None:
         seen.update(args)
 

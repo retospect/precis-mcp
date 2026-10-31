@@ -1104,6 +1104,8 @@ class PcbHandler(Handler):
                 "poly",
                 # op='fork': the source board slug or pb<id>.
                 "from",
+                # op='import_epro': True returns the intake census (gr540839).
+                "report",
                 # op='check': force the inline run past reuse (gr496242).
                 "fresh",
                 # op='order' (_op_order / _order_dry_run); gr495025.
@@ -6372,17 +6374,31 @@ class PcbHandler(Handler):
         except EproImportError as exc:
             # A taken slug, a non-epro target for the update census, or a
             # board precis cannot hold — the importer's own message says which.
-            raise BadInput(f"op='import_epro': {exc}") from exc
+            raise BadInput(
+                f"op='import_epro': {exc}",
+                next=f"put(kind='pcb', id='{slug}', args={{'op':'import_epro', "
+                f"'source':'export:{src_slug}', 'report':True}}) with a free "
+                "slug (an existing non-epro board cannot be censused)",
+            ) from exc
         lines = [
             f"# import_epro export:{build.slug} → {slug}: intake census "
             "(dry run — nothing was written)",
             *(result.intake.lines() if result.intake else []),
             f"source sha256: {build.sha256} (the bytes view='epro' writes)",
-            f"Next: op='fork' copies {src_slug} losslessly; a real .epro2 "
-            "file imports with the CLI: precis pcb import-epro <file> "
-            "--slug <slug> --report",
         ]
-        return Response(body="\n".join(lines))
+        return Response(
+            body="\n".join(lines)
+            + "\n"
+            + render_next_section(
+                [
+                    (
+                        f"put(kind='pcb', id='{slug}', args={{'op':'fork', "
+                        f"'from':'{src_slug}'}})",
+                        f"copy {src_slug} losslessly",
+                    )
+                ]
+            )
+        )
 
     def _op_fork(
         self,
@@ -8780,19 +8796,23 @@ class PcbHandler(Handler):
             except (TypeError, ValueError):
                 raise BadInput(
                     f"view='svg' args.bbox must be [x0, y0, x1, y1] in mm, "
-                    f"got {raw_bbox!r}"
+                    f"got {raw_bbox!r}",
+                    next="args={'bbox':[0, 0, 20, 10]} (x0, y0, x1, y1 in mm)",
                 ) from None
             if len(vals) != 4 or not (vals[0] < vals[2] and vals[1] < vals[3]):
                 raise BadInput(
                     f"view='svg' args.bbox needs [x0, y0, x1, y1] with "
-                    f"x0<x1 and y0<y1, got {raw_bbox!r}"
+                    f"x0<x1 and y0<y1, got {raw_bbox!r}",
+                    next="args={'bbox':[0, 0, 20, 10]} (x0<x1, y0<y1)",
                 )
             scope["bbox"] = tuple(vals)
             if raw_refdes:
                 raise BadInput(
                     "view='svg' fab scope: 'bbox' and 'refdes' are "
                     "alternatives — pass one or the other ('nets' may "
-                    "join either, it only highlights)"
+                    "join either, it only highlights)",
+                    next="drop 'refdes' (keep bbox) or drop 'bbox' "
+                    "(use args={'refdes':['U1'], 'nets':['GND']})",
                 )
         for key, raw in (("refdes", raw_refdes), ("nets", raw_nets)):
             if raw is None:
@@ -8801,7 +8821,10 @@ class PcbHandler(Handler):
             names = [str(n).strip() for n in names if str(n).strip()]
             if not names:
                 raise BadInput(
-                    f"view='svg' args.{key} needs at least one non-empty name"
+                    f"view='svg' args.{key} needs at least one non-empty name",
+                    next=f"args={{'{key}':['U1']}}"
+                    if key == "refdes"
+                    else "args={'nets':['GND']}",
                 )
             scope[key] = names
         margin = args.get("margin")
@@ -8810,11 +8833,13 @@ class PcbHandler(Handler):
                 margin = float(margin)
             except (TypeError, ValueError):
                 raise BadInput(
-                    f"view='svg' args.margin must be a mm number, got {margin!r}"
+                    f"view='svg' args.margin must be a mm number, got {margin!r}",
+                    next="args={'margin': 2}",
                 ) from None
             if margin < 0:
                 raise BadInput(
-                    f"view='svg' args.margin must be >= 0 mm, got {margin!r}"
+                    f"view='svg' args.margin must be >= 0 mm, got {margin!r}",
+                    next="args={'margin': 2}",
                 )
             scope["margin"] = margin
         return scope or None

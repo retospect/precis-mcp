@@ -208,6 +208,17 @@ def kimi_env(tmp_path: Path, bins: Path) -> dict[str, str]:
     env["KIMI_CODE_HOME"] = str(tmp_path / "kimi-home")
     env["CLAUDE_JSON"] = str(claude_json)
     env["KIMI_TREE_TIMEOUT"] = "45"
+    # kimi-tree refuses a stale ~/.kimi-code (kimi-setup --check); sync the
+    # throwaway KIMI_CODE_HOME first, as a user would before launching.
+    subprocess.run(
+        [str(REPO / "scripts" / "kimi-setup")],
+        env=env,
+        check=True,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        timeout=60,
+    )
     return env
 
 
@@ -247,7 +258,10 @@ def test_prompt_launch_without_tty_runs_bounded(tmp_path: Path) -> None:
     )
     assert r.returncode == 0, r.stderr
     assert "--prompt say ok" in read_log(tmp_path, "kimi.log")
-    assert "timeout 45 kimi --prompt say ok" in read_log(tmp_path, "timeout.log")
+    # kimi-tree execs the resolved path (command -v), not the bare name.
+    timeout_log = read_log(tmp_path, "timeout.log")
+    assert timeout_log.startswith("timeout 45 ")
+    assert "kimi --prompt say ok" in timeout_log
 
 
 def test_interactive_launch_with_tty_runs_unbounded(tmp_path: Path) -> None:

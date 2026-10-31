@@ -2923,6 +2923,7 @@ def test_reap_worktrees_report_buckets_and_removes_nothing(
     primary = report_repo["primary"]
     wt_root = report_repo["wt_root"]
     dead_pid = report_repo["dead_pid"]
+    assert isinstance(primary, Path) and isinstance(wt_root, Path)
 
     wt_before = _git(primary, "worktree", "list", "--porcelain").stdout
     br_before = _git(
