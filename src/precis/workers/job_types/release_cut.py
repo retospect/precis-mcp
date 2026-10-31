@@ -12,8 +12,9 @@ detached submit/poll pair under ``ssh_node``:
 * :func:`poll` waits for the exit file; on exit 0 with a
   ``RELEASE_CUT: r<N> <sha>`` line it records the cut on the plan
   (:func:`precis.plans.release.record_cut`: ``meta.release`` on the plan
-  root, the real range on the plan's ``tests-green`` gate and loop, ``deploy
-  r<N>`` on the approval ask) and succeeds with r<N> and the sha in the
+  root with the ``host`` and ``checkout`` it ran in, the real range on the
+  plan's ``tests-green`` gate and loop, ``deploy r<N>`` on the approval
+  ask) and succeeds with r<N> and the sha in the
   summary and ``meta.release_cut``. No ``RELEASE_CUT`` line (S already live,
   a release in flight elsewhere) or a non-zero exit fails the job with the
   log tail; the plan tick's retry cap then files the ask.
@@ -186,6 +187,14 @@ def kill(ctx: Any, handle: Any) -> None:
         pass
 
 
+def run_host(params: dict[str, Any]) -> str | None:
+    """The node this job runs on: its ``params.target_node`` pin (ssh_node
+    pins a job to the node that launched it), else this worker's
+    ``PRECIS_NODE``; ``None`` for a node-less worker."""
+    node = params.get("target_node") or os.environ.get("PRECIS_NODE")
+    return str(node).strip() or None if node else None
+
+
 def origin_repo(root: Path) -> str | None:
     """``owner/repo`` of the checkout's ``origin`` remote, else ``None``."""
     try:
@@ -239,11 +248,22 @@ def poll(ctx: Any, handle: Any) -> bool:
     rn, sha, rng = cut
     params = (ctx.meta or {}).get("params") or {}
     todo_id = params.get("todo_id")
-    repo = origin_repo(Path(str(handle.get("root") or ".")))
+    checkout = str(handle.get("root") or ".")
+    repo = origin_repo(Path(checkout))
+    host = run_host(params)
     notes: list[str] = []
     if isinstance(todo_id, int):
         try:
-            notes = _release.record_cut(ctx.store, todo_id, rn, sha, rng, repo=repo)
+            notes = _release.record_cut(
+                ctx.store,
+                todo_id,
+                rn,
+                sha,
+                rng,
+                repo=repo,
+                host=host,
+                checkout=checkout,
+            )
         except Exception as exc:
             log.warning("%s: record_cut on td%s failed", NAME, todo_id, exc_info=True)
             fail_with_tail(
@@ -253,11 +273,23 @@ def poll(ctx: Any, handle: Any) -> bool:
                 log_text,
             )
             return True
-    ctx.set_meta(release_cut={"rN": rn, "sha": sha, "range": rng, "repo": repo})
+    ctx.set_meta(
+        release_cut={
+            "rN": rn,
+            "sha": sha,
+            "range": rng,
+            "repo": repo,
+            "host": host,
+            "checkout": checkout,
+        }
+    )
     ctx.append_chunk(
         "job_summary",
         "\n".join(
-            [f"release_cut: {rn} at {sha} (range {rng}, repo {repo or 'unknown'})"]
+            [
+                f"release_cut: {rn} at {sha} (range {rng}, repo {repo or 'unknown'}, "
+                f"host {host or 'unknown'}, checkout {checkout})"
+            ]
             + [f"- {n}" for n in notes]
         ),
     )
@@ -276,6 +308,7 @@ __all__ = [
     "launch_script",
     "origin_repo",
     "poll",
+    "run_host",
     "submit",
     "validate_submit",
     "wall_seconds",

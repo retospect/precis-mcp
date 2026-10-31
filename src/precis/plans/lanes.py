@@ -51,6 +51,16 @@ FACTORY_DENY_WRITE_PATHS: tuple[str, ...] = (
     "src/precis/workers/job_types/run_slice.py",
     "src/precis/workers/job_types/plan_dispatch.py",
     "src/precis/workers/job_types/gripe_validate.py",
+    # the dark release pass: the approval guard, the ops and the script
+    # (named singly although plans/** already spans two of them: the
+    # release path must stay denied if the glob above is ever narrowed)
+    "src/precis/plans/release.py",
+    "src/precis/plans/lanes.py",
+    "src/precis/workers/job_types/release_cut.py",
+    "src/precis/workers/job_types/ci_verdict_poll.py",
+    "src/precis/workers/job_types/release_deploy.py",
+    "src/precis/workers/job_types/land_slice.py",
+    "scripts/release",
     # alert rules, detectors and monitors
     "src/precis/alert_ids.py",
     "src/precis/alerts.py",

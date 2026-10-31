@@ -818,8 +818,38 @@ def test_every_seed_lane_carries_the_factory_deny_paths() -> None:
         "src/precis/plans/**",
         "src/precis/workers/job_types/plan_dispatch.py",
         "src/precis/workers/job_types/gripe_validate.py",
+        # the dark release pass (td543856)
+        "src/precis/plans/release.py",
+        "src/precis/plans/lanes.py",
+        "src/precis/workers/job_types/release_cut.py",
+        "src/precis/workers/job_types/ci_verdict_poll.py",
+        "src/precis/workers/job_types/release_deploy.py",
+        "src/precis/workers/job_types/land_slice.py",
+        "scripts/release",
     ):
         assert path in lanes.FACTORY_DENY_WRITE_PATHS
+
+
+def test_release_modules_are_denied_by_name() -> None:
+    hits = run_slice.deny_violations(
+        [
+            "scripts/release",
+            "scripts/release-notes",
+            "src/precis/workers/job_types/release_cut.py",
+            "src/precis/workers/job_types/ci_verdict_poll.py",
+            "src/precis/workers/job_types/release_deploy.py",
+            "src/precis/workers/job_types/land_slice.py",
+            "src/precis/workers/job_types/fix_gripe.py",
+        ],
+        lanes.FACTORY_DENY_WRITE_PATHS,
+    )
+    assert hits == [
+        "scripts/release",
+        "src/precis/workers/job_types/ci_verdict_poll.py",
+        "src/precis/workers/job_types/land_slice.py",
+        "src/precis/workers/job_types/release_cut.py",
+        "src/precis/workers/job_types/release_deploy.py",
+    ]
 
 
 def test_exit_zero_with_is_error_fails(seams: dict[str, Any]) -> None:

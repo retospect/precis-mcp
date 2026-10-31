@@ -13,6 +13,11 @@ the r<N> the plan's cut recorded. :func:`validate_submit` refuses otherwise
 :func:`submit` re-checks before launching. There is no param that names a
 release: r<N> comes only from the plan root's ``meta.release``.
 
+**Host pin.** ``release_cut`` records the ``host`` and ``checkout`` it ran in
+on ``meta.release``; the tick mints this job with ``params.target_node`` =
+that host, :func:`validate_submit` refuses any other (or no) node, and
+:func:`submit` refuses a worker whose ``PRECIS_NODE`` or checkout differs.
+
 * :func:`submit` runs ``scripts/release --deploy-only r<N>`` in the same
   checkout the cut ran in (the ``.release-owner`` marker there makes it the
   release's owner). The script never cuts; it refuses unless release/r<N> is
@@ -29,6 +34,7 @@ release: r<N> comes only from the plan root's ``meta.release``.
 from __future__ import annotations
 
 import logging
+import os
 from pathlib import Path
 from typing import Any
 
@@ -73,8 +79,13 @@ def wall_seconds() -> float:
     return float(_DEFAULT_WALL_S)
 
 
-def _refusal(store: Any, params: dict[str, Any]) -> tuple[str | None, str | None]:
-    """``(refusal, rN)``."""
+def _refusal(
+    store: Any, params: dict[str, Any], *, running: bool = False
+) -> tuple[str | None, str | None]:
+    """``(refusal, rN)``. Beyond approval, the deploy must sit where the cut
+    ran (``meta.release.host`` / ``checkout``): at dispatch the host is the
+    job's ``params.target_node`` (the tick pins it); once ``running`` it is
+    this worker's own node and checkout."""
     todo_id = params.get("todo_id")
     reason = _rc.factory_refusal(NAME) or _rc.todo_refusal(
         store, NAME, todo_id, required=True
@@ -86,6 +97,18 @@ def _refusal(store: Any, params: dict[str, Any]) -> tuple[str | None, str | None
     rn, why = _release.approval(store, todo_id)
     if rn is None:
         return f"{NAME}: not approved — {why}", None
+    host = os.environ.get("PRECIS_NODE") if running else params.get("target_node")
+    checkout = None
+    if running:
+        try:
+            checkout = str(_rs.slice_root())
+        except RuntimeError as exc:
+            return f"{NAME}: {exc}", None
+    pin = _release.pin_refusal(
+        _release.release_of(store, todo_id), host=host or None, checkout=checkout
+    )
+    if pin is not None:
+        return f"{NAME}: {pin}", None
     return None, rn
 
 
@@ -99,7 +122,7 @@ def validate_submit(
 def submit(ctx: Any, spec: Any) -> Any:
     del spec
     params = dict((ctx.meta or {}).get("params") or {})
-    reason, rn = _refusal(ctx.store, params)
+    reason, rn = _refusal(ctx.store, params, running=True)
     if reason is not None or rn is None:
         ctx.record_failure(reason or f"{NAME}: no approved release")
         return None

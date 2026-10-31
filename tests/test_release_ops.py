@@ -37,6 +37,7 @@ RNG = f"{PREV}..{SHA[:12]}"
 def _env(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("PRECIS_FACTORY", raising=False)
     monkeypatch.delenv("GH_TOKEN", raising=False)
+    monkeypatch.delenv("PRECIS_NODE", raising=False)
     psettings.invalidate()
 
 
@@ -106,9 +107,20 @@ def _succeed(store: Store, job_id: int) -> None:
     )
 
 
-def _cut(store: Store) -> T.PlanMint:
+def _cut(
+    store: Store, *, host: str | None = None, checkout: str | None = None
+) -> T.PlanMint:
     mint = T.mint_release_pass(store)
-    R.record_cut(store, mint.ids["cut"], "r7", SHA, RNG, repo="o/r")
+    R.record_cut(
+        store,
+        mint.ids["cut"],
+        "r7",
+        SHA,
+        RNG,
+        repo="o/r",
+        host=host,
+        checkout=checkout,
+    )
     return mint
 
 
@@ -411,8 +423,9 @@ def _exit(seen: dict[str, Any], code: int, out: str) -> None:
 
 
 def test_release_cut_runs_cut_only_and_stamps_the_plan(
-    store: Store, checkout: dict[str, Any]
+    store: Store, checkout: dict[str, Any], monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    monkeypatch.setenv("PRECIS_NODE", "node-a")
     mint = T.mint_release_pass(store)
     ctx = Ctx(store, {"todo_id": mint.ids["cut"]})
     handle = rc.submit(ctx, None)
@@ -434,9 +447,13 @@ def test_release_cut_runs_cut_only_and_stamps_the_plan(
         "sha": SHA,
         "range": RNG,
         "repo": "o/r",
+        "host": "node-a",
+        "checkout": str(checkout["root"]),
     }
     assert ctx.chunks[-1][1].startswith(f"release_cut: r7 at {SHA}")
-    assert _meta(store, mint.root_id)["release"]["rN"] == "r7"
+    rel = _meta(store, mint.root_id)["release"]
+    assert rel["rN"] == "r7"
+    assert (rel["host"], rel["checkout"]) == ("node-a", str(checkout["root"]))
     assert _meta(store, mint.ids["gate"])["gate"]["args"]["range"] == RNG
 
 
@@ -502,6 +519,65 @@ def test_release_deploy_fails_on_a_refused_deploy(
     assert gates.read_prod_head(store) is None
 
 
+# ── the deploy is pinned to the cut's host and checkout ──────────────
+
+
+def test_deploy_dispatch_needs_the_cut_host(store: Store) -> None:
+    mint = _cut(store, host="node-a", checkout="/srv/repo")
+    _comment(store, mint.ids["approval"], "answer: deploy r7")
+    todo = mint.ids["deploy"]
+    for params in ({"todo_id": todo}, {"todo_id": todo, "target_node": "node-b"}):
+        refusal = rd.validate_submit(store, params=params)
+        assert refusal is not None and "'node-a'" in refusal, refusal
+        assert "target_node='node-a'" in refusal
+    assert (
+        rd.validate_submit(store, params={"todo_id": todo, "target_node": "node-a"})
+        is None
+    )
+
+
+def test_deploy_run_refuses_another_host_or_checkout(
+    store: Store, checkout: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = str(checkout["root"])
+    mint = _cut(store, host="node-a", checkout=root)
+    _comment(store, mint.ids["approval"], "answer: deploy r7")
+    params = {"todo_id": mint.ids["deploy"], "target_node": "node-a"}
+
+    # Wrong node, then no node at all: refused with the recorded host named.
+    for env in ("node-b", None):
+        if env is None:
+            monkeypatch.delenv("PRECIS_NODE", raising=False)
+        else:
+            monkeypatch.setenv("PRECIS_NODE", env)
+        ctx = Ctx(store, dict(params))
+        assert rd.submit(ctx, None) is None
+        assert "'node-a'" in ctx.failures[0], ctx.failures
+    assert checkout["argv"] == []
+
+    # Right node, other checkout: refused naming the recorded checkout.
+    monkeypatch.setenv("PRECIS_NODE", "node-a")
+    monkeypatch.setattr(rs, "slice_root", lambda: Path("/elsewhere/repo"))
+    ctx = Ctx(store, dict(params))
+    assert rd.submit(ctx, None) is None
+    assert repr(root) in ctx.failures[0], ctx.failures
+    assert checkout["argv"] == []
+
+    # Same node, same checkout: launches.
+    monkeypatch.setattr(rs, "slice_root", lambda: checkout["root"])
+    ctx = Ctx(store, dict(params))
+    assert rd.submit(ctx, None) is not None, ctx.failures
+    assert len(checkout["argv"]) == 1
+
+
+def test_pin_refusal_without_a_recorded_pin_allows_anything() -> None:
+    assert R.pin_refusal(None, host=None) is None
+    assert R.pin_refusal({"rN": "r7"}, host=None, checkout="/x") is None
+    rel = {"rN": "r7", "host": "node-a", "checkout": "/srv/repo"}
+    assert R.pin_refusal(rel, host="node-a", checkout="/srv/repo") is None
+    assert R.pin_refusal(rel, host="node-a") is None  # dispatch: no checkout yet
+
+
 # ── the plan tick drives the plan ───────────────────────────────────
 
 
@@ -511,7 +587,10 @@ def _only_job(store: Store, todo_id: int) -> tuple[int, dict[str, Any]]:
     return jobs[0]
 
 
-def test_tick_walks_a_release_pass_to_the_deploy(store: Store) -> None:
+@pytest.mark.parametrize("host", [None, "node-a"])
+def test_tick_walks_a_release_pass_to_the_deploy(
+    store: Store, host: str | None
+) -> None:
     mint = T.mint_release_pass(store)
     ids = mint.ids
     res = pd.run_pass(store)
@@ -522,7 +601,16 @@ def test_tick_walks_a_release_pass_to_the_deploy(store: Store) -> None:
 
     # The cut job: record the cut, succeed. The tick closes the cut and
     # dispatches the poll on job_inproc in the same pass.
-    R.record_cut(store, ids["cut"], "r7", SHA, RNG, repo="o/r")
+    R.record_cut(
+        store,
+        ids["cut"],
+        "r7",
+        SHA,
+        RNG,
+        repo="o/r",
+        host=host,
+        checkout="/srv/repo" if host else None,
+    )
     _succeed(store, job)
     pd.run_pass(store)
     assert _status(store, ids["cut"]) == "done"
@@ -555,4 +643,6 @@ def test_tick_walks_a_release_pass_to_the_deploy(store: Store) -> None:
     pd.run_pass(store)
     _job, meta = _only_job(store, ids["deploy"])
     assert (meta["job_type"], meta["executor"]) == ("release_deploy", "ssh_node")
-    assert meta["params"] == {"todo_id": ids["deploy"]}
+    # The tick pins the deploy to the node the cut ran on.
+    want = {"todo_id": ids["deploy"], **({"target_node": host} if host else {})}
+    assert meta["params"] == want

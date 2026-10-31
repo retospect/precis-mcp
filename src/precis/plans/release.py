@@ -9,7 +9,7 @@ what lives here:
 - **The cut's facts flow through the plan root.** ``release_cut`` parses
   ``RELEASE_CUT: r<N> <sha>`` / ``RELEASE_RANGE: <prev>..<sha>`` from
   ``scripts/release --cut-only`` and calls :func:`record_cut`, which stamps
-  ``meta.release = {rN, sha, range, repo, cut_at}`` on the plan root and
+  ``meta.release = {rN, sha, range, repo, host, checkout, cut_at}`` on the plan root and
   rewrites the plan's open ``tests-green`` gates and loop ``until`` specs
   from the :data:`PENDING_RANGE` placeholder to the real range, and the
   approval ask's options to ``['deploy r<N>', 'hold']``. The later ops read
@@ -135,6 +135,42 @@ def release_of(store: Store, todo_id: int) -> dict[str, Any] | None:
     return rel
 
 
+def pinned_host(store: Store, todo_id: int) -> str | None:
+    """The node the plan's cut ran on (``meta.release.host``), else ``None``."""
+    rel = release_of(store, todo_id)
+    host = str((rel or {}).get("host") or "").strip()
+    return host or None
+
+
+def pin_refusal(
+    rel: dict[str, Any] | None, *, host: str | None, checkout: str | None = None
+) -> str | None:
+    """Why the deploy may not run on ``host`` / ``checkout``, or ``None``.
+
+    ``cut`` and ``deploy`` share one checkout (the ``.release-owner``
+    marker ``scripts/release`` leaves there makes it the release's owner),
+    so a deploy off the recorded host or checkout is refused. A cut that
+    recorded neither (older plans) pins nothing; ``checkout`` ``None``
+    skips the checkout check (the tick that mints the job is not the
+    worker that runs it)."""
+    if not rel:
+        return None
+    want_host = str(rel.get("host") or "").strip()
+    if want_host and host != want_host:
+        return (
+            f"the cut ran on {want_host!r}, not {host or 'an unpinned worker'!r}; "
+            f"next: run the deploy on {want_host!r} (params.target_node={want_host!r})"
+        )
+    want_checkout = str(rel.get("checkout") or "").strip()
+    if want_checkout and checkout is not None and checkout != want_checkout:
+        return (
+            f"the cut ran in checkout {want_checkout!r}, not {checkout!r}; "
+            f"next: point PRECIS_SLICE_ROOT at {want_checkout!r} on "
+            f"{want_host or 'the cut host'!r}"
+        )
+    return None
+
+
 def _plan_nodes(store: Store, root: int) -> list[tuple[int, dict[str, Any], str]]:
     """``(id, meta, status)`` of every live todo tagged ``plan:<root>``."""
     with store.pool.connection() as conn:
@@ -171,15 +207,23 @@ def record_cut(
     rng: str,
     *,
     repo: str | None = None,
+    host: str | None = None,
+    checkout: str | None = None,
     now: datetime | None = None,
 ) -> list[str]:
     """Stamp the cut on ``todo_id``'s plan (module docstring); returns one
-    note per node written."""
+    note per node written. ``host`` / ``checkout`` are the node and repo
+    root the cut ran in; the deploy must run in the same pair
+    (:func:`pin_refusal`)."""
     root = plan_root(store, todo_id)
     when = _stamp(now or datetime.now(UTC))
     rel: dict[str, Any] = {"rN": rn, "sha": sha, "range": rng, "cut_at": when}
     if valid_repo(repo):
         rel["repo"] = repo
+    if host:
+        rel["host"] = host
+    if checkout:
+        rel["checkout"] = checkout
     store.stamp_ref_meta(root, {"release": rel})
     notes = [f"td{root}: meta.release = {rn} {sha[:9]} ({rng})"]
     new_gate = {"kind": "tests-green", "args": {"range": rng}}
@@ -363,6 +407,8 @@ __all__ = [
     "ci_verdict_rows",
     "parse_cut",
     "parse_deployed",
+    "pin_refusal",
+    "pinned_host",
     "plan_root",
     "prod_head_record",
     "record_ci_verdict",

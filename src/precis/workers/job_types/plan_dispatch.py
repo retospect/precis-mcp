@@ -112,6 +112,7 @@ from typing import Any
 from precis.errors import BadInput
 from precis.plans import gates as _gates
 from precis.plans import lanes as _lanes
+from precis.plans import release as _release
 from precis.plans import templates as _templates
 from precis.plans.nodes import node_kind
 from precis.store._todo_sql import _DOABLE_EXCLUSION_TAGS
@@ -1190,6 +1191,11 @@ def _step_dispatch(plan: _Plan, w: _Writer, res: PassResult) -> None:
             if not go:
                 continue
             params["lane"] = lane_name
+        if job_type == "release_deploy" and "target_node" not in params:
+            # The deploy runs where the cut ran (meta.release.host, td543856).
+            host = _release.pinned_host(w.store, n.id)
+            if host:
+                params["target_node"] = host
         spec = get_job_type(job_type)
         if spec is None:
             res.notes.append(
