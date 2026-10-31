@@ -1316,6 +1316,61 @@ def submit_kinetics_job_detached(
     )
 
 
+def submit_modes_job_detached(
+    units: list[dict[str, Any]],
+    *,
+    work_dir: str | None = None,
+    cpuset: str | None = None,
+) -> DetachedHandle:
+    """Launch the ``autocatpath_modes`` compute
+    (:func:`precis_pathway.modes_job.run_compute`) in a DETACHED child, the
+    same protocol as :func:`submit_seed_partial_detached`."""
+    request = {"mode": "modes_job", "units": units}
+    return _spawn_detached(
+        request, prefix="autocatpath-modes-", work_dir=work_dir, cpuset=cpuset
+    )
+
+
+def modes_calculator(unit: dict[str, Any], calcs: dict[str, Any]) -> tuple[Any, Any]:
+    """``(calculator, config)`` for one seed unit of the modes job: the model
+    that seed ran, one loaded calculator per model across the job."""
+    from autocatpath.calculators import make_calculator, resolve_backend
+
+    cfg = _prep(unit["config"], unit.get("force_backend"))
+    backend, model = cfg.mlip.specs()[int(unit.get("model_index") or 0)]
+    backend = resolve_backend(backend)
+    tag = f"{backend}:{model}" if model else backend
+    cfg.mlip.backend, cfg.mlip.model, cfg.mlip.models = backend, model, []
+    if tag not in calcs:
+        calcs[tag] = make_calculator(cfg.mlip)
+    return calcs[tag], cfg
+
+
+def measure_unit_modes(
+    unit: dict[str, Any], calc: Any, cfg: Any
+) -> tuple[dict[str, Any], dict[str, str]]:
+    """The engine's normal-mode measurement on each stored geometry of one seed
+    unit: ``({state: measurement}, {state: failure})``."""
+    from ase.io import read as ase_read
+    from autocatpath.thermo import vib_correction
+
+    vib: dict[str, Any] = {}
+    failed: dict[str, str] = {}
+    for name, extxyz in (unit.get("structures") or {}).items():
+        try:
+            atoms: Any = ase_read(io.StringIO(extxyz), format="extxyz")
+            vib[name] = vib_correction(
+                atoms,
+                calc,
+                int(atoms.info["n_slab"]),
+                cfg.conditions.temperature,
+                cfg.thermo.freq_floor,
+            )
+        except Exception as exc:
+            failed[name] = f"{type(exc).__name__}: {exc}"
+    return vib, failed
+
+
 def _spawn_detached(
     request: dict[str, Any],
     *,
@@ -2504,6 +2559,10 @@ def _subprocess_main(argv: list[str]) -> int:
             from precis_pathway import kinetics_job
 
             result = kinetics_job.run_compute(req["config"], req["results"])
+        elif req.get("mode") == "modes_job":
+            from precis_pathway import modes_job
+
+            result = modes_job.run_compute(req["units"])
         elif req.get("mode") == "coverage":
             result = dict(
                 run_coverage_scan(

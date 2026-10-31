@@ -220,7 +220,15 @@ class PathwayHandler(Handler):
         # pathway, optionally under an overriding environment/objective/sweep.
         # 'verify' (gr543165): multi-seed-at-dispatch — one call that
         # reruns the pathway's candidate NEB on N fresh seeds.
-        modes=("preview", "revalidate", "recompute_kinetics", "verify"),
+        # 'measure_modes' mints autocatpath_modes: the normal modes a stored
+        # vib-priced pathway lacks, from its seed jobs' geometries.
+        modes=(
+            "preview",
+            "revalidate",
+            "recompute_kinetics",
+            "verify",
+            "measure_modes",
+        ),
         views=(
             "analysis",
             "compare",
@@ -275,6 +283,8 @@ class PathwayHandler(Handler):
             return self._revalidate(id, args)
         if mode == "recompute_kinetics":  # engine-free: the job checks the host
             return self._recompute_kinetics(id, args)
+        if mode == "measure_modes":  # engine-free: the job checks the host
+            return self._measure_modes(id)
         from . import runner
 
         if not text or not text.strip():
@@ -597,6 +607,61 @@ class PathwayHandler(Handler):
             body=(
                 f"re-validation of manifest {str(stored)[:12]} queued. {job.body}\n"
                 f"Verdict: get(kind='pathway', id={str(ident)!r}, view='manifest')"
+            )
+        )
+
+    def _measure_modes(self, ident: str | int | None) -> Response:
+        """``mode='measure_modes'``: mint ``autocatpath_modes`` for a stored
+        vib-priced pathway whose record has no modes, which the sweep's re-T
+        rule needs to vary T."""
+        from precis_pathway import modes_job
+
+        store = self.hub.live_store
+        if ident is None:
+            raise BadInput(
+                "mode='measure_modes' needs the pathway handle (id=)",
+                next="put(kind='pathway', id='pw123', mode='measure_modes')",
+            )
+        ref = _lookup(store, str(ident))
+        if ref is None:
+            raise BadInput(
+                f"no pathway '{ident}'", next="get(kind='pathway') lists all"
+            )
+        thermo = ((ref.meta or {}).get("results") or {}).get("thermo") or {}
+        if thermo.get("mode") != "vib":
+            raise BadInput(
+                f"pathway '{ident}' is not vib-priced (thermo.mode="
+                f"{thermo.get('mode')!r}); it has no measured modes to add",
+                next=f"get(kind='pathway', id={str(ident)!r}, view='methods')",
+            )
+        lacking = (
+            set(thermo.get("state_corrections") or {})
+            - set(thermo.get("vib_fallback") or [])
+            - set(thermo.get("state_modes") or {})
+        )
+        if not lacking:
+            return Response(body=f"pathway '{ident}' already has modes for every state")
+        if not modes_job.seed_jobs(store, ref.id):
+            raise BadInput(
+                f"pathway '{ident}' has no succeeded seed job with stored geometry",
+                next="re-run the pathway: new seeds store their modes",
+            )
+        from precis.handlers.job import JobHandler
+
+        job = JobHandler(hub=self.hub).put(
+            job_type=modes_job.NAME,
+            executor="ssh_node",
+            parent_id=ref.id,
+            idem_key=f"{modes_job.NAME}:{ref.id}",
+            requires={"gpu": 1},
+            params={"pathway_ref_id": ref.id, "pathway_slug": ref.slug or str(ident)},
+        )
+        return Response(
+            body=(
+                f"mode measurement queued for '{ident}' ({len(lacking)} states "
+                f"lack modes). {job.body}\n"
+                f"Then: put(kind='pathway', id={str(ident)!r}, "
+                "mode='recompute_kinetics')"
             )
         )
 

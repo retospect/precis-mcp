@@ -170,6 +170,35 @@ def test_detached_child_round_trips_the_kinetics_job_envelope(monkeypatch, tmp_p
     }
 
 
+def test_modes_job_measures_stored_geometry_with_the_engine():
+    """The modes child reads a stored extxyz and returns the whole measurement;
+    a state it cannot read is reported, the others still run."""
+    from ase.build import add_adsorbate, fcc111
+    from ase.calculators.emt import EMT
+    from autocatpath.thermo import harmonic_g
+
+    from precis_pathway import runner
+
+    slab = fcc111("Cu", size=(2, 2, 2), vacuum=8.0)
+    n_slab = len(slab)
+    add_adsorbate(slab, "O", 1.2, "fcc")
+    slab.info["n_slab"] = n_slab
+    cfg = MagicMock()
+    cfg.conditions.temperature = 298.15
+    cfg.thermo.freq_floor = 12.0
+
+    vib, failed = runner.measure_unit_modes(
+        {"structures": {"O": runner._atoms_to_extxyz(slab), "bad": "not extxyz"}},
+        EMT(),
+        cfg,
+    )
+
+    assert list(failed) == ["bad"]
+    rec = vib["O"]
+    assert rec["n_modes"] == 3 and len(rec["hessian"]) == 3
+    assert harmonic_g(rec["hnu"], 298.15, 12.0)[0] == rec["g"]
+
+
 def test_recompute_kinetics_validates_environment_and_objective_with_the_engine():
     """A bad environment/objective is refused at put time, naming the key —
     not as a failed job later."""

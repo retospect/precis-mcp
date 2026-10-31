@@ -133,6 +133,21 @@ objective:                        # stored now; the (T, p_total) sweep acts on i
   (folded into the network basis: measures compare only on an equal
   environment) and per-step reversibility in `view='kinetics'`.
 
+## Measure the modes a stored pathway lacks
+
+A sweep that varies T needs each state's normal modes on a `thermo.mode: vib`
+pathway. Engines from 0.43 store them; for an older pathway every point is
+refused ("carries no stored modes") until you measure them from the geometries
+on its seed jobs:
+
+```python
+put(kind="pathway", id="no-nh3-pd", mode="measure_modes")
+```
+
+The job takes a gpu slot and needs no relaxation. It keeps the baked correction
+(the modes only move it away from the run T) and reports the re-measured `g`
+against the stored one on its own `meta.modes_check`.
+
 ## Recompute the kinetics of a stored pathway
 
 Verify- and neb-tier aggregates mint an `autocatpath_kinetics` job

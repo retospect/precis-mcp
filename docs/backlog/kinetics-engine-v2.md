@@ -218,6 +218,10 @@ Rules:
   from stored modes. Slice 1 pins T to the aggregate's T; slice 4 defines
   the re-T rule (modes re-evaluated at T; a node whose correction is `vib`
   without stored modes refuses a T other than the run T, naming the node).
+  Engine 0.43 stores the modes (`thermo.state_modes`, per seed): the baked
+  correction stands and the harmonic G of the modes moves it, so the run T
+  reproduces the record. Older pathways get them from `autocatpath_modes`
+  (`put(mode='measure_modes')`), re-measured on the seed jobs' geometries.
 - **Equilibrium composition, defined.** Inputs stay at their table values,
   the target's output pressure is fixed, and the remaining outputs are
   solved so every one of the `n_gas − rank(ν)` independent affinities
@@ -1302,8 +1306,8 @@ where the paper gives them and records `theta0` otherwise.
    every APPLIED offset, so changing an offset also moves it. The
    re-T rule rebuilt references from the ledger alone, which dropped
    gases priced only for a cycle closure (the target): the TPD ramp
-   keeps them (`kinetics._closure_refs_reT`); the sweep's re-T has the
-   same gap and is not fixed here. No diffusion (D5) means isolated
+   keeps them (`kinetics._closure_refs_reT`), and the sweep's re-T does
+   too from engine 0.43. No diffusion (D5) means isolated
    fragments of a recombinative peak never meet on the lattice: the
    KMC ramp of H at low coverage leaves adsorbate behind and says so;
    the MF ramp is the comparison model. The `sigma_tpd,X z_X` term of
