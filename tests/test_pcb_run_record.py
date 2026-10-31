@@ -13,6 +13,7 @@ from __future__ import annotations
 
 from typing import Any
 
+import numpy as np
 import pytest
 
 from precis.dispatch import Hub
@@ -313,3 +314,89 @@ def test_run_record_job_is_delete_and_gc_proof(store: Store) -> None:
     after = _job_meta(store, ref_id)
     assert "transcript" not in after and "assembled_context" not in after
     assert after["run_record"]["schema"] == run_record.RUN_RECORD_SCHEMA
+
+
+def test_route_failure_pushes_no_via_names_endpoint_parts() -> None:
+    """A no_via branch becomes ONE push row between its endpoint parts,
+    along their centre line, sized by the via window (rule via dia +
+    clearance)."""
+    from types import SimpleNamespace
+
+    from precis.pcb.rules import NetRules
+    from precis.workers.job_types.pcb_place import _route_failure_pushes
+
+    piece = SimpleNamespace(
+        net=0, branch=3, layer=0, points=((0.0, 0.0), (5.0, 0.0)), pin_a=10, pin_b=11
+    )
+    plan = SimpleNamespace(
+        no_via=(3,),
+        pieces=(piece,),
+        guarded=(),
+        crossings=(),
+        unreachable=(),
+        severed=(),
+    )
+    pin_part = np.arange(20, dtype=int) % 5  # pin 10 -> part 0, pin 11 -> part 1
+    td = SimpleNamespace(pin_part=pin_part, net_name=("VBAT",))
+    pose = np.zeros((5, 4))
+    pose[0, :2] = (2.0, 2.0)
+    pose[1, :2] = (12.0, 2.0)
+    rules = {"VBAT": NetRules(track_width_mm=0.2, clearance_mm=0.15, via_dia_mm=0.6)}
+    pushes = _route_failure_pushes(td, plan, pose, rules, 0.45)
+    assert len(pushes) == 1
+    p = pushes[0]
+    assert (p.a, p.b) == (0, 1)
+    assert p.axis == pytest.approx((10.0, 0.0))  # raw centre line; shove normalises
+    assert p.sep_mm == pytest.approx(0.75)  # 0.6 dia + 0.15 clearance
+
+
+def test_route_failure_pushes_guarded_names_closest_parts() -> None:
+    """A guarded net's piece approaching a foreign net's piece becomes a
+    push between the approach-END parts, along the closest-approach
+    direction, sized by the anti-short veto's deficit."""
+    from types import SimpleNamespace
+
+    from precis.pcb.rules import NetRules
+    from precis.workers.job_types.pcb_place import _route_failure_pushes
+
+    g_piece = SimpleNamespace(
+        net=0, branch=0, layer=0, points=((0.0, 0.0), (5.0, 0.0)), pin_a=0, pin_b=1
+    )
+    f_piece = SimpleNamespace(
+        net=1, branch=1, layer=0, points=((2.0, 0.3), (7.0, 0.3)), pin_a=2, pin_b=3
+    )
+    plan = SimpleNamespace(
+        no_via=(),
+        pieces=(g_piece, f_piece),
+        guarded=(0,),
+        crossings=(),
+        unreachable=(),
+        severed=(),
+    )
+    pin_part = np.array([0, 0, 1, 1], dtype=int)
+    td = SimpleNamespace(pin_part=pin_part, net_name=("G", "F"))
+    pose = np.zeros((2, 4))
+    rules = {
+        "G": NetRules(track_width_mm=0.2, clearance_mm=0.15),
+        "F": NetRules(track_width_mm=0.2, clearance_mm=0.15),
+    }
+    pushes = _route_failure_pushes(td, plan, pose, rules, 0.45)
+    assert len(pushes) == 1
+    p = pushes[0]
+    assert (p.a, p.b) == (0, 1)
+    assert p.axis == pytest.approx((0.0, 0.3))  # raw approach vector; shove normalises
+    # veto = (0.2+0.2)/2 + 0.15 = 0.35; dist 0.3 -> deficit 0.05 + 0.1 margin
+    assert p.sep_mm == pytest.approx(0.15)
+
+
+def test_route_failure_pushes_clean_plan_is_empty() -> None:
+    """A clean plan builds no rows — the loop's zero-cost path."""
+    from types import SimpleNamespace
+
+    from precis.workers.job_types.pcb_place import _route_failure_pushes
+
+    plan = SimpleNamespace(
+        no_via=(), pieces=(), guarded=(), crossings=(), unreachable=(), severed=()
+    )
+    td = SimpleNamespace(pin_part=np.zeros(4, dtype=int), net_name=())
+    assert _route_failure_pushes(td, plan, np.zeros((1, 4)), {}, None) == []

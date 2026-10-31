@@ -11,7 +11,7 @@ from typing import Any
 import pytest
 
 from precis.pcb.board_library import catalog_matches
-from precis.pcb.board_script import emit
+from precis.pcb.board_script import classified_batch, emit
 from precis.pcb.rows import normalize_footprint
 from precis_geom.pcb import PcbBuilderError
 from tests.workspaces._script import load_module
@@ -95,7 +95,7 @@ def test_malformed_catalog_row_keeps_source_pads(tmp_path: Path, row: Any) -> No
     cache = _write_cache(tmp_path, {"C123": row})
     text, module = _emit_and_load(tmp_path, batch, cache)
     _assert_local_fallback(text)
-    assert module.build().to_batch() == batch
+    assert module.build().to_batch() == classified_batch(batch)
 
 
 def test_matching_normalized_catalog_row_replaces_inline_pads(tmp_path: Path) -> None:
@@ -117,7 +117,7 @@ def test_matching_normalized_catalog_row_replaces_inline_pads(tmp_path: Path) ->
     assert normalize_footprint(rebuilt["footprints"][0]) == normalize_footprint(
         batch["footprints"][0]
     )
-    assert rebuilt["components"] == batch["components"]
+    assert rebuilt["components"] == classified_batch(batch)["components"]
     assert rebuilt["nets"] == batch["nets"]
     assert rebuilt["connections"] == batch["connections"]
     assert batch == original
@@ -142,7 +142,7 @@ def test_catalog_geometry_mismatch_keeps_source_pads(
     cache = _write_cache(tmp_path, {"C123": row})
     text, module = _emit_and_load(tmp_path, batch, cache)
     _assert_local_fallback(text)
-    assert module.build().to_batch() == batch
+    assert module.build().to_batch() == classified_batch(batch)
 
 
 def test_missing_catalog_row_keeps_source_pads(tmp_path: Path) -> None:
@@ -150,7 +150,7 @@ def test_missing_catalog_row_keeps_source_pads(tmp_path: Path) -> None:
     cache = _write_cache(tmp_path, {})
     text, module = _emit_and_load(tmp_path, batch, cache)
     _assert_local_fallback(text)
-    assert module.build().to_batch() == batch
+    assert module.build().to_batch() == classified_batch(batch)
 
 
 @pytest.mark.parametrize("invalid", ["source", "cache"])
@@ -171,7 +171,7 @@ def test_geometry_error_keeps_pads_and_reports_on_each_part(
     for line in part_lines:
         assert f"catalog geometry error ({context}): ValueError:" in line
         assert "unsupported-shape" in line
-    assert module.build().to_batch() == batch
+    assert module.build().to_batch() == classified_batch(batch)
 
 
 def test_shared_footprint_needs_catalog_match_for_every_part(tmp_path: Path) -> None:
@@ -183,7 +183,7 @@ def test_shared_footprint_needs_catalog_match_for_every_part(tmp_path: Path) -> 
     cache = _write_cache(tmp_path, {"C123": row})
     text, module = _emit_and_load(tmp_path, batch, cache)
     _assert_local_fallback(text)
-    assert module.build().to_batch() == batch
+    assert module.build().to_batch() == classified_batch(batch)
 
 
 def test_cache_edit_after_emission_refuses_rebuild(tmp_path: Path) -> None:

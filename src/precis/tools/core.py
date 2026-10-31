@@ -534,8 +534,7 @@ def get(
     `tag=`, `kinds=`: skill. NotFound "unknown kind" with "routes through
     host(s)": see the full reference.
 
-    Full reference: get(kind='skill', id='precis-get-help'), or
-    search(kind='skill', q='fisheye extent ladder') for a topical lookup.
+    Full reference: get(kind='skill', id='precis-get-help').
     """
     session = _ctx_session(ctx)
     token = serve_ledger.bind(session, _ctx_raw_args(ctx))
@@ -2084,8 +2083,7 @@ def delete(
     `args={'comment': K}`. Other kinds (skill, conv, tag, ...) take
     their own door or refuse as Unsupported.
 
-    Full reference: get(kind='skill', id='precis-delete-help'), or
-    search(kind='skill', q='delete a ref or region') for a topical lookup.
+    Full reference: get(kind='skill', id='precis-delete-help').
     """
     payload: dict[str, Any] = {
         "kind": kind,

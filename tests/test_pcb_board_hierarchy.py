@@ -10,7 +10,7 @@ from typing import Any
 
 import pytest
 
-from precis.pcb.board_script import emit
+from precis.pcb.board_script import classified_batch, emit
 from tests.workspaces._script import load_module
 
 
@@ -83,8 +83,9 @@ def _assert_same_payload(actual: dict[str, Any], expected: dict[str, Any]) -> No
     assert actual.keys() == expected.keys()
     for key, value in expected.items():
         if isinstance(value, list):
+            want = classified_batch(expected)[key] if key == "components" else value
             assert {json.dumps(row, sort_keys=True) for row in actual[key]} == {
-                json.dumps(row, sort_keys=True) for row in value
+                json.dumps(row, sort_keys=True) for row in want
             }, key
         else:
             assert actual[key] == value, key

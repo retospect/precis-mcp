@@ -70,6 +70,75 @@ from typing import Any
 #: Columns a line may not exceed (slice 2's contract).
 _LIMIT = 100
 
+#: Script-transport fallback classification (gr520810 first-use): an
+#: emitted board script must rebuild — ``Net.tie`` refuses unclassified
+#: pins — so a pin row the batch carries without a class gets a
+#: name-based synthesized one, the facts deliberately generous and the
+#: guess explicit in the meta's ``assume``.  The batch/store is never
+#: touched by the guess; a real etype always wins, and a rebuilt board
+#: round-trips the classification verbatim from then on.
+_FALLBACK_ETYPE_BY_NAME = (
+    (re.compile(r"^(gnd|gnda?|dgnd|pgnd|agnd|vss|vssa?)$", re.I), "power_in"),
+    (re.compile(r"^(vcc|vdd|avdd|dvdd|3v3|5v|vin|vbat|vbus|vreg)$", re.I), "power_in"),
+    (re.compile(r"^vout$", re.I), "power_out"),
+)
+_FALLBACK_POWER_FACTS = {
+    "max_current_a": 2.0,
+    "max_voltage_v": 100.0,
+    "assume": "script transport: pin carried no class; name-suggested "
+    "supply, bounds unverified",
+}
+_FALLBACK_SIGNAL_FACTS = {
+    "fmax_hz": 0.0,
+    "assume": "script transport: pin carried no class; DC assumed",
+}
+
+
+def _classified_pin_row(p: dict[str, Any]) -> dict[str, Any]:
+    """One pin row, classified when it carries no etype and is not nc."""
+    etype = "bidi"
+    for rx, et in _FALLBACK_ETYPE_BY_NAME:
+        if rx.match(str(p.get("name") or "")):
+            etype = et
+            break
+    facts = (
+        _FALLBACK_POWER_FACTS if etype.startswith("power_") else _FALLBACK_SIGNAL_FACTS
+    )
+    return {**p, "etype": etype, "meta": {**facts, **dict(p.get("meta") or {})}}
+
+
+def classified_batch(batch: dict[str, Any]) -> dict[str, Any]:
+    """The batch as a script rebuild leaves it: every component pin row
+    carried without a class gains the emit-time fallback classification
+    (see :func:`_classified_pin_row`).  Script round-trip comparisons
+    use this as the expected side — a rebuild legitimately ADDS the
+    class the script must carry to satisfy ``Net.tie``'s first-use gate
+    (gr520810); rows already classed (top-level ``etype`` or an
+    etype-vocabulary tag) pass through untouched."""
+    from precis.pcb import PIN_ETYPES
+
+    etypes = set(PIN_ETYPES)
+    out = dict(batch)
+    out["components"] = [
+        {
+            **c,
+            "pins": [
+                p
+                if (
+                    "etype" in p
+                    or p.get("nc")
+                    or p.get("unused")
+                    or (set(p.get("tags") or []) & etypes)
+                )
+                else _classified_pin_row(p)
+                for p in c.get("pins") or []
+            ],
+        }
+        for c in batch.get("components") or []
+    ]
+    return out
+
+
 #: The store's per-pin columns, for :func:`board_batch`'s raw SELECTs —
 #: no existing reader returns ``pad``/``description``/``note`` and the
 #: netconn ``note`` complete (``pcb_graph`` members carry tags/meta,
@@ -379,8 +448,27 @@ def _emit_part(
         loss.append(f"part {c['refdes']!r}: {k!r} cannot emit")
     refdes = refdes if refdes is not None else c["refdes"]
     pins: list[Any] = []
+    from precis.pcb import PIN_ETYPES
+
+    etype_tags = set(PIN_ETYPES)
     for p in c.get("pins") or []:
-        pins.append(p["name"] if set(p) == {"name"} else p)
+        # The emitted script must REBUILD: Net.tie refuses unclassified
+        # pins at first use (gr520810), so a pin row the batch carries
+        # without a class gets a name-based synthesized one, provenance
+        # explicit in the meta's ``assume`` — a real etype always wins,
+        # and the batch/store itself is never touched by the guess.  A
+        # class riding an etype-vocabulary TAG counts too (the store's
+        # canonical write — pcb_pins.tags — not a top-level etype key).
+        if (
+            "etype" in p
+            or p.get("nc")
+            or p.get("unused")
+            or (set(p.get("tags") or []) & etype_tags)
+        ):
+            q = p
+        else:
+            q = _classified_pin_row(p)
+        pins.append(q["name"] if set(q) == {"name"} else q)
     kw_parts = []
     for k, v in (
         ("label", c.get("label")),

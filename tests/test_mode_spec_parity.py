@@ -57,8 +57,10 @@ _EXPECTED_MODES: dict[tuple[str, str], tuple[str, ...] | None] = {
     #    what id= already selects — 'create' (no id=) or 'comment' (id=<n>);
     #    a mismatch is BadInput (gr338441) -----------------------------
     ("gripe", "put"): ("create", "comment"),
-    # -- put: pathway frames the reaction network without ML compute ----
-    ("pathway", "put"): ("preview", "revalidate"),
+    # -- put: pathway frames the reaction network without ML compute;
+    #    'recompute_kinetics' mints autocatpath_kinetics for a stored
+    #    config (aggregate_job) ------------------------------------------
+    ("pathway", "put"): ("preview", "revalidate", "recompute_kinetics"),
     # -- put: structure's sole recognised mode is the deliberate-rerun
     #    door (put(id=<slug-or-handle>, mode='rerun')) onto the quest
     #    compute lane — every other value is rejected (gr499904) --------

@@ -14,7 +14,7 @@ import pytest
 from precis.pcb.topoplace.design import TopoZone
 from precis.pcb.topoplace.mesh import build_mesh
 from precis.pcb.topoplace.proxy import overlap_area
-from precis.pcb.topoplace.shove import shove_pose
+from precis.pcb.topoplace.shove import ShovePush, shove_pose
 from tests.fixtures.pcb.topo_example_a import example_a
 from tests.fixtures.pcb.topo_synth import synth_design
 
@@ -149,3 +149,41 @@ def test_shove_is_deterministic() -> None:
     a, b = shove_pose(d, pose), shove_pose(d, pose)
     np.testing.assert_array_equal(a.pose, b.pose)
     assert a.moved_mm == b.moved_mm
+
+
+def test_shove_push_row_separates_non_overlapping_pair() -> None:
+    """A caller push row moves a legal (non-overlapping) pair apart along
+    the axis by ~sep — the route stage's failure-directed shove lever.
+    The row demands only the REMAINING separation each round, so the run
+    converges instead of re-demanding sep forever."""
+    d = example_a()
+    pose = d.pose0.copy()
+    gap0 = float((pose[1, :2] - pose[0, :2])[0])
+    res = shove_pose(d, pose, push=[ShovePush(0, 1, (1.0, 0.0), 1.0)])
+    gap1 = float((res.pose[1, :2] - res.pose[0, :2])[0])
+    assert res.moved_mm > 0.3
+    assert gap1 - gap0 == pytest.approx(1.0, abs=0.2)
+
+
+def test_shove_push_row_fixed_anchor_moves_movable_side() -> None:
+    """One fixed side turns the push into a translation of the free side
+    alone — the fixed part's row stays untouched."""
+    d = example_a()
+    pose = d.pose0.copy()
+    fixed = np.asarray([True] + [False] * (len(d.parts) - 1))
+    d1 = dataclasses.replace(d, fixed=fixed)
+    res = shove_pose(d1, pose, push=[ShovePush(0, 1, (1.0, 0.0), 1.0)])
+    np.testing.assert_allclose(res.pose[0], pose[0])
+    assert res.pose[1, 0] - pose[1, 0] == pytest.approx(1.0, abs=0.2)
+
+
+def test_shove_push_row_rigid_mates_skipped() -> None:
+    """Two parts of one authored group share a single LP variable, so a
+    push between them is dead — no row, no demand, no movement."""
+    d = example_a()
+    pose = d.pose0.copy()
+    group_of = np.zeros(len(d.parts), dtype=int)
+    group_members = (tuple(range(len(d.parts))),)
+    d1 = dataclasses.replace(d, group_of=group_of, group_members=group_members)
+    res = shove_pose(d1, pose, push=[ShovePush(0, 1, (1.0, 0.0), 1.0)])
+    assert res.moved_mm == 0.0

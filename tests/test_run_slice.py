@@ -8,11 +8,16 @@ from __future__ import annotations
 
 import json
 import subprocess
+import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
 import pytest
+
+pytestmark = pytest.mark.skipif(
+    sys.platform == "win32", reason="POSIX-only: execs shell script scripts/ship"
+)
 
 from precis.plans import lanes
 from precis.plans.lanes import ANY_CLASS, Lane, pick_lane

@@ -79,6 +79,24 @@ _SLACK_W = 100.0  # separation slack penalty (×mm) — ~100× displacement, so
 
 
 @dataclass(frozen=True, slots=True)
+class ShovePush:
+    """A caller-requested separation driver, one slack-priced LP row:
+    push part ``b`` off part ``a`` along ``axis`` (need not be unit —
+    normalised here) until the projection ``n̂·(c_b − c_a)`` grows by
+    ``sep_mm`` beyond its current value.  The topo route stage feeds
+    these from the router's own failure report (no-via / short-risk
+    nets name their endpoint parts), so a failed route *causes* a
+    targeted shove instead of a blind re-shove.  Soft like every other
+    driver: when the guards leave no room the row relaxes into its
+    slack rather than refusing the LP."""
+
+    a: int  # part index — the "anchor" side
+    b: int  # part index — the side that gets pushed
+    axis: tuple[float, float]  # direction b moves, relative to a
+    sep_mm: float  # extra projected separation wanted
+
+
+@dataclass(frozen=True, slots=True)
 class ShoveResult:
     """``pose`` is the shoved pose; ``resolved`` means the final mesh
     reports no same-side pair, blocking zone or outline residual.
@@ -144,7 +162,13 @@ def _legal_xy(
     return np.where(ok, lo_i, centre), np.where(ok, hi_i, centre)
 
 
-def shove_pose(d: TopoDesign, pose: np.ndarray, *, rounds: int = 10) -> ShoveResult:
+def shove_pose(
+    d: TopoDesign,
+    pose: np.ndarray,
+    *,
+    rounds: int = 10,
+    push: tuple[ShovePush, ...] | list[ShovePush] | None = None,
+) -> ShoveResult:
     """Spec §4 shove: a global min-|Δ| LP over part translations.
 
     Drivers: every same-side courtyard pair's MTV separation and every
@@ -155,7 +179,12 @@ def shove_pose(d: TopoDesign, pose: np.ndarray, *, rounds: int = 10) -> ShoveRes
     current pose), part centres stay in their legal box, |δ| ≤
     ``_CAP_MM`` per round — all hard. Runs to no-violations or
     ``rounds``; on LP infeasibility (bounds∩triangles — rare) stops and
-    reports (legalize then takes its MTV pass on what remains)."""
+    reports (legalize then takes its MTV pass on what remains).
+
+    ``push`` adds caller-requested separation drivers (see
+    :class:`ShovePush`) alongside the overlap/zone rows — the route
+    stage's failure-directed shove.  They persist for every round of
+    the run and relax into slack exactly like the overlap rows."""
     pose = np.asarray(pose, dtype=np.float64).copy()
     n = len(d.parts)
     if not n or not len(d.part_outline):
@@ -198,6 +227,28 @@ def shove_pose(d: TopoDesign, pose: np.ndarray, *, rounds: int = 10) -> ShoveRes
     spent = 0
     mesh_errors = 0
     mesh_error = ""
+
+    # Caller-push bookkeeping: the row each round demands only the
+    # REMAINING separation (target minus what earlier rounds already
+    # gained), re-measured at the round's pose — the same re-derive
+    # contract the overlap rows have, so a satisfied push drops out
+    # instead of re-demanding its full ``sep_mm`` every round.
+    push_state: list[tuple[int, int, np.ndarray, float, float]] = []
+    pose_a = np.asarray(pose, dtype=np.float64)
+    for sp in push or ():
+        ia, ib = int(sp.a), int(sp.b)
+        if not (0 <= ia < n and 0 <= ib < n) or ia == ib:
+            continue
+        if len(d.group_of) and 0 <= int(d.group_of[ia]) == int(d.group_of[ib]):
+            continue  # rigid mates share one LP variable — cannot separate
+        n_ax = np.asarray(sp.axis, dtype=np.float64).reshape(2)
+        norm = float(np.hypot(n_ax[0], n_ax[1]))
+        if not math.isfinite(norm) or norm <= 1e-9:
+            continue
+        n_ax = n_ax / norm
+        sep = max(0.0, float(sp.sep_mm))
+        start = float(n_ax @ (pose_a[ib, :2] - pose_a[ia, :2]))
+        push_state.append((ia, ib, n_ax, sep, start))
 
     for _ in range(rounds):
         sides = pose[:, 3] >= 0.5
@@ -336,6 +387,18 @@ def shove_pose(d: TopoDesign, pose: np.ndarray, *, rounds: int = 10) -> ShoveRes
                     )
                     if depth > 0.0:
                         wants.append(([(i, -vec / depth)], -(depth + _CLR_MM)))
+        # Caller-requested separation drivers (route-stage failure
+        # pushes): same row shape as an overlap MTV — n̂ pushes b off a,
+        # n̂·(δ_b − δ_a) ≥ remaining ⇔ n̂·δ_a − n̂·δ_b ≤ −remaining —
+        # wanted even when the pair does not overlap.  Only the REMAINING
+        # separation is demanded (measured at this round's pose), so a
+        # satisfied push drops out exactly like a resolved overlap row.
+        for ia, ib, n_ax, sep, start in push_state:
+            proj_cur = float(n_ax @ (pose[ib, :2] - pose[ia, :2]))
+            remain_mm = sep - (proj_cur - start)
+            if remain_mm <= 1e-6:
+                continue
+            wants.append(([(ia, n_ax), (ib, -n_ax)], -remain_mm))
         if not wants:
             break
 

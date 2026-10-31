@@ -2750,7 +2750,7 @@ def test_inflight_reads_another_users_live_pid_as_live(
 
 
 @pytest.fixture
-def report_repo(tmp_path: Path) -> dict[str, Path | int]:
+def report_repo(tmp_path: Path) -> dict[str, Any]:
     """A throwaway repo exercising every ``--report`` bucket.
 
     Worktrees (all under ``primary/.claude/worktrees``, ``.claude``

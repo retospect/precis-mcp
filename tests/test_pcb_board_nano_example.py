@@ -5,7 +5,7 @@ from __future__ import annotations
 import ast
 from pathlib import Path
 
-from precis.pcb.board_script import emit
+from precis.pcb.board_script import classified_batch, emit
 from tests.workspaces._script import load_module
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -27,7 +27,7 @@ def test_generated_nano_matches_current_writer_and_source() -> None:
         ast.parse((directory / "main.py").read_text(encoding="utf-8"))
     )
     board = load_module(directory / "main.py", "nano_example").build()
-    assert board.to_batch() == fixture
+    assert board.to_batch() == classified_batch(fixture)
     assert not board.check().findings
     assert sorted(board.check().not_checked) == sorted(
         fixture["meta"]["synthesized_footprint_refdes"]

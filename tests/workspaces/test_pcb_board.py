@@ -34,6 +34,7 @@ from typing import Any
 import pytest
 
 import precis_geom.pcb as pcb
+from precis.pcb.board_script import classified_batch
 from precis_geom.pcb import Board, Footprint, PcbBuilderError, module, pad, rect
 from tests.workspaces._script import load_module
 
@@ -82,7 +83,10 @@ def _golden_row(b: Board) -> dict[str, Any]:
 @pytest.mark.parametrize("name", list(CONVERTED))
 def test_converted_example_is_byte_equal_to_its_fixture(name: str) -> None:
     got = _example(name).to_batch()
-    want = _fixture(CONVERTED[name])
+    # the example classifies pins the fixture leaves bare (the emit-time
+    # fallback class, gr520810) — compare against the rebuild-normalized
+    # fixture, the same contract test_pcb_board_script uses
+    want = classified_batch(_fixture(CONVERTED[name]))
     assert got == want
     assert pcb.canonical_json(got) == pcb.canonical_json(want)
 

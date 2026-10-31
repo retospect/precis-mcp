@@ -124,6 +124,12 @@ _KNOWN_UNWIRED: dict[str, str] = {
     "src/precis/pcb/board_script.py::board_batch": (
         "CLI scripts/pcb-batch-to-board; MCP wiring follows slice 5 (gr514048)"
     ),
+    "src/precis/pcb/board_script.py::classified_batch": (
+        "the expected-side constructor for script round-trip comparisons: "
+        "emit synthesizes fallback pin classes (gr520810 first-use), so a "
+        "rebuilt batch legitimately differs from the authored batch; "
+        "tests-only by design"
+    ),
     "src/precis/pcb/local.py::gerbers_zip": (
         "pcb-workspace-code slice 4: the out/gerbers.zip payload, reached "
         "only through the lazy local door; no in-src caller by name"

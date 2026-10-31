@@ -18,7 +18,12 @@ from typing import Any
 import pytest
 
 from precis.ingest import pcb_epro
-from precis.pcb.board_script import BoardScriptError, board_batch, emit
+from precis.pcb.board_script import (
+    BoardScriptError,
+    board_batch,
+    classified_batch,
+    emit,
+)
 from precis_geom.pcb import Board
 from tests.workspaces._script import load_module
 
@@ -508,7 +513,9 @@ def test_readback_epro_fixture(store) -> None:
         ],
     )
     batch, _annotations = board_batch(store, "epro-bs")
-    assert _exec(emit(batch, "epro-bs", "epro")).build().to_batch() == batch
+    assert _exec(emit(batch, "epro-bs", "epro")).build().to_batch() == classified_batch(
+        batch
+    )
 
 
 _RULE = '{"type":"RULE","ticket":49,"id":"[\\"RULE\\",\\"%s\\",\\"%s\\"]"}||%s|\n'
@@ -654,7 +661,7 @@ def test_epro_rules_survive_script_roundtrip(store) -> None:
 
     text = emit(batch, "epro-rules-bs", "epro")
     rebuilt = _exec(text).build().to_batch()
-    assert rebuilt == batch
+    assert rebuilt == classified_batch(batch)
     assert "b.net_class(" in text
     assert "keepout" in text
     assert "# not mapped:" in text
@@ -723,7 +730,12 @@ def _row_set(rows: list[dict[str, Any]]) -> set[str]:
 
 def _assert_board_rows_equal(actual: dict[str, Any], expected: dict[str, Any]) -> None:
     for key in ("components", "nets", "connections"):
-        assert _row_set(actual[key]) == _row_set(expected[key]), key
+        want = (
+            classified_batch(expected)["components"]
+            if key == "components"
+            else expected[key]
+        )
+        assert _row_set(actual[key]) == _row_set(want), key
     assert _row_set(actual.get("planes", [])) == _row_set(expected.get("planes", []))
     expected_measures = []
     for source in expected.get("measures", []):

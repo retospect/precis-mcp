@@ -361,6 +361,178 @@ def _topo_run(
     return result, files, summary_text, side_changes, label_spots, diverged
 
 
+def _plan_failed_count(plan: Any) -> int:
+    """Unresolved-route problems, the metric the failure-driven shove
+    loop minimises (0 = every net realized).  Duck-typed: the field
+    list matches :class:`precis.pcb.topoplace.realise.RoutePlan`, and
+    ``guarded``/``severed`` default absent for pre-field bench fakes."""
+    return (
+        len(plan.crossings)
+        + len(plan.unreachable)
+        + len(plan.no_via)
+        + len(getattr(plan, "guarded", ()))
+        + len(getattr(plan, "severed", ()))
+    )
+
+
+def _route_failure_pushes(
+    td: Any,
+    plan: Any,
+    pose: Any,
+    net_rules: Any,
+    min_via_dia: float | None,
+    *,
+    cap_mm: float = 2.0,
+) -> list[Any]:
+    """Blocker-directed shove rows, built from the plan's OWN failures
+    (Reto 2026-10-30: "should just cause shove, and vias to be
+    generated, and things to be pushed — don't log it, make it work"):
+
+    * a ``no_via`` branch minted no via because the siting walk found
+      no keepout-clean point anywhere on the corridor — push the
+      branch's endpoint parts apart along their centre line by the via
+      window (dia + clearance), stretching the corridor so the re-route
+      has edges to site on;
+    * a ``guarded`` net had copper withdrawn for approaching another
+      net — push the parts owning the closest-approach pieces apart
+      along the closest-approach direction by the anti-short veto's
+      deficit.
+
+    Rows are capped (``cap_mm``) and deduped by part pair — a push is
+    one soft LP row the guards may relax, never a demand.  Geometry
+    reads ``plan.pieces`` (which keeps withdrawn/failed geometry "for
+    the record"), so no mesh rebuild is needed to build them."""
+    from precis.pcb.topoplace.shove import ShovePush
+
+    pose_a = np.asarray(pose, dtype=float)
+    pin_part = np.asarray(td.pin_part, dtype=int)
+
+    def _rules(net: int) -> Any:
+        if 0 <= int(net) < len(td.net_name):
+            return (net_rules or {}).get(str(td.net_name[int(net)]))
+        return None
+
+    def _via_window(net: int) -> float:
+        r = _rules(net)
+        dia = float(getattr(r, "via_dia_mm", None) or min_via_dia or 0.6)
+        return min(cap_mm, dia + float(getattr(r, "clearance_mm", 0.15)))
+
+    pushes: list[Any] = []
+    by_pair: dict[tuple[int, int], int] = {}
+
+    def _add(pa: int, pb: int, axis: tuple[float, float], sep: float) -> None:
+        if sep <= 0.0:
+            return
+        key = (min(pa, pb), max(pa, pb))
+        i = by_pair.get(key)
+        if i is None:
+            by_pair[key] = len(pushes)
+            pushes.append(ShovePush(pa, pb, axis, sep))
+        else:
+            prev = pushes[i]
+            if prev.sep_mm < sep:
+                pushes[i] = ShovePush(prev.a, prev.b, prev.axis, sep)
+
+    # ── no_via branches: endpoint separation along the corridor
+    for bi in plan.no_via:
+        branch_pieces = [p for p in plan.pieces if p.branch == bi]
+        if not branch_pieces:
+            continue
+        pin_a = int(branch_pieces[0].pin_a)
+        pin_b = int(branch_pieces[0].pin_b)
+        if not (0 <= pin_a < len(pin_part) and 0 <= pin_b < len(pin_part)):
+            continue
+        pa, pb = int(pin_part[pin_a]), int(pin_part[pin_b])
+        if pa == pb or not (0 <= pa < len(pose_a) and 0 <= pb < len(pose_a)):
+            continue  # both ends on one part — no separation to gain
+        axis = pose_a[pb, :2] - pose_a[pa, :2]
+        _add(
+            pa, pb, (float(axis[0]), float(axis[1])), _via_window(branch_pieces[0].net)
+        )
+
+    # ── guarded nets: closest-approach pair, pushed apart by the deficit
+    guarded = set(getattr(plan, "guarded", ()))
+    if guarded:
+        from shapely.geometry import LineString
+        from shapely.ops import nearest_points
+
+        guarded_pieces = [p for p in plan.pieces if p.net in guarded]
+        foreign_pieces = [p for p in plan.pieces if p.net not in guarded]
+        for gp in guarded_pieces:
+            g_line = LineString(gp.points)
+            g_bounds = g_line.bounds
+            best: tuple[float, Any] | None = None
+            for op in foreign_pieces + [q for q in guarded_pieces if q.net != gp.net]:
+                if op is gp:
+                    continue
+                if (
+                    best is not None
+                    and _bbox_gap(g_bounds, _line_bounds(op.points)) >= best[0]
+                ):
+                    continue
+                d = float(g_line.distance(LineString(op.points)))
+                if best is None or d < best[0]:
+                    best = (d, op)
+            if best is None:
+                continue
+            dist, op = best
+            near_g, near_o = nearest_points(g_line, LineString(op.points))
+            # the piece ends at its pins — the owning part is the one
+            # whose END is nearest the approach point
+            ga_part = _nearest_pin_part(gp, (near_g.x, near_g.y), pin_part, pose_a)
+            gb_part = _nearest_pin_part(op, (near_o.x, near_o.y), pin_part, pose_a)
+            if ga_part is None or gb_part is None or ga_part == gb_part:
+                continue
+            rg, ro = _rules(gp.net), _rules(op.net)
+            veto = (
+                float(getattr(rg, "track_width_mm", 0.2))
+                + float(getattr(ro, "track_width_mm", 0.2))
+            ) / 2.0 + max(
+                float(getattr(rg, "clearance_mm", 0.15)),
+                float(getattr(ro, "clearance_mm", 0.15)),
+            )
+            _add(
+                ga_part,
+                gb_part,
+                (near_o.x - near_g.x, near_o.y - near_g.y),
+                min(cap_mm, veto - dist + 0.1),
+            )
+    return pushes
+
+
+def _line_bounds(pts: Any) -> tuple[float, float, float, float]:
+    xs = [p[0] for p in pts]
+    ys = [p[1] for p in pts]
+    return (min(xs), min(ys), max(xs), max(ys))
+
+
+def _bbox_gap(
+    a: tuple[float, float, float, float], b: tuple[float, float, float, float]
+) -> float:
+    dx = max(a[0], b[0]) - min(a[2], b[2])
+    dy = max(a[1], b[1]) - min(a[3], b[3])
+    return math.hypot(max(0.0, dx), max(0.0, dy))
+
+
+def _nearest_pin_part(
+    piece: Any, xy: tuple[float, float], pin_part: Any, pose_a: Any
+) -> int | None:
+    """The part owning the piece END (pin side) nearest ``xy`` — the
+    half of the piece that actually approaches the foreign copper."""
+    ends = ((piece.pin_a, piece.points[0]), (piece.pin_b, piece.points[-1]))
+    best_pin: int | None = None
+    best_d = math.inf
+    for pin, pt in ends:
+        pin = int(pin)
+        if not (0 <= pin < len(pin_part)):
+            continue
+        d = math.hypot(float(pt[0]) - xy[0], float(pt[1]) - xy[1])
+        if d < best_d:
+            best_d = d
+            best_pin = pin
+    return int(pin_part[best_pin]) if best_pin is not None else None
+
+
 def _topo_route(
     ctx: DispatchContext,
     ir: PcbIR,
@@ -373,6 +545,7 @@ def _topo_route(
     board_id: Any,
     pcb_ref_id: int,
     label_spots: dict[str, str] | None = None,
+    out_files: dict[str, Any] | None = None,
 ) -> tuple[str, dict[str, Any]]:
     """The topo route half of a ``placer='topo'`` run (slice-5 ruling:
     place and route are ONE job — the pose commits above, then the same
@@ -458,12 +631,14 @@ def _topo_route(
 
     # Failure-driven shove (Reto 2026-10-30: "should just cause shove, and
     # vias to be generated, and things to be pushed — don't log it, make it
-    # work"): nets the plan failed for "no via site" or "short-risk" name
-    # their blockers — shove the pose apart and re-route, bounded rounds,
-    # keep the best realization. A board that routes clean the first time
-    # takes the zero-cost path (failed empty -> break before any shove);
-    # a shove that stops moving, overflows the mesh, or stops improving
-    # gives up and keeps the best plan so far.
+    # work"): the plan's own failures name their blockers — a no_via
+    # branch's endpoint parts, a guarded net's closest-approach pair —
+    # and those pairs become targeted LP push rows (see
+    # _route_failure_pushes).  Bounded rounds, keep the best
+    # realization.  A board that routes clean the first time takes the
+    # zero-cost path (failed empty -> break before any shove); a shove
+    # that stops moving, overflows the mesh, or stops improving gives
+    # up and keeps the best plan so far.
     from precis.pcb.topoplace import shove as _tpshove
 
     route_shove_mm = 0.0
@@ -471,11 +646,22 @@ def _topo_route(
     pose = td_route.pose0
     best_plan, best_rres = plan, rres
     best_pose = pose
-    best_failed = len(plan.no_via) + len(getattr(plan, "guarded", ()))
-    for _round in range(2):
+    best_failed = _plan_failed_count(plan)
+    for _round in range(3):
         if best_failed == 0:
             break
-        shoved = _tpshove.shove_pose(td_route, pose, rounds=3)
+        pushes = _route_failure_pushes(
+            td_route, best_plan, pose, net_rules, min_via_dia
+        )
+        # pushes name the participants when the plan's geometry supports
+        # it; a failing plan that names none still shoves blind (the v1
+        # contract the bench fakes encode: failures exist -> shove and
+        # re-route, pushes only steer the direction).
+        shoved = (
+            _tpshove.shove_pose(td_route, pose, rounds=3, push=pushes)
+            if pushes
+            else _tpshove.shove_pose(td_route, pose, rounds=3)
+        )
         route_shove_mm += shoved.moved_mm
         if shoved.moved_mm <= 1e-6:
             break
@@ -491,7 +677,7 @@ def _topo_route(
             )
         except _tprealise.CorridorOverflow:
             break
-        failed = len(plan.no_via) + len(getattr(plan, "guarded", ()))
+        failed = _plan_failed_count(plan)
         if failed >= best_failed:
             break
         best_plan, best_rres, best_pose, best_failed = plan, rres, pose, failed
@@ -711,6 +897,109 @@ def _topo_route(
         for r in rows.values()
         if (r.get("note") or "").startswith(DANGLING_NET_NOTE_PREFIX)
     )
+    n_failed = sum(1 for r in rows.values() if r["status"] == "failed")
+
+    # ── Visibility payload (Reto: "I just see ratsnest" — dump the plan
+    # itself): per-net topology/status/problems from sketch_rows plus the
+    # piece/via geometry, and the two-kernel routing masks at the
+    # COMMITTED pose (the shoved pose if the loop kept one) — the "via
+    # prohibited" / "pad blocking bars" debug layers, vector throughout.
+    if out_files is not None:
+        from shapely.geometry import Polygon
+
+        from precis.pcb.topoplace import masks as _tpmasks
+        from precis.pcb.topoplace import proxy as _tpproxy
+
+        net_names = [str(ir.net_name[i]) for i in range(len(ir.net_name))]
+        pieces_by_net: dict[int, list[dict[str, Any]]] = {}
+        for p in plan.pieces:
+            pieces_by_net.setdefault(int(p.net), []).append(
+                {
+                    "branch": int(p.branch),
+                    "layer": layers[p.layer] if 0 <= p.layer < len(layers) else p.layer,
+                    "pts": [
+                        [round(float(x), 4), round(float(y), 4)] for x, y in p.points
+                    ],
+                }
+            )
+        vias_by_net: dict[int, list[dict[str, Any]]] = {}
+        for v in plan.vias:
+            vias_by_net.setdefault(int(v.net), []).append(
+                {
+                    "x": round(float(v.x), 4),
+                    "y": round(float(v.y), 4),
+                    "branch": int(v.branch),
+                }
+            )
+        wires_payload: dict[str, Any] = {"nets": {}}
+        for name, row in rows.items():
+            ni = net_names.index(name) if name in net_names else None
+            wires_payload["nets"][name] = {
+                **row,
+                "pieces": pieces_by_net.get(ni, []) if ni is not None else [],
+                "vias": vias_by_net.get(ni, []) if ni is not None else [],
+            }
+        out_files["wires.json"] = wires_payload
+
+        zone_polys: list[tuple[Any, tuple[int, ...]]] = []
+        for z in td_route.zones:
+            if z.kind not in ("keepout", "mounting_hole", "label_keepout"):
+                continue
+            if len(z.ring) < 4:
+                continue
+            zl = tuple(int(l) for l in (z.layers or ()))
+            if z.kind == "label_keepout":
+                # Silkscreen is an OUTER-layer fact: it never blocks an
+                # inner corridor, and only the via annulus on the outers
+                # cares (the siting walk's rule, mirrored here).
+                outers = {0, ir.n_layers - 1}
+                zl = tuple(sorted(set(zl) & outers)) if zl else tuple(sorted(outers))
+            zg = Polygon(
+                np.asarray(
+                    _tpproxy.zone_world_ring(td_route, z, best_pose), dtype=float
+                )
+            )
+            if not zg.is_empty and zg.area > 0.0:
+                zone_polys.append((zg, zl))
+        rule_widths = [float(r.track_width_mm) for r in (net_rules or {}).values()]
+        rule_clrs = [float(r.clearance_mm) for r in (net_rules or {}).values()]
+        board_masks = _tpmasks.build_masks(
+            td_route,
+            best_pose,
+            n_layers=ir.n_layers,
+            min_wire_mm=min(rule_widths) if rule_widths else 0.15,
+            min_clearance_mm=min(rule_clrs) if rule_clrs else 0.15,
+            via_dia_mm=float(min_via_dia) if min_via_dia else 0.6,
+            zone_polys=tuple(zone_polys),
+        )
+        out_files["masks.json"] = {
+            "layer_names": layers,
+            "layers": [
+                {
+                    "route_block": lm.route_block,
+                    "spines": [
+                        {
+                            "pts": [
+                                [round(float(x), 4), round(float(y), 4)]
+                                for x, y in s.pts
+                            ],
+                            "width_mm": s.width_mm,
+                            "refdes": s.refdes,
+                            "layer": s.layer,
+                        }
+                        for s in lm.spines
+                    ],
+                    "route_block_free": lm.route_block_free,
+                    "via_prevent_free": lm.via_prevent_free,
+                }
+                for lm in board_masks.layers
+            ],
+            "via_prevent": board_masks.via_prevent,
+        }
+        out_files["masks.svg"] = _tpmasks.masks_svg(
+            board_masks, td_route.outline, tuple(layers)
+        )
+
     meta = {
         "nets": len(rows),
         "realized": n_realized,
@@ -1335,6 +1624,7 @@ def _dispatch(ctx: DispatchContext, spec: JobTypeSpec) -> None:
                     board_id=gate_board_id,
                     pcb_ref_id=pcb_ref_id,
                     label_spots=label_spots,
+                    out_files=topo_files,
                 )
             except Exception as exc:
                 log.exception("pcb_place: topo route stage raised; placement kept")
