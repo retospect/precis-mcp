@@ -97,6 +97,7 @@ import sys
 import time
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
+from functools import cache
 from pathlib import Path
 from typing import Any
 
@@ -1011,13 +1012,15 @@ def _is_heavy_mark(node: ast.expr) -> bool:
     return isinstance(node, ast.Attribute) and node.attr in _HEAVY_MARKS
 
 
-def _all_slow(path: Path) -> bool:
-    """True when ``pytest -m 'not slow'`` collects zero tests from the
-    file: a module-level ``pytestmark`` carries a heavy mark, or every
-    test function/method is marked (a marked class marks its methods).
-    Unreadable/unparseable and test-free files answer False."""
+@cache
+def _all_slow_cached(resolved: str, mtime_ns: int) -> bool:
+    """Parse-once core of ``_all_slow``, keyed by (resolved path,
+    mtime_ns): one answer per file revision. ``select()`` re-scans its
+    whole selection on every call and the corpus ratchet calls it once
+    per corpus ref — uncached, that was ~560 selects re-reading and
+    re-parsing every selected test file each time (gr544126)."""
     try:
-        tree = ast.parse(path.read_text(encoding="utf-8"))
+        tree = ast.parse(Path(resolved).read_text(encoding="utf-8"))
     except (OSError, SyntaxError, ValueError):
         return False
     for node in tree.body:
@@ -1046,6 +1049,19 @@ def _all_slow(path: Path) -> bool:
     return bool(decorators) and all(
         any(_is_heavy_mark(d) for d in decs) for decs in decorators
     )
+
+
+def _all_slow(path: Path) -> bool:
+    """True when ``pytest -m 'not slow'`` collects zero tests from the
+    file: a module-level ``pytestmark`` carries a heavy mark, or every
+    test function/method is marked (a marked class marks its methods).
+    Unreadable/unparseable and test-free files answer False."""
+    try:
+        resolved = str(path.resolve())
+        mtime_ns = path.stat().st_mtime_ns
+    except OSError:
+        return False
+    return _all_slow_cached(resolved, mtime_ns)
 
 
 def map_targets(changed: str) -> set[str]:

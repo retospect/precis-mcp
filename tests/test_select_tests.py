@@ -128,6 +128,29 @@ def test_every_corpus_ref_is_selectable(selector: sel.Selector) -> None:
     )
 
 
+def test_second_select_does_not_reparse(
+    selector: sel.Selector, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr544126: the slow-lane scan re-read and re-parsed every selected
+    file on every ``select()`` — the corpus ratchet's ~560 selects times
+    its selection pushed the test past its timeout. A repeat select over
+    the same files must not parse them again."""
+    changed = ["src/precis/data/skills/precis-gardener-help.md"]
+    targets, _ = selector.select(changed)
+    assert targets, "expected a non-empty selection for the slow-lane scan"
+    calls = 0
+    real_parse = ast.parse
+
+    def counting(*args: Any, **kwargs: Any) -> Any:
+        nonlocal calls
+        calls += 1
+        return real_parse(*args, **kwargs)
+
+    monkeypatch.setattr(ast, "parse", counting)
+    selector.select(changed)
+    assert calls == 0, f"second select() re-parsed {calls} file(s)"
+
+
 # The five r35 reds, by offender diff (gr485791). Python-only cases may be
 # delegated to testmon when a map exists — `testmon or want in targets`.
 R35_CASES = [
