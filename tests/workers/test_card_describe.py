@@ -423,7 +423,8 @@ def test_failed_ref_error_line_carries_class_and_reason(
     assert lines == [
         f"card_describe: ref_id={ref_id} failed: ValueError: "
         "card_describe reply carried no usable 'description' field; "
-        'reply={"narrative": "..."}; reply_chars=20'
+        'reply={"narrative": "..."}; decode=ok tail={"narrative": "..."}; '
+        "reply_chars=20"
     ]
 
 
@@ -455,7 +456,8 @@ def test_failure_line_carries_reply_chars_and_stop_reason(
     assert lines == [
         f"card_describe: ref_id={ref_id} failed: ValueError: "
         "card_describe reply carried no usable 'description' field; "
-        'reply={"narrative": "..."}; reply_chars=20 stop=length'
+        'reply={"narrative": "..."}; decode=ok tail={"narrative": "..."}; '
+        "reply_chars=20 stop=length"
     ]
 
 
@@ -1208,3 +1210,127 @@ def test_prompt_states_self_contained_json_only(store: Any, hub: Any) -> None:
     # Schema + example are the tail — the last thing the model reads.
     assert user.index("Card:") < user.index("Example:")
     assert user.rstrip().endswith("}")
+
+
+# ── gr545026: the rejected reply is salvaged before the paid retry ────
+
+
+def test_unparseable_dispatch_reply_is_salvaged_without_retry(
+    store: Any, hub: Any
+) -> None:
+    """gr545026's prod shape: the ``claude -p`` gate rejects a mid-string-
+    cut reply as ``unparseable`` — but the reply rides
+    ``DispatchError.reply`` and the tolerant extraction recovers the
+    description, so the ref is described with NO second billed call."""
+    from precis.utils.llm.router import DispatchError
+
+    ref_id = _put_structure(hub)
+
+    class _UnparseableWithReply(_FakeClient):
+        def complete(self, messages: list[dict[str, str]]) -> Any:
+            self.calls.append(messages)
+            raise DispatchError(
+                "claude -p returned no parseable JSON block",
+                reason_class="unparseable",
+                reply=_TRUNC_MID_STRING_REPLY,
+                model="claude-sonnet-5",
+            )
+
+    client = _UnparseableWithReply()
+    r = run_card_describe_pass(store, client=client, batch_size=10)
+
+    assert (r["claimed"], r["ok"], r["failed"]) == (1, 1, 0)
+    assert len(client.calls) == 1  # recovered — the nudge retry is skipped
+    chunks = _desc_chunks(store, ref_id)
+    assert chunks[0][1] == _TRUNC_MID_STRING_STORED
+    assert chunks[0][2]["model"] == "claude-sonnet-5"
+
+
+def test_unsalvageable_dispatch_reply_retries_once_with_diag(
+    store: Any, hub: Any, caplog: Any
+) -> None:
+    """A rejected reply that yields nothing (truncated before a usable
+    value) still buys exactly one nudge retry — and the retry line names
+    why the rung's parse choked: the decode position plus the reply's
+    length and tail (gr545026)."""
+    import logging
+
+    from precis.utils.llm.router import DispatchError
+
+    ref_id = _put_structure(hub)
+    bad_reply = '{"description": "A PdO slab, plausibly a cat'
+
+    class _CutThenJson(_FakeClient):
+        def complete(self, messages: list[dict[str, str]]) -> Any:
+            self.calls.append(messages)
+            if len(self.calls) == 1:
+                raise DispatchError(
+                    "claude -p returned no parseable JSON block",
+                    reason_class="unparseable",
+                    reply=bad_reply,
+                )
+            return SimpleNamespace(
+                text=json.dumps({"description": _DESC}),
+                data={"description": _DESC},
+                model="claude-sonnet-5",
+            )
+
+    with caplog.at_level(logging.WARNING, logger="precis.workers.card_describe"):
+        r = run_card_describe_pass(store, client=_CutThenJson(), batch_size=10)
+
+    assert (r["claimed"], r["ok"], r["failed"]) == (1, 1, 0)
+    lines = [
+        rec.getMessage()
+        for rec in caplog.records
+        if "retrying once" in rec.getMessage()
+    ]
+    assert len(lines) == 1
+    assert f"ref_id={ref_id}" in lines[0]
+    assert f"reply_chars={len(bad_reply)}" in lines[0]
+    assert "decode=Unterminated string" in lines[0]
+    assert "tail=" in lines[0]
+
+
+def test_persistent_dispatch_unparseable_fails_after_one_retry(
+    store: Any, hub: Any
+) -> None:
+    """Both dispatches unparseable with no recoverable reply: the ref
+    fails after exactly two calls — one retry, never a loop."""
+    from precis.utils.llm.router import DispatchError
+
+    ref_id = _put_structure(hub)
+
+    class _AlwaysUnparseable(_FakeClient):
+        def complete(self, messages: list[dict[str, str]]) -> Any:
+            self.calls.append(messages)
+            raise DispatchError(
+                "claude -p returned no parseable JSON block",
+                reason_class="unparseable",
+                reply="plain prose, nothing to salvage",
+            )
+
+    client = _AlwaysUnparseable()
+    r = run_card_describe_pass(store, client=client, batch_size=10)
+
+    assert (r["claimed"], r["ok"], r["failed"]) == (1, 0, 1)
+    assert len(client.calls) == 2
+    assert _desc_chunks(store, ref_id) == []
+
+
+def test_first_description_object_wins_over_trailing_block(
+    store: Any, hub: Any
+) -> None:
+    """gr545026: a reply whose FIRST balanced object carries the answer
+    wins over a trailing second object — the shared parse's last-block
+    pick would otherwise store the echo instead of the description."""
+    ref_id = _put_structure(hub)
+    decoy = (
+        "A decoy object that looks like a description but is not the "
+        "answer the model was asked for."
+    )
+    reply = f'{{"description": "{_DESC}"}}\n{{"description": "{decoy}"}}'
+
+    r = run_card_describe_pass(store, client=_RawClient(reply), batch_size=10)
+
+    assert (r["claimed"], r["ok"], r["failed"]) == (1, 1, 0)
+    assert _desc_chunks(store, ref_id)[0][1] == _DESC

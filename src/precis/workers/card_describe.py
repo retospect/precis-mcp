@@ -85,6 +85,22 @@ rung stops inheriting the 220-token summarizer cap, and the reply parse
 salvages a truncated ``description`` (recover the string to the cut,
 trim to the last complete sentence, ≥ :data:`_MIN_SALVAGE_CHARS` or
 retry) — each salvage logged at info so prod can count it.
+
+gr545026 (~10% of first attempts still failed ``unparseable`` after
+gr543828): the replies were JSON-shaped now — the failure moved to the
+``claude -p`` gate's own complete-object requirement
+(:func:`precis.utils.claude_p._parse_last_json_block`), which rejects a
+reply cut mid-string or loosely fenced *before* this module's tolerant
+parse ever sees it, so every flake cost a second paid dispatch. The
+rejected reply now rides the ``DispatchError`` (``reply``/``model``,
+mirroring ``LlmResult.text``/``.model``) and the pass runs the tolerant
+extraction on it before buying the one nudge retry — a recoverable cut
+saves the retry outright. The failure lines also name *why* the parse
+failed: the ``JSONDecodeError`` position plus the reply's tail (a pos
+near ``reply_chars`` with the tail inside a string is a cap cut; a
+stray token names itself), and the object pick prefers the FIRST
+balanced block carrying a string ``description`` so a trailing second
+object can't shadow the answer.
 """
 
 from __future__ import annotations
@@ -95,6 +111,8 @@ import json
 import logging
 import os
 import re
+from collections.abc import Iterator
+from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any
 
 from psycopg import Connection
@@ -200,6 +218,12 @@ DESCRIBE_EXTRA_ARGS: tuple[str, ...] = ("--max-turns", "1")
 #: enough to name the wrong shape (truncated JSON, a wrong key, an
 #: envelope) straight off the log line (gr523669).
 _REPLY_EXCERPT_CHARS = 200
+
+#: How much of a bad reply's TAIL reaches the failure diagnostic
+#: (gr545026): the head names the shape, the tail names the cut — a
+#: decode error near ``reply_chars`` with the tail inside a string is a
+#: truncation, not a contract break.
+_REPLY_TAIL_CHARS = 120
 
 #: Consecutive failed attempts after which a ref is benched: its attempt
 #: lease is re-stamped at the same ordinal with
@@ -474,6 +498,60 @@ def _reply_telemetry(res: Any) -> str:
     return f"{out} stop={stop}" if stop else out
 
 
+def _reply_diag(text: str) -> str:
+    """``decode=<err>@<pos> tail=<flattened tail>`` for a rejected reply —
+    WHY the strict parse choked (gr545026). A pos near ``reply_chars``
+    with the tail inside a string names an output-cap cut; a stray token
+    names itself; ``decode=ok`` means the JSON parsed and the failure is
+    the missing ``description`` key. ``""`` on no text."""
+    if not text:
+        return ""
+    tail = _reply_excerpt(text[-_REPLY_TAIL_CHARS:])
+    try:
+        json.loads(text)
+    except json.JSONDecodeError as exc:
+        return f"decode={exc.msg}@{exc.pos} tail={tail}"
+    return f"decode=ok tail={tail}"
+
+
+def _balanced_objects(text: str) -> Iterator[str]:
+    """Yield top-level brace-balanced ``{...}`` spans in order (gr545026 —
+    first-balanced-object tolerance: a second JSON block after the answer
+    must not shadow it). Naive brace counting, same as the shared
+    last-block scan — a brace inside a string still counts."""
+    depth = 0
+    start = -1
+    for i, ch in enumerate(text):
+        if ch == "{":
+            if depth == 0:
+                start = i
+            depth += 1
+        elif ch == "}" and depth > 0:
+            depth -= 1
+            if depth == 0 and start >= 0:
+                yield text[start : i + 1]
+                start = -1
+
+
+def _description_object(text: str) -> dict[str, Any] | None:
+    """The first candidate — the whole reply, then each balanced block in
+    order — that parses (strict, then control-char-tolerant, the same
+    two passes ``extract_json_object`` runs) to a dict carrying a string
+    ``description``, or ``None``. Whole-text first so a brace inside a
+    description string can't cut the block early; block order so a
+    trailing second object can't shadow the answer (gr545026)."""
+    for candidate in [text, *_balanced_objects(text)]:
+        for strict in (True, False):
+            try:
+                obj = json.loads(candidate, strict=strict)
+            except Exception:
+                continue
+            if isinstance(obj, dict) and isinstance(obj.get("description"), str):
+                return obj
+            break
+    return None
+
+
 def _decode_json_string(src: str) -> str | None:
     """Decode a raw JSON string body that may end mid-escape (the cap cut
     it): ``json.loads`` — strict first, control-char-tolerant second,
@@ -581,7 +659,12 @@ def _extract_description(res: Any) -> tuple[str, str | None]:
     text = (m.group(1) if m else raw).strip()
     data = getattr(res, "data", None)
     if not (isinstance(data, dict) and isinstance(data.get("description"), str)):
-        alt = extract_json_object(text)
+        # The shared parse takes the LAST balanced block — a reply
+        # carrying a second object after the answer (a trailing example
+        # or echo, gr545026) must not shadow ``description``: prefer the
+        # FIRST candidate that carries one; the shared parse stays as
+        # the fallback for the wrong-key diagnostic.
+        alt = _description_object(text) or extract_json_object(text)
         if isinstance(alt, dict):
             data = alt
     desc = data.get("description") if isinstance(data, dict) else None
@@ -590,10 +673,30 @@ def _extract_description(res: Any) -> tuple[str, str | None]:
     salvage = _salvage_description(text)
     if salvage is not None:
         return salvage
+    diag = _reply_diag(text)
     raise ValueError(
         "card_describe reply carried no usable 'description' field; "
-        f"reply={_reply_excerpt(raw or repr(data))}; {_reply_telemetry(res)}"
+        f"reply={_reply_excerpt(raw or repr(data))}; "
+        f"{diag + '; ' if diag else ''}{_reply_telemetry(res)}"
     )
+
+
+def _recover_rejected_reply(exc: DispatchError) -> tuple[Any, str, str] | None:
+    """Salvage a description out of an ``unparseable`` dispatch failure's
+    reply (gr545026). The ``claude -p`` gate demands one *complete* JSON
+    object, so a reply cut mid-string or loosely fenced is rejected at
+    dispatch while still carrying a description the tolerant parse
+    recovers — skipping the paid nudge retry. Returns
+    ``(reply_view, text, salvage_reason)`` or ``None``."""
+    reply = exc.reply or ""
+    if not reply.strip():
+        return None
+    view = SimpleNamespace(text=reply, data=None, model=exc.model)
+    try:
+        text, salvage = _extract_description(view)
+    except ValueError:
+        return None
+    return view, text, f"unparseable-dispatch:{salvage or 'tolerant'}"
 
 
 def _figure_notes(store: Store, ref_id: int) -> str:
@@ -678,33 +781,50 @@ def describe_card(
             },
         ]
     nudged = [*messages, {"role": "user", "content": _JSON_NUDGE}]
-    retried = False
-    try:
-        res = client.complete(messages)
-    except DispatchError as exc:
-        if exc.reason_class != "unparseable":
-            raise
-        retried = True
-        log.warning(
-            "card_describe: ref_id=%s dispatch failed unparseable (%s); "
-            "retrying once with a JSON-only nudge",
-            ref_id,
-            str(exc)[:_REPLY_EXCERPT_CHARS],
-        )
-        res = client.complete(nudged)
-    try:
-        text, salvage = _extract_description(res)
-    except ValueError as exc:
-        if retried:
-            raise
-        log.warning(
-            "card_describe: ref_id=%s unparseable reply (%s); "
-            "retrying once with a JSON-only nudge",
-            ref_id,
-            str(exc)[:_REPLY_EXCERPT_CHARS],
-        )
-        res = client.complete(nudged)
-        text, salvage = _extract_description(res)
+    res: Any = None
+    text = ""
+    salvage: str | None = None
+    last_exc: Exception | None = None
+    done = False
+    for i, attempt in enumerate((messages, nudged)):
+        if i == 1:
+            # The single nudge retry (gr543828) — logged once, never a
+            # loop. An unparseable dispatch names its decode diagnostic
+            # (gr545026) so the line says why the rung rejected the reply.
+            if isinstance(last_exc, DispatchError):
+                detail = str(last_exc)[:_REPLY_EXCERPT_CHARS]
+                reply = last_exc.reply or ""
+                if reply:
+                    detail += f"; reply_chars={len(reply)} {_reply_diag(reply)}"
+                why = f"dispatch failed unparseable ({detail})"
+            else:
+                why = f"unparseable reply ({str(last_exc)[:_REPLY_EXCERPT_CHARS]})"
+            log.warning(
+                "card_describe: ref_id=%s %s; retrying once with a JSON-only nudge",
+                ref_id,
+                why,
+            )
+        try:
+            res = client.complete(attempt)
+        except DispatchError as exc:
+            if exc.reason_class != "unparseable":
+                raise
+            recovered = _recover_rejected_reply(exc)
+            if recovered is None:
+                last_exc = exc
+                continue
+            res, text, salvage = recovered
+            done = True
+            break
+        try:
+            text, salvage = _extract_description(res)
+            done = True
+            break
+        except ValueError as exc:
+            last_exc = exc
+    if not done:
+        assert last_exc is not None  # both attempts failed
+        raise last_exc
     if salvage is not None:
         log.info(
             "card_describe: ref_id=%s description salvaged (%s; %s)",

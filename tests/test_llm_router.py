@@ -1844,6 +1844,10 @@ def test_dispatch_client_error_carries_reason_class(
     with pytest.raises(DispatchError) as ei:
         client.complete([{"role": "user", "content": "x"}])
     assert ei.value.reason_class == "unparseable"
+    # gr545026: the rejected reply and the rung's model ride the error so
+    # a caller's tolerant parse can recover without a second dispatch.
+    assert ei.value.reply == "prose"
+    assert ei.value.model == "claude-sonnet-5"
 
 
 def test_dispatch_log_call_false_skips_route_log(

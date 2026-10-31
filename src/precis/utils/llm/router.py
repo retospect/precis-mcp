@@ -3974,6 +3974,12 @@ class DispatchError(RuntimeError):
     structural failure class — ``'unparseable'`` lets a caller retry a
     format flake with a nudge instead of sniffing the message text
     (card_describe's JSON-only retry, gr543828).
+    ``reply``/``model`` mirror the failing rung's
+    :attr:`LlmResult.text`/``.model`` when one exists — an
+    ``unparseable`` failure still carries the model's answer, so a
+    caller with a more tolerant parse than the rung's own gate can
+    recover it without paying for a second dispatch (card_describe's
+    rejected-reply salvage, gr545026).
     """
 
     def __init__(
@@ -3984,12 +3990,16 @@ class DispatchError(RuntimeError):
         retry_at: datetime | None = None,
         cli_unavailable: bool = False,
         reason_class: str | None = None,
+        reply: str | None = None,
+        model: str | None = None,
     ) -> None:
         super().__init__(message)
         self.paused = paused
         self.retry_at = retry_at
         self.cli_unavailable = cli_unavailable
         self.reason_class = reason_class
+        self.reply = reply
+        self.model = model
 
 
 @dataclass
@@ -4116,6 +4126,8 @@ class DispatchClient:
                 retry_at=res.retry_at,
                 cli_unavailable=res.cli_unavailable,
                 reason_class=res.reason_class,
+                reply=res.text or None,
+                model=res.model or None,
             )
         return res
 
