@@ -206,9 +206,13 @@ def _sessions() -> dict[str, str] | None:
     inflight = ROOT / "scripts" / "inflight"
     if not os.access(inflight, os.X_OK):
         return None
+    # The ``session`` field guards a destructive gate reap, so the shared
+    # scan (scripts/lib/inflight_cache.py) may be at most 10 s old here, not
+    # the default 45: a lock taken just before this hook ran is still seen.
     try:
         out = subprocess.run(
-            [str(inflight), "--json"],
+            [str(inflight), "--json", "--skip-branch-probes"],
+            env={**os.environ, "INFLIGHT_CACHE_TTL": "10"},
             capture_output=True,
             text=True,
             encoding="utf-8",

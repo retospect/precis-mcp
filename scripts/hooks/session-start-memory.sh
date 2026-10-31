@@ -126,6 +126,11 @@ rotate_nodes() {
 }
 
 cd "$repo" || fail "cannot enter repo root"
+# Both CLI calls below are reads whose stderr is discarded, so prod-precis's
+# `git fetch origin prod` + stale-tree check (which only WARNS for a read) is
+# pure latency here — ~5 s a call, and a ref-lock contender across dozens of
+# sessions starting together (gr541365). Skip it; writes keep their guard.
+export PRECIS_ALLOW_STALE_PROD_TREE=1
 out="$("${cli[@]}" memory index --for-hook --export-dir "$nodes" 2>"$errf")"
 rc=$?
 if [ "$rc" -ne 0 ]; then

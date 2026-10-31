@@ -54,7 +54,7 @@ fi
 
 # no live session holding the primary.
 [ -x scripts/inflight ] || exit 0
-JSON=$(scripts/inflight --json 2>/dev/null) || exit 0
+JSON=$(scripts/inflight --json --skip-branch-probes 2>/dev/null) || exit 0
 [ -z "$JSON" ] && exit 0
 LIVE=$(printf '%s' "$JSON" | PRIMARY="$PRIMARY" python3 -c '
 import json, os, sys

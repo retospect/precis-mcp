@@ -178,11 +178,13 @@ def stale_line(verdict: dict, pending: dict | None) -> str:
 def inflight_trees() -> list[dict]:
     try:
         cp = subprocess.run(
-            [str(ROOT / "scripts" / "inflight"), "--json"],
+            [str(ROOT / "scripts" / "inflight"), "--json", "--skip-branch-probes"],
             capture_output=True,
             text=True,
             encoding="utf-8",
-            timeout=30,
+            # May queue behind another session's shared scan (inflight_cache,
+            # lock wait up to 45 s); a timeout reads as "no tree claims the red".
+            timeout=120,
             check=False,
         )
         return json.loads(cp.stdout).get("worktrees", []) if cp.returncode == 0 else []

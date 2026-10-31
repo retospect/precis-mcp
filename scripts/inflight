@@ -68,8 +68,18 @@
 #                               # landed branchless branch reads stranded until a
 #                               # full run re-verifies it.
 #
+# Cache (gr541365): `--for-hook` and `--json --skip-branch-probes` — the shapes
+# every SessionStart hook asks for — are served from ONE shared scan
+# (scripts/lib/inflight_cache.py): scans serialize on a lock and the result is
+# reused for INFLIGHT_CACHE_TTL seconds (default 45) by all sessions. The table,
+# `--all` and a plain `--json` always scan live. Set INFLIGHT_NO_CACHE=1 for a
+# live read of a hook shape (a destructive recheck should).
+#
 # Env: INFLIGHT_MAX_ROWS  default-table row cap (0/unset → 40)
 #      INFLIGHT_JOBS      probe fan-out width (default 12, capped at the CPU count)
+#      INFLIGHT_CACHE_TTL cache lifetime in seconds for the shapes above (default 45)
+#      INFLIGHT_NO_CACHE  non-empty → never read or write the shared cache
+#      INFLIGHT_NEUTRAL   non-empty → caller-neutral scan (no `*`/`self`); set by the cache helper
 #
 # See: CLAUDE.md / "Session workflow" (the .claude/purpose protocol).
 set -uo pipefail
@@ -96,6 +106,20 @@ command -v git >/dev/null 2>&1 || exit 0
 git rev-parse --git-dir >/dev/null 2>&1 || exit 0
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# Hook-mode shapes share ONE scan across every concurrent SessionStart
+# (gr541365; scripts/lib/inflight_cache.py). The helper runs this script back
+# with INFLIGHT_NO_CACHE=1 to scan, so it never recurses. A helper that fails
+# falls through to the live scan below — a broken cache never costs an answer.
+if [ -z "${INFLIGHT_NO_CACHE:-}" ] && [ "$SHOW_ALL" = 0 ] \
+   && [ -f "$SCRIPT_DIR/lib/inflight_cache.py" ] && command -v python3 >/dev/null 2>&1; then
+  if [ "$FOR_HOOK" = 1 ] && [ "$JSON_MODE" = 0 ]; then
+    python3 "$SCRIPT_DIR/lib/inflight_cache.py" hook "$SCRIPT_DIR/inflight" && exit 0
+  elif [ "$FOR_HOOK" = 0 ] && [ "$JSON_MODE" = 1 ] && [ "$SKIP_BP" = 1 ]; then
+    python3 "$SCRIPT_DIR/lib/inflight_cache.py" json "$SCRIPT_DIR/inflight" && exit 0
+  fi
+fi
+
 # Pick the primary branch: prefer main, fall back to master.
 BASE=main
 git show-ref --verify --quiet refs/heads/main || BASE=master
@@ -111,6 +135,11 @@ PRIMARY=$(git worktree list --porcelain 2>/dev/null | awk 'NR == 1 {print $2}')
 # instead of a `rev-parse` per unmerged branch.
 BASE_TREE=$(git rev-parse "$BASE^{tree}" 2>/dev/null || echo "")
 MAIN_ROOT="$(dirname "$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null)" 2>/dev/null)"
+# The tree the caller stands in (marked `*`, bucketed `self`, never removable).
+# A cacheable scan is taken caller-neutral (INFLIGHT_NEUTRAL=1): the cache is
+# shared by every worktree, so lib/inflight_cache.py applies `self` on read.
+SELF_PATH=$HERE
+[ -n "${INFLIGHT_NEUTRAL:-}" ] && SELF_PATH=''
 
 MAX_ROWS=${INFLIGHT_MAX_ROWS:-40}
 case $MAX_ROWS in ''|*[!0-9]*) MAX_ROWS=40 ;; esac
@@ -399,7 +428,7 @@ probe_worktree() {
   local dirty=0 untr=0 fa='' fb='' line base
 
   if [ "$branch" = "$BASE" ]; then name=$BASE; else name=${path##*/}; fi
-  mark=' '; [ "$path" = "$HERE" ] && mark='*'
+  mark=' '; [ "$path" = "$SELF_PATH" ] && mark='*'
   sess=$(session_field "$locked")
   # Canonicalize like the marker's `cwd` (Path.resolve()) so the compare is
   # not fooled by a symlinked parent (e.g. /var -> /private/var on macOS).
@@ -470,13 +499,13 @@ probe_worktree() {
   if [ "$verd" = 'merged' ] && [ "$dirtyf" = 'clean' ] \
      && [[ "$sess" != live#* && "$sess" != live-task#* ]] \
      && [ "$sess" != 'locked' ] && [ "$agent_tree" = 0 ] \
-     && [ "$path" != "$HERE" ] && [ "$path" != "$PRIMARY" ]; then
+     && [ "$path" != "$SELF_PATH" ] && [ "$path" != "$PRIMARY" ]; then
     rem=$name
   fi
 
   if [ "$JSON_MODE" = 1 ]; then
     if [ "$path" = "$PRIMARY" ] || [ "$branch" = "$BASE" ]; then bucket='base'
-    elif [ "$path" = "$HERE" ]; then bucket='self'
+    elif [ "$path" = "$SELF_PATH" ]; then bucket='self'
     elif [[ "$sess" == live-task#* ]]; then bucket='live_subagent'
     elif [[ "$sess" == live#* ]]; then bucket='live_session'
     elif [ "$sess" = 'locked' ]; then bucket='needs_judgment'

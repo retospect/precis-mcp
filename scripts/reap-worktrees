@@ -733,7 +733,8 @@ else
     JSON2=""
     if [ "${#FILTERED[@]}" -gt 0 ]; then
         sleep "$GRACE_SECONDS"
-        JSON2=$(scripts/inflight "${INFLIGHT_ARGS[@]}" 2>/dev/null) || JSON2=""
+        # Live read, never the shared cache: this is the check a removal rests on.
+        JSON2=$(INFLIGHT_NO_CACHE=1 scripts/inflight "${INFLIGHT_ARGS[@]}" 2>/dev/null) || JSON2=""
     fi
     for rec in "${FILTERED[@]:-}"; do
         [ -z "$rec" ] && continue

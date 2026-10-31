@@ -44,7 +44,7 @@ wired in `.claude/settings.json` under `hooks:`. Deny = exit 2 with stderr
 | `session-start-lock.sh` | SessionStart | Acquires the `git worktree lock` (`pid <N>`) that marks this tree held by a live session — the liveness signal `scripts/inflight` reads | — |
 | `heal-primary-branch.sh` | SessionStart | Heals the PRIMARY checkout back onto `main` when it sits on a fully-merged, clean, unheld branch. `PRECIS_NO_HEAL_PRIMARY=1` | — |
 | `session-start-memory.sh` | SessionStart | Prints the one-line memory summary (`precis memory index --for-hook`) once MEMORY.md carries the graph marker; writes the per-node body cache and a last-good copy | — |
-| `memory-nudge.sh` | SessionStart | Runs `scripts/memory-lint` in the background (`~/.cache/precis/memory-lint.log`); prints nothing | — |
+| `memory-nudge.sh` | SessionStart | Runs `scripts/memory-lint` in the background (`~/.cache/precis/memory-lint.log`), at most once per `MEMORY_NUDGE_SECS` (600); prints nothing | — |
 | `read-dedup.py --session-start` | SessionStart | Deletes the session's dedup state when `source` is `compact`/`clear`/`resume` | `source`, `session_id` |
 | `subagent-task-state.py start\|stop` | SubagentStart / SubagentStop | Writes/removes the per-task marker `{agent_id, pid, cwd, started_at}` in the shared git dir; stale markers self-prune | `agent_id`, `cwd` |
 | `session-end-reap.sh` | SessionEnd | Releases the worktree lock; reaps THIS session's worktree when `scripts/inflight --json` buckets it `safe_remove`. `reason` `clear`/`resume` passes. `PRECIS_NO_AUTOREAP=1` | `reason`, `cwd` |
@@ -56,6 +56,15 @@ SessionStart commands wired outside `scripts/hooks/` (same `hooks:` block):
 `scripts/reap-worktrees --for-hook`, `scripts/reap-test-dbs --for-hook`,
 `scripts/reap-idle-gates --for-hook`, `scripts/reap-stale-serves --for-hook`,
 `scripts/main-ci-status --for-hook`, `scripts/docs-index`.
+
+Every one of these asks the fleet scan for the same thing, so
+`scripts/inflight --for-hook` and `--json --skip-branch-probes` share one
+scan (`scripts/lib/inflight_cache.py`): scans serialize on a lock and the
+result is reused for `INFLIGHT_CACHE_TTL` seconds (45) across all sessions
+and callers. The table, `--all` and a plain `--json` stay live;
+`INFLIGHT_NO_CACHE=1` forces a live read (reap-worktrees' pre-removal
+recheck uses it). A hook that needs the fleet state adds
+`--skip-branch-probes` to its `--json` call rather than scanning on its own.
 
 ## Not wired in `.claude/settings.json`
 

@@ -35,6 +35,7 @@ READ_ONLY=(
     logs stats resolve schema-doc post-migration-check
     tools:get tools:search
     quest:status
+    memory:index gripes:--summary
     gripe-fix:brief
     secret:check
 )

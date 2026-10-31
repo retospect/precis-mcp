@@ -280,7 +280,11 @@ if [ -n "$ROOT" ] && [ -f "$ROOT/scripts/lib/compose-project.sh" ] \
         # merge-tree per stranded pin) is wasted spend (gr541365).
         INFLIGHT_ARGS=(--json)
         [ "$FOR_HOOK" = 1 ] && INFLIGHT_ARGS+=(--skip-branch-probes)
-        INFLIGHT_JSON="$("$ROOT/scripts/inflight" "${INFLIGHT_ARGS[@]}" 2>/dev/null || true)"
+        # The `session` field guards a destructive stop, so a shared scan may
+        # be at most 10 s old here (default 45): a lock taken by a session that
+        # started just before this one is still seen, yet a burst of starts
+        # still coalesces onto one scan.
+        INFLIGHT_JSON="$(INFLIGHT_CACHE_TTL=10 "$ROOT/scripts/inflight" "${INFLIGHT_ARGS[@]}" 2>/dev/null || true)"
 
         # session_for <path> — the exact `session` field scripts/inflight
         # --json computed for <path> (live#<pid> / dead-lock#<pid> / locked /
