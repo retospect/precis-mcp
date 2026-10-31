@@ -38,7 +38,8 @@ that holds the lane's credentials with ``params.target_node``):
   land) it ends ``failed`` with the log tail and releases the lease: the
   claim tag goes, the todo returns to ``STATUS:open`` and gains
   ``attempt:<n>``.
-* :func:`kill` SIGTERMs the session's process group.
+* :func:`kill` SIGTERMs the session's process group and revokes the
+  slice's MCP grant (the sweep ends the job — poll may never run).
 
 Deny paths are enforced twice: the session gets them as ``Edit``/
 ``Write``/``MultiEdit``/``NotebookEdit`` deny rules through ``--settings``
@@ -804,7 +805,14 @@ def _mint_slice_token(
     shared token rather than breaking the factory on an un-deployed
     host. A failed ``open_run`` still mints (attribution then rides the
     ``slice-td<id>-`` session-id prefix and ``meta.slice`` only); a
-    failed mint abandons the log and returns ``None``."""
+    failed mint abandons the log and returns ``None``.
+
+    The file is named ``td<todo_id>j<job_id>`` (``a<agentlog_id>`` when
+    no job id is around, bare ``td<todo_id>`` when neither is): two
+    jobs can run sessions for one todo at once — a bare ``td<id>`` file
+    let the resubmit overwrite the live grant and the older run's revoke
+    then deleted the new grant.
+    """
     from precis import agentlog, slice_tokens
 
     directory = slice_tokens.registry_dir()
@@ -820,8 +828,15 @@ def _mint_slice_token(
         job_ref_id=getattr(ctx, "ref_id", None),
         meta_extra={"slice": f"td{todo_id}"},
     )
+    job = getattr(ctx, "ref_id", None)
+    if isinstance(job, int) and not isinstance(job, bool) and job > 0:
+        name = f"td{todo_id}j{job}"
+    elif isinstance(log_id, int) and log_id > 0:
+        name = f"td{todo_id}a{log_id}"
+    else:
+        name = f"td{todo_id}"
     try:
-        token = slice_tokens.mint(directory, f"td{todo_id}", agentlog_id=log_id)
+        token = slice_tokens.mint(directory, name, agentlog_id=log_id)
     except Exception:
         log.warning(
             "run_slice: slice-token mint for td%d failed; launching on the "
@@ -831,7 +846,26 @@ def _mint_slice_token(
         )
         agentlog.close_run(ctx.store, log_id, status="aborted")
         return None
-    return {"token": token, "dir": str(directory), "agentlog_id": log_id}
+    return {
+        "token": token,
+        "dir": str(directory),
+        "agentlog_id": log_id,
+        "name": name,
+    }
+
+
+def _handle_grant(handle: dict[str, Any]) -> dict[str, Any] | None:
+    """The grant fields the handle persisted for a later revoke, or
+    ``None`` when the submit minted nothing."""
+    if not isinstance(handle, dict) or not handle.get("slice_token_dir"):
+        return None
+    return {
+        "dir": handle.get("slice_token_dir"),
+        "agentlog_id": handle.get("agentlog_id"),
+        # Handles written before the job-qualified name carry no ``name``;
+        # their file is the bare td<todo_id>.
+        "name": handle.get("slice_token_name"),
+    }
 
 
 def _revoke_slice_grant(ctx: Any, todo_id: int, grant: Any, status: str) -> None:
@@ -843,7 +877,10 @@ def _revoke_slice_grant(ctx: Any, todo_id: int, grant: Any, status: str) -> None
     from precis import agentlog, slice_tokens
 
     try:
-        slice_tokens.revoke(Path(str(grant.get("dir") or "")), f"td{todo_id}")
+        slice_tokens.revoke(
+            Path(str(grant.get("dir") or "")),
+            str(grant.get("name") or f"td{todo_id}"),
+        )
     except Exception:  # pragma: no cover — defensive
         log.warning("run_slice: slice-token revoke for td%d failed", todo_id)
     agentlog.close_run(ctx.store, grant.get("agentlog_id"), status=status)
@@ -961,7 +998,7 @@ def submit(ctx: Any, spec: Any) -> Any:
         "job_event",
         f"run_slice: launched td{todo_id} on lane {lane.name} (model {model}, "
         f"effort {effort}) pid {pid} in {tree} "
-        f"(mcp token: {'slice td' + str(todo_id) if grant else 'shared'})",
+        f"(mcp token: {f'slice {grant["name"]}' if grant else 'shared'})",
     )
     handle: dict[str, Any] = {
         "pid": pid,
@@ -973,6 +1010,7 @@ def submit(ctx: Any, spec: Any) -> Any:
     }
     if grant:
         handle["slice_token_dir"] = grant["dir"]
+        handle["slice_token_name"] = grant["name"]
         handle["agentlog_id"] = grant["agentlog_id"]
     if identity is not None:
         # ssh_node's orphan reaper kills only a group whose leader still
@@ -1145,11 +1183,7 @@ def poll(ctx: Any, handle: Any) -> bool:
         summary += ["", *commits[:20]]
     ctx.append_chunk("job_summary", "\n".join(summary))
 
-    grant = (
-        {"dir": handle.get("slice_token_dir"), "agentlog_id": handle.get("agentlog_id")}
-        if handle.get("slice_token_dir")
-        else None
-    )
+    grant = _handle_grant(handle)
     if clean and nothing is None:
         _revoke_slice_grant(ctx, todo_id, grant, "ok")
         ctx.set_status("succeeded")
@@ -1174,10 +1208,18 @@ def poll(ctx: Any, handle: Any) -> bool:
 
 
 def kill(ctx: Any, handle: Any) -> None:
-    """Wall-clock / operator kill: SIGTERM the session's process group."""
-    del ctx
+    """Wall-clock / operator kill: SIGTERM the session's process group and
+    revoke its slice-token grant — the sweep that calls this ends the job,
+    so without this the file would linger until the TTL (:mod:`precis.slice_tokens`)."""
     if not isinstance(handle, dict):
         return
+    grant = _handle_grant(handle)
+    if grant is not None:
+        params = (getattr(ctx, "meta", None) or {}).get("params") or {}
+        try:
+            _revoke_slice_grant(ctx, int(params.get("todo_id") or 0), grant, "aborted")
+        except Exception:  # pragma: no cover — the signal still goes
+            log.warning("run_slice: slice-token revoke on kill failed")
     pgid = int(handle.get("pgid") or handle.get("pid") or 0)
     if pgid <= 1:
         return

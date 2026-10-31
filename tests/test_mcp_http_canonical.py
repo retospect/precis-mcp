@@ -256,6 +256,78 @@ def test_status_lists_the_checkouts_in_use(env: dict[str, str], tmp_path: Path) 
     assert "do NOT delete" in out
 
 
+def test_missing_precis_mcp_main_refuses(env: dict[str, str], tmp_path: Path) -> None:
+    """gr516960: an explicit /main override naming a missing checkout is a
+    misconfig — refuse, never substitute the resolved repo (the silent
+    fall-back is how a deleted checkout became an empty mount)."""
+    repo = tmp_path / "checkout"
+    (repo / ".git").mkdir(parents=True)
+    env["PRECIS_MCP_REPO"] = str(repo)
+    env["PRECIS_MCP_MAIN"] = str(tmp_path / "gone")
+    r = _ensure(env)
+    assert r.returncode == 3, r.stderr
+    assert "PRECIS_MCP_MAIN" in r.stderr and "not a git checkout" in r.stderr
+    assert str(tmp_path / "gone") in r.stderr and "next=" in r.stderr
+
+
+def test_missing_precis_mcp_src_refuses(env: dict[str, str], tmp_path: Path) -> None:
+    """Same for /src: a PRECIS_MCP_SRC that is not a checkout must not be
+    silently swapped for the resolved repo and serve the wrong tree."""
+    repo = tmp_path / "checkout"
+    (repo / ".git").mkdir(parents=True)
+    env["PRECIS_MCP_REPO"] = str(repo)
+    env["PRECIS_MCP_SRC"] = str(tmp_path / "gone")
+    r = _ensure(env)
+    assert r.returncode == 3, r.stderr
+    assert "PRECIS_MCP_SRC" in r.stderr and "not a git checkout" in r.stderr
+
+
+def test_real_precis_mcp_main_and_src_pass_the_guard(
+    env: dict[str, str], tmp_path: Path
+) -> None:
+    """The overrides still work when they name real checkouts — a
+    worktree-style /src whose .git is a FILE counts (past the guard =
+    stops at the absent rig image, exit 2)."""
+    repo = tmp_path / "checkout"
+    (repo / ".git").mkdir(parents=True)
+    wt = tmp_path / "worktree"
+    wt.mkdir()
+    (wt / ".git").write_text("gitdir: /elsewhere\n", encoding="utf-8")
+    env["PRECIS_MCP_REPO"] = str(repo)
+    env["PRECIS_MCP_MAIN"] = str(repo)
+    env["PRECIS_MCP_SRC"] = str(wt)
+    assert _ensure(env).returncode == 2
+
+
+def test_absent_default_prod_clone_keeps_its_fallback(
+    env: dict[str, str], tmp_path: Path
+) -> None:
+    """Only the DEFAULT ${REPO}-prod clone falls back to the resolved
+    repo — the documented 'no clone -> serve the main checkout'."""
+    repo = tmp_path / "checkout"
+    (repo / ".git").mkdir(parents=True)
+    env["PRECIS_MCP_REPO"] = str(repo)
+    assert _ensure(env).returncode == 2, "no -prod clone must still serve"
+    st = _ensure(env, "--status")
+    assert st.returncode == 0
+    assert f"served src {repo} (from the resolved repo" in st.stdout
+
+
+def test_status_reports_the_requested_src_even_when_missing(
+    env: dict[str, str], tmp_path: Path
+) -> None:
+    """--status is the diagnostic: it never refuses, and it names the
+    requested path, not a substituted one."""
+    repo = tmp_path / "checkout"
+    (repo / ".git").mkdir(parents=True)
+    env["PRECIS_MCP_REPO"] = str(repo)
+    gone = tmp_path / "gone"
+    env["PRECIS_MCP_SRC"] = str(gone)
+    r = _ensure(env, "--status")
+    assert r.returncode == 0, r.stderr
+    assert f"served src {gone} (from PRECIS_MCP_SRC)" in r.stdout
+
+
 # --- the cli python-kind root (gr520147) --------------------------------------
 #
 # The image check exits (2) before the PY_ROOTS assembly runs, so these

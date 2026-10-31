@@ -79,7 +79,12 @@ client ──► 127.0.0.1:8765 ──► <name>-proxy (Caddy, never recreated b
   different physical path refuses before touching docker — a stale second
   copy of the repo once recreated the live backend. `mcp-http-install
   --apply` and `mcp-image-refresh` refuse from a non-canonical tree the same
-  way. Backends and the proxy carry a `precis.invoker` label
+  way. The explicit mount overrides refuse too: a `PRECIS_MCP_MAIN`
+  (`/main`) or `PRECIS_MCP_SRC` (`/src`) naming a path that is not a
+  checkout exits 3 before any docker call — never substituted for the
+  resolved repo, which would silently serve the wrong tree (the `-prod`
+  default alone keeps its "no clone → serve the main checkout" fallback).
+  Backends and the proxy carry a `precis.invoker` label
   (script/pid/ppid/cwd) so the container records who created it, and
   `precis-status` shows the mounted host paths as `src_host`/`main_host`.
 - Before deleting a checkout on this host (a strays/second-copy cleanup),
@@ -92,11 +97,16 @@ client ──► 127.0.0.1:8765 ──► <name>-proxy (Caddy, never recreated b
   standby backend. The guard now refuses instead, but the deleted path
   still leaves every run refusing until the marker is corrected.
 - `slice-tokens/` is the per-slice bearer registry (gr543694): `run_slice`
-  on this host mints one grant file per slice session at submit and
-  deletes it at poll; the backends mount it read-only at
+  on this host mints one grant file per slice session at submit (named
+  `td<todo>j<job>`, so a resubmit never overwrites a live grant), deletes
+  it at poll and at kill, and the next mint sweeps files older than the
+  run_slice wall-clock cap — the server also treats such a file as no
+  grant. The backends mount the dir read-only at
   `/run/precis-slice-tokens` (`PRECIS_MCP_SLICE_TOKEN_DIR`) and accept a
-  `td<id>.<hex>` bearer as that slice — its calls carry the slice's own
-  agentlog/session attribution instead of the shared token's. A host
+  `td<id>.<hex>` bearer as that slice. The grant is ATTRIBUTION, not a
+  security boundary: a slice session runs as the same host user with the
+  same MCP access the shared token has — the bearer only names whose
+  calls they are (its own agentlog/session ids, `meta.slice`). A host
   without the dir mints nothing and slices keep the shared token.
 - The Caddyfile is generated inline by the script (`caddyfile_for`), not a
   template file, because the script is installed as a single file outside the

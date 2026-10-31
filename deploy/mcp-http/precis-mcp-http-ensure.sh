@@ -103,10 +103,20 @@ fi
 # A function so require_canonical_checkout can re-derive it when it adopts a
 # different REPO on a host's first run.
 resolve_src_repo() {
-    SRC_REPO="${PRECIS_MCP_SRC:-${REPO}-prod}"
+    if [ -n "${PRECIS_MCP_SRC:-}" ]; then
+        # An explicit PRECIS_MCP_SRC is kept verbatim even when missing:
+        # substituting the resolved repo would silently serve the wrong
+        # tree (gr516960). The serving path refuses it; --status reports it.
+        SRC_REPO="$PRECIS_MCP_SRC"
+        SRC_REPO_FROM="PRECIS_MCP_SRC"
+        return 0
+    fi
+    SRC_REPO="${REPO}-prod"
+    SRC_REPO_FROM="the default clone ${REPO}-prod"
     # A linked worktree's `.git` is a `gitdir:` pointer file, not a directory.
     if [ ! -f "${SRC_REPO}/.git/HEAD" ] && [ ! -f "${SRC_REPO}/.git" ]; then
         SRC_REPO="$REPO"
+        SRC_REPO_FROM="the resolved repo (no ${REPO}-prod clone)"
     fi
 }
 resolve_src_repo
@@ -366,7 +376,7 @@ status_report() {
     # deleting any checkout on this host (gr516960 ask 4): the canonical
     # marker, this run's resolution, and every backend's /src + /main mounts.
     echo "checkouts: marker ${STATE_DIR}/main-checkout -> $(cat "${STATE_DIR}/main-checkout" 2>/dev/null || echo '(none recorded)')"
-    echo "checkouts: resolved ${REPO} (from ${REPO_FROM}); served src ${SRC_REPO}"
+    echo "checkouts: resolved ${REPO} (from ${REPO_FROM}); served src ${SRC_REPO} (from ${SRC_REPO_FROM})"
     local c
     for c in "$(bname a)" "$(bname b)"; do
         if exists "$c"; then
@@ -503,6 +513,30 @@ fi
 # A non-canonical run must not even move the served clone: the guard goes
 # before follow_prod, under the lock, before any docker call.
 require_canonical_checkout
+
+# An explicit checkout override that is missing (or not a checkout) is a
+# misconfig, never a fallback: substituting REPO would silently serve the
+# wrong tree, and mounting the missing path lets docker create it as an
+# EMPTY dir — the 2026-10-25 crash-loop (gr516960). Refuse with the source
+# named. Only the DEFAULT ${REPO}-prod clone keeps its "no clone -> serve
+# the main checkout" fallback; --status runs before this and still reports.
+if [ -n "${PRECIS_MCP_MAIN:-}" ] && [ ! -d "${PRECIS_MCP_MAIN}/.git" ]; then
+    cat >&2 <<EOF
+precis-mcp: REFUSING: PRECIS_MCP_MAIN is not a git checkout:
+  ${PRECIS_MCP_MAIN}
+next= point PRECIS_MCP_MAIN at a real checkout, or unset it to serve ${REPO}.
+EOF
+    exit 3
+fi
+if [ -n "${PRECIS_MCP_SRC:-}" ] && [ ! -f "${PRECIS_MCP_SRC}/.git/HEAD" ] && [ ! -f "${PRECIS_MCP_SRC}/.git" ]; then
+    cat >&2 <<EOF
+precis-mcp: REFUSING: PRECIS_MCP_SRC is not a git checkout:
+  ${PRECIS_MCP_SRC}
+  the served tree must be a checkout or a linked worktree (whose .git is a file).
+next= point PRECIS_MCP_SRC at the served clone/worktree, or unset it to serve ${REPO}-prod.
+EOF
+    exit 3
+fi
 
 # Keep the served clone on origin/prod. scripts/deploy moves it only on the
 # machine that runs the deploy, so a second machine hosting this server
@@ -654,11 +688,17 @@ POOL_MAX="${PRECIS_DB_POOL_MAX_SIZE:-16}"
 # /roots/<alias>; a change alters the container spec, so the next run
 # recreates (blue-green) on its own.
 # What /main mounts: REPO (resolved at the top, ${STATE_DIR}/main-checkout
-# included); PRECIS_MCP_MAIN overrides it for a test rig.
+# included); PRECIS_MCP_MAIN overrides it for a test rig. A missing one is
+# already refused above; this recheck only catches a checkout deleted
+# mid-run — refuse rather than let docker mount an empty dir (gr516960).
 MAIN_CHECKOUT="${PRECIS_MCP_MAIN:-$REPO}"
 if [ ! -d "${MAIN_CHECKOUT}/.git" ]; then
-    note "PRECIS_MCP_MAIN: '${MAIN_CHECKOUT}' is not a git checkout; using ${REPO}"
-    MAIN_CHECKOUT="$REPO"
+    cat >&2 <<EOF
+precis-mcp: REFUSING: the /main checkout is not a git checkout:
+  ${MAIN_CHECKOUT}
+next= re-run once the checkout exists again; it was valid when this run started.
+EOF
+    exit 3
 fi
 
 PY_ROOTS="precis:/app,main:/main"
@@ -878,6 +918,10 @@ ENVS=(
     # The slice-token grant dir run_slice mints into (gr543694); a constant
     # mount path, so the spec hash changes exactly once, at this upgrade.
     -e PRECIS_MCP_SLICE_TOKEN_DIR=/run/precis-slice-tokens
+    # Grants expire at the run_slice wall-clock cap (mtime); exporting the
+    # same knob keeps the server's TTL identical to the worker's
+    # (precis.slice_tokens.grant_ttl_s / run_slice.wall_seconds).
+    -e "PRECIS_RUN_SLICE_WALL_S=${PRECIS_RUN_SLICE_WALL_S:-14400}"
     ${WT_ENVS[@]+"${WT_ENVS[@]}"}
     ${TOPO_ENVS[@]+"${TOPO_ENVS[@]}"}
 )

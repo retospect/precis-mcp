@@ -3,6 +3,8 @@ and the run-context stamps (:mod:`precis.slice_tokens`)."""
 
 from __future__ import annotations
 
+import os
+import time
 from pathlib import Path
 
 import pytest
@@ -60,9 +62,83 @@ def test_mint_without_an_agentlog(tmp_path: Path) -> None:
 
 
 def test_mint_rejects_a_non_td_slice_id(tmp_path: Path) -> None:
-    """The id is a filename: anything but td<digits> never reaches the fs."""
+    """The id is a filename: anything but td<digits>[ja<digits>] never
+    reaches the fs."""
     with pytest.raises(ValueError, match="td<digits>"):
         slice_tokens.mint(tmp_path, "../escape")
+    with pytest.raises(ValueError, match="td<digits>"):
+        slice_tokens.mint(tmp_path, "td42x1")
+
+
+def test_job_qualified_names_validate_and_stay_strict(tmp_path: Path) -> None:
+    """The grant names its run: td<todo>j<job> / td<todo>a<log> — and the
+    bearer regex accepts nothing else, so a malformed locator never
+    reaches the file lookup."""
+    token = slice_tokens.mint(tmp_path, "td42j900")
+    assert slice_tokens.grant(tmp_path, f"Bearer {token}") == ("td42j900", None)
+    hexpart = "0" * 64
+    for bad in ("td42x1", "td42.j900", "tdj42", "td42j", "j42", "td42j-1", "tD42"):
+        assert slice_tokens.grant(tmp_path, f"Bearer {bad}.{hexpart}") is None
+
+
+def test_grant_rejects_a_file_older_than_the_wall_clock_cap(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The TTL is the run_slice wall-clock cap judged by mtime: a worker
+    that dies before its revoke leaves the file, but it stops granting."""
+    monkeypatch.setenv("PRECIS_RUN_SLICE_WALL_S", "3600")
+    token = slice_tokens.mint(tmp_path, "td42")
+    assert slice_tokens.grant(tmp_path, f"Bearer {token}") == ("td42", None)
+    stale = time.time() - 3700
+    os.utime(tmp_path / "td42", (stale, stale))
+    assert slice_tokens.grant(tmp_path, f"Bearer {token}") is None
+
+
+def test_grant_ttl_reads_the_wall_clock_env(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Worker and server share the one knob; a missing or unparsable
+    value falls back to the run_slice default cap."""
+    monkeypatch.delenv("PRECIS_RUN_SLICE_WALL_S", raising=False)
+    assert slice_tokens.grant_ttl_s() == 4 * 3600
+    monkeypatch.setenv("PRECIS_RUN_SLICE_WALL_S", "600")
+    assert slice_tokens.grant_ttl_s() == 600.0
+    monkeypatch.setenv("PRECIS_RUN_SLICE_WALL_S", "junk")
+    assert slice_tokens.grant_ttl_s() == 4 * 3600
+
+
+def test_mint_sweeps_stale_grants_and_tmp_files(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The writer-side reaper: each mint removes grant and mint-temp
+    files past the TTL — the revoke never ran for them — while fresh
+    files and foreign names stay."""
+    monkeypatch.setenv("PRECIS_RUN_SLICE_WALL_S", "60")
+    stale = time.time() - 3600
+    for name in ("td1", "td2j5", ".td3.99.tmp"):
+        p = tmp_path / name
+        p.write_text("x\n", encoding="utf-8")
+        os.utime(p, (stale, stale))
+    keep = tmp_path / "unrelated"
+    keep.write_text("x\n", encoding="utf-8")
+    os.utime(keep, (stale, stale))
+    fresh = slice_tokens.mint(tmp_path, "td9")  # mints while sweeping
+    assert not (tmp_path / "td1").exists()
+    assert not (tmp_path / "td2j5").exists()
+    assert not (tmp_path / ".td3.99.tmp").exists()
+    assert (tmp_path / "td9").exists() and keep.exists()
+    assert slice_tokens.grant(tmp_path, f"Bearer {fresh}") is not None
+
+
+def test_grant_file_with_non_ascii_content_is_no_grant(tmp_path: Path) -> None:
+    """A corrupt grant must 401, never 500: content that does not decode
+    or compare cleanly (compare_digest raises TypeError on non-ASCII) is
+    simply no grant."""
+    token = slice_tokens.mint(tmp_path, "td42")
+    (tmp_path / "td42").write_text("tökën\n", encoding="utf-8")
+    assert slice_tokens.grant(tmp_path, f"Bearer {token}") is None
+    (tmp_path / "td42").write_bytes(b"\xff\xfe binary\n")
+    assert slice_tokens.grant(tmp_path, f"Bearer {token}") is None
 
 
 def test_stamp_meta_only_inside_a_slice_context() -> None:

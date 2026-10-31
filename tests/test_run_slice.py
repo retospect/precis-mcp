@@ -710,11 +710,14 @@ def test_submit_mints_a_per_slice_token_and_poll_revokes_it(
     [(_argv, kw)] = seams["launch"]
     token = kw["env"]["PRECIS_MCP_TOKEN"]
     assert token != "shared-token"
-    assert re.fullmatch(r"td42\.[0-9a-f]{64}", token)
-    grant_file = registry / "td42"
+    # The grant names the JOB (ctx.ref_id 900): two sessions for one todo
+    # never overwrite each other's file.
+    assert re.fullmatch(r"td42j900\.[0-9a-f]{64}", token)
+    grant_file = registry / "td42j900"
     assert grant_file.read_text(encoding="utf-8").split()[0] == token
     assert handle["slice_token_dir"] == str(registry)
-    assert "mcp token: slice td42" in ctx.chunks[-1][1]
+    assert handle["slice_token_name"] == "td42j900"
+    assert "mcp token: slice td42j900" in ctx.chunks[-1][1]
 
     _finish(handle, 0, json.dumps({"is_error": False, "result": "done"}) + "\n")
     pctx = _poll_ctx(store, ctx)
@@ -737,7 +740,50 @@ def test_launch_failure_revokes_the_slice_token(
     store.add_todo(42, "t")
     ctx, handle = _submit(store, seams)
     assert handle is None and ctx.status == "failed"
-    assert not (registry / "td42").exists()
+    assert not (registry / "td42j900").exists()
+
+
+def test_resubmit_mints_a_job_qualified_grant_not_an_overwrite(
+    seams: dict[str, Any], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Two jobs can run sessions for one todo at once: the grant file
+    names the job, so the resubmit's mint does not clobber the live
+    grant — and the older job's revoke does not delete the new one."""
+    registry = tmp_path / "slice-tokens"
+    registry.mkdir()
+    monkeypatch.setenv("PRECIS_MCP_SLICE_TOKEN_DIR", str(registry))
+    store = _Store()
+    store.add_todo(42, "t")
+    ctx1, handle1 = _submit(store, seams)
+    ctx2 = _Ctx(store, {"todo_id": 42})
+    ctx2.ref_id = 901
+    handle2 = run_slice.submit(ctx2, None)
+    first, second = registry / "td42j900", registry / "td42j901"
+    assert first.exists() and second.exists()
+    assert handle2["slice_token_name"] == "td42j901"
+
+    # the older job finishing revokes only its own grant
+    _finish(handle1, 0, json.dumps({"is_error": False, "result": "done"}))
+    assert run_slice.poll(_poll_ctx(store, ctx1), handle1) is True
+    assert not first.exists() and second.exists()
+
+
+def test_kill_revokes_the_slice_grant(
+    seams: dict[str, Any], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A sweep kill ends the job without another poll — kill() itself
+    deletes the grant file (and still signals the process group)."""
+    registry = tmp_path / "slice-tokens"
+    registry.mkdir()
+    monkeypatch.setenv("PRECIS_MCP_SLICE_TOKEN_DIR", str(registry))
+    store = _Store()
+    store.add_todo(42, "t")
+    ctx, handle = _submit(store, seams)
+    grant_file = registry / "td42j900"
+    assert grant_file.exists()
+    run_slice.kill(ctx, handle)
+    assert seams["signals"] == [4242]
+    assert not grant_file.exists()
 
 
 def _finish(handle: dict[str, Any], exit_code: int | None, log: str) -> None:
