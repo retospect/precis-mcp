@@ -1,0 +1,309 @@
+#!/usr/bin/env -S uv run --no-project --python >=3.12 python
+"""Reap stale, 0-byte ``index.lock`` files a killed git left wedging a tree.
+
+    scripts/reap-index-locks [--apply] [--dry-run] [--for-hook]
+
+gr541144: a repo hook killed at its 1-minute timeout mid-`git status` (and
+Devin lanes running repo hooks the same way) can die between open() and
+write() on index.lock, leaving a 0-byte file no process holds. Every later
+git write in that worktree then fails "Unable to create '.../index.lock':
+File exists." until a human removes it — three times in a week before this.
+cb448644c and 9b11bb0b1 removed the known writers (GIT_OPTIONAL_LOCKS=0
+reads); this is the safety net for whatever is left.
+
+REPORT-ONLY BY DEFAULT. A wrong reap races a live git write, so the sweep
+only PRINTS "would reap <path> (age N m, 0 B)" for each candidate that
+passes every check below — it deletes solely under an explicit ``--apply``
+(``--dry-run`` is still accepted and means the same as the default), and no
+caller passes it: not the SessionStart hook, not scripts/reap-worktrees in
+either mode. Removal is a deliberate human act; the report line is the
+prompt. Called by scripts/reap-worktrees in both --for-hook and full modes;
+nothing in .claude/settings.json names it directly. Cost shape mirrors the
+other reapers: one glob + stat per lock — lsof and ps run only when a
+candidate is already 0-byte AND old, and there are no per-tree git calls
+(the single `git worktree list` runs only for a stale PRIMARY lock).
+--for-hook buys silence only on the keep paths: a "would reap" line still
+prints, because report-only means it is the only signal the wedge exists.
+
+A lock is reported (and reaped under --apply) only when ALL of these hold —
+every "can't prove it" fails closed toward keeping the file, because a
+missed reap is the status quo while a wrong reap races a live writer:
+
+  1. size is exactly 0 bytes — a live writer's lock carries its payload;
+  2. mtime older than STALE_SECONDS — a 0-byte lock a live git still wants
+     is filled within a second of creation, so old-and-empty can only be a
+     killed writer's;
+  3. no live process holds it open — lsof on macOS and Linux; lsof missing
+     means nothing can be proven, so candidates are REPORTED as kept,
+     never reaped;
+  4. no git process has its cwd inside that worktree — `ps` for this user's
+     git/git-* processes, cwd read via /proc/<pid>/cwd with an lsof
+     fallback (the same read scripts/lib/session-lock.sh's
+     other_session_in makes). Liveness is fail-safe: a pid counts as dead
+     ONLY on positive evidence — it is a zombie (state Z/X in
+     /proc/<pid>/stat on Linux, `ps -o stat=` where /proc is absent) or
+     the pid is gone. An alive git whose cwd is unreadable is "unknown" →
+     every candidate is kept (gr541144: on CI runners even a live git's
+     cwd can go unreadable, and a reaped live lock is the incident this
+     file exists to prevent). A zombie/dead git is skipped, not unknown —
+     it has no cwd and holds no lock. Worktree paths match on whole path
+     components: a cwd equal to the worktree root or below it, never a
+     sibling that shares a prefix.
+
+Only ``index.lock`` is ever touched — never HEAD.lock, refs locks, or
+packed-refs.lock, which a dead-writer sweep has no business judging.
+PRECIS_NO_AUTOREAP=1 → no-op, same as the sibling reapers.
+"""
+
+import glob
+import os
+import shutil
+import subprocess
+import sys
+import time
+
+#: Reto ruling (gr541144): 10 minutes. A 0-byte index.lock this old is
+#: never a live writer's — git fills a real lock within a second of
+#: creating it. Shorter races slow hosts mid-write; longer leaves the tree
+#: wedged past the point anyone notices.
+STALE_SECONDS = 600
+
+_HERE = os.path.dirname(os.path.abspath(__file__))
+
+
+def _run(cmd):
+    return subprocess.run(
+        cmd, cwd=_HERE, capture_output=True, text=True, encoding="utf-8"
+    )
+
+
+def _common_dir():
+    r = _run(["git", "rev-parse", "--path-format=absolute", "--git-common-dir"])
+    return r.stdout.strip() if r.returncode == 0 else ""
+
+
+def _candidates(common):
+    """Every index.lock the shared git dir can hold: the primary's own plus
+    each linked worktree's (worktrees/<name>/index.lock). -> (lock, name,
+    marker); marker is "primary" or the worktree's admin dir, resolved to a
+    checkout path lazily by _worktree_path."""
+    out = []
+    prim = os.path.join(common, "index.lock")
+    if os.path.isfile(prim):
+        out.append((prim, "primary", "primary"))
+    for admin in sorted(glob.glob(os.path.join(common, "worktrees", "*"))):
+        lock = os.path.join(admin, "index.lock")
+        if os.path.isfile(lock):
+            out.append((lock, os.path.basename(admin), admin))
+    return out
+
+
+def _stale(lock, now):
+    """Seconds-old for a 0-byte, STALE_SECONDS-old lock; None otherwise
+    (missing, non-empty, fresh, unreadable — every one a keep)."""
+    try:
+        st = os.stat(lock)
+    except OSError:
+        return None
+    if st.st_size != 0:
+        return None
+    age = now - st.st_mtime
+    return age if age >= STALE_SECONDS else None
+
+
+def _held_open(lock):
+    """True: a live process holds it open; False: provably none; None: can't
+    tell (lsof error) — the caller keeps on either non-False."""
+    r = _run(["lsof", "-t", "--", lock])
+    if r.stderr.strip():
+        return None
+    return bool(r.stdout.strip())
+
+
+def _pid_gone(pid):
+    """The pid no longer exists — the strongest positive evidence a process
+    is dead. kill(0) raises ESRCH only for a pid with no process behind it;
+    EPERM (exists, not ours) and anything else mean it is still there."""
+    try:
+        os.kill(int(pid), 0)
+    except ProcessLookupError:
+        return True
+    except (OSError, ValueError):
+        return False
+    return False
+
+
+def _is_zombie(pid):
+    """Positive evidence of a zombie: state Z/X in /proc/<pid>/stat on
+    Linux, `ps -o stat=` where /proc is absent (macOS). Anything unreadable
+    is False — "can't tell" must never count as dead."""
+    try:
+        with open(f"/proc/{pid}/stat", encoding="utf-8") as f:
+            stat = f.read()
+    except OSError:
+        stat = ""
+    if stat:
+        # comm can contain spaces/parens — the state field is the first
+        # word after the LAST ")".
+        fields = stat.rsplit(")", 1)[1].split()
+        return bool(fields) and fields[0] in ("Z", "X")
+    r = _run(["ps", "-o", "stat=", "-p", str(pid)])
+    state = r.stdout.strip()
+    return bool(state) and state[0] in "ZX"
+
+
+def _proc_dead(pid):
+    """True ONLY on positive evidence the pid holds nothing: gone, or a
+    zombie. Anything uncertain is False — a live process that merely won't
+    answer our reads still vetoes the sweep (gr541144)."""
+    return _pid_gone(pid) or _is_zombie(pid)
+
+
+def _proc_cwd(pid):
+    """A process's cwd: /proc/<pid>/cwd first (Linux), lsof -d cwd as the
+    fallback — the same read scripts/lib/session-lock.sh's
+    other_session_in makes. None = unreadable."""
+    try:
+        return os.readlink(f"/proc/{pid}/cwd")
+    except OSError:
+        pass
+    r = _run(["lsof", "-a", "-p", pid, "-d", "cwd", "-Fn"])
+    for ln in r.stdout.splitlines():
+        if ln.startswith("n"):
+            return ln[1:]
+    return None
+
+
+def _git_cwds():
+    """realpath'd cwds of this user's git/git-* processes; None when the
+    process table can't be read or a LIVE git's cwd can't be resolved —
+    "unknown", which the caller treats as keep-everything. A git that died
+    between the ps snapshot and the read — or sits unreaped as a zombie —
+    is not a holder; every other unreadable case vetoes."""
+    r = _run(["ps", "-U", str(os.getuid()), "-o", "pid=,comm="])
+    if r.returncode != 0:
+        return None
+    cwds = []
+    for ln in r.stdout.splitlines():
+        parts = ln.split(None, 1)
+        if len(parts) != 2:
+            continue
+        pid, comm = parts[0].strip(), parts[1].strip()
+        base = os.path.basename(comm)
+        if base != "git" and not base.startswith("git-"):
+            continue
+        cwd = _proc_cwd(pid)
+        if cwd is None:
+            if _proc_dead(pid):
+                continue  # provably holds nothing — no veto
+            return None  # alive, cwd unknowable → keep everything
+        cwds.append(os.path.realpath(cwd))
+    return cwds
+
+
+def _worktree_path(marker):
+    """The checkout a lock belongs to. "primary" → the main worktree (one
+    `git worktree list` — the only git call the sweep can make, and it runs
+    only when a stale PRIMARY lock survived this far); an admin dir → the
+    dirname of the checkout's .git file recorded in `gitdir`. None =
+    unmappable → the caller keeps."""
+    if marker == "primary":
+        r = _run(["git", "worktree", "list", "--porcelain"])
+        for ln in r.stdout.splitlines():
+            if ln.startswith("worktree "):
+                return ln[len("worktree ") :]
+        return None
+    try:
+        with open(os.path.join(marker, "gitdir"), encoding="utf-8") as f:
+            gitdir = f.read().strip()
+    except OSError:
+        return None
+    return os.path.dirname(gitdir) if gitdir else None
+
+
+def _in_tree(cwd, wt_path):
+    """cwd inside the worktree, matched on whole path components: equal to
+    the worktree root or below it. A sibling sharing a string prefix
+    (/repo/A vs /repo/AB) never counts."""
+    real = os.path.realpath(wt_path)
+    return cwd == real or cwd.startswith(real + os.sep)
+
+
+def keep(for_hook, detail, reason):
+    """A kept candidate reports only in the human-facing lane — under
+    --for-hook a keep is the common case and SessionStart stays silent."""
+    if not for_hook:
+        print(f"reap-index-locks: kept stale index.lock: {detail} — {reason}")
+
+
+def main(argv):
+    apply = "--apply" in argv  # --dry-run is accepted: it names the default
+    for_hook = "--for-hook" in argv
+    if os.environ.get("PRECIS_NO_AUTOREAP"):
+        return 0
+    common = _common_dir()
+    if not common:
+        return 0
+    now = time.time()
+    stale = []  # (name, lock, marker, age-seconds)
+    for lock, name, marker in _candidates(common):
+        age = _stale(lock, now)
+        if age is not None:
+            stale.append((name, lock, marker, age))
+    if not stale:
+        if not for_hook:
+            print("reap-index-locks: nothing to reap")
+        return 0
+
+    # lsof is the only proof a lock is unheld (condition 3). Missing → the
+    # sweep can't prove anything, so it reports and keeps every candidate —
+    # printed even under --for-hook: with no lsof the sweep can never act
+    # again, and silence would hide that permanently.
+    if shutil.which("lsof") is None:
+        names = ", ".join(n for n, *_ in stale)
+        print(
+            f"reap-index-locks: lsof not found — {len(stale)} stale "
+            f"index.lock candidate(s) kept: {names}"
+        )
+        return 0
+
+    cwds = _git_cwds()  # None: a live git's cwd is unknown → keep all
+    for name, lock, marker, age in stale:
+        detail = f"{lock} (age {int(age // 60)}m, 0 B)"
+        held = _held_open(lock)
+        if held is not False:
+            keep(for_hook, detail, "held open" if held else "open state unreadable")
+            continue
+        if cwds is None:
+            keep(for_hook, detail, "a git process's cwd is unreadable")
+            continue
+        if cwds:
+            wt = _worktree_path(marker)
+            if wt is None:
+                keep(for_hook, detail, "can't map the lock to its worktree")
+                continue
+            if any(_in_tree(c, wt) for c in cwds):
+                keep(for_hook, detail, "a git process is running in the worktree")
+                continue
+        if not apply:
+            # Report-only (the default; --dry-run names the same lane): the
+            # line still prints under --for-hook — it is the only signal a
+            # wedged tree exists, and nothing deletes without --apply.
+            print(f"reap-index-locks: would reap {detail}")
+            continue
+        # Re-verify at the unlink: a writer could have appeared since the
+        # scan — the lock must still be 0-byte AND old or the race is lost.
+        if _stale(lock, time.time()) is None:
+            keep(for_hook, detail, "changed since the scan")
+            continue
+        try:
+            os.unlink(lock)
+        except OSError:
+            keep(for_hook, detail, "unlink failed")
+            continue
+        print(f"reaped stale index.lock: {detail}")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))
