@@ -123,6 +123,11 @@ next section.
 | `structure_propose` | `claude_inproc` | Turn an instruction into proposed structure ops (tool-less claude, propose-only — a human applies them) |
 | `reading_brief`     | `claude_inproc` | Compose the morning reading-brief cast as a dated draft (see `precis-audio-help`) |
 | `remarkable_send`   | `claude_inproc` | Export a draft in reMarkable mode and upload the PDF to the tablet — siblings `remarkable_papers_send` (cited-source PDFs) and `remarkable_reading_send` (per-source reading edition) |
+
+## Fleet and dark-factory job_types — queue drains, slices, plan dispatch
+
+| `job_type`          | Executor        | What it does                                  |
+|---------------------|-----------------|-----------------------------------------------|
 | `embed_batch`       | `job_inproc`    | Bounded work order draining the derived embed queue — minted by the `materialize` cadence above the backlog high-water mark |
 | `derived_drain`     | `job_inproc`    | Bounded work order draining a SMALL-tier derived LLM queue (summarize/classify) — cloud-only lane |
 
