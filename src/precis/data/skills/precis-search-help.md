@@ -666,7 +666,8 @@ search(kind='todo', tags=['waiting-for:reto'], args={'sort': 'recency'})
 ```
 
 Queryless lifecycle browse (`todo`, `gripe`, `quest`, `alert`) defaults
-to live rows and reports terminal entries hidden by your scope — pass
+to live rows and reports the closed (and, for gripes, parked) entries
+hidden by your scope — pass
 `status='*'` or an explicit lifecycle tag to include history. Dormant
 quests stay live, abandoned ones don't; alerts read history via
 `alert-state:` (`status='resolved'`).

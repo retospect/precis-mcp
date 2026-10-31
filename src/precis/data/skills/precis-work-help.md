@@ -249,6 +249,7 @@ changes:
 | `auto_verify` | fixed on main; the deploy check closes it once the sha is on prod |
 | `user_verify` | fixed on main; a human checks it via the per-deploy ask todo |
 | `needs_spec` | ill-specified; parked until a docs/backlog spec names it |
+| `parked` | waiting on a `meta.until` condition; `gripe_parked` wakes it to `open` |
 | `done` | fixed and verified (leaves the view) |
 | `wontfix` | decided against (leaves the view) |
 

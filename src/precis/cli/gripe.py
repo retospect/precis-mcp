@@ -281,14 +281,14 @@ def run(args: argparse.Namespace) -> None:
 
 def _print_summary(args: argparse.Namespace) -> None:
     from precis.config import load_config
-    from precis.handlers.gripe import _TERMINAL_STATUS_TAGS, age_summary
+    from precis.handlers.gripe import _OPEN_EXCLUDED_TAGS, age_summary
     from precis.store import Store
 
     store = Store.connect(resolve_dsn(args.database_url, cfg=load_config()))
     try:
         # "open" is the live cohort — every non-terminal STATUS, the
         # same set get(kind='gripe', id='/open') lists (gr530682).
-        line = age_summary(store, [], exclude_tags=sorted(_TERMINAL_STATUS_TAGS))
+        line = age_summary(store, [], exclude_tags=sorted(_OPEN_EXCLUDED_TAGS))
         print(f"gripes: {line} — get(kind='gripe', id='/open')")
     finally:
         store.close()
@@ -445,6 +445,22 @@ def verify_done(
         f"{label} {' '.join(items)}" for label, items in groups.items() if items
     )
     return line or "nothing to do"
+
+
+def unpark_gripe(store: Any, gid: int, text: str) -> bool:
+    """Wake a parked gripe (gr543711): comment ``text`` and flip it back
+    to ``STATUS:open`` through the handler (the tag leg clears
+    ``meta.until``). Returns False when the put refused."""
+    from precis.dispatch import Hub
+    from precis.errors import PrecisError
+    from precis.handlers.gripe import GripeHandler
+
+    handler = GripeHandler(hub=Hub(store=store))
+    try:
+        handler.put(id=gid, text=text, tags=["STATUS:open"])
+    except PrecisError:
+        return False
+    return True
 
 
 def verify_back(store: Any, text: str, ids: list[int]) -> str:

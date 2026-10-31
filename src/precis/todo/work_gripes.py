@@ -56,6 +56,7 @@ _STAGE_ORDER = (
     "auto_verify",
     "user_verify",
     "needs_spec",
+    "parked",
 )
 _STAGE_RANK = {s: i for i, s in enumerate(_STAGE_ORDER)}
 
@@ -103,10 +104,11 @@ def thread_slugs(tags: list[str]) -> tuple[str, ...]:
 
 
 def _terminal_tags() -> list[str]:
-    # Lazy: the numeric-ref base pulls the handler stack in.
-    from precis.handlers._numeric_ref import _BROWSE_TERMINALS
+    # Lazy: the numeric-ref base pulls the handler stack in. Parked is
+    # off the open queue too (gr543711) — the live-excluded set.
+    from precis.handlers._numeric_ref import _live_excluded_tags
 
-    return sorted(_BROWSE_TERMINALS["gripe"])
+    return sorted(_live_excluded_tags("gripe"))
 
 
 def _open_gripes(store: Store, *, tags: list[str] | None = None) -> list[Ref]:

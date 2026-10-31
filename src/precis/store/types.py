@@ -1170,6 +1170,10 @@ _KIND_STATUS_VALUES: dict[str, frozenset[str]] = {
             # verifier closes it then) or a human sends it back to
             # ``open``.
             "needs_spec",
+            # ``parked`` (gr543711): waits on a wake condition in
+            # ``meta.until``; the ``gripe_parked`` cadence returns it to
+            # ``open`` when met. Non-terminal but off every open queue.
+            "parked",
             "done",
             "wontfix",
         }

@@ -315,6 +315,15 @@ REGISTRY: dict[str, SettingSpec] = {
             "Unset: devin-ai-integration[bot].",
         ),
         SettingSpec(
+            key="gripe.unpark_interval_hours",
+            type="float",
+            env_var="PRECIS_GRIPE_UNPARK_INTERVAL_HOURS",
+            default=48.0,
+            doc="Hours between gripe_parked wake-check passes "
+            "(precis.workers.gripe_parked): how often each parked gripe's "
+            "meta.until condition is re-evaluated. Read live at claim time.",
+        ),
+        SettingSpec(
             key="contact.edgar_user_agent",
             type="str",
             env_var="PRECIS_EDGAR_USER_AGENT",

@@ -150,6 +150,25 @@ _RESOLVED_REQUIRED_TAGS = _TERMINAL_STATUS_TAGS | {
 _CLAIMABLE_STATUSES = frozenset({"open", "triaged", "ready_for_fix"})
 _COMMENT_KIND = "gripe_comment"
 
+#: ``STATUS:parked`` (gr543711): the gripe waits on a wake condition in
+#: ``meta.until`` ({type, value, note}); the ``gripe_parked`` cadence
+#: evaluates it and returns met gripes to ``open``. Non-terminal, but off
+#: every open queue — /open, the live cohort, the open-count lines and
+#: the fix-loop prefilters all subtract :data:`_OPEN_EXCLUDED_TAGS`.
+PARKED_STATUS_TAG = "STATUS:parked"
+#: The tag set "still open" subtracts: terminals plus parked. Search and
+#: browse reach the same set through
+#: :func:`precis.handlers._numeric_ref._live_excluded_tags` — keep equal.
+_OPEN_EXCLUDED_TAGS = _TERMINAL_STATUS_TAGS | {PARKED_STATUS_TAG}
+#: ``put`` ``args={'until': …}`` / ``tag`` ``meta={'until': …}`` carrier
+#: for the parked wake condition — plumbed from the public verb into the
+#: tag leg via request-scoped slots (the ``_PUT_PRIO`` pattern); a shared
+#: handler instance serves concurrent calls, so nothing goes on ``self``.
+_PUT_UNTIL: RequestState[Any] = RequestState("precis_gripe_put_until", None)
+_PARK_UNTIL: RequestState[dict[str, Any] | None] = RequestState(
+    "precis_gripe_park_until", None
+)
+
 #: ``get`` view spellings with one reading on this kind (gr494831 step 2;
 #: prod 2026-10-15..17 sent view='full' x6, 'default' x1). ``'full'`` is a
 #: first-class view since gr499040 (the complete read — body + every
@@ -366,7 +385,7 @@ def age_summary(
         if len(statuses) == 1
         else (
             "open"
-            if exclude_tags and set(exclude_tags) == _TERMINAL_STATUS_TAGS
+            if exclude_tags and set(exclude_tags) == _OPEN_EXCLUDED_TAGS
             else "live"
             if exclude_tags
             else "listed"
@@ -414,7 +433,7 @@ class GripeHandler(NumericRefHandler):
             "create. Body + append-only comment timeline live as "
             "chunks. Status tracked via the STATUS: tag (one of: open, "
             "triaged, fixing, ready_for_fix, in_review, verify, "
-            "auto_verify, user_verify, needs_spec, done, wontfix)."
+            "auto_verify, user_verify, needs_spec, parked, done, wontfix)."
         ),
         supports_get=True,
         supports_search=True,
@@ -486,22 +505,29 @@ class GripeHandler(NumericRefHandler):
         # via the explicit tag filter:
         # search(kind='gripe', tags=['STATUS:in_review']).
         # /queue and /batch are the gripe-fix loop views (gr519361),
-        # rendered in get() before the base list-view route.
-        return ("recent", "open", "wontfix", "queue", "batch")
+        # rendered in get() before the base list-view route. /parked is
+        # the parked shelf (gr543711): each row's until condition and
+        # parked age.
+        return ("recent", "open", "wontfix", "queue", "batch", "parked")
 
-    paged_list_views: ClassVar[frozenset[str]] = frozenset({"open", "wontfix"})
+    paged_list_views: ClassVar[frozenset[str]] = frozenset(
+        {"open", "wontfix", "parked"}
+    )
 
     def _list_view(
         self, view: str, *, page: int = 1, page_size: int | None = None
     ) -> Response | None:
         size = 20 if page_size is None else page_size
         offset = (page - 1) * size
+        if view == "parked":
+            return self._parked_list_view(page=page, size=size)
         if view not in self.paged_list_views:
             return super()._list_view(view)
         # /open selects by exclusion, not by pinning STATUS:open — the
-        # live cohort is every non-terminal status (gr530682).
+        # live cohort is every non-terminal status (gr530682), and parked
+        # is off it too (gr543711).
         tags = [] if view == "open" else ["STATUS:wontfix"]
-        exclude = sorted(_TERMINAL_STATUS_TAGS) if view == "open" else None
+        exclude = sorted(_OPEN_EXCLUDED_TAGS) if view == "open" else None
         # The next-page call must repeat a non-default page_size or the
         # continuation silently shrinks back to 20 rows.
         more_args = "'page': {next}"
@@ -557,6 +583,54 @@ class GripeHandler(NumericRefHandler):
             rid: f"unpicked {d}d"
             for rid, d in gf.stale_unpicked(self.store, refs).items()
         }
+
+    def _parked_list_view(self, *, page: int, size: int) -> Response:
+        """``id='/parked'``: parked gripes with their wake condition and
+        how long they've been parked (gr543711)."""
+        from precis.utils.handle_registry import try_format
+        from precis.utils.parked import describe_until
+
+        total = self.store.count_refs(kind=self.kind, tags=[PARKED_STATUS_TAG])
+        refs = self.store.list_refs(
+            kind=self.kind,
+            tags=[PARKED_STATUS_TAG],
+            order_by="updated_asc",
+            limit=size,
+            offset=(page - 1) * size,
+        )
+        now = datetime.now(UTC)
+        lines = [
+            f"# {total} parked {self._sense()} entr"
+            f"{'y' if total == 1 else 'ies'} (until + parked age)"
+        ]
+        for r in refs:
+            until = (r.meta or {}).get("until") or {}
+            days: int | None = None
+            raw_at = until.get("parked_at")
+            if isinstance(raw_at, str):
+                try:
+                    days = (now - datetime.fromisoformat(raw_at)).days
+                except ValueError:
+                    days = None
+            handle = try_format(self.kind, r.id) or str(r.id)
+            first = (r.title or "").split("\n", 1)[0].strip()[:80]
+            age = f"{days}d" if days is not None else "?"
+            lines.append(
+                f"{handle} · parked {age} · until {describe_until(until)}"
+                + (f" · {first}" if first else "")
+            )
+        if not refs:
+            lines.append("no parked gripes")
+        if total > page * size:
+            lines.append(
+                f"next page: get(kind='gripe', id='/parked', "
+                f"args={{'page': {page + 1}, 'page_size': {size}}})"
+            )
+        lines.append(
+            "unpark: tag(kind='gripe', id=<id>, add=['STATUS:open']) — "
+            "the gripe_parked cadence flips met conditions on its own"
+        )
+        return Response(body="\n".join(lines), result_count=len(refs))
 
     def _fold_project_arg(
         self,
@@ -617,6 +691,10 @@ class GripeHandler(NumericRefHandler):
         # which triage may correct (a carried tag is filer-set and
         # never overridden).
         project: str | None = None,
+        # ``args={'until': …}`` (dict or shorthand) — the STATUS:parked
+        # wake condition (gr543711); carried to the tag leg / create via
+        # ``_PUT_UNTIL``.
+        until: dict[str, Any] | str | None = None,
         **_kw: Any,
     ) -> Response:
         # ``text=`` + ``body=`` join as first line + details (the todo
@@ -662,6 +740,17 @@ class GripeHandler(NumericRefHandler):
                     ),
                 )
             project_tag = f"{_PROJECT_TAG_PREFIX}{slug}"
+        if until is not None and PARKED_STATUS_TAG not in {
+            t.strip() for t in (tags or ())
+        }:
+            raise BadInput(
+                "args={'until': …} pairs only with tags=['STATUS:parked'] — "
+                "it is the parked wake condition, stored as meta.until",
+                next=(
+                    f"put(kind={self.kind!r}, id=<id>, tags=['STATUS:parked'], "
+                    "args={'until': <condition>})"
+                ),
+            )
         # id-presence is what actually dispatches create-vs-comment; an
         # explicit mode= is accepted only as a redundant-but-unambiguous
         # confirmation of that ('create' <-> no id=, 'comment' <-> id=<n>)
@@ -716,16 +805,17 @@ class GripeHandler(NumericRefHandler):
                         id, link=link, unlink=unlink, rel=rel, tags=tags, untags=untags
                     )
                 )
-                resp = self._append_then_link(
-                    None,
-                    id=id,
-                    link=link,
-                    unlink=unlink,
-                    rel=rel,
-                    tags=tags,
-                    untags=untags,
-                    what="link/tag edit",
-                )
+                with _PUT_UNTIL.bind(until):
+                    resp = self._append_then_link(
+                        None,
+                        id=id,
+                        link=link,
+                        unlink=unlink,
+                        rel=rel,
+                        tags=tags,
+                        untags=untags,
+                        what="link/tag edit",
+                    )
                 return interpreted(resp, readings)
             if text is None or not text.strip():
                 raise BadInput(
@@ -736,16 +826,17 @@ class GripeHandler(NumericRefHandler):
             # edge/tag edit in one transaction (comment-then-close is one
             # put, not reject + re-put + tag(); gr484232). The tag edit is
             # this kind's own tag() — the same STATUS guards apply.
-            resp = self._append_then_link(
-                lambda: self._append_comment(id=id, text=text),
-                id=id,
-                link=link,
-                unlink=unlink,
-                rel=rel,
-                tags=tags,
-                untags=untags,
-                what=f"{self._sense()} comment",
-            )
+            with _PUT_UNTIL.bind(until):
+                resp = self._append_then_link(
+                    lambda: self._append_comment(id=id, text=text),
+                    id=id,
+                    link=link,
+                    unlink=unlink,
+                    rel=rel,
+                    tags=tags,
+                    untags=untags,
+                    what=f"{self._sense()} comment",
+                )
             return interpreted(resp, readings)
         # Read-scoped create (write:none, --read-only, agent_ro — the
         # dispatch carve-out is what let this put reach the handler): the
@@ -788,7 +879,7 @@ class GripeHandler(NumericRefHandler):
             self._reject_mutating_put(
                 id=None, mode=None, untags=untags, unlink=unlink, rel=rel, link=link
             )
-            with _PUT_PRIO.bind(validate_prio(prio)):
+            with _PUT_PRIO.bind(validate_prio(prio)), _PUT_UNTIL.bind(until):
                 resp = self._create_observation(
                     text=text, tags=tags, link=link, rel=rel
                 )
@@ -807,17 +898,18 @@ class GripeHandler(NumericRefHandler):
             slug = matched[0]
             keeper = self._theme_keeper(slug)
             if keeper is not None:
-                resp = self._merge_into_keeper(
-                    keeper,
-                    slug,
-                    text=text,
-                    prio=prio,
-                    link=link,
-                    unlink=unlink,
-                    rel=rel,
-                    tags=tags,
-                    untags=untags,
-                )
+                with _PUT_UNTIL.bind(until):
+                    resp = self._merge_into_keeper(
+                        keeper,
+                        slug,
+                        text=text,
+                        prio=prio,
+                        link=link,
+                        unlink=unlink,
+                        rel=rel,
+                        tags=tags,
+                        untags=untags,
+                    )
                 return interpreted(resp, readings)
             tags = [*(tags or []), f"{THEME_TAG_PREFIX}{slug}"]
             note = (
@@ -831,7 +923,7 @@ class GripeHandler(NumericRefHandler):
         # request-scoped slot (``_PUT_PRIO``, as todo does — the base put's
         # signature stays untouched). The ``PRIO:`` tag alias keeps working;
         # the explicit kwarg wins.
-        with _PUT_PRIO.bind(validate_prio(prio)):
+        with _PUT_PRIO.bind(validate_prio(prio)), _PUT_UNTIL.bind(until):
             resp = super().put(
                 id=id,
                 text=text,
@@ -859,7 +951,7 @@ class GripeHandler(NumericRefHandler):
         refs = self.store.list_refs(
             kind=self.kind,
             tags=[f"{THEME_TAG_PREFIX}{slug}"],
-            exclude_tags=sorted(_TERMINAL_STATUS_TAGS),
+            exclude_tags=sorted(_OPEN_EXCLUDED_TAGS),
             order_by="created_asc",
             limit=1,
         )
@@ -1048,6 +1140,10 @@ class GripeHandler(NumericRefHandler):
         remove: list[str] | None = None,
         prio: int | None = None,
         reason: str | None = None,
+        # ``meta={'until': …}`` / ``until=`` — the STATUS:parked wake
+        # condition (gr543711); refused on every other add.
+        meta: dict[str, Any] | None = None,
+        until: dict[str, Any] | str | None = None,
         **_kw: Any,
     ) -> Response:
         # Near-miss PRIO spellings are read as canonical, named in the reply.
@@ -1059,10 +1155,18 @@ class GripeHandler(NumericRefHandler):
         add, status_readings = alias_status_tags(add, kind=self.kind)
         readings += status_readings
         readings = [*readings, *self._check_thread_tags(add, id=id)]
+        park_until = self._resolve_parked_until(id, add, until=until, meta=meta)
         if isinstance(id, list):
             return interpreted(
                 self._tag_batch(
-                    id, add=add, remove=remove, prio=prio, reason=reason, **_kw
+                    id,
+                    add=add,
+                    remove=remove,
+                    prio=prio,
+                    reason=reason,
+                    meta=meta,
+                    until=until,
+                    **_kw,
                 ),
                 readings,
             )
@@ -1114,9 +1218,11 @@ class GripeHandler(NumericRefHandler):
                     Response(body=f"set {shown} on {self._sense()} id={ref_id}"),
                     readings,
                 )
-        return interpreted(
-            super().tag(id=id, add=add, remove=remove, reason=reason, **_kw), readings
-        )
+        with _PARK_UNTIL.bind(park_until):
+            return interpreted(
+                super().tag(id=id, add=add, remove=remove, reason=reason, **_kw),
+                readings,
+            )
 
     def _check_thread_tags(
         self, tags: list[str] | None, *, id: object = "<id>", create: bool = False
@@ -1341,6 +1447,69 @@ class GripeHandler(NumericRefHandler):
             ),
         )
 
+    def _resolve_parked_until(
+        self,
+        id: str | int | list[str | int],
+        add: list[str] | None,
+        *,
+        until: dict[str, Any] | str | None,
+        meta: dict[str, Any] | None,
+    ) -> dict[str, Any] | None:
+        """``STATUS:parked`` needs its wake condition (gr543711).
+
+        Sources, in order: the ``until=`` kwarg (``args={'until': …}``
+        flattened), ``meta={'until': …}``, and the ``put`` ``args=
+        {'until': …}`` slot (``_PUT_UNTIL``, bound while the comment/tag
+        leg runs). A shorthand string ('gr<N>', 'td<N>', a 9-40-hex sha,
+        an ISO date, else free text) expands via
+        :func:`precis.utils.parked.until_shorthand`. Without one the add
+        is refused naming the call; ``until``/``meta`` on any *other*
+        add is refused too — never a silent drop.
+        """
+        from precis.utils.parked import normalize_until
+
+        m_until = None
+        if meta is not None:
+            if not isinstance(meta, dict) or set(meta) - {"until"}:
+                raise BadInput(
+                    "tag's meta= carries only {'until': <condition>} — the "
+                    "STATUS:parked wake condition",
+                    next=(
+                        f"tag(kind={self.kind!r}, id={id}, "
+                        "add=['STATUS:parked'], meta={'until': "
+                        "{'type': 'date', 'value': '<ISO-date>'}})"
+                    ),
+                )
+            m_until = meta.get("until")
+        given = until if until is not None else m_until
+        if given is None:
+            given = _PUT_UNTIL.get()
+        parking = any(str(t).strip() == PARKED_STATUS_TAG for t in add or ())
+        if given is not None and not parking:
+            raise BadInput(
+                "until= / meta={'until': …} pairs only with STATUS:parked",
+                next=(
+                    f"tag(kind={self.kind!r}, id={id}, "
+                    "add=['STATUS:parked'], until={'type': 'date', "
+                    "'value': '<ISO-date>'})"
+                ),
+            )
+        if not parking:
+            return None
+        if given is None:
+            raise BadInput(
+                f"parking a {self._sense()} needs its wake condition — "
+                "until {type, value, note}: 'ref_done' gr<N>/td<N>, "
+                "'sha_in_prod' <sha>, 'spec_landed' docs/backlog/<x>.md, "
+                "'date' <ISO-8601>, or 'text' '<condition>'",
+                next=(
+                    f"tag(kind={self.kind!r}, id={id}, "
+                    "add=['STATUS:parked'], meta={'until': "
+                    "{'type': 'ref_done', 'value': 'gr123'}})"
+                ),
+            )
+        return normalize_until(given, store=self.store)
+
     def _after_tag_mutation(
         self,
         ref_id: int,
@@ -1356,9 +1525,30 @@ class GripeHandler(NumericRefHandler):
 
         gr541800/gr543584: a ``claimed-by:`` add gets the todo lease stamp
         (single holder, ``expires_at``); a verify state or a terminal
-        STATUS releases every claim — the builder's work is on main."""
+        STATUS releases every claim — the builder's work is on main.
+
+        gr543711: ``STATUS:parked`` stamps ``meta.until`` (validated by
+        ``_resolve_parked_until``, carried here via ``_PARK_UNTIL``); any
+        other STATUS add — the wake flip back to ``open`` included —
+        clears the key."""
+        from psycopg.types.json import Jsonb
+
         from precis.todo import guards
 
+        status_adds = {str(t) for t in added if str(t).startswith("STATUS:")}
+        if PARKED_STATUS_TAG in status_adds:
+            if (park := _PARK_UNTIL.get()) is not None:
+                payload = {**park, "parked_at": datetime.now(UTC).isoformat()}
+                conn.execute(
+                    "UPDATE refs SET meta = COALESCE(meta, '{}'::jsonb) "
+                    "|| %s::jsonb WHERE ref_id = %s",
+                    (Jsonb({"until": payload}), ref_id),
+                )
+        elif status_adds:
+            conn.execute(
+                "UPDATE refs SET meta = meta - 'until' WHERE ref_id = %s",
+                (ref_id,),
+            )
         guards.stamp_claim_lease(conn, ref_id, added)
         if any(str(t) in _RESOLVED_REQUIRED_TAGS for t in added):
             guards.release_claims(conn, ref_id)
@@ -1534,6 +1724,24 @@ class GripeHandler(NumericRefHandler):
                 "agent:<run> by file_gripe_readonly"
             )
         parsed_extra_tags = [Tag.parse_strict(t, kind=self.kind) for t in (tags or [])]
+        park_until = None
+        if any(str(t) == PARKED_STATUS_TAG for t in parsed_extra_tags):
+            from precis.utils.parked import normalize_until
+
+            if (given := _PUT_UNTIL.get()) is None:
+                raise BadInput(
+                    "parking a new gripe needs its wake condition — "
+                    "args={'until': <condition>}",
+                    next=(
+                        f"put(kind={self.kind!r}, text='...', "
+                        "tags=['STATUS:parked'], args={'until': "
+                        "{'type': 'ref_done', 'value': 'gr123'}})"
+                    ),
+                )
+            park_until = {
+                **normalize_until(given, store=self.store),
+                "parked_at": datetime.now(UTC).isoformat(),
+            }
 
         def _write() -> tuple[int, str | None]:
             # One fresh transaction per attempt — the retry_locked contract
@@ -1561,6 +1769,14 @@ class GripeHandler(NumericRefHandler):
                         set_by="agent",
                         replace_prefix=(tag.namespace == "closed"),
                         conn=conn,
+                    )
+                if park_until is not None:
+                    from psycopg.types.json import Jsonb
+
+                    conn.execute(
+                        "UPDATE refs SET meta = COALESCE(meta, '{}'::jsonb) "
+                        "|| %s::jsonb WHERE ref_id = %s",
+                        (Jsonb({"until": park_until}), ref_id),
                     )
                 if target is not None:
                     self.store.add_link(
@@ -2105,7 +2321,7 @@ class GripeHandler(NumericRefHandler):
         refs = self.store.list_refs(
             kind=self.kind,
             meta_has=gf.META_KEY,
-            exclude_tags=sorted(_TERMINAL_STATUS_TAGS),
+            exclude_tags=sorted(_OPEN_EXCLUDED_TAGS),
             order_by="updated_desc",
             limit=2000,
         )

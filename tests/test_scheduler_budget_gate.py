@@ -166,7 +166,15 @@ def test_exactly_the_llm_cadences_are_marked_spending():
     ``spends=True`` is invisible to the ceiling — the bug this file exists for.
     """
     spending = {c.name for c in scheduler.CADENCES if c.spends}
-    assert spending == {"dream_agent", "structural", "deep_review", "gripe_triage"}
+    # gripe_parked (gr543711): a ``text`` until bills the cheapest tier —
+    # the whole 48 h wake pass is deferrable under a budget freeze.
+    assert spending == {
+        "dream_agent",
+        "structural",
+        "deep_review",
+        "gripe_triage",
+        "gripe_parked",
+    }
 
 
 def test_cron_tick_is_not_marked_spending():

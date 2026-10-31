@@ -177,6 +177,21 @@ def _run_draft_refresh_scan(store: Store, batch_size: int) -> None:
     )
 
 
+def _run_gripe_parked(store: Store, batch_size: int) -> None:
+    """Wake-check parked gripes (gr543711): flip each one whose
+    ``meta.until`` condition is met back to ``STATUS:open``. The interval
+    resolves live from ``gripe.unpark_interval_hours`` (default 48 h)."""
+    from precis.workers.gripe_parked import run_gripe_parked_pass
+
+    result = run_gripe_parked_pass(store)
+    log.info(
+        "scheduler: gripe_parked inner result claimed=%d ok=%d failed=%d",
+        result.claimed,
+        result.ok,
+        result.failed,
+    )
+
+
 def _run_gripe_parents(store: Store, batch_size: int) -> None:
     """Fill ``meta.dup_parents`` on freshly embedded gripes — pipeline
     v2 slice 2 (``docs/backlog/gripe-pipeline-v2.md`` §Intake). Host-
@@ -816,6 +831,12 @@ def _dream_resolve_interval(store: Store) -> int:
     return int(dream_throttle.resolve_min_interval_minutes(store) * 60)
 
 
+def _gripe_parked_resolve_interval(store: Store) -> int:
+    from precis.workers.gripe_parked import resolve_interval_s
+
+    return resolve_interval_s(store)
+
+
 def _over_daily_budget(store: Store, cadence: str) -> bool:
     """True when a ``spends=True`` cadence must skip this fire — the fleet has
     already burned ``PRECIS_DAILY_COST_CEILING`` over the trailing 24h.
@@ -1084,6 +1105,17 @@ CADENCES: tuple[Cadence, ...] = (
     # line names open work). Host-agnostic, daily, off the exact day
     # boundary like the other daily sweeps. No `eligible` check: pure
     # local SQL. spends=False: no LLM anywhere in the sweep.
+    # gr543711: the parked-gripe wake check — every 48 h by default,
+    # resolvable live via the ``gripe.unpark_interval_hours`` setting.
+    # Host-agnostic; off the exact two days (+97m, clear of the daily
+    # sweeps). spends=True: a ``text`` until bills the cheapest tier.
+    Cadence(
+        name="gripe_parked",
+        interval_s=48 * 3600 + 97 * 60,
+        run=_run_gripe_parked,
+        resolve_interval=_gripe_parked_resolve_interval,
+        spends=True,
+    ),
     Cadence(
         name="memory_thread_sweep",
         interval_s=24 * 3600 + 43 * 60,

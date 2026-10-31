@@ -2631,6 +2631,7 @@ _MARKER_GRIPE_LIVE_STATUSES: tuple[str, ...] = (
     "auto_verify",
     "user_verify",
     "needs_spec",
+    "parked",
 )
 
 

@@ -150,8 +150,8 @@ q='…')` finds the matching passages inside one gripe (find-in-ref,
 `precis-get-help`).
 
 **`status='open'` means the live cohort** — every non-terminal STATUS
-(`open`, `triaged`, `fixing`, `ready_for_fix`, `in_review`, `verify`,
-`auto_verify`, `user_verify`, `needs_spec`), not the
+except `parked` (`open`, `triaged`, `fixing`, `ready_for_fix`, `in_review`,
+`verify`, `auto_verify`, `user_verify`, `needs_spec`), not the
 literal `STATUS:open` tag. It's also the implicit default on `q=`
 searches, so a bare `search(kind='gripe', q='…')` searches the backlog,
 not just the untriaged inbox. For the literal `STATUS:open` cohort pin
@@ -168,7 +168,7 @@ search(kind="gripe", q="X", status="*")  # every status, no filter
 `status='open|triaged'` (or a comma list) is an error naming the valid
 values, not a union filter. Run one search per value, or `status='*'`.
 Valid: `open`, `triaged`, `fixing`, `ready_for_fix`, `in_review`, `verify`,
-`auto_verify`, `user_verify`, `needs_spec`, `done`, `wontfix`.
+`auto_verify`, `user_verify`, `needs_spec`, `parked`, `done`, `wontfix`.
 
 **Enumerating vs. searching — a trap.** Adding `q=` to a status/tag
 filter turns a *complete enumeration* into a *ranked filter*: a gripe
@@ -242,6 +242,38 @@ search(kind="gripe", tags=["STATUS:needs_spec"])   # parked until a spec exists
 ```python
 search(kind="gripe", tags=["STATUS:wontfix"])
 ```
+
+## Park a gripe until something happens
+## Show me the parked gripes
+
+`STATUS:parked` shelves a gripe off every open queue — `/open`, the
+live cohort and the open-count lines all skip it — until its wake
+condition is met; the `gripe_parked` pass (every ~48 h) then flips it
+back to `STATUS:open` with one `unparked:` comment. Parking **requires
+the condition** — `until` as a dict `{type, value, note}` or a
+shorthand string:
+
+```python
+tag(kind="gripe", id=N, add=["STATUS:parked"],
+    meta={"until": {"type": "ref_done", "value": "gr123"}})
+put(kind="gripe", id=N, tags=["STATUS:parked"], args={"until": "td456"})
+put(kind="gripe", id=N, tags=["STATUS:parked"],
+    args={"until": "2026-12-01"})
+# spec_landed's value is a spec's repo path — the id this read takes:
+get(kind="md", id="docs/backlog/<slug>.md")
+```
+
+Condition types: `ref_done` (gr/td handle; met when that ref reaches a
+terminal STATUS), `sha_in_prod` (a hex sha; met once it is in the
+recorded prod head), `spec_landed` (a spec's repo path — the `id=` an
+`md` get takes, as above; the wake pass can't see the repo, so unpark
+by hand or use `text`), `date` (ISO-8601; met at that UTC instant),
+`text` (free
+text — the cheapest tier judges met/not_met/unsure from the newest
+comments; unsure = not met). Shorthands: `gr<N>`/`td<N>` → `ref_done`,
+a 9–40-hex sha → `sha_in_prod`, an ISO date → `date`, anything else →
+`text`. `get(kind="gripe", id="/parked")` lists the shelf with each
+condition and parked age; `tag(add=["STATUS:open"])` unparks by hand.
 
 ## Show me a specific gripe
 ## Read a gripe with its comment thread
@@ -666,6 +698,7 @@ citation audit emits findings and todos, not gripes.
 | `STATUS:auto_verify`   | On main, waiting for a gated release: needs a newest `resolved: <sha> (main, release pending)` comment (`scripts/ship` writes both for every `grN` ending the squash subject); releases the lease. `scripts/gripe-validate` / the `gripe_validate` job flips it to `done` once the sha is on prod — or back to `triaged` when the release gate is red. The triage worker also parks deployed-pending fixes here (`fix-sha:`) |
 | `STATUS:user_verify`   | Same wait, but a human must check the fix (the lander opts the gripe in at ship time). Each deploy keeps ONE ask-user todo listing the cohort; the gripes close when it's answered |
 | `STATUS:needs_spec`    | Ill-specified — parked until a docs/backlog spec names it (the deploy verifier closes it then) or a human sends it back to `open` ("move back to new" on the web detail page) |
+| `STATUS:parked`        | Waiting on a `meta.until` wake condition (gr/td ref done, sha in prod, a date, or free text) — off every open queue; the `gripe_parked` pass returns it to `open` when met. Requires `until` on the parking call |
 | `STATUS:done`          | Fixed/resolved — terminal; hidden from the live queue |
 | `STATUS:wontfix`       | Decided not to act (kept on record)     |
 | (deleted)              | `delete` — duplicates, spam and gripes filed in error only. A *fixed* gripe is a `resolved: <sha> (r<N>) — <how verified>` comment + `STATUS:done` |

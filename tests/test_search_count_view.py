@@ -205,7 +205,9 @@ class TestGripeTagAxisFacet:
         resp = gripes.search(view="count", group_by="state")
         assert resp.body.startswith("# 1 gripe entry")
         assert "(default: live statuses)" in resp.body
-        assert "1 terminal entries hidden; status='*' to include" in resp.body
+        # gr543711: gripe's live exclusion adds parked — the noun is
+        # "closed or parked" there, "terminal" on the other kinds.
+        assert "1 closed or parked entries hidden; status='*' to include" in resp.body
         assert _facet_counts(resp.body) == {"STATUS:open": 1}
 
         resp_all = gripes.search(view="count", group_by="state", status="*")

@@ -106,6 +106,7 @@ _RANKED_VALUES: tuple[str, ...] = (
     "auto_verify",
     "user_verify",
     "needs_spec",
+    "parked",
     "done",
     "wontfix",
 )
@@ -146,6 +147,7 @@ _STATUS_BADGE: dict[str, str] = {
     "auto_verify": "bg-teal-muted text-teal-deep border-teal-strong",
     "user_verify": "bg-accent-muted text-accent-deep border-accent-strong",
     "needs_spec": "bg-warning-muted text-warning-deep border-warning-strong",
+    "parked": "bg-surface-muted text-fg-faint border-line-strong",
     "done": "bg-success-muted text-success-deep border-success-strong",
     "wontfix": "bg-danger-muted text-danger-deep border-danger-strong",
     "retired": "bg-surface-muted text-fg-faint border-line",

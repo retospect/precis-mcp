@@ -21,9 +21,9 @@
       <input type="hidden" name="value" value="{{ v }}" />
       <button type="submit"
               class="text-xs px-2 py-1 rounded border border-line text-fg-subtle hover:bg-surface-subtle hover:text-fg-secondary">
-        {# gr543698: on a needs_spec gripe, → open IS "back to new" —
-           triage re-picks it up with the new comments. #}
-        {% if v == 'open' and status == 'needs_spec' %}&rarr; move back to new{% else %}&rarr; {{ v }}{% endif %}
+        {# gr543698/gr543711: on a needs_spec or parked gripe, → open IS
+           "back to new" — triage re-picks it up with the new comments. #}
+        {% if v == 'open' and status in ('needs_spec', 'parked') %}&rarr; move back to new{% else %}&rarr; {{ v }}{% endif %}
       </button>
     </form>
     {% endif %}

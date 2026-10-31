@@ -126,6 +126,7 @@ _LIVE_STATUSES = (
     "auto_verify",
     "user_verify",
     "needs_spec",
+    "parked",
 )
 
 # ── error-head normalisation ─────────────────────────────────────────────

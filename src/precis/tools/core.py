@@ -1464,6 +1464,13 @@ def put(
     # a chunk (chunk_kind=, text=) placed by at={first|last|into|before|after}.
     at: dict[str, Any] | None = None,
     project: str | int | None = None,
+    # gripe STATUS:parked wake condition (gr543711, precis-gripe-help):
+    # until={type, value, note} or a shorthand ('gr<N>'/'td<N>' → ref_done,
+    # 9–40-hex sha → sha_in_prod, ISO date → date, else free text), stored
+    # as meta.until; pairs only with tags=['STATUS:parked']. Declared at
+    # the verb level (the gr262482 pattern) so strict-schema MCP clients
+    # don't strip it — args={'until': …} remains the documented channel.
+    until: dict[str, Any] | str | None = None,
     # draft term batch (chunk_kind='term'): put(kind='draft', id=<slug>,
     # chunk_kind='term', terms=[{'text': '<definition>', 'meta': {'short':
     # '<ABBR>'}}, ...]) files many registry term leaves in one transaction
@@ -1752,6 +1759,7 @@ def put(
                 "chunk_kind": chunk_kind,
                 "at": at,
                 "project": project,
+                "until": until,
                 "terms": terms,
                 "table": table,
                 "caption": caption,

@@ -10,16 +10,24 @@ from precis.tools import core
 
 
 @pytest.mark.parametrize(
-    "kind,live,terminal",
+    "kind,live,terminal,hidden_label",
     [
         (
             "todo",
             ["open", "doing", "blocked", "paused"],
             ["done", "won't-do", "abandoned"],
+            "terminal",
         ),
-        ("gripe", ["open", "triaged", "in_review"], ["done", "wontfix"]),
-        ("quest", ["active", "dormant"], ["abandoned"]),
-        ("alert", ["open"], ["resolved"]),
+        # gr543711: gripe's live exclusion adds parked — the hidden-count
+        # noun is "closed or parked" there, "terminal" elsewhere.
+        (
+            "gripe",
+            ["open", "triaged", "in_review"],
+            ["done", "wontfix"],
+            "closed or parked",
+        ),
+        ("quest", ["active", "dormant"], ["abandoned"], "terminal"),
+        ("alert", ["open"], ["resolved"], "terminal"),
     ],
 )
 def test_browse_lifecycle_scope(
@@ -27,6 +35,7 @@ def test_browse_lifecycle_scope(
     kind: str,
     live: list[str],
     terminal: list[str],
+    hidden_label: str,
     monkeypatch: Any,
 ) -> None:
     hub = runtime_with_store.hub
@@ -49,9 +58,9 @@ def test_browse_lifecycle_scope(
     monkeypatch.setattr(core, "_get_runtime", lambda: runtime_with_store)
     native = core.search(kind=kind, tags=["waiting-for:fixture-r14"], page_size=100)
     assert isinstance(native, str)
-    assert f"{len(terminal)} terminal entries hidden" in native
+    assert f"{len(terminal)} {hidden_label} entries hidden" in native
     assert "\tstatus\t" in default
-    assert f"{len(terminal)} terminal entries hidden" in default
+    assert f"{len(terminal)} {hidden_label} entries hidden" in default
     assert "status='*'" in default
     for state in live:
         assert re.search(rf"\t{state}\t(?:[^\t]*\t)?fixture-state-{state}\t", default)
@@ -80,7 +89,7 @@ def test_browse_lifecycle_scope(
     assert f"fixture-state-{terminal[0]}" in tagged
     empty_page = handler.search(**args, page=2).body
     assert "no " in empty_page
-    assert f"{len(terminal)} terminal entries hidden" in empty_page
+    assert f"{len(terminal)} {hidden_label} entries hidden" in empty_page
 
 
 def test_alert_closed_shorthand(runtime_with_store: Any) -> None:

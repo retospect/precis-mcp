@@ -299,6 +299,33 @@ _BROWSE_TERMINALS: dict[str, tuple[str, ...]] = {
     "alert": ("alert-state:resolved",),
 }
 
+#: Non-terminal STATUS values the live cohort also excludes — live but
+#: parked off the open queue (gripe: ``STATUS:parked``, gr543711 — it
+#: waits on ``meta.until`` and the ``gripe_parked`` cadence wakes it).
+#: :func:`_live_excluded_tags` is the one set queryless browse,
+#: ``status='open'`` and the hidden-count notes subtract; ``status='*'``
+#: still sees everything.
+_BROWSE_PARKED: dict[str, tuple[str, ...]] = {
+    "gripe": ("STATUS:parked",),
+}
+
+
+def _live_excluded_tags(kind: str) -> list[str]:
+    """Terminal + parked tag values the live cohort subtracts for ``kind``."""
+    return [*_BROWSE_TERMINALS.get(kind, ()), *_BROWSE_PARKED.get(kind, ())]
+
+
+def _hidden_excluded_label(kind: str, exclude_tags: list[str]) -> str | None:
+    """The "N … hidden" noun for an exclusion ⊆ the live-excluded set —
+    ``terminal`` when only terminals are cut, ``closed or parked`` once a
+    parked status rides along. ``None`` for a caller's own ``status='!v'``
+    exclusion (the terminal wording would lie there)."""
+    if not exclude_tags or set(exclude_tags) > set(_live_excluded_tags(kind)):
+        return None
+    if set(exclude_tags) <= set(_BROWSE_TERMINALS.get(kind, ())):
+        return "terminal"
+    return "closed or parked"
+
 
 def _extract_summary(body: str) -> tuple[str, int]:
     """Return ``(summary, remaining_words)`` for the list-view TOON row.
@@ -1057,7 +1084,7 @@ class NumericRefHandler(Handler):
             for t in (tags or [])
         )
         excluded = (
-            list(_BROWSE_TERMINALS[self.kind]) if browse and not explicit_state else []
+            _live_excluded_tags(self.kind) if browse and not explicit_state else []
         )
         if excluded:
             effective_tags, status_note = tags, "(default: live statuses)"
@@ -1498,7 +1525,7 @@ class NumericRefHandler(Handler):
                 return (
                     effective or None,
                     note,
-                    list(_BROWSE_TERMINALS[self.kind]),
+                    _live_excluded_tags(self.kind),
                 )
             tag_str = f"STATUS:{resolved}"
             if tag_str not in effective:
@@ -1537,9 +1564,7 @@ class NumericRefHandler(Handler):
             return ""
         scope = f" tagged {tags}" if tags else ""
         args = f"tags={tags!r}" if tags else ""
-        if exclude_tags and set(exclude_tags) != set(
-            _BROWSE_TERMINALS.get(self.kind, ())
-        ):
+        if exclude_tags and set(exclude_tags) != set(_live_excluded_tags(self.kind)):
             # An exclusion the plain browse doesn't already apply (a
             # caller's status='!v' — even a subset of the terminals —
             # selects a different set than the live browse) must ride
@@ -1641,8 +1666,7 @@ class NumericRefHandler(Handler):
         if status_note:
             parts.append(status_note)
         if (
-            exclude_tags
-            and set(exclude_tags) <= set(_BROWSE_TERMINALS.get(self.kind, ()))
+            (label := _hidden_excluded_label(self.kind, exclude_tags or [])) is not None
             and not (q and q.strip())
             and link_ref_id is None
             and include_ref_ids is None
@@ -1654,7 +1678,7 @@ class NumericRefHandler(Handler):
             # status='!v' exclusion the "terminal" wording would lie.
             hidden = self.store.count_refs(kind=self.kind, tags=tags) - total
             if hidden > 0:
-                parts.append(f"{hidden} terminal entries hidden; status='*' to include")
+                parts.append(f"{hidden} {label} entries hidden; status='*' to include")
         if facets:
             parts.append("")
             parts.append(" × ".join(_count_facet_label(f) for f in facets) + ":")
@@ -1895,12 +1919,13 @@ class NumericRefHandler(Handler):
         total = self.store.count_refs(
             kind=self.kind, tags=tags, id_min=id_min, id_max=id_max, **filters
         )
-        if exclude_tags and set(exclude_tags) <= set(
-            _BROWSE_TERMINALS.get(self.kind, ())
+        if (
+            exclude_tags
+            and (label := _hidden_excluded_label(self.kind, exclude_tags)) is not None
         ):
             hidden = self.store.count_refs(kind=self.kind, tags=tags) - total
             note = (
-                note + f"\n{hidden} terminal entries hidden; status='*' to include"
+                note + f"\n{hidden} {label} entries hidden; status='*' to include"
             ).strip()
         tag_clause = f" tagged {tags}" if tags else ""
         if not refs:

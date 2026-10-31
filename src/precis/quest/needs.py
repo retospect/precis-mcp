@@ -83,6 +83,7 @@ _LIVE_GRIPE_STATUSES: tuple[str, ...] = (
     "auto_verify",
     "user_verify",
     "needs_spec",
+    "parked",
 )
 
 
