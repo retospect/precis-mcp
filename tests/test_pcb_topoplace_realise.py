@@ -46,6 +46,7 @@ from precis.pcb.topoplace.realise import (
     widen_power,
     widen_targets,
 )
+from precis.pcb.topoplace.shove import directness_pushes, shove_pose
 from precis.pcb.topoplace.wires import WirePath, Wires, build_wires
 from tests.fixtures.pcb.topo_example_a import example_a
 
@@ -2979,6 +2980,108 @@ def test_small_obstacle_between_aligned_pads_detours_and_realizes() -> None:
     rows = sketch_rows(plan, td, ir, layers)
     assert rows["N1"]["status"] == "realized"
     assert _drc_findings(res, ir, layers, footprints=footprints) == []
+
+
+def _dot3_board(
+    *,
+    c: tuple[float, float] = (15.0, 10.0),
+    lane_y: float = 10.0,
+) -> pcb.Board:
+    """Reto's shove fixture (2026-10-31): A and B FIXED on a lane, C
+    movable (rotation locked, xy free) standing ON the lane. The
+    direct-first cycle — route (detours around C), directness_pushes,
+    shove_pose, re-route — must end with A–B as the straight segment
+    and C off the lane."""
+    fp = pcb.Footprint("DOT", [pcb.pad("1", "rect", 0.0, 0.0, w=0.9, h=0.9)])
+    b = pcb.Board("shove3", stackup=4, outline=pcb.rect(30.0, 20.0))
+    f = b.footprint(fp)
+    pa = b.part("PA", footprint=f, pins=["1"]).at(5.0, lane_y, fixed="both")
+    pb = b.part("PB", footprint=f, pins=["1"]).at(25.0, lane_y, fixed="both")
+    b.part("PC", footprint=f, pins=["1"]).at(*c, fixed="rot")
+    for p in (pa["1"], pb["1"]):
+        p.etype("bidi", fmax_hz=0.0, assume="micro wire end")
+    b.wire(pa["1"], pb["1"], name="N1").current = 0.001
+    return b
+
+
+def _route_td(board: pcb.Board):
+    """The _route_micro setup steps without the route — the shove tests
+    route twice (before and after the shove) at different poses."""
+    design = kernel._design(board, None)
+    ir = kernel._build_ir(design)
+    footprints = kernel._footprints(design, ir)
+    td = design_from_ir(
+        ir,
+        footprints,
+        net_classes=design.graph.get("net_classes"),
+        route_planes=True,
+        features=design.features,
+    )
+    return td, ir, footprints
+
+
+def test_movable_blocker_gets_shoved_off_the_direct_lane() -> None:
+    """A and B fixed, C standing on the A–B lane: the first route
+    detours (the lane IS blocked), directness_pushes names C as the
+    blocker, shove_pose moves it, and the re-route is the straight
+    origin→destination segment — direct first, shove the movable
+    blocker, detour only when nothing can move."""
+    td, ir, footprints = _route_td(_dot3_board())
+    layers = [str(layer.get("name") or "") for layer in ir.stackup]
+    t0 = time.perf_counter()
+    plan0, _res0 = route_design(td, ir)
+    # first route: the lane IS blocked — today it answers with an F↔B
+    # via hop under PC (3 pieces, 2 vias), not a straight segment
+    assert not (len(plan0.pieces) == 1 and len(plan0.pieces[0].points) == 2), (
+        f"first route should not be the straight lane: {plan0.pieces}"
+    )
+
+    pushes = directness_pushes(td, plan0)
+    assert len(pushes) == 1, f"exactly PC must be named: {pushes}"
+    (push,) = pushes
+    assert push.b == 2 and push.a == 0  # PC pushed off PA's anchor
+
+    sr = shove_pose(td, np.asarray(td.pose0, dtype=float), push=pushes)
+    assert abs(float(sr.pose[2, 1]) - 10.0) > 0.5, "PC must leave the lane"
+    assert tuple(sr.pose[0, :2]) == (5.0, 10.0), "PA is fixed"
+    assert tuple(sr.pose[1, :2]) == (25.0, 10.0), "PB is fixed"
+
+    plan1, res1 = route_design(td, ir, pose=sr.pose)
+    wall_s = time.perf_counter() - t0
+    assert wall_s < 5.0, f"route→push→shove→route took {wall_s:.2f}s"
+    assert plan1.vias == ()
+    (piece1,) = plan1.pieces
+    assert piece1.points == ((5.0, 10.0), (25.0, 10.0)), (
+        f"re-route after the shove must be the straight lane: {piece1.points}"
+    )
+    (track1,) = res1.tracks
+    assert len(track1.segments) == 1
+    rows = sketch_rows(plan1, td, ir, layers)
+    assert rows["N1"]["status"] == "realized"
+    # commit the shoved pose to the IR so the DRC judges pads where
+    # they actually land (pose rot is quarter-turns; ir wants degrees)
+    ir.inst_x[:] = sr.pose[:, 0]
+    ir.inst_y[:] = sr.pose[:, 1]
+    ir.inst_rot[:] = sr.pose[:, 2] * 90.0
+    assert _drc_findings(res1, ir, layers, footprints=footprints) == []
+
+
+def test_blocker_off_the_lane_routes_straight_with_no_pushes() -> None:
+    """The trivial half of direct-first: C NOT on the lane — the very
+    first route is the straight segment and directness_pushes names
+    nobody (origin→destination is tried first, nothing to shove)."""
+    td, ir, footprints = _route_td(_dot3_board(c=(15.0, 14.0)))
+    layers = [str(layer.get("name") or "") for layer in ir.stackup]
+    t0 = time.perf_counter()
+    plan0, res0 = route_design(td, ir)
+    wall_s = time.perf_counter() - t0
+    assert wall_s < 1.0, f"3-part straight route took {wall_s:.2f}s"
+    (piece0,) = plan0.pieces
+    assert piece0.points == ((5.0, 10.0), (25.0, 10.0))
+    assert directness_pushes(td, plan0) == []
+    (track0,) = res0.tracks
+    assert len(track0.segments) == 1
+    assert _drc_findings(res0, ir, layers, footprints=footprints) == []
 
 
 def test_cornered_pad_pair_routes_an_s_detour() -> None:

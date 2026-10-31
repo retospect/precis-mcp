@@ -41,6 +41,7 @@ step.
 from __future__ import annotations
 
 import math
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -50,6 +51,7 @@ from scipy.sparse import csr_matrix, lil_matrix
 from shapely.geometry import Point, Polygon
 from shapely.ops import nearest_points
 
+from precis.pcb.rules import NetRules
 from precis.pcb.topoplace.design import TopoDesign
 from precis.pcb.topoplace.legalize import (
     _board_layers,
@@ -65,6 +67,7 @@ from precis.pcb.topoplace.proxy import (
     _EPS,
     _body_geom,
     _ring_geom,
+    local_to_world,
     through_hole_parts,
     zone_world_circle,
     zone_world_ring,
@@ -122,6 +125,157 @@ class ShoveResult:
     remaining: tuple[tuple[int, int, float], ...] = field(default_factory=tuple)
     mesh_errors: int = 0
     mesh_error: str = ""
+
+
+_DEFAULT_NR = NetRules(track_width_mm=0.15, clearance_mm=0.15)
+_CLEAR_HI_MM = 8.0  #: directness push cap — past this the lane is unshovable
+
+
+def directness_pushes(
+    d: TopoDesign,
+    plan: Any,
+    *,
+    pose: Any = None,
+    net_rules: Mapping[str, NetRules] | None = None,
+) -> list[ShovePush]:
+    """Direct-first routing (Reto 2026-10-31): the first try is the
+    straight origin→destination lane; a movable part standing on it
+    gets pushed off it — the detour is the last resort, not the first
+    answer.
+
+    For every realized piece whose drawn copper materially exceeds its
+    own pad-pad straight line, when the clearance-buffered direct lane
+    crosses ONLY movable parts — no zone, no fixed part (beyond the
+    piece's own endpoints), no other piece's copper — emit one
+    :class:`ShovePush` per blocker, perpendicular off the lane, by the
+    translation that clears its courtyard and body. Feed the result to
+    :func:`shove_pose` (``push=...``), re-route at the shoved pose, and
+    keep the better plan by the caller's own objective.
+    """
+    from shapely.affinity import translate
+    from shapely.geometry import LineString
+
+    rules = net_rules or {}
+    pose_a = np.asarray(d.pose0 if pose is None else pose, dtype=np.float64)
+
+    def _nr(net: int) -> NetRules:
+        name = str(d.net_name[net]) if 0 <= net < len(d.net_name) else str(net)
+        return rules.get(name, _DEFAULT_NR)
+
+    def _pin_xy(pin: int) -> tuple[float, float]:
+        part = int(d.pin_part[pin])
+        w = local_to_world(np.asarray([d.pin_xy[pin]], dtype=np.float64), pose_a[part])
+        return (float(w[0][0]), float(w[0][1]))
+
+    zone_geoms = [
+        Polygon(np.asarray(zone_world_ring(d, z, pose_a), dtype=np.float64)[:-1])
+        for z in d.zones
+        if len(z.ring) >= 4 and z.kind != "label_keepout"
+    ]
+    part_geoms: list[Polygon | None] = []
+    for i in range(len(d.parts)):
+        ring = _ring_geom(d, pose_a[i], i)
+        body = _body_geom(d, pose_a[i], i)
+        if ring is not None and body is not None:
+            ring = ring.union(body)
+        part_geoms.append(ring if ring is not None else body)
+
+    guarded = set(int(g) for g in getattr(plan, "guarded", ()) or ())
+    by_branch: dict[int, list[Any]] = {}
+    for piece in plan.pieces:
+        if piece.net in guarded:
+            continue
+        by_branch.setdefault(int(piece.branch), []).append(piece)
+
+    pushes: list[ShovePush] = []
+    for _br, pieces in by_branch.items():
+        one = pieces[0]
+        pin_a, pin_b = int(one.pin_a), int(one.pin_b)
+        if pin_a < 0 or pin_b < 0:
+            continue
+        if not (0 <= pin_a < len(d.pin_part) and 0 <= pin_b < len(d.pin_part)):
+            continue
+        p0, p1 = _pin_xy(pin_a), _pin_xy(pin_b)
+        dx, dy = p1[0] - p0[0], p1[1] - p0[1]
+        direct = math.hypot(dx, dy)
+        if direct <= 1e-9:
+            continue
+        # the straight lane must be legal copper geometry at all —
+        # pushing cannot make an off-grid pad pair straight
+        if not (dx == 0 or dy == 0 or abs(abs(dx) - abs(dy)) <= 1e-9):
+            continue
+        # already the straight segment: nothing to win
+        if len(pieces) == 1 and len(one.points) == 2:
+            q = one.points
+            if (
+                abs(q[0][0] - p0[0]) <= 1e-6
+                and abs(q[0][1] - p0[1]) <= 1e-6
+                and abs(q[-1][0] - p1[0]) <= 1e-6
+                and abs(q[-1][1] - p1[1]) <= 1e-6
+            ):
+                continue
+        nr = _nr(one.net)
+        req = float(nr.clearance_mm) + float(nr.track_width_mm) / 2.0
+        lane = LineString([p0, p1])
+        lane_buf = lane.buffer(req)
+        # non-shovable obstruction on the lane: a zone, or another
+        # branch's copper (moving the blocker will not straighten those)
+        if any(zg.intersects(lane_buf) for zg in zone_geoms):
+            continue
+        others_cross = False
+        for pj in plan.pieces:
+            if int(pj.branch) == int(one.branch):
+                continue
+            if LineString([(float(q[0]), float(q[1])) for q in pj.points]).intersects(
+                lane_buf
+            ):
+                others_cross = True
+                break
+        if others_cross:
+            continue
+        ends = {int(d.pin_part[pin_a]), int(d.pin_part[pin_b])}
+        blockers: list[int] = []
+        unshovable = False
+        for i, g in enumerate(part_geoms):
+            if g is None or i in ends or not g.intersects(lane_buf):
+                continue
+            if len(d.fixed) and bool(d.fixed[i]):
+                unshovable = True
+                break
+            blockers.append(i)
+        if unshovable or not blockers:
+            continue
+        lane_dir = (dx / direct, dy / direct)
+        perp = (-lane_dir[1], lane_dir[0])
+        anchor = int(d.pin_part[pin_a])
+        for b_i in blockers:
+            centre = pose_a[b_i][:2]
+            side = perp[0] * (centre[0] - p0[0]) + perp[1] * (centre[1] - p0[1])
+            n = (perp[0], perp[1]) if side >= 0 else (-perp[0], -perp[1])
+            g = part_geoms[b_i]
+            assert g is not None
+            if not g.intersects(lane_buf):
+                continue
+            if translate(
+                g, xoff=n[0] * _CLEAR_HI_MM, yoff=n[1] * _CLEAR_HI_MM
+            ).intersects(lane_buf):
+                continue  # cannot clear within the cap — leave the detour
+            lo, hi = 0.0, _CLEAR_HI_MM
+            for _ in range(24):
+                mid = 0.5 * (lo + hi)
+                if translate(g, xoff=n[0] * mid, yoff=n[1] * mid).intersects(lane_buf):
+                    lo = mid
+                else:
+                    hi = mid
+            pushes.append(
+                ShovePush(
+                    a=anchor,
+                    b=b_i,
+                    axis=(float(n[0]), float(n[1])),
+                    sep_mm=float(hi) + 0.05,
+                )
+            )
+    return pushes
 
 
 def _vert_owner(d: TopoDesign, mesh: TopoMesh) -> np.ndarray:
@@ -595,4 +749,4 @@ def shove_pose(
     )
 
 
-__all__ = ["ShoveResult", "shove_pose"]
+__all__ = ["ShovePush", "ShoveResult", "directness_pushes", "shove_pose"]
