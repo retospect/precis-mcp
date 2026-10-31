@@ -38,6 +38,43 @@ def test_skill_count_reasonable(skill: SkillHandler) -> None:
     assert 5 <= len(skills) <= 400
 
 
+def test_served_alias_registry_is_sound(skill: SkillHandler) -> None:
+    """gr524267: every ``_SKILL_SLUG_ALIASES`` entry rescues a slug that
+    has no file (a real file must always win) and points at a file that
+    ships — a dangling target is a redirect to a NotFound."""
+    from precis.handlers.skill import _SKILL_SLUG_ALIASES, _load_skills_map
+
+    corpus = _load_skills_map()
+    for alias, target in _SKILL_SLUG_ALIASES.items():
+        assert alias not in corpus, f"{alias} ships a file AND an alias entry"
+        assert target in corpus, f"alias {alias!r} -> missing skill {target!r}"
+
+
+def test_workspace_db_reference_convention_reaches_the_surfacing_skills(
+    skill: SkillHandler,
+) -> None:
+    """gr514049 slice 6: the pcb/se skills whose readers write or review
+    workspace code each point at the shared cite-the-DB convention in
+    ``precis-workspace-help``."""
+    from precis.handlers.skill import _load_skill
+
+    covered = [
+        "precis-pcb-help",
+        "precis-pcb-check-help",
+        "precis-pcb-review-help",
+        "precis-pcb-fab-help",
+        "precis-pcb-topo-help",
+        "precis-se-help",
+        "precis-se-design-help",
+        "precis-se-atomic-help",
+        "precis-workspace-optimize-help",
+    ]
+    for slug in covered:
+        body = _load_skill(slug)
+        assert body is not None, slug
+        assert "[[precis-workspace-help]]" in body, slug
+
+
 # ── subdirectory discovery + include expansion ───────────────────────
 
 

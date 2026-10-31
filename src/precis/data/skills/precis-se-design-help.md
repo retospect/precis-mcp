@@ -127,3 +127,10 @@ because a pin carries no moment and nothing triangulates it.
 `rigid` connects merge their blocks into one rigid body in that view, so a
 spar built as a chain of rigid blocks is analysed as a body; only the
 axial members and rigid groups are modelled (`revolute` etc. are not).
+
+## Cite the DB in the design script
+
+A workspace script's material choice, constraint number or load value
+taken from precis gets `# <handle> (<why>)` on its line — same
+convention as the pcb board script. Full convention:
+[[precis-workspace-help]] §Cite the DB in the script (gr514049).

@@ -214,9 +214,10 @@ Too many hits? Narrow skill search/toc with `args={'family': 'se'}` or
 (a hub's subtree) or `tags=['section:gotchas']`. Responses suggest these when they'd help.
 
 Slug exceptions: `kind='part'` is documented under `precis-part-select-help`
-— there is no `precis-part-help`. A `NotFound` on a guessed help slug is
-not a dead end: describe the goal instead —
-`search(kind='skill', q='<what you want to do>')`.
+(task-named, not `precis-part-help`); the guessed slug still resolves —
+`get(id='precis-part-help')` serves it with an `aliased from` banner. Any
+other `NotFound` on a guessed help slug is not a dead end: describe the
+goal instead — `search(kind='skill', q='<what you want to do>')`.
 
 ## The todo tree — task substrate
 

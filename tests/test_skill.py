@@ -65,6 +65,47 @@ def test_get_unknown_id_without_help_alias_still_not_found(
         skill.get(id="zz-no-such-skill")
 
 
+# ── registered served aliases (_SKILL_SLUG_ALIASES, gr524267) ──────────
+
+
+def test_get_registered_alias_serves_canonical_skill(
+    skill: SkillHandler,
+) -> None:
+    """gr524267: ``precis-part-help`` is the ``precis-<kind>-help``
+    convention's known exception — the part skill is task-named, and the
+    guessed slug resolves to it with the one-hop's banner."""
+    out = skill.get(id="precis-part-help")
+    assert "(aliased from 'precis-part-help' → precis-part-select-help)" in out.body
+    assert "JLCPCB" in out.body
+
+
+def test_registered_alias_resolves_toc_and_chunk_selectors(
+    skill: SkillHandler,
+) -> None:
+    """Unlike the bare-kind one-hop, a registered alias carries the
+    selectors too — ``/toc`` and ``~N`` land on the canonical skill's
+    handles."""
+    out = skill.get(id="precis-part-help/toc")
+    assert "precis-part-select-help" in out.body
+    out = skill.get(id="precis-part-help~0")
+    assert "precis-part-select-help~0" in out.body
+
+
+def test_registered_alias_find_in_ref(skill: SkillHandler) -> None:
+    """``get(id=<alias>, q=…)`` scans the canonical skill's body."""
+    out = skill.get(id="precis-part-help", q="Basic")
+    assert "Basic" in out.body
+
+
+def test_registered_alias_is_noted_on_the_canonical_row(
+    skill: SkillHandler,
+) -> None:
+    """The catalogue annotates the canonical slug with its alias rather
+    than listing ``precis-part-help`` as a second row."""
+    out = skill.get(id="/")
+    assert "precis-part-select-help (alias: precis-part-help)" in out.body
+
+
 def test_get_skill_body_sets_result_budget_hint(skill: SkillHandler) -> None:
     """A whole-skill-body ``get`` names its targeted TOC and section reads."""
     out = skill.get(id="precis-overview")

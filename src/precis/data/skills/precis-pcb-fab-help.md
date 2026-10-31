@@ -285,6 +285,14 @@ gets none.
 `view='mechanical'` emits a JSON profile (outline + holes + component
 height-blocks) a `cad` enclosure references (see [[precis-cad-help]]).
 
+## Cite the DB when the script leaves
+
+A board script that ships with the package stays readable by someone
+without this DB: its `# <handle> (<why>)` comments expand to
+self-contained citations on export. Write them the same as any other
+workspace script — full convention: [[precis-workspace-help]] §Cite
+the DB in the script (gr514049).
+
 ## See also
 
 - [[precis-pcb-help]] — author the netlist + placement this exports.

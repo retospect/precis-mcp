@@ -22,10 +22,12 @@ from precis.runtime._shared import RuntimeShape
 #: Used by :meth:`HintsMixin._maybe_add_skill_hint` when
 #: ``precis-{kind}-help`` doesn't exist because the kind was renamed
 #: but the skill kept its broader name (provider-rooted vs.
-#: capability-rooted naming + the rename slice).
+#: capability-rooted naming + the rename slice), or the kind's skill
+#: is task-named (``part`` → ``precis-part-select-help``, gr524267).
 _KIND_SKILL_ALIASES: dict[str, str] = {
     "perplexity-research": "precis-perplexity-help",
     "perplexity-reasoning": "precis-perplexity-help",
+    "part": "precis-part-select-help",
 }
 
 
@@ -132,9 +134,10 @@ class HintsMixin(RuntimeShape):
             if kind == "skill":
                 hint = "get(kind='skill', id='toc')"
             elif kind in _KIND_SKILL_ALIASES:
-                # Renamed kinds whose `precis-{kind}-help` doesn't
-                # exist (the skill kept the broader provider-rooted
-                # name). Mapped here so the auto-hint stays runnable.
+                # Kinds whose `precis-{kind}-help` doesn't exist —
+                # renamed kinds (skill kept the provider-rooted name)
+                # or a task-named skill (`part`). Mapped here so the
+                # auto-hint stays runnable.
                 hint = f"get(kind='skill', id='{_KIND_SKILL_ALIASES[kind]}')"
             else:
                 # gr332020 item 2: only point at ``precis-{kind}-help``

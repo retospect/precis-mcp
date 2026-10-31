@@ -132,6 +132,13 @@ C0G > X7R > X5R > Y5V/Z5U against the part fact's minimum. The
 deterministic `passive_rating` rule (precis-pcb-check-help) applies the
 same revision; a bump marks every verdict that recorded it stale.
 
+## Cite the DB in the board script
+
+A change argued off a review verdict keeps the evidence it rested on
+in the script — `# <handle> (<why>)` on the deciding line, same
+convention as every other precis-sourced number. Full convention:
+[[precis-workspace-help]] §Cite the DB in the script (gr514049).
+
 ## Not here
 
 The review proposes, it does not edit the board — argue changes with

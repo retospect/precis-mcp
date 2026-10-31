@@ -220,6 +220,13 @@ def test_skill_breadcrumb_points_at_existing_kind_skill() -> None:
     assert _breadcrumb("draft") == "get(kind='skill', id='precis-draft-help')"
 
 
+def test_skill_breadcrumb_part_kind_maps_to_task_named_skill() -> None:
+    """gr524267: kind='part' has no ``precis-part-help`` — the skill is
+    task-named, so the hint maps it rather than falling back to the
+    verb or pointing at the (alias-served) guessed slug."""
+    assert _breadcrumb("part") == "get(kind='skill', id='precis-part-select-help')"
+
+
 def test_skill_breadcrumb_skips_nonexistent_kind_skill() -> None:
     """gr332020 item 2: a live kind with no shipped help skill must fall
     back to the per-verb hint, not fabricate a dead-end slug."""

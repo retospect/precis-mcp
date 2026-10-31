@@ -409,6 +409,14 @@ other).
   off-axis port even on an otherwise-correct design. It warns, never
   gates, and names which measurement it used.
 
+## Cite the DB in the design script
+
+A seam angle, lattice choice or join parameter taken from a paper, a
+finding or a catalogue row carries `# <handle> (<why>)` on its script
+line — same convention as every other workspace script. Full
+convention: [[precis-workspace-help]] §Cite the DB in the script
+(gr514049).
+
 ## See also
 
 - [[precis-se-help]] — the call surface: op grammar, units, non-atomic views

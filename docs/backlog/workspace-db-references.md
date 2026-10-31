@@ -144,14 +144,16 @@ whether copyrighted chunks may leave at all is an open question below.
 
 ### Skill updates
 
-Skills are runtime docs (`src/precis/data/skills/`). Add a short
-"Citing sources in workspace code" section, one shared text, to:
-`precis-pcb-help`, `precis-pcb-check-help`, `precis-pcb-review-help`,
-`precis-pcb-route-help` (constraint numbers), `precis-pcb-fab-help`,
-`precis-se-help`, `precis-se-design-help`, `precis-se-atomic-help`
-(seam/lattice choices). The gr513747 optimisation skill gets the weights
-rule when it lands. Each says: the v1 syntax, what to annotate, that
-unresolved handles are lint errors, that export expands them.
+Skills are runtime docs (`src/precis/data/skills/`). The shared section
+lives in `precis-workspace-help` §Cite the DB in the script; the other
+skills carry a short "Cite the DB" pointer to it naming what *they*
+annotate. Covered (gr514049): `precis-pcb-help`, `precis-pcb-check-help`
+(datasheet-authored pads/pins), `precis-pcb-review-help` (a fix argued
+off a verdict), `precis-pcb-fab-help` (export side), `precis-pcb-topo-help`
+(constraint numbers — the spec's `precis-pcb-route-help` never shipped;
+topo is the router), `precis-se-help`, `precis-se-design-help`,
+`precis-se-atomic-help` (seam/lattice choices), and the gr513747
+weights rule in `precis-workspace-optimize-help`. Slice 6 done.
 
 ## Slices (smallest first)
 
@@ -162,7 +164,7 @@ unresolved handles are lint errors, that export expands them.
 | 3 | `expand_references` pure function, `block` mode, citations + capped excerpts, idempotent | golden file; expand twice == once; strip(expand(x)) == x |
 | 4 | Staleness digests + re-export diff echo | change a chunk, re-export, entry replaced and echoed |
 | 5 | Wire into se `tree_to_json` `workspaces` and the pcb design export (needs those export paths to exist) | exported design rebuilds offline with excerpts present |
-| 6 | Skill text in the eight skills above | skill lint |
+| 6 | Skill text in the skills above — DONE (gr514049 lane worktree-skillnames) | skill lint |
 | 7 | Extension fields (`~selector`, ` | gloss`, `inline`/`sidecar` modes) | v1 reader keeps unknown tails verbatim |
 
 Slices 1-4 need nothing from the workspace code; 5 blocks on the export

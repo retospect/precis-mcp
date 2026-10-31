@@ -119,6 +119,14 @@ job's routed output on the standing boards — the anneal+vroute column
 is retired (`op='route'` refuses), so the table is topo numbers and
 their DRC-by-rule breakdown.
 
+## Cite the DB in the board script
+
+A constraint number the script sets from a datasheet or standard —
+clearance, creepage, trace width, a via drill — carries `# <handle>
+(<why>)` on its line, same convention as every other precis-sourced
+number. Full convention: [[precis-workspace-help]] §Cite the DB in the
+script (gr514049).
+
 ## See also
 
 - [[precis-pcb-help]] — author the netlist a topo-place run acts on; the

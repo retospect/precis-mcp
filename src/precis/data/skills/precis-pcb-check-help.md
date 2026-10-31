@@ -290,3 +290,11 @@ Judged like every inline edit: a delta that adds or deepens an error
 stores nothing. `view='pinout'` marks each overridden pad
 `authored pad override` and names dead ones (pad no longer on the
 resolved footprint); `view='footprints'` lists their numbers.
+
+## Cite the DB in the board script
+
+A pad/pin fix or authored footprint taken from a datasheet cites it the
+same way the rest of the script does — `# <handle> (<why>)` on the
+deciding line (`# ds:<slug>~p12 (pad 9 is the exposed thermal pad)`).
+Full convention: [[precis-workspace-help]] §Cite the DB in the script
+(gr514049).

@@ -278,10 +278,27 @@ _TAG_GROUPS: tuple[tuple[str, str], ...] = (
 
 
 # Inline aliases shown next to the canonical slug — keeps the index
-# from listing two rows for the same skill. ``toc`` is the only one
-# today; new aliases land here.
+# from listing two rows for the same skill. Served aliases
+# (:data:`_SKILL_SLUG_ALIASES`) plus the synth ``toc``; new aliases
+# land here.
 _SKILL_ALIASES_INLINE: dict[str, tuple[str, ...]] = {
     "precis-toc": ("toc",),
+    "precis-part-select-help": ("precis-part-help",),
+}
+
+
+#: Served-slug aliases — an id with no file of its own that resolves to
+#: one (alias → canonical, gr524267). ``part`` is the known exception
+#: to the ``precis-<kind>-help`` convention every other kind follows:
+#: its skill is task-named (``precis-part-select-help``), so the
+#: guessed ``precis-part-help`` was a silent NotFound. Renaming the
+#: file would break every shipped reference; the alias keeps both
+#: spellings working, selectors (``~N``, ``/toc``) included — unlike
+#: the gr338442 one-hop below, which only rescues bare kind/verb words
+#: on the whole-skill path. A real file with the alias's name always
+#: wins (delete the map entry the day one ships).
+_SKILL_SLUG_ALIASES: dict[str, str] = {
+    "precis-part-help": "precis-part-select-help",
 }
 
 
@@ -795,8 +812,8 @@ class SkillHandler(Handler):
             )
         text = _load_skill(slug, corpus=corpus)
         if text is None:
-            alias_target = f"precis-{slug}-help"
-            if _corpus_has(corpus, alias_target):
+            alias_target = _serve_fallback(slug, corpus)
+            if alias_target is not None:
                 text = _load_skill(alias_target, corpus=corpus)
                 slug = alias_target
         if text is None and slug in self._SYNTHESIZED_SKILLS:
@@ -912,6 +929,14 @@ class SkillHandler(Handler):
                 next="skill slugs are lowercase letters/digits/hyphens",
             )
 
+        # A registered served alias (gr524267) resolves before dispatch
+        # so ``<alias>/toc`` and ``<alias>~N`` honour it too — unlike the
+        # gr338442 one-hop below, which stays a whole-skill fallback.
+        requested_slug = slug
+        served_via_alias = _skill_alias_target(slug, corpus)
+        if served_via_alias is not None:
+            slug = served_via_alias
+
         # Path view (``slug/toc``) and explicit ``view='toc'`` both
         # render the TOC. Chunk specs ``slug~N`` / ``slug~A..B`` go
         # through the chunk-resolver below.
@@ -988,8 +1013,11 @@ class SkillHandler(Handler):
             # name. Before giving up, check the one-hop alias — if it
             # exists, serve it (with a banner naming the redirect) rather
             # than making the caller retry with the fuller slug.
-            alias_target = f"precis-{slug}-help"
-            if _corpus_has(corpus, alias_target):
+            # ``_serve_fallback`` also covers the registered alias map —
+            # unreachable after the early resolution above (an alias that
+            # resolved has a file), kept so this block reads complete.
+            alias_target = _serve_fallback(slug, corpus)
+            if alias_target is not None:
                 text = _load_skill(alias_target, corpus=corpus)
                 assert text is not None  # _corpus_has just confirmed it
                 text = f"(aliased from {slug!r} → {alias_target})\n\n" + text
@@ -1029,6 +1057,10 @@ class SkillHandler(Handler):
                     ),
                 ],
             )
+        if served_via_alias is not None:
+            # gr524267: the requested id is a registered alias — name
+            # the redirect with the same banner the one-hop uses.
+            text = f"(aliased from {requested_slug!r} → {slug})\n\n" + text
         # Client-held rev tag (gr477798): every whole-skill serve ends
         # with ``skill rev <sha8>``; the stub is returned only when the
         # caller echoes the current sha8 via ``have=``. The sha is over
@@ -4748,8 +4780,8 @@ def _skill_is_write_only(slug: str, *, corpus: dict[str, str] | None = None) -> 
     """
     text = _load_skill(slug, corpus=corpus)
     if text is None:
-        alias_target = f"precis-{slug}-help"
-        if _corpus_has(corpus, alias_target):
+        alias_target = _serve_fallback(slug, corpus)
+        if alias_target is not None:
             text = _load_skill(alias_target, corpus=corpus)
     if text is None:
         return False
@@ -4762,8 +4794,8 @@ def _write_only_stub(slug: str, *, corpus: dict[str, str] | None = None) -> str:
     (the skill exists; this connection just can't use it)."""
     text = _load_skill(slug, corpus=corpus)
     if text is None:
-        alias_target = f"precis-{slug}-help"
-        if _corpus_has(corpus, alias_target):
+        alias_target = _serve_fallback(slug, corpus)
+        if alias_target is not None:
             slug = alias_target
             text = _load_skill(slug, corpus=corpus)
     fm = parse_frontmatter(text or "")
@@ -5035,6 +5067,33 @@ def _list_skills() -> list[str]:
 def _corpus_has(corpus: dict[str, str] | None, slug: str) -> bool:
     """``slug`` exists in ``corpus`` (a worktree map) or the packaged corpus."""
     return slug in corpus if corpus is not None else skill_exists(slug)
+
+
+def _skill_alias_target(slug: str, corpus: dict[str, str] | None = None) -> str | None:
+    """Canonical slug when ``slug`` is a registered served alias whose
+    target exists in ``corpus`` (:data:`_SKILL_SLUG_ALIASES`, gr524267).
+
+    A real file always wins — an alias shadows nothing, it only rescues
+    a slug that would otherwise NotFound."""
+    if _corpus_has(corpus, slug):
+        return None
+    target = _SKILL_SLUG_ALIASES.get(slug)
+    if target is not None and _corpus_has(corpus, target):
+        return target
+    return None
+
+
+def _serve_fallback(slug: str, corpus: dict[str, str] | None = None) -> str | None:
+    """Slug to serve when ``slug`` has no file of its own.
+
+    Order: a registered served alias (:data:`_SKILL_SLUG_ALIASES`,
+    gr524267), then the gr338442 one-hop ``precis-<slug>-help`` for a
+    bare kind/verb word. ``None`` when neither resolves."""
+    target = _skill_alias_target(slug, corpus)
+    if target is not None:
+        return target
+    candidate = f"precis-{slug}-help"
+    return candidate if _corpus_has(corpus, candidate) else None
 
 
 def _load_skill(slug: str, *, corpus: dict[str, str] | None = None) -> str | None:
