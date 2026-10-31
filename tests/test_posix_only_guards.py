@@ -41,7 +41,10 @@ from pathlib import Path
 _ROOT = Path(__file__).resolve().parents[1]
 
 #: Modules a human vetted as cross-platform despite tripping a detector.
-_EXEMPT: set[str] = set()
+_EXEMPT: set[str] = {
+    # Only asserts that a brief's text names "scripts/ship"; fake seams, no exec.
+    "tests/test_run_slice.py",
+}
 
 #: Stdlib modules that do not exist on Windows — importing one at module
 #: scope doesn't just fail a test, it breaks collection of the whole file.

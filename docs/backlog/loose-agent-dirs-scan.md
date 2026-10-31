@@ -11,7 +11,7 @@ Source gripes: gr520908.
 Reto, 2026-10-26: file a meta-gripe each time an agent's working state
 has no precis home and it falls back to loose files. The trigger: ~500
 GRIPE_FIX fleet files in `/tmp` lost to the 2026-10-26 reboot
-(gr519361), and `~/design-tree` holding a spec, a ruling log, red
+(gr519361), and a `design-tree` directory in the home dir holding a spec, a ruling log, red
 lists, run metrics and ~25 scripts for two days before anyone mapped
 them to homes.
 

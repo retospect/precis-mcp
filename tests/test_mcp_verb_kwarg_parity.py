@@ -268,7 +268,6 @@ _ARGS_ONLY: frozenset[tuple[str, str, str]] = frozenset(
         ("finding", "edit", "unacquirable_mode"),
         ("finding", "edit", "unacquirable_note"),
         # -- edit: memory D3-shortcut argument-graph kwargs ---------------
-        ("memory", "edit", "hook"),
         ("memory", "edit", "rule"),
         ("memory", "edit", "warrant"),
         # -- edit: in-process planner state --------------------------------
