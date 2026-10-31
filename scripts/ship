@@ -189,7 +189,10 @@ set -euo pipefail
 
 cd "$(dirname "$0")/.."
 WORKTREE="$PWD"
-BRANCH="$(git branch --show-current)"
+# Tolerant: --await reads only the state file and must answer from a tree
+# git cannot see (the test container's /app); the ship path still refuses
+# an empty BRANCH below ("detached HEAD").
+BRANCH="$(git branch --show-current 2>/dev/null || true)"
 SHIP_T0="$(date +%s)"
 
 # --impacted (or PRECIS_SHIP_IMPACTED=1): gate pytest with testmon impact
