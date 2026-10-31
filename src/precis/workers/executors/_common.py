@@ -644,6 +644,57 @@ def _coordinator_capability_ok(
     return requires <= advertised.get(host, set())
 
 
+def placement_requires(meta: dict[str, Any]) -> frozenset[str]:
+    """The job_type's ``ServiceSpec.placement`` tokens (td543917): host
+    capabilities checked at claim, never reserved. Empty for a job_type with
+    no spec or none declared — every job_type but the dark-factory ops."""
+    job_type = meta.get("job_type")
+    spec = SERVICES_BY_NAME.get(str(job_type)) if job_type else None
+    return spec.placement if spec is not None else frozenset()
+
+
+def _placement_ok(
+    meta: dict[str, Any], advertised: dict[str, set[str]], default_host: str
+) -> bool:
+    """Check-only placement gate (td543917): ``True`` when the job_type
+    declares no :func:`placement_requires` tokens, or the host that would
+    run it (its ``target_node`` pin, else this claiming host — the
+    :func:`_coordinator_capability_ok` derivation) advertises every one.
+    Applied on every claim path, unlike that opt-in gate: the static
+    ``JobTypeSpec.requires`` of an ``ssh_node`` job (``has_gpaw``) is not a
+    ``resource_slots`` token, so ``ssh_node`` cannot opt into
+    ``check_job_type_requires`` without stranding every GPU job."""
+    tokens = placement_requires(meta)
+    if not tokens:
+        return True
+    params = meta.get("params") or {}
+    host = str(params.get("target_node") or default_host)
+    return tokens <= advertised.get(host, set())
+
+
+def advertised_by_host(conn: Connection) -> dict[str, set[str]]:
+    """Public read of :func:`_advertised_by_host` — what each live host
+    advertises in ``resource_slots`` (the plan tick's queued-job note)."""
+    return _advertised_by_host(conn)
+
+
+def placement_gap(
+    meta: dict[str, Any], advertised: dict[str, set[str]]
+) -> frozenset[str]:
+    """The job's :func:`placement_requires` tokens when NO live host in
+    ``advertised`` (``host -> tokens``) offers all of them at once, else
+    empty. A ``target_node`` pin narrows the search to that host. Shared by
+    the sweeper's unschedulable alert and the plan tick's queued note."""
+    tokens = placement_requires(meta)
+    if not tokens:
+        return frozenset()
+    pin = (meta.get("params") or {}).get("target_node")
+    hosts = [advertised.get(str(pin), set())] if pin else list(advertised.values())
+    if any(tokens <= have for have in hosts):
+        return frozenset()
+    return tokens
+
+
 def _advertised_by_host(conn: Connection) -> dict[str, set[str]]:
     """``host -> {resources it currently advertises}`` from ``resource_slots``.
 
@@ -1123,6 +1174,13 @@ def claim_executor_jobs(
     above is unsafe for a Yield-heavy coordinator job_type like
     ``quest_tick``). Off by default: every other caller is unaffected.
 
+    **Placement gate (td543917).** Always on: a row whose job_type's
+    ``ServiceSpec.placement`` (:func:`placement_requires`) names a token the
+    running host does not advertise is dropped the same way
+    (:func:`_placement_ok`) — how the ``ssh_node`` dark-factory ops
+    (``run_slice``, ``land_slice``, ``release_*``) reach a host with the
+    repo checkout, ``claude`` and ``git``.
+
     **Node gate (the structure atomistic IR #3).** A job may pin itself to a node via
     ``meta.params.target_node`` (``struct_relax`` sets it so the GPU
     relax is claimed by the node that ssh+stages it, keeping the NFS
@@ -1311,6 +1369,16 @@ def claim_executor_jobs(
             # claim_executor_jobs's docstring. Runs before anything else so a
             # capability-less host never reaches (and never reserves against)
             # the resource_slots path below for this row.
+            return None
+        if not _placement_ok(meta, advertised, default_host):
+            # Placement gate (td543917): a dark-factory op on a host without
+            # its checkout / claude / git stays queued for a capable host.
+            log.debug(
+                "claim: skip job %s on %s — placement %s not advertised",
+                ref_id,
+                default_host,
+                sorted(placement_requires(meta)),
+            )
             return None
         if reclaim_stale_running and meta.get("reserved"):
             # A stolen (crash-recovered) job still carries the dead worker's
@@ -2215,6 +2283,7 @@ __all__ = [
     "WAITING_CHILDREN",
     "WAITING_MANUAL_KICK",
     "WAITING_TIME",
+    "advertised_by_host",
     "append_chunk",
     "claim_executor_jobs",
     "current_status",
@@ -2224,6 +2293,8 @@ __all__ = [
     "max_job_attempts",
     "maybe_reset_gpu_after_kill",
     "park_job_until",
+    "placement_gap",
+    "placement_requires",
     "poison_guard",
     "record_failure",
     "release_job_reservation",

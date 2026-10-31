@@ -8,6 +8,7 @@ never lets a broken probe escape (heartbeat liveness must survive it).
 from __future__ import annotations
 
 import subprocess
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -25,6 +26,7 @@ _OVERRIDE_ENVS = (
     "PRECIS_CLAUDE_BIN",
     "PRECIS_FIX_WORK_DIR",
     "CLAUDE_CODE_OAUTH_TOKEN",
+    "PRECIS_SLICE_ROOT",
 )
 
 
@@ -88,7 +90,7 @@ def test_container_runtime_none_when_absent(monkeypatch: pytest.MonkeyPatch) -> 
 
 
 def test_container_runtime_explicit_abspath_off_path(
-    monkeypatch: pytest.MonkeyPatch, tmp_path
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     """OrbStack's docker often isn't on a daemon's PATH — a full path in
     PRECIS_CONTAINER_BIN is found via existence, not ``which``."""
@@ -315,13 +317,61 @@ def test_probe_git_present_and_absent(monkeypatch: pytest.MonkeyPatch) -> None:
     assert cap._probe_git() == 0
 
 
+def test_vocabulary_includes_placement_tokens() -> None:
+    """td543917: ``ServiceSpec.placement`` tokens are probed like ``requires``."""
+    assert {"repo_checkout", "claude_bin", "git"} <= cap.capability_vocabulary()
+    assert "repo_checkout" in cap._PROBES
+
+
+def test_probe_repo_checkout_present(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    (tmp_path / ".git").mkdir()
+    monkeypatch.setenv("PRECIS_SLICE_ROOT", str(tmp_path))
+    assert cap._probe_repo_checkout() == 1
+
+
+def test_probe_repo_checkout_absent_without_dot_git(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setenv("PRECIS_SLICE_ROOT", str(tmp_path))
+    assert cap._probe_repo_checkout() == 0
+    monkeypatch.setenv("PRECIS_SLICE_ROOT", str(tmp_path / "missing"))
+    assert cap._probe_repo_checkout() == 0
+
+
+def test_probe_repo_checkout_absent_when_slice_root_raises(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The jo543902 shape: a venv install with no checkout around it."""
+    from precis.workers.job_types import run_slice
+
+    def _no_checkout() -> None:
+        raise RuntimeError("no git checkout around site-packages")
+
+    monkeypatch.setattr(run_slice, "slice_root", _no_checkout)
+    assert cap._probe_repo_checkout() == 0
+
+
+def test_probe_repo_checkout_unknown_when_git_times_out(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from precis.workers.job_types import run_slice
+
+    def _hang() -> None:
+        raise subprocess.TimeoutExpired(cmd="git", timeout=300)
+
+    monkeypatch.setattr(run_slice, "slice_root", _hang)
+    assert cap._probe_repo_checkout() is None
+
+
 def test_probe_claude_bin_on_path(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(cap.shutil, "which", _which({"claude"}))
     assert cap._probe_claude_bin() == 1
 
 
 def test_probe_claude_bin_env_abspath_off_path(
-    monkeypatch: pytest.MonkeyPatch, tmp_path
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     """A daemon PATH often misses claude — an absolute PRECIS_CLAUDE_BIN
     is found via existence, mirroring container_runtime."""
@@ -441,7 +491,7 @@ def test_container_agent_degraded_reports_zero(monkeypatch: pytest.MonkeyPatch) 
 
 
 def test_upload_staging_reported_only_when_configured(
-    monkeypatch: pytest.MonkeyPatch, tmp_path
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     """A host whose ``PRECIS_UPLOAD_STAGING`` resolves advertises the
     capability the ``paper_pull`` upload leg gates on; an unset (or

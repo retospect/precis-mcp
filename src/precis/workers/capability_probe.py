@@ -89,7 +89,8 @@ RETRACTABLE_SOFT_SIGNALS = frozenset(
 
 
 def capability_vocabulary() -> frozenset[str]:
-    """Every capability token any service declares via ``requires``.
+    """Every capability token any service declares via ``requires`` or
+    ``placement`` (the check-only claim-gate tokens, td543917).
 
     The self-probe evaluates exactly this set, so a capability no host can
     provide still gets a definitive absent (deleted) row rather than being
@@ -97,7 +98,7 @@ def capability_vocabulary() -> frozenset[str]:
     """
     tokens: set[str] = set()
     for spec in SERVICES:
-        tokens |= set(spec.requires)
+        tokens |= set(spec.requires) | set(spec.placement)
     return frozenset(tokens)
 
 
@@ -342,6 +343,31 @@ def _probe_claude_config() -> int:
     return 1 if _stored_claude_auth() else 0
 
 
+def _probe_repo_checkout() -> int | None:
+    """The repo checkout the dark-factory jobs work in (td543917):
+    ``run_slice.slice_root()`` — ``PRECIS_SLICE_ROOT``, else the checkout
+    around the installed package — resolving to a directory that holds a
+    ``.git`` (a dir in a main checkout, a file in a worktree).
+
+    ``1`` present; ``0`` when ``slice_root()`` raises (no checkout around
+    the package, the case of a venv install — jo543902), the path is not a
+    directory, it has no ``.git``, or ``git`` is not installed; ``None``
+    (unknown, leave the row) when ``git`` timed out or failed to start for
+    another reason."""
+    from precis.workers.job_types import run_slice
+
+    try:
+        root = run_slice.slice_root()
+    except RuntimeError:
+        return 0
+    except FileNotFoundError:
+        return 0
+    except (OSError, subprocess.SubprocessError):
+        log.warning("capability_probe: repo_checkout git probe failed", exc_info=True)
+        return None
+    return 1 if root.is_dir() and (root / ".git").exists() else 0
+
+
 def claude_bin_present() -> bool:
     """Public read of the ``claude_bin`` probe — whether THIS host can exec
     ``claude`` (``PRECIS_CLAUDE_BIN`` or ``claude`` on PATH). The LLM router's
@@ -388,6 +414,7 @@ _PROBES: dict[str, Callable[[], int | None]] = {
     "claude_bin": _probe_claude_bin,
     "clones_dir": _probe_clones_dir,
     "claude_config_mount": _probe_claude_config,
+    "repo_checkout": _probe_repo_checkout,
 }
 
 #: Vocabulary tokens already warned about as probe-less — the

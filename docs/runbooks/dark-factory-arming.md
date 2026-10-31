@@ -84,6 +84,34 @@ owner). `ci_verdict_poll` needs only the DB and api.github.com; set
 
 ## Slice hosts
 
+A slice host is any worker whose heartbeat advertises `repo_checkout`,
+`claude_bin` and `git`. No host is named anywhere: `run_slice` is claimed
+only by a worker advertising all three; `land_slice`, `release_cut` and
+`release_deploy` need `repo_checkout` + `git` (the lander and a re-cut or
+deploy stay pinned to the host that ran the slice or the cut). Until a host
+qualifies, the job waits `STATUS:queued` — it is not failed or counted as
+an attempt — the sweeper raises `scheduler/unschedulable:<job id>`, and
+after 10 min the tick notes `td<id>: job jo<N> queued <m> min — no host
+advertises {tokens}`.
+
+The probes, re-run every heartbeat:
+
+- `repo_checkout`: `PRECIS_SLICE_ROOT` names a directory holding `.git`, or,
+  unset, the worker's code sits inside a git checkout. A venv install
+  (`site-packages`) has none: set `PRECIS_SLICE_ROOT`.
+- `claude_bin`: `claude` on the worker's `PATH`, or `PRECIS_CLAUDE_BIN`
+  set to a name on `PATH` or an absolute path (a launchd `PATH` often
+  misses it).
+- `git`: `git` on the worker's `PATH`.
+
+Set the env vars in the worker's service environment and restart it; the
+next heartbeat advertises the tokens. To check what a host advertises:
+
+    scripts/prod-psql --ro "SELECT host, resource, capacity FROM resource_slots
+      WHERE resource IN ('repo_checkout', 'claude_bin', 'git') ORDER BY host"
+
+The other settings a slice host reads:
+
 - `PRECIS_SLICE_ROOT`: the repo checkout `run_slice` cuts `slice-td<id>`
   worktrees (branch `slice/<id>`) under. Default: the main checkout of
   the repo the worker runs from. Set it when the worker has no git

@@ -147,6 +147,17 @@ class ServiceSpec:
     needs_claude: str | None = None
     # ── capability + cost (feeds later slices) ──────────────────────
     requires: frozenset[str] = field(default_factory=frozenset)
+    #: Host capabilities a job of this type needs on the host that runs it
+    #: (td543917) — the same ``resource_slots`` vocabulary as ``requires``,
+    #: but CHECK-ONLY: the claim gate (``executors._common.claim_executor_
+    #: jobs``) skips the row on a host whose heartbeat does not advertise
+    #: every token, so it waits ``STATUS:queued`` for a capable host, and
+    #: nothing is reserved or counted. ``requires`` reserves a capacity-1
+    #: slot until the job ends and claims anyway where the token is
+    #: unadvertised — wrong for a multi-hour slice session that must never
+    #: start on a host without the checkout. The sweeper's
+    #: ``_alert_unschedulable_jobs`` pages when no live host advertises them all.
+    placement: frozenset[str] = field(default_factory=frozenset)
     uses_model: bool = False
     uses_external: tuple[str, ...] = ()
     prompt_env: str | None = None
@@ -1282,6 +1293,78 @@ SERVICES: tuple[ServiceSpec, ...] = (
         "ledger; minted by a recurring todo, dark until service_config "
         "lights it.",
         doc_skill="precis-gardener-help",
+    ),
+    # ── Dark factory job types (td543917: capability placement) ──────
+    # The slice, land and release ops run git/claude in a repo checkout on
+    # the claiming host: `placement` holds them queued until a host whose
+    # heartbeat advertises the tokens claims them. The tick, verdict poll
+    # and gripe validation are DB/HTTP-only (job_inproc) and need none.
+    ServiceSpec(
+        name="run_slice",
+        label="Run slice (job)",
+        category="jobs",
+        kind=ServiceKind.JOB,
+        placement=frozenset({"repo_checkout", "claude_bin", "git"}),
+        uses_model=True,
+        one_line="One slice headless: claude -p in its own worktree of the "
+        "host's checkout; a clean exit mints land_slice.",
+        doc_skill="precis-job-help",
+    ),
+    ServiceSpec(
+        name="land_slice",
+        label="Land slice (job)",
+        category="jobs",
+        kind=ServiceKind.JOB,
+        placement=frozenset({"repo_checkout", "git"}),
+        one_line="Land a slice's branch with scripts/ship --quick on the "
+        "host that ran it.",
+        doc_skill="precis-job-help",
+    ),
+    ServiceSpec(
+        name="release_cut",
+        label="Release cut (job)",
+        category="jobs",
+        kind=ServiceKind.JOB,
+        placement=frozenset({"repo_checkout", "git"}),
+        one_line="Cut release/r<N> with scripts/release --cut-only in the "
+        "host's checkout.",
+        doc_skill="precis-job-help",
+    ),
+    ServiceSpec(
+        name="release_deploy",
+        label="Release deploy (job)",
+        category="jobs",
+        kind=ServiceKind.JOB,
+        placement=frozenset({"repo_checkout", "git"}),
+        one_line="Deploy an approved release with scripts/release "
+        "--deploy-only on the release owner's host.",
+        doc_skill="precis-job-help",
+    ),
+    ServiceSpec(
+        name="plan_dispatch",
+        label="Plan dispatch tick (job)",
+        category="jobs",
+        kind=ServiceKind.JOB,
+        one_line="Dark-factory tick: gates, loops, reviews, phases, one job "
+        "per doable plan task, hygiene.",
+        doc_skill="precis-job-help",
+    ),
+    ServiceSpec(
+        name="ci_verdict_poll",
+        label="CI verdict poll (job)",
+        category="jobs",
+        kind=ServiceKind.JOB,
+        uses_external=("github",),
+        one_line="Record check.yml's verdict for a release cut on the plan root.",
+        doc_skill="precis-job-help",
+    ),
+    ServiceSpec(
+        name="gripe_validate",
+        label="Gripe validate (job)",
+        category="jobs",
+        kind=ServiceKind.JOB,
+        one_line="Close STATUS:verify gripes whose resolved sha is in prod.",
+        doc_skill="precis-job-help",
     ),
     ServiceSpec(
         # Gripe pipeline v2 slice 3 (precis.workers.gripe_triage): the

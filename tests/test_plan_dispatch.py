@@ -1047,3 +1047,64 @@ def test_pick_lane_excludes_the_builder_vendor() -> None:
     )
     # Without the exclusion the pick is unchanged (table order).
     assert pick_lane(None, "review", lanes=(sub, codex), counts={}) is sub
+
+
+# ── td543917: placement capabilities ───────────────────────────────
+
+
+def _advertise(store: Store, host: str, slots: dict[str, int | None]) -> None:
+    store.sync_host_resource_slots(host, slots)
+    with store.pool.connection() as conn:
+        conn.execute(
+            "INSERT INTO host_heartbeat (host, ts) VALUES (%s, now()) "
+            "ON CONFLICT (host) DO UPDATE SET ts = EXCLUDED.ts",
+            (host,),
+        )
+        conn.commit()
+
+
+def _backdate(store: Store, ref_id: int, minutes: int) -> None:
+    with store.pool.connection() as conn:
+        conn.execute(
+            "UPDATE refs SET created_at = now() - make_interval(mins => %s) "
+            "WHERE ref_id = %s",
+            (minutes, ref_id),
+        )
+        conn.commit()
+
+
+def _unplaced_notes(res: pd.PassResult) -> list[str]:
+    return [n for n in res.notes if "no host advertises" in n]
+
+
+def test_queued_slice_with_no_capable_host_gets_a_note(store: Store) -> None:
+    mint = _one_task_plan(store)
+    task = mint.ids["task"]
+    job = _slice_job(store, task, "run_slice", "queued")
+    _backdate(store, job, 15)
+    # Capabilities split across two hosts: neither can place the slice.
+    _advertise(store, "node-a", {"repo_checkout": 1})
+    _advertise(store, "node-b", {"claude_bin": 1, "git": 1})
+    res = pd.run_pass(store)
+    assert _unplaced_notes(res) == [
+        f"td{task}: job jo{job} queued 15 min — no host advertises "
+        "{claude_bin, git, repo_checkout}"
+    ]
+    # A job still queued is no attempt: no ask, no second dispatch.
+    assert (res.asks, res.dispatched) == (0, 0)
+    assert _status(store, task) == "open"
+
+
+def test_queued_slice_note_waits_ten_minutes(store: Store) -> None:
+    mint = _one_task_plan(store)
+    job = _slice_job(store, mint.ids["task"], "run_slice", "queued")
+    _backdate(store, job, 5)
+    assert _unplaced_notes(pd.run_pass(store)) == []
+
+
+def test_queued_slice_with_a_capable_host_gets_no_note(store: Store) -> None:
+    mint = _one_task_plan(store)
+    job = _slice_job(store, mint.ids["task"], "run_slice", "queued")
+    _backdate(store, job, 30)
+    _advertise(store, "node-a", {"repo_checkout": 1, "claude_bin": 1, "git": 1})
+    assert _unplaced_notes(pd.run_pass(store)) == []

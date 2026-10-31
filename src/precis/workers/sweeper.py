@@ -125,15 +125,17 @@ from precis.utils.job_bubble import bubble_job_failure, remove_child_failed_tags
 from precis.workers.executors._common import (
     CLAIMABLE,
     JOB_EVENT_KIND,
+    advertised_by_host,
     append_chunk,
     effective_requires,
     job_type_requires,
+    placement_gap,
+    placement_requires,
     release_job_reservation,
     set_meta,
 )
 from precis.workers.nursery import (
     DEAD_WORKER_SILENCE_MIN,
-    HOST_DARK_SILENCE_MIN,
     WORKER_CONTINUOUS_PROCESSES,
 )
 from precis.workers.runner import BatchResult
@@ -642,6 +644,12 @@ def _alert_unschedulable_jobs(store: Store) -> int:
     skipped: self-gating declines to reserve but the node gate still runs
     them, so they aren't stuck. Returns the alert count.
 
+    td543917: a job_type's ``ServiceSpec.placement`` tokens (the dark-factory
+    ops — ``run_slice`` needs ``repo_checkout`` + ``claude_bin`` + ``git``)
+    are a check-only gate on every claim path, so the job is stuck unless
+    one live host advertises ALL of them (:func:`placement_gap`); that
+    applies to pinned rows too (only the pinned host is looked at).
+
     Also resolves any open ``scheduler`` alert whose fingerprint isn't in
     this pass's live set — the job left ``STATUS:queued`` or the capability
     got advertised — so alerts don't accumulate forever (gr254322).
@@ -653,21 +661,14 @@ def _alert_unschedulable_jobs(store: Store) -> int:
     the retraction for it again. That fossil can silently suppress this
     exact alert (the capability still reads as "advertised somewhere"), so
     the ``advertised`` set here is filtered to hosts with a fresh
-    ``host_heartbeat`` row — same :data:`HOST_DARK_SILENCE_MIN` cutoff
+    ``host_heartbeat`` row — same ``nursery.HOST_DARK_SILENCE_MIN`` cutoff
     ``nursery._detect_host_dark`` uses to call a host dark (mirrored on the
     ``/factory`` UI's ``_STALE_AFTER_S`` = 600s "alive" cutoff), so a host
     merely quiet between heartbeats (default 60s pacing) never trips this.
     """
     with store.pool.connection() as conn:
-        advertised = {
-            str(r[0])
-            for r in conn.execute(
-                "SELECT DISTINCT rs.resource FROM resource_slots rs "
-                "JOIN host_heartbeat hh ON hh.host = rs.host "
-                "WHERE hh.ts > now() - %(silence)s::interval",
-                {"silence": f"{HOST_DARK_SILENCE_MIN} minutes"},
-            ).fetchall()
-        }
+        by_host = advertised_by_host(conn)
+        advertised = set().union(*by_host.values()) if by_host else set()
         rows = conn.execute(
             """
             SELECT r.ref_id, r.meta
@@ -700,14 +701,24 @@ def _alert_unschedulable_jobs(store: Store) -> int:
             # too. ``job_type_requires`` folds in any params-conditional
             # tokens (``paper_pull``'s ``upload_staging``).
             requires = {**requires, **{tok: 1 for tok in job_type_requires(meta)}}
-        if not requires:
+        # td543917: placement tokens are gated on EVERY claim path (pinned or
+        # not) and must all sit on ONE live host, so a fleet that has the
+        # checkout on one host and claude on another still pages.
+        gap = placement_gap(meta, by_host)
+        if not requires and not gap:
             continue
         params = meta.get("params") or {}
-        if params.get("target_node"):
-            continue  # pinned → the node gate still runs it; not stuck
-        unmet = sorted(res for res in requires if res not in advertised)
-        if not unmet:
+        unmet_set = set(gap)
+        if not params.get("target_node"):
+            # Pinned → the node gate still runs the reserve-or-drop
+            # ``requires``; only an unpinned row is stuck on them.
+            unmet_set |= {res for res in requires if res not in advertised}
+        if not unmet_set:
             continue
+        unmet = sorted(unmet_set)
+        requires = {**requires, **{tok: 1 for tok in placement_requires(meta)}}
+        pin = params.get("target_node")
+        where = f"target_node={pin}" if pin else "no target_node pin"
         fingerprint = f"unschedulable:{ref_id}"
         raise_alert(
             store,
@@ -715,7 +726,7 @@ def _alert_unschedulable_jobs(store: Store) -> int:
             fingerprint=fingerprint,
             title=f"Job #{ref_id} needs {', '.join(unmet)} — no host advertises it",
             detail=(
-                f"requires={requires}; unmet={unmet}; no target_node pin. "
+                f"requires={requires}; unmet={unmet}; {where}. "
                 "Provision the capability (a host must advertise it via the "
                 "heartbeat probe) or the job waits forever."
             ),

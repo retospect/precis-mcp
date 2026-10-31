@@ -74,7 +74,10 @@ subtree whose nodes are shaped by :mod:`precis.plans.nodes`. One pass:
    (``meta.ask`` kind ``ruling``, tags ``ask-user`` + ``showstopper``) that it
    is ``blocked-by``. Attempts count the ended jobs since the newest ask on
    the task (or the ``attempt:<n>`` tag ``run_slice`` writes, before any ask),
-   so answering the ask re-arms the task.
+   so answering the ask re-arms the task. A job still queued is never an
+   attempt; one queued over 10 min whose ``ServiceSpec.placement``
+   capabilities no live host advertises gets the note ``td<id>: job jo<N>
+   queued <m> min — no host advertises {tokens}`` (td543917).
 
 Plan roots: the ids named by ``plan:<id>`` tags on live todos, plus every
 live todo whose meta makes it a gate / loop / generator / phase; a root
@@ -131,6 +134,10 @@ SERVICE = "plan_dispatch"
 
 #: A ``claimed-by:`` tag older than this, with no live job, is released.
 CLAIM_STALE = timedelta(hours=4)
+
+#: A plan job queued longer than this with no host advertising its placement
+#: capabilities gets a pass note (td543917).
+QUEUED_NOTE_AFTER = timedelta(minutes=10)
 
 #: Default ``meta.retries`` of a task.
 DEFAULT_RETRIES = 2
@@ -1043,6 +1050,8 @@ def _attempts(plan: _Plan, n: _Node) -> int:
     ended = [
         j
         for i, j in enumerate(jobs)
+        # Ended only: a job still queued — never claimed, e.g. waiting for
+        # a host with its placement capabilities (td543917) — is no attempt.
         if j.status in _JOB_ENDED
         and (since is None or j.created_at > since)
         and (floor is None or j.id > floor)
@@ -1407,8 +1416,43 @@ def _step_gripe_leases(store: Any, w: _Writer, res: PassResult, now: datetime) -
         res.notes.append(f"gr{gripe_id}: released expired {', '.join(held)}")
 
 
+def _step_unplaced(store: Any, plan: _Plan, res: PassResult, now: datetime) -> None:
+    """td543917: a note per plan job queued past :data:`QUEUED_NOTE_AFTER`
+    whose placement capabilities (``ServiceSpec.placement``) no live host
+    advertises together — the claim gate holds it until one does. Read-only;
+    the sweeper's ``scheduler/unschedulable:<id>`` alert is the page."""
+    from precis.workers.executors._common import (
+        advertised_by_host,
+        placement_gap,
+        placement_requires,
+    )
+
+    waiting = [
+        (n, j)
+        for n in plan.todos()
+        for j in plan.jobs(n)
+        if j.status == "queued"
+        and now - j.created_at > QUEUED_NOTE_AFTER
+        and placement_requires(j.meta)
+    ]
+    if not waiting:
+        return
+    with store.pool.connection() as conn:
+        advertised = advertised_by_host(conn)
+    for n, j in waiting:
+        gap = placement_gap(j.meta, advertised)
+        if not gap:
+            continue
+        minutes = int((now - j.created_at).total_seconds() // 60)
+        res.notes.append(
+            f"td{n.id}: job jo{j.id} queued {minutes} min — no host advertises "
+            f"{{{', '.join(sorted(gap))}}}"
+        )
+
+
 def _step_hygiene(plan: _Plan, w: _Writer, res: PassResult, now: datetime) -> None:
     _step_gripe_leases(w.store, w, res, now)
+    _step_unplaced(w.store, plan, res, now)
     for n in plan.todos():
         if _closed(n):
             continue
@@ -1509,6 +1553,7 @@ __all__ = [
     "DEFAULT_RETRIES",
     "NAME",
     "PARAMS_SCHEMA",
+    "QUEUED_NOTE_AFTER",
     "SERVICE",
     "SPEC",
     "PassResult",
