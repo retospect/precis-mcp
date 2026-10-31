@@ -71,7 +71,9 @@ prune), then cuts r<N+1> at main and prints
 "r<N> superseded by r<N+1> (red, contained in main)". A green or still-gating
 release keeps the refusal (`--supersede` retires it by operator call;
 `--abandon` deletes it on origin), as does a red one carrying commits main
-lacks. `cut` also refuses when an unrecorded release branch exists on origin,
+lacks. `cut` also refuses when an unrecorded release branch exists on origin
+with commits main lacks (one whose head main already contains is a stale
+leftover — ignored, with the delete command printed for the operator),
 off main's first-parent line, or when the cut tree carries a new duplicate
 migration number. Once release N is deploying or later, `cut` may append r<N+1> at
 origin/main — only when main contains N's head and its tree differs, so the
@@ -1867,7 +1869,29 @@ def cmd_cut(state: Path, args: argparse.Namespace) -> int:
     if existing is None:
         return _cut_refuse("could not read origin's branches (git ls-remote failed)")
     recorded = {r["branch"] for r in records}
-    foreign = [b for b in existing if b not in recorded]
+    main_tip = _ref(root, "refs/remotes/origin/main")
+    foreign = []
+    for b in existing:
+        if b in recorded:
+            continue
+        head = _remote(root, f"refs/heads/{b}")
+        if head is None:
+            return _cut_refuse(
+                "could not read origin's branches (git ls-remote failed)"
+            )
+        if head and not _ref(root, f"{head}^{{commit}}"):
+            _rgit(root, "fetch", "-q", "origin", f"refs/heads/{b}")
+        if head and main_tip and _ancestor(root, head, main_tip):
+            # gr544044: a leftover whose head main already contains (a
+            # superseded release Reto has not pruned, or a stale branch a
+            # stale record left) is retired — it must not stall the cut.
+            # Deleting it is the operator's call, so name the command.
+            print(
+                f"{b}: head on main, stale — ignored; "
+                f"delete with: git push origin --delete {b}"
+            )
+            continue
+        foreign.append(b)
     if foreign:
         return _cut_refuse(
             f"release branch {', '.join(foreign)} exists on origin — one open release at a time"

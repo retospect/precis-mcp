@@ -19,6 +19,7 @@ from tests._script import load_script
 from tests.test_round_gate import (
     REPO_ROOT,
     Rig,
+    _child,
     _commit,
     _git,
     _live,
@@ -89,11 +90,14 @@ def test_sha_off_first_parent_is_refused(rig: Rig) -> None:
 
 
 def test_rides_an_unrecorded_release_that_contains_s(rig: Rig) -> None:
-    _push_branch(rig, "release/r7", rig.shas["c3"])
+    # A foreign branch carrying commits main lacks is in flight; one whose
+    # head main already contains is a stale leftover (gr544044).
+    work = _child(rig, rig.shas["c3"], "unrecorded release work")
+    _push_branch(rig, "release/r7", work)
     out = _release(rig, "--sha", rig.shas["c2"], *FAST)
     assert out.returncode == 0, out.stderr
     assert (
-        f"riding release release/r7 at {rig.shas['c3'][:9]}: it ships "
+        f"riding release release/r7 at {work[:9]}: it ships "
         f"{rig.shas['c2'][:9]}" in out.stdout
     )
     assert rig.deploy_log() == []
@@ -102,12 +106,66 @@ def test_rides_an_unrecorded_release_that_contains_s(rig: Rig) -> None:
 def test_release_not_containing_s_rides_the_next_cut(rig: Rig) -> None:
     """No queueing (release-train §5): an in-flight release that lacks S
     reports and exits 0 — the driver cuts N+1 at deploy start."""
-    _push_branch(rig, "release/r7", rig.shas["c0"])
+    work = _child(rig, rig.shas["c0"], "unshipped release work")
+    _push_branch(rig, "release/r7", work)
     out = _release(rig, *FAST)
     assert out.returncode == 0, out.stdout + out.stderr
     assert f"{rig.shas['c3'][:9]} rides the next cut" in out.stdout
     assert "queued" not in out.stdout
     assert rig.deploy_log() == []
+
+
+def test_superseded_release_kept_on_origin_does_not_block_a_new_cut(
+    rig: Rig,
+) -> None:
+    """gr544044: a superseded release's branch stays on origin for Reto to
+    prune; the in-flight check must read the terminal record as finished."""
+    assert _release(rig, "--cut-only", *FAST).returncode == 0  # r1 at c3
+    path = rig.root / ".git" / "precis-round" / "round.json"
+    cur = _round_json(rig)
+    rel = _rel(cur)
+    rel["state"] = "superseded"
+    rel["superseded_by"] = 2
+    path.write_text(json.dumps(cur), encoding="utf-8")
+    c4 = _commit(rig.root, "src/c4.py", "c4 code")
+    _git(rig.root, "push", "-q", "origin", "main")
+    out = _release(rig, "--cut-only", *FAST)
+    assert out.returncode == 0, out.stdout + out.stderr
+    assert "rides the next cut" not in out.stdout
+    assert (
+        "release/r1: head on main, superseded — ignored; "
+        "delete with: git push origin --delete release/r1" in out.stdout
+    )
+    assert f"RELEASE_CUT: r2 {c4}" in out.stdout.splitlines()
+    assert rig.origin_ref("release/r1") == rig.shas["c3"]  # never deleted
+    assert rig.origin_ref("release/r2") == c4
+
+
+def test_unrecorded_release_branch_on_main_is_retired(rig: Rig) -> None:
+    """gr544044: a release/* left on origin whose head main already contains
+    is stale — the cut proceeds and the line names the delete command."""
+    _push_branch(rig, "release/r7", rig.shas["c0"])
+    out = _release(rig, "--cut-only", *FAST)
+    assert out.returncode == 0, out.stdout + out.stderr
+    assert (
+        "release/r7: head on main, stale — ignored; "
+        "delete with: git push origin --delete release/r7" in out.stdout
+    )
+    # `open` numbers past the stale branch, so the cut mints r8.
+    assert f"RELEASE_CUT: r8 {rig.shas['c3']}" in out.stdout.splitlines()
+    assert rig.origin_ref("release/r7") == rig.shas["c0"]  # never deleted
+    assert rig.origin_ref("release/r8") == rig.shas["c3"]
+
+
+def test_unrecorded_release_branch_off_main_still_blocks(rig: Rig) -> None:
+    """A foreign release/* carrying commits main lacks is still in flight."""
+    work = _child(rig, rig.shas["c0"], "unshipped release work")
+    _push_branch(rig, "release/r7", work)
+    out = _release(rig, *FAST)
+    assert out.returncode == 0, out.stdout + out.stderr
+    assert f"{rig.shas['c3'][:9]} rides the next cut" in out.stdout
+    assert "RELEASE_CUT:" not in out.stdout
+    assert rig.origin_ref("release/r1") == ""
 
 
 def test_fresh_path_opens_cuts_waits_and_deploys(rig: Rig) -> None:
@@ -244,7 +302,8 @@ def test_cut_only_rerun_reports_the_own_release_without_recutting(rig: Rig) -> N
 
 
 def test_cut_only_on_a_foreign_release_prints_no_cut_line(rig: Rig) -> None:
-    _push_branch(rig, "release/r7", rig.shas["c3"])
+    work = _child(rig, rig.shas["c3"], "foreign release work")
+    _push_branch(rig, "release/r7", work)
     out = _release(rig, "--cut-only", *FAST)
     assert out.returncode == 0, out.stderr
     assert "riding release release/r7" in out.stdout

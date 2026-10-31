@@ -556,12 +556,31 @@ def test_cut_without_a_candidate_refuses_in_gates_words(
 
 def test_cut_refuses_while_a_release_branch_exists_on_origin(rig: Rig) -> None:
     _open_round(rig)
-    _push_branch(rig, "release/r0", rig.shas["c0"])
+    work = _child(rig, rig.shas["c0"], "unshipped release work")
+    _push_branch(rig, "release/r0", work)
     out = rig.round("cut", **_fresh(rig, "c2"))
     assert out.returncode == 1
     assert "release/r0" in out.stderr
     assert rig.origin_ref("release/r1") == ""
     assert not _live(_round_json(rig))
+
+
+def test_cut_ignores_a_stale_release_branch_main_already_contains(
+    rig: Rig,
+) -> None:
+    """gr544044: an unrecorded release/* whose head is an ancestor of
+    origin/main is a leftover — named with the delete command, never cut
+    or deleted, and it must not stall the cut."""
+    _open_round(rig)
+    _push_branch(rig, "release/r0", rig.shas["c0"])
+    out = rig.round("cut", **_fresh(rig, "c2"))
+    assert out.returncode == 0, out.stderr
+    assert (
+        "release/r0: head on main, stale — ignored; "
+        "delete with: git push origin --delete release/r0" in out.stdout
+    )
+    assert rig.origin_ref("release/r1") == rig.shas["c2"]
+    assert rig.origin_ref("release/r0") == rig.shas["c0"]
 
 
 def test_cut_refuses_when_round_json_records_an_open_release(rig: Rig) -> None:
@@ -666,7 +685,8 @@ def test_cut_dry_run_checks_everything_and_changes_nothing(rig: Rig) -> None:
     assert rig.origin_ref("release/r1") == ""
     assert state.read_bytes() == before
     # A refusing check still refuses under --dry-run.
-    _push_branch(rig, "release/r0", rig.shas["c0"])
+    work = _child(rig, rig.shas["c0"], "unshipped release work")
+    _push_branch(rig, "release/r0", work)
     assert rig.round("cut", "--dry-run", **_fresh(rig, "c2")).returncode == 1
 
 

@@ -28,7 +28,9 @@ Steps, in order:
      origin/main's first-parent line (else exit 1).
   2. S already in origin/prod: "already live", exit 0.
   3. A release in flight (a live round.json record or an unrecorded origin
-     `release/*`):
+     `release/*`; a branch recorded terminal, or whose head origin/main
+     already contains, is a leftover — ignored, with the delete command
+     printed for a human; the script never deletes a remote branch):
      - this worktree owns the record (`.release-owner` marker at the worktree
        root, written at cut, matching the recorded branch + base; round.json
        is shared by every worktree, so "recorded" is not "mine"): resume
@@ -1086,8 +1088,29 @@ def run(args: argparse.Namespace) -> int:
         branches = release_branches()
         if branches is None:
             return die(1, "scripts/release: cannot read origin's branches")
-        recorded = {r["branch"] for r in live}
-        foreign = [b for b in branches if b not in recorded]
+        recorded = {
+            str(r["branch"]): str(r.get("state") or "")
+            for r in cur.get("releases") or []
+            if r.get("branch")
+        }
+        live_branches = {str(r["branch"]) for r in live}
+        foreign = []
+        for b in branches:
+            if b in live_branches:
+                continue
+            head = remote(f"refs/heads/{b}") or ""
+            if head and not rev(head):
+                git("fetch", "-q", "origin", f"refs/heads/{b}")
+            if head and rev(head) and ancestor(head, "refs/remotes/origin/main"):
+                # gr544044: a terminal record's leftover branch, or a stale
+                # one predating the record fix, is retired — not in flight.
+                # Deleting it is the operator's call, so name the command.
+                say(
+                    f"{b}: head on main, {recorded.get(b) or 'stale'} — ignored; "
+                    f"delete with: git push origin --delete {b}"
+                )
+            elif b not in recorded:
+                foreign.append(b)
 
         if live or foreign:
             if rel and mine:
