@@ -44,6 +44,41 @@ def test_rel_alone_and_link_plus_unlink_rejected(hub: Hub) -> None:
         h.put(id=dup, text="x", link=f"gripe:{canon}", unlink=f"gripe:{canon}")
 
 
+# ── rel= aliases + did-you-mean (gr543346) ────────────────────────
+
+
+@pytest.mark.parametrize(
+    ("alias", "canonical"),
+    [
+        ("duplicate-of", "superseded-by"),
+        ("duplicate", "superseded-by"),
+        ("dup-of", "superseded-by"),
+        ("dupe-of", "superseded-by"),
+        ("duplicated-by", "supersedes"),
+    ],
+)
+def test_duplicate_rel_aliases_normalise(hub: Hub, alias: str, canonical: str) -> None:
+    """The dup spellings agents invent (gr543346: 9 failed puts in one
+    session) normalise to the canonical dup close — ``dup superseded-by
+    keeper`` — and the stored edge records the canonical slug."""
+    h, dup, canon = _two(hub)
+    h.put(id=dup, text="dup of canonical", link=f"gripe:{canon}", rel=alias)
+    links = h.store.links_for(dup, direction="out")
+    assert [(lk.dst_ref_id, lk.relation) for lk in links] == [(canon, canonical)]
+
+
+def test_unknown_rel_names_closest_matches(hub: Hub) -> None:
+    """A near-miss rel= gets a did-you-mean in the error, and next=
+    names a rel= that works."""
+    h, dup, canon = _two(hub)
+    with pytest.raises(BadInput) as exc:
+        h.put(id=dup, text="x", link=f"gripe:{canon}", rel="supersede-by")
+    assert "did you mean" in str(exc.value)
+    assert "'superseded-by'" in str(exc.value)
+    assert "rel='superseded-by'" in str(exc.value)
+    assert not h.store.links_for(dup, direction="out")
+
+
 # ── tags=/untags= ride along on a comment append (gr484232) ────────
 
 

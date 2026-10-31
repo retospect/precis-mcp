@@ -38,7 +38,7 @@ from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from contextvars import ContextVar
 from datetime import datetime
-from typing import TYPE_CHECKING, Any, Literal, cast
+from typing import TYPE_CHECKING, Any, Literal, cast, get_args
 
 from psycopg import Connection
 from psycopg.errors import ForeignKeyViolation, InFailedSqlTransaction
@@ -191,14 +191,22 @@ def _reraise_link_fk_violation(
     constraint = getattr(exc.diag, "constraint_name", None) or ""
     what = _LINK_FK_CONSTRAINT_HINT.get(constraint, constraint or "an endpoint")
     if constraint == "links_relation_fkey":
+        # Lazy: the store layer sits below ``precis.utils`` in the import
+        # order; the did-you-mean pool is the literal + the alias
+        # spellings, resolved to canonical slugs by the helper.
+        from precis.utils.relations import closest_relations
+
+        close = closest_relations(relation, get_args(Relation))
+        hint = f" — did you mean {', '.join(repr(c) for c in close)}?" if close else ""
         return BadInput(
             f"unknown relation: {relation!r} (not registered in the "
-            "relations vocabulary)",
-            next=(
+            f"relations vocabulary){hint}",
+            next=[
+                *([f"retry with rel={close[0]!r}"] if close else []),
                 "pick a registered relation, or if this should be a "
                 "built-in relation, the vocabulary seed migration hasn't "
-                "landed on this deployment — file a gripe"
-            ),
+                "landed on this deployment — file a gripe",
+            ],
         )
     if constraint == "links_src_ref_id_fkey":
         return BadInput(

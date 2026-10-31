@@ -20,8 +20,12 @@ status: active
 
 Closed list of relation slugs `link(...)` accepts as `rel=`. Default
 is `related-to`. Unknown relations raise `BadInput` with the full
-options list. Link verb mechanics and target grammar live in
-`precis-link-help`.
+options list plus a did-you-mean on a near-miss. There is no
+`duplicate-of` relation: marking a dup IS supersession, so the
+`duplicate-of`/`duplicate`/`dup-of`/`dupe-of` spellings (and
+`duplicated-by`) are accepted but normalise to
+`superseded-by`/`supersedes` — dup → the keeper. Link verb mechanics
+and target grammar live in `precis-link-help`.
 
 ## Which relation should I use?
 ## Pick the right rel= for what I want to record
