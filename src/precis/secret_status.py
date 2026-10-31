@@ -103,6 +103,15 @@ class SecretSpec:
 
 KNOWN_SECRETS: tuple[SecretSpec, ...] = (
     SecretSpec(
+        name="PRECIS_FACTORY_GIT_TOKEN",
+        purpose="GitHub token the factory lander and gh use as a git "
+        "credential helper (precis.workers.factory_git).",
+        get_url="https://github.com/settings/personal-access-tokens",
+        get_blurb="Create a fine-grained token with contents and pull-request "
+        "write on the repo and paste it here.",
+        probe_group=None,
+    ),
+    SecretSpec(
         name="ANTHROPIC_API_KEY",
         purpose="Anthropic API key for the cloud rungs of the LLM ladder.",
         get_url="https://console.anthropic.com/settings/keys",
