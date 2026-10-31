@@ -8,8 +8,8 @@ design-review: yes
 
 ## Resume
 
-- **Next:** a thread session is being brought up (2026-10-26). catpath v0.41.0 (catpath main 8e4b119; local suite 1201 passed, 3 skipped) runs ledger → CHE electrochemical layer (v0.40 ShiftProvider; PCET count ledger-driven, gr515697; U_L sign follows reaction direction so oxidation is covered, gr516530) → `kin.solve` with NEB→BEP rated sources → steady state, TOF, X_RC, paired-draw ratio band, per-route U_L. Open work: (1) real-potential validation on spark, UMA backend only (MACE stopped on Reto's OK 2026-10-26, it starved spark's memory): 17.5 h in, on B3 (full-stack ammonia/Ru), test 3 of 7; C (co_oxidation) and A×3 (orr_pt111) to come, no ETA; B1 and B2 failed on both backends, cause unknown until pytest prints details at session end; zero validation passes so far. (2) gr517976 (test_draws) on catpath branch `fix/gr517976-draws-tests`: test 1 rewritten and passing (cross-checked against an NEB-only solve); test 2 scan shows rho=0.5 narrows the band (width ratio 0.82), no `draws.paired` bug; next multi-seed test 2, full suite, land, close.
-- **Blocked by:** item 25 (no re-runs, incl. the NH₃ neb-tier re-run of pw455722's candidate): Reto, 2026-10-26, "lift 25 after validation" — lifts once the 7-test UMA validation on spark is green; holds until then. Exception, Reto 2026-10-30: lifted for one run only, subject A's pathway for SPSO slice 8 (st202238, neb tier, seed 0; pathway q164903cand-68da9d40f5-rx-0b4fd15fb0, minted 2026-10-30). Second lift, Reto via the coordinator 2026-10-31: the SPSO slice 8 stage-1 `surface_coverage_scan` jobs on baseline st203306 (jo543903), subject A st202238 (jo543904) and subject B st463208 (jo543910), pinned to castor (the first mints, jo543898 and jo543899, failed in 0.1 s on a node without autocatpath, gr543909), with baseline pathway pw538937 (minted 2026-10-30, origin accepted as-is), A pathway pw541657 and B pathway pw517889 as the stage-0 pathways. The overnight pathways pw542513, pw542519 and pw542537 stay out of the study until gr543908 explains them. Scope: those three scans only; no other re-run. The restale pause (`fidelity_restale_cap` 0 on qu164903) stays. Item 23 (no Pd-hydride NEB pilot, Reto 2026-10-02) unchanged, and Reto 2026-10-29 keeps it held until SPSO slice 8 has run; its original lift condition was "the improved catpath": item-19 corrections (shipped in 0.24.0) plus the surface-Pourbaix work, whose optimizer build is unverified. td470248 (BEEF-vdW single points on the PdH geometries) is done. Pending: B1/B2 diagnosis, ordered by Reto 2026-10-26 and run separately off spark by the catpath coordinator.
+- **Next:** a thread session is being brought up (2026-10-26). catpath v0.41.0 (catpath main 8e4b119; local suite 1201 passed, 3 skipped) runs ledger → CHE electrochemical layer → `kin.solve` with NEB→BEP rated sources → steady state, TOF, X_RC, paired-draw ratio band, per-route U_L. Open work: (1) real-potential validation on spark, UMA backend only: on B3 (full-stack ammonia/Ru), test 3 of 7; C and A×3 to come, no ETA; B1 and B2 failed on both backends, cause unknown; zero validation passes so far. (2) gr517976 (test_draws) on catpath branch `fix/gr517976-draws-tests`: test 1 passing; next multi-seed test 2, full suite, land, close. (3) SPSO slice 8: Part A landed (6a81453eb); Part B stage 1 scans queued, detail under Settled history.
+- **Blocked by:** item 25 (no re-runs, incl. the NH₃ neb-tier re-run of pw455722's candidate): Reto, 2026-10-26, "lift 25 after validation" — lifts once the 7-test UMA validation on spark is green; holds until then. Two scoped exceptions for SPSO slice 8 (Reto 2026-10-30 and 2026-10-31; scope and ids under Settled history). The restale pause (`fidelity_restale_cap` 0 on qu164903) stays. Item 23 (no Pd-hydride NEB pilot, Reto 2026-10-02) stays held until SPSO slice 8 has run (Reto 2026-10-29). td470248 is done. Pending: B1/B2 diagnosis, run separately off spark by the catpath coordinator.
 - **Unblocks:** A ranking against a complete competing network.
 - **Acceptance:** NO→NH₃ answered over a U/pH window on the complete network ([Status](#thread-context)); validation passes on real-potential cases; validation green lifts item 25; no re-run before. Engine-version checks must match the released engine.
 - **Worktree:** `catalysis-selectivity`
@@ -55,6 +55,18 @@ spin-paired energy (§22i), so the table stands.
 **Settled history (folded 2026-10-26; the Resume block above is current,
 the dated detail is in `git log` and the owning items):**
 
+- **Item 25 lifts for SPSO slice 8 (Reto, 2026-10-30 and 2026-10-31).**
+  First, one run: subject A's pathway (st202238, neb tier, seed 0;
+  pw541657, minted 2026-10-30). Second, via the coordinator: the stage-1
+  `surface_coverage_scan` jobs on baseline st203306 (jo543903), subject A
+  st202238 (jo543904) and subject B st463208 (jo543910), pinned to castor
+  (the first mints, jo543898 and jo543899, failed in 0.1 s on a node without
+  autocatpath, gr543909). Stage-0 pathways: baseline pw538937 (minted
+  2026-10-30, origin accepted as-is), A pw541657, B pw517889. The overnight
+  pathways pw542513, pw542519 and pw542537 stay out of the study until
+  gr543908 explains them. Scope: those runs only; no other re-run. Item 23's
+  original lift condition was "the improved catpath": the item-19 corrections
+  (0.24.0) plus the surface-Pourbaix work.
 - **Engine and pin.** Catpath 0.24.0 added NO+NO coupling, NH₂OH scission,
   template-level `network_digest` and the item-19 gas (NH₃, NO, N₂O,
   NH₂OH) and Pd H* +0.25 eV corrections, ON by default and recorded under
