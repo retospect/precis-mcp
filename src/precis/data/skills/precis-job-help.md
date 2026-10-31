@@ -123,6 +123,11 @@ next section.
 | `structure_propose` | `claude_inproc` | Turn an instruction into proposed structure ops (tool-less claude, propose-only — a human applies them) |
 | `reading_brief`     | `claude_inproc` | Compose the morning reading-brief cast as a dated draft (see `precis-audio-help`) |
 | `remarkable_send`   | `claude_inproc` | Export a draft in reMarkable mode and upload the PDF to the tablet — siblings `remarkable_papers_send` (cited-source PDFs) and `remarkable_reading_send` (per-source reading edition) |
+
+## Fleet and dark-factory job_types — queue drains, slices, plan dispatch
+
+| `job_type`          | Executor        | What it does                                  |
+|---------------------|-----------------|-----------------------------------------------|
 | `embed_batch`       | `job_inproc`    | Bounded work order draining the derived embed queue — minted by the `materialize` cadence above the backlog high-water mark |
 | `derived_drain`     | `job_inproc`    | Bounded work order draining a SMALL-tier derived LLM queue (summarize/classify) — cloud-only lane |
 | `run_slice`         | `ssh_node`      | Dark factory: launch one slice (a todo with a brief) headless on a lane — `claude -p --permission-mode bypassPermissions` in worktree `slice-td<id>` on branch `slice/<id>` cut from `origin/main`, an allowlisted env (no DB credentials) and the lane's `deny_write_paths` as deny rules; a branch touching a deny path fails the attempt; `meta.lane`/`model`/`effort` on the job; the session's last message lands as a `handoff:` comment on the todo; a failure returns the todo to `STATUS:open` with `attempt:<n>`. Params `todo_id`, optional `lane`, `model`, `effort`, `target_node`. Refused while the factory kill switch is on — ask a human operator to clear it (recipe: `docs/runbooks/dark-factory-arming.md`) |

@@ -38,11 +38,11 @@ def _editable_install() -> bool:
     """precis-mcp installed editable — or not installed at all (a bare
     src checkout on ``sys.path`` is the same shape for shadow purposes)."""
     try:
-        dist = importlib.metadata.distribution("precis-mcp")
+        distribution = importlib.metadata.distribution("precis-mcp")
     except importlib.metadata.PackageNotFoundError:
         return True
     try:
-        direct_url = json.loads(dist.read_text("direct_url.json") or "{}")
+        direct_url = json.loads(distribution.read_text("direct_url.json") or "{}")
     except (OSError, json.JSONDecodeError):
         return False
     return bool(direct_url.get("dir_info", {}).get("editable"))
