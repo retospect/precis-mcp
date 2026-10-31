@@ -123,6 +123,9 @@ _LIVE_STATUSES = (
     "ready_for_fix",
     "in_review",
     "verify",
+    "auto_verify",
+    "user_verify",
+    "needs_spec",
 )
 
 # ── error-head normalisation ─────────────────────────────────────────────

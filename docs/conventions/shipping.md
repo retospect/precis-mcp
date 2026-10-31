@@ -43,18 +43,21 @@ and exits 0. It never fails the ship or the deploy. Off switch:
 refuses writes from a tree behind `origin/prod`, so a stale tree prints a
 failed post and posts nothing.
 
-The handles ending the squash subject also move status (gr541800 ladder:
-triaged → fixing → verify → done). After the gripe-note comment,
+The handles ending the squash subject also move status (gr541800/gr543584
+ladder: triaged → fixing → auto_verify|user_verify → done). After the gripe-note comment,
 `scripts/ship` runs `scripts/lib/land_notify.py`: each `grN` in the
 trailing `(grN, tdM)` list gets `resolved: <sha> (main, release pending)`
-+ `STATUS:verify`; each `tdM` gets `landed: <sha>` + `STATUS:done`.
++ `STATUS:auto_verify` (`PRECIS_VERIFY_KIND=user` → `STATUS:user_verify`;
+each `tdM` gets `landed: <sha>` + `STATUS:done`.
 Same best-effort contract, one `land-notify` line, forwarded to the quiet
 epilogue next to `SHIP_STATUS`; off switch
 `PRECIS_LAND_NOTIFY=0`. Ship owns this close — after a land, check the
 ref's state, not the log, and never post a second `landed:` comment or
 `STATUS:done` by hand (gr542762). After each rollout `scripts/release` runs
-`scripts/gripe-validate`, which flips every verify gripe whose resolved
-sha is an ancestor of `origin/prod` to `done` (`--dry-run` lists them;
+`scripts/gripe-validate`, which flips every auto-verify gripe whose resolved
+sha is an ancestor of `origin/prod` to `done`, keeps one ask-user todo
+for `user_verify` gripes, and closes `needs_spec` gripes a prod spec
+names (`--dry-run` lists them;
 it is safe to run on a schedule; off switch `PRECIS_GRIPE_VALIDATE=0`).
 
 Write the commit message to a file and `git commit -F <file>` — never

@@ -2102,7 +2102,7 @@ class TestFixEvidence:
 
 
 class TestCloseOutcomes:
-    """The dry-run rulings end to end: fixed → done/verify, noise →
+    """The dry-run rulings end to end: fixed → done/auto_verify, noise →
     wontfix, disputes → wontfix unless owner-filed."""
 
     def test_fixed_deployed_closes_done(
@@ -2124,7 +2124,7 @@ class TestCloseOutcomes:
         assert last.startswith(f"resolved: {sha}")
         assert "repair the widget" in last
 
-    def test_fixed_on_main_only_writes_verify(
+    def test_fixed_on_main_only_writes_auto_verify(
         self, store: Store, repo: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         gid = _gripe(store, "the widget is broken")
@@ -2137,8 +2137,8 @@ class TestCloseOutcomes:
             llm=_llm({"verdicts": [_verdict(gid, verdict="fixed", sha=sha)]}),
             repo=repo,
         )
-        assert r.ok == 1 and r.extra["closed_verify"] == 1
-        assert _status(store, gid) == "verify"
+        assert r.ok == 1 and r.extra["closed_auto_verify"] == 1
+        assert _status(store, gid) == "auto_verify"
         assert any(c.startswith(f"fix-sha: {sha}") for c in _comments(store, gid))
 
     def test_fixed_without_evidence_bug_triages(self, store: Store, repo: Path) -> None:

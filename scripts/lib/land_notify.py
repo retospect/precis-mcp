@@ -8,10 +8,14 @@ td541978). It reads the parenthesised handle list ending the squash
 subject — ``(gr123)``, ``(gr1, td2)``, ``(td9 gr8)`` — and, per handle:
 
 - gripe ``grN``: comment ``resolved: <sha9> (main, release pending) —
-  landed: <subject>`` with ``STATUS:verify`` in the same put (comment
-  first, so the handler's ``resolved:`` guard sees it). The gripe now
-  waits for scripts/gripe-validate to flip it done once the sha is on
-  origin/prod.
+  landed: <subject>`` with ``STATUS:auto_verify`` in the same put
+  (comment first, so the handler's ``resolved:`` guard sees it). The
+  gripe now waits for scripts/gripe-validate to flip it done once the
+  sha is on origin/prod. ``--verify-kind user`` (or
+  ``PRECIS_VERIFY_KIND=user``) writes ``STATUS:user_verify`` instead —
+  the lander picks which of the two verify states the check needs
+  (gr543584): code can check ``auto_verify``, a human checks
+  ``user_verify``.
 - todo ``tdN``: comment ``landed: <sha9> — <subject>``, then
   ``STATUS:done`` (the todo handler releases every ``claimed-by:`` lease
   on a terminal STATUS).
@@ -70,11 +74,16 @@ def parse_handles(subject: str) -> list[tuple[str, int]]:
     return list(seen)
 
 
-def payloads(sha: str, subject: str) -> list[tuple[str, list[list[str]]]]:
+def payloads(
+    sha: str, subject: str, *, verify_kind: str = "auto"
+) -> list[tuple[str, list[list[str]]]]:
     """Per handle: its label and the ``prod-precis`` argv tails to run, in
-    order. Pure — the unit under test."""
+    order. ``verify_kind`` is ``auto`` (``STATUS:auto_verify``) or
+    ``user`` (``STATUS:user_verify``) — the lander's pick. Pure — the
+    unit under test."""
     short = sha[:9]
     title = subject.strip()
+    status = "auto_verify" if verify_kind == "auto" else "user_verify"
     out: list[tuple[str, list[list[str]]]] = []
     for kind, n in parse_handles(subject)[:MAX_HANDLES]:
         if kind == "gripe":
@@ -82,10 +91,10 @@ def payloads(sha: str, subject: str) -> list[tuple[str, list[list[str]]]]:
             calls = [
                 [
                     "tools", "put", "--kind", "gripe", "--id", str(n),
-                    "--text", text, "--tags", json.dumps(["STATUS:verify"]),
+                    "--text", text, "--tags", json.dumps([f"STATUS:{status}"]),
                 ]
             ]  # fmt: skip
-            out.append((f"gr{n} verify", calls))
+            out.append((f"gr{n} {status}", calls))
         else:
             text = f"landed: {short} — {title}"
             calls = [
@@ -116,10 +125,16 @@ def _tail(text: str) -> str:
 
 
 def notify(
-    sha: str, subject: str, *, base: list[str], run: Runner, timeout: float
+    sha: str,
+    subject: str,
+    *,
+    base: list[str],
+    run: Runner,
+    timeout: float,
+    verify_kind: str = "auto",
 ) -> str:
     """Run every payload; return the one summary line."""
-    plan = payloads(sha, subject)
+    plan = payloads(sha, subject, verify_kind=verify_kind)
     over = len(parse_handles(subject)) - len(plan)
     ok: list[str] = []
     failed: list[str] = []
@@ -151,9 +166,22 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--sha", required=True, help="the landed squash sha")
     ap.add_argument("--subject", required=True, help="the squash subject line")
     ap.add_argument("--dry-run", action="store_true", help="print, do not post")
+    ap.add_argument(
+        "--verify-kind",
+        choices=("auto", "user"),
+        default="",
+        help=(
+            "verify state the named gripes take: 'auto' (STATUS:auto_verify, "
+            "default) or 'user' (STATUS:user_verify). Env PRECIS_VERIFY_KIND."
+        ),
+    )
     args = ap.parse_args(argv)
 
-    plan = payloads(args.sha, args.subject)
+    verify_kind = args.verify_kind or os.environ.get("PRECIS_VERIFY_KIND", "auto")
+    if verify_kind not in ("auto", "user"):
+        print(f"land-notify: bad verify kind {verify_kind!r} — using auto")
+        verify_kind = "auto"
+    plan = payloads(args.sha, args.subject, verify_kind=verify_kind)
     if not plan:
         return 0
     named = " ".join(label.split()[0] for label, _ in plan)
@@ -176,7 +204,12 @@ def main(argv: list[str] | None = None) -> int:
         )
         timeout = float(os.environ.get("PRECIS_LAND_NOTIFY_TIMEOUT") or TIMEOUT_S)
         line = notify(
-            args.sha, args.subject, base=base, run=note.run_capped, timeout=timeout
+            args.sha,
+            args.subject,
+            base=base,
+            run=note.run_capped,
+            timeout=timeout,
+            verify_kind=verify_kind,
         )
         print(line)
     except Exception as e:  # best-effort: never fail the ship

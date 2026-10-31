@@ -2628,6 +2628,9 @@ _MARKER_GRIPE_LIVE_STATUSES: tuple[str, ...] = (
     "ready_for_fix",
     "in_review",
     "verify",
+    "auto_verify",
+    "user_verify",
+    "needs_spec",
 )
 
 

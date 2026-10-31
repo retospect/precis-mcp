@@ -85,7 +85,9 @@ _TERMINAL_GRIPE_STATUSES = frozenset({"done", "wontfix"})
 #: stale job flipping it to ``in_review``/``open`` would silently cancel
 #: the pending verification. Guards the executor's status writes, the
 #: fix_gripe-job mint bump, and the fixer's write-back.
-_NO_DOWNGRADE_GRIPE_STATUSES = _TERMINAL_GRIPE_STATUSES | frozenset({"verify"})
+_NO_DOWNGRADE_GRIPE_STATUSES = _TERMINAL_GRIPE_STATUSES | frozenset(
+    {"verify", "auto_verify", "user_verify", "needs_spec"}
+)
 
 
 def _gripe_status(store: Any, gripe_id: int) -> str | None:

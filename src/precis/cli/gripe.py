@@ -97,8 +97,9 @@ def add_parser(sub: argparse._SubParsersAction) -> argparse.ArgumentParser:
         "--verify-list",
         action="store_true",
         help=(
-            "Print one JSON line {id, sha} per live STATUS:verify gripe; sha "
-            "is from its newest 'resolved: <sha>' / 'fix-sha: <sha>' comment "
+            "Print one JSON line {id, status, sha} per live verify-state "
+            "gripe (auto_verify, user_verify, legacy verify); sha is from "
+            "its newest 'resolved: <sha>' / 'fix-sha: <sha>' comment "
             "(scripts/gripe-validate). Read-only."
         ),
     )
@@ -108,8 +109,31 @@ def add_parser(sub: argparse._SubParsersAction) -> argparse.ArgumentParser:
         metavar="TEXT",
         help=(
             "Comment TEXT ({sha} = the gripe's own resolved sha) and tag "
-            "STATUS:done on each --ids gripe still at STATUS:verify "
+            "STATUS:done on each --ids gripe still at an auto-verify status "
             "(scripts/gripe-validate)."
+        ),
+    )
+    dp.add_argument(
+        "--verify-ask",
+        action="store_true",
+        help=(
+            "Sync the one ask-user todo for user_verify gripes: close "
+            "covered gripes on an answered ask, mint/refresh the ask "
+            "(scripts/gripe-validate, gripe_validate job)."
+        ),
+    )
+    dp.add_argument(
+        "--spec-list",
+        action="store_true",
+        help="Print one gripe id per line per live STATUS:needs_spec gripe.",
+    )
+    dp.add_argument(
+        "--spec-done",
+        default=None,
+        metavar="TEXT",
+        help=(
+            "Comment TEXT and tag STATUS:done on each --ids gripe still at "
+            "STATUS:needs_spec (scripts/gripe-validate spec check)."
         ),
     )
     dp.add_argument(
@@ -142,15 +166,35 @@ def run(args: argparse.Namespace) -> None:
     if args.summary:
         _print_summary(args)
         return
-    if args.verify_list or args.verify_done is not None:
+    if (
+        args.verify_list
+        or args.verify_done is not None
+        or args.verify_ask
+        or args.spec_list
+        or args.spec_done is not None
+    ):
         store = Store.connect(resolve_dsn(args.database_url, cfg=load_config()))
         try:
+            ids = [int(i) for i in args.ids.replace(" ", "").split(",") if i]
             if args.verify_list:
-                for gid, sha in verify_list(store):
-                    print(json.dumps({"id": gid, "sha": sha}))
-            else:
-                ids = [int(i) for i in args.ids.replace(" ", "").split(",") if i]
+                for gid, status, sha in verify_list(store):
+                    print(json.dumps({"id": gid, "status": status, "sha": sha}))
+            elif args.verify_done is not None:
                 print(verify_done(store, args.verify_done, ids))
+            elif args.verify_ask:
+                print(user_verify_sync(store))
+            elif args.spec_list:
+                for gid in spec_list(store):
+                    print(gid)
+            else:
+                print(
+                    verify_done(
+                        store,
+                        args.spec_done,
+                        ids,
+                        statuses=(NEEDS_SPEC_STATUS,),
+                    )
+                )
         finally:
             store.close()
         return
@@ -295,6 +339,15 @@ def note_gripes(store: Any, text: str, ids: list[int]) -> str:
 #: land note, a builder's close) or ``fix-sha: <sha>`` (the triage worker).
 _VERIFY_SHA_RE = re.compile(r"^\s*(?:resolved|fix-sha):\s*([0-9a-f]{7,40})\b")
 
+#: The verify cohort (gr543584): ``auto_verify`` is checked by the
+#: deploy-time validator, ``user_verify`` waits on a human check;
+#: ``verify`` is the legacy spelling of ``auto_verify``.
+AUTO_VERIFY_STATUSES: tuple[str, ...] = ("auto_verify", "verify")
+USER_VERIFY_STATUS = "user_verify"
+NEEDS_SPEC_STATUS = "needs_spec"
+#: Every status ``--verify-list`` reports, in query order.
+VERIFY_STATUSES: tuple[str, ...] = (*AUTO_VERIFY_STATUSES, USER_VERIFY_STATUS)
+
 
 def verify_sha(store: Any, gid: int) -> str | None:
     """The sha in the newest comment of ``gid`` that names one, else None."""
@@ -313,27 +366,53 @@ def verify_sha(store: Any, gid: int) -> str | None:
     return None
 
 
-def verify_list(store: Any) -> list[tuple[int, str | None]]:
-    """Every live STATUS:verify gripe with the sha it waits on (gr541800)."""
+def _status_list(store: Any, statuses: tuple[str, ...]) -> list[tuple[int, str]]:
+    """Live gripe ``(id, status)`` rows for any of ``statuses``."""
     with store.pool.connection() as conn:
         rows = conn.execute(
-            "SELECT r.ref_id FROM refs r "
+            "SELECT r.ref_id, t.value FROM refs r "
             "JOIN ref_tags rt ON rt.ref_id = r.ref_id "
             "JOIN tags t ON t.tag_id = rt.tag_id "
-            "AND t.namespace = 'STATUS' AND t.value = 'verify' "
+            "AND t.namespace = 'STATUS' AND t.value = ANY(%s) "
             "WHERE r.kind = 'gripe' AND r.retired_at IS NULL "
-            "ORDER BY r.ref_id"
+            "ORDER BY r.ref_id",
+            (list(statuses),),
         ).fetchall()
-    return [(int(r[0]), verify_sha(store, int(r[0]))) for r in rows]
+    return [(int(r[0]), str(r[1])) for r in rows]
 
 
-def verify_done(store: Any, text: str, ids: list[int]) -> str:
-    """Close each ``ids`` gripe still at STATUS:verify: comment ``text``
-    (``{sha}`` → its own verify sha) then STATUS:done, through the handler
-    so the ``resolved:`` guard and the close cascade both run.
+def verify_list(store: Any) -> list[tuple[int, str, str | None]]:
+    """Every live verify-state gripe: ``(id, status, sha)`` (gr543584).
+
+    ``status`` is ``auto_verify``, ``user_verify`` or the legacy
+    ``verify`` (the auto cohort); ``sha`` is from its newest
+    ``resolved:`` / ``fix-sha:`` comment.
+    """
+    return [
+        (gid, status, verify_sha(store, gid))
+        for gid, status in _status_list(store, VERIFY_STATUSES)
+    ]
+
+
+def spec_list(store: Any) -> list[int]:
+    """Every live ``STATUS:needs_spec`` gripe id (gr543698)."""
+    return [gid for gid, _ in _status_list(store, (NEEDS_SPEC_STATUS,))]
+
+
+def verify_done(
+    store: Any,
+    text: str,
+    ids: list[int],
+    *,
+    statuses: tuple[str, ...] = AUTO_VERIFY_STATUSES,
+) -> str:
+    """Close each ``ids`` gripe still at one of ``statuses``: comment
+    ``text`` (``{sha}`` → its own verify sha) then STATUS:done, through
+    the handler so the ``resolved:`` guard and the close cascade both
+    run.
 
     Returns ``done grA grB · not verify: grC · not found: grD · failed: …``
-    (empty groups omitted). A gripe that moved off verify since the list
+    (empty groups omitted). A gripe that left the cohort since the list
     was read is skipped, never re-closed.
     """
     from precis.dispatch import Hub
@@ -341,6 +420,7 @@ def verify_done(store: Any, text: str, ids: list[int]) -> str:
     from precis.handlers.gripe import GripeHandler
 
     handler = GripeHandler(hub=Hub(store=store))
+    wanted = {f"STATUS:{s}" for s in statuses}
     groups: dict[str, list[str]] = {
         "done": [],
         "not verify:": [],
@@ -351,7 +431,7 @@ def verify_done(store: Any, text: str, ids: list[int]) -> str:
         if store.get_ref(kind="gripe", id=gid) is None:
             groups["not found:"].append(f"gr{gid}")
             continue
-        if "STATUS:verify" not in {str(t) for t in store.tags_for(gid)}:
+        if not {str(t) for t in store.tags_for(gid)} & wanted:
             groups["not verify:"].append(f"gr{gid}")
             continue
         sha = verify_sha(store, gid) or "?"
@@ -365,6 +445,217 @@ def verify_done(store: Any, text: str, ids: list[int]) -> str:
         f"{label} {' '.join(items)}" for label, items in groups.items() if items
     )
     return line or "nothing to do"
+
+
+def verify_back(store: Any, text: str, ids: list[int]) -> str:
+    """Send each ``ids`` gripe back to ``STATUS:triaged`` with comment
+    ``text`` — the verify-failure path (a red release gate, gr519676).
+    Returns the gripe handles moved, or '' when every put refused."""
+    from precis.dispatch import Hub
+    from precis.errors import PrecisError
+    from precis.handlers.gripe import GripeHandler
+
+    handler = GripeHandler(hub=Hub(store=store))
+    done: list[str] = []
+    for gid in ids:
+        try:
+            handler.put(id=gid, text=text, tags=["STATUS:triaged"])
+        except PrecisError:
+            continue
+        done.append(f"gr{gid}")
+    return "triaged " + " ".join(done) if done else ""
+
+
+# ── user_verify: the one ask-user todo per deploy (gr519676) ─────────
+
+#: ``meta.digest`` marker on the live user-verify ask todo — at most one
+#: at a time (the gripe_triage ``reto:ask`` digest's shape, td541979).
+_UV_DIGEST_META = "gripe_validate:user_verify"
+#: ``meta.verify_gripes`` — the gripe ids the ask currently covers; a
+#: pass closes the still-``user_verify`` ones once the todo is answered.
+_UV_ASK_OPTIONS: tuple[str, ...] = (
+    "checked — the fixes are live, close them",
+    "found a problem — see my comments on the gripes",
+)
+
+
+def _uv_digest_rows(conn: Any) -> list[tuple[int, dict[str, Any], str]]:
+    """``(todo_id, meta, status)`` for every ``meta.digest``-marked todo,
+    newest first. ``status`` is its STATUS value ('' when untagged)."""
+    rows = conn.execute(
+        """
+        SELECT r.ref_id, r.meta,
+               COALESCE((SELECT t.value FROM ref_tags rt
+                  JOIN tags t ON t.tag_id = rt.tag_id
+                 WHERE rt.ref_id = r.ref_id AND t.namespace = 'STATUS'
+                 LIMIT 1), '') AS status
+          FROM refs r
+         WHERE r.kind = 'todo' AND r.retired_at IS NULL
+           AND r.meta->>'digest' = %s
+         ORDER BY r.ref_id DESC
+        """,
+        (_UV_DIGEST_META,),
+    ).fetchall()
+    return [(int(r[0]), dict(r[1] or {}), str(r[2])) for r in rows]
+
+
+def _uv_answered(store: Any, todo_id: int, status: str) -> bool:
+    """Whether the ask todo is answered: STATUS:done or a newest
+    ``answer:`` comment (the ``answer`` gate's convention, plans/gates)."""
+    if status == "done":
+        return True
+    comments = [
+        c
+        for c in store.chunks.list_chunks_for_ref(todo_id)
+        if c.chunk_kind == "todo_comment"
+    ]
+    newest = max(comments, key=lambda c: (c.ord, c.id)).text if comments else ""
+    return newest.lstrip().lower().startswith("answer:")
+
+
+def _uv_covered(meta: dict[str, Any]) -> list[int]:
+    ids = meta.get("verify_gripes")
+    if not isinstance(ids, list):
+        return []
+    return [int(i) for i in ids if isinstance(i, int)]
+
+
+def user_verify_sync(store: Any, *, head: str | None = None) -> str:
+    """Sync the user-verify ask todo after a deploy (gr519676).
+
+    Two halves, both idempotent:
+
+    1. An answered ask (STATUS:done or a newest ``answer:`` comment)
+       closes every gripe it covered that's still at ``user_verify`` —
+       "they close when he answers". A superseded duplicate digest row
+       is retired.
+    2. One live ask todo lists the whole current ``user_verify`` cohort
+       — minted when none exists, refreshed in place when the cohort or
+       head changed, retired when nothing is left to check.
+
+    Returns one summary line; writes never raise past the caller's own
+    error handling (a single bad gripe skips to the report line).
+    """
+    from precis.errors import PrecisError
+    from precis.store.types import TODO_BODY_KIND, ChunkInsert, Tag
+    from precis.todo.guards import check_ask_meta
+
+    open_ids = {gid for gid, st in _status_list(store, (USER_VERIFY_STATUS,))}
+    parts: list[str] = []
+    with store.tx() as conn:
+        digests = _uv_digest_rows(conn)
+    from precis.todo import TERMINAL_TODO_STATUSES
+
+    live_td: tuple[int, dict[str, Any]] | None = None
+    for tid, meta, status in digests:
+        if _uv_answered(store, tid, status):
+            covered = [g for g in _uv_covered(meta) if g in open_ids]
+            if covered:
+                from precis.dispatch import Hub
+                from precis.handlers.gripe import GripeHandler
+
+                handler = GripeHandler(hub=Hub(store=store))
+                for gid in covered:
+                    sha = verify_sha(store, gid) or "user check"
+                    try:
+                        handler.put(
+                            id=gid,
+                            text=(
+                                f"resolved: {sha} — user-verified after "
+                                f"deploy (td{tid} answered)"
+                            ),
+                            tags=["STATUS:done"],
+                        )
+                        open_ids.discard(gid)
+                    except PrecisError:
+                        continue
+                parts.append(
+                    f"answered td{tid}: closed " + " ".join(f"gr{g}" for g in covered)
+                )
+            continue
+        if status in TERMINAL_TODO_STATUSES:
+            # Answered-no (won't-do/auto-timeout): not an answer and not a
+            # live ask — the cohort goes into a fresh mint below.
+            continue
+        if live_td is None:
+            live_td = (tid, meta)
+        else:
+            with store.tx() as conn:
+                store.stamp_ref_meta(tid, {"superseded_by": live_td[0]}, conn=conn)
+                store.retire_ref(tid, conn=conn)
+    ids = sorted(open_ids)
+    head9 = (head or "")[:9]
+    title = f"gripe validate: {len(ids)} user_verify gripe(s) to check after deploy"
+    body_lines = [
+        "Deploy-time validation parked these gripes at `STATUS:user_verify` —",
+        "a human has to check each fix in prod. Answer + close this todo",
+        "when checked; the still-`user_verify` gripes close `done` on the",
+        "next validate pass. Retag a failed one `STATUS:triaged` first.",
+        "",
+    ]
+    body_lines += [f"- gr{g}" for g in ids]
+    body = "\n".join(body_lines) + "\n"
+    ask = {
+        "kind": "ruling",
+        "options": list(_UV_ASK_OPTIONS),
+        "blocks": "nothing",
+        "context": f"{len(ids)} user_verify after deploy {head9 or '(no prod head)'}"[
+            :600
+        ],
+    }
+    check_ask_meta({"ask": ask})
+    if not ids:
+        if live_td is not None:
+            with store.tx() as conn:
+                store.stamp_ref_meta(
+                    live_td[0], {"superseded_by": "empty cohort"}, conn=conn
+                )
+                store.retire_ref(live_td[0], conn=conn)
+            parts.append(f"ask td{live_td[0]} retired (no user_verify gripes left)")
+        return " · ".join(parts) if parts else "no user_verify gripes"
+    if live_td is not None:
+        tid, meta = live_td
+        if _uv_covered(meta) == ids and (meta.get("verify_head") or "") == head9:
+            parts.append(f"ask td{tid} current")
+        else:
+            with store.tx() as conn:
+                store.chunks.set_ref_title(tid, title, source="system", conn=conn)
+                store.stamp_ref_meta(
+                    tid,
+                    {"ask": ask, "verify_gripes": ids, "verify_head": head9},
+                    conn=conn,
+                )
+                store.chunks.replace_body_chunk(
+                    tid, body, chunk_kind=TODO_BODY_KIND, source="system", conn=conn
+                )
+                store.add_tag(tid, Tag.open("ask-user"), set_by="system", conn=conn)
+            parts.append(f"ask td{tid} refreshed ({len(ids)})")
+        return " · ".join(parts)
+    meta = {
+        "digest": _UV_DIGEST_META,
+        "ask": ask,
+        "verify_gripes": ids,
+        "verify_head": head9,
+    }
+    with store.tx() as conn:
+        ref = store.insert_ref(
+            kind="todo", slug=None, title=title, meta=meta, conn=conn
+        )
+        store.add_tag(
+            ref.id,
+            Tag.closed("STATUS", "open"),
+            set_by="system",
+            replace_prefix=True,
+            conn=conn,
+        )
+        store.add_tag(ref.id, Tag.open("ask-user"), set_by="system", conn=conn)
+        store.chunks.insert_chunks(
+            ref.id,
+            [ChunkInsert(ord=0, text=body, meta={"chunk_kind": TODO_BODY_KIND})],
+            conn=conn,
+        )
+    parts.append(f"ask td{int(ref.id)} minted ({len(ids)})")
+    return " · ".join(parts)
 
 
 def shorten_titles(

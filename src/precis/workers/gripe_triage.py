@@ -1555,6 +1555,25 @@ def _drop_lease(meta: dict[str, Any]) -> dict[str, Any]:
     return {k: v for k, v in meta.items() if k != "pipeline"}
 
 
+#: A docs/backlog spec path a gripe's text may already name — the "has a
+#: spec" signal for the size-L leg of needs-spec routing (gr543698).
+_BACKLOG_SPEC_RE = re.compile(r"docs/backlog/[\w.-]+\.md")
+
+
+def _needs_spec(g: ClaimedGripe, v: Verdict) -> bool:
+    """Ill-specified → ``STATUS:needs_spec`` (gr543698): the verdict's own
+    classification carries it — ``fix: spec`` (no clear expected
+    behaviour, or an open design call), or ``size: L`` with no
+    docs/backlog spec named anywhere on the gripe. Deterministic — no
+    new model call."""
+    if v.fix == "spec":
+        return True
+    if v.size != "L":
+        return False
+    text = f"{g.title or ''}\n{g.body or ''}"
+    return _BACKLOG_SPEC_RE.search(text) is None
+
+
 def _next_ord(conn: Any, ref_id: int) -> int:
     row = conn.execute(
         "SELECT coalesce(max(ord) + 1, 0) FROM chunks WHERE ref_id = %s",
@@ -1676,7 +1695,7 @@ def _write_verdict(
                 status = "done"
                 close.append(f"resolved: {evidence.sha} {evidence.subject} ({day})")
             else:
-                status = "verify"
+                status = "auto_verify"
                 sha = evidence.sha if evidence is not None else (v.fix_sha or "?")
                 close.append(f"fix-sha: {sha}")
                 close.append("triage: fix cites main — landed, not yet deployed")
@@ -1686,6 +1705,12 @@ def _write_verdict(
         elif may_close and v.verdict in _DISPUTES:
             status = "wontfix"
             close.append(f"resolved: wontfix — {v.verdict}: {v.reason} ({day})")
+        elif status == "triaged" and v.verdict == "bug" and _needs_spec(g, v):
+            # gr543698: ill-specified — a spec must exist before a builder
+            # picks this. needs_spec parks it off the pick list; the
+            # deploy verifier closes it once a docs/backlog spec names it.
+            status = "needs_spec"
+            comments.append(f"needs-spec: {v.recommend or v.reason or '(see gripe)'}")
         # Replace the OPEN triage tags + a stale disagreement flag.
         conn.execute(
             """

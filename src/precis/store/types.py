@@ -1157,7 +1157,19 @@ _KIND_STATUS_VALUES: dict[str, frozenset[str]] = {
             "fixing",
             "ready_for_fix",
             "in_review",
+            # The verify split (gr543584, migration 0268): ``auto_verify``
+            # is checked by the deploy-time validator (sha in prod →
+            # done); ``user_verify`` waits on a human check via one
+            # ask-user todo per deploy. ``verify`` stays accepted as the
+            # legacy spelling of ``auto_verify`` (0268-era rows).
             "verify",
+            "auto_verify",
+            "user_verify",
+            # ``needs_spec`` (gr543698): triage parks an ill-specified
+            # gripe until a docs/backlog spec names it (the deploy
+            # verifier closes it then) or a human sends it back to
+            # ``open``.
+            "needs_spec",
             "done",
             "wontfix",
         }
