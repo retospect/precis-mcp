@@ -477,10 +477,12 @@ def test_pending_gate_prefers_the_blocked_by_gate(seams: dict[str, Any]) -> None
     store.add_todo(42, tags=("plan:40",))
     seams["gates"] = [(50, False), (51, True)]
     assert land_slice.pending_gate(store, 42) == 51
+    # No gate blocked-by this todo (a revert task): fill none, even when there
+    # is only one pending gate.
     seams["gates"] = [(50, False)]
-    assert land_slice.pending_gate(store, 42) == 50
+    assert land_slice.pending_gate(store, 42) is None
     seams["gates"] = [(50, False), (52, False)]
-    assert land_slice.pending_gate(store, 42) is None  # ambiguous: leave both
+    assert land_slice.pending_gate(store, 42) is None
     store.add_todo(43)
     assert land_slice.pending_gate(store, 43) is None  # in no plan
 

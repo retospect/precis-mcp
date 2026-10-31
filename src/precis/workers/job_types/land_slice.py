@@ -309,16 +309,15 @@ def _plan_tag(store: Any, todo_id: int) -> str | None:
 def pending_gate(store: Any, todo_id: int) -> int | None:
     """The plan's ``sha-in-prod`` gate this land fills: among the todo's
     plan's gates still at :data:`PENDING_SHA`, the one ``blocked-by`` the
-    todo, else the only one. ``None`` when the todo is in no plan or the
-    pick is ambiguous."""
+    todo. ``None`` when the todo is in no plan or no pending gate is
+    ``blocked-by`` it (so a revert task, which no gate waits on, never
+    fills a gate that was reset after a REVERT verdict)."""
     plan = _plan_tag(store, todo_id)
     if plan is None:
         return None
     gates = _pending_gates(store, plan, todo_id)
     mine = [g for g, blocked_by_me in gates if blocked_by_me]
-    if mine:
-        return mine[0]
-    return gates[0][0] if len(gates) == 1 else None
+    return mine[0] if mine else None
 
 
 def _write_gate(store: Any, gate_id: int, sha: str, todo_id: int) -> None:
@@ -549,7 +548,7 @@ def poll(ctx: Any, handle: Any) -> bool:
             _write_gate(store, gate_id, sha, todo_id)
             summary.append(f"gate td{gate_id}: sha-in-prod sha set to {sha[:9]}")
         else:
-            summary.append("gate: no pending sha-in-prod gate for this slice")
+            summary.append("gate: no pending sha-in-prod gate blocked-by this todo")
     except Exception as exc:  # pragma: no cover — reported, the land stands
         log.warning("land_slice: gate write for td%d failed", todo_id, exc_info=True)
         summary.append(f"gate: write FAILED ({exc})")
