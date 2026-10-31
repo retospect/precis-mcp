@@ -903,6 +903,27 @@ def _poll_one(ctx: DispatchContext) -> bool:
     return terminal
 
 
+def _pin_to_submitting_node(conn: Any, ref_id: int, handle: Any) -> None:
+    """Pin an un-pinned job to the node that just launched its compute.
+
+    The handle names a process and a scratch dir on THIS host, so only this
+    host can poll it. Left un-pinned, ``_polling_jobs`` on a ``PRECIS_NODE``
+    worker never selects it (a NULL pin is claimable by any node but polled
+    by none) and any node can reclaim it: 542535/542536 finished in two
+    minutes and failed on the crash-loop guard three hours later, results
+    uncollected. A node-less worker polls the NULL pin and needs nothing."""
+    node = os.environ.get("PRECIS_NODE")
+    if node is None or handle is None:
+        return
+    conn.execute(
+        "UPDATE refs SET meta = meta || jsonb_build_object('params',"
+        "  COALESCE(meta->'params', '{}'::jsonb)"
+        "  || jsonb_build_object('target_node', %s::text))"
+        " WHERE ref_id = %s AND meta->'params'->>'target_node' IS NULL",
+        (node, ref_id),
+    )
+
+
 def _run_one(ctx: DispatchContext) -> bool:
     """Dispatch one claimed job — detached submit (§H piece 4, preferred)
     when the job_type exposes ``submit``/``poll``, else the legacy
@@ -981,6 +1002,7 @@ def _run_one(ctx: DispatchContext) -> bool:
                 deadline=_deadline_epoch(meta, spec),
                 submit_started_at=None,
             )
+            _pin_to_submitting_node(conn, ref_id, handle)
             conn.commit()
         return False
 

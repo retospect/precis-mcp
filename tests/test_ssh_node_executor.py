@@ -850,6 +850,64 @@ def test_submit_launches_detached_and_never_blocks(
     assert not _meta(store, rid).get("submit_started_at")
 
 
+def test_unpinned_submit_is_polled_by_the_node_that_launched_it(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """542535/542536: an un-pinned detached job's compute lives on the
+    submitting host. Submit pins it there, so the next pass on that node
+    polls it to terminal and no other node can poll or reclaim it."""
+    polled: list[str] = []
+
+    def _poll(ctx: Any, handle: str) -> bool:
+        polled.append(handle)
+        ctx.set_status("succeeded")
+        return True
+
+    monkeypatch.setattr(
+        ssh_node,
+        "get_job_type",
+        lambda name: _spec(submit=lambda c, s: "pid-7", poll=_poll),
+    )
+    monkeypatch.setenv("PRECIS_NODE", "node-a")
+    rid = _mk_job(store, params={"keep": 1})
+
+    ssh_node.run_ssh_node_pass(store, limit=1)
+
+    params = _meta(store, rid)["params"]
+    assert params == {"keep": 1, "target_node": "node-a"}
+    assert polled == []  # submit pass: the poll step ran before the claim
+
+    monkeypatch.setenv("PRECIS_NODE", "node-b")
+    assert ssh_node._polling_jobs(store, "node-b") == []
+    ssh_node.run_ssh_node_pass(store, limit=1)
+    assert polled == []
+
+    monkeypatch.setenv("PRECIS_NODE", "node-a")
+    result = ssh_node.run_ssh_node_pass(store, limit=1)
+    assert polled == ["pid-7"]
+    assert result["ok"] == 1
+    assert _status(store, rid) == "succeeded"
+
+
+def test_submit_on_a_node_less_worker_stays_unpinned(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Single-machine install: no PRECIS_NODE, so the NULL pin stays and the
+    node-less poll step selects it."""
+    monkeypatch.delenv("PRECIS_NODE", raising=False)
+    monkeypatch.setattr(
+        ssh_node,
+        "get_job_type",
+        lambda name: _spec(submit=lambda c, s: "pid-8", poll=lambda c, h: False),
+    )
+    rid = _mk_job(store, params={"keep": 1})
+
+    ssh_node.run_ssh_node_pass(store, limit=1)
+
+    assert _meta(store, rid)["params"] == {"keep": 1}
+    assert [row[0] for row in ssh_node._polling_jobs(store, None)] == [rid]
+
+
 def test_submit_intent_marker_committed_before_launch(
     store: Store, monkeypatch: pytest.MonkeyPatch
 ) -> None:

@@ -483,7 +483,8 @@ def _mint_kinetics_job(
             "config": config,
             "content_key": params.get("content_key"),
             # no target_node: the sweep need not land on the seed host the
-            # parent aggregate ran on
+            # parent aggregate ran on; the host that submits it pins it
+            # (ssh_node._pin_to_submitting_node)
         },
     )
     return int(resp.ref_id) if resp.ref_id is not None else None

@@ -369,9 +369,20 @@ _JOB_RESULT_KIND = "job_result"
 # precis.quest.loop) parents directly on the quest it drives — added to the
 # core set (not the plugin ``can_own_jobs`` extension) because the reconciler
 # runs from a worker pass with a bare, unbooted ``Hub(store=store)`` that
-# never populates the plugin-lookup path.
+# never populates the plugin-lookup path. ``pathway`` is here for the same
+# reason: the aggregate job mints its kinetics child from a worker pass.
 JOB_PARENT_KINDS: frozenset[str] = frozenset(
-    {"todo", "structure", "cad", "draft", "quest", "pcb", "part", "component"}
+    {
+        "todo",
+        "structure",
+        "cad",
+        "draft",
+        "quest",
+        "pcb",
+        "part",
+        "component",
+        "pathway",
+    }
 )
 
 #: The intent-vs-compute job lanes extension (good-search-coordinator §Substrate fixes #3): a

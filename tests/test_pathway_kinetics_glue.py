@@ -48,6 +48,32 @@ def _mint_ctx(tier: str = "verify") -> MagicMock:
     return ctx
 
 
+def test_mint_reaches_the_real_job_handler_from_a_worker_pass(store, monkeypatch):
+    """The aggregate mints from a worker pass, whose bare ``Hub`` has no
+    plugin kinds: the pathway parent must still be accepted. The mocks below
+    stub ``JobHandler`` and hid this on prod (every mint raised BadInput)."""
+    from types import SimpleNamespace
+
+    from precis_pathway import aggregate_job
+
+    monkeypatch.setenv("PRECIS_PATHWAY_KINETICS_MINT_ENABLED", "1")
+    pathway = store.insert_ref(
+        kind="pathway",
+        slug="kin-mint-real",
+        title="kin-mint-real pathway",
+        meta={"tier": "verify", "results": {"nodes": {"A": 0.0}, "edges": []}},
+    )
+
+    job_id = aggregate_job._mint_kinetics_job(
+        SimpleNamespace(store=store), {"config": {"name": "x"}}, pathway.id
+    )
+
+    assert job_id is not None
+    job = store.get_ref(kind="job", id=job_id)
+    assert job.parent_id == pathway.id
+    assert job.meta["job_type"] == "autocatpath_kinetics"
+
+
 def test_verify_aggregate_mints_kinetics_job(monkeypatch):
     """With the mint flag on, a verify-tier pathway's aggregate mints
     autocatpath_kinetics; other tiers don't, and the mint carries no
