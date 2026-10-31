@@ -443,15 +443,17 @@ def _topo_route(
     keepouts = pcb_session.keepouts_from_features(features or [])
     loaded = ctx.store.pcb_load(pcb_ref_id)
     net_rules = pcb_session.route_net_rules(loaded, capability)
-    # gr524334: the siting walk's fallback diameter — the fab minimum,
-    # tried when a net's rule via (the comfortable house default) finds
-    # no site on a branch.
+    # gr524334: the siting walk's fallback dia/drill pair — the fab
+    # minimum, tried when a net's rule via (the comfortable house
+    # default) finds no site on a branch.
     min_via_dia = capability.jlc_min.get("via_diameter_mm")
+    min_via_drill = capability.jlc_min.get("drill_mm")
     plan, rres = _tprealise.route_design(
         td_route,
         ir,
         net_rules=net_rules,
         min_via_dia=None if min_via_dia is None else float(min_via_dia),
+        min_via_drill=None if min_via_drill is None else float(min_via_drill),
     )
 
     # Failure-driven shove (Reto 2026-10-30: "should just cause shove, and

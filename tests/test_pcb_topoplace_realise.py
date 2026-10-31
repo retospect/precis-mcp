@@ -23,6 +23,7 @@ from precis.pcb import local as kernel
 from precis.pcb import realize as pcb_realize
 from precis.pcb.capabilities import capability_for
 from precis.pcb.ir import PcbIR, from_graph
+from precis.pcb.rules import NetRules
 from precis.pcb.session import clearance_net_rules, route_net_rules
 from precis.pcb.topoplace import design_from_ir
 from precis.pcb.topoplace import wires as wires_mod
@@ -31,6 +32,7 @@ from precis.pcb.topoplace.mesh import TopoMesh, build_mesh
 from precis.pcb.topoplace.realise import (
     RoutePiece,
     RoutePlan,
+    ViaSite,
     _guarded_nets,
     _run_bounds,
     _severed_nets,
@@ -1284,6 +1286,102 @@ def test_via_siting_falls_back_to_the_fab_minimum_dia() -> None:
     _e, _t, x, y, dia = site
     assert (x, y) == (5.0, 0.0)
     assert dia == 0.45
+
+
+def test_fallback_sited_via_pairs_the_fab_minimum_drill() -> None:
+    """gr524334: the fallback is a dia/drill PAIR — a site qualified at
+    the fab-minimum diameter records the fab-minimum drill too, so the
+    emitted barrel keeps a legal annular ring (0.45 over the house
+    0.25 drill leaves 0.10 mm, under JLC's 0.15 floor — an
+    ``annular_ring`` error at the gate). The TH pad band runs parallel
+    to the straight F↔B wire 0.45 mm off it: inside the
+    0.75/2+0.15=0.525 house keep-out, outside the 0.45/2+0.15=0.375
+    fab-minimum one."""
+    mesh = TopoMesh(
+        verts=np.asarray([[0.0, 0.0], [10.0, 0.0], [5.0, 0.0]]),
+        tris=np.zeros((0, 3), np.int32),
+        edges=np.asarray([[0, 2], [2, 1]], np.int32),
+        tri_edges=np.zeros((0, 3), np.int32),
+        edge_tris=np.zeros((2, 2), np.int32),
+        constrained=np.zeros(2, dtype=bool),
+        pad_vertex={},
+    )
+    branch = WirePath(
+        net=0,
+        pin_a=0,
+        pin_b=1,
+        tris=(),
+        edges=(0, 1),
+        t=(0.5, 0.5),
+        points=((0.0, 0.0), (5.0, 0.0), (10.0, 0.0)),
+    )
+    wires = Wires(
+        branches=(branch,),
+        order=((0,), (0,)),
+        capacity_mm=np.zeros(2),
+        net_layers=(frozenset({0, 3}),),
+        unreachable=(),
+        gap_free_mm=np.full((1, 4), -1.0),
+        gap_cap=np.full((1, 4), -1),
+    )
+    d = TopoDesign(
+        parts=("P1", "P2", "PB"),
+        pin_xy=np.asarray([[0.0, 0.0], [10.0, 0.0], [5.0, 5.225]]),
+        pin_part=np.asarray([0, 1, 2]),
+        pin_side=np.asarray([0, 1, 2], dtype=np.int8),
+        pin_label=np.asarray(["1"] * 3, dtype=object),
+        pin_net=np.asarray([0, 0, 0], dtype=np.int32),
+        net_pins=(np.asarray([0, 1]),),
+        flex=(),
+        swap_groups=(),
+        fixed=np.zeros(3, dtype=bool),
+        freedoms=np.full(3, 3, dtype=np.uint8),
+        outline=np.asarray([[-1.0, -1.0], [11.0, -1.0], [11.0, 1.0], [-1.0, 1.0]]),
+        pose0=np.zeros((3, 4)),
+        net_name=("N0",),
+        # the 0.45-mm-off pad band: y in [0.45, 10], x in [-10, 20]
+        pin_wh=np.asarray([[0.0, 0.0], [0.0, 0.0], [30.0, 9.55]]),
+    )
+    rules = {
+        "N0": NetRules(
+            track_width_mm=0.15,
+            clearance_mm=0.15,
+            via_dia_mm=0.75,
+            via_drill_mm=0.25,
+        ),
+    }
+    plan = plan_route(
+        d, mesh, wires, 4, net_rules=rules, min_via_dia=0.45, min_via_drill=0.15
+    )
+    (via,) = plan.vias
+    assert (via.dia_mm, via.drill_mm) == (0.45, 0.15)
+
+    ir = SimpleNamespace(net_name=np.asarray(["N0"], dtype=object))
+    (rv,) = realize_result(plan, d, ir, 4, net_rules=rules).vias
+    assert (rv.dia_mm, rv.drill_mm) == (0.45, 0.15)
+
+
+def test_realize_result_keeps_the_net_rule_pair_for_a_house_via() -> None:
+    """A site qualified at the net-rule diameter (the site's dia/drill
+    left zero) still emits the rule's own pair — the fab-minimum drill
+    belongs to fallback sites only."""
+    d, _mesh, _wires = _via_fixture(constrained=(True, False, False, False))
+    rules = {
+        "N0": NetRules(
+            track_width_mm=0.15,
+            clearance_mm=0.15,
+            via_dia_mm=0.75,
+            via_drill_mm=0.25,
+        )
+    }
+    plan = RoutePlan(
+        pieces=(),
+        vias=(ViaSite(0, 0, 0, 0.5, 5.0, 2.0),),
+        layers=(0,),
+    )
+    ir = SimpleNamespace(net_name=np.asarray(["N0"], dtype=object))
+    (rv,) = realize_result(plan, d, ir, 4, net_rules=rules).vias
+    assert (rv.dia_mm, rv.drill_mm) == (0.75, 0.25)
 
 
 def _span_fixture() -> tuple[TopoDesign, TopoMesh, Wires]:

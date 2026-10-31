@@ -199,6 +199,36 @@ def test_resolve_net_rules_via_fields_are_populated_from_fab_floor():
     assert rules.via_drill_mm is not None and rules.via_drill_mm > 0
 
 
+def test_resolve_net_rules_via_drill_follows_an_overridden_dia():
+    """gr524334: dia and drill are ONE coupled barrel — a class
+    ``via_dia_mm`` override under ``drill + 2 x ring`` must shrink the
+    drill, else the resolved pair emits an annular ring under the fab
+    floor (0.45 dia over the house 0.25 drill leaves 0.10 mm, under
+    JLC's 0.15). The 4layer fallback pair is exactly dia 0.45 / drill
+    0.15 / ring 0.15."""
+    rules = resolve_net_rules(
+        "signal",
+        layer_is_outer=True,
+        fab_caps=_CAP4,
+        overrides={"via_dia_mm": _CAP4.jlc_min["via_diameter_mm"]},
+    )
+    ring_min = _CAP4.jlc_min["annular_ring_mm"]
+    assert ring_min is not None
+    assert rules.via_dia_mm == pytest.approx(_CAP4.jlc_min["via_diameter_mm"])
+    assert rules.via_drill_mm == pytest.approx(_CAP4.jlc_min["drill_mm"])
+    assert rules.via_dia_mm is not None and rules.via_drill_mm is not None
+    assert (rules.via_dia_mm - rules.via_drill_mm) / 2.0 == pytest.approx(ring_min)
+
+
+def test_resolve_net_rules_via_drill_unmoved_when_the_ring_already_clears():
+    """The coupling never shrinks a drill whose ring already clears the
+    floor: the plain house pair (0.75 dia / 0.25 drill / 0.25 ring)
+    resolves unchanged."""
+    rules = resolve_net_rules("signal", layer_is_outer=True, fab_caps=_CAP4)
+    assert rules.via_dia_mm == pytest.approx(_CAP4.house_default["via_diameter_mm"])
+    assert rules.via_drill_mm == pytest.approx(_CAP4.house_default["drill_mm"])
+
+
 # ── via ampacity: via_capacity_a / via_count_for_current ─────────────────
 
 

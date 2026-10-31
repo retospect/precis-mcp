@@ -125,7 +125,10 @@ class ViaSite:
     clamps ``t`` off the endpoint vertices — gr520901). ``dia_mm`` is
     the barrel the site was qualified against — the fab-minimum fallback
     when the net-rule via found no site (gr524334); ``0.0`` means the
-    net rule's own via_dia (the comfortable house default)."""
+    net rule's own via_dia (the comfortable house default). ``drill_mm``
+    is the drill paired with that barrel (the fab-minimum drill under a
+    fallback diameter — the house drill would leave a sub-floor annular
+    ring); ``0.0`` means the net rule's own drill."""
 
     net: int
     branch: int
@@ -134,6 +137,7 @@ class ViaSite:
     x: float
     y: float
     dia_mm: float = 0.0
+    drill_mm: float = 0.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -2258,6 +2262,7 @@ def plan_route(
     net_rules: Mapping[str, NetRules] | None = None,
     pose: Any = None,
     min_via_dia: float | None = None,
+    min_via_drill: float | None = None,
     paths: Sequence[Sequence[tuple[float, float]]] | None = None,
 ) -> RoutePlan:
     """Layer assignment → pieces + via sites for one routed pose.
@@ -2272,7 +2277,11 @@ def plan_route(
     ``min_via_dia`` (the fab minimum) as the fallback when the rule
     via finds no site (gr524334); a join with no qualifying point at
     either diameter mints no via and lands on
-    :attr:`RoutePlan.no_via`."""
+    :attr:`RoutePlan.no_via`. A fallback-sited via records
+    ``min_via_drill`` as its drill — the fallback is the fab-minimum
+    dia/drill PAIR, so the emitted barrel's annular ring stays fab-legal
+    (a 0.45 mm pad over the house 0.25 mm drill leaves a 0.10 mm ring,
+    under JLC's 0.15 floor)."""
     wires, runs, cuts, crossings = assign_layers(
         d, mesh, wires, n_layers, net_rules=net_rules, pose=pose
     )
@@ -2437,7 +2446,12 @@ def plan_route(
                 continue
             e, t, x, y, via_d = site
             site_edges.add(e)
-            vias.append(ViaSite(b.net, bi, e, t, x, y, via_d))
+            via_drill = (
+                float(min_via_drill)
+                if min_via_drill is not None and via_d != via_dia
+                else 0.0
+            )
+            vias.append(ViaSite(b.net, bi, e, t, x, y, via_d, via_drill))
             placed.append((x, y, via_d))
             cut_xy.append((x, y))
         if not sited:
@@ -2607,10 +2621,10 @@ def realize_result(
                 net_id=ir_net.get(name, -1),
                 x=v.x,
                 y=v.y,
-                # a fallback-sited barrel keeps its qualified diameter
-                # (gr524334) — 0.0 means the net rule's own via
+                # a fallback-sited barrel keeps its qualified
+                # dia/drill pair (gr524334) — 0.0 means the net rule's own
                 dia_mm=float(v.dia_mm or nr.via_dia_mm or _VIA_DIA_MM),
-                drill_mm=float(nr.via_drill_mm or _VIA_DRILL_MM),
+                drill_mm=float(v.drill_mm or nr.via_drill_mm or _VIA_DRILL_MM),
                 layer_lo=lo,
                 layer_hi=hi,
                 endpoint="a",
@@ -3027,6 +3041,7 @@ def route_design(
     pose: Any = None,
     net_rules: Mapping[str, NetRules] | None = None,
     min_via_dia: float | None = None,
+    min_via_drill: float | None = None,
 ) -> tuple[RoutePlan, Any]:
     """Mesh → wires → plan → copper for one pose — the route half every
     caller (the ``placer='topo'`` job, ``pcb.local.topo_place``) shares.
@@ -3081,6 +3096,7 @@ def route_design(
         net_rules=net_rules,
         pose=mesh_pose,
         min_via_dia=min_via_dia,
+        min_via_drill=min_via_drill,
         paths=paths,
     )
     emit = plan

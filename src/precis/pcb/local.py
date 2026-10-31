@@ -1028,15 +1028,17 @@ def topo_place(
                     ),
                 )
         net_rules = pcb_session.route_net_rules(design.graph, design.fab_caps)
-        # gr524334: siting falls back to the fab-minimum via diameter
-        # when the net-rule via (house default) finds no site.
+        # gr524334: siting falls back to the fab-minimum via dia/drill
+        # pair when the net-rule via (house default) finds no site.
         _min_via = design.fab_caps.jlc_min.get("via_diameter_mm")
+        _min_drill = design.fab_caps.jlc_min.get("drill_mm")
         plan, rres = _tprealise.route_design(
             td_route,
             ir,
             pose=result.best_pose,
             net_rules=net_rules,
             min_via_dia=None if _min_via is None else float(_min_via),
+            min_via_drill=None if _min_drill is None else float(_min_drill),
         )
         # The oracle measures the PLACED board — write the winning pose
         # into the local ir first (it is throwaway; ``poses`` above

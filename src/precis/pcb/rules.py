@@ -385,6 +385,23 @@ def resolve_net_rules(
     if via_drill_mm is not None and drill_min is not None:
         via_drill_mm = max(float(via_drill_mm), drill_min)
 
+    # dia and drill are ONE coupled barrel (capabilities' own
+    # ``via_diameter_mm`` derivation: ``dia >= drill + 2 x ring``): a
+    # class ``via_dia_mm`` override under ``drill + 2 x ring_min`` would
+    # emit a barrel whose annular ring sits under the fab floor, so the
+    # drill shrinks to keep the ring — never the ring under the drill.
+    # ``via_dia_mm`` is already clamped to ``via_min`` (itself derived
+    # ``>= drill_min + 2 x ring_min``), so this never pushes the drill
+    # under ``drill_min`` — a row without that coupling keeps its drill
+    # floor and the undersized DIAMETER stays the flagged part.
+    ring_min = _fab_min(fab_caps, "annular_ring_mm")
+    if via_dia_mm is not None and via_drill_mm is not None and ring_min is not None:
+        floor = 0.0 if drill_min is None else drill_min
+        via_drill_mm = max(
+            floor,
+            min(float(via_drill_mm), float(via_dia_mm) - 2.0 * ring_min),
+        )
+
     return NetRules(
         track_width_mm=float(width_mm),
         clearance_mm=tiers.clearance_mm,
