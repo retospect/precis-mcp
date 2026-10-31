@@ -1,14 +1,13 @@
-"""gr513871 — the compact route-failure digest on the default route path.
+"""gr513871 — the compact route-failure digest on the route path.
 
 The route run's per-net notes name ONE problem at a time, so a board
 failing many nets on the same blocked corridor read as the same crossing
 repeated 183 times with no run-level summary. ``route_digest`` aggregates
-``fail.problems`` into binding constraints; the job stamps it onto
-``refs.meta.last_route.digest`` and ``view='route-status'`` renders it.
-
-Routing is retired (gr515107): nothing produces a NEW digest. These tests
-pin the read half — ``digest_lines`` over a stored digest dict — for
-boards routed before the cut.
+``fail.problems`` into binding constraints; the topo route stage produces
+it again (``build_digest`` over ``sketch_rows`` — ``meta.topo_run.route``
+on the job, ``meta.last_route.digest`` on the board ref,
+``pcb.local.route``'s ``LocalRoute.digest`` offline) and
+``view='route-status'`` renders it.
 """
 
 from __future__ import annotations
@@ -19,7 +18,7 @@ import pytest
 
 from precis.dispatch import Hub
 from precis.handlers.pcb import PcbHandler
-from precis.pcb.route_digest import digest_lines
+from precis.pcb.route_digest import _REASON_HINTS, build_digest, digest_lines
 
 #: A digest in the shape the pcb_route job stamped onto
 #: ``refs.meta.last_route.digest`` — kept literal so the renderer test
@@ -41,6 +40,87 @@ _DIGEST: dict[str, Any] = {
         },
     ],
 }
+
+
+# ── build_digest: sketch_rows -> the stored digest shape ─────────────
+
+
+def _rows(*specs: tuple[str, list[dict[str, Any]]]) -> dict[str, dict[str, Any]]:
+    """``{net: row}`` — each spec is ``(net, problems)``; an empty list
+    is a realized net."""
+    out: dict[str, dict[str, Any]] = {}
+    for name, problems in specs:
+        if problems:
+            out[name] = {"status": "failed", "fail": {"problems": problems}}
+        else:
+            out[name] = {"status": "realized"}
+    return out
+
+
+def test_build_digest_groups_by_reason_worst_first() -> None:
+    """The point of the digest: many nets failing on the same reason
+    collapse into ONE constraint line, ordered by complaint count."""
+    rows = _rows(
+        ("A", [{"reason": "unrouted"}]),
+        ("B", [{"reason": "same-layer-crossing", "with": "C"}]),
+        ("C", [{"reason": "same-layer-crossing", "with": "B"}]),
+        ("D", [{"reason": "same-layer-crossing", "with": "B"}]),
+        ("E", [{"reason": "unrouted"}, {"reason": "no via site"}]),
+    )
+    d = build_digest(rows)
+    assert d["failed"] == ["A", "B", "C", "D", "E"]
+    assert [c["reason"] for c in d["constraints"]] == [
+        "same-layer-crossing",
+        "unrouted",
+        "no via site",
+    ]
+    assert d["constraints"][0]["count"] == 3
+    assert d["constraints"][1]["count"] == 2
+
+
+def test_build_digest_dedupes_a_net_repeating_one_reason() -> None:
+    """A net complaining about the same blocker twice is ONE net on the
+    constraint, however often the complaint repeats."""
+    rows = _rows(
+        (
+            "A",
+            [
+                {"reason": "same-layer-crossing", "with": "B", "layer": 0},
+                {"reason": "same-layer-crossing", "with": "B", "layer": 0},
+            ],
+        ),
+    )
+    d = build_digest(rows)
+    (c,) = d["constraints"]
+    assert c["count"] == 2 and c["nets"] == ["A"]
+
+
+def test_build_digest_target_is_the_most_named_blocker_with_layer() -> None:
+    """``target`` resolves ``problem.layer`` through ``layer_names`` —
+    the corridor the reader should look at."""
+    rows = _rows(
+        ("A", [{"reason": "same-layer-crossing", "with": "X", "layer": 0}]),
+        ("B", [{"reason": "same-layer-crossing", "with": "Y", "layer": 3}]),
+        ("C", [{"reason": "same-layer-crossing", "with": "X", "layer": 0}]),
+    )
+    d = build_digest(rows, layer_names=["F.Cu", "In1.Cu", "In2.Cu", "B.Cu"])
+    (c,) = d["constraints"]
+    assert c["target"] == "X on F.Cu"
+    assert c["hint"] == _REASON_HINTS["same-layer-crossing"]
+
+
+def test_build_digest_hint_and_missing_fields() -> None:
+    """A reason with no registered lever carries no ``hint``; a problem
+    naming no blocker carries no ``target``; a realized-only board
+    digests to the honest empty set."""
+    d = build_digest(_rows(("A", [{"reason": "search_budget"}])))
+    (c,) = d["constraints"]
+    assert "target" not in c and "hint" not in c
+    assert build_digest(_rows(("A", []), ("B", []))) == {
+        "failed": [],
+        "constraints": [],
+    }
+    assert build_digest({}) == {"failed": [], "constraints": []}
 
 
 def test_digest_lines_render_header_constraints_and_hint() -> None:

@@ -45,7 +45,8 @@ def test_op_route_refuses_with_next_and_mints_no_job(store: Store) -> None:
         pcb.put(id="retired-route", args={"op": "route"})
     next_text = str(exc.value.next)
     assert "op':'place'" in next_text
-    assert "routed copper is not available yet" in next_text
+    assert "'placer':'topo'" in next_text
+    assert "'route':True" in next_text
 
     with store.pool.connection() as conn:
         row = conn.execute(

@@ -370,7 +370,7 @@ def test_local_op_failure_diag_anchors_op_id_and_call_site() -> None:
     """Acceptance (b): a failed scriptless pcb op → ``exc.diag`` with
     ``anchor.op_id`` and the caller's ``file:line``."""
     with pytest.raises(local.LocalError) as exc_info:
-        local.route(object())
+        local.route(object(), place=False)
     d = exc_info.value.diag
     assert d is not None
     assert d.status is Status.ERROR

@@ -14,24 +14,25 @@ surface end to end — author, declare the planes, place, render —
 and checks that every expected layer group is present in the SVG *and*
 carries geometry.
 
-**Routing is retired** (gr515107, Reto 2026-10-25: the vector router was
-deleted, tag ``vroute-final``; the topological router is the only router
-and its realiser is not landed yet). The ``put(op='route')`` leg died
-with it, and with it every film that only realized copper could fill:
-the inner-layer pours the declared plane nets used to produce (a
-``plane_net`` declaration is still recorded, but nothing realizes it
-yet), the ``B.Cu`` pour, the tracks and vias, and the PTH drill file
-(vias were the only plated holes on this fixture — it carries no
-mounting holes). What still carries geometry is asserted non-empty;
-the rest renders as present-but-empty groups and is not asserted.
+**This fixture never routes.** ``put(op='route')`` is retired
+(gr515107, Reto 2026-10-25: the vector router was deleted, tag
+``vroute-final``; topo route rides ``op='place'`` with ``placer='topo'``,
+``route=True``) and this test does not drive a route — so every film
+that only realized copper could fill stays empty: the inner-layer pours
+the declared plane nets used to produce (a ``plane_net`` declaration is
+still recorded, but no route run realizes it on this fixture), the
+``B.Cu`` pour, the tracks and vias, and the PTH drill file (vias were
+the only plated holes on this fixture — it carries no mounting holes).
+What still carries geometry is asserted non-empty; the rest renders as
+present-but-empty groups and is not asserted.
 
 **Ground planes are DECLARED here, not discovered.** ``op='plane_net'`` is
 the authored path; the annealer does not choose plane promotion on this
 fixture (measured: 79 PLANE_PROMOTE moves proposed over 3000 iterations,
 all rejected on cost). The declarations are kept — they are what a human
 designing a 4-layer board authors, and they are what the topological
-realiser will pour from when it lands — but with no router they produce
-no copper, so there is no pour to assert.
+realiser pours from — but with no route run on this fixture they
+produce no copper, so there is no pour to assert.
 
 Set ``PRECIS_PCB_RENDER_OUT=/path/to/board.svg`` to keep the rendered
 board for inspection; unset, the test still runs and asserts everything.
@@ -198,7 +199,7 @@ def test_the_fab_svg_carries_every_film_including_the_declared_ground_planes(
     # The arrangement a human actually asks for on 4 layers: signals route
     # on the inner pair with opposed preferred directions, and the outer
     # pair carries traces AND a copper fill in the space between them —
-    # nothing realizes the fill while routing is retired (module docstring),
+    # nothing realizes the fill on this unrouted fixture (module docstring),
     # but the authored shape is what the topological realiser will read.
     #
     # Written straight to the board row because **there is no stackup
@@ -262,14 +263,15 @@ def test_the_fab_svg_carries_every_film_including_the_declared_ground_planes(
     if out and seed == _RENDER_SEED:
         Path(out).write_text(svg, encoding="utf-8")
 
-    # Routing is retired (gr515107): no pcb_copper rows exist, so DRC has
-    # no real geometry to check — `view='drc'` answers the retirement body
+    # No route ran on this fixture: no pcb_copper rows exist, so DRC has
+    # no real geometry to check — `view='drc'` answers the no-copper body
     # on this all-synthesized board rather than a findings table, and the
-    # waiver ledger this test used to hold died with it (see the module
-    # record above). Report the route status — every fanout>=2 net reads
-    # 'unrouted', the expected state — instead of a findings tally.
+    # waiver ledger this test used to hold died with the route leg (see
+    # the module record above). Report the route status — every
+    # fanout>=2 net reads 'unrouted', the expected state — instead of a
+    # findings tally.
     drc_view = pcb.get(id="fabrender", view="drc")
-    assert "no realized copper yet" in drc_view.body
+    assert "no copper stored" in drc_view.body
     unrouted = sorted(
         row["name"]
         for row in store.pcb_route_status(ref.id)

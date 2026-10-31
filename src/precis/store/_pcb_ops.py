@@ -4840,6 +4840,32 @@ class PcbMixin:
             n += 1
         return n
 
+    def pcb_last_route_merge(
+        self,
+        ref_id: int,
+        updates: dict[str, Any],
+        *,
+        conn: Connection | None = None,
+    ) -> None:
+        """Merge ``updates`` INTO ``meta.last_route`` — a nested jsonb
+        merge, not the top-level ``meta ||`` most writers use, so keys a
+        writer did not touch (``ripped``, ``warm_start``) survive a later
+        run stamping only ``realized``/``failed``/``digest`` (gr513871).
+        A non-object ``last_route`` is replaced wholesale — a scalar
+        there was never valid state. Reuses ``conn`` inside an existing
+        transaction."""
+        sql = (
+            "UPDATE refs SET meta = jsonb_set(meta, '{last_route}', "
+            "(CASE WHEN jsonb_typeof(meta -> 'last_route') = 'object' "
+            "THEN meta -> 'last_route' ELSE '{}'::jsonb END) || %s::jsonb) "
+            "WHERE ref_id = %s"
+        )
+        if conn is not None:
+            conn.execute(sql, (Jsonb(dict(updates)), ref_id))
+        else:
+            with self._pcb_tx() as c:
+                c.execute(sql, (Jsonb(dict(updates)), ref_id))
+
     def pcb_copper_replace(
         self,
         board_id: int,

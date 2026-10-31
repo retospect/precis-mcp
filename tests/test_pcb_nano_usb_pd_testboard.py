@@ -10,12 +10,12 @@ pairwise clearances resolve per net.
 
 **This test MEASURES; it no longer gates on counts.** Reto 2026-10-19:
 the grid router's per-seed floors are dropped ("Drop the grid router's
-floors? yes"). Routing is retired (gr515107, Reto 2026-10-25: vroute
-deleted, tag ``vroute-final``; topo is the only router and unshipped), so
-what remains is the place + stored-DRC half of the old baseline — the
-runs still have to drain cleanly and the per-rule DRC breakdown is
-printed as evidence so a regression stays visible. Synthesized bounds
-and provisional topology are documented in the fixture.
+floors? yes"). Vector routing is retired (gr515107, Reto 2026-10-25:
+vroute deleted, tag ``vroute-final``; topo is the only router), so what
+remains is the place + stored-DRC half of the old baseline — the runs
+still have to drain cleanly and the per-rule DRC breakdown is printed as
+evidence so a regression stays visible. Synthesized bounds and
+provisional topology are documented in the fixture.
 """
 
 from __future__ import annotations
@@ -297,7 +297,8 @@ def test_nano_seed_covers_the_board(store: Store, seed: int) -> None:
 @pytest.mark.parametrize("seed", NANO_SEEDS)
 def test_nano_board_places_cleanly_per_seed(store: Store, seed: int) -> None:
     """Every seed's place job must drain cleanly (``_place`` asserts
-    that). Was the routed-count sweep — routing is retired (gr515107), so
+    that). Was the routed-count sweep — vector routing is retired
+    (gr515107), so
     the placement drain is what remains. One test per seed, not one
     8-seed loop: the loop took 20-30 min on a CI runner and, pinned to a
     single shard, sat at the 40 min job cap (gr495187); per-seed ids

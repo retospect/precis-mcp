@@ -124,11 +124,6 @@ _KNOWN_UNWIRED: dict[str, str] = {
     "src/precis/pcb/board_script.py::board_batch": (
         "CLI scripts/pcb-batch-to-board; MCP wiring follows slice 5 (gr514048)"
     ),
-    "src/precis/pcb/local.py::run": (
-        "pcb-workspace-code slice 4: the main.py --place/--route entry, "
-        "reached through precis_geom.pcb's lazy importlib door, which the "
-        "caller scan can't see"
-    ),
     "src/precis/pcb/local.py::gerbers_zip": (
         "pcb-workspace-code slice 4: the out/gerbers.zip payload, reached "
         "only through the lazy local door; no in-src caller by name"
@@ -152,12 +147,6 @@ _KNOWN_UNWIRED: dict[str, str] = {
         "— local.probe always passes resolver= so the board-bound "
         "resolver never registers and precis_diag's registry dispatch "
         "never calls it"
-    ),
-    "src/precis/pcb/probe.py::PcbProbeResolver.digest": (
-        "gr522028 S1c: ProbeResolver protocol member — precis_diag.probe "
-        "calls it on the resolver= override local.probe passes; the "
-        "domain-agnostic core can't import this module, so no in-src "
-        "call site can name it"
     ),
     "src/precis/pcb/clearance.py::outward_circle": (
         "pcb-vector-router slice 2: the circumscribed polygon for consumers "
@@ -276,11 +265,9 @@ _KNOWN_UNWIRED: dict[str, str] = {
         "pin-swap IR mutator; its only caller was the pcb_route job's "
         "supply-matching pass — same Slice-7 gap as pinswap.propose_* below"
     ),
-    "src/precis/pcb/local.py::route": (
-        "kept as a refusing stub so local.route names the retirement "
-        "(ROUTE_RETIRED) instead of an AttributeError; its only caller was "
-        "the deleted route bench"
-    ),
+    # local.py::route left this list 2026-10-27: it is the in-script
+    # route call again (gr513867) — Board.route() and local.run()'s
+    # --route path call it over the topo stage.
     "src/precis/pcb/pinswap.py::offsets_from_ir": (
         "pin-swap offset derivation; its only caller was the pcb_route "
         "job's supply-matching pass — Slice-7 swap write-back consumes it again"

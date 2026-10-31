@@ -5,6 +5,7 @@ diversity invariant, and seed determinism — spec §1a's own tests."""
 from __future__ import annotations
 
 import time
+from typing import Any
 
 import numpy as np
 import pytest
@@ -520,6 +521,44 @@ def test_settle_label_room_never_pushes_past_edge_clearance() -> None:
     assert repaired[0, 0] == pytest.approx(15.0)
     assert repaired[0, 1] == pytest.approx(27.75)
     assert walk1[0] > 0.0
+
+
+def test_overlap_proxy_parity_over_staged_moves() -> None:
+    """gr513870: ``_pair_overlap``'s disjoint scan runs on cached
+    bounds/side arrays patched by the stage — the staged and committed
+    ``overlap`` totals must stay equal to the ``overlap_area`` recompute
+    through side flips, stacked staged moves (a swap's first half) and
+    revert/commit interleaving."""
+    from precis.pcb.topoplace.proxy import overlap_area
+
+    def _area(d: Any, proxy: ProxyState) -> float:
+        pose = proxy.pose.copy()
+        for p, row in proxy._stage.items():
+            pose[p] = row
+        return overlap_area(d, pose)
+
+    d, _inst, _nets = synth_design(seed=0)
+    w = ObjectiveShares(crossings=0.5, ratsnest=0.1, overlap=0.4)
+    proxy = ProxyState(d, d.pose0, w)
+    rng = np.random.default_rng(4)
+    movable = np.flatnonzero(~d.fixed)
+    for i in range(400):
+        p = int(movable[rng.integers(len(movable))])
+        row = proxy.pose[p].copy()
+        kind = rng.random()
+        if kind < 0.7:
+            row[0] += rng.normal(0.0, 3.0)
+            row[1] += rng.normal(0.0, 3.0)
+        elif kind < 0.9:
+            row[2] = (row[2] + float(rng.integers(1, 4))) % 4
+        else:
+            row[3] = 1.0 - row[3]
+        proxy.try_move(p, row)
+        assert proxy.overlap == pytest.approx(_area(d, proxy)), i
+        (proxy.commit if rng.random() < 0.5 else proxy.revert)()
+        if i % 25 == 0:
+            assert proxy.overlap == pytest.approx(overlap_area(d, proxy.pose)), i
+    assert proxy.overlap == pytest.approx(overlap_area(d, proxy.pose))
 
 
 def test_placer_beats_autoplace_at_equal_evals_median() -> None:

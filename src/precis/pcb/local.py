@@ -13,12 +13,16 @@ here reimplements an engine; what the store path gets from
 ``pcb_graph``/``pcb_planes``/``pcb_footprints`` this module derives from
 ``board.to_batch()``.
 
-**Routing is retired** (Reto 2026-10-25): the vector router was deleted
-(tag ``vroute-final``); the topological router is the only router and
-its realiser is not landed yet. ``pcb.local.route`` raises
-:class:`LocalError` (:data:`precis.pcb.ROUTE_RETIRED`); the DRC/render
-functions take a :class:`LocalPlacement` and honestly emit a placed
-board — pads and authored fixed copper, no tracks.
+**Routing is topological** — the vector router was deleted
+(2026-10-25, tag ``vroute-final``) and the topo realiser is the only
+router. :func:`route` is the in-script route call (gr513867): it runs
+the same slice-5 stage (:func:`_route_stage` — mesh → wires → plan →
+``widen_power`` under the board's own DRC oracle → ``sketch_rows``) the
+``placer='topo'`` job and :func:`topo_place` share, either at an
+already-placed pose or after the topo placer. The store-side
+``put(op='route')`` stays refused with
+:data:`precis.pcb.ROUTE_RETIRED` — routing a stored board rides
+``op='place', placer='topo', route=True`` instead.
 
 **Preview, not board state.** A laptop run writes ``out/*.json`` /
 ``gerbers.zip`` files only — judged mutation, ``last_route`` and
@@ -44,6 +48,7 @@ through ``Board.catalog_footprints()``; and every ``place`` call takes
 from __future__ import annotations
 
 import copy
+import dataclasses
 import json
 import logging
 import math
@@ -54,15 +59,15 @@ from pathlib import Path
 from typing import Any
 
 from precis.pcb import (
+    DANGLING_NET_NOTE_PREFIX,
     DEFAULT_STACKUP,
-    ROUTE_RETIRED,
-    ROUTE_RETIRED_NEXT,
     STACKUP_PRESETS,
 )
 from precis.pcb import diag as pcb_diag
 from precis.pcb import drc as pcb_drc
 from precis.pcb import profiles as pcb_profiles
 from precis.pcb import realize as pcb_realize
+from precis.pcb import route_digest as pcb_route_digest
 from precis.pcb import rows as pcb_rows
 from precis.pcb import session as pcb_session
 from precis.pcb.ir import PcbIR
@@ -585,6 +590,12 @@ def _batch_of(board: Any) -> dict[str, Any]:
     batch = board.to_batch() if hasattr(board, "to_batch") else board
     if not isinstance(batch, dict):
         raise LocalError("place/route wants a precis_geom Board or a batch dict")
+    # ``to_batch()`` emits no slug — the store supplies it at put time;
+    # offline the board's own name is the slug every run file and result
+    # object should carry.
+    slug = getattr(board, "slug", None)
+    if slug and not ((batch.get("meta") or {}).get("slug")):
+        batch = {**batch, "meta": {**(batch.get("meta") or {}), "slug": str(slug)}}
     return batch
 
 
@@ -797,7 +808,264 @@ def place(
     )
 
 
-# ── route (retired) ────────────────────────────────────────────────────
+# ── route ─────────────────────────────────────────────────────────────
+
+
+@dataclass
+class _RouteStage:
+    """The topo route half's product — shared by :func:`topo_place` (it
+    renders ``route.json`` off it) and :func:`route` (it wraps it in a
+    :class:`LocalRoute`). ``design`` is the routing TopoDesign
+    (``route_planes=True``), distinct from the placer's."""
+
+    plan: Any
+    result: Any
+    widths: dict[int, float]
+    rows: dict[str, dict[str, Any]]
+    drc_errors: int
+    design: Any = field(repr=False, default=None)
+
+
+def _route_stage(
+    design: _Design,
+    ir: PcbIR,
+    footprints: dict[str, dict[str, Any]],
+    *,
+    pose: Any = None,
+    label_spots: dict[str, str] | None = None,
+) -> _RouteStage:
+    """The shared slice-5 route stage: a routing design that admits the
+    rails, the mesh at ``pose`` — ``d.pose0``, the pose ``ir`` already
+    carries, when None — then ``widen_power`` under the board's own DRC
+    oracle and the ``pcb_routes``-shaped per-net rows.
+
+    ``pose`` is a placer pose array (``best_pose``); when given it is
+    written into ``ir`` after the plan so the widen oracle and the final
+    error count measure the board being routed. ``label_spots`` are the
+    place half's refdes-label pins — threaded in as ``keepout`` zones
+    (:func:`precis.pcb.topoplace.label_boxes_for`, the same threading
+    the pcb_place job's route stage uses) so the router never sites a
+    via where the silk pass will draw the label. ``ir`` is throwaway in
+    every caller. Raises on a corridor-overflow refusal — best-effort
+    wrapping is the caller's choice, not this stage's."""
+    from precis.pcb import topoplace as _tp
+    from precis.pcb.topoplace import realise as _tprealise
+
+    td_route = _tp.design_from_ir(
+        ir,
+        footprints,
+        net_classes=design.graph.get("net_classes"),
+        features=design.features,
+        fixed_copper=design.fixed_copper,
+        route_planes=True,
+        capability=design.fab_caps,
+        hole_margin_mm=hole_fab_clearance_mm(design.fab_caps),
+    )
+    # The place half's label pins become route-time keep-outs — the
+    # router never sites a via (or threads a wire) through the box the
+    # placer promised the refdes label. The boxes measure the pose being
+    # routed: ``pose`` when given, else the pose ``ir`` already carries.
+    if label_spots:
+        boxes = _tp.label_boxes_for(
+            td_route, pose if pose is not None else td_route.pose0, label_spots
+        )
+        if boxes:
+            td_route = dataclasses.replace(
+                td_route,
+                zones=tuple(td_route.zones)
+                + tuple(
+                    _tp.TopoZone(
+                        kind="label_keepout",
+                        ring=ring,
+                        name=f"label:{refdes}",
+                    )
+                    for refdes, ring in boxes
+                ),
+            )
+    net_rules = pcb_session.route_net_rules(design.graph, design.fab_caps)
+    # gr524334: siting falls back to the fab-minimum via dia/drill
+    # pair when the net-rule via (house default) finds no site.
+    _min_via = design.fab_caps.jlc_min.get("via_diameter_mm")
+    _min_drill = design.fab_caps.jlc_min.get("drill_mm")
+    plan, rres = _tprealise.route_design(
+        td_route,
+        ir,
+        pose=pose,
+        net_rules=net_rules,
+        min_via_dia=None if _min_via is None else float(_min_via),
+        min_via_drill=None if _min_drill is None else float(_min_drill),
+    )
+    if pose is not None:
+        # The oracle measures the PLACED board — write the routed pose
+        # into the local ir (``poses`` on the returned objects already
+        # captured it for the caller).
+        for i in range(len(td_route.parts)):
+            x, y, rot_q, side = (float(v) for v in pose[i])
+            if not (math.isfinite(x) and math.isfinite(y)):
+                continue
+            ir.inst_x[i] = x
+            ir.inst_y[i] = y
+            ir.inst_rot[i] = rot_q * 90.0
+            ir.inst_bottom[i] = side >= 0.5
+    layers = design.layer_names
+    keepouts = pcb_session.keepouts_from_features(design.features)
+    # The widen oracle's own map — the FULL clearance resolution
+    # (per-net class floors), not the route map's signal-width
+    # variant; a class ``min_clearance_mm`` is an error tier the fab
+    # floor alone would let a widened rail violate.
+    drc_net_rules = pcb_session.clearance_net_rules(design.graph, design.fab_caps)
+
+    def _drc_findings(rres_: Any) -> list[Any]:
+        # ``widen_power`` keys the findings, so the oracle returns them,
+        # not a count (gr524392). ``footprints`` gives the real per-pin
+        # pad shapes (the synthesized pads it defaulted to under-
+        # measure); the authored fixed copper rides the model too — the
+        # same authored-copper masking the job oracle has.
+        # ``_copper_model`` is the job oracle's own builder: it carries
+        # the mounting-hole drills ``to_gerber_model`` lacks, so a rail
+        # is never widened toward a hole the job would refuse.
+        model = pcb_session._copper_model(
+            ir,
+            pcb_realize.result_copper_rows(rres_, ir, layers, derived=True)
+            + [{**row, "net": row.get("net") or ""} for row in design.fixed_copper],
+            footprints=footprints,
+        )
+        return [
+            f
+            for f in pcb_drc.run_geometric_drc(
+                model,
+                capability=design.fab_caps,
+                outline=[list(p) for p in (design.outline or [])],
+                keepouts=keepouts,
+                net_rules=drc_net_rules,
+            )
+            if f.severity == "error"
+        ]
+
+    # The widen targets are the nets' current-derived IPC-2221 widths —
+    # clearance_net_rules' resolution, the same map the DRC oracle
+    # measures against — for nets that carry a real current annotation.
+    # A rail claims its target where the oracle allows; the power set is
+    # the plane/power rails plus any net whose target exceeds the width
+    # it was born at (gr524239: widening follows estimated current, never
+    # free space). Unannotated nets get no target: they keep the legacy
+    # widest-the-oracle-allows ruling (gr520904).
+    power_ids, targets = _tprealise.widen_targets(ir, net_rules, drc_net_rules)
+    rres, widths = _tprealise.widen_power(
+        rres, sorted(power_ids), drc_findings=_drc_findings, targets=targets
+    )
+    rows = _tprealise.sketch_rows(plan, td_route, ir, layers)
+    return _RouteStage(
+        plan=plan,
+        result=rres,
+        widths=widths,
+        rows=rows,
+        drc_errors=len(_drc_findings(rres)),
+        design=td_route,
+    )
+
+
+@dataclass
+class LocalRoute:
+    """What ``pcb.local.route`` returns — the in-script route result
+    (gr513867): per-net status (``nets`` and the ``routed``/``failed``/
+    ``dangling``/``unrouted`` buckets), via/track counts, routed
+    ``length_mm``, the final DRC ``drc_errors`` count and the run's
+    ``digest`` (gr513871's produced half — the same shape
+    ``meta.last_route.digest`` stores and ``view='route-status'``
+    renders). ``plan``/``result`` are the raw RoutePlan/RealizeResult;
+    ``run`` is the :class:`TopoRun` when the placer ran (its ``out/``
+    files stand). ``design``/``ir``/``footprints``/``poses`` make it a
+    valid input to :func:`drc`/:func:`gerbers`/:func:`board_svg` — the
+    routed board rendered, not the placed one."""
+
+    slug: str
+    nets: dict[str, dict[str, Any]]
+    routed: list[str]
+    failed: list[str]
+    dangling: list[str]
+    unrouted: list[str]
+    tracks: int
+    vias: int
+    length_mm: float
+    drc_errors: int
+    digest: dict[str, Any]
+    poses: dict[str, tuple[float, float, float]] = field(default_factory=dict)
+    out: str | None = None
+    run: Any = field(repr=False, default=None)
+    plan: Any = field(repr=False, default=None)
+    result: Any = field(repr=False, default=None)
+    design: Any = field(repr=False, default=None)
+    ir: Any = field(repr=False, default=None)
+    footprints: Any = field(repr=False, default=None)
+    ready: bool = True
+
+    def summary(self) -> str:
+        lines = [
+            f"routed {len(self.routed)}/{len(self.nets)} net(s): "
+            f"{len(self.failed)} failed"
+            + (f", {len(self.dangling)} dangling" if self.dangling else "")
+            + f", {self.vias} via(s), {self.length_mm:.1f} mm, "
+            f"{self.drc_errors} DRC error(s)"
+        ]
+        lines.extend(pcb_route_digest.digest_lines(self.digest))
+        return "\n".join(lines)
+
+
+def _local_route(
+    *,
+    slug: str,
+    plan: Any,
+    rres: Any,
+    nets: dict[str, dict[str, Any]],
+    digest: dict[str, Any],
+    drc_errors: int,
+    poses: dict[str, tuple[float, float, float]],
+    out: str | None = None,
+    run: Any = None,
+    design: Any = None,
+    ir: Any = None,
+    footprints: Any = None,
+) -> LocalRoute:
+    """Assemble the :class:`LocalRoute` — the bucket split both call
+    sites share. ``dangling`` is the stored-status exemption: a
+    ``realized`` row whose note is the <2-member marker never counted
+    as routed work."""
+    dangling = sorted(
+        n
+        for n, r in nets.items()
+        if str(r.get("note") or "").startswith(DANGLING_NET_NOTE_PREFIX)
+    )
+    dangling_set = set(dangling)
+    routed = sorted(
+        n
+        for n, r in nets.items()
+        if r.get("status") == "realized" and n not in dangling_set
+    )
+    failed = sorted(n for n, r in nets.items() if r.get("status") == "failed")
+    bucketed = set(routed) | set(failed) | dangling_set
+    unrouted = sorted(n for n in nets if n not in bucketed)
+    return LocalRoute(
+        slug=slug,
+        nets=nets,
+        routed=routed,
+        failed=failed,
+        dangling=dangling,
+        unrouted=unrouted,
+        tracks=len(rres.tracks),
+        vias=len(rres.vias),
+        length_mm=round(sum(float(t.length_mm) for t in rres.tracks), 3),
+        drc_errors=int(drc_errors),
+        digest=digest,
+        poses=poses,
+        out=out,
+        run=run,
+        plan=plan,
+        result=rres,
+        design=design,
+        ir=ir,
+        footprints=footprints,
+    )
 
 
 @pcb_diag.op("route")
@@ -805,20 +1073,112 @@ def route(
     board: Any,
     *,
     placement: LocalPlacement | None = None,
+    place: bool = True,
     seed: int = 1,
-    iters: int | None = None,
-    groups: bool = False,
-    router: str = "vector",
-    force: bool = False,
-    place: bool | None = None,
+    effort: int = 20000,
+    out: str = "out/topo",
     catalog: dict[str, dict[str, Any]] | None = None,
-) -> None:
-    """Retired — the vector router (vroute) was deleted 2026-10-25 (tag
-    ``vroute-final``); the topological router is the only router and its
-    realiser is not landed yet. Always raises :class:`LocalError`;
-    :func:`place` plus the ``drc``/render exports below still work on the
-    placed board."""
-    raise LocalError(f"{ROUTE_RETIRED} Next: {ROUTE_RETIRED_NEXT}")
+) -> LocalRoute:
+    """Route the board through the topological router — the workspace's
+    in-script route call (gr513867), DB-free.
+
+    ``place=True`` (default) runs the whole place→route pipeline —
+    :func:`topo_place`, with its run files under ``out`` — the
+    place-then-route the bench wrapper did. ``place=False`` routes the
+    board as authored: every part keeps its ``at()`` pose. Or hand a
+    :func:`place` result over as ``placement=`` to route the anneal's
+    pose without a second solve.
+
+    Returns a :class:`LocalRoute`. A route-stage refusal (a corridor
+    overflow, a design the router cannot read) raises
+    :class:`LocalError` — a refusal is a result the caller must see,
+    never silent empty copper."""
+    from precis.pcb.topoplace.wires import CorridorOverflow
+
+    if placement is not None and not place:
+        raise LocalError(
+            "pcb.local.route: placement= and place=False disagree — "
+            "a handed-over placement IS the pose to route; drop one"
+        )
+    if placement is not None:
+        try:
+            stage = _route_stage(placement.design, placement.ir, placement.footprints)
+        except CorridorOverflow as exc:
+            raise LocalError(str(exc)) from exc
+        nets = {
+            name: {"status": r["status"], "note": r.get("note")}
+            for name, r in stage.rows.items()
+        }
+        return _local_route(
+            slug=placement.slug,
+            plan=stage.plan,
+            rres=stage.result,
+            nets=nets,
+            digest=pcb_route_digest.build_digest(
+                stage.rows, layer_names=placement.design.layer_names
+            ),
+            drc_errors=stage.drc_errors,
+            poses=placement.poses,
+            design=placement.design,
+            ir=placement.ir,
+            footprints=placement.footprints,
+        )
+    if not place:
+        design = _design(board, catalog)
+        ir = _build_ir(design)
+        footprints = _footprints(design, ir)
+        try:
+            stage = _route_stage(design, ir, footprints)
+        except CorridorOverflow as exc:
+            raise LocalError(str(exc)) from exc
+        nets = {
+            name: {"status": r["status"], "note": r.get("note")}
+            for name, r in stage.rows.items()
+        }
+        return _local_route(
+            slug=str(design.batch.get("meta", {}).get("slug") or ""),
+            plan=stage.plan,
+            rres=stage.result,
+            nets=nets,
+            digest=pcb_route_digest.build_digest(
+                stage.rows, layer_names=design.layer_names
+            ),
+            drc_errors=stage.drc_errors,
+            poses={
+                str(ir.instance_refdes[i]): (
+                    float(ir.inst_x[i]),
+                    float(ir.inst_y[i]),
+                    float(ir.inst_rot[i]),
+                )
+                for i in range(ir.n_instances)
+            },
+            design=design,
+            ir=ir,
+            footprints=footprints,
+        )
+    run = topo_place(board, seed=seed, effort=effort, out=out, catalog=catalog)
+    route_json = run.files.get("route.json") or {}
+    if run.route is None:
+        raise LocalError(
+            "pcb.local.route: the route stage failed — "
+            f"{route_json.get('error') or 'no result'} "
+            f"(run files under {run.out})"
+        )
+    plan, rres = run.route
+    return _local_route(
+        slug=run.slug,
+        plan=plan,
+        rres=rres,
+        nets={str(k): dict(v) for k, v in (route_json.get("nets") or {}).items()},
+        digest=dict(route_json.get("digest") or {}),
+        drc_errors=int(route_json.get("drc_errors") or 0),
+        poses={r: (p[0], p[1], p[2]) for r, p in run.poses.items()},
+        out=run.out,
+        run=run,
+        design=run.design_ctx,
+        ir=run.ir,
+        footprints=run.footprints,
+    )
 
 
 # ── topo_place (topo-place spec §1c) ───────────────────────────────────
@@ -845,15 +1205,19 @@ class TopoRun:
     design_ctx: _Design | None = field(repr=False, default=None)
     #: ``(RoutePlan, RealizeResult)`` of the slice-5 route stage over the
     #: winning pose — the same shared half the ``placer='topo'`` job runs
-    #: (:func:`precis.pcb.topoplace.realise.route_design` +
-    #: :func:`~precis.pcb.topoplace.realise.widen_power`). ``None`` only
-    #: if that stage itself raised — place output still stands.
+    #: (:func:`_route_stage`). ``None`` only if that stage itself raised —
+    #: place output still stands.
     route: Any = field(repr=False, default=None)
     #: The refdes-label pins for the winning pose
     #: (:func:`precis.pcb.topoplace.label_spots_for`) — the job persists
     #: these as instance ``meta.label_spot``; the in-process run exposes
     #: them here and in the run files' ``label_spots.json``.
     label_spots: dict[str, str] = field(default_factory=dict)
+    #: The IR (carrying the routed pose when the stage ran) and the
+    #: refdes-keyed footprint map — what ``route()`` hands a
+    #: :class:`LocalRoute` for ``drc``/``gerbers``/``board_svg``.
+    ir: Any = field(repr=False, default=None)
+    footprints: Any = field(repr=False, default=None)
 
     def summary(self) -> str:
         return str(self.files["summary.txt"])
@@ -925,17 +1289,15 @@ def topo_place(
     )
     _tp.check_slots(td)
     if td.measures and not obj.measures:
-        import dataclasses
-
         # gr520546: authored measures steer the anneal — priced in only
         # when the design carries resolvable specs.
         obj = dataclasses.replace(obj, measures=0.2)
     result = _tp.topo_place(td, objective=obj, effort=effort, seed=seed)
     # Post-anneal label-room repair — the same deterministic nudge pass
     # the pcb_place job runs (labels adjacent, nothing edge-squished).
-    import dataclasses as _dc
-
-    result = _dc.replace(result, best_pose=_tp.settle_label_room(td, result.best_pose))
+    result = dataclasses.replace(
+        result, best_pose=_tp.settle_label_room(td, result.best_pose)
+    )
     assignment = _tp.assign_pins(td, result.best_pose)
     pm = _tp.pair_map(td)
     # The refdes-label pins for the winning pose — computed before the run
@@ -987,130 +1349,37 @@ def topo_place(
         for i, refdes in enumerate(td.parts)
     }
     # Slice-5 ruling: the same place→route half the job runs, in-process —
-    # a routing design that admits the rails, the mesh at the WINNING pose
-    # (``pose=``, not the authored ``pose0``), then widen_power under the
-    # board's own DRC oracle. Best-effort like the job: a raise keeps the
-    # place output, ``route`` stays None and route.json records the note.
+    # the mesh at the WINNING pose (``pose=``, not the authored
+    # ``pose0``), then widen_power under the board's own DRC oracle.
+    # Best-effort like the job: a raise keeps the place output,
+    # ``route`` stays None and route.json records the note.
     route_pair = None
     route_json: dict[str, Any] = {}
     try:
-        from precis.pcb.topoplace import realise as _tprealise
-
-        td_route = _tp.design_from_ir(
-            ir,
-            footprints,
-            net_classes=design.graph.get("net_classes"),
-            features=design.features,
-            fixed_copper=design.fixed_copper,
-            route_planes=True,
-            capability=design.fab_caps,
-            hole_margin_mm=hole_fab_clearance_mm(design.fab_caps),
+        stage = _route_stage(
+            design, ir, footprints, pose=result.best_pose, label_spots=label_spots
         )
-        # The place half's label pins become route-time keep-outs (the
-        # same threading the pcb_place job's route stage uses) — the
-        # router never sites a via where the silk pass will draw the
-        # refdes label.
-        if label_spots:
-            boxes = _tp.label_boxes_for(td_route, result.best_pose, label_spots)
-            if boxes:
-                import dataclasses as _dc
-
-                td_route = _dc.replace(
-                    td_route,
-                    zones=tuple(td_route.zones)
-                    + tuple(
-                        _tp.TopoZone(
-                            kind="label_keepout",
-                            ring=ring,
-                            name=f"label:{refdes}",
-                        )
-                        for refdes, ring in boxes
-                    ),
-                )
-        net_rules = pcb_session.route_net_rules(design.graph, design.fab_caps)
-        # gr524334: siting falls back to the fab-minimum via dia/drill
-        # pair when the net-rule via (house default) finds no site.
-        _min_via = design.fab_caps.jlc_min.get("via_diameter_mm")
-        _min_drill = design.fab_caps.jlc_min.get("drill_mm")
-        plan, rres = _tprealise.route_design(
-            td_route,
-            ir,
-            pose=result.best_pose,
-            net_rules=net_rules,
-            min_via_dia=None if _min_via is None else float(_min_via),
-            min_via_drill=None if _min_drill is None else float(_min_drill),
-        )
-        # The oracle measures the PLACED board — write the winning pose
-        # into the local ir first (it is throwaway; ``poses`` above
-        # already captured it for the caller).
-        for i in range(len(td.parts)):
-            x, y, rot_q, side = (float(v) for v in result.best_pose[i])
-            if not (math.isfinite(x) and math.isfinite(y)):
-                continue
-            ir.inst_x[i] = x
-            ir.inst_y[i] = y
-            ir.inst_rot[i] = rot_q * 90.0
-            ir.inst_bottom[i] = side >= 0.5
-        layers = design.layer_names
-        keepouts = pcb_session.keepouts_from_features(design.features)
-        # The widen oracle's own map — the FULL clearance resolution
-        # (per-net class floors), not the route map's signal-width
-        # variant; a class ``min_clearance_mm`` is an error tier the fab
-        # floor alone would let a widened rail violate.
-        drc_net_rules = pcb_session.clearance_net_rules(design.graph, design.fab_caps)
-
-        def _drc_findings(rres_: Any) -> list[Any]:
-            # ``widen_power`` keys the findings, so the oracle returns
-            # them, not a count (gr524392). ``footprints`` gives the real
-            # per-pin pad shapes (the synthesized pads it defaulted to
-            # under-measure); the authored fixed copper rides the model
-            # too — the same authored-copper masking the job oracle had.
-            model = pcb_realize.to_gerber_model(
-                rres_,
-                ir,
-                layers=layers,
-                outline=[list(p) for p in (design.outline or [])],
-                footprints=footprints,
-            )
-            model["copper"] += [
-                {**row, "net": row.get("net") or ""} for row in design.fixed_copper
-            ]
-            return [
-                f
-                for f in pcb_drc.run_geometric_drc(
-                    model,
-                    capability=design.fab_caps,
-                    outline=model["outline"],
-                    keepouts=keepouts,
-                    net_rules=drc_net_rules,
-                )
-                if f.severity == "error"
-            ]
-
-        # See _topo_route for the rationale: targets are the current-derived
-        # IPC-2221 widths (clearance_net_rules) of the current-annotated
-        # nets; the widen set is the plane/power rails plus the nets whose
-        # target beats their born width, an unannotated rail taking the
-        # widest step the oracle accepts (gr524239: a real estimate
-        # outranks the class).
-        power_ids, targets = _tprealise.widen_targets(ir, net_rules, drc_net_rules)
-        rres, widths = _tprealise.widen_power(
-            rres, power_ids, drc_findings=_drc_findings, targets=targets
-        )
-        rows = _tprealise.sketch_rows(plan, td_route, ir, layers)
+        plan, rres = stage.plan, stage.result
         route_pair = (plan, rres)
         route_json = {
             "nets": {
                 name: {"status": r["status"], "note": r.get("note")}
-                for name, r in rows.items()
+                for name, r in stage.rows.items()
             },
             "tracks": len(rres.tracks),
             "vias": len(rres.vias),
+            "length_mm": round(sum(float(t.length_mm) for t in rres.tracks), 2),
+            "drc_errors": stage.drc_errors,
             "crossings": [list(c) for c in plan.crossings],
-            "unreachable": [str(td_route.net_name[k]) for k in plan.unreachable],
+            "unreachable": [str(stage.design.net_name[k]) for k in plan.unreachable],
             # the refusal count — a route that returned had no cut
             "corridor_overflow": 0,
-            "widened": {str(ir.net_name[k]): w for k, w in widths.items()},
+            "widened": {str(ir.net_name[k]): w for k, w in stage.widths.items()},
+            # the run's binding-constraint digest (gr513871) — same shape
+            # ``meta.last_route.digest`` stores on the server side.
+            "digest": pcb_route_digest.build_digest(
+                stage.rows, layer_names=design.layer_names
+            ),
         }
         files["route.json"] = route_json
         _runstore.write_run(files, out)
@@ -1137,23 +1406,29 @@ def topo_place(
         design_ctx=design,
         route=route_pair,
         label_spots=label_spots,
+        ir=ir,
+        footprints=footprints,
     )
 
 
 # ── model, DRC, exports ────────────────────────────────────────────────
 
 
-def _model(placement: LocalPlacement) -> dict[str, Any]:
+def _model(placement: LocalPlacement | LocalRoute) -> dict[str, Any]:
     """The gerber/svg-shaped board model — ``to_gerber_model`` plus the
     extras ``export_fab``/``run_geometric_drc`` read (drills, silk,
-    mask opens, instances, net names, plane fills). The placed board's
-    ``RealizeResult`` is empty — routing is retired, so pads and authored
-    fixed copper are all there is to model."""
+    mask opens, instances, net names, plane fills). A
+    :class:`LocalPlacement` emits the empty ``RealizeResult`` — pads and
+    authored fixed copper; a :class:`LocalRoute` emits its routed copper
+    on top."""
     design = placement.design
     ir = placement.ir
     layers = design.layer_names
+    realized = getattr(placement, "result", None)
     model: dict[str, Any] = pcb_realize.to_gerber_model(
-        pcb_realize.RealizeResult(tracks=(), vias=(), warnings=()),
+        realized
+        if realized is not None
+        else pcb_realize.RealizeResult(tracks=(), vias=(), warnings=()),
         ir,
         layers=layers,
         outline=design.outline or [],
@@ -1235,10 +1510,10 @@ def _model(placement: LocalPlacement) -> dict[str, Any]:
 
 
 @pcb_diag.op("drc")
-def drc(placement: LocalPlacement) -> list[Any]:
-    """``run_geometric_drc`` over the placed model at the board's profile
-    capability row — the geometric rule set ``view='drc'`` runs, on the
-    laptop's model rather than the store's."""
+def drc(placement: LocalPlacement | LocalRoute) -> list[Any]:
+    """``run_geometric_drc`` over the placed-or-routed model at the
+    board's profile capability row — the geometric rule set ``view='drc'``
+    runs, on the laptop's model rather than the store's."""
     design = placement.design
     model = _model(placement)
     return pcb_drc.run_geometric_drc(
@@ -1333,10 +1608,14 @@ def findings_text(findings: list[Any], *, header: str = "") -> str:
 
 
 def gerbers(
-    placement: LocalPlacement, *, name: str = "board", allow_synthesized: bool = True
+    placement: LocalPlacement | LocalRoute,
+    *,
+    name: str = "board",
+    allow_synthesized: bool = True,
 ) -> dict[str, str]:
     """The fab bundle — :func:`precis.pcb.gerber.export_fab` over the
-    placed model (pads + fixed copper — no routed copper exists).
+    model (pads + fixed copper, plus routed copper on a
+    :class:`LocalRoute`).
     ``allow_synthesized`` defaults True offline (a laptop
     has no ``part_footprints`` cache, so synthesized bounds are the rule,
     not the exception); the preview files are marked by the notes file
@@ -1348,7 +1627,9 @@ def gerbers(
     return pcb_gerber.export_fab(model, name=name, allow_synthesized=allow_synthesized)
 
 
-def gerbers_zip(placement: LocalPlacement, *, name: str = "board") -> bytes:
+def gerbers_zip(
+    placement: LocalPlacement | LocalRoute, *, name: str = "board"
+) -> bytes:
     """``gerbers()`` zipped — the ``out/gerbers.zip`` payload."""
     from precis.pcb import gerber as pcb_gerber
 
@@ -1375,8 +1656,8 @@ def schematic_svg(design: _Design) -> str:
     )
 
 
-def board_svg(placement: LocalPlacement) -> str:
-    """``out/board.svg`` — the placed model rendered."""
+def board_svg(placement: LocalPlacement | LocalRoute) -> str:
+    """``out/board.svg`` — the placed-or-routed model rendered."""
     from precis.pcb import svg as pcb_svg
 
     model = _model(placement)
@@ -1432,27 +1713,83 @@ def placement_json(placement: LocalPlacement) -> dict[str, Any]:
     }
 
 
-def copper_json(placement: LocalPlacement) -> dict[str, Any]:
+def copper_json(
+    placement: LocalPlacement | LocalRoute, *, route: LocalRoute | None = None
+) -> dict[str, Any]:
     """``out/copper.json`` — the copper rows + per-net statuses (the
     ``pcb_copper``/``pcb_routes`` pair a server run persists, as the
-    preview file §Q3 names it). Empty: routing is retired, so a placed
-    board carries no router copper."""
+    preview file §Q3 names it) plus the run's failure ``digest``
+    (gr513871). A bare :class:`LocalPlacement` has no routed copper —
+    the honest empty set; hand over the :class:`LocalRoute` (as
+    ``route=``, or as ``placement`` itself) for the routed rows."""
+    rt = (
+        route
+        if route is not None
+        else placement
+        if isinstance(placement, LocalRoute)
+        else None
+    )
+    if rt is None or rt.result is None:
+        return {
+            "copper": [],
+            "routes": {},
+            "unrouted_reasons": {},
+            "digest": {},
+            "committed_round": 0,
+        }
+    layers = rt.design.layer_names if rt.design is not None else []
+    ir = rt.ir
+    copper: list[dict[str, Any]] = []
+    for t in rt.result.tracks:
+        if not (0 <= t.layer < len(layers)):
+            continue
+        copper.append(
+            {
+                "ctype": "track",
+                "layer": layers[t.layer],
+                "net": str(ir.net_name[t.net_id]) if ir is not None else "",
+                "segments": list(t.segments),
+                "length_mm": round(float(t.length_mm), 4),
+                "width_mm": t.width_mm,
+            }
+        )
+    for v in rt.result.vias:
+        lo = v.layer_lo if 0 <= v.layer_lo < len(layers) else 0
+        hi = v.layer_hi if 0 <= v.layer_hi < len(layers) else len(layers) - 1
+        copper.append(
+            {
+                "ctype": "via",
+                "net": str(ir.net_name[v.net_id]) if ir is not None else "",
+                "x": round(float(v.x), 4),
+                "y": round(float(v.y), 4),
+                "dia_mm": v.dia_mm,
+                "drill_mm": v.drill_mm,
+                "span": [layers[lo], layers[hi]] if layers else [],
+            }
+        )
     return {
-        "copper": [],
-        "routes": {},
-        "unrouted_reasons": {},
-        "digest": {},
+        "copper": copper,
+        "routes": {
+            name: {"status": r.get("status"), "note": r.get("note")}
+            for name, r in rt.nets.items()
+        },
+        "unrouted_reasons": {
+            name: str(r.get("note"))
+            for name, r in rt.nets.items()
+            if r.get("note") and r.get("status") != "realized"
+        },
+        "digest": rt.digest,
         "committed_round": 0,
     }
 
 
-def bom_csv(placement: LocalPlacement) -> str:
+def bom_csv(placement: LocalPlacement | LocalRoute) -> str:
     from precis.pcb import export as pcb_export
 
     return pcb_export.bom_csv(_model(placement))
 
 
-def cpl_csv(placement: LocalPlacement) -> str:
+def cpl_csv(placement: LocalPlacement | LocalRoute) -> str:
     from precis.pcb import export as pcb_export
 
     return pcb_export.cpl_csv(_model(placement))
@@ -1476,11 +1813,11 @@ def run(
     """Write every §Q3 output ``precis_geom.pcb.run`` can't (it owns
     ``manifest.json``/``trace.json``/``check.txt``): ``netlist.net``,
     ``schematic.svg`` and ``ratsnest.svg`` always; ``placement.json``
-    for ``do_place``/``do_route``; the placed board's
+    for ``do_place``/``do_route``; the routed board's
     ``copper.json``/``drc.txt``/``gerbers.zip``/``board.svg``/``bom.csv``/
-    ``cpl.csv`` for ``do_route`` (no router yet — routing is retired, so
-    the "route" outputs honestly describe the placed board). Returns the
-    written filenames."""
+    ``cpl.csv`` for ``do_route`` — the anneal's pose routed by
+    :func:`route`'s topo stage, so the "route" outputs describe real
+    copper. Returns the written filenames."""
     import json
     from pathlib import Path
 
@@ -1508,19 +1845,16 @@ def run(
     )
     if not do_route:
         return written
-    print("no router yet — routing is retired; writing the placed board")
-    w("copper.json", json.dumps(copper_json(placement), indent=1) + "\n")
+    rt = route(batch, placement=placement)
+    w("copper.json", json.dumps(copper_json(placement, route=rt), indent=1) + "\n")
     w(
         "drc.txt",
-        findings_text(
-            drc(placement),
-            header=f"{slug}: {placement.summary()} (unrouted — no router yet)",
-        ),
+        findings_text(drc(rt), header=f"{slug}: {rt.summary()}"),
     )
-    gerber_files = gerbers(placement, name=slug)
+    gerber_files = gerbers(rt, name=slug)
     (out / "gerbers.zip").write_bytes(pcb_gerber_zip(gerber_files))
     written.append("gerbers.zip")
-    w("board.svg", board_svg(placement))
+    w("board.svg", board_svg(rt))
     w("bom.csv", bom_csv(placement))
     w("cpl.csv", cpl_csv(placement))
     return written
@@ -1541,6 +1875,7 @@ __all__ = [
     "PLACE_ONLY_SCHEDULE",
     "LocalError",
     "LocalPlacement",
+    "LocalRoute",
     "TopoRun",
     "batch_to_graph",
     "board_svg",

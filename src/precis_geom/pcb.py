@@ -3289,6 +3289,32 @@ class Board:
             not_checked_groups=groups,
         )
 
+    @traced
+    def route(self, **params: Any) -> Any:
+        """Route this board with the kernel's topological router —
+        ``pcb.local.route`` (gr513867). DB-free: the same place→route
+        stage the server's ``placer='topo'`` job runs, in-process, one
+        ``core`` frame on the trace like every other library call.
+
+        Keyword params (``pcb.local.route``'s own): ``placement`` — a
+        ``pcb.local.LocalPlacement`` to route as-is; ``place=False`` —
+        route the authored ``at()`` poses, no placer; ``seed``,
+        ``effort``, ``out`` (the run-files dir, default ``out/topo``),
+        ``catalog`` (LCSC-keyed footprint rows).
+
+        Returns a ``pcb.local.LocalRoute`` — per-net status
+        (``nets``/``routed``/``failed``/``dangling``), ``vias``,
+        ``length_mm``, ``drc_errors`` and the failure ``digest``; it
+        also feeds ``pcb.local.drc``/``gerbers``/``board_svg`` as the
+        routed board. A refusal (corridor overflow) raises."""
+        # ``_kernel()`` here, not the ``local`` alias: a module-level
+        # ``__getattr__`` (PEP 562) answers attribute reads on the module
+        # object only — a bare ``local`` inside a method is a LOAD_GLOBAL
+        # that never consults it.
+        result = _kernel().route(self, **params)
+        _trace.record(made={"routes": 1})
+        return result
+
     def _pin_universe(self, part: Part) -> tuple[set[str], str] | None:
         """``(pin names, provenance label)`` a part's pads declare —
         the offline pin universe ``pin.unknown`` checks against
@@ -4273,8 +4299,8 @@ def run(
     (``netlist.net``, ``schematic.svg``, ``ratsnest.svg``, and for route
     ``placement.json``/``copper.json``/``drc.txt``/``gerbers.zip``/
     ``board.svg``/``bom.csv``/``cpl.csv``) via :func:`local`. ``--route``
-    no longer routes — routing is retired, so the run places and reports
-    "no router yet". A missing kernel refuses the flagged run and writes
+    routes the anneal's placement through the topo stage — the outputs
+    describe real copper. A missing kernel refuses the flagged run and writes
     the base set for a plain one. The check outcome is recorded in the
     manifest's ``check`` block and echoed on stdout — a failing board
     never lands silently (gr521604)."""

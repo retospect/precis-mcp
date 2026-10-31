@@ -2,15 +2,16 @@
 seeds 1-5, mirroring ``tests/test_pcb_reference_end_to_end.py``'s
 structure.
 
-**Routing is retired** (gr515107, Reto 2026-10-25: the vector router was
-deleted, tag ``vroute-final``; the topological router is the only router
-and its realiser is not landed yet). The ``put(op='route')`` leg this
+``put(op='route')`` is retired (gr515107, Reto 2026-10-25: the vector
+router was deleted, tag ``vroute-final``; topo route rides
+``op='place'`` with ``placer='topo'``, ``route=True`` — this file drains
+place-only jobs, so no route runs). The ``put(op='route')`` leg this
 file used to drive — and the paired DRC/routed-count measurement it
 existed to report (docs/backlog/pcb-engine-plan.md's §"Obligations to
 the paper" item 3) — died with it. Every fanout>=2 net now reads
 ``unrouted`` and that is the expected state, not a failure; and on this
 no-copper board ``view='drc'`` answers a pads-only pass whose only
-errors are the per-net ``unrouted`` rows — the retired router's expected
+errors are the per-net ``unrouted`` rows — the expected unrouted
 signature, asserted as such below.
 
 What remains: the place job must still drain cleanly across seeds 1-5 —
@@ -119,14 +120,13 @@ def test_motor_power_board_place_seed(store: Store, seed: int) -> None:
         if row["name"] in fanout2_nets and row["status"] != "unrouted"
     ]
     assert not non_unrouted, (
-        f"expected every fanout>=2 net 'unrouted' (routing is retired), "
-        f"got {non_unrouted}"
+        f"expected every fanout>=2 net 'unrouted' (no route ran), got {non_unrouted}"
     )
 
     # view='drc' on this no-copper board runs a pads-only pass whose
-    # only errors are the per-net `unrouted` rows — the retired router's
-    # expected signature (a board with real cached pads gets a real
-    # findings table, not the "no realized copper yet" bail).
+    # only errors are the per-net `unrouted` rows — the expected
+    # unrouted signature (a board with real cached pads gets a real
+    # findings table, not the no-copper bail).
     drc = pcb.get(id=slug, view="drc")
     assert "(pads-only DRC — no routed copper yet)" in drc.body
     error_rules = {

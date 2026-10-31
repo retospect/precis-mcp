@@ -1230,11 +1230,11 @@ def test_enqueue_note_keeps_cluster_caveat_when_a_worker_is_live(pcb, store):
 
 
 def test_op_route_refuses_before_any_enqueue(pcb, store):
-    """gr515107 — routing is retired (vroute deleted 2026-10-25, tag
-    ``vroute-final``; the topological router is the only router and its
-    realiser is not landed yet). ``op='route'`` refuses with the retired
-    message and ``next=``, minting no job — workers/test_pcb_route.py
-    pins the same refusal one level down."""
+    """gr515107 — ``op='route'`` is retired (vroute deleted 2026-10-25,
+    tag ``vroute-final``; topo route rides ``op='place'`` with
+    ``placer='topo'``, ``route=True``). ``op='route'`` refuses with the
+    retired message and ``next=``, minting no job —
+    workers/test_pcb_route.py pins the same refusal one level down."""
     pcb.put(id="retired-route", args=_CROSSED_OUTLINED)
     ref = store.get_ref(kind="pcb", id="retired-route")
     assert ref is not None
@@ -2970,7 +2970,7 @@ def test_op_move_rips_the_nets_on_a_moved_pad_and_keeps_routed_copper_elsewhere(
     )
 
     assert f"ripped 1 net(s): {arr_net}" in resp.body
-    assert "routing is retired" in resp.body
+    assert "re-route via op='place', placer='topo', route=True" in resp.body
     assert store.pcb_nets_with_router_copper(board_id) == {"NX"}
     status = {r["name"]: r["status"] for r in store.pcb_route_status(ref.id)}
     assert status[arr_net] == "unrouted"

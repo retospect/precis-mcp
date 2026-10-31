@@ -1732,6 +1732,18 @@ class ProxyState:
             if (self.w.overlap or self.w.silkroom or self.w.margin)
             else []
         )
+        #: The committed rings' bounds and mount sides as flat arrays —
+        #: ``_pair_overlap``'s disjoint test vectorised over them
+        #: (gr513870): one ``.bounds`` read per ring build/commit instead
+        #: of one per pair per staged move. NaN rows mark ringless parts
+        #: (a NaN compare is False, so they drop out unbranched). This IS
+        #: ``_ring_bounds`` — the label axis's broad phase reads the same
+        #: committed array (both consumers copy before overlaying staged
+        #: rows).
+        self._rb = self._ring_bounds
+        self._rsides = (
+            self.pose[:, 3] >= 0.5 if self._rings else np.zeros(0, dtype=bool)
+        )
         self._th = through_hole_parts(d)
         self._ov = (
             _ring_overlap_total(self._rings, self.pose, self._th)
@@ -2015,20 +2027,29 @@ class ProxyState:
         if geom is None:
             return 0.0
         x0, y0, x1, y1 = geom.bounds
+        # Staged-or-committed bounds/sides as flat arrays — the staged
+        # overrides are a copy patched per staged row (a stage is one
+        # move or one swap), not a re-read of every ring's ``.bounds``.
+        rb, sides = self._rb, self._rsides
+        if self._stage_rings or self._stage:
+            rb = self._rb.copy()
+            for q, g in self._stage_rings.items():
+                rb[q] = g.bounds if g is not None else np.nan
+            sides = self._rsides.copy()
+            for q, row in self._stage.items():
+                sides[q] = row[3] >= 0.5
+        hit = (
+            (rb[:, 0] <= x1)
+            & (rb[:, 2] >= x0)
+            & (rb[:, 1] <= y1)
+            & (rb[:, 3] >= y0)
+            & ((sides == side) | self._th | self._th[part])
+        )
+        hit[part] = False
+        rings, staged = self._rings, self._stage_rings
         total = 0.0
-        part_th = self._th[part]
-        for j in range(len(self.d.parts)):
-            if j == part:
-                continue
-            gj = self._ring_of(j)
-            if gj is None or (
-                side != self._side_of(j) and not (part_th or self._th[j])
-            ):
-                continue
-            bx0, by0, bx1, by1 = gj.bounds
-            if x1 < bx0 or bx1 < x0 or y1 < by0 or by1 < y0:
-                continue
-            total += float(geom.intersection(gj).area)
+        for j in np.nonzero(hit)[0]:
+            total += float(geom.intersection(staged.get(j, rings[j])).area)
         return total
 
     def _pair_room(self, part: int, geom, side: bool) -> tuple[float, float]:
@@ -2472,14 +2493,11 @@ class ProxyState:
             self.pose[p] = row
             self._pw[self.d.pin_part == p] = pin_world(self.d, row, p)
             if self._rings:
-                self._rings[p] = self._stage_rings.get(p, self._rings[p])
+                g = self._stage_rings.get(p, self._rings[p])
+                self._rings[p] = g
                 self._bodies[p] = self._stage_bodies.get(p, self._bodies[p])
-        if self._rings:
-            for p, g in enumerate(self._rings):
-                if g is not None:
-                    self._ring_bounds[p] = g.bounds
-                else:
-                    self._ring_bounds[p] = np.nan
+                self._rb[p] = g.bounds if g is not None else np.nan
+                self._rsides[p] = row[3] >= 0.5
         for p, axes in self._stage_mg.items():
             self._mg_e[p], self._mg_p[p], self._mg_h[p], self._mg_l[p] = axes
         self._ov += self._d_ov

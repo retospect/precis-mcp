@@ -6,10 +6,11 @@ DB-free by ``tests/test_pcb_reference_design.py``) driven for real here:
 author the design, ``put(op='place')`` -> drain the enqueued ``pcb_place``
 job, then read back the (retired) route state and ``view='drc'``'s answer.
 
-**Routing is retired** (gr515107, Reto 2026-10-25: the vector router was
-deleted, tag ``vroute-final``; the topological router is the only router
-and its realiser is not landed yet). The ``put(op='route')`` leg and the
-routed-count assertion died with it — every fanout>=2 net now reads
+``put(op='route')`` is retired (gr515107, Reto 2026-10-25: the vector
+router was deleted, tag ``vroute-final``; topo route rides
+``op='place'`` with ``placer='topo'``, ``route=True`` — this test drains
+a place-only job, so no route runs). The ``put(op='route')`` leg and
+the routed-count assertion died with it — every fanout>=2 net now reads
 ``unrouted`` and that is the expected state, not a failure. What remains
 gates placement and stored DRC exactly as before; the measurements below
 are the dated record of how the board got here.
@@ -181,7 +182,7 @@ def test_esp32c3_reference_place_reads_back_retired_route_state(
     _drain_one_job(store, ref.id)
 
     # --- the unrouted state is the expected one ----------------------
-    # Routing is retired: every fanout>=2 net stays stored 'unrouted'.
+    # No route ran: every fanout>=2 net stays stored 'unrouted'.
     # (Was the routed-count assertion — the honest population stays
     # fanout >= 2, 11 of the 20 nets here, computed off the fixture so a
     # fixture edit can't drift the two apart.)
@@ -197,17 +198,16 @@ def test_esp32c3_reference_place_reads_back_retired_route_state(
         if row["name"] in fanout2_nets and row["status"] != "unrouted"
     ]
     assert not non_unrouted, (
-        f"expected every fanout>=2 net 'unrouted' (routing is retired), "
-        f"got {non_unrouted}"
+        f"expected every fanout>=2 net 'unrouted' (no route ran), got {non_unrouted}"
     )
     unrouted_fanout2 = sum(1 for row in status_rows if row["name"] in fanout2_nets)
 
     # view='drc' on this all-synthesized, no-copper board answers the
-    # retirement body — the intended contract (module docstring), asserted
+    # no-copper body — the intended contract (module docstring), asserted
     # rather than a findings table there is no real geometry to check.
     drc = pcb.get(id="esp32c3-ref", view="drc")
-    assert "no realized copper yet" in drc.body
-    assert "routing is retired" in drc.body
+    assert "no copper stored" in drc.body
+    assert "placer='topo'" in drc.body
 
     print(f"REPORT seed={seed} unrouted_fanout2={unrouted_fanout2}/{len(fanout2_nets)}")
     record_property("unrouted_fanout2", unrouted_fanout2)

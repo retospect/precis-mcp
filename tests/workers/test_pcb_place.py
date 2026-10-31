@@ -959,3 +959,41 @@ def test_pcb_place_topo_refuses_when_the_stored_pose_is_not_recoverable(
         i["refdes"]: (i["x"], i["y"]) for i in store.pcb_graph(ref_id)["instances"]
     }
     assert after == before
+
+
+def test_pcb_place_topo_route_stamps_the_run_digest(store: Store) -> None:
+    """gr513871's stored half: a ``placer='topo', route=True`` dispatch
+    lands the run's binding-constraint digest on BOTH stamps —
+    ``ctx.meta.topo_run.route.digest`` (the job's drill-down) and the
+    board ref's ``meta.last_route.digest`` (what ``view='route-status'``
+    renders), the latter written through ``pcb_last_route_merge`` on real
+    pg. The two must be the same object content — a reader of either sees
+    the same run."""
+    ref_id = _seed(
+        store, "place-topo-route", {**_CROSSED, "features": [closed_outline()]}
+    )
+    ctx = _FakeCtx(
+        store,
+        params={
+            "pcb_ref_id": ref_id,
+            "placer": "topo",
+            "route": True,
+            "iters": 200,
+            "seed": 1,
+        },
+    )
+    _dispatch(ctx)
+
+    assert not ctx.failures
+    route = ctx.meta["topo_run"]["route"]
+    digest = route["digest"]
+    assert set(digest) == {"failed", "constraints"}
+    assert digest["failed"] == sorted(digest["failed"])
+    assert route["nets"] == route["realized"] + route["failed"]
+
+    ref = store.get_ref(kind="pcb", id="place-topo-route")
+    assert ref is not None
+    last_route = ref.meta["last_route"]
+    assert last_route["digest"] == digest
+    assert last_route["realized"] == route["realized"]
+    assert last_route["failed"] == route["failed"]

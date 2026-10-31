@@ -288,8 +288,9 @@ height-blocks) a `cad` enclosure references (see [[precis-cad-help]]).
 ## See also
 
 - [[precis-pcb-help]] — author the netlist + placement this exports.
-- [[precis-pcb-topo-help]] — the topo placer opt-in; routing is retired,
-  so a fab export today carries pads, authored pours and stored copper.
+- [[precis-pcb-topo-help]] — the topo placer + router (`placer='topo'`,
+  `route=True`); a fab export carries pads, authored pours and stored
+  copper.
 - [[precis-pcb-check-help]] — the check surface behind `view='gerber'`'s
   DRC verdict.
 - [[precis-cad-help]] — the enclosure side of `view='mechanical'`.

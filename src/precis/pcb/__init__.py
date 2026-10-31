@@ -22,15 +22,17 @@ input revision: pcb_graph omits fab polygons, copper and footprint geometry,
 so its fingerprint alone cannot invalidate a mask/coverlay decision. Missing
 geometry records ``not checkable (gr520329)``, never an inferred pass.
 
-**Routing is retired** (Reto 2026-10-25): the vector router
+**Routing is topological** (Reto 2026-10-25): the vector router
 (:mod:`~precis.pcb.vroute`) was deleted — main keeps tag ``vroute-final``
 for its last build. Topological routing (topo slice 2,
-:mod:`~precis.pcb.topo`) is the only router and its realiser is not
-landed yet, so new boards get no routed copper: :func:`pcb.local.route`
-and ``put(kind='pcb', args={'op':'route'})`` refuse with
-:data:`ROUTE_RETIRED`, and :mod:`~precis.pcb.realize` keeps only the pad
-geometry + stored-copper model + gerber-model slice that placement, DRC,
-fab render/export and stored runs still need.
+:mod:`~precis.pcb.topo`, realiser :mod:`~precis.pcb.topoplace.realise`)
+is the only router: it runs inside the ``placer='topo'`` job
+(``route=True``) and offline through ``pcb.local.route``/``topo_place``.
+The standalone ``put(kind='pcb', args={'op':'route'})`` job is retired —
+it refuses with :data:`ROUTE_RETIRED` — and
+:mod:`~precis.pcb.realize` keeps only the pad geometry + stored-copper
+model + gerber-model slice that placement, DRC, fab render/export and
+stored runs still need.
 
 Stored ``meta.last_route.warm_start`` records each group's method and
 distance in mm for boards routed before the cut — matched roles also
@@ -201,17 +203,19 @@ DANGLING_NET_NOTE_PREFIX = "dangling net"
 DANGLING_NET_NOTE = f"{DANGLING_NET_NOTE_PREFIX} (<2 members) — nothing to route"
 
 #: Reto 2026-10-25: the vector router (vroute) is deleted (tag
-#: ``vroute-final``); topological routing (topo slice 2) is the only
-#: router and its realiser is not landed yet. ``op='route'`` and
-#: ``pcb.local.route`` refuse with this pair — stored copper and stored
-#: route statuses for boards routed before the cut stay legible.
+#: ``vroute-final``); topological routing (topo slice 2,
+#: :mod:`precis.pcb.topoplace.realise`) is the only router — it runs
+#: inside the ``placer='topo'`` job (``route=True``) and offline via
+#: ``pcb.local.route``/``topo_place``. The standalone ``op='route'``
+#: job stays refused with this pair — stored copper and stored route
+#: statuses for boards routed before the cut stay legible.
 ROUTE_RETIRED = (
-    "pcb: routing is retired — the vector router (vroute) was deleted "
-    "(tag vroute-final); the topological router is the only router and "
-    "its realiser is not landed yet"
+    "pcb: routing is retired for op='route' — the vector router (vroute) "
+    "was deleted (tag vroute-final); topological routing is the only router"
 )
 ROUTE_RETIRED_NEXT = (
-    "put(args={'op':'place'}) for placement; routed copper is not available yet"
+    "put(args={'op':'place','placer':'topo','route':True}) places and "
+    "routes via topo; offline: pcb.local.route(board)"
 )
 
 #: The closed §1i electrical-role vocabulary a pin may declare (Slice 5 of

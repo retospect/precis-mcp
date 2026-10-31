@@ -28,8 +28,8 @@ pixels. The verbs map onto the seven-verb surface:
   ``op='place'`` **enqueues** a ``pcb_place`` worker job (never compute
   inline — the optimizer measures ~880 moves/s, minutes per board)
   idempotent per (design, op, content-hash); ``op='route'`` is retired
-  (:data:`precis.pcb.ROUTE_RETIRED` — vroute deleted, topo is the only
-  router and unshipped); ``op='move'``/
+  (:data:`precis.pcb.ROUTE_RETIRED` — vroute deleted; topo route rides
+  ``op='place'`` with ``placer='topo'``, ``route=True``); ``op='move'``/
   ``'rip'``/``'pin_side'``/``'plane_net'``/``'class_rules'`` are cheap inline
   edits. ``op='part'`` (``{'refdes','part'}`` or ``moves=[...]``) binds a
   SELECTED catalog C-number to an existing generic component — the edit the
@@ -78,10 +78,10 @@ pixels. The verbs map onto the seven-verb surface:
   ``view='links'`` reads them back).
 
 The in-house place engine (:mod:`precis.pcb.optimize`, run via the
-``pcb_place`` job) is the primary path. Routing is retired — the vector
-router (vroute) was deleted 2026-10-25 (tag ``vroute-final``); the
-topological router is the only router and its realiser is not landed
-yet, so routed copper is not available for new boards (stored runs stay
+``pcb_place`` job) is the primary path. ``op='route'`` is retired —
+the vector router (vroute) was deleted 2026-10-25 (tag
+``vroute-final``); topological routing is the only router and rides
+``op='place'`` with ``placer='topo'``, ``route=True`` (stored runs stay
 legible). Export is the one place the design leaves the
 relational graph.
 See ``precis-pcb-help``.
@@ -933,7 +933,8 @@ class JudgeReport:
         """Response lines for the report, each ending in a newline."""
         out = [
             f"{net} ripped: {rule} after this change — its stored copper "
-            "stays cleared (routing is retired)\n"
+            "stays cleared; re-route via op='place', placer='topo', "
+            "route=True\n"
             for net, rule in sorted(self.ripped.items())
         ]
         out.extend(
@@ -1247,7 +1248,8 @@ class PcbHandler(Handler):
             "with args={...}; "
             "put(args={'op':'place'}) ENQUEUES a worker "
             "job (never inline; idempotent per design+op+content-hash; "
-            "op='route' is retired — no router) — "
+            "op='route' is retired — routing rides op='place' with "
+            "placer='topo', route=True) — "
             "args={'autoplace':{...}} is a deprecated alias for op='place'; "
             "put(args={'op':'move'|'rip'|'pin_side'|'plane_net'|'class_rules'|"
             "'phase'|'profile'|'pins'}) "
@@ -3126,7 +3128,8 @@ class PcbHandler(Handler):
             body += (
                 f"\nripped {len(ripped)} net(s): "
                 + "; ".join(f"{n} ({rip[n]})" for n in ripped)
-                + "; their stored copper stays cleared — routing is retired"
+                + "; their stored copper stays cleared — re-route via "
+                "op='place', placer='topo', route=True"
             )
         if standing:
             body += (
@@ -3229,8 +3232,9 @@ class PcbHandler(Handler):
             return Response(body=f"net {net!r} has no route to rip (already unrouted)")
         return Response(
             body=f"# ripped {net} — sketch cleared, back to unrouted\n"
-            "Routing is retired — the cleared state stands; "
-            "args={'op':'pin_side'} still edits the stored topology."
+            "The cleared state stands until a re-route (op='place', "
+            "placer='topo', route=True); args={'op':'pin_side'} still "
+            "edits the stored topology."
         )
 
     def _op_pin_side(self, ref: Any, args: dict[str, Any]) -> Response:
@@ -3252,8 +3256,8 @@ class PcbHandler(Handler):
             )
         return Response(
             body=f"# pinned {a} ↔ {b} on {net} to side={side}\n"
-            "Stored — takes effect when a router exists again (op='route' "
-            "is retired)."
+            "Stored — takes effect on the next topo route (op='place', "
+            "placer='topo', route=True)."
         )
 
     def _op_plane_net(self, ref: Any, args: dict[str, Any]) -> Response:
@@ -3314,8 +3318,9 @@ class PcbHandler(Handler):
             )
         return Response(
             body=f"# {net} assigned to plane layer {layer}\n"
-            "Stored — takes effect when a router exists again (op='route' "
-            "is retired): its pins fan out (dog-bone) instead of routing."
+            "Stored — takes effect on the next topo route (op='place', "
+            "placer='topo', route=True): its pins fan out (dog-bone) "
+            "instead of routing."
         )
 
     def _refuse_bad_clearance_rules(
@@ -4553,8 +4558,8 @@ class PcbHandler(Handler):
                 )
                 for e in stackup
             )
-            + f"\n\nRoutable: {routable}. Stored — takes effect when a "
-            "router exists again (op='route' is retired).",
+            + f"\n\nRoutable: {routable}. Stored — takes effect on the "
+            "next topo route (op='place', placer='topo', route=True).",
         )
 
     # ── footprint cache (gr341532 fix 3) ────────────────────────────────
@@ -4731,7 +4736,8 @@ class PcbHandler(Handler):
         rows just written."""
         out = [
             f"{net} ripped: {rule} after this footprint change — its stored "
-            "copper stays cleared (routing is retired)\n"
+            "copper stays cleared; re-route via op='place', placer='topo', "
+            "route=True\n"
             for net, rule in sorted(judged.ripped.items())
         ]
         shown = [*judged.margins, *judged.visible]
@@ -5800,8 +5806,8 @@ class PcbHandler(Handler):
             )
         if not copper:
             warnings.append(
-                "no realized copper — routing is retired, so the gerbers "
-                "will carry pads/outline/drills only"
+                "no copper stored — run op='place', placer='topo', "
+                "route=True; the gerbers carry pads/outline/drills only"
             )
 
         footprints = self.store.pcb_footprints_for(ref_id)
@@ -6518,7 +6524,8 @@ class PcbHandler(Handler):
         else:
             copper_line = (
                 "copper: none — the file carries the outline, parts, pads and "
-                "nets only (routing is retired; no routed copper exists)."
+                "nets only (no copper stored — run op='place', "
+                "placer='topo', route=True)."
             )
         head = (
             f"# exported {slug} → EPRO2 (EasyEDA Pro)\n{path}  "
@@ -6604,9 +6611,9 @@ class PcbHandler(Handler):
         if lengths:
             schema.append("len_ratio")
         body = f"# route status — {format_route_summary(counts)}\n" + (
-            "stored statuses only — routing is retired (vroute deleted; "
-            "topo is the only router and unshipped), these are the last "
-            "stored runs\n" + render_agent_table(table_rows, schema=schema)
+            "stored statuses — written by the last run "
+            "(placer='topo', route=True writes them; op='route' is "
+            "retired)\n" + render_agent_table(table_rows, schema=schema)
         )
         if lengths:
             body += (
@@ -6779,8 +6786,9 @@ class PcbHandler(Handler):
         last_route = (ref.meta or {}).get("last_route")
         if not last_route:
             return Response(
-                body="no route run yet\n\nRouting is retired — this view "
-                "reads stored runs only." + self._capacity_map_text(ref_id)
+                body="no route run yet\n\nThis view reads stored runs — "
+                "run op='place', placer='topo', route=True to produce "
+                "one." + self._capacity_map_text(ref_id)
             )
         warnings = last_route.get("warnings") or []
         head = (
@@ -7012,8 +7020,8 @@ class PcbHandler(Handler):
 
     def _render_planes(self, ref_id: int) -> Response:
         """Plane assignments (``pcb_planes``) — which nets are
-        plane-served on which layer. Stored state only: routing is
-        retired, so nothing new fans out. Shows
+        plane-served on which layer. Stored state only — nothing new
+        fans out until the next topo route. Shows
         ``source`` so a reader can tell a human's explicit
         ``op='plane_net'`` instruction (``authored``) apart from the
         anneal's own settled decision (``derived``, written back by the
@@ -7098,8 +7106,8 @@ class PcbHandler(Handler):
             )
         else:
             body += (
-                "\n\nno pours stored yet — pours came from the retired "
-                "router; no new pours land"
+                "\n\nno pours stored yet — pours come from the topo "
+                "realiser; run op='place', placer='topo', route=True"
             )
         return Response(body=body)
 
@@ -7733,9 +7741,9 @@ class PcbHandler(Handler):
         ran = self._drc_run(ref_id, design, reuse=not args.get("fresh"))
         if ran is None:
             return Response(
-                body="no realized copper yet\n\nRouted copper is not "
-                "available yet — routing is retired (op='route' deleted); "
-                "pads/fixed copper alone carry no checkable geometry."
+                body="no copper stored — run op='place', placer='topo', "
+                "route=True\n\nPads/fixed copper alone carry no "
+                "checkable geometry."
             )
         run_id, findings, pads_only, delta, baseline, reused = ran
         n_error = sum(1 for f in findings if f.severity == "error")

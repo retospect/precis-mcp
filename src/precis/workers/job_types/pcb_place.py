@@ -554,6 +554,14 @@ def _topo_route(
         rres, power_ids, drc_findings=_drc_findings, targets=targets
     )
     rows = _tprealise.sketch_rows(plan, td_route, ir, layers)
+    # gr513871's produced half: the run's binding-constraint digest —
+    # stamped on meta.topo_run.route (this job's drill-down), on the
+    # board ref's meta.last_route.digest (view='route-status' renders
+    # it ahead of the per-net table) and on the laptop side's
+    # route.json.
+    from precis.pcb import route_digest as pcb_route_digest
+
+    digest = pcb_route_digest.build_digest(rows, layer_names=layers)
 
     # pcb_copper.net_id is a real FK — the IR-local net int resolves back
     # to the DB net_id by name (the deleted pcb_route's own join, verbatim).
@@ -620,6 +628,8 @@ def _topo_route(
                 "geom": geom,
             }
         )
+    n_realized = sum(1 for r in rows.values() if r["status"] == "realized")
+    n_failed = sum(1 for r in rows.values() if r["status"] == "failed")
     # ONE transaction: a raise between the copper replace and the route
     # rows must never strand copper without route status. An empty route
     # result never wipes stored copper — the replace is skipped so the
@@ -675,6 +685,19 @@ def _topo_route(
                 else 0
             )
         )
+        # The digest rides the same guard as the rows it summarizes —
+        # stamping it over a run whose rows were skipped would make
+        # route-status narrate a different run than its table shows.
+        if copper_rows:
+            ctx.store.pcb_last_route_merge(
+                pcb_ref_id,
+                {
+                    "realized": n_realized,
+                    "failed": n_failed,
+                    "digest": digest,
+                },
+                conn=conn,
+            )
 
     if shoved_kept and not copper_rows:
         # Nothing persisted — the board keeps the anneal pose its stored
@@ -683,14 +706,11 @@ def _topo_route(
         # not a pose that was only probed.
         ir.inst_x[:] = pose0_x
         ir.inst_y[:] = pose0_y
-
-    n_realized = sum(1 for r in rows.values() if r["status"] == "realized")
     n_dangling = sum(
         1
         for r in rows.values()
         if (r.get("note") or "").startswith(DANGLING_NET_NOTE_PREFIX)
     )
-    n_failed = sum(1 for r in rows.values() if r["status"] == "failed")
     meta = {
         "nets": len(rows),
         "realized": n_realized,
@@ -715,6 +735,7 @@ def _topo_route(
         # (gr540907: meta said {realized: 7, tracks: 0} while the stored
         # rows held a previous attempt's {realized: 10, tracks: 3}).
         "persisted": bool(copper_rows),
+        "digest": digest,
     }
     if not copper_rows:
         stored = ctx.store.pcb_route_status(pcb_ref_id)

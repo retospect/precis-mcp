@@ -46,7 +46,7 @@ way (`put(kind='job', parent_id=…, job_type=…, params=…)`).
 
 | `job_type`          | Executor        | What it does                                  |
 |---------------------|-----------------|-----------------------------------------------|
-| `pcb_place` | `job_inproc` | The enqueued `put(kind='pcb', args={'op':'place'})` — the placement anneal; `pcb_route` is gone (`op='route'` refuses — routing retired 2026-10-25; see `precis-pcb-help`) |
+| `pcb_place` | `job_inproc` | The enqueued `put(kind='pcb', args={'op':'place'})` — the placement anneal and, with `placer='topo'` + `route=True`, the topo route; `op='route'`/`pcb_route` is retired (refuses; see `precis-pcb-help`) |
 | `retrosynth`      | `ssh_node`      | Plan a retrosynthesis route to a target molecule on the compute lane (see `precis-rxn-help`) |
 | `autocatpath_seed` | `ssh_node`     | One `(model, seed)` unit of an autocatpath pathway exploration; stashes the JSON partial for the sibling aggregate (see `precis-pathway-help`) |
 | `autocatpath_aggregate` | `ssh_node` | Fold the seed fan-out's partials into the pathway's graph + pooled-uncertainty result on the pathway ref |

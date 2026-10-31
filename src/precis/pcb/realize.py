@@ -507,9 +507,9 @@ def pad_board_wh(geom: PadGeom, inst_rot: float) -> tuple[float, float]:
     padplace.place_footprint_pads` swaps w/h itself when the pad's total
     rotation (instance + the pad's own ``rot``) is 90 degrees or 270, so
     the flashed aperture matches the rotated land, and
-    :attr:`PadGeom.axis_aligned` records that it did. A SYNTHESIZED pad
-    has no footprint to place, so its w/h are FOOTPRINT-LOCAL
-    (:class:`PadGeom`'s own docstring) and the swap has to happen here.
+    :attr:`PadGeom.axis_aligned` records that it did. Any w/h still in
+    the FOOTPRINT-LOCAL frame (:attr:`PadGeom.footprint_local` — every
+    ``ir.pin_*`` fallback row, bound or real-sized) gets its swap here.
 
     **Two functions used to answer this question independently and
     disagree** (the defect :func:`precis.pcb.drc._copper_item_polygon`'s
@@ -534,7 +534,7 @@ def pad_board_wh(geom: PadGeom, inst_rot: float) -> tuple[float, float]:
     if geom.shape not in ("rect", "obround"):
         return geom.w_mm, geom.h_mm
     rot = 0.0 if math.isnan(inst_rot) else inst_rot
-    if geom.synthesized and padplace.rect_swaps_wh(rot):
+    if geom.footprint_local and padplace.rect_swaps_wh(rot):
         return geom.h_mm, geom.w_mm
     return geom.w_mm, geom.h_mm
 
@@ -552,7 +552,7 @@ def pad_is_oblique(geom: PadGeom, inst_rot: float) -> bool:
     if geom.shape not in ("rect", "obround"):
         return False
     rot = 0.0 if math.isnan(inst_rot) else inst_rot
-    if geom.synthesized:
+    if geom.footprint_local:
         return not padplace.pad_axis_aligned(rot)
     return not geom.axis_aligned
 
@@ -1268,12 +1268,23 @@ class PadGeom:
     footprint-local, never board-rotated by this field at all — see
     :func:`_realize_vector`'s own pad-shape builder, which resolves a
     synthesized rect pad's board orientation from the instance's own
-    rotation directly rather than through this flag)."""
+    rotation directly rather than through this flag).
+
+    ``footprint_local`` is the FRAME marker ``synthesized`` used to be
+    borrowed for: ``True`` when ``w_mm``/``h_mm`` are in the pad's
+    footprint-local frame and still need the instance-rotation swap
+    (:func:`pad_board_wh`), ``False`` for a real footprint pad, which
+    arrives already board-oriented. The two flags differ for a pin whose
+    REAL size came through :meth:`~precis.pcb.ir.PcbIR.set_pin_pad` —
+    not a bound (``synthesized=False``) but still footprint-local; a
+    caller keying the swap off ``synthesized`` emits that pad
+    transposed on every 90°-rotated instance."""
 
     w_mm: float
     h_mm: float
     shape: str
     synthesized: bool
+    footprint_local: bool = False
     poly: list[tuple[float, float]] | None = None
     role: str | None = None
     mask: str | None = None
@@ -1576,6 +1587,10 @@ def pad_geometry(
                     float(ir.pin_h[pid]),
                     str(ir.pin_shape[pid]),
                     synthesized=bool(ir.pin_pad_synthesized[pid]),
+                    # Real size or bound, the IR fallback's w/h are always
+                    # footprint-local — the instance-rotation swap is
+                    # still owed (:func:`pad_board_wh`).
+                    footprint_local=True,
                 )
             )
     return out

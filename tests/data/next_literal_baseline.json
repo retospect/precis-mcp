@@ -17,7 +17,6 @@
   "src/precis/handlers/rxn.py": 2,
   "src/precis/handlers/structure.py": 9,
   "src/precis/pcb/generators.py": 1,
-  "src/precis/pcb/local.py": 1,
   "src/precis/pcb/session.py": 1,
   "src/precis/quest/compute.py": 1,
   "src/precis/structure/completion.py": 1,

@@ -13,8 +13,8 @@ level shifters and gate clamps, per-net ``current``/``working_voltage_v``
 so widths and pairwise clearances resolve per net.
 
 **This test reports the honest current state — it does not assert clean.**
-The routed half retired with the router (gr515107: vroute deleted
-2026-10-25, tag ``vroute-final``; topo is the only router and unshipped),
+The routed half retired with the vector router (gr515107: vroute deleted
+2026-10-25, tag ``vroute-final``; topo is the only router),
 so the baseline is place + stored DRC — the per-rule breakdowns are
 printed as evidence so a regression names the rule, not just the count.
 Neither number is a verdict that the board is manufacturable;
