@@ -323,9 +323,11 @@ kind, or lacking a link to a kind (`tags=` then filters the
 `linked_from` side, not the papers):
 
 ```python
-search(kind="paper", args={"linked_from": "memory", "lacks": "finding"},
-       tags=["SPACE:research"])
+search(kind="paper", args={"linked_from": "memory", "lacks": "finding"})
 ```
+
+Add `tags=[...]` to narrow the linking side — e.g. a `SPACE:` tag
+filters the memories that link, not the papers.
 
 No `q=` gives a paged listing; `view='count'` the filtered total.
 

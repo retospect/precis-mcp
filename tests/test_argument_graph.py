@@ -200,7 +200,9 @@ class TestRuleAndWarrant:
         self, handler: MemoryHandler
     ) -> None:
         mid = id_of(handler.put(text="x").body)
-        with pytest.raises(BadInput, match="text=, title=, rule=, warrant=, or meta="):
+        with pytest.raises(
+            BadInput, match="text=, title=, hook=, rule=, warrant=, or meta="
+        ):
             handler.edit(id=mid)
 
 

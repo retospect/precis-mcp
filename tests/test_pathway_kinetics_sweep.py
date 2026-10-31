@@ -134,9 +134,11 @@ def test_detached_child_round_trips_the_kinetics_job_envelope(monkeypatch, tmp_p
     class _Proc:
         pid = 4242
 
-    monkeypatch.setattr(
-        "subprocess.Popen", lambda cmd, **kw: spawned.append(cmd) or _Proc()
-    )
+    def _popen(cmd: list[str], **_kw: Any) -> _Proc:
+        spawned.append(cmd)
+        return _Proc()
+
+    monkeypatch.setattr("subprocess.Popen", _popen)
     handle = runner_mod.submit_kinetics_job_detached(
         {"name": "kin"}, {"nodes": {"A": 0.0}, "edges": []}, work_dir=str(tmp_path)
     )

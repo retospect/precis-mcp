@@ -14,7 +14,7 @@ from precis import settings as psettings
 from precis.dispatch import Hub
 from precis.handlers.todo import TodoHandler
 from precis.plans import gates
-from precis.plans.gates import GateResult, evaluate
+from precis.plans.gates import GateVerdict, evaluate
 from precis.store import Store
 from tests._script import load_script
 from tests.conftest import id_of
@@ -89,7 +89,7 @@ def test_not_before_boundary_uses_injected_clock(store: Store) -> None:
 )
 def test_not_before_bad_args_close(store: Store, args: dict[str, Any]) -> None:
     res = evaluate(store, {"kind": "not-before", "args": args}, todo_id=1)
-    assert res == GateResult(False, res.why) and res.why.startswith("not-before")
+    assert res == GateVerdict(False, res.why) and res.why.startswith("not-before")
 
 
 # ── answer ────────────────────────────────────────────────────────
