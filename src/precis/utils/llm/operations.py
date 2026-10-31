@@ -258,6 +258,24 @@ LLM_OPERATIONS: dict[str, OpDefault] = {
             "local model and resolves its endpoint through the model card."
         ),
     ),
+    "cite_resolve:passage": OpDefault(
+        tier=Tier.BIG,
+        model=None,
+        label="Cite-resolve passage pick (BIG)",
+        description=(
+            "`cite_resolve._passage_verdict` — the which-of-these-chunks-"
+            "does-the-citation-support pick behind every chunk→chunk "
+            "`cites` upgrade (`workers/cite_resolve.py`, gr513768 slice 6)."
+        ),
+        note=(
+            "Reto's explicit choice (gr513768 ruling, 2026-10-24): castor "
+            "local, not a cloud tier — each verdict is small, independent "
+            "and latency-tolerant. BIG is the capability tier; the "
+            "per-operation `llm.op.cite_resolve:passage` app_settings row "
+            "selects the local model and resolves its endpoint through the "
+            "model card, exactly as `llm.op.chase:verify` does above."
+        ),
+    ),
     "taproot:dedup": OpDefault(
         tier=Tier.MEDIUM,
         model=None,

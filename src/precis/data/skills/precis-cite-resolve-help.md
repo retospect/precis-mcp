@@ -126,6 +126,32 @@ tuple still isn't a no-op: `link` merges your `meta` (`evidence`,
 the cited paper isn't held yet, link anyway once the stub exists —
 the edge resolves to the filled paper when it lands.
 
+A `cite_resolve`-minted edge can also carry a deeper pin: the
+`cite_resolve:passage` layer reads the citing sentence and the cited
+paper's embedded chunks, then upgrades the link to chunk→chunk
+(`links.meta.passage` records the verdict, or `verdict='none'` when no
+passage supports it — a `caveat` there flags "cited passage does not
+support the claim"). Read `meta.passage` before re-deriving a
+passage the layer already judged.
+
+## Deep-link a set of papers on request
+
+Reading a whole paper *well* — every in-text marker resolved, not
+just the one you tripped on — is a work order, not a mid-read recipe:
+
+```python
+put(kind='job', job_type='cite_resolve', executor='job_inproc',
+    params={'ref_ids': [<pa ref ids, up to 50>]})
+```
+
+The job jumps the access queue: it bumps `bib_parse`/`bib_mark` for
+the named papers (the only path that does — an access mark never
+parses a bibliography on demand), resolves every marker through the
+same machinery, and reports `meta.cite_resolve_progress`
+(`done`/`total`/`eta_s`) while it runs and a per-paper
+`{resolved, ambiguous, unheld}` count on `meta.cite_resolve` when it
+finishes — poll with `get(kind='job', id=<id>)`.
+
 ## See also
 
 - [[precis-paper-help]] — paper handles, views, `put` requests

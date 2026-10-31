@@ -480,7 +480,11 @@ _RELINK_DOOR: ContextVar[bool] = ContextVar("precis_relink_door", default=False)
 #: 2026-10-21 list): stance and provenance are exactly what retrieval
 #: cannot recompute, so these skip the co-retrieval distance check.
 #: ``explains`` is in the list but is handled by the claim-hub routing
-#: below — it is not an evidence edge (migration 0203).
+#: below — it is not an evidence edge (migration 0203). ``cites``
+#: joined by ruling (Reto 2026-10-24, gr513768): a citation edge is a
+#: bibliography fact the index cannot recompute either, and exempting
+#: it unblocks the ``cite_resolve`` passage layer — the evidence-pin
+#: and writer-annotation requirements below still apply to it.
 MACHINE_EDGE_STANCE: frozenset[str] = frozenset(
     {
         "supports",
@@ -491,6 +495,7 @@ MACHINE_EDGE_STANCE: frozenset[str] = frozenset(
         "corroborates",
         "refines",
         "explains",
+        "cites",
     }
 )
 

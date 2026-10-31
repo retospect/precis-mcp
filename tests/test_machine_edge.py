@@ -206,16 +206,38 @@ class TestRefusals:
         with _machine():
             with pytest.raises(BadInput, match="machine-edge-co-retrievable"):
                 store.add_link(
-                    src_ref_id=a, dst_ref_id=b, relation="cites", meta=_meta()
+                    src_ref_id=a, dst_ref_id=b, relation="supersedes", meta=_meta()
                 )
+
+    def test_co_retrievable_cites_edge_is_exempt(self, store: Store) -> None:
+        """gr513768 ruling #1: ``cites`` joined the stance exemption — a
+        citation edge is a bibliography fact the index cannot recompute,
+        so the distance refusal no longer applies (evidence + annotation
+        still do)."""
+        a, b = _ref(store, "paper", "a"), _ref(store, "paper", "b")
+        _card(store, a, "same barrier text")
+        _card(store, b, "same barrier text")  # identical → distance ~0
+        with _machine():
+            store.add_link(src_ref_id=a, dst_ref_id=b, relation="cites", meta=_meta())
+        assert _link_row(store, a, b, "cites") is not None
+        # …but the evidence + annotation requirements still gate it:
+        with _machine(), pytest.raises(BadInput, match="machine-edge-no-evidence"):
+            store.add_link(
+                src_ref_id=a,
+                dst_ref_id=b,
+                relation="cites",
+                meta=dict(_ANNOTATION),
+            )
 
     def test_distant_non_stance_edge_is_accepted(self, store: Store) -> None:
         a, b = _ref(store, "paper", "a"), _ref(store, "paper", "b")
         _card(store, a, "catalysis barriers")
         _card(store, b, "retirement planning")
         with _machine():
-            store.add_link(src_ref_id=a, dst_ref_id=b, relation="cites", meta=_meta())
-        assert _link_row(store, a, b, "cites") is not None
+            store.add_link(
+                src_ref_id=a, dst_ref_id=b, relation="supersedes", meta=_meta()
+            )
+        assert _link_row(store, a, b, "supersedes") is not None
 
     def test_no_card_vector_means_no_co_retrieval_refusal(self, store: Store) -> None:
         a, b = _ref(store, "paper", "a"), _ref(store, "paper", "b")

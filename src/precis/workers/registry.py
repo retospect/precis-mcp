@@ -1018,14 +1018,19 @@ SERVICES: tuple[ServiceSpec, ...] = (
         # `CITERES:pending` papers (the first-`get` trigger is a later
         # slice) and registers behind `enable_env`, so a service_config
         # row (or `--only cite_resolve`) is the only door. Converges on
-        # a `CITERES:<version>` chunk tag. Pure regex — no LLM, no
-        # external call.
+        # a `CITERES:<version>` chunk tag. The mint layers are pure
+        # regex — no LLM — but slice 4's OpenAlex hop calls the shared
+        # limiter, and slice 6's passage layer (`cite_resolve:passage`,
+        # PRECIS_CITE_RESOLVE_PASSAGE_ENABLED, off by default) spends a
+        # routed call per ref-level link.
         name="cite_resolve",
         label="Chunk→paper cites links",
         category="discovery",
         kind=ServiceKind.PASS,
         ref_pass=True,
         enable_env="PRECIS_CITE_RESOLVE_ENABLED",
+        uses_model=True,
+        uses_external=("openalex",),
         cost_sources=("cite_resolve",),
         one_line="Mint chunk→paper cites links from inline markers "
         "(access-marked papers only).",

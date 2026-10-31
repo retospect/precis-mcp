@@ -10,7 +10,7 @@ chunk scope on the citing side: a chunk that says "as shown before
 resolved to. With reference chunks permanently unembedded (gr513749),
 the marker is the reader's first hop to the cited work.
 
-Two deterministic layers (no LLM, no external call):
+Two deterministic layers (no LLM), one OpenAlex leg, one LLM layer:
 
 - **Numeric** (slice 1): ``chunk_citations`` markers whose
   ``paper_bib_entries`` row carries a ``held_ref_id`` — nothing to
@@ -36,6 +36,13 @@ Two deterministic layers (no LLM, no external call):
   ``upsert_stub_paper``); a miss stamps ``match_conf``
   :data:`_MATCH_CONF_OPENALEX_MISS` on rows already decided. A limiter
   refusal defers the paper — it is never error-stamped.
+- **Passage** (slice 6, LLM): ``PRECIS_CITE_RESOLVE_PASSAGE_ENABLED``
+  lights :func:`run_passage_sweep` at the end of the pass — each minted
+  ref-level link's citing sentence is embedded, the cited paper's top-5
+  embedded body chunks go to ``cite_resolve:passage`` (the BIG tier
+  Reto steered to castor's local lane, same as ``chase:verify``), and a
+  pick upgrades the link to chunk→chunk while ``none`` memoizes the
+  pair (``links.meta.passage``) so it is not retried.
 
 **Marker order (decided).** Every link carries ``meta.marker`` (the
 label as written — ``"32"``, ``"[3-5]"``, ``"Miller 1921"``) and
@@ -102,6 +109,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 from psycopg import Connection
+from psycopg.types.json import Jsonb
 
 from precis.ingest import openalex_meta
 from precis.store.types import Tag
@@ -971,8 +979,498 @@ def _sweep_paper(store: Store, ref_id: int, conn: Connection) -> tuple[int, int]
     return len(chunks), ensured
 
 
+# ── the passage layer (slice 6) ──────────────────────────────────────
+
+#: Links one passage sweep attempts per pass — each is one routed LLM
+#: call, so this bounds the layer's spend per cycle the way
+#: ``_OA_SEARCH_MAX_PER_PAPER`` bounds the OpenAlex leg.
+_PASSAGE_MAX_PER_PASS = 8
+
+#: Candidate body chunks of the cited paper a verdict chooses among
+#: (spec: "top-5 embedded chunks").
+_PASSAGE_CANDIDATES = 5
+
+#: Char caps for the prompt — the citing context window and each
+#: candidate chunk's text.
+_PASSAGE_CITE_MAX_CHARS = 1200
+_PASSAGE_CHUNK_MAX_CHARS = 1500
+
+_PASSAGE_PROMPT = """A citation marker {marker} in one paper cites another paper. Decide
+which of the candidate passages from the cited paper the citation most
+plausibly points at — or that none of them is a plausible source.
+
+Citing passage (the marker {marker} appears in it):
+<citing>
+{citing}
+</citing>
+
+Candidate passages of the cited paper:
+{candidates}
+
+Reply with exactly one JSON object and no other text:
+{{"pick": <1-{n}> or null, "caveat": <short note or null>}}
+- "pick" is the 1-based index of the passage the citation supports, or
+  null when no candidate is a plausible source.
+- "caveat" is null normally; set a short note like "cited passage does
+  not support the claim" when the best passage contradicts the citing
+  sentence rather than backing it."""
+
+
+def passage_enabled() -> bool:
+    """``PRECIS_CITE_RESOLVE_PASSAGE_ENABLED`` — the LLM layer's own dark
+    gate (default OFF).
+
+    The spec's slice-5 contract: "deterministic layer first, LLM layer
+    only when its flag is on". Independent of
+    :func:`cite_resolve_enabled` (the read-path mark) and of the pass's
+    ``service_config`` lighting — lighting the feature is three
+    deliberate acts: the env on the MCP server (marks), a
+    ``service prio`` row (the pass claims), and this env on the worker
+    (the passage pick spends a routed call per link)."""
+    return bool(int(os.environ.get("PRECIS_CITE_RESOLVE_PASSAGE_ENABLED", "0") or "0"))
+
+
+def _claim_passage_links(conn: Connection, *, limit: int) -> list[dict[str, Any]]:
+    """Up to ``limit`` ref-level ``cites`` links this pass minted that a
+    passage verdict has never touched.
+
+    A link is a candidate only while ``meta.passage`` is absent — the
+    done-marker (``verdict='chunk'`` on upgrade, ``'none'`` when the
+    model declines, ``'skipped'`` when the pair can't be judged this
+    version) — and only when the cited paper carries at least one
+    embedded body chunk under the default embedder: a cited stub has no
+    passage to find, and it becomes a candidate on its own when its
+    body lands. ``FOR UPDATE OF l SKIP LOCKED`` keeps a sibling's sweep
+    off the same batch; the lock releases at commit, well before the
+    LLM calls — the ``meta.passage`` write is the durable claim.
+    """
+    rows = conn.execute(
+        """
+        SELECT l.link_id, l.src_ref_id, l.src_chunk_id, l.dst_ref_id,
+               l.meta->>'marker' AS marker, sc.text AS citing_text
+          FROM links l
+          JOIN chunks sc ON sc.chunk_id = l.src_chunk_id
+          JOIN refs dr ON dr.ref_id = l.dst_ref_id
+         WHERE l.relation = 'cites'
+           AND l.src_chunk_id IS NOT NULL
+           AND l.dst_chunk_id IS NULL
+           AND l.meta->>'source' = %(source)s
+           AND NOT (l.meta ? 'passage')
+           AND dr.kind = 'paper' AND dr.retired_at IS NULL
+           AND sc.retired_at IS NULL
+           AND EXISTS (
+                 SELECT 1 FROM chunks dc
+                  JOIN chunk_embeddings ce ON ce.chunk_id = dc.chunk_id
+                  JOIN embedders de ON de.name = ce.embedder AND de.is_default
+                 WHERE dc.ref_id = l.dst_ref_id
+                   AND dc.ord >= 0 AND dc.retired_at IS NULL
+                   AND ce.status = 'ok' AND ce.vector IS NOT NULL
+               )
+         ORDER BY l.link_id
+         LIMIT %(limit)s
+           FOR UPDATE OF l SKIP LOCKED
+        """,
+        {"source": _LINK_SOURCE, "limit": limit},
+    ).fetchall()
+    return [
+        {
+            "link_id": int(r[0]),
+            "src_ref_id": int(r[1]),
+            "src_chunk_id": int(r[2]),
+            "dst_ref_id": int(r[3]),
+            "marker": str(r[4] or ""),
+            "citing_text": str(r[5] or ""),
+        }
+        for r in rows
+    ]
+
+
+def _citing_passage(text: str, marker: str) -> str:
+    """The window of the citing chunk around the marker — the "citing
+    sentence" the verdict embeds and the model reads.
+
+    Numeric labels (``"32"``, ``"[3-5]"``, ``"[7,9]"``) look for a
+    bracket group containing one of the label's numbers; author-year
+    labels look for the surname. A window of ±600 chars around the
+    first hit is the sentence-plus-context the passage pick needs;
+    nothing found → the chunk head, capped the same.
+    """
+    pos = -1
+    if marker.startswith("[") or marker.isdigit():
+        for m in _CITE_GROUP_RE.finditer(text):
+            inner = set(re.findall(r"\d+", m.group(0)))
+            if inner & set(re.findall(r"\d+", marker)):
+                pos = m.start()
+                break
+    else:
+        surname = marker.split()[0] if marker.split() else ""
+        if surname:
+            hit = re.search(re.escape(surname), text, re.IGNORECASE)
+            if hit is not None:
+                pos = hit.start()
+    half = _PASSAGE_CITE_MAX_CHARS // 2
+    if pos < 0:
+        return text[:_PASSAGE_CITE_MAX_CHARS]
+    start = max(0, pos - half)
+    return text[start : pos + half]
+
+
+def _passage_candidates(
+    conn: Connection, dst_ref_id: int, query_vec: list[float]
+) -> list[tuple[int, int, str]]:
+    """``(chunk_id, ord, text)`` — the cited paper's top-``_PASSAGE_
+    CANDIDATES`` embedded body chunks nearest the citing passage (the
+    semantic-search-scoped-to-one-paper leg; body chunks are embedded,
+    reference chunks are not — gr513749)."""
+    from pgvector import Vector
+
+    rows = conn.execute(
+        """
+        SELECT c.chunk_id, c.ord, c.text
+          FROM chunks c
+          JOIN chunk_embeddings ce ON ce.chunk_id = c.chunk_id
+          JOIN embedders e ON e.name = ce.embedder AND e.is_default
+         WHERE c.ref_id = %(ref)s
+           AND c.ord >= 0 AND c.retired_at IS NULL
+           AND ce.status = 'ok' AND ce.vector IS NOT NULL
+         ORDER BY ce.vector <=> %(qv)s::vector
+         LIMIT %(limit)s
+        """,
+        {"ref": dst_ref_id, "qv": Vector(query_vec), "limit": _PASSAGE_CANDIDATES},
+    ).fetchall()
+    return [(int(r[0]), int(r[1]), str(r[2] or "")) for r in rows]
+
+
+def _passage_verdict(
+    marker: str, citing: str, candidates: list[tuple[int, int, str]]
+) -> tuple[int | None, str | None, str | None]:
+    """``(pick_index_0based | None, caveat, model)`` — the small-model
+    call behind ``cite_resolve:passage`` (tier BIG; spec slice 6).
+
+    The caller splits two ``pick_index=None`` cases on ``model``: a
+    genuine verdict keeps the answering model's name (``(None, caveat,
+    model)`` = "no candidate supports this" → memo ``'none'``), while an
+    unusable answer — transport error, unparseable or out-of-range —
+    returns ``(None, None, None)`` and the pair is left un-memoed so a
+    later sweep retries it."""
+    from precis.utils.llm.router import LlmRequest, Tier, route
+
+    cand_block = "\n\n".join(
+        f"[{i + 1}] (ord {ord_}) {text[:_PASSAGE_CHUNK_MAX_CHARS]}"
+        for i, (_cid, ord_, text) in enumerate(candidates)
+    )
+    res = route(
+        LlmRequest(
+            tier=Tier.BIG,
+            prompt=_PASSAGE_PROMPT.format(
+                marker=marker or "(?)",
+                citing=citing[:_PASSAGE_CITE_MAX_CHARS],
+                candidates=cand_block,
+                n=len(candidates),
+            ),
+            source="cite_resolve:passage",
+            max_tokens=400,
+        )
+    )
+    if res.error or res.data is None or not isinstance(res.data, dict):
+        if res.error:
+            log.warning("cite_resolve: passage verdict failed: %s", res.error)
+        return None, None, None
+    pick = res.data.get("pick")
+    caveat = res.data.get("caveat")
+    model = getattr(res, "model", None)
+    if pick is None:
+        return None, (str(caveat) if caveat else None), model
+    try:
+        idx = int(pick) - 1
+    except (TypeError, ValueError):
+        return None, None, None
+    if not 0 <= idx < len(candidates):
+        return None, None, None
+    return idx, (str(caveat) if caveat else None), model
+
+
+def _write_passage_outcome(
+    conn: Connection,
+    link: dict[str, Any],
+    *,
+    pick_chunk_id: int | None,
+    pick_ord: int | None,
+    caveat: str | None,
+    model: str | None,
+) -> str:
+    """Apply one verdict inside the caller's transaction; returns
+    ``'chunk'`` (upgraded), ``'none'`` (declined + memoed) or
+    ``'skipped'`` (a sibling already set ``dst_chunk_id`` — the claim
+    predicate itself excludes the row now, so nothing is written).
+
+    Upgrade = move the minted ref-level row onto the chosen dst chunk
+    (``UPDATE dst_chunk_id``) — unless a chunk→chunk row for that exact
+    tuple already exists (an agent's by-hand link, or a later manual
+    write), in which case the verdict merges onto it and the ref-level
+    row is deleted: the chunk edge subsumes it. Either way the
+    ``meta.passage`` annotation is the ruling's writer record — model,
+    pass version, and one ``why`` sentence — plus the caveat when the
+    model flagged non-support."""
+    meta: dict[str, Any] = {
+        "v": CITERES_VERSION,
+        "writer": f"{_LINK_SOURCE}:passage:{CITERES_VERSION}",
+        "model": model,
+        "why": (
+            f"marker {link['marker'] or '?'} resolved to the cited paper's "
+            f"ord {pick_ord}"
+            if pick_chunk_id is not None
+            else f"no candidate passage of the cited paper backs marker "
+            f"{link['marker'] or '?'}"
+        ),
+    }
+    if caveat:
+        meta["caveat"] = caveat
+    if pick_chunk_id is not None:
+        meta["verdict"] = "chunk"
+        dup = conn.execute(
+            "SELECT link_id FROM links WHERE src_ref_id = %(s)s "
+            "AND src_chunk_id = %(sc)s AND dst_ref_id = %(d)s "
+            "AND dst_chunk_id = %(dc)s AND relation = 'cites' LIMIT 1",
+            {
+                "s": link["src_ref_id"],
+                "sc": link["src_chunk_id"],
+                "d": link["dst_ref_id"],
+                "dc": pick_chunk_id,
+            },
+        ).fetchone()
+        if dup is not None:
+            conn.execute(
+                "UPDATE links SET meta = meta || %(m)s::jsonb WHERE link_id = %(id)s",
+                {"m": Jsonb({"passage": meta}), "id": int(dup[0])},
+            )
+            conn.execute(
+                "DELETE FROM links WHERE link_id = %(id)s",
+                {"id": link["link_id"]},
+            )
+            return "chunk"
+        cur = conn.execute(
+            "UPDATE links SET dst_chunk_id = %(dc)s, "
+            "meta = meta || %(m)s::jsonb WHERE link_id = %(id)s "
+            "AND dst_chunk_id IS NULL",
+            {"dc": pick_chunk_id, "m": Jsonb({"passage": meta}), "id": link["link_id"]},
+        )
+        if cur.rowcount == 0:
+            # A sibling upgraded the row between claim and write — the
+            # claim's ``dst_chunk_id IS NULL`` predicate already keeps it
+            # out of future batches, so no memo is needed.
+            return "skipped"
+        return "chunk"
+    conn.execute(
+        "UPDATE links SET meta = meta || %(m)s::jsonb WHERE link_id = %(id)s",
+        {"m": Jsonb({"passage": {**meta, "verdict": "none"}}), "id": link["link_id"]},
+    )
+    return "none"
+
+
+def run_passage_sweep(
+    store: Store, embedder: Any, *, limit: int = _PASSAGE_MAX_PER_PASS
+) -> dict[str, int]:
+    """One bounded sweep of the passage layer (spec slice 6): claim
+    ref-level ``cites`` links this pass minted, ask the model which
+    embedded body chunk of the cited paper each citing marker supports,
+    and upgrade the link to chunk→chunk — or memo ``verdict='none'`` so
+    the pair is not retried.
+
+    ``embedder is None`` no-ops the sweep (mirrors ``conflict_search``'s
+    embedder-unavailable degrade): a ref-level link is already a good
+    landing, the passage upgrade is a bonus. Each link's embed + call +
+    write runs with no connection held across the model hop — the claim
+    transaction commits first (the lease idiom the OA leg uses), and a
+    pair whose embed or call fails is simply not memoed, so it retries
+    next sweep.
+
+    Returns ``{claimed, chunk, none, skipped, failed}``."""
+    out = {"claimed": 0, "chunk": 0, "none": 0, "skipped": 0, "failed": 0}
+    if embedder is None:
+        log.warning("cite_resolve: passage sweep no-ops — no embedder wired")
+        return out
+    with store.pool.connection() as conn:
+        links = _claim_passage_links(conn, limit=limit)
+        conn.commit()
+    out["claimed"] = len(links)
+    for link in links:
+        try:
+            citing = _citing_passage(link["citing_text"], link["marker"])
+            query_vec = embedder.embed_one(citing)
+            with store.pool.connection() as conn:
+                candidates = _passage_candidates(conn, link["dst_ref_id"], query_vec)
+                conn.commit()
+            if not candidates:
+                continue  # dst lost its embeddings — retry next sweep
+            idx, caveat, model = _passage_verdict(link["marker"], citing, candidates)
+            if model is None and idx is None:
+                out["failed"] += 1
+                continue
+            pick_id = candidates[idx][0] if idx is not None else None
+            pick_ord = candidates[idx][1] if idx is not None else None
+            outcome = "none"
+            with store.pool.connection() as conn:
+                with conn.transaction():
+                    outcome = _write_passage_outcome(
+                        conn,
+                        link,
+                        pick_chunk_id=pick_id,
+                        pick_ord=pick_ord,
+                        caveat=caveat,
+                        model=model,
+                    )
+            out[outcome] += 1
+        except Exception:
+            log.warning(
+                "cite_resolve: passage verdict failed for link %s",
+                link["link_id"],
+                exc_info=True,
+            )
+            out["failed"] += 1
+    return out
+
+
+# ── the on-request door (slice 7) ────────────────────────────────────
+
+
+def _ambiguous_author_year_count(
+    text: str, index: dict[tuple[str, int], list[BibEntry]]
+) -> int:
+    """Author-year candidates dropped for matching **2+** bib entries —
+    the job-report's ``ambiguous`` leg. Zero-match candidates are not
+    counted: per the whitelist rule they were never citations of *this*
+    paper's bibliography, so calling them ambiguous would inflate the
+    report with plain prose years ("in 2004 …")."""
+    return sum(
+        1
+        for m in _AUTHOR_YEAR_RE.finditer(text)
+        if len(
+            index.get((_norm_name(m.group("surname")), int(m.group("year")[:4])), [])
+        )
+        > 1
+    )
+
+
+def _paper_outcome_counts(conn: Connection, ref_id: int) -> dict[str, int]:
+    """``{resolved, ambiguous, unheld}`` over one paper's body chunks —
+    the per-paper count the ``cite_resolve`` job finishes with (spec
+    slice 7's acceptance). ``resolved`` = resolved citation occurrences
+    whose entry names a live held paper; ``unheld`` = occurrences whose
+    entry has no held target (stub-requested or unresolved); ``ambiguous``
+    = author-year candidates the whitelist dropped for matching several
+    entries."""
+    entries = _paper_entries(conn, ref_id)
+    ay_index = _author_year_index(entries)
+    held = {
+        e.id: e.held_ref_id
+        for e in entries
+        if e.held_ref_id is not None and e.held_ref_id != ref_id
+    }
+    chunks = [
+        (int(r[0]), int(r[1]), str(r[2] or ""))
+        for r in conn.execute(
+            "SELECT chunk_id, ord, text FROM chunks WHERE ref_id = %s "
+            "AND ord >= 0 AND retired_at IS NULL ORDER BY ord",
+            (ref_id,),
+        ).fetchall()
+    ]
+    if not chunks or not held:
+        return {"resolved": 0, "ambiguous": 0, "unheld": 0}
+    live = {
+        int(r[0])
+        for r in conn.execute(
+            "SELECT ref_id FROM refs WHERE ref_id = ANY(%s) AND retired_at IS NULL",
+            (list(set(held.values())),),
+        ).fetchall()
+    }
+    marker_maps = _chunk_marker_map(conn, [c[0] for c in chunks])
+    resolved = unheld = ambiguous = 0
+    for chunk_id, _ord, text in chunks:
+        for _order, _label, entry_id in _ordered_occurrences(
+            text, marker_maps.get(chunk_id, {}), ay_index
+        ):
+            dst = held.get(entry_id)
+            if dst is None or dst not in live:
+                unheld += 1
+            else:
+                resolved += 1
+        ambiguous += _ambiguous_author_year_count(text, ay_index)
+    return {"resolved": resolved, "ambiguous": ambiguous, "unheld": unheld}
+
+
+def resolve_one_paper(
+    store: Store,
+    ref_id: int,
+    *,
+    email: str = "",
+    embedder: Any = None,
+) -> dict[str, Any]:
+    """Run one named paper through the whole pipeline synchronously —
+    the ``cite_resolve`` job's per-paper leg (gr513768 slice 7): the
+    OpenAlex entry-resolution leg, the chunk sweep, the outcome counts,
+    and the passage sweep over its links when that layer is lit.
+
+    The attempt lease is stamped first so a concurrent
+    :func:`run_cite_resolve_pass` claim skips the paper — the job *is*
+    the high-priority claim, which is exactly how an on-request paper
+    outranks the access queue: it never waits behind ``CITERES:pending``
+    papers, it bypasses the mark entirely (no ``CITERES:pending`` tag is
+    written; ``_sweep_paper``'s ``replace_prefix`` flip still lands
+    ``CITERES:swept``, so a later ``get`` doesn't re-mark it).
+    ``bib_parse``/``bib_mark`` prerequisites are the caller's — the job
+    runs them for the named papers before this leg.
+
+    Returns ``{chunks_swept, links_ensured, resolved, ambiguous,
+    unheld, entries_resolved, entries_missed, passage}``."""
+    out: dict[str, Any] = {
+        "chunks_swept": 0,
+        "links_ensured": 0,
+        "resolved": 0,
+        "ambiguous": 0,
+        "unheld": 0,
+        "entries_resolved": 0,
+        "entries_missed": 0,
+    }
+    with store.pool.connection() as conn:
+        ref_lease.stamp_attempt(store, ref_id, _CITERES_NS, conn=conn)
+        conn.commit()
+    leg = _resolve_paper_openalex(store, ref_id, email=email)
+    out["entries_resolved"] = leg["resolved"]
+    out["entries_missed"] = leg["missed"]
+    try:
+        with store.pool.connection() as conn:
+            with conn.transaction():
+                swept, ensured = _sweep_paper(store, ref_id, conn)
+                ref_lease.clear_attempt(store, ref_id, _CITERES_NS, conn=conn)
+                counts = _paper_outcome_counts(conn, ref_id)
+        out["chunks_swept"] = swept
+        out["links_ensured"] = ensured
+        out.update(counts)
+    except Exception:
+        # Same failure shape as the pass: the lease stays to brake a
+        # re-bill, the error tag records the attempt.
+        with store.pool.connection() as econn:
+            stamp = _error_stamp(econn, ref_id)
+            store.add_tag(
+                ref_id,
+                Tag.closed(_CITERES_NS, stamp),
+                set_by="system",
+                conn=econn,
+            )
+            econn.commit()
+        raise
+    if passage_enabled():
+        out["passage"] = run_passage_sweep(store, embedder)
+    return out
+
+
 def run_cite_resolve_pass(
-    store: Store, *, batch_size: int | None = None, email: str = ""
+    store: Store,
+    *,
+    batch_size: int | None = None,
+    email: str = "",
+    embedder: Any = None,
 ) -> dict[str, int]:
     """One pass: claim ``CITERES:pending`` papers, run each through the
     OpenAlex leg then write its chunks' ``cites`` links, stamp
@@ -998,8 +1496,15 @@ def run_cite_resolve_pass(
     next pass (``bib_parse``'s documented idiom). Deferred is never
     error-stamped.
 
+    The passage layer (spec slice 6) runs at the end of the same call
+    when its own flag is lit (:func:`passage_enabled`) — one bounded
+    :func:`run_passage_sweep` after the paper loop, upgrading minted
+    ref-level links to chunk→chunk.
+
     Returns ``{papers_swept, chunks_swept, links_ensured,
-    entries_resolved, entries_missed, deferred, failed}``.
+    entries_resolved, entries_missed, deferred, failed, passage}`` —
+    ``passage`` is the sweep's own ``{claimed, chunk, none, skipped,
+    failed}`` dict, present only when the layer ran.
     """
     papers_swept = chunks_swept = links_ensured = 0
     entries_resolved = entries_missed = 0
@@ -1111,7 +1616,7 @@ def run_cite_resolve_pass(
             )
             _error_tag(ref_id)
 
-    return {
+    out: dict[str, Any] = {
         "papers_swept": papers_swept,
         "chunks_swept": chunks_swept,
         "links_ensured": links_ensured,
@@ -1120,11 +1625,16 @@ def run_cite_resolve_pass(
         "deferred": deferred,
         "failed": len(failed_ids),
     }
+    if passage_enabled():
+        out["passage"] = run_passage_sweep(store, embedder)
+    return out
 
 
 __all__ = [
     "CITERES_VERSION",
     "BibEntry",
     "ensure_chunk_cites_links",
+    "resolve_one_paper",
     "run_cite_resolve_pass",
+    "run_passage_sweep",
 ]

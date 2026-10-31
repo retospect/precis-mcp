@@ -230,11 +230,26 @@ Decided (Reto 2026-10-24, relayed by COORDINATOR):
   with its own `meta.marker_order` position in expansion order — no
   `markers`-list form.
 
+Resolved since draft:
+
+- **Request surface (slice 7, built).** The `kind='job'` work-order
+  convention (`hub.sibling('job').put` / `JobTypeSpec` + `job_inproc`
+  dispatch — `paper_pull`'s shape) answers open question 1:
+  `job_type='cite_resolve'` takes `params.ref_ids`, validates live
+  papers at put time, and runs the resolve legs synchronously inside
+  the dispatch — itself the high-priority claim, so it outranks the
+  access queue by construction. ETA lands on
+  `meta.cite_resolve_progress`; the per-paper
+  `{resolved, ambiguous, unheld}` count on `meta.cite_resolve`.
+- **Passage layer (slice 6, built).** `cite_resolve:passage` registered
+  in `LLM_OPERATIONS` (BIG, castor steer); `cites` added to
+  `MACHINE_EDGE_STANCE` per ruling #1; `run_passage_sweep` upgrades
+  ref-level links to chunk→chunk and memos `none` on
+  `links.meta.passage`. Gate: `PRECIS_CITE_RESOLVE_PASSAGE_ENABLED`
+  (off default).
+
 Open:
 
-1. **Request surface.** Is "deep link this set now" a new job kind or an
-   existing generic job with a `kind` payload? Needs a pointer to the job
-   conventions before slice 7 is `ready`.
 2. **Eval.** Passage-layer precision on castor gpt-oss vs a frontier judge
    (see `llm-judge-reliability.md`): is a sampled review gate wanted before
    the link is shown, as for `chase:verify`?

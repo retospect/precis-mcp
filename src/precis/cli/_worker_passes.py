@@ -155,8 +155,35 @@ def build_ref_passes(
 
         _cr_email = (settings.get_str("contact.polite_email") or "").strip()
 
+        # The slice-6 passage layer needs an embedder — resolve LAZILY on
+        # first invocation (the hub_refine pattern above): the layer is
+        # env-dark by default, so booting an embedder at registration
+        # would load bge-m3 on every boot for a pass that never runs it.
+        _cr_embedder_cache: list[Any] = []
+
+        def _cr_get_embedder() -> Any:
+            if _cr_embedder_cache:
+                return _cr_embedder_cache[0]
+            try:
+                embedder = _resolve_embedder(args, store)
+            except Exception:
+                log.warning(
+                    "cite_resolve: embedder unavailable -- passage layer will no-op",
+                    exc_info=True,
+                )
+                embedder = None
+            _cr_embedder_cache.append(embedder)
+            return embedder
+
         def _cite_resolve_pass(batch_size: int) -> _CrBatchResult:
-            r = run_cite_resolve_pass(store, batch_size=batch_size, email=_cr_email)
+            from precis.workers.cite_resolve import passage_enabled
+
+            r = run_cite_resolve_pass(
+                store,
+                batch_size=batch_size,
+                email=_cr_email,
+                embedder=_cr_get_embedder() if passage_enabled() else None,
+            )
             return _CrBatchResult.from_dict(
                 "cite_resolve",
                 {**r, "claimed": r["papers_swept"], "ok": r["papers_swept"]},

@@ -1048,3 +1048,231 @@ def test_oa_ratelimited_defers_never_errors(
     assert result["papers_swept"] == 1
     assert store.has_tag(second, "CITERES", "swept") is True
     assert store.has_tag(first, "CITERES", "pending") is True
+
+
+# ── the passage layer (slice 6) + the on-request job (slice 7) ───────
+
+from types import SimpleNamespace
+
+from precis.workers.cite_resolve import (
+    _citing_passage,
+    _claim_passage_links,
+    passage_enabled,
+    resolve_one_paper,
+    run_passage_sweep,
+)
+
+
+class _FakeEmbedder:
+    def embed_one(self, text: str) -> list[float]:
+        return [0.0] * 1023 + [1.0]
+
+
+def _embed_chunk(store: Any, chunk_id: int, vec: list[float] | None = None) -> None:
+    v = vec if vec is not None else [0.0] * 1023 + [1.0]
+    lit = "[" + ",".join(repr(x) for x in v) + "]"
+    with store.pool.connection() as conn:
+        conn.execute(
+            "INSERT INTO chunk_embeddings (chunk_id, embedder, vector, status) "
+            "VALUES (%s, 'bge-m3', %s::vector, 'ok')",
+            (chunk_id, lit),
+        )
+        conn.commit()
+
+
+def _cite_resolve_link(
+    store: Any, src_ref: int, src_chunk_ord: int, dst_ref: int
+) -> int:
+    """A ref-level ``cites`` link exactly as the mint writes it."""
+    store.add_link(
+        src_ref_id=src_ref,
+        src_pos=src_chunk_ord,
+        dst_ref_id=dst_ref,
+        relation="cites",
+        set_by="system",
+        meta={"source": "cite_resolve", "writer": "cite_resolve:1", "marker": "32"},
+    )
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            "SELECT link_id FROM links WHERE src_ref_id=%s AND dst_ref_id=%s "
+            "AND relation='cites'",
+            (src_ref, dst_ref),
+        ).fetchone()
+    assert row is not None
+    return int(row[0])
+
+
+def _fake_route_pick(idx: int | None):
+    def _route(req: Any) -> Any:
+        assert req.source == "cite_resolve:passage"
+        return SimpleNamespace(
+            error=None,
+            data={"pick": (idx + 1) if idx is not None else None, "caveat": None},
+            model="fake-oss",
+        )
+
+    return _route
+
+
+def _route_path() -> str:
+    return "precis.utils.llm.router.route"
+
+
+def test_passage_sweep_upgrades_link_to_chunk(
+    store: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    citing = seed_paper_ref(store, slug="citing-p6")
+    cited = seed_paper_ref(store, slug="cited-p6")
+    src_chunk = _seed_chunk(store, citing, 0, "As shown before [32], the rate holds.")
+    dst_chunk = _seed_chunk(store, cited, 0, "The rate derivation in full.")
+    _embed_chunk(store, dst_chunk)
+    link_id = _cite_resolve_link(store, citing, 0, cited)
+    monkeypatch.setattr(_route_path(), _fake_route_pick(0))
+
+    out = run_passage_sweep(store, _FakeEmbedder())
+
+    assert out == {"claimed": 1, "chunk": 1, "none": 0, "skipped": 0, "failed": 0}
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            "SELECT dst_chunk_id, meta->'passage' FROM links WHERE link_id=%s",
+            (link_id,),
+        ).fetchone()
+    assert int(row[0]) == dst_chunk
+    passage = row[1]
+    assert passage["verdict"] == "chunk"
+    assert passage["model"] == "fake-oss"
+    assert passage["writer"].startswith("cite_resolve:passage:")
+    # memoed → a second sweep claims nothing
+    assert run_passage_sweep(store, _FakeEmbedder())["claimed"] == 0
+
+
+def test_passage_sweep_none_verdict_is_memoed(
+    store: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    citing = seed_paper_ref(store, slug="citing-n6")
+    cited = seed_paper_ref(store, slug="cited-n6")
+    _seed_chunk(store, citing, 0, "As shown before [32], the rate holds.")
+    _embed_chunk(store, _seed_chunk(store, cited, 0, "Unrelated passage."))
+    link_id = _cite_resolve_link(store, citing, 0, cited)
+    monkeypatch.setattr(_route_path(), _fake_route_pick(None))
+
+    out = run_passage_sweep(store, _FakeEmbedder())
+
+    assert out["none"] == 1 and out["chunk"] == 0
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            "SELECT dst_chunk_id, meta->'passage'->>'verdict' FROM links "
+            "WHERE link_id=%s",
+            (link_id,),
+        ).fetchone()
+    assert row[0] is None  # ref-level link stays
+    assert row[1] == "none"
+    assert run_passage_sweep(store, _FakeEmbedder())["claimed"] == 0
+
+
+def test_passage_sweep_no_embedder_noops(store: Any) -> None:
+    citing = seed_paper_ref(store, slug="citing-e6")
+    cited = seed_paper_ref(store, slug="cited-e6")
+    _seed_chunk(store, citing, 0, "As shown before [32].")
+    _embed_chunk(store, _seed_chunk(store, cited, 0, "Text."))
+    _cite_resolve_link(store, citing, 0, cited)
+    out = run_passage_sweep(store, None)
+    assert out == {"claimed": 0, "chunk": 0, "none": 0, "skipped": 0, "failed": 0}
+
+
+def test_passage_claim_needs_embedded_dst_chunks(store: Any) -> None:
+    citing = seed_paper_ref(store, slug="citing-s6")
+    cited = seed_paper_ref(store, slug="cited-s6")  # stub: no chunks at all
+    _seed_chunk(store, citing, 0, "As shown before [32].")
+    _cite_resolve_link(store, citing, 0, cited)
+    with store.pool.connection() as conn:
+        assert _claim_passage_links(conn, limit=10) == []
+
+
+def test_citing_passage_windows_on_the_marker() -> None:
+    text = "Intro fluff. " * 60 + "We rely on [32] here. " + "Tail. " * 60
+    got = _citing_passage(text, "[32]")
+    assert "[32]" in got
+    assert len(got) <= 1200
+    # author-year: surname find
+    got = _citing_passage(text.replace("[32]", "Miller 1921"), "Miller 1921")
+    assert "Miller" in got
+
+
+def test_passage_env_gate(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("PRECIS_CITE_RESOLVE_PASSAGE_ENABLED", raising=False)
+    assert passage_enabled() is False
+    monkeypatch.setenv("PRECIS_CITE_RESOLVE_PASSAGE_ENABLED", "1")
+    assert passage_enabled() is True
+
+
+def test_resolve_one_paper_runs_without_pending_mark(store: Any) -> None:
+    """The job door: a named paper resolves synchronously — no
+    CITERES:pending needed — and lands CITERES:swept so a later get
+    doesn't re-mark it."""
+    citing = seed_paper_ref(store, slug="job-citing")
+    cited = seed_paper_ref(store, slug="job-cited")
+    _seed_chunk(store, citing, 0, "As shown before [32].")
+    _seed_entry(store, citing, 32, held_ref_id=cited, match_conf=0.9)
+    # the chunk_citations whitelist via the real bib_mark sweep
+    assert run_bib_mark_pass(store, ref_ids=[citing])["chunks_swept"] == 1
+
+    out = resolve_one_paper(store, citing)
+
+    assert out["links_ensured"] == 1
+    assert out["resolved"] == 1 and out["unheld"] == 0
+    links = _cites_links(store, citing)
+    assert len(links) == 1
+    assert store.has_tag(citing, "CITERES", "swept") is True
+    assert store.has_tag(citing, "CITERES", "pending") is False
+
+
+def test_bib_mark_ref_ids_restricts_the_sweep(store: Any) -> None:
+    p1 = seed_paper_ref(store, slug="bm-one")
+    p2 = seed_paper_ref(store, slug="bm-two")
+    for p in (p1, p2):
+        _seed_entry(store, p, 1, raw_text="ref one")
+        _seed_chunk(store, p, 0, "Cites [1] here.")
+
+    out = run_bib_mark_pass(store, ref_ids=[p1])
+
+    assert out["chunks_swept"] == 1
+    with store.pool.connection() as conn:
+        assert (
+            conn.execute(
+                "SELECT count(*) FROM chunk_citations cc JOIN chunks c "
+                "USING (chunk_id) WHERE c.ref_id = %s",
+                (p1,),
+            ).fetchone()[0]
+            == 1
+        )
+        assert (
+            conn.execute(
+                "SELECT count(*) FROM chunk_citations cc JOIN chunks c "
+                "USING (chunk_id) WHERE c.ref_id = %s",
+                (p2,),
+            ).fetchone()[0]
+            == 0
+        )
+
+
+def test_job_type_registered_and_validates(store: Any) -> None:
+    from precis.errors import BadInput
+    from precis.workers import job_types
+    from precis.workers.job_types import cite_resolve as job_mod
+
+    assert "cite_resolve" in job_types.known_job_types()
+    spec = job_types.get_job_type("cite_resolve")
+    assert spec is not None and spec.dispatch is job_mod._dispatch
+
+    paper = seed_paper_ref(store, slug="job-ok")
+    not_paper = store.insert_ref(kind="memory", slug=None, title="m", meta={}).id
+    job_mod.validate(store, {"ref_ids": [paper]})  # live paper: no raise
+    with pytest.raises(BadInput):
+        job_mod.validate(store, {"ref_ids": [int(not_paper)]})
+    with pytest.raises(BadInput):
+        job_mod.validate(store, {"ref_ids": [paper, 999999]})
+
+    # idem: same set dedupes, order-insensitive
+    assert job_mod.idem_key([2, 1]) == job_mod.idem_key([1, 2])
+    assert job_mod.idem_key([1]) != job_mod.idem_key([2])

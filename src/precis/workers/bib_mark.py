@@ -99,11 +99,14 @@ def _batch_size_default() -> int:
 
 
 def _claim_chunks_to_sweep(
-    conn: Any, *, batch_size: int
+    conn: Any, *, batch_size: int, ref_ids: list[int] | None = None
 ) -> list[tuple[int, int, int, str]]:
     """Up to ``batch_size`` ``(chunk_id, ref_id, ord, text)`` rows for body
     chunks of a ``paper`` that has parsed ``paper_bib_entries`` rows and
-    isn't yet swept at :data:`BIBMARK_VERSION`.
+    isn't yet swept at :data:`BIBMARK_VERSION`. ``ref_ids`` optionally
+    restricts the sweep to the named papers (the ``cite_resolve``
+    deep-link job's targeted leg, gr513768 slice 7); ``None`` sweeps
+    the corpus.
 
     No lease table — the ``BIBMARK:<version>`` chunk tag written after the
     scan IS the durable done-marker (mirrors ``chase_trigger`` /
@@ -111,6 +114,14 @@ def _claim_chunks_to_sweep(
     instances off the same batch; the lock is held through write + mark +
     commit so the marker lands before release.
     """
+    ref_filter = "AND c.ref_id = ANY(%(ref_ids)s)" if ref_ids else ""
+    binds: dict[str, Any] = {
+        "ns": _BIBMARK_NS,
+        "val": BIBMARK_VERSION,
+        "limit": batch_size,
+    }
+    if ref_ids:
+        binds["ref_ids"] = list(ref_ids)
     rows = conn.execute(
         """
         SELECT c.chunk_id, c.ref_id, c.ord, c.text
@@ -130,11 +141,14 @@ def _claim_chunks_to_sweep(
                     AND t.namespace = %(ns)s
                     AND t.value = %(val)s
                )
+        """
+        + ref_filter
+        + """
          ORDER BY c.chunk_id
          LIMIT %(limit)s
            FOR UPDATE OF c SKIP LOCKED
         """,
-        {"ns": _BIBMARK_NS, "val": BIBMARK_VERSION, "limit": batch_size},
+        binds,
     ).fetchall()
     return [(int(r[0]), int(r[1]), int(r[2]), str(r[3] or "")) for r in rows]
 
@@ -167,9 +181,19 @@ def _write_chunk_citations(
     return written
 
 
-def run_bib_mark_pass(store: Store, *, batch_size: int | None = None) -> dict[str, int]:
+def run_bib_mark_pass(
+    store: Store,
+    *,
+    batch_size: int | None = None,
+    ref_ids: list[int] | None = None,
+) -> dict[str, int]:
     """One pass: claim a body-chunk batch, extract whitelisted inline
     markers, write ``chunk_citations``, mark every claimed chunk swept.
+
+    ``ref_ids`` optionally restricts the sweep to the named papers
+    (``bib_parse``'s targeted-backfill param, mirrored) — the
+    ``cite_resolve`` deep-link job uses it to sweep exactly its
+    work-order papers (gr513768 slice 7).
 
     (b)+(c)+(d) run in ONE transaction (all-or-nothing, same as
     ``chase_trigger``): a mid-batch failure rolls back the whole sweep so a
@@ -189,7 +213,9 @@ def run_bib_mark_pass(store: Store, *, batch_size: int | None = None) -> dict[st
     failed = 0
     try:
         with store.pool.connection() as conn:
-            claimed = _claim_chunks_to_sweep(conn, batch_size=resolved_batch_size)
+            claimed = _claim_chunks_to_sweep(
+                conn, batch_size=resolved_batch_size, ref_ids=ref_ids
+            )
             if claimed:
                 # marker whitelist per paper (fetched once per distinct ref)
                 marker_maps: dict[int, dict[int, int]] = {}

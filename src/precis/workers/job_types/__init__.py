@@ -1092,6 +1092,11 @@ def get_job_type(name: str) -> JobTypeSpec | None:
         return ACCEPT_SPEC
     # Fall through to plugin-discovered specs. Cached on first
     # lookup so subsequent calls are cheap.
+    if name == "cite_resolve":
+        from precis.workers.job_types.cite_resolve import SPEC
+
+        _REGISTRY[name] = SPEC
+        return SPEC
     plugins = _get_plugin_specs()
     spec = plugins.get(name)
     if spec is not None:
@@ -1160,6 +1165,7 @@ def known_job_types() -> list[str]:
         "dep_check",
         "pr_action",
         "youtube_bulk",
+        "cite_resolve",
     ]
     plugin_names = sorted(_get_plugin_specs())
     # Built-ins first so the error-message ordering is stable for
