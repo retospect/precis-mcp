@@ -116,6 +116,33 @@ get(kind="perplexity-reasoning", id="<slug>", view="body")
 
 Ask a focused question instead when you only need part of the answer.
 
+## Bound what a get returns — `no_sources` / `max_bytes`
+
+Perplexity ignores length instructions, and the `Sources:` URL list
+alone can be bigger than the answer. Two `args=` knobs bound the
+**returned** text only — the Sonar call, the cached row and its
+citation meta are identical either way, so a later plain `get` still
+shows everything:
+
+```python
+get(kind="perplexity-research", id="<query>", args={"no_sources": True})
+get(kind="perplexity-reasoning", id="<query>", args={"max_bytes": 4096})
+```
+
+- `args={"no_sources": True}` drops the trailing `Sources:` block from
+  the returned text (the inline `[N]` markers stay). The URLs remain
+  stored on the cached row — a plain `get`, a `~N` chunk read or
+  `view='body'` still shows them.
+- `args={"max_bytes": N}` returns at most N bytes of the whole-body
+  render: the head that fits, an `outline:` of the stored chunks, and
+  a `next:` range-read call (`id='<slug>~<cut>..<last>'`) that returns
+  the rest. Too-small values refuse with `next=` naming the range
+  read rather than returning nothing.
+
+The API reports no expected result size before the call, so there is
+no pre-fetch estimate to warn on — these args and the chunk-range
+reads above are the only size bounds available.
+
 New refs mint `<60-char slug>-<sha8>` — the tail is a hash of the full
 `model:query` key, so two queries that share a long lead-in now get
 distinct slugs instead of colliding (rows minted before the change keep

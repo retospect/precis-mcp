@@ -44,11 +44,23 @@ from __future__ import annotations
 import hashlib
 import logging
 import re
+from contextvars import ContextVar
 from dataclasses import dataclass
 from typing import Any, ClassVar
 
-from precis.errors import BadInput, Upstream
-from precis.handlers._cache_base import CacheBackedHandler, FetchResult
+from precis._result_budget import (
+    _cap_outline,
+    _fit_head,
+    body_bytes,
+    result_context_cap,
+    size_cell,
+)
+from precis.errors import BadInput, ResultBudgetExceeded, Upstream
+from precis.handlers._cache_base import (
+    CacheBackedHandler,
+    FetchResult,
+    dedupe_overlap_join,
+)
 from precis.protocol import KindSpec
 from precis.response import Response
 from precis.utils.http import (
@@ -82,6 +94,86 @@ _PERPLEXITY_ATTRIBUTION_TEMPLATE = (
     "Terms of Service: disclose AI use in any public output; Standard/Pro "
     "tiers are restricted to personal / non-commercial use."
 )
+
+
+# ---------------------------------------------------------------------------
+# Return-shaping args (gr540306)
+# ---------------------------------------------------------------------------
+#
+# ``args={'no_sources': True}`` / ``args={'max_bytes': N}`` bound what a
+# whole-body render RETURNS — the cached row keeps the Sources block and
+# every byte either way. Sonar reports no pre-call result size, so these
+# two are the only size bounds a caller has.
+#
+# Per-call state, threaded from the public ``get`` to ``_render``
+# without an instance attribute — the same idiom as
+# ``youtube._LANG_PREF``: handler objects are shared across FastMCP's
+# worker-thread pool, so per-request state can't sit on ``self``.
+# ``(drop_sources, max_bytes)``; the default shapes nothing.
+_RETURN_OPTS: ContextVar[tuple[bool, int | None]] = ContextVar(
+    "precis.perplexity._return_opts", default=(False, None)
+)
+
+#: The fetch formatter appends the numbered URL list under a literal
+#: ``Sources:`` lead-in as the LAST body element
+#: (:func:`_format_perplexity_body`). Rendered, the chunk re-join may
+#: put blank lines between the numbered rows.
+_SOURCES_TAIL_RE = re.compile(
+    r"\n+Sources:\s*\n(?:\s*\[\d+\][^\n]*(?:\n|$))+",
+)
+
+
+def _drop_sources_block(body: str) -> str:
+    """Remove the trailing ``Sources:\\n[n] url`` block from a rendered
+    body — the ``args={'no_sources': True}`` shaping (gr540306).
+
+    The strip fires only when the block is the last body element: the
+    text right after it must be the render footer (``- <attribution>``,
+    a ``- cite as`` line, a ``Next:`` table) or end-of-body. A
+    ``Sources:`` lead-in mid-answer followed by more prose is left
+    alone — that would be real content, not the formatter's tail.
+    """
+    m = _SOURCES_TAIL_RE.search(body)
+    if m is None:
+        return body
+    tail = body[m.end() :].lstrip()
+    if tail and not tail.startswith(("- ", "Next:", "{")):
+        return body
+    return body[: m.start()] + "\n\n" + tail
+
+
+def _first_unshown_ord(blocks: list[Any], shown_body_bytes: int) -> int | None:
+    """``ord`` of the first chunk not wholly inside the shown head —
+    where a continuation range read must start so nothing is skipped.
+
+    ``blocks`` are the ref's stored chunks; cumulative sizes run
+    through the same :func:`dedupe_overlap_join` the reader render
+    uses, so the seam math matches what actually printed. ``None``
+    when the shown bytes cover every chunk (nothing left to page to).
+    """
+    running = ""
+    for b in blocks:
+        running = dedupe_overlap_join([running, b.text or ""])
+        if len(running.encode("utf-8")) > shown_body_bytes:
+            return b.ord
+    return None
+
+
+def _coerce_max_bytes(value: int | None, *, kind: str) -> int | None:
+    """Validate ``args={'max_bytes': N}`` — a positive int or ``None``.
+
+    Rejected before the paid fetch so a typo'd cap never bills. A
+    ``bool`` is an ``int`` subclass — ``max_bytes=True`` reads as a
+    caller typo, not a 1-byte cap.
+    """
+    if value is None:
+        return None
+    if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+        raise BadInput(
+            f"{kind}: args['max_bytes'] must be a positive int (got {value!r})",
+            next=(f"get(kind={kind!r}, id='<query>', args={{'max_bytes': 4096}})"),
+        )
+    return value
 
 
 # ---------------------------------------------------------------------------
@@ -332,6 +424,62 @@ class _PerplexityBase(CacheBackedHandler):
         model = meta.get("model") or self.TIER.model
         return f"{model}:{query}"
 
+    # ── get: return-shaping args ─────────────────────────────────────
+
+    def get(
+        self,
+        *,
+        id: str | int | None = None,
+        q: str | None = None,
+        view: str | None = None,
+        tags: list[str] | None = None,
+        untags: list[str] | None = None,
+        mode: str | None = None,
+        ttl_days: int | None = None,
+        refresh: bool = False,
+        no_fetch: bool = False,
+        literal: bool = False,
+        no_sources: bool = False,
+        max_bytes: int | None = None,
+        **kw: Any,
+    ) -> Response:
+        """Base ``get`` plus two return-shaping args (gr540306).
+
+        ``args={'no_sources': True}`` drops the ``Sources:`` URL block
+        from the RETURNED text — the cached row keeps it, so a later
+        plain get still shows it. ``args={'max_bytes': N}`` bounds the
+        returned body to N bytes (head + chunk outline + a ``next:``
+        range read for the rest). Neither changes what is paid for or
+        cached: the Sonar call, the stored body and the citation meta
+        are identical with or without them. The pair is published to
+        ``_render`` through ``_RETURN_OPTS`` (see the module section
+        for why a ContextVar). ``max_bytes`` is validated before the
+        call so a bad value never reaches the paid fetch.
+
+        The base kwargs are re-declared and forwarded explicitly —
+        the dispatch extras gate validates ``args=`` keys against the
+        resolved signature's own params, so ``args={'no_fetch': True}``
+        (an advertised call) must appear here or it would refuse.
+        """
+        cap = _coerce_max_bytes(max_bytes, kind=self.spec.kind)
+        token = _RETURN_OPTS.set((bool(no_sources), cap))
+        try:
+            return super().get(
+                id=id,
+                q=q,
+                view=view,
+                tags=tags,
+                untags=untags,
+                mode=mode,
+                ttl_days=ttl_days,
+                refresh=refresh,
+                no_fetch=no_fetch,
+                literal=literal,
+                **kw,
+            )
+        finally:
+            _RETURN_OPTS.reset(token)
+
     # ── auth + transport ──────────────────────────────────────────────
 
     @staticmethod
@@ -515,22 +663,149 @@ class _PerplexityBase(CacheBackedHandler):
                 )
             )
         body = resp.body + render_next_section(nav)
+        # Return shaping (gr540306). ``no_sources`` drops the Sources
+        # block from the RETURNED text only — the stored row keeps it,
+        # so a later plain get still shows it. ``max_bytes`` bounds
+        # this body to the caller's number without touching what was
+        # paid for or stored. Sonar reports no pre-call result size,
+        # so the pair is the only size bound a caller has — the
+        # over-cap next= names them for the same reason.
+        drop_sources, max_bytes = _RETURN_OPTS.get()
+        if drop_sources:
+            body = _drop_sources_block(body)
+        # The base render's targeted read: a multi-chunk report over
+        # the context budget refuses whole-body, and the recovery is
+        # this kind's own chunk-range read (``id='<slug>~0..3'``),
+        # not a hardcoded search on another tier (gr534654). A
+        # single-chunk answer can't page — narrowing the question is
+        # still the recovery there.
+        result_budget_hint = (
+            resp.result_budget_hint
+            or f"search(kind={self.spec.kind!r}, "
+            "q='<a narrower question>', page_size=1) requests a "
+            "focused answer"
+        )
+        result_budget_hint += (
+            "; args={'max_bytes': N} bounds the return, "
+            "args={'no_sources': True} drops the Sources block"
+        )
+        if max_bytes is not None:
+            body = self._cap_return_bytes(
+                body,
+                ref=ref,
+                cap=max_bytes,
+                fallback_hint=result_budget_hint,
+            )
         return Response(
             body=body,
             cost=resp.cost,
-            # The base render's targeted read: a multi-chunk report over
-            # the context budget refuses whole-body, and the recovery is
-            # this kind's own chunk-range read (``id='<slug>~0..3'``),
-            # not a hardcoded search on another tier (gr534654). A
-            # single-chunk answer can't page — narrowing the question is
-            # still the recovery there.
-            result_budget_hint=(
-                resp.result_budget_hint
-                or f"search(kind={self.spec.kind!r}, "
-                "q='<a narrower question>', page_size=1) requests a "
-                "focused answer"
-            ),
+            result_budget_hint=result_budget_hint,
         )
+
+    def _continuation_hint(self, slug: str, cut_ord: int, last_ord: int) -> str:
+        """The range read that returns what a ``max_bytes`` head cut off.
+
+        Names the inclusive ``~<cut>..<last>`` range (``~<cut>`` when it
+        lands on the last chunk) — the same ``slug~N``/``~lo..hi``
+        grammar the over-cap recovery advertises, continued from where
+        the head ran out instead of restarting at ``~0``.
+        """
+        sel = f"~{cut_ord}" if cut_ord == last_ord else f"~{cut_ord}..{last_ord}"
+        return (
+            f"get(kind={self.spec.kind!r}, id='{slug}{sel}') — the rest of the answer"
+        )
+
+    def _cap_return_bytes(
+        self,
+        body: str,
+        *,
+        ref,
+        cap: int,
+        fallback_hint: str,
+    ) -> str:
+        """Bound the rendered body to ``cap`` bytes — the
+        ``args={'max_bytes': N}`` shaping (gr540306).
+
+        Same shape the result-budget fitter produces — a whole-line
+        head, an ``outline:`` of the stored chunks, and a ``next:``
+        line naming the range read that returns the rest — but
+        bounded by the caller's number instead of an env cap.
+        ``cap`` is also clamped to :func:`result_context_cap` so an
+        env cap set tighter than the caller's still binds.
+        """
+        bound = min(cap, result_context_cap())
+        if body_bytes(body) <= bound:
+            return body
+        size = body_bytes(body)
+        blocks = self.store.chunks.list_chunks_for_ref(ref.id)
+        slug = ref.slug or str(ref.id)
+        # Byte offset where the joined chunk text starts inside the
+        # rendered body — the head bytes that map onto chunks. When the
+        # joined text isn't in the render (a withheld body) the
+        # continuation can't be computed — the fallback hint stands
+        # alone rather than paging a body that isn't being shown.
+        joined = dedupe_overlap_join([b.text or "" for b in blocks])
+        start = body.find(joined) if joined else -1
+        cuttable = start >= 0 and bool(blocks)
+        prefix_bytes = len(body[:start].encode("utf-8")) if cuttable else 0
+
+        # Chunk-outline map, bounded at half the cap like the fitter's —
+        # a map bigger than the head it describes stops paying.
+        outline_block = ""
+        if len(blocks) > 1:
+            rows = _cap_outline(
+                "\n".join(
+                    f"`{slug}~{b.ord}`"
+                    + (f"\t{sz}" if (sz := size_cell(body_bytes(b.text or ""))) else "")
+                    for b in blocks
+                )
+            )
+            kept: list[str] = []
+            used = 0
+            for ln in rows.split("\n"):
+                cost = len(ln.encode("utf-8")) + 3
+                if used + cost > bound // 2:
+                    break
+                kept.append(f"  {ln}")
+                used += cost
+            if kept:
+                outline_block = "\n\noutline:\n" + "\n".join(kept)
+
+        marker = (
+            f"\n\n… truncated: showing {{shown}} of {size} bytes; cap max_bytes={cap}"
+        )
+        # Iterate the trailer: the ``next:`` call depends on the cut
+        # chunk, which depends on the head, which depends on the
+        # trailer width. Widths settle in a couple of passes; the
+        # stable-tail check breaks the loop and a fourth pass bounds
+        # the worst case (same fixed-point scheme the fitter uses).
+        cut: int | None = None
+        shown = 0
+        head, tail = "", ""
+        for _ in range(4):
+            nxt = (
+                self._continuation_hint(slug, cut, blocks[-1].ord)
+                if cut is not None and cuttable
+                else fallback_hint
+            )
+            new_tail = marker.format(shown=shown) + outline_block + f"\nnext: {nxt}"
+            if new_tail == tail:
+                break
+            tail = new_tail
+            head, _dropped = _fit_head(body, max(0, bound - body_bytes(tail)))
+            shown = body_bytes(head)
+            cut = (
+                _first_unshown_ord(blocks, max(0, shown - prefix_bytes))
+                if cuttable
+                else None
+            )
+        if not shown or body_bytes(head + tail) > bound:
+            raise ResultBudgetExceeded(
+                f"get: result is {size} bytes and even a head will not "
+                f"fit under max_bytes={cap}",
+                next=fallback_hint,
+            )
+        return head + tail
 
     # ── /recent listing — Perplexity-specific; surfaces imported vs
     #    fetched provenance and points at the import path so Pro users

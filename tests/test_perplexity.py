@@ -1827,3 +1827,136 @@ def test_unknown_view_rejected(websearch: WebsearchHandler) -> None:
         websearch.get(id="anything", view="bogu")
     assert err.value.options == ["body"]
     assert _StubClient.call_count == 0
+
+
+# ── args={'no_sources': True} / args={'max_bytes': N} (gr540306) ──────
+#
+# Return-shaping args bound what a whole-body render RETURNS — the
+# Sonar call and the cached row are identical either way.
+
+
+def _multi_section_response() -> dict[str, Any]:
+    """A Sonar payload whose body parses into several chunks plus a
+    Sources block — enough that a small ``max_bytes`` must cut."""
+    sections = "\n\n".join(
+        f"## Section {i}\n\n" + f"Detail sentence {i}.{j}. " * 10
+        for i in range(8)
+        for j in (1,)
+    )
+    return {
+        "choices": [{"message": {"content": sections}}],
+        "citations": [
+            "https://example.com/a",
+            "https://example.com/b",
+        ],
+    }
+
+
+def test_no_sources_drops_sources_block_from_return(
+    websearch: WebsearchHandler,
+) -> None:
+    resp = websearch.get(id="who is the CEO of Anthropic", no_sources=True)
+    assert "Dario Amodei" in resp.body
+    assert "Sources:" not in resp.body
+    # The second URL lives ONLY in the Sources list — the Next: trailer's
+    # "fetch the first cited source" hint legitimately keeps citing [1].
+    assert "en.wikipedia.org" not in resp.body
+
+
+def test_no_sources_keeps_sources_on_the_cached_row(
+    websearch: WebsearchHandler,
+) -> None:
+    """no_sources shapes the RETURNED text only — the stored row keeps
+    the block, so a plain get on the same row still shows it."""
+    websearch.get(id="who is the CEO of Anthropic")
+    shaped = websearch.get(id="who is the CEO of Anthropic", no_sources=True)
+    assert "Sources:" not in shaped.body
+    full = websearch.get(id="who is the CEO of Anthropic")
+    assert "Sources:" in full.body
+    assert "anthropic.com/about" in full.body
+    assert _StubClient.call_count == 1
+
+
+def test_shaping_args_fire_no_paid_call_on_cache_hit(
+    websearch: WebsearchHandler,
+) -> None:
+    """A cached-hit read with either arg is still a read — mock asserts
+    zero additional upstream POSTs (gr540306 test ask)."""
+    websearch.get(id="who is the CEO of Anthropic")
+    assert _StubClient.call_count == 1
+    websearch.get(id="who is the CEO of Anthropic", no_sources=True)
+    websearch.get(id="who is the CEO of Anthropic", max_bytes=2000)
+    websearch.get(id="who is the CEO of Anthropic", no_sources=True, max_bytes=2000)
+    assert _StubClient.call_count == 1
+
+
+def test_max_bytes_bounds_return_and_next_reads_the_rest(
+    websearch: WebsearchHandler,
+) -> None:
+    """``args={'max_bytes': N}`` returns ≤ N bytes — head + outline +
+    a ``next:`` range read that returns the rest of the answer."""
+    import re
+
+    _StubClient.response = _StubResp(json_data=_multi_section_response())
+    resp = websearch.get(id="a long report", max_bytes=900)
+    assert len(resp.body.encode("utf-8")) <= 900
+    assert "… truncated" in resp.body
+    m = re.search(
+        r"next: get\(kind='websearch', id='([^']*~\d+(?:\.\.\d+)?)'\)", resp.body
+    )
+    assert m, resp.body
+    rest = websearch.get(id=m.group(1))
+    assert _StubClient.call_count == 1  # the range read is cache, not a call
+    # The named range returns content the head cut off — including the
+    # stored Sources block at the tail.
+    head = resp.body.split("\n\n… truncated")[0]
+    assert "Section 7" not in head
+    assert "Section 7" in rest.body
+    assert "example.com/a" in rest.body
+
+
+def test_max_bytes_under_cap_returns_whole(websearch: WebsearchHandler) -> None:
+    resp = websearch.get(id="who is the CEO of Anthropic", max_bytes=20000)
+    assert "… truncated" not in resp.body
+    assert "Sources:" in resp.body
+
+
+def test_max_bytes_rejects_non_positive_before_fetch(
+    websearch: WebsearchHandler,
+) -> None:
+    for bad in (0, -5, True, "big"):
+        with pytest.raises(BadInput, match="max_bytes"):
+            websearch.get(id="a query", max_bytes=bad)  # type: ignore[arg-type]
+    assert _StubClient.call_count == 0
+
+
+def test_shaping_args_reach_the_handler_through_args(
+    runtime_with_store: Any,
+) -> None:
+    """The advertised spelling ``args={'no_sources': …, 'max_bytes': …}``
+    must pass the dispatch extras gate — it validates args= keys against
+    the resolved get signature (re-declared base params keep
+    ``args={'no_fetch': True}`` working too)."""
+    from precis.handlers.perplexity import WebsearchHandler as _W
+
+    assert _W.__name__ == "WebsearchHandler"
+    out = runtime_with_store.dispatch(
+        "get",
+        {
+            "kind": "websearch",
+            "id": "who is the CEO of Anthropic",
+            "__extras__": {"no_sources": True, "max_bytes": 2000},
+        },
+    )
+    assert "[error:" not in out, out
+    assert "Sources:" not in out
+    out2 = runtime_with_store.dispatch(
+        "get",
+        {
+            "kind": "websearch",
+            "id": "who is the CEO of Anthropic",
+            "__extras__": {"no_fetch": True},
+        },
+    )
+    assert "[error:" not in out2, out2
+    assert _StubClient.call_count == 1
