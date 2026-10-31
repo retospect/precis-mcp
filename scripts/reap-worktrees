@@ -54,14 +54,6 @@
 # be reaped while its own gate is still in flight — deleting that ref would
 # kill the run. 24h is far clear of both.
 #
-# Third job, same lane: STALE index.lock FILES (gr541144). A hook killed at
-# its timeout can leave a 0-byte index.lock that fails every later git
-# write in that tree until a human removes it. cb448644c and 9b11bb0b1
-# removed the known writers (the GIT_OPTIONAL_LOCKS=0 export below is one);
-# scripts/reap-index-locks — invoked at the bottom of this script in both
-# --for-hook and full modes — reaps what's left: 0-byte, older than 10
-# minutes, held open by nobody, with no git process in that tree.
-#
 # Escape hatches: PRECIS_NO_AUTOREAP=1 → no-op. PRECIS_NO_CI_REF_REAP=1 →
 # worktrees still reaped, remote refs left alone (also the switch for a
 # machine that should never touch the remote).
@@ -825,17 +817,6 @@ if [ -x scripts/reap-kimi-workspaces ]; then
     KIMI_ARGS=(--for-hook)
     [ "$DRY_RUN" = 1 ] && KIMI_ARGS+=(--dry-run)
     scripts/reap-kimi-workspaces "${KIMI_ARGS[@]}" 2>/dev/null || true
-fi
-
-# Stale index.lock sweep (gr541144 — see header's third job): a glob + stat
-# per lock, lsof/ps only for 10-minute-old 0-byte candidates, no per-tree
-# git calls — cheap in --for-hook. --dry-run forwards so a dry run stays
-# dry; --for-hook forwards so a keep stays silent.
-if [ -x scripts/reap-index-locks ]; then
-    LOCK_ARGS=()
-    [ "$FOR_HOOK" = 1 ] && LOCK_ARGS+=(--for-hook)
-    [ "$DRY_RUN" = 1 ] && LOCK_ARGS+=(--dry-run)
-    scripts/reap-index-locks "${LOCK_ARGS[@]+"${LOCK_ARGS[@]}"}" 2>/dev/null || true
 fi
 
 if [ "${#REAPED[@]}" -eq 0 ]; then
