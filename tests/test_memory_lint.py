@@ -73,7 +73,8 @@ def _git(cwd: Path, *args: str) -> subprocess.CompletedProcess[str]:
 def lint_repo(tmp_path: Path) -> Path:
     """A throwaway repo carrying the REAL scripts/memory-lint at its real
     relative path, plus the tracked runbook check 6 used to stamp — gr536400
-    pins that nothing ever writes it again."""
+    pins that nothing ever writes it again. (Check 6's clock is the fake
+    $HOME's cache log; ``home_and_mem`` seeds it in-window.)"""
     repo = tmp_path / "repo"
     repo.mkdir()
     _git(repo, "init", "-q", "-b", "main")
@@ -87,7 +88,7 @@ def lint_repo(tmp_path: Path) -> Path:
     runbooks_dir = repo / "docs" / "runbooks"
     runbooks_dir.mkdir(parents=True)
     (runbooks_dir / "memory-sibling-repos.md").write_text(
-        f"## Log\n\n**{_today()}** — placeholder\n", encoding="utf-8"
+        "# Runbook stub\n", encoding="utf-8"
     )
 
     _git(repo, "add", "-A")
@@ -122,11 +123,16 @@ def _landed_sha(repo: Path) -> str:
 @pytest.fixture
 def home_and_mem(lint_repo: Path, tmp_path: Path) -> tuple[Path, Path]:
     """A fake $HOME whose memory dir matches the path scripts/memory-lint
-    derives from ``lint_repo``, so the script finds our fixture INDEX."""
+    derives from ``lint_repo``, so the script finds our fixture INDEX. Check
+    6's cache log is seeded with a fresh stamp so tests unrelated to it don't
+    trip its self-stamping append."""
     home = tmp_path / "home"
     escaped = _main_root(lint_repo).replace("/", "-")
     mem = home / ".claude" / "projects" / escaped / "memory"
     mem.mkdir(parents=True)
+    state = _sib_state(home)
+    state.parent.mkdir(parents=True)
+    state.write_text(f"**{_today()}** — ✓ clean\n", encoding="utf-8")
     return home, mem
 
 
@@ -414,10 +420,8 @@ def test_graph_mode_sibling_check_scans_nodes_and_stamps(
     lint_repo: Path, graph_setup: tuple[Path, Path, Path, Path]
 ) -> None:
     home, _mem, cache, nodes = graph_setup
-    runbook = lint_repo / "docs" / "runbooks" / "memory-sibling-repos.md"
-    runbook.write_text("## Log\n\n**2020-01-01** — old\n", encoding="utf-8")  # DUE
-    before = runbook.read_text(encoding="utf-8")
     state = _sib_state(home)
+    state.write_text("**2020-01-01** — old\n", encoding="utf-8")  # DUE
     (nodes / "me464092.md").write_text(
         "# Sibling\n\nSee ~/work/long-retired-sibling-repo for it.\n", encoding="utf-8"
     )
@@ -428,12 +432,12 @@ def test_graph_mode_sibling_check_scans_nodes_and_stamps(
     assert (
         "me464092: ~/work/long-retired-sibling-repo — no longer on disk" in res.stdout
     ), res.stdout
-    # The stamp lands in the untracked cache log; the tracked runbook is
-    # never dirtied (the bug this pins: it blocked ship's primary ff).
-    assert f"**{_today()}** — 1 stale path(s): me464092:" in state.read_text(
-        encoding="utf-8"
-    )
-    assert runbook.read_text(encoding="utf-8") == before
+    # The stamp lands in the untracked cache log; no tracked file is dirtied
+    # (the bug this pins: it blocked ship's primary ff).
+    stamped = state.read_text(encoding="utf-8")
+    assert stamped.startswith("**2020-01-01** — old\n"), stamped
+    assert f"**{_today()}** — 1 stale path(s): me464092:" in stamped
+    assert _git(lint_repo, "status", "--porcelain").stdout == ""
 
 
 def _sib_state(home: Path) -> Path:
@@ -441,14 +445,11 @@ def _sib_state(home: Path) -> Path:
     return home / ".cache" / "precis" / "memory-sibling-repos.log"
 
 
-def test_sibling_check_in_window_cache_stamp_wins_over_stale_runbook(
+def test_sibling_check_in_window_cache_stamp_is_quiet(
     lint_repo: Path, graph_setup: tuple[Path, Path, Path, Path]
 ) -> None:
     home, _mem, cache, nodes = graph_setup
-    runbook = lint_repo / "docs" / "runbooks" / "memory-sibling-repos.md"
-    runbook.write_text("## Log\n\n**2020-01-01** — old\n", encoding="utf-8")
     state = _sib_state(home)
-    state.parent.mkdir(parents=True)
     state.write_text(f"**{_today()}** — ✓ clean\n", encoding="utf-8")
     (nodes / "me464092.md").write_text("# x\n\nbody\n", encoding="utf-8")
 
@@ -459,18 +460,17 @@ def test_sibling_check_in_window_cache_stamp_wins_over_stale_runbook(
     assert state.read_text(encoding="utf-8") == f"**{_today()}** — ✓ clean\n"
 
 
-def test_sibling_check_falls_back_to_runbook_when_no_cache_log(
+def test_sibling_check_missing_cache_log_is_due(
     lint_repo: Path, graph_setup: tuple[Path, Path, Path, Path]
 ) -> None:
     home, _mem, cache, nodes = graph_setup
-    # lint_repo's runbook carries a fresh stamp (today); no cache log exists.
-    assert not _sib_state(home).exists()
+    _sib_state(home).unlink()
     (nodes / "me464092.md").write_text("# x\n\nbody\n", encoding="utf-8")
 
     res = _run(lint_repo, home, cache=cache, nodes=nodes)
 
-    assert "sibling-repo check: ok (last " + _today() in res.stdout, res.stdout
-    assert not _sib_state(home).exists()  # in-window: nothing stamped
+    assert "sibling-repo check: DUE (last never)" in res.stdout, res.stdout
+    assert f"**{_today()}** — ✓ clean" in _sib_state(home).read_text(encoding="utf-8")
 
 
 def test_sibling_check_stamps_the_cache_log_never_the_tracked_runbook(
@@ -484,7 +484,6 @@ def test_sibling_check_stamps_the_cache_log_never_the_tracked_runbook(
     runbook = lint_repo / "docs" / "runbooks" / "memory-sibling-repos.md"
     runbook.chmod(0o444)
     state = _sib_state(home)
-    state.parent.mkdir(parents=True)
     state.write_text("**2020-01-01** — old\n", encoding="utf-8")  # DUE
     (mem / "MEMORY.md").write_text("- flat\n", encoding="utf-8")
     (mem / "env.md").write_text(
@@ -515,7 +514,6 @@ def test_sibling_check_verifies_the_project_code_layout_verbatim(
     (the gr536400 plural-path report was real text, not a mis-parse)."""
     home, mem = home_and_mem
     state = _sib_state(home)
-    state.parent.mkdir(parents=True)
     state.write_text("**2020-01-01** — old\n", encoding="utf-8")  # DUE
     (mem / "MEMORY.md").write_text("- flat\n", encoding="utf-8")
     live = home / "work" / "project" / "code" / "real-sibling"
@@ -542,9 +540,9 @@ def test_graph_mode_with_a_missing_or_empty_node_cache_skips_with_one_line(
     lint_repo: Path, graph_setup: tuple[Path, Path, Path, Path]
 ) -> None:
     home, _mem, cache, nodes = graph_setup
-    log = lint_repo / "docs" / "runbooks" / "memory-sibling-repos.md"
-    log.write_text("## Log\n\n**2020-01-01** — old\n", encoding="utf-8")  # DUE
-    before = log.read_text(encoding="utf-8")
+    state = _sib_state(home)
+    state.write_text("**2020-01-01** — old\n", encoding="utf-8")  # DUE
+    before = state.read_text(encoding="utf-8")
 
     for nodedir in (nodes, nodes / "absent"):  # empty, then missing
         res = _run(lint_repo, home, cache=cache, nodes=nodedir, args=("--currency",))
@@ -555,8 +553,7 @@ def test_graph_mode_with_a_missing_or_empty_node_cache_skips_with_one_line(
         assert "currency ledger" not in res.stdout, res.stdout
         assert "sibling-repo check" not in res.stdout, res.stdout
         assert "hygiene issue" not in res.stdout, res.stdout
-        assert log.read_text(encoding="utf-8") == before  # nothing scanned, no stamp
-        assert not _sib_state(home).exists()
+        assert state.read_text(encoding="utf-8") == before  # nothing scanned, no stamp
 
 
 def test_graph_mode_stray_write_check_compares_to_pre_cutover(

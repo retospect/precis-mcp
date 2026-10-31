@@ -195,15 +195,15 @@ Live repo hygiene — migration collisions ⋅ code anchors ⋅ memory index ⋅
      gripes, and shipped commits that don't name the gripe all slip past it —
      see the runbook.)
    - **FDA-grant cadence** (`scripts/fda-grant-review`) — on **DUE** (last pass
-     >30 days ago) audit the macOS Full-Disk-Access grants + brew pins that let
-     each Mac's launchd/cron daemons reach the NAS: per host (melchior/balthazar/
-     caspar; spark is Linux → immune), resolve every venv interpreter and confirm
-     its cdhash-bearing real path is granted (`auth_value=2`) and its
-     `python@3.1x` is pinned at that build. Re-grant (System Settings → Full Disk
-     Access — TCC can't be set from CLI) + `launchctl kickstart -k` any drift,
-     `brew pin` any unpinned, then
-     `scripts/fda-grant-review --stamp "<note>"`. Inside the 30-day window it's
-     quiet — skip it. The nursery `nas-denied` detector is the real-time backstop (alerts
+     >30 days ago) audit the macOS Full-Disk-Access grants that let each Mac's
+     launchd/cron daemons reach the NAS: per host (melchior/balthazar/caspar;
+     spark is Linux → immune), resolve every venv interpreter and confirm it
+     is still a python.org framework build (Developer-ID signed) and its
+     resolved path is granted (`auth_value=2`). Re-grant (System Settings →
+     Full Disk Access — TCC can't be set from CLI) + `launchctl kickstart -k`
+     any drift, then `scripts/fda-grant-review --stamp "<note>"`. No brew
+     pinning: old `brew pin` markers are vestigial since the python.org
+     migration. Inside the 30-day window it's quiet — skip it. The nursery `nas-denied` detector is the real-time backstop (alerts
      in minutes when a host is *actually* locked out — the script also prints any
      open count); this cadence is the proactive drift catch. (This exists because
      a `brew upgrade python` cdhash bump silently broke melchior's grant and
