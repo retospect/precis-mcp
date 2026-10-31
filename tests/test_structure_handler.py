@@ -16,6 +16,7 @@ import pytest
 from precis.dispatch import Hub
 from precis.errors import BadInput, NotFound
 from precis.handlers.structure import StructureHandler, guard_energy_comparable
+from tests._timing import budget
 
 _PD = json.dumps(
     {
@@ -352,7 +353,7 @@ def test_relax_xtb_dispatches_a_job_never_inline(
     structure.put(id="pd_pair", text=_PD)
     t0 = time.monotonic()
     resp = structure.edit(id="pd_pair", ops=[{"op": "relax", "fidelity": "xtb"}])
-    assert time.monotonic() - t0 < _XTB_REQUEST_BUDGET_S
+    assert time.monotonic() - t0 < budget(_XTB_REQUEST_BUDGET_S)
     assert "dispatched" in resp.body and "job id=" in resp.body
     assert "STATUS:queued" in resp.body
     ref = structure.store.get_ref(kind="structure", id="pd_pair")
@@ -394,7 +395,7 @@ def test_relax_xtb_defers_slow_preflight_and_writes_no_revision(
     monkeypatch.setattr(handler, "_relax_cache_address", slow_phase)
     t0 = time.monotonic()
     response = structure.edit(id="organic", ops=[{"op": "relax", "fidelity": "xtb"}])
-    assert time.monotonic() - t0 < 1.0
+    assert time.monotonic() - t0 < budget(1.0)
     assert "job id=" in response.body
     assert calls == []
     assert store.structure_version(ref.id) == version
@@ -469,7 +470,7 @@ def test_relax_xtb_refuses_fast_without_a_compute_node(
     t0 = time.monotonic()
     with pytest.raises(Internal, match="PRECIS_DFT_NODE") as excinfo:
         structure.edit(id="pd_pair", ops=[{"op": "relax", "fidelity": "xtb"}])
-    assert time.monotonic() - t0 < _XTB_REQUEST_BUDGET_S
+    assert time.monotonic() - t0 < budget(_XTB_REQUEST_BUDGET_S)
     assert excinfo.value.next and "'clean'" in str(excinfo.value.next)
 
 
@@ -494,7 +495,7 @@ def test_relax_xtb_validator_refusal_is_fast_and_mints_no_job(
     t0 = time.monotonic()
     with pytest.raises(BadInput) as excinfo:
         structure.edit(id="clash_xtb", ops=[{"op": "relax", "fidelity": "xtb"}])
-    assert time.monotonic() - t0 < _XTB_REQUEST_BUDGET_S
+    assert time.monotonic() - t0 < budget(_XTB_REQUEST_BUDGET_S)
     assert "aH1" in str(excinfo.value) and "'clean'" in str(excinfo.value.next)
     assert _child_jobs2(store, ref.id) == []
 

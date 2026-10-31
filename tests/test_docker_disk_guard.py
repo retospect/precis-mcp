@@ -25,6 +25,8 @@ from pathlib import Path
 
 import pytest
 
+from tests._timing import budget
+
 pytestmark = pytest.mark.skipif(
     sys.platform == "win32",
     reason="the shipped bash scripts + fake docker are POSIX-only",
@@ -289,7 +291,7 @@ def test_loaded_daemon_answering_past_10s_is_a_successful_probe(
     proc = _run_test(tmp_path, FAKE_DF_MODE="delay", FAKE_DF_DELAY="12")
     assert proc.returncode == 0, proc.stderr
     assert "disk probe failed" not in proc.stderr
-    assert time.monotonic() - t0 < 30
+    assert time.monotonic() - t0 < budget(30)
 
 
 def test_create_wedged_daemon_still_answers_via_exec(tmp_path: Path) -> None:
@@ -303,7 +305,7 @@ def test_create_wedged_daemon_still_answers_via_exec(tmp_path: Path) -> None:
     assert proc.returncode == 3
     assert "docker VM disk has 9 GB free" in proc.stderr
     # The hanging create leg was never touched — the exec leg answered at once.
-    assert time.monotonic() - t0 < 10
+    assert time.monotonic() - t0 < budget(10)
     log = _log(tmp_path)
     assert [ln for ln in log if ln.startswith("execdf|")]
     assert [ln for ln in log if ln.startswith("df|")] == []
@@ -360,7 +362,7 @@ def test_hung_probe_is_bounded_then_blocks_as_failed(tmp_path: Path) -> None:
     assert proc.returncode == 3, proc.stderr
     assert "disk probe failed: " in proc.stderr
     assert "timed out" in proc.stderr
-    assert time.monotonic() - t0 < 15
+    assert time.monotonic() - t0 < budget(15)
     # A wedged daemon ends the docker leg after ONE alarm, not one per image.
     assert len([ln for ln in _log(tmp_path) if ln.startswith("df|")]) == 1
 
@@ -378,7 +380,7 @@ def test_zero_timeout_is_not_an_unbounded_probe(tmp_path: Path) -> None:
     )
     assert proc.returncode == 3, proc.stderr
     assert "timed out" in proc.stderr
-    assert time.monotonic() - t0 < 20
+    assert time.monotonic() - t0 < budget(20)
 
 
 def test_overall_bound_caps_the_whole_image_loop(tmp_path: Path) -> None:
@@ -401,7 +403,7 @@ def test_overall_bound_caps_the_whole_image_loop(tmp_path: Path) -> None:
     assert "disk probe failed: " in proc.stderr
     # The second attempt gets only the 1 s left of the 3 s total, then times out.
     assert "timed out after 1s" in proc.stderr
-    assert time.monotonic() - t0 < 12
+    assert time.monotonic() - t0 < budget(12)
     assert len([ln for ln in _log(tmp_path) if ln.startswith("df|")]) == 2
 
 

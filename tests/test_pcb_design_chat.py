@@ -18,6 +18,7 @@ from precis.handlers.conversation import ConversationHandler
 from precis.handlers.pcb import PcbHandler
 from precis.store import ChunkInsert
 from precis_web import design_turn, pcb_design
+from tests._timing import budget
 
 
 def seed(store, slug="selection_fixture"):
@@ -311,8 +312,8 @@ def test_cache_guard_protects_absent_keys_allows_reads_and_bounds_contention(sto
         with ThreadPoolExecutor(max_workers=1) as pool:
             pool.submit(cache_write).result(timeout=1)
     elapsed["guard"] = time.monotonic() - start
-    assert 0.08 <= elapsed["write"] < 1.0
-    assert elapsed["guard"] < 2.0
+    assert 0.08 <= elapsed["write"] < budget(1.0)
+    assert elapsed["guard"] < budget(2.0)
     from pathlib import Path
 
     evidence = Path(".scratch/selection.local/measured-cache-contention.json")

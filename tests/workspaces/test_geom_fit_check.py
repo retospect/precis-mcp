@@ -14,6 +14,7 @@ import pytest
 from precis.utils.units import parse_quantity
 from precis_geom import fit as geom_fit
 from precis_geom import out as geom_out
+from tests._timing import budget
 
 _FIXTURE = Path(__file__).parent / "data" / "unicycle" / "out"
 
@@ -45,7 +46,7 @@ def test_unicycle_findings(unicycle: Path) -> None:
     assert "make_fixture.py:" in text
     # Wall-clock: loaded CI runners measured 335-345 ms (r100), so the bound
     # catches an order-of-magnitude regression, not load jitter.
-    assert cold_ms < 1500.0
+    assert cold_ms < budget(1500.0)
 
 
 def test_determinism_byte_identical(unicycle: Path) -> None:

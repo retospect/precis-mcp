@@ -22,6 +22,7 @@ import precis.utils.rate_limit as rate_limit_mod
 import precis.workers.bib_parse as bib_parse_mod
 from precis.liveness import drain_sleep, request_drain
 from precis.utils import http
+from tests._timing import budget
 
 _NEEDS_FCNTL = pytest.mark.skipif(
     sys.platform == "win32",
@@ -46,7 +47,7 @@ class TestDrainSleep:
         request_drain()
         start = time.monotonic()
         assert drain_sleep(10.0) is True
-        assert time.monotonic() - start < 0.5
+        assert time.monotonic() - start < budget(0.5)
 
 
 # ── http.external_retry ─────────────────────────────────────────────────
@@ -122,7 +123,7 @@ class TestCrossrefQueryDrain:
         # Undrained, five attempts and four backoffs would run; draining
         # stops the retry loop after the first failed attempt.
         assert calls["n"] == 1
-        assert elapsed < 1.0
+        assert elapsed < budget(1.0)
 
 
 # ── rate_limit.acquire ──────────────────────────────────────────────────

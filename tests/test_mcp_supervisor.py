@@ -25,6 +25,7 @@ if sys.platform == "win32":
     )
 
 from precis import mcp_supervisor
+from tests._timing import budget
 
 SUPERVISOR = Path(mcp_supervisor.__file__)
 
@@ -206,7 +207,7 @@ def test_sigterm_is_forwarded_and_the_supervisor_exits(tmp_path: Path) -> None:
     time.sleep(0.5)
     start = time.monotonic()
     err = _stop(proc)
-    assert time.monotonic() - start < 5
+    assert time.monotonic() - start < budget(5)
     assert "stopped by signal 15" in err
     # This child has no drain handler, so the forwarded SIGHUP kills it.
     assert proc.returncode == 128 + signal.SIGHUP

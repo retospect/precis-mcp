@@ -23,6 +23,7 @@ from pathlib import Path
 
 import pytest
 
+from tests._timing import budget
 from tests.test_fleet_verbs import (  # noqa: F401  (fleet is the shared fixture)
     BUSY,
     IDLE,
@@ -599,7 +600,7 @@ def test_watch_a_hung_gh_is_cut_off_and_the_tick_finishes(wf: Fleet) -> None:
     wf.env["PRECIS_FLEET_GH_TIMEOUT"] = "1"
     started = time.monotonic()
     assert _watch(wf) == []
-    assert time.monotonic() - started < 15
+    assert time.monotonic() - started < budget(15)
 
 
 def test_watch_ci_never_emits_a_run_created_outside_the_window(wf: Fleet) -> None:

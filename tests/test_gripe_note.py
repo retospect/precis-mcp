@@ -23,6 +23,7 @@ from precis.cli.gripe import note_gripes
 from precis.store import Store
 from tests._refs import insert_gripe
 from tests._script import load_script
+from tests._timing import budget
 from tests.test_ship_narrow_lock import Rig, _finish, _tree_files
 
 REPO = Path(__file__).resolve().parents[1]
@@ -186,7 +187,7 @@ def test_timed_out_post_is_logged_and_exits_promptly(tmp_path: Path) -> None:
         PRECIS_GRIPE_NOTE_CLI=cli,
         PRECIS_GRIPE_NOTE_TIMEOUT="1",
     )
-    assert time.monotonic() - t0 < 15
+    assert time.monotonic() - t0 < budget(15)
     assert cp.returncode == 0
     assert "TimeoutExpired posting on gr7" in cp.stdout
 
@@ -217,7 +218,7 @@ def test_release_note_never_fails_or_holds_the_deploy(
     monkeypatch.setattr(release, "NOTE_TIMEOUT_S", 1.0)
     t0 = time.monotonic()
     release.note_gripes("aaaa", "bbbb", "deployed r1 ({sha})")
-    assert time.monotonic() - t0 < 15
+    assert time.monotonic() - t0 < budget(15)
     out = capsys.readouterr().out
     if body.startswith("sleep"):
         assert "gripe-note: TimeoutExpired" in out

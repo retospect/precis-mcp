@@ -38,6 +38,7 @@ from precis_chain.relax import (
     hinge_stiffness,
     relax_bundle,
 )
+from tests._timing import budget
 
 _MOTIF = Motif(
     name="test-duplex",
@@ -267,7 +268,7 @@ def test_four_hundred_bodies_settle_in_under_ten_seconds() -> None:
     started = time.perf_counter()
     result = relax_bundle(bodies, hinges, [], [], radii, 500)
     elapsed = time.perf_counter() - started
-    assert elapsed < 10.0, f"400-body settle took {elapsed:.1f}s"
+    assert elapsed < budget(10.0), f"400-body settle took {elapsed:.1f}s"
     assert result.bodies.shape == (400, 2, 3)
     assert np.all(np.isfinite(result.bodies))
 

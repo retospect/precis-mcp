@@ -39,6 +39,7 @@ from precis.cad.inspect import (
 from precis.cad.primitives import Field as FieldPrim
 from precis.cad.scene import build_design, parse_source
 from precis.cad.vec import as_vec3, translation
+from tests._timing import budget
 
 
 def plate_design() -> tuple[Design, Expr]:
@@ -600,7 +601,7 @@ def test_ray_tangent_slide_gives_up_instead_of_crawling() -> None:
     elapsed = time.perf_counter() - start
     assert r.hits == ()
     assert r.min_distance_m == pytest.approx(0.0, abs=1e-6)
-    assert elapsed < 5.0
+    assert elapsed < budget(5.0)
     assert r.stalled
 
 

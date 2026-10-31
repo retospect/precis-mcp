@@ -613,10 +613,13 @@ jobs:
       - id: suite
         run: >-
           uv run --all-extras --no-extra catalyst --no-extra catalyst-gpu
-          pytest -n 6 --cov=src --cov-context=test --cov-report=
+          pytest -n 6 -m 'not no_cov' --cov=src --cov-context=test --cov-report=
           --junitxml=coverage-junit.xml
         env:
           PRECIS_TEST_PG_URL: postgresql://postgres:postgres@localhost:5432/precis_test
+          # Lets tests/_timing.py scale wall-clock budgets without an
+          # import probe (coverage traces this whole run).
+          PRECIS_COVERAGE_RUN: "1"
       # A red suite still leaves a usable map — partial coverage beats
       # none: the manifest records partial:true plus the junit failure
       # count so the selector can say what it is holding. Skipped only

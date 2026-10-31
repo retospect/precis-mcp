@@ -146,13 +146,24 @@ exit 0
 """
 
 
+# scripts/deploy's full-ansible preflight (`ansible-doc -t module
+# community.general.homebrew`) must see a resolution too — on hosts where
+# only ansible-core is installed the real lookup fails and the deploy dies
+# before any play (the macos CI leg, gr543576).
+_FAKE_ANSIBLE_DOC = """#!/usr/bin/env bash
+exit 0
+"""
+
+
 def _make_fake_bin(tmp_path: Path) -> Path:
     bindir = tmp_path / "fakebin"
     bindir.mkdir()
     (bindir / "ansible").write_text(_FAKE_ANSIBLE, encoding="utf-8")
     (bindir / "ansible-playbook").write_text(_FAKE_ANSIBLE_PLAYBOOK, encoding="utf-8")
+    (bindir / "ansible-doc").write_text(_FAKE_ANSIBLE_DOC, encoding="utf-8")
     (bindir / "ansible").chmod(0o755)
     (bindir / "ansible-playbook").chmod(0o755)
+    (bindir / "ansible-doc").chmod(0o755)
     return bindir
 
 

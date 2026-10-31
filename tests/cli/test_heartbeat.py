@@ -17,6 +17,7 @@ from types import SimpleNamespace
 import pytest
 
 from precis.workers import heartbeat
+from tests._timing import budget
 
 # ``os.getloadavg`` is Unix-only; the monkeypatch tests assume the
 # attribute exists on the real module so it can be replaced. Windows
@@ -397,7 +398,7 @@ def test_probe_nas_hang_times_out_and_second_call_skips_cleanly(monkeypatch) -> 
     result = heartbeat._probe_nas()
     elapsed = time.monotonic() - start
     assert result == {"nas_probe_err": "timeout", "nas_path": "/opt/nas/botshome"}
-    assert elapsed < 5.0  # bounded by the 0.2s timeout, not the 10s hang
+    assert elapsed < budget(5.0)  # bounded by the 0.2s timeout, not the 10s hang
 
     # The abandoned worker thread is still stuck — a second call must skip
     # launching a new one rather than leaking another thread per tick.
@@ -408,7 +409,7 @@ def test_probe_nas_hang_times_out_and_second_call_skips_cleanly(monkeypatch) -> 
         "nas_probe_err": "previous probe still stuck",
         "nas_path": "/opt/nas/botshome",
     }
-    assert elapsed2 < 1.0  # returns immediately, no join wait
+    assert elapsed2 < budget(1.0)  # returns immediately, no join wait
 
     release.set()  # let the abandoned thread finish so it doesn't linger
 

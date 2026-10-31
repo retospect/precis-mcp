@@ -24,6 +24,7 @@ from precis.users import (
     normalize_login,
     verify_password,
 )
+from tests._timing import budget
 
 
 def test_roundtrip_unpeppered() -> None:
@@ -90,7 +91,7 @@ def test_burn_verify_costs_about_what_a_verify_costs() -> None:
     t1 = time.perf_counter()
     burn_verify()
     burn = time.perf_counter() - t1
-    assert 0.2 < burn / real < 5.0
+    assert 0.2 < burn / real < budget(5.0)
 
 
 def test_feed_token_digest_matches_mint() -> None:

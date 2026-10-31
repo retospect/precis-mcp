@@ -608,7 +608,10 @@ def test_invoke_finalizes_cancelled_on_cancel(
 
     monkeypatch.setattr(agentlog, "close_run", fake_close_run)
 
+    entered = asyncio.Event()
+
     async def hang(*args: Any, **kwargs: Any) -> Any:
+        entered.set()
         await asyncio.sleep(3600)
         raise AssertionError("unreachable")
 
@@ -620,7 +623,11 @@ def test_invoke_finalizes_cancelled_on_cancel(
         task = asyncio.create_task(
             ci.invoke(LLMConfig(), "sys", "hi", conv_slug="c-cx")
         )
-        await asyncio.sleep(0)
+        # Cancel must land inside _run_turn: a bare sleep(0) races the
+        # to_thread open_run round-trip, and a cancel delivered there
+        # propagates before log_id binds — no stamp, KeyError (3.12 leg,
+        # run 41194910382).
+        await entered.wait()
         task.cancel()
         with pytest.raises(asyncio.CancelledError):
             await task

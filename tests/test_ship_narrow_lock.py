@@ -29,6 +29,8 @@ from pathlib import Path
 
 import pytest
 
+from tests._timing import budget
+
 pytestmark = pytest.mark.skipif(
     sys.platform == "win32", reason="the shipped bash script is POSIX-only"
 )
@@ -1185,7 +1187,7 @@ def test_locked_net_helper_bounds_a_hung_command() -> None:
         timeout=30,
     )
     assert "rc=142" in proc.stdout, proc.stdout + proc.stderr
-    assert time.monotonic() - t0 < 10
+    assert time.monotonic() - t0 < budget(10)
 
 
 _CI_EXTRAS = "--all-extras --no-extra catalyst --no-extra catalyst-gpu"

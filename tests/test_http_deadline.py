@@ -18,6 +18,7 @@ import pytest
 
 from precis.utils.deadline import DeadlineExceeded, call_with_deadline
 from precis.utils.http import request_with_deadline
+from tests._timing import budget
 
 
 class _TrickleHandler(BaseHTTPRequestHandler):
@@ -80,7 +81,7 @@ class TestCallWithDeadline:
                 label="wedged-test",
             )
         elapsed = time.monotonic() - t0
-        assert elapsed < 10, f"deadline did not bound the call ({elapsed:.1f}s)"
+        assert elapsed < budget(10), f"deadline did not bound the call ({elapsed:.1f}s)"
         assert "wedged-test" in str(ei.value)
         # The abandoned work is still running — the exception hands the
         # caller its thread so it can decline to re-invoke while it lives.
@@ -117,7 +118,7 @@ class TestRequestWithDeadline:
         elapsed = time.monotonic() - t0
         # Well under the per-phase 30s timeout — the overall bound is what
         # fired, not a phase timeout.
-        assert elapsed < 10, f"call was not bounded ({elapsed:.1f}s)"
+        assert elapsed < budget(10), f"call was not bounded ({elapsed:.1f}s)"
 
     def test_fast_response_returns_normally(self, trickle_url) -> None:
         # A trivial non-trickling endpoint on the same server shape is
@@ -171,4 +172,4 @@ class TestOrcidFetchDeadline:
         with pytest.raises(Upstream, match="transport"):
             orcid_api.fetch_record("0000-0002-1825-0097")
         elapsed = time.monotonic() - t0
-        assert elapsed < 10, f"ORCID fetch was not bounded ({elapsed:.1f}s)"
+        assert elapsed < budget(10), f"ORCID fetch was not bounded ({elapsed:.1f}s)"

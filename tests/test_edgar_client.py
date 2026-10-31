@@ -18,6 +18,7 @@ from precis.handlers._edgar_client import (
     TokenBucket,
     parse_company_tickers,
 )
+from tests._timing import budget
 
 
 class TestTokenBucket:
@@ -26,7 +27,7 @@ class TestTokenBucket:
         start = time.monotonic()
         for _ in range(5):
             bucket.acquire()
-        assert time.monotonic() - start < 0.05
+        assert time.monotonic() - start < budget(0.05)
 
     def test_throttles_when_drained(self) -> None:
         # capacity 1, rate 20/s → the 2nd acquire waits ~1/20 = 50ms.
@@ -35,7 +36,7 @@ class TestTokenBucket:
         start = time.monotonic()
         bucket.acquire()
         elapsed = time.monotonic() - start
-        assert 0.02 < elapsed < 0.5
+        assert 0.02 < elapsed < budget(0.5)
 
 
 class TestParseCompanyTickers:

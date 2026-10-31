@@ -34,6 +34,7 @@ def _payload(record: logging.LogRecord) -> dict[str, Any] | None:
     return getattr(record, "payload", None)
 
 
+from tests._timing import budget
 from tests.workers._helpers import make_mock_bge_m3, seed_chunks
 
 # ---------------------------------------------------------------------------
@@ -835,7 +836,7 @@ class TestRunLoopRefPassDeadline:
         finally:
             release.set()
         elapsed = time.monotonic() - t0
-        assert elapsed < 10, f"loop held by wedged pass ({elapsed:.1f}s)"
+        assert elapsed < budget(10), f"loop held by wedged pass ({elapsed:.1f}s)"
         assert calls["hang"] == 1  # abandoned once, never re-entered
         assert calls["tick"] == 3  # sibling cadence kept firing
 
@@ -926,7 +927,7 @@ class TestRunLoopRefPassDeadline:
             )
         finally:
             release.set()
-        assert time.monotonic() - t0 < 10
+        assert time.monotonic() - t0 < budget(10)
         assert calls["hang"] == 1
         assert calls["ok"] == 2
 

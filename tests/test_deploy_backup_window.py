@@ -570,6 +570,13 @@ inference                  : ok=1    changed=0    unreachable=0    failed=0    s
 serving                    : ok=1    changed=0    unreachable=0    failed=0    skipped=0    rescued=0    ignored=0
 RECAP
 """
+# The deploy's full-ansible preflight runs `ansible-doc -t module
+# community.general.homebrew`; without a fake, a real ansible-core on PATH
+# (the macos CI leg) fails the lookup and the deploy dies before the guard
+# path under test (gr543576).
+_FAKE_ANSIBLE_DOC = """#!/usr/bin/env bash
+exit 0
+"""
 
 
 class DeployFixture:
@@ -665,6 +672,7 @@ def deploy_fx(tmp_path: Path) -> DeployFixture:
     for name, body in (
         ("ansible", _FAKE_ANSIBLE),
         ("ansible-playbook", _FAKE_PLAYBOOK),
+        ("ansible-doc", _FAKE_ANSIBLE_DOC),
     ):
         (fakebin / name).write_text(body, encoding="utf-8")
         (fakebin / name).chmod(0o755)

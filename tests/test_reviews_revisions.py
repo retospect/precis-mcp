@@ -24,6 +24,7 @@ from precis.store.revision_context import (
     revision_context,
 )
 from precis.store.types import ChunkInsert
+from tests._timing import budget
 
 
 def _finding(store: Store, title: str = "NO reduces to NH3 on Cu(100)") -> int:
@@ -309,7 +310,7 @@ def test_refresh_gives_up_on_a_held_lock(store: Store) -> None:
             with store.pool.connection() as conn:
                 conn.execute("UPDATE kinds SET covered_meta = '{}' WHERE slug = 'job'")
             waited = time.monotonic() - t0
-            assert 2.0 < waited < 15.0  # gave up at ~3 s, did not hang
+            assert 2.0 < waited < budget(15.0)  # gave up at ~3 s, did not hang
             after = _trigger_state(store)
             assert after[0] == before[0]  # triggers untouched
             assert after[2] is not None and "lock timeout" in str(after[2])

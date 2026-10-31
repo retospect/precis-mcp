@@ -12,6 +12,8 @@ import jinja2
 import pytest
 import yaml
 
+from tests._timing import budget
+
 pytestmark = pytest.mark.skipif(
     sys.platform == "win32",
     reason="POSIX-only: runs the rendered bash collector script",
@@ -129,7 +131,7 @@ def test_script_timeout_writes_up_zero_and_leaves_no_child(tmp_path: Path) -> No
     script, out = _setup(tmp_path, timeout_s=1)
     t0 = time.monotonic()
     _run(script, "wedge")
-    assert time.monotonic() - t0 < 20
+    assert time.monotonic() - t0 < budget(20)
     assert _UP0 in out.read_text(encoding="utf-8")
     time.sleep(0.5)
     left = subprocess.run(["pgrep", "-f", _MARKER], capture_output=True, check=False)

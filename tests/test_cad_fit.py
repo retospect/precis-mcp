@@ -25,6 +25,7 @@ from precis.cad.fit import (
 from precis.cad.scene import parse_source
 from precis.cad.tessellate import _FN, _circular_seg
 from precis.cad.vec import identity, rotation, translation
+from tests._timing import budget
 
 _CHORD = 1e-5  # 0.01 mm — the small test parts hit the CHORD_MAX cap
 
@@ -255,7 +256,7 @@ def test_aabb_broadphase_under_200ms() -> None:
     elapsed_ms = (time.monotonic() - t0) * 1000
     assert rep.errors == []
     assert rep.n_pairs == 0
-    assert elapsed_ms < 200.0
+    assert elapsed_ms < budget(200.0)
 
 
 # ---------------------------------------------------------------------------

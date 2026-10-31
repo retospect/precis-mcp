@@ -21,6 +21,8 @@ from pathlib import Path
 
 import pytest
 
+from tests._timing import budget
+
 #: Rule C decides "is this cd redundant?" with ``os.path.isabs`` on the host's
 #: own semantics. The fixtures below are POSIX worktree paths (what the hook
 #: actually sees — it only ever runs on this repo's macOS/Linux dev boxes), and
@@ -686,7 +688,7 @@ def test_pykind_hits_kills_within_budget(monkeypatch, tmp_path) -> None:
     monkeypatch.setattr(_pykind, "TIMEOUT_S", 0.2)
     t0 = time.monotonic()
     assert _pykind.pykind_hits("Foo", str(tmp_path)) == []
-    assert time.monotonic() - t0 < 5
+    assert time.monotonic() - t0 < budget(5)
 
 
 def test_pykind_hits_bad_rc_returns_empty(monkeypatch, tmp_path) -> None:

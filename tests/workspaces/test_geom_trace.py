@@ -24,6 +24,7 @@ import pytest
 from precis.cad.scene import NodeSpec, SceneSpec
 from precis_geom import trace, trace_schema
 from precis_ws import out
+from tests._timing import budget
 from tests.workspaces._script import load_script
 
 pytestmark = pytest.mark.filterwarnings("ignore")
@@ -585,7 +586,7 @@ def test_overhead_budget() -> None:
             out.note(f"n{i}")
         per_call_warm = (time.perf_counter() - t0) / 2000
     overhead_us = (per_call_warm - per_call_cold) * 1e6
-    assert overhead_us < 150, (
+    assert overhead_us < budget(150), (
         f"trace overhead {overhead_us:.0f}µs/call "
         f"(fixture build {cold * 1e3:.2f}ms cold / {warm * 1e3:.2f}ms warm)"
     )

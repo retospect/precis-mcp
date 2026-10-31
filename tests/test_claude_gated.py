@@ -28,6 +28,7 @@ from precis.utils.claude_agent import (
     _resolve_agent_args,
     call_claude_agent,
 )
+from tests._timing import budget
 
 pytestmark = pytest.mark.skipif(
     sys.platform == "win32",
@@ -192,7 +193,7 @@ def test_pending_past_deadline_fails_closed(
     t0 = time.monotonic()
     with pytest.raises(_Err) as ei:
         _gated(fake_claude, gate_deadline_s=0.6)
-    assert time.monotonic() - t0 < 10
+    assert time.monotonic() - t0 < budget(10)
     assert ei.value.mcp_not_ready is True
     assert ei.value.mcp_status == {"precis": "pending"}
     assert "status=pending" in str(ei.value)
@@ -238,7 +239,7 @@ def test_overall_timeout_covers_the_run(
     t0 = time.monotonic()
     with pytest.raises(_Err) as ei:
         _gated(fake_claude, timeout_s=1.5, gate_deadline_s=1.0)
-    assert time.monotonic() - t0 < 15
+    assert time.monotonic() - t0 < budget(15)
     assert ei.value.timed_out is True
     assert ei.value.mcp_not_ready is False
     assert "timed out after 1.5s" in str(ei.value)

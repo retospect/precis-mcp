@@ -19,6 +19,7 @@ from precis.utils.table_formula import (
     evaluate_table,
     table_stats,
 )
+from tests._timing import budget
 
 
 def _table(formula: str | None = None, **kw) -> dict:
@@ -209,7 +210,7 @@ def test_bytes_repeat_dies_fast_at_eval() -> None:
         ev.eval("b'x' * 10**9")
     with pytest.raises(TypeError):
         ev.eval("b'%0999999999d' % 1")
-    assert time.monotonic() - t0 < 1.0
+    assert time.monotonic() - t0 < budget(1.0)
 
 
 def test_store_scalar_caps() -> None:
@@ -234,7 +235,7 @@ def test_bigint_chain_stays_fast() -> None:
     t = normalize_table({"columns": cols, "rows": [[None] * 3]})
     t0 = time.monotonic()
     t, _ = evaluate_table(t)
-    assert time.monotonic() - t0 < 1.0
+    assert time.monotonic() - t0 < budget(1.0)
     assert t["rows"][0] == ["#NUM", "#NUM", "#NUM"]
     # and the mult bound alone: two under-pow-cap factors over the bit cap
     t = normalize_table(
@@ -275,7 +276,7 @@ def test_round_negative_ndigits_bounded() -> None:
     t = _table("round(1, -10**7)")
     t0 = time.monotonic()
     t, _ = evaluate_table(t)
-    assert time.monotonic() - t0 < 1.0
+    assert time.monotonic() - t0 < budget(1.0)
     assert all(r[2] == 0 for r in t["rows"])
     # a huge magnitude that still lands within x's bits rounds honestly
     t = normalize_table(
@@ -286,7 +287,7 @@ def test_round_negative_ndigits_bounded() -> None:
     )
     t0 = time.monotonic()
     t, _ = evaluate_table(t)
-    assert time.monotonic() - t0 < 1.0
+    assert time.monotonic() - t0 < budget(1.0)
     assert t["rows"][0][1] == 10**300
     assert t["rows"][1][1] == 0 and t["rows"][2][1] == 0  # nearest 100: 0
 

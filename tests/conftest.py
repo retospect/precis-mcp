@@ -727,6 +727,13 @@ def pytest_configure(config: pytest.Config) -> None:
     )
     config.addinivalue_line(
         "markers",
+        "no_cov: cannot run under the coverage tracer (a native crash or "
+        "OOM that takes the xdist worker down with it — gr543576). Only "
+        "check.yml's coverage-db job deselects it (-m 'not no_cov'); every "
+        "other lane, the nightly full shape included, still runs it.",
+    )
+    config.addinivalue_line(
+        "markers",
         "nightly: too heavy for the release gate even after the rt-s3 "
         "splits (>240 s CI and unsplittable — moved to the nightly run per "
         "Reto 2026-10-24). check.yml's gate shape (ci/**, release/** and PR "

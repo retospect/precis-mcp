@@ -32,6 +32,7 @@ from precis.utils._claude_subprocess import (
     terminate_claude,
 )
 from precis.utils.claude_oauth import ENV_VAR
+from tests._timing import budget
 
 #: Every test here execs a shebang'd bash stub as the ``claude`` binary — a
 #: shape Windows can't run at all (``OSError: [WinError 193]``), and one that
@@ -518,7 +519,7 @@ def test_terminate_claude_term_alone_reaps_a_compliant_child(tmp_path: Path) -> 
     terminate_claude(proc, grace_s=5.0)
 
     assert proc.returncode == 0
-    assert time.monotonic() - started < 4.0  # did not ride out the grace
+    assert time.monotonic() - started < budget(4.0)  # did not ride out the grace
 
 
 def test_terminate_claude_sends_term_from_a_foreign_process_group(
@@ -642,7 +643,7 @@ def test_run_claude_timeout_drain_is_bounded(tmp_path: Path, monkeypatch) -> Non
     assert exc.value.timed_out is True
     # 0.3 timeout + 0.3 grace + 0.5 drain, plus slack — nowhere near the
     # 60 s the orphaned grandchild keeps the pipes open.
-    assert time.monotonic() - started < 10.0
+    assert time.monotonic() - started < budget(10.0)
 
 
 # ── no start_new_session: the worker's process group owns claude ─────────

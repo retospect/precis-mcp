@@ -51,6 +51,8 @@ import jinja2
 import pytest
 import yaml
 
+from tests._timing import budget
+
 pytestmark = pytest.mark.skipif(
     sys.platform == "win32", reason="POSIX-only: runs the bash run-user wrapper"
 )
@@ -359,7 +361,7 @@ def test_wrapper_returns_promptly_with_the_childs_status(tmp_path: Path) -> None
         check=False,
     )
     assert res.returncode == 7
-    assert time.monotonic() - started < 1.0
+    assert time.monotonic() - started < budget(1.0)
 
 
 def test_wrapper_watchdog_reaps_the_child_when_its_parent_dies(

@@ -11,6 +11,7 @@ import pytest
 from precis.utils import log_scrub
 from precis.utils.log_scrub import SecretScrubFilter
 from precis.utils.secret_scan import find_secrets, might_contain_secret
+from tests._timing import budget
 from tests.test_secret_scan import NEGATIVES, POSITIVES
 
 # Runtime-assembled so the source holds no literal credential.
@@ -185,7 +186,7 @@ def test_overhead_on_ordinary_lines_is_negligible() -> None:
     # bound is 40 us — 5x nominal — so a real regression (masking every
     # line, a lost trigger pre-check) still fails while scheduling jitter
     # on a loaded -n6 runner does not.
-    assert per_record_us < 40
+    assert per_record_us < budget(40)
 
 
 def test_httpx_url_arg_params_masked_with_shared_token() -> None:

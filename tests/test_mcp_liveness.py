@@ -30,6 +30,7 @@ from precis.mcp_liveness import (
     record_wedge_kill,
     run_liveness_loop,
 )
+from tests._timing import budget
 
 _NEEDS_SIGHUP = pytest.mark.skipif(
     sys.platform == "win32",
@@ -227,7 +228,7 @@ def test_probe_fails_within_timeout_on_a_server_that_never_answers() -> None:
         elapsed = time.monotonic() - started
     assert failure is not None
     assert "within 2s" in failure
-    assert elapsed < 6.0
+    assert elapsed < budget(6.0)
 
 
 def test_probe_fails_fast_on_a_closed_port() -> None:

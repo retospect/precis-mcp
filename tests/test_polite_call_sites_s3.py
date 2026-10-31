@@ -30,6 +30,7 @@ from precis.utils import http
 from precis.utils.http import check_user_agent, reset_circuit
 from precis.utils.rate_limit import RateLimited
 from precis.workers import bib_parse, fetch_oa
+from tests._timing import budget
 
 
 @dataclass
@@ -561,5 +562,5 @@ def test_habanero_one_overall_deadline_over_all_retries(
         assert crossref.fetch_message("10.1/x") is None
     finally:
         release.set()
-    assert time.monotonic() - start < 2.0
+    assert time.monotonic() - start < budget(2.0)
     assert calls["n"] == 1  # no retry started after the overall deadline

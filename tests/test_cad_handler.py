@@ -536,6 +536,10 @@ def test_out_of_limits_state_is_bad_input(cad):
     "-n6 + per-context coverage) in the 2026-10-30 coverage-db nightly "
     "(gr543576); a sweep is the module's heaviest memory profile"
 )
+@pytest.mark.no_cov(
+    reason="the same OOM redded the 2026-10-31 coverage-db run — the map "
+    "job deselects no_cov; the trace-free nightly legs still run it"
+)
 @pytest.mark.timeout(480)  # CI worst 173s x2.5 for runner variance (gr503084)
 def test_sweep_reports_collision_and_envelope(cad):
     cad.put(id="motor_j", text=_MOTOR_J)

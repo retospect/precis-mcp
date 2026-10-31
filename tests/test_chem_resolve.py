@@ -17,6 +17,7 @@ from precis.dispatch import Hub
 from precis.errors import BadInput, Upstream
 from precis.handlers import _chem_resolve as cr
 from precis.handlers.chem import ChemHandler
+from tests._timing import budget
 
 rdkit = pytest.importorskip("rdkit")
 
@@ -314,7 +315,7 @@ def test_locant_refusal_stays_fast_offline() -> None:
     elapsed = time.monotonic() - t0
     assert res.status == "ambiguous"
     assert len(res.candidates) == 2
-    assert elapsed < 2.0
+    assert elapsed < budget(2.0)
 
 
 # ── handler (cache flow) ─────────────────────────────────────────────

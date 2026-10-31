@@ -23,6 +23,7 @@ from precis.quest.gaps import (
     quest_momentum,
 )
 from precis.store import Store, Tag
+from tests._timing import budget
 
 
 def _handler(store: Any) -> QuestHandler:
@@ -188,13 +189,13 @@ class TestGapsStructureFanoutCap:
         gaps_elapsed = time.monotonic() - t0
         # 10k structures, no papers → "no-literature" plus the fanout-capped hint.
         assert gaps
-        assert gaps_elapsed < 10.0, f"view='gaps' path took {gaps_elapsed:.2f}s"
+        assert gaps_elapsed < budget(10.0), f"view='gaps' path took {gaps_elapsed:.2f}s"
 
         t0 = time.monotonic()
         body = h.get(id=qid, view="tree").body
         tree_elapsed = time.monotonic() - t0
         assert body
-        assert tree_elapsed < 10.0, f"view='tree' took {tree_elapsed:.2f}s"
+        assert tree_elapsed < budget(10.0), f"view='tree' took {tree_elapsed:.2f}s"
 
 
 # ── momentum ──────────────────────────────────────────────────────────

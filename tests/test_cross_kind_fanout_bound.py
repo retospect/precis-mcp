@@ -9,6 +9,7 @@ import pytest
 
 from precis.runtime import search as search_mod
 from precis.runtime.core import PrecisRuntime
+from tests._timing import budget
 
 
 def _patch_invoke(monkeypatch: pytest.MonkeyPatch, rt: PrecisRuntime, fn) -> None:
@@ -112,7 +113,7 @@ def test_fan_out_deadline_names_stragglers_and_keeps_fast_kinds(
     out = rt._cross_kind_fan_out(kinds, {"q": "x", "top_k": 10})
     elapsed = time.perf_counter() - t0
     release.set()
-    assert elapsed < 2.0
+    assert elapsed < budget(2.0)
     assert isinstance(out[kinds[0]], TimeoutError)
     assert out[kinds[1]] == [] and out[kinds[2]] == []
 
@@ -146,7 +147,7 @@ def test_deadline_cancels_the_query_on_the_server(
     _patch_invoke(monkeypatch, rt, sleepy)
     t0 = time.perf_counter()
     out = rt._cross_kind_fan_out(kinds, {"q": "x", "top_k": 10})
-    assert time.perf_counter() - t0 < 5.0
+    assert time.perf_counter() - t0 < budget(5.0)
     deadline = time.perf_counter() + 5.0
     running = 1
     while time.perf_counter() < deadline:

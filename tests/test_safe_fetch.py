@@ -35,6 +35,7 @@ from precis.utils.safe_fetch import (
     safe_get,
     safe_stream,
 )
+from tests._timing import budget
 
 # ── classification: literal IPs (no DNS) ─────────────────────────────
 
@@ -442,7 +443,7 @@ def test_dns_stall_raises_timeout(monkeypatch: pytest.MonkeyPatch) -> None:
             t0 = time.monotonic()
             with pytest.raises(httpx.ConnectTimeout, match="DNS resolution timed out"):
                 safe_get(client, "http://stall.test/")
-            assert time.monotonic() - t0 < 5.0
+            assert time.monotonic() - t0 < budget(5.0)
         # standalone pre-check: plain TimeoutError subclass, not a refusal
         monkeypatch.setattr(sf, "_DNS_TIMEOUT_DEFAULT", 0.3)
         with pytest.raises(sf.DnsTimeout) as ei:

@@ -21,6 +21,7 @@ import pytest
 
 from precis.embedder import MockEmbedder, RemoteEmbedder
 from precis.embedder_service import Busy, EmbedderService, make_server
+from tests._timing import budget
 
 _DIM = 32
 
@@ -252,7 +253,7 @@ def test_self_probe_detects_hung_embed_without_blocking() -> None:
         service._run_probe_once()
         elapsed = time.monotonic() - start
 
-        assert elapsed < 2.0  # did not wait out the 10s hang
+        assert elapsed < budget(2.0)  # did not wait out the 10s hang
         assert service.ready is False
     finally:
         service.stop_probe()
@@ -483,7 +484,7 @@ def test_queue_wait_zero_sheds_immediately_like_before() -> None:
         with pytest.raises(Busy):
             service.embed(["b"])
         elapsed = time.monotonic() - start
-        assert elapsed < 0.5  # shed immediately, not a bounded wait
+        assert elapsed < budget(0.5)  # shed immediately, not a bounded wait
         assert service.metrics.rejected_429 == 1
         assert service.metrics.queued == 0
 

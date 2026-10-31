@@ -48,6 +48,7 @@ from precis_pathway import runner, scratch
 from precis_pathway.handler import PathwayHandler
 from precis_pathway.persist import pathway_title, persist_result
 from precis_pathway.types import DetachedHandle, PathwayArtifact, PollResult
+from tests._timing import budget
 
 SMOKE = """
 name: bridge_smoke
@@ -2443,7 +2444,7 @@ def test_submit_seed_partial_detached_returns_handle_without_blocking(
     handle = runner.submit_seed_partial_detached({}, 7, 1, force_backend="emt")
     elapsed = time.time() - before
 
-    assert elapsed < 2.0  # never waits on the (gated, un-released) child
+    assert elapsed < budget(2.0)  # never waits on the (gated, un-released) child
     assert {"pid", "pgid", "dir", "started_at"} <= set(handle)
     assert handle["pgid"] == handle["pid"]
     assert os.path.isdir(handle["dir"])

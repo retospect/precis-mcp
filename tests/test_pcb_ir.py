@@ -38,6 +38,7 @@ from precis.pcb.ir import (
     unconnected_items,
     validate_embedding,
 )
+from tests._timing import budget
 from tests.fixtures.pcb.stackups import LEGACY_V1_STACKUP
 
 
@@ -365,7 +366,7 @@ def test_instance_courtyard_polygon_dense_union_decimates_before_the_offset():
         "decimated-input ring under-covers the exact keep-out"
     )
     n_union_verts = sum(len(g.exterior.coords) for g in union.geoms)
-    assert elapsed < 5.0, (
+    assert elapsed < budget(5.0), (
         f"courtyard on a {n_union_verts}-vertex union took {elapsed:.1f}s — "
         "the dense-input decimate regressed"
     )

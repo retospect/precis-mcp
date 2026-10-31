@@ -143,13 +143,23 @@ exit 0
 """
 
 
+# scripts/deploy's full-ansible preflight (`ansible-doc -t module
+# community.general.homebrew`) must resolve too — a real ansible-core on
+# PATH (the macos CI leg) fails the lookup and the deploy dies early.
+_FAKE_ANSIBLE_DOC = """#!/usr/bin/env bash
+exit 0
+"""
+
+
 def _make_fake_bin(tmp_path: Path) -> Path:
     bindir = tmp_path / "fakebin"
     bindir.mkdir()
     (bindir / "ansible").write_text(_FAKE_ANSIBLE, encoding="utf-8")
     (bindir / "ansible-playbook").write_text(_FAKE_ANSIBLE_PLAYBOOK, encoding="utf-8")
+    (bindir / "ansible-doc").write_text(_FAKE_ANSIBLE_DOC, encoding="utf-8")
     (bindir / "ansible").chmod(0o755)
     (bindir / "ansible-playbook").chmod(0o755)
+    (bindir / "ansible-doc").chmod(0o755)
     return bindir
 
 

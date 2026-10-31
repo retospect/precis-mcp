@@ -43,6 +43,7 @@ from precis_se.chain.relax import op_relax_chain
 from precis_se.chain.vocab import SEGMENT_ROLE, chain_role
 from precis_se.handler import SeHandler
 from precis_se.ops import SeTree, apply_ops
+from tests._timing import budget
 
 #: The rectangle's shape. 24 helices of 256 bp is the acceptance criterion's
 #: design; 256 is 8 square-lattice repeats, so every helix is in register.
@@ -185,7 +186,7 @@ def test_layout_chain_is_fast_and_tiles_every_helix_exactly() -> None:
     started = time.process_time()
     apply_ops(tree, [{"op": "layout_chain"}])
     elapsed = time.process_time() - started
-    assert elapsed < 2.0, f"layout_chain took {elapsed:.2f} s"
+    assert elapsed < budget(2.0), f"layout_chain took {elapsed:.2f} s"
 
     segments = {
         name: _chain_of(node)
@@ -272,7 +273,7 @@ def test_relax_chain_settles_the_whole_rectangle_inside_the_budget() -> None:
     started = time.perf_counter()
     echo = op_relax_chain(None, tree, {"op": "relax_chain"})
     elapsed = time.perf_counter() - started
-    assert elapsed < 30.0, f"relax_chain took {elapsed:.2f} s — {echo}"
+    assert elapsed < budget(30.0), f"relax_chain took {elapsed:.2f} s — {echo}"
     assert "settled 192 segment bodies over 24 helices" in echo
     # Every scaffold turn and every staple crossover is a spring: 23 + 96.
     assert "with 119 loop spring(s)" in echo
@@ -308,7 +309,7 @@ def test_drc_view_is_fast_and_never_clears_two_segments(
     drc_elapsed = time.perf_counter() - started
     # Secondary sanity floor, 3x the old 5 s bound; the pair count below is
     # the regression guard (gr493799).
-    assert drc_elapsed < 15.0, f"view='drc' took {drc_elapsed:.2f} s"
+    assert drc_elapsed < budget(15.0), f"view='drc' took {drc_elapsed:.2f} s"
     # Load-independent stand-in for the old ``< 5 s`` wall bound (gr493799):
     # the DRC view is slow exactly when segment<->segment pairs reach the
     # kernel clearance query (18,336 candidates), so assert none did.

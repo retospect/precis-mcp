@@ -17,6 +17,7 @@ import pytest
 from precis.embedder import MockEmbedder
 from precis.skill_index import FileCorpusIndex
 from precis.skill_index import index as index_mod
+from tests._timing import budget
 
 FILES = {
     "alpha": "# Alpha\n\nFirst content about apples and oranges.\n",
@@ -70,7 +71,7 @@ def test_a_slow_build_does_not_hold_the_search(
 
     started = time.monotonic()
     assert idx.search("apples") == []  # semantic unavailable, lexical answers
-    assert time.monotonic() - started < 1.0
+    assert time.monotonic() - started < budget(1.0)
 
     assert idx._build_thread is not None
     idx._build_thread.join(timeout=10.0)

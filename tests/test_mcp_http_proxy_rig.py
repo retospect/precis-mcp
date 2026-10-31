@@ -41,6 +41,8 @@ from pathlib import Path
 
 import pytest
 
+from tests._timing import budget
+
 _ROOT = Path(__file__).resolve().parent.parent
 _SCRIPT = _ROOT / "deploy" / "mcp-http" / "precis-mcp-http-ensure.sh"
 _FAKE_IMAGE = os.environ.get("PRECIS_MCP_RIG_IMAGE", "python:3.12-slim-bookworm")
@@ -644,7 +646,7 @@ def test_backend_never_ready_keeps_old_live(rig: Rig) -> None:
         elapsed = time.time() - t0
     assert r.returncode != 0
     assert "did not answer 401" in r.stderr and "stays live" in r.stderr, r.stderr
-    assert 6 <= elapsed < 40
+    assert 6 <= elapsed < budget(40)
     assert rig.ps() == sorted([f"{rig.name}-a", f"{rig.name}-proxy"])
     assert (rig.state / "backend").read_text(encoding="utf-8").strip() == "a"
     assert not hammer.bad() and set(hammer.colours()) == {"a"}
@@ -820,4 +822,4 @@ def test_request_waits_for_a_backend_that_is_coming_up(rig: Rig) -> None:
         f"\n[rig] POST issued with the backend stopped: answered {outcome} after {waited:.1f}s"
     )
     assert outcome == (200, "a")
-    assert 2.5 < waited < 20
+    assert 2.5 < waited < budget(20)

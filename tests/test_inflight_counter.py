@@ -16,6 +16,7 @@ from pathlib import Path
 import pytest
 
 from precis import inflight
+from tests._timing import budget
 
 
 @pytest.fixture(autouse=True)
@@ -29,7 +30,7 @@ def test_idle_process_drains_immediately() -> None:
     assert inflight.count() == 0
     started = time.monotonic()
     assert inflight.wait_for_drain(5.0) is True
-    assert time.monotonic() - started < 1.0
+    assert time.monotonic() - started < budget(1.0)
 
 
 def test_drain_blocks_until_the_last_call_leaves() -> None:
@@ -52,7 +53,7 @@ def test_drain_is_bounded_so_a_wedged_call_cannot_hold_a_bounce_open() -> None:
     inflight.enter()
     started = time.monotonic()
     assert inflight.wait_for_drain(0.2) is False
-    assert time.monotonic() - started < 2.0
+    assert time.monotonic() - started < budget(2.0)
 
 
 def test_counter_is_visible_across_threads() -> None:
@@ -148,7 +149,9 @@ def test_arrivals_during_a_drain_cannot_stop_it_settling() -> None:
         churn.join(5.0)
 
     assert drained is True, "drain never settled while traffic kept arriving"
-    assert elapsed < 3.0, f"drain waited {elapsed:.1f}s for calls it does not own"
+    assert elapsed < budget(3.0), (
+        f"drain waited {elapsed:.1f}s for calls it does not own"
+    )
     assert inflight.count() >= 0
 
 

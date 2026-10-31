@@ -29,6 +29,7 @@ import numpy as np
 
 from precis_se.ops import SeTree, apply_ops
 from precis_se.validate import _aabb_clear, envelope_overlaps, validate
+from tests._timing import budget
 
 #: Two straight, free-path waypoints along +z, nanometre-scale — enough to
 #: place a small ``layout_chain`` helix without the free-path/lattice
@@ -72,7 +73,7 @@ def test_spread_29_block_design_validates_near_instantly() -> None:
     overlaps, cross_scale, unchecked = envelope_overlaps(tree)
     elapsed = time.monotonic() - t0
 
-    assert elapsed < 5.0, f"took {elapsed:.2f}s — broad phase not filtering"
+    assert elapsed < budget(5.0), f"took {elapsed:.2f}s — broad phase not filtering"
     assert overlaps == []
     assert cross_scale == []
     assert unchecked == []
@@ -89,7 +90,7 @@ def test_spread_design_validate_reports_clean_and_fast() -> None:
     findings = validate(tree)
     elapsed = time.monotonic() - t0
 
-    assert elapsed < 5.0, f"took {elapsed:.2f}s"
+    assert elapsed < budget(5.0), f"took {elapsed:.2f}s"
     assert findings == []
 
 

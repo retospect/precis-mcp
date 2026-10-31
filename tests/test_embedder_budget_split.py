@@ -28,6 +28,7 @@ from typing import Any
 import pytest
 
 from precis.config import PrecisConfig
+from tests._timing import budget
 
 
 def _worst_case_seconds(timeout: float, max_retries: int) -> float:
@@ -200,7 +201,7 @@ def test_bulkhead_sheds_past_max_concurrency_instead_of_queueing() -> None:
     started = time.monotonic()
     with pytest.raises(Upstream):
         emb.embed_one("third")
-    assert time.monotonic() - started < 1.0
+    assert time.monotonic() - started < budget(1.0)
 
     inner.gate.set()
     for t in threads:

@@ -19,6 +19,7 @@ import pytest
 
 from precis.budget import meter
 from precis.utils.llm import local_serving
+from tests._timing import budget
 
 
 @pytest.fixture(autouse=True)
@@ -611,7 +612,7 @@ def test_acquire_wait_bounded_by_ambient_deadline(store) -> None:
         second = local_serving.acquire("solo", wait_s=30.0)
     elapsed = time.monotonic() - t0
     assert second is not None and second.paused and not second.reserved
-    assert elapsed < 5.0
+    assert elapsed < budget(5.0)
     local_serving.release(first)
 
 
@@ -628,7 +629,7 @@ def test_acquire_wait_bounded_by_deadline_kwarg(store) -> None:
     second = local_serving.acquire("solo", wait_s=30.0, deadline=t0 + 0.3)
     elapsed = time.monotonic() - t0
     assert second is not None and second.paused and not second.reserved
-    assert elapsed < 5.0
+    assert elapsed < budget(5.0)
     local_serving.release(first)
 
 

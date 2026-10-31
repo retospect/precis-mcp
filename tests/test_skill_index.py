@@ -18,6 +18,7 @@ from precis.embedder import MockEmbedder
 from precis.skill_index import FileCorpusIndex, chunk_by_h2
 from precis.skill_index.cache import EmbeddingCache, default_cache_dir
 from precis.skill_index.chunker import CHUNK_VARIANTS, CHUNKER_VERSION
+from tests._timing import budget
 
 
 def json_load(path: Path) -> dict[str, Any]:
@@ -641,7 +642,7 @@ def test_index_query_embed_hang_fails_fast(
     # here. It must return promptly (well under the 5s sleep) with no
     # hits, rather than blocking until the embedder call returns.
     assert hits == []
-    assert elapsed < 2.0, f"search() blocked for {elapsed:.2f}s past its cap"
+    assert elapsed < budget(2.0), f"search() blocked for {elapsed:.2f}s past its cap"
 
 
 def test_index_caches_to_disk(files: dict[str, str], tmp_path: Path) -> None:

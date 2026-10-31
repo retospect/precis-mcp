@@ -28,6 +28,7 @@ import pytest
 from precis import secrets as secrets_mod
 from precis.store import Store
 from precis.utils import rate_limit
+from tests._timing import budget
 
 pytestmark = pytest.mark.usefixtures("store")
 
@@ -131,7 +132,7 @@ class TestRateLane:
             granted = rate_limit.acquire(provider, max_wait_s=0.2)
             elapsed = time.monotonic() - t0
             assert granted is False
-            assert elapsed < 1.0
+            assert elapsed < budget(1.0)
         finally:
             _cleanup(use_store_dsn, provider)
 
@@ -194,7 +195,7 @@ class TestQuotaLane:
             elapsed = time.monotonic() - t0
             assert granted is False
             # Quota exhaustion must not spin/wait — near-instant refusal.
-            assert elapsed < 1.0
+            assert elapsed < budget(1.0)
         finally:
             _cleanup(use_store_dsn, provider)
 
@@ -652,7 +653,7 @@ class TestDeadlineBound:
                 granted = rate_limit.acquire("test_rl_dl_ambient", max_wait_s=300.0)
         elapsed = time.monotonic() - t0
         assert granted is False
-        assert elapsed < 5.0, f"waited past the deadline ({elapsed:.1f}s)"
+        assert elapsed < budget(5.0), f"waited past the deadline ({elapsed:.1f}s)"
         assert rate_limit.refusal_counts()["test_rl_dl_ambient"] == 1
         msgs = [
             r.getMessage()
@@ -672,7 +673,7 @@ class TestDeadlineBound:
             "test_rl_dl_kwarg", max_wait_s=300.0, deadline=t0 + 0.3
         )
         assert granted is False
-        assert time.monotonic() - t0 < 5.0
+        assert time.monotonic() - t0 < budget(5.0)
         assert rate_limit.refusal_counts()["test_rl_dl_kwarg"] == 1
 
     def test_past_deadline_refuses_without_waiting(
@@ -684,7 +685,7 @@ class TestDeadlineBound:
             "test_rl_dl_past", max_wait_s=300.0, deadline=t0 - 1.0
         )
         assert granted is False
-        assert time.monotonic() - t0 < 1.0
+        assert time.monotonic() - t0 < budget(1.0)
 
     def test_no_deadline_still_waits_max_wait_s(
         self, monkeypatch: pytest.MonkeyPatch
@@ -696,7 +697,7 @@ class TestDeadlineBound:
         granted = rate_limit.acquire("test_rl_dl_plain", max_wait_s=0.3)
         elapsed = time.monotonic() - t0
         assert granted is False
-        assert elapsed >= 0.25 and elapsed < 5.0
+        assert elapsed >= 0.25 and elapsed < budget(5.0)
 
     def test_call_with_deadline_publishes_the_ambient_bound(
         self, monkeypatch: pytest.MonkeyPatch
@@ -737,7 +738,7 @@ class TestDeadlineBound:
 
         t0 = time.monotonic()
         assert call_with_deadline(_work, deadline_s=5.0) is False
-        assert time.monotonic() - t0 < 5.0
+        assert time.monotonic() - t0 < budget(5.0)
         assert rate_limit.refusal_counts()["test_rl_dl_cwd2"] == 1
 
     def test_grant_under_deadline_still_grants(
@@ -855,7 +856,7 @@ class TestDeadlineBound:
                     granted = rate_limit.acquire(provider, max_wait_s=300.0)
             elapsed = time.monotonic() - t0
             assert granted is False
-            assert elapsed < 5.0
+            assert elapsed < budget(5.0)
             assert rate_limit.refusal_counts()[provider] == 1
             assert any(
                 provider in r.getMessage()

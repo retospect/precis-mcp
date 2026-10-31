@@ -26,6 +26,7 @@ from precis_pathway import surface_pourbaix as sp
 from precis_web.app import create_app
 from precis_web.config import WebConfig
 from precis_web.pourbaix_svg import map_svg
+from tests._timing import budget
 
 AREA = 10.0
 
@@ -1112,7 +1113,7 @@ def test_pourbaix_quest_page_cold_render_bound(
     assert counter.n < 150, counter.n
     # Secondary sanity floor, 3x the old 5 s bound: the count above is the
     # regression guard; this only catches a gross slowdown it cannot see.
-    assert elapsed < 15.0, f"cold render took {elapsed:.2f}s"
+    assert elapsed < budget(15.0), f"cold render took {elapsed:.2f}s"
 
 
 def test_pourbaix_quest_page_batched_equals_per_structure(

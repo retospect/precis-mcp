@@ -56,6 +56,7 @@ from precis import server
 from precis.store import Store
 from precis.store.pool import create_pool
 from tests._mcp_session import build_test_mcp, connected_sessions, text_of
+from tests._timing import budget
 from tests.conftest import _active_dsn
 
 pytestmark = pytest.mark.usefixtures("store")
@@ -233,7 +234,7 @@ def test_a_session_storm_queues_on_the_semaphore_not_the_pool(
     )
     assert stats["requests_num"] >= 24, stats
     assert 1 < gauge.peak <= 4, f"peak checked-out connections: {gauge.peak}"
-    assert elapsed < 10, f"storm took {elapsed:.1f}s (ideal ~0.3s)"
+    assert elapsed < budget(10), f"storm took {elapsed:.1f}s (ideal ~0.3s)"
 
 
 def test_a_storm_wider_than_the_pool_waits_but_does_not_time_out(
@@ -275,7 +276,7 @@ def test_a_storm_wider_than_the_pool_waits_but_does_not_time_out(
         f"the pool never queued although 8 permits sat over 3 connections: {stats}"
     )
     assert gauge.peak <= 3, f"peak checked-out connections: {gauge.peak}"
-    assert elapsed < 10, f"storm took {elapsed:.1f}s (ideal ~0.3s)"
+    assert elapsed < budget(10), f"storm took {elapsed:.1f}s (ideal ~0.3s)"
 
 
 # ── teardown ─────────────────────────────────────────────────────────

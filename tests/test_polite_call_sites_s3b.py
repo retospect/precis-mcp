@@ -32,6 +32,7 @@ from precis.ingest import orcid
 from precis.utils import http
 from precis.utils.http import check_user_agent, reset_circuit
 from precis.utils.rate_limit import RateLimited
+from tests._timing import budget
 
 _ORCID_ID = "0000-0002-1825-0097"
 
@@ -266,7 +267,7 @@ def test_orcid_one_overall_deadline_over_all_retries(
     t0 = time.monotonic()
     with pytest.raises(Upstream, match="transport"):
         orcid._api_get(f"{_ORCID_ID}/person")
-    assert time.monotonic() - t0 < 1.0
+    assert time.monotonic() - t0 < budget(1.0)
     assert len(server.requests) >= 2  # it retried; the deadline spanned them
     # The abandoned deadline thread keeps retrying after the call returned;
     # left alone it takes limiter tokens inside whichever later test has the

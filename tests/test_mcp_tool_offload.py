@@ -41,6 +41,7 @@ from typing import Any
 import anyio
 
 from precis import server
+from tests._timing import budget
 
 # ── schema preservation ─────────────────────────────────────────────
 
@@ -255,7 +256,7 @@ def test_offload_sync_cancel_returns_promptly_and_frees_semaphore() -> None:
     assert cancelled
     # the regression (abandon_on_cancel=False) holds the await for the
     # sync body's full ~10s wait; the fix returns at the 0.5s deadline
-    assert elapsed < 5.0, elapsed
+    assert elapsed < budget(5.0), elapsed
     assert sem_value == 1
 
 
