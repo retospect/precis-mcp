@@ -73,6 +73,7 @@ import sys
 import time
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -2911,7 +2912,7 @@ def report_repo(tmp_path: Path) -> dict[str, Path | int]:
 
 
 def test_reap_worktrees_report_buckets_and_removes_nothing(
-    report_repo: dict[str, Path | int],
+    report_repo: dict[str, Any],
 ) -> None:
     """``--report`` prints every bucket with the right counts and names, and
     changes nothing: same worktree list, same branches, same locks, every

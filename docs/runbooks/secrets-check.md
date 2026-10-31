@@ -4,7 +4,7 @@ A **weekly** pass that asks: *does every external API credential the
 product relies on still work?* An expired or revoked key otherwise shows up
 only when a job fails (`pourbaix_bulk` with `failure_class=config`,
 gr496305). `scripts/secrets-check-review` prints `DUE` when the newest dated
-line in `## Log` is more than 7 days old; `/whatneedsdoing` surfaces it. The
+line in `~/.cache/precis/secrets-check-review.log` is more than 7 days old; `/whatneedsdoing` surfaces it. The
 script only keeps the clock — it never probes anything.
 
 ## The pass
@@ -24,8 +24,8 @@ script only keeps the clock — it never probes anything.
 2. Each `failed` or non-optional `missing` credential becomes one
    `waiting-for:reto` todo (skill `precis-user-queue-help`) carrying the key
    URL from the line. Never paste a value anywhere.
-3. Append one dated line to `## Log` (newest first) with the four counts and
-   the queued todo ids. That resets the clock.
+3. `scripts/secrets-check-review --stamp "<ok/failed/unprobed/missing counts, queued todo ids>"`.
+   That resets the clock.
 
 ## Notes
 
@@ -51,5 +51,7 @@ script only keeps the clock — it never probes anything.
 
 ## Log
 
-- **2026-10-18** — cadence established (this runbook, `scripts/secrets-check-review`, `precis secret check`). First pass due.
-- **2026-10-28** — 14 ok, 0 failed, 14 unprobed, 4 missing (FARNELL, MOUSER, CATHUB filed as waiting-for:reto todos; SUMMARIZE_LLM_KEY optional).
+The clock is `~/.cache/precis/secrets-check-review.log` (written by
+`scripts/secrets-check-review --stamp "<note>"`); entries before 2026-10-30 are
+in git history (`git log -p docs/runbooks/secrets-check.md`).
+

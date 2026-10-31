@@ -12,7 +12,7 @@ Status 2026-10-17: every pass-1 item shipped. Pass #2 is OVERDUE (was due 2026-1
 Shipped (pass #1 miner, runbook, schema regen, shared render cap, batch
 `get`/`tag`/glossary `put`, draft-write latency, ledger instrumentation):
 b9f44519f, c37b29150; per-item history in `git log`. Pass #1's numbers and
-method: `docs/runbooks/surface-review.md` `## Log`. The miner:
+method: `git log -p docs/runbooks/surface-review.md` (before 2026-10-30). The miner:
 `scripts/mine-sessions/README.md`.
 
 Open: `gr456287` (harness worktree guard, 308 refusals / 97 of 99 sessions) —

@@ -158,7 +158,9 @@ def _child(handler: TodoHandler, root: int, text: str, **meta: Any) -> int:
 
 
 def _meta(store: Store, todo_id: int) -> dict[str, Any]:
-    return store.get_ref(kind="todo", id=todo_id).meta or {}
+    ref = store.get_ref(kind="todo", id=todo_id)
+    assert ref is not None, todo_id
+    return ref.meta or {}
 
 
 def test_put_accepts_plan_keys(handler: TodoHandler, store: Store) -> None:

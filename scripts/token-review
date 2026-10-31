@@ -6,39 +6,15 @@
 #
 # The review reads local session transcripts for repeated token-waste patterns
 # (context bloat, wrong-tier agents, un-rtk'd firehoses, redundant calls) and
-# turns findings into OPEN-ITEMS / gripes. Procedure + dated log:
-#   docs/runbooks/token-review.md   (the `## Log` section is the clock)
+# turns findings into OPEN-ITEMS / gripes. Procedure:
+#   docs/runbooks/token-review.md
+# The clock is ~/.cache/precis/token-review.log, written by
+#   scripts/token-review --stamp "<note>"      (see scripts/cadence-lib.sh)
 set -euo pipefail
 cd "$(dirname "$0")/.."
+source scripts/cadence-lib.sh
 
-LOG="docs/runbooks/token-review.md"
-WINDOW_DAYS=7
+cadence_init token-review 7 docs/runbooks/token-review.md "$@"
 
-if [[ ! -f "$LOG" ]]; then
-    echo "token-review: DUE (no runbook at $LOG)"; exit 0
-fi
-
-# newest dated line in the `## Log` section (any order — sort -r picks the newest date)
-last=$(awk '/^## Log/{f=1;next} f' "$LOG" \
-    | grep -oE '\*\*[0-9]{4}-[0-9]{2}-[0-9]{2}\*\*' | sort -r | head -1 | tr -d '*' || true)
-
-if [[ -z "$last" ]]; then
-    echo "token-review: DUE (no dated entry in $LOG '## Log')"; exit 0
-fi
-
-# portable YYYY-MM-DD -> epoch seconds (BSD date on macOS, GNU date on CI/Linux)
-epoch_of() { date -u -j -f "%Y-%m-%d" "$1" +%s 2>/dev/null || date -u -d "$1" +%s 2>/dev/null; }
-last_e=$(epoch_of "$last" || true)
-now_e=$(date +%s)
-
-if [[ -z "$last_e" ]]; then
-    echo "token-review: last entry '$last' unparseable — check $LOG"; exit 0
-fi
-
-days=$(( (now_e - last_e) / 86400 ))
-if (( days > WINDOW_DAYS )); then
-    echo "token-review: DUE (last pass $last, ${days}d ago > ${WINDOW_DAYS}d) — scan recent large transcripts for repeated token-waste; file findings to OPEN-ITEMS/gripes; append a dated line to $LOG. See the runbook."
-else
-    echo "token-review: ok (last pass $last, ${days}d ago; due in $(( WINDOW_DAYS - days ))d)"
-fi
+cadence_check pass "scan recent large transcripts for repeated token-waste; file findings to OPEN-ITEMS/gripes" || true
 exit 0

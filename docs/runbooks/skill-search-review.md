@@ -27,9 +27,10 @@ surface problem — cross-reference, don't duplicate.
 ## When
 
 `scripts/skill-search-review` prints `skill-search-review: DUE` when the newest
-dated line in this file's `## Log` is >30 days old (or absent). Inside the
-window it's quiet. Run the pass when DUE, then append a dated line — that resets
-the clock.
+dated line in `~/.cache/precis/skill-search-review.log` is >30 days old (or
+absent). Inside the window it's quiet. Run the pass when DUE, then
+`scripts/skill-search-review --stamp "<corpus size, headline, what shipped>"` —
+that resets the clock.
 
 Cold-skill audit: `get(kind='skill', view='usage')` lists every skill with its
 last read (`GREATEST(last_recalled_at, last_viewed_at)` on its lazily minted
@@ -78,6 +79,10 @@ pass:
    server hang; `no skills mention '…'` = genuine **zero** match; a `{slug`
    table = **ok**. Only `ok`+`zero` are search-quality data — segment them out
    before judging relevance, or blocked/rejected noise dominates the stats.
+   `still running after 120s` is its own class (hangs were ~45% of local
+   searches on 2026-10-02, gr461598). Positive control: `health digest` (the
+   health-digest agent's routine query) must rank top-1; if not, suspect the
+   matcher or a cold embedder before the skills.
 3. **Stat** — volume by source, unique/normalized queries, query-length dist,
    error/zero rate, outcome mix, selected-rank distribution (top-1 vs top-3 hit
    rate among selects), off-menu selects, re-search rate.
@@ -119,31 +124,7 @@ fraction of the catalogue.
 
 ## Log
 
-Newest first. One line per pass: date, corpus size, headline, what shipped.
+The clock is `~/.cache/precis/skill-search-review.log` (written by
+`scripts/skill-search-review --stamp "<note>"`); entries before 2026-10-30 are
+in git history (`git log -p docs/runbooks/skill-search-review.md`).
 
-- **2026-10-02** — Third audit (`mine-sessions --since 40d --prod`; 177 skills). 166 skill searches: 141 executed (111 prod job, 30 local; 84 unique queries, 45 of them the health-digest agent's `health digest`, top-1 every time), 0 blocked or rejected, 25 local calls hung >120s (`still running after 120s`, ~45% of local skill searches; filed gr461598). Next action after an executed menu: 72 selects (top-1 34 = 47%, top-3 61 = 85%), 20 off-menu opens, 18 re-searches, 31 abandons. Misses: `child-failed-parked` (job-help 5th; 10 prod reformulations), `cad units mm primitives…` (cad-help 5th), `nm molecular blocks` (kind merged into se, no skill said so), OTS / `pass-dead` / `lane-skipping` (no skill mentions them). Shipped: job-help H2 + answers line for child-failed-parked, se-atomic-help answers line for the merged nm kind. Filed: backlog `skill-search-compound-token-and-family-prefix.md` (matcher), gr461598. gr259665 confirmed fixed; gr259666 (bare section column) no longer reproduces.
-
-- **2026-08-26** — Second audit. 49 searches over 32d (21 local incl.
-  subagent sidechains — a path the first pass's glob missed — plus 28 prod);
-  zero blocked/rejected (the 07-20 permission noise is gone). Top-1 ~41%,
-  top-3 ~56% (n=34, directional). Shipped this pass: `precis-alert-help`
-  producers table gained the `review:tool-starved:<reviewer>` /
-  `review:empty:<reviewer>` rows + stale "reviewers stay on memory" prose
-  fixed (a prod agent burned 4 reformulations failing to find these);
-  `precis-dispatch-help` gained a "Host capabilities (what an executor
-  advertises)" H2 alias (one phrasing of the clones_dir query cluster lost
-  to a semantic false-positive in settings-help). Filed: gr259665 (matcher:
-  rare slug-unique identity token gets no coverage-bar relief — 'taproot'
-  query never surfaced precis-taproot-help) and gr259666 (search table's
-  section column shows a bare heading, agents paste it as a `~` selector →
-  BadInput; pair it with its `~N` index). Positive control: `health digest`
-  ranks top-1 every time.
-- **2026-07-25** — First audit. 56 skill searches over 20d (30 local dev, 26
-  prod); only 27 executed (22 blocked by a transient 2026-07-20 permission
-  window, 6 user-rejected, 1 hang). Top-1 hit 5/11 among selects. Root cause:
-  lexical leg + title boost were atomic whole-query substring matches → fixed to
-  tokenized word-overlap + identity-weighted boost + H2-header awareness
-  (`skill.py`, regression tests in `test_skill.py`). Content fixes: draft
-  hygiene/footer vocab, `ask_user` docs, skill-authoring redirect, llm
-  router/tier vocab. Behavioral note filed: agents conflate "tool blocked" with
-  "zero matches" and thrash reformulations — worth a nursery friction-detector.

@@ -29,9 +29,9 @@ fixed.
 ## When
 
 `scripts/gripe-gc-review` prints `gripe-gc-review: DUE` when the newest dated
-line in this file's `## Log` is >7 days old (or absent). Inside the window
-it's quiet. Run the pass when DUE, then append a dated line (below) — that
-resets the clock. If prod is reachable read-only, the script also prints a
+line in `~/.cache/precis/gripe-gc-review.log` is >7 days old (or absent).
+Inside the window it's quiet. Run the pass when DUE, then stamp it (step 5) —
+that resets the clock. If prod is reachable read-only, the script also prints a
 best-effort count of currently-open shipped-marked gripes (`title ILIKE
 '%shipped%'`) as a nicety — offline, it just prints the DUE line.
 
@@ -50,108 +50,17 @@ best-effort count of currently-open shipped-marked gripes (`title ILIKE
 4. **Do not close** a gripe marked "shipped" whose fix landed **with open
    follow-ups** — those are still real open work, just relabeled; leave them
    open (fix the misleading title if you have time).
-5. Append **one** dated line here summarizing the pass (count closed / left
-   open and why) — newest first, so the script reads the top.
+5. `scripts/gripe-gc-review --stamp "<closed N / left open M and why>"`.
+
+Verify against current code and `git log`, never a "shipped" claim in a comment:
+`fix_gripe` DIAGNOSIS comments run on stale worker clones and are unreliable.
+Enumerate with `search(kind='gripe', tags=['STATUS:open'], page_size=100)`, then
+cross-reference ids against `git log` since the last pass and scan the latest
+comment of each for a shipped sha.
 
 ## Log
 
-- **2026-10-23** — gripe step: 41 open, 0 closed (no shipped-marked comments; only gr506756 has a fix on origin/prod, c785992dc in r88, and its runtime confirmation is pending), 41 left open. Known-open set (gr493181 gr493192 gr493201 gr502250 gr502698 gr497688 gr456287 gr507415) not re-checked.
-- **2026-10-07 (gripe session, fix pass)** — coder agents in isolated worktrees on small unclaimed open gripes, merged into the `gripe` tree and shipped as seven full-gate batches (138d00d98, 2cb16ee44, d6c4b47be, 0e037ea18, batch seven). **Closed 28**: gr462730 gr462090 gr468591 gr471806 gr461375 gr462606 gr462136 gr461595 gr464538 gr464669 gr462067 gr471933 gr459571 gr461762 gr458944 gr465128 gr459568 gr458472 gr459058 gr466345 gr453861 gr470561 gr461598 gr456034 gr459602 gr470909 gr450524 gr173580, plus gr451018 gr464672 gr462129 with batch seven. Left open with status comments: gr462088, gr462726, gr469080, gr469081, gr470193. Not taken (thread-owned or design): gr449840, gr458458, gr461596, gr453860, gr450103, gr343752, gr464238, gr462703, gr461790, the hexfold/pcb/viewer thread gripes. Lessons recorded on the gripes: verify every coder's `git show --stat HEAD` before merging (one claimed tests it never wrote); run mypy via the interpreter entry point before each ship (three gate reds were mypy).
-- **2026-10-07** — id cross-reference of all 152 open gripes against main's log since 07-20 (26 named by a commit) plus a latest-comment read on the 16 with fix commits. **Closed 4**: gr452384 (both fix_gripe ceilings deployed: 09b9a9bb max_turns, 735d9a5f USD cap; account limit is gr456240, unpark is td453690), gr461607 (b41ad4328, verified live 10-02), gr462133 (31ef22f79 on prod since 10-02, backend container recreated 10-06), gr460711 (repo half 8ebb9d785/31ef22f79 + ensure-script install 10-02). Left open with fixes partly landed, each with a named residual: gr453859 (/drive stubs queue still mixes the no-OA set), gr465474 (anon 465241 not yet merged into 202942), gr459928 (tube/cap authored defects unbuilt), gr462596 (reconnect command + upstream client report), gr465931 (TLS egress is an ops issue), gr228652, gr451269, gr311857, gr461146, gr463517.
-- **2026-09-18** — candidate scan: latest-comment regex for a shipped sha over all 137 open (5 hits) + title ILIKE shipped/fixed/resolved/landed (17 hits, mostly false positives). **Closed 2**: gr250455 (gate/CI ruff skew — class closed by 7c46931c ship --remote; residual tracked in gr346534), gr250453 (NAS lockout — resolved 08-25, durable follow-ups = nas-denied detector + fda-grant cadence). Left open: gr245505 (structural:tool-starved, 18 doctor comments, still recurring daily on melchior — chronic, unfixed), gr336604 (pollux job_ssh_node pass-dead, recurring), gr273965 (UniFi DPI — owner queue td345841), gr261537/gr345784 (still live per latest comment), gr336344/336349/336352/343741 (feature asks, never shipped).
-- **2026-09-09** — full sweep over all 73 open gripes (`search(kind='gripe',
-  tags=['STATUS:open'], page_size=100)` enumeration, cross-checked with
-  targeted `q='shipped'/'fixed in'/'resolved'/'closing'` passes to surface
-  every shipped-claiming comment). **Closed 0.** Every gripe whose comment
-  thread claims a shipped fix explicitly says, in its own latest comment,
-  that it must stay open — verified each against current code/`git log`
-  rather than trusting the claim: gr310809 (fix in e4b5d98f, not deployed +
-  user-gated docker-rm per this runbook's own standing note), gr311857
-  (217e215c, pending user-gated pool widening), gr180306 (a08ba404 fixed the
-  mint-time recall gap prospectively, but the specific fi176861/fi178714
-  pair is still unmerged — a user-gated prod mutation — and the corpus-wide
-  dedup sweep is unbuilt), gr279770 (522f8b20 hardened the router's own
-  dedup logic, but the underlying feature gap — no re-gate/retire path for
-  stale `candidate` nanopub rows — is untouched, still 7/136 failing gates
-  as of today's comment 8), gr269811 (two of three via-placement fixes
-  landed 2026-08-29, but a third cross-segment via-via case is explicitly
-  unfixed with its own reproducer), gr267456 (comment 3 flips to
-  `in_review` pending verification, not closed — the courtyard-overlap term
-  shipped but the admissibility-consequence follow-up isn't confirmed
-  covered), gr263257 (2c3f44f5 fixed the provisional-frontier sort half;
-  the empty-trusted-frontier root cause needs a still-HELD prod
-  `meta.rubric_objectives` write), gr254322 (46f624f4 stops new alert
-  debris but explicitly leaves the requeue-stranded primitive + human sweep
-  + provisioning question open), gr264184 (item 1 of 3 repaired 08-27,
-  items 2-3 — corpus-wide sweep + mint-time gate — still open), gr204874
-  (ec03854c fixed 2 of 3 mint-gate defect classes for new extractions; the
-  proxy-grounded check and the already-minted junk-hub cleanup are
-  deferred), gr244679 (confirmed live against current
-  `_paper_search.py::_representative_block_for_ref`, which still picks
-  `pos=0`/`pos=-1` with no boilerplate check — the cited 43e3579d shipped a
-  callout mitigation only, not the underlying fix; an auto-diagnosis
-  comment on this gripe wrongly claimed 43e3579d doesn't exist — it does,
-  confirmed via `git log`, so that comment's conclusion is unreliable and
-  was not relied on), gr250455 (a98826b6 fixed the immediate CI/gate ruff
-  skew, but the gripe's own text says "the class remains" — no
-  exact-pin/same-resolution fix shipped), gr266043 (latent bug, not yet
-  manifesting, no fix shipped). No gripe was closed on an unverified
-  "shipped" claim alone — each was checked against the diff/commit or
-  current code before being left open. 73 remain open.
-- **2026-08-22** — targeted sweep over the 27 open gripes carrying stale
-  `STATUS:done` (gr207238's drift report — should have been soft-deleted, not
-  status-tagged). **Closed 25**, each verified against an actual commit on
-  `main` (or, for 3 pulse-probe gripes, against the gripe's own prior
-  investigative comment): gr193672 (030ea413), gr178699 (91bab110), gr172202
-  (eef20cf8), gr170069 (23ff8cf8, via gr170073's already-closed finding),
-  gr162444 (37294af8), gr55671 (162d56e9), plus two batch-fix commits that
-  each named several gripes explicitly in their own commit message —
-  667629c5 closed gr39242/gr39244/gr39245/gr39246/gr39247/gr39248/gr39249/
-  gr39250/gr39251/gr39252/gr39253/gr38683, and b3085a73 closed
-  gr38684/gr38690/gr38692/gr38693 (the last two re-verified live: `search
-  (kind='skill', q=...)` and `search(kind='paper', q='*')` on prod both now
-  degrade cleanly instead of 500ing). gr179358/gr179357/gr179356 (nursery
-  backlog triage, dream_agent false-alarm, chunk_keywords self-recovery)
-  closed on their own prior verified resolution comments — operational
-  fixes, no code commit applies. **Left open (2):** gr162624 (llm-catalog
-  variant-precise offerings — own comment says "SHIPPED... dark, NOT yet
-  deployed" with explicit residual follow-ups) and gr49604 (Discord
-  pagination truncation — only the secondary auto-caption-duplication note
-  was fixed by 988e683e; the actual root cause, an asa_bot-side fix, is
-  still explicitly open). gr207238 (the drift-report gripe itself) left
-  untouched — its part (b), a code/schema fix to stop `STATUS:done` from
-  being a valid gripe tag, is still unresolved.
-- **2026-08-10** — full sweep (issue-closer agent) over 66 open (gr197709
-  skipped — closed separately by the caller; 2 new gripes, gr202117 +
-  gr202116, filed mid-pass, landing the end count at 67). **Closed 0.** Every
-  shipped-claiming or ambiguous gripe either already carried a prior pass's
-  accurate partial-fix/leave-open comment (gr196953, gr171931, gr175799,
-  gr171782, gr180155, gr171431, gr192827, gr187627, gr191125) or turned out
-  unshipped/deploy-pending on fresh verification: gr162141 (OpenAlex balance
-  — needs a product decision, not a diff), gr55762 (draft-reader storage cost
-  — fix options never implemented since base 162d56e9), gr192371 (autocatpath
-  GPU-slot crash — code fix 47671907 shipped but explicitly deploy-pending
-  per its own comment), gr199339 (worker-compute crash-loop — none of its 3
-  fix directions landed), gr191673 (ssh_node submit/compute_handle race —
-  confirmed still non-atomic in `_run_one`), gr194088 (baseline schema
-  missing `cfp` row — confirmed absent in the current snapshot), gr171512
-  (`/factory` POST routes — confirmed still no auth middleware), gr180189
-  (pa1056 bibtex — instance fixed but stated systemic sweep still open). The
-  2026-08-07 pass already cleared the closeable backlog; this pass found
-  nothing new to close. 67 remain open.
-- **2026-07-29** — cadence established (this runbook +
-  `scripts/gripe-gc-review`). Baseline: ~64 open gripes in prod, ~11
-  already shipped-marked but unclosed — first real pass deferred to the
-  first DUE firing.
-- **2026-08-07** — full sweep (issue-closer agent) over 68 open. Closed 4
-  total this session: gr196678 (clusterize COPY timeout, verified via
-  cluster_runs 415), gr193963 (frozen taproot hubs, all 8 advanced),
-  gr196736 (pgpass brew-link conflict, b0c7d74d), plus dup gr194401 found
-  already closed by a prior pass alongside gr196635/gr192606. Verified-
-  still-unfixed and left open: gr191673, gr194088, gr196720, gr192372;
-  partial-fix noted on gr196447. All four watchdog gripes re-checked live
-  and still stale (taproot_edges 59.8h, anki_sync ~2.5d overdue,
-  briefing_audio 111h silent, embed backlog 99 undrained) — real prod
-  stalls, not closeable. 67 remain.
-- **2026-10-01** — two passes; closed gr458726, gr366640, gr458317, gr456236; gr459481 already closed; left open with fixes landed: gr457326, gr452084, gr452384, gr450123, gr451269 (re-arm/remediation/design follow-ups); stale worker clones make fix_gripe DIAGNOSIS comments unreliable.
-- **2026-10-15** — gripe step of triage: 31 open, 0 closed (no open gripe named by a fix sha or any origin/prod commit; main-only a7eb2afba cites gr486399 as an allowlist entry, not a fix), 31 left open. Thread files hold 42 distinct stale gr pointers to closed gripes (not edited); 23 open gripes are orphans of every thread and backlog item.
+The clock is `~/.cache/precis/gripe-gc-review.log` (written by
+`scripts/gripe-gc-review --stamp "<note>"`); entries before 2026-10-30 are in
+git history (`git log -p docs/runbooks/gripe-gc.md`).
+

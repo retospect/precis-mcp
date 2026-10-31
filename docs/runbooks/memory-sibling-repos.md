@@ -27,9 +27,9 @@ outside the repo). No human step required.
 
 `scripts/memory-lint` prints `sibling-repo check: DUE` (and then runs it) when
 the newest dated line in `~/.cache/precis/memory-sibling-repos.log` is >7 days
-old. If that file has no dated line yet, it falls back to the newest dated
-line in this file's `## Log` below (history from before the log moved).
-Inside the window it just reports the last result.
+old, or has none (fresh machine: one extra run). Inside the window it just
+reports the last result. Entries before 2026-10-30 are in git history
+(`git log -p docs/runbooks/memory-sibling-repos.md`).
 
 The log is untracked on purpose: the check used to append here, which dirtied
 every checkout it ran in, including the primary `main` checkout (blocking
@@ -50,45 +50,7 @@ or may be a typo; resolve it the same way as any other currency-ledger
 finding (adjust the reference, or if the whole memory is now stale, fold it
 into a durable doc and delete the memory).
 
-## Log (history through 2026-10-30)
+A memory that only *mentions* a retired path in a "this is gone" note still
+trips the scanner (it matches the literal): reword the memory to drop the path
+string rather than treating the finding as real.
 
-Frozen: new results go to the cache log named under "When", not here.
-
-**2026-07-24** — check added; `~/work/cluster` references already swept <!-- home-path: allow — names the shape the sibling-path check scans -->
-(this session) across all memory files ahead of the first automated run.
-
-**2026-08-01** — 1 stale path(s): catpath-dev-deploy.md cited `~/work/…/catpath` (gone). False alarm on content: the memory already pointed at the live `/Users/reto/catpath` and only *mentioned* the dead path in its "is GONE" note — which the `~/work/` scanner (this file, step 6) matched as a live ref. Fixed by dropping the literal dead-path string from the memory body; scanner only greps `~/work/…`, so the correct out-of-tree path is invisible to it and no longer trips.  <!-- home-path: allow — verbatim check findings -->
-
-**2026-08-01** — ✓ clean (re-verified after the catpath fix above).
-
-**2026-08-02** — ✓ clean
-
-**2026-08-10** — ✓ clean
-
-**2026-08-18** — 1 stale path(s): caspar-embedder-worker-disabled.md: ~/work/cluster — no longer on disk (repo retired/renamed? fix or drop the ref); resolved same day: false positive — the memory *correctly* states that checkout is gone; reworded to drop the path literal. <!-- home-path: allow — verbatim check findings -->
-
-**2026-08-18** — ✓ clean (later sibling run, after the rewording above).
-
-**2026-08-26** — ✓ clean
-
-**2026-09-03** — ✓ clean
-
-**2026-09-11** — 1 stale path(s): glass_foam_buoyancy_study.md: ~/work/projects/code/glassfoam-sim — no longer on disk (repo retired/renamed? fix or drop the ref);  <!-- home-path: allow — verbatim check findings -->
-
-**2026-09-11** — ✓ clean (later run, session-start hook)
-
-**2026-09-19** — ✓ clean
-
-**2026-09-27** — ✓ clean
-
-**2026-10-05** — ✓ clean
-
-**2026-10-13** — 8 stale path(s): me474315: ~/work/projects/code/CatHub — no longer on disk (repo retired/renamed? fix or drop the ref); me474333: ~/work/projects/code/catpath — no longer on disk (repo retired/renamed? fix or drop the ref); me474364: ~/work/projects/code/glassfoam-sim — no longer on disk (repo retired/renamed? fix or drop the ref); me474402: ~/work/projects/code/catpath — no longer on disk (repo retired/renamed? fix or drop the ref); me474437: ~/work/projects/code/slullama — no longer on disk (repo retired/renamed? fix or drop the ref); me477677: ~/work/projects/code/catpath — no longer on disk (repo retired/renamed? fix or drop the ref); me477684: ~/work/projects/code/catpath — no longer on disk (repo retired/renamed? fix or drop the ref); me477685: ~/work/projects/code/precis-dft — no longer on disk (repo retired/renamed? fix or drop the ref);  <!-- home-path: allow — verbatim check findings -->
-
-**2026-10-21** — 9 stale path(s): me474315: ~/work/projects/code/CatHub — no longer on disk (repo retired/renamed? fix or drop the ref); me474333: ~/work/projects/code/catpath — no longer on disk (repo retired/renamed? fix or drop the ref); me474364: ~/work/projects/code/glassfoam-sim — no longer on disk (repo retired/renamed? fix or drop the ref); me474402: ~/work/projects/code/catpath — no longer on disk (repo retired/renamed? fix or drop the ref); me474437: ~/work/projects/code/slullama — no longer on disk (repo retired/renamed? fix or drop the ref); me477677: ~/work/projects/code/catpath — no longer on disk (repo retired/renamed? fix or drop the ref); me477684: ~/work/projects/code/catpath — no longer on disk (repo retired/renamed? fix or drop the ref); me477685: ~/work/projects/code/precis-dft — no longer on disk (repo retired/renamed? fix or drop the ref); me500716: ~/work/projects/code/catpath — no longer on disk (repo retired/renamed? fix or drop the ref);   <!-- home-path: allow — verbatim check findings -->
-
-**2026-10-29** — 1 stale path(s): kimi-builder-lane.md: ~/work/projects — no longer on disk (repo retired/renamed? fix or drop the ref);  <!-- home-path: allow — verbatim scanner findings -->
-
-**2026-10-29** — 1 stale path(s): builder-deploy-env.md: ~/work/projects/code/precis-mcp-prod — no longer on disk (repo retired/renamed? fix or drop the ref);  <!-- home-path: allow — verbatim scanner findings -->
-
-**2026-10-30** — 4 stale path(s): me474386: ~/work/projects — no longer on disk (repo retired/renamed? fix or drop the ref); me474408: ~/work/projects — no longer on disk (repo retired/renamed? fix or drop the ref); me475507: ~/work/projects/code/precis-mcp-prod — no longer on disk (repo retired/renamed? fix or drop the ref); me493601: ~/work/new_papers — no longer on disk (repo retired/renamed? fix or drop the ref);  <!-- home-path: allow — verbatim scanner findings -->

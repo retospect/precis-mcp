@@ -1,7 +1,7 @@
 # Runbook — macOS FDA-grant drift audit
 
 **Cadence:** 30 days (advisory nudge: `scripts/fda-grant-review`, surfaced in
-`/whatneedsdoing`). The `## Log` section below is the clock.
+`/whatneedsdoing`). The clock is `~/.cache/precis/fda-grant-review.log`.
 
 ## Why this exists
 
@@ -133,9 +133,15 @@ scripts/prod-psql "SELECT h.host, e.key AS process, e.value->>'ok' AS ok, e.valu
   (and `com.precis.worker`, etc.). A grant added while a daemon runs is NOT
   adopted until restart.
 
-Then append a dated line to the `## Log` below.
+Then `scripts/fda-grant-review --stamp "<hosts audited, drift found/fixed>"`.
 
 ## Notes / gotchas
+
+- The canonical list is not the whole daemon set: melchior's asa-bot and
+  asa-slack ran on Homebrew python@3.14 (ad-hoc signed, outside the list;
+  gr530710). Also resolve the interpreter of each launchd plist on the host,
+  not only the canonical venvs. caspar has no canonical venvs or heartbeat
+  row; castor and pollux are Linux, out of scope.
 
 - `timeout` is absent on macOS by default — don't wrap `ssh` in it (use
   `gtimeout` from coreutils if you must, or just let it run).
@@ -147,30 +153,7 @@ Then append a dated line to the `## Log` below.
 
 ## Log
 
-- **2026-08-01** — Initial pass. gateway's FDA grant had broken on a
-  `brew upgrade python` (`3.12.13`→`3.12.13_4`, `3.14.3_1`→`3.14.6`); re-granted
-  both current interpreters, kickstarted watch/worker/heartbeat, verified
-  `nas_ok=true` + nursery alert 180213 auto-resolved. The other two Macs were
-  healthy (older, still-granted builds). All three Macs `brew pin`ned
-  python@3.12 + python@3.14 at their current builds. Detector
-  (`nas-denied`) + this cadence shipped `f0d16c22`.
-- **2026-08-24** — Migrated all NAS-touching venvs to python.org interpreters
-  (Developer-ID signed); FDA grants no longer break on python upgrades.
-  Trigger: gateway web daemon lockout after an unpinned brew upgrade of
-  python@3.14 (3.14.6→3.14.7).
-- **2026-08-25** — Cutover complete: all 6 grants (3 Macs × 3.12+3.14) in and
-  probe-verified `NAS-READ-OK` from daemon context; all daemons kickstarted.
-  Added the launchd NAS-probe procedure above (force-register + verify) after
-  learning the FDA file picker steers operators to the framework dylib, which
-  TCC never matches.
-- **2026-09-09** — Audit pass (39d since last): melchior + balthazar heartbeats
-  `nas_ok=true`; all python.org interpreters TCC-granted (auth_value=2) and
-  Developer-ID signed; no open nas-denied alerts. Drift: three venvs still
-  resolve to Homebrew python (ad-hoc signed, cdhash-invalidation risk on
-  upgrade) — melchior `/opt/hermes/venv` (hermes role), balthazar
-  `/opt/mcps/extract/venv` (extract_watch role), caspar
-  `/opt/precis/embedder-venv` (precis_embedder role). Currently granted, so no
-  outage; rebuild them onto the python.org framework before the next cycle
-  (due 2026-10-09).
-- **2026-09-16** — Audit pass (7d; the DUE flag was the script reading the oldest-first log — fixed): melchior + balthazar nas_ok=true; caspar absent from host_heartbeat (investigate separately). All python.org interpreters (3.12 + 3.14) Developer-ID signed and TCC-granted (auth_value=2), pinned. Drift persists: three venvs still on Homebrew ad-hoc python — melchior /opt/hermes (hermes role), balthazar /opt/mcps/extract (extract_watch role), caspar /opt/precis/embedder (precis_embedder role) — granted today, but a `brew upgrade python@3.x` re-mints the cdhash and silently voids the grant. Rebuild onto python.org before the next cycle (due 2026-10-16). No open nas-denied alerts.
-- **2026-10-28** — Audit pass, read-only. melchior and balthazar: every canonical venv runs on python.org 3.12 or 3.14, Developer-ID signed, TCC-granted (auth_value=2), pinned. The 09-16 drift venvs (/opt/hermes, /opt/mcps/extract, caspar embedder) are gone. caspar has no canonical venvs and no precis worker. castor and pollux are Linux, so out of scope. No hand drift, no open nas-denied alerts. Gap gr530710: melchior's asa-bot and asa-slack run on Homebrew python@3.14 (granted today, but not in this audit's list).
+The clock is `~/.cache/precis/fda-grant-review.log` (written by
+`scripts/fda-grant-review --stamp "<note>"`); entries before 2026-10-30 are in
+git history (`git log -p docs/runbooks/fda-grant-review.md`).
+

@@ -147,16 +147,16 @@ Live repo hygiene — migration collisions ⋅ code anchors ⋅ memory index ⋅
      >7 days ago) run the session-tightness scan: read recent large local
      transcripts for repeated token-waste (context bloat, wrong-tier agents,
      un-`rtk`'d firehoses, redundant calls), file findings to `docs/backlog/` /
-     gripes, then append a dated line to `docs/runbooks/token-review.md`. Inside
-     the 7-day window it's quiet — skip it.
+     gripes, then `scripts/token-review --stamp "<note>"`. Inside the 7-day
+     window it's quiet — skip it.
    - **Surface-review cadence** (`scripts/surface-review`) — on **DUE** (last
      pass >14 days ago) run `/surface-review`: mine the window with
      `scripts/mine-sessions/run.sh`, read the scoreboard, fan `forensics`
      agents over the evidence cards (plus the random arm), gate for
      live-and-unfixed, then attach the measurement to the existing backlog
-     item / gripe — mint only what nothing covers. Append a dated line to
-     `docs/runbooks/surface-review.md`. Inside the 14-day window it's quiet —
-     skip it. Remit: the precis MCP surface (verbs, error messages, renders,
+     item / gripe — mint only what nothing covers. Then
+     `scripts/surface-review --stamp "<note>"`. Inside the 14-day window it's
+     quiet — skip it. Remit: the precis MCP surface (verbs, error messages, renders,
      vocabulary, capability gaps) — distinct from token-review's harness
      behaviour and skill-search-review's discovery ranking.
    - **DB-thrash cadence** (`scripts/db-thrash-review`) — on **DUE** (last pass
@@ -165,9 +165,9 @@ Live repo hygiene — migration collisions ⋅ code anchors ⋅ memory index ⋅
      indexes · dead-tuple bloat), interpret outliers by *ratio* (lifetime
      `idx_scan=0` = safe to drop; a small table full-scanned often = throttle the
      caller, not an index; an unindexed fleet-wide GC = single-flight + index),
-     file findings to `docs/backlog/`/gripes, then append a dated line to
-     `docs/runbooks/db-thrash-review.md`. Inside the 14-day window it's quiet —
-     skip it. (This cadence exists because an unindexed GC pegged caspar for
+     file findings to `docs/backlog/`/gripes, then
+     `scripts/db-thrash-review --stamp "<note>"`. Inside the 14-day window it's
+     quiet — skip it. (This cadence exists because an unindexed GC pegged caspar for
      hours unnoticed; migs 0077/0078.)
    - **Skill-search cadence** (`scripts/skill-search-review`) — on **DUE** (last
      pass >30 days ago) run the skill-search discoverability audit: reconstruct
@@ -177,9 +177,9 @@ Live repo hygiene — migration collisions ⋅ code anchors ⋅ memory index ⋅
      executed queries, then LLM-eval whether each returned menu + the caller's
      selection made sense, and propose "better search bits" (skill H2/vocabulary
      edits, or a matcher change in `src/precis/handlers/skill.py`). File findings
-     to `docs/backlog/`/gripes, then append a dated line to
-     `docs/runbooks/skill-search-review.md`. Inside the 30-day window it's quiet
-     — skip it. (This cadence exists because skill search is agents' only
+     to `docs/backlog/`/gripes, then
+     `scripts/skill-search-review --stamp "<note>"`. Inside the 30-day window
+     it's quiet — skip it. (This cadence exists because skill search is agents' only
      discovery fallback when they don't know a slug, yet nothing logs how well it
      works; the first pass found the matcher was doing atomic whole-query
      substring matching. Runbook has the pipeline.)
@@ -189,9 +189,8 @@ Live repo hygiene — migration collisions ⋅ code anchors ⋅ memory index ⋅
      close the genuinely-fully-shipped ones — a one-line resolution comment
      naming the sha, then soft-delete (same convention as step 2). **Leave
      open** any gripe that shipped *with* open follow-ups — that's still real
-     work, just mislabeled. Then append a dated line to
-     `docs/runbooks/gripe-gc.md`. Inside the 7-day window it's quiet — skip
-     it. (This cadence exists because `issue-closer` only inspects the
+     work, just mislabeled. Then `scripts/gripe-gc-review --stamp "<note>"`.
+     Inside the 7-day window it's quiet — skip it. (This cadence exists because `issue-closer` only inspects the
      single just-shipped commit, so multi-commit fixes, pre-issue-closer
      gripes, and shipped commits that don't name the gripe all slip past it —
      see the runbook.)
@@ -202,9 +201,9 @@ Live repo hygiene — migration collisions ⋅ code anchors ⋅ memory index ⋅
      its cdhash-bearing real path is granted (`auth_value=2`) and its
      `python@3.1x` is pinned at that build. Re-grant (System Settings → Full Disk
      Access — TCC can't be set from CLI) + `launchctl kickstart -k` any drift,
-     `brew pin` any unpinned, then append a dated line to
-     `docs/runbooks/fda-grant-review.md`. Inside the 30-day window it's quiet —
-     skip it. The nursery `nas-denied` detector is the real-time backstop (alerts
+     `brew pin` any unpinned, then
+     `scripts/fda-grant-review --stamp "<note>"`. Inside the 30-day window it's
+     quiet — skip it. The nursery `nas-denied` detector is the real-time backstop (alerts
      in minutes when a host is *actually* locked out — the script also prints any
      open count); this cadence is the proactive drift catch. (This exists because
      a `brew upgrade python` cdhash bump silently broke melchior's grant and
@@ -217,9 +216,9 @@ Live repo hygiene — migration collisions ⋅ code anchors ⋅ memory index ⋅
      last succeeded job for an unprobed secret jobs depend on. Never print,
      paste or store a value — the output has none. File each `failed` or
      non-optional `missing` credential as one `waiting-for:reto` todo with the
-     key URL from its line (step 4a), then append a dated line to
-     `docs/runbooks/secrets-check.md`. Inside the 7-day window it's quiet —
-     skip it. (An expired key otherwise surfaces only as a failing job, e.g.
+     key URL from its line (step 4a), then
+     `scripts/secrets-check-review --stamp "<note>"`. Inside the 7-day window
+     it's quiet — skip it. (An expired key otherwise surfaces only as a failing job, e.g.
      `pourbaix_bulk` with `failure_class=config`; runbook has the details.)
      The weekly `secret_check` scheduler cadence runs the same probes and
      raises one alert per `failed` credential — check

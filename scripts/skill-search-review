@@ -8,39 +8,15 @@
 # prod job transcripts, stats their uniqueness/outcomes, LLM-evals whether the
 # returned menu + the caller's selection made sense, and proposes "better search
 # bits" (skill vocabulary / matcher fixes) to improve tool discoverability.
-# Procedure + dated log:
-#   docs/runbooks/skill-search-review.md   (the `## Log` section is the clock)
+# Procedure:
+#   docs/runbooks/skill-search-review.md
+# The clock is ~/.cache/precis/skill-search-review.log, written by
+#   scripts/skill-search-review --stamp "<note>"   (see scripts/cadence-lib.sh)
 set -euo pipefail
 cd "$(dirname "$0")/.."
+source scripts/cadence-lib.sh
 
-LOG="docs/runbooks/skill-search-review.md"
-WINDOW_DAYS=30
+cadence_init skill-search-review 30 docs/runbooks/skill-search-review.md "$@"
 
-if [[ ! -f "$LOG" ]]; then
-    echo "skill-search-review: DUE (no runbook at $LOG)"; exit 0
-fi
-
-# newest dated line in the `## Log` section (any order — sort -r picks the newest date)
-last=$(awk '/^## Log/{f=1;next} f' "$LOG" \
-    | grep -oE '\*\*[0-9]{4}-[0-9]{2}-[0-9]{2}\*\*' | sort -r | head -1 | tr -d '*' || true)
-
-if [[ -z "$last" ]]; then
-    echo "skill-search-review: DUE (no dated entry in $LOG '## Log')"; exit 0
-fi
-
-# portable YYYY-MM-DD -> epoch seconds (BSD date on macOS, GNU date on CI/Linux)
-epoch_of() { date -u -j -f "%Y-%m-%d" "$1" +%s 2>/dev/null || date -u -d "$1" +%s 2>/dev/null; }
-last_e=$(epoch_of "$last" || true)
-now_e=$(date +%s)
-
-if [[ -z "$last_e" ]]; then
-    echo "skill-search-review: last entry '$last' unparseable — check $LOG"; exit 0
-fi
-
-days=$(( (now_e - last_e) / 86400 ))
-if (( days > WINDOW_DAYS )); then
-    echo "skill-search-review: DUE (last pass $last, ${days}d ago > ${WINDOW_DAYS}d) — reconstruct skill searches from transcripts, stat + LLM-eval relevance/satisfaction, propose better search bits; append a dated line to $LOG. See the runbook."
-else
-    echo "skill-search-review: ok (last pass $last, ${days}d ago; due in $(( WINDOW_DAYS - days ))d)"
-fi
+cadence_check pass "reconstruct skill searches from transcripts, stat + LLM-eval relevance/satisfaction, propose better search bits" || true
 exit 0

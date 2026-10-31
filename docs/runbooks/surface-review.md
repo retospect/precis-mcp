@@ -36,9 +36,9 @@ a finding across two logs.
 ## When
 
 `scripts/surface-review` prints `surface-review: DUE` when the newest dated
-line in this file's `## Log` is >14 days old (or absent). Inside the window
-it is quiet. Run the pass when DUE, then append a dated line — that resets
-the clock.
+line in `~/.cache/precis/surface-review.log` is >14 days old (or absent).
+Inside the window it is quiet. Run the pass when DUE, then stamp it (step 6)
+— that resets the clock.
 
 ## Calibration — read this before the error table
 
@@ -128,8 +128,23 @@ disagrees with the alert.
    a new gripe, through `gripe-filer` so the dedup step runs, only for a
    confirmed-live cause that nothing covers. Fix the cheap ones in-session:
    error wording, a skill's vocabulary, a stale doc.
-6. **Log.** Append one dated line below, newest first: window, corpus size,
-   headline numbers, what shipped, what was filed.
+6. **Stamp.** `scripts/surface-review --stamp "<window, corpus size, headline
+   numbers, what shipped, what was filed; whether PRECIS_FRICTION_REFLECT
+   stays off>"`.
+
+Miner caveats, to discount before trusting a card:
+
+- The ledger carries no payload, so fleet byte cost is a PROXY (extrapolated
+  from the local mean result size), never a measurement.
+- Adjacency detectors (`narrow-after-fat`, reformulation) must not run over
+  the ledger's day-bucket pseudo-session, and need same-verb/same-id to count
+  as narrowing. `read_then_unused` saturates near 100% (it emits
+  `PROXY-SATURATED`).
+- The asa bots' 30 s `get(kind='gripe', id='/open')` liveness ping is dropped
+  by the miner but still counted by other ledger consumers (gr492453).
+- Known detector false positives: `skill_taught_wrong` counts a legitimate
+  NotFound and blames the last-read skill; `session_digest` drops assistant
+  text; `exec_class zero` counts empty-capture rows.
 
 ## Levers
 
@@ -159,76 +174,11 @@ blocked on a grouping/dedup lane so raw wishes do not pile up untriaged
 
 Turning it on converts this retrospective into a continuous feed. Until then
 this pass is the only thing looking. Re-read that item each pass and say in
-the log whether it is still the right call to leave it off.
+the stamp note whether it is still the right call to leave it off.
 
 ## Log
 
-Newest first. One line per pass: date, window, corpus size, headline, what
-shipped, what was filed.
+The clock is `~/.cache/precis/surface-review.log` (written by
+`scripts/surface-review --stamp "<note>"`); entries before 2026-10-30 are in
+git history (`git log -p docs/runbooks/surface-review.md`).
 
-- **2026-10-16** — Ad-hoc 6 h pass (08:31–14:31Z), first with `--devin`.
-  37,364 events / 252 sessions (local 24,473 over 160 files · Devin 6,843
-  over 20 sessions · ledger 2,486 · llmlog 3,562), 305 candidates, 54 cards +
-  36 random. Headline: **58% of the ledger was one bot probe** — the asa
-  Discord + Slack bots' 30 s `get(kind='gripe', id='/open')` liveness ping
-  (1,434 rows, the entire `render_obesity get|gripe` top row); the miner now
-  drops it (ledger 2,486 → 1,058), other ledger consumers still count it
-  (gr492453). Real friction, none of it errors: gripe reading is N singleton
-  gets, often doubled plain-then-`view='comments'` (197 reformulations / 12
-  sessions, 6 of 36 random cards; batch get refuses `comments`, gr492451);
-  `view='meta'` is the first move for raw meta and is refused on
-  job/pathway/quest, then agents psql `refs` (gr492452; the pathway kind's
-  67% error rate is mostly this). Devin sampled windows were shell-first —
-  zero precis verbs in both random Devin cards. Shipped: gripe
-  `view='full'` aliases `comments` and the unknown-view hint says what the
-  plain get already shows (paper stub mints retried 5× with `tags=`;
-  b4f8f4590 made paper put accept them, landed alongside);
-  `precis-job-observe-help` marks `sandbox_run` `target_node`/`resources`
-  required with a minimal example (2 BadInput retries after reading it);
-  `precis-se-help` states `view='block'` needs `args={'name':…}`. Evidence
-  appended to `mcp-surface-economy.md` (#2 counts re-confirmed; schema.md
-  pointer present but unreachable for checkout-less cluster agents; new
-  job-by-subject shape). Not filed, n=2 each: prod web UI URL absent from
-  skills (only in repo-dev memory); ad-hoc SQL column guesses. Detector
-  false positives worth fixing in the miner: `skill_taught_wrong` counts a
-  legitimate NotFound and attributes to whichever skill was read last;
-  `session_digest` drops assistant text; `exec_class zero` counts
-  empty-capture rows. `PRECIS_FRICTION_REFLECT` stays off — this pass again
-  inferred soft friction (the double fetch, the meta detour) that a
-  self-report would have named directly, but the dedup lane is still
-  unbuilt.
-- **2026-09-29** — First pass, and the one that built the toolkit. Window 5d,
-  390,590 events (local 64,767 over 305 files · ledger 34,625 · llmlog
-  289,119 · jobs 2,079), 235 candidates, 45 cards + 12 random. Headline: the
-  surface is **cheap in dev and unmeasured on the fleet** — precis is 5.7% of
-  tool-result bytes in local sessions, but 27,680 of 30,038 `get(kind='gripe')`
-  calls are fleet-side and the ledger carries no payload, so fleet byte cost
-  is only estimable (≈130 MB / ≈33M tok / 5d, a PROXY off a 4,716 B local
-  mean). Filed: `gripe-comment-timeline-uncapped` (`_render_one` appends every
-  comment with no cap, while the links section one file over was capped for
-  this exact reason in gr311344/gr311679) and
-  `draft-write-latency-whole-draft-rescan` (`sync_draft_links` is O(whole
-  draft) per write → `put(kind='draft')` p95 181.9 s; explicitly *not* the
-  embed cascade, which gr244419 already fixed). Evidence appended to
-  `mcp-surface-economy.md`: gaps #1/#2/#4/#5 confirmed (#1 sharpened — rank is
-  exposed but returns 0.02 for every hit, so it doesn't discriminate; #5
-  widened to fleet/ops health), #3/#6 **not** evidenced this window, plus two
-  gaps the list missed — schema/structure discoverability (96
-  `information_schema` calls / 21 sessions; `docs/reference/schema.md` is 12
-  weeks stale, missing 4 pcb tables, and **no skill pointed at it** — fixed
-  this pass in `precis-status-help`) and no batch form on singleton verbs (a
-  draft's 508 undefined abbreviations = ~500 round trips). Also filed the
-  ledger `result_bytes` change that would turn this pass's biggest number from
-  an extrapolation into a measurement. **Three of the pass's findings were
-  bugs in the miner itself**, all caught by the judging agents and fixed
-  before shipping: `narrow-after-fat` counted `get`→unrelated-`search` as
-  narrowing (n=1,830 → 0 once same-verb/same-id was required);
-  every adjacency detector ran over the ledger's day-bucket pseudo-session, so
-  the whole fleet's daily calls read as one agent's consecutive turns
-  (`get|quest` "reformulated" 26× inside 19 seconds); and `read_then_unused`
-  saturates at ~100%, so it now emits a `PROXY-SATURATED` self-check instead
-  of per-verb rates. The random arm produced the pass's most valuable finding
-  despite being the smallest — sized up to 36 for next time.
-  `PRECIS_FRICTION_REFLECT` stays off: the soft-friction signal it would give
-  is exactly what this pass had to infer indirectly, so it remains the
-  strongest next lever, but the dedup lane it needs is still unbuilt.

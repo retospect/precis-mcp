@@ -105,11 +105,12 @@ filter, not a proof.
 
 ## 7. Log
 
-Append one dated line to `docs/runbooks/surface-review.md` `## Log`, newest
-first: date, window, corpus size, headline numbers, what shipped, what was
-filed. That line is the cadence clock — `scripts/surface-review` reads it.
+Run `scripts/surface-review --stamp "<window, corpus size, headline numbers,
+what shipped, what was filed>"`. That line (in
+`~/.cache/precis/surface-review.log`) is the cadence clock —
+`scripts/surface-review` reads it.
 
-Re-read `docs/backlog/friction-reflection-enable.md` and say in the log
+Re-read `docs/backlog/friction-reflection-enable.md` and say in the stamp note
 whether leaving `PRECIS_FRICTION_REFLECT` off is still the right call. It is
 the one lever that would turn this retrospective into a continuous feed.
 

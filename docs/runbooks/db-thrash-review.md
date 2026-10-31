@@ -16,9 +16,9 @@ regex. The script only says **when** it's due; you run the pass.
 ## When
 
 `scripts/db-thrash-review` prints `db-thrash-review: DUE` when the newest dated
-line in this file's `## Log` is >14 days old (or absent). Inside the window it's
-quiet. Run the pass when DUE, then append a dated line (below) — that resets the
-clock.
+line in `~/.cache/precis/db-thrash-review.log` is >14 days old (or absent).
+Inside the window it's quiet. Run the pass when DUE, then
+`scripts/db-thrash-review --stamp "<one-line verdict>"` — that resets the clock.
 
 ## The pass — prod-hop and run these four scans
 
@@ -85,56 +85,17 @@ FROM pg_stat_user_tables WHERE n_dead_tup>500 ORDER BY n_dead_tup DESC LIMIT 12;
   (investigate autovacuum settings).
 - File anything actionable as a `docs/backlog/` item / a gripe; fix in-reach ones directly.
   Watch for growth-without-retention (an insert-only log table with no GC).
+- **Counters reset on postmaster restart.** Check `pg_postmaster_start_time()`
+  first; counts from a fresh window (a few hours) don't compare to older passes
+  and `idx_scan=0` there proves nothing. A new `idx_scan=0` index (fresh ingest)
+  needs a second clean window before a drop is filed.
+- **Deliberate keeps — don't re-flag:** `chunks_keywords_gin` (backs
+  `mode='verbatim'`) and `tag_embeddings_vector_hnsw` (backs ANN below the size
+  threshold). A 13-row table (`app_settings`) with huge seq_scan counts means a
+  hot caller (`docs/backlog/db-resident-settings.md`), not a missing index.
 
 ## Log
 
-- **2026-10-23** — Healthy; no gripes filed (session MCP was down for the whole pass). Postmaster restarted 2026-10-22 17:02Z, so counters are ~25 h old and not comparable to 10-02. No long-runners. Bloat all <9% except `chunk_tags` 16.7% (10k of 60.7k rows, no autovacuum recorded; watch, file if >20% next pass). Seq-scans by tuples read: `worker_logs` 2.0G, `chunks` 1.7G, `chunk_embeddings` 1.4G, `ref_tags` 739M (planner choice). `kind_provider` 1,794 scans on 16.7k rows: the gr461595 pattern persists although that gripe closed 10-07 — reopen or refile when the MCP is back. `llm_call_log` hash indexes (gr461596) no longer in the idx_scan=0 top-12; verify whether dropped. New idx_scan=0 within the window: `parts_params_idx` 61 MB, `parts_description_tsv_idx` 40 MB, `struct_atoms`/`struct_bonds` (~41 MB, likely fresh ingest); `paper_authors` trgm/openalex/orcid (~31 MB) second window in a row. Re-check all next pass before filing a drop.
-- **2026-10-02** — Healthy; one finding. Postmaster restarted 2026-10-02 03:01Z, so all pg_stat counters are ~7h old (not comparable to 09-16; `app_settings` seq_scans now 338k vs 8.6M is the reset, not a fix). No long-runners (one 1.3 s chunk-candidate CTE). Bloat all <5% (`worker_logs` 4.4%, `ref_tags` 4.4%). Seq-scans by tuples read: `ref_tags` 8.3G (30k scans x 275k rows, 834k-row table, 464M idx_scan — planner choice), `chunks` 7.5G, `chunk_embeddings` 4.9G, `worker_logs` 3.9G; new outlier `kind_provider` 4,038 scans on 51k rows = gr461595 (ephemeral-container roster rows + nursery detector scan). `llm_call_log` request/response hash indexes (228 MB) still idx_scan=0 and still undropped: filed as gr461596 (was only a log line before). Other idx_scan=0 this window (`paper_authors` trgm/openalex/orcid, 26 MB) is within the 7h window — re-check next pass.
-- **2026-09-16** — Healthy; no long-runners, bloat all <5%. `app_settings` seq_scans 8.6M (3x from 2026-08-23's 2.9M) — the 13-row table is polled hot; `docs/backlog/db-resident-settings.md` (cache TTL) is now the actionable fix. Known drop candidates unchanged: `llm_call_log` request/response hash indexes (~206 MB, lifetime idx_scan 0/2) — verify-then-drop migration pending since 2026-08-07. `ref_tags` seq_scan/size ratio climbing (199k on 120 MB).
-Newest first. One line per completed pass — `**YYYY-MM-DD**` + a terse verdict.
-
-- **2026-08-26** — Healthy; re-confirms 2026-08-23 (which the DUE detector
-  missed — the 08-22/08-23 entries had been appended newest-LAST; log order
-  fixed this pass). One 7 s IO-wait `chunk_embeddings` select, no long-runners.
-  Seq-scans stable vs 08-23 (`worker_logs` 4.5 GB, `ref_tags` 133k scans on a
-  93 MB table — rational planner choice). Drop candidates unchanged:
-  `llm_call_log` request/response hash indexes (~159 MB combined, lifetime
-  idx_scan=0) — still awaiting the verify-then-drop migration. Dead bloat all
-  <5% (max `pdf_locations` 4.7%); `chunk_embeddings` still shows no
-  last_autovacuum but 0.5% dead — keep on watch.
-- **2026-08-23** — Healthy; re-confirms 2026-08-22. No long-runners; dead
-  bloat all <5% (worker_logs 3.2%, autovac current). Drop candidates
-  unchanged: `llm_call_log` request/response hash indexes (~140 MB, lifetime
-  idx_scan=0) — still awaiting the verify-then-drop migration. New
-  observations: `app_settings` 2.9M cumulative seq scans on 13 rows — a
-  13-row table seq-scans by design, but the volume says a caller polls
-  `live_config` hot (see `docs/backlog/db-resident-settings.md`, cache TTL
-  angle); `chunk_tags`/`chunk_embeddings` show no autovacuum in
-  pg_stat_user_tables — dead ratios are fine (2.7%/0.4%), watch next pass.
-  `tag_embeddings_vector_hnsw` shows idx_scan=0 this window but was
-  deliberately kept 2026-08-07 (backs ANN below size threshold) — do not
-  re-flag.
-- **2026-08-22** — Healthy. No active long-runners (empty pg_stat_activity).
-  Seq-scan tables stable; `worker_logs` down to 4.5 GB (from 7.1 GB — sweeper
-  GC working). Still-unused drop candidates: `llm_call_log` request/response
-  hash indexes (136 MB combined, lifetime idx_scan=0) — verify no live queries
-  on those columns, then drop via forward migration. Dead bloat all <5%,
-  vacuum nominal. Fleet note: melchior `llm_summarize` logged 66 transient
-  summarizer 504s against 117k chunk_summaries written — noisy-but-working.
-- **2026-08-07** — Healthy. No active long-runners (two samples, both empty).
-  Last pass's fixes verified holding: `worker_logs` oldest row = 30d, 0 rows
-  past 31d (sweeper GC working; 7.1 GB is just retention volume), no bloat
-  anywhere (max dead_pct 5.1%; the "never autovacuumed" tables are simply
-  below the 20% threshold). One filing: 4 non-PK secondary indexes with
-  lifetime `idx_scan=0` (~127 MB: `llm_call_log_request_hash_idx`,
-  `vault_events_name_at_idx`, `chunks_section_path_idx`,
-  `chunks_numerics_idx`) → a backlog item, verify-before-drop via forward
-  migration. Kept (again): `chunks_keywords_gin`, `tag_embeddings_vector_hnsw`.
-- **2026-07-19** — Baseline pass (the review that motivated this runbook).
-  Found + fixed: `llm_blob` GC saturating caspar (unindexed hash anti-join, no
-  single-flight) → migs 0077 (hash indexes) + `route_log.gc` guards. Dropped ~193
-  MB dead indexes (mig 0078: `chunks_dream_score_idx`, `chunks_watch_score_idx`,
-  `llm_call_log_source_ts_idx`). Throttled `corpus_reconcile`'s per-tick
-  full-enum. Filed: `worker_logs` unbounded → added 30-day sweeper GC. No bloat
-  (all dead_pct <5%). Kept `chunks_keywords_gin` (backs `mode='verbatim'`) +
-  `tag_embeddings_vector_hnsw` (live, just below the ANN size threshold).
+The clock is `~/.cache/precis/db-thrash-review.log` (written by
+`scripts/db-thrash-review --stamp "<note>"`); entries before 2026-10-30 are in
+git history (`git log -p docs/runbooks/db-thrash-review.md`).

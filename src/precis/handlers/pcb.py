@@ -6302,7 +6302,7 @@ class PcbHandler(Handler):
                 next=f"put(kind='pcb', id='{slug}', args={{'op':'import_epro', "
                 "'source':'export:<board slug>', 'report':True}}) returns "
                 "the intake census",
-                options=[True],
+                options=["True"],
             )
         source = str(args.get("source") or "").strip()
         src_slug = source.removeprefix("export:").strip()

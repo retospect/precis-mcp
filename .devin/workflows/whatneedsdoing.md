@@ -60,11 +60,11 @@ suggests needs the user's explicit go-ahead first.
      reconsolidation DUE run `scripts/memory-lint --currency` and
      judgment-resolve each suspect (once/day at most).
    - **Token-review cadence** — on DUE, scan recent large transcripts for
-     repeated token-waste, file findings, append a dated line to
-     `docs/runbooks/token-review.md`. Quiet inside the 7-day window.
+     repeated token-waste, file findings, then
+     `scripts/token-review --stamp "<note>"`. Quiet inside the 7-day window.
    - **DB-thrash cadence** — on DUE, run the four `pg_stat_*` prod scans,
-     interpret outliers by *ratio*, file findings, append a dated line to
-     `docs/runbooks/db-thrash-review.md`. Quiet inside the 14-day window.
+     interpret outliers by *ratio*, file findings, then
+     `scripts/db-thrash-review --stamp "<note>"`. Quiet inside the 14-day window.
    - **Nightly build** — `✗ RED` = upstream dependency drift broke green main;
      investigate the named tests. `DUE` = kick off `scripts/nightly` as a
      **non-blocking background command** (it records to `.nightly-status.md`);

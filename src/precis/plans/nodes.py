@@ -110,6 +110,8 @@ def _unknown_keys(spec: dict[str, Any], allowed: tuple[str, ...]) -> str | None:
 
 
 def _op_problems(op: Any) -> list[str]:
+    name: Any
+    params: Any
     if isinstance(op, str):
         name, params = op, None
     elif isinstance(op, dict):
