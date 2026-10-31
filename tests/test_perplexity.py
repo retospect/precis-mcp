@@ -445,6 +445,130 @@ def test_non_handle_tilde_query_unaffected(
     assert _StubClient.call_count == 1
 
 
+# ── section-handle reads (gr542060) ──────────────────────────────────
+# ``search`` emits block-hit handles as ``<slug>~<block.slug>`` (e.g.
+# ``…~5-official-qiskit-ibm-runtime-mcp-server``). Pasting one into
+# ``get`` must read the cached section — never a fresh paid call.
+
+
+def _import_sectioned_report(h: Any, query: str) -> Any:
+    """Import a multi-section report; return its ref."""
+    h.put(
+        id=query,
+        text=(
+            "# Report\n\n"
+            "## 5. Official Qiskit IBM Runtime MCP Server\n\n"
+            "the official server body\n\n"
+            "## Alternatives\n\n"
+            "the alternatives body"
+        ),
+        mode="import",
+    )
+    return h.store.list_refs(kind=h.spec.kind, limit=1)[0]
+
+
+@pytest.mark.parametrize(
+    "handler_cls", [WebsearchHandler, ThinkHandler, ResearchHandler]
+)
+def test_search_hit_section_handle_reads_cache_without_fetch(
+    store: Store, handler_cls: Any
+) -> None:
+    """The exact handle form ``search`` emits — ``<slug>~<block.slug>`` —
+    reads that stored section; the paid client is never called."""
+    h = handler_cls(hub=Hub(store=store, embedder=MockEmbedder(dim=1024)))
+    ref = _import_sectioned_report(h, "qiskit mcp servers")
+    blocks = h.store.chunks.list_chunks_for_ref(ref.id)
+    section = next(b for b in blocks if "Official Qiskit" in b.text)
+    handle = f"{ref.slug}~{section.slug}"
+
+    resp = h.get(id=handle)
+
+    assert section.text in resp.body
+    assert "the alternatives body" not in resp.body
+    assert _StubClient.call_count == 0
+
+
+@pytest.mark.parametrize(
+    "handler_cls", [WebsearchHandler, ThinkHandler, ResearchHandler]
+)
+def test_unknown_section_on_cached_slug_refuses_with_sections(
+    store: Store, handler_cls: Any
+) -> None:
+    """An unknown selector on a live slug refuses, naming the valid
+    section handles — never a fresh paid call."""
+    h = handler_cls(hub=Hub(store=store, embedder=MockEmbedder(dim=1024)))
+    ref = _import_sectioned_report(h, "qiskit mcp servers")
+
+    with pytest.raises(BadInput, match="search block handle") as ei:
+        h.get(id=f"{ref.slug}~no-such-section")
+
+    msg = str(ei.value)
+    assert f"{ref.slug}~5-official-qiskit-ibm-runtime-mcp" in msg
+    assert f"{ref.slug}~alternatives" in msg
+    assert "no_fetch" in msg
+    assert _StubClient.call_count == 0
+
+
+@pytest.mark.parametrize(
+    "handler_cls", [WebsearchHandler, ThinkHandler, ResearchHandler]
+)
+def test_tilde_id_on_missing_slug_never_fetches(store: Store, handler_cls: Any) -> None:
+    """An ``id`` containing ``~`` is an address, not a query — an
+    unresolvable prefix refuses rather than spending."""
+    h = handler_cls(hub=Hub(store=store, embedder=MockEmbedder(dim=1024)))
+    with pytest.raises(BadInput, match="section address"):
+        h.get(id="not-a-cached-slug~some-section")
+    assert _StubClient.call_count == 0
+
+
+# ── citation numbering (gr542060) ────────────────────────────────────
+# The inline [N] markers index the id-spaced ``search_results`` list;
+# the legacy ``citations`` array can arrive reordered/deduplicated.
+
+
+def test_sources_follow_search_results_order_not_citations() -> None:
+    """When both fields are present and disagree, Sources: follows
+    ``search_results`` — the array the [N] markers are numbered against."""
+    body, citations = _format_perplexity_body(
+        {
+            "choices": [{"message": {"content": "claim a [1] claim b [2]"}}],
+            "citations": ["https://b.example/", "https://a.example/"],
+            "search_results": [
+                {"title": "A", "url": "https://a.example/"},
+                {"title": "B", "url": "https://b.example/"},
+            ],
+        }
+    )
+    assert "[1] https://a.example/" in body
+    assert "[2] https://b.example/" in body
+    assert citations == ["https://a.example/", "https://b.example/"]
+
+
+def test_sources_honour_explicit_search_result_ids() -> None:
+    """Reformulated responses can carry explicit result ids — the label
+    is the marker id, not the array position."""
+    body, _citations = _format_perplexity_body(
+        {
+            "choices": [{"message": {"content": "claim [7]"}}],
+            "search_results": [{"id": 7, "url": "https://seven.example/"}],
+        }
+    )
+    assert "[7] https://seven.example/" in body
+
+
+def test_sources_fall_back_to_citations_array() -> None:
+    """Legacy responses without ``search_results`` keep the documented
+    ``citations`` mapping: [N] → citations[N-1]."""
+    body, citations = _format_perplexity_body(
+        {
+            "choices": [{"message": {"content": "claim [1]"}}],
+            "citations": ["https://only.example/"],
+        }
+    )
+    assert "[1] https://only.example/" in body
+    assert citations == ["https://only.example/"]
+
+
 # ── env / availability ───────────────────────────────────────────────
 
 

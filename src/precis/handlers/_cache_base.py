@@ -217,6 +217,11 @@ class FetchResult:
 # ``<slug>~<lo>-<hi>``, matching the paper kind's ``_RANGE_RE``) returns the
 # inclusive chunk range, one "page" at a time; every hinted page is sized to
 # fit under the context budget (``_RANGE_PAGE_CHUNKS``).
+#
+# The named form ``<slug>~<block-slug>`` resolves the selector that
+# ``search`` prints as its block-hit handle (``<slug>~<block.slug>``):
+# on a paid kind a pasted handle must read the cache, not spend
+# (gr542060 — ``tilde_id_is_address``).
 
 #: ``<anything>~<digits>`` at the end of the string — the base's slugs never
 #: contain ``~`` (``_slug_for`` sanitises to alnum/``-``/``_``), so this
@@ -234,6 +239,16 @@ _CHUNK_RANGE_SELECTOR_RE = re.compile(r"^(.+)~(\d+)(?:\.\.|-)(\d+)$")
 #: over budget after this narrowing sets its own hint down to a single
 #: chunk (``_render_chunk_selector``).
 _RANGE_PAGE_CHUNKS = 4
+
+#: ``<digits>-<rest>`` at the start of a named section selector — a
+#: composite ``<ord>-<block-slug>`` spelling resolves against ``rest``
+#: too, so either handle shape search can emit reads the same block.
+_ORD_PREFIXED_SECTION_RE = re.compile(r"^\d+-(.+)$")
+
+#: Cap on the section-handle list an unknown-selector refusal renders
+#: via ``options=`` — a deep-research report can have hundreds of
+#: blocks; the first dozen is enough to copy a valid handle from.
+_NAMED_SECTION_OPTIONS_MAX = 12
 
 
 def _parse_chunk_selector(raw: str) -> tuple[str, int, int] | None:
@@ -311,6 +326,15 @@ class CacheBackedHandler(Handler):
     #: never gated; priced kinds (the perplexity tiers, via
     #: ``_PerplexityBase``) override it.
     cost_per_call_usd: ClassVar[float] = 0.0
+
+    #: ``True`` on paid query-addressed kinds (the perplexity tiers):
+    #: an ``id`` containing ``~`` is ALWAYS a cache-section address —
+    #: never a fresh billable query (gr542060 — a search block handle
+    #: pasted into ``get`` used to mint a new ~$0.02 row). Free kinds
+    #: leave it False so an id that merely contains ``~`` (a
+    #: ``https://host/~user`` URL, a ``~10 items`` query) keeps its
+    #: ordinary query semantics.
+    tilde_id_is_address: ClassVar[bool] = False
 
     def __init__(self, *, hub: Hub) -> None:
         if hub.store is None:
@@ -442,15 +466,19 @@ class CacheBackedHandler(Handler):
                 ),
             )
 
-        # Chunk selector: ``get(id='<slug>~<ord>')`` or ``get(id='<slug>~<lo>..<hi>')``
-        # — the shape the dispatcher rewrites a resolved chunk handle
-        # (``nc<id>``) into for any kind declaring
-        # ``supports_chunk_selectors=True`` (gr311336; ranges gr533135).
-        # Gated on the explicit opt-in so kinds that never declared it
-        # (math/web today) keep treating a literal ``~digits``-suffixed
-        # string as an ordinary query, unchanged.
+        # Chunk/section selector: ``get(id='<slug>~<ord>')``,
+        # ``<slug>~<lo>..<hi>``, or the named-section form
+        # ``<slug>~<block-slug>`` that ``search`` emits as a block-hit
+        # handle — the shape the dispatcher rewrites a resolved chunk
+        # handle (``nc<id>``) into for any kind declaring
+        # ``supports_chunk_selectors=True`` (gr311336; ranges gr533135;
+        # named sections gr542060). Gated on the explicit opt-in so
+        # kinds that never declared it (math today) keep treating a
+        # literal ``~digits``-suffixed string as an ordinary query,
+        # unchanged.
         if self.spec.supports_chunk_selectors and isinstance(id, str):
-            parsed = _parse_chunk_selector(id.strip())
+            sel_id = id.strip()
+            parsed = _parse_chunk_selector(sel_id)
             if parsed is not None:
                 slug, lo, hi = parsed
                 return self._render_chunk_selector(
@@ -461,6 +489,39 @@ class CacheBackedHandler(Handler):
                     untags=untags,
                     view=view,
                 )
+            if "~" in sel_id:
+                prefix, _, section = sel_id.partition("~")
+                prefix, section = prefix.strip(), section.strip()
+                entry = (
+                    self.store.get_cache_entry_by_slug(kind=self.spec.kind, slug=prefix)
+                    if prefix
+                    else None
+                )
+                if entry is not None:
+                    ref, _cache = entry
+                    return self._render_named_section(
+                        ref,
+                        prefix,
+                        section,
+                        tags=tags,
+                        untags=untags,
+                        view=view,
+                    )
+                if self.tilde_id_is_address:
+                    raise BadInput(
+                        f"{self.spec.kind}: {sel_id!r} reads as a section "
+                        f"address (<slug>~<section>) — {prefix!r} is not "
+                        f"a cached {self.spec.kind} ref, and a `~` id "
+                        "never fires a fresh paid call.",
+                        next=(
+                            f"get(kind={self.spec.kind!r}, id='/recent') "
+                            "lists the cached slugs",
+                            f"to query {sel_id!r} literally, pass it as "
+                            "q= with args={'literal': True}",
+                        ),
+                    )
+                # A free kind's id that merely contains ``~`` — fall
+                # through to the ordinary query path, unchanged.
 
         # ``mode=`` validation. Today only ``refresh`` is honoured —
         # bypass the freshness check, force ``_fetch``, write the
@@ -914,6 +975,58 @@ class CacheBackedHandler(Handler):
             )
         body = frame + render_next_section(nav)
         return Response(body=body, result_budget_hint=hint)
+
+    def _render_named_section(
+        self,
+        ref: Ref,
+        slug: str,
+        section: str,
+        *,
+        tags: list[str] | None,
+        untags: list[str] | None,
+        view: str | None,
+    ) -> Response:
+        """Read one named section of a cached ref — ``<slug>~<block-slug>``.
+
+        ``search`` emits block-hit handles as ``<slug>~<block.slug>``
+        (e.g. ``…~5-official-qiskit-ibm-runtime-mcp-server``); pasting
+        one into ``get`` must read that stored chunk, never fire a
+        fresh query (gr542060). A leading ``<ord>-`` prefix is
+        tolerated so a composite ``<ord>-<slug>`` spelling resolves
+        too. An unknown selector refuses with the valid section
+        handles: on a paid tier the wrong recovery used to mint a new
+        billable row, so the refusal names the cached alternatives
+        instead.
+        """
+        block = self.store.chunks.get_chunk(ref.id, slug=section) if section else None
+        if block is None and section:
+            m = _ORD_PREFIXED_SECTION_RE.match(section)
+            if m is not None:
+                block = self.store.chunks.get_chunk(ref.id, slug=m.group(1))
+        if block is not None:
+            return self._render_chunk_selector(
+                slug,
+                block.ord,
+                block.ord,
+                tags=tags,
+                untags=untags,
+                view=view,
+            )
+        blocks = self.store.chunks.list_chunks_for_ref(ref.id)
+        handles = [f"{slug}~{b.slug or b.ord}" for b in blocks]
+        raise BadInput(
+            f"{self.spec.kind}: {section!r} reads as a search block "
+            f"handle but is not a stored section of {slug!r} "
+            f"({len(handles)} sections exist) — a `~` id never fires a "
+            "fresh paid call.",
+            options=handles[:_NAMED_SECTION_OPTIONS_MAX],
+            next=(
+                f"get(kind={self.spec.kind!r}, id={slug!r}, "
+                "args={'no_fetch': True}) reads the whole cached "
+                "report — the options list names the valid section "
+                "handles"
+            ),
+        )
 
     def _attribute_touch(self, ref_id: int) -> None:
         """Attribute a freshly-created cache ref's chunks to the current

@@ -141,6 +141,11 @@ class _PerplexityBase(CacheBackedHandler):
     #: a third party: keep the secret gate on.
     stores_opaque_text: ClassVar[bool] = False
 
+    #: A ``~``-carrying id is ALWAYS a cache-section address on the paid
+    #: tiers — never a fresh billable query (gr542060 — a pasted search
+    #: block handle used to mint a new ~$0.02–$0.50 row).
+    tilde_id_is_address: ClassVar[bool] = True
+
     # ── inherited from CacheBackedHandler (subclasses override) ──────
     provider: ClassVar[str] = "perplexity"
     corpus_slug: ClassVar[str] = "default"
@@ -946,18 +951,43 @@ def _format_perplexity_body(data: dict[str, Any]) -> tuple[str, list[str]]:
     # the tag, so the strip is a no-op there.  (MCP critic MINOR-C
     # — perplexity-reasoning kind leaks <think>…</think> reasoning trace.)
     content = _strip_reasoning_trace(content)
-    citations: list[str] = [str(c) for c in (data.get("citations") or [])]
+    sources = _citation_sources(data)
+    citations = [url for _n, url in sources]
 
     parts: list[str] = []
     parts.append(content if content else "_(Perplexity returned an empty answer.)_")
 
-    if citations:
+    if sources:
         parts.append("")
         parts.append("Sources:")
-        for i, url in enumerate(citations, 1):
-            parts.append(f"[{i}] {url}")
+        for n, url in sources:
+            parts.append(f"[{n}] {url}")
 
     return "\n".join(parts), citations
+
+
+def _citation_sources(data: dict[str, Any]) -> list[tuple[int, str]]:
+    """The numbered source list the inline ``[N]`` markers index.
+
+    ``search_results`` is the canonical, id-spaced source list — when an
+    entry carries an ``id`` that IS the marker number, and array order
+    is the id order. The legacy ``citations`` array can arrive
+    deduplicated or reordered relative to it, which skews ``[N]`` off
+    its source (gr542060 — a ``[36]`` marker in a deep-research answer
+    landed on an unrelated URL). Prefer ``search_results``; fall back
+    to ``citations`` — 1-indexed by position, the documented legacy
+    mapping — for responses that predate the field.
+    """
+    numbered: list[tuple[int, str]] = []
+    for i, r in enumerate(data.get("search_results") or [], 1):
+        url: Any = r.get("url") if isinstance(r, dict) else r
+        if not url:
+            continue
+        rid = r.get("id") if isinstance(r, dict) else None
+        numbered.append((rid if isinstance(rid, int) else i, str(url)))
+    if numbered:
+        return numbered
+    return [(i, str(c)) for i, c in enumerate(data.get("citations") or [], 1)]
 
 
 def _title_for_query(query: str) -> str:
