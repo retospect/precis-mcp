@@ -300,6 +300,120 @@ def test_tests_green_bad_args_close(store: Store, rng: object) -> None:
     assert not res.open and res.why.startswith("tests-green")
 
 
+# ── drc-clean ─────────────────────────────────────────────────────
+
+
+def _pcb(store: Store, slug: str = "gate-board") -> int:
+    """A two-part design with a board row (U1, R1; nets VCC/GND)."""
+    ref, _created, _counts = store.pcb_apply(
+        slug=slug,
+        title=slug,
+        components=[
+            {"refdes": "U1", "label": "MCU", "pins": [{"name": "1"}, {"name": "2"}]},
+            {"refdes": "R1", "label": "R", "pins": [{"name": "1"}, {"name": "2"}]},
+        ],
+        nets=[{"name": "VCC"}, {"name": "GND"}],
+        connections=[
+            {"net": "VCC", "refdes": "U1", "pin": "1"},
+            {"net": "VCC", "refdes": "R1", "pin": "1"},
+            {"net": "GND", "refdes": "U1", "pin": "2"},
+            {"net": "GND", "refdes": "R1", "pin": "2"},
+        ],
+    )
+    store.pcb_ensure_board(int(ref.id))
+    return int(ref.id)
+
+
+def _review_run(store: Store, ref_id: int, *severities: str) -> str:
+    """Record a DRC run the way pcb_review's check leg does
+    (check_run.run(record=True) -> check_run.record_run -> the store write),
+    one finding per severity."""
+    from precis.pcb import check_run
+    from precis.pcb.drc import DrcFinding
+
+    findings = [
+        DrcFinding(rule=f"rule{i}", severity=sev, where=f"U1.{i}", detail="x")
+        for i, sev in enumerate(severities)
+    ]
+    board_id = store.pcb_ensure_board(ref_id)
+    ran = check_run.record_run(
+        store, board_id, findings, False, "routed", record=True, claimed_phase=None
+    )
+    assert ran.run_id is not None
+    return ran.run_id
+
+
+def _drc(board: object) -> dict[str, Any]:
+    return {"kind": "drc-clean", "args": {"board": board}}
+
+
+def test_drc_clean_closed_with_no_run(store: Store) -> None:
+    ref_id = _pcb(store)
+    res = evaluate(store, _drc(f"pb{ref_id}"), todo_id=1)
+    assert res == GateVerdict(False, f"no DRC run yet on pb{ref_id}")
+
+
+def test_drc_clean_closed_with_the_error_count(store: Store) -> None:
+    ref_id = _pcb(store)
+    run = _review_run(store, ref_id, "error", "error", "warn")
+    res = evaluate(store, _drc(f"pb{ref_id}"), todo_id=1)
+    assert not res.open
+    assert res.why == f"2 DRC error(s) on pb{ref_id} (run {run[:12]})"
+
+
+def test_drc_clean_open_when_newest_run_has_no_error(store: Store) -> None:
+    ref_id = _pcb(store)
+    _review_run(store, ref_id, "error")
+    run = _review_run(store, ref_id, "warn")
+    res = evaluate(store, _drc(f"pb{ref_id}"), todo_id=1)
+    assert res.open, res.why
+    assert res.why == f"DRC clean on pb{ref_id} (run {run[:12]}, 1 warning(s))"
+    # A clean run (zero findings) is a verdict too, and the newest wins.
+    _review_run(store, ref_id, "error")
+    assert not evaluate(store, _drc(f"pb{ref_id}"), todo_id=1).open
+    _review_run(store, ref_id)
+    assert evaluate(store, _drc(f"pb{ref_id}"), todo_id=1).open
+
+
+def test_drc_clean_closed_when_the_design_changed_since(store: Store) -> None:
+    ref_id = _pcb(store)
+    run = _review_run(store, ref_id)
+    assert evaluate(store, _drc(f"pb{ref_id}"), todo_id=1).open
+    assert store.pcb_set_placement(ref_id, {"U1": (5.0, 7.0)}) == 1
+    res = evaluate(store, _drc(f"pb{ref_id}"), todo_id=1)
+    assert not res.open
+    assert (
+        res.why == f"pb{ref_id} changed since DRC run {run[:12]}; the check must re-run"
+    )
+
+
+@pytest.mark.parametrize("spell", ["slug", "pcb:slug", "handle", "id"])
+def test_drc_clean_resolves_board_spellings(store: Store, spell: str) -> None:
+    ref_id = _pcb(store, slug="spelled")
+    _review_run(store, ref_id)
+    board = {
+        "slug": "spelled",
+        "pcb:slug": "pcb:spelled",
+        "handle": f"PB{ref_id}",
+        "id": str(ref_id),
+    }[spell]
+    res = evaluate(store, _drc(board), todo_id=1)
+    assert res.open, res.why
+    assert f"pb{ref_id}" in res.why
+
+
+@pytest.mark.parametrize("board", [None, "", "  ", 7, "pcb:"])
+def test_drc_clean_bad_args_close(store: Store, board: object) -> None:
+    res = evaluate(store, _drc(board), todo_id=1)
+    assert not res.open and res.why.startswith("drc-clean")
+
+
+def test_drc_clean_unknown_board_closes(store: Store) -> None:
+    res = evaluate(store, _drc("no-such-board"), todo_id=1)
+    assert not res.open
+    assert res.why.startswith("drc-clean:") and "not found" in res.why
+
+
 # ── dispatch ──────────────────────────────────────────────────────
 
 

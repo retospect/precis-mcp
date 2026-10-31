@@ -8,7 +8,7 @@ on existing fields, never by a new kind:
   ``run_slice`` for LLM work);
 - phase: a todo with children and ``meta.auto_close``;
 - gate: ``meta.gate = {kind, args}`` — ``sha-in-prod``, ``tests-green``,
-  ``answer``, ``not-before``; evaluated, never dispatched;
+  ``answer``, ``not-before``, ``drc-clean``; evaluated, never dispatched;
 - loop: ``meta.loop = {max, until, body}``;
 - generator: ``meta.generate = {role, from}``.
 

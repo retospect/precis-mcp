@@ -7,7 +7,8 @@ A plan is a todo subtree; what a node *is* lives in five optional meta keys
 ``op``          str job_type name, or ``{type, params?}`` -- a task
 ``auto_close``  bool -- a phase: the tick closes it when every child is done
 ``gate``        ``{kind, args}``: ``sha-in-prod {sha}``,
-                ``tests-green {range}``, ``answer``, ``not-before {ts}``
+                ``tests-green {range}``, ``answer``, ``not-before {ts}``,
+                ``drc-clean {board}``
 ``loop``        ``{max, until: <gate spec>, body: <template name>}``
 ``generate``    ``{role: slicer|spec-writer|triage, from: <str>}``
 ==============  ==========================================================
@@ -34,7 +35,13 @@ PLAN_KEYS: tuple[str, ...] = ("op", "gate", "loop", "generate", "auto_close")
 #: A node carries at most one of these (each makes it a different kind).
 EXCLUSIVE_KEYS: tuple[str, ...] = ("gate", "loop", "generate")
 
-GATE_KINDS: tuple[str, ...] = ("sha-in-prod", "tests-green", "answer", "not-before")
+GATE_KINDS: tuple[str, ...] = (
+    "sha-in-prod",
+    "tests-green",
+    "answer",
+    "not-before",
+    "drc-clean",
+)
 GENERATE_ROLES: tuple[str, ...] = ("slicer", "spec-writer", "triage")
 
 #: job_type names that are accepted for ``op`` before they reach the
@@ -48,6 +55,7 @@ _GATE_ARG_KEYS: dict[str, tuple[str, ...]] = {
     "tests-green": ("range",),
     "answer": (),
     "not-before": ("ts",),
+    "drc-clean": ("board",),
 }
 
 _SHA_RE = re.compile(r"[0-9a-f]{7,40}")
@@ -61,7 +69,8 @@ PLAN_SHAPES: dict[str, str] = {
         "{'kind': 'sha-in-prod', 'args': {'sha': '<hex sha>'}} | "
         "{'kind': 'tests-green', 'args': {'range': '<git range>'}} | "
         "{'kind': 'answer'} | "
-        "{'kind': 'not-before', 'args': {'ts': 'YYYY-MM-DDTHH:MM:SSZ'}}"
+        "{'kind': 'not-before', 'args': {'ts': 'YYYY-MM-DDTHH:MM:SSZ'}} | "
+        "{'kind': 'drc-clean', 'args': {'board': 'pb<id>'}}"
     ),
     "loop": ("{'max': <int > 0>, 'until': <gate spec>, 'body': '<template name>'}"),
     "generate": (
@@ -72,7 +81,7 @@ PLAN_SHAPES: dict[str, str] = {
 
 
 class GateSpec(TypedDict):
-    kind: Literal["sha-in-prod", "tests-green", "answer", "not-before"]
+    kind: Literal["sha-in-prod", "tests-green", "answer", "not-before", "drc-clean"]
     args: NotRequired[dict[str, str]]
 
 

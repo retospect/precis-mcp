@@ -371,14 +371,85 @@ def test_release_fix_body_shape(store: Store) -> None:
     assert triage == {"role": "triage", "from": f"gripes tagged plan:{mint.root_id}"}
 
 
+def _pcb(store: Store, slug: str = "amp") -> int:
+    ref, _created, _counts = store.pcb_apply(
+        slug=slug,
+        title=slug,
+        components=[{"refdes": "R1", "label": "R", "pins": [{"name": "1"}]}],
+        nets=[{"name": "SIG"}],
+        connections=[{"net": "SIG", "refdes": "R1", "pin": "1"}],
+    )
+    return int(ref.id)
+
+
 def test_pcb_fix_body_reads_the_board_from_until(store: Store) -> None:
+    pcb = _pcb(store)
     mint = T.TEMPLATES["pcb-pipeline"].mint(store, None, board="pcb:amp")
     body = T.mint_body(store, mint.ids["loop"], "pcb-fix")
     assert set(body.ids) == {"fix", "drc", "review"}
     assert _meta(store, body.ids["drc"])["op"] == {
         "type": "pcb_review",
-        "params": {"board": "pcb:amp"},
+        "params": {"pcb_ref_id": pcb},
     }
+    assert _meta(store, body.ids["review"])["generate"] == {
+        "role": "triage",
+        "from": f"pb{pcb}",
+    }
+
+
+def test_pcb_fix_body_reads_a_legacy_tests_green_until(store: Store) -> None:
+    pcb = _pcb(store)
+
+    def build(m: T._Minter) -> None:
+        m.node("root", "Plan", {"auto_close": True})
+        m.node(
+            "loop",
+            "Loop",
+            {
+                "loop": {
+                    "max": 5,
+                    "until": {"kind": "tests-green", "args": {"range": "drc:pcb:amp"}},
+                    "body": "pcb-fix",
+                }
+            },
+        )
+
+    loop = T._run(store, None, build).ids["loop"]
+    body = T.mint_body(store, loop, "pcb-fix")
+    assert _meta(store, body.ids["drc"])["op"]["params"] == {"pcb_ref_id": pcb}
+
+
+def test_pcb_fix_body_refuses_a_loop_naming_no_board(store: Store) -> None:
+    from precis.errors import BadInput
+
+    def build(m: T._Minter) -> None:
+        m.node("root", "Plan", {"auto_close": True})
+        m.node(
+            "loop",
+            "Loop",
+            {
+                "loop": {
+                    "max": 5,
+                    "until": {"kind": "drc-clean", "args": {"board": "pb999999999"}},
+                    "body": "pcb-fix",
+                }
+            },
+        )
+
+    loop = T._run(store, None, build).ids["loop"]
+    with pytest.raises(BadInput, match="names no pcb design"):
+        T.mint_body(store, loop, "pcb-fix")
+
+
+def test_pcb_pipeline_until_is_a_live_drc_clean_gate(store: Store) -> None:
+    from precis.plans.gates import evaluate
+
+    pcb = _pcb(store)
+    mint = T.TEMPLATES["pcb-pipeline"].mint(store, None, board=f"pb{pcb}")
+    loop = _meta(store, mint.ids["loop"])["loop"]
+    verdict = evaluate(store, loop["until"], todo_id=mint.ids["loop"])
+    assert not verdict.open
+    assert verdict.why == f"no DRC run yet on pb{pcb}"
 
 
 def test_mechanical_task_closes_when_its_job_succeeds(store: Store) -> None:

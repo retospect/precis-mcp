@@ -15,6 +15,14 @@ each and nothing is dispatched for it. Kinds:
 - ``tests-green {range}`` — ``range`` is ``A..B`` or one sha; open once CI
   is recorded green on its end (``B``), else (no verdict row) once ``B`` is
   in prod.
+- ``drc-clean {board}`` — ``board`` is a pcb design (``pb<id>`` handle, slug,
+  ``pcb:<slug>``); open once the design's newest recorded DRC run (the
+  ``pcb_drc_runs`` / ``pcb_drc_findings`` record ``pcb_review``'s check leg
+  and ``op='check'`` write, read through
+  :meth:`Store.pcb_drc_findings_latest`) is fresh and carries no live
+  (unwaived) ``severity='error'`` finding — the rule
+  :func:`precis.pcb.route_state.classify` applies. No run yet, or a run the
+  design has changed since, is closed: "not checked" is not "clean".
 
 **Where prod's head comes from.** The server has no git. ``scripts/release``
 records ``{head, deployed_at, landed}`` after each deploy into the
@@ -52,6 +60,10 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
+
+from precis.errors import BadInput, NotFound
+from precis.utils import handle_registry
+from precis.utils.slug_ref import resolve_live_slug_ref
 
 if TYPE_CHECKING:
     from precis.store import Store
@@ -263,6 +275,55 @@ def _tests_green(
     return GateVerdict(res.open, why)
 
 
+# ── drc-clean ─────────────────────────────────────────────────────
+
+
+def resolve_board(store: Store, raw: object) -> int:
+    """The pcb ref id a board spelling names: a ``pb<id>`` handle, a slug,
+    ``pcb:<slug>`` / ``pcb:<id>``, or a bare ref id. Raises ``BadInput``
+    (empty or not a string/int) or ``NotFound`` (no live pcb design)."""
+    if isinstance(raw, bool) or not isinstance(raw, (str, int)):
+        raise BadInput(
+            f"board={raw!r} is not a pcb design",
+            next="name the design as its handle 'pb<id>' or its slug",
+        )
+    text = str(raw).strip()
+    if text.lower().startswith("pcb:"):
+        text = text[4:].strip()
+    if not text:
+        raise BadInput(
+            "board is empty",
+            next="name the design as its handle 'pb<id>' or its slug",
+        )
+    return int(resolve_live_slug_ref(store, kind="pcb", id=text).id)
+
+
+def _drc_clean(
+    store: Store, args: dict[str, Any], *, todo_id: int, now: datetime
+) -> GateVerdict:
+    raw = args.get("board")
+    if not isinstance(raw, str) or not raw.strip():
+        return _closed("drc-clean needs args.board (a pcb handle 'pb<id>' or slug)")
+    try:
+        ref_id = resolve_board(store, raw)
+    except (BadInput, NotFound) as e:
+        return _closed(f"drc-clean: {e}")
+    board = handle_registry.format_handle("pcb", ref_id)
+    run_id, findings = store.pcb_drc_findings_latest(ref_id)
+    if run_id is None:
+        return _closed(f"no DRC run yet on {board}")
+    run = str(run_id)[:12]
+    if store.pcb_drc_run_stale(ref_id, run_id):
+        return _closed(f"{board} changed since DRC run {run}; the check must re-run")
+    errors = [
+        f for f in findings if f.get("severity") == "error" and not f.get("waived_by")
+    ]
+    if errors:
+        return _closed(f"{len(errors)} DRC error(s) on {board} (run {run})")
+    warns = sum(1 for f in findings if f.get("severity") != "error")
+    return GateVerdict(True, f"DRC clean on {board} (run {run}, {warns} warning(s))")
+
+
 _Evaluator = Callable[..., GateVerdict]
 
 #: Gate kind → evaluator. A new kind is one entry here and one in the spec.
@@ -271,6 +332,7 @@ EVALUATORS: dict[str, _Evaluator] = {
     "answer": _answer,
     "sha-in-prod": _sha_in_prod,
     "tests-green": _tests_green,
+    "drc-clean": _drc_clean,
 }
 
 
@@ -313,4 +375,5 @@ __all__ = [
     "evaluate",
     "read_ci_verdicts",
     "read_prod_head",
+    "resolve_board",
 ]

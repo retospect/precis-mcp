@@ -173,7 +173,19 @@ def test_release_pass_shape(store: Store) -> None:
     _assert_plan_hygiene(store, mint)
 
 
+def _pcb(store: Store, slug: str = "amp") -> int:
+    ref, _created, _counts = store.pcb_apply(
+        slug=slug,
+        title=slug,
+        components=[{"refdes": "R1", "label": "R", "pins": [{"name": "1"}]}],
+        nets=[{"name": "SIG"}],
+        connections=[{"net": "SIG", "refdes": "R1", "pin": "1"}],
+    )
+    return int(ref.id)
+
+
 def test_pcb_pipeline_shape(store: Store) -> None:
+    pcb = _pcb(store)
     mint = TEMPLATES["pcb-pipeline"].mint(store, None, board="pcb:amp")
     assert _kinds(store, mint) == {
         "root": "phase",
@@ -188,10 +200,68 @@ def test_pcb_pipeline_shape(store: Store) -> None:
         ("drc", "route"),
         ("review", "drc"),
     }
-    assert _meta(store, mint.ids["place"])["op"]["type"] == "pcb_place"
+    # The handle resolves at mint: the job ops carry what their
+    # PARAMS_SCHEMA requires, the gate and generator the pb<id> handle.
+    params = {"pcb_ref_id": pcb}
+    assert _meta(store, mint.ids["place"])["op"] == {
+        "type": "pcb_place",
+        "params": params,
+    }
+    assert _meta(store, mint.ids["drc"])["op"] == {
+        "type": "pcb_review",
+        "params": params,
+    }
+    # No route job_type: op='route' is retired (td542269 report).
+    assert _meta(store, mint.ids["route"])["op"] == "run_slice"
+    loop = _meta(store, mint.ids["loop"])["loop"]
+    assert loop["until"] == {"kind": "drc-clean", "args": {"board": f"pb{pcb}"}}
+    assert loop["body"] == "pcb-fix"
+    assert _meta(store, mint.ids["review"])["generate"] == {
+        "role": "triage",
+        "from": f"pb{pcb}",
+    }
     for key in ("route", "drc", "review"):
         assert _parent_of(store, mint.ids[key]) == mint.ids["loop"]
     _assert_plan_hygiene(store, mint)
+
+
+def test_pcb_pipeline_op_params_pass_the_job_schemas(store: Store) -> None:
+    # gr542298: plan_dispatch's submit check refused {board} params.
+    from precis.workers.job_types import get_job_type
+    from precis.workers.job_types.plan_dispatch import _params_problem
+
+    mint = TEMPLATES["pcb-pipeline"].mint(store, None, board=f"pb{_pcb(store)}")
+    for key in ("place", "drc"):
+        op = _meta(store, mint.ids[key])["op"]
+        spec = get_job_type(op["type"])
+        assert spec is not None
+        assert _params_problem(spec.params_schema, op["params"]) is None
+        assert isinstance(op["params"]["pcb_ref_id"], int)
+
+
+@pytest.mark.parametrize(
+    "spell",
+    [
+        lambda _i: "amp",
+        lambda _i: "pcb:amp",
+        lambda i: f"PB{i}",
+        lambda i: str(i),
+        lambda i: i,
+    ],
+    ids=["slug", "pcb:slug", "handle", "id-str", "id-int"],
+)
+def test_pcb_pipeline_accepts_board_spellings(store: Store, spell: Any) -> None:
+    pcb = _pcb(store)
+    mint = TEMPLATES["pcb-pipeline"].mint(store, None, board=spell(pcb))
+    assert _meta(store, mint.ids["place"])["op"]["params"] == {"pcb_ref_id": pcb}
+
+
+@pytest.mark.parametrize("board", ["no-such-board", "", "pb999999999"])
+def test_pcb_pipeline_refuses_unknown_board(store: Store, board: str) -> None:
+    with pytest.raises(BadInput) as exc:
+        TEMPLATES["pcb-pipeline"].mint(store, None, board=board)
+    assert "names no pcb design" in exc.value.cause
+    assert exc.value.next and "search(kind='pcb'" in exc.value.next
 
 
 def test_template_mints_under_a_parent(handler: TodoHandler, store: Store) -> None:

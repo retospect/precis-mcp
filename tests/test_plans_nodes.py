@@ -19,6 +19,7 @@ GATE_SHA = {"kind": "sha-in-prod", "args": {"sha": SHA}}
 GATE_TESTS = {"kind": "tests-green", "args": {"range": "origin/prod..main"}}
 GATE_ANSWER = {"kind": "answer"}
 GATE_TS = {"kind": "not-before", "args": {"ts": "2026-10-31T12:00:00Z"}}
+GATE_DRC = {"kind": "drc-clean", "args": {"board": "pb42"}}
 LOOP = {"max": 3, "until": GATE_ANSWER, "body": "dogfood-cycle"}
 GENERATE = {"role": "slicer", "from": "docs/backlog/x.md#Section"}
 
@@ -39,7 +40,9 @@ GENERATE = {"role": "slicer", "from": "docs/backlog/x.md#Section"}
         ({"gate": GATE_ANSWER}, "gate"),
         ({"gate": {"kind": "answer", "args": {}}}, "gate"),
         ({"gate": GATE_TS}, "gate"),
+        ({"gate": GATE_DRC}, "gate"),
         ({"loop": LOOP}, "loop"),
+        ({"loop": {**LOOP, "until": GATE_DRC, "body": "pcb-fix"}}, "loop"),
         ({"loop": {**LOOP, "count": 0}}, "loop"),  # the tick's iteration count
         ({"loop": {**LOOP, "count": 2}}, "loop"),
         ({"generate": GENERATE}, "generator"),
@@ -89,6 +92,13 @@ def test_accepts_each_kind(meta: dict[str, Any] | None, kind: str | None) -> Non
             "ISO-8601",
         ),
         ({"gate": {"kind": "answer", "when": 1}}, "unknown key"),
+        ({"gate": {"kind": "drc-clean"}}, "takes exactly ['board']"),
+        ({"gate": {"kind": "drc-clean", "args": {"board": " "}}}, "non-empty"),
+        ({"gate": {"kind": "drc-clean", "args": {"board": 42}}}, "non-empty string"),
+        (
+            {"gate": {"kind": "drc-clean", "args": {"range": "drc:pb42"}}},
+            "takes exactly",
+        ),
         ({"loop": [1]}, "meta.loop must be a dict"),
         ({"loop": {**LOOP, "max": 0}}, "meta.loop.max"),
         ({"loop": {**LOOP, "max": -2}}, "meta.loop.max"),

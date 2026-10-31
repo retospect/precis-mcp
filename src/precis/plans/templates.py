@@ -29,7 +29,8 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
-from precis.errors import BadInput
+from precis.errors import BadInput, NotFound
+from precis.plans.gates import resolve_board
 from precis.plans.nodes import validate_plan_meta
 from precis.store import Store, Tag
 from precis.store.types import TODO_BODY_KIND, ChunkInsert
@@ -357,36 +358,51 @@ def mint_release_pass(store: Store, parent_id: int | None = None) -> PlanMint:
 # -- pcb-pipeline ------------------------------------------------------------
 
 
+def _pcb_board(store: Store, raw: Any, *, where: str) -> tuple[int, str]:
+    """``(pcb ref id, 'pb<id>' handle)`` for a board spelling; refuses one
+    that names no live pcb design."""
+    try:
+        ref_id = resolve_board(store, raw)
+    except (BadInput, NotFound) as e:
+        raise BadInput(
+            f"{where}: board={raw!r} names no pcb design ({e})",
+            next=(
+                "search(kind='pcb', q='...') for the design, then "
+                "args={'template': 'pcb-pipeline', 'board': 'pb<id>'}"
+            ),
+        ) from e
+    return ref_id, handle_registry.format_handle("pcb", ref_id)
+
+
+def _drc_until(board: str) -> dict[str, Any]:
+    return {"kind": "drc-clean", "args": {"board": board}}
+
+
 def mint_pcb_pipeline(
-    store: Store, parent_id: int | None = None, *, board: str
+    store: Store, parent_id: int | None = None, *, board: Any
 ) -> PlanMint:
     """place -> a loop whose first iteration is route -> drc -> review, until
-    the DRC is clean (max 5)."""
-    board = str(board).strip()
-    if not board:
-        raise BadInput(
-            "board is empty",
-            next="args={'template': 'pcb-pipeline', 'board': 'pcb:<slug>'}",
-        )
+    the DRC is clean (max 5). ``board`` is resolved to its pcb ref at mint:
+    the job ops carry ``pcb_ref_id``, the gate and titles the ``pb<id>``
+    handle."""
+    ref_id, handle = _pcb_board(store, board, where="pcb-pipeline")
+    params = {"pcb_ref_id": ref_id}
 
     def build(m: _Minter) -> None:
-        m.node("root", f"PCB pipeline for {board}", _phase())
+        m.node("root", f"PCB pipeline for {handle}", _phase())
         m.node(
             "place",
-            f"Place {board}",
-            _task({"type": "pcb_place", "params": {"board": board}}),
-            body=f"Run pcb_place on {board}.",
+            f"Place {handle}",
+            _task({"type": "pcb_place", "params": dict(params)}),
+            body=f"Run pcb_place on {handle}.",
         )
         loop = m.node(
             "loop",
-            f"Route and check {board} until the DRC is clean",
+            f"Route and check {handle} until the DRC is clean",
             {
                 "loop": {
                     "max": _PCB_LOOP_MAX,
-                    # No drc-clean gate kind exists; tests-green over a
-                    # 'drc:<board>' range is the closest shape (to be settled
-                    # with the gate evaluators).
-                    "until": {"kind": "tests-green", "args": {"range": f"drc:{board}"}},
+                    "until": _drc_until(handle),
                     "body": "pcb-fix",
                 }
             },
@@ -396,23 +412,26 @@ def mint_pcb_pipeline(
         # body); the tick re-mints a body named 'pcb-fix' while the DRC is dirty.
         m.node(
             "route",
-            f"Route {board}",
-            _task(),  # no route job_type yet (dark-factory Templates); swap when added
+            f"Route {handle}",
+            # No route job_type: op='route' is retired and the topo router
+            # runs only inside pcb_place (placer='topo', route=True), which
+            # re-places too -- td542269 left this on run_slice.
+            _task(),
             parent=loop,
-            body=f"Route {board}.",
+            body=f"Route {handle}.",
         )
         m.node(
             "drc",
-            f"DRC {board}",
-            _task({"type": "pcb_review", "params": {"board": board}}),
+            f"DRC {handle}",
+            _task({"type": "pcb_review", "params": dict(params)}),
             parent=loop,
-            body=f"Run the DRC check leg of pcb_review on {board}.",
+            body=f"Run the DRC check leg of pcb_review on {handle}.",
             blocked_by=("route",),
         )
         m.node(
             "review",
-            f"Review the DRC report of {board}",
-            _generate("triage", board),
+            f"Review the DRC report of {handle}",
+            _generate("triage", handle),
             parent=loop,
             body="Read the DRC report; mint a fix task per violation.",
             blocked_by=("drc",),
@@ -541,17 +560,24 @@ def mint_pcb_fix(
     store: Store, loop_todo_id: int, *, iteration: int | None = None, **_ctx: Any
 ) -> PlanMint:
     """fix -> drc -> review generator, for the board the loop's ``until``
-    gate names (``tests-green {range: 'drc:<board>'}``)."""
+    gate names (``drc-clean {board: 'pb<id>'}``; a loop minted before that
+    kind existed carries ``tests-green {range: 'drc:<board>'}``, also read)."""
     loop, root = _loop_context(store, loop_todo_id)
     until = loop.get("until") if isinstance(loop.get("until"), dict) else {}
-    rng = str(((until or {}).get("args") or {}).get("range") or "")
-    board = rng[4:].strip() if rng.startswith("drc:") else ""
-    if not board:
+    args = (until or {}).get("args") or {}
+    if (until or {}).get("kind") == "drc-clean":
+        raw = str(args.get("board") or "").strip()
+    else:
+        rng = str(args.get("range") or "")
+        raw = rng[4:].strip() if rng.startswith("drc:") else ""
+    if not raw:
         raise BadInput(
             f"pcb-fix on td{loop_todo_id}: meta.loop.until names no board "
-            f"(want args.range 'drc:<board>', got {rng!r})",
+            f"(want {{'kind': 'drc-clean', 'args': {{'board': 'pb<id>'}}}}, "
+            f"got {until!r})",
             next="mint the loop with the pcb-pipeline template",
         )
+    ref_id, board = _pcb_board(store, raw, where=f"pcb-fix on td{loop_todo_id}")
     suffix = _iteration_suffix(iteration)
 
     def build(m: _Minter) -> None:
@@ -567,7 +593,7 @@ def mint_pcb_fix(
         m.node(
             "drc",
             f"DRC {board}{suffix}",
-            _task({"type": "pcb_review", "params": {"board": board}}),
+            _task({"type": "pcb_review", "params": {"pcb_ref_id": ref_id}}),
             body=f"Run the DRC check leg of pcb_review on {board}.",
             blocked_by=("fix",),
         )

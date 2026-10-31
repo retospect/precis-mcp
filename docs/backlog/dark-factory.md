@@ -364,7 +364,7 @@ the dispatcher is one schedule tick over it.
 |---|---|---|
 | task | a leaf todo with a brief (step 2 chunks); `meta.op` = job_type + params, default `run_slice` for LLM work | its job ends: a land writes STATUS:done (ship, td541978); a mechanical job writes it on success |
 | phase | a todo with children and `meta.auto_close` | every child done or won't-do; the tick closes it |
-| gate | `meta.gate = {kind, args}`; kinds `sha-in-prod {sha}`, `tests-green {range}`, `answer` (an ask-user todo is a gate), `not-before {ts}` | the tick evaluates the predicate; nothing is dispatched for a gate |
+| gate | `meta.gate = {kind, args}`; kinds `sha-in-prod {sha}`, `tests-green {range}`, `answer` (an ask-user todo is a gate), `not-before {ts}`, `drc-clean {board}` | the tick evaluates the predicate; nothing is dispatched for a gate |
 | loop | `meta.loop = {max, until: <gate spec>, body: <template>}` | the tick re-mints the body when every current child is done, `until` is false and count < max; exit closes it |
 | generator | `meta.generate = {role: slicer \| spec-writer \| triage, from: <md section \| gripe \| board>}` | its job is an LLM turn whose output is child todos; afterwards it behaves as a phase |
 
@@ -454,8 +454,10 @@ view (td542097, after td541982); the fixes the tick's first pass found
 on any plan node); `run_slice` hardening — branch `slice/<id>`, env
 allowlist, attribution, reaper-safe handle (td542235), blocked by the
 permission-mode ruling (ask td542236); a CI verdict record so
-`tests-green` holds before a deploy (td542230); the pcb-pipeline gaps
-(td542269: drc-clean gate, board → `pcb_ref_id`, a route job type).
+`tests-green` holds before a deploy (td542230); a pcb route job type
+(`op='route'` is retired and the topo router runs only inside
+`pcb_place` with `route=True`, which re-places, so the pcb-pipeline's
+route task stays on `run_slice` until a route-only entry exists).
 Arming order: `/go` → rulings → td542302 + td542235 → arm the tick with
 `dry_run` → one gripe-fix plan on a real gripe → arm for real.
 
