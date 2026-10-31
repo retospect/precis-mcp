@@ -40,10 +40,12 @@ from typing import TYPE_CHECKING, Any
 
 import numpy as np
 
+from precis.errors import BadInput
 from precis.pcb import geom as pcb_geom
 from precis.pcb import ir as pcb_ir
 from precis.pcb import padplace as pcb_padplace
 from precis.pcb import pose
+from precis.pcb.currents import require_net_currents
 from precis.pcb.rules import resolve_net_rules
 from precis_geom.pcb_shape import Keepout
 
@@ -112,6 +114,41 @@ OUTLINE_FIX_HINT = (
     "'geom':{'path':[[0,0],[40,0],[40,30],[0,30]]}}]}) — a closed polygon of "
     "at least 3 points that does not cross itself"
 )
+
+
+def require_layout_ready(
+    graph: dict[str, Any],
+    features: list[dict[str, Any]],
+    *,
+    board_id: str | int | None = None,
+) -> None:
+    """The same input gate for enqueue, worker dispatch and offline placement.
+
+    Jobs can bypass the handler (or read a board changed since enqueue), so
+    readiness must be checked on their actual inputs, before solving.
+    """
+    require_net_currents(
+        ((n["name"], n.get("est_current_a")) for n in graph.get("nets", [])),
+        board_id=board_id,
+    )
+    outline = outline_from_features(features)
+    if outline:
+        xs = [float(p[0]) for p in outline if len(p) >= 2]
+        ys = [float(p[1]) for p in outline if len(p) >= 2]
+        if xs and (min(xs) < 0 or min(ys) < 0):
+            mx, my = min(xs), min(ys)
+            axis = "x" if my >= 0 else "y" if mx >= 0 else "x and y"
+            label = f"pcb: {board_id!r}" if board_id is not None else "pcb"
+            raise BadInput(
+                f"{label} — the board outline sits partly in "
+                f"negative coordinates ({axis} below 0; minimum at "
+                f"x={mx:g}mm, y={my:g}mm)",
+                next=(
+                    "the board datum is the outline's positive-quadrant "
+                    "origin — shift the outline so its lowest corner "
+                    "lands on (0,0): " + OUTLINE_FIX_HINT
+                ),
+            )
 
 
 def outline_defect(outline: list[list[float]] | None) -> str | None:

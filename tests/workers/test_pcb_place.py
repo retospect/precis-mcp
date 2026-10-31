@@ -115,6 +115,43 @@ def test_pcb_place_refuses_unset_current(store: Store, placer: str | None) -> No
     assert not ctx.summaries
 
 
+@pytest.mark.parametrize("placer", [None, "topo"])
+@pytest.mark.parametrize("force", [False, True])
+@pytest.mark.parametrize("x,y", [(-1.0, 0.0), (0.0, -1.0), (-1.0, -1.0)])
+def test_pcb_place_job_refuses_negative_outline_without_writing(
+    store: Store,
+    placer: str | None,
+    force: bool,
+    x: float,
+    y: float,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """gr543693: local-loop jobs skip enqueue, never input readiness."""
+    ref_id = _seed(
+        store,
+        "place-negative-outline",
+        {**_CROSSED, "features": [closed_outline(x, y, 50, 40)]},
+    )
+    before = pcb_place.pcb_session_store.load_snapshot(store, ref_id)
+    ctx = _FakeCtx(
+        store,
+        params={"pcb_ref_id": ref_id, "placer": placer, "force": force},
+    )
+
+    def no_ir(*args: Any, **kwargs: Any) -> Any:
+        pytest.fail("readiness must refuse before constructing the solver IR")
+
+    monkeypatch.setattr(pcb_place.pcb_session, "build_ir", no_ir)
+    with pytest.raises(BadInput, match="negative coordinates") as exc:
+        _dispatch(ctx)
+    assert "lands on (0,0)" in str(exc.value.next)
+    assert "'ftype':'outline'" in str(exc.value.next)
+    assert not ctx.summaries
+    assert "topo_run" not in ctx.meta and "run_record" not in ctx.meta
+    after = pcb_place.pcb_session_store.load_snapshot(store, ref_id)
+    assert after == before
+
+
 def test_pcb_place_moves_instances_and_reduces_crossings(store: Store) -> None:
     ref_id = _seed(store, "place-x", _CROSSED)
     ctx = _FakeCtx(store, params={"pcb_ref_id": ref_id, "iters": 2000, "seed": 1})

@@ -24,6 +24,11 @@ geometry records ``not checkable (gr520329)``, never an inferred pass.
 
 Placement and route refuse an unset net current (gr520545 —
 :mod:`~precis.pcb.currents`).
+Placement also refuses negative outline coordinates (gr520794).
+``session.require_layout_ready`` owns both checks for handler enqueue,
+worker dispatch and offline place/topo-place (gr543693): a direct local
+job must not bypass input gates, nor may a queued job trust an earlier
+check of board geometry that could have changed before it runs.
 
 **Routing is topological** (Reto 2026-10-25): the vector router
 (:mod:`~precis.pcb.vroute`) was deleted — main keeps tag ``vroute-final``

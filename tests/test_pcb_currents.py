@@ -9,8 +9,10 @@ from precis.errors import BadInput
 from precis.pcb import local
 from precis.pcb.currents import require_net_currents
 from precis.pcb.rows import net_row
+from precis.pcb.session import require_layout_ready
 from precis.pcb.topoplace import design_from_ir
 from precis.pcb.topoplace.realise import route_design
+from tests._pcb_outline import closed_outline
 
 
 def _board(current: float | None) -> pcb.Board:
@@ -44,6 +46,36 @@ def test_place_refuses_missing_ground_current(placer) -> None:
 def test_place_proceeds_with_every_current_explicit(current: float) -> None:
     placement = local.place(_board(current), iters=1)
     assert set(placement.poses) == {"A", "B"}
+
+
+@pytest.mark.parametrize("placer", [local.place, local.topo_place])
+@pytest.mark.parametrize("x,y,axis", [(-1, 0, "x"), (0, -1, "y"), (-1, -1, "x and y")])
+def test_local_place_refuses_negative_outline_before_solving(
+    placer, x: int, y: int, axis: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr543693: both offline placers obey the handler's datum gate."""
+    batch = _board(0).to_batch()
+    batch["features"] = [closed_outline(x, y, 20, 10)]
+
+    def no_solve(*args, **kwargs):
+        pytest.fail("readiness must refuse before constructing the solver IR")
+
+    monkeypatch.setattr(local, "_build_ir", no_solve)
+    with pytest.raises(BadInput, match=f"{axis} below 0") as exc:
+        placer(batch)
+    assert "minimum at" in str(exc.value)
+    assert "lands on (0,0)" in str(exc.value.next)
+    assert "'ftype':'outline'" in str(exc.value.next)
+
+
+@pytest.mark.parametrize("x,y", [(0, 0), (1, 2)])
+def test_layout_readiness_accepts_positive_outline_and_explicit_zero(
+    x: int, y: int
+) -> None:
+    require_layout_ready(
+        {"nets": [{"name": "ZERO", "est_current_a": 0}]},
+        [closed_outline(x, y, 20, 10)],
+    )
 
 
 def test_route_design_refuses_unset_ir_current() -> None:

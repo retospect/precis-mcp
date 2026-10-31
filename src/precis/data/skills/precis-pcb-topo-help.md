@@ -51,6 +51,9 @@ including ground and signals; placement and routing refuse unset values.
 Use `b.net('GND', current=0.5)` in the script (with the design's estimate),
 or patch the stored net as described in [[precis-pcb-help]]. `b.check()`
 reports missing currents as hard `net.current_unset` findings.
+The outline must also stay in +x/+y. Handler enqueue, direct worker jobs
+and offline `pcb.local.place`/`topo_place` share these readiness checks;
+`force=True` overrides placement DRC only, never input readiness.
 
 ```python
 put(kind="pcb", id="sensor-node", args={"op": "place", "placer": "topo"})

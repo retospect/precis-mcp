@@ -778,11 +778,7 @@ def place(
     batch describes. ``catalog=`` supplies LCSC-keyed footprint rows the
     laptop has no cache for."""
     design = _design(board, catalog)
-    from precis.pcb.currents import require_net_currents
-
-    require_net_currents(
-        (n["name"], n.get("est_current_a")) for n in design.graph.get("nets", [])
-    )
+    pcb_session.require_layout_ready(design.graph, design.features)
     ir, footprints, (applied, measures) = _prepare(design)
     config = OptimizeConfig(
         iters=iters or PLACE_ITERS,
@@ -1294,11 +1290,7 @@ def topo_place(
         )
 
     design = _design(board, catalog)
-    from precis.pcb.currents import require_net_currents
-
-    require_net_currents(
-        (n["name"], n.get("est_current_a")) for n in design.graph.get("nets", [])
-    )
+    pcb_session.require_layout_ready(design.graph, design.features)
     ir = _build_ir(design)
     footprints = _footprints(design, ir)
     td = _tp.design_from_ir(
