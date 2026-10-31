@@ -1196,29 +1196,6 @@ def _tri_circumcenter(
     return ux, uy
 
 
-def _point_in_tri(
-    p: tuple[float, float],
-    a: tuple[float, float],
-    b: tuple[float, float],
-    c: tuple[float, float],
-) -> bool:
-    """Barycentric-side containment (boundary counts) — an obtuse
-    triangle's circumcenter falls outside and is no via site."""
-    px, py = float(p[0]), float(p[1])
-
-    def _cross(
-        o: tuple[float, float], u: tuple[float, float], v: tuple[float, float]
-    ) -> float:
-        return (u[0] - o[0]) * (v[1] - o[1]) - (u[1] - o[1]) * (v[0] - o[0])
-
-    d1 = _cross((px, py), a, b)
-    d2 = _cross((px, py), b, c)
-    d3 = _cross((px, py), c, a)
-    has_neg = (d1 < 0) or (d2 < 0) or (d3 < 0)
-    has_pos = (d1 > 0) or (d2 > 0) or (d3 > 0)
-    return not (has_neg and has_pos)
-
-
 def _seg_rect_clear(
     a: tuple[float, float],
     b: tuple[float, float],
@@ -1384,10 +1361,19 @@ def _site_via(
         return None
     anchor_d = _poly_project(pts, seg, anchor)
 
-    def qualifies(x: float, y: float, dia: float, margin: float) -> bool:
+    def qualifies(
+        x: float, y: float, dia: float, margin: float, *, edge_checks: bool
+    ) -> bool:
         """The barrel keep-out at one point — every body the 1D walk
         has always checked, shared by the on-wire walk and the 2D
-        stage so both site against identical geometry."""
+        stage so both site against identical geometry. ``edge_checks``
+        carries the 1D-only on-edge semantics (the host edge must be
+        free, its endpoint vertices clear) — an ON-edge via straddles
+        that edge; a 2D site's nearest edge is informational (realize
+        reads x/y only), and on a dense mesh it is invariably a sub-mm
+        ring sub-segment whose endpoints are pad corners — the pad
+        rects already judge those, and rejecting otherwise-legal
+        circumcenters over them minted zero vias on taz-leaf."""
         if any(
             math.dist((x, y), (px, py)) < (dia + pd) / 2.0 + clearance
             for px, py, pd in placed
@@ -1411,6 +1397,8 @@ def _site_via(
             for p, q in itertools.pairwise(fpts)
         ):
             return False
+        if not edge_checks:
+            return True
         e, _t = _nearest_edge(mesh, (x, y))
         if mesh.constrained[e]:
             return False  # a constrained ring edge never holds a via
@@ -1436,7 +1424,7 @@ def _site_via(
                 if d < 0.0 or d > total:
                     continue
                 x, y = _poly_point_at(pts, seg, d)
-                if not qualifies(x, y, dia, margin):
+                if not qualifies(x, y, dia, margin, edge_checks=True):
                     continue
                 e, t = _nearest_edge(mesh, (x, y))
                 return e, t, x, y
@@ -1483,14 +1471,19 @@ def _site_via(
                     for v in tri
                 )
                 cc = _tri_circumcenter(a, bb, c)
-                if cc is None or not _point_in_tri(cc, a, bb, c):
-                    continue  # collinear, or obtuse — the center falls outside
+                if cc is None:
+                    continue  # collinear triple — no center at all
+                # NOTE: an obtuse corridor sliver's circumcenter falls
+                # OUTSIDE its triangle — that is not a defect: the
+                # center is still the point locally farthest from the
+                # mesh vertices, and the stub cap below is the locality
+                # guarantee (one triangle's reach), not containment.
                 s_arc = _poly_project(pts, seg, cc)
                 proj = _poly_point_at(pts, seg, s_arc)
                 stub = math.dist(cc, proj)
                 if stub > _VIA_2D_STUB_CAP_MM or stub <= 1e-9:
                     continue
-                if not qualifies(*cc, dia, margin):
+                if not qualifies(*cc, dia, margin, edge_checks=False):
                     continue
                 sline = LineString([cc, proj])
                 if any(
