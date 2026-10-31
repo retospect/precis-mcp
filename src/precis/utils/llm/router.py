@@ -23,6 +23,12 @@ Four pieces:
   :mod:`precis.utils.claude_p` itself has no notion of tier. Precedence:
   ``LlmRequest.max_usd`` (explicit) > ``PRECIS_CLAUDE_MAX_USD`` (env) >
   :data:`_CLAUDE_P_TIER_MAX_USD` (tier default) — see gr255847.
+* named provider profiles (:class:`ProviderProfile`, the ``llm.profiles``
+  config row read via :mod:`precis.utils.llm.live_config`) — a rung's
+  ``profile`` key pins its own hosted endpoint + credential reference, so
+  one process routes several hosted providers in a single chain
+  (gr543825). A ``kind='subscription'`` profile additionally gates its
+  rung through a bulk-work guard and a sliding-window cap.
 
 :class:`Tier` aligns with :class:`~precis.utils.prompt.model.Profile`: a
 ``HELPER`` (tool-less, one-shot) profile rides ``MEDIUM``/``SMALL`` on
@@ -46,6 +52,7 @@ import random
 import re
 import threading
 import time
+from collections import deque
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass, field
 from dataclasses import replace as _replace
@@ -229,6 +236,36 @@ assert set(_TIER_MODEL) == set(Tier), "resolve_model: tier table is not total"
 #: coherence check). ``SMALL`` always routes local/hosted-OSS
 #: (:func:`select_transport`), so it is excluded.
 _CLOUD_TIERS: frozenset[Tier] = frozenset({Tier.FRONTIER, Tier.BIG, Tier.MEDIUM})
+
+#: Purposes a ``kind='subscription'`` provider-profile rung refuses
+#: (:func:`_subscription_refusal`) — matched against the call's
+#: :attr:`LlmRequest.source` (exact or ``:``-prefixed base) and its explicit
+#: ``work_class``. Bulk lanes burn calls at corpus scale — the hosted
+#: ``glm-4.7-flash`` SMALL lane alone did ~325k calls in 48 h — and a flat
+#: subscription plan is sized for interactive/deliverable traffic, not that
+#: drain. A refusal is rung-scoped: the chain falls through to the next
+#: rung, so a subscription rung in a bulk lane is visible dead config, not a
+#: traffic leak onto the plan.
+_SUBSCRIPTION_BULK_WORK: frozenset[str] = frozenset(
+    {
+        # The per-chunk corpus drains — SMALL covers most of these too, but
+        # the set is the second bar for a bulk pass running on a bigger tier.
+        "llm_summarize",
+        "classify",
+        "inject_scan",
+        "context_sentence",
+        "stub_rank",
+        "paper_glossary",
+        "bib_parse",
+        # BIG-tier bulk (a per-card describe pass).
+        "card_describe",
+        # Keyword/embedding-side high-volume helpers — they do not ride
+        # route() today, but the label costs nothing if they ever do.
+        "chunk_keywords",
+        "tag_embeddings",
+        "embed",
+    }
+)
 
 
 def resolve_model(tier: Tier, backend: Backend | None = None) -> str:
@@ -1318,6 +1355,13 @@ class LlmRequest:
     #: :attr:`Rung.reasoning_effort`; :func:`_dispatch_local` sends it as
     #: ``extra_body={"reasoning_effort": ...}``. ``None`` ⇒ nothing extra.
     local_reasoning_effort: str | None = None
+    #: A ``llm.profiles`` entry name — stamped by
+    #: :class:`FailoverProvider` from :attr:`Rung.profile`, or pinned by a
+    #: caller dispatching at one named provider. The hosted wires
+    #: (:func:`_dispatch_openai_compat`, :func:`run_oss_tool_loop`) then use
+    #: that profile's ``base_url``/key instead of the process-wide
+    #: ``PRECIS_LLM_BASE_URL``/host-keyed default. ``None`` ⇒ unchanged.
+    profile: str | None = None
     #: Caller label ("dream", "review:structural", "chase:verify", ...) — the
     #: categorical feature the route-log keys on. Free-form; empty if unset.
     source: str = ""
@@ -1619,6 +1663,269 @@ def provider_for(transport: Transport, *, bare: bool = False) -> LlmProvider:
     return _PROVIDERS[transport]
 
 
+# ── named provider profiles (llm.profiles) ─────────────────────────────
+#
+# One process-wide ``PRECIS_LLM_BASE_URL`` cannot route two hosted
+# providers in a single chain: every hosted rung read the same env url and
+# the same host-keyed vault lookup. A *provider profile* names a hosted
+# endpoint + its credential + a billing kind, so a chain can mix providers
+# per rung (gr543825 — the prerequisite for the subscription lanes). The
+# table lives where the other live router config lives: the
+# ``llm.profiles`` ``app_settings`` row (a JSON name → profile map),
+# overridable per-process by ``PRECIS_LLM_PROFILES`` — same mechanism and
+# precedence as ``llm.chain.<tier>`` (:mod:`precis.utils.llm.live_config`).
+# No profile named anywhere ⇒ byte-identical behaviour.
+
+
+@dataclass(frozen=True, slots=True)
+class SubscriptionCap:
+    """A subscription profile's sliding-window budget.
+
+    ``calls`` / ``tokens`` bound usage inside ``window_s`` seconds; either
+    may be ``None`` (unbounded on that axis). Accounting is per-process —
+    see :data:`_sub_ledger`.
+    """
+
+    calls: int | None
+    tokens: int | None
+    window_s: float
+
+
+@dataclass(frozen=True, slots=True)
+class ProviderProfile:
+    """A named hosted-provider endpoint a chain rung can pin.
+
+    ``base_url`` replaces the process-wide ``PRECIS_LLM_BASE_URL`` for that
+    rung; ``api_key_ref`` names a vault/env secret resolved **at call
+    time** (:func:`_profile_api_key`) — the key value is never stored on
+    the profile and never logged. ``kind`` is ``'metered'`` (per-token
+    billing — the default) or ``'subscription'`` (a flat plan the bulk
+    guard + window cap protect). ``cap`` bounds a subscription profile's
+    sliding-window usage.
+    """
+
+    name: str
+    base_url: str
+    api_key_ref: str | None
+    kind: str  # 'metered' | 'subscription'
+    cap: SubscriptionCap | None
+
+
+def _parse_profile_cap(name: str, raw: object) -> SubscriptionCap | None:
+    """Validate a profile's ``cap`` block; ``None`` when malformed (the
+    caller treats a malformed cap as a malformed profile — it logs why)."""
+    if not isinstance(raw, dict):
+        log.warning("llm-profile %r: cap must be an object (%r)", name, raw)
+        return None
+    window = raw.get("window_s")
+    if not isinstance(window, (int, float)) or isinstance(window, bool) or window <= 0:
+        log.warning(
+            "llm-profile %r: cap.window_s must be a positive number (%r)",
+            name,
+            window,
+        )
+        return None
+    limits: dict[str, int | None] = {}
+    for key in ("calls", "tokens"):
+        value = raw.get(key)
+        if value is not None and (
+            not isinstance(value, int) or isinstance(value, bool) or value <= 0
+        ):
+            log.warning(
+                "llm-profile %r: cap.%s must be a positive int (%r)",
+                name,
+                key,
+                value,
+            )
+            return None
+        limits[key] = value
+    return SubscriptionCap(
+        calls=limits["calls"], tokens=limits["tokens"], window_s=float(window)
+    )
+
+
+def resolve_profile(name: str | None) -> ProviderProfile | None:
+    """Resolve a named provider profile from ``llm.profiles``.
+
+    ``None`` for an unset name, an unknown name, or a malformed entry —
+    each malformed field is warned once per read; the rung's host-availability
+    check (:func:`_hosted_oss_unavailable`) and the hosted wires' config
+    guard turn the unresolvable name into a named failure rather than a
+    silent fall-back to ``PRECIS_LLM_BASE_URL`` (which would send the call
+    — and someone else's key — to a different provider than the chain
+    pinned).
+    """
+    if not name:
+        return None
+    from precis.utils.llm import live_config
+
+    raw = (live_config.profiles_override() or {}).get(name)
+    if not isinstance(raw, dict):
+        log.warning(
+            "llm-profile: %r has no entry in llm.profiles — rungs naming it "
+            "cannot dispatch",
+            name,
+        )
+        return None
+    base_url = raw.get("base_url")
+    if not isinstance(base_url, str) or not (
+        urlparse(base_url).scheme and urlparse(base_url).netloc
+    ):
+        log.warning(
+            "llm-profile %r needs a full http(s) base_url (%r) — ignored",
+            name,
+            base_url,
+        )
+        return None
+    api_key_ref = raw.get("api_key_ref")
+    if api_key_ref is not None and not isinstance(api_key_ref, str):
+        log.warning(
+            "llm-profile %r: api_key_ref must name a vault/env secret (%r) — ignored",
+            name,
+            api_key_ref,
+        )
+        return None
+    kind = raw.get("kind", "metered")
+    if kind not in ("metered", "subscription"):
+        log.warning(
+            "llm-profile %r: kind must be 'metered' or 'subscription' (%r) — ignored",
+            name,
+            kind,
+        )
+        return None
+    cap: SubscriptionCap | None = None
+    if raw.get("cap") is not None:
+        cap = _parse_profile_cap(name, raw["cap"])
+        if cap is None:
+            return None
+    return ProviderProfile(
+        name=name,
+        base_url=base_url,
+        api_key_ref=api_key_ref,
+        kind=kind,
+        cap=cap,
+    )
+
+
+#: Per-process subscription usage ledger: profile name → deque of
+#: ``(monotonic_ts, tokens)``, one entry per *dispatched* call on a
+#: subscription-profiled rung. **In-process only** — the router reads
+#: ``llm_call_log`` on the write path only, and this is the cheap truthful
+#: counter the code offers: it counts THIS process's demand, so a windowed
+#: cap under-counts across a multi-process fleet rather than over-charging.
+#: The logged row already carries the profile name
+#: (``features.profile``), which is the hook a shared, cross-process
+#: counter would key on later.
+_sub_ledger: dict[str, deque[tuple[float, int]]] = {}
+_sub_lock = threading.Lock()
+
+
+def _subscription_tally(profile: ProviderProfile, result: LlmResult) -> None:
+    """Ledger one dispatched subscription-rung call: 1 call + its tokens.
+
+    Counts every completed attempt — even an error result went out over
+    the wire and may have drawn plan usage, so counting it is the safe
+    side for a cap. Tokens prefer the provider's ``usage.total_tokens``
+    (what it billed), falling back to the input+output split.
+    """
+    tokens = result.total_tokens
+    if tokens is None:
+        tokens = (result.input_tokens or 0) + (result.output_tokens or 0)
+    with _sub_lock:
+        _sub_ledger.setdefault(profile.name, deque()).append(
+            (time.monotonic(), int(tokens or 0))
+        )
+
+
+def _subscription_window(
+    profile: ProviderProfile, cap: SubscriptionCap
+) -> tuple[int, int, float | None]:
+    """``(calls, tokens, oldest_ts)`` inside ``cap.window_s``, evicting
+    expired entries as it reads; ``oldest_ts`` is ``None`` when the
+    window is empty."""
+    cutoff = time.monotonic() - cap.window_s
+    with _sub_lock:
+        entries = _sub_ledger.get(profile.name)
+        if not entries:
+            return 0, 0, None
+        while entries and entries[0][0] <= cutoff:
+            entries.popleft()
+        if not entries:
+            return 0, 0, None
+        return len(entries), sum(t for _, t in entries), entries[0][0]
+
+
+def _subscription_refusal(
+    profile: ProviderProfile, req: LlmRequest, *, model: str
+) -> LlmResult | None:
+    """Why a subscription-profile rung must skip THIS call, as a result —
+    ``None`` when the rung may run. Only ``kind='subscription'`` profiles
+    gate: a metered profile buys per token and needs no lane guard.
+
+    * **Bulk guard** — the ``SMALL`` tier and the bulk purposes in
+      :data:`_SUBSCRIPTION_BULK_WORK` (matched on ``req.source``, exact or
+      ``:``-prefixed, and on an explicit ``req.work_class``) refuse
+      outright: ``subscription_bulk_refused``, a permanent shape
+      mismatch, so not ``paused``.
+    * **Window cap** — ``cap`` usage at the limit refuses for the window:
+      ``subscription_cap``, ``paused`` with ``retry_at`` at the oldest
+      in-window call's expiry.
+
+    Both refusals are rung-scoped: :class:`FailoverProvider` treats the
+    result like any other failed rung — it logs the ``reason_class`` and
+    walks on, so the refusal never pauses the rest of the chain.
+    """
+    if profile.kind != "subscription":
+        return None
+    source = req.source or ""
+    if (
+        req.tier is Tier.SMALL
+        or source in _SUBSCRIPTION_BULK_WORK
+        or source.partition(":")[0] in _SUBSCRIPTION_BULK_WORK
+        or (req.work_class or "") in _SUBSCRIPTION_BULK_WORK
+    ):
+        return LlmResult(
+            text="",
+            cost_usd=None,
+            turns_used=None,
+            model=model,
+            tier=req.tier,
+            error=(
+                f"subscription profile {profile.name!r} refuses bulk work "
+                f"(tier={req.tier.value}, source={source or 'unset'}) — "
+                "subscription plans are not sized for the bulk lanes"
+            ),
+            reason_class="subscription_bulk_refused",
+        )
+    cap = profile.cap
+    if cap is not None:
+        calls, tokens, oldest = _subscription_window(profile, cap)
+        if (cap.calls is not None and calls >= cap.calls) or (
+            cap.tokens is not None and tokens >= cap.tokens
+        ):
+            wait_s = (
+                cap.window_s - (time.monotonic() - oldest)
+                if oldest is not None
+                else cap.window_s
+            )
+            return LlmResult(
+                text="",
+                cost_usd=None,
+                turns_used=None,
+                model=model,
+                tier=req.tier,
+                error=(
+                    f"subscription profile {profile.name!r} window cap "
+                    f"reached ({calls} calls/{tokens} tokens in "
+                    f"{cap.window_s:.0f}s) — skipped"
+                ),
+                paused=True,
+                reason_class="subscription_cap",
+                retry_at=datetime.now(UTC) + timedelta(seconds=max(wait_s, 0.0)),
+            )
+    return None
+
+
 # ── failover ladder (composes the port) ────────────────────────────────
 
 
@@ -1658,6 +1965,13 @@ class Rung:
     ``local`` wire only, as the OpenAI-compatible ``reasoning_effort`` body
     field, so a reasoning model (gpt-oss-120b) spends fewer tokens thinking.
     ``None`` sends the request exactly as before.
+
+    ``profile`` names a ``llm.profiles`` entry — the rung then dispatches
+    on that profile's ``base_url`` and key instead of the process-wide
+    ``PRECIS_LLM_BASE_URL``/host-keyed default, so one chain can mix two
+    hosted providers (gr543825). A ``kind='subscription'`` profile also
+    gates the rung through :func:`_subscription_refusal` (bulk guard +
+    window cap) before it runs. ``None`` ⇒ unchanged behaviour.
     """
 
     transport: Transport
@@ -1667,6 +1981,7 @@ class Rung:
     max_tokens: int | None = None
     timeout_s: float | None = None
     reasoning_effort: str | None = None
+    profile: str | None = None
 
 
 #: A quality gate on an error-free result: return ``True`` to accept, ``False``
@@ -1733,14 +2048,31 @@ class FailoverProvider:
                 call_req = _replace(
                     call_req, local_reasoning_effort=rung.reasoning_effort
                 )
+            if rung.profile is not None:
+                call_req = _replace(call_req, profile=rung.profile)
             started = time.monotonic()
-            last = _classified(
-                _empty_length_is_failure(
-                    provider_for(rung.transport, bare=rung.bare).run(
-                        call_req, model=rung.model or model
+            rung_model = rung.model or model
+            rung_profile = resolve_profile(rung.profile) if rung.profile else None
+            # A subscription-profile rung gates per call here (bulk guard +
+            # window cap). The refusal is an ordinary failed-rung result —
+            # the ladder logs it with its reason_class and walks on.
+            refusal = (
+                _subscription_refusal(rung_profile, call_req, model=rung_model)
+                if rung_profile is not None
+                else None
+            )
+            if refusal is not None:
+                last = refusal
+            else:
+                last = _classified(
+                    _empty_length_is_failure(
+                        provider_for(rung.transport, bare=rung.bare).run(
+                            call_req, model=rung_model
+                        )
                     )
                 )
-            )
+                if rung_profile is not None and rung_profile.kind == "subscription":
+                    _subscription_tally(rung_profile, last)
             # Stamp the rung that actually ran. Done per-iteration (not once at
             # the end) so a fall-through to a cloud rung is recorded as cloud —
             # the accounting must follow the money, not the operator's intent.
@@ -1856,9 +2188,10 @@ def resolve_chain(tier: Tier, *, tools_needed: bool, backend: Backend) -> list[R
     A configured override
     (:func:`~precis.utils.llm.live_config.chain_override`) is a list of rung
     dicts (``{"placement": "cloud"|"local", "model": <str>, "transport":
-    <str>, "bare": <bool>, "max_tokens": <int>}``, ``bare`` optional default
-    ``False``, ``max_tokens``
-    and ``timeout_s`` optional positive numbers — see :class:`Rung`)
+    <str>, "bare": <bool>, "max_tokens": <int>, "profile": <str>}``,
+    ``bare`` optional default ``False``, ``max_tokens``
+    and ``timeout_s`` optional positive numbers, ``profile`` an optional
+    ``llm.profiles`` entry name — see :class:`Rung`)
     mapped onto :class:`Rung` in order, ``placement`` carried
     through as the label. Any malformed rung degrades the *whole* chain back
     to :func:`_default_chain` — never partial — logged once.
@@ -1933,8 +2266,15 @@ def parse_chain_rungs(
             transport = Transport(transport_raw)
         except ValueError:
             return [], ("has an unknown transport", i, transport_raw)
-        if transport is Transport.OPENAI_COMPAT and not os.environ.get(
-            "PRECIS_LLM_BASE_URL"
+        prof_raw = raw.get("profile")
+        if prof_raw is not None and (
+            not isinstance(prof_raw, str) or not prof_raw.strip()
+        ):
+            return [], ("has an invalid profile name", i, prof_raw)
+        if (
+            transport is Transport.OPENAI_COMPAT
+            and prof_raw is None
+            and not os.environ.get("PRECIS_LLM_BASE_URL")
         ):
             # Mirrors `route()`'s Backend.OPENAI-without-a-base-url guard
             # (falls back to ANTHROPIC before ever reaching a chain) for the
@@ -1948,6 +2288,10 @@ def parse_chain_rungs(
                 i,
                 transport_raw,
             )
+        # A profiled rung carries its own endpoint, so the env-base-url
+        # guard above does not apply to it; an unresolvable profile name is
+        # caught later by the host-availability drop / the wire's own
+        # config guard instead of failing the whole chain here.
         placement = raw.get("placement")
         bare_raw = raw.get("bare", False)
         if not isinstance(bare_raw, bool):
@@ -1976,6 +2320,7 @@ def parse_chain_rungs(
                 max_tokens=mt_raw,
                 timeout_s=float(to_raw) if to_raw is not None else None,
                 reasoning_effort=re_raw,
+                profile=prof_raw,
             )
         )
     return rungs, None
@@ -2050,7 +2395,9 @@ def _rung_is_cloud(rung: Rung) -> bool:
     * ``CLAUDE_AGENT`` / ``CLAUDE_P`` → always Anthropic **cloud**.
     * ``LOCAL`` → the loopback local completion wire → **local**.
     * ``OPENAI_COMPAT`` / ``OPENAI_TOOLS`` → hosted-OSS **cloud** when a hosted
-      endpoint is configured (``PRECIS_LLM_BASE_URL`` set), else **local** (a
+      endpoint is configured (``PRECIS_LLM_BASE_URL`` set, or a named
+      :attr:`Rung.profile` — by definition a hosted endpoint), else
+      **local** (a
       ``served_by`` llama-swap slot is the only way these run without a base
       url). Conservative for a throttle whose job is to keep work off cloud: a
       rung that *might* have gone to a local ``served_by`` slot but has a hosted
@@ -2065,6 +2412,8 @@ def _rung_is_cloud(rung: Rung) -> bool:
         return True
     if rung.transport is Transport.LOCAL:
         return False
+    if rung.profile:
+        return True
     return bool(os.environ.get("PRECIS_LLM_BASE_URL"))
 
 
@@ -2359,13 +2708,35 @@ def _claude_rung_unavailable(rung: Rung) -> str | None:
 def _hosted_oss_unavailable(rung: Rung, model: str) -> str | None:
     """Why an OpenAI-wire rung can't run on THIS host, or ``None``.
 
-    Hosted mode needs ``PRECIS_LLM_BASE_URL``; a listed provider host
+    Hosted mode needs ``PRECIS_LLM_BASE_URL`` — or a named rung profile,
+    which carries its own ``base_url``; a listed provider host
     (:data:`_PROVIDER_KEY_BY_HOST`) additionally needs its vault key — an
     unlisted endpoint (self-hosted, possibly auth-less) can't be proven to
-    need one, so only a listed host's missing key skips the rung.
-    ``openai_tools`` can instead ride a local ``served_by`` slot
+    need one, so only a listed host's missing key skips the rung. A
+    profile's ``api_key_ref`` is checked the same way: set and unresolvable
+    ⇒ skip. ``openai_tools`` can instead ride a local ``served_by`` slot
     (``local_url`` is stamped at slot-acquire), which needs no base url.
     """
+    if rung.profile:
+        profile = resolve_profile(rung.profile)
+        if profile is None:
+            return (
+                f"llm profile {rung.profile!r} does not resolve "
+                "(no llm.profiles entry, or malformed)"
+            )
+        if profile.api_key_ref:
+            from precis.secrets import get_secret
+
+            if not get_secret(profile.api_key_ref):
+                return (
+                    f"no API key resolves for llm profile {profile.name!r} "
+                    f"({profile.api_key_ref} env or vault)"
+                )
+            return None
+        host = urlparse(profile.base_url).hostname or ""
+        if host in _PROVIDER_KEY_BY_HOST and not _provider_api_key(profile.base_url):
+            return f"no API key resolves for {host} (env or vault)"
+        return None
     base_url = os.environ.get("PRECIS_LLM_BASE_URL", "")
     if base_url:
         host = urlparse(base_url).hostname or ""
@@ -2449,7 +2820,11 @@ def _hosted_small_model() -> str:
 
 
 def _hosted_small_remap(
-    model: str, transport: Transport, *, has_local_slot: bool
+    model: str,
+    transport: Transport,
+    *,
+    has_local_slot: bool,
+    profile: str | None = None,
 ) -> str:
     """Transparently remap a local-only model alias onto a real hosted small
     model when the call is actually headed to a hosted OSS backend
@@ -2458,7 +2833,8 @@ def _hosted_small_remap(
 
     A no-op unless *all* of: the transport is hosted-OSS
     (:data:`Transport.OPENAI_COMPAT`/:data:`Transport.OPENAI_TOOLS`),
-    ``PRECIS_LLM_BASE_URL`` is set, the call isn't already pinned to a local
+    a hosted endpoint is in play (``PRECIS_LLM_BASE_URL`` set or a
+    resolvable rung ``profile``), the call isn't already pinned to a local
     ``served_by`` slot (``has_local_slot`` — that slot's own model name is
     already correct), and ``model`` is one of
     :data:`_LOCAL_ONLY_MODEL_ALIASES`. Under the default ``ANTHROPIC``
@@ -2469,7 +2845,9 @@ def _hosted_small_remap(
         return model
     if transport not in (Transport.OPENAI_COMPAT, Transport.OPENAI_TOOLS):
         return model
-    if not os.environ.get("PRECIS_LLM_BASE_URL"):
+    if not os.environ.get("PRECIS_LLM_BASE_URL") and not (
+        profile and resolve_profile(profile) is not None
+    ):
         return model
     if model not in _LOCAL_ONLY_MODEL_ALIASES:
         return model
@@ -3037,7 +3415,12 @@ def _route_inner(req: LlmRequest) -> LlmResult:
     # model). A bare single primary rung (model=None, flag off) routes
     # straight to its provider, which keeps the saturated-slot escape below
     # gated on a real ladder.
-    if _failover_enabled() or len(ladder) > 1 or ladder[0].model is not None:
+    if (
+        _failover_enabled()
+        or len(ladder) > 1
+        or ladder[0].model is not None
+        or ladder[0].profile is not None
+    ):
         provider: LlmProvider = FailoverProvider(ladder)
     else:
         # Carry the rung's auth opt-in here too. Unreachable for an operator
@@ -3242,7 +3625,7 @@ def _route_inner(req: LlmRequest) -> LlmResult:
             # escaping to the hosted rung), so a local-only alias
             # (`summarizer` et al.) still needs the hosted remap.
             saturated_model = _hosted_small_remap(
-                model, transport, has_local_slot=False
+                model, transport, has_local_slot=False, profile=ladder[0].profile
             )
             # Rung 0 now runs at `PRECIS_LLM_BASE_URL`, whatever its chain
             # label says — an operator rung labelled `placement: "local"`
@@ -3299,7 +3682,10 @@ def _route_inner(req: LlmRequest) -> LlmResult:
     # `served_by` slot (`call_req.local_url` unset means no slot — or a slot
     # with no direct endpoint — is in play).
     call_model = _hosted_small_remap(
-        call_model, transport, has_local_slot=call_req.local_url is not None
+        call_model,
+        transport,
+        has_local_slot=call_req.local_url is not None,
+        profile=ladder[0].profile,
     )
     started = time.monotonic()
     try:
@@ -3764,6 +4150,8 @@ def _route_features(req: LlmRequest, result: LlmResult | None = None) -> dict[st
         feats["degraded_from"] = req.degraded_from
     if req.keyword_rule:
         feats["keyword_rule"] = req.keyword_rule
+    if req.profile:
+        feats["profile"] = req.profile
     if result is not None:
         stop = result.stop_reason
         terminal = result.terminal_reason
@@ -4162,6 +4550,49 @@ def _provider_api_key(base_url: str) -> str:
     return get_secret("PRECIS_LLM_API_KEY") or ""
 
 
+def _profile_api_key(profile: ProviderProfile) -> str:
+    """Resolve a profile's key at call time: ``api_key_ref`` through the
+    vault/env lookup (:func:`precis.secrets.get_secret`), else the
+    host-keyed default on the profile's own ``base_url``. The value never
+    enters the profile, a log row, or an exception — only the wire."""
+    if profile.api_key_ref:
+        from precis.secrets import get_secret
+
+        return get_secret(profile.api_key_ref) or ""
+    return _provider_api_key(profile.base_url)
+
+
+def _req_base_url(req: LlmRequest) -> str:
+    """The hosted base url this call targets: the rung's named profile,
+    else the process-wide ``PRECIS_LLM_BASE_URL``. A profile name that
+    fails to resolve yields ``""`` so the caller's own missing-url guard
+    names the fault — never a silent fall-back to a *different* provider
+    than the chain pinned."""
+    if req.profile:
+        profile = resolve_profile(req.profile)
+        return profile.base_url if profile is not None else ""
+    return os.environ.get("PRECIS_LLM_BASE_URL", "")
+
+
+def _req_api_key(req: LlmRequest, base_url: str) -> str:
+    """The key for the call's endpoint, resolved at call time: a named
+    profile's ``api_key_ref``, else the host-keyed default."""
+    if req.profile:
+        profile = resolve_profile(req.profile)
+        return _profile_api_key(profile) if profile is not None else ""
+    return _provider_api_key(base_url)
+
+
+def _endpoint_label(req: LlmRequest) -> str:
+    """Where the hosted endpoint comes from, for a config-error message —
+    the rung's profile or the process env var."""
+    return (
+        f"llm profile {req.profile!r} base_url"
+        if req.profile
+        else "PRECIS_LLM_BASE_URL"
+    )
+
+
 #: Retry horizon for a shared-limiter refusal. The limiter already polled
 #: for its whole ``limiter_wait_s`` (30 s) before refusing, so the host's
 #: bucket has been saturated by *our own* concurrent demand for that long;
@@ -4211,17 +4642,18 @@ def _dispatch_openai_compat(req: LlmRequest, model: str) -> LlmResult:
 
     from precis.workers.llm_summarize import LlmClient, LlmConfig
 
-    base_url = os.environ.get("PRECIS_LLM_BASE_URL", "")
+    base_url = _req_base_url(req)
     parsed_base_url = urlparse(base_url)
     if not parsed_base_url.scheme or not parsed_base_url.netloc:
-        # An empty/malformed PRECIS_LLM_BASE_URL reaches here whenever this
-        # rung runs without going through route()'s Backend.OPENAI-without-a-
-        # base-url guard first — a chain override that pins openai_compat
-        # directly (resolve_chain has its own matching guard, but a rung
-        # built any other way still lands here). Without this check,
-        # LlmClient.complete concatenates it into a bare '/chat/completions'
-        # path and urlopen raises "unknown url type" once per call
-        # (gr259631) instead of one clear, named config error.
+        # An empty/malformed PRECIS_LLM_BASE_URL (or an unresolvable rung
+        # profile) reaches here whenever this rung runs without going
+        # through route()'s Backend.OPENAI-without-a-base-url guard first —
+        # a chain override that pins openai_compat directly (resolve_chain
+        # has its own matching guard, but a rung built any other way still
+        # lands here). Without this check, LlmClient.complete concatenates
+        # it into a bare '/chat/completions' path and urlopen raises
+        # "unknown url type" once per call (gr259631) instead of one clear,
+        # named config error.
         return LlmResult(
             text="",
             cost_usd=None,
@@ -4229,12 +4661,12 @@ def _dispatch_openai_compat(req: LlmRequest, model: str) -> LlmResult:
             model=model,
             tier=req.tier,
             error=(
-                f"PRECIS_LLM_BASE_URL is unset or invalid ({base_url!r}) — the "
+                f"{_endpoint_label(req)} is unset or invalid ({base_url!r}) — the "
                 "openai_compat transport needs a full http(s) base url"
             ),
             paused=False,
         )
-    api_key = _provider_api_key(base_url)
+    api_key = _req_api_key(req, base_url)
     cfg = replace(
         LlmConfig.from_env(),
         url=base_url,
@@ -4355,6 +4787,7 @@ def run_oss_tool_loop(
     thinking: bool | None = None,
     stream: bool = False,
     max_tokens: int | None = None,
+    profile: ProviderProfile | None = None,
 ) -> AgentLoopResult:
     """Drive the in-process OSS ``tools=`` loop and return the RAW
     :class:`~precis.utils.llm.openai_tools.AgentLoopResult`.
@@ -4364,7 +4797,8 @@ def run_oss_tool_loop(
     from a resumable ``max_turns`` cutoff) reuses the exact client-build +
     verb-wiring instead of the collapsed :class:`LlmResult`. Builds the
     client from ``PRECIS_LLM_BASE_URL`` + the vault key
-    (:func:`_provider_api_key`), UNLESS ``local_url`` is given (a
+    (:func:`_provider_api_key`) — or from ``profile``'s ``base_url`` /
+    ``api_key_ref`` when a rung names one — UNLESS ``local_url`` is given (a
     local-serving slot's pinned llama-swap endpoint), in which case it routes
     there directly with an authless dummy key. Runs the precis verbs
     in-process via ``runtime.dispatch`` unless ``tool_less``. May raise
@@ -4398,8 +4832,16 @@ def run_oss_tool_loop(
         # extension, only ever sent to the pinned local endpoint.
         extra_body: dict[str, Any] | None = {"cache_prompt": False}
     else:
-        base_url = os.environ.get("PRECIS_LLM_BASE_URL", "")
-        api_key = _provider_api_key(base_url)
+        base_url = (
+            profile.base_url
+            if profile is not None
+            else os.environ.get("PRECIS_LLM_BASE_URL", "")
+        )
+        api_key = (
+            _profile_api_key(profile)
+            if profile is not None
+            else _provider_api_key(base_url)
+        )
         extra_body = openrouter_routing(None, thinking=thinking) or None
     timeout = timeout_s if timeout_s is not None else 600.0
     client = ToolChatClient(
@@ -4530,6 +4972,27 @@ def _dispatch_openai_tools(req: LlmRequest, model: str) -> LlmResult:
     """
     from precis.utils.inproc_context import tick_context
 
+    profile: ProviderProfile | None = None
+    if req.profile:
+        profile = resolve_profile(req.profile)
+        if profile is None:
+            # An unresolvable profile name must fail here, named — falling
+            # back to PRECIS_LLM_BASE_URL would dispatch at a different
+            # provider than the chain pinned.
+            return _classified(
+                LlmResult(
+                    text="",
+                    cost_usd=None,
+                    turns_used=None,
+                    model=model,
+                    tier=req.tier,
+                    error=(
+                        f"llm profile {req.profile!r} does not resolve — "
+                        "check the llm.profiles config"
+                    ),
+                    stop_reason="error",
+                )
+            )
     ctx = _overlay_tick_context(_overlay_with_source(req))
     try:
         with tick_context(ctx) if ctx is not None else contextlib.nullcontext():
@@ -4545,6 +5008,7 @@ def _dispatch_openai_tools(req: LlmRequest, model: str) -> LlmResult:
                 thinking=req.thinking,
                 stream=req.stream,
                 max_tokens=req.max_tokens,
+                profile=profile,
             )
     except RateLimited as exc:
         return _replace(_limiter_refused(req, model, exc), stop_reason="error")

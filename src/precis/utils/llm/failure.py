@@ -29,6 +29,12 @@ Classes (:data:`FailureClass`):
   isn't JSON). No horizon: the wording names no reset instant, and a
   failover chain may still walk past it (a different rung's sample can
   parse — it is not ``content``).
+* ``subscription_cap`` — a named provider profile's subscription window
+  budget is exhausted (the ``llm.profiles`` rung guard, gr543825).
+  Horizon: the profile window's own expiry, stamped by the router.
+* ``subscription_bulk_refused`` — a subscription-profile rung refused
+  bulk work (SMALL tier / a bulk purpose). No horizon: the call's shape
+  can't change, another rung must take it.
 
 Unknown wording stays unclassified (``None``) — a false negative keeps
 today's generic cool-down, a false positive would only bring one retry
@@ -49,13 +55,30 @@ from urllib.error import HTTPError
 from precis.utils.http import retry_after_seconds
 from precis.utils.llm.quota import quota_retry_at
 
-FailureClass = Literal["quota", "rate", "budget", "transport", "content", "unparseable"]
+FailureClass = Literal[
+    "quota",
+    "rate",
+    "budget",
+    "transport",
+    "content",
+    "unparseable",
+    "subscription_cap",
+    "subscription_bulk_refused",
+]
 
 #: Classes a failover chain may fall through on: the *rung* is the problem,
 #: not the prompt. ``content`` is deliberately absent; ``unparseable`` is a
 #: per-sample format flake, so the next rung's fresh sample can still parse.
 FALL_THROUGH_CLASSES: frozenset[str] = frozenset(
-    {"quota", "rate", "budget", "transport", "unparseable"}
+    {
+        "quota",
+        "rate",
+        "budget",
+        "transport",
+        "unparseable",
+        "subscription_cap",
+        "subscription_bulk_refused",
+    }
 )
 
 #: Classes the SMALL lane retries in-process (router ``route()``): short

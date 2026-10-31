@@ -68,6 +68,20 @@ OP_KEY_PREFIX = "llm.op."
 #: Absent / any other value = cloud on (the default) — so with nothing set,
 #: dispatch is byte-identical.
 CLOUD_ENABLED_KEY = "llm.cloud_enabled"
+#: app_settings key for the named provider-profile table: a JSON object
+#: ``{"<name>": {"base_url": <str>, "api_key_ref": <str?>, "kind":
+#: "metered"|"subscription" (default "metered"), "cap": {"calls": <int?>,
+#: "tokens": <int?>, "window_s": <number>}?}}`` — the grammar
+#: :func:`precis.utils.llm.router.resolve_profile` validates. A chain
+#: rung's ``"profile"`` key names one entry; each profile carries its own
+#: endpoint + credential reference, so one process can route several
+#: hosted providers in a single chain (gr543825).
+PROFILES_KEY = "llm.profiles"
+#: Per-process env override for the profile table — same JSON format as
+#: :data:`PROFILES_KEY`; wins over the DB row for this process only
+#: (one-off runs/tests), exactly as ``PRECIS_LLM_CHAIN_<TIER>`` sits above
+#: the chain row.
+ENV_PROFILES_VAR = "PRECIS_LLM_PROFILES"
 
 #: Per-process env overrides (one-off runs on a different model/transport
 #: without touching the fleet-wide ``app_settings`` rows): ``PRECIS_LLM_CHAIN_<TIER>``
@@ -122,12 +136,16 @@ def chain_env_active(tier: Tier) -> bool:
 _env_warned: set[str] = set()
 
 
-def _warn_env_override(what: str, tier: Tier, var: str) -> None:
+def _warn_env_once(var: str, message: str) -> None:
     with _lock:
         if var in _env_warned:
             return
         _env_warned.add(var)
-    log.warning("llm %s for %s overridden by %s", what, tier.value, var)
+    log.warning("%s", message)
+
+
+def _warn_env_override(what: str, tier: Tier, var: str) -> None:
+    _warn_env_once(var, f"llm {what} for {tier.value} overridden by {var}")
 
 
 def backend_override() -> str | None:
@@ -225,6 +243,67 @@ def _parse_env_chain(var: str, raw: str) -> list[dict]:
     return parsed
 
 
+def profiles_override() -> dict | None:
+    """The provider-profile table (``llm.profiles``) as a raw name → dict
+    map, or ``None`` (→ no profiles; a rung naming one fails to resolve).
+
+    Degrade-safe like :func:`chain_override`: no store / no row / invalid
+    JSON / a non-dict all return ``None`` rather than raising; per-entry
+    field validation is the router's job
+    (:func:`~precis.utils.llm.router.resolve_profile`). A per-process
+    ``PRECIS_LLM_PROFILES`` env var (same JSON) wins over the DB row and —
+    like the env chain — is NOT degrade-safe: a malformed value raises
+    :class:`~precis.errors.BadInput` naming the var.
+    """
+    env = os.environ.get(ENV_PROFILES_VAR, "").strip()
+    if env:
+        parsed_env = _parse_env_profiles(env)
+        _warn_env_once(
+            ENV_PROFILES_VAR,
+            f"llm provider profiles overridden by {ENV_PROFILES_VAR}",
+        )
+        return parsed_env
+    raw = _cached_setting(PROFILES_KEY)
+    if raw is None:
+        return None
+    try:
+        parsed = json.loads(raw)
+    except (json.JSONDecodeError, TypeError, ValueError):
+        log.warning("live_config: ignoring malformed JSON for %s", PROFILES_KEY)
+        return None
+    if not isinstance(parsed, dict):
+        log.warning(
+            "live_config: ignoring non-object %s (got %s)",
+            PROFILES_KEY,
+            type(parsed).__name__,
+        )
+        return None
+    return parsed
+
+
+def _parse_env_profiles(raw: str) -> dict:
+    from precis.errors import BadInput
+
+    example = (
+        '{"<name>": {"base_url": "https://<host>/v1", '
+        '"api_key_ref": "<SECRET_NAME>", "kind": "metered"}}'
+    )
+    try:
+        parsed = json.loads(raw)
+    except (json.JSONDecodeError, TypeError, ValueError) as exc:
+        raise BadInput(
+            f"{ENV_PROFILES_VAR} is not valid JSON ({exc})",
+            next=f"set {ENV_PROFILES_VAR} to a JSON object of profiles, e.g. {example}",
+        ) from exc
+    if not isinstance(parsed, dict) or not parsed:
+        raise BadInput(
+            f"{ENV_PROFILES_VAR} must be a non-empty JSON object of "
+            f"profiles (got {type(parsed).__name__})",
+            next=f"set {ENV_PROFILES_VAR} to e.g. {example}",
+        )
+    return parsed
+
+
 def op_override(source: str) -> dict | None:
     """The web-set ``{"tier": ..., "model": ...}`` override for ``source``, or
     ``None`` (→ the operation registry's code default,
@@ -315,8 +394,10 @@ __all__ = [
     "CLOUD_ENABLED_KEY",
     "ENV_CHAIN_PREFIX",
     "ENV_MODEL_PREFIX",
+    "ENV_PROFILES_VAR",
     "MODEL_KEY_PREFIX",
     "OP_KEY_PREFIX",
+    "PROFILES_KEY",
     "backend_override",
     "bust_cache",
     "chain_env_active",
@@ -329,4 +410,5 @@ __all__ = [
     "model_override",
     "op_key",
     "op_override",
+    "profiles_override",
 ]

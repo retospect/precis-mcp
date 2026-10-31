@@ -6904,3 +6904,326 @@ def test_failover_unparseable_rung_logs_one_error_then_success(
     assert ok.errored is False
     assert ok.model == "m-rung1"
     assert "reply_head" not in ok.features
+
+
+# ── named provider profiles (llm.profiles, gr543825) ────────────────────
+
+
+def _set_profiles(monkeypatch: pytest.MonkeyPatch, profiles: dict) -> None:
+    monkeypatch.setenv("PRECIS_LLM_PROFILES", json.dumps(profiles))
+
+
+def _profile_fakes(
+    monkeypatch: pytest.MonkeyPatch, seen: list[dict[str, object]]
+) -> None:
+    """Wire the hosted-OSS dispatch path to a scripted FakeClient: each
+    LlmClient construction records (url, api_key, model); ``complete``
+    raises OSError on the 'alpha' endpoint so a chain falls through."""
+    import precis.secrets as secrets
+    import precis.workers.llm_summarize as summ
+
+    class FakeClient:
+        def __init__(self, config: object) -> None:
+            seen.append(
+                {
+                    "url": getattr(config, "url", None),
+                    "api_key": getattr(config, "api_key", None),
+                    "model": getattr(config, "model", None),
+                }
+            )
+
+        def complete(
+            self, messages: list[dict[str, str]], **_kw: object
+        ) -> _FakeOpenAI:
+            if seen[-1]["url"] == "https://alpha.example.invalid/v1":
+                raise OSError("connection refused")
+            return _FakeOpenAI(text="ok", total_tokens=5)
+
+    monkeypatch.setattr(summ, "LlmClient", FakeClient)
+    monkeypatch.setattr(
+        secrets,
+        "get_secret",
+        lambda name, **kw: {
+            "ALPHA_LLM_KEY": "sk-alpha",
+            "BETA_LLM_KEY": "sk-beta",
+            "SUB_LLM_KEY": "sk-sub",
+            "PAID_LLM_KEY": "sk-paid",
+        }.get(name),
+    )
+
+
+def test_chain_mixes_two_hosted_profiles(monkeypatch: pytest.MonkeyPatch) -> None:
+    """One chain routes two hosted providers: each profiled rung dispatches
+    at its own base_url authed by its own api_key_ref — the process-wide
+    PRECIS_LLM_BASE_URL stays unset to prove the profile supplies the
+    endpoint."""
+    _set_profiles(
+        monkeypatch,
+        {
+            "alpha": {
+                "base_url": "https://alpha.example.invalid/v1",
+                "api_key_ref": "ALPHA_LLM_KEY",
+                "kind": "metered",
+            },
+            "beta": {
+                "base_url": "https://beta.example.invalid/v1",
+                "api_key_ref": "BETA_LLM_KEY",
+                "kind": "metered",
+            },
+        },
+    )
+    seen: list[dict[str, object]] = []
+    _profile_fakes(monkeypatch, seen)
+    monkeypatch.setattr(
+        "precis.utils.llm.live_config.chain_override",
+        lambda _tier: [
+            {"transport": "openai_compat", "model": "model-a", "profile": "alpha"},
+            {"transport": "openai_compat", "model": "model-b", "profile": "beta"},
+        ],
+    )
+    monkeypatch.delenv("PRECIS_LLM_BASE_URL", raising=False)
+    router._sub_ledger.clear()
+
+    out = route(LlmRequest(tier=Tier.MEDIUM, prompt="judge this"))
+
+    assert out.error is None
+    assert out.text == "ok"
+    # rung 0 (alpha) failed the wire; rung 1 (beta) answered — each at its
+    # own url, with its own key and pinned model.
+    assert [c["url"] for c in seen] == [
+        "https://alpha.example.invalid/v1",
+        "https://beta.example.invalid/v1",
+    ]
+    assert [c["api_key"] for c in seen] == ["sk-alpha", "sk-beta"]
+    assert [c["model"] for c in seen] == ["model-a", "model-b"]
+
+
+def test_chain_rung_without_profile_is_unchanged(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Acceptance pin: a rung naming no profile behaves exactly as today —
+    env base url + the host-keyed vault key — and ``Rung.profile`` is None."""
+    import precis.secrets as secrets
+    import precis.workers.llm_summarize as summ
+
+    monkeypatch.setenv("PRECIS_LLM_BASE_URL", "https://openrouter.ai/api/v1")
+    rungs, bad = router.parse_chain_rungs(
+        [{"transport": "openai_compat", "model": "m"}]
+    )
+    assert bad is None
+    assert rungs[0].profile is None
+
+    seen: list[dict[str, object]] = []
+
+    class FakeClient:
+        def __init__(self, config: object) -> None:
+            seen.append(
+                {
+                    "url": getattr(config, "url", None),
+                    "api_key": getattr(config, "api_key", None),
+                }
+            )
+
+        def complete(self, messages: list[dict[str, str]]) -> _FakeOpenAI:
+            return _FakeOpenAI(text="oss out", total_tokens=7)
+
+    monkeypatch.setattr(summ, "LlmClient", FakeClient)
+    monkeypatch.setattr(secrets, "get_secret", lambda name, **kw: "sk-env")
+    monkeypatch.setattr(
+        "precis.utils.llm.live_config.chain_override",
+        lambda _tier: [{"transport": "openai_compat", "model": "m"}],
+    )
+
+    out = route(LlmRequest(tier=Tier.MEDIUM, prompt="x"))
+
+    assert out.error is None
+    assert seen[0]["url"] == "https://openrouter.ai/api/v1"
+    assert seen[0]["api_key"] == "sk-env"
+
+
+def _subscription_chain() -> list[dict[str, object]]:
+    return [
+        {"transport": "openai_compat", "model": "sub-model", "profile": "sub"},
+        {"transport": "openai_compat", "model": "paid-model", "profile": "paid"},
+    ]
+
+
+def _subscription_profiles(monkeypatch: pytest.MonkeyPatch) -> None:
+    _set_profiles(
+        monkeypatch,
+        {
+            "sub": {
+                "base_url": "https://sub.example.invalid/v1",
+                "api_key_ref": "SUB_LLM_KEY",
+                "kind": "subscription",
+                "cap": {"calls": 1, "window_s": 3600},
+            },
+            "paid": {
+                "base_url": "https://paid.example.invalid/v1",
+                "api_key_ref": "PAID_LLM_KEY",
+                "kind": "metered",
+            },
+        },
+    )
+
+
+def test_subscription_cap_exhaustion_falls_through(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A subscription profile whose window cap is spent skips its rung with
+    a logged ``subscription_cap`` reason — the chain walks to the next rung
+    without pausing it, and the skip itself is a route-log row."""
+    _subscription_profiles(monkeypatch)
+    seen: list[dict[str, object]] = []
+    _profile_fakes(monkeypatch, seen)
+    monkeypatch.setattr(
+        "precis.utils.llm.live_config.chain_override",
+        lambda _tier: _subscription_chain(),
+    )
+    monkeypatch.delenv("PRECIS_LLM_BASE_URL", raising=False)
+    router._sub_ledger.clear()
+    recorded = _capture_route_log(monkeypatch)
+
+    first = route(LlmRequest(tier=Tier.MEDIUM, prompt="x"))
+    assert first.error is None
+    assert seen[-1]["url"] == "https://sub.example.invalid/v1"
+    assert len(router._sub_ledger["sub"]) == 1
+    assert router._sub_ledger["sub"][0][1] == 5  # total_tokens tallied
+
+    import logging as _logging
+
+    with caplog.at_level(_logging.WARNING, logger="precis.utils.llm.router"):
+        second = route(LlmRequest(tier=Tier.MEDIUM, prompt="x"))
+
+    assert second.error is None
+    # The cap (1 call/3600s) skipped the sub rung with NO wire call — the
+    # only new dispatch is the metered fallback.
+    assert seen[-1]["url"] == "https://paid.example.invalid/v1"
+    assert any("subscription_cap" in r.message for r in caplog.records)
+    skipped = recorded[-2]
+    assert skipped.reason_class == "subscription_cap"
+    assert skipped.features["profile"] == "sub"
+    assert "window cap" in (skipped.error or "")
+
+
+@pytest.mark.parametrize(
+    "req_kwargs",
+    [
+        {"tier": Tier.SMALL},
+        {"tier": Tier.MEDIUM, "source": "card_describe"},
+        {"tier": Tier.MEDIUM, "source": "card_describe:figures"},
+        {"tier": Tier.MEDIUM, "work_class": "chunk_keywords"},
+    ],
+    ids=["small-tier", "bulk-source", "bulk-source-prefix", "bulk-work-class"],
+)
+def test_subscription_rung_refuses_bulk_work(
+    monkeypatch: pytest.MonkeyPatch, req_kwargs: dict[str, Any]
+) -> None:
+    """The bulk guard skips a subscription rung on SMALL traffic and on any
+    bulk purpose — ``subscription_bulk_refused``, then the chain walks on."""
+    _subscription_profiles(monkeypatch)
+    seen: list[dict[str, object]] = []
+    _profile_fakes(monkeypatch, seen)
+    monkeypatch.setattr(
+        "precis.utils.llm.live_config.chain_override",
+        lambda _tier: _subscription_chain(),
+    )
+    monkeypatch.delenv("PRECIS_LLM_BASE_URL", raising=False)
+    router._sub_ledger.clear()
+    recorded = _capture_route_log(monkeypatch)
+
+    out = route(LlmRequest(prompt="x", **req_kwargs))
+
+    assert out.error is None
+    assert seen[-1]["url"] == "https://paid.example.invalid/v1"
+    skipped = recorded[-2]
+    assert skipped.reason_class == "subscription_bulk_refused"
+    assert skipped.features["profile"] == "sub"
+
+
+def test_profile_key_never_reaches_logs_or_errors(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """The api_key VALUE resolves at call time into the client config — it
+    must never appear in a log record, a route-log row, or an error."""
+    import logging as _logging
+
+    secret = "sk-secret-zzz-9"
+    _set_profiles(
+        monkeypatch,
+        {
+            "alpha": {
+                "base_url": "https://alpha.example.invalid/v1",
+                "api_key_ref": "ALPHA_LLM_KEY",
+                "kind": "metered",
+            }
+        },
+    )
+    import precis.secrets as secrets
+    import precis.workers.llm_summarize as summ
+
+    seen: dict[str, object] = {}
+
+    class FailingClient:
+        def __init__(self, config: object) -> None:
+            seen["api_key"] = getattr(config, "api_key", None)
+
+        def complete(
+            self, messages: list[dict[str, str]], **_kw: object
+        ) -> _FakeOpenAI:
+            raise OSError("boom")
+
+    monkeypatch.setattr(summ, "LlmClient", FailingClient)
+    monkeypatch.setattr(secrets, "get_secret", lambda name, **kw: secret)
+    monkeypatch.setattr(
+        "precis.utils.llm.live_config.chain_override",
+        lambda _tier: [
+            {"transport": "openai_compat", "model": "m", "profile": "alpha"}
+        ],
+    )
+    monkeypatch.delenv("PRECIS_LLM_BASE_URL", raising=False)
+    router._sub_ledger.clear()
+    recorded = _capture_route_log(monkeypatch)
+
+    with caplog.at_level(_logging.DEBUG):
+        out = route(LlmRequest(tier=Tier.MEDIUM, prompt="x"))
+
+    assert seen["api_key"] == secret  # the wire got it — the test is real
+    haystack = [out.error or ""]
+    haystack += [r.getMessage() for r in caplog.records]
+    for rec in recorded:
+        haystack += [
+            rec.error or "",
+            rec.request_text,
+            rec.response_text,
+            json.dumps(rec.features),
+        ]
+    assert all(secret not in blob for blob in haystack)
+
+
+def test_resolve_profile_parses_env_table(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The env table resolves into ProviderProfile entries; unknown and
+    malformed names degrade to None rather than raising."""
+    _set_profiles(
+        monkeypatch,
+        {
+            "alpha": {
+                "base_url": "https://alpha.example.invalid/v1",
+                "api_key_ref": "ALPHA_LLM_KEY",
+                "kind": "subscription",
+                "cap": {"calls": 3, "tokens": 900, "window_s": 60},
+            },
+            "broken": {"base_url": "not-a-url"},
+        },
+    )
+    p = router.resolve_profile("alpha")
+    assert p is not None
+    assert p.base_url == "https://alpha.example.invalid/v1"
+    assert p.api_key_ref == "ALPHA_LLM_KEY"
+    assert p.kind == "subscription"
+    assert p.cap is not None and p.cap.calls == 3 and p.cap.window_s == 60.0
+    assert router.resolve_profile("missing") is None
+    assert router.resolve_profile("broken") is None
+    assert router.resolve_profile(None) is None
