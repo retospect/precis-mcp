@@ -2,7 +2,7 @@
 id: precis-job-observe-help
 family: work
 title: precis — compute job types and the fleet /-views
-summary: the compute-lane job types (struct_relax, pourbaix_bulk, surface_coverage_scan, sandbox_run, pathway/pcb/retrosynth lanes) plus the read-only /… views (/logs, /limits, /delta, /builds, /throughput, /cadence) on kind='job'
+summary: the compute-lane job types (struct_relax, pourbaix_bulk, surface_coverage_scan, sandbox_run, pathway/pcb/retrosynth lanes) plus the read-only /… views (/logs, /limits, /delta, /builds, /throughput, /cadence, /settings) on kind='job'
 answers:
   - which job types run compute or code, and on which executor?
   - how do I run a relax, a Pourbaix verdict or a coverage scan?
@@ -14,6 +14,7 @@ answers:
   - has a fix reached the fleet yet / which build is each process on?
   - is the fleet working or idle?
   - when does a cadence fire next?
+  - is a live switch (app_settings / service_config row) set?
 applies-to: get/search/put (kind='job')
 tags: workflow, verbs, troubleshooting
 kinds: job
@@ -215,6 +216,26 @@ get(kind="job", id="/cadence")                # every scheduler_leases row
 Each recurring cadence holds a `scheduler_leases` row — the lease clock
 the decentralized scheduler claims. `next_fire_at` in the past means the
 cadence is due, not broken (any live worker may claim it).
+
+## Is a live switch set? — /settings
+
+```python
+get(kind="job", id="/settings")   # every app_settings + service_config row
+```
+
+`app_settings` is the generic non-secret KV (a row IS a non-default
+override — cadence knobs like `dream.min_interval_minutes`, budget caps,
+marker snapshots); `service_config` is the per-(host, service)
+run-control table (`prio` = live off/weight switch, `concurrency` =
+in-pass fan-out, `expires_at` = reserve-mode clock). Deny-by-default:
+only allowlisted key families render a row at all (the rest are a
+withheld count), unknown key segments render as `<name>`, and values
+render only as typed scalars (bool, number, timestamp, duration,
+vetted enum word — anything else is `(withheld: string, N chars)`).
+`service_config.host` is masked. Read-only — writes stay with
+`precis service` / `precis settings` / the web pages. The Dark switches
+table on [[precis-status]] covers only `enable_env` services; this is
+every row.
 
 ## See also
 

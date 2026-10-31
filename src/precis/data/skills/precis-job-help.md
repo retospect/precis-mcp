@@ -577,7 +577,8 @@ Fleet-introspection views `get(kind='job', id='/…')` — `/logs`
 (worker_logs, filterable by handler/host/process/job/since/level/q,
 also via `args=`), `/limits` (provider pacing), `/delta` (since the
 last doctor tick), `/builds` (per-process code + `contains_sha`),
-`/throughput` (claims + queue depth) — live in
+`/throughput` (claims + queue depth), `/settings` (app_settings +
+service_config rows, read-only) — live in
 [[precis-job-observe-help]].
 
 ## See also

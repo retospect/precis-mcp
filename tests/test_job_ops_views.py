@@ -281,3 +281,337 @@ def test_delta_bad_since_raises(jobs: JobHandler) -> None:
 
     with pytest.raises(BadInput):
         jobs.get(id="/delta?since=yesterday-ish")
+
+
+# ── /settings (gr538186) ────────────────────────────────────────────
+
+# Fake values for the redaction tests — one marked constant so the
+# secret-gate marker stays rare. Every literal that trips the tree gate
+# sits on the line right under the marker (gate: marker exempts its own
+# line and the next); the rest are gate-clean fakes.
+# fmt: off
+_FAKE_SETTINGS: dict[str, str] = {  # secret-gate: allow — fake values for redaction tests
+    "dsn": "postgres://user:hunter2@db.internal/precis", "tok_url": "https://node.example/cb?token=tok-probe-123", "key_url": "https://node.example/cb?api_key=key-probe-456", "pw_cfg": "user=ops password=pw-probe-789", "ghs_tok": "ghs_aB3dE5fG7hJ9kL1mN3pQ5rS7tU9vW1x", "asia_key": "ASIAAB3DEF4GH5JK6LM7", "cg_ip_peer": "peer 100.64.0.5.", "cg_ip_word": "host100.64.0.5",
+    "json_pw": '{"password": "hunter2"}',
+    "yaml_pw": "password: hunter2",
+    "pw_kv": "pw=x",
+    "tok_kv": "tok=x",
+    "basic_auth": "Authorization: Basic dXNlcjpwYXNz",
+    "npm_tok": "npm_probe123",
+    "sk_live_tok": "sk_live_probe123",
+    "ya29_tok": "ya29.probe123",
+    "xoxe_tok": "xoxe-probe123",
+    "hf_tok": "hf_probe123",
+    "userinfo_url": "https://tok123@github.com/x",
+    "bare_node": "somenode",
+    "lan_node": "gpu1.lan",
+    "host_port_kv": "host=somenode port=5432",
+    "v6_zone": "fe80::1%eth0",
+    "sk_tok": "sk-test-probe-secret",
+    "aws_key": "AKIAEXAMPLEFAKE0000",
+    "hex32": "0123456789abcdef" * 2,
+    "bearer_json": '{"auth":"Bearer abc123def"}',
+    "email": "someone@example.org",
+    "endpoint_json": '{"endpoint": "thinkpad"}',
+    "name_json": '{"name": "alice"}',
+    "args_json": '{"args": {"value": "s3cr3t-pass"}}',
+    "horse": "correct-horse-battery",
+    "alice_mbp": "alice-mbp",
+    "v4_lit": "192.0.2.7",
+    "good_ts": "2026-10-29T12:30:00Z",
+    "not_ts": "not-a-timestamp-marker",
+    "good_model": "kimi-k2",
+}
+# fmt: on
+
+#: ``(fixture field, fragments that must never render)`` — every leak
+#: shape the gr538186 review found, seeded under an *allowlisted* key:
+#: the typed-value rule must withhold each one.
+_SETTINGS_LEAK_CASES: list[tuple[str, list[str]]] = [
+    ("json_pw", ["hunter2", "password"]),
+    ("yaml_pw", ["hunter2"]),
+    ("pw_kv", ["pw=x"]),
+    ("tok_kv", ["tok=x"]),
+    ("basic_auth", ["dXNlcjpwYXNz", "Basic"]),
+    ("ghs_tok", ["ghs_aB3d"]),
+    ("npm_tok", ["npm_probe123"]),
+    ("sk_live_tok", ["sk_live_probe123"]),
+    ("ya29_tok", ["ya29.probe123"]),
+    ("xoxe_tok", ["xoxe-probe123"]),
+    ("hf_tok", ["hf_probe123"]),
+    ("asia_key", ["ASIA" + "AB3DEF4GH5JK6LM7"]),
+    ("aws_key", ["AKIAEXAMPLEFAKE0000"]),
+    ("sk_tok", ["sk-test-probe-secret"]),
+    ("userinfo_url", ["tok123@github.com"]),
+    ("dsn", ["hunter2", "db.internal", "postgres:"]),
+    ("bare_node", ["somenode"]),
+    ("lan_node", ["gpu1.lan"]),
+    ("host_port_kv", ["somenode", "5432"]),
+    ("cg_ip_peer", ["100.64" + ".0.5"]),
+    ("cg_ip_word", ["100.64" + ".0.5"]),
+    ("v6_zone", ["fe80"]),
+    ("hex32", ["0123456789abcdef"]),
+    ("bearer_json", ["abc123def"]),
+    ("email", ["someone@example.org"]),
+    ("endpoint_json", ["thinkpad", "endpoint"]),
+    ("name_json", ["alice"]),
+    ("args_json", ["s3cr3t-pass", "args"]),
+    ("horse", ["correct-horse-battery"]),
+    ("v4_lit", ["192.0.2.7"]),
+]
+
+
+def _seed_setting(store: Store, key: str, value: str) -> None:
+    with store.pool.connection() as conn:
+        conn.execute(
+            "INSERT INTO app_settings (key, value, updated_at) "
+            "VALUES (%s, %s, now()) "
+            "ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value",
+            (key, value),
+        )
+        conn.commit()
+
+
+def _drop_setting(store: Store, key: str) -> None:
+    with store.pool.connection() as conn:
+        conn.execute("DELETE FROM app_settings WHERE key = %s", (key,))
+        conn.commit()
+
+
+def _settings_body_for(jobs: JobHandler, store: Store, key: str, value: str) -> str:
+    _seed_setting(store, key, value)
+    try:
+        return jobs.get(id="/settings").body
+    finally:
+        _drop_setting(store, key)
+
+
+def test_settings_renders_typed_values(jobs: JobHandler, store: Store) -> None:
+    """Positives: a bool, int, float, ISO timestamp, duration, a
+    per-key enum member and a ``*.model`` name all render."""
+    tag = uuid4().hex[:8]
+    cases = {
+        f"dream.{tag}.b": ("true", "true"),
+        f"dream.{tag}.i": ("42", "42"),
+        f"dream.{tag}.f": ("0.75", "0.75"),
+        f"dream.{tag}.t": (_FAKE_SETTINGS["good_ts"], "2026-10-29T12:30:00"),
+        f"dream.{tag}.d": ("15m", "15m"),
+        f"dream.{tag}.mode": ("shadow", "shadow"),
+        "schema.gate": ("warn", "warn"),
+        f"dream.{tag}.tier": ("big", "big"),
+        f"dream.{tag}.model": (_FAKE_SETTINGS["good_model"], "kimi-k2"),
+    }
+    for k, (v, _want) in cases.items():
+        _seed_setting(store, k, v)
+    try:
+        body = jobs.get(id="/settings").body
+        assert "## app_settings" in body
+        for _k, (_v, want) in cases.items():
+            assert want in body
+    finally:
+        for k in cases:
+            _drop_setting(store, k)
+
+
+def test_settings_normalizes_key_names(jobs: JobHandler, store: Store) -> None:
+    """Only allowlist-pattern segments print; an operator-chosen
+    segment — hostname or job id — collapses to ``<name>``."""
+    tag = uuid4().hex[:8]
+    keys = {
+        "budget.hourly_usd": "5.0",  # every segment known — shows whole
+        f"dream.gpu{tag[:4]}.last_run": _FAKE_SETTINGS["good_ts"],
+        f"dream.{tag}": "probe-value-42",
+    }
+    for k, v in keys.items():
+        _seed_setting(store, k, v)
+    try:
+        body = jobs.get(id="/settings").body
+        assert "budget.hourly_usd" in body
+        assert "dream.<name>.last_run" in body
+        assert "dream.<name>" in body
+        # …but the operator-chosen segments never print.
+        assert tag not in body
+        assert f"gpu{tag[:4]}" not in body
+    finally:
+        for k in keys:
+            _drop_setting(store, k)
+
+
+@pytest.mark.parametrize(
+    ("field", "fragments"),
+    _SETTINGS_LEAK_CASES,
+    ids=[field for field, _ in _SETTINGS_LEAK_CASES],
+)
+def test_settings_withholds_leak_shapes(
+    jobs: JobHandler, store: Store, field: str, fragments: list[str]
+) -> None:
+    """Every review-found leak shape withholds under an allowlisted
+    key — DSNs, name=value secrets, token prefixes, hostnames, IPs."""
+    key = f"dream.{uuid4().hex[:8]}"
+    body = _settings_body_for(jobs, store, key, _FAKE_SETTINGS[field])
+    assert "(withheld" in body
+    for frag in fragments:
+        assert frag not in body
+
+
+def test_settings_withholds_secret_named_keys(jobs: JobHandler, store: Store) -> None:
+    """A secret-shaped key name withholds its value even allowlisted —
+    ``pwd``/``passphrase``/``dsn``/``url``/``api_key`` pieces."""
+    tag = uuid4().hex[:8]
+    keys = [
+        "dream.pwd",
+        f"llm.op.{tag}.passphrase",
+        f"llm.op.{tag}.dsn",
+        f"llm.op.{tag}.api_key",
+        f"contact.{tag}.tokens",
+        f"contact.{tag}.credentials",
+    ]
+    for k in keys:
+        _seed_setting(store, k, f"value-for-{k}")
+    try:
+        body = jobs.get(id="/settings").body
+        for k in keys:
+            assert f"value-for-{k}" not in body
+    finally:
+        for k in keys:
+            _drop_setting(store, k)
+
+
+def test_settings_counts_denied_keys(jobs: JobHandler, store: Store) -> None:
+    """Non-allowlisted keys are a count, not a row — the key name
+    itself never prints (``deploy.fleet`` included)."""
+    tag = uuid4().hex[:8]
+    keys = [
+        f"test.{tag}.internal",
+        "deploy.fleet",
+        "contact.email",
+        f"release.{tag}.marker",
+    ]
+    for k in keys:
+        _seed_setting(store, k, "opaque-marker-7")
+    try:
+        body = jobs.get(id="/settings").body
+        assert "withheld)" in body
+        for k in keys:
+            assert k not in body
+        assert "deploy.fleet" not in body
+        assert "contact.email" not in body
+        assert "opaque-marker-7" not in body
+    finally:
+        for k in keys:
+            _drop_setting(store, k)
+
+
+def test_settings_last_run_requires_timestamp(jobs: JobHandler, store: Store) -> None:
+    tag = uuid4().hex[:8]
+    good, bad = f"dream.{tag}.last_run", f"dream.{tag}x.last_run"
+    _seed_setting(store, good, _FAKE_SETTINGS["good_ts"])
+    _seed_setting(store, bad, _FAKE_SETTINGS["not_ts"])
+    try:
+        body = jobs.get(id="/settings").body
+        assert "2026-10-29T12:30:00" in body
+        assert "not-a-timestamp-marker" not in body
+    finally:
+        _drop_setting(store, good)
+        _drop_setting(store, bad)
+
+
+def test_settings_json_walk_allowlists_keys(jobs: JobHandler, store: Store) -> None:
+    """An ``llm.op.*`` JSON override renders its known fields; a denied
+    object key withholds name and value."""
+    key = f"llm.op.{uuid4().hex[:8]}"
+    value = (
+        '{"tier": "big", "model": "kimi-k2", '
+        '"endpoint": "http://somenode:11434", '
+        '"api_key": "sk-test-probe-secret"}'
+    )
+    body = _settings_body_for(jobs, store, key, value)
+    assert '"tier": "big"' in body
+    assert '"model": "kimi-k2"' in body
+    assert "api_key" not in body
+    assert "endpoint" not in body
+    assert "sk-test-probe-secret" not in body
+    assert "somenode" not in body
+
+
+def test_settings_collapses_per_day_keys(jobs: JobHandler, store: Store) -> None:
+    """100 per-day marker keys collapse to one stem line — the view
+    stays well under the 4 KB card cap."""
+    tag = uuid4().hex[:8]
+    keys = [f"dream.cw{tag}:minted:{2100 + i}-01-01" for i in range(100)]
+    for i, k in enumerate(keys):
+        _seed_setting(store, k, str(i))
+    try:
+        body = jobs.get(id="/settings").body
+        assert "100 per-day keys — newest 2199-01-01" in body
+        assert "dream.<name>:<name>*" in body
+        for k in keys:
+            assert k not in body
+        assert len(body.encode("utf-8")) < 4096
+    finally:
+        for k in keys:
+            _drop_setting(store, k)
+
+
+def test_settings_service_config_typed_cells(jobs: JobHandler, store: Store) -> None:
+    """Service names print only from the registry enum; actor and host
+    material never render — a node hostname in the host column or an
+    operator laptop name in the actor cell."""
+    from precis.workers.registry import SERVICES
+    from precis.workers.service_config import (
+        clear_service_config,
+        set_service_concurrency,
+        set_service_prio,
+    )
+
+    tag = uuid4().hex[:8]
+    host = f"testnode-{tag}"
+    real_service = SERVICES[0].name
+    fake_service = f"test_svc_{tag}"
+    set_service_prio(store, host, real_service, 3, actor="alice-mbp")
+    set_service_concurrency(store, "*", fake_service, 4, actor="ops@somenode")
+    try:
+        body = jobs.get(id="/settings").body
+        assert "## service_config" in body
+        assert real_service in body  # registered name is the service enum
+        assert fake_service not in body  # unknown word: no enum → withheld
+        assert host not in body  # node hostname masked
+        assert "(masked)" in body
+        assert "alice-mbp" not in body  # actor: no enum → withheld
+        assert "somenode" not in body
+        assert "prio" in body and "conc" in body
+    finally:
+        clear_service_config(store, host, real_service)
+        clear_service_config(store, "*", fake_service)
+
+
+def test_settings_view_is_safe_for_any_agent(jobs: JobHandler, store: Store) -> None:
+    """The view is ungated on purpose — there is no privileged read.
+    A plain ``get`` (the only caller shape the API offers) over rows
+    stuffed with operator material returns only typed cells, ``<name>``
+    segments and the withheld count."""
+    tag = uuid4().hex[:8]
+    keys = {
+        f"dream.{tag}": _FAKE_SETTINGS["dsn"],
+        f"test.{tag}": _FAKE_SETTINGS["pw_cfg"],
+        f"llm.op.{tag}.api_key": _FAKE_SETTINGS["sk_tok"],
+    }
+    for k, v in keys.items():
+        _seed_setting(store, k, v)
+    try:
+        body = jobs.get(id="/settings").body
+        for v in keys.values():
+            assert v not in body
+        for frag in ("hunter2", "db.internal", "sk-test-probe-secret"):
+            assert frag not in body
+        assert "withheld" in body
+    finally:
+        for k in keys:
+            _drop_setting(store, k)
+
+
+def test_settings_empty_tables_render_cleanly(jobs: JobHandler) -> None:
+    resp = jobs.get(id="/settings")
+    assert resp.body.startswith("# settings")
+    assert "## app_settings" in resp.body
+    assert "## service_config" in resp.body

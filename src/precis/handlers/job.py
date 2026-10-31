@@ -105,6 +105,201 @@ _FIX_REPO_ENV = "PRECIS_FIX_REPO_DIR"
 #: up to ``rate_limit.MAX_SEEDED_HOST_ROWS``).
 _LIMITS_MAX_ROWS = 600
 
+# ── /settings list view: read-only app_settings + service_config
+# surface (gr538186) ────────────────────────────────────────────────
+#: The app_settings table is an ALLOWLIST, not a blocklist (gr538186
+#: review): only these key families render a row at all — the typed
+#: registry's scalar knobs (``precis.settings.REGISTRY``), the budget
+#: caps, the ``llm.op.*`` op overrides, and ``*.last_run`` markers.
+#: Every other key contributes only to the withheld-count line — the
+#: table answers "is the switch set", it never exfiltrates an unknown
+#: key's name or content.
+_ALLOWED_SETTING_PREFIXES: tuple[str, ...] = (
+    "budget.",
+    "chem.",
+    "dream.",
+    "dream_consolidate.",
+    "llm.local_first.",
+    "llm.op.",
+    "schema.",
+    "si.",
+)
+_ALLOWED_SETTING_KEYS: frozenset[str] = frozenset(
+    {"pcb.easyeda_browser_headers", "pathway.kinetics_mint_enabled"}
+)
+_ALLOWED_SETTING_SUFFIXES: tuple[str, ...] = (".last_run", ":last_run")
+#: Keys that never appear even as a normalized row — the fleet deploy
+#: ledger is operator material (host/process detail); it only counts
+#: toward the withheld line.
+_WITHHELD_SETTING_KEYS: frozenset[str] = frozenset({"deploy.fleet"})
+#: Secret-shaped key pieces — belt-and-suspenders on top of the
+#: allowlist so an ``llm.op.*.api_key`` or ``contact.*.dsn`` still
+#: withholds its value. Whole word-pieces only (plurals and
+#: dsn/url/uri count).
+_SECRET_KEY_TOKENS: frozenset[str] = frozenset(
+    {
+        "auth",
+        "secret",
+        "secrets",
+        "token",
+        "tokens",
+        "password",
+        "passwords",
+        "passwd",
+        "passphrase",
+        "passphrases",
+        "pass",
+        "pwd",
+        "pin",
+        "otp",
+        "key",
+        "private",
+        "credential",
+        "credentials",
+        "bearer",
+        "cookie",
+        "oauth",
+        "dsn",
+        "url",
+        "uri",
+    }
+)
+_SECRET_KEY_PREFIXES: frozenset[str] = frozenset(
+    {"api", "access", "private", "session", "signing", "client", "encryption"}
+)
+#: Structural field names a JSON object key or a ``service_config`` cell
+#: may print under — ``{"model": …}`` renders ``model`` while
+#: ``{"api_key": …}`` renders ``<name>``. Names are denied by default:
+#: an operator-chosen label is itself a place a host or secret hides.
+_STRUCTURAL_FIELD_NAMES: frozenset[str] = frozenset(
+    {
+        "chain",
+        "concurrency",
+        "count",
+        "enabled",
+        "engine",
+        "kind",
+        "limit",
+        "limits",
+        "mode",
+        "model",
+        "model_pref",
+        "params",
+        "placement",
+        "prio",
+        "provider",
+        "retries",
+        "runner",
+        "service",
+        "settings",
+        "timeout",
+        "timeout_s",
+        "transport",
+        "tier",
+        "type",
+    }
+)
+#: Typed scalar rendering (gr538186 review round 2 — deny-by-default
+#: replaces the pattern scrubber): a value prints only when it parses
+#: as one of these shapes. Everything else is
+#: ``(withheld: <type>, <len> chars)``.
+_SETTINGS_BOOL_WORDS: frozenset[str] = frozenset({"true", "false"})
+_SETTINGS_NUMBER = re.compile(r"[+-]?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?")
+#: A lone digit run longer than this is an id/token shape, not a knob.
+_SETTINGS_NUMBER_MAX_LEN = 20
+_SETTINGS_DURATION = re.compile(r"\d+(?:\.\d+)?[smhd]")
+#: The relaxed charset a ``*.model``/``model`` leaf may take — model
+#: names carry dots, slashes, colons (``openai/gpt-5``, ``qwen2.5``).
+_SETTINGS_MODEL_WORD = re.compile(r"[a-z0-9][a-z0-9._/+-]{0,63}")
+#: Value keys whose string is a known-name field (model names) —
+#: matched on the key's last ``.``/``:`` segment or a JSON object key.
+_SCHEMA_VALUE_KEYS: frozenset[str] = frozenset({"model", "model_pref"})
+#: Per-key enums a printed word must belong to (gr538186 round 3 — a
+#: plain lowercase word is NOT a type; without an enum the word is
+#: withheld). ``tier``/``transport``/``service`` resolve from their
+#: registries in :func:`_setting_enum`; the static ones live here.
+_STATIC_SETTING_ENUMS: dict[str, frozenset[str]] = {
+    "mode": frozenset({"off", "on", "shadow"}),
+    "gate": frozenset({"refuse", "warn", "off"}),
+    "placement": frozenset({"cloud", "local", "default"}),
+    "provider": frozenset(
+        {
+            "anthropic",
+            "openai",
+            "openrouter",
+            "google",
+            "googleapis",
+            "claude_agent",
+            "claude_p",
+            "local",
+            "openai_compat",
+            "openai_tools",
+        }
+    ),
+}
+#: Shapes a printable word may NOT take (gr538186 review round 2 —
+#: ``_scrub_hosts``'s successor as the second layer on enum words):
+_SETTINGS_IPISH = re.compile(r"\d+\.\d+\.\d")  # 3+ dotted numerics
+_SETTINGS_DNS_ALPHA = re.compile(r"\.[a-z]")  # dotted alpha label = dns-ish
+_HOST_PIECES: frozenset[str] = frozenset(
+    {
+        "lan",
+        "wan",
+        "wlan",
+        "local",
+        "internal",
+        "intranet",
+        "corp",
+        "home",
+        "db",
+        "vm",
+        "ts",
+        "tail",
+        "tailnet",
+        "rig",
+        "box",
+        "pc",
+        "pi",
+        "rpi",
+        "srv",
+        "nas",
+        "gpu",
+        "host",
+        "node",
+        "nodes",
+        "server",
+        "servers",
+        "worker",
+        "workers",
+        "machine",
+        "cluster",
+        "desktop",
+        "laptop",
+        "router",
+        "printer",
+    }
+)
+#: A piece ENDING in a machine lexeme, digits allowed (``somenode``,
+#: ``gpu1``, ``db01``, ``worker3``).
+_HOST_PIECE_TAIL = re.compile(
+    r"(?:node|gpu|srv|server|host|nas|worker|machine|cluster|desktop"
+    r"|laptop|tailnet|db|vm|box|pc|lan|rig|pi)\d*$"
+)
+#: A word starting like a known credential family — the token-prefix
+#: list survives only as a block on the enum-word path, not as the
+#: scrub mechanism.
+_SECRET_WORD = re.compile(
+    r"(?:sk[-_]|gh[a-z]_|github_pat|glpat[-_]|xox|akia|asia|aiza|eyj"
+    r"|npm_|hf_|ya29|pk[-_]|shpat|sbp_|oauth|bearer|token|secret"
+    r"|passwd|password|credential|apikey|api[-_]key)"
+)
+#: Per-day marker keys — ``citer_watch:minted:2026-10-29`` — collapse
+#: to one line per stem so a daily-marker family can't blow the 4 KB
+#: card cap (gr538186 review).
+_DAILY_SETTING_KEY = re.compile(r"^(.*[:.])((?:19|20|21)\d{2}-?\d{2}-?\d{2})$")
+#: Rendered cap on one allowlisted ``app_settings`` value.
+_SETTINGS_VALUE_CAP = 160
+
 
 def _limits_ts(value: Any) -> str:
     """``2026-10-23T16:44Z`` or ``-`` — a NULL timestamptz on a ``/limits``
@@ -637,6 +832,7 @@ class JobHandler(NumericRefHandler):
             "cadence",
             "limits",
             "delta",
+            "settings",
         )
 
     def get(
@@ -761,6 +957,9 @@ class JobHandler(NumericRefHandler):
         if view == "delta" or view.startswith("delta?"):
             _, _, query_string = view.partition("?")
             return self._render_delta_view(query_string)
+        if view == "settings" or view.startswith("settings?"):
+            _, _, query_string = view.partition("?")
+            return self._render_settings_view(query_string)
         return super()._list_view(view)
 
     def _render_transcript_view(self, ref: Any) -> Response:
@@ -924,6 +1123,200 @@ class JobHandler(NumericRefHandler):
             "jobs a fire mints"
         )
         return Response(body="\n".join(lines), result_count=1)
+
+    def _render_settings_view(self, query_string: str) -> Response:
+        """``id='/settings'`` — the live DB switches, read-only (gr538186).
+
+        Two tables. ``app_settings``: every row IS a non-default
+        override (an absent key falls back to env/compiled defaults —
+        ``precis.settings``' typed registry and
+        ``precis.budget.settings``' generic KV both read it).
+        ``service_config``: every ``(host, service)`` run-control row
+        (``prio`` is the live off/weight switch, ``concurrency`` the
+        in-pass fan-out knob, ``expires_at`` the reserve-mode clock).
+        ``precis-status``'s Dark switches table only covers
+        ``enable_env`` services; this is the full row truth an agent
+        verifying "is <service>/<cadence knob> lit" needs without
+        prod-psql.
+
+        Deny-by-default (review round 2): rows render only for
+        allowlisted key families (:data:`_ALLOWED_SETTING_PREFIXES`) —
+        every other key just adds to the withheld count. A rendered key
+        collapses segments the allowlist/``REGISTRY`` doesn't know to
+        ``<name>`` (``dream.gpu1.last_run`` → ``dream.<name>.last_run``)
+        so an operator-chosen segment can't smuggle a hostname. A
+        rendered VALUE must parse as a typed scalar — bool, number, ISO
+        timestamp, duration, or a member of the key's enum set
+        (:func:`_setting_value`)
+        — and ``service_config`` cells pass the same rule, ``host``
+        excepted (always masked). The view is deliberately ungated:
+        typed-only output makes it safe for ANY agent caller — there is
+        no privileged read that shows more. Writes stay with the
+        operator surfaces (``precis service``, ``precis settings``,
+        /budget) — there is no put path here.
+        """
+        import psycopg
+
+        from precis.format import render_agent_table
+        from precis.workers.service_config import list_service_config
+
+        with self.store.pool.connection() as conn:
+            try:
+                app_rows = conn.execute(
+                    "SELECT key, value, updated_at, updated_by "
+                    "FROM app_settings ORDER BY key"
+                ).fetchall()
+            except psycopg.errors.UndefinedColumn:
+                # Pre-0125 DB — no updated_by yet (same fallback
+                # ``precis.settings._db_meta`` carries).
+                conn.rollback()
+                app_rows = conn.execute(
+                    "SELECT key, value, updated_at, NULL FROM app_settings ORDER BY key"
+                ).fetchall()
+        svc_rows = list_service_config(self.store)
+
+        # Denied keys — non-allowlisted and _WITHHELD_SETTING_KEYS —
+        # never appear, not even as a row; they only count. Date-
+        # suffixed marker keys (``si.check:2026-10-29``) collapse to one
+        # line per stem — 100 daily keys can't fill the card. ``daily``
+        # groups ``(key, piece, value, updated_at, updated_by)`` under
+        # the match's stem.
+        daily: dict[str, list[tuple[str, str, Any, Any, Any]]] = {}
+        rest: list[tuple[str, Any, Any, Any]] = []
+        withheld_keys = 0
+        for row in app_rows:
+            key = str(row[0])
+            allowed = (
+                _allowlisted_setting_key(key) and key not in _WITHHELD_SETTING_KEYS
+            )
+            m = _DAILY_SETTING_KEY.match(key)
+            if m and allowed:
+                daily.setdefault(m.group(1), []).append(
+                    (key, m.group(2), row[1], row[2], row[3])
+                )
+            elif allowed:
+                rest.append(row)
+            else:
+                withheld_keys += 1
+        display: list[tuple[str, str, Any, str]] = []
+        for key, value, updated_at, updated_by in rest:
+            display.append(
+                (
+                    _shown_setting_key(str(key)),
+                    _setting_value(str(key), value),
+                    updated_at,
+                    _typed_scalar(str(updated_by or "-")),
+                )
+            )
+        for stem, group in daily.items():
+            if len(group) == 1:
+                key, _piece, value, updated_at, updated_by = group[0]
+                display.append(
+                    (
+                        _shown_setting_key(key),
+                        _setting_value(key, value),
+                        updated_at,
+                        _typed_scalar(str(updated_by or "-")),
+                    )
+                )
+                continue
+            newest = max(group, key=lambda g: g[1])
+            newest_piece = newest[1]
+            newest_updated = max(
+                (dt for g in group if (dt := as_utc(g[3])) is not None),
+                default=None,
+            )
+            display.append(
+                (
+                    _shown_setting_key(stem).rstrip(".:") + "*",
+                    f"{len(group)} per-day keys — newest {newest_piece}",
+                    newest_updated,
+                    _typed_scalar(str(newest[4] or "-")),
+                )
+            )
+        display.sort(key=lambda r: r[0])
+
+        lines = [
+            "# settings — live DB switches (read-only)",
+            "",
+            "An app_settings row is a non-default override; a "
+            "service_config row is the live run-control knob (absent "
+            "row = env/profile default). Values render only for "
+            "allowlisted keys and only as typed scalars (bool, number, "
+            "timestamp, duration, vetted word); unknown key segments "
+            "render as <name>. Writes stay with the operator surfaces "
+            "(precis service / precis settings / /budget).",
+            "",
+            f"## app_settings ({len(display)} shown, {withheld_keys} withheld)",
+        ]
+        if display:
+            lines.append(
+                render_agent_table(
+                    [
+                        {
+                            "key": key,
+                            "value": value_cell,
+                            "updated": _limits_ts(updated_at),
+                            "by": by,
+                        }
+                        for key, value_cell, updated_at, by in display
+                    ],
+                    schema=["key", "value", "updated", "by"],
+                )
+            )
+        else:
+            lines.append(
+                "no app_settings rows — every key reads its env/compiled default."
+            )
+        lines += ["", f"## service_config ({len(svc_rows)})"]
+        if svc_rows:
+            lines.append(
+                render_agent_table(
+                    [
+                        {
+                            # A node hostname is operator material —
+                            # mask it; the ``*`` wildcard is not a host.
+                            "host": (
+                                str(r["host"]) if str(r["host"]) == "*" else "(masked)"
+                            ),
+                            "service": _typed_scalar(
+                                str(r["service"]), schema_key="service"
+                            ),
+                            "prio": str(r["prio"]),
+                            "conc": (
+                                str(r["concurrency"])
+                                if r["concurrency"] is not None
+                                else "-"
+                            ),
+                            "model": _typed_scalar(
+                                str(r["model_pref"] or "-"), schema_key="model"
+                            ),
+                            "expires_at": _limits_ts(r["expires_at"]),
+                            "updated": _limits_ts(r["updated_at"]),
+                            "actor": _typed_scalar(str(r["actor"] or "-")),
+                        }
+                        for r in svc_rows
+                    ],
+                    schema=[
+                        "host",
+                        "service",
+                        "prio",
+                        "conc",
+                        "model",
+                        "expires_at",
+                        "updated",
+                        "actor",
+                    ],
+                )
+            )
+        else:
+            lines.append(
+                "no service_config rows — every service runs at its "
+                "profile/env default."
+            )
+        return Response(
+            body="\n".join(lines), result_count=len(display) + len(svc_rows)
+        )
 
     def _render_throughput_view(self, query_string: str) -> Response:
         """``id='/throughput?since=<hrs>'`` — is the fleet working or idle?
@@ -4009,6 +4402,275 @@ def _parse_logs_int(
             if m:
                 return int(m.group(1)) * (24 if m.group(2).lower() == "d" else 1)
         raise BadInput(f"{field}={raw!r} is not an integer", next=example) from exc
+
+
+def _allowlisted_setting_key(key: str) -> bool:
+    """True when ``key`` is a known non-secret setting family —
+    ``/settings`` renders values ONLY for these (gr538186 review: an
+    allowlist, not a blocklist — a key the allowlist doesn't know is
+    treated as potentially secret even when it holds something
+    innocuous)."""
+    if key.startswith(_ALLOWED_SETTING_PREFIXES) or key in _ALLOWED_SETTING_KEYS:
+        return True
+    return any(key.endswith(s) for s in _ALLOWED_SETTING_SUFFIXES)
+
+
+def _secretish_key(key: str) -> bool:
+    """True when an ``app_settings`` key names a secret-shaped value.
+
+    Splits the key on non-alphanumerics and flags a whole piece in
+    :data:`_SECRET_KEY_TOKENS` (``token``/``tokens``, ``secret``/
+    ``secrets``, ``credentials``, ``dsn``, ``url``, ``oauth`` …) or a
+    ``<prefix>key`` pair where the prefix is in
+    :data:`_SECRET_KEY_PREFIXES` (``api_key``, ``access_key``,
+    ``private_key`` …). Whole-piece matching is the point:
+    ``pcb.parts_refresh.last_key`` (a pagination cursor) stays readable
+    while anything named like a credential is treated as one regardless
+    of what it holds.
+    """
+    parts = [p for p in re.split(r"[^a-z0-9]+", key.lower()) if p]
+    if any(p in _SECRET_KEY_TOKENS for p in parts):
+        return True
+    # ``apikey``-style single pieces and ``api_key``-style pairs.
+    if any(p.endswith("key") and p[:-3] in _SECRET_KEY_PREFIXES for p in parts):
+        return True
+    return any(
+        parts[i] in _SECRET_KEY_PREFIXES and parts[i + 1] == "key"
+        for i in range(len(parts) - 1)
+    )
+
+
+def _parse_timestamp(text: str) -> str | None:
+    """Normalised ISO form of ``text`` when it is a timestamp (ISO-8601
+    or epoch seconds), else ``None``."""
+    t = text.strip().strip('"')
+    try:
+        dt = datetime.fromisoformat(t.replace("Z", "+00:00"))
+    except ValueError:
+        try:
+            dt = datetime.fromtimestamp(float(t), UTC)
+        except (ValueError, OverflowError, OSError):
+            return None
+    return dt.isoformat()
+
+
+def _hostish_word(word: str) -> bool:
+    """``somenode``/``gpu1``/``db01`` — a word naming a machine, checked
+    per ``-``/``_``/``.`` piece (``plan``/``inode`` trip too — a false
+    positive only ever withholds)."""
+    for piece in re.split(r"[-_.]+", word):
+        if piece and (piece in _HOST_PIECES or _HOST_PIECE_TAIL.search(piece)):
+            return True
+    return False
+
+
+def _leaky_word(word: str) -> bool:
+    """True when a charset-clean word still carries host or credential
+    shape — the second layer on the enum-word render path (gr538186
+    round 2): dotted numerics (an IPv4-ish quad), a dotted alpha label
+    (``gpu1.lan``, ``x.ts.net``, ``openai.com``), a machine lexeme, or a
+    credential-family prefix (``sk-``, ``ghs_``, ``npm_``, ``xox``,
+    ``ya29``, ``hf_`` …)."""
+    return (
+        _SETTINGS_IPISH.search(word) is not None
+        or _SETTINGS_DNS_ALPHA.search(word) is not None
+        or _hostish_word(word)
+        or _SECRET_WORD.search(word) is not None
+    )
+
+
+def _opaque_word(word: str) -> bool:
+    """A long SEPARATORLESS alnum run is a token/hash, not an enum word
+    (a name with ``-``/``_``/``.`` joints reads as a name): ≥24 chars
+    of any mix, or ≥16 chars mixing letters and digits."""
+    if not re.fullmatch(r"[a-z0-9]+", word):
+        return False
+    if len(word) >= 24:
+        return True
+    return any(c.isdigit() for c in word) and any(c.isalpha() for c in word)
+
+
+def _withheld_cell(text: str) -> str:
+    kind = "json" if text[:1] in ("{", "[") else "string"
+    return f"(withheld: {kind}, {len(text)} chars)"
+
+
+def _setting_enum(schema_key: str | None) -> frozenset[str]:
+    """The per-key enum a printed word must belong to — no enum, no
+    word (gr538186 round 3). ``tier``/``transport`` resolve from their
+    enums so a renamed member stays printable, ``service`` from the
+    worker registry (plus the ``reserve`` pseudo-service), and
+    ``provider`` covers the rate-limit/backend spellings."""
+    if schema_key is None:
+        return frozenset()
+    if schema_key in _STATIC_SETTING_ENUMS:
+        return _STATIC_SETTING_ENUMS[schema_key]
+    try:
+        if schema_key == "tier":
+            from precis.utils.llm.router import _LEGACY_TIER_ALIASES, Tier
+
+            return frozenset({t.value for t in Tier} | set(_LEGACY_TIER_ALIASES))
+        if schema_key == "transport":
+            from precis.utils.llm.router import Transport
+
+            return frozenset(t.value for t in Transport)
+        if schema_key == "service":
+            from precis.workers.registry import SERVICES
+
+            return frozenset({spec.name for spec in SERVICES} | {"reserve"})
+    except Exception:  # registry modules absent in a thin env
+        return frozenset()
+    return frozenset()
+
+
+def _typed_scalar(text: str, *, schema_key: str | None = None) -> str:
+    """One rendered cell under the typed-only rule (gr538186).
+
+    Prints the value only when it parses as a bool, a number, an ISO
+    timestamp, a duration, or a member of the key's enum set
+    (:func:`_setting_enum`) — a plain lowercase word is not a type, so
+    without an enum it withholds (``alice-mbp`` as an actor, a hostname
+    as a service). Under a :data:`_SCHEMA_VALUE_KEYS` field like
+    ``model`` the relaxed model-name charset stands in for the enum,
+    still passing the host/IP/secret second layer. Anything else is
+    ``(withheld: <type>, <len> chars)`` — the table proves a switch is
+    set without exfiltrating what it holds.
+    """
+    if not text or text == "-":
+        return "-"
+    low = text.lower()
+    if low in _SETTINGS_BOOL_WORDS:
+        return low
+    if _SETTINGS_NUMBER.fullmatch(text) and len(text) <= _SETTINGS_NUMBER_MAX_LEN:
+        return text
+    ts = _parse_timestamp(text)
+    if ts is not None:
+        return ts
+    if _SETTINGS_DURATION.fullmatch(low):
+        return low
+    if low in _setting_enum(schema_key):
+        return low
+    if (
+        schema_key in _SCHEMA_VALUE_KEYS
+        and _SETTINGS_MODEL_WORD.fullmatch(text)
+        and not _leaky_word(text)
+        and not _opaque_word(text)
+    ):
+        return text
+    return _withheld_cell(text)
+
+
+def _render_setting_json(parsed: Any) -> str:
+    """Walk a parsed JSON value for the ``/settings`` value cell —
+    object keys print only on the known-name allowlist
+    (:func:`_known_name_words`), every scalar leaf gets the same
+    :func:`_typed_scalar` rule, and a leaf under a
+    :data:`_SCHEMA_VALUE_KEYS` object key keeps that schema."""
+    import json as _json
+
+    def leaf(value: Any, key_hint: str | None) -> str:
+        if isinstance(value, bool):
+            return "true" if value else "false"
+        if isinstance(value, (int, float)):
+            return str(value)
+        if value is None:
+            return "null"
+        if isinstance(value, dict):
+            return obj(value)
+        if isinstance(value, list):
+            return "[" + ", ".join(leaf(v, key_hint) for v in value) + "]"
+        return _json.dumps(_typed_scalar(str(value), schema_key=key_hint))
+
+    def obj(d: dict[Any, Any]) -> str:
+        parts = []
+        for k, v in d.items():
+            name = str(k)
+            if name.lower() not in _known_name_words():
+                # A denied key withholds the whole entry — the name is
+                # unknown, so its subtree is untrusted (``password``
+                # would otherwise render its leaf as a plain word).
+                parts.append('"<name>": "(withheld)"')
+                continue
+            parts.append(f"{_json.dumps(name)}: {leaf(v, name)}")
+        return "{" + ", ".join(parts) + "}"
+
+    if isinstance(parsed, dict):
+        return obj(parsed)
+    if isinstance(parsed, list):
+        return "[" + ", ".join(leaf(v, None) for v in parsed) + "]"
+    return _json.dumps(_typed_scalar(str(parsed)))
+
+
+def _known_name_words() -> frozenset[str]:
+    """Key segments/field names that may print — deny-by-default: the
+    allowlist literals, the ``precis.settings.REGISTRY`` knob names, and
+    :data:`_STRUCTURAL_FIELD_NAMES`. An operator-chosen segment
+    (``gpu1``, a job id, a node name) is never one of these."""
+    words = set(_STRUCTURAL_FIELD_NAMES)
+    for lit in (
+        *_ALLOWED_SETTING_PREFIXES,
+        *_ALLOWED_SETTING_KEYS,
+        *_ALLOWED_SETTING_SUFFIXES,
+    ):
+        words.update(p for p in re.split(r"[^a-z0-9_-]+", lit.lower()) if p)
+    try:
+        from precis.settings import REGISTRY
+
+        for reg_key in REGISTRY:
+            words.update(p for p in re.split(r"[^a-z0-9_-]+", reg_key.lower()) if p)
+    except Exception:  # settings module absent in a thin env
+        pass
+    try:
+        from precis.utils.llm import operations
+
+        for op in (*operations.LLM_OPERATIONS, *operations.EXCLUDED_OPERATIONS):
+            words.update(p for p in re.split(r"[^a-z0-9_-]+", op.lower()) if p)
+    except Exception:  # llm utils absent in a thin env
+        pass
+    return frozenset(words)
+
+
+def _shown_setting_key(key: str) -> str:
+    """The ``key`` column of a ``/settings`` row — each ``.``/``:``
+    segment prints only when it is a known name word, else ``<name>``
+    (``dream.gpu1.last_run`` → ``dream.<name>.last_run``)."""
+    known = _known_name_words()
+    return re.sub(
+        r"[^.:]+",
+        lambda m: m.group(0) if m.group(0).lower() in known else "<name>",
+        key,
+    )
+
+
+def _setting_value(key: str, value: Any) -> str:
+    """The ``value`` cell of a ``/settings`` app_settings row.
+
+    Two gates (gr538186): the KEY must be allowlisted and not
+    secret-named, and the VALUE must pass the typed rule
+    (:func:`_typed_scalar`) — bool, number, ISO timestamp, duration,
+    vetted word, or a JSON value walked leaf-by-leaf
+    (:func:`_render_setting_json`). A ``*.last_run`` marker renders
+    only as a timestamp. Rendered text is whitespace-collapsed and
+    capped at :data:`_SETTINGS_VALUE_CAP`.
+    """
+    if _secretish_key(key) or not _allowlisted_setting_key(key):
+        return "(withheld)"
+    text = _COUNT_HEAD_WS.sub(" ", str(value)).strip()
+    if any(key.endswith(sfx) for sfx in _ALLOWED_SETTING_SUFFIXES):
+        # A ``*.last_run`` marker renders only as a timestamp.
+        ts = _parse_timestamp(text)
+        return ts if ts is not None else _withheld_cell(text)
+    if text[:1] in ("{", "["):
+        import json as _json
+
+        try:
+            rendered = _render_setting_json(_json.loads(text))
+        except ValueError:
+            return _withheld_cell(text)
+        if len(rendered) > _SETTINGS_VALUE_CAP:
+            return f"{rendered[:_SETTINGS_VALUE_CAP]}… ({len(rendered)} chars)"
+        return rendered
+    return _typed_scalar(text, schema_key=re.split(r"[.:]+", key.lower())[-1] or None)
 
 
 def _job_group_by(group_by: Any) -> Any:

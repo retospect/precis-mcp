@@ -17,7 +17,18 @@ tags: workflow, troubleshooting
 Settings are the fleet's non-secret knobs — spend caps, polite-pool
 contact identities, and anything a kind's registration is gated on. A DB
 row always beats the env var, which always beats the compiled default.
-There is no verb that reads or writes them.
+
+Read them with `get(kind='job', id='/settings')` — a table of
+allowlisted `app_settings` keys plus every `service_config` row (host,
+service, prio, concurrency, model, expires_at). Deny-by-default:
+non-allowlisted keys appear only as a withheld count, key segments the
+registry doesn't know render as `<name>`, and values render only as
+typed scalars (bool, number, timestamp, duration, vetted enum word) —
+a string that doesn't parse as one of those is
+`(withheld: string, N chars)`. `service_config.host` is masked, and
+there is no write verb: writes stay with the operator surfaces
+(`precis service`, `precis settings`, the `/settings`/`/budget` web
+pages).
 
 ## A kind raised Unsupported because a setting is missing
 
