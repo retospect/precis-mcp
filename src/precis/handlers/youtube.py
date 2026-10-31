@@ -44,7 +44,7 @@ from precis.handlers._cache_base import (
     FetchResult,
     _parse_chunk_selector,
 )
-from precis.protocol import KindSpec
+from precis.protocol import ArgsSpec, KindSpec
 from precis.response import Response
 from precis.store import SEMANTIC_DISTANCE_FLOOR
 from precis.store.types import CacheEntry, ChunkInsert, ChunkRow, Ref
@@ -203,6 +203,11 @@ class YouTubeHandler(CacheBackedHandler):
         id_required=True,
         views=("languages", "body", "toc"),
     )
+
+    #: args= keys ``put`` reads — the fetch_many submit (gr531240).
+    ARGS: ClassVar[dict[str, ArgsSpec]] = {
+        "put": ArgsSpec({"op", "ids", "languages"}),
+    }
 
     provider: ClassVar[str] = "youtube"
     # The handler emits its own time-windowed chunks in ``_fetch``
