@@ -2432,11 +2432,13 @@ def _spoke_offsets(
             i += 1
         merged: list[tuple[float, float]] = [work[0]]
         for k in range(1, len(work) - 1):
-            a, c, b = merged[-1], work[k], work[k + 1]
-            cross = (c[0] - a[0]) * (b[1] - c[1]) - (c[1] - a[1]) * (b[0] - c[0])
-            dot = (c[0] - a[0]) * (b[0] - c[0]) + (c[1] - a[1]) * (b[1] - c[1])
+            pa, pc, pb = merged[-1], work[k], work[k + 1]
+            cross = (pc[0] - pa[0]) * (pb[1] - pc[1]) - (pc[1] - pa[1]) * (
+                pb[0] - pc[0]
+            )
+            dot = (pc[0] - pa[0]) * (pb[0] - pc[0]) + (pc[1] - pa[1]) * (pb[1] - pc[1])
             if abs(cross) > 1e-9 or dot <= 0.0:
-                merged.append(c)
+                merged.append(pc)
         merged.append(work[-1])
         pts_out[bi] = merged
 
