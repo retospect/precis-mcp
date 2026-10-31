@@ -131,18 +131,19 @@ paper needs.
    confirmation reruns whose verdict is already stored (st336035's
    pw512178/pw513347 were already blocked). Below 4 because Reto ordered 4
    first; its core `gate_rows` is what 4's slice 3 `view='neb'` reuses.
-6. **backlog/neb-trust-gate-methodology.md** (gr536970/gr541116) — Reto
-   decision, not a build: qu164903's barrier credits have flipped 6-for-6
-   across three fault families, so no barrier-axis conclusion until the
-   multi-seed-at-dispatch methodology is ruled. Below 5 because it is an
-   ask over assembled pieces — item 5's shipped slice 1 is its
-   inspectable half — and a ruling here may re-rank the endpoint items
-   it gates.
+
+Shipped: **backlog/neb-trust-gate-methodology.md** (gr536970/gr541116/
+gr543165) — Reto ruled 2026-10-31 (multi-seed-at-dispatch, default 3; the
+named credit anchor = pathway id + passing gates + seed set; struct_neb
+binds too; per-fault-family action) and landed in 00d43f05a
+(`trust_gate.trust_anchor`/`struct_neb_anchor`/`family_action`,
+`put(mode='verify')`, `dispatch_autocatpath` seed widening, `view='trust'`
+anchor + next-action lines) — release pending.
 
 ## Horizon
 
-Items 1-4 and 6 are engine items moved down from Do next 2026-10-01 to keep
-it at five; engine-over-UI still holds.
+Items 1-4 are engine items moved down from Do next 2026-10-01 to keep it
+at five; engine-over-UI still holds.
 
 1. **backlog/neb-barriers-in-the-catpath-pipeline.md** — NEB transition-
    state barriers as a pipeline step (barriers, not just thermodynamics);

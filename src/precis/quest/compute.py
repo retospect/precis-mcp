@@ -4630,7 +4630,12 @@ def harvest_measures(
                         s.id,
                         exc_info=True,
                     )
-            if not stashed:
+            if not stashed and pw_is_pathway:
+                # The anchor rule binds the pathway lane only (the guard
+                # above that computed ``anchor`` in the first place) — a
+                # non-pathway-kind barrier job (the pre-gr543165
+                # ``_pathway_quality`` warnings lane) never had an anchor
+                # to begin with and keeps its own trust verdict.
                 measures["barrier_anchor"] = anchor
                 if anchor is not None and anchor.get("over"):
                     measures["barrier_trusted"] = True
