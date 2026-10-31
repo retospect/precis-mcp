@@ -3116,11 +3116,20 @@ class PaperHandler(Handler):
         suffix = "" if total <= len(rows) and page == 1 else f" of {total}"
         noun = "entry" if len(rows) == 1 else "entries"
         lines = [f"# {len(rows)} {kind} {noun} ({scope}){suffix}"]
+        table_rows = []
         for ref_id, title, year in rows:
             handle = handle_registry.format_handle(kind, int(ref_id))
             preview = _excerpt(title_md(title or ""), limit=80)
-            when = f"  ({year})" if year else ""
-            lines.append(f"  {handle:<30}{when}  {preview}")
+            table_rows.append(
+                {
+                    "handle": handle,
+                    "year": f"({year})" if year else "",
+                    "preview": preview,
+                }
+            )
+        lines.append(
+            render_agent_table(table_rows, schema=["handle", "year", "preview"])
+        )
         body = "\n".join(lines)
         args_bit = ", ".join(
             f"'{k}': '{v}'"
@@ -3307,11 +3316,20 @@ class PaperHandler(Handler):
         suffix = "" if total <= len(rows) and page == 1 else f" of {total}"
         noun = "entry" if len(rows) == 1 else "entries"
         lines = [f"# {len(rows)} {kind} {noun} stamped {stamp!r}{suffix}"]
+        table_rows = []
         for ref_id, title, stamp_val in rows:
             handle = handle_registry.format_handle(kind, int(ref_id))
             preview = _excerpt(title_md(title or ""), limit=80)
-            value = f"  = {stamp_val}" if stamp_val else ""
-            lines.append(f"  {handle:<30}{value}  {preview}")
+            table_rows.append(
+                {
+                    "handle": handle,
+                    "stamp": f"= {stamp_val}" if stamp_val else "",
+                    "preview": preview,
+                }
+            )
+        lines.append(
+            render_agent_table(table_rows, schema=["handle", "stamp", "preview"])
+        )
         body = "\n".join(lines)
         next_ops: list[tuple[str, str]] = []
         if offset + len(rows) < total:
@@ -8532,6 +8550,7 @@ class PaperHandler(Handler):
             f"# {len(refs)} paper{'s' if len(refs) != 1 else ''}{suffix}"
             f"  ({total_chunks} chunks)"
         ]
+        rows = []
         for r in refs:
             year = (r.meta or {}).get("year") or ""
             # Run titles through the JATS/entity cleanup before
@@ -8540,8 +8559,14 @@ class PaperHandler(Handler):
             # any LLM reading it copies the markup back into prose.
             # (MCP critic MINOR — list view leaks raw HTML/JATS.)
             preview = _excerpt(title_md(r.title), limit=80)
-            yr = f"  ({year})" if year else ""
-            lines.append(f"  {_pa(r):<30}{yr}  {preview}")
+            rows.append(
+                {
+                    "handle": _pa(r),
+                    "year": f"({year})" if year else "",
+                    "preview": preview,
+                }
+            )
+        lines.append(render_agent_table(rows, schema=["handle", "year", "preview"]))
         body = "\n".join(lines)
         body += render_next_section(
             [
@@ -8663,15 +8688,19 @@ class PaperHandler(Handler):
             f"# {len(refs)} {kind}{'s' if len(refs) != 1 else ''}"
             f"{tag_scope}{sort_scope}{suffix}"
         ]
+        table_rows = []
         for r in refs:
             year = (r.meta or {}).get("year") or ""
             preview = _excerpt(title_md(r.title), limit=80)
             if date_key:
                 day = (r.meta or {}).get(date_key)
-                when = f"  {date_key} {day}" if day else f"  (no {date_key})"
+                when = f"{date_key} {day}" if day else f"(no {date_key})"
             else:
-                when = f"  ({year})" if year else ""
-            lines.append(f"  {_pa(r):<30}{when}  {preview}")
+                when = f"({year})" if year else ""
+            table_rows.append({"handle": _pa(r), "when": when, "preview": preview})
+        lines.append(
+            render_agent_table(table_rows, schema=["handle", "when", "preview"])
+        )
         body = "\n".join(lines)
         next_ops: list[tuple[str, str]] = []
         if offset + len(refs) < total:

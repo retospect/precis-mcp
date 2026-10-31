@@ -20,8 +20,9 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+from precis._result_budget import size_cell
 from precis.errors import NotFound
-from precis.format import toon
+from precis.format import render_agent_table
 from precis.response import Response
 from precis.store._draft_ops import DraftReviewRow
 
@@ -68,13 +69,16 @@ def render_review_view(store: Store, ref: Ref) -> Response:
         line: dict[str, str] = {
             "handle": c.dc,
             "kind": c.chunk_kind,
+            "size": size_cell(len(c.text.encode("utf-8"))),
             "text": _preview(c.text),
         }
         for checker in checkers:
             line[checker] = _mark(by_checker.get(checker))
         rows.append(line)
 
-    table = toon.dump(rows, schema=["handle", "kind", "text", *checkers])
+    table = render_agent_table(
+        rows, schema=["handle", "kind", "size", "text", *checkers]
+    )
     trailer = (
         f"\n\n{len(chunks)} chunk(s), {len(checkers)} checker(s): {', '.join(checkers)}"
     )

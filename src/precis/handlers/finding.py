@@ -101,6 +101,7 @@ import psycopg
 from psycopg.errors import UniqueViolation
 
 from precis.errors import BadInput, NotFound, Unsupported
+from precis.format import render_agent_table
 from precis.handlers import (
     _finding_acquire,
     _finding_edit,
@@ -1956,7 +1957,6 @@ class FindingHandler(NumericRefHandler):
         publish row and never will, so an established-only result stays
         exactly as narrow as it was.
         """
-        from precis.format import render_agent_table
 
         if not refs:
             return Response(body="no finding entries match")

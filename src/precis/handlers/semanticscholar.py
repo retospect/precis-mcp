@@ -1198,8 +1198,10 @@ def _format_author_papers_table(
         cites = pf[0].get("citationCount")
         return int(cites) if isinstance(cites, int | float) else -1
 
+    from precis.utils.table_data import table_to_markdown
+
     ranked = sorted(zip(papers, flags, strict=True), key=_cites_key, reverse=True)
-    lines = ["| year | cites | corpus | title | s2 id |", "|---|---|---|---|---|"]
+    rows: list[list[str]] = []
     for p, (flag, _rid) in ranked:
         year = p.get("year")
         year_s = str(year) if year is not None else "?"
@@ -1215,8 +1217,10 @@ def _format_author_papers_table(
         if len(title) > _AUTHOR_TITLE_TRUNCATE:
             title = title[: _AUTHOR_TITLE_TRUNCATE - 1].rstrip() + "…"
         s2_id = str(p.get("paperId") or "")
-        lines.append(f"| {year_s} | {cites_s} | {corpus} | {title} | {s2_id} |")
-    return "\n".join(lines)
+        rows.append([year_s, cites_s, corpus, title, s2_id])
+    return table_to_markdown(
+        {"header": ["year", "cites", "corpus", "title", "s2 id"], "rows": rows}
+    )
 
 
 __all__ = ["SemanticScholarHandler"]

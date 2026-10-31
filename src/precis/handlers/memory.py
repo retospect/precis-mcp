@@ -617,17 +617,25 @@ class MemoryHandler(NumericRefHandler):
         ref = self._resolve_live_ref(self._coerce_id(id))
         body = self._body_text(ref)
         handle = handle_registry.try_format(self.kind, ref.id) or str(ref.id)
+        from precis.format import render_agent_table
+
         sections = self._body_sections(body)
-        lines = []
-        for slug, title, text in sections:
-            sz = size_cell(len(text.encode("utf-8")))
-            line = f"{handle}~{slug}"
-            if sz:
-                line += f"\t{sz}"
-            lines.append(f"{line} — {title}")
-        body_sz = size_cell(len(body.encode("utf-8")))
-        lines.append(f"{handle}~body" + (f"\t{body_sz}" if body_sz else ""))
-        return "\n".join(lines)
+        rows = [
+            {
+                "section": f"{handle}~{slug}",
+                "size": size_cell(len(text.encode("utf-8"))),
+                "title": title,
+            }
+            for slug, title, text in sections
+        ]
+        rows.append(
+            {
+                "section": f"{handle}~body",
+                "size": size_cell(len(body.encode("utf-8"))),
+                "title": "",
+            }
+        )
+        return render_agent_table(rows, schema=["section", "size", "title"])
 
     def _get_batch(self, ids: list[Any], *, view: str | None) -> Response:
         """``get(id=[...])``: each memory in full, in the order given.

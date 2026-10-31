@@ -84,22 +84,22 @@ def handler(tmp_path: Path) -> PythonHandler:
 def test_lambda_call_credited_to_enclosing_function(handler: PythonHandler) -> None:
     # `g` is bound by a function-local import, used inside the lambda.
     body = handler.get(id="r::pkg.a.g", view="callers").body
-    assert "r::pkg.lam.in_lambda  pkg/lam.py:" in body
+    assert "r::pkg.lam.in_lambda\tpkg/lam.py:" in body
     body = handler.get(id="r::pkg.a.f", view="callers").body
-    assert "r::pkg.lam.K.m  pkg/lam.py:" in body
+    assert "r::pkg.lam.K.m\tpkg/lam.py:" in body
 
 
 def test_module_scope_lambda_credited_to_module(handler: PythonHandler) -> None:
     body = handler.get(id="r::pkg.a.f", view="callers").body
-    assert "r::pkg.lam  pkg/lam.py:3" in body
+    assert "r::pkg.lam\tpkg/lam.py:3" in body
 
 
 def test_nested_function_call_edge_and_local_import(handler: PythonHandler) -> None:
     body = handler.get(id="r::pkg.a.g", view="callers").body
-    assert "r::pkg.nest.outer.inner  pkg/nest.py:" in body
+    assert "r::pkg.nest.outer.inner\tpkg/nest.py:" in body
     body = handler.get(id="r::pkg.a.f", view="callers").body
-    assert "r::pkg.nest.outer  pkg/nest.py:" in body
-    assert "r::pkg.nest.C.meth.helper  pkg/nest.py:" in body
+    assert "r::pkg.nest.outer\tpkg/nest.py:" in body
+    assert "r::pkg.nest.C.meth.helper\tpkg/nest.py:" in body
     imp = handler.get(id="r::pkg.a", view="importers").body
     assert "mod (in outer.inner)" in imp
 

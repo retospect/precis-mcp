@@ -457,17 +457,24 @@ def render_runtrace(
         for ln in result.stderr.strip().splitlines()[-5:]:
             lines.append(f"  {ln}")
 
-    lines.append("")
-    lines.append("Next:")
-    lines.append(
-        f"  get(kind='python', id={alias!r}, view='callgraph', "
-        f"args={{'entry': {entry!r}}})"
-    )
-    if collapsed:
-        lines.append(
-            f"  get(kind='python', id={alias!r}, view='runtrace', "
-            f"args={{'entry': {entry!r}, 'expand_stdlib': True}})"
+    from precis.utils.next_block import render_next_section
+
+    nxt = [
+        (
+            f"get(kind='python', id={alias!r}, view='callgraph', "
+            f"args={{'entry': {entry!r}}})",
+            "static call graph for the same entry",
         )
+    ]
+    if collapsed:
+        nxt.append(
+            (
+                f"get(kind='python', id={alias!r}, view='runtrace', "
+                f"args={{'entry': {entry!r}, 'expand_stdlib': True}})",
+                "re-trace with stdlib frames",
+            )
+        )
+    lines.append(render_next_section(nxt))
     if not result.ok:
         lines.append("  # gate check: export PRECIS_PYTHON_ALLOW_EXEC=1 if missing")
 

@@ -12,7 +12,7 @@ Spec: gr520905 comments 1-2.
 from __future__ import annotations
 
 from precis.errors import NotFound
-from precis.format import serialize
+from precis.format import render_agent_table
 from precis.python_index.docparams import first_sentence
 from precis.python_index.types import ParamDoc, Symbol
 
@@ -34,7 +34,7 @@ def render_params(alias: str, sym: Symbol) -> str:
     ]
     body = (
         f"# {alias}::{sym.qualname} — {sym.file}:{sym.start_line}-{sym.end_line}\n"
-        f"params[{len(rows)}]" + serialize(rows, format="toon", schema=_PARAMS_SCHEMA)
+        f"params[{len(rows)}]" + render_agent_table(rows, schema=_PARAMS_SCHEMA)
     )
     doc_only = [p.name for p in sym.params if p.drift == "doc-only"]
     undocumented = [p.name for p in sym.params if p.drift == "undocumented"]

@@ -621,10 +621,10 @@ class TestCoverage:
         body = _handler(store).get(id="/coverage").body
         assert "30 day(s)" in body
         taxon_row = next(l for l in body.splitlines() if l.startswith("taxon"))
-        assert "live     2" in taxon_row and "considered    1" in taxon_row
-        assert "50.0%" in taxon_row and "claude-opus-4-8: 1" in taxon_row
+        assert taxon_row.split("\t")[1:4] == ["2", "1", "50.0%"]
+        assert "claude-opus-4-8: 1" in taxon_row
         memory_row = next(l for l in body.splitlines() if l.startswith("memory"))
-        assert "considered    0" in memory_row and "0.0%" in memory_row
+        assert "\t0\t0.0%" in memory_row
 
     def test_coverage_honours_the_days_arg_and_a_stamped_date(self, store: Any) -> None:
         reviewed = _mk(store, "cov stamped")

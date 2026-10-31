@@ -110,6 +110,32 @@ _EXEMPT: dict[str, str] = {
     "handlers/part.py::_categories_view": "catalog categories, not rows",
     "handlers/folder.py::_render_one": "folder rows — sweep follow-up",
     "handlers/taxon.py::_render_meta_view": "vocab rows, not bodies",
+    "handlers/_slug_ref_shared.py::render_slug_ref_list": (
+        "generic /recent list — Ref carries no stored byte length and a "
+        "bulk body-byte read per browse list is the never-query shape"
+    ),
+    "handlers/anki.py::_render_leeches": (
+        "leech ranking rows — meta counters (lapses/ease/reps) only, "
+        "no stored text loaded"
+    ),
+    "handlers/draft.py::_render_toc": (
+        "toc nav rows (handle/level/title/gist) — chunk sizes are the "
+        "outline view's job"
+    ),
+    "handlers/edgar.py::_render_list": "filing registry rows — meta fields only",
+    "handlers/paper.py::_render_link_scope_search": (
+        "paper list rows — refs carry no stored byte length"
+    ),
+    "handlers/paper.py::_render_stamp_search": (
+        "paper list rows — refs carry no stored byte length"
+    ),
+    "handlers/paper.py::_render_list_papers": (
+        "paper list rows — refs carry no stored byte length"
+    ),
+    "handlers/paper.py::_render_tags_only_search": (
+        "paper list rows — refs carry no stored byte length"
+    ),
+    "handlers/patent.py::_render_list": "patent registry rows — meta fields only",
 }
 
 

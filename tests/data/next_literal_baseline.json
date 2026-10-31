@@ -1,12 +1,6 @@
 {
   "src/precis/cli/main.py": 1,
   "src/precis/handlers/_paper_toc.py": 1,
-  "src/precis/handlers/_python_callgraph.py": 1,
-  "src/precis/handlers/_python_entries.py": 1,
-  "src/precis/handlers/_python_eye.py": 1,
-  "src/precis/handlers/_python_render.py": 5,
-  "src/precis/handlers/_python_reverse.py": 3,
-  "src/precis/handlers/_python_runtrace.py": 1,
   "src/precis/handlers/_review_view.py": 2,
   "src/precis/handlers/cad.py": 3,
   "src/precis/handlers/checklist.py": 5,
@@ -21,6 +15,5 @@
   "src/precis/quest/compute.py": 1,
   "src/precis/structure/completion.py": 1,
   "src/precis/utils/next_block.py": 1,
-  "src/precis/utils/toc_db.py": 1,
   "src/precis/workers/job_types/pcb_review.py": 1
 }

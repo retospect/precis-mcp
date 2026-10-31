@@ -14,7 +14,9 @@ from __future__ import annotations
 import re
 
 from precis.errors import BadInput
+from precis.format import render_agent_table
 from precis.python_index import ModuleIndex, RepoIndex, Symbol
+from precis.utils.next_block import render_next_section
 
 _CAP = 50
 
@@ -64,8 +66,15 @@ def render_callers(alias: str, sym: Symbol, idx: RepoIndex) -> str:
 
     lines = [f"# callers of {sym.qualname}  ({len(exact)} resolved)\n"]
     if exact:
-        for caller, file, line, _ in exact[:_CAP]:
-            lines.append(f"  {alias}::{caller}  {file}:{line}")
+        lines.append(
+            render_agent_table(
+                [
+                    {"caller": f"{alias}::{c}", "at": f"{f_}:{l}"}
+                    for c, f_, l, _ in exact[:_CAP]
+                ],
+                schema=["caller", "at"],
+            )
+        )
         if len(exact) > _CAP:
             lines.append(f"  … ({len(exact) - _CAP} more)")
     else:
@@ -76,18 +85,28 @@ def render_callers(alias: str, sym: Symbol, idx: RepoIndex) -> str:
             f"Unresolved, same name `{sym.name}` "
             f"({len(lexical)}; receiver type unknown):"
         )
-        for caller, file, line, callee in lexical[:_CAP]:
-            lines.append(
-                f"  {alias}::{caller}  {file}:{line}  {callee.removeprefix('ext:')}"
+        lines.append(
+            render_agent_table(
+                [
+                    {
+                        "caller": f"{alias}::{c}",
+                        "at": f"{f_}:{l}",
+                        "callee": ce.removeprefix("ext:"),
+                    }
+                    for c, f_, l, ce in lexical[:_CAP]
+                ],
+                schema=["caller", "at", "callee"],
             )
+        )
         if len(lexical) > _CAP:
             lines.append(f"  … ({len(lexical) - _CAP} more)")
     lines.append("")
     lines.append("Dynamic dispatch (getattr, registries) is invisible to this view.")
-    lines.append("")
-    lines.append("Next:")
-    lines.append(f"  get(kind='python', id='{alias}::{sym.qualname}', view='source')")
-    return "\n".join(lines) + "\n"
+    body = "\n".join(lines)
+    body += render_next_section(
+        [(f"get(kind='python', id='{alias}::{sym.qualname}', view='source')", "source")]
+    )
+    return body + "\n"
 
 
 def render_importers(alias: str, module: str, idx: RepoIndex) -> str:
@@ -116,8 +135,16 @@ def render_importers(alias: str, module: str, idx: RepoIndex) -> str:
     lines = [f"# importers of {module}  ({len(rows)} modules)\n"]
     if not rows:
         lines.append("  (no module imports it)")
-    for qn, file, bound_names in rows[:_CAP]:
-        lines.append(f"  {alias}::{qn}  {file}  [{bound_names}]")
+    else:
+        lines.append(
+            render_agent_table(
+                [
+                    {"module": f"{alias}::{qn}", "file": f_, "names": bound}
+                    for qn, f_, bound in rows[:_CAP]
+                ],
+                schema=["module", "file", "names"],
+            )
+        )
     if len(rows) > _CAP:
         lines.append(f"  … ({len(rows) - _CAP} more)")
     lines.append("")
@@ -127,9 +154,11 @@ def render_importers(alias: str, module: str, idx: RepoIndex) -> str:
         "`importlib.import_module` are not indexed."
     )
     lines.append("")
-    lines.append("Next:")
-    lines.append(f"  get(kind='python', id='{alias}::{module}', view='imports')")
-    return "\n".join(lines) + "\n"
+    body = "\n".join(lines)
+    body += render_next_section(
+        [(f"get(kind='python', id='{alias}::{module}', view='imports')", "its imports")]
+    )
+    return body + "\n"
 
 
 def render_imports(alias: str, mod: ModuleIndex, idx: RepoIndex) -> str:
@@ -149,8 +178,15 @@ def render_imports(alias: str, mod: ModuleIndex, idx: RepoIndex) -> str:
     ]
     if internal:
         lines.append("In-repo:")
-        for target, names in sorted(internal.items()):
-            lines.append(f"  {alias}::{target}  [{', '.join(names)}]")
+        lines.append(
+            render_agent_table(
+                [
+                    {"module": f"{alias}::{t}", "names": ", ".join(n)}
+                    for t, n in sorted(internal.items())
+                ],
+                schema=["module", "names"],
+            )
+        )
         lines.append("")
     if external:
         lines.append("External:")
@@ -159,11 +195,16 @@ def render_imports(alias: str, mod: ModuleIndex, idx: RepoIndex) -> str:
     if not internal and not external:
         lines.append("  (no module-scope imports)")
         lines.append("")
-    lines.append("Next:")
-    lines.append(
-        f"  get(kind='python', id='{alias}::{mod.qualname}', view='importers')"
+    body = "\n".join(lines)
+    body += render_next_section(
+        [
+            (
+                f"get(kind='python', id='{alias}::{mod.qualname}', view='importers')",
+                "who imports it",
+            )
+        ]
     )
-    return "\n".join(lines) + "\n"
+    return body + "\n"
 
 
 # ---------------------------------------------------------------------------

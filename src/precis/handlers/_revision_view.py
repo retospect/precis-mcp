@@ -18,6 +18,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any
 
 from precis.errors import BadInput
+from precis.format import render_agent_table
 from precis.response import Response
 
 if TYPE_CHECKING:
@@ -48,12 +49,19 @@ def render_revision_history(store: Store, ref: Ref) -> Response:
             result_count=0,
         )
     lines = [f"history: {len(revs)} revision(s) for {ref.kind} {ref.id}"]
-    for r in revs:
-        who = r.actor + (f"/{r.model}" if r.model else "")
-        shas = f"{(r.prev_sha or '-')[:8]}→{(r.new_sha or '-')[:8]}"
-        lines.append(
-            f"  {r.at:%Y-%m-%d %H:%MZ}  {r.event:<12}  {who:<24}  {shas}  {r.reason}"
-        )
+    rows = [
+        {
+            "at": f"{r.at:%Y-%m-%d %H:%MZ}",
+            "event": r.event,
+            "who": r.actor + (f"/{r.model}" if r.model else ""),
+            "shas": f"{(r.prev_sha or '-')[:8]}→{(r.new_sha or '-')[:8]}",
+            "reason": r.reason,
+        }
+        for r in revs
+    ]
+    lines.append(
+        render_agent_table(rows, schema=["at", "event", "who", "shas", "reason"])
+    )
     return Response(body="\n".join(lines), result_count=len(revs))
 
 

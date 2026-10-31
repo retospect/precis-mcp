@@ -440,11 +440,16 @@ def render_eye(
         else:
             _ring2_symbols(lines, seeds, seen, idx)
 
-    lines.extend(
-        [
-            "",
-            "Next:",
-            f"  get(kind='python', id='{alias}::{sym.qualname}', view='source')",
-        ]
+    from precis.utils.next_block import render_next_section
+
+    lines.append(
+        render_next_section(
+            [
+                (
+                    f"get(kind='python', id='{alias}::{sym.qualname}', view='source')",
+                    "source",
+                )
+            ]
+        )
     )
     return head + "\n" + "\n".join(lines)

@@ -25,6 +25,7 @@ from datetime import UTC
 from typing import TYPE_CHECKING, Any
 
 from precis.errors import Unsupported
+from precis.format import render_agent_table
 from precis.response import Response
 
 if TYPE_CHECKING:
@@ -88,16 +89,23 @@ def render_event_log(
     if source:
         header += f" (source={source!r})"
     lines.append(header)
+    rows = []
     for ev in events:
         ts = ev.ts
         if ts.tzinfo is not None:
             ts = ts.astimezone(UTC)
-        stamp = ts.strftime("%Y-%m-%dT%H:%M:%SZ")
-        summary = _summarise(ev.source, ev.event, ev.payload, ev.cost_usd)
-        line = f"  {stamp}  {ev.source:<18}  {ev.event:<14}  {summary}"
-        if ev.duration_ms is not None:
-            line += f"  ({ev.duration_ms} ms)"
-        lines.append(line)
+        rows.append(
+            {
+                "ts": ts.strftime("%Y-%m-%dT%H:%M:%SZ"),
+                "source": ev.source,
+                "event": ev.event,
+                "summary": _summarise(ev.source, ev.event, ev.payload, ev.cost_usd),
+                "ms": ev.duration_ms if ev.duration_ms is not None else "",
+            }
+        )
+    lines.append(
+        render_agent_table(rows, schema=["ts", "source", "event", "summary", "ms"])
+    )
     return Response(body="\n".join(lines), result_count=len(events))
 
 

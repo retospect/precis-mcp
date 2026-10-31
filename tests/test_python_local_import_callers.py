@@ -58,9 +58,9 @@ def handler(tmp_path: Path) -> PythonHandler:
 def test_callers_view_resolves_function_local_import(handler: PythonHandler) -> None:
     body = handler.get(id="r::pkg.a.f", view="callers").body
     assert "3 resolved" in body
-    assert "r::pkg.local.uses_local  pkg/local.py:" in body
-    assert "r::pkg.local.uses_guarded  pkg/local.py:" in body
-    assert "r::pkg.local.uses_module_alias  pkg/local.py:" in body
+    assert "r::pkg.local.uses_local\tpkg/local.py:" in body
+    assert "r::pkg.local.uses_guarded\tpkg/local.py:" in body
+    assert "r::pkg.local.uses_module_alias\tpkg/local.py:" in body
 
 
 def test_symbol_view_called_by_includes_function_local_import(
@@ -79,6 +79,6 @@ def test_unresolved_bare_name_call_is_a_labelled_lead(handler: PythonHandler) ->
 
 def test_importers_reports_function_local_importers(handler: PythonHandler) -> None:
     body = handler.get(id="r::pkg.a", view="importers").body
-    assert "r::pkg.local  pkg/local.py" in body
+    assert "r::pkg.local\tpkg/local.py" in body
     assert "f (in uses_local)" in body
     assert "Function-local imports are not indexed" not in body

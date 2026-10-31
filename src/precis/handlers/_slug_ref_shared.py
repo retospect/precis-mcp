@@ -165,8 +165,10 @@ def render_slug_ref_list(
             body += render_next_section(empty_next)
         return Response(body=body)
 
+    from precis.format import render_agent_table
+
     headline_label = _resolve_count_plural(label_plural, n=len(refs))
-    lines = [f"# {len(refs)} {headline_label}"]
+    rows = []
     for r in refs:
         preview = (
             (r.title[:preview_len] + "…") if len(r.title) > preview_len else r.title
@@ -177,7 +179,11 @@ def render_slug_ref_list(
         slug = r.slug or "?"
         if len(slug) > slug_col_width:
             slug = slug[: slug_col_width - 1] + "…"
-        lines.append(f"  {handle:<8}{slug:<{slug_col_width}}  {preview}")
+        rows.append({"handle": handle, "slug": slug, "preview": preview})
+    lines = [
+        f"# {len(refs)} {headline_label}",
+        render_agent_table(rows, schema=["handle", "slug", "preview"]),
+    ]
     body = "\n".join(lines)
     if populated_next:
         body += render_next_section(populated_next)

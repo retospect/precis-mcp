@@ -759,11 +759,18 @@ class _PerplexityBase(CacheBackedHandler):
         # a map bigger than the head it describes stops paying.
         outline_block = ""
         if len(blocks) > 1:
+            from precis.format import render_agent_table
+
             rows = _cap_outline(
-                "\n".join(
-                    f"`{slug}~{b.ord}`"
-                    + (f"\t{sz}" if (sz := size_cell(body_bytes(b.text or ""))) else "")
-                    for b in blocks
+                render_agent_table(
+                    [
+                        {
+                            "block": f"{slug}~{b.ord}",
+                            "size": size_cell(body_bytes(b.text or "")),
+                        }
+                        for b in blocks
+                    ],
+                    schema=["block", "size"],
                 )
             )
             kept: list[str] = []

@@ -72,8 +72,8 @@ def handler(tmp_path: Path) -> PythonHandler:
 
 def test_callers_lists_call_sites_with_anchor_and_line(handler: PythonHandler) -> None:
     body = handler.get(id="r::pkg.core.helper", view="callers").body
-    assert "r::pkg.core.Box.put  pkg/core.py:" in body
-    assert "r::pkg.user.run  pkg/user.py:" in body
+    assert "r::pkg.core.Box.put\tpkg/core.py:" in body
+    assert "r::pkg.user.run\tpkg/user.py:" in body
     assert "2 resolved" in body
 
 
@@ -108,7 +108,7 @@ def test_reverse_views_require_qualname_id(handler: PythonHandler) -> None:
 
 def test_importers_lists_importing_modules(handler: PythonHandler) -> None:
     body = handler.get(id="r::pkg.core", view="importers").body
-    assert "r::pkg.user  pkg/user.py" in body
+    assert "r::pkg.user\tpkg/user.py" in body
     assert "1 modules" in body
     # from-import names and the submodule import are both reported.
     assert "Box" in body and "helper" in body and "core" in body

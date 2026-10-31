@@ -34,6 +34,7 @@ import re
 from typing import Any, ClassVar
 
 from precis.errors import BadInput
+from precis.format import render_agent_table
 from precis.handlers._numeric_ref import NumericRefHandler
 from precis.protocol import KindSpec
 from precis.response import Response
@@ -191,10 +192,19 @@ class AnkiHandler(NumericRefHandler):
             f"# {len(rows)} bad-recall card(s) — fix the cloze "
             "(tag `precis-fix` in Anki) or study more"
         ]
-        for ref_id, title, lapses, ease, reps in rows:
-            preview = (title[:70] + "…") if len(title) > 70 else title
-            lines.append(
-                f"  ak{ref_id:<7} lapses={lapses or 0} ease={ease if ease is not None else '?'} "
-                f"reps={reps or 0}  {preview}"
+        lines.append(
+            render_agent_table(
+                [
+                    {
+                        "id": f"ak{ref_id}",
+                        "lapses": lapses or 0,
+                        "ease": ease if ease is not None else "?",
+                        "reps": reps or 0,
+                        "preview": (title[:70] + "…") if len(title) > 70 else title,
+                    }
+                    for ref_id, title, lapses, ease, reps in rows
+                ],
+                schema=["id", "lapses", "ease", "reps", "preview"],
             )
+        )
         return Response(body="\n".join(lines))

@@ -257,11 +257,19 @@ def render_from_store(
             parts.extend([f"Topics: {topics}", ""])
     parts.append(table)
     if fat_clusters:
-        parts.extend(
-            ["", "Next: drill a cluster for finer structure (recurses to chunks)"]
+        from precis.utils.next_block import render_next_section
+
+        parts.append(
+            render_next_section(
+                [
+                    (
+                        f"get(kind='paper', id='{row_handle}', view='toc')",
+                        "drill a cluster for finer structure",
+                    )
+                    for row_handle in fat_clusters
+                ]
+            )
         )
-        for row_handle in fat_clusters:
-            parts.append(f"  get(kind='paper', id='{row_handle}', view='toc')")
     return "\n".join(parts)
 
 
