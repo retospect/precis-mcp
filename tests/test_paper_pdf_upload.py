@@ -765,3 +765,62 @@ def test_queued_pull_still_dedupes_same_sha(paper, store, staging):
     body = paper.put(id=ref_id, args={"pdf_upload": _SHA, "reason": "r"}).body
     assert "already queued" in body
     assert len(_job_ids(store)) == 1
+
+
+def test_replace_pdf_reupload_after_failed_pull_not_deduped(
+    store, dirs, runtime_with_store, tmp_path, monkeypatch
+):
+    """(c) through the gripe's own door — ``POST /replace-pdf`` twice with
+    the same bytes. The first ``paper_pull`` dies terminal on a
+    staging-less worker; its ``upload:<sha>`` idem_key must NOT dedupe
+    the second POST onto the failed job (terminal statuses never block
+    a re-put). A third POST while the retry is still queued dedupes onto
+    it — the dedupe still guards active work."""
+    pytest.importorskip("fastapi")
+    from fastapi.testclient import TestClient
+
+    from precis_web.app import create_app
+    from precis_web.config import WebConfig
+
+    _inbox, staging = dirs
+    ref_id = _stub(store, body=True)
+    client = TestClient(
+        create_app(
+            runtime=runtime_with_store,
+            web_config=WebConfig(corpus_dir=tmp_path / "corpus"),
+        )
+    )
+    files = {"file": ("paper.pdf", _PDF, "application/pdf")}
+
+    resp = client.post(
+        f"/papers/{ref_id}/replace-pdf", files=files, follow_redirects=False
+    )
+    assert resp.status_code == 303
+    assert "queued" in unquote(resp.headers["location"])
+    jid1 = _job_ids(store)[-1]
+
+    # A staging-less worker claims the pull — the terminal failure (b)
+    # made real. The staged file is untouched: no_upload_staging refuses
+    # before it is read.
+    monkeypatch.delenv("PRECIS_UPLOAD_STAGING", raising=False)
+    _run_job_dispatch(store, jid1)
+    assert _job_status(store, jid1) == "failed"
+
+    # The user's retry: same bytes → same idem_key → a FRESH job, since
+    # STATUS:failed is terminal and never blocks a re-put.
+    monkeypatch.setenv("PRECIS_UPLOAD_STAGING", str(staging))
+    resp = client.post(
+        f"/papers/{ref_id}/replace-pdf", files=files, follow_redirects=False
+    )
+    assert resp.status_code == 303
+    assert "queued" in unquote(resp.headers["location"])
+    (jid2,) = [j for j in _job_ids(store) if j != jid1]
+    assert _job_status(store, jid2) == "queued"
+
+    # While the retry is still in flight, a third identical POST dedupes
+    # onto it — no third job is minted.
+    resp = client.post(
+        f"/papers/{ref_id}/replace-pdf", files=files, follow_redirects=False
+    )
+    assert resp.status_code == 303
+    assert _job_ids(store) == [jid1, jid2]
