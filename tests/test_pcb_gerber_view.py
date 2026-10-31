@@ -1133,3 +1133,32 @@ def test_slot_hole_is_g85_in_the_drill_file_and_drawn_in_the_svg() -> None:
     assert 'class="drill-slot"' in svg
     assert 'd="M 4.5000 6.0000 L 5.5000 6.0000"' in svg
     assert 'stroke-width="0.5000" stroke-linecap="round"' in svg
+
+
+def test_overlays_render_as_off_by_default_toggle_layers() -> None:
+    """Reto 2026-10-31: the design-side regions no gerber carries
+    (keepouts, courtyards, label boxes, router masks) ride the fab SVG as
+    collapsible extra layers — one ``layer-<key>`` group, OFF by default,
+    with a legend row that toggles it like any copper layer."""
+    from precis.pcb import gerber_view
+
+    files = {"board-F_Cu.gbr": "%FSLAX46Y46*%\n%MOMM*%\nG04 empty*\nM02*\n"}
+    body = gerber_view.render_fab_svg(
+        files,
+        title="ov",
+        overlays=[
+            {
+                "key": "ov-keepouts",
+                "label": "Keepouts",
+                "colour": "#ef4444",
+                "rings": [[(0.0, 0.0), (5.0, 0.0), (5.0, 3.0), (0.0, 3.0)]],
+                "titles": ["keepout ZIP all"],
+            },
+            {"key": "ov-empty", "label": "Nothing", "rings": []},
+        ],
+    )
+    assert 'id="layer-ov-keepouts" class="layer off overlay"' in body
+    assert "<title>keepout ZIP all</title>" in body
+    assert 'data-layer="ov-keepouts"' in body and ">Keepouts<" in body
+    # an overlay with no rings adds neither a group nor a legend row
+    assert "ov-empty" not in body

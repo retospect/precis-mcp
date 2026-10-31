@@ -89,6 +89,7 @@ import itertools
 import json
 import math
 import re
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -1501,8 +1502,17 @@ def render_fab_svg(
     outline_handle: str | None = None,
     flip: bool = False,
     scope: dict[str, Any] | None = None,
+    overlays: Sequence[dict[str, Any]] = (),
 ) -> str:
     """An SVG of a whole fab set, one toggleable group per layer.
+
+    ``overlays`` (Reto 2026-10-31: "the secret keepout regions and stuff
+    as collapsible extra layers") are design-side regions that exist in
+    no gerber — keepouts, courtyards, label boxes, the router's
+    route-block / via-prevent masks. Each ``{"key", "label", "colour",
+    "rings": [[(x, y), ...], ...], "titles": [...]}`` row becomes one more
+    toggleable ``layer-<key>`` group (OFF by default) and legend row,
+    drawn as translucent outlined polygons above the stack.
 
     The y axis is flipped (``scale(1,-1)``) because gerber's origin is
     bottom-left and SVG's is top-left. Getting this wrong renders a mirrored
@@ -1675,6 +1685,30 @@ def render_fab_svg(
             )
         body.append("</g>")
 
+    overlay_rows: list[tuple[str, str, str]] = []
+    for ov in overlays:
+        key = str(ov["key"])
+        colour = str(ov.get("colour") or "#a855f7")
+        rings = [r for r in (ov.get("rings") or ()) if len(r) >= 3]
+        if not rings:
+            continue
+        titles = list(ov.get("titles") or ())
+        body.append(
+            f'<g id="layer-{key}" class="layer off overlay" fill="{colour}" '
+            f'fill-opacity="0.18" stroke="{colour}" stroke-width="0.08" '
+            'stroke-dasharray="0.3 0.2" pointer-events="none">'
+        )
+        for i, ring in enumerate(rings):
+            d = _path_d([(float(x), float(y)) for x, y in ring]) + " Z"
+            t = (
+                esc(str(titles[i]))
+                if i < len(titles)
+                else esc(str(ov.get("label") or key))
+            )
+            body.append(f'<path d="{d}"><title>{t}</title></path>')
+        body.append("</g>")
+        overlay_rows.append((key, str(ov.get("label") or key), colour))
+
     hover_meta = ""
     if hover.get("facts") is not None:
         hover_meta = (
@@ -1724,6 +1758,19 @@ def render_fab_svg(
             f'<rect x="12" y="{ty - 8}" width="12" height="12" fill="#ef4444" '
             'class="swatch"/>'
             f'<text x="32" y="{ty + 2}">Ratsnest</text>'
+            "</g>"
+        )
+    for key, label, colour in overlay_rows:
+        ty = 18 + len(rows) * 20
+        rows.append(
+            f'<g class="legend-row off" data-layer="{key}" '
+            f"onclick=\"(function(g){{g.classList.toggle('off');"
+            f"document.getElementById('layer-{key}').classList.toggle('off');}})"
+            '(this)">'
+            f'<rect x="8" y="{ty - 11}" width="152" height="18" class="hit"/>'
+            f'<rect x="12" y="{ty - 8}" width="12" height="12" fill="{colour}" '
+            'class="swatch"/>'
+            f'<text x="32" y="{ty + 2}">{esc(label)}</text>'
             "</g>"
         )
     # The board cursor readout lives at the bottom of the legend box — the

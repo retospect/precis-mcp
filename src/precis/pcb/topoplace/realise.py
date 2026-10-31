@@ -71,7 +71,7 @@ from precis.pcb.ratsnest import PLANE_CLASSES
 from precis.pcb.rules import NetRules
 from precis.pcb.topoplace import proxy as topo_proxy
 from precis.pcb.topoplace import wires as _wires
-from precis.pcb.topoplace.design import TopoDesign, _world_to_local
+from precis.pcb.topoplace.design import TopoDesign, TopoZone, _world_to_local
 from precis.pcb.topoplace.masks import BoardMasks, corridor_score
 from precis.pcb.topoplace.mesh import TopoMesh
 from precis.pcb.topoplace.wires import (
@@ -2365,7 +2365,21 @@ def _spoke_offsets(
         obstacles: list[tuple[Polygon, float]] = [
             (pg, req) for pg, pin in pad_polys if pin not in term
         ]
-        obstacles.extend((zp, req) for zp, _z in zone_polys)
+        own_name = (
+            str(d.net_name[wires.branches[bi].net])
+            if wires.branches[bi].net < len(d.net_name)
+            else ""
+        )
+        obstacles.extend(
+            (zp, req) for zp, z in zone_polys if not (z.net and z.net == own_name)
+        )
+        # the chord's L corner must stay on the board (RF_FEED on
+        # taz-leaf-local-64 cornered 3 mm² outside the leaf outline)
+        inside = (
+            Polygon(np.asarray(d.outline, dtype=float)).buffer(-req)
+            if len(d.outline) >= 3
+            else None
+        )
         peer_lines: list[tuple[Any, float]] = []
         for bj, other in enumerate(pts_out):
             if bj == bi or wires.branches[bj].net == wires.branches[bi].net:
@@ -2379,7 +2393,10 @@ def _spoke_offsets(
             line: LineString,
             obstacles: list[tuple[Polygon, float]] = obstacles,
             peer_lines: list[tuple[Any, float]] = peer_lines,
+            inside: Polygon | None = inside,
         ) -> bool:
+            if inside is not None and not inside.covers(line):
+                return False
             return all(line.distance(ox) >= r - 1e-9 for ox, r in obstacles) and all(
                 line.distance(ol) >= g - 1e-9 for ol, g in peer_lines
             )
@@ -3683,6 +3700,19 @@ def _guarded_nets(
     pose: np.ndarray,
     net_rules: Mapping[str, NetRules] | None,
 ) -> set[int]:
+    """Net-level view of :func:`_guarded_branches` — the nets with at
+    least one short-risk branch."""
+    return set(_guarded_branches(emit, d, ir, n_layers, pose, net_rules))
+
+
+def _guarded_branches(
+    emit: RoutePlan,
+    d: TopoDesign,
+    ir: Any,
+    n_layers: int,
+    pose: np.ndarray,
+    net_rules: Mapping[str, NetRules] | None,
+) -> dict[int, set[int]]:
     """The anti-short guard (gr524239): net indices of the emit set whose
     copper would violate foreign clearance — a track over a foreign pad,
     two foreign tracks closer than their widths plus clearance, a via
@@ -3694,7 +3724,14 @@ def _guarded_nets(
     pads. A violating net is withdrawn WHOLE (no orphan fragments) and
     recorded on :attr:`RoutePlan.guarded`. Centerline-vs-centerline
     distances against both nets' resolved widths and clearances — the
-    same figures the DRC gate measures, so a pass here is a pass there."""
+    same figures the DRC gate measures, so a pass here is a pass there.
+
+    Per BRANCH since 2026-10-31 (Reto: "C14, C4 GND segment could be
+    routed" — GND's 35-branch tree was withdrawn whole for one shorting
+    branch): returns ``{net: {branch, ...}}``; the caller drops the
+    offending branches' pieces and vias, the emit-connectivity check
+    then trims what dangles, and the copper that joins pads stays. The
+    net still reports ``failed: short-risk``."""
     from shapely.geometry import LineString
 
     rules = net_rules or {}
@@ -3731,11 +3768,18 @@ def _guarded_nets(
     for i, pc in enumerate(emit.pieces):
         by_layer.setdefault(pc.layer, []).append(i)
 
-    guarded: set[int] = set()
+    guarded: dict[int, set[int]] = {}
+
+    def mark(net: int, branch: int) -> None:
+        guarded.setdefault(int(net), set()).add(int(branch))
+
+    def marked(net: int, branch: int) -> bool:
+        return int(branch) in guarded.get(int(net), ())
+
     for lay, idxs in by_layer.items():
         for i in idxs:
             pi = emit.pieces[i]
-            if pi.net in guarded:
+            if marked(pi.net, pi.branch):
                 continue
             nri = nrules(nm(pi.net))
             wi, ci = float(nri.track_width_mm), float(nri.clearance_mm)
@@ -3744,26 +3788,26 @@ def _guarded_nets(
                     continue  # own-net pads are where terminals land
                 cp = float(nrules(pname).clearance_mm) if pname else ci
                 if lines[i].distance(poly) < wi / 2.0 + max(ci, cp):
-                    guarded.add(pi.net)
+                    mark(pi.net, pi.branch)
                     break
-            if pi.net in guarded:
+            if marked(pi.net, pi.branch):
                 continue
             for j in idxs:
                 if j <= i:
                     continue
                 pj = emit.pieces[j]
-                if pj.net == pi.net or pj.net in guarded:
+                if pj.net == pi.net or marked(pj.net, pj.branch):
                     continue
                 nrj = nrules(nm(pj.net))
                 gap = (wi + float(nrj.track_width_mm)) / 2.0 + max(
                     ci, float(nrj.clearance_mm)
                 )
                 if lines[i].distance(lines[j]) < gap:
-                    guarded.add(pi.net)
-                    guarded.add(pj.net)
+                    mark(pi.net, pi.branch)
+                    mark(pj.net, pj.branch)
     # A via barrel spans every layer: vs foreign pads and foreign pieces.
     for v in emit.vias:
-        if v.net in guarded:
+        if marked(v.net, v.branch):
             continue
         nrv = nrules(nm(v.net))
         dia, cv = (
@@ -3793,7 +3837,7 @@ def _guarded_nets(
             if hit:
                 break
         if hit:
-            guarded.add(v.net)
+            mark(v.net, v.branch)
     return guarded
 
 
@@ -3975,6 +4019,7 @@ def route_design(
     nets keep their first-pass pieces (the record ``wires.json`` draws)
     and problems, re-indexed behind the second pass's branches."""
     from precis.pcb.currents import require_net_currents
+    from precis.pcb.topoplace.mesh import MeshConflictError
 
     require_net_currents(zip(ir.net_name, ir.net_current_a))
     kw: dict[str, Any] = dict(
@@ -3995,48 +4040,182 @@ def route_design(
             f"route: pass 2 — {len(failed)} net(s) withdrawn, "
             f"re-routing {len(survivors)} survivor(s) without them"
         )
-    d2 = dataclasses.replace(
-        d,
-        net_pins=tuple(
-            np.zeros(0, dtype=np.int64) if k in failed else pins
+
+    def _only(nets: set[int]) -> tuple[np.ndarray, ...]:
+        return tuple(
+            pins if k in nets else np.zeros(0, dtype=np.int64)
             for k, pins in enumerate(d.net_pins)
-        ),
-    )
+        )
+
     try:
-        plan2, rres2 = _route_pass(d2, ir, **kw)
+        plan2, rres2 = _route_pass(
+            dataclasses.replace(d, net_pins=_only(survivors)), ir, **kw
+        )
     except CorridorOverflow:
         return plan, rres
     if _plan_failed_nets(plan2):
         # a survivor fails without its neighbours — pass 1 stands
         return plan, rres
-    n2 = len(plan2.layers)
-    shift = n2
-    carried = [
-        dataclasses.replace(p, branch=p.branch + shift)
-        for p in plan.pieces
-        if p.net in failed
+    # passes 3..: the withdrawn nets again, in tiers by pin count (the
+    # 2-3-pin nets first, the trees last), each tier routed against ALL
+    # copper kept so far frozen as same-net-passable zones — a rip-up
+    # and re-route of the failed set; the per-branch guard keeps what
+    # joins pads, so a tree lands its easy branches even when it fails.
+    kept_plan, kept_rres = plan2, rres2
+    tiers = [
+        {k for k in failed if len(d.net_pins[k]) <= 3},
+        {k for k in failed if len(d.net_pins[k]) > 3},
     ]
-    carried_vias = [
-        dataclasses.replace(v, branch=v.branch + shift)
-        for v in plan.vias
-        if v.net in failed
-    ]
-    merged = dataclasses.replace(
-        plan2,
-        pieces=tuple(plan2.pieces) + tuple(carried),
-        vias=tuple(plan2.vias) + tuple(carried_vias),
-        layers=tuple(plan2.layers) + tuple(plan.layers),
-        crossings=tuple(plan2.crossings)
-        + tuple((a + shift, b + shift) for a, b in plan.crossings),
-        unreachable=tuple(sorted(set(plan2.unreachable) | set(plan.unreachable))),
-        stranded=tuple(plan2.stranded) + tuple(plan.stranded),
-        no_via=tuple(plan2.no_via) + tuple(b + shift for b in plan.no_via),
-        guarded=tuple(sorted(set(plan2.guarded) | set(plan.guarded))),
-        severed=tuple(sorted(set(plan2.severed) | set(plan.severed))),
-        off_angle=tuple(sorted(set(plan2.off_angle) | set(plan.off_angle))),
-        withdrawn=tuple(sorted(failed)),
+    still: set[int] = set()
+    for tier_no, tier in enumerate(t for t in tiers if t):
+        try:
+            frozen = _copper_zones(kept_rres, d, ir)
+            d3 = dataclasses.replace(
+                d, net_pins=_only(tier), zones=tuple(d.zones) + tuple(frozen)
+            )
+            if event is not None:
+                event(
+                    f"route: pass {3 + tier_no} — {len(tier)} withdrawn net(s) "
+                    f"re-routed against {len(frozen)} frozen copper piece(s)"
+                )
+            plan3, rres3 = _route_pass(d3, ir, **kw)
+        except (CorridorOverflow, MeshConflictError):
+            # the frozen copper may defeat the CDT's edge recovery — the
+            # tier stays withdrawn rather than routed without it
+            still |= tier
+            continue
+        still |= _plan_failed_nets(plan3) & tier
+        kept_plan, kept_rres = _merge_pass(
+            kept_plan, kept_rres, plan3, rres3, tier, d, ir
+        )
+    # A net that still fails keeps only its SIMPLE partial copper — the
+    # single-layer branches that join two of its pads in a few legs (the
+    # C4–C14 GND class). Its via hops and long detours are speculative
+    # copper toward pads it never reached (RF_FEED: a 40-leg B.Cu snake
+    # along the leaf edge) and go with the net.
+    from precis.pcb.ir import pin_point
+
+    still_names = {str(d.net_name[k]) for k in still if k < len(d.net_name)}
+    pad_xy: dict[int, list[tuple[float, float]]] = {}
+    for pid in range(ir.n_pins):
+        pt = pin_point(ir, pid)
+        if pt is not None and int(ir.pin_net[pid]) >= 0:
+            pad_xy.setdefault(int(ir.pin_net[pid]), []).append(
+                (float(pt[0]), float(pt[1]))
+            )
+
+    def _pad_to_pad(t: Any) -> bool:
+        a = tuple(float(v) for v in t.segments[0]["start"])
+        b = tuple(float(v) for v in t.segments[-1]["end"])
+        pads_ = pad_xy.get(int(t.net_id), [])
+        return (
+            len(t.segments) <= _PARTIAL_MAX_SEGMENTS
+            and any(math.dist(a, p) < 1e-3 for p in pads_)
+            and any(math.dist(b, p) < 1e-3 for p in pads_)
+        )
+
+    kept_rres = dataclasses.replace(
+        kept_rres,
+        tracks=tuple(
+            t
+            for t in kept_rres.tracks
+            if str(ir.net_name[t.net_id]) not in still_names or _pad_to_pad(t)
+        ),
+        vias=tuple(
+            v for v in kept_rres.vias if str(ir.net_name[v.net_id]) not in still_names
+        ),
     )
-    return merged, rres2
+    return dataclasses.replace(kept_plan, withdrawn=tuple(sorted(still))), kept_rres
+
+
+#: The most legs a still-failed net's partial track may keep (route_design).
+_PARTIAL_MAX_SEGMENTS = 6
+
+
+def _merge_pass(
+    base: RoutePlan,
+    base_r: Any,
+    extra: RoutePlan,
+    extra_r: Any,
+    nets: set[int],
+    d: TopoDesign,
+    ir: Any,
+) -> tuple[RoutePlan, Any]:
+    """``base`` plus ``extra``'s records for ``nets`` — branch indices of
+    ``extra`` shifted behind ``base``'s so the two index spaces never
+    collide; copper joined by net name (``RealizeResult`` nets are IR
+    indices, plan nets design indices)."""
+    n0 = len(base.layers)
+    names = {str(d.net_name[k]) for k in nets if k < len(d.net_name)}
+    plan = dataclasses.replace(
+        base,
+        pieces=tuple(base.pieces)
+        + tuple(
+            dataclasses.replace(p, branch=p.branch + n0)
+            for p in extra.pieces
+            if p.net in nets
+        ),
+        vias=tuple(base.vias)
+        + tuple(
+            dataclasses.replace(v, branch=v.branch + n0)
+            for v in extra.vias
+            if v.net in nets
+        ),
+        layers=tuple(base.layers) + tuple(extra.layers),
+        crossings=tuple(base.crossings)
+        + tuple((a + n0, b + n0) for a, b in extra.crossings),
+        unreachable=tuple(
+            sorted(set(base.unreachable) | (set(extra.unreachable) & nets))
+        ),
+        stranded=tuple(base.stranded)
+        + tuple(u for u in extra.stranded if u.net in nets),
+        no_via=tuple(base.no_via) + tuple(b + n0 for b in extra.no_via),
+        guarded=tuple(sorted(set(base.guarded) | (set(extra.guarded) & nets))),
+        severed=tuple(sorted(set(base.severed) | (set(extra.severed) & nets))),
+        off_angle=tuple(sorted(set(base.off_angle) | (set(extra.off_angle) & nets))),
+    )
+    rres = dataclasses.replace(
+        base_r,
+        tracks=tuple(base_r.tracks)
+        + tuple(t for t in extra_r.tracks if str(ir.net_name[t.net_id]) in names),
+        vias=tuple(base_r.vias)
+        + tuple(v for v in extra_r.vias if str(ir.net_name[v.net_id]) in names),
+        pours=tuple(base_r.pours) + tuple(extra_r.pours),
+        warnings=tuple(base_r.warnings) + tuple(extra_r.warnings),
+    )
+    return plan, rres
+
+
+def _copper_zones(rres: Any, d: TopoDesign, ir: Any) -> list[TopoZone]:
+    """Realized tracks and vias as ``fixed_copper`` :class:`TopoZone`
+    rows (net-tagged, so the same net may still touch them) — the
+    survivors' copper frozen for :func:`route_design`'s pass 3."""
+    from precis.pcb import realize as pcb_realize
+    from precis.pcb.drc import _copper_item_polygon
+
+    layers = [str(layer.get("name") or "") for layer in ir.stackup]
+    name_to_idx = {n: i for i, n in enumerate(layers)}
+    out: list[TopoZone] = []
+    for row in pcb_realize.result_copper_rows(rres, ir, layers, derived=True):
+        geom = _copper_item_polygon(dict(row))
+        if geom is None or geom.is_empty or not hasattr(geom, "exterior"):
+            continue
+        # a buffered track is a rounded sliver with dozens of ring
+        # vertices; the CDT's edge recovery wants a coarse ring
+        geom = geom.simplify(0.02, preserve_topology=True)
+        if geom.is_empty or not hasattr(geom, "exterior"):
+            continue
+        layer = str(row.get("layer") or "")
+        out.append(
+            TopoZone(
+                kind="fixed_copper",
+                ring=np.asarray(geom.exterior.coords, dtype=np.float64),
+                layers=(name_to_idx[layer],) if layer in name_to_idx else (),
+                net=str(row.get("net") or ""),
+                name=f"pass-2 copper {row.get('ctype') or '?'}",
+            )
+        )
+    return out
 
 
 def _route_pass(
@@ -4117,16 +4296,21 @@ def _route_pass(
     # copper before it may be realized. A flagged net is withdrawn
     # whole — never commit shorting copper; the plan records it so
     # sketch_rows reports the net failed.
-    guarded = _guarded_nets(emit, d, ir, ir.n_layers, np.asarray(mesh_pose), net_rules)
+    gbr = _guarded_branches(emit, d, ir, ir.n_layers, np.asarray(mesh_pose), net_rules)
+    guarded = set(gbr)
     if guarded:
+        bad_br = {(n, b) for n, bs in gbr.items() for b in bs}
         emit = dataclasses.replace(
             emit,
-            pieces=tuple(p for p in emit.pieces if p.net not in guarded),
-            vias=tuple(v for v in emit.vias if v.net not in guarded),
+            pieces=tuple(p for p in emit.pieces if (p.net, p.branch) not in bad_br),
+            vias=tuple(v for v in emit.vias if (v.net, v.branch) not in bad_br),
         )
         plan = dataclasses.replace(plan, guarded=tuple(sorted(guarded)))
         if event is not None:
-            event(f"route: guard — {len(guarded)} net(s) withdrawn (short risk)")
+            event(
+                f"route: guard — {len(bad_br)} branch(es) of {len(guarded)} "
+                "net(s) withdrawn (short risk)"
+            )
     # gr537831: a net is "realized" only when its committed copper —
     # pieces, vias and the pads they must reach — is ONE connected
     # piece. A severed emit (the edgeless F↔B hop ending on the wrong

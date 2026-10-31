@@ -8884,6 +8884,128 @@ class PcbHandler(Handler):
             )
         return Response(body=body)
 
+    def _fab_overlays(self, ref_id: int) -> list[dict[str, Any]]:
+        """The design-side regions the fab picture otherwise hides (Reto
+        2026-10-31: keepouts "and stuff" as collapsible extra layers):
+        authored keepouts, part courtyards (the placer's reservation),
+        the pinned refdes-label boxes the router keeps vias out of, and —
+        when a topo run is stored — its route-block / via-prevent masks.
+        Best-effort per row: a region family that fails to build is
+        left out, never a broken picture. All OFF by default."""
+        from precis.pcb.cost import COURTYARD_MIN_SEPARATION_MM
+        from precis.pcb.ir import COURTYARD_CLEARANCE_MM, world_courtyard_polygons
+
+        out: list[dict[str, Any]] = []
+        try:
+            graph = self.store.pcb_graph(ref_id)
+            ir = self._build_ir(ref_id, graph)
+            features = self.store.pcb_features_list(ref_id)
+        except Exception:
+            log.debug("pcb: fab overlays — no IR", exc_info=True)
+            return out
+        try:
+            kos = pcb_session.keepouts_from_features(features)
+            out.append(
+                {
+                    "key": "ov-keepouts",
+                    "label": "Keepouts",
+                    "colour": "#ef4444",
+                    "rings": [[tuple(p) for p in k.poly] for k in kos],
+                    "titles": [
+                        f"keepout {k.reason or ''} {','.join(k.layers or ()) or 'all'}"
+                        for k in kos
+                    ],
+                }
+            )
+        except Exception:
+            log.debug("pcb: fab overlays — keepouts", exc_info=True)
+        try:
+            polys = world_courtyard_polygons(
+                ir,
+                clearance_mm=COURTYARD_CLEARANCE_MM,
+                fallback_half_extent_mm=COURTYARD_MIN_SEPARATION_MM / 2.0,
+            )
+            rings = [
+                (str(ir.instance_refdes[i]), poly)
+                for i, poly in enumerate(polys)
+                if poly
+            ]
+            out.append(
+                {
+                    "key": "ov-courtyards",
+                    "label": "Courtyards",
+                    "colour": "#22d3ee",
+                    "rings": [r for _, r in rings],
+                    "titles": [f"courtyard {rd}" for rd, _ in rings],
+                }
+            )
+        except Exception:
+            log.debug("pcb: fab overlays — courtyards", exc_info=True)
+        try:
+            design = self.store.pcb_load(ref_id)
+            spots = pcb_session.label_spots(design)
+            if spots:
+                from precis.pcb import topoplace as _tp
+
+                td = _tp.design_from_ir(
+                    ir,
+                    pcb_session.footprints_by_refdes(
+                        ir,
+                        self.store.pcb_footprints_for(ref_id),
+                        local_footprints_by_name=self.store.pcb_local_footprints_for(
+                            ref_id
+                        ),
+                        local_names_by_refdes=(
+                            pcb_session.local_footprint_names_by_refdes(graph)
+                        ),
+                    ),
+                    features=features,
+                )
+                boxes = _tp.label_boxes_for(td, td.pose0, spots)
+                out.append(
+                    {
+                        "key": "ov-labels",
+                        "label": "Label boxes",
+                        "colour": "#f59e0b",
+                        "rings": [[tuple(p) for p in ring] for _, ring in boxes],
+                        "titles": [
+                            f"label box {rd} ({spots.get(rd)})" for rd, _ in boxes
+                        ],
+                    }
+                )
+        except Exception:
+            log.debug("pcb: fab overlays — label boxes", exc_info=True)
+        try:
+            runs = _topo_runs(self.store, ref_id)
+            masks = _topo_files(runs[0]).get("masks.json") if runs else None
+            if isinstance(masks, dict):
+                names = list(masks.get("layer_names") or ())
+                for li, lm in enumerate(masks.get("layers") or ()):
+                    lname = names[li] if li < len(names) else str(li)
+                    rb = lm.get("route_block") or []
+                    if rb:
+                        out.append(
+                            {
+                                "key": f"ov-routeblock-{li}",
+                                "label": f"Route block {lname}",
+                                "colour": "#a855f7",
+                                "rings": [[tuple(p) for p in r] for r in rb],
+                            }
+                        )
+                vp = masks.get("via_prevent") or []
+                if vp:
+                    out.append(
+                        {
+                            "key": "ov-viaprevent",
+                            "label": "Via prevent",
+                            "colour": "#ec4899",
+                            "rings": [[tuple(p) for p in r] for r in vp],
+                        }
+                    )
+        except Exception:
+            log.debug("pcb: fab overlays — masks", exc_info=True)
+        return out
+
     def _fab_svg_model(
         self, ref_id: int, slug: str
     ) -> tuple[dict[str, Any], list[str]] | None:
@@ -9130,6 +9252,7 @@ class PcbHandler(Handler):
             body = gerber_view.render_fab_svg(
                 files,
                 title=slug,
+                overlays=self._fab_overlays(ref_id),
                 selection_manifest=selection_manifest,
                 # `feature:outline` on the Edge_Cuts group — only when the
                 # board's outline is a pcb_features row (`model["outline"]`
