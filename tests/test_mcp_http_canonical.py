@@ -239,6 +239,23 @@ def test_marker_naming_a_missing_path_refuses_then_recovers(
     assert _ensure(env, cwd=Path(want)).returncode == 2
 
 
+def test_status_lists_the_checkouts_in_use(env: dict[str, str], tmp_path: Path) -> None:
+    """gr516960 ask 4: a strays/second-copy cleanup checks `--status`
+    before deleting a checkout — it names the marker, the resolved repo
+    and (when containers exist) their /src + /main mounts."""
+    canon = tmp_path / "canon"
+    (canon / ".git").mkdir(parents=True)
+    state = Path(env["PRECIS_MCP_HTTP_STATE"])
+    state.mkdir()
+    (state / "main-checkout").write_text(str(canon) + "\n", encoding="utf-8")
+    r = _ensure(env, "--status")
+    assert r.returncode == 0, r.stderr
+    out = r.stdout
+    assert f"checkouts: marker {state}/main-checkout -> {canon}" in out
+    assert f"checkouts: resolved {canon} (from the recorded marker" in out
+    assert "do NOT delete" in out
+
+
 # --- the cli python-kind root (gr520147) --------------------------------------
 #
 # The image check exits (2) before the PY_ROOTS assembly runs, so these
@@ -521,6 +538,7 @@ def _run_cli_and_args(tmp_path: Path, env_extra: dict[str, str]) -> str:
             MAIN_CHECKOUT="{tmp_path}/checkout" SRC_REPO="{tmp_path}/checkout"
             NET=test-net DB_HOST=db DB_IP=203.0.113.10 BACKEND_PORT=8765
             SECRETS_OUT="{tmp_path}/secrets" CACHE_DIR="{tmp_path}/cache"
+            SLICE_TOKEN_DIR="{tmp_path}/slice-tokens"
             UV_CACHE_VOLUME=test-uv ENTRYPOINT=/entry
             TOKEN=test-token IMAGE=test-image RUN_CMD='true'
             . "{args}"
@@ -572,6 +590,14 @@ def test_cli_sig_label_recreates_the_backend_on_upgrade(tmp_path: Path) -> None:
     assert _env_hash(out) != first
     # An unchanged package keeps the hash: no recreate per session start.
     assert _env_hash(_run_cli_and_args(tmp_path, env)) != first
+
+
+def test_slice_token_dir_is_mounted_and_env_set(tmp_path: Path) -> None:
+    """gr543694: the backend mounts the grant dir read-only and gets
+    ``PRECIS_MCP_SLICE_TOKEN_DIR`` pointing at the mount path."""
+    out = _run_cli_and_args(tmp_path, {"PRECIS_MCP_CLI_PYTHON": "off"})
+    assert "slice-tokens:/run/precis-slice-tokens:ro" in out
+    assert "PRECIS_MCP_SLICE_TOKEN_DIR=/run/precis-slice-tokens" in out
 
 
 def test_cli_sig_follows_symlinked_files(tmp_path: Path) -> None:

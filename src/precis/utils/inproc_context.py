@@ -67,6 +67,11 @@ class TickContext:
     #: The producing job (``LlmRequest.source``: ``"dream"``, ``"plan_tick"``,
     #: …) — what ``tool_calls.source`` records. Not the model tier.
     source: str | None = None
+    #: The run_slice slice (``td<id>``) an HTTP call was authenticated as —
+    #: set from the per-slice bearer grant (precis.slice_tokens, gr543694),
+    #: never on an in-process tick. Drives the ``meta.slice`` ref stamp and
+    #: the ``slice-td<id>-`` tool_calls session-id prefix.
+    slice_id: str | None = None
     disabled_kinds: tuple[tuple[str, str], ...] = ()
 
 

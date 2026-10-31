@@ -33,7 +33,8 @@ client ──► 127.0.0.1:8765 ──► <name>-proxy (Caddy, never recreated b
   use `docker logs <name>-a` or `-b`.
 - State is under `~/.cache/precis-mcp-http/` (`PRECIS_MCP_HTTP_STATE`):
   `backend` (live colour), `caddy/Caddyfile` (what the proxy routes to; it wins
-  if it ever disagrees with `backend`), `ensure.log`, `secrets/`, `cache/`.
+  if it ever disagrees with `backend`), `ensure.log`, `secrets/`, `cache/`,
+  `slice-tokens/` (below).
 - Extra python-kind roots for one host go in `python-roots` there, one
   `name:/absolute/host/path` per line (e.g. a sibling repo). Each is mounted
   read-only at `/roots/<name>` and appended to `PRECIS_PYTHON_ROOTS`; editing
@@ -82,13 +83,21 @@ client ──► 127.0.0.1:8765 ──► <name>-proxy (Caddy, never recreated b
   (script/pid/ppid/cwd) so the container records who created it, and
   `precis-status` shows the mounted host paths as `src_host`/`main_host`.
 - Before deleting a checkout on this host (a strays/second-copy cleanup),
-  check `main-checkout` and the mounted host paths first — `--status`,
-  `precis-status` (`src_host`/`main_host`) or `docker inspect` of the
-  backends. On 2026-10-25 a cleanup removed the marker's checkout while
-  containers still mounted it; the pre-guard script then fell back to a
-  nonexistent default and crash-looped a standby backend. The guard now
-  refuses instead, but the deleted path still leaves every run refusing
-  until the marker is corrected.
+  run `--status` and check its `checkouts:` lines: they name the
+  `main-checkout` marker, the resolved repo, and every live backend's
+  `/src` + `/main` host mounts — never delete a path on that list without
+  correcting the marker first. On 2026-10-25 a cleanup removed the
+  marker's checkout while containers still mounted it; the pre-guard
+  script then fell back to a nonexistent default and crash-looped a
+  standby backend. The guard now refuses instead, but the deleted path
+  still leaves every run refusing until the marker is corrected.
+- `slice-tokens/` is the per-slice bearer registry (gr543694): `run_slice`
+  on this host mints one grant file per slice session at submit and
+  deletes it at poll; the backends mount it read-only at
+  `/run/precis-slice-tokens` (`PRECIS_MCP_SLICE_TOKEN_DIR`) and accept a
+  `td<id>.<hex>` bearer as that slice — its calls carry the slice's own
+  agentlog/session attribution instead of the shared token's. A host
+  without the dir mints nothing and slices keep the shared token.
 - The Caddyfile is generated inline by the script (`caddyfile_for`), not a
   template file, because the script is installed as a single file outside the
   repo. The proxy mounts the **directory** `caddy/`, so the atomic `mv` that

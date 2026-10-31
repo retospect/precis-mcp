@@ -362,6 +362,19 @@ status_report() {
     # The proxy retries dials for 60 s, so a down backend shows as a hang here.
     via="$(http_code 5 -X POST -H 'Content-Type: application/json' --data '{}' "http://127.0.0.1:${PORT}/mcp")"
     echo "backend:  POST 127.0.0.1:${PORT}/mcp (no token, via proxy) -> ${via}  (401 = serving, 502 = backend down, 000 = no answer in 5 s)"
+    # The checkout-in-use list a strays/second-copy cleanup MUST check before
+    # deleting any checkout on this host (gr516960 ask 4): the canonical
+    # marker, this run's resolution, and every backend's /src + /main mounts.
+    echo "checkouts: marker ${STATE_DIR}/main-checkout -> $(cat "${STATE_DIR}/main-checkout" 2>/dev/null || echo '(none recorded)')"
+    echo "checkouts: resolved ${REPO} (from ${REPO_FROM}); served src ${SRC_REPO}"
+    local c
+    for c in "$(bname a)" "$(bname b)"; do
+        if exists "$c"; then
+            docker inspect -f '{{range .Mounts}}{{if or (eq .Destination "/src") (eq .Destination "/main")}}{{.Source}} -> {{.Destination}}  {{end}}{{end}}' "$c" 2>/dev/null \
+                | sed "s/^/checkouts: ${c} mounts: /;s/  *$//"
+        fi
+    done
+    echo "checkouts: do NOT delete any path above without correcting the marker first"
 }
 
 if [ "$MODE" = status ]; then
@@ -583,7 +596,12 @@ SECRETS_NEW="${STATE_DIR}/secrets.new"
 # with the embedder saturated. Both colours mount it; during a swap the two
 # overlap for the new one's start-up.
 CACHE_DIR="${STATE_DIR}/cache"
-mkdir -p "$CACHE_DIR" "$CADDY_DIR"
+# Per-slice bearer-token registry (gr543694): run_slice on this host mints
+# one grant file per slice session here and deletes it at poll; the backend
+# mounts the dir read-only and validates td<id>.<hex> bearers against the
+# files. Its mere existence is the handshake run_slice checks before minting.
+SLICE_TOKEN_DIR="${STATE_DIR}/slice-tokens"
+mkdir -p "$CACHE_DIR" "$CADDY_DIR" "$SLICE_TOKEN_DIR"
 # uv's cache, so a fresh container's prepare step is not a cold download.
 # A named volume, not a host bind: tens of thousands of cache files on the
 # virtiofs share are the file-handle load that panicked a dev machine on
@@ -857,6 +875,9 @@ ENVS=(
     # names that copy instead of hiding it.
     -e "PRECIS_MCP_SRC_HOST=${SRC_REPO}"
     -e "PRECIS_MCP_MAIN_HOST=${MAIN_CHECKOUT}"
+    # The slice-token grant dir run_slice mints into (gr543694); a constant
+    # mount path, so the spec hash changes exactly once, at this upgrade.
+    -e PRECIS_MCP_SLICE_TOKEN_DIR=/run/precis-slice-tokens
     ${WT_ENVS[@]+"${WT_ENVS[@]}"}
     ${TOPO_ENVS[@]+"${TOPO_ENVS[@]}"}
 )
@@ -1019,6 +1040,7 @@ RUN_ARGS=(
     # kinds before a deploy; roots main:/main in ENVS above.
     -v "${MAIN_CHECKOUT}:/main:ro"
     -v "${SECRETS_OUT}:/run/precis-secrets:ro"
+    -v "${SLICE_TOKEN_DIR}:/run/precis-slice-tokens:ro"
     -v "${CACHE_DIR}:/home/precis/.cache/precis"
     -v "${UV_CACHE_VOLUME}:/home/precis/.cache/uv"
     ${EXTRA_MOUNTS[@]+"${EXTRA_MOUNTS[@]}"}

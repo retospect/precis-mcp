@@ -115,6 +115,69 @@ def test_install_token_auth_accepts_correct_token() -> None:
     assert resp.text == "ok"
 
 
+# ── per-slice bearer grants (gr543694) ─────────────────────────────
+
+
+def _scope_echo_app() -> Any:
+    """A Starlette app whose /probe echoes the grant the middleware stamped."""
+    from starlette.applications import Starlette
+    from starlette.responses import PlainTextResponse
+    from starlette.routing import Route
+
+    from precis import slice_tokens
+
+    async def _probe(request: Any) -> Any:
+        scope = request.scope
+        return PlainTextResponse(
+            f"{scope.get(slice_tokens.SCOPE_SLICE_ID)}"
+            f"|{scope.get(slice_tokens.SCOPE_AGENTLOG_ID)}"
+        )
+
+    return Starlette(routes=[Route("/probe", _probe)])
+
+
+def test_install_token_auth_accepts_a_minted_slice_token(tmp_path: Any) -> None:
+    from starlette.testclient import TestClient
+
+    from precis import slice_tokens
+
+    app = _scope_echo_app()
+    server._install_token_auth(app, token="s3cr3t", slice_dir=tmp_path)
+    token = slice_tokens.mint(tmp_path, "td42", agentlog_id=777)
+    resp = TestClient(app).get("/probe", headers={"Authorization": f"Bearer {token}"})
+    assert resp.status_code == 200
+    assert resp.text == "td42|777"  # the grant reaches the ASGI scope
+
+
+def test_install_token_auth_slice_grant_stamps_nothing_on_the_shared_token(
+    tmp_path: Any,
+) -> None:
+    from starlette.testclient import TestClient
+
+    app = _scope_echo_app()
+    server._install_token_auth(app, token="s3cr3t", slice_dir=tmp_path)
+    resp = TestClient(app).get("/probe", headers={"Authorization": "Bearer s3cr3t"})
+    assert resp.status_code == 200
+    assert resp.text == "None|None"
+
+
+def test_install_token_auth_rejects_a_revoked_slice_token(tmp_path: Any) -> None:
+    from starlette.testclient import TestClient
+
+    from precis import slice_tokens
+
+    app = _tiny_app()
+    server._install_token_auth(app, token="s3cr3t", slice_dir=tmp_path)
+    token = slice_tokens.mint(tmp_path, "td42")
+    client = TestClient(app)
+    slice_tokens.revoke(tmp_path, "td42")
+    resp = client.get("/probe", headers={"Authorization": f"Bearer {token}"})
+    assert resp.status_code == 401
+    # an unknown td<id>.<hex> shape never reaches the filesystem lookup
+    resp = client.get("/probe", headers={"Authorization": f"Bearer td99.{'a' * 64}"})
+    assert resp.status_code == 401
+
+
 # ── session idle timeout + /mcp session-id logging (gr538272) ─────
 
 

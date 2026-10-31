@@ -245,6 +245,17 @@ _SEQ_COUNTERS: dict[str, int] = {}
 _SESSION_LOCK = threading.Lock()
 
 
+def _slice_prefix() -> str:
+    """``"slice-td<id>-"`` inside a slice-token-attributed call, else ""."""
+    try:
+        from precis import slice_tokens
+
+        sid = slice_tokens.current_slice_id()
+    except Exception:
+        return ""
+    return f"slice-{sid}-" if sid else ""
+
+
 def _session_id() -> str | None:
     """The currently-bound session's ledger id, minted on first use —
     ``None`` outside a session (CLI, inproc ticks, tests)."""
@@ -263,8 +274,12 @@ def _session_id() -> str | None:
             sid = None
         if sid is None:
             # ``wt-<tree>-`` leads on a per-worktree server so its rows
-            # sort apart from the shared server's (precis.worktree_server).
-            head = f"{worktree_server.session_prefix()}{socket.gethostname()}"
+            # sort apart from the shared server's (precis.worktree_server);
+            # ``slice-td<id>-`` leads inside a slice-token call (gr543694).
+            head = (
+                f"{worktree_server.session_prefix()}{_slice_prefix()}"
+                f"{socket.gethostname()}"
+            )
             sid = f"{head}-{os.getpid()}-{uuid4().hex[:10]}"
             try:
                 _SESSION_IDS[session] = sid

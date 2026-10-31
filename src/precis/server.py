@@ -1574,7 +1574,7 @@ def _check_bearer_token(header_value: str | None, expected: str) -> bool:
     return secrets.compare_digest(header_value, f"Bearer {expected}")
 
 
-def _install_token_auth(app: Any, *, token: str) -> None:
+def _install_token_auth(app: Any, *, token: str, slice_dir: Any = None) -> None:
     """Wrap a FastMCP-built Starlette ``app`` (``sse_app()`` /
     ``streamable_http_app()``) with a bearer-token gate.
 
@@ -1585,15 +1585,33 @@ def _install_token_auth(app: Any, *, token: str) -> None:
     caller is a single per-run sandbox container reading a token minted
     for it and written to ``/work/mcp.json``. Never applied to stdio
     (that transport has no HTTP request to check).
+
+    ``slice_dir`` (``PRECIS_MCP_SLICE_TOKEN_DIR``, the mounted
+    ``/run/precis-slice-tokens`` on the shared session server) enables the
+    second credential shape (gr543694): a ``td<id>.<hex>`` bearer
+    validated against a grant file ``run_slice`` minted at submit and
+    deletes at poll. A validated grant is stamped into the ASGI scope so
+    the dispatch path attributes the call to its slice
+    (:mod:`precis.slice_tokens`).
     """
     from starlette.middleware.base import BaseHTTPMiddleware
     from starlette.requests import Request
     from starlette.responses import JSONResponse
 
+    from precis import slice_tokens
+
     class _TokenAuthMiddleware(BaseHTTPMiddleware):
         async def dispatch(self, request: Request, call_next: Any) -> Any:
-            if not _check_bearer_token(request.headers.get("authorization"), token):
+            header = request.headers.get("authorization")
+            if _check_bearer_token(header, token):
+                return await call_next(request)
+            grant = slice_tokens.grant(slice_dir, header)
+            if grant is None:
                 return JSONResponse({"error": "unauthorized"}, status_code=401)
+            slice_id, agentlog_id = grant
+            request.scope[slice_tokens.SCOPE_SLICE_ID] = slice_id
+            if agentlog_id is not None:
+                request.scope[slice_tokens.SCOPE_AGENTLOG_ID] = agentlog_id
             return await call_next(request)
 
     app.add_middleware(_TokenAuthMiddleware)
@@ -1763,7 +1781,15 @@ def _run_network_transport(
     mcp.settings.host = host
     mcp.settings.port = port
     app = mcp.streamable_http_app() if transport == "streamable-http" else mcp.sse_app()
-    _install_token_auth(app, token=token)
+    from precis import slice_tokens
+
+    _install_token_auth(
+        app,
+        token=token,
+        slice_dir=(
+            Path(p) if (p := os.environ.get(slice_tokens.ENV_DIR, "").strip()) else None
+        ),
+    )
     _install_session_log(app, mcp_path=mcp.settings.streamable_http_path)
 
     async def _serve() -> None:

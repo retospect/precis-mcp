@@ -571,7 +571,8 @@ def _ctx_run_context(ctx: Context | None, store: Any = None) -> Any:
     ``touched`` links) pick it up with no further plumbing. Keys the
     meta omits fall through to the ambient context/env, matching the
     overlay's merge semantics. ``None`` outside a live request, on a
-    non-stdio transport, or when the meta carries neither key.
+    non-stdio transport with no middleware-stamped slice grant, or when
+    the meta carries neither key.
     """
     if ctx is None:
         return None
@@ -582,9 +583,13 @@ def _ctx_run_context(ctx: Context | None, store: Any = None) -> Any:
         # transport gate, not a source of the MCP request. The parsed
         # ``params._meta`` lands on ``RequestContext.meta`` on every
         # transport; we honor it on stdio only — an HTTP client must not
-        # be able to forge run attribution (gr540852).
-        if getattr(rc, "request", None) is not None:
-            return None
+        # be able to forge run attribution (gr540852). On HTTP the trusted
+        # channel is the auth middleware's own scope stamp: a validated
+        # per-slice bearer carries the slice id + agentlog id
+        # (gr543694, :mod:`precis.slice_tokens`).
+        request = getattr(rc, "request", None)
+        if request is not None:
+            return _http_slice_run_context(request)
         meta = getattr(rc, "meta", None)
     except (AttributeError, ValueError):
         return None
@@ -628,6 +633,33 @@ def _ctx_run_context(ctx: Context | None, store: Any = None) -> Any:
     from precis.utils.inproc_context import TickContext
 
     return TickContext(agentlog_id=log_id, source=source)
+
+
+def _http_slice_run_context(request: Any) -> Any:
+    """The run context the token-auth middleware stamped on an HTTP
+    request: ``precis.slice_id`` (+ the mint's ``precis.agentlog_id``)
+    from the ASGI scope, or ``None`` for an ordinary shared-token call.
+
+    Unlike ``params._meta`` this stamp is server-issued — it only lands
+    after ``slice_tokens.grant`` validated the ``td<id>.<hex>`` bearer
+    against the minted file, so it is safe to bind here (gr543694).
+    """
+    from precis import slice_tokens
+    from precis.utils.inproc_context import TickContext
+
+    try:
+        scope = getattr(request, "scope", None) or {}
+        slice_id = scope.get(slice_tokens.SCOPE_SLICE_ID)
+        agentlog_id = scope.get(slice_tokens.SCOPE_AGENTLOG_ID)
+    except (AttributeError, ValueError):
+        return None
+    if not slice_id:
+        return None
+    return TickContext(
+        source="run_slice",
+        agentlog_id=agentlog_id if isinstance(agentlog_id, int) else None,
+        slice_id=str(slice_id),
+    )
 
 
 def get(

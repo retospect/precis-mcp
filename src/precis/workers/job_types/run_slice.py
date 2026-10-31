@@ -261,19 +261,27 @@ def slice_branch(todo_id: int) -> str:
     return f"slice/{todo_id}"
 
 
-def slice_env(todo_id: int, effort: str) -> dict[str, str]:
+def slice_env(
+    todo_id: int, effort: str, *, mcp_token: str | None = None
+) -> dict[str, str]:
     """The session's environment: :data:`ENV_ALLOWLIST` names present in
     the worker's env, the MCP token (env, else the mounted secret), the
     subscription OAuth token (env, else the vault — the only store for it;
     jo544333 ran as the launchd ``deploy`` user and ``claude`` answered
     ``Not logged in``), and ``PRECIS_SLICE_ID``/``PRECIS_SLICE_EFFORT``.
     Nothing else — in particular no ``ANTHROPIC_API_KEY``, so the session
-    cannot fall onto the per-token billed path."""
+    cannot fall onto the per-token billed path.
+
+    ``mcp_token`` is the per-slice bearer :func:`_mint_slice_token`
+    minted (gr543694); given, it replaces the shared token outright so
+    the server attributes the session's calls to this slice."""
     env = {k: os.environ[k] for k in ENV_ALLOWLIST if os.environ.get(k)}
     from precis.utils.claude_oauth import ensure_oauth_token
 
     ensure_oauth_token(env)
-    if "PRECIS_MCP_TOKEN" not in env:
+    if mcp_token:
+        env["PRECIS_MCP_TOKEN"] = mcp_token
+    elif "PRECIS_MCP_TOKEN" not in env:
         try:
             from precis.secrets import mounted_secret
 
@@ -785,6 +793,62 @@ def _ensure_worktree(root: Path, todo_id: int) -> Path:
     return tree
 
 
+def _mint_slice_token(
+    ctx: Any, todo_id: int, *, model: str, brief: str
+) -> dict[str, Any] | None:
+    """Mint the session's per-slice bearer + its agentlog (gr543694).
+
+    The grant file goes into :func:`precis.slice_tokens.registry_dir` —
+    ``None`` on a host whose shared server was never upgraded (no dir,
+    no ``PRECIS_MCP_SLICE_TOKEN_DIR``), which keeps the slice on the
+    shared token rather than breaking the factory on an un-deployed
+    host. A failed ``open_run`` still mints (attribution then rides the
+    ``slice-td<id>-`` session-id prefix and ``meta.slice`` only); a
+    failed mint abandons the log and returns ``None``."""
+    from precis import agentlog, slice_tokens
+
+    directory = slice_tokens.registry_dir()
+    if directory is None:
+        return None
+    log_id = agentlog.open_run(
+        ctx.store,
+        source="run_slice",
+        title=f"run_slice td{todo_id}",
+        model=model,
+        prompt=brief,
+        parent_ref_id=todo_id,
+        job_ref_id=getattr(ctx, "ref_id", None),
+        meta_extra={"slice": f"td{todo_id}"},
+    )
+    try:
+        token = slice_tokens.mint(directory, f"td{todo_id}", agentlog_id=log_id)
+    except Exception:
+        log.warning(
+            "run_slice: slice-token mint for td%d failed; launching on the "
+            "shared token",
+            todo_id,
+            exc_info=True,
+        )
+        agentlog.close_run(ctx.store, log_id, status="aborted")
+        return None
+    return {"token": token, "dir": str(directory), "agentlog_id": log_id}
+
+
+def _revoke_slice_grant(ctx: Any, todo_id: int, grant: Any, status: str) -> None:
+    """Delete the grant file (the token 401s from the next request on)
+    and stamp the run's agentlog closed. Best-effort — the job outcome
+    lands either way."""
+    if not grant:
+        return
+    from precis import agentlog, slice_tokens
+
+    try:
+        slice_tokens.revoke(Path(str(grant.get("dir") or "")), f"td{todo_id}")
+    except Exception:  # pragma: no cover — defensive
+        log.warning("run_slice: slice-token revoke for td%d failed", todo_id)
+    agentlog.close_run(ctx.store, grant.get("agentlog_id"), status=status)
+
+
 def _fail_submit(ctx: Any, todo_id: int, lane: str | None, reason: str) -> None:
     attempt = None
     try:
@@ -852,6 +916,7 @@ def submit(ctx: Any, spec: Any) -> Any:
         role=_generate_role(todo.meta),
         deny_paths=lane.deny_write_paths,
     )
+    grant: dict[str, Any] | None = None
     try:
         tree = _ensure_worktree(slice_root(), todo_id)
         scratch = tree / "scratch"
@@ -875,25 +940,28 @@ def submit(ctx: Any, spec: Any) -> Any:
             "--settings",
             deny_settings(lane.deny_write_paths, tree),
         ]
+        grant = _mint_slice_token(ctx, todo_id, model=model, brief=brief)
         pid = _launch(
             argv,
             cwd=tree,
             stdin=brief_path,
             log=log_path,
             exit_file=exit_path,
-            env=slice_env(todo_id, effort),
+            env=slice_env(todo_id, effort, mcp_token=grant["token"] if grant else None),
         )
         started_at = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
         identity = _process_identity(pid)
     except Exception as exc:
         log.warning("run_slice: launch of td%d failed", todo_id, exc_info=True)
+        _revoke_slice_grant(ctx, todo_id, grant, "aborted")
         _fail_submit(ctx, todo_id, lane.name, f"launch failed: {exc}")
         return None
 
     ctx.append_chunk(
         "job_event",
         f"run_slice: launched td{todo_id} on lane {lane.name} (model {model}, "
-        f"effort {effort}) pid {pid} in {tree}",
+        f"effort {effort}) pid {pid} in {tree} "
+        f"(mcp token: {'slice td' + str(todo_id) if grant else 'shared'})",
     )
     handle: dict[str, Any] = {
         "pid": pid,
@@ -903,6 +971,9 @@ def submit(ctx: Any, spec: Any) -> Any:
         "exit_file": str(exit_path),
         "started_at": started_at,
     }
+    if grant:
+        handle["slice_token_dir"] = grant["dir"]
+        handle["agentlog_id"] = grant["agentlog_id"]
     if identity is not None:
         # ssh_node's orphan reaper kills only a group whose leader still
         # has this boot_id and start-tick count; without them it skips.
@@ -1074,10 +1145,17 @@ def poll(ctx: Any, handle: Any) -> bool:
         summary += ["", *commits[:20]]
     ctx.append_chunk("job_summary", "\n".join(summary))
 
+    grant = (
+        {"dir": handle.get("slice_token_dir"), "agentlog_id": handle.get("agentlog_id")}
+        if handle.get("slice_token_dir")
+        else None
+    )
     if clean and nothing is None:
+        _revoke_slice_grant(ctx, todo_id, grant, "ok")
         ctx.set_status("succeeded")
         return True
 
+    _revoke_slice_grant(ctx, todo_id, grant, "failed")
     attempt = None
     try:
         attempt = release_todo(ctx.store, todo_id, str(lane) if lane else None)

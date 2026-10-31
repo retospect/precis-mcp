@@ -205,6 +205,9 @@ def seams(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> dict[str, Any]:
     monkeypatch.setenv("PRECIS_SLICE_ROOT", str(tmp_path))
     monkeypatch.setenv("PRECIS_RUN_SLICE_MODEL", "claude-test-model")
     monkeypatch.delenv("PRECIS_FACTORY", raising=False)
+    # No slice-token registry on this rig (the dir never exists) → the
+    # shared-token path stays the default under test (gr543694).
+    monkeypatch.setenv("PRECIS_MCP_SLICE_TOKEN_DIR", str(tmp_path / "no-slice-tokens"))
     return calls
 
 
@@ -685,6 +688,56 @@ def test_submit_refuses_when_factory_off(
     ctx, handle = _submit(store, seams)
     assert handle is None and ctx.status == "failed"
     assert seams["launch"] == [] and seams["git"] == []
+
+
+# ── per-slice MCP token (gr543694) ─────────────────────────────────
+
+
+def test_submit_mints_a_per_slice_token_and_poll_revokes_it(
+    seams: dict[str, Any], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """With the registry dir present the session's ``PRECIS_MCP_TOKEN`` is
+    a ``td<id>.<hex>`` grant the server attributes to this slice — never
+    the shared token — and poll deletes the file (the revoke)."""
+    registry = tmp_path / "slice-tokens"
+    registry.mkdir()
+    monkeypatch.setenv("PRECIS_MCP_SLICE_TOKEN_DIR", str(registry))
+    monkeypatch.setenv("PRECIS_MCP_TOKEN", "shared-token")
+    store = _Store()
+    store.add_todo(42, "t")
+    ctx, handle = _submit(store, seams)
+
+    [(_argv, kw)] = seams["launch"]
+    token = kw["env"]["PRECIS_MCP_TOKEN"]
+    assert token != "shared-token"
+    assert re.fullmatch(r"td42\.[0-9a-f]{64}", token)
+    grant_file = registry / "td42"
+    assert grant_file.read_text(encoding="utf-8").split()[0] == token
+    assert handle["slice_token_dir"] == str(registry)
+    assert "mcp token: slice td42" in ctx.chunks[-1][1]
+
+    _finish(handle, 0, json.dumps({"is_error": False, "result": "done"}) + "\n")
+    pctx = _poll_ctx(store, ctx)
+    assert run_slice.poll(pctx, handle) is True
+    assert not grant_file.exists()
+
+
+def test_launch_failure_revokes_the_slice_token(
+    seams: dict[str, Any], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    registry = tmp_path / "slice-tokens"
+    registry.mkdir()
+    monkeypatch.setenv("PRECIS_MCP_SLICE_TOKEN_DIR", str(registry))
+
+    def boom(*_a: Any, **_kw: Any) -> int:
+        raise RuntimeError("no claude")
+
+    monkeypatch.setattr(run_slice, "_launch", boom)
+    store = _Store()
+    store.add_todo(42, "t")
+    ctx, handle = _submit(store, seams)
+    assert handle is None and ctx.status == "failed"
+    assert not (registry / "td42").exists()
 
 
 def _finish(handle: dict[str, Any], exit_code: int | None, log: str) -> None:
