@@ -38,7 +38,7 @@ The whole write path (export) is unbuilt.
 **On prod since 2026-10-02:** the real board is imported as pcb
 `heater-base-test`, APWR/BPWR annotated (td458070 closed), all 89 nets
 unrouted. Dogfooding it found a courtyard bug (courtyards from synthesized pad
-sizes; fixed by ewod-pcb, verified on prod: silk_missing 96 → 3 real ones). The SATA connector's slot holes (gr461213) import as
+sizes; fixed by ewod-pcb, verified on prod: silk_missing 96 → 3 real ones). The SATA connector's slot holes import as
 slots now (pad `slot`, Excellon G85, slot-aware annular ring); re-import
 the board to clear its 4 false annular-ring errors.
 Reto's 2026-10-02 look found the CN1/CN2 standoff rings around no hole
@@ -153,7 +153,7 @@ review, VERIFIED by Reto 2026-10-14 — review-queue
    0.000 mm pad hits in jo484766 were the route job's OWN annealed
    placement, and prod's taz15 now carries jo489777's annealed poses
    (186 placement errors; the source poses live on `taz15-blank`) —
-   gr489911/gr489913 (op='place' now refuses a placement worse than
+   (op='place' now refuses a placement worse than
    the stored one). Part 2 (Reto 2026-10-16): a moved part rips the fixed
    copper on its pads, in op='place' and in op='route''s single anneal
    (the loop path does not rip yet). On dev, prod taz15 with its 10
@@ -162,19 +162,19 @@ review, VERIFIED by Reto 2026-10-14 — review-queue
    forced past 9 outline_containment errors, held by the worse-board
    guard). At the source poses with every part frozen: the
    categorical `courtyard_overlap` error refused the route on 30 pairs
-   the fab built (gr489912, fixed: graded on lands);
+   the fab built (fixed: graded on lands);
    `taz15` with its source copper then routed 146 → **150/151** after
    the plane fan-out stopped drilling drop vias for pins the pour or a
-   source via already serves (gr489924, fixed); the last
-   net was gr489175 (closed). `taz15-blank` from scratch: 138/151 as imported
+   source via already serves; the last
+   net was the THT-pad model (closed). `taz15-blank` from scratch: 138/151 as imported
    (GND/3V3 traced, no outer pours), 139/151 with GND→B.Cu and
    3V3→F.Cu declared — 8 of the rest are CN4's 0.5 mm-pitch escapes
-   (gr489923 and gr491588, both closed; the escape stub that took this to
+   (both closed; the escape stub that took this to
    149/151 was held because it changes routing across the nano board, and
    `backlog/pcb-vector-router.md` slice 3 replaces the stub),
    2 drop-via sites (GND/PV+), 2 search budget. The
    source's 7 `via_via_keepout` errors still need `force=True` on
-   `taz15` (gr489914; the doubled via is deduped at import).
+   `taz15` (the doubled via is deduped at import).
 2. ~~The real board's design-rule table is dropped at import~~ — **DONE
    2026-10-14 in `p1-epro`.** V1.15's table is 19 `RULE` records on every
    PCB document and ZERO `RULE_SELECTOR`s (the "16 + 168" guess was wrong).
@@ -280,7 +280,7 @@ export/fab if this file outgrows itself.
 7. **backlog/pcb-engine-plan.md** §5 — 2-layer and n-layer stackups; enqueue
    refuses len(stackup) != 4 while the processor already handles 2. Waits on
    nothing; removes the wall a colleague's 2-layer .epro2 hits at import.
-8. **edge_mate residue (from the closed gr451356)** — `edge_mate` (instance attribute, `pcb/edge_mate.py`)
+8. **edge_mate residue (from the closed side-insertion gripe)** — `edge_mate` (instance attribute, `pcb/edge_mate.py`)
    is authored per instance; shipped: placer snap + `edge_mating` DRC in
    `view='drc'`, the place and route jobs' pre-route check
    (`session.placement_drc_findings`) and the judged-mutation gate (moving

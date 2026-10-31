@@ -39,7 +39,7 @@ owner on 2026-09-30, 10 prio high; this file gives them one.
    ordered slices live in thread [structure-workspaces](structure-workspaces.md);
    this thread owns only the pcb-side checks (DRC `frame` column, request
    lanes) when they touch `drc.py`/`realize.py`.
-2. **backlog/pcb-topo-place.md** — `draft/high` (gr515107): the topo
+2. **backlog/pcb-topo-place.md** — `draft/high`: the topo
    placer/router campaign — pairwise part map, solver-side pin
    assignment, corridor shove and its own realiser. `blocked-by` 1 per
    its front matter (the pcb-ws4 gate), though slices 0–1c are already
@@ -101,12 +101,12 @@ owner on 2026-09-30, 10 prio high; this file gives them one.
     via IPC-2221) and lacks (impedance→width, return-path→geometry,
     per-edge widths). Do not build without a further ruling.
 14. **backlog/pcb-design-flow.md** — `ready/high`, filed 2026-10-26 from
-    gr519925 + gr519924 (TAZ leaf dogfood): the requirements-to-fab
+    the TAZ leaf dogfood: the requirements-to-fab
     skill, selection record (graph memory, selects/rejects, ruled
     2026-10-26), budget convention, consigned BOM lines, mech/coating
     checklist. Slice 1 is a skill with no code and can go now; it is
     independent of items 1–12.
-15. **backlog/design-rerun-pull.md** — `draft/normal` (gr512900): a run
+15. **backlog/design-rerun-pull.md** — `draft/normal`: a run
     archive, content-keyed replay and elite warm starts so a re-run
     pulls from prior successes. Its record layer feeds 1's §3 request
     cache and its route leg waits on 2's realiser; every open question
@@ -129,19 +129,19 @@ owner on 2026-09-30, 10 prio high; this file gives them one.
   engine (`field.py` + `field_polish` accepted-ignored, bench column
   trimmed); the smooth-energy spec `pcb-unified-place-route` is parked
   Superseded — topo-place is the path.
-  placer-c: ABNORMAL-stalled stages retry θ-pinned (gr503452) and the
+  placer-c: ABNORMAL-stalled stages retry θ-pinned and the
   gate is legality + field energy, anneal `total()` report-only
-  (gr503458) — polish applies on sanity free-bottom and p2u.
+  — polish applies on sanity free-bottom and p2u.
   placer-d+e: seed spreads shelves over the outline + rigid groups get
-  a far-edge strip (gr503556); bin-density spread term (normalized by
+  a far-edge strip; bin-density spread term (normalized by
   total part area after it out-weighed p2u's supply tree); bounded
-  descent + snap clamp + partial revert (gr503640); mounting holes are
-  T4 fixed obstacles on both sides (gr503640 fix 2). Bench: placer-e.
+  descent + snap clamp + partial revert; mounting holes are
+  T4 fixed obstacles on both sides. Bench: placer-e.
   placer-f: written rotations are grid values in [0,360) — seed-θ
   fallback, k=4 dominant + ROT_TILT_MIN_GAIN tilt gate, wirelength
-  never-worse accept gate (gr503694 + the container-only sanity
+  never-worse accept gate (+ the container-only sanity
   bottom-header divergence). Next: slice 3 labels as variables (T8).
-  placer-i: gr503556 seed cover closed — groups take a top-anchored
+  placer-i: seed cover closed — groups take a top-anchored
   corner column sized to their rotated bbox (member axis along the
   board edge), parts shelf-pack the L around it; nano bands max
   34.5 % (was 59). `_signed` batched through shapely ufuncs:
@@ -150,13 +150,13 @@ owner on 2026-09-30, 10 prio high; this file gives them one.
   (90,45,15)° tiers (90 free, 45 priced, 15 more), stage-1 rotation
   well switch (ROT_WELL_FROM_STAGE1) against early θ drift, tilt gate
   folded into priced E; snap_to_preferred shares the well's grid.
-  placer-k: gr503556 polish knot — the (Σa)²-normalized BinDensity
+  placer-k: polish knot — the (Σa)²-normalized BinDensity
   gradient is ~10³ below the T1+tree pull, so no portable fixed λ
   counters re-clustering (measured 0.03 vs 46; λ 0.1→50 all knotted).
   λ is now force-balanced at handoff (DENSITY_FORCE_FRAC=0.25 of the
   wirelength gradient, capped), ePlace-style — re-clustering pays for
   itself inside E.
-  gr504889: a fully posed, legal import remains the incumbent across the joint
+  Import incumbent: a fully posed, legal import remains the incumbent across the joint
   place+route pass; reject re-placement when the T1+D14 wirelength
   accept metric is more than 2% worse than those input poses. A
   legalization/outline repair rules out restoring the illegal input.
@@ -182,7 +182,7 @@ owner on 2026-09-30, 10 prio high; this file gives them one.
   1 (epro import keeps part identity) landed from `p1-epro` as
   `a7863eda3`; slice 5 waits on `datasheet-facts-mesh.md`.
 - **Pin-level datasheet provenance + the two-source pin-name
-  cross-check (gr458878 closed).** Filed 2026-09-30 on Reto's word. The `datasheet` kind and
+  cross-check.** Filed 2026-09-30 on Reto's word. The `datasheet` kind and
   `link(rel='datasheet-of')` already bind a datasheet to a PART; what is
   missing is a pin-level link target (links are
   `kind:identifier[~selector]` and pcb has no pin selector), an extraction
@@ -192,7 +192,7 @@ owner on 2026-09-30, 10 prio high; this file gives them one.
   "with provenance"; this is WHERE that provenance lives. Extend
   `pcb-argue-with-design.md`'s existing anchor grammar, do not mint a second
   scheme.
-- **The prod `parts` catalog was EMPTY** — recorded in gr458878 (closed);
+- **The prod `parts` catalog was EMPTY** — recorded and closed;
   the Open API walk has since populated ~2.0M rows and refills the low
   range (ewod-pcb handoff item 4).
 

@@ -42,7 +42,7 @@ picture — suspect a stale server upstream before suspecting the data.
 **Last reviewed:** 2026-10-02 (strain layers and the xyz/pdb export live
 since 567f207f; Reto approved both as they are, review item
 se-3d-viewer-1; level chips landed for round 2)
-**2026-10-23 (gr508636/gr508637):** the strain rows' threshold slider is
+**2026-10-23:** the strain rows' threshold slider is
 now a draggable box plot with outliers (the element keeps the old range
 contract — `.value` in 0..1000 moved by `input` — so viewer_check is
 unchanged), and the viewer gained a `night` toggle (vendored setTheme +
@@ -59,7 +59,7 @@ and `view='fasten'` on prod's `unicycle-c1` match the local result
 (flange_bolt_left error, flange_bolt_right warning). Found: `view='fasten'`
 drew the error with the same ⚠ as a warning; fixed in round 3 (✗).
 
-**2026-10-28 (box3 dogfood, gr529551):** box3 (screw-down enclosure,
+**2026-10-28 (box3 dogfood):** box3 (screw-down enclosure,
 `box3-fdm`/`box3-molding`) published with exact-AABB envelopes — it reads
 as boxes now, but every rung still draws envelopes, so the hollow shell
 renders solid (cavity, bosses, cores invisible on /se). Reto asks:
@@ -178,8 +178,7 @@ up:
    `backlog/printable-atomic-models.md`. The floor is computed on the
    server (one source of truth), so the dialog asks the route for it and
    does not hard-code 1e7/5e7.
-8. **Realized-geometry rung** (triaged 2026-10-28; symptom + dogfood: box3,
-   gr529551). The viewer draws envelopes at every rung, so hollow parts
+8. **Realized-geometry rung** (triaged 2026-10-28; symptom + dogfood: box3). The viewer draws envelopes at every rung, so hollow parts
    render solid — box3's cavity, bosses and cores are invisible on /se
    (every rung shows the same AABB box). ~~Build: mesh each block's realized
    expression at the realized rung (field backend, coarse pitch,
@@ -257,7 +256,7 @@ the region property layer in `backlog/pocket-from-molecule.md`.
 
 ## Parked
 
-- **[se3d-rev-meshes](../se3d-rev-meshes.md)** — `?rev=` on a past revision draws the live cad design's meshes (Do-next 8 residue, gr531335); unparks on Reto's refuse-vs-snapshot ruling.
+- **[se3d-rev-meshes](../se3d-rev-meshes.md)** — `?rev=` on a past revision draws the live cad design's meshes (Do-next 8 residue); unparks on Reto's refuse-vs-snapshot ruling.
 - **backlog/se-3d-viewer-ux-batch.md**, colour-channel selector / clip
   plane — unparks with Horizon 2, when a block-selection surface exists.
 - **backlog/se-3d-viewer-ux-batch.md**, hide the picking dropdown + label the

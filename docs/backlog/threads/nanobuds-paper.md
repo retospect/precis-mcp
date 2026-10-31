@@ -302,7 +302,7 @@ item is nanobuds-paper-32. Edit-verb year=/journal= fix landed
    printed sources, no single linked passage individually carries the
    full sentence. This is not a miscitation count (Reto 11:56Z ruling).
    Report: `~/.claude/projects/-Users-reto-precis-mcp/nanobud-fidelity/ <!-- home-path: allow — names a scratch/review file in the old Mac project dir -->
-   printed-read/REPORT.md`. Wrong-paper ingest: gr463414.
+   printed-read/REPORT.md`. Wrong-paper ingest: fixed.
    **Item 26 ruled 11:56Z after a Fable audit**
    (`reviews/citation-rigour-audit-2026-10-03.md`). Adopted citation rule:
    - support is judged against the paper's full text, and passages may

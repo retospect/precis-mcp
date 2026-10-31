@@ -8,7 +8,7 @@ design-review: yes
 
 ## Resume
 
-- **Next:** (1) deploy carries the 2026-10-13 wave (open-pole sphere top 85cbabe5b, xtb rung 669d615cf, atomic clearance sweep 4eaae25ba, rail tube b7fcf3328, sp3 seam lines 692d8830a); after it, relax the prod candidates `hexfold-relax-{y-a,fin-out,fin-in,seam-out,seam-in,valve}` through `fidelity='xtb'` (dispatches to the compute group once Reto pushes the linux-aarch64 tblite wheel, `/tmp/gripe-fleet/xtb-wheel.sh`, gr488907 closed) and mint the open-pole nanobud and a 3-rail tube on prod. (2) The [relax campaign](#relax-campaign-2026-10-13) verdict: the equal-120 sp2 seam is not a GFN2-xTB minimum (it dimerises into the `k3-sp3-z` chain), so seam-family scenes should be authored on the sp3 row — the [2026-10-14 junction sweep](#junction-model-campaign-2026-10-14) added `k3-sp3-a` and `chan-k3-sp3-z` rows and wrote the catalogue note, pending land. (3) `backlog/hexfold-tethered-relax-op.md` (slice 0): **HELD** (Reto 2026-10-22) — the queued launch waits for a re-scope against [structure-workspaces](../structure-workspaces.md) slice 4p (relax-service path); then the re-vet of Do-next 1a, then the graded-bends residual (Do-next 3; gr459928 is closed). The open-for-Reto on gr470905 (whether stored-mode surface deviation should score the H caps) lapsed with its close. Earlier prod records: [Prod runs 2026-10-07](#prod-runs-and-measurements-2026-10-07); [catalogue R17 variant A](../hexfold-seam-type-catalogue.md#r17-variant-a-public-scene-contract--2026-10-07).
+- **Next:** (1) deploy carries the 2026-10-13 wave (open-pole sphere top 85cbabe5b, xtb rung 669d615cf, atomic clearance sweep 4eaae25ba, rail tube b7fcf3328, sp3 seam lines 692d8830a); after it, relax the prod candidates `hexfold-relax-{y-a,fin-out,fin-in,seam-out,seam-in,valve}` through `fidelity='xtb'` (dispatches to the compute group once Reto pushes the linux-aarch64 tblite wheel, `/tmp/gripe-fleet/xtb-wheel.sh`) and mint the open-pole nanobud and a 3-rail tube on prod. (2) The [relax campaign](#relax-campaign-2026-10-13) verdict: the equal-120 sp2 seam is not a GFN2-xTB minimum (it dimerises into the `k3-sp3-z` chain), so seam-family scenes should be authored on the sp3 row — the [2026-10-14 junction sweep](#junction-model-campaign-2026-10-14) added `k3-sp3-a` and `chan-k3-sp3-z` rows and wrote the catalogue note, pending land. (3) `backlog/hexfold-tethered-relax-op.md` (slice 0): **HELD** (Reto 2026-10-22) — the queued launch waits for a re-scope against [structure-workspaces](../structure-workspaces.md) slice 4p (relax-service path); then the re-vet of Do-next 1a, then the graded-bends residual (Do-next 3). The open-for-Reto on whether stored-mode surface deviation should score the H caps lapsed with its close. Earlier prod records: [Prod runs 2026-10-07](#prod-runs-and-measurements-2026-10-07); [catalogue R17 variant A](../hexfold-seam-type-catalogue.md#r17-variant-a-public-scene-contract--2026-10-07).
 - **Blocked by:** Three-plane Y cannot use the revolution-target receipt; surface_deviation stays unavailable. Legacy r5 remains unavailable without receipt. Unequal variant B needs seam-row measurement. Larger-pillar cost gate is a separate next slice; scientific/hero/model holds unchanged.
 - **Unblocks:** Trusted geometry for [nanobuds-paper](nanobuds-paper.md#resume).
 - **Acceptance:** Use [hexfold-ideal-surface-then-tile](../hexfold-ideal-surface-then-tile.md) and the verification steps in [Do next](#do-next); check current deployment and worktree state before acting.
@@ -76,12 +76,12 @@ itself shut).
 Moved out of the Resume (word budget); every fact kept.
 
 - Fin scenes, Local measurements, all clash-free and H-terminated by default: sp3 outward 963 C, inward 1,603 C, host angles 87–124° at the pinned registration; seam tubes outward 1,076 C (seam line 0.85 Å proud of the 6.96 Å mean wall radius), inward 1,780 C (notch 0.6 Å deep at 12.38 Å mean radius), seam angles exact.
-- Y variant A ran on prod 2026-10-07 12:15Z (round 5, fc8ad08f7): `se:hexfold-dogfood-y-a` block `y` UID 212, 5,790 atoms, 87 seam eight-cycles, 0 clashes, 696 ring-angle WARNs, matching the dev-DB build; URL handed to Reto, td471803 done. Native stored-target acceptance on legacy r5 recorded on gr470905 (default reads honest-unavailable, override and null boundaries as specified); a receipt-backed positive read still needs a post-R17 sphere/cylinder generation.
+- Y variant A ran on prod 2026-10-07 12:15Z (round 5, fc8ad08f7): `se:hexfold-dogfood-y-a` block `y` UID 212, 5,790 atoms, 87 seam eight-cycles, 0 clashes, 696 ring-angle WARNs, matching the dev-DB build; URL handed to Reto, td471803 done. Native stored-target acceptance on legacy r5 (default reads honest-unavailable, override and null boundaries as specified); a receipt-backed positive read still needs a post-R17 sphere/cylinder generation.
 
 ## Design note: pillar diameter (post-R16 dogfood)
 
 Retained historical planning note, not authorization for another fleet run.
-gr469873 original reach acceptance is DONE; the diameter sweep and cost-job
+The original reach acceptance is DONE; the diameter sweep and cost-job
 follow-on transfers to a Mac-local agent. No wider-pillar build or sweep
 validation was performed for this note.
 
@@ -90,7 +90,7 @@ reduces collapse in the ball12 lineage, `se:hexfold-dogfood-r4` /
 `st465728`. Plan fresh Melchior-only variants at current diameter, 1.5x
 and 2x, with the same authored ball radius and fold settings, after R16
 deployment and authenticated process/viewer gates. Durable plan and limits:
-Precis gr469873, comment 2, publication key
+publication key
 `hexfold-ball12-pillar-diameter-sweep-plan`; native readback verified, OPEN.
 Transport pointer: fleet-state `inbox/hexfold-r16-dogfood-plan.md`.
 
@@ -105,7 +105,7 @@ narrow guard/budget change is prerequisite for larger builds. Do not scale
 the whole scene or bypass the guard. Recover the actual authored ball radius
 from saved provenance; a fitted sphere radius is not that provenance.
 
-Guard investigation (durable gr469873 comment 3, readback verified)
+Guard investigation (durable, readback verified)
 confirms the n ceiling protects synchronous request cost, not socket or
 print clearance. A proposed explicit 12/18/24 ceiling opt-in must preserve
 the default and all geometry checks, with a proven Melchior request budget;
@@ -217,7 +217,7 @@ removed as met — the transport move it waited on happened 09-29)
   `view='block'` on `pillar_foot` shows "report: NOT ok — 51
   finding(s)" with 4 ERROR `geom.clash` at 0.54–0.97 Å. Gap filed:
   `view='validate'` says 0 errors and `view='drc'` none on the same
-  design (gr464342).
+  design.
 
 ## Do next
 
@@ -253,15 +253,15 @@ removed as met — the transport move it waited on happened 09-29)
          tether is not in the `.hx` text and figs/render_hero.py's
          untethered build cannot reproduce it. A prod `hexfold` generate
          still relaxes untethered until S4b.
-       - The (24,0) pill variant is unblocked: gr464358's frustum was
+       - The (24,0) pill variant is unblocked: the frustum was
          seeded mirrored (fixed 2026-10-11, no seed pair under 1.2 Å for
          k = 4..16, n = 6..24); re-run `plan_foot(24, 8.0)`. Hole cells
-         that hit gr464341's fuse phase are refused (Reto 2026-10-12: option c,
+         that hit the k=0 fuse phase are refused (Reto 2026-10-12: option c,
          keep str order; `k='fit'` covers it), so a layout change
          may need a cell moved.
        - Reto picked pill12. The pillar's fused (6,0)→C60 neck opened
          under MACE-MP and GFN2-xTB only because its seed was
-         mirror-registered (gr464358). Re-run 2026-10-11 on hexfold 0.3.4
+         mirror-registered. Re-run 2026-10-11 on hexfold 0.3.4
          (GFN2-xTB, H-capped, nothing pinned, FIRE fmax 0.05, Te 1000 K):
          k = 0..3 all converge with the six seam bonds at 1.403 Å, and a
          0.05 Å random kick re-relaxed to fmax 0.02 returns 1.405–1.406 Å
@@ -410,8 +410,7 @@ removed as met — the transport move it waited on happened 09-29)
    the new zero-code scene is a tube with two opposite sp3 strips.
    H-termination is shipped (Default behaviours above) and inherited.
 
-2. **The overlap family the clash check reports — residuals (gr459567
-   closed).** The bud
+2. **The overlap family the clash check reports — residuals.** The bud
    placement shipped on 2026-10-02 with `geom.clash`. Every [2+2], [9-6]
    and [8-7] C60 now seeds outside its host, and the `geom.clash` bands
    are ERROR under 1.0 Å and WARN up to 1.8 Å. The orchestrator's C1
@@ -443,7 +442,7 @@ removed as met — the transport move it waited on happened 09-29)
          Å on g57.
        - **`geom.seed_short_bond` (WARN, bonded seed pairs under 1.0 Å):
          shipped.** It fires on two examples: `sheet_pill_bump` (6 bonds,
-         min 0.49 Å; feed into gr459812) and `tube_ring_closure` (0.00 Å,
+         min 0.49 Å; feed into the fuse-mirror fix) and `tube_ring_closure` (0.00 Å,
          the closure fixture). `sheet_sw` (0.72 Å) is clean since the bond
          rotation.
        - **SW: `sw` is a bond rotation now** (K0 SW ruling 2026-10-03;
@@ -467,7 +466,7 @@ removed as met — the transport move it waited on happened 09-29)
        is the correct report. The example comment and
        `test_tube_ring_closure_gets_a_seam_cycle_finding_and_improves`'s
        docstring now say so.
-     - **gr462075** `flanged_doughnut` (+`_oh`): gr464358's fix (2026-10-11)
+     - `flanged_doughnut` (+`_oh`): the frustum mirror fix (2026-10-11)
        registered the flange to the seam's index-to-index pairing: seed
        pairs under 0.7 Å 22 → 0, stick pairs under 1.0 Å 69 → 13 (min
        0.27 → 0.40 Å), max seam crossing bond 11.45 → 10.79 Å.
@@ -487,8 +486,8 @@ removed as met — the transport move it waited on happened 09-29)
          plus the `_oh` variant? If yes, rebuild the example via the
          tiler. If not, do the joint cycle solve that lets the washers
          bend (Reto: acceptable).
-     - **gr459812** `sheet_pill_bump`, `capped_tube`,
-       `capped_tube_da_neck`: fixed by gr464358 (2026-10-11), the fuse
+     - `sheet_pill_bump`, `capped_tube`,
+       `capped_tube_da_neck`: fixed 2026-10-11 by the frustum mirror fix, the fuse
        path's mirror. Stick pairs under 1.8 Å 32 → 3 (min 0.90 → 1.65 Å),
        36 → 0, 48 → 0. All three have zero relaxed clashes and no seed-overlap
        ERROR on the 2026-10-12 0.3.5 sweep. Winding is tested against the
@@ -503,9 +502,9 @@ removed as met — the transport move it waited on happened 09-29)
      neighbours. A 120° rest angle on a 4-coordinate [2+2]/junction atom
      would squeeze its neighbours together exactly as observed. If that
      is the cause, fix it there and leave the repulsion constant alone.
-     (The cap-seam angle case, gr346966, was a mirrored seed, not the
+     (The cap-seam angle case was a mirrored seed, not the
      springs: fixed by fdf058da1, every cap seam now within 3.3°.)
-   - **`K_REP`: shipped (hexfold 0.3.5, gr459567 junction squeeze).**
+   - **`K_REP`: shipped (hexfold 0.3.5, junction squeeze).**
      `stick._K_REP` 0.1 → 2.0 and `_REP_CUT` 1.3 → 1.4 (1.99 Å), and
      the repulsion now skips every pair within two bonds (rim 1-3 pairs
      sit in no ring, so no chord spring excluded them). The rest-angle
@@ -518,12 +517,11 @@ removed as met — the transport move it waited on happened 09-29)
      14 → 0 / 0.30 → 0.40, flanged_doughnut 146 → 0 / 0.32 → 0.29,
      sheet_pill_bump 3 → 0; the skill's tube(10,10)+C60 [9-6] and the
      pillar bud 0 pairs at 0.40; every other example and angle maximum
-     unchanged (tube55 included). Worse: `tube_ring_closure` (gr462074,
-     already tangled) 180 pairs / 0.49 Å → 106 / 1.39 Å, worst bond
+     unchanged (tube55 included). Worse: `tube_ring_closure` (already tangled) 180 pairs / 0.49 Å → 106 / 1.39 Å, worst bond
      0.51 → 0.98 Å. The planner table was regenerated and the goldens
      re-pinned in the same commit. Not done: sweep the stored non-bud
      prod structures (they carry the old relaxer's coordinates until
-     regenerated). Its regression, gr479847 (cone5's one-bond rim atoms,
+     regenerated). Its regression (cone5's one-bond rim atoms,
      in no ring, folded to 41° once the 1-3 repulsion went), was fixed in
      0.3.6: `_angle_springs` adds an sp2 chord spring per one-bond lattice
      atom (cone5 worst 108.7°; sheet corners 119.9 → 120.0°).
@@ -561,7 +559,7 @@ removed as met — the transport move it waited on happened 09-29)
      32/0.90 · sheet_sw 3/1.65 · tube_ring_closure 180/0.49. After the fix
      only the bud lines change: nanobud_22 0, sheet_bud_22 0, nanobud_87
      14/1.19 and nanobud_96 12/1.53, and all four balls now sit outside.
-3. **Graded bends — residuals (gr459928 closed), re-ranked behind the
+3. **Graded bends — residuals, re-ranked behind the
    overlap family on 2026-10-02**
    (C2 verdict). The far-rims-pinned relax put the graded corner one ring
    row ahead of the baseline, which is the resolution of the measurement:
@@ -750,7 +748,7 @@ removed as met — the transport move it waited on happened 09-29)
    on the block axis; the pair form keeps sites facing the partner) and
    `args.lining` on the clearance sweep scores each pocket's
    shape-vs-`cargo_A3` + like-minus-unlike polarity pairs with an
-   arc-verdict STUB (`precis_se.atomic.sites`). gr488904 fixes landed
+   arc-verdict STUB (`precis_se.atomic.sites`). Fixes landed
    across 10-15: empty `ring:` selector refused with the classes
    present, `in`-face exposure 0 + limit + `face='axial'` (ed1f8ce4c),
    and ring class = every ring the atom sits on (defect labels like
@@ -780,7 +778,7 @@ removed as met — the transport move it waited on happened 09-29)
     stands in for. This is the "solving" capability of Do-next 3's split:
     a smooth profile in (sheet → catenoid foot → tube → flare → drum →
     rounded lid), and distributed defects out. It emits authored-defect
-    lists (gr459928). The smooth-drum slice there (Reto 2026-10-01) has
+    lists. The smooth-drum slice there (Reto 2026-10-01) has
     its meridian (`precis_surface.revolution`, table radii from
     `hexfold.radii`), row fit (`precis_surface.rowfit`), viewer overlay
     and carbon wrapper (se generator `smooth_drum`) landed; prod has se

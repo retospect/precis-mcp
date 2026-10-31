@@ -64,7 +64,7 @@ the dated detail is in `git log` and the owning items):**
   autocatpath, gr543909). Stage-0 pathways: baseline pw538937 (minted
   2026-10-30, origin accepted as-is), A pw541657, B pw517889. The overnight
   pathways pw542513, pw542519 and pw542537 stay out of the study until
-  gr543908 explains them. Scope: those runs only; no other re-run. Item 23's
+  they are explained. Scope: those runs only; no other re-run. Item 23's
   original lift condition was "the improved catpath": the item-19 corrections
   (0.24.0) plus the surface-Pourbaix work.
 - **Engine and pin.** Catpath 0.24.0 added NO+NO coupling, NH₂OH scission,
@@ -80,10 +80,10 @@ the dated detail is in `git log` and the owning items):**
   (`compute._pinned_network_basis`: pin/env version plus the quest's
   resolved neb template); any stamped key on an older engine demotes to
   provisional, and the restale pass redispatches it at its own tier,
-  cap-bounded and deduped by the in-flight pathway check (gr510764,
-  `gf-questbasis`). That redispatch is a re-run: it is under item 25's
+  cap-bounded and deduped by the in-flight pathway check
+  (`gf-questbasis`). That redispatch is a re-run: it is under item 25's
   hold until validation is green.
-- **Kinetics guard (gr502251, `e0e59d776`).** The aggregate's
+- **Kinetics guard (`e0e59d776`).** The aggregate's
   microkinetics stage caps Monte Carlo samples to 60% of its wall budget
   and refuses below 100 samples; the 900-second child cap is unchanged.
 - **Pd-hydride.** The stage-3 precis fixes landed (`c9c52c95b`:
@@ -128,12 +128,12 @@ the dated detail is in `git log` and the owning items):**
    the plan now; launch nothing until the validation is green. Bound
    (Reto, 2026-10-29): owned GPU lanes count as $0 cash for the $25 rule;
    the stated bound is wall time, ≤1.5 GPU-h per seed (5400 s cap).
-   The hold was prose only. The restale pass (gr510764, on prod since
+   The hold was prose only. The restale pass (on prod since
    2026-10-24) can re-run stale stamps under it, so Reto ruled
    2026-10-29 to pause it on qu164903 (`fidelity_restale_cap=0`) until
-   the lift. Not yet set: that key is outside the quest edit allowlist
-   (gr537835), so it is a direct `refs.meta` update Reto runs; whether
-   the tier ladder is on cannot be read over the MCP (gr537834). Seed
+   the lift. Not yet set: that key is outside the quest edit allowlist,
+   so it is a direct `refs.meta` update Reto runs; whether
+   the tier ladder is on cannot be read over the MCP. Seed
    jobs on spark were running for this quest on 2026-10-29 and cannot be
    attributed to restale. At the lift, restore the cap (default 2) in the
    same step as the first re-run.

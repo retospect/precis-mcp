@@ -239,14 +239,14 @@ check their state first.
    passes since the supervisor (live 14:20Z 2026-10-01). Left: AC3,
    which closes opportunistically on the next verb-signature change someone
    else lands; delete the item when it does.
-4. **backlog/kind-scoped-vector-search.md** — root cause of gr495190: a
+4. **backlog/kind-scoped-vector-search.md** — root cause of the slow cross-kind search: a
    per-kind semantic search walks the global HNSW (memory 33 s on prod)
    and times out sessions' calls. Built; the rollout tooling (btree
    before fill, per-window retry, maintenance params, ccnew cleanup,
    autovacuum window, unfilled diagnostic) and the re-sized rollout
    (rehearsal step, 20–45 h paper pass, max_wal_size raise, RAM
    arithmetic) are on branch `kvs`, held for the window after the
-   verified prod backup (gr500071/gr496659, both closed). Reto chose option 1: fill
+   verified prod backup. Reto chose option 1: fill
    every kind, then reindex.
 
 ## Runbook

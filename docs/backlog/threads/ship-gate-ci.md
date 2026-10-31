@@ -8,7 +8,7 @@ design-review: yes
 
 ## Resume
 
-- **Next:** Verify Do next 1 (gr495187: both halves landed — the ship-side cap of 2 concurrent `ci/*` gates, then the slim main-push lane per Reto 2026-10-23; check the drift guard keeps reading release/nightly verdicts on the first pushes after it lands). The prod-as-second-parent check is covered by tests/test_round_release.py::test_release_deploy_second_parent_tag_merge_and_retirement (355212c02); release rounds are done.
+- **Next:** Verify Do next 1 (both halves landed — the ship-side cap of 2 concurrent `ci/*` gates, then the slim main-push lane per Reto 2026-10-23; check the drift guard keeps reading release/nightly verdicts on the first pushes after it lands). The prod-as-second-parent check is covered by tests/test_round_release.py::test_release_deploy_second_parent_tag_merge_and_retirement (355212c02); release rounds are done.
 - **Blocked by:** Nothing.
 - **Unblocks:** Verified release deployments for every thread.
 - **Acceptance:** Use the [release-cycle runbook](../../runbooks/release-cycle.md) and the verification steps in [Do next](#do-next); check current deployment and worktree state before acting.
@@ -82,7 +82,7 @@ nightly — the diff-cover verdict is still open.
    release gate fixed in place, next cut at deploy start. 7 slices; two
    questions open for Reto at its end. Supersedes the "one release at a
    time" model.
-1. **gr495187** — CI runner starvation: main runs waited ~70 min for shard
+1. **CI runner starvation**: main runs waited ~70 min for shard
    runners. Measured twice (gripe comments 1 and 4): mean demand is only
    ~12.4 of 40 runners; the failure was unbounded `ci/*` gate fan-out (peak
    20 concurrent gates, 77% of at-cap jobs, 10–14% of the week at cap)
@@ -105,7 +105,7 @@ nightly — the diff-cover verdict is still open.
    `tests/data/outbound_timeout_baseline.json` (frozen at 100 sites/88
    keys, one-way floor; `while True` polls and tests/ report-only),
    `tests/test_outbound_polite_ratchet.py` tightened per call, ruff S113
-   on for src/+scripts/. It absorbed gr503084's parts B and C; gr503084
+   on for src/+scripts/. It absorbed the CI-hang gripe's parts B and C; that gripe
    is closed and its part A (CI hang debuggability) went with p0-ci.
 
 3. **release-candidate-verdicts** (item deleted 2026-10-12, all settled) — p1 (Reto 2026-10-03). Main's

@@ -25,8 +25,8 @@ design-review: yes
 
 ## Do next
 
-1. **backlog/autoskill.md** deploy verification — new dream/plan_tick `tool_calls` rows carry `agentlog_id` and `source`, `autoskill_sessions.used` not null; closes gr537773. First because the meters read these columns.
-2. **backlog/context-navigation.md §2 A0** — code landed (gr540852); verify after deploy that doctor_tick/review/asa_bot `tool_calls` rows carry `agentlog_id` and `source`, then close the gripe.
+1. **backlog/autoskill.md** deploy verification — new dream/plan_tick `tool_calls` rows carry `agentlog_id` and `source`, `autoskill_sessions.used` not null. First because the meters read these columns.
+2. **backlog/context-navigation.md §2 A0** — code landed; verify after deploy that doctor_tick/review/asa_bot `tool_calls` rows carry `agentlog_id` and `source`, then close the gripe.
 3. **backlog/context-navigation.md §7 twin** — `context_items` + `_ctx` pop + hooks; replaces four stores; everything below reads it. Waits on the hook-logging check.
 4. **backlog/context-navigation.md §4 + §7 readers** — stubs, `rs` sets, compaction handoff, meters, eval bank, baseline.
 
@@ -35,7 +35,7 @@ design-review: yes
 1. **backlog/context-navigation.md §2** — autoskill pointer rows on the twin; the hold-out comparison starts here, not at deploy.
 2. **backlog/context-navigation.md §3 → §5** — row grammar, then multi-get + injection, then multi-query on every kind; unblocks held WU2/WU5/WU7.
 3. **backlog/block-navigation.md** — its slices re-pointed at sets and the row grammar; the authoring lint is independent and can go any time.
-4. **backlog/context-navigation.md §9** — cache-backed chunking + backfill; makes the big paid results navigable (gr540306).
+4. **backlog/context-navigation.md §9** — cache-backed chunking + backfill; makes the big paid results navigable.
 5. **backlog/context-navigation.md §8 B0** — asa preamble reorder, half a build, its own meter; any time.
 6. **backlog/context-navigation.md §8 B1–B4** — Mode B loop; plan_tick first.
 7. **backlog/compact-handoff.md** — merge into the twin reader once it exists; pointer note until then.

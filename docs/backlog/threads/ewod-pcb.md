@@ -70,17 +70,17 @@ Do-next renumbered)
 Everything is landed. Builds 3-4 are live (prod 929107f32). Build 5
 (datasheet pull, 2b3c62811) and the docs (7f22e8128, 24872a348) are
 marked in round 4 and wait on its deploy. **Waits on:** the round-4
-deploy, for steps 2, 3 and 5 below. gr464537 (step 4) waits on nothing
+deploy, for steps 2, 3 and 5 below. Step 4 waits on nothing
 and is the first build on reopen. The sheet-job adapter waits on
 se-machine-design's input shape (Do-next).
 
-1. **gr464240** → `backlog/pcb-anneal-best-state-vs-routability.md` (Do-next 0b;
+1. **Anneal best state vs routability** → `backlog/pcb-anneal-best-state-vs-routability.md` (Do-next 0b;
    ruled 2026-10-12: route start/best/last, keep the most-routed).
 2. **ewod-dogfood-6 re-put (board retired 2026-10-26; applies to a fresh generated board)** (ARR1 stored
-   v3, code v10). gr480010 is closed: `op='route'` on the stale board is
+   v3, code v10). `op='route'` on the stale board is
    refused with no job minted. A 2026-10-17 prod snapshot re-put on main
    lands with the stored sink pose (rot 90) and no via-in-pad, and
-   generator v10 (gr481705) seeds the sink on its via box, so `regenerate`
+   generator v10 seeds the sink on its via box, so `regenerate`
    lands it placed too. Left: after the deploy, re-put the same
    generators entry on prod, then route.
 3. Build 4 is landed (round 3: 5f145c3a, 4d58cefc, 4def048c, 796fc1b4).
@@ -88,7 +88,7 @@ se-machine-design's input shape (Do-next).
    (datasheet pull, build 5). Order confirmed by Reto (ewod-pcb-3).
    After the deploy, dogfood: a put that shrinks the outline under routed
    copper rips the net and does not refuse.
-4. gr464537 (the 500 was our ms signing timestamp, fixed 484ec24f1;
+4. The JLC API 500 (it was our ms signing timestamp, fixed 484ec24f1;
    parts_refresh is API-only again): after deploy confirm the daily walk
    advances `pcb.parts_refresh.last_key` and C25804/C1525 stay in `parts`.
    Background: `parts` holds 2.0M rows from the
@@ -202,8 +202,8 @@ here: a code-version input to `content_hash` (round-2 review finding 1).
    (2b3c62811, in R16): the `datasheet_pull` job (job_inproc), the
    put/EasyEDA-import trigger, `get(kind='part')` reasons. Unchecked: put a
    board in prod, read `get(kind='part')` for a C-number and judge the
-   ingested chunks. JLC's component API 500 was ours (gr464537, closed:
-   the ms signing timestamp); re-check `jlc_api_error` on the prod pull.
+   ingested chunks. JLC's component API 500 was ours (the ms signing
+   timestamp); re-check `jlc_api_error` on the prod pull.
    The mesh
    half is knowledge-mesh's (review item ewod-pcb-2).
 4. **dogfood-6's 25 failed escapes are not corridor starvation.**
@@ -262,7 +262,7 @@ here: a code-version input to `content_hash` (round-2 review finding 1).
    - *What is left:* 10 nets — R2C4, R3C3, R3C5, R5C4, R5C7, R6C1, R6C4,
      R6C6, R6C7, R7C6 — mostly rows 5–7, the far side from the driver.
      Past In2.Cu the lever is a third routable layer, or the escape
-     order/placement, not iterations. (Since gr480010 a route put on the
+     order/placement, not iterations. (A route put on the
      stale v3 expansion is REFUSED, not warned; the re-expansion is
      handoff item 2's blocker.)
 5. **backlog/pcb-escape-and-driver-chain.md** — `prio: high`; escape and
@@ -302,10 +302,10 @@ here: a code-version input to `content_hash` (round-2 review finding 1).
    **backlog/pcb-footprint-pad-layer-unvalidated.md** — the HV constraint
    vocabulary (creepage at 250 V) and pad-layer validation; wait on 1, where
    a class becomes enforceable rather than advisory. (§F shipped in
-   **gr345859**: `ewod_pad_array` declares its five fabric invariants as
+   `ewod_pad_array` declares its five fabric invariants as
    `strength='invariant'` measures, evaluated by `view='measures'` and
    gating put/route through the always-valid gate; `hard` still steers.)
-   **gr458878** (closed; filed on
+   The pin-level datasheet-provenance gap (filed on
    Reto's word 2026-09-30) was the pin-level datasheet-provenance gap: a
    datasheet links to a PART, but no pin selector exists so no pin fact can
    cite the page it came from (ruled 2026-10-12: build `part:<C#>~<pin>`,
@@ -343,7 +343,7 @@ here: a code-version input to `content_hash` (round-2 review finding 1).
     shipped; left: stencil bridges, channel-cutout variant, coating
     extent, `view='cutsheets'` (not `mechanical`, which is the fab view),
     generator-row persistence. Dimensions ruled 2026-10-21: items 1, 2, 4,
-    5 buildable; 3's wait on gr414481 is satisfied (closed), so it is
+    5 buildable; 3's wait on the parylene extent is satisfied, so it is
     buildable too.
 13. **backlog/pcb-ewod-multitile.md** — waits on 2 and 3; multitile
     multiplies whatever the escape corridor does.
@@ -401,10 +401,6 @@ here: a code-version input to `content_hash` (round-2 review finding 1).
 
 ## No action needed
 
-- **gr346009** — soft-deleted, do not reopen; the count it exposed was
-  the sink's misnamed pins, fixed 2026-10-01, and a put or DRC now names
-  any pin that matches no pad on a cached footprint. (Tombstone restored 2026-09-30 after the review's relink
-  pass pruned it as "closed".)
 - **The "maze occupancy guarantee leak"** — there was no leak. The router
   cleared its own claim by 0.1703 mm on the copper that fired the finding;
   the model and the grid disagreed about the pad's ORIENTATION. Fixed by
@@ -416,6 +412,6 @@ here: a code-version input to `content_hash` (round-2 review finding 1).
 ## Seam
 
 `backlog/cross-scale-single-assembly.md` (owned by se-machine-design) is
-where the EWOD cartridge stack — gr451662's ITO/adhesive/alignment
+where the EWOD cartridge stack — the ITO/adhesive/alignment
 layers, the physical assembly above the PCB — becomes part of one
 cross-scale design rather than a bare PCB; not ranked here.

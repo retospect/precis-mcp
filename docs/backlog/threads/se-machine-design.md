@@ -121,7 +121,7 @@ off that gap until it closes.
      waits on print 2 being handled. Print 2 is a re-run of the bracket
      with `min_member=0.003`, `max_iter` about 150, owed after r40 is
      live (the se_simp job needs the deploy that carries engine simp/2).
-     Print 2's first dogfood failed as gr495400 (fixed 2026-10-17): at
+     Print 2's first dogfood failed (fixed 2026-10-17): at
      the boundary pitch == min_member/3 the filter adds nothing and the
      default round == pitch erased a one-voxel load path ~30 min in. The
      default round now clamps to half a pitch there, an explicit
@@ -280,7 +280,7 @@ off that gap until it closes.
 
 ## Parked
 
-- **[cad-pattern-ops](../cad-pattern-ops.md)** — DSL mirror/rotate/tile as one motif mechanism (gr536408); unparks on Reto's ruling whether a model-side pattern mechanism beats the Python-generator path.
+- **[cad-pattern-ops](../cad-pattern-ops.md)** — DSL mirror/rotate/tile as one motif mechanism; unparks on Reto's ruling whether a model-side pattern mechanism beats the Python-generator path.
 - **microfluidic cartridge modelling** — unparked by Reto 2026-09-30 to
   the Horizon only, and lives inside `backlog/cross-scale-single-assembly.md`
   (Do-next 9) rather than as its own entry.

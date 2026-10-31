@@ -43,7 +43,7 @@ unattributable identity claiming and failing prod jobs — is bigger than this
 thread and is flagged on the Horizon for an owner.
 **Last reviewed:** 2026-10-04 (reopened for the alert-delivery job; built 2026-10-11, awaiting deploy); 2026-10-03 (round-3 dogfood PASS: diagnose job 464662 on 929107f3 ledgered cost_usd 0.21, 8 turns, input_tokens set; td464074 closed); 2026-10-03 (round-2 dogfood: diagnose ledger nulls fixed); 2026-10-03 (doctor stops filing gripe/alert-tracked asks as Reto todos); 2026-10-02 (lane-close prod writes done); 2026-10-02 (fix_gripe lane closed by ruling, Parked emptied); 2026-10-02 (NAS attestation built on Reto's option-1 ruling); 2026-10-02 (stranded-branch work finished and deployed); 2026-09-30 (pillar review same day added four orphan
 gripes and the fix_gripe self-repair cluster as one Parked entry; pruned
-gr346534, soft-deleted)
+a soft-deleted gripe)
 **Worktree:** `monitors-that-go-quiet`
 **Resume (2026-10-11, alert delivery built):**
 - Built: `precis alertmanager-receiver` (loopback webhook, queues one ops
@@ -62,7 +62,7 @@ gr346534, soft-deleted)
   or asa_bot is down, PostgresDown included.
 - Done and verified on prod earlier: the doctor filer fix (tick 464516), the
   diagnose_gripe cost ledger (job 464662).
-- Built 2026-10-22 (worktree `garden-timeout`, gr503581): a failed daily
+- Built 2026-10-22 (worktree `garden-timeout`): a failed daily
   `graph_garden` run gets one bounded retry — the cadence is an hourly
   check tick and `mint_job` mints `garden:<date>:retry` when the day's
   job is STATUS:failed — and `watchdog:cadence/graph_garden` now reads
@@ -126,14 +126,14 @@ gr346534, soft-deleted)
    `health_digest` check on the log, because the DB node has no tick of
    its own. It must be timeout-guarded against the NFS hang in item 2.
 4. **backlog/alert-sources-without-a-tracker.md** (filed 2026-10-10 from
-   gr472019 and gr476100; the router tracker binding shipped, what is left
+   two untracked alert sources; the router tracker binding shipped, what is left
    is the OTS batch 7 re-stamp). It ranks below 1–3 because the alerts still
    fire; what is missing is the tracker binding, so nothing goes silent.
-5. **backlog/db-exporters-role.md** (gr492114 closed; option (b) of gr465126) —
+5. **backlog/db-exporters-role.md** (option (b) of the dead-alert-rules fix) —
    the role shipped; waits on Reto's vault DSNs and `prometheus_reader`
    login (2026-10-22), then the deploy steps in that item. Ranks last
    because the gate already stops the false NodeDown/PostgresDown.
-6. **backlog/host-session-events.md** (filed 2026-10-19 from gr496610;
+6. **backlog/host-session-events.md** (filed 2026-10-19 from the builder-session mass exit;
    IDEA, nothing specced). Record host reboot, network loss and regain, power
    events and session exits, with a per-host timeline view. Ranks last: it
    adds history, not a missing page.

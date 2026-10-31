@@ -25,7 +25,7 @@ Reto's 2026-10-07T16:37:02Z ruling supersedes the historical cause gate:
 pointer's byte equality with its October 3 transcript Write and the
 surviving backup. The reported file-mode directory has a different
 checkout key; a directory switch is an inference, not a proved cause.
-gr472845 (title-only retirement selector, export's metadata stamps) is fixed:
+The title-only retirement selector and export's metadata stamps are fixed:
 retire matches by normalized title/slug and lists unmatched legacy nodes in
 `legacy_unmatched`; take the pre-import backup with `export --no-stamp`.
 Several legacy nodes matching one topic now refuse under `--legacy retire` as
@@ -188,8 +188,7 @@ how an agent reaches the graph; `fisheye-*` is how it moves within it):
 7. **backlog/turn-routing-and-context-dsl.md**
 8. **Context-audit tail** — the catalog lives in
    `scripts/context-audit/`; the fisheye study (gr56588) is carried in
-   `backlog/context-navigation.md` §1 measures (gr503440,
-   closed — its render residuals: halt-reason + numeric-handle items shipped
+   `backlog/context-navigation.md` §1 measures (its render residuals: halt-reason + numeric-handle items shipped
    2026-10-21; quest-frontier objective and recency N-of-K items stay
    with `handlers/quest.py` / `runtime/search.py` owners).
 

@@ -7,7 +7,7 @@ effort: medium
 
 ## Resume
 
-- **Next:** item 3’s still-bodiless policy pass and close td461154; then the stub-queue policy decision (item 9 — mint outpaces fetch ~7:1, queue 8,085). The S2-acquire, DOI-addressing and embed_batch lock-contention fixes (gr483930, gr484234 — both closed) are committed in `worktree-ingest-fix` (40a8b1cb2, 72b9ea243, 9b4adcdf8), awaiting the release owner — verify post-deploy error rates per item 9.
+- **Next:** item 3’s still-bodiless policy pass and close td461154; then the stub-queue policy decision (item 9 — mint outpaces fetch ~7:1, queue 8,085). The S2-acquire, DOI-addressing and embed_batch lock-contention fixes are committed in `worktree-ingest-fix` (40a8b1cb2, 72b9ea243, 9b4adcdf8), awaiting the release owner — verify post-deploy error rates per item 9.
 - **Blocked by:** Nothing from deployment; safe_fetch fallback remains at the orchestrator’s gate.
 - **Unblocks:** Evidence acquisition for [catalysis](catalysis-selectivity.md#resume).
 - **Acceptance:** Use [the latest handoff](#thread-context) and [ranked work](#do-next): account for the bodiless remainder and verify the 10-14 gripe fixes on prod.
@@ -43,11 +43,11 @@ is verified done on prod.
   genuine 404 from a resolver fault (`S2ResolverError`, never cached —
   an outage no longer poisons the miss cache for the TTL); `acquire`
   mints `acquire:unverified` + `meta.acquire_unverified` on a resolver
-  fault instead of a "hallucinated id" BadInput (gr483930). (b)
+  fault instead of a "hallucinated id" BadInput. (b)
   `verify=`/`citation=`/`context_ref_id=` declared on `put()`; dispatch
   promotes an args= key naming a real handler kwarg; DOI/arXiv
   canonicalisation via `precis.identity`; `get` resolves doi:/URL-form
-  DOIs, arxiv ids, s2, pubmed through `ref_identifiers` (gr484234).
+  DOIs, arxiv ids, s2, pubmed through `ref_identifiers`.
   (c) `retry_locked` wraps the embed write tx in `embed_batch` and
   `run_handler_once`.
 - Confirmed done on prod (was never verified after round 6): ref 202942
@@ -63,13 +63,13 @@ is verified done on prod.
   for walker; the rest sit queued behind fetch-lane depth, not a defect),
   the arXiv e-print magic-byte and plain-TeX staging,
   a connect-failure retry on Crossref and bib_parse (round 6, c83c46973),
-  the gr465474 no-body fold fix, and the FOR NO KEY UPDATE fold
+  the no-body fold fix, and the FOR NO KEY UPDATE fold
   serialisation. `precis paper fetch-si <id>` is the CLI spelling of
   `put(kind='paper', id=…, mode='fetch-si')`.
 - At the orchestrator's gate, not landed by this thread: the safe_fetch
   next-address fallback, branch `worktree-agent-a3b62578f305e3772` tip
-  3e1e8cb5c (reviews §3, verdict LAND; gr465931). Ruled (Reto 2026-10-12,
-  design-fold; gr465931): the built packet capture stays off. Reopen
+  3e1e8cb5c (reviews §3, verdict LAND). Ruled (Reto 2026-10-12,
+  design-fold): the built packet capture stays off. Reopen
   trigger: si_fetch ConnectTimeouts still occur after the fallback is
   deployed; then enable the capture on one host for two weeks, not on
   all fetchers.
@@ -119,7 +119,7 @@ is verified done on prod.
      (`ingest/glyph_outline.py`; writes `glyph_health['recovery']`). The
      outline table is still empty. Next: seed it from pa494/pa47024, then
      the step-3 repair backfill (see the file's §Recovery).
-   - Detector tightened 2026-10-14 (gr228594 comment 8): the 10-12
+   - Detector tightened 2026-10-14: the 10-12
      backfill dry run flagged 456/900 and a read-only sample found 30/30
      false positives. `suspected` now needs a positive tell for weak
      evidence (micron-word + bare-`m`, or stray-space `V/ mm`); mode-a/b
@@ -130,7 +130,7 @@ is verified done on prod.
      tell count, then the --apply batches resume.
    - The result goes to Reto as a release look-at item either way. Rank 1: the corpus is wrong
    with no error, and embeddings, findings and cites all inherit it.
-3. **The bodiless-paper policy pass (td461154; gr453860 closed)** — 947
+3. **The bodiless-paper policy pass (td461154)** — 947
    papers have a PDF and no body. Measured
    2026-10-02:
    - 814 Elsevier not-entitled: the XML has no body and the PDF is the
@@ -185,16 +185,16 @@ is verified done on prod.
    corrupt bucket (repair or OCR), not another re-fetch. Seen on 6 of
    batch 2's no-body refs and 5 of batch 1's. Side defects filed:
    the arXiv e-print of a PDF-only submission parsed as a
-   LaTeX tarball (fixed by a magic-byte check in the arxiv_source leg), and gr465474 (an arXiv fetch for ref 202942 minted
-   anon ref 465241 instead of folding into it). Next: once batch 2
+   LaTeX tarball (fixed by a magic-byte check in the arxiv_source leg), and an arXiv fetch for ref 202942 that minted
+   anon ref 465241 instead of folding into it. Next: once batch 2
    drains, apply the policy to what is still bodiless, routing
    Pdfium-unreadable PDFs to repair. This
    Prod 2026-10-11: 857 still bodiless; `heal:bodiless` has judged
    preview=811, unreadable=43, extracted=10. The PDF leg now journals
    `ingest:pdf` / `no_body` (reason `deferred_printable_only`,
    `extraction_empty_fallback` or `extraction_empty`) at ingest time
-   (gr453860). Reto 2026-10-11, both in `paper_hygiene` and run by
-   `paper_reconcile`: (a) gr464259 — a body that is >= 90% references/SI
+  . Reto 2026-10-11, both in `paper_hygiene` and run by
+   `paper_reconcile`: (a) a body that is >= 90% references/SI
    (`heal_partial_body_papers`) gets ONE re-fetch via the
    `markup_refetch` pin (`heal:partial_body` `refetch_queued`); judged 6h
    after the next `fetch_ok`, or after 7 days with none, it becomes
@@ -211,18 +211,18 @@ is verified done on prod.
    applied to the remainder and the gained-body count is reported to Reto. Vault-key
    follow-up for the 2,796 preview bodies: td462729. Evidence is in
    `~/.claude/projects/-Users-reto-precis-mcp/bodiless/`. <!-- home-path: allow — names a scratch/review file in the old Mac project dir -->
-   gr506757 (2026-10-23): a `deferred_printable_only` no-body can also mean
+   2026-10-23: a `deferred_printable_only` no-body can also mean
    the companion's sidecar fold was refused on its embedded DocInfo DOI —
    Elsevier stamps some companions with a *predecessor* paper's metadata —
    which then minted a phantom ref and stole the printable. Fixed in
    `add.py::_ingest_pdf`: printable_only probes content hashes only,
    refused folds re-gate on rendered-text identity (`attach_doi_overridden`
    / `attach_refused` events) and never mint. Retiring the minted
-   phantoms now has a door (gr509441):
+   phantoms now has a door:
    `edit(kind='paper', args={'retire': True, 'reason': …})` — refuses a
    ref with body, PDF, external id or live inbound cites; `retire:
    False` undoes.
-4. **gr506756** — `pass-dead:melchior/precis-worker/fetch`, open. The
+4. **Fetch ref-pass confirmation** — `pass-dead:melchior/precis-worker/fetch`. The
    outbound-policy work shipped in full 2026-10-23 (spec deleted; the
    model lives in `utils/outbound_policy.py`, the gate in
    `invariants.md` §Outbound): limiter/slot waits bound themselves to
@@ -234,7 +234,7 @@ is verified done on prod.
    said no OA copy. Shipped 2026-10-02: a `no-oa` bucket in
    `precis stats --stubs`, the manual-retrieval list `precis stubs --no-oa`
    (≥3 hour-bucketed passes, every fetcher event `no_oa_version`), and an
-   acquire re-stamp guard (`ACQUIRE_RESTAMP_MIN_HOURS`; gr510430 narrowed
+   acquire re-stamp guard (`ACQUIRE_RESTAMP_MIN_HOURS`; later narrowed
    it to auto-discovery paths — an explicit `put(kind='paper')` always
    re-stamps and retries next pass, and rate_limited/circuit_open passes
    no longer advance the fetch backoff). Still open: the /drive
@@ -298,7 +298,7 @@ is verified done on prod.
      remaining failures should be embedder-unreachable/infra only.
    - Ref 464821 (last bodiless anon) is a no-pdf stub — it will drain
      through the fetch queue like the rest; no special action.
-11. **gr512169 prod repair (Reto's call, prod write)** — the identity
+11. **Series-sibling prod repair (Reto's call, prod write)** — the identity
     gate shipped (stub reconcile now refuses series siblings /
     first-author mismatches); what remains is the prod split of
     pa512121 (Part II) back out of pa509714's Part I DOI — the exact
@@ -306,7 +306,7 @@ is verified done on prod.
 
 ## Horizon
 
-0. **`backlog/paper-backup-pdf-transfer.md`** (gr517423) — slice 1 is the
+0. **`backlog/paper-backup-pdf-transfer.md`** — slice 1 is the
    undo export every destructive paper door lacks (gr513878 needed
    hand SQL); later slices unblock re-extract/re-home of stored PDFs.
    Slice 4 waits on the keep_pdf door.

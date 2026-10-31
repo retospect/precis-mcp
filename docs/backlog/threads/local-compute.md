@@ -33,7 +33,7 @@ Current declared activity: the `roster:` front matter above; dated allocation de
 
 **Castor sound again + the 69% fall-through fixed, 2026-10-14 (Reto: "lets fix the local compute", "take local llm traffic off melchior and put it on one of the sparks"):**
 
-- **Corruption root cause:** not the 131072 window — vLLM 0.20.1's Marlin MXFP4 kernel is broken on GB10/SM121 (vllm-project/vllm#37030; stray leading `!`, flat first-token logits, nondeterministic temp-0). `VLLM_MARLIN_USE_ATOMIC_ADD=1` did not fix it. Fix: swap the engine — new `deploy/roles/sglang` + `deploy/playbooks/49a-sglang.yml` (a121538d4) runs `lmsysorg/sglang:latest-cu130` on gpt-oss-120b with `--mem-fraction-static 0.80` + `--max-running-requests 32` (the 0.86/64 trial hung castor under load 2026-10-14 — scheduler 100% CPU, gr485635; weights need ≥0.80 of the box), `--context-length 131072` (fp8 KV measured a 211k-token pool at 0.86; smaller at 0.80), the runai streaming loader + drop-cache (plain load earlyooms a GB10), gpt-oss reasoning/tool parsers. **Soundness (3× same prompt, temp 0): identical + sane at ~1k, ~16k and ~66k context**; tool-call and `/v1/messages` paths clean. vLLM stays in the role but is parked; no need to debug it further unless SGLang regresses.
+- **Corruption root cause:** not the 131072 window — vLLM 0.20.1's Marlin MXFP4 kernel is broken on GB10/SM121 (vllm-project/vllm#37030; stray leading `!`, flat first-token logits, nondeterministic temp-0). `VLLM_MARLIN_USE_ATOMIC_ADD=1` did not fix it. Fix: swap the engine — new `deploy/roles/sglang` + `deploy/playbooks/49a-sglang.yml` (a121538d4) runs `lmsysorg/sglang:latest-cu130` on gpt-oss-120b with `--mem-fraction-static 0.80` + `--max-running-requests 32` (the 0.86/64 trial hung castor under load 2026-10-14 — scheduler 100% CPU; weights need ≥0.80 of the box), `--context-length 131072` (fp8 KV measured a 211k-token pool at 0.86; smaller at 0.80), the runai streaming loader + drop-cache (plain load earlyooms a GB10), gpt-oss reasoning/tool parsers. **Soundness (3× same prompt, temp 0): identical + sane at ~1k, ~16k and ~66k context**; tool-call and `/v1/messages` paths clean. vLLM stays in the role but is parked; no need to debug it further unless SGLang regresses.
 - **Placement (c7be07641):** small tier moves off the big Mac onto castor — `openai/gpt-oss-120b` absorbs `small` (the same SGLang endpoint serves both model names; the lm162513 card + `castor | llm:openai/gpt-oss-120b | 32` slot row already exist, no DB row changes). pollux stays science-only. This departs from the ruled "Agreed layout plan, NOT scheduled" (which kept glm on melchior) — noted for Reto in `llm-capacity-plan.md`.
 - **Routing fix (this branch):** `local_serving.acquire` now (a) waits up to `PRECIS_LOCAL_SLOT_WAIT_S` (default 10 s, `0` restores old behavior) for a slot to free, and (b) spills to every other LAN-routable `served_by` host for the model — before the router ever sees `paused` and overflows to cloud. This is the cap-4 cause of the ~78% routed-local→cloud fall-through.
 - **A real blocker the eval exposed:** the `local` wire's default `max_tokens` is the summarizer's 220; gpt-oss spends it all on reasoning and returns empty content, every call. Rungs now carry an optional `max_tokens` (parsed into `Rung`, applied when the request doesn't pin one). **The staged writes below carry `"max_tokens":1600`; under the pre-branch code that key is silently ignored — apply only after this branch is deployed.**
@@ -47,7 +47,7 @@ Current declared activity: the `roster:` front matter above; dated allocation de
 
   gpt-oss is 6 points under the incumbent's own rerun self-agreement, with the whole gap in the fuzzy `partial` stratum (haiku self-agrees only 16/24 there). Reads: fine for summarize/small, a judgment call for medium — Reto decides, per the 2026-10-03 keep-judgment-on-Claude plan.
 
-- **chase:verify batch eval, landed 2026-10-21 (gr499038):** batch verify shipped 7c769aebd; Reto ruled on 2026-10-22 to route this plain completion to castor, so the 200-item eval is a regression record, not a gate. `scripts/llm_eval/chase_verify_batch_eval.py` (re-created 73c26dd06 — the WIP f3ce89000 was unreachable) samples logged verifies, regroups items by claim block into ≤6-item batch prompts via the real templates, replays them on the candidate rung (`--model`/`--endpoint-url`, or `--op-chain` for the `llm.op.chase:verify` rung 0) and the FRONTIER rung, and writes agreement + Wilson CI + confusion to `gold_set/local/`. The live op chain already points to the castor local model; a six-item fixture measured 1,177 prompt tokens/item for singles vs 2,021 total (337/item) batched, a 71.4% reduction.
+- **chase:verify batch eval, landed 2026-10-21:** batch verify shipped 7c769aebd; Reto ruled on 2026-10-22 to route this plain completion to castor, so the 200-item eval is a regression record, not a gate. `scripts/llm_eval/chase_verify_batch_eval.py` (re-created 73c26dd06 — the WIP f3ce89000 was unreachable) samples logged verifies, regroups items by claim block into ≤6-item batch prompts via the real templates, replays them on the candidate rung (`--model`/`--endpoint-url`, or `--op-chain` for the `llm.op.chase:verify` rung 0) and the FRONTIER rung, and writes agreement + Wilson CI + confusion to `gold_set/local/`. The live op chain already points to the castor local model; a six-item fixture measured 1,177 prompt tokens/item for singles vs 2,021 total (337/item) batched, a 71.4% reduction.
 
 - **Staged settings writes (prod-psql; DO NOT apply until the sglang deploy AND this branch are live — see the max_tokens note above):**
 
@@ -217,7 +217,7 @@ then the three Sparks back on duty (big model, embeddings, science lanes; Reto 2
    live since 2026-10-11, now rung 0 on the serving node, ~0% fall-through;
    item closed 2026-10-21). It deliberately reverses the 2026-08-15 "do not
    re-apply the local-only SMALL cutover" warning: do not revert it on the
-   strength of that note. The unexplained drain stall is gr503442.
+   strength of that note. The drain stall is unexplained.
 **Order for putting the big local model to work** (Reto 2026-10-03,
 endorsed; sequence and ETA in review item local-compute-13):
 (1) finish Slice 0: load above 64 streams, quality on knowledge-mesh's task
@@ -377,7 +377,7 @@ task set.
    here (seam below).
 10. **backlog/dreaming.md**
 11. **backlog/llm-cost-accounting.md**
-12. **The capacity-idle monitor — residuals (gr458727 closed)** — ("is the fleet working or
+12. **The capacity-idle monitor — residuals** — ("is the fleet working or
     idle"): roadmap pillar 3 says it is missing; measurement only, owned
     here (Ruled 2026-10-01, `INDEX.md`); the gardener idle filler and
     `llm-lane-scheduler.md`'s capacity controller consume it.

@@ -36,7 +36,7 @@ worker's plist and live env), and da14331f7 — the stuck-seed repair now keys
 on the candidate's newest T_agg tree ahead of the latest aggregate job (the
 older succeeded neb aggregate had masked the 9 qu164903 (NO→NH3 on Pd(111))
 verify trees, 23 of 27 seeds failed at wall 5400 in September). **Dogfood
-confirmed 2026-10-11 (gr465963):** the compute slice ran; all 9 qu164903 verify
+confirmed 2026-10-11:** the compute slice ran; all 9 qu164903 verify
 candidates carry `quest_seed_infra_retries=1` (stamped 10-08/10-10, 322478
 since 09-07), and autocatpath_seed jobs keep minting (newest 479080 queued
 2026-10-11 14:42Z). The 06:46Z "no dispatch" report was premature: that tick
@@ -121,17 +121,17 @@ paper needs.
    wall and the seed cpuset (`0-4,10-14`, runner falls back unpinned when
    the node lacks those CPUs) landed in 4181421ce; the dispatch follows
    its deploy (Resume line).
-4. **backlog/neb-structure-builder.md** (gr512126) — Reto 2026-10-25:
-   build it, kept separate from gr506762/gr515871. qu509651 has zero
+4. **backlog/neb-structure-builder.md** — Reto 2026-10-25:
+   build it, kept separate from gr506762 and the NEB trust diagnostic. qu509651 has zero
    barriers after 21 sightings. Slice 1 needs no GPU and unblocks its
    endpoints. Draft until Reto answers the open questions; slice 3's
    per-edge job is also the first piece Horizon 1 can reuse.
-5. **backlog/neb-trust-diagnostic.md** (gr515871) — zero-compute
+5. **backlog/neb-trust-diagnostic.md** — zero-compute
    `view='gate'` on pathways; prevents qu164903 spending ticks on
    confirmation reruns whose verdict is already stored (st336035's
    pw512178/pw513347 were already blocked). Below 4 because Reto ordered 4
    first; its core `gate_rows` is what 4's slice 3 `view='neb'` reuses.
-6. **backlog/neb-trust-gate-methodology.md** (gr536970/gr541116) — Reto
+6. **backlog/neb-trust-gate-methodology.md** — Reto
    decision, not a build: qu164903's barrier credits have flipped 6-for-6
    across three fault families, so no barrier-axis conclusion until the
    multi-seed-at-dispatch methodology is ruled. Below 5 because it is an

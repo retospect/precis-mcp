@@ -231,7 +231,7 @@ a block exists. The dialectic design is
 4. **backlog/knowledge-mesh.md in-scope 2** (meta.supply widened to
    measures) — waits on measures-substrate (knowledge-mesh thread); supply
    numbers with identity instead of free floats.
-5. **backlog/retire-dossier.md** (draft) — Reto 2026-10-24 (gr510505):
+5. **backlog/retire-dossier.md** (draft) — Reto 2026-10-24:
    "retire the dossier". Directions become todos `part-of` the quest,
    evidence `serves`, the narrative is a bounded generated view, exports
    build from the graph; 7 slices plus a dry-run-first migration of the 25

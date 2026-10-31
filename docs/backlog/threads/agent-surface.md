@@ -7,10 +7,10 @@ effort: medium
 
 ## Resume
 
-- **Next:** [block-navigation](../block-navigation.md) slice 1 (authoring lint); then [tool-description-budgets](../tool-description-budgets.md) slices 2+ (slice 1, the cap test into `CODE_HYGIENE`, landed 2026-10-21); the gr494831 error contract (M1–M3) is on main, so it unblocks nothing further.
+- **Next:** [block-navigation](../block-navigation.md) slice 1 (authoring lint); then [tool-description-budgets](../tool-description-budgets.md) slices 2+ (slice 1, the cap test into `CODE_HYGIENE`, landed 2026-10-21); the error contract (M1–M3) is on main, so it unblocks nothing further.
 - **Blocked by:** Nothing.
 - **Unblocks:** Agents that recover from a refused call without a human, and fewer silent misuses on the surface every thread uses.
-- **Acceptance:** Each item's own criteria; for gr494831, a call either does exactly what its ack says or refuses with a next step.
+- **Acceptance:** Each item's own criteria; for the error contract, a call either does exactly what its ack says or refuses with a next step.
 - **Worktree:** `agent-surface`
 - **Builds:** Not estimated here; use the owning item's current slice estimate.
 - **Detail:** [Ranked work](#do-next) · [Horizon](#horizon) · [Coordination map](INDEX.md).
@@ -22,7 +22,7 @@ Current declared activity: the `roster:` front matter above; dated allocation de
 **Status:** ends when an agent on the precis MCP never has a misuse succeed
 silently, every refusal carries the fix (`next=`/`options=`), and the tool
 descriptions fit their byte budget with kind detail in skills — the agent
-half of the Surfaces axis in `docs/roadmap.md`. The gr494831 error
+half of the Surfaces axis in `docs/roadmap.md`. The error
 contract (M1–M3) is on main in full; the web Drive items (the human half
 of the same surface) follow the agent-side work; the order is now
 description budgets, then Drive.
@@ -58,7 +58,7 @@ description budgets, then Drive.
    design refs as a sort key; blocked on a ruling (moved from
    multiscale-design-core 2026-10-17).
 6. **backlog/read-scope-skill-fencing.md** — read-scoped connections get
-   skills and `Next:` hints without write recipes (gr512233); ready
+   skills and `Next:` hints without write recipes; ready
    2026-10-25 on Reto's option-B ruling (scope from the connection, no
    flag); slice 1 is the filter plus `precis-gripe-help`.
 

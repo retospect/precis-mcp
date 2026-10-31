@@ -89,12 +89,12 @@ graph-health-metrics, five parked gripes, and the seam with
   (`DRY_RUNS_ESCALATE=36`, `COOL_RUNS=84`). The recurring seed lands
   post-deploy (coordinator); a lit service with no recurring is what
   `watchdog:cadence/graph_garden` flags.
-- **gr503580 built (2026-10-22, worktree `garden-timeout`):** the
+- **Untagged-detector timeout built (2026-10-22, worktree `garden-timeout`):** the
   `untagged` detector's per-row seeded count timed out the first prod
   run (jo503579, 0 proposals); counts are a one-shot CTE now (75 ms on
   prod, was 120 s+), each detector runs under a 60 s deadline with
   skip-and-continue, and the job summary names skipped detectors.
-- **gr504843 built (2026-10-22, worktree `garden-fix`):** gardener yield
+- **Gardener yield fixes built (2026-10-22, worktree `garden-fix`):** gardener yield
   fixes — the proposal budget is shared round-robin across detectors, a
   rejected key stays closed while its target is unchanged, `dangling_edge`
   skips both-retired, provenance and history edges, memory `dup_pair`
@@ -104,14 +104,14 @@ graph-health-metrics, five parked gripes, and the seam with
   a 40 s budget, and a `paper-identity` merge detector proposes (no
   auto-apply).
 - **g4-gardener-yield built (2026-10-23):** the proposer leaves its
-  completion cap to the op chain (gr504896) and records each rejection
+  completion cap to the op chain and records each rejection
   as a `rejected` row keyed on its prompt version, so an unchanged
-  candidate is asked once, not every run (gr506046). dup_pair evidence
+  candidate is asked once, not every run. dup_pair evidence
   keeps names and definitions apart and a short-sibling rule rejects
-  Pedal/Wheel-shaped pairs without a model call (gr504843). Each run
+  Pedal/Wheel-shaped pairs without a model call. Each run
   ends in the proposal consumer: dangling-edge prunes apply, Opus
-  approves (undoable merge) or rejects with a reason code (gr506044).
-  gr507641 built (g4-relink): approved relinks apply through
+  approves (undoable merge) or rejects with a reason code.
+  Built (g4-relink): approved relinks apply through
   `apply_relink` — the machine-edge gate admits the structural edge
   keyed on the approved review row (`links.meta.garden_relink`), and
   `precis garden undo <relink_id>` deletes it; pre-door recorded
@@ -192,8 +192,7 @@ graph-health-metrics, five parked gripes, and the seam with
 5. **Part refs: live, but inert until the prod catalog fills.** Shipped
    2026-10-02 and deployed in round 2 (63301c5c); the design is in the
    `precis.handlers.part` docstring. Prod read 2026-10-03:
-   - **The catalog was empty.** `parts` had 0 rows (pcb-platform thread,
-     gr458878 — closed), so nothing could mint. The walk has since filled
+   - **The catalog was empty.** `parts` had 0 rows (pcb-platform thread), so nothing could mint. The walk has since filled
      ~2.0M rows, so the item's "inert" premise needs re-checking.
    - **The backfill has nothing to do.** `precis pcb link-parts
      --dry-run` reports 2 boards, 0 mints, 0 edges, and 1 placed
@@ -314,7 +313,7 @@ graph-health-metrics, five parked gripes, and the seam with
     ref subject shipped); a pulled datasheet's ratings, specs, package and pin table as
     page-cited `measures` rows on the part ref (Reto, ewod-pcb-2 and
     knowledge-mesh-6); the pin table feeds the pad-map check from the
-    closed gr458878.
+    pcb-platform thread's pin table.
 17. **backlog/greenfield-schema-review.md** — file only (Reto,
     knowledge-mesh-6): what the schema would be designed today and the
     migration path there. A review, not a refactor; any time. It now

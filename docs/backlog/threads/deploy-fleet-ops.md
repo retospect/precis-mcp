@@ -43,7 +43,7 @@ residue, then batched ops and flip steps.
    landed 2026-10-21 (worktree `bug-deploy-lock`): the atomic steal +
    ownership-checked release and the ancestry-branched fail_msg are done;
    residual is the descendant-nonfatal decision (Reto call) and closing
-   gr203786.
+   the item.
 3. **backlog/deploy-assertions.md** — verification guards (bounce coverage,
    plist drift, model-serving); makes 1 and 2 detectable after the fact.
 4. **backlog/deploy-tree-lints-reachability-and-dest-collision.md** — lint

@@ -43,13 +43,13 @@ quality-of-life and container items.
    shipped, and 2 cannot bound what it cannot see.
 4. **backlog/sandbox-python-script.md** — `prio: high`; arbitrary Python
    in a no-network container (`sandbox_run mode:script`), from a job or a
-   `run:python` todo. Needs no OAuth, so it does not wait on gr329258;
+   `run:python` todo. Needs no OAuth, so it does not wait on OAuth;
    started 2026-10-18 on Reto's ask. Slice 1 (job-path `mode:script`:
    inline `code`, PyPI wheel lock, `--network none`, harvest on any exit)
    shipped 2026-10-18, slice 2 (`inputs`, `code_ref`, a read-only MCP
    on a unix socket) the same day; next is slice 3 (todo sugar). Not
    live until slice 4 lights castor + pollux, which first needs async
-   staging (gr496426, closed) and the package allow-list review.
+   staging and the package allow-list review.
 5. **backlog/relax-slices.md** — `STATUS:yielded` + a per-claim wall
    budget so a checkpointed long relax gives the lane a turn; in
    progress on `worktree-g8-relax-slices`, flag-gated off until r91
@@ -63,7 +63,6 @@ quality-of-life and container items.
    2026-10-30; its work lives in prod: platform quest qu540835, root
    todo td540836, the six step-1/1b slices under it (work view, gripes
    in the tree, `/work`, fleet reporter, asks list, `precis-work-help`).
-   gr541665, gr541684 and gr541800 are folded into it.
 1. **backlog/worker-rotation-starves-rescue-passes.md** — the rescue
    starvation shipped (overdue rescue passes age to the front of the
    rotation); left is the one unbounded job pass still inside the wait.

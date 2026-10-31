@@ -72,7 +72,7 @@ Seams:
   mechanism and the click-time pick route, the chain thread owns the
   resolver (`precis_se/pick.py`, built) the route calls.
 - precis_se atomic output — a composite corrupted by a stale process
-  (gr458061) renders in the
+  renders in the
   viewer as a wrong picture; hexfold's `composite_part_stolen` validate
   check now reports it, so the viewer's interest is unchanged, only the cause.
 - se-machine-design (the se owner, active since 2026-10-01) owns the design model, including the
@@ -105,7 +105,7 @@ Waits:
 - viewer Horizon 3–4 (reaction forces, mechanical DRC phase 2) feed
   `backlog/se-feasibility-and-cost.md`, the far end all three serve.
 - nanobuds-paper's seam-topology cross-cite waited on the `EnvKey`
-  extent fix (gr456641 + gr457997), which shipped; its remaining waits
+  extent fix, which shipped; its remaining waits
   live in its own thread file.
 - td344088 (se + hexfold paper) waits on the walker dogfood (chain
   Do-next 1) for its figure.
@@ -274,7 +274,7 @@ Seams:
   is a rate bucket (`external_rate_limits`) or a slot hold
   (`resource_slots`), resolved by `utils/outbound_policy.py` — spec
   deleted, the model lives in its module docstring, the gate in
-  `invariants.md` §Outbound; ingest-and-fetch keeps only the gr506756
+  `invariants.md` §Outbound; ingest-and-fetch keeps only the
   fetch-pass confirmation.
   `local-compute` ranks `backlog/llm-lane-scheduler.md`, the `llm-local`
   class — one allocator per box (capacity controller + class lanes;
@@ -284,8 +284,7 @@ Seams:
   `job-scheduling-fairness.md`, factory/platform) decides which job runs;
   lanes decide which LLM call gets a slot; fillers are pull generators so
   no job is minted only to wait for a lane (seam recorded 2026-10-23).
-- `scripts/deploy` — the restart-on-installed-file-change work (gr457894,
-  closed) and the deploy session's render-tree lock are the same script;
+- `scripts/deploy` — the restart-on-installed-file-change work (shipped) and the deploy session's render-tree lock are the same script;
   no thread owns deploy.
 - `scripts/main-ci-status` / check.yml — the monitors thread gates every other thread's "is main green"
   answer — and as of 2026-09-30 it answers: the stale-verdict read,
@@ -295,11 +294,11 @@ Seams:
   instead of the next tree's author finding it.
 
 Waits:
-- plugin-split Horizon 2–4 waited on gr457894 (each extraction is a module
-  move that re-triggers the stale-worker break); it is closed, so they
+- plugin-split Horizon 2–4 waited on the restart-on-installed-file-change work (each extraction is a module
+  move that re-triggers the stale-worker break); it shipped, so they
   are unblocked.
 - td457903 (the castor restart) was withdrawn 2026-09-30 — the ImportError
-  was a stale session MCP, gr458061's shape, not prod. Nothing here waits
+  was a stale session MCP, a stale-code shape, not prod. Nothing here waits
   on Reto.
 
 ## ingest — acquisition and extraction fidelity
@@ -332,7 +331,7 @@ its own programme above, the job-lifecycle cluster was ranked across
 moved to Python 3.13 to match the ship gate. The one below has a
 decision from Reto (2026-10-01) and, as of the same day, a rank in local-compute.
 
-- **fleet capacity is unmeasured** — gr458727 (closed; was ranked in
+- **fleet capacity is unmeasured** — (was ranked in
   `local-compute.md` Horizon 12, 2026-10-01). All 20 nursery detectors answer
   "is work stuck?"; none answers "is capacity used?". Idle GPUs beside an empty
   queue are invisible and indistinguishable from a healthy fleet, which is the
