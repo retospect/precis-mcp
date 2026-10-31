@@ -417,7 +417,9 @@ def test_release_fix_body_shape(store: Store) -> None:
     mint = T.TEMPLATES["release-pass"].mint(store, None)
     loop = mint.ids["loop"]
     body = T.mint_body(store, loop, "release-fix", iteration=2)
-    assert set(body.ids) == {"triage", "fix", "recut"}
+    assert set(body.ids) == {"triage", "fix", "recut", "poll"}
+    assert _meta(store, body.ids["recut"])["op"] == "release_cut"
+    assert _meta(store, body.ids["poll"])["op"] == "ci_verdict_poll"
     assert body.root_id == loop
     for todo_id in body.ids.values():
         assert f"plan:{mint.root_id}" in _open_tags(store, todo_id)

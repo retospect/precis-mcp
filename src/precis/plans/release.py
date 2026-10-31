@@ -13,7 +13,11 @@ what lives here:
   rewrites the plan's open ``tests-green`` gates and loop ``until`` specs
   from the :data:`PENDING_RANGE` placeholder to the real range, and the
   approval ask's options to ``['deploy r<N>', 'hold']``. The later ops read
-  :func:`release_of` with their own ``todo_id``.
+  :func:`release_of` with their own ``todo_id``. The ``release-fix`` loop's
+  re-cut is a second ``release_cut`` (td543855): the same call overwrites
+  ``meta.release`` whole, rewrites the still-open gate / loop / ask to the
+  new range and r<N>, and reopens a ``tests-green`` gate an earlier cut's
+  range had opened -- that verdict does not cover the new cut.
 - **CI verdict and prod head writers**, store-side twins of
   ``scripts/release``'s ``record_ci_verdict`` / ``record_prod_head`` (the
   script cannot import this package; the row shapes are the same, so the
@@ -38,6 +42,7 @@ from precis.plans.gates import (
     read_ci_verdicts,
     read_prod_head,
 )
+from precis.store.types import Tag
 
 if TYPE_CHECKING:
     from precis.store import Store
@@ -228,7 +233,22 @@ def record_cut(
     notes = [f"td{root}: meta.release = {rn} {sha[:9]} ({rng})"]
     new_gate = {"kind": "tests-green", "args": {"range": rng}}
     for node_id, meta, status in _plan_nodes(store, root):
-        if status in _CLOSED or node_id == root:
+        if node_id == root:
+            continue
+        if status == "done" and _tests_green(meta.get("gate")):
+            if meta["gate"] != new_gate:
+                # Opened on an earlier cut's range: that verdict says nothing
+                # about this cut, so the gate closes again over the new one.
+                store.stamp_ref_meta(node_id, {"gate": new_gate, "gate_result": None})
+                store.add_tag(
+                    node_id,
+                    Tag.closed("STATUS", "open"),
+                    set_by="system",
+                    replace_prefix=True,
+                )
+                notes.append(f"td{node_id}: gate reopened -> {rn}")
+            continue
+        if status in _CLOSED:
             continue
         updates: dict[str, Any] = {}
         if _tests_green(meta.get("gate")):

@@ -646,3 +646,132 @@ def test_tick_walks_a_release_pass_to_the_deploy(
     # The tick pins the deploy to the node the cut ran on.
     want = {"todo_id": ids["deploy"], **({"target_node": host} if host else {})}
     assert meta["params"] == want
+
+
+# ── a red verdict re-cuts (td543855) ────────────────────────────────
+
+SHA2 = "beef" + "2" * 36
+RNG2 = f"{PREV}..{SHA2[:12]}"
+
+
+def _close(store: Store, todo_id: int) -> None:
+    store.add_tag(
+        todo_id, Tag.closed("STATUS", "done"), set_by="system", replace_prefix=True
+    )
+
+
+def _iteration(store: Store, loop_id: int) -> dict[str, int]:
+    """The loop's children keyed by their release-fix role."""
+    with store.pool.connection() as conn:
+        rows = conn.execute(
+            "SELECT ref_id, meta FROM refs WHERE kind = 'todo' AND parent_id = %s "
+            "AND retired_at IS NULL ORDER BY ref_id",
+            (loop_id,),
+        ).fetchall()
+    keys = {"run_slice": "fix", "release_cut": "recut", "ci_verdict_poll": "poll"}
+    out: dict[str, int] = {}
+    for ref_id, meta in rows:
+        key = "triage" if "generate" in meta else keys[meta["op"]]
+        assert key not in out, (key, rows)
+        out[key] = int(ref_id)
+    return out
+
+
+def test_red_verdict_recuts_and_a_green_recut_opens_the_approval(
+    store: Store,
+) -> None:
+    mint = T.mint_release_pass(store)
+    ids = mint.ids
+    pd.run_pass(store)
+    job, _ = _only_job(store, ids["cut"])
+    R.record_cut(store, ids["cut"], "r7", SHA, RNG, repo="o/r")
+    _succeed(store, job)
+    pd.run_pass(store)
+    job, _ = _only_job(store, ids["poll"])
+
+    # Red on r7: the poll closes, the gate stays shut, the loop mints
+    # iteration 1 = triage -> fix -> recut (release_cut) -> poll.
+    R.record_ci_verdict(store, SHA, RNG, "red", "31")
+    _succeed(store, job)
+    pd.run_pass(store)
+    res = pd.run_pass(store)
+    assert res.loops_minted == 1, res.notes
+    assert _status(store, ids["poll"]) == "done"
+    assert _status(store, ids["gate"]) == "open"
+    assert _meta(store, ids["gate"])["gate_result"]["open"] is False
+    assert _meta(store, ids["loop"])["loop"]["count"] == 1
+    it = _iteration(store, ids["loop"])
+    assert set(it) == {"triage", "fix", "recut", "poll"}
+    assert _jobs_under(store, it["recut"]) == []  # blocked by the fix
+
+    # Triage and fix land (their sessions close them); the tick dispatches
+    # the mechanical re-cut.
+    for key in ("triage", "fix"):
+        for job_id, _m in _jobs_under(store, it[key]):
+            _succeed(store, job_id)
+        _close(store, it[key])
+    pd.run_pass(store)
+    job, meta = _only_job(store, it["recut"])
+    assert (meta["job_type"], meta["executor"]) == ("release_cut", "ssh_node")
+    assert meta["params"] == {"todo_id": it["recut"]}
+
+    # The re-cut's job records r8 on the plan: meta.release overwritten,
+    # gate / loop until / approval options moved to the new range.
+    notes = R.record_cut(store, it["recut"], "r8", SHA2, RNG2, repo="o/r")
+    assert notes[0].startswith(f"td{mint.root_id}: meta.release = r8")
+    rel = _meta(store, mint.root_id)["release"]
+    assert (rel["rN"], rel["sha"], rel["range"]) == ("r8", SHA2, RNG2)
+    want = {"kind": "tests-green", "args": {"range": RNG2}}
+    assert _meta(store, ids["gate"])["gate"] == want
+    assert _meta(store, ids["gate"])["gate_result"] is None
+    assert _meta(store, ids["loop"])["loop"]["until"] == want
+    assert _meta(store, ids["loop"])["loop"]["count"] == 1
+    assert _meta(store, ids["approval"])["ask"]["options"] == ["deploy r8", "hold"]
+    _succeed(store, job)
+    pd.run_pass(store)
+    assert _status(store, it["recut"]) == "done"
+    job, meta = _only_job(store, it["poll"])
+    assert (meta["job_type"], meta["executor"]) == ("ci_verdict_poll", "job_inproc")
+    assert meta["params"] == {"todo_id": it["poll"]}
+    target = cvp.resolve_target(store, meta["params"])
+    assert (target["sha"], target["range"], target["branch"]) == (
+        SHA2,
+        RNG2,
+        "release/r8",
+    )
+
+    # Green on r8: the poll closes, the gate opens on the new range, the
+    # loop closes without a second iteration, the approval asks for r8.
+    R.record_ci_verdict(store, SHA2, RNG2, "green", "32")
+    _succeed(store, job)
+    pd.run_pass(store)
+    res = pd.run_pass(store)
+    assert res.loops_minted == 0, res.notes
+    assert _status(store, ids["gate"]) == "done"
+    assert _status(store, ids["loop"]) == "done"
+    assert set(_iteration(store, ids["loop"])) == {"triage", "fix", "recut", "poll"}
+    assert _status(store, ids["approval"]) == "open"
+    assert "ask-user" in {str(t.value) for t in store.tags_for(ids["approval"])}
+    assert "deploy r8" in _meta(store, ids["approval"])["ask"]["options"]
+    assert _jobs_under(store, ids["deploy"]) == []
+
+    _comment(store, ids["approval"], "answer: deploy r8")
+    pd.run_pass(store)
+    _job, meta = _only_job(store, ids["deploy"])
+    assert meta["job_type"] == "release_deploy"
+
+
+def test_recut_reopens_a_gate_an_earlier_cut_opened(store: Store) -> None:
+    mint = _cut(store)
+    R.record_ci_verdict(store, SHA, RNG, "green", "31")
+    _close(store, mint.ids["gate"])
+    R.record_cut(store, mint.ids["cut"], "r8", SHA2, RNG2)
+    assert _status(store, mint.ids["gate"]) == "open"
+    gate = _meta(store, mint.ids["gate"])
+    assert gate["gate"]["args"]["range"] == RNG2 and gate["gate_result"] is None
+    assert not gates.evaluate(store, gate["gate"], todo_id=mint.ids["gate"]).open
+    # Recording the same cut again leaves a gate it opened alone.
+    R.record_ci_verdict(store, SHA2, RNG2, "green", "32")
+    _close(store, mint.ids["gate"])
+    R.record_cut(store, mint.ids["cut"], "r8", SHA2, RNG2)
+    assert _status(store, mint.ids["gate"]) == "done"

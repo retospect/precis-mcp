@@ -412,7 +412,7 @@ def _tag(m: _Minter, todo_id: int, value: str) -> None:
 
 def mint_release_pass(store: Store, parent_id: int | None = None) -> PlanMint:
     """cut -> poll -> gate tests-green -> approval ask -> deploy; a loop
-    mints fixer + re-cut while red (td543733).
+    mints triage + fixer + re-cut + poll while red (td543733, td543855).
 
     ``cut`` (``release_cut``) runs ``scripts/release --cut-only`` and stamps
     r<N>/sha on the root (``meta.release``) and the real range on the gate
@@ -657,7 +657,17 @@ def _iteration_suffix(iteration: Any) -> str:
 def mint_release_fix(
     store: Store, loop_todo_id: int, *, iteration: int | None = None, **_ctx: Any
 ) -> PlanMint:
-    """triage (generator over gripes tagged ``plan:<root>``) -> fix -> re-cut."""
+    """triage (generator over gripes tagged ``plan:<root>``) -> fix -> re-cut
+    (``release_cut``) -> poll (``ci_verdict_poll``), td543855.
+
+    The re-cut is the mechanical op the release-pass ``cut`` is: it records
+    the new cut on the plan root (:func:`precis.plans.release.record_cut`
+    overwrites ``meta.release`` and rewrites the open ``tests-green`` gate,
+    the loop's ``until`` and the approval options to the new range / r<N>).
+    The poll reads that new ``meta.release``, so the loop -- which waits for
+    every child to close -- re-evaluates ``until`` on a recorded verdict for
+    the new range: red mints the next iteration, green closes the loop while
+    the gate opens and frees the approval ask."""
     _loop, root = _loop_context(store, loop_todo_id)
     tag = f"plan:{root}"
     suffix = _iteration_suffix(iteration)
@@ -686,9 +696,23 @@ def mint_release_fix(
         m.node(
             "recut",
             f"Re-cut the release{suffix}",
-            _task(),
-            body="Cut release/r<N> from main with scripts/release.",
+            _task("release_cut"),
+            body=(
+                "release_cut runs scripts/release --cut-only on main with the fixes "
+                "in, then records the new cut on the plan root (meta.release) and "
+                "the new range on the tests-green gate and this loop's until."
+            ),
             blocked_by=("fix",),
+        )
+        m.node(
+            "poll",
+            f"Record the CI verdict on the re-cut{suffix}",
+            {**_task("ci_verdict_poll"), "retries": _POLL_RETRIES},
+            body=(
+                "ci_verdict_poll reads check.yml's run on the re-cut's sha from "
+                "the GitHub API and records it in release.ci_verdicts."
+            ),
+            blocked_by=("recut",),
         )
 
     return _run_body(store, loop_todo_id, root, build)
