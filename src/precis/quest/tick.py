@@ -1387,9 +1387,15 @@ _GENERIC_NEB_CONTEXT = (
     "\n## Barriers — one NEB edge between two of your own designs\n"
     "Two endpoint energies are NOT a barrier — never report ΔE as E_a. To "
     "measure an activation barrier on a step you choose:\n"
-    "1. IS: build the initial state — the `slab` op for an fcc(111) surface, "
-    "`add_adsorbate` for a group (H·O·N·OH·H2O·NH·NH2·NH3·C·CH·CH2·CH3·CH4), "
-    "or hand-built ops.\n"
+    "1. IS: build the initial state — the `slab` op for an fcc(111) surface "
+    '({"op":"slab","element":"<host>","size":[3,3,4],"fix_layers":2}; '
+    "element AND size are required), `add_adsorbate` for a group "
+    "(H·O·N·OH·H2O·NH·NH2·NH3·C·CH·CH2·CH3·CH4), or hand-built ops. A "
+    "dopant ADATOM is `add_atom_site` on a named site "
+    '({"op":"add_atom_site","element":"<dopant>","site":{"type":"hollow",'
+    '"anchors":[three top-layer labels]}}), never a typed z; to bind an '
+    "adsorbate to the adatom, name the adatom's label among its anchors. "
+    "Recipe: get(kind='skill', id='precis-structure-slab-help').\n"
     "2. FS: DERIVE the final state from the IS so atom labels match — "
     "put(kind='structure', id='<fs-slug>', args={'derive_from': '<is-slug>', "
     "'ops': [...]}). `transfer` moves one atom onto an acceptor (the "

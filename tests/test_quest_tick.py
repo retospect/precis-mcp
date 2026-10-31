@@ -2408,6 +2408,12 @@ class TestReactionContext:
         # The mint cap names its env pin, not a hardcoded number.
         assert "PRECIS_STRUCT_NEB_QUEST_DAILY" in prompt
         assert "{neb_quest_daily}" not in prompt
+        # gr544002: blind Cu(111) adatom proposals failed on a slab op with
+        # no size and on hand-typed adatom heights — the door names the
+        # slab's required args and the site-placed adatom op.
+        assert '"size":[3,3,4]' in prompt
+        assert '"op":"add_atom_site"' in prompt
+        assert "precis-structure-slab-help" in prompt
 
     def test_generic_quest_without_barrier_objective_gets_no_neb_door(
         self, store: Any

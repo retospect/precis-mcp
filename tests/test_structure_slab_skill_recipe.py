@@ -100,3 +100,30 @@ def test_recipe_is_ts_fs_all_validate_clean() -> None:
 
     # Same atom set across all three — the NEB interpolates by label.
     assert set(scene_ts.atoms) == set(scene_is.atoms) == set(scene_fs.atoms)
+
+
+def test_adatom_recipe_passes_preflight() -> None:
+    """gr544002: the skill's dopant-adatom recipe (O + CH4 anchored on the
+    adatom) builds, validates clean and passes the MLIP preflight. Its O
+    sits beyond the 3.5 Å tether of every Cu, so the pass proves the
+    preflight anchors it through the adatom."""
+    pytest.importorskip("ase")
+    from precis.structure import preflight as pf
+    from tests._skill_roots import skill_path
+
+    text = skill_path("precis-structure-slab-help").read_text(encoding="utf-8")
+    section = text.split("## Adsorbates on a dopant adatom", 1)[1].split("\n## ", 1)[0]
+    payloads = re.findall(r"text='(\{.*?\})'", section, re.DOTALL)
+    assert len(payloads) == 1
+    scene = Scene(cell=Cell(np.eye(3)))
+    apply_ops(scene, json.loads(payloads[0])["ops"])
+    assert _errors(scene) == []
+    verdict = pf.preflight(scene)
+    assert verdict.ok is True, verdict.reasons
+
+    o = scene.atoms["aO1"].frac
+    d_cu = min(
+        scene.cell.mic(o, a.frac)[0] for a in scene.atoms.values() if a.element == "Cu"
+    )
+    assert scene.cell.mic(o, scene.atoms["aRh1"].frac)[0] < pf.MAX_ADS_HEIGHT
+    assert d_cu > pf.MAX_ADS_HEIGHT

@@ -171,7 +171,8 @@ MAX_SETTLE_STEPS = 30
 #: Below this, two non-frozen atoms are clashing even after the settle.
 MIN_BOND = 0.7
 
-#: An adsorbate atom farther than this from every slab atom is untethered.
+#: An adsorbate atom farther than this from every slab atom, and from every
+#: adsorbate atom already anchored, is untethered (:func:`_untethered`).
 MAX_ADS_HEIGHT = 3.5
 
 #: Top-of-cell fractional band (along the surface normal) an atom shouldn't
@@ -521,6 +522,31 @@ def _vacuum_gaps(scaled: np.ndarray, axis: int) -> list[tuple[float, float]]:
     return gaps
 
 
+def _untethered(
+    atoms, slab_idx: list[int], ads_idx: list[int]
+) -> list[tuple[int, float]]:
+    """``(index, distance)`` for every adsorbate atom not anchored to the slab.
+
+    An atom is anchored when it lies within :data:`MAX_ADS_HEIGHT` of a slab
+    atom or of an adsorbate atom already anchored, grown to a fixed point. A
+    dopant adatom anchors whatever sits on it, and an upright molecule's top
+    H is held through its own binding atom. The distance reported is to the
+    nearest anchored atom."""
+    anchored = list(slab_idx)
+    pending = list(ads_idx)
+    while pending:
+        nearest = {
+            i: float(np.min(atoms.get_distances(i, anchored, mic=True)))
+            for i in pending
+        }
+        grown = [i for i in pending if nearest[i] <= MAX_ADS_HEIGHT]
+        if not grown:
+            return [(i, nearest[i]) for i in pending]
+        anchored += grown
+        pending = [i for i in pending if nearest[i] > MAX_ADS_HEIGHT]
+    return []
+
+
 def _clash_reasons(
     scene: Scene, atoms, labels: list[str], *, settled: bool
 ) -> list[PreflightReason]:
@@ -582,27 +608,28 @@ def _geometry_checks(scene: Scene, atoms, labels: list[str]) -> list[PreflightRe
     if not any(scene.cell.pbc):
         return reasons
 
-    # -- detached: an adsorbate atom too far from every slab atom ----------
+    # -- detached: an adsorbate atom too far from the slab and from every
+    # adsorbate atom already anchored to it (gr544002: an O or CH4 sitting
+    # on a dopant ADATOM is held by the adatom, not by a host atom 4-5 Å
+    # below it, so tethering is transitive) ------------------------------
     slab_idx, ads_idx = _slab_adsorbate_indices(scene, atoms, labels)
     if slab_idx and ads_idx:
-        for i in ads_idx:
-            dists = atoms.get_distances(i, slab_idx, mic=True)
-            min_d = float(np.min(dists)) if len(dists) else float("inf")
-            if min_d > MAX_ADS_HEIGHT:
-                la = labels[i]
-                reasons.append(
-                    PreflightReason(
-                        code="detached",
-                        atom=la,
-                        element=scene.atoms[la].element,
-                        message=(
-                            f"atom {la} ({scene.atoms[la].element}) floats "
-                            f"{min_d:.1f} Å above the surface — not bonded "
-                            "to the slab; lower it toward a hollow/bridge site "
-                            "or remove it."
-                        ),
-                    )
+        for i, min_d in _untethered(atoms, slab_idx, ads_idx):
+            la = labels[i]
+            reasons.append(
+                PreflightReason(
+                    code="detached",
+                    atom=la,
+                    element=scene.atoms[la].element,
+                    message=(
+                        f"atom {la} ({scene.atoms[la].element}) floats "
+                        f"{min_d:.1f} Å from the slab and from every atom "
+                        "anchored to it — not bonded to the surface; lower "
+                        "it toward a hollow/bridge site (anchor it on an "
+                        "adatom's label to bind it there) or remove it."
+                    ),
                 )
+            )
 
     # -- surface-normal axis: the one with the largest vacuum gap -----------
     scaled = atoms.get_scaled_positions(wrap=True)

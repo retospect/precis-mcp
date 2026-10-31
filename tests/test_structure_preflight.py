@@ -97,6 +97,72 @@ class TestDetached:
         assert any(r.atom == label for r in detached)
         assert verdict.ok is False
 
+    @staticmethod
+    def _cu_adatom(extra: list[dict]) -> Scene:
+        scene = Scene(cell=Cell(np.eye(3)))
+        ops.apply_ops(
+            scene,
+            [
+                {
+                    "op": "slab",
+                    "element": "Cu",
+                    "size": [3, 3, 4],
+                    "vacuum": 10.0,
+                    "fix_layers": 2,
+                },
+                {
+                    "op": "add_atom_site",
+                    "element": "Rh",
+                    "site": {"type": "hollow", "anchors": ["aCu28", "aCu29", "aCu31"]},
+                },
+                *extra,
+            ],
+        )
+        return scene
+
+    def test_adsorbates_held_by_a_dopant_adatom_are_not_detached(self) -> None:
+        """gr544002: qu509651's Cu(111) dopant-adatom proposals failed
+        preflight as 'floating'. An O bridging the adatom and a CH4 on top of
+        it sit 4-6 Å above the nearest Cu but 2-2.5 Å from the adatom, which
+        anchors them. Tethering is transitive through anchored atoms."""
+        scene = self._cu_adatom(
+            [
+                {
+                    "op": "add_adsorbate",
+                    "species": "O",
+                    "site": {"type": "bridge", "anchors": ["aRh1", "aCu33"]},
+                },
+                {
+                    "op": "add_adsorbate",
+                    "species": "CH4",
+                    "site": {"type": "top", "anchors": ["aRh1"]},
+                    "height": 2.5,
+                },
+            ]
+        )
+        verdict = pf.preflight(scene)
+        assert verdict.ok is True, verdict.reasons
+
+    def test_a_floating_cluster_anchored_to_nothing_is_still_detached(self) -> None:
+        """Transitivity starts from the slab: two O atoms bonded to each
+        other 6 Å above the adatom anchor nothing and stay detached."""
+        scene = self._cu_adatom([])
+        rh = scene.cell.frac_to_cart(scene.atoms["aRh1"].frac)
+        labels = []
+        for dx in (0.0, 1.2):
+            cart = rh + np.array([dx, 0.0, 6.0])
+            label = scene.next_label("O")
+            scene.atoms[label] = Atom(
+                label=label,
+                element="O",
+                frac=scene.cell.wrap(scene.cell.cart_to_frac(cart)),
+            )
+            labels.append(label)
+        verdict = pf.preflight(scene)
+        detached = {r.atom for r in verdict.reasons if r.code == "detached"}
+        assert set(labels) <= detached
+        assert "aRh1" not in detached
+
 
 class TestClash:
     def test_coincident_atoms_cannot_settle_apart(self) -> None:

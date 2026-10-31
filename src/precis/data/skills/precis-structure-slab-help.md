@@ -109,6 +109,35 @@ cell, on-surface hollow is `z≈0.46` (a ~1 Å H–metal bond) — `frac z=0.66`
 looks plausible but floats H ~4.3 Å off the surface: preflight fails or
 the relax finishes in 0 steps at a subsurface-degenerate energy.
 
+## Adsorbates on a dopant adatom
+
+A dopant adatom (`add_atom_site`, any element) is itself an anchor:
+name its label in the next op's `anchors` to bind an adsorbate to it.
+Preflight treats an atom as anchored when it sits within 3.5 Å of the
+slab or of an atom already anchored, so an O 2.5 Å from the adatom
+passes even though it sits over 3.5 Å from every host atom (gr544002).
+
+```python
+put(kind="structure", id="cu_rh_ad_o_ch4", text='{"ops":[
+  {"op":"slab","element":"Cu","size":[3,3,4],"fix_layers":2},
+  {"op":"add_atom_site","element":"Rh","site":{"type":"hollow","anchors":["aCu28","aCu29","aCu31"]}},
+  {"op":"add_adsorbate","species":"O","site":{"type":"bridge","anchors":["aRh1","aCu33"]}},
+  {"op":"add_adsorbate","species":"CH4","site":{"type":"top","anchors":["aCu30"]},"height":2.5}]}')
+```
+
+`Rh` is a syntax example; any dopant element works the same way. The
+adatom mints as `aRh1` (`a<El><n>`, counted per element). A site's
+height is taken from its HIGHEST anchor, so the O on the
+`aRh1`–`aCu33` bridge sits above the adatom rather than down at the
+host layer. The CH4 spectator takes a neighbouring host top site
+(C···O ~3.7 Å). A CH4 on the adatom itself needs a taller `height`
+(3.3 clears it for Rh): at 2.5 the validator infers a C–adatom bond
+and C goes `over_valence`.
+The relax that follows finds the real binding geometry.
+Preflight's `detached` reason names the atom and its distance to the
+nearest anchored atom. When that fires, re-anchor the atom on a real
+site; never tweak its z.
+
 ## Reaction endpoints — a label-matched IS/FS pair
 
 An NEB band interpolates between endpoints **by atom label** — a final
