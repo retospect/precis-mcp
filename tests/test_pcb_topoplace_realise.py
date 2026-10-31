@@ -11,7 +11,7 @@ import dataclasses
 import itertools
 import math
 import time
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from types import SimpleNamespace
 
 import numpy as np
@@ -37,6 +37,7 @@ from precis.pcb.topoplace.realise import (
     _guarded_nets,
     _run_bounds,
     _severed_nets,
+    _simplify_octilinear,
     _site_via,
     assign_layers,
     plan_route,
@@ -2886,11 +2887,13 @@ def test_wall_between_pads_detours_on_one_layer_within_four_bends() -> None:
     assert {p.layer for p in plan.pieces} == {0}
     (track,) = res.tracks
     segs = [(tuple(s["start"]), tuple(s["end"])) for s in track.segments]
-    assert 2 <= len(segs) <= 5, f"detour should take 1..4 bends, got {segs}"
+    # gr543905: the redraw came out (right, down, right, up) — the
+    # simplification pass drops the pad-side jog: down, across, up.
+    assert len(segs) == 3, f"detour should be a 3-leg U, got {segs}"
     pts = [segs[0][0]] + [b for _a, b in segs]
     assert pts[0] == (5.0, 10.0) and pts[-1] == (25.0, 10.0)
-    assert Polygon(wall).distance(LineString(pts)) >= 0.15 / 2 - 1e-3, (
-        f"detour enters the wall: {segs}"
+    assert Polygon(wall).distance(LineString(pts)) >= 0.15 / 2 + 0.15 - 1e-3, (
+        f"detour enters the wall's clearance: {segs}"
     )
     rows = sketch_rows(plan, td, ir, layers)
     assert rows["N1"]["status"] == "realized"
@@ -2980,6 +2983,59 @@ def test_small_obstacle_between_aligned_pads_detours_and_realizes() -> None:
     rows = sketch_rows(plan, td, ir, layers)
     assert rows["N1"]["status"] == "realized"
     assert _drc_findings(res, ir, layers, footprints=footprints) == []
+
+
+def _blocker_clear(
+    *blocks: Polygon, reach: float = 0.225
+) -> Callable[[LineString], bool]:
+    """A ``path_clear`` stand-in: the path keeps ``reach`` (half-width
+    plus clearance) off every blocker."""
+    return lambda path: all(b.distance(path) >= reach - 1e-9 for b in blocks)
+
+
+def test_simplify_collapses_a_sliver_staircase_to_one_l() -> None:
+    """gr543905: the bend pass's off-grid nudge leaves staircases with
+    0.01 mm slivers on an open lane. Nothing blocks, so the pass re-draws
+    the whole run as one L (or straight) — fewest legs, endpoints held,
+    every leg on the 45° grid."""
+    stair = (
+        (0.0, 0.0),
+        (1.0, 0.0),
+        (1.0, 0.01),
+        (2.5, 0.01),
+        (2.5, 1.0),
+        (2.51, 1.0),
+        (2.51, 2.0),
+    )
+    out = _simplify_octilinear(stair, _blocker_clear())
+    assert out[0] == stair[0] and out[-1] == stair[-1]
+    assert len(out) - 1 <= 2, out
+    for a, b in itertools.pairwise(out):
+        dx, dy = abs(b[0] - a[0]), abs(b[1] - a[1])
+        assert dx < 1e-9 or dy < 1e-9 or abs(dx - dy) < 1e-9, out
+
+
+def test_simplify_keeps_a_dip_the_blocker_demands() -> None:
+    """gr543905's guard rail: the dip-and-return around a blocker is
+    legitimate geometry. A 1 mm square straddles the straight lane; the
+    U around it is the fewest legs that clear it, so the pass leaves the
+    path alone — it only removes bends that clear the same obstacles."""
+    block = Polygon([(4.5, -0.5), (5.5, -0.5), (5.5, 0.5), (4.5, 0.5)])
+    u = ((0.0, 0.0), (0.0, -1.0), (10.0, -1.0), (10.0, 0.0))
+    assert _simplify_octilinear(u, _blocker_clear(block)) == u
+
+
+def test_simplify_takes_a_45_corner_when_both_ls_are_blocked() -> None:
+    """Window re-draws try the 45°+axis corners too: a 4-leg staircase
+    whose two L corners sit on blockers collapses to diagonal-then-axis,
+    clear of both."""
+    blocks = (
+        Polygon([(9.0, -1.0), (11.0, -1.0), (11.0, 1.0), (9.0, 1.0)]),
+        Polygon([(-1.0, 4.0), (1.0, 4.0), (1.0, 6.0), (-1.0, 6.0)]),
+    )
+    stair = ((0.0, 0.0), (3.0, 0.0), (3.0, 3.0), (8.0, 3.0), (8.0, 5.0), (10.0, 5.0))
+    out = _simplify_octilinear(stair, _blocker_clear(*blocks))
+    assert out == ((0.0, 0.0), (5.0, 5.0), (10.0, 5.0)), out
 
 
 def _dot3_board(
@@ -3288,8 +3344,10 @@ def test_chord_shortcut_works_next_to_a_peer_and_merges_collinear_legs() -> None
     branch with a peer polyline within 2 mm — on a board of 0402s that
     is every branch. Now a chord is vetted together with the L the
     octilinear redraw makes of it (corner spliced in), a spliced corner
-    is the next scan origin, and collinear legs merge: S2_REF is one L,
-    S2_DRV the 3-leg U around R12's own pin 2."""
+    is the next scan origin, and collinear legs merge: S2_REF is one L.
+    S2_DRV was the 3-leg U around R12's own pin 2; the simplification
+    pass (gr543905) finds the up-first L that clears that pad with the
+    same predicate, so it is one L too."""
     td, ir, footprints, plan, res, layers, wall_s = _route_micro(
         _two_0402_pairs_board()
     )
@@ -3302,7 +3360,7 @@ def test_chord_shortcut_works_next_to_a_peer_and_merges_collinear_legs() -> None
     }
     segs = {str(ir.net_name[t.net_id]): t.segments for t in res.tracks}
     assert len(segs["S2_REF"]) == 2
-    assert len(segs["S2_DRV"]) == 3
+    assert len(segs["S2_DRV"]) == 2
     # every leg axis-aligned or 45°, no sliver
     for name, ss in segs.items():
         for s in ss:

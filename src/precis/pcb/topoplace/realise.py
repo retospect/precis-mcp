@@ -3359,6 +3359,66 @@ def _coalesce_micro(
     return tuple(out)
 
 
+#: The simplification pass's reach (gr543905): a window of at most this
+#: many legs is re-drawn as one or two octilinear legs. Bounded so the
+#: pass stays a handful of clearance probes per vertex on a busy board.
+_SIMPLIFY_SPAN = 4
+
+
+def _octi_links(
+    p: tuple[float, float], q: tuple[float, float]
+) -> list[tuple[tuple[float, float], ...]]:
+    """The interior vertices of every ≤2-leg octilinear path ``p → q``,
+    fewest legs first: the straight leg when ``p→q`` is already on the
+    45° grid, else the two axis L corners and the two 45°+axis corners
+    (diagonal first, axis first). Corners take the target's coordinate
+    verbatim, so each leg is exact-axis or exact-45° up to fp."""
+    if not _seg_off_45(p, q):
+        return [()]
+    dx, dy = q[0] - p[0], q[1] - p[1]
+    sx, sy = math.copysign(1.0, dx), math.copysign(1.0, dy)
+    m = min(abs(dx), abs(dy))
+    out: list[tuple[tuple[float, float], ...]] = [((q[0], p[1]),), ((p[0], q[1]),)]
+    if abs(dx) >= abs(dy):
+        out += [((p[0] + sx * m, q[1]),), ((q[0] - sx * m, p[1]),)]
+    else:
+        out += [((q[0], p[1] + sy * m),), ((p[0], q[1] - sy * m),)]
+    return out
+
+
+def _simplify_octilinear(
+    pts: tuple[tuple[float, float], ...],
+    path_clear: Callable[[LineString], bool],
+) -> tuple[tuple[float, float], ...]:
+    """The post-octilinear simplification pass (gr543905): retry the
+    corner choice with fewer bends. Each window of 2..``_SIMPLIFY_SPAN``
+    legs (widest first) is re-drawn as the straight leg or one
+    octilinear corner (:func:`_octi_links`) with the rest of the path
+    held; the re-draw is kept only when ``path_clear`` — the SAME
+    predicate the corner choice used — passes for the new legs and the
+    leg count drops. A dip around a blocker survives because every
+    shorter re-draw fails that predicate. Endpoints (pad joins) never
+    move; every accept removes a vertex, so the loop terminates."""
+    out = list(pts)
+    while True:
+        hit = next(
+            (
+                (i, j, link)
+                for i in range(len(out) - 2)
+                for j in range(min(len(out) - 1, i + _SIMPLIFY_SPAN), i + 1, -1)
+                if math.dist(out[i], out[j]) >= _COALESCE_EPS_MM
+                for link in _octi_links(out[i], out[j])
+                if len(link) + 1 < j - i
+                and path_clear(LineString([out[i], *link, out[j]]))
+            ),
+            None,
+        )
+        if hit is None:
+            return tuple(out)
+        i, j, link = hit
+        out[i + 1 : j] = list(link)
+
+
 def realize_result(
     plan: RoutePlan,
     d: TopoDesign,
@@ -3375,7 +3435,10 @@ def realize_result(
     ``pose`` (gr520900) enables the pad-aware octilinear corner choice —
     a corner only lands where it clears foreign copper; absent, the
     legacy horizontal-first redraw runs (synthetic callers without a
-    placed pose).
+    placed pose). With a pose the redraw is then simplified
+    (:func:`_simplify_octilinear`, gr543905): windows of legs re-drawn
+    with fewer bends under the same clearance predicate — the anti-short
+    guard checks that same simplified shape.
 
     Two emit-stage geometry vetoes run on the redrawn points (gr543679,
     gr543719): micro-vertices coalesce (``_coalesce_micro``), and a
@@ -3468,6 +3531,8 @@ def realize_result(
 
             pts = _octilinear(p.points, corner_clear, _jog)
         pts = _coalesce_micro(pts)
+        if pad_polys is not None:
+            pts = _simplify_octilinear(pts, path_clear)
         if any(_seg_off_45(a, b) for a, b in itertools.pairwise(pts)):
             # gr543679: a kept authored leg survived the redraw — refuse
             # the piece's track rather than commit copper the DRC's
@@ -3759,10 +3824,9 @@ def _guarded_branches(
             for j, oc in enumerate(emit.pieces)
             if j != i and oc.layer == pc.layer
         ]
+        corner_clear, path_clear = _piece_clear_ctx(pc, pad_polys, nm, nrules, others)
         lines[i] = LineString(
-            _octilinear(
-                pc.points, _piece_clear_ctx(pc, pad_polys, nm, nrules, others)[0]
-            )
+            _simplify_octilinear(_octilinear(pc.points, corner_clear), path_clear)
         )
     by_layer: dict[int, list[int]] = {}
     for i, pc in enumerate(emit.pieces):
