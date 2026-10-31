@@ -346,6 +346,24 @@ like the others; the grace period for stranded branches (three builds
 proposed). Answered: the lander lands everything the moment it is done,
 with the seconds-cheap checks only.
 
+**Flow review, Reto 2026-10-31 ("make it work and we dogfood it").**
+Four rulings, built as wave 5: (1) the builder never ships — it commits
+on `slice/<id>` and ends with the handoff; the `land_slice` job is the
+lander, so the deny-path check runs before the land, not after
+(td543731); (2) review is a node in every template that lands code, a
+`reviewer` generator blocked by the build and blocking nothing — the
+gate and validate follow the land, the verdict mints FIX and REVERT
+tasks (td543732); (3) the release cut returns the moment the push is
+done and a verdict poll on no lane records the GitHub result, so the
+`tests-green` gate does the waiting; cut and deploy are mechanical ops,
+only the fixer is a model slice, and the deploy sits behind an `answer`
+gate because authority.md keeps deploys Reto's (td543733); (4) the tick
+dispatches by `(prio, id)` across all roots — a prio-1 release fixer
+beats a prio-5 gripe build (td543732). Priority between gripes and
+ships is therefore the todo's `prio`, not a lane. The builder credential
+(push `slice/*` only) is a GitHub ruleset plus a second account or
+deploy key, Reto's (ask td543734).
+
 ## Plans: the job lifecycle and the plan graph (step 3 design, td541983)
 
 Reto 2026-10-30: every gripe goes triage → fix → validate, each action
@@ -448,15 +466,31 @@ loops (`BODIES` registry) → auto-close → dispatch → hygiene, kill switch
 `PRECIS_FACTORY=off` or `service_config` prio 0, **not armed in prod**
 (d36ca88f1; the arming `put` is in `precis-job-help`).
 
-Open before the first real dispatch: gate and loop rows in the work
-view (td542097, after td541982); the fixes the tick's first pass found
-(td542302: `loop.count`, generators close via the tick, no `llm_tier`
-on any plan node); `run_slice` hardening — branch `slice/<id>`, env
-allowlist, attribution, reaper-safe handle (td542235), blocked by the
-permission-mode ruling (ask td542236); a CI verdict record so
-`tests-green` holds before a deploy (td542230).
-Arming order: `/go` → rulings → td542302 + td542235 → arm the tick with
-`dry_run` → one gripe-fix plan on a real gripe → arm for real.
+Landed 2026-10-31: the permission ruling (td542236: `bypassPermissions`
+plus per-lane `deny_write_paths`, enforced by `--settings` deny rules in
+the session and a poll-time diff check on the server) and the `run_slice`
+hardening — branch `slice/<id>`, env allowlist with no DSN, boot_id in
+the handle (a97d9154c). **Armed in prod the same day:** the
+`plan_dispatch` tick as recurring td543630, `params.dry_run` until
+a97d9154c reaches the slice host; `gripe_validate` as td543715. The
+first plan is gripe-fix td543631 on gr524267; every dry-run pass names
+its triage node as the slice it would dispatch.
+
+Wave 5 (Reto 2026-10-31, "make it work and we dogfood it"), the four
+rulings from the flow review, one slice each: the **lander** — the
+builder commits on `slice/<id>` and stops; the poll's deny check passes
+and a mechanical `land_slice` job runs `scripts/ship`, writes the sha
+into the pending gate and deletes branch + worktree (td543731); **review
+after land** as a `reviewer` generator node in gripe-fix and slice-tree,
+verdict `review: LAND|FIX|REVERT` handled by the tick, dispatch ordered
+by `(prio, id)` across all roots so a release fixer beats a gripe build
+(td543732); the **dark release pass** — `scripts/release --cut-only`
+returns after the push, `ci_verdict_poll` records the GitHub verdict
+without holding a lane, an `answer` gate (approval ask) keeps the deploy
+Reto's under authority.md, `release_deploy` runs after it (td543733);
+the **builder credential** that may push `slice/*` only is a ruling plus
+a secret (ask td543734). Still open: `scripts/ship` refusing a slice
+diff on deny paths pre-land (td543697, harness).
 
 ## Next steps, by unlock value
 
