@@ -22,6 +22,8 @@ much torque at this speed" for any design that contains one.
 
 ## Slice 1 — linear torque-speed motor
 
+*Landed 2026-10-31 — the commit carrying this line.*
+
 A rotary motor is two blocks joined by a `revolute` joint (existing
 grammar, nothing new): a stator block and a rotor block, `connect`ed
 port-to-port with `joint={"class": "revolute", "axis": […]}`. The motor's
