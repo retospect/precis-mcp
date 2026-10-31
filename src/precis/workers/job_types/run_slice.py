@@ -71,6 +71,7 @@ import os
 import re
 import signal
 import subprocess
+import tempfile
 from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
@@ -257,6 +258,20 @@ def slice_name(todo_id: int) -> str:
     return f"slice-td{todo_id}"
 
 
+def run_dir(todo_id: int) -> Path:
+    """Where a slice's session log and exit record live:
+    ``<tempdir>/precis-slice-ops/td<id>/`` — outside the worktree, so a tree
+    that is removed while the session runs (a reaper, a hand `git worktree
+    remove`) still leaves the poll an exit code and a log to read
+    (jo544355 lost both). ``PRECIS_SLICE_OPS_DIR`` overrides the parent
+    (tests). Created on demand."""
+    base = os.environ.get("PRECIS_SLICE_OPS_DIR", "").strip()
+    parent = Path(base) if base else Path(tempfile.gettempdir()) / "precis-slice-ops"
+    path = parent / f"td{todo_id}"
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
 def slice_branch(todo_id: int) -> str:
     """Branch of a slice: ``slice/<id>`` (spec § "Branches")."""
     return f"slice/{todo_id}"
@@ -293,6 +308,12 @@ def slice_env(
             env["PRECIS_MCP_TOKEN"] = token
     env["PRECIS_SLICE_ID"] = f"td{todo_id}"
     env["PRECIS_SLICE_EFFORT"] = effort
+    # The checkout's SessionEnd hook (scripts/hooks/session-end-reap.sh)
+    # removes a clean, merged, sessionless worktree when the session ends —
+    # which a triage slice's tree is. jo544355: it reaped slice-td543632 under
+    # the poll, the exit record was never written, and the job sat until the
+    # crash-loop guard. The factory owns slice trees (the lander deletes them).
+    env["PRECIS_NO_AUTOREAP"] = "1"
     return env
 
 
@@ -960,8 +981,9 @@ def submit(ctx: Any, spec: Any) -> Any:
         scratch.mkdir(parents=True, exist_ok=True)
         brief_path = scratch / "brief.md"
         brief_path.write_text(brief, encoding="utf-8")
-        log_path = scratch / "run_slice.log"
-        exit_path = scratch / "run_slice.exit"
+        ops = run_dir(todo_id)
+        log_path = ops / "run_slice.log"
+        exit_path = ops / "run_slice.exit"
         exit_path.unlink(missing_ok=True)
         argv = [
             claude_bin(),
@@ -1122,7 +1144,13 @@ def poll(ctx: Any, handle: Any) -> bool:
         ctx.record_failure(f"run_slice: malformed handle {handle!r}")
         return True
     exit_code = _read_exit(handle)
-    if exit_code is None and _process_alive(int(handle.get("pid") or 0)):
+    tree = Path(str(handle.get("worktree") or ""))
+    vanished = not tree.is_dir()
+    if (
+        exit_code is None
+        and not vanished
+        and _process_alive(int(handle.get("pid") or 0))
+    ):
         return False
     ctx.set_meta(compute_handle_released=True)
 
@@ -1131,7 +1159,6 @@ def poll(ctx: Any, handle: Any) -> bool:
     lane = (ctx.meta or {}).get("lane")
     log_text = _read_log(handle)
     result, is_error = parse_result(log_text)
-    tree = Path(str(handle.get("worktree") or ""))
     # Server-side deny check, before the handoff lands: independent of
     # whether the session honoured its deny rules (Bash writes included).
     denied = _deny_reason(tree, _lane_deny_paths(lane))
@@ -1196,7 +1223,11 @@ def poll(ctx: Any, handle: Any) -> bool:
     except Exception:  # pragma: no cover — defensive; the job still fails
         log.warning("run_slice: lease release on td%d failed", todo_id, exc_info=True)
     tail = log_text[-_TAIL_CAP:].strip()
-    what = denied or nothing or f"failed (exit {exit_code})"
+    if vanished:
+        gone = f"worktree {tree} vanished while the session ran (reaped?)"
+    else:
+        gone = None
+    what = denied or nothing or gone or f"failed (exit {exit_code})"
     reason = (
         f"run_slice: session for td{todo_id} {what}; todo back to open, "
         f"attempt:{attempt}"
@@ -1246,6 +1277,7 @@ __all__ = [
     "poll",
     "release_todo",
     "render_brief",
+    "run_dir",
     "slice_branch",
     "slice_env",
     "slice_root",

@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import re
+import shutil
 import subprocess
 import sys
 from dataclasses import dataclass, field
@@ -203,6 +204,7 @@ def seams(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> dict[str, Any]:
     )
     monkeypatch.setattr(lanes, "live_lane_counts", lambda store: calls.get("live", {}))
     monkeypatch.setenv("PRECIS_SLICE_ROOT", str(tmp_path))
+    monkeypatch.setenv("PRECIS_SLICE_OPS_DIR", str(tmp_path / "ops"))
     monkeypatch.setenv("PRECIS_RUN_SLICE_MODEL", "claude-test-model")
     monkeypatch.delenv("PRECIS_FACTORY", raising=False)
     # No slice-token registry on this rig (the dir never exists) → the
@@ -522,9 +524,12 @@ def test_submit_launches_and_claims(seams: dict[str, Any], tmp_path: Path) -> No
         "pid": 4242,
         "pgid": 4242,
         "worktree": str(tree),
-        "log": str(tree / "scratch" / "run_slice.log"),
-        "exit_file": str(tree / "scratch" / "run_slice.exit"),
+        # Outside the tree: a reaped worktree must not take the exit record
+        # and log with it (jo544355).
+        "log": str(run_slice.run_dir(42) / "run_slice.log"),
+        "exit_file": str(run_slice.run_dir(42) / "run_slice.exit"),
     }
+    assert not Path(handle["log"]).is_relative_to(tree)
     assert ctx.status is None and ctx.failure is None
     assert ctx.meta_set == {
         "lane": "claude-sub",
@@ -590,9 +595,12 @@ def test_submit_env_is_an_allowlist(
     assert env["PATH"] == "/usr/bin:/bin"
     assert env["PRECIS_SLICE_ID"] == "td42"
     assert env["PRECIS_SLICE_EFFORT"] == "low"
+    # The checkout's SessionEnd reaper must leave the slice tree alone.
+    assert env["PRECIS_NO_AUTOREAP"] == "1"
     assert set(env) <= set(run_slice.ENV_ALLOWLIST) | {
         "PRECIS_SLICE_ID",
         "PRECIS_SLICE_EFFORT",
+        "PRECIS_NO_AUTOREAP",
     }
 
 
@@ -825,6 +833,26 @@ def test_poll_running_then_success(seams: dict[str, Any]) -> None:
     assert "claimed-by:lane-claude-sub" in store.tag_strings(42)
     assert "STATUS:doing" in store.tag_strings(42)
     assert not any(t.startswith("attempt:") for t in store.tag_strings(42))
+
+
+def test_poll_vanished_worktree_fails_and_releases(seams: dict[str, Any]) -> None:
+    """jo544355: the tree was reaped under the running session, no exit record
+    was ever written, and a pid that still looked alive kept the poll waiting
+    for three hours. A missing worktree ends the poll: failed, todo released,
+    the log (outside the tree) still read."""
+    store = _Store()
+    store.add_todo(42, "t")
+    ctx, handle = _submit(store, seams)
+    pctx = _poll_ctx(store, ctx)
+    Path(handle["log"]).write_text("partial output\n", encoding="utf-8")
+    shutil.rmtree(handle["worktree"])
+    seams["alive"] = True  # pid reused or a stuck wrapper: liveness lies
+    assert run_slice.poll(pctx, handle) is True
+    assert pctx.status == "failed"
+    assert "vanished while the session ran" in (pctx.failure or "")
+    assert "partial output" in (pctx.failure or "")
+    assert "STATUS:open" in store.tag_strings(42)
+    assert "claimed-by:lane-claude-sub" not in store.tag_strings(42)
 
 
 def test_poll_clean_exit_without_a_commit_fails(seams: dict[str, Any]) -> None:
