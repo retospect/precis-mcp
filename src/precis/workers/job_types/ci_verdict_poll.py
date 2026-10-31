@@ -84,12 +84,18 @@ class PollError(Exception):
 
 
 def _http_get(url: str, params: dict[str, Any], headers: dict[str, str]) -> Any:
-    """Seam: one GET through the SSRF-pinned client; returns the response."""
-    from precis.utils.http import http_client
+    """Seam: one GET through the SSRF-pinned client under the politeness
+    rules (``with_backoff``: retries, breaker, the per-host limiter);
+    returns the final response."""
+    from precis.utils.http import http_client, with_backoff
     from precis.utils.safe_fetch import safe_get
 
     with http_client(timeout=_TIMEOUT_S, headers=headers) as client:
-        return safe_get(client, url, params=params)
+
+        def send() -> Any:
+            return safe_get(client, url, params=params)
+
+        return with_backoff(send, service="github", url=url)
 
 
 def _repo_from_git() -> str | None:
