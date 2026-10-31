@@ -286,7 +286,15 @@ def _finalize(
     sweep = results.get("kinetics_sweep") or {}
     n_pts = len(sweep.get("points") or [])
     optimum = sweep.get("optimum")
-    if optimum:
+    if optimum and optimum.get("value") is None:
+        # the objective had no value at any point: that T and p are the first
+        # row of the grid, not an optimum
+        ctx.append_chunk(
+            "job_event",
+            f"autocatpath_kinetics: {n_pts} points; objective "
+            f"{optimum.get('objective')} had no value at any point",
+        )
+    elif optimum:
         ctx.append_chunk(
             "job_event",
             f"autocatpath_kinetics: {n_pts} points; optimum "

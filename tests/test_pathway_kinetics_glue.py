@@ -1323,6 +1323,37 @@ def test_poll_fails_the_job_when_the_sweep_solved_no_point(monkeypatch) -> None:
     assert "re-T refuses 400 K" in ctx.record_failure.call_args.args[0]
 
 
+def test_poll_does_not_call_the_first_grid_row_an_optimum(monkeypatch) -> None:
+    from precis_pathway import kinetics_job, seed_job
+
+    store = _stored_pathway()
+    envelope = {
+        "results": {
+            "kinetics_v2": {"tof_mf": 1.0},
+            "kinetics_sweep": {
+                "points": [{"T": 500.0}],
+                "optimum": {"T": 500.0, "value": None, "objective": "selectivity.NH3"},
+            },
+        },
+        "notes": [],
+    }
+    _fake_runner(
+        monkeypatch,
+        poll_seed_partial_detached=lambda h, **kw: {
+            "state": "done",
+            "result": envelope,
+        },
+    )
+    monkeypatch.setattr(seed_job, "_reap_scratch", lambda ctx, h, *, failed: None)
+    ctx = _job_ctx(store)
+
+    kinetics_job._poll(ctx, {"dir": "/tmp/x"})
+
+    events = [c.args[1] for c in ctx.append_chunk.call_args_list]
+    assert any("selectivity.NH3 had no value" in e for e in events)
+    assert not any("optimum T=" in e for e in events)
+
+
 def test_poll_persists_a_nan_as_null(monkeypatch) -> None:
     """A solve with no positive TOF reports its rate-control sum as NaN, which
     a jsonb write refuses (job 543712)."""

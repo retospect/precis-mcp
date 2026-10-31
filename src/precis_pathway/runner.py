@@ -1954,7 +1954,20 @@ def run_kinetics(
             return
         configured = cfg.kinetics.n_samples
         cfg.kinetics.n_samples = n_samples
-        extra = {"tpd": tpd} if tpd is not None else {}
+        extra: dict[str, Any] = {"tpd": tpd} if tpd is not None else {}
+        was = _stored_node_pressures(results_json)
+        if was is not None:
+            # solve moves nodes AND refs from this table, so hand it refs
+            # priced there as well
+            _, refs = kinetics.reprice(
+                {},
+                ledgers,
+                refs,
+                cfg.conditions.temperature,
+                cfg.env().pressure,
+                lambda m: was.get(m, 1.0),
+            )
+            extra["priced_pressures"] = was
         out = kinetics.solve(
             cfg,
             nodes,
@@ -2204,6 +2217,41 @@ def run_kinetics_sweep_subprocess(
         )
 
 
+def _stored_node_pressures(results_json: dict[str, Any]) -> dict[str, float] | None:
+    """The gas table the stored nodes were priced at (unlisted = 1 bar), from
+    ``results.thermo.pressures``; ``None`` when they carry no gas pricing to
+    move. A recompute under another environment prices its references at the
+    new table, so the nodes must be moved there too: left alone, each node's
+    ledger stays at the old table while its closures use the new one."""
+    thermo = results_json.get("thermo") or {}
+    if thermo.get("mode") in (None, "none"):
+        return None
+    return {str(k): float(v) for k, v in (thermo.get("pressures") or {}).items()}
+
+
+def _nodes_at_environment(
+    kin: Any,
+    cfg: Any,
+    ledgers: dict[str, Any],
+    refs: dict[str, Any],
+    g: dict[str, float],
+    results_json: dict[str, Any],
+) -> dict[str, float]:
+    """Stored node energies moved to ``cfg.env()``'s table."""
+    was = _stored_node_pressures(results_json)
+    if was is None:
+        return g
+    moved, _ = kin.reprice(
+        g,
+        ledgers,
+        refs,
+        cfg.conditions.temperature,
+        lambda m: was.get(m, 1.0),
+        cfg.env().pressure,
+    )
+    return cast("dict[str, float]", moved)
+
+
 def _run_kinetics_sweep(config: dict[str, Any], results_json: dict[str, Any]) -> None:
     """In-process half of :func:`run_kinetics_sweep_subprocess` — also the
     ``kinetics_sweep`` child's workhorse.  Builds cfg/net/ledgers/refs like
@@ -2228,6 +2276,7 @@ def _run_kinetics_sweep(config: dict[str, Any], results_json: dict[str, Any]) ->
             str(k): float(v.get("mean", v) if isinstance(v, dict) else v)
             for k, v in nodes.items()
         }
+        g = _nodes_at_environment(_kin, cfg, ledgers, refs, g, results_json)
         target = str(
             (results_json.get("score") or {}).get("target")
             or config.get("target")
@@ -2398,6 +2447,7 @@ def _run_kinetics_tpd(config: dict[str, Any], results_json: dict[str, Any]) -> N
             str(k): float(v.get("mean", v) if isinstance(v, dict) else v)
             for k, v in nodes.items()
         }
+        g = _nodes_at_environment(_kin, cfg, ledgers, refs, g, results_json)
         target = str(
             (results_json.get("score") or {}).get("target")
             or config.get("target")

@@ -170,6 +170,42 @@ def test_detached_child_round_trips_the_kinetics_job_envelope(monkeypatch, tmp_p
     }
 
 
+def test_stored_nodes_move_to_the_recompute_environment():
+    """A node priced at 1 bar NO moves by kT ln p when the recompute states
+    1e-3 bar, and not at all when the tables agree. A consumed gas gets less
+    available, so the node rises."""
+    import math
+    from types import SimpleNamespace
+
+    from autocatpath import kinetics
+    from autocatpath.environment import Environment
+    from autocatpath.ledger import Ledger
+
+    from precis_pathway import runner
+
+    T = 298.15
+    cfg = SimpleNamespace(
+        conditions=SimpleNamespace(temperature=T),
+        env=lambda: Environment(T=T, inputs={"NO": 1e-3}, preset="far"),
+    )
+    ledgers = {"NO@N": Ledger(consumed={"NO": 1})}
+    refs = {"gas": {"NO": -5.0}}
+    g = {"*": 0.0, "NO@N": 0.2}
+    stored = {"thermo": {"mode": "vib", "pressures": {}}}
+
+    moved = runner._nodes_at_environment(kinetics, cfg, ledgers, refs, g, stored)
+
+    assert moved["*"] == 0.0
+    kt = kinetics.K_B_EV * T
+    assert abs(moved["NO@N"] - (0.2 - kt * math.log(1e-3))) < 1e-9
+
+    same = {"thermo": {"mode": "vib", "pressures": {"NO": 1e-3}}}
+    kept = runner._nodes_at_environment(kinetics, cfg, ledgers, refs, g, same)
+    assert kept["NO@N"] == 0.2
+    none = {"thermo": {"mode": "none"}}
+    assert runner._nodes_at_environment(kinetics, cfg, ledgers, refs, g, none) is g
+
+
 def test_modes_job_measures_stored_geometry_with_the_engine():
     """The modes child reads a stored extxyz and returns the whole measurement;
     a state it cannot read is reported, the others still run."""
