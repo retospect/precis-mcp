@@ -636,3 +636,55 @@ def test_invoke_finalizes_cancelled_on_cancel(
 
     assert stamped["log_id"] == 9
     assert stamped["status"] == "cancelled"
+
+
+def test_invoke_stamps_cancelled_when_cancel_lands_during_open(
+    monkeypatch: pytest.MonkeyPatch, _run_store_state: Any
+) -> None:
+    """A cancel delivered while the open's thread is still minting the
+    run (the 3.12 leg's race, nightly run 41194910382) used to drop the id
+    the thread went on to mint — the run stayed open for the reaper. It
+    is now awaited and stamped ``cancelled`` before the cancel propagates."""
+    ci = _run_store_state
+    import asyncio
+    import threading
+
+    from precis import agentlog
+
+    monkeypatch.setattr(ci, "_run_store", object())
+    started, release = threading.Event(), threading.Event()
+
+    def slow_open(*args: Any) -> int:
+        started.set()
+        release.wait(10)
+        return 11
+
+    monkeypatch.setattr(ci, "_open_turn_log", slow_open)
+    stamped: dict[str, Any] = {}
+
+    def fake_close_run(store: Any, lid: int, **kwargs: Any) -> None:
+        stamped["log_id"] = lid
+        stamped.update(kwargs)
+
+    monkeypatch.setattr(agentlog, "close_run", fake_close_run)
+
+    async def never(*args: Any, **kwargs: Any) -> Any:
+        raise AssertionError("a turn cancelled during the open must not run")
+
+    monkeypatch.setattr(ci, "_run_turn", never)
+
+    from asa_bot.config import LLMConfig
+
+    async def main() -> None:
+        task = asyncio.create_task(
+            ci.invoke(LLMConfig(), "sys", "hi", conv_slug="c-open")
+        )
+        await asyncio.to_thread(started.wait, 10)
+        task.cancel()
+        release.set()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    asyncio.run(main())
+
+    assert stamped == {"log_id": 11, "status": "cancelled"}

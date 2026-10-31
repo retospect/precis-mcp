@@ -532,13 +532,15 @@ def test_out_of_limits_state_is_bad_input(cad):
 
 
 @pytest.mark.nightly(
-    reason="crashed an xdist worker (OOM on the 16 GB shared runner under "
-    "-n6 + per-context coverage) in the 2026-10-30 coverage-db nightly "
-    "(gr543576); a sweep is the module's heaviest memory profile"
+    reason="~80 s plain: ~220k scalar SDF evaluations, relate._min_max_sdf's "
+    "14^3 seed grid plus descents per pair per state (gr543576)"
 )
 @pytest.mark.no_cov(
-    reason="the same OOM redded the 2026-10-31 coverage-db run — the map "
-    "job deselects no_cov; the trace-free nightly legs still run it"
+    reason="not an OOM: the 2026-10-30 and -31 coverage-db runs each left a "
+    "hang-stack dump for gw4 (fired 5 s before the 480 s timeout), then "
+    "pytest-timeout's thread method os._exit'd the worker — 'node down'. "
+    "Traced, the scalar SDF loop outruns 480 s; the map job deselects "
+    "no_cov, the trace-free nightly legs still run it"
 )
 @pytest.mark.timeout(480)  # CI worst 173s x2.5 for runner variance (gr503084)
 def test_sweep_reports_collision_and_envelope(cad):

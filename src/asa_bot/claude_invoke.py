@@ -393,6 +393,30 @@ def _open_turn_log(turn_model: str, conv_slug: str, user_message: str) -> int | 
     )
 
 
+async def _open_turn_log_async(
+    turn_model: str, conv_slug: str, user_message: str
+) -> int | None:
+    """:func:`_open_turn_log` off the loop, cancel-safe.
+
+    A cancel landing while the open's thread runs would drop the id the
+    thread still mints, leaving the run open for the reaper (nightly run
+    41194910382). The open is shielded instead: on cancel it is awaited
+    to completion, its id stamped ``cancelled``, then the cancel re-raised.
+    """
+    opening = asyncio.ensure_future(
+        asyncio.to_thread(_open_turn_log, turn_model, conv_slug, user_message)
+    )
+    try:
+        return await asyncio.shield(opening)
+    except asyncio.CancelledError:
+        try:
+            minted = await opening
+            await asyncio.to_thread(_close_turn_log, minted, None, status="cancelled")
+        except Exception:
+            log.warning("asa agentlog: cancel-time finalize failed", exc_info=True)
+        raise
+
+
 def _close_turn_log(
     log_id: int | None, result: ClaudeResult | None, *, status: str | None = None
 ) -> None:
@@ -507,9 +531,7 @@ async def invoke(
     log_id = agentlog_id
     if log_id is None:
         try:
-            log_id = await asyncio.to_thread(
-                _open_turn_log, model, conv_slug, user_message
-            )
+            log_id = await _open_turn_log_async(model, conv_slug, user_message)
         except Exception:
             log.warning("asa agentlog: open failed", exc_info=True)
             log_id = None

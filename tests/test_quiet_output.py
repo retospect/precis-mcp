@@ -286,7 +286,9 @@ def test_ship_quiet_forwards_land_notify(rig: Rig) -> None:
         sleep=1,
         msg="fix(test): land-notify forwarding (td7)",
         PRECIS_SHIP_VERBOSE="0",
-        PRECIS_LAND_NOTIFY_CLI="/bin/true",
+        # PATH lookup: macOS has /usr/bin/true only — a literal /bin/true
+        # is FileNotFoundError there (nightly 41194910382, macos leg).
+        PRECIS_LAND_NOTIFY_CLI="true",
     )
     out = _finish(p, log)
     assert out.rstrip().endswith("SHIP_STATUS: shipped"), out
