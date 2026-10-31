@@ -458,7 +458,11 @@ put(kind='job', parent_id=<structure_ref_id>, link='quest:<quest_id>',
   per entry; `params.model_index` picks which one this job runs (scan one
   job per index — several models pool under one `anchor_key` and the
   sweep keeps their model-form band apart). `params.target_node` pins a
-  GPU node; `point_U_RHE` / `window_U_RHE` / `pH` frame the sweep.
+  GPU node; `point_U_RHE` / `window_U_RHE` / `pH` frame the sweep. An
+  unpinned scan (and every `autocatpath_*` job) is claimed only by a worker
+  whose heartbeat advertises the `autocatpath` capability — a venv that can
+  import the engine; on any other node it waits `STATUS:queued`, and the
+  `scheduler` alert names the missing capability if no host has it.
 - Baseline probes ride along first: a scan with no `structure_ref` runs
   the config's own clean label slab (the footing candidate scans pool
   under). Check for ones still in flight before widening this recipe —

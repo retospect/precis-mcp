@@ -368,6 +368,18 @@ def _probe_repo_checkout() -> int | None:
     return 1 if root.is_dir() and (root / ".git").exists() else 0
 
 
+def _probe_autocatpath() -> int:
+    """The ``autocatpath`` engine importable in THIS venv (gr543909) — 1/0,
+    never unknown. ``find_spec`` locates the package without importing it
+    (the engine pulls numpy/scipy/ase), so a heartbeat stays cheap; a venv
+    without the ``[catalyst]`` extra reads 0 and the claim gate leaves
+    engine job types queued for a host that has it."""
+    try:
+        return 1 if find_spec("autocatpath") else 0
+    except (ImportError, ValueError):
+        return 0
+
+
 def claude_bin_present() -> bool:
     """Public read of the ``claude_bin`` probe — whether THIS host can exec
     ``claude`` (``PRECIS_CLAUDE_BIN`` or ``claude`` on PATH). The LLM router's
@@ -415,6 +427,7 @@ _PROBES: dict[str, Callable[[], int | None]] = {
     "clones_dir": _probe_clones_dir,
     "claude_config_mount": _probe_claude_config,
     "repo_checkout": _probe_repo_checkout,
+    "autocatpath": _probe_autocatpath,
 }
 
 #: Vocabulary tokens already warned about as probe-less — the

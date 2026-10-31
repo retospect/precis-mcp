@@ -154,6 +154,64 @@ def test_ssh_node_land_slice_gate_reads_the_pinned_host(
     assert _ssh_host == [jid]
 
 
+ENGINE_JOB_TYPES = [
+    "autocatpath_explore",
+    "autocatpath_seed",
+    "autocatpath_aggregate",
+    "autocatpath_kinetics",
+    "autocatpath_modes",
+    "autocatpath_revalidate",
+    "surface_coverage_scan",
+]
+
+
+@pytest.mark.parametrize("name", ENGINE_JOB_TYPES)
+def test_engine_job_types_declare_autocatpath_placement(name: str) -> None:
+    """gr543909: every job_type whose dispatch imports the engine is gated."""
+    spec = SERVICES_BY_NAME[name]
+    assert spec.kind is ServiceKind.JOB
+    assert spec.placement == frozenset({"autocatpath"})
+    assert spec.requires == frozenset()
+
+
+def test_engine_job_types_cover_the_pathway_entry_points() -> None:
+    """A new ``precis_pathway`` job_type must join the gated set."""
+    import tomllib
+    from pathlib import Path
+
+    eps = tomllib.loads(
+        (Path(__file__).parents[1] / "pyproject.toml").read_text(encoding="utf-8")
+    )["project"]["entry-points"]["precis.job_types"]
+    pathway = {k for k, v in eps.items() if v.startswith("precis_pathway.")}
+    assert pathway == set(ENGINE_JOB_TYPES)
+
+
+def test_unpinned_coverage_scan_waits_for_an_engine_node(
+    store: Store, _ssh_host: list[int]
+) -> None:
+    """gr543909: an unpinned ``surface_coverage_scan`` claimed by a node
+    without the engine failed in 0.1 s (ModuleNotFoundError). It now stays
+    queued there and is claimed once the node advertises ``autocatpath``."""
+    _advertise(store, "node-a", {"git": 1})
+    jid = _queue(store, "surface_coverage_scan")
+    assert ssh_node.run_ssh_node_pass(store, limit=5)["claimed"] == 0
+    assert _ssh_host == []
+    assert _status(store, jid) == "queued"
+    assert "lease_host" not in _meta(store, jid)
+    _advertise(store, "node-a", {"git": 1, "autocatpath": 1})
+    assert ssh_node.run_ssh_node_pass(store, limit=5)["claimed"] == 1
+    assert _ssh_host == [jid]
+
+
+def test_unpinned_coverage_scan_alerts_when_no_host_has_the_engine(
+    store: Store,
+) -> None:
+    _advertise(store, "node-a", {"git": 1})
+    jid = _queue(store, "surface_coverage_scan")
+    assert _alert_unschedulable_jobs(store) == 1
+    assert _alert_open(store, f"unschedulable:{jid}")
+
+
 def test_ssh_node_gate_leaves_other_job_types_alone(
     store: Store, _ssh_host: list[int]
 ) -> None:

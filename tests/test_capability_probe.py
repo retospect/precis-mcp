@@ -317,6 +317,21 @@ def test_probe_git_present_and_absent(monkeypatch: pytest.MonkeyPatch) -> None:
     assert cap._probe_git() == 0
 
 
+def test_probe_autocatpath_present_and_absent(monkeypatch: pytest.MonkeyPatch) -> None:
+    """gr543909: the engine token reads the venv, never imports the engine."""
+    monkeypatch.setattr(cap, "find_spec", lambda name: object())
+    assert cap._probe_autocatpath() == 1
+    monkeypatch.setattr(cap, "find_spec", lambda name: None)
+    assert cap._probe_autocatpath() == 0
+
+    def _boom(name: str) -> None:
+        raise ValueError(name)
+
+    monkeypatch.setattr(cap, "find_spec", _boom)
+    assert cap._probe_autocatpath() == 0
+    assert "autocatpath" in cap.capability_vocabulary()
+
+
 def test_vocabulary_includes_placement_tokens() -> None:
     """td543917: ``ServiceSpec.placement`` tokens are probed like ``requires``."""
     assert {"repo_checkout", "claude_bin", "git"} <= cap.capability_vocabulary()

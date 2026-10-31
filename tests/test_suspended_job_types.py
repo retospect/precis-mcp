@@ -16,7 +16,7 @@ from precis.quest.compute import dispatch_autocatpath
 from precis.store import Store
 from precis.store.types import Tag
 from precis.workers.executors import suspended_job_types
-from precis.workers.executors._common import claim_executor_jobs
+from precis.workers.executors._common import claim_executor_jobs, reserve_host
 
 
 def _queue_job(store: Store, *, executor: str, job_type: str | None) -> int:
@@ -57,6 +57,15 @@ def test_suspended_type_is_not_claimed_others_are(
     store: Store, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     ex = "test_suspend_claim"
+    host = reserve_host()
+    store.sync_host_resource_slots(host, {"autocatpath": 1})
+    with store.pool.connection() as conn:
+        conn.execute(
+            "INSERT INTO host_heartbeat (host, ts) VALUES (%s, now()) "
+            "ON CONFLICT (host) DO UPDATE SET ts = EXCLUDED.ts",
+            (host,),
+        )
+        conn.commit()
     held = _queue_job(store, executor=ex, job_type="autocatpath_seed")
     free = _queue_job(store, executor=ex, job_type="demo")
     monkeypatch.setenv(

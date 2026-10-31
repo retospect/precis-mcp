@@ -763,7 +763,7 @@ def test_autocatpath_seed_serializes_on_single_gpu_slot(
     from precis.handlers.job import JobHandler
     from precis.handlers.todo import TodoHandler
 
-    _advertise(store, "spark", {"gpu": 1})
+    _advertise(store, "spark", {"gpu": 1, "autocatpath": 1})
     todo_out = TodoHandler(hub=hub).put(text="autocatpath aggregate")
     todo_id = todo_out.ref_id
     assert todo_id is not None
@@ -821,8 +821,9 @@ def test_autocatpath_seed_on_gpu_less_host_claims_unthrottled(
     from precis.handlers.job import JobHandler
     from precis.handlers.todo import TodoHandler
 
-    # NOTE: no store.sync_host_resource_slots(...) for "spark_nogpu" — the
-    # host has never advertised a gpu row.
+    # NOTE: "spark_nogpu" advertises the engine (gr543909 placement gate) but
+    # never a gpu row.
+    _advertise(store, "spark_nogpu", {"autocatpath": 1})
     todo_out = TodoHandler(hub=hub).put(text="autocatpath aggregate (no gpu host)")
     todo_id = todo_out.ref_id
     assert todo_id is not None
