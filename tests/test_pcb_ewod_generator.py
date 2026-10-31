@@ -175,6 +175,15 @@ def test_a_stale_board_is_named_and_regenerate_re_expands_it(pcb):
         )
         conn.commit()
 
+    pcb.put(
+        id="ewod-gen-1",
+        args={
+            "nets": [
+                {"name": n["name"], "current": 0.001}
+                for n in pcb.store.pcb_graph(ref.id)["nets"]
+            ]
+        },
+    )
     assert (
         "generator output is stale"
         in pcb.put(id="ewod-gen-1", args={"op": "place", "iters": 10}).body

@@ -46,6 +46,12 @@ the default.
 
 ## Enqueue a topo-place run
 
+Declare `current` (estimated maximum amps) on **every net** first,
+including ground and signals; placement and routing refuse unset values.
+Use `b.net('GND', current=0.5)` in the script (with the design's estimate),
+or patch the stored net as described in [[precis-pcb-help]]. `b.check()`
+reports missing currents as hard `net.current_unset` findings.
+
 ```python
 put(kind="pcb", id="sensor-node", args={"op": "place", "placer": "topo"})
 put(kind="pcb", id="sensor-node", args={"op": "place", "placer": "topo", "route": True})

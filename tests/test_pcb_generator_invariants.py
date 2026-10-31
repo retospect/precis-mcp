@@ -32,12 +32,16 @@ def _seed(pcb: PcbHandler, store: Store, slug: str = "inv") -> tuple[Any, int]:
     pcb.put(
         id=slug,
         args={
-            "features": [closed_outline(-100, -100, 500, 500)],
+            # gr520794: place refuses an outline outside +x/+y — the
+            # whole board shifted +100,+100 so the outline's minimum
+            # corner lands on (0,0) (same 600mm span); the array's
+            # anchor moves with the frame.
+            "features": [closed_outline(0, 0, 600, 600)],
             "generators": [
                 {
                     "name": "ARR1",
                     "generator": "ewod_pad_array",
-                    "params": dict(_6X6),
+                    "params": dict(_6X6, x=100, y=100),
                 }
             ],
         },
@@ -144,7 +148,11 @@ def test_same_params_reapply_keeps_exactly_one_set(
         id="inv",
         args={
             "generators": [
-                {"name": "ARR1", "generator": "ewod_pad_array", "params": dict(_6X6)}
+                {
+                    "name": "ARR1",
+                    "generator": "ewod_pad_array",
+                    "params": dict(_6X6, x=100, y=100),
+                }
             ]
         },
     )
@@ -163,7 +171,7 @@ def test_changed_params_reapply_replaces_the_generator_measures(
                 {
                     "name": "ARR1",
                     "generator": "ewod_pad_array",
-                    "params": {"grid": [4, 4]},
+                    "params": {"grid": [4, 4], "x": 100, "y": 100},
                 }
             ]
         },

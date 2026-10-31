@@ -1301,7 +1301,12 @@ def test_corridor_overflow_recorded_and_refused() -> None:
     from precis.pcb.topoplace.realise import route_design
 
     with pytest.raises(CorridorOverflow) as excinfo:
-        route_design(d, SimpleNamespace(n_layers=2))
+        route_design(
+            d,
+            SimpleNamespace(
+                n_layers=2, net_name=d.net_name, net_current_a=[0.001] * len(d.net_name)
+            ),
+        )
     msg = str(excinfo.value)
     assert "corridor overflow" in msg
     assert all(o in msg for o in cut.owners)
@@ -1400,7 +1405,9 @@ def test_power_net_routes_at_routing_width_not_widen_target() -> None:
         caps,
     )["N0"].track_width_mm == pytest.approx(0.4)
 
-    ir = SimpleNamespace(n_layers=2, net_name=list(d.net_name))
+    ir = SimpleNamespace(
+        n_layers=2, net_name=list(d.net_name), net_current_a=[5.0] * len(d.net_name)
+    )
     # control — the full-resolution map still prices the widen target as
     # a routing demand and the channel refuses: three rails at ~9.7
     # finest-rule slots each against the corridor's 20

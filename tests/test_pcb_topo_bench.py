@@ -29,12 +29,12 @@ from tests.fixtures.pcb import topo_bench as tb
 
 _TINY: dict[str, Any] = {
     "components": [
-        {"refdes": "A", "label": "ic", "x": 0.0, "y": 0.0, "pins": [{"name": "1"}]},
-        {"refdes": "B", "label": "ic", "x": 2.0, "y": 2.0, "pins": [{"name": "1"}]},
-        {"refdes": "C", "label": "ic", "x": 0.0, "y": 2.0, "pins": [{"name": "1"}]},
-        {"refdes": "D", "label": "ic", "x": 2.0, "y": 0.0, "pins": [{"name": "1"}]},
+        {"refdes": "A", "label": "ic", "x": 50.0, "y": 50.0, "pins": [{"name": "1"}]},
+        {"refdes": "B", "label": "ic", "x": 52.0, "y": 52.0, "pins": [{"name": "1"}]},
+        {"refdes": "C", "label": "ic", "x": 50.0, "y": 52.0, "pins": [{"name": "1"}]},
+        {"refdes": "D", "label": "ic", "x": 52.0, "y": 50.0, "pins": [{"name": "1"}]},
     ],
-    "nets": [{"name": "N1"}, {"name": "N2"}],
+    "nets": [{"current": 0.001, "name": "N1"}, {"current": 0.001, "name": "N2"}],
     "connections": [
         {"net": "N1", "refdes": "A", "pin": "1"},
         {"net": "N1", "refdes": "B", "pin": "1"},
@@ -370,8 +370,11 @@ def test_topo_route_widen_oracle_respects_class_min_clearance(
             )
         ],
         "nets": [
-            {"name": "GND", "net_class": "gnd"},
-            {"name": "SIG", "net_class": "hv"},
+            # 1.0 A: the IPC-2221 widen target (~0.30mm) must exceed the
+            # 0.25 step the hv floor admits — a token current would gate
+            # widening off entirely (gr524239).
+            {"current": 1.0, "name": "GND", "net_class": "gnd"},
+            {"current": 0.001, "name": "SIG", "net_class": "hv"},
         ],
         "connections": [
             {"net": "GND", "refdes": "G1", "pin": "2"},

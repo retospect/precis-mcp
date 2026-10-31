@@ -1155,6 +1155,12 @@ def _dispatch(ctx: DispatchContext, spec: JobTypeSpec) -> None:
     # (`load_snapshot`, the same call `_enqueue_op` digests); the resolved
     # snapshot is job-written, not hashed, so it stays a separate read.
     design = pcb_session_store.load_snapshot(ctx.store, pcb_ref_id)
+    from precis.pcb.currents import require_net_currents
+
+    require_net_currents(
+        ((n["name"], n.get("est_current_a")) for n in design.graph.get("nets", [])),
+        board_id=pcb_ref_id,
+    )
     graph = pcb_resolved.apply(
         design.graph, ctx.store.pcb_netlist_snapshot_latest(pcb_ref_id)
     )

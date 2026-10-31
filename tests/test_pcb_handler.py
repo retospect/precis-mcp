@@ -60,8 +60,8 @@ _DESIGN: dict[str, Any] = {
     ],
     "nets": [
         {"name": "VCC3V3", "class": "power", "current": 0.5},
-        {"name": "GND", "class": "gnd"},
-        {"name": "I2C_SCL", "class": "i2c"},
+        {"current": 0.5, "name": "GND", "class": "gnd"},
+        {"current": 0.001, "name": "I2C_SCL", "class": "i2c"},
     ],
     "connections": [
         {"net": "VCC3V3", "refdes": "U1", "pin": "VDD"},
@@ -405,8 +405,8 @@ _CROSSED = {
         {"refdes": "D", "label": "ic", "x": 2.0, "y": 0.0, "pins": [{"name": "1"}]},
     ],
     "nets": [
-        {"name": "N1", "class": "signal"},
-        {"name": "N2", "class": "signal"},
+        {"current": 0.001, "name": "N1", "class": "signal"},
+        {"current": 0.001, "name": "N2", "class": "signal"},
     ],
     "connections": [
         {"net": "N1", "refdes": "A", "pin": "1"},
@@ -1110,6 +1110,25 @@ def test_autoplace_alias_enqueues_a_place_job_with_deprecation_note(pcb, store):
     assert "crossings — 1" in after.body
 
 
+@pytest.mark.parametrize("placer", [None, "topo"])
+def test_op_place_refuses_unset_current_before_enqueue(pcb, store, placer):
+    design = {**_CROSSED, "nets": [{"name": "N1", "current": 0}, {"name": "N2"}]}
+    pcb.put(id="missing-current", args=design)
+    with pytest.raises(BadInput) as exc:
+        pcb.put(id="missing-current", args={"op": "place", "placer": placer})
+    hint = str(exc.value.next)
+    assert "N2" in hint and "1 net(s)" in hint
+    assert "put(kind='pcb'" in hint and "'current': 0.01" in hint
+    ref = store.get_ref(kind="pcb", id="missing-current")
+    assert ref is not None
+    with store.pool.connection() as conn:
+        count = conn.execute(
+            "SELECT count(*) FROM refs WHERE kind = 'job' AND parent_id = %s",
+            (ref.id,),
+        ).fetchone()
+    assert count == (0,)
+
+
 def test_op_place_enqueues_and_is_idempotent_per_content_hash(pcb, store):
     pcb.put(id="idem-place", args=_CROSSED)
     ref = store.get_ref(kind="pcb", id="idem-place")
@@ -1268,7 +1287,7 @@ def test_op_place_warns_but_enqueues_a_stale_generator_expansion(
             version=1,
             canonical_params=dict(params),
             components=[{"refdes": name, "pins": [{"name": "1"}, {"name": "2"}]}],
-            nets=[{"name": "NG"}],
+            nets=[{"name": "NG", "current": 0.001}],
             connections=[{"net": "NG", "refdes": name, "pin": "1"}],
             footprints=[],
             features=[],
@@ -1337,6 +1356,63 @@ def test_op_place_force_must_be_boolean(pcb):
     pcb.put(id="op-force-bad", args=_CROSSED_OUTLINED)
     with pytest.raises(BadInput, match="force"):
         pcb.put(id="op-force-bad", args={"op": "place", "force": "yes"})
+
+
+# ── gr520794: the board outline must sit in +x/+y before place ─────────
+#: Board whose outline dips below the origin — the datum gate must refuse
+#: before a job is minted.
+_NEG_OUTLINE_BOARD: dict[str, Any] = {
+    **_CROSSED,
+    "features": [closed_outline(-10.0, -5.0, 50.0, 40.0)],
+}
+
+
+def _delete_jobs(store, ref_id):
+    with store.pool.connection() as conn:
+        conn.execute(
+            "DELETE FROM refs WHERE kind = 'job' AND parent_id = %s", (ref_id,)
+        )
+        conn.commit()
+
+
+def test_op_place_refuses_an_outline_outside_the_positive_quadrant(pcb, store):
+    """gr520794 (Reto 2026-10-28) — the board datum is the outline's
+    positive-quadrant origin: an outline with negative coordinates has no
+    shared frame with the fab outputs, so place refuses (BadInput)
+    showing how to set the datum instead of enqueueing."""
+    pcb.put(id="neg-outline", args=_NEG_OUTLINE_BOARD)
+    with pytest.raises(BadInput, match="negative") as exc:
+        pcb.put(id="neg-outline", args={"op": "place"})
+    assert "minimum at x=-10" in str(exc.value)
+    assert "'ftype':'outline'" in str(exc.value.next)
+    # mints no job.
+    ref = store.get_ref(kind="pcb", id="neg-outline")
+    assert ref is not None
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            "SELECT count(*) FROM refs WHERE kind = 'job' AND parent_id = %s",
+            (ref.id,),
+        ).fetchone()
+    assert row is not None and row[0] == 0
+
+
+def test_op_route_refuses_retired_before_the_datum_gate(pcb, store):
+    """gr520794 + gr515107 — retired routing entry points keep their
+    unconditional refusal: ``op='route'`` on a negative-outline board
+    answers retired, never reaching the datum gate."""
+    pcb.put(id="neg-outline-route", args=_NEG_OUTLINE_BOARD)
+    with pytest.raises(BadInput, match="routing is retired"):
+        pcb.put(id="neg-outline-route", args={"op": "route"})
+
+
+def test_op_place_passes_with_the_outline_in_the_positive_quadrant(pcb, store):
+    """gr520794 — the same board with its outline at (0,0) enqueues."""
+    pcb.put(id="pos-outline", args=_CROSSED_OUTLINED)
+    resp = pcb.put(id="pos-outline", args={"op": "place"})
+    assert "enqueued" in resp.body
+    ref = store.get_ref(kind="pcb", id="pos-outline")
+    assert ref is not None
+    _delete_jobs(store, ref.id)
 
 
 def test_op_place_route_must_be_boolean(pcb):

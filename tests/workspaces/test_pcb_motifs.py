@@ -43,9 +43,9 @@ def _move_pin(board: Board, refdes: str, pin: str, net: str) -> None:
 
 def _ldo(*, output_cap: bool, classes: str = "functions") -> Board:
     board = Board("ldo-motif")
-    vin = board.net("INPUT", cls="power", voltage=5.0)
-    vout = board.net("OUTPUT", cls="power", voltage=3.3)
-    gnd = board.net("GROUND", cls="ground", voltage=0.0)
+    vin = board.net("INPUT", cls="power", voltage=5.0, current=0.15)
+    vout = board.net("OUTPUT", cls="power", voltage=3.3, current=0.15)
+    gnd = board.net("GROUND", cls="ground", voltage=0.0, current=0.15)
     names = ("VIN", "VOUT", "GND") if classes == "labels" else ("1", "2", "3")
     regulator = board.part("U1", roles=["ldo"] if classes == "etypes" else [])
     if classes == "functions":
@@ -134,10 +134,10 @@ def test_fixed_output_buck_feedback_needs_no_external_divider() -> None:
     converter["FB"].etype("input", fmax_hz=0.0, assume="fb divider")
     for p in inductor.pins("1", "2"):
         p.etype("passive", fmax_hz=600e3, assume="buck inductor")
-    board.net("INPUT", cls="power", voltage=20.0).tie(converter["VIN"])
-    board.net("SWITCH", voltage=20.0).tie(converter["SW"], inductor["1"])
-    board.net("OUTPUT", cls="power").tie(inductor["2"], converter["FB"])
-    board.net("GROUND", cls="ground", voltage=0.0).tie(converter["GND"])
+    board.net("INPUT", cls="power", current=0.15, voltage=20.0).tie(converter["VIN"])
+    board.net("SWITCH", current=0.15, voltage=20.0).tie(converter["SW"], inductor["1"])
+    board.net("OUTPUT", cls="power", current=0.15).tie(inductor["2"], converter["FB"])
+    board.net("GROUND", cls="ground", current=0.15, voltage=0.0).tie(converter["GND"])
 
     buck = next(motif for motif in MOTIFS if motif.name == "buck")
     assert buck.eligibility(converter)
@@ -184,14 +184,14 @@ def test_buck_accepts_multiterminal_inductor_and_resistor_network(
         p.etype("passive", fmax_hz=600e3, assume="buck inductor")
     for p in divider.pins("1", "2", "3"):
         p.etype("passive", fmax_hz=0.0, assume="fb divider")
-    board.net("INPUT", cls="power", voltage=20.0).tie(converter["VIN"])
-    board.net("AUXILIARY").tie(inductor["1"])
-    switch = board.net("SWITCH", voltage=20.0)
+    board.net("INPUT", cls="power", current=0.15, voltage=20.0).tie(converter["VIN"])
+    board.net("AUXILIARY", current=0.01).tie(inductor["1"])
+    switch = board.net("SWITCH", current=0.15, voltage=20.0)
     switch.tie(converter["SW"], inductor["2"])
-    board.net("OUTPUT", cls="power").tie(inductor["3"], divider["3"])
-    ground = board.net("GROUND", cls="ground", voltage=0.0)
+    board.net("OUTPUT", cls="power", current=0.15).tie(inductor["3"], divider["3"])
+    ground = board.net("GROUND", cls="ground", current=0.15, voltage=0.0)
     ground.tie(converter["GND"], divider["2"])
-    board.net("FEEDBACK").tie(converter["FB"], divider["1"])
+    board.net("FEEDBACK", current=0.001).tie(converter["FB"], divider["1"])
     if terminals == 4:
         inductor["4"].etype("passive", fmax_hz=600e3, assume="buck inductor")
         divider["4"].etype("passive", fmax_hz=0.0, assume="fb divider")
@@ -284,10 +284,10 @@ def test_led_without_limit_keeps_exact_finding_shape() -> None:
     driver["PA1"].etype("output", fmax_hz=0.0, assume="led drive")
     led["A"].etype("input", fmax_hz=0.0, assume="led anode")
     led["K"].etype("output", fmax_hz=0.0, assume="led cathode")
-    board.net("LED_N").tie(driver["PA1"], led["A"], current=Max("20mA"))
-    board.net("GND").tie(led["K"])
+    board.net("LED_N", current=0.02).tie(driver["PA1"], led["A"], current=Max("20mA"))
+    board.net("GND", current=0.02).tie(led["K"])
 
-    (finding,) = board.check().findings
+    (finding,) = _motif_findings(board)
     assert asdict(finding) == {
         "code": "led_without_limit",
         "message": "D1.A (LED) sits on a current path with no series current-limit part",
@@ -309,8 +309,10 @@ def test_led_with_series_limiter_has_no_motif_finding() -> None:
     led["A"].etype("input", fmax_hz=0.0, assume="led anode")
     led["K"].etype("output", fmax_hz=0.0, assume="led cathode")
     resistor["1"].current_role("series")
-    board.net("DRIVE").tie(driver["PA1"], resistor["1"], current=Max("20mA"))
-    board.net("LED_N").tie(resistor["2"], led["A"])
-    board.net("GND").tie(led["K"])
+    board.net("DRIVE", current=0.02).tie(
+        driver["PA1"], resistor["1"], current=Max("20mA")
+    )
+    board.net("LED_N", current=0.02).tie(resistor["2"], led["A"])
+    board.net("GND", current=0.02).tie(led["K"])
 
     assert _motif_findings(board) == []

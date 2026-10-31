@@ -51,7 +51,7 @@ def build() -> pcb.Board:
         j1[cc].etype("input", fmax_hz=0.0, assume="usb-c cc")
         r["1"].etype("passive", fmax_hz=0.0, assume="5.1k cc pulldown")
         r["2"].etype("passive", fmax_hz=0.0, assume="5.1k cc pulldown")
-        b.wire(j1[cc], r["1"], name=f"CC{i}")
+        b.wire(j1[cc], r["1"], name=f"CC{i}").current = 0.001
         gnd.tie(r["2"])
     j1.on_edge("left")
     j1.at(2.0, 10.0, rot=90, fixed="rot")  # x/y free along the edge
@@ -109,7 +109,7 @@ def build() -> pcb.Board:
     j2["1"].etype("bidi", fmax_hz=1e6, assume="updi")
     j2["2"].etype("power_out", max_current_a=0.3, max_voltage_v=3.3, assume="hdr 3v3")
     j2["3"].etype("power_in", max_current_a=0.3, max_voltage_v=3.3, assume="hdr gnd")
-    b.wire(j2["1"], u1["PA0"], name="UPDI")
+    b.wire(j2["1"], u1["PA0"], name="UPDI").current = 0.001
     v33.tie(j2["2"])
     gnd.tie(j2["3"])
     j2.on_edge("right")
@@ -120,8 +120,8 @@ def build() -> pcb.Board:
     led["K"].etype("input", fmax_hz=0.0, assume="led cathode")
     r3["1"].etype("passive", fmax_hz=0.0, assume="led series")
     r3["2"].etype("passive", fmax_hz=0.0, assume="led series")
-    b.wire(u1["PA7"], r3["1"], name="LED")
-    b.wire(r3["2"], led["A"], name="LED_K")
+    b.wire(u1["PA7"], r3["1"], name="LED").current = 0.001
+    b.wire(r3["2"], led["A"], name="LED_K").current = 0.001
     gnd.tie(led["K"])
 
     for pin in ("PA1", "PA2", "PA3", "PB0", "PB1"):

@@ -3199,9 +3199,9 @@ class Board:
     def check(self) -> CheckResult:
         """Pure, offline L0 checks (§Q1): parts with no catalog part and no
         authored footprint are NOT-CHECKED (a synthesized landpattern
-        bound); a declared net with zero connections, a connection to a
-        part the board never made, a part naming an unregistered
-        footprint, a pin name no known pad answers to, and a declared
+        bound); a declared net with no current or zero connections,
+        a connection to a part the board never made, a part naming an
+        unregistered footprint, a pin name no known pad answers to, and a declared
         pin left unwired without an intent marker are findings. No
         geometry, no DRC — that stays server-side (§DRC)."""
         not_checked = [
@@ -3238,6 +3238,20 @@ class Board:
             for fp in self._parts[r]._flex_slots
             if fp.net is not None
         }
+        findings += [
+            CheckFinding(
+                code="net.current_unset",
+                net=n,
+                site=self._nets[n].site,
+                message=(
+                    f"net {n!r} needs an explicit current before place/route; "
+                    f"edit its declaration to b.net({n!r}, current=0.01), "
+                    "replacing 0.01 with its estimated maximum amps"
+                ),
+            )
+            for n in self._net_order
+            if (current := self._nets[n].current) is None or math.isnan(current)
+        ]
         findings += [
             CheckFinding(
                 code="net.unconnected",

@@ -578,8 +578,8 @@ def test_check_findings() -> None:
     b = Board("t14")
     u1 = b.part("U1", lcsc="C1")
     b.part("R1", pins=["1", "2"])
-    b.net("FLOAT")
-    b.net("GND", voltage=0.0).tie(
+    b.net("FLOAT", current=0.001)
+    b.net("GND", current=0.001, voltage=0.0).tie(
         u1["GND"].etype(
             "power_in", max_current_a=0.1, max_voltage_v=5.0, assume="ic gnd"
         )

@@ -20,7 +20,10 @@ _DESIGN: dict[str, Any] = {
         {"refdes": "A", "label": "ic", "x": 0.0, "y": 0.0, "pins": [{"name": "1"}]},
         {"refdes": "B", "label": "ic", "x": 2.0, "y": 2.0, "pins": [{"name": "1"}]},
     ],
-    "nets": [{"name": "N1", "class": "signal"}, {"name": "GND", "class": "gnd"}],
+    "nets": [
+        {"name": "N1", "class": "signal", "current": 0.001},
+        {"name": "GND", "class": "gnd", "current": 0.001},
+    ],
     "connections": [
         {"net": "N1", "refdes": "A", "pin": "1"},
         {"net": "N1", "refdes": "B", "pin": "1"},

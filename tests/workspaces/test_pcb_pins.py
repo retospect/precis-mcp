@@ -43,7 +43,11 @@ def _led_board(*, series: bool) -> Board:
     d1["A"].etype("input", fmax_hz=0.0, assume="led anode")
     d1["K"].etype("input", fmax_hz=0.0, assume="led cathode")
     d1.pin_functions({"A": ["LED"]})
-    n1, n2, gnd = b.net("N1"), b.net("N2"), b.net("GND")
+    n1, n2, gnd = (
+        b.net("N1", current=0.001),
+        b.net("N2", current=0.001),
+        b.net("GND", current=0.001),
+    )
     n1.tie(u1["PA1"], r1["1"], current=pcb.Max("20mA"), source="ds:9~c4")
     if series:
         r1["1"].current_role("series")
@@ -389,7 +393,7 @@ def test_over_current_wired_pin() -> None:
     u1["PA1"].etype("output", fmax_hz=0.0, assume="gpio")
     r1["1"].etype("passive", fmax_hz=0.0, assume="jellybean")
     u1.pin_functions({"PA1": {"functions": ["GPIO"], "max_current_a": 0.005}})
-    n = b.net("LED")
+    n = b.net("LED", current=0.001)
     n.tie(u1["PA1"], current=pcb.Max("20mA"), source="ds:9~c4")
     n.tie(r1["1"])
     # source.unchecked is the separate "no client staged" note for the
@@ -405,19 +409,19 @@ def test_slot_bound_net_is_not_unconnected() -> None:
     declared net with no tie at all still floats."""
     b = Board("t")
     u1 = b.part("U1")
-    b.net("SIG").tie(
+    b.net("SIG", current=0.001).tie(
         u1.pin(
             any_of=["PA1", "PA2"], name="BTN", etype="input", fmax_hz=0.0, assume="btn"
         )
     )
-    b.net("DANGLING")
+    b.net("DANGLING", current=0.001)
     assert [(f.code, f.net) for f in b.check().findings] == [
         ("net.unconnected", "DANGLING")
     ]
     # an untied slot binds nothing — its net stays floating
     b2 = Board("t2")
     b2.part("U1").pin(any_of=["PA1", "PA2"], name="BTN")
-    b2.net("SIG")
+    b2.net("SIG", current=0.001)
     assert [
         (f.code, f.net) for f in b2.check().findings if f.code == "net.unconnected"
     ] == [("net.unconnected", "SIG")]
@@ -433,7 +437,7 @@ def test_over_current_dedupes_per_net() -> None:
     r1["1"].etype("passive", fmax_hz=0.0, assume="jellybean")
     r1["2"].etype("passive", fmax_hz=0.0, assume="jellybean")
     u1.pin_functions({"PA1": {"functions": ["GPIO"], "max_current_a": 0.005}})
-    n = b.net("LED")
+    n = b.net("LED", current=0.001)
     n.tie(u1["PA1"], r1["1"], current=pcb.Max("20mA"), source="ds:9~c4")
     n.tie(r1["2"], current=pcb.Max("30mA"), source="ds:9~c5")
     (f,) = [f for f in b.check().findings if f.code == "over_current"]
@@ -453,7 +457,7 @@ def test_over_current_slot_all_candidates_rated_low() -> None:
             "PA2": {"functions": ["GPIO"], "max_current_a": 0.004},
         }
     )
-    b.net("N").tie(
+    b.net("N", current=0.001).tie(
         u1.pin(
             any_of=["PA1", "PA2"],
             name="PWR",
@@ -471,7 +475,7 @@ def test_over_current_slot_all_candidates_rated_low() -> None:
     b2 = Board("t2")
     u2 = b2.part("U1")
     u2.pin_functions({"PA1": {"functions": ["GPIO"], "max_current_a": 0.005}})
-    b2.net("N").tie(
+    b2.net("N", current=0.001).tie(
         u2.pin(
             any_of=["PA1", "PB0"],
             name="PWR",
@@ -494,8 +498,8 @@ def test_led_without_limit_on_requirement_net() -> None:
     d1["A"].etype("input", fmax_hz=0.0, assume="led anode")
     d1["K"].etype("input", fmax_hz=0.0, assume="led cathode")
     d1.pin_functions({"A": ["LED"]})
-    b.net("LED_N").tie(u1["PA1"], d1["A"], current=pcb.Max("20mA"))
-    b.net("GND").tie(d1["K"])
+    b.net("LED_N", current=0.001).tie(u1["PA1"], d1["A"], current=pcb.Max("20mA"))
+    b.net("GND", current=0.001).tie(d1["K"])
     (f,) = b.check().findings
     assert f.code == "led_without_limit"
     assert f.refdes == "D1" and f.net == "LED_N"

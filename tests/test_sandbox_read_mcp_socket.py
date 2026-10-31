@@ -260,7 +260,7 @@ def test_pcb_sources_through_sandbox_read_gate(
     board = pcb.Board("sandbox-source")
     part = board.part("U1", lcsc="C111")
     part["1"].etype("bidi", fmax_hz=0.0, assume="test pin")
-    net = board.net("N")
+    net = board.net("N", current=0.001)
     if claim == "pin_functions":
         part.pin_functions({"1": ["GPIO"]}, source=handle)
         net.tie(part["1"])

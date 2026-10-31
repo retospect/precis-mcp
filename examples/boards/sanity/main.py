@@ -82,7 +82,7 @@ def build(
         for i, pin_c in enumerate(permutation(seed), start=1):
             b.wire(
                 headers[a][f"P{i}"], headers[c][f"P{pin_c}"], name=f"{prefix}{i:02d}"
-            )
+            ).current = 0.001
     return b
 
 

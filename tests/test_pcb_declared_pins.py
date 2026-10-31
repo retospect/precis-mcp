@@ -576,6 +576,16 @@ def test_hv_ring_sink_stays_clear_after_place_job(
     # 300 iters, not the 2000 default: the floor check is on the IR the
     # anneal receives, and three default-length anneals of this ring cost
     # ~3 min, enough to push its CI shard past the job timeout.
+    pcb.put(
+        id=slug,
+        args={
+            "nets": [
+                {"name": n["name"], "current": 0.001}
+                for n in store.pcb_graph(ref.id)["nets"]
+                if n.get("est_current_a") is None
+            ]
+        },
+    )
     pcb.put(id=slug, args={"op": "place", "seed": seed, "iters": 300})
     _drain_one_job(store, ref.id)
     assert floors_seen, "the place job never ran the anneal"

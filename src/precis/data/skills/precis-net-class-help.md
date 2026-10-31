@@ -26,13 +26,17 @@ apply by default. A pour itself is authored (`op='plane_net'`, a stackup
 ```python
 'nets': [
   {'name':'VCC3V3', 'class':'power', 'current':0.5},   # 0.5 A → width sized for you
-  {'name':'GND',    'class':'gnd'},                     # plane net
-  {'name':'I2C_SCL','class':'i2c'},
-  {'name':'MIC_OUT','class':'analog'},
+  {'name':'GND',    'class':'gnd', 'current':0.5},       # return current
+  {'name':'I2C_SCL','class':'i2c', 'current':0.001},
+  {'name':'MIC_OUT','class':'analog', 'current':0.001},
 ]
 ```
 
 ## The classes
+
+Every net needs an explicit `current` before placement or routing. Classes
+do not supply current defaults, including for signals and ground. The
+values above are examples; use the design's estimated maximum amps.
 
 | class | meaning | width | plane? | typical measures |
 |-------|---------|-------|--------|------------------|

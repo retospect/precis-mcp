@@ -2231,6 +2231,44 @@ class PcbHandler(Handler):
             ),
         )
 
+    def _require_layout_ready(self, ref: Any, snap: Any) -> None:
+        """The place input gate — refuse (``BadInput``, never a
+        warn-and-enqueue) when the design lacks what layout needs.
+
+        gr520545: every net carries an explicit ``current`` figure —
+        :func:`precis.pcb.currents.require_net_currents` owns the check,
+        shared with the local-place and worker-job entry points.
+
+        gr520794 (Reto 2026-10-28): the positive-quadrant convention
+        ``drc.check_board_origin`` warns about is a hard refusal here —
+        an outline outside +x/+y has no shared datum with the fab
+        outputs, so place refuses rather than optimize on one frame and
+        ship another."""
+        graph = snap.graph
+        from precis.pcb.currents import require_net_currents
+
+        require_net_currents(
+            ((n["name"], n.get("est_current_a")) for n in graph.get("nets", [])),
+            board_id=ref.slug,
+        )
+        outline = pcb_session.outline_from_features(snap.features or [])
+        if outline:
+            xs = [float(p[0]) for p in outline if len(p) >= 2]
+            ys = [float(p[1]) for p in outline if len(p) >= 2]
+            if xs and (min(xs) < 0 or min(ys) < 0):
+                mx, my = min(xs), min(ys)
+                axis = "x" if my >= 0 else "y" if mx >= 0 else "x and y"
+                raise BadInput(
+                    f"pcb: {ref.slug!r} — the board outline sits partly in "
+                    f"negative coordinates ({axis} below 0; minimum at "
+                    f"x={mx:g}mm, y={my:g}mm)",
+                    next=(
+                        "the board datum is the outline's positive-quadrant "
+                        "origin — shift the outline so its lowest corner "
+                        "lands on (0,0): " + pcb_session.OUTLINE_FIX_HINT
+                    ),
+                )
+
     def _enqueue_op(self, ref: Any, op: str, opts: dict[str, Any]) -> str:
         """Enqueue a ``pcb_place`` worker job — NEVER
         computes inline (the serve thread-pool starvation lesson; the
@@ -2240,6 +2278,7 @@ class PcbHandler(Handler):
         the in-flight/prior job rather than minting a duplicate."""
         snap = pcb_session_store.load_snapshot(self.store, ref.id)
         graph = snap.graph
+        self._require_layout_ready(ref, snap)
         stackup = (graph.get("board") or {}).get("stackup") or []
         if len(stackup) != 4:
             raise BadInput(

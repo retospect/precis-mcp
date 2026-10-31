@@ -285,10 +285,9 @@ def first_present(d: dict[str, Any], *keys: str) -> Any:
     ``None`` — the alias resolver for authoring fields whose ZERO is
     meaningful.
 
-    The older ``d.get(a) or d.get(b)`` idiom elsewhere in this module is
-    safe only where 0 and NULL mean the same thing (a 0 A current estimate
-    and no estimate both fall through to the fab floor). It is wrong for a
-    net deliberately annotated ``working_voltage_v: 0`` — a shield tied to
+    The older ``d.get(a) or d.get(b)`` idiom is wrong for an explicit
+    zero-current declaration, which must pass the current precondition,
+    and for a net annotated ``working_voltage_v: 0`` — a shield tied to
     chassis — which must stay 0 so the pairwise ``|V_a - V_b|`` term sees a
     real potential difference, not an unannotated net."""
     for key in keys:

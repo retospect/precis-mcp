@@ -79,9 +79,9 @@ def _sanity_board() -> pcb.Board:
         (e2, "1"),
     ):
         part[num].etype("bidi", fmax_hz=0.0, assume="sanity wire end")
-    b.wire(a1["2"], a2["1"], name="N1")
-    b.wire(c1["2"], c2["2"], name="N2")
-    b.wire(e1["1"], e2["1"], name="N3")
+    b.wire(a1["2"], a2["1"], name="N1").current = 0.001
+    b.wire(c1["2"], c2["2"], name="N2").current = 0.001
+    b.wire(e1["1"], e2["1"], name="N3").current = 0.001
     return b
 
 
@@ -173,12 +173,12 @@ def test_route_planes_admits_plane_class_nets() -> None:
     g2 = b.part("G2", footprint=f, pins=["1", "2"]).at(15.0, 5.0)
     for g in (g1["1"], g2["1"]):
         g.etype("power_in", max_current_a=0.1, max_voltage_v=5.0, assume="plane pin")
-    b.net("GND", cls="gnd").tie(g1["1"], g2["1"])
+    b.net("GND", current=0.001, cls="gnd").tie(g1["1"], g2["1"])
     s1 = b.part("S1", footprint=f, pins=["1", "2"]).at(5.0, 8.0)
     s2 = b.part("S2", footprint=f, pins=["1", "2"]).at(15.0, 8.0)
     s1["2"].etype("bidi", fmax_hz=0.0, assume="sig end")
     s2["1"].etype("bidi", fmax_hz=0.0, assume="sig end")
-    b.wire(s1["2"], s2["1"], name="SIG")
+    b.wire(s1["2"], s2["1"], name="SIG").current = 0.001
 
     design = kernel._design(b, None)
     ir = kernel._build_ir(design)
@@ -211,13 +211,16 @@ def _plane_board() -> pcb.Board:
     g2 = b.part("G2", footprint=f, pins=["1", "2"]).at(22.0, 5.0)
     for g in (g1["2"], g2["1"]):
         g.etype("power_in", max_current_a=0.1, max_voltage_v=5.0, assume="plane pin")
-    b.net("GND", cls="gnd").tie(g1["2"], g2["1"])
+    # explicit zero: the legal "carries nothing" declaration under the
+    # net-current gate — reads as no current-derived widen target, so the
+    # rail keeps the legacy class-driven ruling.
+    b.net("GND", current=0.0, cls="gnd").tie(g1["2"], g2["1"])
     s1 = b.part("S1", footprint=f, pins=["1", "2"]).at(5.0, 8.5)
     s2 = b.part("S2", footprint=f, pins=["1", "2"]).at(15.0, 8.5)
     s1["2"].etype("bidi", fmax_hz=0.0, assume="sig end")
     s2["1"].etype("bidi", fmax_hz=0.0, assume="sig end")
     # inner pins — the wire must not cross the part's unwired outer pad
-    b.wire(s1["2"], s2["1"], name="SIG")
+    b.wire(s1["2"], s2["1"], name="SIG").current = 0.001
     return b
 
 
@@ -269,7 +272,10 @@ def test_widen_oracle_judges_class_min_clearance(tmp_path) -> None:
     g2 = b.part("G2", footprint=f, pins=["1", "2"]).at(22.0, 5.0)
     for g in (g1["2"], g2["1"]):
         g.etype("power_in", max_current_a=0.1, max_voltage_v=5.0, assume="plane pin")
-    b.net("GND", cls="gnd").tie(g1["2"], g2["1"])
+    # 1.0 A: the IPC-2221 widen target (~0.30mm) must exceed the 0.25
+    # step the hv floor admits — a token current would gate widening
+    # off entirely (gr524239).
+    b.net("GND", current=1.0, cls="gnd").tie(g1["2"], g2["1"])
     # hv class: a hard 0.8 mm floor — the pad NEAREST the rail is the
     # classed copper the widened track's gap is judged against.
     s1 = b.part("S1", footprint=f, pins=["1", "2"]).at(15.0, 6.44)
@@ -277,7 +283,7 @@ def test_widen_oracle_judges_class_min_clearance(tmp_path) -> None:
     s1["2"].etype("bidi", fmax_hz=0.0, assume="sig end")
     s2["1"].etype("bidi", fmax_hz=0.0, assume="sig end")
     b.net_class("hv", min_clearance_mm=0.8)
-    b.net("SIG", cls="hv").tie(s1["2"], s2["1"])
+    b.net("SIG", current=0.001, cls="hv").tie(s1["2"], s2["1"])
 
     run = kernel.topo_place(b, effort=200, seed=1, out=str(tmp_path / "topo"))
     assert run.route is not None, run.files.get("route.json")
@@ -438,7 +444,9 @@ def test_widen_unannotated_gnd_rail_still_widens_end_to_end() -> None:
     routes as a normal net and is widened in the final stage, claiming
     the widest step the DRC oracle accepts (the legacy ruling a
     plane-class net keeps when it carries no current estimate)."""
-    board = _plane_board()  # GND cls="gnd", no est_current_a
+    board = _plane_board()  # GND cls="gnd", explicit-zero current — no
+    # est_current_a-derived target, so the widen set reads it as the
+    # legacy "unannotated rail" case the gate-era equivalent allows.
     design = kernel._design(board, None)
     ir = kernel._build_ir(design)
     footprints = kernel._footprints(design, ir)
@@ -1126,8 +1134,8 @@ def test_forced_crossing_board_commits_no_track_short() -> None:
     b2 = b.part("B2", footprint=f, pins=["1", "2"]).at(25.0, 3.0)
     for part, num in ((a1, "2"), (a2, "1"), (b1, "2"), (b2, "1")):
         part[num].etype("bidi", fmax_hz=0.0, assume="wire end")
-    b.wire(a1["2"], a2["1"], name="NA")
-    b.wire(b1["2"], b2["1"], name="NB")
+    b.wire(a1["2"], a2["1"], name="NA").current = 0.001
+    b.wire(b1["2"], b2["1"], name="NB").current = 0.001
 
     design = kernel._design(b, None)
     ir = kernel._build_ir(design)
@@ -1586,9 +1594,9 @@ def test_spoke_offsets_fan_shared_gap_and_shared_corner() -> None:
         (c3, "1"),
     ):
         part[num].etype("bidi", fmax_hz=0.0, assume="slit wire end")
-    b.wire(a1["2"], c3["1"], name="N1")
-    b.wire(a2["2"], c2["1"], name="N2")
-    b.wire(a3["2"], c1["1"], name="N3")
+    b.wire(a1["2"], c3["1"], name="N1").current = 0.001
+    b.wire(a2["2"], c2["1"], name="N2").current = 0.001
+    b.wire(a3["2"], c1["1"], name="N3").current = 0.001
 
     design = kernel._design(b, None)
     ir = kernel._build_ir(design)
@@ -1757,7 +1765,7 @@ def _slit_board(pairs):
     for k, (pa, pc) in enumerate(pairs):
         src[pa]["2"].etype("bidi", fmax_hz=0.0, assume="slit wire end")
         dst[pc]["1"].etype("bidi", fmax_hz=0.0, assume="slit wire end")
-        b.wire(src[pa]["2"], dst[pc]["1"], name=f"N{k + 1}")
+        b.wire(src[pa]["2"], dst[pc]["1"], name=f"N{k + 1}").current = 0.001
     return b
 
 

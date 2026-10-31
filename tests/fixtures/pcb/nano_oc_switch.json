@@ -1086,36 +1086,46 @@
       "current": 0.3
     },
     {
-      "name": "LED_A"
+      "name": "LED_A",
+      "current": 0.001
     },
     {
-      "name": "RST"
+      "name": "RST",
+      "current": 0.001
     },
     {
-      "name": "DTR"
+      "name": "DTR",
+      "current": 0.001
     },
     {
-      "name": "RXD"
+      "name": "RXD",
+      "current": 0.001
     },
     {
-      "name": "TXD"
+      "name": "TXD",
+      "current": 0.001
     },
     {
       "name": "XTAL1",
-      "class": "clock"
+      "class": "clock",
+      "current": 0.001
     },
     {
       "name": "XTAL2",
-      "class": "clock"
+      "class": "clock",
+      "current": 0.001
     },
     {
-      "name": "MOSI"
+      "name": "MOSI",
+      "current": 0.001
     },
     {
-      "name": "MISO"
+      "name": "MISO",
+      "current": 0.001
     },
     {
-      "name": "SCK"
+      "name": "SCK",
+      "current": 0.001
     },
     {
       "name": "OUT1",
@@ -1123,10 +1133,12 @@
       "current": 2.0
     },
     {
-      "name": "BASE1"
+      "name": "BASE1",
+      "current": 0.001
     },
     {
-      "name": "GPIO2"
+      "name": "GPIO2",
+      "current": 0.001
     },
     {
       "name": "OUT2",
@@ -1134,10 +1146,12 @@
       "current": 2.0
     },
     {
-      "name": "BASE2"
+      "name": "BASE2",
+      "current": 0.001
     },
     {
-      "name": "GPIO3"
+      "name": "GPIO3",
+      "current": 0.001
     },
     {
       "name": "OUT3",
@@ -1145,10 +1159,12 @@
       "current": 2.0
     },
     {
-      "name": "BASE3"
+      "name": "BASE3",
+      "current": 0.001
     },
     {
-      "name": "GPIO4"
+      "name": "GPIO4",
+      "current": 0.001
     },
     {
       "name": "OUT4",
@@ -1156,10 +1172,12 @@
       "current": 2.0
     },
     {
-      "name": "BASE4"
+      "name": "BASE4",
+      "current": 0.001
     },
     {
-      "name": "GPIO5"
+      "name": "GPIO5",
+      "current": 0.001
     }
   ],
   "connections": [

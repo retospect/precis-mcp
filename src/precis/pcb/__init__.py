@@ -22,6 +22,9 @@ input revision: pcb_graph omits fab polygons, copper and footprint geometry,
 so its fingerprint alone cannot invalidate a mask/coverlay decision. Missing
 geometry records ``not checkable (gr520329)``, never an inferred pass.
 
+Placement and route refuse an unset net current (gr520545 —
+:mod:`~precis.pcb.currents`).
+
 **Routing is topological** (Reto 2026-10-25): the vector router
 (:mod:`~precis.pcb.vroute`) was deleted — main keeps tag ``vroute-final``
 for its last build. Topological routing (topo slice 2,

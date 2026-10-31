@@ -16,6 +16,7 @@ from typing import Any
 import pytest
 
 from precis.dispatch import Hub
+from precis.errors import BadInput
 from precis.handlers.pcb import PcbHandler
 from precis.store import Store
 from precis.workers.job_types import pcb_place
@@ -63,8 +64,8 @@ _CROSSED: dict[str, Any] = {
         {"refdes": "D", "label": "ic", "x": 2.0, "y": 0.0, "pins": [{"name": "1"}]},
     ],
     "nets": [
-        {"name": "N1", "class": "signal"},
-        {"name": "N2", "class": "signal"},
+        {"current": 0.001, "name": "N1", "class": "signal"},
+        {"current": 0.001, "name": "N2", "class": "signal"},
     ],
     "connections": [
         {"net": "N1", "refdes": "A", "pin": "1"},
@@ -72,6 +73,20 @@ _CROSSED: dict[str, Any] = {
         {"net": "N2", "refdes": "C", "pin": "1"},
         {"net": "N2", "refdes": "D", "pin": "1"},
     ],
+}
+
+
+#: ``_CROSSED`` shifted 50mm into the default +x/+y outline — the
+#: worse-placement gates need a clean stored placement, and parts whose
+#: pads sit on the outline's own minimum carry board-edge errors
+#: (gr520794 keeps the outline in +x/+y, so the margin comes from the
+#: parts, not a negative outline).
+_CROSSED_INBOARD: dict[str, Any] = {
+    **_CROSSED,
+    "components": [
+        {**c, "x": c["x"] + 50.0, "y": c["y"] + 50.0} for c in _CROSSED["components"]
+    ],
+    "features": [closed_outline()],
 }
 
 
@@ -86,6 +101,18 @@ def _seed(store: Store, slug: str, args: dict[str, Any]) -> int:
     ref = store.get_ref(kind="pcb", id=slug)
     assert ref is not None
     return int(ref.id)
+
+
+@pytest.mark.parametrize("placer", [None, "topo"])
+def test_pcb_place_refuses_unset_current(store: Store, placer: str | None) -> None:
+    design = {**_CROSSED, "nets": [{"name": "N1", "current": 0}, {"name": "N2"}]}
+    ref_id = _seed(store, "place-unset-current", design)
+    ctx = _FakeCtx(store, params={"pcb_ref_id": ref_id, "placer": placer})
+    with pytest.raises(BadInput) as exc:
+        _dispatch(ctx)
+    assert "N2" in str(exc.value.next)
+    assert "put(kind='pcb'" in str(exc.value.next)
+    assert not ctx.summaries
 
 
 def test_pcb_place_moves_instances_and_reduces_crossings(store: Store) -> None:
@@ -118,7 +145,7 @@ def test_pcb_place_refuses_to_commit_a_worse_placement(
     The board carries a closed outline so the stored placement is clean:
     without one the gate's ``outline_missing`` (gr500431) puts an error on
     BOTH sides and the "stored one has 0" baseline is gone."""
-    ref_id = _seed(store, "place-worse", {**_CROSSED, "features": [closed_outline()]})
+    ref_id = _seed(store, "place-worse", _CROSSED_INBOARD)
     before = {
         i["refdes"]: (i["x"], i["y"]) for i in store.pcb_graph(ref_id)["instances"]
     }
@@ -211,7 +238,7 @@ def test_pcb_place_never_moves_a_fixed_instance(store: Store) -> None:
                 "pins": [{"name": "1"}],
             },
         ],
-        "nets": [{"name": "N", "class": "signal"}],
+        "nets": [{"current": 0.001, "name": "N", "class": "signal"}],
         "connections": [
             {"net": "N", "refdes": "U1", "pin": "1"},
             {"net": "N", "refdes": "U2", "pin": "1"},
@@ -259,7 +286,7 @@ def test_pcb_place_snap_and_soft_pin_report_and_stamp(store: Store) -> None:
                 "pins": [{"name": str(p)} for p in range(1, 7)],
             },
         ],
-        "nets": [{"name": "N", "class": "signal"}],
+        "nets": [{"current": 0.001, "name": "N", "class": "signal"}],
         "connections": [
             {"net": "N", "refdes": "A", "pin": "1"},
             {"net": "N", "refdes": "B", "pin": "1"},
@@ -432,7 +459,10 @@ _RIPUP: dict[str, Any] = {
         _part("U2", 10.0, "both"),
         _part("U3", 12.0, "both"),
     ],
-    "nets": [{"name": "N1", "class": "signal"}, {"name": "N2", "class": "signal"}],
+    "nets": [
+        {"current": 0.001, "name": "N1", "class": "signal"},
+        {"current": 0.001, "name": "N2", "class": "signal"},
+    ],
     "connections": [
         {"net": "N1", "refdes": "U1", "pin": "1"},
         {"net": "N1", "refdes": "R1", "pin": "1"},
@@ -503,7 +533,7 @@ def test_pcb_place_rips_up_fixed_copper_left_on_a_foreign_pad(
     design = {
         **_RIPUP,
         "components": [*_RIPUP["components"], _part("R5", 6.0)],
-        "nets": [*_RIPUP["nets"], {"name": "N5", "class": "signal"}],
+        "nets": [*_RIPUP["nets"], {"current": 0.001, "name": "N5", "class": "signal"}],
         "connections": [
             *_RIPUP["connections"],
             {"net": "N5", "refdes": "R5", "pin": "1"},
@@ -641,9 +671,7 @@ def test_pcb_place_topo_falls_back_instead_of_refusing(
 
     from precis.pcb import topoplace as tp
 
-    ref_id = _seed(
-        store, "place-topo-worse", {**_CROSSED, "features": [closed_outline()]}
-    )
+    ref_id = _seed(store, "place-topo-worse", _CROSSED_INBOARD)
     real_topo = tp.topo_place
     captured: dict[str, Any] = {}
 
@@ -969,9 +997,7 @@ def test_pcb_place_topo_route_stamps_the_run_digest(store: Store) -> None:
     renders), the latter written through ``pcb_last_route_merge`` on real
     pg. The two must be the same object content — a reader of either sees
     the same run."""
-    ref_id = _seed(
-        store, "place-topo-route", {**_CROSSED, "features": [closed_outline()]}
-    )
+    ref_id = _seed(store, "place-topo-route", _CROSSED_INBOARD)
     ctx = _FakeCtx(
         store,
         params={

@@ -27,7 +27,9 @@ autorouter are downstream *export*.
 Units are **millimetres**. The board frame: origin at the **board-outline
 corner**, **+X right, +Y up (north)**, rotation **clockwise from north** in degrees (`rot`, alias `rot_deg`; a unit string like `"1.5708 rad"` also works),
 pivot = the component centroid. (Exporters convert to each fab's convention —
-e.g. the JLCPCB CPL flips rotation to CCW for you.)
+e.g. the JLCPCB CPL flips rotation to CCW for you.) `op='place'` refuses an
+outline with negative x or y — the fix is to re-`put` the outline so it sits
+in +x/+y with its lowest corner on the origin.
 
 Five verbs, no new ones: `put` (create/extend), `get` (list / netlist TOC /
 one instance / one net / an analysis / an export), `search` (by intent),
@@ -153,8 +155,8 @@ put(
         ],
         "nets": [
             {"name": "VCC3V3", "class": "power", "current": 0.5},
-            {"name": "GND", "class": "gnd"},
-            {"name": "I2C_SCL", "class": "i2c"},
+            {"name": "GND", "class": "gnd", "current": 0.5},
+            {"name": "I2C_SCL", "class": "i2c", "current": 0.001},
         ],
         "connections": [
             {"net": "VCC3V3", "refdes": "U1", "pin": "VDD"},
@@ -231,7 +233,14 @@ Field notes:
   (`I2C_SCL`, not `N$7`). `class` drives width / measure defaults
   ([[precis-net-class-help]]); `current` is amps, a plain number you set on
   **every** net — `0.001` when you have no better figure; unset refuses
-  place/route. `width` (mm) overrides.
+  place/route. No class supplies a silent default. `width` (mm) overrides
+  width, but does not waive the current requirement.
+- Set the estimated maximum amps when declaring a script net:
+  `b.net('I2C_SCL', current=0.001)`. For an existing stored net:
+  `put(kind='pcb', id='my-board', args={'nets': [{'name': 'I2C_SCL', 'current': 0.001}]})`.
+  These are example currents; choose the design's actual estimate.
+  `b.check()` reports missing values as hard `net.current_unset` findings;
+  place/route refuses with missing net names and a repair call.
 - **net electrical spec** — where datasheet numbers go: `current` (amps →
   IPC-2221 width), `voltage` (peak working volts), `edge_rate` (V/ns),
   `impedance` (ohms), `function` (`crystal`|`switcher_sw`|`adc_input`|
@@ -308,57 +317,9 @@ get(kind="pcb", id="sensor-node@I2C_SCL")  # ONE net: every (refdes, pin) on it
 
 `#REFDES` is the **hop** — the core traversal move. `@NET` is the membership
 view. Walk the design instance-by-instance instead of ingesting it whole.
-
-### Inspect one connector's actual pads
-
-```python
-get(kind='pcb', id='sensor-node#J1', view='pinout')
-```
-
-One instance only; the selector is required. The ordinary `#J1` hop stays
-the logical pin/net/neighbour view. Pinout reads cached or design-local
-physical pads without fetching or changing the board. It shows original
-pad IDs, distinct indexed rows for duplicate IDs, local/board mm, side,
-rotation, layers and stored pin/net mapping evidence. `explicit-pin-pad`,
-`footprint-pin-map` and `pad-number-identity` identify the mapping source;
-identity fallback is not an independently known signal. `unconnected`
-means a mapped pin without a net; `unclaimed` means no declared pin;
-`ambiguous` retains conflicting pins/nets rather than choosing one.
-A footprint with non-plated holes (pegs, standoffs) gets a second table,
-one row per hole: `local_x_mm`/`local_y_mm`, `board_x_mm`/`board_y_mm`
-(same transform as pads) and `dia_mm`; it is omitted when there are none.
-
-Local +X is right and +Y up; board coordinates are top-view, rotations CW.
-Bottom-side pads mirror local X before rotation and translation. Unplaced
-instances retain local geometry but have unavailable board coordinates.
-Missing cached/authored geometry gives an explicit nextcall, never guessed
-pads. Catalog cache source versus authored geometry is stated; neither
-verifies the supplier pinout or mating orientation. No provider pull, job,
-catalogue refresh, routing or placement runs from this view.
-
-### Preview an unsaved explicit mapping
-
-```python
-get(kind='pcb', id='sensor-node#J1', view='pinout-preview',
-    args={'pins':[{'name':'CLK','pad':'2'}, {'name':'UNKNOWN','pad':None}]})
-```
-
-Existing instance/stored geometry required. This read-only echo adds proposed
-labels beside P1's stored evidence; it never writes pins, assigns nets, fetches
-geometry or queues jobs. `name` is a semantic label, not a net declaration.
-Only `pins` is accepted; each entry requires exactly name/string and
-pad/exact-string-or-null. Null means unknown binding; even the label NC does
-not establish disconnection. Mating orientation and vendor numbering remain
-unknown. Conflicting drafts are shown with canonical-authoring refusal hints,
-never selected or persisted. This includes one name with both null and bound
-pads; distinct null-bound names stay unknown, not conflicting. `pins=[]`
-explicitly means no proposed assignments. Missing geometry stays unavailable with a manual
-inspection/authoring hint. Duplicate physical pads remain distinct rows.
-
-Limits: one instance,32 proposed entries,64 physical rows,64-character names,
-32-character pad IDs,16384 response characters. Oversize requests return typed
-correction, never silent truncation. Ordinary `view='pinout'` reads persisted
-evidence only; use that view for larger stored instances.
+One instance's stored pads (`view='pinout'` on `#REFDES`) and a read-only
+draft pin→pad mapping (`view='pinout-preview'`):
+[[precis-pcb-footprint-help]].
 
 Every catalog part on the board is also a graph edge: the design `contains`
 one part ref per C-number, with the refdes list and qty on the edge, kept

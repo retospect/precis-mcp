@@ -28,7 +28,7 @@ _DESIGN = {
         {"refdes": "U1", "label": "mcu", "x": 0.0, "y": 0.0, "pins": [{"name": "1"}]},
         {"refdes": "R1", "label": "r", "x": 5.0, "y": 0.0, "pins": [{"name": "1"}]},
     ],
-    "nets": [{"name": "N1", "class": "signal"}],
+    "nets": [{"current": 0.001, "name": "N1", "class": "signal"}],
     "connections": [
         {"net": "N1", "refdes": "U1", "pin": "1"},
         {"net": "N1", "refdes": "R1", "pin": "1"},

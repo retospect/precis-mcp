@@ -37,8 +37,8 @@ _CROSSED: dict[str, Any] = {
         {"refdes": "D", "label": "ic", "x": 2.0, "y": 0.0, "pins": [{"name": "1"}]},
     ],
     "nets": [
-        {"name": "N1", "class": "signal"},
-        {"name": "N2", "class": "signal"},
+        {"name": "N1", "class": "signal", "current": 0.001},
+        {"name": "N2", "class": "signal", "current": 0.001},
     ],
     "connections": [
         {"net": "N1", "refdes": "A", "pin": "1"},

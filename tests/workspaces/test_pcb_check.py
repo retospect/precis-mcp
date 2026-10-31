@@ -32,9 +32,9 @@ import precis_geom.pcb as pcb
 b = pcb.Board("t")
 u1 = b.part("U1", lcsc="C1")
 u1.pin_functions({"1": {"functions": ["GPIO"], "max_current_a": 0.5}})
-vcc = b.net("VCC", voltage=3.3)
+vcc = b.net("VCC", current=0.001, voltage=3.3)
 vcc.tie(u1["1"].etype("input", fmax_hz=0.0, assume="test pin"), current=pcb.Max("2A"))
-b.net("FLOATY")
+b.net("FLOATY", current=0.001)
 b.part("U9", footprint="NOPE")
 result = b.check()
 """,
@@ -68,9 +68,9 @@ import precis_geom.pcb as pcb
 b = pcb.Board("t")
 fp = pcb.Footprint("HDR", pads=[pcb.pad("1", "rect", 0, 0), pcb.pad("2", "rect", 1, 0)])
 j1 = b.part("J1", footprint=fp)
-vcc = b.net("VCC")
+vcc = b.net("VCC", current=0.001)
 vcc.tie(j1["3"].etype("input", fmax_hz=0.0, assume="typo pin"))
-gnd = b.net("GND")
+gnd = b.net("GND", current=0.001)
 gnd.tie(j1["1"].etype("input", fmax_hz=0.0, assume="hdr pin"))
 u2 = b.part("U2", footprint=fp)
 u2.pin_functions({"VBD": ["GPIO"]})
@@ -114,7 +114,7 @@ b = pcb.Board("t")
 other = pcb.Board("o")
 u1 = b.part("U1", pins=["1", "2", "3", "4", "5", "6"])
 r9 = other.part("R9", pins=["1", "2"])
-vcc = b.net("VCC")
+vcc = b.net("VCC", current=0.001)
 vcc.tie(u1["1"].etype("input", fmax_hz=0.0, assume="ic pin"))
 vcc.tie(r9["1"].etype("input", fmax_hz=0.0, assume="foreign pin"))
 u1["2"].nc()
@@ -161,7 +161,7 @@ import precis_geom.pcb as pcb
 
 b = pcb.Board("t")
 u1 = b.part("U1", lcsc="C1")
-vcc = b.net("VCC")
+vcc = b.net("VCC", current=0.001)
 vcc.tie(u1["1"].etype("input", fmax_hz=0.0, assume="ic pin"), source="ds:da1~dk1")
 vcc.tie(u1["2"].etype("input", fmax_hz=0.0, assume="ic pin"), source="bogus")
 result = b.check()
@@ -221,11 +221,11 @@ import precis_geom.pcb as pcb
 b = pcb.Board("t")
 u1 = b.part("U1", lcsc="C222")
 u1.pin_functions({"3": ["GPIO"]}, source="ds:da1~dk7")
-vcc = b.net("VCC")
+vcc = b.net("VCC", current=0.001)
 vcc.tie(u1["1"].etype("input", fmax_hz=0.0, assume="ic pin"), source="ds:da1~dk9")
 vcc.tie(u1["2"].etype("input", fmax_hz=0.0, assume="ic pin"), source="ds:da404~dk0")
 u2 = b.part("U2", lcsc="C111")
-gnd = b.net("GND")
+gnd = b.net("GND", current=0.001)
 gnd.tie(u2["1"].etype("input", fmax_hz=0.0, assume="ic pin"), source="ds:da1~dk3")
 """,
     )
@@ -295,7 +295,7 @@ import precis_geom.pcb as pcb
 
 b = pcb.Board("t")
 u1 = b.part("U1", lcsc="C1")
-n = b.net("N")
+n = b.net("N", current=0.001)
 for i, ref in enumerate(("da404", "da500", "da501", "da502", "da503")):
     n.tie(
         u1[str(i + 1)].etype("input", fmax_hz=0.0, assume="ic pin"),
@@ -343,7 +343,7 @@ import precis_geom.pcb as pcb
 
 b = pcb.Board("t")
 u1 = b.part("U1", lcsc="C1")
-vcc = b.net("VCC")
+vcc = b.net("VCC", current=0.001)
 vcc.tie(u1["1"].etype("input", fmax_hz=0.0, assume="ic pin"), source="ds:da1~dk1")
 """,
     )
@@ -364,14 +364,14 @@ import precis_geom.pcb as pcb
 b = pcb.Board("t")
 u1 = b.part("U1", lcsc="C1")
 u1.pin_functions({"1": {"functions": ["GPIO"], "max_voltage_v": 5}})
-hv = b.net("HV", voltage=20)
+hv = b.net("HV", current=0.001, voltage=20)
 hv.tie(u1["1"].etype("input", fmax_hz=0.0, assume="hv pin"))
 b.net_class("rail", working_voltage_v=48)
-hv2 = b.net("HV2", cls="rail")
+hv2 = b.net("HV2", current=0.001, cls="rail")
 u3 = b.part("U3", lcsc="C3")
 u3["1"].meta["max_voltage_v"] = 12
 hv2.tie(u3["1"].etype("input", fmax_hz=0.0, assume="hv pin"))
-sig = b.net("SIG")
+sig = b.net("SIG", current=0.001)
 u2 = b.part("U2", lcsc="C2")
 u2["1"].meta["max_voltage_v"] = 3.3
 sig.tie(u2["1"].etype("input", fmax_hz=0.0, assume="sig pin"))
@@ -408,7 +408,7 @@ def test_over_voltage_silent_when_no_pin_bounds_exist(tmp_path: Path) -> None:
 import precis_geom.pcb as pcb
 
 b = pcb.Board("t")
-b.net("GND")
+b.net("GND", current=0.001)
 """,
     )
     result = mod.b.check()
@@ -437,9 +437,9 @@ import precis_geom.pcb as pcb
 b = pcb.Board("t")
 u2 = b.part("U2", lcsc="C2")
 u2["1"].meta["max_voltage_v"] = 3.3
-sig = b.net("SIG")
+sig = b.net("SIG", current=0.001)
 sig.tie(u2["1"].etype("input", fmax_hz=0.0, assume="sig pin"))
-b.net("FLOATY")
+b.net("FLOATY", current=0.001)
 b.part("R1")
 """,
     )

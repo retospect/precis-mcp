@@ -273,6 +273,12 @@ def _ring_design() -> dict[str, Any]:
                 "generator": "ewod_pad_array",
                 "params": {
                     "grid": [8, 8],
+                    # gr520794: place refuses an outline outside +x/+y —
+                    # the whole board shifted +20,+20 so the outline's
+                    # minimum corner lands on (0,0); the array's anchor
+                    # moves with the frame.
+                    "x": 20,
+                    "y": 20,
                     # docs/backlog/pcb-ewod-multitile.md "Rulings
                     # 2026-09-19" items 3/10 -- same dogfood-fixture
                     # convention as tests/test_pcb_ewod_dogfood.py: declare
@@ -301,7 +307,9 @@ def _ring_design() -> dict[str, Any]:
         "features": [
             {
                 "ftype": "outline",
-                "geom": {"path": [[-20, -20], [20, -20], [20, 20], [-20, 20]]},
+                # gr520794: place refuses an outline outside +x/+y —
+                # the same board shifted so its minimum corner is (0,0).
+                "geom": {"path": [[0, 0], [40, 0], [40, 40], [0, 40]]},
             },
         ],
     }

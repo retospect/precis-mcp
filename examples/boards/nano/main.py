@@ -176,14 +176,18 @@ def build() -> pcb.Board:
     )
     boot15 = b.net(  # board='nano-usb-pd-test'
         "BOOT15",
+        current=0.001,
         voltage=25.0,
         note="bootstrap — floats ~5 V over SW",
     )
-    fb15 = b.net("FB15", voltage=0.8)  # board='nano-usb-pd-test'
-    en15 = b.net(
-        "EN15", voltage=20.0, note="enable pulled to VBUS"
-    )  # board='nano-usb-pd-test'
-    comp15 = b.net("COMP15", voltage=5.0)  # board='nano-usb-pd-test'
+    fb15 = b.net("FB15", current=0.001, voltage=0.8)  # board='nano-usb-pd-test'
+    en15 = b.net(  # board='nano-usb-pd-test'
+        "EN15",
+        current=0.001,
+        voltage=20.0,
+        note="enable pulled to VBUS",
+    )
+    comp15 = b.net("COMP15", current=0.001, voltage=5.0)  # board='nano-usb-pd-test'
     sw9 = b.net(  # board='nano-usb-pd-test'
         "SW9",
         cls="power",
@@ -193,14 +197,18 @@ def build() -> pcb.Board:
     )
     boot9 = b.net(  # board='nano-usb-pd-test'
         "BOOT9",
+        current=0.001,
         voltage=25.0,
         note="bootstrap — floats ~5 V over SW",
     )
-    fb9 = b.net("FB9", voltage=0.8)  # board='nano-usb-pd-test'
-    en9 = b.net(
-        "EN9", voltage=20.0, note="enable pulled to VBUS"
-    )  # board='nano-usb-pd-test'
-    comp9 = b.net("COMP9", voltage=5.0)  # board='nano-usb-pd-test'
+    fb9 = b.net("FB9", current=0.001, voltage=0.8)  # board='nano-usb-pd-test'
+    en9 = b.net(  # board='nano-usb-pd-test'
+        "EN9",
+        current=0.001,
+        voltage=20.0,
+        note="enable pulled to VBUS",
+    )
+    comp9 = b.net("COMP9", current=0.001, voltage=5.0)  # board='nano-usb-pd-test'
     sw5 = b.net(  # board='nano-usb-pd-test'
         "SW5",
         cls="power",
@@ -210,16 +218,21 @@ def build() -> pcb.Board:
     )
     boot5 = b.net(  # board='nano-usb-pd-test'
         "BOOT5",
+        current=0.001,
         voltage=25.0,
         note="bootstrap — floats ~5 V over SW",
     )
-    fb5 = b.net("FB5", voltage=0.8)  # board='nano-usb-pd-test'
-    en5 = b.net(
-        "EN5", voltage=20.0, note="enable pulled to VBUS"
-    )  # board='nano-usb-pd-test'
-    comp5 = b.net("COMP5", voltage=5.0)  # board='nano-usb-pd-test'
+    fb5 = b.net("FB5", current=0.001, voltage=0.8)  # board='nano-usb-pd-test'
+    en5 = b.net(  # board='nano-usb-pd-test'
+        "EN5",
+        current=0.001,
+        voltage=20.0,
+        note="enable pulled to VBUS",
+    )
+    comp5 = b.net("COMP5", current=0.001, voltage=5.0)  # board='nano-usb-pd-test'
     gate1 = b.net(  # board='nano-usb-pd-test'
         "GATE1",
+        current=0.001,
         voltage=30.0,
         note="TODO(netlist-review): high-side topology is PROVISIONAL — MIC5019-class charge-pump driver + N-FET, unvalidated; resolves the brief's high-side requirement at review (docs/backlog/pcb-usb-c-pd-nano-testboard.md §Topology); gate sits ~10 V over the 20 V source",
     )
@@ -232,6 +245,7 @@ def build() -> pcb.Board:
     )
     gate2 = b.net(  # board='nano-usb-pd-test'
         "GATE2",
+        current=0.001,
         voltage=30.0,
         note="TODO(netlist-review): high-side topology is PROVISIONAL — MIC5019-class charge-pump driver + N-FET, unvalidated; resolves the brief's high-side requirement at review (docs/backlog/pcb-usb-c-pd-nano-testboard.md §Topology); gate sits ~10 V over the 20 V source",
     )
@@ -244,6 +258,7 @@ def build() -> pcb.Board:
     )
     gate3 = b.net(  # board='nano-usb-pd-test'
         "GATE3",
+        current=0.001,
         voltage=30.0,
         note="TODO(netlist-review): high-side topology is PROVISIONAL — MIC5019-class charge-pump driver + N-FET, unvalidated; resolves the brief's high-side requirement at review (docs/backlog/pcb-usb-c-pd-nano-testboard.md §Topology); gate sits ~10 V over the 20 V source",
     )
@@ -256,6 +271,7 @@ def build() -> pcb.Board:
     )
     gate4 = b.net(  # board='nano-usb-pd-test'
         "GATE4",
+        current=0.001,
         voltage=30.0,
         note="TODO(netlist-review): high-side topology is PROVISIONAL — MIC5019-class charge-pump driver + N-FET, unvalidated; resolves the brief's high-side requirement at review (docs/backlog/pcb-usb-c-pd-nano-testboard.md §Topology); gate sits ~10 V over the 20 V source",
     )
@@ -266,82 +282,111 @@ def build() -> pcb.Board:
         voltage=20.0,
         note="TODO(netlist-review): high-side topology is PROVISIONAL — MIC5019-class charge-pump driver + N-FET, unvalidated; resolves the brief's high-side requirement at review (docs/backlog/pcb-usb-c-pd-nano-testboard.md §Topology); 20 V / 5 A envelope",
     )
-    cc1 = b.net(
-        "CC1", voltage=5.0, note="USB-C CC line to STUSB4500"
-    )  # board='nano-usb-pd-test'
-    cc2 = b.net(
-        "CC2", voltage=5.0, note="USB-C CC line to STUSB4500"
-    )  # board='nano-usb-pd-test'
-    sda = b.net(
-        "SDA", voltage=5.0, note="I2C, shared with Nano A4"
-    )  # board='nano-usb-pd-test'
-    scl = b.net(
-        "SCL", voltage=5.0, note="I2C, shared with Nano A5"
-    )  # board='nano-usb-pd-test'
-    rst = b.net("RST", voltage=5.0)  # board='nano-usb-pd-test'
-    aref = b.net("AREF", voltage=5.0)  # board='nano-usb-pd-test'
-    tx = b.net("TX", voltage=5.0)  # board='nano-usb-pd-test'
-    rx = b.net("RX", voltage=5.0)  # board='nano-usb-pd-test'
-    x1 = b.net("X1", voltage=5.0)  # board='nano-usb-pd-test'
-    x2 = b.net("X2", voltage=5.0)  # board='nano-usb-pd-test'
+    cc1 = b.net(  # board='nano-usb-pd-test'
+        "CC1",
+        current=0.001,
+        voltage=5.0,
+        note="USB-C CC line to STUSB4500",
+    )
+    cc2 = b.net(  # board='nano-usb-pd-test'
+        "CC2",
+        current=0.001,
+        voltage=5.0,
+        note="USB-C CC line to STUSB4500",
+    )
+    sda = b.net(  # board='nano-usb-pd-test'
+        "SDA",
+        current=0.001,
+        voltage=5.0,
+        note="I2C, shared with Nano A4",
+    )
+    scl = b.net(  # board='nano-usb-pd-test'
+        "SCL",
+        current=0.001,
+        voltage=5.0,
+        note="I2C, shared with Nano A5",
+    )
+    rst = b.net("RST", current=0.001, voltage=5.0)  # board='nano-usb-pd-test'
+    aref = b.net("AREF", current=0.001, voltage=5.0)  # board='nano-usb-pd-test'
+    tx = b.net("TX", current=0.001, voltage=5.0)  # board='nano-usb-pd-test'
+    rx = b.net("RX", current=0.001, voltage=5.0)  # board='nano-usb-pd-test'
+    x1 = b.net("X1", current=0.001, voltage=5.0)  # board='nano-usb-pd-test'
+    x2 = b.net("X2", current=0.001, voltage=5.0)  # board='nano-usb-pd-test'
     err_cable = b.net(  # board='nano-usb-pd-test'
         "ERR_CABLE",
+        current=0.001,
         voltage=5.0,
         note="PDO table: 20 V/3 A advertised but no 5 A → cable not e-marked",
     )
     err_source = b.net(  # board='nano-usb-pd-test'
         "ERR_SOURCE",
+        current=0.001,
         voltage=5.0,
         note="PDO table: no 20 V at all → source is the limit",
     )
-    d2 = b.net("D2", voltage=5.0)  # board='nano-usb-pd-test'
-    d3 = b.net("D3", voltage=5.0)  # board='nano-usb-pd-test'
-    d4 = b.net("D4", voltage=5.0)  # board='nano-usb-pd-test'
-    d5 = b.net("D5", voltage=5.0)  # board='nano-usb-pd-test'
-    d6 = b.net("D6", voltage=5.0)  # board='nano-usb-pd-test'
-    d7 = b.net("D7", voltage=5.0)  # board='nano-usb-pd-test'
-    d8 = b.net("D8", voltage=5.0)  # board='nano-usb-pd-test'
-    d9 = b.net("D9", voltage=5.0)  # board='nano-usb-pd-test'
-    d10 = b.net("D10", voltage=5.0)  # board='nano-usb-pd-test'
+    d2 = b.net("D2", current=0.001, voltage=5.0)  # board='nano-usb-pd-test'
+    d3 = b.net("D3", current=0.001, voltage=5.0)  # board='nano-usb-pd-test'
+    d4 = b.net("D4", current=0.001, voltage=5.0)  # board='nano-usb-pd-test'
+    d5 = b.net("D5", current=0.001, voltage=5.0)  # board='nano-usb-pd-test'
+    d6 = b.net("D6", current=0.001, voltage=5.0)  # board='nano-usb-pd-test'
+    d7 = b.net("D7", current=0.001, voltage=5.0)  # board='nano-usb-pd-test'
+    d8 = b.net("D8", current=0.001, voltage=5.0)  # board='nano-usb-pd-test'
+    d9 = b.net("D9", current=0.001, voltage=5.0)  # board='nano-usb-pd-test'
+    d10 = b.net("D10", current=0.001, voltage=5.0)  # board='nano-usb-pd-test'
     d11 = b.net(  # board='nano-usb-pd-test'
         "D11",
+        current=0.001,
         voltage=5.0,
         note="TODO(netlist-review): shared — ICSP MOSI + EN4 channel",
     )
     d12 = b.net(  # board='nano-usb-pd-test'
         "D12",
+        current=0.001,
         voltage=5.0,
         note="TODO(netlist-review): shared — ICSP MISO + ERR_SOURCE LED",
     )
     d13 = b.net(  # board='nano-usb-pd-test'
         "D13",
+        current=0.001,
         voltage=5.0,
         note="TODO(netlist-review): shared — ICSP SCK + ERR_CABLE LED",
     )
-    a0 = b.net("A0", voltage=5.0)  # board='nano-usb-pd-test'
-    a1 = b.net("A1", voltage=5.0)  # board='nano-usb-pd-test'
-    a2 = b.net("A2", voltage=5.0)  # board='nano-usb-pd-test'
-    a3 = b.net("A3", voltage=5.0)  # board='nano-usb-pd-test'
-    a6 = b.net("A6", voltage=5.0)  # board='nano-usb-pd-test'
-    a7 = b.net("A7", voltage=5.0)  # board='nano-usb-pd-test'
+    a0 = b.net("A0", current=0.001, voltage=5.0)  # board='nano-usb-pd-test'
+    a1 = b.net("A1", current=0.001, voltage=5.0)  # board='nano-usb-pd-test'
+    a2 = b.net("A2", current=0.001, voltage=5.0)  # board='nano-usb-pd-test'
+    a3 = b.net("A3", current=0.001, voltage=5.0)  # board='nano-usb-pd-test'
+    a6 = b.net("A6", current=0.001, voltage=5.0)  # board='nano-usb-pd-test'
+    a7 = b.net("A7", current=0.001, voltage=5.0)  # board='nano-usb-pd-test'
     led_v20 = b.net(  # board='nano-usb-pd-test'
         "LED_V20",
+        current=0.001,
         voltage=20.0,
         note="rail-present LED drop",
     )
     led_v15 = b.net(  # board='nano-usb-pd-test'
         "LED_V15",
+        current=0.001,
         voltage=15.0,
         note="rail-present LED drop",
     )
-    led_v9 = b.net(
-        "LED_V9", voltage=9.0, note="rail-present LED drop"
+    led_v9 = b.net(  # board='nano-usb-pd-test'
+        "LED_V9",
+        current=0.001,
+        voltage=9.0,
+        note="rail-present LED drop",
+    )
+    led_v5 = b.net(  # board='nano-usb-pd-test'
+        "LED_V5",
+        current=0.001,
+        voltage=5.0,
+        note="rail-present LED drop",
+    )
+    pd_vreg_1v2 = b.net(
+        "PD_VREG_1V2", current=0.001, voltage=1.2
     )  # board='nano-usb-pd-test'
-    led_v5 = b.net(
-        "LED_V5", voltage=5.0, note="rail-present LED drop"
+    pd_vreg_2v7 = b.net(
+        "PD_VREG_2V7", current=0.001, voltage=2.7
     )  # board='nano-usb-pd-test'
-    pd_vreg_1v2 = b.net("PD_VREG_1V2", voltage=1.2)  # board='nano-usb-pd-test'
-    pd_vreg_2v7 = b.net("PD_VREG_2V7", voltage=2.7)  # board='nano-usb-pd-test'
 
     # parts
     j_usb = b.part(  # board='nano-usb-pd-test' lcsc:C165948

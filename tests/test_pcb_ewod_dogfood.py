@@ -208,6 +208,12 @@ def _design(escape_layers: list[str] | None = None) -> dict[str, Any]:
                 "generator": "ewod_pad_array",
                 "params": {
                     "grid": [8, 8],
+                    # gr520794: place refuses an outline outside +x/+y —
+                    # the whole board shifted +15,+15 so the outline's
+                    # minimum corner lands on (0,0); the array's anchor
+                    # and every authored part move with the frame.
+                    "x": 15,
+                    "y": 15,
                     # Rulings 2026-09-19 items 3/10: a declared drive
                     # voltage derives `hv_separation` from IPC-2221B's B4
                     # column instead of falling back to the fab spacing
@@ -340,8 +346,8 @@ def _design(escape_layers: list[str] | None = None) -> dict[str, Any]:
                 "part": _TEMP_SENSOR_LCSC,
                 "footprint": "SOT-563",
                 "layer": "bottom",
-                "x": 20.0,
-                "y": 0.0,
+                "x": 35.0,
+                "y": 15.0,
                 "fixed": "both",
                 "pins": [{"name": p} for p in _TEMP_SENSOR_PINS],
             },
@@ -349,8 +355,8 @@ def _design(escape_layers: list[str] | None = None) -> dict[str, Any]:
                 "refdes": "POGO1",
                 "label": "Top-plate pogo terminal (TODO: real part)",
                 "footprint": "pogo-ring-4",
-                "x": 20.0,
-                "y": 10.0,
+                "x": 35.0,
+                "y": 25.0,
                 "fixed": "both",
                 "pins": [{"name": "TOP"}],
             },
@@ -358,8 +364,8 @@ def _design(escape_layers: list[str] | None = None) -> dict[str, Any]:
                 "refdes": "J_HV",
                 "label": "HV-in connector",
                 "footprint": "hv-in-connector",
-                "x": 20.0,
-                "y": -10.0,
+                "x": 35.0,
+                "y": 5.0,
                 "fixed": "both",
                 "pins": [{"name": "HV+"}, {"name": "HV-"}],
             },
@@ -367,8 +373,8 @@ def _design(escape_layers: list[str] | None = None) -> dict[str, Any]:
                 "refdes": "R_BLEED",
                 "label": "HV rail bleed resistor",
                 "footprint": "bleed-resistor-0805",
-                "x": 20.0,
-                "y": -6.0,
+                "x": 35.0,
+                "y": 9.0,
                 "fixed": "both",
                 "pins": [{"name": "1"}, {"name": "2"}],
             },
@@ -376,8 +382,8 @@ def _design(escape_layers: list[str] | None = None) -> dict[str, Any]:
                 "refdes": "J_INSTR",
                 "label": "Instrument pin header (power + I2C)",
                 "footprint": "pinheader-4",
-                "x": 20.0,
-                "y": 5.0,
+                "x": 35.0,
+                "y": 20.0,
                 "fixed": "both",
                 "pins": [{"name": str(i + 1)} for i in range(4)],
             },
@@ -385,8 +391,8 @@ def _design(escape_layers: list[str] | None = None) -> dict[str, Any]:
                 "refdes": "J_SERIAL",
                 "label": "Serial bus out header (DIN/DOUT)",
                 "footprint": "serial-header-2",
-                "x": 20.0,
-                "y": 15.0,
+                "x": 35.0,
+                "y": 30.0,
                 "fixed": "both",
                 "pins": [{"name": "1"}, {"name": "2"}],
             },
@@ -421,7 +427,9 @@ def _design(escape_layers: list[str] | None = None) -> dict[str, Any]:
         "features": [
             {
                 "ftype": "outline",
-                "geom": {"path": [[-15, -15], [35, -15], [35, 25], [-15, 25]]},
+                # gr520794: place refuses an outline outside +x/+y —
+                # the same board shifted so its minimum corner is (0,0).
+                "geom": {"path": [[0, 0], [50, 0], [50, 40], [0, 40]]},
             },
         ],
     }
@@ -932,6 +940,16 @@ def test_dogfood_place_keeps_every_land_off_the_authored_plaza_vias(pcb, store):
     slug = _seed(pcb)
     ref = store.get_ref(kind="pcb", id=slug)
     assert ref is not None
+    pcb.put(
+        id=slug,
+        args={
+            "nets": [
+                {"name": n["name"], "current": 0.001}
+                for n in store.pcb_graph(ref.id)["nets"]
+                if n.get("est_current_a") is None
+            ]
+        },
+    )
     resp = pcb.put(id=slug, args={"op": "place", "seed": 1})
     assert "enqueued" in resp.body
     _drain_one_job(store, ref.id)

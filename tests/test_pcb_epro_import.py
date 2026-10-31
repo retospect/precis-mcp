@@ -925,6 +925,15 @@ def test_route_enqueues_without_refusing(pcb, imported) -> None:
     which is the check that the import and the job ops agree."""
     with pytest.raises(BadInput, match="routing is retired"):
         pcb.put(id=imported.slug, args={"op": "route"})
+    pcb.put(
+        id=imported.slug,
+        args={
+            "nets": [
+                {"name": n["name"], "current": 0.001}
+                for n in pcb.store.pcb_graph(imported.ref_id)["nets"]
+            ]
+        },
+    )
     res = pcb.put(id=imported.slug, args={"op": "place"})
     assert "refus" not in res.body.lower()
 

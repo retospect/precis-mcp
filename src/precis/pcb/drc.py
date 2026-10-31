@@ -3330,14 +3330,15 @@ def check_keepout_copper(
 def check_board_origin(
     model: dict[str, Any], outline: list[list[float]] | None = None
 ) -> list[DrcFinding]:
-    """Positive-quadrant nudge (gr520794): nothing requires board
-    geometry to sit at ``x,y >= 0`` with its bbox minimum near the
-    origin — but a board that does reads the same in the fab outputs as
-    it does to a human, one shared frame for gerbers, the SVG views and
-    whoever holds the callipers. When an outline vertex or a pad centre
-    carries a negative coordinate ONE aggregated ``warn`` names the
-    extreme — a convention note, never a ``deny``: asymmetric outline
-    shapes legitimately centre on the origin."""
+    """Positive-quadrant nudge (gr520794): a board that sits at
+    ``x,y >= 0`` with its bbox minimum near the origin reads the same in
+    the fab outputs as it does to a human, one shared frame for gerbers,
+    the SVG views and whoever holds the callipers. When an outline vertex
+    or a pad centre carries a negative coordinate ONE aggregated ``warn``
+    names the extreme — on THIS surface it stays a convention note for a
+    mid-authoring board, while ``op='place'`` refuses the same condition
+    outright at the tool gate (Reto 2026-10-28:
+    ``PcbHandler._require_layout_ready``)."""
     xs: list[float] = []
     ys: list[float] = []
     for p in outline or []:

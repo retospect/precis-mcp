@@ -852,57 +852,57 @@
       "current": 0.5,
       "working_voltage_v": 0.0
     },
-    {
+    {"current": 0.001,
       "name": "SDA",
       "class": "i2c"
     },
-    {
+    {"current": 0.001,
       "name": "SCL",
       "class": "i2c"
     },
-    {
+    {"current": 0.001,
       "name": "EN"
     },
-    {
+    {"current": 0.001,
       "name": "BOOT"
     },
-    {
+    {"current": 0.001,
       "name": "GPIO2"
     },
-    {
+    {"current": 0.001,
       "name": "GPIO3"
     },
-    {
+    {"current": 0.001,
       "name": "GPIO8"
     },
-    {
+    {"current": 0.001,
       "name": "GPIO9"
     },
-    {
+    {"current": 0.001,
       "name": "TXD"
     },
-    {
+    {"current": 0.001,
       "name": "RXD"
     },
-    {
+    {"current": 0.001,
       "name": "LED_A"
     },
-    {
+    {"current": 0.001,
       "name": "J1_P5"
     },
-    {
+    {"current": 0.001,
       "name": "J1_P6"
     },
-    {
+    {"current": 0.001,
       "name": "J1_P7"
     },
-    {
+    {"current": 0.001,
       "name": "J1_P8"
     },
-    {
+    {"current": 0.001,
       "name": "EN_FILT"
     },
-    {
+    {"current": 0.001,
       "name": "PGOOD_A"
     }
   ],

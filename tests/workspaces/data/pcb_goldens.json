@@ -5,7 +5,7 @@
   "nets": 2,
   "not_checked": [],
   "parts": 2,
-  "sha256": "2d1d09d1fe6b2a00103d7a9c0c5df05fc3a53570b0bef179d70c23fc56689bbe"
+  "sha256": "ff0cf3eb1fcdf75fec84ea7539a80256b05a0686507854b5b2803dbb1a00843a"
  },
  "esp32c3": {
   "connections": 81,
@@ -43,7 +43,7 @@
    "C16"
   ],
   "parts": 29,
-  "sha256": "6927839e78990bf08502a80294a543e747fc141904e1cca4a44f127112331221"
+  "sha256": "6aaf22b0fd45859e1a259046fc298cd00f723b3db34882d108c832462bb59aec"
  },
  "nano": {
   "connections": 270,
@@ -94,7 +94,7 @@
    "R_GS4"
   ],
   "parts": 86,
-  "sha256": "f61137228244af50627569032c31608607458b67cafee6312758605373c7134d"
+  "sha256": "fe10c5edb4cf735bd524c0e42749a9b834c30539ad284592e64246d8a4c26704"
  },
  "nano_usb_pd": {
   "connections": 270,
@@ -145,7 +145,7 @@
    "R_GS4"
   ],
   "parts": 86,
-  "sha256": "f61137228244af50627569032c31608607458b67cafee6312758605373c7134d"
+  "sha256": "fe10c5edb4cf735bd524c0e42749a9b834c30539ad284592e64246d8a4c26704"
  },
  "nano_usb_pd_r2": {
   "connections": 298,
@@ -206,7 +206,7 @@
    "R_PD4"
   ],
   "parts": 103,
-  "sha256": "4821090428f50d66c9c2c9297706241213663f303229be83f519b3c878b1b985"
+  "sha256": "050e001d04a89b6b4813785512cb39088dde0ce76e64b83a1301d9a774d9e5e5"
  },
  "sanity": {
   "connections": 40,
@@ -214,7 +214,7 @@
   "nets": 20,
   "not_checked": [],
   "parts": 4,
-  "sha256": "edf64376d4faff502a787d4c17968179852f19283101ece9fb778068cc2c1dad"
+  "sha256": "e74d4eddc8f5f9d6ca2e2043cee9729a4a17722e93107e6519c9a96447eba868"
  },
  "usbc_attiny": {
   "connections": 36,
@@ -222,6 +222,6 @@
   "nets": 8,
   "not_checked": [],
   "parts": 11,
-  "sha256": "beeca66326fb8bc73d1b6e26870cfddd3a898374ef669ad806410ae59a7f8c12"
+  "sha256": "8e822dcf74fb4b8659e608126db3c0b16253c47889e3dea07f151edb23f48585"
  }
 }

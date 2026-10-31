@@ -3078,8 +3078,11 @@ def route_design(
     stage plus each of ``assign_layers``' search rounds — ``None``
     keeps the route silent; the job wires it to ``job_event`` chunks,
     the laptop path exposes it as ``progress=``."""
+    from precis.pcb.currents import require_net_currents
     from precis.pcb.topoplace.mesh import build_mesh
     from precis.pcb.topoplace.wires import build_wires
+
+    require_net_currents(zip(ir.net_name, ir.net_current_a))
 
     mesh_pose = d.pose0 if pose is None else pose
     mesh = build_mesh(d, mesh_pose)

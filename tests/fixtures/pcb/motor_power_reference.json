@@ -570,22 +570,28 @@
     },
     {
       "name": "SW",
-      "class": "power"
+      "class": "power",
+      "current": 0.001
     },
     {
-      "name": "BOOT"
+      "name": "BOOT",
+      "current": 0.001
     },
     {
-      "name": "FB"
+      "name": "FB",
+      "current": 0.001
     },
     {
-      "name": "EN"
+      "name": "EN",
+      "current": 0.001
     },
     {
-      "name": "IN1"
+      "name": "IN1",
+      "current": 0.001
     },
     {
-      "name": "IN2"
+      "name": "IN2",
+      "current": 0.001
     },
     {
       "name": "OUT_A",
@@ -598,16 +604,20 @@
       "current": 3.0
     },
     {
-      "name": "ISENSE"
+      "name": "ISENSE",
+      "current": 0.001
     },
     {
-      "name": "LED_A"
+      "name": "LED_A",
+      "current": 0.001
     },
     {
-      "name": "AUX_EN"
+      "name": "AUX_EN",
+      "current": 0.001
     },
     {
-      "name": "VM_TP"
+      "name": "VM_TP",
+      "current": 0.001
     }
   ],
   "connections": [

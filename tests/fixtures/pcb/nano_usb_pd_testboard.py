@@ -816,21 +816,24 @@ def _nets() -> list[dict[str, Any]]:
                 "note": "buck switch node; swings 0..VBUS",
             },
             {
+                "current": 0.001,
                 "name": f"BOOT{r}",
                 "working_voltage_v": 25.0,
                 "note": "bootstrap — floats ~5 V over SW",
             },
-            {"name": f"FB{r}", "working_voltage_v": 0.8},
+            {"current": 0.001, "name": f"FB{r}", "working_voltage_v": 0.8},
             {
+                "current": 0.001,
                 "name": f"EN{r}",
                 "working_voltage_v": 20.0,
                 "note": "enable pulled to VBUS",
             },
-            {"name": f"COMP{r}", "working_voltage_v": 5.0},
+            {"current": 0.001, "name": f"COMP{r}", "working_voltage_v": 5.0},
         ]
     for i in range(1, 5):
         nets += [
             {
+                "current": 0.001,
                 "name": f"GATE{i}",
                 "working_voltage_v": 30.0,
                 "note": _HS_TODO + "; gate sits ~10 V over the 20 V source",
@@ -863,6 +866,7 @@ def _nets() -> list[dict[str, Any]]:
     ):
         nets.append(
             {
+                "current": 0.001,
                 "name": name,
                 "working_voltage_v": volts,
                 **({"note": note} if note else {}),
@@ -878,6 +882,7 @@ def _nets() -> list[dict[str, Any]]:
     }
     nets += [
         {
+            "current": 0.001,
             "name": f"D{i}",
             "working_voltage_v": 5.0,
             **({"note": _d_notes[i]} if i in _d_notes else {}),
@@ -885,13 +890,14 @@ def _nets() -> list[dict[str, Any]]:
         for i in range(2, 14)
     ]
     nets += [
-        {"name": n, "working_voltage_v": 5.0}
+        {"current": 0.001, "name": n, "working_voltage_v": 5.0}
         for n in ("A0", "A1", "A2", "A3", "A6", "A7")
     ]
     for r in ("20", *_RAILS):
         volts = 20.0 if r == "20" else float(r)
         nets.append(
             {
+                "current": 0.001,
                 "name": f"LED_V{r}",
                 "working_voltage_v": volts,
                 "note": "rail-present LED drop",
@@ -1317,8 +1323,8 @@ def build_design() -> dict[str, Any]:
         "components": _classified(_components()),
         "nets": _nets()
         + [
-            {"name": "PD_VREG_1V2", "working_voltage_v": 1.2},
-            {"name": "PD_VREG_2V7", "working_voltage_v": 2.7},
+            {"current": 0.001, "name": "PD_VREG_1V2", "working_voltage_v": 1.2},
+            {"current": 0.001, "name": "PD_VREG_2V7", "working_voltage_v": 2.7},
         ],
         "connections": _connections(),
         "features": FEATURES,
