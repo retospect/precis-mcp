@@ -2092,6 +2092,7 @@ def run_kinetics_subprocess(
         "nodes": results_json.get("nodes"),
         "edges": results_json.get("edges"),
         "score": results_json.get("score"),
+        "thermo": results_json.get("thermo"),
         "tpd": tpd,
     }
     with tempfile.TemporaryDirectory(prefix="autocatpath-kinetics-") as td:
@@ -2523,6 +2524,7 @@ def _kinetics_child(req: dict[str, Any], out_path: str, mem_cap: int = 0) -> int
             "nodes": req.get("nodes"),
             "edges": req.get("edges"),
             "score": req.get("score"),
+            "thermo": req.get("thermo"),
         }
     }
     try:

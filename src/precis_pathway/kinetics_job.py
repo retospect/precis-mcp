@@ -103,9 +103,15 @@ _CLEARS = {
     "kinetics_tpd": "kinetics_tpd_error",
 }
 
-_DEFAULT_WALL_S = 3600
-#: TPD check, kinetics solve and sweep each run under their own ceiling.
-_N_STEPS = 3
+#: The per-step ceiling (s) when ``PRECIS_AUTOCATPATH_KINETICS_SECONDS`` is
+#: unset, the same default as ``runner._kinetics_timeout_s``.
+_DEFAULT_STEP_S = 900
+#: The sweep gets this many step budgets: 48 points with an order stencil per
+#: gas plus the optimum search outran one on 511428 (job 544260).
+_SWEEP_STEPS = 3
+#: TPD check and kinetics solve take one step each.
+_N_STEPS = 2 + _SWEEP_STEPS
+_DEFAULT_WALL_S = _N_STEPS * _DEFAULT_STEP_S + 300
 
 
 def _wall_seconds() -> float:
@@ -122,6 +128,20 @@ def _wall_seconds() -> float:
     if step <= 0:
         return float(_DEFAULT_WALL_S)
     return float(max(_DEFAULT_WALL_S, _N_STEPS * step + 300))
+
+
+def _sweep_budget_s() -> int:
+    """The sweep child's ceiling; 0 (unbounded steps) stays 0."""
+    try:
+        step = int(os.environ.get("PRECIS_AUTOCATPATH_KINETICS_SECONDS", ""))
+    except ValueError:
+        step = _DEFAULT_STEP_S
+    return max(0, step) * _SWEEP_STEPS
+
+
+def _tpd_family(config: dict[str, Any]) -> Any:
+    """The reference family the TPD check would compare against."""
+    return ((config.get("kinetics") or {}).get("tpd") or {}).get("family")
 
 
 def overlay_recompute_config(
@@ -176,7 +196,11 @@ def compute(
         results.pop(key, None)
 
     tpd: dict[str, Any] | None = None
-    if runner.has_tpd():
+    if not _tpd_family(config):
+        # with no family every adsorbate ends as no_reference and no offset can
+        # apply, so the ramp would spend its whole budget to produce nothing
+        note("autocatpath_kinetics: TPD skipped (no kinetics.tpd.family)")
+    elif runner.has_tpd():
         tpd = _tpd_check(runner, config, results, note)
 
     note("autocatpath_kinetics: kinetics solve")
@@ -197,7 +221,7 @@ def compute(
         note(f"autocatpath_kinetics: kinetics solved (tof_mf={tof})")
 
     note("autocatpath_kinetics: sweeping (T, p_total)")
-    runner.run_kinetics_sweep_subprocess(config, results)
+    runner.run_kinetics_sweep_subprocess(config, results, timeout=_sweep_budget_s())
     if "kinetics_sweep_error" in results:
         # a sweep failure is not a pathway-fatal: the v2 record + the error
         # both persist so the surface stays honest.
@@ -360,6 +384,11 @@ def _finalize(
         for ok_key, err_key in _CLEARS.items():
             if ok_key in results:
                 res_meta.pop(err_key, None)  # a fresh success retires its error
+        if "kinetics_sweep_error" in results and "kinetics_sweep" not in results:
+            # the stored sweep was solved under another request: kept, but it
+            # must not read as this request's answer
+            if "kinetics_sweep" in res_meta:
+                res_meta["kinetics_sweep_previous"] = res_meta.pop("kinetics_sweep")
         res_meta.update({k: results[k] for k in _OUTPUT_KEYS if k in results})
         cur["results"] = res_meta
         # a failed solve's rate-control sum is NaN, which Jsonb refuses

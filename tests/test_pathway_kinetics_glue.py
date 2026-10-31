@@ -1144,13 +1144,76 @@ def test_job_is_detached_and_sized_from_the_kinetics_env(monkeypatch) -> None:
     assert spec.requires == frozenset()
     assert spec.wall_seconds is not None
     monkeypatch.delenv("PRECIS_AUTOCATPATH_KINETICS_SECONDS", raising=False)
-    assert spec.wall_seconds() == 3600.0
+    assert spec.wall_seconds() == 4800.0
     monkeypatch.setenv("PRECIS_AUTOCATPATH_KINETICS_SECONDS", "2400")
-    assert spec.wall_seconds() == 3 * 2400 + 300  # three steps, each <= 2400 s
+    # TPD and solve one step each, the sweep three
+    assert spec.wall_seconds() == 5 * 2400 + 300
+    assert kinetics_job._sweep_budget_s() == 7200
     monkeypatch.setenv("PRECIS_AUTOCATPATH_KINETICS_SECONDS", "0")
-    assert spec.wall_seconds() == 3600.0  # unbounded steps: the deadline bounds it
+    assert spec.wall_seconds() == 4800.0  # unbounded steps: the deadline bounds it
+    assert kinetics_job._sweep_budget_s() == 0
     monkeypatch.setenv("PRECIS_AUTOCATPATH_KINETICS_SECONDS", "junk")
-    assert spec.wall_seconds() == 3600.0
+    assert spec.wall_seconds() == 4800.0
+    assert kinetics_job._sweep_budget_s() == 2700
+
+
+def test_compute_skips_the_tpd_ramp_without_a_reference_family(monkeypatch) -> None:
+    """No family means no comparison and no offset: the ramp timed out at 900 s
+    on 511428 and 527720 to produce nothing."""
+    from precis_pathway import kinetics_job
+
+    ramps: list[dict] = []
+    _fake_runner(
+        monkeypatch,
+        has_tpd=lambda: True,
+        run_kinetics_tpd_subprocess=lambda cfg, res: ramps.append(cfg),
+        run_kinetics_subprocess=lambda cfg, artifact, **k: None,
+        run_kinetics_sweep_subprocess=lambda cfg, res, **k: None,
+        fold_tpd=lambda res: None,
+    )
+    notes: list[str] = []
+    kinetics_job.compute({"name": "x"}, {}, notes.append)
+    assert ramps == []
+    assert any("TPD skipped" in n for n in notes)
+
+    with_family = {"kinetics": {"tpd": {"family": "Pd111"}}}
+
+    def _ramp(runner: Any, cfg: dict, res: dict, note: Any) -> None:
+        ramps.append(cfg)
+
+    monkeypatch.setattr(kinetics_job, "_tpd_check", _ramp)
+    kinetics_job.compute(with_family, {}, notes.append)
+    assert ramps == [with_family]
+
+
+def test_failed_sweep_moves_the_stored_one_aside(monkeypatch) -> None:
+    """Solved under another request, it must not read as this one's answer."""
+    from precis_pathway import kinetics_job, seed_job
+
+    store = _stored_pathway()
+    store.ref.meta["results"]["kinetics_sweep"] = {"points": [{"T": 1.0}]}
+    envelope = {
+        "results": {
+            "kinetics_v2": {"tof_mf": 1.0},
+            "kinetics_sweep_error": "timed out",
+        },
+        "notes": [],
+    }
+    _fake_runner(
+        monkeypatch,
+        poll_seed_partial_detached=lambda h, **kw: {
+            "state": "done",
+            "result": envelope,
+        },
+    )
+    monkeypatch.setattr(seed_job, "_reap_scratch", lambda ctx, h, *, failed: None)
+
+    kinetics_job._poll(_job_ctx(store), {"dir": "/tmp/x"})
+
+    res = store.ref.meta["results"]
+    assert "kinetics_sweep" not in res
+    assert res["kinetics_sweep_previous"] == {"points": [{"T": 1.0}]}
+    assert res["kinetics_sweep_error"] == "timed out"
 
 
 def test_overlay_replaces_environment_and_drops_its_priced_views() -> None:

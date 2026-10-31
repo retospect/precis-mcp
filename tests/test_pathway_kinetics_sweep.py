@@ -206,6 +206,28 @@ def test_stored_nodes_move_to_the_recompute_environment():
     assert runner._nodes_at_environment(kinetics, cfg, ledgers, refs, g, none) is g
 
 
+def test_kinetics_child_gets_the_thermo_record(monkeypatch, tmp_path):
+    """The solve child needs results.thermo to know what table the nodes were
+    priced at: without it the recompute's move to the new table never ran."""
+    from precis_pathway import runner
+
+    seen: list[dict] = []
+
+    def _capture(config, artifact, **kw):
+        seen.append(dict(artifact["results_json"]))
+
+    monkeypatch.setattr(runner, "run_kinetics", _capture)
+    out = tmp_path / "out.json"
+    req = {
+        "config": {},
+        "nodes": {"*": 0.0},
+        "edges": [],
+        "thermo": {"mode": "vib", "pressures": {}},
+    }
+    runner._kinetics_child(req, str(out))
+    assert seen[0]["thermo"] == {"mode": "vib", "pressures": {}}
+
+
 def test_modes_job_measures_stored_geometry_with_the_engine():
     """The modes child reads a stored extxyz and returns the whole measurement;
     a state it cannot read is reported, the others still run."""
