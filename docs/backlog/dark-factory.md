@@ -474,26 +474,49 @@ plus per-lane `deny_write_paths`, enforced by `--settings` deny rules in
 the session and a poll-time diff check on the server) and the `run_slice`
 hardening — branch `slice/<id>`, env allowlist with no DSN, boot_id in
 the handle (a97d9154c). **Armed in prod the same day:** the
-`plan_dispatch` tick as recurring td543630, `params.dry_run` until
-a97d9154c reaches the slice host; `gripe_validate` as td543715. The
-first plan is gripe-fix td543631 on gr524267; every dry-run pass names
-its triage node as the slice it would dispatch.
+`plan_dispatch` tick dry-ran as recurring td543630 (nine passes, each
+naming the triage node of gripe-fix td543631 on gr524267 as the slice it
+would dispatch), then went live as td543894 once r161 carried a97d9154c;
+`gripe_validate` as td543715. **The first live dispatch (jo543902,
+13:05Z) failed at launch:** an arbitrary cluster worker claimed the
+`run_slice` row and had no git checkout around its installed package.
+The live tick is paused until the capability slice below is deployed and
+a host advertises the slice capabilities (ask td543961: `PRECIS_SLICE_ROOT`
+and `PRECIS_CLAUDE_BIN` in the slice host's worker environment).
 
 Wave 5 (Reto 2026-10-31, "make it work and we dogfood it"), the four
-rulings from the flow review, one slice each: the **lander** — the
-builder commits on `slice/<id>` and stops; the poll's deny check passes
-and a mechanical `land_slice` job runs `scripts/ship`, writes the sha
-into the pending gate and deletes branch + worktree (td543731); **review
-after land** as a `reviewer` generator node in gripe-fix and slice-tree,
-verdict `review: LAND|FIX|REVERT` handled by the tick, dispatch ordered
-by `(prio, id)` across all roots so a release fixer beats a gripe build
-(td543732); the **dark release pass** — `scripts/release --cut-only`
-returns after the push, `ci_verdict_poll` records the GitHub verdict
-without holding a lane, an `answer` gate (approval ask) keeps the deploy
-Reto's under authority.md, `release_deploy` runs after it (td543733);
-the **builder credential** that may push `slice/*` only is a ruling plus
-a secret (ask td543734). Still open: `scripts/ship` refusing a slice
-diff on deny paths pre-land (td543697, harness).
+rulings from the flow review plus two more, all landed the same day:
+the **lander** — the builder commits on `slice/<id>` and stops; the
+poll's deny check passes and a mechanical `land_slice` job runs
+`scripts/ship`, writes the sha into the gate blocked-by the landed todo
+(and only that one) and deletes branch + worktree (87f2a8dbf,
+c215f56fd); **review after land** as a `reviewer` generator node in
+gripe-fix and slice-tree, verdict `review: LAND|FIX|REVERT` handled by
+the tick, FIX mints a fix task, REVERT a revert task and resets the
+sha-in-prod gate, dispatch ordered by `(prio, id)` across all roots
+(152d3a055, a77bec3f7); the **dark release pass** — `scripts/release
+--cut-only` returns after the push, `ci_verdict_poll` parks itself while
+CI runs, an `answer` gate keeps the deploy Reto's, `release_deploy`
+refuses unless the answer names its release, a red verdict re-cuts on
+the first cut's host and restarts the poll (8e689d950, d18e809c4,
+fb5b52048, b6eaee5bf); the release modules in `deny_write_paths` and the
+cut/deploy host pin (d004db304); **capability placement** (Reto: "the
+host that can do it can take it, and alert if none can") — the factory
+job types declare `ServiceSpec.placement` tokens (`run_slice`:
+repo_checkout + claude_bin + git; lander, cut, deploy: repo_checkout +
+git), the heartbeat probes them into `resource_slots`, the claim gate
+places the row, the sweeper's `unschedulable` alert fires when no single
+live host has them all, the tick notes a job queued over ten minutes
+(5b1ab776b); **PR intake** per step 9 — `pr_poll`, the class rules in
+`precis.plans.pr_class`, `dep_check` (relock + resolve under 3.12 and
+3.13, never building), `pr_action` behind an answered ask, `land_slice`
+closing the PR (70637167c). Four of the ten open Dependabot PRs are
+majors (trafilatura too), so four approval asks will appear when
+`pr_poll` is armed. Open: the builder credential that may push `slice/*`
+only (ask td543734); `scripts/ship` refusing a slice diff on deny paths
+pre-land (td543697, harness); land-notify losing the ship's note under
+load (gr543833, twice on 2026-10-31); analyst brief close and PR head
+pin / re-intake (td543919, td543920, building).
 
 ## Next steps, by unlock value
 
