@@ -5,6 +5,9 @@ subject move — each gripe gets ``resolved: <sha> (main, release pending)``
 + STATUS:verify in one put, each todo a ``landed: <sha>`` comment then
 STATUS:done. Pinned here: the subject parser, the exact prod-precis argv,
 and that a refused or crashing prod call never fails (exit 0, one line).
+gr543833: a fault retries once at double the timeout; every handle's calls
+are journaled to the pending dir before they run (kill-safe) and deleted
+once posted; ``replay`` drains the dir.
 """
 
 from __future__ import annotations
@@ -113,6 +116,131 @@ def test_notify_survives_a_timeout(mod: ModuleType) -> None:
     assert line.endswith("failed: gr7 (TimeoutExpired)")
 
 
+def test_notify_retries_once_then_succeeds(mod: ModuleType, tmp_path: Path) -> None:
+    """gr543833: a transient fault (TimeoutExpired) is retried ONCE at
+    double the timeout — a momentarily dead prod must not lose the note."""
+    timeouts: list[float] = []
+
+    def run(cmd: list[str], timeout: float) -> subprocess.CompletedProcess[str]:
+        timeouts.append(timeout)
+        if len(timeouts) == 1:
+            raise subprocess.TimeoutExpired(cmd, timeout)
+        return subprocess.CompletedProcess(cmd, 0, "ok", "")
+
+    line = mod.notify(
+        SHA, "x: y (gr7)", base=["cli"], run=run, timeout=1.0, pending_dir=tmp_path
+    )
+    assert line == f"land-notify {SHA[:9]}: gr7 auto_verify"
+    assert timeouts == [1.0, 2.0]  # first cap, then the doubled retry
+    assert list(tmp_path.glob("*.json")) == []  # posted → journal deleted
+
+
+def test_notify_files_pending_note_after_two_faults(
+    mod: ModuleType, tmp_path: Path
+) -> None:
+    """Both attempts faulting leaves the exact calls on disk, named in the
+    one summary line with the replay hint (gr543833)."""
+    attempts: list[list[str]] = []
+
+    def run(cmd: list[str], timeout: float) -> subprocess.CompletedProcess[str]:
+        attempts.append(cmd)
+        raise subprocess.TimeoutExpired(cmd, timeout)
+
+    line = mod.notify(
+        SHA, "x: y (gr7)", base=["cli"], run=run, timeout=1.0, pending_dir=tmp_path
+    )
+    assert len(attempts) == 2
+    assert "failed: gr7 (TimeoutExpired)" in line
+    assert f"{SHA[:9]}-gr7.json" in line
+    assert "replay: scripts/ship --replay-notes" in line
+    (pending,) = tmp_path.glob("*.json")
+    assert pending.name == f"{SHA[:9]}-gr7.json"
+    note = json.loads(pending.read_text(encoding="utf-8"))
+    assert note["sha"] == SHA
+    assert note["calls"] == mod.payloads(SHA, "x: y (gr7)")[0][1]
+
+
+def test_replay_posts_and_deletes(mod: ModuleType, tmp_path: Path) -> None:
+    """``--replay``'s unit: each pending file's calls run through the same
+    transport; the file is deleted only once they all succeeded."""
+    calls = mod.payloads(SHA, "x: y (gr7, td8)")
+    for label, call_list in calls:
+        handle = label.split()[0]
+        (tmp_path / f"{SHA[:9]}-{handle}.json").write_text(
+            json.dumps(
+                {
+                    "sha": SHA,
+                    "subject": "x: y (gr7, td8)",
+                    "label": label,
+                    "calls": call_list,
+                }
+            ),
+            encoding="utf-8",
+        )
+    seen: list[list[str]] = []
+
+    def run(cmd: list[str], timeout: float) -> subprocess.CompletedProcess[str]:
+        seen.append(cmd)
+        return subprocess.CompletedProcess(cmd, 0, "ok", "")
+
+    posted, left = mod.replay(tmp_path, base=["cli"], run=run, timeout=1.0)
+    assert (posted, left) == (2, 0)
+    assert list(tmp_path.glob("*.json")) == []
+    assert [c[2] for c in seen] == ["put", "put", "tag"]
+
+
+def test_replay_keeps_a_failed_note(mod: ModuleType, tmp_path: Path) -> None:
+    (tmp_path / f"{SHA[:9]}-gr7.json").write_text(
+        json.dumps(
+            {
+                "sha": SHA,
+                "subject": "x: y (gr7)",
+                "label": "gr7 verify",
+                "calls": mod.payloads(SHA, "x: y (gr7)")[0][1],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    def run(cmd: list[str], timeout: float) -> subprocess.CompletedProcess[str]:
+        return subprocess.CompletedProcess(cmd, 3, "", "refused")
+
+    posted, left = mod.replay(tmp_path, base=["cli"], run=run, timeout=1.0)
+    assert (posted, left) == (0, 1)
+    assert (tmp_path / f"{SHA[:9]}-gr7.json").exists()
+
+
+def test_epilogue_still_reports_shipped_when_notify_died(tmp_path: Path) -> None:
+    """gr543833: the incident's transcript ended on the notify — the run
+    was killed mid-call, so no token and a derived ``error`` masked a real
+    land. ship now writes ``SHIP_STATUS: shipped`` into the transcript the
+    moment the land is reported; the epilogue prefers the log's own last
+    token over the rc-derived one."""
+    log = tmp_path / "dead-notify.log"
+    log.write_text(
+        "▶ report\n"
+        "shipped — landed on main:\n"
+        "012345678 fix(x): y (gr7)\n"
+        "SHIP_STATUS: shipped\n"
+        "gripe-note: TimeoutExpired posting on gr7 — not retried\n",
+        encoding="utf-8",
+    )
+    proc = subprocess.run(
+        [
+            "/bin/bash",
+            "-c",
+            f'. "{REPO}/scripts/lib/quiet-log.sh"; quiet_epilogue "{log}" 137 SHIP_STATUS shipped',
+        ],
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        check=False,
+    )
+    assert proc.returncode == 0, proc.stderr
+    assert proc.stdout.rstrip().endswith("SHIP_STATUS: shipped"), proc.stdout
+
+
 def _fake_cli(tmp_path: Path, rc: int) -> tuple[str, Path]:
     log = tmp_path / "calls.jsonl"
     fake = tmp_path / "fake_cli.py"
@@ -126,11 +254,21 @@ def _fake_cli(tmp_path: Path, rc: int) -> tuple[str, Path]:
     return f"{sys.executable} {fake}", log
 
 
-def _main(cli: str, subject: str) -> subprocess.CompletedProcess[str]:
+def _main(cli: str, subject: str, tmp_path: Path) -> subprocess.CompletedProcess[str]:
     env = {**os.environ, "PRECIS_LAND_NOTIFY_CLI": cli}
     env.pop("PRECIS_LAND_NOTIFY", None)
     return subprocess.run(
-        [sys.executable, str(SCRIPT), "--sha", SHA, "--subject", subject],
+        # --pending-dir: journal into the test dir, not the repo's real scratch/
+        [
+            sys.executable,
+            str(SCRIPT),
+            "--sha",
+            SHA,
+            "--subject",
+            subject,
+            "--pending-dir",
+            str(tmp_path),
+        ],
         capture_output=True,
         text=True,
         encoding="utf-8",
@@ -142,7 +280,7 @@ def _main(cli: str, subject: str) -> subprocess.CompletedProcess[str]:
 
 def test_main_posts_through_the_cli(tmp_path: Path) -> None:
     cli, log = _fake_cli(tmp_path, 0)
-    out = _main(cli, "feat(x): y (gr7, td8)")
+    out = _main(cli, "feat(x): y (gr7, td8)", tmp_path)
     assert out.returncode == 0, out.stderr
     assert out.stdout.strip() == f"land-notify {SHA[:9]}: gr7 auto_verify · td8 done"
     lines = log.read_text(encoding="utf-8").splitlines()
@@ -156,13 +294,13 @@ def test_main_posts_through_the_cli(tmp_path: Path) -> None:
 
 def test_main_refusal_never_fails(tmp_path: Path) -> None:
     cli, _ = _fake_cli(tmp_path, 3)
-    out = _main(cli, "feat(x): y (gr7)")
+    out = _main(cli, "feat(x): y (gr7)", tmp_path)
     assert out.returncode == 0
     assert "failed: gr7 (exit 3" in out.stdout
 
 
 def test_main_without_handles_is_silent(tmp_path: Path) -> None:
     cli, log = _fake_cli(tmp_path, 0)
-    out = _main(cli, "feat(x): y")
+    out = _main(cli, "feat(x): y", tmp_path)
     assert out.returncode == 0 and out.stdout == ""
     assert not log.exists()

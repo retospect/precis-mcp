@@ -167,6 +167,11 @@
 #                                        # PRECIS_SHIP_AWAIT_BUDGET s (480),
 #                                        # exits 124 while still running —
 #                                        # re-run the same command.
+#         scripts/ship --replay-notes   # post every unsent land-notify note
+#                                        # parked in
+#                                        # scratch/land-notify-pending/
+#                                        # (gr543833); exit 1 while any
+#                                        # remain.
 #
 # The full-suite path (no --impacted/--quick) also runs the DIFF-COVERAGE gate:
 # pytest runs under pytest-cov in the container, then diff-cover on the HOST
@@ -299,8 +304,9 @@ ORIG_ARGV=("$@")
 # same command until it returns the run's verdict. Two log shapes resolve:
 # the caller's capture file (quiet mode ends it with the epilogue's
 # `SHIP_STATUS: <token>`) and the run's own transcript (the `log:` path, or
-# a --verbose capture — green ends `landed on main` / `release fix landed`,
-# red ends in a ✖ line; every scripts/ship failure path prints one).
+# a --verbose capture — a land prints `SHIP_STATUS: shipped` into the
+# transcript itself, gr543833; a pre-land red ends in a ✖ line; every
+# scripts/ship failure path prints one).
 # scripts/ship-wait stays the GATE waiter (verdict markers, gh run ids);
 # --await answers in ship's own exit-code vocabulary. Handled before flag
 # parsing and the quiet re-exec: it is a standalone verb, not a mode — and
@@ -420,6 +426,17 @@ if [[ "${1:-}" == "--await" ]]; then
     exit 1
 fi
 
+# --replay-notes (gr543833): post every land-notify note still parked in
+# scratch/land-notify-pending/ (one <sha9>-<handle>.json per failed or
+# interrupted notify — see scripts/lib/land_notify.py). A standalone verb
+# like --await: handled before flag parsing, the quiet re-exec and the
+# state record below (it is not a ship run and must not clobber the
+# record --await watches); the exit code is the replay's (0 = nothing
+# left pending).
+if [[ "${1:-}" == "--replay-notes" ]]; then
+    exec python3 "${WORKTREE}/scripts/lib/land_notify.py" --replay
+fi
+
 # ── per-worktree --await state (gr541681) ────────────────────────────────
 # Every run records itself for `scripts/ship --await`: pid/log/start up
 # front, exit + the derived SHIP_STATUS token on the way out (each EXIT
@@ -490,7 +507,7 @@ while :; do
         # get silently dropped (gr209915).
         -m|--message) MSG="${2:-}"; shift 2 ;;
         --) shift; break ;;
-        -*) printf '\033[31m✖ unknown flag %s (known: --await --impacted --mutate --quick --checked --remote --full --slow --release --release-branch --allow-migration --verbose -m/--message)\033[0m\n' "$1" >&2; exit 2 ;;
+        -*) printf '\033[31m✖ unknown flag %s (known: --await --replay-notes --impacted --mutate --quick --checked --remote --full --slow --release --release-branch --allow-migration --verbose -m/--message)\033[0m\n' "$1" >&2; exit 2 ;;
         *) break ;;
     esac
 done
@@ -1371,6 +1388,17 @@ LOCKED_NET_TIMEOUT="${PRECIS_SHIP_LOCKED_NET_TIMEOUT:-60}"
 _locked_net() {
     if command -v perl >/dev/null 2>&1; then
         perl -e 'alarm shift; exec @ARGV' "$LOCKED_NET_TIMEOUT" "$@"
+    else
+        "$@"
+    fi
+}
+# `_bounded <seconds> <cmd…>` — the same alarm, caller-chosen ceiling; used
+# for the post-land notify, which is NOT in the lock. rc 142 on SIGALRM.
+# Self-contained: tests source these helpers standalone.
+_bounded() {
+    local budget="$1"; shift
+    if command -v perl >/dev/null 2>&1; then
+        perl -e 'alarm shift; exec @ARGV' "$budget" "$@"
     else
         "$@"
     fi
@@ -2867,6 +2895,14 @@ else
     # commit, so name OUR landed sha rather than whatever main is by now.
     say "shipped — landed on main:"
     git log --oneline -1 "${LANDED_SHA:-origin/main}"
+    # The land is the fact — emit the status token BEFORE the best-effort
+    # notify steps (gr543833): a notify that hung or died used to take
+    # SHIP_STATUS with it (the run was killed mid-notify and the log ended
+    # on the gripe-note timeout line). quiet_epilogue prefers the log's own
+    # last SHIP_STATUS line over the rc-derived token, so a transcript that
+    # stops after this still reports shipped; a degraded tail step may yet
+    # append "shipped — <note>" below.
+    printf 'SHIP_STATUS: shipped\n'
     # Comment each gripe the landed commit fixes (subject "(gr123)" or a
     # "Fixes: gr123" trailer; docs/conventions/shipping.md). Only for a commit
     # this run pushed — the nothing-new path re-names main's tip. Best-effort:
@@ -2878,10 +2914,19 @@ else
     # each gripe gets "resolved: <sha> (main, release pending)" + STATUS:verify
     # (scripts/gripe-validate flips it done once on origin/prod), each todo
     # "landed: <sha>" + STATUS:done. After gripe-note, so the resolved:
-    # comment is the newest. Best-effort: always exits 0, one log line.
+    # comment is the newest. Best-effort: always exits 0, one log line; a
+    # call fault retries once at 2× and every handle's calls are journaled
+    # to scratch/land-notify-pending/ BEFORE they run, so the outer alarm
+    # (PRECIS_LAND_NOTIFY_BUDGET) can cut a stuck notify without losing a
+    # note — leftovers are replayable via `scripts/ship --replay-notes`.
     if [[ -n "$LANDED_SHA" && "$LANDED_SHA" != "$OLD_MAIN" && -f "${WORKTREE}/scripts/lib/land_notify.py" ]]; then
-        python3 "${WORKTREE}/scripts/lib/land_notify.py" --sha "$LANDED_SHA" \
-            --subject "$(git log -1 --format=%s "$LANDED_SHA")" || true
+        _bounded "${PRECIS_LAND_NOTIFY_BUDGET:-600}" \
+            python3 "${WORKTREE}/scripts/lib/land_notify.py" --sha "$LANDED_SHA" \
+                --subject "$(git log -1 --format=%s "$LANDED_SHA")" || true
+        _pending=("${WORKTREE}/scratch/land-notify-pending"/*.json)
+        if [[ -f "${_pending[0]}" ]]; then
+            printf 'land-notify: %d unsent note(s) — replay: scripts/ship --replay-notes\n' "${#_pending[@]}"
+        fi
     fi
     if [[ "$QUICK" == 1 ]]; then
         # Names what actually ran. The old wording ("no ruff/mypy/pytest") outlived

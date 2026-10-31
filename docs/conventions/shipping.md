@@ -51,7 +51,15 @@ trailing `(grN, tdM)` list gets `resolved: <sha> (main, release pending)`
 each `tdM` gets `landed: <sha>` + `STATUS:done`.
 Same best-effort contract, one `land-notify` line, forwarded to the quiet
 epilogue next to `SHIP_STATUS`; off switch
-`PRECIS_LAND_NOTIFY=0`. Ship owns this close — after a land, check the
+`PRECIS_LAND_NOTIFY=0`. A faulting prod call retries once at double the
+timeout; every handle's calls are journaled to
+`scratch/land-notify-pending/<sha9>-<handle>.json` before they run and
+deleted once posted, so a failed (or killed) notify leaves the unsent
+calls replayable — `scripts/ship --replay-notes` drains the dir
+(gr543833). The land emits `SHIP_STATUS: shipped` before these notifies,
+so a dead notify cannot take the status token with it; the notify call
+itself is alarm-bounded (`PRECIS_LAND_NOTIFY_BUDGET`, 600 s). Ship owns
+this close — after a land, check the
 ref's state, not the log, and never post a second `landed:` comment or
 `STATUS:done` by hand (gr542762). After each rollout `scripts/release` runs
 `scripts/gripe-validate`, which flips every auto-verify gripe whose resolved

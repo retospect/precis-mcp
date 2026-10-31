@@ -2,6 +2,7 @@
 """scripts/lib/land_notify.py — after a land, move the refs the subject names.
 
     python3 scripts/lib/land_notify.py --sha SHA --subject 'feat(x): y (gr1, td2)'
+    python3 scripts/lib/land_notify.py --replay [--pending-dir DIR]
 
 scripts/ship calls this once its CAS push to main succeeded (gr541800,
 td541978). It reads the parenthesised handle list ending the squash
@@ -24,8 +25,17 @@ Each write is one ``scripts/prod-precis tools put|tag`` call, run from the
 first tree that contains origin/prod (scripts/gripe-note's ``write_tree``;
 prod-precis refuses writes from a stale tree). Best-effort by contract: it
 always exits 0 and prints ONE line naming what moved and what failed; a
-missing DSN, a refusal, a crash or a call past TIMEOUT_S is reported, not
-retried. Skips when PRECIS_LAND_NOTIFY=0 or nothing is named.
+missing DSN, a refusal or a crash is reported. A call faulting past
+TIMEOUT_S (or on another transient error) is retried ONCE at double the
+timeout (gr543833 — a momentarily dead prod used to lose the note
+outright). Skips when PRECIS_LAND_NOTIFY=0 or nothing is named.
+
+The notes are journaled, at-least-once: each handle's exact calls are
+written to ``<repo>/scratch/land-notify-pending/<sha9>-<handle>.json``
+BEFORE they run and deleted only once the handle posted — a notify that
+fails, crashes or is killed mid-run leaves its unsent notes replayable.
+``--replay`` posts every file in the dir and deletes it on success;
+``scripts/ship --replay-notes`` is the same thing from the ship driver.
 
 Test seams: PRECIS_LAND_NOTIFY_CLI replaces the prod-precis command (and
 skips the DSN check); PRECIS_LAND_NOTIFY_TIMEOUT overrides TIMEOUT_S.
@@ -53,6 +63,10 @@ DSN_FILE = Path.home() / ".secrets" / "pw" / "PRECIS_DATABASE_URL"
 TIMEOUT_S = 60.0
 #: A subject names a handful of refs; past this the tail is reported only.
 MAX_HANDLES = 8
+#: Journal for unsent notes: one ``<sha9>-<handle>.json`` per handle,
+#: drained by ``--replay`` / ``scripts/ship --replay-notes``.
+PENDING_DIR = SCRIPTS.parent / "scratch" / "land-notify-pending"
+REPLAY_HINT = "replay: scripts/ship --replay-notes"
 
 _HANDLE = r"(?:gr|td)\d+"
 _SUBJECT_RE = re.compile(rf"\(({_HANDLE}(?:[,\s]+{_HANDLE})*)\)\s*$")
@@ -124,6 +138,41 @@ def _tail(text: str) -> str:
     return re.sub(r"[a-z]+://\S+", "<url>", last)[:160]
 
 
+def _post(
+    run: Runner, cmd: list[str], timeout: float
+) -> subprocess.CompletedProcess[str]:
+    """One prod call, retried once at double the timeout on a transient
+    fault (gr543833). A non-zero rc is a refusal — returned, not retried;
+    a second fault propagates."""
+    try:
+        return run(cmd, timeout)
+    except (OSError, subprocess.SubprocessError):
+        return run(cmd, timeout * 2)
+
+
+def _journal(
+    pending_dir: Path, sha: str, subject: str, label: str, calls: list[list[str]]
+) -> Path | None:
+    """The at-least-once record: the handle's exact ``prod-precis`` argv
+    tails, written BEFORE they run so a kill mid-notify still leaves the
+    note replayable (gr543833). A scratch-dir fault costs the journal, not
+    the notify."""
+    path = pending_dir / f"{sha[:9]}-{label.split()[0]}.json"
+    try:
+        pending_dir.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            json.dumps(
+                {"sha": sha, "subject": subject, "label": label, "calls": calls},
+                indent=2,
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+    except OSError:
+        return None
+    return path
+
+
 def notify(
     sha: str,
     subject: str,
@@ -132,25 +181,47 @@ def notify(
     run: Runner,
     timeout: float,
     verify_kind: str = "auto",
+    pending_dir: Path | None = None,
 ) -> str:
-    """Run every payload; return the one summary line."""
+    """Run every payload; return the one summary line. ``pending_dir``
+    turns on the journal — every handle's file is written up front, deleted
+    when it posts and left behind (named in the summary) when it fails."""
     plan = payloads(sha, subject, verify_kind=verify_kind)
     over = len(parse_handles(subject)) - len(plan)
+    # Journal EVERY handle before the first call runs — a kill mid-notify
+    # then leaves each unposted handle's calls replayable (gr543833).
+    pending = (
+        {
+            label.split()[0]: _journal(pending_dir, sha, subject, label, calls)
+            for label, calls in plan
+        }
+        if pending_dir is not None
+        else {}
+    )
     ok: list[str] = []
     failed: list[str] = []
+    saved: list[str] = []
     for label, calls in plan:
         handle = label.split()[0]
+        why = ""
         for call in calls:
             try:
-                cp = run([*base, *call], timeout)
+                cp = _post(run, [*base, *call], timeout)
             except (OSError, subprocess.SubprocessError) as e:
-                failed.append(f"{handle} ({type(e).__name__})")
+                why = f"{handle} ({type(e).__name__})"
                 break
             if cp.returncode != 0:
-                failed.append(f"{handle} (exit {cp.returncode}: {_tail(cp.stderr)})")
+                why = f"{handle} (exit {cp.returncode}: {_tail(cp.stderr)})"
                 break
+        p = pending.get(handle)
+        if why:
+            failed.append(why)
+            if p is not None:
+                saved.append(p.name)
         else:
             ok.append(label)
+            if p is not None:
+                p.unlink(missing_ok=True)
     parts = []
     if ok:
         parts.append(" · ".join(ok))
@@ -158,13 +229,93 @@ def notify(
         parts.append("failed: " + "; ".join(failed))
     if over > 0:
         parts.append(f"+{over} more not posted")
+    if saved:
+        parts.append(f"unsent: {', '.join(saved)} in {pending_dir} — {REPLAY_HINT}")
     return f"land-notify {sha[:9]}: " + (" · ".join(parts) or "nothing to do")
+
+
+def replay(
+    pending_dir: Path, *, base: list[str], run: Runner, timeout: float
+) -> tuple[int, int]:
+    """Post every journaled note under ``pending_dir``; a file is deleted
+    only once its calls all succeeded. Returns ``(posted, left)``."""
+    posted = left = 0
+    for path in sorted(pending_dir.glob("*.json")):
+        try:
+            note = json.loads(path.read_text(encoding="utf-8"))
+            calls = [list(c) for c in note["calls"]]
+        except (OSError, ValueError, TypeError) as e:
+            print(
+                f"land-notify replay: {path.name} unreadable ({type(e).__name__}) — kept"
+            )
+            left += 1
+            continue
+        label = str(note.get("label") or path.stem)
+        why = ""
+        for call in calls:
+            try:
+                cp = _post(run, [*base, *call], timeout)
+            except (OSError, subprocess.SubprocessError) as e:
+                why = type(e).__name__
+                break
+            if cp.returncode != 0:
+                why = f"exit {cp.returncode}: {_tail(cp.stderr)}"
+                break
+        if why:
+            print(f"land-notify replay: {label} failed ({why}) — kept {path.name}")
+            left += 1
+        else:
+            path.unlink()
+            posted += 1
+            print(f"land-notify replay: {label} posted — deleted {path.name}")
+    return posted, left
+
+
+def _transport() -> tuple[list[str] | None, Runner]:
+    """(prod-precis argv prefix, runner) — prefix ``None`` when this host
+    cannot write prod (no CLI seam and no DSN)."""
+    note = _gripe_note()
+    cli = os.environ.get("PRECIS_LAND_NOTIFY_CLI", "").strip()
+    if cli:
+        return shlex.split(cli), note.run_capped
+    if not DSN_FILE.is_file():
+        return None, note.run_capped
+    return [
+        str(note.write_tree(SCRIPTS.parent) / "scripts" / "prod-precis")
+    ], note.run_capped
+
+
+def _replay(args: argparse.Namespace) -> int:
+    """``--replay``: drain the pending dir. Unlike the notify path this is
+    an operator verb, so it reports honestly — exit 1 while anything is
+    left pending."""
+    if os.environ.get("PRECIS_LAND_NOTIFY", "1") == "0":
+        print("land-notify replay: PRECIS_LAND_NOTIFY=0 — skipped")
+        return 1
+    files = sorted(args.pending_dir.glob("*.json"))
+    if not files:
+        print(f"land-notify replay: nothing pending in {args.pending_dir}")
+        return 0
+    try:
+        base, run = _transport()
+    except Exception as e:
+        print(f"land-notify replay: {type(e).__name__} — {len(files)} left pending")
+        return 1
+    if base is None:
+        print(
+            f"land-notify replay: no prod DSN on this host — {len(files)} left pending"
+        )
+        return 1
+    timeout = float(os.environ.get("PRECIS_LAND_NOTIFY_TIMEOUT") or TIMEOUT_S)
+    posted, left = replay(args.pending_dir, base=base, run=run, timeout=timeout)
+    print(f"land-notify replay: {posted} posted, {left} pending")
+    return 0 if left == 0 else 1
 
 
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(prog="scripts/lib/land_notify.py", description=__doc__)
-    ap.add_argument("--sha", required=True, help="the landed squash sha")
-    ap.add_argument("--subject", required=True, help="the squash subject line")
+    ap.add_argument("--sha", help="the landed squash sha")
+    ap.add_argument("--subject", help="the squash subject line")
     ap.add_argument("--dry-run", action="store_true", help="print, do not post")
     ap.add_argument(
         "--verify-kind",
@@ -175,7 +326,22 @@ def main(argv: list[str] | None = None) -> int:
             "default) or 'user' (STATUS:user_verify). Env PRECIS_VERIFY_KIND."
         ),
     )
+    ap.add_argument(
+        "--replay",
+        action="store_true",
+        help="post every pending note under --pending-dir, deleting each on success",
+    )
+    ap.add_argument(
+        "--pending-dir",
+        type=Path,
+        default=PENDING_DIR,
+        help="journal dir for unsent notes (default %(default)s)",
+    )
     args = ap.parse_args(argv)
+    if args.replay:
+        return _replay(args)
+    if not args.sha or not args.subject:
+        ap.error("needs --sha and --subject, or --replay")
 
     verify_kind = args.verify_kind or os.environ.get("PRECIS_VERIFY_KIND", "auto")
     if verify_kind not in ("auto", "user"):
@@ -196,20 +362,17 @@ def main(argv: list[str] | None = None) -> int:
         print(f"land-notify: no prod DSN on this host — skipped {named}")
         return 0
     try:
-        note = _gripe_note()
-        base = (
-            shlex.split(cli)
-            if cli
-            else [str(note.write_tree(SCRIPTS.parent) / "scripts" / "prod-precis")]
-        )
+        base, run = _transport()
+        assert base is not None  # cli set or DSN present — checked above
         timeout = float(os.environ.get("PRECIS_LAND_NOTIFY_TIMEOUT") or TIMEOUT_S)
         line = notify(
             args.sha,
             args.subject,
             base=base,
-            run=note.run_capped,
+            run=run,
             timeout=timeout,
             verify_kind=verify_kind,
+            pending_dir=args.pending_dir,
         )
         print(line)
     except Exception as e:  # best-effort: never fail the ship

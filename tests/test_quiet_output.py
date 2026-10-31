@@ -393,12 +393,13 @@ def test_ship_await_quiet_red_log_exits_one(rig: Rig) -> None:
 
 
 def test_ship_await_verbose_transcript_green(rig: Rig) -> None:
-    """A --verbose capture has no epilogue and no SHIP_STATUS token —
-    `landed on main` is the green marker on a raw transcript."""
+    """A --verbose capture has no epilogue — the transcript itself carries
+    SHIP_STATUS: shipped, emitted the moment the land is reported (before
+    the best-effort notifies, gr543833). --await resolves it directly."""
     wt = rig.worktree("awaitv", {"v.txt": "v\n"})
     p, log = rig.ship(wt, "--quick", sleep=1)  # rig defaults VERBOSE=1
     out = _finish(p, log)
-    assert "SHIP_STATUS" not in out
+    assert "SHIP_STATUS: shipped" in out
     cp = _ship_await(rig, log)
     assert cp.returncode == 0, cp.stdout + cp.stderr
 
