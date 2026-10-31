@@ -230,7 +230,11 @@ def test_registered_as_detached_ssh_node_type() -> None:
     assert spec.compatible_executors == frozenset({"ssh_node"})
     assert spec.submit is land_slice.submit and spec.poll is land_slice.poll
     assert spec.kill is land_slice.kill
-    assert spec.params_schema["required"] == ["todo_id", "worktree", "branch"]
+    # worktree + branch (a slice) or pr (a pull request, td543749)
+    assert spec.params_schema["required"] == ["todo_id"]
+    assert {"worktree", "branch", "pr", "checked"} <= set(
+        spec.params_schema["properties"]
+    )
 
 
 def test_validate_submit(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -525,3 +529,120 @@ def test_stub_ship_through_the_real_launcher(
     assert f"args: --quick {SUBJECT}" in log
     assert "verbose: 1" in log
     assert pctx.meta_set["landed_sha"] == FULL_SHA
+
+
+# ── pull requests (td543749) ───────────────────────────────────────
+
+PR_HEAD = "c4b3f7068776baa190e7b05bd8758bf19d786c3b"
+PR_TITLE = "deps: Update lxml requirement from >=5.0 to >=6.1.3"
+
+
+@pytest.fixture
+def pr_seams(
+    seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> dict[str, Any]:
+    """``seams`` plus a PR fetch: ``worktree add`` makes the tree,
+    ``rev-parse HEAD`` answers ``seams['head']``, ``gh`` is recorded."""
+    inner = land_slice._git
+    seams["head"] = PR_HEAD
+    seams["gh"] = []
+
+    def git(args: list[str], cwd: Path) -> subprocess.CompletedProcess[str]:
+        if args[:2] == ["worktree", "add"]:
+            seams["git"].append((args, Path(cwd)))
+            Path(args[2]).mkdir(parents=True, exist_ok=True)
+            return _proc()
+        if args == ["rev-parse", "HEAD"]:
+            return _proc(seams["head"] + "\n")
+        return inner(args, cwd)
+
+    def gh(args: list[str]) -> subprocess.CompletedProcess[str]:
+        seams["gh"].append(args)
+        return _proc()
+
+    monkeypatch.setattr(land_slice, "_git", git)
+    monkeypatch.setattr(land_slice, "_gh", gh)
+    seams["pr_tree"] = tmp_path / ".claude" / "worktrees" / "slice-pr-73"
+    return seams
+
+
+def _pr_store() -> _Store:
+    store = _Store()
+    pr = {
+        "number": 73,
+        "repo": "acme/widgets",
+        "title": PR_TITLE,
+        "class": "dependabot",
+        "head_sha": PR_HEAD,
+    }
+    store.add_todo(40, status="open", meta={"auto_close": True, "pr": pr})
+    store.add_todo(42, status="open", tags=("plan:40",))
+    return store
+
+
+def test_pr_land_fetches_the_head_and_ships_checked(pr_seams: dict[str, Any]) -> None:
+    store = _pr_store()
+    ctx = _Ctx(store, {"todo_id": 42, "pr": 73, "checked": True})
+    handle = land_slice.submit(ctx, None)
+    assert ctx.failure is None, ctx.failure
+    tree = pr_seams["pr_tree"]
+    git = [a for a, _cwd in pr_seams["git"]]
+    assert ["fetch", "origin", "+pull/73/head:refs/heads/slice/pr-73"] in git
+    assert ["worktree", "add", str(tree), "slice/pr-73"] in git
+    [(argv, kw)] = pr_seams["launch"]
+    subject = "build(deps): update lxml requirement from >=5.0 to >=6.1.3 (td42)"
+    assert argv == [str(tree / "scripts" / "ship"), "--checked", subject]
+    assert len(subject.encode("utf-8")) <= land_slice.SUBJECT_CAP
+    assert kw["cwd"] == tree and handle["worktree"] == str(tree)
+
+    _finish(handle, 0, GREEN_LOG)
+    pctx = _Ctx(store, {"todo_id": 42, "pr": 73, "checked": True})
+    assert land_slice.poll(pctx, handle) is True
+    assert pctx.status == "succeeded", pctx.failure
+    [close] = pr_seams["gh"]
+    assert close[:5] == ["pr", "close", "73", "--repo", "acme/widgets"]
+    assert close[5] == "--comment" and FULL_SHA[:12] in close[6]
+    assert ["branch", "-D", "slice/pr-73"] in _cleanup_cmds(pr_seams)
+    assert pctx.meta_set["closed_pr"] == 73
+
+
+def test_pr_land_refuses_a_moved_head(pr_seams: dict[str, Any]) -> None:
+    pr_seams["head"] = "f" * 40
+    store = _pr_store()
+    ctx = _Ctx(store, {"todo_id": 42, "pr": 73})
+    assert land_slice.submit(ctx, None) is None
+    assert ctx.failure is not None and "not c4b3f7068" in ctx.failure
+    assert pr_seams["launch"] == []
+
+
+def test_pr_land_needs_the_pinned_worktree(
+    pr_seams: dict[str, Any], tmp_path: Path
+) -> None:
+    store = _pr_store()
+    gone = str(tmp_path / "gone")
+    ctx = _Ctx(store, {"todo_id": 42, "pr": 73, "worktree": gone})
+    assert land_slice.submit(ctx, None) is None
+    assert ctx.failure is not None and "dep_check" in ctx.failure
+    assert not any(a[:1] == ["fetch"] for a, _cwd in pr_seams["git"])
+
+
+def test_fix_slice_land_closes_its_pr(pr_seams: dict[str, Any]) -> None:
+    store = _pr_store()
+    store.refs[42].meta["pr_close"] = 73
+    ctx, handle = _submit(store, pr_seams)
+    _finish(handle, 0, GREEN_LOG)
+    pctx = _Ctx(store, _params(pr_seams))
+    assert land_slice.poll(pctx, handle) is True
+    assert pctx.status == "succeeded"
+    [close] = pr_seams["gh"]
+    assert close[:3] == ["pr", "close", "73"]
+
+
+def test_plain_slice_land_touches_no_pr(pr_seams: dict[str, Any]) -> None:
+    store = _Store()
+    store.add_todo(42)
+    ctx, handle = _submit(store, pr_seams)
+    _finish(handle, 0, GREEN_LOG)
+    pctx = _Ctx(store, _params(pr_seams))
+    assert land_slice.poll(pctx, handle) is True
+    assert pr_seams["gh"] == [] and pctx.meta_set["closed_pr"] is None

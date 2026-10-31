@@ -1,0 +1,11 @@
+[
+  {
+    "sha": "54c44293a40fb3bafbd1583ec5bbf66d56ce2ae6",
+    "filename": "pyproject.toml",
+    "status": "modified",
+    "additions": 1,
+    "deletions": 1,
+    "changes": 2,
+    "patch": "@@ -182,7 +182,7 @@ dependencies = [\n     \"latex2mathml>=3.77\",\n-    \"lxml>=5.0\",\n+    \"lxml>=6.1.3\",\n     \"resvg-py>=0.1\","
+  }
+]

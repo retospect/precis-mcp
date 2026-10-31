@@ -74,10 +74,46 @@ checkout (its `.release-owner` marker makes the deploy the release's
 owner). `ci_verdict_poll` needs only the DB and api.github.com; set
 `release.repo` (`owner/repo`) on a host with no checkout.
 
+## Inbound pull requests (pr_poll)
+
+One recurring todo; every 15 minutes `pr_poll` lists the repo's open PRs
+and mints one `pr-intake` plan (tagged `pr:<n>`) per non-draft PR that has
+none. The armed `plan_dispatch` tick drives each plan:
+
+    put(kind='todo', text='pr_poll tick',
+        meta={'schedule': {'every': '15m'}, 'executor': 'job_inproc',
+              'job_type': 'pr_poll'})
+
+Disarm: close or pause that todo. Dry run by hand: a `pr_poll` job with
+`params={'dry_run': true}` lists what it would mint, with each PR's class.
+One PR by hand: `put(kind='todo', mode='plan', args={'template':
+'pr-intake', 'pr': <n>})`.
+
+The class decides the nodes (`precis.plans.pr_class`): `dependabot` runs
+`dep_check` → (major bump: an `approval` ask, `land` / `ignore this major`
+/ `hold`) → `land_slice --checked` → reviewer; `factory` lands and
+reviews; `harness` is only an ask (land it yourself with `/go`);
+`external` gets a read-only analysis, then an ask (`approval` for a fix,
+`design-verdict` for a feature: `land as is` / `land after fixes: <list>`
+/ `request changes on the PR` / `close`). Answer like the release ask:
+
+    put(kind='todo', id=<decision id>, text='answer: land')
+    tag(kind='todo', id=<decision id>, add=['STATUS:done'], remove=['ask-user'])
+
+`pr_action` acts on the answer; nothing is posted to GitHub before it.
+
+Host needs: `pr_poll` only the DB and api.github.com (set `release.repo`
+when the worker has no checkout; `GH_TOKEN` lifts the 60/h limit).
+`dep_check`, `land_slice` and `pr_action` run on a slice host: the
+checkout, `uv`, push rights and `gh auth` (the PR close and comments are
+posted as that login — gr543694). `pr.factory_builders` lists the logins
+whose `(td<id>)` PRs count as factory slices (default Devin's bot).
+
 ## Kill switch
 
 - `PRECIS_FACTORY=off` in the worker's environment: `run_slice`,
-  `release_cut` and `release_deploy` refuse every submit, and `plan_dispatch` runs read-only (counts what it would
+  `release_cut`, `release_deploy`, `dep_check` and `pr_action` refuse
+  every submit, and `plan_dispatch` runs read-only (counts what it would
   have done, writes nothing). Unset it and restart the worker to re-arm.
 - A `service_config` row for `plan_dispatch` with `prio = 0` (any host)
   also makes the pass read-only, as does `params.dry_run`.

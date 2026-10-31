@@ -79,10 +79,11 @@ def _assert_plan_hygiene(store: Store, mint: PlanMint) -> None:
         }, key
 
 
-def test_registry_has_the_four_templates() -> None:
+def test_registry_has_the_five_templates() -> None:
     assert sorted(TEMPLATES) == [
         "gripe-fix",
         "pcb-pipeline",
+        "pr-intake",
         "release-pass",
         "slice-tree",
     ]

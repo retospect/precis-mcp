@@ -736,6 +736,34 @@ def _load_release_op(name: str) -> JobTypeSpec:
     )
 
 
+#: Inbound pull requests (td543749): the poll is a plugin dispatch under
+#: job_inproc; dep_check is a detached submit/poll pair and pr_action a
+#: submit-only act under ssh_node. PRECIS_FACTORY=off refuses the two.
+_PR_OPS: tuple[str, ...] = ("pr_poll", "dep_check", "pr_action")
+
+
+def _load_pr_op(name: str) -> JobTypeSpec:
+    if name == "pr_poll":
+        from precis.workers.job_types import pr_poll
+
+        return pr_poll.SPEC
+    from importlib import import_module
+
+    mod = import_module(f"precis.workers.job_types.{name}")
+    return JobTypeSpec(
+        name=name,
+        params_schema=mod.PARAMS_SCHEMA,
+        compatible_executors=mod.COMPATIBLE_EXECUTORS,
+        requires=mod.REQUIRES,
+        description=mod.DESCRIPTION,
+        validate_submit=mod.validate_submit,
+        submit=mod.submit,
+        poll=mod.poll,
+        kill=getattr(mod, "kill", None),
+        wall_seconds=mod.wall_seconds,
+    )
+
+
 #: Name → spec. Populated lazily on first access so the import
 #: graph stays cheap for the MCP server.
 _REGISTRY: dict[str, JobTypeSpec] = {}
@@ -967,6 +995,9 @@ def get_job_type(name: str) -> JobTypeSpec | None:
     if name in _RELEASE_OPS:
         _REGISTRY[name] = _load_release_op(name)  # dark release pass (td543733)
         return _REGISTRY[name]
+    if name in _PR_OPS:
+        _REGISTRY[name] = _load_pr_op(name)  # inbound pull requests (td543749)
+        return _REGISTRY[name]
     if name == "diagnose_gripe":
         _REGISTRY["diagnose_gripe"] = _load_diagnose_gripe()
         return _REGISTRY["diagnose_gripe"]
@@ -1113,6 +1144,9 @@ def known_job_types() -> list[str]:
         "release_cut",
         "ci_verdict_poll",
         "release_deploy",
+        "pr_poll",
+        "dep_check",
+        "pr_action",
     ]
     plugin_names = sorted(_get_plugin_specs())
     # Built-ins first so the error-message ordering is stable for

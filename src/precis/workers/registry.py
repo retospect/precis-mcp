@@ -1366,6 +1366,39 @@ SERVICES: tuple[ServiceSpec, ...] = (
         one_line="Close STATUS:verify gripes whose resolved sha is in prod.",
         doc_skill="precis-job-help",
     ),
+    # Inbound pull requests (td543749): the poll is DB/HTTP-only; dep_check
+    # (git + uv) and pr_action (gh) run on a slice host with the checkout.
+    ServiceSpec(
+        name="pr_poll",
+        label="PR poll (job)",
+        category="jobs",
+        kind=ServiceKind.JOB,
+        uses_external=("github",),
+        one_line="Mint one pr-intake plan per open pull request, class "
+        "decided in code.",
+        doc_skill="precis-job-help",
+    ),
+    ServiceSpec(
+        name="dep_check",
+        label="Dependabot lock check (job)",
+        category="jobs",
+        kind=ServiceKind.JOB,
+        placement=frozenset({"repo_checkout", "git"}),
+        one_line="Resolve a Dependabot PR's lock for python 3.12/3.13 with "
+        "uv --no-build; relock on the PR branch when stale.",
+        doc_skill="precis-job-help",
+    ),
+    ServiceSpec(
+        name="pr_action",
+        label="PR action (job)",
+        category="jobs",
+        kind=ServiceKind.JOB,
+        placement=frozenset({"repo_checkout", "git"}),
+        uses_external=("github",),
+        one_line="Act on an answered PR decision: let the land run, mint the "
+        "fix slice, or comment/close on GitHub with gh.",
+        doc_skill="precis-job-help",
+    ),
     ServiceSpec(
         # Gripe pipeline v2 slice 3 (precis.workers.gripe_triage): the
         # 15-minute `gripe_triage` scheduler cadence fires the pass; this

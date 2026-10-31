@@ -32,6 +32,21 @@ Detached submit/poll pair under ``ssh_node``, like ``run_slice``:
   worktree stay for that session.
 * :func:`kill` SIGTERMs ship's process group.
 
+**Pull requests** (td543749). With ``params.pr = <n>`` (a ``pr-intake``
+plan's land node) the branch is ``slice/pr-<n>`` and the worktree is
+``params.worktree`` when ``dep_check`` pinned one (it must exist: it holds
+the relock commit), else ``slice-pr-<n>``, cut here from ``git fetch origin
++pull/<n>/head`` and refused when the head is not the sha the intake
+classified (``meta.pr.head_sha`` on the plan root). The subject is the PR
+title made lint-clean (:func:`precis.plans.pr_class.land_subject`) plus
+``(td<id>)``, and ``params.checked`` (the template sets it) ships with
+``--checked``: a pyproject diff selects the contract and import-map tests.
+After a green land — of a PR node, or of any slice whose todo carries
+``meta.pr_close = <n>`` (the "land after fixes" slice) — the PR is closed
+with a comment naming the squash sha (:func:`_gh`, the host's ``gh auth``:
+the attribution gap of gr543694 applies). A failed close is reported in
+the summary, not a job failure.
+
 Guard: ``PRECIS_FACTORY=off`` refuses every submit. Git, launch and
 process probes go through module-level seams (:func:`_git`,
 :func:`_launch`, :func:`_process_alive`, :func:`_pending_gates`) so tests
@@ -83,8 +98,12 @@ PARAMS_SCHEMA: dict[str, Any] = {
         "lane": {"type": "string"},
         # ssh_node's host pin: the host that holds the worktree.
         "target_node": {"type": "string"},
+        # A pull request's land (worktree/branch then optional, see above).
+        "pr": {"type": "integer"},
+        # Ship with --checked instead of --quick.
+        "checked": {"type": "boolean"},
     },
-    "required": ["todo_id", "worktree", "branch"],
+    "required": ["todo_id"],
     "additionalProperties": False,
 }
 
@@ -96,7 +115,9 @@ DESCRIPTION: str = (
     "subject in its worktree, the landed sha on the todo and into the plan's "
     "pending sha-in-prod gate, then delete the worktree and the slice/<id> "
     "branch (local and origin). A red ship reopens the todo with attempt:<n>. "
-    "Minted by run_slice; refused while PRECIS_FACTORY=off."
+    "Minted by run_slice; with params.pr it lands a pull request's head "
+    "(slice/pr-<n>, --checked) and closes the PR. Refused while "
+    "PRECIS_FACTORY=off."
 )
 
 
@@ -139,6 +160,13 @@ def _launch(
 
 def _process_alive(pid: int) -> bool:
     return _rs._process_alive(pid)
+
+
+def _gh(args: list[str]) -> subprocess.CompletedProcess[str]:
+    """Run ``gh <args>`` (the PR close); never raises on a non-zero exit."""
+    from precis.workers.job_types import pr_action
+
+    return pr_action._gh(args)
 
 
 def _pending_gates(store: Any, plan_tag: str, todo_id: int) -> list[tuple[int, bool]]:
@@ -376,6 +404,100 @@ def validate_submit(
     return reason.replace("run_slice:", "land_slice:", 1) if reason else None
 
 
+# ── Pull requests ──────────────────────────────────────────────────
+
+
+def _pr_param(params: dict[str, Any]) -> int | None:
+    pr = params.get("pr")
+    if isinstance(pr, bool) or not isinstance(pr, int) or pr <= 0:
+        return None
+    return pr
+
+
+def _plan_pr(store: Any, todo_id: int) -> dict[str, Any] | None:
+    """The plan root's ``meta.pr`` (``None`` outside a pr-intake plan)."""
+    from precis.plans import pr_class
+
+    try:
+        return pr_class.pr_of(store, todo_id)
+    except Exception:  # pragma: no cover — a land never fails on this read
+        log.warning("land_slice: meta.pr read for td%d failed", todo_id, exc_info=True)
+        return None
+
+
+def _pr_worktree(
+    params: dict[str, Any], number: int, head: str
+) -> tuple[Path | None, str]:
+    """``(worktree, '')`` for a PR land, or ``(None, why)``: the pinned
+    ``params.worktree`` (must exist), else ``slice-pr-<n>`` cut here from
+    the PR head, which must be ``head`` (the classified sha) when known."""
+    from precis.workers.job_types import dep_check as _dc
+
+    given = str(params.get("worktree") or "")
+    if given:
+        tree = Path(given)
+        if tree.is_dir():
+            return tree, ""
+        return None, (
+            f"pinned worktree {tree} is missing on this host (it holds "
+            "dep_check's relock); reopen the plan's check node to re-run dep_check"
+        )
+    try:
+        root = _rs.slice_root()
+    except RuntimeError as exc:
+        return None, str(exc)
+    tree, branch = _dc.pr_tree(root, number), _dc.pr_branch(number)
+    if not tree.is_dir():
+        ref = f"+pull/{number}/head:refs/heads/{branch}"
+        fetch = _git(["fetch", "origin", ref], root)
+        if fetch.returncode != 0:
+            return None, f"git fetch origin {ref} failed: {fetch.stderr.strip()[:200]}"
+        add = _git(["worktree", "add", str(tree), branch], root)
+        if add.returncode != 0:
+            return None, f"git worktree add {tree} failed: {add.stderr.strip()[:200]}"
+    if head:
+        rev = _git(["rev-parse", "HEAD"], tree).stdout.strip().lower()
+        if not rev or not rev.startswith(head.strip().lower()[:40]):
+            return None, (
+                f"PR #{number}'s head is {rev[:9] or '?'}, not {head[:9]} (the sha "
+                "the intake classified and the decision saw); a moved head needs "
+                "a new intake"
+            )
+    return tree, ""
+
+
+def _pr_to_close(store: Any, params: dict[str, Any], todo_id: int) -> int | None:
+    """The PR a green land closes: ``params.pr``, else the todo's
+    ``meta.pr_close`` (the 'land after fixes' slice)."""
+    number = _pr_param(params)
+    if number is not None:
+        return number
+    ref = store.get_ref(kind="todo", id=todo_id)
+    raw = (ref.meta or {}).get("pr_close") if ref is not None else None
+    return (
+        raw if isinstance(raw, int) and not isinstance(raw, bool) and raw > 0 else None
+    )
+
+
+def _close_pr(store: Any, number: int, todo_id: int, sha: str) -> str:
+    """Close PR ``number`` with a comment naming the squash sha; one note."""
+    from precis.plans import pr_class
+
+    pr = _plan_pr(store, todo_id) or {}
+    repo = pr_class.resolve_repo(store, pr.get("repo"))
+    if not repo:
+        return f"PR #{number}: not closed (no owner/repo; set release.repo)"
+    text = (
+        f"Landed on main as {sha[:12]} (squash, td{todo_id}) by the precis "
+        "lander. Closing: the change is on main."
+    )
+    proc = _gh(["pr", "close", str(number), "--repo", repo, "--comment", text])
+    if proc.returncode != 0:
+        err = (proc.stderr or proc.stdout or "").strip()[:200]
+        return f"PR #{number}: close FAILED ({err})"
+    return f"PR #{number}: closed with the landed sha"
+
+
 # ── Detached protocol ──────────────────────────────────────────────
 
 
@@ -410,18 +532,35 @@ def submit(ctx: Any, spec: Any) -> Any:
         return None
     assert isinstance(todo_id, int)
     lane = params.get("lane")
-    tree = Path(str(params.get("worktree") or ""))
-    if not str(params.get("worktree") or "") or not tree.is_dir():
-        _fail(
-            ctx,
-            todo_id,
-            lane,
-            f"worktree {tree} is missing on this host",
-            handoff=f"land FAILED: worktree {tree} is missing; rebuild the slice.",
-        )
-        return None
+    number = _pr_param(params)
+    pr = _plan_pr(ctx.store, todo_id) if number is not None else None
+    if number is not None:
+        found, why = _pr_worktree(params, number, str((pr or {}).get("head_sha") or ""))
+        if found is None:
+            _fail(ctx, todo_id, lane, why, handoff=f"land FAILED: {why}.")
+            return None
+        tree = found
+    else:
+        tree = Path(str(params.get("worktree") or ""))
+        if not str(params.get("worktree") or "") or not tree.is_dir():
+            _fail(
+                ctx,
+                todo_id,
+                lane,
+                f"worktree {tree} is missing on this host",
+                handoff=f"land FAILED: worktree {tree} is missing; rebuild the slice.",
+            )
+            return None
     subjects = _branch_subjects(tree)
     subject = squash_subject(subjects or [], todo_id)
+    if subject is not None and pr is not None and pr.get("title"):
+        from precis.plans import pr_class
+
+        subject = with_handle(
+            pr_class.land_subject(str(pr["title"]), str(pr.get("class") or "")),
+            todo_id,
+        )
+    flag = "--checked" if params.get("checked") else "--quick"
     if subject is None:
         what = "git log failed" if subjects is None else "no commit ahead"
         _fail(
@@ -442,7 +581,7 @@ def submit(ctx: Any, spec: Any) -> Any:
         scratch.mkdir(parents=True, exist_ok=True)
         exit_path.unlink(missing_ok=True)
         pid = _launch(
-            [ship_bin(tree), "--quick", subject],
+            [ship_bin(tree), flag, subject],
             cwd=tree,
             log=log_path,
             exit_file=exit_path,
@@ -460,7 +599,7 @@ def submit(ctx: Any, spec: Any) -> Any:
         return None
     ctx.set_meta(land_subject=subject)
     ctx.append_chunk(
-        "job_event", f"land_slice: scripts/ship --quick {subject!r} pid {pid} in {tree}"
+        "job_event", f"land_slice: scripts/ship {flag} {subject!r} pid {pid} in {tree}"
     )
     handle: dict[str, Any] = {
         "pid": pid,
@@ -490,7 +629,11 @@ def poll(ctx: Any, handle: Any) -> bool:
 
     params = (ctx.meta or {}).get("params") or {}
     todo_id = int(params.get("todo_id") or 0)
-    branch = str(params.get("branch") or _rs.slice_branch(todo_id))
+    number = _pr_param(params)
+    default_branch = (
+        f"slice/pr-{number}" if number is not None else _rs.slice_branch(todo_id)
+    )
+    branch = str(params.get("branch") or default_branch)
     lane = params.get("lane")
     tree = Path(str(handle.get("worktree") or params.get("worktree") or ""))
     subject = str(handle.get("subject") or "")
@@ -554,12 +697,21 @@ def poll(ctx: Any, handle: Any) -> bool:
         summary.append(f"gate: write FAILED ({exc})")
     cleanup = _cleanup(tree, branch)
     summary += cleanup
+    closed_pr = None
+    try:
+        closed_pr = _pr_to_close(store, dict(params), todo_id)
+        if closed_pr is not None:
+            summary.append(_close_pr(store, closed_pr, todo_id, sha))
+    except Exception as exc:  # pragma: no cover — reported, the land stands
+        log.warning("land_slice: PR close for td%d failed", todo_id, exc_info=True)
+        summary.append(f"PR close FAILED ({exc})")
     ctx.set_meta(
         exit_code=exit_code,
         ship_status=status or "shipped",
         landed_sha=sha,
         gate_id=gate_id,
         cleanup=cleanup,
+        closed_pr=closed_pr,
     )
     ctx.append_chunk("job_summary", "\n".join(summary))
     ctx.set_status("succeeded")

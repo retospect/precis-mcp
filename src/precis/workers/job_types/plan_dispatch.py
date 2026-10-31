@@ -42,7 +42,8 @@ subtree whose nodes are shaped by :mod:`precis.plans.nodes`. One pass:
    close the node; counted as ``reopened``). Then closes every node whose work
    is finished: a phase
    (``meta.auto_close``) or a generator with children, once every child is
-   closed; a mechanical task (``meta.op`` other than ``run_slice``) whose
+   closed; an ``analyst`` generator once its newest job succeeded and an
+   ``analysis:`` comment was posted since (td543749); a mechanical task (``meta.op`` other than ``run_slice``) whose
    newest job succeeded; a ``run_slice`` task whose newest job is a
    succeeded ``land_slice`` (a succeeded build alone never closes it, and
    a build plus its red land count as one attempt). Deepest first, so
@@ -964,6 +965,27 @@ def _step_reopen(plan: _Plan, w: _Writer, res: PassResult) -> None:
         )
 
 
+def _analysis_posted(plan: _Plan, store: Any, n: _Node) -> bool:
+    """An ``analyst`` generator (td543749) whose newest job succeeded and
+    left an ``analysis:`` comment (bare or as the ``handoff:``) since it
+    was minted: its work is done."""
+    gen = n.meta.get("generate")
+    if not isinstance(gen, dict) or gen.get("role") != "analyst":
+        return False
+    jobs = plan.jobs(n)
+    if not jobs or jobs[-1].status != "succeeded":
+        return False
+    for c in _comments(store, n.id):
+        if c.created_at < jobs[-1].created_at:
+            break
+        body = str(c.text).strip().lower()
+        if body.startswith("handoff:"):
+            body = body[len("handoff:") :].strip()
+        if body.startswith(_templates.ANALYSIS_PREFIX):
+            return True
+    return False
+
+
 def _step_phases(plan: _Plan, w: _Writer, res: PassResult) -> None:
     for n in sorted(plan.todos(), key=lambda x: (-x.depth, x.id)):
         if _closed(n) or n.status == "paused":
@@ -977,6 +999,10 @@ def _step_phases(plan: _Plan, w: _Writer, res: PassResult) -> None:
                 w.set_status(n, "done")
                 res.phases_closed += 1
                 res.notes.append(f"{kind} td{n.id} closed: every child is closed")
+            elif not kids and _analysis_posted(plan, w.store, n):
+                w.set_status(n, "done")
+                res.phases_closed += 1
+                res.notes.append(f"analyst td{n.id} closed: analysis: comment posted")
         elif kind == "task" and not kids:
             # A run_slice task closes through its land: the newest job is
             # then a succeeded land_slice (its ship closes the todo first;

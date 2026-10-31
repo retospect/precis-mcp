@@ -306,6 +306,15 @@ REGISTRY: dict[str, SettingSpec] = {
             "Unset: the cut's recorded repo, else the checkout's origin remote.",
         ),
         SettingSpec(
+            key="pr.factory_builders",
+            type="str",
+            env_var=None,
+            default=None,
+            doc="Comma-separated GitHub logins whose pull requests with a "
+            "(td<id>) title are factory slices (precis.plans.pr_class). "
+            "Unset: devin-ai-integration[bot].",
+        ),
+        SettingSpec(
             key="contact.edgar_user_agent",
             type="str",
             env_var="PRECIS_EDGAR_USER_AGENT",

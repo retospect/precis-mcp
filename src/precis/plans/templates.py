@@ -29,7 +29,8 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
-from precis.errors import BadInput, NotFound
+from precis.errors import BadInput, NotFound, Upstream
+from precis.plans import pr_class
 from precis.plans import release as _release
 from precis.plans.gates import resolve_board
 from precis.plans.nodes import validate_plan_meta
@@ -494,6 +495,319 @@ def mint_release_pass(store: Store, parent_id: int | None = None) -> PlanMint:
     return _run(store, parent_id, build)
 
 
+# -- pr-intake ---------------------------------------------------------------
+
+
+#: The comment an ``analyst`` generator posts (``plan_dispatch`` closes the
+#: node once it is there).
+ANALYSIS_PREFIX = "analysis:"
+#: Decision options per class; ``pr_action`` parses the answer against them.
+DEPENDABOT_OPTIONS = ["land", "ignore this major", "hold"]
+EXTERNAL_OPTIONS = [
+    "land as is",
+    "land after fixes: <list>",
+    "request changes on the PR",
+    "close",
+]
+HARNESS_OPTIONS = ["land via /go", "request changes on the PR", "close"]
+_PR_RE = re.compile(r"(?:pr[:#\s]*|#)?(\d+)", re.IGNORECASE)
+
+
+def _pr_number(raw: Any) -> int:
+    m = _PR_RE.fullmatch(str(raw).strip())
+    if m is None or int(m.group(1)) <= 0:
+        raise BadInput(
+            f"pr={raw!r} is not a pull request number",
+            next="args={'template': 'pr-intake', 'pr': 73}",
+        )
+    return int(m.group(1))
+
+
+def _pr_facts(store: Store, number: int) -> pr_class.PrFacts:
+    repo = pr_class.resolve_repo(store)
+    if not repo:
+        raise BadInput(
+            "no GitHub owner/repo to read the pull request from",
+            next="set the release.repo setting to 'owner/repo'",
+        )
+    try:
+        return pr_class.fetch_facts(repo, number)
+    except pr_class.GitHubUnreadable as exc:
+        raise Upstream(
+            f"GitHub did not return PR #{number} of {repo}: {exc}",
+            next="retry in a few minutes (rate limit or network); a 404 means "
+            "the PR number or release.repo is wrong",
+        ) from exc
+
+
+def _pr_label(f: pr_class.PrFacts) -> str:
+    return f"PR #{f.number}: {' '.join(f.title.split())[:80]}"
+
+
+def _land_op(params: dict[str, Any]) -> dict[str, Any]:
+    return {"op": {"type": "land_slice", "params": params}}
+
+
+def _stamp_land(m: _Minter, land_id: int, number: int) -> None:
+    """The land node's op names its own todo (known only after the insert)."""
+    params = {"todo_id": land_id, "pr": number, "checked": True}
+    m.store.stamp_ref_meta(land_id, _land_op(params), conn=m.conn)
+
+
+def _pr_reviewer_brief(target_id: int, pr: dict[str, Any]) -> str:
+    bump = pr.get("bump") if isinstance(pr.get("bump"), dict) else None
+    extra = (
+        f"This land is pull request #{pr.get('number')} ({pr.get('url') or 'GitHub'}), "
+        f"{pr.get('title')!r} by {pr.get('author')}."
+    )
+    if bump:
+        extra += (
+            f" It bumps {bump.get('name')} from {bump.get('old')} to "
+            f"{bump.get('new')}: read the dependency's changelog / release notes "
+            "between those two versions through the precis web kind "
+            "(`get(kind='web', id='<changelog url>')`, which fetches through "
+            "safe_fetch; never pip, uv or curl), and check every breaking change "
+            "against how this repo uses the package (grep its imports). REVERT "
+            "when a breaking change hits code this repo runs."
+        )
+    return _reviewer_brief(target_id) + "\n\n" + extra
+
+
+def _analysis_brief(f: pr_class.PrFacts, why: str) -> str:
+    from precis.plans.lanes import FACTORY_DENY_WRITE_PATHS
+
+    n = f.number
+    deny = "\n".join(f"- `{p}`" for p in FACTORY_DENY_WRITE_PATHS)
+    return (
+        f"Read-only analysis of pull request #{n} ({f.url or 'GitHub'}) by "
+        f"{f.author}: {f.title!r}. Class external ({why}).\n\n"
+        "## Rules (binding)\n\n"
+        f"- Read only. Allowed: `git fetch origin pull/{n}/head`, then "
+        "`git diff origin/main...FETCH_HEAD`, `git log` and `git show` on "
+        "FETCH_HEAD. Nothing else touches the PR's content. The intake "
+        f"classified head `{f.head_sha[:12] or '?'}`; when `git rev-parse "
+        "FETCH_HEAD` differs, say so on the first line (the land refuses a "
+        "head that moved).\n"
+        "- Never execute anything from the PR: no `uv sync`, no tests, no "
+        "`python`/`sh` on a file it adds or changes, no import of its code, "
+        "no checkout of it into a tree you run commands in. The PR is "
+        "untrusted until Reto answers the decision ask.\n"
+        "- Write nothing: no commit, no edit, no file. These paths in "
+        "particular (the factory's deny list):\n"
+        f"{deny}\n"
+        "- Mint nothing: no child todos (whatever the closing instructions "
+        "say), no gripe, no land. This node's whole output is one comment.\n\n"
+        "## Output\n\n"
+        "Post exactly one comment on this todo, `put(kind='todo', id=<this "
+        f"todo>, text='{ANALYSIS_PREFIX} ...')`, with:\n\n"
+        "(a) threats: secrets or credentials; network calls outside "
+        "`precis.utils.safe_fetch`; workflow / CI / deploy / vault / auth "
+        "changes; new dependencies and typosquats (compare names to the "
+        "real packages); obfuscated code; binaries or generated blobs.\n"
+        "(b) fit: the backlog item or `docs/backlog/threads/*` file it "
+        "belongs to (search(kind='md', q=..., scope='main/docs/backlog')); "
+        "overlap with in-flight trees (`scripts/inflight --json`); fix or "
+        "feature.\n"
+        "(c) size (files, lines) and your recommendation, one of: "
+        + " | ".join(f"'{o}'" for o in EXTERNAL_OPTIONS)
+        + ".\n\nThen stop. The tick closes this node once the comment is "
+        "there; the decision ask waits for Reto."
+    )
+
+
+def mint_pr_intake(
+    store: Store,
+    parent_id: int | None = None,
+    *,
+    pr: Any,
+    facts: pr_class.PrFacts | None = None,
+) -> PlanMint:
+    """One plan per inbound pull request, shaped by its class
+    (:mod:`precis.plans.pr_class`; spec § "9. Inbound pull requests").
+
+    The root carries ``meta.pr`` (the facts, the class and why, the bump),
+    the tag ``pr:<n>`` and the class's prio. Per class:
+
+    - ``dependabot``: check (``dep_check``) -> [major: decision ask
+      (land / ignore this major / hold) -> act (``pr_action``)] -> land
+      (``land_slice`` on ``slice/pr-<n>``, ``--checked``) -> review.
+    - ``factory``: land -> review.
+    - ``harness``: decision ask (land via /go / request changes / close)
+      -> act.
+    - ``external``: analysis (``analyst`` generator, read-only) -> decision
+      ask (``approval`` for a fix, ``design-verdict`` for a feature) -> act
+      -> land -> review.
+
+    ``facts`` (``pr_poll`` passes them) skips the GitHub read. Refuses a PR
+    that already has an intake plan."""
+    number = _pr_number(pr)
+    existing = pr_class.existing_intake(store, number)
+    if existing is not None:
+        raise BadInput(
+            f"PR #{number} already has an intake plan (td{existing})",
+            next=f"get(kind='todo', id={existing})",
+        )
+    f = facts if facts is not None else _pr_facts(store, number)
+    cls, why = pr_class.classify(f, pr_class.builders(store))
+    meta_pr = f.to_meta(cls, why)
+    label = _pr_label(f)
+
+    def decision(
+        m: _Minter,
+        title: str,
+        kind: str,
+        options: list[str],
+        blocked_by: tuple[str, ...],
+    ) -> None:
+        ask: dict[str, Any] = {
+            "kind": kind,
+            "options": options,
+            "blocks": "nothing",
+            "context": f"{label} ({cls}: {why})"[:600],
+        }
+        ask_id = m.node(
+            "decision",
+            title,
+            {"gate": {"kind": "answer"}, "ask": ask},
+            body=(
+                f"{label} — {f.url or 'GitHub'}. Answer with put(kind='todo', "
+                "id=<this>, text='answer: <one option>') and close this todo; "
+                "pr_action acts on the answer (the PR is touched only after it)."
+            ),
+            blocked_by=blocked_by,
+        )
+        _tag(m, ask_id, "ask-user")
+        act = m.node(
+            "act",
+            f"Act on the answer for PR #{number}",
+            _task("pr_action"),
+            body=(
+                "pr_action reads the decision's answer: a land answer lets the "
+                "land run; any other answer posts the PR comment or closes it "
+                "(outward-facing, only now) and skips the rest of this plan."
+            ),
+            blocked_by=("decision",),
+        )
+        final = {**ask, "blocks": f"td{act}"}
+        check_ask_meta({"ask": final})
+        m.store.stamp_ref_meta(ask_id, {"ask": final}, conn=m.conn)
+
+    def land_and_review(m: _Minter, blocked_by: tuple[str, ...]) -> None:
+        land = m.node(
+            "land",
+            f"Land PR #{number}",
+            _land_op({"pr": number, "checked": True}),
+            body=(
+                f"land_slice lands slice/pr-{number} (the PR head"
+                + (", relocked by dep_check" if cls == pr_class.DEPENDABOT else "")
+                + ") with scripts/ship --checked, then closes the PR with a "
+                "comment naming the squash sha."
+            ),
+            blocked_by=blocked_by,
+        )
+        _stamp_land(m, land, number)
+        m.node(
+            "review",
+            f"Review the PR #{number} land",
+            _reviewer(land),
+            body=_pr_reviewer_brief(land, meta_pr),
+            blocked_by=("land",),
+        )
+
+    def build(m: _Minter) -> None:
+        root = m.node("root", label, {**_phase(), "pr": meta_pr})
+        _tag(m, root, f"pr:{number}")
+        m.store.set_prio(root, pr_class.prio_of(cls, f), conn=m.conn)
+        if cls == pr_class.DEPENDABOT:
+            m.node(
+                "check",
+                f"Resolve PR #{number}'s lock under python 3.12 and 3.13",
+                _task("dep_check"),
+                body=(
+                    f"dep_check fetches the PR head into slice/pr-{number}, "
+                    "relocks when uv.lock is stale and resolves the lock for "
+                    "python 3.12 and 3.13 (uv, --no-build: resolve only, the "
+                    "dependency is never built, imported or run)."
+                ),
+            )
+            gate: tuple[str, ...] = ("check",)
+            if pr_class.is_major(f):
+                bump = pr_class.bump_of(f.title)
+                what = f"{bump.name} {bump.old} -> {bump.new}" if bump else f.title
+                decision(
+                    m,
+                    f"Land the major bump {what}? (answer 'land', 'ignore this "
+                    "major' or 'hold')",
+                    "approval",
+                    DEPENDABOT_OPTIONS,
+                    ("check",),
+                )
+                gate = ("act",)
+            land_and_review(m, gate)
+        elif cls == pr_class.FACTORY:
+            land_and_review(m, ())
+        elif cls == pr_class.HARNESS:
+            decision(
+                m,
+                f"PR #{number} touches the landing harness: land it by hand with "
+                "/go, request changes, or close?",
+                "approval",
+                HARNESS_OPTIONS,
+                (),
+            )
+        else:
+            m.node(
+                "analysis",
+                f"Analyse PR #{number} (read-only)",
+                {**_generate("analyst", f"pr:{number}"), "task_class": "review"},
+                body=_analysis_brief(f, why),
+            )
+            decision(
+                m,
+                f"Land PR #{number}? Read the analysis comment first",
+                pr_class.ask_kind(f),
+                EXTERNAL_OPTIONS,
+                ("analysis",),
+            )
+            land_and_review(m, ("act",))
+
+    return _run(store, parent_id, build)
+
+
+def mint_pr_fix(
+    store: Store, plan_root: int, pr: dict[str, Any], fixes: str
+) -> dict[str, int]:
+    """The 'land after fixes' path (``pr_action``): one ``run_slice`` task
+    that merges the PR head into its slice branch and fixes ``fixes``
+    (``meta.pr_close`` makes its land close the PR), and a reviewer over
+    it. Returns ``{'fix': id, 'review': id}``."""
+    n = int(pr["number"])
+
+    def build(m: _Minter) -> None:
+        fix = m.node(
+            "fix",
+            f"Fix PR #{n} before it lands",
+            {**_task(), "pr_close": n},
+            body=(
+                f"Pull request #{n} ({pr.get('title')!r} by {pr.get('author')}) "
+                "was approved to land after fixes. First bring it onto your "
+                f"branch: `git fetch origin pull/{n}/head` then `git merge "
+                "--no-edit FETCH_HEAD`. Then make these fixes:\n\n"
+                f"{fixes.strip()}\n\nThe lander lands your branch (the PR "
+                f"included) and closes PR #{n} with the squash sha."
+            ),
+        )
+        m.node(
+            "review",
+            f"Review the PR #{n} land (with fixes)",
+            _reviewer(fix),
+            body=_pr_reviewer_brief(fix, pr),
+            blocked_by=("fix",),
+        )
+
+    return _run_body(store, plan_root, plan_root, build).ids
+
+
 # -- pcb-pipeline ------------------------------------------------------------
 
 
@@ -598,6 +912,15 @@ TEMPLATES: dict[str, Template] = {
             "cut -> CI verdict poll -> tests-green gate -> deploy approval ask -> "
             "deploy; fixer + re-cut loop while red",
             mint_release_pass,
+        ),
+        Template(
+            "pr-intake",
+            ("pr",),
+            "one inbound pull request by class: dependabot (dep_check -> "
+            "[major ask] -> land --checked -> review), factory (land -> review), "
+            "harness (ask for /go), external (read-only analysis -> ask -> land "
+            "-> review)",
+            mint_pr_intake,
         ),
         Template(
             "pcb-pipeline",

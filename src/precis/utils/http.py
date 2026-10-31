@@ -480,6 +480,8 @@ POLICIES: dict[str, Policy] = {
     # the caller passes (auto-seeded, one request a second), so they need no
     # migration. A 4xx other than 401/403/429 comes back as a response.
     "web-fetch": Policy(attempts=3, base=2.0, cap=30.0, label="web fetch"),
+    # The dark factory's GitHub REST reads (pr_poll, ci_verdict_poll).
+    "github": Policy(attempts=3, base=2.0, cap=30.0, label="GitHub API"),
     "wikipedia": Policy(attempts=4, base=2.0, label="Wikipedia"),
     "wolfram": Policy(attempts=3, base=2.0, cap=30.0, label="Wolfram Alpha"),
     # A live agent waits on these two: few attempts, short cap. A 429 backs
