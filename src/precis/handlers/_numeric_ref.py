@@ -1005,6 +1005,10 @@ class NumericRefHandler(Handler):
         # ranked paths. A lone bound is legal on either side.
         id_min: int | str | None = None,
         id_max: int | str | None = None,
+        # ``args={'project': '<slug>'}`` — the gripe project axis
+        # (gr543639), flattened to a kwarg like every other args= key.
+        # Base refuses (:meth:`_fold_project_arg`); gripe overrides it.
+        project: str | None = None,
         **_kw: Any,
     ) -> Response:
         # Fold the ``q='*'`` match-all spelling before any view dispatch
@@ -1069,6 +1073,13 @@ class NumericRefHandler(Handler):
         normalized_tags = Tag.normalize_filter(
             effective_tags, kind=self.kind, axis_in_use=self._axis_in_use
         )
+        # The project axis (gripe, gr543639) folds into the resolved tag
+        # set — a non-default value pins its ``project:<slug>`` tag, the
+        # default value excludes every other ``project:<slug>`` in use.
+        if project is not None:
+            normalized_tags, excluded = self._fold_project_arg(
+                project, normalized_tags, excluded
+            )
 
         # ``view='count'``: the aggregate answer — one filtered total
         # plus per-facet counts — runs the same filters the listing/
@@ -1315,6 +1326,23 @@ class NumericRefHandler(Handler):
             parts.append(trunc)
         parts.append(table)
         return Response(body="\n".join(parts), result_count=len(hit_refs))
+
+    def _fold_project_arg(
+        self,
+        project: str,
+        tags: list[str] | None,
+        excluded: list[str],
+    ) -> tuple[list[str] | None, list[str]]:
+        """Fold ``args={'project': '<slug>'}`` into ``(tags, excluded)``.
+
+        Gripe-only (gr543639 — the ``project:<slug>`` open axis). Every
+        other kind refuses rather than silently dropping the filter.
+        """
+        raise BadInput(
+            f"search(kind={self.kind!r}) takes no args={{'project': …}} — "
+            "only gripe carries a project axis",
+            next="search(kind='gripe', args={'project': '<slug>'})",
+        )
 
     def _apply_status_default(
         self, status: str | None, tags: list[str] | None

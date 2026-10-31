@@ -326,6 +326,71 @@ class TestTick:
         assert called == []
         assert _status(store, gid) == "open"
 
+    def test_project_corrected_on_a_defaulted_gripe(self, store: Store) -> None:
+        """gr543639: a gripe filed at the precis default gets the model's
+        judged ``project:<slug>`` plus a correction comment naming why."""
+        _light(store)
+        gid = _gripe(
+            store,
+            "catpath import drops unicode filenames",
+            body="src/catpath/importer.py silently skips non-ascii names",
+        )
+        _run(
+            store,
+            _llm(
+                {
+                    "verdicts": [
+                        _verdict(
+                            gid,
+                            project="catpath",
+                            project_why="body names src/catpath/importer.py",
+                        )
+                    ]
+                }
+            ),
+        )
+        assert "project:catpath" in _open_tag_values(store, gid)
+        assert any(
+            c.startswith("project: precis -> catpath, because")
+            for c in _comments(store, gid)
+        )
+
+    def test_project_filer_set_is_never_overridden(self, store: Store) -> None:
+        """A ``project:<slug>`` the filer set stays — even when the model
+        votes for something else."""
+        _light(store)
+        gid = _gripe(store, "explicitly infra")
+        store.add_tag(gid, Tag.open("project:infra"), set_by="agent")
+        _run(
+            store,
+            _llm(
+                {
+                    "verdicts": [
+                        _verdict(gid, project="catpath", project_why="model guessed")
+                    ]
+                }
+            ),
+        )
+        values = _open_tag_values(store, gid)
+        assert "project:infra" in values and "project:catpath" not in values
+        assert not any(c.startswith("project:") for c in _comments(store, gid))
+
+    def test_project_unset_prompt_line_and_precis_write(self, store: Store) -> None:
+        """A defaulted gripe the model calls precis still settles: the
+        tag lands with no correction comment."""
+        _light(store)
+        gid = _gripe(store, "put id= on gripe is confusing")
+        prompts: list[str] = []
+
+        def spy(prompt: str) -> LlmResult:
+            prompts.append(prompt)
+            return _llm({"verdicts": [_verdict(gid, project="precis")]})(prompt)
+
+        _run(store, spy)
+        assert "project: unset" in prompts[0]
+        assert "project:precis" in _open_tag_values(store, gid)
+        assert not any(c.startswith("project:") for c in _comments(store, gid))
+
     def test_writes_tags_prio_status_and_clears_lease(self, store: Store) -> None:
         gid = _gripe(store, "router pours fail", age_days=7, body="it pours")
         _light(store)

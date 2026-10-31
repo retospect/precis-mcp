@@ -115,6 +115,17 @@ log = logging.getLogger(__name__)
 
 _BODY_KIND = "gripe_body"
 _RESOLVED_PREFIX = "resolved:"
+#: The ``project:<slug>`` open axis (gr543639): which repo/project the
+#: gripe is against. Optional on ``put`` — the tag is written ONLY when
+#: the filer passes ``args={'project': '<slug>'}``, so a gripe carrying
+#: no ``project:`` tag reads as the ``precis`` default and one carrying
+#: the tag counts as filer-set (the triage tick's never-override rule
+#: keys on that presence, gripe_triage._write_verdict). Open, not a
+#: closed axis: any slug normalises (unknown projects are allowed —
+#: triage figures the specific one out).
+_PROJECT_TAG_PREFIX = "project:"
+_DEFAULT_PROJECT = "precis"
+_PROJECT_SLUG_RE = re.compile(r"[^a-z0-9]+")
 #: The gripe lifecycle's terminal STATUS tags — derived from
 #: ``_BROWSE_TERMINALS`` so "still open" has one definition everywhere
 #: (the /open view, the status='open' live default, theme matching and
@@ -247,6 +258,15 @@ _HANDLE_TOKEN_RE = re.compile(r"\b([a-z]{2}\d+)\b", re.IGNORECASE)
 
 #: Cap on handles the card line lists — a log-paste gripe can quote dozens.
 _REF_LINE_CAP = 12
+
+
+def _project_slug(value: Any) -> str | None:
+    """An ``args={'project': '<slug>'}`` value → its ``project:`` tag
+    suffix (gr543639): case- and space-normalised kebab-case, capped.
+    ``None`` on unusable input — the caller refuses rather than file a
+    gripe under a slug that says nothing."""
+    slug = _PROJECT_SLUG_RE.sub("-", str(value or "").strip().lower()).strip("-")
+    return slug[:48].strip("-") or None
 
 
 def _referenced_handles(text: str) -> list[str]:
@@ -527,6 +547,33 @@ class GripeHandler(NumericRefHandler):
             for rid, d in gf.stale_unpicked(self.store, refs).items()
         }
 
+    def _fold_project_arg(
+        self,
+        project: str,
+        tags: list[str] | None,
+        excluded: list[str],
+    ) -> tuple[list[str] | None, list[str]]:
+        """``args={'project': '<slug>'}`` (gr543639): a non-default
+        value pins its ``project:<slug>`` tag; the ``precis`` default
+        excludes every *other* ``project:<slug>`` in use — an untagged
+        gripe reads as the default, so a tag pin would miss it."""
+        slug = _project_slug(project)
+        if slug is None:
+            raise BadInput(
+                f"args={{'project': {project!r}}} normalises to no slug",
+                next=f"search(kind={self.kind!r}, args={{'project': 'catpath'}})",
+            )
+        if slug != _DEFAULT_PROJECT:
+            return [*(tags or []), f"{_PROJECT_TAG_PREFIX}{slug}"], excluded
+        with self.store.pool.connection() as conn:
+            rows = conn.execute(
+                "SELECT DISTINCT t.value FROM tags t "
+                "WHERE t.namespace = 'OPEN' AND t.value LIKE %s "
+                "AND t.value <> %s",
+                (f"{_PROJECT_TAG_PREFIX}%", f"{_PROJECT_TAG_PREFIX}{slug}"),
+            ).fetchall()
+        return tags, [*excluded, *(str(r[0]) for r in rows)]
+
     # ── put: create or append-comment ───────────────────────────────
 
     def put(
@@ -553,6 +600,12 @@ class GripeHandler(NumericRefHandler):
         # create-only keys — the dispatcher flattens args= into kwargs.
         new: bool | None = None,
         observation: bool | None = None,
+        # ``args={'project': '<slug>'}`` — which repo/project the gripe
+        # is against (gr543639). Written as the open ``project:<slug>``
+        # tag only when given; omitted reads as the ``precis`` default,
+        # which triage may correct (a carried tag is filer-set and
+        # never overridden).
+        project: str | None = None,
         **_kw: Any,
     ) -> Response:
         # ``text=`` + ``body=`` join as first line + details (the todo
@@ -582,6 +635,22 @@ class GripeHandler(NumericRefHandler):
         tags, readings = alias_prio_tags(tags)
         tags, status_readings = alias_status_tags(tags, kind=self.kind)
         readings += status_readings
+        # args={'project': '<slug>'} → the open ``project:<slug>`` tag.
+        # Any slug normalises (an unknown project is allowed — triage
+        # sorts out a wrong guess); unusable input refuses rather than
+        # filing bare.
+        project_tag: str | None = None
+        if project is not None and str(project).strip():
+            slug = _project_slug(project)
+            if slug is None:
+                raise BadInput(
+                    f"args={{'project': {project!r}}} normalises to no slug",
+                    next=(
+                        f"put(kind={self.kind!r}, text='...', "
+                        "args={'project': '<repo-slug>'})"
+                    ),
+                )
+            project_tag = f"{_PROJECT_TAG_PREFIX}{slug}"
         # id-presence is what actually dispatches create-vs-comment; an
         # explicit mode= is accepted only as a redundant-but-unambiguous
         # confirmation of that ('create' <-> no id=, 'comment' <-> id=<n>)
@@ -616,6 +685,14 @@ class GripeHandler(NumericRefHandler):
                 raise BadInput(
                     f"prio= is not accepted when appending a {self._sense()} comment",
                     next=f"use tag(kind={self.kind!r}, id={id}, prio={prio})",
+                )
+            if project_tag is not None:
+                # Same for the project axis — re-tagging an existing
+                # gripe is a tag() call, not a comment-put arg.
+                raise BadInput(
+                    "project= is not accepted when appending a "
+                    f"{self._sense()} comment",
+                    next=f"tag(kind={self.kind!r}, id={id}, add=[{project_tag!r}])",
                 )
             no_text = text is None or not text.strip()
             edges = (link, unlink, tags, untags)
@@ -681,6 +758,7 @@ class GripeHandler(NumericRefHandler):
                     ("prio", prio),
                     ("new", new),
                     ("observation", observation),
+                    ("project", project_tag),
                 )
                 if val
             ]
@@ -690,6 +768,8 @@ class GripeHandler(NumericRefHandler):
                     f"{', '.join(non_text)} needs a write-capable run",
                     next=f"put(kind={self.kind!r}, text='your friction report')",
                 )
+        if project_tag is not None:
+            tags = [*(tags or []), project_tag]
         # Observation (gr514477 batch): file already closed. The auto-close
         # goes through the same resolved-comment + tag path as a manual
         # close, so the close gate applies unchanged.

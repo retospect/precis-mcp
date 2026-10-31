@@ -199,6 +199,16 @@ def _prio_of(tags: Any) -> str | None:
     return None
 
 
+def _project_of(tags: Any) -> str | None:
+    """The ``project:<slug>`` open-tag value, if the gripe carries one
+    (gr543639) — ``None`` reads as the ``precis`` default."""
+    for t in tags:
+        v = str(getattr(t, "value", "") or "")
+        if getattr(t, "namespace", None) == "open" and v.startswith("project:"):
+            return v
+    return None
+
+
 def _filed_by(request: Request) -> str:
     """Who the attribution line should name.
 
@@ -273,7 +283,12 @@ def _rows(
                (SELECT p.value FROM ref_tags prt
                   JOIN tags p ON p.tag_id = prt.tag_id
                  WHERE prt.ref_id = r.ref_id AND p.namespace = 'PRIO'
-                 LIMIT 1) AS prio
+                 LIMIT 1) AS prio,
+               (SELECT pj.value FROM ref_tags prj
+                  JOIN tags pj ON pj.tag_id = prj.tag_id
+                 WHERE prj.ref_id = r.ref_id AND pj.namespace = 'OPEN'
+                   AND pj.value LIKE 'project:%%'
+                 ORDER BY pj.value LIMIT 1) AS project
           FROM refs r
           LEFT JOIN ref_tags rt ON rt.ref_id = r.ref_id
                AND rt.tag_id IN (SELECT tag_id FROM tags WHERE namespace = 'STATUS')
@@ -296,6 +311,7 @@ def _rows(
                 "updated": _ago(r[3]),
                 "status": r[4] or "open",
                 "prio": r[5],
+                "project": r[6],
             }
         )
     return out
@@ -453,11 +469,15 @@ async def status_rows(
 
 
 @router.post("", response_model=None)
-async def file_gripe(request: Request, text: str = Form(...)) -> Response:
+async def file_gripe(
+    request: Request, text: str = Form(...), project: str = Form("")
+) -> Response:
     """File a new gripe via ``put`` (no id — the create path).
 
     Blank text is a no-op redirect, mirroring the comment route: an
-    empty gripe carries nothing to triage.
+    empty gripe carries nothing to triage. The optional ``project``
+    field rides the same ``args={'project': …}`` channel the verb
+    documents (gr543639) — blank means the ``precis`` default.
     """
     if not text.strip():
         return RedirectResponse(url="/gripes", status_code=303)
@@ -466,6 +486,8 @@ async def file_gripe(request: Request, text: str = Form(...)) -> Response:
         "kind": "gripe",
         "text": _attribute(text, _filed_by(request)),
     }
+    if project.strip():
+        args["project"] = project.strip()
     if user is not None:
         # Server-side filer tag — the trusted "filed by" channel (the
         # body attribution line is untrusted text; triage's owner
@@ -523,6 +545,7 @@ async def detail(request: Request, id: int) -> HTMLResponse:
             "status_badge": _status_badge(status),
             "retired": getattr(ref, "retired_at", None) is not None,
             "prio": _prio_of(tags),
+            "project": _project_of(tags),
         },
     )
 

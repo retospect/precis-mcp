@@ -12,6 +12,7 @@
       {% if updated %}· updated {{ updated | ago }}{% endif %}
       {% if set_by %}· by <span class="font-mono">{{ set_by }}</span>{% endif %}
       {% if prio %}· <span class="font-mono">PRIO:{{ prio }}</span>{% endif %}
+      {% if project and project != 'project:precis' %}· <span class="font-mono">{{ project }}</span>{% endif %}
     </p>
   </div>
   {% if not retired %}{% include "gripes/_gripe_status.html.j2" %}{% endif %}

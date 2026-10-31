@@ -81,6 +81,47 @@ class TestGripe:
         tags = gripe.store.tags_for(refs[0].id)
         assert any("STATUS:open" in str(t) for t in tags)
 
+    def test_put_project_writes_the_open_axis(self, gripe: GripeHandler) -> None:
+        """gr543639: ``args={'project': …}`` → the open ``project:<slug>``
+        tag, normalised; omitted writes no tag (the ``precis`` default)."""
+        gripe.put(text="catpath import drops unicode", project="Cat Path")
+        cat = gripe.store.list_refs(kind="gripe", limit=10)[0]
+        assert any(t.value == "project:cat-path" for t in gripe.store.tags_for(cat.id))
+        gripe.put(text="a precis gripe with no project arg")
+        other = next(
+            r for r in gripe.store.list_refs(kind="gripe", limit=10) if r.id != cat.id
+        )
+        assert not any(
+            t.value.startswith("project:") for t in gripe.store.tags_for(other.id)
+        )
+
+    def test_put_project_refused_on_comment_append(self, gripe: GripeHandler) -> None:
+        gripe.put(text="a gripe to comment on")
+        gid = gripe.store.list_refs(kind="gripe", limit=10)[0].id
+        with pytest.raises(BadInput, match="project= is not accepted"):
+            gripe.put(id=gid, text="correction", project="catpath")
+
+    def test_search_args_project_filters(self, gripe: GripeHandler) -> None:
+        """``search(kind='gripe', args={'project': 'catpath'})`` filters;
+        ``'precis'`` reaches tagged-precis AND untagged-defaulted rows."""
+        gripe.put(text="catpath bug", project="catpath")
+        cat_id = int(gripe.store.list_refs(kind="gripe", limit=10)[0].id)
+        gripe.put(text="explicitly precis", project="precis")
+        tagged_id = int(
+            next(
+                r.id
+                for r in gripe.store.list_refs(kind="gripe", limit=10)
+                if r.id != cat_id
+            )
+        )
+        default_id = int(insert_gripe(gripe.store, "defaulted — no tag").id)
+        cat = gripe.search(project="catpath", status="*")
+        assert f"gr{cat_id}" in cat.body and f"gr{default_id}" not in cat.body
+        precis = gripe.search(project="precis", status="*")
+        assert f"gr{cat_id}" not in precis.body
+        assert f"gr{tagged_id}" in precis.body
+        assert f"gr{default_id}" in precis.body
+
     def test_put_with_id_appends_comment_chunk(self, gripe: GripeHandler) -> None:
         gripe.put(text="paper slug NotFound has no near-match suggestions")
         refs = gripe.store.list_refs(kind="gripe", limit=10)

@@ -49,6 +49,14 @@ _BARE_NAMESPACES: frozenset[str] = frozenset({"OPEN", "FLAG"})
 #: gripe both stamp ``STATUS:open`` on create).
 OPEN_BY_DEFAULT: frozenset[str] = frozenset({"todo", "gripe"})
 
+#: ``(namespace, value, kind)`` quiet triples — a tag that restates its
+#: kind's default drops before counting, like ``STATUS:open``.
+#: ``project:precis`` on a gripe IS the default (gr543639); only a
+#: non-default project is worth a chip.
+_QUIET_DEFAULTS: frozenset[tuple[str, str, str]] = frozenset(
+    {("OPEN", "project:precis", "gripe")}
+)
+
 #: Per-store cache for :func:`_axis_ranks`, dropped with its store.
 _AXIS_RANKS: weakref.WeakKeyDictionary[Any, dict[str, float]] = (
     weakref.WeakKeyDictionary()
@@ -113,6 +121,7 @@ def chips_for(
         if not (
             (ns == "STATUS" and v == "open" and kind in OPEN_BY_DEFAULT)
             or (ns == "SPACE" and ring_spaces is not None and v in ring_spaces)
+            or (ns, v, kind) in _QUIET_DEFAULTS
         )
     ]
     if not kept:

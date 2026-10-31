@@ -36,6 +36,30 @@ put(kind="gripe", text="paper slug NotFound does not surface near-match options"
 # → created gripe id=42 (STATUS:open)
 ```
 
+**Which project is it against?** `args={'project': '<slug>'}` sets the
+open `project:<slug>` axis — `precis` by default, but gripes against
+anything can be filed (known slugs today: `precis`, `catpath`,
+`autocatpath`, `hexfold`, `infra`; any slug normalises, an unknown one
+is not rejected). Omitted means `precis` — and no `project:` tag is
+written, so the triage tick may *correct* a wrong default with a
+`project: precis -> <slug>, because …` comment. A `project:` tag the
+filer set is never overridden.
+
+```python
+put(kind="gripe", text="catpath import drops unicode filenames",
+    args={"project": "catpath"})
+# after the fact, same axis:
+tag(kind="gripe", id=42, add=["project:hexfold"])
+```
+
+Filter a project cohort — and `project='precis'` also reaches the
+untagged-defaulted gripes (they read as the default):
+
+```python
+search(kind="gripe", args={"project": "catpath"})
+search(kind="gripe", args={"project": "precis"})
+```
+
 Half-sentence is fine — articulation can wait. Don't pre-classify,
 don't articulate the fix. A title is optional: `title=` is accepted and
 becomes the first line of the body (the title is just the first line). The system tags it
@@ -554,8 +578,12 @@ Use `rel='supersedes'` when the child *replaces* the parent's scope,
 (`delete`) only once every live thread it carried is linked out —
 otherwise you lose the trail.
 
-## Tag the repo a gripe is about
-## Which project is this bug in? {write}
+## Tag the repo a gripe is about {write}
+
+`repo:<name>` (fix-tree targeting) and `project:<slug>` (which project
+the gripe is *against*, above) are different axes — `repo:` tells a
+`fix_gripe` job which tree to clone, `project:` is the triage axis the
+census groups by.
 
 If you've got more than one project under the same precis
 instance, tag the gripe with the repo name so `fix_gripe` knows

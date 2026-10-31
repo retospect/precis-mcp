@@ -203,6 +203,13 @@ _PRIO_DEFAULT = 8
 _SLUG_RE = re.compile(r"[^a-z0-9]+")
 _MISS_RE = re.compile(r"^\d+$")
 
+#: The ``project:<slug>`` open axis (gr543639): which repo/project the
+#: gripe is against. A gripe filed without one reads as the ``precis``
+#: default — the tick judges it and writes the tag; a gripe already
+#: carrying ``project:<slug>`` is filer-set and never overridden.
+_DEFAULT_PROJECT = "precis"
+_PROJECT_TAG_PREFIX = "project:"
+
 
 def gripe_triage_enabled(
     store: Store, *, conn: Any = None, host: str | None = None
@@ -797,6 +804,10 @@ class ClaimedGripe:
     #: still matches, so a gripe closed or re-leased mid-call is skipped
     #: instead of being re-opened or drained under a foreign lease.
     claim_stamp: str
+    #: The filer-set ``project:<slug>`` suffix, or ``None`` — the
+    #: ``precis`` default the tick may correct (gr543639). A filer-set
+    #: project is never overridden.
+    project: str | None = None
 
     def age_days(self, now: datetime) -> float:
         return max(0.0, (now - self.created_at).total_seconds() / 86400.0)
@@ -941,6 +952,14 @@ def _batch_rows(store: Store, claimed: list[tuple[int, str]]) -> list[ClaimedGri
                 set_by=str(set_by or ""), tags=open_tags, body=str(body)
             ),
             claim_stamp=stamps[int(ref_id)],
+            project=next(
+                (
+                    v[len(_PROJECT_TAG_PREFIX) :]
+                    for t in open_tags
+                    if (v := t.split(":", 1)[-1]).startswith(_PROJECT_TAG_PREFIX)
+                ),
+                None,
+            ),
         )
     # Claim order (reopened first, then oldest) drives the prompt order.
     return [by_id[i] for i, _s in claimed if i in by_id]
@@ -1034,6 +1053,15 @@ For EACH gripe decide:
   none fits. A live thread slug makes a good cluster name.
 - size: S = minutes-to-hours, M = one focused session, L = multi-session
   or cross-cutting.
+- project: which repo/project the gripe is against — 'precis' is the
+  default. Judge ONLY when the gripe's header says "project: unset";
+  infer it from its title, body, the paths and links it names (a body
+  citing src/catpath/… is 'catpath'). Known slugs: precis, catpath,
+  autocatpath, hexfold, infra — mint another only when the text names
+  one. When the header shows a filer-set project, repeat THAT value.
+- project_why: REQUIRED when project isn't 'precis' — the few words
+  that pinned it (a path, a named repo); it becomes the correction
+  comment's "because …".
 - severity: 1..5 — 5 wrong result or data loss, 4 a blocked workflow,
   3 degraded but workable, 2 papercut, 1 wish/polish.
 - verdict: one of "bug" | "not-a-bug" | "working-as-designed" |
@@ -1082,6 +1110,8 @@ per gripe shown, exactly {n} entries:
       "fix": "skill|code|mcp|web|docs|infra|ops|spec|reto",
       "cluster": "<slug>",
       "size": "S|M|L",
+      "project": "<slug — repeat the filer-set value when shown>",
+      "project_why": "<only when project isn't precis>",
       "severity": <1-5>,
       "verdict": "bug" | "not-a-bug" | "working-as-designed" | "noise"
                  | "fixed",
@@ -1122,6 +1152,11 @@ def _gripe_block(
         f"### gr{g.ref_id} — age {g.age_days(now):.1f}d, "
         f"{g.dup_count} parked duplicate(s)\n"
         f"tags: {tags}\n"
+    )
+    head += (
+        f"project: {g.project} (set by the filer — keep it)\n"
+        if g.project is not None
+        else "project: unset (filer took the precis default — judge it)\n"
     )
     if g.reopened:
         head += "REOPENED: a previous fix failed verification.\n"
@@ -1255,6 +1290,11 @@ class Verdict:
     #: The citing commit sha for a ``fixed`` verdict — a prefix of (or
     #: equal to) one of the gripe's collected evidence shas.
     fix_sha: str | None
+    #: The judged ``project:<slug>`` suffix (gr543639) — applied only
+    #: on a gripe the filer left at the ``precis`` default.
+    project: str = _DEFAULT_PROJECT
+    #: The short "because …" for a non-default project correction.
+    project_why: str | None = None
 
     @property
     def not_a_bug(self) -> bool:
@@ -1391,6 +1431,14 @@ def parse_verdicts(
             )
             continue
         reason = str(item.get("reason") or "").strip()
+        raw_project = str(item.get("project") or "").strip()
+        project = _slugify(raw_project) if raw_project else _DEFAULT_PROJECT
+        project_why = str(item.get("project_why") or "").strip() or None
+        # A filer-set ``project:<slug>`` is never overridden — the
+        # model repeats it (the prompt says so) but the write reads the
+        # gripe's own tag regardless of what the verdict claims.
+        if g.project is not None:
+            project = g.project
         offered = {
             int(p["id"]) for p in g.dup_parents if str(p.get("id", "")).isdigit()
         }
@@ -1426,6 +1474,8 @@ def parse_verdicts(
             recommend=recommend,
             dups=tuple(dups),
             fix_sha=ev.sha if ev is not None else None,
+            project=project,
+            project_why=project_why,
         )
     return verdicts, sorted(set(claimed) - set(verdicts))
 
@@ -1659,6 +1709,22 @@ def _write_verdict(
             g.ref_id, Tag.open(f"cluster:{v.cluster}"), set_by="system", conn=conn
         )
         store.add_tag(g.ref_id, Tag.open(f"size:{v.size}"), set_by="system", conn=conn)
+        # gr543639: settle the project axis on a defaulted gripe — the
+        # model judged it from the same text it triaged. A filer-set
+        # ``project:<slug>`` is never touched (``parse_verdicts``
+        # already forced the verdict's value back to the filer's).
+        if g.project is None:
+            store.add_tag(
+                g.ref_id,
+                Tag.open(f"{_PROJECT_TAG_PREFIX}{v.project}"),
+                set_by="system",
+                conn=conn,
+            )
+            if v.project != _DEFAULT_PROJECT:
+                comments.append(
+                    f"project: {_DEFAULT_PROJECT} -> {v.project}, because "
+                    f"{_one_line(v.project_why or v.reason or 'see gripe text')}"
+                )
         if reto:
             store.add_tag(g.ref_id, Tag.open("reto:ask"), set_by="system", conn=conn)
             comments.append(

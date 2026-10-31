@@ -4618,6 +4618,22 @@ def test_gripes_filing_dispatches_put_and_redirects(runtime, client) -> None:
     assert args["text"].endswith("via the /gripes web form")
 
 
+def test_gripes_filing_form_carries_an_optional_project(runtime, client) -> None:
+    """gr543639: the form's optional ``project`` field rides put's
+    ``args={'project': …}`` channel; a blank field sends nothing."""
+    resp = client.post(
+        "/gripes",
+        data={"text": "catpath importer skips unicode", "project": " catpath "},
+        follow_redirects=False,
+    )
+    assert resp.status_code == 303
+    verb, args = runtime.calls[-1]
+    assert verb == "put" and args["project"] == "catpath"
+    client.post("/gripes", data={"text": "plain gripe"}, follow_redirects=False)
+    assert "project" not in runtime.calls[-1][1]
+    assert 'name="project"' in client.get("/gripes").text
+
+
 def test_gripes_filing_names_the_gate_as_off_when_it_is(runtime, client) -> None:
     """No gate ⇒ no identity — the text says so rather than guessing one.
 

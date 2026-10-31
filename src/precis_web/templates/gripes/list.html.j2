@@ -22,6 +22,11 @@
     <textarea name="text" rows="4" required
               placeholder="What broke, what you expected, and how to hit it again…"
               class="w-full rounded-md border border-line-strong px-3 py-2 text-sm"></textarea>
+    {# Optional project (gr543639): which repo the gripe is against —
+       blank is the precis default; triage corrects a wrong guess. #}
+    <input name="project" type="text"
+           placeholder="project (optional — defaults to precis)"
+           class="w-72 rounded-md border border-line-strong px-3 py-2 text-sm">
     <div class="flex flex-wrap items-center gap-3">
       <button class="rounded-md bg-accent-solid text-on-solid text-sm px-4 py-2 hover:bg-accent-solid-strong">
         File gripe
