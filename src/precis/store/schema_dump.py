@@ -35,8 +35,13 @@ GRANT/REVOKE statements stay in the dump (``--no-owner`` only): the
 migration chain's privilege layout names PUBLIC exclusively, so the
 snapshot reproduces it verbatim — a baseline-built install gets the same
 ACLs a replayed one does (gr505335; the convergence test asserts it).
-The one exception is the guarded ``agent_rw`` grants of 0257/0258, which a
-role-less scratch DB never applies: ``_APP_ROLE_GRANTS`` re-emits them.
+The exception is the ``pg_roles``-guarded ``agent_rw`` grants of
+0257/0258: the scratch DB's server gets the app roles as NOLOGIN
+stand-ins before the replay so the guarded GRANTs fire and are dumped
+(gr538444 — the hand-maintained ``_APP_ROLE_GRANTS`` block they replaced
+could drift from the migrations; the test file
+``tests/test_vault_execute_grants.py``'s cluster lock is shared so a
+concurrent run's role drop cannot un-fire the guards mid-replay).
 
 This is a dual-track scheme (Rails ``schema.rb`` / Ecto
 ``structure.sql``), **not** a third greenfield: the numbered migrations
@@ -46,7 +51,9 @@ stay sealed in the tree as the upgrade path for existing databases.
 from __future__ import annotations
 
 import logging
+import re
 import subprocess
+import time
 from pathlib import Path
 
 import psycopg
@@ -142,40 +149,28 @@ _LEDGER_EPOCH = "1970-01-01 00:00:00+00"
 #: Default scratch database name created on the maintenance server.
 DEFAULT_SCRATCH_DB = "precis_schema_dump"
 
+#: The app roles prod provisions out-of-tree (ansible) that migrations
+#: grant to behind a ``pg_roles`` guard (0257/0258 grant EXECUTE to
+#: ``agent_rw``). A role-less scratch server never fires those GRANTs and
+#: pg_dump cannot capture them (gr538444) — the dump creates NOLOGIN
+#: stand-ins for the replay window, then drops only the ones it made.
+#: Roles are cluster-global, not per-DB, so creation adopts a role that
+#: already exists (a shared test cluster may provision the real ones).
+APP_ROLES: tuple[str, ...] = ("agent_rw", "agent_ro")
 
-#: Grants to the out-of-tree ``agent_rw`` role that migrations 0257/0258
-#: apply in a ``pg_roles``-guarded DO block. The scratch DB the dump runs
-#: against has no such role, so the guarded GRANTs never fire there and
-#: pg_dump cannot capture them — yet the REVOKE FROM PUBLIC lines it does
-#: capture would leave a baseline-built install (role present) without
-#: vault access. Re-emit them here, behind the same guard. Keep in step
-#: with any later migration that grants to ``agent_rw``.
-_APP_ROLE_GRANTS = """\
---
--- Grants to agent_rw (migrations 0257, 0258), guarded like the migrations:
--- the role is provisioned out-of-tree, absent on a fresh dev/test DB.
---
+#: Advisory-lock key shared with ``tests/test_vault_execute_grants.py``:
+#: roles are cluster-global, so the create → replay → drop window must
+#: serialize across processes — a concurrent run's DROP ROLE between the
+#: role check and 0257's guarded GRANT would silently un-fire it.
+_ROLE_LOCK_KEY = "precis:vault-grants-test"
 
-DO $$
-BEGIN
-    IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'agent_rw') THEN
-        EXECUTE 'GRANT EXECUTE ON FUNCTION
-            vault.reveal(text),
-            vault.reveal(text, text, text, integer, integer, text),
-            vault.set_secret(text, text),
-            vault.set_secret_if_absent(text, text),
-            vault.delete_secret(text),
-            vault.gc_events(integer)
-            TO agent_rw';
-        EXECUTE 'GRANT EXECUTE ON FUNCTION
-            public.refs_retire_event_trail(),
-            public.precis_revision_triggers_refresh(),
-            public.precis_kinds_refresh_guarded()
-            TO agent_rw';
-    END IF;
-END
-$$;
-"""
+#: Dumped ACL lines that name an out-of-tree app role. pg_dump emits them
+#: plain — ``GRANT … TO agent_rw;`` — but a baseline must still load on a
+#: role-less fresh install, so they are pulled out of the DDL and re-emitted
+#: behind the same ``pg_roles`` guard the migrations use.
+_APP_ROLE_ACL_RE = re.compile(
+    r"^(?P<stmt>(?:GRANT|REVOKE) .+? (?:TO|FROM) (?P<role>agent_rw|agent_ro));$"
+)
 
 
 def baseline_path(migrations_dir: Path) -> Path:
@@ -255,6 +250,63 @@ def parse_baseline_ledger(sql_text: str) -> list[tuple[str, str]]:
 # ---------------------------------------------------------------------------
 
 
+def _acquire_role_lock(conn: psycopg.Connection) -> None:
+    """Serialize the create → replay → drop role window cluster-wide.
+
+    Session-scoped advisory lock on the admin connection — it must be
+    held open until :func:`_drop_app_roles` runs. Same key the
+    vault-grants test uses so the dump's role window and the test's
+    create → assert → drop window can never interleave.
+    """
+    for _ in range(300):
+        got = conn.execute(
+            "SELECT pg_try_advisory_lock(hashtext(%s))", (_ROLE_LOCK_KEY,)
+        ).fetchone()
+        if got is not None and got[0]:
+            return
+        time.sleep(1)
+    raise RuntimeError(
+        f"could not acquire the cluster role lock ({_ROLE_LOCK_KEY!r}) after "
+        "300s — another baseline dump or the vault-grants test holds it"
+    )
+
+
+def _ensure_app_roles(conn: psycopg.Connection) -> list[str]:
+    """Create NOLOGIN stand-ins for the app roles the cluster lacks.
+
+    Returns the roles this call created — a pre-existing role (a shared
+    cluster's real provisioning, or a leftover stand-in) is adopted for
+    the replay and NOT reported, so the caller never drops it.
+    """
+    made: list[str] = []
+    for role in APP_ROLES:
+        exists = conn.execute(
+            "SELECT 1 FROM pg_roles WHERE rolname = %s", (role,)
+        ).fetchone()
+        if exists is None:
+            conn.execute(
+                _sql.SQL("CREATE ROLE {} NOLOGIN").format(_sql.Identifier(role))
+            )
+            made.append(role)
+    return made
+
+
+def _drop_app_roles(conn: psycopg.Connection, made: list[str]) -> None:
+    """Drop the stand-in roles :func:`_ensure_app_roles` created.
+
+    Tolerates 2BP01 (dependent objects — a concurrent scratch-DB replay
+    granted the role mid-dump; the leftover NOLOGIN role is adoptable
+    next run) and 42704 (already gone), the same contract the
+    vault-grants test's cleanup uses.
+    """
+    for role in made:
+        try:
+            conn.execute(_sql.SQL("DROP ROLE {}").format(_sql.Identifier(role)))
+        except psycopg.Error as exc:
+            if exc.diag.sqlstate not in ("2BP01", "42704"):
+                raise
+
+
 def _run_pg_dump(pg_dump_bin: str, scratch_dsn: str, extra: list[str]) -> str:
     """Invoke ``pg_dump`` against ``scratch_dsn``; return its stdout.
 
@@ -304,6 +356,49 @@ def _clean_dump(text: str, *, seed_data: bool = False) -> str:
     return "\n".join(out)
 
 
+def _guard_app_role_acls(schema_ddl: str) -> tuple[str, str]:
+    """Split role-named ACL lines out of the dump into a guarded DO block.
+
+    Returns ``(ddl_without_role_acls, guarded_block)`` — ``""`` for the
+    block when the dump named no app role. Lines are captured from the
+    dump itself (never hand-maintained — gr538444) and re-emitted one
+    ``EXECUTE`` per statement, per role, behind the same ``pg_roles``
+    check the migrations carry, so a role-less fresh install still loads.
+    """
+    stmts: dict[str, list[str]] = {}
+    kept: list[str] = []
+    for line in schema_ddl.splitlines():
+        m = _APP_ROLE_ACL_RE.match(line)
+        if m is None:
+            kept.append(line)
+            continue
+        stmts.setdefault(m.group("role"), []).append(m.group("stmt"))
+    if not stmts:
+        return "\n".join(kept), ""
+    block = [
+        "--",
+        "-- Grants/revokes naming the out-of-tree app roles, captured by",
+        "-- pg_dump from the replayed chain and guarded like the",
+        "-- migrations: the roles are provisioned out-of-tree, absent on a",
+        "-- fresh dev/test DB.",
+        "--",
+        "DO $$",
+        "BEGIN",
+    ]
+    for role in APP_ROLES:
+        if role not in stmts:
+            continue
+        block.append(
+            f"    IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = '{role}') THEN"
+        )
+        for stmt in stmts[role]:
+            esc = stmt.replace("'", "''")
+            block.append(f"        EXECUTE '{esc}';")
+        block.append("    END IF;")
+    block += ["END", "$$;"]
+    return "\n".join(kept), "\n".join(block) + "\n"
+
+
 def _assemble(schema_ddl: str, seed_data: str, ledger: str, *, head: str) -> str:
     ext_lines = "\n".join(f"CREATE EXTENSION IF NOT EXISTS {e};" for e in EXTENSIONS)
     header = (
@@ -325,10 +420,11 @@ def _assemble(schema_ddl: str, seed_data: str, ledger: str, *, head: str) -> str
         f"{ext_lines}\n"
         "CREATE SCHEMA IF NOT EXISTS public;\n"
     )
-    return (
-        f"{header}\n{schema_ddl.rstrip()}\n\n{_APP_ROLE_GRANTS}\n"
-        f"{seed_data.rstrip()}\n\n{ledger}"
-    )
+    schema_ddl, role_acls = _guard_app_role_acls(schema_ddl)
+    out = f"{header}\n{schema_ddl.rstrip()}\n\n"
+    if role_acls:
+        out += f"{role_acls}\n"
+    return f"{out}{seed_data.rstrip()}\n\n{ledger}"
 
 
 def generate_baseline_sql(
@@ -347,7 +443,10 @@ def generate_baseline_sql(
     ``maintenance_dsn`` may point at any database on the target server;
     its dbname is swapped to ``postgres`` for the CREATE/DROP and to
     ``scratch_db`` for the replay + dump. The connecting role needs
-    ``CREATEDB``.
+    ``CREATEDB`` — and ``CREATEROLE`` when the cluster lacks the
+    :data:`APP_ROLES` stand-ins (created NOLOGIN for the replay so the
+    migration chain's ``pg_roles``-guarded GRANTs fire and are dumped;
+    pre-existing roles are adopted and never dropped).
     """
     from precis.store.migrate import Migrator
 
@@ -358,30 +457,37 @@ def generate_baseline_sql(
     with psycopg.connect(admin_dsn, autocommit=True) as conn:
         conn.execute(_sql.SQL("DROP DATABASE IF EXISTS {}").format(db_ident))
         conn.execute(_sql.SQL("CREATE DATABASE {}").format(db_ident))
-    try:
-        # Full from-scratch replay — no baseline. This is the canonical
-        # source of truth the snapshot must reproduce.
-        applied = Migrator(scratch_dsn, migrations_dir).apply_all()
-        head = applied[-1][1] if applied else "(empty)"
+        # Session-scoped: this connection must stay open until the roles
+        # are dropped, or the lock releases with the disconnect.
+        _acquire_role_lock(conn)
+        made_roles = _ensure_app_roles(conn)
+        try:
+            # Full from-scratch replay — no baseline. This is the canonical
+            # source of truth the snapshot must reproduce.
+            applied = Migrator(scratch_dsn, migrations_dir).apply_all()
+            head = applied[-1][1] if applied else "(empty)"
 
-        schema_ddl = _clean_dump(
-            _run_pg_dump(
-                pg_dump_bin,
-                scratch_dsn,
-                ["--schema=public", "--schema=vault", "--schema-only"],
+            schema_ddl = _clean_dump(
+                _run_pg_dump(
+                    pg_dump_bin,
+                    scratch_dsn,
+                    ["--schema=public", "--schema=vault", "--schema-only"],
+                )
             )
-        )
-        seed_extra = ["--data-only"]
-        for t in SEED_TABLES:
-            seed_extra += ["--table", f"public.{t}"]
-        seed_data = _clean_dump(
-            _run_pg_dump(pg_dump_bin, scratch_dsn, seed_extra), seed_data=True
-        )
-        ledger = _render_ledger_copy(migrations_dir)
-        return _assemble(schema_ddl, seed_data, ledger, head=head)
-    finally:
-        with psycopg.connect(admin_dsn, autocommit=True) as conn:
+            seed_extra = ["--data-only"]
+            for t in SEED_TABLES:
+                seed_extra += ["--table", f"public.{t}"]
+            seed_data = _clean_dump(
+                _run_pg_dump(pg_dump_bin, scratch_dsn, seed_extra), seed_data=True
+            )
+            ledger = _render_ledger_copy(migrations_dir)
+            return _assemble(schema_ddl, seed_data, ledger, head=head)
+        finally:
+            # DB first: the grants it held are what would pin a made role
+            # with 2BP01. The lock covers the whole window.
             conn.execute(_sql.SQL("DROP DATABASE IF EXISTS {}").format(db_ident))
+            _drop_app_roles(conn, made_roles)
+            conn.execute("SELECT pg_advisory_unlock(hashtext(%s))", (_ROLE_LOCK_KEY,))
 
 
 def write_baseline(

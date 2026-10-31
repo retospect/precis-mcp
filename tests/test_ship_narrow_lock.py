@@ -442,6 +442,110 @@ def test_quick_ship_mints_the_fallback_footer_only_when_absent(rig: Rig) -> None
     assert re.search(r"^Co-Authored-By: Test <t@example\.invalid>$", msg, re.M), msg
 
 
+def test_quick_ship_m_keeps_the_branch_commit_trailers(rig: Rig) -> None:
+    """gr538832: -m resolves the subject but must not drop the branch
+    commits' attribution trailers — the squash used to mint only the
+    generic Co-Authored-By and the real footer (Claude-Session included)
+    never reached main."""
+    wt = rig.worktree("mtrail", {"t.txt": "t\n"})
+    rig.g(
+        wt,
+        "commit",
+        "-q",
+        "--amend",
+        "-m",
+        "fix(ship): keep the author footer\n\n"
+        "Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>\n"
+        "Claude-Session: https://claude.ai/code/session_test123",
+    )
+    p, log = rig.ship(wt, "--quick", sleep=1)  # rig.ship always passes -m
+    _finish(p, log)
+    msg = rig.g(rig.origin, "log", "-1", "--format=%B", "refs/heads/main")
+    assert "Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>" in msg
+    assert "Claude-Session: https://claude.ai/code/session_test123" in msg
+    # and no substitute footer was minted on top (rig sets PRECIS_CO_AUTHOR)
+    assert "Co-Authored-By: Test <t@example.invalid>" not in msg
+
+
+def test_quick_ship_m_merges_attr_trailers_across_commits(rig: Rig) -> None:
+    """gr538832 continued: every branch commit contributes its
+    Co-Authored-By/Claude-Session, deduped in commit order — and the
+    ship-minted WIP snapshot's generic footer is never attribution.
+    A dirty .claude/ path is what ship still sweeps into that snapshot
+    (non-.claude dirt is refused outright), and under -m the snapshot is
+    named after -m, not wip(*) — only the pre-WIP tip bounds it."""
+    wt = rig.worktree("m2t", {"t.txt": "t\n"})
+    rig.g(
+        wt,
+        "commit",
+        "-q",
+        "--amend",
+        "-m",
+        "fix(ship): part one\n\nCo-Authored-By: Devin SWE-2 <noreply@cognition.ai>",
+    )
+    (wt / ".claude").mkdir(exist_ok=True)
+    (wt / ".claude" / "state.txt").write_text("v1\n", encoding="utf-8")
+    rig.g(wt, "add", "-f", ".claude/state.txt")  # .claude/ is gitignored
+    rig.g(
+        wt,
+        "commit",
+        "-q",
+        "-m",
+        "fix(ship): part two\n\n"
+        "Co-Authored-By: Devin SWE-2 <noreply@cognition.ai>\n"
+        "Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>",
+    )
+    # Dirty tracked .claude/ path: ship sweeps it into the WIP commit.
+    (wt / ".claude" / "state.txt").write_text("v2\n", encoding="utf-8")
+    p, log = rig.ship(wt, "--quick", sleep=1)
+    _finish(p, log)
+    msg = rig.g(rig.origin, "log", "-1", "--format=%B", "refs/heads/main")
+    assert msg.count("Co-Authored-By: Devin SWE-2 <noreply@cognition.ai>") == 1
+    devin = msg.index("Co-Authored-By: Devin SWE-2 <noreply@cognition.ai>")
+    claude = msg.index("Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>")
+    assert devin < claude, msg
+    # The WIP snapshot's footer (PRECIS_CO_AUTHOR) is not attribution.
+    assert "Co-Authored-By: Test <t@example.invalid>" not in msg
+
+
+def test_quick_ship_m_mints_the_fallback_when_branch_has_none(rig: Rig) -> None:
+    """Fallback under -m: a branch with no Co-Authored-By anywhere still
+    gets the session footer (rig's PRECIS_CO_AUTHOR)."""
+    wt = rig.worktree("mnotrail", {"n.txt": "n\n"})
+    rig.g(wt, "commit", "-q", "--amend", "-m", "fix(ship): no trailer at all")
+    p, log = rig.ship(wt, "--quick", sleep=1)
+    _finish(p, log)
+    msg = rig.g(rig.origin, "log", "-1", "--format=%B", "refs/heads/main")
+    assert re.search(r"^Co-Authored-By: Test <t@example\.invalid>$", msg, re.M), msg
+
+
+def test_quiet_status_names_a_failed_local_main_sync(rig: Rig) -> None:
+    """gr538832 tail: a dirty primary makes the best-effort local-main ff
+    fail with "would be overwritten by merge", but the run exits 0 — the
+    derived token read a clean ship. The log's own SHIP_STATUS line must
+    name the degraded step (quiet_epilogue prefers it over deriving)."""
+    wt = rig.worktree("desync", {"collide.txt": "landed\n"})
+    (rig.primary / "collide.txt").write_text(
+        "local\n", encoding="utf-8"
+    )  # the ff into primary must fail on this untracked file
+    p, log = rig.ship(wt, "--quick", sleep=1, PRECIS_SHIP_VERBOSE="0")
+    rc = p.wait(timeout=120)
+    out = log.read_text(encoding="utf-8")
+    assert rc == 0, out
+    assert "collide.txt" in _tree_files(rig)  # the land itself did happen
+    assert "would be overwritten by merge" in out  # git's error, echoed by the epilogue
+    inner_log = Path(out.splitlines()[0].removeprefix("log: "))
+    assert "WARNING: primary main not fast-forwarded" in inner_log.read_text(
+        encoding="utf-8"
+    )
+    # The token the desk sees names the degraded step, not a bare "shipped".
+    assert re.search(
+        r"SHIP_STATUS: shipped — local main not fast-forwarded "
+        r"\(primary dirty or diverged\)",
+        out,
+    ), out
+
+
 def _stage_hooks_mirror(wt: Path, stub_rc: int) -> None:
     """The .claude/.devin mirror pair as the real repo tracks it, with a
     stub gen-devin-hooks whose exit code is the verdict."""

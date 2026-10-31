@@ -35,7 +35,8 @@ def add_parser(sub: argparse._SubParsersAction) -> argparse.ArgumentParser:
         default=None,
         help=(
             "Maintenance DSN whose server hosts the scratch DB "
-            "(override PRECIS_DATABASE_URL). The connecting role needs CREATEDB."
+            "(override PRECIS_DATABASE_URL). The connecting role needs "
+            "CREATEDB — and CREATEROLE when the cluster lacks the app roles."
         ),
     )
     dump.add_argument(

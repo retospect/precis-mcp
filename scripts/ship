@@ -616,6 +616,11 @@ else
 fi
 
 # ── 2. commit WIP ───────────────────────────────────────────────────────
+# The pre-WIP tip bounds the attribution-trailer collection below: the
+# snapshot commit's footer is ship-minted (generic), not attribution, and
+# under -m its subject is the -m text — not wip(*) — so a subject filter
+# alone could not exclude it (gr538832).
+PRE_WIP_HEAD="$(git rev-parse HEAD)"
 if [[ -n "$(git status --porcelain)" ]]; then
     say "committing WIP"
     git add -A
@@ -640,7 +645,16 @@ fi
 _base="$(git merge-base origin/main HEAD 2>/dev/null || echo origin/main)"
 _msg_err="$(mktemp)"
 MSG="$(ship_resolve_msg "$MSG" "$_base" 2>"$_msg_err")" || die "$(cat "$_msg_err")"
-rm -f "$_msg_err"; unset _base _msg_err
+rm -f "$_msg_err"
+# The resolved message carries no trailer block when -m named the subject
+# (gr538832: the squash then minted only the generic Co-Authored-By and the
+# branch's real footer — Claude-Session included — never reached main).
+# Collect the branch commits' own attribution trailers NOW, before
+# _squash_and_rebase or an in-lock forward merge rewrites HEAD (afterwards
+# base..HEAD names other people's commits); ship_mint_trailers merges them
+# at mint time. PRE_WIP_HEAD keeps ship's own snapshot commit out.
+BRANCH_ATTRS="$(ship_branch_attr_trailers "$_base" "$PRE_WIP_HEAD")"
+unset _base _msg_err
 
 # Gate-slot admission (gr202193): cap concurrent gate containers fleet-wide
 # so sibling gates queue instead of OOM-killing each other against the
@@ -1302,10 +1316,13 @@ _sync_local_main() {
     if [[ "$(git -C "$primary" symbolic-ref --quiet --short HEAD || true)" == "main" ]]; then
         git -C "$primary" merge --ff-only origin/main \
             && echo "local main → $(git -C "$primary" rev-parse --short main)" \
-            || echo "WARNING: primary main not fast-forwarded (dirty or diverged) — run 'git merge --ff-only origin/main' there by hand."
+            || { echo "WARNING: primary main not fast-forwarded (dirty or diverged) — run 'git merge --ff-only origin/main' there by hand."
+                 SHIP_STATUS_NOTE="local main not fast-forwarded (primary dirty or diverged)"; }
     else
         git update-ref refs/heads/main origin/main \
-            && echo "local main ref → $(git rev-parse --short main)"
+            && echo "local main ref → $(git rev-parse --short main)" \
+            || { echo "WARNING: could not move the local main ref — update refs/heads/main by hand."
+                 SHIP_STATUS_NOTE="local main ref not moved"; }
     fi
 }
 
@@ -1725,7 +1742,7 @@ _release_land() {
 $(printf '%s\n' "${MSG:-release(r${REL_N}): ${subject}}" | ship_msg_body)
 
 Release: r${REL_N}; from ${BRANCH} ${head8}
-$(printf '%s\n' "$MSG" | ship_mint_trailers "" "$CO_AUTHOR")
+$(printf '%s\n' "$MSG" | ship_mint_trailers "" "$CO_AUTHOR" "$BRANCH_ATTRS")
 EOF
 )"
         fi
@@ -1782,14 +1799,17 @@ _release_after_landing() {
     git fetch -q origin main || true
     if [[ -n "$(git status --porcelain)" ]]; then
         echo "WARNING: worktree dirty after the release ship — skipping the branch sync."
+        SHIP_STATUS_NOTE="worktree dirty after the ship — branch sync skipped"
     elif ! git merge --no-edit origin/main >/dev/null 2>&1; then
         git merge --abort 2>/dev/null || true
         echo "WARNING: merging origin/main into ${BRANCH} conflicted — branch left as it was (it holds more than the fix?). The release fix itself landed."
+        SHIP_STATUS_NOTE="post-land merge of origin/main into ${BRANCH} conflicted — branch left as it was"
     elif [[ "$(git rev-parse 'HEAD^{tree}')" == "$(git rev-parse 'origin/main^{tree}')" ]]; then
         git reset --hard origin/main >/dev/null \
             && say "reset ${BRANCH} → $(git rev-parse --short origin/main) (tree equals origin/main; zero divergence)"
     else
         echo "WARNING: ${BRANCH}'s tree differs from origin/main after the merge — it holds work beyond the release fix; branch left merged, not reset."
+        SHIP_STATUS_NOTE="${BRANCH} holds work beyond the release fix — branch left merged, not reset"
     fi
     if [[ -z "$REL_M" ]]; then
         say "release ${REL_BRANCH}: nothing to do — already in main (release head ${REL_R1})"
@@ -1950,7 +1970,7 @@ _squash_and_rebase() {
         git reset -q --soft "$mb" \
             && git commit -q --no-verify -m "$(printf '%s\n' "$MSG" | ship_msg_body)
 
-$(printf '%s\n' "$MSG" | ship_mint_trailers "" "$CO_AUTHOR")" \
+$(printf '%s\n' "$MSG" | ship_mint_trailers "" "$CO_AUTHOR" "$BRANCH_ATTRS")" \
             || die "could not squash ${BRANCH} onto its merge-base."
     fi
     git rebase -q origin/main \
@@ -2047,6 +2067,12 @@ FWD_BASE=""
 FWD_N=0
 GATE_TRAILER=""
 LANDED_SHA=""
+# Why the ship's ending was degraded even though the land itself succeeded —
+# a best-effort tail step that failed mid-run (today: the local-main ff).
+# The quiet epilogue derives SHIP_STATUS from the exit code alone, so this
+# is emitted as the log's last SHIP_STATUS line, which the epilogue prefers
+# over the derived token (gr538832).
+SHIP_STATUS_NOTE=""
 # The sha this run actually gated — $NEW on a real squash, $OLD_MAIN when the
 # tree was already landed (see the nothing-new guard below). Written to
 # $SHIP_SHA_FILE after the loop, full gate only.
@@ -2551,7 +2577,7 @@ for (( attempt = 1; attempt <= MAX_ATTEMPTS; attempt++ )); do
         # rides above it so `git log` tells an exact-tested land from a
         # forward-merged one; the default Co-Authored-By is minted only
         # when the resolved message claims none.
-        TRAILERS="$(printf '%s\n' "$MSG" | ship_mint_trailers "$GATE_TRAILER" "$CO_AUTHOR")"
+        TRAILERS="$(printf '%s\n' "$MSG" | ship_mint_trailers "$GATE_TRAILER" "$CO_AUTHOR" "$BRANCH_ATTRS")"
         MSG_BODY="$(printf '%s\n' "$MSG" | ship_msg_body)"
         git merge-base --is-ancestor "$OLD_MAIN" HEAD \
             || die "internal: HEAD lacks OLD_MAIN (${OLD_MAIN:0:8}) — refusing to squash a tree that would revert main. Lock released, nothing pushed. Re-run scripts/ship and report this."
@@ -2671,6 +2697,7 @@ else
             && say "reset ${BRANCH} → $(git rev-parse --short origin/main) (zero divergence; next sync is a clean ff)"
     else
         say "worktree dirty after ship — ${BRANCH} already sits on the landed ${LANDED_SHA:0:8} (an ancestor of main); left alone. Run 'git reset --hard origin/main' when clean to advance past it."
+        SHIP_STATUS_NOTE="worktree dirty after the ship — branch not reset"
     fi
 
     _reap_absorbed_agents
@@ -2740,4 +2767,15 @@ elif stats="$(_deploy_lag_stats)" 2>/dev/null && [[ -n "$stats" ]]; then
     printf '📦 %s commit(s) on main not yet deployed (oldest %sh ago) %s — scripts/deploy to flush.\n' "$_lag_n" "$_lag_age_h" "$_lag_src_txt"
 elif _deploy_marker_missing; then
     printf '📦 no successful deploy on record (marker absent) — lag unknown; the next green scripts/deploy sets it.\n'
+fi
+
+# The quiet epilogue derives the SHIP_STATUS token from the exit code alone —
+# a best-effort tail step that failed mid-run used to read as a clean ship
+# (gr538832: the log ended on the primary's "local changes would be
+# overwritten by merge" error while the status still said "shipped" — the
+# land was real, the local-main sync was not). Emit the token ourselves when
+# such a step failed: quiet_epilogue takes the log's LAST "SHIP_STATUS: …"
+# line over the derived one.
+if [[ -n "${SHIP_STATUS_NOTE:-}" ]]; then
+    printf 'SHIP_STATUS: shipped — %s\n' "$SHIP_STATUS_NOTE"
 fi

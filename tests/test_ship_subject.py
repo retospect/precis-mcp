@@ -255,6 +255,80 @@ def test_mint_trailers_prepends_gate_and_drops_stale_gate() -> None:
     )
 
 
+def test_branch_attr_trailers_dedup_order_skip_wip(tmp_path: Path) -> None:
+    """gr538832: the branch's Co-Authored-By/Claude-Session trailers,
+    deduped oldest-commit-first; a wip(*) snapshot's ship-minted footer is
+    not attribution and stays out."""
+    repo = _repo(
+        tmp_path,
+        [
+            "fix(a): one\n\nCo-Authored-By: Devin SWE-2 <noreply@cognition.ai>\n"
+            "Claude-Session: none (Devin builder, x)",
+            "wip(b): snapshot\n\nCo-Authored-By: Claude <noreply@anthropic.com>",
+            "fix(a): two\n\nCo-Authored-By: Devin SWE-2 <noreply@cognition.ai>\n"
+            "Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>\n"
+            "Signed-off-by: T <t@example.invalid>",
+        ],
+    )
+    r = subprocess.run(
+        ["bash", "-c", '. "$1"; ship_branch_attr_trailers origin/main', "_", str(LIB)],
+        cwd=repo,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+    )
+    assert r.returncode == 0, r.stderr
+    assert r.stdout == (
+        "Co-Authored-By: Devin SWE-2 <noreply@cognition.ai>\n"
+        "Claude-Session: none (Devin builder, x)\n"
+        "Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>\n"
+    )
+
+
+def test_lowercase_coauthored_trailer_carried_no_fallback(tmp_path: Path) -> None:
+    """Trailer keys are case-insensitive: GitHub-style "Co-authored-by:" is
+    carried over from the branch, and the generic fallback is not added."""
+    repo = _repo(
+        tmp_path,
+        ["fix(a): one\n\nCo-authored-by: Dev <dev@example.invalid>"],
+    )
+    r = subprocess.run(
+        [
+            "bash",
+            "-c",
+            '. "$1"; attrs="$(ship_branch_attr_trailers origin/main)"; '
+            'printf "fix(a): one\\n" | ship_mint_trailers "" "$2" "$attrs"',
+            "_",
+            str(LIB),
+            "Co-Authored-By: Claude <noreply@anthropic.com>",
+        ],
+        cwd=repo,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+    )
+    assert r.returncode == 0, r.stderr
+    assert r.stdout == "Co-authored-by: Dev <dev@example.invalid>\n"
+
+
+def test_mint_trailers_merges_branch_attrs_and_gates_fallback() -> None:
+    """gr538832: $3 merges the branch's attribution trailers after the
+    message's own (deduped); the fallback is minted only when neither the
+    message nor $3 carries a Co-Authored-By."""
+    r = _fn(
+        "ship_mint_trailers",
+        "fix(ship): x\n",
+        "Gate: lint only",
+        "Co-Authored-By: Claude <noreply@anthropic.com>",
+        "Co-Authored-By: Devin SWE-2 <noreply@cognition.ai>\nClaude-Session: none (d)",
+    )
+    assert r.returncode == 0
+    assert r.stdout == (
+        "Gate: lint only\nCo-Authored-By: Devin SWE-2 <noreply@cognition.ai>\n"
+        "Claude-Session: none (d)\n"
+    )
+
+
 def test_ship_dies_on_wip_only_branch_before_the_gate(tmp_path: Path) -> None:
     """The real script refuses at the WIP step: nothing after it ran."""
     origin = tmp_path / "origin.git"
