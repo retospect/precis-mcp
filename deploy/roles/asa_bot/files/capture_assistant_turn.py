@@ -77,6 +77,10 @@ def main() -> int:
         "msg_id": _msg_id_from(payload),
         "author": "asa",
         "ts": datetime.now(tz=UTC).isoformat(),
+        # The turn's agentlog id — set on the claude -p env by asa_bot's
+        # run-context overlay; the shim forwards it as _meta so this
+        # capture write stamps tool_calls.agentlog_id (gr540852).
+        "agentlog_id": os.environ.get("PRECIS_CURRENT_AGENTLOG"),
         "stop_reason": payload.get("stop_reason"),
         "input_tokens": _usage_field(payload, "input_tokens"),
         "output_tokens": _usage_field(payload, "output_tokens"),

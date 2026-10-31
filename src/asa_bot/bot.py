@@ -40,15 +40,17 @@ import discord
 from asa_bot import attachments, identity, preamble, slash
 from asa_bot.briefing_buffer import BriefingBuffer
 from asa_bot.capture_shim import CaptureShim
-from asa_bot.claude_invoke import invoke as claude_invoke
 from asa_bot.claude_invoke import (
+    close_turn_log,
+    open_turn_log,
     shutdown_attribution_store,
     shutdown_chain_executor,
 )
+from asa_bot.claude_invoke import invoke as claude_invoke
 from asa_bot.config import Config, LLMConfig, load_discord_token
 from asa_bot.conv_slug import compute_slug
 from asa_bot.pg_listen import PgListener
-from asa_bot.precis_client import PrecisClient, health_loop
+from asa_bot.precis_client import PrecisClient, bind_run, health_loop
 from precis.utils.msgsplit import split_message
 from precis.utils.secret_scan import mask_secrets
 
@@ -276,118 +278,147 @@ class AsaBot(discord.Client):
             )
             return True
 
-        # 1. Capture user turn.
-        # Mapped Discord id -> precis account abbrev; else display name.
-        # The abbrev (None when unmapped) also attributes the LLM's writes.
-        author_handle, account = await identity.resolve_speaker(
-            self._cfg.precis.database_url, message.author
-        )
+        # Mint the turn's agentlog up front and bind it on the client, so
+        # the daemon's own calls below (capture, preamble reads) stamp the
+        # same run the LLM's tool calls get via the env overlay
+        # (gr540852). This worker task owns the binding until the next
+        # turn rebinds.
+        llm_cfg = _llm_with_override(self._cfg.llm, self._runtime.model_override)
+        log_id = await asyncio.to_thread(open_turn_log, llm_cfg, slug, message.content)
+        bind_run(agentlog_id=log_id)
+        reached_invoke = False
         try:
-            await self._precis.call_tool(
-                "put",
-                {
-                    "kind": "conv",
-                    "id": slug,
-                    "text": message.content,
-                    "author": author_handle,
-                    "msg_id": str(message.id),
-                    "meta": {
-                        "ts": message.created_at.astimezone(UTC).isoformat(),
-                        "platform": "discord",
-                        "discord_user_id": str(message.author.id),
-                        "channel_id": str(message.channel.id),
-                        "guild_id": str(message.guild.id) if message.guild else "dm",
-                    },
-                    "ref_meta": {
-                        "platform": "discord",
-                        "guild_id": str(message.guild.id) if message.guild else "dm",
-                        "channel_id": str(message.channel.id),
-                        "thread_id": _thread_id_of(message),
-                    },
-                },
+            # 1. Capture user turn.
+            # Mapped Discord id -> precis account abbrev; else display name.
+            # The abbrev (None when unmapped) also attributes the LLM's writes.
+            author_handle, account = await identity.resolve_speaker(
+                self._cfg.precis.database_url, message.author
             )
-        except Exception:
-            log.exception("user-turn capture failed; proceeding anyway")
+            try:
+                await self._precis.call_tool(
+                    "put",
+                    {
+                        "kind": "conv",
+                        "id": slug,
+                        "text": message.content,
+                        "author": author_handle,
+                        "msg_id": str(message.id),
+                        "meta": {
+                            "ts": message.created_at.astimezone(UTC).isoformat(),
+                            "platform": "discord",
+                            "discord_user_id": str(message.author.id),
+                            "channel_id": str(message.channel.id),
+                            "guild_id": (
+                                str(message.guild.id) if message.guild else "dm"
+                            ),
+                        },
+                        "ref_meta": {
+                            "platform": "discord",
+                            "guild_id": (
+                                str(message.guild.id) if message.guild else "dm"
+                            ),
+                            "channel_id": str(message.channel.id),
+                            "thread_id": _thread_id_of(message),
+                        },
+                    },
+                )
+            except Exception:
+                log.exception("user-turn capture failed; proceeding anyway")
 
-        # 2. Build preamble.
-        guild_name = message.guild.name if message.guild else "DM"
-        channel_obj = message.channel
-        channel_name = getattr(channel_obj, "name", None) or "channel"
-        thread_name = None
-        if isinstance(channel_obj, discord.Thread):
-            thread_name = channel_obj.name
-        try:
-            pre = await preamble.build(
-                precis=self._precis,
-                cfg=self._cfg.preamble,
-                conv_slug=slug,
-                guild_name=guild_name,
-                channel_name=channel_name,
-                thread_name=thread_name,
-                author_handle=author_handle,
-                soul=self._soul,
-                tool_hints=self._tool_hints,
-            )
-        except Exception:
-            log.exception("preamble build failed; using SOUL only")
-            pre = self._soul
+            # 2. Build preamble.
+            guild_name = message.guild.name if message.guild else "DM"
+            channel_obj = message.channel
+            channel_name = getattr(channel_obj, "name", None) or "channel"
+            thread_name = None
+            if isinstance(channel_obj, discord.Thread):
+                thread_name = channel_obj.name
+            try:
+                pre = await preamble.build(
+                    precis=self._precis,
+                    cfg=self._cfg.preamble,
+                    conv_slug=slug,
+                    guild_name=guild_name,
+                    channel_name=channel_name,
+                    thread_name=thread_name,
+                    author_handle=author_handle,
+                    soul=self._soul,
+                    tool_hints=self._tool_hints,
+                )
+            except Exception:
+                log.exception("preamble build failed; using SOUL only")
+                pre = self._soul
 
-        # 3. Invoke claude -p.
-        progress_msg = None
-        # The progress message gets edited as claude streams. We hold:
-        # last_label = what's currently shown in the message
-        # last_text_edit_at = monotonic timestamp of the last text_partial
-        #   edit; text_partial events are throttled (every ~5s) to stay
-        #   within Discord's edit budget. tool_use / subagent events bypass
-        #   the throttle since they're rare and informative.
-        state: dict[str, Any] = {"label": None, "last_text_edit_at": 0.0}
+            # 3. Invoke claude -p.
+            progress_msg = None
+            # The progress message gets edited as claude streams. We hold:
+            # last_label = what's currently shown in the message
+            # last_text_edit_at = monotonic timestamp of the last text_partial
+            #   edit; text_partial events are throttled (every ~5s) to stay
+            #   within Discord's edit budget. tool_use / subagent events bypass
+            #   the throttle since they're rare and informative.
+            state: dict[str, Any] = {"label": None, "last_text_edit_at": 0.0}
 
-        async def on_progress(evt: tuple) -> None:
-            nonlocal progress_msg
-            kind = evt[0]
-            # first_sentence is special: it's the user-facing ack
-            # ("Looking at the cluster status now"), not a widget update.
-            # Send it as its own message so it doesn't get edited away
-            # when the working indicator advances. The final reply lands
-            # separately later.
-            if kind == "first_sentence":
-                try:
-                    await _reply_target(message).send(mask_secrets(evt[1]))
-                except discord.HTTPException:
-                    pass
-                return
-            label = _format_progress(evt)
-            if label is None:
-                return
-            label = mask_secrets(label)  # tool args may echo a credential
-            now = time.monotonic()
-            if kind == "text_partial":
-                if now - state["last_text_edit_at"] < 5.0:
+            async def on_progress(evt: tuple) -> None:
+                nonlocal progress_msg
+                kind = evt[0]
+                # first_sentence is special: it's the user-facing ack
+                # ("Looking at the cluster status now"), not a widget update.
+                # Send it as its own message so it doesn't get edited away
+                # when the working indicator advances. The final reply lands
+                # separately later.
+                if kind == "first_sentence":
+                    try:
+                        await _reply_target(message).send(mask_secrets(evt[1]))
+                    except discord.HTTPException:
+                        pass
                     return
-                state["last_text_edit_at"] = now
-            if label == state["label"]:
-                return
-            state["label"] = label
-            if progress_msg is None:
-                try:
-                    progress_msg = await _reply_target(message).send(label)
-                except discord.HTTPException:
-                    pass
-            else:
-                try:
-                    await progress_msg.edit(content=label)
-                except discord.HTTPException:
-                    pass
+                label = _format_progress(evt)
+                if label is None:
+                    return
+                label = mask_secrets(label)  # tool args may echo a credential
+                now = time.monotonic()
+                if kind == "text_partial":
+                    if now - state["last_text_edit_at"] < 5.0:
+                        return
+                    state["last_text_edit_at"] = now
+                if label == state["label"]:
+                    return
+                state["label"] = label
+                if progress_msg is None:
+                    try:
+                        progress_msg = await _reply_target(message).send(label)
+                    except discord.HTTPException:
+                        pass
+                else:
+                    try:
+                        await progress_msg.edit(content=label)
+                    except discord.HTTPException:
+                        pass
 
-        result = await claude_invoke(
-            _llm_with_override(self._cfg.llm, self._runtime.model_override),
-            system_prompt=pre,
-            user_message=message.content,
-            conv_slug=slug,
-            on_progress=on_progress,
-            acting_user=account,
-            pinned=bool(self._runtime.model_override),
-        )
+            # Once invoke is entered it owns the log's close (its finally
+            # runs even on cancel), so the flag flips before the await.
+            reached_invoke = True
+            result = await claude_invoke(
+                llm_cfg,
+                system_prompt=pre,
+                user_message=message.content,
+                conv_slug=slug,
+                on_progress=on_progress,
+                acting_user=account,
+                pinned=bool(self._runtime.model_override),
+                agentlog_id=log_id,
+            )
+        finally:
+            if not reached_invoke and log_id is not None:
+                # The turn died in capture/preamble — finalize the log we
+                # minted rather than leaving it open for the reaper.
+                bind_run()
+                try:
+                    await asyncio.to_thread(close_turn_log, log_id, status="aborted")
+                except Exception:
+                    log.warning(
+                        "asa agentlog: orphaned-turn close failed", exc_info=True
+                    )
 
         # 4. Post reply (replace progress msg with final).
         # The first sentence was already streamed as a standalone ack
@@ -477,43 +508,66 @@ class AsaBot(discord.Client):
         as a standalone Discord message in the channel.
         """
         msg_id = f"cron:{cron_id}:{datetime.now(tz=UTC).timestamp()}"
-        try:
-            await self._precis.call_tool(
-                "put",
-                {
-                    "kind": "conv",
-                    "id": conv_slug,
-                    "text": payload,
-                    "author": "cron-runner",
-                    "msg_id": msg_id,
-                },
-            )
-        except Exception:
-            log.exception("cron synth capture failed; continuing")
-
-        try:
-            pre = await preamble.build(
-                precis=self._precis,
-                cfg=self._cfg.preamble,
-                conv_slug=conv_slug,
-                guild_name="(cron)",
-                channel_name="(cron)",
-                thread_name=None,
-                author_handle="cron-runner",
-                soul=self._soul,
-                tool_hints=self._tool_hints,
-            )
-        except Exception:
-            log.exception("cron preamble failed; using SOUL only")
-            pre = self._soul
-
-        result = await claude_invoke(
-            self._cfg.llm,
-            system_prompt=pre,
-            user_message=payload,
-            conv_slug=conv_slug,
-            on_progress=None,
+        # Same up-front mint + bind as _handle_one: the synth capture and
+        # preamble reads attribute to the cron turn's run (gr540852).
+        log_id = await asyncio.to_thread(
+            open_turn_log, self._cfg.llm, conv_slug, payload
         )
+        bind_run(agentlog_id=log_id)
+        reached_invoke = False
+        try:
+            try:
+                await self._precis.call_tool(
+                    "put",
+                    {
+                        "kind": "conv",
+                        "id": conv_slug,
+                        "text": payload,
+                        "author": "cron-runner",
+                        "msg_id": msg_id,
+                    },
+                )
+            except Exception:
+                log.exception("cron synth capture failed; continuing")
+
+            try:
+                pre = await preamble.build(
+                    precis=self._precis,
+                    cfg=self._cfg.preamble,
+                    conv_slug=conv_slug,
+                    guild_name="(cron)",
+                    channel_name="(cron)",
+                    thread_name=None,
+                    author_handle="cron-runner",
+                    soul=self._soul,
+                    tool_hints=self._tool_hints,
+                )
+            except Exception:
+                log.exception("cron preamble failed; using SOUL only")
+                pre = self._soul
+
+            # Once invoke is entered it owns the log's close (its finally
+            # runs even on cancel), so the flag flips before the await.
+            reached_invoke = True
+            result = await claude_invoke(
+                self._cfg.llm,
+                system_prompt=pre,
+                user_message=payload,
+                conv_slug=conv_slug,
+                on_progress=None,
+                agentlog_id=log_id,
+            )
+        finally:
+            if not reached_invoke and log_id is not None:
+                # The cron turn died in capture/preamble — finalize the
+                # minted log rather than leaving it open for the reaper.
+                bind_run()
+                try:
+                    await asyncio.to_thread(close_turn_log, log_id, status="aborted")
+                except Exception:
+                    log.warning(
+                        "asa agentlog: orphaned-turn close failed", exc_info=True
+                    )
 
         # Find the Discord channel from the slug and post the result.
         channel = await self._channel_from_slug(conv_slug)

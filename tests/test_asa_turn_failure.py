@@ -45,6 +45,8 @@ class _FakeMessage:
     def __init__(self) -> None:
         self.id = 42
         self.thread = None
+        self.content = "hi"
+        self.author = object()
         self.channel = _FakeChannel()
         self.reactions: list[str] = ["🔄"]
 
@@ -124,6 +126,83 @@ def test_clean_reply_clears_working_reaction(monkeypatch: pytest.MonkeyPatch) ->
 
     assert msg.reactions == []
     assert msg.channel.sent == []
+
+
+def _turn_bot(monkeypatch: pytest.MonkeyPatch) -> Any:
+    """An AsaBot exercising the REAL ``_handle_one`` — mint/close are
+    stubbed so the turn never touches a DB (gr540852 review)."""
+    monkeypatch.setattr(AsaBot, "user", property(lambda self: _BOT_USER))
+    bot: Any = object.__new__(AsaBot)
+    bot._cfg = Config(
+        llm=LLMConfig(turn_timeout_seconds=0),
+        discord=DiscordConfig(),
+        precis=PrecisConfig(),
+        preamble=PreambleConfig(),
+        capture=CaptureConfig(),
+    )
+    bot._runtime = bot_mod.slash.Runtime()
+    bot._soul = "soul"
+    bot._tool_hints = None
+    bot._precis = object()  # capture/preamble calls never reach it
+    return bot
+
+
+def test_handle_one_closes_minted_log_when_capture_raises(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A turn dying between ``open_turn_log`` and ``claude_invoke``
+    finalizes the minted agentlog instead of leaking it open (gr540852
+    review)."""
+    closed: list[tuple[int, str | None]] = []
+    monkeypatch.setattr(bot_mod, "open_turn_log", lambda *a, **kw: 7)
+    monkeypatch.setattr(
+        bot_mod,
+        "close_turn_log",
+        lambda lid, *, status: closed.append((lid, status)),
+    )
+
+    async def boom(db_url: Any, author: Any) -> tuple[str, None]:
+        raise ConnectionError("identity lookup down")
+
+    monkeypatch.setattr("asa_bot.identity.resolve_speaker", boom)
+
+    invoked: list[Any] = []
+
+    async def fake_invoke(*a: Any, **kw: Any) -> Any:
+        invoked.append(kw.get("agentlog_id"))
+        return object()
+
+    monkeypatch.setattr(bot_mod, "claude_invoke", fake_invoke)
+
+    bot = _turn_bot(monkeypatch)
+    with pytest.raises(ConnectionError):
+        asyncio.run(bot._handle_one("conv-x", _FakeMessage()))
+
+    assert invoked == []
+    assert closed == [(7, "aborted")]
+
+
+def test_cron_prompt_closes_log_on_pre_invoke_cancel(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Same close-path on the cron lane: a cancellation inside the synth
+    capture still finalizes the minted log (gr540852 review)."""
+    closed: list[int] = []
+    monkeypatch.setattr(bot_mod, "open_turn_log", lambda *a, **kw: 9)
+    monkeypatch.setattr(
+        bot_mod, "close_turn_log", lambda lid, *, status: closed.append(lid)
+    )
+
+    class _Precis:
+        async def call_tool(self, *a: Any, **kw: Any) -> Any:
+            raise asyncio.CancelledError
+
+    bot = _turn_bot(monkeypatch)
+    bot._precis = _Precis()
+    with pytest.raises(asyncio.CancelledError):
+        asyncio.run(bot._deliver_cron_prompt("conv-x", "payload", cron_id=1))
+
+    assert closed == [9]
 
 
 # A precis "server" that reads requests and never answers: the hung leg.

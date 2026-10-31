@@ -96,7 +96,9 @@ class CaptureShim:
         msg_id = data.get("msg_id")
         if msg_id:
             args["msg_id"] = msg_id
-        await self._precis.call_tool("put", args)
+        # The hook forwards the turn's agentlog id (PRECIS_CURRENT_AGENTLOG
+        # off the claude -p env) so this write stamps to the run (gr540852).
+        await self._precis.call_tool("put", args, agentlog_id=data.get("agentlog_id"))
 
     def _append_fallback(self, data: dict[str, Any]) -> None:
         record = dict(data)

@@ -44,6 +44,10 @@
    link). `:-` ⇒ empty when not a tick; agentlog.current_from_env treats empty
    as unset (no-op), so it's safe for asa / non-tick runs. #}
         "PRECIS_CURRENT_AGENTLOG": "${PRECIS_CURRENT_AGENTLOG:-}",
+{# Same pass-through, same rationale: the producing job so the spawned
+   `serve` records it as tool_calls.source (gr537773/gr540852 — without
+   this entry a `claude -p` turn's calls write source=NULL). #}
+        "PRECIS_CURRENT_SOURCE": "${PRECIS_CURRENT_SOURCE:-}",
 {# Same pass-through, same rationale: the run's cascade tier so the spawned
    `serve` records it as tool_calls.source (the ledger's per-tier split). #}
         "PRECIS_CURRENT_MODEL": "${PRECIS_CURRENT_MODEL:-}",

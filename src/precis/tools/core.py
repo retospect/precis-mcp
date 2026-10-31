@@ -7,6 +7,7 @@ the shared registry in tools/__init__.py.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import logging
 import threading
@@ -91,6 +92,7 @@ def _monotonic() -> float:
 
 
 _TOOL_CALL_LOGGER = logging.getLogger("precis.tools.mcp_calls")
+log = logging.getLogger(__name__)
 
 
 def _log_tool_call(
@@ -285,10 +287,42 @@ def _dispatch(
     runtime = _get_runtime()
     started = _monotonic()
     is_error = False
+    run_ctx = _ctx_run_context(ctx, store=getattr(runtime, "store", None))
     try:
-        body, is_error = runtime.dispatch_with_status(
-            verb, payload, fold=_ctx_session(ctx) is not None
-        )
+        ctxmgr: contextlib.AbstractContextManager[None]
+        if run_ctx is not None:
+            import dataclasses
+
+            from precis.utils.inproc_context import (
+                TickContext,
+                current,
+                tick_context,
+            )
+
+            # Merge onto the ambient tick, not a blank replace — the wire
+            # declares only agentlog_id/source; disabled_kinds,
+            # parent_todo, workspace and model an outer tick bound keep
+            # their values (router._overlay_tick_context's semantics).
+            base = current() or TickContext()
+            ctxmgr = tick_context(
+                dataclasses.replace(
+                    base,
+                    agentlog_id=(
+                        run_ctx.agentlog_id
+                        if run_ctx.agentlog_id is not None
+                        else base.agentlog_id
+                    ),
+                    source=(
+                        run_ctx.source if run_ctx.source is not None else base.source
+                    ),
+                )
+            )
+        else:
+            ctxmgr = contextlib.nullcontext()
+        with ctxmgr:
+            body, is_error = runtime.dispatch_with_status(
+                verb, payload, fold=_ctx_session(ctx) is not None
+            )
         if is_error:
             return CallToolResult(
                 content=[TextContent(type="text", text=body)],
@@ -467,6 +501,133 @@ def _ctx_raw_args(ctx: Context | None) -> dict[str, Any] | None:
     except (AttributeError, ValueError):
         return None
     return dict(args) if isinstance(args, dict) else None
+
+
+#: Wire-declared run sources the serve honors on ``params._meta.precis``
+#: — the channel exists for long-lived daemon clients whose serve env
+#: froze at spawn; today only asa_bot's ``PrecisClient`` uses it. The
+#: meta is client-supplied, so a value outside the vocabulary is a
+#: forgery: dropped with a warning (gr540852).
+_WIRE_SOURCES: frozenset[str] = frozenset({"asa_bot"})
+
+#: Per-process verdict cache for wire-declared agentlog ids —
+#: ``{ref_id: names an open kind='agentlog' ref}``. One indexed SELECT
+#: per new id; a cached verdict costs nothing on the long-lived client's
+#: every-call meta path. Read failures are not cached — a transient
+#: hiccup drops only that call's attribution.
+_WIRE_AGENTLOG_OK: dict[int, bool] = {}
+
+
+def _wire_agentlog_ok(store: Any, log_id: int) -> bool:
+    """``log_id`` names an existing, still-open ``kind='agentlog'`` ref.
+
+    The wire id is client-supplied: without this check any stdio client
+    could stamp another run's calls (``tool_calls.agentlog_id``,
+    ``touched`` links) or a nonexistent ref (gr540852). Open means
+    ``retired_at IS NULL AND NOT meta ? 'ended_at'`` — the same shape
+    the reaper sweeps. ``False`` when the read can't run at all.
+    """
+    verdict = _WIRE_AGENTLOG_OK.get(log_id)
+    if verdict is not None:
+        return verdict
+    if store is None:
+        return False
+    try:
+        with store.pool.connection() as conn:
+            row = conn.execute(
+                "SELECT 1 FROM refs "
+                "WHERE ref_id = %s AND kind = 'agentlog' "
+                "AND retired_at IS NULL AND NOT meta ? 'ended_at'",
+                (log_id,),
+            ).fetchone()
+    except Exception:
+        log.warning("run-context _meta: agentlog check failed", exc_info=True)
+        return False
+    ok = row is not None
+    _WIRE_AGENTLOG_OK[log_id] = ok
+    return ok
+
+
+def _ctx_run_context(ctx: Context | None, store: Any = None) -> Any:
+    """Run context declared on the wire: ``CallToolRequest.params._meta``.
+
+    A spawned ``precis serve`` takes its run attribution from
+    ``PRECIS_CURRENT_AGENTLOG`` / ``PRECIS_CURRENT_SOURCE`` in its env —
+    but those freeze at spawn, so a *long-lived* client (asa_bot's
+    ``PrecisClient`` — one serve subprocess across many turns) can never
+    carry a per-run id that way (gr540852). Such a client declares the
+    run per call instead: ``params._meta = {"precis": {"agentlog_id": N,
+    "source": "…"}}``.
+
+    The declaration is honored on stdio only and is client-supplied, so
+    it is validated before it binds: ``agentlog_id`` must name an
+    existing, still-open agentlog ref (:func:`_wire_agentlog_ok`) and
+    ``source`` must be a wire producer (:data:`_WIRE_SOURCES`) — else the
+    forged half is dropped with a warning. It then binds as a
+    :class:`TickContext` for the dispatch — the same ContextVar the
+    in-process tick path uses, so the existing readers
+    (``agentlog.current_from_env``/``current_source_from_env`` →
+    ``tool_calls.agentlog_id``/``source``, ``touch_from_env`` →
+    ``touched`` links) pick it up with no further plumbing. Keys the
+    meta omits fall through to the ambient context/env, matching the
+    overlay's merge semantics. ``None`` outside a live request, on a
+    non-stdio transport, or when the meta carries neither key.
+    """
+    if ctx is None:
+        return None
+    try:
+        rc = ctx.request_context
+        # ``RequestContext.request`` is the *transport* request context —
+        # the Starlette request on HTTP, ``None`` on stdio — so it is the
+        # transport gate, not a source of the MCP request. The parsed
+        # ``params._meta`` lands on ``RequestContext.meta`` on every
+        # transport; we honor it on stdio only — an HTTP client must not
+        # be able to forge run attribution (gr540852).
+        if getattr(rc, "request", None) is not None:
+            return None
+        meta = getattr(rc, "meta", None)
+    except (AttributeError, ValueError):
+        return None
+    if meta is None:
+        return None
+    raw: dict[str, Any] = (
+        meta.model_dump() if hasattr(meta, "model_dump") else dict(meta)
+    )
+    run = raw.get("precis")
+    if not isinstance(run, dict):
+        return None
+    log_id: int | None = None
+    raw_id = run.get("agentlog_id")
+    if raw_id is not None:
+        try:
+            v = int(str(raw_id).strip())
+        except (TypeError, ValueError):
+            v = 0
+        if v > 0:
+            log_id = v
+    if log_id is not None and not _wire_agentlog_ok(store, log_id):
+        log.warning(
+            "run-context _meta: agentlog_id %s names no open agentlog ref; dropped",
+            log_id,
+        )
+        log_id = None
+    raw_source = run.get("source")
+    source = (
+        raw_source.strip()
+        if isinstance(raw_source, str) and raw_source.strip()
+        else None
+    )
+    if source is not None and source not in _WIRE_SOURCES:
+        log.warning(
+            "run-context _meta: source %r is not a wire producer; dropped",
+            raw_source,
+        )
+        source = None
+    if log_id is None and source is None:
+        return None
+    from precis.utils.inproc_context import TickContext
+
+    return TickContext(agentlog_id=log_id, source=source)
 
 
 def get(

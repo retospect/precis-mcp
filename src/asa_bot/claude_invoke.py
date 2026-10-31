@@ -355,6 +355,16 @@ def shutdown_attribution_store() -> None:
             log.warning("asa agentlog: store close failed", exc_info=True)
 
 
+def open_turn_log(cfg: LLMConfig, conv_slug: str, user_message: str) -> int | None:
+    """Mint a turn's agentlog for a caller that needs the id BEFORE
+    ``invoke`` runs — bot.py binds it on the daemon's own MCP calls
+    (user-turn capture, preamble reads) so the whole turn attributes to
+    the one run (gr540852). ``invoke(agentlog_id=…)`` closes it exactly
+    like a self-minted log. Blocking; run off the event loop."""
+    model = _flag_value(cfg.command, "--model", resolve_model(Tier.FRONTIER))
+    return _open_turn_log(model, conv_slug, user_message)
+
+
 def _open_turn_log(turn_model: str, conv_slug: str, user_message: str) -> int | None:
     """Open this turn's agentlog (gr540852). ``None`` on any failure — a
     Discord reply never waits on attribution. Blocking; run off the loop."""
@@ -401,6 +411,19 @@ def _close_turn_log(
     )
 
 
+def close_turn_log(log_id: int | None, *, status: str) -> None:
+    """Finalize a caller-minted turn log ``invoke`` never reached.
+
+    The companion to :func:`open_turn_log`: bot.py mints the id before
+    its capture/preamble calls, and a raise or cancellation there leaves
+    the log open until the reaper finds it (gr540852 review). Once
+    ``invoke(agentlog_id=…)`` is entered it owns the close itself, so a
+    caller runs this only on the pre-invoke exits. Best-effort,
+    blocking; run off the loop.
+    """
+    _close_turn_log(log_id, None, status=status)
+
+
 def _route_as(req: LlmRequest, acting_user: str | None) -> LlmResult:
     """``route(req)`` with in-process verb writes attributed to ``acting_user``.
 
@@ -425,6 +448,7 @@ async def invoke(
     on_progress: Callable[..., Any] | None = None,
     acting_user: str | None = None,
     pinned: bool = False,
+    agentlog_id: int | None = None,
 ) -> ClaudeResult:
     """Run one claude -p turn via the router. Returns the aggregated ClaudeResult.
 
@@ -477,12 +501,18 @@ async def invoke(
             log.exception("debug prompt dump failed; continuing")
 
     # One agentlog per Discord turn (every degrade step shares it), so the
-    # turn's tool_calls rows carry agentlog_id (gr540852).
-    try:
-        log_id = await asyncio.to_thread(_open_turn_log, model, conv_slug, user_message)
-    except Exception:
-        log.warning("asa agentlog: open failed", exc_info=True)
-        log_id = None
+    # turn's tool_calls rows carry agentlog_id (gr540852). A caller that
+    # minted earlier (bot.py — to stamp the capture/preamble calls that
+    # precede the LLM run) hands the id in instead.
+    log_id = agentlog_id
+    if log_id is None:
+        try:
+            log_id = await asyncio.to_thread(
+                _open_turn_log, model, conv_slug, user_message
+            )
+        except Exception:
+            log.warning("asa agentlog: open failed", exc_info=True)
+            log_id = None
     turn = _Turn(
         cfg=cfg,
         system_prompt=system_prompt,

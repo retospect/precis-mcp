@@ -6,20 +6,95 @@ uses for MCP. Background health-check restarts on crash.
 
 Concurrent callers serialize through an asyncio.Lock so request/
 response framing stays sane on the single pipe.
+
+Run attribution (gr540852): the serve subprocess env freezes at spawn,
+so a per-turn ``PRECIS_CURRENT_AGENTLOG`` can never reach it that way —
+the id rides ``CallToolRequest.params._meta`` instead (the server's
+``tools/core._ctx_run_context`` binds it for the call). Callers pass it
+explicitly (``call_tool(..., agentlog_id=…)``) or bind it for a whole
+turn with :func:`run_context`; ``PRECIS_CURRENT_SOURCE`` goes the other
+way — a static ``"asa_bot"`` in the spawn env, since every call this
+client makes is daemon work.
 """
 
 from __future__ import annotations
 
 import asyncio
 import contextlib
+import contextvars
 import json
 import logging
 import os
+from collections.abc import Iterator
 from typing import Any
 
 from asa_bot.config import PrecisConfig
 
 log = logging.getLogger(__name__)
+
+#: The task-local run context :func:`run_context` binds — an
+#: ``{agentlog_id, source}`` dict ``call_tool`` folds into
+#: ``params._meta`` so the serve-side ledger stamps the call to the run.
+_RUN_CTX: contextvars.ContextVar[dict[str, Any] | None] = contextvars.ContextVar(
+    "asa_bot_precis_run", default=None
+)
+
+
+@contextlib.contextmanager
+def run_context(
+    *, agentlog_id: int | None = None, source: str | None = None
+) -> Iterator[None]:
+    """Bind run attribution for the calling task's ``call_tool``s.
+
+    Everything the task does within the block — the user-turn capture,
+    the preamble reads — carries ``_meta.precis`` naming the turn's
+    agentlog. Task-scoped (a ContextVar), so the health-check loop and
+    other tasks' calls stay unattributed. Keys left ``None`` are simply
+    absent from the meta — the serve falls back to its own env for them.
+    """
+    token = _RUN_CTX.set({"agentlog_id": agentlog_id, "source": source})
+    try:
+        yield
+    finally:
+        _RUN_CTX.reset(token)
+
+
+def bind_run(agentlog_id: int | str | None = None, source: str | None = None) -> None:
+    """Bind run attribution for the calling task until the next bind.
+
+    The persistent companion of :func:`run_context` — asa's turn workers
+    are one task per conv that rebind before each turn's first call, so
+    a set that outlives its turn never leaks onto another run's calls.
+    ``bind_run()`` (no args) clears a stale binding.
+    """
+    _RUN_CTX.set({"agentlog_id": agentlog_id, "source": source})
+
+
+def _run_meta(
+    *, agentlog_id: int | str | None = None, source: str | None = None
+) -> dict[str, Any]:
+    """The ``params._meta.precis`` block for one call, or ``{}``.
+
+    Explicit kwargs win over the :func:`run_context` binding; a key with
+    no value anywhere is omitted (the serve falls back to its env). A
+    non-numeric ``agentlog_id`` is dropped with a warning rather than
+    failing the call — attribution must never break the tool call it
+    labels, same contract as the server-side readers.
+    """
+    bound = _RUN_CTX.get() or {}
+    log_id = agentlog_id if agentlog_id is not None else bound.get("agentlog_id")
+    src = source if source is not None else bound.get("source")
+    meta: dict[str, Any] = {}
+    if log_id is not None:
+        try:
+            v = int(str(log_id).strip())
+            if v > 0:
+                meta["agentlog_id"] = v
+        except (TypeError, ValueError):
+            log.warning("precis run-context: bad agentlog_id %r", log_id)
+    if src is not None and str(src).strip():
+        meta["source"] = str(src).strip()
+    return {"precis": meta} if meta else {}
 
 
 class PrecisClient:
@@ -45,6 +120,10 @@ class PrecisClient:
         env.update(self._cfg.env)
         if self._cfg.database_url:
             env.setdefault("PRECIS_DATABASE_URL", self._cfg.database_url)
+        # tool_calls.source on every call this client makes: the
+        # producing job is the daemon itself (gr540852). ``setdefault`` —
+        # the launchd env or config may pin a different producer.
+        env.setdefault("PRECIS_CURRENT_SOURCE", "asa_bot")
         self._proc = await asyncio.create_subprocess_exec(
             *self._cfg.command,
             stdin=asyncio.subprocess.PIPE,
@@ -120,9 +199,26 @@ class PrecisClient:
         with contextlib.suppress(ProcessLookupError):
             self._proc.kill()
 
-    async def call_tool(self, name: str, arguments: dict[str, Any]) -> Any:
-        """Convenience: invoke an MCP tool, return its content text."""
-        resp = await self.request("tools/call", {"name": name, "arguments": arguments})
+    async def call_tool(
+        self,
+        name: str,
+        arguments: dict[str, Any],
+        *,
+        agentlog_id: int | str | None = None,
+        source: str | None = None,
+    ) -> Any:
+        """Convenience: invoke an MCP tool, return its content text.
+
+        ``agentlog_id`` / ``source`` declare the call's run context on
+        ``params._meta.precis`` — the channel a long-lived serve has for
+        per-run attribution (see the module docstring). Explicit kwargs
+        win over a :func:`run_context` binding.
+        """
+        params: dict[str, Any] = {"name": name, "arguments": arguments}
+        meta = _run_meta(agentlog_id=agentlog_id, source=source)
+        if meta:
+            params["_meta"] = meta
+        resp = await self.request("tools/call", params)
         # MCP tool responses come back as {"content": [{"type": "text",
         # "text": "..."}], "isError": false}.
         content = resp.get("content") if isinstance(resp, dict) else None
