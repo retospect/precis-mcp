@@ -2701,6 +2701,13 @@ def _octilinear(
         Callable[[tuple[float, float], tuple[float, float], tuple[float, float]], bool]
         | None
     ) = None,
+    jog: (
+        Callable[
+            [tuple[float, float], tuple[float, float]],
+            tuple[tuple[float, float], tuple[float, float]] | None,
+        ]
+        | None
+    ) = None,
 ) -> tuple[tuple[float, float], ...]:
     """The piece's taut path re-drawn in multiples of 45° — the DRC's
     rectilinear rule admits no other angle (``every drawn wire must be
@@ -2709,10 +2716,11 @@ def _octilinear(
     L bend whose legs touch copper they must avoid — the
     horizontal-first corner is preferred, the vertical-first corner is
     taken when the first's legs are blocked, and when NEITHER clears
-    the leg keeps its authored line rather than minting a bend across
-    a pad — the emit 45° check in ``realize_result`` then refuses the
-    piece's track (gr543679); a kept authored leg is the one shape that
-    can leave this redraw off-angle."""
+    the new ``jog(p, q)`` (the S-detour fallback) gets a chance to
+    route around both blockers with an axis-aligned jog pair before
+    the leg keeps its authored line — a kept authored leg is the one
+    shape that can leave this redraw off-angle, and the emit 45° check
+    in ``realize_result`` then refuses the piece's track (gr543679)."""
     out: list[tuple[float, float]] = [(float(points[0][0]), float(points[0][1]))]
     for p, q in itertools.pairwise(points):
         dx, dy = q[0] - p[0], q[1] - p[1]
@@ -2728,8 +2736,60 @@ def _octilinear(
         elif clear(pp, c2, qq):
             out.extend((c2, qq))
         else:
-            out.append(qq)
+            js = jog(pp, qq) if jog is not None else None
+            if js is not None:
+                out.extend((js[0], js[1], qq))
+            else:
+                out.append(qq)
     return tuple(out)
+
+
+def _axis_jog(
+    p: tuple[float, float],
+    q: tuple[float, float],
+    path_clear: Callable[[LineString], bool],
+    blocks: Iterable[Polygon],
+) -> tuple[tuple[float, float], tuple[float, float]] | None:
+    """The S/Z fallback for an octilinear leg whose BOTH L corners are
+    vetoed: jog horizontally (``p → (p.x, y_j) → (q.x, y_j) → q``) or
+    vertically at a candidate coordinate, first candidate whose full
+    4-point path clears wins. Candidates are harvested from the
+    blocking polygons' bbox edges inside the leg's span — the obstacles
+    that vetoed the L's leave their footprints there — plus the span
+    midpoint, preferred nearest the middle. Axis jogs keep the redraw
+    on the 45° grid. Returns None when no jog clears (the caller keeps
+    the authored leg and the emit guard judges)."""
+    px, py = float(p[0]), float(p[1])
+    qx, qy = float(q[0]), float(q[1])
+    if abs(px - qx) <= 1e-9 or abs(py - qy) <= 1e-9:
+        return None
+    xs_lo, xs_hi = min(px, qx), max(px, qx)
+    ys_lo, ys_hi = min(py, qy), max(py, qy)
+    mid_y = ys_lo + (ys_hi - ys_lo) / 2.0
+    mid_x = xs_lo + (xs_hi - xs_lo) / 2.0
+    y_cands = {mid_y}
+    x_cands = {mid_x}
+    for b_ in blocks:
+        bx0, by0, bx1, by1 = b_.bounds
+        if bx0 <= xs_hi and bx1 >= xs_lo:
+            y_cands.add(float(by0))
+            y_cands.add(float(by1))
+        if by0 <= ys_hi and by1 >= ys_lo:
+            x_cands.add(float(bx0))
+            x_cands.add(float(bx1))
+    for yj in sorted(y_cands, key=lambda y: (abs(y - mid_y), y)):
+        if abs(yj - py) <= 1e-9 or abs(yj - qy) <= 1e-9:
+            continue
+        j1, j2 = (px, yj), (qx, yj)
+        if path_clear(LineString([p, j1, j2, q])):
+            return (j1, j2)
+    for xj in sorted(x_cands, key=lambda x: (abs(x - mid_x), x)):
+        if abs(xj - px) <= 1e-9 or abs(xj - qx) <= 1e-9:
+            continue
+        j1, j2 = (xj, py), (xj, qy)
+        if path_clear(LineString([p, j1, j2, q])):
+            return (j1, j2)
+    return None
 
 
 #: Emit-side vertex dedupe reach (gr543719): the octilinear corner pass
@@ -2812,6 +2872,22 @@ def realize_result(
     pad_polys = (
         _pad_polys(d, ir, n_layers, np.asarray(pose)) if pose is not None else None
     )
+    # zone keepouts as world-frame polygons — the octilinear redraw's
+    # clearance candidates (its L corners were pad-only: an L could be
+    # drawn clean of every pad yet straight through a keepout). layer
+    # filtering happens per piece; label_keepout is VIA-only (silk over
+    # traces) and never blocks copper.
+    zone_polys: list[tuple[Polygon, Any]] = []
+    if pad_polys is not None:
+        from precis.pcb.topoplace.proxy import zone_world_ring
+
+        pose_a = np.asarray(pose)
+        for z in d.zones:
+            if z.kind == "label_keepout":
+                continue
+            ring = zone_world_ring(d, z, pose_a)
+            if len(ring) >= 3:
+                zone_polys.append((Polygon(np.asarray(ring)), z))
 
     def nm(k: int) -> str:
         return str(d.net_name[k]) if 0 <= k < len(d.net_name) else str(k)
@@ -2832,20 +2908,38 @@ def realize_result(
             for j, oc in enumerate(plan.pieces)
             if j != pi_ and oc.layer == p.layer
         ]
-        pts = (
-            _octilinear(p.points)
-            if pad_polys is None
-            else _octilinear(
-                p.points,
-                _piece_corner_clear(
-                    p,
-                    pad_polys,
-                    nm,
-                    lambda n: rules.get(n, _DEFAULT),
-                    others,
-                ),
-            )
+        piece_zones = [
+            (zp, z.net)
+            for zp, z in zone_polys
+            if (not z.layers or p.layer in z.layers) and (not z.net or z.net != name)
+        ]
+        corner_clear, path_clear = _piece_clear_ctx(
+            p,
+            pad_polys if pad_polys is not None else {},
+            nm,
+            lambda n: rules.get(n, _DEFAULT),
+            others,
+            zones=piece_zones,
         )
+        if pad_polys is None:
+            pts = _octilinear(p.points)
+        else:
+            blocks: list[Polygon] = [
+                poly
+                for pname, poly, _pin in pad_polys.get(p.layer, [])
+                if not pname or pname != name
+            ]
+            blocks.extend(zp for zp, _znet in piece_zones)
+
+            def _jog(
+                pp: tuple[float, float],
+                qq: tuple[float, float],
+                _pc: Callable[[LineString], bool] = path_clear,
+                _bl: list[Polygon] = blocks,
+            ) -> tuple[tuple[float, float], tuple[float, float]] | None:
+                return _axis_jog(pp, qq, _pc, _bl)
+
+            pts = _octilinear(p.points, corner_clear, _jog)
         pts = _coalesce_micro(pts)
         if any(_seg_off_45(a, b) for a, b in itertools.pairwise(pts)):
             # gr543679: a kept authored leg survived the redraw — refuse
@@ -3008,47 +3102,67 @@ def _pad_polys(
     return pad_polys
 
 
-def _piece_corner_clear(
+def _piece_clear_ctx(
     piece: RoutePiece,
     pad_polys: dict[int, list[tuple[str, Polygon, int]]],
     nm: Callable[[int], str],
     nrules: Callable[[str], NetRules],
     others: Iterable[tuple[LineString, float, float]] = (),
-) -> Callable[[tuple[float, float], tuple[float, float], tuple[float, float]], bool]:
-    """The octilinear corner test for one piece (gr520900): a candidate
-    L bend ``p → c → q`` clears when BOTH legs keep the track's
-    half-width plus the pairwise clearance off every foreign pad on
-    its layer and the pairwise centreline spacing off every other
-    piece's spoke path on the same layer — a clear corner point is
-    not enough, the stub leg from the corner to ``q`` can still graze
-    a pad, and an L redrawn across a neighbour's channel crosses it
-    even though the taut paths never did."""
+    zones: Iterable[tuple[Polygon, str]] = (),
+) -> tuple[
+    Callable[[tuple[float, float], tuple[float, float], tuple[float, float]], bool],
+    Callable[[LineString], bool],
+]:
+    """The octilinear redraw's clearance tests for one piece (gr520900),
+    now over ALL blocking geometry: foreign pads on its layer
+    (:func:`_pad_polys`), zone keepouts blocking its layer (same-net
+    fixed-copper zones a wire may pass, ``TopoZone.net``, stay clear),
+    and the pairwise spacing off every other piece's spoke path on the
+    same layer. Zone blindness was the S-detour defect: the redraw
+    chose an L corner inside a keepout stub because only pads could
+    veto it. Returns ``(corner_clear, path_clear)`` — the 3-arg L-bend
+    verdict, and the underlying arbitrary-path verdict the S/Z jog
+    search composes 4-point candidates against. A candidate clears
+    when BOTH legs keep the track's half-width plus clearance off
+    every blocker — a clear corner point is not enough, the stub leg
+    from the corner onward can still graze, and a redrawn path across
+    a neighbour's channel crosses it even though the taut paths never
+    did."""
     nr = nrules(nm(piece.net))
     wi, ci = float(nr.track_width_mm), float(nr.clearance_mm)
     own = nm(piece.net)
 
-    def clear(
-        p: tuple[float, float], c: tuple[float, float], q: tuple[float, float]
-    ) -> bool:
-        path = LineString(
-            [
-                (float(p[0]), float(p[1])),
-                (float(c[0]), float(c[1])),
-                (float(q[0]), float(q[1])),
-            ]
-        )
+    def path_clear(path: LineString) -> bool:
         for pname, poly, _pin in pad_polys.get(piece.layer, []):
             if pname and pname == own:
                 continue
             cp = float(nrules(pname).clearance_mm) if pname else ci
             if poly.distance(path) < wi / 2.0 + max(ci, cp) - 1e-9:
                 return False
+        for zp, znet in zones:
+            if znet and znet == own:
+                continue
+            if zp.distance(path) < wi / 2.0 + ci - 1e-9:
+                return False
         for oline, wo, co in others:
             if path.distance(oline) < (wi + wo) / 2.0 + max(ci, co) - 1e-9:
                 return False
         return True
 
-    return clear
+    def clear(
+        p: tuple[float, float], c: tuple[float, float], q: tuple[float, float]
+    ) -> bool:
+        return path_clear(
+            LineString(
+                [
+                    (float(p[0]), float(p[1])),
+                    (float(c[0]), float(c[1])),
+                    (float(q[0]), float(q[1])),
+                ]
+            )
+        )
+
+    return clear, path_clear
 
 
 def _guarded_nets(
@@ -3100,7 +3214,7 @@ def _guarded_nets(
         ]
         lines[i] = LineString(
             _octilinear(
-                pc.points, _piece_corner_clear(pc, pad_polys, nm, nrules, others)
+                pc.points, _piece_clear_ctx(pc, pad_polys, nm, nrules, others)[0]
             )
         )
     by_layer: dict[int, list[int]] = {}

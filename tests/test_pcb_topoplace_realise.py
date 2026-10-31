@@ -11,6 +11,7 @@ import dataclasses
 import itertools
 import math
 import time
+from collections.abc import Sequence
 from types import SimpleNamespace
 
 import numpy as np
@@ -2800,23 +2801,28 @@ def test_unwind_move_leading_through_foreign_pad_is_rejected() -> None:
 
 
 def _dot_board(
-    *, wall: list[list[float]] | None = None, far_side: str = "top"
+    *,
+    p1: tuple[float, float] = (5.0, 10.0),
+    p2: tuple[float, float] = (25.0, 10.0),
+    walls: Sequence[Sequence[Sequence[float]]] | None = None,
+    wall: Sequence[Sequence[float]] | None = None,
+    far_side: str = "top",
 ) -> pcb.Board:
     """Reto's micro-router fixture (2026-10-31): two one-pad parts on a
-    30x20 board, pads 20 mm apart on the y=10 centreline — nothing else
-    on the board unless ``wall`` is given. The trivial end-to-end cases
-    the realiser must nail in milliseconds: direct run, one-wall detour,
-    F↔B via hop."""
+    30x20 board, nothing else unless ``walls``/``wall`` is given. The
+    trivial end-to-end cases the realiser must nail in milliseconds:
+    direct run, L bend, S detour, one-wall detour, F↔B via hop.
+    (Single ``wall`` kept for the existing callers.)"""
     fp = pcb.Footprint("DOT", [pcb.pad("1", "rect", 0.0, 0.0, w=0.9, h=0.9)])
     b = pcb.Board("micro", stackup=4, outline=pcb.rect(30.0, 20.0))
     f = b.footprint(fp)
-    p1 = b.part("P1", footprint=f, pins=["1"]).at(5.0, 10.0)
-    p2 = b.part("P2", footprint=f, pins=["1"]).at(25.0, 10.0, side=far_side)
-    if wall is not None:
-        b.keepout(wall)
-    for p in (p1["1"], p2["1"]):
+    q1 = b.part("P1", footprint=f, pins=["1"]).at(*p1)
+    q2 = b.part("P2", footprint=f, pins=["1"]).at(*p2, side=far_side)
+    for w in walls if walls is not None else ([wall] if wall is not None else ()):
+        b.keepout([list(p) for p in w])
+    for p in (q1["1"], q2["1"]):
         p.etype("bidi", fmax_hz=0.0, assume="micro wire end")
-    b.wire(p1["1"], p2["1"], name="N1").current = 0.001
+    b.wire(q1["1"], q2["1"], name="N1").current = 0.001
     return b
 
 
@@ -2884,6 +2890,64 @@ def test_wall_between_pads_detours_on_one_layer_within_four_bends() -> None:
     assert Polygon(wall).distance(LineString(pts)) >= 0.15 / 2 - 1e-3, (
         f"detour enters the wall: {segs}"
     )
+    rows = sketch_rows(plan, td, ir, layers)
+    assert rows["N1"]["status"] == "realized"
+    assert _drc_findings(res, ir, layers, footprints=footprints) == []
+
+
+def test_offset_pad_pair_routes_one_l_bend() -> None:
+    """Pads diagonally offset (dx=10, dy=5): the straight line is off
+    the 45° grid, so the honest single-layer route is ONE L bend — two
+    axis legs from pad centre to pad centre, zero vias, milliseconds.
+    Pins the octilinear redraw on the trivial positive case."""
+    td, ir, footprints, plan, res, layers, wall_s = _route_micro(
+        _dot_board(p1=(5.0, 10.0), p2=(15.0, 5.0))
+    )
+    assert wall_s < 1.0, f"2-pad L route took {wall_s:.2f}s"
+    assert plan.vias == () and plan.crossings == ()
+    assert plan.guarded == () and not getattr(plan, "off_angle", ())
+    assert {p.layer for p in plan.pieces} == {0}
+    (track,) = res.tracks
+    segs = [(tuple(s["start"]), tuple(s["end"])) for s in track.segments]
+    assert len(segs) == 2, f"one L bend expected, got {segs}"
+    (a, b), (c, e) = segs
+    assert a == (5.0, 10.0) and e == (15.0, 5.0)
+    assert b == c  # the shared corner
+    horiz = a[1] == b[1] and a[0] != b[0]
+    vert = c[0] == e[0] and c[1] != e[1]
+    assert horiz and vert, f"L legs must be axis-aligned: {segs}"
+    assert b in ((15.0, 10.0), (5.0, 5.0)), f"corner at either bend: {segs}"
+    rows = sketch_rows(plan, td, ir, layers)
+    assert rows["N1"]["status"] == "realized"
+    assert _drc_findings(res, ir, layers, footprints=footprints) == []
+
+
+def test_cornered_pad_pair_routes_an_s_detour() -> None:
+    """Both single-bend corridors blocked — wall stubs over the two
+    would-be L corners: the router must find the S detour (at most
+    four bends), single layer, holding clearance off both stubs. This
+    is the 'router should be able to find its way around' case in
+    miniature."""
+    stubs = (
+        [[23.0, 3.0], [27.0, 3.0], [27.0, 7.0], [23.0, 7.0]],  # (25,5) corner
+        [[3.0, 13.0], [7.0, 13.0], [7.0, 17.0], [3.0, 17.0]],  # (5,15) corner
+    )
+    td, ir, footprints, plan, res, layers, wall_s = _route_micro(
+        _dot_board(p1=(5.0, 5.0), p2=(25.0, 15.0), walls=stubs)
+    )
+    assert wall_s < 1.0, f"2-pad S route took {wall_s:.2f}s"
+    assert plan.vias == () and plan.crossings == ()
+    assert plan.guarded == () and not getattr(plan, "off_angle", ())
+    assert {p.layer for p in plan.pieces} == {0}
+    (track,) = res.tracks
+    segs = [(tuple(s["start"]), tuple(s["end"])) for s in track.segments]
+    assert 2 <= len(segs) <= 5, f"S detour should take 1..4 bends, got {segs}"
+    pts = [segs[0][0]] + [bb for _a, bb in segs]
+    assert pts[0] == (5.0, 5.0) and pts[-1] == (25.0, 15.0)
+    for stub in stubs:
+        assert Polygon(stub).distance(LineString(pts)) >= 0.15 / 2 - 1e-3, (
+            f"S detour enters a stub: {segs}"
+        )
     rows = sketch_rows(plan, td, ir, layers)
     assert rows["N1"]["status"] == "realized"
     assert _drc_findings(res, ir, layers, footprints=footprints) == []
