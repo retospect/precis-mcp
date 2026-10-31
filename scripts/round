@@ -16,7 +16,8 @@ and nothing is tracked or pushed.
   scripts/round in <sha> [note]       peer: I landed <sha> this round (repeatable)
   scripts/round none [note]           peer: nothing to land this round
   scripts/round eta <text>            peer: still working, here is when/what
-  scripts/round status [--json]       the table: every worktree and its mark
+  scripts/round status [--json]       the table: every worktree and its mark, plus
+                                      live and superseded releases
   scripts/round pending               worktrees with no final mark, one per line
   scripts/round close                 coordinator: end the round
   scripts/round gate [--json]         coordinator: exact release head verdict, else newest green main
@@ -25,7 +26,10 @@ and nothing is tracked or pushed.
                                       (down, dropped mid-run or PRECIS_DEPLOY_SKIP_HOSTS);
                                       on a completed round, name hosts from its recorded
                                       lagging set — the pin never moves
-  scripts/round cut [--sha S] [--dry-run]   coordinator: cut release/r<N> at the candidate (or S)
+  scripts/round cut [--sha S] [--dry-run]   coordinator: cut release/r<N> at the candidate (or S);
+                                      a red open release whose commits are all on main is
+                                      marked superseded in the record and r<N+1> is cut
+                                      at origin/main — the red branch is not deleted
   scripts/round cut --abandon         coordinator: delete the open release branch (every commit on main)
   scripts/round cut --supersede [--dry-run]  coordinator: mark the open release superseded in the
                                       record (no remote delete) and cut the next at origin/main
@@ -61,10 +65,15 @@ runs the full gate shape on every `release/**` push. Each record carries a
 state (release-train §5): open while it can take fixes (cut, gating, fixing,
 green), deploying/deployed while a rollout journal is live, then terminal
 (confirmed, superseded, abandoned). `cut` refuses while an open release is
-recorded (`cut --supersede` retires a red one whose every commit is on main:
-the record only, origin's branch stays for Reto to prune) or an unrecorded release branch exists on origin, off main's
-first-parent line, or when the cut tree carries a new duplicate migration
-number. Once release N is deploying or later, `cut` may append r<N+1> at
+recorded — except a red one whose head is an ancestor of origin/main, which
+it marks superseded (the record only; origin's red branch stays for Reto to
+prune), then cuts r<N+1> at main and prints
+"r<N> superseded by r<N+1> (red, contained in main)". A green or still-gating
+release keeps the refusal (`--supersede` retires it by operator call;
+`--abandon` deletes it on origin), as does a red one carrying commits main
+lacks. `cut` also refuses when an unrecorded release branch exists on origin,
+off main's first-parent line, or when the cut tree carries a new duplicate
+migration number. Once release N is deploying or later, `cut` may append r<N+1> at
 origin/main — only when main contains N's head and its tree differs, so the
 train pipelines while a release deploys. While recorded, gate/deploy
 read only its exact remote head's full CI certificate and age, bound to one
@@ -539,6 +548,16 @@ def cmd_status(state: Path, args: argparse.Namespace) -> int:
                     )
                     + " — catch up: scripts/round deploy --catch-up"
                 )
+    for rel in _releases(cur):
+        if rel["state"] != "superseded":
+            continue
+        by = rel.get("superseded_by")
+        why = rel.get("superseded_why")
+        print(
+            f"  release {rel['branch']} superseded"
+            + (f" by r{by}" if by else "")
+            + (f" ({why})" if why else "")
+        )
     width = max([len(r["peer"]) for r in rows] + [4])
     for r in rows:
         shas = " ".join(s[:8] for s in r["shas"])
@@ -811,52 +830,76 @@ def _docs_only(root: Path, sha: str) -> bool:
     return all(re.match(DOCS_ONLY_RE, f) for f in files)
 
 
+def _red_verdict(root: Path, sha: str) -> tuple[bool, dict[str, Any] | None]:
+    """(looked, red verdict) for one sha's check-run set.
+
+    The set is red when every gate job completed and at least one failed; an
+    in-flight run is undecided, a green or empty set is not red. `looked` is
+    False when `gh` could not answer at all.
+    """
+    jq = r'.check_runs[] | [.name, .status, (.conclusion // ""), .html_url] | @tsv'
+    try:
+        cp = subprocess.run(
+            [
+                "gh",
+                "api",
+                f"repos/{{owner}}/{{repo}}/commits/{sha}/check-runs",
+                "--jq",
+                jq,
+            ],
+            cwd=root,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            check=False,
+            timeout=60,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False, None
+    if cp.returncode != 0:
+        return False, None
+    rows = [ln.split("\t") for ln in cp.stdout.splitlines() if ln.count("\t") == 3]
+    # failed-first counts too: a red one leaves its shards `skipped`,
+    # which must not read as "not red" (release train §3).
+    rows = [
+        r
+        for r in rows
+        if r[0] in ("lint", "failed-first") or r[0].startswith("test-linux")
+    ]
+    if not rows or any(r[1] != "completed" for r in rows):
+        return True, None
+    failed = [r for r in rows if r[2] in ("failure", "timed_out")]
+    if not failed:
+        return True, None
+    m = re.search(r"/actions/runs/(\d+)", failed[0][3])
+    return True, {
+        "sha": sha,
+        "jobs": [r[0] for r in failed],
+        "url": failed[0][3],
+        "run_id": m.group(1) if m else "",
+    }
+
+
 def _red_above(root: Path, cand: str) -> dict[str, Any] | None:
     """Newest of the 10 main commits above `cand` whose verdict is complete and failed."""
-    jq = r'.check_runs[] | [.name, .status, (.conclusion // ""), .html_url] | @tsv'
     for sha in (
         _rgit(root, "rev-list", "--first-parent", "-n10", f"{cand}..origin/main") or ""
     ).split():
-        try:
-            cp = subprocess.run(
-                [
-                    "gh",
-                    "api",
-                    f"repos/{{owner}}/{{repo}}/commits/{sha}/check-runs",
-                    "--jq",
-                    jq,
-                ],
-                cwd=root,
-                capture_output=True,
-                text=True,
-                encoding="utf-8",
-                check=False,
-                timeout=60,
-            )
-        except (OSError, subprocess.SubprocessError):
+        looked, red = _red_verdict(root, sha)
+        if not looked:
             return None
-        if cp.returncode != 0:
-            return None
-        rows = [ln.split("\t") for ln in cp.stdout.splitlines() if ln.count("\t") == 3]
-        # failed-first counts too: a red one leaves its shards `skipped`,
-        # which must not read as "not red" (release train §3).
-        rows = [
-            r
-            for r in rows
-            if r[0] in ("lint", "failed-first") or r[0].startswith("test-linux")
-        ]
-        if not rows or any(r[1] != "completed" for r in rows):
-            continue
-        failed = [r for r in rows if r[2] in ("failure", "timed_out")]
-        if failed:
-            m = re.search(r"/actions/runs/(\d+)", failed[0][3])
-            return {
-                "sha": sha,
-                "jobs": [r[0] for r in failed],
-                "url": failed[0][3],
-                "run_id": m.group(1) if m else "",
-            }
+        if red:
+            return red
     return None
+
+
+def _release_red(root: Path, rel: dict[str, Any]) -> bool:
+    """The open release's recorded head carries a complete, failed verdict."""
+    head = _remote(root, f"refs/heads/{rel['branch']}")
+    if head is None:
+        return False
+    looked, red = _red_verdict(root, head or rel["base"])
+    return looked and red is not None
 
 
 def _candidate(root: Path) -> tuple[str, str]:
@@ -1739,6 +1782,7 @@ def cmd_cut(state: Path, args: argparse.Namespace) -> int:
     n = cur["n"]
     records = _releases(cur)
     open_rel = _open_rel(cur)
+    auto_superseded = False
     if open_rel is not None:
         rel = open_rel
         if rel.get("cut_pending"):
@@ -1775,19 +1819,27 @@ def cmd_cut(state: Path, args: argparse.Namespace) -> int:
             _write(state / "round.json", cur)
             print(f"{rel['branch']} pending cut reconciled at {rel['base'][:9]}")
             return 0
-        if not args.supersede:
-            return _cut_refuse(
-                f"round.json already records an open release ({open_rel['branch']})"
-                " — `scripts/round cut --supersede` (record only, next cut at"
-                " origin/main) or `--abandon` (deletes it on origin) first"
-            )
+        auto_superseded = False
         why = _supersede_check(root, open_rel)
+        if not args.supersede and not why:
+            # A red release already contained in main supersedes itself in the
+            # record; green, gating and unverifiable heads keep the refusal.
+            if _release_red(root, open_rel):
+                auto_superseded = True
+            else:
+                why = (
+                    f"round.json already records an open release ({open_rel['branch']})"
+                    " — `scripts/round cut --supersede` (record only, next cut at"
+                    " origin/main) or `--abandon` (deletes it on origin) first"
+                )
         if why:
             return _cut_refuse(why)
         # In memory only: the cut record's write below persists it, so a
         # refused or dry-run cut leaves the open release open.
         open_rel["state"] = "superseded"
         open_rel.pop("cut_pending", None)
+        if auto_superseded:
+            open_rel["superseded_why"] = "red, contained in main"
         records = _releases(cur)
     elif args.supersede:
         return _cut_refuse(
@@ -1800,6 +1852,8 @@ def cmd_cut(state: Path, args: argparse.Namespace) -> int:
             "this round already deployed — close and open the next round"
         )
     n_new = prev["n"] + 1 if prev is not None else n
+    if open_rel is not None and open_rel["state"] == "superseded":
+        open_rel["superseded_by"] = n_new
     branch = f"release/r{n_new}"
     taken = _remote(root, f"refs/tags/deployed/r{n_new}")
     if taken is None:
@@ -1918,6 +1972,8 @@ def cmd_cut(state: Path, args: argparse.Namespace) -> int:
             )
     del rel["cut_pending"]
     _write(state / "round.json", cur)
+    if auto_superseded:
+        print(f"r{open_rel['n']} superseded by r{n_new} (red, contained in main)")
     print(f"{branch} cut at {sha[:9]} — late work lands on main for round {n_new + 1}")
     print(
         f'fleet say -m "{branch} is cut at {sha[:9]} and frozen for round {n}: a release'

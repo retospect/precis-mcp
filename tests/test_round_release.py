@@ -1590,6 +1590,86 @@ def test_supersede_refuses_without_an_open_release(rig: Rig) -> None:
     assert "nothing to supersede" in out.stderr
 
 
+def _gate_rows(rig: Rig, sha: str, *verdicts: str) -> None:
+    """Canned `gh …/check-runs --jq` rows for `sha`: name/status/conclusion."""
+    url = "https://github.com/o/r/actions/runs/4242/job/9"
+    (rig.gh_dir / sha).write_text(
+        "".join(f"{v}\t{url}\n" for v in verdicts), encoding="utf-8"
+    )
+
+
+def test_cut_supersedes_a_red_release_contained_in_main(rig: Rig) -> None:
+    """gr531127: plain `cut` retires a red release whose head is an ancestor
+    of origin/main and cuts r<N+1> at main; the red branch is not deleted."""
+    head = _cut(rig)
+    _gate_rows(
+        rig,
+        head,
+        "lint\tcompleted\tsuccess",
+        "test-linux (1)\tcompleted\tsuccess",
+        "test-linux (2)\tcompleted\tfailure",
+    )
+    out = rig.round("cut")
+    assert out.returncode == 0, out.stderr
+    assert "r1 superseded by r2 (red, contained in main)" in out.stdout
+    old = _rel(_round_json(rig), 1)
+    assert old["state"] == "superseded"
+    assert old["superseded_by"] == 2
+    assert _rel(_round_json(rig), 2)["state"] == "cut"
+    assert rig.origin_ref("release/r1") == head
+    assert rig.origin_ref("release/r2") == rig.shas["c3"]
+    status = rig.round("status")
+    assert status.returncode == 0, status.stderr
+    assert "release/r1" in status.stdout
+    assert "superseded" in status.stdout
+
+
+def test_cut_refuses_a_red_release_with_commits_not_on_main(rig: Rig) -> None:
+    """A red release head that is not an ancestor of origin/main keeps the
+    refusal, naming the unforwarded commits."""
+    _cut(rig)
+    fix = _child(rig, rig.shas["c2"], "unforwarded release fix")
+    _push_branch(rig, "release/r1", fix)
+    _gate_rows(
+        rig,
+        fix,
+        "lint\tcompleted\tsuccess",
+        "test-linux (1)\tcompleted\tfailure",
+    )
+    out = rig.round("cut")
+    assert out.returncode == 1
+    assert "carries commits not on origin/main" in out.stderr
+    assert rig.origin_ref("release/r2") == ""
+    assert _rel(_round_json(rig), 1)["state"] == "cut"
+
+
+@pytest.mark.parametrize(
+    "verdicts",
+    [
+        pytest.param(
+            ["lint\tcompleted\tsuccess", "test-linux (1)\tcompleted\tsuccess"],
+            id="green",
+        ),
+        pytest.param(
+            ["lint\tcompleted\tsuccess", "test-linux (1)\tin_progress\t"],
+            id="gating",
+        ),
+    ],
+)
+def test_cut_keeps_refusing_a_green_or_gating_release(
+    rig: Rig, verdicts: list[str]
+) -> None:
+    """Supersede applies only to a red release; green and still-gating heads
+    get the same refusal as before."""
+    head = _cut(rig)
+    _gate_rows(rig, head, *verdicts)
+    out = rig.round("cut")
+    assert out.returncode == 1
+    assert "already records an open release" in out.stderr
+    assert rig.origin_ref("release/r2") == ""
+    assert _rel(_round_json(rig), 1)["state"] == "cut"
+
+
 def test_deploy_resumes_the_journal_record_with_an_open_release(rig: Rig) -> None:
     """`round deploy` acts on the deploying record, not the open one."""
     head = _deploying(rig)
