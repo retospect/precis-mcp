@@ -16,6 +16,7 @@ from threading import Barrier
 from typing import Any
 
 import pytest
+from psycopg.types.json import Jsonb
 
 from precis.store import Store
 from precis.store.types import Tag
@@ -1930,6 +1931,119 @@ def test_poison_guarded_detached_job_killed_at_transition(
 
     ssh_node.run_ssh_node_pass(store, limit=2)
     assert killed == [(rid, handle)]
+
+
+# ── gr541147: a restart re-adopting a live detached compute is not a crash ──
+
+
+def _restart_reclaimed(store: Store, ref_id: int, *, deadline: float | None) -> None:
+    """Stand in for one more worker restart: the row's lease identity names
+    a dead generation again, as after every deploy."""
+    fields: dict[str, Any] = {"lease_boot_id": "dead-generation"}
+    if deadline is not None:
+        fields["deadline"] = deadline
+    with store.pool.connection() as conn:
+        conn.execute(
+            "UPDATE refs SET meta = meta || %s::jsonb WHERE ref_id = %s",
+            (Jsonb(fields), ref_id),
+        )
+        conn.commit()
+
+
+def _detached_restart_job(
+    store: Store, *, attempts: int, deadline: float | None
+) -> tuple[int, dict[str, Any]]:
+    store.record_heartbeat(
+        "spark-readopt", meta={"boot_ids": {"ssh_node": "new-generation"}}
+    )
+    handle = _identity_handle()
+    rid = _mk_running_job(
+        store,
+        lease_offset_s=3600,
+        attempts=attempts,
+        lease_boot_id="dead-generation",
+        lease_process="ssh_node",
+        lease_host="spark-readopt",
+        compute_handle=handle,
+        target_node="spark",
+    )
+    _restart_reclaimed(store, rid, deadline=deadline)
+    return rid, handle
+
+
+def test_live_detached_handle_survives_repeated_restart_reclaims(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """jo543547: a 3.5 h seed re-adopted across deploys was failed on the
+    third restart and its healthy child killed.  A handle proven alive
+    (boot ID + start time + group) inside its deadline is re-adopted on
+    every restart without spending an attempt."""
+    killed: list[tuple[Any, Any]] = []
+    reaped: list[tuple[Any, Any]] = []
+    monkeypatch.setattr(
+        ssh_node, "get_job_type", lambda name: _kill_reap_spec(killed, reaped)
+    )
+    _fake_detached_identity(monkeypatch)
+    monkeypatch.setenv("PRECIS_NODE", "spark")
+    deadline = time.time() + 7200
+    rid, _ = _detached_restart_job(store, attempts=0, deadline=deadline)
+
+    for _ in range(ssh_node._MAX_ATTEMPTS + 2):
+        ssh_node.run_ssh_node_pass(store, limit=2)
+        _restart_reclaimed(store, rid, deadline=deadline)
+
+    meta = _meta(store, rid)
+    assert _status(store, rid) == "running"
+    assert killed == []
+    assert meta["attempts"] == 0
+    assert {r["why"] for r in meta["reclaims"]} == {"readopt"}
+
+
+@pytest.mark.parametrize(
+    "case", ["dead-group", "start-time-mismatch", "past-deadline", "no-deadline"]
+)
+def test_unprovable_detached_handle_still_trips_the_guard(
+    store: Store, monkeypatch: pytest.MonkeyPatch, case: str
+) -> None:
+    """Only a provably-live handle inside its deadline is refunded: a dead
+    group, a recycled pid (start time differs), a blown deadline or a row
+    with no deadline at all still fails at the attempt cap."""
+    killed: list[tuple[Any, Any]] = []
+    reaped: list[tuple[Any, Any]] = []
+    monkeypatch.setattr(
+        ssh_node, "get_job_type", lambda name: _kill_reap_spec(killed, reaped)
+    )
+    _fake_detached_identity(
+        monkeypatch, start_time=999 if case == "start-time-mismatch" else 123456
+    )
+    if case == "dead-group":
+        monkeypatch.setattr(ssh_node, "_detached_group_alive", lambda handle: False)
+    monkeypatch.setenv("PRECIS_NODE", "spark")
+    deadline = {
+        "past-deadline": time.time() - 60,
+        "no-deadline": None,
+    }.get(case, time.time() + 7200)
+    rid, _ = _detached_restart_job(
+        store, attempts=ssh_node._MAX_ATTEMPTS, deadline=deadline
+    )
+
+    ssh_node.run_ssh_node_pass(store, limit=2)
+
+    # past its deadline the poll step kills it before any claim; the
+    # others reach the guard -- either way it ends failed, never refunded
+    assert _status(store, rid) == "failed"
+    assert all(r["why"] != "readopt" for r in _meta(store, rid).get("reclaims", []))
+
+
+def test_readopt_entries_do_not_fill_the_reclaim_churn_backstop() -> None:
+    """Ten re-adoptions are ten restarts, not legacy churn."""
+    from precis.workers.executors import _common
+
+    meta = {
+        "attempts": 0,
+        "reclaims": [{"at": "x", "why": "readopt"}] * _common._RECLAIMS_CAP,
+    }
+    assert _common.poison_guard(None, None, 1, meta) is False  # type: ignore[arg-type]
 
 
 def test_detached_group_permission_error_is_not_ours(

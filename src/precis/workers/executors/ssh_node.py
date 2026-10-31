@@ -98,6 +98,9 @@ from precis.workers.executors._common import (
     JOB_EVENT_KIND as _JOB_EVENT_KIND,
 )
 from precis.workers.executors._common import (
+    RECLAIM_WHY_READOPT as _RECLAIM_WHY_READOPT,
+)
+from precis.workers.executors._common import (
     RUNNING as _RUNNING,
 )
 from precis.workers.executors._common import (
@@ -283,6 +286,56 @@ def _detached_identity_reason(handle: Any) -> str | None:
     except (OSError, ValueError, TypeError, IndexError, UnicodeError):
         return "identity-unreadable"
     return None
+
+
+def _readoptable(meta: dict[str, Any], node: str | None) -> bool:
+    """True when a reclaimed row's detached compute is provably still the
+    process this node launched and still inside its wall-clock deadline.
+
+    Identity is boot ID + process start time of the group leader
+    (:func:`_detached_identity_reason`), not pid alone — pids recycle
+    across a day of restarts — plus a live group.  A row with no
+    ``meta.deadline`` is never re-adoptable: without the bound a hung
+    child could be re-adopted forever (gr541147)."""
+    handle = meta.get("compute_handle")
+    if not isinstance(handle, dict) or meta.get("compute_handle_released"):
+        return False
+    if (meta.get("params") or {}).get("target_node") != node:
+        return False
+    deadline = meta.get("deadline")
+    try:
+        if deadline is None or time.time() > float(deadline):
+            return False
+    except (TypeError, ValueError):
+        return False
+    return _detached_identity_reason(handle) is None and _detached_group_alive(handle)
+
+
+def _refund_readopt_attempt(
+    store: Store, conn: Any, ref_id: int, meta: dict[str, Any]
+) -> None:
+    """Undo the attempt ``claim_executor_jobs`` just counted for this
+    reclaim and relabel it a re-adoption: a worker restart that finds the
+    job's compute alive is not the job crashing.  Before gr541147 three
+    deploys failed any seed longer than three restart gaps, and the
+    poison path then killed its healthy child."""
+    reclaims = list(meta.get("reclaims") or [])
+    if not reclaims or reclaims[-1].get("why") == _RECLAIM_WHY_READOPT:
+        return
+    reclaims[-1] = {**reclaims[-1], "why": _RECLAIM_WHY_READOPT}
+    attempts = max(0, int(meta.get("attempts") or 0) - 1)
+    meta["attempts"] = attempts
+    meta["reclaims"] = reclaims
+    _set_meta(conn, ref_id, attempts=attempts, reclaims=reclaims)
+    _append_chunk(
+        store,
+        ref_id,
+        _JOB_EVENT_KIND,
+        f"runner: worker restart found detached compute pid="
+        f"{meta['compute_handle'].get('pid')} alive — re-adoption, not "
+        "counted as a run attempt",
+        conn=conn,
+    )
 
 
 def _orphaned_detached_jobs(
@@ -520,7 +573,11 @@ def run_ssh_node_pass(store: Store, *, limit: int = 1) -> dict[str, int]:
             # failure (the worker/executor died mid-dispatch, not the
             # compute reporting a physical verdict), so a
             # `struct_relax`-style harvest reading `failure_class` must
-            # not treat it as a rule-out.
+            # not treat it as a rule-out. A reclaim that finds its
+            # detached compute provably alive is refunded first: restarts
+            # are not crashes (gr541147).
+            if _readoptable(meta, node):
+                _refund_readopt_attempt(store, conn, ref_id, meta)
             if _poison_guard(store, conn, ref_id, meta):
                 if (
                     node is not None

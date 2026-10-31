@@ -175,7 +175,9 @@ def kill_seed_partial_detached(
         tail = _tail_logs(scratch)
         if tail:
             log.warning(
-                "autocatpath_seed: wall-clock kill of pid=%s — child output:\n%s",
+                # the executor's job event names the reason (deadline,
+                # cancel, orphan reap) -- this hook cannot tell them apart
+                "autocatpath_seed: killed detached compute pid=%s — child output:\n%s",
                 handle.get("pid"),
                 tail,
             )

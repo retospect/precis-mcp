@@ -491,6 +491,13 @@ _NO_ADVERTISED_BOOT_ID = NO_ADVERTISED_BOOT_ID
 #: Cap on ``meta.reclaims`` length — forensics, not an unbounded log.
 _RECLAIMS_CAP = 10
 
+#: ``meta.reclaims[].why`` for a reclaim the executor proved was a
+#: re-adoption of a still-live detached compute (same boot, same process
+#: start time, group alive, inside its deadline): the worker restarted,
+#: the job did not crash.  Refunded from ``meta.attempts`` and left out of
+#: the reclaim-churn backstop (gr541147).
+RECLAIM_WHY_READOPT = "readopt"
+
 
 def max_job_attempts() -> int:
     """Max run-attempts before a re-claimed job is treated as poison.
@@ -2226,16 +2233,20 @@ def poison_guard(
     **Legacy backstop.** Old epoch reclaims did not increment attempts.
     A job carrying that history still fails when its capped forensic
     ``meta.reclaims`` list fills, even if its new attempt count is low.
+    Reclaims an executor marked :data:`RECLAIM_WHY_READOPT` (a restart
+    re-adopting a live detached compute) count toward neither.
     """
     cap = MAX_ATTEMPTS if max_attempts is None else max_attempts
     attempts = int(meta.get("attempts") or 0)
     reclaims = meta.get("reclaims") or []
-    reclaim_churn = len(reclaims) >= _RECLAIMS_CAP
+    # re-adoptions of a live detached compute are restarts, not churn
+    counted = [r for r in reclaims if r.get("why") != RECLAIM_WHY_READOPT]
+    reclaim_churn = len(counted) >= _RECLAIMS_CAP
     if attempts < cap and not reclaim_churn:
         return False
     if reclaim_churn and attempts < cap:
         reason = (
-            f"runner: {len(reclaims)} reclaims recorded (reclaim-churn cap "
+            f"runner: {len(counted)} reclaims recorded (reclaim-churn cap "
             f"{_RECLAIMS_CAP} reached) while only {attempts} run attempt(s) "
             "were counted — legacy uncounted epoch reclaims; failing as "
             "a poison-guard backstop"
@@ -2274,6 +2285,7 @@ __all__ = [
     "QUEUED",
     "RECLAIM_WHY_EPOCH",
     "RECLAIM_WHY_EXPIRY",
+    "RECLAIM_WHY_READOPT",
     "RUNNING",
     "STATUS_NAMESPACE",
     "SUCCEEDED",
