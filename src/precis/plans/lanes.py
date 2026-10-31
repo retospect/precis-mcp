@@ -69,6 +69,8 @@ class Lane:
     is the fit set; :data:`ANY_CLASS` fits every class.
     ``deny_write_paths`` are the repo globs a slice on this lane may not
     write (:data:`FACTORY_DENY_WRITE_PATHS` for every seed lane).
+    ``vendor`` is the model vendor behind the lane (``''`` = unknown); a
+    review is picked with ``exclude_vendor`` = the builder lane's vendor.
     """
 
     name: str
@@ -78,6 +80,7 @@ class Lane:
     task_classes: frozenset[str]
     enabled: bool = True
     deny_write_paths: tuple[str, ...] = FACTORY_DENY_WRITE_PATHS
+    vendor: str = ""
 
     def fits(self, task_class: str) -> bool:
         """``True`` when this lane takes ``task_class`` work."""
@@ -92,6 +95,7 @@ LANES: tuple[Lane, ...] = (
         credential_pool="subscription",
         cap=2,
         task_classes=frozenset({ANY_CLASS}),
+        vendor="anthropic",
     ),
     Lane(
         name="codex",
@@ -100,6 +104,7 @@ LANES: tuple[Lane, ...] = (
         cap=1,
         task_classes=frozenset({"code", "review"}),
         enabled=False,
+        vendor="openai",
     ),
     Lane(
         name="kimi",
@@ -108,6 +113,7 @@ LANES: tuple[Lane, ...] = (
         cap=1,
         task_classes=frozenset({"code", "docs"}),
         enabled=False,
+        vendor="moonshot",
     ),
     Lane(
         name="devin",
@@ -116,6 +122,7 @@ LANES: tuple[Lane, ...] = (
         cap=1,
         task_classes=frozenset({"code"}),
         enabled=False,
+        vendor="cognition",
     ),
     Lane(
         name="metered",
@@ -124,6 +131,9 @@ LANES: tuple[Lane, ...] = (
         cap=1,
         task_classes=frozenset({ANY_CLASS}),
         enabled=False,
+        # OpenRouter / API keys: the vendor is per model; the registry
+        # (step 3) splits this lane per vendor before it is enabled.
+        vendor="openrouter",
     ),
 )
 
@@ -171,6 +181,7 @@ def pick_lane(
     *,
     lanes: tuple[Lane, ...] = LANES,
     counts: Mapping[str, int] | None = None,
+    exclude_vendor: str | None = None,
 ) -> Lane | None:
     """The lane a ``task_class`` slice launches on, or ``None`` when every
     fit lane is full (or none fits).
@@ -179,8 +190,18 @@ def pick_lane(
     the fewest live ``run_slice`` jobs carrying that ``meta.lane``, only
     lanes under their cap; ties keep table order. ``counts`` skips the DB
     read (tests, or a caller that already has them).
+
+    ``exclude_vendor`` (the review rule: the reviewer never comes from the
+    builder's vendor) drops fit lanes of that vendor. When no fit lane of
+    another vendor is enabled the pick falls back to the full fit set --
+    the caller sees ``lane.vendor == exclude_vendor`` and says so; once a
+    second vendor's lane is enabled the rule holds (a full one is waited
+    for, not bypassed).
     """
     fit = [lane for lane in lanes if lane.enabled and lane.fits(task_class)]
+    if exclude_vendor:
+        other = [lane for lane in fit if lane.vendor != exclude_vendor]
+        fit = other or fit
     if not fit:
         return None
     live = dict(counts) if counts is not None else live_lane_counts(store)

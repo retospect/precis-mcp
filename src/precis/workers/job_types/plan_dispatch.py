@@ -13,6 +13,28 @@ subtree whose nodes are shaped by :mod:`precis.plans.nodes`. One pass:
    the body is re-minted under it (:func:`precis.plans.templates.mint_body`)
    and the count bumped. A body with no minter closes the loop with a
    comment naming the gap.
+2a. **reviews** — a reviewer generator (``meta.generate.role ==
+   'reviewer'``, ``from: 'td<id>'``) whose newest job succeeded is judged by
+   its newest comment starting ``review:`` posted since that job was minted
+   (a ``handoff: review: …`` counts too). Grammar, verdict word
+   case-insensitive, any of ``—`` / ``–`` / ``-`` as the dash::
+
+       review: LAND
+       review: FIX — <the list of findings>
+       review: REVERT — <why>
+
+   ``LAND`` closes the node. ``FIX`` mints one ``run_slice`` task
+   ``Fix review findings for td<id>`` (body = the list) under the plan root
+   and closes the node. ``REVERT`` mints one ``run_slice`` task ``Revert
+   <sha> on main`` (the ``landed: <sha>`` comment of each reviewed node --
+   ``td<id>`` itself, or its child todos when it has them, as a slicer
+   does) under the root, reopens each reviewed node ``blocked-by`` that
+   revert with a ``handoff: review: REVERT — <why>`` comment (the rebuild's
+   brief), and leaves the reviewer open to review the rebuild; both get a
+   fresh retry budget (``meta.rearmed_after_job``). A missing or malformed
+   verdict reopens the node for one retry (``meta.retries`` default 2), then
+   the hygiene ask-user path. ``meta.review = {verdict, job, at}`` records
+   the job judged, so a pass never acts twice on one job.
 3. **phases** — first reopens a generator that is ``STATUS:done`` while a
    child is still open (a generator's session mints children, it does not
    close the node; counted as ``reopened``). Then closes every node whose work
@@ -28,7 +50,14 @@ subtree whose nodes are shaped by :mod:`precis.plans.nodes`. One pass:
    ``meta.op`` resolved to ``{type, params}`` (a bare name is
    ``{type: name, params: {todo_id}}``), default ``run_slice {todo_id}``.
    The tick owns plan retries, so a retry drops the ``child-failed:`` tags
-   the failure bubble left.
+   the failure bubble left. **Order:** candidates from every plan root are
+   taken together, sorted by (prio ascending, todo id ascending); a node
+   with no ``prio`` takes its nearest ancestor's, else 5. So a prio-1
+   release fixer is minted (and reaches the lanes) before a prio-5 gripe
+   build, whichever root is older. A reviewer's ``run_slice`` is pinned to
+   ``pick_lane('review', exclude_vendor=<the builder lane's vendor>)``;
+   while no other vendor's lane is enabled that falls back to the
+   builder's lane and the action note says so.
 5. **hygiene** — a ``claimed-by:`` tag older than 4 h on a todo with no live
    child job is released (``STATUS:open``); the same for a ``STATUS:fixing``
    gripe (lease past ``expires_at``, no live job under or ``fixes``-linked to
@@ -52,8 +81,8 @@ inside another root's subtree is folded into it. Closed roots are skipped.
 in-memory model and counts what it would have done, nothing is written. The
 job summary's first line is
 ``plan_dispatch: roots=N gates=o/c loops=minted/closed phases=closed
-dispatched=N released=N asks=N dry_run=bool reopened=N``; the actions follow
-it.
+dispatched=N released=N asks=N dry_run=bool reopened=N reviews=N``; the
+actions follow it.
 
 **Arming** (an operator write, not done by any deploy) — the recurring todo
 the minter turns into a job every 5 minutes, like ``graph_garden``::
@@ -77,6 +106,7 @@ from typing import Any
 
 from precis.errors import BadInput
 from precis.plans import gates as _gates
+from precis.plans import lanes as _lanes
 from precis.plans import templates as _templates
 from precis.plans.nodes import node_kind
 from precis.store._todo_sql import _DOABLE_EXCLUSION_TAGS
@@ -112,6 +142,17 @@ _JOB_TERMINAL = frozenset({"succeeded", "failed", "cancelled"})
 _JOB_ENDED = frozenset({"succeeded", "failed"})
 _ATTEMPT_RE = re.compile(r"^attempt:(\d+)$")
 
+#: Dispatch prio of a node with no prio on it or any ancestor.
+DEFAULT_PRIO = 5
+
+#: A reviewer's verdict comment (module docstring, step 2a).
+_VERDICT_RE = re.compile(
+    r"review:\s*(LAND|FIX|REVERT)\b[\s:]*(?:[—–-]+\s*)?(.*)",
+    re.IGNORECASE | re.DOTALL,
+)
+_LANDED_RE = re.compile(r"landed:\s*([0-9a-f]{7,40})\b", re.IGNORECASE)
+_TD_FROM_RE = re.compile(r"\s*td(\d+)\s*")
+
 #: Doable exclusions the tick honours: the shared registry minus
 #: ``child-failed:`` — plan retries are the tick's, not the bubble's.
 _EXCLUSIONS: tuple[str, ...] = tuple(
@@ -146,8 +187,9 @@ PARAMS_SCHEMA: dict[str, Any] = {
 }
 
 DESCRIPTION: str = (
-    "Dark-factory plan tick: evaluate gates, advance loops, close finished "
-    "phases, mint one job per doable plan task (run_slice by default), "
+    "Dark-factory plan tick: evaluate gates, advance loops, act on reviewer "
+    "verdicts (LAND/FIX/REVERT), close finished phases, mint one job per "
+    "doable plan task in (prio, id) order (run_slice by default), "
     "release stale claims and file an ask-user once a task hits its retry "
     "cap. Read-only while PRECIS_FACTORY=off or service_config "
     "plan_dispatch prio 0."
@@ -390,6 +432,8 @@ class PassResult:
     released: int = 0
     asks: int = 0
     reopened: int = 0
+    #: Reviewer verdicts acted on (LAND / FIX / REVERT).
+    reviews: int = 0
     notes: list[str] = field(default_factory=list)
 
     def counts(self) -> dict[str, Any]:
@@ -405,6 +449,7 @@ class PassResult:
             "asks": self.asks,
             "dry_run": self.dry_run,
             "reopened": self.reopened,
+            "reviews": self.reviews,
         }
 
     def summary(self) -> str:
@@ -414,7 +459,7 @@ class PassResult:
             f"loops={self.loops_minted}/{self.loops_closed} "
             f"phases={self.phases_closed} dispatched={self.dispatched} "
             f"released={self.released} asks={self.asks} dry_run={self.dry_run} "
-            f"reopened={self.reopened}"
+            f"reopened={self.reopened} reviews={self.reviews}"
         )
 
     def render(self) -> str:
@@ -563,6 +608,284 @@ def _step_loops(
         res.notes.append(f"loop td{n.id}: minted {body} iteration {count + 1}/{cap}")
 
 
+# ── (2a) reviews ───────────────────────────────────────────────────
+
+
+def _is_reviewer(n: _Node) -> bool:
+    gen = n.meta.get("generate")
+    return (
+        node_kind(n.meta) == "generator"
+        and isinstance(gen, dict)
+        and gen.get("role") == "reviewer"
+    )
+
+
+def _review_from(n: _Node) -> int | None:
+    """The ``td<id>`` a reviewer's ``meta.generate.from`` names."""
+    m = _TD_FROM_RE.fullmatch(str((n.meta.get("generate") or {}).get("from") or ""))
+    return int(m.group(1)) if m else None
+
+
+def _review_targets(plan: _Plan, n: _Node) -> list[_Node]:
+    """The nodes whose land the reviewer judges: ``from`` itself, or its
+    child todos (asks excluded) when it has them (a slicer's slices)."""
+    target_id = _review_from(n)
+    target = plan.nodes.get(target_id) if target_id is not None else None
+    if target is None or target.kind != "todo":
+        return []
+    kids = [c for c in plan.child_todos(target) if "ask" not in c.meta]
+    return kids or [target]
+
+
+def _builder_vendor(plan: _Plan, n: _Node) -> str | None:
+    """The vendor of the lane the newest reviewed job ran on, if known."""
+    for target in _review_targets(plan, n):
+        laned = [j for j in plan.jobs(target) if j.meta.get("lane")]
+        if not laned:
+            continue
+        lane = _lanes.get_lane(str(laned[-1].meta["lane"]))
+        if lane is not None and lane.vendor:
+            return lane.vendor
+    return None
+
+
+def _comments(store: Any, todo_id: int) -> list[Any]:
+    """The todo's comment chunks, newest first."""
+    return sorted(
+        (
+            c
+            for c in store.chunks.list_chunks_for_ref(todo_id)
+            if c.chunk_kind == _COMMENT_KIND and c.text
+        ),
+        key=lambda c: (int(c.ord), int(c.id)),
+        reverse=True,
+    )
+
+
+def parse_verdict(text: str) -> tuple[str, str] | None:
+    """``(LAND|FIX|REVERT, rest)`` of one ``review:`` line, or ``None``
+    when it is not a verdict. ``FIX`` and ``REVERT`` need a non-empty rest
+    (the list / the why); a ``handoff:`` prefix is stripped first."""
+    body = text.strip()
+    if body.lower().startswith("handoff:"):
+        body = body[len("handoff:") :].strip()
+    m = _VERDICT_RE.fullmatch(body)
+    if m is None:
+        return None
+    verdict, rest = m.group(1).upper(), m.group(2).strip()
+    if verdict != "LAND" and not rest:
+        return None
+    return verdict, rest
+
+
+def _is_review_line(text: str) -> bool:
+    body = text.strip().lower()
+    if body.startswith("handoff:"):
+        body = body[len("handoff:") :].strip()
+    return body.startswith("review:")
+
+
+def _read_verdict(
+    store: Any, todo_id: int, since: datetime
+) -> tuple[tuple[str, str] | None, str | None]:
+    """``(verdict, raw line)`` from the newest ``review:`` comment posted at
+    or after ``since``; ``(None, None)`` when there is none, ``(None, line)``
+    when it is malformed."""
+    for c in _comments(store, todo_id):
+        if c.created_at < since:
+            break
+        if _is_review_line(str(c.text)):
+            return parse_verdict(str(c.text)), str(c.text).strip()
+    return None, None
+
+
+def _landed_sha(store: Any, todo_id: int) -> str | None:
+    """The sha of the todo's newest ``landed: <sha>`` comment."""
+    for c in _comments(store, todo_id):
+        m = _LANDED_RE.match(str(c.text).strip())
+        if m:
+            return m.group(1).lower()
+    return None
+
+
+def _first_line(text: str, cap: int = 120) -> str:
+    line = text.strip().splitlines()[0] if text.strip() else ""
+    return line if len(line) <= cap else line[: cap - 1] + "…"
+
+
+def _mint_task(
+    store: Any, plan: _Plan, w: _Writer, root: int, title: str, body: str, now: datetime
+) -> int:
+    """Mint a ``run_slice`` task under the plan root (read-only: nothing) and
+    add it to the in-memory plan, so the root phase does not close over it
+    this pass. Returns its id (a negative stand-in when read-only)."""
+    if w.dry_run:
+        new_id = -1 - len([i for i in plan.nodes if i < 0])
+    else:
+        new_id = _templates.mint_plan_task(store, root, title, body)
+    parent = plan.nodes.get(root)
+    plan.nodes[new_id] = _Node(
+        id=new_id,
+        kind="todo",
+        parent_id=root,
+        title=title,
+        meta={"op": DEFAULT_OP},
+        status="open",
+        created_at=now,
+        prio=None,
+        depth=(parent.depth + 1) if parent is not None else 1,
+        root=root,
+        open_tags={f"plan:{root}": now},
+    )
+    if parent is not None:
+        parent.children.append(new_id)
+    return new_id
+
+
+def _review_fix(
+    store: Any,
+    plan: _Plan,
+    w: _Writer,
+    n: _Node,
+    handle: str,
+    findings: str,
+    now: datetime,
+) -> int:
+    body = (
+        f"{findings}\n\nFindings of the review td{n.id} of {handle}'s land on "
+        f"main. Fix them on a fresh slice and land it; {handle}'s brief is the "
+        "intent."
+    )
+    return _mint_task(
+        store, plan, w, n.root, f"Fix review findings for {handle}", body, now
+    )
+
+
+def _review_revert(
+    store: Any,
+    plan: _Plan,
+    w: _Writer,
+    res: PassResult,
+    n: _Node,
+    handle: str,
+    why: str,
+    now: datetime,
+) -> int:
+    """Mint the revert task and requeue each reviewed node behind it."""
+    targets = _review_targets(plan, n)
+    landed = [(t, _landed_sha(store, t.id)) for t in targets]
+    shas = [sha for _t, sha in landed if sha]
+    if len(shas) == 1:
+        title = f"Revert {shas[0]} on main"
+    elif shas:
+        title = f"Revert {len(shas)} landed slices of {handle} on main"
+    else:
+        title = f"Revert the {handle} land on main"
+    named = (
+        ", ".join(f"`{s}`" for s in shas)
+        if shas
+        else f"the squash commit(s) naming {handle} (`git log --grep {handle} origin/main`)"
+    )
+    body = (
+        f"Revert {named} on main: `git revert --no-edit <sha>` for each, newest "
+        "first; resolve conflicts against the current main; commit with a "
+        f"`revert(...)` subject and land it as a normal slice (scripts/ship).\n\n"
+        f"Why (review td{n.id}): {why}"
+    )
+    revert_id = _mint_task(store, plan, w, n.root, title, body, now)
+    requeue = [t for t, sha in landed if sha] or targets
+    for t in requeue:
+        claims = _claims(t)
+        if claims:
+            w.remove_tags(t, claims)
+        newest = plan.jobs(t)
+        if newest:
+            w.stamp_meta(t, {"rearmed_after_job": newest[-1].id})
+        w.comment(
+            t,
+            f"handoff: review: REVERT — {why}\n\n(review td{n.id}; reverted by "
+            f"td{revert_id} — rebuild after it lands, from the brief, with this "
+            "finding in mind)",
+        )
+        if t.status != "open":
+            w.set_status(t, "open")
+        plan.blockers.setdefault(t.id, []).append(
+            _Blocker(id=revert_id, status="open", is_ask=False, created_at=now)
+        )
+        if not w.dry_run:
+            store.add_link(src_ref_id=t.id, dst_ref_id=revert_id, relation="blocked-by")
+    res.notes.append(
+        f"td{n.id}: requeued {', '.join(f'td{t.id}' for t in requeue) or 'nothing'} "
+        f"behind the revert"
+    )
+    return revert_id
+
+
+def _step_reviews(
+    store: Any, plan: _Plan, w: _Writer, res: PassResult, now: datetime
+) -> None:
+    for n in plan.todos():
+        if not _is_reviewer(n) or _closed(n) or plan.paused(n):
+            continue
+        if plan.child_todos(n) or plan.live_job(n):
+            continue
+        jobs = plan.jobs(n)
+        if not jobs or jobs[-1].status != "succeeded":
+            continue
+        newest = jobs[-1]
+        seen = n.meta.get("review")
+        if isinstance(seen, dict) and seen.get("job") == newest.id:
+            continue
+        verdict, raw = _read_verdict(store, n.id, newest.created_at)
+        claims = _claims(n)
+        if claims:
+            w.remove_tags(n, claims)
+        record: dict[str, Any] = {"job": newest.id, "at": _iso(now)}
+        target_id = _review_from(n)
+        handle = f"td{target_id if target_id is not None else n.id}"
+        if verdict is None:
+            what = (
+                f"a malformed verdict {_first_line(raw)!r}"
+                if raw
+                else "no `review:` comment"
+            )
+            w.stamp_meta(n, {"review": {**record, "verdict": None}})
+            w.comment(
+                n,
+                f"plan_dispatch: job:{newest.id} succeeded with {what}; want "
+                f"{_templates.REVIEW_GRAMMAR}. Retrying (meta.retries="
+                f"{_retries(n)}), then asking.",
+            )
+            if n.status != "open":
+                w.set_status(n, "open")
+            res.notes.append(f"td{n.id}: review job:{newest.id} left {what}")
+            continue
+        kind, rest = verdict
+        record["verdict"] = kind
+        if kind == "LAND":
+            w.set_status(n, "done")
+            res.notes.append(f"td{n.id}: review LAND for {handle}; closed")
+        elif kind == "FIX":
+            fix_id = _review_fix(store, plan, w, n, handle, rest, now)
+            record["task"] = fix_id
+            w.set_status(n, "done")
+            res.notes.append(
+                f"td{n.id}: review FIX for {handle}; minted td{fix_id}, closed"
+            )
+        else:
+            revert_id = _review_revert(store, plan, w, res, n, handle, rest, now)
+            record["task"] = revert_id
+            w.stamp_meta(n, {"rearmed_after_job": newest.id})
+            if n.status != "open":
+                w.set_status(n, "open")
+            res.notes.append(
+                f"td{n.id}: review REVERT for {handle}; minted td{revert_id}, "
+                "reviewer stays open for the rebuild"
+            )
+        w.stamp_meta(n, {"review": record})
+        res.reviews += 1
+
+
 # ── (3) phases ─────────────────────────────────────────────────────
 
 
@@ -661,17 +984,29 @@ def _retries(n: _Node) -> int:
 
 def _attempts(plan: _Plan, n: _Node) -> int:
     """Ended jobs since the newest ask on ``n`` (all of them, floored by the
-    ``attempt:<n>`` tag, when there was never an ask)."""
+    ``attempt:<n>`` tag, when there was never an ask). A REVERT verdict
+    re-arms a node like an answered ask: only jobs after
+    ``meta.rearmed_after_job`` count."""
     asks = [b for b in plan.blockers.get(n.id, []) if b.is_ask]
     since = max((b.created_at for b in asks), default=None)
+    floor = _rearm_floor(n)
     ended = [
         j
         for j in plan.jobs(n)
-        if j.status in _JOB_ENDED and (since is None or j.created_at > since)
+        if j.status in _JOB_ENDED
+        and (since is None or j.created_at > since)
+        and (floor is None or j.id > floor)
     ]
-    if since is None:
+    if since is None and floor is None:
         return max(len(ended), _attempt_tag(n))
     return len(ended)
+
+
+def _rearm_floor(n: _Node) -> int | None:
+    raw = n.meta.get("rearmed_after_job")
+    if isinstance(raw, bool) or not isinstance(raw, int):
+        return None
+    return raw
 
 
 def _capped(plan: _Plan, n: _Node) -> bool:
@@ -747,10 +1082,40 @@ def _mint_job(
     return job_id
 
 
+def _effective_prio(plan: _Plan, n: _Node) -> int:
+    """``n``'s prio, else its nearest ancestor's, else :data:`DEFAULT_PRIO`."""
+    for node in (n, *plan.ancestors(n)):
+        if node.prio is not None:
+            return node.prio
+    return DEFAULT_PRIO
+
+
+def _review_lane(
+    plan: _Plan, w: _Writer, res: PassResult, n: _Node
+) -> tuple[bool, str | None]:
+    """``(go, lane name)`` for a reviewer's ``run_slice``: the review lane
+    excluding the builder's vendor; ``go=False`` when every fit lane is full."""
+    vendor = _builder_vendor(plan, n)
+    lane = _lanes.pick_lane(
+        w.store, _templates.REVIEW_TASK_CLASS, exclude_vendor=vendor
+    )
+    if lane is None:
+        res.notes.append(
+            f"td{n.id}: review not dispatched — every lane fit for "
+            f"{_templates.REVIEW_TASK_CLASS!r} is at its cap"
+        )
+        return False, None
+    if vendor and lane.vendor == vendor:
+        res.notes.append(
+            f"td{n.id}: review on lane {lane.name} shares the builder's vendor "
+            f"{vendor!r} (no other vendor's lane is enabled; the cross-vendor "
+            "rule holds once one is)"
+        )
+    return True, lane.name
+
+
 def _step_dispatch(plan: _Plan, w: _Writer, res: PassResult) -> None:
-    for n in sorted(
-        plan.todos(), key=lambda x: (x.prio if x.prio is not None else 5, x.id)
-    ):
+    for n in sorted(plan.todos(), key=lambda x: (_effective_prio(plan, x), x.id)):
         if not _dispatchable(plan, n) or n.status != "open":
             continue
         if _excluded(n) or _claims(n) or plan.live_job(n):
@@ -764,6 +1129,11 @@ def _step_dispatch(plan: _Plan, w: _Writer, res: PassResult) -> None:
             )
             continue
         job_type, params = _resolve_op(n)
+        if _is_reviewer(n) and job_type == DEFAULT_OP and "lane" not in params:
+            go, lane_name = _review_lane(plan, w, res, n)
+            if not go:
+                continue
+            params["lane"] = lane_name
         spec = get_job_type(job_type)
         if spec is None:
             res.notes.append(
@@ -1031,6 +1401,7 @@ def run_pass(
     w = _Writer(store, dry_run)
     _step_gates(store, plan, w, res, now)
     _step_loops(store, plan, w, res, now)
+    _step_reviews(store, plan, w, res, now)
     _step_reopen(plan, w, res)
     _step_phases(plan, w, res)
     _step_dispatch(plan, w, res)
@@ -1076,6 +1447,7 @@ __all__ = [
     "SPEC",
     "PassResult",
     "load",
+    "parse_verdict",
     "read_only_reason",
     "run_pass",
 ]

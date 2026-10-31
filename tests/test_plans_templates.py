@@ -47,6 +47,14 @@ def _blocked_by(store: Store, mint: PlanMint) -> set[tuple[str, str]]:
     return {(by_id[s], by_id[d]) for s, d in rows}
 
 
+def _body(store: Store, todo_id: int) -> str:
+    return "\n".join(
+        str(c.text)
+        for c in store.chunks.list_chunks_for_ref(todo_id)
+        if c.chunk_kind == "todo_body"
+    )
+
+
 def _kinds(store: Store, mint: PlanMint) -> dict[str, str | None]:
     return {k: node_kind(_meta(store, i)) for k, i in mint.ids.items()}
 
@@ -85,22 +93,40 @@ def test_registry_has_the_four_templates() -> None:
 def test_gripe_fix_shape(handler: TodoHandler, store: Store) -> None:
     gripe = _gripe(handler)
     mint = TEMPLATES["gripe-fix"].mint(store, None, gripe_id=gripe)
-    assert set(mint.ids) == {"root", "triage", "brief", "build", "gate", "validate"}
+    assert set(mint.ids) == {
+        "root",
+        "triage",
+        "brief",
+        "build",
+        "review",
+        "gate",
+        "validate",
+    }
     assert _kinds(store, mint) == {
         "root": "phase",
         "triage": "generator",
         "brief": "task",
         "build": "task",
+        "review": "generator",
         "gate": "gate",
         "validate": "task",
     }
+    # The review is blocked by the build only, and blocks nothing: the
+    # gate and the validate never wait on it.
     assert _blocked_by(store, mint) == {
         ("brief", "triage"),
         ("build", "brief"),
+        ("review", "build"),
         ("gate", "build"),
         ("validate", "gate"),
     }
     assert _meta(store, mint.ids["build"])["op"] == "run_slice"
+    review = _meta(store, mint.ids["review"])
+    assert review["generate"] == {"role": "reviewer", "from": f"td{mint.ids['build']}"}
+    assert review["task_class"] == "review"
+    assert _body(store, mint.ids["review"]).count("review: LAND") == 1
+    assert "Mint nothing yourself" in _body(store, mint.ids["review"])
+    assert f"td{mint.ids['build']}" in _body(store, mint.ids["review"])
     assert _meta(store, mint.ids["gate"])["gate"] == {
         "kind": "sha-in-prod",
         "args": {"sha": "0000000"},
@@ -148,13 +174,19 @@ def test_slice_tree_shape(store: Store) -> None:
         "root": "phase",
         "spec": "generator",
         "slicer": "generator",
-        "review": "task",
+        "review": "generator",
     }
     assert _blocked_by(store, mint) == {("slicer", "spec"), ("review", "slicer")}
     assert _meta(store, mint.ids["slicer"])["generate"] == {
         "role": "slicer",
         "from": "main/docs/backlog/x.md~Heading",
     }
+    assert _meta(store, mint.ids["review"])["generate"] == {
+        "role": "reviewer",
+        "from": f"td{mint.ids['slicer']}",
+    }
+    body = _body(store, mint.ids["review"])
+    assert "child todo" in body and "review: REVERT" in body
     _assert_plan_hygiene(store, mint)
 
 

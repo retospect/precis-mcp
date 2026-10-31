@@ -10,10 +10,13 @@ A plan is a todo subtree; what a node *is* lives in five optional meta keys
                 ``tests-green {range}``, ``answer``, ``not-before {ts}``,
                 ``drc-clean {board}``
 ``loop``        ``{max, until: <gate spec>, body: <template name>}``
-``generate``    ``{role: slicer|spec-writer|triage, from: <str>}``
+``generate``    ``{role: slicer|spec-writer|triage|reviewer, from: <str>}``
 ==============  ==========================================================
 
-A node carries at most one of ``gate`` / ``loop`` / ``generate``.
+A node carries at most one of ``gate`` / ``loop`` / ``generate``. A
+``reviewer`` generator mints nothing itself: its session posts one
+``review:`` verdict comment and the tick acts on it (``from`` is the
+``td<id>`` of the node whose land it reviews).
 
 This module only judges shape: :func:`validate_plan_meta` returns
 human-readable problems (empty list = fine) and :func:`node_kind` names the
@@ -42,7 +45,7 @@ GATE_KINDS: tuple[str, ...] = (
     "not-before",
     "drc-clean",
 )
-GENERATE_ROLES: tuple[str, ...] = ("slicer", "spec-writer", "triage")
+GENERATE_ROLES: tuple[str, ...] = ("slicer", "spec-writer", "triage", "reviewer")
 
 #: job_type names that are accepted for ``op`` before they reach the
 #: registry. ``run_slice`` lands with td542094 (the step 6 lane adapter);
@@ -74,8 +77,8 @@ PLAN_SHAPES: dict[str, str] = {
     ),
     "loop": ("{'max': <int > 0>, 'until': <gate spec>, 'body': '<template name>'}"),
     "generate": (
-        "{'role': 'slicer'|'spec-writer'|'triage', "
-        "'from': '<md section | gripe | board>'}"
+        "{'role': 'slicer'|'spec-writer'|'triage'|'reviewer', "
+        "'from': '<md section | gripe | board | td<id> reviewed>'}"
     ),
 }
 
@@ -99,7 +102,7 @@ class LoopSpec(TypedDict):
 #: Functional form: ``from`` is a keyword, so a class body cannot name it.
 GenerateSpec = TypedDict(
     "GenerateSpec",
-    {"role": Literal["slicer", "spec-writer", "triage"], "from": str},
+    {"role": Literal["slicer", "spec-writer", "triage", "reviewer"], "from": str},
 )
 
 

@@ -196,6 +196,64 @@ def _generate(role: str, source: str) -> dict[str, Any]:
     return {"generate": {"role": role, "from": source}}
 
 
+#: ``meta.task_class`` of a reviewer node (``run_slice`` picks its lane by it).
+REVIEW_TASK_CLASS = "review"
+
+#: The verdict lines a reviewer posts; ``plan_dispatch`` parses them.
+REVIEW_GRAMMAR = (
+    "`review: LAND` (clean) | `review: FIX — <the list of findings>` | "
+    "`review: REVERT — <why>`"
+)
+
+
+def _reviewer(target_id: int) -> dict[str, Any]:
+    """A reviewer generator over the land of ``td<target_id>``."""
+    return {**_generate("reviewer", f"td{target_id}"), "task_class": REVIEW_TASK_CLASS}
+
+
+def _reviewer_brief(target_id: int, *, slices: bool = False) -> str:
+    """The reviewer's brief (the node body ``run_slice`` puts in the session
+    brief): read the landed squash diff against the brief, post one verdict."""
+    if slices:
+        what = (
+            f"Each child todo of td{target_id} is a slice that landed on main: "
+            "its `landed: <sha>` comment names the squash commit. For each, "
+            "read `git show <sha>` against that child's brief chunk "
+            "(`get(kind='todo', id=<child>)`)."
+        )
+    else:
+        what = (
+            f"td{target_id} landed on main: its `landed: <sha>` comment names "
+            "the squash commit. Read `git show <sha>` against td"
+            f"{target_id}'s brief chunk (`get(kind='todo', id={target_id})`)."
+        )
+    return (
+        "Review after land, from another lane than the builder's. "
+        f"{what} Judge whether the diff does what the brief asked, and "
+        "nothing it should not.\n\n"
+        "Post exactly one comment on this todo, "
+        "`put(kind='todo', id=<this todo>, text=...)`, as one of: "
+        f"{REVIEW_GRAMMAR}. The text after the dash is what the fix or the "
+        "revert slice is built from: name files and the concrete problem.\n\n"
+        "Mint nothing yourself: no child todos, no fix, no revert, no commit, "
+        "no land, and do not tag this todo done. The plan tick reads the "
+        "verdict: LAND closes this review, FIX mints the fix slice, REVERT "
+        "mints the revert slice and requeues the build."
+    )
+
+
+def mint_plan_task(
+    store: Store, plan_root: int, title: str, body: str, *, op: Any = "run_slice"
+) -> int:
+    """Mint one task todo directly under ``plan_root``, tagged
+    ``plan:<plan_root>`` (the tick's fix / revert slices). Returns its id."""
+
+    def build(m: _Minter) -> None:
+        m.node("task", title, _task(op), body=body)
+
+    return _run_body(store, plan_root, plan_root, build).ids["task"]
+
+
 # -- gripe-fix ---------------------------------------------------------------
 
 
@@ -213,7 +271,11 @@ def mint_gripe_fix(
     store: Store, parent_id: int | None = None, *, gripe_id: Any
 ) -> PlanMint:
     """triage -> brief -> build -> gate sha-in-prod -> validate, under a phase
-    root that is ``related-to`` the gripe (the gripe keeps the ticket state)."""
+    root that is ``related-to`` the gripe (the gripe keeps the ticket state).
+
+    A reviewer generator over the build's land is blocked-by the build only:
+    the review is non-blocking, so the gate and the validate do not wait on
+    it (dark-factory.md § "Branches")."""
     gid = _gripe_id(gripe_id)
     gripe = store.get_ref(kind="gripe", id=gid)
     if gripe is None:
@@ -253,6 +315,13 @@ def mint_gripe_fix(
             blocked_by=("brief",),
         )
         m.node(
+            "review",
+            f"Review the {handle} fix after land",
+            _reviewer(m.ids["build"]),
+            body=_reviewer_brief(m.ids["build"]),
+            blocked_by=("build",),
+        )
+        m.node(
             "gate",
             f"Wait for the {handle} fix to reach prod",
             {"gate": {"kind": "sha-in-prod", "args": {"sha": PENDING_SHA}}},
@@ -282,8 +351,9 @@ def mint_slice_tree(
     """spec-writer -> slicer -> (N tasks, minted by the slicer) -> review.
 
     The spec-writer generator always exists: when the section is not thin its
-    turn mints nothing. The review is blocked-by the slicer, which behaves as
-    a phase once it has minted its tasks, so it waits for all of them."""
+    turn mints nothing. The review is a reviewer generator over the slicer's
+    tasks, blocked-by the slicer, which behaves as a phase once it has minted
+    its tasks, so it waits for all of them."""
     section = str(section).strip()
     if not section:
         raise BadInput(
@@ -312,8 +382,8 @@ def mint_slice_tree(
         m.node(
             "review",
             f"Review the slices of {section}",
-            _task(),
-            body="Review the landed slices on another lane than the builders'.",
+            _reviewer(m.ids["slicer"]),
+            body=_reviewer_brief(m.ids["slicer"], slices=True),
             blocked_by=("slicer",),
         )
 
@@ -443,7 +513,8 @@ TEMPLATES: dict[str, Template] = {
         Template(
             "gripe-fix",
             ("gripe_id",),
-            "triage -> brief -> build -> sha-in-prod gate -> validate, for one gripe",
+            "triage -> brief -> build -> sha-in-prod gate -> validate "
+            "(+ a non-blocking review of the land), for one gripe",
             mint_gripe_fix,
         ),
         Template(

@@ -501,7 +501,7 @@ def test_done_generator_with_open_child_is_reopened(store: Store) -> None:
     res = pd.run_pass(store, now=datetime.now(UTC))
     assert res.reopened == 1
     assert res.counts()["reopened"] == 1
-    assert res.summary().endswith("dry_run=False reopened=1")
+    assert res.summary().endswith("dry_run=False reopened=1 reviews=0")
     assert _status(store, gen) == "open"
     # Its dependant stays blocked; the child, not the generator, is dispatched.
     assert _jobs_under(store, after) == []
@@ -653,3 +653,262 @@ def test_dry_run_counts_the_gripe_release_without_writing(hub: Any) -> None:
     assert res.released == 1
     assert _status(store, gid) == "fixing"
     assert _comments(store, gid) == []
+
+
+# ── reviewer verdicts (td543732) ───────────────────────────────────
+
+
+def _review_plan(store: Store) -> T.PlanMint:
+    """root phase: build (run_slice) <- review (reviewer generator)."""
+
+    def build(m: T._Minter) -> None:
+        m.node("root", "Plan", {"auto_close": True})
+        b = m.node("build", "Build it", {"op": "run_slice"}, body="Build it.")
+        m.node(
+            "review",
+            "Review it",
+            T._reviewer(b),
+            body=T._reviewer_brief(b),
+            blocked_by=("build",),
+        )
+
+    return T._run(store, None, build)
+
+
+def _job(
+    store: Store, todo: int, *, status: str = "succeeded", lane: str | None = None
+) -> int:
+    with store.tx() as conn:
+        ref = mint_background_job(
+            store,
+            conn=conn,
+            job_type="run_slice",
+            executor="ssh_node",
+            title="run_slice",
+            params={"todo_id": todo},
+            parent_id=todo,
+            status=status,
+            meta_extra={"lane": lane} if lane else None,
+        )
+    return int(ref.id)
+
+
+def _todo_comment(store: Store, todo: int, text: str) -> None:
+    ords = [int(c.ord) for c in store.chunks.list_chunks_for_ref(todo)]
+    store.chunks.insert_chunks(
+        todo,
+        [
+            ChunkInsert(
+                ord=max(ords, default=0) + 1,
+                text=text,
+                meta={"chunk_kind": "todo_comment"},
+            )
+        ],
+    )
+
+
+def _todo_comments(store: Store, todo: int) -> list[str]:
+    return [
+        str(c.text)
+        for c in sorted(store.chunks.list_chunks_for_ref(todo), key=lambda c: c.ord)
+        if c.chunk_kind == "todo_comment"
+    ]
+
+
+def _reviewed(store: Store, verdict: str) -> T.PlanMint:
+    """The build landed (``landed:`` comment, done) on claude-sub; the
+    review session ran, posted ``verdict`` and left its claim."""
+    mint = _review_plan(store)
+    build, review = mint.ids["build"], mint.ids["review"]
+    _job(store, build, lane="claude-sub")
+    _todo_comment(store, build, "landed: abc1234 — the fix")
+    _mark_done(store, build)
+    _job(store, review, lane="claude-sub")
+    store.add_tag(review, Tag.open("claimed-by:lane-claude-sub"), set_by="system")
+    store.add_tag(
+        review, Tag.closed("STATUS", "doing"), set_by="system", replace_prefix=True
+    )
+    if verdict:
+        _todo_comment(store, review, verdict)
+    _todo_comment(store, review, "handoff: reviewed the squash diff")
+    return mint
+
+
+def _blocked_by_ids(store: Store, src: int) -> list[int]:
+    with store.pool.connection() as conn:
+        rows = conn.execute(
+            "SELECT dst_ref_id FROM links WHERE src_ref_id = %s "
+            "AND relation = 'blocked-by' ORDER BY dst_ref_id",
+            (src,),
+        ).fetchall()
+    return [int(r[0]) for r in rows]
+
+
+@pytest.mark.parametrize(
+    ("text", "want"),
+    [
+        ("review: LAND", ("LAND", "")),
+        ("  review: land — clean", ("LAND", "clean")),
+        (
+            "review: FIX — a.py misses the empty case",
+            ("FIX", "a.py misses the empty case"),
+        ),
+        ("review: FIX - one\n- two", ("FIX", "one\n- two")),
+        ("review: REVERT – breaks the API", ("REVERT", "breaks the API")),
+        ("handoff: review: LAND", ("LAND", "")),
+        ("review: FIX", None),
+        ("review: REVERT —", None),
+        ("review: LANDING", None),
+        ("review: looks fine", None),
+        ("LAND", None),
+    ],
+)
+def test_parse_verdict(text: str, want: tuple[str, str] | None) -> None:
+    assert pd.parse_verdict(text) == want
+
+
+def test_review_land_closes_the_reviewer(store: Store) -> None:
+    mint = _reviewed(store, "review: LAND")
+    review = mint.ids["review"]
+    res = pd.run_pass(store)
+    assert res.reviews == 1
+    assert res.summary().endswith("reviews=1")
+    assert _status(store, review) == "done"
+    assert not any(v.startswith("claimed-by:") for v in _open_tags(store, review))
+    assert _meta(store, review)["review"]["verdict"] == "LAND"
+    # Nothing minted; the root phase closes over build + review.
+    assert _children(store, mint.root_id) == [mint.ids["build"], review]
+    assert _status(store, mint.root_id) == "done"
+    # The judged job is not judged again.
+    assert pd.run_pass(store).reviews == 0
+
+
+def test_review_fix_mints_one_fix_task_under_the_root(store: Store) -> None:
+    mint = _reviewed(store, "review: FIX — a.py misses the empty case")
+    build, review = mint.ids["build"], mint.ids["review"]
+    res = pd.run_pass(store)
+    assert res.reviews == 1
+    assert _status(store, review) == "done"
+    (fix,) = [c for c in _children(store, mint.root_id) if c not in (build, review)]
+    ref = store.get_ref(kind="todo", id=fix)
+    assert ref is not None
+    assert ref.title == f"Fix review findings for td{build}"
+    assert dict(ref.meta or {}) == {"op": "run_slice"}
+    assert f"plan:{mint.root_id}" in _open_tags(store, fix)
+    body = [
+        c.text
+        for c in store.chunks.list_chunks_for_ref(fix)
+        if c.chunk_kind == "todo_body"
+    ]
+    assert body and str(body[0]).startswith("a.py misses the empty case")
+    assert _blocked_by_ids(store, fix) == []
+    assert _meta(store, review)["review"] == {
+        "verdict": "FIX",
+        "job": _meta(store, review)["review"]["job"],
+        "at": _meta(store, review)["review"]["at"],
+        "task": fix,
+    }
+    # The root stays open for the fix, which is dispatched in the same pass.
+    assert _status(store, mint.root_id) == "open"
+    assert res.dispatched == 1
+    assert len(_jobs_under(store, fix)) == 1
+
+
+def test_review_revert_mints_a_revert_and_requeues_the_build(store: Store) -> None:
+    mint = _reviewed(store, "review: REVERT — breaks the public API")
+    build, review = mint.ids["build"], mint.ids["review"]
+    res = pd.run_pass(store)
+    assert res.reviews == 1
+    (revert,) = [c for c in _children(store, mint.root_id) if c not in (build, review)]
+    ref = store.get_ref(kind="todo", id=revert)
+    assert ref is not None and ref.title == "Revert abc1234 on main"
+    # The build is reopened behind the revert, with the verdict as its handoff.
+    assert _status(store, build) == "open"
+    assert _blocked_by_ids(store, build) == [revert]
+    assert _todo_comments(store, build)[-1].startswith(
+        "handoff: review: REVERT — breaks the public API"
+    )
+    assert isinstance(_meta(store, build)["rearmed_after_job"], int)
+    # The reviewer stays open (claim dropped) to review the rebuild.
+    assert _status(store, review) == "open"
+    assert not any(v.startswith("claimed-by:") for v in _open_tags(store, review))
+    assert _meta(store, review)["review"]["verdict"] == "REVERT"
+    # Only the revert is dispatched: the build waits on it, the review on the build.
+    assert res.dispatched == 1
+    assert len(_jobs_under(store, revert)) == 1
+    assert len(_jobs_under(store, build)) == 1
+    # Idempotent: the judged job is not acted on twice.
+    res = pd.run_pass(store)
+    assert (res.reviews, res.dispatched) == (0, 0)
+    # The revert lands: the build is redispatched on a fresh retry budget.
+    _finish_live_jobs(store)
+    assert pd.run_pass(store).dispatched == 1
+    assert len(_jobs_under(store, build)) == 2
+
+
+def test_review_without_verdict_retries_once_then_asks(store: Store) -> None:
+    mint = _reviewed(store, "review: looks fine to me")
+    review = mint.ids["review"]
+    res = pd.run_pass(store)
+    assert (res.reviews, res.asks) == (0, 0)
+    assert _meta(store, review)["review"]["verdict"] is None
+    assert "malformed verdict" in _todo_comments(store, review)[-1]
+    # One retry, pinned to the review lane; one lane only, so the note says so.
+    assert res.dispatched == 1
+    (_old, (retry, meta)) = _jobs_under(store, review)
+    assert meta["params"] == {"todo_id": review, "lane": "claude-sub"}
+    assert any("shares the builder's vendor 'anthropic'" in n for n in res.notes)
+    # The retry posts nothing either: the hygiene ask follows.
+    store.add_tag(
+        retry, Tag.closed("STATUS", "succeeded"), set_by="system", replace_prefix=True
+    )
+    res = pd.run_pass(store)
+    assert (res.reviews, res.dispatched, res.asks) == (0, 0, 1)
+    assert "no `review:` comment" in _todo_comments(store, review)[-1] or (
+        "malformed verdict" in _todo_comments(store, review)[-1]
+    )
+    asks = [c for c in _children(store, mint.root_id) if "ask" in _meta(store, c)]
+    assert len(asks) == 1
+
+
+def test_dispatch_orders_by_prio_across_roots(store: Store) -> None:
+    older = _one_task_plan(store)  # no prio anywhere: 5
+    newer = _one_task_plan(store)
+    with store.pool.connection() as conn:
+        conn.execute("UPDATE refs SET prio = 1 WHERE ref_id = %s", (newer.root_id,))
+    res = pd.run_pass(store, dry_run=True)
+    order = [n.split(":")[0] for n in res.notes if "would dispatch" in n]
+    # The prio-1 root's task (inherited prio) goes before the older prio-5 one.
+    assert order == [f"td{newer.ids['task']}", f"td{older.ids['task']}"]
+
+
+def test_pick_lane_excludes_the_builder_vendor() -> None:
+    from precis.plans.lanes import Lane, pick_lane
+
+    sub = Lane("sub", "claude_p", "s", 2, frozenset({"*"}), vendor="anthropic")
+    codex = Lane("codex", "codex_exec", "c", 1, frozenset({"review"}), vendor="openai")
+    off = Lane(
+        "codex", "codex_exec", "c", 1, frozenset({"review"}), False, vendor="openai"
+    )
+    pick = pick_lane(
+        None, "review", lanes=(sub, codex), counts={}, exclude_vendor="anthropic"
+    )
+    assert pick is codex
+    # Only the builder's vendor enabled: fall back to it.
+    pick = pick_lane(
+        None, "review", lanes=(sub, off), counts={}, exclude_vendor="anthropic"
+    )
+    assert pick is sub
+    # The other vendor's lane is full: wait, do not bypass the rule.
+    assert (
+        pick_lane(
+            None,
+            "review",
+            lanes=(sub, codex),
+            counts={"codex": 1},
+            exclude_vendor="anthropic",
+        )
+        is None
+    )
+    # Without the exclusion the pick is unchanged (table order).
+    assert pick_lane(None, "review", lanes=(sub, codex), counts={}) is sub

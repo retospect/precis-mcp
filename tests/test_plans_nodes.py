@@ -47,6 +47,10 @@ GENERATE = {"role": "slicer", "from": "docs/backlog/x.md#Section"}
         ({"loop": {**LOOP, "count": 2}}, "loop"),
         ({"generate": GENERATE}, "generator"),
         ({"generate": {"role": "triage", "from": "gripe"}}, "generator"),
+        (
+            {"generate": {"role": "reviewer", "from": "td12"}, "task_class": "review"},
+            "generator",
+        ),
         ({"auto_close": True, "generate": GENERATE}, "generator"),
         ({"auto_close": False}, None),
         ({"llm_tier": "opus", "prio": 3}, None),
