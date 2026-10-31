@@ -114,6 +114,17 @@ class TestPageImageView:
         assert "expires: " in body
         assert "pimg2020-p3.png" in body
 
+    def test_unset_base_url_names_the_vault_door(
+        self, store: Store, handler: PaperHandler
+    ) -> None:
+        """gr524008 — with no origin the link is path-only; the banner
+        must name the call that sets it, not just 'the vault'."""
+        _seed(store, "pimgbase2020")
+        body = handler.get(id="pimgbase2020", view="page_image", args={"page": 0}).body
+        assert "PRECIS_WEB_BASE_URL is not set" in body.splitlines()[0]
+        assert "precis secret set PRECIS_WEB_BASE_URL" in body.splitlines()[0]
+        assert _url(body).startswith("/files/pdf_page/")
+
     def test_page_and_ord_are_mutually_exclusive(
         self, store: Store, handler: PaperHandler
     ) -> None:

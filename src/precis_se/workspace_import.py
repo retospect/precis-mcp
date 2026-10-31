@@ -2948,7 +2948,8 @@ def workspace_upload_link_op(store: Any, *, design: str, op: dict[str, Any]) -> 
         lines.append(
             "PRECIS_WEB_BASE_URL is not set — the link below is "
             "path-only; prepend the precis_web origin to POST to it "
-            "(the operator sets it via the vault)."
+            "(the operator sets it with `precis secret set "
+            "PRECIS_WEB_BASE_URL` or on /secrets)."
         )
     lines += [
         f"# {design} — workspace out/ upload link",

@@ -84,6 +84,8 @@ class TestPdfLinkView:
         _seed(store, "linkbase2020")
         body = handler.get(id="linkbase2020", view="pdf_link").body
         assert "PRECIS_WEB_BASE_URL is not set" in body.splitlines()[0]
+        # The degraded line names the operator door (gr524008).
+        assert "precis secret set PRECIS_WEB_BASE_URL" in body.splitlines()[0]
         assert _url(body).startswith("/files/pdf/")
 
     def test_base_url_joins_onto_path(

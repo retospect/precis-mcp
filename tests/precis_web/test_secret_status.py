@@ -61,6 +61,19 @@ def test_mp_api_key_is_listed_presence_only() -> None:
     assert "pourbaix_bulk" in spec.purpose
 
 
+def test_web_base_url_is_listed_presence_only() -> None:
+    # The file-links origin (precis.file_links.WEB_BASE_URL_SECRET) must
+    # show on /secrets so the operator can provision it — unregistered, an
+    # unset secret has no write row and its absence surfaces only as
+    # path-only links (gr524008). Non-optional: on a deployment serving
+    # file links an absent origin is a misconfiguration, not a normal one.
+    from precis.file_links import WEB_BASE_URL_SECRET
+
+    (spec,) = [s for s in secret_status.KNOWN_SECRETS if s.name == WEB_BASE_URL_SECRET]
+    assert spec.probe_group is None
+    assert not spec.optional
+
+
 def test_every_probe_group_has_a_registered_probe() -> None:
     groups = {s.probe_group for s in secret_status.KNOWN_SECRETS if s.probe_group}
     assert groups  # sanity: the registry does define probed secrets

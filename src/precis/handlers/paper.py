@@ -1173,7 +1173,8 @@ class PaperHandler(Handler):
             lines.append(
                 "PRECIS_WEB_BASE_URL is not set — the link below is "
                 "path-only; prepend the precis_web origin to POST to it "
-                "(the operator sets it via the vault)."
+                "(the operator sets it with `precis secret set "
+                "PRECIS_WEB_BASE_URL` or on /secrets)."
             )
         lines += [
             f"# {slug} — PDF upload link",
@@ -7303,7 +7304,8 @@ class PaperHandler(Handler):
             lines.append(
                 "PRECIS_WEB_BASE_URL is not set — the link below is "
                 "path-only; prepend the precis_web origin to fetch it "
-                "(the operator sets it via the vault)."
+                "(the operator sets it with `precis secret set "
+                "PRECIS_WEB_BASE_URL` or on /secrets)."
             )
         stem = ref.slug or handle
         lines += [
@@ -7377,7 +7379,8 @@ class PaperHandler(Handler):
             else [
                 "PRECIS_WEB_BASE_URL is not set — the link below is "
                 "path-only; prepend the precis_web origin to fetch it "
-                "(the operator sets it via the vault)."
+                "(the operator sets it with `precis secret set "
+                "PRECIS_WEB_BASE_URL` or on /secrets)."
             ]
         )
 

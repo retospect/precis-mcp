@@ -405,7 +405,10 @@ size and page count, expiry, and the `curl` line), never the bytes.
 The link is reusable until it expires — `args={'ttl_s': N}` (default
 600 s, cap 3600 s). A ref with no PDF refuses and points at
 `pdf_url`. When the reply's first line says `PRECIS_WEB_BASE_URL` is
-unset the URL is path-only — prepend the precis_web origin yourself.
+unset the URL is path-only — prepend the precis_web origin yourself;
+when you don't have it, report it — the operator sets
+`PRECIS_WEB_BASE_URL` in the vault (`precis secret set` or /secrets)
+and every later link is absolute.
 
 ## A worker stamped a paper as done/failed — how do I re-run it?
 

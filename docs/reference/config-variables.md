@@ -187,6 +187,7 @@ env is `PRECIS_UNPAYWALL_EMAIL`.
 | `PRECIS_MP_API_KEY` | DB vault (process env first) | Materials Project key for the `pourbaix_bulk` job's Pourbaix entry fetch and for `get(kind='structure', id='mp-<n>', args={'source':'materials-project'})`. Unset → the job fails `failure_class=config`, the lookup refuses with `next=`; never a silent result. |
 | `PRECIS_CATHUB_API_KEY` | DB vault (process env first) | Catalysis-Hub key, sent as `X-API-Key` on `structure` `source='catalysis-hub'` fetches. Optional: unset → keyless request; a 401/403 refuses with `next=`. |
 | `PRECIS_SECRETS_FILE_DIR` | file fallback (`~/.secrets/pw`) | Local-dev fallback; the vault wins when both resolve. |
+| `PRECIS_WEB_BASE_URL` | DB vault (env/file override) | Public precis_web origin minted file links (`page_image`/`pdf_link`/upload doors) are joined onto. Unset → path-only links; a KNOWN_SECRETS entry tracks presence on /secrets. |
 | `PRECIS_CROSSREF_MAILTO` / `PRECIS_UNPAYWALL_EMAIL` / `PRECIS_WIKIPEDIA_UA` | polite-pool identity | Low-risk. |
 
 ---
