@@ -620,6 +620,7 @@ def test_scope_unknown_key_does_not_fire_on_enumerated_keys() -> None:
             "material": "graphene",
             "method": "DFT",
             "pH": "13.6",
+            "facet": "Pd(111)",
             "regime": "low-temperature",
             "system": "MoS2 monolayer",
             "quantity": "band gap",

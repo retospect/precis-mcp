@@ -656,6 +656,75 @@ class TestNearDuplicateRefusal:
             )
         assert f"fi{sibling_id}" in str(ei.value)
 
+    def test_unembedded_hub_from_other_passage_of_same_paper_found(self, store) -> None:
+        """gr530995: a restatement from another passage of the same paper,
+        minted seconds earlier (no embedding yet), is judged too."""
+        paper = _seed_paper(store, cite_key="miller23a")
+        store.chunks.insert_chunks(
+            paper, [ChunkInsert(ord=1, text="Results chunk.", meta={})]
+        )
+        with store.pool.connection() as conn:
+            chunks = dict(
+                conn.execute(
+                    "SELECT ord, chunk_id FROM chunks WHERE ref_id = %s", (paper,)
+                ).fetchall()
+            )
+        sup0 = [{"paper": f"pc{chunks[0]}", "source_handle": f"pc{chunks[0]}"}]
+        sup1 = [{"paper": f"pc{chunks[1]}", "source_handle": f"pc{chunks[1]}"}]
+        sibling = _finding_hub_mint.put_hub(
+            store, sentence=_COMPOUND, scope={}, supporters=sup0, dedup=False
+        )
+        sibling_id = int(_search(r"claim hub fi(\d+)", sibling.body).group(1))
+
+        calls: list = []
+        with pytest.raises(BadInput) as ei:
+            _put_atom(
+                store,
+                supporters=sup1,
+                block_fn=_block_none,
+                containment_fn=_containment("generalization", calls),
+            )
+        assert f"fi{sibling_id}" in str(ei.value)
+        assert len(calls) == 1
+
+    def test_embedded_hub_of_same_paper_not_double_judged(self, store) -> None:
+        paper = _seed_paper(store, cite_key="miller23a")
+        store.chunks.insert_chunks(
+            paper, [ChunkInsert(ord=1, text="Results chunk.", meta={})]
+        )
+        with store.pool.connection() as conn:
+            chunks = dict(
+                conn.execute(
+                    "SELECT ord, chunk_id FROM chunks WHERE ref_id = %s", (paper,)
+                ).fetchall()
+            )
+        sup0 = [{"paper": f"pc{chunks[0]}", "source_handle": f"pc{chunks[0]}"}]
+        sup1 = [{"paper": f"pc{chunks[1]}", "source_handle": f"pc{chunks[1]}"}]
+        sibling = _finding_hub_mint.put_hub(
+            store, sentence=_COMPOUND, scope={}, supporters=sup0, dedup=False
+        )
+        sibling_id = int(_search(r"claim hub fi(\d+)", sibling.body).group(1))
+        with store.pool.connection() as conn:
+            body_chunk = conn.execute(
+                "SELECT chunk_id FROM chunks WHERE ref_id = %s AND ord = 0 "
+                "AND chunk_kind = 'finding_body'",
+                (sibling_id,),
+            ).fetchone()[0]
+            conn.execute(
+                "INSERT INTO chunk_embeddings (chunk_id, embedder, status) "
+                "VALUES (%s, 'bge-m3', 'ok')",
+                (body_chunk,),
+            )
+            conn.commit()
+
+        resp = _put_atom(
+            store,
+            supporters=sup1,
+            block_fn=_block_none,
+            containment_fn=_never_called,
+        )
+        assert "claim hub fi" in resp.body
+
     def test_force_mints_and_stamps_override(self, store) -> None:
         compound = mint_hub(store, CanonicalClaim(sentence=_COMPOUND, scope={}))
         _seed_paper(store, cite_key="miller23a")

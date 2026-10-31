@@ -1530,9 +1530,11 @@ def lint_claim_sentence(
 #: across 1,527 hubs). Deliberately small; adding a key is a deliberate
 #: act, not a drive-by. `pH` joined 2026-10-29 (gr530995): the macatamo
 #: pilot scopes electrochemistry claims by it, and it is an enumerated
-#: axis, not prose (`scope-free-text` still guards the value).
+#: axis, not prose (`scope-free-text` still guards the value). `facet`
+#: joined with it (crystal face / slab, e.g. `Pd(111)`).
 SCOPE_KEYS: frozenset[str] = frozenset(
     {
+        "facet",
         "material",
         "method",
         "pH",

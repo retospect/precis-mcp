@@ -242,11 +242,13 @@ hub (`fi<N>`) and its sentence, with three options:
   Use only when the claim really is distinct. It also bypasses a
   containment-judge outage, recording `verdict='unjudged'`.
 
-Same-passage neighbours (up to 3) also go through the ordinary dedup
-judge, so a same-passage `same` verdict attaches automatically instead of
-refusing. An identical re-put (same sentence and scope) converges onto its
-own hub first and is never refused. Cost per put: up to 3 extra MEDIUM
-dedup calls and up to 6 containment calls, typically 0–3.
+Same-passage neighbours (up to 3), and hubs of the same paper whose body
+has no embedding yet (up to 3 more; a restatement from another passage
+minted seconds ago), also go through the ordinary dedup judge, so a `same`
+verdict attaches automatically instead of refusing. An identical re-put
+(same sentence and scope) converges onto its own hub first and is never
+refused. Cost per put: up to 6 extra MEDIUM dedup calls and up to 9
+containment calls, typically 0–3.
 
 Found two already-minted hubs that are the same claim? `get(kind='finding',
 id='fi<winner>', view='merge-plan', args={'loser': 'fi<loser>'})` shows

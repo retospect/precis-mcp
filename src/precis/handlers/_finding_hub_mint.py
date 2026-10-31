@@ -125,6 +125,8 @@ ContainmentFn = Callable[[str, str], ContainmentVerdict]
 
 #: Same-passage neighbours judged per put (besides the ANN ones).
 _SAME_PASSAGE_MAX = 3
+#: Same-paper hubs with no embedding yet, judged per put (besides the above).
+_UNEMBEDDED_PAPER_MAX = 3
 
 __all__ = ["put_hub", "render_similar_view"]
 
@@ -326,7 +328,8 @@ def _same_passage_neighbours(
     store: Store, supporters: list[dict[str, Any]]
 ) -> list[MergeCandidate]:
     """Live claim hubs that already carry an evidence edge on the chunk any
-    supporter's ``source_handle`` names — same-burst siblings, which an ANN
+    supporter's ``source_handle`` names, plus the still-unembedded hubs of the
+    supporters' papers — same-burst siblings, which an ANN
     search misses while their body chunk is still unembedded. Unresolvable
     supporters are skipped (the mint's own validation reports them)."""
     resolved, _errors = authoring.resolve_supporters(store, supporters)
@@ -366,7 +369,45 @@ def _same_passage_neighbours(
                         hub_ref_id=int(ref_id), claim=str(title), distance=1.0
                     ),
                 )
-    return list(found.values())[:_SAME_PASSAGE_MAX]
+        passage = list(found.values())[:_SAME_PASSAGE_MAX]
+        seen = {c.hub_ref_id for c in passage}
+        # gr530995: a reworded restatement of a claim from ANOTHER passage of
+        # the same paper (abstract vs results) sits in the same embedding
+        # window, so the passage lookup above never sees it either.
+        for paper_id in dict.fromkeys(int(s["paper_ref_id"]) for s in resolved):
+            rows = conn.execute(
+                f"""
+                SELECT r.ref_id, r.title
+                FROM refs r
+                JOIN chunks c ON c.ref_id = r.ref_id AND c.ord = 0
+                             AND c.chunk_kind = 'finding_body'
+                             AND c.retired_at IS NULL
+                WHERE r.kind = 'finding' AND r.retired_at IS NULL
+                  AND {claim_hub_predicate_sql()}
+                  AND EXISTS (SELECT 1 FROM links l
+                              WHERE l.src_ref_id = %(paper)s
+                                AND l.dst_ref_id = r.ref_id)
+                  AND NOT EXISTS (SELECT 1 FROM chunk_embeddings ce
+                                  WHERE ce.chunk_id = c.chunk_id
+                                    AND ce.status = 'ok')
+                ORDER BY r.ref_id DESC
+                LIMIT %(n)s
+                """,
+                {
+                    "paper": paper_id,
+                    "n": _UNEMBEDDED_PAPER_MAX,
+                    **CLAIM_HUB_PREDICATE_PARAMS,
+                },
+            ).fetchall()
+            for ref_id, title in rows:
+                if int(ref_id) not in seen:
+                    seen.add(int(ref_id))
+                    passage.append(
+                        MergeCandidate(
+                            hub_ref_id=int(ref_id), claim=str(title), distance=1.0
+                        )
+                    )
+    return passage
 
 
 def _containment_hit(
