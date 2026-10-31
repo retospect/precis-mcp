@@ -116,13 +116,13 @@ red, since do-not-repropose outranks the epistemic mark. Nothing needs
 rewriting when a hypothesis is later refuted or promoted.
 
 ```
-put(kind='finding', hypothesis=True,
-    title='<claim sentence — same grammar as any claim, see below>',
-    motivation='<what each source established; which transfer is unproven>',
-    testable_by='<the measurement that would settle it either way>',
-    motivated_by=['pc293', 'fi1234'],   # >=2 independent sources (papers/structures)
-    llm_models=['claude-fable-5'],      # required: the model id(s) authoring this
-    from_memory='me4567')               # optional: the note it came from
+put(kind='finding', title='<claim sentence — same grammar as any claim, see below>',
+    args={'hypothesis': True,
+          'motivation': '<what each source established; which transfer is unproven>',
+          'testable_by': '<the measurement that would settle it either way>',
+          'motivated_by': ['pc293', 'fi1234'],   # >=2 independent sources (papers/structures)
+          'llm_models': ['claude-fable-5'],      # required: the model id(s) authoring this
+          'from_memory': 'me4567'})              # optional: the note it came from
 ```
 
 ## Hypothesis — the mint door's rules
@@ -171,7 +171,7 @@ sentence) against what you parked.
 
 **Sharpening.** `motivation=`/`testable_by=` aren't frozen at mint: while
 the claim is unsigned (`candidate`/`reviewed`), `edit(kind='finding',
-id='fi<N>', testable_by=…)` (and/or `motivation=…`) patches the parked
+id='fi<N>', args={'testable_by': …})` (and/or `'motivation': …`) patches the parked
 envelope and keeps the prior wording in `meta.testable_by_history` /
 `meta.motivation_history`. An unsigned review reopens in place and consumers
 are flagged/listed for re-review. Once signed, correction requires a successor

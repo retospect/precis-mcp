@@ -39,10 +39,11 @@ strings:
 
 ```python
 put(kind="finding", title="<claim>", body="<verbatim source quote>",
-    cited_in="https://example.org/article", tags=["STATUS:staged"],
+    tags=["STATUS:staged"],
     meta={"quote": "<verbatim source quote>", "verdict": "supports",
-          "verifier": "<name>", "checked_at": "2026-10-28"})
-# Or cited_in="web:example-article" / the web ref handle.
+          "verifier": "<name>", "checked_at": "2026-10-28"},
+    args={"cited_in": "https://example.org/article"})
+# Or args={"cited_in": "web:example-article"} / the web ref handle.
 ```
 
 Creation stores `meta.draft_source` and does not fetch. Paper import

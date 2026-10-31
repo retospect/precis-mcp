@@ -95,7 +95,7 @@ the hub ([[precis-cite-paper-help]]):
 
 ```python
 put(kind="paper", doi="10.5281/zenodo.22863181")  # idempotent request
-# once ingested: put(kind="finding", title="<claim>", supporters=[{"paper": "pa<id>", "source_handle": "pc<id>"}])
+# once ingested: put(kind="finding", title="<claim>", args={"supporters": [{"paper": "pa<id>", "source_handle": "pc<id>"}]})
 ```
 
 Copy `pa<id>` / `pc<id>` from search output. If the record has no passage

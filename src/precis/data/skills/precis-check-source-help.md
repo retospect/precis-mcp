@@ -130,7 +130,7 @@ one on it, run the adversarial check, then write the hub's handle:
 search(kind="finding", q="<the claim>", status="*", mode="semantic")
 link(kind="finding", id="fi<id>", rel="corroborates", target="pc7")  # hub exists
 put(kind="finding", title="<one self-contained claim sentence>",
-    supporters=[{"paper": "pa<id>", "source_handle": "pc7"}])  # no hub yet
+    args={"supporters": [{"paper": "pa<id>", "source_handle": "pc7"}]})  # no hub yet
 ```
 
 ```text

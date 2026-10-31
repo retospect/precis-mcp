@@ -105,9 +105,9 @@ precision, no rounding:
 ```python
 put(kind="finding",
     title="<one self-contained claim sentence>",
-    scope={"<regime-key>": "<controlled term>"},
-    supporters=[{"paper": "pa5", "source_handle": "pc293"},
-                {"paper": "pa9", "source_handle": "pc871"}])
+    args={"scope": {"<regime-key>": "<controlled term>"},
+          "supporters": [{"paper": "pa5", "source_handle": "pc293"},
+                         {"paper": "pa9", "source_handle": "pc871"}]})
 # → "claim hub fi<id> …" — cite it as [fi<id>]
 ```
 

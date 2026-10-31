@@ -102,7 +102,7 @@ get(id="pc234")  # read it; the chunk must state the claim's core
 get(id="pa5", view="claims")  # hubs this paper already grounds — cite one if it fits
 put(kind="finding",
     title="<one self-contained claim sentence>",
-    supporters=[{"paper": "pa5", "source_handle": "pc234"}])
+    args={"supporters": [{"paper": "pa5", "source_handle": "pc234"}]})
 # → "claim hub fi<id>" — cite [fi<id>]
 ```
 

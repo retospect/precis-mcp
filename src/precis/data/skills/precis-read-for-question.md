@@ -121,8 +121,9 @@ idempotent and the root dedups. The reader:
 For each proposal the root calls the hub door:
 
 ```python
-put(kind="finding", title="<sentence>", scope={"<regime-key>": "<term>"},
-    supporters=[{"paper": "pa<id>", "source_handle": "pc<chunk>"}])
+put(kind="finding", title="<sentence>",
+    args={"scope": {"<regime-key>": "<term>"},
+          "supporters": [{"paper": "pa<id>", "source_handle": "pc<chunk>"}]})
 ```
 
 On a build where the door runs the semantic dedup itself, the response
@@ -172,10 +173,11 @@ That is not a claim; it has no grounding passage, and hand-bundling
 atoms into a composite is forbidden. It is a hypothesis:
 
 ```python
-put(kind="finding", hypothesis=True, title="<declarative sentence>",
-    motivation="<what A and B each established; which transfer is unproven>",
-    testable_by="<the measurement that would settle it>",
-    motivated_by=["fi<a>", "pc<b>"], llm_models=["<your model id>"])
+put(kind="finding", title="<declarative sentence>",
+    args={"hypothesis": True,
+          "motivation": "<what A and B each established; which transfer is unproven>",
+          "testable_by": "<the measurement that would settle it>",
+          "motivated_by": ["fi<a>", "pc<b>"], "llm_models": ["<your model id>"]})
 ```
 
 One pass over the new and existing ids after all readers return, its

@@ -100,7 +100,7 @@ demonstrated — do not force it into a claim hub and go looking for a
 paper that props it up. That is the failure mode: search a corpus this
 size hard enough and something supports almost any proposition.
 
-Mint it as what it is: `put(kind='finding', hypothesis=True, …)` with
+Mint it as what it is: `put(kind='finding', args={'hypothesis': True, …})` with
 `motivation=` (the inferential leap) and `testable_by=` (the experiment
 that would settle it). A hypothesis hub carries **no evidence edges by
 type** — motivation replaces grounding, and `motivated-by` edges point at

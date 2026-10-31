@@ -13,11 +13,12 @@ cases:
           args:
             title: 're:(?is).+'
             body: 're:(?is).*2\.4.*'
-            cited_in: pc42
+            args: {cited_in: pc42}      # kind-specific fields ride args={...}
       record: {kind: finding}
     forbid:
       calls:
-        - {verb: put, kind: finding, args: {cited_in: 're:(doi|arxiv):.*'}}  # a bare doi: is not a handle
+        - {verb: put, kind: finding, args: {cited_in: 're:(?is).+'}}  # top-level cited_in= is the deprecated spelling
+        - {verb: put, kind: finding, args: {args: {cited_in: 're:(doi|arxiv):.*'}}}  # a bare doi: is not a handle
         - {verb: put, kind: paper}       # pc42 is already held; no stub needed
         - {verb: put, kind: memory}      # a finding is not a free-standing note
     fake:
@@ -29,13 +30,13 @@ cases:
             body: >-
               Device prep: 2.4 kV applied across the 50 nm gate oxide for
               30 s on Si/SiO2 MOSCAPs with a Cu top contact, N2 ambient.
-            cited_in: pc42
+            args: {cited_in: pc42}
       record: {kind: finding}
       answer: >
         put(kind='finding', title='gate-bias 2.4 kV / 30 s on Si/SiO2',
-        body='…', cited_in='pc42') — title, body and a source-chunk
-        cited_in= are all mandatory; the ack returns the id and pub_id
-        placeholder.
+        body='…', args={'cited_in': 'pc42'}) — title, body and a
+        source-chunk cited_in are all mandatory; the ack returns the id
+        and pub_id placeholder.
 
   - id: check-existing-finding
     prompt: |

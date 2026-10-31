@@ -22,7 +22,7 @@ they fail `no-epistemic-mode` / `no-evidence-verb`, and rewording cannot
 honestly fix that. Two types hold them. You cannot create either: **the
 type exists only as a key on the approve payload**, which a person
 submits (`/nanopub` review form or `precis nanopub approve --payload`).
-`put(kind='finding', artifact_type=…)` and `mint_hub` refuse it, and the
+`put(kind='finding', args={'artifact_type': …})` and `mint_hub` refuse it, and the
 reword sweep skips any hub carrying the marker — so a failing claim
 cannot be moved into these types by an agent or a batch pass. Do not
 propose one as a way past a lint failure: measured on prod, 5 of ~3,600

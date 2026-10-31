@@ -150,7 +150,7 @@ Three different operations on an existing hub:
 
 ```python
 # 1. mint the sharper claim (its own hub / fi<id>)
-out = put(kind="finding", title="…sharper wording…", scope={}, supporters=[…])
+out = put(kind="finding", title="…sharper wording…", args={"scope": {}, "supporters": […]})
 # 2. link sharper --refines--> original
 link(kind="finding", id=f"fi{out['hub_ref_id']}", rel="refines", target="fi<original>")
 ```
