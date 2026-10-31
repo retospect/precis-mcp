@@ -320,7 +320,7 @@ paper = [
                             # series; agent-supplied PDFs reach
                             # fitz.open via the OA cascade so we keep
                             # the floor tight.
-    "opencv-python-headless>=4.10",
+    "opencv-python-headless>=5.0.0.93",
                             # ``cv2`` — the figure digitiser (docs/backlog/
                             # figure-digitise.md) needs it for colour
                             # masking / Hough lines. It resolved only
