@@ -424,8 +424,11 @@ coordinator turn calls it.
   is thin → slicer generator → N tasks each with a declared file set,
   overlapping sets sequenced by blocked-by at mint (gr541684) → review
   task on another lane → phase auto-close.
-- **release-pass:** cut → gate tests-green → fixer generator on red →
-  re-cut; the loop from "Branches".
+- **release-pass:** cut (`release_cut`) → CI verdict poll
+  (`ci_verdict_poll`) → gate tests-green → approval ask (`answer` gate,
+  `deploy r<N>` | `hold`) → deploy (`release_deploy`); fixer generator on
+  red → re-cut, the loop from "Branches". Open: the loop's re-cut is still
+  an LLM task that does not re-stamp `meta.release` or re-arm the poll.
 - **pcb-pipeline(board):** place+route (`pcb_place`, placer topo, route
   on) → drc (`pcb_review`'s check leg) → review generator over the DRC
   report minting fix tasks → loop until drc-clean, max N. The

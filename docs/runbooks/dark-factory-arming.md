@@ -36,10 +36,45 @@ Disarm: close or pause that todo. Dry run by hand: a `gripe_validate` job
 with `params={'dry_run': true}` lists what would flip. Not covered by the
 factory kill switch (it only closes gripes whose fix is already deployed).
 
+## Release pass (cut, verdict, approval, deploy)
+
+Mint one plan; the armed `plan_dispatch` tick drives it:
+
+    put(kind='todo', mode='plan', args={'template': 'release-pass'})
+
+The nodes run in order: `cut` (`release_cut`: `scripts/release --cut-only`
+in the slice host's checkout, then `meta.release = {rN, sha, range, repo}`
+on the plan root) → `poll` (`ci_verdict_poll`: records check.yml's verdict
+in `release.ci_verdicts`, parked between polls while CI runs) → `gate`
+(`tests-green` on the cut's range) and `loop` (a red verdict mints the
+`release-fix` body) → `approval` → `deploy` (`release_deploy`:
+`scripts/release --deploy-only r<N>`, pinned).
+
+The `approval` node is an `ask-user` todo (`meta.ask.kind = approval`,
+options `deploy r<N>` | `hold`); it shows on `/asks` once the plan exists
+and opens once the gate is green and it is answered. To deploy:
+
+    put(kind='todo', id=<approval id>, text='answer: deploy r<N>')
+    tag(kind='todo', id=<approval id>, add=['STATUS:done'], remove=['ask-user'])
+
+Any other answer (`hold`) closes the ask but deploys nothing: `release_deploy`
+refuses unless the newest `answer:` names `deploy r<N>` for the cut this plan
+recorded, and the tick notes "not dispatched" each pass. To deploy later,
+add a new `answer: deploy r<N>` comment. The deploy exits at "rollout done,
+runtime pending" like `/go`: confirming runtime
+(`scripts/round deploy --confirm-runtime`) stays a session's step.
+
+Host needs: the slice host's checkout (`PRECIS_SLICE_ROOT`) with push
+rights to origin, `gh` (the script's gate step), and whatever
+`scripts/deploy` needs for the deploy; cut and deploy run in the same
+checkout (its `.release-owner` marker makes the deploy the release's
+owner). `ci_verdict_poll` needs only the DB and api.github.com; set
+`release.repo` (`owner/repo`) on a host with no checkout.
+
 ## Kill switch
 
-- `PRECIS_FACTORY=off` in the worker's environment: `run_slice` refuses
-  every submit, and `plan_dispatch` runs read-only (counts what it would
+- `PRECIS_FACTORY=off` in the worker's environment: `run_slice`,
+  `release_cut` and `release_deploy` refuse every submit, and `plan_dispatch` runs read-only (counts what it would
   have done, writes nothing). Unset it and restart the worker to re-arm.
 - A `service_config` row for `plan_dispatch` with `prio = 0` (any host)
   also makes the pass read-only, as does `params.dry_run`.

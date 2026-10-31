@@ -30,10 +30,12 @@ from dataclasses import dataclass
 from typing import Any
 
 from precis.errors import BadInput, NotFound
+from precis.plans import release as _release
 from precis.plans.gates import resolve_board
 from precis.plans.nodes import validate_plan_meta
 from precis.store import Store, Tag
 from precis.store.types import TODO_BODY_KIND, ChunkInsert
+from precis.todo.guards import check_ask_meta
 from precis.utils import handle_registry
 
 #: ``meta.gate.args.sha`` of a ``sha-in-prod`` gate minted before the build
@@ -43,7 +45,6 @@ GATE_SHA_NOTE = (
     "The sha in meta.gate is a placeholder ('0000000'): the build task's land "
     "writes the real sha here once it is known. Until then this gate stays false."
 )
-_RELEASE_RANGE = "origin/prod..main"
 _RELEASE_LOOP_MAX = 3
 _PCB_LOOP_MAX = 5
 _GRIPE_ID_RE = re.compile(r"(?:gr|gripe:)?(\d+)", re.IGNORECASE)
@@ -393,34 +394,102 @@ def mint_slice_tree(
 # -- release-pass ------------------------------------------------------------
 
 
-def mint_release_pass(store: Store, parent_id: int | None = None) -> PlanMint:
-    """cut -> gate tests-green; a loop mints fixer + re-cut while red.
+#: Retry budget of the verdict poll: each job parks itself while CI is
+#: pending (``ci_verdict_poll``), so a retry is another hour of polling.
+_POLL_RETRIES = 3
+RELEASE_RANGE_NOTE = (
+    f"The range in meta.gate is a placeholder ('{_release.PENDING_RANGE}'): the "
+    "release_cut job writes the cut's '<prev prod>..<sha>' here (and the sha "
+    "and r<N> on the plan root's meta.release). Until then this gate stays false."
+)
 
-    The gate and the loop are siblings, both blocked-by the cut: the gate
-    shows the predicate, the loop's ``until`` is the same predicate and it
-    starts empty (a green cut never runs a fixer)."""
-    gate = {"kind": "tests-green", "args": {"range": _RELEASE_RANGE}}
+
+def _tag(m: _Minter, todo_id: int, value: str) -> None:
+    m.store.add_tag(
+        todo_id, Tag.parse_strict(value, kind="todo"), set_by="agent", conn=m.conn
+    )
+
+
+def mint_release_pass(store: Store, parent_id: int | None = None) -> PlanMint:
+    """cut -> poll -> gate tests-green -> approval ask -> deploy; a loop
+    mints fixer + re-cut while red (td543733).
+
+    ``cut`` (``release_cut``) runs ``scripts/release --cut-only`` and stamps
+    r<N>/sha on the root (``meta.release``) and the real range on the gate
+    and the loop's ``until``. ``poll`` (``ci_verdict_poll``) records the
+    GitHub verdict, parking itself while CI runs. The gate and the loop are
+    siblings blocked-by the poll, so the loop sees a recorded verdict: green
+    closes it empty, red mints a fixer. ``approval`` is an ``answer`` gate
+    that is also the ask-user todo Reto answers (``deploy r<N>`` | ``hold``);
+    ``deploy`` (``release_deploy``) refuses unless that answer names
+    ``deploy r<N>`` (:func:`precis.plans.release.approval`)."""
+    gate = {"kind": "tests-green", "args": {"range": _release.PENDING_RANGE}}
+    ask: dict[str, Any] = {
+        "kind": "approval",
+        "options": _release.approval_options("r<N>"),
+        "blocks": "nothing",
+        "context": "release/r<N> is cut by this plan; green CI gates this ask",
+    }
 
     def build(m: _Minter) -> None:
         m.node("root", "Release pass", _phase())
         m.node(
             "cut",
             "Cut the release",
-            _task(),
-            body="Cut release/r<N> from main with scripts/release.",
+            _task("release_cut"),
+            body=(
+                "release_cut runs scripts/release --cut-only in the repo checkout: "
+                "cut release/r<N> from main and return without waiting for CI."
+            ),
+        )
+        m.node(
+            "poll",
+            "Record the CI verdict on the cut",
+            {**_task("ci_verdict_poll"), "retries": _POLL_RETRIES},
+            body=(
+                "ci_verdict_poll reads check.yml's run on the cut's sha from the "
+                "GitHub API and records it in release.ci_verdicts."
+            ),
+            blocked_by=("cut",),
         )
         m.node(
             "gate",
             "Wait for the cut to go green",
             {"gate": gate},
-            blocked_by=("cut",),
+            blocked_by=("poll",),
+            comment=RELEASE_RANGE_NOTE,
         )
         m.node(
             "loop",
             "Fix and re-cut until green",
             {"loop": {"max": _RELEASE_LOOP_MAX, "until": gate, "body": "release-fix"}},
-            blocked_by=("cut",),
+            blocked_by=("poll",),
         )
+        approval = m.node(
+            "approval",
+            "Deploy the release? (answer 'deploy r<N>' or 'hold')",
+            {"gate": {"kind": "answer"}, "ask": ask},
+            body=(
+                "The release this plan cut is green. Answer with "
+                "put(kind='todo', id=<this>, text='answer: deploy r<N>') and close "
+                "this todo; 'hold' (or any other answer) deploys nothing."
+            ),
+            blocked_by=("gate",),
+        )
+        _tag(m, approval, "ask-user")
+        deploy = m.node(
+            "deploy",
+            "Deploy the release",
+            _task("release_deploy"),
+            body=(
+                "release_deploy runs scripts/release --deploy-only r<N> (pinned), "
+                "only after the approval ask is answered 'deploy r<N>'."
+            ),
+            blocked_by=("approval",),
+        )
+        final = {**ask, "blocks": f"td{deploy}"}
+        check_ask_meta({"ask": final})
+        m.store.stamp_ref_meta(approval, {"ask": final}, conn=m.conn)
 
     return _run(store, parent_id, build)
 
@@ -526,7 +595,8 @@ TEMPLATES: dict[str, Template] = {
         Template(
             "release-pass",
             (),
-            "cut -> tests-green gate; fixer + re-cut loop while red",
+            "cut -> CI verdict poll -> tests-green gate -> deploy approval ask -> "
+            "deploy; fixer + re-cut loop while red",
             mint_release_pass,
         ),
         Template(

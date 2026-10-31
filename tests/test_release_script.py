@@ -220,6 +220,92 @@ def test_deployed_round_is_closed_and_reopened_before_cutting(rig: Rig) -> None:
     assert rig.deploy_log() == [f"{s1} --pinned", f"{s2} --pinned"]
 
 
+def test_cut_only_cuts_and_returns_without_waiting(rig: Rig) -> None:
+    """td543733: --cut-only stops after the cut — no CI wait, no deploy."""
+    out = _release(rig, "--cut-only", *FAST)
+    assert out.returncode == 0, out.stdout + out.stderr
+    s = rig.shas["c3"]
+    assert f"release/r1 cut at {s[:9]}" in out.stdout
+    assert f"RELEASE_CUT: r1 {s}" in out.stdout.splitlines()
+    assert any(ln.startswith("RELEASE_RANGE: ") for ln in out.stdout.splitlines())
+    assert "waiting for CI" not in out.stdout
+    assert rig.origin_ref("release/r1") == s
+    assert rig.deploy_log() == []
+    assert _marker(rig).exists()  # the later --deploy-only owns it
+
+
+def test_cut_only_rerun_reports_the_own_release_without_recutting(rig: Rig) -> None:
+    assert _release(rig, "--cut-only", *FAST).returncode == 0
+    out = _release(rig, "--cut-only", *FAST)
+    assert out.returncode == 0, out.stdout + out.stderr
+    assert " cut at " not in out.stdout
+    assert f"RELEASE_CUT: r1 {rig.shas['c3']}" in out.stdout.splitlines()
+    assert _round_json(rig)["n"] == 1
+
+
+def test_cut_only_on_a_foreign_release_prints_no_cut_line(rig: Rig) -> None:
+    _push_branch(rig, "release/r7", rig.shas["c3"])
+    out = _release(rig, "--cut-only", *FAST)
+    assert out.returncode == 0, out.stderr
+    assert "riding release release/r7" in out.stdout
+    assert "RELEASE_CUT:" not in out.stdout
+
+
+def test_cut_only_dry_run_stops_after_the_cut(rig: Rig) -> None:
+    out = _release(rig, "--cut-only", "--dry-run", *FAST)
+    assert out.returncode == 0, out.stderr
+    assert "would stop after the cut (--cut-only)" in out.stdout
+    assert "would deploy" not in out.stdout
+    assert rig.origin_ref("release/r1") == ""
+
+
+def test_deploy_only_deploys_the_cut_pinned(rig: Rig) -> None:
+    s = rig.shas["c3"]
+    assert _release(rig, "--cut-only", *FAST).returncode == 0
+    out = _release(rig, "--deploy-only", "r1", *FAST, **_green(rig))
+    assert out.returncode == 3, out.stdout + out.stderr
+    assert " cut at " not in out.stdout
+    assert any(
+        ln.startswith(f"RELEASE_DEPLOYED: r1 {s} ") for ln in out.stdout.splitlines()
+    )
+    assert _next_line(s) in out.stdout
+    assert rig.deploy_log() == [f"{s} --pinned"]
+
+
+@pytest.mark.parametrize("which", ["r2", "bogus"])
+def test_deploy_only_refuses_another_release_and_never_cuts(
+    rig: Rig, which: str
+) -> None:
+    assert _release(rig, "--cut-only", *FAST).returncode == 0
+    out = _release(rig, "--deploy-only", which, *FAST, **_green(rig))
+    assert out.returncode == 1
+    assert rig.deploy_log() == []
+    assert rig.origin_ref("release/r2") == ""
+
+
+def test_deploy_only_without_a_cut_refuses(rig: Rig) -> None:
+    out = _release(rig, "--deploy-only", "r1", *FAST, **_green(rig))
+    assert out.returncode == 1
+    assert "not a live recorded release" in out.stderr
+    assert rig.origin_ref("release/r1") == ""
+    assert rig.deploy_log() == []
+
+
+def test_deploy_only_refuses_a_release_this_tree_did_not_cut(rig: Rig) -> None:
+    assert _release(rig, "--cut-only", *FAST).returncode == 0
+    _marker(rig).unlink()
+    out = _release(rig, "--deploy-only", "r1", *FAST, **_green(rig))
+    assert out.returncode == 1
+    assert "did not cut release/r1" in out.stderr
+    assert rig.deploy_log() == []
+
+
+def test_cut_only_and_deploy_only_are_exclusive(rig: Rig) -> None:
+    out = _release(rig, "--cut-only", "--deploy-only", "r1", *FAST)
+    assert out.returncode == 2
+    assert "not allowed with" in out.stderr
+
+
 def test_dry_run_only_reads(rig: Rig) -> None:
     out = _release(rig, "--dry-run", *FAST)
     assert out.returncode == 0, out.stderr

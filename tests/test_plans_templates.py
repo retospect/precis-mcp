@@ -195,13 +195,33 @@ def test_release_pass_shape(store: Store) -> None:
     assert _kinds(store, mint) == {
         "root": "phase",
         "cut": "task",
+        "poll": "task",
         "gate": "gate",
         "loop": "loop",
+        "approval": "gate",
+        "deploy": "task",
     }
-    assert _blocked_by(store, mint) == {("gate", "cut"), ("loop", "cut")}
+    assert _blocked_by(store, mint) == {
+        ("poll", "cut"),
+        ("gate", "poll"),
+        ("loop", "poll"),
+        ("approval", "gate"),
+        ("deploy", "approval"),
+    }
+    assert _meta(store, mint.ids["cut"])["op"] == "release_cut"
+    assert _meta(store, mint.ids["poll"])["op"] == "ci_verdict_poll"
+    assert _meta(store, mint.ids["deploy"])["op"] == "release_deploy"
+    gate = _meta(store, mint.ids["gate"])["gate"]
+    assert gate == {"kind": "tests-green", "args": {"range": "0000000"}}
     loop = _meta(store, mint.ids["loop"])["loop"]
-    assert loop["until"] == _meta(store, mint.ids["gate"])["gate"]
+    assert loop["until"] == gate
     assert loop["max"] == 3
+    approval = _meta(store, mint.ids["approval"])
+    assert approval["gate"] == {"kind": "answer"}
+    assert approval["ask"]["kind"] == "approval"
+    assert approval["ask"]["options"] == ["deploy r<N>", "hold"]
+    assert approval["ask"]["blocks"] == f"td{mint.ids['deploy']}"
+    assert "ask-user" in {t.value for t in store.tags_for(mint.ids["approval"])}
     _assert_plan_hygiene(store, mint)
 
 

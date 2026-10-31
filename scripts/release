@@ -11,6 +11,17 @@ and never bypasses a refusal.
 
   scripts/release [--sha S] [--ci-timeout MIN]
                   [--poll SEC] [--dry-run] [--adopt]
+                  [--cut-only | --deploy-only r<N>]
+
+--cut-only (the dark release pass's `release_cut` op): steps 1-5 only. After
+the cut (or on finding this worktree's own release already cut) it prints
+`RELEASE_CUT: r<N> <head sha>` and `RELEASE_RANGE: <prev_prod>..<head>` and
+exits 0 without waiting for check.yml; a release in flight elsewhere, or S
+already live, prints the usual line and no RELEASE_CUT. --deploy-only r<N>
+(the `release_deploy` op): never cuts; refuses (exit 1) unless release/r<N>
+is the live recorded release and this worktree owns it (--adopt takes it),
+waits for CI only if the head is not yet green, then runs step 7 and prints
+`RELEASE_DEPLOYED: r<N> <head> <prev_prod or ->` after the rollout.
 
 Steps, in order:
   1. fetch origin main/prod; S = --sha or origin/main; S must sit on
@@ -960,6 +971,9 @@ def deploy_and_close(args: argparse.Namespace, sha: str) -> int:
         cur = round_state() or {}
         head = pending_sha(_release_by_state(cur, DEPLOYING_STATES), sha)
         say(record_prod_head(prev, head))
+        if getattr(args, "deploy_only", ""):
+            # The release_deploy op parses this to record the prod head itself.
+            say(f"RELEASE_DEPLOYED: {label} {head} {prev or '-'}")
     if rc == 3:
         # The release owner's path: rollout done, runtime confirmed later by
         # `scripts/round deploy --confirm-runtime`. The deploy note posts
@@ -987,6 +1001,8 @@ def deploy_and_close(args: argparse.Namespace, sha: str) -> int:
 
 def run(args: argparse.Namespace) -> int:
     warn_hook_drift()  # gr516942: report (never write) ~/.claude hook drift
+    if args.deploy_only:
+        return deploy_only(args)
     races = 0
     while True:
         fetch()
@@ -1117,7 +1133,9 @@ def run(args: argparse.Namespace) -> int:
                     sys.stderr.write(cp.stderr)
                     return 1
         if args.dry_run:
-            return dry_run_plan(s, n, is_open and not cur.get("deployed"))
+            return dry_run_plan(
+                s, n, is_open and not cur.get("deployed"), cut_only=args.cut_only
+            )
 
         rc = cut_and_finish(args, s)
         if rc == -1:  # lost a cut race
@@ -1128,16 +1146,97 @@ def run(args: argparse.Namespace) -> int:
         return rc
 
 
-def dry_run_plan(s: str, n: int, can_ask_cut: bool) -> int:
+def dry_run_plan(s: str, n: int, can_ask_cut: bool, *, cut_only: bool = False) -> int:
     if can_ask_cut:  # `round cut` refuses without an open round
         cp = rnd("cut", "--sha", s, "--dry-run")
         sys.stdout.write(cp.stdout)
         if cp.returncode:
             sys.stderr.write(cp.stderr)
     say(f"would cut release/r{n} at {s[:9]}")
+    if cut_only:
+        say("would stop after the cut (--cut-only)")
+        return 0
     say("would wait for CI")
     say("would deploy")
     return 0
+
+
+def report_cut(branch: str = "") -> int:
+    """--cut-only's result: ``RELEASE_CUT: r<N> <head>`` and the verdict
+    range (``<prev_prod>..<head>``, the same spelling note_ci_verdict
+    records), then exit 0 without waiting for CI."""
+    cur = round_state() or {}
+    rel = (
+        next((r for r in live_releases(cur) if r.get("branch") == branch), {})
+        if branch
+        else _release_by_state(cur, OPEN_STATES)
+    )
+    branch = str(rel.get("branch") or branch or f"release/r{cur.get('n')}")
+    head = remote(f"refs/heads/{branch}") or str(rel.get("base") or "")
+    if not head:
+        return die(1, f"scripts/release: {branch} has no head on origin after the cut")
+    prev = rev("origin/prod")
+    n = LANDED_SHA_LEN
+    rng = f"{prev[:n]}..{head[:n]}" if prev else head
+    say(f"RELEASE_CUT: {branch.rsplit('/', 1)[-1]} {head}")
+    say(f"RELEASE_RANGE: {rng}")
+    return 0
+
+
+_DEPLOY_ONLY_RE = re.compile(r"^(?:release/)?r?(\d+)$")
+
+
+def deploy_only(args: argparse.Namespace) -> int:
+    """--deploy-only r<N>: deploy the live recorded release/r<N> this
+    worktree cut, pinned. Never cuts; any other state refuses with exit 1."""
+    m = _DEPLOY_ONLY_RE.match(str(args.deploy_only).strip())
+    if m is None:
+        return die(
+            1, f"scripts/release: --deploy-only {args.deploy_only!r} is not r<N>"
+        )
+    want = f"release/r{m.group(1)}"
+    fetch()
+    cur = round_state()
+    if cur is None:
+        return die(1, "scripts/release: cannot read `scripts/round status --json`")
+    rel = next((r for r in live_releases(cur) if r.get("branch") == want), None)
+    if rel is None:
+        return die(
+            1,
+            f"scripts/release: {want} is not a live recorded release — nothing "
+            "deployed; cut one with scripts/release --cut-only",
+        )
+    if rel.get("cut_pending"):
+        return die(
+            1, f"scripts/release: {want} has a pending cut — re-run --cut-only first"
+        )
+    if not owns(rel):
+        if not args.adopt:
+            return die(
+                1,
+                f"scripts/release: this worktree did not cut {want}; re-run with "
+                "--adopt only if its cutting session died",
+            )
+        if not args.dry_run:
+            write_owner(str(rel["branch"]), str(rel["base"]), str(rel.get("cut_at")))
+    dep = rel.get("deployment") or {}
+    sha = str(rel.get("base") or "")
+    if dep.get("rollout_at") and not dep.get("runtime_confirmed_at"):
+        say(f"{want}: rollout already done")
+        say(next_line(pending_sha(rel, sha)))
+        return 3
+    if args.dry_run:
+        say(f"would deploy {want}")
+        return 0
+    facts = gate_facts()
+    head = str(facts.get("release_head") or "")
+    if not (
+        head and facts.get("release_branch") == want and facts.get("candidate") == head
+    ):
+        rc = wait_ci(want, args)
+        if rc:
+            return rc
+    return deploy_and_close(args, sha)
 
 
 def cut_and_finish(args: argparse.Namespace, s: str, branch: str = "") -> int:
@@ -1177,6 +1276,8 @@ def finish(args: argparse.Namespace, s: str) -> int:
     cur = round_state() or {}
     rel = _release_by_state(cur, OPEN_STATES)
     branch = str(rel.get("branch") or f"release/r{cur.get('n')}")
+    if getattr(args, "cut_only", False):
+        return report_cut(branch)
     rc = wait_ci(branch, args)
     if rc:
         return rc
@@ -1204,6 +1305,8 @@ def resume(
             f"resuming release {branch} at {tip[:9]}: {s[:9]} is not in it "
             "and rides the next release"
         )
+    if getattr(args, "cut_only", False):
+        return 0 if args.dry_run else report_cut(branch)
     if dep.get("rollout_at") and not dep.get("runtime_confirmed_at"):
         say(next_line(pending_sha(rel, s)))
         return 3
@@ -1243,6 +1346,19 @@ def main(argv: list[str] | None = None) -> int:
         "--adopt",
         action="store_true",
         help="take ownership of the recorded release (its cutting session died)",
+    )
+    mode = ap.add_mutually_exclusive_group()
+    mode.add_argument(
+        "--cut-only",
+        action="store_true",
+        help="cut (or report this worktree's open release) and exit without "
+        "waiting for CI; prints RELEASE_CUT: r<N> <sha>",
+    )
+    mode.add_argument(
+        "--deploy-only",
+        default="",
+        metavar="rN",
+        help="deploy the recorded release/r<N> this worktree cut; never cuts",
     )
     return run(ap.parse_args(argv))
 

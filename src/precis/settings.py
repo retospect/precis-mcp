@@ -297,6 +297,15 @@ REGISTRY: dict[str, SettingSpec] = {
             "fallback.",
         ),
         SettingSpec(
+            key="release.repo",
+            type="str",
+            env_var="PRECIS_RELEASE_REPO",
+            default=None,
+            doc="GitHub owner/repo whose check.yml runs ci_verdict_poll reads "
+            "for a release cut (precis.workers.job_types.ci_verdict_poll). "
+            "Unset: the cut's recorded repo, else the checkout's origin remote.",
+        ),
+        SettingSpec(
             key="contact.edgar_user_agent",
             type="str",
             env_var="PRECIS_EDGAR_USER_AGENT",
