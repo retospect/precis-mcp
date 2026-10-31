@@ -1439,9 +1439,34 @@ def _check_alert_backlog_rot(conn: Any) -> CheckResult:
 #: deploy that slows a pair shows the same doubling.
 _TOOL_LATENCY_BASELINE_S = 7 * 86400
 
-#: A pair whose p95 doubled but is still under this is not reported:
-#: 40 ms → 90 ms is noise, not a slow MCP.
+#: Minimum calls each window needs before ``tool_latency_regressed``
+#: judges a pair — deliberately separate from
+#: :data:`~precis.health_checks.TOOL_LATENCY_MIN_CALLS`, which gates the
+#: budget check. The week-long baseline wants the larger sample: a
+#: sparse baseline's p95 is a few calls' luck, and put/fleet's n=10
+#: ~0 ms week read one 6 s hour as "more than doubled" — the alert
+#: flapped open 24x on that noise (gr542156). The hour keeps a lower
+#: bar because the second-slowest guard already rejects a one-outlier
+#: hour.
+_TOOL_LATENCY_REGRESSION_MIN_CALLS = 5
+_TOOL_LATENCY_REGRESSION_MIN_BASELINE_CALLS = 30
+
+#: Absolute margin over the baseline p95 a regression must clear on top
+#: of the 2x ratio — see :func:`_regression_line_ms`. A pair whose p95
+#: doubled but stayed within this of the baseline is not reported:
+#: 40 ms → 90 ms is noise, not a slow MCP, and under a ~1 s baseline
+#: this margin is the only term with teeth.
 _TOOL_LATENCY_REGRESSION_FLOOR_MS = 1000
+
+
+def _regression_line_ms(baseline_p95_ms: int) -> int:
+    """The effective "doubled" line a pair's p95 (and second-slowest
+    call) must clear to count as regressed: the larger of twice the
+    baseline and the baseline plus the absolute floor. Below a ~1 s
+    baseline the ratio term collapses toward zero — twice ~0 is ~0 — so
+    the margin carries the floor and a near-zero week cannot make a
+    merely slowish hour read as a regression (gr542156)."""
+    return max(2 * baseline_p95_ms, baseline_p95_ms + _TOOL_LATENCY_REGRESSION_FLOOR_MS)
 
 
 def _fmt_pair(t: health_checks.ToolLatency, *, with_baseline: bool = False) -> str:
@@ -1462,8 +1487,11 @@ def _tool_latency_checks(conn: Any) -> list[CheckResult]:
     ledger (gr479849): ``tool_latency`` goes stale when a verb/kind's p95
     exceeds its budget
     (:func:`precis.health_checks.tool_latency_budget_ms`);
-    ``tool_latency_regressed`` when it more than doubled against the
-    trailing week. Pairs under
+    ``tool_latency_regressed`` when it cleared
+    :func:`_regression_line_ms` — the doubled baseline or baseline +
+    the absolute floor, whichever is higher — against a
+    ``_TOOL_LATENCY_REGRESSION_MIN_BASELINE_CALLS``-call trailing week
+    (gr542156). Budget pairs under
     :data:`~precis.health_checks.TOOL_LATENCY_MIN_CALLS` calls are not
     judged, and a pair needs its second-slowest call over the line too:
     one cold call after a restart is not a slow MCP.
@@ -1493,11 +1521,11 @@ def _tool_latency_checks(conn: Any) -> list[CheckResult]:
     over = [t for t in judged if _two_over(t, t.budget_ms)]
     regressed = [
         t
-        for t in judged
-        if t.baseline_calls >= floor
+        for t in rows
+        if t.calls >= _TOOL_LATENCY_REGRESSION_MIN_CALLS
+        and t.baseline_calls >= _TOOL_LATENCY_REGRESSION_MIN_BASELINE_CALLS
         and t.baseline_p95_ms is not None
-        and t.p95_ms >= _TOOL_LATENCY_REGRESSION_FLOOR_MS
-        and _two_over(t, 2 * t.baseline_p95_ms)
+        and _two_over(t, _regression_line_ms(t.baseline_p95_ms))
     ]
     budget = (
         CheckResult(

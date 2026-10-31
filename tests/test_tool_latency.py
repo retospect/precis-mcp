@@ -92,13 +92,38 @@ def test_under_budget_or_too_few_calls_is_green(store) -> None:
 
 
 def test_p95_doubled_against_the_week_flags_regression(store) -> None:
-    _seed(store, "get", "todo", [500] * 12, age_s=86400)
+    _seed(store, "get", "todo", [500] * 35, age_s=86400)
     _seed(store, "get", "todo", [2000] * 12)
-    _seed(store, "get", "memory", [20] * 12, age_s=86400)
+    _seed(store, "get", "memory", [20] * 35, age_s=86400)
     _seed(store, "get", "memory", [80] * 12)  # doubled, under the 1 s floor
     c = _checks(store)["tool_latency_regressed"]
     assert c.status == "stale"
     assert "get/todo" in c.detail and "get/memory" not in c.detail
+
+
+def test_sparse_baseline_cannot_flag_regression(store) -> None:
+    """gr542156's flap: put/fleet's week held only 10 calls at ~0 ms, so
+    a 6 s hour read as "more than doubled". Under 30 baseline calls the
+    pair is not judged, however slow the hour."""
+    _seed(store, "put", "fleet", [10] * 10, age_s=86400)
+    _seed(store, "put", "fleet", [6000] * 10)
+    assert _checks(store)["tool_latency_regressed"].status == "ok"
+
+
+def test_one_slow_call_over_a_dense_zero_baseline_is_green(store) -> None:
+    """A dense but near-zero baseline still cannot be carried by one
+    slowish call: the second-slowest call must clear the line too."""
+    _seed(store, "put", "fleet", [10] * 40, age_s=86400)
+    _seed(store, "put", "fleet", [10] * 9 + [6000])
+    assert _checks(store)["tool_latency_regressed"].status == "ok"
+
+
+def test_regression_needs_the_absolute_margin(store) -> None:
+    """Doubling a dense ~0 ms baseline to under 1 s stays green: once
+    the ratio term collapses, the line is baseline + 1 s."""
+    _seed(store, "get", "gripe", [10] * 40, age_s=86400)
+    _seed(store, "get", "gripe", [600] * 10)
+    assert _checks(store)["tool_latency_regressed"].status == "ok"
 
 
 def test_status_table_is_durable_across_renders(store) -> None:
