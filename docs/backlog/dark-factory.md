@@ -247,9 +247,11 @@ the release.** Per-tree gating serialises N full runs on one Docker VM;
 a batch costs one run plus two or three fix rounds whatever N is;
 nobody deploys `main`, prod comes from `release/r<N>`, so a red `main`
 hurts no one, while an unmerged finished tree drifts and is forgotten.
-What exists: `scripts/ship` already squashes
-(`commit-tree` + CAS push, one message), merges `origin/main` forward
-first, then resets the branch to the shipped `main`; worktrees that are
+What exists: `scripts/ship` already does the whole dance — squash the
+branch to one commit, rebase it onto `origin/main`, lint, squash
+(`commit-tree`) onto `origin/main` again under the lock, one CAS push
+(main stays linear; only a lock-time race falls back to a forward merge),
+then reset the branch to the shipped `main`; worktrees that are
 merged, clean and sessionless auto-reap; `*-pin` branches with no
 worktree are left alone ("stranded", hundreds today); no pull requests
 except Devin's; review is Reto's queue plus the reviewer agent. The
@@ -280,9 +282,9 @@ factory keeps the machinery and adds an owner to every branch.
   the hygiene tests and pytest all move to the batch; that needs a ship
   mode rawer than today's `--quick`, whose blocking lint took over ten
   minutes on a prose-only diff on 2026-10-30 (Tailwind rebuild
-  included). The squash message is the slice title and brief. A merge
-  conflict on the forward merge is a fix round for the builder lane, not
-  a human. After the land the lander writes the `landed` chunk and
+  included). The squash message is the slice title and brief. A
+  conflict on the rebase onto `main` is a fix round for the builder lane,
+  not a human. After the land the lander writes the `landed` chunk and
   **deletes the branch and its worktree or container**, instead of
   ship's reset to `main`: the slice is done, so the branch has no owner
   left. Human trees keep the reset.

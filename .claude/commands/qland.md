@@ -66,8 +66,9 @@ Optional ship message from the user: `$ARGUMENTS`
    ```
    scripts/ship --quick "<message>"
    ```
-   It does: refuse-if-on-main → refuse a dirty tree (outside `.claude/`) → sync (`git fetch` +
-   `git merge` origin/main) → **pre-qland lint** (unlocked) → ship-lock (seconds;
+   It does: refuse-if-on-main → refuse a dirty tree (outside `.claude/`) → sync (`git fetch`,
+   squash the branch to one commit, `git rebase` onto origin/main — linear, no merge
+   commit) → **pre-qland lint** (unlocked) → ship-lock (seconds;
    if main moved, `git merge` it forward inside the lock, lint not re-run, a
    `Gate: lint only` trailer on the squash) → squash-merge to `main` via
    `commit-tree` + CAS push → fast-forward the local `main` → release the lock →
