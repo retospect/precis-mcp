@@ -153,6 +153,28 @@ def _pa(ref: Ref) -> str:
     return handle_registry.format_handle(ref.kind, ref.id)
 
 
+def _blocks_range_not_found(store: Store, ref: Ref, lo: int, hi: int) -> NotFound:
+    """``NotFound`` for a ``~LO..HI`` block read past the last block:
+    name the paper's block count and its valid range so a probing
+    caller stops instead of stepping further out (gr547805 — a probe
+    walked ~70..79, ~80..89, ~90..99 on a shorter paper)."""
+    total = store.chunks.count_chunks(ref.id)
+    if not total:
+        return NotFound(
+            f"no blocks in {ref.slug} for range ~{lo}..{hi} — "
+            f"{ref.slug} has no body blocks",
+            next=f"get(id='{_pa(ref)}', view='toc')",
+        )
+    return NotFound(
+        f"no blocks in {ref.slug} for range ~{lo}..{hi} — "
+        f"{ref.slug} has {total} blocks, valid: ~0..{total - 1}",
+        next=[
+            f"get(id='{_pa(ref)}~{max(0, total - 10)}..{total - 1}')",
+            f"get(id='{_pa(ref)}', view='toc')",
+        ],
+    )
+
+
 def _retired_note(report: Any) -> str:
     """The body-ops ack suffix naming retired chunks the delete also
     took (``BodyReport.retired_chunks``); empty when there were none."""
@@ -2047,9 +2069,16 @@ class PaperHandler(Handler):
                     ),
                 )
             if len(id) > _BATCH_ID_CAP:
+                from precis.handlers._numeric_ref import _id_batch_next
+
                 raise BadInput(
                     f"id=[...] takes at most {_BATCH_ID_CAP} ids, got {len(id)}",
-                    next=f"split into calls of {_BATCH_ID_CAP} or fewer",
+                    next=_id_batch_next(
+                        "get",
+                        self.spec.kind,
+                        id,
+                        extra=f", q={str(q).strip()!r}",
+                    ),
                 )
             blocks: list[str] = []
             for elem in id:
@@ -2090,9 +2119,8 @@ class PaperHandler(Handler):
         if pos_range is not None:
             chunks = self.store.chunks.list_chunks_for_ref(ref.id, pos_range=pos_range)
             if not chunks:
-                raise NotFound(
-                    f"no blocks in {ref.slug} for range ~{pos_range[0]}..{pos_range[1]}",
-                    next=f"get(id='{_pa(ref)}', view='toc')",
+                raise _blocks_range_not_found(
+                    self.store, ref, pos_range[0], pos_range[1]
                 )
         else:
             chunks = self.store.chunks.list_chunks_for_ref(ref.id)
@@ -2298,9 +2326,11 @@ class PaperHandler(Handler):
                 next=f"get(kind='{kind}', id=[<handle-or-slug>, ...])",
             )
         if len(ids) > _BATCH_ID_CAP:
+            from precis.handlers._numeric_ref import _id_batch_next
+
             raise BadInput(
                 f"id=[...] takes at most {_BATCH_ID_CAP} ids, got {len(ids)}",
-                next=f"split into calls of {_BATCH_ID_CAP} or fewer",
+                next=_id_batch_next("get", kind, ids),
             )
         if str(view or "").strip() == "status":
             # ``search(kind='paper', view='status', ids=[…])`` is the
@@ -8167,10 +8197,7 @@ class PaperHandler(Handler):
         else:
             blocks = self.store.chunks.list_chunks_for_ref(ref.id, pos_range=(lo, hi))
         if not blocks:
-            raise NotFound(
-                f"no blocks in {ref.slug} for range ~{lo}..{hi}",
-                next=f"get(id='{_pa(ref)}', view='toc')",
-            )
+            raise _blocks_range_not_found(self.store, ref, lo, hi)
 
         # Figure-and-caption coalescing: when a single-block request
         # lands on an image-only block, fetch the next block too so the

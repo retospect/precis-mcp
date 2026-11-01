@@ -71,7 +71,11 @@ from precis.errors import BadInput, Gone, NotFound, Upstream
 from precis.format import render_agent_table
 from precis.handlers._eye import is_eye_view
 from precis.handlers._links_render import render_links_section
-from precis.handlers._numeric_ref import BATCH_ID_CAP, BATCH_VIEW_PAGE_CHARS
+from precis.handlers._numeric_ref import (
+    BATCH_ID_CAP,
+    BATCH_VIEW_PAGE_CHARS,
+    _id_batch_next,
+)
 from precis.pcb import catalog, jlc_api, jlc_library
 from precis.pcb._http import VendorError
 from precis.pcb.catalog import min_unit_price
@@ -413,7 +417,7 @@ class PartHandler(Handler):
         if len(ids) > BATCH_ID_CAP:
             raise BadInput(
                 f"id=[...] takes at most {BATCH_ID_CAP} ids, got {len(ids)}",
-                next=f"split into calls of {BATCH_ID_CAP} or fewer",
+                next=_id_batch_next("get", "part", ids),
             )
         lcses: list[str] = []
         for pos, raw in enumerate(ids):

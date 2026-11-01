@@ -698,6 +698,32 @@ class TestChunks:
         assert "TOC of this range" not in resp.body
         assert "previous chunk" not in resp.body
 
+    def test_chunk_range_past_the_last_names_count_and_valid_range(
+        self, store: Store, handler: PaperHandler
+    ) -> None:
+        """gr547805: ``get(id='…~70..79')`` past the last block names how
+        many blocks the paper has, the valid range, and a working
+        ``next=`` — a probe kept stepping ~80..89, ~90..99 on each
+        refusal."""
+        _seed_paper(store, blocks=["a", "b", "c"])
+        with pytest.raises(NotFound) as exc:
+            handler.get(id="wang2020state~70..79")
+        assert "no blocks in wang2020state for range ~70..79" in str(exc.value)
+        assert "3 blocks" in str(exc.value) and "valid: ~0..2" in str(exc.value)
+        nxt = str(exc.value.next)
+        pa = record_handle(store, "wang2020state")
+        assert f"get(id='{pa}~0..2')" in nxt and "view='toc'" in nxt
+
+    def test_chunk_range_past_the_last_on_find_in_ref(
+        self, store: Store, handler: PaperHandler
+    ) -> None:
+        """Same refusal through the find-in-ref path (``q=`` on a ranged
+        id) — one shared helper shapes both."""
+        _seed_paper(store, blocks=["a", "b", "c"])
+        with pytest.raises(NotFound) as exc:
+            handler.get(id="wang2020state~70..79", q="nitrate")
+        assert "3 blocks" in str(exc.value) and "valid: ~0..2" in str(exc.value)
+
     def test_chunk_header_shows_the_ordinal(
         self, store: Store, handler: PaperHandler
     ) -> None:
@@ -883,8 +909,11 @@ class TestBatchGet:
     def test_batch_empty_and_cap(self, handler: PaperHandler) -> None:
         with pytest.raises(BadInput, match="empty"):
             handler.get(id=[])
-        with pytest.raises(BadInput, match="at most"):
+        with pytest.raises(BadInput, match="at most") as exc:
             handler.get(id=["x"] * 51)
+        # gr547806: the next= names the batched split verbatim.
+        nxt = str(exc.value.next)
+        assert f"id={['x'] * 50!r}" in nxt and f"id={['x']!r}" in nxt
 
     def test_batch_wrong_kind_handle_named(
         self, store: Store, handler: PaperHandler, hub: Hub

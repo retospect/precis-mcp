@@ -2578,13 +2578,18 @@ class GripeHandler(NumericRefHandler):
                     ),
                 ) from None
             if number not in ords:
+                # gr547802: the count and the valid ord window go in the
+                # message; the ``next=`` is the listing call — a bare
+                # ord list isn't callable and callers re-issued the same
+                # failing get.
                 raise BadInput(
-                    f"{self._sense()} {ref.id} has no comment {number}",
-                    next=(
-                        f"comments on {self._sense()} {ref.id}: {ords}"
+                    f"{self._sense()} {ref.id} has no comment {number}"
+                    + (
+                        f" — it has {len(ords)} comments, valid: {ords[0]}..{ords[-1]}"
                         if ords
-                        else f"{self._sense()} {ref.id} has no comments"
+                        else " — it has none"
                     ),
+                    next=(f"get(kind={self.kind!r}, id={ref.id}, view='comments')"),
                 )
             return _Window(only=number)
         if comments is not None:

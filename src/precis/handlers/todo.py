@@ -72,6 +72,7 @@ caching needed.
 from __future__ import annotations
 
 import dataclasses
+import difflib
 from collections.abc import Callable
 from enum import StrEnum
 from typing import TYPE_CHECKING, Any, ClassVar, cast
@@ -80,7 +81,7 @@ from precis.errors import BadInput, Unsupported
 from precis.handlers import _comment_timeline as tl
 from precis.handlers._interpret import interpreted
 from precis.handlers._mode_help import require_mode
-from precis.handlers._numeric_ref import NumericRefHandler
+from precis.handlers._numeric_ref import _BASE_VIEWS, NumericRefHandler
 from precis.handlers._prio_tag import PRIO_TAG_TO_INT, split_prio, validate_prio
 from precis.handlers._request_state import RequestState
 from precis.handlers._tag_redirect import redirect_long_tag_values
@@ -316,11 +317,15 @@ _TREE_GET_VIEWS: frozenset[str] = frozenset({"tree"})
 #: ``get`` view spellings with one reading on a todo (gr511440 — the
 #: prod ledger showed ``get(kind='todo', view='full')`` refusals; the same
 #: family already folds on job/memory/gripe). ``'full'`` is the default
-#: card — a todo's plain get already is the complete read. ``None`` maps
-#: to the default view; each alias runs the canonical call and names the
-#: reading via :func:`interpreted` (gr494831's shape).
+#: card — a todo's plain get already is the complete read. ``'brief'``
+#: and ``'tags'`` (gr547804) read as the same card — a todo card is the
+#: brief and carries its ``tags:`` line. ``None`` maps to the default
+#: view; each alias runs the canonical call and names the reading via
+#: :func:`interpreted` (gr494831's shape).
 _TODO_GET_VIEW_ALIASES: dict[str, str | None] = {
     "full": None,
+    "brief": None,
+    "tags": None,
 }
 
 #: Reserved *virtual* link relation. ``link(rel='parent')`` is a
@@ -509,6 +514,33 @@ class TodoHandler(NumericRefHandler):
             raise Unsupported(
                 f"view {view!r} is registered but has no renderer wired",
                 options=sorted(_TREE_GET_VIEWS),
+            )
+        if (
+            view is not None
+            and view not in _BASE_VIEWS
+            and view not in self._search_view_names()
+            and view not in _TODO_GET_VIEW_ALIASES
+        ):
+            # gr547804: the base class's generic raise lists only
+            # ``_BASE_VIEWS`` — a caller guessing a view name never sees
+            # todo's own get views ('comments', 'tree') or where the
+            # list views live. Name the whole vocabulary here. Search
+            # views stay excluded so the base's search-redirect (or its
+            # own refusal) keeps handling them; alias spellings ('full',
+            # 'brief', 'tags') without an id fall through to the
+            # "requires id=" refusal.
+            views_list = ["comments", "tree", "full", *_BASE_VIEWS]
+            near = difflib.get_close_matches(view, views_list, n=1)
+            lead = f"nearest is view={near[0]!r}. " if near else ""
+            raise Unsupported(
+                f"unknown view {view!r} for kind='todo'",
+                options=views_list,
+                next=(
+                    lead + "get(kind='todo', id=<id>) — the card (text, "
+                    "tags, status); view='comments' the timeline; "
+                    "view='tree' the subtree; list views are search-side: "
+                    "search(kind='todo', view='projects'|'doable'|'active')"
+                ),
             )
         # Single-ref reads route through the base class so links /
         # log views and the soft-delete vs not-found split keep

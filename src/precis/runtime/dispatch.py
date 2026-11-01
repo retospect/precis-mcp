@@ -2994,7 +2994,7 @@ class DispatchMixin(RuntimeShape):
                 "one-transaction batch",
                 next=(f"call edit once per id: edit(kind={kind!r}, id={first!r}, ...)"),
             )
-        from precis.handlers._numeric_ref import BATCH_ID_CAP
+        from precis.handlers._numeric_ref import BATCH_ID_CAP, _id_batch_next
 
         if not ids:
             raise BadInput(
@@ -3004,7 +3004,7 @@ class DispatchMixin(RuntimeShape):
         if len(ids) > BATCH_ID_CAP:
             raise BadInput(
                 f"id=[...] takes at most {BATCH_ID_CAP} ids, got {len(ids)}",
-                next=f"split into calls of {BATCH_ID_CAP} or fewer",
+                next=_id_batch_next("edit", kind, ids) + " — same other args on each",
             )
 
         # De-dupe, order kept — ``_coerce_ids`` does the same for the

@@ -52,7 +52,7 @@ from precis.errors import BadInput, NotFound, PrecisError, Unsupported
 from precis.format import render_agent_table
 from precis.handlers._eye import EYE_LADDER, eye_body, is_eye_view
 from precis.handlers._interpret import interpreted
-from precis.handlers._numeric_ref import BATCH_ID_CAP
+from precis.handlers._numeric_ref import BATCH_ID_CAP, _id_batch_next
 from precis.handlers._slice_args import slice_window
 from precis.handlers._slug_ref_shared import (
     render_slug_ref_list,
@@ -1086,7 +1086,7 @@ class DraftHandler(Handler):
         if len(ids) > BATCH_ID_CAP:
             raise BadInput(
                 f"id=[...] takes at most {BATCH_ID_CAP} ids, got {len(ids)}",
-                next=f"split into calls of {BATCH_ID_CAP} or fewer",
+                next=_id_batch_next("get", "draft", ids),
             )
         blocks: list[str] = []
         for pos, elem in enumerate(ids):

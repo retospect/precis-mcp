@@ -505,9 +505,19 @@ class EdgarHandler(Handler):
         handle = handle_registry.format_handle("edgar", ref.id)
         blocks = self.store.chunks.list_chunks_for_ref(ref.id, pos_range=(lo, hi))
         if not blocks:
+            total = self.store.chunks.count_chunks(ref.id)
             raise NotFound(
-                f"no blocks in {ref.slug} for range ~{lo}..{hi}",
-                next=f"get(id={handle!r})",
+                f"no blocks in {ref.slug} for range ~{lo}..{hi}"
+                + (
+                    f" — {ref.slug} has {total} blocks, valid: ~0..{total - 1}"
+                    if total
+                    else f" — {ref.slug} has no body blocks"
+                ),
+                next=(
+                    f"get(id={handle!r}~{max(0, total - 10)}..{total - 1})"
+                    if total
+                    else f"get(id={handle!r})"
+                ),
             )
         slug = ref.slug or "?"
         lines: list[str] = []

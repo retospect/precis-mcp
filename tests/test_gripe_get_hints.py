@@ -228,3 +228,35 @@ def test_non_handle_still_names_the_search_path(hub: Hub) -> None:
         handler.get(id="backlog_foo")
     assert "search(kind='gripe'" in str(exc.value.next)
     assert "get(id=" not in str(exc.value.next)
+
+
+# ── gr547802: a comment selector past the last names count + window ──
+
+
+def test_comment_selector_past_the_last_names_count_and_window(
+    hub: Hub,
+) -> None:
+    """gr547802: ``args={'comment': K}`` past the last comment says how
+    many comments exist and the valid window, and its ``next=`` is the
+    listing call. The old ``next=`` was a bare ord list — not callable —
+    and one session re-issued the failing get 46 times."""
+    handler = GripeHandler(hub=hub)
+    rid = _gripe(handler)  # comments 1..3
+    with pytest.raises(BadInput) as exc:
+        handler.get(id=rid, view="comments", comment=9)
+    assert f"gripe {rid} has no comment 9" in str(exc.value)
+    assert "3 comments" in str(exc.value) and "1..3" in str(exc.value)
+    nxt = str(exc.value.next)
+    assert nxt.startswith("get(")
+    assert f"id={rid}" in nxt and "view='comments'" in nxt
+
+
+def test_comment_selector_on_a_commentless_gripe_still_gives_a_call(
+    hub: Hub,
+) -> None:
+    handler = GripeHandler(hub=hub)
+    rid = _gripe(handler, comments=0)
+    with pytest.raises(BadInput) as exc:
+        handler.get(id=rid, view="comments", comment=1)
+    assert "has no comment 1" in str(exc.value)
+    assert "view='comments'" in str(exc.value.next)

@@ -210,6 +210,20 @@ def test_get_batch_cap_empty_view_and_foreign_handle(hub: Hub) -> None:
         handler.get(id=mixed)
 
 
+def test_get_batch_cap_next_shows_the_split(hub: Hub) -> None:
+    """gr547806: 'split into calls of 50 or fewer' told the shape, not
+    the split — sessions re-issued the whole list. ``next=`` now shows
+    the same call re-issued verbatim in batches of BATCH_ID_CAP."""
+    handler = GripeHandler(hub=hub)
+    ids = _batch(*range(1, BATCH_ID_CAP + 11))
+    with pytest.raises(BadInput) as exc:
+        handler.get(id=ids)
+    nxt = str(exc.value.next)
+    assert f"id={ids[:BATCH_ID_CAP]!r}" in nxt
+    assert f"id={ids[BATCH_ID_CAP:]!r}" in nxt
+    assert "; " in nxt
+
+
 def test_list_id_refused_cleanly_elsewhere(hub: Hub) -> None:
     with pytest.raises(BadInput, match="does not take id=") as refused:
         AnkiHandler(hub=hub).get(id=_batch(1, 2))
@@ -719,6 +733,8 @@ def test_edit_id_list_repeat_dedupes_and_caps(
     )
     assert "[error" in body
     assert f"at most {BATCH_ID_CAP}" in body
+    # gr547806: the refusal names the batched split, not just the cap.
+    assert f"id={list(range(BATCH_ID_CAP))!r}" in body
 
 
 def test_edit_id_list_repeat_dedupes_spelling_variants(

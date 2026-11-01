@@ -468,6 +468,49 @@ def test_raw_view_in_unknown_view_options(handler: TodoHandler) -> None:
     assert "raw" in (exc.value.options or [])
 
 
+# ── gr547804: get view aliases and the unknown-view vocabulary ─────
+
+
+def test_get_view_brief_and_tags_read_as_the_card(handler: TodoHandler) -> None:
+    """gr547804: 'brief' and 'tags' each have one reading — the card
+    already is the brief and carries the ``tags:`` line — so the get
+    runs it and names the reading."""
+    r = handler.put(text="Tagged todo.", tags=["project:x"])
+    rid = _id_of(r.body)
+    for view in ("brief", "tags"):
+        body = handler.get(id=rid, view=view).body
+        assert f"interpreted: view={view!r} read as the default view" in body
+        assert "Tagged todo." in body
+        assert "project:x" in body
+
+
+def test_get_unknown_view_names_the_todo_get_views(handler: TodoHandler) -> None:
+    """gr547804: an unknown get view lists todo's own get views —
+    'comments' and 'tree' on top of the base views — and its ``next=``
+    names the plain get plus where the list views live."""
+    from precis.errors import Unsupported
+
+    r = handler.put(text="A todo.")
+    rid = _id_of(r.body)
+    with pytest.raises(Unsupported) as exc:
+        handler.get(id=rid, view="frobnicate")
+    options = exc.value.options or []
+    assert "comments" in options and "tree" in options and "raw" in options
+    nxt = str(exc.value.next)
+    assert "get(kind='todo'" in nxt and "search(kind='todo'" in nxt
+
+
+def test_get_search_view_still_redirects_to_search(handler: TodoHandler) -> None:
+    """A search view on get keeps the base's search redirect — the
+    unknown-view vocabulary must not shadow it (gr48523)."""
+    from precis.errors import BadInput
+
+    r = handler.put(text="A todo.")
+    rid = _id_of(r.body)
+    with pytest.raises(BadInput, match="search view"):
+        handler.get(view="doable")
+
+
 def test_doable_excludes_child_failed_parents(
     handler: TodoHandler, store: Store
 ) -> None:

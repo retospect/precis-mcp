@@ -115,6 +115,19 @@ _BASE_VIEWS: tuple[str, ...] = ("links", "log", "raw", "history", "diff")
 # draft ``terms=[...]`` batch write reuses it for the same reason.
 BATCH_ID_CAP = 50
 
+
+def _id_batch_next(verb: str, kind: str, ids: list[Any], *, extra: str = "") -> str:
+    """The ``next=`` for an over-cap ``id=[...]`` refusal: the same call
+    re-issued verbatim as batches of :data:`BATCH_ID_CAP` (gr547806 —
+    ``split into calls of 50 or fewer`` told the shape but not the split,
+    and sessions re-issued the whole list). ``extra`` is a literal suffix
+    appended inside the parens (e.g. ``, q='...'``)."""
+    return "; ".join(
+        f"{verb}(kind={kind!r}, id={ids[i : i + BATCH_ID_CAP]!r}{extra})"
+        for i in range(0, len(ids), BATCH_ID_CAP)
+    )
+
+
 # Summary budget for the TOON list view's first-line cell. Memories
 # written before the SOUL's first-line discipline landed are often a
 # single ~400-word paragraph with no newlines; without a cap the
@@ -3710,7 +3723,7 @@ class NumericRefHandler(Handler):
         if len(ids) > BATCH_ID_CAP:
             raise BadInput(
                 f"id=[...] takes at most {BATCH_ID_CAP} ids, got {len(ids)}",
-                next=f"split into calls of {BATCH_ID_CAP} or fewer",
+                next=_id_batch_next("get", cls.kind, ids),
             )
         out: list[int] = []
         for pos, raw in enumerate(ids):
