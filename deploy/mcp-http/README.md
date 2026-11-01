@@ -103,7 +103,12 @@ client ──► 127.0.0.1:8765 ──► <name>-proxy (Caddy, never recreated b
   run_slice wall-clock cap — the server also treats such a file as no
   grant. The backends mount the dir read-only at
   `/run/precis-slice-tokens` (`PRECIS_MCP_SLICE_TOKEN_DIR`) and accept a
-  `td<id>.<hex>` bearer as that slice. The grant is ATTRIBUTION, not a
+  `td<id>.<hex>` bearer as that slice. The file holds the bearer's SHA-256
+  digest, mode 644: it is not a credential, which is what lets a worker
+  running as another user mint it — colima's virtiofs performs every
+  container read as the colima user, so a 0600 grant owned by the launchd
+  `deploy` account was unreadable to the backend (jo547598). The grant is
+  ATTRIBUTION, not a
   security boundary: a slice session runs as the same host user with the
   same MCP access the shared token has — the bearer only names whose
   calls they are (its own agentlog/session ids, `meta.slice`). A host

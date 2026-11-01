@@ -6,11 +6,13 @@ no git, no claude is ever spawned.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 import shutil
 import subprocess
 import sys
+import urllib.error
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -780,7 +782,10 @@ def test_submit_mints_a_per_slice_token_and_poll_revokes_it(
     # never overwrite each other's file.
     assert re.fullmatch(r"td42j900\.[0-9a-f]{64}", token)
     grant_file = registry / "td42j900"
-    assert grant_file.read_text(encoding="utf-8").split()[0] == token
+    # the file carries the digest, never the token (a 0644 file, not a credential)
+    content = grant_file.read_text(encoding="utf-8")
+    assert content.split()[0] == hashlib.sha256(token.encode("ascii")).hexdigest()
+    assert token not in content
     assert handle["slice_token_dir"] == str(registry)
     assert handle["slice_token_name"] == "td42j900"
     assert "mcp token: slice td42j900" in ctx.chunks[-1][1]
@@ -807,6 +812,104 @@ def test_launch_failure_revokes_the_slice_token(
     ctx, handle = _submit(store, seams)
     assert handle is None and ctx.status == "failed"
     assert not (registry / "td42j900").exists()
+
+
+class _Resp:
+    status = 200
+
+    def __enter__(self) -> _Resp:
+        return self
+
+    def __exit__(self, *_a: Any) -> None:
+        return None
+
+
+def _write_mcp_json(tmp_path: Path) -> Path:
+    tree = tmp_path / ".claude" / "worktrees" / "slice-td42"
+    tree.mkdir(parents=True, exist_ok=True)
+    (tree / ".mcp.json").write_text(
+        json.dumps(
+            {
+                "mcpServers": {
+                    "precis": {
+                        "url": "http://127.0.0.1:8765/mcp",
+                        "bearerTokenEnvVar": "PRECIS_MCP_TOKEN",
+                    }
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    return tree
+
+
+def test_submit_preflights_the_mcp_with_the_session_bearer(
+    seams: dict[str, Any], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Before the launch one ``initialize`` goes to the checkout's precis
+    URL carrying the bearer the session will use; a 2xx lets the launch
+    proceed."""
+    registry = tmp_path / "slice-tokens"
+    registry.mkdir()
+    monkeypatch.setenv("PRECIS_MCP_SLICE_TOKEN_DIR", str(registry))
+    _write_mcp_json(tmp_path)
+    seen: list[Any] = []
+
+    def fake_open(req: Any, timeout: float) -> _Resp:
+        seen.append(req)
+        return _Resp()
+
+    monkeypatch.setattr(run_slice, "_mcp_preflight_open", fake_open)
+    store = _Store()
+    store.add_todo(42, "t")
+    ctx, handle = _submit(store, seams)
+    assert handle is not None
+    [(_argv, kw)] = seams["launch"]
+    [req] = seen
+    assert req.full_url == "http://127.0.0.1:8765/mcp"
+    assert req.get_header("Authorization") == f"Bearer {kw['env']['PRECIS_MCP_TOKEN']}"
+    assert b'"initialize"' in req.data
+
+
+def test_submit_fails_fast_when_the_mcp_rejects_the_bearer(
+    seams: dict[str, Any], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A 401 at preflight is the jo547598 shape: the attempt fails in
+    seconds (no session launched), the grant is revoked and the todo goes
+    back to open — never a 40-minute session ending in a handoff."""
+    registry = tmp_path / "slice-tokens"
+    registry.mkdir()
+    monkeypatch.setenv("PRECIS_MCP_SLICE_TOKEN_DIR", str(registry))
+    _write_mcp_json(tmp_path)
+
+    def reject(req: Any, timeout: float) -> _Resp:
+        raise urllib.error.HTTPError(req.full_url, 401, "Unauthorized", None, None)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(run_slice, "_mcp_preflight_open", reject)
+    store = _Store()
+    store.add_todo(42, "t")
+    ctx, handle = _submit(store, seams)
+    assert handle is None and ctx.status == "failed"
+    assert "preflight: HTTP 401" in (ctx.failure or "")
+    assert seams["launch"] == []
+    assert not (registry / "td42j900").exists()
+    tags = store.tag_strings(42)
+    assert "STATUS:open" in tags and not any(t.startswith("claimed-by:") for t in tags)
+
+
+def test_submit_skips_the_preflight_without_a_precis_server(
+    seams: dict[str, Any], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """No ``.mcp.json`` precis entry: nothing to check, the launch proceeds."""
+
+    def boom(req: Any, timeout: float) -> _Resp:
+        raise AssertionError("preflight must not run")
+
+    monkeypatch.setattr(run_slice, "_mcp_preflight_open", boom)
+    store = _Store()
+    store.add_todo(42, "t")
+    _ctx, handle = _submit(store, seams)
+    assert handle is not None
 
 
 def test_resubmit_mints_a_job_qualified_grant_not_an_overwrite(

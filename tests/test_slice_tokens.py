@@ -41,8 +41,17 @@ def test_registry_dir_default_needs_the_ensure_created_dir(
 def test_mint_grant_revoke_roundtrip(tmp_path: Path) -> None:
     token = slice_tokens.mint(tmp_path, "td42", agentlog_id=777)
     assert token.startswith("td42.") and len(token.rsplit(".", 1)[1]) == 64
-    assert (tmp_path / "td42").stat().st_mode & 0o777 == 0o600
+    # The file holds the token's digest, never the token: it is not a
+    # credential, so 0644 — a server running as another user (through
+    # colima's virtiofs, which reads as the colima user) can read it.
+    assert (tmp_path / "td42").stat().st_mode & 0o777 == 0o644
+    content = (tmp_path / "td42").read_text(encoding="utf-8")
+    assert token not in content and token.rsplit(".", 1)[1] not in content
     assert slice_tokens.grant(tmp_path, f"Bearer {token}") == ("td42", 777)
+    # a file holding the raw token (the pre-digest layout) grants nothing
+    raw = "td43." + "a" * 64
+    (tmp_path / "td43").write_text(f"{raw}\n", encoding="utf-8")
+    assert slice_tokens.grant(tmp_path, f"Bearer {raw}") is None
     # wrong token, shared-token shape, tampered tail, no header, no dir
     assert slice_tokens.grant(tmp_path, "Bearer td42." + "0" * 64) is None
     assert slice_tokens.grant(tmp_path, "Bearer shared-token") is None

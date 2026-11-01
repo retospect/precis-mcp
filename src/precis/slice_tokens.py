@@ -5,12 +5,13 @@ A ``run_slice`` session reaches the session MCP
 launch env holds — historically the shared bearer every interactive
 session uses, so its calls were indistinguishable from any other
 agent's. This module is the per-slice credential: at submit the worker
-mints a token file into the host-side registry dir, exports the token
-as the session's ``PRECIS_MCP_TOKEN`` (``.mcp.json``'s
-``bearerTokenEnvVar`` — no client change needed), and deletes the file
-at poll or kill — the revoke. The serving container mounts the same dir
-read-only; its auth middleware validates a ``td<id>.<hex>`` bearer
-against the file and stamps the grant (``precis.slice_id`` /
+mints a token, writes its SHA-256 digest to a grant file in the
+host-side registry dir, exports the token as the session's
+``PRECIS_MCP_TOKEN`` (``.mcp.json``'s ``bearerTokenEnvVar`` — no client
+change needed), and deletes the file at poll or kill — the revoke. The
+serving container mounts the same dir read-only; its auth middleware
+validates a ``td<id>.<hex>`` bearer against the file's digest and
+stamps the grant (``precis.slice_id`` /
 ``precis.agentlog_id``) into the ASGI scope, where
 ``tools.core._ctx_run_context`` binds it as the call's run context —
 ``tool_calls.agentlog_id``/``source``, ``touched`` links, ``meta.slice``
@@ -38,11 +39,18 @@ shared token (status quo) rather than failing closed — an un-upgraded
 server would 401 a slice token, which is worse than shared attribution.
 The token names its file (``td<id>.<64 hex>``), so a grant check is one
 read, not a directory scan; the hex half is 256 bits from
-``secrets.token_hex`` and compared constant-time.
+``secrets.token_hex``, and its SHA-256 digest is what the file holds and
+what the server compares constant-time. The file is therefore not a
+credential and is written mode 0644 — the worker and the server often
+run as different users (a launchd service account mints, the operator's
+container reads), and a Mac host's colima virtiofs performs every
+container read as the colima user, so a 0600 grant owned by the worker
+user was unreadable to the server (jo547598, Reto 2026-11-01).
 """
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import os
 import re
@@ -149,25 +157,32 @@ def _sweep_stale(directory: Path) -> None:
             pass
 
 
+def _digest(token: str) -> str:
+    """SHA-256 hex digest of a bearer — the grant file's content."""
+    return hashlib.sha256(token.encode("ascii")).hexdigest()
+
+
 def mint(directory: Path, slice_id: str, *, agentlog_id: int | None = None) -> str:
     """Write the grant file ``<directory>/<slice_id>`` and return the
     bearer token to hand the session.
 
-    The file's first whitespace-separated field is the expected token,
-    the optional second the run's agentlog id — written atomically
-    (temp + ``os.replace``) so the server never reads a half-written
-    grant. Mode 600: it is a credential file. Each mint also sweeps files
-    that outlived the TTL (:func:`_sweep_stale`).
+    The file's first whitespace-separated field is the SHA-256 digest of
+    the expected token, the optional second the run's agentlog id —
+    written atomically (temp + ``os.replace``) so the server never reads
+    a half-written grant. The token itself never touches the disk, so the
+    file is not a credential: mode 644, readable by a server running as
+    another user (module docstring). Each mint also sweeps files that
+    outlived the TTL (:func:`_sweep_stale`).
     """
     if not _NAME_RE.match(slice_id):
         raise ValueError(f"slice id {slice_id!r} is not td<digits>[ja<digits>]")
     _sweep_stale(directory)
     token = f"{slice_id}.{secrets.token_hex(32)}"
-    content = token + (f" {int(agentlog_id)}" if agentlog_id else "") + "\n"
+    content = _digest(token) + (f" {int(agentlog_id)}" if agentlog_id else "") + "\n"
     target = Path(directory) / slice_id
     tmp = target.with_name(f".{slice_id}.{os.getpid()}.tmp")
     tmp.write_text(content, encoding="utf-8")
-    tmp.chmod(0o600)
+    tmp.chmod(0o644)
     os.replace(tmp, target)
     return token
 
@@ -191,8 +206,10 @@ def grant(
     miss for the shared-token path to 401 on. A file older than the
     wall-clock TTL (:func:`grant_ttl_s`) is no grant, and so is one that
     does not decode or compare cleanly (a 401, never a 500). The file's
-    first field is compared constant-time; its optional second field is
-    the run's agentlog id, or ``None`` when absent/malformed.
+    first field is compared constant-time against the bearer's SHA-256
+    digest (a file holding the raw token grants nothing); its optional
+    second field is the run's agentlog id, or ``None`` when
+    absent/malformed.
     """
     if directory is None or not header_value:
         return None
@@ -209,7 +226,7 @@ def grant(
         return None
     fields = content.split()
     try:
-        if not fields or not secrets.compare_digest(fields[0], token):
+        if not fields or not secrets.compare_digest(fields[0], _digest(token)):
             return None
     except TypeError:
         return None  # non-ASCII field: no grant, never a 500

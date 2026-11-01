@@ -170,7 +170,14 @@ The other settings a slice host reads:
   session would start on the worker's `PRECIS_MCP_TOKEN` — and a service
   account has none, which the session sees as `401 AUTH_HEADER_REJECTED`
   / "Not logged in" (jo546987). The ensure script makes the dir setgid
-  group-writable; the worker user must share that group.
+  group-writable; the worker user must share that group. The grant file
+  holds the bearer's SHA-256 digest at mode 644, not the token: on a Mac
+  host colima's virtiofs reads every mounted file as the colima user, so
+  a 0600 grant owned by the worker account was unreadable to the server
+  and every slice call answered 401 (jo547598). Before launching, the
+  worker sends one `initialize` with the session's bearer to the
+  `.mcp.json` URL and fails the attempt in seconds on anything but a
+  2xx, so a broken grant never costs a session's wall clock.
 - The session's `UV_CACHE_DIR` is `<tempdir>/precis-slice-ops/uv-cache`
   (`PRECIS_SLICE_OPS_DIR` overrides the parent), not the service account's
   `~/.cache/uv` — the checkout's hooks run through `uv`, and a root-owned

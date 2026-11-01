@@ -78,6 +78,8 @@ import signal
 import subprocess
 import sys
 import tempfile
+import urllib.error
+import urllib.request
 from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
@@ -893,6 +895,75 @@ def _ensure_worktree(root: Path, todo_id: int) -> Path:
     return tree
 
 
+#: The MCP preflight's HTTP call — a seam for tests.
+_mcp_preflight_open = urllib.request.urlopen
+
+
+def _mcp_url(tree: Path) -> str | None:
+    """The precis MCP URL the session will connect to: the checkout's
+    ``.mcp.json`` ``mcpServers.precis.url``. ``None`` when the checkout
+    names no such server (nothing to preflight)."""
+    try:
+        data = json.loads((tree / ".mcp.json").read_text(encoding="utf-8"))
+        url = data["mcpServers"]["precis"]["url"]
+    except (OSError, ValueError, KeyError, TypeError):
+        return None
+    return url if isinstance(url, str) and url.startswith("http") else None
+
+
+def _preflight_mcp(tree: Path, token: str | None) -> None:
+    """One ``initialize`` with the session's bearer against the checkout's
+    precis MCP, before the session is launched. Anything but a 2xx raises,
+    which fails the attempt in seconds: jo546987 and jo547598 each spent a
+    40-minute session on a bearer the server rejected at startup (a shared
+    token the service account lacked, then a grant file the server could
+    not read), and the 401 surfaced only in the handoff. No precis server
+    in ``.mcp.json`` or no token: nothing to check (the session then runs
+    without the MCP, as before)."""
+    url = _mcp_url(tree)
+    if url is None or not token:
+        return
+    body = json.dumps(
+        {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": {
+                "protocolVersion": "2025-03-26",
+                "capabilities": {},
+                "clientInfo": {"name": "run_slice-preflight", "version": "1"},
+            },
+        }
+    ).encode("utf-8")
+    req = urllib.request.Request(
+        url,
+        data=body,
+        method="POST",
+        headers={
+            "Authorization": f"Bearer {token}",
+            "Content-Type": "application/json",
+            "Accept": "application/json, text/event-stream",
+        },
+    )
+    try:
+        with _mcp_preflight_open(req, timeout=15) as resp:
+            status = int(resp.status)
+    except urllib.error.HTTPError as e:
+        status = e.code
+    except OSError as e:
+        raise RuntimeError(
+            f"precis MCP preflight: no answer from {url} ({e})"
+        ) from None
+    if not 200 <= status < 300:
+        hint = (
+            " — the server rejected the session's bearer: a slice grant it "
+            "cannot read, or a shared token it does not hold"
+            if status == 401
+            else ""
+        )
+        raise RuntimeError(f"precis MCP preflight: HTTP {status} from {url}{hint}")
+
+
 def _mint_slice_token(
     ctx: Any, todo_id: int, *, model: str, brief: str
 ) -> dict[str, Any] | None:
@@ -1078,13 +1149,15 @@ def submit(ctx: Any, spec: Any) -> Any:
             deny_settings(lane.deny_write_paths, tree),
         ]
         grant = _mint_slice_token(ctx, todo_id, model=model, brief=brief)
+        env = slice_env(todo_id, effort, mcp_token=grant["token"] if grant else None)
+        _preflight_mcp(tree, env.get("PRECIS_MCP_TOKEN"))
         pid = _launch(
             argv,
             cwd=tree,
             stdin=brief_path,
             log=log_path,
             exit_file=exit_path,
-            env=slice_env(todo_id, effort, mcp_token=grant["token"] if grant else None),
+            env=env,
         )
         started_at = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
         identity = _process_identity(pid)

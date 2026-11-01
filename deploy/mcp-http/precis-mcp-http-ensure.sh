@@ -631,9 +631,10 @@ SECRETS_NEW="${STATE_DIR}/secrets.new"
 # overlap for the new one's start-up.
 CACHE_DIR="${STATE_DIR}/cache"
 # Per-slice bearer-token registry (gr543694): run_slice on this host mints
-# one grant file per slice session here and deletes it at poll; the backend
-# mounts the dir read-only and validates td<id>.<hex> bearers against the
-# files. Its mere existence is the handshake run_slice checks before minting.
+# one grant file per slice session here (the bearer's SHA-256 digest, mode
+# 644 — not a credential) and deletes it at poll; the backend mounts the dir
+# read-only and validates td<id>.<hex> bearers against those digests. Its
+# mere existence is the handshake run_slice checks before minting.
 SLICE_TOKEN_DIR="${STATE_DIR}/slice-tokens"
 mkdir -p "$CACHE_DIR" "$CADDY_DIR" "$SLICE_TOKEN_DIR"
 # The minting worker may be a different user from the one running this
