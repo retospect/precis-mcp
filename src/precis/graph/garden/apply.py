@@ -192,6 +192,14 @@ def apply_merge(
     clear :func:`~precis.graph.garden.paper_gate.paper_identity` inside
     the transaction, else :class:`MergeRefused` with the gate's reason
     (gr512125). A human applying by hand is not gated.
+
+    A paper loser's body and PDF move to a winner that lacks them
+    (gr548654, dedup's ``_move_body_to_survivor`` → ``move_body``) inside
+    the same transaction — a failure rolls the whole merge back. The move
+    is named in the review row (``body_moved_from`` / ``body_moved``) and
+    in ``meta.garden_merge.body_moved``; a winner that already has a body
+    keeps it. ``undo_merge`` does not move the body back: the restored
+    loser comes back as a stub and the body stays on the winner.
     """
     if loser_id == winner_id:
         raise BadInput("merge needs two distinct refs")
@@ -263,6 +271,24 @@ def apply_merge(
                 raise MergeRefused(str(ident.reason), ident.why, ident.as_meta())
             verdict_extra = {**(verdict_extra or {}), "identity": ident.as_meta()}
 
+        # A body-less / pdf-less winner takes the loser's body and PDF
+        # (gr548654): without it the retire strands the only text on a
+        # tombstone. Decided here so the review row names the move before
+        # it runs; both bodies present is left to the identity gate.
+        body_moves: list[str] = []
+        if loser_kind == "paper":
+            from precis.ingest.dedup import pending_body_move
+
+            body_moves = pending_body_move(
+                conn, survivor_ref_id=winner_id, duplicate_ref_id=loser_id
+            )
+            if body_moves:
+                verdict_extra = {
+                    **(verdict_extra or {}),
+                    "body_moved_from": loser_id,
+                    "body_moved": body_moves,
+                }
+
         if review_id is not None:
             from precis.graph.garden.proposals import resolve_proposal
 
@@ -286,6 +312,21 @@ def apply_merge(
                     f"no pending garden proposal review_id={review_id} "
                     "(already decided, or not a garden row)"
                 )
+
+        # Body first: its chunk-anchored links re-point onto the copies
+        # the move lands on the winner, so the repoint below finds
+        # them already on the winner instead of de-grounding them
+        # against a chunkless winner.
+        if body_moves:
+            from precis.ingest.dedup import _move_body_to_survivor
+
+            _move_body_to_survivor(
+                store,
+                survivor_ref_id=winner_id,
+                duplicate_ref_id=loser_id,
+                source=actor,
+                conn=conn,
+            )
 
         # Snapshot every link touching the loser, then repoint each onto
         # the winner (insert-substituted-copy; dedup via the unique key).
@@ -400,18 +441,22 @@ def apply_merge(
                 "WHERE ref_id = %s",
                 (json.dumps(record.aliases_added), winner_id),
             )
-        loser_meta = dict(loser_meta)
-        loser_meta["superseded_by"] = winner_id
-        loser_meta[META_MERGE] = {
-            "merge_id": merge_id,
-            "winner": winner_id,
-            "at": record.at,
-            "aliases_added": record.aliases_added,
-            "links": record.links,
+        # Merged into the live meta, not written over the early read: the
+        # body move strips the loser's body-owned keys in between.
+        loser_stamp = {
+            "superseded_by": winner_id,
+            META_MERGE: {
+                "merge_id": merge_id,
+                "winner": winner_id,
+                "at": record.at,
+                "aliases_added": record.aliases_added,
+                "links": record.links,
+                **({"body_moved": body_moves} if body_moves else {}),
+            },
         }
         conn.execute(
-            "UPDATE refs SET meta = %s WHERE ref_id = %s",
-            (Jsonb(loser_meta), loser_id),
+            "UPDATE refs SET meta = meta || %s WHERE ref_id = %s",
+            (Jsonb(loser_stamp), loser_id),
         )
         store.retire_ref(loser_id, conn=conn)
     log.info(

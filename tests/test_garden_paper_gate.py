@@ -538,3 +538,92 @@ class TestPaperGate:
         (hold,) = _holds(store, review_id)
         assert hold["held"] == "version_unclear"
         assert hold["identity"]["hold"] == "version_unclear"
+
+
+# ── gr548654: a merge carries the only body to the survivor ─────────────────
+
+
+def _body_ords(store: Store, ref_id: int) -> list[int]:
+    with store.pool.connection() as conn:
+        rows = conn.execute(
+            "SELECT ord FROM chunks WHERE ref_id = %s AND ord >= 0 "
+            "  AND retired_at IS NULL ORDER BY ord",
+            (ref_id,),
+        ).fetchall()
+    return [int(r[0]) for r in rows]
+
+
+def _pdf_of(store: Store, ref_id: int) -> str | None:
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            "SELECT pdf_sha256 FROM refs WHERE ref_id = %s", (ref_id,)
+        ).fetchone()
+    return row[0] if row else None
+
+
+class TestMergeCarriesBody:
+    def test_bodyless_winner_takes_the_losers_body_and_pdf(self, store: Store) -> None:
+        w = _paper(store, "w", doi="10.1/carry")
+        lo = _paper(store, "l", pdf_sha="a" * 64, body=_words(21, 600))
+        other = _paper(store, "o", "Unrelated Citing Paper")
+        anchored = store.add_link(
+            src_ref_id=other, dst_ref_id=lo, relation="related-to", dst_pos=3
+        )
+        review_id = _proposal(store, w, lo)
+        assert _body_ords(store, w) == [] and len(_body_ords(store, lo)) == 10
+
+        apply_merge(store, lo, w, actor="reto", review_id=review_id)
+
+        assert _body_ords(store, w) == list(range(10))
+        assert _body_ords(store, lo) == []
+        assert _pdf_of(store, w) == "a" * 64 and _pdf_of(store, lo) is None
+        assert not _live(store, lo)
+        with store.pool.connection() as conn:
+            row = conn.execute(
+                "SELECT l.dst_ref_id, c.ref_id, c.ord FROM links l "
+                "JOIN chunks c ON c.chunk_id = l.dst_chunk_id "
+                "WHERE l.link_id = %s",
+                (anchored.id,),
+            ).fetchone()
+            meta = conn.execute(
+                "SELECT meta FROM refs WHERE ref_id = %s", (lo,)
+            ).fetchone()
+        assert row == (w, w, 3)
+        assert meta is not None
+        assert meta[0]["garden_merge"]["body_moved"] == ["pdf", "body"]
+        assert meta[0]["superseded_by"] == w
+        (decision,) = _decisions(store, review_id)
+        assert decision["body_moved_from"] == lo
+        assert decision["body_moved"] == ["pdf", "body"]
+
+    def test_machine_door_carries_the_body_on_same_pdf(self, store: Store) -> None:
+        w = _paper(store, "w", pdf_sha="b" * 64)
+        lo = _paper(store, "l", pdf_sha="b" * 64, body=_words(22, 600))
+        review_id = _proposal(store, w, lo)
+        report = consume_proposals(store, review=_Judge("approve"))
+        assert report.applied == 1 and not _live(store, lo)
+        assert _body_ords(store, w) == list(range(10))
+        assert _body_ords(store, lo) == []
+        assert _pdf_of(store, w) == "b" * 64
+        (row,) = _decisions(store, review_id)
+        assert row["body_moved_from"] == lo and row["body_moved"] == ["body"]
+
+    def test_survivor_with_a_body_keeps_it(self, store: Store) -> None:
+        text = _words(23, 600)
+        w = _paper(store, "w", pdf_sha="c" * 64, body=text)
+        lo = _paper(store, "l", pdf_sha="d" * 64, body=text[:-12] + _words(24, 12))
+        review_id = _proposal(store, w, lo)
+        report = consume_proposals(store, review=_Judge("approve"))
+        assert report.applied == 1
+        assert _body_ords(store, w) == list(range(10))
+        assert _pdf_of(store, w) == "c" * 64
+        (row,) = _decisions(store, review_id)
+        assert "body_moved_from" not in row
+
+    def test_both_bodiless_moves_nothing(self, store: Store) -> None:
+        w = _paper(store, "w", pdf_sha="e" * 64)
+        lo = _paper(store, "l", pdf_sha="e" * 64)
+        review_id = _proposal(store, w, lo)
+        apply_merge(store, lo, w, actor="reto", review_id=review_id)
+        (row,) = _decisions(store, review_id)
+        assert "body_moved_from" not in row

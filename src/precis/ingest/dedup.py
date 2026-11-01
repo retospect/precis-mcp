@@ -114,6 +114,29 @@ def _rehome_content_identifiers(
     )
 
 
+def pending_body_move(
+    conn: Any, *, survivor_ref_id: int, duplicate_ref_id: int
+) -> list[str]:
+    """What :func:`_move_body_to_survivor` would move, without moving it
+    (``"pdf"``, ``"body"``; empty when nothing is due). Lets a caller that
+    must record the move before it happens (the garden merge's review row,
+    gr548654) ask first."""
+    rows = conn.execute(
+        "SELECT ref_id, pdf_sha256, "
+        f"       {has_body_sql('r')} "
+        "  FROM refs r WHERE ref_id = ANY(%s)",
+        ([survivor_ref_id, duplicate_ref_id],),
+    ).fetchall()
+    by_id = {int(r[0]): r for r in rows}
+    sv, du = by_id.get(survivor_ref_id), by_id.get(duplicate_ref_id)
+    if sv is None or du is None:
+        return []
+    return [
+        *(["pdf"] if du[1] is not None and sv[1] is None else []),
+        *(["body"] if du[2] and not sv[2] else []),
+    ]
+
+
 def _move_body_to_survivor(
     store: Store,
     *,
