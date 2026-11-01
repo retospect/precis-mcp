@@ -168,6 +168,11 @@ COMMANDS: tuple[Command, ...] = (
         "Generate a campaign's measurand list from corpus usage.",
     ),
     _c(
+        "taxonomy",
+        "taxonomy",
+        "Term-taxonomy maintenance: mirror docs/glossary.md into nodes.",
+    ),
+    _c(
         "retire-draft-equations",
         "retire_draft_equations",
         "Convert legacy draft `equation` chunks to `$$…$$` paragraphs.",

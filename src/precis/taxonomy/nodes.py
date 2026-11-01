@@ -37,6 +37,11 @@ CALLER_KEYS: frozenset[str] = frozenset(
         "excludes",
         "sign_convention",
         "difference",
+        # Mirror keys (gr548266): the glossary importer stamps where a
+        # term lives on disk — pointer is its "start here" file/skill,
+        # file_mirror is the source identity (path, line, namespace).
+        "pointer",
+        "file_mirror",
     }
 )
 #: Boundary-example keys: shown on ``get``, kept out of the embedded card so
@@ -55,6 +60,7 @@ EDITABLE_KEYS: frozenset[str] = frozenset(
         "excludes",
         "sign_convention",
         "difference",
+        "pointer",
     }
 )
 #: Keys the handler writes itself; legal on a stored node, not a caller input.
@@ -141,6 +147,18 @@ def dimension_clash(a: dict[str, Any], b: dict[str, Any]) -> bool:
     if ka != kb:
         return True
     return ka == "si" and a.get("si_vector") != b.get("si_vector")
+
+
+def mirror_namespace(meta: dict[str, Any]) -> str | None:
+    """The ``file_mirror.namespace`` of a file-mirrored node, else ``None``.
+
+    The dedup/sibling refusal gates on it: a candidate in a *different*
+    namespace (or an unmirrored node vs. a mirrored put) is skipped
+    before the dimension-clash check, so ``repo-dev-glossary`` terms can
+    never suppress a science taxon — or be suppressed by one (gr548266).
+    """
+    fm = meta.get("file_mirror")
+    return fm.get("namespace") if isinstance(fm, dict) else None
 
 
 def validate_taxon_meta(
@@ -256,6 +274,26 @@ def validate_taxon_meta(
         from precis.taxonomy.measure_units import validate_display_unit
 
         validate_display_unit(display, out.get("canonical_unit"))
+
+    pointer = out.get("pointer")
+    if pointer is not None and not isinstance(pointer, str):
+        raise BadInput(
+            "pointer must be a string",
+            next="pointer='src/precis/...::symbol · skill name'",
+        )
+
+    fm = out.get("file_mirror")
+    if fm is not None and (
+        not isinstance(fm, dict)
+        or not isinstance(fm.get("path"), str)
+        or not isinstance(fm.get("namespace"), str)
+        or (fm.get("line") is not None and not isinstance(fm.get("line"), int))
+    ):
+        raise BadInput(
+            "file_mirror must be {'path': str, 'namespace': str, 'line': int}",
+            next="file_mirror={'path': 'docs/glossary.md', 'namespace': "
+            "'repo-dev-glossary', 'line': 42}",
+        )
 
     contract = out.get("contract")
     if contract is not None:

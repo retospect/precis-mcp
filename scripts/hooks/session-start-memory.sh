@@ -162,4 +162,52 @@ if mkdir -p "$(dirname "$cache")" 2>/dev/null &&
     printf '%s\n' "$out" >"$cache.tmp.$$" 2>/dev/null; then
     mv -f "$cache.tmp.$$" "$cache" 2>/dev/null || rm -f "$cache.tmp.$$"
 fi
+
+# Glossary mirror (gr548266): keep repo-dev taxon/alias nodes in step with
+# docs/glossary.md. `git hash-object` gates the CLI call locally — an
+# unchanged file costs no prod roundtrip (same latency worry as the
+# memory-index calls above); the importer keeps its own app_state sha
+# fast-path for direct runs. A changed file re-syncs (--sync: removed
+# terms soft-delete) and the sha lands in $gloss_sha only on success, so
+# a failed pass retries next session. One stdout line only when the
+# mirror moved; failures are a capped stderr line, never a block.
+# The terms export feeds scripts/memory-lint's coined-term check
+# (PRECIS_GLOSSARY_TERMS / PRECIS_GLOSSARY_SHA override, tests).
+gloss="$repo/docs/glossary.md"
+gloss_terms="${PRECIS_GLOSSARY_TERMS:-$(dirname "$nodes")/glossary-terms.txt}"
+gloss_sha="${PRECIS_GLOSSARY_SHA:-$(dirname "$nodes")/glossary.sha}"
+refresh_terms=0
+if [ -f "$gloss" ]; then
+    gsha="$(git hash-object "$gloss" 2>/dev/null || true)"
+    gprev="$(cat "$gloss_sha" 2>/dev/null || true)"
+    # An empty $gsha (git hiccup) still runs the import — the importer's
+    # own sha fast-path caps the cost; no local marker is written then.
+    if [ -z "$gsha" ] || [ "$gsha" != "$gprev" ]; then
+        gerr_before=$(wc -c <"$errf" 2>/dev/null || echo 0)
+        gout="$("${cli[@]}" taxonomy import-glossary --sync "$gloss" 2>>"$errf")" || gout=""
+        if [ -n "$gout" ]; then
+            case "$gout" in
+            *"up to date"*) : ;;   # DB already had the sha — quiet
+            *) echo "$gout" | tail -n 1 ;;
+            esac
+            if [ -n "$gsha" ]; then
+                mkdir -p "$(dirname "$gloss_sha")" 2>/dev/null \
+                    && printf '%s\n' "$gsha" >"$gloss_sha" 2>/dev/null
+            fi
+            refresh_terms=1
+        fi
+        # A failed glossary call appended to the same stderr file — report
+        # its new tail only (the earlier index lines were handled above).
+        gerr="$(tail -c +$((gerr_before + 1)) "$errf" 2>/dev/null | tail -n 1 | cut -c1-300)"
+        [ -n "$gerr" ] && printf '%s\n' "$gerr" >&2
+    fi
+    if [ ! -s "$gloss_terms" ] || [ "$refresh_terms" -eq 1 ]; then
+        mkdir -p "$(dirname "$gloss_terms")" 2>/dev/null
+        "${cli[@]}" taxonomy list --namespace repo-dev-glossary \
+            >"$gloss_terms.tmp.$$" 2>/dev/null \
+            && [ -s "$gloss_terms.tmp.$$" ] \
+            && mv -f "$gloss_terms.tmp.$$" "$gloss_terms" \
+            || rm -f "$gloss_terms.tmp.$$"
+    fi
+fi
 exit 0

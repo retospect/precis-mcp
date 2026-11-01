@@ -62,6 +62,7 @@ from precis.taxonomy.nodes import (
     STATUS_PROPOSED,
     dimension_clash,
     initial_taxon_meta,
+    mirror_namespace,
     slugify,
     taxon_card_text,
     validate_taxon_meta,
@@ -421,6 +422,12 @@ class TaxonHandler(NumericRefHandler):
             meta = self._initial_meta(text, [])
             if put_meta:
                 meta = self._merge_put_meta(text, meta, put_meta)
+        # File-mirrored nodes only ever suppress each other: a put in
+        # namespace N skips candidates outside N, and an unmirrored put
+        # skips every mirrored candidate — a repo-dev glossary term can
+        # neither merge into a same-named science taxon nor block one
+        # (gr548266).
+        ns = mirror_namespace(meta)
         reasons: dict[int, str] = {}
         terms = [meta.get("name", ""), *(meta.get("aliases") or [])] if names else []
         for term in terms:
@@ -453,7 +460,9 @@ class TaxonHandler(NumericRefHandler):
             if rid == exclude:
                 continue
             ref = self.store.get_ref(kind=self.kind, id=rid)
-            if ref is not None and not _dimension_clash(meta, ref.meta or {}):
+            if ref is None or mirror_namespace(ref.meta or {}) != ns:
+                continue
+            if not _dimension_clash(meta, ref.meta or {}):
                 keep.append(rid)
         if not keep:
             return
@@ -544,10 +553,12 @@ class TaxonHandler(NumericRefHandler):
                 )
                 if score >= SIBLING_MIN_OVERLAP:
                     reasons[sid] = f"word overlap {score:.2f}"
+        ns = mirror_namespace(meta)
         keep = [
             r
             for r in reasons
             if (ref := refs.get(r)) is not None
+            and mirror_namespace(ref.meta or {}) == ns
             and not _dimension_clash(meta, ref.meta or {})
         ]
         if not keep:

@@ -1,14 +1,22 @@
-"""``precis taxonomy-bootstrap`` — generate a campaign's measurand list.
+"""``precis taxonomy-bootstrap`` / ``precis taxonomy`` — campaign list + glossary mirror.
 
-Runs the procedure in `docs/backlog/taxonomy-bootstrap.md` over the snapshot a
-campaign config pins. The list is an output, not a table someone maintains, so
-this verb is the whole interface: same campaign, same salt, same snapshot, same
-list.
+``taxonomy-bootstrap`` runs the procedure in
+`docs/backlog/taxonomy-bootstrap.md` over the snapshot a campaign config
+pins. The list is an output, not a table someone maintains, so this verb is
+the whole interface: same campaign, same salt, same snapshot, same list.
 
 ``--stage census`` stops before the model pass, which is the only stage that
 costs anything. ``--freeze`` is a separate flag because writing
 ``list.vN.yaml`` is an act with consequences — every binding document
 afterwards cites that version.
+
+``precis taxonomy import-glossary`` mirrors `docs/glossary.md` into
+``repo-dev-glossary`` taxon + alias nodes (gr548266): idempotent, matching
+``file_mirror.namespace`` + term; ``--sync`` soft-deletes nodes whose term
+left the file; ``--dry-run`` counts without writing; ``--force`` bypasses
+the blob-sha fast-path (`precis.taxonomy.glossary`). ``precis taxonomy
+list --namespace <ns>`` prints the mirrored terms — the comparison set
+``scripts/memory-lint`` uses for its coined-term check.
 """
 
 from __future__ import annotations
@@ -17,14 +25,66 @@ import argparse
 import json
 from pathlib import Path
 
-from precis.cli._common import connect_router_store
+from precis.cli._common import connect_router_store, resolve_dsn
 from precis.taxonomy import discovery
 from precis.taxonomy import run as pipeline
 from precis.taxonomy.config import CampaignConfig, load_campaign
 
 
 def add_parser(sub: argparse._SubParsersAction) -> argparse.ArgumentParser:
-    """Register the ``taxonomy-bootstrap`` subparser on ``sub``."""
+    """Register the ``taxonomy-bootstrap`` and ``taxonomy`` subparsers."""
+    tax = sub.add_parser(
+        "taxonomy",
+        help="Term-taxonomy maintenance: mirror docs/glossary.md into nodes.",
+    )
+    tax_sub = tax.add_subparsers(dest="taxonomy_cmd", required=True)
+    imp = tax_sub.add_parser(
+        "import-glossary",
+        help="Mirror a glossary file into repo-dev taxon + alias nodes.",
+    )
+    imp.add_argument(
+        "file",
+        nargs="?",
+        default=None,
+        help="Glossary file (default: docs/glossary.md in this checkout).",
+    )
+    imp.add_argument(
+        "--sync",
+        action="store_true",
+        help="Soft-delete namespace nodes whose term left the file.",
+    )
+    imp.add_argument(
+        "--dry-run", action="store_true", help="Count changes; write nothing."
+    )
+    imp.add_argument(
+        "--sha",
+        default=None,
+        help="Git blob sha to gate on (default: computed from the file). "
+        "When it equals the sha stored after the last successful pass the "
+        "import is a no-op.",
+    )
+    imp.add_argument(
+        "--force",
+        action="store_true",
+        help="Ignore the stored blob sha and re-run the whole file.",
+    )
+    imp.add_argument(
+        "--namespace",
+        default="repo-dev-glossary",
+        help="meta.file_mirror.namespace for mirrored nodes.",
+    )
+    imp.add_argument("--database-url", default=None, help="Postgres DSN override.")
+    lst = tax_sub.add_parser(
+        "list",
+        help="Print the mirrored terms of a namespace, one per line.",
+    )
+    lst.add_argument(
+        "--namespace",
+        default="repo-dev-glossary",
+        help="meta.file_mirror.namespace to list (default: repo-dev-glossary).",
+    )
+    lst.add_argument("--database-url", default=None, help="Postgres DSN override.")
+
     parser = sub.add_parser(
         "taxonomy-bootstrap",
         help="Generate a campaign's measurand list from corpus usage.",
@@ -123,7 +183,10 @@ def probe_verdict(result: pipeline.RunResult, config: CampaignConfig) -> str:
 
 
 def run(args: argparse.Namespace) -> None:
-    """Execute ``precis taxonomy-bootstrap``."""
+    """Execute ``precis taxonomy`` / ``precis taxonomy-bootstrap``."""
+    if args.cmd == "taxonomy":
+        _run_taxonomy(args)
+        return
     config = load_campaign(args.campaign)
     out = (
         Path(args.out).expanduser()
@@ -202,3 +265,41 @@ def run(args: argparse.Namespace) -> None:
         print(f"frozen list     {written}")
     else:
         print("frozen list     — not written (pass --freeze)")
+
+
+def _run_taxonomy(args: argparse.Namespace) -> None:
+    """Execute ``precis taxonomy import-glossary`` / ``precis taxonomy list``."""
+    from precis.config import load_config
+    from precis.store import Store
+    from precis.taxonomy import glossary
+
+    if args.taxonomy_cmd == "list":
+        store = Store.connect(resolve_dsn(args.database_url, cfg=load_config()))
+        try:
+            for term in glossary.list_mirrored_terms(store, args.namespace):
+                print(term)
+        finally:
+            store.close()
+        return
+
+    path = (
+        Path(args.file)
+        if args.file
+        else Path(__file__).resolve().parents[3] / "docs" / "glossary.md"
+    )
+    if not path.is_file():
+        raise SystemExit(f"precis taxonomy import-glossary: no file at {path}")
+    store = Store.connect(resolve_dsn(args.database_url, cfg=load_config()))
+    try:
+        report = glossary.import_glossary(
+            store,
+            path,
+            sync=args.sync,
+            dry_run=args.dry_run,
+            blob_sha=args.sha or glossary.glossary_blob_sha(path),
+            force=args.force,
+            namespace=args.namespace,
+        )
+    finally:
+        store.close()
+    print(report.summary())

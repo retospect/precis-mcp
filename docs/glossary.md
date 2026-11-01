@@ -23,6 +23,8 @@
 > **Hyphenation:** coined multiword terms are unhyphenated as nouns (claim hub, spin loop, failure bubble); hyphenate only attributively (claim-hub node).
 >
 > **Retired synonyms:** when a term loses a synonym-collapse, note the loser inside the winner's entry as `(legacy: X)` — never a separate line — and only while X is still encounterable (persisted strings, an unrenamed surface). Fully purged ⇒ delete the note; git log is the history.
+>
+> **Graph mirror (gr548266):** every `**term**` bullet below mirrors into a `repo-dev-glossary` `taxon` node — gloss → definition, `→ pointer` → `meta.pointer`, `(legacy: X)` / `(lit: Y)` → `same-as` alias rows (lit names get `meta.kind='literature'`). The SessionStart hook re-runs `precis taxonomy import-glossary --sync` whenever this file's blob changes; deleting a line deletes the node.
 
 ## Coined terms
 
