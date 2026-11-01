@@ -1194,6 +1194,74 @@ def test_poll_generator_with_no_children_fails_and_releases(
     assert seams["lands"] == []
 
 
+@pytest.mark.parametrize(
+    ("text", "want"),
+    [
+        ("moot: gr1 is already done", ("moot", "gr1 is already done")),
+        (
+            "\n  No-Op: section is thick enough.\n",
+            ("no-op", "section is thick enough."),
+        ),
+        ("Minted td1.\nmoot: late", None),
+        ("moot:", None),
+        ("BLOCKED: MCP 401.", None),
+        ("", None),
+    ],
+)
+def test_generator_verdict_parse(text: str, want: tuple[str, str] | None) -> None:
+    from precis.plans.nodes import generator_verdict
+
+    assert generator_verdict(text) == want
+
+
+def test_poll_generator_noop_verdict_closes_it_as_done(seams: dict[str, Any]) -> None:
+    """gr548813: a generator that says `no-op:` first minted nothing on
+    purpose. Success, claim dropped, todo done, plan goes on (no moot tag)."""
+    store = _Store()
+    store.add_todo(
+        42, "Spec it", meta={"generate": {"role": "spec-writer", "from": "x"}}
+    )
+    ctx, handle = _submit(store, seams)
+    _finish(
+        handle,
+        0,
+        json.dumps(
+            {"is_error": False, "result": "no-op: the section is already thick."}
+        ),
+    )
+    pctx = _poll_ctx(store, ctx)
+    assert run_slice.poll(pctx, handle) is True
+    assert pctx.status == "succeeded"
+    tags = store.tag_strings(42)
+    assert "STATUS:done" in tags
+    assert not any(
+        t.startswith("claimed-by:") or t.startswith("attempt:") for t in tags
+    )
+    assert "verdict:moot" not in tags
+    assert seams["lands"] == []
+
+
+def test_poll_generator_moot_verdict_tags_the_plan_close(seams: dict[str, Any]) -> None:
+    """jo548670: triage found the gripe already resolved. `moot:` closes the
+    generator and leaves the tick's tag so it closes the plan."""
+    store = _Store()
+    store.add_todo(
+        42, "Triage gr1", meta={"generate": {"role": "triage", "from": "gr1"}}
+    )
+    ctx, handle = _submit(store, seams)
+    _finish(
+        handle,
+        0,
+        json.dumps({"is_error": False, "result": "moot: gr1 is STATUS:done."}),
+    )
+    pctx = _poll_ctx(store, ctx)
+    assert run_slice.poll(pctx, handle) is True
+    assert pctx.status == "succeeded"
+    tags = store.tag_strings(42)
+    assert {"STATUS:done", "verdict:moot"} <= tags
+    assert any(c.startswith("handoff: moot:") for c in store.comments(42))
+
+
 def test_poll_reviewer_generator_needs_no_children(seams: dict[str, Any]) -> None:
     """A reviewer's deliverable is one verdict comment, never children."""
     store = _Store()

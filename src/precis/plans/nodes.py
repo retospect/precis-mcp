@@ -297,3 +297,27 @@ def node_kind(meta: dict[str, Any] | None) -> NodeKind | None:
     if meta.get("op") is not None:
         return "task"
     return None
+
+
+#: A child-minting generator's verdict when it correctly mints nothing
+#: (gr548813): the first non-empty line of its result is ``no-op: <why>``
+#: (nothing to add, the plan goes on) or ``moot: <why>`` (the plan's reason
+#: is gone -- the source already resolved, closed or deleted). Any other
+#: childless exit is a failed attempt.
+GENERATOR_VERDICTS: tuple[str, ...] = ("no-op", "moot")
+
+#: Open tag ``run_slice`` sets on a ``moot:`` generator; the tick closes the
+#: plan on it (every open node and the root as won't-do) and drops it.
+MOOT_TAG = "verdict:moot"
+
+_VERDICT_RE = re.compile(r"^\s*(no-op|moot):\s*(\S.*?)\s*$", re.IGNORECASE)
+
+
+def generator_verdict(result: str | None) -> tuple[str, str] | None:
+    """``(kind, why)`` when the first non-empty line of ``result`` is one of
+    :data:`GENERATOR_VERDICTS`, else ``None``."""
+    for line in (result or "").splitlines():
+        if line.strip():
+            m = _VERDICT_RE.match(line)
+            return (m.group(1).lower(), m.group(2)) if m else None
+    return None

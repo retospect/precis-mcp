@@ -296,7 +296,9 @@ def mint_gripe_fix(
             _generate("triage", handle),
             body=(
                 f"Read {handle}: pick the task class and the builder model; "
-                "mint an ask gate when the report is unusable."
+                "mint an ask gate when the report is unusable. Already "
+                "resolved or closed? Mint nothing and make `moot: <why>` the "
+                "first line of your final message: the plan closes on it."
             ),
         )
         m.node(
@@ -311,8 +313,12 @@ def mint_gripe_fix(
             f"Build the fix for {handle}",
             _task("run_slice"),
             body=(
-                f"run_slice on the lane triage picked; the land writes "
-                f"'resolved: <sha>' + verify on {handle}."
+                f"run_slice on the lane triage picked, in its own worktree on "
+                f"`slice/<id>`. Then the land (land_slice, `scripts/ship "
+                "--quick`): rebase on main, lint (fix if red), squash to one "
+                "commit, rebase again, squash-merge onto main, delete the "
+                f"branch and worktree; it writes 'resolved: <sha>' + verify on "
+                f"{handle}."
             ),
             blocked_by=("brief",),
         )

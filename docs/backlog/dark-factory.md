@@ -391,7 +391,7 @@ the dispatcher is one schedule tick over it.
 | phase | a todo with children and `meta.auto_close` | every child done or won't-do; the tick closes it |
 | gate | `meta.gate = {kind, args}`; kinds `sha-in-prod {sha}`, `tests-green {range}`, `answer` (an ask-user todo is a gate), `not-before {ts}`, `drc-clean {board}` | the tick evaluates the predicate; nothing is dispatched for a gate |
 | loop | `meta.loop = {max, until: <gate spec>, body: <template>}` | the tick re-mints the body when every current child is done, `until` is false and count < max; exit closes it |
-| generator | `meta.generate = {role: slicer \| spec-writer \| triage, from: <md section \| gripe \| board>}` | its job is an LLM turn whose output is child todos; afterwards it behaves as a phase |
+| generator | `meta.generate = {role: slicer \| spec-writer \| triage, from: <md section \| gripe \| board>}` | its job is an LLM turn whose output is child todos; afterwards it behaves as a phase. A childless exit is a failed attempt unless the result's first line is `no-op: <why>` (closes done, plan goes on) or `moot: <why>` (the tick closes the whole plan as won't-do and raises an alert) — gr548813 |
 
 Edges: containment is `parent_id`, sequence is a `blocked-by` link
 (`view='doable'` already honours it), service is `serves`. The example

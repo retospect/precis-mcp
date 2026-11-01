@@ -86,7 +86,7 @@ from pathlib import Path
 from typing import Any
 
 from precis.plans import lanes as _lanes
-from precis.plans.nodes import node_kind
+from precis.plans.nodes import MOOT_TAG, generator_verdict, node_kind
 from precis.store.types import TODO_BODY_KIND, ChunkInsert, Tag
 
 log = logging.getLogger(__name__)
@@ -609,6 +609,22 @@ def release_todo(store: Any, todo_id: int, lane: str | None) -> int:
     return attempt
 
 
+def close_todo(
+    store: Any, todo_id: int, lane: str | None, *, tags: tuple[str, ...] = ()
+) -> None:
+    """Close a generator that correctly minted nothing (a ``no-op:`` /
+    ``moot:`` verdict): drop the claim, add ``tags``, ``STATUS:done``. The
+    tick leaves a childless done generator closed (``_step_reopen`` only
+    reopens one with open children)."""
+    if lane:
+        store.remove_tag(todo_id, Tag.open(f"claimed-by:lane-{lane}"))
+    for value in tags:
+        store.add_tag(todo_id, Tag.open(value), set_by="system")
+    store.add_tag(
+        todo_id, Tag.closed("STATUS", "done"), set_by="system", replace_prefix=True
+    )
+
+
 # ── Brief ──────────────────────────────────────────────────────────
 
 
@@ -633,6 +649,12 @@ def _generator_close(todo_id: int) -> list[str]:
         "2. Add `blocked-by` links between the children for any sequence.",
         "3. Then stop. Do not tag this todo done: the dispatcher closes it "
         "when its children finish.",
+        "",
+        "Nothing to mint? Say so as the FIRST line of your final message: "
+        "`moot: <why>` when the source is already resolved, closed or gone "
+        "(the plan closes on it), `no-op: <why>` when there is nothing to add "
+        "and the plan should go on. Any other childless exit counts as a "
+        "failed attempt and is retried.",
         "",
         "Your final message is posted on the todo as the `handoff:` comment: "
         "the children you created (ids) and anything left open.",
@@ -1355,13 +1377,32 @@ def poll(ctx: Any, handle: Any) -> bool:
         and _mints_children(ctx.store, todo_id)
         and _child_todo_count(ctx.store, todo_id) == 0
     ):
-        # A child-minting generator that exits 0 with no children did not
-        # do its job (jo546987: the session never reached the MCP and said
-        # so in its handoff, yet exit 0 read as success and the todo sat
-        # `doing` under its lease until the stale-claim sweep). Count it as
-        # a failed attempt now, lease released.
-        nothing = "created no child todos (a generator's work is its children)"
-        summary.append(f"Children: {nothing}.")
+        verdict = generator_verdict(result)
+        if verdict is None:
+            # A child-minting generator that exits 0 with no children did
+            # not do its job (jo546987: the session never reached the MCP
+            # and said so in its handoff, yet exit 0 read as success and the
+            # todo sat `doing` under its lease until the stale-claim sweep).
+            # Count it as a failed attempt now, lease released.
+            nothing = "created no child todos (a generator's work is its children)"
+            summary.append(f"Children: {nothing}.")
+        else:
+            # jo548670 (gr548813): the session found the source already
+            # resolved and correctly minted nothing. A `no-op:` / `moot:`
+            # first line is that verdict: the generator closes done; on
+            # `moot:` the tick closes the plan (MOOT_TAG).
+            kind_, why = verdict
+            moot = kind_ == "moot"
+            close_todo(
+                ctx.store,
+                todo_id,
+                str(lane) if lane else None,
+                tags=(MOOT_TAG,) if moot else (),
+            )
+            summary.append(
+                f"Children: none, by verdict `{kind_}: {why[:200]}`; td{todo_id} "
+                f"closed{' and tagged for the tick to close the plan' if moot else ''}."
+            )
     elif land:
         try:
             land_job = _mint_land(ctx, todo_id, tree, lane)

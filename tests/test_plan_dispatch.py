@@ -583,6 +583,40 @@ def test_done_generator_without_open_children_is_left_closed(store: Store) -> No
     assert _status(store, mint.ids["gen"]) == "done"
 
 
+def _moot_plan(store: Store) -> T.PlanMint:
+    """root -> childless triage generator -> after (blocked-by it)."""
+
+    def build(m: T._Minter) -> None:
+        m.node("root", "Fix gr1", {"auto_close": True})
+        m.node("gen", "Triage gr1", {"generate": {"role": "triage", "from": "gr1"}})
+        m.node("after", "Build", {"op": "run_slice"}, blocked_by=("gen",))
+
+    return T._run(store, None, build)
+
+
+def test_moot_generator_closes_the_plan(store: Store) -> None:
+    """gr548813: run_slice closed the triage on a `moot:` verdict and left
+    MOOT_TAG; the tick closes the rest of the plan as won't-do, once."""
+    from precis.plans.nodes import MOOT_TAG
+
+    mint = _moot_plan(store)
+    gen, after = mint.ids["gen"], mint.ids["after"]
+    _mark_done(store, gen)
+    store.add_tag(gen, Tag.open(MOOT_TAG), set_by="system")
+
+    res = pd.run_pass(store)
+    assert _status(store, gen) == "done"
+    assert _status(store, after) == "won't-do"
+    assert _status(store, mint.root_id) == "won't-do"
+    assert MOOT_TAG not in _open_tags(store, gen)
+    assert any("closed as won't-do" in n for n in res.notes)
+    assert _jobs_under(store, after) == []
+
+    # Idempotent: nothing left to close, no second note.
+    res = pd.run_pass(store)
+    assert not any("closed as won't-do" in n for n in res.notes)
+
+
 def test_dry_run_counts_the_reopen_without_writing(store: Store) -> None:
     mint = _generator_plan(store)
     _mark_done(store, mint.ids["gen"])

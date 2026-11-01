@@ -113,12 +113,13 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
+from precis.alerts import raise_alert
 from precis.errors import BadInput
 from precis.plans import gates as _gates
 from precis.plans import lanes as _lanes
 from precis.plans import release as _release
 from precis.plans import templates as _templates
-from precis.plans.nodes import node_kind
+from precis.plans.nodes import MOOT_TAG, node_kind
 from precis.store._todo_sql import _DOABLE_EXCLUSION_TAGS
 from precis.store.types import TODO_BODY_KIND, ChunkInsert, Tag
 from precis.todo import BLOCKER_TERMINAL_STATUSES, TERMINAL_TODO_STATUSES
@@ -965,6 +966,40 @@ def _step_reopen(plan: _Plan, w: _Writer, res: PassResult) -> None:
         )
 
 
+def _step_moot(store: Any, plan: _Plan, w: _Writer, res: PassResult) -> None:
+    """A generator ``run_slice`` closed on a ``moot:`` verdict carries
+    ``MOOT_TAG`` (gr548813): the plan's reason is gone (its gripe already
+    resolved, its section deleted). Close every other open node of that plan
+    and its root as won't-do, each with a comment naming the verdict, raise
+    one alert on the root so a human sees the plan went away, drop the tag."""
+    for n in plan.todos():
+        if MOOT_TAG not in n.open_tags:
+            continue
+        why = f"td{n.id} reported `moot:` (its handoff comment has the why)"
+        closed = 0
+        for m in plan.todos():
+            if m.root != n.root or m.id == n.id or _closed(m):
+                continue
+            w.comment(m, f"plan_dispatch: plan closed — {why}")
+            w.set_status(m, "won't-do")
+            closed += 1
+        w.remove_tags(n, [MOOT_TAG])
+        res.phases_closed += closed
+        res.notes.append(f"plan td{n.root} closed as won't-do: {why}; {closed} node(s)")
+        if w.dry_run:
+            continue
+        root = plan.nodes.get(n.root)
+        raise_alert(
+            store,
+            source=NAME,
+            fingerprint=f"plan-moot:{n.root}",
+            title=f"plan td{n.root} closed as moot: {root.title if root else ''}".strip(),
+            detail=f"{why}; {closed} open node(s) set to won't-do.",
+            severity="info",
+            subject_ref_id=n.root,
+        )
+
+
 def _analysis_posted(plan: _Plan, store: Any, n: _Node) -> bool:
     """An ``analyst`` generator (td543749) whose newest job succeeded and
     left an ``analysis:`` comment (bare or as the ``handoff:``) since it
@@ -1539,6 +1574,7 @@ def run_pass(
     _step_loops(store, plan, w, res, now)
     _step_reviews(store, plan, w, res, now)
     _step_reopen(plan, w, res)
+    _step_moot(store, plan, w, res)
     _step_phases(plan, w, res)
     _step_dispatch(plan, w, res)
     _step_hygiene(plan, w, res, now)
