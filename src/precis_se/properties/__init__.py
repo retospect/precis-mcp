@@ -68,6 +68,7 @@ Computer = Callable[[Any, Any], float | None]
 _LAZY_TABLES: dict[str, tuple[str, str]] = {
     "wall": ("precis_se.properties.computers", "WALL_COMPUTERS"),
     "flow": ("precis_se.flow", "FLOW_COMPUTERS"),
+    "motor": ("precis_se.motor", "MOTOR_COMPUTERS"),
 }
 
 
@@ -94,10 +95,11 @@ class _LazyComputer:
 
 
 #: measurand slug → computer. The wall-side region computers
-#: (:mod:`precis_se.properties.computers`, pocket-from-molecule slice 2a)
-#: and the flow-chamber computers (:mod:`precis_se.flow`,
-#: se-flow-kernel slice 2) — every other measurand stays
-#: declared-but-unchecked.
+#: (:mod:`precis_se.properties.computers`, pocket-from-molecule slice 2a),
+#: the flow-chamber computers (:mod:`precis_se.flow`,
+#: se-flow-kernel slice 2) and the flagellar-motor computer
+#: (:mod:`precis_se.motor`, se-flagellar-motor.md slice 1) — every other
+#: measurand stays declared-but-unchecked.
 COMPUTERS: dict[str, Computer] = {
     slug: _LazyComputer(slug)
     for slug in (
@@ -122,6 +124,7 @@ COMPUTERS.update(
         )
     }
 )
+COMPUTERS.update({"output-torque": _LazyComputer("output-torque", table="motor")})
 
 
 def is_checked(measurand: str | None) -> bool:
