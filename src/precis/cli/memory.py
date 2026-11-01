@@ -1343,6 +1343,14 @@ def add_parser(sub: argparse._SubParsersAction) -> argparse.ArgumentParser:
         ),
     )
     idx.add_argument(
+        "--curve",
+        action="store_true",
+        help=(
+            "With --set, print recall and median index + fisheye+1hop "
+            "estimated tokens at k=3/5/8/12 (chars/4)."
+        ),
+    )
+    idx.add_argument(
         "--k", type=int, default=5, help="Hits to print with --q/--set (default 5)."
     )
     idx.add_argument("--database-url", default=None, help="Postgres DSN override.")
@@ -1430,6 +1438,8 @@ def run(args: argparse.Namespace) -> None:
     """Implements ``precis memory import`` / ``precis memory index``."""
     from precis.config import load_config
 
+    if getattr(args, "curve", False) and args.recall_set is None:
+        raise SystemExit("precis memory index: --curve requires --set")
     cfg = load_config()
     dsn = resolve_dsn(args.database_url, cfg=cfg)
     store = Store.connect(dsn)
@@ -1521,6 +1531,17 @@ def run(args: argparse.Namespace) -> None:
                 cfg, store, needed=True, prog="precis memory index --recall-set"
             )
             entries = load_recall_set(args.recall_set or None)
+            if args.curve:
+                from precis.cli.memory_recall import measure_recall, render_recall_curve
+
+                print(
+                    render_recall_curve(
+                        measure_recall(store, entries, embedder=embedder)
+                    ),
+                    end="",
+                    flush=True,
+                )
+                return
             print(
                 render_recall_report(store, entries, k=args.k, embedder=embedder),
                 end="",

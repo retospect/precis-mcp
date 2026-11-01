@@ -753,12 +753,14 @@ ALERT_RULES: tuple[AlertRule, ...] = (
         "memory_recall",
         "recall-dropped",
         "The weekly P4 memory recall score dropped below the last recorded "
-        "one (total or a native/mirror split).",
+        "one (total or a native/mirror split), or median index + fisheye "
+        "tokens at k=5 rose more than 25%.",
         "warn",
         "scheduler",
         triage="Read app_settings['memory_recall:last'] for the misses, then "
-        "`precis memory index --set` for the per-query HIT/MISS table; fix "
-        "the regressed titles/hooks or the index path, then resolve.",
+        "`precis memory index --set` for the per-query HIT/MISS table "
+        "(--curve for recall versus estimated tokens); fix the regressed "
+        "titles/hooks, index path or render cost, then resolve.",
     ),
 )
 

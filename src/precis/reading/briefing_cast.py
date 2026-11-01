@@ -72,6 +72,7 @@ from precis.utils import handle_registry
 from precis.utils.llm.router import DispatchClient, Tier
 from precis.utils.text import excerpt
 from precis.workers.briefing import _complete_with_retry
+from precis.workers.memory_recall import memory_recall_summary
 
 if TYPE_CHECKING:
     from precis.store.store import Store
@@ -710,6 +711,9 @@ def _lane_system_activity(
         line = _doctor_report_line(report)
         if line:
             parts.append(f"Doctor report: {line}")
+
+    if recall_summary := memory_recall_summary(store):
+        parts.append(recall_summary)
 
     # "Needs you" / failed-job attention — count only, the detail is a tap away.
     try:

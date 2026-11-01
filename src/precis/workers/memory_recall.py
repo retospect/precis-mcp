@@ -5,10 +5,10 @@ discovered by recall rather than preloaded (context-memory-hierarchy P4,
 landed 2026-10-18). A hand-run ``precis memory index --set`` is a score
 nobody watches; this makes it durable. Fired from the weekly host-agnostic ``memory_recall`` scheduler cadence:
 
-1. **Score** — :func:`precis.cli.memory.recall_report_rows` over the
+1. **Score** — :func:`precis.cli.memory_recall.measure_recall` over the
    packaged P4 question set (``precis.data``
    :data:`~precis.cli.memory.RECALL_SET_RESOURCE`; the same set and scorer
-   ``--set`` runs, added in 32f1dc70c) at k=5, with the deployment's real
+   ``--set`` runs, added in 32f1dc70c) at k=3/5/8/12, with the deployment's real
    embedder — lexical-only would mislead, so a host that cannot build one
    is ruled out by the cadence's ``eligible`` gate and a fire that still
    loses its embedder raises instead of recording a junk score.
@@ -16,10 +16,13 @@ nobody watches; this makes it durable. Fired from the weekly host-agnostic ``mem
    :func:`~precis.cli.memory._mirrored_handles`) is written to
    ``app_settings['memory_recall:last']`` — the same ``app_settings``
    health row health_digest's checks snapshot uses (no new table) — with
-   a bounded ``history`` of prior scores.
+   a bounded ``history`` of prior scores. Additive ``queries``/``curve``
+   fields retain ranks, recall and rendered chars/tokens (``chars/4``)
+   through agent runtime dispatch, including both fisheye get variants.
 3. **Alert** — a score below the last recorded one (total or either
-   origin split) raises one WARN ``kind='alert'``; an equal-or-higher
-   run resolves it. The first run only records a baseline.
+   origin split), or median index-plus-fisheye tokens at k=5 up more than
+   25%, raises one WARN ``kind='alert'``. A run with neither regression
+   resolves it. The first run only records a baseline.
 
 Question set rules (``src/precis/data/memory_recall_set.json``, one entry
 per real case: ``query``, prod answer ``want`` handle, title + hook
@@ -76,6 +79,11 @@ _HISTORY_KEYS = (
     "native_total",
     "mirror_hits",
     "mirror_total",
+    "token_estimator",
+    "rank_k",
+    "queries",
+    "curve",
+    "median_tokens_k5",
 )
 
 
@@ -109,10 +117,8 @@ def run_memory_recall_pass(
     hits at k, ``failed`` = misses — so a regression is visible in
     ``worker_logs`` without opening the app_settings row.
     """
-    from precis.cli.memory import (
-        load_recall_set,
-        recall_report_rows,
-    )
+    from precis.cli.memory import load_recall_set
+    from precis.cli.memory_recall import measure_recall
 
     now = now or datetime.now(UTC)
     entries = load_recall_set() if entries is None else entries
@@ -122,13 +128,16 @@ def run_memory_recall_pass(
 
         embedder = make_embedder_from_config(load_config(), dim=store.embedding_dim())
 
-    rows = recall_report_rows(store, entries, k=k, embedder=embedder)
+    measurements = measure_recall(store, entries, k=k, embedder=embedder)
+    rows = measurements["queries"]
     tally = {"native": [0, 0], "mirror": [0, 0]}
     misses: list[str] = []
-    for entry, rank, origin in rows:
+    for entry in rows:
+        origin = entry["origin"]
+        hit = entry["recall_at_k"][str(k)]
         tally[origin][1] += 1
-        tally[origin][0] += rank is not None
-        if rank is None:
+        tally[origin][0] += hit
+        if not hit:
             misses.append(str(entry["want"]))
     score: dict[str, Any] = {
         "k": k,
@@ -139,6 +148,7 @@ def run_memory_recall_pass(
         "mirror_hits": tally["mirror"][0],
         "mirror_total": tally["mirror"][1],
         "misses": misses,
+        **measurements,
     }
 
     prev = _last_score(store)
@@ -151,6 +161,19 @@ def run_memory_recall_pass(
         ):
             if isinstance(old, int) and cur < old:
                 drops.append(f"{label} {cur} < {old}")
+        old_tokens = prev.get("median_tokens_k5")
+        tokens = score["median_tokens_k5"]
+        if (
+            prev.get("token_estimator") == score["token_estimator"]
+            and isinstance(old_tokens, (int, float))
+            and old_tokens > 0
+            and tokens is not None
+            and tokens > old_tokens * 1.25
+        ):
+            drops.append(
+                f"k=5 median tokens {tokens:.1f} > {old_tokens:.1f} "
+                f"(+{(tokens / old_tokens - 1) * 100:.1f}%)"
+            )
 
     prior_history = prev.get("history") if prev is not None else None
     history = list(prior_history) if isinstance(prior_history, list) else []
@@ -167,17 +190,21 @@ def run_memory_recall_pass(
             store,
             source=ALERT_SOURCE,
             fingerprint=ALERT_FINGERPRINT,
-            title=(f"[memory_recall] recall dropped at k={k}: " + "; ".join(drops)),
+            title=(
+                f"[memory_recall] recall/cost regression at k={k}: " + "; ".join(drops)
+            ),
             detail=(
                 f"P4 set scored {score['hits']}/{score['total']} at k={k} "
                 f"(native {score['native_hits']}/{score['native_total']}, "
                 f"mirror {score['mirror_hits']}/{score['mirror_total']}), "
-                f"below the last recorded run; misses: "
+                f"regressions versus the last recorded run: {'; '.join(drops)}; misses: "
                 f"{', '.join(misses) or 'none'}.\n"
                 "Scores live in app_settings['memory_recall:last'] "
                 "(prior scores in 'history'); `precis memory index --set` "
-                "prints the per-query HIT/MISS table. Fix the regressed "
-                "titles/hooks or the index path, then resolve this alert."
+                "prints the per-query HIT/MISS table; add --curve for recall "
+                "versus median tokens (index + fisheye+1hop, chars/4). Fix "
+                "the regressed titles/hooks, index path or render cost, "
+                "then resolve this alert."
             ),
             severity="warn",
         )
@@ -197,10 +224,29 @@ def run_memory_recall_pass(
     )
 
 
+def memory_recall_summary(store: Store) -> str:
+    """One best-effort morning-brief line; absent/legacy runs stay silent."""
+    try:
+        doc = _last_score(store)
+        if doc is None or doc.get("median_tokens_k5") is None:
+            return ""
+        row = next(row for row in doc["curve"] if row["k"] == 5)
+        return (
+            f"Memory recall: {row['hits']}/{row['total']} at k=5; "
+            f"median {row['median_tokens']:.0f} tokens "
+            f"(index + fisheye+1hop, {doc['token_estimator']}; "
+            f"{doc['computed_at']})."
+        )
+    except Exception:
+        log.debug("memory recall summary unavailable", exc_info=True)
+        return ""
+
+
 __all__ = [
     "ALERT_FINGERPRINT",
     "ALERT_SOURCE",
     "LAST_SCORE_KEY",
     "RECALL_K",
+    "memory_recall_summary",
     "run_memory_recall_pass",
 ]
