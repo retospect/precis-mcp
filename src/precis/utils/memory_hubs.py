@@ -208,6 +208,43 @@ def band_order(
     return [i for i in ordered if i in active] + [i for i in ordered if i not in active]
 
 
+#: Recency prior on memory recall (gr548265, ``utils/memory_fusion``): the
+#: fused score is multiplied by the node's band factor — ACTIVE (see
+#: :func:`band_order`), SETTLED, or untouched past :data:`BAND_OLD_DAYS`.
+BAND_FACTOR_ACTIVE = 1.15
+BAND_FACTOR_SETTLED = 1.0
+BAND_FACTOR_OLD = 0.9
+BAND_OLD_DAYS = 60
+
+
+def band_factors(
+    store: Store, ref_ids: list[int], *, now: datetime | None = None
+) -> dict[int, float]:
+    """``{ref id: recency factor}`` from the node's band (the
+    :func:`band_order` ACTIVE test; untouched past :data:`BAND_OLD_DAYS` =
+    :data:`BAND_FACTOR_OLD`; else :data:`BAND_FACTOR_SETTLED`). Fail-soft:
+    a store fault returns ``{}`` (every factor 1.0)."""
+    ids = [int(i) for i in ref_ids]
+    if not ids:
+        return {}
+    try:
+        stamps = recency_stamps(store, ids)
+        active = _band_active(store, ids, tags=None, stamps=stamps, now=now)
+    except Exception:
+        log.debug("band factor read failed", exc_info=True)
+        return {}
+    old_cut = (now or datetime.now(UTC)) - timedelta(days=BAND_OLD_DAYS)
+    oldest = datetime.min.replace(tzinfo=UTC)
+    return {
+        i: BAND_FACTOR_ACTIVE
+        if i in active
+        else BAND_FACTOR_OLD
+        if (stamps.get(i) or oldest) < old_cut
+        else BAND_FACTOR_SETTLED
+        for i in ids
+    }
+
+
 def _band_active(
     store: Store,
     ids: list[int],

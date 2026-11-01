@@ -115,6 +115,7 @@ from precis.handlers.plaintext import _require_find_and_text
 from precis.protocol import KindSpec
 from precis.response import Response
 from precis.store import Tag
+from precis.store._search_cut import semantic_fold_distance
 from precis.store.types import ActorSlug, ChunkInsert, Ref
 from precis.utils import handle_registry, search_trace
 from precis.utils.db_retry import retry_locked
@@ -128,9 +129,12 @@ from precis.utils.edit_resolve import (
 )
 from precis.utils.link_target import parse_link_target
 from precis.utils.match_all import fold_match_all_q
+from precis.utils.memory_fusion import GOTCHAS_TAG, FusionFlags
+from precis.utils.memory_fusion import rerank as rerank_fused
 from precis.utils.memory_hubs import (
     NEW_MEMORY,
     MemoryDraft,
+    band_factors,
     draft_link_hints,
     draft_tag_values,
     draft_thread_dup_hint,
@@ -399,6 +403,9 @@ class MemoryHandler(NumericRefHandler):
     # NumericRefHandler._search_body_chunks / _body_search_hits.
     search_body_chunks: ClassVar[bool] = True
     heat_salience_on_body_search: ClassVar[bool] = True
+    # Recall fusion (gr548265): rescue, recency prior, gotcha quota over the
+    # fused pool — :meth:`_rerank_fused`, ``precis.utils.memory_fusion``.
+    fused_rerank: ClassVar[bool] = True
 
     #: ``view='index'`` is this kind's complete-handle-list render —
     #: ``view='ids'``/``'list'`` are refused by ``_search_inner``, so the
@@ -2663,8 +2670,10 @@ class MemoryHandler(NumericRefHandler):
         ``view='index'`` returns one ``- <Title> (me<id>[, <filename>]) —
         <hook>`` line per best-ranked memory (the session-start index shape;
         ``<filename>`` is ``meta.file_mirror.filename`` when mirrored,
-        ``<hook>`` is ``meta.hook`` else the body's first line). Any other
-        ``view`` is refused; ``None`` is the unchanged default render.
+        ``<hook>`` is ``meta.hook`` else the body's first line). Ranked by
+        :meth:`_rerank_fused`, so the page can carry one admitted gotcha
+        past ``page_size``. Any other ``view`` is refused; ``None`` is the
+        unchanged default render.
 
         Without ``q`` the index listing is a bounded enumeration, not a
         ranked set — ``args={'page': N}`` walks it, each page bounded by
@@ -2747,6 +2756,7 @@ class MemoryHandler(NumericRefHandler):
             include_ref_ids=include_ref_ids,
             chunk_scope=chunk_scope,
             hard_cut=True,
+            rerank=True,
         )
         search_trace.page(
             [search_trace.ref_handle(ref, block) for block, ref, _ in hits],
@@ -2775,6 +2785,41 @@ class MemoryHandler(NumericRefHandler):
                 )
             )
         return Response(body="\n".join(lines))
+
+    def _rerank_fused(
+        self,
+        pool: list[tuple[Any, Ref, float]],
+        fold_info: dict[int, tuple[float | None, bool]],
+        *,
+        k: int,
+    ) -> tuple[list[tuple[Any, Ref, float]], int]:
+        """Recall fusion over the fused pool (gr548265): semantic rank-1
+        rescue, band recency prior, gotcha quota — each behind its own
+        default-on env flag (:class:`~precis.utils.memory_fusion.FusionFlags`).
+        The cut a rescued or admitted hit must clear is the pool's
+        query-relative gap cut (``store._search_cut``, gr548264), the same
+        bar the fold and the hard cut apply."""
+        flags = FusionFlags.from_env()
+        if not flags.any or not pool:
+            return pool, 0
+        ids = [int(ref.id) for _b, ref, _s in pool]
+        factors = band_factors(self.store, ids) if flags.recency else {}
+        gotchas: set[int] = set()
+        if flags.quota:
+            gotchas = {
+                rid
+                for rid, vals in self.store.ref_tags_bulk(ids).items()
+                if GOTCHAS_TAG in {v for _ns, v in vals}
+            }
+        return rerank_fused(
+            pool,
+            fold_info,
+            k=k,
+            cut=semantic_fold_distance(self.kind, (d for d, _ in fold_info.values())),
+            factors=factors,
+            gotchas=gotchas,
+            flags=flags,
+        )
 
     def _index_listing(
         self,

@@ -218,7 +218,10 @@ line. `q=` is required. The second call opens the hit with its linked
 neighbours and the nearest unlinked memories in the same `SPACE:`
 (`precis-fisheye-help`). `view='index'` applies the same hard 0.42
 recall cut as the write-section round-trip check — a memory whose
-title/hook lacks the task words never lists. Shell form: `precis memory
+title/hook lacks the task words never lists. The semantically nearest
+hit keeps a slot even with no word match, recently touched nodes rank a
+little higher, and when no gotcha made the page the best matching
+`section:gotchas` node is added as one extra line. Shell form: `precis memory
 index --q "<task>" --k 5`. Any other `view=` on memory search is refused.
 
 ## Read a memory I have the id for

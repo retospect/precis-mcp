@@ -625,6 +625,10 @@ class NumericRefHandler(Handler):
     #: out so bug reports never enter the dream frontier.
     heat_salience_on_body_search: ClassVar[bool] = False
 
+    #: Opt the rendered body-chunk search into :meth:`_rerank_fused` over
+    #: the fused pool (memory: gr548265). Off = the store's RRF order.
+    fused_rerank: ClassVar[bool] = False
+
     #: Per-kind default for the ``search(status=…)`` shorthand. When set
     #: (e.g. gripe → ``'open'``), a bare ``search(kind=K, …)`` filters by
     #: ``STATUS:<value>`` — the everyday "what's still open?" call — unless
@@ -2399,6 +2403,7 @@ class NumericRefHandler(Handler):
         chunk_scope: str | None = None,
         hard_cut: bool = False,
         query_vec: list[float] | None = None,
+        rerank: bool = False,
     ) -> tuple[
         list[tuple[Any, Ref, float]],
         int,
@@ -2450,6 +2455,12 @@ class NumericRefHandler(Handler):
         ``sem_distance`` is ``None`` when the semantic leg never saw the
         hit. The map is populated when ``hard_cut`` is off; machine paths
         apply the same policy inside the store, before pagination.
+
+        ``rerank`` hands the deduped fused pool to :meth:`_rerank_fused`
+        before the page window — only on a :attr:`fused_rerank` kind, in
+        hybrid mode with a query vector; the rendered search and memory
+        ``view='index'`` set it, the cross-kind stream does not. It also
+        populates ``fold_info``.
         """
         # ``chunk_scope`` narrows which chunks may match: 'title' = only the
         # opted-in header card, 'body' = never the card, None = both.
@@ -2458,13 +2469,20 @@ class NumericRefHandler(Handler):
             list(card_kinds) if chunk_scope == "title" and card_kinds else None
         )
         fold_info: dict[int, tuple[float | None, bool]] = {}
+        if query_vec is None:
+            query_vec = query_vec_for(getattr(self.hub, "embedder", None), q, mode)
+        # Only the fused leg carries an RRF score and per-row fold metadata
+        # a re-rank can read; lexical, semantic and the no-embedder
+        # fallback keep their store order.
+        rerank = (
+            rerank
+            and self.fused_rerank
+            and query_vec is not None
+            and (mode or "hybrid").strip().lower() == "hybrid"
+        )
         raw = self.store.chunks.search_chunks(
             q=q,
-            query_vec=(
-                query_vec
-                if query_vec is not None
-                else query_vec_for(getattr(self.hub, "embedder", None), q, mode)
-            ),
+            query_vec=query_vec,
             mode=mode,
             kind=self.kind,
             tags=tags,
@@ -2476,7 +2494,7 @@ class NumericRefHandler(Handler):
             include_ref_ids=include_ref_ids,
             card_kinds=card_kinds,
             chunk_kinds=chunk_kinds,
-            fold_info_out=fold_info if not hard_cut else None,
+            fold_info_out=fold_info if rerank or not hard_cut else None,
         )
         # ``raw`` is most-relevant first in every mode; the score's direction
         # is not (semantic is a distance), so keep each ref's first block and
@@ -2484,12 +2502,19 @@ class NumericRefHandler(Handler):
         best_by_ref: dict[int, tuple[Any, Ref, float]] = {}
         for block, ref, rank in raw:
             best_by_ref.setdefault(ref.id, (block, ref, rank))
-        for fused_rank, (block, ref, _rank) in enumerate(best_by_ref.values(), 1):
+        pool = list(best_by_ref.values())
+        extra = 0
+        if rerank:
+            pool, extra = self._rerank_fused(pool, fold_info, k=page_size)
+        for fused_rank, (block, ref, _rank) in enumerate(pool, 1):
             search_trace.observe(
                 search_trace.ref_handle(ref, block), fused_rank=fused_rank, cut="page"
             )
-        window_start = max(0, (page - 1) * page_size)
-        ordered = list(best_by_ref.values())[window_start : window_start + page_size]
+        # ``extra`` rows the re-rank appended past ``page_size`` widen the
+        # first page and shift every later window by the same count.
+        window_start = max(0, (page - 1) * page_size) + (extra if page > 1 else 0)
+        window_end = window_start + page_size + (extra if page <= 1 else 0)
+        ordered = pool[window_start:window_end]
         search_trace.page(
             [search_trace.ref_handle(ref, block) for block, ref, _ in ordered]
         )
@@ -2513,6 +2538,18 @@ class NumericRefHandler(Handler):
             len(ordered),
         )
         return ordered, total, fold_info
+
+    def _rerank_fused(
+        self,
+        pool: list[tuple[Any, Ref, float]],
+        fold_info: dict[int, tuple[float | None, bool]],
+        *,
+        k: int,
+    ) -> tuple[list[tuple[Any, Ref, float]], int]:
+        """Re-rank the deduped fused pool before the page window; returns
+        ``(pool, extra)`` where ``extra`` rows widen the first page past
+        ``k``. Default: unchanged. Runs only when :attr:`fused_rerank`."""
+        return pool, 0
 
     def _search_body_chunks(
         self,
@@ -2549,6 +2586,7 @@ class NumericRefHandler(Handler):
             exclude_ref_ids=exclude_ref_ids,
             include_ref_ids=include_ref_ids,
             chunk_scope=chunk_scope,
+            rerank=True,
         )
         if self.heat_salience_on_body_search:
             self.store.chunks.bump_salience(
