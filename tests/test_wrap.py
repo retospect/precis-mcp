@@ -1,5 +1,5 @@
 """Shared cylinder-wrap mapping — slice 4 of
-``docs/backlog/se-cylinder-wrap-mold.md``.
+the cylinder wrap + mold work.
 
 ``hexfold.wrap`` is the dimension-free core both realisations use: the macro
 height relief (``precis.cad``) and hexfold's nano roll-up. These pin that the

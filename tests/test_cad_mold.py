@@ -1,5 +1,5 @@
-"""``precis.cad.mold.pull_check`` — the mold-release check (spec
-``docs/backlog/se-cylinder-wrap-mold.md`` slice 2): map-space edges on
+"""``precis.cad.mold.pull_check`` — the mold-release check (cylinder
+wrap + mold, slice 2): map-space edges on
 relief leaves, analytic faces on the rest, and the ``relief_fit='clip'``
 fixer. The se-side ``mold.undercut`` finding rides the same check."""
 

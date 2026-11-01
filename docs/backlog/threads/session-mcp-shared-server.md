@@ -239,15 +239,12 @@ check their state first.
    passes since the supervisor (live 14:20Z 2026-10-01). Left: AC3,
    which closes opportunistically on the next verb-signature change someone
    else lands; delete the item when it does.
-4. **backlog/kind-scoped-vector-search.md** — root cause of the slow cross-kind search: a
-   per-kind semantic search walks the global HNSW (memory 33 s on prod)
-   and times out sessions' calls. Built; the rollout tooling (btree
-   before fill, per-window retry, maintenance params, ccnew cleanup,
-   autovacuum window, unfilled diagnostic) and the re-sized rollout
-   (rehearsal step, 20–45 h paper pass, max_wal_size raise, RAM
-   arithmetic) are on branch `kvs`, held for the window after the
-   verified prod backup. Reto chose option 1: fill
-   every kind, then reindex.
+4. **Shipped 2026-10-24, item deleted:** kind-scoped-vector-search (root
+   cause of the slow cross-kind search) — 14 partial HNSW indexes live on
+   prod (`chunk_embeddings_kind_ready` holds all 14 markers, re-checked
+   2026-11-01), the global index unchanged for paper. The paper fill and
+   the `chunk_embeddings_ref_kind_filled` CHECK stay deferred with no
+   deadline; the per-kind marker is the durable gate meanwhile.
 
 ## Runbook
 

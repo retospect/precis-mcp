@@ -1716,6 +1716,8 @@ def put(
     details — and takes either or both. `tags=`/`untags=` add/remove;
     `link=`/`unlink=`
     use `kind:identifier[~selector]`, `rel=` defaults to `related-to`.
+    `text={'$ref': '<handle>'}` = that handle's body (needs a same-session
+    `get` of it).
 
     Full reference: get(kind='skill', id='precis-put-help').
     """
@@ -2149,7 +2151,7 @@ def edit(
     Anchors: `before=` / `after=` / `match='unique'|'first'|'all'|'nth'`
     / `nth=`. `base_sha=` (python `~L` ranges: the read's `sha=`) refuses
     the edit if content changed. `dry_run=True` previews; `reason=` why.
-    Unsupported modes/fields raise `BadInput` with accepted options.
+    `text={'$ref': '<handle>'}` = its body (after a same-session `get`).
 
     Full reference: get(kind='skill', id='precis-edit-help').
     """

@@ -1,4 +1,4 @@
-"""The ``mold`` op (spec ``docs/backlog/se-cylinder-wrap-mold.md`` slice
+"""The ``mold`` op (cylinder wrap + mold, slice
 3): cut the mold halves from a molded part — one cad mold block per pull,
 ``Inter(sector_i, Diff(box, scale(part, 1+shrink)))``, refusing a layout
 slice 2 finds undercut for.

@@ -1,8 +1,8 @@
 """Shared cylinder-wrap mapping — the ``(u, v)`` frame a pattern spec wraps.
 
 A pattern defined on the unrolled cylinder (circumferential ``u ∈ [0, 1)``,
-periodic; axial ``v``) is realised two ways in this monorepo, and slice 4 of
-``docs/backlog/se-cylinder-wrap-mold.md`` factors the shared core out here so
+periodic; axial ``v``) is realised two ways in this monorepo, and the
+cylinder wrap + mold work (slice 4) factors the shared core out here so
 one spec drives both:
 
 - **macro** — a height relief: :class:`precis.cad.primitives.CylRelief`

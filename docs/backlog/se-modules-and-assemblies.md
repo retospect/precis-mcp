@@ -297,7 +297,8 @@ put(kind="se", id="grip-tool-1", text='''{"ops": [
 get(kind="se", id="grip-tool-1", view="mold", args={"layout": "halves", "alpha_deg": 2})
 ```
 
-The relief leaf is dimension-free (`se-cylinder-wrap-mold.md` slice 4),
+The relief leaf is dimension-free (`cad/primitives.py::CylRelief`, shared
+`hexfold.wrap` frame),
 `view='mold'` runs the pull check per orbit once `pattern-groups.md`
 lands, and the `mold` op (slice 3) refuses an undercut layout. The map
 sha comes from the `hmap` knurl builder — a generator, where the pitch

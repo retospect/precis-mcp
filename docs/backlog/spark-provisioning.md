@@ -1,5 +1,5 @@
 ---
-status: ready
+status: parked
 pillar: local-compute
 ---
 
@@ -57,5 +57,12 @@ Traps: the bench role must not enter inventory (no service group, no capability 
 
 ## Open questions / decisions log
 
+- Parked 2026-10-26 (`fix/spark-provisioning`, re-dispatch): the only shipped-shaped
+  slice (nvidia docker runtime convergence) already landed 2026-10-21
+  (`b12b88eb5`, already on `main`). Everything left in this file needs either
+  a live-inventory ruling (next item) or cluster-admin host access neither of
+  which this worktree has — `status: ready` was stale and caused this
+  re-dispatch. Reopen once the host-list ruling below lands or a session has
+  cluster-admin access for the Host items.
 - Resolved 2026-10-24: section 1's TTS base image sentence was stale (`deploy/roles/tts/tasks/main.yml` already derives the base from the Dockerfile `FROM`; `deploy/roles/tts/defaults/main.yml` confirms there is no `tts_base_image` var). Deleted; only the host-side pre-seed note remains.
 - Proposed (needs ruling): section 2's host list is stale. castor is retired as a compute node (serves gpt-oss-120b via SGLang), pollux has one GB10, spark runs the compute and sandbox lanes. Proposal: restate the host list from the live inventory overlay before anyone builds the play. (Not actioned here — the live inventory overlay is gitignored and not present in this worktree; needs cluster-admin access.)

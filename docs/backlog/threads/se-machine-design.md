@@ -227,12 +227,20 @@ off that gap until it closes.
    design-optimisation kit + examples, no server op) are ranked in
    structure-workspaces Do-next 5–6, as is `backlog/se-native-fields.md`
    (solids: conduction, DC, Joule, thermoelastic) — seam in INDEX.md.
-0a. **backlog/se-cylinder-wrap-mold.md** — wrap a relief / height map /
+0a. **se cylinder wrap + mold negative** — wrap a relief / height map /
    2-D shape around a cylinder, undercut check per pull layout, mold
-   halves as the negative (Reto 2026-10-21); Q1–Q4 decided, slice 1
-   (relief leaf, pull-aware flanks) landed 2026-10-21 on `wrapmold-s1`,
-   slice 4 core (shared `hexfold.wrap.WrapSpec` frame, macro+nano)
-   landed 2026-10-24; slice 2 (pull check / `mold.undercut` DRC) follows.
+   halves as the negative (Reto 2026-10-21); Q1–Q4 decided, all four
+   slices shipped (backlog item deleted on ship, truth in `cad/`): slice 1
+   (relief leaf `primitives.py::CylRelief`, `hmap.py`, pull-aware flanks)
+   landed 2026-10-21, slice 2 (`cad/mold.py::pull_check`, `mold.undercut`
+   DRC) 2026-10-21, slice 3 (se `mold` op, `modes.py` `molding`)
+   2026-10-24, slice 4 core (shared `hexfold.wrap.WrapSpec` frame,
+   macro+nano) 2026-10-24. Open follow-ups, not yet ranked: photo→edges
+   engraving and photo→depth bas-relief (own slice, GPU) and procedural
+   masonry pattern sources; material-card shrink default; axial
+   constant-in-z undercut check; milled-mold cutter radius; the
+   `twist ↔ chiral-screw` (`twist_per_cell`) bridge; nano pattern
+   consumer in [pocket-from-molecule](../pocket-from-molecule.md).
 0b. **backlog/se-multiphysics.md** — species/heat/EO/Darcy/slip/
    compliance/power-law/two-phase on the thin-gap kernel + external 3-D
    backend; se carries BCs as patch measures (Reto 2026-10-21); slice 1

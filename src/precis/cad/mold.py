@@ -1,5 +1,5 @@
-"""Mold release checks and cavity geometry (spec
-``docs/backlog/se-cylinder-wrap-mold.md``, slices 2–3).
+"""Mold release checks and cavity geometry (cylinder
+wrap + mold, slices 2–3).
 
 Slice 2 is the release check — ``n̂·p ≥ sin α`` per slide pull. Slice 3
 adds the cavity builder (:func:`mold_piece_spec` and the ``MoldLayout``

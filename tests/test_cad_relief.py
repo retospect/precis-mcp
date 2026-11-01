@@ -1,5 +1,5 @@
 """CylRelief — the cylinder wrap/relief leaf, slice 1 of
-``docs/backlog/se-cylinder-wrap-mold.md``.
+the cylinder wrap + mold work.
 
 Pins the acceptance list: ``h ≡ 0`` equals ``cyl:``, ``h ≡ c`` equals a
 ``cyl:`` of ``R + c``; the u-seam rule (refuse a jump, blend it); the

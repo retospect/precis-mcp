@@ -1,5 +1,5 @@
-"""``mold.undercut`` — the se-side mold-release finding (spec
-``docs/backlog/se-cylinder-wrap-mold.md``, slice 2).
+"""``mold.undercut`` — the se-side mold-release finding (cylinder
+wrap + mold, slice 2).
 
 Every block bound to a cad design (:class:`~precis_se.ops.SeTree`
 ``bound_kind='cad'``) is hydrated through the same store-level seam

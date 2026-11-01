@@ -179,7 +179,7 @@ def _prepare_filtered_ann(conn: Connection, limit: int) -> None:
 #: ~92% of prod's embeddings; 0.3 s measured 2026-10-17). No partial index.
 _ANN_GLOBAL_KINDS: frozenset[str] = frozenset({"paper"})
 #: Kinds big enough for their own partial HNSW index (>= 5,000 embedded
-#: chunks on prod, 2026-10-17; docs/backlog/kind-scoped-vector-search.md).
+#: chunks on prod, 2026-10-17; migration 0226).
 #: ``precis backfill-embedding-kinds`` builds one per kind CONCURRENTLY under
 #: :func:`ann_partial_index_name`; until that index is valid and the kind's
 #: fill is done (the 0242 ``chunk_embeddings_kind_ready`` marker, or the

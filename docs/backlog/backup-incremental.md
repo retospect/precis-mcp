@@ -160,6 +160,19 @@ never printed.
   ship time (`/mnt/dbbackup` absent — the nfs_client dbbackup play needs
   `nas_dbbackup_export` + `nas_lan_*` in the overlay), and the
   backup-window deploy guard does not cover the 21:45 slot.
+- 2026-10-26: the 21:45 window-guard gap above is closed — landed
+  2026-10-25 (gr513885, unrelated harness commit) as
+  `backup_dir_window_start_utc`/`_end_utc` (21:30–23:30) in
+  `deploy/roles/backups/defaults/main.yml`; `scripts/lib/backup-window.sh`
+  now reads every `<X>_window_*_utc` pair instead of only the primary one
+  (`tests/test_deploy_backup_window.py` covers 21:40/23:00). The
+  `dbbackup` mount gap is not a code defect: `nfs_client`'s `dbbackup.yml`
+  play and the `01-nfs.yml` `data`-group play are wired and correct, dark
+  by design until the overlay sets `nas_dbbackup_export` + `nas_lan_name`
+  + `nas_lan_ip` (`deploy/inventory.example/hosts.example.yml:70-77`); it
+  stays open until the release owner sets those three in the live
+  overlay, confirms the DB node is in group `data`, and re-runs
+  `01-nfs.yml --tags dbbackup`.
 - Status 2026-11-01 (read-only host check, 13:28Z): slice 1 is on main
   (a6e09ee11) but **not deployed** — on the DB node `pg_backup_dir.sh` is
   absent from the role's install dir, no 21:45 cron line, no log or lock,
