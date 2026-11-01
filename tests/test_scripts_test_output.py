@@ -45,7 +45,8 @@ _LIBS = (
 
 _FAKE_DOCKER = r"""#!/usr/bin/env bash
 # Synthetic docker -- logs compose invocations; never touches a daemon.
-#   FAKE_DOCKER_LOG   appended: up|<proj> / run|<proj>|<all args> / down|<proj>
+#   FAKE_DOCKER_LOG   appended: up|<proj> / run|<proj>|<all args> /
+#                     env|COMPOSE_PROGRESS=<v> (per run) / down|<proj>
 #   FAKE_PS_SERVICES  newline-separated service names `docker ps` reports
 #   FAKE_RUN_STDOUT   file whose contents `compose run` prints to stdout
 #   FAKE_RUN_STDERR   file whose contents `compose run` prints to stderr
@@ -86,6 +87,7 @@ case "${args[0]:-}" in
         ;;
       run)
         echo "run|$proj|${args[*]}" >> "$FAKE_DOCKER_LOG"
+        echo "env|COMPOSE_PROGRESS=${COMPOSE_PROGRESS:-}" >> "$FAKE_DOCKER_LOG"
         [ -n "${FAKE_RUN_STDOUT:-}" ] && cat "$FAKE_RUN_STDOUT"
         [ -n "${FAKE_RUN_STDERR:-}" ] && cat "$FAKE_RUN_STDERR" >&2
         if [ -n "${FAKE_RUN_RC_FILE:-}" ] && [ -s "$FAKE_RUN_RC_FILE" ]; then
@@ -313,12 +315,16 @@ def test_caller_qq_is_respected(tmp_path: Path) -> None:
 
 
 def test_compose_run_uses_quiet_progress(tmp_path: Path) -> None:
-    """gr515155: compose's "Container … Creating/Started" lifecycle chatter
-    is switched off at the source — --progress quiet on the compose call,
-    not another output filter."""
+    """gr515155 + gr549329: compose's "Container … Creating/Started"
+    lifecycle chatter is switched off at the source, not by another output
+    filter — via COMPOSE_PROGRESS=quiet in docker's env. The --progress
+    flag form is rejected by docker 29.x's compose (unknown flag), so no
+    compose call may carry it."""
     rc, _, log, stderr = _run(tmp_path)
     assert rc == 0, stderr
-    assert "--progress quiet" in _run_line(log)
+    assert "--progress" not in _run_line(log)
+    envs = [line for line in log if line.startswith("env|")]
+    assert envs == ["env|COMPOSE_PROGRESS=quiet"], envs
 
 
 def test_git_common_dir_is_mounted(tmp_path: Path) -> None:

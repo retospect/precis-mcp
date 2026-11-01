@@ -613,11 +613,13 @@ cleanup() {
     exit "$rc"
 }
 trap cleanup EXIT
-# --progress quiet (gr515155): compose otherwise prints its "Container …
-# Creating/Created/Started" lifecycle lines above every result, which the
-# terse-output contract promises away. Errors still print; this only drops
-# the progress reporter.
-compose() { env UID="$(id -u)" GID="$(id -g)" docker compose --progress quiet -f "$INFRA_COMPOSE" -p "$COMPOSE_PROJECT" --profile dev "$@"; }
+# COMPOSE_PROGRESS=quiet (gr515155, gr549329): compose otherwise prints
+# its "Container … Creating/Created/Started" lifecycle lines above every
+# result, which the terse-output contract promises away. Errors still
+# print; this only drops the progress reporter. The env var, not the
+# --progress flag: docker 29.x's compose rejects the flag outright
+# (unknown flag), while COMPOSE_PROGRESS is honoured by old and new.
+compose() { env UID="$(id -u)" GID="$(id -g)" COMPOSE_PROGRESS=quiet docker compose -f "$INFRA_COMPOSE" -p "$COMPOSE_PROJECT" --profile dev "$@"; }
 
 # Terminal-noise filters (gr513886): noise that can't be silenced at the
 # source is appended to the per-run log ($RUN_LOG) instead of the
