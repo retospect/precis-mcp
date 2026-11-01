@@ -3042,6 +3042,17 @@ def test_seed_job_poll_done_sets_meta_and_succeeds(
         "partial": {"states": {"s0": {}}, "warnings": []},
         "lattice": {"emt": 3.9},
         "structures": {"s0": {"energy": -1.0, "extxyz": "1\nX 0 0 0\n"}},
+        "bands": {
+            "s0": [{"images_energy": [0.0, 0.8, 0.1], "n_images": 3, "barrier": 0.8}]
+        },
+        "ts": {
+            "s0": {
+                "ts_energy": 0.7,
+                "ts_image": 1,
+                "band_images": 3,
+                "barrier": 0.8,
+            }
+        },
     }
     monkeypatch.setattr(
         runner,
@@ -3073,6 +3084,8 @@ def test_seed_job_poll_done_sets_meta_and_succeeds(
         "lattice",
         "structures",
         "weights_sha256",
+        "bands",
+        "ts",
     }
     assert ctx.meta_updates["content_key"] == "deadbeef"
     assert ctx.meta_updates["compute_handle_released"] is True
@@ -3082,6 +3095,12 @@ def test_seed_job_poll_done_sets_meta_and_succeeds(
     assert ctx.meta_updates["partial"] == result["partial"]
     assert ctx.meta_updates["lattice"] == {"emt": 3.9}
     assert ctx.meta_updates["structures"] == result["structures"]
+    assert ctx.meta_updates["bands"] == result["bands"]
+    for profiles in ctx.meta_updates["bands"].values():
+        assert all("images_energy" in p for p in profiles)
+    assert ctx.meta_updates["ts"] == result["ts"]
+    for stamp in ctx.meta_updates["ts"].values():
+        assert set(stamp) == {"ts_energy", "ts_image", "band_images", "barrier"}
     assert any(kind == "job_summary" for kind, _text in ctx.chunks)
     assert not any(kind == "run_log" for kind, _text in ctx.chunks)  # no tail given
 
