@@ -719,6 +719,17 @@ ALERT_RULES: tuple[AlertRule, ...] = (
         "meta.source_url, update proposal todos, then resolve the alert.",
     ),
     AlertRule(
+        "upstream_watch",
+        "moved:{item}",
+        "An issue/PR we filed on a GitHub repo we do not own moved since "
+        "the last daily check.",
+        "warn",
+        "upstream_watch",
+        triage="The detail names the movement, the suggested response, and "
+        "the todo that waits on it; nothing posts upstream without Reto.",
+        budget="daily poll",
+    ),
+    AlertRule(
         "parts_refresh",
         "jlcpcb-api",
         "The daily JLCPCB catalog walk failed — the parts table stays stale.",

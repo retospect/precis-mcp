@@ -532,6 +532,30 @@ def _run_citer_watch(store: Store, batch_size: int) -> None:
     )
 
 
+def _run_upstream_watch(store: Store, batch_size: int) -> None:
+    """Daily watch of upstream issues/PRs we filed on repos we do not own
+    (gr543879): search api.github.com for items authored by our account
+    moved since the last poll, flag the ``upstream:<repo>#<n>``-tagged
+    waiting todo (or mint one) via an alert, write a digest memory.
+    Dark-gated inside the pass: no ``upstream_watch`` service_config row
+    (prio > 0) → all-zeros no-op, so the cadence's lease advances
+    harmlessly while dark (the ``dream_consolidate`` shape — a
+    never-claimed lease would read as "stopped firing" to health_digest).
+    ``batch_size`` is unused — the pass bounds itself via MAX_ITEMS and
+    MAX_DETAIL_FETCHES. spends=False: no LLM — the GitHub reads draw on
+    the shared ``github`` limiter row, not the model budget."""
+    del batch_size
+    from precis.workers.upstream_watch import run_upstream_watch_pass
+
+    result = run_upstream_watch_pass(store)
+    log.info(
+        "scheduler: upstream_watch inner result claimed=%d ok=%d failed=%d",
+        result["claimed"],
+        result["ok"],
+        result["failed"],
+    )
+
+
 def _run_secret_check(store: Store, batch_size: int) -> None:
     """Weekly credential probe (gr496305 item 4): runs
     ``secret_status.weekly_report`` and raises one ``secret_check`` alert
@@ -1134,6 +1158,20 @@ CADENCES: tuple[Cadence, ...] = (
         name="citer_watch",
         interval_s=24 * 3600 + 57 * 60,
         run=_run_citer_watch,
+    ),
+    # gr543879: the upstream issue/PR watch — daily, host-agnostic, off
+    # the exact day boundary (+61m, clear of the other daily fires).
+    # Ships DISABLED: the cadence fires and the lease advances, but the
+    # pass no-ops until a `service_config` row lights `upstream_watch`
+    # (prio > 0) — `precis service prio '*' upstream_watch 1` is the prod
+    # flag. No `service=` gate on the cadence on purpose: that gate
+    # leaves the lease unclaimed while dark, which health_digest's
+    # cadence-staleness check reports as "stopped firing" forever.
+    # spends=False: no LLM; the GitHub reads draw the shared limiter.
+    Cadence(
+        name="upstream_watch",
+        interval_s=24 * 3600 + 61 * 60,
+        run=_run_upstream_watch,
     ),
     # 2026-10 dream hygiene: consolidate stale dreams — retire unrecalled+
     # untouched dreams (60d; 90d for thread: memories) behind one supersedes

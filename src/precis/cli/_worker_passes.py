@@ -1302,6 +1302,20 @@ def build_ref_passes(
 
         ref_passes.append(_citer_watch_pass)
 
+    # Upstream issue/PR watch (gr543879). Same shape as citer_watch
+    # above: no `default_profiles`, so this registration is for a
+    # manual `--only upstream_watch` run only — the STANDING trigger is
+    # the daily `upstream_watch` scheduler cadence. `--only` passes
+    # `enabled=True` (the operator escape hatch).
+    if _register("upstream_watch"):
+        from precis.workers.upstream_watch import run_upstream_watch_pass
+
+        def _upstream_watch_pass(batch_size: int) -> _BatchResult:
+            r = run_upstream_watch_pass(store, enabled=True)
+            return _BatchResult.from_dict("upstream_watch", r)
+
+        ref_passes.append(_upstream_watch_pass)
+
     # News ingestion (news kind). Walks the news_sources feed
     # registry, fetches + mints new articles as `news` refs. Like
     # watch_poll it makes external calls on a cadence, so it's

@@ -322,6 +322,9 @@ Lowercase prefixes (coin new ones freely):
 - `project:` — which initiative (`project:giri`, `project:precis-v2`)
 - `confidence-` — bare-style confidence levels (`confidence-tentative`,
   `confidence-moderate`, `confidence-strong`, `confidence-certain`)
+- `upstream:` — the todo waits on a GitHub issue/PR we filed on a repo
+  we do not own (`upstream:speedyk-005/yasbd-lib#409`); the daily
+  `upstream_watch` pass flags it when that item moves
 
 Bare flags (coin freely as long as they don't collide with a closed
 value on the same kind): `wip`, `star`, `draft`, `private`, `pinned`.

@@ -351,6 +351,16 @@ REGISTRY: dict[str, SettingSpec] = {
             doc="SEC EDGAR requires a User-Agent with contact info.",
         ),
         SettingSpec(
+            key="upstream_watch.author",
+            type="str",
+            env_var="PRECIS_UPSTREAM_AUTHOR",
+            default="retospect",
+            doc="GitHub login whose authored issues/PRs on repos it does "
+            "not own the upstream_watch worker polls daily "
+            "(precis.workers.upstream_watch). The search's -user:<login> "
+            "clause is the own-repo exclusion.",
+        ),
+        SettingSpec(
             key="contact.wikipedia_ua",
             type="str",
             env_var="PRECIS_WIKIPEDIA_UA",

@@ -1512,6 +1512,26 @@ SERVICES: tuple[ServiceSpec, ...] = (
         doc_skill="precis-overview",
     ),
     ServiceSpec(
+        # gr543879: the upstream issue/PR watch (workers/upstream_watch.py).
+        # Same dark-by-default shape as citer_watch just above: the
+        # STANDING trigger is the daily `upstream_watch` scheduler
+        # cadence, which fires and advances its lease while dark — the
+        # pass no-ops until a service_config row lights `upstream_watch`
+        # (prio > 0), so enabling is the prod flag
+        # `precis service prio '*' upstream_watch 1`. This registration is
+        # for a manual `--only upstream_watch` run only.
+        name="upstream_watch",
+        label="Upstream issue watch",
+        category="acquisition",
+        kind=ServiceKind.PASS,
+        ref_pass=True,
+        uses_external=("github",),
+        one_line="Daily watch of issues/PRs we filed on repos we do not "
+        "own; movement flags the upstream:-tagged waiting todo or mints "
+        "one; dark until lit.",
+        doc_skill="precis-overview",
+    ),
+    ServiceSpec(
         name="news_poll",
         label="News ingestion",
         category="acquisition",
