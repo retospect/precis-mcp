@@ -76,6 +76,12 @@ from precis.utils.claude_p import (
     call_claude_p,
     unwrap_envelope,
 )
+from precis.utils.codex_exec import (
+    CodexExecError,
+    CodexExecResult,
+    CodexExecUnparseableError,
+    call_codex_exec,
+)
 from precis.utils.llm import autoskill as _autoskill
 from precis.utils.llm import failure as _failure
 from precis.utils.llm import keyword_route as _keyword_route
@@ -173,6 +179,11 @@ class Transport(StrEnum):
       + :mod:`precis.utils.llm.precis_tools`). Serves both a served local
       model backing ``BIG`` and the ``OPENAI`` backend's tool-using cloud
       calls — same wire, different base url.
+    * ``CODEX_EXEC`` — :func:`precis.utils.codex_exec.call_codex_exec`
+      (one-shot ``codex exec`` on the ChatGPT subscription, tool-less,
+      ``--json`` event stream). Ships dark: a chain rung on it is dropped
+      at dispatch until an operator lights the lane
+      (:func:`precis.utils.llm.live_config.codex_exec_enabled`).
     """
 
     CLAUDE_AGENT = "claude_agent"
@@ -180,6 +191,7 @@ class Transport(StrEnum):
     LOCAL = "local"
     OPENAI_COMPAT = "openai_compat"
     OPENAI_TOOLS = "openai_tools"
+    CODEX_EXEC = "codex_exec"
 
     @property
     def carries_tools(self) -> bool:
@@ -573,6 +585,8 @@ def rung_knobs(rung: Rung) -> dict[str, Any]:
       ``PRECIS_LLM_BASE_URL`` is set (:func:`run_oss_tool_loop` applies the
       no-thinking directive only to a hosted call, same caveat as ``LOCAL``
       for a direct llama-swap endpoint); no ``effort`` (unsupported param).
+    * ``CODEX_EXEC`` — none: ``codex exec`` is a one-shot CLI run; model is
+      the only tunable this lane forwards (``-m``/``PRECIS_CODEX_MODEL``).
     """
     if rung.transport is Transport.CLAUDE_AGENT:
         return {
@@ -601,6 +615,13 @@ def rung_knobs(rung: Rung) -> dict[str, Any]:
             "temp_max": 2.0,
             "thinking": True,
             "effort": True,
+        }
+    if rung.transport is Transport.CODEX_EXEC:
+        return {
+            "temperature": False,
+            "temp_max": None,
+            "thinking": False,
+            "effort": False,
         }
     # Transport.OPENAI_TOOLS
     return {
@@ -1156,6 +1177,46 @@ def result_from_claude_p(res: ClaudePResult, *, model: str, tier: Tier) -> LlmRe
     return result
 
 
+def result_from_codex_exec(
+    res: CodexExecResult, *, model: str, tier: Tier
+) -> LlmResult:
+    """Normalize a :class:`~precis.utils.codex_exec.CodexExecResult`.
+
+    Same contract as :func:`result_from_claude_p`: ``text`` is the reply
+    with the wire framing stripped (the joined ``agent_message`` items,
+    falling back to ``raw_stdout`` for a bare-text run); ``data`` is the
+    parsed JSON dict a judge caller reads. Same quota-notice check too —
+    an exhausted ChatGPT window arrives as an ordinary exit-0 reply that
+    IS the notice (or as a ``turn.failed``/``error`` event, folded in on
+    the error path by :func:`_codex_error_result`), and the loose
+    lead-ins in :mod:`precis.utils.llm.quota` (``usage limit`` family)
+    match its wording. ``cost_usd`` stays ``None``: a subscription call
+    reports tokens, never dollars.
+    """
+    text = res.text or res.raw_stdout
+    result = LlmResult(
+        text=text,
+        cost_usd=res.cost_usd,
+        turns_used=None,
+        model=model,
+        tier=tier,
+        data=res.data,
+        input_tokens=res.input_tokens,
+        output_tokens=res.output_tokens,
+        cache_read_tokens=res.cache_read_tokens,
+    )
+    if not res.data and is_quota_exhaustion_text(text):
+        result = _replace(
+            result,
+            paused=True,
+            quota_exhausted=True,
+            reason_class="quota",
+            retry_at=quota_retry_at(result.text),
+            error=f"account quota exhausted: {text.strip()}",
+        )
+    return result
+
+
 def result_from_openai(res: _HasText, *, model: str, tier: Tier) -> LlmResult:
     """Normalize a local ``LlmClient.complete`` result (OpenAI choices).
 
@@ -1586,6 +1647,58 @@ class ClaudePProvider:
         return result_from_claude_p(pres, model=model, tier=req.tier)
 
 
+def _codex_error_result(exc: CodexExecError, *, model: str, tier: Tier) -> LlmResult:
+    """Fold a ``codex exec`` failure into a normalized error result.
+
+    :func:`_error_result` already maps the structural classes
+    (``binary_missing`` → ``cli_unavailable``, ``timed_out`` → ``paused``,
+    non-zero exit → classified error). The lane's own addition: the CLI's
+    extracted ``reply`` (an ``agent_message`` that failed the contract, or
+    a ``turn.failed``/``error`` event's message — the shape a ChatGPT
+    usage-limit notice arrives in) is surfaced as ``text`` and
+    quota-checked, so the rung *pauses* rather than failing — the same
+    treatment :func:`result_from_agent` gives a quota word-salad reply
+    (gr345336's lesson: a subscription exhaustion must never read as an
+    unparseable answer and burn a failure budget)."""
+    result = _error_result(exc, model=model, tier=tier)
+    reply = getattr(exc, "reply", None)
+    if reply is not None:
+        result = _replace(result, text=reply)
+    if result.cli_unavailable or result.timed_out:
+        return result
+    notice = result.text or (result.error or "")
+    if result.reason_class == "quota" or (notice and is_quota_exhaustion_text(notice)):
+        return _replace(
+            result,
+            paused=True,
+            quota_exhausted=True,
+            reason_class="quota",
+            retry_at=result.retry_at or quota_retry_at(notice),
+        )
+    if isinstance(exc, CodexExecUnparseableError):
+        return _classified(result, reason_class="unparseable")
+    return result
+
+
+class CodexExecProvider:
+    """``codex exec`` one-shot judge on the ChatGPT subscription
+    (:mod:`precis.utils.codex_exec`, gr543830). Ships dark — the rung gate
+    drops it until the lane is lit; reachable only via an operator chain
+    rung, never :func:`select_transport`."""
+
+    def run(self, req: LlmRequest, *, model: str) -> LlmResult:
+        try:
+            cres = call_codex_exec(
+                req.prompt,
+                model=model,
+                timeout_s=req.timeout_s,
+                extra_args=req.extra_args,
+            )
+        except CodexExecError as exc:
+            return _codex_error_result(exc, model=model, tier=req.tier)
+        return result_from_codex_exec(cres, model=model, tier=req.tier)
+
+
 class LocalProvider:
     """Loopback local ``LlmClient`` — OpenAI ``/v1/chat/completions``,
     tool-less local completion."""
@@ -1633,6 +1746,7 @@ _PROVIDERS: dict[Transport, LlmProvider] = {
     Transport.LOCAL: LocalProvider(),
     Transport.OPENAI_COMPAT: OpenAICompatProvider(),
     Transport.OPENAI_TOOLS: OpenAIToolsProvider(),
+    Transport.CODEX_EXEC: CodexExecProvider(),
 }
 
 # Import-time totality guard: every Transport must have a provider, so
@@ -2409,7 +2523,11 @@ def _rung_is_cloud(rung: Rung) -> bool:
         return False
     if rung.label == "cloud":
         return True
-    if rung.transport in (Transport.CLAUDE_AGENT, Transport.CLAUDE_P):
+    if rung.transport in (
+        Transport.CLAUDE_AGENT,
+        Transport.CLAUDE_P,
+        Transport.CODEX_EXEC,
+    ):
         return True
     if rung.transport is Transport.LOCAL:
         return False
@@ -2451,7 +2569,11 @@ def _fallback_placement(transport: Transport) -> str:
     forgets to stamp placement still logs a best-effort value instead of a
     silent NULL.
     """
-    if transport in (Transport.CLAUDE_AGENT, Transport.CLAUDE_P):
+    if transport in (
+        Transport.CLAUDE_AGENT,
+        Transport.CLAUDE_P,
+        Transport.CODEX_EXEC,
+    ):
         return "cloud"
     if transport is Transport.LOCAL:
         return "local"
@@ -2652,6 +2774,48 @@ _CLAUDE_TRANSPORTS: frozenset[Transport] = frozenset(
     {Transport.CLAUDE_P, Transport.CLAUDE_AGENT}
 )
 
+#: Transports that exec a first-party subscription CLI on this host —
+#: ``claude -p``'s pair plus ``codex exec``. A rung dropped for a missing
+#: binary/login on one of these is flagged ``cli_unavailable`` on the
+#: emptied-chain degrade (the host can never run it), unlike an OSS wire
+#: whose absence is endpoint config, not a host defect.
+_CLI_TRANSPORTS: frozenset[Transport] = frozenset(
+    {Transport.CLAUDE_P, Transport.CLAUDE_AGENT, Transport.CODEX_EXEC}
+)
+
+
+def _codex_rung_unavailable(rung: Rung) -> str | None:
+    """Why a ``codex_exec`` rung can't run on THIS host, or ``None``.
+
+    Two gates: the lane flag (ships dark —
+    :func:`precis.utils.llm.live_config.codex_exec_enabled`; a dark rung is
+    skipped like any other unusable rung, so config may carry it before the
+    ruling lands), then the host probes the heartbeat's capability surface
+    shares — the ``codex`` binary and a ChatGPT login
+    (:func:`~precis.workers.capability_probe.codex_bin_present` /
+    ``codex_login_present`)."""
+    del rung
+    from precis.utils.codex_exec import resolve_codex_binary
+    from precis.utils.llm import live_config
+    from precis.workers import capability_probe as _cap
+
+    if not live_config.codex_exec_enabled():
+        return (
+            "codex_exec lane is dark — set llm.codex_exec in app_settings "
+            "(or PRECIS_CODEX_EXEC per process) to light it"
+        )
+    if not _cap.codex_bin_present():
+        return (
+            f"codex binary {resolve_codex_binary()!r} not found on this host "
+            "(PATH / PRECIS_CODEX_BIN)"
+        )
+    if not _cap.codex_login_present():
+        return (
+            "codex is not logged in on this host (`codex login status` — "
+            "the lane needs a ChatGPT subscription login; run `codex login`)"
+        )
+    return None
+
 
 def _claude_credential_absent(rung: Rung) -> str | None:
     """The credential half of a claude rung's host check — a reason string,
@@ -2764,6 +2928,8 @@ def _rung_unavailable(rung: Rung, model: str) -> str | None:
     """
     if rung.transport in _CLAUDE_TRANSPORTS:
         return _claude_rung_unavailable(rung)
+    if rung.transport is Transport.CODEX_EXEC:
+        return _codex_rung_unavailable(rung)
     if rung.transport in (Transport.OPENAI_COMPAT, Transport.OPENAI_TOOLS):
         return _hosted_oss_unavailable(rung, model)
     return None
@@ -2860,7 +3026,12 @@ def _hosted_small_remap(
 #: (``claude_agent`` / ``openai_tools``) run multi-turn tool loops that
 #: cost real turns per attempt and have their own park-and-resume path.
 _INPROCESS_RETRY_TRANSPORTS: frozenset[Transport] = frozenset(
-    {Transport.LOCAL, Transport.OPENAI_COMPAT, Transport.CLAUDE_P}
+    {
+        Transport.LOCAL,
+        Transport.OPENAI_COMPAT,
+        Transport.CLAUDE_P,
+        Transport.CODEX_EXEC,
+    }
 )
 
 #: Base of the retry backoff (seconds): waits ``base·2ⁿ`` plus jitter.
@@ -3539,7 +3710,7 @@ def _route_inner(req: LlmRequest) -> LlmResult:
                     ),
                     paused=True,
                     cli_unavailable=any(
-                        r.transport in _CLAUDE_TRANSPORTS for r, _ in _unavail
+                        r.transport in _CLI_TRANSPORTS for r, _ in _unavail
                     ),
                     # The wire this rung would have needed doesn't exist here.
                     reason_class="transport",
@@ -5428,6 +5599,7 @@ __all__ = [
     "resolve_model",
     "result_from_agent",
     "result_from_claude_p",
+    "result_from_codex_exec",
     "result_from_openai",
     "route",
     "run_oss_tool_loop",

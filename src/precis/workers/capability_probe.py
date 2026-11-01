@@ -397,6 +397,32 @@ def claude_auth_present() -> bool:
     return _probe_claude_config() == 1
 
 
+def codex_bin_present() -> bool:
+    """Public read of the ``codex_exec`` lane's binary probe — whether THIS
+    host can exec ``codex`` (``PRECIS_CODEX_BIN`` or ``codex`` on PATH).
+    Delegates to :mod:`precis.utils.codex_exec` (the transport owns the
+    binary/env names); the LLM router's rung gate reads it so a codex-less
+    host skips the rung at dispatch (gr543830)."""
+    from precis.utils.codex_exec import codex_bin_present as _probe
+
+    return _probe()
+
+
+def codex_login_present() -> bool:
+    """Public read of the ``codex_exec`` lane's login probe — a ChatGPT
+    subscription login per ``codex login status`` (TTL-cached in
+    :mod:`precis.utils.codex_exec`). Presence, not correctness: a stale
+    login still reports True — the run path surfaces the auth failure.
+
+    Deliberately NOT in :data:`_PROBES`: no ``ServiceSpec`` declares a
+    ``codex_exec`` token yet (the lane ships dark), and probe keys must
+    stay a subset of the registry vocabulary. Registering it is a
+    one-liner once a service requires it."""
+    from precis.utils.codex_exec import codex_login_present as _probe
+
+    return _probe()
+
+
 def claude_agent_capable() -> bool:
     """Whether THIS host can run a ``call_claude_agent``-class workload —
     the ``claude`` binary (:func:`claude_bin_present`) OR the verified

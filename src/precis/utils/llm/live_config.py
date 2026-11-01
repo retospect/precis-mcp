@@ -86,6 +86,18 @@ PROFILES_KEY = "llm.profiles"
 #: the chain row.
 ENV_PROFILES_VAR = "PRECIS_LLM_PROFILES"
 
+#: app_settings key lighting the ``codex_exec`` transport lane (gr543830).
+#: DARK BY DEFAULT — the inverse of :data:`CLOUD_ENABLED_KEY`: absent /
+#: falsey (``false``/``0``/``no``/``off``) means a ``codex_exec`` chain
+#: rung is dropped at dispatch; only an explicit truthy value lights it.
+CODEX_EXEC_KEY = "llm.codex_exec"
+#: Per-process switch for the same lane — when SET (any non-empty value)
+#: it decides alone, so ``PRECIS_CODEX_EXEC=0`` is a one-process kill
+#: switch over a lit DB row (a safety flag favours off).
+ENV_CODEX_EXEC_VAR = "PRECIS_CODEX_EXEC"
+
+_TRUTHY = {"1", "true", "yes", "on"}
+
 #: Per-process env overrides (one-off runs on a different model/transport
 #: without touching the fleet-wide ``app_settings`` rows): ``PRECIS_LLM_CHAIN_<TIER>``
 #: holds the exact value format of ``llm.chain.<tier>``; ``PRECIS_LLM_MODEL_<TIER>``
@@ -350,6 +362,22 @@ def cloud_enabled() -> bool:
     return raw.strip().lower() not in ("false", "0", "no", "off")
 
 
+def codex_exec_enabled() -> bool:
+    """Whether the ``codex_exec`` transport lane is lit.
+
+    Dark by default (the ``codex`` subscription lane has an open terms
+    question — gr543830): only an explicit truthy ``PRECIS_CODEX_EXEC``
+    env value or ``llm.codex_exec`` app_settings row lights it. A set env
+    var decides alone (``0``/``off`` forces dark for the process even when
+    the row is lit); unset, the DB row decides; no row ⇒ ``False``.
+    """
+    env = os.environ.get(ENV_CODEX_EXEC_VAR)
+    if env is not None and env.strip():
+        return env.strip().lower() in _TRUTHY
+    raw = _cached_setting(CODEX_EXEC_KEY)
+    return raw is not None and raw.strip().lower() in _TRUTHY
+
+
 def bust_cache() -> None:
     """Drop the TTL cache so the *next* read re-queries the DB.
 
@@ -395,7 +423,9 @@ __all__ = [
     "BACKEND_KEY",
     "CHAIN_KEY_PREFIX",
     "CLOUD_ENABLED_KEY",
+    "CODEX_EXEC_KEY",
     "ENV_CHAIN_PREFIX",
+    "ENV_CODEX_EXEC_VAR",
     "ENV_MODEL_PREFIX",
     "ENV_PROFILES_VAR",
     "MODEL_KEY_PREFIX",
@@ -408,6 +438,7 @@ __all__ = [
     "chain_key",
     "chain_override",
     "cloud_enabled",
+    "codex_exec_enabled",
     "model_env_var",
     "model_key",
     "model_override",
