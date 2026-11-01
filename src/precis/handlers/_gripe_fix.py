@@ -55,7 +55,7 @@ KIND_LABEL = {BRIEF_KIND: "brief", HANDOFF_KIND: "handoff", REVIEW_KIND: "review
 BATCH_PREFIX = "batch:"
 META_KEY = "fix"
 #: ``meta.fix`` keys the edit writes; ``''`` clears one.
-META_FIELDS: tuple[str, ...] = ("host", "session", "tree", "landed")
+META_FIELDS: tuple[str, ...] = ("host", "session", "tree", "landed", "check")
 VERDICTS: tuple[str, ...] = ("land", "fix")
 QUEUES: tuple[str, ...] = (
     "unbriefed",
@@ -77,6 +77,7 @@ EDIT_KEYS: tuple[str, ...] = (
     "review",
     "findings",
     "landed",
+    "check",
 )
 _TERMINAL = frozenset({"done", "wontfix"})
 _SHA_RE = re.compile(r"^[0-9a-f]{7,40}$")
@@ -108,6 +109,7 @@ class FixState:
     session: str | None
     tree: str | None
     landed: str | None
+    check: str | None
     status: str | None
     events: tuple[FixEvent, ...]
     in_loop: bool
@@ -203,6 +205,7 @@ def state_from(ref: Ref, tags: list[Any], events: tuple[FixEvent, ...]) -> FixSt
         session=fix.get("session") or None,
         tree=fix.get("tree") or None,
         landed=fix.get("landed") or None,
+        check=fix.get("check") or None,
         status=status_of(tags),
         events=events,
         in_loop=isinstance(meta, dict),
@@ -384,6 +387,8 @@ def card_line(state: FixState) -> str | None:
         bits.append(f"review {(state.verdict or '?').upper()} #{review.ord}")
     if state.landed:
         bits.append(f"landed {state.landed}")
+    if state.check:
+        bits.append(f"check {state.check[:80]}")
     return "fix: " + " · ".join(bits) + " · view='fix'"
 
 
@@ -568,6 +573,7 @@ class FixPatch:
     review: str | None = None
     findings: str | None = None
     landed: str | None = None
+    check: str | None = None
 
     @property
     def empty(self) -> bool:
@@ -642,6 +648,24 @@ def validate_patch(ref_id: Any, raw: dict[str, Any]) -> FixPatch:
             next=f"edit(kind='gripe', id={ref_id}, mode='fix', args={{'landed': "
             "'<sha on main>'}})",
         )
+    check = vals.get("check")
+    if check:
+        # The auto-close prod check (gr519676) — the closed grammar in
+        # workers/gripe_autoclose is the whole safety story, so a line
+        # that does not parse refuses here, at write time.
+        from precis.workers.gripe_autoclose import CheckError, parse_check
+
+        try:
+            parse_check(check)
+        except (CheckError, BadInput) as e:
+            raise BadInput(
+                f"check line does not parse: {e}",
+                next=(
+                    f"edit(kind='gripe', id={ref_id}, mode='fix', args="
+                    "{'check': 'count job with tag=STATUS:succeeded and "
+                    "meta.job_type=gripe_validate >= 1'})"
+                ),
+            ) from e
     return FixPatch(**vals)
 
 
@@ -760,6 +784,7 @@ def apply_patch(
         session=fix.get("session"),
         tree=fix.get("tree"),
         landed=fix.get("landed"),
+        check=fix.get("check"),
         status=new_status or before.status,
         events=tuple(events),
         in_loop=True,

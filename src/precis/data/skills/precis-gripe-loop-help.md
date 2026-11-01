@@ -56,6 +56,7 @@ Stored — the smallest set:
 | who | `meta.fix.host`, `meta.fix.session` | `args={'host': 'mac-a', 'session': 'devin:tables-s2'}` |
 | tree | `meta.fix.tree` | `args={'tree': 'tables-s2'}` |
 | landed sha | `meta.fix.landed` | `args={'landed': '98aa301d6'}` |
+| prod check | `meta.fix.check` | `args={'check': 'count job with tag=STATUS:succeeded >= 1'}` |
 
 `host` is the machine name the fleet kind reports; `session` is
 `<vendor>:<window>` — the builder's tmux window name
@@ -63,7 +64,15 @@ Stored — the smallest set:
 `codex:codex-castor-s2`; the launcher records it), or
 `claude:<session id>` for a session with no window — so the fleet row
 `vendor:host:project:tree` resolves from its prefix. `''` clears any of
-the four meta fields.
+the meta fields.
+
+`check` is the auto-close prod check (step 7): one line, written at
+land time, verified by the reviewer. Grammar (closed set, no LLM —
+the `gripe_autoclose` worker tick runs it read-only once the landed sha
+is in prod): `read <kind> <id> contains "<substring>"` ·
+`read <kind> <id> count "<substring>" <cmp> <n>` ·
+`count <kind> [with tag=<tag>|meta.<path>=<value> [and …]] <cmp> <n>`
+where `<cmp>` is `= != > < >= <=`.
 
 Derived, never stored: the queue (below), the census per batch, counts,
 ages, the round number (briefs so far), the builder vendor.
@@ -231,6 +240,15 @@ put(kind="gripe", id=514335, text="resolved: 98aa301d6 (r110) — deployed, prob
 The triage tick closes a gripe on its own only when a commit *citing* the
 gripe is provably deployed; a batch gripe the commit does not name is
 yours to close from this list.
+
+A gripe carrying a `meta.fix.check` line closes itself: once the landed
+sha is in the recorded prod set, the `gripe_autoclose` tick runs the
+check — pass → `resolved: <sha> (r<N>) — prod check passed: <line>` +
+`STATUS:done`; fail → closed anyway and a new `STATUS:triaged` gripe is
+filed, `derived-from` the old one, naming the sha and the observed
+check output. No check line → untouched (the manual close above); a
+`hold:no-autoclose` tag → untouched. The tick ships dark until an
+operator lights it (`precis service prio '*' gripe_autoclose 1`).
 
 ## Which gripes are in build, in review, landing, awaiting deploy?
 ## Who is working this gripe, on which host?

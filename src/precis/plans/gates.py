@@ -218,9 +218,9 @@ def _prefix_match(a: str, b: str) -> bool:
     return n >= MIN_SHA_LEN and a[:n] == b[:n]
 
 
-def _sha_deployed(store: Store, sha: str) -> GateVerdict:
+def sha_deployed(store: Store, sha: str) -> GateVerdict:
     """Whether ``sha`` is in the recorded prod head; the shared core of
-    ``sha-in-prod`` and ``tests-green``."""
+    ``sha-in-prod``, ``tests-green`` and the gripe auto-close pass."""
     rec = read_prod_head(store)
     if rec is None:
         return _closed(f"no prod head recorded ({PROD_HEAD_KEY}); {sha} not seen")
@@ -249,7 +249,7 @@ def _sha_in_prod(
     store: Store, args: dict[str, Any], *, todo_id: int, now: datetime
 ) -> GateVerdict:
     sha, bad = _clean_sha(args.get("sha"), "sha-in-prod args.sha")
-    return bad or _sha_deployed(store, sha)
+    return bad or sha_deployed(store, sha)
 
 
 def _tests_green(
@@ -270,7 +270,7 @@ def _tests_green(
         if row["verdict"] == "green":
             return GateVerdict(True, f"CI green on {short} ({run}, {at})")
         return _closed(f"CI red on {short} ({run}, {at})")
-    res = _sha_deployed(store, sha)
+    res = sha_deployed(store, sha)
     why = res.why.replace("not in prod yet", "no green deploy covers it yet")
     return GateVerdict(res.open, why)
 
@@ -376,4 +376,5 @@ __all__ = [
     "read_ci_verdicts",
     "read_prod_head",
     "resolve_board",
+    "sha_deployed",
 ]

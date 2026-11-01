@@ -532,6 +532,30 @@ def _run_citer_watch(store: Store, batch_size: int) -> None:
     )
 
 
+def _run_gripe_autoclose(store: Store, batch_size: int) -> None:
+    """Hourly gripe auto-close (gr519676): for each live gripe carrying a
+    ``meta.fix.check`` line whose ``meta.fix.landed`` sha is in the
+    recorded prod set, run the check read-only and close (pass) or close
+    + refile a linked triage gripe (fail).
+    Dark-gated inside the pass: no ``gripe_autoclose`` service_config row
+    (prio > 0) → all-zeros no-op, so the cadence's lease advances
+    harmlessly while dark (the ``citer_watch`` shape — a never-claimed
+    lease would read as "stopped firing" to health_digest).
+    ``batch_size`` is unused — the pass bounds itself via MAX_PER_PASS.
+    spends=False: no LLM — the closed check grammar is pure local SQL +
+    ref reads; the writes are the gripe close and the refile."""
+    del batch_size
+    from precis.workers.gripe_autoclose import run_gripe_autoclose_pass
+
+    result = run_gripe_autoclose_pass(store)
+    log.info(
+        "scheduler: gripe_autoclose inner result claimed=%d ok=%d failed=%d",
+        result["claimed"],
+        result["ok"],
+        result["failed"],
+    )
+
+
 def _run_upstream_watch(store: Store, batch_size: int) -> None:
     """Daily watch of upstream issues/PRs we filed on repos we do not own
     (gr543879): search api.github.com for items authored by our account
@@ -1172,6 +1196,20 @@ CADENCES: tuple[Cadence, ...] = (
         name="upstream_watch",
         interval_s=24 * 3600 + 61 * 60,
         run=_run_upstream_watch,
+    ),
+    # gr519676: the gripe auto-close prod check — hourly, host-agnostic,
+    # off the exact hour (+13m, clear of the 3600s cadences). Ships
+    # DISABLED: the cadence fires and the lease advances, but the pass
+    # no-ops until a `service_config` row lights `gripe_autoclose`
+    # (prio > 0) — `precis service prio '*' gripe_autoclose 1` is the
+    # prod flag. No `service=` gate on the cadence on purpose: that gate
+    # leaves the lease unclaimed while dark, which health_digest's
+    # cadence-staleness check reports as "stopped firing" forever.
+    # spends=False: no LLM; the closed check grammar is local SQL.
+    Cadence(
+        name="gripe_autoclose",
+        interval_s=3600 + 13 * 60,
+        run=_run_gripe_autoclose,
     ),
     # 2026-10 dream hygiene: consolidate stale dreams — retire unrecalled+
     # untouched dreams (60d; 90d for thread: memories) behind one supersedes

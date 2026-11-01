@@ -1316,6 +1316,21 @@ def build_ref_passes(
 
         ref_passes.append(_upstream_watch_pass)
 
+    # Gripe auto-close prod check (gr519676). Same shape as citer_watch
+    # above: no `default_profiles`, so this registration is for a manual
+    # `--only gripe_autoclose` run only — the STANDING trigger is the
+    # hourly `gripe_autoclose` scheduler cadence. `--only` passes
+    # `enabled=True` (the operator escape hatch).
+    if _register("gripe_autoclose"):
+        from precis.workers.gripe_autoclose import run_gripe_autoclose_pass
+        from precis.workers.runner import BatchResult as _BatchResult
+
+        def _gripe_autoclose_pass(batch_size: int) -> _BatchResult:
+            r = run_gripe_autoclose_pass(store, enabled=True)
+            return _BatchResult.from_dict("gripe_autoclose", r)
+
+        ref_passes.append(_gripe_autoclose_pass)
+
     # News ingestion (news kind). Walks the news_sources feed
     # registry, fetches + mints new articles as `news` refs. Like
     # watch_poll it makes external calls on a cadence, so it's

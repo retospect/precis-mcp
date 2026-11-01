@@ -252,6 +252,61 @@ inferred; a close list's third token is a batch only when the plan
 already knows that batch; `-start` briefs are the batch item and
 `-r<N>`/`-rulings`/`-add-` siblings later rounds.
 
+## Auto-close on deploy — the prod check (gr519676, spec)
+
+Reto's ruling (2026-10-26, on the gripe): a gripe records its fix's sha
+in `meta.fix.landed`; when that sha is deployed — an ancestor of the
+deployed prod head — run the gripe's **prod check** read-only, then
+close (pass) or close and re-file (fail).
+
+### The check line — `meta.fix.check`
+
+A single line, written by the fixer at land time
+(`edit(kind='gripe', mode='fix', args={'check': '<line>'})`, typically
+on the same edit as `landed`); the reviewer verifies it. A gripe with
+no check line is never auto-closed — it keeps the manual `resolved:`
+close — and a gripe tagged `hold:no-autoclose` is never touched. The
+edit refuses a line that does not parse.
+
+A small closed set of check types, run by the worker without an LLM:
+
+- `read <kind> <id> contains "<substring>"` — the MCP-read shape: the
+  ref's title + chunk text carries the substring.
+- `read <kind> <id> count "<substring>" <cmp> <n>` — occurrence count
+  (`<cmp>` is `= != > < >= <=`).
+- `count <kind> [with <pred> [and <pred>…]] <cmp> <n>` — the read-only
+  SQL count with a predicate: `pred` is `tag=<tag>` or
+  `meta.<dotted.path>=<literal>` over live refs.
+
+### The tick — `workers/gripe_autoclose.py`
+
+The `gripe_autoclose` scheduler cadence (hourly, host-agnostic) finds
+live gripes carrying a non-empty `meta.fix.check` whose
+`meta.fix.landed` is in the recorded prod set — the `release.prod_head`
+record's `head` or an accumulated `landed` sha
+(`plans/gates.sha_deployed`, the same record `sha-in-prod` reads; the
+server has no git, so the record *is* "deployed").
+
+- **Pass** → `resolved: <sha> (r<N>) — prod check passed: <line>` +
+  `STATUS:done` through the gripe handler, so the `resolved:` guard and
+  the close cascade run (the record's `release` field names `r<N>`;
+  `prod <head9>` when absent).
+- **Fail** → close anyway and file a NEW gripe back to
+  `STATUS:triaged`, linked `derived-from` the old one. Its first line
+  says the fix at `<sha>` failed its prod check and why (the observed
+  check output). Chain cap: the refiled gripe of a third consecutive
+  failure on one root carries `hold:no-autoclose` — a human takes it
+  from there.
+- Idempotent: a closed gripe leaves the candidate set, so a re-run is a
+  no-op; a malformed check line (hand-edited meta) is logged and
+  skipped, never closed on.
+
+**Ships dark** — the `citer_watch` shape: the cadence fires and the
+lease advances, but the pass no-ops until a `service_config` row lights
+`gripe_autoclose` (`precis service prio '*' gripe_autoclose 1`). The
+manual `--only gripe_autoclose` run is the operator escape hatch
+(`enabled=True`).
+
 ## Open questions / decisions log
 
 - **Decided (conservative):** no STATUS value is added; the loop reuses

@@ -104,9 +104,9 @@ def _ref_done(store: Any, value: str) -> tuple[bool, str]:
 
 
 def _sha_in_prod(store: Any, value: str) -> tuple[bool, str]:
-    from precis.plans.gates import _sha_deployed
+    from precis.plans.gates import sha_deployed
 
-    verdict = _sha_deployed(store, value)
+    verdict = sha_deployed(store, value)
     return verdict.open, verdict.why
 
 

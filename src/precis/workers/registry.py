@@ -1532,6 +1532,26 @@ SERVICES: tuple[ServiceSpec, ...] = (
         doc_skill="precis-overview",
     ),
     ServiceSpec(
+        # gr519676: the gripe auto-close prod check
+        # (workers/gripe_autoclose.py). Same dark-by-default shape as
+        # citer_watch just above: the STANDING trigger is the hourly
+        # `gripe_autoclose` scheduler cadence, which fires and advances
+        # its lease while dark — the pass no-ops until a service_config
+        # row lights `gripe_autoclose` (prio > 0), so enabling is the
+        # prod flag `precis service prio '*' gripe_autoclose 1`. This
+        # registration is for a manual `--only gripe_autoclose` run only
+        # (the operator escape hatch: enabled=True).
+        name="gripe_autoclose",
+        label="Gripe auto-close prod check",
+        category="health",
+        kind=ServiceKind.PASS,
+        ref_pass=True,
+        one_line="Run a gripe's meta.fix.check when its landed sha "
+        "reaches prod; close on pass, close + refile a linked triage "
+        "gripe on fail; dark until lit.",
+        doc_skill="precis-gripe-loop-help",
+    ),
+    ServiceSpec(
         name="news_poll",
         label="News ingestion",
         category="acquisition",

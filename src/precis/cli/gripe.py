@@ -486,6 +486,53 @@ def verify_done(
     return line or "nothing to do"
 
 
+def resolve_gripe(store: Any, gid: int, text: str) -> bool:
+    """Close one live gripe: comment ``text`` + STATUS:done through the
+    handler — the ``resolved:``-newest-comment guard and the close
+    cascade both run (gr519676's auto-close leg uses this; unlike
+    ``verify_done`` it does not check a status cohort). Returns False
+    when the put refused."""
+    from precis.dispatch import Hub
+    from precis.errors import PrecisError
+    from precis.handlers.gripe import GripeHandler
+
+    handler = GripeHandler(hub=Hub(store=store))
+    try:
+        handler.put(id=gid, text=text, tags=["STATUS:done"])
+    except PrecisError:
+        return False
+    return True
+
+
+#: ``id=N`` in a gripe create ack (``conftest.id_of``'s shape — the
+#: handler's create Response carries no structured ref_id).
+_CREATED_ID_RE = re.compile(r"\bid=(\d+)\b")
+
+
+def file_gripe(
+    store: Any,
+    text: str,
+    *,
+    tags: list[str] | None = None,
+    link: str | None = None,
+    rel: str | None = None,
+) -> int | None:
+    """File a new gripe through the handler (``args={'new': True}`` — the
+    filing is its own item, never a theme ``+1``); return its ref id,
+    or ``None`` when the put refused."""
+    from precis.dispatch import Hub
+    from precis.errors import PrecisError
+    from precis.handlers.gripe import GripeHandler
+
+    handler = GripeHandler(hub=Hub(store=store))
+    try:
+        resp = handler.put(text=text, tags=tags, link=link, rel=rel, new=True)
+    except PrecisError:
+        return None
+    m = _CREATED_ID_RE.search(resp.body)
+    return int(m.group(1)) if m else None
+
+
 def unpark_gripe(store: Any, gid: int, text: str) -> bool:
     """Wake a parked gripe (gr543711): comment ``text`` and flip it back
     to ``STATUS:open`` through the handler (the tag leg clears
