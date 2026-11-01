@@ -12,6 +12,11 @@
 #   scripts/build-image                # builds the `precis` service
 #   scripts/build-image precis-dev     # builds the dev image
 #
+# Safety (gr544137): refuses below a free-disk floor
+# (PRECIS_BUILD_MIN_FREE_GB, default 60), builds to a temp tag, smoke-runs
+# `python -c 'import autocatpath'` in it, and retags the service's own tag
+# only on success — a failed build never leaves :latest broken.
+#
 # The compose file lives in this repo at
 # docker/dev/compose.yaml (override with $PRECIS_COMPOSE).
 # This wrapper collects the values on the host and threads them in via
@@ -28,6 +33,28 @@ if [[ ! -f "${INFRA_COMPOSE}" ]]; then
 fi
 
 SERVICE="${1:-precis}"
+
+# Free-space floor (gr544137): one dev-image build used ~50 GB, and two builds
+# that ran out of disk at the final unpack broke the fleet's :latest. Refuse up
+# front, reading free space the way scripts/test does (docker-disk.sh).
+# PRECIS_BUILD_MIN_FREE_GB overrides the floor; 0 skips the check.
+# shellcheck source=scripts/lib/docker-disk.sh
+source scripts/lib/docker-disk.sh
+MIN_FREE_GB="${PRECIS_BUILD_MIN_FREE_GB:-60}"
+case "${MIN_FREE_GB}" in '' | *[!0-9]*) MIN_FREE_GB=60 ;; esac
+if [[ "${MIN_FREE_GB}" -gt 0 ]]; then
+    FREE_GB="$(docker_free_gb)" || true
+    case "${FREE_GB}" in
+        '' | failed:*)
+            echo "ERR: build-image: disk probe failed: ${FREE_GB#failed: }; not a disk-full verdict. Re-run, or PRECIS_BUILD_MIN_FREE_GB=0 to skip the check" >&2
+            exit 3
+            ;;
+    esac
+    if [[ "${FREE_GB}" -lt "${MIN_FREE_GB}" ]]; then
+        echo "ERR: build-image: docker VM disk has ${FREE_GB} GB free, a build needs ~${MIN_FREE_GB} GB (PRECIS_BUILD_MIN_FREE_GB overrides). Free space first; nothing was built or retagged" >&2
+        exit 3
+    fi
+fi
 
 # The compose build's models stage COPYs from the `premodels` context
 # (additional_contexts in compose.yaml) — ensure the tag exists first:
@@ -97,7 +124,30 @@ AUTOCATPATH_REV="${AUTOCATPATH_REV:-main}"
 # anonymous access works. A caller-set GH_TOKEN wins over `gh auth token`.
 export GH_TOKEN="${GH_TOKEN:-$(gh auth token 2>/dev/null || true)}"
 
-exec docker compose -f "${INFRA_COMPOSE}" build \
+# gr544137: build to a temp tag and move the service's own tag only after the
+# built image proves it can import its engine. Building straight onto the tag
+# let two out-of-space builds leave precis-dev:latest on a half-unpacked image
+# (and the last good one untagged), breaking every fresh gate container in the
+# fleet. A compose override renames the build's output; :latest is untouched
+# until the smoke run passes.
+IMAGE="$(docker compose -f "${INFRA_COMPOSE}" config --format json \
+    | python3 -c 'import json,sys; print(json.load(sys.stdin)["services"][sys.argv[1]]["image"])' "${SERVICE}")" || IMAGE=""
+if [[ -z "${IMAGE}" ]]; then
+    echo "ERR: cannot resolve the image name of service '${SERVICE}' in ${INFRA_COMPOSE}" >&2
+    exit 1
+fi
+case "${IMAGE##*/}" in
+    *:*) IMAGE_REPO="${IMAGE%:*}" ;;
+    *) IMAGE_REPO="${IMAGE}" ;;
+esac
+TEMP_TAG="${IMAGE_REPO}:build-${GIT_SHA_SHORT}-$(date -u +%Y%m%d%H%M%S)"
+OVERRIDE_DIR="$(mktemp -d)"
+trap 'rm -rf "${OVERRIDE_DIR}"' EXIT
+OVERRIDE_FILE="${OVERRIDE_DIR}/override.yaml"
+printf 'services:\n  %s:\n    image: "%s"\n' "${SERVICE}" "${TEMP_TAG}" >"${OVERRIDE_FILE}"
+
+build_rc=0
+docker compose -f "${INFRA_COMPOSE}" -f "${OVERRIDE_FILE}" build \
     --build-arg "PRECIS_UV_LOCK_SHA256=${UV_LOCK_SHA256}" \
     --build-arg "AUTOCATPATH_REV=${AUTOCATPATH_REV}" \
     --build-arg "PRECIS_GIT_LAST_TAG=${GIT_LAST_TAG}" \
@@ -109,4 +159,32 @@ exec docker compose -f "${INFRA_COMPOSE}" build \
     --build-arg "PRECIS_BUILD_TIME=${BUILD_TIME}" \
     --build-arg "PRECIS_BUILD_HOST=${BUILD_HOST}" \
     --build-arg "PRECIS_BUILD_USER=${BUILD_USER}" \
-    "${SERVICE}"
+    "${SERVICE}" || build_rc=$?
+if [[ "${build_rc}" != 0 ]]; then
+    echo "[build-image] build failed (exit ${build_rc}); ${IMAGE} left untouched" >&2
+    exit "${build_rc}"
+fi
+
+SMOKE_MODULE="${PRECIS_BUILD_SMOKE_MODULE:-}"
+if [[ -z "${SMOKE_MODULE}" ]]; then
+    case "${SERVICE}" in
+        precis-dev) SMOKE_MODULE=autocatpath ;;
+        *) SMOKE_MODULE=precis ;;
+    esac
+fi
+echo "[build-image] smoke-testing ${TEMP_TAG}: python -c 'import ${SMOKE_MODULE}'" >&2
+smoke_rc=0
+docker run --rm --pull=never --entrypoint python "${TEMP_TAG}" \
+    -c "import ${SMOKE_MODULE}" </dev/null || smoke_rc=$?
+if [[ "${smoke_rc}" != 0 ]]; then
+    echo "[build-image] smoke run failed (exit ${smoke_rc}): ${TEMP_TAG} cannot import ${SMOKE_MODULE}." >&2
+    echo "[build-image] ${IMAGE} left untouched. Inspect the build with: docker run --rm -it --entrypoint python ${TEMP_TAG}" >&2
+    echo "[build-image] once done, drop it with: docker rmi ${TEMP_TAG}" >&2
+    exit 1
+fi
+
+docker tag "${TEMP_TAG}" "${IMAGE}"
+# Untag the temp name: left behind it would pin this image's layers after the
+# next build moves ${IMAGE} on (tens of GB per generation).
+docker rmi "${TEMP_TAG}" >/dev/null || true
+echo "[build-image] ${IMAGE} retagged from ${TEMP_TAG} (smoke passed)" >&2
