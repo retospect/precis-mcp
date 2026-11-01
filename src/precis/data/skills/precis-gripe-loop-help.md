@@ -74,6 +74,15 @@ is in prod): `read <kind> <id> contains "<substring>"` ·
 `count <kind> [with tag=<tag>|meta.<path>=<value> [and …]] <cmp> <n>`
 where `<cmp>` is `= != > < >= <=`.
 
+A `read` check matches the target's **raw title + chunk text**, not
+the rendered `get(kind=…, id=…)` card — write the needle against
+title/body text, and never the gripe's own id (a self-read is refused:
+same kind it is tautological, another kind it can't resolve). The tick
+rejects checks a typo would silently decide — an unknown `kind`; a
+comparison true (`>= 0`, `> -1`) or false (`= -1`, `< 0`) for every
+count; and an unanchored `count` an empty result satisfies (`= 0`,
+`< n`, `!= n≠0` need a `tag=`/`meta.` predicate to mean anything).
+
 Derived, never stored: the queue (below), the census per batch, counts,
 ages, the round number (briefs so far), the builder vendor.
 
@@ -242,12 +251,20 @@ gripe is provably deployed; a batch gripe the commit does not name is
 yours to close from this list.
 
 A gripe carrying a `meta.fix.check` line closes itself: once the landed
-sha is in the recorded prod set, the `gripe_autoclose` tick runs the
-check — pass → `resolved: <sha> (r<N>) — prod check passed: <line>` +
-`STATUS:done`; fail → closed anyway and a new `STATUS:triaged` gripe is
-filed, `derived-from` the old one, naming the sha and the observed
-check output. No check line → untouched (the manual close above); a
-`hold:no-autoclose` tag → untouched. The tick ships dark until an
+sha is an ancestor of the CURRENT recorded prod head (a rolled-back sha
+still in the record's `landed` reads not-deployed; on a clone-less
+worker the record's membership is the fallback) and that head has stood
+30 min, the `gripe_autoclose` tick runs the check — pass →
+`resolved: <sha> (r<N>) — prod check passed: <line>` + `STATUS:done`;
+fail → a first failure only records `meta.fix.check_failed_at` (a pass
+between clears it), and a repeat an hour later closes the gripe FIRST,
+then files a new `STATUS:triaged` gripe `derived-from` the old one —
+or reuses a live refile already linked — naming the sha and the
+observed check output, so a refused close never mints hourly
+duplicates. No check line → untouched (the manual close above); a
+`hold:no-autoclose` tag → untouched (both exclusions honour
+`ref_tags.expires_at`; check queries run under a 5 s statement_timeout
+and a cancel is skipped, never a verdict). The tick ships dark until an
 operator lights it (`precis service prio '*' gripe_autoclose 1`).
 
 ## Which gripes are in build, in review, landing, awaiting deploy?

@@ -270,33 +270,67 @@ edit refuses a line that does not parse.
 
 A small closed set of check types, run by the worker without an LLM:
 
-- `read <kind> <id> contains "<substring>"` — the MCP-read shape: the
-  ref's title + chunk text carries the substring.
+- `read <kind> <id> contains "<substring>"` — the ref's **raw title +
+  chunk text** carries the substring. This is not the rendered
+  `get(kind=…, id=…)` output — rendered views add card chrome, link
+  annotations and tag lists a raw read never sees, so write the needle
+  against title/body text. A read of the gripe's OWN id is refused
+  (same kind it is tautological — the gripe always contains what the
+  fixer wrote; another kind it can't resolve and reads as a spurious
+  failure).
 - `read <kind> <id> count "<substring>" <cmp> <n>` — occurrence count
   (`<cmp>` is `= != > < >= <=`).
 - `count <kind> [with <pred> [and <pred>…]] <cmp> <n>` — the read-only
   SQL count with a predicate: `pred` is `tag=<tag>` or
   `meta.<dotted.path>=<literal>` over live refs.
 
+At pass time the parser also refuses what a typo would silently
+decide: an unknown `kind` (a typo'd kind counts zero refs and reads as
+"the fix worked"); a comparison true (`>= 0`, `> -1`) or false
+(`= -1`, `< 0`) for EVERY count — it can never go the other way; and,
+unless a `tag=`/`meta.` predicate anchors it, a comparison an EMPTY
+count satisfies (`= 0`, `< n`, `<= n`, `!= n≠0`) — vacuous on a
+mistyped kind. Every check query runs under a 5 s
+`SET LOCAL statement_timeout`; a cancelled check is *skipped*, never a
+verdict either way.
+
 ### The tick — `workers/gripe_autoclose.py`
 
 The `gripe_autoclose` scheduler cadence (hourly, host-agnostic) finds
-live gripes carrying a non-empty `meta.fix.check` whose
-`meta.fix.landed` is in the recorded prod set — the `release.prod_head`
-record's `head` or an accumulated `landed` sha
-(`plans/gates.sha_deployed`, the same record `sha-in-prod` reads; the
-server has no git, so the record *is* "deployed").
+live gripes carrying a non-empty `meta.fix.check` — terminal STATUS
+(`done`/`wontfix`) and `hold:no-autoclose` excluded, each only while
+its `ref_tags` row is unexpired (the `build_tag_filter` rule).
 
-- **Pass** → `resolved: <sha> (r<N>) — prod check passed: <line>` +
+Deployed means the sha is an ancestor of the CURRENT recorded prod
+head — `git merge-base --is-ancestor <sha> <head>` in the
+`PRECIS_THREADS_DIR` checkout (or the package's repo root). Git is
+truth both ways: a rolled-back fix still in the record's `landed`
+reads NOT deployed; a sha aged out of `landed` that is still an
+ancestor of head reads deployed. Only when no checkout can answer
+(clone-less worker) does the record's `head`/`landed` membership
+decide, the `sha-in-prod` fallback. The head must also have *stood*:
+a `deployed_at` younger than `MIN_DEPLOY_AGE_S` (30 min,
+`PRECIS_AUTOCLOSE_MIN_DEPLOY_AGE_S`) defers the whole pass — a check
+mid-rollout flaps on partial deploys.
+
+- **Pass** → clear any `meta.fix.check_failed_at` marker (a pass
+  resets the failure clock), then
+  `resolved: <sha> (r<N>) — prod check passed: <line>` +
   `STATUS:done` through the gripe handler, so the `resolved:` guard and
   the close cascade run (the record's `release` field names `r<N>`;
   `prod <head9>` when absent).
-- **Fail** → close anyway and file a NEW gripe back to
-  `STATUS:triaged`, linked `derived-from` the old one. Its first line
-  says the fix at `<sha>` failed its prod check and why (the observed
-  check output). Chain cap: the refiled gripe of a third consecutive
-  failure on one root carries `hold:no-autoclose` — a human takes it
-  from there.
+- **Fail** → the FIRST failure only records
+  `meta.fix.check_failed_at` and retries next fire; a repeat failure
+  on a pass at least an hour later is confirmed — the gripe closes
+  FIRST (`resolved: … prod check FAILED …`), then a NEW gripe is filed
+  back to `STATUS:triaged`, linked `derived-from` the old one. Close
+  first means a refused close files nothing; before filing, a live
+  gripe already linked `derived-from` this one is reused instead — a
+  chain never piles up hourly duplicates. The refile's first line says
+  the fix at `<sha>` failed its prod check and why (the observed check
+  output). Chain cap: the refiled gripe of a third consecutive failure
+  on one root carries `hold:no-autoclose` — a human takes it from
+  there.
 - Idempotent: a closed gripe leaves the candidate set, so a re-run is a
   no-op; a malformed check line (hand-edited meta) is logged and
   skipped, never closed on.

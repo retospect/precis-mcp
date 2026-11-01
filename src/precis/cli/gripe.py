@@ -509,6 +509,22 @@ def resolve_gripe(store: Any, gid: int, text: str) -> bool:
 _CREATED_ID_RE = re.compile(r"\bid=(\d+)\b")
 
 
+def comment_gripe(store: Any, gid: int, text: str) -> bool:
+    """Append a comment to a gripe through the handler (no tags) —
+    gr519676's auto-close uses it for the "refiled as gr<N>" pointer on
+    an already-closed gripe. Returns False when the put refused."""
+    from precis.dispatch import Hub
+    from precis.errors import PrecisError
+    from precis.handlers.gripe import GripeHandler
+
+    handler = GripeHandler(hub=Hub(store=store))
+    try:
+        handler.put(id=gid, text=text)
+    except PrecisError:
+        return False
+    return True
+
+
 def file_gripe(
     store: Any,
     text: str,
