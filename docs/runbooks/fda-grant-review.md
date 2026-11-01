@@ -52,9 +52,15 @@ checklist to `/Users/Shared/cluster-fda-checklist.txt` on each `scripts/deploy` 
 as of 2026-08-01). The NAS-touching interpreters in practice:
 `/opt/precis/venv/bin/python3`, `/opt/precis/embedder-venv/bin/python3`,
 `/opt/mcps/venv/bin/python3`, `/opt/mcps/extract/venv/bin/python3`,
-`/opt/hermes/venv/bin/python3` (each present only on some hosts; absent ones are
-skipped). Runs on every macOS host in the fleet; Linux hosts are immune, never
-audit them.
+`/opt/hermes/venv/bin/python3`, `/opt/asa/venv/bin/python3` (each present only
+on some hosts; absent ones are skipped). `/opt/asa/venv` is the odd one out —
+the asa-bot/asa-slack bridge venv still resolves to ad-hoc-signed Homebrew
+python@3.14, so a `brew upgrade` re-mints the cdhash and silently voids the
+grant; flagging that is what this audit is for. Runs on every macOS host
+holding canonical venvs — today melchior and balthazar. caspar has no
+canonical venvs or heartbeat row left, so nothing there can drift; Linux
+hosts are immune, never audit them — the heartbeat query's castor and
+pollux rows (Linux, `/usr/bin/python3.12`, stale `ts`) are noise.
 
 ## Audit procedure (when DUE)
 
@@ -66,6 +72,8 @@ For each macOS host, three checks:
       `/Library/Frameworks/Python.framework/Versions/`, and
       `codesign -dv --verbose=2 <resolved path>` must show a
       `TeamIdentifier=` line that is not `not set`.
+      `/opt/asa/venv` fails this by design (Homebrew Cellar, ad-hoc) —
+      see the asa note under remediation below.
   (b) **Grants are present** — each resolved path shows up in
       `kTCCServiceSystemPolicyAllFiles` with `auth_value = 2`.
   (c) **Heartbeat is healthy** — every `host_heartbeat.meta.nas_ok_by_process`
@@ -74,7 +82,7 @@ For each macOS host, three checks:
 ```bash
 for v in /opt/precis/venv/bin/python3 /opt/precis/embedder-venv/bin/python3 \
          /opt/mcps/venv/bin/python3 /opt/mcps/extract/venv/bin/python3 \
-         /opt/hermes/venv/bin/python3; do
+         /opt/hermes/venv/bin/python3 /opt/asa/venv/bin/python3; do
   [ -e "$v" ] || continue
   resolved=$(readlink -f "$v")
   printf "  %s -> %s\n" "$v" "$resolved"
@@ -95,6 +103,13 @@ scripts/prod-psql "SELECT h.host, e.key AS process, e.value->>'ok' AS ok, e.valu
   the owning role (`mcps`, `extract_watch`, `precis_worker`, or
   `precis_embedder`); its venv-mode detection wipes and rebuilds against the
   python.org interpreter automatically.
+  **`/opt/asa/venv` is the known exception** — `asa_bot`/`asa_slack` build it
+  against `/opt/homebrew/bin/python3` on purpose, so it always resolves to
+  ad-hoc Cellar python and re-running those roles does NOT move it; check
+  (a) flags it every pass. What matters is (b): the *resolved* Cellar binary
+  must stay granted, and a brew upgrade silently voids that — expect to
+  re-grant it after each `brew upgrade python@3.x`. Migrating it to
+  python.org is a separate role change, not this runbook.
 - **Ungranted resolved interpreter** (path with `auth_value=0`, or absent):
   first run the **launchd NAS probe** below — a deliberately-denied daemon
   attempt makes TCC auto-register the binary as a toggled-OFF row, so the
@@ -137,11 +152,11 @@ Then `scripts/fda-grant-review --stamp "<hosts audited, drift found/fixed>"`.
 
 ## Notes / gotchas
 
-- The canonical list is not the whole daemon set: melchior's asa-bot and
-  asa-slack ran on Homebrew python@3.14 (ad-hoc signed, outside the list;
-  gr530710). Also resolve the interpreter of each launchd plist on the host,
-  not only the canonical venvs. caspar has no canonical venvs or heartbeat
-  row; castor and pollux are Linux, out of scope.
+- Resolve the interpreter of each launchd plist on the host, not only the
+  canonical venvs — the list is not the whole daemon set (gr530710:
+  `/opt/asa/venv`, the shared asa-bot/asa-slack interpreter, went unaudited
+  until it was added). caspar has no canonical venvs or heartbeat row;
+  castor and pollux are Linux, out of scope.
 
 - `timeout` is absent on macOS by default — don't wrap `ssh` in it (use
   `gtimeout` from coreutils if you must, or just let it run).

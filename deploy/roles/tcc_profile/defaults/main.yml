@@ -70,3 +70,12 @@ tcc_profile_binaries:
   # Hermes / Asa agent venv (symlink → .../Versions/3.14/bin/python3.14).
   # Present on the gateway only; auto-skipped elsewhere.
   - /opt/hermes/venv/bin/python3
+
+  # Shared asa chat-bridge venv (com.asa.bot + com.asa.slack). Unlike the
+  # venvs above, the asa roles build it against /opt/homebrew/bin/python3
+  # --symlinks, so it resolves to the current Homebrew Cellar python —
+  # ad-hoc signed: a `brew upgrade python@3.x` re-mints the cdhash and
+  # silently voids the grant, exactly the drift the monthly audit exists
+  # to catch (gr530710). Listed by venv path, never a pinned Cellar path,
+  # so the resolved entry tracks brew bumps. Gateway only.
+  - /opt/asa/venv/bin/python3
