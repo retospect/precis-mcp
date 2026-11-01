@@ -3714,7 +3714,10 @@ class RefsMixin:
             )
         # Aliased as ``r`` so the tag-filter helper can reference
         # ``r.ref_id`` uniformly across all store query shapes.
-        clauses = ["r.retired_at IS NULL"]
+        clauses = [
+            "r.retired_at IS NULL",
+            "(r.kind <> 'agentlog' OR r.meta->>'trace' IS DISTINCT FROM 'search')",
+        ]
         params: list[Any] = []
         if kind is not None:
             params.append(kind)
@@ -3844,6 +3847,7 @@ class RefsMixin:
         clauses = [
             "r.kind = ANY(%s)",
             "r.retired_at IS NOT NULL" if deleted else "r.retired_at IS NULL",
+            "(r.kind <> 'agentlog' OR r.meta->>'trace' IS DISTINCT FROM 'search')",
         ]
         params: list[Any] = [list(kinds)]
         if profiles.KIND in kinds:
@@ -4293,6 +4297,7 @@ class RefsMixin:
         identical; Phase 3 switches to ``chunks.tsv``)."""
         clauses = [
             "r.retired_at IS NULL",
+            "(r.kind <> 'agentlog' OR r.meta->>'trace' IS DISTINCT FROM 'search')",
             "to_tsvector('english', " + _TITLE_PLAIN_SQL + ") @@ qq.qq",
         ]
         params: list[Any] = [lexical_q(q)]
@@ -4362,6 +4367,7 @@ class RefsMixin:
         """
         clauses = [
             "r.retired_at IS NULL",
+            "(r.kind <> 'agentlog' OR r.meta->>'trace' IS DISTINCT FROM 'search')",
             "to_tsvector('english', " + _TITLE_PLAIN_SQL + ") @@ qq.qq",
         ]
         params: list[Any] = [lexical_q(q)]
@@ -4446,7 +4452,10 @@ class RefsMixin:
         keeps refs created strictly before that instant (the gripe open
         view's "older than 3d" count).
         """
-        clauses = ["r.retired_at IS NULL"]
+        clauses = [
+            "r.retired_at IS NULL",
+            "(r.kind <> 'agentlog' OR r.meta->>'trace' IS DISTINCT FROM 'search')",
+        ]
         params: list[Any] = []
         if kind is not None:
             params.append(kind)
@@ -4581,6 +4590,9 @@ class RefsMixin:
             meta_eq=meta_eq,
             id_min=id_min,
             id_max=id_max,
+        )
+        clauses.append(
+            "(r.kind <> 'agentlog' OR r.meta->>'trace' IS DISTINCT FROM 'search')"
         )
         where = " AND ".join(clauses)
 

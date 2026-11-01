@@ -18,6 +18,12 @@ frame limit. The tool ledger already stores only call metadata, not content.
 Read-scope handle redirects recheck the resolved kind against the sandbox
 allowlist before rewriting dispatch arguments: the server's earlier gate
 only saw the caller's kind, which a conversion can change.
+
+Search traces reuse agentlog refs without tags or chunks: one best-effort
+INSERT after dispatch, never an embedding/summarize/keywords work item.
+Call-local stage evidence retains pre-cut candidates (50 plus the total),
+so floor/fold/page misses remain attributable without extra retrieval queries.
+Default agentlog listings omit traces; ``/traces`` is the explicit read door.
 """
 
 from __future__ import annotations

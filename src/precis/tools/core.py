@@ -734,7 +734,15 @@ def get(
     try:
         payload: dict[str, Any] = {"kind": kind, "id": id, "view": view, "q": q}
         if args:
-            err = _check_reserved_args(args, reserved=("kind", "id", "view", "q"))
+            trace_filters = (
+                kind == "agentlog"
+                and isinstance(id, str)
+                and (id == "/traces" or id.startswith("/traces?"))
+            )
+            reserved = (
+                ("id", "view", "q") if trace_filters else ("kind", "id", "view", "q")
+            )
+            err = _check_reserved_args(args, reserved=reserved)
             if err is not None:
                 return err
             payload["__extras__"] = dict(args)

@@ -48,7 +48,7 @@ from precis.runtime._shared import (
 from precis.store._chunks_ops import ANN_STATEMENT_TIMEOUT_MS
 from precis.store._mappers import SEMANTIC_DISTANCE_FLOOR
 from precis.store.types import Tag
-from precis.utils import handle_registry
+from precis.utils import handle_registry, search_trace
 from precis.utils.search_merge import (
     SearchHit,
     block_hits_to_search_hits,
@@ -753,6 +753,7 @@ class SearchMixin(RuntimeShape):
         eligible = self._cross_kind_kinds()
         normalized = kind.strip().lower()
         if normalized in _CROSS_KIND_ALIASES:
+            search_trace.resolved_kinds(eligible)
             return eligible
         if normalized == _CROSS_KIND_SOURCE_ALIAS:
             eligible_set = set(eligible)
@@ -767,11 +768,13 @@ class SearchMixin(RuntimeShape):
                         "kind='*' for the full cross-kind fan-out"
                     ),
                 )
+            search_trace.resolved_kinds(list(_CROSS_KIND_SOURCE_KINDS))
             return list(_CROSS_KIND_SOURCE_KINDS)
 
         requested = [tok.strip() for tok in kind.split(",")]
         requested = [t for t in requested if t]
         if not requested:
+            search_trace.resolved_kinds(eligible)
             return eligible
 
         bad = [t for t in requested if t not in eligible]

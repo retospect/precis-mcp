@@ -116,7 +116,7 @@ from precis.protocol import KindSpec
 from precis.response import Response
 from precis.store import Tag
 from precis.store.types import ActorSlug, ChunkInsert, Ref
-from precis.utils import handle_registry
+from precis.utils import handle_registry, search_trace
 from precis.utils.db_retry import retry_locked
 from precis.utils.edit_resolve import (
     EditOp,
@@ -2747,6 +2747,10 @@ class MemoryHandler(NumericRefHandler):
             include_ref_ids=include_ref_ids,
             chunk_scope=chunk_scope,
             hard_cut=True,
+        )
+        search_trace.page(
+            [search_trace.ref_handle(ref, block) for block, ref, _ in hits],
+            rendered=True,
         )
         if not hits:
             tag_suffix = f" tagged {normalized}" if normalized else ""

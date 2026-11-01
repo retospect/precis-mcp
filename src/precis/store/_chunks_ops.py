@@ -469,7 +469,7 @@ from precis.store._tag_filter import (
     wiki_fence,
 )
 from precis.store.types import ChunkInsert, ChunkRow, Density, Ref
-from precis.utils import handle_registry
+from precis.utils import handle_registry, search_trace
 from precis.utils.angle import angle_anchors
 from precis.utils.canon import RANK_BONUS, boost_ref_ids, lexical_q
 
@@ -1292,7 +1292,15 @@ class ChunkStore:
                 rows = conn.execute(
                     _sql(f"(SELECT {_SCOPED_OR_TSQUERY})"), [q, *params[1:]]
                 ).fetchall()
-        return [_unpack_search_row(r) for r in rows]
+        unpacked = [_unpack_search_row(r) for r in rows]
+        if search_trace.active():
+            for rank, (block, ref, _score) in enumerate(unpacked, offset + 1):
+                search_trace.observe(
+                    search_trace.ref_handle(ref, block),
+                    lexical_rank=rank,
+                    fused_rank=rank,
+                )
+        return unpacked
 
     def search_chunks_keywords(
         self,
@@ -1592,9 +1600,10 @@ class ChunkStore:
         # after a deploy. Twenty minutes later both took ~0.1-0.2 s. So
         # the in-scan form has a slow tail under load, and this form
         # costs nothing when the box is quiet.
+        tracing = search_trace.active()
         outer_where = ""
         distance_params: list[Any] = []
-        if max_distance is not None:
+        if max_distance is not None and not tracing:
             outer_where = "WHERE s.dist < %s "
             distance_params = [float(max_distance)]
 
@@ -1623,12 +1632,30 @@ class ChunkStore:
                 *([qv] if order_vec else []),
                 limit + offset,
                 *distance_params,
-                offset,
+                0 if tracing else offset,
             ]
             sql = f"SELECT * FROM ({core}) s {outer_where}ORDER BY s.dist ASC OFFSET %s"
             _prepare_filtered_ann(conn, limit + offset)
             rows = conn.execute(sql, params).fetchall()
-        return [_unpack_search_row(r) for r in rows]
+        unpacked = [_unpack_search_row(r) for r in rows]
+        if tracing:
+            kept = []
+            for rank, (block, ref, distance) in enumerate(unpacked, 1):
+                cut = (
+                    "corpus-floor"
+                    if max_distance is not None and not distance < max_distance
+                    else None
+                )
+                search_trace.observe(
+                    search_trace.ref_handle(ref, block),
+                    semantic_distance=distance,
+                    fused_rank=rank,
+                    cut=cut,
+                )
+                if cut is None:
+                    kept.append((block, ref, distance))
+            return kept[offset:]
+        return unpacked
 
     def search_chunks_fused(
         self,
@@ -1856,6 +1883,10 @@ class ChunkStore:
             + or_exists
         )
 
+        # Observe the bounded pre-cut pool in this query, not a second
+        # retrieval. RRF still reads the filtered sem leg, so rejected
+        # neighbours never contribute a score; the original page is cut below.
+        tracing = search_trace.active()
         # gr513663: the semantic-only floor drops fused rows no lexical
         # leg corroborated once their distance clears the stricter bar.
         # ``lex_any`` counts as corroboration too — it is still a term
@@ -1866,7 +1897,7 @@ class ChunkStore:
         # the rendered fold hides ``d > t`` only, and the two must agree
         # (gr514956 review).
         sem_only_where = ""
-        if semantic_only_max_distance is not None:
+        if semantic_only_max_distance is not None and not tracing:
             sem_only_where = (
                 f"WHERE ({corrob_expr}"
                 "OR (SELECT s2.d FROM sem s2 WHERE s2.cid = fused.cid) <= %s)"
@@ -1875,7 +1906,7 @@ class ChunkStore:
         # gr514956: the render fold needs each row's sem-leg distance and
         # corroboration verdict to decide what hides behind the cursor.
         fold_cols = ""
-        if fold_info_out is not None:
+        if fold_info_out is not None or tracing:
             fold_cols = (
                 ", (SELECT s3.d FROM sem s3 WHERE s3.cid = fused.cid) AS sem_d"
                 f", ({corrob_expr}) AS corroborated"
@@ -1893,6 +1924,22 @@ class ChunkStore:
                 f"THEN {float(RANK_BONUS)!r} ELSE 0 END AS canon_score"
             )
             order_sql = "canon_score"
+        trace_cols = ""
+        if tracing:
+            lex_rank = "(SELECT l.rnk FROM lex l WHERE l.cid = fused.cid)"
+            if or_leg:
+                lex_rank = (
+                    f"coalesce({lex_rank}, "
+                    "(SELECT a.rnk FROM lex_any a WHERE a.cid = fused.cid))"
+                )
+            trace_cols = (
+                f", {lex_rank} AS lexical_rank"
+                ", (SELECT s.d FROM sem_raw s WHERE s.cid = fused.cid) AS raw_d"
+            )
+        sem_input = "sem_raw" if tracing else f"({sem_core})"
+        sem_raw_cte = f"sem_raw AS ({sem_core})," if tracing else ""
+        sem_union = "sem_raw" if tracing else "sem"
+        outer_page = "" if tracing else "LIMIT %s OFFSET %s"
         sql = f"""
             WITH lex AS (
                 SELECT c.chunk_id AS cid,
@@ -1907,9 +1954,9 @@ class ChunkStore:
                       {where_extra}
                 LIMIT %s
             ),
-            {lex_any_cte}sem AS (
+            {lex_any_cte}{sem_raw_cte}sem AS (
                 SELECT x.cid, x.d, row_number() OVER (ORDER BY x.d ASC) AS rnk
-                FROM ({sem_core}) x
+                FROM {sem_input} x
                 {sem_outer_where}
             ),
             fused AS (
@@ -1925,16 +1972,16 @@ class ChunkStore:
                 FROM (
                     SELECT cid FROM lex
                     UNION
-                    {lex_any_union}SELECT cid FROM sem
+                    {lex_any_union}SELECT cid FROM {sem_union}
                 ) u
             )
-            SELECT {proj}, {_REFS_COLS_ALIASED}, {score_sql}{fold_cols}
+            SELECT {proj}, {_REFS_COLS_ALIASED}, {score_sql}{fold_cols}{trace_cols}
             FROM fused
             JOIN chunks c ON c.chunk_id = fused.cid
             JOIN refs r ON r.ref_id = c.ref_id
             {sem_only_where}
             ORDER BY {order_sql} DESC
-            LIMIT %s OFFSET %s
+            {outer_page}
         """
 
         # Widen the inner CTE LIMITs by ``offset`` so the outer fused
@@ -1973,22 +2020,51 @@ class ChunkStore:
         full_params.extend([k] * (3 if or_leg else 2))
         if canon_ids:
             full_params.append(canon_ids)
-        if fold_info_out is not None and or_corrob:
+        if (fold_info_out is not None or tracing) and or_corrob:
             full_params.append(q)
-        if semantic_only_max_distance is not None:
+        if semantic_only_max_distance is not None and not tracing:
             if or_corrob:
                 full_params.append(q)
             full_params.append(float(semantic_only_max_distance))
-        full_params.append(limit)
-        full_params.append(offset)
+        if not tracing:
+            full_params.append(limit)
+            full_params.append(offset)
 
         with self.pool.connection() as conn:
             _prepare_filtered_ann(conn, inner_limit)
-            rows = conn.execute(sql, full_params).fetchall()
-        unpacked = [_unpack_search_row(r) for r in rows]
+            db_rows: list[tuple[Any, ...]] = conn.execute(sql, full_params).fetchall()
+        unpacked = [_unpack_search_row(r) for r in db_rows]
+        if tracing:
+            kept_rows = []
+            kept_hits = []
+            for rank, (raw, hit) in enumerate(zip(db_rows, unpacked, strict=True), 1):
+                block, ref, _score = hit
+                sem_d, corroborated, lex_rank, raw_d = raw[_SCORE_IDX + 1 :]
+                cut = None
+                if lex_rank is None and sem_d is None:
+                    cut = "corpus-floor"
+                elif (
+                    semantic_only_max_distance is not None
+                    and not corroborated
+                    and sem_d is not None
+                    and sem_d > semantic_only_max_distance
+                ):
+                    cut = "fold"
+                search_trace.observe(
+                    search_trace.ref_handle(ref, block),
+                    lexical_rank=int(lex_rank) if lex_rank is not None else None,
+                    semantic_distance=float(raw_d) if raw_d is not None else None,
+                    fused_rank=rank,
+                    cut=cut,
+                )
+                if cut is None:
+                    kept_rows.append(raw)
+                    kept_hits.append(hit)
+            db_rows = kept_rows[offset : offset + limit]
+            unpacked = kept_hits[offset : offset + limit]
         if fold_info_out is not None:
             fold_info_out.clear()
-            for raw, (block, _ref, _s) in zip(rows, unpacked, strict=True):
+            for raw, (block, _ref, _s) in zip(db_rows, unpacked, strict=True):
                 sem_d = raw[_SCORE_IDX + 1]
                 fold_info_out[block.id] = (
                     float(sem_d) if isinstance(sem_d, (int, float)) else None,

@@ -45,6 +45,7 @@ from typing import Any
 
 from precis.store import SEMANTIC_DISTANCE_FLOOR, Ref
 from precis.taproot.notation import normalize_notation
+from precis.utils import search_trace
 from precis.utils.embed_query import query_vec_for
 
 #: Standard RRF damping constant, matching ``search_merge._merge_rrf`` and
@@ -74,6 +75,10 @@ def _fuse(streams: list[list[Ref]], limit: int) -> list[Ref]:
                 first_seen[ref.id] = ref
                 order.append(ref.id)
     ranked = sorted(order, key=lambda rid: (-totals[rid], order.index(rid)))
+    for rank, rid in enumerate(ranked, 1):
+        search_trace.observe(
+            search_trace.ref_handle(first_seen[rid]), fused_rank=rank, cut="page"
+        )
     return [first_seen[rid] for rid in ranked[:limit]]
 
 
@@ -202,6 +207,8 @@ def fused_ref_hits(
             refs = [r for r in refs if r.id not in exclude_set]
         if include_set is not None:
             refs = [r for r in refs if r.id in include_set]
+        for rank, ref in enumerate(refs, 1):
+            search_trace.observe(search_trace.ref_handle(ref), lexical_rank=rank)
         return refs
 
     streams: list[list[Ref]] = []

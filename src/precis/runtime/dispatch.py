@@ -42,6 +42,7 @@ from typing import TYPE_CHECKING, Any
 
 import psycopg
 
+from precis.agentlog import write_search_trace
 from precis.errors import (
     BadInput,
     Denied,
@@ -89,7 +90,7 @@ from precis.store.revision_context import (
     process_actor,
     revision_context,
 )
-from precis.utils import handle_registry
+from precis.utils import handle_registry, search_trace
 from precis.utils.canon import CanonState
 from precis.utils.canon import bind as canon_bind
 from precis.utils.canon import unbind as canon_unbind
@@ -1396,6 +1397,35 @@ class DispatchMixin(RuntimeShape):
         return dispatch_args, expanded.ack
 
     def dispatch_with_status(
+        self, verb: str, args: dict[str, Any], *, fold: bool = False
+    ) -> tuple[str, bool]:
+        if (
+            verb != "search"
+            or self.store is None
+            or search_trace.CURRENT.get() is not None
+            or os.environ.get("PRECIS_SEARCH_TRACES", "1").strip().lower()
+            in {"0", "off", "false", "no"}
+        ):
+            return self._dispatch_status(verb, args, fold=fold)
+        try:
+            trace = search_trace.SearchTrace()
+            token = search_trace.CURRENT.set(trace)
+        except Exception:
+            log.warning("search trace: collector unavailable", exc_info=True)
+            return self._dispatch_status(verb, args, fold=fold)
+        original = dict(args)
+        try:
+            result = self._dispatch_status(verb, args, fold=fold)
+            try:
+                write_search_trace(self.store, original, trace)
+            except Exception:
+                log.warning("search trace: attribution failed", exc_info=True)
+            return result
+        finally:
+            trace.closed = True
+            search_trace.CURRENT.reset(token)
+
+    def _dispatch_status(
         self, verb: str, args: dict[str, Any], *, fold: bool = False
     ) -> tuple[str, bool]:
         """Run one verb call and report whether it errored.

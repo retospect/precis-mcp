@@ -62,6 +62,57 @@ SOURCE_ENV_VAR = "PRECIS_CURRENT_SOURCE"
 #: Default retention window (days) before the sweeper reaps an agentlog
 #: and its ``touched`` links. Overridable via env in the sweeper.
 RETENTION_DAYS = 30
+SEARCH_TRACE_RETENTION_DAYS = 60
+
+
+def write_search_trace(store: Store, args: dict[str, Any], trace: Any) -> None:
+    """One INSERT, no tags/chunks or reads; skip a saturated pool after 50 ms.
+
+    ``trace`` identifies disposable telemetry; ``source`` remains producer
+    attribution and must never decide whether an ordinary run is purged.
+    """
+    try:
+        candidates, total = trace.snapshot()
+        kind = args.get("kind") or "*"
+        kinds = trace.kinds or (
+            kind
+            if isinstance(kind, list)
+            else [k.strip() for k in str(kind).split(",")]
+        )
+        q = args.get("q")
+        meta = mask_secrets_deep(
+            {
+                "source": "search",
+                "trace": "search",
+                "q": q,
+                "q_len": len(q) if isinstance(q, str) else 0,
+                "mode": args.get("mode") or "hybrid",
+                "kinds": kinds,
+                "view": args.get("view"),
+                "session": current_from_env(),
+                "candidates": candidates,
+                "candidates_total": total,
+            }
+        )
+        if isinstance(meta["q"], str):
+            meta["q"] = meta["q"][:500]
+        with store.pool.connection(timeout=0.05) as conn, conn.transaction():
+            conn.execute(
+                "INSERT INTO refs (kind, title, meta) "
+                "VALUES ('agentlog', 'Search trace', %s::jsonb)",
+                (json.dumps(meta),),
+            )
+    except Exception:
+        log.warning("agentlog: search trace write failed", exc_info=True)
+
+
+def search_trace_retention_days() -> int:
+    raw = os.environ.get("PRECIS_SEARCH_TRACE_RETENTION_DAYS", "")
+    try:
+        days = int(raw) if raw else SEARCH_TRACE_RETENTION_DAYS
+        return days if days > 0 else SEARCH_TRACE_RETENTION_DAYS
+    except ValueError:
+        return SEARCH_TRACE_RETENTION_DAYS
 
 
 def open_log(
@@ -364,7 +415,7 @@ def read_checkpoint(store: Store, *, log_id: int) -> dict[str, Any]:
 
 def gc_stale_logs(store: Store, *, older_than_days: int = RETENTION_DAYS) -> int:
     """Reap agentlogs (and their ``touched`` links) past the retention
-    window. Returns the number of agentlogs soft-deleted.
+    window. Returns the number of agentlogs reaped.
 
     Deletes the ``touched`` link rows outright — they're pure
     attribution, worthless once the run record is gone — but NEVER the
@@ -373,18 +424,24 @@ def gc_stale_logs(store: Store, *, older_than_days: int = RETENTION_DAYS) -> int
     soft-deleted (``retired_at``) like any other ref, keeping the row
     for forensics while dropping it from every live view.
 
-    Cheap: one DELETE on links + one UPDATE on refs per pass.
+    Search traces have no chunks and are physically deleted on their own
+    retention window: soft retirement alone would leave their bulky candidate
+    JSONB growing forever. Ordinary run records retain the forensic policy.
     """
     with store.tx() as conn:
-        ids = [
-            int(r[0])
-            for r in conn.execute(
-                "SELECT ref_id FROM refs "
-                "WHERE kind = 'agentlog' AND retired_at IS NULL "
-                "  AND created_at < now() - %s::interval",
-                (f"{int(older_than_days)} days",),
-            ).fetchall()
-        ]
+        rows = conn.execute(
+            "SELECT ref_id, meta->>'trace' = 'search' FROM refs "
+            "WHERE kind = 'agentlog' "
+            "  AND (retired_at IS NULL OR meta->>'trace' = 'search') "
+            "  AND created_at < now() - CASE "
+            "    WHEN meta->>'trace' = 'search' THEN %s::interval "
+            "    ELSE %s::interval END",
+            (
+                f"{search_trace_retention_days()} days",
+                f"{int(older_than_days)} days",
+            ),
+        ).fetchall()
+        ids = [int(r[0]) for r in rows]
         if not ids:
             return 0
         # Drop the attribution edges (either endpoint — 'touched' is
@@ -397,9 +454,12 @@ def gc_stale_logs(store: Store, *, older_than_days: int = RETENTION_DAYS) -> int
         )
         conn.execute(
             "UPDATE refs SET retired_at = now(), updated_at = now() "
-            "WHERE ref_id = ANY(%s)",
+            "WHERE ref_id = ANY(%s) AND meta->>'trace' IS DISTINCT FROM 'search'",
             (ids,),
         )
+        trace_ids = [int(r[0]) for r in rows if r[1]]
+        if trace_ids:
+            conn.execute("DELETE FROM refs WHERE ref_id = ANY(%s)", (trace_ids,))
         return len(ids)
 
 
@@ -426,6 +486,7 @@ def list_recent(store: Store, *, limit: int = 200) -> list[dict[str, Any]]:
               FROM refs r
              WHERE r.kind = 'agentlog'
                AND r.retired_at IS NULL
+               AND r.meta->>'trace' IS DISTINCT FROM 'search'
              ORDER BY r.created_at DESC
              LIMIT %s
             """,

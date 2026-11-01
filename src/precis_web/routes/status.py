@@ -139,6 +139,7 @@ def _kind_counts(store: Store) -> list[dict[str, Any]]:
     with _connect(store) as conn:
         rows = conn.execute(
             "SELECT kind, count(*)::int FROM refs WHERE retired_at IS NULL "
+            "AND (kind <> 'agentlog' OR meta->>'trace' IS DISTINCT FROM 'search') "
             "GROUP BY kind ORDER BY count(*) DESC"
         ).fetchall()
     return [{"kind": r[0], "count": int(r[1])} for r in rows]

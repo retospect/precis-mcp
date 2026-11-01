@@ -50,7 +50,9 @@ _TRIAGE_KEYS: tuple[str, ...] = (
 )
 #: Meta keys never inlined — too bulky for the summary; ``view='raw'``
 #: carries them verbatim.
-_BULKY_KEYS: frozenset[str] = frozenset({"prompt", "checkpoint", "result"})
+_BULKY_KEYS: frozenset[str] = frozenset(
+    {"prompt", "checkpoint", "result", "candidates"}
+)
 #: Caps on the generic section: lines shown and chars per value.
 _EXTRA_META_CAP = 8
 _META_VALUE_CHARS = 200
@@ -140,7 +142,7 @@ class AgentLogHandler(NumericRefHandler):
     # ── list-view filters (id='/<view>') ────────────────────────────
 
     def _supported_list_views(self) -> tuple[str, ...]:
-        return ("recent", "calls", "sessions")
+        return ("recent", "calls", "sessions", "traces")
 
     def get(
         self,
@@ -152,8 +154,22 @@ class AgentLogHandler(NumericRefHandler):
         # args= extras gate passes it (the job /logs precedent, gr508686).
         # Any value on a non-``calls`` read is refused below.
         limit: str | int | None = None,
+        since: str | int | None = None,
+        kind: str | None = None,
         **_kw: Any,
     ) -> Response:
+        if isinstance(id, str) and (id == "/traces" or id.startswith("/traces?")):
+            _, _, qs = id.partition("?")
+            params = dict(parse_qsl(qs, keep_blank_values=True))
+            for key, value in (("since", since), ("kind", kind), ("limit", limit)):
+                if value is not None:
+                    params.setdefault(key, str(value))
+            return self._render_traces(params)
+        if kind is not None:
+            raise BadInput(
+                "kind= filter applies only to id='/traces'",
+                next="get(kind='agentlog', id='/traces', args={'since': '90d'})",
+            )
         if (r := self._route_find(id=id, view=view, q=q)) is not None:
             return r
         single = (
@@ -187,7 +203,7 @@ class AgentLogHandler(NumericRefHandler):
                 "id='/calls?…' or id='/sessions?…'",
                 next="get(kind='agentlog', id=<N>, view='calls', limit=50)",
             )
-        return super().get(id=id, view=view, q=q, **_kw)
+        return super().get(id=id, view=view, q=q, since=since, **_kw)
 
     def _list_view(self, view: str) -> Response | None:
         # '/calls' and '/calls?kind=paper&view=toc&errors=1' both route
@@ -199,6 +215,63 @@ class AgentLogHandler(NumericRefHandler):
             _, _, query_string = view.partition("?")
             return self._render_sessions_mining(query_string)
         return super()._list_view(view)
+
+    def _render_traces(self, params: dict[str, str]) -> Response:
+        from precis.handlers.job import _parse_logs_int
+
+        unknown = sorted(set(params) - {"since", "kind", "limit", "page_size"})
+        if unknown:
+            raise BadInput(
+                f"unknown /traces filters: {', '.join(unknown)}",
+                options=["since", "kind", "page_size"],
+                next="get(kind='agentlog', id='/traces?since=90d&kind=memory')",
+            )
+        hours = _parse_logs_int(
+            params.get("since"),
+            default=90 * 24,
+            field="since",
+            example="since='90d'",
+            units=True,
+        )
+        limit = _parse_logs_int(
+            params.get("page_size") or params.get("limit"),
+            default=50,
+            field="page_size",
+            example="page_size=50",
+        )
+        if hours <= 0 or limit <= 0:
+            raise BadInput(
+                "since and page_size must be positive",
+                next="get(kind='agentlog', id='/traces?since=90d&page_size=50')",
+            )
+        clauses = [
+            "kind = 'agentlog'",
+            "retired_at IS NULL",
+            "meta->>'trace' = 'search'",
+            "created_at >= now() - %s::interval",
+        ]
+        values: list[Any] = [f"{hours} hours"]
+        if params.get("kind"):
+            clauses.append("meta->'kinds' ? %s")
+            values.append(params["kind"])
+        values.append(min(limit, 200))
+        with self.store.pool.connection() as conn:
+            rows = conn.execute(
+                "SELECT ref_id, created_at, meta FROM refs WHERE "
+                + " AND ".join(clauses)
+                + " ORDER BY created_at DESC, ref_id DESC LIMIT %s",
+                values,
+            ).fetchall()
+        lines = ["# Search traces"]
+        for ident, created, meta in rows:
+            lines.append(
+                f"ag{ident} | {created.isoformat()} | q={_meta_value(meta.get('q'))} "
+                f"| {meta.get('mode')} | {meta.get('kinds')} "
+                f"| {meta.get('candidates_total', 0)} candidates"
+            )
+        if not rows:
+            lines.append("no search traces match")
+        return Response(body="\n".join(lines), result_count=len(rows))
 
     def _render_calls_view(self, ref: Any, *, limit: Any = None) -> Response:
         """``get(kind='agentlog', id=N, view='calls')`` — the run's own
@@ -508,6 +581,35 @@ class AgentLogHandler(NumericRefHandler):
         body = super()._render_one(ref, tags)
         meta = ref.meta or {}
         lines: list[str] = []
+        if meta.get("trace") == "search":
+            lines = [
+                body,
+                f"q: {_meta_value(meta.get('q'))}",
+                f"mode: {meta.get('mode')} | kinds: {meta.get('kinds')} "
+                f"| view: {meta.get('view')} | session: {meta.get('session')}",
+                f"candidates: {len(meta.get('candidates', []))} "
+                f"of {meta.get('candidates_total', 0)}",
+                "",
+                "| handle | lexical_rank | semantic_distance | fused_rank | cut | rendered |",
+                "| --- | --- | --- | --- | --- | --- |",
+            ]
+            for candidate in meta.get("candidates", []):
+                lines.append(
+                    "| "
+                    + " | ".join(
+                        str(candidate.get(key))
+                        for key in (
+                            "handle",
+                            "lexical_rank",
+                            "semantic_distance",
+                            "fused_rank",
+                            "cut",
+                            "rendered",
+                        )
+                    )
+                    + " |"
+                )
+            return "\n".join(lines)
         shown: set[str] = set()
         for key in _TRIAGE_KEYS:
             val = meta.get(key)

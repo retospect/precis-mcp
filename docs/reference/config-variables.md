@@ -278,6 +278,18 @@ dollars (gr162594: the quest lane never reports a $ cost).
 
 ---
 
+Search traces: `PRECIS_SEARCH_TRACE_RETENTION_DAYS` (60) is the separate
+positive-integer retention window for agentlog `meta.trace='search'`
+rows; invalid values fall back to 60. The same sweeper GC physically
+deletes expired traces, independently of ordinary logs' 30-day soft
+retirement. `PRECIS_SEARCH_TRACES` defaults on;
+`0`/`off`/`false`/`no` disables the best-effort single-INSERT trace on each
+search. Traces keep at most 50 pre-cut candidates plus `candidates_total`,
+and at most 500 query characters plus the original `q_len`. Pool acquisition
+waits at most 50 ms; saturation skips the best-effort trace write.
+Traces have no chunks, embeddings, summaries or keywords; default agentlog
+listings and searches omit them.
+
 ## 10. Tier-3 IPC & build stamps (not configuration)
 
 - **Per-invocation IPC** (a parent sets them per child; never

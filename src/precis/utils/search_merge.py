@@ -42,7 +42,7 @@ from typing import Any, Literal
 
 from precis._result_budget import size_cell as _size_cell
 from precis.response import Response
-from precis.utils import handle_registry
+from precis.utils import handle_registry, search_trace
 from precis.utils.search_header import format_search_headline
 
 # Reciprocal-rank-fusion constant.  60 is the value Cormack et al.
@@ -405,7 +405,23 @@ def merge_and_render(
         body = empty_body or _empty_body(header_noun, query)
         return Response(body=body, result_count=0)
 
+    for rank, hit in enumerate(merged, 1):
+        handle = (
+            hit.uhandle
+            or handle_registry.try_format(hit.kind, hit.ref_id)
+            or hit.handle
+        )
+        search_trace.observe(handle, fused_rank=rank)
     rendered = merged[:page_size]
+    search_trace.page(
+        [
+            hit.uhandle
+            or handle_registry.try_format(hit.kind, hit.ref_id)
+            or hit.handle
+            for hit in rendered
+        ],
+        rendered=True,
+    )
     total_pre_cap = len(merged)
 
     # ``format_search_headline`` requires a concrete query string.

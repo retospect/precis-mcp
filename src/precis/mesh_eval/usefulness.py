@@ -65,6 +65,7 @@ _ORPHAN_SQL = """
            count(*) AS live
       FROM refs r
      WHERE r.retired_at IS NULL
+       AND (r.kind <> 'agentlog' OR r.meta->>'trace' IS DISTINCT FROM 'search')
      GROUP BY r.kind
      ORDER BY orphans DESC, live DESC
 """
@@ -76,6 +77,7 @@ _DUP_SQL = """
                AS norm_title, count(*) AS n
           FROM refs r
          WHERE r.retired_at IS NULL
+           AND (r.kind <> 'agentlog' OR r.meta->>'trace' IS DISTINCT FROM 'search')
          GROUP BY r.kind, norm_title
         HAVING count(*) > 1
       ) d
@@ -97,6 +99,7 @@ _STALE_SQL = """
            count(*) AS live
       FROM refs r
      WHERE r.retired_at IS NULL
+       AND (r.kind <> 'agentlog' OR r.meta->>'trace' IS DISTINCT FROM 'search')
      GROUP BY r.kind
      ORDER BY stale_orphans DESC
 """

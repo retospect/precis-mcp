@@ -620,7 +620,9 @@ class ReviewsMixin:
                 str(r[0]): int(r[1])
                 for r in c.execute(
                     "SELECT kind, count(*) FROM refs "
-                    "WHERE retired_at IS NULL GROUP BY kind"
+                    "WHERE retired_at IS NULL "
+                    "AND (kind <> 'agentlog' OR meta->>'trace' IS DISTINCT FROM 'search') "
+                    "GROUP BY kind"
                 ).fetchall()
             }
             rows = c.execute(
@@ -642,6 +644,7 @@ class ReviewsMixin:
                 "   ORDER BY r.at DESC, r.revision_id DESC, t.o DESC LIMIT 1"
                 ") latest ON true "
                 "WHERE f.retired_at IS NULL AND f.trust_confidence = 'considered' "
+                "AND (f.kind <> 'agentlog' OR f.meta->>'trace' IS DISTINCT FROM 'search') "
                 "GROUP BY 1, 2",
                 {"days": days},
             ).fetchall()

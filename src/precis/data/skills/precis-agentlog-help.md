@@ -67,6 +67,8 @@ requested tier/pin.
 ```
 get(kind='agentlog', id=42)         # one run
 get(kind='agentlog', id='/recent')  # recent runs, newest-first
+get(kind='agentlog', id='/traces', args={'since': '90d', 'kind': 'memory'})
+                                  # search traces, excluded from /recent
 search(kind='agentlog', q='...')    # lexical over run titles
 search(kind='agentlog', link='dr42995')  # runs linked to that ref — the
                                     # touched edges included, so this is
@@ -85,6 +87,16 @@ The sweeper (`gc_stale_logs`) reaps agentlogs past
 `PRECIS_AGENTLOG_RETENTION_DAYS` (default 30): `touched` links go —
 they're pure attribution — but **never the chunks** (append-only).
 The ref is soft-deleted, kept for forensics.
+
+Search calls append one best-effort `meta.trace='search'` row after the
+page is built, with query, mode, kinds, view, current agentlog session and
+up to 50 pre-cut candidates (`candidates_total` keeps the uncapped count).
+Reading that row shows lexical ranks, semantic distances, fused ranks,
+cut reasons and whether each candidate rendered. Traces create no chunks
+or derived work and never alter search output. They have their own
+`PRECIS_SEARCH_TRACE_RETENTION_DAYS` window (default 60 days), physically
+deleted by the same sweeper to bound storage rather than retained as
+tombstones; `PRECIS_SEARCH_TRACES=0` disables writes.
 
 ## Web
 

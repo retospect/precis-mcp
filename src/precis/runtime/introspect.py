@@ -130,7 +130,8 @@ class IntrospectionMixin(RuntimeShape):
         assert self.store is not None  # gate above
         with self.store.pool.connection() as conn:
             total = conn.execute(
-                "SELECT count(*) FROM refs WHERE kind = %s AND retired_at IS NULL",
+                "SELECT count(*) FROM refs WHERE kind = %s AND retired_at IS NULL "
+                "AND (kind <> 'agentlog' OR meta->>'trace' IS DISTINCT FROM 'search')",
                 (kind,),
             ).fetchone()
             if key is None:
@@ -140,6 +141,7 @@ class IntrospectionMixin(RuntimeShape):
                            min(left(e.value::text, %s)) AS example
                       FROM refs r, jsonb_each(coalesce(r.meta, '{}'::jsonb)) e
                      WHERE r.kind = %s AND r.retired_at IS NULL
+                       AND (r.kind <> 'agentlog' OR r.meta->>'trace' IS DISTINCT FROM 'search')
                      GROUP BY e.key, jsonb_typeof(e.value)
                      ORDER BY n DESC, e.key
                      LIMIT %s
@@ -154,6 +156,7 @@ class IntrospectionMixin(RuntimeShape):
                       FROM refs r,
                            jsonb_each(r.meta -> %s) e
                      WHERE r.kind = %s AND r.retired_at IS NULL
+                       AND (r.kind <> 'agentlog' OR r.meta->>'trace' IS DISTINCT FROM 'search')
                        AND jsonb_typeof(r.meta -> %s) = 'object'
                      GROUP BY e.key, jsonb_typeof(e.value)
                      ORDER BY n DESC, e.key
@@ -229,7 +232,11 @@ class IntrospectionMixin(RuntimeShape):
             filter_tags.append(f"STATUS:{str(status).strip()}")
 
         assert self.store is not None  # gate above
-        clauses = ["r.retired_at IS NULL", "r.kind = %s"]
+        clauses = [
+            "r.retired_at IS NULL",
+            "r.kind = %s",
+            "(r.kind <> 'agentlog' OR r.meta->>'trace' IS DISTINCT FROM 'search')",
+        ]
         params: list[Any] = [kind]
         if filter_tags:
             frag, frag_params = build_tag_filter(filter_tags, ref_alias="r")

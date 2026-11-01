@@ -476,6 +476,7 @@ def _scan_window(
             int(r[0])
             for r in conn.execute(
                 "SELECT ref_id FROM refs WHERE retired_at IS NULL AND kind = %s "
+                "AND (kind <> 'agentlog' OR meta->>'trace' IS DISTINCT FROM 'search') "
                 "AND ref_id > %s ORDER BY ref_id LIMIT %s",
                 (kind, after, size),
             ).fetchall()
@@ -484,12 +485,7 @@ def _scan_window(
 
 
 def _kind_count(store: Store, kind: str) -> int:
-    with store.pool.connection() as conn:
-        row = conn.execute(
-            "SELECT count(*) FROM refs WHERE retired_at IS NULL AND kind = %s",
-            (kind,),
-        ).fetchone()
-    return int(row[0]) if row else 0
+    return store.count_refs(kind=kind)
 
 
 def dup_window_size(n_live: int, scan_cap: int) -> int:

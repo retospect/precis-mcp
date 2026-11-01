@@ -71,7 +71,7 @@ from precis.store import (
     Tag,
 )
 from precis.store.types import _KIND_STATUS_VALUES
-from precis.utils import handle_registry, tag_chips
+from precis.utils import handle_registry, search_trace, tag_chips
 from precis.utils.embed_query import query_vec_for
 from precis.utils.link_tag_ops import (
     _DEFAULT_RELATION,
@@ -1275,6 +1275,9 @@ class NumericRefHandler(Handler):
             include_ref_ids=include_ref_ids,
             card_kinds=self.search_card_kinds,
         )
+        search_trace.page(
+            [search_trace.ref_handle(ref) for ref in hit_refs], rendered=True
+        )
         if not hit_refs:
             tag_suffix = f" tagged {normalized_tags}" if normalized_tags else ""
             body = f"no {self._sense()} entries match {q!r}{tag_suffix}"
@@ -2464,8 +2467,15 @@ class NumericRefHandler(Handler):
         best_by_ref: dict[int, tuple[Any, Ref, float]] = {}
         for block, ref, rank in raw:
             best_by_ref.setdefault(ref.id, (block, ref, rank))
+        for fused_rank, (block, ref, _rank) in enumerate(best_by_ref.values(), 1):
+            search_trace.observe(
+                search_trace.ref_handle(ref, block), fused_rank=fused_rank, cut="page"
+            )
         window_start = max(0, (page - 1) * page_size)
         ordered = list(best_by_ref.values())[window_start : window_start + page_size]
+        search_trace.page(
+            [search_trace.ref_handle(ref, block) for block, ref, _ in ordered]
+        )
         # The count is lexical-only while the hits are now fused, so a
         # semantic-only match would render "3 of 0 matches". Floor the total
         # at what we actually return. (It stays an undercount when semantic
@@ -2587,8 +2597,13 @@ class NumericRefHandler(Handler):
                 and not corroborated
             ):
                 weak.append((block, ref, rank))
+                search_trace.observe(search_trace.ref_handle(ref, block), cut="fold")
             else:
                 shown.append((block, ref, rank))
+        search_trace.page(
+            [search_trace.ref_handle(ref, block) for block, ref, _ in shown],
+            rendered=True,
+        )
         # The headline counts what the page actually shows — folded rows
         # are announced by the hint line, not by "N of K".
         lines = [
