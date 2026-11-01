@@ -659,5 +659,13 @@ def render(inspection: Inspection, slug: str, view: str, args: dict[str, Any]) -
         raise BadInput(
             "side must be top or bottom", options=["top", "bottom"], next=NEXT
         )
-    lines = getattr(inspection, view)(args)
+    # Direct calls, not getattr: the dead-export gate traces callers by name.
+    if view == "wire":
+        lines = inspection.wire(args)
+    elif view == "part":
+        lines = inspection.part(args)
+    elif view == "layer":
+        lines = inspection.layer(args)
+    else:
+        lines = inspection.snippet(args)
     return page(lines, slug, view, args)
