@@ -410,6 +410,8 @@ def _build_dispatch_context(
     ref_id: int,
     title: str,
     meta: dict[str, Any],
+    *,
+    pass_deadline: float | None = None,
 ) -> DispatchContext:
     """Construct a DispatchContext closing over executor helpers.
 
@@ -499,6 +501,7 @@ def _build_dispatch_context(
         is_cancel_requested=_ctx_is_cancel_requested,
         renew_lease=_ctx_renew_lease,
         defer=_ctx_defer,
+        pass_deadline=pass_deadline,
     )
 
 

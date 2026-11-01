@@ -24,6 +24,7 @@ on this dataclass interface, not on ``claude_inproc`` internals.
 from __future__ import annotations
 
 import re
+import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
@@ -109,6 +110,16 @@ class DispatchContext:
     #: built outside the executor (tests).
     defer: Callable[[datetime | None, str], bool] | None = None
 
+    #: Monotonic timestamp (``time.monotonic()``) after which the
+    #: claiming pass is out of wall budget — stamped by the coordinator
+    #: executor from ``PRECIS_COORDINATOR_PASS_BUDGET_S`` (gr549215).
+    #: A cooperative dispatcher polls :meth:`budget_exhausted` between
+    #: units and returns a short ``Yield`` with its checkpoint rather
+    #: than holding the worker rotation for a whole multi-minute run.
+    #: ``None`` = unbounded (contexts built outside the pass, e.g.
+    #: tests).
+    pass_deadline: float | None = None
+
     #: Executor-observed completion stamp in the current transaction.
     #: Reap hooks can use this when their own connection cannot yet see
     #: a poison-guard terminal write. Never inferred from claim-time meta.
@@ -166,3 +177,14 @@ class DispatchContext:
                 f"spawn_child: could not parse job id from put ack: {resp.body!r}"
             )
         return int(m.group(1))
+
+    def budget_exhausted(self) -> bool:
+        """True once the claiming pass's wall deadline has passed.
+
+        Poll between units (a chunk, a review, a spawned step). On
+        ``True`` the dispatcher should checkpoint and ``Yield`` with a
+        near-immediate ``at_time`` wake — the wake_runner re-queues the
+        job for the next rotation, which resumes it from the checkpoint.
+        ``False`` when the context carries no deadline.
+        """
+        return self.pass_deadline is not None and time.monotonic() >= self.pass_deadline

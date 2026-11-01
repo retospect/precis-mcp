@@ -31,6 +31,17 @@ Differences from ``claude_inproc``:
 - The dispatcher path is ``spec.dispatch(ctx, spec)`` only —
   built-in fallback ``if/elif`` doesn't apply here (coordinator
   has no built-in job_types).
+- A per-pass wall budget (``PRECIS_COORDINATOR_PASS_BUDGET_S``,
+  default 120 s; gr549215) bounds how long one pass may hold the
+  worker rotation: a >70 min ``survey_extract`` read starved every
+  other ref-pass on melchior's catch-all. The pass stamps its
+  deadline on each claimed job's :class:`DispatchContext`
+  (``pass_deadline``); a cooperative dispatcher that polls
+  :meth:`DispatchContext.budget_exhausted` between units
+  (``survey_extract`` between chunks) checkpoints and returns a
+  near-immediate ``Yield``, and once the deadline passes the pass
+  releases its not-yet-started claims back to ``STATUS:yielded`` —
+  both are claimable again on the next rotation.
 - A ``children_done`` ``Yield`` also gets ``meta.wake_deadline`` stamped
   at park time (the child-deadlock wake deadline)
   — MAX of the children's own ``params.resources.wall_seconds`` plus
@@ -59,6 +70,7 @@ from typing import TYPE_CHECKING, Any
 
 from psycopg import Connection
 
+from precis.utils.env import env_float
 from precis.workers.executors._common import (
     CANCELLED as _CANCELLED,
 )
@@ -109,6 +121,9 @@ from precis.workers.executors._common import (
 )
 from precis.workers.executors._common import (
     set_status as _set_status,
+)
+from precis.workers.executors._common import (
+    yield_claim as _yield_claim,
 )
 from precis.workers.executors._yield import Done, Yield
 
@@ -220,6 +235,24 @@ def _children_wake_deadline_s(conn: Connection, child_job_ids: list[int]) -> flo
     if not known:
         return floor_s
     return max(max(known) + _WAKE_DEADLINE_MARGIN_S, floor_s)
+
+
+def _pass_budget_s() -> float:
+    """Wall budget (seconds) for one :func:`run_coordinator_pass` —
+    ``PRECIS_COORDINATOR_PASS_BUDGET_S``, default 120. ``<= 0``
+    disables the bound (the pre-gr549215 shape: a pass holds the
+    rotation for as long as its longest slice runs).
+
+    The budget is cooperative, not preemptive: each claimed job sees
+    the pass deadline on its :class:`DispatchContext`
+    (``pass_deadline``), and a dispatcher that polls
+    :meth:`~precis.workers.executors._context.DispatchContext.
+    budget_exhausted` between units yields with its checkpoint so the
+    rotation is released — gr549215: a >70 min ``survey_extract`` held
+    ``job_ssh_node``, ``wake_runner``, ``sweeper`` and
+    ``quest_loop_reconcile`` off melchior's catch-all rotation.
+    """
+    return env_float("PRECIS_COORDINATOR_PASS_BUDGET_S", 120.0)
 
 
 # ── Claim ─────────────────────────────────────────────────────────
@@ -376,7 +409,16 @@ def run_coordinator_pass(
     Each claimed job runs one slice and either reaches terminal
     status or yields. Wake_runner re-queues yielded jobs when their
     wake condition fires.
+
+    The pass is wall-budgeted (:func:`_pass_budget_s`, gr549215): its
+    deadline rides each job's ``ctx.pass_deadline`` so a cooperative
+    dispatcher can checkpoint-and-yield between units, and once the
+    deadline passes the pass releases its not-yet-started claims back
+    to ``STATUS:yielded`` — claimable again next rotation — instead
+    of starting another slice.
     """
+    budget_s = _pass_budget_s()
+    deadline = (time.monotonic() + budget_s) if budget_s > 0 else None
     with store.pool.connection() as conn:
         rows = _claim_jobs(conn, limit=limit)
         if not rows:
@@ -385,8 +427,9 @@ def run_coordinator_pass(
         for ref_id, _title, _meta in rows:
             # Short lease. The slice is meant to finish quickly. NB
             # lease expiry alone does NOT enable takeover: the claim
-            # SQL requires STATUS:queued (see _common.claim_executor_
-            # jobs), so a slice that crashes mid-run sits unreachable
+            # SQL requires STATUS:queued|yielded (see
+            # _common.claim_executor_jobs), so a slice that crashes
+            # mid-run sits unreachable
             # at STATUS:running until the sweeper terminally fails
             # the whole job at PRECIS_STUCK_JOB_HOURS — despite the
             # valid checkpoint in meta.coordinator_state. Requeue-
@@ -405,12 +448,41 @@ def run_coordinator_pass(
 
     ok = 0
     failed = 0
-    for ref_id, title, meta in rows:
+    for i, (ref_id, title, meta) in enumerate(rows):
+        if deadline is not None and time.monotonic() >= deadline:
+            # Budget spent — release the claims this pass never started
+            # so the next rotation resumes them. ``yield_claim`` refunds
+            # the reservation, clears the lease and re-queues at
+            # STATUS:yielded; a ``None`` return means the yield applied
+            # (a raced status change — e.g. a cancel — is left alone).
+            # One failed release must not strand the rest of the batch.
+            released = 0
+            for r_id, _t, _m in rows[i:]:
+                try:
+                    if _yield_claim(store, r_id) is None:
+                        released += 1
+                except Exception:
+                    log.warning(
+                        "coordinator: releasing un-started claim %d "
+                        "failed; it stays STATUS:running for the "
+                        "stuck-job sweeper",
+                        r_id,
+                        exc_info=True,
+                    )
+            log.info(
+                "coordinator: pass budget %gs spent — released %d "
+                "un-started claim(s) to STATUS:yielded",
+                budget_s,
+                released,
+            )
+            break
         try:
             # Built once here — the (store, ref_id, title, meta) cluster
             # this job needs, threaded onward as one DispatchContext rather
             # than four positional args.
-            ctx = _build_dispatch_context(store, ref_id, title, meta)
+            ctx = _build_dispatch_context(
+                store, ref_id, title, meta, pass_deadline=deadline
+            )
             # gr204309: keep the claim-time lease alive for the whole
             # slice, not just its first _LEASE_MINUTES — see
             # _LeaseKeepalive's docstring.

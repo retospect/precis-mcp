@@ -22,7 +22,12 @@ a remote/paid endpoint, so it is rung-aware: once a routed call lands
 ``local`` (no external rate limit, no metered cost) the dispatch skips
 the inter-chunk park and runs the paper to completion — a crash then
 re-runs the paper, cheap under the idempotent dup-skip. A remote or
-unknown placement keeps the per-slice park.
+unknown placement keeps the per-slice park. The unrolled local loop
+is still bounded by the claiming pass's ``ctx.pass_deadline``
+(gr549215): once the coordinator pass's wall budget is spent the
+loop yields between chunks and resumes at the checkpointed ``idx``,
+so one survey can no longer hold the worker rotation for a >70 min
+read.
 
 When every chunk is read the job spawns one ``measure_accept`` child
 and waits on it. ``measure_accept`` draws the deterministic stratified
@@ -1107,7 +1112,19 @@ def _phase_extract(ctx: DispatchContext, state: dict[str, Any]) -> Any:
     # pacing off — see the module docstring.
     local_lane: bool | None = None
     pause_streak = int(state.get("pause_streak") or 0)
-    while idx < len(chunks) and (processed < per_slice or local_lane):
+    # ``ctx.budget_exhausted`` is the third exit (gr549215): the
+    # coordinator pass's wall deadline. Between chunks is the yield
+    # boundary — a pass that spent its budget stops after its current
+    # chunk and the checkpointed ``idx`` resumes it next rotation. The
+    # ``processed == 0`` floor keeps every pass advancing at least one
+    # chunk: a slice dispatched with its deadline already spent (a tiny
+    # budget, or a long preamble) must not re-yield forever at the
+    # same ``idx``.
+    while (
+        idx < len(chunks)
+        and (processed < per_slice or local_lane)
+        and (processed == 0 or not ctx.budget_exhausted())
+    ):
         chunk = chunks[idx]
         idx += 1
         if not include_all and _skippable(chunk, kinds):
@@ -1190,6 +1207,13 @@ def _phase_extract(ctx: DispatchContext, state: dict[str, Any]) -> Any:
     if idx < len(chunks):
         if ctx.is_cancel_requested():
             return Done(summary="survey_extract cancelled", success=False)
+        # ``idx`` is the resume cursor — the count of chunks already
+        # finished; the next claim re-enters the loop at the next one.
+        why = (
+            f"pass budget spent: {idx}/{len(chunks)} chunks read — resume next rotation"
+            if ctx.budget_exhausted()
+            else f"pacing: {idx}/{len(chunks)} chunks read — next slice"
+        )
         return Yield(
             state={
                 "phase": "extract",
@@ -1199,9 +1223,7 @@ def _phase_extract(ctx: DispatchContext, state: dict[str, Any]) -> Any:
                 "run_token": run_token,
                 "pause_streak": pause_streak,
             },
-            wake_when=_wake_s(
-                1, why=f"pacing: {idx}/{len(chunks)} chunks read — next slice"
-            ),
+            wake_when=_wake_s(1, why=why),
         )
 
     # Extraction done — spawn the acceptance child (unless skipped).

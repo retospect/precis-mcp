@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import shutil
 import tempfile
+import time
 from dataclasses import replace
 from pathlib import Path
 from typing import Any
@@ -27,6 +28,8 @@ from precis.workers.executors._yield import Done, Yield
 from precis.workers.job_types import survey_extract as job
 from tests.extract_helpers import (
     CHUNK1,
+    CHUNK2,
+    CHUNK3,
     drive,
     fake_ctx,
     fe_reply,
@@ -216,6 +219,208 @@ class TestSurveyExtractDispatch:
             ).fetchone()
         assert got[0] == "measure_accept"
         assert got[1].startswith("survey-extract:")
+
+
+class TestPassBudgetYield:
+    """gr549215: the coordinator pass's wall deadline bounds even the
+    unrolled local-lane loop — an over-budget pass yields after its
+    current chunk, the resumed pass continues at the next one, and a
+    survey read across several passes lands the same rows one pass
+    would."""
+
+    _ADS_REPLY = {
+        "results": [
+            {
+                "subject": "Pd membrane",
+                "measurand": "adsorption-energy",
+                "literal": "-1.87",
+                "unit": "eV",
+                "anchor": "1",
+                "attribution": "own_work",
+                "inputs": [],
+            }
+        ]
+    }
+
+    @pytest.fixture(autouse=True)
+    def _local_chain(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Same chain fixture as TestSurveyExtractDispatch — the reader's
+        placement='local' ask needs a local rung."""
+        monkeypatch.setattr(
+            "precis.utils.llm.router.resolve_chain",
+            lambda *a, **k: [Rung(Transport.LOCAL, model="test-local", label="local")],
+        )
+
+    def _dispatch(self, store: Store, meta: dict, deadline: float | None) -> Any:
+        dispatch = job.SPEC.dispatch
+        assert dispatch is not None
+        return dispatch(fake_ctx(store, meta, [], pass_deadline=deadline), job.SPEC)
+
+    def test_over_budget_pass_yields_after_the_current_chunk(
+        self, world: dict, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        store = world["store"]
+        replies = iter(
+            [
+                json.dumps(fe_reply()),
+                '{"results": []}',
+                json.dumps(self._ADS_REPLY),
+            ]
+        )
+        # placement='local' flips pacing off — only the pass deadline
+        # can stop this loop. The shared clock sits under the 1500
+        # deadline; chunk 1's routed call burns the rest of the budget,
+        # so the loop exits before chunk 2 starts.
+        now = [1000.0]
+        monkeypatch.setattr(time, "monotonic", lambda: now[0])
+
+        def _route(req: Any) -> Any:
+            now[0] = 2000.0
+            return llm_result(next(replies, '{"results": []}'), placement="local")
+
+        monkeypatch.setattr(job, "route", _route)
+
+        out = self._dispatch(store, _extract_meta(world, skip_accept=True), 1500.0)
+
+        assert isinstance(out, Yield)
+        assert out.state["phase"] == "extract"
+        # The resume cursor is the count of finished chunks: chunk 1
+        # landed its rows, the next claim re-enters at chunk 2.
+        assert out.state["idx"] == 1
+        assert out.state["stats"]["chunks"] == 1
+        assert "pass budget" in out.wake_when.payload["why"]
+
+    def test_resumed_pass_continues_at_the_next_chunk(
+        self, world: dict, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        store = world["store"]
+        replies = iter(
+            [
+                json.dumps(fe_reply()),
+                '{"results": []}',
+                json.dumps(self._ADS_REPLY),
+            ]
+        )
+        now = [1000.0]
+        monkeypatch.setattr(time, "monotonic", lambda: now[0])
+
+        def _route(req: Any) -> Any:
+            now[0] = 2000.0
+            return llm_result(next(replies, '{"results": []}'), placement="local")
+
+        monkeypatch.setattr(job, "route", _route)
+
+        meta = _extract_meta(world, skip_accept=True)
+        out = self._dispatch(store, meta, 1500.0)
+        assert isinstance(out, Yield) and out.state["idx"] == 1
+
+        # The next rotation: same job, checkpoint in meta, no binding
+        # deadline — finishes the paper from chunk 2.
+        meta2 = dict(meta)
+        meta2["coordinator_state"] = out.state
+        done = self._dispatch(store, meta2, None)
+        assert isinstance(done, Done) and done.success
+        outs = [
+            r
+            for r in store.measures_for(world["paper"], include_superseded=True)
+            if r["direction"] == "output"
+        ]
+        assert {r["literal"] for r in outs} == {"95", "-1.87"}
+
+    def test_multi_pass_output_matches_the_single_pass_run(
+        self, world: dict, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        store = world["store"]
+        # A second paper with byte-identical chunks gets the single-pass
+        # run the multi-pass result is compared against.
+        paper2 = seed_ref(store, title="A synthetic survey", kind="paper")
+        for i, text in enumerate((CHUNK1, CHUNK2, CHUNK3)):
+            seed_chunk(store, ref_id=paper2, text=text, ord=i)
+        replies = iter(
+            [
+                json.dumps(fe_reply()),
+                '{"results": []}',
+                json.dumps(self._ADS_REPLY),
+                json.dumps(fe_reply()),
+                '{"results": []}',
+                json.dumps(self._ADS_REPLY),
+            ]
+        )
+        now = [1000.0]
+        monkeypatch.setattr(time, "monotonic", lambda: now[0])
+
+        def _route(req: Any) -> Any:
+            now[0] = 2000.0
+            return llm_result(next(replies, '{"results": []}'), placement="local")
+
+        monkeypatch.setattr(job, "route", _route)
+
+        meta1 = _extract_meta(world, skip_accept=True)
+        out = self._dispatch(store, meta1, 1500.0)
+        assert isinstance(out, Yield)
+        meta1["coordinator_state"] = out.state
+        done = self._dispatch(store, meta1, None)
+        assert isinstance(done, Done) and done.success
+
+        meta2 = _extract_meta(world, skip_accept=True, paper=paper2)
+        done2 = self._dispatch(store, meta2, None)
+        assert isinstance(done2, Done) and done2.success
+
+        def _outs(paper: int) -> list[tuple[str, str]]:
+            return sorted(
+                (str(r["literal"]), str(r["reported_unit"]))
+                for r in store.measures_for(paper, include_superseded=True)
+                if r["direction"] == "output"
+            )
+
+        assert _outs(world["paper"]) == _outs(paper2)
+        assert {lit for lit, _u in _outs(paper2)} == {"95", "-1.87"}
+
+    def test_tiny_budget_still_advances_one_chunk_per_pass(
+        self, world: dict, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A deadline already spent when the slice starts must not
+        re-yield at the same idx forever: the ``processed == 0`` floor
+        runs the first chunk, so every pass still moves the cursor."""
+        store = world["store"]
+        replies = iter(
+            [
+                json.dumps(fe_reply()),
+                '{"results": []}',
+                json.dumps(self._ADS_REPLY),
+            ]
+        )
+        monkeypatch.setattr(
+            job,
+            "route",
+            lambda req: llm_result(next(replies, '{"results": []}'), placement="local"),
+        )
+        # Every clock read is past the deadline — the budget check is
+        # exhausted on all three passes.
+        monkeypatch.setattr(time, "monotonic", lambda: 2000.0)
+
+        meta = _extract_meta(world, skip_accept=True)
+        idxs: list[int] = []
+        done: Done | None = None
+        for _ in range(10):
+            out = self._dispatch(store, meta, 1500.0)
+            if isinstance(out, Done):
+                done = out
+                break
+            assert isinstance(out, Yield)
+            idxs.append(int(out.state["idx"]))
+            meta["coordinator_state"] = out.state
+
+        # One processed chunk per pass: yields at idx 1, then 2, and the
+        # third pass reads the last chunk and finishes.
+        assert idxs == [1, 2]
+        assert done is not None and done.success
+        outs = [
+            r
+            for r in store.measures_for(world["paper"], include_superseded=True)
+            if r["direction"] == "output"
+        ]
+        assert {r["literal"] for r in outs} == {"95", "-1.87"}
 
 
 class TestValidate:

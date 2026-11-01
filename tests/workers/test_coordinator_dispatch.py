@@ -9,7 +9,7 @@ can be asserted without a live Postgres.
 from __future__ import annotations
 
 import time
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from dataclasses import dataclass
 from typing import Any, cast
 from unittest.mock import MagicMock
@@ -625,3 +625,113 @@ class TestLeaseKeepalive:
         assert entered == [1]
         assert exited == [1]
         assert out == {"claimed": 1, "ok": 1, "failed": 0}
+
+
+# ── Pass wall budget (gr549215) ─────────────────────────────────
+#
+# One pass may not hold the rotation for as long as its longest slice
+# runs — a >70 min survey_extract starved every other ref-pass on
+# melchior's catch-all. The pass stamps its deadline on each claimed
+# job's ctx.pass_deadline and releases its un-started claims once the
+# budget is spent.
+
+
+class TestPassBudget:
+    def _rows(self, n: int) -> list[tuple[int, str, dict[str, Any]]]:
+        return [(i, f"job{i}", {"job_type": "x"}) for i in range(1, n + 1)]
+
+    def _stub_pass(self, monkeypatch: pytest.MonkeyPatch, rows: list) -> dict:
+        monkeypatch.setattr(coordinator, "_claim_jobs", lambda conn, *, limit: rows)
+        monkeypatch.setattr(coordinator, "_set_status", lambda *_a, **_k: None)
+        monkeypatch.setattr(
+            coordinator, "_LeaseKeepalive", lambda *_a, **_k: nullcontext()
+        )
+        calls: dict[str, list] = {"ran": [], "released": []}
+
+        def _fake_run_one(ctx: Any) -> None:
+            calls["ran"].append(ctx)
+
+        def _fake_yield_claim(store: Any, ref_id: int) -> None:
+            calls["released"].append(ref_id)
+
+        monkeypatch.setattr(coordinator, "_run_one", _fake_run_one)
+        monkeypatch.setattr(coordinator, "_yield_claim", _fake_yield_claim)
+        return calls
+
+    def test_budget_env_default_and_override(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.delenv("PRECIS_COORDINATOR_PASS_BUDGET_S", raising=False)
+        assert coordinator._pass_budget_s() == 120.0
+        monkeypatch.setenv("PRECIS_COORDINATOR_PASS_BUDGET_S", "45")
+        assert coordinator._pass_budget_s() == 45.0
+        monkeypatch.setenv("PRECIS_COORDINATOR_PASS_BUDGET_S", "bogus")
+        assert coordinator._pass_budget_s() == 120.0
+
+    def test_over_budget_pass_releases_unstarted_claims(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Job 1's slice spends the budget; jobs 2-4 are released back
+        to STATUS:yielded without a dispatch — the next rotation
+        resumes them instead of the pass holding the loop."""
+        monkeypatch.setenv("PRECIS_COORDINATOR_PASS_BUDGET_S", "10")
+        calls = self._stub_pass(monkeypatch, self._rows(4))
+        # Clock reads: the pass's deadline stamp, then the per-job
+        # budget check — under at t=5 (job 1 runs), over at t=20.
+        ticks = iter([0.0, 5.0, 20.0])
+        monkeypatch.setattr(time, "monotonic", lambda: next(ticks, 20.0))
+
+        out = coordinator.run_coordinator_pass(_FakeStore())
+
+        assert [c.ref_id for c in calls["ran"]] == [1]
+        assert calls["ran"][0].pass_deadline == 10.0
+        assert calls["released"] == [2, 3, 4]
+        assert out == {"claimed": 4, "ok": 1, "failed": 0}
+
+    def test_zero_budget_disables_the_deadline(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("PRECIS_COORDINATOR_PASS_BUDGET_S", "0")
+        calls = self._stub_pass(monkeypatch, self._rows(3))
+
+        out = coordinator.run_coordinator_pass(_FakeStore())
+
+        assert [c.ref_id for c in calls["ran"]] == [1, 2, 3]
+        assert all(c.pass_deadline is None for c in calls["ran"])
+        assert calls["released"] == []
+        assert out == {"claimed": 3, "ok": 3, "failed": 0}
+
+    def test_a_failed_release_does_not_strand_the_rest(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A DB error releasing one un-started claim is logged and
+        skipped — the remaining claims are still released."""
+        monkeypatch.setenv("PRECIS_COORDINATOR_PASS_BUDGET_S", "10")
+        rows = self._rows(4)
+        monkeypatch.setattr(coordinator, "_claim_jobs", lambda conn, *, limit: rows)
+        monkeypatch.setattr(coordinator, "_set_status", lambda *_a, **_k: None)
+        monkeypatch.setattr(
+            coordinator, "_LeaseKeepalive", lambda *_a, **_k: nullcontext()
+        )
+        ran: list[Any] = []
+
+        def _fake_run_one(ctx: Any) -> None:
+            ran.append(ctx)
+
+        monkeypatch.setattr(coordinator, "_run_one", _fake_run_one)
+        attempted: list[int] = []
+
+        def _flaky_yield(store: Any, ref_id: int) -> None:
+            attempted.append(ref_id)
+            if ref_id == 3:
+                raise RuntimeError("db gone")
+
+        monkeypatch.setattr(coordinator, "_yield_claim", _flaky_yield)
+        ticks = iter([0.0, 5.0, 20.0])
+        monkeypatch.setattr(time, "monotonic", lambda: next(ticks, 20.0))
+
+        out = coordinator.run_coordinator_pass(_FakeStore())
+
+        assert [c.ref_id for c in ran] == [1]
+        assert attempted == [2, 3, 4]
+        assert out == {"claimed": 4, "ok": 1, "failed": 0}

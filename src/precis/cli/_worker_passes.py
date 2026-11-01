@@ -512,7 +512,9 @@ def build_ref_passes(
     # whose meta.executor=='coordinator'. These are long-running
     # orchestrators (precis-dft's dft_campaign is the first
     # consumer) that run one short slice per pass and yield
-    # between phases. See workers/executors/coordinator.py.
+    # between phases. The pass itself is wall-budgeted
+    # (PRECIS_COORDINATOR_PASS_BUDGET_S, gr549215). See
+    # workers/executors/coordinator.py.
     if _register("job_coordinator"):
         from precis.workers.executors.coordinator import (
             run_coordinator_pass,

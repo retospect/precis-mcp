@@ -102,6 +102,7 @@ def fake_ctx(
     meta: dict[str, Any],
     events: list | None = None,
     ref_id: int | None = None,
+    pass_deadline: float | None = None,
 ) -> DispatchContext:
     out = events if events is not None else []
 
@@ -123,6 +124,7 @@ def fake_ctx(
         set_meta=_set_meta,
         record_failure=lambda r, **kw: out.append(("fail", {"reason": r, **kw})),
         is_cancel_requested=lambda: False,
+        pass_deadline=pass_deadline,
     )
 
 
