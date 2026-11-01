@@ -15,7 +15,7 @@ Drives ``pcb_place._dispatch`` on a fake context, the
 from __future__ import annotations
 
 import types
-from typing import Any
+from typing import Any, cast
 
 import pytest
 
@@ -61,7 +61,7 @@ class _FakeCtx:
 
 
 def _dispatch(ctx: _FakeCtx) -> None:
-    pcb_place._dispatch(ctx, pcb_place.SPEC)  # type: ignore[arg-type]
+    pcb_place._dispatch(cast("Any", ctx), pcb_place.SPEC)
 
 
 def _seed(store: Store, slug: str, args: dict[str, Any]) -> int:

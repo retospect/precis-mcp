@@ -94,9 +94,9 @@ up to 50 pre-cut candidates (`candidates_total` keeps the uncapped count).
 Reading that row shows lexical ranks, semantic distances, fused ranks,
 cut reasons and whether each candidate rendered. Traces create no chunks
 or derived work and never alter search output. They have their own
-`PRECIS_SEARCH_TRACE_RETENTION_DAYS` window (default 60 days), physically
-deleted by the same sweeper to bound storage rather than retained as
-tombstones; `PRECIS_SEARCH_TRACES=0` disables writes.
+retention window (default 60 days), physically deleted by the same
+sweeper to bound storage rather than retained as tombstones. To change
+the window or turn trace writes off, ask a human operator.
 
 ## Web
 

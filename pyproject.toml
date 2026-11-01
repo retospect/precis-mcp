@@ -56,7 +56,7 @@ classifiers = [
 
 dependencies = [
     "mcp[cli]>=1.0,<3",
-    "psycopg[binary,pool]>=3.2",
+    "psycopg[binary,pool]>=3.3.6",
     # pgvector-python >=0.5 returns fetched vector columns as a non-iterable
     # ``Vector`` object (was a numpy array). Every raw-vector read now routes
     # through ``precis.store._mappers._coerce_vector`` (``.to_list()``-aware),
@@ -182,7 +182,7 @@ dependencies = [
     # figure→PNG) pair; lxml also backs the patent kind's EPO XML parsing.
     "python-docx>=1.2.0",
     "latex2mathml>=3.77",
-    "lxml>=5.0",
+    "lxml>=6.1.3",
     "resvg-py>=0.1",
     # mermaid kind — mermaidx runs real mermaid.js in embedded QuickJS +
     # resvg (no Node/Chromium/network). The kind still ships dark behind
@@ -195,8 +195,8 @@ dependencies = [
     # dft (light, torch-free) — ASE + spglib back CIF I/O, symmetry, the EMT
     # relax rung and slab ops. ase is also (harmlessly) listed by
     # [dft-ml]. The MLIP rung ([dft-ml], torch) stays optional.
-    "ase>=3.22",
-    "spglib>=2.1",
+    "ase>=3.29.0",
+    "spglib>=2.8.0",
     # scipy — already present in every install transitively via ase;
     # promoted to a direct dep for the se atomic clearance path (cKDTree
     # + ConvexHull in precis_se/atomic/clearance.py) so the guarantee is
@@ -241,7 +241,7 @@ dependencies = [
     "httpx>=0.27",
     "wolframalpha>=5.0",           # wolfram kind (key-gated)
     "youtube-transcript-api>=1.2.4", # youtube kind
-    "trafilatura>=1.6",            # web page → markdown extractor
+    "trafilatura>=2.3.1",            # web page → markdown extractor
     "feedparser>=6.0",             # RSS/Atom for the news kind / news_poll
     "python-epo-ops-client>=4.0",  # patent kind — EPO OPS (OAuth2 fair-use)
     "packaging>=24",
@@ -284,7 +284,7 @@ asa = ["discord.py>=2.4", "aiohttp>=3.9"]
 # core. Socket Mode (a persistent outbound WebSocket), so no HTTP/ingress
 # deps needed. Install target: `precis-mcp[asa-slack]` on the same host
 # `asa` runs on.
-asa-slack = ["slack_bolt>=1.20", "slack_sdk>=3.27"]
+asa-slack = ["slack_bolt>=1.20", "slack_sdk>=3.45.0"]
 # tts — local text-to-speech for the audio-export renderer (voice drafts +
 # the morning brief). Kokoro (per-language native voices, Apache) via
 # kokoro-onnx; soundfile for WAV I/O; numpy rides along. Heavy + host-specific
@@ -314,7 +314,7 @@ tts = ["kokoro-onnx>=0.4", "soundfile>=0.12"]
 # [tool.uv] override-dependencies (see that table for why and when to drop).
 paper = [
     "marker-pdf>=1.0; sys_platform != 'win32'",
-    "pymupdf>=1.24.10",     # ``fitz`` — page-level PDF text + metadata.
+    "pymupdf>=2.0",     # ``fitz`` — page-level PDF text + metadata.
                             # >=1.24.10 picks up the heap-corruption
                             # fixes shipped in the 1.24 maintenance
                             # series; agent-supplied PDFs reach
@@ -354,7 +354,7 @@ paper = [
 # learned potential (MACE-MP-0). torch is heavy — gated out of the default
 # install; rung-0 `clean` geometry repair needs none of this. GPAW/DFT
 # (`dft-gpaw`) runs as a cluster job, not inline.
-dft-ml = ["ase>=3.22", "mace-torch>=0.3", "torch-dftd>=0.4"]
+dft-ml = ["ase>=3.29.0", "mace-torch>=0.3", "torch-dftd>=0.4"]
 # Catalyst reaction-pathway plugin (bundle-pathway-in-tree proposal): the
 # `pathway` kind's KIND SURFACE — the `precis_pathway` glue imports the pure
 # `autocatpath` engine (numpy/scipy/ase/rdkit, no ML backend). Split from the
@@ -399,7 +399,7 @@ struct-search = ["agox>=3.11,<4"]
 web = [
     "fastapi>=0.110",
     "uvicorn[standard]>=0.29",
-    "jinja2>=3.1",
+    "jinja2>=3.1.6",
     "python-multipart>=0.0.9",
     # /manual renders its markdown chapters (routes/manual.py). Already in
     # the resolved tree as a transitive of rich, so this adds no install
@@ -412,7 +412,7 @@ web = [
     # ``[web,estimate]`` only, so without this the route's
     # ``require_optional("fitz")`` refuses on prod. Same floor as
     # ``[paper]`` (the heap-corruption fixes note lives there).
-    "pymupdf>=1.24.10",
+    "pymupdf>=2.0",
 ]
 # CAD STEP interchange (ADR 0041 §10). The lightweight printable path
 # (``manifold3d`` CSG kernel → STL/3MF) is now core — see the "Deterministic,
@@ -647,7 +647,7 @@ dev = [
     # gate): mechanises the layering conventions that used to live only in
     # prose — see [tool.importlinter] below. Built on grimp (already here).
     "import-linter>=2.1",
-    "types-pyyaml>=6.0.12.20260724",
+    "types-pyyaml>=6.0.12.20260906",
     "lxml-stubs>=0.5.1",
     "types-tqdm>=4.70.0.20260805",
     "types-xmltodict>=1.0.1.20260518",
