@@ -7,7 +7,9 @@ STATUS:done. Pinned here: the subject parser, the exact prod-precis argv,
 and that a refused or crashing prod call never fails (exit 0, one line).
 gr543833: a fault retries once at double the timeout; every handle's calls
 are journaled to the pending dir before they run (kill-safe) and deleted
-once posted; ``replay`` drains the dir.
+once posted; ``replay`` drains the dir. gr544215: a failed call's full
+stderr lands on the pending note's ``failure`` key — the console shows
+``_tail`` only.
 """
 
 from __future__ import annotations
@@ -160,6 +162,28 @@ def test_notify_files_pending_note_after_two_faults(
     assert note["calls"] == mod.payloads(SHA, "x: y (gr7)")[0][1]
 
 
+def test_pending_note_keeps_full_stderr(mod: ModuleType, tmp_path: Path) -> None:
+    """gr544215: the console's one ``_tail`` line hid the refusal's
+    cause — the pending note keeps the failed call's argv tail, exit
+    and FULL stderr for the postmortem."""
+    stderr = "[error:Internal] boom\n  next: file a gripe naming this call\n"
+
+    def run(cmd: list[str], timeout: float) -> subprocess.CompletedProcess[str]:
+        return subprocess.CompletedProcess(cmd, 3, "", stderr)
+
+    line = mod.notify(
+        SHA, "x: y (gr7)", base=["cli"], run=run, timeout=1.0, pending_dir=tmp_path
+    )
+    assert "failed: gr7 (exit 3:" in line
+    (pending,) = tmp_path.glob("*.json")
+    note = json.loads(pending.read_text(encoding="utf-8"))
+    assert note["failure"] == {
+        "call": mod.payloads(SHA, "x: y (gr7)")[0][1][0],
+        "exit": 3,
+        "stderr": stderr,
+    }
+
+
 def test_replay_posts_and_deletes(mod: ModuleType, tmp_path: Path) -> None:
     """``--replay``'s unit: each pending file's calls run through the same
     transport; the file is deleted only once they all succeeded."""
@@ -207,7 +231,12 @@ def test_replay_keeps_a_failed_note(mod: ModuleType, tmp_path: Path) -> None:
 
     posted, left = mod.replay(tmp_path, base=["cli"], run=run, timeout=1.0)
     assert (posted, left) == (0, 1)
-    assert (tmp_path / f"{SHA[:9]}-gr7.json").exists()
+    pending = tmp_path / f"{SHA[:9]}-gr7.json"
+    assert pending.exists()
+    # The kept note carries the failed call's detail for the postmortem.
+    note = json.loads(pending.read_text(encoding="utf-8"))
+    assert note["failure"]["exit"] == 3
+    assert note["failure"]["stderr"] == "refused"
 
 
 def test_epilogue_still_reports_shipped_when_notify_died(tmp_path: Path) -> None:

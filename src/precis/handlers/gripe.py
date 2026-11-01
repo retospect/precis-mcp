@@ -74,14 +74,18 @@ Surface (see ``precis-gripe-help``):
 
 from __future__ import annotations
 
+import contextlib
 import difflib
 import logging
 import re
 import uuid
+from collections.abc import Iterator
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, ClassVar, NamedTuple
+
+import psycopg.errors
 
 from precis.errors import BadInput, Denied, Gone, NotFound, Unsupported, Upstream
 from precis.handlers import _comment_timeline as tl
@@ -168,6 +172,70 @@ _PUT_UNTIL: RequestState[Any] = RequestState("precis_gripe_put_until", None)
 _PARK_UNTIL: RequestState[dict[str, Any] | None] = RequestState(
     "precis_gripe_park_until", None
 )
+
+#: The 0176 deferred trigger's refusal text. ``gripe_status_check()``
+#: holds the *database's* STATUS vocabulary — a value this build's
+#: ``_KIND_STATUS_VALUES`` accepts but the migrated-to function does
+#: not (a STATUS migration landed, not yet deployed: gr544215's
+#: ``STATUS:auto_verify`` on a pre-0268 database) passes every
+#: app-level check and dies at COMMIT as a raw ``CheckViolation``.
+_STATUS_CHECK_MSG = "must have exactly one STATUS tag"
+_STATUS_CHECK_COUNTS_RE = re.compile(
+    r"found (\d+) STATUS tag\(s\), (\d+) off-vocabulary"
+)
+_STATUS_CHECK_VOCAB_RE = re.compile(r"from \(([^)]*)\)")
+
+
+def _status_check_refusal(exc: BaseException) -> BadInput | None:
+    """An off-vocabulary ``gripe_status_check`` refusal → a typed error
+    naming the database's own STATUS vocabulary; ``None`` otherwise.
+
+    Only the off-vocabulary arm translates — that shape means the
+    caller's value is legal on this build but unknown to the database's
+    function (code ahead of migrations). A count breach instead means
+    the exactly-one-STATUS invariant the handler itself maintains
+    broke; that stays an Internal, a real server bug.
+    """
+    if not isinstance(exc, psycopg.errors.CheckViolation):
+        return None
+    message = exc.diag.message_primary or ""
+    if _STATUS_CHECK_MSG not in message:
+        return None
+    counts = _STATUS_CHECK_COUNTS_RE.search(message)
+    if counts is None or counts.group(2) == "0":
+        return None
+    m = _STATUS_CHECK_VOCAB_RE.search(message)
+    options = [v.strip() for v in m.group(1).split(",")] if m else None
+    return BadInput(
+        f"the database refused the STATUS write — {message}",
+        options=options,
+        next=(
+            "the database's STATUS vocabulary predates this build's — the "
+            "migration that adds the value has not reached this database: "
+            "retry after the deploy applies it, or retry the call with one "
+            "of the database's values"
+        ),
+    )
+
+
+@contextlib.contextmanager
+def _translate_status_check() -> Iterator[None]:
+    """Re-raise a commit-time ``gripe_status_check`` refusal typed.
+
+    Wraps the verb's write phase: the 0176 trigger is DEFERRABLE
+    INITIALLY DEFERRED, so it fires at the outermost COMMIT — inside
+    ``store.tx()`` on a bare ``tag()``, at ``store.atomic()``'s edge on
+    a ``put``'s comment+tag unit. Either way the ``CheckViolation``
+    surfaces at the ``with`` exit, so wrapping the call covers both.
+    """
+    try:
+        yield
+    except psycopg.errors.CheckViolation as exc:
+        refusal = _status_check_refusal(exc)
+        if refusal is None:
+            raise
+        raise refusal from exc
+
 
 #: ``get`` view spellings with one reading on this kind (gr494831 step 2;
 #: prod 2026-10-15..17 sent view='full' x6, 'default' x1). ``'full'`` is a
@@ -805,7 +873,7 @@ class GripeHandler(NumericRefHandler):
                         id, link=link, unlink=unlink, rel=rel, tags=tags, untags=untags
                     )
                 )
-                with _PUT_UNTIL.bind(until):
+                with _PUT_UNTIL.bind(until), _translate_status_check():
                     resp = self._append_then_link(
                         None,
                         id=id,
@@ -826,7 +894,7 @@ class GripeHandler(NumericRefHandler):
             # edge/tag edit in one transaction (comment-then-close is one
             # put, not reject + re-put + tag(); gr484232). The tag edit is
             # this kind's own tag() — the same STATUS guards apply.
-            with _PUT_UNTIL.bind(until):
+            with _PUT_UNTIL.bind(until), _translate_status_check():
                 resp = self._append_then_link(
                     lambda: self._append_comment(id=id, text=text),
                     id=id,
@@ -879,7 +947,11 @@ class GripeHandler(NumericRefHandler):
             self._reject_mutating_put(
                 id=None, mode=None, untags=untags, unlink=unlink, rel=rel, link=link
             )
-            with _PUT_PRIO.bind(validate_prio(prio)), _PUT_UNTIL.bind(until):
+            with (
+                _PUT_PRIO.bind(validate_prio(prio)),
+                _PUT_UNTIL.bind(until),
+                _translate_status_check(),
+            ):
                 resp = self._create_observation(
                     text=text, tags=tags, link=link, rel=rel
                 )
@@ -898,7 +970,7 @@ class GripeHandler(NumericRefHandler):
             slug = matched[0]
             keeper = self._theme_keeper(slug)
             if keeper is not None:
-                with _PUT_UNTIL.bind(until):
+                with _PUT_UNTIL.bind(until), _translate_status_check():
                     resp = self._merge_into_keeper(
                         keeper,
                         slug,
@@ -923,7 +995,11 @@ class GripeHandler(NumericRefHandler):
         # request-scoped slot (``_PUT_PRIO``, as todo does — the base put's
         # signature stays untouched). The ``PRIO:`` tag alias keeps working;
         # the explicit kwarg wins.
-        with _PUT_PRIO.bind(validate_prio(prio)), _PUT_UNTIL.bind(until):
+        with (
+            _PUT_PRIO.bind(validate_prio(prio)),
+            _PUT_UNTIL.bind(until),
+            _translate_status_check(),
+        ):
             resp = super().put(
                 id=id,
                 text=text,
@@ -1157,8 +1233,8 @@ class GripeHandler(NumericRefHandler):
         readings = [*readings, *self._check_thread_tags(add, id=id)]
         park_until = self._resolve_parked_until(id, add, until=until, meta=meta)
         if isinstance(id, list):
-            return interpreted(
-                self._tag_batch(
+            with _translate_status_check():
+                resp = self._tag_batch(
                     id,
                     add=add,
                     remove=remove,
@@ -1167,9 +1243,8 @@ class GripeHandler(NumericRefHandler):
                     meta=meta,
                     until=until,
                     **_kw,
-                ),
-                readings,
-            )
+                )
+            return interpreted(resp, readings)
         # ``PRIO:`` → the canonical prio column (which the backlog groomer
         # inherits onto the minted fix_gripe todo, so a human tagging a gripe
         # PRIO:high actually hastens its fix), stripped from the tag set like
@@ -1218,7 +1293,7 @@ class GripeHandler(NumericRefHandler):
                     Response(body=f"set {shown} on {self._sense()} id={ref_id}"),
                     readings,
                 )
-        with _PARK_UNTIL.bind(park_until):
+        with _PARK_UNTIL.bind(park_until), _translate_status_check():
             return interpreted(
                 super().tag(id=id, add=add, remove=remove, reason=reason, **_kw),
                 readings,
