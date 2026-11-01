@@ -25,6 +25,14 @@ The write and load halves of ``docs/backlog/memory-native-authoring.md``:
   <hook>`` bullet per node. ``--export-dir`` also writes each topic node's body
   to ``DIR/<handle>.md`` (same query, swapped in whole) so
   ``scripts/memory-lint`` can lint node bodies.
+- ``precis memory backfill-space [--dry-run] [--limit N]`` infers ``SPACE:``
+  on live memories that carry none (gr548275): present tags, then the
+  writer signal on the refs row (``meta.file_mirror`` / ``slug`` /
+  ``section`` / ``source`` / ``hook``, digest meta keys, ``set_by``),
+  ``ref_events`` sources as fallback, then link-endpoint kinds. The
+  residue keeps no SPACE tag but carries ``space:unknown`` so it stays
+  countable. ``--dry-run`` reports per-space and per-rule counts with
+  sample handles and writes nothing.
 
 The logic lives in :func:`import_memory_dir` and :func:`render_memory_index`
 (both take a :class:`~precis.store.Store`) so tests call them directly; the
@@ -50,6 +58,7 @@ from typing import Any
 
 from precis.cli._common import resolve_dsn
 from precis.store import Store
+from precis.store.types import Tag
 from precis.utils.text import slugify
 
 log = logging.getLogger(__name__)
@@ -1217,6 +1226,343 @@ def export_memory_nodes(
 
 
 # ---------------------------------------------------------------------------
+# backfill-space (gr548275)
+# ---------------------------------------------------------------------------
+
+#: Open tag stamped on a memory no rule could space — the residue stays
+#: countable (``search(kind='memory', tags=['space:unknown'])``) without a
+#: bogus ``SPACE:`` value. Lowercase prefix: an *open* tag, not the axis.
+UNKNOWN_SPACE_TAG = "space:unknown"
+
+#: Rule (a) — a tag already on the node names its writer's space. The
+#: gripe's list is ``tier:synthetic-insight``, ``DREAM:*``,
+#: ``kind:lemma``/``kind:inference`` → research; ``dream-thread`` /
+#: ``thread:*`` are the dream writer's open tags, and ``section:*`` /
+#: ``mirror:*`` / ``gotchas:none`` / ``repo-dev`` exist only inside the
+#: repo-dev memory shape.
+_RESEARCH_TAGS = frozenset(
+    {"tier:synthetic-insight", "kind:lemma", "kind:inference", "dream-thread"}
+)
+_RESEARCH_TAG_PREFIXES = ("thread:", "DREAM:")
+_REPO_DEV_TAGS = frozenset({"gotchas:none", "repo-dev"})
+_REPO_DEV_TAG_PREFIXES = ("section:", "mirror:")
+
+#: Rule (b) — the writer signal on the refs row: ``meta.source`` and
+#: ``ref_events.source`` values → space (the gripe's writer map; prod
+#: carries no memory create events, so events are only a fallback).
+_WRITER_SPACE = {
+    "asa": "research",
+    "discord": "research",
+    "dreaming": "research",
+    "quest-tick": "research",
+    "fixer": "repo-dev",
+    "gripe-fix": "repo-dev",
+    "harness": "repo-dev",
+    "memory-import": "repo-dev",
+    "memory-mirror": "repo-dev",
+}
+#: ``refs.meta`` keys only research-side system writers stamp — the
+#: ``write_system`` digests (citer-watch / upstream-watch / the two
+#: reviewers' ``meta_prefix``) and the dream consolidation summary.
+_RESEARCH_META_PREFIXES = (
+    "dream_consolidated",
+    "citer_watch_",
+    "upstream_watch_",
+    "deep_review_",
+    "structural_",
+)
+#: ``refs.set_by`` values only research-side writers produce (handler
+#: creates leave the column NULL; ingest/worker paths stamp it).
+_RESEARCH_SET_BY = frozenset({"dream", "system"})
+
+#: Rule (c) — a link endpoint's kind says which corpus authored the note.
+_RESEARCH_LINK_KINDS = frozenset({"quest", "paper", "finding", "conv"})
+
+#: Sample handles printed per inferred space on a dry run.
+_SAMPLE_HANDLES = 10
+
+
+@dataclass
+class BackfillSpaceReport:
+    """What one :func:`backfill_space` run did / would do."""
+
+    dry_run: bool = False
+    #: Live memories without a SPACE tag that were classified.
+    scanned: int = 0
+    #: space → count of memories the rules inferred for it.
+    counts: dict[str, int] = field(default_factory=dict)
+    #: ``"<space>/<rule>"`` → count — which evidence fired.
+    rules: dict[str, int] = field(default_factory=dict)
+    #: ``(ref_id, space, rule)`` per classified memory — the full plan;
+    #: :data:`samples` is the rendered slice.
+    decisions: list[tuple[int, str, str]] = field(default_factory=list)
+    #: space → up to :data:`_SAMPLE_HANDLES` handles.
+    samples: dict[str, list[str]] = field(default_factory=dict)
+    #: Real run only: space → SPACE tags written.
+    tagged: dict[str, int] = field(default_factory=dict)
+    #: Real run only: ``space:unknown`` newly stamped / already present.
+    unknown_stamped: int = 0
+    unknown_kept: int = 0
+
+    def summary(self) -> str:
+        head = "memory backfill-space"
+        if self.dry_run:
+            head += " (dry run — nothing written)"
+        lines = [f"{head}: scanned {self.scanned} unspaced live memories"]
+        for space in ("research", "repo-dev", "unknown"):
+            rules = ", ".join(
+                f"{key.split('/', 1)[1]}={n}"
+                for key, n in sorted(self.rules.items())
+                if key.startswith(f"{space}/")
+            )
+            lines.append(
+                f"  {space}: {self.counts.get(space, 0)}"
+                + (f" ({rules})" if rules else "")
+            )
+            samp = self.samples.get(space)
+            if samp:
+                lines.append(f"    samples: {' '.join(samp)}")
+        if not self.dry_run:
+            tagged = (
+                ", ".join(
+                    f"SPACE:{space}={self.tagged[space]}"
+                    for space in sorted(self.tagged)
+                )
+                or "none"
+            )
+            lines.append(f"  tagged: {tagged}")
+            lines.append(
+                f"  {UNKNOWN_SPACE_TAG}: {self.unknown_stamped} stamped"
+                + (
+                    f", {self.unknown_kept} already stamped"
+                    if self.unknown_kept
+                    else ""
+                )
+            )
+        return "\n".join(lines) + "\n"
+
+
+def infer_space(
+    ref: Any,
+    tag_values: set[str],
+    event_sources: set[str],
+    linked: list[tuple[str, bool]],
+) -> tuple[str, str]:
+    """``(space, rule)`` for one unspaced memory — the gr548275 rule order.
+
+    ``tag_values`` renders the ref's live tags as the agent sees them
+    (``"SPACE:research"`` for a closed tag, ``"section:threads"`` for an
+    open one). ``event_sources`` is the ref's distinct
+    ``ref_events.source`` set; ``linked`` is ``(kind, is_repo_dev)`` per
+    live link endpoint, where ``is_repo_dev`` means the endpoint carries
+    ``SPACE:repo-dev`` (or, for a todo, an open ``repo-dev`` tag).
+
+    (a) tags → (b) writer signal on the refs row (``meta`` identity keys,
+    ``meta.source``, digest meta prefixes, ``meta.hook``, ``set_by``, then
+    ``ref_events`` as fallback) → (c) link-endpoint kinds (research kinds
+    first, per the gripe's written order) → (d) ``unknown``.
+    """
+    # (a) tags already present
+    if tag_values & _RESEARCH_TAGS or any(
+        v.startswith(_RESEARCH_TAG_PREFIXES) for v in tag_values
+    ):
+        return "research", "a:tags"
+    if tag_values & _REPO_DEV_TAGS or any(
+        v.startswith(_REPO_DEV_TAG_PREFIXES) for v in tag_values
+    ):
+        return "repo-dev", "a:tags"
+    # (b) writer signal on the refs row, then ref_events as fallback
+    meta = ref.meta or {}
+    if "file_mirror" in meta:
+        return "repo-dev", "b:file-mirror"
+    if "slug" in meta or "section" in meta:
+        return "repo-dev", "b:import-keys"
+    source = meta.get("source")
+    if isinstance(source, str) and source in _WRITER_SPACE:
+        return _WRITER_SPACE[source], "b:meta-source"
+    if any(k.startswith(_RESEARCH_META_PREFIXES) for k in meta):
+        return "research", "b:system-digest"
+    if "hook" in meta:
+        return "repo-dev", "b:hook"
+    if ref.set_by in _RESEARCH_SET_BY:
+        return "research", "b:set-by"
+    ev_spaces = {_WRITER_SPACE[s] for s in event_sources if s in _WRITER_SPACE}
+    if "repo-dev" in ev_spaces:
+        return "repo-dev", "b:events"
+    if "research" in ev_spaces:
+        return "research", "b:events"
+    # (c) link-endpoint kinds — research first (written order)
+    if any(kind in _RESEARCH_LINK_KINDS for kind, _ in linked):
+        return "research", "c:links"
+    if any(
+        kind == "gripe" or (kind in ("todo", "memory") and repo_dev)
+        for kind, repo_dev in linked
+    ):
+        return "repo-dev", "c:links"
+    # (d) residue
+    return "unknown", "d:none"
+
+
+def _unspaced_memory_ids(store: Store, limit: int | None) -> list[int]:
+    """Live ``kind='memory'`` ids carrying no live ``SPACE:*`` tag."""
+    sql = (
+        "SELECT r.ref_id FROM refs r "
+        "WHERE r.kind = 'memory' AND r.retired_at IS NULL "
+        "AND NOT EXISTS ("
+        "  SELECT 1 FROM ref_tags rt JOIN tags t ON t.tag_id = rt.tag_id "
+        "  WHERE rt.ref_id = r.ref_id AND t.namespace = 'SPACE' "
+        "  AND (rt.expires_at IS NULL OR rt.expires_at > now())"
+        ") ORDER BY r.ref_id"
+    )
+    params: list[Any] = []
+    if limit is not None:
+        sql += " LIMIT %s"
+        params.append(limit)
+    with store.pool.connection() as conn:
+        return [int(r[0]) for r in conn.execute(sql, params).fetchall()]
+
+
+def _event_sources(store: Store, ids: list[int]) -> dict[int, set[str]]:
+    """Distinct ``ref_events.source`` values per candidate ref."""
+    if not ids:
+        return {}
+    with store.pool.connection() as conn:
+        rows = conn.execute(
+            "SELECT DISTINCT ref_id, source FROM ref_events WHERE ref_id = ANY(%s)",
+            (ids,),
+        ).fetchall()
+    out: dict[int, set[str]] = {}
+    for ref_id, source in rows:
+        out.setdefault(int(ref_id), set()).add(str(source))
+    return out
+
+
+def _linked_endpoints(
+    store: Store, ids: list[int]
+) -> dict[int, list[tuple[str, bool]]]:
+    """``{memory_id: [(endpoint kind, endpoint is repo-dev-marked), …]}``.
+
+    Both edge directions count — a gripe linking *to* a memory is as much
+    repo-dev evidence as the memory linking the gripe. An endpoint is
+    repo-dev-marked when it carries ``SPACE:repo-dev`` (or, for a todo,
+    the open ``repo-dev`` tag). Retired endpoints count too: a retired
+    gripe still says who wrote the note.
+    """
+    if not ids:
+        return {}
+    with store.pool.connection() as conn:
+        rows = conn.execute(
+            "SELECT src_ref_id, dst_ref_id FROM links "
+            "WHERE src_ref_id = ANY(%s) OR dst_ref_id = ANY(%s)",
+            (ids, ids),
+        ).fetchall()
+    idset = set(ids)
+    neighbours: dict[int, set[int]] = {}
+    for src, dst in rows:
+        s, d = int(src), int(dst)
+        if s == d:
+            continue
+        if s in idset:
+            neighbours.setdefault(s, set()).add(d)
+        if d in idset:
+            neighbours.setdefault(d, set()).add(s)
+    other_ids = sorted({o for ends in neighbours.values() for o in ends})
+    others = store.fetch_refs_by_ids(other_ids)  # tombstones still signal
+    space_rd = store.ref_tag_values(other_ids, "SPACE", ["repo-dev"])
+    open_rd = store.ref_tag_values(other_ids, "OPEN", ["repo-dev"])
+    out: dict[int, list[tuple[str, bool]]] = {}
+    for rid, ends in neighbours.items():
+        entries = []
+        for o in ends:
+            other = others.get(o)
+            if other is None:
+                continue
+            repo_dev = o in space_rd or (other.kind == "todo" and o in open_rd)
+            entries.append((other.kind, repo_dev))
+        out[rid] = entries
+    return out
+
+
+def backfill_space(
+    store: Store, *, dry_run: bool = False, limit: int | None = None
+) -> BackfillSpaceReport:
+    """Infer ``SPACE:`` on every live memory that carries none (gr548275).
+
+    ``limit`` caps the candidate set (oldest first). ``dry_run`` plans
+    only — same classification, no writes. A real run stamps
+    ``SPACE:research`` / ``SPACE:repo-dev`` (``set_by='system'``,
+    ``replace_prefix`` for safety) and leaves the ``unknown`` residue
+    unspaced but carrying :data:`UNKNOWN_SPACE_TAG` so it stays countable;
+    a stale ``space:unknown`` is removed when a node later classifies.
+    Idempotent: a re-run finds no unspaced node left to tag and re-reports
+    the stamped unknowns as ``unknown_kept``.
+    """
+    from precis.utils import handle_registry
+
+    ids = _unspaced_memory_ids(store, limit)
+    refs = store.fetch_refs_by_ids(ids, include_deleted=False)
+    tag_rows = store.ref_tags_bulk(ids)
+    tag_values = {
+        rid: {v if ns in ("OPEN", "FLAG") else f"{ns}:{v}" for ns, v in pairs}
+        for rid, pairs in tag_rows.items()
+    }
+    sources = _event_sources(store, ids)
+    linked = _linked_endpoints(store, ids)
+
+    report = BackfillSpaceReport(dry_run=dry_run, scanned=len(ids))
+    plan: list[tuple[Any, str, str]] = []
+    for rid in ids:
+        ref = refs.get(rid)
+        if ref is None:
+            continue  # retired between the two reads — skip
+        space, rule = infer_space(
+            ref,
+            tag_values.get(rid, set()),
+            sources.get(rid, set()),
+            linked.get(rid, []),
+        )
+        plan.append((ref, space, rule))
+        report.decisions.append((rid, space, rule))
+        report.counts[space] = report.counts.get(space, 0) + 1
+        key = f"{space}/{rule}"
+        report.rules[key] = report.rules.get(key, 0) + 1
+        bucket = report.samples.setdefault(space, [])
+        if len(bucket) < _SAMPLE_HANDLES:
+            handle = handle_registry.try_format("memory", rid) or f"me{rid}"
+            bucket.append(handle)
+
+    if dry_run:
+        return report
+
+    with store.tx() as conn:
+        for ref, space, _rule in plan:
+            has_unknown = UNKNOWN_SPACE_TAG in tag_values.get(ref.id, set())
+            if space == "unknown":
+                if has_unknown:
+                    report.unknown_kept += 1
+                    continue
+                store.add_tag(
+                    ref.id,
+                    Tag.open(UNKNOWN_SPACE_TAG),
+                    set_by="system",
+                    conn=conn,
+                )
+                report.unknown_stamped += 1
+                continue
+            store.add_tag(
+                ref.id,
+                Tag.closed("SPACE", space),
+                set_by="system",
+                replace_prefix=True,
+                conn=conn,
+            )
+            if has_unknown:
+                store.remove_tag(ref.id, Tag.open(UNKNOWN_SPACE_TAG), conn=conn)
+            report.tagged[space] = report.tagged.get(space, 0) + 1
+    return report
+
+
+# ---------------------------------------------------------------------------
 # argparse shell
 # ---------------------------------------------------------------------------
 
@@ -1383,6 +1729,28 @@ def add_parser(sub: argparse._SubParsersAction) -> argparse.ArgumentParser:
         help="List the dangling edges and write nothing.",
     )
     prn.add_argument("--database-url", default=None, help="Postgres DSN override.")
+    bfs = msub.add_parser(
+        "backfill-space",
+        help=(
+            "Infer SPACE: on live memories that carry none (gr548275): "
+            "present tags, then the writer signal on the refs row "
+            "(meta keys, ref_events fallback), then link endpoints. The "
+            "residue gets a 'space:unknown' open tag so it stays countable."
+        ),
+    )
+    bfs.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Report counts per inferred space and per rule, with sample handles; write nothing.",
+    )
+    bfs.add_argument(
+        "--limit",
+        type=int,
+        default=None,
+        metavar="N",
+        help="Classify at most N unspaced memories (oldest first).",
+    )
+    bfs.add_argument("--database-url", default=None, help="Postgres DSN override.")
     mirror = msub.add_parser(
         "mirror", help="Explicit faithful file/graph snapshot exchange."
     )
@@ -1523,6 +1891,9 @@ def run(args: argparse.Namespace) -> None:
                 )
         elif args.memory_cmd == "prune-links":
             print(render_prune_links(store, dry_run=args.dry_run), end="")
+        elif args.memory_cmd == "backfill-space":
+            bfs_report = backfill_space(store, dry_run=args.dry_run, limit=args.limit)
+            print(bfs_report.summary(), end="")
         elif args.recall_set is not None:
             from precis.cli._common import cli_embedder
 
