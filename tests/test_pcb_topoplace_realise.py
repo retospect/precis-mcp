@@ -1457,10 +1457,12 @@ def test_via_siting_falls_back_to_the_fab_minimum_dia() -> None:
         t=(0.5,),
         points=((0.0, 0.0), (10.0, 0.0)),
     )
-    # one pad strip spanning the corridor, 0.40 mm off the polyline
-    row = (0, 0.0, 0.55, 10.0, 0.15)
+    # a pad strip EITHER side of the corridor, 0.40 mm off the polyline
+    # (both sides: the exhaustive local stage would otherwise step off
+    # the wire into the open half-plane and site the house via there)
+    rows = ((0, 0.0, 0.55, 10.0, 0.15), (0, 0.0, -0.55, 10.0, 0.15))
     pose = np.zeros((1, 4))
-    assert _site_via(mesh, branch, 0, 4, 0.6, 0.15, [], ((row,), (row,)), pose) is None
+    assert _site_via(mesh, branch, 0, 4, 0.6, 0.15, [], (rows, rows), pose) is None
     site = _site_via(
         mesh,
         branch,
@@ -1469,7 +1471,7 @@ def test_via_siting_falls_back_to_the_fab_minimum_dia() -> None:
         0.6,
         0.15,
         [],
-        ((row,), (row,)),
+        (rows, rows),
         pose,
         fallback_dia=0.45,
     )
@@ -1527,7 +1529,10 @@ def test_fallback_sited_via_pairs_the_fab_minimum_drill() -> None:
         swap_groups=(),
         fixed=np.zeros(3, dtype=bool),
         freedoms=np.full(3, 3, dtype=np.uint8),
-        outline=np.asarray([[-1.0, -1.0], [11.0, -1.0], [11.0, 1.0], [-1.0, 1.0]]),
+        # the board edge 0.5 mm under the wire: with the band above, the
+        # house barrel's 0.525 keep-out fits nowhere (the local search
+        # would otherwise find open board below the wire)
+        outline=np.asarray([[-1.0, -0.5], [11.0, -0.5], [11.0, 1.0], [-1.0, 1.0]]),
         pose0=np.zeros((3, 4)),
         net_name=("N0",),
         # the 0.45-mm-off pad band: y in [0.45, 10], x in [-10, 20]

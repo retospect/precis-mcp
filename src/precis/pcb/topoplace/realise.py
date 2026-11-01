@@ -1199,6 +1199,12 @@ _Pads = tuple[tuple[int, float, float, float, float], ...]
 #: is a re-thread, not a site, and the branch honestly reports no_via
 #: (pcb-topo-place.md §2D — free-point jogs are a separate slice).
 _VIA_2D_STUB_CAP_MM = 1.0
+#: The exhaustive local via search (``_site_via.walk_grid``): disc radius
+#: around the join anchor and the scan step. 2.5 mm reaches past two 0402
+#: courtyards; 0.15 mm is below the fab's via-to-copper clearance so no
+#: legal pocket is skipped over.
+_VIA_GRID_RADIUS_MM = 2.5
+_VIA_GRID_STEP_MM = 0.15
 
 
 def _tri_circumcenter(
@@ -1470,7 +1476,6 @@ def _site_via(
         outers, zones, the outline, foreign tracks, placed vias) at
         track width, and capped at :data:`_VIA_2D_STUB_CAP_MM`."""
         margin = dia / 2.0 + clearance
-        stub_margin = track_w / 2.0 + clearance
 
         def _edge_arc(k: int) -> float:
             e = int(b.edges[k])
@@ -1510,43 +1515,82 @@ def _site_via(
                     continue
                 if not qualifies(*cc, dia, margin, edge_checks=False):
                     continue
-                sline = LineString([cc, proj])
-                if any(
-                    sline.distance(Point(px, py)) < (dia + pd) / 2.0 + clearance
-                    for px, py, pd in placed
-                ):
-                    continue
-                if not all(
-                    _seg_rect_clear(cc, proj, pads, pose, stub_margin)
-                    for pads in pad_sets
-                ):
-                    continue
-                if any(ko.distance(sline) < stub_margin for ko in keepouts):
-                    continue
-                if outline is not None and (
-                    not outline.covers(sline)
-                    or outline.boundary.distance(sline) < stub_margin
-                ):
-                    continue
-                if any(
-                    _seg_seg_dist(cc, proj, p, q) < m
-                    for fpts, m in foreign
-                    for p, q in itertools.pairwise(fpts)
-                ):
+                if not stub_ok(cc, proj, dia):
                     continue
                 e, tt = _nearest_edge(mesh, cc)
                 return e, tt, float(cc[0]), float(cc[1])
         return None
 
+    def stub_ok(cc: tuple[float, float], proj: tuple[float, float], dia: float) -> bool:
+        """The off-path site's joining stub vetted like a drawn leg —
+        placed vias, pad rects on both outers, keepouts, the outline,
+        foreign polylines — at track width."""
+        stub_margin = track_w / 2.0 + clearance
+        sline = LineString([cc, proj])
+        if any(
+            sline.distance(Point(px, py)) < (dia + pd) / 2.0 + clearance
+            for px, py, pd in placed
+        ):
+            return False
+        if not all(
+            _seg_rect_clear(cc, proj, pads, pose, stub_margin) for pads in pad_sets
+        ):
+            return False
+        if any(ko.distance(sline) < stub_margin for ko in keepouts):
+            return False
+        if outline is not None and (
+            not outline.covers(sline) or outline.boundary.distance(sline) < stub_margin
+        ):
+            return False
+        return not any(
+            _seg_seg_dist(cc, proj, p, q) < m
+            for fpts, m in foreign
+            for p, q in itertools.pairwise(fpts)
+        )
+
+    def walk_grid(dia: float) -> tuple[int, float, float, float] | None:
+        """The exhaustive local stage (Reto 2026-10-31, "now do vias"):
+        when neither the on-wire walk nor the circumcenters qualify, scan
+        a disc of radius :data:`_VIA_GRID_RADIUS_MM` around the join
+        anchor at :data:`_VIA_GRID_STEP_MM`, nearest point first, for any
+        barrel position whose stub to the polyline also clears. The
+        circumcenter set is one triangle's reach; on a board of 0402s at
+        courtyard density the legal pocket is often two or three
+        triangles over, still well within the branch's own span."""
+        margin = dia / 2.0 + clearance
+        r_max = _VIA_GRID_RADIUS_MM
+        step = _VIA_GRID_STEP_MM
+        n = int(r_max / step)
+        cands = sorted(
+            (
+                (
+                    math.hypot(i * step, j * step),
+                    anchor[0] + i * step,
+                    anchor[1] + j * step,
+                )
+                for i in range(-n, n + 1)
+                for j in range(-n, n + 1)
+                if 0 < math.hypot(i * step, j * step) <= r_max
+            ),
+        )
+        for _r, x, y in cands:
+            if not qualifies(x, y, dia, margin, edge_checks=False):
+                continue
+            s_arc = _poly_project(pts, seg, (x, y))
+            proj = _poly_point_at(pts, seg, s_arc)
+            if math.dist((x, y), proj) > _VIA_GRID_RADIUS_MM:
+                continue
+            if not stub_ok((x, y), proj, dia):
+                continue
+            e, tt = _nearest_edge(mesh, (x, y))
+            return e, tt, float(x), float(y)
+        return None
+
     dia = float(via_dia)
-    site = walk(dia)
-    if site is None:
-        site = walk2d(dia)
+    site = walk(dia) or walk2d(dia) or walk_grid(dia)
     if site is None and fallback_dia is not None and fallback_dia < via_dia:
         dia = float(fallback_dia)
-        site = walk(dia)
-        if site is None:
-            site = walk2d(dia)
+        site = walk(dia) or walk2d(dia) or walk_grid(dia)
     if site is None:
         return None
     e, t, x, y = site
@@ -1751,6 +1795,16 @@ def _spoke_offsets(
     def nrules(net: int) -> NetRules:
         name = str(d.net_name[net]) if net < len(d.net_name) else str(net)
         return rules.get(name, _DEFAULT)
+
+    edge_zone = _edge_zone(
+        d,
+        min(
+            (float(nrules(b.net).clearance_mm) for b in wires.branches),
+            default=float(_DEFAULT.clearance_mm),
+        ),
+    )
+    if edge_zone is not None:
+        zone_polys.append(edge_zone)
 
     def ws(bi: int) -> tuple[float, float]:
         nr = nrules(wires.branches[bi].net)
@@ -3478,6 +3532,15 @@ def realize_result(
             ring = zone_world_ring(d, z, pose_a)
             if len(ring) >= 3:
                 zone_polys.append((Polygon(np.asarray(ring)), z))
+        edge_zone = _edge_zone(
+            d,
+            min(
+                (float(r.clearance_mm) for r in rules.values()),
+                default=float(_DEFAULT.clearance_mm),
+            ),
+        )
+        if edge_zone is not None:
+            zone_polys.append(edge_zone)
 
     def nm(k: int) -> str:
         return str(d.net_name[k]) if 0 <= k < len(d.net_name) else str(k)
@@ -4248,6 +4311,32 @@ def _merge_pass(
         warnings=tuple(base_r.warnings) + tuple(extra_r.warnings),
     )
     return plan, rres
+
+
+def _edge_zone(d: TopoDesign, s_min: float) -> tuple[Polygon, TopoZone] | None:
+    """The board's OUTSIDE as a zone obstacle for the spoke/chord passes:
+    the outline's exterior grown by ``edge_clearance − min clearance``,
+    so a branch holding its usual ``s + w/2`` off it holds
+    ``edge_clearance + w/2`` off the real edge — the DRC's bar. Never
+    added to ``d.zones`` (the mesh would read the ring as a region)."""
+    edge = float(getattr(d, "edge_clearance_mm", 0.0) or 0.0)
+    if edge <= 0.0 or len(d.outline) < 3:
+        return None
+    from shapely.geometry import box
+
+    outline = Polygon(np.asarray(d.outline, dtype=float))
+    if outline.is_empty:
+        return None
+    x0, y0, x1, y1 = outline.bounds
+    ext = box(x0 - 5.0, y0 - 5.0, x1 + 5.0, y1 + 5.0).difference(outline)
+    grow = edge - s_min
+    if grow > 0.0:
+        ext = ext.buffer(grow, join_style=2)
+    if ext.is_empty:
+        return None
+    return ext, TopoZone(
+        kind="board_edge", ring=np.asarray(d.outline), name="board edge"
+    )
 
 
 def _copper_zones(rres: Any, d: TopoDesign, ir: Any) -> list[TopoZone]:

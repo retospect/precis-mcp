@@ -480,6 +480,13 @@ class TopoDesign:
     #: at draw time (taz-leaf runs 34-37: fallback-priced placements
     #: shared outline walls everywhere and 26-32 of 50 labels walked).
     silk: SilkRoom = field(default_factory=SilkRoom.fallback)
+    #: Copper-to-board-edge clearance the fab row demands
+    #: (``board_edge_clearance_vcut_mm``, the figure the DRC measures
+    #: when the panel type is unknown); 0 when no capability was passed.
+    #: The realiser keeps tracks, chords and via barrels this far off
+    #: the outline (Reto 2026-10-31: RF_FEED hugged the leaf edge at
+    #: 0.273 mm against a 0.4 mm bar).
+    edge_clearance_mm: float = 0.0
     #: Slice 4 (corridor capacity): each pin's pad ``(w, h)`` in the part
     #: frame — an edge's wire capacity is its length minus the pad
     #: extents it touches. ``ir.pin_w``/``pin_h`` verbatim.
@@ -1338,6 +1345,12 @@ def design_from_ir(
         zones=_zones(ir, features, fixed_copper, names, pose0, hole_margin_mm),
         net_name=tuple(net_names),
         silk=SilkRoom.from_capability(capability),
+        edge_clearance_mm=float(
+            (getattr(capability, "jlc_min", None) or {}).get(
+                "board_edge_clearance_vcut_mm"
+            )
+            or 0.0
+        ),
         pin_wh=np.column_stack(
             [
                 np.asarray(ir.pin_w, dtype=np.float64),
