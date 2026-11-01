@@ -5,9 +5,14 @@ from __future__ import annotations
 
 import json
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
+
+pytestmark = pytest.mark.skipif(
+    sys.platform == "win32", reason="POSIX-only: runs a bash hook"
+)
 
 HOOK = Path(__file__).resolve().parents[1] / "scripts" / "hooks" / "twin-asked.sh"
 
@@ -18,6 +23,7 @@ def _run(prompt: str) -> subprocess.CompletedProcess:
         input=json.dumps({"prompt": prompt}),
         capture_output=True,
         text=True,
+        encoding="utf-8",
         timeout=15,
     )
 
