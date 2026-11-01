@@ -54,6 +54,8 @@
   {% elif rows_status == 'open' %}
   ✓ No open gripes. File friction as you hit it — use the form above, or
   <span class="font-mono">put(kind='gripe', text='…')</span>.
+  {% elif rows_status == 'attention' %}
+  ✓ Nothing needs attention — no open, triaged or auto_verify gripes.
   {% else %}
   No gripes with status {{ rows_status }}.
   {% endif %}

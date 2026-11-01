@@ -131,7 +131,7 @@
               <span class="ml-1 inline-flex items-center justify-center rounded-full bg-danger-solid text-on-solid text-[10px] font-semibold leading-none px-1.5 h-[1.1rem] min-w-[1.1rem]">{{ nav_needs_you }}</span>
               {% endif %}
             </a>
-            <a href="/gripes" data-tour="nav-gripes" data-shortcut="g g" data-shortcut-label="Gripes" title="Gripes (g g)"
+            <a href="/gripes?status=attention" data-tour="nav-gripes" data-shortcut="g g" data-shortcut-label="Gripes" title="Gripes (g g)"
                class="px-2 py-1 rounded text-xs font-medium transition inline-flex items-center {% if active_tab == 'gripes' %}{{ _tab_on }}{% else %}{{ _tab_off }}{% endif %}">
               Gripes
               {% if nav_gripes %}

@@ -12,12 +12,16 @@ The nav shows three live counts:
   deliberately excluded — the fetcher works that automatically; it lives
   under Browse, not here.) The ``Needs you`` tab
   (:mod:`precis_web.routes.needs_you`) lands on both.
-* **Gripes** — ``kind='gripe'`` rows tagged ``STATUS:triaged``, the pick
-  list: the workbench's default filter
-  (:mod:`precis_web.routes.gripes`), so the badge reads what the page
-  opens on. A distinct colour from both other badges — dev-bug-tracker
-  attention, not an operator health signal or a planner block.
-  A permanent large count stops meaning anything.
+* **Gripes** — live ``kind='gripe'`` rows in the ``attention`` cohort
+  (``gripes.BADGE_STATUSES``: ``open`` + ``triaged`` + ``auto_verify``,
+  gr548577) — everything actionable that isn't properly closed: filed,
+  on the pick list, or landed awaiting the release check. Leased
+  (``fixing``) and shelved (``needs_spec``/``parked``) rows stay out, as
+  does ``user_verify`` — that cohort already surfaces through the
+  Needs-you ask todo. The badge links to ``/gripes?status=attention``,
+  which lists the same set. A distinct colour from both other badges —
+  dev-bug-tracker attention, not an operator health signal or a
+  planner block. A permanent large count stops meaning anything.
 * **Alerts** — open ``kind='alert'`` rows (machine-detected ops /
   health conditions). A different colour from "Needs you" on purpose —
   system-flagged vs you-must-act, mirroring how ``alert`` is kept
@@ -92,28 +96,27 @@ def _alerts_count(store: Store) -> int:
 
 # store stays Any: tests pass a hand-rolled fake narrower than Store
 def _gripes_count(store: Any) -> int:
-    """Un-retired ``kind='gripe'`` rows tagged ``STATUS:triaged`` — the pick list.
+    """Live ``kind='gripe'`` rows in the ``attention`` cohort — the badge's set.
 
-    Count-only mirror of ``gripes.py::_rows`` at the page's default
-    filter (``gripes.DEFAULT_STATUS``, ``triaged``) — keep the two in
-    sync. The full live list is one click away on ``/gripes`` and is
-    deliberately not what the badge counts.
+    Count-only mirror of ``gripes.py::_rows`` at ``gripes.BADGE_FILTER``
+    (gr548577): ``BADGE_STATUSES`` — open + triaged + auto_verify — with
+    an untagged gripe counting as ``open``. Keep the two in sync.
     """
-    from precis_web.routes.gripes import DEFAULT_STATUS
+    from precis_web.routes.gripes import BADGE_STATUSES
 
     with store.pool.connection() as conn:
         row = conn.execute(
             """
-            SELECT count(*)
+            SELECT count(DISTINCT r.ref_id)
               FROM refs r
+              LEFT JOIN ref_tags rt ON rt.ref_id = r.ref_id
+                   AND rt.tag_id IN
+                       (SELECT tag_id FROM tags WHERE namespace = 'STATUS')
+              LEFT JOIN tags t ON t.tag_id = rt.tag_id
              WHERE r.kind = 'gripe' AND r.retired_at IS NULL
-               AND EXISTS (
-                   SELECT 1 FROM ref_tags rt
-                     JOIN tags t ON t.tag_id = rt.tag_id
-                    WHERE rt.ref_id = r.ref_id AND t.namespace = 'STATUS'
-                      AND t.value = %s)
+               AND COALESCE(t.value, 'open') = ANY(%s)
             """,
-            (DEFAULT_STATUS,),
+            (list(BADGE_STATUSES),),
         ).fetchone()
     return int(row[0]) if row and row[0] is not None else 0
 

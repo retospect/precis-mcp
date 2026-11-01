@@ -4764,17 +4764,19 @@ def test_gripes_retire_dispatches_delete_and_redirects_to_list(runtime, client) 
 def test_gripes_nav_tab_renders_with_badge_hook(client) -> None:
     """The Gripes tab is wired into the shared nav (badge count is 0
     under the fake store's empty pool — see test_gripes_count below for
-    the counting logic itself)."""
+    the counting logic itself). It lands on the ``attention`` cohort the
+    badge counts (gr548577)."""
     resp = client.get("/gripes")
     assert resp.status_code == 200
-    assert 'href="/gripes"' in resp.text
+    assert 'href="/gripes?status=attention"' in resp.text
     assert ">Gripes<" in resp.text
 
 
-def test_gripes_count_is_the_triaged_pick_list() -> None:
-    """``_gripes_count`` mirrors ``gripes.py``'s default filter — a raw SQL
-    count of the un-retired ``STATUS:triaged`` gripes (the pick list), the
-    status bound as a parameter."""
+def test_gripes_count_is_the_attention_cohort() -> None:
+    """``_gripes_count`` mirrors ``gripes.BADGE_STATUSES`` (gr548577) — a
+    raw SQL count of the un-retired gripes whose effective status
+    (untagged = ``open``) is open/triaged/auto_verify, bound as one ANY
+    parameter."""
     from contextlib import contextmanager
 
     from precis_web.nav import _gripes_count
@@ -4785,8 +4787,8 @@ def test_gripes_count_is_the_triaged_pick_list() -> None:
 
     class _Conn:
         def execute(self, sql, params=None):
-            assert "t.value = %s" in sql
-            assert params == ("triaged",)
+            assert "COALESCE(t.value, 'open') = ANY(%s)" in sql
+            assert params == (["open", "triaged", "auto_verify"],)
             return _Cursor()
 
     class _Pool:

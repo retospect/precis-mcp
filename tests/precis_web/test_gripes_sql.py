@@ -19,6 +19,9 @@ from precis.store import Tag
 from precis_web.routes.gripes import (
     _ROWS_PAGE,
     _STATUS_PARAM_VALUES,
+    BADGE_FILTER,
+    BADGE_STATUSES,
+    _filter_chips,
     _rows,
     _status_counts,
 )
@@ -134,6 +137,30 @@ def test_rows_status_filters(store: Any) -> None:
     assert all_ids == {int(o.id), int(d.id), int(w.id), int(ret.id)}
     assert ret_ids == {int(ret.id)}
     assert done_ids == {int(d.id)}
+
+
+def test_rows_attention_is_the_badge_cohort(store: Any) -> None:
+    """gr548577: the ``attention`` cohort filter serves exactly the
+    ``BADGE_STATUSES`` union the nav badge counts — open + triaged +
+    auto_verify, untagged counting as open — and its synthetic chip
+    sums the same set."""
+    o = insert_gripe(store, "cohort-open")
+    t = insert_gripe(store, "cohort-triaged", status="triaged")
+    a = insert_gripe(store, "cohort-autoverify", status="auto_verify")
+    insert_gripe(store, "out-fixing", status="fixing")
+    insert_gripe(store, "out-userverify", status="user_verify")
+    insert_gripe(store, "out-parked", status="parked")
+    insert_gripe(store, "out-done", status="done")
+    ret = insert_gripe(store, "out-retired", status="triaged")
+    store.retire_ref(ret.id)
+
+    rows = _rows(store, status_filter=BADGE_FILTER)
+    assert {r["ref_id"] for r in rows} == {int(o.id), int(t.id), int(a.id)}
+    assert {r["status"] for r in rows} == set(BADGE_STATUSES)
+
+    chips = _filter_chips(_status_counts(store), BADGE_FILTER)
+    assert chips[0]["status"] == BADGE_FILTER
+    assert chips[0]["count"] == 3
 
 
 def test_rows_serves_the_drift_status_the_count_surfaces(store: Any) -> None:

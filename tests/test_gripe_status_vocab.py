@@ -144,16 +144,18 @@ def test_web_count_and_rows_treat_untagged_gripe_as_open(store: Store) -> None:
     with store.tx() as conn:
         conn.execute("SET LOCAL session_replication_role = replica")
         conn.execute("DELETE FROM ref_tags WHERE ref_id = %s", (rid,))
-    # the nav badge counts the triaged pick list only (td541981)
-    assert _gripes_count(store) == 0
+    # the nav badge's attention cohort (gr548577) counts an untagged
+    # gripe as open — both live opens land in it
+    assert _gripes_count(store) == 2
     rows = _rows(store, status_filter="live")
     assert len(rows) == 2
     assert {r["status"] for r in rows} == {"open"}
 
 
-def test_live_list_includes_verify_but_badge_is_triaged_only(store: Store) -> None:
+def test_live_list_includes_verify_but_badge_excludes_it(store: Store) -> None:
     """``verify`` is non-terminal, so the web ``live`` filter lists it; the
-    nav badge counts only the triaged pick list."""
+    nav badge's attention cohort (gr548577) is open + triaged +
+    auto_verify — a legacy ``verify`` spelling stays out."""
     from precis_web.nav import _gripes_count
     from precis_web.routes.gripes import _rows
 

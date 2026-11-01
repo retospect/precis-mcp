@@ -1,7 +1,10 @@
 """Nav badges mirror each page's default filter (td541981).
 
-* Gripes badge = ``STATUS:triaged`` (the pick list), the same set
-  ``/gripes`` opens on — not the 195-strong live list.
+* Gripes badge = the ``attention`` cohort — ``open`` + ``triaged`` +
+  ``auto_verify``, the not-properly-closed set (gr548577) that
+  ``/gripes?status=attention`` lists. Leased ``fixing`` and shelved
+  ``needs_spec``/``parked`` stay out; ``user_verify`` already rides
+  the Needs-you ask todo.
 * Needs-you badge = showstopper + ``ask-user`` decision rows from
   ``asks_model``; discussions and a bare ``waiting-for:reto`` stay off.
 """
@@ -34,17 +37,30 @@ def _todo(store: Any, title: str, *tags: str) -> int:
     return int(ref.id)
 
 
-def test_gripes_badge_counts_triaged_only(store: Any) -> None:
+def test_gripes_badge_counts_the_attention_cohort(store: Any) -> None:
+    """gr548577: the badge sums open + triaged + auto_verify — everything
+    not properly closed that still needs a pickup or the release check."""
+    insert_gripe(store, "filed", status="open")
     insert_gripe(store, "pick-me", status="triaged")
-    insert_gripe(store, "not-yet", status="open")
-    insert_gripe(store, "in-flight", status="verify")
-    insert_gripe(store, "finished", status="done")
-    assert _gripes_count(store) == 1
+    insert_gripe(store, "landed", status="auto_verify")
+    for status in (
+        "fixing",
+        "in_review",
+        "user_verify",
+        "needs_spec",
+        "parked",
+        "verify",
+        "ready_for_fix",
+    ):
+        insert_gripe(store, f"excluded-{status}", status=status)
+    insert_gripe(store, "closed-done", status="done")
+    insert_gripe(store, "closed-wontfix", status="wontfix")
+    assert _gripes_count(store) == 3
 
 
-def test_gripes_badge_skips_a_retired_triaged_gripe(store: Any) -> None:
+def test_gripes_badge_skips_a_retired_cohort_gripe(store: Any) -> None:
     keep = insert_gripe(store, "pick-me", status="triaged")
-    gone = insert_gripe(store, "merged-away", status="triaged")
+    gone = insert_gripe(store, "merged-away", status="auto_verify")
     store.retire_ref(gone.id)
     assert keep.id != gone.id
     assert _gripes_count(store) == 1
@@ -80,12 +96,12 @@ def test_needs_you_drops_a_closed_ask(store: Any) -> None:
     assert _asks_count(store) == 1
 
 
-def test_gripes_default_filter_is_the_badge_set(
+def test_gripes_default_filter_is_the_pick_list(
     store: Any, client: Any, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """``GET /gripes`` opens on triaged: the triaged row is inline, the
-    open row is behind its (collapsed) chip, and the triaged chip's count
-    equals the badge."""
+    """``GET /gripes`` still opens on triaged: the triaged row is inline,
+    the open row is behind its (collapsed) chip — but the nav badge now
+    counts the wider ``attention`` cohort (gr548577)."""
     from precis_web.routes import gripes
 
     insert_gripe(store, "fixture-triaged-pick", status="triaged")
@@ -97,15 +113,48 @@ def test_gripes_default_filter_is_the_badge_set(
     assert "fixture-triaged-pick" in page
     assert "fixture-open-hidden" not in page
     assert 'hx-get="/gripes/rows?status=open"' in page
-    assert _gripes_count(store) == 1
+    assert _gripes_count(store) == 2
 
 
-@pytest.mark.parametrize("status", ["live", "all"])
-def test_gripes_status_param_reaches_the_big_lists(
+def test_gripes_badge_lands_on_the_attention_cohort(
+    store: Any, client: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The badge links to ``/gripes?status=attention``, which lists the
+    same open + triaged + auto_verify set the count sums (gr548577)."""
+    from precis_web.routes import gripes
+
+    insert_gripe(store, "fixture-open-listed", status="open")
+    insert_gripe(store, "fixture-triaged-listed", status="triaged")
+    insert_gripe(store, "fixture-autoverify-listed", status="auto_verify")
+    insert_gripe(store, "fixture-fixing-hidden", status="fixing")
+    insert_gripe(store, "fixture-parked-hidden", status="parked")
+    insert_gripe(store, "fixture-done-hidden", status="done")
+    monkeypatch.setattr(gripes, "get_store", lambda request: store)
+
+    assert 'href="/gripes?status=attention"' in client.get("/gripes").text
+    page = client.get("/gripes?status=attention").text
+    assert 'data-status="attention" open' in page
+    for listed in (
+        "fixture-open-listed",
+        "fixture-triaged-listed",
+        "fixture-autoverify-listed",
+    ):
+        assert listed in page
+    for hidden in (
+        "fixture-fixing-hidden",
+        "fixture-parked-hidden",
+        "fixture-done-hidden",
+    ):
+        assert hidden not in page
+
+
+@pytest.mark.parametrize("status", ["live", "all", "attention"])
+def test_gripes_status_param_reaches_the_cohort_lists(
     store: Any, client: Any, monkeypatch: pytest.MonkeyPatch, status: str
 ) -> None:
-    """``?status=live`` / ``all`` stay reachable: the cohort renders inline
-    under a synthetic leading chip carrying its summed count."""
+    """``?status=live`` / ``all`` / ``attention`` stay reachable: the
+    cohort renders inline under a synthetic leading chip carrying its
+    summed count."""
     from precis_web.routes import gripes
 
     insert_gripe(store, "fixture-triaged-pick", status="triaged")

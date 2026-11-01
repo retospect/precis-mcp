@@ -41,16 +41,18 @@
 
 {# One <details> chip per status, workflow order (gr520298). Only the
    selected filter's panel carries rows at page load (default: triaged,
-   the pick list the nav badge counts) — every other status fires ONE
+   the pick list; the nav badge counts the wider ``attention`` cohort —
+   gr548577) — every other status fires ONE
    /gripes/rows request on its first expand (``toggle once``), on the
    shared code path; counts come from the load-time GROUP BY, so a
    1.9k-row done bucket costs a number, not a table. ``retired`` is the
    pseudo-status the count gives soft-deleted rows (merged/duplicate/
-   junk). ``live`` / ``all`` lead the list only when selected. #}
+   junk). ``attention`` / ``live`` / ``all`` lead the list only when
+   selected. #}
 <p class="mb-3 text-sm text-fg-faint">
   Showing <span class="font-mono">{{ selected }}</span>.
   Filter:
-  {% for f in ['triaged', 'live', 'all'] %}
+  {% for f in ['triaged', 'attention', 'live', 'all'] %}
   {% if f == selected %}<span class="font-semibold text-fg-secondary">{{ f }}</span>{% else %}<a href="/gripes?status={{ f }}" class="text-accent-deep hover:underline">{{ f }}</a>{% endif %}{% if not loop.last %} · {% endif %}
   {% endfor %}
 </p>

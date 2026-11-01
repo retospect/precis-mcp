@@ -9,8 +9,9 @@ data-layer work: every mutation dispatches an existing verb (``tag`` /
 tree guards stay single-sourced with the MCP surface (see ``deps.py``).
 
 * ``GET /gripes[?status=<s>]`` — the selected filter's gripes inline
-  (default ``triaged``, the pick list the nav badge counts; ``live`` /
-  ``all`` / any one status by ``status=``) plus one status chip per
+  (default ``triaged``, the pick list; ``attention`` — the cohort the
+  nav badge counts — plus ``live`` / ``all`` / any one status by
+  ``status=``) plus one status chip per
   status with its count (gr520298). The load is a single
   ``COUNT … GROUP BY`` status plus the selected rows; every other
   status's rows lazy-load on the chip's first expand. Retired gripes
@@ -82,10 +83,21 @@ STATUS_VALUES: tuple[str, ...] = (
     "wontfix",
 )
 
-#: The list's default filter and what the nav badge counts
-#: (``nav.py::_gripes_count``): the triaged pick list. "live" and "all"
-#: stay reachable by ``?status=``.
+#: The list's default filter: the triaged pick list. "attention",
+#: "live" and "all" stay reachable by ``?status=``.
 DEFAULT_STATUS = "triaged"
+
+#: STATUS cohort the nav badge counts (gr548577): the actionable,
+#: not-properly-closed set — newly filed (``open``), on the pick list
+#: (``triaged``), or landed and awaiting the release check
+#: (``auto_verify``). ``fixing`` is leased in-flight work,
+#: ``needs_spec``/``parked`` are shelved off every queue, and
+#: ``user_verify`` already surfaces through the Needs-you ask todo.
+BADGE_STATUSES: tuple[str, ...] = ("open", "triaged", "auto_verify")
+
+#: The ``?status=`` cohort the badge links to — ``BADGE_STATUSES`` as
+#: one list, so a clicked count shows exactly the set it numbered.
+BADGE_FILTER = "attention"
 
 #: Terminal STATUS values the "live" filter excludes. ``done`` = fixed/resolved
 #: (the documented terminal state since gr207238 blessed the de facto
@@ -119,13 +131,20 @@ _STATUS_RANK_SQL = " ".join(
 
 #: Values ``GET /gripes/rows?status=`` accepts: the renderable STATUS
 #: vocabulary plus the ``retired`` pseudo-status (the soft-deleted
-#: bucket's chip) and the ``all``/``live`` cohort filters — plus, at
+#: bucket's chip) and the ``all``/``live``/``attention`` cohort
+#: filters — plus, at
 #: request time, every status value the grouped count returns, so an
 #: off-vocabulary drift chip stays expandable. Anything else is a 400
 #: naming this list — the value used to bind straight into the WHERE
 #: clause and hand back an empty state that read as "no gripes", which
 #: silently masked typos and off-vocabulary guesses.
-_STATUS_PARAM_VALUES: tuple[str, ...] = (*_RANKED_VALUES, "retired", "all", "live")
+_STATUS_PARAM_VALUES: tuple[str, ...] = (
+    *_RANKED_VALUES,
+    "retired",
+    "all",
+    "live",
+    BADGE_FILTER,
+)
 
 #: Rows per ``/gripes/rows`` page — the cap that keeps a closed-status
 #: chip's first expand from shipping its whole cohort (the done bucket
@@ -254,7 +273,8 @@ def _rows(
 
     ``status_filter``: ``'live'`` (everything but the TERMINAL_VALUES),
     ``'all'``, ``'retired'`` (the soft-deleted merged/duplicate/junk
-    bucket), or any one status value. The ``/gripes/rows`` route
+    bucket), ``BADGE_FILTER`` (the nav badge's BADGE_STATUSES union),
+    or any one status value. The ``/gripes/rows`` route
     allowlists to ``_STATUS_PARAM_VALUES`` first; this helper itself
     still takes any string — the status value is always a bind
     parameter, never interpolated. ``limit``/``offset`` page the result
@@ -276,6 +296,10 @@ def _rows(
         params.append(list(TERMINAL_VALUES))
     elif status_filter == "retired":
         clauses.append("r.retired_at IS NOT NULL")
+    elif status_filter == BADGE_FILTER:
+        clauses.append("r.retired_at IS NULL")
+        clauses.append("COALESCE(t.value, 'open') = ANY(%s)")
+        params.append(list(BADGE_STATUSES))
     else:
         clauses.append("r.retired_at IS NULL")
         clauses.append("COALESCE(t.value, 'open') = %s")
@@ -360,14 +384,17 @@ def _status_counts(store: Store) -> list[dict[str, Any]]:
 def _filter_chips(chips: list[dict[str, Any]], selected: str) -> list[dict[str, Any]]:
     """The page's chips with the selected filter guaranteed present.
 
-    ``live`` / ``all`` are cohort filters, not stored statuses, so they
-    get a synthetic leading chip whose count is summed from the grouped
-    count (``live`` = every non-retired, non-terminal status; ``all``
-    = everything including the retired bucket). A selected status with
+    ``live`` / ``all`` / ``BADGE_FILTER`` are cohort filters, not stored
+    statuses, so they get a synthetic leading chip whose count is summed
+    from the grouped count (``live`` = every non-retired, non-terminal
+    status; ``all`` = everything including the retired bucket;
+    ``BADGE_FILTER`` = the BADGE_STATUSES union). A selected status with
     no rows (``triaged`` on an empty pick list) still renders, at 0.
     """
     out = list(chips)
-    if selected == "live":
+    if selected == BADGE_FILTER:
+        count = sum(c["count"] for c in chips if c["status"] in BADGE_STATUSES)
+    elif selected == "live":
         count = sum(
             c["count"]
             for c in chips
@@ -389,10 +416,11 @@ def _filter_chips(chips: list[dict[str, Any]], selected: str) -> list[dict[str, 
 async def gripes(request: Request, status: str = DEFAULT_STATUS) -> HTMLResponse:
     """The selected filter's rows inline + one chip per status (gr520298).
 
-    The default filter is ``triaged`` — the pick list, the same count
-    the nav badge shows (``nav.py::_gripes_count``). ``?status=live`` /
-    ``all`` / any one status reaches the rest; the chips carry counts
-    per status so the big list is one click away.
+    The default filter is ``triaged`` — the pick list. The nav badge
+    (``nav.py::_gripes_count``) counts the wider ``attention`` cohort
+    (``BADGE_STATUSES``), which ``?status=attention`` lists.
+    ``?status=live`` / ``all`` / any one status reaches the rest; the
+    chips carry counts per status so the big list is one click away.
 
     Two queries at load: the grouped count and the selected rows — the
     terminal/retired cohort (thousands of rows in prod) never leaves
