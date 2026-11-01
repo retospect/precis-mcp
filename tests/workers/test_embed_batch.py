@@ -120,6 +120,10 @@ def test_unregistered_mock_embedder_fails_infra_before_claiming(
     fail ``infra`` with a self-describing reason and claim NOTHING — not
     claim + embed + die on ``chunk_embeddings_embedder_fkey`` per
     micro-batch (the 2026-09-25 agent-lane shape)."""
+    # ``embedders`` is preserved across tests, so a 'mock' row leaked by an
+    # earlier test (the seed loader registers one) would make it registered.
+    with store.pool.connection() as conn:
+        conn.execute("DELETE FROM embedders WHERE name = 'mock'")
     _patch_embedder(monkeypatch, MockEmbedder(dim=1024))
     seed_chunks(store, [f"chunk {i}" for i in range(3)])
 

@@ -321,10 +321,17 @@ def test_load_registers_the_dev_embedder(store: Store, tmp_path: Path) -> None:
     slice_path.write_text(
         "".join(json.dumps(x) + "\n" for x in lines), encoding="utf-8"
     )
-    seed.load_slice(store.dsn, slice_path, migrate=False)
-    with psycopg.connect(store.dsn) as conn:
-        rows = conn.execute("SELECT name, dim FROM embedders").fetchall()
-    assert ("mock", 1024) in rows
+    try:
+        seed.load_slice(store.dsn, slice_path, migrate=False)
+        with psycopg.connect(store.dsn) as conn:
+            rows = conn.execute("SELECT name, dim FROM embedders").fetchall()
+        assert ("mock", 1024) in rows
+    finally:
+        # ``embedders`` survives the per-test truncation (seeded vocabulary);
+        # a leaked 'mock' row makes embed_batch's unregistered-embedder guard
+        # pass for every later test on this DB.
+        with psycopg.connect(store.dsn) as conn:
+            conn.execute("DELETE FROM embedders WHERE name = 'mock'")
 
 
 def test_dangling_fks_are_pruned(store: Store, tmp_path: Path) -> None:
