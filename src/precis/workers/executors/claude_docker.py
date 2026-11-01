@@ -1721,6 +1721,7 @@ def _terminate(
                 work_dir=work_dir,
                 image=str((meta or {}).get("image") or ""),
                 model=str((meta or {}).get("model") or ""),
+                succeeded=status == _SUCCEEDED and exit_code == 0,
                 extra_derived_from=(
                     int(build_folder_id) if isinstance(build_folder_id, int) else None
                 ),

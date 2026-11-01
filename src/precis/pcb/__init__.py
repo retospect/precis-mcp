@@ -7,6 +7,8 @@ board already placed rectangles — and keep every stage a pure function
 over it so each is unit-testable in isolation. Export is the one place a
 design leaves the relational graph.
 
+Inspection and run intake: :mod:`~precis.pcb.inspection`, :mod:`~precis.pcb.workspace`.
+
 ``pcb_review`` works the shipped ``pcb-tapeout`` and conditionally assigned
 ``pcb-mech-env`` judgment ledgers through the same checklist sync/status/write
 path. Mechanical review is declaration-driven (flex process, fab features or

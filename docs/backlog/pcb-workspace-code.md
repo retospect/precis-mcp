@@ -304,6 +304,13 @@ rebuilds with real pads. This is what CI runs (§Goldens).
 
 ## Import boundary (trusted side)
 
+Extend the bounded run intake in
+`src/precis/pcb/workspace.py::run_batch` and the judged PCB run put.
+Local `precis pcb import-run` and successful sandbox harvest already
+attach the trace and producing job through that door. Remaining here:
+workspace ownership, changed-board replacement/retirement, planes,
+requests and W5 refusals; do not add a second run-envelope parser.
+
 `src/precis/pcb/workspace_import.py`, called by the workspace run's
 import step when `manifest.kind == 'pcb'`:
 

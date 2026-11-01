@@ -81,6 +81,19 @@ def add_parser(sub: argparse._SubParsersAction) -> argparse.ArgumentParser:
     )
     psub = p.add_subparsers(dest="pcb_cmd", required=True)
 
+    ir = psub.add_parser(
+        "import-run", help="Import a finished PCB out/ with its construction trace."
+    )
+    ir.add_argument("path", help="The local run's out/ directory.")
+    ir.add_argument("--slug", default=None, help="Override the manifest's design slug.")
+    ir.add_argument(
+        "--run-job", type=int, default=None, help="Producing job ref, if any."
+    )
+    ir.add_argument(
+        "--database-url", default=None, help="Override PRECIS_DATABASE_URL."
+    )
+    ir.set_defaults(func=run)
+
     ie = psub.add_parser(
         "import-epro",
         help="Import an EasyEDA Pro .epro2 board into the pcb kind.",
@@ -233,6 +246,8 @@ def run(args: argparse.Namespace) -> None:
     """Dispatch ``precis pcb <cmd>``."""
     if args.pcb_cmd == "import-epro":
         _import_epro(args)
+    elif args.pcb_cmd == "import-run":
+        _import_run(args)
     elif args.pcb_cmd == "copper-report":
         _copper_report(args)
     elif args.pcb_cmd == "refresh-parts":
@@ -257,6 +272,26 @@ def _link_parts(args: argparse.Namespace) -> None:
     )
     if args.dry_run:
         print("  (dry run — nothing was written)")
+
+
+def _import_run(args: argparse.Namespace) -> None:
+    from pathlib import Path
+
+    from precis.errors import PrecisError
+    from precis.ingest.pcb_workspace import import_pcb_run
+    from precis.store import Store
+
+    store = Store.connect(resolve_dsn(args.database_url))
+    try:
+        result = import_pcb_run(
+            store, Path(args.path), slug=args.slug, run_job=args.run_job
+        )
+    except (PrecisError, OSError) as exc:
+        print(f"pcb import-run: {exc}", file=sys.stderr)
+        raise SystemExit(EXIT_REFUSED) from exc
+    finally:
+        store.close()
+    print(result.body)
 
 
 def _import_epro(args: argparse.Namespace) -> None:

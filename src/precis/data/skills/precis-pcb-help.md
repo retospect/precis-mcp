@@ -81,6 +81,53 @@ pads orphaned (no net) with intended `unused`/`nc` counted separately,
 per-layer source-copper counts and extents, and the source outline bbox
 beside the stored design's. Name lists cap at 10 + "+N more".
 
+## Text inspection
+
+Use the stored board's geometry, not an SVG, for structural questions:
+
+```python
+get(kind='pcb', id='board', view='wire', args={'pin':'U1.3'})
+get(kind='pcb', id='board', view='wire', args={'net':'SIG*', 'net_class':'sense'})
+get(kind='pcb', id='board', view='part', args={'refdes':'U1'})
+get(kind='pcb', id='board', view='layer', args={'layer':'F.Cu'})
+get(kind='pcb', id='board', view='snippet', args={'refdes':['U1','C1'], 'margin':1})
+get(kind='pcb', id='board', view='snippet', args={'bbox':[0,0,10,5]})
+```
+
+Wire beams walk pin/branch/segment/via/endpoint, reporting layer, length,
+cumulative mm and coordinates. `pin` accepts a physical pad number or pin
+name. `layer` and `min_length` (mm) hide rows without changing travel
+distances. Pours are counted but have no invented centre-line distance.
+Part cards include pose, pad nets, same-side courtyard gaps, actual label
+spot/offset and DRC findings; `refdes`/`net` accept globs, `side` is
+`top|bottom`. Layer sheets include counts, net histogram, extents and
+12x6 occupied-area ASCII density. Layers and snippets accept `net`/
+`net_class` globs and `bbox` or `refdes` + `margin` region filters.
+Silkscreen layers are `F.Silkscreen`/`B.Silkscreen`.
+
+Coordinates round to 0.01 mm; each result stays below 4 KB. Follow its
+`next:` call (same filters, `offset` advanced) for remaining rows.
+Reads record no DRC run. Synthesized pad geometry is explicitly marked on
+part cards; these views are inspection, not fabrication approval.
+
+## Finished PCB runs
+
+`uv run precis pcb import-run PATH/TO/out` imports a local finished run
+through the same judged put as the server. `--slug PREVIEW` overrides the
+manifest's slug; `--run-job ID` binds an existing producing job. The
+import always takes sibling `manifest.json` **and** `trace.json`; no
+manual `trace` argument is needed. MCP accepts the same two texts as
+`put(kind='pcb', id='board', args={'run': {'manifest.json': manifest_text,
+'trace.json': trace_text}})`. Successful sandbox harvest imports PCB
+manifests automatically and binds its job. `view='frames'` then resolves
+part/net makers to script lines.
+
+Building offline still writes previews only. Re-importing identical
+construction preserves features; changed existing boards refuse and
+require a fresh slug until workspace replacement ships. Failed runs,
+service requests and plane-assignment manifests refuse rather than
+silently dropping output.
+
 ## Copy a board — `op='fork'`
 
 `put(id='<new slug>', args={'op':'fork','from':'<slug or pb<id>>'},

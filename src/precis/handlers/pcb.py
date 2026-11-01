@@ -253,6 +253,7 @@ _TOPO_VIEWS = ("topo",)
 #: frame walk), kept off ``view='trace'`` which already means a net's
 #: route path through series passives (:meth:`PcbHandler._render_frames`).
 _TRACE_VIEWS = ("frames",)
+_INSPECTION_VIEWS = ("wire", "part", "layer", "snippet")
 
 #: pcb-svg-render — publication-quality vector figures off the same
 #: copper model Gerber writes from (:mod:`precis.pcb.svg`), plus the L3
@@ -290,6 +291,7 @@ _VIEWS = (
     *_SESSION_VIEWS,
     *_TOPO_VIEWS,
     *_TRACE_VIEWS,
+    *_INSPECTION_VIEWS,
     *_RENDER_VIEWS,
     *_OTHER_VIEWS,
 )
@@ -1271,6 +1273,7 @@ class PcbHandler(Handler):
                 # run's trace.json; 'run_job' names the job ref the
                 # ws_trace chunk stores on (absent = the board ref).
                 "trace",
+                "run",
                 "run_job",
                 "achieve_date",
                 "billing_address",
@@ -1335,6 +1338,12 @@ class PcbHandler(Handler):
                 # view='check'/'drc': force the inline run past reuse
                 # (gr496242).
                 "fresh",
+                "layer",
+                "pin",
+                "side",
+                "net_class",
+                "min_length",
+                "offset",
             }
         ),
     }
@@ -1489,6 +1498,38 @@ class PcbHandler(Handler):
         reported in the response. A put that leaves the design with no
         placed instance is never judged."""
         args = args or {}
+        if "run" in args:
+            from precis.pcb.workspace import RUN_NEXT, run_batch
+
+            if set(args) - {"run", "run_job"}:
+                raise BadInput(
+                    "PCB run cannot mix with batch fields or ops", next=RUN_NEXT
+                )
+            batch = run_batch(args["run"])
+            digest = hashlib.sha256(
+                json.dumps(
+                    {k: v for k, v in batch.items() if k != "trace"}, sort_keys=True
+                ).encode("utf-8")
+            ).hexdigest()
+            prior = self.store.get_ref(kind="pcb", id=str(id).strip()) if id else None
+            if prior is not None:
+                generated = (prior.meta or {}).get("generated") or {}
+                if generated.get("pcb_batch_sha") != digest:
+                    raise BadInput(
+                        "PCB run differs from an existing board; this import "
+                        "does not replace or retire board rows",
+                        next=RUN_NEXT.replace("<slug>", "<new-slug>"),
+                    )
+                # Identical construction does not append its features again.
+                batch = {"trace": batch["trace"]}
+            else:
+                run_meta = dict(batch.get("meta") or {})
+                run_meta["generated"] = {
+                    **dict(run_meta.get("generated") or {}),
+                    "pcb_batch_sha": digest,
+                }
+                batch["meta"] = run_meta
+            args = {**batch, **{k: v for k, v in args.items() if k != "run"}}
         if (id is None or not str(id).strip()) and args.get("op") == "footprint":
             # gr520322: the part_footprints cache is catalogue-wide, so
             # pulling or authoring a catalog part's pads needs no design
@@ -2023,10 +2064,31 @@ class PcbHandler(Handler):
         if "#" in s:
             slug, refdes = s.split("#", 1)
             ref = resolve_live_slug_ref(self.store, kind="pcb", id=slug.strip())
+            if view in _INSPECTION_VIEWS:
+                key = "pin" if view == "wire" else "refdes"
+                selected = dict(args or {})
+                if key in selected and selected[key] != refdes.strip():
+                    raise BadInput(
+                        f"{key} disagrees with the board selector",
+                        next=f"get(kind='pcb', id={slug.strip()!r}, view={view!r}, "
+                        f"args={selected!r})",
+                    )
+                selected[key] = refdes.strip()
+                return self._render_inspection(ref.id, view, selected)
             return self._render_instance(ref.id, refdes.strip())
         if "@" in s:
             slug, net = s.split("@", 1)
             ref = resolve_live_slug_ref(self.store, kind="pcb", id=slug.strip())
+            if view in _INSPECTION_VIEWS:
+                selected = dict(args or {})
+                if "net" in selected and selected["net"] != net.strip():
+                    raise BadInput(
+                        "net disagrees with the board selector",
+                        next=f"get(kind='pcb', id={slug.strip()!r}, view={view!r}, "
+                        f"args={selected!r})",
+                    )
+                selected["net"] = net.strip()
+                return self._render_inspection(ref.id, view, selected)
             return self._render_net(ref.id, net.strip())
 
         ref = resolve_live_slug_ref(self.store, kind="pcb", id=s)
@@ -5235,6 +5297,8 @@ class PcbHandler(Handler):
             return self._render_route_status(ref_id)
         if view in _TOPO_VIEWS:
             return self._render_topo(ref_id, args)
+        if view in _INSPECTION_VIEWS:
+            return self._render_inspection(ref_id, view, args)
         if view == "congestion":
             return self._render_congestion(ref_id)
         if view == "planes":
@@ -9002,7 +9066,7 @@ class PcbHandler(Handler):
         capability = self._stackup_capability(
             board["stackup"], board_profile_name, meta=board.get("meta")
         )
-        pads, silk_draws, furniture_warnings, _silk_census, copper = (
+        pads, silk_draws, furniture_warnings, silk_census, copper = (
             self._board_furniture(
                 ir,
                 pads,
@@ -9050,6 +9114,7 @@ class PcbHandler(Handler):
                 ),
             ],
             "silkscreen": silk_draws,
+            "silk_census": [dataclasses.asdict(c) for c in silk_census],
             "soldermask_expansion_mm": pcb_silk.soldermask_expansion_mm(capability),
             "mask_open_regions": self._mask_open_regions(ref_id),
             # Same fab-layer keys `_fab_model` carries (gr520329) — this
@@ -9060,6 +9125,46 @@ class PcbHandler(Handler):
             ),
         }
         return model, furniture_warnings
+
+    def _render_inspection(
+        self, ref_id: int, view: str, args: dict[str, Any]
+    ) -> Response:
+        from shapely.geometry import Polygon
+
+        from precis.pcb import inspection, pose
+
+        ref = self.store.fetch_refs_by_ids([ref_id]).get(ref_id)
+        slug = (ref.slug if ref is not None else None) or "pcb"
+        assembled = self._fab_svg_model(ref_id, slug)
+        if assembled is None:
+            raise BadInput(
+                "PCB inspection needs a board",
+                next=f"get(kind='pcb', id={slug!r})",
+            )
+        model, _warnings = assembled
+        design = self.store.pcb_load(ref_id)
+        _pads, local, _bodies, _footprints = self._drc_geometry(ref_id, model["layers"])
+        courtyards = {
+            str(i["refdes"]): Polygon(
+                [pose.to_world(x, y, i) for x, y in local[str(i["refdes"])]]
+            )
+            for i in design["instances"]
+            if i.get("x") is not None
+            and i.get("y") is not None
+            and str(i["refdes"]) in local
+        }
+        ran = (
+            self._drc_run(ref_id, design, reuse=True)
+            if view in ("part", "snippet")
+            else None
+        )
+        data = inspection.Inspection(
+            model,
+            {**self.store.pcb_graph(ref_id), "instances": design["instances"]},
+            courtyards,
+            ran.findings if ran is not None else [],
+        )
+        return Response(body=inspection.render(data, slug, view, args))
 
     @staticmethod
     def _selection_rows(manifest: dict[str, Any]) -> dict[str, Any]:

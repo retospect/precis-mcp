@@ -58,7 +58,7 @@ adding a new one — a fresh migration is out of scope for this cycle
 ``derived-from`` already carries the right semantics (this folder's
 *result* is derived from that build's *code*); ``meta.run_of_folder_id``
 on the run's own harvest folder disambiguates which ``derived-from``
-edge is "the run job" vs. "the build it re-ran" without a new relation
+    edge is "the run job" vs. "the build it re-ran" without a new relation
 slug.
 """
 
@@ -600,6 +600,7 @@ def harvest_out(
     root: Path | None = None,
     artifact_store_root: Path | None = None,
     extra_derived_from: int | None = None,
+    succeeded: bool = True,
 ) -> HarvestResult:
     """Turn a container's exited-0 ``/work/out`` into the DB + NAS
     harvest — used for both a ``mode:build``'s code output and a
@@ -609,6 +610,11 @@ def harvest_out(
     no files — nothing to harvest (the "empty out/" taxonomy class; the
     job still succeeds on exit code, this only affects the summary
     text).
+
+    Successful PCB manifests also import through the judged PCB run door,
+    attaching trace.json to this job. ``succeeded=False`` keeps a failed
+    script's harvest as evidence only. Import refusals remain in the
+    summary without discarding the harvested artifacts.
 
     ``root`` is ``PRECIS_ROOT`` (default: read from the env — ``None``
     when unset skips the plaintext projection with a logged warning; the
@@ -703,6 +709,24 @@ def harvest_out(
         meta_updates["run_recipe"] = run_recipe
     store.stamp_ref_meta(job_ref_id, meta_updates)
 
+    manifest_path = out_dir / "manifest.json"
+    if succeeded and manifest_path.is_file() and not manifest_path.is_symlink():
+        if manifest_path.stat().st_size <= MAX_HARVEST_FILE_BYTES:
+            try:
+                manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            except (ValueError, UnicodeError):
+                manifest = None
+            if isinstance(manifest, dict) and manifest.get("kind") == "pcb":
+                from precis.errors import PrecisError
+                from precis.ingest.pcb_workspace import import_pcb_run
+
+                try:
+                    imported = import_pcb_run(store, out_dir, run_job=job_ref_id)
+                except PrecisError as exc:
+                    messages.append(f"PCB run import refused: {exc}")
+                else:
+                    messages.append(f"PCB run imported: {imported.body}")
+
     return HarvestResult(
         folder_ref_id=folder.id,
         n_projected=len(ref_ids),
@@ -746,6 +770,7 @@ def summarize(result: HarvestResult) -> str:
         )
     if result.run_recipe is not None:
         bits.append("RUN.json recipe parsed.")
+    bits.extend(m for m in result.messages if m.startswith("PCB run import"))
     return " ".join(bits)
 
 

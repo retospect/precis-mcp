@@ -4292,6 +4292,7 @@ class Board:
         return {
             "schema": MANIFEST_SCHEMA,
             "kind": "pcb",
+            "slug": self.slug,
             "board": self.to_batch(),
             "requests": [dict(r) for r in requests],
             "parts": [self._catalog_reads[k] for k in sorted(self._catalog_reads)],
