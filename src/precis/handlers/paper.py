@@ -430,8 +430,18 @@ _EDIT_DOOR_ARGS = (
     "clear_abstract",
     "convert_to",
     "drop_identifier",
+    "move_identifier_to",
+    "clear",
     "cite_key",
 )
+
+#: First-class ``refs`` columns ``args={'clear': …}`` can blank
+#: (gr548255): ``authors`` (jsonb + ``paper_authors`` rows) and ``year``.
+#: Clearing is a door, not a field spelling — blank means "keep" for
+#: every edit field, ``year`` has no empty value through the schema
+#: (``int | None``), and ``authors=[]`` reads as "set an empty byline",
+#: not "the byline is unknown".
+_CLEARABLE_FIELDS: tuple[str, ...] = ("authors", "year")
 
 
 # ``_coerce_search_year`` / ``_embed_query_batch`` / ``_broad_args_suffix`` used
@@ -683,7 +693,10 @@ class PaperHandler(Handler):
         # ``paper_reextract`` job to re-extract it (gr517423,
         # :meth:`_reextract`; ``pdf_sha256`` rides it too);
         # ``drop_identifier`` removes one named identifier row
-        # (:meth:`_drop_identifier`); ``reason`` is the audit string every
+        # (:meth:`_drop_identifier`); ``move_identifier_to`` re-homes it
+        # onto another live ref (:meth:`_move_identifier_to`); ``clear``
+        # blanks a first-class column (``authors``/``year``,
+        # :meth:`_clear_fields`); ``reason`` is the audit string every
         # door writes into its ref_event. Subclass hooks read their own
         # keys via _edit_args.
         "edit": ArgsSpec(
@@ -704,6 +717,8 @@ class PaperHandler(Handler):
                 "convert_to",
                 "subtype",
                 "drop_identifier",
+                "move_identifier_to",
+                "clear",
                 "cite_key",
                 "reason",
             }
@@ -3995,7 +4010,13 @@ class PaperHandler(Handler):
         ``args={'drop_identifier': {'scheme': …, 'value': …}}`` removes
         exactly one ``ref_identifiers`` row — the surgical fix for a
         wrong id sitting next to correct ones
-        (:meth:`_drop_identifier`); ``args={'drop_body': True,
+        (:meth:`_drop_identifier`);
+        ``args={'move_identifier_to': {'scheme': …, 'value': …, 'to':
+        <ref>}}`` re-homes one such row onto another live ref
+        (:meth:`_move_identifier_to`);
+        ``args={'clear': ['authors','year']}`` blanks a first-class
+        bibliographic column no field spelling can express
+        (:meth:`_clear_fields`); ``args={'drop_body': True,
         'keep_pdf': True}`` drops the body but keeps the pdf attachment
         so the bodiless-heal re-extracts it (:meth:`_drop_body`);
         ``args={'reextract': True}`` is that kept drop plus the queued
@@ -4237,6 +4258,20 @@ class PaperHandler(Handler):
                     reason=reason,
                     dry=bool(dry_mode),
                 )
+            if door == "move_identifier_to":
+                return self._move_identifier_to(
+                    id,
+                    raw_args["move_identifier_to"],
+                    reason=reason,
+                    dry=bool(dry_mode),
+                )
+            if door == "clear":
+                return self._clear_fields(
+                    id,
+                    raw_args["clear"],
+                    reason=reason,
+                    dry=bool(dry_mode),
+                )
             return self._clear_abstract(id, reason=reason, dry=bool(dry_mode))
         ref_id = self._resolve_paper_ref_id(id)
         # gr514995: an explicit blank abstract used to be a silent no-op
@@ -4253,6 +4288,18 @@ class PaperHandler(Handler):
                 next=f"edit(kind='{self.spec.kind}', "
                 f"id='{handle_registry.format_handle(self.spec.kind, ref_id)}', "
                 "args={'clear_abstract': True, 'reason': '<why>'})",
+            )
+        # gr548255: same blank-is-keep rule for the byline — an explicit
+        # empty ``authors=[]``/``''`` used to fall through to the generic
+        # "needs at least one field" refusal, so a converted datasheet
+        # stuck holding the wrong paper's authors had no removal door.
+        if authors is not None and not authors:
+            raise BadInput(
+                "authors=<empty> does not clear the byline — blank "
+                "fields keep the stored value",
+                next=f"edit(kind='{self.spec.kind}', "
+                f"id='{handle_registry.format_handle(self.spec.kind, ref_id)}', "
+                "args={'clear': ['authors'], 'reason': '<why>'})",
             )
         extra_changes = self._edit_args(ref_id, args, dry=bool(dry_mode))
         if supplement_of is not None and str(supplement_of).strip():
@@ -6370,6 +6417,167 @@ class PaperHandler(Handler):
             )
         )
 
+    def _clear_fields(
+        self, id: str | int, spec: Any, *, reason: str, dry: bool
+    ) -> Response:
+        """``edit(args={'clear': ['authors','year']})`` — blank a
+        first-class bibliographic column (gr548255).
+
+        The converted-datasheet repair: a ``convert_to`` flip keeps the
+        donor paper's byline and year on the new datasheet, and no
+        field-level spelling can remove them — blank means "keep" for
+        every edit field, ``authors=[]`` reads as "set an empty byline"
+        and ``year`` has no empty value through the edit schema
+        (``int | None``). Same shape as the ``clear_abstract``
+        precedent: removal lives behind a reasoned door. ``authors``
+        wipes ``refs.authors`` plus every ``paper_authors`` row (a
+        converted paper may still carry them — ``set_paper_authors``
+        no-ops on non-paper kinds, so they would otherwise linger) and
+        drops the ``meta.authors_source`` provenance stamp that named
+        the wiped byline's tier; the ``card_*`` chunks rebuild so the
+        wrong names stop matching search. ``year`` writes NULL. A
+        ``metadata_cleared`` ref_event carries the reason and the
+        cleared fields.
+        """
+        from precis.ingest import paper_dump
+
+        kind = self.spec.kind
+        ref, handle = self._require_live_body_ref(id, "clear")
+        self._require_reason(reason, "clear", kind, handle, arg="['authors']")
+        fields = (
+            [spec]
+            if isinstance(spec, str)
+            else [str(f) for f in spec]
+            if isinstance(spec, (list, tuple))
+            else []
+        )
+        fields = [f.strip().lower() for f in fields]
+        unknown = [f for f in fields if f not in _CLEARABLE_FIELDS]
+        if not fields or unknown:
+            raise BadInput(
+                "args['clear'] takes a field name or a list of them"
+                + (f" — {unknown[0]!r} is not clearable" if unknown else ""),
+                options=sorted(_CLEARABLE_FIELDS),
+                next=f"edit(kind='{kind}', id='{handle}', args="
+                "{'clear': ['authors', 'year'], 'reason': '<why>'})",
+            )
+        want_authors = "authors" in fields
+        want_year = "year" in fields
+        with self.store.pool.connection() as conn:
+            n_author_rows = int(
+                (
+                    conn.execute(
+                        "SELECT count(*) FROM paper_authors WHERE ref_id = %s",
+                        (ref.id,),
+                    ).fetchone()
+                    or (0,)
+                )[0]
+            )
+            undo = paper_dump.undo_line(conn, ref.id, handle)
+        has_authors = bool(ref.authors) or n_author_rows > 0
+        has_year = ref.year is not None
+        if (not want_authors or not has_authors) and (not want_year or not has_year):
+            return Response(
+                body=f"no change: {handle} already has "
+                + " and ".join(
+                    part
+                    for part in (
+                        "no byline" if want_authors and not has_authors else "",
+                        "no year" if want_year and not has_year else "",
+                    )
+                    if part
+                )
+                + "."
+            )
+        bits: list[str] = []
+        if want_authors:
+            bits.append(
+                f"byline wiped ({n_author_rows} paper_authors row(s) + "
+                "refs.authors, meta.authors_source dropped; card_* "
+                "chunks rebuilt)"
+                if has_authors
+                else "byline already empty"
+            )
+        if want_year:
+            bits.append(f"year {ref.year} → NULL" if has_year else "year already NULL")
+        if dry:
+            return Response(
+                body=(
+                    f"DRY RUN (no write) - would clear {handle}: "
+                    + "; ".join(bits)
+                    + "; a 'metadata_cleared' ref_event logged.\n\n"
+                    + f"{undo}"
+                )
+            )
+        with self.store.tx() as conn:
+            # TOCTOU pin, same shape as the other doors: lock the ref
+            # row and re-verify it stayed live since the check.
+            row = conn.execute(
+                "SELECT retired_at, meta->>'superseded_by' "
+                "FROM refs WHERE ref_id = %s FOR NO KEY UPDATE",
+                (ref.id,),
+            ).fetchone()
+            if row is None or row[0] is not None or row[1] is not None:
+                raise BadInput(
+                    f"{handle} was retired or merged since the check — "
+                    "a clear needs a live ref",
+                    next=f"re-resolve and retry: edit(kind='{kind}', "
+                    "id='<live ref>', args={'clear': "
+                    f"{fields}, 'reason': '{reason}'}})",
+                )
+            cleared: list[str] = []
+            if want_authors and has_authors:
+                conn.execute("DELETE FROM paper_authors WHERE ref_id = %s", (ref.id,))
+                conn.execute(
+                    "UPDATE refs SET authors = '[]'::jsonb, "
+                    "meta = meta - 'authors_source', updated_at = now() "
+                    "WHERE ref_id = %s",
+                    (ref.id,),
+                )
+                cleared.append("authors")
+                fresh = conn.execute(
+                    "SELECT title, meta FROM refs WHERE ref_id = %s",
+                    (ref.id,),
+                ).fetchone()
+                assert fresh is not None
+                meta = fresh[1] if isinstance(fresh[1], dict) else {}
+                kw = meta.get("keywords", [])
+                rewrite_cards(
+                    conn,
+                    ref.id,
+                    title=fresh[0] or "",
+                    author_names=[],
+                    abstract=meta.get("abstract", "")
+                    if isinstance(meta.get("abstract"), str)
+                    else "",
+                    keywords=list(kw) if isinstance(kw, list) else [],
+                )
+            if want_year and has_year:
+                conn.execute(
+                    "UPDATE refs SET year = NULL, updated_at = now() WHERE ref_id = %s",
+                    (ref.id,),
+                )
+                cleared.append("year")
+            self.store.append_event(
+                ref.id,
+                source="agent",
+                event="metadata_cleared",
+                payload={
+                    "reason": reason,
+                    "cleared": cleared,
+                    "paper_authors_removed": n_author_rows if want_authors else 0,
+                    "year_was": ref.year if want_year else None,
+                },
+                conn=conn,
+            )
+        return Response(
+            body=(
+                f"cleared {handle}: "
+                + "; ".join(bits)
+                + " (ref_event 'metadata_cleared' logged)."
+            )
+        )
+
     def _convert_to(
         self,
         id: str | int,
@@ -6707,6 +6915,245 @@ class PaperHandler(Handler):
                 + "ref_event 'identifier_dropped' logged; the pair is "
                 "suppressed in meta.dropped_identifiers (an explicit "
                 "re-add lifts it)."
+            )
+        )
+
+    def _move_identifier_to(
+        self, id: str | int, spec: Any, *, reason: str, dry: bool
+    ) -> Response:
+        """``edit(args={'move_identifier_to': {'scheme': …, 'value': …,
+        'to': <ref>}})`` — re-home one ``ref_identifiers`` row onto
+        another live ref (gr548255).
+
+        The repair for a body op that carried a claim it shouldn't:
+        ``split_body`` used to move *every* ``pdf_sha256`` row with the
+        body, so a second file's row (a merge leftover, an alias for a
+        different attachment) ended up claiming it for the minted ref
+        while the donor — which still owns that file — lost it. One
+        ``(scheme, value)`` row changes owner per call; the
+        ``(id_kind, id_value)`` primary key means the value itself
+        can't exist twice, so there is no merge to refuse — only the
+        target's own state to check.
+
+        Refusals: ``cite_key`` outright (a cite_key is the ref's
+        handle — re-keying is ``args={'cite_key': …}``'s job); the
+        source's own ``pdf_sha256`` *pointer* row (that is the
+        attachment itself — ``move_pdf_to`` / ``move_body_to`` move it
+        with the file); a scheme the source doesn't hold; a target
+        that is not a live ref of this kind; and — for a
+        *single-valued* scheme (``paper_id``/``pub_id``, the scalar
+        reads in ``v_refs``) — a target already holding a different
+        value. ``identifier_moved`` ref_events log on both refs with
+        the reason.
+        """
+        from precis.ingest import paper_dump
+        from precis.ingest.dedup import _SINGLE_ID_KINDS
+
+        kind = self.spec.kind
+        src, src_h = self._require_live_body_ref(id, "move_identifier_to")
+        self._require_reason(
+            reason,
+            "move_identifier_to",
+            kind,
+            src_h,
+            arg="{'scheme': '<scheme>', 'value': '<value>', 'to': 'pa<M>'}",
+        )
+        if not isinstance(spec, dict):
+            raise BadInput(
+                "move_identifier_to takes a dict — {'scheme': '<scheme>', "
+                "'value': '<value>', 'to': '<target ref>'}",
+                next=f"edit(kind='{kind}', id='{src_h}', args="
+                "{'move_identifier_to': {'scheme': 'pdf_sha256', "
+                "'value': '<sha>', 'to': 'pa<M>'}, 'reason': '<why>'})",
+            )
+        scheme = str(spec.get("scheme") or "").strip().lower()
+        value = _normalise_identifier(scheme, str(spec.get("value") or ""))
+        to_raw = str(spec.get("to") or "").strip()
+        if not scheme or not value or not to_raw:
+            raise BadInput(
+                "move_identifier_to needs 'scheme', 'value' and 'to' — "
+                "one identifier row per call",
+                next=f"edit(kind='{kind}', id='{src_h}', args="
+                "{'move_identifier_to': {'scheme': 'pdf_sha256', "
+                "'value': '<sha>', 'to': 'pa<M>'}, 'reason': '<why>'})",
+            )
+        if scheme == "cite_key":
+            raise BadInput(
+                "move_identifier_to cannot move a cite_key — a cite_key "
+                "is the ref's handle, not an external identifier",
+                next=f"re-key instead: edit(kind='{kind}', id='{src_h}', "
+                "args={'cite_key': '<newkey>', 'reason': '<why>'})",
+            )
+        tgt = self._resolve_ref_incl_retired(to_raw)
+        if tgt is None:
+            raise BadInput(
+                f"move_identifier_to 'to'={to_raw!r} resolves to no {kind} ref",
+                next=f"search(kind='{kind}', q='...') for the live "
+                "target's pa<id> or slug",
+            )
+        tgt_h = _pa(tgt)
+        if tgt.id == src.id:
+            raise BadInput(
+                "move_identifier_to 'to' names the record itself",
+                next="pass the other live ref the identifier belongs to",
+            )
+        if tgt.retired_at is not None:
+            chain_end = self.store.follow_supersede(tgt.id)
+            if chain_end is not None:
+                end_h = handle_registry.format_handle(tgt.kind, chain_end)
+                raise BadInput(
+                    f"{tgt_h} is itself merged into {end_h} — a move "
+                    "must land on a live ref",
+                    next=f"edit(kind='{kind}', id='{src_h}', args="
+                    f"{{'move_identifier_to': {{'scheme': '{scheme}', "
+                    f"'value': '{value}', 'to': '{end_h}'}}, "
+                    f"'reason': '{reason}'}})",
+                )
+            raise BadInput(
+                f"{tgt_h} is deleted (retired, no survivor) — a move "
+                "must land on a live ref",
+                next=f"search(kind='{kind}', q='...') for a live target",
+            )
+        pointer = (src.pdf_sha256 or "").strip().lower()
+        if scheme == "pdf_sha256" and value == pointer:
+            raise BadInput(
+                f"pdf_sha256={value!r} is {src_h}'s pdf pointer — the "
+                "identifier row moves with the file, not alone",
+                next=f"move the attachment instead: edit(kind='{kind}', "
+                f"id='{src_h}', args={{'move_pdf_to': '{tgt_h}', "
+                "'pdf_sha256': "
+                f"'{value}', 'reason': '{reason}'}}) (or 'move_body_to' "
+                "when the body goes too)",
+            )
+        with self.store.pool.connection() as conn:
+            held = [
+                str(r[0])
+                for r in conn.execute(
+                    "SELECT id_value FROM ref_identifiers "
+                    "WHERE ref_id = %s AND id_kind = %s",
+                    (src.id, scheme),
+                ).fetchall()
+            ]
+            tgt_held = [
+                str(r[0])
+                for r in conn.execute(
+                    "SELECT id_value FROM ref_identifiers "
+                    "WHERE ref_id = %s AND id_kind = %s",
+                    (tgt.id, scheme),
+                ).fetchall()
+            ]
+            undo = paper_dump.undo_line(conn, src.id, src_h)
+        if value not in {v.lower() for v in held}:
+            raise BadInput(
+                f"{src_h} has no {scheme}={value!r} identifier row",
+                next=(
+                    f"{src_h} holds {scheme}: {', '.join(held)} — pass "
+                    "one of those as 'value'"
+                    if held
+                    else f"get(kind='{kind}', id='{src_h}') lists the "
+                    "identifiers it does hold"
+                ),
+            )
+        if scheme in _SINGLE_ID_KINDS and tgt_held:
+            raise BadInput(
+                f"{tgt_h} already holds {scheme}={tgt_held[0]!r} — "
+                f"{scheme} is single-valued per ref, so the move would "
+                "leave it claiming two",
+                next=f"drop {tgt_h}'s row first if it is the wrong one: "
+                f"edit(kind='{kind}', id='{tgt_h}', args="
+                f"{{'drop_identifier': {{'scheme': '{scheme}', 'value': "
+                f"'{tgt_held[0]}'}}, 'reason': '<why>'}}), then retry",
+            )
+        if dry:
+            rest = (
+                f"{src_h} keeps {len(held) - 1} other {scheme} row(s)"
+                if len(held) > 1
+                else f"its last {scheme} row"
+            )
+            return Response(
+                body=(
+                    f"DRY RUN (no write) - would move identifier "
+                    f"{scheme}:{value} from {src_h} to {tgt_h} ({rest}); "
+                    f"'identifier_moved' ref_events logged on both.\n\n{undo}"
+                )
+            )
+        with self.store.tx() as conn:
+            # TOCTOU pin: lock both ref rows in ref_id order and
+            # re-verify liveness + the row's ownership before moving it.
+            locked = {
+                int(r[0]): r
+                for r in conn.execute(
+                    "SELECT ref_id, retired_at, meta->>'superseded_by' "
+                    "FROM refs WHERE ref_id = ANY(%s) "
+                    "ORDER BY ref_id FOR NO KEY UPDATE",
+                    ([src.id, tgt.id],),
+                )
+            }
+            for ref_id, handle in ((src.id, src_h), (tgt.id, tgt_h)):
+                row = locked.get(ref_id)
+                if row is None or row[1] is not None or row[2] is not None:
+                    raise BadInput(
+                        f"{handle} was retired or merged since the "
+                        "check — an identifier move needs both refs live",
+                        next="re-resolve and retry the edit",
+                    )
+            if (
+                scheme in _SINGLE_ID_KINDS
+                and conn.execute(
+                    "SELECT 1 FROM ref_identifiers WHERE ref_id = %s AND id_kind = %s",
+                    (tgt.id, scheme),
+                ).fetchone()
+            ):
+                raise BadInput(
+                    f"{tgt_h} gained a {scheme} row since the check — "
+                    f"{scheme} is single-valued per ref",
+                    next="re-list the target's identifiers and retry",
+                )
+            moved = conn.execute(
+                "UPDATE ref_identifiers SET ref_id = %s "
+                "WHERE ref_id = %s AND id_kind = %s "
+                "AND lower(id_value) = %s RETURNING id_value",
+                (tgt.id, src.id, scheme, value),
+            ).fetchone()
+            if moved is None:
+                raise BadInput(
+                    f"{src_h}'s {scheme}={value!r} row was removed "
+                    "between the check and the write — nothing moved",
+                    next="re-list the ref's identifiers and retry if "
+                    "the row is really still there",
+                )
+            payload = {
+                "reason": reason,
+                "scheme": scheme,
+                "value": str(moved[0]),
+                "from_ref_id": src.id,
+                "to_ref_id": tgt.id,
+            }
+            self.store.append_event(
+                src.id,
+                source="agent",
+                event="identifier_moved",
+                payload=payload,
+                conn=conn,
+            )
+            self.store.append_event(
+                tgt.id,
+                source="agent",
+                event="identifier_moved",
+                payload=payload,
+                conn=conn,
+            )
+        remaining = [v for v in held if v.lower() != value]
+        return Response(
+            body=(
+                f"moved identifier {scheme}:{moved[0]} from {src_h} to "
+                f"{tgt_h} "
+                + (
+                    f"({len(remaining)} {scheme} row(s) stay on {src_h}); "
+                    if remaining
+                    else f"(no {scheme} rows left on {src_h}); "
+                )
+                + "ref_event 'identifier_moved' logged on both."
             )
         )
 

@@ -69,6 +69,7 @@ def _rehome_content_identifiers(
     dst_ref_id: int,
     dst_had_pdf: bool,
     dst_had_body: bool,
+    moved_pdf_sha256: str | None = None,
 ) -> None:
     """Re-home the donor's content identifiers onto the target.
 
@@ -84,6 +85,14 @@ def _rehome_content_identifiers(
     them as scalars): each moves only onto a target that holds none of
     that kind — a target that has one keeps it and the donor's row
     stays behind.
+
+    ``pdf_sha256`` rows are NOT blanket-moved (gr548255): a ref may
+    hold several — one per attached file, only one of which is the
+    pointer whose file the moving body was extracted from
+    (``refs.pdf_sha256`` is that link; ``pdf_pages`` is the span on
+    it). Only the ``moved_pdf_sha256`` row follows; the donor's other
+    attachments stay claimed by the donor. ``None`` means no file
+    moved, so every ``pdf_sha256`` row stays.
     """
     stale = [
         kind
@@ -98,6 +107,13 @@ def _rehome_content_identifiers(
             "DELETE FROM ref_identifiers WHERE ref_id = %s AND id_kind = ANY(%s)",
             (dst_ref_id, stale),
         )
+    if moved_pdf_sha256 is not None:
+        conn.execute(
+            "UPDATE ref_identifiers SET ref_id = %s "
+            "WHERE ref_id = %s AND id_kind = 'pdf_sha256' "
+            "AND lower(id_value) = %s",
+            (dst_ref_id, src_ref_id, moved_pdf_sha256.lower()),
+        )
     held = {
         str(r[0])
         for r in conn.execute(
@@ -106,7 +122,7 @@ def _rehome_content_identifiers(
             (dst_ref_id, list(_SINGLE_ID_KINDS)),
         )
     }
-    kinds = list(_PDF_ID_KINDS) + [k for k in _SINGLE_ID_KINDS if k not in held]
+    kinds = ["content_hash"] + [k for k in _SINGLE_ID_KINDS if k not in held]
     conn.execute(
         "UPDATE ref_identifiers SET ref_id = %s "
         "WHERE ref_id = %s AND id_kind = ANY(%s)",
@@ -229,6 +245,7 @@ def _move_body_to_survivor(
             dst_ref_id=survivor_ref_id,
             dst_had_pdf=False,
             dst_had_body=bool(sv[5]),
+            moved_pdf_sha256=str(du[1]),
         )
         moved.append("pdf")
 

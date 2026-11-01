@@ -2403,3 +2403,311 @@ class TestDroppedIdentifierSuppression:
             )
         assert "openalex" not in _id_kinds(store, survivor)
         assert set(self._dropped(store, survivor)["openalex"]) == {"w555"}
+
+
+class TestClearFields:
+    """gr548255: ``args={'clear': ['authors','year']}`` blanks a
+    first-class column — the converted-datasheet repair for a donor
+    paper's byline/year."""
+
+    def _authors_json(self, store: Store, ref_id: int) -> Any:
+        ref = store.fetch_refs_by_ids([ref_id], include_deleted=True)[ref_id]
+        return ref.authors
+
+    def test_clear_authors_and_year(self, store: Store, handler: PaperHandler) -> None:
+        ref = _seed(
+            store,
+            "clearboth2020",
+            year=2020,
+            authors=[{"family": "Wrong", "given": "W."}],
+            meta={"authors_source": "crossref"},
+        )
+        store.set_paper_authors(ref, [{"family": "Wrong", "given": "W."}], source="pdf")
+        resp = _edit(
+            handler,
+            ref,
+            {"clear": ["authors", "year"], "reason": "converted datasheet gr548255"},
+        )
+        out = store.fetch_refs_by_ids([ref])[ref]
+        assert out.authors == [] or out.authors is None or out.authors == {}
+        assert out.year is None
+        assert "authors_source" not in _meta(store, ref)
+        with store.pool.connection() as conn:
+            n = conn.execute(
+                "SELECT count(*) FROM paper_authors WHERE ref_id = %s", (ref,)
+            ).fetchone()
+        assert n is not None and n[0] == 0
+        ev = _events(store, ref, "metadata_cleared")
+        assert len(ev) == 1
+        assert ev[0].payload["reason"] == "converted datasheet gr548255"
+        assert sorted(ev[0].payload["cleared"]) == ["authors", "year"]
+        assert ev[0].payload["year_was"] == 2020
+        assert "cleared" in resp.body
+
+    def test_clear_authors_only(self, store: Store, handler: PaperHandler) -> None:
+        ref = _seed(
+            store,
+            "clearauth2021",
+            year=2021,
+            authors=[{"family": "Wrong", "given": "W."}],
+        )
+        resp = _edit(handler, ref, {"clear": "authors", "reason": "x"})
+        out = store.fetch_refs_by_ids([ref])[ref]
+        assert out.year == 2021
+        ev = _events(store, ref, "metadata_cleared")
+        assert ev[0].payload["cleared"] == ["authors"]
+        assert "cleared" in resp.body
+
+    def test_noop_when_already_empty(self, store: Store, handler: PaperHandler) -> None:
+        ref = _seed(store, "clearnoop2020")
+        resp = _edit(handler, ref, {"clear": ["authors", "year"], "reason": "x"})
+        assert "no change" in resp.body
+        assert _events(store, ref, "metadata_cleared") == []
+
+    def test_unknown_field_refused(self, store: Store, handler: PaperHandler) -> None:
+        ref = _seed(store, "clearbad2020", year=2020)
+        with pytest.raises(BadInput, match="not clearable") as exc:
+            _edit(handler, ref, {"clear": ["title"], "reason": "x"})
+        assert exc.value.options == ["authors", "year"]
+
+    def test_missing_reason_refused(self, store: Store, handler: PaperHandler) -> None:
+        ref = _seed(store, "clearnr2020", year=2020)
+        with pytest.raises(BadInput, match="reason"):
+            _edit(handler, ref, {"clear": ["year"]})
+
+    def test_dry_run_writes_nothing(self, store: Store, handler: PaperHandler) -> None:
+        ref = _seed(store, "cleardry2020", year=2020)
+        resp = _edit(
+            handler,
+            ref,
+            {"clear": ["year"], "reason": "x"},
+            dry_run=True,
+        )
+        assert "DRY RUN" in resp.body
+        assert store.fetch_refs_by_ids([ref])[ref].year == 2020
+        assert _events(store, ref, "metadata_cleared") == []
+
+    def test_empty_authors_kwarg_points_at_door(
+        self, store: Store, handler: PaperHandler
+    ) -> None:
+        ref = _seed(store, "clearkwarg2020", year=2020)
+        with pytest.raises(BadInput, match="does not clear the byline") as exc:
+            handler.edit(id=ref, authors=[])
+        assert "'clear': ['authors']" in str(exc.value.next)
+
+
+class TestMoveIdentifierTo:
+    """gr548255: ``args={'move_identifier_to': {'scheme','value','to'}}``
+    re-homes one ref_identifiers row — the repair for a body op that
+    carried a second file's claim to the minted ref."""
+
+    def test_happy_path(self, store: Store, handler: PaperHandler) -> None:
+        a = _seed(store, "midsrc2020", year=2020)
+        b = _seed(store, "midtgt2020", year=2020)
+        _add_pdf_id(store, a, _SHA)
+        _add_pdf_id(store, a, _SHA_B)
+        resp = _edit(
+            handler,
+            a,
+            {
+                "move_identifier_to": {
+                    "scheme": "pdf_sha256",
+                    "value": _SHA_B,
+                    "to": f"pa{b}",
+                },
+                "reason": "row belongs to the donor gr548255",
+            },
+        )
+        assert _pdf_id_values(store, a) == [_SHA]
+        assert _pdf_id_values(store, b) == [_SHA_B]
+        ev_a = _events(store, a, "identifier_moved")
+        ev_b = _events(store, b, "identifier_moved")
+        assert len(ev_a) == len(ev_b) == 1
+        assert ev_a[0].payload["to_ref_id"] == b
+        assert ev_b[0].payload["from_ref_id"] == a
+        assert ev_a[0].payload["reason"] == "row belongs to the donor gr548255"
+        assert "moved identifier" in resp.body
+
+    def test_dry_run_writes_nothing(self, store: Store, handler: PaperHandler) -> None:
+        a = _seed(store, "middrya2020", year=2020)
+        b = _seed(store, "middryb2020", year=2020)
+        _add_pdf_id(store, a, _SHA)
+        resp = _edit(
+            handler,
+            a,
+            {
+                "move_identifier_to": {
+                    "scheme": "pdf_sha256",
+                    "value": _SHA,
+                    "to": f"pa{b}",
+                },
+                "reason": "x",
+            },
+            dry_run=True,
+        )
+        assert "DRY RUN" in resp.body
+        assert _pdf_id_values(store, a) == [_SHA]
+        assert _pdf_id_values(store, b) == []
+        assert _events(store, a, "identifier_moved") == []
+
+    def test_unique_scheme_conflict_refused(
+        self, store: Store, handler: PaperHandler
+    ) -> None:
+        a = _seed(store, "miduqa2020", year=2020)
+        b = _seed(store, "miduqb2020", year=2020)
+        store.set_ref_identifier(a, "pub_id", "p1", source="test")
+        store.set_ref_identifier(b, "pub_id", "p2", source="test")
+        with pytest.raises(BadInput, match="single-valued") as exc:
+            _edit(
+                handler,
+                a,
+                {
+                    "move_identifier_to": {
+                        "scheme": "pub_id",
+                        "value": "p1",
+                        "to": f"pa{b}",
+                    },
+                    "reason": "x",
+                },
+            )
+        assert "drop_identifier" in str(exc.value.next)
+        with store.pool.connection() as conn:
+            row = conn.execute(
+                "SELECT ref_id FROM ref_identifiers WHERE id_kind = 'pub_id' "
+                "AND id_value = 'p1'",
+            ).fetchone()
+        assert row is not None and int(row[0]) == a
+
+    def test_missing_row_refused(self, store: Store, handler: PaperHandler) -> None:
+        a = _seed(store, "midnora2020", year=2020)
+        b = _seed(store, "midnorb2020", year=2020)
+        with pytest.raises(BadInput, match="has no pdf_sha256"):
+            _edit(
+                handler,
+                a,
+                {
+                    "move_identifier_to": {
+                        "scheme": "pdf_sha256",
+                        "value": _SHA,
+                        "to": f"pa{b}",
+                    },
+                    "reason": "x",
+                },
+            )
+
+    def test_cite_key_refused(self, store: Store, handler: PaperHandler) -> None:
+        a = _seed(store, "midcka2020", year=2020)
+        b = _seed(store, "midckb2020", year=2020)
+        with pytest.raises(BadInput, match="cite_key"):
+            _edit(
+                handler,
+                a,
+                {
+                    "move_identifier_to": {
+                        "scheme": "cite_key",
+                        "value": "midcka2020",
+                        "to": f"pa{b}",
+                    },
+                    "reason": "x",
+                },
+            )
+
+    def test_pointer_row_refused(self, store: Store, handler: PaperHandler) -> None:
+        a = _seed(store, "midptra2020", year=2020)
+        b = _seed(store, "midptrb2020", year=2020)
+        _body(store, a, 1)
+        _pdf(store, a)
+        with pytest.raises(BadInput, match="pdf pointer") as exc:
+            _edit(
+                handler,
+                a,
+                {
+                    "move_identifier_to": {
+                        "scheme": "pdf_sha256",
+                        "value": _SHA,
+                        "to": f"pa{b}",
+                    },
+                    "reason": "x",
+                },
+            )
+        assert "move_pdf_to" in str(exc.value.next)
+
+    def test_retired_target_refused(self, store: Store, handler: PaperHandler) -> None:
+        a = _seed(store, "midreta2020", year=2020)
+        b = _seed(store, "midretb2020", year=2020)
+        _add_pdf_id(store, a, _SHA)
+        with store.pool.connection() as conn:
+            conn.execute("UPDATE refs SET retired_at = now() WHERE ref_id = %s", (b,))
+        with pytest.raises(BadInput, match="retired|deleted"):
+            _edit(
+                handler,
+                a,
+                {
+                    "move_identifier_to": {
+                        "scheme": "pdf_sha256",
+                        "value": _SHA,
+                        "to": f"pa{b}",
+                    },
+                    "reason": "x",
+                },
+            )
+
+    def test_missing_reason_refused(self, store: Store, handler: PaperHandler) -> None:
+        a = _seed(store, "midnra2020", year=2020)
+        b = _seed(store, "midnrb2020", year=2020)
+        _add_pdf_id(store, a, _SHA)
+        with pytest.raises(BadInput, match="reason"):
+            _edit(
+                handler,
+                a,
+                {
+                    "move_identifier_to": {
+                        "scheme": "pdf_sha256",
+                        "value": _SHA,
+                        "to": f"pa{b}",
+                    }
+                },
+            )
+
+
+class TestSplitBodyMultiSha:
+    """gr548255: a donor attached to several pdfs splits off only the
+    identifier row of the file the body came from (the ``refs.pdf_sha256``
+    pointer); its other attachment claims stay."""
+
+    def test_split_moves_only_pointer_sha_row(
+        self, store: Store, handler: PaperHandler
+    ) -> None:
+        a = _seed(store, "splitmulti2020", year=2020)
+        _body(store, a, 2)
+        _pdf(store, a)
+        _add_pdf_id(store, a, _SHA_B)  # a second file's row, belongs to a
+        resp = _edit(
+            handler,
+            a,
+            {"split_body": {"title": "The Other Work"}, "reason": "x"},
+        )
+        b = int(_events(store, a, "body_split")[0].payload["new_ref_id"])
+        assert _pdf_sha(store, b) == _SHA
+        assert _pdf_id_values(store, b) == [_SHA]
+        # the donor kept the second file's claim
+        assert _pdf_id_values(store, a) == [_SHA_B]
+        assert "pa" in resp.body
+
+    def test_split_bodyless_pointer_keeps_all_rows(
+        self, store: Store, handler: PaperHandler
+    ) -> None:
+        """No pointer moved (no pdf) → every pdf_sha256 row stays on the
+        donor: none of them names the body's file."""
+        a = _seed(store, "splitnoptr2020", year=2020)
+        _body(store, a, 1)
+        _add_pdf_id(store, a, _SHA)
+        _add_pdf_id(store, a, _SHA_B)
+        _edit(
+            handler,
+            a,
+            {"split_body": {"title": "New Work"}, "reason": "x"},
+        )
+        b = int(_events(store, a, "body_split")[0].payload["new_ref_id"])
+        assert _pdf_id_values(store, a) == [_SHA, _SHA_B]
+        assert _pdf_id_values(store, b) == []

@@ -633,6 +633,7 @@ def move_body(*, src_ref_id: int, dst_ref_id: int, conn: Any) -> BodyReport:
     # own rule): the MCP door's target always does, but dedup's survivor
     # may already hold a pdf — then the donor keeps its pointer and the
     # target's pdf-kind rows are live, not stale (gr515106).
+    moved_sha: str | None = None
     row = conn.execute(
         "SELECT pdf_sha256 FROM refs WHERE ref_id = %s", (dst_ref_id,)
     ).fetchone()
@@ -655,20 +656,35 @@ def move_body(*, src_ref_id: int, dst_ref_id: int, conn: Any) -> BodyReport:
             "WHERE ref_id = %s",
             (pdf_sha, pdf_pages, pdf_role, dst_ref_id),
         )
+        moved_sha = str(pdf_sha)
 
-    # Content identifiers follow the body: pdf_sha256/content_hash
-    # always (the file moved), paper_id/pub_id only onto a target that
-    # lacks the kind (single-valued per ref). The target holds no body
-    # (every caller guarantees it — the ``(ref_id, ord)`` uniqueness
-    # would refuse a second body anyway), so any pdf-kind rows it
-    # carries that describe bytes/text it does not hold are stale and
-    # dropped by the re-home (gr515805).
+    # Content identifiers follow the body: content_hash always (the
+    # hash covers the canonical body text), pdf_sha256 only the row
+    # naming the file that just moved — the donor's *other* pdf_sha256
+    # rows claim different files and stay (gr548255: a multi-attachment
+    # donor's split used to re-home every row, leaving the donor with
+    # no claim on its own file). paper_id/pub_id move only onto a
+    # target that lacks the kind (single-valued per ref). The target
+    # holds no body (every caller guarantees it — the ``(ref_id, ord)``
+    # uniqueness would refuse a second body anyway), so any pdf-kind
+    # rows it carries that describe bytes/text it does not hold are
+    # stale and dropped by the re-home (gr515805).
     _rehome_content_identifiers(
         conn,
         src_ref_id=src_ref_id,
         dst_ref_id=dst_ref_id,
         dst_had_pdf=dst_had_pdf,
         dst_had_body=False,
+        moved_pdf_sha256=moved_sha,
+    )
+    report = replace(
+        report,
+        identifiers=[
+            i
+            for i in report.identifiers
+            if not i.startswith("pdf_sha256:")
+            or (moved_sha is not None and i == f"pdf_sha256:{moved_sha}")
+        ],
     )
 
     body_meta = _body_owned_meta(conn, src_ref_id)
