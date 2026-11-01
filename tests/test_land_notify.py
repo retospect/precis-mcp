@@ -46,10 +46,15 @@ def mod() -> ModuleType:
         ("feat(x): y (gr1, td2)", [("gripe", 1), ("todo", 2)]),
         ("feat(x): y (td9 gr8 td9)", [("todo", 9), ("gripe", 8)]),
         ("feat(x): y (gr541800, td541978)  ", [("gripe", 541800), ("todo", 541978)]),
+        # ``refs grN`` — the partial form (gr547015) — still a gripe
+        # handle; its partiality is what partial_gripes reports.
+        ("feat(x): y (gr1, refs gr2)", [("gripe", 1), ("gripe", 2)]),
+        ("feat(x): y (refs gr3)", [("gripe", 3)]),
         # Mentions that are not the trailing handle list never match.
         ("feat(x): gr12 half done", []),
         ("feat(x): y (gr12) and more", []),
         ("feat(x): y (see gr12)", []),
+        ("feat(x): y (refs)", []),
         ("feat(x): y", []),
     ],
 )
@@ -57,6 +62,13 @@ def test_parse_handles(
     mod: ModuleType, subject: str, want: list[tuple[str, int]]
 ) -> None:
     assert mod.parse_handles(subject) == want
+
+
+def test_partial_gripes_marks_only_refs_items(mod: ModuleType) -> None:
+    assert mod.partial_gripes("feat(x): y (gr1, refs gr2, td3)") == {2}
+    assert mod.partial_gripes("feat(x): y (refs gr3 refs gr4)") == {3, 4}
+    assert mod.partial_gripes("feat(x): y (gr1, td2)") == set()
+    assert mod.partial_gripes("feat(x): refs gr9 in prose") == set()
 
 
 def test_payloads_gripe_then_todo(mod: ModuleType) -> None:
@@ -80,6 +92,23 @@ def test_payloads_gripe_then_todo(mod: ModuleType) -> None:
         ["tools", "tag", "--kind", "todo", "--id", "8",
          "--add", json.dumps(["STATUS:done"])],
     ]  # fmt: skip
+
+
+def test_payloads_partial_gripe(mod: ModuleType) -> None:
+    """gr547015: ``refs grN`` is a partial fix — a ``landed (partial)``
+    comment, no ``resolved:`` text and no STATUS write, so
+    gripe-validate never sees a sha to auto-close on."""
+    subject = "feat(x): y (gr7, refs gr8)"
+    plan = mod.payloads(SHA, subject)
+    assert [label for label, _ in plan] == ["gr7 auto_verify", "gr8 partial"]
+    (partial_calls,) = [calls for label, calls in plan if label == "gr8 partial"]
+    assert partial_calls == [
+        [
+            "tools", "put", "--kind", "gripe", "--id", "8",
+            "--text", f"landed (partial): {SHA[:9]} — {subject}",
+        ]
+    ]  # fmt: skip
+    assert "--tags" not in partial_calls[0]
 
 
 def test_payloads_user_verify_kind(mod: ModuleType) -> None:

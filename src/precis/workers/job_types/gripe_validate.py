@@ -17,7 +17,9 @@ Per cohort (:func:`precis.cli.gripe.verify_list`):
   :func:`~precis.cli.gripe.verify_done`. Sha in prod but the gate red
   → verification failed: comment + back to ``STATUS:triaged``. Not yet
   in prod → pending; no sha in a comment → one dedup'd note (it can't
-  be verified).
+  be verified). A gripe carrying ``hold:no-autoclose`` (gr547015, the
+  never-close mark) is skipped: a live sha earns a dedup'd ``shipped
+  in <release>`` note, never ``STATUS:done``.
 - ``user_verify``: a human checks — :func:`~precis.cli.gripe.user_verify_sync`
   mints or refreshes ONE ask-user todo listing the cohort and closes
   the covered gripes once the ask is answered (gr519676).
@@ -76,6 +78,7 @@ class ValidateResult:
     pending: list[tuple[int, str]] = field(default_factory=list)
     no_sha: list[int] = field(default_factory=list)
     failed: list[int] = field(default_factory=list)
+    held: list[tuple[int, str]] = field(default_factory=list)
     user: int = 0
     spec: int = 0
     closed: str = ""
@@ -89,6 +92,7 @@ class ValidateResult:
             "pending": len(self.pending),
             "no_sha": len(self.no_sha),
             "failed": len(self.failed),
+            "held": len(self.held),
             "user": self.user,
             "spec": self.spec,
             "dry_run": self.dry_run,
@@ -100,6 +104,7 @@ class ValidateResult:
             f"gripe_validate (prod head {head}): verify={self.verify} "
             f"live={len(self.live)} pending={len(self.pending)} "
             f"no_sha={len(self.no_sha)} failed={len(self.failed)} "
+            f"held={len(self.held)} "
             f"user={self.user} spec={self.spec} dry_run={self.dry_run}"
         )
 
@@ -126,6 +131,11 @@ class ValidateResult:
             lines.append(
                 "no sha in a resolved: comment: "
                 + " ".join(f"gr{g}" for g in self.no_sha)
+            )
+        if self.held:
+            lines.append(
+                "held (no auto-close): "
+                + " ".join(f"gr{g}@{s[:9]}" for g, s in self.held)
             )
         if self.ask:
             lines.append(self.ask)
@@ -187,6 +197,11 @@ _FAILED_TEXT = (
     "validate: the resolved sha is in prod but the release gate on "
     "{head} is RED{run} — verification failed, back to triaged"
 )
+#: The held gripe's per-release note (gr547015) — ``{where}`` is the
+#: release label or ``prod <head9>``. ``note_gripes`` dedupes on the
+#: exact text, so one deploy comments once; the next release notes
+#: again. The gripe's STATUS is never touched.
+_HELD_TEXT = "shipped in {where} — held from auto-close (hold:no-autoclose)"
 
 
 def _verify_failed(store: Any, ids: list[int], row: dict[str, Any], head: str) -> str:
@@ -201,6 +216,7 @@ def run_pass(store: Any, *, dry_run: bool = False) -> ValidateResult:
     """One validation pass (module docstring)."""
     from precis.cli.gripe import (
         AUTO_VERIFY_STATUSES,
+        hold_set,
         note_gripes,
         spec_list,
         user_verify_sync,
@@ -211,7 +227,10 @@ def run_pass(store: Any, *, dry_run: bool = False) -> ValidateResult:
     res = ValidateResult(dry_run=dry_run)
     rec = read_prod_head(store)
     rows = verify_list(store)
-    auto = [(g, s) for g, st, s in rows if st in AUTO_VERIFY_STATUSES]
+    auto_all = [(g, s) for g, st, s in rows if st in AUTO_VERIFY_STATUSES]
+    held_ids = hold_set(store, [g for g, _s in auto_all])
+    auto = [(g, s) for g, s in auto_all if g not in held_ids]
+    held_rows = [(g, s) for g, s in auto_all if g in held_ids]
     res.verify = len(auto)
     res.user = sum(1 for _g, st, _s in rows if st not in AUTO_VERIFY_STATUSES)
     res.spec = len(spec_list(store))
@@ -219,6 +238,7 @@ def run_pass(store: Any, *, dry_run: bool = False) -> ValidateResult:
         # Nothing to compare against: every gripe stays at its state.
         res.no_sha = [g for g, sha in auto if not sha]
         res.pending = [(g, sha) for g, sha in auto if sha]
+        res.held = [(g, s or "?") for g, s in held_rows]
         return res
     res.head = str(rec["head"])
     gate = head_gate(rec, read_ci_verdicts(store))
@@ -232,8 +252,15 @@ def run_pass(store: Any, *, dry_run: bool = False) -> ValidateResult:
             res.failed.append(gid)
         else:
             res.live.append((gid, sha))
+    # Held gripes are never closed (gr547015). A live sha means this
+    # deploy shipped code touching it — note the ship, hold the status.
+    res.held = [(g, s or "?") for g, s in held_rows]
     if dry_run:
         return res
+    live_held = [g for g, s in held_rows if s and sha_live(rec, s)]
+    if live_held:
+        where = str(rec.get("release") or f"prod {res.head[:9]}")
+        note_gripes(store, _HELD_TEXT.replace("{where}", where), live_held)
     if res.failed:
         out = _verify_failed(store, res.failed, gate or {}, res.head)
         if out:

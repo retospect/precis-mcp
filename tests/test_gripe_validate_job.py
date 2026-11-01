@@ -193,6 +193,48 @@ def test_auto_verify_closes_naming_the_release(hub: Any) -> None:
     )
 
 
+def test_held_gripe_is_noted_never_closed(hub: Any) -> None:
+    """gr547015: a ``hold:no-autoclose`` gripe is skipped by the
+    auto-close — a live sha earns a dedup'd ``shipped in r<N>`` note
+    and its STATUS is never touched."""
+    store = hub.store
+    import json as _json
+
+    from precis import settings as psettings
+
+    psettings.set_setting(
+        gates.PROD_HEAD_KEY,
+        _json.dumps(
+            {"head": HEAD, "deployed_at": "x", "landed": [], "release": "r161"}
+        ),
+        store=store,
+    )
+    gid = _verify_gripe(hub, f"resolved: {HEAD[:9]} (main, release pending)")
+    store.add_tag(gid, Tag.open("hold:no-autoclose"), set_by="agent")
+    res = gv.run_pass(store)
+    assert res.held == [(gid, HEAD[:9])] and res.live == []
+    assert _status(store, gid) == "verify"
+    comments = [
+        c.text
+        for c in store.chunks.list_chunks_for_ref(gid)
+        if c.chunk_kind == "gripe_comment"
+    ]
+    assert comments[-1] == (
+        "shipped in r161 — held from auto-close (hold:no-autoclose)"
+    )
+    # Idempotent: the second pass notes nothing new (exact-text dedup).
+    res2 = gv.run_pass(store)
+    assert res2.held == [(gid, HEAD[:9])]
+    comments2 = [
+        c.text
+        for c in store.chunks.list_chunks_for_ref(gid)
+        if c.chunk_kind == "gripe_comment"
+    ]
+    assert comments2 == comments
+    # … and it renders as held, not as a close.
+    assert "held (no auto-close): " + f"gr{gid}@{HEAD[:9]}" in res.render()
+
+
 def test_red_gate_sends_live_gripe_back_to_triaged(hub: Any) -> None:
     store = hub.store
     _record(store)

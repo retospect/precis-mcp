@@ -54,7 +54,13 @@ cited sha that is not an ancestor (gr515489, gr515506). The lint step is
 `scripts/test --typecheck`, never "mypy on touched files" (gr515507). A
 rebase instruction names `git rebase --autostash origin/main` (gr513770).
 Never brief the heredoc commit recipe; the footer prescribes `git commit
--F <file>` (gr513763). When the tier grants precis writes (W), say the
+-F <file>` (gr513763). A commit that touches a gripe without finishing it
+names it `refs gr<id>` inside the subject's trailing list
+(`fix(x): y (gr1, refs gr2)`, gr547015): land-notify posts a
+`landed (partial)` comment, no `resolved:` and no `STATUS:auto_verify` —
+a plain `(gr<id>)` still auto-closes on deploy. A never-close gripe
+carries the `hold:no-autoclose` tag: gripe-validate skips it and notes
+`shipped in r<N>` instead of `STATUS:done`. When the tier grants precis writes (W), say the
 write verbs are deferred tools: load them with ToolSearch
 `select:mcp__precis__put,mcp__precis__edit,mcp__precis__tag,mcp__precis__link`
 first (gr504489). Hook wiring claims are checked against

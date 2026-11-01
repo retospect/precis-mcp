@@ -6,7 +6,8 @@
 
 scripts/ship calls this once its CAS push to main succeeded (gr541800,
 td541978). It reads the parenthesised handle list ending the squash
-subject — ``(gr123)``, ``(gr1, td2)``, ``(td9 gr8)`` — and, per handle:
+subject — ``(gr123)``, ``(gr1, td2)``, ``(td9 gr8)``, ``(gr1, refs
+gr2)`` — and, per handle:
 
 - gripe ``grN``: comment ``resolved: <sha9> (main, release pending) —
   landed: <subject>`` with ``STATUS:auto_verify`` in the same put
@@ -17,6 +18,10 @@ subject — ``(gr123)``, ``(gr1, td2)``, ``(td9 gr8)`` — and, per handle:
   the lander picks which of the two verify states the check needs
   (gr543584): code can check ``auto_verify``, a human checks
   ``user_verify``.
+- gripe ``refs grN`` (gr547015): the partial form — the commit touches
+  the gripe without finishing it. Comment ``landed (partial): <sha9>
+  — <subject>``, no STATUS write: no ``resolved:`` comment, so
+  gripe-validate never sees a sha to auto-close on.
 - todo ``tdN``: comment ``landed: <sha9> — <subject>``, then
   ``STATUS:done`` (the todo handler releases every ``claimed-by:`` lease
   on a terminal STATUS).
@@ -73,8 +78,13 @@ PENDING_DIR = SCRIPTS.parent / "scratch" / "land-notify-pending"
 REPLAY_HINT = "replay: scripts/ship --replay-notes"
 
 _HANDLE = r"(?:gr|td)\d+"
-_SUBJECT_RE = re.compile(rf"\(({_HANDLE}(?:[,\s]+{_HANDLE})*)\)\s*$")
-_ITEM_RE = re.compile(r"(gr|td)(\d+)")
+#: ``refs grN`` — the partial form (gr547015): the commit touches the
+#: gripe without finishing it; land-notify comments, no verify tag.
+_PARTIAL = r"refs\s+gr\d+"
+_SUBJECT_RE = re.compile(
+    rf"\(((?:{_HANDLE}|{_PARTIAL})(?:[,\s]+(?:{_HANDLE}|{_PARTIAL}))*)\)\s*$"
+)
+_ITEM_RE = re.compile(r"(refs\s+)?(gr|td)(\d+)")
 
 Runner = Callable[[list[str], float], subprocess.CompletedProcess[str]]
 
@@ -87,9 +97,22 @@ def parse_handles(subject: str) -> list[tuple[str, int]]:
         return []
     seen: dict[tuple[str, int], None] = {}
     for item in _ITEM_RE.finditer(m.group(1)):
-        kind = "gripe" if item.group(1) == "gr" else "todo"
-        seen.setdefault((kind, int(item.group(2))), None)
+        kind = "gripe" if item.group(2) == "gr" else "todo"
+        seen.setdefault((kind, int(item.group(3))), None)
     return list(seen)
+
+
+def partial_gripes(subject: str) -> set[int]:
+    """The ``refs grN`` ids in the subject's trailing list — partial
+    work: a landed comment, no ``resolved:`` and no STATUS write."""
+    m = _SUBJECT_RE.search(subject.strip())
+    if m is None:
+        return set()
+    return {
+        int(item.group(3))
+        for item in _ITEM_RE.finditer(m.group(1))
+        if item.group(1) is not None
+    }
 
 
 def payloads(
@@ -102,9 +125,20 @@ def payloads(
     short = sha[:9]
     title = subject.strip()
     status = "auto_verify" if verify_kind == "auto" else "user_verify"
+    partials = partial_gripes(subject)
     out: list[tuple[str, list[list[str]]]] = []
     for kind, n in parse_handles(subject)[:MAX_HANDLES]:
         if kind == "gripe":
+            if n in partials:
+                text = f"landed (partial): {short} — {title}"
+                calls = [
+                    [
+                        "tools", "put", "--kind", "gripe", "--id", str(n),
+                        "--text", text,
+                    ]
+                ]  # fmt: skip
+                out.append((f"gr{n} partial", calls))
+                continue
             text = f"resolved: {short} (main, release pending) — landed: {title}"
             calls = [
                 [

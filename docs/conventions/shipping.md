@@ -22,7 +22,15 @@ MCP verbs; the checker itself reads local files and never repoints comments.
 a parenthesised id list ending the subject (`fix(x): y (gr123)`) or a
 `Fixes: gr123` trailer line in the body (`Fixes: gr1, gr2` also works).
 Any other mention (`blocks gr…`, `related gr…`, `per gr… c6`) is context
-and gets nothing.
+and gets nothing. A commit that *touches* a gripe without finishing it
+uses the partial form `refs grN` inside the same trailing list
+(`fix(x): y (gr1, refs gr2)`, gr547015): land-notify posts a
+`landed (partial): <sha>` comment with no `resolved:` and no STATUS
+write, so nothing auto-closes. A gripe that must *never* auto-close
+carries the `hold:no-autoclose` tag (a plain tag, applied with
+`tag(kind='gripe', id=N, add=['hold:no-autoclose'])`) — even if a commit
+names it plainly, gripe-validate skips it and posts a `shipped in r<N>`
+note instead of `STATUS:done`.
 
 After a landing, `scripts/ship` comments `landed <sha> on main` on each
 gripe the landed commit fixes. On a deploy, `scripts/release` comments
@@ -48,6 +56,8 @@ ladder: triaged → fixing → auto_verify|user_verify → done). After the grip
 `scripts/ship` runs `scripts/lib/land_notify.py`: each `grN` in the
 trailing `(grN, tdM)` list gets `resolved: <sha> (main, release pending)`
 + `STATUS:auto_verify` (`PRECIS_VERIFY_KIND=user` → `STATUS:user_verify`;
+each `refs grN` (the partial form, above) gets only a `landed (partial):
+<sha>` comment — no `resolved:`, no STATUS write;
 each `tdM` gets `landed: <sha>` + `STATUS:done`.
 Same best-effort contract, one `land-notify` line, forwarded to the quiet
 epilogue next to `SHIP_STATUS`; off switch
@@ -63,7 +73,9 @@ this close — after a land, check the
 ref's state, not the log, and never post a second `landed:` comment or
 `STATUS:done` by hand (gr542762). After each rollout `scripts/release` runs
 `scripts/gripe-validate`, which flips every auto-verify gripe whose resolved
-sha is an ancestor of `origin/prod` to `done`, keeps one ask-user todo
+sha is an ancestor of `origin/prod` to `done` — except a gripe tagged
+`hold:no-autoclose`, which stays and gets a `shipped in r<N>` note per
+release instead — keeps one ask-user todo
 for `user_verify` gripes, and closes `needs_spec` gripes a prod spec
 names (`--dry-run` lists them;
 it is safe to run on a schedule; off switch `PRECIS_GRIPE_VALIDATE=0`).

@@ -140,6 +140,24 @@ def test_run_closes_only_live_ids(tmp_path: Path, repo: dict[str, Any]) -> None:
 
 
 @posix
+def test_held_gripe_is_never_in_the_close_set(
+    tmp_path: Path, repo: dict[str, Any]
+) -> None:
+    """gr547015: a ``hold:no-autoclose`` row (``held`` on --verify-list)
+    is reported, never closed — the recurring job posts its ``shipped
+    in r<N>`` note instead."""
+    rows = _rows(repo) + [{"id": 6, "sha": repo["c1"][:9], "held": True}]
+    cli, log = _fake_cli(tmp_path, rows)
+    line = _run(repo, cli)
+    assert ": done gr1 · pending:" in line
+    assert f"held (no auto-close): gr6@{repo['c1'][:9]}" in line
+    calls = [json.loads(x) for x in log.read_text(encoding="utf-8").splitlines()]
+    done = calls[1]
+    assert done[:2] == ["gripes", "--verify-done"]
+    assert done[3:] == ["--ids", "1,5"]  # gr6 is live but held — absent
+
+
+@posix
 def test_nothing_live_makes_no_write(tmp_path: Path, repo: dict[str, Any]) -> None:
     cli, log = _fake_cli(tmp_path, [{"id": 2, "sha": repo["c3"]}])
     line = _run(repo, cli)
@@ -189,3 +207,20 @@ def test_verify_list_and_done(hub: Any, store: Store) -> None:
     newest = max(comments, key=lambda x: x.ord)
     assert newest.text == "resolved: abcdef123 (on prod p) — test"
     assert a not in {g for g, _st, _s in verify_list(store)}
+
+
+@pytest.mark.db
+def test_verify_done_refuses_a_held_gripe(hub: Any, store: Store) -> None:
+    """gr547015: the prod-side verb itself honours ``hold:no-autoclose``
+    — a stale caller's id list cannot close a held gripe."""
+    from precis.cli.gripe import hold_set, verify_done
+    from precis.handlers.gripe import GripeHandler
+
+    h = GripeHandler(hub=hub)
+    a = _gripe(store, "verify")
+    h.put(id=a, text="resolved: abcdef123 (main, release pending)")
+    store.add_tag(a, Tag.open("hold:no-autoclose"), set_by="agent")
+    assert hold_set(store, [a]) == {a}
+    out = verify_done(store, "resolved: {sha} (on prod p) — test", [a])
+    assert out == f"held: gr{a}"
+    assert {str(t) for t in store.tags_for(a)} >= {"STATUS:verify"}

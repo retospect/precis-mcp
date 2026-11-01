@@ -97,9 +97,10 @@ def add_parser(sub: argparse._SubParsersAction) -> argparse.ArgumentParser:
         "--verify-list",
         action="store_true",
         help=(
-            "Print one JSON line {id, status, sha} per live verify-state "
-            "gripe (auto_verify, user_verify, legacy verify); sha is from "
-            "its newest 'resolved: <sha>' / 'fix-sha: <sha>' comment "
+            "Print one JSON line {id, status, sha, held} per live "
+            "verify-state gripe (auto_verify, user_verify, legacy "
+            "verify); sha is from its newest 'resolved: <sha>' / "
+            "'fix-sha: <sha>' comment, held is the hold:no-autoclose tag "
             "(scripts/gripe-validate). Read-only."
         ),
     )
@@ -177,8 +178,19 @@ def run(args: argparse.Namespace) -> None:
         try:
             ids = [int(i) for i in args.ids.replace(" ", "").split(",") if i]
             if args.verify_list:
-                for gid, status, sha in verify_list(store):
-                    print(json.dumps({"id": gid, "status": status, "sha": sha}))
+                vrows = verify_list(store)
+                held = hold_set(store, [g for g, _st, _s in vrows])
+                for gid, status, sha in vrows:
+                    print(
+                        json.dumps(
+                            {
+                                "id": gid,
+                                "status": status,
+                                "sha": sha,
+                                "held": gid in held,
+                            }
+                        )
+                    )
             elif args.verify_done is not None:
                 print(verify_done(store, args.verify_done, ids))
             elif args.verify_ask:
@@ -399,6 +411,26 @@ def spec_list(store: Any) -> list[int]:
     return [gid for gid, _ in _status_list(store, (NEEDS_SPEC_STATUS,))]
 
 
+#: The never-close mark (gr547015): a gripe carrying this (open) tag is
+#: held out of the auto-verify close — the validator notes the ship
+#: instead.
+HOLD_NO_AUTOCLOSE_TAG = "hold:no-autoclose"
+
+
+def hold_set(store: Any, ids: list[int]) -> set[int]:
+    """Which of ``ids`` carry ``hold:no-autoclose`` (gr547015)."""
+    if not ids:
+        return set()
+    with store.pool.connection() as conn:
+        rows = conn.execute(
+            "SELECT rt.ref_id FROM ref_tags rt "
+            "JOIN tags t ON t.tag_id = rt.tag_id "
+            "WHERE rt.ref_id = ANY(%s) AND t.value = %s",
+            (list(ids), HOLD_NO_AUTOCLOSE_TAG),
+        ).fetchall()
+    return {int(r[0]) for r in rows}
+
+
 def verify_done(
     store: Any,
     text: str,
@@ -421,13 +453,20 @@ def verify_done(
 
     handler = GripeHandler(hub=Hub(store=store))
     wanted = {f"STATUS:{s}" for s in statuses}
+    # A ``hold:no-autoclose`` gripe is never closed by this verb
+    # (gr547015) — a stale caller's id list cannot override the hold.
+    held = hold_set(store, ids) if statuses == AUTO_VERIFY_STATUSES else set()
     groups: dict[str, list[str]] = {
         "done": [],
+        "held:": [],
         "not verify:": [],
         "not found:": [],
         "failed:": [],
     }
     for gid in ids:
+        if gid in held:
+            groups["held:"].append(f"gr{gid}")
+            continue
         if store.get_ref(kind="gripe", id=gid) is None:
             groups["not found:"].append(f"gr{gid}")
             continue

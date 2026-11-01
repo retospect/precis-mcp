@@ -10,9 +10,9 @@ origin/prod) | wontfix.
 
 Two prod calls through scripts/prod-precis:
 
-1. ``gripes --verify-list`` — one JSON line ``{id, sha}`` per live verify
-   gripe; sha is from its newest ``resolved: <sha>`` / ``fix-sha: <sha>``
-   comment.
+1. ``gripes --verify-list`` — one JSON line ``{id, status, sha, held}``
+   per live verify gripe; sha is from its newest ``resolved: <sha>`` /
+   ``fix-sha: <sha>`` comment.
 2. ``gripes --verify-done TEXT --ids …`` — for the gripes whose sha is an
    ancestor of origin/prod (``git merge-base --is-ancestor``, after a
    fetch), comment ``resolved: <sha> (on prod <prod9>) — …`` and tag
@@ -20,7 +20,11 @@ Two prod calls through scripts/prod-precis:
 
 ``--dry-run`` reads only: it lists what would flip and why the rest stay
 (not on prod yet, no sha, sha unknown to this clone). ``--prod-ref``
-overrides the ref (default origin/prod, fetched first).
+overrides the ref (default origin/prod, fetched first). A gripe
+carrying ``hold:no-autoclose`` (gr547015's never-close mark — the
+``held`` field on ``--verify-list`` rows) is never in the close set;
+the recurring ``gripe_validate`` job posts its ``shipped in r<N>``
+note instead.
 
 scripts/release runs it after the deploy step; it is idempotent and
 non-interactive, so a recurring job (precis schedule, cron) can run it
@@ -88,11 +92,13 @@ def _git(*args: str) -> subprocess.CompletedProcess[str] | None:
 _AUTO_STATUSES = frozenset({"verify", "auto_verify"})
 
 
-def parse_verify_list(out: str) -> list[tuple[int, str, str | None]]:
-    """``[(id, status, sha|None)]`` from ``gripes --verify-list`` JSON
-    lines; any non-JSON line (a deprecation notice, a warning) is
-    skipped. A row with no ``status`` reads as ``verify``."""
-    rows: list[tuple[int, str, str | None]] = []
+def parse_verify_list(out: str) -> list[tuple[int, str, str | None, bool]]:
+    """``[(id, status, sha|None, held)]`` from ``gripes --verify-list``
+    JSON lines; any non-JSON line (a deprecation notice, a warning) is
+    skipped. A row with no ``status`` reads as ``verify``; ``held``
+    (the ``hold:no-autoclose`` tag, gr547015) defaults False — an older
+    prod build does not emit it."""
+    rows: list[tuple[int, str, str | None, bool]] = []
     for line in out.splitlines():
         line = line.strip()
         if not line.startswith("{"):
@@ -107,6 +113,7 @@ def parse_verify_list(out: str) -> list[tuple[int, str, str | None]]:
                 int(obj["id"]),
                 str(obj.get("status") or "verify"),
                 str(sha) if sha else None,
+                bool(obj.get("held")),
             )
         )
     return rows
@@ -229,8 +236,9 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     rows = parse_verify_list(listed.stdout)
-    auto = [(g, s) for g, st, s in rows if st in _AUTO_STATUSES]
-    users = [g for g, st, _s in rows if st == "user_verify"]
+    held = [(g, s) for g, st, s, h in rows if st in _AUTO_STATUSES and h]
+    auto = [(g, s) for g, st, s, h in rows if st in _AUTO_STATUSES and not h]
+    users = [g for g, st, _s, _h in rows if st == "user_verify"]
     groups = classify(auto, prod)
     live = groups["live"][:MAX_IDS]
     rest = [
@@ -238,6 +246,8 @@ def main(argv: list[str] | None = None) -> int:
         for label, items in groups.items()
         if label != "live" and items
     ]
+    if held:
+        rest.append("held (no auto-close): " + _named(held))
     if len(groups["live"]) > MAX_IDS:
         rest.append(f"+{len(groups['live']) - MAX_IDS} live next run")
     tail = (" · " + " · ".join(rest)) if rest else ""
