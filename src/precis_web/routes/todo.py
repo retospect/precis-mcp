@@ -960,6 +960,65 @@ def _todo_bodies(store: Store, todo_ids: list[int]) -> dict[int, str]:
     return out
 
 
+def _focus_deps(store: Store, todo_ids: list[int]) -> list[dict[str, Any]]:
+    """The ``blocked-by`` graph of a focused subtree, as the page's
+    depends-on / depended-on-by table.
+
+    One row per subtree todo with at least one edge, ordered by id:
+    ``depends_on`` is its ``blocked-by`` targets, ``depended_by`` the
+    live refs blocked-by it — each ``{id, title}``; an endpoint outside
+    the subtree still renders. Order/dependency lives in the links, so
+    the page draws it from the links, not from prose (gr548798).
+    Degrades to ``[]`` under the test fake (no links table)."""
+    if not todo_ids:
+        return []
+    try:
+        with store.pool.connection() as conn:
+            rows = conn.execute(
+                "SELECT src_ref_id, dst_ref_id FROM links "
+                "WHERE relation = 'blocked-by' "
+                "AND (src_ref_id = ANY(%s) OR dst_ref_id = ANY(%s))",
+                (todo_ids, todo_ids),
+            ).fetchall()
+    except Exception:  # pragma: no cover - defensive (fake cursor)
+        return []
+    depends_on: dict[int, list[int]] = {}
+    depended_by: dict[int, list[int]] = {}
+    endpoint_ids: set[int] = set()
+    for src, dst in rows:
+        src, dst = int(src), int(dst)
+        if src in todo_ids:
+            depends_on.setdefault(src, []).append(dst)
+            endpoint_ids.add(dst)
+        if dst in todo_ids:
+            depended_by.setdefault(dst, []).append(src)
+            endpoint_ids.add(src)
+    if not endpoint_ids:
+        return []
+    refs = store.fetch_refs_by_ids(endpoint_ids, include_deleted=False)
+
+    def _entry(ref_id: int) -> dict[str, Any] | None:
+        ref = refs.get(ref_id)
+        if ref is None:
+            return None
+        return {"id": ref_id, "title": (ref.title or "").split("\n", 1)[0]}
+
+    def _entries(ids: list[int]) -> list[dict[str, Any]]:
+        return [e for i in sorted(ids) if (e := _entry(i)) is not None]
+
+    titles = {i: refs[i].title for i in todo_ids if i in refs}
+    return [
+        {
+            "id": tid,
+            "title": (titles.get(tid) or "").split("\n", 1)[0],
+            "depends_on": _entries(depends_on.get(tid, [])),
+            "depended_by": _entries(depended_by.get(tid, [])),
+        }
+        for tid in sorted(todo_ids)
+        if depends_on.get(tid) or depended_by.get(tid)
+    ]
+
+
 def _build_rows(
     store: Store, *, precis_root: Path | None = None
 ) -> list[dict[str, Any]]:
@@ -1358,6 +1417,7 @@ async def dashboard(
     doable_raw, _ = await await_dispatch(request, "search", doable_args)
     doable_body = _linkify_todo_handles(doable_raw)
     focus_row: dict[str, Any] | None = None
+    focus_deps: list[dict[str, Any]] = []
     if focus is not None:
         # The focused node itself is the heading; everything below it
         # in ``focused_rows`` is the subtree. Pull it out so the
@@ -1366,6 +1426,9 @@ async def dashboard(
             if r["id"] == focus:
                 focus_row = r
                 break
+        focus_deps = _focus_deps(
+            store, [r["id"] for r in focused_rows if r["kind"] == "todo"]
+        )
 
     # Mermaid tree: built only when the operator explicitly opted in
     # (``?tree=N``) and we have a focus. Validate against the closed
@@ -1397,6 +1460,7 @@ async def dashboard(
             "exclude_tags": exclude,
             "focus_id": focus,
             "focus_row": focus_row,
+            "focus_deps": focus_deps,
             "serves_id": serves_id,
             "breadcrumb": breadcrumb,
             "show_jobs": show_jobs,

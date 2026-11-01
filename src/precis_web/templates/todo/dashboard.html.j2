@@ -153,6 +153,7 @@
        not two (the ⋯ panel below still works the same). #}
     {% if focus_id and focus_row %}
     <section class="mb-3 rounded-lg border border-line bg-surface p-3">
+      <div class="mb-2 text-sm font-semibold" data-node-title>{{ focus_row.title }}</div>
       <form method="post" action="/todo/{{ focus_id }}/children" class="flex items-start gap-2">
         {{ filter_inputs() }}
         <textarea name="text" required rows="2" placeholder="Add a child under #{{ focus_id }}…"
@@ -176,6 +177,32 @@
         <a href="/todo{{ state_qs(focus_id, tree_override=0) }}" class="ml-2 text-fg-subtle hover:text-fg-secondary underline">hide</a>
         {% endif %}
       </div>
+      {# Dependencies: the subtree's blocked-by links rendered as a
+         depends-on / depended-on-by table (gr548798) — the page draws
+         order from the links, so a plan reads as structure, not prose. #}
+      {% if focus_deps %}
+      <div class="mt-3" data-deps>
+        <h3 class="text-xs font-semibold uppercase tracking-wide text-fg-faint mb-1">Dependencies</h3>
+        <table class="w-full text-xs">
+          <thead>
+            <tr class="text-left text-fg-faint">
+              <th class="pr-3 py-1 font-medium">Node</th>
+              <th class="pr-3 py-1 font-medium">Depends on</th>
+              <th class="py-1 font-medium">Depended on by</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for d in focus_deps %}
+            <tr class="border-t border-line" data-dep="{{ d.id }}">
+              <td class="pr-3 py-1 align-top"><a href="/todo?focus={{ d.id }}" class="font-mono hover:underline">#{{ d.id }}</a> {{ d.title }}</td>
+              <td class="pr-3 py-1 align-top">{% for t in d.depends_on %}<a href="/todo?focus={{ t.id }}" class="font-mono hover:underline whitespace-nowrap">#{{ t.id }}</a> {{ t.title }}{{ "; " if not loop.last }}{% endfor %}</td>
+              <td class="py-1 align-top">{% for t in d.depended_by %}<a href="/todo?focus={{ t.id }}" class="font-mono hover:underline whitespace-nowrap">#{{ t.id }}</a> {{ t.title }}{{ "; " if not loop.last }}{% endfor %}</td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+      {% endif %}
     </section>
     {% endif %}
     {% if tree_diagram %}

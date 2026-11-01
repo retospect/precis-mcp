@@ -167,6 +167,26 @@ def test_gripe_fix_accepts_handle_spelling_and_refuses_unknown_gripe(
         TEMPLATES["gripe-fix"].mint(store, None, gripe_id="soon")
 
 
+def test_brief_and_slicer_prompts_carry_links_and_title_style(
+    handler: TodoHandler, store: Store
+) -> None:
+    """gr548798 / gr548799: the brief-writer and slicer prompts express
+    order as blocked-by links — never a prose ordering line — and name
+    steps in the summary-title house style."""
+    gripe = _gripe(handler)
+    mint = TEMPLATES["gripe-fix"].mint(store, None, gripe_id=gripe)
+    brief = _body(store, mint.ids["brief"])
+    assert "· " in brief
+    assert "telegraphic" in brief
+
+    mint = TEMPLATES["slice-tree"].mint(store, None, section="main/docs/x.md~Y")
+    slicer = _body(store, mint.ids["slicer"])
+    assert "blocked-by links" in slicer
+    assert "never in a title or body line" in slicer
+    assert "· " in slicer
+    assert "telegraphic" in slicer
+
+
 def test_slice_tree_shape(store: Store) -> None:
     mint = TEMPLATES["slice-tree"].mint(
         store, None, section="main/docs/backlog/x.md~Heading"

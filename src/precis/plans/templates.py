@@ -305,7 +305,12 @@ def mint_gripe_fix(
             "brief",
             f"Write the builder brief for {handle}",
             _task(),
-            body=f"A frontier model writes the builder's brief chunk for {handle}.",
+            body=(
+                f"A frontier model writes the builder's brief chunk for "
+                f"{handle}; it names each step in the summary-title house "
+                "style (`<object> · <behaviour> · <role>`, middot-separated, "
+                "telegraphic)."
+            ),
             blocked_by=("triage",),
         )
         m.node(
@@ -382,8 +387,11 @@ def mint_slice_tree(
             f"Slice {section} into tasks",
             _generate("slicer", section),
             body=(
-                "Mint one task per slice, each with a declared file set; "
-                "sequence overlapping file sets with blocked-by."
+                "Mint one task per slice, each with a declared file set, "
+                "titled in the summary-title house style (`<object> · "
+                "<behaviour> · <role>`, middot-separated, telegraphic); "
+                "sequence overlapping file sets with blocked-by links — "
+                "order lives in the links, never in a title or body line."
             ),
             blocked_by=("spec",),
         )

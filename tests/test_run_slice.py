@@ -471,6 +471,17 @@ def test_analyst_brief_posts_one_analysis_and_mints_nothing(
     assert "add=['STATUS:done']" not in brief
 
 
+def test_generator_close_links_not_prose_and_house_title() -> None:
+    """gr548798 / gr548799: a generator's closing instructions put order
+    in blocked-by links (never sequencing prose) and title children in
+    the summary-title house style."""
+    text = "\n".join(run_slice._generator_close(5))
+    assert "blocked-by" in text
+    assert "never write sequencing prose" in text
+    assert "· " in text
+    assert "telegraphic" in text
+
+
 def test_role_close_table_is_the_only_dispatch() -> None:
     assert set(run_slice._ROLE_CLOSE) == {"reviewer", "analyst"}
     # a role outside the table keeps the generic child-todo closing

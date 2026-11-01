@@ -645,8 +645,13 @@ def _generator_close(todo_id: int) -> list[str]:
         "",
         "1. Create each child with `put(kind='todo', text=..., body=..., "
         "meta={'llm_tier': None, ...}, "
-        f"args={{'parent_id': {todo_id}}})`.",
-        "2. Add `blocked-by` links between the children for any sequence.",
+        f"args={{'parent_id': {todo_id}}})`. Title each child in the "
+        "summary-title house style — `<object> · <behaviour> · <role>`, "
+        "middot-separated, telegraphic.",
+        "2. Add `blocked-by` links between the children for any sequence. "
+        "Order lives in those links alone: never write sequencing prose "
+        "(`depends on`, `step N of M`, `after <sibling>`) into a title or "
+        "body.",
         "3. Then stop. Do not tag this todo done: the dispatcher closes it "
         "when its children finish.",
         "",
