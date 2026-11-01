@@ -46,7 +46,9 @@ def test_mint_grant_revoke_roundtrip(tmp_path: Path) -> None:
     # wrong token, shared-token shape, tampered tail, no header, no dir
     assert slice_tokens.grant(tmp_path, "Bearer td42." + "0" * 64) is None
     assert slice_tokens.grant(tmp_path, "Bearer shared-token") is None
-    assert slice_tokens.grant(tmp_path, f"Bearer {token[:-1]}0") is None
+    # flip the last hex digit (a fixed "0" equals the real tail 1 time in 16)
+    tampered = token[:-1] + ("1" if token[-1] == "0" else "0")
+    assert slice_tokens.grant(tmp_path, f"Bearer {tampered}") is None
     assert slice_tokens.grant(tmp_path, None) is None
     assert slice_tokens.grant(None, f"Bearer {token}") is None
     # revoke = delete the file → the token 401s from the next request on
