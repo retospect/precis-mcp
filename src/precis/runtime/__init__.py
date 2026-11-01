@@ -24,6 +24,13 @@ INSERT after dispatch, never an embedding/summarize/keywords work item.
 Call-local stage evidence retains pre-cut candidates (50 plus the total),
 so floor/fold/page misses remain attributable without extra retrieval queries.
 Default agentlog listings omit traces; ``/traces`` is the explicit read door.
+Followed/used feedback only consults a bounded process-local session cache:
+32 searches per session, 128 sessions per store, expiring after 30 minutes.
+No trace lookup is added to get; matching updates have short pool/SQL/lock
+budgets and skip failures at debug level. Losing feedback on process restart
+is intentional. ``precis traces export --jsonl`` reads a consistent read-only
+snapshot, retaining unrendered candidates as unlabeled and separating weak
+rendered-minus-followed negatives from explicit trace/graph misses.
 """
 
 from __future__ import annotations

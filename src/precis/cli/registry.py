@@ -279,6 +279,7 @@ COMMANDS: tuple[Command, ...] = (
     ),
     _c("worker", "worker", "Drive the derived-artifact queue (embeddings, summaries)."),
     _c("logs", "logs", "Read the centralised worker_logs table"),
+    _c("traces", "traces", "Export search traces and feedback (read-only)."),
     _c("stubs", "stubs", "List paper refs needing PDFs (with last fetcher attempt)."),
     _c(
         "stats",

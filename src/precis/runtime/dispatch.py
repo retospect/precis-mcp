@@ -42,7 +42,8 @@ from typing import TYPE_CHECKING, Any
 
 import psycopg
 
-from precis.agentlog import write_search_trace
+from precis import search_feedback
+from precis.agentlog import current_from_env, write_search_trace
 from precis.errors import (
     BadInput,
     Denied,
@@ -1406,7 +1407,16 @@ class DispatchMixin(RuntimeShape):
             or os.environ.get("PRECIS_SEARCH_TRACES", "1").strip().lower()
             in {"0", "off", "false", "no"}
         ):
-            return self._dispatch_status(verb, args, fold=fold)
+            original = dict(args)
+            result = self._dispatch_status(verb, args, fold=fold)
+            if not result[1] and self.store is not None:
+                try:
+                    search_feedback.record(
+                        self.store, current_from_env(), verb, original
+                    )
+                except Exception:
+                    log.debug("search trace feedback unavailable", exc_info=True)
+            return result
         try:
             trace = search_trace.SearchTrace()
             token = search_trace.CURRENT.set(trace)

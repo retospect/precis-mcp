@@ -43,6 +43,7 @@ import os
 from collections.abc import Iterable
 from typing import Any
 
+from precis import search_feedback
 from precis.store import Store
 from precis.store.types import Tag
 from precis.utils.secret_scan import mask_secrets_deep
@@ -97,11 +98,14 @@ def write_search_trace(store: Store, args: dict[str, Any], trace: Any) -> None:
         if isinstance(meta["q"], str):
             meta["q"] = meta["q"][:500]
         with store.pool.connection(timeout=0.05) as conn, conn.transaction():
-            conn.execute(
+            row = conn.execute(
                 "INSERT INTO refs (kind, title, meta) "
-                "VALUES ('agentlog', 'Search trace', %s::jsonb)",
+                "VALUES ('agentlog', 'Search trace', %s::jsonb) "
+                "RETURNING ref_id, created_at",
                 (json.dumps(meta),),
-            )
+            ).fetchone()
+        if row is not None:
+            search_feedback.remember(store, row[0], row[1], meta)
     except Exception:
         log.warning("agentlog: search trace write failed", exc_info=True)
 
