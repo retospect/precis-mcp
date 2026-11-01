@@ -26,7 +26,9 @@ _LANES = (
 
 
 def test_group_var_is_the_single_source() -> None:
-    gv = yaml.safe_load((_DEPLOY / "group_vars" / "all.yml").read_text("utf-8"))
+    gv = yaml.safe_load(
+        (_DEPLOY / "group_vars" / "all.yml").read_text(encoding="utf-8")
+    )
     assert gv[_VAR] == 6000
 
 
