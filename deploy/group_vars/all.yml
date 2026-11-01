@@ -35,7 +35,11 @@ precis_identity_env: "{{ precis_identity_env_raw | dict2items | rejectattr('valu
 # Templates fall back to 50.0 when unset; raised 2026-08-17 (steady spend
 # ran ~$60/day and the tripped ceiling paused discretionary dispatch).
 # Zero-LLM compute mints are ceiling-exempt in code (workers/dispatch.py).
-precis_daily_cost_ceiling: 100.0
+# Raised 2026-11-01 (Reto): the sum is claude -p *nominal* list-price
+# dollars, mostly subscription calls never billed; one 2-hour taproot:dedup
+# burst ($160 nominal) blacked out gripe_triage/structural for a day. Interim
+# until the ceiling sums billed dollars only (gr549279).
+precis_daily_cost_ceiling: 300.0
 
 # Planner spend caps (PRECIS_MAX_TODO_USD / PRECIS_MAX_TREE_USD). Templates
 # fall back to 5.0 / 10.0 when unset; raised 2026-09-09 after the organoid
