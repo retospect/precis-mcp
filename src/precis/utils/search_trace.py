@@ -22,6 +22,7 @@ MAX_CANDIDATES = 50
 @dataclass
 class SearchTrace:
     candidates: dict[str, dict[str, Any]] = field(default_factory=dict)
+    owners: dict[str, str] = field(default_factory=dict)
     kinds: list[str] | None = None
     lock: Any = field(default_factory=Lock)
     closed: bool = False
@@ -53,12 +54,25 @@ def ref_handle(ref: Any, block: Any = None) -> str:
     try:
         chunk = block is not None and ref.slug is not None
         ident = block.id if chunk else ref.id
-        return handle_registry.try_format(ref.kind, ident, chunk=chunk) or (
+        handle = handle_registry.try_format(ref.kind, ident, chunk=chunk) or (
             f"{ref.kind}:{ref.id}"
         )
+        owner(handle, ref.kind, ref.id)
+        return handle
     except Exception:
         log.warning("search trace: handle observation failed", exc_info=True)
         return ""
+
+
+def owner(handle: str, kind: str, ref_id: int | None) -> None:
+    """Reuse retrieval's owner identity; feedback must not query it on get."""
+    trace = CURRENT.get()
+    if trace is not None and ref_id is not None:
+        with trace.lock:
+            if not trace.closed:
+                trace.owners[handle] = (
+                    handle_registry.try_format(kind, ref_id) or f"{kind}:{ref_id}"
+                )
 
 
 def observe(

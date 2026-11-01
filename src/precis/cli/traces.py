@@ -11,6 +11,7 @@ import argparse
 import json
 import re
 from collections.abc import Iterator
+from datetime import datetime
 from typing import Any
 
 import psycopg
@@ -40,7 +41,8 @@ def add_parser(sub: argparse._SubParsersAction) -> None:
     export.add_argument("--database-url", default=None)
 
 
-def _graph_misses(conn: Connection, metas: list[dict[str, Any]]) -> set[str]:
+def _graph_misses(conn: Connection, metas: list[dict[str, Any]]) -> dict[str, datetime]:
+    """Latest qualifying evidence per handle, compared to each trace's time."""
     handles = {
         c["handle"]
         for meta in metas
@@ -63,20 +65,22 @@ def _graph_misses(conn: Connection, metas: list[dict[str, Any]]) -> set[str]:
         )
         refs.update({h: owners[c] for h, c in chunks.items() if c in owners})
     if not refs:
-        return set()
+        return {}
     rows = conn.execute(
-        "SELECT DISTINCT l.dst_ref_id FROM links l "
+        "SELECT l.dst_ref_id, max(CASE "
+        "WHEN l.relation = 'raises-concern-about' THEN l.created_at "
+        "ELSE source.created_at END) FROM links l "
         "JOIN refs source ON source.ref_id = l.src_ref_id "
         "WHERE l.dst_ref_id = ANY(%s) AND source.retired_at IS NULL AND ("
         "l.relation = 'raises-concern-about' OR "
         "(source.kind = 'todo' AND EXISTS ("
         "SELECT 1 FROM ref_tags rt JOIN tags t ON t.tag_id = rt.tag_id "
         "WHERE rt.ref_id = source.ref_id AND t.namespace = 'OPEN' "
-        "AND t.value = 'memory-review')))",
+        "AND t.value = 'memory-review'))) GROUP BY l.dst_ref_id",
         (sorted(set(refs.values())),),
     ).fetchall()
-    missed_ids = {r[0] for r in rows}
-    return {h for h, ident in refs.items() if ident in missed_ids}
+    missed_at: dict[int, datetime] = dict(rows)
+    return {h: missed_at[ident] for h, ident in refs.items() if ident in missed_at}
 
 
 def export_rows(
@@ -90,7 +94,7 @@ def export_rows(
                 "SELECT r.ref_id, r.meta, EXISTS("
                 "SELECT 1 FROM ref_tags rt JOIN tags t ON t.tag_id = rt.tag_id "
                 "WHERE rt.ref_id = r.ref_id AND t.namespace = 'OPEN' "
-                "AND t.value = 'trace:miss') "
+                "AND t.value = 'trace:miss'), r.created_at "
                 "FROM refs r WHERE r.kind = 'agentlog' "
                 "AND r.retired_at IS NULL AND r.meta->>'trace' = 'search' "
                 "AND r.created_at >= now() - %s::interval "
@@ -100,7 +104,7 @@ def export_rows(
             )
             while batch := cursor.fetchmany(500):
                 graph_misses = _graph_misses(conn, [r[1] for r in batch])
-                for ident, meta, explicit_miss in batch:
+                for ident, meta, explicit_miss, created_at in batch:
                     candidates = meta.get("candidates", [])
                     handles = {c["handle"] for c in candidates}
                     rendered = {c["handle"] for c in candidates if c.get("rendered")}
@@ -116,9 +120,13 @@ def export_rows(
                         "followed": sorted(followed),
                         "used": sorted(used),
                         "positives": sorted(used | followed),
-                        "negatives": sorted(rendered - followed),
+                        "negatives": sorted(rendered - followed - used),
                         "misses": sorted(
-                            (rendered & graph_misses)
+                            {
+                                h
+                                for h in rendered
+                                if h in graph_misses and graph_misses[h] >= created_at
+                            }
                             | (rendered if explicit_miss else set())
                         ),
                         "trace_miss": explicit_miss,

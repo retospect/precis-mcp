@@ -105,7 +105,7 @@ def write_search_trace(store: Store, args: dict[str, Any], trace: Any) -> None:
                 (json.dumps(meta),),
             ).fetchone()
         if row is not None:
-            search_feedback.remember(store, row[0], row[1], meta)
+            search_feedback.remember(store, row[0], row[1], meta, owners=trace.owners)
     except Exception:
         log.warning("agentlog: search trace write failed", exc_info=True)
 

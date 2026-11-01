@@ -25,12 +25,14 @@ Call-local stage evidence retains pre-cut candidates (50 plus the total),
 so floor/fold/page misses remain attributable without extra retrieval queries.
 Default agentlog listings omit traces; ``/traces`` is the explicit read door.
 Followed/used feedback only consults a bounded process-local session cache:
-32 searches per session, 128 sessions per store, expiring after 30 minutes.
-No trace lookup is added to get; matching updates have short pool/SQL/lock
-budgets and skip failures at debug level. Losing feedback on process restart
-is intentional. ``precis traces export --jsonl`` reads a consistent read-only
-snapshot, retaining unrendered candidates as unlabeled and separating weak
-rendered-minus-followed negatives from explicit trace/graph misses.
+32 searches per session, 128 sessions per store; Postgres alone checks the
+30-minute window. Retrieval supplies chunk-owner aliases without extra queries.
+No trace lookup is added to get; each matching row update has a 50 ms lock /
+75 ms statement budget and only a confirmed committed update is cached.
+Failures skip at debug level; losing feedback on process restart is intentional.
+``precis traces export --jsonl`` reads a consistent read-only snapshot,
+retaining unrendered candidates as unlabeled. Weak negatives exclude both
+followed and used candidates; graph misses must postdate the trace.
 """
 
 from __future__ import annotations

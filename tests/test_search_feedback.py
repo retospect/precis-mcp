@@ -103,17 +103,66 @@ def test_get_in_another_or_missing_session_does_not_follow(
     assert "followed" not in _meta(runtime.live_store, ident)
 
 
-def test_expired_trace_does_not_query_or_follow(runtime_with_store):
+def test_expired_trace_is_checked_by_database_without_poisoning_cache(
+    runtime_with_store,
+):
     runtime = runtime_with_store
+    store = runtime.live_store
     handle, ident = _search(runtime)
-    future = datetime.now(UTC) + timedelta(minutes=31)
-    with patch.object(search_feedback, "datetime") as clock:
-        clock.now.return_value = future
-        with patch.object(search_feedback, "_signals") as signals:
-            body, error = runtime.dispatch_with_status("get", {"id": handle})
-            assert not error, body
-            signals.assert_not_called()
-    assert "followed" not in _meta(runtime.live_store, ident)
+    with store.tx() as conn:
+        conn.execute(
+            "UPDATE refs SET created_at = now() - interval '31 minutes' "
+            "WHERE ref_id = %s",
+            (ident,),
+        )
+    body, error = runtime.dispatch_with_status("get", {"id": handle})
+    assert not error, body
+    assert "followed" not in _meta(store, ident)
+    assert search_feedback._RECENT[store][123][0].followed == set()
+    with store.tx() as conn:
+        conn.execute("UPDATE refs SET created_at = now() WHERE ref_id = %s", (ident,))
+    body, error = runtime.dispatch_with_status("get", {"id": handle})
+    assert not error, body
+    assert _meta(store, ident)["followed"] == [handle]
+
+
+@pytest.mark.parametrize(
+    ("address", "expected"),
+    [("pa5~3", "pa5"), ("paper:5~abs", "pa5"), ("pc5~3", "pc5")],
+)
+def test_address_strips_selectors(address, expected):
+    assert search_feedback._address(address) == {expected}
+
+
+@pytest.mark.parametrize("address", ["chunk", "record-selector", "kind-selector"])
+def test_chunk_candidate_matches_get_on_owner_without_lookup(
+    runtime_with_store, address
+):
+    runtime = runtime_with_store
+    store = runtime.live_store
+    ref = store.insert_ref(kind="paper", slug="feedback26", title="retrieval evidence")
+    chunk = store.chunks.insert_chunks(
+        ref.id, [ChunkInsert(ord=0, text="feedback evidence retrieval")]
+    )[0]
+    body, error = runtime.dispatch_with_status(
+        "search", {"kind": "paper", "q": "feedback evidence", "mode": "lexical"}
+    )
+    assert not error, body
+    with store.pool.connection() as conn:
+        trace_id, meta = conn.execute(
+            "SELECT ref_id, meta FROM refs WHERE meta->>'trace' = 'search'"
+        ).fetchone()
+    handle = f"pc{chunk.id}"
+    assert any(c["handle"] == handle for c in meta["candidates"])
+    assert search_feedback._RECENT[store][123][0].owners[handle] == f"pa{ref.id}"
+    read = {
+        "chunk": handle,
+        "record-selector": f"pa{ref.id}~0",
+        "kind-selector": f"paper:{ref.id}~0",
+    }[address]
+    body, error = runtime.dispatch_with_status("get", {"id": read})
+    assert not error, body
+    assert _meta(store, trace_id)["followed"] == [handle]
 
 
 def test_get_without_recent_trace_adds_no_trace_sql(runtime_with_store, monkeypatch):
@@ -161,6 +210,30 @@ def test_body_signals_ignore_find_anchors_and_titles():
         )[1]
         == set()
     )
+
+
+@pytest.mark.parametrize("verb", ["put", "edit"])
+def test_link_argument_counts_as_used_without_body(verb):
+    assert search_feedback._signals(
+        verb, {"kind": "memory", "id": 1, "link": "me2"}
+    ) == ("used", {"me2"})
+    assert search_feedback._signals(verb, {"link": "me2", "text": "[me3]"}) == (
+        "used",
+        {"me2", "me3"},
+    )
+
+
+def test_put_link_argument_appends_used_in_database(runtime_with_store):
+    runtime = runtime_with_store
+    handle, ident = _search(runtime)
+    source = runtime.live_store.insert_ref(
+        kind="memory", slug=None, title="linked observation"
+    )
+    body, error = runtime.dispatch_with_status(
+        "put", {"kind": "memory", "id": source.id, "link": handle}
+    )
+    assert not error, body
+    assert _meta(runtime.live_store, ident)["used"] == [handle]
 
 
 def test_recent_cache_is_bounded_per_session_and_store(store):
@@ -262,7 +335,8 @@ def test_export_labels_and_all_miss_sources(runtime_with_store):
     assert row["id"] == f"ag{ident}"
     assert row["candidates"] == candidates
     assert row["positives"] == sorted(handles[:2])
-    assert row["negatives"] == sorted(handles[1:4])
+    assert row["negatives"] == sorted(handles[2:4])
+    assert not set(row["positives"]) & set(row["negatives"])
     assert row["misses"] == sorted(handles[2:4])
     assert row["trace_miss"] is False
     assert handles[4] not in row["positives"] + row["negatives"] + row["misses"]
@@ -290,6 +364,76 @@ def test_export_resolves_chunk_graph_misses_and_empty_explicit_miss(store):
     assert rows[f"ag{ident}"]["misses"] == [handle]
     assert rows[f"ag{empty}"]["trace_miss"] is True
     assert rows[f"ag{empty}"]["misses"] == []
+
+
+@pytest.mark.parametrize("evidence", ["concern", "review"])
+def test_graph_misses_are_scoped_to_each_trace_timestamp(store, evidence):
+    ref = store.insert_ref(kind="memory", slug=None, title="reviewed candidate")
+    handle = f"me{ref.id}"
+    candidates = [{"handle": handle, "rendered": True}]
+    before, same, after = [_trace(store, candidates) for _ in range(3)]
+    source = store.insert_ref(
+        kind="todo" if evidence == "review" else "memory",
+        slug=None,
+        title="miss evidence",
+    )
+    if evidence == "review":
+        store.add_tag(source.id, Tag.open("memory-review"), set_by="system")
+    store.add_link(
+        src_ref_id=source.id,
+        dst_ref_id=ref.id,
+        relation="related-to" if evidence == "review" else "raises-concern-about",
+        set_by="system",
+    )
+    evidence_at = datetime.now(UTC) - timedelta(hours=1)
+    with store.tx() as conn:
+        for ident, offset in [(before, -1), (same, 0), (after, 1)]:
+            conn.execute(
+                "UPDATE refs SET created_at = %s WHERE ref_id = %s",
+                (evidence_at + timedelta(minutes=offset), ident),
+            )
+        conn.execute(
+            "UPDATE refs SET created_at = %s WHERE ref_id = %s",
+            (
+                evidence_at
+                if evidence == "review"
+                else evidence_at - timedelta(days=1),
+                source.id,
+            ),
+        )
+        conn.execute(
+            "UPDATE links SET created_at = %s WHERE src_ref_id = %s",
+            (
+                evidence_at if evidence == "concern" else datetime.now(UTC),
+                source.id,
+            ),
+        )
+    rows = {r["id"]: r for r in _export(store)}
+    assert rows[f"ag{before}"]["misses"] == [handle]
+    assert rows[f"ag{same}"]["misses"] == [handle]
+    assert rows[f"ag{after}"]["misses"] == []
+
+
+def test_cache_acknowledges_only_rows_updated_inside_database_window(
+    runtime_with_store,
+):
+    runtime = runtime_with_store
+    store = runtime.live_store
+    handle, recent = _search(runtime)
+    old = _trace(store, [{"handle": handle, "rendered": True}], session=123)
+    search_feedback.remember(store, old, datetime.now(UTC), _meta(store, old))
+    with store.tx() as conn:
+        conn.execute(
+            "UPDATE refs SET created_at = now() - interval '31 minutes' WHERE ref_id = %s",
+            (old,),
+        )
+    body, error = runtime.dispatch_with_status("get", {"id": handle})
+    assert not error, body
+    entries = {entry.id: entry for entry in search_feedback._RECENT[store][123]}
+    assert entries[recent].followed == {handle}
+    assert entries[old].followed == set()
+    assert _meta(store, recent)["followed"] == [handle]
+    assert "followed" not in _meta(store, old)
 
 
 def test_export_filters_old_and_retired_traces_and_is_read_only(store):

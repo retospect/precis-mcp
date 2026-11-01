@@ -411,6 +411,7 @@ def merge_and_render(
             or handle_registry.try_format(hit.kind, hit.ref_id)
             or hit.handle
         )
+        search_trace.owner(handle, hit.kind, hit.ref_id)
         search_trace.observe(handle, fused_rank=rank)
     rendered = merged[:page_size]
     search_trace.page(
