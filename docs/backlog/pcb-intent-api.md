@@ -178,7 +178,7 @@ print(rt.summary())
 
 | intent | exists today | status |
 |---|---|---|
-| objective terms | `cost.py` USD terms (`crossings`, `routing_area`, `via_usd`, bbox area), `CostConfig` | weights-as-shares + R_i: **GAP** (small; wraps `CostConfig`) |
+| objective terms | `cost.py` USD terms (`crossings`, `routing_area`, `via_usd`, bbox area), `CostConfig` | topo-place shares: `pcb.objective(**shares)` over `ObjectiveShares`, R_i at the seed pose in the proxy (exists); `CostConfig` shares, `ref=<run>`, R_i on the run: **GAP** (small) |
 | place budgets/seed | `pcb_place` params `iters`, `seed`, `snap`, `groups` (`field_polish` accepted-ignored, engine deleted 2026-10-25) | exists |
 | route budgets | `RealizeConfig.max_expansions` (60k), `vroute` 6k, `budget_s` (`loop`/`expansion_caps` accepted-ignored, deleted 2026-10-25) | exists; `pcb.budget` is a rename |
 | in-script route | job-only; `bench.py` knows sanity/power; no DB-free Board→IR | **GAP** (gr513867) |
@@ -200,7 +200,7 @@ print(rt.summary())
 
 | # | slice | size | tier |
 |---|---|---|---|
-| 1 | `pcb.objective` + R_i + shares → `CostConfig` scaling; `objective=None` bit-for-bit; R_i and per-term table on the run | S | Sonnet/Devin |
+| 1 | remainder of slice 1 (the `pcb.objective(**shares)` builder over the ten `ObjectiveShares` terms and the seed-pose R_i inside the topo-place proxy shipped): `ref=<run>` cross-run R_i, shares → `CostConfig` scaling for the `wirelength`/USD terms, R_i and per-term table on the run manifest; `objective=None` stays bit-for-bit | S | Sonnet/Devin |
 | 2 | geometry ref expressions (`outline`, `courtyard`, `center`, pin centre, boolean/buffer/offset) resolved by shapely against an IR pose snapshot; `b.check()` validation | M | Sonnet |
 | 3 | intent block in manifest + request key + service-frame args + `view='trace' against` diff | S | Sonnet |
 | 4 | binding-constraint digest on `summary()`/`route-status` (hard-at-bound, soft shares, unmet rules, frame column) | M | Opus (needs judgement on "binding") |

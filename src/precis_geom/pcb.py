@@ -1967,6 +1967,59 @@ def rect(w: float, h: float, *, corner_mm: float | None = None) -> dict[str, Any
     return geom
 
 
+#: Objective-share terms :func:`objective` accepts today — the ones
+#: ``precis.pcb.topoplace.design.ObjectiveShares`` actually prices
+#: (pcb-intent-api §Weights, Decision 18) — one entry per field, pinned by
+#: ``tests/workspaces/test_pcb_board.py::test_objective_terms_match_shares``.
+#: ``wirelength`` and the other ``CostConfig`` USD terms are not share
+#: terms of the topo-place objective: a GAP until the cost-currency
+#: bridge (slice 2+) lands.
+OBJECTIVE_TERMS = (
+    "crossings",
+    "ratsnest",
+    "vias",
+    "overlap",
+    "spread",
+    "measures",
+    "backtrack",
+    "direction",
+    "silkroom",
+    "margin",
+)
+
+
+def objective(*, ref: str = "seed", **shares: float) -> dict[str, float]:
+    """A named share vector for ``pcb.local.topo_place(objective=...)``
+    (pcb-intent-api §Weights, Decision 18): each kwarg is that term's
+    SHARE of the total AT THE SEED REFERENCE POSE — ``ratsnest=0.8,
+    crossings=0.2`` means literally 80%/20%, not a raw weight across
+    units. The placer normalises the shares to sum to 1 and measures
+    each term's reference value once at the seed pose
+    (``ObjectiveShares.__post_init__``); this function only validates
+    the kwargs and carries them through — it does no measuring itself.
+
+    ``ref="seed"`` is the only reference this supports today — a named
+    earlier run (``ref=<run>``, cross-run comparability) is a GAP. At
+    least one term is required, and an unknown term name raises rather
+    than silently falling back to that term's class default (a typo'd
+    kwarg would otherwise mean something other than what was written)."""
+    if ref != "seed":
+        raise PcbBuilderError(
+            f"pcb.objective: ref={ref!r} not supported — only the seed-pose "
+            "reference exists today (a named earlier run is a GAP)"
+        )
+    unknown = sorted(set(shares) - set(OBJECTIVE_TERMS))
+    if unknown:
+        raise PcbBuilderError(
+            f"pcb.objective: unknown term(s) {unknown} — known: "
+            f"{OBJECTIVE_TERMS} (CostConfig terms like wirelength are not "
+            "topo-place share terms — a GAP)"
+        )
+    if not shares:
+        raise PcbBuilderError("pcb.objective: at least one term weight is required")
+    return dict(shares)
+
+
 # --------------------------------------------------------------------------
 # Board
 # --------------------------------------------------------------------------
@@ -4544,6 +4597,7 @@ __all__ = [
     "enclosure",
     "fit",
     "module",
+    "objective",
     "pad",
     "rect",
     "run",

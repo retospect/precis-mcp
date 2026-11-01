@@ -214,6 +214,36 @@ def test_local_route_feeds_the_routed_board_to_drc_and_exports(
     assert copper["digest"] == rt.digest
 
 
+def test_topo_place_accepts_pcb_objective(tmp_path: Path) -> None:
+    """``pcb.objective(...)`` (pcb-intent-api slice 1) is a plain shares
+    mapping ``local.topo_place`` resolves the same way a hand-built dict
+    always could — but unlike a partial hand-built dict, an unset term
+    lands at 0.0, never the ``ObjectiveShares`` class default, so
+    ``pcb.objective(ratsnest=1.0)`` really is all-ratsnest."""
+    run = pcb.local.topo_place(
+        _example("sanity"),
+        objective=pcb.objective(ratsnest=1.0),
+        effort=200,
+        seed=1,
+        out=str(tmp_path / "topo"),
+    )
+    assert run.poses
+
+
+def test_objective_shares_mapping_fills_unset_terms_with_zero() -> None:
+    """A partial mapping names only what it means: unset terms are 0.0
+    (before the share normalisation), not the 0.8/0.2 class defaults;
+    an unknown key raises; ``None`` is the preset lookup unchanged."""
+    from precis.pcb import topoplace as tp
+    from precis.pcb.local import LocalError, _objective_shares
+
+    only = _objective_shares({"ratsnest": 1.0, "margin": 1.0}, "compact")
+    assert (only.ratsnest, only.margin, only.crossings) == (0.5, 0.5, 0.0)
+    with pytest.raises(LocalError, match="unknown objective term"):
+        _objective_shares({"wirelength": 1.0}, "compact")
+    assert _objective_shares(None, "compact") is tp.PRESETS["compact"]
+
+
 def test_board_default_stackup_is_four_routable_layers() -> None:
     """gr514459: ``Board()`` emits no stackup key and resolves to the
     semantic default — 4 routable copper layers

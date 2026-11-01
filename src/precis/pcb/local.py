@@ -1246,6 +1246,31 @@ class TopoRun:
         return str(self.files["summary.txt"])
 
 
+def _objective_shares(objective: Any, preset: str) -> Any:
+    """``objective=`` resolved to an ``ObjectiveShares`` — ``None`` keeps
+    today's preset lookup bit-for-bit (pcb-intent-api slice 1: the house
+    default is unchanged); a mapping (e.g. from :func:`precis_geom.pcb.
+    objective`) fills only the terms it names at ``0.0``, never an
+    ``ObjectiveShares`` class default, so ``{"ratsnest": 1.0}`` is
+    literally all-ratsnest, not ratsnest topped up against a hidden
+    0.8 crossings floor."""
+    from precis.pcb import topoplace as _tp
+
+    if objective is None:
+        if preset not in _tp.PRESETS:
+            raise LocalError(
+                f"unknown topo-place preset {preset!r} — known: {sorted(_tp.PRESETS)}"
+            )
+        return _tp.PRESETS[preset]
+    if isinstance(objective, _tp.ObjectiveShares):
+        return objective
+    terms = [f.name for f in dataclasses.fields(_tp.ObjectiveShares)]
+    unknown = sorted(set(objective) - set(terms))
+    if unknown:
+        raise LocalError(f"unknown objective term(s) {unknown} — known: {terms}")
+    return _tp.ObjectiveShares(**{k: float(objective.get(k, 0.0)) for k in terms})
+
+
 @pcb_diag.op("topo_place")
 def topo_place(
     board: Any,
@@ -1264,10 +1289,12 @@ def topo_place(
     ``pins.json``/``summary.txt``/``placement.svg``, byte-deterministic
     per Decision 22). ``preset`` names a share vector
     (:data:`~precis.pcb.topoplace.design.PRESETS`); ``objective=``
-    overrides it with an ``ObjectiveShares`` or a mapping over any of
-    the share keys (``crossings``/``ratsnest``/``overlap``/``vias``/
-    ``backtrack``/``direction``/``silkroom``/``margin`` — unlisted keys
-    default 0).
+    overrides it with an ``ObjectiveShares`` or the mapping
+    :func:`precis_geom.pcb.objective` builds (any of the share keys,
+    ``crossings``/``ratsnest``/``vias``/``overlap``/``spread``/
+    ``measures``/``backtrack``/``direction``/``silkroom``/``margin`` —
+    unlisted keys are 0, never an ``ObjectiveShares`` class default;
+    pcb-intent-api §Weights).
     ``catalog=`` supplies LCSC-keyed footprint
     rows, exactly as :func:`place`. ``progress`` (gr513870's per-round
     progress) receives one line per anneal restart plus the route
@@ -1278,25 +1305,7 @@ def topo_place(
     from precis.pcb.topoplace import runstore as _runstore
     from precis.pcb.topoplace import summary as _tpsummary
 
-    if objective is None:
-        if preset not in _tp.PRESETS:
-            raise LocalError(
-                f"unknown topo-place preset {preset!r} — known: {sorted(_tp.PRESETS)}"
-            )
-        obj = _tp.PRESETS[preset]
-    elif isinstance(objective, _tp.ObjectiveShares):
-        obj = objective
-    else:
-        obj = _tp.ObjectiveShares(
-            crossings=float(objective.get("crossings", 0.8)),
-            ratsnest=float(objective.get("ratsnest", 0.2)),
-            overlap=float(objective.get("overlap", 0.0)),
-            vias=float(objective.get("vias", 0.0)),
-            backtrack=float(objective.get("backtrack", 0.0)),
-            direction=float(objective.get("direction", 0.0)),
-            silkroom=float(objective.get("silkroom", 0.0)),
-            margin=float(objective.get("margin", 0.0)),
-        )
+    obj = _objective_shares(objective, preset)
 
     design = _design(board, catalog)
     pcb_session.require_layout_ready(design.graph, design.features)
