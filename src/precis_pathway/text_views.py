@@ -100,8 +100,13 @@ def graph_to_mermaid(graph: dict[str, Any]) -> str:
         if e.get("kind") == "supply":
             lines.append(f"  {src} -.->|supply| {tgt}")
         else:
-            ea = e.get("barrier", 0.0)
+            ea = e.get("barrier")
             estd = e.get("barrier_std", 0.0)
-            flag = " ⚠" if e.get("low_confidence") else ""
-            lines.append(f'  {src} -->|"Ea {ea:.2f}±{estd:.2f}{flag}"| {tgt}')
+            flag = " ⚠" if ea is None or e.get("low_confidence") else ""
+            if ea is None:
+                label = "Ea n/a"
+            else:
+                spread = f"±{estd:.2f}" if estd is not None else " (std n/a)"
+                label = f"Ea {ea:.2f}{spread}"
+            lines.append(f'  {src} -->|"{label}{flag}"| {tgt}')
     return "\n".join(lines)

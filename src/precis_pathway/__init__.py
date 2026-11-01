@@ -23,6 +23,8 @@ reaction coordinate (columns; ``RATE``/``SPAN`` precomputed).
 under CHE (``analysis.at_potential``: states shift by ``n_H·eU``, barriers
 don't; refused on a pre-CHE graph). Loop + levers: skill
 ``precis-pathway-help``.
+Mermaid labels a null NEB barrier ``Ea n/a`` with a low-confidence flag:
+when both optimizers fail, no measured barrier exists, not a zero barrier.
 
 Seed diagnostics separate intent (``requested_seeds``), observed child
 launches (``executed_seeds``), and result trust. A launched child remains

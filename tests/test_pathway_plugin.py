@@ -401,6 +401,11 @@ def test_run_kinetics_success_folds_solve_result_onto_results_json(
     )
 
 
+def _fake_reprice(nodes, _ledgers, refs, *_args):
+    """Budget/exception fakes preserve refs without doing pressure physics."""
+    return nodes, refs
+
+
 def test_run_kinetics_solve_exception_sets_kinetics_error_never_raises(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -410,6 +415,8 @@ def test_run_kinetics_solve_exception_sets_kinetics_error_never_raises(
     art = _cached_run(SMOKE)
 
     class _FakeKinetics:
+        reprice = staticmethod(_fake_reprice)
+
         @staticmethod
         def solve(*_a: Any, **_k: Any) -> dict:
             raise ValueError("no usable transitions")
@@ -435,6 +442,8 @@ def _fake_kinetics(seen: dict[str, Any]) -> type:
     collects what ``solve`` actually ran with."""
 
     class _FakeKinetics:
+        reprice = staticmethod(_fake_reprice)
+
         @staticmethod
         def build_transitions(g, edges, links, ledgers, refs, t, p, area, **_kw):
             return [
@@ -452,7 +461,19 @@ def _fake_kinetics(seen: dict[str, Any]) -> type:
             return {"a": 1.0}, {"nullity": 1}
 
         @staticmethod
-        def solve(cfg, nodes, edges, net, refs, *, span, mari, log):
+        def solve(
+            cfg,
+            nodes,
+            edges,
+            net,
+            refs,
+            *,
+            span,
+            mari,
+            thermo_record,
+            log,
+            priced_pressures=None,
+        ):
             seen["n_samples"] = cfg.kinetics.n_samples
             return {
                 "tof": 1e-3,
@@ -533,12 +554,26 @@ def test_run_kinetics_unbounded_budget_skips_calibration(
     seen: dict[str, Any] = {}
 
     class _FakeKinetics:
+        reprice = staticmethod(_fake_reprice)
+
         @staticmethod
         def build_transitions(*_a, **_kw):
             pytest.fail("calibration must not run without a budget")
 
         @staticmethod
-        def solve(cfg, nodes, edges, net, refs, *, span, mari, log):
+        def solve(
+            cfg,
+            nodes,
+            edges,
+            net,
+            refs,
+            *,
+            span,
+            mari,
+            thermo_record,
+            log,
+            priced_pressures=None,
+        ):
             seen["n_samples"] = cfg.kinetics.n_samples
             return {"tof": 1e-3}
 
