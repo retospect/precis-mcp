@@ -108,11 +108,12 @@ def validate(scene: Scene) -> list[ValidationIssue]:
                 f"{radii_sum:.2f} Å covalent-radii sum (the {floor:.2f} Å "
                 "hard-sphere floor is 0.6× that) — so one was likely placed "
                 "at a guessed position. Place it with add_atom_site on a "
-                "named site ({'type': 'top'|'bridge'|'hollow', "
-                "'anchors': [labels]}) instead of hand-typed fractional "
+                "named site ({'type': 'top'|'bridge'|'fcc'|'hcp'} — with no "
+                "'anchors' precis picks a free one; 'near': <label> puts it "
+                "beside that atom) instead of hand-typed fractional "
                 "coordinates; a dopant substitutes for an existing atom "
-                "({'op': 'set_element', 'atom': <label>, 'element': <el>}), "
-                "it is not added on top of one."
+                "({'op': 'set_element', 'element': <el>, 'site': {'type': "
+                "'top'}} or 'atom': <label>), it is not added on top of one."
             )
         else:
             fix = (

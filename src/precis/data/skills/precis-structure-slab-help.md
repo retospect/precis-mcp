@@ -2,11 +2,12 @@
 id: precis-structure-slab-help
 family: science
 title: precis — building a metal slab (the slab op, adsorbate sites, IS/FS endpoints)
-summary: seed an fcc(111) metal slab with the slab op, place a dopant or adsorbate on a named site (top/bridge/hollow) instead of a guessed z, and branch a label-matched IS/FS endpoint pair an NEB band can interpolate
+summary: seed an fcc(111) metal slab with the slab op, place a dopant adatom, substitution or adsorbate on a named site (top/bridge/fcc/hcp, precis picks the anchors and coordinates) instead of a guessed z, and branch a label-matched IS/FS endpoint pair an NEB band can interpolate
 answers:
   - how do I build a metal slab with the slab op, then put a dopant or adsorbate on it?
   - what does a 3×3 slab supercell mean for coverage?
   - how do I place an adsorbate on a real site (top/bridge/hollow) without guessing a z coordinate?
+  - how do I place a dopant adatom on an fcc or hcp hollow without picking anchor labels?
   - how do I make an IS/FS endpoint pair an NEB band can use?
 applies-to: put/edit/get (kind='structure')
 status: active
@@ -74,17 +75,26 @@ height): 37 atoms, an O* bridging the dopant. A CH4 spectator is one more
 
 ### `slab` refusals
 
-- `slab needs 'element' and 'size' as [nx, ny, nz]` — both required.
+- `slab needs 'element' (host metal symbol; absent) and 'size' ([nx, ny,
+  nz]; got …)` — names each missing or malformed field, plus any key the
+  op ignores (`ignored key(s) ['metal']`). Every slab and site refusal
+  starts with `valid form: <op>`, a working op to copy.
 - `slab 'fix_layers' is an integer COUNT of bottom layers to freeze …` —
   it is not a list of layer indices.
 - `slab numeric params must be numbers — got …` — a non-coercible
   `size`/`vacuum`/`fix_layers`/`a`.
+- `slab can't build fcc(111) 'Ru' …` — a metal that is not fcc in ASE's
+  reference table needs `a` (its lattice constant, Å).
 - `slab op needs ASE (the [dft] extra)` — the runtime lacks ASE.
 
 The follow-up ops refuse in kind: an unknown `site.type` (only
-`top`/`bridge`/`hollow` — no interstitials), the wrong anchor count
-(1/2/3 anchors), a repeated or missing anchor label, and
-`add_adsorbate 'species' must be one of […]` outside the catalogue.
+`top`/`bridge`/`hollow`/`fcc`/`hcp` — no interstitials), the wrong anchor
+count (1/2/3/3/3 anchors), a repeated or missing anchor label, anchors
+naming the other hollow (`form an hcp hollow, not fcc`), a site key
+other than `type`/`anchors`/`near` (`anchor` asks `did you mean
+'anchors'?`), `anchors` and `near` together, `set_element` given both
+`atom` and `site`, and `add_adsorbate 'species' must be one of […]`
+outside the catalogue.
 
 ## Place an adsorbate on a real site, not a guessed z
 
@@ -108,6 +118,33 @@ when no anchor exists yet; on the standard Pd(111) `[3,3,4]`/vacuum-10
 cell, on-surface hollow is `z≈0.46` (a ~1 Å H–metal bond) — `frac z=0.66`
 looks plausible but floats H ~4.3 Å off the surface: preflight fails or
 the relax finishes in 0 steps at a subsurface-degenerate energy.
+
+## Let precis pick the site — no anchors
+
+Omit `anchors` and precis picks the site itself on the slab's top layer:
+`top`, `bridge`, `fcc` or `hcp` (`hollow` = either hollow). An hcp
+hollow sits over an atom of the second layer, an fcc hollow over a gap
+in it. The pick is the free site nearest `near` (an atom label, or an
+element meaning any atom of it), else nearest the cell centre. A site is
+free when no placed atom lands within bonding range of an existing atom
+other than the site's own anchors. `set_element` takes the same form
+for a substitution: `site:{"type":"top"}` (or `"subsurface"`) picks a
+host atom of that layer and keeps its label.
+
+```python
+put(kind="structure", id="cu_co_ad_o_ch4", text='{"ops":[
+  {"op":"slab","element":"Cu","size":[3,3,4],"fix_layers":2},
+  {"op":"add_atom_site","element":"Co","site":{"type":"fcc"}},
+  {"op":"add_adsorbate","species":"O","site":{"type":"bridge","near":"aCo1"}},
+  {"op":"add_adsorbate","species":"CH4","site":{"type":"top","near":"aO1"},"height":2.5}]}')
+```
+
+`Co` is a syntax example. The O lands on the free bridge beside the
+adatom and the CH4 on the free top site beside the O. Neither needs a
+label you had to work out, and the result validates and passes preflight
+as built. To bind the O to the adatom itself, anchor it on the adatom's
+label (next section). Anchors given with `fcc`/`hcp` are checked: a
+triangle over the other hollow refuses and names it.
 
 ## Adsorbates on a dopant adatom
 

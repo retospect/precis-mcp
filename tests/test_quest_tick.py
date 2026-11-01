@@ -2414,6 +2414,10 @@ class TestReactionContext:
         assert '"size":[3,3,4]' in prompt
         assert '"op":"add_atom_site"' in prompt
         assert "precis-structure-slab-help" in prompt
+        # gr547306: the adatom and substitution examples name no anchor
+        # label — precis picks the site, so nothing is hand-placed.
+        assert '"site":{"type":"fcc"}}' in prompt
+        assert '{"op":"set_element","element":"<dopant>","site":' in prompt
 
     def test_generic_quest_without_barrier_objective_gets_no_neb_door(
         self, store: Any
@@ -2472,6 +2476,10 @@ class TestReactionContext:
         assert '"type":"hollow"' in prompt or "type': 'hollow'" in prompt
         # add_atom is still mentioned, but demoted to an escape hatch.
         assert "escape hatch" in prompt
+        # gr547306: the anchor-free form and the recipe skill are named
+        # in the reaction quest's own op menu too.
+        assert '"site":{"type":"fcc"}}' in prompt
+        assert "precis-structure-slab-help" in prompt
 
     def test_reaction_context_steers_toward_novelty_without_enumerating_elements(
         self, store: Any

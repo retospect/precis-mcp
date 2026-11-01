@@ -889,6 +889,18 @@ def _generator_brief(rec: Any) -> str:
     return f"{name} {brief}"
 
 
+def _op_bad_input(exc: OpError) -> BadInput:
+    """An op refusal as the handler's ``BadInput``: the op's own working
+    example as ``next=`` when it carries one (gr547306), else the generic
+    pointer to the op vocabulary."""
+    return BadInput(
+        f"op error: {exc}",
+        next=exc.next
+        or "get(kind='skill', id='precis-structure-help') for the op vocabulary",
+        options=exc.options,
+    )
+
+
 class StructureHandler(Handler):
     #: args= keys each verb reads out of ``args`` (gr475332); dispatch
     #: rejects any other key. Keep in step with the verb bodies.
@@ -4036,12 +4048,7 @@ class StructureHandler(Handler):
                 try:
                     apply_ops(scene, [op])
                 except OpError as exc:
-                    raise BadInput(
-                        f"op error: {exc}",
-                        next="get(kind='skill', id='precis-structure-help') "
-                        "for the op vocabulary",
-                        options=exc.options,
-                    ) from exc
+                    raise _op_bad_input(exc) from exc
                 continue
             echoes.append(self._import_fragment(scene, op))
         return relax_ops, ("\n".join(echoes) if echoes else None)
@@ -4067,12 +4074,7 @@ class StructureHandler(Handler):
         try:
             apply_ops(scene, graph_ops)
         except OpError as exc:
-            raise BadInput(
-                f"op error: {exc}",
-                next="get(kind='skill', id='precis-structure-help') "
-                "for the op vocabulary",
-                options=exc.options,
-            ) from exc
+            raise _op_bad_input(exc) from exc
         if not relax_ops:
             return None
         ro = relax_ops[-1]

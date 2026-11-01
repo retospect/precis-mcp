@@ -1391,10 +1391,14 @@ _GENERIC_NEB_CONTEXT = (
     '({"op":"slab","element":"<host>","size":[3,3,4],"fix_layers":2}; '
     "element AND size are required), `add_adsorbate` for a group "
     "(H·O·N·OH·H2O·NH·NH2·NH3·C·CH·CH2·CH3·CH4), or hand-built ops. A "
-    "dopant ADATOM is `add_atom_site` on a named site "
-    '({"op":"add_atom_site","element":"<dopant>","site":{"type":"hollow",'
-    '"anchors":[three top-layer labels]}}), never a typed z; to bind an '
-    "adsorbate to the adatom, name the adatom's label among its anchors. "
+    "dopant ADATOM is `add_atom_site` on a named site, never a typed z: "
+    '{"op":"add_atom_site","element":"<dopant>","site":{"type":"fcc"}} — '
+    "with no `anchors` precis picks a free top/bridge/fcc/hcp site and "
+    'computes its coordinates; "near":"<label or element>" picks the free '
+    "site beside that atom (O beside the adatom, CH4 beside the O). A "
+    'SUBSTITUTION is {"op":"set_element","element":"<dopant>","site":'
+    '{"type":"top"}} (or "subsurface"). To bind an adsorbate to the adatom '
+    "itself, name the adatom's label among its `anchors`. "
     "Recipe: get(kind='skill', id='precis-structure-slab-help').\n"
     "2. FS: DERIVE the final state from the IS so atom labels match — "
     "put(kind='structure', id='<fs-slug>', args={'derive_from': '<is-slug>', "
@@ -1504,8 +1508,11 @@ def _reaction_context(store: Store, quest: Ref, *, fr: Any | None = None) -> str
         "- add_atom_site — an adatom placed by NAMING a site, never guessing "
         'coordinates: {"op":"add_atom_site","element":"H","site":'
         '{"type":"hollow","anchors":["aPd1","aPd2","aPd3"]}} '
-        '("type" is top/bridge/hollow with 1/2/3 anchors; code resolves the '
-        "exact position from the anchor atoms — prefer this over add_atom)\n"
+        '("type" is top/bridge/hollow/fcc/hcp with 1/2/3/3/3 anchors; code '
+        "resolves the exact position from the anchor atoms — prefer this over "
+        'add_atom). Omit "anchors" and code picks a free site of that type '
+        'itself: {"op":"add_atom_site","element":"Cu","site":{"type":"fcc"}}; '
+        '"near": <label or element> picks the free site beside that atom\n'
         "- add_adsorbate — a whole GROUP on a named site (coverage series, "
         "explicit-water spectators), placed with its own internal geometry: "
         '{"op":"add_adsorbate","species":"OH","site":{"type":"top",'
@@ -1523,7 +1530,9 @@ def _reaction_context(store: Store, quest: Ref, *, fr: Any | None = None) -> str
         "slab atom)\n"
         "- set_element — SUBSTITUTE a surface atom (in-plane dopant / "
         f'single-atom-alloy motif): {{"op":"set_element","atom":"{top_label}",'
-        '"element":"Cu"}\n'
+        '"element":"Cu"}, or let code pick the host atom: '
+        '{"op":"set_element","element":"Cu","site":{"type":"top"}} '
+        '("subsurface" = one layer down; "near" works as above)\n'
         "- vacancy — REMOVE a surface atom (defect site): "
         f'{{"op":"vacancy","atom":"{top_label}"}}\n'
         "- add_atom (advanced/escape hatch) — a raw fractional coordinate: "
@@ -1537,7 +1546,8 @@ def _reaction_context(store: Store, quest: Ref, *, fr: Any | None = None) -> str
         "height for you — prefer it.\n"
         "You may combine several ops (e.g. two set_element for a 2-atom alloy, "
         "or set_element + vacancy). Vary composition; do not hand-enumerate "
-        "atoms.\n"
+        "atoms. Worked recipes (dopant adatoms, co-adsorbates, IS/FS pairs): "
+        "get(kind='skill', id='precis-structure-slab-help').\n"
     )
     # PBC ground rules (qu164903 corner saga): without these the model treats
     # supercell positions as physical sites ("corner" vs "central"), proposes

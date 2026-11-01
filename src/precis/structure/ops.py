@@ -15,7 +15,14 @@ contract surfaces this as a structured error, §5c).
 site (top/bridge/hollow over existing atom labels) instead of guessing
 fractional coordinates. :func:`_resolve_site` turns the name into exact
 coordinates and delegates to :func:`_op_add_atom` — one label-minting/
-validation path for both raw and site-symbolic placement.
+validation path for both raw and site-symbolic placement. With no
+``anchors`` (gr547306) the op picks them itself: :func:`_auto_site` lists
+the slab top layer's top/bridge/fcc/hcp sites and takes the free one
+nearest ``near`` (else the cell centre), "free" meaning no placed atom
+within bond-inference range of a non-anchor atom — the validator's own
+bond rule, so an auto-placed group never trips an overlap or an extra
+bond. It never binds to a ``near`` atom; naming that atom as an anchor
+does. ``set_element`` takes the same by-site form for substitutions.
 ``add_adsorbate`` is its multi-atom twin: a catalogued group (H · O · N ·
 OH · H2O · NH · NH2 · NH3 · C · CH · CH2 · CH3 · CH4) placed from the same
 named site with its own gas-phase internal geometry and bonds, so a
@@ -50,6 +57,7 @@ from __future__ import annotations
 
 import math
 import re
+from collections import Counter
 from collections.abc import Sequence
 from typing import Any
 
@@ -77,11 +85,25 @@ class OpError(ValueError):
 
     ``options`` carries the closed-vocabulary / ambiguous-candidate list a
     refusal wants to surface (e.g. ``transfer``'s equidistant tie) — the
-    handler boundary forwards it onto the ``BadInput``'s ``options=``."""
+    handler boundary forwards it onto the ``BadInput``'s ``options=``.
+    ``next`` is an op-specific hint the handler forwards as the
+    ``BadInput``'s ``next=`` in place of its generic skill pointer.
+    ``example`` is a valid op that LEADS the message (``valid form: <op> —
+    <cause>``), so it survives a capped echo of the error such as a quest's
+    rejected-proposal note (``quest.compute._REJECT_REASON_CAP``) however
+    long the cause's ``got`` repr runs (gr547306)."""
 
-    def __init__(self, cause: str, *, options: Sequence[str] | None = None) -> None:
+    def __init__(
+        self,
+        cause: str,
+        *,
+        options: Sequence[str] | None = None,
+        next: str | None = None,
+        example: str | None = None,
+    ) -> None:
         self.options = list(options) if options is not None else None
-        super().__init__(cause)
+        self.next = next
+        super().__init__(f"valid form: {example} — {cause}" if example else cause)
 
 
 def apply_ops(scene: Scene, ops: list[dict[str, Any]]) -> Scene:
@@ -189,8 +211,71 @@ def _op_add_atom(scene: Scene, op: dict[str, Any]) -> None:
 
 #: Anchor count required per site type (v1 closed set — no interstitials yet;
 #: an octahedral/tetrahedral void needs a different resolver, backlogged in
-#: the estimate-kind design doc).
-_SITE_ANCHOR_COUNT = {"top": 1, "bridge": 2, "hollow": 3}
+#: the estimate-kind design doc). ``fcc`` and ``hcp`` are the two hollows of
+#: a (111) surface: an hcp hollow sits over an atom of the layer below, an
+#: fcc hollow over a gap in it (:func:`_hollow_kind`).
+_SITE_ANCHOR_COUNT = {"top": 1, "bridge": 2, "hollow": 3, "fcc": 3, "hcp": 3}
+
+#: Metal atoms within this many Å in z are one slab layer — the
+#: :mod:`.invariants` layer tolerance (fcc(111) layers sit ~2 Å apart).
+_LAYER_TOL = 0.5
+
+#: In-plane Å within which an atom of the layer below sits under a hollow,
+#: making it the hcp hollow. Under an fcc hollow the nearest such atom is
+#: one hollow-to-atom distance (d_nn/√3, ~1.5 Å on Cu) away.
+_HCP_XY_TOL = 0.5
+
+#: The working op a site refusal leads with, and the ``next=`` hint after
+#: it (gr547306: the quest agent kept hand-placing dopant adatoms). ``Ni``
+#: is a syntax example, not a suggested dopant.
+_SITE_EXAMPLE = '{"op":"add_atom_site","element":"Ni","site":{"type":"fcc"}}'
+_SITE_HINT = (
+    "omit 'anchors' and precis picks a free top/bridge/fcc/hcp site on the "
+    "top layer; 'near': <label or element> picks the free one beside that "
+    "atom (give 'anchors' or 'near', not both). "
+    "Recipe: get(kind='skill', id='precis-structure-slab-help')"
+)
+
+#: The keys a site object reads; any other is refused, so a typo
+#: (``anchor``) never silently falls through to an auto-picked site.
+_SITE_KEYS = ("type", "anchors", "near")
+
+#: Misspellings of ``anchors`` the unknown-key refusal names it for.
+_ANCHOR_TYPOS = frozenset({"anchor", "labels", "label", "atoms", "atom"})
+
+#: ``set_element`` site types: the lattice layer a by-name substitution
+#: lands in (``top`` = the surface layer, ``subsurface`` = the one below).
+_SUBST_LAYER = {"top": -1, "subsurface": -2}
+
+_SUBST_EXAMPLE = '{"op":"set_element","element":"Ni","site":{"type":"top"}}'
+_SUBST_HINT = (
+    "precis picks a host atom of that layer ('near': <label or element> "
+    "picks the one beside that atom); or give 'atom' instead of 'site': "
+    '{"op":"set_element","atom":"aCu28","element":"Ni"}'
+)
+
+
+def _check_site_keys(site: dict[str, Any], allowed: tuple[str, ...]) -> None:
+    """Refuse a site object carrying a key outside ``allowed``, naming it
+    and the valid ones (``did you mean 'anchors'?`` for its misspellings)."""
+    unknown = sorted(str(k) for k in site if k not in allowed)
+    if not unknown:
+        return
+    guess = (
+        " — did you mean 'anchors'?"
+        if "anchors" in allowed and _ANCHOR_TYPOS & set(unknown)
+        else ""
+    )
+    form = (
+        (_SITE_EXAMPLE, _SITE_HINT)
+        if allowed == _SITE_KEYS
+        else (_SUBST_EXAMPLE, _SUBST_HINT)
+    )
+    raise OpError(
+        f"unknown site key(s) {unknown}; a site reads only {list(allowed)}{guess}",
+        example=form[0],
+        next=form[1],
+    )
 
 
 def _op_add_atom_site(scene: Scene, op: dict[str, Any]) -> None:
@@ -200,16 +285,21 @@ def _op_add_atom_site(scene: Scene, op: dict[str, Any]) -> None:
     "anchors": ["aPd1", "aPd2", "aPd3"]}, "height": <optional Å>}``. Resolves
     the site to Cartesian coordinates (:func:`_resolve_site`) and delegates
     to :func:`_op_add_atom` for the actual mint — same label/validation path
-    as raw ``add_atom``.
+    as raw ``add_atom``. Without ``anchors`` precis picks the site itself
+    (:func:`_auto_site`).
     """
     element = op.get("element")
     if not element:
-        raise OpError("add_atom_site needs an 'element'")
+        raise OpError(
+            "add_atom_site needs an 'element'", example=_SITE_EXAMPLE, next=_SITE_HINT
+        )
     site = op.get("site")
     if not isinstance(site, dict):
         raise OpError(
             "add_atom_site needs a 'site' object: "
-            "{'type': 'top'|'bridge'|'hollow', 'anchors': [labels]}"
+            "{'type': 'top'|'bridge'|'hollow'|'fcc'|'hcp', 'anchors'?: [labels]}",
+            example=_SITE_EXAMPLE,
+            next=_SITE_HINT,
         )
     frac = _resolve_site(scene, site, str(element), op.get("height"))
     delegate = dict(op)
@@ -221,7 +311,13 @@ def _op_add_atom_site(scene: Scene, op: dict[str, Any]) -> None:
 
 
 def _resolve_site(
-    scene: Scene, site: dict[str, Any], element: str, height: Any
+    scene: Scene,
+    site: dict[str, Any],
+    element: str,
+    height: Any,
+    *,
+    group: list[tuple[str, np.ndarray]] | None = None,
+    ignore: frozenset[str] | set[str] = frozenset(),
 ) -> np.ndarray:
     """Resolve a symbolic site (type + anchor labels) to fractional coords.
 
@@ -231,25 +327,56 @@ def _resolve_site(
     hollow site spanning a cell wall doesn't average a wrapped-away copy).
     z = the anchors' highest z + ``height`` (default: the covalent-radius-sum
     rule, see :func:`_default_site_height`).
+
+    No ``anchors`` key → :func:`_auto_site` picks them; ``group`` (the
+    placed atoms as ``(element, Cartesian offset from the binding atom)``)
+    and ``ignore`` (labels that are moving anyway) feed its clearance
+    check. An unknown key, or ``anchors`` with ``near``, refuses: either
+    would otherwise place the atom somewhere the caller didn't ask for.
     """
+    _check_site_keys(site, _SITE_KEYS)
+    if "anchors" in site and "near" in site:
+        raise OpError(
+            "a site takes 'anchors' (you name the site) or 'near' (precis "
+            "picks the free one beside that atom), not both",
+            example=_SITE_EXAMPLE,
+            next=_SITE_HINT,
+        )
     site_type = site.get("type")
     if site_type not in _SITE_ANCHOR_COUNT:
         raise OpError(
             f"add_atom_site 'site.type' must be one of "
             f"{sorted(_SITE_ANCHOR_COUNT)}, got {site_type!r} — interstitials "
-            "aren't supported yet"
+            "aren't supported yet",
+            example=_SITE_EXAMPLE,
+            next=_SITE_HINT,
         )
     anchors = site.get("anchors")
+    if "anchors" not in site:
+        return _auto_site(
+            scene, site, element, height, group or [(element, np.zeros(3))], ignore
+        )
     if not isinstance(anchors, list) or not anchors:
-        raise OpError("add_atom_site 'site.anchors' must be a list of atom labels")
+        raise OpError(
+            "add_atom_site 'site.anchors' must be a list of atom labels, or "
+            "absent for precis to pick the site",
+            example=_SITE_EXAMPLE,
+            next=_SITE_HINT,
+        )
     want = _SITE_ANCHOR_COUNT[site_type]
     if len(anchors) != want:
         raise OpError(
             f"a {site_type!r} site needs exactly {want} anchor(s), got "
-            f"{len(anchors)}: {anchors!r}"
+            f"{len(anchors)}: {anchors!r}",
+            example=_SITE_EXAMPLE,
+            next=_SITE_HINT,
         )
     if len(set(anchors)) != len(anchors):
-        raise OpError(f"add_atom_site anchors must be distinct labels, got {anchors!r}")
+        raise OpError(
+            f"add_atom_site anchors must be distinct labels, got {anchors!r}",
+            example=_SITE_EXAMPLE,
+            next=_SITE_HINT,
+        )
     atoms = [_require_atom(scene, str(a)) for a in anchors]
     ref_frac = atoms[0].frac
     carts = []
@@ -262,17 +389,267 @@ def _resolve_site(
     carts_arr = np.asarray(carts, dtype=float)
     xy = carts_arr[:, :2].mean(axis=0)
     z_top = float(carts_arr[:, 2].max())
-    if height is None:
-        h = _default_site_height(anchor_elements, element)
-    else:
-        try:
-            h = float(height)
-        except (TypeError, ValueError) as exc:
+    if site_type in ("fcc", "hcp"):
+        kind = _hollow_kind(scene, xy, z_top)
+        if kind != site_type:
             raise OpError(
-                f"add_atom_site 'height' must be a number, got {height!r}"
-            ) from exc
+                f"anchors {anchors!r} form an {kind} hollow, not {site_type} — "
+                f"say type {kind!r}, or omit 'anchors' and precis picks a free "
+                f"{site_type} site",
+                example=_SITE_EXAMPLE,
+                next=_SITE_HINT,
+            )
+    h = _site_height(anchor_elements, element, height)
     target_cart = np.array([xy[0], xy[1], z_top + h])
     return scene.cell.wrap(scene.cell.cart_to_frac(target_cart))
+
+
+def _site_height(anchor_elements: list[str], element: str, height: Any) -> float:
+    """``height`` as Å, or the covalent-radius default when it is absent."""
+    if height is None:
+        return _default_site_height(anchor_elements, element)
+    try:
+        return float(height)
+    except (TypeError, ValueError) as exc:
+        raise OpError(
+            f"add_atom_site 'height' must be a number, got {height!r}"
+        ) from exc
+
+
+def _metal_layers(scene: Scene) -> list[tuple[float, list[str]]]:
+    """The slab's layers bottom→top as ``(mean z Å, labels)``.
+
+    Metal atoms (``elements.max_valence`` is ``None``, the rule
+    :func:`_largest_metal_component` uses) clustered by Cartesian z. A layer
+    counts only when it holds more than half the fullest layer's atoms, so
+    a dopant adatom above the surface is not mistaken for the surface. A
+    substituted dopant stays in its layer."""
+    metal = sorted(
+        (float(scene.cell.frac_to_cart(a.frac)[2]), label)
+        for label, a in scene.atoms.items()
+        if elements.max_valence(a.element) is None
+    )
+    clusters: list[list[tuple[float, str]]] = []
+    for z, label in metal:
+        if clusters and z - clusters[-1][-1][0] <= _LAYER_TOL:
+            clusters[-1].append((z, label))
+        else:
+            clusters.append([(z, label)])
+    if not clusters:
+        return []
+    full = max(len(c) for c in clusters)
+    return [
+        (float(np.mean([z for z, _ in c])), [label for _, label in c])
+        for c in clusters
+        if len(c) > full / 2
+    ]
+
+
+def _in_plane_shifts(scene: Scene) -> list[np.ndarray]:
+    """Cartesian translations to the 3×3 in-plane periodic images."""
+    lat = scene.cell.lattice
+    pbc = scene.cell.pbc
+    return [
+        i * lat[0] + j * lat[1]
+        for i in (-1, 0, 1)
+        if pbc[0] or i == 0
+        for j in (-1, 0, 1)
+        if pbc[1] or j == 0
+    ]
+
+
+def _hollow_kind(
+    scene: Scene,
+    xy: np.ndarray,
+    z: float,
+    layers: list[tuple[float, list[str]]] | None = None,
+) -> str:
+    """``'hcp'`` when an atom of the slab layer below ``z`` sits under the
+    in-plane point ``xy``, else ``'fcc'``. ``layers`` is a precomputed
+    :func:`_metal_layers`."""
+    layers = _metal_layers(scene) if layers is None else layers
+    below = [labels for zl, labels in layers if zl < z - _LAYER_TOL]
+    if not below:
+        raise OpError(
+            "telling an fcc from an hcp hollow needs the slab layer under it — "
+            "build at least two layers, or use type 'hollow'",
+            example=_SITE_EXAMPLE,
+            next=_SITE_HINT,
+        )
+    shifts = _in_plane_shifts(scene)
+    for label in below[-1]:
+        p = scene.cell.frac_to_cart(scene.atoms[label].frac)
+        for s in shifts:
+            if float(np.linalg.norm((p + s)[:2] - xy)) < _HCP_XY_TOL:
+                return "hcp"
+    return "fcc"
+
+
+def _surface_sites(
+    scene: Scene, layers: list[tuple[float, list[str]]], site_type: str
+) -> list[tuple[tuple[str, ...], np.ndarray]]:
+    """Every distinct ``site_type`` site of the top slab layer (the last of
+    ``layers``) as ``(anchor labels, Cartesian point at the highest
+    anchor's z)``.
+
+    Neighbours are the in-plane periodic images within 1.2× the layer's
+    nearest-neighbour distance, so a small cell still yields all its
+    bridges and hollows. Sites are de-duplicated by wrapped in-plane
+    position; iteration follows sorted labels, so the result is
+    deterministic."""
+    top = sorted(layers[-1][1])
+    base = {la: scene.cell.frac_to_cart(scene.atoms[la].frac) for la in top}
+    images = [(la, p + s) for la, p in base.items() for s in _in_plane_shifts(scene)]
+    seps = [float(np.linalg.norm(q - p)) for p in base.values() for _lb, q in images]
+    cutoff = 1.2 * min((d for d in seps if d > 1e-6), default=0.0)
+    seen: set[tuple[float, float]] = set()
+    out: list[tuple[tuple[str, ...], np.ndarray]] = []
+
+    def keep(anchors: tuple[str, ...], pts: list[np.ndarray]) -> None:
+        point = np.mean(pts, axis=0)
+        point[2] = max(float(p[2]) for p in pts)
+        frac = scene.cell.cart_to_frac(point)
+        key = (round(float(frac[0]), 3) % 1.0, round(float(frac[1]), 3) % 1.0)
+        if key in seen:
+            return
+        seen.add(key)
+        if site_type in ("fcc", "hcp") and (
+            _hollow_kind(scene, point[:2], float(point[2]), layers) != site_type
+        ):
+            return
+        out.append((anchors, point))
+
+    for la, p in base.items():
+        if site_type == "top":
+            keep((la,), [p])
+            continue
+        nbrs = [
+            (lb, q) for lb, q in images if 1e-6 < float(np.linalg.norm(q - p)) <= cutoff
+        ]
+        if site_type == "bridge":
+            for lb, q in nbrs:
+                keep((la, lb), [p, q])
+            continue
+        for n, (lb, q) in enumerate(nbrs):
+            for lc, r in nbrs[n + 1 :]:
+                if float(np.linalg.norm(r - q)) <= cutoff:
+                    keep((la, lb, lc), [p, q, r])
+    return out
+
+
+def _mic_dists(scene: Scene, frac: np.ndarray, others: np.ndarray) -> np.ndarray:
+    """Minimum-image distances (Å) from one fractional point to each row of
+    ``others``: reduce per periodic axis, then take the nearest of the 27
+    neighbouring images (exact for the slab cells the site ops run on)."""
+    pbc = np.asarray(scene.cell.pbc, dtype=bool)
+    d = np.asarray(others, dtype=float) - np.asarray(frac, dtype=float)
+    d[:, pbc] -= np.round(d[:, pbc])
+    shifts = np.array(
+        [
+            (i, j, k)
+            for i in (-1, 0, 1)
+            for j in (-1, 0, 1)
+            for k in (-1, 0, 1)
+            if (pbc[0] or i == 0) and (pbc[1] or j == 0) and (pbc[2] or k == 0)
+        ],
+        dtype=float,
+    )
+    cart = (d[:, None, :] + shifts[None, :, :]) @ scene.cell.lattice
+    return np.linalg.norm(cart, axis=-1).min(axis=1)
+
+
+def _near_fracs(scene: Scene, near: Any) -> np.ndarray | None:
+    """A site's ``near`` — an atom label, or an element meaning every atom
+    of it — as fractional positions; ``None`` when absent."""
+    if near is None:
+        return None
+    key = str(near)
+    if key in scene.atoms:
+        return np.array([scene.atoms[key].frac])
+    same = [a.frac for a in scene.atoms.values() if a.element == key]
+    if same:
+        return np.array(same)
+    raise OpError(
+        f"site 'near' {key!r} is neither an atom label nor an element in the "
+        f"scene — {_no_atom_msg(scene, key)}",
+        example=_SITE_EXAMPLE,
+        next=_SITE_HINT,
+    )
+
+
+def _ref_dist(scene: Scene, frac: np.ndarray, near: np.ndarray | None) -> float:
+    """How far ``frac`` sits from ``near``, or from the cell's in-plane
+    centre when no ``near`` was given — the order sites are tried in."""
+    ref = near if near is not None else np.array([[0.5, 0.5, float(frac[2])]])
+    return float(_mic_dists(scene, frac, ref).min())
+
+
+def _site_is_free(
+    scene: Scene,
+    point: np.ndarray,
+    group: list[tuple[str, np.ndarray]],
+    exclude: set[str],
+) -> bool:
+    """True when no placed atom lands within bond-inference range
+    (:func:`elements.bond_cutoff`) of an existing atom other than the
+    site's own anchors — the placement bonds to nothing the validator would
+    then flag as an overlap or an extra bond."""
+    labels = [la for la in scene.atoms if la not in exclude]
+    if not labels:
+        return True
+    others = np.array([scene.atoms[la].frac for la in labels])
+    els = [scene.atoms[la].element for la in labels]
+    for el, offset in group:
+        d = _mic_dists(scene, scene.cell.cart_to_frac(point + offset), others)
+        cut = np.array([elements.bond_cutoff(el, e) for e in els])
+        if bool(np.any(d < cut)):
+            return False
+    return True
+
+
+def _auto_site(
+    scene: Scene,
+    site: dict[str, Any],
+    element: str,
+    height: Any,
+    group: list[tuple[str, np.ndarray]],
+    ignore: frozenset[str] | set[str],
+) -> np.ndarray:
+    """Pick a ``site.type`` site on the slab's top layer when the caller
+    named no anchors (gr547306: hand-picked anchors and hand-typed z kept
+    failing as clashes and floating atoms).
+
+    Candidates are tried nearest ``site.near`` first (an atom label, or an
+    element: nearest any atom of it), else nearest the cell's in-plane
+    centre; the first one whose placed atoms clear every non-anchor atom by
+    its bond-inference distance wins. Height follows the anchored rule."""
+    site_type = str(site["type"])
+    layers = _metal_layers(scene)
+    if not layers:
+        raise OpError(
+            f"a {site_type!r} site without 'anchors' needs a metal slab to pick "
+            "from — build it with the slab op first, or name the anchors",
+            example=_SITE_EXAMPLE,
+            next=_SITE_HINT,
+        )
+    near = _near_fracs(scene, site.get("near"))
+    tried: list[tuple[float, tuple[str, ...], np.ndarray]] = []
+    for anchors, point in _surface_sites(scene, layers, site_type):
+        h = _site_height([scene.atoms[a].element for a in anchors], element, height)
+        target = point + np.array([0.0, 0.0, h])
+        dist = _ref_dist(scene, scene.cell.cart_to_frac(target), near)
+        tried.append((round(dist, 6), anchors, target))
+    tried.sort(key=lambda t: (t[0], t[1]))
+    for _dist, anchors, target in tried:
+        if _site_is_free(scene, target, group, set(anchors) | set(ignore)):
+            return scene.cell.wrap(scene.cell.cart_to_frac(target))
+    raise OpError(
+        f"no free {site_type} site on the top layer — each one puts the "
+        f"{element} within bond range of an existing atom; name the 'anchors' "
+        "yourself or choose another site type",
+        example=_SITE_EXAMPLE,
+        next=_SITE_HINT,
+    )
 
 
 #: Adsorbate species catalogue for :func:`_op_add_adsorbate` — the whole
@@ -406,10 +783,11 @@ def _op_add_adsorbate(scene: Scene, op: dict[str, Any]) -> None:
     if not isinstance(site, dict):
         raise OpError(
             "add_adsorbate needs a 'site' object: "
-            "{'type': 'top'|'bridge'|'hollow', 'anchors': [labels]}"
+            "{'type': 'top'|'bridge'|'hollow'|'fcc'|'hcp', 'anchors'?: [labels]}",
+            example=_SITE_EXAMPLE,
+            next=_SITE_HINT,
         )
     binder, atoms, bonds = ADSORBATES[species]
-    origin_frac = _resolve_site(scene, site, binder, op.get("height"))
 
     rotate = op.get("rotate", 0.0)
     try:
@@ -417,18 +795,21 @@ def _op_add_adsorbate(scene: Scene, op: dict[str, Any]) -> None:
     except BadInput as exc:
         raise OpError(f"{exc}; {exc.next}" if exc.next else str(exc)) from exc
     cos_t, sin_t = math.cos(theta), math.sin(theta)
+    offsets = [
+        (element, np.array([dx * cos_t - dy * sin_t, dx * sin_t + dy * cos_t, dz]))
+        for element, (dx, dy, dz) in atoms
+    ]
+    origin_frac = _resolve_site(scene, site, binder, op.get("height"), group=offsets)
 
     labels: list[str] = []
-    for element, (dx, dy, dz) in atoms:
-        x = dx * cos_t - dy * sin_t
-        y = dx * sin_t + dy * cos_t
+    for element, offset in offsets:
         # The offset is converted as a VECTOR and added in fractional space:
         # round-tripping the origin through cart_to_frac would leave the
         # binding atom an epsilon off the site (and, at frac 0, wrapped to
         # the far wall), so it would no longer land exactly where
         # ``add_atom_site`` puts a lone atom. ``cart_to_frac`` is linear, so
         # a difference vector converts cleanly.
-        frac = origin_frac + scene.cell.cart_to_frac(np.array([x, y, dz]))
+        frac = origin_frac + scene.cell.cart_to_frac(offset)
         label = scene.next_label(element)
         _op_add_atom(
             scene,
@@ -467,7 +848,58 @@ def _default_site_height(anchor_elements: list[str], element: str) -> float:
 
 
 def _op_set_element(scene: Scene, op: dict[str, Any]) -> None:
-    _require_atom(scene, op["atom"]).element = op["element"]
+    """Transmute one atom: by label (``atom``), or by lattice site
+    (``site: {"type": "top"|"subsurface", "near"?: <label or element>}``),
+    where precis picks the host atom (:func:`_lattice_atom`)."""
+    element = op.get("element")
+    if not element:
+        raise OpError(
+            "set_element needs an 'element'", example=_SUBST_EXAMPLE, next=_SUBST_HINT
+        )
+    if "atom" in op and "site" in op:
+        raise OpError(
+            "set_element takes 'atom' (you name the atom) or 'site' (precis "
+            "picks it), not both",
+            example=_SUBST_EXAMPLE,
+            next=_SUBST_HINT,
+        )
+    if op.get("atom") is not None:
+        _require_atom(scene, str(op["atom"])).element = element
+        return
+    site = op.get("site")
+    if isinstance(site, dict):
+        _check_site_keys(site, ("type", "near"))
+    if not isinstance(site, dict) or site.get("type") not in _SUBST_LAYER:
+        raise OpError(
+            "set_element needs 'atom' (a label) or 'site': {'type': "
+            "'top'|'subsurface', 'near'?: <label or element>}",
+            example=_SUBST_EXAMPLE,
+            next=_SUBST_HINT,
+        )
+    scene.atoms[_lattice_atom(scene, site)].element = element
+
+
+def _lattice_atom(scene: Scene, site: dict[str, Any]) -> str:
+    """The host atom a by-site ``set_element`` substitutes (gr547306): in
+    the named slab layer, the atom of that layer's majority element nearest
+    ``site.near`` (else nearest the cell's in-plane centre), so a second
+    substitution never re-picks a dopant. Ties break by label."""
+    layers = _metal_layers(scene)
+    depth = _SUBST_LAYER[str(site["type"])]
+    if len(layers) < -depth:
+        raise OpError(
+            f"a {site['type']!r} substitution needs a slab with at least "
+            f"{-depth} layer(s) — build it with the slab op first",
+            example=_SUBST_EXAMPLE,
+            next=_SUBST_HINT,
+        )
+    layer = layers[depth][1]
+    host = Counter(scene.atoms[la].element for la in layer).most_common(1)[0][0]
+    near = _near_fracs(scene, site.get("near"))
+    return min(
+        (la for la in layer if scene.atoms[la].element == host),
+        key=lambda la: (round(_ref_dist(scene, scene.atoms[la].frac, near), 6), la),
+    )
 
 
 def _op_vacancy(scene: Scene, op: dict[str, Any]) -> None:
@@ -649,6 +1081,39 @@ def _op_remove_measure(scene: Scene, op: dict[str, Any]) -> None:
         raise OpError(f"no {kind!r} measure over {atoms!r}")
 
 
+#: The keys the ``slab`` op reads.
+_SLAB_KEYS = ("element", "size", "vacuum", "fix_layers", "a")
+
+#: The working op every ``slab`` refusal leads with, and its ``next=``
+#: hint (gr547306; :class:`OpError`'s ``example``).
+_SLAB_EXAMPLE = (
+    '{"op":"slab","element":"Cu","size":[3,3,4],"vacuum":10.0,"fix_layers":2}'
+)
+_SLAB_HINT = "recipe: get(kind='skill', id='precis-structure-slab-help')"
+
+
+def _check_slab_fields(op: dict[str, Any]) -> tuple[str, Sequence[Any]]:
+    """``(element, size)`` of a ``slab`` op, or a refusal naming each absent
+    or malformed field, what it got, and any key the op does not read
+    (gr547306: quest proposals kept dying on 'missing element/size' without
+    learning which, or that a key they sent was ignored)."""
+    element, size = op.get("element"), op.get("size")
+    bad: list[str] = []
+    if not isinstance(element, str) or not element.strip():
+        got = "absent" if "element" not in op else f"got {element!r}"
+        bad.append(f"'element' (host metal symbol; {got})")
+    if not isinstance(size, (list, tuple)) or len(size) != 3:
+        got = "absent" if "size" not in op else f"got {size!r}"
+        bad.append(f"'size' ([nx, ny, nz]; {got})")
+    if not bad and isinstance(size, (list, tuple)):
+        return str(element), size
+    extra = sorted(k for k in op if k != "op" and k not in _SLAB_KEYS)
+    tail = f"; ignored key(s) {extra}" if extra else ""
+    raise OpError(
+        f"slab needs {' and '.join(bad)}{tail}", example=_SLAB_EXAMPLE, next=_SLAB_HINT
+    )
+
+
 def _op_slab(scene: Scene, op: dict[str, Any]) -> None:
     """Bulk template (§5b): build an fcc(111) metal slab and (re)seed the scene.
 
@@ -664,10 +1129,7 @@ def _op_slab(scene: Scene, op: dict[str, Any]) -> None:
         from ase.build import fcc111
     except ImportError as exc:  # pragma: no cover - ASE is the [dft] extra
         raise OpError("slab op needs ASE (the [dft] extra)") from exc
-    element = op.get("element")
-    size = op.get("size")
-    if not element or not isinstance(size, (list, tuple)) or len(size) != 3:
-        raise OpError("slab needs 'element' and 'size' as [nx, ny, nz]")
+    element, size = _check_slab_fields(op)
     # Coerce every numeric param defensively: an LLM emits messy JSON — an
     # explicit ``null`` for an optional key (treat as absent → default), or a
     # non-number where an int/float is due. Any non-coercible value raises a
@@ -679,7 +1141,9 @@ def _op_slab(scene: Scene, op: dict[str, Any]) -> None:
         # *indices*. It's an integer COUNT of bottom layers — say so, retryably.
         raise OpError(
             f"slab 'fix_layers' is an integer COUNT of bottom layers to freeze "
-            f"(e.g. 2 = the bottom two layers), not a list of indices — got {fl!r}"
+            f"(e.g. 2 = the bottom two layers), not a list of indices — got {fl!r}",
+            example=_SLAB_EXAMPLE,
+            next=_SLAB_HINT,
         )
     try:
         nx, ny, nz = int(size[0]), int(size[1]), int(size[2])
@@ -692,14 +1156,25 @@ def _op_slab(scene: Scene, op: dict[str, Any]) -> None:
         raise OpError(
             f"slab numeric params must be numbers — got size={size!r}, "
             f"vacuum={op.get('vacuum')!r}, fix_layers={op.get('fix_layers')!r}, "
-            f"a={op.get('a')!r}"
+            f"a={op.get('a')!r}",
+            example=_SLAB_EXAMPLE,
+            next=_SLAB_HINT,
         ) from exc
-    slab = fcc111(
-        str(element),
-        size=(nx, ny, nz),
-        vacuum=vacuum,
-        a=a,
-    )
+    try:
+        slab = fcc111(
+            str(element),
+            size=(nx, ny, nz),
+            vacuum=vacuum,
+            a=a,
+        )
+    except (KeyError, ValueError) as exc:
+        raise OpError(
+            f"slab can't build fcc(111) {element!r} ({exc}) — 'element' is a "
+            "metal symbol; one that isn't fcc in ASE's reference table needs "
+            "'a' (its lattice constant, Å)",
+            example=_SLAB_EXAMPLE,
+            next=_SLAB_HINT,
+        ) from exc
     slab.pbc = (True, True, True)
     # Freeze the bottom `fix_layers` layers (mirror autocatpath: sort by z ascending).
     frozen: set[int] = set()
@@ -1380,7 +1855,9 @@ def _op_move_group(scene: Scene, op: dict[str, Any]) -> None:
             "drop the declared bond tying the group to the surface, or "
             "move adsorbate atoms individually with displace"
         )
-    target_frac = _resolve_site(scene, site, str(atom.element), op.get("height"))
+    target_frac = _resolve_site(
+        scene, site, str(atom.element), op.get("height"), ignore=frag
+    )
     delta = np.asarray(target_frac, dtype=float) - atom.frac
     for label in frag:
         scene.atoms[label].frac = scene.cell.wrap(scene.atoms[label].frac + delta)

@@ -83,6 +83,25 @@ def test_put_creates_lists_and_round_trips(structure):
     assert "Pd2" in toc.body and "1 bonds" in toc.body
 
 
+def test_slab_op_refusal_carries_a_working_example_as_next(structure):
+    """gr547306: a quest proposal's slab op missing ``size`` came back as
+    'missing element/size' with only a generic skill pointer. The refusal
+    now names the field and leads with a valid op, the skill pointer as
+    ``next=``, and the example survives the quest's rejected-proposal note
+    cap."""
+    pytest.importorskip("ase")
+    from precis.quest.compute import _reject_reason
+
+    spec = {"ops": [{"op": "slab", "element": "Cu", "layers": 4}]}
+    with pytest.raises(BadInput) as exc:
+        structure.put(id="cu_no_size", text=json.dumps(spec))
+    assert "'size' ([nx, ny, nz]; absent)" in exc.value.cause
+    assert exc.value.cause.startswith('op error: valid form: {"op":"slab"')
+    assert isinstance(exc.value.next, str)
+    assert "precis-structure-slab-help" in exc.value.next
+    assert '"size":[3,3,4]' in _reject_reason(exc.value)
+
+
 def test_atom_and_neighborhood_and_bonds_probes(structure):
     structure.put(id="pd_pair", text=_PD)
     atom = structure.get(id="pd_pair", view="atom", args={"atom": "aPd1"})

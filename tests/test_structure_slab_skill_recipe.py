@@ -127,3 +127,24 @@ def test_adatom_recipe_passes_preflight() -> None:
     )
     assert scene.cell.mic(o, scene.atoms["aRh1"].frac)[0] < pf.MAX_ADS_HEIGHT
     assert d_cu > pf.MAX_ADS_HEIGHT
+
+
+def test_anchor_free_recipe_validates_and_passes_preflight() -> None:
+    """gr547306: the skill's no-anchors recipe — every site picked by
+    precis — builds as printed, validates clean and passes preflight."""
+    pytest.importorskip("ase")
+    from precis.structure import preflight as pf
+    from tests._skill_roots import skill_path
+
+    text = skill_path("precis-structure-slab-help").read_text(encoding="utf-8")
+    section = text.split("## Let precis pick the site — no anchors", 1)[1]
+    section = section.split("\n## ", 1)[0]
+    payloads = re.findall(r"text='(\{.*?\})'", section, re.DOTALL)
+    assert len(payloads) == 1
+    ops = json.loads(payloads[0])["ops"]
+    assert not any("anchors" in (op.get("site") or {}) for op in ops)
+    scene = Scene(cell=Cell(np.eye(3)))
+    apply_ops(scene, ops)
+    assert _errors(scene) == []
+    verdict = pf.preflight(scene)
+    assert verdict.ok is True, verdict.reasons
