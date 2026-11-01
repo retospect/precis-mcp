@@ -511,6 +511,57 @@ def test_get_search_view_still_redirects_to_search(handler: TodoHandler) -> None
         handler.get(view="doable")
 
 
+def test_get_every_served_view_still_serves(handler: TodoHandler) -> None:
+    """r180 red (827fd1adf regression): the gr547804 unknown-view raise
+    sat in front of the base-class router and refused the eye extents
+    ('fisheye', 'fisheye+1hop'). Enumerate every view spelling
+    ``get(kind='todo', id=N, view=…)`` serves — none may hit the
+    "unknown view" refusal."""
+    from precis.errors import PrecisError, Unsupported
+
+    r = handler.put(text="View enumeration todo.", tags=["project:x"])
+    rid = _id_of(r.body)
+    served = (
+        # Card aliases (read as the default view).
+        "full",
+        "brief",
+        "tags",
+        # Todo's own get views.
+        "comments",
+        "tree",
+        # Base views (links/log/raw/history/diff).
+        "links",
+        "log",
+        "raw",
+        "history",
+        "diff",
+        # Eye ladder + recall — routed to eye() in the base class.
+        "kwd",
+        "summary",
+        "verbatim",
+        "fisheye",
+        "fisheye+1hop",
+        "fisheye+2hop",
+        "fisheye+1hop+recall",
+    )
+    for view in served:
+        try:
+            resp = handler.get(id=rid, view=view)
+        except Unsupported as exc:
+            assert "unknown view" not in str(exc), (
+                f"view={view!r} regressed to 'unknown view': {exc}"
+            )
+        except PrecisError:
+            # A routed pre-existing refusal (e.g. view='diff' without
+            # since=) is fine — it is not the 'unknown view' regression.
+            pass
+        else:
+            assert resp.body is not None, f"view={view!r} returned no body"
+    # The regression's own spellings must render, not merely route.
+    assert handler.get(id=rid, view="fisheye").body
+    assert handler.get(id=rid, view="fisheye+1hop").body
+
+
 def test_doable_excludes_child_failed_parents(
     handler: TodoHandler, store: Store
 ) -> None:

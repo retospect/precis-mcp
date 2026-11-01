@@ -79,6 +79,7 @@ from typing import TYPE_CHECKING, Any, ClassVar, cast
 
 from precis.errors import BadInput, Unsupported
 from precis.handlers import _comment_timeline as tl
+from precis.handlers._eye import is_eye_view
 from precis.handlers._interpret import interpreted
 from precis.handlers._mode_help import require_mode
 from precis.handlers._numeric_ref import _BASE_VIEWS, NumericRefHandler
@@ -520,6 +521,7 @@ class TodoHandler(NumericRefHandler):
             and view not in _BASE_VIEWS
             and view not in self._search_view_names()
             and view not in _TODO_GET_VIEW_ALIASES
+            and not is_eye_view(view)
         ):
             # gr547804: the base class's generic raise lists only
             # ``_BASE_VIEWS`` — a caller guessing a view name never sees
@@ -528,7 +530,8 @@ class TodoHandler(NumericRefHandler):
             # views stay excluded so the base's search-redirect (or its
             # own refusal) keeps handling them; alias spellings ('full',
             # 'brief', 'tags') without an id fall through to the
-            # "requires id=" refusal.
+            # "requires id=" refusal; eye extents ('fisheye', 'kwd', …)
+            # route to ``eye`` in the base class.
             views_list = ["comments", "tree", "full", *_BASE_VIEWS]
             near = difflib.get_close_matches(view, views_list, n=1)
             lead = f"nearest is view={near[0]!r}. " if near else ""
