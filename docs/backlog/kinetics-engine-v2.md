@@ -810,7 +810,7 @@ class TpdComparison:                # one per adsorbate, D11
 | `tof_chain` | single-site linear chain TOF | s⁻¹ site⁻¹ | `_linear_steady` | never |
 | `tof_mf` | mean-field site-balance TOF of the target | s⁻¹ site⁻¹ | D7 Newton steady state | never (a non-converged solve raises) |
 | `tof_kmc` | lattice KMC TOF with CI | s⁻¹ site⁻¹ | field names kept, meanings exact: `median` = the MEAN of the per-replica production-window TOFs; `p5`/`p95` = lower/upper bound of the two-sided 90 % Student-t confidence interval of that mean (batch means of one replica's blocks when there is one) — interval bounds, not percentiles; `n_events` total, `accelerator` id | KMC not run at this point |
-| `selectivity` | share of the net gas-phase production per product | fraction | MF net production rates, normalised; KMC values when run (stated in `warnings`) | never |
+| `selectivity` | share of the target's key-element atoms leaving in each net product (N for NH3; H2O and H2 excluded) | fraction | MF net production rates, normalised; KMC values when run (stated in `warnings`) | never |
 | `coverages` | θ per site class per species, `*` = vacancy | ML of that site class | MF (KMC when run) | never |
 | `drc` | degree of rate control per step (Campbell pa51354) | — | MF finite difference, forward and reverse scaled together | never (MF always runs) |
 | `trc` | thermodynamic rate control per intermediate | — | MF finite difference on `state_g` | never |
