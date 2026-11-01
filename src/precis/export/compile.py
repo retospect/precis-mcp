@@ -94,7 +94,10 @@ def compile_pdf(
     """Run ``latexmk -pdf`` on an exported project. Returns a
     :class:`CompileResult`; never raises on a LaTeX error (that's a
     ``ok=False`` result with the log tail). ``skipped=True`` when no
-    latexmk is installed."""
+    latexmk is installed. ``ok`` tracks the deliverable — a ``main.pdf``
+    this run (re)wrote — not latexmk's exit code, which also goes
+    non-zero when an auxiliary step (makeglossaries/biber, rerun cap)
+    fails after a complete shipout."""
     project_dir = Path(project_dir)
     if not have_latexmk():
         log.warning("compile_pdf: latexmk not on PATH; skipping (install mactex)")
@@ -107,6 +110,11 @@ def compile_pdf(
         )
     if timeout_s is None:
         timeout_s = int(os.environ.get("PRECIS_LATEXMK_TIMEOUT_S", "120"))
+    pdf = project_dir / (Path(entrypoint).stem + ".pdf")
+    # Remove any leftover target first so "exists afterwards" means THIS
+    # run wrote it — a stale PDF from an earlier attempt must not rescue
+    # a failed run.
+    pdf.unlink(missing_ok=True)
     try:
         with trusted_latexmkrc() as trusted_rc:
             # lualatex (not pdflatex): UTF-8 native, so arbitrary scientific
@@ -144,13 +152,36 @@ def compile_pdf(
             returncode=-1,
             log_tail=f"latexmk timed out after {timeout_s}s",
         )
-    pdf = project_dir / (Path(entrypoint).stem + ".pdf")
-    ok = proc.returncode == 0 and pdf.exists()
+    # A fresh main.pdf is the deliverable. latexmk exits non-zero when ANY
+    # orchestrated step fails — a makeglossaries/biber custom-dep error, or
+    # the rerun cap — even though the engine already shipped a complete PDF
+    # (gr549006: the route then 500'd on a good file, and the .log tail
+    # showed a clean shipout that hid the failing step entirely). Serve a
+    # PDF this run wrote (the pre-run unlink above rules out a stale one);
+    # never produced or empty still fails with the log tail.
+    fresh = pdf.is_file() and pdf.stat().st_size > 0
+    log_tail = _log_tail(project_dir, entrypoint, proc.stdout + proc.stderr)
+    if proc.returncode != 0:
+        # latexmk's own output names the step that actually failed ("Error
+        # return from 'biber main'", "cusdep ... gave return code 256",
+        # "Maximum runs of lualatex reached") — the .log tail alone ends
+        # with a clean 'Output written on main.pdf' and hides it.
+        mk_tail = "\n".join((proc.stdout + proc.stderr).splitlines()[-15:])
+        if mk_tail and mk_tail not in log_tail:
+            log_tail = (
+                f"{log_tail}\n\n--- latexmk (exit {proc.returncode}) ---\n{mk_tail}"
+            )
+        if fresh:
+            log.warning(
+                "compile_pdf: latexmk exited %d but wrote a fresh %s; serving it",
+                proc.returncode,
+                pdf.name,
+            )
     return CompileResult(
-        ok=ok,
-        pdf=pdf if ok else None,
+        ok=fresh,
+        pdf=pdf if fresh else None,
         returncode=proc.returncode,
-        log_tail=_log_tail(project_dir, entrypoint, proc.stdout + proc.stderr),
+        log_tail=log_tail,
     )
 
 

@@ -17,6 +17,7 @@ runs for real in the gate container — that asymmetry is the point.
 
 from __future__ import annotations
 
+import os
 import re
 import shutil
 import zlib
@@ -207,6 +208,34 @@ def test_abbrev_forms_compile_and_headings_stay_bookmark_safe(tmp_path: Path) ->
         )
     ]
     assert "DFT Benchmarks" in titles, titles
+
+
+def test_aux_step_failure_still_serves_the_shipped_pdf(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr549006 — the prod 500: a makeglossaries failure makes latexmk
+    exit non-zero even though the engine already shipped a complete
+    ``main.pdf`` (the route then 500'd on a good file, and the .log tail
+    showed a clean shipout that hid the failing step). ``makeglossaries``
+    is PATH-stubbed to exit 1 — the exact ``run_makeglossaries`` cus-dep
+    failure — while real latexmk/lualatex/biber do the rest; the fresh
+    PDF must still be the deliverable."""
+    _smoke_project(tmp_path)
+    stub_dir = tmp_path / "stubbin"
+    stub_dir.mkdir()
+    stub = stub_dir / "makeglossaries"
+    stub.write_text("#!/bin/sh\nexit 1\n", encoding="utf-8")
+    stub.chmod(0o755)
+    # compile_pdf's hardened env inherits os.environ, so this PATH reaches
+    # latexmk's own `system "makeglossaries"` call — the stub shadows the
+    # real binary; lualatex/latexmk/biber still resolve from the real dirs.
+    monkeypatch.setenv("PATH", f"{stub_dir}:{os.environ['PATH']}")
+    res = compile_pdf(tmp_path, timeout_s=300)
+    assert not res.skipped
+    assert res.returncode != 0  # latexmk reports the cus-dep failure...
+    assert res.ok  # ...but the fresh PDF is still served
+    assert res.pdf is not None and res.pdf.stat().st_size > 1024
+    assert "latexmk" in res.log_tail
 
 
 def _inflated(pdf: bytes) -> bytes:
