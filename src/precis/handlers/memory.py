@@ -129,6 +129,11 @@ from precis.utils.edit_resolve import (
 from precis.utils.link_target import parse_link_target
 from precis.utils.match_all import fold_match_all_q
 from precis.utils.memory_hubs import (
+    NEW_MEMORY,
+    MemoryDraft,
+    draft_link_hints,
+    draft_tag_values,
+    draft_thread_dup_hint,
     link_hints,
     narrowing_hints,
     sub_hub_hints,
@@ -852,10 +857,16 @@ class MemoryHandler(NumericRefHandler):
         rule: str | None = None,
         warrant: str | None = None,
         meta: dict[str, Any] | None = None,
+        dry_run: bool | str = False,
         **_kw: Any,
     ) -> Response:
         """Create a memory. ``text=`` is the body prose, ``title=`` the short
         header. Emit the body first, then a title once its point is clear.
+
+        ``dry_run=True`` writes nothing and returns the create ack's
+        ``Next:`` block (``id='<new>'`` for the memory it would create), the
+        nearest same-SPACE memories by embedding distance, and a proposed
+        kind by rule (:mod:`precis.handlers._put_preview`).
 
         When ``title=`` is omitted it's derived from the body's first line
         (capped at 80 chars) — but an explicit title reads better and is
@@ -872,6 +883,13 @@ class MemoryHandler(NumericRefHandler):
         ``meta={'hook': '...'}`` sets the memory's one-line index text
         (``refs.meta.hook``); ``type`` (user/feedback/project/reference) is the other writable key.
         """
+        dry = normalize_dry_run(dry_run) is not None
+        if id is not None and dry:
+            raise BadInput(
+                "dry_run= previews a new memory; put(id=...) attaches a link "
+                "to an existing one",
+                next="put(kind='memory', text='...', title='...', dry_run=True)",
+            )
         if id is not None:
             return self._put_on_existing(
                 id=id,
@@ -902,6 +920,13 @@ class MemoryHandler(NumericRefHandler):
                 create_meta[key] = value.strip()
         if "hook" in create_meta:
             create_meta["hook"] = mask_secrets(create_meta["hook"])
+        if dry:
+            self._reject_mutating_put(
+                id=None, mode=mode, untags=untags, unlink=unlink, rel=rel, link=link
+            )
+            return self._put_dry_run(
+                text=text, tags=tags, link=link, rel=rel, put_meta=create_meta
+            )
         return super().put(
             id=id,
             text=text,
@@ -1178,6 +1203,86 @@ class MemoryHandler(NumericRefHandler):
         ack = self._with_first_line_nudge(self._render_create_ack(ref.id), title)
         ack = self._facts_note(ack, facts_deferred)
         return self._with_attribution_advisory(ack, misses), int(ref.id)
+
+    def _put_dry_run(
+        self,
+        *,
+        text: str | None,
+        tags: list[str] | None,
+        link: str | None,
+        rel: str | None,
+        put_meta: dict[str, Any],
+    ) -> Response:
+        """The ``put(dry_run=True)`` preview (gr548271): the create path's
+        validation and its ack's ``Next:`` rows, computed from the draft;
+        nothing is written."""
+        from precis.handlers import _put_preview
+        from precis.utils.link_tag_ops import guard_taxon_hierarchy, validate_relation
+
+        if text is None or not text.strip():
+            raise BadInput(
+                f"creating a {self._sense()} requires text= (the body prose)",
+                next="put(kind='memory', text='the thought', title='short title', "
+                "dry_run=True)",
+            )
+        title = put_meta.get("title") or _derive_title(text)
+        all_tags = [*self.default_tags_on_create, *(tags or [])]
+        if _dream_stamp_defaults(all_tags)[1]:
+            all_tags.append("SPACE:research")
+        from precis.handlers._tag_redirect import (
+            REDIRECTABLE_NAMESPACES,
+            _value_needs_redirect,
+        )
+
+        def _redirected(t: str) -> bool:
+            ns, sep, value = t.partition(":")
+            return (
+                bool(sep)
+                and ns in REDIRECTABLE_NAMESPACES
+                and (_value_needs_redirect(value))
+            )
+
+        # A prose ask-user:/halt: value becomes an overflow chunk on the real
+        # create, not a tag, so it neither refuses nor feeds the hints here.
+        values = draft_tag_values(
+            [t for t in all_tags if not _redirected(t)], kind=self.kind
+        )
+        parents: tuple[int, ...] = ()
+        if link is not None:
+            target = parse_link_target(link, store=self.store)
+            relation = validate_relation(rel)
+            guard_taxon_hierarchy(
+                self.store, None, target, relation, src_kind=self.kind
+            )
+            if relation == "part-of" and target.ref_id is not None:
+                parents = (int(target.ref_id),)
+        draft = MemoryDraft(
+            title=title,
+            body=text,
+            hook=put_meta.get("hook"),
+            tags=values,
+            parents=parents,
+        )
+        rows = [
+            *draft_thread_dup_hint(self.store, draft),
+            (
+                "get(kind='skill', id='precis-firstline-help')",
+                "title conventions (lead with the conclusion)",
+            ),
+            *draft_link_hints(self, draft),
+            *_roundtrip_rows(title, NEW_MEMORY),
+        ]
+        space = next((v for v in sorted(values) if v.startswith("SPACE:")), None)
+        dups = _put_preview.nearest_duplicates(
+            self, f"{title}\n{text}", kind=self.kind, space=space
+        )
+        return _put_preview.render_preview(
+            self.kind,
+            dups=dups,
+            space=space,
+            next_rows=rows,
+            rule=_put_preview.kind_rule(text),
+        )
 
     # ── attribution gate (precis.handlers._attribution) ──
 
@@ -3052,24 +3157,28 @@ def _roundtrip_hint(handler: Any, ref_id: int) -> list[tuple[str, str]]:
     just hub-shaped ones. Never raises, like ``link_hints``."""
     try:
         ref = handler.store.get_ref(kind="memory", id=ref_id)
-        title = " ".join(str(ref.title or "").split())[:80] if ref else ""
-        if not title:
-            return []
-        from precis.store._mappers import SEMANTIC_ONLY_FOLD_DISTANCE
-        from precis.utils import handle_registry
-
         me = handle_registry.try_format("memory", ref_id) or f"me{ref_id}"
-        cut = SEMANTIC_ONLY_FOLD_DISTANCE.get("memory", 0.42)
-        return [
-            (
-                f"search(kind='memory', q={title!r}, view='index')",
-                f"round-trip: if {me} is not listed, the {cut} recall "
-                "cut hides it — put the task words in title=/meta.hook",
-            )
-        ]
+        return _roundtrip_rows(str(ref.title or "") if ref else "", me)
     except Exception:
         log.debug("memory round-trip hint skipped for %s", ref_id, exc_info=True)
         return []
+
+
+def _roundtrip_rows(title: str, me: str) -> list[tuple[str, str]]:
+    """The round-trip row for a memory titled ``title`` shown as ``me``."""
+    title = " ".join(title.split())[:80]
+    if not title:
+        return []
+    from precis.store._mappers import SEMANTIC_ONLY_FOLD_DISTANCE
+
+    cut = SEMANTIC_ONLY_FOLD_DISTANCE.get("memory", 0.42)
+    return [
+        (
+            f"search(kind='memory', q={title!r}, view='index')",
+            f"round-trip: if {me} is not listed, the {cut} recall "
+            "cut hides it — put the task words in title=/meta.hook",
+        )
+    ]
 
 
 def _derive_title(body: str, *, max_len: int = _TITLE_MAX) -> str:

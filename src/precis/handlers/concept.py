@@ -21,6 +21,7 @@ from __future__ import annotations
 
 from typing import Any, ClassVar
 
+from precis.errors import BadInput
 from precis.handlers._numeric_ref import NumericRefHandler
 from precis.protocol import KindSpec
 from precis.reading.concepts import (
@@ -28,6 +29,9 @@ from precis.reading.concepts import (
     initial_concept_meta,
     split_name_def,
 )
+from precis.response import Response
+from precis.store import Tag
+from precis.utils.edit_resolve import normalize_dry_run
 
 
 class ConceptHandler(NumericRefHandler):
@@ -61,6 +65,53 @@ class ConceptHandler(NumericRefHandler):
     #: Emit an embeddable `card_combined` (name + definition) so the concept is
     #: a vector — the substrate for frontier distance + review routing.
     emits_card: ClassVar[bool] = True
+
+    def put(
+        self,
+        *,
+        text: str | None = None,
+        tags: list[str] | None = None,
+        auto_refresh_days: int | None = None,
+        dry_run: bool | str = False,
+        **_kw: Any,
+    ) -> Response:
+        """Create a concept; ``dry_run=True`` writes nothing and lists the
+        nearest concepts to its card text (name — definition) by embedding
+        distance (:mod:`precis.handlers._put_preview`)."""
+        if normalize_dry_run(dry_run) is None:
+            return super().put(
+                text=text, tags=tags, auto_refresh_days=auto_refresh_days, **_kw
+            )
+        from precis.handlers import _put_preview
+
+        self._reject_mutating_put(
+            id=_kw.get("id"),
+            mode=_kw.get("mode"),
+            untags=_kw.get("untags"),
+            unlink=_kw.get("unlink"),
+            rel=_kw.get("rel"),
+            link=_kw.get("link"),
+        )
+        if text is None or not text.strip():
+            raise BadInput(
+                "creating a concept requires text='<name> — <definition>'",
+                next="put(kind='concept', text='overpotential — the extra "
+                "voltage beyond equilibrium', dry_run=True)",
+            )
+        parsed = [Tag.parse_strict(t, kind=self.kind) for t in tags or []]
+        space = next(
+            (f"SPACE:{t.value}" for t in reversed(parsed) if t.prefix == "SPACE"),
+            None,
+        )
+        dups = _put_preview.nearest_duplicates(
+            self, self._card_combined_text(text), kind=self.kind, space=space
+        )
+        return _put_preview.render_preview(
+            self.kind,
+            dups=dups,
+            space=space,
+            next_rows=_put_preview.dup_read_rows(self.kind, dups),
+        )
 
     def _initial_meta(self, text: str, tags: list[str]) -> dict[str, Any]:
         name, definition = split_name_def(text)

@@ -392,7 +392,13 @@ calls when a link, type tag or split is missing: the two nearest hubs, up to
 five unlinked gotchas for a thread — and, on a `put` whose
 `section:threads` title prefix matches a live thread node's, the
 `edit(mode='replace')` call that updates that node instead. No lines
-means the node is in place. The `rel=` choices between two memories:
+means the node is in place. `put(..., dry_run=True)` returns that block
+before anything is written (`id='<new>'` stands for the new memory), plus
+the three nearest memories in the same `SPACE:` by embedding distance, a
+`near-duplicate meN (0.05) — edit it instead?` line under 0.08, and a
+proposed kind by rule (`kind: memory (rule: default)`). Finding and
+concept puts take `dry_run=True` too, without the kind line. The `rel=`
+choices between two memories:
 `precis-relations` (the memory↔memory block); where each edge renders:
 `precis-fisheye-help`.
 

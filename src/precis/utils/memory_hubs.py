@@ -9,6 +9,11 @@ gotcha links to a thread it applies to with ``qualifies`` (the thread reads
 ``put`` / ``edit`` on a memory and :func:`sub_hub_hints` the narrower
 ``link`` ack (``precis.handlers.memory``).
 Summaries past the eye's child cap need the hub tag, not pruned membership.
+
+The placement, hub-less and thread-prefix hints read a :class:`MemoryDraft`
+(title, body, hook, tags, ``part-of`` parents), not the ref row, so
+``put(dry_run=True)`` previews the same ``Next:`` block before any row
+exists (gr548271): a duplicate caught after the write had to be deleted.
 """
 
 from __future__ import annotations
@@ -16,6 +21,7 @@ from __future__ import annotations
 import logging
 import re
 from collections.abc import Iterable, Mapping
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any
 
@@ -40,6 +46,26 @@ SECTION_TYPES = ("threads", "runbooks", "gotchas", "workflow", "reference")
 _HINT_HUBS = 2
 _HINT_GOTCHAS = 5
 _QUERY_BODY_CHARS = 300
+
+#: The handle a dry-run preview prints for the memory a ``put`` would
+#: create — no id exists until the row does.
+NEW_MEMORY = "<new>"
+
+
+@dataclass(frozen=True)
+class MemoryDraft:
+    """What the write-path hints read off a memory, before or after it exists.
+
+    ``tags`` uses the :func:`_tag_values` shape (``SPACE:x`` for a space, the
+    bare value otherwise); ``parents`` are the ``part-of`` targets a draft's
+    ``put(link=..., rel='part-of')`` would add (a written ref reads its own).
+    """
+
+    title: str
+    body: str
+    hook: str | None
+    tags: frozenset[str]
+    parents: tuple[int, ...] = ()
 
 
 def parents_of(store: Store, ref_ids: list[int]) -> dict[int, list[int]]:
@@ -348,6 +374,48 @@ def link_hints(handler: Any, ref_id: int) -> list[tuple[str, str]]:
         return []
 
 
+def draft_link_hints(handler: Any, draft: MemoryDraft) -> list[tuple[str, str]]:
+    """The :func:`link_hints` lines a ``put`` of ``draft`` would ack, with
+    :data:`NEW_MEMORY` standing in for the id. Reads only. Never raises."""
+    try:
+        if _HUB_TAG in draft.tags:
+            return []
+        space = _space_tag(set(draft.tags))
+        if space is None:
+            return []
+        hubs = handler.store.list_refs(
+            kind="memory", tags=[space, _HUB_TAG], limit=10_000
+        )
+        if not hubs:
+            return _hubless_lines(handler, draft, space, ref_id=None)
+        return _placement_hints(handler, draft, hubs, space, ref_id=None)
+    except Exception:
+        log.debug("memory draft link hints skipped", exc_info=True)
+        return []
+
+
+def draft_tag_values(tags: Iterable[str], *, kind: str = "memory") -> frozenset[str]:
+    """The :func:`_tag_values` set a create stamping ``tags`` in order would
+    leave: a later closed tag replaces an earlier one on the same axis (the
+    create's ``replace_prefix``). Raises ``BadInput`` on a tag the write
+    would refuse."""
+    from precis.store import Tag
+
+    by_axis: dict[str, str] = {}
+    values: list[str] = []
+    for raw in tags:
+        tag = Tag.parse_strict(raw, kind=kind)
+        if tag.namespace == "closed" and tag.prefix:
+            value = f"SPACE:{tag.value}" if tag.prefix == "SPACE" else tag.value
+            if tag.prefix in by_axis:
+                values.remove(by_axis[tag.prefix])
+            by_axis[tag.prefix] = value
+            values.append(value)
+        else:
+            values.append(tag.value)
+    return frozenset(values)
+
+
 def sub_hub_hints(handler: Any, ref_id: int) -> list[tuple[str, str]]:
     """Only the sub-hub half of :func:`link_hints`: ``section:index``
     suggestion when the node lists more live part-of children than the
@@ -391,18 +459,29 @@ def _space_tag(values: set[str]) -> str | None:
     return next((v for v in sorted(values) if v.startswith("SPACE:")), None)
 
 
+def _memory_handle(ref_id: int | None) -> str:
+    if ref_id is None:
+        return NEW_MEMORY
+    from precis.utils import handle_registry
+
+    return handle_registry.try_format("memory", ref_id) or f"me{ref_id}"
+
+
+def _draft_of(handler: Any, ref: Any, values: Iterable[str]) -> MemoryDraft:
+    return MemoryDraft(
+        title=str(ref.title or ""),
+        body=handler._body_text(ref),
+        hook=(ref.meta or {}).get("hook"),
+        tags=frozenset(values),
+    )
+
+
 def _link_hints(handler: Any, ref_id: int) -> list[tuple[str, str]]:
     store: Store = handler.store
     values = _tag_values(store, ref_id)
     space = _space_tag(values)
     if _HUB_TAG in values:
         return []
-    from precis.utils import handle_registry
-
-    def h(i: int) -> str:
-        return handle_registry.try_format("memory", i) or f"me{i}"
-
-    me = h(ref_id)
     lines: list[tuple[str, str]] = _sub_hub_lines(store, ref_id, values)
     if space is None:
         return lines
@@ -414,12 +493,53 @@ def _link_hints(handler: Any, ref_id: int) -> list[tuple[str, str]]:
     ref = store.get_ref(kind="memory", id=ref_id)
     if ref is None:
         return []
-    mine = hubs_of(store, [ref_id]).get(ref_id, [])
-    body = handler._body_text(ref)
+    draft = _draft_of(handler, ref, values)
+    return lines + _placement_hints(handler, draft, hubs, space, ref_id=ref_id)
+
+
+def _live_parents(store: Store, parents: Iterable[int]) -> list[int]:
+    ids = sorted(set(parents))
+    refs = store.fetch_refs_by_ids(ids) if ids else {}
+    return [i for i in ids if i in refs and refs[i].retired_at is None]
+
+
+def _draft_hubs(store: Store, parents: list[int]) -> list[int]:
+    """The :func:`hubs_of` answer for a node whose live parents are
+    ``parents``: a parent hub, else the hub a parent's chain reaches."""
+    hubs = _live_hubs(store, set(parents))
+    out = [p for p in parents if p in hubs]
+    if out:
+        return out
+    reached = hubs_of(store, [p for p in parents if p not in hubs])
+    for p in parents:
+        out.extend(h for h in reached.get(p, []) if h not in out)
+    return out
+
+
+def _placement_hints(
+    handler: Any,
+    draft: MemoryDraft,
+    hubs: list[Any],
+    space: str,
+    *,
+    ref_id: int | None,
+) -> list[tuple[str, str]]:
+    """Hub, gotcha, split and type-tag lines for ``draft`` in ``space``, which
+    has hubs; ``ref_id`` is ``None`` for a draft not written yet."""
+    store: Store = handler.store
+    h = _memory_handle
+    me = h(ref_id)
+    lines: list[tuple[str, str]] = []
+    values = draft.tags
+    if ref_id is not None:
+        mine = hubs_of(store, [ref_id]).get(ref_id, [])
+    else:
+        mine = _draft_hubs(store, _live_parents(store, draft.parents))
+    body = draft.body
 
     if not mine:
-        hook = str((ref.meta or {}).get("hook") or body[:_QUERY_BODY_CHARS])
-        query = f"{ref.title or ''} {hook}".strip()
+        hook = str(draft.hook or body[:_QUERY_BODY_CHARS])
+        query = f"{draft.title} {hook}".strip()
         from precis.store import Tag
 
         hub_ids = {x.id for x in hubs}
@@ -447,7 +567,10 @@ def _link_hints(handler: Any, ref_id: int) -> list[tuple[str, str]]:
         # inherits the parent's gotcha links — the split convention puts
         # ``qualifies`` edges on the summary only, so a detail node never
         # gets this hint (gr489921).
-        direct = parents_of(store, [ref_id]).get(ref_id, [])
+        if ref_id is not None:
+            direct = parents_of(store, [ref_id]).get(ref_id, [])
+        else:
+            direct = _live_parents(store, draft.parents)
         detail_child = bool(set(direct) - _live_hubs(store, set(direct)))
         gotchas = [] if detail_child else _unlinked_gotchas(store, ref_id, mine)
         for gid in gotchas[:_HINT_GOTCHAS]:
@@ -501,17 +624,19 @@ def _hubless_hints(handler: Any, ref_id: int, space: str) -> list[tuple[str, str
     ref = store.get_ref(kind="memory", id=ref_id)
     if ref is None:
         return []
+    return _hubless_lines(handler, _draft_of(handler, ref, ()), space, ref_id=ref_id)
+
+
+def _hubless_lines(
+    handler: Any, draft: MemoryDraft, space: str, *, ref_id: int | None
+) -> list[tuple[str, str]]:
     from precis.utils import handle_registry
 
-    def h(i: int) -> str:
-        return handle_registry.try_format("memory", i) or f"me{i}"
+    me = _memory_handle(ref_id)
+    hook = str(draft.hook or draft.body[:_QUERY_BODY_CHARS])
+    query = f"{draft.title} {hook}".strip()
 
-    me = h(ref_id)
-    body = handler._body_text(ref)
-    hook = str((ref.meta or {}).get("hook") or body[:_QUERY_BODY_CHARS])
-    query = f"{ref.title or ''} {hook}".strip()
-
-    cands, dup = _hubless_neighbours(handler, ref, space, query)
+    cands, dup = _hubless_neighbours(handler, ref_id, space, query)
     lines: list[tuple[str, str]] = []
     if dup is not None:
         dup_id, dup_kind, dup_score = dup
@@ -544,7 +669,7 @@ def _hubless_hints(handler: Any, ref_id: int, space: str) -> list[tuple[str, str
 
 
 def _hubless_neighbours(
-    handler: Any, ref: Any, space: str, query: str
+    handler: Any, ref_id: int | None, space: str, query: str
 ) -> tuple[list[tuple[int, str, float]], tuple[int, str, float | None] | None]:
     """``(candidates, dup)`` for the hub-less fallback.
 
@@ -553,12 +678,12 @@ def _hubless_neighbours(
     nearest same-space *memory* that looks like the same subject:
     any semantic hit inside the recall floor, or a lexical hit sharing
     ≥ :data:`_HUBLESS_DUP_COVERAGE` of the query's content words.
+    ``ref_id=None`` (a draft) takes the lexical leg, as a fresh ``put`` does.
     """
     store: Store = handler.store
-    ref_id = int(ref.id)
-    seed = store.chunks.seed_chunk_for_ref(ref_id)
+    seed = store.chunks.seed_chunk_for_ref(ref_id) if ref_id is not None else None
     vec = store.chunks.get_chunk_vector(seed) if seed is not None else None
-    if vec is not None:
+    if vec is not None and ref_id is not None:
         sem_hits = store.chunks.search_chunks_semantic(
             query_vec=vec,
             kinds=["finding", "memory"],
@@ -603,7 +728,7 @@ def _hubless_neighbours(
                     kind=kind,
                     tags=Tag.normalize_filter([space], kind=kind),
                     limit=_HUBLESS_CANDIDATES,
-                    exclude_ref_ids=[ref_id],
+                    exclude_ref_ids=[ref_id] if ref_id is not None else None,
                 )
             )
         except Exception:
@@ -702,16 +827,33 @@ def thread_dup_hint(store: Store, ref_id: int) -> list[tuple[str, str]]:
         return []
 
 
-def _thread_dup_hint(store: Store, ref_id: int) -> list[tuple[str, str]]:
-    from precis.utils.memory_threads import THREADS_TAG, title_prefix
+def draft_thread_dup_hint(store: Store, draft: MemoryDraft) -> list[tuple[str, str]]:
+    """:func:`thread_dup_hint` for a ``put`` not written yet. Never raises."""
+    try:
+        return _thread_dup_lines(store, set(draft.tags), draft.title, ref_id=None)
+    except Exception:
+        log.debug("memory draft thread-dup hint skipped", exc_info=True)
+        return []
 
+
+def _thread_dup_hint(store: Store, ref_id: int) -> list[tuple[str, str]]:
     values = _tag_values(store, ref_id)
     if THREADS_TAG not in values:
         return []
     ref = store.get_ref(kind="memory", id=ref_id)
     if ref is None:
         return []
-    prefix = title_prefix(ref.title or "")
+    return _thread_dup_lines(store, values, ref.title or "", ref_id=ref_id)
+
+
+def _thread_dup_lines(
+    store: Store, values: set[str], title: str, *, ref_id: int | None
+) -> list[tuple[str, str]]:
+    from precis.utils.memory_threads import title_prefix
+
+    if THREADS_TAG not in values:
+        return []
+    prefix = title_prefix(title)
     if not prefix:
         return []
     # Peers live in the same SPACE — a same-named thread in another space
@@ -751,20 +893,24 @@ def _by_word_overlap(query: str, hubs: list[Any]) -> list[int]:
     return [i for _n, i in sorted(scored)]
 
 
-def _unlinked_gotchas(store: Store, thread_id: int, hub_ids: list[int]) -> list[int]:
+def _unlinked_gotchas(
+    store: Store, thread_id: int | None, hub_ids: list[int]
+) -> list[int]:
     """Live ``section:gotchas`` descendants of the thread's hubs (the same
     ``part-of`` subtree ``search(args={'under': hub})`` walks, detail nodes
-    included) not yet linked to it with ``qualifies``."""
+    included) not yet linked to it with ``qualifies`` (``thread_id=None``:
+    a draft, linked to nothing yet)."""
     cand_set: set[int] = set()
     for hid in hub_ids:
         cand_set |= store.part_of_descendants(hid)
-    with store.pool.connection() as conn:
-        rows = conn.execute(
-            "SELECT src_ref_id FROM links "
-            "WHERE relation = 'qualifies' AND dst_ref_id = %s",
-            (thread_id,),
-        ).fetchall()
-    cand_set -= {int(r[0]) for r in rows} | {thread_id}
+    if thread_id is not None:
+        with store.pool.connection() as conn:
+            rows = conn.execute(
+                "SELECT src_ref_id FROM links "
+                "WHERE relation = 'qualifies' AND dst_ref_id = %s",
+                (thread_id,),
+            ).fetchall()
+        cand_set -= {int(r[0]) for r in rows} | {thread_id}
     cand = sorted(cand_set)
     if not cand:
         return []

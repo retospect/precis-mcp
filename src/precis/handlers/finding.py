@@ -127,6 +127,7 @@ from precis.store.types import (
 from precis.taproot import authoring, hub
 from precis.taproot.seniority import is_claim_hub
 from precis.utils import handle_registry
+from precis.utils.edit_resolve import normalize_dry_run
 from precis.utils.glyph_health import glyph_caveat
 from precis.utils.link_tag_ops import apply_tag_ops
 from precis.utils.link_target import LinkTarget, parse_link_target
@@ -264,6 +265,28 @@ class FindingHandler(NumericRefHandler):
     #: ``edit(id=[...])`` runs the handler's own one-transaction batch.
     edit_id_list: ClassVar[str] = "native"
 
+    def _put_dry_run(
+        self, title: str | None, body_text: str | None, tags: list[Tag]
+    ) -> Response:
+        """``put(dry_run=True)``: nearest findings, nothing written."""
+        from precis.handlers import _put_preview
+
+        text = "\n".join(s.strip() for s in (title, body_text) if s and s.strip())
+        if not text:
+            raise BadInput(
+                "a finding dry run needs the claim — pass title= and/or body=",
+                next="put(kind='finding', title='claim', body='claim text', "
+                "dry_run=True)",
+            )
+        space = next((f"SPACE:{t.value}" for t in tags if t.prefix == "SPACE"), None)
+        dups = _put_preview.nearest_duplicates(self, text, kind=self.kind, space=space)
+        return _put_preview.render_preview(
+            self.kind,
+            dups=dups,
+            space=space,
+            next_rows=_put_preview.dup_read_rows(self.kind, dups),
+        )
+
     # ──────────────────────────────────────────────────────────────────
     # put — create a new finding (idempotent on deterministic pub_id)
     # ──────────────────────────────────────────────────────────────────
@@ -298,9 +321,16 @@ class FindingHandler(NumericRefHandler):
         # that habitually pass text on every put (the seven-verb
         # default shape) don't get bounced back.
         text: str | None = None,
+        dry_run: bool | str = False,
         **_kw: Any,
     ) -> Response:
         """Create a finding — trimodal.
+
+        ``dry_run=True`` writes nothing and lists the nearest findings to
+        ``title`` + ``body`` by embedding distance (inside the ``SPACE:`` of
+        ``tags=`` when given), with a retain line for a near-duplicate
+        (:mod:`precis.handlers._put_preview`). It runs the argument checks
+        above the creation modes, not the mode-specific ones.
 
         **Ordinary (chase) mode.** Required: ``title`` (the claim
         sentence — it carries all the meaning; over
@@ -412,6 +442,9 @@ class FindingHandler(NumericRefHandler):
                     "(web /nanopub review or `precis nanopub approve`)"
                 ),
             )
+
+        if normalize_dry_run(dry_run) is not None:
+            return self._put_dry_run(title, body_text, parsed_tags)
 
         # --- Hypothesis-proposal mode ---
         # A finding born with ``hypothesis=True`` is a conjecture, not a
