@@ -28,6 +28,19 @@ orientation, whose row label) carries a citation marker — ``et al.``,
 subject label carries one. A condition anchored ``source: "caption"``
 on a table :func:`assign_captions` left unpaired drops
 (``caption_missing``) — an ambiguous pairing is worse than none.
+
+The same rule covers log scales (gr506762 slice-4: mx1410/mx1424 stored
+``13.1 s^-1`` off a ``log(ν/s⁻¹)`` column the recipe gave no
+``transform``): an output series whose label prints ``log``/``log10``/
+``lg`` (base 10 — bare ``log`` is the kinetics convention) or
+``ln``/``log_e`` stores ``base**cell``; a label naming another base, or a
+declared ``transform`` that disagrees with the label, drops
+(``log_base_unclear``) rather than guessing. A header-only unit the text
+never prints (the ``unit_without_text_support`` case) in one of the
+units small models pin on unrelated columns — ``eV``, ``%``, ``s^-1`` —
+drops (``unit_header_mismatch``) when the label does not name the
+measurand either (mx1609 eV on fluence exponents, mx1455 % site
+fraction as coverage); any other unsupported unit stays a flag.
 """
 
 from __future__ import annotations
@@ -49,7 +62,7 @@ from precis.extract.proposals import (
     _tier,
     resolve_measurand,
 )
-from precis.extract.tables import ParsedTable, has_citation_marker
+from precis.extract.tables import ParsedTable, has_citation_marker, header_unit
 from precis.store._measures_ops import MeasureAnchor, MeasureSpec
 from precis.taxonomy.measure_units import NeedsMolarMass, make_converter, parse_literal
 from precis.taxonomy.money import split_currency
@@ -458,6 +471,42 @@ def _label_names_measurand(label: str, entry: VocabEntry) -> bool:
     return False
 
 
+#: A log token in a series label: ``log``/``Log``/``LOG`` with an
+#: optional ``10``/``_10``/``e``/``_e`` base, ``lg`` or ``ln`` (lowercase
+#: only — ``Ln`` is the lanthanide symbol). Braces are stripped first so
+#: ``\log_{10}`` reads as ``log_10``.
+_LOG_LABEL_RE = re.compile(
+    r"(?<![A-Za-z])(?:(?:[Ll]og|LOG)(?:_?(?P<base>\d+|e)(?![A-Za-z0-9]))?"
+    r"|(?P<lg>lg)|(?P<ln>ln))(?![A-Za-z])"
+)
+
+#: Units a header-only claim may carry only when the text prints them or
+#: the label names the measurand (plain-surface, whitespace-free).
+_GUESSED_UNITS = frozenset({"eV", "%", "s-1", "1/s", "/s"})
+
+
+def _label_log_transform(label: str) -> str | None:
+    """The transform a series label's log token implies: ``'log10'``,
+    ``'ln'``, ``None`` when the label prints no log, ``'unclear'`` for
+    any other base or a label mixing two bases."""
+    found: set[str] = set()
+    for m in _LOG_LABEL_RE.finditer(label.replace("{", "").replace("}", "")):
+        base = m.group("base")
+        if m.group("ln") or base == "e":
+            found.add("ln")
+        elif m.group("lg") or base in (None, "10"):
+            found.add("log10")
+        else:
+            found.add("unclear")
+    if not found:
+        return None
+    return found.pop() if len(found) == 1 else "unclear"
+
+
+def _guessed_unit(unit: str) -> bool:
+    return re.sub(r"\s+", "", _verify.unit_surface(unit)) in _GUESSED_UNITS
+
+
 def _unit_mismatch(unit: str, entry: VocabEntry) -> str | None:
     """``None`` when ``unit`` converts to the measurand's canonical unit
     (or is a currency token — the S1 currency path inside
@@ -634,15 +683,36 @@ def expand_recipe(
             return _subject_surface(parsed.columns[c].header)
         return None
 
+    def row_label(r: int | None) -> str | None:
+        """The row's label cell: the subject column for a ``columns``
+        table that names one, else the leftmost cell."""
+        if r is None:
+            return None
+        axis = (
+            norm.subject_axis
+            if orientation == "columns" and norm.subject_axis is not None
+            else 0
+        )
+        cell = cell_at(r, axis)
+        return cell.text if cell is not None else None
+
     def table_meta(
         r: int | None, c: int | None, label: str | None, footnote: str | None
     ) -> dict[str, Any]:
+        # col_header / row_label / header_unit are the reviewer's context
+        # (gr506762 slice-4): ``header`` is only the series axis's label;
+        # the cross axis's label (e.g. a per-column cluster size) was lost.
         return {
             "chunk": chunk_id,
             "table": table,
             "row": None if r is None else r + 1,
             "col": None if c is None else c + 1,
             "header": label,
+            "col_header": (
+                parsed.columns[c].header if c is not None and 0 <= c < n_cols else None
+            ),
+            "row_label": row_label(r),
+            "header_unit": header_unit(label) if label else None,
             "row_span": (
                 list(parsed.row_spans[r])
                 if r is not None and r < len(parsed.row_spans)
@@ -842,6 +912,22 @@ def expand_recipe(
                 drops.append(_drop(loc, "unit_dimension_mismatch", mismatch))
                 continue
         label = series_label(spec)
+        label_tf = _label_log_transform(label)
+        if label_tf == "unclear" or (
+            label_tf is not None
+            and spec.transform is not None
+            and spec.transform != label_tf
+        ):
+            drops.append(
+                _drop(
+                    loc,
+                    "log_base_unclear",
+                    f"label {label!r} vs transform {spec.transform!r}",
+                )
+            )
+            continue
+        if label_tf is not None:
+            eff_spec = replace(eff_spec, transform=label_tf)
         coords = (
             ((r, spec.index) for r in range(n_rows))
             if orientation == "columns"
@@ -870,7 +956,7 @@ def expand_recipe(
             err, text_v, flag_v = parsed_lit.err, parsed_lit.text, parsed_lit.flag
             form = parsed_lit.form
             printed_value: float | None = None
-            if spec.transform:
+            if eff_spec.transform:
                 if form in ("categorical", "boolean") or (
                     num is None and low is None and high is None
                 ):
@@ -878,18 +964,18 @@ def expand_recipe(
                         _drop(
                             loc_cell,
                             "bad_shape",
-                            f"{spec.transform} on non-numeric {literal!r}",
+                            f"{eff_spec.transform} on non-numeric {literal!r}",
                         )
                     )
                     continue
                 printed_value = num
-                tf = _transformed(parsed_lit, spec.transform)
+                tf = _transformed(parsed_lit, eff_spec.transform)
                 if tf is None or isinstance(tf, str):
                     drops.append(
                         _drop(
                             loc_cell,
                             tf if isinstance(tf, str) else "bad_shape",
-                            f"{spec.transform} "
+                            f"{eff_spec.transform} "
                             + (
                                 "uncertainty edges overflow"
                                 if isinstance(tf, str)
@@ -940,13 +1026,25 @@ def expand_recipe(
                 # slice-4: correct sticking coefficients flagged).
                 support = " ".join(t for t in (label, unit_cell or "", cap_text) if t)
                 if not _verify.unit_has_text_support(claimed_unit, support):
+                    if _guessed_unit(claimed_unit) and not _label_names_measurand(
+                        label, out_entry
+                    ):
+                        drops.append(
+                            _drop(
+                                loc_cell,
+                                "unit_header_mismatch",
+                                f"unit {claimed_unit!r} is printed nowhere and "
+                                f"label {label!r} does not name {out_entry.name!r}",
+                            )
+                        )
+                        continue
                     flags.append("unit_without_text_support")
             cited = cited_at(r, c, spec)
             attribution = (
                 "cited_work" if cited else (spec.attribution or norm.attribution)
             )
             tier = "asserted" if cited else _tier(attribution, spec.tier or norm.tier)
-            if spec.transform:
+            if eff_spec.transform:
                 status = "interpreted"
             else:
                 status = (
@@ -958,8 +1056,8 @@ def expand_recipe(
                 status = over["measurand_status"]
             meta = base_meta()
             meta["table"] = table_meta(r, c, label, cell.footnote)
-            if spec.transform:
-                meta["transform"] = spec.transform
+            if eff_spec.transform:
+                meta["transform"] = eff_spec.transform
                 if printed_value is not None:
                     meta["printed_value"] = printed_value
             output = MeasureSpec(

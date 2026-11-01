@@ -1389,6 +1389,10 @@ class TestRunLevelAcceptance:
         # sibling cells are the reviewable evidence.
         assert row_line in prompt
         assert "series label: $\\log(\\nu/\\mathrm{s}^{-1})$" in prompt
+        # A row written before col_header/row_label were stamped (the
+        # slice-4 prod rows) still names both axes from header + subject.
+        assert "column header: $\\log(\\nu/\\mathrm{s}^{-1})$" in prompt
+        assert "row label: methane" in prompt
         assert "table cell: T1 row 1 col 2" in prompt
         # A log-scale cell without the note reads as a misreported unit.
         assert "transform: the cell prints log10(value)" in prompt

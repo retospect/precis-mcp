@@ -389,6 +389,7 @@ batch rows and stay.
 For parsed pipe tables, the pass makes one table-level recipe call and expands
 its series into cell-anchored runs; an unparsed table or unusable recipe falls
 back to per-cell reading. Table outputs and inputs carry `meta.table` cell
-coordinates, header, orientation and caption link. Log-scale series record
-`meta.transform` (`log10` or `ln`), store the transformed value, and retain the
-printed exponent as `meta.printed_value`.
+coordinates, header, column header, row label, header unit, orientation and
+caption link. Log-scale series record `meta.transform` (`log10` or `ln`), store
+the transformed value, and retain the printed exponent as `meta.printed_value`;
+a label printing `log`/`lg`/`ln` sets it even when the recipe omits it.

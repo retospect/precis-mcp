@@ -12,10 +12,12 @@ items live in ``tests/test_survey_extract_job.py``.
 
 from __future__ import annotations
 
+import math
 from typing import Any
 
 import pytest
 
+from precis.extract.prompt import review_prompt
 from precis.extract.proposals import VocabEntry
 from precis.extract.recipes import expand_recipe, validate_recipe
 from precis.extract.tables import parse_table
@@ -69,6 +71,14 @@ VOCAB = {
         21, "pre-exponential-factor", "pre-exponential factor", "s^-1", "prefactor"
     ),
     22: _entry(22, "desorption-energy", "desorption energy", "kJ/mol"),
+    23: _entry(
+        23,
+        "desorption-activation-energy",
+        "desorption activation energy",
+        "J",
+        "E_d",
+    ),
+    24: _entry(24, "coverage", "coverage", "1"),
 }
 
 
@@ -466,6 +476,230 @@ class TestDrops:
         assert "subject axis" in drops[0]["detail"]
         assert len(runs) == 8
         assert all(r.output.meta["table"]["col"] != 1 for r in runs)
+
+
+def _one_series(
+    measurand: str, unit: str | None, transform: str | None = None
+) -> dict[str, Any]:
+    series: dict[str, Any] = {
+        "index": 1,
+        "measurand": measurand,
+        "unit": unit,
+        "role": "output",
+    }
+    if transform is not None:
+        series["transform"] = transform
+    return {"table": {"orientation": "columns", "subject_axis": 0, "series": [series]}}
+
+
+class TestLogScaleHeaders:
+    """gr506762 slice-4: mx1410/mx1424 stored the printed exponents 13.1
+    and 16.0 as ``s^-1`` off a ``log(ν/s⁻¹)`` column the recipe gave no
+    transform. The label's log token now sets the transform itself."""
+
+    @pytest.mark.parametrize(
+        "header",
+        [
+            "log(nu/s^-1)",
+            "$\\log(\\nu/\\mathrm{s}^{-1})$",
+            "log10(k/s^-1)",
+            "$\\log_{10}(A/\\mathrm{s}^{-1})$",
+            "lg A (s^-1)",
+            "Log k (s^-1)",
+        ],
+    )
+    def test_base10_header_stores_power_of_ten(self, header: str) -> None:
+        text = (
+            f"| Species | {header} |\n|---|---|\n| methane | 13.1 |\n| ethane | 16.0 |"
+        )
+        runs, drops = _expand(
+            text, _one_series("pre-exponential-factor", "s^-1"), caption=None
+        )
+        assert drops == []
+        by_lit = {r.output.literal: r.output for r in runs}
+        assert by_lit["13.1"].value_num == pytest.approx(10**13.1)
+        assert by_lit["16.0"].value_num == pytest.approx(1e16)
+        for out in by_lit.values():
+            assert out.reported_unit == "s^-1"
+            assert out.meta["transform"] == "log10"
+            assert out.meta["printed_value"] in (13.1, 16.0)
+            assert out.measurand_status == "interpreted"
+
+    @pytest.mark.parametrize(
+        "header", ["ln(k/s^-1)", "$\\ln (A/\\mathrm{s}^{-1})$", "log_e k (s^-1)"]
+    )
+    def test_ln_header_stores_power_of_e(self, header: str) -> None:
+        text = f"| Species | {header} |\n|---|---|\n| methane | 30 |"
+        runs, drops = _expand(
+            text, _one_series("pre-exponential-factor", "s^-1"), caption=None
+        )
+        assert drops == []
+        assert len(runs) == 1
+        assert runs[0].output.value_num == pytest.approx(math.e**30)
+        assert runs[0].output.meta["transform"] == "ln"
+
+    @pytest.mark.parametrize(
+        ("header", "transform"),
+        [("log_2 k", None), ("log(k/s^-1)", "ln"), ("ln k", "log10")],
+    )
+    def test_unclear_or_conflicting_base_refuses(
+        self, header: str, transform: str | None
+    ) -> None:
+        text = f"| Species | {header} |\n|---|---|\n| methane | 13.1 |"
+        runs, drops = _expand(
+            text,
+            _one_series("pre-exponential-factor", "s^-1", transform),
+            caption=None,
+        )
+        assert runs == []
+        assert [d["reason"] for d in drops] == ["log_base_unclear"]
+
+    @pytest.mark.parametrize(
+        "header", ["rate (s^-1)", "Catalog rate (s^-1)", "Ln-O (s^-1)"]
+    )
+    def test_no_log_token_leaves_value(self, header: str) -> None:
+        text = f"| Species | {header} |\n|---|---|\n| methane | 13.1 |"
+        runs, drops = _expand(text, _one_series("rate", "s^-1"), caption=None)
+        assert drops == []
+        assert runs[0].output.value_num == 13.1
+        assert "transform" not in runs[0].output.meta
+
+
+class TestHeaderOnlyUnits:
+    """gr506762 slice-4: a unit the table never prints, in a unit small
+    models pin on unrelated columns (eV, %, s^-1), refuses when the label
+    does not name the measurand either — mx1609 eV on laser-fluence
+    exponents, mx1455 % on a site fraction read as coverage."""
+
+    def test_unprinted_ev_on_unrelated_label_refuses(self) -> None:
+        text = "| Sample | fluence exponent n |\n|---|---|\n| A | 1.8 |"
+        runs, drops = _expand(
+            text, _one_series("desorption-activation-energy", "eV"), caption=None
+        )
+        assert runs == []
+        assert [d["reason"] for d in drops] == ["unit_header_mismatch"]
+
+    def test_unprinted_percent_on_site_fraction_refuses(self) -> None:
+        text = "| Site | site fraction |\n|---|---|\n| step | 12 |"
+        runs, drops = _expand(text, _one_series("coverage", "%"), caption=None)
+        assert runs == []
+        assert [d["reason"] for d in drops] == ["unit_header_mismatch"]
+
+    def test_unprinted_ev_on_naming_label_stays_a_flag(self) -> None:
+        text = "| Sample | E_d |\n|---|---|\n| A | 1.8 |"
+        runs, drops = _expand(
+            text, _one_series("desorption-activation-energy", "eV"), caption=None
+        )
+        assert drops == []
+        assert runs[0].flags == ["unit_without_text_support"]
+
+    def test_printed_ev_lands_unflagged(self) -> None:
+        text = "| Sample | fluence exponent n |\n|---|---|\n| A | 1.8 |"
+        runs, drops = _expand(
+            text,
+            _one_series("desorption-activation-energy", "eV"),
+            caption=(CAP_ID, "Table 1. Barriers in eV."),
+        )
+        assert drops == []
+        assert runs[0].flags == []
+
+    def test_other_unprinted_unit_stays_a_flag(self) -> None:
+        text = "| Sample | fluence exponent n |\n|---|---|\n| A | 1.8 |"
+        runs, drops = _expand(
+            text, _one_series("desorption-activation-energy", "meV"), caption=None
+        )
+        assert drops == []
+        assert runs[0].flags == ["unit_without_text_support"]
+
+    def test_dimensionless_1_never_flags(self) -> None:
+        text = "| Site | site fraction |\n|---|---|\n| step | 0.12 |"
+        runs, drops = _expand(text, _one_series("coverage", None), caption=None)
+        assert drops == []
+        assert runs[0].output.reported_unit == "1"
+        assert runs[0].flags == []
+
+
+class TestReviewContext:
+    """gr506762 slice-4: ~55 of 60 sampled table rows read 'undecidable'.
+    A cell-anchored row's review prompt carries the table caption, the
+    column header, the row label and the header unit."""
+
+    def test_columns_row_prompt_carries_all_four(self) -> None:
+        text = "| Surface | $E_{\\rm a}$ (kJ/mol) |\n|---|---|\n| Ni{100} | 85 |"
+        runs, drops = _expand(
+            text,
+            _one_series("desorption-energy", "kJ/mol"),
+            caption=(CAP_ID, "Table 3. CO desorption on Ni."),
+        )
+        assert drops == []
+        out = runs[0].output
+        tm = dict(out.meta["table"])
+        assert tm["col_header"] == "$E_{\\rm a}$ (kJ/mol)"
+        assert tm["row_label"] == "Ni{100}"
+        assert tm["header_unit"] == "kJ/mol"
+        tm["caption"] = "Table 3. CO desorption on Ni."
+        prompt = review_prompt(
+            literal=out.literal,
+            reported_unit=out.reported_unit,
+            measurand="desorption-energy",
+            subject_label=out.subject,
+            span_text="| Ni{100} | 85 |",
+            table=tm,
+        )
+        assert "table caption: Table 3. CO desorption on Ni." in prompt
+        assert "column header: $E_{\\rm a}$ (kJ/mol)" in prompt
+        assert "row label: Ni{100}" in prompt
+        assert "header unit: kJ/mol" in prompt
+
+    def test_rows_table_keeps_the_column_header(self) -> None:
+        # The per-column cluster size: in a rows table the series label is
+        # the row label, so the column header was nowhere on the row.
+        text = "| | m = 1 | m = 2 |\n|---|---|---|\n| sticking (s^-1) | 0.5 | 0.7 |"
+        recipe = {
+            "table": {
+                "orientation": "rows",
+                "series": [
+                    {"index": 0, "measurand": "rate", "unit": "s^-1", "role": "output"}
+                ],
+            }
+        }
+        runs, drops = _expand(text, recipe, caption=None)
+        assert drops == []
+        by_col = {r.output.meta["table"]["col"]: r.output.meta["table"] for r in runs}
+        assert by_col[2]["col_header"] == "m = 1"
+        assert by_col[3]["col_header"] == "m = 2"
+        assert by_col[2]["row_label"] == "sticking (s^-1)"
+        assert by_col[2]["header_unit"] == "s^-1"
+        prompt = review_prompt(
+            literal="0.5",
+            reported_unit="s^-1",
+            measurand="rate",
+            subject_label=None,
+            span_text="| sticking (s^-1) | 0.5 | 0.7 |",
+            table=by_col[2],
+        )
+        assert "column header: m = 1" in prompt
+        assert "row label: sticking (s^-1)" in prompt
+
+    def test_pre_stamp_row_falls_back_to_header(self) -> None:
+        prompt = review_prompt(
+            literal="85",
+            reported_unit="kJ/mol",
+            measurand="desorption-energy",
+            subject_label="Ni100",
+            span_text="| Ni{100} | 85 |",
+            table={
+                "table": 1,
+                "row": 1,
+                "col": 2,
+                "header": "E_a (kJ/mol)",
+                "orientation": "columns",
+                "caption": "Table 3. CO desorption on Ni.",
+            },
+        )
+        assert "column header: E_a (kJ/mol)" in prompt
+        assert "row label: Ni100" in prompt
+        assert "header unit: kJ/mol" in prompt
 
 
 class TestValidateRecipe:

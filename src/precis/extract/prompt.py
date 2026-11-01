@@ -19,7 +19,7 @@ from typing import Any
 
 from precis.extract.anchors import anchored_text
 from precis.extract.proposals import VocabEntry
-from precis.extract.tables import ParsedTable
+from precis.extract.tables import ParsedTable, header_unit
 from precis.utils.llm.json_reply import extract_json_object
 
 _READER_CONTRACT = """\
@@ -285,7 +285,12 @@ def review_prompt(
     ``table`` carries the row's ``meta.table`` context (recipe-extracted
     rows only) — its ``T<n>`` number, 1-based row/col, the series label
     as ``header``, the ``orientation`` and a resolved ``caption`` text —
-    without it the reviewer sees one cell with no column name.
+    without it the reviewer sees one cell with no column name. The
+    caption, column header, row label and header unit each get their own
+    line (gr506762 slice-4: a row lacking one reads 'undecidable'); a row
+    written before ``col_header``/``row_label``/``header_unit`` were
+    stamped falls back to ``header`` on its own axis and the unit
+    :func:`header_unit` reads off it.
 
     ``transform`` is the row's ``meta.transform`` (``log10``/``ln``): the
     cell prints the log of the value, so the literal is the exponent —
@@ -311,15 +316,32 @@ def review_prompt(
             f"is the printed exponent, not the value itself{stored}"
         )
     if table:
+        orientation = table.get("orientation") or "columns"
         coord = (
             f"T{table.get('table')} row {table.get('row')} "
-            f"col {table.get('col')} ({table.get('orientation') or 'columns'})"
+            f"col {table.get('col')} ({orientation})"
         )
         bits.append(f"table cell: {coord}")
-        if table.get("header"):
-            bits.append(f"series label: {table['header']}")
+        series = table.get("header")
+        if series:
+            bits.append(f"series label: {series}")
         if table.get("caption"):
             bits.append(f"table caption: {table['caption']}")
+        col_header = table.get("col_header") or (
+            series if orientation == "columns" else None
+        )
+        row_label = table.get("row_label") or (
+            series if orientation == "rows" else subject_label
+        )
+        unit = table.get("header_unit") or (
+            header_unit(series) if isinstance(series, str) else None
+        )
+        if col_header:
+            bits.append(f"column header: {col_header}")
+        if row_label:
+            bits.append(f"row label: {row_label}")
+        if unit:
+            bits.append(f"header unit: {unit}")
         if table.get("footnote"):
             bits.append(f"footnote marker: {table['footnote']}")
     return (
