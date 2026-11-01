@@ -10,7 +10,7 @@ from __future__ import annotations
 import argparse
 import json
 import re
-from collections.abc import Iterator
+from collections.abc import Generator
 from datetime import datetime
 from typing import Any
 
@@ -85,7 +85,7 @@ def _graph_misses(conn: Connection, metas: list[dict[str, Any]]) -> dict[str, da
 
 def export_rows(
     conn: Connection, *, since: str, kind: str | None = None
-) -> Iterator[dict[str, Any]]:
+) -> Generator[dict[str, Any], None, None]:
     """Stream a snapshot in bounded batches; enforce read-only at the DB."""
     with conn.transaction():
         conn.execute("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY")

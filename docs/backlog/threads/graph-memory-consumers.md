@@ -155,7 +155,12 @@ and the R17 ruling keeps files and graph coexisting. Kept for the record.
    review; all `builder:swe2-high`):** build in this order —
    gr548263 followed/used/export → gr548264 gap cut
    (re-scopes gr514956) → gr548265 memory fusion (absorbs gr515867) →
-   gr548268 tokens-per-hit + knee curve → gr548269 recall-set harvest;
+   gr548268 tokens-per-hit + knee curve. Recall-set harvest (gr548269):
+   `precis.workers.memory_recall_harvest::run_memory_recall_harvest_pass`
+   ships dark (`service_config`); operator-only
+   `precis memory recall-set accept td<N> [--only N,M]` edits the checkout
+   benchmark without committing or pushing. Activation and public-data review
+   remain operator-owned;
    independent: gr548266/548267 glossary mirror + canon pre-pass,
    gr548270 sub-hub hint, gr548271 dry_run door, gr548275 SPACE backfill,
    gr548278/548279/548280 pass hygiene. Specs:

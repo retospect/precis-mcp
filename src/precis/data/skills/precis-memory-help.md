@@ -555,6 +555,17 @@ part, then `delete`. Settled → add what you changed to the todo and mark it
 `tag(kind='todo', id=<this todo>, add=['waiting-for:reto'])` — that puts it on
 Reto's queue (`precis-user-queue-help`) and takes it out of planner dispatch.
 
+## Operator: recall-set review
+
+Weekly `memory_recall_harvest` ships OFF behind `service_config`. When explicitly
+enabled, it queues up to 50 trace-derived pairs in a parked `recall-set-review`
+todo, not the benchmark. In a precis Git checkout, run
+`precis memory recall-set accept td<N> [--only 1,3]` to append reviewed pairs
+to `src/precis/data/memory_recall_set.json`. It reads the todo without graph
+writes, prints the diff, and never commits or pushes. The operator checks for
+private data and lands the diff; no fixer is queued. Close the todo after all
+pairs are settled. Prior batches suppress repeat proposals.
+
 ## Operator: mirror files
 ## Harness MEMORY.md ↔ graph import/export — CLI, not MCP verbs
 

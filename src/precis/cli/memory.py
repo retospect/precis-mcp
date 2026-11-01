@@ -56,6 +56,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
+from precis.cli import memory_recall_set
 from precis.cli._common import resolve_dsn
 from precis.store import Store
 from precis.store.types import Tag
@@ -1579,6 +1580,7 @@ def add_parser(sub: argparse._SubParsersAction) -> argparse.ArgumentParser:
         ),
     )
     msub = mp.add_subparsers(dest="memory_cmd", required=True)
+    memory_recall_set.configure_parser(msub)
 
     imp = msub.add_parser(
         "import",
@@ -1806,6 +1808,9 @@ def run(args: argparse.Namespace) -> None:
     """Implements ``precis memory import`` / ``precis memory index``."""
     from precis.config import load_config
 
+    if args.memory_cmd == "recall-set":
+        memory_recall_set.run(args)
+        return
     if getattr(args, "curve", False) and args.recall_set is None:
         raise SystemExit("precis memory index: --curve requires --set")
     cfg = load_config()

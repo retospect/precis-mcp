@@ -714,6 +714,18 @@ def _run_memory_recall(store: Store, batch_size: int) -> None:
     )
 
 
+def _run_memory_recall_harvest(store: Store, batch_size: int) -> None:
+    """Propose trace-backed pairs only when the service_config gate is lit."""
+    from precis.workers.memory_recall_harvest import run_memory_recall_harvest_pass
+
+    result = run_memory_recall_harvest_pass(store)
+    log.info(
+        "scheduler: memory_recall_harvest proposed=%d todo=%s",
+        result.ok,
+        result.extra.get("todo_id"),
+    )
+
+
 def _run_nanopub_stale_sweep(store: Store, batch_size: int) -> None:
     """One nanopub candidate re-gate sweep (gr279770's sweep half), fired
     from the daily host-agnostic ``nanopub_stale_sweep`` cadence.
@@ -1275,6 +1287,13 @@ CADENCES: tuple[Cadence, ...] = (
         name="memory_recall",
         interval_s=7 * 24 * 3600 + 17 * 60,
         run=_run_memory_recall,
+        eligible=_memory_recall_eligible,
+    ),
+    # Dark inside the pass, so the weekly lease still advances while OFF.
+    Cadence(
+        name="memory_recall_harvest",
+        interval_s=7 * 24 * 3600 + 23 * 60,
+        run=_run_memory_recall_harvest,
         eligible=_memory_recall_eligible,
     ),
     # gr496305 item 4: the weekly credential check — run the /secrets

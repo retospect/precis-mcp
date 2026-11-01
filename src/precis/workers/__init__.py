@@ -86,7 +86,8 @@ checked inside heavy-executor claims.
 
 Scheduler cadences
 ------------------
-``memory_recall`` measures agent renders, not stored bodies; :mod:`.memory_recall`.
+``memory_recall`` measures renders; :mod:`.memory_recall`.
+``memory_recall_harvest`` queues proposals, default-OFF; :mod:`.memory_recall_harvest`.
 
 ``scheduler.py`` decentralizes recurring-work triggering — see its own
 docstring for the lease mechanism. ``CADENCES``: ``cron_tick`` (60s),

@@ -29,6 +29,12 @@ not a background bidirectional synchronizer.
 Mirror YAML keeps timestamp values as literal strings so JSON metadata retains
 their spelling; only its loader changes, leaving ordinary SafeLoader semantics
 and non-string key refusal intact. Raw headers remain the export authority.
+
+``memory recall-set accept`` is a checkout-only operator door: trace proposals
+are read from parked review todos, but acceptance only edits the tracked
+six-field JSON benchmark and prints its diff. No graph write, commit or push
+is hidden in the command; query text can be private, so the operator reviews
+the diff before landing it in this public repo.
 """
 
 from __future__ import annotations
