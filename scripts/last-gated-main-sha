@@ -79,11 +79,14 @@ Three outcomes, in both the plain and the `--age-hours` mode:
   exit 0, empty    unknowable — no `gh`, no auth, a GraphQL error or timeout,
                    malformed JSON, a `--start` git cannot resolve, a green sha
                    whose timestamps are unreadable, or no commits at all in the
-                   window (nothing to judge). Empty output means unknowable and
-                   never refuses: for the sha it means "gate fully", for
-                   `--age-hours` "do not refuse on this". An unanswerable
-                   lookup must never be the thing that blocks a ship, or a
-                   GitHub outage stops the fleet.
+                   window (nothing to judge), or commits but not one check
+                   suite on any of them (the identity running `gh` most likely
+                   cannot read checks, e.g. a fine-grained token without
+                   checks:read: blind, not "none gated").
+                   Empty output means unknowable and never refuses: for the
+                   sha it means "gate fully", for `--age-hours` "do not refuse
+                   on this". An unanswerable lookup must never be the thing
+                   that blocks a ship, or a GitHub outage stops the fleet.
   exit 2, empty    looked and found none: every page the walk needed was
                    fetched, the window holds at least one commit, and none has
                    a full verdict (a page-capped walk still counts: the whole
@@ -465,6 +468,7 @@ def lookup(start: str, limit: int, hours: float) -> tuple[str, str | None, list[
     by_oid: dict[str, list[Run]] = {}
     after: str | None = None
     pages = max(1, -(-limit // PAGE_SIZE))
+    saw_suite = False  # any fetched commit carried a check suite
     for fetched in range(1, pages + 1):
         page = fetch_page(cutoff, after)
         if page is None:
@@ -472,6 +476,8 @@ def lookup(start: str, limit: int, hours: float) -> tuple[str, str | None, list[
         for node in page["nodes"]:
             if isinstance(node, dict) and node.get("oid"):
                 by_oid[node["oid"]] = _runs_of(node)
+                if (node.get("checkSuites") or {}).get("nodes"):
+                    saw_suite = True
         info = page.get("pageInfo") or {}
         after = info.get("endCursor")
         complete = not info.get("hasNextPage") or not after or fetched == pages
@@ -479,6 +485,11 @@ def lookup(start: str, limit: int, hours: float) -> tuple[str, str | None, list[
         if sha is not None:
             return FOUND, sha, by_oid[sha]
         if decided or complete:
+            # No commit in the window carried a single check suite: the
+            # token most likely cannot read checks (no checks:read), so
+            # "none green" would be an artifact of blindness, not an answer.
+            if not saw_suite:
+                return UNKNOWN, None, []
             return NONE_GREEN, None, []
     return UNKNOWN, None, []
 

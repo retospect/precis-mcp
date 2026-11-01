@@ -29,7 +29,14 @@ Detached submit/poll pair under ``ssh_node``, like ``run_slice``:
   job fails with the ✖ line, a ``handoff:`` comment tells the next build
   session why, and the todo reopens with ``attempt:<n>`` (run_slice's
   :func:`~precis.workers.job_types.run_slice.release_todo`). The branch and
-  worktree stay for that session.
+  worktree stay for that session. A ✖ about *main* (:func:`is_main_refusal`:
+  the drift guard's two refusals) is a deferral, not a red: poll counts it
+  (``handle.main_refusals``), parks the handle for
+  :func:`refusal_backoff_s` (``handle.not_before``, default 30 min), then
+  relaunches ship; the todo is untouched. Each step renews ``meta.deadline``
+  (park: backoff + wall; relaunch: wall), so a parked land is not killed at
+  the 1 h wall while a running ship still is; past
+  :data:`MAX_MAIN_REFUSALS` the job fails with a "land BLOCKED" handoff.
 * :func:`kill` SIGTERMs ship's process group.
 
 **Pull requests** (td543749). With ``params.pr = <n>`` (a ``pr-intake``
@@ -60,7 +67,7 @@ import os
 import re
 import signal
 import subprocess
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -86,6 +93,22 @@ _HANDLES_RE = re.compile(rf"\(({_HANDLE}(?:[,\s]+{_HANDLE})*)\)\s*$")
 _ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
 _STATUS_RE = re.compile(r"SHIP_STATUS:\s*(\S+)")
 _LANDED_MARK = "shipped — landed on main:"
+
+#: Substrings of ship's own refusal lines (``die`` in ``scripts/ship``'s
+#: qland drift guard) that are about MAIN's state, not the branch's: the
+#: land is deferred and ship relaunched, not the slice reopened.
+MAIN_REFUSAL_MARKS: tuple[str, ...] = (
+    "main has no all-green shard matrix",
+    "main's last all-green shard matrix is",
+)
+#: Deferrals tolerated per land; the next main refusal fails the job with a
+#: "land BLOCKED" handoff (nothing wrong on the branch).
+MAX_MAIN_REFUSALS = 8
+#: Seconds a deferred land waits before ship runs again
+#: (``PRECIS_LAND_REFUSAL_BACKOFF_S`` overrides): main's state changes on the
+#: scale of a /go, not of a poll, so an immediate retry only burns the cap.
+MAIN_REFUSAL_BACKOFF_S = 1800
+_TS_FMT = "%Y-%m-%dT%H:%M:%SZ"
 
 PARAMS_SCHEMA: dict[str, Any] = {
     "type": "object",
@@ -116,7 +139,8 @@ DESCRIPTION: str = (
     "Land one finished slice: scripts/ship --quick with the slice's commit "
     "subject in its worktree, the landed sha on the todo and into the plan's "
     "pending sha-in-prod gate, then delete the worktree and the slice/<id> "
-    "branch (local and origin). A red ship reopens the todo with attempt:<n>. "
+    "branch (local and origin). A red ship reopens the todo with attempt:<n>; "
+    "a refusal about main's state (drift guard) retries ship every 30 min, up to 8 times. "
     "Minted by run_slice; with params.pr it lands a pull request's head "
     "(slice/pr-<n>, --checked) and closes the PR. Refused while "
     "PRECIS_FACTORY=off."
@@ -134,6 +158,16 @@ def wall_seconds() -> float:
     except ValueError:
         return float(_DEFAULT_WALL_S)
     return float(n if n > 0 else _DEFAULT_WALL_S)
+
+
+def refusal_backoff_s() -> int:
+    """Deferral wait (``PRECIS_LAND_REFUSAL_BACKOFF_S``, default
+    :data:`MAIN_REFUSAL_BACKOFF_S`; never negative)."""
+    try:
+        n = int(os.environ.get("PRECIS_LAND_REFUSAL_BACKOFF_S", MAIN_REFUSAL_BACKOFF_S))
+    except ValueError:
+        return MAIN_REFUSAL_BACKOFF_S
+    return max(n, 0)
 
 
 def ship_bin(tree: Path) -> str:
@@ -162,6 +196,11 @@ def _launch(
 
 def _process_alive(pid: int) -> bool:
     return _rs._process_alive(pid)
+
+
+def _now() -> datetime:
+    """The clock (UTC); a seam so tests move time."""
+    return datetime.now(UTC)
 
 
 def _gh(args: list[str]) -> subprocess.CompletedProcess[str]:
@@ -267,6 +306,12 @@ def cross_line(log_text: str) -> str | None:
         if "✖" in line:
             return line.strip()
     return None
+
+
+def is_main_refusal(cross: str | None) -> bool:
+    """True when ``cross`` (a :func:`cross_line` result) is ship refusing on
+    main's state (:data:`MAIN_REFUSAL_MARKS`), not on the branch."""
+    return bool(cross) and any(mark in str(cross) for mark in MAIN_REFUSAL_MARKS)
 
 
 def landed_short(log_text: str) -> str | None:
@@ -578,6 +623,31 @@ def submit(ctx: Any, spec: Any) -> Any:
             ),
         )
         return None
+    handle = _launch_ship(ctx, tree, flag, subject)
+    if handle is None:
+        return None
+    ctx.set_meta(land_subject=subject)
+    ctx.append_chunk(
+        "job_event",
+        f"land_slice: scripts/ship {flag} {subject!r} pid {handle['pid']} in {tree}",
+    )
+    return handle
+
+
+def _launch_ship(
+    ctx: Any,
+    tree: Path,
+    flag: str,
+    subject: str,
+    *,
+    carry: dict[str, Any] | None = None,
+) -> dict[str, Any] | None:
+    """Launch ``scripts/ship <flag> <subject>`` detached in ``tree`` and
+    return the fresh handle (``flag`` kept in it so :func:`poll` can relaunch;
+    ``main_refusals`` / ``last_refusal`` copied from ``carry``). ``None`` after
+    driving the job terminal when the launch itself failed."""
+    params = (ctx.meta or {}).get("params") or {}
+    todo_id = int(params.get("todo_id") or 0)
     scratch = tree / "scratch"
     log_path = scratch / "land_slice.log"
     exit_path = scratch / "land_slice.exit"
@@ -598,15 +668,11 @@ def submit(ctx: Any, spec: Any) -> Any:
         _fail(
             ctx,
             todo_id,
-            lane,
+            params.get("lane"),
             f"ship launch failed: {exc}",
             handoff=f"land FAILED: scripts/ship did not start ({exc}).",
         )
         return None
-    ctx.set_meta(land_subject=subject)
-    ctx.append_chunk(
-        "job_event", f"land_slice: scripts/ship {flag} {subject!r} pid {pid} in {tree}"
-    )
     handle: dict[str, Any] = {
         "pid": pid,
         "pgid": pid,
@@ -614,12 +680,83 @@ def submit(ctx: Any, spec: Any) -> Any:
         "log": str(log_path),
         "exit_file": str(exit_path),
         "subject": subject,
+        "flag": flag,
         "started_at": datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
     }
+    for key in ("main_refusals", "last_refusal"):
+        if carry is not None and key in carry:
+            handle[key] = carry[key]
     identity = _rs._process_identity(pid)
     if identity is not None:
         handle["boot_id"], handle["start_time"] = identity
     return handle
+
+
+def _defer_to_main(
+    ctx: Any,
+    handle: dict[str, Any],
+    cross: str,
+    refusals: int,
+) -> bool:
+    """A main-side refusal is a deferral, not a red: count it, note it on the
+    job and park the handle until ``not_before`` (now + :func:`refusal_backoff_s`);
+    :func:`_relaunch_when_due` runs ship again then. The dead ship's pid,
+    identity and exit file are dropped so no poll re-reads its exit. The
+    handle is mutated in place and persisted to ``meta.compute_handle`` (poll
+    cannot hand one back). Always ``False``: the job stays running."""
+    due = _now() + timedelta(seconds=refusal_backoff_s())
+    for key in ("pid", "pgid", "boot_id", "start_time"):
+        handle.pop(key, None)
+    Path(str(handle.get("exit_file") or os.devnull)).unlink(missing_ok=True)
+    handle.update(
+        main_refusals=refusals,
+        last_refusal=cross,
+        not_before=due.strftime(_TS_FMT),
+    )
+    ctx.append_chunk(
+        "job_event",
+        f"land_slice: deferred (main-side refusal #{refusals}): {cross} — "
+        f"scripts/ship again after {due:%H:%M}Z",
+    )
+    # Parked time must not eat the ssh_node wall deadline: it covers the
+    # wait plus one fresh ship run.
+    deadline = _now().timestamp() + refusal_backoff_s() + wall_seconds()
+    ctx.set_meta(
+        compute_handle=handle, compute_handle_released=False, deadline=deadline
+    )
+    return False
+
+
+def _relaunch_when_due(ctx: Any, handle: dict[str, Any]) -> bool:
+    """Poll half of a parked deferral: ``False`` before ``not_before``; at or
+    after it, drop the marker and launch ship again (same worktree, flag and
+    subject, counters carried), persisting the new handle in place. ``True``
+    only when the launch failed (the job is then already failed)."""
+    try:
+        due = datetime.strptime(str(handle["not_before"]), _TS_FMT).replace(tzinfo=UTC)
+    except (KeyError, ValueError):
+        due = _now()  # unreadable marker: do not park forever
+    if _now() < due:
+        return False
+    params = (ctx.meta or {}).get("params") or {}
+    handle.pop("not_before", None)
+    tree = Path(str(handle.get("worktree") or params.get("worktree") or ""))
+    flag = str(
+        handle.get("flag") or ("--checked" if params.get("checked") else "--quick")
+    )
+    fresh = _launch_ship(
+        ctx, tree, flag, str(handle.get("subject") or ""), carry=handle
+    )
+    if fresh is None:
+        return True
+    handle.clear()
+    handle.update(fresh)
+    ctx.set_meta(
+        compute_handle=fresh,
+        compute_handle_released=False,
+        deadline=_now().timestamp() + wall_seconds(),
+    )
+    return False
 
 
 def poll(ctx: Any, handle: Any) -> bool:
@@ -628,6 +765,8 @@ def poll(ctx: Any, handle: Any) -> bool:
     if not isinstance(handle, dict):
         ctx.record_failure(f"land_slice: malformed handle {handle!r}")
         return True
+    if handle.get("not_before"):
+        return _relaunch_when_due(ctx, handle)
     exit_code = _rs._read_exit(handle)
     if exit_code is None and _process_alive(int(handle.get("pid") or 0)):
         return False
@@ -652,6 +791,22 @@ def poll(ctx: Any, handle: Any) -> bool:
             f"scripts/ship exit {'unknown' if exit_code is None else exit_code}"
             f"{f', SHIP_STATUS {status}' if status else ''}"
         )
+        reason = f"ship of td{todo_id} red: {cross}"
+        handoff = (
+            f"land FAILED on {branch}: {cross}. Fix it on the branch, commit, "
+            "leave the tree clean; the lander re-runs scripts/ship."
+        )
+        if is_main_refusal(cross):
+            # Main's state, not the branch's: park and retry later, up to the cap.
+            refusals = int(handle.get("main_refusals") or 0) + 1
+            if refusals <= MAX_MAIN_REFUSALS:
+                return _defer_to_main(ctx, handle, cross, refusals)
+            reason = f"land blocked by main for {refusals} refusals: {cross}"
+            handoff = (
+                f"land BLOCKED on {branch}: main refused the land {refusals} times "
+                f"({cross}). Nothing is wrong on the branch; it needs a /go (full "
+                "gate) over main or a fixed red on main. Do not rebuild."
+            )
         ctx.set_meta(exit_code=exit_code, ship_status=status)
         ctx.append_chunk(
             "job_summary",
@@ -659,16 +814,12 @@ def poll(ctx: Any, handle: Any) -> bool:
             f"{handle.get('log')}",
         )
         tail = log_text[-_TAIL_CAP:].strip()
-        reason = f"ship of td{todo_id} red: {cross}"
         _fail(
             ctx,
             todo_id,
             lane,
             reason + (f"\n--- log tail ---\n{tail}" if tail else ""),
-            handoff=(
-                f"land FAILED on {branch}: {cross}. Fix it on the branch, commit, "
-                "leave the tree clean; the lander re-runs scripts/ship."
-            ),
+            handoff=handoff,
         )
         return True
 
@@ -770,16 +921,21 @@ SPEC = JobTypeSpec(
 __all__ = [
     "COMPATIBLE_EXECUTORS",
     "DESCRIPTION",
+    "MAIN_REFUSAL_BACKOFF_S",
+    "MAIN_REFUSAL_MARKS",
+    "MAX_MAIN_REFUSALS",
     "NAME",
     "PARAMS_SCHEMA",
     "REQUIRES",
     "SPEC",
     "SUBJECT_CAP",
     "cross_line",
+    "is_main_refusal",
     "kill",
     "landed_short",
     "pending_gate",
     "poll",
+    "refusal_backoff_s",
     "ship_bin",
     "ship_status",
     "squash_subject",

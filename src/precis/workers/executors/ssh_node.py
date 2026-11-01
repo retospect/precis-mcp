@@ -296,7 +296,9 @@ def _readoptable(meta: dict[str, Any], node: str | None) -> bool:
     (:func:`_detached_identity_reason`), not pid alone — pids recycle
     across a day of restarts — plus a live group.  A row with no
     ``meta.deadline`` is never re-adoptable: without the bound a hung
-    child could be re-adopted forever (gr541147)."""
+    child could be re-adopted forever (gr541147). A parked handle —
+    ``not_before`` set by a plugin that defers, e.g. land_slice — has no
+    process; it is re-adoptable on its deadline alone."""
     handle = meta.get("compute_handle")
     if not isinstance(handle, dict) or meta.get("compute_handle_released"):
         return False
@@ -308,6 +310,8 @@ def _readoptable(meta: dict[str, Any], node: str | None) -> bool:
             return False
     except (TypeError, ValueError):
         return False
+    if handle.get("not_before"):
+        return True
     return _detached_identity_reason(handle) is None and _detached_group_alive(handle)
 
 
@@ -327,12 +331,17 @@ def _refund_readopt_attempt(
     meta["attempts"] = attempts
     meta["reclaims"] = reclaims
     _set_meta(conn, ref_id, attempts=attempts, reclaims=reclaims)
+    parked = meta["compute_handle"].get("not_before")
+    found = (
+        f"parked detached job (retry after {parked})"
+        if parked
+        else f"detached compute pid={meta['compute_handle'].get('pid')} alive"
+    )
     _append_chunk(
         store,
         ref_id,
         _JOB_EVENT_KIND,
-        f"runner: worker restart found detached compute pid="
-        f"{meta['compute_handle'].get('pid')} alive — re-adoption, not "
+        f"runner: worker restart found {found} — re-adoption, not "
         "counted as a run attempt",
         conn=conn,
     )
@@ -392,6 +401,8 @@ def _reap_detached_job(
     from precis.store import Tag
 
     handle = meta.get("compute_handle")
+    if isinstance(handle, dict) and handle.get("not_before"):
+        return False  # parked: no process, nothing to kill or skip-log
     stamp = {"at": datetime.now(UTC).isoformat(), "action": "claimed"}
     claimed = conn.execute(
         """
@@ -802,7 +813,8 @@ def _kill_and_terminalize(
     released = False
     # Opaque handles belong to other plugins' own kill protocols. Every
     # dict must validate the actual pgid before any process kill.
-    process_handle = isinstance(handle, dict)
+    # A parked handle (``not_before``) has no process: nothing to verify.
+    process_handle = isinstance(handle, dict) and not handle.get("not_before")
     skip_reason = _detached_identity_reason(handle) if process_handle else None
     with store.pool.connection() as conn:
         if (

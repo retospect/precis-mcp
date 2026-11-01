@@ -2094,6 +2094,128 @@ def test_live_detached_handle_survives_repeated_restart_reclaims(
     assert {r["why"] for r in meta["reclaims"]} == {"readopt"}
 
 
+def _parked_handle() -> dict[str, Any]:
+    """land_slice's deferral state: no pid/pgid/identity, just the wait."""
+    return {
+        "worktree": "/tmp/fake-slice-td42",
+        "subject": "feat(x): y (td42)",
+        "flag": "--quick",
+        "main_refusals": 2,
+        "not_before": "2099-01-01T00:00:00Z",
+    }
+
+
+def test_parked_handle_is_readoptable_on_its_deadline_alone() -> None:
+    """A plugin that defers (land_slice) parks a handle with no process; the
+    identity and group probes cannot apply, so only the node pin and the
+    deadline gate re-adoption."""
+    future = time.time() + 7200
+    meta: dict[str, Any] = {
+        "compute_handle": _parked_handle(),
+        "params": {"target_node": "spark"},
+        "deadline": future,
+    }
+    assert ssh_node._readoptable(meta, "spark") is True
+    assert ssh_node._readoptable(meta, "other-node") is False
+    assert (
+        ssh_node._readoptable({**meta, "deadline": time.time() - 60}, "spark") is False
+    )
+    assert ssh_node._readoptable({**meta, "deadline": None}, "spark") is False
+    assert (
+        ssh_node._readoptable({**meta, "compute_handle_released": True}, "spark")
+        is False
+    )
+    # without the marker the same pid-less handle is not re-adoptable
+    bare = {k: v for k, v in _parked_handle().items() if k != "not_before"}
+    assert ssh_node._readoptable({**meta, "compute_handle": bare}, "spark") is False
+
+
+def test_parked_handle_survives_repeated_restart_reclaims(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Every restart while a land is parked re-adopts it and refunds the
+    attempt (before: one attempt each, the cap-th restart failed the job).
+    Nothing is killed and no orphan-skip is recorded."""
+    killed: list[tuple[Any, Any]] = []
+    reaped: list[tuple[Any, Any]] = []
+    monkeypatch.setattr(
+        ssh_node, "get_job_type", lambda name: _kill_reap_spec(killed, reaped)
+    )
+    monkeypatch.setenv("PRECIS_NODE", "spark")
+    deadline = time.time() + 7200
+    store.record_heartbeat(
+        "spark-readopt", meta={"boot_ids": {"ssh_node": "new-generation"}}
+    )
+    rid = _mk_running_job(
+        store,
+        lease_offset_s=3600,
+        attempts=0,
+        lease_boot_id="dead-generation",
+        lease_process="ssh_node",
+        lease_host="spark-readopt",
+        compute_handle=_parked_handle(),
+        target_node="spark",
+    )
+    _restart_reclaimed(store, rid, deadline=deadline)
+
+    for _ in range(ssh_node._MAX_ATTEMPTS + 2):
+        ssh_node.run_ssh_node_pass(store, limit=2)
+        _restart_reclaimed(store, rid, deadline=deadline)
+
+    meta = _meta(store, rid)
+    assert _status(store, rid) == "running"
+    assert killed == [] and reaped == []
+    assert meta["attempts"] == 0
+    assert {r["why"] for r in meta["reclaims"]} == {"readopt"}
+    assert "detached_orphan_skipped" not in meta
+    assert "detached_orphan_reaped" not in meta
+    events = [
+        c.text
+        for c in store.chunks.list_chunks_for_ref(rid)
+        if getattr(c, "chunk_kind", None) == "job_event"
+    ]
+    assert any("found parked detached job" in t for t in events)
+
+
+def test_parked_handle_past_its_deadline_fails_without_an_orphan_skip(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A parked job whose renewed deadline lapsed is terminalized by the poll
+    step like any detached job; the hook is the plugin's own (a no-op for a
+    pid-less handle), and the handle is not logged as an unverifiable orphan."""
+    killed: list[tuple[Any, Any]] = []
+    reaped: list[tuple[Any, Any]] = []
+    monkeypatch.setattr(
+        ssh_node, "get_job_type", lambda name: _kill_reap_spec(killed, reaped)
+    )
+    monkeypatch.setenv("PRECIS_NODE", "spark")
+    rid = _mk_running_job(
+        store,
+        lease_offset_s=3600,
+        attempts=0,
+        lease_boot_id="dead-generation",
+        compute_handle=_parked_handle(),
+        target_node="spark",
+    )
+    _restart_reclaimed(store, rid, deadline=time.time() - 60)
+
+    ssh_node.run_ssh_node_pass(store, limit=2)
+
+    meta = _meta(store, rid)
+    assert _status(store, rid) == "failed"
+    assert "detached_orphan_skipped" not in meta
+    assert [h for _, h in killed] == [_parked_handle()]
+
+
+def test_orphan_reap_leaves_a_parked_handle_alone() -> None:
+    meta = {"compute_handle": _parked_handle()}
+    no_conn: Any = None  # a parked handle returns before any DB use
+    assert (
+        ssh_node._reap_detached_job(no_conn, no_conn, 1, "t", meta, node="spark")
+        is False
+    )
+
+
 @pytest.mark.parametrize(
     "case", ["dead-group", "start-time-mismatch", "past-deadline", "no-deadline"]
 )

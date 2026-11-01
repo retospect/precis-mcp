@@ -11,6 +11,7 @@ import subprocess
 import sys
 import time
 from dataclasses import dataclass, field
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -499,6 +500,233 @@ def test_poll_red_without_a_cross_line_names_the_exit(seams: dict[str, Any]) -> 
     assert land_slice.poll(pctx, handle) is True
     assert pctx.status == "failed"
     assert pctx.failure is not None and "SHIP_STATUS conflict" in pctx.failure
+
+
+# ── main-side refusals (gr549328) ──────────────────────────────────
+
+DRIFT_LOG = (
+    "quick ship (--quick)\n"
+    "\x1b[31m✖ main has no all-green shard matrix in the last 48h (refuse at "
+    "48h). The burst has outrun its verdicts. Deliberate override: "
+    "PRECIS_QLAND_DRIFT_OVERRIDE=1.\x1b[0m\n"
+    "SHIP_STATUS: error\n"
+)
+
+
+def test_is_main_refusal_marks() -> None:
+    none_green = land_slice.cross_line(DRIFT_LOG)
+    stale = land_slice.cross_line(
+        "\x1b[31m✖ main's last all-green shard matrix is 60.1h old (refuse at 48h)."
+        "\x1b[0m\n"
+    )
+    assert none_green is not None and none_green.startswith("✖ main has no")
+    assert stale is not None and stale.startswith("✖ main's last all-green")
+    assert land_slice.is_main_refusal(none_green) is True
+    assert land_slice.is_main_refusal(stale) is True
+    assert (
+        land_slice.is_main_refusal("✖ ruff format: 1 file would be reformatted")
+        is False
+    )
+    assert land_slice.is_main_refusal("✖ release in flight") is False
+    assert land_slice.is_main_refusal(None) is False
+    assert land_slice.is_main_refusal("") is False
+
+
+def _defer_setup(
+    seams: dict[str, Any], refusals: int | None = None
+) -> tuple[_Store, dict[str, Any]]:
+    store = _Store()
+    store.add_todo(42, tags=("claimed-by:lane-claude-sub",))
+    _ctx, handle = _submit(store, seams)
+    assert handle["flag"] == "--quick"
+    if refusals is not None:
+        handle["main_refusals"] = refusals
+    _finish(handle, 1, DRIFT_LOG)
+    return store, handle
+
+
+T0 = datetime(2026, 11, 1, 10, 0, 0, tzinfo=UTC)
+
+
+@pytest.fixture
+def clock(monkeypatch: pytest.MonkeyPatch) -> dict[str, datetime]:
+    now = {"t": T0}
+    monkeypatch.setattr(land_slice, "_now", lambda: now["t"])
+    monkeypatch.delenv("PRECIS_LAND_REFUSAL_BACKOFF_S", raising=False)
+    return now
+
+
+def test_refusal_backoff_default_and_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("PRECIS_LAND_REFUSAL_BACKOFF_S", raising=False)
+    assert land_slice.MAIN_REFUSAL_BACKOFF_S == 1800
+    assert land_slice.refusal_backoff_s() == 1800
+    monkeypatch.setenv("PRECIS_LAND_REFUSAL_BACKOFF_S", "60")
+    assert land_slice.refusal_backoff_s() == 60
+    monkeypatch.setenv("PRECIS_LAND_REFUSAL_BACKOFF_S", "soon")
+    assert land_slice.refusal_backoff_s() == 1800
+
+
+def test_poll_main_refusal_defers_without_launching(
+    seams: dict[str, Any], clock: dict[str, datetime]
+) -> None:
+    store, handle = _defer_setup(seams)
+    pctx = _Ctx(store, _params(seams))
+    assert land_slice.poll(pctx, handle) is False
+    assert len(seams["launch"]) == 1  # the original submit only
+    assert pctx.status is None and pctx.failure is None
+    assert handle["main_refusals"] == 1
+    assert handle["not_before"] == "2026-11-01T10:30:00Z"
+    assert handle["last_refusal"].startswith("✖ main has no all-green shard matrix")
+    # the dead ship's pid, identity and exit file are gone
+    assert not {"pid", "pgid", "boot_id", "start_time"} & handle.keys()
+    assert not Path(handle["exit_file"]).exists()
+    assert pctx.meta_set["compute_handle"] == handle
+    assert pctx.meta_set["compute_handle_released"] is False
+    # parked time is not charged to the ssh_node wall deadline
+    assert (
+        pctx.meta_set["deadline"] == T0.timestamp() + 1800 + land_slice.wall_seconds()
+    )
+    [(kind, text)] = pctx.chunks
+    assert kind == "job_event"
+    assert text.startswith("land_slice: deferred (main-side refusal #1): ✖ main has no")
+    assert text.endswith("scripts/ship again after 10:30Z")
+    # the todo is untouched: still claimed, no attempt bump, no handoff
+    tags = store.tag_strings(42)
+    assert "claimed-by:lane-claude-sub" in tags
+    assert not any(t.startswith("attempt:") for t in tags)
+    assert store.comments(42) == []
+    assert "exit_code" not in pctx.meta_set
+
+
+def test_poll_before_not_before_does_nothing(
+    seams: dict[str, Any], clock: dict[str, datetime]
+) -> None:
+    store, handle = _defer_setup(seams)
+    assert land_slice.poll(_Ctx(store, _params(seams)), handle) is False
+    before = dict(handle)
+    pctx = _Ctx(store, _params(seams))
+    clock["t"] = T0 + timedelta(seconds=1799)
+    assert land_slice.poll(pctx, handle) is False
+    assert len(seams["launch"]) == 1
+    assert handle == before
+    assert pctx.chunks == [] and pctx.meta_set == {} and pctx.status is None
+
+
+def test_poll_at_not_before_relaunches_once(
+    seams: dict[str, Any],
+    clock: dict[str, datetime],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store, handle = _defer_setup(seams, refusals=2)
+    assert land_slice.poll(_Ctx(store, _params(seams)), handle) is False
+    assert handle["main_refusals"] == 3
+    launched: list[tuple[Any, ...]] = []
+    real = land_slice._launch_ship
+
+    def spy(
+        ctx: Any, tree: Path, flag: str, subject: str, **kw: Any
+    ) -> dict[str, Any] | None:
+        launched.append((tree, flag, subject))
+        return real(ctx, tree, flag, subject, **kw)
+
+    monkeypatch.setattr(land_slice, "_launch_ship", spy)
+    clock["t"] = T0 + timedelta(seconds=1800)  # exactly due
+    pctx = _Ctx(store, _params(seams))
+    assert land_slice.poll(pctx, handle) is False
+    assert launched == [(seams["tree"], "--quick", SUBJECT)]
+    assert len(seams["launch"]) == 2
+    argv, kw = seams["launch"][1]
+    assert argv == [str(seams["tree"] / "scripts" / "ship"), "--quick", SUBJECT]
+    assert kw["env"]["PRECIS_SHIP_VERBOSE"] == "1"
+    assert "not_before" not in handle
+    assert handle["pid"] == 5151 and handle["flag"] == "--quick"
+    assert handle["main_refusals"] == 3  # carried over
+    assert handle["last_refusal"].startswith("✖ main has no")
+    assert pctx.meta_set["compute_handle"] == handle
+    assert pctx.meta_set["compute_handle_released"] is False
+    # a running ship is bounded again: wall from the relaunch, nothing more
+    due = T0 + timedelta(seconds=1800)
+    assert pctx.meta_set["deadline"] == due.timestamp() + land_slice.wall_seconds()
+    assert pctx.status is None and store.comments(42) == []
+    # the relaunch is now running: polls wait on it, no further launch
+    assert land_slice.poll(pctx, handle) is False
+    assert len(seams["launch"]) == 2
+
+
+def test_poll_main_refusal_keeps_checked_flag(
+    seams: dict[str, Any], clock: dict[str, datetime]
+) -> None:
+    store = _Store()
+    store.add_todo(42)
+    params = {**_params(seams), "checked": True}
+    handle = land_slice.submit(_Ctx(store, params), None)
+    assert handle["flag"] == "--checked"
+    _finish(handle, 1, DRIFT_LOG)
+    assert land_slice.poll(_Ctx(store, params), handle) is False
+    clock["t"] = T0 + timedelta(hours=1)
+    assert land_slice.poll(_Ctx(store, params), handle) is False
+    assert seams["launch"][1][0][1] == "--checked"
+
+
+def test_poll_relaunch_failure_fails_the_job(
+    seams: dict[str, Any],
+    clock: dict[str, datetime],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store, handle = _defer_setup(seams)
+    assert land_slice.poll(_Ctx(store, _params(seams)), handle) is False
+
+    def boom(argv: list[str], **kw: Any) -> int:
+        raise OSError("no fork")
+
+    monkeypatch.setattr(land_slice, "_launch", boom)
+    clock["t"] = T0 + timedelta(hours=1)
+    pctx = _Ctx(store, _params(seams))
+    assert land_slice.poll(pctx, handle) is True
+    assert pctx.failure is not None and "ship launch failed" in pctx.failure
+
+
+def test_poll_main_refusal_cap_fails_with_the_blocked_handoff(
+    seams: dict[str, Any],
+) -> None:
+    store, handle = _defer_setup(seams, refusals=land_slice.MAX_MAIN_REFUSALS)
+    pctx = _Ctx(store, _params(seams))
+    assert land_slice.poll(pctx, handle) is True
+    assert len(seams["launch"]) == 1  # no relaunch past the cap
+    n = land_slice.MAX_MAIN_REFUSALS + 1
+    assert pctx.status == "failed" and pctx.failure is not None
+    assert pctx.failure.startswith(
+        f"land_slice: land blocked by main for {n} refusals:"
+    )
+    assert "✖ main has no all-green shard matrix" in pctx.failure
+    [handoff] = store.comments(42)
+    assert handoff.startswith(
+        "handoff: land BLOCKED on slice/42: main refused the land "
+    )
+    assert f"the land {n} times (✖ main has no" in handoff
+    assert handoff.endswith("or a fixed red on main. Do not rebuild.")
+    assert "Nothing is wrong on the branch" in handoff
+    assert _cleanup_cmds(seams) == []
+
+
+def test_poll_lint_red_is_unchanged_by_the_main_refusal_path(
+    seams: dict[str, Any],
+) -> None:
+    store = _Store()
+    store.add_todo(42, tags=("claimed-by:lane-claude-sub",))
+    _ctx, handle = _submit(store, seams)
+    handle["main_refusals"] = 3
+    _finish(handle, 1, "\x1b[31m✖ ruff: 2 errors in src/x.py\x1b[0m\n")
+    pctx = _Ctx(store, _params(seams))
+    assert land_slice.poll(pctx, handle) is True
+    assert len(seams["launch"]) == 1
+    assert (
+        pctx.failure is not None
+        and "ship of td42 red: ✖ ruff: 2 errors" in pctx.failure
+    )
+    assert "attempt:1" in pctx.failure
+    assert store.comments(42)[-1].startswith("handoff: land FAILED on slice/42: ✖ ruff")
+    assert "attempt:1" in store.tag_strings(42)
 
 
 # ── gate pick ──────────────────────────────────────────────────────

@@ -787,6 +787,48 @@ def test_exit_two_also_in_age_mode(
     assert capsys.readouterr().out == ""
 
 
+def test_no_check_suites_anywhere_is_blind_not_none_green(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A token without checks:read gets commits with empty `checkSuites`. That
+    is "could not look" (exit 0, empty), never "none gated" (exit 2): the drift
+    guard must not refuse on a blind lookup."""
+    mod = _load()
+    blind: list[dict[str, Any]] = [
+        {"oid": BURST, "checkSuites": {"nodes": []}},
+        {"oid": GATED},  # key absent altogether
+    ]
+
+    def fake_run(*args: str) -> str | None:
+        return f"{BURST}\n{GATED}" if args[0] != "gh" else _response(blind)
+
+    monkeypatch.setattr(mod, "_run", fake_run)
+    assert mod.lookup("HEAD", 500, 48)[0] == mod.UNKNOWN
+    assert mod.main(["--age-hours"]) == 0
+    assert capsys.readouterr().out == ""
+    assert mod.main([]) == 0
+    assert capsys.readouterr().out == ""
+
+
+def test_suites_present_but_none_green_is_still_none_green(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """One suite on one commit is enough to trust the answer: the lookup could
+    read checks, and nothing was green."""
+    mod = _load()
+    mixed = [
+        {"oid": BURST, "checkSuites": {"nodes": []}},
+        _commit(GATED, _shards("CANCELLED")),
+    ]
+
+    def fake_run(*args: str) -> str | None:
+        return f"{BURST}\n{GATED}" if args[0] != "gh" else _response(mixed)
+
+    monkeypatch.setattr(mod, "_run", fake_run)
+    assert mod.lookup("HEAD", 500, 48)[0] == mod.NONE_GREEN
+    assert mod.main([]) == 2
+
+
 def test_exit_two_needs_every_page_the_walk_needed(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -922,7 +964,8 @@ def test_page_cap_follows_the_limit(monkeypatch: pytest.MonkeyPatch) -> None:
 
     def fake_run(*args: str) -> str | None:
         calls.append(args)
-        return GATED if args[0] != "gh" else _response([], more="x")
+        page = [_commit(OLDER, _shards("CANCELLED"))]  # suites readable, none green
+        return GATED if args[0] != "gh" else _response(page, more="x")
 
     monkeypatch.setattr(mod, "_run", fake_run)
     # Cut by the cap with nothing green in what was covered: still "looked,
