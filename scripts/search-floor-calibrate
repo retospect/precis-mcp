@@ -1,8 +1,7 @@
 #!/usr/bin/env bash
-# scripts/search-floor-calibrate — re-measure the per-kind semantic-only
-# distance floors on a live DB (gr514956). READ-ONLY: every statement is
-# a SELECT; it proposes values for SEMANTIC_ONLY_FOLD_DISTANCE, it never
-# writes them.
+# scripts/search-floor-calibrate — compare fixed semantic-only floors and
+# query-relative gap cuts (gr514956, gr548264). READ-ONLY: every statement
+# is a SELECT; it reports measurements, never changes search settings.
 #
 # Usage:
 #   scripts/_prod-run scripts/search-floor-calibrate    # against PROD

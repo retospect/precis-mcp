@@ -10,6 +10,7 @@ never reach the noise pool.
 from __future__ import annotations
 
 import importlib.util
+import json
 import math
 import sys
 from pathlib import Path
@@ -17,6 +18,7 @@ from types import ModuleType
 
 import pytest
 
+from precis.embedder import MockEmbedder
 from precis.store import ChunkInsert, Store, Tag
 
 _SCRIPT = Path(__file__).resolve().parents[1] / "scripts" / "_search_floor_calibrate.py"
@@ -215,6 +217,8 @@ def test_measure_kind_end_to_end(store: Store) -> None:
     # the .05 paper chunk.
     assert sorted(m.noise) == pytest.approx([0.20, 0.30, 0.35, 0.55], abs=1e-4)
     assert m.n_no_body == 0 and m.n_queries == 2
+    print(mod.report(m, current=0.42))
+    assert len(m.pages) == 2
 
 
 def test_comment_kinds_are_never_targets(store: Store) -> None:
@@ -314,3 +318,65 @@ def test_report_renders_candidate_table() -> None:
     out = mod.report(m, current=0.55)
     assert "paper" in out and "p10/p50/p90/max" in out
     assert "<- current" in out and "proposed" in out
+    assert "gap " in out and "per-query best" in out
+
+
+def test_gap_sweep_is_query_relative() -> None:
+    mod = _load()
+    m = mod.KindMeasurement(
+        kind="memory",
+        pages=[(0.20, [0.25, 0.50]), (0.55, [0.50, 0.60])],
+    )
+    assert mod.gap_shares(m, 0.03) == pytest.approx((50, 75))
+    assert mod.gap_shares(m, 0.15) == pytest.approx((0, 25))
+
+
+def test_recall_set_tsv_conversion_and_local_measurement(
+    store: Store, tmp_path: Path
+) -> None:
+    """Exercise the real query set, not prod data, using hash-only fixtures."""
+    mod = _load()
+    source = _SCRIPT.parents[1] / "src/precis/data/memory_recall_set.json"
+    tsv = mod.recall_set_tsv(source)
+    rows = tsv.splitlines()
+    assert len(rows) == 36
+    assert rows[0] == "label timestamps with Z\t481712"
+
+    # No production vectors/bodies are in the repo. Seed the public hook
+    # snapshots under fresh local IDs and remap the TSV, never query prod IDs.
+    entries = json.loads(source.read_text(encoding="utf-8"))
+    embedder = MockEmbedder(dim=store.embedding_dim())
+    ids = {}
+    for entry in entries:
+        ids[entry["want"]] = _ref_with(
+            store,
+            "memory",
+            None,
+            [
+                ChunkInsert(
+                    ord=0,
+                    text=entry["hook"],
+                    embedding=embedder.embed_one(entry["hook"]),
+                )
+            ],
+        )
+    local_tsv = tmp_path / "recall.tsv"
+    local_tsv.write_text(
+        "".join(f"{e['query']}\t{ids[e['want']]}\n" for e in entries),
+        encoding="utf-8",
+    )
+    queries = mod._tsv_queries(local_tsv, embedder=embedder, dim=store.embedding_dim())
+    with store.pool.connection() as conn:
+        measured = mod.measure(
+            conn,
+            kind="memory",
+            queries=queries,
+            embedder=_embedder_name(store),
+            exclude_kinds=(),
+            noise_k=10,
+        )
+    assert measured.n_queries == 36 and len(measured.rel) == 36
+    print("LOCAL HASH SNAPSHOTS (not production calibration)")
+    print(mod.report(measured, current=0.42))
+    assert mod.gap_shares(measured, 0.15) == pytest.approx((100, 100))
+    assert mod.gap_shares(measured, 0.15)[0] <= mod.share_above(measured.rel, 0.42)

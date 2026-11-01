@@ -65,10 +65,14 @@ from precis.protocol import Handler, KindSpec
 from precis.response import Response
 from precis.store import (
     SEMANTIC_DISTANCE_FLOOR,
-    SEMANTIC_ONLY_FOLD_DISTANCE,
     Link,
     Ref,
     Tag,
+)
+from precis.store._search_cut import (
+    fixed_floors_enabled,
+    fold_enabled,
+    semantic_fold_distance,
 )
 from precis.store.types import _KIND_STATUS_VALUES
 from precis.utils import handle_registry, search_trace, tag_chips
@@ -2411,22 +2415,17 @@ class NumericRefHandler(Handler):
         lexical leg at all), and the default/``'hybrid'`` falls through to
         the same ``search_chunks_fused`` call this used before the fix.
 
-        ``hard_cut`` (gr514956) applies this kind's
-        :data:`SEMANTIC_ONLY_FOLD_DISTANCE` as a hard
-        ``semantic_only_max_distance`` — weak uncorroborated hits are
-        dropped outright rather than folded behind a cursor. It is the
+        ``hard_cut`` applies the shared query-relative gap/corpus boundary:
+        weak uncorroborated hits are dropped outright. It is the
         policy for the paths no human reads (``view='index'`` recall,
         the cross-kind ``search_hits`` stream), where a fold tail and
-        its hint would be dead weight. Kinds absent from the table are
-        unaffected.
+        its hint would be dead weight.
 
         Returns ``(ordered, total, fold_info)`` where ``fold_info`` maps
         each returned chunk id to ``(sem_distance, corroborated)`` —
         ``sem_distance`` is ``None`` when the semantic leg never saw the
-        hit. The map is populated only when this kind appears in
-        :data:`SEMANTIC_ONLY_FOLD_DISTANCE` and ``hard_cut`` is off:
-        other kinds (and the machine paths, which discard it) skip the
-        extra SELECT columns and the OR-corroboration probe entirely.
+        hit. The map is populated when ``hard_cut`` is off; machine paths
+        apply the same policy inside the store, before pagination.
         """
         # ``chunk_scope`` narrows which chunks may match: 'title' = only the
         # opted-in header card, 'body' = never the card, None = both.
@@ -2447,19 +2446,13 @@ class NumericRefHandler(Handler):
             tags=tags,
             limit=page_size * 5 * max(1, page),
             max_distance=SEMANTIC_DISTANCE_FLOOR,
-            semantic_only_max_distance=(
-                SEMANTIC_ONLY_FOLD_DISTANCE.get(self.kind) if hard_cut else None
-            ),
+            semantic_only_cut=hard_cut,
             exclude_tags=exclude_tags,
             exclude_ref_ids=exclude_ref_ids,
             include_ref_ids=include_ref_ids,
             card_kinds=card_kinds,
             chunk_kinds=chunk_kinds,
-            fold_info_out=(
-                fold_info
-                if self.kind in SEMANTIC_ONLY_FOLD_DISTANCE and not hard_cut
-                else None
-            ),
+            fold_info_out=fold_info if not hard_cut else None,
         )
         # ``raw`` is most-relevant first in every mode; the score's direction
         # is not (semantic is a distance), so keep each ref's first block and
@@ -2514,8 +2507,8 @@ class NumericRefHandler(Handler):
     ) -> Response:
         """Rendered body-chunk search: headline + one block per matching ref.
 
-        For kinds listed in :data:`SEMANTIC_ONLY_FOLD_DISTANCE`, a hit
-        whose semantic distance clears the kind's threshold *and* that no
+        A hit whose semantic distance clears the shared gap/corpus threshold
+        *and* that no
         lexical leg corroborated is omitted from the default rendered
         results with an explicit count and a refinement hint. Shown hits
         render their semantic distance ``(0.21)`` in place of the opaque
@@ -2579,12 +2572,14 @@ class NumericRefHandler(Handler):
             )
             body += render_next_section(nav)
             return Response(body=body, result_count=0)
-        # gr514956 weak-match fold — see the docstring. ``sem_d is None``
+        # Query-relative weak-match fold. ``sem_d is None``
         # (a lex-only hit the semantic leg never scored) can never fold:
         # there is no distance to judge it weak on. Compact views get no
         # fold at all — the enumeration must list every hit.
         fold_distance = (
-            SEMANTIC_ONLY_FOLD_DISTANCE.get(self.kind) if compact is None else None
+            semantic_fold_distance(self.kind, (d for d, _ in fold_info.values()))
+            if compact is None and (mode or "hybrid").lower() == "hybrid"
+            else None
         )
         shown: list[tuple[Any, Ref, float]] = []
         weak: list[tuple[Any, Ref, float]] = []
@@ -2597,7 +2592,10 @@ class NumericRefHandler(Handler):
                 and not corroborated
             ):
                 weak.append((block, ref, rank))
-                search_trace.observe(search_trace.ref_handle(ref, block), cut="fold")
+                search_trace.observe(
+                    search_trace.ref_handle(ref, block),
+                    cut="fold" if fixed_floors_enabled() else "gap",
+                )
             else:
                 shown.append((block, ref, rank))
         search_trace.page(
@@ -2641,9 +2639,7 @@ class NumericRefHandler(Handler):
                 chips = chip_map.get(int(ref.id), "")
                 size = size_cell(sizes.get(int(ref.id), 0))
                 sem_d = fold_info.get(block.id, (None, True))[0]
-                if fold_distance is not None:
-                    # ``dist`` shows only on folding kinds — every other
-                    # kind's ``(rank=…)`` render stays byte-identical.
+                if fold_enabled(self.kind):
                     return self._render_body_search_hit(
                         ref, block, rank, dist=sem_d, chips=chips, size=size
                     )
@@ -2655,7 +2651,8 @@ class NumericRefHandler(Handler):
         if weak:
             lines.append(
                 f"── {len(weak)} weak match(es) omitted "
-                f"(distance > {fold_distance}); refine q= or use "
+                f"(distance > {fold_distance:.2f}"
+                f"{'' if fixed_floors_enabled() else ', gap cut'}); refine q= or use "
                 f"view={self.search_ids_view!r} "
                 "for the complete top-N handle list ──"
             )
@@ -2687,8 +2684,7 @@ class NumericRefHandler(Handler):
         Default: ``## <sense> <id>: <title>  (rank=…)`` + snippet.
         Subclasses whose chunks carry structure (e.g. gripe's comment
         timeline) override to add per-chunk context and accept ``dist``
-        the same way — but callers only pass it on kinds that fold
-        (``SEMANTIC_ONLY_FOLD_DISTANCE``), where the semantic distance
+        the same way. With gap folding enabled, the semantic distance
         ``(0.21)`` replaces ``(rank=…)`` — the number the fold cut is
         calibrated on is more informative than an opaque RRF score
         (gr514956). ``dist=None`` under a folding kind (a lex-only hit)
@@ -2723,7 +2719,7 @@ class NumericRefHandler(Handler):
 
         Hard-cut, never folded (gr514956): the merge stream is consumed
         by ranking code, not a human — a weak uncorroborated hit past
-        this kind's :data:`SEMANTIC_ONLY_FOLD_DISTANCE` is dropped, with
+        the query-relative gap/corpus boundary is dropped, with
         no hint and no cursor tail to drain.
         """
         if not (q and q.strip()):

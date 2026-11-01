@@ -44,7 +44,7 @@ from precis.errors import BadInput, NotFound, Upstream
 from precis.handlers._slug_ref_shared import resolve_live_slug_ref
 from precis.protocol import Handler
 from precis.response import Response
-from precis.store import SEMANTIC_DISTANCE_FLOOR, SEMANTIC_ONLY_FOLD_DISTANCE
+from precis.store import SEMANTIC_DISTANCE_FLOOR
 from precis.store.types import ChunkInsert, Tag
 from precis.utils import handle_registry
 from precis.utils.chunk_ingest import to_chunk_inserts
@@ -1630,9 +1630,7 @@ class CacheBackedHandler(Handler):
             kind=self.spec.kind,
             limit=page_size,
             max_distance=SEMANTIC_DISTANCE_FLOOR,
-            # gr514956: per-kind hard cut on uncorroborated semantic hits
-            # (cross-kind stream only; ``None`` for unlisted kinds).
-            semantic_only_max_distance=SEMANTIC_ONLY_FOLD_DISTANCE.get(self.spec.kind),
+            semantic_only_cut=True,
         )
         # Salience bump (block-level); no-op for dream-actor reads.
         self.store.chunks.bump_salience([block.id for block, _ref, _score in triples])

@@ -21,6 +21,11 @@ from precis.handlers.wikipedia import WikipediaHandler
 from precis.store import SEMANTIC_ONLY_FOLD_DISTANCE, ChunkInsert, Store
 
 
+@pytest.fixture(autouse=True)
+def fixed_fallback(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("PRECIS_SEARCH_FIXED_FLOORS", "1")
+
+
 def _vec_at(dim: int, distance: float) -> list[float]:
     """Unit vector at cosine ``distance`` from the query vector e0."""
     c = 1.0 - distance

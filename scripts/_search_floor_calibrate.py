@@ -1,4 +1,4 @@
-"""search-floor-calibrate — re-measure the per-kind semantic-only floors.
+"""search-floor-calibrate — compare fixed floors with query-relative gap cuts.
 
 ``SEMANTIC_ONLY_FOLD_DISTANCE`` (gr514956) is calibrated on prod's bge-m3
 cosine-distance distribution; this is the read-only probe behind that
@@ -27,7 +27,9 @@ table, and a proposed one — the midpoint when the distributions
 separate cleanly, else the ``1 - --max-rel-loss`` quantile of relevant
 capped 0.10 under ``SEMANTIC_DISTANCE_FLOOR`` (the 0.55 shape paper and
 web landed on). The script PROPOSES only; changing the table stays a
-human decision.
+human decision. Both modes also sweep gap deltas 0.03..0.15 using each
+query's own minimum across relevant and noise candidates, capped at 0.65.
+These distance-only probes do not model lexical corroboration or fused rank.
 
 Free-text mode (``--queries-tsv FILE``, ``query_text<TAB>ref_id`` per
 line) embeds real queries through the configured embedder — the
@@ -39,6 +41,8 @@ Usage (via the ``search-floor-calibrate`` shell wrapper):
 
     scripts/_prod-run scripts/search-floor-calibrate          # prod, all kinds
     scripts/search-floor-calibrate --kind memory --sample 60  # dev DB
+    scripts/search-floor-calibrate --recall-set-tsv src/precis/data/memory_recall_set.json > scratch/recall.tsv
+    scripts/search-floor-calibrate --kind memory --queries-tsv scratch/recall.tsv
 
 READ-ONLY: every statement is a SELECT. ``PRECIS_DATABASE_URL`` picks the
 DB (dev by default; ``scripts/_prod-run`` supplies prod's).
@@ -47,6 +51,7 @@ DB (dev by default; ``scripts/_prod-run`` supplies prod's).
 from __future__ import annotations
 
 import argparse
+import json
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -58,6 +63,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from _common import open_store
 
 from precis.store import SEMANTIC_DISTANCE_FLOOR, SEMANTIC_ONLY_FOLD_DISTANCE
+from precis.store._search_cut import GAP_CUT_DELTA, gap_cut_distance
 
 
 @dataclass(frozen=True)
@@ -89,6 +95,7 @@ PROBES: dict[str, Probe] = {
 #: Candidate floors the per-kind table reports loss/removal at — the
 #: historic probes (0.42/0.45) plus the band under the 0.65 corpus floor.
 CANDIDATE_FLOORS = (0.42, 0.45, 0.50, 0.55, 0.60, 0.65)
+CANDIDATE_GAPS = tuple(i / 100 for i in range(3, 16))
 
 #: A proposed floor stays this far under ``SEMANTIC_DISTANCE_FLOOR`` —
 #: at the corpus floor itself nothing reachable is left to cut.
@@ -109,6 +116,8 @@ class KindMeasurement:
     n_no_body: int = 0
     rel: list[float] = field(default_factory=list)
     noise: list[float] = field(default_factory=list)
+    # Keep query boundaries: a pooled minimum would not be a relative cut.
+    pages: list[tuple[float | None, list[float]]] = field(default_factory=list)
 
 
 #: One calibration query: the query vector in ``'[…]'`` text form (binds
@@ -227,17 +236,17 @@ def measure(
             out.n_no_body += 1
         else:
             out.rel.append(d)
-        out.noise.extend(
-            noise_distances(
-                conn,
-                kind=kind,
-                ref_id=ref_id,
-                embedder=embedder,
-                qvec=qvec,
-                exclude_kinds=exclude_kinds,
-                noise_k=noise_k,
-            )
+        noise = noise_distances(
+            conn,
+            kind=kind,
+            ref_id=ref_id,
+            embedder=embedder,
+            qvec=qvec,
+            exclude_kinds=exclude_kinds,
+            noise_k=noise_k,
         )
+        out.noise.extend(noise)
+        out.pages.append((d, noise))
     return out
 
 
@@ -335,6 +344,11 @@ def report(
             f"   {f:.2f}   {share_above(m.rel, f):8.1f} "
             f"{share_above(m.noise, f):9.1f}{mark}"
         )
+    lines.append("   gap     rel-drop%  noise-rm% (per-query best + delta, cap 0.65)")
+    for delta in CANDIDATE_GAPS:
+        rel_drop, noise_rm = gap_shares(m, delta)
+        mark = "  <- default (provisional)" if delta == GAP_CUT_DELTA else ""
+        lines.append(f"   {delta:.2f}   {rel_drop:8.1f} {noise_rm:9.1f}{mark}")
     floor, why = propose_floor(
         m.rel, m.noise, corpus_floor=corpus_floor, max_rel_loss=max_rel_loss
     )
@@ -342,6 +356,30 @@ def report(
     prop = f"{floor:.2f}" if floor is not None else "none"
     lines.append(f"  current {cur}   proposed {prop} — {why}")
     return "\n".join(lines)
+
+
+def gap_shares(m: KindMeasurement, delta: float) -> tuple[float, float]:
+    """Loss/removal percentages using each query's candidate minimum."""
+    rel_dropped = noise_removed = n_rel = n_noise = 0
+    for rel, noise in m.pages:
+        threshold = gap_cut_distance([rel, *noise], delta)
+        if rel is not None:
+            n_rel += 1
+            rel_dropped += rel > threshold
+        n_noise += len(noise)
+        noise_removed += sum(d > threshold for d in noise)
+    return (
+        100 * rel_dropped / n_rel if n_rel else 0.0,
+        100 * noise_removed / n_noise if n_noise else 0.0,
+    )
+
+
+def recall_set_tsv(path: Path) -> str:
+    """Convert the packaged recall set without opening a DB or an embedder."""
+    entries = json.loads(path.read_text(encoding="utf-8"))
+    return "".join(
+        f"{e['query']}\t{int(e['want'].removeprefix('me'))}\n" for e in entries
+    )
 
 
 def _resolve_probe(args: argparse.Namespace, kind: str, parser: Any) -> Probe:
@@ -451,6 +489,13 @@ def main() -> None:
         help="tolerated relevant-loss fraction for the proposal (default 0.05)",
     )
     p.add_argument(
+        "--recall-set-tsv",
+        type=Path,
+        metavar="JSON",
+        help="print query<TAB>ref_id from a memory recall JSON set, then exit "
+        "(no DB access; redirect to a TSV for --queries-tsv)",
+    )
+    p.add_argument(
         "--queries-tsv",
         type=Path,
         default=None,
@@ -459,6 +504,9 @@ def main() -> None:
         "sampling stored chunks (needs exactly one --kind)",
     )
     args = p.parse_args()
+    if args.recall_set_tsv:
+        print(recall_set_tsv(args.recall_set_tsv), end="")
+        return
 
     kinds = args.kinds or list(PROBES)
     if args.queries_tsv and len(kinds) != 1:

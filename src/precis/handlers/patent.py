@@ -47,7 +47,7 @@ from precis.patent.slug import looks_like_docdb, parse_docdb_id
 from precis.patent.xml import OpsHit, parse_search_response
 from precis.protocol import Handler, KindSpec, tolerates_extra_kwargs
 from precis.response import Response
-from precis.store import SEMANTIC_DISTANCE_FLOOR, SEMANTIC_ONLY_FOLD_DISTANCE, Ref, Tag
+from precis.store import SEMANTIC_DISTANCE_FLOOR, Ref, Tag
 from precis.store._mappers import _REFS_COLS_ALIASED, _row_to_ref
 from precis.utils import handle_registry
 from precis.utils.embed_query import embed_query
@@ -506,8 +506,8 @@ class PatentHandler(Handler):
         ``query_vec=`` may be pre-supplied by the runtime cross-kind
         dispatcher to avoid an embed_one(q) per kind in the fan-out.
         ``mode='lexical'`` forces the keyword leg (no embed).
-        ``hard_cut`` (gr514956) drops uncorroborated semantic hits past the
-        kind's ``SEMANTIC_ONLY_FOLD_DISTANCE``; the cross-kind stream sets it.
+        ``hard_cut`` drops uncorroborated semantic hits past the shared
+        query-relative gap/corpus boundary; the cross-kind stream sets it.
         """
         if not (q and q.strip()):
             return []
@@ -524,9 +524,7 @@ class PatentHandler(Handler):
             tags=tags,
             limit=page_size,
             max_distance=SEMANTIC_DISTANCE_FLOOR,
-            semantic_only_max_distance=(
-                SEMANTIC_ONLY_FOLD_DISTANCE.get("patent") if hard_cut else None
-            ),
+            semantic_only_cut=hard_cut,
         )
 
     # ── rendering helpers ──────────────────────────────────────────────

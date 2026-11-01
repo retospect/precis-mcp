@@ -51,6 +51,7 @@ from precis.store._mappers import (
     _upsert_tag,
 )
 from precis.store._salience import background_actor_active
+from precis.store._search_cut import fixed_floors_enabled, semantic_fold_distance
 from precis.store.core import StoreCore
 
 #: Whitelist mapping a background actor's name to its per-actor rotation
@@ -1670,6 +1671,7 @@ class ChunkStore:
         k: int = 60,
         max_distance: float | None = None,
         semantic_only_max_distance: float | None = None,
+        semantic_only_cut: bool = False,
         exclude_tags: list[str] | None = None,
         exclude_ref_ids: list[int] | None = None,
         include_ref_ids: list[int] | None = None,
@@ -1713,6 +1715,10 @@ class ChunkStore:
         result fold reads this to hide — not drop — weak uncorroborated
         rows; ``semantic_only_max_distance`` uses the same corroboration
         definition for its hard cut.
+
+        ``semantic_only_cut`` applies the shared query-relative gap policy
+        before pagination, retaining the bounded pre-cut pool for traces.
+        The fixed per-kind fallback is opt-in for one release.
 
         ``card_kinds`` opts the listed synthetic cards back into both
         legs (see :func:`_ord_card_clause`).
@@ -1887,6 +1893,7 @@ class ChunkStore:
         # retrieval. RRF still reads the filtered sem leg, so rejected
         # neighbours never contribute a score; the original page is cut below.
         tracing = search_trace.active()
+        collect_pool = tracing or semantic_only_cut
         # gr513663: the semantic-only floor drops fused rows no lexical
         # leg corroborated once their distance clears the stricter bar.
         # ``lex_any`` counts as corroboration too — it is still a term
@@ -1897,7 +1904,7 @@ class ChunkStore:
         # the rendered fold hides ``d > t`` only, and the two must agree
         # (gr514956 review).
         sem_only_where = ""
-        if semantic_only_max_distance is not None and not tracing:
+        if semantic_only_max_distance is not None and not collect_pool:
             sem_only_where = (
                 f"WHERE ({corrob_expr}"
                 "OR (SELECT s2.d FROM sem s2 WHERE s2.cid = fused.cid) <= %s)"
@@ -1906,7 +1913,7 @@ class ChunkStore:
         # gr514956: the render fold needs each row's sem-leg distance and
         # corroboration verdict to decide what hides behind the cursor.
         fold_cols = ""
-        if fold_info_out is not None or tracing:
+        if fold_info_out is not None or collect_pool:
             fold_cols = (
                 ", (SELECT s3.d FROM sem s3 WHERE s3.cid = fused.cid) AS sem_d"
                 f", ({corrob_expr}) AS corroborated"
@@ -1925,7 +1932,7 @@ class ChunkStore:
             )
             order_sql = "canon_score"
         trace_cols = ""
-        if tracing:
+        if collect_pool:
             lex_rank = "(SELECT l.rnk FROM lex l WHERE l.cid = fused.cid)"
             if or_leg:
                 lex_rank = (
@@ -1936,10 +1943,10 @@ class ChunkStore:
                 f", {lex_rank} AS lexical_rank"
                 ", (SELECT s.d FROM sem_raw s WHERE s.cid = fused.cid) AS raw_d"
             )
-        sem_input = "sem_raw" if tracing else f"({sem_core})"
-        sem_raw_cte = f"sem_raw AS ({sem_core})," if tracing else ""
-        sem_union = "sem_raw" if tracing else "sem"
-        outer_page = "" if tracing else "LIMIT %s OFFSET %s"
+        sem_input = "sem_raw" if collect_pool else f"({sem_core})"
+        sem_raw_cte = f"sem_raw AS ({sem_core})," if collect_pool else ""
+        sem_union = "sem_raw" if collect_pool else "sem"
+        outer_page = "" if collect_pool else "LIMIT %s OFFSET %s"
         sql = f"""
             WITH lex AS (
                 SELECT c.chunk_id AS cid,
@@ -2020,13 +2027,13 @@ class ChunkStore:
         full_params.extend([k] * (3 if or_leg else 2))
         if canon_ids:
             full_params.append(canon_ids)
-        if (fold_info_out is not None or tracing) and or_corrob:
+        if (fold_info_out is not None or collect_pool) and or_corrob:
             full_params.append(q)
-        if semantic_only_max_distance is not None and not tracing:
+        if semantic_only_max_distance is not None and not collect_pool:
             if or_corrob:
                 full_params.append(q)
             full_params.append(float(semantic_only_max_distance))
-        if not tracing:
+        if not collect_pool:
             full_params.append(limit)
             full_params.append(offset)
 
@@ -2034,7 +2041,12 @@ class ChunkStore:
             _prepare_filtered_ann(conn, inner_limit)
             db_rows: list[tuple[Any, ...]] = conn.execute(sql, full_params).fetchall()
         unpacked = [_unpack_search_row(r) for r in db_rows]
-        if tracing:
+        if collect_pool:
+            threshold = semantic_only_max_distance
+            if semantic_only_cut:
+                threshold = semantic_fold_distance(
+                    kind, (raw[_SCORE_IDX + 4] for raw in db_rows)
+                )
             kept_rows = []
             kept_hits = []
             for rank, (raw, hit) in enumerate(zip(db_rows, unpacked, strict=True), 1):
@@ -2044,12 +2056,16 @@ class ChunkStore:
                 if lex_rank is None and sem_d is None:
                     cut = "corpus-floor"
                 elif (
-                    semantic_only_max_distance is not None
+                    threshold is not None
                     and not corroborated
-                    and sem_d is not None
-                    and sem_d > semantic_only_max_distance
+                    and raw_d is not None
+                    and raw_d > threshold
                 ):
-                    cut = "fold"
+                    cut = (
+                        "gap"
+                        if semantic_only_cut and not fixed_floors_enabled()
+                        else "fold"
+                    )
                 search_trace.observe(
                     search_trace.ref_handle(ref, block),
                     lexical_rank=int(lex_rank) if lex_rank is not None else None,
@@ -2453,6 +2469,7 @@ class ChunkStore:
         k: int = 60,
         max_distance: float | None = None,
         semantic_only_max_distance: float | None = None,
+        semantic_only_cut: bool = False,
         exclude_tags: list[str] | None = None,
         exclude_ref_ids: list[int] | None = None,
         include_ref_ids: list[int] | None = None,
@@ -2583,6 +2600,7 @@ class ChunkStore:
             k=k,
             max_distance=max_distance,
             semantic_only_max_distance=semantic_only_max_distance,
+            semantic_only_cut=semantic_only_cut,
             exclude_ref_ids=exclude_ref_ids,
             include_ref_ids=include_ref_ids,
             include_speculative=include_speculative,

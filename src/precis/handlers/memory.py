@@ -3163,7 +3163,7 @@ class MemoryHandler(NumericRefHandler):
 
 def _roundtrip_hint(handler: Any, ref_id: int) -> list[tuple[str, str]]:
     """The create-ack recall check (gr520279): ``view='index'`` recall
-    applies the hard :data:`SEMANTIC_ONLY_FOLD_DISTANCE` cut, so a memory
+    applies the shared gap/corpus cut, so a memory
     whose title/hook lacks the task words silently never comes back. One
     prefilled line telling the writer to verify — in every space, not
     just hub-shaped ones. Never raises, like ``link_hints``."""
@@ -3181,14 +3181,11 @@ def _roundtrip_rows(title: str, me: str) -> list[tuple[str, str]]:
     title = " ".join(title.split())[:80]
     if not title:
         return []
-    from precis.store._mappers import SEMANTIC_ONLY_FOLD_DISTANCE
-
-    cut = SEMANTIC_ONLY_FOLD_DISTANCE.get("memory", 0.42)
     return [
         (
             f"search(kind='memory', q={title!r}, view='index')",
-            f"round-trip: if {me} is not listed, the {cut} recall "
-            "cut hides it — put the task words in title=/meta.hook",
+            f"round-trip: if {me} is not listed, ranking or the recall "
+            "gap/corpus cut may hide it — put the task words in title=/meta.hook",
         )
     ]
 

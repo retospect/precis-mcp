@@ -2120,8 +2120,7 @@ class GripeHandler(NumericRefHandler):
         """One result line: header + chunk-kind context + matched text.
 
         ``dist`` rides along for signature compatibility with the base
-        fold render (gr514956) — gripe is not in
-        ``SEMANTIC_ONLY_FOLD_DISTANCE``, so callers never pass it today.
+        query-relative fold render; lexical-only hits retain the rank label.
         ``chips`` is the ref's pre-rendered tag chips (gr520321).
         """
         kind = block.chunk_kind

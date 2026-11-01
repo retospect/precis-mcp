@@ -92,6 +92,15 @@ distinguish eligible values from approved ones without another ledger read.
 Measure paper/quest searches match subjects and anchor-chunk owners so
 promoting a subject does not hide its source evidence. Quest filtering
 shares the recursive inbound ``serves`` closure with measure ranking.
+
+Hybrid automatic recall uses ``_search_cut.gap_cut_distance``: best semantic
+distance plus one delta, capped at the 0.65 corpus floor. Absolute per-kind
+floors cannot account for free-text queries' distance offsets. OR-term lexical
+corroboration always survives; the numeric renderer hides the same weak tail
+with an explicit count, while ids and explicit semantic/lexical modes bypass
+the gap cut. ``PRECIS_SEARCH_GAP_CUT`` overrides delta;
+``PRECIS_SEARCH_FIXED_FLOORS=1`` restores the old table for one release.
+The delta is provisional: local hash embeddings do not calibrate prod bge-m3.
 """
 
 from __future__ import annotations

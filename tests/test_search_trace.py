@@ -31,6 +31,8 @@ from precis_web.routes.status import _kind_counts
 @pytest.fixture(autouse=True)
 def _trace_settings(monkeypatch):
     monkeypatch.setenv("PRECIS_SEARCH_TRACES", "1")
+    monkeypatch.delenv("PRECIS_SEARCH_FIXED_FLOORS", raising=False)
+    monkeypatch.delenv("PRECIS_SEARCH_GAP_CUT", raising=False)
     monkeypatch.delenv("PRECIS_SEARCH_TRACE_RETENTION_DAYS", raising=False)
     monkeypatch.delenv("PRECIS_CURRENT_AGENTLOG", raising=False)
 
@@ -127,7 +129,7 @@ def test_trace_retains_stage_values_and_cuts(runtime_with_store, monkeypatch, vi
     assert lex["rendered"] is True
     assert lex["cut"] is None
     assert candidates[f"me{ids['strong']}"]["rendered"] is True
-    assert candidates[f"me{ids['weak']}"]["cut"] == "fold"
+    assert candidates[f"me{ids['weak']}"]["cut"] == "gap"
     assert candidates[f"me{ids['weak']}"]["rendered"] is False
     assert candidates[f"me{ids['floor']}"]["cut"] == "corpus-floor"
     assert candidates[f"me{ids['floor']}"]["rendered"] is False
@@ -301,7 +303,7 @@ def test_numeric_ref_and_cross_kind_have_one_trace(runtime_with_store):
     assert len(rows) == 2
     assert rows[-1][1]["kinds"] == ["memory", "todo"]
     assert sum(c["rendered"] for c in rows[-1][1]["candidates"]) == 1
-    assert any(c["cut"] == "fold" for c in rows[-1][1]["candidates"])
+    assert any(c["cut"] == "gap" for c in rows[-1][1]["candidates"])
 
 
 def test_trace_adds_only_one_insert_and_no_queries(runtime_with_store, monkeypatch):

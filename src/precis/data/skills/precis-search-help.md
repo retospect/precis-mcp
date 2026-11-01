@@ -359,30 +359,31 @@ is never trimmed.
 ## Weak memory matches leave the default result
 ## The `weak match(es) omitted` line
 
-`search(kind='memory', ...)` omits hits prod measured as noise: a hit whose
-embedding distance clears **0.42** *and* that no lexical leg corroborated.
+`search(kind='memory', ...)` omits a hit whose embedding distance exceeds
+the best candidate distance plus the shared gap delta, capped at **0.65**,
+*and* that no lexical leg corroborated.
 Shown hits print that distance (`(0.21)`) in place of the opaque rank. The
 result ends with a count and a targeted alternative:
 
 ```text
-── N weak match(es) omitted (distance > 0.42); refine q= or use view='ids' for the complete top-N handle list ──
+── N weak match(es) omitted (distance > 0.25, gap cut); refine q= or use view='ids' for the complete top-N handle list ──
 ```
 
 All-weak results say `no strong match` ahead of the same line. A
 partial-term (OR) lexical match counts as corroboration, so a long query is
-never judged on distance alone. Only `memory` renders the omission line
-(gr514956, prod 2026-10-25); other kinds list all hits in their own
-search.
+never judged on distance alone. Numeric body-search renderers show the omission
+line; paper, patent and web retain their own single-kind rendering.
 
 `search(kind='memory', view='index')` (the session-start recall shape)
-applies 0.42 as a hard cut with no hint. The omission applies to the
+applies the same gap/corpus boundary as a hard cut with no hint. The omission applies to the
 default hybrid mode only: `mode='semantic'` and `mode='lexical'` never
 omit, so a semantic search lists everything within the 0.65 corpus floor.
 
-Cross-kind search (`kind='*'` or a kind list) applies a measured per-kind
-cut to uncorroborated semantic hits: memory 0.42, paper 0.55, patent 0.50,
-web 0.55, in hybrid mode only. Other kinds are not cut, and the single-kind
+Cross-kind search (`kind='*'` or a kind list) applies the shared gap/corpus
+cut to uncorroborated semantic hits in hybrid mode. The single-kind
 `search(kind='paper'|'patent'|'web', ...)` does not apply these cuts.
+The provisional delta defaults to 0.15 (`PRECIS_SEARCH_GAP_CUT` override);
+`PRECIS_SEARCH_FIXED_FLOORS=1` restores the old per-kind floors for one release.
 
 ## Filter search results by tag
 ## Find refs tagged with topic:X

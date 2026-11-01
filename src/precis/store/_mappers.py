@@ -155,6 +155,10 @@ SEMANTIC_DISTANCE_FLOOR = 0.65
 # that also matched lexically is never floor-cut.
 SEMANTIC_ONLY_DISTANCE_FLOOR = 0.45
 
+# One-release fallback only (gr514956, superseded by gr548264):
+# PRECIS_SEARCH_FIXED_FLOORS=1 selects this table. The default policy is
+# query-relative, in _search_cut.gap_cut_distance, for every kind.
+# Historical calibration and behavior of the fallback follow.
 # Per-kind fold threshold for rendered search results (gr514956). A hit
 # whose semantic distance clears the kind's value AND that has no lexical
 # corroboration is *folded* out of the rendered page — not dropped, so it

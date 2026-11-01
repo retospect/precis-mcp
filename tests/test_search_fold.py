@@ -17,6 +17,12 @@ from precis.handlers.memory import MemoryHandler
 from precis.store import SEMANTIC_ONLY_FOLD_DISTANCE, ChunkInsert, Store
 
 
+@pytest.fixture(autouse=True)
+def fixed_fallback(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Preserve the one-release fixed-floor contract alongside gap tests."""
+    monkeypatch.setenv("PRECIS_SEARCH_FIXED_FLOORS", "1")
+
+
 def _unit_vec(dim: int, pairs: list[tuple[int, float]]) -> list[float]:
     v = [0.0] * dim
     for i, x in pairs:
