@@ -42,6 +42,7 @@ class _Ref:
     id: int
     title: str
     meta: dict[str, Any] = field(default_factory=dict)
+    parent_id: int | None = None
 
 
 class _Chunks:
@@ -75,8 +76,9 @@ class _Store:
         comments: tuple[str, ...] = (),
         tags: tuple[str, ...] = (),
         meta: dict[str, Any] | None = None,
+        parent_id: int | None = None,
     ) -> None:
-        self.refs[ref_id] = _Ref(ref_id, title, dict(meta or {}))
+        self.refs[ref_id] = _Ref(ref_id, title, dict(meta or {}), parent_id)
         self.tags[ref_id] = [Tag.closed("STATUS", status)] + [Tag.open(t) for t in tags]
         rows = [_Chunk(0, body, TODO_BODY_KIND)] if body else []
         rows += [_Chunk(i + 1, c, "todo_comment") for i, c in enumerate(comments)]
@@ -85,6 +87,12 @@ class _Store:
     def get_ref(self, *, kind: str, id: int) -> _Ref | None:
         assert kind == "todo"
         return self.refs.get(id)
+
+    def recent_refs(
+        self, kinds: list[str], *, parent_id: int | None = None, **_: Any
+    ) -> list[_Ref]:
+        assert kinds == ["todo"]
+        return [r for r in self.refs.values() if r.parent_id == parent_id]
 
     def tags_for(self, ref_id: int) -> list[Tag]:
         return list(self.tags.get(ref_id, []))
@@ -597,10 +605,15 @@ def test_submit_env_is_an_allowlist(
     assert env["PRECIS_SLICE_EFFORT"] == "low"
     # The checkout's SessionEnd reaper must leave the slice tree alone.
     assert env["PRECIS_NO_AUTOREAP"] == "1"
+    # uv's cache lives under the worker-owned ops dir, not the service
+    # account's home (jo546987: root-owned ~/.cache/uv killed every hook).
+    assert env["UV_CACHE_DIR"] == str(run_slice.ops_root() / "uv-cache")
+    assert Path(env["UV_CACHE_DIR"]).is_dir()
     assert set(env) <= set(run_slice.ENV_ALLOWLIST) | {
         "PRECIS_SLICE_ID",
         "PRECIS_SLICE_EFFORT",
         "PRECIS_NO_AUTOREAP",
+        "UV_CACHE_DIR",
     }
 
 
@@ -872,12 +885,50 @@ def test_poll_generator_clean_exit_mints_no_land(seams: dict[str, Any]) -> None:
     store = _Store()
     store.add_todo(42, "Slice it", meta={"generate": {"role": "slicer", "from": "x"}})
     ctx, handle = _submit(store, seams)
+    # The session minted its children through the MCP while it ran.
+    store.add_todo(1, "child one", parent_id=42)
+    store.add_todo(2, "child two", parent_id=42)
     _finish(handle, 0, json.dumps({"is_error": False, "result": "Minted td1, td2."}))
     pctx = _poll_ctx(store, ctx)
     assert run_slice.poll(pctx, handle) is True
     assert pctx.status == "succeeded"
     assert seams["lands"] == []
     assert "land_job" not in pctx.meta_set
+
+
+def test_poll_generator_with_no_children_fails_and_releases(
+    seams: dict[str, Any],
+) -> None:
+    """jo546987: the session never reached the MCP, minted nothing, said so
+    in its handoff and exited 0 — which read as success and left the todo
+    `doing` under its lease. A child-minting generator with no children is
+    a failed attempt."""
+    store = _Store()
+    store.add_todo(42, "Slice it", meta={"generate": {"role": "slicer", "from": "x"}})
+    ctx, handle = _submit(store, seams)
+    _finish(handle, 0, json.dumps({"is_error": False, "result": "BLOCKED: MCP 401."}))
+    pctx = _poll_ctx(store, ctx)
+    assert run_slice.poll(pctx, handle) is True
+    assert pctx.status == "failed"
+    assert pctx.failure is not None and "created no child todos" in pctx.failure
+    tags = store.tag_strings(42)
+    assert "STATUS:open" in tags
+    assert "attempt:1" in tags
+    assert not any(t.startswith("claimed-by:") for t in tags)
+    assert seams["lands"] == []
+
+
+def test_poll_reviewer_generator_needs_no_children(seams: dict[str, Any]) -> None:
+    """A reviewer's deliverable is one verdict comment, never children."""
+    store = _Store()
+    store.add_todo(
+        42, "Review it", meta={"generate": {"role": "reviewer", "from": "x"}}
+    )
+    ctx, handle = _submit(store, seams)
+    _finish(handle, 0, json.dumps({"is_error": False, "result": "review: LAND"}))
+    pctx = _poll_ctx(store, ctx)
+    assert run_slice.poll(pctx, handle) is True
+    assert pctx.status == "succeeded"
 
 
 def test_poll_failed_land_mint_releases_the_lease(

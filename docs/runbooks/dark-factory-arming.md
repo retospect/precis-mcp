@@ -162,6 +162,19 @@ The other settings a slice host reads:
   earlier attempt is renamed to `slice/<id>`.
 - `PRECIS_CLAUDE_BIN`: the `claude` binary the slice session execs
   (default `claude` on PATH). Point it at a stub in tests.
+- `PRECIS_MCP_SLICE_TOKEN_DIR`: the shared session MCP's per-slice grant
+  registry (`<mcp-http state dir>/slice-tokens`, created by the ensure
+  script). Needed when the worker runs as a different user from the one
+  running the server (melchior: launchd `deploy` vs the operator): the
+  default is under the *worker's* home, where no server reads, so the
+  session would start on the worker's `PRECIS_MCP_TOKEN` — and a service
+  account has none, which the session sees as `401 AUTH_HEADER_REJECTED`
+  / "Not logged in" (jo546987). The ensure script makes the dir setgid
+  group-writable; the worker user must share that group.
+- The session's `UV_CACHE_DIR` is `<tempdir>/precis-slice-ops/uv-cache`
+  (`PRECIS_SLICE_OPS_DIR` overrides the parent), not the service account's
+  `~/.cache/uv` — the checkout's hooks run through `uv`, and a root-owned
+  home cache (a `sudo` bootstrap) killed every Bash hook in jo546987.
 - The session runs `--permission-mode bypassPermissions` with the lane's
   `deny_write_paths` (`FACTORY_DENY_WRITE_PATHS` in
   `src/precis/plans/lanes.py`: the ship harness, the factory's own

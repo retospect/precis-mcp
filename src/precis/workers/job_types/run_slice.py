@@ -53,7 +53,8 @@ the tree clean, stop", and ``land_slice`` runs ``scripts/ship``, whose
 land_notify closes the todo. A generator node is the exception: its brief
 ends with "create the child todos", no land job is minted, and the plan
 tick closes it once its children are closed (it reopens one a session
-marked done too early).
+marked done too early). A child-minting generator that exits 0 with no
+children is a failed attempt (lease released), not a success.
 
 Guard: ``PRECIS_FACTORY=off`` refuses every submit (:func:`validate_submit`)
 and every launch (:func:`submit` re-checks). Subprocess, git and process
@@ -258,16 +259,37 @@ def slice_name(todo_id: int) -> str:
     return f"slice-td{todo_id}"
 
 
+def ops_root() -> Path:
+    """The worker-owned dir slice run state lives under:
+    ``<tempdir>/precis-slice-ops/`` (``PRECIS_SLICE_OPS_DIR`` overrides it —
+    tests). Created on demand; owned by whichever user runs the worker, so
+    everything the session must be able to write goes here rather than
+    under a home dir the service account may not own."""
+    base = os.environ.get("PRECIS_SLICE_OPS_DIR", "").strip()
+    root = Path(base) if base else Path(tempfile.gettempdir()) / "precis-slice-ops"
+    root.mkdir(parents=True, exist_ok=True)
+    return root
+
+
 def run_dir(todo_id: int) -> Path:
     """Where a slice's session log and exit record live:
-    ``<tempdir>/precis-slice-ops/td<id>/`` — outside the worktree, so a tree
-    that is removed while the session runs (a reaper, a hand `git worktree
-    remove`) still leaves the poll an exit code and a log to read
-    (jo544355 lost both). ``PRECIS_SLICE_OPS_DIR`` overrides the parent
-    (tests). Created on demand."""
-    base = os.environ.get("PRECIS_SLICE_OPS_DIR", "").strip()
-    parent = Path(base) if base else Path(tempfile.gettempdir()) / "precis-slice-ops"
-    path = parent / f"td{todo_id}"
+    ``<ops_root>/td<id>/`` — outside the worktree, so a tree that is removed
+    while the session runs (a reaper, a hand `git worktree remove`) still
+    leaves the poll an exit code and a log to read (jo544355 lost both).
+    Created on demand."""
+    path = ops_root() / f"td{todo_id}"
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+def uv_cache_dir() -> Path:
+    """``UV_CACHE_DIR`` for the session: ``<ops_root>/uv-cache``. The
+    checkout's hooks run through ``uv``, and uv's default cache is under
+    the user's home — jo546987 ran as the launchd ``deploy`` user whose
+    ``~/.cache/uv`` a root-run bootstrap had left root-owned, so every Bash
+    PreToolUse hook died on ``Permission denied`` and the session had no
+    shell at all. Created on demand."""
+    path = ops_root() / "uv-cache"
     path.mkdir(parents=True, exist_ok=True)
     return path
 
@@ -314,6 +336,8 @@ def slice_env(
     # the poll, the exit record was never written, and the job sat until the
     # crash-loop guard. The factory owns slice trees (the lander deletes them).
     env["PRECIS_NO_AUTOREAP"] = "1"
+    # uv's cache under a dir this worker owns (see uv_cache_dir).
+    env["UV_CACHE_DIR"] = str(uv_cache_dir())
     return env
 
 
@@ -481,6 +505,23 @@ def _todo_status(store: Any, todo_id: int) -> str | None:
 def _is_generator(store: Any, todo_id: int) -> bool:
     ref = store.get_ref(kind="todo", id=todo_id)
     return ref is not None and node_kind(ref.meta) == "generator"
+
+
+def _mints_children(store: Any, todo_id: int) -> bool:
+    """A generator whose brief ends with :func:`_generator_close`: its
+    deliverable is child todos. A reviewer or analyst (``_ROLE_CLOSE``)
+    delivers one comment instead and never mints."""
+    ref = store.get_ref(kind="todo", id=todo_id)
+    if ref is None or node_kind(ref.meta) != "generator":
+        return False
+    gen = (ref.meta or {}).get("generate")
+    role = gen.get("role") if isinstance(gen, dict) else None
+    return role not in _ROLE_CLOSE
+
+
+def _child_todo_count(store: Any, todo_id: int) -> int:
+    """Live todos parented to ``todo_id`` (the children a generator minted)."""
+    return len(store.recent_refs(["todo"], parent_id=todo_id, limit=1000))
 
 
 def _open_tag_values(store: Any, todo_id: int) -> list[str]:
@@ -1197,6 +1238,19 @@ def poll(ctx: Any, handle: Any) -> bool:
             "(nothing to land)"
         )
         summary.append(f"Land: {nothing}.")
+    elif (
+        clean
+        and not land
+        and _mints_children(ctx.store, todo_id)
+        and _child_todo_count(ctx.store, todo_id) == 0
+    ):
+        # A child-minting generator that exits 0 with no children did not
+        # do its job (jo546987: the session never reached the MCP and said
+        # so in its handoff, yet exit 0 read as success and the todo sat
+        # `doing` under its lease until the stale-claim sweep). Count it as
+        # a failed attempt now, lease released.
+        nothing = "created no child todos (a generator's work is its children)"
+        summary.append(f"Children: {nothing}.")
     elif land:
         try:
             land_job = _mint_land(ctx, todo_id, tree, lane)

@@ -636,6 +636,11 @@ CACHE_DIR="${STATE_DIR}/cache"
 # files. Its mere existence is the handshake run_slice checks before minting.
 SLICE_TOKEN_DIR="${STATE_DIR}/slice-tokens"
 mkdir -p "$CACHE_DIR" "$CADDY_DIR" "$SLICE_TOKEN_DIR"
+# The minting worker may be a different user from the one running this
+# server (a Mac slice host: the launchd `deploy` service account; same
+# `staff` group). Group-writable + setgid, so its grants land here and
+# stay group-owned; the backend reads the dir, never the worker's home.
+chmod g+ws "$SLICE_TOKEN_DIR"
 # uv's cache, so a fresh container's prepare step is not a cold download.
 # A named volume, not a host bind: tens of thousands of cache files on the
 # virtiofs share are the file-handle load that panicked a dev machine on
