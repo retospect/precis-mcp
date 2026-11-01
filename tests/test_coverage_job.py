@@ -1277,3 +1277,94 @@ def test_runner_mixtures_support_matches_the_engine_config_fields() -> None:
     got = runner.coverage_mixtures_supported()
     assert isinstance(got, bool)
     assert got == ("mixtures" in {f.name for f in dataclasses.fields(CoverageConfig)})
+
+
+# ── per-point scan geometry (gr540872) ────────────────────────────────────
+
+
+def _geometry_result(with_geometry: bool) -> dict[str, Any]:
+    cov = _coverage("mace:medium", -0.02)
+    if with_geometry:
+        cov["facets"][0]["adsorbates"]["H"]["points"][0]["geometry_id"] = "111:H:1"
+        cov["geometries"] = [
+            {
+                "id": "111:H:1",
+                "facet": "111",
+                "adsorbate": "H",
+                "n": 1,
+                "failed": False,
+                "final": "1\nProperties=species:S:1:pos:R:3\nH 0 0 1\n",
+                "frames": None,
+            }
+        ]
+    return {
+        "model": "mace:medium",
+        "model_index": 0,
+        "coverage": cov,
+        "engine_version": "0.45.0",
+        "corrections": None,
+    }
+
+
+def _geometry_dispatch(
+    store: Store, monkeypatch: pytest.MonkeyPatch, *, with_geometry: bool
+) -> tuple[_FakeCtx, int]:
+    monkeypatch.setattr(
+        runner,
+        "run_coverage_scan_subprocess",
+        lambda config, model_index, **kw: _geometry_result(with_geometry),
+    )
+    job = store.insert_ref(kind="job", slug=None, title="cov", meta={}).id
+    ctx = _FakeCtx(
+        store=store,
+        params={"config": CONFIG, "anchor_key": "c" * 64, "target_node": "spark"},
+        ref_id=int(job),
+    )
+    coverage_job._dispatch(ctx, coverage_job.SPEC)
+    assert ctx.failure is None, ctx.failure
+    return ctx, int(job)
+
+
+def test_dispatch_stores_scan_geometry_out_of_the_meta(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from precis.store import scan_geometry
+
+    ctx, job = _geometry_dispatch(store, monkeypatch, with_geometry=True)
+    assert "geometries" not in ctx.meta_updates["coverage"]
+    assert [p["point"] for p in scan_geometry.list_points(store, job)] == ["111:H:1"]
+    events = [t for k, t in ctx.chunks if k == "job_event"]
+    assert any("stored 1 scan_geometry chunk(s) for 1 point(s)" in t for t in events)
+
+
+def test_dispatch_without_engine_geometry_behaves_as_before(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An engine without keep_geometry returns no ``geometries``: the job
+    writes exactly what it always did and no scan_geometry chunk."""
+    from precis.store import scan_geometry
+
+    ctx, job = _geometry_dispatch(store, monkeypatch, with_geometry=False)
+    assert [k for k, _ in ctx.chunks] == ["job_event", "job_summary"]
+    assert scan_geometry.list_points(store, job) == []
+    assert ctx.meta_updates["coverage"] == _geometry_result(False)["coverage"]
+
+
+@pytest.mark.parametrize("supported", [True, False])
+def test_run_coverage_scan_asks_for_geometry_only_when_supported(
+    monkeypatch: pytest.MonkeyPatch, supported: bool
+) -> None:
+    import autocatpath.coverage as engine_cov
+
+    seen: dict[str, Any] = {}
+
+    def _scan(cfg: Any, log: Any = print, **kw: Any) -> dict[str, Any]:
+        seen.update(kw)
+        return {"model": "emt", "corrections": None}
+
+    monkeypatch.setattr(engine_cov, "scan", _scan)
+    monkeypatch.setattr(runner, "coverage_geometry_supported", lambda: supported)
+    runner.run_coverage_scan(CONFIG, 0, log=lambda *a, **k: None)
+    assert ("keep_geometry" in seen) is supported
+    if supported:
+        assert seen["keep_geometry"] is True

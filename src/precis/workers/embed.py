@@ -152,10 +152,14 @@ class EmbedHandler(WorkerHandler):
     # notes are agent annotations, never body text; the ord<0 band
     # keeps them out of body predicates and this keeps them out of
     # the vector index (meta.no_index backs it on the chunk too).
+    # ``scan_geometry`` — a coverage scan point's extxyz carrier chunk
+    # (precis/store/scan_geometry.py, gr540872): a one-line summary
+    # over a chunk_blobs payload, never embedded (meta.no_index too).
     skip_chunk_kinds: ClassVar[tuple[str, ...]] = (
         "references",
         "field",
         "paper_note",
+        "scan_geometry",
     )
 
     def __init__(self, embedder: Embedder) -> None:

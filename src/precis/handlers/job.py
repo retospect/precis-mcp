@@ -861,6 +861,11 @@ class JobHandler(NumericRefHandler):
         # lists the file names and sizes plus the summary text. Declared
         # (not read off ``**_kw``) so the args= extras gate passes it.
         file: str | None = None,
+        # view='geometry' selectors (gr540872): ``point`` picks one scan
+        # point's stored extxyz, ``frames`` its failed-relax trajectory
+        # instead of the final structure. Declared for the args= gate.
+        point: str | None = None,
+        frames: bool | str | None = None,
         **_kw: Any,
     ) -> Response:
         # ``/logs`` takes its filters from the id's query string; a
@@ -919,6 +924,16 @@ class JobHandler(NumericRefHandler):
         if view == "run-files":
             ref = self._resolve_live_ref(self._coerce_id(id))
             return interpreted(self._render_run_files_view(ref, file=file), readings)
+        if view == "geometry":
+            ref = self._resolve_live_ref(self._coerce_id(id))
+            return interpreted(
+                self._render_geometry_view(ref, point=point, frames=frames), readings
+            )
+        if point is not None or frames is not None:
+            raise BadInput(
+                "point= / frames= only apply to view='geometry'",
+                next="get(kind='job', id=<job>, view='geometry')",
+            )
         # ``sha=`` is the ``/builds`` ancestry question (gr463592). It is
         # declared here, not read off the query string alone, so
         # ``get(kind='job', id='/builds', args={'sha': ...})`` passes the
@@ -1061,6 +1076,83 @@ class JobHandler(NumericRefHandler):
                 "```",
             ]
         return Response(body="\n".join(lines), result_count=len(files))
+
+    def _render_geometry_view(
+        self, ref: Any, *, point: str | None, frames: bool | str | None
+    ) -> Response:
+        """``view='geometry'`` (gr540872) — a coverage scan's stored
+        per-point geometry (``scan_geometry`` chunks, extxyz in
+        ``chunk_blobs``; :mod:`precis.store.scan_geometry`). Without
+        ``args`` it lists the points (id, facet, adsorbate, n, failed, the
+        parts stored and their sizes); ``args={'point': '<id>'}`` returns
+        that point's final relaxed structure as extxyz, adding
+        ``'frames': True`` its failed-relax trajectory. The only read of
+        these chunks: the default card never inlines them."""
+        from precis.store import scan_geometry
+
+        points = scan_geometry.list_points(self.store, ref.id)
+        if not points:
+            return Response(
+                body=(
+                    f"job {ref.id} has no stored scan geometry — a "
+                    "surface_coverage_scan job on an engine with "
+                    "keep_geometry stores one record per scan point"
+                ),
+                result_count=0,
+            )
+        if point is None:
+            if frames is not None:
+                raise BadInput(
+                    "frames= needs point=",
+                    next=f"get(kind='job', id={ref.id}, view='geometry', "
+                    "args={'point': '<id>', 'frames': True})",
+                )
+            n_failed = sum(1 for p in points if p["failed"])
+            lines = [
+                f"# job {ref.id} scan geometry — {len(points)} point(s), "
+                f"{n_failed} failed",
+                "",
+            ]
+            for p in points:
+                parts = ", ".join(f"{k} {v} B" for k, v in p["parts"].items())
+                extra = (
+                    f" ({p['n_frames_total']} frames relaxed)"
+                    if p.get("n_frames_total") is not None
+                    else ""
+                )
+                lines.append(
+                    f"- {p['point']} — {p['adsorbate']} n={p['n']}"
+                    f"{' FAILED' if p['failed'] else ''}: {parts}{extra}"
+                )
+            lines += [
+                "",
+                f"one point: get(kind='job', id={ref.id}, view='geometry', "
+                "args={'point': '<id>'}) — add 'frames': True for a failed "
+                "point's relax trajectory",
+            ]
+            return Response(body="\n".join(lines), result_count=len(points))
+        want_frames = frames is True or str(frames).strip().lower() in (
+            "1",
+            "true",
+            "yes",
+        )
+        part = "frames" if want_frames else "final"
+        ids = [p["point"] for p in points]
+        if point not in ids:
+            raise BadInput(
+                f"job {ref.id} has no scan point {point!r}",
+                options=ids,
+                next=f"get(kind='job', id={ref.id}, view='geometry')",
+            )
+        text = scan_geometry.fetch_point(self.store, ref.id, point, part)
+        if text is None:
+            raise BadInput(
+                f"scan point {point!r} has no {part} geometry stored"
+                + (" (only failed points keep frames)" if want_frames else ""),
+                next=f"get(kind='job', id={ref.id}, view='geometry', "
+                f"args={{'point': {point!r}}})",
+            )
+        return Response(body=text, result_count=1)
 
     def _render_cadence_view(self, name: str | None) -> Response:
         """``id='/cadence[/<name>]'`` — the ``scheduler_leases`` lease

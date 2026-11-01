@@ -434,6 +434,8 @@ def _dispatch(ctx: Any, spec: Any) -> None:
     if bad is not None:
         ctx.record_failure(f"{NAME}: {bad}", failure_class="input")
         return
+    from precis.store import scan_geometry
+
     from . import runner, surface_pourbaix
 
     mixtures_ok = runner.coverage_mixtures_supported()
@@ -569,6 +571,10 @@ def _dispatch(ctx: Any, spec: Any) -> None:
 
     model = str(result["model"])
     coverage = result["coverage"]
+    # per-point extxyz (gr540872) never rides the meta: sibling scans read
+    # meta->'coverage' for up to 50 jobs per run; it goes to scan_geometry
+    # chunks below, once the scan's own record is saved
+    geometries = coverage.pop("geometries", None)
     own_id = getattr(ctx, "ref_id", None)
     siblings = sibling_scan_rows(
         ctx.store, anchor_key, exclude=int(own_id) if isinstance(own_id, int) else None
@@ -632,6 +638,18 @@ def _dispatch(ctx: Any, spec: Any) -> None:
         che_sweep=che,
     )
     warnings = list(coverage.get("warnings") or [])
+    if geometries and isinstance(own_id, int):
+        try:
+            n_geo = scan_geometry.store_geometries(ctx.store, own_id, geometries)
+        except Exception as exc:  # the scan stands; its geometry is a record
+            log.warning("%s: storing scan geometry failed", NAME, exc_info=True)
+            warnings.append(f"scan geometry not stored: {exc}")
+        else:
+            ctx.append_chunk(
+                "job_event",
+                f"{NAME}: stored {n_geo} scan_geometry chunk(s) for "
+                f"{len(geometries)} point(s) — get(kind='job', view='geometry')",
+            )
     if dropped_uncorrected:
         warnings.append(
             "corrections: model(s) "

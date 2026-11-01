@@ -339,6 +339,28 @@ An unknown `file=` refuses listing the available names; a job with
 no `topo_run` gets a clear empty answer. For the board-side drill-down
 (run pick, diffs) see `precis-pcb-topo-help` (`view='topo'`).
 
+## A coverage scan's per-point geometry — view='geometry'
+
+A `surface_coverage_scan` job on an engine with `keep_geometry`
+(autocatpath >= 0.45) stores every scan point's final relaxed structure,
+and for a failed point (unconverged, detached, placement clash) its relax
+trajectory subsampled to at most 50 frames, as `scan_geometry` chunks
+with the extxyz in a blob (gr540872). They are never embedded, never
+summarized, and never shown on the default job card; read them here:
+
+```python
+get(kind='job', id=<job>, view='geometry')
+# → the points: id, adsorbate, n, FAILED, stored parts + sizes
+get(kind='job', id=<job>, view='geometry', args={'point': '(111):O:4'})
+# → that point's final relaxed structure (extxyz)
+get(kind='job', id=<job>, view='geometry',
+    args={'point': '(111):O:4', 'frames': True})
+# → a failed point's relax trajectory (multi-frame extxyz)
+```
+
+Append-only: a re-run of the job adds new chunks and the newest record of
+a point wins; an unknown point refuses listing the stored ids.
+
 ## What jobs have run on this gripe?
 ## History of fix attempts for a gripe
 

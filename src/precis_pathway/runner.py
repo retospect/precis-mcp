@@ -1042,7 +1042,12 @@ def run_coverage_scan(
     prepared = _stamp_slab(cfg, slab_extxyz)
     c = copy.deepcopy(prepared.cfg)
     c.mlip.backend, c.mlip.model, c.mlip.models = resolved, model, []
-    data = scan(c, log=log) if seed is None else scan(c, log=log, seed=seed)
+    kw: dict[str, Any] = {} if seed is None else {"seed": seed}
+    if coverage_geometry_supported():
+        # per-point extxyz (gr540872); coverage_job stores it as
+        # scan_geometry chunks and keeps it out of the job meta
+        kw["keep_geometry"] = True
+    data = scan(c, log=log, **kw)
     corrections = data.get("corrections")
     return {
         "model": str(
@@ -1728,6 +1733,18 @@ def coverage_seed_supported() -> bool:
     from autocatpath.coverage import scan
 
     return "seed" in inspect.signature(scan).parameters
+
+
+def coverage_geometry_supported() -> bool:
+    """Whether the installed engine's scan can return per-point geometry
+    (``keep_geometry``, catpath 423c4fa / gr540872) — feature-detected on
+    ``scan``'s signature like :func:`coverage_seed_supported`; an older
+    engine runs the scan exactly as before."""
+    import inspect
+
+    from autocatpath.coverage import scan
+
+    return "keep_geometry" in inspect.signature(scan).parameters
 
 
 def _import_kinetics() -> Any:

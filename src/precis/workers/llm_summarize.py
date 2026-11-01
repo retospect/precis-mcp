@@ -104,6 +104,8 @@ SKIP_KINDS: frozenset[str] = frozenset(
         # Paper notes (gr521094): ord<0 + meta.no_index already gate
         # them; listed so a kind scan reads as classified.
         "paper_note",
+        # Coverage scan geometry (gr540872): extxyz in a blob.
+        "scan_geometry",
     }
 )
 

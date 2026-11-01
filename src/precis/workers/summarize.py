@@ -66,11 +66,14 @@ class RakeLemmaHandler(WorkerHandler):
     #     (gr521094); agent annotations, never body text. ord<0 +
     #     meta.no_index already gate it; listed so a kind scan reads
     #     as classified.
+    #   * ``scan_geometry`` — a coverage scan point's extxyz carrier
+    #     (gr540872); a summary line over a blob, nothing to summarize.
     skip_chunk_kinds: ClassVar[tuple[str, ...]] = (
         "references",
         "table",
         "field",
         "paper_note",
+        "scan_geometry",
     )
 
     def __init__(
