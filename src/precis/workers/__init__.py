@@ -137,6 +137,14 @@ Two SQL watchdog passes and two agentic reviewers, plus disk:
 
 Notable pass mechanics
 ----------------------
+* ``chunk_keywords`` prepares candidates per chunk/paper, embeds the whole
+  claimed batch via ``Embedder.embed`` once, then scores each chunk's slice.
+  Per-chunk RPCs held the fleet advisory lock for about two minutes per
+  32 chunks (gr547587). Scoring/version and short write transactions stay
+  unchanged; no pooled connection is held across embedding. The CLI still
+  claims 32 by default: raising it needs real embedder/lock timings below
+  one minute, not mock throughput. There is no keyword cadence gate;
+  this ref-pass waits for the full serial rotation between turns.
 * ``embed`` is manual-only (``--only embed``); the ``materialize`` cadence
   mints bounded ``embed_batch`` jobs (default-ON,
   ``PRECIS_MATERIALIZE_EMBED=0`` opts out) above

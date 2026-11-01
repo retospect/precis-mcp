@@ -21,9 +21,12 @@ Coverage shape:
 from __future__ import annotations
 
 from typing import Any
+from unittest.mock import Mock
 
+import pytest
 from psycopg.types.json import Jsonb
 
+from precis.embedder import EmbedderUnavailable
 from precis.store import Store
 from precis.workers.chunk_keywords import (
     KEYWORDS_VERSION,
@@ -314,6 +317,28 @@ class TestEnsurePaperAbbrevs:
 
 
 class TestExtractChunkKeywords:
+    def test_scores_and_abbrev_dedup_are_unchanged(self, monkeypatch: Any) -> None:
+        monkeypatch.setattr(
+            "precis.workers.chunk_keywords._rake_phrases",
+            Mock(return_value=["AB", "alpha batch", "zero", "opposite"]),
+        )
+        embedder = make_mock_bge_m3()
+        embed = Mock(return_value=[[1.0, 0.0], [1.0, 0.0], [0.0, 0.0], [-1.0, 0.0]])
+        monkeypatch.setattr(embedder, "embed", embed)
+        assert extract_chunk_keywords(
+            chunk_text="synthetic candidates",
+            chunk_embedding=[1.0, 0.0],
+            abbrevs={"AB": "alpha batch"},
+            embedder=embedder,
+        ) == [
+            {"short": "AB", "long": "alpha batch", "score": 1.0},
+            {"short": None, "long": "zero", "score": 0.0},
+            {"short": None, "long": "opposite", "score": -1.0},
+        ]
+        embed.assert_called_once_with(
+            ["alpha batch", "alpha batch", "zero", "opposite"]
+        )
+
     def test_returns_top_k_shape(self) -> None:
         embedder = make_mock_bge_m3()
         chunk_vec = embedder.embed_one(_BODY_TEXT_1)
@@ -420,6 +445,171 @@ class TestWriteChunkKeywords:
 
 
 class TestRunChunkKeywordsPass:
+    @pytest.mark.parametrize("batch_size", [3, 32])
+    def test_one_embed_call_matches_serial_keywords(
+        self, store: Store, monkeypatch: Any, batch_size: int
+    ) -> None:
+        """Flattening preserves chunk slices and paper-local abbreviation scope."""
+        refs = [seed_ref(store), seed_ref(store)]
+        with store.pool.connection() as conn:
+            for ref_id, long_form in zip(
+                refs, ["alpha batch", "another batch"], strict=True
+            ):
+                conn.execute(
+                    "UPDATE refs SET meta = %s WHERE ref_id = %s",
+                    (Jsonb({"abbrevs": {"AB": long_form}}), ref_id),
+                )
+            conn.commit()
+        empty_text = "the " * 60
+        candidates = {
+            _BODY_TEXT_1: ["AB", "alpha batch", "shared phrase"],
+            empty_text: [],
+            _BODY_TEXT_2: ["AB", "another batch", "shared phrase", "last phrase"],
+        }
+        monkeypatch.setattr(
+            "precis.workers.chunk_keywords._rake_phrases",
+            lambda text, *, max_keywords: candidates[text],
+        )
+        texts = [_BODY_TEXT_1, empty_text, _BODY_TEXT_2]
+        for i in range(batch_size):
+            _seed_long_chunk(
+                store, ref_id=refs[i % 2], ord=i, text=texts[i % len(texts)]
+            )
+        embedder = make_mock_bge_m3()
+        expected: dict[int, list[dict[str, Any]]] = {}
+        with store.pool.connection() as conn:
+            rows = claim_chunks_without_keywords(conn, limit=batch_size)
+            for chunk_id, ref_id, text, vec_text in rows:
+                assert vec_text is not None
+                expected[chunk_id] = extract_chunk_keywords(
+                    chunk_text=text,
+                    chunk_embedding=[float(v) for v in vec_text.strip("[]").split(",")],
+                    abbrevs=ensure_paper_abbrevs(conn, ref_id),
+                    embedder=embedder,
+                )
+            conn.commit()
+        embed = Mock(wraps=embedder.embed)
+        monkeypatch.setattr(embedder, "embed", embed)
+
+        result = run_chunk_keywords_pass(store, embedder, batch_size=batch_size)
+
+        assert result == {"claimed": batch_size, "ok": batch_size, "failed": 0}
+        embed.assert_called_once()
+        assert len(embed.call_args.args[0]) == sum(len(candidates[r[2]]) for r in rows)
+        with store.pool.connection() as conn:
+            written = conn.execute(
+                "SELECT chunk_id, keywords, keywords_meta FROM chunks ORDER BY chunk_id"
+            ).fetchall()
+        assert len(written) == batch_size
+        for chunk_id, canonical, meta in written:
+            assert meta["keywords"] == expected[chunk_id]
+            assert meta["version"] == KEYWORDS_VERSION
+            assert meta["embedder"] == embedder.model
+            assert canonical == [
+                (k["short"] or k["long"]).lower() for k in expected[chunk_id]
+            ]
+
+    def test_all_empty_candidates_need_no_embed_call(
+        self, store: Store, monkeypatch: Any
+    ) -> None:
+        ref_id = seed_ref(store)
+        for i in range(2):
+            _seed_long_chunk(store, ref_id=ref_id, ord=i, text="the " * 60)
+        embedder = make_mock_bge_m3()
+        embed = Mock(wraps=embedder.embed)
+        monkeypatch.setattr(embedder, "embed", embed)
+
+        assert run_chunk_keywords_pass(store, embedder) == {
+            "claimed": 2,
+            "ok": 2,
+            "failed": 0,
+        }
+        embed.assert_not_called()
+        with store.pool.connection() as conn:
+            assert conn.execute("SELECT keywords FROM chunks").fetchall() == [
+                ([],),
+                ([],),
+            ]
+
+    @pytest.mark.parametrize("failure", ["unavailable", "short", "extra", "exception"])
+    def test_failed_batch_writes_nothing_and_can_retry(
+        self, store: Store, monkeypatch: Any, failure: str
+    ) -> None:
+        ref_id = seed_ref(store)
+        for i in range(2):
+            _seed_long_chunk(store, ref_id=ref_id, ord=i, text=_BODY_TEXT_1)
+        embedder = make_mock_bge_m3()
+        real_embed = embedder.embed
+
+        def broken_embed(texts: list[str]) -> list[list[float]]:
+            if failure == "unavailable":
+                raise EmbedderUnavailable("temporarily busy")
+            if failure == "exception":
+                raise RuntimeError("bad embed response")
+            vectors = real_embed(texts)
+            return vectors[:-1] if failure == "short" else vectors + [vectors[0]]
+
+        embed = Mock(side_effect=broken_embed)
+        monkeypatch.setattr(embedder, "embed", embed)
+        result = run_chunk_keywords_pass(store, embedder)
+        assert result == (
+            {"claimed": 0, "ok": 0, "failed": 0}
+            if failure == "unavailable"
+            else {"claimed": 2, "ok": 0, "failed": 2}
+        )
+        embed.assert_called_once()
+        with store.pool.connection() as conn:
+            assert conn.execute("SELECT keywords FROM chunks").fetchall() == [
+                (None,),
+                (None,),
+            ]
+        monkeypatch.setattr(embedder, "embed", real_embed)
+        assert run_chunk_keywords_pass(store, embedder) == {
+            "claimed": 2,
+            "ok": 2,
+            "failed": 0,
+        }
+
+    @pytest.mark.parametrize("stage", ["prepare", "score"])
+    def test_bad_chunk_does_not_shift_later_slices(
+        self, store: Store, monkeypatch: Any, stage: str
+    ) -> None:
+        ref_id = seed_ref(store)
+        bad_id = _seed_long_chunk(store, ref_id=ref_id, ord=0, text=_BODY_TEXT_1)
+        good_id = _seed_long_chunk(store, ref_id=ref_id, ord=1, text=_BODY_TEXT_2)
+        embedder = make_mock_bge_m3()
+        if stage == "prepare":
+
+            def bad_candidates(text: str, *, max_keywords: int) -> list[str]:
+                if text == _BODY_TEXT_1:
+                    raise ValueError("bad candidates")
+                return ["good phrase"]
+
+            monkeypatch.setattr(
+                "precis.workers.chunk_keywords._rake_phrases", bad_candidates
+            )
+        else:
+            real_embed = embedder.embed
+
+            def bad_vector(texts: list[str]) -> list[list[float]]:
+                vectors = real_embed(texts)
+                vectors[0] = [1.0]  # Only the first chunk has an invalid dimension.
+                return vectors
+
+            monkeypatch.setattr(embedder, "embed", bad_vector)
+
+        assert run_chunk_keywords_pass(store, embedder) == {
+            "claimed": 2,
+            "ok": 1,
+            "failed": 1,
+        }
+        with store.pool.connection() as conn:
+            written: dict[int, list[str] | None] = dict(
+                conn.execute("SELECT chunk_id, keywords FROM chunks").fetchall()
+            )
+        assert written[bad_id] is None
+        assert written[good_id]
+
     def test_ok_path_writes_keywords_and_returns_counts(self, store: Store) -> None:
         ref_id = seed_ref(store)
         cid1 = _seed_long_chunk(store, ref_id=ref_id, ord=0, text=_BODY_TEXT_1)

@@ -130,7 +130,7 @@ SKIP_KINDS: frozenset[str] = frozenset(
 _TOP_K = 8
 
 #: RAKE candidate pool size. Wider gives KeyBERT more to score and
-#: rank from, at the cost of one extra batched embed call per chunk.
+#: rank from. Candidates across the claimed chunks share one embed call.
 _RAKE_POOL = 40
 
 
@@ -365,9 +365,18 @@ def extract_chunk_keywords(
       4. Take top-K; merge abbrev pairs (``MOF`` + ``metal-organic
          framework`` collapse to one entry).
     """
-    candidates = _rake_phrases(chunk_text, max_keywords=_RAKE_POOL)
-    if not candidates:
+    candidate_meta = _prepare_keyword_candidates(chunk_text, abbrevs)
+    if not candidate_meta:
         return []
+    cand_vecs = embedder.embed([long_form for long_form, _ in candidate_meta])
+    return _score_keyword_candidates(chunk_embedding, candidate_meta, cand_vecs)
+
+
+def _prepare_keyword_candidates(
+    chunk_text: str, abbrevs: dict[str, str]
+) -> list[tuple[str, str | None]]:
+    """Keep each candidate's embedding text and paper-local short form."""
+    candidates = _rake_phrases(chunk_text, max_keywords=_RAKE_POOL)
 
     # Build the candidate→embedding_text mapping (long-form if known
     # short). We preserve the candidate-as-it-appeared for short-
@@ -378,7 +387,6 @@ def extract_chunk_keywords(
         short_to_long[short.lower()] = long_form
         long_to_short[long_form.lower()] = short
 
-    embed_texts: list[str] = []
     candidate_meta: list[tuple[str, str | None]] = []  # (long-form, short or None)
     for cand in candidates:
         cand_l = cand.lower()
@@ -392,12 +400,16 @@ def extract_chunk_keywords(
             cand_short = long_to_short[cand_l]
         else:
             cand_short = None
-        embed_texts.append(long_form)
         candidate_meta.append((long_form, cand_short))
+    return candidate_meta
 
-    # One batched embed call.
-    cand_vecs = embedder.embed(embed_texts)
 
+def _score_keyword_candidates(
+    chunk_embedding: list[float],
+    candidate_meta: list[tuple[str, str | None]],
+    cand_vecs: list[list[float]],
+) -> list[dict[str, Any]]:
+    """Score one chunk's slice without changing candidate order or dedup."""
     # Score each candidate by cosine against the chunk embedding.
     chunk_norm = _l2_norm(chunk_embedding)
     scored: list[tuple[float, str, str | None]] = []
@@ -526,9 +538,8 @@ def _run_chunk_keywords_batch(
        pre-fix single-transaction version did.
     2. **Abbrevs + extract** (no DB connection held across the embedder
        call): :func:`_ensure_paper_abbrevs_retrying` (per ref, cached —
-       its own short retried transaction) then
-       :func:`extract_chunk_keywords`, which itself makes one batched
-       embedder HTTP round-trip per chunk, with nothing checked out.
+       its own short retried transaction), then prepare all candidates
+       and embed them in one call. Score each chunk's slice independently.
     3. **Write** (short txn per chunk, wrapped in :func:`retry_locked`):
        :func:`write_chunk_keywords`, guarded (see its docstring) so a
        double-claim landing in the post-commit window — genuinely rare
@@ -550,6 +561,8 @@ def _run_chunk_keywords_batch(
 
     ok = failed = 0
     abbrev_cache: dict[int, dict[str, str]] = {}
+    prepared: list[tuple[int, list[float], list[tuple[str, str | None]]]] = []
+    embed_texts: list[str] = []
     for chunk_id, ref_id, text, vec_text in rows:
         try:
             if vec_text is None:
@@ -564,12 +577,45 @@ def _run_chunk_keywords_batch(
                 abbrev_cache[ref_id] = _ensure_paper_abbrevs_retrying(store, ref_id)
             abbrevs = abbrev_cache[ref_id]
 
-            keywords = extract_chunk_keywords(
-                chunk_text=text,
-                chunk_embedding=chunk_vec,
-                abbrevs=abbrevs,
-                embedder=embedder,
+            candidates = _prepare_keyword_candidates(text, abbrevs)
+            prepared.append((chunk_id, chunk_vec, candidates))
+            embed_texts.extend(long_form for long_form, _ in candidates)
+        except (LockNotAvailable, DeadlockDetected) as exc:
+            log.warning(
+                "chunk_keywords: chunk_id=%s deferred after residual lock "
+                "contention: %s",
+                chunk_id,
+                exc,
             )
+        except Exception:
+            log.exception("chunk_keywords: chunk_id=%s failed", chunk_id)
+            failed += 1
+
+    try:
+        cand_vecs = embedder.embed(embed_texts) if embed_texts else []
+        if len(cand_vecs) != len(embed_texts):
+            raise ValueError(
+                f"embedder returned {len(cand_vecs)} vectors for "
+                f"{len(embed_texts)} keyword candidates"
+            )
+    except EmbedderUnavailable as exc:
+        log.warning(
+            "chunk_keywords: embedder unavailable (%s); deferring batch of %d chunks",
+            exc,
+            claimed,
+        )
+        return {"claimed": 0, "ok": 0, "failed": 0}
+    except Exception:
+        log.exception("chunk_keywords: candidate embedding batch failed")
+        return {"claimed": claimed, "ok": 0, "failed": failed + len(prepared)}
+
+    offset = 0
+    for chunk_id, chunk_vec, candidates in prepared:
+        end = offset + len(candidates)
+        chunk_cand_vecs = cand_vecs[offset:end]
+        offset = end
+        try:
+            keywords = _score_keyword_candidates(chunk_vec, candidates, chunk_cand_vecs)
 
             def _write(
                 chunk_id: int = chunk_id, keywords: list[dict[str, Any]] = keywords
@@ -586,19 +632,7 @@ def _run_chunk_keywords_batch(
             retry_locked(_write, label=f"chunk_keywords chunk_id={chunk_id}")
             ok += 1
         except EmbedderUnavailable as exc:
-            # The embedder is transiently down/busy — and it embeds a
-            # candidate set per chunk, so the *next* chunk would just
-            # hit the same wall. Stop the pass and defer the rest: the
-            # unwritten chunks stay unclaimed (keywords still NULL) and
-            # re-claim next pass. Don't count them ``failed`` (the
-            # chunks are fine) and report ``claimed=0`` so the run-loop
-            # backs off the down embedder instead of hot-looping it.
-            log.warning(
-                "chunk_keywords: embedder unavailable (%s); "
-                "deferring %d remaining chunks this pass",
-                exc,
-                claimed - ok,
-            )
+            log.warning("chunk_keywords: embedder unavailable (%s); deferring", exc)
             return {"claimed": 0, "ok": 0, "failed": 0}
         except (LockNotAvailable, DeadlockDetected) as exc:
             # Residual lock contention that outlasted retry_locked's own
