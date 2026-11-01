@@ -129,6 +129,15 @@ class SeedPartialResult(TypedDict):
     #: sha256 of the MLIP checkpoint this unit loaded (D10), ``None`` for
     #: EMT or when the file could not be located on the seed's host.
     weights_sha256: str | None
+    #: gr543776 keep-everything, present when the engine exposes the
+    #: capture seams (``_collect_saddle``/``ts_collect``): per-step NEB
+    #: band profiles (``images_energy`` + scalar evidence), per-step
+    #: saddle stamps, and the kept geometries/profiles as
+    #: ``{relpath: text}`` — ``seed_job`` lands the last in the job
+    #: artifact store; the first two ride job meta.
+    bands: NotRequired[dict[str, list[dict[str, Any]]]]
+    ts: NotRequired[dict[str, dict[str, Any]]]
+    artifacts: NotRequired[dict[str, str]]
 
 
 class CoverageScanResult(TypedDict):

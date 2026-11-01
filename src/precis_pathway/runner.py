@@ -44,6 +44,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, cast
 
 from .coverage_sites import representable_coverages, slab_top_sites
+from .keep import install_hooks as _install_keep_hooks
 from .scratch import (
     _cleanup_detached,
     _tail_logs,
@@ -518,6 +519,7 @@ def run_seed_partial(
     force_backend: str | None = None,
     slab_extxyz: str | None = None,
     only_steps: Sequence[str] | None = None,
+    checkpoint_dir: str | None = None,
     log: Any = lambda *a, **k: None,
 ) -> SeedPartialResult:
     """Run ONE ``(model, seed)`` unit of a pathway exploration.
@@ -557,10 +559,29 @@ def run_seed_partial(
     native structure ingest, slice-1b), and ``weights_sha256`` (the sha256
     of the checkpoint this unit loaded, D10 — ``None`` for EMT or when the
     file could not be located; the seed lane is where the weights live).
+
+    Keep-everything (gr543776, Reto 2026-11-01): while the engine runs,
+    :mod:`precis_pathway.keep`'s hooks capture each reported NEB band
+    (``images`` → extxyz, ``images_energy`` → the ~2 kB profile), each
+    step's saddle (``ts_collect``, the engine's own seam — passed only
+    when this engine's ``run_one_seed`` accepts it), and every finished
+    relax (lowest-energy per state). The geometries come back in
+    ``artifacts`` (``{relpath: text}`` — landed in the job artifact store
+    by ``seed_job``), the profiles in ``bands`` and the saddle stamps in
+    ``ts``; ``checkpoint_dir`` additionally writes every artifact to disk
+    as it completes — the child's own scratch ``checkpoints/`` — so a
+    SIGKILLed or failed seed's finished measurements survive for
+    ``seed_job._reap_scratch`` to harvest before the dir is reaped. All
+    captures are feature-detected; an older engine loses retention, never
+    the run.
     """
+    import inspect
+
+    import autocatpath.pipeline as _pipeline
     from autocatpath.calculators import make_calculator, resolve_backend
-    from autocatpath.pipeline import run_one_seed
     from autocatpath.structures import default_lattice, equilibrium_lattice
+
+    run_one_seed = _pipeline.run_one_seed
 
     cfg = _prep(config, force_backend)
     specs = cfg.mlip.specs()
@@ -602,7 +623,30 @@ def run_seed_partial(
     # ``poison:<p>`` keys; serialise the non-poison states to extxyz so the
     # geometry crosses the JSON job boundary.
     collect: dict[str, Any] | None = {} if model_index == 0 else None
-    partial = run_one_seed(c, seed, log=log, collect=collect)
+
+    # gr543776 keep-everything (see the docstring): install the capture
+    # hooks for this one call and hand the engine its own saddle-collect
+    # dict when its run_one_seed accepts the kwarg.
+    ts_collect: dict[str, Any] = {}
+    bands: dict[str, list[dict[str, Any]]] = {}
+    artifacts: dict[str, str] = {}
+    restore = _install_keep_hooks(
+        _pipeline,
+        seed=seed,
+        bands=bands,
+        artifacts=artifacts,
+        checkpoint_dir=checkpoint_dir,
+        progress=log,
+    )
+    kw: dict[str, Any] = (
+        {"ts_collect": ts_collect}
+        if "ts_collect" in inspect.signature(run_one_seed).parameters
+        else {}
+    )
+    try:
+        partial = run_one_seed(c, seed, log=log, collect=collect, **kw)
+    finally:
+        restore()
     partial["model"] = tag
     structures: dict[str, SeedStructureEntry] = {
         name: {"energy": float(energy), "extxyz": _atoms_to_extxyz(atoms)}
@@ -625,7 +669,7 @@ def run_seed_partial(
         weights_sha = _vm.weights_sha256_for(backend, model)
     except Exception:  # provenance only; never fails the unit
         log(f"[{tag}] weights_sha256: could not hash the checkpoint")
-    return {
+    out: SeedPartialResult = {
         "seed": seed,
         "model": tag,
         "model_index": model_index,
@@ -634,6 +678,23 @@ def run_seed_partial(
         "structures": structures,
         "weights_sha256": weights_sha,
     }
+    if bands:
+        out["bands"] = bands
+    ts_summary = {
+        str(step): {
+            "ts_energy": atoms.info.get("ts_energy"),
+            "ts_image": atoms.info.get("ts_image"),
+            "band_images": atoms.info.get("band_images"),
+            "barrier": atoms.info.get("barrier"),
+        }
+        for step, atoms in ts_collect.items()
+        if getattr(atoms, "info", None) is not None
+    }
+    if ts_summary:
+        out["ts"] = ts_summary
+    if artifacts:
+        out["artifacts"] = artifacts
+    return out
 
 
 #: Default subprocess wall-clock bound (s) when a job declares no
@@ -2655,6 +2716,14 @@ def _subprocess_main(argv: list[str]) -> int:
                     # Absent on a request file an older build wrote (the
                     # detached protocol leaves them on disk) -> whole network.
                     only_steps=req.get("only_steps") or None,
+                    # gr543776: incremental per-measurement checkpoints into
+                    # the scratch dir's checkpoints/ — a SIGKILLed child's
+                    # finished bands/relaxes survive for _reap_scratch to
+                    # harvest. Both launch protocols derive it from out_path,
+                    # so request files need no new field.
+                    checkpoint_dir=os.path.join(
+                        os.path.dirname(out_path), "checkpoints"
+                    ),
                     # Child logs go to stdout (parent captures + logs them);
                     # the JSON result travels by file, so this can't corrupt
                     # the envelope.

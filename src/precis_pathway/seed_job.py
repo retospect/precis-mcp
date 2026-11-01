@@ -42,11 +42,22 @@ The weights seam is NOT here: which checkpoint a unit loads is resolved
 inside ``runner.run_seed_partial`` (``resolve_backend`` +
 ``make_calculator``); ``precis_pathway.manifest`` hashes that file for the
 validation manifest (``weights_sha256``).
+
+**Retention (gr543776, Reto 2026-11-01 "keep everything").** The child
+writes each finished band / saddle / relax incrementally into its scratch
+``checkpoints/`` AND returns the same payloads in the result envelope's
+``artifacts``. The succeeded paths (``_dispatch`` / ``_poll``) land the
+envelope's in the job artifact store (:mod:`precis.store.job_artifacts`,
+``meta.artifacts`` pointers — never the bytes); ``_reap_scratch``
+harvests whatever checkpoints exist before deleting the dir, which is the
+only copy a killed or failed seed leaves. ``meta.bands`` / ``meta.ts``
+carry the small profiles and saddle stamps.
 """
 
 from __future__ import annotations
 
 import logging
+import os
 import re
 from typing import TYPE_CHECKING, Any
 
@@ -271,6 +282,7 @@ def _dispatch(ctx: Any, spec: Any) -> None:
         if _only_steps(params):
             kw["only_steps"] = _only_steps(params)
         result = runner.run_seed_partial_subprocess(config, seed, model_index, **kw)
+        _record_artifacts(ctx, result)
     except runner.ChildKilledError as exc:
         # INFRA-class (parked-leaf-recovery, docs/backlog/
         # parked-leaf-recovery.md): the child died by signal (SIGKILL/OOM)
@@ -318,6 +330,8 @@ def _dispatch(ctx: Any, spec: Any) -> None:
         lattice=result.get("lattice") or {},
         structures=result.get("structures") or {},
         weights_sha256=result.get("weights_sha256"),
+        bands=result.get("bands") or {},
+        ts=result.get("ts") or {},
         **_provenance_meta(params),
     )
     n_states = len(partial.get("states") or {})
@@ -328,6 +342,36 @@ def _dispatch(ctx: Any, spec: Any) -> None:
         f"{n_states} state(s), {n_warnings} warning(s).",
     )
     ctx.set_status("succeeded")
+
+
+def _record_artifacts(ctx: Any, result: Any) -> int:
+    """Land the seed child's kept geometries (gr543776 — NEB bands, TS
+    saddles, finished relaxes) in the job artifact store: each
+    ``result["artifacts"]`` entry becomes one file under
+    ``PRECIS_JOB_ARTIFACT_ROOT`` plus one ``meta.artifacts`` row. Never
+    fails the unit — a lost artifact is logged, the run's result already
+    landed."""
+    from precis.store import job_artifacts
+
+    artifacts = result.get("artifacts") or {}
+    n = 0
+    for name, text in artifacts.items():
+        try:
+            data = text.encode("utf-8") if isinstance(text, str) else bytes(text)
+            with ctx.store.pool.connection() as conn:
+                job_artifacts.write_artifact(conn, ctx.ref_id, name, data)
+                conn.commit()
+            n += 1
+        except Exception:
+            log.warning(
+                "autocatpath_seed: artifact write failed for %s", name, exc_info=True
+            )
+    if n:
+        ctx.append_chunk(
+            "job_event",
+            f"autocatpath_seed: kept {n} artifact(s) (NEB bands, TS geometry, relaxes)",
+        )
+    return n
 
 
 def _run(*_a: Any, **_k: Any) -> Any:
@@ -406,11 +450,71 @@ def _job_stamped(ctx: Any) -> bool:
     return bool(row and row[0])
 
 
+def _harvest_scratch(ctx: Any, handle: Any) -> int:
+    """Salvage whatever the child left under ``<scratch>/checkpoints/``
+    before the dir is reaped (gr543776 item 2): a killed or failed seed
+    returns nothing, so its finished relaxes and NEB bands only ever
+    existed as these incremental checkpoint files — land each in the job
+    artifact store. Filenames already recorded on the job (the succeeded
+    path wrote the same artifacts from the result envelope) are skipped,
+    so a re-reap stays idempotent; meta is re-read fresh because
+    ``ctx.meta`` is the claim-time snapshot."""
+    from precis.store import job_artifacts
+
+    scratch_dir = (handle or {}).get("dir")
+    if not scratch_dir:
+        return 0
+    ckpt = os.path.join(scratch_dir, "checkpoints")
+    if not os.path.isdir(ckpt):
+        return 0
+    with ctx.store.pool.connection() as conn:
+        row = conn.execute(
+            "SELECT meta->'artifacts' FROM refs WHERE ref_id = %s", (ctx.ref_id,)
+        ).fetchone()
+    existing = {
+        a.get("name")
+        for a in ((row[0] if row and isinstance(row[0], list) else []) or [])
+        if isinstance(a, dict)
+    }
+    n = 0
+    for fname in sorted(os.listdir(ckpt)):
+        fpath = os.path.join(ckpt, fname)
+        if fname in existing or not os.path.isfile(fpath) or os.path.islink(fpath):
+            continue
+        try:
+            with open(fpath, "rb") as fh:
+                data = fh.read()
+        except OSError:
+            continue
+        try:
+            with ctx.store.pool.connection() as conn:
+                job_artifacts.write_artifact(conn, ctx.ref_id, fname, data)
+                conn.commit()
+            n += 1
+        except Exception:
+            log.warning(
+                "autocatpath_seed: artifact harvest of %s failed",
+                fname,
+                exc_info=True,
+            )
+    if n:
+        ctx.append_chunk(
+            "job_event",
+            f"autocatpath_seed: harvested {n} artifact(s) from the scratch dir",
+        )
+    return n
+
+
 def _reap_scratch(ctx: Any, handle: Any, *, failed: bool) -> None:
     """Delete the compute dir, but only after the job's ``finished_at`` /
     ``wall_s`` / ``node`` stamp has landed (gr496403): a dir that vanishes
     first takes the only wall-time record of the run with it. An unstamped
-    job keeps its dir (and logs it) rather than losing the evidence."""
+    job keeps its dir (and logs it) rather than losing the evidence.
+
+    Before the delete, harvest the child's ``checkpoints/`` into the job
+    artifact store (gr543776) and drain this job's local spool toward the
+    shared root — the ruling's "keep them locally and move them in the
+    job's cleanup step"."""
     from precis_pathway import scratch
 
     if not _job_stamped(ctx):
@@ -420,6 +524,16 @@ def _reap_scratch(ctx: Any, handle: Any, *, failed: bool) -> None:
             (handle or {}).get("dir"),
         )
         return
+    try:
+        _harvest_scratch(ctx, handle)
+    except Exception:
+        log.warning("autocatpath_seed: scratch harvest failed", exc_info=True)
+    try:
+        from precis.store import job_artifacts
+
+        job_artifacts.drain_spool(ctx.ref_id)
+    except Exception:
+        log.warning("autocatpath_seed: spool drain failed", exc_info=True)
     scratch.finalize_seed_partial_detached(handle, failed=failed)
 
 
@@ -498,6 +612,7 @@ def _poll(ctx: Any, handle: Any) -> bool:
         return True
     result = status["result"]
     partial = result["partial"]
+    _record_artifacts(ctx, result)
     ctx.set_meta(
         content_key=params.get("content_key"),
         seed=seed,
@@ -507,6 +622,8 @@ def _poll(ctx: Any, handle: Any) -> bool:
         lattice=result.get("lattice") or {},
         structures=result.get("structures") or {},  # see _dispatch's note
         weights_sha256=result.get("weights_sha256"),
+        bands=result.get("bands") or {},
+        ts=result.get("ts") or {},
         **_provenance_meta(params),
     )
     tail = (status.get("tail") or "")[-4000:]
