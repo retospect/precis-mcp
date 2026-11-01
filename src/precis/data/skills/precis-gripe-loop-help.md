@@ -131,6 +131,10 @@ time:
   did not say whether it counts the note text or the stored line with its
   timestamp and window prepended; the builder had to guess.
 
+Every brief to an agent session also carries the standing context rule
+(gr515153): bulky reads — queue files, triage outputs, review texts — go
+to a subagent that returns a digest, not into the main loop.
+
 ## Step 3 — assign the builder
 
 When the builder session starts, record who and where:

@@ -74,6 +74,32 @@ def ctx_percent(pane: str) -> int | None:
     return None if best is None else round(best[1])
 
 
+#: Absolute context sizes panes print. A ``N% ctx`` footer cannot answer
+#: "~120k tokens?" — the window is unknown — so the peer-loop compact
+#: threshold (gr515153) reads these instead: Devin ``Context: 200k / 262k
+#: tokens (76%)``, Claude's post-turn ``new task? /clear to save 196.5k
+#: tokens`` and its mid-turn spinner ``(47s · esc to interrupt · 88.2k
+#: tokens)``. Bottom-most wins, same rule as ctx_percent.
+_CTX_TOKEN_RES = (
+    re.compile(r"Context:\s*(\d+(?:\.\d+)?)\s*([kKmM])\s*/"),
+    re.compile(r"/clear to save\s+(\d+(?:\.\d+)?)\s*([kKmM])\s+tokens"),
+    re.compile(r"·\s*(\d+(?:\.\d+)?)\s*([kKmM])\s+tokens"),
+)
+
+
+def ctx_tokens(pane: str) -> int | None:
+    """Context fill in tokens, any agent; ``None`` when the pane prints no
+    absolute size (a bare ``N% ctx`` footer is unjudgeable by a token
+    threshold — leave it alone rather than guess the window)."""
+    best: tuple[int, float] | None = None
+    for pat in _CTX_TOKEN_RES:
+        for m in re.finditer(pat, pane):
+            if best is None or m.start() >= best[0]:
+                mult = 1_000 if m.group(2).lower() == "k" else 1_000_000
+                best = (m.start(), float(m.group(1)) * mult)
+    return None if best is None else round(best[1])
+
+
 def nonempty_tail(pane: str, n: int) -> list[str]:
     return [ln for ln in pane.splitlines() if ln.strip()][-n:]
 

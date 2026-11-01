@@ -34,7 +34,11 @@ The thread-session fleet (one window per roadmap thread) is
                                         when a pane's ctx hits --ceiling
                                         (default 70%), re-arm below --rearm;
                                         FORCED HANDOFF line at --hard (85%);
-                                        --compact sends /compact instead
+                                        --compact sends /compact instead;
+                                        --tokens N triggers on N context
+                                        tokens (bare flag 120k, env
+                                        FLEET_COMPACT_TOKENS), idle panes
+                                        only — the peer main-loop form
     fleet-wave close NAME...            kill window, remove tree, drop branch;
                                         refuses a tree with unlanded commits
     fleet-wave land TREE [--checked|--remote] [-m MSG]
@@ -84,7 +88,13 @@ for the coordinator; that marker re-arms on the same ``--rearm`` drop.
 ``{name}`` inside it fills with the wave name. ``--compact`` sends
 ``/compact`` instead and re-arms at half the ceiling: the orchestrator
 main loops (any window name, not only ``claude-``/``devin-``) cost most
-in cache reads past ~120k tokens (gr515153).
+in cache reads past ~120k tokens (gr515153). ``--tokens`` is the
+peer-loop form: it implies ``--compact`` and triggers on the absolute
+context size a pane prints — Devin's ``Context: N / M tokens``, Claude's
+``/clear to save N tokens`` — with a bare flag meaning 120k and
+``FLEET_COMPACT_TOKENS``/``--tokens N`` retuning (k/M suffixes). A
+compact never fires mid-turn: a busy pane is skipped and retried on the
+next poll, and a pane that prints no token figure is left alone.
 
 Watcher output is Monitor input, and every line wakes the coordinator at
 full context (gr515152: 70% of GRIPE_FIX's Opus calls). So
@@ -165,6 +175,8 @@ Configuration (env, or the matching flag before the subcommand):
                                   approve/--revoke/land refuse anywhere else
   FLEET_COORDINATOR, FLEET_RELEASE_OWNER, FLEET_APPROVAL   footer fills
   FLEET_LEGACY_FOOTERS=1          pre-v2 footers, no apply (one release)
+  FLEET_COMPACT_TOKENS            ctx-guard's peer-loop compact threshold
+                                  (default of --tokens; bare flag = 120k)
 """
 
 from __future__ import annotations
@@ -193,6 +205,7 @@ from fleet_panes import (
     LAUNCH_PERMISSION_MODE,
     compacting,
     ctx_percent,
+    ctx_tokens,
     dialog_command,
     dialog_type,
     nonempty_tail,
@@ -1571,6 +1584,15 @@ _CTX_GUARD_MESSAGE = (
 )
 
 
+def _token_amount(s: str) -> int:
+    """``120k``/``1.5M``/``120000`` → tokens; bad input is a usage error."""
+    m = re.fullmatch(r"(\d+(?:\.\d+)?)\s*([kKmM]?)", s.strip())
+    if not m:
+        raise SystemExit(f"fleet-wave: bad token amount {s!r} (e.g. 120k)")
+    mult = {"": 1, "k": 1_000, "m": 1_000_000}[m.group(2).lower()]
+    return round(float(m.group(1)) * mult)
+
+
 def _ctx_guard_message(a: argparse.Namespace) -> str:
     if a.message_file:
         return Path(a.message_file).read_text(encoding="utf-8").rstrip("\n")
@@ -1586,18 +1608,26 @@ def cmd_ctx_guard(f: Fleet, a: argparse.Namespace) -> int:
     and reports each time: a guard that cannot deliver is itself worth a
     line. ``{name}`` in the message fills with the wave name.
 
+    ``--tokens`` switches the trigger (and ``--rearm``) from ctx % to the
+    absolute context size the pane prints (gr515153) and implies
+    ``--compact``; a pane that prints no token figure is skipped.
+
     At or above ``--hard`` — the same line where send-line refuses fresh
     instructions — a ``<name>.hard`` marker makes the guard print one
     FORCED HANDOFF line per episode for the coordinator; it re-arms on
     the same ``--rearm`` drop. A pane that jumps straight past the
     ceiling still gets the instruction through ``_send_text``.
     """
+    if a.tokens:
+        a.tokens = _token_amount(a.tokens)
+        a.compact = True
+    trigger = a.tokens or a.ceiling
     if a.rearm is None:
-        a.rearm = a.ceiling // 2 if a.compact else 40
-    if a.rearm >= a.ceiling:
+        a.rearm = trigger // 2 if a.compact else 40
+    if a.rearm >= trigger:
         print(
-            f"fleet-wave: --rearm ({a.rearm}) must be below --ceiling "
-            f"({a.ceiling}); the guard would oscillate",
+            f"fleet-wave: --rearm ({a.rearm}) must be below the trigger "
+            f"({trigger}); the guard would oscillate",
             file=sys.stderr,
         )
         return 2
@@ -1614,20 +1644,29 @@ def cmd_ctx_guard(f: Fleet, a: argparse.Namespace) -> int:
             pane = f.capture(win) if win else None
             if pane is None:
                 continue
-            pct = ctx_percent(ANSI_RE.sub("", pane))
-            if pct is None:
+            plain = ANSI_RE.sub("", pane)
+            pct = ctx_percent(plain)
+            fill = ctx_tokens(plain) if a.tokens else pct
+            if fill is None:
                 continue
             marker = st_dir / name
             hard = st_dir / f"{name}.hard"
-            if pct < a.rearm:
+            if fill < a.rearm:
                 said.pop(name, None)
                 marker.unlink(missing_ok=True)
                 hard.unlink(missing_ok=True)
                 continue
-            if pct >= a.ceiling and not marker.exists():
+            if fill >= trigger and not marker.exists():
                 tree = f.worktrees / name
-                if a.compact and tree.is_dir() and _active_subagent_task(tree):
-                    continue  # /compact under a live subagent loses its result
+                if a.compact:
+                    if tree.is_dir() and _active_subagent_task(tree):
+                        # /compact under a live subagent loses its result
+                        continue
+                    if BUSY_RE.search(plain):
+                        # never /compact mid-turn (gr515153): the send
+                        # would queue and fire at an arbitrary later
+                        # point — retry on the next poll instead
+                        continue
                 rc, note = _send_text(
                     f,
                     win,
@@ -1640,7 +1679,7 @@ def cmd_ctx_guard(f: Fleet, a: argparse.Namespace) -> int:
                 # rc 4: text typed, Enter unconfirmed — count it as sent so
                 # the guard neither resends nor nags every poll.
                 if rc in (0, 4):
-                    marker.write_text(f"{pct} {utc_stamp()}\n", encoding="utf-8")
+                    marker.write_text(f"{fill} {utc_stamp()}\n", encoding="utf-8")
                 what = "/compact" if a.compact else "WIP+handoff"
                 if rc == 0:
                     outcome = f"sent {what}"
@@ -1648,15 +1687,18 @@ def cmd_ctx_guard(f: Fleet, a: argparse.Namespace) -> int:
                     outcome = f"sent {what}, UNVERIFIED ({note})"
                 else:
                     outcome = f"send refused ({note})"
+                level = (
+                    f"{fill / 1000:g}k tokens" if a.tokens else f"{fill}%"
+                )
                 # A refusal retries every poll; say it once per distinct
                 # reason, not once per minute (gr515152).
                 if rc in (0, 4) or said.get(name) != outcome:
                     print(
-                        f"{utc_stamp()} ctx-guard: {win} at {pct}% — {outcome}",
+                        f"{utc_stamp()} ctx-guard: {win} at {level} — {outcome}",
                         flush=True,
                     )
                 said[name] = outcome
-            if pct >= a.hard and not hard.exists():
+            if pct is not None and pct >= a.hard and not hard.exists():
                 hard.write_text(f"{pct} {utc_stamp()}\n", encoding="utf-8")
                 print(
                     f"{utc_stamp()} ctx-guard: {win} at {pct}% — FORCED "
@@ -2006,16 +2048,26 @@ def parser() -> argparse.ArgumentParser:
         "--rearm",
         type=int,
         default=None,
-        help="context %% below which a nudged pane re-arms (default 40; "
-        "half of --ceiling with --compact)",
+        help="level below which a nudged pane re-arms, in the trigger's "
+        "unit (default 40; half of --ceiling/--tokens with --compact)",
     )
     s.add_argument(
         "--compact",
         action="store_true",
-        help="send /compact instead of the WIP+handoff text — for the "
-        "orchestrator main loops (gr515153); pick --ceiling as 120k tokens "
-        "over the window size (12 for a 1M window); skipped while the "
-        "window's tree has a live subagent task",
+        help="send /compact instead of the WIP+handoff text, never "
+        "mid-turn (a busy pane is skipped to the next poll); skipped "
+        "while the window's tree has a live subagent task",
+    )
+    s.add_argument(
+        "--tokens",
+        nargs="?",
+        const="120k",
+        default=os.environ.get("FLEET_COMPACT_TOKENS") or None,
+        metavar="N",
+        help="compact when the pane's printed context exceeds N tokens "
+        "(k/M suffixes) — the peer main-loop threshold (gr515153); bare "
+        "--tokens is 120k, env FLEET_COMPACT_TOKENS; implies --compact; "
+        "a pane that prints no token figure is skipped",
     )
     s.add_argument(
         "--hard",

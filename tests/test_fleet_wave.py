@@ -382,6 +382,94 @@ def test_ctx_guard_compact_sends_slash_compact(env: dict[str, str]) -> None:
     assert not _ctx_guard_marker(env, "coordinator").exists()
 
 
+#: A Claude idle pane prints the absolute context size in the /clear hint;
+#: a busy one carries it in the spinner (layouts: tests/fixtures/panes/).
+CLAUDE_TOK196 = (
+    "⏺ done 6:38 PM\n"
+    "                new task? /clear to save 196.5k tokens\n"
+    "────\n❯ \n────\n  Sonnet 5.5  20% ctx\n"
+)
+CLAUDE_TOK80 = CLAUDE_TOK196.replace("196.5k", "80k")
+CLAUDE_BUSY_TOK240 = (
+    "⏺ working\n✻ Churning… (47s · esc to interrupt · 240.1k tokens)\n"
+    "────\n❯ \n────\n  Opus 5.5  43% ctx\n"
+)
+
+
+def test_ctx_tokens_reads_the_absolute_size() -> None:
+    m = _module()
+    assert m.ctx_tokens(DEVIN_CTX76) == 200_000
+    assert m.ctx_tokens("Context: 340k/1M (34%)") == 340_000
+    assert m.ctx_tokens(CLAUDE_TOK196) == 196_500
+    assert m.ctx_tokens(CLAUDE_BUSY_TOK240) == 240_100
+    # Bottom-most figure wins, same rule as ctx_percent.
+    pane = DEVIN_CTX76 + "new task? /clear to save 150k tokens\n"
+    assert m.ctx_tokens(pane) == 150_000
+    # A bare % footer is unjudgeable by a token threshold.
+    assert m.ctx_tokens("  20% ctx · opus\n") is None
+    assert m.ctx_tokens("nothing") is None
+
+
+def test_ctx_guard_tokens_compacts_an_idle_peer(env: dict[str, str]) -> None:
+    """gr515153: a peer main loop past ~120k tokens is compacted at idle."""
+    _windows(env, {"chat": CLAUDE_TOK196})
+    args = ("ctx-guard", "chat", "--tokens", "120k", "--ticks", "1",
+            "--wait", "0", "--poll", "0", "--pause", "0")  # fmt: skip
+    proc = _run(env, *args)
+    assert "at 196.5k tokens — sent /compact" in proc.stdout
+    sends = [c for c in _tmux_calls(env) if c[0] == "send-keys"]
+    assert sends[0][-1] == "/compact"
+    assert _ctx_guard_marker(env, "chat").exists()
+
+
+def test_ctx_guard_tokens_skips_a_busy_pane(env: dict[str, str]) -> None:
+    """gr515153: never mid-turn — a busy pane is skipped to the next poll,
+    not queued a /compact."""
+    _windows(env, {"chat": CLAUDE_BUSY_TOK240})
+    args = ("ctx-guard", "chat", "--tokens", "--ticks", "1",
+            "--wait", "0", "--poll", "0", "--pause", "0")  # fmt: skip
+    proc = _run(env, *args)
+    assert proc.stdout == ""
+    assert not _ctx_guard_marker(env, "chat").exists()
+    assert not [c for c in _tmux_calls(env) if c[0] == "send-keys"]
+    # Bare --tokens defaults to 120k; once idle the same pane compacts.
+    _windows(env, {"chat": CLAUDE_TOK196})
+    assert "sent /compact" in _run(env, *args).stdout
+
+
+def test_ctx_guard_tokens_leaves_small_and_pct_only_panes(
+    env: dict[str, str],
+) -> None:
+    _windows(env, {"chat": CLAUDE_TOK80, "pct-only": IDLE})
+    proc = _run(env, "ctx-guard", "chat", "pct-only", "--tokens",
+                "--ticks", "1", "--wait", "0", "--poll", "0",
+                "--pause", "0")  # fmt: skip
+    assert proc.stdout == ""
+    assert not _ctx_guard_marker(env, "chat").exists()
+    assert not [c for c in _tmux_calls(env) if c[0] == "send-keys"]
+
+
+def test_ctx_guard_tokens_env_sets_the_threshold(env: dict[str, str]) -> None:
+    """FLEET_COMPACT_TOKENS tunes the ~120k default without a flag."""
+    env = {**env, "FLEET_COMPACT_TOKENS": "150k"}
+    _windows(env, {"chat": CLAUDE_TOK196})
+    args = ("ctx-guard", "chat", "--ticks", "1", "--wait", "0",
+            "--poll", "0", "--pause", "0")  # fmt: skip
+    assert "sent /compact" in _run(env, *args).stdout
+    _windows(env, {"chat": CLAUDE_TOK80.replace("80k", "140k")})
+    # 140k < 150k: under the env threshold it stays armed and silent.
+    assert _run(env, *args).stdout == ""
+
+
+def test_token_amount_parses_suffixes() -> None:
+    m = _module()
+    assert m._token_amount("120k") == 120_000
+    assert m._token_amount("1.5M") == 1_500_000
+    assert m._token_amount("96000") == 96_000
+    with pytest.raises(SystemExit):
+        m._token_amount("lots")
+
+
 def test_ctx_guard_message_fills_name(env: dict[str, str]) -> None:
     _windows(env, {"devin-g": DEVIN_CTX76})
     proc = _run(
@@ -510,7 +598,7 @@ def test_ctx_guard_refuses_rearm_at_or_above_ceiling(env: dict[str, str]) -> Non
     proc = _run(env, "ctx-guard", "a", "--ticks", "1", "--rearm", "80",
                 "--ceiling", "70")  # fmt: skip
     assert proc.returncode == 2
-    assert "--rearm (80) must be below --ceiling (70)" in proc.stderr
+    assert "--rearm (80) must be below the trigger (70)" in proc.stderr
     assert not _typed(env)
 
 

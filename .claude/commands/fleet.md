@@ -135,6 +135,14 @@ On a `ctx <window> <pct>% <state>` event:
 - 50% and up, busy: `say` it to commit WIP, update its thread file and run
   `/next` at the next stopping point; compact when it goes idle.
 - Never while its dialog is open.
+- Peer main loops (Opus/Fable seats — GRIPE_FIX, CHAT, the coordinator
+  windows): `scripts/fleet-wave ctx-guard <win>… --compact --tokens` in a
+  background window sends `/compact` once a pane's printed context
+  passes ~120k tokens (`FLEET_COMPACT_TOKENS` retunes), only while the
+  pane is idle — never mid-turn, never under a live subagent task
+  (gr515153). Bulky reads (queue files, triage outputs, review texts)
+  go to a digest subagent that returns a few lines, not into the main
+  loop.
 - The orchestrator itself follows the same rule: at 30%, write the
   round state to `.claude/purpose` and the open items to the review
   queue, then `/compact`.
