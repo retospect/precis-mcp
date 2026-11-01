@@ -1,0 +1,152 @@
+#!/usr/bin/env bash
+# scripts/git-tidy — operator-run object-store tidy (gr548630).
+#
+# Why this exists: every squash-land leaves the branch's commits
+# unreachable, the worktree reaper deletes the branches, and nothing ever
+# expires them — git's defaults keep unreachable reflog entries 30 days
+# and pruneExpire 2 weeks, and `gc --auto` only fires on loose-object
+# thresholds. Observed 2026-11-01: 16,482 unreachable commits and 260,987
+# unreachable trees on the shared .git. Reto: "declare tree bankruptcy
+# and bring this down to like 100."
+#
+# Reto 2026-11-01 ruling: a command an operator runs, NEVER automatic —
+# no SessionStart/session-end hook, no cadence, nothing scheduled. The
+# object store is shared by ~50 live sessions, so this never uses
+# --prune=now: prune windows stay >= 1 day so an in-flight ship's fresh
+# objects can never be reaped from under it.
+#
+# Default is a DRY RUN: prints `git fsck --unreachable --no-reflogs`
+# counts, every stash entry with age/branch/sha (never drops one — stashes
+# keep their objects reachable and hide WIP nobody owns; drop by sha is
+# Reto's call), and the exact commands --apply would run.
+#
+# --apply, from the main checkout:
+#   1. refuses while any ship lock is held (the repo-wide squash lock
+#      <common>/precis-ship.lock.d or any worktree's
+#      precis-ship-worktree.lock.d — judged with lock-holder.sh's live-
+#      holder rule, so a stale lock warns instead of wedging);
+#   2. writes the durable repo-local gc config (--local only, idempotent):
+#      gc.reflogExpireUnreachable=7.days, gc.pruneExpire=3.days,
+#      gc.auto=1000 — so plain `git gc --auto` self-cleans afterwards;
+#   3. runs `git reflog expire --expire-unreachable=1.day.ago --all`,
+#      then `git gc --prune=1.day.ago`;
+#   4. prints the fsck counts before and after.
+#
+# usage: scripts/git-tidy [--apply]
+set -euo pipefail
+
+APPLY=0
+for a in "$@"; do
+    case "$a" in
+        --apply) APPLY=1 ;;
+        -h|--help)
+            printf 'usage: scripts/git-tidy [--apply]\n'
+            printf '  (no args)  dry run: fsck unreachable counts, stash list, the plan\n'
+            printf '  --apply    set repo-local gc config, reflog expire + gc (refuses while a ship lock is held)\n'
+            exit 0
+            ;;
+        *)
+            printf 'usage: scripts/git-tidy [--apply]\n' >&2
+            exit 2
+            ;;
+    esac
+done
+
+SCRIPT_DIR=$(cd "$(dirname "$0")" && pwd)
+# shellcheck source=scripts/lib/lock-holder.sh
+. "$SCRIPT_DIR/lib/lock-holder.sh"
+
+COMMON=$(git rev-parse --git-common-dir 2>/dev/null) \
+    || { printf 'git-tidy: not inside a git repository\n' >&2; exit 2; }
+COMMON=$(cd "$COMMON" && pwd -P)
+
+# fsck counts, one "  <n> <kind> <type>" line per object type.
+fsck_counts() {
+    { git fsck --unreachable --no-reflogs 2>/dev/null || true; } | awk '
+        $1 == "unreachable" || $1 == "dangling" { n[$1 FS $2]++ }
+        END { for (k in n) printf "  %8d %s\n", n[k], k }' | sort -k2,2 -k3,3
+}
+
+# ship lock held ⇔ a lock dir exists AND lock-holder.sh's reclaim rule
+# says it is NOT reclaimable (live holder this host, or fresh foreign/
+# unparseable). A reclaimable dir is a stale lock: warn, never delete.
+ship_lock_held() {
+    local d pid
+    for d in "$COMMON/precis-ship.lock.d" \
+             "$COMMON/precis-ship-worktree.lock.d" \
+             "$COMMON"/worktrees/*/precis-ship-worktree.lock.d; do
+        [ -d "$d" ] || continue
+        if lock_holder_reclaim_reason "$d" 60 >/dev/null 2>&1; then
+            printf 'note: stale ship lock at %s — ignoring (reclaimable; left in place)\n' "$d" >&2
+            continue
+        fi
+        pid=$(lock_holder_pid "$d")
+        printf '%s (pid %s)\n' "$d" "${pid:-unparseable}"
+        return 0
+    done
+    return 1
+}
+
+list_stashes() {
+    local line sel rest ct sha subj days now n=0
+    now=$(date +%s)
+    while IFS= read -r line; do
+        [ -n "$line" ] || continue
+        sel=${line%%$'\x1f'*}; rest=${line#*$'\x1f'}
+        ct=${rest%%$'\x1f'*};   rest=${rest#*$'\x1f'}
+        sha=${rest%%$'\x1f'*};  subj=${rest#*$'\x1f'}
+        days=$(( (now - ct) / 86400 ))
+        printf '  %-10s %4dd  %.10s  %s\n' "$sel" "$days" "$sha" "$subj"
+        n=$((n + 1))
+    done < <(git stash list --format='%gd%x1f%ct%x1f%H%x1f%gs')
+    [ "$n" -gt 0 ] || printf '  (no stash entries)\n'
+}
+
+GC_KEYS='gc.reflogExpireUnreachable=7.days
+gc.pruneExpire=3.days
+gc.auto=1000'
+
+write_gc_config() {
+    local key val
+    printf '%s\n' "$GC_KEYS" | while IFS='=' read -r key val; do
+        git config --local "$key" "$val"
+        printf '  set --local %s=%s\n' "$key" "$val"
+    done
+}
+
+printf 'unreachable objects (git fsck --unreachable --no-reflogs):\n'
+counts_before=$(fsck_counts)
+printf '%s\n' "${counts_before:-  0 (none reported)}"
+
+printf 'stash entries (listed, never dropped — drop by sha is manual):\n'
+list_stashes
+
+if [ "$APPLY" -ne 1 ]; then
+    printf 'dry run — --apply would:\n'
+    printf '  git config --local gc.reflogExpireUnreachable 7.days\n'
+    printf '  git config --local gc.pruneExpire 3.days\n'
+    printf '  git config --local gc.auto 1000\n'
+    printf '  git reflog expire --expire-unreachable=1.day.ago --all\n'
+    printf '  git gc --prune=1.day.ago\n'
+    printf '  (refuses while a ship lock is held; never --prune=now)\n'
+    exit 0
+fi
+
+held=$(ship_lock_held) && {
+    printf 'git-tidy: ship lock held — refusing: %s\n' "$held" >&2
+    printf 're-run after the ship finishes.\n' >&2
+    exit 1
+}
+
+printf 'gc config (--local, idempotent):\n'
+write_gc_config
+
+printf 'expiring unreachable reflog entries older than 1 day...\n'
+git reflog expire --expire-unreachable=1.day.ago --all
+
+printf 'git gc --prune=1.day.ago ...\n'
+git gc --prune=1.day.ago
+
+printf 'unreachable objects after:\n'
+counts_after=$(fsck_counts)
+printf '%s\n' "${counts_after:-  0 (none reported)}"

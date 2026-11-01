@@ -464,6 +464,41 @@ SessionStart. When a clone does resolve but still is not at the deployed
 sha after the sync attempt, `scripts/deploy`'s confirmation
 (`_confirm_prod_clone`) fails the run naming both shas.
 
+## Object-store tidy — scripts/git-tidy
+
+Every squash-land leaves the branch's commits unreachable, the worktree
+reaper deletes the branches, and nothing expires them: git's defaults
+keep unreachable reflog entries 30 days and pruneExpire 2 weeks, so the
+shared `.git` accumulates tens of thousands of dangling objects
+(gr548630: 16k unreachable commits / 261k trees on 2026-11-01).
+`scripts/git-tidy` is the recipe — an operator runs it by hand from the
+main checkout; it is deliberately never wired to a hook, cadence or
+worker (Reto 2026-11-01).
+
+`scripts/git-tidy` with no args is a dry run: it prints `git fsck
+--unreachable --no-reflogs` counts, every stash entry with age, branch
+and sha (stashes hold their objects reachable and hide WIP nobody owns —
+the script lists them, dropping by sha stays manual), and the commands
+`--apply` would run.
+
+`scripts/git-tidy --apply`:
+
+1. Refuses while any ship lock is held — the repo-wide squash lock
+   (`precis-ship.lock.d` under `--git-common-dir`) or any worktree's
+   `precis-ship-worktree.lock.d`, judged by lock-holder.sh's live-holder
+   rule so a stale lock warns and proceeds. A gc racing a ship could reap
+   objects the in-flight squash still needs.
+2. Writes the durable repo-local config (`--local`, idempotent):
+   `gc.reflogExpireUnreachable=7.days`, `gc.pruneExpire=3.days`,
+   `gc.auto=1000` — after the one-off bankruptcy pass, plain `git gc
+   --auto` self-cleans instead of regrowing the pile.
+3. Runs `git reflog expire --expire-unreachable=1.day.ago --all`, then
+   `git gc --prune=1.day.ago`, and prints the fsck counts before/after.
+
+Never `--prune=now`: ~50 live sessions share the object store, and a
+session that just wrote objects for an in-flight ship or commit would
+lose them. The 1-day window is the safety margin.
+
 ## Rounds and the fleet
 
 Routine fleet status — landed, red, waiting, done — goes on the board,
