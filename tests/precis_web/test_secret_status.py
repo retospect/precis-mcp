@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import asyncio
 from datetime import UTC, datetime
+from html import unescape
 from typing import TYPE_CHECKING, Any, cast
 
 import pytest
@@ -190,6 +191,26 @@ def test_run_checks_absent_secret_is_skipped(monkeypatch: pytest.MonkeyPatch) ->
     assert results == {}
 
 
+def test_llm_subscription_secrets_are_never_resolved_or_probed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    names = {"KIMI_CODE_API_KEY", "OPENAI_API_KEY", "DEVIN_API_TOKEN"}
+    monkeypatch.setattr(
+        secret_status, "is_available", lambda name, *, store: name in names
+    )
+
+    def no_resolve(*args: Any, **kwargs: Any) -> str:
+        raise AssertionError("presence-only secrets must not be decrypted")
+
+    async def no_probe(*args: Any, **kwargs: Any) -> secret_status.CheckResult:
+        raise AssertionError("presence-only secrets must not be probed")
+
+    monkeypatch.setattr(secret_status, "get_secret", no_resolve)
+    monkeypatch.setattr(secret_status, "_probe_group", no_probe)
+
+    assert asyncio.run(secret_status.run_checks(store=_FAKE_STORE)) == {}
+
+
 def test_run_checks_single_member_group(monkeypatch: pytest.MonkeyPatch) -> None:
     _patch_presence(monkeypatch, {"ANTHROPIC_API_KEY": "sk-x"})
 
@@ -242,6 +263,75 @@ def _patch_page(
     monkeypatch.setattr(
         "precis.workers.secret_check.pending_status_check", lambda store: False
     )
+
+
+@pytest.mark.parametrize(
+    "name, get_url, instructions",
+    [
+        (
+            "KIMI_CODE_API_KEY",
+            "https://www.kimi.com/coding/docs/en/",
+            (
+                "Kimi Code Console",
+                "up to 5",
+                "real User-Agent",
+                "never impersonate",
+                "key auth only",
+                "CLI OAuth",
+                "coding and agent use only",
+                "Membership Benefits",
+                "Community Guidelines",
+                "before enabling",
+                "retention and training",
+            ),
+        ),
+        (
+            "OPENAI_API_KEY",
+            "https://platform.openai.com/api-keys",
+            (
+                "Optional OpenAI Platform API key",
+                "host-login entries",
+                "codex login",
+                "each host",
+                "never extract tokens",
+                "never copy an auth file",
+            ),
+        ),
+        (
+            "DEVIN_API_TOKEN",
+            "https://docs.devin.ai/api-reference/overview",
+            (
+                "first confirm the plan includes the Devin API",
+                "service user",
+                "cog_",
+                "personal access token",
+                "never buy overage",
+            ),
+        ),
+    ],
+)
+def test_llm_secret_entries_render_with_instructions(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+    name: str,
+    get_url: str,
+    instructions: tuple[str, ...],
+) -> None:
+    _patch_page(monkeypatch, present_names=set(), snap=_snapshot({}))
+
+    response = client.get("/secrets")
+
+    assert response.status_code == 200
+    page = unescape(response.text)
+    (spec,) = [s for s in secret_status.KNOWN_SECRETS if s.name == name]
+    assert spec.probe_group is None
+    assert spec.optional
+    assert spec.get_url == get_url
+    assert f'name="name" value="{name}"' in page
+    assert f'href="{get_url}"' in page
+    assert spec.get_blurb in page
+    for instruction in instructions:
+        assert instruction in spec.get_blurb
 
 
 def test_index_renders_missing_and_verified_dots(

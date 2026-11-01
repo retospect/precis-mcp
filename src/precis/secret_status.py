@@ -129,6 +129,49 @@ KNOWN_SECRETS: tuple[SecretSpec, ...] = (
         probe_group=None,
     ),
     SecretSpec(
+        name="KIMI_CODE_API_KEY",
+        purpose="Kimi Code membership key; presence-only provisioning for "
+        "the planned coding adapter, not enabled by storing a key.",
+        get_url="https://www.kimi.com/coding/docs/en/",
+        get_blurb="Create a key in the Kimi Code Console (up to 5 per account) "
+        "and paste it here. Use our real User-Agent; never impersonate the "
+        "Kimi CLI or another client. Use key auth only, never CLI OAuth. "
+        "Restricted to coding and agent use only, not bulk background or "
+        "product integration calls. Read the Membership Benefits and "
+        "Community Guidelines pages before enabling, and check data "
+        "retention and training terms before sending production prompts.",
+        cost="included with a Kimi Code membership",
+        probe_group=None,
+        optional=True,
+    ),
+    SecretSpec(
+        name="OPENAI_API_KEY",
+        purpose="OpenAI Platform fallback for the planned Codex lane; "
+        "presence-only, separate from a ChatGPT subscription.",
+        get_url="https://platform.openai.com/api-keys",
+        get_blurb="Optional OpenAI Platform API key: create one on the API "
+        "keys page and paste it here. This page does not support host-login "
+        "entries. For subscription Codex use, run `codex login` on each host "
+        "through Codex's own flow; never extract tokens and never copy an "
+        "auth file between hosts. Storing this key does not enable an adapter.",
+        cost="paid - usage-billed, not subscription benefits",
+        probe_group=None,
+        optional=True,
+    ),
+    SecretSpec(
+        name="DEVIN_API_TOKEN",
+        purpose="Devin API token for the planned job executor, not an LLM "
+        "router rung; presence-only, executor not yet enabled.",
+        get_url="https://docs.devin.ai/api-reference/overview",
+        get_blurb="Before creating a token, first confirm the plan includes "
+        "the Devin API and read Cognition's terms on automated use. Create "
+        "a service user cog_ token or personal access token and paste it "
+        "here. Pause on quota exhaustion; never buy overage.",
+        cost="requires a plan with Devin API access",
+        probe_group=None,
+        optional=True,
+    ),
+    SecretSpec(
         name="PERPLEXITY_API_KEY",
         purpose="Backs the perplexity-research / perplexity-reasoning kinds.",
         get_url="https://www.perplexity.ai/settings/api",
