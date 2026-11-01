@@ -6,7 +6,8 @@ pair, stored in either orientation) and a type tag ``section:<type>``; a
 gotcha links to a thread it applies to with ``qualifies`` (the thread reads
 ``qualified-by``). The batch readers here feed the memory export manifest
 (``precis.cli.memory``); :func:`link_hints` feeds the write-path hints of
-``put`` / ``edit`` / ``link`` on a memory (``precis.handlers.memory``).
+``put`` / ``edit`` on a memory and :func:`sub_hub_hints` the narrower
+``link`` ack (``precis.handlers.memory``).
 Summaries past the eye's child cap need the hub tag, not pruned membership.
 """
 
@@ -347,6 +348,45 @@ def link_hints(handler: Any, ref_id: int) -> list[tuple[str, str]]:
         return []
 
 
+def sub_hub_hints(handler: Any, ref_id: int) -> list[tuple[str, str]]:
+    """Only the sub-hub half of :func:`link_hints`: ``section:index``
+    suggestion when the node lists more live part-of children than the
+    fisheye shows. A ``link`` ack emits just this — the write just set
+    membership, so the filing/typing/gotcha hints are noise there
+    (gr548270). Never raises."""
+    try:
+        store: Store = handler.store
+        return _sub_hub_lines(store, ref_id, _tag_values(store, ref_id))
+    except Exception:
+        log.debug("memory sub-hub hint skipped for %s", ref_id, exc_info=True)
+        return []
+
+
+def _sub_hub_lines(
+    store: Store, ref_id: int, values: set[str]
+) -> list[tuple[str, str]]:
+    if _HUB_TAG in values:
+        return []
+    children = {
+        link.dst_ref_id if link.src_ref_id == ref_id else link.src_ref_id
+        for link in store.links_for(ref_id, direction="out", relation="contains")
+    } - {ref_id}
+    live_children = sum(
+        child.retired_at is None for child in store.fetch_refs_by_ids(children).values()
+    )
+    if live_children <= _NEIGHBOR_GROUP_CAP:
+        return []
+    from precis.utils import handle_registry
+
+    me = handle_registry.try_format("memory", ref_id) or f"me{ref_id}"
+    return [
+        (
+            f"tag(kind='memory', id='{me}', add=['section:index'])",
+            f"{live_children} part-of children — a hub lists them uncapped",
+        )
+    ]
+
+
 def _space_tag(values: set[str]) -> str | None:
     return next((v for v in sorted(values) if v.startswith("SPACE:")), None)
 
@@ -363,21 +403,7 @@ def _link_hints(handler: Any, ref_id: int) -> list[tuple[str, str]]:
         return handle_registry.try_format("memory", i) or f"me{i}"
 
     me = h(ref_id)
-    lines: list[tuple[str, str]] = []
-    children = {
-        link.dst_ref_id if link.src_ref_id == ref_id else link.src_ref_id
-        for link in store.links_for(ref_id, direction="out", relation="contains")
-    } - {ref_id}
-    live_children = sum(
-        child.retired_at is None for child in store.fetch_refs_by_ids(children).values()
-    )
-    if live_children > _NEIGHBOR_GROUP_CAP:
-        lines.append(
-            (
-                f"tag(kind='memory', id='{me}', add=['section:index'])",
-                f"{live_children} part-of children — a hub lists them uncapped",
-            )
-        )
+    lines: list[tuple[str, str]] = _sub_hub_lines(store, ref_id, values)
     if space is None:
         return lines
     # hubs are few; no practical cap (a silent 200 would drop the rest)

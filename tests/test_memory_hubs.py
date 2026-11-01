@@ -218,6 +218,8 @@ def test_link_hints_new_subhub_on_the_target(hub: Hub, batch: bool) -> None:
 
     assert f"tag(kind='memory', id='{_h(summary)}', add=['section:index'])" in out
     assert "9 part-of children — a hub lists them uncapped" in out
+    # the link ack carries only the sub-hub hint — no filing/typing extras
+    assert "type this node" not in out
 
 
 def test_link_hint_failure_does_not_refuse_a_committed_link(

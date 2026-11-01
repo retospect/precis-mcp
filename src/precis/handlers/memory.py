@@ -131,6 +131,7 @@ from precis.utils.match_all import fold_match_all_q
 from precis.utils.memory_hubs import (
     link_hints,
     narrowing_hints,
+    sub_hub_hints,
     thread_dup_hint,
 )
 from precis.utils.next_block import render_next_section
@@ -445,7 +446,9 @@ class MemoryHandler(NumericRefHandler):
                 )
                 if resolved.kind == "memory":
                     ref_ids.add(resolved.ref_id)
-            hints = [hint for rid in sorted(ref_ids) for hint in link_hints(self, rid)]
+            hints = [
+                hint for rid in sorted(ref_ids) for hint in sub_hub_hints(self, rid)
+            ]
             return replace(response, body=response.body + render_next_section(hints))
         except Exception:
             log.debug("memory link ack hints skipped", exc_info=True)
