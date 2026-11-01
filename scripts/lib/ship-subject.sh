@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # bash 3.2 floor (stock macOS): no declare -A, mapfile, ${x,,}, &>, |&, coproc, globstar — tests/test_bash32_gotchas.py
-# Squash-commit message resolution + lint for scripts/ship (sourced).
+# Commit-subject lint shared by scripts/ship and scripts/hooks/commit-msg,
+# plus squash-commit message resolution (sourced).
 #
 # The landed subject is what `git log` shows forever, so it must say WHAT
 # changed — never a `ship(<branch>): squash-merge` or `wip(...)` placeholder.
@@ -41,8 +42,18 @@ ship_subject_lint() {
         printf "commit subject must look like 'type(scope): what changed' (feat|fix|docs|test|chore|build|refactor|perf|ci|release|revert) — got: %s — fix it, or set PRECIS_SHIP_SUBJECT_LINT=0 in an emergency\n" "$subject" >&2
         return 1
     fi
-    if (( ${#subject} > 72 )); then
-        printf "commit subject is %d chars, max 72 — shorten it and put detail in the body — got: %s — or set PRECIS_SHIP_SUBJECT_LINT=0 in an emergency\n" "${#subject}" "$subject" >&2
+    # Count UTF-8 code points, not bytes, even under LC_ALL=C or macOS bash
+    # 3.2. Continuation bytes do not start a character.
+    local LC_ALL=C length=0 offset=0 cut_offset=0
+    while (( offset < ${#subject} )); do
+        if [[ "${subject:offset:1}" != [$'\200'-$'\277'] ]]; then
+            (( length += 1 ))
+            if (( length == 73 )); then cut_offset=$offset; fi
+        fi
+        (( offset += 1 ))
+    done
+    if (( length > 72 )); then
+        printf "commit subject is %d chars (characters, not bytes), %d over max 72 — cut: '%s' — put detail in the body, or set PRECIS_SHIP_SUBJECT_LINT=0 in an emergency\n" "$length" "$(( length - 72 ))" "${subject:cut_offset}" >&2
         return 1
     fi
     return 0

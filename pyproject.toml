@@ -1008,6 +1008,7 @@ extend-exclude = [
     "scripts/gripe-gc-review",
     "scripts/guide-web",
     "scripts/hook-sync",
+    "scripts/hooks/commit-msg",
     "scripts/inflight",
     "scripts/kimi-tree",
     "scripts/mcp-entry-preflight",

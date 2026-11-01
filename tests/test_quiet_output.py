@@ -229,6 +229,40 @@ def test_epilogue_forwards_selection_notes(tmp_path: Path) -> None:
     assert proc.stdout.rstrip().endswith("SHIP_STATUS: shipped")
 
 
+def test_epilogue_tail_does_not_repeat_failure_blocks(tmp_path: Path) -> None:
+    """gr548403: a refusal near EOF used to print in both header and tail."""
+    log = tmp_path / "refused.log"
+    log.write_text(
+        "noise\n\n\u2716 commit subject is 73 chars\n"
+        "  cut: x\nRuntimeError: context\nlast unfiltered line\n",
+        encoding="utf-8",
+    )
+    proc = subprocess.run(
+        [
+            _BASH,
+            "-c",
+            '. "$1"; quiet_epilogue "$2" 1 SHIP_STATUS shipped',
+            "_",
+            str(REPO / "scripts" / "lib" / "quiet-log.sh"),
+            str(log),
+        ],
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        timeout=10,
+    )
+    assert proc.returncode == 0, proc.stderr
+    for line in (
+        "\u2716 commit subject is 73 chars",
+        "  cut: x",
+        "RuntimeError: context",
+        "last unfiltered line",
+    ):
+        assert proc.stderr.count(line) == 1
+    assert proc.stdout.rstrip().endswith("SHIP_STATUS: error")
+
+
 @pytest.fixture
 def rig(tmp_path: Path) -> Rig:
     return Rig(tmp_path)

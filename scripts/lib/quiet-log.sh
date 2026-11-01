@@ -10,8 +10,8 @@
 #   · Python Traceback blocks (from "Traceback" through the exception
 #     line) and lines matching error|Error|FAILED — a crash that never
 #     reached a die() stays readable
-#   · on a non-zero exit, the last 5 log lines (the end state, whatever
-#     shape the failure took)
+#   · on a non-zero exit, the last 5 log lines not already shown (the end
+#     state, whatever shape the failure took)
 #   · on a conflict, the conflicted file list — names, never diffs
 #   · the selector's two advisory notes: the coverage "static-only (wide)
 #     selection" warning and the slow-lane note naming selected targets a
@@ -37,21 +37,27 @@ quiet_epilogue() {
     #   failing-job lines are all written indented); a Traceback through
     #   its first unindented colon line (the exception summary); and any
     #   error|Error|FAILED line a bare crash leaves behind.
-    awk '/✖/{c=1;print;next}
-         c&&/^[ \t]/{print;next}
+    awk -v rc="$rc" '
+         function emit() { if (!shown[NR]++) print }
+         { tail[NR % 5] = $0 }
+         /✖/{c=1;emit();next}
+         c&&/^[ \t]/{emit();next}
          {c=0}
-         /Traceback/{t=1;print;next}
-         t&&/^[^ \t]/&&/:/{print;t=0;next}
-         t{print;next}
-         /error|Error|FAILED/{print}
-         /coverage: no measured DB|slow-lane:/{print}' "$log" >&2 || true
+         /Traceback/{t=1;emit();next}
+         t&&/^[^ \t]/&&/:/{emit();t=0;next}
+         t{emit();next}
+         /error|Error|FAILED/{emit()}
+         /coverage: no measured DB|slow-lane:/{emit()}
+         END {
+             if (rc != 0)
+                 for (i = NR > 5 ? NR - 4 : 1; i <= NR; i++)
+                     if (!shown[i]) print tail[i % 5]
+         }' "$log" >&2 || true
     if [ "$rc" -ne 0 ]; then
         files="$(git diff --name-only --diff-filter=U 2>/dev/null || true)"
         if [ -n "$files" ]; then
             printf 'conflicted files:\n%s\n' "$files" >&2
         fi
-        # A crash with no ✖ is still readable: the log's end state.
-        tail -5 "$log" >&2 || true
     fi
     status="$(grep -o "${name}: .*" "$log" 2>/dev/null | tail -1 || true)"
     if [ -z "$status" ]; then

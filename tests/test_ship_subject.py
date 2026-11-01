@@ -21,6 +21,7 @@ pytestmark = pytest.mark.skipif(
 REPO = Path(__file__).resolve().parent.parent
 LIB = REPO / "scripts" / "lib" / "ship-subject.sh"
 SHIP = REPO / "scripts" / "ship"
+HOOK = REPO / "scripts" / "hooks" / "commit-msg"
 
 
 def _git(cwd: Path, *args: str) -> str:
@@ -179,6 +180,105 @@ def test_lint_off_via_env(tmp_path: Path) -> None:
     assert r.stdout == "whatever\n"
 
 
+@pytest.mark.parametrize("char", ["x", "\u00e9", "\U0001f680"])
+@pytest.mark.parametrize("length", [72, 73])
+def test_lint_counts_characters_not_bytes(char: str, length: int) -> None:
+    """gr548403: the limit and cut tail stay character-based in a byte locale."""
+    subject = "fix(ship): " + char * (length - len("fix(ship): "))
+    r = subprocess.run(
+        [
+            "/bin/bash",
+            "-euc",
+            '. "$1"; ship_subject_lint "$2"',
+            "_",
+            str(LIB),
+            subject,
+        ],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        timeout=10,
+        env={k: v for k, v in os.environ.items() if k != "PRECIS_SHIP_SUBJECT_LINT"}
+        | {"LC_ALL": "C"},
+    )
+    assert r.returncode == (0 if length == 72 else 1), r.stderr
+    assert r.stdout == ""
+    if length == 73:
+        assert "73 chars (characters, not bytes), 1 over max 72" in r.stderr
+        assert f"cut: '{char}'" in r.stderr
+        assert len(r.stderr.splitlines()) == 1
+    else:
+        assert r.stderr == ""
+
+
+def test_lint_names_the_exact_overshoot(tmp_path: Path) -> None:
+    subject = "fix: " + "x" * 67 + " the pass"
+    r = _resolve(_repo(tmp_path, []), subject)
+    assert r.returncode == 1
+    assert "81 chars (characters, not bytes), 9 over max 72" in r.stderr
+    assert "cut: ' the pass'" in r.stderr
+
+
+@pytest.mark.parametrize(
+    ("subject", "lint_off", "accepted"),
+    [
+        ("fix: " + "x" * 67, False, True),
+        ("fix: " + "x" * 68, False, False),
+        ("fix: " + "\u00e9" * 67, False, True),
+        ("fix: " + "\u00e9" * 68, False, False),
+        ("ship(branch): squash-merge", False, False),
+        ("wip(branch): snapshot", False, False),
+        ("no conventional prefix", False, False),
+        ("fix: " + "x" * 68, True, True),
+    ],
+)
+def test_commit_msg_hook_lints_git_commit_f(
+    tmp_path: Path, subject: str, lint_off: bool, accepted: bool
+) -> None:
+    """gr548403: a real git commit -F refuses invalid subjects before commit."""
+    repo = _repo(tmp_path, [])
+    lib_dir = repo / "scripts" / "lib"
+    lib_dir.mkdir(parents=True)
+    (lib_dir / LIB.name).write_bytes(LIB.read_bytes())
+    hook = repo / ".git" / "hooks" / "commit-msg"
+    hook.write_bytes(HOOK.read_bytes())
+    hook.chmod(0o755)
+    # The common hooks directory must also work from a linked worktree.
+    worktree = tmp_path / "linked"
+    _git(repo, "worktree", "add", "-q", "-b", "feature", str(worktree))
+    (worktree / "scripts" / "lib").mkdir(parents=True)
+    (worktree / "scripts" / "lib" / LIB.name).write_bytes(LIB.read_bytes())
+    message = tmp_path / "message.txt"
+    message.write_text(subject + "\n\nBody may be longer than 72.\n", encoding="utf-8")
+    before = _git(worktree, "rev-parse", "HEAD")
+    r = subprocess.run(
+        [
+            "git",
+            "-c",
+            "user.name=t",
+            "-c",
+            "user.email=t@example.invalid",
+            "commit",
+            "--allow-empty",
+            "-F",
+            str(message),
+        ],
+        cwd=worktree,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        timeout=30,
+        env={**os.environ, "PRECIS_SHIP_SUBJECT_LINT": "0" if lint_off else "1"},
+    )
+    assert (r.returncode == 0) == accepted, r.stdout + r.stderr
+    assert (_git(worktree, "rev-parse", "HEAD") != before) == accepted
+    if not accepted:
+        assert r.stderr.count("commit subject") == 1
+        if len(subject) == 73:
+            assert "73 chars (characters, not bytes), 1 over max 72" in r.stderr
+            assert f"cut: '{subject[-1]}'" in r.stderr
+
+
 def _fn(func: str, msg: str, *args: str) -> subprocess.CompletedProcess[str]:
     """Pipe ``msg`` through a ship-subject.sh helper."""
     return subprocess.run(
@@ -327,6 +427,64 @@ def test_mint_trailers_merges_branch_attrs_and_gates_fallback() -> None:
         "Gate: lint only\nCo-Authored-By: Devin SWE-2 <noreply@cognition.ai>\n"
         "Claude-Session: none (d)\n"
     )
+
+
+@pytest.mark.parametrize("verbose", [False, True])
+@pytest.mark.parametrize("explicit", [False, True])
+def test_ship_rejects_subject_before_build_and_clears_stale_pin(
+    tmp_path: Path, verbose: bool, explicit: bool
+) -> None:
+    """gr548403: reject before npx, but always invalidate the previous gate pin."""
+    repo = _repo(tmp_path, [])
+    _git(repo, "checkout", "-q", "-b", "feature")
+    lib_dir = repo / "scripts" / "lib"
+    lib_dir.mkdir(parents=True)
+    (repo / "scripts" / "ship").write_bytes(SHIP.read_bytes())
+    for lib in (REPO / "scripts" / "lib").glob("*.sh"):
+        (lib_dir / lib.name).write_bytes(lib.read_bytes())
+    (repo / ".gitignore").write_text(".claude/\n.ship-sha\n", encoding="utf-8")
+    subject = "fix: " + "x" * 67 + "\u00e9"
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-q", "-m", "fix: real change" if explicit else subject)
+    pin = repo / ".ship-sha"
+    pin.write_text("previous gated sha\n", encoding="utf-8")
+    before = _git(repo, "rev-parse", "HEAD")
+    fakebin = tmp_path / "bin"
+    fakebin.mkdir()
+    probe = tmp_path / "npx-called"
+    npx = fakebin / "npx"
+    npx.write_text(
+        '#!/bin/sh\nprintf called > "$SUBJECT_BUILD_PROBE"\n', encoding="utf-8"
+    )
+    npx.chmod(0o755)
+    args = ["bash", "scripts/ship", "--quick"]
+    if explicit:
+        args += ["-m", subject]
+    if verbose:
+        args.append("--verbose")
+    r = subprocess.run(
+        args,
+        cwd=repo,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        timeout=30,
+        env={k: v for k, v in os.environ.items() if not k.startswith("PRECIS_")}
+        | {
+            "PATH": f"{fakebin}{os.pathsep}{os.environ['PATH']}",
+            "SUBJECT_BUILD_PROBE": str(probe),
+        },
+    )
+    assert r.returncode == 1, r.stdout + r.stderr
+    assert r.stderr.count("commit subject") == 1
+    assert r.stderr.count("\u2716") == 1
+    assert "73 chars (characters, not bytes), 1 over max 72" in r.stderr
+    assert "cut: '\u00e9'" in r.stderr
+    assert not probe.exists(), "Tailwind ran before subject lint"
+    assert not pin.exists(), "a rejected ship must not retain a stale gate pin"
+    assert _git(repo, "rev-parse", "HEAD") == before
+    assert _git(repo, "status", "--porcelain") == ""
+    assert "syncing origin/main" not in r.stdout
 
 
 def test_ship_dies_on_wip_only_branch_before_the_gate(tmp_path: Path) -> None:

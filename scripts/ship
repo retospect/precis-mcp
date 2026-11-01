@@ -704,6 +704,12 @@ fi
 [[ -n "$BRANCH" ]] || die "detached HEAD — check out a feature branch first."
 [[ "$BRANCH" != "main" ]] || die "on main — nothing to ship."
 
+# Resolve + lint before locks, deploy probes, dirty-tree handling or builds.
+# A bad message must never trigger a Tailwind rebuild (gr548403).
+. "${WORKTREE}/scripts/lib/ship-subject.sh"
+_base="$(git merge-base origin/main HEAD 2>/dev/null || echo origin/main)"
+MSG="$(ship_resolve_msg "$MSG" "$_base" 2>&1)" || die "$MSG"
+
 # ── 1b. per-worktree ship lock (gr335894) ────────────────────────────────
 # Taken here — after the sanity checks, before the first git write (§2 WIP
 # commit) — and deliberately AFTER the "── 1. sanity" marker: everything
@@ -809,13 +815,6 @@ if [[ "$RELEASE" != 1 && -f "$TAKEN_FILE" ]]; then
     ABSORBED_AGENTS="$(cat "$TAKEN_FILE")"
 fi
 
-# Resolve + lint the squash message NOW (cheap), before any lint/gate/CI: -m, or
-# the branch's own real commit(s); never a ship(...)/wip(...) placeholder.
-. "${WORKTREE}/scripts/lib/ship-subject.sh"
-_base="$(git merge-base origin/main HEAD 2>/dev/null || echo origin/main)"
-_msg_err="$(mktemp)"
-MSG="$(ship_resolve_msg "$MSG" "$_base" 2>"$_msg_err")" || die "$(cat "$_msg_err")"
-rm -f "$_msg_err"
 # The resolved message carries no trailer block when -m named the subject
 # (gr538832: the squash then minted only the generic Co-Authored-By and the
 # branch's real footer — Claude-Session included — never reached main).
@@ -824,7 +823,7 @@ rm -f "$_msg_err"
 # base..HEAD names other people's commits); ship_mint_trailers merges them
 # at mint time. PRE_WIP_HEAD keeps ship's own snapshot commit out.
 BRANCH_ATTRS="$(ship_branch_attr_trailers "$_base" "$PRE_WIP_HEAD")"
-unset _base _msg_err
+unset _base
 
 # Gate-slot admission (gr202193): cap concurrent gate containers fleet-wide
 # so sibling gates queue instead of OOM-killing each other against the

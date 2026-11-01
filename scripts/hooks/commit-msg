@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+# Git commit-msg hook; shares ship's subject rules and emergency opt-out.
+# Not auto-installed: repo tooling currently manages harness hooks only.
+# Copy to the active Git hooks directory as an executable to enable it;
+# preserve any existing commit-msg hook rather than replacing it.
+set -euo pipefail
+
+root="$(git rev-parse --show-toplevel)"
+. "${root}/scripts/lib/ship-subject.sh"
+subject=""
+IFS= read -r subject < "$1" || true
+ship_subject_lint "$subject"
