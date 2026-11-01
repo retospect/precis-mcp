@@ -74,10 +74,13 @@ class JobTypeSpec:
     #: gripe_id, params) -> str | None``: return an error message
     #: when the submit can't actually be carried out, ``None``
     #: when OK. The MCP-side ``JobHandler.put`` surfaces non-None
-    #: as ``BadInput`` so the LLM gets an immediate rejection
-    #: rather than a queued zombie job. ``None`` here means "no
-    #: extra validation beyond the static schema / executor /
-    #: REQUIRES checks".
+    #: as ``BadInput`` under a generic fix-and-retry ``next=`` so the
+    #: LLM gets an immediate rejection rather than a queued zombie
+    #: job; the hook may instead RAISE ``BadInput`` itself — carrying
+    #: its own ``next=`` — for a refusal the caller cannot fix
+    #: (deployment env — gr549582), matching ``validate``'s contract.
+    #: ``None`` here means "no extra validation beyond the static
+    #: schema / executor / REQUIRES checks".
     validate_submit: Callable[..., str | None] | None = None
     #: Optional submit-time semantic check, ``validate(store, params)``
     #: (gr511724). ``JobHandler.put`` calls it right after the static

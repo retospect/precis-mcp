@@ -2673,11 +2673,7 @@ class GripeHandler(NumericRefHandler):
                     f"put(kind={self.kind!r}, id={ref_id}, text='more details')",
                     "append a comment",
                 ),
-                (
-                    f"put(kind='job', job_type='fix_gripe', "
-                    f"link='{self.kind}:{ref_id}', rel='fixes')",
-                    "hand off to an agent",
-                ),
+                *self._fix_gripe_offer(ref_id),
                 (
                     f"link(kind={self.kind!r}, id={ref_id}, "
                     "target='<gripe-handle>', rel='supersedes')",
@@ -2686,6 +2682,43 @@ class GripeHandler(NumericRefHandler):
             ]
         )
         return Response(body=body)
+
+    def _fix_gripe_offer(self, ref_id: int) -> list[tuple[str, str]]:
+        """The ``fix_gripe`` hand-off hint — only where it can run.
+
+        Advertised only when the job type is registered AND this
+        process would accept the put, judged by the same pre-submit
+        gate the JobHandler runs on it
+        (``JobTypeSpec.validate_submit`` — the ``PRECIS_FIX_*`` env
+        wired, a repo route for the gripe, ``ANTHROPIC_API_KEY``
+        present). On a session-MCP process the fix lane is off and the
+        hint's only outcome was a refusal the caller cannot fix
+        (gr549582), so it stays out; the refusal's own ``next=`` names
+        the route that works (the gripe-fix loop). A probe failure
+        suppresses the hint rather than sinking the ack of an
+        already-filed gripe.
+        """
+        from precis.workers.job_types import get_job_type
+
+        spec = get_job_type("fix_gripe")
+        if spec is None or spec.validate_submit is None:
+            return []
+        try:
+            err = spec.validate_submit(self.store, gripe_id=ref_id, params={})
+        except BadInput:
+            return []
+        except Exception:
+            log.exception("fix_gripe offer probe failed for gripe id=%s", ref_id)
+            return []
+        if err is not None:
+            return []
+        return [
+            (
+                f"put(kind='job', job_type='fix_gripe', "
+                f"link='{self.kind}:{ref_id}', rel='fixes')",
+                "hand off to an agent",
+            )
+        ]
 
 
 #: Comment chunk_kind per referrer kind — only kinds with a comment

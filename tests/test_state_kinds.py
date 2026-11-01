@@ -542,13 +542,23 @@ class TestGripe:
         assert "lifecycle probe open" in pinned
         assert "lifecycle probe triaged" not in pinned
 
-    def test_create_ack_hints_round_trip(self, gripe: GripeHandler) -> None:
+    def test_create_ack_hints_round_trip(
+        self, gripe: GripeHandler, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         """The ack used to advertise ``link='gripe'+':N'`` — a BinOp
         the literals-only command parser rejects. Now both the
         ``link=`` (real id, D3 shortcut) and the
         ``target=`` (unknowable other-gripe id) render as single string
         literals — the latter a quoted ``<gripe-handle>`` template."""
         from tests.hintcheck import assert_hints_round_trip
+
+        # gr549582: the fix_gripe hand-off is advertised only when the
+        # submit path would accept it — wire the lane env so the hint
+        # renders here (the lane-off case is pinned below).
+        monkeypatch.setenv("PRECIS_FIX_WORK_DIR", "/tmp/precis-fix-work")
+        monkeypatch.setenv("PRECIS_FIX_REPO_DIR", "/tmp/precis-mcp")
+        monkeypatch.delenv("PRECIS_FIX_REPOS", raising=False)
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
 
         resp = gripe.put(text="hint round-trip regression fixture")
         gid = int(gripe.store.list_refs(kind="gripe", limit=1)[0].id)
@@ -565,6 +575,24 @@ class TestGripe:
         link_hints = [h for h in hints if h.startswith("link(")]
         assert link_hints, f"expected the supersedes hint: {hints!r}"
         assert "target='<gripe-handle>'" in link_hints[0]
+
+    def test_create_ack_drops_fix_gripe_offer_when_lane_cannot_run(
+        self, gripe: GripeHandler, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """gr549582: on a process where the fix lane can't run
+        (``PRECIS_FIX_WORK_DIR`` unset — the session MCP), the create
+        ack must not advertise a ``put(kind='job', job_type='fix_gripe')``
+        the submit path would only refuse; the other hints stay."""
+        for var in (
+            "PRECIS_FIX_WORK_DIR",
+            "PRECIS_FIX_REPO_DIR",
+            "PRECIS_FIX_REPOS",
+        ):
+            monkeypatch.delenv(var, raising=False)
+        resp = gripe.put(text="lane-off hand-off suppression fixture")
+        assert "job_type='fix_gripe'" not in resp.body
+        assert "append a comment" in resp.body
+        assert "supersedes" in resp.body
 
     def test_kindspec_is_first_class(self) -> None:
         """Regression guard: the v0 write-only KindSpec was inverted
@@ -642,6 +670,27 @@ class TestJob:
         handler = JobHandler.__new__(JobHandler)
         with pytest.raises(BadInput, match="fix_gripe requires link"):
             handler.put(job_type="fix_gripe")
+
+    def test_fix_gripe_env_refusal_names_the_route_that_works(
+        self,
+        job: JobHandler,
+        store: Store,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """gr549582: a ``fix_gripe`` put refused on deployment env
+        (the caller cannot set ``PRECIS_FIX_WORK_DIR`` on the server)
+        carries a ``next=`` naming the route that works — the
+        gripe-fix loop — instead of the generic "retry the same put"."""
+        for var in (
+            "PRECIS_FIX_WORK_DIR",
+            "PRECIS_FIX_REPO_DIR",
+            "PRECIS_FIX_REPOS",
+        ):
+            monkeypatch.delenv(var, raising=False)
+        gid = insert_gripe(store, "lane-off refusal target").id
+        with pytest.raises(BadInput, match="PRECIS_FIX_WORK_DIR") as exc_info:
+            job.put(job_type="fix_gripe", link=f"gripe:{gid}", rel="fixes")
+        assert "precis-gripe-loop-help" in str(exc_info.value.next or "")
 
     def test_search_link_only_no_q_lists_linked_jobs(
         self, job: JobHandler, store: Store

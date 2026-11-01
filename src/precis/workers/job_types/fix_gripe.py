@@ -55,6 +55,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from precis.errors import BadInput
 from precis.utils import claude_oauth as _oauth
 from precis.utils.claude_agent import ClaudeAgentError, ContainerRequiredError
 from precis.utils.llm.router import Backend, Tier, resolve_backend, resolve_model
@@ -286,6 +287,22 @@ def _parse_repos_env(raw: str | None) -> dict[str, Path]:
     return out
 
 
+#: ``next=`` for fix_gripe submit refusals a caller cannot fix —
+#: deployment-env failures (gr549582). An MCP caller cannot set
+#: server-side env, so the generic "fix what the message names, then
+#: retry the same put" wrapper names a next step that does not exist;
+#: the route that works today is the gripe-fix loop — the owning
+#: thread's session fixes the gripe in its own worktree
+#: (``precis-gripe-loop-help``; the auto-fix lane is OFF by ruling,
+#: Reto 2026-10-02).
+_FIX_LANE_OFF_NEXT = (
+    "the fix_gripe lane is off on this process — the route that works "
+    "is the gripe-fix loop (the owning thread's session fixes the "
+    "gripe in its own worktree): get(kind='skill', "
+    "id='precis-gripe-loop-help')"
+)
+
+
 def validate_submit(
     # tests pass narrow local stubs (tags_for-only / get_ref-only),
     # diverging from Store
@@ -296,11 +313,15 @@ def validate_submit(
 ) -> str | None:
     """Pre-submit check: can we actually run this fix on this gripe?
 
-    Returns an error message string if not, ``None`` if OK. The
-    JobHandler surfaces non-None as a ``BadInput`` at the
-    ``put(kind='job', ...)`` boundary so the caller gets an
-    immediate, actionable rejection rather than a queued job that
-    silently fails at claim time.
+    Returns an error message string for a caller-fixable refusal,
+    ``None`` when OK. The JobHandler surfaces a non-None return as a
+    ``BadInput`` at the ``put(kind='job', ...)`` boundary so the caller
+    gets an immediate, actionable rejection rather than a queued job
+    that silently fails at claim time. Raises :class:`BadInput`
+    directly — carrying its own ``next=`` naming the route that works
+    — for a refusal only the deployment can fix (the env class):
+    an MCP caller cannot set server env, so the generic
+    fix-and-retry wrapper would lie (gr549582).
 
     We check three things:
 
@@ -316,7 +337,7 @@ def validate_submit(
     try:
         cfg = load_config_from_env()
     except RuntimeError as exc:
-        return str(exc)
+        raise BadInput(str(exc), next=_FIX_LANE_OFF_NEXT) from exc
     try:
         resolve_repo_for_gripe(store, gripe_id, cfg)
     except ValueError as exc:
@@ -324,12 +345,13 @@ def validate_submit(
     from precis import secrets as _secrets
 
     if not _secrets.get_secret("ANTHROPIC_API_KEY"):
-        return (
+        raise BadInput(
             "fix_gripe: ANTHROPIC_API_KEY is not set in the precis "
             "container env. The in-container `claude -p --bare` "
             "invocation can't reach the host's OAuth / Keychain "
             "state, so an API key is required. Add it to the "
-            "precis-dev service in your compose file."
+            "precis-dev service in your compose file.",
+            next=_FIX_LANE_OFF_NEXT,
         )
     return None
 

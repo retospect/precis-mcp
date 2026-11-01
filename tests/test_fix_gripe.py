@@ -635,13 +635,18 @@ class TestValidateSubmit:
         return _Store()
 
     def test_rejects_when_env_missing(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """gr549582: an env refusal the caller cannot fix raises
+        ``BadInput`` carrying its own ``next=`` — the route that works
+        (the gripe-fix loop), not the generic fix-and-retry wrapper."""
+        from precis.errors import BadInput
         from precis.workers.job_types.fix_gripe import validate_submit
 
         monkeypatch.delenv("PRECIS_FIX_REPO_DIR", raising=False)
         monkeypatch.delenv("PRECIS_FIX_REPOS", raising=False)
         monkeypatch.delenv("PRECIS_FIX_WORK_DIR", raising=False)
-        err = validate_submit(self._store(), gripe_id=42, params={})
-        assert err is not None and "PRECIS_FIX_WORK_DIR" in err
+        with pytest.raises(BadInput, match="PRECIS_FIX_WORK_DIR") as exc_info:
+            validate_submit(self._store(), gripe_id=42, params={})
+        assert "precis-gripe-loop-help" in str(exc_info.value.next or "")
 
     def test_rejects_unknown_repo_tag(self, monkeypatch: pytest.MonkeyPatch) -> None:
         from precis.workers.job_types.fix_gripe import validate_submit
@@ -656,14 +661,19 @@ class TestValidateSubmit:
     def test_rejects_when_api_key_missing(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
+        """gr549582: same env-class refusal shape as the missing
+        ``PRECIS_FIX_WORK_DIR`` case — raised ``BadInput`` whose
+        ``next=`` names the gripe-fix loop."""
+        from precis.errors import BadInput
         from precis.workers.job_types.fix_gripe import validate_submit
 
         monkeypatch.setenv("PRECIS_FIX_WORK_DIR", "/tmp/precis-fix-work")
         monkeypatch.setenv("PRECIS_FIX_REPO_DIR", "/tmp/precis-mcp")
         monkeypatch.delenv("PRECIS_FIX_REPOS", raising=False)
         monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
-        err = validate_submit(self._store(), gripe_id=42, params={})
-        assert err is not None and "ANTHROPIC_API_KEY" in err
+        with pytest.raises(BadInput, match="ANTHROPIC_API_KEY") as exc_info:
+            validate_submit(self._store(), gripe_id=42, params={})
+        assert "precis-gripe-loop-help" in str(exc_info.value.next or "")
 
     def test_accepts_valid_config(self, monkeypatch: pytest.MonkeyPatch) -> None:
         from precis.workers.job_types.fix_gripe import validate_submit
