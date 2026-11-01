@@ -85,8 +85,9 @@
 #     20b.
 #   * `job_inproc` (executors/job_inproc.py) has no ServiceSpec.introspect of
 #     its own beyond that shared claim path — its own module reads only
-#     PRECIS_INPROC_CONCURRENCY / PRECIS_JOB_INPROC_LEASE_S / PRECIS_NODE,
-#     all optional with code defaults. BUT the job_type it drains,
+#     PRECIS_JOB_INPROC_LEASE_S / PRECIS_NODE, both optional with code
+#     defaults (PRECIS_INPROC_CONCURRENCY is claude_inproc's knob alone, see
+#     the env comment below). BUT the job_type it drains,
 #     `embed_batch`, resolves its embedder through `load_config()`
 #     (workers/embed.py::resolve_embedder → PrecisConfig.embedder), whose
 #     default is the non-production "mock" backend — so this lane MUST carry
@@ -304,10 +305,14 @@
                  'PRECIS_MAX_TREE_USD': (precis_max_tree_usd | default(10.0)) | string,
                  'PRECIS_DAILY_COST_CEILING': (precis_daily_cost_ceiling | default(50.0)) | string,
                  'PRECIS_SUSPENDED_JOB_TYPES': precis_suspended_job_types | default(''),
+                 'PRECIS_INPROC_CONCURRENCY': (precis_worker_agentlane_inproc_concurrency | default(3)) | string,
+                 'PRECIS_CARD_FORGE_AUTONOMY': precis_card_forge_autonomy | default('act'),
                  'PRECIS_EMBEDDER': precis_worker_agent_embedder | default('remote'),
                  'PRECIS_EMBEDDER_URL': precis_worker_agent_embedder_url
                    | default('http://127.0.0.1:' ~ (embedder_port | default(8181))),
                })
+             | combine({'PRECIS_LOCAL_SERVE_CONFIG': precis_local_serve_config} if precis_local_serve_config is defined else {})
+             | combine({'PRECIS_SUMMARIZE_MODEL': precis_local_llm_model_override} if precis_local_llm_model_override is defined else {})
              | combine(
                  {
                    'PRECIS_FIX_WORK_DIR': precis_fix_work_dir | default('/Users/deploy/precis-fix-work'),
@@ -326,6 +331,18 @@
                  {'PRECIS_CLAUDE_BIN': claude_run_wrapper | default('/opt/precis/bin/claude-run-user')}
                  if (os_family == 'darwin' and (claude_run_user | default('')) | length > 0) else {}
                ) }}
+        # ^ Catch-all handover (gateway lanes): 20b now runs `--skip
+        # job_claude_inproc` on the gateway, so this lane is the SOLE claimant
+        # of claude_inproc jobs. Env a claude_inproc job type reads that 20b's
+        # gateway unit carried and this lane lacked: PRECIS_CARD_FORGE_AUTONOMY
+        # (card_forge, reading/flashcards.py — without it the job runs in
+        # observe-only "report" mode; 20b's `act` default mirrored here) and
+        # the PRECIS_LOCAL_SERVE_CONFIG / PRECIS_SUMMARIZE_MODEL host-local
+        # served_by overrides (SMALL-tier route() calls from job types).
+        # PRECIS_INPROC_CONCURRENCY is read ONLY by claude_inproc
+        # (_inproc_concurrency, clamped 1-16): job_inproc has no such knob, so
+        # raising it does not change job_inproc's serial pass. `--batch-size 1`
+        # still claims max(limit, concurrency) = 3 rows per pass.
         # ^ gr346813 (2026-09-20): this lane claims most claude_inproc jobs on
         # the gateway, yet only 20b's collapsed unit carried the §13 container
         # env — so every diagnose_gripe/fix_gripe this lane won cancelled on

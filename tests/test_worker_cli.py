@@ -165,6 +165,30 @@ class TestParser:
         with pytest.raises(SystemExit):
             parser.parse_args(["worker", "--only", "embed", "--only", "bogus_pass"])
 
+    def test_worker_only_accepts_hub_refine(self):
+        # Dedicated hub_refine lane (deploy 20h): `--only hub_refine`.
+        parser = _build_parser()
+        args = parser.parse_args(["worker", "--only", "hub_refine"])
+        assert args.only == ["hub_refine"]
+
+    def test_worker_skip_repeatable_and_validated(self):
+        parser = _build_parser()
+        assert parser.parse_args(["worker"]).skip is None
+        args = parser.parse_args(
+            [
+                "worker",
+                "--profile",
+                "all",
+                "--skip",
+                "hub_refine",
+                "--skip",
+                "job_claude_inproc",
+            ]
+        )
+        assert args.skip == ["hub_refine", "job_claude_inproc"]
+        with pytest.raises(SystemExit):
+            parser.parse_args(["worker", "--skip", "bogus_pass"])
+
     def test_worker_profile_defaults_to_system(self):
         parser = _build_parser()
         args = parser.parse_args(["worker"])
@@ -608,6 +632,23 @@ class TestShouldRegister:
         assert not _should_register(
             ["hub_refine"], "minter", profile_passes=frozenset({"minter"})
         )
+
+    def test_skip_drops_a_profile_pass_and_an_enable_env_pass(self):
+        # The collapsed catch-all (`--profile all --skip hub_refine --skip
+        # job_claude_inproc`) hands both passes to dedicated lanes: skip
+        # beats profile membership AND the always-register enable_env path.
+        member = frozenset({"job_claude_inproc", "minter"})
+        skip = ["hub_refine", "job_claude_inproc"]
+        assert not _should_register(None, "hub_refine", skip=skip)
+        assert not _should_register(
+            None, "job_claude_inproc", profile_passes=member, skip=skip
+        )
+        # Everything not named is untouched.
+        assert _should_register(None, "minter", profile_passes=member, skip=skip)
+        assert _should_register(None, "classify", skip=skip)
+
+    def test_skip_wins_over_only(self):
+        assert not _should_register(["hub_refine"], "hub_refine", skip=["hub_refine"])
 
 
 class TestCapabilityGateDefault:

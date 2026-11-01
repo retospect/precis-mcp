@@ -130,6 +130,12 @@
 - name: "20g — precis slice poll lane (gateway, job_ssh_node)"
   ansible.builtin.import_playbook: playbooks/20g-precis-worker-slices.yml
 
+# Dedicated taproot hub_refine lane (gateway, `--only hub_refine`): the pass
+# was ~27% of the collapsed worker's 40-50 min lap (p50 665 s per pass). 20b
+# runs `--skip hub_refine` so this unit is the only claimant. After 20b/20g.
+- name: "20h — precis hub_refine lane (gateway, hub_refine)"
+  ansible.builtin.import_playbook: playbooks/20h-precis-worker-hubrefine.yml
+
 # Dedicated OpenAlex-snapshot worker lane — `--only openalex_snapshot` on
 # `precis_capabilities.openalex_snapshot` hosts (the data node): the monthly
 # works-dump cites refresh (oa-cites slice 3). The pass self-throttles ~30d,

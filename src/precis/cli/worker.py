@@ -60,7 +60,11 @@ if TYPE_CHECKING:
 
 
 def _should_register(
-    only: list[str] | None, name: str, *, profile_passes: frozenset[str] = frozenset()
+    only: list[str] | None,
+    name: str,
+    *,
+    profile_passes: frozenset[str] = frozenset(),
+    skip: list[str] | None = None,
 ) -> bool:
     """Whether ``name`` registers into ``ref_passes`` on this invocation.
 
@@ -70,6 +74,9 @@ def _should_register(
     until restart, so a later live prio flip had nothing to gate). The
     per-cycle ``pass_gate`` (TTL-cached, consulted every cycle) is now
     the ONE decision point for whether a registered pass actually *runs*.
+
+    ``skip`` (``--skip X``, repeatable) vetoes a name outright — checked
+    first, so it wins over ``--only``, profile membership and ``enable_env``.
 
     ``only`` (``--only X``, repeatable) forces exactly the named
     pass(es) regardless of profile membership. Otherwise always-register
@@ -81,6 +88,8 @@ def _should_register(
     eligibility). A pass with neither profile membership nor
     ``enable_env`` does not register.
     """
+    if skip is not None and name in skip:
+        return False
     if only is not None:
         return name in only
     if name in profile_passes or name.startswith("axis:"):
@@ -361,6 +370,57 @@ HandlerKey = Literal[
 # ---------------------------------------------------------------------------
 
 
+#: Pass names ``--only`` / ``--skip`` accept (one shared list so a unit can
+#: always skip what another can pin).
+_PASS_CHOICES: tuple[str, ...] = (
+    "embed",
+    "summarize",
+    "chunk_keywords",
+    "bib_parse",
+    "bib_retag",
+    "chase",
+    "chase_trigger",
+    "inbound_ground",
+    "hub_refine",
+    "fetch",
+    "gp_fetch",
+    "stub_rank",
+    "tag_embeddings",
+    "job_claude_inproc",
+    "job_inproc",
+    "job_ssh_node",
+    "job_claude_docker",
+    "job_devin_api",
+    "dream_agent",
+    "auto_check",
+    "schedule",
+    "nursery",
+    "heartbeat",
+    "structural",
+    "deep_review",
+    "minter",
+    "sweeper",
+    "quota_check",
+    "disk_check",
+    "watch_poll",
+    "citer_watch",
+    "upstream_watch",
+    "idea_feed",
+    "news_poll",
+    "parts_refresh",
+    "mail_poll",
+    "inject_scan",
+    "briefing",
+    "llm_summarize",
+    "classify",
+    "llm_reconcile",
+    "paper_glossary",
+    "classify_topics",
+    "backlog_groom",
+    "briefing_audio",
+)
+
+
 def add_parser(sub: argparse._SubParsersAction) -> None:
     """Register the ``precis worker`` subcommand on ``sub``."""
     p = sub.add_parser(
@@ -424,52 +484,7 @@ def add_parser(sub: argparse._SubParsersAction) -> None:
     )
     p.add_argument(
         "--only",
-        choices=(
-            "embed",
-            "summarize",
-            "chunk_keywords",
-            "bib_parse",
-            "bib_retag",
-            "chase",
-            "chase_trigger",
-            "inbound_ground",
-            "fetch",
-            "gp_fetch",
-            "stub_rank",
-            "tag_embeddings",
-            "job_claude_inproc",
-            "job_inproc",
-            "job_ssh_node",
-            "job_claude_docker",
-            "job_devin_api",
-            "dream_agent",
-            "auto_check",
-            "schedule",
-            "nursery",
-            "heartbeat",
-            "structural",
-            "deep_review",
-            "minter",
-            "sweeper",
-            "quota_check",
-            "disk_check",
-            "watch_poll",
-            "citer_watch",
-            "upstream_watch",
-            "idea_feed",
-            "news_poll",
-            "parts_refresh",
-            "mail_poll",
-            "inject_scan",
-            "briefing",
-            "llm_summarize",
-            "classify",
-            "llm_reconcile",
-            "paper_glossary",
-            "classify_topics",
-            "backlog_groom",
-            "briefing_audio",
-        ),
+        choices=_PASS_CHOICES,
         action="append",
         default=None,
         help="Restrict to one or more handler kinds (repeatable: "
@@ -478,6 +493,18 @@ def add_parser(sub: argparse._SubParsersAction) -> None:
         "ad-hoc backfills (`--only embed --once`), debugging, and a "
         "dedicated agent-lane unit that must run more than one pass "
         "without picking up the rest of a profile's rotation.",
+    )
+    p.add_argument(
+        "--skip",
+        choices=_PASS_CHOICES,
+        action="append",
+        default=None,
+        help="Drop one or more passes from this worker (repeatable: "
+        "`--profile all --skip hub_refine --skip job_claude_inproc`). "
+        "Applied after --profile / --only selection, so the pass never "
+        "registers and the unit never spends a rotation slot (or a "
+        "claim) on it; the inverse of --only. Used by the collapsed "
+        "catch-all unit when a dedicated lane owns the pass.",
     )
     p.add_argument(
         "--with-llm",
@@ -712,7 +739,12 @@ def run(args: argparse.Namespace) -> None:
             """Boot gate: whether ``name`` registers into ``ref_passes`` on
             this invocation. See :func:`_should_register` — this just binds
             it to the current invocation's ``--only`` / ``--profile``."""
-            return _should_register(args.only, name, profile_passes=profile_passes)
+            return _should_register(
+                args.only,
+                name,
+                profile_passes=profile_passes,
+                skip=getattr(args, "skip", None),
+            )
 
         # Chunk-keybert pass (F20). Replaces the v1 segment_toc worker.
         # Runs after embeddings exist (the claim query requires
@@ -1162,6 +1194,8 @@ def _build_handlers(
     is_system = profile in ("system", "all")
 
     def _want(name: str) -> bool:
+        if name in (getattr(args, "skip", None) or ()):
+            return False
         if args.only is not None:
             return name in args.only
         if name == "embed":

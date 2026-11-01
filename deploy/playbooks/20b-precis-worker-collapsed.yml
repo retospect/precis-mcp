@@ -451,6 +451,22 @@
          | combine({'PRECIS_FETCH_MARKUP': '1'} if (precis_worker_fetch_markup | default(false)) else {})
          | combine({'PRECIS_OA_FETCH_INFLIGHT': precis_worker_fetch_inflight | string}
              if (precis_worker_fetch_inflight | default('')) else {}) }}
+    # ── passes the gateway catch-all hands to dedicated lanes ──
+    # `--skip` (cli/worker.py) drops a pass from this unit's rotation after
+    # profile selection, so the 40-50 min serial lap stops spending slots on
+    # work another unit owns:
+    #   * hub_refine → 20h (`--only hub_refine`): ~27% of the lap (p50 665 s
+    #     per pass) and every pass claims work.
+    #   * job_claude_inproc → 20e (`--only job_claude_inproc --only
+    #     job_inproc`): the same handler, ~22% of the lap; 20e is the sole
+    #     claimant of claude_inproc jobs from here on, so any env a
+    #     claude_inproc job type reads must be in 20e's env (card_forge's
+    #     PRECIS_CARD_FORGE_AUTONOMY was the gap when this landed).
+    # Gateway only: scheduler/inference never ran hub_refine (prio row is
+    # gateway-only) or job_claude_inproc (no PRECIS_MCP_CONFIG there).
+    _l_b_skip_flags: >-
+      {{ '--skip hub_refine --skip job_claude_inproc'
+         if inventory_hostname in groups['gateway'] else '' }}
     # Where the lane runs — kept as one var so the render and the stale-unit
     # removal below can never disagree about "should exist here".
     _l_b_fetch_lane_on: >-
@@ -505,6 +521,7 @@
           mode: keepalive
         service_unit_exec: >-
           {{ precis_worker_venv }}/bin/precis worker --profile all
+          {{ _l_b_skip_flags }}
           --batch-size {{ precis_worker_batch_size }}
           --idle-seconds {{ precis_worker_idle_seconds }}
           --embedder {{ precis_worker_embedder }}

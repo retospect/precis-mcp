@@ -590,6 +590,11 @@
 - name: "Slice poll lane                (gateway, job_ssh_node)"
   ansible.builtin.import_playbook: playbooks/20g-precis-worker-slices.yml
 
+# hub_refine lane: the macOS `com.precis.*.plist` bounce below sweeps up
+# com.precis.worker-hubrefine.plist too; no extra bounce task.
+- name: "hub_refine lane                (gateway, hub_refine)"
+  ansible.builtin.import_playbook: playbooks/20h-precis-worker-hubrefine.yml
+
 - name: "Refresh serving-host heartbeat    (heartbeat-only worker, no queue claims)"
   ansible.builtin.import_playbook: playbooks/20c-precis-heartbeat-serving.yml
 

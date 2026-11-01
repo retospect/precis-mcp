@@ -1,0 +1,114 @@
+---
+# 20h-precis-worker-hubrefine.yml — the dedicated taproot hub_refine lane on
+# the gateway.
+#
+# WHY THIS EXISTS. In the collapsed catch-all worker (20b) `hub_refine` is one
+# slot of a serial round-robin (workers/runner.py `run_loop`) with a 40-50 min
+# lap. A pass takes ~11 min (p50 665 s: PRECIS_TAPROOT_REFINE_PASS_WALL_S
+# defaults to 600 s and every pass finds due hubs), i.e. ~27% of the lap,
+# while every other pass on the host waits behind it.
+#
+# WHAT THIS IS. A second worker running ONLY `--only hub_refine`, looping
+# back-to-back (idle sleep only when a pass finds nothing). 20b's unit adds
+# `--skip hub_refine` in the same change, so there is exactly one claimant:
+# hub_refine claims due hubs via leases in the DB, but a second runner would
+# just duplicate LLM verify spend. Same second-scheduling-lane pattern as 20e
+# (agent lane) and 20g (slice poll lane).
+#
+# NO --batch-size. The pass ignores it (`_hub_refine_pass(batch_size)` calls
+# run_hub_refine_pass with its own PRECIS_TAPROOT_REFINE_* knobs: hubs per
+# pass, wall budget, verify calls per hub), so the code defaults stand and
+# tuning them is a host_var-free env change in a later commit.
+#
+# NO service_config GATE. `--only` bypasses the per-cycle pass_gate
+# (cli/worker.py: `_pass_gate` is None whenever `--only` is set), so the
+# `service prio` row that switches hub_refine on in 20b's rotation (gateway
+# only on prod) is not consulted here: the lane runs whenever the unit is
+# loaded. Stop it by booting the unit out, not by flipping the prio.
+#
+# ENV. Traced from what the pass reads, mirroring 20b's values:
+#   * DB DSN + PGPASSFILE + HOME + PATH — HOME holds the `claude` OAuth state
+#     the verifier/judge calls use.
+#   * the verifier/judge calls are tool-less `route()` calls at Tier.BIG /
+#     Tier.MEDIUM (workers/_chase_llm.py, hub_refine.py), i.e. the `claude_p`
+#     transport: PRECIS_CLAUDE_BIN (darwin sudo -n wrapper when
+#     `claude_run_user` is set, as 20b/20e/20g), plus the LLM backend/model
+#     keys (PRECIS_LLM_*, PRECIS_MODEL_*) which ride `precis_shared_env`.
+#   * the embedder pair — discovery embeds the claim sentence; with no
+#     EmbedHandler booted (embed is manual-only) the pass builds one lazily
+#     from PRECIS_EMBEDDER / PRECIS_EMBEDDER_URL (cli/worker.py
+#     `_resolve_embedder`). Absent them the default is the real bge-m3 model
+#     loaded in-process on the gateway, which is wrong.
+#   * PRECIS_DAILY_COST_CEILING — route()/claude_p meter spend against it
+#     (route_log, claude_p); the same value as 20b so the fleet-wide ceiling
+#     is claim-order independent. Planner caps (MAX_TICKS/TODO/TREE) are NOT
+#     rendered: no planner runs here.
+#   * precis_shared_env / precis_identity_env (API-key parity with every
+#     precis-* unit).
+# Not carried: PRECIS_MCP_CONFIG (tool-less calls), PRECIS_SUSPENDED_JOB_TYPES
+# (no job claims), the container/dream/anki/fix/tts blocks, PRECIS_CHASE_LLM /
+# PRECIS_TAPROOT_CHASE_ENABLED (gate the chase bridge, not hub_refine).
+#
+# NO READINESS GATE (unlike 20e/43). `hub_refine` is added to the `--only`
+# choices in the same change as this lane; a stale venv would reject the flag
+# and crash-loop under keepalive until 20b has refreshed the venv, which is
+# loud and self-healing (launchd throttles the respawn), so no wrapper script.
+#
+# Run order: after 20b (rides its venv, deploy user and pgpass; imports no
+# role) and after 20g. The redeploy macOS `com.precis.*.plist` glob already
+# bounces `com.precis.worker-hubrefine.plist`; the final task covers the
+# site.yml path.
+
+- name: Deploy the dedicated hub_refine lane (taproot hub refine)
+  hosts: gateway
+  become: true
+  vars:
+    # Local constants — role defaults aren't in scope (no role imported).
+    _hubrefine_venv: /opt/precis/venv
+    _hubrefine_dsn: "postgresql://agent_rw@{{ hostvars[postgres_host]['ansible_host'] }}:{{ pgbouncer_port }}/precis_prod"
+  tasks:
+    - name: render + load the hub_refine lane unit
+      ansible.builtin.import_role:
+        name: service_unit
+      vars:
+        service_unit_name: worker-hubrefine
+        service_unit_run_as: deploy
+        # /tmp avoids the getcwd() EPERM trap on an NFS-mounted cwd (as 20b).
+        service_unit_working_dir: /tmp
+        service_unit_process_type: Interactive
+        service_unit_schedule:
+          mode: keepalive
+        service_unit_timeout_stop_sec: 60
+        service_unit_exec: >-
+          {{ _hubrefine_venv }}/bin/precis worker --only hub_refine
+          --idle-seconds {{ precis_worker_hubrefine_idle_seconds | default(30) }}
+        service_unit_env: >-
+          {{ precis_shared_env
+             | combine(precis_identity_env | default({}))
+             | combine({
+                 'HOME': '/Users/deploy',
+                 'PATH': _hubrefine_venv + '/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin',
+                 'PGPASSFILE': '/Users/deploy/.pgpass',
+                 'PRECIS_DATABASE_URL': _hubrefine_dsn,
+                 'PRECIS_PROCESS': 'precis-worker-hubrefine',
+                 'PRECIS_SOURCE': 'precis-worker-hubrefine',
+                 'PRECIS_DAILY_COST_CEILING': (precis_daily_cost_ceiling | default(50.0)) | string,
+                 'PRECIS_EMBEDDER': precis_worker_agent_embedder | default('remote'),
+                 'PRECIS_EMBEDDER_URL': precis_worker_agent_embedder_url
+                   | default('http://127.0.0.1:' ~ (embedder_port | default(8181))),
+               })
+             | combine(
+                 {'PRECIS_CLAUDE_BIN': claude_run_wrapper | default('/opt/precis/bin/claude-run-user')}
+                 if ((claude_run_user | default('')) | length > 0) else {}
+               ) }}
+
+    # Code-refresh bounce for the site.yml path ONLY: redeploy defines
+    # `precis_deploy_changed` and its blanket plist bounce already restarted
+    # this unit; service_unit's own reload fires only on a plist diff.
+    - name: Bounce the hub_refine lane on a code refresh (site.yml path)
+      ansible.builtin.command: launchctl kickstart -k system/com.precis.worker-hubrefine
+      become: true
+      when: precis_deploy_changed is not defined
+      changed_when: true
+      failed_when: false
+  tags: [precis-worker-hubrefine, precis]
