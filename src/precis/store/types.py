@@ -1526,8 +1526,9 @@ _KIND_ALLOWED_AXES: dict[str, frozenset[str]] = {
     # striving weight that (from slice 2) flows down the `serves` DAG as the
     # reweighting field. No other closed axes.
     "quest": frozenset({"STATUS", "PRIO"}),
-    # Job state machine — STATUS only. PRIO not used (jobs run on
-    # demand; if you want one prioritised, just submit it later).
+    # Job state machine — STATUS only. Priority is the ``refs.prio``
+    # column the claim order reads (put/tag ``prio=``), never a PRIO:
+    # tag row.
     "job": frozenset({"STATUS"}),
     # Free-form notes: confidence, topic, project, etc. are open tags
     # (``confidence-strong``, ``topic-noxrr``). ``DREAM:`` is provenance for

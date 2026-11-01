@@ -205,6 +205,36 @@ put(kind='job',
 # → created job id=101
 ```
 
+## Queue behind interactive work — prio= / origin=
+
+Claim order is **class, then priority, then time queued** — the same
+`(class_rank, aged_prio, queued_since)` key the `queue:` lines on a
+queued job report. Two mint-time knobs:
+
+```python
+put(kind='job', parent_id=<todo>, job_type='survey_extract',
+    origin='background',   # meta.origin scheduling class:
+                           # human > agent > recurring > background
+    prio=8)                # refs.prio, 1..10 — lower = hotter (NULL reads 5)
+```
+
+* `origin=` overrides the context-derived class. An agent's put derives
+  `agent` by default — batch work it fans out sits *in the interactive
+  band*, ahead of every real background job. Pass `origin='background'`
+  so interactive work always claims first. `origin='human'` is refused
+  (authenticated web writes only), and a job parented on a coordinator
+  job inherits the parent's class — a conflicting `origin=` refuses.
+* `prio=` writes the `refs.prio` column (the 0014 scale: 1 preempts
+  across *all* classes, 2 is the cron band, 5 the default, 8 commodity
+  background). Inside a class, an aged job gains one prio band per
+  ~10 min queued, so a high-number prio still can't starve — it just
+  claims after fresher work first.
+* Reprioritise a live job with `tag(kind='job', id=N, prio=M)` — works
+  on any non-terminal job (queued, running, `waiting_*`; the write
+  lands on the row's next claim/re-queue). A terminal job refuses:
+  nothing claims it again. `prio=`/`origin=` on `mode='retry'` /
+  `mode='retarget'` are refused — those verbs don't mint.
+
 The handler validates `job_type`, `executor`, `params`, AND the
 parent todo's existence at submit time. If something's wrong, the
 `put` call fails immediately rather than queueing an unrunnable job.

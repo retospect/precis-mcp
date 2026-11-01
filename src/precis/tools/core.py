@@ -1469,13 +1469,14 @@ def put(
     # the ad-hoc put(kind='job', parent_id=…) submit path is uncallable over
     # MCP (JobHandler.put requires it, but it never reached the schema).
     parent_id: int | str | None = None,
-    # todo / gripe / quest priority (see precis-todo-tree-help): the
+    # todo / gripe / quest / job priority (see precis-todo-tree-help): the
     # canonical ``refs.prio`` column (1..10, lower = hotter) that the
-    # doable-view / dispatch ORDER BY sorts on. Declared at the verb level
-    # (the gr262482 pattern) so strict-schema MCP clients don't strip it —
-    # the handlers accepted ``prio=`` all along, but it never reached the
-    # schema nor the dispatch payload, so priority was uncallable over MCP
-    # (operators fell back to raw ``UPDATE refs SET prio=…``).
+    # doable-view / dispatch ORDER BY and the job claim order sort on.
+    # Declared at the verb level (the gr262482 pattern) so strict-schema
+    # MCP clients don't strip it — the handlers accepted ``prio=`` all
+    # along, but it never reached the schema nor the dispatch payload, so
+    # priority was uncallable over MCP (operators fell back to raw
+    # ``UPDATE refs SET prio=…``).
     prio: int | None = None,
     # job retry (see precis-job-help): re-run a failed job —
     # put(kind='job', id=<failed>, mode='retry'[, model='sonnet']). model=
@@ -1486,6 +1487,13 @@ def put(
     # structured selection (meta.llm_select.placement); needed when the
     # parent's surviving placement pin is what failed the job (gr516589).
     placement: str | None = None,
+    # job scheduling class (see precis-job-help): put(kind='job', …,
+    # origin='background') queues batch work behind interactive/agent
+    # jobs — ``meta.origin``, which the claim order ranks before prio.
+    # 'human' stays authenticated-web-only; a job parent fixes the
+    # child's class. Declared at the verb level (the gr262482 pattern)
+    # so strict-schema MCP clients don't strip it.
+    origin: str | None = None,
     # todo plan mint (put(kind='todo', mode='plan'), see precis-plan-help):
     # template= names the plan template, gripe_id=/section=/board= are its
     # arguments. Declared at the verb level (the gr262482 pattern) so
@@ -1788,6 +1796,7 @@ def put(
                 "prio": prio,
                 "model": model,
                 "placement": placement,
+                "origin": origin,
                 "template": template,
                 "gripe_id": gripe_id,
                 "section": section,
@@ -2331,7 +2340,7 @@ def tag(
     # promotion; only this door was missing (gr301897). Other kinds' tag()
     # don't declare meta and swallow it via **_kw (a no-op, not an error).
     meta: dict[str, Any] | None = None,
-    # todo / gripe / quest (see precis-todo-tree-help): the canonical
+    # todo / gripe / quest / job (see precis-todo-tree-help): the canonical
     # ``refs.prio`` column (1..10, lower = hotter). Same declared-at-the-
     # verb-level story as meta= above — the handlers took ``prio=`` all
     # along but it never reached the MCP schema or the dispatch payload.
@@ -2363,7 +2372,7 @@ def tag(
 
     `meta=` (todo only): promotes an allowlisted key (e.g. `llm_tier`)
     onto the ref's meta dict — see precis-todo-tree-help.
-    `prio=` (todo/gripe/quest): priority column, 1..10, lower=hotter.
+    `prio=` (todo/gripe/quest/job): priority column, 1..10, lower=hotter.
 
     Full reference: get(kind='skill', id='precis-tag-help'), or
     search(kind='skill', q='classifying refs') for a topical lookup.

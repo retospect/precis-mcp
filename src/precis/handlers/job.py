@@ -34,6 +34,8 @@ from precis.handlers._numeric_ref import (
     _parse_id_range,
     _parse_window_bound,
 )
+from precis.handlers._prio_tag import validate_prio
+from precis.handlers._tag_redirect import redirect_long_tag_values
 from precis.protocol import KindSpec
 from precis.response import Response
 from precis.store import Tag
@@ -2634,6 +2636,8 @@ class JobHandler(NumericRefHandler):
         model: str | None = None,
         select: dict[str, Any] | None = None,
         placement: str | None = None,
+        prio: int | None = None,
+        origin: str | None = None,
         **_kw: Any,
     ) -> Response:
         # Retry surface: ``put(kind='job', id=N, mode='retry')`` re-runs a
@@ -2647,6 +2651,12 @@ class JobHandler(NumericRefHandler):
         # the same way unless it is overridden here).
         # Handled before the generic ``id is not None`` /
         # ``mode`` rejections below.
+        if mode in ("retry", "retarget") and (prio is not None or origin is not None):
+            raise BadInput(
+                f"prio=/origin= are mint-time stamps; put(mode={mode!r}) "
+                "does not mint a row",
+                next="to reorder a queued job: tag(kind='job', id=<job>, prio=<1..10>)",
+            )
         if mode == "retry":
             return self._retry_job(
                 id=id, model=model, select=select, placement=placement
@@ -2719,6 +2729,13 @@ class JobHandler(NumericRefHandler):
         # validator covers it without pulling in jsonschema.
         params = params or {}
         _validate_params(params, spec.params_schema, job_type=spec.name)
+
+        # ``prio=`` — the ``refs.prio`` claim-order column (1..10, lower =
+        # hotter), same scale the todo/gripe ``prio=`` kwarg writes
+        # (migration 0014). ``origin=`` — the scheduling class
+        # (``meta.origin``); validated below once the parent's class is
+        # known, since a job parent fixes the child's class.
+        prio = validate_prio(prio)
 
         # Per-type semantic check (gr511724): the store-backed refusal
         # the dispatcher would otherwise hit at claim time — an unknown
@@ -2877,10 +2894,36 @@ class JobHandler(NumericRefHandler):
         from precis.workers._mint import JOB_ORIGINS
 
         _ctx = current_revision_context()
+        if origin is not None and origin not in JOB_ORIGINS:
+            raise BadInput(
+                f"origin must be one of {list(JOB_ORIGINS)}, got {origin!r}",
+                options=list(JOB_ORIGINS),
+            )
         if parent_kind == "job":
-            meta["origin"] = (
+            child_origin = (
                 parent_origin if parent_origin in JOB_ORIGINS else "background"
             )
+            if origin is not None and origin != child_origin:
+                # The 2026-10-23 ruling: a job parent fixes the child's
+                # class — a conflicting origin= is refused, not silently
+                # dropped.
+                raise BadInput(
+                    f"origin={origin!r} conflicts with the parent job's class "
+                    f"{child_origin!r} — a job-parented child inherits the "
+                    "parent's class",
+                    next="drop origin= (the child takes the parent job's class)",
+                )
+            meta["origin"] = child_origin
+        elif origin == "human" and not (
+            _ctx is not None and _ctx.trust_actor_type == "human"
+        ):
+            raise BadInput(
+                "origin='human' is reserved for an authenticated web write "
+                "(an agent's put derives 'agent')",
+                next="use origin='background' to queue behind interactive work",
+            )
+        elif origin is not None:
+            meta["origin"] = origin
         elif _ctx is not None and _ctx.trust_actor_type == "human":
             meta["origin"] = "human"
         elif current_background_actor() is not None:
@@ -2935,6 +2978,7 @@ class JobHandler(NumericRefHandler):
                 title=title,
                 meta=meta,
                 parent_id=parent_int,
+                prio=prio,
                 conn=conn,
             )
             for tag in parsed_tags:
@@ -2979,8 +3023,10 @@ class JobHandler(NumericRefHandler):
         return Response(
             body=(
                 f"created job id={ref.id} (STATUS:queued, "
-                f"job_type={spec.name!r}, executor={resolved_executor!r}). "
-                f"poll: get(kind='job', id={ref.id})."
+                f"job_type={spec.name!r}, executor={resolved_executor!r}, "
+                f"origin={meta['origin']!r}"
+                + (f", prio={prio}" if prio is not None else "")
+                + f"). poll: get(kind='job', id={ref.id})."
             ),
             ref_id=ref.id,
             reused=False,
@@ -3464,11 +3510,56 @@ class JobHandler(NumericRefHandler):
         id: str | int,
         add: list[str] | None = None,
         remove: list[str] | None = None,
+        prio: int | None = None,
+        reason: str | None = None,
         **_kw: Any,
     ) -> Response:
         """Tag a job + bubble ``child-failed:<job_id>`` to the parent todo
-        when STATUS:failed is added (the parent's owner decides next move)."""
-        resp = super().tag(id=id, add=add, remove=remove, **_kw)
+        when STATUS:failed is added (the parent's owner decides next move).
+
+        ``prio=`` rewrites the ``refs.prio`` claim-order column (1..10,
+        lower = hotter — the band ``claim_executor_jobs`` sorts a queued
+        job by inside its origin class). Refused on a terminal job: a
+        terminal row never claims again, so the write would be a silent
+        no-op."""
+        prio = validate_prio(prio)
+        # A list ``id=[...]`` falls through to the base tag's batch door,
+        # which re-enters this method once per scalar id (with prio).
+        if prio is not None and not isinstance(id, list):
+            ref_id = self._coerce_id(id)
+            # ``set_prio`` commits on its own connection, so every check
+            # the base ``tag`` would raise must run first — a refused
+            # ``add=`` must not leave a changed prio behind (todo.py's
+            # A6 rule).
+            self._resolve_live_ref(ref_id)
+            if add:
+                add, _redirected_chunks = redirect_long_tag_values(
+                    self.store, ref_id=ref_id, tags=add
+                )
+            parsed_add = [Tag.parse_strict(s, kind=self.kind) for s in add or []]
+            for s in remove or []:
+                Tag.parse_strict(s, kind=self.kind)
+            pre_tags = self.store.tags_for(ref_id)
+            self._guard_tag_add(ref_id, parsed_add, set(pre_tags))
+            status = _status_of(pre_tags)
+            if status in _TERMINAL_STATUSES:
+                raise BadInput(
+                    f"job id={ref_id} is STATUS:{status}; prio orders the "
+                    "claim queue, and a terminal job never claims again",
+                    next="prio= applies to queued/running/waiting jobs",
+                )
+            self.store.set_prio(ref_id, prio)
+            if not add and not remove:
+                # Only a prio write happened — the base tag() would
+                # reject an otherwise-empty call.
+                self._record_tag_reason(ref_id, reason)
+                return Response(body=f"set prio={prio} on job id={ref_id}")
+        # ``prio`` rides through the base's ``**_kw`` — dead weight on a
+        # scalar call (already written above), live on the batch path,
+        # where ``_tag_batch`` re-enters this method per id with it.
+        resp = super().tag(
+            id=id, add=add, remove=remove, reason=reason, prio=prio, **_kw
+        )
         if add and any(a == "STATUS:failed" for a in add):
             from precis.utils.job_bubble import bubble_job_failure
 
