@@ -22,7 +22,7 @@ from precis.store import Store
 from precis.store.types import Tag
 from precis.workers.executors import EXECUTOR_PROVIDES, ssh_node
 from precis.workers.executors._common import claim_executor_jobs
-from precis.workers.job_types import JobTypeSpec
+from precis.workers.job_types import JobTypeSpec, get_job_type, run_slice
 
 pytestmark = pytest.mark.db
 
@@ -391,6 +391,29 @@ def test_poison_guard_fails_past_max_attempts(
     # crash-loop guard is an INFRA failure (the worker died mid-dispatch, not
     # a physical verdict) — a struct_relax-style harvest must be able to tell.
     assert _meta(store, rid)["failure_class"] == "infra"
+
+
+def test_poison_guard_release_error_does_not_undo_failure(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    released: list[int] = []
+
+    def release(ctx: Any, handle: Any) -> None:
+        released.append(ctx.ref_id)
+        raise RuntimeError("release failed")
+
+    spec = replace(_spec(), release=release)
+    monkeypatch.setattr(ssh_node, "get_job_type", lambda name: spec)
+    rid = _mk_running_job(store, lease_offset_s=-60, attempts=ssh_node._MAX_ATTEMPTS)
+
+    result = ssh_node.run_ssh_node_pass(store, limit=2)
+
+    assert result == {"claimed": 1, "ok": 0, "failed": 1}
+    assert released == [rid]
+    assert _status(store, rid) == "failed"
+    meta = _meta(store, rid)
+    assert meta["failure_class"] == "infra"
+    assert "crash-loop guard" in meta["error"]
 
 
 # ── Worker boot epoch: epoch-aware reclaim (the lease-epoch reclaim arm) ──
@@ -1931,6 +1954,78 @@ def test_poison_guarded_detached_job_killed_at_transition(
 
     ssh_node.run_ssh_node_pass(store, limit=2)
     assert killed == [(rid, handle)]
+
+
+@pytest.mark.parametrize("handle", [None, {"pid": 4242, "pgid": 4242}])
+def test_poison_guard_releases_run_slice_todo_without_process_identity(
+    store: Store, monkeypatch: pytest.MonkeyPatch, handle: Any
+) -> None:
+    """gr546830: refusing an unverifiable kill must not strand the todo."""
+    monkeypatch.setenv("PRECIS_NODE", "spark")
+    store.record_heartbeat("spark")
+    store.sync_host_resource_slots(
+        "spark", {"repo_checkout": 1, "claude_bin": 1, "git": 1}
+    )
+    store.record_heartbeat(
+        "spark-poison", meta={"boot_ids": {"ssh_node": "new-generation"}}
+    )
+    todo = store.insert_ref(kind="todo", slug=None, title="slice")
+    store.add_tag(todo.id, Tag.closed("STATUS", "doing"), set_by="system")
+    store.add_tag(todo.id, Tag.open("claimed-by:lane-claude-sub"), set_by="system")
+    rid = _mk_running_job(
+        store,
+        lease_offset_s=3600,
+        attempts=ssh_node._MAX_ATTEMPTS,
+        lease_boot_id="dead-generation",
+        lease_process="ssh_node",
+        lease_host="spark-poison",
+        compute_handle=handle,
+        target_node="spark",
+    )
+    with store.pool.connection() as conn:
+        conn.execute(
+            "UPDATE refs SET meta = meta || %s::jsonb WHERE ref_id = %s",
+            (
+                Jsonb(
+                    {
+                        "job_type": "run_slice",
+                        "lane": "claude-sub",
+                        "params": {"todo_id": todo.id, "target_node": "spark"},
+                    }
+                ),
+                rid,
+            ),
+        )
+        conn.commit()
+    releases: list[int] = []
+    release_todo = run_slice.release_todo
+
+    def release(store: Any, todo_id: int, lane: str | None) -> int:
+        releases.append(todo_id)
+        return release_todo(store, todo_id, lane)
+
+    killed: list[Any] = []
+    spec = get_job_type("run_slice")
+    assert spec is not None
+    spec = replace(
+        spec,
+        poll=lambda ctx, handle: False,
+        kill=lambda ctx, handle: killed.append(handle),
+    )
+    monkeypatch.setattr(run_slice, "release_todo", release)
+    monkeypatch.setattr(ssh_node, "get_job_type", lambda name: spec)
+    result = ssh_node.run_ssh_node_pass(store, limit=2)
+
+    assert result == {"claimed": 1, "ok": 0, "failed": 1}
+    assert _status(store, rid) == "failed"
+    assert releases == [todo.id]
+    assert killed == []
+    assert _status(store, todo.id) == "open"
+    tags = {str(t) for t in store.tags_for(todo.id)}
+    assert "claimed-by:lane-claude-sub" not in tags
+    assert "attempt:1" in tags
+    ssh_node.run_ssh_node_pass(store, limit=2)
+    assert releases == [todo.id]
 
 
 # ── gr541147: a restart re-adopting a live detached compute is not a crash ──

@@ -171,6 +171,8 @@ def seams(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> dict[str, Any]:
         "alive": True,
         "signals": [],
         "identity": None,
+        "ps_identity": "Sat Oct 31 19:57:00 2026 slice-user",
+        "process_alive": run_slice._process_alive,
     }
 
     def fake_git(args: list[str], cwd: Path) -> subprocess.CompletedProcess[str]:
@@ -205,8 +207,11 @@ def seams(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> dict[str, Any]:
     monkeypatch.setattr(run_slice, "_mint_land", fake_mint_land)
     monkeypatch.setattr(run_slice, "_git", fake_git)
     monkeypatch.setattr(run_slice, "_launch", fake_launch)
-    monkeypatch.setattr(run_slice, "_process_alive", lambda pid: calls["alive"])
+    monkeypatch.setattr(run_slice, "_process_alive", lambda pid, **kw: calls["alive"])
     monkeypatch.setattr(run_slice, "_process_identity", lambda pid: calls["identity"])
+    monkeypatch.setattr(
+        run_slice, "_darwin_process_identity", lambda pid: calls["ps_identity"]
+    )
     monkeypatch.setattr(
         run_slice, "_signal_group", lambda pgid, sig: calls["signals"].append(pgid)
     )
@@ -665,6 +670,46 @@ def test_submit_handle_carries_process_identity(seams: dict[str, Any]) -> None:
     assert handle["pgid"] == handle["pid"] == 4242
 
 
+def test_submit_handle_carries_darwin_identity(
+    seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(run_slice.sys, "platform", "darwin")
+    store = _Store()
+    store.add_todo(42, "t")
+    _ctx, handle = _submit(store, seams)
+    assert handle["ps_identity"] == seams["ps_identity"]
+    assert "boot_id" not in handle
+
+
+@pytest.mark.parametrize("output,rc", [("", 1), ("", 0), ("start user\n", 0)])
+def test_darwin_process_identity_uses_ps(
+    monkeypatch: pytest.MonkeyPatch, output: str, rc: int
+) -> None:
+    def ps(argv: list[str], **kw: Any) -> subprocess.CompletedProcess[str]:
+        assert argv == ["ps", "-o", "lstart=,user=", "-p", "4242"]
+        assert kw["env"]["LC_ALL"] == "C"
+        assert kw["timeout"] == 5
+        return _proc(output, rc)
+
+    monkeypatch.setattr(run_slice.subprocess, "run", ps)
+    assert run_slice._darwin_process_identity(4242) == (
+        "start user" if output else None
+    )
+
+
+@pytest.mark.parametrize(
+    "error", [OSError("no ps"), subprocess.TimeoutExpired("ps", 5)]
+)
+def test_darwin_process_identity_unavailable(
+    monkeypatch: pytest.MonkeyPatch, error: Exception
+) -> None:
+    def ps(*args: Any, **kw: Any) -> Any:
+        raise error
+
+    monkeypatch.setattr(run_slice.subprocess, "run", ps)
+    assert run_slice._darwin_process_identity(4242) is None
+
+
 def test_submit_renames_legacy_branch(seams: dict[str, Any]) -> None:
     seams["branches"] = {"refs/heads/slice-td42"}
     store = _Store()
@@ -807,6 +852,25 @@ def test_kill_revokes_the_slice_grant(
     assert not grant_file.exists()
 
 
+def test_release_revokes_grant_and_releases_todo_without_a_signal(
+    seams: dict[str, Any], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    registry = tmp_path / "slice-tokens"
+    registry.mkdir()
+    monkeypatch.setenv("PRECIS_MCP_SLICE_TOKEN_DIR", str(registry))
+    store = _Store()
+    store.add_todo(42, "t")
+    ctx, handle = _submit(store, seams)
+    pctx = _poll_ctx(store, ctx)
+
+    run_slice.release(pctx, handle)
+    run_slice.release(pctx, handle)
+
+    assert not (registry / "td42j900").exists()
+    assert seams["signals"] == []
+    assert store.tag_strings(42) == {"STATUS:open", "attempt:1"}
+
+
 def _finish(handle: dict[str, Any], exit_code: int | None, log: str) -> None:
     Path(handle["log"]).write_text(log, encoding="utf-8")
     if exit_code is not None:
@@ -846,6 +910,104 @@ def test_poll_running_then_success(seams: dict[str, Any]) -> None:
     assert "claimed-by:lane-claude-sub" in store.tag_strings(42)
     assert "STATUS:doing" in store.tag_strings(42)
     assert not any(t.startswith("attempt:") for t in store.tag_strings(42))
+
+
+@pytest.mark.parametrize(
+    "current,denied,alive",
+    [
+        ("Sat Oct 31 20:00:00 2026 slice-user", False, False),
+        ("Sat Oct 31 19:57:00 2026 other-user", True, False),
+        (None, True, False),
+        ("Sat Oct 31 19:57:00 2026 slice-user", False, True),
+        ("Sat Oct 31 19:57:00 2026 slice-user", True, True),
+    ],
+)
+def test_poll_darwin_requires_matching_pid_identity(
+    seams: dict[str, Any],
+    monkeypatch: pytest.MonkeyPatch,
+    current: str | None,
+    denied: bool,
+    alive: bool,
+) -> None:
+    """gr546830: a reused PID must not keep a dead session's todo claimed."""
+    monkeypatch.setattr(run_slice.sys, "platform", "darwin")
+    store = _Store()
+    store.add_todo(42, "t")
+    ctx, handle = _submit(store, seams)
+    seams["ps_identity"] = current
+
+    def probe(pid: int, sig: int) -> None:
+        assert (pid, sig) == (4242, 0)
+        if denied:
+            raise PermissionError("not ours")
+
+    monkeypatch.setattr(run_slice.os, "kill", probe)
+    # Exercise the real liveness probe, not the fixture's stub.
+    monkeypatch.setattr(run_slice, "_process_alive", seams["process_alive"])
+    pctx = _poll_ctx(store, ctx)
+    assert run_slice.poll(pctx, handle) is not alive
+    if alive:
+        assert pctx.status is None
+        assert "STATUS:doing" in store.tag_strings(42)
+    else:
+        assert pctx.status == "failed"
+        assert "STATUS:open" in store.tag_strings(42)
+        assert "claimed-by:lane-claude-sub" not in store.tag_strings(42)
+
+
+@pytest.mark.parametrize(
+    "platform,alive", [("darwin", False), ("linux", True), ("freebsd14", True)]
+)
+def test_process_alive_permission_error_is_platform_specific(
+    monkeypatch: pytest.MonkeyPatch, platform: str, alive: bool
+) -> None:
+    def denied(pid: int, sig: int) -> None:
+        raise PermissionError("not ours")
+
+    monkeypatch.setattr(run_slice.os, "kill", denied)
+    monkeypatch.setattr(run_slice.sys, "platform", platform)
+    assert run_slice._process_alive(4242) is alive
+
+
+def test_poll_linux_permission_error_keeps_session_running(
+    seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(run_slice.sys, "platform", "linux")
+    seams["identity"] = ("boot", 12345)
+    store = _Store()
+    store.add_todo(42, "t")
+    ctx, handle = _submit(store, seams)
+    assert "ps_identity" not in handle
+
+    def denied(pid: int, sig: int) -> None:
+        raise PermissionError("pid probe denied")
+
+    monkeypatch.setattr(run_slice.os, "kill", denied)
+    monkeypatch.setattr(run_slice, "_process_alive", seams["process_alive"])
+    pctx = _poll_ctx(store, ctx)
+    assert run_slice.poll(pctx, handle) is False
+    assert pctx.status is None
+    assert store.tag_strings(42) == {"STATUS:doing", "claimed-by:lane-claude-sub"}
+
+
+def test_poll_legacy_darwin_permission_error_releases_todo(
+    seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(run_slice.sys, "platform", "darwin")
+    store = _Store()
+    store.add_todo(42, "t")
+    ctx, handle = _submit(store, seams)
+    del handle["ps_identity"]
+
+    def denied(pid: int, sig: int) -> None:
+        raise PermissionError("not ours")
+
+    monkeypatch.setattr(run_slice.os, "kill", denied)
+    monkeypatch.setattr(run_slice, "_process_alive", seams["process_alive"])
+    pctx = _poll_ctx(store, ctx)
+    assert run_slice.poll(pctx, handle) is True
+    assert pctx.status == "failed"
+    assert store.tag_strings(42) == {"STATUS:open", "attempt:1"}
 
 
 def test_poll_vanished_worktree_fails_and_releases(seams: dict[str, Any]) -> None:

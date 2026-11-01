@@ -228,6 +228,11 @@ class JobTypeSpec:
     #: type whose enqueued input DOES rot is a correctness bug, not a
     #: tuning choice.
     queue_ttl_exempt: bool = False
+    #: Optional idempotent ``release(ctx, handle)`` for leases/grants, not
+    #: process signals or scratch deletion. ssh_node calls it after a
+    #: poison failure or operator/deadline terminalization even when
+    #: process identity cannot authorize ``kill``.
+    release: Callable[..., Any] | None = None
 
     def __post_init__(self) -> None:
         """Enforce "the executor has something to call".
@@ -583,6 +588,7 @@ def _load_run_slice() -> JobTypeSpec:
         submit=run_slice.submit,
         poll=run_slice.poll,
         kill=run_slice.kill,
+        release=run_slice.release,
         wall_seconds=run_slice.wall_seconds,
     )
 

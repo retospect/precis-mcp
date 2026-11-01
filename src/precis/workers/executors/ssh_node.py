@@ -542,7 +542,7 @@ def run_ssh_node_pass(store: Store, *, limit: int = 1) -> dict[str, int]:
     # the next submit.
     _reap_detached_orphans(store, node)
 
-    poisoned = 0
+    poisoned: list[tuple[int, str, dict[str, Any]]] = []
     to_run: list[tuple[int, str, dict[str, Any]]] = []
     with store.pool.connection() as conn:
         # Node gate: only the node a job pins itself to (meta.params.
@@ -594,7 +594,7 @@ def run_ssh_node_pass(store: Store, *, limit: int = 1) -> dict[str, int]:
                         node=node,
                         require_grace=False,
                     )
-                poisoned += 1
+                poisoned.append((ref_id, title, meta))
                 continue
             spec = get_job_type(str(meta.get("job_type") or ""))
             conn.execute(
@@ -607,7 +607,9 @@ def run_ssh_node_pass(store: Store, *, limit: int = 1) -> dict[str, int]:
             to_run.append((ref_id, title, meta))
         conn.commit()
 
-    failed += poisoned
+    for ref_id, title, meta in poisoned:
+        _release_job(_build_dispatch_context(store, ref_id, title, meta))
+    failed += len(poisoned)
     for ref_id, title, meta in to_run:
         try:
             if meta.get("compute_handle"):
@@ -753,6 +755,17 @@ def _legacy_deadline_owned(conn: Any, ctx: DispatchContext, handle: Any) -> bool
     return row is not None
 
 
+def _release_job(ctx: DispatchContext) -> None:
+    """Release non-process resources after commit, even if kill was unsafe."""
+    spec = get_job_type(str(ctx.meta.get("job_type") or ""))
+    if spec is None or spec.release is None:
+        return
+    try:
+        spec.release(ctx, ctx.meta.get("compute_handle"))
+    except Exception:  # pragma: no cover — cleanup must not kill the pass
+        log.warning("ssh_node: release of job %d raised", ctx.ref_id, exc_info=True)
+
+
 def _kill_and_terminalize(
     ctx: DispatchContext,
     handle: Any,
@@ -847,6 +860,7 @@ def _kill_and_terminalize(
         _set_status(store, ref_id, _FAILED, conn=conn)
         conn.commit()
     bubble_job_failure(store, ref_id)
+    _release_job(ctx)
     if (released or skip_reason == "group-unavailable") and getattr(
         spec, "reap", None
     ) is not None:

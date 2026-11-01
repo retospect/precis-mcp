@@ -25,6 +25,9 @@ that holds the lane's credentials with ``params.target_node``):
   the session. The handle is ``{pid, pgid, worktree, log, exit_file,
   started_at}`` plus ``boot_id``/``start_time`` (the Linux process
   identity ssh_node's orphan reaper checks) when ``/proc`` has them.
+  On Darwin it carries ``ps_identity`` (start time + user); polling
+  requires a recorded identity to match, since a reused pid can pass
+  signal 0. Legacy Darwin handles cannot use EPERM as evidence of liveness.
 * :func:`poll` waits for the exit file (or a dead pid), checks the branch
   against the lane's ``deny_write_paths`` (:func:`deny_violations`),
   posts the session's last message as a ``handoff:`` comment on the todo,
@@ -38,8 +41,9 @@ that holds the lane's credentials with ``params.target_node``):
   land) it ends ``failed`` with the log tail and releases the lease: the
   claim tag goes, the todo returns to ``STATUS:open`` and gains
   ``attempt:<n>``.
-* :func:`kill` SIGTERMs the session's process group and revokes the
-  slice's MCP grant (the sweep ends the job — poll may never run).
+* :func:`kill` SIGTERMs the session's process group. :func:`release`
+  revokes the MCP grant and releases the todo even when the poison
+  guard cannot safely signal a process (poll may never run).
 
 Deny paths are enforced twice: the session gets them as ``Edit``/
 ``Write``/``MultiEdit``/``NotebookEdit`` deny rules through ``--settings``
@@ -72,6 +76,7 @@ import os
 import re
 import signal
 import subprocess
+import sys
 import tempfile
 from collections.abc import Callable
 from datetime import UTC, datetime
@@ -421,17 +426,49 @@ def _launch(
     return int(proc.pid)
 
 
-def _process_alive(pid: int) -> bool:
-    """``True`` while ``pid`` exists (signal 0 probe)."""
+def _process_alive(pid: int, *, identity_matches: bool = False) -> bool:
+    """Signal 0 liveness; Darwin EPERM needs a matching identity."""
     try:
         os.kill(pid, 0)
     except ProcessLookupError:
         return False
     except PermissionError:
-        return True
+        return sys.platform != "darwin" or identity_matches
     except OSError:
         return False
     return True
+
+
+def _darwin_process_identity(pid: int) -> str | None:
+    """Start time + user from ps; Darwin has no Linux /proc identity."""
+    try:
+        result = subprocess.run(
+            ["ps", "-o", "lstart=,user=", "-p", str(pid)],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            timeout=5,
+            check=False,
+            env={**os.environ, "LC_ALL": "C"},
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    identity = " ".join(result.stdout.split())
+    return identity if result.returncode == 0 and identity else None
+
+
+def _session_alive(handle: dict[str, Any]) -> bool:
+    pid = int(handle.get("pid") or 0)
+    if pid <= 1:
+        return False
+    if "ps_identity" in handle:
+        expected = handle.get("ps_identity")
+        if not expected or _darwin_process_identity(pid) != expected:
+            return False
+        return _process_alive(pid, identity_matches=True)
+    # If ps failed at submit there is no ps_identity, so Darwin falls
+    # back to the legacy rule: EPERM without matching identity is not ours.
+    return _process_alive(pid)
 
 
 def _signal_group(pgid: int, sig: int) -> None:
@@ -1051,6 +1088,9 @@ def submit(ctx: Any, spec: Any) -> Any:
         )
         started_at = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
         identity = _process_identity(pid)
+        ps_identity = (
+            _darwin_process_identity(pid) if sys.platform == "darwin" else None
+        )
     except Exception as exc:
         log.warning("run_slice: launch of td%d failed", todo_id, exc_info=True)
         _revoke_slice_grant(ctx, todo_id, grant, "aborted")
@@ -1079,6 +1119,8 @@ def submit(ctx: Any, spec: Any) -> Any:
         # ssh_node's orphan reaper kills only a group whose leader still
         # has this boot_id and start-tick count; without them it skips.
         handle["boot_id"], handle["start_time"] = identity
+    if ps_identity is not None:
+        handle["ps_identity"] = ps_identity
     return handle
 
 
@@ -1187,11 +1229,7 @@ def poll(ctx: Any, handle: Any) -> bool:
     exit_code = _read_exit(handle)
     tree = Path(str(handle.get("worktree") or ""))
     vanished = not tree.is_dir()
-    if (
-        exit_code is None
-        and not vanished
-        and _process_alive(int(handle.get("pid") or 0))
-    ):
+    if exit_code is None and not vanished and _session_alive(handle):
         return False
     ctx.set_meta(compute_handle_released=True)
 
@@ -1292,10 +1330,25 @@ def poll(ctx: Any, handle: Any) -> bool:
     return True
 
 
+def release(ctx: Any, handle: Any) -> None:
+    """Release the failed run's lease/grant without signaling any process."""
+    meta = getattr(ctx, "meta", None) or {}
+    todo_id = int((meta.get("params") or {}).get("todo_id") or 0)
+    grant = _handle_grant(handle)
+    if grant is not None:
+        try:
+            _revoke_slice_grant(ctx, todo_id, grant, "aborted")
+        except Exception:  # pragma: no cover — the lease still releases
+            log.warning("run_slice: slice-token revoke on release failed")
+    lane = meta.get("lane")
+    if lane and f"claimed-by:lane-{lane}" not in _open_tag_values(ctx.store, todo_id):
+        return
+    if todo_id and _todo_status(ctx.store, todo_id) == "doing":
+        release_todo(ctx.store, todo_id, str(lane) if lane else None)
+
+
 def kill(ctx: Any, handle: Any) -> None:
-    """Wall-clock / operator kill: SIGTERM the session's process group and
-    revoke its slice-token grant — the sweep that calls this ends the job,
-    so without this the file would linger until the TTL (:mod:`precis.slice_tokens`)."""
+    """Wall-clock / operator kill: revoke the grant and SIGTERM."""
     if not isinstance(handle, dict):
         return
     grant = _handle_grant(handle)
@@ -1329,6 +1382,7 @@ __all__ = [
     "kill",
     "parse_result",
     "poll",
+    "release",
     "release_todo",
     "render_brief",
     "run_dir",

@@ -55,6 +55,9 @@ The lanes
   All dict handles must name a valid pgid distinct from the worker's group.
   Poison cleanup carries its transaction-observed completion stamp through
   ``DispatchContext.completion_stamped`` so reap sees the uncommitted write.
+  Poison and operator/deadline failures also call the job type's idempotent
+  ``release`` hook after commit, independently of process identity: refusing
+  an unsafe kill must not strand a run_slice todo lease or MCP grant.
 * ``claude_docker`` — runs ``sandbox_run`` as a detached container on a
   sandbox host: launch, poll by name, reap. A reclaimed row
   carrying ``meta.container`` is re-adopted by name-match, never
