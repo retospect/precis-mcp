@@ -1162,3 +1162,30 @@ def test_overlays_render_as_off_by_default_toggle_layers() -> None:
     assert 'data-layer="ov-keepouts"' in body and ">Keepouts<" in body
     # an overlay with no rings adds neither a group nor a legend row
     assert "ov-empty" not in body
+
+
+def test_overlay_lines_and_points_render() -> None:
+    """Plan polylines and via sites ride the overlay rows as strokes and
+    discs (Reto 2026-10-31: "the vectorized crossover free routing, and
+    any corridor things, with layers")."""
+    from precis.pcb import gerber_view
+
+    files = {"board-F_Cu.gbr": "%FSLAX46Y46*%\n%MOMM*%\nG04 empty*\nM02*\n"}
+    body = gerber_view.render_fab_svg(
+        files,
+        title="ov",
+        overlays=[
+            {
+                "key": "ov-plan-0",
+                "label": "Plan F.Cu",
+                "lines": [[(0.0, 0.0), (3.0, 0.0), (3.0, 2.0)]],
+                "line_titles": ["plan N1 (realized) F.Cu"],
+                "line_width": 0.12,
+            },
+            {"key": "ov-plan-vias", "label": "Plan vias", "points": [(1.0, 1.0)]},
+        ],
+    )
+    assert 'id="layer-ov-plan-0" class="layer off overlay"' in body
+    assert "<title>plan N1 (realized) F.Cu</title>" in body
+    assert 'stroke-width="0.120"' in body
+    assert '<circle cx="1.0000" cy="1.0000"' in body and ">Plan vias<" in body

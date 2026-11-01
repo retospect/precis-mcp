@@ -1509,10 +1509,14 @@ def render_fab_svg(
     ``overlays`` (Reto 2026-10-31: "the secret keepout regions and stuff
     as collapsible extra layers") are design-side regions that exist in
     no gerber — keepouts, courtyards, label boxes, the router's
-    route-block / via-prevent masks. Each ``{"key", "label", "colour",
-    "rings": [[(x, y), ...], ...], "titles": [...]}`` row becomes one more
-    toggleable ``layer-<key>`` group (OFF by default) and legend row,
-    drawn as translucent outlined polygons above the stack.
+    route-block / via-prevent masks, the topo plan's polylines and via
+    sites per layer, the corridor spines. Each ``{"key", "label",
+    "colour", "rings": [[(x, y), ...]], "lines": [[(x, y), ...]],
+    "points": [(x, y)], "titles"/"line_titles"/"point_titles": [...],
+    "line_width", "point_r"}`` row becomes one more toggleable
+    ``layer-<key>`` group (OFF by default) and legend row — rings as
+    translucent outlined polygons, lines as solid strokes, points as
+    discs — above the stack.
 
     The y axis is flipped (``scale(1,-1)``) because gerber's origin is
     bottom-left and SVG's is top-left. Getting this wrong renders a mirrored
@@ -1690,9 +1694,12 @@ def render_fab_svg(
         key = str(ov["key"])
         colour = str(ov.get("colour") or "#a855f7")
         rings = [r for r in (ov.get("rings") or ()) if len(r) >= 3]
-        if not rings:
+        lines = [ln for ln in (ov.get("lines") or ()) if len(ln) >= 2]
+        points = list(ov.get("points") or ())
+        if not rings and not lines and not points:
             continue
         titles = list(ov.get("titles") or ())
+        label = str(ov.get("label") or key)
         body.append(
             f'<g id="layer-{key}" class="layer off overlay" fill="{colour}" '
             f'fill-opacity="0.18" stroke="{colour}" stroke-width="0.08" '
@@ -1700,14 +1707,30 @@ def render_fab_svg(
         )
         for i, ring in enumerate(rings):
             d = _path_d([(float(x), float(y)) for x, y in ring]) + " Z"
-            t = (
-                esc(str(titles[i]))
-                if i < len(titles)
-                else esc(str(ov.get("label") or key))
-            )
+            t = esc(str(titles[i])) if i < len(titles) else esc(label)
             body.append(f'<path d="{d}"><title>{t}</title></path>')
+        # polylines (a route plan, corridor spines): solid strokes of the
+        # row's width, no fill; ``line_titles`` names each
+        lw = float(ov.get("line_width") or 0.12)
+        ltitles = list(ov.get("line_titles") or ())
+        for i, ln in enumerate(lines):
+            d = _path_d([(float(x), float(y)) for x, y in ln])
+            t = esc(str(ltitles[i])) if i < len(ltitles) else esc(label)
+            body.append(
+                f'<path d="{d}" fill="none" stroke-width="{lw:.3f}" '
+                'stroke-dasharray="none" stroke-linecap="round" '
+                f'stroke-linejoin="round"><title>{t}</title></path>'
+            )
+        pr = float(ov.get("point_r") or 0.3)
+        ptitles = list(ov.get("point_titles") or ())
+        for i, (px, py) in enumerate(points):
+            t = esc(str(ptitles[i])) if i < len(ptitles) else esc(label)
+            body.append(
+                f'<circle cx="{float(px):.4f}" cy="{float(py):.4f}" r="{pr:.3f}" '
+                f'fill-opacity="0.5" stroke-dasharray="none"><title>{t}</title></circle>'
+            )
         body.append("</g>")
-        overlay_rows.append((key, str(ov.get("label") or key), colour))
+        overlay_rows.append((key, label, colour))
 
     hover_meta = ""
     if hover.get("facts") is not None:

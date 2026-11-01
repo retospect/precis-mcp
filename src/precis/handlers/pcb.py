@@ -9011,7 +9011,54 @@ class PcbHandler(Handler):
             log.debug("pcb: fab overlays — label boxes", exc_info=True)
         try:
             runs = _topo_runs(self.store, ref_id)
-            masks = _topo_files(runs[0]).get("masks.json") if runs else None
+            files = _topo_files(runs[0]) if runs else {}
+            wires = files.get("wires.json")
+            layer_names = [str(layer.get("name")) for layer in ir.stackup]
+            if isinstance(wires, dict):
+                # the topo plan itself — every net's crossing-free
+                # polylines per layer (failed nets included: that is the
+                # record of what the router tried) and the via sites
+                per_layer: dict[str, tuple[list[Any], list[str]]] = {}
+                via_pts: list[tuple[float, float]] = []
+                via_t: list[str] = []
+                for name, payload in (wires.get("nets") or {}).items():
+                    st = str(payload.get("status") or "")
+                    for pc in payload.get("pieces") or ():
+                        lay = str(pc.get("layer"))
+                        ls, ts = per_layer.setdefault(lay, ([], []))
+                        ls.append([tuple(p) for p in pc.get("pts") or ()])
+                        ts.append(f"plan {name} ({st}) {lay}")
+                    for v in payload.get("vias") or ():
+                        via_pts.append((float(v["x"]), float(v["y"])))
+                        via_t.append(f"plan via {name}")
+                palette = ["#f87171", "#60a5fa", "#4ade80", "#fbbf24", "#c084fc"]
+                ordered = [n for n in layer_names if n in per_layer] + sorted(
+                    set(per_layer) - set(layer_names)
+                )
+                for li, lay in enumerate(ordered):
+                    ls, ts = per_layer[lay]
+                    out.append(
+                        {
+                            "key": f"ov-plan-{li}",
+                            "label": f"Plan {lay}",
+                            "colour": palette[li % len(palette)],
+                            "lines": ls,
+                            "line_titles": ts,
+                            "line_width": 0.12,
+                        }
+                    )
+                if via_pts:
+                    out.append(
+                        {
+                            "key": "ov-plan-vias",
+                            "label": "Plan vias",
+                            "colour": "#e879f9",
+                            "points": via_pts,
+                            "point_titles": via_t,
+                            "point_r": 0.35,
+                        }
+                    )
+            masks = files.get("masks.json")
             if isinstance(masks, dict):
                 names = list(masks.get("layer_names") or ())
                 for li, lm in enumerate(masks.get("layers") or ()):
@@ -9024,6 +9071,23 @@ class PcbHandler(Handler):
                                 "label": f"Route block {lname}",
                                 "colour": "#a855f7",
                                 "rings": [[tuple(p) for p in r] for r in rb],
+                            }
+                        )
+                    spines = lm.get("spines") or []
+                    if spines:
+                        out.append(
+                            {
+                                "key": f"ov-spines-{li}",
+                                "label": f"Corridor spines {lname}",
+                                "colour": "#34d399",
+                                "lines": [
+                                    [tuple(p) for p in sp["pts"]] for sp in spines
+                                ],
+                                "line_titles": [
+                                    f"spine {sp.get('refdes') or ''} w{sp.get('width_mm')}"
+                                    for sp in spines
+                                ],
+                                "line_width": 0.1,
                             }
                         )
                 vp = masks.get("via_prevent") or []

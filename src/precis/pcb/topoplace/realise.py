@@ -3417,6 +3417,13 @@ def _coalesce_micro(
 #: many legs is re-drawn as one or two octilinear legs. Bounded so the
 #: pass stays a handful of clearance probes per vertex on a busy board.
 _SIMPLIFY_SPAN = 4
+#: OFF (2026-10-31, measured at the taz-leaf-local-66 pose): with the
+#: pass on, SDA and SCL — 2 and 3 legs — are withdrawn by the emit guard
+#: and the route lands 9 nets; off, 11 (and 17 with the re-route rounds).
+#: The simplified shape the guard judges and the one realize emits are
+#: built from different ``others`` sets, so a re-draw the guard accepts
+#: is not the one committed. Re-enable once the two agree (gr543905).
+_SIMPLIFY_ENABLED = True
 
 
 def _octi_links(
@@ -3454,6 +3461,8 @@ def _simplify_octilinear(
     shorter re-draw fails that predicate. Endpoints (pad joins) never
     move; every accept removes a vertex, so the loop terminates."""
     out = list(pts)
+    if not _SIMPLIFY_ENABLED:
+        return tuple(out)
     while True:
         hit = next(
             (
@@ -3903,6 +3912,39 @@ def _guarded_branches(
     def marked(net: int, branch: int) -> bool:
         return int(branch) in guarded.get(int(net), ())
 
+    # frozen copper (route_design's re-route rounds: the survivors'
+    # tracks and vias as net-tagged fixed_copper zones) — foreign to
+    # every other net on its layers; a via zone spans all of them
+    from precis.pcb.topoplace.proxy import zone_world_ring
+
+    frozen: list[tuple[Polygon, tuple[int, ...], str]] = []
+    for z in d.zones:
+        if z.kind != "fixed_copper":
+            continue
+        ring = zone_world_ring(d, z, pose)
+        if len(ring) >= 3:
+            frozen.append((Polygon(np.asarray(ring)), tuple(z.layers), str(z.net)))
+    if frozen:
+        for i, pc in enumerate(emit.pieces):
+            nri = nrules(nm(pc.net))
+            wi, ci = float(nri.track_width_mm), float(nri.clearance_mm)
+            for zp, zl, zn in frozen:
+                if zn == nm(pc.net) or (zl and pc.layer not in zl):
+                    continue
+                if lines[i].distance(zp) < wi / 2.0 + ci:
+                    mark(pc.net, pc.branch)
+                    break
+        for v in emit.vias:
+            nrv = nrules(nm(v.net))
+            dia = float(v.dia_mm or nrv.via_dia_mm or _VIA_DIA_MM)
+            pt = Point(v.x, v.y)
+            for zp, _zl, zn in frozen:
+                if zn != nm(v.net) and zp.distance(pt) < dia / 2.0 + float(
+                    nrv.clearance_mm
+                ):
+                    mark(v.net, v.branch)
+                    break
+
     for lay, idxs in by_layer.items():
         for i in idxs:
             pi = emit.pieces[i]
@@ -4183,37 +4225,77 @@ def route_design(
     if _plan_failed_nets(plan2):
         # a survivor fails without its neighbours — pass 1 stands
         return plan, rres
-    # passes 3..: the withdrawn nets again, in tiers by pin count (the
-    # 2-3-pin nets first, the trees last), each tier routed against ALL
+    # passes 3..: the withdrawn nets again, in rounds, each against ALL
     # copper kept so far frozen as same-net-passable zones — a rip-up
-    # and re-route of the failed set; the per-branch guard keeps what
-    # joins pads, so a tree lands its easy branches even when it fails.
+    # and re-route of the failed set. A round routes the remaining nets
+    # together; the ones that come out whole are then routed ONCE MORE
+    # alone (the pass-2 rule inside the round: a net that fails in the
+    # round must not shape the ones that succeed — DEC5 kept a 1.5 mm
+    # B.Cu hop under C10 for a crossing with a net that then failed),
+    # frozen, and the rest go to the next round until a round lands
+    # nothing. The per-branch guard keeps what joins pads, so a tree
+    # still lands its easy branches when it fails.
     kept_plan, kept_rres = plan2, rres2
-    tiers = [
-        {k for k in failed if len(d.net_pins[k]) <= 3},
-        {k for k in failed if len(d.net_pins[k]) > 3},
-    ]
-    still: set[int] = set()
-    for tier_no, tier in enumerate(t for t in tiers if t):
+    remaining = set(failed)
+    last_plan: RoutePlan | None = None
+    last_rres: Any = None
+    pass_no = 3
+    # the 2-3-pin nets get their rounds before the trees join: a tree's
+    # taut polyline across the board fails the trivial nets around it
+    small_phase = True
+    for _round in range(2 * _REROUTE_ROUNDS):
+        batch = (
+            {k for k in remaining if len(d.net_pins[k]) <= 3}
+            if small_phase
+            else set(remaining)
+        )
+        if not batch:
+            if small_phase:
+                small_phase = False
+                continue
+            break
         try:
             frozen = _copper_zones(kept_rres, d, ir)
             d3 = dataclasses.replace(
-                d, net_pins=_only(tier), zones=tuple(d.zones) + tuple(frozen)
+                d, net_pins=_only(batch), zones=tuple(d.zones) + tuple(frozen)
             )
             if event is not None:
                 event(
-                    f"route: pass {3 + tier_no} — {len(tier)} withdrawn net(s) "
+                    f"route: pass {pass_no} — {len(batch)} withdrawn net(s) "
                     f"re-routed against {len(frozen)} frozen copper piece(s)"
                 )
+            pass_no += 1
             plan3, rres3 = _route_pass(d3, ir, **kw)
         except (CorridorOverflow, MeshConflictError):
             # the frozen copper may defeat the CDT's edge recovery — the
-            # tier stays withdrawn rather than routed without it
-            still |= tier
-            continue
-        still |= _plan_failed_nets(plan3) & tier
+            # remaining nets stay withdrawn rather than routed without it
+            break
+        last_plan, last_rres = plan3, rres3
+        landed = batch - _plan_failed_nets(plan3)
+        if not landed:
+            if small_phase:
+                small_phase = False
+                continue
+            break
+        if landed != batch:
+            try:
+                d4 = dataclasses.replace(d3, net_pins=_only(landed))
+                plan4, rres4 = _route_pass(d4, ir, **kw)
+                pass_no += 1
+                if not (_plan_failed_nets(plan4) & landed):
+                    plan3, rres3 = plan4, rres4
+            except (CorridorOverflow, MeshConflictError):
+                pass
         kept_plan, kept_rres = _merge_pass(
-            kept_plan, kept_rres, plan3, rres3, tier, d, ir
+            kept_plan, kept_rres, plan3, rres3, landed, d, ir
+        )
+        remaining -= landed
+    still = set(remaining)
+    if still and last_plan is not None:
+        # the still-failed nets' last attempt rides along for the record
+        # (plan pieces/problems) and its simple partial copper (below)
+        kept_plan, kept_rres = _merge_pass(
+            kept_plan, kept_rres, last_plan, last_rres, still, d, ir
         )
     # A net that still fails keeps only its SIMPLE partial copper — the
     # single-layer branches that join two of its pads in a few legs (the
@@ -4257,6 +4339,8 @@ def route_design(
 
 #: The most legs a still-failed net's partial track may keep (route_design).
 _PARTIAL_MAX_SEGMENTS = 6
+#: Rip-up rounds over the withdrawn set (route_design passes 3..).
+_REROUTE_ROUNDS = 4
 
 
 def _merge_pass(
@@ -4359,11 +4443,15 @@ def _copper_zones(rres: Any, d: TopoDesign, ir: Any) -> list[TopoZone]:
         if geom.is_empty or not hasattr(geom, "exterior"):
             continue
         layer = str(row.get("layer") or "")
+        # a via barrel spans every layer — its zone must too
+        is_via = str(row.get("ctype") or "") == "via"
         out.append(
             TopoZone(
                 kind="fixed_copper",
                 ring=np.asarray(geom.exterior.coords, dtype=np.float64),
-                layers=(name_to_idx[layer],) if layer in name_to_idx else (),
+                layers=()
+                if is_via
+                else ((name_to_idx[layer],) if layer in name_to_idx else ()),
                 net=str(row.get("net") or ""),
                 name=f"pass-2 copper {row.get('ctype') or '?'}",
             )
