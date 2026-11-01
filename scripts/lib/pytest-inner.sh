@@ -19,7 +19,8 @@ python3 scripts/lib/prewarm-pycache.py pysbd || exit $?
 # pyproject.toml + UV_WITH; a stamp file at the worktree root records the
 # last passing key. A check that ran under a different key, a failure,
 # and an entry-points heal (which patched only this throwaway container,
-# marked by "precis-preflight: healed") all leave no stamp, so the next
+# marked by "precis-preflight: healed") and a lock-pin drift warning all
+# leave no stamp, so the next
 # run checks again. No key → checks run every time, same as before.
 # A pass under an autobridge --with overlay (AUTO_WITH, exported by
 # scripts/test) proves the overlay, not the baked venv — it must not
@@ -36,7 +37,15 @@ else
     # gr519535: a dev-group dep added after the image bake quiet-skips via
     # importorskip — refuse it here, before pytest, with the rebuild named.
     python3 scripts/lib/check-dev-deps.py || exit $?
-    python3 scripts/lib/check-lock-pins.py || exit $?
+    # gr544137: the lock-pin check only WARNS (exit 0) on version drift, so a
+    # warned pass must not stamp — else the next run hits the stamp and the
+    # drift goes silent while the stale image keeps failing tests.
+    _lp_rc=0
+    _lp_out="$(python3 scripts/lib/check-lock-pins.py 2>&1)" || _lp_rc=$?
+    if [[ -n "$_lp_out" ]]; then
+        printf '%s\n' "$_lp_out" >&2
+    fi
+    [[ "$_lp_rc" == 0 ]] || exit "$_lp_rc"
     _ep_out="$(python3 scripts/lib/check-entry-points.py --heal 2>&1)" || {
         printf '%s\n' "${_ep_out:-}" >&2
         exit 1
@@ -44,7 +53,7 @@ else
     if [[ -n "$_ep_out" ]]; then
         printf '%s\n' "$_ep_out" >&2
     fi
-    if [[ -n "${PRECIS_PREFLIGHT_KEY:-}" && -z "${AUTO_WITH:-}" \
+    if [[ -n "${PRECIS_PREFLIGHT_KEY:-}" && -z "${AUTO_WITH:-}" && -z "$_lp_out" \
         && "$_ep_out" != *"precis-preflight: healed"* ]]; then
         printf '%s\n' "$STAMP_KEY" >"$PREFLIGHT_STAMP" 2>/dev/null || true
     fi

@@ -39,7 +39,10 @@ case "${1:-}" in
       && [ "${AUTO_WITH:-}" != "--with ${FAKE_DEV_DEP}" ]; then exit 1; fi
     exit "${FAKE_FAIL_DEV:-0}"
     ;;
-  scripts/lib/check-lock-pins.py)     exit "${FAKE_FAIL_LOCK:-0}" ;;
+  scripts/lib/check-lock-pins.py)
+    [ "${FAKE_LOCK_WARN:-0}" = "1" ] && echo "WARNING: stale precis-dev image" >&2
+    exit "${FAKE_FAIL_LOCK:-0}"
+    ;;
   scripts/lib/check-entry-points.py)
     [ "${FAKE_HEAL:-0}" = "1" ] && echo "precis-preflight: healed"
     exit "${FAKE_FAIL_EP:-0}"
@@ -193,6 +196,49 @@ def test_heal_writes_no_stamp(tmp_path: Path) -> None:
     assert len(_checks(log)) == 4
     assert log[-1].startswith("-P -m pytest")
     assert not stamp_path.exists()
+
+
+def test_lock_pin_warning_is_shown_and_never_stamped(tmp_path: Path) -> None:
+    """gr544137: check-lock-pins warns with exit 0 on version drift. A
+    stamp written after that pass made the next run skip the check, so the
+    drift went silent. The warning must reach stderr and leave no stamp."""
+    stamp = tmp_path / "shared-stamp"
+    env = {"FAKE_LOCK_WARN": "1", "PRECIS_PREFLIGHT_STAMP": str(stamp)}
+    rc, log, _ = _run(tmp_path / "first", extra_env=env)
+    assert rc == 0
+    assert log[-1].startswith("-P -m pytest")
+    assert not stamp.exists()
+
+    rc2, log2, _ = _run(tmp_path / "second", extra_env=env)
+    assert rc2 == 0
+    assert "scripts/lib/check-lock-pins.py" in _checks(log2)
+
+
+def test_lock_pin_warning_reaches_stderr(tmp_path: Path) -> None:
+    tree, fakebin = _stage(tmp_path)
+    log = tmp_path / "py.log"
+    log.write_text("", encoding="utf-8")
+    env = dict(os.environ)
+    env["PATH"] = f"{fakebin}{os.pathsep}{os.environ['PATH']}"
+    env.update(
+        FAKE_PY_LOG=str(log),
+        FAKE_LOCK_WARN="1",
+        PRECIS_PREFLIGHT_STAMP=str(tmp_path / "stamp"),
+        PRECIS_PREFLIGHT_KEY="key1",
+        PRECIS_AUTO_N="0",
+    )
+    proc = subprocess.run(
+        ["bash", str(tree / "scripts" / "lib" / "pytest-inner.sh"), "tests/x.py"],
+        cwd=tree,
+        env=env,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        timeout=30,
+        check=False,
+    )
+    assert proc.returncode == 0
+    assert "WARNING: stale precis-dev image" in proc.stderr
 
 
 def test_no_key_runs_checks_without_stamping(tmp_path: Path) -> None:

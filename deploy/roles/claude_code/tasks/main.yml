@@ -71,7 +71,7 @@
 
 - name: Install / upgrade @anthropic-ai/claude-code globally via npm
   when: not claude_stat.stat.exists or (claude_code_force_reinstall | default(false) | bool)
-  ansible.builtin.command: /opt/homebrew/bin/npm install -g @anthropic-ai/claude-code
+  ansible.builtin.command: "/opt/homebrew/bin/npm install -g @anthropic-ai/claude-code{{ ('@' ~ agent_cli_pin_claude) if (agent_cli_pin_claude | default('')) else '' }}"
   become: false
   register: claude_npm_install
   changed_when: "'added' in (claude_npm_install.stdout | default('')) or 'updated' in (claude_npm_install.stdout | default('')) or 'changed' in (claude_npm_install.stdout | default(''))"

@@ -1,0 +1,94 @@
+#!/usr/bin/env -S uv run --no-project --python >=3.12 python
+"""scripts/agent-cli-update — report and update the vendor agent CLIs per host.
+
+    scripts/agent-cli-update --host NAME [--cli claude,kimi]            report
+    scripts/agent-cli-update --group GROUP --apply                      update
+
+One door for claude, codex, devin and kimi (gr543827). Dry-run by default: it
+runs the read-only report (installed version vs pin vs vendor minimum, with an
+ALERT per host behind its pin) and changes nothing. ``--apply`` installs each
+CLI's pin with the vendor's own installer, smokes it (``--version`` plus one
+headless prompt; ``--no-prompt`` drops the prompt) and reinstalls the previous
+version when the smoke fails, exiting non-zero.
+
+Pins are ``agent_cli_pin_<cli>`` in the inventory overlay (or
+deploy/roles/agent_clis/defaults/main.yml); bumping is one edit plus this
+script. Rollback is restoring the previous pin and running ``--apply`` again.
+No host name lives in the repo: ``--host`` / ``--group`` name overlay entries
+and become ansible's ``--limit``; one is required, so a run never reaches the
+whole fleet by accident. No CLI auth file is copied; each host logs in through
+the vendor's own flow.
+
+Runs playbooks/30-agent-clis.yml through scripts/host-ops/play (the prod-pinned
+checkout and the overlay). ``--print`` shows the command without running it.
+Test seam: PRECIS_AGENT_CLI_PLAY replaces the play command.
+"""
+
+from __future__ import annotations
+
+import argparse
+import os
+import shlex
+import subprocess
+import sys
+from pathlib import Path
+
+HERE = Path(__file__).resolve().parent
+CLIS = ("claude", "codex", "devin", "kimi")
+PLAYBOOK = "playbooks/30-agent-clis.yml"
+
+
+def build_command(args: argparse.Namespace) -> list[str]:
+    play = shlex.split(
+        os.environ.get("PRECIS_AGENT_CLI_PLAY") or str(HERE / "host-ops" / "play")
+    )
+    limit = ":".join([*args.host, *args.group])
+    cmd = [
+        *play,
+        PLAYBOOK,
+        "--limit",
+        limit,
+        "-e",
+        f"agent_cli_mode={'update' if args.apply else 'report'}",
+    ]
+    if args.cli:
+        cmd += ["-e", f"agent_cli_only={','.join(args.cli)}"]
+    if args.no_prompt:
+        cmd += ["-e", "agent_cli_smoke_prompt=false"]
+    if args.strict:
+        cmd += ["-e", "agent_cli_strict=true"]
+    return cmd
+
+
+def parse(argv: list[str] | None) -> argparse.Namespace:
+    ap = argparse.ArgumentParser(prog="scripts/agent-cli-update", description=__doc__)
+    ap.add_argument("--host", action="append", default=[], help="overlay host name")
+    ap.add_argument("--group", action="append", default=[], help="overlay group name")
+    ap.add_argument("--cli", help=f"comma list of {', '.join(CLIS)} (default: all)")
+    ap.add_argument("--apply", action="store_true", help="update (default: report)")
+    ap.add_argument("--no-prompt", action="store_true", help="skip headless prompt")
+    ap.add_argument("--strict", action="store_true", help="report: fail on ALERT")
+    ap.add_argument(
+        "--print", action="store_true", help="show the command, run nothing"
+    )
+    args = ap.parse_args(argv)
+    if not (args.host or args.group):
+        ap.error("name --host NAME or --group GROUP (never the whole fleet by default)")
+    args.cli = [c.strip() for c in (args.cli or "").split(",") if c.strip()]
+    bad = [c for c in args.cli if c not in CLIS]
+    if bad:
+        ap.error(f"unknown --cli {', '.join(bad)}; choose from {', '.join(CLIS)}")
+    return args
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = parse(argv)
+    cmd = build_command(args)
+    if args.print:
+        print(shlex.join(cmd))
+        return 0
+    return subprocess.run(cmd, check=False).returncode
+
+
+if __name__ == "__main__":
+    sys.exit(main())

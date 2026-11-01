@@ -1,0 +1,12 @@
+---
+# Report or update the vendor agent CLIs (claude, codex, devin, kimi) on the
+# hosts that run them (gr543827). Deliberately NOT imported by site.yml or
+# redeploy-precis.yml: a deploy never upgrades a CLI. Drive it with
+# scripts/agent-cli-update (dry-run report by default, --apply to update);
+# the pins live in the overlay (roles/agent_clis/defaults/main.yml).
+- name: Agent CLI report / update
+  hosts: all
+  gather_facts: false
+  roles:
+    - agent_clis
+  tags: [agent-clis]

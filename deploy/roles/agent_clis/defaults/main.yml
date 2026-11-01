@@ -1,0 +1,57 @@
+---
+# Agent CLIs (claude, codex, devin, kimi): one door to report and update
+# them (gr543827). Driven by scripts/agent-cli-update; files/agent_cli.py
+# does the work on the host. Not part of site.yml / redeploy: a normal
+# deploy never touches these CLIs, only an explicit update run does.
+#
+# Pins: one known-good version per CLI. Set it in the overlay's group_vars
+# or host_vars (one edit), then run `scripts/agent-cli-update --apply`.
+# Rollback is restoring the previous pin and running it again. Empty =
+# unpinned: reported, never updated.
+agent_cli_pin_claude: ""
+agent_cli_pin_codex: ""
+agent_cli_pin_devin: ""
+agent_cli_pin_kimi: ""
+
+# Vendor minimums: a host below one raises an ALERT in the report. Empty =
+# no minimum known.
+agent_cli_min_claude: ""
+agent_cli_min_codex: ""
+agent_cli_min_devin: ""
+agent_cli_min_kimi: ""
+
+# report (read-only, the default) | update (install pins, smoke, roll back).
+agent_cli_mode: report
+# Comma-separated subset ("claude,kimi"); empty = all four.
+agent_cli_only: ""
+# Smoke = `--version` names the pin; with this on, also one headless prompt
+# per CLI. The prompt needs the CLI logged in for the user ansible runs as
+# (each host logs in through the vendor's own flow; no auth is copied).
+agent_cli_smoke_prompt: true
+# report: exit non-zero (fail the run) when any ALERT is raised.
+agent_cli_strict: false
+
+# Vendor installers. {version} is the pin. devin's own updater cannot pick a
+# version, so it is not pinnable: it installs the latest, the smoke check
+# fails when that is not the pin, and there is no automatic rollback.
+agent_cli_installers:
+  claude:
+    bin: claude
+    install: "npm install -g @anthropic-ai/claude-code@{version}"
+    pinnable: true
+    smoke: ["-p", "Reply with the single word OK."]
+  codex:
+    bin: codex
+    install: "npm install -g @openai/codex@{version}"
+    pinnable: true
+    smoke: ["exec", "Reply with the single word OK."]
+  devin:
+    bin: devin
+    install: "devin update"
+    pinnable: false
+    smoke: ["-p", "Reply with the single word OK."]
+  kimi:
+    bin: kimi
+    install: "npm install -g @moonshot-ai/kimi-code@{version}"
+    pinnable: true
+    smoke: ["-p", "Reply with the single word OK."]
