@@ -6,20 +6,18 @@ an entitlement miss, not success); repair job:
 
 Derived-queue core
 -----------------------------
-The worker's "queue" is the data itself: a chunk with no row in
-``chunk_embeddings`` for embedder ``bge-m3`` *needs* to be embedded. No
-separate ``block_jobs``/queue table — derived artifact tables double as
-the work-tracking surface. Ingest writes rows and returns; it never
-enqueues or blocks on derived work (a worker outage delays embeddings,
-never loses them — the missing row IS the queue entry).
+Derived artifact tables are the queue: a chunk missing a ``bge-m3`` row in
+``chunk_embeddings`` needs embedding; no separate ``block_jobs`` table.
+Ingest writes rows without enqueueing or waiting. Outages delay derived
+work without losing it: missing output remains claimable.
 
 Each :class:`WorkerHandler` owns one ``(output_table, model)`` pair.
 :meth:`claim_batch` locks missing-output chunks with ``FOR UPDATE OF c SKIP
 LOCKED``; :meth:`process` is pure, and :meth:`write_ok`/:meth:`write_failed`
 persist results or poison-pill failures. :meth:`status` reports
-``(total, ok, failed, pending)`` for the CLI/health view. One transaction in
-:func:`run_handler_once` handles a batch; :func:`run_loop` rotates registered
-handlers until idle, then sleeps and polls again.
+``(total, ok, failed, pending)`` for CLI/health. :func:`run_handler_once`
+handles one batch; :func:`run_loop` rotates handlers until idle, then sleeps
+and polls.
 
 Pass taxonomy
 -------------
@@ -63,11 +61,10 @@ example row on the class); crash paths log an errored row under the same
 
 Profiles + service registry
 ---------------------------
-``--profile system`` (every node) / ``agent`` (the OAuth + MCP-config
-gateway host: ``job_claude_inproc``, ``quota_check``) / ``all`` (their
-union — the collapsed one-daemon-per-host deploy; topology in
-``deploy/README.md``). Profile is pass *ownership*, not a live switch.
-``registry.py`` is the declarative source of truth: one frozen
+``--profile system`` (every node) / ``agent`` (OAuth + MCP-config gateway:
+``job_claude_inproc``, ``quota_check``) / ``all`` (union, one daemon/host;
+topology: ``deploy/README.md``). Profiles own passes, not live switches.
+``registry.py`` declares one frozen
 :class:`~precis.workers.registry.ServiceSpec` per pass/job-type/compute
 service/daemon/serving endpoint. ``cli/worker.py`` derives its profile
 sets via ``service_names_for_profile()``; the ``/env`` inspector reads
@@ -137,14 +134,12 @@ Two SQL watchdog passes and two agentic reviewers, plus disk:
 
 Notable pass mechanics
 ----------------------
-* ``chunk_keywords`` prepares candidates per chunk/paper, embeds the whole
-  claimed batch via ``Embedder.embed`` once, then scores each chunk's slice.
-  Per-chunk RPCs held the fleet advisory lock for about two minutes per
-  32 chunks (gr547587). Scoring/version and short write transactions stay
-  unchanged; no pooled connection is held across embedding. The CLI still
-  claims 32 by default: raising it needs real embedder/lock timings below
-  one minute, not mock throughput. There is no keyword cadence gate;
-  this ref-pass waits for the full serial rotation between turns.
+* ``chunk_keywords`` embeds claimed chunks' paper-local candidates once via
+  ``Embedder.embed``, then scores per-chunk slices. Per-chunk RPCs held the
+  fleet advisory lock ~2 minutes/32 chunks (gr547587). Scoring/version and
+  short writes are unchanged; no pooled connection spans embedding. CLI
+  batch stays 32 until real embedder/lock timings, not mocks, justify raising
+  it well below one minute. No cadence gate: turns follow the serial rotation.
 * ``embed`` is manual-only (``--only embed``); the ``materialize`` cadence
   mints bounded ``embed_batch`` jobs (default-ON,
   ``PRECIS_MATERIALIZE_EMBED=0`` opts out) above
