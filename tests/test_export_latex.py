@@ -2238,7 +2238,9 @@ def _stub_latexmk(tmp_path, *, succeed=True):
     script = tmp_path / "latexmk"
     body = "#!/bin/sh\n"
     body += (
-        "touch main.pdf\nexit 0\n" if succeed else "echo '! Undefined.' >&2\nexit 1\n"
+        "printf '%%PDF-stub\\n%%%%EOF\\n' > main.pdf\nexit 0\n"
+        if succeed
+        else "echo '! Undefined.' >&2\nexit 1\n"
     )
     script.write_text(body, encoding="utf-8")
     script.chmod(script.stat().st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)

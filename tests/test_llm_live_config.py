@@ -44,6 +44,10 @@ def _bind(
     calls = {"n": 0}
     store = _Store() if rows is not None else None
     monkeypatch.setattr(meter, "active_store", lambda: store)
+    # The budget meter memoises BudgetStatus for 15s process-wide, not per
+    # store — a tripped status cached by a neighbouring test would pause
+    # these dispatches via gate_tier. Clear it.
+    meter._cached = None
 
     def fake_get(_store: object, key: str) -> str | None:
         calls["n"] += 1

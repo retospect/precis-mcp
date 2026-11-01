@@ -45,7 +45,10 @@ class _FakeOpenAI:
 
 class _GateStore:
     """A ``meter.active_store`` stand-in whose service_config read says
-    the gate is lit (or not)."""
+    the gate is lit (or not). Only that one query is answered: the
+    budget breaker reads the same bound store (spend sums, app_settings
+    caps), and a blanket ``(1,)`` there fakes a tripped $1 cap — the
+    meter must read dark (no rows → zero spend, default caps)."""
 
     def __init__(self, lit: bool) -> None:
         self._lit = lit
@@ -57,11 +60,17 @@ class _GateStore:
         class _CM:
             def __enter__(self) -> Any:
                 class _Conn:
-                    def execute(self, *a: Any, **k: Any) -> _Conn:
+                    def __init__(self) -> None:
+                        self._q = ""
+
+                    def execute(self, q: str, *a: Any, **k: Any) -> _Conn:
+                        self._q = q
                         return self
 
                     def fetchone(self) -> Any:
-                        return (1,) if lit else None
+                        if "service_config" in self._q:
+                            return (1,) if lit else None
+                        return None
 
                 return _Conn()
 
@@ -72,7 +81,13 @@ class _GateStore:
 
 
 def _gate(monkeypatch: pytest.MonkeyPatch, lit: bool) -> None:
+    from precis.budget import meter
+
     monkeypatch.setattr("precis.budget.meter.active_store", lambda: _GateStore(lit))
+    # The meter memoises BudgetStatus for 15s process-wide, not per store —
+    # drop a status a neighbouring test computed so it can't gate (or
+    # un-gate) the dispatches below.
+    meter._cached = None
 
 
 def _profiles(monkeypatch: pytest.MonkeyPatch, profiles: dict) -> None:

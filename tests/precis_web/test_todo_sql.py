@@ -122,5 +122,7 @@ def test_focus_page_renders_the_todo_body(
     page = client.get(f"/todo?focus={todo.id}")
     assert page.status_code == 200, page.text
     assert "choose between pa1 and pa2" in page.text
-    # The focused row's details block renders open.
-    assert "<details" in page.text and "open" in page.text
+    # The focused row's card starts expanded (gr548797 replaced the
+    # <details> block with the Alpine expand control).
+    assert 'x-data="{actions:true}"' in page.text
+    assert "data-card-detail" in page.text
