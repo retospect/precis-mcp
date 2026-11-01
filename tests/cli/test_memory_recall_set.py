@@ -105,7 +105,7 @@ def test_operator_cli_reads_todo_but_never_commits_or_changes_graph(
     )
     store.add_tag(todo.id, Tag.closed("STATUS", "open"), set_by="system")
     with store.pool.connection() as conn, monkeypatch.context() as scoped:
-        scoped.setattr(recall_set.psycopg, "connect", lambda dsn: conn)
+        scoped.setattr(recall_set.psycopg, "connect", lambda dsn, **_kw: conn)
         scoped.setattr(recall_set, "resolve_dsn", lambda *a, **k: "unused")
         run(
             _build_parser().parse_args(

@@ -126,7 +126,6 @@ _ARGS_ONLY: frozenset[tuple[str, str, str]] = frozenset(
         ("draft", "put", "image"),
         ("draft", "put", "lang"),
         ("draft", "put", "mime"),
-        ("draft", "put", "origin"),
         ("draft", "put", "permission"),
         ("draft", "put", "voice"),
         # -- checklist: kind-scoping and pcb anchors, args= like fleet
