@@ -18,6 +18,7 @@ files write in name order — equal inputs give byte-identical runs.
 
 from __future__ import annotations
 
+import dataclasses
 import hashlib
 import json
 from collections.abc import Mapping
@@ -36,8 +37,8 @@ from precis.pcb.topoplace.writeback import lock_payload
 
 #: ``manifest.json``'s schema tag — bump on any shape change (the
 #: objective dict gained ``silkroom`` at /2, ``margin`` at /3,
-#: 2026-10-29).
-RUN_SCHEMA = "precis.topo-run/3"
+#: ``measures`` at /4, 2026-11-01).
+RUN_SCHEMA = "precis.topo-run/4"
 #: Kernel version stamped on every manifest: bump when the solver's
 #: output changes for equal inputs (the route job's ``CODE_VERSION``
 #: convention — a stored run must name the code that made it).
@@ -98,16 +99,12 @@ def manifest(
         "wheel_version": precis_geom.__version__,
         "seed": int(result.seed),
         "effort": int(effort),
+        # every ObjectiveShares term, from the dataclass's own field
+        # list — a new share can never be dropped here again (gr549293:
+        # the hand-written list left ``measures`` off the run record)
         "objective": {
-            "crossings": float(objective.crossings),
-            "ratsnest": float(objective.ratsnest),
-            "overlap": float(objective.overlap),
-            "spread": float(objective.spread),
-            "vias": float(objective.vias),
-            "backtrack": float(objective.backtrack),
-            "direction": float(objective.direction),
-            "silkroom": float(objective.silkroom),
-            "margin": float(objective.margin),
+            f.name: float(getattr(objective, f.name))
+            for f in dataclasses.fields(ObjectiveShares)
         },
         "board_hash": str(board_hash),
         "parts": parts,

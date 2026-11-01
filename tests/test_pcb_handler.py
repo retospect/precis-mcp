@@ -4561,7 +4561,7 @@ def _topo_files(crossings: int, pose: list[list[float]] | None = None) -> dict:
     ``runstore.run_files`` emits (manifest/elites/pairs/summary/svg)."""
     return {
         "manifest.json": {
-            "schema": "precis.topo-run/3",
+            "schema": "precis.topo-run/4",
             "seed": 1,
             "effort": 20000,
             "result": {"crossings": crossings, "length": 12.3},

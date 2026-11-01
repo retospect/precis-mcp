@@ -4,10 +4,14 @@ byte-deterministic run files (Decision 22) — spec §1c's own tests."""
 
 from __future__ import annotations
 
+import dataclasses
 import re
+
+import numpy as np
 
 from precis.pcb.topoplace import (
     ObjectiveShares,
+    TopoPlaceResult,
     assign_pins,
     pair_map,
     runstore,
@@ -171,3 +175,34 @@ def test_manifest_carries_the_run_provenance() -> None:
         "placement.svg",
     }
     assert files["placement.svg"].startswith("<svg")
+
+
+def test_objective_terms_match_shares() -> None:
+    """gr549293: the manifest's objective dict records EVERY
+    ``ObjectiveShares`` term — the keys are the dataclass's own field
+    list, so a new share can never be dropped again (``measures`` was
+    the one the hand-written key list left off)."""
+    d, _inst, _nets = synth_design(seed=0, n_parts=4, n_nets=4, n_multinet=0)
+    result = TopoPlaceResult(
+        best_pose=np.zeros((len(d.parts), 4)),
+        best_cost=0.0,
+        crossings=0,
+        length=0.0,
+        evals=0,
+        restarts=0,
+        seed=_SEED,
+        elites=(),
+        ladder_scores=(),
+    )
+    m = runstore.manifest(
+        d,
+        result,
+        objective=W,
+        effort=_EFFORT,
+        board_hash="0" * 16,
+        parts=[],
+        footprints={},
+    )
+    terms = [f.name for f in dataclasses.fields(ObjectiveShares)]
+    assert sorted(m["objective"]) == sorted(terms)
+    assert m["objective"]["measures"] == float(W.measures)
