@@ -77,6 +77,23 @@ put(
 - **reason** — required-in-spirit free text; this is the design rationale the
   next reader (or you, later) needs.
 
+## Author measures from a board script
+
+`put` stores the builder's measure calls in the shape above:
+
+| builder call | stored row |
+|--------------|------------|
+| `b.near(a, b, within_mm=2)` | `proximity`, goal 2 |
+| `b.apart(a, b, at_least_mm=10)` | `separation`, goal 10 |
+| `b.align(a, b, axis='x')` | `align`, `meta.axis` `x`, goal null (0.05 mm) |
+| `b.measure(metric, parts, bound=…)` | that metric; `bound` (or `goal`) becomes the goal |
+
+`hard=True` stores `hard`, otherwise `soft` — a builder measure steers, it is
+never a `gauge`. Parts become `{'instance': refdes}` operands. A metric outside
+the table below, other than `near`/`apart`, refuses the `put`; so do a `bound`
+and a `goal` that disagree. Offline `pcb.local` place runs price the same rows.
+A re-`put` adds its measures beside the earlier rows; it does not replace them.
+
 ## Metrics
 
 | metric | evaluates | drives placement | use for |
@@ -175,6 +192,11 @@ get(kind="pcb", id="s", view="measures")
 A `hard` violation is a real problem; a `soft` one is a tradeoff the placer
 made; a `gauge` row is just information. Re-run after `autoplace` to see what
 held.
+
+The check surface fails on the same verdicts: a VIOLATED `hard` proximity,
+separation or align measure is a `measure` **error** in `view='check'`/`'drc'`,
+a `soft` one a `warn`; the row names the pair, the limit (its goal), the
+measured value and the residual. `gauge`, `invariant`, `pending` add nothing.
 
 ## How measures interact with placement
 

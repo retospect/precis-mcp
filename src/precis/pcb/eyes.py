@@ -663,6 +663,26 @@ _TARGET_REL_TOL = 0.10
 _TARGET_ABS_TOL = 0.1
 
 
+def target_tol_mm(goal: float) -> float:
+    """Half-width of a ``direction='target'`` verdict's ok band around
+    ``goal``: ±10% of it, 0.1 mm floor."""
+    return max(_TARGET_REL_TOL * abs(goal), _TARGET_ABS_TOL)
+
+
+def measure_excess(value: float, bound: str, goal: Any) -> float:
+    """How far ``value`` sits past the limit :func:`_judge` holds it to, mm;
+    0.0 when it holds or there is no goal. Lives beside the verdict so a
+    violated measure's reported residual uses the same band."""
+    if goal is None:
+        return 0.0
+    g = float(goal)
+    if bound == "lower":
+        return max(0.0, g - value)
+    if bound == "upper":
+        return max(0.0, value - g)
+    return max(0.0, abs(value - g) - target_tol_mm(g))
+
+
 def _judge(values: list[float], bound: str, goal: Any) -> tuple[float, bool]:
     """(binding value, ok) for a measure over ``values`` under ``bound``.
 
@@ -680,7 +700,7 @@ def _judge(values: list[float], bound: str, goal: Any) -> tuple[float, bool]:
         val = max(values)
         return val, val <= g
     val = max(values, key=lambda v: abs(v - g))
-    return val, abs(val - g) <= max(_TARGET_REL_TOL * abs(g), _TARGET_ABS_TOL)
+    return val, abs(val - g) <= target_tol_mm(g)
 
 
 def evaluate_measures(
@@ -701,7 +721,11 @@ def evaluate_measures(
     ``pending`` until their evaluators land. ``align`` (a part and a part /
     ``point`` / ``feature_id``) reads ``features`` — the
     ``Store.pcb_features_list`` rows — to resolve a ``feature_id`` operand;
-    the graph itself carries none.
+    the graph itself carries none. A judged proximity / separation / align
+    row also carries ``pair`` (the binding pair's two ends: refdes, or an
+    align datum's ``(x, y)``), ``parts`` (the refdes among them) and
+    ``excess`` (mm past the limit, 0 when ok) — what the check surface's
+    ``measure`` finding reports (:mod:`precis.pcb.measure_check`).
 
     The generator-declared invariant metrics
     (:data:`precis.pcb.generators.INVARIANT_METRICS` — gr345859 §F) are
@@ -748,27 +772,31 @@ def evaluate_measures(
         }
         bound = measure_bound(m.get("direction"), metric)
         if metric in ("separation", "proximity") and len(refs) >= 2:
-            pairs = [
-                dist(placed[refs[i]], placed[refs[j]])
+            pairs = {
+                (refs[i], refs[j]): dist(placed[refs[i]], placed[refs[j]])
                 for i in range(len(refs))
                 for j in range(i + 1, len(refs))
-            ]
-            val, ok = _judge(pairs, bound, goal)
+            }
+            val, ok = _judge(list(pairs.values()), bound, goal)
             row["value"] = round(val, 3)
             row["verdict"] = "ok" if ok else "VIOLATED"
             row["over"] = ", ".join(refs)
+            row["pair"] = row["parts"] = next(p for p, d in pairs.items() if d == val)
+            row["excess"] = round(measure_excess(val, bound, goal), 3)
         elif metric == "align":
             spec = parse_align(m)
             pa = placed.get(spec.ref_a) if spec is not None else None
             pb = None
             over = ""
+            end_b = ""
             if spec is not None:
                 if spec.ref_b is not None:
                     pb = placed.get(spec.ref_b)
-                    over = f"{spec.ref_a}, {spec.ref_b}"
+                    end_b = spec.ref_b
                 elif spec.datum is not None:
                     pb = spec.datum
-                    over = f"{spec.ref_a}, ({spec.datum[0]:g}, {spec.datum[1]:g})"
+                    end_b = f"({spec.datum[0]:g}, {spec.datum[1]:g})"
+                over = f"{spec.ref_a}, {end_b}"
             if spec is None or pa is None or pb is None:
                 row["verdict"] = "pending"  # unresolved operand: never ok
             else:
@@ -777,6 +805,11 @@ def evaluate_measures(
                 row["value"] = round(val, 3)
                 row["verdict"] = "ok" if val <= spec.tol_mm else "VIOLATED"
                 row["over"] = over
+                row["pair"] = (spec.ref_a, end_b)
+                row["parts"] = tuple(
+                    r for r in (spec.ref_a, spec.ref_b) if r is not None
+                )
+                row["excess"] = round(measure_excess(val, "upper", spec.tol_mm), 3)
                 # `meta.snapped` is stamped by the place/route job when the
                 # optimizer's deterministic snap pass closed the last
                 # sub-step residual (optimize.py); only an `ok` row can

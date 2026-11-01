@@ -34,6 +34,11 @@ from typing import Any
 import numpy as np
 
 from precis.pcb.topoplace.archive import Elite, EliteArchive
+from precis.pcb.topoplace.contain import (
+    board_polygon,
+    part_outside_mm2,
+    stays_on_board,
+)
 from precis.pcb.topoplace.design import (
     FREEDOM_BACK_SIDE,
     FREEDOM_ROTATE,
@@ -140,6 +145,29 @@ def _legal_xy(
     centre = np.broadcast_to((lo + hi) / 2.0, (n, 2))
     ok = hi_i > lo_i
     return np.where(ok, lo_i, centre), np.where(ok, hi_i, centre)
+
+
+def _keeps_on_board(
+    d: TopoDesign,
+    board: Any,
+    staged: dict[int, np.ndarray],
+    off_now: np.ndarray,
+    off_new: dict[int, float],
+) -> bool:
+    """Whether every staged part :func:`~.contain.stays_on_board` against
+    its committed outside area ``off_now``; fills ``off_new`` with the
+    staged areas a commit adopts. Needed beside the overlap gate: the
+    clamp above is the outline's BBOX, and the proxy's legality debt
+    does not hold the courtyard to the polygon — it prices pin centres
+    and body-to-edge clearance, as one total a courtyard-overlap gain
+    can pay for, and nothing at all under a zero ``overlap`` share."""
+    if board is None:
+        return True
+    for p, row in staged.items():
+        off_new[p] = part_outside_mm2(d, board, row, p)
+        if not stays_on_board(float(off_now[p]), off_new[p]):
+            return False
+    return True
 
 
 def _scatter(
@@ -271,6 +299,8 @@ def topo_place(
     span = float(np.hypot(*(hi - lo)))
     span2 = max(span * span, 1.0)
     xy_lo, xy_hi = _legal_xy(d, lo, hi)
+    # the boxes are the outline's bbox; the polygon gates every commit
+    board = board_polygon(d)
 
     n_restarts = max(1, min(4, effort // 2500))
     per_restart = max(1, effort // n_restarts)
@@ -363,6 +393,14 @@ def topo_place(
         #: the committed violation total — the legality floor for every
         #: proposal below (a move may reduce debt, never raise it).
         ov_now = float(proxy.overlap)
+        #: per-part courtyard area off the outline polygon, committed —
+        #: the containment floor (:func:`_keeps_on_board`) beside it.
+        off_now = np.asarray(
+            [part_outside_mm2(d, board, proxy.pose[i], i) for i in range(n_parts)]
+            if board is not None
+            else np.zeros(n_parts),
+            dtype=np.float64,
+        )
 
         # move weights over the options this design actually has —
         # picking a valid move every eval keeps the effort honest.
@@ -503,13 +541,17 @@ def topo_place(
                     )
                 d_rb *= lam / span2
             delta = d_proxy + d_rb
-            if proxy.overlap > ov_now + _OV_EPS:
+            off_new: dict[int, float] = {}
+            if proxy.overlap > ov_now + _OV_EPS or not _keeps_on_board(
+                d, board, staged_rows, off_now, off_new
+            ):
                 # Legality is not a trade. The commit gate refuses any
                 # placement with more DRC violations than the stored
                 # board, so a move that raises courtyard/containment/
                 # edge debt — however good its crossings — strands the
                 # whole run (taz-leaf flow runs: elites at cost 0.30 the
-                # gate refused). Moves that raise overlap debt are
+                # gate refused). Moves that raise overlap debt, or carry
+                # a courtyard further off the outline polygon, are
                 # refused outright, temperature or not; overlap
                 # reductions and everything else still face Metropolis
                 # on the full Δ.
@@ -517,6 +559,8 @@ def topo_place(
             elif delta < 0 or rng.random() < math.exp(-delta / temp):
                 proxy.commit()
                 ov_now = float(proxy.overlap)
+                for p, off in off_new.items():
+                    off_now[p] = off
             else:
                 proxy.revert()
 

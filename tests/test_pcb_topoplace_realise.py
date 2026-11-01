@@ -35,9 +35,9 @@ from precis.pcb.topoplace.realise import (
     RoutePlan,
     ViaSite,
     _guarded_nets,
+    _pull_taut,
     _run_bounds,
     _severed_nets,
-    _simplify_octilinear,
     _site_via,
     assign_layers,
     plan_route,
@@ -1052,31 +1052,20 @@ def _off45_fixture() -> tuple[TopoDesign, SimpleNamespace]:
     return d, ir
 
 
-def test_emit_guard_refuses_a_kept_off_angle_leg() -> None:
-    """gr543679: when neither L-bend clears, ``_octilinear`` keeps the
-    authored leg — off the 45° grid. The emit check must REFUSE the
-    piece's track (never commit copper the DRC's octilinear rule would
-    flag after the fact) and record the net, so the route stage reports
-    it failed — the ``guarded`` fold-in plus ``off_angle`` naming the
-    real reason."""
+def test_emit_writes_an_off_angle_leg_as_drawn() -> None:
+    """Reto 2026-11-01: wire angles are free. A diagonal leg off the 45°
+    grid is emitted as drawn — one segment, nothing withdrawn — and the
+    net reports realized."""
     d, ir = _off45_fixture()
     piece = RoutePiece(
         net=0, branch=0, layer=0, points=((0.0, 0.0), (3.0, 1.0)), pin_a=0, pin_b=1
     )
     plan = RoutePlan(pieces=(piece,), vias=(), layers=(0,))
-    off_angle: list[int] = []
-    res = realize_result(plan, d, ir, 2, pose=d.pose0, off_angle=off_angle)
-    assert res.tracks == ()  # no off-angle copper committed
-    assert off_angle == [0]
-
-    # the withdrawal surfaces as a failed net with the true reason, not
-    # a silent vanish and not a mislabelled short-risk (route_design
-    # folds off_angle nets into guarded for the failure count).
-    plan = dataclasses.replace(plan, guarded=(0,), off_angle=(0,))
+    (track,) = realize_result(plan, d, ir, 2).tracks
+    segs = [(tuple(s["start"]), tuple(s["end"])) for s in track.segments]
+    assert segs == [((0.0, 0.0), (3.0, 1.0))]
     rows = sketch_rows(plan, d, ir, ["F.Cu", "B.Cu"])
-    assert rows["N0"]["status"] == "failed"
-    assert rows["N0"]["fail"]["problems"][0]["reason"] == "non-octilinear"
-    assert "non-octilinear" in rows["N0"]["note"]
+    assert rows["N0"]["status"] == "realized"
 
 
 def test_emit_coalesces_micro_vertices() -> None:
@@ -1092,18 +1081,15 @@ def test_emit_coalesces_micro_vertices() -> None:
         points=((0.0, 0.0), (2.0, 0.0), (2.0005, 0.0), (4.0, 0.0)),
     )
     plan = RoutePlan(pieces=(piece,), vias=(), layers=(0,))
-    off_angle: list[int] = []
-    (track,) = realize_result(plan, d, ir, 2, off_angle=off_angle).tracks
-    assert off_angle == []
+    (track,) = realize_result(plan, d, ir, 2).tracks
     segs = [(tuple(s["start"]), tuple(s["end"])) for s in track.segments]
     assert segs[0][0] == (0.0, 0.0) and segs[-1][1] == (4.0, 0.0)
     assert all(math.dist(a, b) >= 1e-3 for a, b in segs), (
         f"micro-segment survived: {segs}"
     )
 
-    # a micro-vertex whose removal would redraw the merged segment
-    # off-angle is KEPT — coalescing may shrink by the epsilon, never
-    # break the 45° discipline.
+    # angles are free (Reto 2026-11-01): a micro-vertex at a corner goes
+    # too, the merged segment runs a hair off the axis, endpoints held.
     corner = RoutePiece(
         net=0,
         branch=1,
@@ -1111,23 +1097,20 @@ def test_emit_coalesces_micro_vertices() -> None:
         points=((0.0, 0.0), (0.0005, 0.0), (0.0005, 2.0)),
     )
     plan = RoutePlan(pieces=(corner,), vias=(), layers=(0,))
-    off_angle = []
-    (track,) = realize_result(plan, d, ir, 2, off_angle=off_angle).tracks
-    assert off_angle == []
-    assert len(track.segments) == 2
+    (track,) = realize_result(plan, d, ir, 2).tracks
+    segs = [(tuple(s["start"]), tuple(s["end"])) for s in track.segments]
+    assert segs == [((0.0, 0.0), (0.0005, 2.0))]
 
 
-def test_emit_keeps_a_normal_45_piece_untouched() -> None:
-    """The vetoes are silent on legal geometry: an axis/45° piece emits
-    exactly its authored corners, nothing withdrawn, nothing moved."""
+def test_emit_keeps_a_drawn_piece_untouched() -> None:
+    """realize_result writes the points it is given: an authored piece
+    emits exactly its corners, nothing withdrawn, nothing moved."""
     d, ir = _off45_fixture()
     piece = RoutePiece(
         net=0, branch=0, layer=0, points=((0.0, 0.0), (3.0, 0.0), (5.0, 2.0))
     )
     plan = RoutePlan(pieces=(piece,), vias=(), layers=(0,))
-    off_angle: list[int] = []
-    (track,) = realize_result(plan, d, ir, 2, off_angle=off_angle).tracks
-    assert off_angle == []
+    (track,) = realize_result(plan, d, ir, 2).tracks
     segs = [(tuple(s["start"]), tuple(s["end"])) for s in track.segments]
     assert segs == [((0.0, 0.0), (3.0, 0.0)), ((3.0, 0.0), (5.0, 2.0))]
     assert track.length_mm == pytest.approx(3.0 + 2.0 * math.sqrt(2.0))
@@ -1769,21 +1752,14 @@ def test_spoke_offsets_fan_shared_gap_and_shared_corner() -> None:
     assert {p.net for p in plan.pieces} == set(
         td.net_name.index(n) for n in ("N1", "N2", "N3")
     )
-    # gr543679: the squeeze through the slit leaves diagonal legs no
-    # L-bend can replace (both corners graze the gate pads or the
-    # neighbour's channel), so the emit 45° check refuses those tracks
-    # rather than committing copper the DRC's octilinear rule would
-    # flag — the nets are withdrawn and reported failed, not silently
-    # stored. The anti-short guard itself stays silent (nothing here
-    # shorts).
-    assert set(getattr(plan, "off_angle", ())) == {
-        td.net_name.index(n) for n in ("N1", "N2", "N3")
-    }
-    assert res.tracks == ()
+    # Reto 2026-11-01: angles are free, so the squeeze's diagonal legs
+    # are emitted as drawn (they used to be withdrawn as off-45°) and
+    # all three nets realize with clearance held.
+    assert plan.guarded == ()
+    assert {str(ir.net_name[t.net_id]) for t in res.tracks} == {"N1", "N2", "N3"}
     rows = sketch_rows(plan, td, ir, layers)
     for n in ("N1", "N2", "N3"):
-        assert rows[n]["status"] == "failed"
-        assert rows[n]["fail"]["problems"][0]["reason"] == "non-octilinear"
+        assert rows[n]["status"] == "realized"
 
 
 def test_fan_slit_fixture_is_planar_no_braid_no_vias() -> None:
@@ -2863,7 +2839,7 @@ def test_direct_pad_pair_routes_as_one_straight_segment() -> None:
     td, ir, footprints, plan, res, layers, wall_s = _route_micro(_dot_board())
     assert wall_s < 1.0, f"2-pad direct route took {wall_s:.2f}s"
     assert plan.vias == () and plan.crossings == ()
-    assert plan.guarded == () and not getattr(plan, "off_angle", ())
+    assert plan.guarded == ()
     (piece,) = plan.pieces
     assert piece.layer == 0
     assert piece.points == ((5.0, 10.0), (25.0, 10.0))
@@ -2888,13 +2864,13 @@ def test_wall_between_pads_detours_on_one_layer_within_four_bends() -> None:
     assert wall_s < 1.0, f"2-pad detour route took {wall_s:.2f}s"
     assert plan.vias == ()
     assert plan.crossings == ()
-    assert plan.guarded == () and not getattr(plan, "off_angle", ())
+    assert plan.guarded == ()
     assert {p.layer for p in plan.pieces} == {0}
     (track,) = res.tracks
     segs = [(tuple(s["start"]), tuple(s["end"])) for s in track.segments]
-    # gr543905: the redraw came out (right, down, right, up) — the
-    # simplification pass drops the pad-side jog: down, across, up.
-    assert len(segs) == 3, f"detour should be a 3-leg U, got {segs}"
+    # any angle (Reto 2026-11-01): out to the wall's corner, along it,
+    # back in — three legs at most
+    assert len(segs) <= 3, f"detour should take at most 3 legs, got {segs}"
     pts = [segs[0][0]] + [b for _a, b in segs]
     assert pts[0] == (5.0, 10.0) and pts[-1] == (25.0, 10.0)
     assert Polygon(wall).distance(LineString(pts)) >= 0.15 / 2 + 0.15 - 1e-3, (
@@ -2905,45 +2881,35 @@ def test_wall_between_pads_detours_on_one_layer_within_four_bends() -> None:
     assert _drc_findings(res, ir, layers, footprints=footprints) == []
 
 
-def test_offset_pad_pair_routes_one_l_bend() -> None:
-    """Pads diagonally offset (dx=10, dy=5): the straight line is off
-    the 45° grid, so the honest single-layer route is ONE L bend — two
-    axis legs from pad centre to pad centre, zero vias, milliseconds.
-    Pins the octilinear redraw on the trivial positive case."""
+def test_offset_pad_pair_routes_one_straight_segment() -> None:
+    """Pads diagonally offset (dx=10, dy=5): angles are free (Reto
+    2026-11-01), so the honest single-layer route is ONE straight
+    segment pad centre to pad centre, zero vias, milliseconds."""
     td, ir, footprints, plan, res, layers, wall_s = _route_micro(
         _dot_board(p1=(5.0, 10.0), p2=(15.0, 5.0))
     )
-    assert wall_s < 1.0, f"2-pad L route took {wall_s:.2f}s"
+    assert wall_s < 1.0, f"2-pad offset route took {wall_s:.2f}s"
     assert plan.vias == () and plan.crossings == ()
-    assert plan.guarded == () and not getattr(plan, "off_angle", ())
+    assert plan.guarded == ()
     assert {p.layer for p in plan.pieces} == {0}
     (track,) = res.tracks
     segs = [(tuple(s["start"]), tuple(s["end"])) for s in track.segments]
-    assert len(segs) == 2, f"one L bend expected, got {segs}"
-    (a, b), (c, e) = segs
-    assert a == (5.0, 10.0) and e == (15.0, 5.0)
-    assert b == c  # the shared corner
-    horiz = a[1] == b[1] and a[0] != b[0]
-    vert = c[0] == e[0] and c[1] != e[1]
-    assert horiz and vert, f"L legs must be axis-aligned: {segs}"
-    assert b in ((15.0, 10.0), (5.0, 5.0)), f"corner at either bend: {segs}"
+    assert segs == [((5.0, 10.0), (15.0, 5.0))], segs
     rows = sketch_rows(plan, td, ir, layers)
     assert rows["N1"]["status"] == "realized"
     assert _drc_findings(res, ir, layers, footprints=footprints) == []
 
 
 def test_diagonal_pad_pair_on_forty_five_is_one_straight_segment() -> None:
-    """Pads at (10,10) and (20,20) sit exactly on a 45° diagonal — which
-    the DRC's octilinear rule admits as-is. The honest route is ONE
-    straight segment, zero corners (Reto's 2026-10-31 ask: a 90° turn
-    here would be wasted geometry; the 90°-turn case is the off-diagonal
-    L test above)."""
+    """Pads at (10,10) and (20,20): the honest route is ONE straight
+    segment, zero corners (Reto's 2026-10-31 ask: a 90° turn here would
+    be wasted geometry)."""
     td, ir, footprints, plan, res, layers, wall_s = _route_micro(
         _dot_board(p1=(10.0, 10.0), p2=(20.0, 20.0), board=(30.0, 25.0))
     )
     assert wall_s < 1.0, f"2-pad 45° route took {wall_s:.2f}s"
     assert plan.vias == () and plan.crossings == ()
-    assert plan.guarded == () and not getattr(plan, "off_angle", ())
+    assert plan.guarded == ()
     assert {p.layer for p in plan.pieces} == {0}
     (track,) = res.tracks
     segs = [(tuple(s["start"]), tuple(s["end"])) for s in track.segments]
@@ -2962,23 +2928,22 @@ def test_small_obstacle_between_aligned_pads_detours_and_realizes() -> None:
     boundary-run deadlock — the 0-width path slid along the keepout's
     bottom edge, the per-bend scan deadlocked on the shared boundary,
     and the blind fallback slid both bends 0.226 mm INSIDE the keepout;
-    the emit guard withdrew the piece). Geometry note: with the house
-    clearance the octilinear floor for a lane-straddling obstacle is
-    four segments (three corners) via tangent 45°s; the redraw's
-    staircase runs one corner longer, so the honest bound is ≤5
-    segments, full 0.225 mm clearance, single layer, no vias."""
+    the emit guard withdrew the piece). With free angles (Reto
+    2026-11-01) the detour is out to the obstacle's corner, along it and
+    back in: at most three segments, full 0.225 mm clearance, single
+    layer, no vias."""
     obstacle = [[14.0, 9.0], [16.0, 9.0], [16.0, 11.0], [14.0, 11.0]]
     td, ir, footprints, plan, res, layers, wall_s = _route_micro(
         _dot_board(p1=(5.0, 10.0), p2=(25.0, 10.0), walls=[obstacle])
     )
     assert wall_s < 1.0, f"2-pad small-obstacle route took {wall_s:.2f}s"
     assert plan.vias == () and plan.crossings == ()
-    assert plan.guarded == () and not getattr(plan, "off_angle", ())
+    assert plan.guarded == ()
     assert {p.layer for p in plan.pieces} == {0}
     (track,) = res.tracks
     segs = [(tuple(s["start"]), tuple(s["end"])) for s in track.segments]
-    assert 2 <= len(segs) <= 5, (
-        f"small-obstacle detour should realize ≤5 segs, got {segs}"
+    assert 2 <= len(segs) <= 3, (
+        f"small-obstacle detour should realize ≤3 segs, got {segs}"
     )
     pts = [segs[0][0]] + [bb for _a, bb in segs]
     assert pts[0] == (5.0, 10.0) and pts[-1] == (25.0, 10.0)
@@ -2998,11 +2963,10 @@ def _blocker_clear(
     return lambda path: all(b.distance(path) >= reach - 1e-9 for b in blocks)
 
 
-def test_simplify_collapses_a_sliver_staircase_to_one_l() -> None:
-    """gr543905: the bend pass's off-grid nudge leaves staircases with
-    0.01 mm slivers on an open lane. Nothing blocks, so the pass re-draws
-    the whole run as one L (or straight) — fewest legs, endpoints held,
-    every leg on the 45° grid."""
+def test_pull_taut_collapses_a_sliver_staircase_to_one_segment() -> None:
+    """Reto 2026-11-01 (any angle, few segments): a staircase with
+    0.01 mm slivers on an open lane is pulled to the straight segment
+    between its endpoints."""
     stair = (
         (0.0, 0.0),
         (1.0, 0.0),
@@ -3012,35 +2976,28 @@ def test_simplify_collapses_a_sliver_staircase_to_one_l() -> None:
         (2.51, 1.0),
         (2.51, 2.0),
     )
-    out = _simplify_octilinear(stair, _blocker_clear())
-    assert out[0] == stair[0] and out[-1] == stair[-1]
-    assert len(out) - 1 <= 2, out
-    for a, b in itertools.pairwise(out):
-        dx, dy = abs(b[0] - a[0]), abs(b[1] - a[1])
-        assert dx < 1e-9 or dy < 1e-9 or abs(dx - dy) < 1e-9, out
+    assert _pull_taut(stair, _blocker_clear()) == (stair[0], stair[-1])
 
 
-def test_simplify_keeps_a_dip_the_blocker_demands() -> None:
-    """gr543905's guard rail: the dip-and-return around a blocker is
-    legitimate geometry. A 1 mm square straddles the straight lane; the
-    U around it is the fewest legs that clear it, so the pass leaves the
-    path alone — it only removes bends that clear the same obstacles."""
+def test_pull_taut_keeps_a_dip_the_blocker_demands() -> None:
+    """The dip-and-return around a blocker is load-bearing: a 1 mm square
+    straddles the straight lane, every shortcut would cross it, so the
+    pull leaves the path alone."""
     block = Polygon([(4.5, -0.5), (5.5, -0.5), (5.5, 0.5), (4.5, 0.5)])
     u = ((0.0, 0.0), (0.0, -1.0), (10.0, -1.0), (10.0, 0.0))
-    assert _simplify_octilinear(u, _blocker_clear(block)) == u
+    assert _pull_taut(u, _blocker_clear(block)) == u
 
 
-def test_simplify_takes_a_45_corner_when_both_ls_are_blocked() -> None:
-    """Window re-draws try the 45°+axis corners too: a 4-leg staircase
-    whose two L corners sit on blockers collapses to diagonal-then-axis,
-    clear of both."""
-    blocks = (
-        Polygon([(9.0, -1.0), (11.0, -1.0), (11.0, 1.0), (9.0, 1.0)]),
-        Polygon([(-1.0, 4.0), (1.0, 4.0), (1.0, 6.0), (-1.0, 6.0)]),
-    )
-    stair = ((0.0, 0.0), (3.0, 0.0), (3.0, 3.0), (8.0, 3.0), (8.0, 5.0), (10.0, 5.0))
-    out = _simplify_octilinear(stair, _blocker_clear(*blocks))
-    assert out == ((0.0, 0.0), (5.0, 5.0), (10.0, 5.0)), out
+def test_pull_taut_cuts_the_corner_a_blocker_leaves_open() -> None:
+    """Only a shortcut that clears is taken: with a blocker above the
+    lane's first half, the direct chord to the far end is refused, the
+    run along the lane collapses, and the last leg stays."""
+    block = Polygon([(2.0, 0.5), (3.0, 0.5), (3.0, 1.5), (2.0, 1.5)])
+    path = ((0.0, 0.0), (2.0, 0.0), (5.0, 0.0), (6.0, 3.0))
+    out = _pull_taut(path, _blocker_clear(block))
+    assert out[0] == path[0] and out[-1] == path[-1]
+    assert len(out) < len(path)
+    assert _blocker_clear(block)(LineString(out))
 
 
 def _dot3_board(
@@ -3110,12 +3067,9 @@ def test_close_pad_pair_threads_its_own_rings_straight() -> None:
     assert plan.vias == (), f"an empty lane must not need vias: {plan.vias}"
     (track,) = res.tracks
     segs = [(tuple(s["start"]), tuple(s["end"])) for s in track.segments]
-    assert len(segs) == 2, (
-        f"a 3.3°-skewed pair is one L (2 segments) — the wobble was 9: {segs}"
-    )
-    (a, c), (d, e) = segs
-    assert a == (10.5, 10.0) and e == (12.997, 10.145) and c == d
-    assert c[0] == e[0] and a[1] == c[1], f"the L's legs must be axis-aligned: {segs}"
+    # angles are free (Reto 2026-11-01): the 3.3°-skewed pair is ONE
+    # straight segment pad to pad — the wobble was 9
+    assert segs == [((10.5, 10.0), (12.997, 10.145))], segs
     rows = sketch_rows(plan, td, ir, layers)
     assert rows["S2_DRV"]["status"] == "realized"
     assert _drc_findings(res, ir, layers, footprints=footprints) == []
@@ -3185,31 +3139,32 @@ def test_blocker_off_the_lane_routes_straight_with_no_pushes() -> None:
     assert _drc_findings(res0, ir, layers, footprints=footprints) == []
 
 
-def test_cornered_pad_pair_routes_an_s_detour() -> None:
-    """Both single-bend corridors blocked — wall stubs over the two
-    would-be L corners: the router must find the S detour (at most
-    four bends), single layer, holding clearance off both stubs. This
-    is the 'router should be able to find its way around' case in
-    miniature."""
-    stubs = (
+def test_cornered_pad_pair_routes_around_a_blocked_diagonal() -> None:
+    """Wall stubs over the two would-be L corners plus a block on the
+    straight diagonal: with free angles (Reto 2026-11-01) the router
+    must still find its way around the block — at most three legs,
+    single layer, holding clearance off every obstacle. The 'router
+    should be able to find its way around' case in miniature."""
+    walls = (
         [[23.0, 3.0], [27.0, 3.0], [27.0, 7.0], [23.0, 7.0]],  # (25,5) corner
         [[3.0, 13.0], [7.0, 13.0], [7.0, 17.0], [3.0, 17.0]],  # (5,15) corner
+        [[14.0, 9.0], [16.0, 9.0], [16.0, 11.0], [14.0, 11.0]],  # on the diagonal
     )
     td, ir, footprints, plan, res, layers, wall_s = _route_micro(
-        _dot_board(p1=(5.0, 5.0), p2=(25.0, 15.0), walls=stubs)
+        _dot_board(p1=(5.0, 5.0), p2=(25.0, 15.0), walls=walls)
     )
-    assert wall_s < 1.0, f"2-pad S route took {wall_s:.2f}s"
+    assert wall_s < 1.0, f"2-pad detour route took {wall_s:.2f}s"
     assert plan.vias == () and plan.crossings == ()
-    assert plan.guarded == () and not getattr(plan, "off_angle", ())
+    assert plan.guarded == ()
     assert {p.layer for p in plan.pieces} == {0}
     (track,) = res.tracks
     segs = [(tuple(s["start"]), tuple(s["end"])) for s in track.segments]
-    assert 2 <= len(segs) <= 5, f"S detour should take 1..4 bends, got {segs}"
+    assert 2 <= len(segs) <= 3, f"detour should take at most 3 legs, got {segs}"
     pts = [segs[0][0]] + [bb for _a, bb in segs]
     assert pts[0] == (5.0, 5.0) and pts[-1] == (25.0, 15.0)
-    for stub in stubs:
-        assert Polygon(stub).distance(LineString(pts)) >= 0.15 / 2 - 1e-3, (
-            f"S detour enters a stub: {segs}"
+    for wall in walls:
+        assert Polygon(wall).distance(LineString(pts)) >= 0.15 / 2 - 1e-3, (
+            f"detour enters a wall: {segs}"
         )
     rows = sketch_rows(plan, td, ir, layers)
     assert rows["N1"]["status"] == "realized"
@@ -3301,7 +3256,7 @@ def test_f_b_hop_mints_one_via_with_straight_runs() -> None:
     )
     assert wall_s < 1.0, f"F<->B hop route took {wall_s:.2f}s"
     assert plan.crossings == ()
-    assert plan.guarded == () and not getattr(plan, "off_angle", ())
+    assert plan.guarded == ()
     assert len(plan.vias) == 1
     (via,) = plan.vias
     assert via.branch == 0
@@ -3345,14 +3300,12 @@ def _two_0402_pairs_board() -> pcb.Board:
 
 def test_chord_shortcut_works_next_to_a_peer_and_merges_collinear_legs() -> None:
     """Reto 2026-10-31 (taz-leaf-n): S2_REF stored 6 segments and S2_DRV
-    5 where 2 and 3 are the honest answers. The chord pass skipped every
-    branch with a peer polyline within 2 mm — on a board of 0402s that
-    is every branch. Now a chord is vetted together with the L the
-    octilinear redraw makes of it (corner spliced in), a spliced corner
-    is the next scan origin, and collinear legs merge: S2_REF is one L.
-    S2_DRV was the 3-leg U around R12's own pin 2; the simplification
-    pass (gr543905) finds the up-first L that clears that pad with the
-    same predicate, so it is one L too."""
+    5 where far fewer are the honest answers. The chord pass skipped
+    every branch with a peer polyline within 2 mm — on a board of 0402s
+    that is every branch. Now any clear chord is taken and, with free
+    angles (Reto 2026-11-01), emitted as drawn: S2_REF is one straight
+    segment, and S2_DRV — which has to clear R12's own pin 2 — takes at
+    most two."""
     td, ir, footprints, plan, res, layers, wall_s = _route_micro(
         _two_0402_pairs_board()
     )
@@ -3364,15 +3317,12 @@ def test_chord_shortcut_works_next_to_a_peer_and_merges_collinear_legs() -> None
         "S2_REF": "realized",
     }
     segs = {str(ir.net_name[t.net_id]): t.segments for t in res.tracks}
-    assert len(segs["S2_REF"]) == 2
-    assert len(segs["S2_DRV"]) == 2
-    # every leg axis-aligned or 45°, no sliver
+    assert len(segs["S2_REF"]) == 1, segs["S2_REF"]
+    assert len(segs["S2_DRV"]) <= 2, segs["S2_DRV"]
+    # no sliver legs
     for name, ss in segs.items():
         for s in ss:
-            dx = abs(s["end"][0] - s["start"][0])
-            dy = abs(s["end"][1] - s["start"][1])
-            assert dx < 1e-9 or dy < 1e-9 or abs(dx - dy) < 1e-9, (name, s)
-            assert max(dx, dy) > 0.2, (name, s)
+            assert math.dist(s["start"], s["end"]) > 0.2, (name, s)
     assert _drc_findings(res, ir, layers, footprints=footprints) == []
 
 

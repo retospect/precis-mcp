@@ -3040,62 +3040,20 @@ def test_clearance_oracle_matches_on_dense_close_layout():
         assert naive == indexed, (trial, model, naive ^ indexed)
 
 
-# ── octilinear (every drawn wire a multiple of 45 degrees) ────────────
+# ── wire angles are free (Reto 2026-11-01) ────────────────────────────
 
 
-def test_check_octilinear_fires_on_an_off_angle_segment():
-    """A 55-degree run is exactly the defect the 2026-08-31 user review
-    reported ("R2->R1 at ~55deg") -- one error per offending segment,
-    naming the angle so the fix starts from the finding."""
+def test_any_angle_track_raises_no_angle_finding():
+    """Reto 2026-11-01: "I don't care about 0,90,45 degree wires" — the
+    2026-08-31 octilinear house rule is gone, so a 55-degree run is
+    legal copper and the geometric run grades nothing about its angle."""
     model = {
         "layers": ["F.Cu"],
         "copper": [_track("A", "F.Cu", (0.0, 0.0), (7.0, 10.0))],
+        "pads": [],
     }
-    findings = drc.check_octilinear(model)
-    assert len(findings) == 1
-    f = findings[0]
-    assert f.rule == "octilinear" and f.severity == "error"
-    assert "55.0deg" in f.detail
-
-
-def test_check_octilinear_quiet_on_axis_diagonal_and_arcs():
-    """Axis runs, true diagonals (|dx| == |dy|) and fillet arcs are all
-    legal -- the rule grades LINE direction only."""
-    arc_track = {
-        "ctype": "track",
-        "layer": "F.Cu",
-        "net": "C",
-        "width_mm": 0.2,
-        "segments": [
-            {
-                "shape": "arc",
-                "start": [0.0, 0.0],
-                "end": [1.0, 1.0],
-                "center": [1.0, 0.0],
-                "cw": False,
-            }
-        ],
-    }
-    model = {
-        "layers": ["F.Cu"],
-        "copper": [
-            _track("A", "F.Cu", (0.0, 0.0), (5.0, 0.0)),
-            _track("A", "F.Cu", (5.0, 0.0), (8.0, 3.0)),
-            _track("B", "F.Cu", (0.0, 1.0), (0.0, 6.0)),
-            arc_track,
-        ],
-    }
-    assert drc.check_octilinear(model) == []
-
-
-def test_check_octilinear_tolerates_six_decimal_source_rounding():
-    """gr492988: a KiCad-imported 45-degree run (taz15-r2) has coordinates
-    rounded to 6 decimals and misses |dx| == |dy| by up to ~8e-5 mm; that
-    is a diagonal, while a 1.0e-4 mm miss is not."""
-    near = _track("A", "F.Cu", (33.098892, 12.878892), (36.505159, 16.285185))
-    off = _track("A", "F.Cu", (0.0, 0.0), (5.0, 5.0002))
-    assert drc.check_octilinear({"layers": ["F.Cu"], "copper": [near]}) == []
-    assert len(drc.check_octilinear({"layers": ["F.Cu"], "copper": [off]})) == 1
+    findings = drc.run_geometric_drc(model, capability=_CAP4)
+    assert not any(f.rule == "octilinear" for f in findings)
 
 
 def test_nets_routed_by_copper_counts_any_connected_copper():

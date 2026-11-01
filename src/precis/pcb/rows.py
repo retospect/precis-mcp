@@ -28,6 +28,10 @@ Contents, by seam:
   material), :func:`map_pad_numbers`
   (``_pcb_map_pad_number_pins``'s pad-number → pin-name rewrite), and
   :data:`NET_SPEC_FIELDS`.
+- **:func:`measure_row`** — a builder-shaped ``measures[]`` row
+  (``Board.near``/``apart``/``align``/``measure``) in the stored
+  ``pcb_measures`` shape, the one conversion ``_pcb_insert_measure`` and
+  the offline place paths share.
 """
 
 from __future__ import annotations
@@ -1140,3 +1144,178 @@ def map_pad_numbers(
         out.append({**k, "pin": target})
         mapped.append(f"{refdes}.{pin} -> {target}")
     return out, mapped
+
+
+# ── measure rows: the builder shape -> the stored shape ─────────────────
+
+#: The builder's measure verbs (``precis_geom.pcb`` ``Board.near`` /
+#: ``Board.apart``) -> the stored metric. The stored metric's natural sense
+#: (:func:`precis.pcb.eyes.measure_bound`) already reads the builder's
+#: ``bound`` right — a proximity goal is a ceiling ("within"), a separation
+#: goal a floor ("at least") — so the converted row carries no
+#: ``direction``.
+MEASURE_METRIC_ALIASES: dict[str, str] = {"near": "proximity", "apart": "separation"}
+
+#: The stored metrics a builder row may name (precis-measures-help's
+#: table): the four the placer and the eyes judge, then the connectivity
+#: metrics stored and reported ``pending`` until their evaluators land. The
+#: generator-declared invariant metrics are not here — a generator writes
+#: those rows itself, already in the stored shape.
+STORED_MEASURE_METRICS: tuple[str, ...] = (
+    "proximity",
+    "separation",
+    "align",
+    "height",
+    "parallelism",
+    "supply_path",
+    "topology",
+    "plane_continuity",
+    "thermal",
+)
+
+_MEASURE_STRENGTHS = ("hard", "soft", "gauge", "invariant")
+
+#: Keys only the builder writes (``align`` puts its axis top-level); any
+#: one of them marks a row for conversion.
+_BUILDER_MEASURE_KEYS = ("hard", "bound", "axis")
+
+#: What every measure refusal names: one measure in the stored shape, and
+#: the skill that documents the shape.
+_MEASURE_NEXT = (
+    "put(kind='pcb', id='<slug>', args={'measures': [{'metric': 'proximity', "
+    "'operands': [{'instance': 'C1'}, {'instance': 'U1'}], 'goal': 2.0, "
+    "'strength': 'soft'}]})",
+    "get(kind='skill', id='precis-measures-help')",
+)
+
+
+def _builder_shaped(m: dict[str, Any]) -> bool:
+    """A row in the builder's dialect: a builder-only key, a builder verb
+    as the metric, or a bare refdes string operand."""
+    if any(m.get(k) is not None for k in _BUILDER_MEASURE_KEYS):
+        return True
+    if str(m.get("metric") or "").strip().lower() in MEASURE_METRIC_ALIASES:
+        return True
+    ops = m.get("operands")
+    return isinstance(ops, list | tuple) and any(isinstance(o, str) for o in ops)
+
+
+def _measure_mm(value: Any, metric: str, key: str) -> float:
+    """A builder ``bound``/``goal`` as the stored goal: a finite number of
+    mm >= 0 — the readers drop anything else to ``pending``."""
+    if (
+        isinstance(value, bool)
+        or not isinstance(value, int | float)
+        or not math.isfinite(value)
+        or value < 0
+    ):
+        raise BadInput(
+            f"pcb measure {metric!r}: {key} must be a number of mm >= 0, got {value!r}",
+            next=_MEASURE_NEXT,
+        )
+    return float(value)
+
+
+def measure_row(m: dict[str, Any]) -> dict[str, Any]:
+    """One authored ``measures[]`` row in the stored ``pcb_measures``
+    shape — the only shape :func:`precis.pcb.optimize.resolve_measures`,
+    :func:`precis.pcb.eyes.evaluate_measures` and the ``measure`` check
+    read.
+
+    The builder (``precis_geom.pcb`` ``Board.near``/``apart``/``align``/
+    ``measure``) writes ``{metric, operands: [refdes], hard, weight,
+    bound?, goal?, axis?}``. Stored verbatim, that row read ``near | gauge
+    | pending``: it never steered placement and never failed a check. So
+    ``near`` -> ``proximity`` and ``apart`` -> ``separation``, ``bound``
+    -> ``goal`` (one limit: a ``goal`` that disagrees refuses); ``hard`` ->
+    strength ``hard``, else ``soft`` (a builder measure exists to steer —
+    never the gauge an absent strength stores as); a refdes string operand
+    -> ``{"instance": refdes}``; ``axis`` -> ``meta.axis``, where ``align``
+    reads it. A metric outside the vocabulary refuses rather than read
+    ``pending`` forever. A row with no builder marker returns unchanged."""
+    if not isinstance(m, dict):
+        raise BadInput(
+            f"pcb measure must be an object, got {type(m).__name__}",
+            next=_MEASURE_NEXT,
+        )
+    if not _builder_shaped(m):
+        return m
+    raw_metric = str(m.get("metric") or "").strip()
+    metric = MEASURE_METRIC_ALIASES.get(raw_metric.lower(), raw_metric.lower())
+    if metric not in STORED_MEASURE_METRICS:
+        raise BadInput(
+            f"pcb measure metric {raw_metric!r} is unknown — stored, it would "
+            "read pending forever, never steer placement and never fail a check",
+            options=[*MEASURE_METRIC_ALIASES, *STORED_MEASURE_METRICS],
+            next=_MEASURE_NEXT,
+        )
+    goal: float | None = None
+    for key in ("bound", "goal"):
+        if m.get(key) is None:
+            continue
+        mm = _measure_mm(m[key], metric, key)
+        if goal is not None and mm != goal:
+            raise BadInput(
+                f"pcb measure {metric!r}: bound {m['bound']!r} and goal "
+                f"{m['goal']!r} disagree — a stored measure holds one limit",
+                next=_MEASURE_NEXT,
+            )
+        goal = mm
+    hard = m.get("hard")
+    if hard is not None and not isinstance(hard, bool):
+        raise BadInput(
+            f"pcb measure {metric!r}: hard must be true or false, got {hard!r}",
+            options=["true", "false"],
+            next=_MEASURE_NEXT,
+        )
+    strength = str(m.get("strength") or "").strip().lower()
+    if strength and strength not in _MEASURE_STRENGTHS:
+        raise BadInput(
+            f"pcb measure {metric!r}: unknown strength {strength!r}",
+            options=list(_MEASURE_STRENGTHS),
+            next=_MEASURE_NEXT,
+        )
+    if strength and hard is not None and hard != (strength == "hard"):
+        raise BadInput(
+            f"pcb measure {metric!r}: hard={hard} contradicts strength {strength!r}",
+            next=_MEASURE_NEXT,
+        )
+    raw_ops = m.get("operands") or []
+    if not isinstance(raw_ops, list | tuple):
+        raise BadInput(
+            f"pcb measure {metric!r}: operands must be a list, got {raw_ops!r}",
+            next=_MEASURE_NEXT,
+        )
+    operands: list[dict[str, Any]] = []
+    for op in raw_ops:
+        if isinstance(op, dict):
+            operands.append(dict(op))
+        elif isinstance(op, str) and op.strip():
+            operands.append({"instance": op.strip()})
+        else:
+            raise BadInput(
+                f"pcb measure {metric!r}: operand {op!r} is neither a refdes "
+                "nor an operand object ({'instance': refdes}, {'role': name}, "
+                "{'point': [x, y]}, {'feature_id': n})",
+                next=_MEASURE_NEXT,
+            )
+    meta = dict(m.get("meta") or {})
+    axis = m.get("axis")
+    if axis is not None:
+        if meta.get("axis") is not None and meta["axis"] != axis:
+            raise BadInput(
+                f"pcb measure {metric!r}: axis {axis!r} contradicts meta.axis "
+                f"{meta['axis']!r}",
+                next=_MEASURE_NEXT,
+            )
+        meta["axis"] = axis
+    return {
+        "metric": metric,
+        "operands": operands,
+        "goal": goal,
+        "strength": strength or ("hard" if hard else "soft"),
+        "weight": m.get("weight"),
+        "direction": m.get("direction"),
+        "reason": m.get("reason"),
+        "meta": meta,
+    }

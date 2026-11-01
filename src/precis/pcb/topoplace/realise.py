@@ -35,6 +35,11 @@ mints no via; the plan records it on :attr:`RoutePlan.no_via` so the
 caller reports the net ``failed: no via site`` instead of committing
 keepout-breaking copper.
 
+Wires are any-angle with few segments (Reto 2026-11-01, superseding the
+2026-08-31 90/45 rule): :func:`_emit_shapes` pulls each piece's
+spoke-offset polyline taut against the copper it must clear, and the
+anti-short guard and :func:`realize_result` both read that one shape.
+
 ``net_rules`` keys net NAME → resolved :class:`~precis.pcb.rules.NetRules`
 (the caller resolves per-net width/clearance the same way
 ``build_region_graph``'s consumers do); ``None`` takes the 2b default
@@ -172,9 +177,6 @@ class RoutePlan:
     #: committed as shorting copper (gr524239). ``sketch_rows`` reports
     #: them ``failed: short-risk``. The plan's own ``pieces`` keep the
     #: withdrawn geometry for the record, exactly like ``crossings``.
-    #: Off-angle emit vetoes (``off_angle``) are ALSO folded in here, so
-    #: the route stage's failure count and shove loop see them without
-    #: a new field to read — ``off_angle`` carries the true reason.
     guarded: tuple[int, ...] = ()
     #: Nets whose emitted copper is not one connected piece joining all
     #: their pads — the emit-connectivity check (gr537831) withdraws
@@ -182,14 +184,6 @@ class RoutePlan:
     #: ``failed: unconnected``. A falsely realized broken net must never
     #: reach DRC.
     severed: tuple[int, ...] = ()
-    #: Nets whose octilinear redraw kept an authored leg no L-bend could
-    #: replace (gr543679): the emit 45° check in ``realize_result``
-    #: refuses the piece's track — never committed, since the DRC's
-    #: octilinear rule would only flag it AFTER commit. The net is
-    #: folded into ``guarded`` for the route stage's accounting; this
-    #: field names the real reason so ``sketch_rows`` reports
-    #: ``failed: non-octilinear`` instead of ``short-risk``.
-    off_angle: tuple[int, ...] = ()
     #: Nets withdrawn after the FIRST route pass (Reto 2026-10-31: SDA
     #: carried 16 segments around GND's taut polyline — and GND was
     #: never committed). A withdrawn net must not shape its neighbours:
@@ -1725,8 +1719,8 @@ _RELAX_FREE_VERTEX_CAP = 60
 _RELAX_MAXFEV_PER_COORD = 200
 _RELAX_MAXFEV_ABS = 20000
 #: The relax aims a hair ABOVE each hinge's strict bound — the emit
-#: guard measures a strict ``<``, and fp noise plus the octilinear
-#: redraw can dip a boundary-exact solve inside it (gr537726: the
+#: guard measures a strict ``<``, and fp noise can dip a
+#: boundary-exact solve inside it (gr537726: the
 #: 3-pair slit relaxed to 0.2998/0.2248 against 0.3/0.225 and was
 #: withdrawn whole).
 _RELAX_SLACK_MM = 0.005
@@ -2427,8 +2421,8 @@ def _spoke_offsets(
         obstacles.extend(
             (zp, req) for zp, z in zone_polys if not (z.net and z.net == own_name)
         )
-        # the chord's L corner must stay on the board (RF_FEED on
-        # taz-leaf-local-64 cornered 3 mm² outside the leaf outline)
+        # the chord must stay on the board (RF_FEED on taz-leaf-local-64
+        # cornered 3 mm² outside the leaf outline)
         inside = (
             Polygon(np.asarray(d.outline, dtype=float)).buffer(-req)
             if len(d.outline) >= 3
@@ -2460,15 +2454,15 @@ def _spoke_offsets(
             b: tuple[float, float],
             _line_ok: Callable[[LineString], bool] = _line_ok,
         ) -> list[tuple[float, float]] | None:
-            """The points that replace the run a..b, or None. The chord
-            must clear — and so must the shape the octilinear redraw
-            will turn it into: an off-angle chord becomes an L whose
-            corner can bulge past the pair gap (measured on the
-            shared-gap squeeze: legal chords turned into short-risk
-            withdrawals — the reason this pass once skipped every
-            branch with a peer within 2 mm, which on a board of 0402s
-            is every branch, so S2_DRV kept its 5 segments). The vetted
-            corner is spliced in here, so the redraw keeps it verbatim."""
+            """The points that replace the run a..b, or None: the chord
+            when it is axis-aligned or 45° and clears, else the first
+            clear L. An arbitrary-angle chord is left to the emit pass
+            (:func:`_emit_shapes`), which pulls the FINAL shapes taut
+            against each other — taken here, before the shared-gap
+            unwind and the relax, a long diagonal chord changes how the
+            wires enter a gap and the later passes cannot space them
+            (measured: the 3-wire slit fixture went from clean to two
+            0.05 mm track-to-track approaches)."""
             if not _line_ok(LineString([a, b])):
                 return None
             dx, dy = b[0] - a[0], b[1] - a[1]
@@ -2483,8 +2477,7 @@ def _spoke_offsets(
         # L corner becomes the next scan origin (its second leg may run
         # on to a later vertex — the U around a part's other pad is 3
         # legs, not 4). A lone off-angle leg (j == i+1) is L'd here too
-        # when its corner clears, so the collinear merge below can see
-        # it; the redraw would draw the same L unvetted otherwise.
+        # when its corner clears, so the collinear merge below can see it.
         work: list[tuple[float, float]] = list(pts)
         i = 0
         while i < len(work) - 1:
@@ -3276,119 +3269,11 @@ def plan_route(
     )
 
 
-def _octilinear(
-    points: tuple[tuple[float, float], ...],
-    clear: (
-        Callable[[tuple[float, float], tuple[float, float], tuple[float, float]], bool]
-        | None
-    ) = None,
-    jog: (
-        Callable[
-            [tuple[float, float], tuple[float, float]],
-            tuple[tuple[float, float], tuple[float, float]] | None,
-        ]
-        | None
-    ) = None,
-) -> tuple[tuple[float, float], ...]:
-    """The piece's taut path re-drawn in multiples of 45° — the DRC's
-    rectilinear rule admits no other angle (``every drawn wire must be
-    a multiple of 45deg``). Each off-angle leg becomes an L bend;
-    ``clear`` (gr520900) is called as ``clear(p, c, q)`` and vetoes an
-    L bend whose legs touch copper they must avoid — the
-    horizontal-first corner is preferred, the vertical-first corner is
-    taken when the first's legs are blocked, and when NEITHER clears
-    the new ``jog(p, q)`` (the S-detour fallback) gets a chance to
-    route around both blockers with an axis-aligned jog pair before
-    the leg keeps its authored line — a kept authored leg is the one
-    shape that can leave this redraw off-angle, and the emit 45° check
-    in ``realize_result`` then refuses the piece's track (gr543679)."""
-    out: list[tuple[float, float]] = [(float(points[0][0]), float(points[0][1]))]
-    for p, q in itertools.pairwise(points):
-        dx, dy = q[0] - p[0], q[1] - p[1]
-        if dx == 0 or dy == 0 or abs(abs(dx) - abs(dy)) <= 1e-9:
-            out.append((float(q[0]), float(q[1])))
-            continue
-        c1 = (float(q[0]), float(p[1]))
-        c2 = (float(p[0]), float(q[1]))
-        qq = (float(q[0]), float(q[1]))
-        pp = (float(p[0]), float(p[1]))
-        if clear is None or clear(pp, c1, qq):
-            out.extend((c1, qq))
-        elif clear(pp, c2, qq):
-            out.extend((c2, qq))
-        else:
-            js = jog(pp, qq) if jog is not None else None
-            if js is not None:
-                out.extend((js[0], js[1], qq))
-            else:
-                out.append(qq)
-    return tuple(out)
-
-
-def _axis_jog(
-    p: tuple[float, float],
-    q: tuple[float, float],
-    path_clear: Callable[[LineString], bool],
-    blocks: Iterable[Polygon],
-) -> tuple[tuple[float, float], tuple[float, float]] | None:
-    """The S/Z fallback for an octilinear leg whose BOTH L corners are
-    vetoed: jog horizontally (``p → (p.x, y_j) → (q.x, y_j) → q``) or
-    vertically at a candidate coordinate, first candidate whose full
-    4-point path clears wins. Candidates are harvested from the
-    blocking polygons' bbox edges inside the leg's span — the obstacles
-    that vetoed the L's leave their footprints there — plus the span
-    midpoint, preferred nearest the middle. Axis jogs keep the redraw
-    on the 45° grid. Returns None when no jog clears (the caller keeps
-    the authored leg and the emit guard judges)."""
-    px, py = float(p[0]), float(p[1])
-    qx, qy = float(q[0]), float(q[1])
-    if abs(px - qx) <= 1e-9 or abs(py - qy) <= 1e-9:
-        return None
-    xs_lo, xs_hi = min(px, qx), max(px, qx)
-    ys_lo, ys_hi = min(py, qy), max(py, qy)
-    mid_y = ys_lo + (ys_hi - ys_lo) / 2.0
-    mid_x = xs_lo + (xs_hi - xs_lo) / 2.0
-    y_cands = {mid_y}
-    x_cands = {mid_x}
-    for b_ in blocks:
-        bx0, by0, bx1, by1 = b_.bounds
-        if bx0 <= xs_hi and bx1 >= xs_lo:
-            y_cands.add(float(by0))
-            y_cands.add(float(by1))
-        if by0 <= ys_hi and by1 >= ys_lo:
-            x_cands.add(float(bx0))
-            x_cands.add(float(bx1))
-    for yj in sorted(y_cands, key=lambda y: (abs(y - mid_y), y)):
-        if abs(yj - py) <= 1e-9 or abs(yj - qy) <= 1e-9:
-            continue
-        j1, j2 = (px, yj), (qx, yj)
-        if path_clear(LineString([p, j1, j2, q])):
-            return (j1, j2)
-    for xj in sorted(x_cands, key=lambda x: (abs(x - mid_x), x)):
-        if abs(xj - px) <= 1e-9 or abs(xj - qx) <= 1e-9:
-            continue
-        j1, j2 = (xj, py), (xj, qy)
-        if path_clear(LineString([p, j1, j2, q])):
-            return (j1, j2)
-    return None
-
-
-#: Emit-side vertex dedupe reach (gr543719): the octilinear corner pass
-#: and the piece-split projections can mint near-zero-length stubs
-#: (stored copper carried 0.01 mm segments on taz-leaf-i). Vertices
-#: closer than this to their predecessor coalesce before segments are
-#: built. A vertex whose removal would break the 45° discipline of the
-#: merged segment is KEPT — coalescing may shrink geometry by the
-#: epsilon, never redraw it off-angle.
+#: Emit-side vertex dedupe reach (gr543719): the spoke offsets and the
+#: piece-split projections can mint near-zero-length stubs (stored
+#: copper carried 0.01 mm segments on taz-leaf-i). Vertices closer than
+#: this to their predecessor coalesce before segments are built.
 _COALESCE_EPS_MM = 1e-3
-
-
-def _seg_off_45(p: tuple[float, float], q: tuple[float, float]) -> bool:
-    """Whether segment ``p→q`` is neither axis-aligned nor a true 45°
-    diagonal — the emit check's strict verdict (fp-exact: the redraw
-    just constructed these points, so no import-rounding tolerance)."""
-    dx, dy = q[0] - p[0], q[1] - p[1]
-    return not (dx == 0 or dy == 0 or abs(abs(dx) - abs(dy)) <= 1e-9)
 
 
 def _coalesce_micro(
@@ -3396,90 +3281,240 @@ def _coalesce_micro(
 ) -> tuple[tuple[float, float], ...]:
     """Drop interior vertices closer than ``_COALESCE_EPS_MM`` to the
     last kept vertex (gr543719), keep-first. The endpoints stay verbatim
-    — they are pad joins. A micro-vertex is dropped only when the merged
-    segment stays axis-aligned or 45°: a corner absorbed against the
-    rule would turn one legal sliver into one illegal leg."""
+    — they are pad and via joins."""
     if len(pts) < 3:
-        return pts
+        return tuple((float(x), float(y)) for x, y in pts)
     out: list[tuple[float, float]] = [(float(pts[0][0]), float(pts[0][1]))]
-    for i in range(1, len(pts) - 1):
-        v = (float(pts[i][0]), float(pts[i][1]))
-        if math.dist(out[-1], v) < _COALESCE_EPS_MM and not _seg_off_45(
-            out[-1], pts[i + 1]
-        ):
-            continue
-        out.append(v)
-    out.append((float(pts[-1][0]), float(pts[-1][1])))
+    for x, y in pts[1:-1]:
+        v = (float(x), float(y))
+        if math.dist(out[-1], v) >= _COALESCE_EPS_MM:
+            out.append(v)
+    end = (float(pts[-1][0]), float(pts[-1][1]))
+    if len(out) > 1 and math.dist(out[-1], end) < _COALESCE_EPS_MM:
+        out[-1] = end
+    else:
+        out.append(end)
     return tuple(out)
 
 
-#: The simplification pass's reach (gr543905): a window of at most this
-#: many legs is re-drawn as one or two octilinear legs. Bounded so the
-#: pass stays a handful of clearance probes per vertex on a busy board.
-_SIMPLIFY_SPAN = 4
-#: OFF (2026-10-31, measured at the taz-leaf-local-66 pose): with the
-#: pass on, SDA and SCL — 2 and 3 legs — are withdrawn by the emit guard
-#: and the route lands 9 nets; off, 11 (and 17 with the re-route rounds).
-#: The simplified shape the guard judges and the one realize emits are
-#: built from different ``others`` sets, so a re-draw the guard accepts
-#: is not the one committed. Re-enable once the two agree (gr543905).
-_SIMPLIFY_ENABLED = True
-
-
-def _octi_links(
-    p: tuple[float, float], q: tuple[float, float]
-) -> list[tuple[tuple[float, float], ...]]:
-    """The interior vertices of every ≤2-leg octilinear path ``p → q``,
-    fewest legs first: the straight leg when ``p→q`` is already on the
-    45° grid, else the two axis L corners and the two 45°+axis corners
-    (diagonal first, axis first). Corners take the target's coordinate
-    verbatim, so each leg is exact-axis or exact-45° up to fp."""
-    if not _seg_off_45(p, q):
-        return [()]
-    dx, dy = q[0] - p[0], q[1] - p[1]
-    sx, sy = math.copysign(1.0, dx), math.copysign(1.0, dy)
-    m = min(abs(dx), abs(dy))
-    out: list[tuple[tuple[float, float], ...]] = [((q[0], p[1]),), ((p[0], q[1]),)]
-    if abs(dx) >= abs(dy):
-        out += [((p[0] + sx * m, q[1]),), ((q[0] - sx * m, p[1]),)]
-    else:
-        out += [((q[0], p[1] + sy * m),), ((p[0], q[1] - sy * m),)]
-    return out
-
-
-def _simplify_octilinear(
+def _pull_taut(
     pts: tuple[tuple[float, float], ...],
-    path_clear: Callable[[LineString], bool],
+    clear: Callable[[LineString], bool],
 ) -> tuple[tuple[float, float], ...]:
-    """The post-octilinear simplification pass (gr543905): retry the
-    corner choice with fewer bends. Each window of 2..``_SIMPLIFY_SPAN``
-    legs (widest first) is re-drawn as the straight leg or one
-    octilinear corner (:func:`_octi_links`) with the rest of the path
-    held; the re-draw is kept only when ``path_clear`` — the SAME
-    predicate the corner choice used — passes for the new legs and the
-    leg count drops. A dip around a blocker survives because every
-    shorter re-draw fails that predicate. Endpoints (pad joins) never
-    move; every accept removes a vertex, so the loop terminates."""
-    out = list(pts)
-    if not _SIMPLIFY_ENABLED:
-        return tuple(out)
-    while True:
-        hit = next(
-            (
-                (i, j, link)
-                for i in range(len(out) - 2)
-                for j in range(min(len(out) - 1, i + _SIMPLIFY_SPAN), i + 1, -1)
-                if math.dist(out[i], out[j]) >= _COALESCE_EPS_MM
-                for link in _octi_links(out[i], out[j])
-                if len(link) + 1 < j - i
-                and path_clear(LineString([out[i], *link, out[j]]))
-            ),
-            None,
+    """The fewest-segment form of a piece's polyline (Reto 2026-11-01:
+    any angle, few segments): from each kept vertex, jump to the
+    FARTHEST later vertex whose straight segment ``clear`` accepts. A
+    vertex no shortcut can skip stays, and the original legs are kept
+    as they are. Endpoints never move."""
+    if len(pts) < 3:
+        return pts
+    out = [pts[0]]
+    i, n = 0, len(pts)
+    while i < n - 1:
+        j = n - 1
+        while j > i + 1 and not clear(LineString([pts[i], pts[j]])):
+            j -= 1
+        out.append(pts[j])
+        i = j
+    return tuple(out)
+
+
+#: Kink offsets tried off a blocked leg's midpoint, perpendicular to it,
+#: each side, nearest first (mm). Small on purpose: a kink repairs a
+#: graze, it does not re-route — the axis-corner and 0.8/1.2 mm
+#: candidates found "clear" board-wide detours whose copper, frozen for
+#: the re-route rounds, walled the remaining nets off (sanity 7/20
+#: routed with them, 18/20 without; taz-leaf-local-66 11/31 either way).
+_KINK_OFFSETS_MM = (0.1, 0.2, 0.3, 0.5)
+
+
+def _kink(
+    p: tuple[float, float],
+    q: tuple[float, float],
+    clear: Callable[[LineString], bool],
+) -> tuple[float, float] | None:
+    """One kink point ``c`` such that ``p → c → q`` clears, or None — the
+    repair for a leg that grazes copper (Reto 2026-11-01: "kink the
+    wires … after topo router is done"). Tries points off the leg's
+    midpoint, perpendicular, nearest first."""
+    length = math.dist(p, q)
+    if length < _COALESCE_EPS_MM:
+        return None
+    nx, ny = -(q[1] - p[1]) / length, (q[0] - p[0]) / length
+    mx, my = (p[0] + q[0]) / 2.0, (p[1] + q[1]) / 2.0
+    cands = [
+        (mx + s * nx * k, my + s * ny * k)
+        for k in _KINK_OFFSETS_MM
+        for s in (1.0, -1.0)
+    ]
+    return next((c for c in cands if clear(LineString([p, c, q]))), None)
+
+
+def _emit_shapes(
+    plan: RoutePlan,
+    d: TopoDesign,
+    ir: Any,
+    n_layers: int,
+    pose: np.ndarray,
+    net_rules: Mapping[str, NetRules] | None,
+    *,
+    skip: Container[int] = (),
+) -> RoutePlan:
+    """The plan with every piece drawn as the copper it will commit
+    (Reto 2026-11-01): any angle, few segments. Each piece's spoke-offset
+    polyline is coalesced, a leg that grazes copper gets one kink
+    (:func:`_kink`), and the result is pulled taut (:func:`_pull_taut`)
+    against what it must clear — foreign pads (the DRC's pad set,
+    :func:`_pad_polys`), keepout zones and other nets' frozen copper, the
+    board-edge band, foreign vias, and the CURRENT shape of every other
+    piece on its layer. Pieces are drawn in order, each against its
+    neighbours' latest shapes, so every accepted shortcut was checked
+    against the final shape of every piece drawn before it and constrains
+    every piece drawn after it. The anti-short guard and
+    :func:`realize_result` both read these points, so the copper judged
+    is the copper written. Pieces of a branch in ``skip`` (an unresolved
+    crossing, never emitted) keep their shape and constrain nothing."""
+    from shapely import STRtree
+    from shapely.geometry import box
+
+    from precis.pcb.topoplace.proxy import zone_world_ring
+
+    rules = net_rules or {}
+
+    def nm(k: int) -> str:
+        return str(d.net_name[k]) if 0 <= k < len(d.net_name) else str(k)
+
+    def nrules(name: str) -> NetRules:
+        return rules.get(name, _DEFAULT)
+
+    # static obstacles per layer: (geometry, net name or "" = foreign to
+    # every net, radius off the geometry, own clearance or None = the
+    # piece's clearance)
+    static: list[list[tuple[Any, str, float, float | None]]] = [
+        [] for _ in range(n_layers)
+    ]
+    for lay, pads in _pad_polys(d, ir, n_layers, pose).items():
+        for pname, poly, _pin in pads:
+            static[lay].append(
+                (poly, pname, 0.0, float(nrules(pname).clearance_mm) if pname else None)
+            )
+    for z in d.zones:
+        if z.kind == "label_keepout":
+            continue  # silk over traces: via-only (the mesh skips it too)
+        ring = zone_world_ring(d, z, pose)
+        if len(ring) < 3:
+            continue
+        zp = Polygon(np.asarray(ring))
+        for lay in z.layers or range(n_layers):
+            if 0 <= int(lay) < n_layers:
+                static[int(lay)].append((zp, str(z.net or ""), 0.0, None))
+    s_min = min(
+        (float(r.clearance_mm) for r in rules.values()),
+        default=float(_DEFAULT.clearance_mm),
+    )
+    edge = _edge_zone(d, s_min)
+    outside: Any = edge[0] if edge is not None else None
+    if outside is None and len(d.outline) >= 3:
+        board = Polygon(np.asarray(d.outline, dtype=float))
+        x0, y0, x1, y1 = board.bounds
+        outside = box(x0 - 5.0, y0 - 5.0, x1 + 5.0, y1 + 5.0).difference(board)
+    if outside is not None and not outside.is_empty:
+        for lay in range(n_layers):
+            static[lay].append((outside, "", 0.0, None))
+    for v in plan.vias:
+        if v.branch in skip:
+            continue
+        nrv = nrules(nm(v.net))
+        rad = float(v.dia_mm or nrv.via_dia_mm or _VIA_DIA_MM) / 2.0
+        for lay in range(n_layers):
+            static[lay].append(
+                (Point(v.x, v.y), nm(v.net), rad, float(nrv.clearance_mm))
+            )
+    trees = [STRtree([o[0] for o in obs]) if obs else None for obs in static]
+    reach = (
+        max(
+            (float(r.track_width_mm) for r in rules.values()),
+            default=float(_DEFAULT.track_width_mm),
         )
-        if hit is None:
-            return tuple(out)
-        i, j, link = hit
-        out[i + 1 : j] = list(link)
+        + max(s_min, max((float(r.clearance_mm) for r in rules.values()), default=0.0))
+        + max(
+            (float(r.via_dia_mm or _VIA_DIA_MM) for r in rules.values()),
+            default=_VIA_DIA_MM,
+        )
+    )
+
+    pieces = list(plan.pieces)
+    live = [i for i, pc in enumerate(pieces) if pc.branch not in skip]
+    lines = {
+        i: LineString([(float(x), float(y)) for x, y in pieces[i].points]) for i in live
+    }
+    by_layer: dict[int, list[int]] = {}
+    for i in live:
+        by_layer.setdefault(pieces[i].layer, []).append(i)
+
+    for i in live:
+        pc = pieces[i]
+        own = nm(pc.net)
+        nri = nrules(own)
+        wi, ci = float(nri.track_width_mm), float(nri.clearance_mm)
+        lay = int(pc.layer)
+        tree = trees[lay] if 0 <= lay < len(trees) else None
+        obs = static[lay] if 0 <= lay < len(static) else []
+        peers = [j for j in by_layer.get(lay, []) if pieces[j].net != pc.net]
+
+        def clear(
+            seg: LineString,
+            *,
+            own: str = own,
+            wi: float = wi,
+            ci: float = ci,
+            tree: Any = tree,
+            obs: list[tuple[Any, str, float, float | None]] = obs,
+            peers: list[int] = peers,
+            i: int = i,
+        ) -> bool:
+            x0, y0, x1, y1 = seg.bounds
+            if tree is not None:
+                for k in tree.query(
+                    box(x0 - reach, y0 - reach, x1 + reach, y1 + reach)
+                ):
+                    geom, oname, rad, oclr = obs[int(k)]
+                    if oname and oname == own:
+                        continue
+                    need = wi / 2.0 + rad + (ci if oclr is None else max(ci, oclr))
+                    if geom.distance(seg) < need - 1e-9:
+                        return False
+            for j in peers:
+                if j == i:
+                    continue
+                bx0, by0, bx1, by1 = lines[j].bounds
+                if (
+                    bx0 > x1 + reach
+                    or bx1 < x0 - reach
+                    or by0 > y1 + reach
+                    or by1 < y0 - reach
+                ):
+                    continue
+                nrj = nrules(nm(pieces[j].net))
+                need = (wi + float(nrj.track_width_mm)) / 2.0 + max(
+                    ci, float(nrj.clearance_mm)
+                )
+                if lines[j].distance(seg) < need - 1e-9:
+                    return False
+            return True
+
+        pts = _coalesce_micro(pc.points)
+        kinked = [pts[0]]
+        for a, b in itertools.pairwise(pts):
+            if not clear(LineString([a, b])):
+                c = _kink(a, b, clear)
+                if c is not None:
+                    kinked.append(c)
+            kinked.append(b)
+        shaped = _pull_taut(tuple(kinked), clear)
+        pieces[i] = dataclasses.replace(pc, points=shaped)
+        lines[i] = LineString(shaped)
+    return dataclasses.replace(plan, pieces=tuple(pieces))
 
 
 def realize_result(
@@ -3489,28 +3524,14 @@ def realize_result(
     n_layers: int,
     *,
     net_rules: Mapping[str, NetRules] | None = None,
-    pose: Any = None,
-    off_angle: list[int] | None = None,
 ) -> Any:
     """The plan as a :class:`precis.pcb.realize.RealizeResult` — the one
     shape the store path, ``result_copper_rows`` and the DRC gate all
-    read. ``ir`` maps the design's ``net_name`` back to ir net ids.
-    ``pose`` (gr520900) enables the pad-aware octilinear corner choice —
-    a corner only lands where it clears foreign copper; absent, the
-    legacy horizontal-first redraw runs (synthetic callers without a
-    placed pose). With a pose the redraw is then simplified
-    (:func:`_simplify_octilinear`, gr543905): windows of legs re-drawn
-    with fewer bends under the same clearance predicate — the anti-short
-    guard checks that same simplified shape.
-
-    Two emit-stage geometry vetoes run on the redrawn points (gr543679,
-    gr543719): micro-vertices coalesce (``_coalesce_micro``), and a
-    piece whose redraw still carries an off-angle segment — a kept
-    authored leg no L-bend cleared — has its track REFUSED, never
-    committed for the DRC's octilinear rule to flag after the fact. The
-    piece's net is appended to ``off_angle`` (an out-list the caller
-    turns into the plan's withdrawal record); the rest of the net's
-    pieces still emit, like ``severed``'s per-component withdrawal."""
+    read. ``ir`` maps the design's ``net_name`` back to ir net ids. Each
+    piece's points are written as drawn, at any angle (Reto 2026-11-01),
+    with micro-vertices coalesced (``_coalesce_micro``, gr543719). The
+    route stage shapes the pieces first (:func:`_emit_shapes`), so the
+    copper the anti-short guard judged is the copper written here."""
     from precis.pcb.realize import (
         RealizedTrack,
         RealizedVia,
@@ -3522,96 +3543,14 @@ def realize_result(
     tracks: list[RealizedTrack] = []
     vias: list[RealizedVia] = []
     rules = net_rules or {}
-    pad_polys = (
-        _pad_polys(d, ir, n_layers, np.asarray(pose)) if pose is not None else None
-    )
-    # zone keepouts as world-frame polygons — the octilinear redraw's
-    # clearance candidates (its L corners were pad-only: an L could be
-    # drawn clean of every pad yet straight through a keepout). layer
-    # filtering happens per piece; label_keepout is VIA-only (silk over
-    # traces) and never blocks copper.
-    zone_polys: list[tuple[Polygon, Any]] = []
-    if pad_polys is not None:
-        from precis.pcb.topoplace.proxy import zone_world_ring
-
-        pose_a = np.asarray(pose)
-        for z in d.zones:
-            if z.kind == "label_keepout":
-                continue
-            ring = zone_world_ring(d, z, pose_a)
-            if len(ring) >= 3:
-                zone_polys.append((Polygon(np.asarray(ring)), z))
-        edge_zone = _edge_zone(
-            d,
-            min(
-                (float(r.clearance_mm) for r in rules.values()),
-                default=float(_DEFAULT.clearance_mm),
-            ),
-        )
-        if edge_zone is not None:
-            zone_polys.append(edge_zone)
 
     def nm(k: int) -> str:
         return str(d.net_name[k]) if 0 <= k < len(d.net_name) else str(k)
 
-    taut = {
-        i: LineString([(float(x), float(y)) for x, y in pc.points])
-        for i, pc in enumerate(plan.pieces)
-    }
-    for pi_, p in enumerate(plan.pieces):
+    for p in plan.pieces:
         name = nm(p.net)
         nr = rules.get(name, _DEFAULT)
-        others = [
-            (
-                taut[j],
-                float(rules.get(nm(oc.net), _DEFAULT).track_width_mm),
-                float(rules.get(nm(oc.net), _DEFAULT).clearance_mm),
-            )
-            for j, oc in enumerate(plan.pieces)
-            if j != pi_ and oc.layer == p.layer
-        ]
-        piece_zones = [
-            (zp, z.net)
-            for zp, z in zone_polys
-            if (not z.layers or p.layer in z.layers) and (not z.net or z.net != name)
-        ]
-        corner_clear, path_clear = _piece_clear_ctx(
-            p,
-            pad_polys if pad_polys is not None else {},
-            nm,
-            lambda n: rules.get(n, _DEFAULT),
-            others,
-            zones=piece_zones,
-        )
-        if pad_polys is None:
-            pts = _octilinear(p.points)
-        else:
-            blocks: list[Polygon] = [
-                poly
-                for pname, poly, _pin in pad_polys.get(p.layer, [])
-                if not pname or pname != name
-            ]
-            blocks.extend(zp for zp, _znet in piece_zones)
-
-            def _jog(
-                pp: tuple[float, float],
-                qq: tuple[float, float],
-                _pc: Callable[[LineString], bool] = path_clear,
-                _bl: list[Polygon] = blocks,
-            ) -> tuple[tuple[float, float], tuple[float, float]] | None:
-                return _axis_jog(pp, qq, _pc, _bl)
-
-            pts = _octilinear(p.points, corner_clear, _jog)
-        pts = _coalesce_micro(pts)
-        if pad_polys is not None:
-            pts = _simplify_octilinear(pts, path_clear)
-        if any(_seg_off_45(a, b) for a, b in itertools.pairwise(pts)):
-            # gr543679: a kept authored leg survived the redraw — refuse
-            # the piece's track rather than commit copper the DRC's
-            # octilinear rule would flag after the fact.
-            if off_angle is not None and p.net not in off_angle:
-                off_angle.append(p.net)
-            continue
+        pts = _coalesce_micro(p.points)
         segs = tuple(
             {
                 "shape": "line",
@@ -3766,69 +3705,6 @@ def _pad_polys(
     return pad_polys
 
 
-def _piece_clear_ctx(
-    piece: RoutePiece,
-    pad_polys: dict[int, list[tuple[str, Polygon, int]]],
-    nm: Callable[[int], str],
-    nrules: Callable[[str], NetRules],
-    others: Iterable[tuple[LineString, float, float]] = (),
-    zones: Iterable[tuple[Polygon, str]] = (),
-) -> tuple[
-    Callable[[tuple[float, float], tuple[float, float], tuple[float, float]], bool],
-    Callable[[LineString], bool],
-]:
-    """The octilinear redraw's clearance tests for one piece (gr520900),
-    now over ALL blocking geometry: foreign pads on its layer
-    (:func:`_pad_polys`), zone keepouts blocking its layer (same-net
-    fixed-copper zones a wire may pass, ``TopoZone.net``, stay clear),
-    and the pairwise spacing off every other piece's spoke path on the
-    same layer. Zone blindness was the S-detour defect: the redraw
-    chose an L corner inside a keepout stub because only pads could
-    veto it. Returns ``(corner_clear, path_clear)`` — the 3-arg L-bend
-    verdict, and the underlying arbitrary-path verdict the S/Z jog
-    search composes 4-point candidates against. A candidate clears
-    when BOTH legs keep the track's half-width plus clearance off
-    every blocker — a clear corner point is not enough, the stub leg
-    from the corner onward can still graze, and a redrawn path across
-    a neighbour's channel crosses it even though the taut paths never
-    did."""
-    nr = nrules(nm(piece.net))
-    wi, ci = float(nr.track_width_mm), float(nr.clearance_mm)
-    own = nm(piece.net)
-
-    def path_clear(path: LineString) -> bool:
-        for pname, poly, _pin in pad_polys.get(piece.layer, []):
-            if pname and pname == own:
-                continue
-            cp = float(nrules(pname).clearance_mm) if pname else ci
-            if poly.distance(path) < wi / 2.0 + max(ci, cp) - 1e-9:
-                return False
-        for zp, znet in zones:
-            if znet and znet == own:
-                continue
-            if zp.distance(path) < wi / 2.0 + ci - 1e-9:
-                return False
-        for oline, wo, co in others:
-            if path.distance(oline) < (wi + wo) / 2.0 + max(ci, co) - 1e-9:
-                return False
-        return True
-
-    def clear(
-        p: tuple[float, float], c: tuple[float, float], q: tuple[float, float]
-    ) -> bool:
-        return path_clear(
-            LineString(
-                [
-                    (float(p[0]), float(p[1])),
-                    (float(c[0]), float(c[1])),
-                    (float(q[0]), float(q[1])),
-                ]
-            )
-        )
-
-    return clear, path_clear
-
-
 def _guarded_nets(
     emit: RoutePlan,
     d: TopoDesign,
@@ -3881,25 +3757,12 @@ def _guarded_branches(
         return rules.get(name, _DEFAULT)
 
     pad_polys = _pad_polys(d, ir, n_layers, pose)
-    taut = {
+    # the emitted copper itself: the route stage drew the pieces
+    # (_emit_shapes) before this guard runs, so judged == written
+    lines = {
         i: LineString([(float(x), float(y)) for x, y in pc.points])
         for i, pc in enumerate(emit.pieces)
     }
-    lines = {}
-    for i, pc in enumerate(emit.pieces):
-        others = [
-            (
-                taut[j],
-                float(nrules(nm(oc.net)).track_width_mm),
-                float(nrules(nm(oc.net)).clearance_mm),
-            )
-            for j, oc in enumerate(emit.pieces)
-            if j != i and oc.layer == pc.layer
-        ]
-        corner_clear, path_clear = _piece_clear_ctx(pc, pad_polys, nm, nrules, others)
-        lines[i] = LineString(
-            _simplify_octilinear(_octilinear(pc.points, corner_clear), path_clear)
-        )
     by_layer: dict[int, list[int]] = {}
     for i, pc in enumerate(emit.pieces):
         by_layer.setdefault(pc.layer, []).append(i)
@@ -3918,12 +3781,25 @@ def _guarded_branches(
     from precis.pcb.topoplace.proxy import zone_world_ring
 
     frozen: list[tuple[Polygon, tuple[int, ...], str]] = []
+    keepouts: list[tuple[Polygon, tuple[int, ...], str]] = []
     for z in d.zones:
-        if z.kind != "fixed_copper":
-            continue
+        if z.kind == "label_keepout":
+            continue  # silk over traces: via-only
         ring = zone_world_ring(d, z, pose)
         if len(ring) >= 3:
-            frozen.append((Polygon(np.asarray(ring)), tuple(z.layers), str(z.net)))
+            (frozen if z.kind == "fixed_copper" else keepouts).append(
+                (Polygon(np.asarray(ring)), tuple(z.layers), str(z.net or ""))
+            )
+    # copper inside a keepout is a DRC error (keepout_copper) — the
+    # taut legs of a part placed off the outline crossed one
+    for i, pc in enumerate(emit.pieces):
+        half = float(nrules(nm(pc.net)).track_width_mm) / 2.0
+        for zp, zl, zn in keepouts:
+            if (zn and zn == nm(pc.net)) or (zl and pc.layer not in zl):
+                continue
+            if lines[i].distance(zp) < half:
+                mark(pc.net, pc.branch)
+                break
     if frozen:
         for i, pc in enumerate(emit.pieces):
             nri = nrules(nm(pc.net))
@@ -4383,7 +4259,6 @@ def _merge_pass(
         no_via=tuple(base.no_via) + tuple(b + n0 for b in extra.no_via),
         guarded=tuple(sorted(set(base.guarded) | (set(extra.guarded) & nets))),
         severed=tuple(sorted(set(base.severed) | (set(extra.severed) & nets))),
-        off_angle=tuple(sorted(set(base.off_angle) | (set(extra.off_angle) & nets))),
     )
     rres = dataclasses.replace(
         base_r,
@@ -4523,9 +4398,15 @@ def _route_pass(
             f"{len(plan.vias)} via(s), {len(plan.crossings)} unresolved "
             f"crossing(s), {len(plan.unreachable)} unreachable"
         )
+    # Any angle, few segments (Reto 2026-11-01): every emitted piece is
+    # drawn once, here, as the copper it will commit — the guard below
+    # and realize_result read the same points.
+    bad = {b for pair in plan.crossings for b in pair}
+    plan = _emit_shapes(
+        plan, d, ir, ir.n_layers, np.asarray(mesh_pose), net_rules, skip=bad
+    )
     emit = plan
-    if plan.crossings:
-        bad = {b for pair in plan.crossings for b in pair}
+    if bad:
         emit = dataclasses.replace(
             plan,
             pieces=tuple(p for p in plan.pieces if p.branch not in bad),
@@ -4573,32 +4454,7 @@ def _route_pass(
         plan = dataclasses.replace(plan, severed=tuple(sorted(severed)))
         if event is not None:
             event(f"route: severed — {len(severed)} net(s) trimmed (unconnected emit)")
-    off_angle: list[int] = []
-    rres = realize_result(
-        emit,
-        d,
-        ir,
-        ir.n_layers,
-        net_rules=net_rules,
-        pose=mesh_pose,
-        off_angle=off_angle,
-    )
-    if off_angle:
-        # gr543679: the emit 45° check refused pieces whose redraw kept
-        # an off-angle authored leg. Fold the nets into ``guarded`` so
-        # the caller's failure count and shove loop see them through the
-        # existing channel; ``off_angle`` names the real reason for
-        # ``sketch_rows``.
-        plan = dataclasses.replace(
-            plan,
-            guarded=tuple(sorted({*plan.guarded, *off_angle})),
-            off_angle=tuple(sorted(set(off_angle))),
-        )
-        if event is not None:
-            event(
-                f"route: emit guard — {len(set(off_angle))} net(s) "
-                "withdrawn (non-45° leg kept)"
-            )
+    rres = realize_result(emit, d, ir, ir.n_layers, net_rules=net_rules)
     if event is not None:
         event(f"route: emit — {len(rres.tracks)} track(s), {len(rres.vias)} via(s)")
     return plan, rres
@@ -4628,9 +4484,7 @@ def sketch_rows(
     that job emitted, so ``note``-reading consumers (the check view's
     ``unrouted`` findings, ``view='route-status'``) parse it unchanged;
     a net the anti-short guard withdrew joins them as ``failed:
-    short-risk`` (gr524239), and a net whose octilinear redraw kept an
-    off-angle leg as ``failed: non-octilinear`` (gr543679); a net with
-    emitted pieces is ``realized``;
+    short-risk`` (gr524239); a net with emitted pieces is ``realized``;
     anything left is ``sketched``. A net absent from the route
     design's ``net_pins`` gets no row — under
     ``design_from_ir(route_planes=True)`` only <2-member nets drop, but
@@ -4713,19 +4567,8 @@ def sketch_rows(
                 }
             )
         # duck-typed plans (the bench tests' SimpleNamespace) predate the
-        # guarded/off_angle fields — absent means nothing was withdrawn.
-        # off_angle is checked first: its nets sit in ``guarded`` too
-        # (folded in for the route stage's failure count), and the true
-        # reason is the kept off-angle leg, not a short risk.
-        if k in getattr(plan, "off_angle", ()):
-            problems.append(
-                {
-                    "reason": "non-octilinear",
-                    "message": "track withdrawn: no 45° redraw clears "
-                    "neighbouring copper (emit guard)",
-                }
-            )
-        elif k in getattr(plan, "guarded", ()):
+        # guarded field — absent means nothing was withdrawn.
+        if k in getattr(plan, "guarded", ()):
             problems.append(
                 {
                     "reason": "short-risk",

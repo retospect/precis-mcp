@@ -19,6 +19,16 @@ move generators already respect ``inst_fixed_xy``/``inst_fixed_rot``, so
 this is a second, independent guard at the write boundary, not the only
 one).
 
+A ``placer='topo'`` run's flex-slot pin choices (``any_of`` slots) are
+netlist, not only a ``pins.h``: each chosen pin joins its slot's net in
+the IR, so the route stage routes it, and commits with the pose as a
+resolved-netlist snapshot (``pcb_netlist_snapshots``; entries tagged
+``source='topo'``) that every effective-netlist reader — the check, the
+route stage, exports — lays over the authored graph. Derived, never
+authored ``pcb_netconns``: the next topo run releases those entries and
+re-solves every slot, so a wired pin neither freezes its slot nor
+starves another slot of a candidate.
+
 Runs under the ``job_inproc`` executor (bounded, in-process — mirrors
 ``embed_batch``'s dispatch shape verbatim).
 """
@@ -30,6 +40,7 @@ import hashlib
 import json
 import logging
 import math
+from collections import Counter
 from typing import TYPE_CHECKING, Any
 
 import numpy as np
@@ -170,6 +181,79 @@ def _ir_pose(ir: PcbIR, pose: Any) -> None:
         ir.inst_bottom[i] = side >= 0.5
 
 
+#: ``source`` of a resolved-netlist snapshot entry a topo run wrote for
+#: a flex-slot pin — the tag the next topo run releases it by.
+_TOPO_SLOT_SOURCE = "topo"
+
+
+def _release_topo_slots(snapshot: dict[str, Any] | None) -> dict[str, Any] | None:
+    """``snapshot`` without the previous topo run's flex-slot bindings.
+    A topo run re-solves every slot from the authored netlist: a pin the
+    last run wired must be free again, or every other slot loses it as
+    a candidate (a re-declared board can then raise ``PinConflict``) and
+    its own slot can never move off it."""
+    if not snapshot:
+        return snapshot
+    return {
+        **snapshot,
+        "pins": [
+            e
+            for e in snapshot.get("pins") or []
+            if e.get("source") != _TOPO_SLOT_SOURCE
+        ],
+    }
+
+
+def _has_topo_slots(snapshot: dict[str, Any] | None) -> bool:
+    return any(
+        e.get("source") == _TOPO_SLOT_SOURCE for e in (snapshot or {}).get("pins") or []
+    )
+
+
+def _wire_slots(ir: PcbIR, td: Any, assignment: Any) -> list[tuple[str, str, str]]:
+    """Fold the solver's flex-slot choices into ``ir.pin_net``: each
+    chosen pin joins its slot's declared net, so the route stage's
+    design routes it and the gate judges the pads the commit writes.
+    Returns ``(refdes, pin, net)`` per pin wired; a slot whose net names
+    no ir net, or whose pin already carries a net, wires nothing. Only
+    ``pin_net`` moves — the IR's L0 segments are not rebuilt, and
+    nothing in the topo tail (gate, rip-up, route stage) reads them.
+    ``td.pin_net`` is the same int32 array as ``ir.pin_net``, so this
+    runs after the last ``td`` reader."""
+    from precis.pcb.ir import NO_NET
+
+    wired: list[tuple[str, str, str]] = []
+    for slot, pin in zip(td.flex, assignment.choice, strict=False):
+        net = int(td.decl_net_ir[slot.net])
+        if net < 0 or int(ir.pin_net[pin]) != NO_NET:
+            continue
+        ir.pin_net[pin] = net
+        wired.append(
+            (
+                str(ir.instance_refdes[int(ir.pin_instance[pin])]),
+                str(ir.pin_label[pin]),
+                str(ir.net_name[net]),
+            )
+        )
+    return wired
+
+
+def _slot_snapshot_pins(
+    ir: PcbIR, authored: dict[str, Any], wired: list[tuple[str, str, str]]
+) -> list[dict[str, Any]]:
+    """The resolved-netlist snapshot a committed topo run writes: the
+    FULL effective pin set off the settled ``ir``
+    (:func:`precis.pcb.resolved.snapshot_pins`, ``declared`` from the
+    authored graph), each wired slot pin tagged
+    :data:`_TOPO_SLOT_SOURCE` for the next run to release."""
+    keys = {(refdes, pin) for refdes, pin, _net in wired}
+    pins = pcb_resolved.snapshot_pins(ir, pcb_resolved.declared_pin_nets(authored))
+    for e in pins:
+        if (e["refdes"], e["pin"]) in keys:
+            e["source"] = _TOPO_SLOT_SOURCE
+    return pins
+
+
 def _diverged_pose(
     td: Any,
     result: Any,
@@ -225,22 +309,39 @@ def _topo_run(
     slug: str,
     features: list[dict[str, Any]] | None = None,
     fixed_copper: list[dict[str, Any]] | None = None,
+    measures: list[dict[str, Any]] | None = None,
     preset: str = "compact",
     capability: Any = None,
     hole_margin_mm: float | None = None,
     gate: Any = None,
     errors_before: int | None = None,
-) -> tuple[Any, dict[str, Any], str, dict[str, str], dict[str, str], str] | None:
+) -> (
+    tuple[
+        Any,
+        dict[str, Any],
+        str,
+        dict[str, str],
+        dict[str, str],
+        str,
+        list[tuple[str, str, str]],
+    ]
+    | None
+):
     """The ``placer='topo'`` run (topo-place spec §1c, Decision 21):
     ``design_from_ir`` → the proxy placer → ``assign_pins`` → the run
-    files, with the winning pose folded back into ``ir`` so the shared
-    gate/ripup/``pcb_set_pose`` tail below measures and writes it like
-    an anneal result. Returns ``(result, files, summary, side_changes,
-    label_spots)`` — ``label_spots`` the refdes → LABEL_SPOT_ORDER pin
-    each part's refdes label should try first
+    files, with the winning pose and the flex-slot pin choices folded
+    back into ``ir`` so the shared gate/ripup/``pcb_set_pose`` tail
+    below measures and writes it like an anneal result. ``measures``
+    are the design's stored ``pcb_measures`` rows — they live beside
+    the graph, never in it. Returns ``(result, files, summary,
+    side_changes, label_spots, diverged, slot_wiring)`` —
+    ``label_spots`` the refdes → LABEL_SPOT_ORDER pin each part's
+    refdes label should try first
     (:func:`precis.pcb.topoplace.label_spots_for`), persisted by the
     run tail as instance ``meta.label_spot`` so the silk draw honors
-    the label space the placer preserved — ``None`` after recording an
+    the label space the placer preserved; ``slot_wiring`` the
+    ``(refdes, pin, net)`` slot pins :func:`_wire_slots` wired, which
+    the tail persists with the pose — ``None`` after recording an
     unclassed ``PinConflict`` failure (the board script's error, not
     the job's). Lazy imports: the kernel pulls scipy, which this
     worker otherwise never loads."""
@@ -263,7 +364,7 @@ def _topo_run(
             placement_sides=(
                 ((graph.get("board") or {}).get("meta") or {}).get("placement_sides")
             ),
-            measures=graph.get("measures"),
+            measures=measures,
             capability=capability,
             hole_margin_mm=hole_margin_mm,
         )
@@ -357,7 +458,18 @@ def _topo_run(
         ),
     )
     files["label_spots.json"] = dict(sorted(label_spots.items()))
-    return result, files, summary_text, side_changes, label_spots, diverged
+    # Last: ``td`` reads ``ir.pin_net`` through an alias, and the run
+    # files above must describe the solve, not its write-back.
+    slot_wiring = _wire_slots(ir, td, assignment)
+    return (
+        result,
+        files,
+        summary_text,
+        side_changes,
+        label_spots,
+        diverged,
+        slot_wiring,
+    )
 
 
 def _plan_failed_count(plan: Any) -> int:
@@ -597,7 +709,9 @@ def _topo_route(
     place and route are ONE job — the pose commits above, then the same
     pose is routed and its copper + ``pcb_routes`` rows written). ``ir``
     already carries the placed pose (``_topo_run`` mutated it), so
-    ``route_design``'s ``d.pose0`` default IS the routed pose.
+    ``route_design``'s ``d.pose0`` default IS the routed pose — and the
+    flex-slot pins it wired, so each slot's chosen pin is routed on its
+    slot net.
 
     The place half's label pins ride in as ``keepout`` zones
     (:func:`precis.pcb.topoplace.label_boxes_for`) — the router never
@@ -610,8 +724,10 @@ def _topo_route(
     and lands as a summary line, because a placed-but-unrouted board is
     strictly better than a failed job that wrote nothing. Returns
     ``(summary_text, meta)`` — ``meta`` lands under
-    ``meta.topo_run.route``."""
-    from precis.pcb import DANGLING_NET_NOTE_PREFIX
+    ``meta.topo_run.route``; its ``realized`` counts routed nets only, a
+    dangling (<2-member) net is stored ``realized`` but tallied under
+    ``dangling``."""
+    from precis.pcb import ROUTE_DANGLING, route_summary_status
     from precis.pcb import drc as pcb_drc
     from precis.pcb import topoplace as _tp
     from precis.pcb.topoplace import realise as _tprealise
@@ -880,8 +996,16 @@ def _topo_route(
                 "geom": geom,
             }
         )
-    n_realized = sum(1 for r in rows.values() if r["status"] == "realized")
-    n_failed = sum(1 for r in rows.values() if r["status"] == "failed")
+    # A dangling (<2-member) net is stored 'realized' so route_complete
+    # never wedges on it, but nothing was routed for it: the tallies
+    # bucket it apart, by the same rule view='route-status' summarizes.
+    buckets = Counter(
+        route_summary_status(r["status"], r.get("note")) for r in rows.values()
+    )
+    n_realized = buckets["realized"]
+    n_dangling = buckets[ROUTE_DANGLING]
+    n_failed = buckets["failed"]
+    n_sketched = buckets["sketched"]
     # ONE transaction: a raise between the copper replace and the route
     # rows must never strand copper without route status. An empty route
     # result never wipes stored copper — the replace is skipped so the
@@ -945,6 +1069,7 @@ def _topo_route(
                 pcb_ref_id,
                 {
                     "realized": n_realized,
+                    "dangling": n_dangling,
                     "failed": n_failed,
                     "digest": digest,
                 },
@@ -958,12 +1083,6 @@ def _topo_route(
         # not a pose that was only probed.
         ir.inst_x[:] = pose0_x
         ir.inst_y[:] = pose0_y
-    n_dangling = sum(
-        1
-        for r in rows.values()
-        if (r.get("note") or "").startswith(DANGLING_NET_NOTE_PREFIX)
-    )
-    n_failed = sum(1 for r in rows.values() if r["status"] == "failed")
 
     # ── Visibility payload (Reto: "I just see ratsnest" — dump the plan
     # itself): per-net topology/status/problems from sketch_rows plus the
@@ -1094,6 +1213,7 @@ def _topo_route(
     meta = {
         "nets": len(rows),
         "realized": n_realized,
+        "dangling": n_dangling,
         "failed": n_failed,
         "tracks": len(rres.tracks),
         "vias": len(rres.vias),
@@ -1118,9 +1238,13 @@ def _topo_route(
         "digest": digest,
     }
     if not copper_rows:
-        stored = ctx.store.pcb_route_status(pcb_ref_id)
+        stored = Counter(
+            route_summary_status(r["status"], r.get("note"))
+            for r in ctx.store.pcb_route_status(pcb_ref_id)
+        )
         meta["stored"] = {
-            "realized": sum(1 for r in stored if r["status"] == "realized"),
+            "realized": stored["realized"],
+            "dangling": stored[ROUTE_DANGLING],
             "tracks": sum(
                 1
                 for c in ctx.store.pcb_copper_list(int(board_id))
@@ -1133,9 +1257,10 @@ def _topo_route(
             f"{ir.net_name[k]}→{w}mm" for k, w in sorted(widths.items())
         )
     text = (
-        f"topo-route: {len(rows)} net(s) — {n_realized} realized "
-        f"({n_dangling} dangling), {n_failed} failed, "
-        f"{len(plan.crossings)} unresolved crossing(s), "
+        f"topo-route: {len(rows)} net(s) — {n_realized} realized, "
+        f"{n_dangling} dangling (nothing to route), {n_failed} failed, "
+        + (f"{n_sketched} sketched (no copper), " if n_sketched else "")
+        + f"{len(plan.crossings)} unresolved crossing(s), "
         f"{len(plan.unreachable)} unreachable net(s); wrote {n_copper} "
         f"copper row(s), {n_routes} route row(s)"
         + (f"; shoved pose committed for {n_pose} part(s)" if n_pose else "")
@@ -1225,8 +1350,9 @@ def _dispatch(ctx: DispatchContext, spec: JobTypeSpec) -> None:
 
     # The effective netlist (Slice 7): the latest resolved snapshot over
     # the authored graph, so placement's ratsnest is built against the
-    # SAME netlist pcb_route realizes copper for. Read-only: only the
-    # route job resolves and writes a snapshot.
+    # SAME netlist the route stage realizes copper for. A topo run
+    # releases the previous topo run's flex-slot bindings first — it
+    # re-solves every slot — and commits the fresh ones with its pose.
     # One read of the graph and every surface the idem key hashes
     # (`load_snapshot`, the same call `_enqueue_op` digests); the resolved
     # snapshot is job-written, not hashed, so it stays a separate read.
@@ -1236,8 +1362,10 @@ def _dispatch(ctx: DispatchContext, spec: JobTypeSpec) -> None:
         design.features or [],
         board_id=pcb_ref_id,
     )
+    netlist_snapshot = ctx.store.pcb_netlist_snapshot_latest(pcb_ref_id)
     graph = pcb_resolved.apply(
-        design.graph, ctx.store.pcb_netlist_snapshot_latest(pcb_ref_id)
+        design.graph,
+        _release_topo_slots(netlist_snapshot) if placer == "topo" else netlist_snapshot,
     )
     if not graph.get("instances"):
         ctx.record_failure(
@@ -1476,6 +1604,7 @@ def _dispatch(ctx: DispatchContext, spec: JobTypeSpec) -> None:
     topo_files: dict[str, Any] | None = None
     topo_text = ""
     topo_diverged = ""
+    slot_wiring: list[tuple[str, str, str]] = []
     topo_result: Any = None
     result: Any = None
     if placer == "topo":
@@ -1533,6 +1662,9 @@ def _dispatch(ctx: DispatchContext, spec: JobTypeSpec) -> None:
             slug=(ref.slug if ref is not None and ref.slug else str(pcb_ref_id)),
             features=features,
             fixed_copper=design.fixed_copper,
+            # The stored pcb_measures rows: measures are not a graph key,
+            # so reading them off ``graph`` priced every authored measure 0.
+            measures=design.measures,
             preset=preset,
             capability=capability,
             hole_margin_mm=hole_fab_clearance_mm(floor_capability),
@@ -1550,6 +1682,7 @@ def _dispatch(ctx: DispatchContext, spec: JobTypeSpec) -> None:
             side_changes,
             label_spots,
             topo_diverged,
+            slot_wiring,
         ) = topo_out
     else:
         result = optimize(ir, config)
@@ -1664,6 +1797,29 @@ def _dispatch(ctx: DispatchContext, spec: JobTypeSpec) -> None:
             if ripped and gate_board_id is not None
             else 0
         )
+        # The flex-slot pins the topo run wired commit with the pose:
+        # copper the route stage lays to a pad the stored netlist still
+        # calls netless is a short at the check. A derived snapshot, not
+        # authored netconns, so the next topo run can release them; a
+        # run that wired nothing still writes one when the last run had
+        # wired pins, or those bindings would outlive the slots.
+        if (
+            placer == "topo"
+            and gate_board_id is not None
+            and (slot_wiring or _has_topo_slots(netlist_snapshot))
+        ):
+            ctx.store.pcb_netlist_snapshot_write(
+                int(gate_board_id),
+                content_hash=pcb_session.content_hash(design.graph, {}),
+                pins=_slot_snapshot_pins(ir, design.graph, slot_wiring),
+                prior=list((netlist_snapshot or {}).get("prior") or []),
+                meta={
+                    "source": "topo_place",
+                    "job": ctx.ref_id,
+                    "slots": len(slot_wiring),
+                },
+                conn=conn,
+            )
 
     # D1 (design-rerun-pull S1): the committed run's replayable record.
     # A topo run submitted with route=True records ONLY once its route
@@ -1770,6 +1926,19 @@ def _dispatch(ctx: DispatchContext, spec: JobTypeSpec) -> None:
             if side_changes
             else ""
         )
+        wired = (
+            f"flex slots: wired {len(slot_wiring)} pin(s) onto their slot "
+            "net(s) — "
+            + ", ".join(f"{r}.{p}→{n}" for r, p, n in slot_wiring)
+            + (
+                " (not persisted: the design has no board row)"
+                if gate_board_id is None
+                else ""
+            )
+            + "\n\n"
+            if slot_wiring
+            else ""
+        )
         ctx.append_chunk(
             "job_summary",
             f"{placement_summary}{topo_diverged}"
@@ -1787,6 +1956,7 @@ def _dispatch(ctx: DispatchContext, spec: JobTypeSpec) -> None:
             "(get(kind='pcb', id=<slug>, view='topo'))\n\n"
             + pcb_session.ripup_note(n_ripped, fixed_rows, ripped)
             + flips
+            + wired
             + route_text
             + "\n"
             + topo_text,

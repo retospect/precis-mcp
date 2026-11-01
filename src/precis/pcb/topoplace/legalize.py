@@ -8,10 +8,12 @@ minimum-translation vector from SAT on the courtyard rings' convex
 hulls (gr524238 rings can be concave; SAT hulls them, see ``_mtv``) —
 splitting the push between two free parts, moving only the free one
 against a fixed part, and skipping both-fixed pairs (unresolvable;
-reported). Parts the push shoves outside the board outline are pulled
-back toward the outline centroid between sweep rounds. Returns the
-legalized pose plus a report; phase 3's corridor LP replaces this with
-a global minimum-displacement solve when slice 4 lands.
+reported). Parts the push shoves outside the board outline (the
+courtyard-in-polygon test of :mod:`.contain`, shared with the shove LP
+and the anneal) are pulled back toward the outline centroid between
+sweep rounds. Returns the legalized pose plus a report; phase 3's
+corridor LP replaces this with a global minimum-displacement solve when
+slice 4 lands.
 """
 
 from __future__ import annotations
@@ -25,6 +27,7 @@ from shapely import box as shapely_box
 from shapely.geometry import Point, Polygon
 from shapely.ops import nearest_points
 
+from precis.pcb.topoplace.contain import board_polygon, on_board, outside_mm2
 from precis.pcb.topoplace.design import TopoDesign, TopoZone
 from precis.pcb.topoplace.proxy import (
     _EPS,
@@ -494,7 +497,7 @@ def _nearest_free_spot(
             tg = _ring_geom(d, row, mate)
             if (
                 tg is None
-                or not outline_geom.covers(tg)
+                or not on_board(outline_geom, tg)
                 or zone_hit(tg, mate, zgs, row)
                 or part_hit(tg, mate)
             ):
@@ -579,11 +582,9 @@ def legalize_pose(
                 return True
         return False
 
-    outline_geom = (
-        Polygon(np.asarray(d.outline, dtype=np.float64))
-        if len(d.outline) >= 3
-        else None
-    )
+    # on-board = the courtyard inside the outline polygon — the one
+    # containment test the shove LP and the anneal hold their moves to
+    outline_geom = board_polygon(d)
     # Pull-back anchors: the outline centroid AND its representative
     # point (guaranteed interior even for concave outlines); containment
     # along the path is sampled, not bisected — on a concave board the
@@ -619,7 +620,7 @@ def legalize_pose(
                 if gi is None or d.fixed[i]:
                     continue
                 on_zone = bool(zgs) and _zone_hit(gi, i, zgs, np.asarray(pose[i]))
-                if outline_geom.covers(gi) and not on_zone:
+                if on_board(outline_geom, gi) and not on_zone:
                     continue
                 mates = _mates(d, i)
                 start = np.asarray(pose[i][:2])
@@ -642,7 +643,7 @@ def legalize_pose(
                             tg = _ring_geom(d, test_row, mate)
                             if (
                                 tg is None
-                                or not outline_geom.covers(tg)
+                                or not on_board(outline_geom, tg)
                                 or _zone_hit(tg, mate, zgs, test_row)
                                 or _part_hit(tg, mate)
                             ):
@@ -740,7 +741,7 @@ def legalize_pose(
         for i, gi in enumerate(geoms):
             if gi is None:
                 continue
-            outside = float(gi.difference(outline_geom).area)
+            outside = outside_mm2(outline_geom, gi)
             if outside > 1e-6:
                 remaining.append((i, -1, outside))
     return LegalizeResult(

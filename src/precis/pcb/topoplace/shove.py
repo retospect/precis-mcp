@@ -12,9 +12,19 @@ the same LP solves — same-side courtyard overlaps and part-on-zone
 intrusions, each linearised as a separation requirement along its
 minimum-translation axis (exact under pure translation: a convex ring's
 projection shifts by n·δ). :func:`~.legalize.legalize_pose` stays the
-exact mop-up behind it — the LP bounds part CENTRES to their legal box,
-so ring-level outline escapes and anything the linearisation declines
-are still legalize's job (``placer.topo_place`` runs shove → legalize).
+exact mop-up behind it for anything the linearisation declines
+(``placer.topo_place`` runs shove → legalize).
+
+Containment is the shove's own job, not legalize's: the route stage
+commits a shoved pose with no legalize behind it. The LP bounds part
+CENTRES to a legal box over the outline's BBOX, and the mesh guard
+cannot see a courtyard that already touches the edge (its ring
+vertices sit on the boundary, no triangle beyond them) — so on a
+concave outline the solved step could carry a part off the board
+(the bbox's off-board pockets: taz-leaf's tip and neck). Every applied
+step is held to :mod:`.contain`'s polygon test instead: a unit leaving
+it gets a cut along its step and the LP re-solves, and what still
+leaves is bisected back on its own (:func:`_hold_on_board`).
 
 Each of ≤ ``rounds`` rounds: rebuild the mesh at the CURRENT pose (the
 spec's "linearised at the current pose" — a stacked pair's coincident
@@ -48,10 +58,17 @@ from typing import Any
 import numpy as np
 from scipy.optimize import linprog
 from scipy.sparse import csr_matrix, lil_matrix
+from scipy.sparse import vstack as sparse_vstack
 from shapely.geometry import Point, Polygon
 from shapely.ops import nearest_points
 
 from precis.pcb.rules import NetRules
+from precis.pcb.topoplace.contain import (
+    board_polygon,
+    outside_mm2,
+    part_outside_mm2,
+    stays_on_board,
+)
 from precis.pcb.topoplace.design import TopoDesign
 from precis.pcb.topoplace.legalize import (
     _board_layers,
@@ -79,6 +96,9 @@ _CAP_MM = 2.0  # per-round |δ| trust region — keeps the linearisation honest
 _EDGE_MM = 0.5  # centre-box margin; twin of ``placer._EDGE_MM``
 _SLACK_W = 100.0  # separation slack penalty (×mm) — ~100× displacement, so
 # the LP only leaves overlap when the guards leave it no room
+_CUT_SOLVES = 2  # containment-cut re-solves per round before the per-unit
+# bisection fallback (most rounds need none; a boundary push needs one)
+_BISECT_STEPS = 16  # containment bisection: 2^-16 of a ≤2√2 mm step
 
 
 @dataclass(frozen=True, slots=True)
@@ -102,7 +122,8 @@ class ShovePush:
 @dataclass(frozen=True, slots=True)
 class ShoveResult:
     """``pose`` is the shoved pose; ``resolved`` means the final mesh
-    reports no same-side pair, blocking zone or outline residual.
+    built and reports no same-side pair, blocking zone or outline
+    residual.
     ``lp_optimum_mm`` is round 1's objective — the reference for the
     spec's "displacement ≤ 1.05 × LP optimum" bound (a multi-round run
     legitimately exceeds it: later rounds see constraints the first
@@ -316,6 +337,160 @@ def _legal_xy(
     return np.where(ok, lo_i, centre), np.where(ok, hi_i, centre)
 
 
+def _unit_on_board(
+    d: TopoDesign,
+    board: Any,
+    pose: np.ndarray,
+    unit: tuple[int, ...],
+    off0: list[float],
+    delta: np.ndarray,
+) -> bool:
+    """Whether translating every member of ``unit`` by ``delta`` keeps
+    each one :func:`~.contain.stays_on_board` against its round-start
+    outside area ``off0``. A zero step always does."""
+    dx, dy = float(delta[0]), float(delta[1])
+    if abs(dx) + abs(dy) <= 1e-12:
+        return True
+    for p in unit:
+        row = np.asarray(pose[p], dtype=np.float64).copy()
+        row[0] += dx
+        row[1] += dy
+        if not stays_on_board(off0[p], part_outside_mm2(d, board, row, p)):
+            return False
+    return True
+
+
+def _on_board_fraction(
+    d: TopoDesign,
+    board: Any,
+    pose: np.ndarray,
+    unit: tuple[int, ...],
+    off0: list[float],
+    delta: np.ndarray,
+) -> float:
+    """The largest bisected ``t`` in [0, 1] with the unit still on the
+    board at ``t·delta``. Bisection only ever moves ``lo`` onto a tested
+    on-board fraction, so the answer is on the board even where a
+    concave edge makes the on-board set along the step non-convex."""
+    lo, hi = 0.0, 1.0
+    for _ in range(_BISECT_STEPS):
+        mid = 0.5 * (lo + hi)
+        if _unit_on_board(d, board, pose, unit, off0, delta * mid):
+            lo = mid
+        else:
+            hi = mid
+    return lo
+
+
+def _exit_normal(
+    d: TopoDesign,
+    board: Any,
+    pose: np.ndarray,
+    unit: tuple[int, ...],
+    off0: list[float],
+    delta: np.ndarray,
+) -> np.ndarray | None:
+    """Outward unit normal of the board edge the unit's step ``delta``
+    leaves through: nearest boundary point → centroid of the first
+    leaving member's off-board courtyard. ``None`` when that region is
+    too thin, or its centroid on the board, to say."""
+    dx, dy = float(delta[0]), float(delta[1])
+    for p in unit:
+        row = np.asarray(pose[p], dtype=np.float64).copy()
+        row[0] += dx
+        row[1] += dy
+        ring = _ring_geom(d, row, p)
+        if ring is None or stays_on_board(off0[p], outside_mm2(board, ring)):
+            continue
+        off = ring.difference(board)
+        if off.is_empty or float(off.area) <= 1e-9:
+            return None
+        c = off.centroid
+        if board.covers(c):
+            return None
+        q = nearest_points(board.exterior, c)[0]
+        v = np.asarray([c.x - q.x, c.y - q.y], dtype=np.float64)
+        nv = float(np.hypot(v[0], v[1]))
+        return v / nv if nv > 1e-9 else None
+    return None
+
+
+def _hold_on_board(
+    d: TopoDesign,
+    board: Any,
+    pose: np.ndarray,
+    units: list[tuple[int, ...]],
+    off0: list[float],
+    res: Any,
+    obj: np.ndarray,
+    a_ub: Any,
+    b_ub: np.ndarray,
+    bounds: list[tuple[float, float | None]],
+) -> tuple[np.ndarray, Any]:
+    """The round's per-unit step ``(M, 2)`` with every unit held on the
+    board polygon, plus the LP result it came from.
+
+    The LP knows only the bbox legal box, so a unit whose solved step
+    ``s`` leaves the polygon gets a cut on its variable ``δ`` —
+    ``n̂·δ ≤ t·(n̂·s)``, ``n̂`` the crossed edge's outward normal
+    (:func:`_exit_normal`; the step's own direction when that is
+    unclear), ``t`` the bisected on-board fraction of ``s`` — and the
+    LP re-solves: it then separates the pair some other way (the
+    partner moves, or the part slides along the edge) instead of losing
+    the push. The edge normal, not the step's, is what leaves the slide
+    open: an MTV push is axis-aligned, the leaf's edges are not. δ = 0
+    satisfies every cut, so a cut never makes the LP infeasible. Units
+    still leaving after ``_CUT_SOLVES`` re-solves are scaled back to
+    their own on-board fraction — the guarantee, at the price of the
+    LP's coordination."""
+    m_count = len(units)
+    step = np.array(res.x[: 2 * m_count].reshape(2, m_count).T)
+    cuts: list[tuple[int, float, float, float]] = []
+    leaving: list[int] = []
+    fracs: dict[int, float] = {}
+    for attempt in range(_CUT_SOLVES + 1):
+        leaving = [
+            m
+            for m in range(m_count)
+            if not _unit_on_board(d, board, pose, units[m], off0, step[m])
+        ]
+        if not leaving:
+            return step, res
+        fracs = {
+            m: _on_board_fraction(d, board, pose, units[m], off0, step[m])
+            for m in leaving
+        }
+        if attempt == _CUT_SOLVES:
+            break
+        for m in leaving:
+            n_out = _exit_normal(d, board, pose, units[m], off0, step[m])
+            along = float(n_out @ step[m]) if n_out is not None else 0.0
+            if n_out is None or along <= 1e-12:
+                along = float(np.hypot(step[m, 0], step[m, 1]))
+                n_out = step[m] / along
+            cuts.append((m, float(n_out[0]), float(n_out[1]), fracs[m] * along))
+        cut_a = lil_matrix((len(cuts), a_ub.shape[1]))
+        cut_b = np.zeros(len(cuts))
+        for k, (m, nx, ny, cap) in enumerate(cuts):
+            cut_a[k, m] = nx
+            cut_a[k, m_count + m] = ny
+            cut_b[k] = cap
+        again = linprog(
+            obj,
+            A_ub=sparse_vstack([a_ub, csr_matrix(cut_a)], format="csr"),
+            b_ub=np.concatenate([b_ub, cut_b]),
+            bounds=bounds,
+            method="highs",
+        )
+        if again.status != 0:
+            break  # numerical (δ = 0 is feasible) — keep the last step
+        res = again
+        step = np.array(res.x[: 2 * m_count].reshape(2, m_count).T)
+    for m in leaving:
+        step[m] = step[m] * fracs[m]
+    return step, res
+
+
 def shove_pose(
     d: TopoDesign,
     pose: np.ndarray,
@@ -331,14 +506,18 @@ def shove_pose(
     guards allow still improves instead of refusing; guards: the
     round's mesh triangles keep signed area ≥ floor (linearised at the
     current pose), part centres stay in their legal box, |δ| ≤
-    ``_CAP_MM`` per round — all hard. Runs to no-violations or
-    ``rounds``; on LP infeasibility (bounds∩triangles — rare) stops and
-    reports (legalize then takes its MTV pass on what remains).
+    ``_CAP_MM`` per round — all hard — and every applied step keeps
+    each part's courtyard on the outline polygon
+    (:func:`_hold_on_board`). Runs to no-violations or ``rounds``; on
+    LP infeasibility (bounds∩triangles — rare) stops and reports
+    (legalize then takes its MTV pass on what remains).
 
     ``push`` adds caller-requested separation drivers (see
     :class:`ShovePush`) alongside the overlap/zone rows — the route
     stage's failure-directed shove.  They persist for every round of
-    the run and relax into slack exactly like the overlap rows."""
+    the run and relax into slack exactly like the overlap rows.  The
+    route stage commits a shoved pose with no legalize behind it, so
+    the containment hold is this function's own contract."""
     pose = np.asarray(pose, dtype=np.float64).copy()
     n = len(d.parts)
     if not n or not len(d.part_outline):
@@ -368,6 +547,9 @@ def shove_pose(
     lo = d.outline.min(axis=0) if len(d.outline) >= 3 else pose[:, :2].min(axis=0)
     hi = d.outline.max(axis=0) if len(d.outline) >= 3 else pose[:, :2].max(axis=0)
     cx_lo, cx_hi = _legal_xy(d, np.asarray(lo, float), np.asarray(hi, float))
+    # the box above is the outline's BBOX — the polygon itself holds
+    # every step (a concave outline's bbox is partly off the board)
+    board = board_polygon(d)
 
     n_zones = sum(1 for z in d.zones if len(z.ring) >= 4)
     part_nets = [_part_nets(d, i) for i in range(n)] if n_zones else []
@@ -408,6 +590,9 @@ def shove_pose(
         sides = pose[:, 3] >= 0.5
         th = through_hole_parts(d)
         geoms = [_ring_geom(d, pose[i], i) for i in range(n)]
+        # each courtyard's area off the board at the round's pose — the
+        # floor :func:`_hold_on_board` holds the step to
+        off0 = [outside_mm2(board, g) for g in geoms] if board is not None else []
         #: gr529963: a mounting-hole zone is tested against the part
         #: BODY — its keep-out already carries the fab margin, so the
         #: courtyard's 0.4mm does not stack on it. Courtyard geoms as
@@ -660,15 +845,22 @@ def shove_pose(
         if res.status != 0:
             reason = "infeasible"
             break
+        if board is not None:
+            step, res = _hold_on_board(
+                d, board, pose, units, off0, res, obj, A_ub, b, bounds
+            )
+        else:
+            step = res.x[: 2 * m_count].reshape(2, m_count).T  # (M, 2)
         if spent == 0:
             lp_optimum = float(res.fun)
-        step = res.x[: 2 * m_count].reshape(2, m_count).T  # (M, 2)
         if float(np.abs(step).sum()) <= 1e-9:
             break
         # Backtracking on the ACTUAL (quadratic) signed areas: the
         # linearised guard can admit a step that inverts a constrained
         # triangle, so verify the exact areas and halve until clean —
-        # lens tris stay exempt (they are meant to collapse).
+        # lens tris stay exempt (they are meant to collapse). A halved
+        # step is re-held to the board too: along a concave edge a
+        # shorter step is not on the board just because the full one is.
         free = (owner >= 0) & (var_of[np.clip(owner, 0, None)] >= 0)
         keep = ref.tris[~exempt]
         scale = 1.0
@@ -682,7 +874,14 @@ def shove_pose(
                 + t[:, 2, 0] * (t[:, 0, 1] - t[:, 1, 1])
             )
             amin = float(actual.min()) if len(t) else math.inf
-            if amin > 1e-9:
+            if amin > 1e-9 and (
+                board is None
+                or _try == 0
+                or all(
+                    _unit_on_board(d, board, pose, units[m], off0, step[m] * scale)
+                    for m in range(m_count)
+                )
+            ):
                 break
             scale *= 0.5
         else:
@@ -700,8 +899,10 @@ def shove_pose(
     # Final report from a fresh mesh at the shoved pose — pair, zone and
     # outline residuals land on ``remaining`` in legalize's encoding.
     remaining: list[tuple[int, int, float]] = []
+    end_built = False
     try:
         end = build_mesh(d, pose)
+        end_built = True
         for cf in end.conflicts:
             if cf.same_side:
                 remaining.append((int(cf.a), int(cf.b), float(cf.area_mm2)))
@@ -737,7 +938,9 @@ def shove_pose(
         reason = reason or "mesh"
     return ShoveResult(
         pose=pose,
-        resolved=not remaining,
+        # a final mesh refused (pads off the board) reports no residual
+        # rows, but nothing about that pose is resolved
+        resolved=end_built and not remaining,
         rounds=spent,
         moved_mm=moved_mm,
         lp_optimum_mm=lp_optimum,

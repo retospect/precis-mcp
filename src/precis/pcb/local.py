@@ -663,7 +663,11 @@ def _design(board: Any, catalog: dict[str, dict[str, Any]] | None) -> _Design:
         outline=outline,
         mounting_holes=pcb_session.mounting_holes_from_features(features),
         planes=_planes_rows(features),
-        measures=copy.deepcopy(batch.get("measures") or []),
+        # The stored shape, as ``_pcb_insert_measure`` writes it: a
+        # builder ``near()`` row resolves to no spec until converted.
+        measures=[
+            pcb_rows.measure_row(m) for m in copy.deepcopy(batch.get("measures") or [])
+        ],
         fixed_copper=_fixed_copper_rows(batch),
         by_lcsc=by_lcsc,
         local_by_name=local_by_name,
@@ -1302,7 +1306,9 @@ def topo_place(
         placement_sides=(
             ((design.graph.get("board") or {}).get("meta") or {}).get("placement_sides")
         ),
-        measures=design.graph.get("measures"),
+        # Measures are not a graph key: reading them off the graph priced
+        # every authored measure 0 (the job path's same fix).
+        measures=design.measures,
         capability=design.fab_caps,
         hole_margin_mm=hole_fab_clearance_mm(design.fab_caps),
     )

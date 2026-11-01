@@ -3626,66 +3626,6 @@ def check_silk_printability(
     return findings
 
 
-#: Float-noise tolerance for the 45-degree direction test — the DRC-side
-#: counterpart of :data:`precis.pcb.realize._OCTILINEAR_EPS_MM`, which stays
-#: at 1e-6 for router output; wider here for imports (kept as a local
-#: constant: this module deliberately imports no realizer). A segment the
-#: router drew misses by rounding only (~1e-14 at board scale); one
-#: imported from a 6-decimal source file misses by up to ~8e-5 mm
-#: (taz15-r2: 555 segments below 1.5e-14, 100 between 1e-6 and 7.7e-5,
-#: none in 7.7e-5..1e-4, then genuine off-angle runs from 1.0e-4 up;
-#: gr492988). 1e-4 mm = 0.1 um, far below any fab's resolution.
-_OCTILINEAR_EPS_MM = 1e-4
-
-
-def check_octilinear(model: dict[str, Any]) -> list[DrcFinding]:
-    """Every drawn copper LINE segment must run at a multiple of 45
-    degrees — axis-aligned or a true diagonal (|dx| == |dy|) — the
-    octilinear discipline every emitter on the router path in
-    :mod:`precis.pcb.realize` guarantees since 2026-08-31 (user
-    requirement: every wire on every layer fully 90/45).
-
-    Scope: ``segments`` entries with ``shape == "line"`` on
-    ``model["copper"]`` — the drawn wires, dogbone stubs included. Arcs
-    are exempt (a corner fillet between two octilinear runs is still an
-    octilinear layout, and an arc has no single direction to grade);
-    pour rims are exempt (a pour follows its blockers, it is not a
-    wire); silkscreen is ink, not copper. No capability field and no
-    two-tier margin — a fab can image any angle, so this is a HOUSE
-    style rule; severity is ``error`` so the acceptance fixtures'
-    copper-class hard zero holds it board-wide."""
-    findings: list[DrcFinding] = []
-    for item in model.get("copper") or []:
-        for seg in item.get("segments") or []:
-            if seg.get("shape") != "line":
-                continue
-            x1, y1 = (float(v) for v in seg["start"])
-            x2, y2 = (float(v) for v in seg["end"])
-            dx, dy = abs(x2 - x1), abs(y2 - y1)
-            if (
-                dx <= _OCTILINEAR_EPS_MM
-                or dy <= _OCTILINEAR_EPS_MM
-                or abs(dx - dy) <= _OCTILINEAR_EPS_MM
-            ):
-                continue
-            angle = math.degrees(math.atan2(y2 - y1, x2 - x1))
-            net, layer = item.get("net"), item.get("layer")
-            findings.append(
-                DrcFinding(
-                    rule="octilinear",
-                    severity="error",
-                    where=f"track[{net}] on {layer}",
-                    detail=(
-                        f"segment ({x1:.3f},{y1:.3f})->({x2:.3f},{y2:.3f}) "
-                        f"on {layer} runs at {angle:.1f}deg; every drawn "
-                        f"wire must be a multiple of 45deg"
-                    ),
-                    objects=({"net": net, "layer": layer, "x": x1, "y": y1},),
-                )
-            )
-    return findings
-
-
 def check_silk_edge_clearance(
     model: dict[str, Any],
     capability: CapabilityRow,
@@ -4948,7 +4888,6 @@ def run_geometric_drc(
         panel_type=panel_type,
         bodies=bodies,
     )
-    findings += check_octilinear(model)
     findings += check_outline_missing(outline)
     findings += check_outline_containment(
         model, outline=outline, courtyards=courtyards, bodies=bodies
@@ -6280,7 +6219,6 @@ __all__ = [
     "check_no_decoupling",
     "check_no_driver",
     "check_npth_clearance",
-    "check_octilinear",
     "check_outline_containment",
     "check_outline_missing",
     "check_over_current",

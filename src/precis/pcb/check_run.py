@@ -33,6 +33,7 @@ from precis.pcb import edge_mate as pcb_edge_mate
 from precis.pcb import furniture as pcb_furniture
 from precis.pcb import geom as pcb_geom
 from precis.pcb import ir as pcb_ir
+from precis.pcb import measure_check as pcb_measure_check
 from precis.pcb import optimize as pcb_optimize
 from precis.pcb import padplace
 from precis.pcb import planes as pcb_planes
@@ -589,6 +590,21 @@ def unsupplied_client_findings(graph: dict[str, Any]) -> list[pcb_drc.DrcFinding
     return pcb_drc.check_unsupplied_client(clients, supplies, roles)
 
 
+def _measure_findings(
+    store: Store, ref_id: int, graph: dict[str, Any]
+) -> list[pcb_drc.DrcFinding]:
+    """The ``measure`` rule over the design's stored measures
+    (:mod:`precis.pcb.measure_check`). It judges placement, so it rides
+    every run but a claimed ``netlist`` one, on both views — not an
+    ``ERC_RULES`` member. A design without measures reads no features."""
+    measures = store.pcb_measures_list(ref_id)
+    if not measures:
+        return []
+    return pcb_measure_check.measure_findings(
+        graph, measures, store.pcb_features_list(ref_id)
+    )
+
+
 def finding_from_row(row: dict[str, Any]) -> pcb_drc.DrcFinding:
     """Rehydrate one persisted ``pcb_drc_findings`` row into the
     :class:`~precis.pcb.drc.DrcFinding` it was written from — the inverse
@@ -695,7 +711,9 @@ def run(
 
     ``erc=True`` adds Slice 5's netlist ERC rules — ``view='check'``
     passes it (the check surface is the superset); ``view='drc'`` is
-    the preset and does not.
+    the preset and does not. The ``measure`` rule (a violated hard/soft
+    placement measure, :mod:`precis.pcb.measure_check`) is not ERC: both
+    views carry it, and only a claimed ``netlist`` eval skips it.
 
     Split out of :meth:`PcbHandler._render_drc` so ``view='gerber'`` asks the SAME
     question the DRC view answers before it hands over a fab bundle,
@@ -831,6 +849,9 @@ def run(
             )
             + pcb_drc.check_undeclared_pads(bail_model, unchecked=undeclared_unchecked)
             + pcb_drc.check_synthesized_footprint(bail_model)
+            # Measures read part centres, not pads: a guessed footprint
+            # does not make a decap 5 mm from its IC any closer.
+            + _measure_findings(store, ref_id, graph)
         )
         # Slice 5 ERC — netlist rules, need no geometry either.
         if erc:
@@ -1013,6 +1034,9 @@ def run(
         ],
         extent_mm=coating_extent_mm(),
     )
+    # Reto 2026-11-01: a violated hard/soft placement measure (decap or
+    # crystal too far from its IC) fails the check, on both views.
+    findings += _measure_findings(store, ref_id, graph)
     if erc:
         findings += erc_findings(design, graph, pads)
     # Read the previous run BEFORE writing this one — it is what this

@@ -44,10 +44,18 @@ when it fails it throws the copper away instead of repairing it.
    one pose every experiment reused.
 
 Fix order: make the problem true (measures, slot write-back, honest
-counts, containment), move the rails off the signal layers, add a
-multi-pose bench, and only then replace post-hoc vetoes with a detailed
-router that is legal by construction against one clearance oracle. That
-last step deletes most of `realise.py`.
+counts, containment, decap/crystal distance as a DRC error), emit the topo
+wires at any angle with few segments (Reto 2026-11-01), add a multi-pose
+bench, move GND off the signal layers, and then make the realiser repair a
+failed kink inside its corridor against one clearance oracle instead of
+withdrawing the net. The any-angle emit and the repair delete most of
+`realise.py`.
+
+**Rulings 2026-11-01 (Reto):** the grid router stays retired — the model
+is topo, then kink the wires; wire angles are free ("I don't care about
+0,90,45 degree wires. Just make it work any way with few segments now");
+a GND pour on In1 is allowed as an interim if it is really needed; a
+decap or crystal beyond its limit fails DRC.
 
 ## Evidence
 
@@ -63,7 +71,7 @@ marked as seed.
 | objective line | `crossings 0.30 / ratsnest 0.04 / … / measures 0.00` |
 | nets with a pin-to-pin tree edge > 10 mm | 18, of which 17 failed; nets with every edge ≤ 10 mm: 8/12 realized |
 | worst offenders | XC1/XC2 17 mm (32 MHz crystal), ANT/RF_FEED/RF2 18–24 mm, DEC4 19 mm, XL2 18 mm, U2 dividers 12–22 mm |
-| parts outside the leaf outline | C11, C13, R23 (C11 at x = 17 mm, U1 at x = 112 mm); DEC1 fails "walled off" |
+| parts pushed off the leaf outline | C11, C13, R23 during the settle: legalize pushed them off, pulled them back on far from U1 (C11 at x = 17 mm, U1 at x = 112 mm); DEC1 fails "walled off" |
 | committed copper | F.Cu 27 tracks / 140 mm, B.Cu 3 / 33 mm, In1/In2 none, 6 vias |
 | failure digest | 23× no via site, 16× short-risk, 9× unconnected, 4× same-layer crossing, 4× unrouted, 3× non-octilinear |
 | seed pose, same router | 8/31 real nets realized; 23 failed, 21 with `no via site` (SDA R30–U3, SCL, S2_DRV R12–R13, XC1/XC2 X1–U1 among them) |
@@ -82,7 +90,7 @@ electrically correct pose has to be routable.
 | Decision 10 cost ladder (route the elites) | `Ladder` hook only; no rung is registered anywhere in `src/`, so the placer never sees a routing result |
 | Phase 1 crossing graph, colouring, certificates, via bracket | colouring is `assign_layers`' local search; certificates and the bracket print `n/a (slice 2)` |
 | Phase 2 topology anneal | not built |
-| Phase 3 corridor capacity, LP shove | built (`wires._corridor`, `shove.shove_pose`); the shove bounds parts by the outline's bounding box |
+| Phase 3 corridor capacity, LP shove | built (`wires._corridor`, `shove.shove_pose`); outline containment is one courtyard-in-polygon rule since 2026-11-01 (`topoplace/contain.py`) |
 | Phase 4 realiser | built; acceptance 9 not met |
 | me507871 widen at the end | built (`widen_power`, with the DRC as its oracle) |
 
@@ -102,11 +110,12 @@ electrically correct pose has to be routable.
   flex slots").
 - `sketch_rows` reports a net with <2 members as `realized`. The headline
   count is inflated by 7, and partially wired slot nets count as complete.
-- Containment has three rules. `placer.py::topo_place` and
-  `shove.py::shove_pose` clamp to `_legal_xy` over the outline's
-  **bounding box**, and the leaf outline is concave. Only
-  `legalize.py::legalize_pose` tests the polygon. The committed pose ends
-  with three parts outside the outline.
+- Containment had three rules (fixed 2026-11-01, A4). `placer.py::topo_place`
+  and `shove.py::shove_pose` clamped to `_legal_xy` over the outline's
+  **bounding box**, and the leaf outline is concave; only
+  `legalize.py::legalize_pose` tested the polygon. On taz-leaf it was
+  legalize's own pushes that moved C11 and C13 off the board, and its
+  pull-back that parked them 95 mm from U1.
 - `flow` gives ratsnest 0.05 against crossings 0.40, silkroom 0.20 and
   margin 0.15. Straight-airwire crossings are a 2-layer planarity proxy.
   On 4 layers a crossing costs at most two vias, but a 20 mm detour fails
@@ -189,80 +198,99 @@ ruling except C's D2.
 - A3. Honest status. Nets with <2 members get `empty`, not `realized`.
   The digest and summary report complete nets and connections realized
   out of required (pin pairs). Test on the sanity board and a slot fixture.
-- A4. One containment rule (polygon) shared by the anneal clamp, the
-  shove LP (post-solve check with step-back for violators) and legalize.
-  Test: on a concave-outline fixture no part leaves the outline under
-  `_settle_pose` or the job's failure shove.
-- A5. Remove the `_SIMPLIFY_ENABLED` flag and its stale comment, keeping
-  the pass on.
+- A4. Landed 2026-11-01: one courtyard-in-polygon rule
+  (`topoplace/contain.py`) held by the anneal, the shove LP (a cut along
+  the crossed edge's normal, then bisection) and legalize. Left: legalize's
+  own overlap/zone pushes still move parts off the board and rely on its
+  pull-back; scatter and restart jitter still use the bounding box.
+- A5. Folded into K (the octilinear simplifier and its flag go).
+- A6. Decap and crystal distance fails DRC (Reto 2026-11-01). A violated
+  `hard` proximity measure is an `error` finding in `view='check'` and
+  `view='drc'` (rule `measure`), naming both parts, the limit and the
+  distance; a violated `soft` one is a `warn`. The limit is the measure's
+  own goal (decaps 2 mm, X1 3 mm, X2 4 mm in `board.py`), and the decap
+  and crystal measures there become `hard: true`. Test: a hard proximity
+  C↔U at 2 mm placed 5 mm apart gives one error; placed within 2 mm, none.
 
-**E1. Multi-pose bench, before any router change.** A bench script
-routes 3 poses (legalized seed, seed 1, seed 2) × 3 boards (sanity,
-usbc_attiny, taz-leaf) and prints complete nets, connections, DRC
-errors, vias and wall time. Every later slice reports this table.
+**K. Any-angle emit (Reto 2026-11-01).** `realize_result` emits each
+piece's spoke-offset polyline as it is — the taut topo wire with its
+spacing kinks — then drops a vertex wherever the straight shortcut stays
+clear under the same clearance predicate, so pieces carry few segments at
+any angle. `_octilinear`, `_axis_jog`, `_octi_links`,
+`_simplify_octilinear`, the off-angle refusal and `RoutePlan.off_angle`
+go; `_coalesce_micro` loses its 45° condition; `drc.check_octilinear`
+leaves the geometric run (the 2026-08-31 house rule it enforced is
+superseded). Test: a two-pad diagonal net emits one segment; a net bent
+around one pad emits at most three; no `octilinear` finding; sanity and
+taz-leaf numbers before and after.
 
-**C. Rails off the signal layers** (shape depends on D2). GND gets an
-exclusive inner layer (In1) through `net_layer_force`, and every other
-net's candidate layers drop In1. Each GND SMD pad gets a fanout via
-within 1 mm on its mount layer. GND then routes alone on In1, so it has
-no crossings, and `widen_power` fattens it. VSTOR on In2 is the same
-move if the bench shows it binds. Test: at the taz-leaf seed pose no
-signal net's crossing or guard record names GND, and committed copper is
-DRC 0.
+**E1. Multi-pose bench.** A bench script routes 3 poses (legalized seed,
+seed 1, seed 2) × 3 boards (sanity, usbc_attiny, taz-leaf) and prints
+complete nets, connections, DRC errors, vias, the placed/seed airwire
+ratio and wall time. Every later slice reports this table.
+
+**C. GND off the signal layers.** GND gets an exclusive inner layer
+(In1) through `net_layer_force`, and every other net's candidate layers
+drop In1. Each GND SMD pad gets a fanout via within 1 mm on its mount
+layer. GND then routes alone on In1, so it has no crossings, and
+`widen_power` fattens it. If routed GND on In1 still fails on the bench,
+pour In1 with `planes.plane_pours` instead, keeping the per-pad vias (an
+interim, Reto 2026-11-01). VSTOR on In2 is the same move if the bench
+shows it binds. Test: at the taz-leaf seed pose no signal net's crossing
+or guard record names GND, and committed copper is DRC 0.
 
 **B. Placement objective**
-- B1. `flow` gets a real measures share and ratsnest ≥ 0.2. In
-  `board.py`, the decap and crystal measures become `hard: true` (D3).
-  Test: taz-leaf decaps and X1/X2 end within their bounds at 3 seeds.
-- B2. Incumbent rule: when the seed pose is legal, the job keeps the
-  annealed pose only if its airwire is within D4's margin of the seed;
-  otherwise it keeps the legalized seed. Test: a small board whose seed
-  is optimal is not made longer.
+- B1. `flow` gets a real measures share and ratsnest ≥ 0.2. Test: taz-leaf
+  decaps and X1/X2 end within their bounds at 3 seeds with no `measure`
+  finding.
+- B2. Dropped for now: with A1 and A6 the anneal can no longer pull decaps
+  and crystals away. Revisit only if E1's placed/seed airwire ratio stays
+  high after B1.
 
-**D. One oracle, then repair instead of withdraw**
+**D. One oracle, then repair inside the corridor**
 - D-a. `CopperIndex`: per-layer STRtree over DRC-source pads
   (`realize.pads_for_ir`), keepouts, the board-edge band and committed
   copper, answering `clear(net, layer, geom, width)` with
   `clearance_net_rules`. Property test: on random segments and discs near
   the taz-leaf pads, the index and `run_geometric_drc` disagree 0 times.
-  Port the guards, the octilinear `clear` and via `qualifies` onto it,
-  then delete the five route-path pad builders and the `_seg_*` helpers.
-- D-b. A corridor maze as the repair step (D1). It is a multi-layer,
-  8-connected grid at ≤ half the track width, inside the branch's corridor
-  triangles plus a 1 mm margin. Obstacles are rasterised from the index,
-  and via cells are where the via disc clears every layer.
-  `scipy.sparse.csgraph` Dijkstra runs it. The output is octilinear by
-  construction. A withdrawn or `no_via` branch is re-routed here and
-  committed into the index. A branch that still fails rips up its
-  blockers under a PathFinder history cost, for a bounded number of
-  rounds. This replaces pass 2, the re-route rounds, the partial filter
-  and the job's failure shove. Test: the sanity board reaches 20/20 with
-  DRC 0.
-- D-c. The maze becomes the primary realiser, with topo supplying order,
-  corridor and a layer hint. Delete `_spoke_offsets`, `_octilinear`,
-  `_axis_jog`, `_simplify_octilinear`, `_coalesce_micro`, `_site_via`,
-  `_merge_pass`, `_copper_zones` and the veto fields. `RoutePlan` carries
-  one `failed: {branch: reason}`. The shape-pinning tests for the deleted
-  code are retired in the same commit. Invariant tests replace them:
-  committed copper is DRC 0, and every complete net joins all its pins
-  including slot pins.
+  Port the guards, the kink and shortcut checks and via `qualifies` onto
+  it, then delete the five route-path pad builders and the `_seg_*`
+  helpers.
+- D-b. Repair, not withdraw. When a piece fails the oracle (short-risk, no
+  via site, unconnected), the realiser tries local alternatives inside the
+  branch's corridor triangles, cheapest first: slide the kink along its
+  edge (the spoke slot order), kink at the blocker's other side, move the
+  via to another index-legal point in the corridor, re-thread that one
+  branch around the blocker (`assign_layers`' re-thread move) and kink
+  again. Only a branch with no legal alternative fails, and it fails
+  alone: the rest of its net and its neighbours stay. This replaces pass
+  2, the re-route rounds, the partial filter and the job's failure shove.
+  Test: sanity reaches 20/20 with DRC 0.
+- D-c. Delete what K and D-b supersede: `_spoke_offsets`' chord,
+  boundary-run and Powell special cases fold into one kink routine,
+  `_site_via`'s four walks become one index query, `_guarded_branches` and
+  `_severed_nets` become assertions, `_merge_pass` and `_copper_zones` go,
+  and `RoutePlan` carries one `failed: {branch: reason}`. The
+  shape-pinning tests for deleted code are retired in the same commit.
+  Invariant tests replace them: committed copper is DRC 0, and every
+  complete net joins all its pins including slot pins.
 
 **B3 / E2 / E3, last.** Register a ladder rung that routes the top-K
 elites and picks the pose by complete nets (Decision 10). Cache the label
-boxes in the anneal (108 s). Target a taz-leaf route of ≤ 20 s (the via
-mask replaces the 93 s siting walk).
+boxes in the anneal (108 s). Target a taz-leaf route of ≤ 20 s (the index
+query replaces the 93 s siting walk).
 
-Order: A → E1 → C → B1/B2 → D-a → D-b → D-c → B3/E2/E3. A corrects what
-is measured, E1 makes each next step comparable, C removes the largest
-blocker at compact poses, and B then gives the router compact poses. The
-D slices go last because they change the most code. Measure B before
-committing to D-c.
+Order: A → K → E1 → C → B1 → D-a → D-b → D-c → B3/E2/E3. A and K are
+cheap and change what is measured, E1 baselines every later step, C
+removes the largest blocker at compact poses, B1 then gives the router
+compact poses, and the D slices change the most code.
 
 ## Streamlining
 
 | area | now | after D-c |
 |---|---|---|
-| `realise.py` | 4951 lines, 62 top-level defs, `_spoke_offsets` 1289 lines, `assign_layers` 403, `_site_via` 267 | ≈1500: `assign_layers` (now a hint), maze, `sketch_rows`, `widen_*` |
+| `realise.py` | 4951 lines, 62 top-level defs, `_spoke_offsets` 1289 lines, `assign_layers` 403, `_site_via` 267 | ≈1500: `assign_layers`, one kink + repair routine, `sketch_rows`, `widen_*` |
+| wire geometry | taut → spoke offsets → 45° L/jog redraw → simplify → coalesce → off-angle refusal | taut → spoke offsets → clear shortcut (K) |
 | clearance | 6 pad builders, 6 segment-distance helpers, 7 vetoes | one `CopperIndex`, matching DRC by test |
 | recovery | pass 2 + 8 rounds + 3 job shoves, all full re-routes | per-branch rip-up inside one route |
 | `RoutePlan` failure fields | `crossings`, `unreachable`, `stranded`, `no_via`, `guarded`, `severed`, `off_angle`, `withdrawn` | `failed: {branch: reason}` |
@@ -279,32 +307,30 @@ with the DRC oracle, `wires.json`/masks and the fab overlays.
    complete (slot pins included), committed copper DRC 0, every `near`
    measure within bound, no part outside the outline.
 2. Sanity: 20/20, DRC 0 (pcb-topo-place acceptance 9).
-3. Status is honest: no `realized` net with <2 members, and summary and
-   digest show complete nets and connections.
-4. One clearance oracle on the route path. The parity test against
+3. Status is honest: a net with <2 members is never counted as routed,
+   and summary and digest show complete nets and connections.
+4. Wires are any-angle with few segments: a realized two-pin net between
+   unobstructed pads is one segment, and no check reports `octilinear`.
+5. One clearance oracle on the route path. The parity test against
    `run_geometric_drc` passes, and `topoplace/` holds no other
    pad-polygon builder.
-5. `realise.py` ≤ 2000 lines. `RoutePlan` has one failure field.
-6. The taz-leaf place+route job takes ≤ 4 min.
+6. `realise.py` ≤ 2000 lines. `RoutePlan` has one failure field.
+7. The taz-leaf place+route job takes ≤ 4 min.
 
 ## Explicitly NOT in scope
 
-A new placer engine; blind or buried vias; impedance-controlled widths;
-changes to DRC rules or capability rows; a GND pour unless D2 rules one
-in; the EasyEDA round-trip.
+A grid or maze router (retired, Reto 2026-11-01); a new placer engine;
+blind or buried vias; impedance-controlled widths; capability rows; the
+EasyEDA round-trip.
 
 ## Open questions / decisions log
 
-- **D1 (Reto):** corridor maze as the detailed realiser, with topo kept
-  as the global router — yes/no. This is not vroute coming back: it runs
-  inside topo's corridors and replaces the slice-5 heuristics, not the
-  topology. Blocks D-b and D-c.
-- **D2 (Reto):** GND on In1 as routed, widened traces with per-pad fanout
-  vias, which stays inside me507871 ("every copper layer is a routing
-  layer", no pours), or a pour on In1 with stitching vias, which
-  supersedes me507871. The 2026-10-31 transfer note records Reto OKing
-  the pour, but graph memory still holds the no-pour ruling. Blocks C.
-- **D3 (Reto):** the taz-leaf decap and crystal `near` measures become
-  `hard: true`.
-- **D4 (Reto):** the incumbent margin for B2 (the field-placer precedent
-  was 2 %).
+- **D1, ruled 2026-11-01:** no grid router. Topo, then kink the wires; the
+  realiser repairs a failed kink inside its corridor (D-b).
+- **D2, ruled 2026-11-01:** a GND pour on In1 is allowed as an interim if
+  it is really needed ("I am not a pour fan, I feel we can do better but
+  not just yet"). C tries routed GND on In1 first.
+- **D3, ruled 2026-11-01:** a decap or crystal beyond its limit fails DRC
+  (A6). The limit is the measure's own goal.
+- **Wire angles, ruled 2026-11-01:** free; few segments (K).
+- **D4, dropped:** the incumbent rule (B2) waits on E1's airwire ratio.

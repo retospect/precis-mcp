@@ -263,7 +263,9 @@ _AMBIENT_CONN: contextvars.ContextVar[Connection | None] = contextvars.ContextVa
 #: ORDER BY, WHERE). Board meta drops the keys the recorder writes
 #: (``drc_runs_by_phase``, ``drc_revisions``, ``drc_scopes``) and
 #: ``op='order'``'s ``jlc_order`` cart record — none changes a verdict;
-#: ``part_footprints`` hashes only its geometry columns.
+#: ``part_footprints`` hashes only its geometry columns. A measure row is a
+#: verdict input (the ``measure`` check rule); its ``meta.snapped`` is the
+#: place job's stamp on an ``ok`` align, never a finding, so it drops.
 _REVISION_PARTS: tuple[tuple[str, str, str, str], ...] = (
     (
         "ROW(t.board_id, t.name, t.stackup, t.fold_lines, "
@@ -314,6 +316,13 @@ _REVISION_PARTS: tuple[tuple[str, str, str, str], ...] = (
         "t",
         "pcb_fixed_copper t",
         "t.fixed_id",
+        "t.ref_id = %(ref)s AND t.retired_at IS NULL",
+    ),
+    (
+        "ROW(t.measure_id, t.metric, t.direction, t.goal, t.strength, t.weight, "
+        "t.operands, t.reason, t.meta - 'snapped')",
+        "pcb_measures t",
+        "t.measure_id",
         "t.ref_id = %(ref)s AND t.retired_at IS NULL",
     ),
     ("t", "pcb_generators t", "t.name", "t.ref_id = %(ref)s"),
@@ -3112,6 +3121,10 @@ class PcbMixin:
     def _pcb_insert_measure(
         self, conn: Connection, ref_id: int, m: dict[str, Any]
     ) -> None:
+        # Every put path lands here (authored batches and generator
+        # expansions alike): a builder-shaped row (`Board.near` & co.)
+        # stored verbatim read `near | gauge | pending` and never steered.
+        m = pcb_rows.measure_row(m)
         metric = str(m.get("metric") or "").strip()
         if not metric:
             raise ValueError("pcb measure needs a metric")
@@ -5487,31 +5500,50 @@ class PcbMixin:
         pins: list[dict[str, Any]],
         prior: list[list[str]],
         meta: dict[str, Any] | None = None,
+        conn: Connection | None = None,
     ) -> int:
         """Append one resolve's snapshot and prune the board to its
         :data:`_SNAPSHOT_KEEP` newest. Derived and regenerable: a resolve
         appends, nothing edits a row. The snapshot migration 0221 wrote
         from ``pcb_pin_swaps`` (``meta.source = 'pcb_pin_swaps'``) is kept
         regardless: it holds the dropped table's rows verbatim. Returns the
-        new ``snapshot_id``."""
-        with self._pcb_tx() as conn:
-            row = conn.execute(
-                "INSERT INTO pcb_netlist_snapshots "
-                "(board_id, content_hash, pins, prior, meta) "
-                "VALUES (%s, %s, %s, %s, %s) RETURNING snapshot_id",
-                (board_id, content_hash, Jsonb(pins), Jsonb(prior), Jsonb(meta or {})),
-            ).fetchone()
-            assert row is not None
-            conn.execute(
-                "DELETE FROM pcb_netlist_snapshots WHERE board_id = %s "
-                # The migration-0221 row is the only record of the dropped
-                # pcb_pin_swaps rows (meta.unmapped): never pruned.
-                "AND meta->>'source' IS DISTINCT FROM 'pcb_pin_swaps' "
-                "AND snapshot_id NOT IN (SELECT snapshot_id FROM "
-                "pcb_netlist_snapshots WHERE board_id = %s "
-                "ORDER BY snapshot_id DESC LIMIT %s)",
-                (board_id, board_id, _SNAPSHOT_KEEP),
+        new ``snapshot_id``. Reuses ``conn`` inside an existing transaction
+        (the topo place job commits its flex-slot wiring with the pose)."""
+        if conn is not None:
+            return self._pcb_netlist_snapshot_write(
+                conn, board_id, content_hash, pins, prior, meta
             )
+        with self._pcb_tx() as c:
+            return self._pcb_netlist_snapshot_write(
+                c, board_id, content_hash, pins, prior, meta
+            )
+
+    def _pcb_netlist_snapshot_write(
+        self,
+        conn: Connection,
+        board_id: int,
+        content_hash: str,
+        pins: list[dict[str, Any]],
+        prior: list[list[str]],
+        meta: dict[str, Any] | None,
+    ) -> int:
+        row = conn.execute(
+            "INSERT INTO pcb_netlist_snapshots "
+            "(board_id, content_hash, pins, prior, meta) "
+            "VALUES (%s, %s, %s, %s, %s) RETURNING snapshot_id",
+            (board_id, content_hash, Jsonb(pins), Jsonb(prior), Jsonb(meta or {})),
+        ).fetchone()
+        assert row is not None
+        conn.execute(
+            "DELETE FROM pcb_netlist_snapshots WHERE board_id = %s "
+            # The migration-0221 row is the only record of the dropped
+            # pcb_pin_swaps rows (meta.unmapped): never pruned.
+            "AND meta->>'source' IS DISTINCT FROM 'pcb_pin_swaps' "
+            "AND snapshot_id NOT IN (SELECT snapshot_id FROM "
+            "pcb_netlist_snapshots WHERE board_id = %s "
+            "ORDER BY snapshot_id DESC LIMIT %s)",
+            (board_id, board_id, _SNAPSHOT_KEEP),
+        )
         return int(row[0])
 
     def pcb_set_class_rules(
