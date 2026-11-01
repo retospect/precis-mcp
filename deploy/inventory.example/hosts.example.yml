@@ -81,6 +81,16 @@ all:
     # from the NAS, the old server's fstab line is replaced, macOS unmounts
     # the old share (stop its users first), Linux nodes need a reboot.
     # cluster_share_on_nas: false
+    # NAS SSH host-key pins (gr513894). TOS updates regenerate the NAS's SSH
+    # host keys; scripts/host-ops/nas-hostkey-check compares an ssh-keyscan
+    # against these pins so a change is checked, not guessed. nas_ssh_port is
+    # the TOS sshd port — non-standard, set it explicitly (no default). The
+    # pin values are the full "SHA256:…" strings `ssh-keygen -lf` prints;
+    # the operator writes them here in the gitignored overlay — never in the
+    # repo. Unset pins are reported UNPINNED by the check.
+    # nas_ssh_port: <the TOS sshd port>
+    # nas_hostkey_sha256_ed25519: "SHA256:<fingerprint>"
+    # nas_hostkey_sha256_ecdsa: "SHA256:<fingerprint>"
 
   children:
     macos:
@@ -166,7 +176,9 @@ all:
     # monitoring_db_exporters: true adds the postgres_exporter :9187 /
     # pgbouncer_exporter :9127 scrape jobs and PostgresDown; default false,
     # set it after playbook 18a (role db_exporters) runs both exporters on
-    # the DB node and their targets answer.
+    # the DB node and their targets answer. monitoring_nas_hostkey: true adds
+    # the hourly NAS SSH host-key pin probe + NASHostKeyMismatch alert (needs
+    # nas_ssh_port and at least one nas_hostkey_sha256_* pin); default off.
     monitoring:
       hosts:
         node-gpu:

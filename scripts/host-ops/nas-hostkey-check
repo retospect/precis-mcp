@@ -1,0 +1,102 @@
+#!/usr/bin/env bash
+# NAS SSH host-key pin check (gr513894). A TOS update on the NAS regenerates
+# every SSH host key unannounced — the 2026-10-24 update broke each ssh path
+# with "REMOTE HOST IDENTIFICATION HAS CHANGED" and confirming the new keys
+# took a console round-trip. This compares what the NAS offers now against
+# the pinned fingerprints so the next change is checked, not guessed.
+#
+# Coordinates and pins all come from the gitignored overlay
+# (deploy/inventory/hosts.yml, read via scripts/lib/pgb-host.sh):
+#   nas_host                        — the NAS hostname (already used for NFS)
+#   nas_ssh_port                    — the TOS sshd port (non-standard; no default)
+#   nas_hostkey_sha256_ed25519      — pinned "SHA256:…" fingerprint (optional)
+#   nas_hostkey_sha256_ecdsa        — pinned "SHA256:…" fingerprint (optional)
+# At least one pin must be set. A scanned key type with no pin prints an
+# UNPINNED line carrying the fingerprint — copy it into the overlay to pin.
+set -euo pipefail
+
+usage() {
+  cat <<'EOF'
+usage: nas-hostkey-check
+
+ssh-keyscan the NAS (nas_host:nas_ssh_port from the overlay) and compare the
+offered ed25519/ecdsa host-key SHA256 fingerprints to the
+nas_hostkey_sha256_* pins. rc 0 = every pinned type matches; rc 1 = mismatch,
+pinned type not offered, or host unreachable; rc 2 = usage/config error.
+EOF
+}
+
+_HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=scripts/lib/pgb-host.sh
+. "${_HERE}/../lib/pgb-host.sh"
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --help|-h) usage; exit 0 ;;
+    *) echo "unknown flag $1 (try --help)" >&2; exit 2 ;;
+  esac
+done
+
+# Like resolve_inventory_var but quiet when unset — the pins are optional
+# individually (an operator may pin ed25519 only at first).
+overlay_var_or_empty() {
+  local overlay
+  overlay="$(resolve_overlay)" || return 2
+  awk -v k="${1}:" '$1 == k { gsub(/["\047]/, "", $2); print $2; exit }' "$overlay"
+}
+
+HOST="$(resolve_inventory_var nas_host)"
+PORT="$(resolve_inventory_var nas_ssh_port)"
+PIN_ED25519="$(overlay_var_or_empty nas_hostkey_sha256_ed25519)"
+PIN_ECDSA="$(overlay_var_or_empty nas_hostkey_sha256_ecdsa)"
+
+if [[ -z "$PIN_ED25519" && -z "$PIN_ECDSA" ]]; then
+  echo "nas-hostkey-check: no pins set in $(resolve_overlay)." >&2
+  echo "  set nas_hostkey_sha256_ed25519 and/or nas_hostkey_sha256_ecdsa" >&2
+  echo "  (the full 'SHA256:…' string ssh-keygen -lf prints)" >&2
+  exit 2
+fi
+
+SCAN="$(ssh-keyscan -T 10 -p "$PORT" -t ed25519,ecdsa "$HOST" 2>/dev/null)" || SCAN=""
+if [[ -z "$SCAN" ]]; then
+  echo "nas-hostkey-check: ssh-keyscan $HOST (port $PORT) returned no keys — host unreachable?" >&2
+  exit 1
+fi
+
+KEYS="$(mktemp "${TMPDIR:-/tmp}/nas-hostkey.XXXXXX")"
+trap 'rm -f "$KEYS"' EXIT
+printf '%s\n' "$SCAN" >"$KEYS"
+
+# "<bits> SHA256:<fp> <comment> (<TYPE>)" per offered key.
+FPS="$(ssh-keygen -lf "$KEYS" 2>/dev/null)" || {
+  echo "nas-hostkey-check: ssh-keygen could not fingerprint the keyscan output" >&2
+  exit 1
+}
+
+FAIL=0
+check_type() {
+  local name="$1" label="$2" pin="$3" seen
+  seen="$(printf '%s\n' "$FPS" | awk -v want="($label)" '$NF == want { print $2; exit }')"
+  if [[ -z "$seen" ]]; then
+    if [[ -n "$pin" ]]; then
+      echo "MISSING $name: pinned as $pin but the host did not offer that key type"
+      return 1
+    fi
+    echo "absent $name (unpinned, host offers no $label key)"
+    return 0
+  fi
+  if [[ -z "$pin" ]]; then
+    echo "UNPINNED $name $seen — set nas_hostkey_sha256_$name in the overlay to pin"
+    return 0
+  fi
+  if [[ "$seen" == "$pin" ]]; then
+    echo "OK $name $seen"
+    return 0
+  fi
+  echo "MISMATCH $name: pinned $pin, host offers $seen"
+  return 1
+}
+
+check_type ed25519 ED25519 "$PIN_ED25519" || FAIL=1
+check_type ecdsa ECDSA "$PIN_ECDSA" || FAIL=1
+exit "$FAIL"

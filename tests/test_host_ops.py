@@ -24,6 +24,7 @@ _REPO = Path(__file__).resolve().parent.parent
 _DIR = _REPO / "scripts" / "host-ops"
 _SCRIPTS = [
     "lanes-overlay",
+    "nas-hostkey-check",
     "nfs-keepalive",
     "nfs-recover",
     "os-update",
@@ -523,3 +524,133 @@ def test_lanes_overlay_dry_run_no_writes(
     result = _run(env, "lanes-overlay")
     assert result.returncode != 0
     assert (overlay / "hosts.yml").read_text(encoding="utf-8") == before
+
+
+# ── nas-hostkey-check: keyscan vs overlay pins (gr513894) ───────────────────
+
+# Canned key lines — the gate image has no openssh-client, so both the scan
+# and the fingerprinting are stubbed. The ssh-keygen stub reprints each
+# "<host> <keytype> <blob>" line in real -lf shape
+# ("<bits> SHA256:<fp> <comment> (<TYPE>)") with fp = "SHA256:" + the key
+# blob, so a pin is just that string.
+_NAS_PUB = {
+    "ed25519": ("ssh-ed25519", "AAAfixtureED25519hostkey"),
+    "ecdsa": ("ecdsa-sha2-nistp256", "BBBfixtureECDSAhostkey"),
+}
+_NAS_FP = {k: "SHA256:" + b64 for k, (_, b64) in _NAS_PUB.items()}
+
+
+def _nas_yml(port: str | None = '"2222"', **pins: str) -> str:
+    lines = [
+        "all:",
+        "  vars:",
+        "    nas_host: fileserver.example",
+    ]
+    if port is not None:
+        lines.append(f"    nas_ssh_port: {port}")
+    lines += [f'    nas_hostkey_sha256_{k}: "{v}"' for k, v in sorted(pins.items())]
+    return "\n".join(lines) + "\n"
+
+
+@pytest.fixture
+def nas_scan(tmp_path: Path) -> dict[str, str]:
+    """Fake ``ssh-keyscan`` (logs argv, offers the canned keys) and fake
+    ``ssh-keygen -lf`` (reprints them in real fingerprint shape)."""
+    d = tmp_path / "scanbin"
+    d.mkdir()
+    calls = tmp_path / "keyscan.calls"
+    (d / "ssh-keyscan").write_text(
+        "#!/bin/sh\n"
+        f'echo "$*" >> "{calls}"\n'
+        + "".join(
+            f"echo 'fileserver.example {kt} {b64}'\n" for kt, b64 in _NAS_PUB.values()
+        ),
+        encoding="utf-8",
+    )
+    (d / "ssh-keygen").write_text(
+        "#!/bin/sh\n"
+        "while [ $# -gt 1 ]; do shift; done\n"
+        'awk \'$2 == "ssh-ed25519" {print "256 SHA256:" $3, $1, "(ED25519)"}\n'
+        '     $2 ~ /^ecdsa/        {print "256 SHA256:" $3, $1, "(ECDSA)"}\''
+        ' "$1"\n',
+        encoding="utf-8",
+    )
+    for s in d.iterdir():
+        s.chmod(0o755)
+    return {"bin": str(d), "calls": str(calls)}
+
+
+def _nas_run(
+    tmp_path: Path, scanbin: str, hosts_yml: str
+) -> subprocess.CompletedProcess[str]:
+    env = _env(tmp_path, {"bin": scanbin}, hosts_yml=hosts_yml)
+    return _run(env, "nas-hostkey-check")
+
+
+def test_nas_hostkey_ok_and_port_from_overlay(
+    tmp_path: Path, nas_scan: dict[str, str]
+) -> None:
+    r = _nas_run(
+        tmp_path,
+        nas_scan["bin"],
+        _nas_yml(ed25519=_NAS_FP["ed25519"], ecdsa=_NAS_FP["ecdsa"]),
+    )
+    assert r.returncode == 0, r.stderr
+    assert f"OK ed25519 {_NAS_FP['ed25519']}" in r.stdout
+    assert f"OK ecdsa {_NAS_FP['ecdsa']}" in r.stdout
+    calls = _calls(nas_scan["calls"])
+    assert len(calls) == 1
+    assert "-p 2222" in calls[0] and "fileserver.example" in calls[0]
+
+
+def test_nas_hostkey_mismatch_exits_1(tmp_path: Path, nas_scan: dict[str, str]) -> None:
+    # Pin ed25519 to the ecdsa fingerprint: genuinely different, real-shaped.
+    r = _nas_run(
+        tmp_path,
+        nas_scan["bin"],
+        _nas_yml(ed25519=_NAS_FP["ecdsa"], ecdsa=_NAS_FP["ecdsa"]),
+    )
+    assert r.returncode == 1
+    assert "MISMATCH ed25519" in r.stdout
+    assert "OK ecdsa" in r.stdout
+
+
+def test_nas_hostkey_unpinned_reports_fingerprint(
+    tmp_path: Path, nas_scan: dict[str, str]
+) -> None:
+    r = _nas_run(tmp_path, nas_scan["bin"], _nas_yml(ed25519=_NAS_FP["ed25519"]))
+    assert r.returncode == 0, r.stderr
+    assert "OK ed25519" in r.stdout
+    assert f"UNPINNED ecdsa {_NAS_FP['ecdsa']}" in r.stdout
+    assert "nas_hostkey_sha256_ecdsa" in r.stdout
+
+
+def test_nas_hostkey_no_pins_refuses(tmp_path: Path, nas_scan: dict[str, str]) -> None:
+    r = _nas_run(tmp_path, nas_scan["bin"], _nas_yml())
+    assert r.returncode == 2
+    assert "nas_hostkey_sha256_ed25519" in r.stderr
+    assert _calls(nas_scan["calls"]) == []
+
+
+def test_nas_hostkey_missing_port_names_the_var(
+    tmp_path: Path, nas_scan: dict[str, str]
+) -> None:
+    r = _nas_run(
+        tmp_path,
+        nas_scan["bin"],
+        _nas_yml(port=None, ed25519=_NAS_FP["ed25519"]),
+    )
+    assert r.returncode == 2
+    assert "nas_ssh_port" in r.stderr
+    assert _calls(nas_scan["calls"]) == []
+
+
+def test_nas_hostkey_unreachable_exits_1(tmp_path: Path) -> None:
+    d = tmp_path / "failbin"
+    d.mkdir()
+    stub = d / "ssh-keyscan"
+    stub.write_text("#!/bin/sh\nexit 1\n", encoding="utf-8")
+    stub.chmod(0o755)
+    r = _nas_run(tmp_path, str(d), _nas_yml(ed25519=_NAS_FP["ed25519"]))
+    assert r.returncode == 1
+    assert "unreachable" in r.stderr

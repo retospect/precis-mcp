@@ -28,6 +28,7 @@ Allow line pending Reto in `.claude/settings.json`, next to
 | `pin-prod` | `git -C $PROD_CHECKOUT fetch` + `checkout --detach origin/prod` and print the result. `PROD_CHECKOUT` defaults to `<main-checkout>-prod` (the env-pointers.sh derivation; `PRECIS_PROD_CHECKOUT` also overrides). | <!-- home-path: allow — the prod-clone convention on hosts -->
 | `play` | The pinned-checkout ansible wrapper: refuses unless `PROD_CHECKOUT` (same `<main-checkout>-prod` derivation / `PRECIS_PROD_CHECKOUT` override as pin-prod) is exactly `origin/prod` (after a fetch), clean, and contains the host-lanes commit `932364d0a` (`HOST_LANES_SHA` env overrides the gate sha). <!-- sha-gate: allow — a gate value the play wrapper checks, not a freshness stamp --> Then runs `ansible-playbook -i <overlay hosts.yml> --vault-password-file deploy/.vault-pass -e precis_{worker,web,embedder}_git_ref=<prod sha> "$@"` from `$PROD_CHECKOUT/deploy` — the SHA_ARGS pin is what keeps a playbook from installing `main` (the 2026-10-15 castor venv break came from a run out of the main checkout). |
 | `lanes-overlay` | The one-shot overlay patch for host-lanes: edits `hosts.yml` groups (new `vllm_serving`, castor out of `compute`, spark into `compute` + `agent_sandbox_hosts`), `group_vars/all/topology.yml` capability lists, and `host_vars/{spark,castor}.yml`. Dry run prints the diff; `--apply` writes. Every anchor must match exactly once or it aborts without writing — a re-run after the overlay is already patched refuses cleanly. Commit in the overlay repo afterwards. `PRECIS_OVERLAY_DIR` overrides the overlay location. |
+| `nas-hostkey-check` | ssh-keyscan the NAS (`nas_host`:`nas_ssh_port` from the overlay) and compare the offered ed25519/ecdsa host-key SHA256 fingerprints to the `nas_hostkey_sha256_*` overlay pins. rc 0 = every pinned type prints `OK`; `MISMATCH`/`MISSING`/unreachable exits 1. A scanned type with no pin prints `UNPINNED <type> SHA256:…` — the line to copy into the overlay. |
 
 ## OS-update run order
 
@@ -66,3 +67,27 @@ port.
   - spark: those two plus precis-worker-sandbox 2G.
 - `/status` shows a heartbeat from spark; the next autocatpath seed lands on
   pollux or spark.
+
+## After a NAS TOS update
+
+TOS updates regenerate the NAS's SSH host keys unannounced (gr513894 — the
+2026-10-24 update broke every ssh path with "REMOTE HOST IDENTIFICATION HAS
+CHANGED" and confirming the new keys took a console round-trip). Right after
+any TOS update, before the next scheduled ssh use of the NAS:
+
+1. `scripts/host-ops/nas-hostkey-check` — expect `MISMATCH` or `MISSING`
+   lines; `UNPINNED`/`MISMATCH` output shows the fingerprints the NAS now
+   offers.
+2. Confirm the new fingerprints out-of-band — Reto at the NAS console
+   (`ssh-keygen -lf /etc/ssh/ssh_host_*_key.pub` there). Never pin a key the
+   network hands you unverified.
+3. Write the confirmed values into the overlay `deploy/inventory/hosts.yml`
+   (`all.vars`, next to `nas_host`): `nas_hostkey_sha256_ed25519` and
+   `nas_hostkey_sha256_ecdsa` hold the full `SHA256:…` string;
+   `nas_ssh_port` is the TOS sshd port — update it too if the update moved
+   it.
+4. Re-run the check until every pinned type prints `OK`, then refresh the
+   stale `known_hosts` entries (`ssh-keygen -R`, or the ssh_tunnels keyscan
+   task via `play`) so ssh stops refusing.
+5. With `monitoring_nas_hostkey` set (dark by default), the hourly probe on
+   the monitoring node raises `NASHostKeyMismatch` on any later drift.

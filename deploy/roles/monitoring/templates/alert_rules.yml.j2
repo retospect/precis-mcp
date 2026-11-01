@@ -88,6 +88,35 @@ groups:
           severity: warning
         annotations:
           summary: "NAS restic heartbeat metric is missing on the monitoring node"
+{% if monitoring_nas_hostkey | bool %}
+      # The hourly probe emits precis_nas_hostkey_match per pinned key type
+      # (gr513894 — a TOS update regenerated the keys and broke every ssh
+      # path). It emits only when the keyscan succeeds: an unreachable NAS
+      # goes stale, never reads as a mismatch.
+      - alert: NASHostKeyMismatch
+        expr: precis_nas_hostkey_match == 0
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "{% raw %}NAS SSH {{ $labels.keytype }} host key differs from the pinned fingerprint (TOS update or MITM) — run scripts/host-ops/nas-hostkey-check{% endraw %}"
+
+      - alert: NASHostKeyMetricStale
+        expr: time() - node_textfile_mtime_seconds{file=~".*nas_hostkey.prom"} > 7200
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "{% raw %}NAS host-key probe has stopped on {{ $labels.instance }}{% endraw %}"
+
+      - alert: NASHostKeyMetricAbsent
+        expr: up{job="node", instance="{{ ansible_host }}:9100"} == 1 unless on(instance) precis_nas_hostkey_match
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "NAS host-key metric is missing on the monitoring node"
+{% endif %}
 {% endif %}
 {% if monitoring_db_exporters | bool %}
       - alert: PostgresDown

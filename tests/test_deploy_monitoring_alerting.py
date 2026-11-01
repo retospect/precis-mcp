@@ -307,3 +307,118 @@ def test_redeploy_bounces_a_stale_receiver_on_monitoring_hosts() -> None:
     # an active unit with an unparseable start time must restart, not skip
     assert "echo stale; exit 0" in script
     assert "precis-alertmanager-receiver" in text
+
+
+# ── gr513894: the NAS host-key pin probe is dark unless enabled ──────────────
+
+
+def _rule_names(**over: object) -> set[str]:
+    return {
+        r["alert"]
+        for g in yaml.safe_load(_render("alert_rules.yml.j2", **over))["groups"]
+        for r in g["rules"]
+    }
+
+
+def test_nas_hostkey_rules_dark_by_default_and_scoped_to_monitoring() -> None:
+    assert "NASHostKeyMismatch" not in _rule_names()
+    assert "NASHostKeyMismatch" not in _rule_names(
+        group_names=[], monitoring_nas_hostkey=True
+    )
+    on = _rule_names(monitoring_nas_hostkey=True)
+    assert {
+        "NASHostKeyMismatch",
+        "NASHostKeyMetricStale",
+        "NASHostKeyMetricAbsent",
+    } <= on
+
+
+def test_nas_hostkey_rule_exprs() -> None:
+    rules = {
+        r["alert"]: r
+        for g in yaml.safe_load(
+            _render("alert_rules.yml.j2", monitoring_nas_hostkey=True)
+        )["groups"]
+        for r in g["rules"]
+    }
+    assert rules["NASHostKeyMismatch"]["expr"] == "precis_nas_hostkey_match == 0"
+    assert rules["NASHostKeyMismatch"]["labels"]["severity"] == "critical"
+    assert "nas_hostkey.prom" in rules["NASHostKeyMetricStale"]["expr"]
+    assert "precis_nas_hostkey_match" in rules["NASHostKeyMetricAbsent"]["expr"]
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX-only shell probe")
+def test_nas_hostkey_probe_marks_match_mismatch_and_unreachable(
+    tmp_path: Path,
+) -> None:
+    # The gate image has no openssh-client: stub both ssh-keyscan and
+    # ssh-keygen -lf (reprints "<host> <type> <blob>" lines in real -lf shape
+    # with fp = "SHA256:" + blob, so a pin is just that string).
+    blob = "AAAfixtureED25519hostkey"
+    fp = "SHA256:" + blob
+    scanbin = tmp_path / "scanbin"
+    scanbin.mkdir()
+    stub = scanbin / "ssh-keyscan"
+    stub.write_text(
+        f"#!/bin/sh\necho 'nas.test ssh-ed25519 {blob}'\n", encoding="utf-8"
+    )
+    keygen = scanbin / "ssh-keygen"
+    keygen.write_text(
+        "#!/bin/sh\n"
+        "while [ $# -gt 1 ]; do shift; done\n"
+        'awk \'$2 == "ssh-ed25519" {print "256 SHA256:" $3, $1, "(ED25519)"}\''
+        ' "$1"\n',
+        encoding="utf-8",
+    )
+    for s in scanbin.iterdir():
+        s.chmod(0o755)
+
+    script = tmp_path / "probe.sh"
+
+    def render(pin: str) -> None:
+        script.write_text(
+            _render(
+                "nas-hostkey-metrics.sh.j2",
+                nas_restic_textfile_dir=str(tmp_path),
+                nas_host="nas.test",
+                nas_ssh_port="2222",
+                nas_hostkey_sha256_ed25519=pin,
+            ),
+            encoding="utf-8",
+        )
+
+    env = _gnu_tool_env(tmp_path)
+    env["PATH"] = f"{scanbin}:{env['PATH']}"
+    metric = tmp_path / "nas_hostkey.prom"
+
+    render(fp)
+    subprocess.run(["sh", str(script)], check=True, env=env)
+    assert metric.read_text(encoding="utf-8") == (
+        'precis_nas_hostkey_match{keytype="ed25519"} 1\n'
+    )
+
+    # A pin the NAS doesn't offer reads 0 — that is what the alert fires on.
+    render("SHA256:" + "0" * 43)
+    subprocess.run(["sh", str(script)], check=True, env=env)
+    assert metric.read_text(encoding="utf-8").endswith("} 0\n")
+
+    # Unreachable NAS: no emit, the stale rule — not a false mismatch — fires.
+    stub.write_text("#!/bin/sh\nexit 1\n", encoding="utf-8")
+    render(fp)
+    before = metric.read_text(encoding="utf-8")
+    subprocess.run(["sh", str(script)], check=True, env=env)
+    assert metric.read_text(encoding="utf-8") == before
+
+
+def test_linux_tasks_gate_the_hostkey_probe_on_the_flag() -> None:
+    defaults = yaml.safe_load(
+        (_ROLE / "defaults" / "main.yml").read_text(encoding="utf-8")
+    )
+    assert defaults["monitoring_nas_hostkey"] is False
+    tasks = yaml.safe_load((_ROLE / "tasks" / "linux.yml").read_text(encoding="utf-8"))
+    gated = [t for t in tasks if "host-key" in t["name"]]
+    assert len(gated) == 3
+    for t in gated:
+        assert t["when"] == "monitoring_nas_hostkey | bool"
+    src = (_ROLE / "tasks" / "linux.yml").read_text(encoding="utf-8")
+    assert "nas-hostkey-metrics.sh.j2" in src

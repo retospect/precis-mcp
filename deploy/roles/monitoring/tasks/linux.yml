@@ -40,6 +40,30 @@
     user: root
   become: true
 
+- name: Deploy NAS host-key pin probe
+  ansible.builtin.template:
+    src: nas-hostkey-metrics.sh.j2
+    dest: "{{ ops_script_dir }}/nas-hostkey-metrics.sh"
+    owner: root
+    mode: "0755"
+  become: true
+  when: monitoring_nas_hostkey | bool
+
+- name: Seed NAS host-key metric
+  ansible.builtin.command: "{{ ops_script_dir }}/nas-hostkey-metrics.sh"
+  become: true
+  changed_when: false
+  when: monitoring_nas_hostkey | bool
+
+- name: Schedule NAS host-key pin probe
+  ansible.builtin.cron:
+    name: "NAS host-key pin metric"
+    minute: "37"
+    job: "{{ ops_script_dir }}/nas-hostkey-metrics.sh"
+    user: root
+  become: true
+  when: monitoring_nas_hostkey | bool
+
 - name: Install Prometheus and Alertmanager (Linux)
   ansible.builtin.apt:
     name:

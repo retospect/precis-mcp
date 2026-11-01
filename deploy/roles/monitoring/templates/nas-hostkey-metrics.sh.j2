@@ -1,0 +1,29 @@
+#!/bin/sh
+# Hourly NAS SSH host-key pin check → textfile metric (gr513894; deployed and
+# scheduled only when monitoring_nas_hostkey is set). TOS updates regenerate
+# the NAS's SSH host keys unannounced: each pinned key type that matches its
+# overlay pin emits 1, a scanned-but-different or missing type emits 0 and
+# NASHostKeyMismatch fires. An unreachable NAS emits nothing — the .prom file
+# keeps its last values and NASHostKeyMetricStale covers a dead probe.
+set -eu
+out="{{ nas_restic_textfile_dir }}/nas_hostkey.prom"
+tmp="${out}.$$"
+keys="${tmp}.keys"
+trap 'rm -f "$tmp" "$keys"' EXIT
+scan=$(timeout 20 ssh-keyscan -T 10 -p {{ nas_ssh_port }} -t ed25519,ecdsa {{ nas_host }} 2>/dev/null) || scan=
+if [ -n "$scan" ]; then
+  printf '%s\n' "$scan" >"$keys"
+  : >"$tmp"
+  emit() {
+    seen=$(ssh-keygen -lf "$keys" 2>/dev/null | awk -v w="($2)" '$NF == w {print $2; exit}')
+    if [ -n "$seen" ] && [ "$seen" = "$3" ]; then m=1; else m=0; fi
+    printf 'precis_nas_hostkey_match{keytype="%s"} %s\n' "$1" "$m" >>"$tmp"
+  }
+{%- if nas_hostkey_sha256_ed25519 | default('') %}
+  emit ed25519 ED25519 '{{ nas_hostkey_sha256_ed25519 }}'
+{%- endif %}
+{%- if nas_hostkey_sha256_ecdsa | default('') %}
+  emit ecdsa ECDSA '{{ nas_hostkey_sha256_ecdsa }}'
+{%- endif %}
+  mv -f "$tmp" "$out"
+fi

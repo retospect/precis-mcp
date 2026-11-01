@@ -22,6 +22,13 @@ monitoring_restic_heartbeat_file: "{{ nas_root }}/backups/restic-last-ok"
 # answer.
 monitoring_db_exporters: false
 
+# Hourly ssh-keyscan probe on this node comparing the NAS's offered SSH host
+# keys to the nas_hostkey_sha256_* overlay pins (gr513894 — a TOS update
+# regenerated them unannounced and broke every ssh path). Off by default:
+# enabling needs nas_ssh_port and at least one nas_hostkey_sha256_* pin in
+# the inventory, and raises NASHostKeyMismatch through the receiver on drift.
+monitoring_nas_hostkey: false
+
 # Alertmanager runs only where there is a Linux package for it and a
 # receiver to hand to. Override per host to turn it off.
 monitoring_alertmanager_enabled: "{{ os_family == 'linux' }}"

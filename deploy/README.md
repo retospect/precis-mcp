@@ -441,7 +441,10 @@ NAS's `/etc/hosts` line), `nas_cluster_export` and `nas_dbbackup_export` (its
 two shares), `cluster_share_on_nas` (the cutover flag for `nfs_client`; leave
 it false until the cutover window), `science_container_user` (`docker run
 --user` for dft/fold/retrosynth) and, in the DB node's host_vars,
-`host_local_root`. Scripts root runs install to `ops_script_dir`
+`host_local_root`. The NAS host-key pin check (gr513894) reads `nas_ssh_port`
+(the TOS sshd port, non-standard) plus the `nas_hostkey_sha256_ed25519` /
+`nas_hostkey_sha256_ecdsa` pins — operator-set fingerprint values that live
+in the overlay only; `monitoring_nas_hostkey` turns on the hourly probe. Scripts root runs install to `ops_script_dir`
 (`group_vars/all.yml`), never under `shared_mount`.
 
 Never bulk-copy from the private checkout: move one file, run the gate, commit.
