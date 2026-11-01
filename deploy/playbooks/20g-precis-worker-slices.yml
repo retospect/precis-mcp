@@ -1,0 +1,96 @@
+---
+# 20g-precis-worker-slices.yml — the dedicated detached-job poll lane on the
+# gateway (gr548810).
+#
+# WHY THIS EXISTS. Only the collapsed catch-all worker (20b) runs the
+# `job_ssh_node` pass on the gateway, and its serial handler rotation takes
+# 40-50 min per lap. Detached ssh_node jobs (run_slice / land_slice) are
+# polled once per lap, so a slice that exits in 7 s shows STATUS:running for
+# ~45 min.
+#
+# WHAT THIS IS. A second tiny worker running ONLY `--only job_ssh_node
+# --batch-size 1`, polling every few seconds — the same second-scheduling-lane
+# pattern as 20e (agent lane) and 43 (GPU-node job_ssh_node lane). It shares
+# only the postgres queue: `FOR UPDATE SKIP LOCKED` arbitrates claims.
+# job_ssh_node is NOT folded into 20e on purpose: ssh_node still supports
+# legacy blocking `dispatch` job types, which would hold a pass for a whole
+# run and starve the planner lane.
+#
+# ENV. A second claimant must carry everything the job types it can win read
+# (the gr346813 / embedder-mock shape, see 20e), mirroring 20b's values:
+# DB DSN + PGPASSFILE + HOME + PATH, PRECIS_CLAUDE_BIN (run_slice spawns
+# `claude`), the planner cost caps, PRECIS_SUSPENDED_JOB_TYPES, PRECIS_DFT_NODE
+# (struct_relax routing), the embedder pair, and shared/identity env.
+# run_slice's remaining reads are optional with code defaults or come from the
+# vault (OAuth token, MCP token), so they need no key here.
+#
+# NO READINESS GATE (unlike 20e/43). A single `--only` value has no
+# append-vs-store hazard, and job_ssh_node is long-registered in the
+# installed argparse choices, so a stale venv just runs the right pass.
+#
+# Run order: after 20b (rides its venv, deploy user and pgpass; imports no
+# role). The redeploy macOS `com.precis.*.plist` glob already bounces
+# `com.precis.worker-slices.plist`; the final task covers the site.yml path.
+
+- name: Deploy the dedicated slice poll lane (job_ssh_node)
+  hosts: gateway
+  become: true
+  vars:
+    # Local constants — role defaults aren't in scope (no role imported).
+    _slices_venv: /opt/precis/venv
+    _slices_dsn: "postgresql://agent_rw@{{ hostvars[postgres_host]['ansible_host'] }}:{{ pgbouncer_port }}/precis_prod"
+  tasks:
+    - name: render + load the slice poll lane unit
+      ansible.builtin.import_role:
+        name: service_unit
+      vars:
+        service_unit_name: worker-slices
+        service_unit_run_as: deploy
+        # /tmp avoids the getcwd() EPERM trap on an NFS-mounted cwd (as 20b).
+        service_unit_working_dir: /tmp
+        service_unit_process_type: Interactive
+        service_unit_schedule:
+          mode: keepalive
+        service_unit_timeout_stop_sec: 60
+        service_unit_exec: >-
+          {{ _slices_venv }}/bin/precis worker --only job_ssh_node
+          --batch-size 1
+          --idle-seconds {{ precis_worker_slices_idle_seconds | default(5) }}
+        service_unit_env: >-
+          {{ precis_shared_env
+             | combine(precis_identity_env | default({}))
+             | combine({
+                 'HOME': '/Users/deploy',
+                 'PATH': _slices_venv + '/bin:/opt/homebrew/bin:/Library/TeX/texbin:/usr/local/bin:/usr/bin:/bin',
+                 'PGPASSFILE': '/Users/deploy/.pgpass',
+                 'PRECIS_DATABASE_URL': _slices_dsn,
+                 'PRECIS_PROCESS': 'precis-worker-slices',
+                 'PRECIS_SOURCE': 'precis-worker-slices',
+                 'PRECIS_MAX_TICKS': (precis_max_ticks | default(25)) | string,
+                 'PRECIS_MAX_TODO_USD': (precis_max_todo_usd | default(5.0)) | string,
+                 'PRECIS_MAX_TREE_USD': (precis_max_tree_usd | default(10.0)) | string,
+                 'PRECIS_DAILY_COST_CEILING': (precis_daily_cost_ceiling | default(50.0)) | string,
+                 'PRECIS_SUSPENDED_JOB_TYPES': precis_suspended_job_types | default(''),
+                 'PRECIS_EMBEDDER': precis_worker_agent_embedder | default('remote'),
+                 'PRECIS_EMBEDDER_URL': precis_worker_agent_embedder_url
+                   | default('http://127.0.0.1:' ~ (embedder_port | default(8181))),
+               })
+             | combine(
+                 {'PRECIS_DFT_NODE': (precis_capabilities.dft | first)}
+                 if ((precis_capabilities.dft | default([])) | length > 0) else {}
+               )
+             | combine(
+                 {'PRECIS_CLAUDE_BIN': claude_run_wrapper | default('/opt/precis/bin/claude-run-user')}
+                 if ((claude_run_user | default('')) | length > 0) else {}
+               ) }}
+
+    # Code-refresh bounce for the site.yml path ONLY: redeploy defines
+    # `precis_deploy_changed` and its blanket plist bounce already restarted
+    # this unit; service_unit's own reload fires only on a plist diff.
+    - name: Bounce the slices lane on a code refresh (site.yml path)
+      ansible.builtin.command: launchctl kickstart -k system/com.precis.worker-slices
+      become: true
+      when: precis_deploy_changed is not defined
+      changed_when: true
+      failed_when: false
+  tags: [precis-worker-slices, precis]

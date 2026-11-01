@@ -585,6 +585,11 @@
 - name: "Agent worker lane              (gateway, job_claude_inproc + job_inproc)"
   ansible.builtin.import_playbook: playbooks/20e-precis-worker-agentlane.yml
 
+# Slice poll lane (gr548810): the macOS `com.precis.*.plist` bounce below
+# sweeps up com.precis.worker-slices.plist too; no extra bounce task.
+- name: "Slice poll lane                (gateway, job_ssh_node)"
+  ansible.builtin.import_playbook: playbooks/20g-precis-worker-slices.yml
+
 - name: "Refresh serving-host heartbeat    (heartbeat-only worker, no queue claims)"
   ansible.builtin.import_playbook: playbooks/20c-precis-heartbeat-serving.yml
 

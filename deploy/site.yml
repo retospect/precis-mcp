@@ -124,6 +124,12 @@
 - name: "20e — precis agent worker lane (gateway, job_claude_inproc + job_inproc)"
   ansible.builtin.import_playbook: playbooks/20e-precis-worker-agentlane.yml
 
+# Dedicated slice poll lane (gateway, `--only job_ssh_node`) — gr548810:
+# detached run_slice/land_slice jobs are polled in seconds, not once per
+# 40-50 min collapsed-worker lap. After 20b (needs its venv).
+- name: "20g — precis slice poll lane (gateway, job_ssh_node)"
+  ansible.builtin.import_playbook: playbooks/20g-precis-worker-slices.yml
+
 # Dedicated OpenAlex-snapshot worker lane — `--only openalex_snapshot` on
 # `precis_capabilities.openalex_snapshot` hosts (the data node): the monthly
 # works-dump cites refresh (oa-cites slice 3). The pass self-throttles ~30d,
