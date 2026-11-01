@@ -636,3 +636,47 @@ def test_pullback_never_lands_a_part_on_a_fixed_courtyard() -> None:
     c8 = Polygon(np.asarray(d.part_outline[1]) + res.pose[1][:2])
     assert not u1.intersects(c8) or u1.intersection(c8).area <= 1e-6
     assert not any({a, b} == {0, 1} for a, b, _ in res.remaining)
+
+
+def test_outline_escapee_teleports_to_the_nearest_free_interior_spot() -> None:
+    """Reto 2026-10-31 (taz-leaf-r): C11, C13 and R23 sat past the leaf
+    tip, off the board — the pull-back only walked straight lines to the
+    centroid and the fixed combs blocked every one. An escapee whose
+    anchor paths are all blocked now takes the nearest free interior
+    spot outright. Fixture: a 20×20 board with a notch cut from the
+    bottom, a FIXED wall across the notch's mouth, a small movable part
+    parked in the notch (outside the outline) — every straight path to
+    the centroid crosses the wall."""
+    import dataclasses
+
+    from shapely.geometry import Polygon
+
+    from precis.pcb.topoplace.legalize import legalize_pose
+
+    outline = np.asarray(
+        [[0, 0], [8, 0], [8, 8], [12, 8], [12, 0], [20, 0], [20, 20], [0, 20]],
+        dtype=float,
+    )
+
+    def sq(h: float) -> np.ndarray:  # closed ring — _ring_geom drops the last point
+        return np.asarray([[-h, -h], [h, -h], [h, h], [-h, h], [-h, -h]], dtype=float)
+
+    d = _design(
+        parts=("WALL", "C1"),
+        pin_part=[0, 1],
+        pin_net=[0, 0],
+        net_pins=[[0, 1]],
+        net_name=("N",),
+        part_outline=(sq(1.9), sq(0.4)),
+        pose0=[[10.0, 9.9, 0, 0], [10.0, 3.0, 0, 0]],
+    )
+    d = dataclasses.replace(d, outline=outline, fixed=np.asarray([True, False]))
+    res = legalize_pose(d, d.pose0.copy())
+    x, y = float(res.pose[1, 0]), float(res.pose[1, 1])
+    g = Polygon(
+        [(x - 0.4, y - 0.4), (x + 0.4, y - 0.4), (x + 0.4, y + 0.4), (x - 0.4, y + 0.4)]
+    )
+    assert Polygon(outline).covers(g), res.pose[1]
+    wall = Polygon([(8.1, 8.0), (11.9, 8.0), (11.9, 11.8), (8.1, 11.8)])
+    assert not g.intersects(wall)
+    assert res.moved_mm > 0.0

@@ -16,7 +16,7 @@ a global minimum-displacement solve when slice 4 lands.
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -453,6 +453,55 @@ def _refresh_owned_zones(
             )
 
 
+def _nearest_free_spot(
+    d: TopoDesign,
+    pose: np.ndarray,
+    part: int,
+    mates: tuple[int, ...],
+    outline_geom: Any,
+    zgs: dict[int, Any],
+    zone_hit: Callable[..., bool],
+    part_hit: Callable[..., bool],
+) -> np.ndarray | None:
+    """The nearest centre (grid-sampled over the outline's bounds, step
+    half the part's ring radius, floor 0.5 mm) at which every rigid
+    mate's ring is inside the outline and clear of zones and other
+    parts — ``None`` when none is within the board."""
+    start = np.asarray(pose[part][:2], dtype=float)
+    g0 = _ring_geom(d, pose[part], part)
+    if g0 is None:
+        return None
+    x0, y0, x1, y1 = g0.bounds
+    r = max(x1 - x0, y1 - y0) / 2.0
+    step = max(0.5, r / 2.0)
+    bx0, by0, bx1, by1 = outline_geom.bounds
+    xs = np.arange(bx0 + r, bx1 - r + 1e-9, step)
+    ys = np.arange(by0 + r, by1 - r + 1e-9, step)
+    if not len(xs) or not len(ys):
+        return None
+    cands = sorted(
+        (float(np.hypot(x - start[0], y - start[1])), x, y) for x in xs for y in ys
+    )
+    for _dist, x, y in cands[:4000]:
+        delta = np.asarray([x, y]) - start
+        ok = True
+        for mate in mates:
+            row = np.asarray(pose[mate]).copy()
+            row[:2] = pose[mate][:2] + delta
+            tg = _ring_geom(d, row, mate)
+            if (
+                tg is None
+                or not outline_geom.covers(tg)
+                or zone_hit(tg, mate, zgs, row)
+                or part_hit(tg, mate)
+            ):
+                ok = False
+                break
+        if ok:
+            return np.asarray([x, y], dtype=float)
+    return None
+
+
 def legalize_pose(
     d: TopoDesign, pose: np.ndarray, *, rounds: int = 2000
 ) -> LegalizeResult:
@@ -596,6 +645,23 @@ def legalize_pose(
                             _refresh_owned_zones(d, pose, zgs, mate)
                         moved += hit * float(np.hypot(*target))
                         break
+                else:
+                    # Neither anchor path is clean (taz-leaf: C11/C13/R23
+                    # shoved past the leaf tip, the combs between them and
+                    # the centroid): take the NEAREST free interior spot
+                    # outright — a legalizer may teleport; what it may not
+                    # do is leave a part off the board (Reto 2026-10-31).
+                    spot = _nearest_free_spot(
+                        d, pose, i, mates, outline_geom, zgs, _zone_hit, _part_hit
+                    )
+                    if spot is not None:
+                        delta = spot - start
+                        for mate in mates:
+                            pose[mate, 0] += delta[0]
+                            pose[mate, 1] += delta[1]
+                            geoms[mate] = _ring_geom(d, pose[mate], mate)
+                            _refresh_owned_zones(d, pose, zgs, mate)
+                        moved += float(np.hypot(*delta))
         if moved == 0.0:
             break
         total_moved += moved
