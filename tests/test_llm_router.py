@@ -6058,7 +6058,7 @@ def test_quota_fallback_cap_reached_stays_paused(
     agent, oss = _cast_quota_setup(
         monkeypatch,
         {"meditation": {"chain": _CAST_QUOTA_CHAIN}},
-        fallback_spent=9.99,  # over the $2 default llm.quota_fallback_daily_usd
+        fallback_spent=9.99,  # over the $5 default llm.quota_fallback_daily_usd
     )
     gated: list[tuple[str, bool]] = []
     recorded: list[str] = []

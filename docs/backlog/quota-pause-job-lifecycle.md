@@ -167,7 +167,7 @@ dump.
   (Reto): yes, per-op `llm.op.*` registry entries
   (`OpDefault.quota_fallback`, the `llm.op.meditation` precedent), with a
   per-op UTC-day USD cap on fallback spend
-  (`llm.quota_fallback_daily_usd`, default $2; at cap the op stays
+  (`llm.quota_fallback_daily_usd`, default $5; at cap the op stays
   quota-paused).** Shipped in gr546460; a generic deliverable-class
   fallback remains unbuilt.
 - **(a) Retry-loop circuit breaker vs (b) auto-retry on gate-cycled

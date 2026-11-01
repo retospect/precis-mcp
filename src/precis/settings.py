@@ -158,7 +158,7 @@ REGISTRY: dict[str, SettingSpec] = {
             key="llm.quota_fallback_daily_usd",
             type="float",
             env_var="PRECIS_LLM_QUOTA_FALLBACK_DAILY_USD",
-            default=2.0,
+            default=5.0,
             doc="UTC-day USD cap, per op, on the quota fallback's paid rungs "
             "(router._quota_fallback_capped): a quota-paused op falls back "
             "to a non-subscription rung only while its recorded fallback "
