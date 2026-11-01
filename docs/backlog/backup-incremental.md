@@ -160,12 +160,18 @@ never printed.
   ship time (`/mnt/dbbackup` absent — the nfs_client dbbackup play needs
   `nas_dbbackup_export` + `nas_lan_*` in the overlay), and the
   backup-window deploy guard does not cover the 21:45 slot.
-- Status 2026-11-01 (reconsolidation pass): slice 1 is on main (a6e09ee11)
-  but its deploy state is unverified — whether `pg_backup_dir.sh`, the
-  `/mnt/dbbackup` mount and `restic-dbdump.sh` are live on the DB node and
-  the NAS, and whether a restic restore drill has passed, need a read-only
-  look at the hosts (no MCP or alert covers backup stamps). The old
-  tar+zstd chain's own checks are green (gr496659 first dump verified
-  2026-10-23, B2 offsite current; both closed). td461206 (restore-drill
-  pull key) is open. The file stays `in-progress` / claimed until that
-  read confirms; slice 2 needs Reto present either way.
+- Status 2026-11-01 (read-only host check, 13:28Z): slice 1 is on main
+  (a6e09ee11) but **not deployed** — on the DB node `pg_backup_dir.sh` is
+  absent from the role's install dir, no 21:45 cron line, no log or lock,
+  `/mnt/dbbackup` neither mounted nor present (the overlay has no
+  `nas_dbbackup_export` / `nas_lan_*`, so the mount play has nothing to
+  mount); the NAS has no `restic-dbdump-last-ok` stamp and `restic-dbdump.sh`
+  was never copied (no ssh path to the NAS from the laptop). The old chain
+  is green: tar+zstd nightly ran 2026-11-01 (29.7 GB), restore drill PASSED
+  2026-10-26, next 2026-11-02 06:00Z. Deploy is Reto-run: set the three
+  overlay vars, apply the `nfs_client` dbbackup play and the backups role
+  to the data group, copy the rendered `restic-dbdump.sh` to the NAS and
+  schedule it. td461206 (restore-drill pull key) is open. Slice 3 note: the
+  legacy script keeps a local dump dir on the DB node (age-pruned), which
+  conflicts with the new chain's no-retained-backups rule — retire it with
+  the chain.
