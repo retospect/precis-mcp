@@ -602,6 +602,13 @@ precis_se = "precis_se.migrations"
 [project.entry-points."precis.skills"]
 precis_pathway = "precis_pathway.skills"
 
+# CLI commands a plugin ships with itself: each entry point resolves to a
+# sequence of precis.cli.registry.Command (the plugin analogue of the core
+# COMMANDS rows). Core never imports the plugin module; the dispatcher
+# loads it only when the command is invoked.
+[project.entry-points."precis.cli"]
+pathway = "precis_pathway.cli:COMMANDS"
+
 [project.entry-points."precis.handle_codes"]
 pathway = "precis_pathway.handles"
 estimate = "precis_estimate.handles"
