@@ -141,6 +141,13 @@ record as a read-only design. Caps, refusals and provenance:
 | `transfer` | `atom`\|`from`, `to`, `distance?`, `order?`, `direction?` | move ONE atom onto an acceptor along the acceptor's open coordination direction (default distance = covalent-radius sum) — the bond-swap step of a reaction endpoint. The moved atom's declared bonds drop and `atom`–`to` is minted. `from` picks the atom bonded to it nearest `to`; an equidistant tie refuses naming the candidates — pick with `atom` |
 | `move_group` | `atom`, `site:{…}` (as above), `height?` | rigidly move the whole declared-bond fragment containing `atom` so `atom` lands on the site; refuses when the fragment holds a fixed atom or a slab atom (slab = the largest connected metal cluster, so a dopant inside it counts as slab) |
 | `set_element` | `atom` or `site:{type:"top"\|"subsurface", near?}`, `element` | transmute — **keeps the atom's label & position** (see caution below); with `site` precis picks a host atom of that slab layer |
+
+## Author a design — the edit, bond and marker ops
+
+The rest of the op vocabulary, also used by `edit`:
+
+| op | args | effect |
+|----|------|--------|
 | `vacancy` | `atom` | remove an atom (label not recycled) |
 | `displace` | `atom`, `vector:[dx,dy,dz]`, `cartesian?` | nudge (Cartesian Å by default; `cartesian:false` for a fractional delta) |
 | `add_bond` | `i`, `j`, `order?`, `image?:[i,j,k]` | declare a bond (intent) |
@@ -150,6 +157,7 @@ record as a read-only design. Caps, refusals and provenance:
 | `measure` | `kind`, `atoms:[…]`, `direction?`, `goal?`, `strength?`, `for?` | pin a measurement with an optional graded goal |
 | `unmark` | `name` | retire an eye by name |
 | `remove_measure` | `kind`, `atoms:[…]` | retire a measure |
+
 ## Assemble rings and fragments, then relax the structure
 
 | op | args | effect |
