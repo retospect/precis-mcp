@@ -471,6 +471,7 @@ from precis.store._tag_filter import (
 from precis.store.types import ChunkInsert, ChunkRow, Density, Ref
 from precis.utils import handle_registry
 from precis.utils.angle import angle_anchors
+from precis.utils.canon import RANK_BONUS, boost_ref_ids, lexical_q
 
 if TYPE_CHECKING:
     from precis.store.store import Store
@@ -909,7 +910,7 @@ class ChunkStore:
             "c.tsv @@ qq.qq",
             *_chunk_noise_clauses(text_alias="c.text"),
         ]
-        params: list[Any] = [q]
+        params: list[Any] = [lexical_q(q)]
         if kinds is not None:
             params.append(list(kinds))
             clauses.append("r.kind = ANY(%s)")
@@ -957,7 +958,7 @@ class ChunkStore:
                         "websearch_to_tsquery('english', %s)",
                         f"(SELECT {_SCOPED_OR_TSQUERY})",
                     ),
-                    params,
+                    [q, *params[1:]],
                 ).fetchone()
         assert row is not None
         return int(row[0])
@@ -1289,7 +1290,7 @@ class ChunkStore:
                 # Scoped recall fallback (gr510534): the AND tsquery
                 # missed inside a single ref — retry every term OR-ed.
                 rows = conn.execute(
-                    _sql(f"(SELECT {_SCOPED_OR_TSQUERY})"), params
+                    _sql(f"(SELECT {_SCOPED_OR_TSQUERY})"), [q, *params[1:]]
                 ).fetchall()
         return [_unpack_search_row(r) for r in rows]
 
@@ -1879,6 +1880,19 @@ class ChunkStore:
                 ", (SELECT s3.d FROM sem s3 WHERE s3.cid = fused.cid) AS sem_d"
                 f", ({corrob_expr}) AS corroborated"
             )
+        # Canon pre-pass (gr548267): refs with an ``instance-of`` edge into a
+        # hit taxon get a soft bonus on the fused score — never a filter. The
+        # id array is the one bound parameter, placed where the fused CTE's
+        # ``k`` constants end (see the param sequence below). Inactive, the
+        # SQL text is the pre-canon text exactly.
+        canon_ids = boost_ref_ids()
+        score_sql, order_sql = "fused.score", "fused.score"
+        if canon_ids:
+            score_sql = (
+                "fused.score + CASE WHEN c.ref_id = ANY(%s) "
+                f"THEN {float(RANK_BONUS)!r} ELSE 0 END AS canon_score"
+            )
+            order_sql = "canon_score"
         sql = f"""
             WITH lex AS (
                 SELECT c.chunk_id AS cid,
@@ -1914,12 +1928,12 @@ class ChunkStore:
                     {lex_any_union}SELECT cid FROM sem
                 ) u
             )
-            SELECT {proj}, {_REFS_COLS_ALIASED}, fused.score{fold_cols}
+            SELECT {proj}, {_REFS_COLS_ALIASED}, {score_sql}{fold_cols}
             FROM fused
             JOIN chunks c ON c.chunk_id = fused.cid
             JOIN refs r ON r.ref_id = c.ref_id
             {sem_only_where}
-            ORDER BY fused.score DESC
+            ORDER BY {order_sql} DESC
             LIMIT %s OFFSET %s
         """
 
@@ -1937,9 +1951,10 @@ class ChunkStore:
         #        + query_vec (unless the exact route) + inner_limit
         #        + [optional: max_distance]
         #   fused: k + [k] + k
-        #   outer: [optional: semantic_only_max_distance] + limit + offset
+        #   outer: [optional: canon boost ids] + [optional: q for fold]
+        #          + [optional: semantic_only_max_distance] + limit + offset
         full_params: list[Any] = []
-        full_params.append(q)
+        full_params.append(lexical_q(q))
         full_params.extend(params)
         qv = _vec_param(query_vec)
         full_params.append(inner_limit)
@@ -1956,6 +1971,8 @@ class ChunkStore:
         if max_distance is not None:
             full_params.append(float(max_distance))
         full_params.extend([k] * (3 if or_leg else 2))
+        if canon_ids:
+            full_params.append(canon_ids)
         if fold_info_out is not None and or_corrob:
             full_params.append(q)
         if semantic_only_max_distance is not None:

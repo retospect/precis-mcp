@@ -313,6 +313,26 @@ entry that is not a taxon is refused naming what it is.
 `search(kind='taxon', under=)` keeps its own meaning: the concept
 descendants, one node only.
 
+## Find a term by its abbreviation or alias
+## My query uses TOF but the text says turnover frequency
+
+```python
+search(kind="memory", q="TOF", args={"canon": True})
+search(kind="memory", q="PEMFC durability", args={"canon": True})  # 4+ chars inside a longer q
+```
+
+`canon=True` (off by default) looks each query word and adjacent word pair up
+as a taxon name, slug or alias, and as a `same-as`/`short-for` alias row that
+points at a taxon. A **unique** taxon hit ORs the node's name and aliases into
+the lexical leg (the other query words stay ANDed in every branch) and gives
+refs classified under the node, or beneath it, a small rank bonus — a nudge,
+never a filter. The result starts with the rewrite: `canon: TOF → tn12
+turnover frequency`. Two taxa for one word is ambiguous: nothing expands and
+the line says so. Skipped: words inside `"quoted phrases"`, `-negated` words,
+and words under 4 characters unless they are the whole query. The semantic leg
+sees your original `q`. `mode='lexical'`/`'verbatim'`/`'literal'` refuse
+`canon=True` (they match your typed words exactly).
+
 ## Refine a broad result set
 ## What if there are more hits than I see?
 

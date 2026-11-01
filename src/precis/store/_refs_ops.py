@@ -68,6 +68,7 @@ from precis.store._tag_filter import (
 from precis.store.types import ActorSlug, Ref, ResolvedHandle, Tag
 from precis.utils import handle_registry
 from precis.utils.authors import author_row_from_entry, entry_from_author_row
+from precis.utils.canon import lexical_q
 from precis.utils.title_views import title_plain_sql
 
 #: gr515227: title FTS / trigram legs read the plain view (markup and
@@ -4294,7 +4295,7 @@ class RefsMixin:
             "r.retired_at IS NULL",
             "to_tsvector('english', " + _TITLE_PLAIN_SQL + ") @@ qq.qq",
         ]
-        params: list[Any] = [q]
+        params: list[Any] = [lexical_q(q)]
         if kind is not None:
             params.append(kind)
             clauses.append("r.kind = %s")
@@ -4363,7 +4364,7 @@ class RefsMixin:
             "r.retired_at IS NULL",
             "to_tsvector('english', " + _TITLE_PLAIN_SQL + ") @@ qq.qq",
         ]
-        params: list[Any] = [q]
+        params: list[Any] = [lexical_q(q)]
         if kind is not None:
             params.append(kind)
             clauses.append("r.kind = %s")

@@ -67,6 +67,12 @@ from precis.runtime._shared import (
     UNCITED_UNSUPPORTED_KINDS as _UNCITED_UNSUPPORTED_KINDS,
 )
 from precis.runtime._shared import RuntimeShape
+from precis.runtime.canon import (
+    canon_line,
+    pop_canon_flag,
+    refuse_exact_mode,
+)
+from precis.runtime.canon import resolve as resolve_canon
 from precis.runtime.trust_verb import (
     TRUST_VERBS,
     create_receipt,
@@ -84,6 +90,9 @@ from precis.store.revision_context import (
     revision_context,
 )
 from precis.utils import handle_registry
+from precis.utils.canon import CanonState
+from precis.utils.canon import bind as canon_bind
+from precis.utils.canon import unbind as canon_unbind
 from precis.utils.match_all import fold_match_all_q
 
 if TYPE_CHECKING:
@@ -1765,6 +1774,7 @@ class DispatchMixin(RuntimeShape):
         """
         note: str | None = None
         listing_kinds: tuple[list[str] | None] | None = None
+        canon_state = None
         if verb == "search":
             self._hoist_spray_args(args)
             self._hoist_source_facet_args(args)
@@ -1773,6 +1783,7 @@ class DispatchMixin(RuntimeShape):
             # source-search gate) reads it as a real query.
             args["q"] = fold_match_all_q(args.get("q"))
             note, listing_kinds = self._resolve_under(args)
+            canon_state = self._resolve_canon(args)
         if verb == "search" and (
             args.get("uncited") is not None
             or args.get("cited") is not None
@@ -1781,15 +1792,31 @@ class DispatchMixin(RuntimeShape):
             self._reject_source_facet_unfiltered_shape(args)
             facet_note = self._resolve_source_facets(args)
             note = "\n".join(n for n in (note, facet_note) if n) or None
-        if listing_kinds is not None:
-            response = self._under_listing(args, listing_kinds[0])
-        else:
-            response = self._dispatch_inner_core(verb, args)
+        canon_token = canon_bind(canon_state) if canon_state is not None else None
+        try:
+            if listing_kinds is not None:
+                response = self._under_listing(args, listing_kinds[0])
+            else:
+                response = self._dispatch_inner_core(verb, args)
+        finally:
+            if canon_token is not None:
+                canon_unbind(canon_token)
+        if canon_state is not None:
+            note = "\n".join(n for n in (note, canon_line(canon_state)) if n)
         if note is not None:
             from dataclasses import replace as _replace
 
             response = _replace(response, body=f"{note}\n\n{response.body}")
         return response
+
+    def _resolve_canon(self, args: dict[str, Any]) -> CanonState | None:
+        """``args={'canon': True}`` → the resolved pre-pass (gr548267), or
+        ``None`` when canon is off. Pops the key either way so the kind's
+        extras whitelist never sees it; refuses an exact-term ``mode=``."""
+        if not pop_canon_flag(args):
+            return None
+        refuse_exact_mode(args.get("mode"))
+        return resolve_canon(self.hub, args.get("q"))
 
     def _resolve_under(
         self, args: dict[str, Any]
