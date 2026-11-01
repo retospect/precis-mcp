@@ -30,6 +30,12 @@ wired in `.claude/settings.json` under `hooks:`. Deny = exit 2 with stderr
 | `guard-autostash-staged.py` | `Bash` | Denies autostash git verbs (`rebase --autostash`, `pull`, `merge`) while the index is non-empty — the stash pop returns changes UNSTAGED | `tool_input.command`, `cwd` |
 | `guard-heredoc.py` | **present, not wired** — the `.claude/settings.json` `Bash` hunk is a pending proposal (gr514124); once wired, `scripts/gen-devin-hooks render` carries it into `.devin/hooks.v1.json` (`exec`) | Denies a `<<` heredoc in a shell command — the one-plain-command rule's repo-side refuse; `<<<` herestrings pass. `ALLOW_HEREDOC=1` escape | `tool_input.command`/`cmd` |
 
+## UserPromptSubmit
+
+| Script | What it does | Payload fields read |
+|---|---|---|
+| `twin-asked.sh` | On a "what is X?"-shaped prompt (the `precis.reading.asked` regex table, reimplemented standalone), prints one line reminding the session to `put(kind='concept', …, tags=['twin:asked'])` after answering — the card-forge queue. **Present, not wired** (gr548277): needs a `UserPromptSubmit` entry `bash "$CLAUDE_PROJECT_DIR/scripts/hooks/twin-asked.sh"` in `.claude/settings.json` — that file is Reto-only. | `prompt` |
+
 ## PostToolUse
 
 | Script | Matcher | What it does | Payload fields read |

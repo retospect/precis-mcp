@@ -160,6 +160,7 @@ def create_app(
         account,
         agentlogs,
         alerts,
+        anki,
         asks,
         blocktree_view,
         budget,
@@ -267,6 +268,7 @@ def create_app(
     app.include_router(settings.router)
     app.include_router(manual.router)
     app.include_router(account.router)
+    app.include_router(anki.router)
 
     @app.get("/", include_in_schema=False)
     async def _root() -> RedirectResponse:

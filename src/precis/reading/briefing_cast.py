@@ -806,6 +806,27 @@ def _lane_recall(store: Store, *, cutoff: datetime) -> str:
             parts.append(
                 "These concepts need you, not another card: " + "; ".join(stuck)
             )
+        # Asked-but-never-carded terms (gr548277): the user asked about a
+        # term at least twice (meta.asked_count >= 2, stamped by the asa
+        # "what is X?" capture / the /anki queue) and the forge still hasn't
+        # rendered a card for it — the name the brief should nag about.
+        asked = conn.execute(
+            "SELECT meta->>'name' FROM refs c "
+            "WHERE c.kind='concept' AND c.retired_at IS NULL "
+            "AND COALESCE((c.meta->>'asked_count')::int, 0) >= 2 "
+            "AND NOT EXISTS ("
+            "  SELECT 1 FROM links l "
+            "  JOIN refs a ON a.kind='anki' AND a.retired_at IS NULL "
+            "             AND a.ref_id = CASE WHEN l.src_ref_id = c.ref_id "
+            "                                 THEN l.dst_ref_id ELSE l.src_ref_id END "
+            "  WHERE (l.src_ref_id = c.ref_id AND l.relation='represents') "
+            "     OR (l.dst_ref_id = c.ref_id AND l.relation='represented-by')) "
+            "ORDER BY (c.meta->>'asked_count')::int DESC LIMIT %s",
+            (_LANE_ITEM_CAP,),
+        ).fetchall()
+        asked_terms = [r[0] for r in asked if r[0]]
+        if asked_terms:
+            parts.append("asked twice, no card yet: " + "; ".join(asked_terms))
     except Exception:  # pragma: no cover - card_forge may not have run yet
         log.debug("reading brief: card_forge lane unavailable", exc_info=True)
 

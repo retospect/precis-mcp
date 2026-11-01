@@ -237,9 +237,12 @@ def _minted_today(store: Store, now: datetime, *, cohort: str | None = None) -> 
 def _cardless_concepts(
     store: Store, *, cohort: str | None, limit: int
 ) -> list[tuple[int, str, str]]:
-    """Unmastered concepts with no live card yet, newest first. A concept the
-    mint pass has judged un-cardable (``meta.card_forge_skip``) is excluded so
-    the daily pass doesn't re-spend a model call refusing it forever."""
+    """Unmastered concepts with no live card yet, ``twin:asked`` first then
+    newest first. A concept the mint pass has judged un-cardable
+    (``meta.card_forge_skip``) is excluded so the daily pass doesn't re-spend
+    a model call refusing it forever. ``twin:asked`` is the queue a human
+    (the ``/anki`` page) or asa ("what is X?" capture) pushes terms onto —
+    those jump the recency order, capped with everything else."""
     cohort_clause = "AND jsonb_exists(c.meta->'cohorts', %s)" if cohort else ""
     sql = f"""
         SELECT c.ref_id, c.meta->>'name', c.meta->>'definition'
@@ -255,7 +258,12 @@ def _cardless_concepts(
                                            THEN l.dst_ref_id ELSE l.src_ref_id END
             WHERE (l.src_ref_id = c.ref_id AND l.relation='represents')
                OR (l.dst_ref_id = c.ref_id AND l.relation='represented-by'))
-        ORDER BY c.ref_id DESC LIMIT %s
+        ORDER BY EXISTS (
+            SELECT 1 FROM ref_tags rt JOIN tags t ON t.tag_id = rt.tag_id
+            WHERE rt.ref_id = c.ref_id
+              AND t.namespace = 'OPEN' AND t.value = 'twin:asked'
+        ) DESC, c.ref_id DESC
+        LIMIT %s
     """
     params: tuple[Any, ...] = (cohort, limit) if cohort else (limit,)
     with store.pool.connection() as conn:
@@ -543,6 +551,44 @@ def _env_int(name: str, default: int) -> int:
         return default
 
 
+#: ``app_settings`` keys for the daily mint cap (gr548276): the durable key,
+#: and the one-day override ``reading.cards_per_day:<YYYY-MM-DD>`` the
+#: ``/anki`` page's "today only" box writes. Resolution is dated → durable →
+#: ``PRECIS_READING_CARDS_PER_DAY`` env → compiled default; a malformed row
+#: falls through to the next tier rather than failing the morning pass.
+CARDS_PER_DAY_KEY = "reading.cards_per_day"
+
+
+def _setting_int(store: Store, key: str) -> int | None:
+    """One ``app_settings`` row as a non-negative int, or None (absent/bad)."""
+    from precis.budget import settings as app_settings
+
+    raw = app_settings.get_setting(store, key)
+    if raw is None:
+        return None
+    try:
+        return max(0, int(float(raw)))
+    except (TypeError, ValueError):
+        log.warning("cards: ignoring malformed %s=%r", key, raw)
+        return None
+
+
+def effective_cards_per_day(store: Store, *, now: datetime | None = None) -> int:
+    """The mint cap in force *today*: the dated ``app_settings`` override
+    when one was written for this UTC date, else the durable setting, else
+    the ``PRECIS_READING_CARDS_PER_DAY`` env (kept as the bootstrap
+    fallback), else the compiled default."""
+    now = now or datetime.now(UTC)
+    for key in (
+        f"{CARDS_PER_DAY_KEY}:{now.date().isoformat()}",
+        CARDS_PER_DAY_KEY,
+    ):
+        val = _setting_int(store, key)
+        if val is not None:
+            return val
+    return _env_int("PRECIS_READING_CARDS_PER_DAY", DEFAULT_CARDS_PER_DAY)
+
+
 def _default_client() -> Any:
     """The production compose client — folds through the router
     onto the ``BIG`` reasoning tier (local-first via ``llm.chain.big``) instead
@@ -589,18 +635,16 @@ def run_card_forge(
     """The whole morning card pass: refresh mastery from the latest Anki stats,
     rework the cards that aren't working, then mint today's new cards. Env
     defaults: ``PRECIS_CARD_FORGE_AUTONOMY`` (``report``, the observe-first
-    default, or ``act``), ``PRECIS_READING_CARDS_PER_DAY``,
+    default, or ``act``), ``PRECIS_READING_CARDS_PER_DAY`` (the fallback tier
+    of :func:`effective_cards_per_day`, behind the ``app_settings`` rows),
     ``PRECIS_CARD_REWORK_MIN_DAYS``, ``PRECIS_CARD_REWORK_STREAK_CAP``."""
     from precis.reading.mastery import run_mastery_pass
 
     now = now or datetime.now(UTC)
     if act is None:
         act = (os.environ.get("PRECIS_CARD_FORGE_AUTONOMY") or "report") == "act"
-    per_day = (
-        per_day
-        if per_day is not None
-        else _env_int("PRECIS_READING_CARDS_PER_DAY", DEFAULT_CARDS_PER_DAY)
-    )
+    if per_day is None:
+        per_day = effective_cards_per_day(store, now=now)
     if min_age_days is None:
         min_age_days = _env_float("PRECIS_CARD_REWORK_MIN_DAYS", DEFAULT_MIN_AGE_DAYS)
     streak_cap = (
@@ -634,6 +678,7 @@ def run_card_forge(
 
 
 __all__ = [
+    "CARDS_PER_DAY_KEY",
     "DEFAULT_CARDS_PER_DAY",
     "DEFAULT_MIN_AGE_DAYS",
     "DEFAULT_STREAK_CAP",
@@ -641,6 +686,7 @@ __all__ = [
     "ForgeReport",
     "author_card",
     "cloze_skill_preamble",
+    "effective_cards_per_day",
     "mint_daily_cards",
     "rework_stale_cards",
     "run_card_forge",

@@ -98,6 +98,9 @@ class AsaBot(discord.Client):
         # rather than posted as they arrive — see ``asa_bot.briefing_buffer``
         # (gr51556).
         self._briefing_buffer = BriefingBuffer(poster=self._post_briefing_parts)
+        # Fire-and-forget twin:asked capture tasks (gr548277) — held like
+        # _attachment_tasks so a pending capture isn't GC'd mid-write.
+        self._asked_tasks: set[asyncio.Task[Any]] = set()
 
     async def setup_hook(self) -> None:
         self._soul = _read_or_empty(self._cfg.preamble.soul_path)
@@ -420,6 +423,18 @@ class AsaBot(discord.Client):
                         "asa agentlog: orphaned-turn close failed", exc_info=True
                     )
 
+        # The reply exists now — the twin:asked capture may run. It is
+        # fire-and-forget on purpose (gr548277): any failure inside is
+        # logged and swallowed, and it must never block or alter the reply
+        # path below. Human turns only — cron synths and outbound captures
+        # never reach this point.
+        if not result.error and (result.text or "").strip():
+            task = asyncio.create_task(
+                self._capture_asked_term(message, slug, result.text, account)
+            )
+            self._asked_tasks.add(task)
+            task.add_done_callback(self._asked_tasks.discard)
+
         # 4. Post reply (replace progress msg with final).
         # The first sentence was already streamed as a standalone ack
         # message; the final reply text still opens with that same
@@ -440,6 +455,29 @@ class AsaBot(discord.Client):
             return False
         await self._post_reply(message, progress_msg, body, result)
         return not result.error
+
+    async def _capture_asked_term(
+        self,
+        message: discord.Message,
+        slug: str,
+        reply_text: str,
+        account: str | None,
+    ) -> None:
+        """twin:asked capture wrapper — the whole leg is optional, so every
+        exception lands in the log and never in the turn."""
+        from asa_bot import twin_asked
+
+        try:
+            await twin_asked.capture(
+                precis=self._precis,
+                dsn=self._cfg.precis.database_url or "",
+                message_text=message.content or "",
+                reply_text=reply_text,
+                conv_slug=slug,
+                account_abbrev=account,
+            )
+        except Exception:
+            log.exception("twin:asked capture failed (msg=%s)", message.id)
 
     async def _post_reply(
         self,

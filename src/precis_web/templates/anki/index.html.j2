@@ -1,0 +1,117 @@
+{% extends "base.html.j2" %}
+{% block title %}Anki{% endblock %}
+{% block content %}
+<a href="/account" class="text-xs text-fg-faint hover:text-fg-muted">&larr; Account</a>
+
+<div class="mt-2 mb-3">
+  <h1 class="text-lg font-semibold">Anki</h1>
+  <p class="text-sm text-fg-subtle">
+    Your forge-authored cards, grouped by concept. Tick what you already
+    know, queue terms to learn, raise the daily cap on heavy mornings.
+  </p>
+</div>
+
+{% if error %}
+<div class="rounded-lg border border-danger bg-danger-subtle px-4 py-3 mb-4 max-w-2xl text-sm text-danger-strong">{{ error }}</div>
+{% endif %}
+{% if notice %}
+<div class="rounded-lg border border-line bg-surface px-4 py-3 mb-4 max-w-2xl text-sm text-fg-secondary">{{ notice }}</div>
+{% endif %}
+
+<p class="text-xs text-fg-subtle mb-4">
+  {{ counts.cards }} card(s) &middot; {{ counts.forge }} forge-authored &middot; {{ counts.leeches }} leech(es)
+  &nbsp;&mdash;&nbsp; {{ counts.mastered }} concept(s) mastered / {{ counts.active }} active
+</p>
+
+{# ── Review ───────────────────────────────────────────────────────── #}
+<h2 class="text-sm font-semibold text-fg-secondary mt-4 mb-2">Review</h2>
+<div class="rounded-lg border border-line bg-surface px-4 py-4 mb-6 max-w-2xl">
+  {% if groups %}
+  <form method="post" action="/anki/known">
+    <ul class="divide-y divide-line-subtle">
+      {% for g in groups %}
+      <li class="py-3">
+        <div class="flex items-start gap-2">
+          <input type="checkbox" name="concept" value="{{ g.concept_id }}" id="c{{ g.concept_id }}" class="mt-1" />
+          <label for="c{{ g.concept_id }}" class="flex-1 text-sm font-medium text-fg-primary cursor-pointer">
+            {{ g.name }}
+            <span class="text-xs font-normal text-fg-faint">
+              — {{ g.state }}{% if g.mastery %} · mastery {{ '%.2f' | format(g.mastery) }}{% endif %}
+            </span>
+          </label>
+        </div>
+        <ul class="ml-6 mt-1 space-y-1">
+          {% for card in g.cards %}
+          <li class="flex items-start gap-2 text-xs text-fg-secondary">
+            <span class="flex-1"><code class="text-fg-faint">ak{{ card.id }}</code> {{ card.text }}</span>
+            <button form="drop-{{ card.id }}" type="submit"
+                    class="shrink-0 text-fg-faint hover:text-danger transition">drop</button>
+          </li>
+          {% endfor %}
+        </ul>
+      </li>
+      {% endfor %}
+    </ul>
+    <button type="submit"
+            class="mt-3 rounded bg-info-solid text-on-solid text-xs px-3 py-1.5
+                   hover:bg-info-solid-strong transition">I know this</button>
+  </form>
+  {# Per-card drop forms: a nested <form> is invalid HTML, so each drop
+     button submits its own sibling form via the form= attribute. #}
+  {% for g in groups %}
+    {% for card in g.cards %}
+    <form id="drop-{{ card.id }}" method="post" action="/anki/drop" class="hidden">
+      <input type="hidden" name="card" value="{{ card.id }}" />
+    </form>
+    {% endfor %}
+  {% endfor %}
+  {% else %}
+  <p class="text-xs text-fg-subtle">No forge-authored cards yet — the morning pass mints them from cardless concepts.</p>
+  {% endif %}
+</div>
+
+{# ── Manual queue ─────────────────────────────────────────────────── #}
+<h2 class="text-sm font-semibold text-fg-secondary mt-4 mb-2">Queue a term</h2>
+<div class="rounded-lg border border-line bg-surface px-4 py-4 mb-6 max-w-2xl">
+  <form method="post" action="/anki/queue" class="space-y-2">
+    <label for="anki-terms" class="text-xs text-fg-muted">term (one per line)</label>
+    <textarea id="anki-terms" name="terms" rows="3"
+              class="w-full rounded border border-line px-2 py-1 text-sm
+                     focus:border-info-emphasis focus:outline-none"></textarea>
+    <button type="submit"
+            class="rounded bg-info-solid text-on-solid text-xs px-3 py-1.5
+                   hover:bg-info-solid-strong transition">Queue</button>
+    <p class="text-[11px] text-fg-faint">
+      Each line matches an existing concept/taxon by name (or mints one) and
+      tags it <code>twin:asked</code> — the next forge run mints asked
+      concepts first.
+    </p>
+  </form>
+</div>
+
+{# ── Daily cap ────────────────────────────────────────────────────── #}
+<h2 class="text-sm font-semibold text-fg-secondary mt-4 mb-2">Daily cap</h2>
+<div class="rounded-lg border border-line bg-surface px-4 py-4 mb-6 max-w-2xl">
+  <form method="post" action="/anki/cap" class="space-y-2">
+    <div class="grid grid-cols-[10rem_1fr] items-center gap-2">
+      <label for="anki-cap" class="text-xs text-fg-muted">concepts per morning</label>
+      <input id="anki-cap" name="per_day" type="number" min="0" max="100"
+             value="{{ cap }}"
+             class="w-24 rounded border border-line px-2 py-1 text-sm
+                    focus:border-info-emphasis focus:outline-none" />
+      <span></span>
+      <label class="flex items-center gap-2 text-xs text-fg-subtle">
+        <input type="checkbox" name="today_only" value="1" /> today only
+        (writes <code>{{ dated_key }}</code>, cleared tomorrow)
+      </label>
+    </div>
+    <button type="submit"
+            class="rounded bg-info-solid text-on-solid text-xs px-3 py-1.5
+                   hover:bg-info-solid-strong transition">Save</button>
+    <p class="text-[11px] text-fg-faint">
+      Currently {{ cap }} — reads <code>{{ dated_key }}</code>, then
+      <code>{{ cap_key }}</code>, then <code>PRECIS_READING_CARDS_PER_DAY</code>.
+    </p>
+  </form>
+</div>
+{% endblock %}
