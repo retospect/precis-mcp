@@ -14,10 +14,16 @@ log). The card write lives in :mod:`precis.llm_catalog` (one writer shared with 
 reconcile worker). This handler is the MCP surface: ``get`` (with model-slug resolution),
 ``search``, and a guarded ``put`` that funnels to the shared writer. The typed review-log
 (``llm_review`` chunks) + the ``llm_call_log`` tote arrive in slice 3.
+
+``/ops`` and source ids read stored ``llm.op.*`` overrides directly from
+this handler's store, not the process-global routing cache. These are
+configuration reads, never LLM calls or claims about effective runtime
+routing: request pins and runtime gates can change where a call lands.
 """
 
 from __future__ import annotations
 
+import json
 import logging
 from typing import Any, ClassVar
 
@@ -28,6 +34,8 @@ from precis.protocol import KindSpec
 from precis.response import Response
 from precis.store import Ref, Tag
 from precis.utils import handle_registry
+from precis.utils.llm.operations import LLM_OPERATIONS, OP_KEY_PREFIX
+from precis.utils.timeutil import as_utc
 
 log = logging.getLogger(__name__)
 
@@ -46,7 +54,8 @@ class LlmHandler(NumericRefHandler):
             "get(kind='llm', id='/placement') reports the local vs cloud share "
             "of logged calls, routed vs landed, per tier and day; "
             "get(kind='llm', id='op:<source>', view='stats') rolls up "
-            "llm_call_log per calling op. Never exported. "
+            "llm_call_log per calling op. get(kind='llm', id='/ops') lists "
+            "operation routes; id='<source>' reads the stored route. Never exported. "
             "See ``llm-catalog`` (git-only)."
         ),
         supports_get=True,
@@ -139,14 +148,114 @@ class LlmHandler(NumericRefHandler):
             s = id.strip()
             core = s[len("llm:") :] if s.startswith("llm:") else s
             if not s.startswith("/") and not core.isdigit():
+                route = self._op_route(s)
+                if route is not None:
+                    if view is not None or any(v is not None for v in _kw.values()):
+                        raise BadInput(
+                            "view= and card selectors don't apply to a stored op route",
+                            next=f"get(kind='llm', id={s!r})",
+                        )
+                    return route
                 ref = self._ref_for(id)
                 return super().get(id=ref.id, view=view, q=q, **_kw)
         return super().get(id=id, view=view, q=q, **_kw)
 
     def _list_view(self, view: str) -> Response | None:
+        if view == "ops":
+            return self._op_routes()
         if view == "placement":
             return Response(body=self._render_placement())
         return super()._list_view(view)
+
+    def _supported_list_views(self) -> tuple[str, ...]:
+        return (*super()._supported_list_views(), "ops", "placement")
+
+    def _op_route(self, source: str) -> Response | None:
+        with self.store.pool.connection() as conn:
+            row = conn.execute(
+                "SELECT value, updated_at FROM app_settings WHERE key = %s",
+                (OP_KEY_PREFIX + source,),
+            ).fetchone()
+        if row is None and source not in LLM_OPERATIONS:
+            return None
+        lines = [f"# llm op route - {source}"]
+        default = LLM_OPERATIONS.get(source)
+        if default is not None:
+            lines.append(
+                f"code default: tier={default.tier.value} "
+                f"model={default.model or '(tier default)'} "
+                f"quota_fallback={default.quota_fallback}"
+            )
+        else:
+            lines.append("unregistered operation: stored override is inert")
+        if row is None:
+            lines.append("no stored override; last set: never")
+        else:
+            stamp = as_utc(row[1])
+            lines.append(
+                "last set: " + (stamp.strftime("%Y-%m-%dT%H:%M:%SZ") if stamp else "?")
+            )
+            try:
+                override = json.loads(row[0])
+            except (TypeError, ValueError):
+                override = None
+            if not isinstance(override, dict):
+                lines.append("invalid stored override: expected a JSON object")
+            else:
+                for key in ("tier", "model", "quota_fallback"):
+                    if key in override:
+                        lines.append(f"{key}={override[key]}")
+                chain = override.get("chain")
+                if chain is None:
+                    lines.append("chain: not stored (inherits tier chain)")
+                elif not isinstance(chain, list) or not chain:
+                    lines.append("invalid stored chain: expected a non-empty list")
+                else:
+                    lines.append("stored chain (in order):")
+                    for i, rung in enumerate(chain):
+                        role = "primary" if i == 0 else "fallback"
+                        # Routing knobs only: endpoint/auth fields never render.
+                        fields = (
+                            "placement",
+                            "transport",
+                            "model",
+                            "max_tokens",
+                            "reasoning_effort",
+                            "thinking",
+                            "effort",
+                            "timeout_s",
+                            "bare",
+                            "profile",
+                        )
+                        detail = (
+                            " ".join(f"{k}={rung[k]}" for k in fields if k in rung)
+                            if isinstance(rung, dict)
+                            else "(invalid rung: expected an object)"
+                        )
+                        lines.append(f"  {i + 1}. {role}: {detail}")
+        lines.append(
+            "Stored configuration only; request pins, tier chains and runtime "
+            "gates may change the route. No LLM call made."
+        )
+        return Response(body="\n".join(lines))
+
+    def _op_routes(self) -> Response:
+        with self.store.pool.connection() as conn:
+            rows = conn.execute(
+                "SELECT key, updated_at FROM app_settings WHERE starts_with(key, %s) "
+                "ORDER BY key",
+                (OP_KEY_PREFIX,),
+            ).fetchall()
+        stored = {key[len(OP_KEY_PREFIX) :]: stamp for key, stamp in rows}
+        sources = sorted(set(LLM_OPERATIONS) | set(stored))
+        lines = [f"# llm op routes ({len(sources)})"]
+        for source in sources:
+            state = "registered" if source in LLM_OPERATIONS else "unregistered (inert)"
+            stamp = as_utc(stored.get(source))
+            when = stamp.strftime("%Y-%m-%dT%H:%M:%SZ") if stamp else "never"
+            lines.append(f"  {source}: {state}; last set: {when}")
+        lines.append("Read a stored chain: get(kind='llm', id='<source>')")
+        return Response(body="\n".join(lines), result_count=len(sources))
 
     # ── put: guarded funnel to the shared catalog writer ────────────
 

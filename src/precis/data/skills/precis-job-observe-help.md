@@ -15,6 +15,7 @@ answers:
   - is the fleet working or idle?
   - when does a cadence fire next?
   - is a live switch (app_settings / service_config row) set?
+  - how many garden proposals were approved, rejected or held for a human?
 applies-to: get/search/put (kind='job')
 tags: workflow, verbs, troubleshooting
 kinds: job
@@ -107,6 +108,20 @@ Read-only view over the centralised `worker_logs` table (migration
 CLI. Header line states the resolved filter + UTC cutoff; each row is
 `ts host handler LEVEL message`; the trailer says `N rows shown of M
 matching`; no other agent surface reads this table (no Bash, no raw SQL).
+
+## Read garden review counts
+
+`get(kind='job', id='/garden', args={'since': '7d'})` reads the
+`graph-garden` / `garden-consumer` review ledger: proposed, approved,
+rejected and held-for-human counts since the UTC cutoff, plus the
+latest non-skipped `graph_garden` job with recorded results in that
+window. Omit `since` for 7d; a positive age (`24h`, `14d`) or ISO UTC
+timestamp works, as does `/garden?since=7d`.
+
+These are dated ledger events, not current pending-proposal counts:
+an approved proposal still has its original proposal event. Held
+consumer rows are separated from proposed; sampled reviewer actors
+are excluded. This view is read-only.
 
 ## Is the external rate limiter pacing a provider?
 

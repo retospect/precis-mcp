@@ -2587,6 +2587,7 @@ class MemoryHandler(NumericRefHandler):
         page: int = 1,
         mode: str | None = None,
         view: str | None = None,
+        group_by: str | list[str] | None = None,
         exclude_ref_ids: list[int] | None = None,
         include_ref_ids: list[int] | None = None,
         scope: str | None = None,
@@ -2601,7 +2602,13 @@ class MemoryHandler(NumericRefHandler):
         ``section:<type>`` gets a one-line narrowing hint appended
         (:func:`~precis.utils.memory_hubs.narrowing_hints`; ``under=`` itself
         is the dispatcher's generic part-of scope). The parameters are spelled
-        out because dispatch routes by this signature."""
+        out because dispatch routes by this signature: it follows cooperative
+        superclass forwarding, not the private ``_search_inner`` helper."""
+        if group_by is not None and view != "count":
+            raise BadInput(
+                "group_by= only applies to view='count'",
+                next="search(kind='memory', view='count', args={'group_by': 'tag:SPACE'})",
+            )
         resp = self._search_inner(
             q=q,
             tags=tags,
@@ -2609,6 +2616,7 @@ class MemoryHandler(NumericRefHandler):
             page=page,
             mode=mode,
             view=view,
+            group_by=group_by,
             exclude_ref_ids=exclude_ref_ids,
             include_ref_ids=include_ref_ids,
             scope=scope,

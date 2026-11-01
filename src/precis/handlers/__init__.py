@@ -63,6 +63,9 @@ compare the previous body with the resolver's snapshot inside the
 transaction. Lock choice, the pre-commit ``INTRANS`` check and the
 call-local ``put_meta`` payload: :mod:`precis.handlers.memory`.
 
+Stored-route/ledger-count rationale: :mod:`precis.handlers.llm`,
+:mod:`precis.handlers.job`.
+
 **Bare ``**_kw`` catch-alls are strict by default (gr334695).** A verb
 method's own ``**kwargs`` is the cooperative-inheritance idiom this
 package leans on heavily — a subclass declares its kind-specific params

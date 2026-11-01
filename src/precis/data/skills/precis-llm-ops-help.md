@@ -7,6 +7,7 @@ answers:
   - why did an LLM call fail, and will retrying help (quota, rate limit, budget)?
   - what is deferred_llm_call?
   - where do I see a tripped LLM budget or quota window?
+  - which model chain is stored for an operation, and when was it set?
 applies-to: get/search (kind='llm'); llm_call_log reason_class; deferred_llm_call job; /budget
 tags: troubleshooting, workflow
 kinds: llm
@@ -17,6 +18,18 @@ status: active
 
 The ops side of the `llm` kind — what happens when a call fails.
 Choosing a model is [[precis-llm-help]].
+
+## Read an operation's stored model route
+
+`get(kind='llm', id='/ops')` lists registered operations and stored
+`llm.op.*` overrides, including unregistered rows marked inert.
+`get(kind='llm', id='graph_garden:propose')` (or `id='llm_summarize'`)
+shows the code default, stored primary/fallback rungs in order, model
+ids, max_tokens, reasoning knobs, quota_fallback and the UTC last-set
+time. Without an override it says so; this is stored configuration,
+not a claim about the effective route after request pins and runtime
+gates. Endpoint/auth fields are omitted. Both reads make no LLM calls.
+Per-op call telemetry stays at `id='op:<source>', view='stats'`.
 
 ## Why did an LLM call fail? Quota, rate limit, retry
 ## What is deferred_llm_call?

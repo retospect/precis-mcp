@@ -8,10 +8,16 @@ and render the job header + status + summary on ``get``.
 
 See ``precis-job-help`` for the agent-facing surface and
 ``precis-fix-gripe-help`` for the first concrete job_type.
+
+``/garden`` counts dated garden review events, not the pending-proposal
+queue: the append-only ledger keeps a proposal after its terminal verdict.
+Consumer holds are separate from proposals; the last run is the latest
+non-skipped graph_garden job with recorded results in the same window.
 """
 
 from __future__ import annotations
 
+import json
 import os
 import re
 import subprocess
@@ -833,6 +839,7 @@ class JobHandler(NumericRefHandler):
             "limits",
             "delta",
             "settings",
+            "garden",
         )
 
     def get(
@@ -885,6 +892,27 @@ class JobHandler(NumericRefHandler):
             )
             if v is not None
         }
+        if isinstance(id, str) and id.partition("?")[0] == "/garden":
+            unsupported = set(logs_args) - {"since"}
+            unsupported.update(
+                k
+                for k, v in {
+                    "view": view,
+                    "q": q,
+                    "sha": sha,
+                    "file": file,
+                    "point": point,
+                    "frames": frames,
+                    **_kw,
+                }.items()
+                if v is not None
+            )
+            if unsupported:
+                raise BadInput(
+                    f"{sorted(unsupported)} don't apply to /garden",
+                    next="get(kind='job', id='/garden', args={'since': '7d'})",
+                )
+            return self._render_garden_view(id.partition("?")[2], since=since)
         if isinstance(id, str) and _is_logs_path(id):
             extra = {k: str(v) for k, v in logs_args.items()}
             if q is not None:
@@ -975,7 +1003,77 @@ class JobHandler(NumericRefHandler):
         if view == "settings" or view.startswith("settings?"):
             _, _, query_string = view.partition("?")
             return self._render_settings_view(query_string)
+        if view == "garden" or view.startswith("garden?"):
+            return self._render_garden_view(view.partition("?")[2])
         return super()._list_view(view)
+
+    def _render_garden_view(
+        self, query_string: str, *, since: str | int | None = None
+    ) -> Response:
+        """Count dated ledger events, not the folded pending-proposal queue."""
+        params = dict(parse_qsl(query_string, keep_blank_values=True))
+        if set(params) - {"since"}:
+            raise BadInput(
+                "unknown /garden filter",
+                next="get(kind='job', id='/garden', args={'since': '7d'})",
+            )
+        raw = params.get("since", since if since is not None else "7d")
+        now = datetime.now(UTC)
+        cutoff = _job_window_bound(str(raw), "since")
+        if cutoff is None or cutoff >= now:
+            raise BadInput(
+                "since= must name a past time or positive age",
+                next="get(kind='job', id='/garden', args={'since': '7d'})",
+            )
+        with self.store.pool.connection() as conn:
+            rows = conn.execute(
+                "SELECT verdict, CASE WHEN actor = 'garden-consumer' "
+                "AND verdict = 'proposed' THEN note END AS hold_note, count(*) "
+                "FROM reviews "
+                "WHERE actor IN ('graph-garden', 'garden-consumer') AND at >= %s "
+                "GROUP BY verdict, hold_note",
+                (cutoff,),
+            ).fetchall()
+            last = conn.execute(
+                "SELECT ref_id FROM refs WHERE kind = 'job' "
+                "AND retired_at IS NULL AND meta->>'job_type' = 'graph_garden' "
+                "AND meta ? 'garden' AND NOT (meta->'garden' ? 'skipped') "
+                "AND COALESCE(precis_try_timestamptz(meta->>'started_at'), "
+                "created_at) >= %s "
+                "ORDER BY COALESCE(precis_try_timestamptz(meta->>'started_at'), "
+                "created_at) DESC, ref_id DESC LIMIT 1",
+                (cutoff,),
+            ).fetchone()
+        counts = dict.fromkeys(
+            ("proposed", "approved", "rejected", "held-for-human"), 0
+        )
+        for verdict, note, n in rows:
+            bucket = str(verdict)
+            if note:
+                try:
+                    payload = json.loads(note)
+                except (TypeError, ValueError):
+                    payload = None
+                review = (
+                    payload.get("garden_review") if isinstance(payload, dict) else None
+                )
+                if isinstance(review, dict) and review.get("held"):
+                    bucket = "held-for-human"
+            counts[bucket] += int(n)
+        lines = [
+            f"# garden reviews since {cutoff.strftime('%Y-%m-%dT%H:%M:%SZ')}",
+            "actors: graph-garden, garden-consumer",
+            f"proposed: {counts['proposed']}",
+            f"approved: {counts['approved']}",
+            f"rejected: {counts['rejected']}",
+            f"held-for-human: {counts['held-for-human']}",
+            f"last run id: {'jo' + str(last[0]) if last else '(none in window)'}",
+            "Counts are ledger events, not current pending proposals; held rows "
+            "are separated from proposed. Sampled reviewer rows are excluded.",
+            "Last run is the latest non-skipped graph_garden job with recorded "
+            "garden results in the same window.",
+        ]
+        return Response(body="\n".join(lines), result_count=sum(counts.values()))
 
     def _render_transcript_view(self, ref: Any) -> Response:
         """``view='transcript'`` — the compact forensic read (gr504491).
