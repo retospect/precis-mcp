@@ -466,7 +466,9 @@ def test_body_move_keeps_survivor_pdf_sha256_aliases(store: Store) -> None:
     ``pdf_sha256`` set — the historical-alias rows are deliberate
     (``pdf_sha256_aliases``), not stale — while its ``content_hash``
     row still drops (no body yet, so it described nothing it held).
-    The donor's pdf-kind rows re-home alongside them."""
+    The donor's ``content_hash`` re-homes (it covers the moved body);
+    its ``pdf_sha256`` row does not — no file moved, so the donor
+    keeps the claim on its own pdf (gr548255)."""
     survivor = int(store.insert_ref(kind="paper", slug="keepal24", title="K").id)
     with store.pool.connection() as conn:
         conn.execute(
@@ -499,6 +501,9 @@ def test_body_move_keeps_survivor_pdf_sha256_aliases(store: Store) -> None:
     assert _id_rows(store, survivor, ["pdf_sha256", "content_hash"]) == [
         ("content_hash", CONTENT),  # donor's — survivor's stale row dropped
         ("pdf_sha256", "a" * 64),  # survivor's live pdf
-        ("pdf_sha256", SHA),  # donor's re-homed row
         ("pdf_sha256", "b" * 64),  # survivor's historical alias
     ]
+    # No file moved: the donor keeps its pdf pointer and identifier —
+    # stripping them would leave it with no claim on its own file.
+    assert _one(store, "SELECT pdf_sha256 FROM refs WHERE ref_id=%s", twin) == SHA
+    assert _id_rows(store, twin, ["pdf_sha256"]) == [("pdf_sha256", SHA)]
