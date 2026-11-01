@@ -23,6 +23,7 @@ from collections import Counter
 from pathlib import Path
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, cast
+from unittest.mock import create_autospec
 
 import pytest
 
@@ -309,14 +310,17 @@ def test_prep_builds_the_environment_from_the_raw_config() -> None:
     assert runner._prep({"name": "x"}, None).environment is None
 
 
-def test_run_kinetics_carries_the_new_keys(monkeypatch: pytest.MonkeyPatch) -> None:
+@pytest.mark.parametrize("thermo_record", [None, {"mode": "none"}])
+def test_run_kinetics_carries_the_new_keys(
+    monkeypatch: pytest.MonkeyPatch, thermo_record: dict[str, Any] | None
+) -> None:
     """``run_kinetics`` folds the engine's result verbatim and its child
-    returns it whole, so the v2 keys need no plumbing — pinned here."""
+    returns it whole. gr548158: the solve stub must match the engine's
+    signature, including the stored thermo record."""
     import autocatpath.ledger as ledger_mod
     import autocatpath.pipeline as pipeline_mod
     import autocatpath.thermo as thermo_mod
 
-    seen: dict[str, Any] = {}
     canned = {
         "tof": 1e-3,
         "environment": {"T": 298.15},
@@ -325,21 +329,23 @@ def test_run_kinetics_carries_the_new_keys(monkeypatch: pytest.MonkeyPatch) -> N
         "reversibility": {"a->b": 0.5},
     }
 
-    class _FakeKinetics:
-        @staticmethod
-        def solve(cfg, nodes, edges, net, refs, *, span, mari, log):
-            seen["environment"] = cfg.environment
-            return canned
-
-    monkeypatch.setattr(runner, "_import_kinetics", lambda: _FakeKinetics)
+    solve = create_autospec(kinetics.solve, return_value=canned)
+    monkeypatch.setattr(
+        runner, "_import_kinetics", lambda: SimpleNamespace(solve=solve)
+    )
     monkeypatch.setattr(pipeline_mod, "_build_net", lambda cfg: None)
     monkeypatch.setattr(pipeline_mod, "ledger_refs", lambda *a, **k: {})
     monkeypatch.setattr(ledger_mod, "compute_ledgers", lambda net: ({}, []))
     monkeypatch.setattr(thermo_mod, "build_table", lambda cfg: None)
     art: Any = {"results_json": {"nodes": {}, "edges": [], "score": {}}}
+    if thermo_record is not None:
+        art["results_json"]["thermo"] = thermo_record
     runner.run_kinetics({"name": "x", "environment": ENV}, art)
+    assert "kinetics_error" not in art["results_json"]
     assert art["results_json"]["kinetics"] == canned
-    assert seen["environment"].outputs["NH3"] == 1e-3
+    solve.assert_called_once()
+    assert solve.call_args.args[0].environment.outputs["NH3"] == 1e-3
+    assert solve.call_args.kwargs["thermo_record"] is thermo_record
 
 
 # --- put: params + refusal with next= ----------------------------------------
