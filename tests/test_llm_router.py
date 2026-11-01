@@ -16,7 +16,7 @@ import json
 import os
 from collections.abc import Callable
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from email.message import Message
 from types import SimpleNamespace
 from typing import Any
@@ -5830,6 +5830,356 @@ def test_op_chain_escape_passes_gates_and_runs_next_rung(
 # rung 0 in a 2-rung failover ladder) and
 # test_saturated_escape_on_local_labelled_rung_lands_cloud_routed_local
 # (single pinned rung).
+
+
+# ── quota fallback (OpDefault.quota_fallback — the casts) ──────────────
+#
+# A ``quota``-class breaker trip on a subscription rung (a non-bare
+# claude-OAuth transport) walks the same ladder to the next rung that
+# doesn't draw subscription quota — but only for an op that opted in, and
+# only while the op's UTC-day fallback spend is under
+# ``llm.quota_fallback_daily_usd``. Mirrors the op-chain tests: the
+# meditation chain's rung 0 is ``claude_agent`` (subscription), rung 1 the
+# non-subscription fallback.
+
+_CAST_QUOTA_CHAIN = [
+    {
+        "transport": "claude_agent",
+        "model": "claude-sonnet-5",
+        "placement": "cloud",
+    },
+    {
+        "transport": "openai_tools",
+        "model": "gpt-oss-120b",
+        "placement": "local",
+    },
+]
+
+
+def _cast_quota_setup(
+    monkeypatch: pytest.MonkeyPatch,
+    op_rows: dict[str, dict[str, Any]],
+    *,
+    fallback_spent: float = 0.0,
+) -> tuple[_Rec, _Rec]:
+    """``llm.op.<source>`` overrides + provider fakes for the cast chain's
+    two wires. Returns the ``(agent, oss)`` call recorders.
+
+    ``fallback_spent`` stubs the op's recorded UTC-day fallback spend —
+    without a bound store the real accounting fails closed (``inf`` →
+    capped), so tests that expect the escape to fire pin ``0.0`` (well
+    under the $2 default cap) and cap tests pin an over-cap figure.
+    """
+    monkeypatch.setattr(
+        "precis.utils.llm.live_config.chain_override", lambda _tier: None
+    )
+    monkeypatch.setattr(
+        "precis.utils.llm.live_config.op_override",
+        lambda source: op_rows.get(source),
+    )
+    monkeypatch.setattr(
+        router, "_quota_fallback_spent_usd", lambda _source: fallback_spent
+    )
+    agent, oss = _Rec("subscription"), _Rec("fallback")
+    monkeypatch.setitem(router._PROVIDERS, Transport.CLAUDE_AGENT, agent)
+    monkeypatch.setitem(router._PROVIDERS, Transport.OPENAI_TOOLS, oss)
+    monkeypatch.setenv("PRECIS_LLM_BASE_URL", "https://openrouter.ai/api/v1")
+    monkeypatch.delenv("PRECIS_SUMMARIZE_LLM_URL", raising=False)
+    _serving(monkeypatch, served=False)
+    return agent, oss
+
+
+def _cast_req(source: str = "meditation") -> LlmRequest:
+    return LlmRequest(tier=Tier.BIG, tools_needed=True, prompt="x", source=source)
+
+
+def test_quota_paused_cast_falls_back_to_non_subscription_rung(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Rung 0 quota-pauses → the chain's next non-subscription rung runs,
+    and the route-log row names the rung that landed it."""
+    agent, oss = _cast_quota_setup(
+        monkeypatch, {"meditation": {"chain": _CAST_QUOTA_CHAIN}}
+    )
+    gated: list[str] = []
+
+    def gate(
+        tier: Tier, *, transport: str, local: bool, bare: bool, **_kw: Any
+    ) -> str | None:
+        gated.append(transport)
+        if transport == "claude_agent":
+            return "claude quota window exhausted — paused"
+        return None
+
+    monkeypatch.setattr("precis.budget.breaker.gate_tier", gate)
+    monkeypatch.setattr("precis.utils.llm.admit.check_dispatch", lambda req, **kw: None)
+    recorded = _capture_route_log(monkeypatch)
+
+    out = route(_cast_req())
+
+    assert out.text == "fallback" and out.error is None and out.paused is False
+    assert agent.calls == [] and oss.calls == [("gpt-oss-120b", None)]
+    # Gated twice: the subscription rung tripped, then the fallback rung was
+    # re-gated on the resource IT spends before dispatch.
+    assert gated == ["claude_agent", "openai_tools"]
+    fb = recorded[0].features["quota_fallback"]
+    assert fb["paused_rung"] == "claude_agent"
+    assert fb["transport"] == "openai_tools" and fb["model"] == "gpt-oss-120b"
+
+
+def test_unpaused_cast_uses_the_subscription_rung(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """No quota pause → rung 0 (claude_agent) runs; the fallback stays silent."""
+    agent, oss = _cast_quota_setup(
+        monkeypatch, {"meditation": {"chain": _CAST_QUOTA_CHAIN}}
+    )
+    monkeypatch.setattr("precis.budget.breaker.gate_tier", lambda *a, **kw: None)
+    monkeypatch.setattr("precis.utils.llm.admit.check_dispatch", lambda req, **kw: None)
+
+    out = route(_cast_req())
+
+    assert out.text == "subscription"
+    assert agent.calls == [("claude-sonnet-5", None)] and oss.calls == []
+
+
+def test_quota_paused_cast_with_no_fallback_rung_pauses(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Every rung draws the subscription → today's paused behaviour stands."""
+    agent, oss = _cast_quota_setup(
+        monkeypatch, {"meditation": {"chain": [_CAST_QUOTA_CHAIN[0]]}}
+    )
+    monkeypatch.setattr(
+        "precis.budget.breaker.gate_tier",
+        lambda *a, **kw: "claude quota window exhausted — paused",
+    )
+
+    out = route(_cast_req())
+
+    assert out.paused is True and out.error == "claude quota window exhausted — paused"
+    assert agent.calls == [] and oss.calls == []
+
+
+def test_quota_paused_non_opted_op_still_pauses(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The fallback is a per-op opt-in: ``chase:verify``'s chain has the same
+    non-subscription rung but the op never asked — a pause, not a silent
+    downgrade onto a rung the pass never priced in."""
+    agent, oss = _cast_quota_setup(
+        monkeypatch, {"chase:verify": {"chain": _CAST_QUOTA_CHAIN}}
+    )
+    monkeypatch.setattr(
+        "precis.budget.breaker.gate_tier",
+        lambda *a, **kw: "claude quota window exhausted — paused",
+    )
+
+    out = route(_cast_req(source="chase:verify"))
+
+    assert out.paused is True
+    assert agent.calls == [] and oss.calls == []
+
+
+def test_quota_fallback_re_gates_the_fallback_rung(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The fallback rung is gated on ITS resource — a dollar-capped rung
+    still pauses (``budget`` class), it doesn't get a free pass."""
+    agent, oss = _cast_quota_setup(
+        monkeypatch, {"meditation": {"chain": _CAST_QUOTA_CHAIN}}
+    )
+
+    def gate(
+        tier: Tier, *, transport: str, local: bool, bare: bool, **_kw: Any
+    ) -> str | None:
+        if transport == "claude_agent":
+            return "claude quota window exhausted — paused"
+        if transport == "openai_tools":
+            return "budget: daily cap $5.00 reached — paused"
+        return None
+
+    monkeypatch.setattr("precis.budget.breaker.gate_tier", gate)
+
+    out = route(_cast_req())
+
+    assert out.paused is True
+    assert out.error == "budget: daily cap $5.00 reached — paused"
+    assert out.reason_class == "budget"
+    assert agent.calls == [] and oss.calls == []
+
+
+def test_quota_fallback_tallies_one_served_row(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A fallback call is ONE logical call: the refused rung-0 gate skips its
+    tally so /budget reads exactly one ``served`` row — no ``paused`` row for
+    a call that was in fact served (the degraded re-ask, which does show both,
+    is two calls)."""
+    agent, oss = _cast_quota_setup(
+        monkeypatch, {"meditation": {"chain": _CAST_QUOTA_CHAIN}}
+    )
+    recorded: list[str] = []
+    # The manual tally for an armed-but-admitted gate writes through the same
+    # outcomes.record the gate's own tally uses.
+    monkeypatch.setattr(
+        "precis.budget.outcomes.record",
+        lambda _st, _cls, outcome: recorded.append(outcome),
+    )
+
+    def gate(
+        tier: Tier, *, transport: str, tally: bool = False, **_kw: Any
+    ) -> str | None:
+        reason = (
+            "claude quota window exhausted — paused"
+            if transport == "claude_agent"
+            else None
+        )
+        if tally:
+            # gate_tier's contract: tally=True writes the decision's row.
+            recorded.append("paused" if reason else "served")
+        return reason
+
+    monkeypatch.setattr("precis.budget.breaker.gate_tier", gate)
+    monkeypatch.setattr("precis.utils.llm.admit.check_dispatch", lambda req, **kw: None)
+
+    out = route(_cast_req())
+
+    assert out.text == "fallback"
+    assert recorded == ["served"]
+
+
+def test_quota_fallback_cap_reached_stays_paused(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """At/over the op's UTC-day fallback cap the escape is dark — the quota
+    pause stands exactly as an unarmed op's: one ``paused`` tally row from
+    the rung-0 gate itself, no rung dispatched."""
+    agent, oss = _cast_quota_setup(
+        monkeypatch,
+        {"meditation": {"chain": _CAST_QUOTA_CHAIN}},
+        fallback_spent=9.99,  # over the $2 default llm.quota_fallback_daily_usd
+    )
+    gated: list[tuple[str, bool]] = []
+    recorded: list[str] = []
+    monkeypatch.setattr(
+        "precis.budget.outcomes.record",
+        lambda _st, _cls, outcome: recorded.append(outcome),
+    )
+
+    def gate(
+        tier: Tier, *, transport: str, tally: bool = False, **_kw: Any
+    ) -> str | None:
+        gated.append((transport, tally))
+        reason = (
+            "claude quota window exhausted — paused"
+            if transport == "claude_agent"
+            else None
+        )
+        if tally:
+            recorded.append("paused" if reason else "served")
+        return reason
+
+    monkeypatch.setattr("precis.budget.breaker.gate_tier", gate)
+
+    out = route(_cast_req())
+
+    assert out.paused is True and out.reason_class == "quota"
+    assert out.error == "claude quota window exhausted — paused"
+    assert agent.calls == [] and oss.calls == []
+    # Capped ⇒ not armed: the one gate ran tallied — /budget's single
+    # ``paused`` row — and no fallback rung was gated at all.
+    assert gated == [("claude_agent", True)]
+    assert recorded == ["paused"]
+
+
+def test_quota_fallback_env_cap_zero_disables(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``PRECIS_LLM_QUOTA_FALLBACK_DAILY_USD=0`` turns the escape off outright
+    — even with $0 recorded fallback spend, ``0 >= 0`` caps it."""
+    agent, oss = _cast_quota_setup(
+        monkeypatch, {"meditation": {"chain": _CAST_QUOTA_CHAIN}}
+    )
+    monkeypatch.setenv("PRECIS_LLM_QUOTA_FALLBACK_DAILY_USD", "0")
+    monkeypatch.setattr(
+        "precis.budget.breaker.gate_tier",
+        lambda *a, **kw: "claude quota window exhausted — paused",
+    )
+
+    out = route(_cast_req())
+
+    assert out.paused is True
+    assert agent.calls == [] and oss.calls == []
+
+
+def test_quota_fallback_spend_sums_priced_and_unpriced_rows(
+    store: Any,
+) -> None:
+    """The cap's accounting reads real ``llm_call_log`` rows (no spend
+    monkeypatch): a priced fallback call sums real dollars; a served but
+    unmetered row counts the per-call estimate; local placement (priced,
+    not billed), refused rows, other sources and yesterday's rows are
+    excluded."""
+    from precis import route_log
+    from precis.budget import meter
+
+    meter.bind_store(store)
+    try:
+        n = 0
+
+        def log_row(
+            cost: float | None,
+            *,
+            source: str = "meditation",
+            placement: str = "cloud",
+            errored: bool = False,
+        ) -> str | None:
+            # ``_write`` over ``record_call``: a failed insert must raise in
+            # the test, not return ``None`` through the best-effort wrapper.
+            # Unique request_text per row — rows share request_hash otherwise,
+            # and a hash-keyed UPDATE would hit them all.
+            nonlocal n
+            n += 1
+            return route_log._write(
+                store,
+                route_log.LlmCallRecord(
+                    source=source,
+                    tier="big",
+                    transport="openai_tools",
+                    model="m",
+                    tools_needed=True,
+                    request_text=f"q{n}",
+                    response_text=f"a{n}",
+                    cost_usd=cost,
+                    turns_used=1,
+                    duration_ms=1,
+                    errored=errored,
+                    error="boom" if errored else None,
+                    data_parsed=False,
+                    features={"quota_fallback": {"rung": "x"}},
+                    placement=placement,
+                ),
+            )
+
+        log_row(1.10)  # priced fallback call → 1.10
+        log_row(None)  # served but unmetered → the unpriced estimate 0.25
+        log_row(None, errored=True)  # refused/errored, spent nothing → 0
+        log_row(5.00, placement="local")  # local = priced not billed → 0
+        log_row(4.00, source="briefing")  # a different op → 0
+        yesterday = log_row(4.00)  # outside today's UTC window → 0
+        with store.pool.connection() as conn:
+            conn.execute(
+                "UPDATE llm_call_log SET ts = %s WHERE request_hash = %s",
+                (datetime.now(UTC) - timedelta(days=2), yesterday),
+            )
+            conn.commit()
+
+        assert router._quota_fallback_spent_usd("meditation") == pytest.approx(
+            1.10 + 0.25
+        )
+    finally:
+        meter.bind_store(None)
 
 
 # ── budget degradation support (gr479851) ──────────────────────────────

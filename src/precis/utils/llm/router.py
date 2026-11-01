@@ -47,6 +47,7 @@ from __future__ import annotations
 import base64
 import contextlib
 import logging
+import math
 import os
 import random
 import re
@@ -2988,6 +2989,146 @@ def _trip_class(transport: Transport, *, bare: bool) -> _failure.FailureClass:
     return "budget"
 
 
+def _rung_draws_quota(rung: Rung) -> bool:
+    """True when a rung spends claude-subscription quota — an OAuth claude
+    transport without ``bare`` (the same split :func:`_trip_class` and the
+    breaker make). A quota-paused window cannot serve it; a ``bare`` rung
+    bills dollars instead, so it survives the quota fallback's prune."""
+    from precis.budget import meter as _meter
+
+    return rung.transport.value in _meter.OAUTH_TRANSPORTS and not rung.bare
+
+
+#: Fallback per-call estimate for a served-but-unpriced fallback row —
+#: the compiled default ``llm.quota_fallback_unpriced_usd`` /
+#: ``PRECIS_QUOTA_FALLBACK_UNPRICED_USD`` resolves against when unset.
+_QUOTA_FALLBACK_UNPRICED_USD = 0.25
+
+
+def _quota_fallback_spent_usd(source: str | None) -> float:
+    """The op's recorded quota-fallback spend today (UTC), in dollars.
+
+    Sums ``llm_call_log.cost_usd`` over this source's rows stamped
+    ``features.quota_fallback`` — the calls the subscription-pause escape
+    actually ran — excluding ``placement='local'`` (a local fallback's
+    ``cost_usd`` is a *priced* figure, not money spent; the same exclusion
+    the dollar caps apply) while a NULL placement still counts
+    (fail-closed, like the caps). A served-but-unpriced row (``cost_usd``
+    NULL, ``errored`` not true) counts a conservative per-call estimate —
+    ``llm.quota_fallback_unpriced_usd`` ($0.25 default) — so an unmetered
+    transport can't fly the fallback under the cap. Mirrors
+    :func:`precis.utils.llm.local_first._spent_usd`: a UTC day, and missing
+    accounting fails closed (``inf``) — an unmeasurable paid fallback is
+    an uncapped one.
+    """
+    from precis import settings as _settings
+    from precis.budget import meter as _meter
+
+    store = _meter.active_store()
+    if store is None:
+        return math.inf
+    unpriced = _settings.get_float("llm.quota_fallback_unpriced_usd")
+    if unpriced is None or not math.isfinite(unpriced) or unpriced < 0:
+        unpriced = _QUOTA_FALLBACK_UNPRICED_USD
+    start = datetime.now(UTC).replace(hour=0, minute=0, second=0, microsecond=0)
+    try:
+        with store.pool.connection() as conn:
+            row = conn.execute(
+                "SELECT COALESCE(sum("
+                "CASE WHEN cost_usd IS NOT NULL THEN cost_usd "
+                "WHEN errored IS NOT TRUE THEN %s "
+                "ELSE 0 END), 0)::float FROM llm_call_log "
+                "WHERE source = %s AND ts >= %s AND ts < %s "
+                "AND features ? 'quota_fallback' "
+                "AND placement IS DISTINCT FROM 'local'",
+                (unpriced, source, start, start + timedelta(days=1)),
+            ).fetchone()
+        return float(row[0]) if row else 0.0
+    except Exception:
+        log.warning(
+            "llm-router: quota-fallback accounting unavailable for %s",
+            source,
+            exc_info=True,
+        )
+        return math.inf
+
+
+def _quota_fallback_capped(source: str | None) -> bool:
+    """True once ``source``'s fallback lane has spent its UTC-day USD cap —
+    the op stays quota-paused instead of running up unbounded paid
+    fallback spend (the 2026-11-01 ruling's per-op daily cap, resolved
+    through ``llm.quota_fallback_daily_usd`` →
+    ``PRECIS_LLM_QUOTA_FALLBACK_DAILY_USD`` → $2). An unreadable cap fails
+    closed like an unreadable spend: the paid fallback doesn't run on a
+    knob the operator may have meant as ``0``."""
+    from precis import settings as _settings
+
+    cap = _settings.get_float("llm.quota_fallback_daily_usd")
+    if cap is None or not math.isfinite(cap):
+        return True
+    return _quota_fallback_spent_usd(source) >= cap
+
+
+def _quota_fallback_ladder(ladder: list[Rung], source: str | None) -> list[Rung] | None:
+    """The ladder the subscription-quota fallback would dispatch — ``ladder``
+    minus every rung that draws claude-subscription quota — when the escape
+    is *armed* for ``source``: rung 0's gate is the quota gate, the op opted
+    in (:func:`~precis.utils.llm.operations.wants_quota_fallback`), at least
+    one non-subscription rung survives the prune, and the op's UTC-day
+    fallback spend is still under its cap (:func:`_quota_fallback_capped`).
+    ``None`` when the fallback cannot fire (today's paused behaviour — a
+    capped op stays quota-paused). Everything but the trip itself is
+    decidable before the gate runs, which is what lets the callers suppress
+    the first gate's tally.
+    """
+    if _trip_class(ladder[0].transport, bare=ladder[0].bare) != "quota":
+        return None
+    from precis.utils.llm import operations as _operations
+
+    if not _operations.wants_quota_fallback(source):
+        return None
+    kept = [rung for rung in ladder if not _rung_draws_quota(rung)]
+    if not (0 < len(kept) < len(ladder)):
+        return None
+    if _quota_fallback_capped(source):
+        return None
+    return kept
+
+
+def _tally_gate(req: LlmRequest, outcome: str) -> None:
+    """The outcome row a ``tally=False`` :func:`gate_tier` skipped. The quota
+    fallback must decide the first gate's tally before it knows whether the
+    gate trips, so the omitted ``served``/``degraded`` row is written here
+    once the outcome is known — same store and class resolution the gate
+    applies."""
+    from precis.budget import meter as _meter
+    from precis.budget import outcomes as _outcomes
+    from precis.budget.work_class import resolve as _resolve_class
+
+    _outcomes.record(_meter.active_store(), _resolve_class(req.work_class), outcome)
+
+
+def _provider_for_ladder(ladder: list[Rung]) -> LlmProvider:
+    """The provider a resolved ladder dispatches through.
+
+    :class:`FailoverProvider` only when there's genuinely a ladder to walk:
+    the failover flag is on, the chain has >1 rung, or a single rung pins
+    its own model (an operator override — ``resolve_chain`` always pins a
+    rung model) or a named provider profile. A bare single primary rung
+    routes straight to its provider, carrying the rung's auth opt-in — a
+    path that silently drops ``bare`` would decide a billing question by
+    omission.
+    """
+    if (
+        _failover_enabled()
+        or len(ladder) > 1
+        or ladder[0].model is not None
+        or ladder[0].profile is not None
+    ):
+        return FailoverProvider(ladder)
+    return provider_for(ladder[0].transport, bare=ladder[0].bare)
+
+
 def _keyword_model_rung(model: str, *, tools_needed: bool) -> Rung:
     """The single rung for a bare-model keyword target — the transport the
     model id implies: a ``claude*`` id rides the claude wire, a model served
@@ -3409,26 +3550,7 @@ def _route_inner(req: LlmRequest) -> LlmResult:
                 routed=_routed_placement(routed_rung, None),
             )
     transport = ladder[0].transport
-    # Wrap in FailoverProvider only when there's genuinely a ladder to walk:
-    # the failover flag is on, the chain has >1 rung, or a single rung pins
-    # its own model (an operator override — resolve_chain always pins a rung
-    # model). A bare single primary rung (model=None, flag off) routes
-    # straight to its provider, which keeps the saturated-slot escape below
-    # gated on a real ladder.
-    if (
-        _failover_enabled()
-        or len(ladder) > 1
-        or ladder[0].model is not None
-        or ladder[0].profile is not None
-    ):
-        provider: LlmProvider = FailoverProvider(ladder)
-    else:
-        # Carry the rung's auth opt-in here too. Unreachable for an operator
-        # override (resolve_chain always pins a rung model, so those take the
-        # FailoverProvider branch above) and no default chain sets it — but a
-        # path that silently drops `bare` would decide a billing question by
-        # omission the first time that changes.
-        provider = provider_for(transport, bare=ladder[0].bare)
+    provider: LlmProvider = _provider_for_ladder(ladder)
     # Global circuit breaker: refuse a *new paid* call once its resource is
     # exhausted (only free local tiers pass; dark when no store is bound).
     # Folds into the normalized error result so callers degrade gracefully.
@@ -3440,15 +3562,72 @@ def _route_inner(req: LlmRequest) -> LlmResult:
     # not starve it. ``_rung_is_cloud`` is the authoritative local/cloud
     # classifier (same one the cloud-throttle uses).
     # ``bare`` moves the resource from OAuth quota to dollars — see gate_tier.
+    # The quota fallback's conditions but the trip itself are decidable
+    # before the gate runs. When it is armed the first gate must NOT tally:
+    # its "paused" row beside the re-gate's row would count one logical call
+    # twice in /budget's per-class outcomes (the degraded re-ask it was
+    # modelled on is two calls, this is one). The skipped tally is written
+    # below once the outcome is known.
+    fallback_ladder = _quota_fallback_ladder(ladder, req.source)
     trip = _breaker.gate_tier(
         req.tier,
         transport=transport.value,
         local=not _rung_is_cloud(ladder[0]),
         bare=ladder[0].bare,
         work_class=req.work_class,
-        tally=True,
+        tally=fallback_ladder is None,
         degraded=bool(req.degraded_from),
     )
+    if fallback_ladder is not None and trip is None:
+        # Armed but rung 0 admitted anyway — the gate's suppressed tally.
+        _tally_gate(req, "served")
+        if req.degraded_from:
+            _tally_gate(req, "degraded")
+    if trip is not None and fallback_ladder is not None:
+        # The quota fallback (OpDefault.quota_fallback — the scheduled casts):
+        # a paused subscription rung yields the same ladder minus every rung
+        # that draws subscription quota (a quota-paused rung can only pause
+        # again, so keeping it in the tail buys nothing), then the new rung 0
+        # is re-gated on the resource IT spends — a hosted rung can still
+        # dollar-cap out. ``routed_rung`` keeps the operator intent so the
+        # row's placement_routed/placement split shows the degrade. The
+        # refused rung wrote no outcome row — the re-gate's is the call's.
+        paused_rung = ladder[0]
+        ladder = fallback_ladder
+        transport = ladder[0].transport
+        provider = _provider_for_ladder(ladder)
+        # Which rung ran, recorded on the route-log row's features — the
+        # cast's traceable record of composing off the subscription lane
+        # (and the row the op's UTC-day fallback spend cap sums).
+        req = _replace(
+            req,
+            features={
+                **(req.features or {}),
+                "quota_fallback": {
+                    "paused_rung": paused_rung.transport.value,
+                    "rung": ladder[0].label or ladder[0].transport.value,
+                    "transport": ladder[0].transport.value,
+                    "model": ladder[0].model or model,
+                },
+            },
+        )
+        log.warning(
+            "llm-router: %s quota-paused rung 0 (%s) — falling back to "
+            "the next non-subscription rung (%s, model=%s)",
+            req.source,
+            paused_rung.transport.value,
+            ladder[0].transport.value,
+            ladder[0].model or model,
+        )
+        trip = _breaker.gate_tier(
+            req.tier,
+            transport=transport.value,
+            local=not _rung_is_cloud(ladder[0]),
+            bare=ladder[0].bare,
+            work_class=req.work_class,
+            tally=True,
+            degraded=bool(req.degraded_from),
+        )
     if trip is not None:
         # A breaker trip is a window-scoped *pause*, not a failure — flag it so a
         # pinned pass skips (and re-runs when the window clears) rather than
@@ -3839,16 +4018,30 @@ async def dispatch_async(req: LlmRequest) -> LlmResult:
     # Reached only for CLAUDE_AGENT (always cloud/OAuth — the non-agent path
     # delegated to sync route() above), so ``local`` is False here; passed for
     # symmetry with the sync gate and to stay correct if the guard ever widens.
+    # When the quota fallback is armed this gate skips its tally — the
+    # delegation to route() below tallies the call's real outcome, so a row
+    # here would double-count it (parity with the sync gate).
+    fallback_ladder = _quota_fallback_ladder(ladder, req.source)
     trip = _breaker.gate_tier(
         req.tier,
         transport=transport.value,
         local=not _rung_is_cloud(ladder[0]),
         bare=ladder[0].bare,
         work_class=req.work_class,
-        tally=True,
+        tally=fallback_ladder is None,
         degraded=bool(req.degraded_from),
     )
+    if fallback_ladder is not None and trip is None:
+        _tally_gate(req, "served")
+        if req.degraded_from:
+            _tally_gate(req, "degraded")
     if trip is not None:
+        # Quota-fallback parity with sync route(): an opted-in op whose chain
+        # has a non-subscription rung left delegates to the sync path, which
+        # owns the fallback walk (the call gives up its on_event stream —
+        # the same trade a keyword retarget already makes).
+        if fallback_ladder is not None:
+            return route(req)
         return _gate_result(
             req,
             _classified(

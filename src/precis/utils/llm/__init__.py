@@ -89,7 +89,10 @@ Resolution, per dispatch (in order)
    this host doesn't serve (else every call ECONNREFUSEs then fails over).
 6. **Gates** — the budget breaker (keyed on the resolved rung's resource:
    OAuth quota vs dollars vs free local) and the catalog window admission —
-   both fold refusals into the normalized result, never raise.
+   both fold refusals into the normalized result, never raise. An
+   ``OpDefault.quota_fallback`` op escapes a ``quota`` pause onto the
+   chain's next non-subscription rung (``llm.quota_fallback_daily_usd``
+   caps it daily).
 
 Local serving: a host that declares ``served_by`` for the model holds one
 of its ``resource_slots`` for the call (``local_serving.acquire``); a

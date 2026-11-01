@@ -55,9 +55,12 @@ MODEL_KEY_PREFIX = "llm.model."
 #: Same suffix vocabulary as :data:`MODEL_KEY_PREFIX`.
 CHAIN_KEY_PREFIX = "llm.chain."
 #: app_settings key prefix for a per-operation override (JSON
-#: ``{"tier": <str>?, "model": <str>?, "chain": [<rung>…]?}``) —
+#: ``{"tier": <str>?, "model": <str>?, "chain": [<rung>…]?,
+#: "quota_fallback": <bool>?}``) —
 #: ``llm.op.<source>`` (per-operation model routing); ``chain`` uses the
-#: same rung grammar as :data:`CHAIN_KEY_PREFIX`. Kept in sync with
+#: same rung grammar as :data:`CHAIN_KEY_PREFIX`, ``quota_fallback``
+#: overrides the op's :attr:`~precis.utils.llm.operations.OpDefault.quota_fallback`
+#: live. Kept in sync with
 #: :data:`precis.utils.llm.operations.OP_KEY_PREFIX` (the writer's mirror).
 OP_KEY_PREFIX = "llm.op."
 #: app_settings key for the cloud-throttle dial. ``"false"`` (or

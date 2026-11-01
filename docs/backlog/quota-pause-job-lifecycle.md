@@ -67,10 +67,10 @@ Open work:
   set grows. Prod residue: `child-failed:531123` on td531122 needs
   clearing (a Reto prod write; it only wedges the recurring if prod's
   scheduler predates efc894624 — verify before assuming).
-- Whether cast ops fall back to a non-subscription rung when
-  quota-paused (the `llm.op.meditation` precedent;
-  `budget-guardrails.md`'s deliverable ladder already defers "add the
-  local rung once the gr479851 degrade ladder lands").
+- ~~Whether cast ops fall back to a non-subscription rung when
+  quota-paused~~ — ruled 2026-11-01 and shipped (gr546460): per-op
+  `OpDefault.quota_fallback` opt-in, capped per UTC day by
+  `llm.quota_fallback_daily_usd`.
 
 ## gr541128 — agent ticks end as opaque failures after park/resume
 
@@ -163,11 +163,13 @@ dump.
 - **(blocker) Resume on `/budget` or wait for the auto-clear?** Asked of
   Reto on gr536351; until ruled, the spec assumes auto-clear plus the
   stall bounds above.
-- **Fallback rung for cast ops when quota-paused?** The
-  `llm.op.meditation` precedent says cast work should have a
-  non-subscription rung; the deliverable ladder's local rung waits on
-  gr479851. Options: per-op `llm.op.*` registry entries vs a generic
-  deliverable-class fallback.
+- **Fallback rung for cast ops when quota-paused? — RULED 2026-11-01
+  (Reto): yes, per-op `llm.op.*` registry entries
+  (`OpDefault.quota_fallback`, the `llm.op.meditation` precedent), with a
+  per-op UTC-day USD cap on fallback spend
+  (`llm.quota_fallback_daily_usd`, default $2; at cap the op stays
+  quota-paused).** Shipped in gr546460; a generic deliverable-class
+  fallback remains unbuilt.
 - **(a) Retry-loop circuit breaker vs (b) auto-retry on gate-cycled
   failure?** The gr541128 recommendation. (a) detects repeated identical
   tool calls near context/budget exhaustion; (b) makes the terminal

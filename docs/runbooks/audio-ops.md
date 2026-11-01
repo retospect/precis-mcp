@@ -71,7 +71,11 @@ The published mp3 and the on-demand PDF share a human stem — `morning_brief_<d
 as the `reading_brief` / `meditation` **`claude_inproc`** job_types on a daily
 recurring (`meta.schedule` set) watch — on `melchior`, where the litellm proxy
 serving `claude-opus` lives (same host as the news briefing); the compose and
-the narration never block each other.
+the narration never block each other. A quota-paused compose doesn't die: both
+ops opt into `quota_fallback`, which drops the subscription rung for the chain's
+next non-subscription rung (recorded as `features.quota_fallback` on the
+route-log row), bounded per op per UTC day by
+`PRECIS_LLM_QUOTA_FALLBACK_DAILY_USD` ($2 default — at cap the pause stands).
 
     precis cast run reading            # compose today's morning-brief draft now
     precis cast run nidra --publish    # compose + narrate + publish (on spark)

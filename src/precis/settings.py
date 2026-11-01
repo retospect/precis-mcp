@@ -155,6 +155,26 @@ REGISTRY: dict[str, SettingSpec] = {
             "(precis.budget.quota); 100 = pause only on an explicit rejection.",
         ),
         SettingSpec(
+            key="llm.quota_fallback_daily_usd",
+            type="float",
+            env_var="PRECIS_LLM_QUOTA_FALLBACK_DAILY_USD",
+            default=2.0,
+            doc="UTC-day USD cap, per op, on the quota fallback's paid rungs "
+            "(router._quota_fallback_capped): a quota-paused op falls back "
+            "to a non-subscription rung only while its recorded fallback "
+            "spend today is under this cap; at/over it the op stays "
+            "quota-paused. 0 disables the fallback outright.",
+        ),
+        SettingSpec(
+            key="llm.quota_fallback_unpriced_usd",
+            type="float",
+            env_var="PRECIS_QUOTA_FALLBACK_UNPRICED_USD",
+            default=0.25,
+            doc="Conservative per-call estimate charged to the quota-fallback "
+            "UTC-day cap for a served fallback row whose cost_usd is NULL — "
+            "an unmetered call must not bypass the cap.",
+        ),
+        SettingSpec(
             key="budget.resume_until",
             type="str",
             env_var=None,

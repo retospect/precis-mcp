@@ -65,7 +65,12 @@ class OpDefault:
     runtime DB override) so migrating a call site off its ``model=`` arg loses
     no capability. ``label`` / ``description`` are the "defaults visible" UI
     surface; ``note`` is a mouseover shown when the default or grouping took
-    real judgment.
+    real judgment. ``quota_fallback`` opts the op into the router's
+    subscription-pause escape (:func:`wants_quota_fallback`): when the rung
+    the gate pauses draws claude-subscription quota, the call lands on the
+    next non-subscription rung its chain already defines instead of pausing —
+    for an unattended scheduled deliverable a landed call on a worse rung
+    beats a paused job.
     """
 
     tier: Tier
@@ -74,6 +79,7 @@ class OpDefault:
     description: str
     env: str | None = None
     note: str | None = None
+    quota_fallback: bool = False
 
 
 @dataclass(frozen=True)
@@ -161,8 +167,13 @@ LLM_OPERATIONS: dict[str, OpDefault] = {
             "was spent the compose simply failed, and the morning episode "
             "landed hours late or not at all (2026-08-05/06/07). BIG has no "
             "quota gate and its chain starts local, so the cast composes for "
-            "~$0 and degrades to a cloud rung instead of to nothing."
+            "~$0 and degrades to a cloud rung instead of to nothing. "
+            "quota_fallback covers the case where the resolved rung still "
+            "draws the subscription (e.g. a claude-first chain): a "
+            "quota-paused cast walks to the chain's next non-subscription "
+            "rung rather than pausing (Reto, 2026-10-29)."
         ),
+        quota_fallback=True,
     ),
     "meditation": OpDefault(
         tier=Tier.BIG,
@@ -178,8 +189,12 @@ LLM_OPERATIONS: dict[str, OpDefault] = {
             "quota-killed compose on 2026-08-05 failed its job, which tagged "
             "the tick child-failed and left collision-skip blocking every "
             "later nidra tick, so one exhausted quota window silently cost "
-            "days of meditations rather than one."
+            "days of meditations rather than one. quota_fallback is the "
+            "belt: if the resolved rung still draws the subscription, a "
+            "quota-paused nidra walks to the chain's next non-subscription "
+            "rung instead of pausing."
         ),
+        quota_fallback=True,
     ),
     "briefing": OpDefault(
         tier=Tier.BIG,
@@ -557,6 +572,32 @@ def resolve_op(source: str | None) -> tuple[Tier, str | None] | None:
     return tier, model
 
 
+def wants_quota_fallback(source: str | None) -> bool:
+    """Whether ``source`` opts into the router's subscription-pause escape:
+    when the rung the budget gate pauses on draws claude-subscription quota,
+    :func:`~precis.utils.llm.router.route` drops the quota-drawing rungs and
+    dispatches the chain's next non-subscription rung (re-gated on the
+    resource it actually spends, and bounded by the op's UTC-day fallback
+    spend cap ``llm.quota_fallback_daily_usd``) instead of returning a
+    pause. ``False`` for a non-registered source or an op that didn't opt
+    in — today's behaviour.
+
+    Off unless the registry flags it (:attr:`OpDefault.quota_fallback` —
+    the scheduled casts, whose job must not die to a paused quota window);
+    an ``llm.op.<source>`` ``"quota_fallback"`` key overrides the code
+    default live, same precedence as the tier/model keys.
+    """
+    default = LLM_OPERATIONS.get(source or "")
+    if default is None:
+        return False
+    from precis.utils.llm import live_config
+
+    override = live_config.op_override(source or "")
+    if override and "quota_fallback" in override:
+        return bool(override["quota_fallback"])
+    return default.quota_fallback
+
+
 #: ``(source, reason)`` pairs already warned about this process — resolution runs
 #: per call, so an unbounded warning per call would flood the log.
 _warned: set[tuple[str, str]] = set()
@@ -633,4 +674,5 @@ __all__ = [
     "op_default",
     "resolve_op",
     "resolve_op_chain",
+    "wants_quota_fallback",
 ]
