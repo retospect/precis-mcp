@@ -44,7 +44,9 @@ owner on 2026-09-30, 10 prio high; this file gives them one.
    assignment, corridor shove and its own realiser. `blocked-by` 1 per
    its front matter (the pcb-ws4 gate), though slices 0–1c are already
    on main through r107 and it builds on its own worktree; ranked here
-   so the thread sees the engine work its items serve.
+   so the thread sees the engine work its items serve. Its routing gap
+   has a fix order in **backlog/topo-route-review.md** (2026-11-01
+   design review on taz-leaf: slices A → E1 → C → B → D).
 3. **backlog/source-bundles.md** — `draft/normal`, filed 2026-10-29 from
    gr520323 (Reto 2026-10-26): a design owns an immutable, hash-keyed
    source snapshot via the signed upload door. Unblocks the 36 KB inline

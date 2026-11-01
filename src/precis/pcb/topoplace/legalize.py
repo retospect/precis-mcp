@@ -473,16 +473,19 @@ def _nearest_free_spot(
         return None
     x0, y0, x1, y1 = g0.bounds
     r = max(x1 - x0, y1 - y0) / 2.0
-    step = max(0.5, r / 2.0)
+    step = max(1.0, r)
     bx0, by0, bx1, by1 = outline_geom.bounds
     xs = np.arange(bx0 + r, bx1 - r + 1e-9, step)
     ys = np.arange(by0 + r, by1 - r + 1e-9, step)
     if not len(xs) or not len(ys):
         return None
     cands = sorted(
-        (float(np.hypot(x - start[0], y - start[1])), x, y) for x in xs for y in ys
+        (float(np.hypot(x - start[0], y - start[1])), x, y)
+        for x in xs
+        for y in ys
+        if outline_geom.contains(Point(x, y))
     )
-    for _dist, x, y in cands[:4000]:
+    for _dist, x, y in cands:
         delta = np.asarray([x, y]) - start
         ok = True
         for mate in mates:
@@ -613,11 +616,22 @@ def legalize_pose(
         if anchors and outline_geom is not None:
             for i in range(n):
                 gi = geoms[i]
-                if gi is None or d.fixed[i] or outline_geom.covers(gi):
+                if gi is None or d.fixed[i]:
+                    continue
+                on_zone = bool(zgs) and _zone_hit(gi, i, zgs, np.asarray(pose[i]))
+                if outline_geom.covers(gi) and not on_zone:
                     continue
                 mates = _mates(d, i)
                 start = np.asarray(pose[i][:2])
-                for anchor in anchors:
+                if on_zone:
+                    # a part the zone sweep's MTV cannot free (taz-leaf:
+                    # C11/C13 parked inside the hanger-ring keepout, the
+                    # MTV of a ring zone points nowhere useful): nearest
+                    # free interior spot, no anchor walk
+                    anchors_i: list[np.ndarray] = []
+                else:
+                    anchors_i = anchors
+                for anchor in anchors_i:
                     target = anchor - start
                     hit = 0.0
                     for t in np.linspace(0.05, 1.0, 20):
