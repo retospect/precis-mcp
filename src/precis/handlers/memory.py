@@ -42,6 +42,11 @@ Semantics (`precis-memory-help`):
                                      shared with ``precis memory index --q``;
                                      ``view='count'`` forwards to the
                                      generic search like no view
+    - search(tags=['ruling'], view='rulings')
+                                   — ruling nodes grouped by status
+                                     (``utils.memory_rulings``; gr548835);
+                                     absorbed/archived/retired rulings drop
+                                     out of the default and index recall
 
 Attribution gate (``handlers/_attribution.py``): every body write
 (create / edit / supersede) checks that a unit-bearing number next to a
@@ -142,6 +147,16 @@ from precis.utils.memory_hubs import (
     narrowing_hints,
     sub_hub_hints,
     thread_dup_hint,
+)
+from precis.utils.memory_rulings import (
+    META_KEYS as _RULING_META_KEYS,
+)
+from precis.utils.memory_rulings import (
+    RULING_TAG,
+    drop_legacy_status_tags,
+    hidden_ids,
+    render_rulings,
+    validate_ruling_meta,
 )
 from precis.utils.next_block import render_next_section
 from precis.utils.secret_scan import mask_secrets
@@ -284,26 +299,47 @@ _OPS_KINDS = ("find-replace", "insert", "append")
 _MEMORY_TYPES = ("user", "feedback", "project", "reference")
 
 
-def _validate_meta(meta: Any) -> dict[str, Any]:
+def _validate_meta(
+    meta: Any,
+    *,
+    ruling: bool = False,
+    existing: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     """Check a caller's ``meta=`` and return the cleaned patch.
 
     ``hook`` is a non-empty single-line ``str`` (stripped); ``type`` is one of
     user/feedback/project/reference (the mirror export's ``metadata.type``).
-    Anything else raises :class:`BadInput` naming the allowed keys.
+    A node tagged ``ruling`` (``ruling=True``) also takes ``ruled_by`` /
+    ``ruled_on`` / ``status`` / ``review_by``
+    (:func:`precis.utils.memory_rulings.validate_ruling_meta`; ``existing`` =
+    the node's meta on an edit, ``None`` on a create, which stamps the
+    defaults). Anything else raises :class:`BadInput` naming the allowed keys.
     """
     example = "meta={'hook': 'one-line index text'}"
+    ruling_note = f"; a node tagged {RULING_TAG!r} also takes {list(_RULING_META_KEYS)}"
     if not isinstance(meta, dict):
         raise BadInput(
             f"meta= must be a dict, got {type(meta).__name__}; "
-            f"allowed keys: {list(_META_ALLOWED)}",
+            f"allowed keys: {list(_META_ALLOWED)}{ruling_note}",
             next=example,
         )
-    unknown = sorted(str(k) for k in meta if k not in _META_ALLOWED)
+    unknown = sorted(
+        str(k) for k in meta if k not in _META_ALLOWED and k not in _RULING_META_KEYS
+    )
     if unknown:
         raise BadInput(
             f"meta= key(s) {unknown} not writable on kind='memory'; "
-            f"allowed keys: {list(_META_ALLOWED)}",
+            f"allowed keys: {list(_META_ALLOWED)}{ruling_note}",
             next=example,
+        )
+    ruling_keys = {k: meta[k] for k in _RULING_META_KEYS if k in meta}
+    if ruling_keys and not ruling:
+        raise BadInput(
+            f"meta= key(s) {sorted(ruling_keys)} only apply to a node tagged "
+            f"{RULING_TAG!r}, and this one is not",
+            next="put(kind='memory', tags=['ruling'], text='…', "
+            "meta={'ruled_by': 'Reto'}) for a new ruling, or "
+            "tag(kind='memory', id=N, add=['ruling']) first",
         )
     out: dict[str, Any] = {}
     if "hook" in meta:
@@ -334,7 +370,15 @@ def _validate_meta(meta: Any) -> dict[str, Any]:
                 ),
             )
         out["type"] = meta["type"]
+    if ruling:
+        out.update(validate_ruling_meta(ruling_keys, existing=existing))
     return out
+
+
+def _ruling_ack(meta: dict[str, Any]) -> str:
+    """The create ack's line naming the ruling keys the write stamped."""
+    stamped = ", ".join(f"{k}={meta[k]}" for k in _RULING_META_KEYS if k in meta)
+    return f"\nruling meta: {stamped}" if stamped else ""
 
 
 class MemoryHandler(NumericRefHandler):
@@ -921,7 +965,14 @@ class MemoryHandler(NumericRefHandler):
             self._guard_thread_create(text or "")
         text, title = mask_secrets(text), mask_secrets(title)
         rule, warrant = mask_secrets(rule), mask_secrets(warrant)
-        create_meta = _validate_meta(meta) if meta is not None else {}
+        is_ruling = any(
+            isinstance(t, str) and t.strip() == RULING_TAG for t in tags or []
+        )
+        create_meta = (
+            _validate_meta(meta or {}, ruling=is_ruling)
+            if meta is not None or is_ruling
+            else {}
+        )
         for key, value in (("title", title), ("rule", rule), ("warrant", warrant)):
             if isinstance(value, str) and value.strip():
                 create_meta[key] = value.strip()
@@ -934,7 +985,7 @@ class MemoryHandler(NumericRefHandler):
             return self._put_dry_run(
                 text=text, tags=tags, link=link, rel=rel, put_meta=create_meta
             )
-        return super().put(
+        resp = super().put(
             id=id,
             text=text,
             mode=mode,
@@ -946,6 +997,9 @@ class MemoryHandler(NumericRefHandler):
             auto_refresh_days=auto_refresh_days,
             meta=create_meta,
         )
+        if is_ruling:
+            resp = replace(resp, body=resp.body + _ruling_ack(create_meta))
+        return resp
 
     def _guard_thread_create(self, body: str) -> None:
         """Refuse a dream-thread create that busts the daily cap or
@@ -1126,7 +1180,7 @@ class MemoryHandler(NumericRefHandler):
         # too, so a rule-first / warrant-later authoring order works).
         meta: dict[str, Any] = {
             k: create_meta[k]
-            for k in ("rule", "warrant", "hook", "type")
+            for k in ("rule", "warrant", "hook", "type", *_RULING_META_KEYS)
             if k in create_meta
         }
         if system_meta:
@@ -1557,7 +1611,7 @@ class MemoryHandler(NumericRefHandler):
         warrant_clean = (
             warrant.strip() if isinstance(warrant, str) and warrant.strip() else None
         )
-        meta_clean = _validate_meta(meta) if meta is not None else {}
+        meta_clean = self._edit_meta(id, meta) if meta is not None else {}
         if "hook" in meta_clean:
             meta_clean["hook"] = mask_secrets(meta_clean["hook"])
         if hook is not None:
@@ -1606,12 +1660,17 @@ class MemoryHandler(NumericRefHandler):
                         "dry_run= may ride along at top level"
                     ),
                 )
-            return self._edit_ops(
-                ref_id=self._coerce_id(id),
-                ops=ops,
-                dry_mode=dry_mode,
-                meta_patch=meta_clean,
-                reason=reason,
+            return self._after_status_write(
+                self._coerce_id(id),
+                meta_clean,
+                dry_mode,
+                self._edit_ops(
+                    ref_id=self._coerce_id(id),
+                    ops=ops,
+                    dry_mode=dry_mode,
+                    meta_patch=meta_clean,
+                    reason=reason,
+                ),
             )
         # Only the MCP default with neither body argument is a metadata
         # patch. Explicit insert/append and even empty text must validate
@@ -1628,21 +1687,26 @@ class MemoryHandler(NumericRefHandler):
                 anchored_meta["rule"] = rule_clean
             if warrant_clean is not None:
                 anchored_meta["warrant"] = warrant_clean
-            return self._edit_anchored(
-                ref_id=self._coerce_id(id),
-                mode=mode,
-                find=find,
-                text=text,
-                before=before,
-                after=after,
-                where=where,
-                match=match,
-                nth=nth,
-                dry_mode=dry_mode,
-                meta_patch=anchored_meta,
-                new_title=new_title,
-                reason=reason,
-                delete_span=delete_span,
+            return self._after_status_write(
+                self._coerce_id(id),
+                meta_clean,
+                dry_mode,
+                self._edit_anchored(
+                    ref_id=self._coerce_id(id),
+                    mode=mode,
+                    find=find,
+                    text=text,
+                    before=before,
+                    after=after,
+                    where=where,
+                    match=match,
+                    nth=nth,
+                    dry_mode=dry_mode,
+                    meta_patch=anchored_meta,
+                    new_title=new_title,
+                    reason=reason,
+                    delete_span=delete_span,
+                ),
             )
         if dry_mode is not None:
             raise BadInput(
@@ -1698,12 +1762,19 @@ class MemoryHandler(NumericRefHandler):
 
             self._write_retried(ref.id, "meta edit", _patch_meta)
             changed = ", ".join(
-                k for k in ("rule", "warrant", "hook", "type") if k in meta_patch
+                k
+                for k in ("rule", "warrant", "hook", "type", *_RULING_META_KEYS)
+                if k in meta_patch
             )
             out = f"updated {self._sense()} id={ref.id} meta: {changed}"
             if new_title is not None:
                 out += f". title now: {new_title!r}"
-            return Response(body=out + render_next_section(link_hints(self, ref.id)))
+            return self._after_status_write(
+                ref.id,
+                meta_clean,
+                dry_mode,
+                Response(body=out + render_next_section(link_hints(self, ref.id))),
+            )
 
         assert text is not None
         misses = self._attribution_misses(text)
@@ -1737,9 +1808,48 @@ class MemoryHandler(NumericRefHandler):
         if lead:
             body += f"\n\nhint: {lead}"
         body += render_next_section(link_hints(self, ref.id))
-        return self._with_attribution_advisory(
-            self._facts_note(Response(body=body), deferred[0] if deferred else 0),
-            misses,
+        return self._after_status_write(
+            ref.id,
+            meta_clean,
+            dry_mode,
+            self._with_attribution_advisory(
+                self._facts_note(Response(body=body), deferred[0] if deferred else 0),
+                misses,
+            ),
+        )
+
+    def _edit_meta(self, id: str | int | list[str | int], meta: Any) -> dict[str, Any]:
+        """``_validate_meta`` for an edit: a ruling key needs the node's tags
+        and current meta (a no-op unless the call carries one)."""
+        if not isinstance(meta, dict) or not any(k in meta for k in _RULING_META_KEYS):
+            return _validate_meta(meta)
+        ref = self._resolve_live_ref(self._coerce_id(id))
+        tags = self.store.ref_tags_bulk([ref.id]).get(ref.id, [])
+        return _validate_meta(
+            meta,
+            ruling=RULING_TAG in {v for _ns, v in tags},
+            existing=dict(ref.meta or {}),
+        )
+
+    def _after_status_write(
+        self,
+        ref_id: int,
+        meta_clean: dict[str, Any],
+        dry_mode: Any,
+        resp: Response,
+    ) -> Response:
+        """After an edit that wrote ``meta.status``: drop the backfill's
+        duplicate ``status:<value>`` tag so tag and meta cannot disagree, and
+        say so in the ack. Skipped on a dry run."""
+        if dry_mode is not None or "status" not in meta_clean:
+            return resp
+        dropped = drop_legacy_status_tags(self.store, ref_id)
+        if not dropped:
+            return resp
+        return replace(
+            resp,
+            body=resp.body
+            + f"\ndropped tag(s) {dropped} — ruling status now lives in meta.status",
         )
 
     def _thread_lead_hint(
@@ -2603,6 +2713,7 @@ class MemoryHandler(NumericRefHandler):
         # index listing re-renders it in its next-page hint (gr538490).
         under: str | int | None = None,
         depth: int | str | None = None,
+        status: str | None = None,
         **kw: Any,
     ) -> Response:
         """Memory search. An unscoped query whose hits cluster in one hub or
@@ -2610,12 +2721,33 @@ class MemoryHandler(NumericRefHandler):
         (:func:`~precis.utils.memory_hubs.narrowing_hints`; ``under=`` itself
         is the dispatcher's generic part-of scope). The parameters are spelled
         out because dispatch routes by this signature: it follows cooperative
-        superclass forwarding, not the private ``_search_inner`` helper."""
+        superclass forwarding, not the private ``_search_inner`` helper.
+
+        ``view='rulings'`` lists the nodes tagged ``ruling`` grouped by
+        status (:func:`~precis.utils.memory_rulings.render_rulings`);
+        ``status=`` (``args={'status': '*'}``) widens it past in-force. The
+        default and ``view='index'`` renders leave absorbed, archived and
+        retired rulings out of recall."""
         if group_by is not None and view != "count":
             raise BadInput(
                 "group_by= only applies to view='count'",
                 next="search(kind='memory', view='count', args={'group_by': 'tag:SPACE'})",
             )
+        if view == "rulings":
+            return self._rulings_view(
+                q=q,
+                tags=tags,
+                page=page,
+                mode=mode,
+                scope=scope,
+                status=status,
+                include_ref_ids=include_ref_ids,
+                exclude_ref_ids=exclude_ref_ids,
+            )
+        if status is not None:
+            kw["status"] = status
+        if view in (None, "index") and (out_of_force := hidden_ids(self.store)):
+            exclude_ref_ids = sorted({*(exclude_ref_ids or ()), *out_of_force})
         resp = self._search_inner(
             q=q,
             tags=tags,
@@ -2644,6 +2776,45 @@ class MemoryHandler(NumericRefHandler):
         if not hints:
             return resp
         return replace(resp, body=resp.body.rstrip() + "\n\n" + "\n".join(hints))
+
+    def _rulings_view(
+        self,
+        *,
+        q: str | None,
+        tags: list[str] | None,
+        page: int,
+        mode: str | None,
+        scope: str | None,
+        status: str | None,
+        include_ref_ids: list[int] | None,
+        exclude_ref_ids: list[int] | None,
+    ) -> Response:
+        """``search(view='rulings')``: refuse what it cannot apply (rule 6),
+        then render. The ``ruling`` tag is implied; extra ``tags=`` narrow."""
+        q = fold_match_all_q(q)
+        unapplied = [
+            name
+            for name, val in (("q", q), ("mode", mode), ("scope", scope))
+            if val not in (None, "")
+        ]
+        if unapplied or page != 1:
+            raise BadInput(
+                f"{'/'.join(unapplied or ['page'])}= is not applied by "
+                "view='rulings' — it lists every matching ruling in one page",
+                next=(
+                    "search(kind='memory', tags=['ruling'], view='rulings') · "
+                    "all statuses: args={'status': '*'} · find one by text: "
+                    "search(kind='memory', q='<words>', tags=['ruling'])"
+                ),
+            )
+        body = render_rulings(
+            self.store,
+            status=status,
+            tags=tags,
+            include_ref_ids=include_ref_ids,
+            exclude_ref_ids=exclude_ref_ids,
+        )
+        return Response(body=body)
 
     def _search_inner(
         self,
@@ -2711,7 +2882,7 @@ class MemoryHandler(NumericRefHandler):
         if view != "index":
             raise BadInput(
                 f"unknown view {view!r} for search(kind='memory')",
-                options=["index", "count"],
+                options=["index", "count", "rulings"],
                 next=(
                     "search(kind='memory', q='<task>', tags=['SPACE:repo-dev'], "
                     "view='index')"

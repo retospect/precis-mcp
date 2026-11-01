@@ -222,7 +222,9 @@ title/hook lacks the task words never lists. The semantically nearest
 hit keeps a slot even with no word match, recently touched nodes rank a
 little higher, and when no gotcha made the page the best matching
 `section:gotchas` node is added as one extra line. Shell form: `precis memory
-index --q "<task>" --k 5`. Any other `view=` on memory search is refused.
+index --q "<task>" --k 5`. Besides `index`, `count` and the default,
+memory search takes `view='rulings'` (see Rulings below); any other
+`view=` is refused.
 
 ## Read a memory I have the id for
 ## Open a memory by id
@@ -515,6 +517,30 @@ Every other closed axis (`STATUS:`, `PRIO:`, `SRC:`, `CACHE:`,
 | Boolean | `pinned`, `star`, `private`, `draft` |
 
 See `precis-tags` for the full axis vocabulary and per-kind matrix.
+
+## Rulings — the owner's one-line decisions
+## List rulings, mark one absorbed or archived
+
+A ruling is a memory tagged `ruling`: a temporary patch on the
+documented system, integrated into skills/spec and then archived. Its
+meta (`put`/`edit(meta=...)`, only on a `ruling` node): `ruled_by`,
+`ruled_on` (ISO date, default today), `status` (`in-force` default,
+`absorbed` = integrated, `archived` = moot, `retired` = won't-do),
+`review_by` (ISO date, default `ruled_on` + 14 days). The status lives
+in meta only; writing it drops a leftover `status:<v>` tag. Link what a
+ruling governs with `link(kind='memory', id=<ruling>, target='todo:N',
+rel='related-to', meta={'rel_intent': 'decides'})`.
+
+```python
+search(kind="memory", tags=["ruling"], view="rulings")                    # in force
+search(kind="memory", tags=["ruling"], view="rulings", args={"status": "*"})  # all
+edit(kind="memory", id=N, meta={"status": "absorbed"})                    # integrated
+```
+
+The view groups by status, rulings due within 3 days (or overdue)
+first, then newest, each with the nodes it decides. Non-in-force
+rulings stay readable by `get` but drop out of recall (`search` default
+and `view='index'`). `q=`/`page=`/`mode=`/`scope=` are refused on the view.
 
 ## A memory I recalled turned out wrong
 ## A recalled memory misled me

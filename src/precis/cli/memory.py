@@ -33,6 +33,9 @@ The write and load halves of ``docs/backlog/memory-native-authoring.md``:
   residue keeps no SPACE tag but carries ``space:unknown`` so it stays
   countable. ``--dry-run`` reports per-space and per-rule counts with
   sample handles and writes nothing.
+- ``precis memory migrate-rulings [--apply]`` (gr548835 slice 1): one-off
+  move of the backfilled ``ruling`` nodes' trailing ``Meta:`` body line into
+  real meta; dry run by default, operator-run only (:func:`migrate_rulings`).
 
 The logic lives in :func:`import_memory_dir` and :func:`render_memory_index`
 (both take a :class:`~precis.store.Store`) so tests call them directly; the
@@ -1563,6 +1566,55 @@ def backfill_space(
     return report
 
 
+def migrate_rulings(store: Store, *, apply: bool = False) -> str:
+    """One-off: move the backfilled ruling nodes' trailing ``Meta:`` body line
+    into real ``meta`` (``ruled_by``/``ruled_on``/``status``/``review_by``)
+    and drop their duplicate ``status:*`` tag (gr548835 slice 1).
+
+    Operator-run only; never wired to a hook or cadence. ``apply=False``
+    (the default) plans and writes nothing. The write is each node's own
+    ``edit(meta=...)``, so validation and the tag drop are the handler's;
+    the body, including its ``Meta:`` line, is left untouched. Nodes whose
+    ``meta.status`` is already set are skipped, so a re-run plans nothing.
+    """
+    from precis.dispatch import Hub
+    from precis.errors import BadInput
+    from precis.handlers.memory import MemoryHandler
+    from precis.utils import handle_registry
+    from precis.utils.memory_rulings import plan_meta_migration, validate_ruling_meta
+
+    handler = MemoryHandler(hub=Hub(store=store, embedder=None))
+    items = plan_meta_migration(store, handler._body_text)
+    lines = [
+        "migrate-rulings: "
+        + ("applying" if apply else "dry run — pass --apply to write")
+    ]
+    wrote = failed = skipped = 0
+    for item in items:
+        handle = handle_registry.try_format("memory", item.ref_id) or f"me{item.ref_id}"
+        head = f"  {handle} {item.title!r}"
+        if not item.meta:
+            skipped += 1
+            lines.append(f"{head} — no 'Meta:' line found; stamp by hand")
+            continue
+        try:
+            patch = validate_ruling_meta(item.meta, existing=item.existing)
+            if apply:
+                handler.edit(id=item.ref_id, meta=item.meta)
+        except BadInput as exc:
+            failed += 1
+            lines.append(f"{head} — refused: {exc.cause}")
+            continue
+        wrote += 1
+        shown = ", ".join(f"{k}={v}" for k, v in {**item.meta, **patch}.items())
+        lines.append(f"{head} — {'wrote' if apply else 'would write'} {shown}")
+    verb = "wrote" if apply else "would write"
+    lines.append(
+        f"migrate-rulings: {verb} {wrote}, refused {failed}, no Meta line {skipped}"
+    )
+    return "\n".join(lines) + "\n"
+
+
 # ---------------------------------------------------------------------------
 # argparse shell
 # ---------------------------------------------------------------------------
@@ -1753,6 +1805,20 @@ def add_parser(sub: argparse._SubParsersAction) -> argparse.ArgumentParser:
         help="Classify at most N unspaced memories (oldest first).",
     )
     bfs.add_argument("--database-url", default=None, help="Postgres DSN override.")
+    mrl = msub.add_parser(
+        "migrate-rulings",
+        help=(
+            "One-off (gr548835): move the ruling nodes' trailing 'Meta:' body "
+            "line into real meta (ruled_by/ruled_on/status/review_by) and drop "
+            "the duplicate status:* tag. Dry run by default; operator-run only."
+        ),
+    )
+    mrl.add_argument(
+        "--apply",
+        action="store_true",
+        help="Write the planned meta (default: plan only).",
+    )
+    mrl.add_argument("--database-url", default=None, help="Postgres DSN override.")
     mirror = msub.add_parser(
         "mirror", help="Explicit faithful file/graph snapshot exchange."
     )
@@ -1896,6 +1962,8 @@ def run(args: argparse.Namespace) -> None:
                 )
         elif args.memory_cmd == "prune-links":
             print(render_prune_links(store, dry_run=args.dry_run), end="")
+        elif args.memory_cmd == "migrate-rulings":
+            print(migrate_rulings(store, apply=args.apply), end="")
         elif args.memory_cmd == "backfill-space":
             bfs_report = backfill_space(store, dry_run=args.dry_run, limit=args.limit)
             print(bfs_report.summary(), end="")
