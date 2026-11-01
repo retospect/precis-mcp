@@ -149,6 +149,117 @@ def run(args: argparse.Namespace) -> None:
         store.close()
 
 
+# ---------------------------------------------------------------------------
+# backfill-perplexity-cites — mint stub web refs for cached [N] citations
+# ---------------------------------------------------------------------------
+
+_CITE_KINDS = ("websearch", "perplexity-reasoning", "perplexity-research")
+
+
+def add_cite_parser(sub: argparse._SubParsersAction) -> argparse.ArgumentParser:
+    """Register the ``backfill-perplexity-cites`` subparser on ``sub``."""
+    p = sub.add_parser(
+        "backfill-perplexity-cites",
+        help="Mint stub web refs for [N] citations in cached perplexity reports.",
+    )
+    p.add_argument(
+        "--kind",
+        choices=_CITE_KINDS,
+        default=None,
+        help="Restrict to one tier (default: all three).",
+    )
+    p.add_argument(
+        "--limit",
+        type=int,
+        default=None,
+        help="Stop after N cache rows per kind.",
+    )
+    p.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Report what would be minted; don't write.",
+    )
+    p.add_argument("--database-url", default=None)
+    return p
+
+
+def run_cites(args: argparse.Namespace) -> None:
+    """Implements ``precis jobs backfill-perplexity-cites``.
+
+    Walks the perplexity cache rows, parses each body's ``Sources:``
+    block (or the fetch-stamped ``citation_map`` meta) and mints a
+    born-stale ``web`` stub per cited URL — the same materialisation the
+    render path does lazily (gr548801). Operator-run only: never wired
+    into a cadence. No network — the stubs fetch on first access.
+    """
+    from precis.config import load_config
+    from precis.handlers._cache_base import dedupe_overlap_join
+    from precis.store import Store
+    from precis.utils.web_refs import (
+        canonical_web_key,
+        citation_pairs,
+        materialize_web_refs,
+    )
+
+    kinds = [args.kind] if args.kind else list(_CITE_KINDS)
+    cfg = load_config()
+    dsn = resolve_dsn(args.database_url, cfg=cfg)
+    store = Store.connect(dsn)
+    try:
+        scanned = cited = minted = already = invalid = 0
+        for kind in kinds:
+            offset = 0
+            seen_rows = 0
+            while True:
+                page = store.list_cache_entries(
+                    kind=kind, provider="perplexity", limit=200, offset=offset
+                )
+                if not page:
+                    break
+                offset += len(page)
+                for ref, cache in page:
+                    seen_rows += 1
+                    if args.limit is not None and seen_rows > args.limit:
+                        break
+                    scanned += 1
+                    body = dedupe_overlap_join(
+                        [b.text or "" for b in store.chunks.list_chunks_for_ref(ref.id)]
+                    )
+                    pairs = citation_pairs(cache.meta or {}, body)
+                    if not pairs:
+                        continue
+                    cited += 1
+                    origin = f"{kind}:{ref.id}"
+                    had = materialize_web_refs(
+                        store, pairs, origin=origin, create=False
+                    )
+                    already += len(had)
+                    n_invalid = sum(
+                        1 for _n, u in pairs if canonical_web_key(u) is None
+                    )
+                    invalid += n_invalid
+                    if args.dry_run:
+                        minted += len(pairs) - len(had) - n_invalid
+                        continue
+                    mapping = materialize_web_refs(store, pairs, origin=origin)
+                    new = len(mapping) - len(had)
+                    minted += new
+                    if new:
+                        print(
+                            f"  {origin}  +{new} web ref(s) "
+                            f"({len(mapping)} cited total)"
+                        )
+                if args.limit is not None and seen_rows > args.limit:
+                    break
+        verb = "would mint" if args.dry_run else "minted"
+        print(
+            f"backfill-perplexity-cites: scanned={scanned} with-citations={cited} "
+            f"{verb}={minted} already-cached={already} invalid-url={invalid}"
+        )
+    finally:
+        store.close()
+
+
 def _derive_query(path: Path, *, strategy: str, base: Path) -> str:
     """Pick the ``id=`` query for a report file.
 
@@ -181,4 +292,4 @@ def _query_from_filename(path: Path) -> str:
     return stem.strip()
 
 
-__all__ = ["add_parser", "run"]
+__all__ = ["add_cite_parser", "add_parser", "run", "run_cites"]

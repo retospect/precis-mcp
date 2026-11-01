@@ -395,6 +395,13 @@ JOB_COMMANDS: tuple[Command, ...] = (
         "Bulk put(mode='import') a directory of Perplexity reports.",
     ),
     _c(
+        "backfill-perplexity-cites",
+        "perplexity",
+        "Mint stub web refs for [N] citations in cached perplexity reports.",
+        register="add_cite_parser",
+        run="run_cites",
+    ),
+    _c(
         "watch-patents",
         "patent",
         "Create a saved CQL patent watch (or delete one with --delete).",

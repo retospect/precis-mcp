@@ -155,9 +155,10 @@ def test_paid_answer_carries_focused_budget_recovery(
 
 def test_websearch_fetches_and_caches(websearch: WebsearchHandler) -> None:
     resp = websearch.get(id="who is the CEO of Anthropic")
-    # Body has answer + citations.
+    # Body has answer + citations. Markers render as linked web refs
+    # (gr548801) — ``[web:<id>]``, not the raw ``[1]``.
     assert "Dario Amodei" in resp.body
-    assert "[1]" in resp.body
+    assert "[web:" in resp.body
     assert "Sources:" in resp.body
     assert "anthropic.com/about" in resp.body
     # Attribution footer mentions the model.

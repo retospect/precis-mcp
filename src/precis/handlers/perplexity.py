@@ -73,6 +73,11 @@ from precis.utils.http import (
 )
 from precis.utils.next_block import render_next_section
 from precis.utils.slug import slug_from_text
+from precis.utils.web_refs import (
+    citation_pairs,
+    materialize_web_refs,
+    rewrite_citation_markers,
+)
 
 log = logging.getLogger(__name__)
 
@@ -601,6 +606,11 @@ class _PerplexityBase(CacheBackedHandler):
                 next="retry later",
             ) from exc
         body, citations = _format_perplexity_body(data)
+        # ``citation_map`` keeps the marker→URL numbering verbatim so a
+        # render can mint/resolve ``web`` refs without re-parsing the
+        # body — and so the id-spaced ``search_results`` numbering
+        # (gr542060) survives chunk-level re-joins.
+        citation_map = {str(n): url for n, url in _citation_sources(data)}
         title = _title_for_query(query)
         # Prefer the provider's *actual* reported cost (newer Sonar returns a
         # ``usage.cost`` block) over the flat TIER estimate, so the budget
@@ -628,6 +638,7 @@ class _PerplexityBase(CacheBackedHandler):
                 "citations": citations,
                 "usage": usage or None,
                 "cost_estimated": real_cost is None,
+                "citation_map": citation_map,
             },
         )
 
@@ -668,17 +679,30 @@ class _PerplexityBase(CacheBackedHandler):
                     "fetch the first cited source directly",
                 )
             )
-        body = resp.body + render_next_section(nav)
-        # Return shaping (gr540306). ``no_sources`` drops the Sources
-        # block from the RETURNED text only — the stored row keeps it,
-        # so a later plain get still shows it. ``max_bytes`` bounds
-        # this body to the caller's number without touching what was
-        # paid for or stored. Sonar reports no pre-call result size,
-        # so the pair is the only size bound a caller has — the
-        # over-cap next= names them for the same reason.
+        # Return shaping (gr540306) + citation link-out (gr548801).
+        # ``no_sources`` drops the Sources block from the RETURNED text
+        # first — its rows still match the ``[N] url`` shape. Then each
+        # ``[N]`` marker (and each kept Sources row's ``[N]``) becomes
+        # ``[web:<id>]``, the ref handle of the born-stale ``web`` cache
+        # ref minted for that URL: fetch-on-access via safe_get, no
+        # network here, stored chunks untouched (render-time
+        # substitution). The rewrite lands BEFORE the byte cap so the
+        # cap bounds what the caller actually receives — its chunk-join
+        # locator applies the same substitution via ``marker_map`` — and
+        # the pairs are parsed from the UNstripped body so ``no_sources``
+        # renders still link the markers.
         drop_sources, max_bytes = _RETURN_OPTS.get()
+        body = resp.body
         if drop_sources:
             body = _drop_sources_block(body)
+        body += render_next_section(nav)
+        pairs = citation_pairs(meta, resp.body)
+        marker_map: dict[int, int] = {}
+        if pairs:
+            marker_map = materialize_web_refs(
+                self.store, pairs, origin=f"{self.spec.kind}:{ref.id}"
+            )
+            body = rewrite_citation_markers(body, marker_map)
         # The base render's targeted read: a multi-chunk report over
         # the context budget refuses whole-body, and the recovery is
         # this kind's own chunk-range read (``id='<slug>~0..3'``),
@@ -701,6 +725,7 @@ class _PerplexityBase(CacheBackedHandler):
                 ref=ref,
                 cap=max_bytes,
                 fallback_hint=result_budget_hint,
+                marker_map=marker_map,
             )
         return Response(
             body=body,
@@ -728,6 +753,7 @@ class _PerplexityBase(CacheBackedHandler):
         ref,
         cap: int,
         fallback_hint: str,
+        marker_map: dict[int, int] | None = None,
     ) -> str:
         """Bound the rendered body to ``cap`` bytes — the
         ``args={'max_bytes': N}`` shaping (gr540306).
@@ -738,6 +764,11 @@ class _PerplexityBase(CacheBackedHandler):
         bounded by the caller's number instead of an env cap.
         ``cap`` is also clamped to :func:`result_context_cap` so an
         env cap set tighter than the caller's still binds.
+
+        ``marker_map`` carries the ``[N]`` → ``[web:<id>]``
+        substitution the citation link-out (gr548801) already applied
+        to ``body``: the chunk-join locator must match the same
+        substitution or a rewritten Sources block unfinds the join.
         """
         bound = min(cap, result_context_cap())
         if body_bytes(body) <= bound:
@@ -751,6 +782,8 @@ class _PerplexityBase(CacheBackedHandler):
         # continuation can't be computed — the fallback hint stands
         # alone rather than paging a body that isn't being shown.
         joined = dedupe_overlap_join([b.text or "" for b in blocks])
+        if marker_map:
+            joined = rewrite_citation_markers(joined, marker_map)
         start = body.find(joined) if joined else -1
         cuttable = start >= 0 and bool(blocks)
         prefix_bytes = len(body[:start].encode("utf-8")) if cuttable else 0

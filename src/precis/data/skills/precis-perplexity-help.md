@@ -49,7 +49,10 @@ get(kind="perplexity-research", q="landscape of post-quantum signature schemes")
 `id=` and `q=` are equivalent, and **both are the search query itself,
 not a lookup key** — see the next section before you paste a number in.
 The response body carries the answer with inline `[N]` citations and a
-trailing `Sources:` block. Cache hits return the same body for free.
+trailing `Sources:` block. Each cited URL gets a stub `web` ref on
+first render, so markers print as `[web:<id>]` — follow one with
+`get(kind='web', id=<id>)` (the stub fetches the page on access) or
+`get(kind='web', id=<url>)`. Cache hits return the same body for free.
 
 ## `id=` is the QUERY, not a ref-id — don't paste a number
 ## How do I retrieve an existing websearch ref by its number?
@@ -130,9 +133,9 @@ get(kind="perplexity-reasoning", id="<query>", args={"max_bytes": 4096})
 ```
 
 - `args={"no_sources": True}` drops the trailing `Sources:` block from
-  the returned text (the inline `[N]` markers stay). The URLs remain
-  stored on the cached row — a plain `get`, a `~N` chunk read or
-  `view='body'` still shows them.
+  the returned text (the inline `[web:<id>]` markers stay — they still
+  resolve). The URLs remain stored on the cached row — a plain `get`,
+  a `~N` chunk read or `view='body'` still shows them.
 - `args={"max_bytes": N}` returns at most N bytes of the whole-body
   render: the head that fits, an `outline:` of the stored chunks, and
   a `next:` range-read call (`id='<slug>~<cut>..<last>'`) that returns

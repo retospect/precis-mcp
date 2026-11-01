@@ -636,9 +636,15 @@ class CacheBackedHandler(Handler):
                                 ttl_seconds_override=ttl_seconds_override,
                                 ttl_override_active=ttl_override_active,
                             )
-                        if self._is_fresh(cache):
-                            self._apply_tag_ops_if_any(ref.id, tags, untags)
-                            return self._render_view(ref, cache, hit=True, view=view)
+                        # A stored row resolved by ref-id or slug still
+                        # serves when stale — the alternative is the
+                        # canonicalise error below ("not a valid URL"
+                        # for an address that exists). The footer marks
+                        # it CACHE:stale; mode='refresh' above is the
+                        # re-fetch path. Born-stale citation stubs
+                        # (gr548801) rely on this to be readable at all.
+                        self._apply_tag_ops_if_any(ref.id, tags, untags)
+                        return self._render_view(ref, cache, hit=True, view=view)
             raise canonical_err
 
         request_hash = self._hash(key)
