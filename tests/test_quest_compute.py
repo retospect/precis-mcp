@@ -4669,6 +4669,31 @@ class TestAutocatpathHarvest:
         assert meta["barrier_desorbed"] == 0
         assert meta["barrier_wrong_site"] == 0
 
+    def test_non_pathway_ref_keeps_verdict_and_gets_no_anchor(self, store: Any) -> None:
+        """gr543165 follow-up: the credit-anchor demotion binds the
+        pathway lane only. A clean barrier whose ``pathway_ref`` is not
+        ``kind='pathway'`` never had an anchor computed, so it keeps its
+        ``_pathway_quality`` verdict (trusted, no ``anchor:none`` block)
+        and gets no ``barrier_anchor`` key."""
+        qid = _mk_quest(store, "A striving")
+        sid = self._candidate(store, qid)
+        target = store.insert_ref(
+            kind="job",
+            slug=None,
+            title="pw",
+            meta={"warnings": [], "low_confidence": False},
+            parent_id=sid,
+        ).id
+        self._autocatpath_job(
+            store, sid, {"result": {"barrier": 0.4}, "pathway_ref": target}
+        )
+        compute_mod.harvest_measures(store, qid)
+        meta = store.fetch_refs_by_ids({sid})[sid].meta or {}
+        assert meta["barrier"] == 0.4
+        assert meta["barrier_trusted"] is True
+        assert "anchor:none" not in (meta.get("barrier_blocked_by") or [])
+        assert "barrier_anchor" not in meta
+
     def test_wrong_site_pathway_is_untrusted(self, store: Any) -> None:
         """A bound-but-mis-bound endpoint (the ``*`` designates a different atom)
         flips ``barrier_trusted=False`` with a ``barrier_wrong_site`` count, so a
