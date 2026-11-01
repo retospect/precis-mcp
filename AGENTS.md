@@ -2,6 +2,8 @@
 
 Codex-facing entry. Claude Code reads `CLAUDE.md`; both share one doc system.
 This file holds Codex guidance and the shared repo-dev graph-memory policy.
+Kimi Code: read `.kimi-code/AGENTS.md` before your first tool call; it
+loads late on its own.
 
 ## Read order
 
