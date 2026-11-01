@@ -419,7 +419,11 @@ if (( GRAPH )) && [[ -n "$MANIFEST" ]]; then
             problems=$((problems+1))
         fi
         if (( hidden > 0 )) && [[ "$sec" != index ]]; then   # hubs list members uncapped
-            echo "  flat hub → $(label_of "$h.md" "$tf"): fisheye+1hop hides $hidden neighbour(s) past its per-relation cap — prune weak links or route them through a hub node"
+            if (( members > 8 )); then
+                echo "  sub-hub without section:index → tag it: $(label_of "$h.md" "$tf"): $members part-of children — tag(kind='memory', id='$h', add=['section:index'])"
+            else
+                echo "  flat hub → $(label_of "$h.md" "$tf"): fisheye+1hop hides $hidden neighbour(s) past its per-relation cap — prune weak links or route them through a hub node"
+            fi
             problems=$((problems+1))
         fi
         if (( dead > 0 )); then
@@ -470,10 +474,11 @@ if (( GRAPH )) && [[ -n "$MANIFEST" ]]; then
     # per-hub counts — gotchas (cols 2+9) and members — as trailing columns)
     done < <(awk -F'\t' -v OFS='\t' '
         FNR == NR {
+            # Count direct children even when their parent has no hub yet,
+            # or a child is itself a section:index sub-hub.
+            direct = (NF >= 12) ? $12 : ((NF >= 9) ? $9 : "")
+            if (direct != "" && direct != "-") members[direct]++
             if (NF >= 9 && $9 != "" && $9 != "-") {
-                # direct members of a hub: the part-of parent column when present
-                direct = (NF >= 12) ? $12 : $9
-                if (direct != "") members[direct]++
                 if ($2 == "gotchas") gotchas[$9]++
             }
             if ($2 != "") secof[$1] = $2
@@ -747,7 +752,59 @@ elif (( CURRENCY )); then
         done
         return 0
     }
+    # Keep context per occurrence: the same anchor can be historical in one
+    # sentence and a live claim in another. Periods inside the token do not
+    # delimit its sentence.
+    currency_anchors() {
+        python3 - "$1" "$2" <<'PY'
+import re
+import sys
+from pathlib import Path
+
+text = Path(sys.argv[1]).read_text(encoding="utf-8")
+path_re = re.compile(
+    r"(?<![A-Za-z0-9_/.-])(?:src|docs|scripts|tests)/[A-Za-z0-9_./-]+\.[A-Za-z0-9]+"
+)
+path_history = re.compile(
+    r"\b(?:deleted|removed|renamed|moved|retired)\b|git\s+(?:show|log)\b|\^:",
+    re.IGNORECASE,
+)
+branch_history = re.compile(r"\b(?:pruned|landed\s+as)\b|\bsquash", re.IGNORECASE)
+
+
+def sentence(match: re.Match[str], prose: str) -> str:
+    start = prose.rfind(".", 0, match.start()) + 1
+    end = prose.find(".", match.end())
+    return prose[start : end if end >= 0 else len(prose)]
+
+
+anchors: set[tuple[str, str]] = set()
+for match in path_re.finditer(text):
+    historical = path_history.search(sentence(match, text)) or re.match(
+        r"[`'\"]?\s*\((?:deleted|gone)\b", text[match.end() :], re.IGNORECASE
+    )
+    anchors.add(("historical" if historical else "path", match.group()))
+
+if sys.argv[2] == "1":
+    prose = re.sub(r"\[\[[^]]*\]\]", "", text)
+    branch_re = re.compile(
+        r"\b(?:branch\s+`?([a-z0-9][a-z0-9._-]+)"
+        r"|worktree-?\s*`?([a-z0-9][a-z0-9-]+))",
+        re.IGNORECASE,
+    )
+    for match in branch_re.finditer(prose):
+        name = (match[1] or match[2]).rstrip(".,;:)`")
+        if "-" not in name:
+            continue
+        historical = branch_history.search(sentence(match, prose))
+        anchors.add(("historical" if historical else "branch", name))
+
+for kind, anchor in sorted(anchors):
+    print(f"{kind}\x1f{anchor}")
+PY
+    }
     cur_suspect=0
+    historical=()
     for tf in "$SCAN_DIR"/*.md; do
         b=$(basename "$tf")
         is_topic "$b" || continue
@@ -785,18 +842,7 @@ elif (( CURRENCY )); then
         #     still surface via their hyphenated `worktree-<name>` spelling.
         #     `[[slug]]` links are stripped first: a memory slug like
         #     [[worktree-switch-breaks-subagent-bash]] names a memory, not a branch.
-        if (( has_open )) && (( ! has_landing )); then
-            prose=$(sed -E 's/\[\[[^]]*\]\]//g' "$tf")
-            while IFS= read -r n; do
-                [[ -z "$n" ]] && continue
-                n="${n%%[.,;:)\`]*}"                         # strip trailing punctuation
-                [[ "$n" == *-* ]] || continue                # kebab-only → drops prose words
-                branch_gone "$n" && findings+=("branch/worktree '$n' gone — shipped-and-pruned (prune) or stranded dark work (recover)?")
-            # `|| true` on each: under set -e + pipefail a no-match grep ends the
-            # subshell, so the worktree grep never ran when no "branch" matched.
-            done < <( { grep -oiE 'branch +`?[a-z0-9][a-z0-9._-]+' <<< "$prose" | sed -E 's/^branch +`?//I' || true;
-                        grep -oiE 'worktree-? *`?[a-z0-9][a-z0-9-]+' <<< "$prose" | sed -E 's/^worktree-? *`?//I' || true; } | sort -u )
-        fi
+        check_branches=$((has_open && ! has_landing))
 
         # NB: no commit-sha currency check. Cross-repo shas (memories legitimately
         # cite `~/work/cluster`) and squash-merge sha-rewrites (the original
@@ -811,11 +857,16 @@ elif (( CURRENCY )); then
         #     and infrastructure/…/scripts/regen-secrets-env.sh (the infra repo) both
         #     end in `scripts/…` but neither is ours — the `/` before `scripts` is a
         #     path char, so the boundary anchor rejects them.
-        while IFS= read -r p; do
-            [[ -z "$p" ]] && continue
-            [[ -e "$MAIN_ROOT/$p" ]] || findings+=("path $p missing on main (renamed/deleted → fix or drop the ref)")
-        done < <(grep -oE '(^|[^A-Za-z0-9_/.-])(src|docs|scripts|tests)/[A-Za-z0-9_./-]+\.[A-Za-z0-9]+' "$tf" \
-                   | sed -E 's/^[^A-Za-z0-9]+//' | sort -u)
+        while IFS=$'\037' read -r kind anchor; do
+            case "$kind" in
+                historical) historical+=("$(ident "$b"): $anchor") ;;
+                branch)
+                    if branch_gone "$anchor"; then
+                        findings+=("branch/worktree '$anchor' gone — shipped-and-pruned (prune) or stranded dark work (recover)?")
+                    fi ;;
+                path) [[ -e "$MAIN_ROOT/$anchor" ]] || findings+=("path $anchor missing on main (renamed/deleted → fix or drop the ref)") ;;
+            esac
+        done < <(currency_anchors "$tf" "$check_branches")
 
         if (( ${#findings[@]} )); then
             cur_suspect=$((cur_suspect+1))
@@ -823,6 +874,8 @@ elif (( CURRENCY )); then
             for f in "${findings[@]}"; do echo "    - $f"; done
         fi
     done
+    echo "  historical (skipped): ${#historical[@]}"
+    for anchor in ${historical[@]+"${historical[@]}"}; do echo "    - $anchor"; done
     if (( cur_suspect == 0 )); then
         echo "  ✓ all git+fs anchors verify"
     elif (( GRAPH )); then

@@ -375,6 +375,8 @@ trips the duplicate-thread check), it carries the parent's
 and it takes no `qualifies` links — the summary's gotcha links already
 cover it.
 
+A summary node that grows past 8 children becomes a sub-hub (`section:index`), still `part-of` its parent hub.
+
 `get(kind="memory", id="me3", view="fisheye+1hop")` on a hub lists every
 member on one line (handle, title, hook) — no cap. Other relation groups
 show 8 neighbours. The fisheye shows only the first 4000 characters of a

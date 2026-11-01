@@ -171,6 +171,71 @@ def test_edit_hints_and_quiet_cases(hub: Hub) -> None:
     assert "summary node + part-of detail nodes" in out
 
 
+@pytest.mark.parametrize(
+    ("child_count", "is_hub", "has_parent"),
+    [(8, False, True), (9, False, True), (9, True, True), (9, False, False)],
+)
+def test_edit_hints_subhub_only_past_eight_live_children(
+    hub: Hub, child_count: int, is_hub: bool, has_parent: bool
+) -> None:
+    """gr548270: summary children are not weak links to prune."""
+    store, handler = hub.live_store, MemoryHandler(hub=hub)
+    summary = _note(handler, "Summary", "body", HUB if is_hub else "section:reference")
+    if has_parent:
+        root = _note(handler, "Root hub", "x", HUB)
+        _part_of(store, summary, root)
+    for i in range(child_count):
+        child = _note(handler, f"Detail {i}", "body", "section:reference")
+        if i % 2:
+            store.add_link(src_ref_id=summary, dst_ref_id=child, relation="contains")
+        else:
+            _part_of(store, child, summary)
+    retired = _note(handler, "Retired detail", "body", "section:reference")
+    _part_of(store, retired, summary)
+    store.retire_ref(retired)
+
+    out = handler.edit(id=summary, mode="replace", text="updated summary").body
+
+    hint = f"tag(kind='memory', id='{_h(summary)}', add=['section:index'])"
+    assert (hint in out) == (child_count > 8 and not is_hub), out
+    if child_count > 8 and not is_hub:
+        assert "9 part-of children — a hub lists them uncapped" in out, out
+
+
+@pytest.mark.parametrize("batch", [False, True])
+def test_link_hints_new_subhub_on_the_target(hub: Hub, batch: bool) -> None:
+    store, handler = hub.live_store, MemoryHandler(hub=hub)
+    root = _note(handler, "Root hub", "x", HUB)
+    summary = _note(handler, "Summary", "body", "section:reference")
+    _part_of(store, summary, root)
+    for i in range(8):
+        _part_of(store, _note(handler, f"Detail {i}"), summary)
+    ninth = _note(handler, "Ninth detail")
+
+    out = handler.link(
+        id=[ninth] if batch else ninth, target=_h(summary), rel="part-of"
+    ).body
+
+    assert f"tag(kind='memory', id='{_h(summary)}', add=['section:index'])" in out
+    assert "9 part-of children — a hub lists them uncapped" in out
+
+
+def test_link_hint_failure_does_not_refuse_a_committed_link(
+    hub: Hub, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    store, handler = hub.live_store, MemoryHandler(hub=hub)
+    source, target = _note(handler, "Source"), _note(handler, "Target")
+
+    def boom(*_a: object, **_kw: object) -> None:
+        raise RuntimeError("hint resolution failed")
+
+    monkeypatch.setattr("precis.handlers.memory.parse_link_target", boom)
+    out = handler.link(id=source, target=_h(target), rel="part-of").body
+
+    assert out.startswith("linked"), out
+    assert store.links_for(source, direction="out", relation="part-of")
+
+
 def test_thread_hints_unlinked_gotchas_of_its_hub(hub: Hub) -> None:
     store, handler = hub.live_store, MemoryHandler(hub=hub)
     root = _note(handler, "Root", "x", HUB)

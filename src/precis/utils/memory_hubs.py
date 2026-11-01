@@ -6,7 +6,8 @@ pair, stored in either orientation) and a type tag ``section:<type>``; a
 gotcha links to a thread it applies to with ``qualifies`` (the thread reads
 ``qualified-by``). The batch readers here feed the memory export manifest
 (``precis.cli.memory``); :func:`link_hints` feeds the write-path hints of
-``put`` / ``edit`` on a memory (``precis.handlers.memory``).
+``put`` / ``edit`` / ``link`` on a memory (``precis.handlers.memory``).
+Summaries past the eye's child cap need the hub tag, not pruned membership.
 """
 
 from __future__ import annotations
@@ -20,6 +21,7 @@ from typing import TYPE_CHECKING, Any
 from precis.todo import TERMINAL_TODO_STATUSES
 from precis.utils.eye_render import (
     _HUB_TAG,
+    _NEIGHBOR_GROUP_CAP,
     _VERBATIM_CAP,
     RECALL_MAX_DISTANCE,
     _hub_ids,
@@ -337,7 +339,7 @@ def _tag_values(store: Store, ref_id: int) -> set[str]:
 
 def link_hints(handler: Any, ref_id: int) -> list[tuple[str, str]]:
     """Advisory lines for a just-written memory ``ref_id``; ``[]`` when all
-    is in place, the node is a hub, or its space has no hub. Never raises."""
+    is in place or the node is a hub. Never raises."""
     try:
         return _link_hints(handler, ref_id)
     except Exception:
@@ -353,15 +355,7 @@ def _link_hints(handler: Any, ref_id: int) -> list[tuple[str, str]]:
     store: Store = handler.store
     values = _tag_values(store, ref_id)
     space = _space_tag(values)
-    if space is None or _HUB_TAG in values:
-        return []
-    # hubs are few; no practical cap (a silent 200 would drop the rest)
-    hubs = store.list_refs(kind="memory", tags=[space, _HUB_TAG], limit=10_000)
-    hubs = [h for h in hubs if h.id != ref_id]
-    if not hubs:
-        return _hubless_hints(handler, ref_id, space)
-    ref = store.get_ref(kind="memory", id=ref_id)
-    if ref is None:
+    if _HUB_TAG in values:
         return []
     from precis.utils import handle_registry
 
@@ -370,6 +364,30 @@ def _link_hints(handler: Any, ref_id: int) -> list[tuple[str, str]]:
 
     me = h(ref_id)
     lines: list[tuple[str, str]] = []
+    children = {
+        link.dst_ref_id if link.src_ref_id == ref_id else link.src_ref_id
+        for link in store.links_for(ref_id, direction="out", relation="contains")
+    } - {ref_id}
+    live_children = sum(
+        child.retired_at is None for child in store.fetch_refs_by_ids(children).values()
+    )
+    if live_children > _NEIGHBOR_GROUP_CAP:
+        lines.append(
+            (
+                f"tag(kind='memory', id='{me}', add=['section:index'])",
+                f"{live_children} part-of children — a hub lists them uncapped",
+            )
+        )
+    if space is None:
+        return lines
+    # hubs are few; no practical cap (a silent 200 would drop the rest)
+    hubs = store.list_refs(kind="memory", tags=[space, _HUB_TAG], limit=10_000)
+    hubs = [h for h in hubs if h.id != ref_id]
+    if not hubs:
+        return lines + _hubless_hints(handler, ref_id, space)
+    ref = store.get_ref(kind="memory", id=ref_id)
+    if ref is None:
+        return []
     mine = hubs_of(store, [ref_id]).get(ref_id, [])
     body = handler._body_text(ref)
 

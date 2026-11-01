@@ -395,6 +395,113 @@ def test_graph_mode_currency_runs_over_the_nodes(
     ), res.stdout
 
 
+def test_currency_skips_deleted_design_doc_recovery_anchor(
+    lint_repo: Path, graph_setup: tuple[Path, Path, Path, Path]
+) -> None:
+    """gr548279: me474399 records a deletion, not a live path claim."""
+    home, _mem, cache, nodes = graph_setup
+    (nodes / "me474399.md").write_text(
+        "# Design history\n\n"
+        "The design doc `docs/backlog/open-namespace-teardown.md` was deleted "
+        "in b02ad7e3c (recover via "
+        "`git show b02ad7e3c^:docs/backlog/open-namespace-teardown.md`).\n",
+        encoding="utf-8",
+    )
+
+    res = _run(lint_repo, home, cache=cache, nodes=nodes, args=("--currency",))
+
+    assert res.returncode == 0, res.stderr
+    assert "missing on main" not in res.stdout, res.stdout
+    assert "historical (skipped): 1" in res.stdout, res.stdout
+    assert "me474399: docs/backlog/open-namespace-teardown.md" in res.stdout
+    assert "all git+fs anchors verify" in res.stdout, res.stdout
+
+
+@pytest.mark.parametrize(
+    "claim",
+    [
+        "`docs/missing.md` was deleted",
+        "`docs/missing.md` was removed",
+        "`docs/missing.md` was renamed",
+        "`docs/missing.md` was moved",
+        "`docs/missing.md` was retired",
+        "Recover with `git show abcdef12:docs/missing.md`",
+        "Inspect `git log -- docs/missing.md`",
+        "Recover `abcdef12^:docs/missing.md`",
+        "`docs/missing.md` (deleted)",
+        "`docs/missing.md` (gone)",
+    ],
+)
+def test_currency_path_history_is_sentence_scoped(
+    lint_repo: Path, graph_setup: tuple[Path, Path, Path, Path], claim: str
+) -> None:
+    home, _mem, cache, nodes = graph_setup
+    (nodes / "me90.md").write_text(
+        f"# Anchors\n\n{claim}.\nSee `docs/live-missing.md` for the NEXT step.\n",
+        encoding="utf-8",
+    )
+    out = _run(lint_repo, home, cache=cache, nodes=nodes, args=("--currency",)).stdout
+
+    assert "path docs/missing.md missing on main" not in out, out
+    assert "path docs/live-missing.md missing on main" in out, out
+    assert "historical (skipped): 1" in out, out
+
+
+def test_currency_checks_live_occurrence_of_a_historical_path(
+    lint_repo: Path, graph_setup: tuple[Path, Path, Path, Path]
+) -> None:
+    home, _mem, cache, nodes = graph_setup
+    (nodes / "me90.md").write_text(
+        "# Anchors\n\n`docs/missing.md` was deleted.\nNEXT: read `docs/missing.md`.\n",
+        encoding="utf-8",
+    )
+    out = _run(lint_repo, home, cache=cache, nodes=nodes, args=("--currency",)).stdout
+
+    assert "path docs/missing.md missing on main" in out, out
+    assert "historical (skipped): 1" in out, out
+
+
+@pytest.mark.parametrize("noun", ["branch", "worktree"])
+@pytest.mark.parametrize(
+    "history", ["pruned", "landed as abcdef12", "squash", "squashed"]
+)
+def test_currency_branch_history_is_sentence_scoped(
+    lint_repo: Path,
+    graph_setup: tuple[Path, Path, Path, Path],
+    noun: str,
+    history: str,
+) -> None:
+    home, _mem, cache, nodes = graph_setup
+    (nodes / "me90.md").write_text(
+        f"# Build\n\nThe {noun} `old-work` is recorded as {history}.\n"
+        f"NEXT slice in {noun} `stranded-work`.\n",
+        encoding="utf-8",
+    )
+    out = _run(lint_repo, home, cache=cache, nodes=nodes, args=("--currency",)).stdout
+
+    assert "branch/worktree 'old-work' gone" not in out, out
+    assert "branch/worktree 'stranded-work' gone" in out, out
+    assert "historical (skipped): 1" in out, out
+    assert "me90: old-work" in out, out
+
+
+def test_currency_accepts_a_live_branch(
+    lint_repo: Path, graph_setup: tuple[Path, Path, Path, Path]
+) -> None:
+    home, _mem, cache, nodes = graph_setup
+    _git(lint_repo, "branch", "live-work")
+    (nodes / "me90.md").write_text(
+        "# Build\n\nNEXT slice in branch `live-work`.\n", encoding="utf-8"
+    )
+
+    res = _run(lint_repo, home, cache=cache, nodes=nodes, args=("--currency",))
+
+    assert res.returncode == 0, res.stderr
+    assert "branch/worktree 'live-work' gone" not in res.stdout, res.stdout
+    assert "historical (skipped): 0" in res.stdout, res.stdout
+    assert "all git+fs anchors verify" in res.stdout, res.stdout
+
+
 def test_currency_ignores_worktree_named_memory_links(
     lint_repo: Path, graph_setup: tuple[Path, Path, Path, Path]
 ) -> None:
@@ -875,6 +982,44 @@ def test_graph_mode_flags_the_fisheye_shape_from_the_manifest(
     assert "dead links → me8 (Note me8): 2 link(s)" in out, out
     assert "me9" not in out, out
     assert "memory-lint: 5 hygiene issue(s) above" in out, out
+
+
+@pytest.mark.parametrize("child_count", [8, 9])
+@pytest.mark.parametrize("parent_hub", ["me1", ""])
+def test_graph_mode_distinguishes_subhub_from_other_link_overflow(
+    lint_repo: Path,
+    graph_setup: tuple[Path, Path, Path, Path],
+    child_count: int,
+    parent_hub: str,
+) -> None:
+    """gr548270: count direct part-of children, not nearest-hub members."""
+    home, _mem, cache, nodes = graph_setup
+    today = _today()
+    for handle in ("me2", "me3"):
+        (nodes / f"{handle}.md").write_text("# Summary\n\nbody\n", encoding="utf-8")
+    rows = [
+        f"me1\tindex\t{today}\t4\t4\t1\t0\t0\t-\t0\t\t",
+        f"me2\treference\t{today}\t4\t4\t{child_count + 1}\t{child_count - 8}\t0\t{parent_hub}\t0\t\t{parent_hub}",
+        f"me3\treference\t{today}\t4\t4\t9\t1\t0\tme1\t0\t\tme1",
+    ]
+    # One direct child is already a sub-hub: its hub column is "-", but
+    # its parent column still contributes to the summary's child count.
+    rows += [
+        f"me{100 + i}\t{'index' if i == 0 else 'reference'}\t{today}\t4\t4\t1\t0\t0\t{'-' if i == 0 else parent_hub}\t0\t\tme2"
+        for i in range(child_count)
+    ]
+    (nodes / "_sections.tsv").write_text("\n".join(rows) + "\n", encoding="utf-8")
+
+    res = _run(lint_repo, home, cache=cache, nodes=nodes)
+    out = res.stdout
+
+    assert res.returncode == 0, res.stderr
+    assert ("sub-hub without section:index → tag it: me2" in out) == (child_count > 8)
+    if child_count > 8:
+        assert "tag(kind='memory', id='me2', add=['section:index'])" in out, out
+    assert "flat hub → me2" not in out, out
+    assert "flat hub → me3" in out, out
+    assert "prune weak links or route them through a hub node" in out, out
 
 
 def test_graph_mode_hub_checks_from_the_hub_columns(
