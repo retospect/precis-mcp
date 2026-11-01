@@ -1,0 +1,337 @@
+{# One tree row — included per row by todo/dashboard.html.j2 (gr548797).
+   A todo renders as a TWO-LINE card: line 1 carries the grip, the status
+   chips and the free tags (short label only — ``thread:factory`` reads
+   "factory", the full tag sits in the hover tooltip), plus the relative
+   times; line 2 is the expand button then the title. Everything the row
+   used to always show — the details body, the +tag form, the edit /
+   status / move / delete forms and the lazy history panel — lives under
+   the expand control. A job keeps the single line it already was.
+   Context: the dashboard's macros (``filter_inputs`` / ``state_qs``) ride
+   the include. #}
+<li class="px-3 py-2{% if r.kind == 'job' %} bg-surface-subtle/60{% endif %}"
+    x-data="{actions:{% if r.id == focus_id %}true{% else %}false{% endif %}}"
+    data-row data-row-href="/todo?focus={{ r.id }}"
+    data-id="{{ r.id }}"
+    data-kind="{{ r.kind }}"
+    data-depth="{{ r.depth }}"
+    data-status="{{ r.status }}"
+    data-level="{{ r.level or '' }}"
+    data-recurring="{{ '1' if r.level == 'recurring' else '0' }}"
+    {% if r.kind == 'todo' %}draggable="true"{% endif %}>
+  {# ── Line 1 — grip · status chips · tag chips · times ───────────── #}
+  <div data-row-line="meta" class="flex items-center gap-2 flex-wrap" style="padding-left: {{ r.depth * 1.25 }}rem">
+    {% if r.kind == 'todo' %}<span class="cursor-grab text-fg-ghost select-none" title="drag to reparent">⠿</span>{% endif %}
+    <span class="text-xs text-fg-faint w-10 shrink-0">#{{ r.id }}</span>
+    {# Badges are clickable filter chips: click → add the
+       corresponding pseudo-tag to ``require`` (composes with
+       the current filter, focus, and show_jobs state). #}
+    {% if r.kind == 'job' %}
+    <a href="/todo{{ state_qs(focus_id, require_add='kind:job') }}"
+       class="text-xs px-1.5 py-0.5 rounded bg-surface-emphasis text-fg-muted hover:bg-surface-strong"
+       title="filter to kind:job">job</a>
+    {% endif %}
+    {% set sc = {'done':'bg-success-muted text-success-strong','doing':'bg-warning-muted text-warning-strong','blocked':'bg-danger-muted text-danger-strong','paused':'bg-surface-emphasis text-fg-muted',"won't-do":'bg-surface-emphasis text-fg-subtle'} %}
+    <a href="/todo{{ state_qs(focus_id, require_add='STATUS:' ~ r.status) }}"
+       class="text-xs px-1.5 py-0.5 rounded {{ sc.get(r.status, 'bg-info-muted text-info-strong') }} hover:opacity-80{% if r.note %} cursor-help{% endif %}"
+       {% if r.note %}title="{{ r.note }} (click to filter to STATUS:{{ r.status }})"{% else %}title="filter to STATUS:{{ r.status }}"{% endif %}>{{ r.status }}{% if r.note %} ⓘ{% endif %}</a>
+    {% if r.level %}
+    <a href="/todo{{ state_qs(focus_id, require_add='level:' ~ r.level) }}"
+       class="text-xs px-1.5 py-0.5 rounded bg-accent-muted text-accent-strong hover:bg-accent-emphasis"
+       title="filter to level:{{ r.level }}">{{ r.level }}</a>
+    {% endif %}
+    {# Processing signals: live row lock and worker lease. #}
+    {% if r.locked %}<span class="text-xs px-1.5 py-0.5 rounded bg-danger-solid text-on-solid" title="row-locked right now (a worker holds it)">🔒 locked</span>{% endif %}
+    {% if r.lease_active %}<span class="text-xs px-1.5 py-0.5 rounded bg-warning-solid-soft text-on-solid" title="worker lease expires {{ r.lease_until | relative }} ({{ r.lease_until | abs_ts }})">⏱ running</span>{% elif r.lease_until %}<span class="text-xs px-1.5 py-0.5 rounded bg-surface-emphasis text-fg-subtle" title="worker lease expired {{ r.lease_until | relative }} ({{ r.lease_until | abs_ts }})">lease expired</span>{% endif %}
+    {% for ai in r.attention_icons %}
+    <a href="{{ ai.href }}" class="text-base leading-none" title="{{ ai.title }}">{{ ai.icon }}</a>
+    {% endfor %}
+    {% if r.kind == 'job' %}
+    {# A job is one line: the title (with its hover popover) stays
+       inline here; a todo's title lives on line 2 below. #}
+    <span class="relative" x-data="{ tip: false }"
+          @mouseenter="tip = true" @mouseleave="tip = false">
+      <span class="text-sm break-words">{{ (r.title or '').split('\n', 1)[0] | truncate(80, killwords=False, end='…') | linkify_refs }}</span>
+      {% if r.title and ('\n' in r.title or r.title|length > 80) %}
+      <div x-show="tip" x-cloak x-transition.opacity.duration.150ms
+           class="absolute z-40 left-0 top-full mt-1 w-[44rem] max-w-[80vw] rounded-lg border border-line bg-surface p-3 shadow-xl"
+           style="white-space: pre-line">
+        <p class="text-xs text-fg-secondary break-words">{{ r.title | linkify_refs }}</p>
+      </div>
+      {% endif %}
+    </span>
+    {% endif %}
+    {% if r.kind == 'todo' %}
+    {# Failed child job(s): show *why* it died (its job_summary) plus a
+       ▶ restart button + model picker. Restart clears the
+       child-failed:<job> bubble (optionally swapping the LLM tier) so
+       dispatch re-mints a fresh attempt. The bare child-failed chip is
+       skipped in the generic loop below — this replaces it. #}
+    {% for cf in r.child_failures %}
+    <span class="inline-flex items-center gap-1 text-xs pl-2 pr-1 py-0.5 rounded-full bg-danger-subtle text-danger-strong border border-danger">
+      <a href="/todo/{{ r.id }}/transcript" target="_blank" rel="noopener"
+         class="hover:underline" title="open the failed job's LLM transcript">⚠ failed{% if cf.reason %} — {{ cf.reason }}{% else %} (job #{{ cf.job_id }} — open to debug){% endif %}</a>
+      <form method="post" action="/todo/{{ cf.job_id }}/retry" class="inline-flex items-center gap-1">
+        {{ filter_inputs() }}
+        <select name="model" class="rounded border-danger-strong text-xs border px-1 py-0.5 bg-surface"
+                title="model to retry on (blank = keep the current LLM tier)">
+          <option value="">↻ same model</option>
+          {% for m in planner_models() if m.alias in ('small','medium','big','frontier') %}
+          <option value="{{ m.alias }}"
+                  {% if m.size or m.context or m.fallbacks %}title="{{ [m.size and 'size ' ~ m.size, m.context and 'ctx ' ~ m.context, m.fallbacks and 'fallback: ' ~ (m.fallbacks | join(', '))] | select | join(' · ') }}"{% endif %}>{{ m.alias }} · {{ m.model }}{% if m.placement == 'local' %} (local){% endif %}</option>
+          {% endfor %}
+        </select>
+        <button class="leading-none text-success hover:text-success-deep"
+                title="▶ restart — clear the failure and re-run this job">▶</button>
+      </form>
+      <form method="post" action="/todo/{{ r.id }}/tags" class="inline-flex">
+        {{ filter_inputs() }}
+        <input type="hidden" name="remove" value="child-failed:{{ cf.job_id }}" />
+        <button class="leading-none text-danger-faint hover:text-danger"
+                title="dismiss this failure bubble"
+                aria-label="remove child-failed:{{ cf.job_id }}">&times;</button>
+      </form>
+    </span>
+    {% endfor %}
+    {# Free-tag chips: short label only (``thread:factory`` → "factory"),
+       the full ``key:value`` string rides the hover; × removes. #}
+    {% for t in r.tags %}
+    {% if not t.startswith('child-failed:') %}
+    <span class="inline-flex items-center gap-1 text-xs pl-2 pr-1 py-0.5 rounded-full bg-surface-muted text-fg-muted"
+          title="{{ t }}">
+      <span>{{ t.split(':')[-1] }}</span>
+      <form method="post" action="/todo/{{ r.id }}/tags" class="inline-flex">
+        {{ filter_inputs() }}
+        <input type="hidden" name="remove" value="{{ t }}" />
+        <button class="leading-none text-fg-faint hover:text-danger"
+                title="remove tag {{ t }}" aria-label="remove tag {{ t }}">&times;</button>
+      </form>
+    </span>
+    {% endif %}
+    {% endfor %}
+    {% endif %}
+    {# ── Time cluster ───────────────────────────────────────────
+       The row's single right-hand anchor (ml-auto): everything
+       after it — retry / ⏹ — packs to the right of
+       it. Relative in the row, absolute in the tooltip, the same
+       pairing every other list view uses.
+
+       What each row answers:
+         todo  — when it was minted, and (once it leaves 'open')
+                 how long it's been in its current state.
+         job   — queued: how long it's been waiting.
+                 running: how long it's been running (+ ⚠ when the
+                 sweeper would call it dead).
+                 terminal: when it finished, and the queue/run
+                 split from ``r.timing``.
+       ``status_since`` is the ref_tags row for the CURRENT status
+       — see routes/todo.py::_load_tags for why that's all the
+       transition history there is. #}
+    <span class="ml-auto flex items-center gap-1.5 text-xs text-fg-faint tabular-nums whitespace-nowrap">
+      {% if r.stuck %}
+      <span class="px-1.5 py-0.5 rounded bg-danger-muted text-danger-strong font-medium"
+            title="STATUS:running since {{ r.status_since | abs_ts }} with no live lease, past PRECIS_STUCK_JOB_HOURS — presumed dead. Recovery is the sweeper, or the next claim cycle's reclaim for a lease-owning executor.">⚠ stuck {{ r.status_since | ago | replace(' ago', '') }}</span>
+      {% endif %}
+      {% if r.kind == 'job' %}
+        {% if r.status == 'queued' %}
+        <span title="minted {{ r.created_at | abs_ts }} — waiting for a worker to claim it">queued {{ r.created_at | ago }}</span>
+        {% elif r.status == 'running' %}
+        <span title="{% if r.started_at %}claimed {{ r.started_at | abs_ts }}{% else %}STATUS:running since {{ r.status_since | abs_ts }}{% endif %}">started {{ (r.started_at or r.status_since) | ago }}</span>
+        {% else %}
+        <span title="{{ r.status }} at {{ r.status_since | abs_ts }}">{{ r.status }} {{ r.status_since | ago }}</span>
+        {% endif %}
+        {% if r.timing %}
+        <span class="text-fg-ghost" title="queue wait vs run time{% if not r.started_at %} — this job predates the meta.started_at stamp, so the two can't be told apart{% endif %}">{{ r.timing }}</span>
+        {% endif %}
+      {% else %}
+        <span title="created {{ r.created_at | abs_ts }}">created {{ r.created_at | ago }}</span>
+        {% if r.status != 'open' and r.status_since %}
+        <span class="text-fg-ghost" title="entered {{ r.status }} at {{ r.status_since | abs_ts }}">{{ r.status }} {{ r.status_since | ago }}</span>
+        {% endif %}
+      {% endif %}
+    </span>
+    {# Retry a failed/cancelled job: clears the parent's child-failed
+       bubble (optionally swapping its meta.llm_tier) so dispatch
+       re-mints a fresh attempt. Posts to put(kind='job', mode='retry')
+       via the /retry route. Visible with "+ show closed jobs". #}
+    {% if r.kind == 'job' and r.status in ['failed', "cancelled"] %}
+    <form method="post" action="/todo/{{ r.id }}/retry" class="flex items-center gap-1">
+      {{ filter_inputs() }}
+      <select name="model" class="rounded border-line-strong text-xs border px-1 py-0.5"
+              title="model for the retry (blank = keep the parent's current LLM tier)">
+        <option value="">↻ same model</option>
+        {% for m in planner_models() if m.alias in ('small','medium','big','frontier') %}
+        <option value="{{ m.alias }}"
+                {% if m.size or m.context or m.fallbacks %}title="{{ [m.size and 'size ' ~ m.size, m.context and 'ctx ' ~ m.context, m.fallbacks and 'fallback: ' ~ (m.fallbacks | join(', '))] | select | join(' · ') }}"{% endif %}>{{ m.alias }} · {{ m.model }}{% if m.placement == 'local' %} (local){% endif %}</option>
+        {% endfor %}
+      </select>
+      <button class="rounded bg-warning-solid text-on-solid text-xs px-2 py-0.5"
+              title="clear the failure bubble on the parent todo so dispatch re-mints a fresh job">Retry</button>
+    </form>
+    {% endif %}
+    {# Tape-player ⏹ for a live job: cancel it and halt its parent todo
+       so dispatch doesn't immediately re-mint a fresh tick. #}
+    {% if r.kind == 'job' and r.status in ['queued', 'running'] %}
+    <form method="post" action="/todo/{{ r.id }}/stop" class="inline-flex">
+      {{ filter_inputs() }}
+      <button class="text-sm leading-none text-danger hover:text-danger-deep"
+              title="⏹ stop — cancel this job &amp; halt its parent todo">⏹</button>
+    </form>
+    {% endif %}
+  </div>
+  {% if r.kind == 'todo' %}
+  {# ── Line 2 — expand · title · nav ──────────────────────────────── #}
+  <div data-row-line="title" class="mt-0.5 flex items-center gap-2" style="padding-left: {{ r.depth * 1.25 }}rem">
+    <button type="button" @click="actions=!actions" data-card-expand
+            class="w-4 shrink-0 text-xs text-fg-faint hover:text-fg-secondary"
+            title="expand — details, tag add, history">
+      <span x-show="!actions" x-cloak>▸</span><span x-show="actions">▾</span>
+    </button>
+    {# First-line + full-body popover. The body is the planner's
+       prompt; rendering the whole multi-paragraph thing in the
+       row blows up vertical density. First line goes in the row
+       (truncated at 80 chars); the rest lives in an Alpine
+       popover triggered on row-text hover (touch users expand
+       instead — same content there). Done items read muted with
+       a ✓ chip — no strikethrough (gr548796). #}
+    {% if r.status == 'done' %}<span class="shrink-0 text-xs px-1 py-0.5 rounded bg-success-muted text-success-strong" title="done">✓</span>{% elif r.status == "won't-do" %}<span class="shrink-0 text-xs px-1 py-0.5 rounded bg-surface-emphasis text-fg-faint" title="won't-do">✕</span>{% endif %}
+    <span class="relative" x-data="{ tip: false }"
+          @mouseenter="tip = true" @mouseleave="tip = false">
+      {# Prompt-like bodies show a 3-keyword RAKE gist in the row
+         (the full text lives in the hover popover); short todos
+         show their first line verbatim. #}
+      {% if r.gist %}
+      <span class="text-sm break-words {% if r.status in ['done',"won't-do"] %}text-fg-faint{% endif %}"><span class="text-fg-faint mr-1" title="3-keyword gist of the prompt; hover for full text">≡</span>{{ r.gist | linkify_refs }}</span>
+      {% else %}
+      <span class="text-sm break-words {% if r.status in ['done',"won't-do"] %}text-fg-faint{% endif %}">{{ (r.title or '').split('\n', 1)[0] | truncate(80, killwords=False, end='…') | linkify_refs }}</span>
+      {% endif %}
+      {% if (r.title and '\n' in r.title) or (r.title and r.title|length > 80) or r.body %}
+      <div x-show="tip" x-cloak x-transition.opacity.duration.150ms
+           class="todo-md absolute z-40 left-0 top-full mt-1 w-[44rem] max-w-[80vw] rounded-lg border border-line bg-surface p-3 shadow-xl"
+           style="white-space: pre-line">
+        <p class="text-xs text-fg-secondary break-words">{{ r.title | linkify_refs }}</p>
+        {% if r.body %}
+        <p class="mt-2 text-xs text-fg-secondary break-words border-t border-line-subtle pt-2">{{ r.body | linkify_refs(markdown=True) }}</p>
+        {% endif %}
+      </div>
+      {% endif %}
+    </span>
+    {% if r.rollup and r.rollup.total %}
+    {# 3-bucket rollup: active · waiting · done over direct todo
+       children. Clicking opens a popover listing the children;
+       each child row has its own rollup chip that drills deeper.
+       Recursion is via a single htmx-loaded fragment template
+       (``_children_popup.html.j2``) — depth-2 lazy. #}
+    <span class="relative" x-data="{ open: false, loaded: false }"
+          @click.outside="open = false"
+          @keyup.escape.window="open = false">
+      <button type="button"
+              @click="open = !open; if (open && !loaded) loaded = true"
+              hx-get="/todo/{{ r.id }}/children-popup?depth=0"
+              hx-target="#popup-children-{{ r.id }}"
+              hx-trigger="click once"
+              class="inline-flex items-center gap-0.5 text-xs ml-1 cursor-pointer hover:opacity-80"
+              title="click to drill into children">
+        <span class="px-1 py-0.5 rounded-l bg-info-muted text-info-strong font-medium">{{ r.rollup.active }}</span>
+        <span class="px-1 py-0.5 bg-warning-muted text-warning-strong font-medium">{{ r.rollup.waiting }}</span>
+        <span class="px-1 py-0.5 rounded-r bg-success-muted text-success-strong font-medium">{{ r.rollup.done }}</span>
+      </button>
+      <div id="popup-children-{{ r.id }}" x-show="open" x-cloak
+           class="absolute z-50 left-0 top-full mt-1"></div>
+    </span>
+    {% endif %}
+    <span class="ml-auto flex items-center gap-2">
+      {# Per-row navigation: 🔍 focus (drill into subtree),
+         📊 tree (focus + mermaid 3 deep). 📊 collapses both into
+         one click for the visual-tree path. #}
+      {% if r.id != focus_id %}
+      <a href="/todo{{ state_qs(r.id) }}"
+         class="text-xs text-fg-faint hover:text-success-strong"
+         title="focus this subtree">🔍</a>
+      <a href="/todo{{ state_qs(r.id, tree_override=3) }}"
+         class="text-xs text-fg-faint hover:text-success-strong"
+         title="focus + show tree diagram (3 deep)">📊</a>
+      {% endif %}
+      {# Tape-player stop/start: ⏹ halts this whole subtree (and cancels
+         its live jobs) so the planner stops minting ticks; ▶ clears the
+         halt to resume. State flips on whether a halt marker is present. #}
+      {% if r.halted %}
+      <form method="post" action="/todo/{{ r.id }}/start" class="inline-flex">
+        {{ filter_inputs() }}
+        <button class="text-sm leading-none text-success hover:text-success-deep"
+                title="▶ start — resume this subtree (clears halt)">▶</button>
+      </form>
+      {% else %}
+      <form method="post" action="/todo/{{ r.id }}/stop" class="inline-flex">
+        {{ filter_inputs() }}
+        <button class="text-sm leading-none text-danger hover:text-danger-deep"
+                title="⏹ stop — halt this whole subtree &amp; cancel its running jobs">⏹</button>
+      </form>
+      {% endif %}
+    </span>
+  </div>
+  {# ── Expanded — everything the card used to always show ────────── #}
+  <div x-show="actions" x-cloak class="mt-2 space-y-2" data-card-detail
+       style="padding-left: {{ (r.depth * 1.25) + 1.5 }}rem">
+    {% if r.body %}
+    {# The details body (todo_body chunk) — the decision/brief a
+       review-note todo carries, markdown-rendered so its lists read
+       as lists (gr548796). The expanded region opens by default on
+       the focused node, where the body IS the page subject
+       (gr521530). #}
+    <div class="todo-md whitespace-pre-wrap break-words text-sm text-fg-secondary">{{ r.body | linkify_refs(markdown=True) }}</div>
+    {% endif %}
+    {# Tag add — the chips themselves (with their ×) live on line 1. #}
+    <form method="post" action="/todo/{{ r.id }}/tags" class="inline-flex items-center gap-1">
+      {{ filter_inputs() }}
+      <input name="add" placeholder="+ tag…"
+             class="rounded border-line-strong text-xs border px-2 py-0.5 w-24" />
+      <button class="rounded border border-line-strong text-xs px-1.5 py-0.5 hover:bg-surface-muted"
+              title="add tag">add</button>
+    </form>
+    <div class="flex flex-wrap items-center gap-2">
+      <!-- Edit text: in-place rewrite via the edit verb (same id).
+           Textarea so multiline todo bodies edit + save verbatim. -->
+      <form method="post" action="/todo/{{ r.id }}/edit" class="flex items-start gap-1 w-full">
+        {{ filter_inputs() }}
+        <textarea name="text" required rows="3" placeholder="todo text…"
+                  class="rounded border-line-strong text-xs border px-2 py-1 flex-1 font-mono">{{ r.title }}</textarea>
+        <button class="rounded bg-solid text-on-solid text-xs px-2 py-0.5">Save text</button>
+      </form>
+      <form method="post" action="/todo/{{ r.id }}/status" class="flex items-center gap-1">
+        {{ filter_inputs() }}
+        <select name="status" class="rounded border-line-strong text-xs border px-1 py-0.5">
+          {% for s in status_choices %}
+          <option value="{{ s }}" {% if s == r.status %}selected{% endif %}>{{ s }}</option>
+          {% endfor %}
+        </select>
+        <button class="rounded bg-solid text-on-solid text-xs px-2 py-0.5">Set</button>
+      </form>
+      <form method="post" action="/todo/{{ r.id }}/children" class="flex items-start gap-1">
+        {{ filter_inputs() }}
+        <textarea name="text" required rows="2" placeholder="add child…"
+                  class="rounded border-line-strong text-xs border px-2 py-1 w-48"></textarea>
+        <button class="rounded border border-line-strong text-xs px-2 py-0.5 hover:bg-surface-muted">+ child</button>
+      </form>
+      <!-- Manual reparent fallback (keyboard / non-DnD path). -->
+      <form method="post" action="/todo/{{ r.id }}/move" class="flex items-center gap-1">
+        {{ filter_inputs() }}
+        <input name="new_parent_id" type="number" min="1" placeholder="parent #"
+               class="rounded border-line-strong text-xs border px-2 py-0.5 w-20" />
+        <button class="rounded border border-line-strong text-xs px-2 py-0.5 hover:bg-surface-muted"
+                title="empty = move to top level">move</button>
+      </form>
+      <form method="post" action="/todo/{{ r.id }}/delete"
+            onsubmit="return confirm('Delete #{{ r.id }}? Children re-parent to top level.')">
+        {{ filter_inputs() }}
+        <button class="rounded text-xs px-2 py-0.5 text-danger hover:bg-danger-subtle">delete</button>
+      </form>
+      <!-- History: lazy-load attempts (jobs) + event log via htmx. -->
+      <button type="button"
+              class="rounded border border-line-strong text-xs px-2 py-0.5 hover:bg-surface-muted"
+              hx-get="/todo/{{ r.id }}/history"
+              hx-target="#hist-{{ r.id }}" hx-swap="innerHTML">history</button>
+      <div id="hist-{{ r.id }}" class="w-full"></div>
+    </div>
+  </div>
+  {% endif %}
+</li>

@@ -4,8 +4,7 @@
   "drafts/_editors.html.j2": 1,
   "drafts/_figures.html.j2": 1,
   "drive/index.html.j2": 3,
-  "smartdraft/view.html.j2": 2,
-  "todo/dashboard.html.j2": 1
+  "smartdraft/view.html.j2": 2
  },
  "placeholder": {
   "account/index.html.j2": 6,
@@ -19,7 +18,6 @@
   "pres/_meta_panel.html.j2": 2,
   "rxn/index.html.j2": 2,
   "settings/index.html.j2": 1,
-  "smartdraft/view.html.j2": 1,
-  "todo/dashboard.html.j2": 1
+  "smartdraft/view.html.j2": 1
  }
 }
