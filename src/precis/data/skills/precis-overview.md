@@ -311,6 +311,7 @@ Corpus-pipeline services documenting against this skill:
 | `watch_poll` | S2 citing-paper poll → stubs |
 | `citer_watch` | daily OpenAlex cited-by watch for held papers; mints stub papers for new citing works (capped per day) and writes a digest memory; dark unless service_config enables it |
 | `upstream_watch` | daily watch of GitHub issues/PRs we filed on repos we do not own; reports movement only — flags the `upstream:<owner>/<repo>#<n>`-tagged todo that waits on it (or mints a tracker) with the suggested response, plus a digest memory; dark unless service_config enables it |
+| `idea_feed` | daily novel-ideas digest: polls arXiv listing RSS (configured categories) + Hacker News top/show (Firebase API), dedupes against ingested refs and prior digests, scores survivors with one SMALL-tier judge call under a $1/day per-op cap, mints one digest `kind='todo'` with the top hits; dark unless service_config enables it |
 | `mail_poll` / `inject_scan` | email poll + depth-0 scan, then model-scores flagged mail |
 | `dream_agent` | reflective memory pass (scheduler cadence) |
 | `watch` (daemon) | PDF-inbox ingestor — alerts `watch:elsevier_truncation/elsevier-truncation:<ref>` (truncated PDF) and `ingest:marker-fallback` (extractor fallback) |

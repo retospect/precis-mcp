@@ -580,6 +580,31 @@ def _run_upstream_watch(store: Store, batch_size: int) -> None:
     )
 
 
+def _run_idea_feed(store: Store, batch_size: int) -> None:
+    """Daily novel-ideas digest (gr543714): poll arXiv listing RSS over
+    the configured categories plus the HN top/show Firebase lists, dedupe
+    against ingested refs and prior digests, score the survivors with one
+    SMALL-tier judge call under a $1/day per-op cap, mint one digest
+    ``kind='todo'`` naming the top hits.
+    Dark-gated inside the pass: no ``idea_feed`` service_config row
+    (prio > 0) → all-zeros no-op, so the cadence's lease advances
+    harmlessly while dark (the ``dream_consolidate`` shape — a
+    never-claimed lease would read as "stopped firing" to health_digest).
+    ``batch_size`` is unused — the pass bounds itself via the per-source
+    caps and the judge's daily USD cap. spends=True: the judge call bills
+    the model, so the global daily ceiling also gates it."""
+    del batch_size
+    from precis.workers.idea_feed import run_idea_feed_pass
+
+    result = run_idea_feed_pass(store)
+    log.info(
+        "scheduler: idea_feed inner result claimed=%d ok=%d failed=%d",
+        result["claimed"],
+        result["ok"],
+        result["failed"],
+    )
+
+
 def _run_secret_check(store: Store, batch_size: int) -> None:
     """Weekly credential probe (gr496305 item 4): runs
     ``secret_status.weekly_report`` and raises one ``secret_check`` alert
@@ -1210,6 +1235,21 @@ CADENCES: tuple[Cadence, ...] = (
         name="gripe_autoclose",
         interval_s=3600 + 13 * 60,
         run=_run_gripe_autoclose,
+    ),
+    # gr543714: the novel-ideas digest — daily, host-agnostic, off the
+    # exact day boundary (+79m, clear of the other daily fires). Ships
+    # DISABLED: the cadence fires and the lease advances, but the pass
+    # no-ops until a `service_config` row lights `idea_feed` (prio > 0)
+    # — `precis service prio '*' idea_feed 1` is the prod flag. No
+    # `service=` gate on the cadence on purpose: that gate leaves the
+    # lease unclaimed while dark, which health_digest's cadence-staleness
+    # check reports as "stopped firing" forever. spends=True: the judge
+    # bills one SMALL-tier call, capped $1/day per op inside the pass.
+    Cadence(
+        name="idea_feed",
+        interval_s=24 * 3600 + 79 * 60,
+        run=_run_idea_feed,
+        spends=True,
     ),
     # 2026-10 dream hygiene: consolidate stale dreams — retire unrecalled+
     # untouched dreams (60d; 90d for thread: memories) behind one supersedes

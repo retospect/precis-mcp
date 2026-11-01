@@ -426,6 +426,24 @@ LLM_OPERATIONS: dict[str, OpDefault] = {
             "the job's `review_limit` (default 10 per run)."
         ),
     ),
+    "idea_feed": OpDefault(
+        tier=Tier.SMALL,
+        model=None,
+        label="Idea-feed novelty judge",
+        description=(
+            "The daily idea_feed digest's one batch judge call "
+            "(workers/idea_feed.py) — scores arXiv-RSS + Hacker News "
+            "candidates for novelty and relevance against the roadmap "
+            "pillars and the open quests. One call per lit fire, capped "
+            "$1/UTC-day by `idea_feed.daily_usd`."
+        ),
+        note=(
+            "SMALL mirrors the spec's 'cheapest tier' pick — a scored "
+            "shortlist over ≤60 clipped titles/abstracts needs no more, "
+            "and the per-op dollar cap bounds the day regardless. Steer "
+            "with an `llm.op.idea_feed` row if the judge proves too weak."
+        ),
+    ),
     "llm_summarize": OpDefault(
         tier=Tier.SMALL,
         model=None,

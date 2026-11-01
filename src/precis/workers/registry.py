@@ -1574,6 +1574,27 @@ SERVICES: tuple[ServiceSpec, ...] = (
         doc_skill="precis-gripe-loop-help",
     ),
     ServiceSpec(
+        # gr543714: the novel-ideas digest (workers/idea_feed.py). Same
+        # dark-by-default shape as citer_watch/upstream_watch above: the
+        # STANDING trigger is the daily `idea_feed` scheduler cadence,
+        # which fires and advances its lease while dark — the pass no-ops
+        # until a service_config row lights `idea_feed` (prio > 0), so
+        # enabling is the prod flag `precis service prio '*' idea_feed 1`.
+        # This registration is for a manual `--only idea_feed` run only.
+        name="idea_feed",
+        label="Novel-ideas digest",
+        category="acquisition",
+        kind=ServiceKind.PASS,
+        ref_pass=True,
+        uses_model=True,
+        uses_external=("arxiv", "hackernews"),
+        cost_sources=("idea_feed",),
+        one_line="Daily arXiv-RSS + HN top/show digest judged for novelty "
+        "and relevance against pillars + open quests; one digest todo "
+        "per run, $1/day judge cap; dark until lit.",
+        doc_skill="precis-overview",
+    ),
+    ServiceSpec(
         name="news_poll",
         label="News ingestion",
         category="acquisition",

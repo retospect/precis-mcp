@@ -351,6 +351,29 @@ REGISTRY: dict[str, SettingSpec] = {
             doc="SEC EDGAR requires a User-Agent with contact info.",
         ),
         SettingSpec(
+            key="idea_feed.daily_usd",
+            type="float",
+            env_var="PRECIS_IDEA_FEED_DAILY_USD",
+            default=1.0,
+            doc="UTC-day USD cap on the idea_feed novelty judge's routed "
+            "calls (precis.workers.idea_feed): spend is summed from "
+            "llm_call_log rows with source='idea_feed' — the per-op cap "
+            "shape of llm.quota_fallback_daily_usd. At/over the cap the "
+            "pass skips the judge (hits still land next fire); "
+            "unreadable accounting fails closed. 0 disables the judge "
+            "outright.",
+        ),
+        SettingSpec(
+            key="idea_feed.arxiv_categories",
+            type="str",
+            env_var="PRECIS_IDEA_FEED_ARXIV_CATEGORIES",
+            default="cs.AI,cs.CL,cs.IR,cs.LG,cond-mat.mes-hall,physics.chem-ph",
+            doc="Comma-separated arXiv listing-RSS categories the daily "
+            "idea_feed poll fetches (rss.arxiv.org/rss/<cat>) — the set "
+            "matching the roadmap pillars (gr543714 spec). One feed GET "
+            "per category per lit fire through the shared arxiv limiter.",
+        ),
+        SettingSpec(
             key="upstream_watch.author",
             type="str",
             env_var="PRECIS_UPSTREAM_AUTHOR",

@@ -327,6 +327,7 @@ _REF_PASS_PRIORITY: dict[str, PassPriority] = {
     "_openalex_snapshot_pass": PassPriority.BACKGROUND,
     "_citer_watch_pass": PassPriority.BACKGROUND,
     "_upstream_watch_pass": PassPriority.BACKGROUND,
+    "_idea_feed_pass": PassPriority.BACKGROUND,
 }
 
 
@@ -455,6 +456,7 @@ def add_parser(sub: argparse._SubParsersAction) -> None:
             "watch_poll",
             "citer_watch",
             "upstream_watch",
+            "idea_feed",
             "news_poll",
             "parts_refresh",
             "mail_poll",

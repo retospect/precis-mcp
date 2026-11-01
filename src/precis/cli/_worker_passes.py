@@ -1353,6 +1353,21 @@ def build_ref_passes(
 
         ref_passes.append(_gripe_autoclose_pass)
 
+    # Novel-ideas digest (gr543714). Same shape as citer_watch above:
+    # no `default_profiles`, so this registration is for a manual
+    # `--only idea_feed` run only — the STANDING trigger is the daily
+    # `idea_feed` scheduler cadence. `--only` passes `enabled=True`
+    # (the operator escape hatch); the judge's per-op daily USD cap
+    # still bounds the run either way.
+    if _register("idea_feed"):
+        from precis.workers.idea_feed import run_idea_feed_pass
+
+        def _idea_feed_pass(batch_size: int) -> _BatchResult:
+            r = run_idea_feed_pass(store, enabled=True)
+            return _BatchResult.from_dict("idea_feed", r)
+
+        ref_passes.append(_idea_feed_pass)
+
     # News ingestion (news kind). Walks the news_sources feed
     # registry, fetches + mints new articles as `news` refs. Like
     # watch_poll it makes external calls on a cadence, so it's
