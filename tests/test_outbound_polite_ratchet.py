@@ -91,6 +91,10 @@ _ALLOWLIST: dict[str, str] = {
         "one initialize preflight against our own precis MCP (the checkout's "
         ".mcp.json); a retry would hide the rejected bearer it exists to catch"
     ),
+    # `precis door`: one POST of a local file to our own precis_web upload
+    # door, at the signed single-use URL the MCP minted. No retry on purpose:
+    # a replay of a spent link is a 409, never a second upload.
+    "precis/cli/door.py": "our own precis_web signed upload door (single-use link)",
     # Deadman ping: exactly one GET per health-digest tick (the tick is the
     # cadence), to the operator's own heartbeat endpoint. It bypasses the core
     # on purpose: a retry or breaker would blur "the tick ran" into "the

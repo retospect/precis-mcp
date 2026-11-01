@@ -192,6 +192,12 @@ class RoutePlan:
     #: withdrawn set only. ``sketch_rows`` attributes first-pass
     #: crossings to withdrawn nets alone.
     withdrawn: tuple[int, ...] = ()
+    #: Plane nets (gr524239): ``(net, layer)`` per net_pins index that
+    #: reaches a reserved plane layer by fanout vias instead of wires.
+    planes: tuple[tuple[int, int], ...] = ()
+    #: ``(net, pin)`` per plane-net SMD pad no legal fanout via site was
+    #: found for — the net reports ``failed: no fanout via``.
+    fanout_missing: tuple[tuple[int, int], ...] = ()
 
     @property
     def n_routed_nets(self) -> int:
@@ -205,6 +211,7 @@ def _plan_failed_nets(plan: RoutePlan) -> set[int]:
     net_by_branch = {p.branch: p.net for p in plan.pieces}
     out: set[int] = set(plan.unreachable) | set(plan.guarded) | set(plan.severed)
     out |= {u.net for u in plan.stranded}
+    out |= {k for k, _pin in getattr(plan, "fanout_missing", ())}
     for a, b in plan.crossings:
         for br in (a, b):
             if br in net_by_branch:
@@ -4012,7 +4019,415 @@ def _severed_nets(
     return severed
 
 
+#: Fanout via search around a plane net's SMD pad (gr524239): ring radii
+#: from the pad centre (mm), nearest first, and directions per ring. The
+#: stub stays short so it is a pad escape, never a wire to dodge.
+_FANOUT_RADII_MM = (0.45, 0.6, 0.75, 0.9, 1.1, 1.3, 1.6, 2.0)
+_FANOUT_DIRECTIONS = 16
+
+
+def _plane_nets(d: TopoDesign, ir: Any) -> dict[int, int]:
+    """``{net_pins index: plane layer}`` for every routed net the board
+    pours (``ir.net_plane_layers``, the authored ``plane_net``), lowest
+    poured layer when a net pours several."""
+    masks = getattr(ir, "net_plane_layers", None)
+    if masks is None:
+        return {}
+    ir_of = {str(n): i for i, n in enumerate(ir.net_name)}
+    out: dict[int, int] = {}
+    for k, name in enumerate(d.net_name):
+        i = ir_of.get(str(name))
+        if i is None or k >= len(d.net_pins) or not len(d.net_pins[k]):
+            continue
+        mask = int(masks[i])
+        layers = [lay for lay in range(int(ir.n_layers)) if mask >> lay & 1]
+        if layers:
+            out[k] = layers[0]
+    return out
+
+
+def _fanout_vias(
+    d: TopoDesign,
+    ir: Any,
+    n_layers: int,
+    pose: np.ndarray,
+    net_rules: Mapping[str, NetRules] | None,
+    plane_nets: Mapping[int, int],
+    *,
+    min_via_dia: float | None = None,
+    min_via_drill: float | None = None,
+) -> tuple[list[Any], list[Any], list[tuple[int, int]]]:
+    """One via per SMD pad of every plane net, as near the pad as the
+    copper around it allows, joined by a straight stub on the pad's layer
+    (gr524239: "plane nets drop to the plane by via, not routed on
+    F.Cu"). A drilled pad already reaches the plane and needs none.
+    Returns ``(tracks, vias, missing)``: the stubs, the vias, and
+    ``(net, pin)`` for each pad no legal site exists for.
+
+    A site is legal when the barrel — it spans every layer — keeps its
+    keep-out from every pad (the fanned pad included: no via-in-pad),
+    from every zone a via may not sit in (keepouts, label boxes, mounting
+    holes, other nets' frozen copper), from every via already placed, and
+    stays edge clearance plus its radius inside the outline; the stub
+    keeps half its width plus clearance from every pad of another net on
+    its layer. The net-rule barrel is tried first, the fab-minimum one
+    (gr524334) only where it finds no site."""
+    from shapely import STRtree
+    from shapely.geometry import box
+
+    from precis.pcb.ir import NO_NET
+    from precis.pcb.realize import RealizedTrack, RealizedVia, through_span
+    from precis.pcb.topoplace.proxy import local_to_world, zone_world_ring
+
+    rules = net_rules or {}
+    ir_net = {str(n): i for i, n in enumerate(ir.net_name)}
+    pad_polys = _pad_polys(d, ir, n_layers, pose)
+    # every pad on every layer, once per (pin, polygon) — a TH pad is
+    # listed per layer by _pad_polys; the barrel only needs it once
+    seen: set[int] = set()
+    pads: list[tuple[str, Any, int, int]] = []
+    for lay in range(n_layers):
+        for pname, poly, pin in pad_polys.get(lay, []):
+            if id(poly) in seen:
+                continue
+            seen.add(id(poly))
+            pads.append((pname, poly, pin, lay))
+    pad_tree = STRtree([pp[1] for pp in pads]) if pads else None
+    layer_pads = [pad_polys.get(lay, []) for lay in range(n_layers)]
+    layer_trees = [STRtree([pp[1] for pp in lp]) if lp else None for lp in layer_pads]
+    zones: list[tuple[Any, str, str]] = []
+    for z in d.zones:
+        ring = zone_world_ring(d, z, pose)
+        if len(ring) >= 3:
+            zones.append((Polygon(np.asarray(ring)), str(z.net or ""), str(z.kind)))
+    board = Polygon(np.asarray(d.outline, dtype=float)) if len(d.outline) >= 3 else None
+    lo, hi = through_span(n_layers)
+    placed: list[tuple[float, float, float]] = []  # x, y, radius
+    tracks: list[Any] = []
+    vias: list[Any] = []
+    missing: list[tuple[int, int]] = []
+    for k in sorted(plane_nets):
+        name = str(d.net_name[k])
+        nr = rules.get(name, _DEFAULT)
+        w, c = float(nr.track_width_mm), float(nr.clearance_mm)
+        edge = max(float(d.edge_clearance_mm or 0.0), c)
+        barrels = [
+            (
+                float(nr.via_dia_mm or _VIA_DIA_MM),
+                float(nr.via_drill_mm or _VIA_DRILL_MM),
+                0.0,
+                0.0,
+            )
+        ]
+        if min_via_dia and float(min_via_dia) < barrels[0][0]:
+            mdia = float(min_via_dia)
+            mdrill = float(min_via_drill or min(barrels[0][1], mdia / 2.0))
+            barrels.append((mdia, mdrill, mdia, mdrill))
+        for pin in (int(p) for p in d.net_pins[k]):
+            side = int(d.pin_side[pin])
+            if side == 2:
+                continue  # drilled: the pad already reaches the plane
+            lay = 0 if side == 0 else n_layers - 1
+            part = int(d.pin_part[pin])
+            cx, cy = (
+                float(v) for v in local_to_world(d.pin_xy[pin][None, :], pose[part])[0]
+            )
+            # outward first: away from the part's centre, so the escape
+            # does not wall the part's other pads in
+            ox, oy = cx - float(pose[part, 0]), cy - float(pose[part, 1])
+            out_ang = math.atan2(oy, ox) if math.hypot(ox, oy) > 1e-9 else 0.0
+            angs = sorted(
+                (
+                    2.0 * math.pi * i / _FANOUT_DIRECTIONS
+                    for i in range(_FANOUT_DIRECTIONS)
+                ),
+                key=lambda a: abs(math.remainder(a - out_ang, 2.0 * math.pi)),
+            )
+            site = None
+            for dia, drill, q_dia, q_drill in barrels:
+                rad = dia / 2.0
+                inner = board.buffer(-(rad + edge)) if board is not None else None
+                for r in _FANOUT_RADII_MM:
+                    for a in angs:
+                        x, y = cx + r * math.cos(a), cy + r * math.sin(a)
+                        pt = Point(x, y)
+                        if inner is not None and not inner.covers(pt):
+                            continue
+                        if any(
+                            math.hypot(x - vx, y - vy) < rad + vr + c
+                            for vx, vy, vr in placed
+                        ):
+                            continue
+                        stub = LineString([(cx, cy), (x, y)])
+                        reach = rad + c + 0.5
+                        ok = True
+                        hits = (
+                            pad_tree.query(
+                                box(x - reach, y - reach, x + reach, y + reach)
+                            )
+                            if pad_tree is not None
+                            else []
+                        )
+                        for j in hits:
+                            pname, poly, _ppin, _play = pads[int(j)]
+                            cp = (
+                                float(rules.get(pname, _DEFAULT).clearance_mm)
+                                if pname
+                                else c
+                            )
+                            if poly.distance(pt) < rad + max(c, cp) - 1e-9:
+                                ok = False
+                                break
+                        if not ok:
+                            continue
+                        ltree = layer_trees[lay]
+                        for j in (
+                            ltree.query(stub.buffer(w / 2.0 + c + 0.5))
+                            if ltree is not None
+                            else []
+                        ):
+                            pname, poly, ppin = layer_pads[lay][int(j)]
+                            if ppin == pin or (pname and pname == name):
+                                continue
+                            cp = (
+                                float(rules.get(pname, _DEFAULT).clearance_mm)
+                                if pname
+                                else c
+                            )
+                            if poly.distance(stub) < w / 2.0 + max(c, cp) - 1e-9:
+                                ok = False
+                                break
+                        if not ok:
+                            continue
+                        for zp, znet, zkind in zones:
+                            if zkind == "fixed_copper" and znet == name:
+                                continue
+                            if zp.distance(pt) < rad + c - 1e-9:
+                                ok = False
+                                break
+                            if (
+                                zkind != "label_keepout"
+                                and zp.distance(stub) < w / 2.0 + c - 1e-9
+                            ):
+                                ok = False
+                                break
+                        if ok:
+                            site = (x, y, dia, drill, q_dia, q_drill)
+                            break
+                    if site is not None:
+                        break
+                if site is not None:
+                    break
+            if site is None:
+                missing.append((k, pin))
+                continue
+            x, y, dia, drill, q_dia, q_drill = site
+            placed.append((x, y, dia / 2.0))
+            net_id = ir_net.get(name, int(NO_NET))
+            tracks.append(
+                RealizedTrack(
+                    seg_id=-1,
+                    net_id=net_id,
+                    layer=lay,
+                    segments=({"shape": "line", "start": [cx, cy], "end": [x, y]},),
+                    length_mm=math.hypot(x - cx, y - cy),
+                    blocked_by=None,
+                    width_mm=w,
+                )
+            )
+            vias.append(
+                RealizedVia(
+                    seg_id=-1,
+                    net_id=net_id,
+                    x=x,
+                    y=y,
+                    dia_mm=dia,
+                    drill_mm=drill,
+                    layer_lo=lo,
+                    layer_hi=hi,
+                    endpoint="a",
+                )
+            )
+    return tracks, vias, missing
+
+
+def _plane_pours(
+    ir: Any,
+    tracks: Sequence[Any],
+    vias: Sequence[Any],
+    d: TopoDesign,
+    pose: np.ndarray,
+    net_rules: Mapping[str, NetRules] | None,
+    footprints: Mapping[str, Any] | None,
+    fixed_copper: Sequence[Mapping[str, Any]] | None,
+    hole_clearance_mm: float,
+) -> list[dict[str, Any]]:
+    """The plane layers poured over the finished copper — the legacy
+    realizer's own pour pass (:func:`precis.pcb.realize._pour_planes`,
+    antipads around every foreign barrel) plus its bare-island drop, so
+    no fill fragment floats without a via of its net (gr524239; an
+    interim, Reto 2026-11-01: "if we really need to make a pour on
+    in1"). Keepout zones are cut out of the fill by clearance: the
+    legacy pass never saw them, and taz-leaf's no-copper hanger ring and
+    zip-tie discs came back as five keepout_copper errors."""
+    from shapely.ops import unary_union
+
+    from precis.pcb import planes as pcb_planes
+    from precis.pcb import realize as pcb_realize
+    from precis.pcb.topoplace.proxy import zone_world_ring
+
+    rules = net_rules or {}
+    clearance = max(
+        (float(r.clearance_mm) for r in rules.values()),
+        default=float(_DEFAULT.clearance_mm),
+    )
+    edge = max(clearance, float(d.edge_clearance_mm or 0.0)) + 0.01
+    pours, _extra = pcb_realize._pour_planes(
+        ir,
+        list(tracks),
+        list(vias),
+        [],
+        [],
+        clearance,
+        edge,
+        dict(footprints or {}),
+        [dict(r) for r in fixed_copper or ()],
+        npth_clearance_mm=float(hole_clearance_mm),
+    )
+    if not pours:
+        return []
+    layer_names = [str(e.get("name")) for e in ir.stackup]
+    cuts: dict[str, list[Any]] = {}
+    for z in d.zones:
+        if z.kind not in ("keepout", "mounting_hole"):
+            continue
+        ring = zone_world_ring(d, z, pose)
+        if len(ring) < 3:
+            continue
+        g = Polygon(np.asarray(ring)).buffer(clearance)
+        for lay in z.layers or range(len(layer_names)):
+            if 0 <= int(lay) < len(layer_names):
+                cuts.setdefault(layer_names[int(lay)], []).append(g)
+    if cuts:
+        cut_pours: list[dict[str, Any]] = []
+        for pour in pours:
+            lay_cuts = cuts.get(str(pour.get("layer")))
+            if not lay_cuts:
+                cut_pours.append(pour)
+                continue
+            poly = Polygon(pour["polygon"], pour.get("holes") or []).buffer(0)
+            rest = poly.difference(unary_union(lay_cuts))
+            for frag in getattr(rest, "geoms", [rest]):
+                if frag.is_empty or frag.area < pcb_planes.MIN_FRAGMENT_MM2:
+                    continue
+                cut_pours.append(
+                    pcb_planes._pour_item(frag, str(pour["layer"]), str(pour["net"]))
+                )
+        pours = cut_pours
+    pours, _dropped = pcb_realize._drop_bare_islands(
+        ir,
+        list(tracks),
+        list(vias),
+        pours,
+        pcb_realize.pads_for_ir(ir, layer_names, dict(footprints or {})),
+        [dict(r) for r in fixed_copper or ()],
+    )
+    return pours
+
+
 def route_design(
+    d: TopoDesign,
+    ir: Any,
+    *,
+    pose: Any = None,
+    net_rules: Mapping[str, NetRules] | None = None,
+    min_via_dia: float | None = None,
+    min_via_drill: float | None = None,
+    event: Callable[[str], None] | None = None,
+    masks: BoardMasks | None = None,
+    footprints: Mapping[str, Any] | None = None,
+    fixed_copper: Sequence[Mapping[str, Any]] | None = None,
+    hole_clearance_mm: float = 0.0,
+) -> tuple[RoutePlan, Any]:
+    """Mesh → wires → plan → copper for one pose — the route half every
+    caller (the ``placer='topo'`` job, ``pcb.local``) shares.
+
+    A net the board pours (``plane_net``, ``ir.net_plane_layers``) is not
+    wired (gr524239: "plane nets drop to the plane by via, not routed on
+    F.Cu"): each of its SMD pads gets a fanout via first
+    (:func:`_fanout_vias`), frozen as copper the signal route keeps off,
+    the plane layer is barred to every routed net
+    (:attr:`TopoDesign.plane_layers`), the signals route
+    (:func:`_route_signals`), and — when the caller passes
+    ``footprints`` — the plane is poured over the finished copper
+    (:func:`_plane_pours`). Without plane nets this is
+    :func:`_route_signals` verbatim; see it for ``pose``, ``net_rules``,
+    ``event`` and ``masks``."""
+    kw: dict[str, Any] = dict(
+        pose=pose,
+        net_rules=net_rules,
+        min_via_dia=min_via_dia,
+        min_via_drill=min_via_drill,
+        event=event,
+        masks=masks,
+    )
+    planes = _plane_nets(d, ir)
+    if not planes:
+        return _route_signals(d, ir, **kw)
+    pose_a = np.asarray(d.pose0 if pose is None else pose, dtype=float)
+    f_tracks, f_vias, missing = _fanout_vias(
+        d,
+        ir,
+        int(ir.n_layers),
+        pose_a,
+        net_rules,
+        planes,
+        min_via_dia=min_via_dia,
+        min_via_drill=min_via_drill,
+    )
+    if event is not None:
+        event(
+            f"route: planes — {len(planes)} net(s) fan out by {len(f_vias)} via(s), "
+            f"{len(missing)} pad(s) without a site"
+        )
+    from precis.pcb.realize import RealizeResult
+
+    fan = RealizeResult(tuple(f_tracks), tuple(f_vias), ())
+    d_sig = dataclasses.replace(
+        d,
+        net_pins=tuple(
+            np.zeros(0, dtype=np.int64) if k in planes else pins
+            for k, pins in enumerate(d.net_pins)
+        ),
+        zones=tuple(d.zones) + tuple(_copper_zones(fan, d, ir)),
+        plane_layers=tuple(sorted(set(planes.values()))),
+    )
+    plan, rres = _route_signals(d_sig, ir, **kw)
+    tracks = tuple(rres.tracks) + tuple(f_tracks)
+    vias = tuple(rres.vias) + tuple(f_vias)
+    pours: list[dict[str, Any]] = []
+    if footprints is not None:
+        pours = _plane_pours(
+            ir,
+            tracks,
+            vias,
+            d,
+            pose_a,
+            net_rules,
+            footprints,
+            fixed_copper,
+            hole_clearance_mm,
+        )
+    rres = dataclasses.replace(
+        rres, tracks=tracks, vias=vias, pours=tuple(rres.pours) + tuple(pours)
+    )
+    plan = dataclasses.replace(
+        plan, planes=tuple(sorted(planes.items())), fanout_missing=tuple(missing)
+    )
+    return plan, rres
+
+
+def _route_signals(
     d: TopoDesign,
     ir: Any,
     *,
@@ -4505,6 +4920,8 @@ def sketch_rows(
     for p in plan.pieces:
         branch_pair.setdefault(p.branch, (p.pin_a, p.pin_b))
     stranded_by_net = {u.net: u for u in plan.stranded}
+    planes_of = dict(getattr(plan, "planes", ()))
+    fan_missing = tuple(getattr(plan, "fanout_missing", ()))
     name_to_k = {str(n): k for k, n in enumerate(d.net_name)}
     member_counts = net_member_counts(ir)
     rows: dict[str, dict[str, Any]] = {}
@@ -4522,6 +4939,39 @@ def sketch_rows(
             continue
         k = name_to_k.get(name)
         if k is None:
+            continue
+        if k in planes_of:
+            # gr524239: a plane net is not wired — every SMD pad drops to
+            # its plane by a fanout via; a pad without a site fails it
+            lay = planes_of[k]
+            lname = str(layer_names[lay]) if 0 <= lay < len(layer_names) else "?"
+            miss = [pin for kk, pin in fan_missing if kk == k]
+            fail = (
+                {
+                    "problems": [
+                        {
+                            "reason": "no fanout via",
+                            "message": "no via site next to "
+                            + ", ".join(pin_key(p) for p in miss[:6])
+                            + (f" (+{len(miss) - 6} more)" if len(miss) > 6 else ""),
+                        }
+                    ]
+                }
+                if miss
+                else None
+            )
+            rows[name] = {
+                "tree": [],
+                "topology": [],
+                "layer_assign": [],
+                "status": "failed" if miss else "realized",
+                "fail": fail,
+                "note": (
+                    f"failed: no fanout via — {fail['problems'][0]['message']}"
+                    if fail
+                    else f"plane {lname}: every pad drops to it by via"
+                ),
+            }
             continue
         branches_k = [b for b, n in net_by_branch.items() if n == k]
         problems: list[dict[str, Any]] = []

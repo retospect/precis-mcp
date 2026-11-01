@@ -2041,6 +2041,9 @@ class Board:
         self._roles: dict[str, Role] = {}
         self._generators: list[dict[str, Any]] = []
         self._measures: list[dict[str, Any]] = []
+        #: ``(refdes, pin)`` a measure names — a pad-number pin there
+        #: (``u1[30]``) is a measure end, not a netlist pin (pin.unknown).
+        self._measured_pins: set[tuple[str, str]] = set()
         self._catalog_reads: dict[str, dict[str, Any]] = {}
         #: ``source=`` resolution per distinct ``ref~chunk`` — a check()
         #: runs repeatedly and each resolution is a client round-trip.
@@ -2962,25 +2965,36 @@ class Board:
         _trace.record(made={"features": 1})
         return f_
 
-    def near(self, a: Part, b: Part, within_mm: float) -> dict[str, Any]:
+    def near(
+        self, a: Part | Pin, b: Part | Pin, within_mm: float, *, hard: bool = False
+    ) -> dict[str, Any]:
         """Placement measure: keep ``a`` and ``b`` within a distance.
 
-        Args:
-            a (Part): First part.
-            b (Part): Second part.
-            within_mm (float): Max separation, millimetres.
-        """
-        return self.measure("near", [a, b], bound=within_mm)
+        A :class:`Pin` end is measured from its pads, a :class:`Part` end
+        from its origin, so a decap names its pins:
+        ``b.near(c["1"], u1["DEC1"], 2.0, hard=True)``.
 
-    def apart(self, a: Part, b: Part, at_least_mm: float) -> dict[str, Any]:
+        Args:
+            a (Part | Pin): First part, or one of its pins.
+            b (Part | Pin): Second part, or one of its pins.
+            within_mm (float): Max separation, millimetres.
+            hard (bool): A hard constraint (a violated one fails the
+                check), not a soft cost.
+        """
+        return self.measure("near", [a, b], bound=within_mm, hard=hard)
+
+    def apart(
+        self, a: Part | Pin, b: Part | Pin, at_least_mm: float, *, hard: bool = False
+    ) -> dict[str, Any]:
         """Placement measure: keep ``a`` and ``b`` at least a distance.
 
         Args:
-            a (Part): First part.
-            b (Part): Second part.
+            a (Part | Pin): First part, or one of its pins (its pads).
+            b (Part | Pin): Second part, or one of its pins.
             at_least_mm (float): Min separation, millimetres.
+            hard (bool): A hard constraint, not a soft cost.
         """
-        return self.measure("apart", [a, b], bound=at_least_mm)
+        return self.measure("apart", [a, b], bound=at_least_mm, hard=hard)
 
     def align(self, a: Part, b: Part, axis: str) -> dict[str, Any]:
         """Placement measure: align ``a`` and ``b`` on an axis.
@@ -3010,16 +3024,27 @@ class Board:
 
         Args:
             metric (str): Measure name, e.g. ``"near"``.
-            operands (Iterable): Parts (or refdes strings) measured.
+            operands (Iterable): Parts, pins (measured from their pads:
+                ``{'instance': refdes, 'pin': name}`` in the row) or
+                refdes strings.
             bound (float | None): Bound on the metric (units are the
                 metric's, mm for distances).
             goal (float | None): Optimisation goal value.
             hard (bool): A hard constraint, not a soft cost.
             weight (float): Soft-constraint weight (default 1.0).
         """
+        ops = list(operands)
+        self._measured_pins.update(
+            (o.part.refdes, o.name) for o in ops if isinstance(o, Pin)
+        )
         m: dict[str, Any] = {
             "metric": metric,
-            "operands": [getattr(o, "refdes", o) for o in operands],
+            "operands": [
+                {"instance": o.part.refdes, "pin": o.name}
+                if isinstance(o, Pin)
+                else getattr(o, "refdes", o)
+                for o in ops
+            ],
             "hard": hard,
             "weight": weight,
         }
@@ -3365,6 +3390,19 @@ class Board:
             return {str(p) for p in cp.pins}, f"catalog part {cp.lcsc}"
         return None
 
+    def _pad_numbers(self, part: Part) -> set[str]:
+        """The pad numbers of the footprint :meth:`_pin_universe` reads —
+        what a measure's pad-number pin (``u1[30]``) resolves against."""
+        fp = self._footprints.get(str(part.footprint or ""))
+        pads = (
+            fp.pads if fp is not None else (part._catalog.pads if part._catalog else [])
+        )
+        return {
+            str(n)
+            for pad_ in pads
+            if (n := pad_.get("number", pad_.get("pin"))) is not None
+        }
+
     def _pin_name_findings(self) -> list[CheckFinding]:
         """``pin.unknown`` (gr521597): every name the script minted on a
         part — wired, declared, claimed or function-tabled — must
@@ -3382,10 +3420,27 @@ class Board:
             shown = ", ".join(sorted(names)[:8])
             if len(names) > 8:
                 shown += f", … (+{len(names) - 8})"
+            numbers = self._pad_numbers(part)
+            wired = {
+                str(c.get("pin")) for c in self._connections if c.get("refdes") == r
+            }
             for name in sorted(set(part._pins) | set(part._pin_functions)):
                 if name in names:
                     continue
                 pin = part._pins.get(name)
+                if (
+                    (r, name) in self._measured_pins
+                    and name in numbers
+                    and name not in wired
+                    and name not in part._declared_pins
+                    and name not in part._pin_functions
+                    and pin is not None
+                    and not pin.annotated
+                ):
+                    # A measure end naming one pad by number (``u1[30]``
+                    # of four VDD pads): never a netlist pin, so not one
+                    # the server's name join must find.
+                    continue
                 site = (pin.site if pin is not None else None) or (
                     part._pin_function_sites.get(name)
                 )

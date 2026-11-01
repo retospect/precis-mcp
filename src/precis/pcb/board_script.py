@@ -714,15 +714,23 @@ def _emit_measure(m: dict[str, Any], parts: dict[str, str]) -> str:
     operands = []
     for operand in m["operands"]:
         if isinstance(operand, dict):
-            if set(operand) != {"instance"} or not isinstance(operand["instance"], str):
+            keys = set(operand)
+            if keys not in ({"instance"}, {"instance", "pin"}) or not isinstance(
+                operand["instance"], str
+            ):
                 raise BoardScriptError(
                     f"measure {m['metric']!r}: unsupported operand {operand!r}"
                 )
-            operand = operand["instance"]
-            if operand not in parts:
+            ref = operand["instance"]
+            if ref not in parts:
                 raise BoardScriptError(
-                    f"measure {m['metric']!r}: unknown instance {operand!r}"
+                    f"measure {m['metric']!r}: unknown instance {ref!r}"
                 )
+            if "pin" in operand:
+                # A pin end: the part's Pin, measured from its pads.
+                operands.append(f"{parts[ref]}[{str(operand['pin'])!r}]")
+                continue
+            operand = ref
         operands.append(repr(operand))
     line = f"b.measure({m['metric']!r}, [{', '.join(operands)}]"
     line += (", " + _kw(**kw) if kw else "") + ")"

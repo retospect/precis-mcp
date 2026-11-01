@@ -47,7 +47,7 @@ from __future__ import annotations
 
 import math
 import re
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from enum import IntEnum
 from typing import Any
@@ -3195,6 +3195,83 @@ def pin_point(ir: PcbIR, pin_id: int) -> tuple[float, float] | None:
         dx, dy, 0.0 if math.isnan(rot) else rot, mirrored=bool(ir.inst_bottom[inst])
     )
     return (x + rdx, y + rdy)
+
+
+def pin_pad_offsets(
+    ir: PcbIR,
+    inst: int,
+    pin: str,
+    pads: Sequence[FootprintPad] | None = None,
+) -> tuple[tuple[float, float], ...]:
+    """Footprint-local centres of the pads a measure operand's ``pin``
+    names on instance ``inst`` — :attr:`PcbIR.pin_dx`'s frame, so
+    :func:`place_offsets` puts them on the board the way :func:`pin_point`
+    puts a pin.
+
+    A pin resolves by NAME, then by pad NUMBER (the rule
+    :func:`footprint_pad_set` joins pins by): every pad labelled ``pin``
+    (U1's four ``VDD`` pads), else the pad numbered ``pin`` (``'30'``, one
+    of them). ``pads`` defaults to :attr:`PcbIR.footprint_pads`. An
+    instance with no real pad set falls back to the netlist pin labelled
+    ``pin`` (its synthesized offset). ``()`` when nothing matches: every
+    reader then leaves the measure out of the anneal and reads it
+    ``pending`` (topo-route-review A7)."""
+    name = str(pin).strip()
+    own = [
+        p for p in (ir.footprint_pads if pads is None else pads) if p.instance == inst
+    ]
+    if own:
+        for match in (
+            [p for p in own if p.label == name],
+            [p for p in own if p.number == name],
+        ):
+            pts = tuple(
+                (ext[0], ext[1])
+                for ext in (footprint_pad_extent(p.raw) for p in match)
+                if ext is not None
+            )
+            if pts:
+                return pts
+        return ()
+    for pid in range(ir.n_pins):
+        if int(ir.pin_instance[pid]) == inst and str(ir.pin_label[pid]) == name:
+            return ((float(ir.pin_dx[pid]), float(ir.pin_dy[pid])),)
+    return ()
+
+
+def place_offsets(
+    ir: PcbIR, inst: int, offsets: Sequence[tuple[float, float]]
+) -> tuple[tuple[float, float], ...]:
+    """Footprint-local ``offsets`` on instance ``inst`` in board space at
+    its current pose — :func:`pin_point`'s mirror-then-rotate. ``()`` for
+    an unplaced instance."""
+    x, y = float(ir.inst_x[inst]), float(ir.inst_y[inst])
+    if math.isnan(x) or math.isnan(y):
+        return ()
+    rot = float(ir.inst_rot[inst])
+    rot = 0.0 if math.isnan(rot) else rot
+    mirrored = bool(ir.inst_bottom[inst])
+    out: list[tuple[float, float]] = []
+    for dx, dy in offsets:
+        rdx, rdy = landpattern.rotate_offset(dx, dy, rot, mirrored=mirrored)
+        out.append((x + rdx, y + rdy))
+    return tuple(out)
+
+
+def pin_pad_points(ir: PcbIR) -> Callable[[str, str], tuple[tuple[float, float], ...]]:
+    """``(refdes, pin) -> board-space pad centres`` over ``ir``'s pose:
+    :func:`pin_pad_offsets` through :func:`place_offsets`. The
+    ``pin_points`` :func:`precis.pcb.eyes.evaluate_measures` takes; ``()``
+    for an unknown or unplaced part or a pin no pad answers."""
+    inst_of = {str(r): i for i, r in enumerate(ir.instance_refdes)}
+
+    def points(refdes: str, pin: str) -> tuple[tuple[float, float], ...]:
+        inst = inst_of.get(str(refdes))
+        if inst is None:
+            return ()
+        return place_offsets(ir, inst, pin_pad_offsets(ir, inst, pin))
+
+    return points
 
 
 def same_layer_crossing_count(ir: PcbIR, layer: int) -> int:

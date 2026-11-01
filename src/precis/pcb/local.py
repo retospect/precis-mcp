@@ -902,6 +902,11 @@ def _route_stage(
         min_via_dia=None if _min_via is None else float(_min_via),
         min_via_drill=None if _min_drill is None else float(_min_drill),
         event=event,
+        # gr524239: a poured net fans out by via; the plane pours over the
+        # finished copper, keeping off the real pads and authored copper
+        footprints=footprints,
+        fixed_copper=design.fixed_copper,
+        hole_clearance_mm=hole_fab_clearance_mm(design.fab_caps),
     )
     if pose is not None:
         # The oracle measures the PLACED board — write the routed pose
@@ -1318,10 +1323,10 @@ def topo_place(
         # when the design carries resolvable specs.
         obj = dataclasses.replace(obj, measures=0.2)
     result = _tp.topo_place(td, objective=obj, effort=effort, seed=seed, event=progress)
-    # Post-anneal label-room repair — the same deterministic nudge pass
-    # the pcb_place job runs (labels adjacent, nothing edge-squished).
+    # Post-anneal repairs — the same deterministic passes the pcb_place
+    # job runs (hard measures met, labels adjacent, nothing edge-squished).
     result = dataclasses.replace(
-        result, best_pose=_tp.settle_label_room(td, result.best_pose)
+        result, best_pose=_tp.settle_pose(td, result.best_pose)
     )
     assignment = _tp.assign_pins(td, result.best_pose)
     pm = _tp.pair_map(td)

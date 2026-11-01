@@ -12,7 +12,10 @@ The rule covers the pair metrics :func:`precis.pcb.eyes.evaluate_measures`
 judges: ``proximity``, ``separation`` and ``align``. ``height`` is not a
 pair and stays a ``view='measures'`` verdict. The verdict, the binding pair
 and the residual all come from that evaluator, so ``view='measures'`` and
-the check surface cannot disagree about a measure.
+the check surface cannot disagree about a measure. A decap or crystal
+measure names its pins (``{'instance': 'C5', 'pin': '1'}`` to U1's VDD pad):
+its gap is pad centre to pad centre, which a 2 mm limit beside a 5 mm IC
+can meet; part origins cannot (topo-route-review A7).
 
 :func:`precis.pcb.check_run.run` adds the findings to ``view='check'`` and
 ``view='drc'`` at every phase except a claimed ``netlist``. The pre-route
@@ -62,13 +65,17 @@ def measure_findings(
     graph: dict[str, Any],
     measures: list[dict[str, Any]],
     features: list[dict[str, Any]] | None = None,
+    *,
+    pin_points: eyes.PinPoints | None = None,
 ) -> list[DrcFinding]:
     """One ``measure`` finding per VIOLATED hard or soft pair measure.
 
     ``measures`` are ``Store.pcb_measures_list`` rows judged against
     ``graph``'s placement; ``features`` resolve an align ``feature_id``
-    operand. ``where`` names the binding pair, ``objects`` carries its
-    refdes and ``margin_mm`` is the residual, negated."""
+    operand; ``pin_points`` places a pin operand's pads (a pin measure
+    without it reads ``pending`` and adds nothing). ``where`` names the
+    binding pair, ``objects`` carries its refdes and ``margin_mm`` is the
+    residual, negated."""
     judged = [
         m
         for m in measures
@@ -78,7 +85,7 @@ def measure_findings(
     if not judged:
         return []
     out: list[DrcFinding] = []
-    results = eyes.evaluate_measures(graph, judged, features)
+    results = eyes.evaluate_measures(graph, judged, features, pin_points=pin_points)
     for m, res in zip(judged, results, strict=True):
         if res["verdict"] != "VIOLATED":
             continue
@@ -90,7 +97,8 @@ def measure_findings(
             measured = f"{axis} offset error {res['value']:g} mm"
             bound = "upper"
         else:
-            measured = f"centre gap {res['value']:g} mm"
+            basis = "pad-centre gap" if res.get("pins") else "centre gap"
+            measured = f"{basis} {res['value']:g} mm"
             bound = eyes.measure_bound(m.get("direction"), metric)
         mid = m.get("measure_id")
         head = f"{strength} {metric}" + ("" if mid is None else f" (measure #{mid})")

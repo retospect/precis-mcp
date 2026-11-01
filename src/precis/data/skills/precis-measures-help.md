@@ -37,7 +37,10 @@ put(
             },
             {
                 "metric": "proximity",
-                "operands": [{"instance": "C1"}, {"instance": "U1"}],
+                "operands": [
+                    {"instance": "C1", "pin": "1"},
+                    {"instance": "U1", "pin": "VDD"},
+                ],
                 "goal": 2,
                 "strength": "hard",
                 "reason": "VDD bypass must sit right at the pin",
@@ -62,6 +65,13 @@ put(
   `sensitive`). Role selection is the power move: tag parts `roles:['noisy']` /
   `['sensitive']` / `['under_lid']` at `put` time, then write one measure over
   the class.
+- **pin operands** — `{'instance': 'U1', 'pin': 'DEC1'}` measures a
+  `proximity`/`separation` end from that pin's pad centres instead of the
+  part's origin. The pin is a name (every pad labelled `VDD`) or, when no
+  pad carries that name, a pad number (`'30'`: one of U1's four VDD pads).
+  The gap is the least over both ends' pads. A pin no pad answers reads
+  `pending` and does not steer. Decaps and crystals need this: beside a
+  5 mm QFN no 0402 origin comes within 2 mm of the IC's origin.
 - **goal** — the target value (mm for geometry).
 - **strength** — `hard` (must hold; heavily penalised in placement), `soft`
   (optimised, traded against crossings/length), `gauge` (measured + reported
@@ -84,12 +94,14 @@ put(
 | builder call | stored row |
 |--------------|------------|
 | `b.near(a, b, within_mm=2)` | `proximity`, goal 2 |
+| `b.near(c["1"], u1["DEC1"], 2, hard=True)` | `proximity` between the two pins' pads, `hard` |
 | `b.apart(a, b, at_least_mm=10)` | `separation`, goal 10 |
 | `b.align(a, b, axis='x')` | `align`, `meta.axis` `x`, goal null (0.05 mm) |
 | `b.measure(metric, parts, bound=…)` | that metric; `bound` (or `goal`) becomes the goal |
 
 `hard=True` stores `hard`, otherwise `soft` — a builder measure steers, it is
-never a `gauge`. Parts become `{'instance': refdes}` operands. A metric outside
+never a `gauge`. Parts become `{'instance': refdes}` operands, pins
+(`part["DEC1"]`, `part[30]`) `{'instance': refdes, 'pin': name}`. A metric outside
 the table below, other than `near`/`apart`, refuses the `put`; so do a `bound`
 and a `goal` that disagree. Offline `pcb.local` place runs price the same rows.
 A re-`put` adds its measures beside the earlier rows; it does not replace them.
@@ -98,8 +110,8 @@ A re-`put` adds its measures beside the earlier rows; it does not replace them.
 
 | metric | evaluates | drives placement | use for |
 |--------|-----------|------------------|---------|
-| `separation` | min centroid gap ≥ goal | **yes** | keep noisy ↔ sensitive apart |
-| `proximity` | max centroid gap ≤ goal | **yes** | bypass cap at the pin; crystal at the MCU |
+| `separation` | min gap ≥ goal (origins, or a pin's pads) | **yes** | keep noisy ↔ sensitive apart |
+| `proximity` | max gap ≤ goal (origins, or a pin's pads) | **yes** | bypass cap at the pin; crystal at the MCU |
 | `align` | pos_b − pos_a = offset on the chosen axes, within goal (mm tolerance) | **yes** | pin a part to a datum; line two parts up on a row/column |
 | `height` | each part's height ≤ goal | reports | fit under a lid / next to a connector |
 | `parallelism` | bus traces run together | pending | I²C/SPI grouping (phase 2) |
@@ -195,8 +207,9 @@ held.
 
 The check surface fails on the same verdicts: a VIOLATED `hard` proximity,
 separation or align measure is a `measure` **error** in `view='check'`/`'drc'`,
-a `soft` one a `warn`; the row names the pair, the limit (its goal), the
-measured value and the residual. `gauge`, `invariant`, `pending` add nothing.
+a `soft` one a `warn`; the row names the pair (`C5.1–U1.30` for pins), the
+limit (its goal), the measured centre or pad-centre gap and the residual.
+`gauge`, `invariant`, `pending` add nothing.
 
 ## How measures interact with placement
 
@@ -212,10 +225,14 @@ still never move regardless. See [[precis-pcb-help]] for the place loop.
 
 ## Idioms
 
-- **Bypass at the pin:** `proximity` `hard`, cap ↔ IC, goal ~2 mm. (See
+- **Bypass at the pin:** `proximity` `hard` between the cap's supply pin and
+  the IC pin it decouples, goal ~2 mm (pad centre to pad centre). One cap
+  per supply pad: name the pad number (`u1[30]`) when an IC repeats `VDD`.
+  Between part origins a 2 mm goal beside a big IC can never hold. (See
   [[precis-decoupling-help]].)
 - **Quiet analog:** tag the preamp `sensitive`, the regulator/MCU `noisy`, one
   `separation` `soft` between the roles.
 - **Fits the box:** tag lid-side parts `under_lid`, one `height` `gauge`.
-- **Crystal hugs the MCU:** `proximity` `hard`, crystal ↔ MCU, small goal —
-  and the load caps get their own `proximity` `hard` onto the crystal.
+- **Crystal hugs the MCU:** `proximity` `hard` per leg, crystal pin ↔ MCU
+  oscillator pin, small goal — and each load cap its own `proximity` `hard`
+  onto the crystal pin it loads.

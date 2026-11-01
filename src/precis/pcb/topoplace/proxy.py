@@ -102,7 +102,12 @@ from precis.pcb.silk import (
     LABEL_SPOT_ORDER,
 )
 from precis.pcb.stroke_font import text_width_mm
-from precis.pcb.topoplace.design import ObjectiveShares, SilkRoom, TopoDesign
+from precis.pcb.topoplace.design import (
+    FREEDOM_ROTATE,
+    ObjectiveShares,
+    SilkRoom,
+    TopoDesign,
+)
 
 #: Same straddle epsilon as ``geom.segments_cross`` — parity between the
 #: incremental count and the scalar predicate is literal, not "close".
@@ -899,11 +904,16 @@ def _try_label_nudges(
         return False
     who_cur = _label_room_tuple(d, who, rings, sides, th, outline, zones)
     score_cur = _label_room_tuple(d, score, rings, sides, th, outline, zones)
+    hard_cur = _hard_violation(d, pose, who)
     for ring_nudges in nudges:
         for dx, dy in ring_nudges:
             row = pose[who].copy()
             row[0] += dx
             row[1] += dy
+            # A label never buys room with a decap's DRC error
+            # (settle_measures ran first).
+            if _hard_violation(d, pose, who, row) > hard_cur + _EPS:
+                continue
             if not _label_room_legal(
                 d, pose, who, row, rings, sides, th, outline, zones
             ):
@@ -995,6 +1005,242 @@ def settle_label_room(
         if not moved:
             break
     return pose
+
+
+#: Where :func:`settle_measures` tries to land the mover's pad around a
+#: target pad: rings at these fractions of the measure's goal, in
+#: :data:`_MEASURE_DIRECTIONS` directions — nearest ring first.
+_MEASURE_RING_FRACTIONS = (0.35, 0.55, 0.75, 0.92)
+_MEASURE_DIRECTIONS = 16
+#: Legality checks one repair may spend (each builds shapely geometry);
+#: the candidates are sorted best-first, so the cap only bites on a part
+#: boxed in on every side.
+_MEASURE_REPAIR_TRIES = 600
+#: Best candidates :func:`_clear_blockers` tries to free when no spot is,
+#: and the most parts one repair moves out of the way.
+_MEASURE_BLOCKER_CANDS = 24
+_MEASURE_MAX_BLOCKERS = 2
+
+
+def _hard_violation(
+    d: TopoDesign, pose: np.ndarray, part: int, row: np.ndarray | None = None
+) -> float:
+    """``part``'s summed HARD measure violation (:func:`_measure_violation`,
+    weighted mm) over every hard measure it is an end of, with its pose
+    row swapped for ``row`` when given."""
+    total = 0.0
+    for spec in d.measures:
+        if not spec.hard or part not in (spec.ia, spec.ib):
+            continue
+        ra = row if row is not None and spec.ia == part else pose[spec.ia]
+        rb = None
+        if spec.ib >= 0:
+            rb = row if row is not None and spec.ib == part else pose[spec.ib]
+        total += _measure_violation(spec, ra, rb)
+    return total
+
+
+def _measure_repair_row(
+    d: TopoDesign,
+    pose: np.ndarray,
+    spec: Any,
+    sides: np.ndarray,
+    th: np.ndarray,
+    outline: Any | None,
+) -> tuple[int, np.ndarray, dict[int, np.ndarray]] | None:
+    """``(mover, row, blocker rows)`` closing as much of ``spec``'s
+    violation as a legal spot allows, or ``None``. The mover is the end
+    with fewer pins (the cap, the crystal; a tie moves operand a). A fixed
+    or grouped mover leaves the measure to the finding: the IC never moves
+    for its cap. Preference: the least violation on a free spot, else the
+    same violation after :func:`_clear_blockers` nudges what sits there,
+    else a partial repair on a free spot."""
+    pins = np.bincount(d.pin_part, minlength=len(d.parts)) if len(d.pin_part) else None
+    if pins is not None and int(pins[spec.ib]) < int(pins[spec.ia]):
+        mover, local, anchor, target_pts = spec.ib, spec.pts_b, spec.ia, spec.pts_a
+    else:
+        mover, local, anchor, target_pts = spec.ia, spec.pts_a, spec.ib, spec.pts_b
+    grouped = len(d.group_of) == len(d.parts) and int(d.group_of[mover]) >= 0
+    if bool(d.fixed[mover]) or grouped:
+        return None
+    cur = _hard_violation(d, pose, mover)
+    row0 = pose[mover]
+    rots = (
+        range(4)
+        if int(d.freedoms[mover]) & int(FREEDOM_ROTATE)
+        else (round(float(row0[2])) % 4,)
+    )
+    cands: list[tuple[float, float, np.ndarray]] = []
+    for tx, ty in _pose_points(target_pts, pose[anchor]):
+        for frac in _MEASURE_RING_FRACTIONS:
+            r = frac * spec.goal_mm
+            for k in range(_MEASURE_DIRECTIONS):
+                ang = 2.0 * math.pi * k / _MEASURE_DIRECTIONS
+                px, py = tx + r * math.cos(ang), ty + r * math.sin(ang)
+                for q in rots:
+                    turned = np.array([0.0, 0.0, float(q), float(row0[3])])
+                    for ox, oy in _pose_points(local or ((0.0, 0.0),), turned):
+                        row = np.array([px - ox, py - oy, float(q), float(row0[3])])
+                        v = _hard_violation(d, pose, mover, row)
+                        if v < cur - _EPS:
+                            moved = math.hypot(row[0] - row0[0], row[1] - row0[1])
+                            cands.append((v, moved, row))
+    if not cands:
+        return None
+    cands.sort(key=lambda c: (round(c[0], 6), c[1]))
+    best = [c for c in cands if round(c[0], 6) == round(cands[0][0], 6)]
+    rest = cands[len(best) :]
+    rings = [_ring_geom(d, pose[k], k) for k in range(len(d.parts))]
+    zones = _margin_zone_entries(d, pose)
+    for _v, _moved, row in best[:_MEASURE_REPAIR_TRIES]:
+        if _label_room_legal(d, pose, mover, row, rings, sides, th, outline, zones):
+            return mover, row, {}
+    for _v, _moved, row in best[:_MEASURE_BLOCKER_CANDS]:
+        cleared = _clear_blockers(d, pose, mover, row, rings, sides, th, outline, zones)
+        if cleared:
+            return mover, row, cleared
+    for _v, _moved, row in rest[:_MEASURE_REPAIR_TRIES]:
+        if _label_room_legal(d, pose, mover, row, rings, sides, th, outline, zones):
+            return mover, row, {}
+    return None
+
+
+def _clear_blockers(
+    d: TopoDesign,
+    pose: np.ndarray,
+    mover: int,
+    row: np.ndarray,
+    rings: list[Any],
+    sides: np.ndarray,
+    th: np.ndarray,
+    outline: Any | None,
+    zones: list[tuple[int, Any]],
+) -> dict[int, np.ndarray] | None:
+    """New rows for the parts ``mover`` at ``row`` would overlap, nudged
+    clear on the label settle's lattice (0.5–3 mm, 8 directions, away from
+    the mover first). Each blocker must be movable and ungrouped, legal
+    against the mover's new ring and keep its hard measures no worse;
+    more than :data:`_MEASURE_MAX_BLOCKERS` means that side of the IC is
+    full. ``None`` when a blocker cannot move or the mover is still
+    illegal after."""
+    gi = _ring_geom(d, row, mover)
+    if gi is None:
+        return None
+    blockers = [
+        j
+        for j, gj in enumerate(rings)
+        if j != mover
+        and gj is not None
+        and _collides(sides, th, mover, j)
+        and gi.intersection(gj).area > _EPS
+    ]
+    if not blockers or len(blockers) > _MEASURE_MAX_BLOCKERS:
+        return None
+    trial = pose.copy()
+    trial[mover] = row
+    trial_rings = list(rings)
+    trial_rings[mover] = gi
+    cx, cy = float(gi.centroid.x), float(gi.centroid.y)
+    out: dict[int, np.ndarray] = {}
+    for j in blockers:
+        grouped = len(d.group_of) == len(d.parts) and int(d.group_of[j]) >= 0
+        if bool(d.fixed[j]) or grouped:
+            return None
+        hard_j = _hard_violation(d, trial, j)
+        ax, ay = float(trial[j][0]) - cx, float(trial[j][1]) - cy
+        placed: np.ndarray | None = None
+        for radius in (0.5, 1.0, 1.5, 2.0, 2.5, 3.0):
+            for dx, dy in sorted(
+                _label_room_nudges(radius), key=lambda v: -(v[0] * ax + v[1] * ay)
+            ):
+                rj = trial[j].copy()
+                rj[0] += dx
+                rj[1] += dy
+                if _hard_violation(d, trial, j, rj) > hard_j + _EPS:
+                    continue
+                if _label_room_legal(
+                    d, trial, j, rj, trial_rings, sides, th, outline, zones
+                ):
+                    placed = rj
+                    break
+            if placed is not None:
+                break
+        if placed is None:
+            return None
+        trial[j] = placed
+        trial_rings[j] = _ring_geom(d, placed, j)
+        out[j] = placed
+    # The edge-line test compares the mover against its CURRENT ring.
+    check = list(trial_rings)
+    check[mover] = rings[mover]
+    if not _label_room_legal(d, trial, mover, row, check, sides, th, outline, zones):
+        return None
+    return out
+
+
+def settle_measures(
+    d: TopoDesign, pose: np.ndarray, *, max_rounds: int = 2
+) -> np.ndarray:
+    """Deterministic post-anneal repair of violated HARD proximity
+    measures (Reto 2026-11-01: a decap or crystal beyond its limit fails
+    DRC). The anneal prices a measure against its seed total, so the last
+    millimetres of a nearly met bound are worth almost nothing to it:
+    taz-leaf kept 13 of 15 pin-to-pin decap and crystal bounds violated at
+    the job's measures share (topo-route-review A7 probe).
+
+    Worst measure first, the small end (:func:`_measure_repair_row`) moves
+    to where its pad lands on a ring around the target pad — fractions of
+    the goal, 16 directions, every quarter turn the part may take, its
+    mount side kept. A candidate must lower the mover's summed hard
+    violation, so a crystal's other leg or a separation never breaks, and
+    pass :func:`_label_room_legal`: pads inside, no ring overlap, no hole
+    keep-out, the edge line held. Best: least violation, then least
+    displacement. Fixed and grouped parts never move; unrepairable
+    measures stay for the ``measure`` finding. :func:`settle_pose` runs
+    this before :func:`settle_label_room`, whose nudges refuse to worsen a
+    hard measure."""
+    pose = np.asarray(pose, dtype=np.float64).copy()
+    hard = [
+        s
+        for s in d.measures
+        if s.hard and s.metric == "dist" and s.bound == "upper" and s.ib >= 0
+    ]
+    if not len(d.parts) or not hard:
+        return pose
+    th = through_hole_parts(d)
+    outline = _outline_geom(d)
+    sides = pose[:, 3] >= 0.5
+    for _round in range(max_rounds):
+        worst = sorted(
+            (
+                (v, k)
+                for k, s in enumerate(hard)
+                if (v := _measure_violation(s, pose[s.ia], pose[s.ib])) > 0.0
+            ),
+            reverse=True,
+        )
+        moved = False
+        for _v, k in worst:
+            spec = hard[k]
+            if _measure_violation(spec, pose[spec.ia], pose[spec.ib]) <= 0.0:
+                continue  # closed by an earlier repair this round
+            got = _measure_repair_row(d, pose, spec, sides, th, outline)
+            if got is not None:
+                mover, row, blockers = got
+                pose[mover] = row
+                for j, rj in blockers.items():
+                    pose[j] = rj
+                moved = True
+        if not moved:
+            break
+    return pose
+
+
+def settle_pose(d: TopoDesign, pose: np.ndarray) -> np.ndarray:
+    """The post-anneal repairs in order: :func:`settle_measures` (a hard
+    decap/crystal bound is a DRC error), then :func:`settle_label_room`
+    (whose nudges keep every hard measure no worse)."""
+    return settle_label_room(d, settle_measures(d, pose))
 
 
 def _eroded_outline(outline: Any | None, erode_mm: float) -> Any | None:
@@ -1618,11 +1864,40 @@ def _concat(wires: list[np.ndarray], nets: list[int]) -> tuple[np.ndarray, np.nd
 _MEASURE_HARD_W = 10.0
 
 
+def _pose_points(
+    pts: tuple[tuple[float, float], ...], row: np.ndarray
+) -> list[tuple[float, float]]:
+    """Part-frame ``pts`` in board space under a pose row —
+    :func:`local_to_world`'s mirror-then-quarter-turn on scalars (the
+    measure term's few pads per move; numpy setup would dominate). No
+    ``pts`` is the part origin."""
+    x, y = float(row[0]), float(row[1])
+    if not pts:
+        return [(x, y)]
+    r = round(float(row[2])) % 4
+    flip = float(row[3]) >= 0.5
+    out: list[tuple[float, float]] = []
+    for px, py in pts:
+        mx = -px if flip else px
+        if r == 0:
+            rx, ry = mx, py
+        elif r == 1:
+            rx, ry = py, -mx
+        elif r == 2:
+            rx, ry = -mx, -py
+        else:
+            rx, ry = -py, mx
+        out.append((x + rx, y + ry))
+    return out
+
+
 def _measure_violation(spec: Any, row_a: np.ndarray, row_b: np.ndarray | None) -> float:
     """One :class:`TopoMeasure`'s weighted violation in mm — 0 when the
     bound holds. Mirrors ``optimize._measure_pair_usd``'s shape (linear
     in the violation, never a legality rejection) minus its USD scale:
-    the proxy normalises by the seed total instead."""
+    the proxy normalises by the seed total instead. A pin end
+    (``pts_a``/``pts_b``) is measured from its pads, the pair's distance
+    the least over both ends' points."""
     xa, ya = float(row_a[0]), float(row_a[1])
     if spec.datum is not None:
         xb, yb = spec.datum
@@ -1645,7 +1920,14 @@ def _measure_violation(spec: Any, row_a: np.ndarray, row_b: np.ndarray | None) -
             align_residual((xa, ya), (xb, yb), spec.offset, spec.axis) - spec.goal_mm,
         )
     else:
-        dist = math.hypot(xa - xb, ya - yb)
+        if (spec.pts_a or spec.pts_b) and row_b is not None:
+            dist = min(
+                math.hypot(pa[0] - pb[0], pa[1] - pb[1])
+                for pa in _pose_points(spec.pts_a, row_a)
+                for pb in _pose_points(spec.pts_b, row_b)
+            )
+        else:
+            dist = math.hypot(xa - xb, ya - yb)
         if spec.bound == "lower":
             v = max(0.0, spec.goal_mm - dist)
         elif spec.bound == "upper":

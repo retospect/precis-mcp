@@ -181,7 +181,7 @@ import heapq
 import math
 import random
 from collections.abc import Callable, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from enum import Enum
 from typing import Any
 
@@ -237,7 +237,9 @@ from precis.pcb.ir import (
     instance_courtyard_polygons,
     instance_land_rects,
     nearest_other_instance,
+    pin_pad_offsets,
     pin_point,
+    place_offsets,
     plane_layers_of,
     pourable_layers,
     routable_layers,
@@ -499,7 +501,13 @@ class MeasureSpec:
     ``refdes_a``/``refdes_b`` are resolved to instance ids at
     :meth:`OptimizeEngine.__init__` time (a design's refdes are stable
     strings; instance ids are engine-internal), so this dataclass itself
-    stays engine-agnostic and easy to unit-test standalone."""
+    stays engine-agnostic and easy to unit-test standalone.
+
+    ``pin_a``/``pin_b`` name a pin operand's pin (topo-route-review A7);
+    each engine resolves it to footprint-local pad centres
+    (:func:`precis.pcb.ir.pin_pad_offsets`) into ``pts_a``/``pts_b``, and
+    the pair's distance is the least over both ends' points. An end with
+    no ``pts`` is the part's origin, as before."""
 
     refdes_a: str
     refdes_b: str
@@ -512,6 +520,30 @@ class MeasureSpec:
     offset: tuple[float, float] = (0.0, 0.0)  # align only: pos_b - pos_a target
     datum: tuple[float, float] | None = None  # align only: fixed pseudo-instance
     measure_id: int | None = None  # align only: the pcb_measures row
+    pin_a: str = ""  # dist only: operand a's pin, "" = the part origin
+    pin_b: str = ""
+    pts_a: tuple[tuple[float, float], ...] = ()  # pin_a's pads, part frame
+    pts_b: tuple[tuple[float, float], ...] = ()
+
+
+def resolve_measure_pins(
+    specs: Sequence[MeasureSpec],
+    pads_of: Callable[[str, str], tuple[tuple[float, float], ...]],
+) -> tuple[MeasureSpec, ...]:
+    """``specs`` with each named pin resolved to its pads' part-frame
+    centres by ``pads_of(refdes, pin)``; a spec whose pin no pad answers
+    is dropped — it reads ``pending`` in the eyes, so it must not steer."""
+    out: list[MeasureSpec] = []
+    for spec in specs:
+        if not (spec.pin_a or spec.pin_b):
+            out.append(spec)
+            continue
+        pts_a = pads_of(spec.refdes_a, spec.pin_a) if spec.pin_a else ()
+        pts_b = pads_of(spec.refdes_b, spec.pin_b) if spec.pin_b else ()
+        if (spec.pin_a and not pts_a) or (spec.pin_b and not pts_b):
+            continue
+        out.append(replace(spec, pts_a=pts_a, pts_b=pts_b))
+    return tuple(out)
 
 
 def resolve_measures(
@@ -567,22 +599,24 @@ def resolve_measures(
         goal = m.get("goal")
         if goal is None:
             continue
-        refs = [
-            str(op["instance"])
+        ends = [
+            (str(op["instance"]), str(op.get("pin") or "").strip())
             for op in (m.get("operands") or [])
             if isinstance(op, dict) and "instance" in op
         ]
-        if len(refs) != 2 or refs[0] == refs[1]:
+        if len(ends) != 2 or ends[0][0] == ends[1][0]:
             continue
         weight = 1.0 if m.get("weight") is None else float(m["weight"])
         out.append(
             MeasureSpec(
-                refdes_a=refs[0],
-                refdes_b=refs[1],
+                refdes_a=ends[0][0],
+                refdes_b=ends[1][0],
                 bound=measure_bound(m.get("direction"), metric),
                 goal_mm=float(goal),
                 hard=(strength == "hard"),
                 weight=weight,
+                pin_a=ends[0][1],
+                pin_b=ends[1][1],
             )
         )
     return tuple(out)
@@ -607,6 +641,13 @@ def _measure_pair_usd(ir: PcbIR, ia: int, ib: int, spec: MeasureSpec) -> float:
         xb, yb = float(ir.inst_x[ib]), float(ir.inst_y[ib])
     if math.isnan(xa) or math.isnan(ya) or math.isnan(xb) or math.isnan(yb):
         return 0.0
+    if spec.metric != "align" and (spec.pts_a or spec.pts_b):
+        dist_mm = min(
+            math.hypot(pa[0] - pb[0], pa[1] - pb[1])
+            for pa in (place_offsets(ir, ia, spec.pts_a) or ((xa, ya),))
+            for pb in (place_offsets(ir, ib, spec.pts_b) or ((xb, yb),))
+        )
+        return _measure_dist_usd(spec, dist_mm)
     if spec.metric == "align":
         # `ib` is -1 for a datum end (the fixed pseudo-instance); the same
         # residual and the same linear-above-tolerance shape as proximity.
@@ -618,7 +659,11 @@ def _measure_pair_usd(ir: PcbIR, ia: int, ib: int, spec: MeasureSpec) -> float:
             return 0.0
         scale = _MEASURE_HARD_USD_PER_MM if spec.hard else _MEASURE_SOFT_USD_PER_MM
         return spec.weight * scale * violation_mm
-    dist_mm = math.hypot(xa - xb, ya - yb)
+    return _measure_dist_usd(spec, math.hypot(xa - xb, ya - yb))
+
+
+def _measure_dist_usd(spec: MeasureSpec, dist_mm: float) -> float:
+    """A proximity/separation measure's USD at pair distance ``dist_mm``."""
     if spec.bound == "lower":  # separation: keep apart, penalise being too close
         violation_mm = max(0.0, spec.goal_mm - dist_mm)
     elif spec.bound == "upper":  # proximity: keep close, penalise being too far
@@ -2639,7 +2684,14 @@ class OptimizeEngine:
         # underneath a stale measure should not crash placement.
         refdes_to_inst = {str(ir.instance_refdes[i]): i for i in range(ir.n_instances)}
         self._measure_pairs: list[tuple[int, int, MeasureSpec]] = []
-        for spec in config.measures:
+        # A pin operand prices its pads (topo-route-review A7), off the
+        # IR's own pad set — the same resolver the eyes' verdict reads.
+        for spec in resolve_measure_pins(
+            config.measures,
+            lambda r, p: (
+                pin_pad_offsets(ir, refdes_to_inst[r], p) if r in refdes_to_inst else ()
+            ),
+        ):
             mia = refdes_to_inst.get(spec.refdes_a)
             if mia is None:
                 continue

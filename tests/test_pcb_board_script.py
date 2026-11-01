@@ -841,14 +841,33 @@ def test_normalized_measure_roundtrips_with_existing_hard_flag() -> None:
     _roundtrip(batch)
 
 
+def test_pin_operand_measure_roundtrips_as_a_pin() -> None:
+    """A pin end (topo-route-review A7) is written as the part's Pin, so the
+    rebuilt row carries the same ``{'instance', 'pin'}`` operand."""
+    batch = _tiny_batch()
+    batch["measures"] = [
+        {
+            "metric": "proximity",
+            "operands": [{"instance": "J1", "pin": "1"}, "R1"],
+            "hard": True,
+            "weight": 1.0,
+            "bound": 2.0,
+        }
+    ]
+    text = _roundtrip(batch)
+    (line,) = [ln for ln in text.splitlines() if "b.measure(" in ln]
+    assert "['1'], 'R1']" in line, line
+
+
 @pytest.mark.parametrize(
     "overrides",
     [
         {"strength": "required"},
         {"strength": "hard", "hard": False},
         {"strength": "soft", "hard": True},
-        {"operands": [{"instance": "J1", "pin": "1"}]},
+        {"operands": [{"instance": "J1", "role": "x"}]},
         {"operands": [{"instance": "MISSING"}]},
+        {"operands": [{"instance": "MISSING", "pin": "1"}]},
     ],
 )
 def test_unexpressible_legacy_measure_refused(overrides: dict[str, Any]) -> None:

@@ -62,6 +62,7 @@ from itertools import combinations
 from typing import TYPE_CHECKING, Any
 
 from precis.pcb import argue
+from precis.pcb import check_run as pcb_check_run
 from precis.pcb import eyes as pcb_eyes
 from precis.pcb import profiles as pcb_profiles
 from precis.pcb import resolved as pcb_resolved
@@ -512,10 +513,12 @@ def _dispatch(ctx: DispatchContext, spec: JobTypeSpec) -> None:
     )
 
     machinery_notes, findings = _machinery(store, pcb_ref_id, inp)
+    measures = store.pcb_measures_list(pcb_ref_id)
     verdicts = pcb_eyes.evaluate_measures(
         graph,
-        store.pcb_measures_list(pcb_ref_id),
+        measures,
         store.pcb_features_list(pcb_ref_id),
+        pin_points=pcb_check_run.measure_pin_points(store, pcb_ref_id, graph, measures),
     )
     vitals = argue.vitals(store, pcb_ref_id)
 

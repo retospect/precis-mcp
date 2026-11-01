@@ -32,12 +32,16 @@ lose its PDF when a same-sha re-upload was abandoned and swept.
 Three artifact kinds live in the staging dir:
 
 * ``<nonce>.part`` — an upload in flight (or interrupted);
-* ``<ref_id>-<sha>.pdf`` / ``<ref_id>-<sha>.tar`` — a completed upload
-  awaiting attach, the ``ref_id`` in the name binding the staging to
-  the ref its token named (an attach for another ref finds nothing).
-  ``.pdf`` is the paper door; ``.tar`` is the se workspace door —
-  ``import_workspace``'s ``staged`` key resolves a run's whole out/
-  tree as one uncompressed tar (gr517643);
+* ``<ref_id>-<sha>.pdf`` / ``<ref_id>-<sha>.tar`` /
+  ``<ref_id>-<sha>.json`` — a completed upload awaiting attach, the
+  ``ref_id`` in the name binding the staging to the ref its token named
+  (an attach for another ref finds nothing). ``.pdf`` is the paper
+  door; ``.tar`` is the se workspace door — ``import_workspace``'s
+  ``staged`` key resolves a run's whole out/ tree as one uncompressed
+  tar (gr517643); ``.json`` is the batch door — one put batch as a JSON
+  object, read by ``put(kind='pcb', args={'batch_ref': '<sha>'})``
+  (gr520323; :mod:`precis.pcb.batch_door`). A batch staging is read,
+  never moved, so the same sha can be put again until the sweep;
 * ``<nonce>.done`` — the single-use marker: the upload token's nonce
   (``exp.sig``) is tombstoned here — before the body streams — so a
   replayed token is refused (``409``) even after its ``.part`` was
@@ -103,9 +107,9 @@ def require_uploads_dir() -> Path:
     directory = uploads_dir()
     if directory is None:
         raise Unsupported(
-            f"PDF upload staging is not configured on this node "
-            f"({UPLOAD_STAGING_ENV} unset, or pointing inside the watch "
-            "inbox)",
+            "upload staging (the signed upload doors) is not configured "
+            f"on this node ({UPLOAD_STAGING_ENV} unset, or pointing inside "
+            "the watch inbox)",
             next=f"set {UPLOAD_STAGING_ENV} to a staging directory "
             "outside every watched tree (deploy default: a sibling of "
             "the watch inbox on the same share)",
@@ -156,6 +160,24 @@ def staged_upload_path(sha: str, *, ref_id: int) -> str | None:
     return str(path) if path.is_file() else None
 
 
+def staged_batch_name(ref_id: int, sha: str) -> str:
+    """The staged batch filename ``<ref_id>-<sha>.json`` — one put batch
+    as a JSON object, ref-bound like :func:`staged_name` (gr520323)."""
+    return f"{ref_id}-{sha.strip().lower()}.json"
+
+
+def staged_batch_path(sha: str, *, ref_id: int) -> str | None:
+    """The staging path of an uploaded batch bound to ``ref_id``, else
+    ``None`` — same existence-is-the-record rule as
+    :func:`staged_upload_path`: a swept, never-uploaded or other-ref sha
+    all answer ``None``."""
+    directory = uploads_dir()
+    if directory is None:
+        return None
+    path = directory / staged_batch_name(ref_id, sha)
+    return str(path) if path.is_file() else None
+
+
 def sweep_stale_uploads(*, now: float | None = None) -> int:
     """Delete staging artifacts older than :data:`STALE_AFTER_S`.
 
@@ -192,6 +214,8 @@ __all__ = [
     "UPLOAD_STAGING_ENV",
     "nonce",
     "require_uploads_dir",
+    "staged_batch_name",
+    "staged_batch_path",
     "staged_name",
     "staged_tree_name",
     "staged_tree_path",

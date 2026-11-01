@@ -38,6 +38,7 @@ from precis.pcb.ir import (
     footprint_pad_set,
     instance_courtyard_polygons,
     layer_name,
+    pin_pad_offsets,
 )
 from precis.pcb.silk import (
     DEFAULT_REFDES_HEIGHT_MM,
@@ -312,7 +313,10 @@ class TopoMeasure:
     to part indices (``ib == -1`` for an ``align`` datum end, which reads
     :attr:`datum` instead of a second part). The bound/goal/hard/weight
     semantics are verbatim the legacy engine's — the same measure must
-    not price differently under a different placer."""
+    not price differently under a different placer. ``pts_a``/``pts_b``
+    are a pin operand's pad centres in the part frame (``pin_xy``'s), from
+    :func:`precis.pcb.ir.pin_pad_offsets` like the legacy engine's; an end
+    without them is the part origin."""
 
     ia: int
     ib: int  # -1 = the datum end (``datum`` below)
@@ -324,6 +328,8 @@ class TopoMeasure:
     axis: str = "xy"  # align only
     offset: tuple[float, float] = (0.0, 0.0)  # align only
     datum: tuple[float, float] | None = None  # align only: fixed end
+    pts_a: tuple[tuple[float, float], ...] = ()  # dist only: a pin's pads
+    pts_b: tuple[tuple[float, float], ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -487,6 +493,12 @@ class TopoDesign:
     #: the outline (Reto 2026-10-31: RF_FEED hugged the leaf edge at
     #: 0.273 mm against a 0.4 mm bar).
     edge_clearance_mm: float = 0.0
+    #: Layers reserved for a plane pour (gr524239; Reto 2026-11-01: an
+    #: In1 GND pour as an interim): no routed net's wire may use them —
+    #: the plane net reaches its layer by a fanout via per pad
+    #: (:func:`precis.pcb.topoplace.realise.route_design`). Empty = every
+    #: layer is a routing layer (me507871).
+    plane_layers: tuple[int, ...] = ()
     #: Slice 4 (corridor capacity): each pin's pad ``(w, h)`` in the part
     #: frame — an edge's wire capacity is its length minus the pad
     #: extents it touches. ``ir.pin_w``/``pin_h`` verbatim.
@@ -1268,11 +1280,24 @@ def design_from_ir(
 
     topo_measures: list[TopoMeasure] = []
     if measures:
-        from precis.pcb.optimize import resolve_measures
+        from precis.pcb.optimize import resolve_measure_pins, resolve_measures
 
         idx_of = {r: i for i, r in enumerate(parts)}
-        for spec in resolve_measures(
+        specs = resolve_measures(
             list(measures), features=[dict(f) for f in features or ()]
+        )
+        fp_pads = (
+            footprint_pad_set(
+                ir, {k: dict(v) for k, v in footprints.items()} if footprints else None
+            )
+            if any(s.pin_a or s.pin_b for s in specs)
+            else ()
+        )
+        for spec in resolve_measure_pins(
+            specs,
+            lambda r, p: (
+                pin_pad_offsets(ir, idx_of[r], p, fp_pads) if r in idx_of else ()
+            ),
         ):
             ia = idx_of.get(spec.refdes_a)
             ib = idx_of.get(spec.refdes_b) if spec.refdes_b else -1
@@ -1292,6 +1317,8 @@ def design_from_ir(
                     axis=spec.axis,
                     offset=spec.offset,
                     datum=spec.datum,
+                    pts_a=spec.pts_a,
+                    pts_b=spec.pts_b,
                 )
             )
 

@@ -51,9 +51,12 @@ OPS = ("get", "put")
 #: door gets its own sentinel so a token minted for one kind's route
 #: can never feed another's: ``upload`` stages a paper PDF
 #: (``/files/upload``), ``upload_tree`` an se workspace's out/ tar
-#: (``/files/upload_tree``, gr517643).
+#: (``/files/upload_tree``, gr517643), ``upload_batch`` a put batch as
+#: one JSON object (``/files/upload_batch`` — the pcb ``batch_ref``
+#: door, gr520323).
 UPLOAD_SHA = "upload"
 UPLOAD_TREE_SHA = "upload_tree"
+UPLOAD_BATCH_SHA = "upload_batch"
 
 #: Reto 2026-10-25: links last 600 s by default, 3600 s max, and a
 #: download link is reusable until expiry.
@@ -214,6 +217,7 @@ __all__ = [
     "FILE_LINK_SECRET",
     "MAX_TTL_S",
     "OPS",
+    "UPLOAD_BATCH_SHA",
     "UPLOAD_SHA",
     "UPLOAD_TREE_SHA",
     "WEB_BASE_URL_SECRET",

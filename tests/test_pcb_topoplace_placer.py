@@ -470,6 +470,104 @@ def test_settle_label_room_nudges_walkers_and_edge_parts() -> None:
     assert rep_e[0, 0] > de.pose0[0, 0]
 
 
+def _decap_fixture(*, c1_fixed: bool = False):
+    """U1 (5.2 mm ring) at the centre and its decap C1 (1.2 mm ring) 9 mm
+    east: one hard proximity, C1's pin to U1's pad 2.5 mm east of U1's
+    origin, within 2 mm (topo-route-review A7)."""
+    import dataclasses
+
+    from precis.pcb.topoplace.design import TopoMeasure
+
+    d = _margin_label_fixture([("U1", 15.0, 15.0, 2.6), ("C1", 24.0, 15.0, 0.6)])
+    spec = TopoMeasure(
+        ia=1,
+        ib=0,
+        bound="upper",
+        goal_mm=2.0,
+        weight=1.0,
+        hard=True,
+        pts_a=((0.0, 0.0),),
+        pts_b=((2.5, 0.0),),
+    )
+    return dataclasses.replace(
+        d, measures=(spec,), fixed=np.asarray([False, c1_fixed])
+    ), spec
+
+
+def test_settle_measures_lands_the_decap_by_its_pin() -> None:
+    """The anneal prices a hard measure; the settle meets it: C1 moves
+    next to U1's pad, legally (no ring overlap), and U1 stays put."""
+    from precis.pcb.topoplace import settle_measures
+    from precis.pcb.topoplace.proxy import _measure_violation, _ring_geom
+
+    d, spec = _decap_fixture()
+    assert _measure_violation(spec, d.pose0[1], d.pose0[0]) > 0.0
+    pose = settle_measures(d, d.pose0)
+    assert _measure_violation(spec, pose[1], pose[0]) == 0.0
+    np.testing.assert_array_equal(pose[0], d.pose0[0])
+    u1, c1 = _ring_geom(d, pose[0], 0), _ring_geom(d, pose[1], 1)
+    assert u1 is not None and c1 is not None
+    assert u1.intersection(c1).area == 0.0
+
+
+def test_settle_measures_never_moves_a_fixed_mover_or_the_ic() -> None:
+    from precis.pcb.topoplace import settle_measures
+
+    d, _spec = _decap_fixture(c1_fixed=True)
+    np.testing.assert_array_equal(settle_measures(d, d.pose0), d.pose0)
+
+
+def test_settle_measures_moves_a_blocker_off_the_only_spots() -> None:
+    """Three parts wall off U1's east pad: no free spot is within 2 mm of
+    it, so the settle nudges a blocker clear and lands the decap there —
+    every ring still disjoint."""
+    import dataclasses
+    import itertools
+
+    from precis.pcb.topoplace import settle_measures
+    from precis.pcb.topoplace.design import TopoMeasure
+    from precis.pcb.topoplace.proxy import _measure_violation, _ring_geom
+
+    d = _margin_label_fixture(
+        [
+            ("U1", 15.0, 15.0, 2.6),
+            ("C1", 26.0, 15.0, 0.6),
+            ("B1", 18.5, 15.0, 0.6),
+            ("B2", 18.5, 16.4, 0.6),
+            ("B3", 18.5, 13.6, 0.6),
+        ]
+    )
+    spec = TopoMeasure(
+        ia=1,
+        ib=0,
+        bound="upper",
+        goal_mm=2.0,
+        weight=1.0,
+        hard=True,
+        pts_a=((0.0, 0.0),),
+        pts_b=((2.5, 0.0),),
+    )
+    d = dataclasses.replace(d, measures=(spec,))
+    pose = settle_measures(d, d.pose0)
+    assert _measure_violation(spec, pose[1], pose[0]) == 0.0
+    assert not np.array_equal(pose[2:], d.pose0[2:])  # a blocker moved
+    rings = [_ring_geom(d, pose[k], k) for k in range(len(d.parts))]
+    for a, b in itertools.combinations(rings, 2):
+        assert a is not None and b is not None
+        assert a.intersection(b).area == 0.0
+
+
+def test_settle_pose_label_room_keeps_a_met_hard_measure() -> None:
+    """The label settle runs after the measure settle and must not buy a
+    label spot with the decap's DRC error."""
+    from precis.pcb.topoplace import settle_pose
+    from precis.pcb.topoplace.proxy import _measure_violation
+
+    d, spec = _decap_fixture()
+    pose = settle_pose(d, d.pose0)
+    assert _measure_violation(spec, pose[1], pose[0]) == 0.0
+
+
 def test_settle_label_room_never_pushes_past_edge_clearance() -> None:
     """gr538618: a settle move must never take a part's courtyard
     outside the board outline minus the edge line the anneal enforces

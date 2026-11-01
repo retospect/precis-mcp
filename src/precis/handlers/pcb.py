@@ -24,6 +24,10 @@ pixels. The verbs map onto the seven-verb surface:
   Re-runnable. Every design gets a default board (``pcb-guided-place-route``
   Slice 1 — one 4-layer FR-4 board, ``pcb_boards``) on first write; nets are
   electrical-only in v1 (``domain`` != ``'electrical'`` is rejected).
+  A batch too big for args rides the signed upload door (gr520323,
+  :mod:`precis.pcb.batch_door`): ``op='batch_upload_link'`` mints the URL
+  and ``args={'batch_ref': '<sha256>'}`` expands the staged file into the
+  same args before anything else reads them.
   ``args={'op': ...}`` is the pcb-guided-place-route Slice 10 tool surface:
   ``op='place'`` **enqueues** a ``pcb_place`` worker job (never compute
   inline — the optimizer measures ~880 moves/s, minutes per board)
@@ -100,7 +104,7 @@ import logging
 import math
 import tempfile
 import urllib.parse
-from collections.abc import Callable, Iterable, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, ClassVar
@@ -123,6 +127,7 @@ from precis.pcb import (
     ROUTE_RETIRED_NEXT,
     STACKUP_PRESETS,
     argue,
+    batch_door,
     check_run,
     eyes,
     format_route_summary,
@@ -183,7 +188,7 @@ from precis.pcb.rows import (
     normalize_pad as _normalize_pad,
 )
 from precis.pcb.rules import NetRules, clearance_rule_problems
-from precis.protocol import ArgsSpec, Handler, KindSpec
+from precis.protocol import ArgsSpec, ArgsView, Handler, KindSpec
 from precis.response import Response
 from precis.store._mappers import SEMANTIC_DISTANCE_FLOOR
 from precis.store.types import ChunkInsert
@@ -355,6 +360,10 @@ _IMPORT_OPS = ("import_epro",)
 #: slug that does not exist yet, so ``put`` routes it before the
 #: existing-design lookup.
 _FORK_OPS = ("fork",)
+#: gr520323 — mints the batch upload door's signed URL
+#: (:mod:`precis.pcb.batch_door`). Writes nothing; routed before the
+#: generic lookup so a missing design's NotFound names the create call.
+_DOOR_OPS = ("batch_upload_link",)
 _OPS = (
     *_JOB_OPS,
     *_INLINE_EDIT_OPS,
@@ -362,6 +371,7 @@ _OPS = (
     *_ORDER_OPS,
     *_IMPORT_OPS,
     *_FORK_OPS,
+    *_DOOR_OPS,
     "datasheets",
     "review",
     "check",
@@ -1275,6 +1285,9 @@ class PcbHandler(Handler):
                 "trace",
                 "run",
                 "run_job",
+                # gr520323: the batch rode the signed upload door —
+                # 'batch_ref' names the staged sha (precis.pcb.batch_door).
+                "batch_ref",
                 "achieve_date",
                 "billing_address",
                 "billing_address_flag",
@@ -1439,6 +1452,11 @@ class PcbHandler(Handler):
             "place; put(args={'op':'review'}) queues a pcb_review job (it runs "
             "its own fresh check) over the unchecked/stale pcb-tapeout items "
             "(precis-pcb-review-help); "
+            "a batch too big for args rides the signed upload door: "
+            "put(args={'op':'batch_upload_link'}) mints a URL, `precis door "
+            "pcb <file.json> --url <url>` stages the file, and "
+            "put(args={'batch_ref':'<sha256>'}) runs the same judged batch "
+            "put on it; "
             "search over names; delete soft-retires; link/unlink "
             "edges to other refs (rel= per precis-relations — e.g. a "
             "board 'serves' the quest it feeds). "
@@ -1496,8 +1514,15 @@ class PcbHandler(Handler):
         new one that names only pads/authored copper refuses the whole put
         (nothing is stored); one that names router copper rips that net,
         reported in the response. A put that leaves the design with no
-        placed instance is never judged."""
+        placed instance is never judged.
+
+        ``args={'batch_ref': '<sha256>'}`` is the same batch put with the
+        batch read from the signed upload door's staging instead of args
+        (:mod:`precis.pcb.batch_door`) — expanded first, so everything
+        below sees exactly the args an inline batch carries."""
         args = args or {}
+        if "batch_ref" in args:
+            id, args = self._batch_ref_args(id, args)
         if "run" in args:
             from precis.pcb.workspace import RUN_NEXT, run_batch
 
@@ -1567,6 +1592,10 @@ class PcbHandler(Handler):
                 return self._op_import_epro(slug, args)
             if op in _FORK_OPS:
                 return self._op_fork(slug, args, title=title, tags=tags, untags=untags)
+            if op in _DOOR_OPS:
+                return self._op_batch_upload_link(
+                    slug, args, title=title, tags=tags, untags=untags
+                )
             if str(op) == "pad" and "#" in slug:
                 slug = self._pad_selector_args(slug, args)
             ref = resolve_live_slug_ref(self.store, kind="pcb", id=slug)
@@ -5481,6 +5510,9 @@ class PcbHandler(Handler):
             measures,
             self.store.pcb_features_list(ref_id),
             fabric=self._measures_fabric(ref_id, measures),
+            pin_points=check_run.measure_pin_points(
+                self.store, ref_id, self._effective_graph(ref_id), measures
+            ),
         )
         rows = [
             {
@@ -6728,6 +6760,82 @@ class PcbHandler(Handler):
             f"Next: get(kind='pcb', id='{slug}').",
         ]
         return Response(body="\n".join(lines))
+
+    def _op_batch_upload_link(
+        self,
+        slug: str,
+        args: dict[str, Any],
+        *,
+        title: str | None,
+        tags: list[str] | None,
+        untags: list[str] | None,
+    ) -> Response:
+        """``put(id=<slug>, args={'op':'batch_upload_link'})`` — mint the
+        batch upload door's single-use signed URL, bound to the design's
+        ref (gr520323, :mod:`precis.pcb.batch_door`). Writes nothing, so
+        any other key — and ``title=``/``tags=``, which belong on the
+        ``batch_ref`` put — refuses rather than vanishing."""
+        extra = sorted(k for k in dict(args) if k != "op")
+        if extra:
+            raise BadInput(
+                f"op='batch_upload_link' takes no other args, got {extra}",
+                next=batch_door.link_call(slug),
+            )
+        if title is not None or tags or untags:
+            raise BadInput(
+                "op='batch_upload_link' writes nothing — title=/tags= belong "
+                "on the put that reads the upload",
+                next=f"{batch_door.put_call(slug)} with title=/tags=",
+            )
+        ref = resolve_live_slug_ref(
+            self.store,
+            kind="pcb",
+            id=slug,
+            next_hint=f"{batch_door.create_call(slug)} first — the upload "
+            "link binds the design's ref",
+        )
+        return Response(
+            body=batch_door.upload_link_body(
+                self.store, slug=str(ref.slug or slug), ref_id=int(ref.id)
+            )
+        )
+
+    def _batch_ref_args(
+        self, id: str | int | None, args: Mapping[str, Any]
+    ) -> tuple[str, dict[str, Any]]:
+        """``args={'batch_ref': '<sha256>'}`` → ``(slug, args)``: the bound
+        design's slug and the staged batch as the put's args, read through
+        the same :class:`ArgsView` dispatch wraps an inline batch in. The
+        slug is the resolved design's own (a ``pb<id>`` handle in ``id=``
+        must land the batch on the design the staging is bound to).
+        ``batch_ref`` rides alone: the staged file is the whole batch, and
+        a second inline key would be a second source for one put."""
+        slug = "" if id is None else str(id).strip()
+        if not slug:
+            raise BadInput(
+                "args['batch_ref'] needs id= — the design the batch was uploaded for",
+                next=batch_door.put_call("<slug>"),
+            )
+        extra = sorted(k for k in dict(args) if k != "batch_ref")
+        if extra:
+            raise BadInput(
+                f"args['batch_ref'] rides alone — the staged file is the "
+                f"whole batch; got {extra} beside it",
+                next=f"{batch_door.put_call(slug)} (fold the other keys into "
+                "the uploaded file, or send them in their own put)",
+            )
+        ref = resolve_live_slug_ref(
+            self.store,
+            kind="pcb",
+            id=slug,
+            next_hint=f"{batch_door.create_call(slug)} creates it; then "
+            f"{batch_door.link_call(slug)}",
+        )
+        bound = str(ref.slug or slug)
+        batch = batch_door.load_staged_batch(
+            dict(args)["batch_ref"], ref_id=int(ref.id), slug=bound
+        )
+        return bound, ArgsView(batch, self.ARGS_KEYS["put"], "pcb.put batch_ref")
 
     def _render_epro(self, ref_id: int, args: dict[str, Any]) -> Response:
         """Write an EasyEDA Pro ``.epro2`` (:mod:`precis.pcb.epro_write`)

@@ -214,10 +214,13 @@ def _net_layers(d: TopoDesign, k: int, n_layers: int) -> frozenset[int]:
     as free so the wire exists to be diagnosed."""
     force = int(d.net_layer_force[k]) if len(d.net_layer_force) > k else -1
     if force >= 0:
-        return frozenset({force})
-    if force == -2:
-        return frozenset(range(1, n_layers - 1))
-    return frozenset(range(n_layers))
+        cand = frozenset({force})
+    elif force == -2:
+        cand = frozenset(range(1, n_layers - 1))
+    else:
+        cand = frozenset(range(n_layers))
+    # a plane-reserved layer carries its pour, never a wire (gr524239)
+    return cand - frozenset(d.plane_layers)
 
 
 @dataclass(slots=True)

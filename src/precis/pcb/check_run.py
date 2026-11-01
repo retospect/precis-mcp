@@ -30,6 +30,7 @@ from precis.errors import BadInput
 from precis.pcb import cost as pcb_cost
 from precis.pcb import drc as pcb_drc
 from precis.pcb import edge_mate as pcb_edge_mate
+from precis.pcb import eyes as pcb_eyes
 from precis.pcb import furniture as pcb_furniture
 from precis.pcb import geom as pcb_geom
 from precis.pcb import ir as pcb_ir
@@ -590,8 +591,28 @@ def unsupplied_client_findings(graph: dict[str, Any]) -> list[pcb_drc.DrcFinding
     return pcb_drc.check_unsupplied_client(clients, supplies, roles)
 
 
+def measure_pin_points(
+    store: Store,
+    ref_id: int,
+    graph: dict[str, Any],
+    measures: list[dict[str, Any]],
+    ir: pcb_ir.PcbIR | None = None,
+) -> pcb_eyes.PinPoints | None:
+    """Where a pin operand's pads sit (:func:`precis.pcb.ir.pin_pad_points`)
+    — ``None`` when no measure names a pin, so a design without one never
+    builds an IR for it. ``ir`` is the caller's already-built one, if any."""
+    if not pcb_eyes.measures_name_pins(measures):
+        return None
+    return pcb_ir.pin_pad_points(
+        ir if ir is not None else build_ir(store, ref_id, graph)
+    )
+
+
 def _measure_findings(
-    store: Store, ref_id: int, graph: dict[str, Any]
+    store: Store,
+    ref_id: int,
+    graph: dict[str, Any],
+    ir: pcb_ir.PcbIR | None = None,
 ) -> list[pcb_drc.DrcFinding]:
     """The ``measure`` rule over the design's stored measures
     (:mod:`precis.pcb.measure_check`). It judges placement, so it rides
@@ -601,7 +622,10 @@ def _measure_findings(
     if not measures:
         return []
     return pcb_measure_check.measure_findings(
-        graph, measures, store.pcb_features_list(ref_id)
+        graph,
+        measures,
+        store.pcb_features_list(ref_id),
+        pin_points=measure_pin_points(store, ref_id, graph, measures, ir),
     )
 
 
@@ -849,8 +873,8 @@ def run(
             )
             + pcb_drc.check_undeclared_pads(bail_model, unchecked=undeclared_unchecked)
             + pcb_drc.check_synthesized_footprint(bail_model)
-            # Measures read part centres, not pads: a guessed footprint
-            # does not make a decap 5 mm from its IC any closer.
+            # An origin measure reads part centres and a pin measure the
+            # pads it names (a synthesized bound here, the best known).
             + _measure_findings(store, ref_id, graph)
         )
         # Slice 5 ERC — netlist rules, need no geometry either.
@@ -1036,7 +1060,7 @@ def run(
     )
     # Reto 2026-11-01: a violated hard/soft placement measure (decap or
     # crystal too far from its IC) fails the check, on both views.
-    findings += _measure_findings(store, ref_id, graph)
+    findings += _measure_findings(store, ref_id, graph, ir)
     if erc:
         findings += erc_findings(design, graph, pads)
     # Read the previous run BEFORE writing this one — it is what this

@@ -23,6 +23,7 @@ distinct mapping evidence.
 from __future__ import annotations
 
 import math
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from typing import Any
 
@@ -703,17 +704,44 @@ def _judge(values: list[float], bound: str, goal: Any) -> tuple[float, bool]:
     return val, abs(val - g) <= target_tol_mm(g)
 
 
+#: ``(refdes, pin) -> board-space pad centres`` — what a pin operand of a
+#: pair measure is measured from (:func:`precis.pcb.ir.pin_pad_points`).
+PinPoints = Callable[[str, str], Sequence[Point]]
+
+
+def measures_name_pins(measures: list[dict[str, Any]]) -> bool:
+    """Whether any measure has a pin operand (``{'instance', 'pin'}``) —
+    a caller builds :data:`PinPoints` (an IR) only then."""
+    return any(
+        isinstance(op, dict) and op.get("pin") is not None
+        for m in measures
+        for op in m.get("operands") or []
+    )
+
+
+def _gap(a: Sequence[Point], b: Sequence[Point]) -> float:
+    """The least distance between two point sets."""
+    return min(dist(p, q) for p in a for q in b)
+
+
 def evaluate_measures(
     graph: dict[str, Any],
     measures: list[dict[str, Any]],
     features: list[dict[str, Any]] | None = None,
     *,
     fabric: dict[str, Any] | None = None,
+    pin_points: PinPoints | None = None,
 ) -> list[dict[str, Any]]:
     """Evaluate stored measures against the current placement.
 
     v1 covers the placement-geometry metrics — ``separation``, ``proximity``
     (pairwise gaps), ``height`` — over operands that name instances or roles.
+    A pair operand may name a pin (``{'instance': 'U1', 'pin': 'DEC1'}``,
+    topo-route-review A7): that end is measured from the pin's pad centres
+    (``pin_points``), the pair's gap is the least over both ends' points,
+    and an instance end stays its origin. A pin no pad answers, or no
+    ``pin_points`` at all, reads ``pending``. Such a row carries
+    ``pins=True`` and its ``pair`` names ``refdes.pin``.
     A stored ``direction`` (min|max|target|keep_above|keep_below) picks which
     side of ``goal`` is ok (:func:`measure_bound`); without one each metric
     keeps its natural sense. The connectivity metrics (parallelism /
@@ -756,6 +784,27 @@ def evaluate_measures(
                 ]
         return list(dict.fromkeys(out))
 
+    def _ends(
+        operands: list[dict[str, Any]],
+    ) -> list[tuple[str, str, Sequence[Point]]] | None:
+        """operands → ``(label, refdes, points)`` per placed end — a pin
+        end is ``refdes.pin`` at its pads, any other end its origin;
+        ``None`` when a pin end has no pad to measure from."""
+        out: dict[str, tuple[str, str, Sequence[Point]]] = {}
+        for op in operands or []:
+            pin = op.get("pin") if isinstance(op, dict) else None
+            ref = op.get("instance") if isinstance(op, dict) else None
+            if pin is None or ref not in placed:
+                for r in _resolve([op]):
+                    out.setdefault(r, (r, r, (placed[r],)))
+                continue
+            pts = tuple(pin_points(str(ref), str(pin))) if pin_points else ()
+            if not pts:
+                return None
+            label = f"{ref}.{pin}"
+            out.setdefault(label, (label, str(ref), pts))
+        return list(out.values())
+
     results: list[dict[str, Any]] = []
     for m in measures:
         metric = (m.get("metric") or "").lower()
@@ -771,18 +820,32 @@ def evaluate_measures(
             "verdict": "—",
         }
         bound = measure_bound(m.get("direction"), metric)
-        if metric in ("separation", "proximity") and len(refs) >= 2:
+        ends = (
+            _ends(m.get("operands") or [])
+            if metric in ("separation", "proximity")
+            else []
+        )
+        if ends is None:
+            row["verdict"] = "pending"  # a pin with no pad: never ok
+        elif len(ends) >= 2:
             pairs = {
-                (refs[i], refs[j]): dist(placed[refs[i]], placed[refs[j]])
-                for i in range(len(refs))
-                for j in range(i + 1, len(refs))
+                (ends[i][0], ends[j][0]): (
+                    (ends[i][1], ends[j][1]),
+                    _gap(ends[i][2], ends[j][2]),
+                )
+                for i in range(len(ends))
+                for j in range(i + 1, len(ends))
             }
-            val, ok = _judge(list(pairs.values()), bound, goal)
+            val, ok = _judge([d for _, d in pairs.values()], bound, goal)
             row["value"] = round(val, 3)
             row["verdict"] = "ok" if ok else "VIOLATED"
-            row["over"] = ", ".join(refs)
-            row["pair"] = row["parts"] = next(p for p, d in pairs.items() if d == val)
+            row["over"] = ", ".join(e[0] for e in ends)
+            row["pair"], (row["parts"], _) = next(
+                (p, v) for p, v in pairs.items() if v[1] == val
+            )
             row["excess"] = round(measure_excess(val, bound, goal), 3)
+            if any(e[0] != e[1] for e in ends):
+                row["pins"] = True
         elif metric == "align":
             spec = parse_align(m)
             pa = placed.get(spec.ref_a) if spec is not None else None

@@ -1183,7 +1183,8 @@ _BUILDER_MEASURE_KEYS = ("hard", "bound", "axis")
 #: the skill that documents the shape.
 _MEASURE_NEXT = (
     "put(kind='pcb', id='<slug>', args={'measures': [{'metric': 'proximity', "
-    "'operands': [{'instance': 'C1'}, {'instance': 'U1'}], 'goal': 2.0, "
+    "'operands': [{'instance': 'C1', 'pin': '1'}, {'instance': 'U1', "
+    "'pin': 'VDD'}], 'goal': 2.0, "
     "'strength': 'soft'}]})",
     "get(kind='skill', id='precis-measures-help')",
 )
@@ -1289,14 +1290,31 @@ def measure_row(m: dict[str, Any]) -> dict[str, Any]:
     operands: list[dict[str, Any]] = []
     for op in raw_ops:
         if isinstance(op, dict):
+            pin = op.get("pin")
+            if pin is not None:
+                # A pin end is measured from its pads (topo-route-review
+                # A7) — it needs its part and a name or pad number.
+                if (
+                    isinstance(pin, bool)
+                    or not isinstance(pin, str | int)
+                    or not str(pin).strip()
+                    or not isinstance(op.get("instance"), str)
+                ):
+                    raise BadInput(
+                        f"pcb measure {metric!r}: pin operand {op!r} needs "
+                        "{'instance': refdes, 'pin': pin name or pad number}",
+                        next=_MEASURE_NEXT,
+                    )
+                op = {**op, "pin": str(pin).strip()}
             operands.append(dict(op))
         elif isinstance(op, str) and op.strip():
             operands.append({"instance": op.strip()})
         else:
             raise BadInput(
                 f"pcb measure {metric!r}: operand {op!r} is neither a refdes "
-                "nor an operand object ({'instance': refdes}, {'role': name}, "
-                "{'point': [x, y]}, {'feature_id': n})",
+                "nor an operand object ({'instance': refdes}, {'instance': "
+                "refdes, 'pin': name}, {'role': name}, {'point': [x, y]}, "
+                "{'feature_id': n})",
                 next=_MEASURE_NEXT,
             )
     meta = dict(m.get("meta") or {})

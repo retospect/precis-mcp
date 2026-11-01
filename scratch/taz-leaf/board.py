@@ -365,7 +365,10 @@ def build() -> pcb.Board:
         a.tie(c["1"])
         k.tie(c["2"])
         if near is not None:
-            b.near(c, near, within)
+            # Reto 2026-11-01: decap/crystal beyond the limit fails DRC.
+            # Pad to pad (topo-route-review A7): cap pin 1 to the pin it
+            # decouples — U1's origin is 2.5 mm inside its own pads.
+            b.near(c["1"], near, within, hard=True)
         return c
 
     def two_pin(ref, value, label, a, k, note=None, fmax=0.0):
@@ -407,14 +410,16 @@ def build() -> pcb.Board:
 
     # nRF52833 config 6 BOM (Table 94). Which cap sits on which pin is
     # inferred: Figure 211 (the schematic) was not extracted. VERIFY.
-    cap("C5", C100N, "100nF", vstor, near=u1, note="VDD pin 8/9")
-    cap("C7", C100N, "100nF", vstor, near=u1, note="VDD pin 30")
-    cap("C11", C100N, "100nF", dec1, near=u1, note="DEC1")
-    cap("C6", C4U7, "4.7uF", vstor, near=u1, within=4.0, note="VDD bulk, pin 40")
-    cap("C13", C1U, "1uF", vstor, near=u1, note="VDD pin 18")
-    cap("C8", None, "820pF", dec5, near=u1, note="DEC5")
-    cap("C10", C100P, "100pF", dec3, near=u1, note="DEC3")
-    cap("C12", C1U, "1uF", dec4, near=u1, note="DEC4/DEC6")
+    # One cap per VDD pad: U1 repeats VDD on pads 8/18/30/40, so those
+    # caps name the pad number (u1[30]); the DEC pins are unique names.
+    cap("C5", C100N, "100nF", vstor, near=u1[8], note="VDD pin 8/9")
+    cap("C7", C100N, "100nF", vstor, near=u1[30], note="VDD pin 30")
+    cap("C11", C100N, "100nF", dec1, near=u1["DEC1"], note="DEC1")
+    cap("C6", C4U7, "4.7uF", vstor, near=u1[40], within=4.0, note="VDD bulk, pin 40")
+    cap("C13", C1U, "1uF", vstor, near=u1[18], note="VDD pin 18")
+    cap("C8", None, "820pF", dec5, near=u1["DEC5"], note="DEC5")
+    cap("C10", C100P, "100pF", dec3, near=u1["DEC3"], note="DEC3")
+    cap("C12", C1U, "1uF", dec4, near=u1["DEC4"], note="DEC4/DEC6")
     x1 = b.part("X1", lcsc="C18213028", label="32MHz 1612 8pF")
     x1.pin("1", etype="passive", fmax_hz=32e6, assume="32 MHz crystal terminal")
     x1.pin("3", etype="passive", fmax_hz=32e6, assume="32 MHz crystal terminal")
@@ -425,15 +430,18 @@ def build() -> pcb.Board:
     xc1.tie(x1["1"])
     xc2.tie(x1["3"])
     gnd.tie(x1["GND"])
-    b.near(x1, u1, 3.0)
+    # each crystal leg pad to its oscillator pin
+    b.near(x1["1"], u1["XC1"], 3.0, hard=True)
+    b.near(x1["3"], u1["XC2"], 3.0, hard=True)
     x2 = b.part("X2", lcsc="C17179429", label="32.768kHz 2012 9pF")
     x2.pin("OSC1", etype="passive", fmax_hz=32768.0, assume="32.768 kHz crystal")
     x2.pin("OSC2", etype="passive", fmax_hz=32768.0, assume="32.768 kHz crystal")
     xl1.tie(x2["OSC1"])
     xl2.tie(x2["OSC2"])
-    b.near(x2, u1, 4.0)
-    cap("C1", C12P, "12pF", xl1, near=x2)
-    cap("C2", C12P, "12pF", xl2, near=x2)
+    b.near(x2["OSC1"], u1["P0.00_XL1"], 4.0, hard=True)
+    b.near(x2["OSC2"], u1["P0.01_XL2"], 4.0, hard=True)
+    cap("C1", C12P, "12pF", xl1, near=x2["OSC1"])
+    cap("C2", C12P, "12pF", xl2, near=x2["OSC2"])
 
     # -- U2 BQ25504 harvester (da519848 9.2.1; thresholds by its equations) --
     u2 = b.part("U2", lcsc="C2876746", label="BQ25504RGTR")
@@ -565,7 +573,7 @@ def build() -> pcb.Board:
     scl.tie(u3["SCL"])
     vstor.tie(u3["VDD"])
     gnd.tie(u3["VSS"], u3["EP"])
-    cap("C30", C100N, "100nF", vstor, near=u3)
+    cap("C30", C100N, "100nF", vstor, near=u3["VDD"])
     res("R30", "10k", sda, vstor, note="I2C pull-up")
     res("R31", "10k", scl, vstor, note="I2C pull-up")
 

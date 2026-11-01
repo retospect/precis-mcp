@@ -65,6 +65,8 @@ from precis.pcb.topoplace.proxy import (
     overlap_area,
     pin_world,
     settle_label_room,
+    settle_measures,
+    settle_pose,
     spread_total,
     via_estimate_total,
 )
@@ -107,6 +109,8 @@ __all__ = [
     "pair_map",
     "pin_world",
     "settle_label_room",
+    "settle_measures",
+    "settle_pose",
     "spread_total",
     "topo_place",
     "via_estimate_total",

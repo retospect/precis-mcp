@@ -211,6 +211,22 @@ ruling except C's D2.
   own goal (decaps 2 mm, X1 3 mm, X2 4 mm in `board.py`), and the decap
   and crystal measures there become `hard: true`. Test: a hard proximity
   C↔U at 2 mm placed 5 mm apart gives one error; placed within 2 mm, none.
+- A7. Measures between pins. `proximity`/`separation` read part origins,
+  so a 2 mm decap bound to the 5 mm QFN U1 cannot hold (an 0402 origin
+  sits ≥ 3.4 mm from U1's): the 13 `measure` errors on taz-leaf-t. An
+  operand may name a pin, `{'instance': 'U1', 'pin': 'DEC1'}`; its points
+  are that pin's pad centres (pads labelled `DEC1`, else the pad numbered
+  `DEC1`, so `'30'` picks one of U1's four VDD pads). The operands'
+  distance is the least over their point sets; an instance operand is its
+  origin, as before. One resolver (`ir.pin_pad_offsets`) feeds the eyes
+  verdict and the `measure` finding, the legacy anneal
+  (`optimize._measure_pair_usd`) and the topo proxy (`TopoMeasure.pts_*`),
+  so the three cannot disagree. A pin that resolves to no pad drops the
+  measure from the anneal and reads `pending`. The builder takes `Pin`
+  operands (`b.near(c["1"], u1["DEC1"], 2.0)`); `board_script` writes
+  them back. `align` keeps origins. Test: a decap 2 mm from its pin but
+  4 mm from the IC origin is `ok` on all three readers; the same measure
+  between origins is VIOLATED.
 
 **K. Any-angle emit (Reto 2026-11-01).** `realize_result` emits each
 piece's spoke-offset polyline as it is — the taut topo wire with its
@@ -237,12 +253,30 @@ layer. GND then routes alone on In1, so it has no crossings, and
 pour In1 with `planes.plane_pours` instead, keeping the per-pad vias (an
 interim, Reto 2026-11-01). VSTOR on In2 is the same move if the bench
 shows it binds. Test: at the taz-leaf seed pose no signal net's crossing
-or guard record names GND, and committed copper is DRC 0.
+or guard record names GND, and committed copper is DRC 0. Landed
+2026-11-01 as the pour interim: `route_design` fans each SMD pad of a
+poured net out by via (`_fanout_vias`, frozen as zones), bars the plane
+layer to wires (`TopoDesign.plane_layers`), routes the signals, then
+pours over the finished copper (`_plane_pours`: keepout cut, bare islands
+dropped). Fixture test `tests/test_pcb_topo_plane_fanout.py`. Left: on
+compact poses most taz-leaf GND pads find no fanout site; two signals
+that cross each other still fail the guard with or without the plane.
 
 **B. Placement objective**
 - B1. `flow` gets a real measures share and ratsnest ≥ 0.2. Test: taz-leaf
   decaps and X1/X2 end within their bounds at 3 seeds with no `measure`
-  finding.
+  finding. Landed 2026-11-01: `settle_measures`, a deterministic
+  post-anneal pass before the label settle (`settle_pose`). It moves the
+  small end of a violated hard proximity onto a ring around its target
+  pad, legal by `_label_room_legal`, never raising the mover's summed hard
+  violation; label nudges may not worsen a hard measure. taz-leaf seed 1,
+  flow 40000, pin measures (A7): 13 of 15 violated at share 0.2 without
+  it, 4 with it (C7↔U1.30, C11↔DEC1, C10↔DEC3, X2↔XL1, all boxed in at
+  U1). Share 1.5 alone: 5 of 15, airwire 351 mm vs 497 mm. With blocker
+  moves (`_clear_blockers`, ≤ 2 parts nudged ≤ 3 mm, none of their hard
+  measures worse): still 4, total excess 8.8 → 5.5 mm (C7 met; X1's XC2
+  leg lost its spot beside pads 28–30). Left: X2 moves without its load
+  caps (it would have to carry them), the share at 3 seeds.
 - B2. Dropped for now: with A1 and A6 the anneal can no longer pull decaps
   and crystals away. Revisit only if E1's placed/seed airwire ratio stays
   high after B1.
@@ -278,7 +312,15 @@ or guard record names GND, and committed copper is DRC 0.
 **B3 / E2 / E3, last.** Register a ladder rung that routes the top-K
 elites and picks the pose by complete nets (Decision 10). Cache the label
 boxes in the anneal (108 s). Target a taz-leaf route of ≤ 20 s (the index
-query replaces the 93 s siting walk).
+query replaces the 93 s siting walk). Profile 2026-11-01
+(taz-leaf-local-71, A7/B1/C in, job wall 752 s; cProfile seconds, about
+1.5× wall): two full routes (first, then after the failure shove), 393 s,
+of which via siting is 311 s (`_site_via`, 684 calls: `walk_grid`,
+`qualifies`, `_pad_clear` → `_world_to_local` 80 M calls); the anneal
+309 s over 85 k moves, half of it the label axis (`_mg_label` 153 s);
+`build_mesh` 28 s; `settle_pose` 1.8 s. A 380 s HiGHS entry is a cProfile
+thread artifact (its caller is the psycopg pool's idle `get`), not the
+shove LP (`shove_pose` 0.0 s).
 
 Order: A → K → E1 → C → B1 → D-a → D-b → D-c → B3/E2/E3. A and K are
 cheap and change what is measured, E1 baselines every later step, C

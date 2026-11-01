@@ -280,7 +280,7 @@ def _diverged_pose(
     from precis.pcb import topoplace as _tp
 
     for i, (label, pose, settle) in enumerate(cands):
-        cand = _tp.settle_label_room(td, pose) if settle else pose
+        cand = _tp.settle_pose(td, pose) if settle else pose
         n = gate(cand)
         # First-at-or-under, deliberately NOT lowest: the candidate order
         # (the anneal's own best, elites by cost, the stored pose) IS the
@@ -379,12 +379,14 @@ def _topo_run(
             dataclasses.replace(base_obj, measures=0.2) if td.measures else base_obj
         )
         result = _tp.topo_place(td, objective=objective, effort=effort, seed=seed)
-        # Post-anneal label-room repair (Reto 2026-10-29, taz-leaf runs
-        # 34-39: 23-37 far labels however the anneal priced the room):
-        # deterministic nudges that put every reachable refdes label next
-        # to its part and pull edge-squished rings off the outline —
-        # the guarantee the anneal's approximate box model cannot give.
-        committed = _tp.settle_label_room(td, result.best_pose)
+        # Post-anneal repairs: hard decap/crystal bounds first (Reto
+        # 2026-11-01: beyond its limit is a DRC error, which a priced term
+        # cannot guarantee), then label room (Reto 2026-10-29, taz-leaf
+        # runs 34-39: 23-37 far labels however the anneal priced the
+        # room) — deterministic nudges that put every reachable refdes
+        # label next to its part and pull edge-squished rings off the
+        # outline, never at a hard measure's expense.
+        committed = _tp.settle_pose(td, result.best_pose)
         diverged = ""
         # gr540612: a diverged long anneal must not strand the board at
         # the commit gate — walk the elites then the stored pose through
@@ -791,6 +793,14 @@ def _topo_route(
         ctx.append_chunk("job_event", t)
 
     event = _route_event
+    # gr524239: a poured net fans out by via and the plane is poured over
+    # the finished copper — the pour needs the real pads and authored
+    # copper it must keep off.
+    plane_kw: dict[str, Any] = dict(
+        footprints=footprints or {},
+        fixed_copper=fixed_copper or [],
+        hole_clearance_mm=hole_fab_clearance_mm(capability),
+    )
     plan, rres = _tprealise.route_design(
         td_route,
         ir,
@@ -801,6 +811,7 @@ def _topo_route(
         masks=_route_masks(
             td_route, td_route.pose0, ir.n_layers, net_rules, min_via_dia
         ),
+        **plane_kw,
     )
 
     # Failure-driven shove (Reto 2026-10-30: "should just cause shove, and
@@ -856,6 +867,7 @@ def _topo_route(
                 min_via_dia=None if min_via_dia is None else float(min_via_dia),
                 event=event,
                 masks=_route_masks(td_route, pose, ir.n_layers, net_rules, min_via_dia),
+                **plane_kw,
             )
         except _tprealise.CorridorOverflow:
             break

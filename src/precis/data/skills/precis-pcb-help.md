@@ -158,6 +158,15 @@ and `reason` remains one provenance comment on the emitted measure call.
 connections in one transaction; re-`put`ting the same slug **extends** it
 (existing refdes/net names are reused, not duplicated).
 
+**A big batch rides the upload door, not args** (gr520323). A board
+script's `to_batch()` is ~36 KB at 50 parts. Create the design
+(`put(id=<slug>, title=…)`), mint a single-use link
+(`put(id=<slug>, args={'op':'batch_upload_link'})`), stage the file with
+`uv run precis door pcb board.json --url '<url>'` (or the printed curl
+line), then `put(id=<slug>, args={'batch_ref':'<sha256>'})`: the same
+judged put, storing the same rows as the inline batch. A staging is swept
+after 24 h.
+
 A physical pad has one canonical electrical pin name:
 conflicting explicit ownership or contradictory same-name pads refuse the
 whole put. Use one canonical name in pins/connections or correct the pad.

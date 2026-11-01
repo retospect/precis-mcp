@@ -736,7 +736,7 @@ def test_pcb_place_topo_falls_back_instead_of_refusing(
     elites = captured["elites"]
     assert elites
     assert "committed elite 1/" in ctx.summaries[0][1]
-    expected = tp.settle_label_room(td, elites[0].pose)
+    expected = tp.settle_pose(td, elites[0].pose)
     after = {
         i["refdes"]: (i["x"], i["y"]) for i in store.pcb_graph(ref_id)["instances"]
     }
@@ -829,7 +829,7 @@ def test_pcb_place_topo_diverged_falls_back_to_an_elite(
         )
 
     monkeypatch.setattr("precis.pcb.topoplace.topo_place", _diverged)
-    monkeypatch.setattr("precis.pcb.topoplace.settle_label_room", lambda td, pose: pose)
+    monkeypatch.setattr("precis.pcb.topoplace.settle_pose", lambda td, pose: pose)
     ctx = _FakeCtx(
         store,
         params={"pcb_ref_id": ref_id, "placer": "topo", "iters": 50, "seed": 1},
@@ -880,7 +880,7 @@ def test_pcb_place_topo_diverged_falls_back_to_the_stored_pose(
         )
 
     monkeypatch.setattr("precis.pcb.topoplace.topo_place", _diverged)
-    monkeypatch.setattr("precis.pcb.topoplace.settle_label_room", lambda td, pose: pose)
+    monkeypatch.setattr("precis.pcb.topoplace.settle_pose", lambda td, pose: pose)
     ctx = _FakeCtx(
         store,
         params={"pcb_ref_id": ref_id, "placer": "topo", "iters": 50, "seed": 1},
@@ -942,7 +942,7 @@ def test_pcb_place_topo_gate_counts_the_copper_the_commit_keeps(
         )
 
     monkeypatch.setattr("precis.pcb.topoplace.topo_place", _topo)
-    monkeypatch.setattr("precis.pcb.topoplace.settle_label_room", lambda td, pose: pose)
+    monkeypatch.setattr("precis.pcb.topoplace.settle_pose", lambda td, pose: pose)
     ctx = _FakeCtx(
         store,
         params={"pcb_ref_id": ref_id, "placer": "topo", "iters": 50, "seed": 1},
@@ -1012,7 +1012,7 @@ def test_pcb_place_topo_refuses_when_the_stored_pose_is_not_recoverable(
 
     monkeypatch.setattr(tp, "design_from_ir", _unrecoverable)
     monkeypatch.setattr(tp, "topo_place", _diverged)
-    monkeypatch.setattr(tp, "settle_label_room", lambda td, pose: pose)
+    monkeypatch.setattr(tp, "settle_pose", lambda td, pose: pose)
     ctx = _FakeCtx(
         store,
         params={"pcb_ref_id": ref_id, "placer": "topo", "iters": 50, "seed": 1},

@@ -414,6 +414,117 @@ def test_upload_tree_no_staging_503(
     assert "PRECIS_UPLOAD_STAGING" in r.json()["detail"]
 
 
+# -- POST /files/upload_batch/{ref_id} (gr520323 — the pcb batch door) --
+#
+# The PDF door's contract with its own sentinel (``upload_batch``), a
+# JSON content type, the batch cap, an optional declared sha and a strict
+# one-object parse. ``put(kind='pcb', args={'batch_ref': sha})`` reads
+# what it leaves.
+
+_BATCH_BYTES = b'{"components":[],"nets":[]}'
+
+
+def _batch_token(ref_id: int = 50, **kw) -> str:
+    return file_links.mint("put", file_links.UPLOAD_BATCH_SHA, ref_id, **kw)
+
+
+def _post_batch(
+    client: TestClient,
+    ref_id: int,
+    token: str,
+    body: bytes = _BATCH_BYTES,
+    *,
+    content_type: str = "application/json",
+    sha: str | None = None,
+):
+    headers = {"content-type": content_type}
+    if sha is not None:
+        headers["x-content-sha256"] = sha
+    return client.post(
+        f"/files/upload_batch/{ref_id}?t={token}", content=body, headers=headers
+    )
+
+
+def test_upload_batch_stages_json_and_answers_the_put(
+    runtime: FakeRuntime, staging_dir, tmp_path
+) -> None:
+    import hashlib
+
+    sha = hashlib.sha256(_BATCH_BYTES).hexdigest()
+    r = _post_batch(_client(runtime, tmp_path), 50, _batch_token(50), sha=sha)
+    assert r.status_code == 200
+    assert r.json()["sha256"] == sha
+    assert (staging_dir / f"50-{sha}.json").read_bytes() == _BATCH_BYTES
+    assert f"'batch_ref': '{sha}'" in r.json()["next"]
+
+
+def test_upload_batch_other_door_tokens_403(
+    runtime: FakeRuntime, staging_dir, tmp_path
+) -> None:
+    client = _client(runtime, tmp_path)
+    assert _post_batch(client, 50, _put_token(50)).status_code == 403
+    assert _post_batch(client, 50, _tree_token(50)).status_code == 403
+    assert _post(client, 50, _batch_token(50)).status_code == 403
+
+
+def test_upload_batch_wrong_content_type_415_keeps_the_link(
+    runtime: FakeRuntime, staging_dir, tmp_path
+) -> None:
+    client = _client(runtime, tmp_path)
+    token = _batch_token(50)
+    r = _post_batch(client, 50, token, content_type="text/plain")
+    assert r.status_code == 415
+    assert _post_batch(client, 50, token).status_code == 200
+
+
+@pytest.mark.parametrize("body", [b"[1, 2]", b'{"a": NaN}', b"{not json"])
+def test_upload_batch_not_one_object_415(
+    runtime: FakeRuntime, staging_dir, tmp_path, body: bytes
+) -> None:
+    r = _post_batch(_client(runtime, tmp_path), 50, _batch_token(50), body)
+    assert r.status_code == 415
+    assert list(staging_dir.iterdir()) == []
+
+
+def test_upload_batch_declared_sha_mismatch_400(
+    runtime: FakeRuntime, staging_dir, tmp_path
+) -> None:
+    client = _client(runtime, tmp_path)
+    token = _batch_token(50)
+    assert _post_batch(client, 50, token, sha="ab" * 32).status_code == 400
+    assert _post_batch(client, 50, token, sha="nothex").status_code == 400
+    # A refused upload leaves nothing behind and the link unspent.
+    assert list(staging_dir.glob("*.json")) == []
+    assert _post_batch(client, 50, token).status_code == 200
+
+
+def test_upload_batch_oversize_413(
+    runtime: FakeRuntime, staging_dir, tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from precis.pcb import batch_door
+
+    monkeypatch.setattr(batch_door, "MAX_BATCH_BYTES", 8)
+    r = _post_batch(_client(runtime, tmp_path), 50, _batch_token(50))
+    assert r.status_code == 413
+    assert not staging_dir.exists() or list(staging_dir.glob("*.json")) == []
+
+
+def test_upload_batch_single_use_409(
+    runtime: FakeRuntime, staging_dir, tmp_path
+) -> None:
+    client = _client(runtime, tmp_path)
+    token = _batch_token(50)
+    assert _post_batch(client, 50, token).status_code == 200
+    assert _post_batch(client, 50, token).status_code == 409
+
+
+def test_upload_batch_wrong_ref_403(
+    runtime: FakeRuntime, staging_dir, tmp_path
+) -> None:
+    r = _post_batch(_client(runtime, tmp_path), 99, _batch_token(50))
+    assert r.status_code == 403
+
+
 # -- GET /files/blob/{sha} (gr520326 — the page_image crop door) -------
 #
 # The token signs ``(op='get', sha, ref_id)``; the fetch is ref-bound —

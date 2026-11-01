@@ -39,6 +39,14 @@ offset 257 is the format gate), and the part renames to
 ``<ref_id>-<sha>.tar`` for ``import_workspace``'s ``staged`` key to
 consume.
 
+``POST /files/upload_batch/{ref_id}?t=<token>`` is the pcb batch door
+(gr520323): ``put(kind='pcb', args={'op': 'batch_upload_link'})`` mints
+it over ``(op='put', sha='upload_batch', ref_id, exp)``; ``precis door
+pcb <file.json>`` (or curl) posts one JSON object — ``Content-Type:
+application/json``, at most ``MAX_BATCH_BYTES``, optionally
+``X-Content-SHA256`` for an end-to-end hash check — and the part renames
+to ``<ref_id>-<sha>.json`` for ``args={'batch_ref': '<sha>'}`` to read.
+
 **This route authenticates itself**, which is why
 :mod:`precis_web.auth` exempts the ``/files`` prefix from its blanket
 Basic gate — and why there is deliberately NO Basic fallback here
@@ -55,6 +63,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import os
+from collections.abc import Callable
 from pathlib import Path
 from typing import TYPE_CHECKING, BinaryIO
 
@@ -64,6 +73,7 @@ from fastapi.responses import FileResponse, Response
 from precis import file_links
 from precis.corpus_layout import rebase_onto_local, resolve_local_pdf
 from precis.ingest import pdf_upload
+from precis.pcb import batch_door
 from precis_web.config import WebConfig
 from precis_web.deps import get_store, get_web_config
 
@@ -103,6 +113,9 @@ async def _stage_stream(
     magic: bytes,
     oversized: str,
     not_what: str,
+    max_bytes: int | None = None,
+    expect_sha: str | None = None,
+    check: Callable[[Path], None] | None = None,
 ) -> tuple[str, int]:
     """Claim ``<stem>.done``, then stream the request body to
     ``<stem>.part`` hashing it as it arrives; return ``(sha256, size)``
@@ -110,10 +123,16 @@ async def _stage_stream(
 
     ``magic`` at ``magic_offset`` is the format gate — a body that ends
     before the check completes, or whose bytes fail it, is a 415;
-    ``MAX_UPLOAD_BYTES`` is a 413 raised mid-read so an over-cap body
-    never reaches disk in full. A failed upload (413/415/disconnect)
-    drops both artifacts so the token stays reusable until expiry.
+    ``max_bytes`` (default ``MAX_UPLOAD_BYTES``) is a 413 raised mid-read
+    so an over-cap body never reaches disk in full. ``expect_sha`` is the
+    client's declared sha256 — a body hashing otherwise is a 400 (the
+    bytes changed in transit, or the header names another file).
+    ``check`` vets the complete part file off the loop and raises
+    ``HTTPException`` to refuse it. A failed upload (any refusal or a
+    disconnect) drops both artifacts so the token stays reusable until
+    expiry.
     """
+    cap = pdf_upload.MAX_UPLOAD_BYTES if max_bytes is None else max_bytes
     part, done = directory / f"{stem}.part", directory / f"{stem}.done"
     try:
         # The nonce is claimed BEFORE the body streams: the ``.done``
@@ -134,7 +153,7 @@ async def _stage_stream(
         try:
             async for chunk in request.stream():
                 size += len(chunk)
-                if size > pdf_upload.MAX_UPLOAD_BYTES:
+                if size > cap:
                     raise HTTPException(status_code=413, detail=oversized)
                 if not checked:
                     head += chunk[: want - len(head)]
@@ -147,6 +166,17 @@ async def _stage_stream(
             await asyncio.to_thread(fh.close)
         if not checked:
             raise HTTPException(status_code=415, detail=not_what)
+        if expect_sha is not None and hasher.hexdigest() != expect_sha:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"body sha256 {hasher.hexdigest()} does not match the "
+                    f"declared {expect_sha} — the bytes changed in transit "
+                    "or the header names another file"
+                ),
+            )
+        if check is not None:
+            await asyncio.to_thread(check, part)
     except FileExistsError as exc:
         # A stray ``.part`` under our own fresh nonce — cannot happen
         # (the tombstone claim serializes the nonce); still a 409, never
@@ -172,9 +202,12 @@ def _staging_dir_or_503() -> Path:
     return directory
 
 
-def _check_declared_length(request: Request, detail: str) -> None:
+def _check_declared_length(
+    request: Request, detail: str, *, max_bytes: int | None = None
+) -> None:
+    cap = pdf_upload.MAX_UPLOAD_BYTES if max_bytes is None else max_bytes
     declared = request.headers.get("content-length")
-    if declared and declared.isdigit() and int(declared) > pdf_upload.MAX_UPLOAD_BYTES:
+    if declared and declared.isdigit() and int(declared) > cap:
         raise HTTPException(status_code=413, detail=detail)
 
 
@@ -273,6 +306,84 @@ async def upload_workspace_tree(ref_id: int, request: Request):
             f"'import_workspace', 'workspace': '<workspace slug>', "
             f"'staged': '{sha}'}}])"
         ),
+    }
+
+
+#: The batch door's declared-sha header. ``precis door pcb`` always
+#: sends it; a bare curl may omit it (the put re-hashes the staging
+#: against the ref either way).
+BATCH_SHA_HEADER = "x-content-sha256"
+
+
+def _batch_json_or_415(part: Path) -> None:
+    """The batch door's content gate — the whole strict-JSON-object parse
+    (:func:`precis.pcb.batch_door.parse_batch_json`; the body is under
+    the cap, so one read is cheap). The key set and every design rule
+    stay with the put."""
+    try:
+        batch_door.parse_batch_json(part.read_bytes())
+    except ValueError as exc:
+        raise HTTPException(status_code=415, detail=f"not a batch: {exc}") from None
+
+
+@router.post("/files/upload_batch/{ref_id}")
+async def upload_batch(ref_id: int, request: Request):
+    """Stage one agent-held put batch — one JSON object — under
+    ``PRECIS_UPLOAD_STAGING`` for ``put(kind='pcb', args={'batch_ref':
+    '<sha>'})`` (gr520323): a 36 KB ``Board.to_batch()`` rides HTTP, never
+    tool args. Same contract as :func:`upload_pdf` — token verified
+    before a body byte, single-use nonce, streamed hash, its own token
+    sentinel (``upload_batch``) — plus the door's checks: ``Content-Type:
+    application/json`` (415, before the nonce is claimed), the
+    ``MAX_BATCH_BYTES`` cap (413), the declared ``X-Content-SHA256`` when
+    sent (400 on a mismatch) and a strict JSON object body (415). The
+    door moves bytes; the put judges the board."""
+    claims = await asyncio.to_thread(
+        _verify, request, op="put", sha=file_links.UPLOAD_BATCH_SHA
+    )
+    if claims.ref_id != ref_id:
+        raise HTTPException(status_code=403, detail="token names another ref")
+    store = get_store(request)
+    directory = _staging_dir_or_503()
+    media = (request.headers.get("content-type") or "").split(";", 1)[0]
+    if media.strip().lower() != "application/json":
+        raise HTTPException(
+            status_code=415, detail="Content-Type must be application/json"
+        )
+    declared = (request.headers.get(BATCH_SHA_HEADER) or "").strip().lower() or None
+    if declared is not None and not batch_door.is_sha256_hex(declared):
+        raise HTTPException(
+            status_code=400, detail="X-Content-SHA256 must be 64 hex digits"
+        )
+    cap = batch_door.MAX_BATCH_BYTES
+    oversized = f"batch exceeds the {cap}-byte cap"
+    _check_declared_length(request, oversized, max_bytes=cap)
+    await asyncio.to_thread(directory.mkdir, parents=True, exist_ok=True)
+    stem = pdf_upload.nonce(claims.exp, (request.query_params["t"]).rsplit(".", 1)[1])
+    sha, size = await _stage_stream(
+        request,
+        directory,
+        stem=stem,
+        magic_offset=0,
+        magic=b"{",
+        oversized=oversized,
+        not_what="not a batch: the body must be one JSON object (first byte '{')",
+        max_bytes=cap,
+        expect_sha=declared,
+        check=_batch_json_or_415,
+    )
+    part = directory / f"{stem}.part"
+    await asyncio.to_thread(
+        os.replace, part, directory / pdf_upload.staged_batch_name(ref_id, sha)
+    )
+    refs = await asyncio.to_thread(store.fetch_refs_by_ids, [ref_id])
+    target = refs.get(ref_id)
+    handle = str(getattr(target, "slug", "") or "") or f"pb{ref_id}"
+    return {
+        "sha256": sha,
+        "bytes": size,
+        "batch_ref": sha,
+        "next": batch_door.put_call(handle, sha),
     }
 
 

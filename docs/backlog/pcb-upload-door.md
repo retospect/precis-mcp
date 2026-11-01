@@ -1,7 +1,11 @@
 # pcb-upload-door — proposal (gr520323)
 
-Status: proposal, Reto 2026-10-31 ("we should make one, propose it").
-Blocked-by nothing; the pattern already exists for papers.
+Status: built 2026-11-01 (`precis.pcb.batch_door`, `precis door pcb`,
+`POST /files/upload_batch/{ref_id}`, `op='batch_upload_link'`,
+`args={'batch_ref': sha}`; tests `tests/test_pcb_batch_door.py` and
+`tests/precis_web/test_files.py`). Left: the two post-deploy exit criteria
+below (switch the taz-leaf push scripts, close gr520323).
+Asked for by Reto 2026-10-31 ("we should make one, propose it").
 
 ## Problem
 
