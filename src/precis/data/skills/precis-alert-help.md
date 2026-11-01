@@ -196,6 +196,7 @@ rule any producer can emit, grouped by source. The families:
 | `local-first:escalation` (`{op}`) | local-first stats, after a helper call | more than 40% of an op's helper calls escalated to the paid model in 24h; one per op per UTC day; consider switching the op's set off |
 | `memory_recall` (`recall-dropped`) | weekly `memory_recall` cadence | k=5 recall on the packaged P4 question set fell below the last recorded score, or median index + fisheye+1hop estimated tokens rose >25% (`app_settings['memory_recall:last']`, prior runs in `history`; `precis memory index --set --curve` shows k=3/5/8/12 recall versus tokens, estimated by chars/4) |
 | `secret_check` (`failed:<name>`) | weekly `secret_check` cadence | the credential probe in `precis.secret_status` rejected a configured key — alert carries the name, HTTP status and key URL, never the value |
+| `plan_dispatch` (`plan-moot:<root>`) | `plan_dispatch` tick | a plan closed itself as moot — its open nodes were set to `won't-do`; the detail says why, reopen the root if the call was wrong |
 | `nanopub_ots` · `nanopub-demote` · `nanopub_mirror` · `watch:*` · `ingest:*` · `inject_scan` · `llm_reconcile:drift` · `scheduler` · `quest_tick` · `admit:oversize` · `fetch_oa:*` · `orcid_enrich` | their owning pass | one or two conditions each — see `/rules` |
 
 The producer surface is generic (`precis.alerts.raise_alert`); a new

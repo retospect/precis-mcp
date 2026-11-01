@@ -264,8 +264,9 @@ observed check output, so a refused close never mints hourly
 duplicates. No check line → untouched (the manual close above); a
 `hold:no-autoclose` tag → untouched (both exclusions honour
 `ref_tags.expires_at`; check queries run under a 5 s statement_timeout
-and a cancel is skipped, never a verdict). The tick ships dark until an
-operator lights it (`precis service prio '*' gripe_autoclose 1`).
+and a cancel is skipped, never a verdict). The tick ships dark; to light
+it, ask a human operator to arm the `gripe_autoclose` service prio
+(recipe: `docs/runbooks/fix-gripe-ops.md`).
 
 ## Which gripes are in build, in review, landing, awaiting deploy?
 ## Who is working this gripe, on which host?

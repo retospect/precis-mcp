@@ -292,6 +292,13 @@ waits at most 50 ms; saturation skips the best-effort trace write.
 Traces have no chunks, embeddings, summaries or keywords; default agentlog
 listings and searches omit them.
 
+Hybrid search cut (`store/_search_cut.py`): `PRECIS_SEARCH_GAP_CUT`
+(default 0.15, provisional — see the module's calibration note) overrides
+the shared gap delta; the keep boundary is best candidate distance plus
+delta, capped at the 0.65 corpus floor. Non-numeric, non-finite or
+negative values fall back to 0.15. `PRECIS_SEARCH_FIXED_FLOORS=1`
+restores the old per-kind floors for one release (exactly `1` enables).
+
 ## 10. Tier-3 IPC & build stamps (not configuration)
 
 - **Per-invocation IPC** (a parent sets them per child; never

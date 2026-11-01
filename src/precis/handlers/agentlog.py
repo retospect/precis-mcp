@@ -227,6 +227,7 @@ class AgentLogHandler(NumericRefHandler):
         return super()._list_view(view)
 
     def _render_traces(self, params: dict[str, str]) -> Response:
+        from precis._result_budget import size_cell
         from precis.handlers.job import _parse_logs_int
 
         unknown = sorted(set(params) - {"since", "kind", "limit", "page_size"})
@@ -267,7 +268,8 @@ class AgentLogHandler(NumericRefHandler):
         values.append(min(limit, 200))
         with self.store.pool.connection() as conn:
             rows = conn.execute(
-                "SELECT ref_id, created_at, meta FROM refs WHERE "
+                "SELECT ref_id, created_at, meta, octet_length(meta::text) "
+                "FROM refs WHERE "
                 + " AND ".join(clauses)
                 + " ORDER BY created_at DESC, ref_id DESC LIMIT %s",
                 values,
@@ -284,10 +286,19 @@ class AgentLogHandler(NumericRefHandler):
                             "mode": meta.get("mode"),
                             "kinds": meta.get("kinds"),
                             "candidates": meta.get("candidates_total", 0),
+                            "size": size_cell(meta_bytes),
                         }
-                        for ident, created, meta in rows
+                        for ident, created, meta, meta_bytes in rows
                     ],
-                    schema=["id", "created", "q", "mode", "kinds", "candidates"],
+                    schema=[
+                        "id",
+                        "created",
+                        "q",
+                        "mode",
+                        "kinds",
+                        "candidates",
+                        "size",
+                    ],
                 )
             )
         else:

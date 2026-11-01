@@ -52,6 +52,7 @@ def checkout_set_path() -> Path:
         text=True,
         encoding="utf-8",
         check=False,
+        timeout=30,
     )
     if root.returncode:
         raise ValueError("run from a precis Git work tree; no files changed")
@@ -64,6 +65,7 @@ def checkout_set_path() -> Path:
         text=True,
         encoding="utf-8",
         check=False,
+        timeout=30,
     )
     if (
         tracked.returncode
@@ -132,7 +134,7 @@ def run(args: argparse.Namespace) -> None:
     try:
         path = checkout_set_path()
         with (
-            psycopg.connect(resolve_dsn(args.database_url)) as conn,
+            psycopg.connect(resolve_dsn(args.database_url), connect_timeout=15) as conn,
             conn.transaction(),
         ):
             conn.execute("SET TRANSACTION READ ONLY")

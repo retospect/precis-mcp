@@ -134,6 +134,6 @@ def export_rows(
 
 
 def run(args: argparse.Namespace) -> None:
-    with psycopg.connect(resolve_dsn(args.database_url)) as conn:
+    with psycopg.connect(resolve_dsn(args.database_url), connect_timeout=15) as conn:
         for row in export_rows(conn, since=args.since, kind=args.kind):
             print(json.dumps(row))

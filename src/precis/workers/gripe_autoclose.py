@@ -339,11 +339,11 @@ def parse_check(text: str, *, kinds: Collection[str] | None = None) -> Check:
                     "count predicates join with `and`: `with <pred> [and <pred>…]`"
                 )
             for tok in preds[::2]:
-                kind, payload = _parse_pred(tok)
-                if kind == "tag":
-                    tags.append(str(payload))
+                _, payload = _parse_pred(tok)
+                if isinstance(payload, str):
+                    tags.append(payload)
                 else:
-                    meta_eq.append(payload)  # type: ignore[arg-type]
+                    meta_eq.append(payload)
         # A predicate-less count an EMPTY result satisfies reads as a
         # pass on the wrong kind — `count gripe = 0` is "no open gripes"
         # only because nothing anchors it. With a tag=/meta. predicate

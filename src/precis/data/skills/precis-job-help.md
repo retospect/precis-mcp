@@ -109,6 +109,7 @@ next section.
 | `good_search_triage`| `claude_inproc` | A `good_search` triage batch (internal — the campaign spawns these itself) |
 | `conflict_sweep`    | `claude_inproc` | One claim hub hunts its opposition: negated-paraphrase ANN over the corpus, `paper_rank`-budgeted LLM verify, `disputes` edge on a confirmed contradicts, `meta.conflict_search` coverage ledger stamped. Minted for you at claim mint and by the approve page's freshness check (dark unless the `conflict_search` service is lit); by hand: params `hub_id` (the `fi<id>` ref_id), optional `refresh` (sweep even if already current — covered passages are still skipped). See `precis-taproot-help`. |
 | `deferred_llm_call` | `coordinator`   | A synchronous surface's LLM call run later, after a Claude quota or budget window (internal — the web follow-up mints it when the model is paused; it sleeps until `retry_at`, then appends the real answer to the conv) |
+| `devin_task`        | `devin_api`     | Hand one task to a cloud Devin session via the official API v3 — the executor mints the session, polls, collects the result and any PR links. Params: `prompt` (required), optional `title`, `repos`, `tags`, `max_acu_limit`, `resources.wall_seconds`. Drained by the `job_devin_api` service, which ships **dark** — gated off every cycle until a human operator lights a `service_config` row; the job carries no prod-write credential, and a claimed result is evidence a consumer verifies by sha, not truth |
 
 ## More registered job_types — the rest of the internal lanes
 

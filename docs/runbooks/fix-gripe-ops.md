@@ -118,3 +118,19 @@ stored via `git config --global credential.helper store` in
 `~/.git-credentials` (mode 600). The checkout's `https://` origin stays as
 the ansible role provisions it. Verify as the deploy user from the
 checkout: `git push --dry-run origin HEAD:refs/heads/gripe_0` exits 0.
+
+## Arming the gripe_autoclose tick
+
+`gripe_autoclose` (the self-close check described in
+`precis-gripe-loop-help`: a `meta.fix.check` gripe closes once its sha is
+deployed and the prod check passes) ships dark — registered but gated
+off every cycle. Light it fleet-wide with:
+
+```bash
+precis service prio '*' gripe_autoclose 1
+```
+
+…and `0` to darken it again. A failure closes the gripe and refiles a
+`STATUS:triaged` `derived-from` gripe naming the observed check output,
+so a mis-lit tick is loud, not silent — verify the first few verdicts
+before walking away.

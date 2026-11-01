@@ -382,8 +382,9 @@ omit, so a semantic search lists everything within the 0.65 corpus floor.
 Cross-kind search (`kind='*'` or a kind list) applies the shared gap/corpus
 cut to uncorroborated semantic hits in hybrid mode. The single-kind
 `search(kind='paper'|'patent'|'web', ...)` does not apply these cuts.
-The provisional delta defaults to 0.15 (`PRECIS_SEARCH_GAP_CUT` override);
-`PRECIS_SEARCH_FIXED_FLOORS=1` restores the old per-kind floors for one release.
+The provisional delta defaults to 0.15; to retune it or to restore the
+old per-kind floors for one release, ask a human operator (knobs:
+`docs/reference/config-variables.md` §Tuning knobs).
 
 ## Filter search results by tag
 ## Find refs tagged with topic:X
