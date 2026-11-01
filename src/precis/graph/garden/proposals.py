@@ -372,12 +372,190 @@ def pending_proposals(
     return out
 
 
+@dataclass(frozen=True, slots=True)
+class MergeLedgerEntry:
+    """One fold of the merge-action slice of the garden ledger
+    (gr548660): the proposal row plus its terminal verdict."""
+
+    review_id: int  # the proposal row's review_id (resolves target)
+    target_kind: str
+    target_id: int
+    key: str
+    detector: str
+    title: str
+    evidence: dict[str, Any]
+    payload: dict[str, Any]  # the proposal's pair (loser/winner pre-verdict)
+    rationale: str
+    verdict: str  # 'proposed' (still pending) | 'approved' | 'rejected'
+    model: str | None
+    proposed_at: Any
+    decided_at: Any | None
+    decided_by: str | None  # actor on the terminal row
+    merge_id: str | None  # garden.applied — the merge record's id
+    loser_id: int | None  # garden.loser on the approved row
+    winner_id: int | None  # garden.winner on the approved row
+    undone: bool
+    current: bool  # the proposal row's content_sha still matches
+
+
+class _MergeAcc:
+    """Per-key fold state for :func:`merge_ledger`."""
+
+    __slots__ = ("proposal", "terminal")
+
+    def __init__(self) -> None:
+        self.proposal: tuple[Any, dict[str, Any]] | None = None
+        self.terminal: tuple[Any, dict[str, Any]] | None = None
+
+
+def merge_ledger(
+    store: Store,
+    *,
+    since: Any | None = None,
+    limit: int = 200,
+) -> list[MergeLedgerEntry]:
+    """The merge-action slice of the garden review ledger (gr548660).
+
+    Same fold as :func:`pending_proposals` — newest garden row per key
+    decides, and a terminal row pairs with the ``proposed`` row it
+    resolves — but keeps merge keys in every state (pending, approved,
+    rejected), not just pending. ``merge_id`` / ``loser_id`` /
+    ``winner_id`` come from the approved row's ``garden`` extras
+    (``resolve_proposal``'s ``extra`` on the apply path).
+
+    ``undone`` asks the loser ref whether it still carries
+    ``meta.garden_merge`` for this merge — ``undo_merge`` clears that
+    record and writes no ledger row, so the loser's own row is the only
+    place the reversal shows. A rejected terminal carrying
+    ``reason='undone'``/``undone=<id>`` (the relink convention) marks it
+    too. ``since`` filters on the deciding row's ``at``.
+    """
+    with store.pool.connection() as conn:
+        rows = conn.execute(
+            "SELECT review_id, target_kind, target_id, model, content_sha, "
+            "       verdict, note, at, actor, "
+            "       coalesce(content_sha = precis_target_sha(target_kind, "
+            "                target_id), false) AS current "
+            "  FROM reviews WHERE note LIKE %s "
+            "   AND NOT (actor = %s AND verdict = 'rejected' AND note LIKE %s) "
+            " ORDER BY at DESC, review_id DESC LIMIT %s",
+            ('%"garden"%', GARDEN_ACTOR, '%"proposer_reject": true%', limit * 8),
+        ).fetchall()
+
+    accs: dict[str, _MergeAcc] = {}
+    order: list[str] = []
+    for row in rows:
+        g = _parse_note(row[6])
+        if g is None or g.get("proposer_reject"):
+            continue
+        key = str(g.get("key") or "")
+        if key not in accs:
+            accs[key] = _MergeAcc()
+            order.append(key)
+        acc = accs[key]
+        if row[5] == "proposed":
+            # Newest proposal wins (a re-opened key); an earlier terminal
+            # already in the acc belongs to a previous decision round and
+            # stays — the pair reads proposed again either way.
+            if acc.proposal is None:
+                acc.proposal = (row, g)
+        elif acc.terminal is None and acc.proposal is None:
+            acc.terminal = (row, g)
+
+    cand: list[
+        tuple[tuple[Any, dict[str, Any]], tuple[Any, dict[str, Any]] | None]
+    ] = []
+    for key in order:
+        acc = accs[key]
+        if acc.proposal is None:
+            # A decided key whose proposal row fell off the over-read
+            # window — without it the action is unverifiable, so skip.
+            continue
+        if str(acc.proposal[1].get("action") or "") != "merge":
+            continue
+        if since is not None:
+            deciding = acc.terminal[0][7] if acc.terminal else acc.proposal[0][7]
+            if deciding is not None and deciding < since:
+                continue
+        cand.append((acc.proposal, acc.terminal))
+        if len(cand) >= limit:
+            break
+
+    # Undone detection: a merge is still applied only while the loser
+    # carries its garden_merge record for this merge_id.
+    losers: set[int] = set()
+    for _prop, term in cand:
+        if term is None or term[1].get("applied") is None:
+            continue
+        try:
+            losers.add(int(term[1]["loser"]))
+        except (KeyError, TypeError, ValueError):
+            continue
+    live_merges: dict[int, str] = {}
+    if losers:
+        with store.pool.connection() as conn:
+            for rid, mid in conn.execute(
+                "SELECT ref_id, meta->'garden_merge'->>'merge_id' "
+                "FROM refs WHERE ref_id = ANY(%s)",
+                (list(losers),),
+            ).fetchall():
+                if mid is not None:
+                    live_merges[int(rid)] = str(mid)
+
+    out: list[MergeLedgerEntry] = []
+    for (prop_row, prop_g), term in cand:
+        term_g: dict[str, Any] = term[1] if term is not None else {}
+        merge_id = term_g.get("applied")
+        try:
+            loser = int(term_g["loser"]) if term_g.get("loser") is not None else None
+        except (TypeError, ValueError):
+            loser = None
+        try:
+            winner = int(term_g["winner"]) if term_g.get("winner") is not None else None
+        except (TypeError, ValueError):
+            winner = None
+        undone = term_g.get("reason") == "undone" or term_g.get("undone") is not None
+        if (
+            merge_id is not None
+            and not undone
+            and loser is not None
+            and live_merges.get(loser) != str(merge_id)
+        ):
+            undone = True
+        out.append(
+            MergeLedgerEntry(
+                review_id=int(prop_row[0]),
+                target_kind=str(prop_row[1]),
+                target_id=int(prop_row[2]),
+                key=str(prop_g.get("key") or ""),
+                detector=str(prop_g.get("detector") or ""),
+                title=str(prop_g.get("title") or ""),
+                evidence=prop_g.get("evidence") or {},
+                payload=prop_g.get("payload") or {},
+                rationale=str(prop_g.get("rationale") or ""),
+                verdict="proposed" if term is None else str(term[0][5]),
+                model=None if prop_row[3] is None else str(prop_row[3]),
+                proposed_at=prop_row[7],
+                decided_at=None if term is None else term[0][7],
+                decided_by=None if term is None else str(term[0][8]),
+                merge_id=None if merge_id is None else str(merge_id),
+                loser_id=loser,
+                winner_id=winner,
+                undone=undone,
+                current=bool(prop_row[9]),
+            )
+        )
+    return out
+
+
 __all__ = [
     "GARDEN_ACTOR",
     "GARDEN_VERSION",
     "GardenProposal",
+    "MergeLedgerEntry",
     "emit_proposal",
     "key_block",
+    "merge_ledger",
     "pending_proposals",
     "proposal_key_pending",
     "record_rejection",

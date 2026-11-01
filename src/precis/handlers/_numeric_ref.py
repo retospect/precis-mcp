@@ -110,7 +110,18 @@ _FILLER_FIRST_LINE = re.compile(
 # additional views should override `get()` to layer their dispatch
 # on top, or — when we land per-kind view registries — extend
 # this tuple via a class-level hook.
-_BASE_VIEWS: tuple[str, ...] = ("links", "log", "raw", "history", "diff")
+#: ``retired`` (gr548660) is a base view too — the opt-in tombstone
+#: read every numeric kind shares through ``NumericRefHandler.get`` —
+#: so subclass view gates (``view not in _BASE_VIEWS``) pass it through
+#: instead of refusing it as unknown.
+_BASE_VIEWS: tuple[str, ...] = (
+    "links",
+    "log",
+    "raw",
+    "history",
+    "diff",
+    "retired",
+)
 
 # Most ids one ``get``/``tag`` call takes as ``id=[...]`` on a kind with
 # ``batch_ids = True``. Sized to the measured loops it replaces (runs of
@@ -936,6 +947,19 @@ class NumericRefHandler(Handler):
             # ``eye`` through the dispatcher before ``get`` runs.
             return self.eye(id=id, extent=view, q=q)
         ref_id = self._coerce_id(id)
+        if view == "retired":
+            # Opt-in tombstone read (gr548660): the only get that does
+            # not redirect to the survivor — it renders the retired row
+            # itself, so resolution must see soft-deleted rows.
+            ref = self.store.get_ref(kind=self.kind, id=ref_id, include_deleted=True)
+            if ref is None:
+                raise NotFound(
+                    f"{self._sense()} id={ref_id} not found",
+                    next=f"search(kind={self.kind!r}, q='...') to find existing",
+                )
+            from precis.handlers._retired_view import render_retired_ref
+
+            return render_retired_ref(self.store, ref)
         ref = self._resolve_live_ref(ref_id)
         if view is not None:
             if view not in _BASE_VIEWS:

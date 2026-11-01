@@ -246,6 +246,20 @@ _ID_JUNK_EXTRAS_KEYS = (
     )
 )
 
+
+def _wants_retired_view(args: dict[str, Any]) -> bool:
+    """True when the caller opted into the tombstone read (gr548660).
+
+    Both spellings count — ``view='retired'`` and
+    ``args={'retired': True}`` — because handle routing happens before
+    the extras are flattened into handler kwargs.
+    """
+    if str(args.get("view") or "").strip() == "retired":
+        return True
+    extras = args.get(_EXTRAS_KEY)
+    return isinstance(extras, dict) and bool(extras.get("retired"))
+
+
 #: Kinds whose ``id=`` legitimately contains whitespace — a URL, file
 #: path, free-text query or expression — where a pasted tail could be
 #: real content. For these kinds ``id=`` is never trimmed.
@@ -3306,6 +3320,23 @@ class DispatchMixin(RuntimeShape):
         # never let it reach a handler kwargs gate.
         args.pop(_RESOLVED_FACETS_KEY, None)
         extras = args.pop(_EXTRAS_KEY, None)
+        if verb == "get" and isinstance(extras, dict) and "retired" in extras:
+            # ``args={'retired': True}`` spells ``view='retired'``
+            # (gr548660). Normalise here, before the kwargs gate, so the
+            # flag works uniformly on every kind's get() without each
+            # handler declaring a `retired` kwarg — and the gate never
+            # sees the alias key itself.
+            extras = dict(extras)
+            retired_flag = extras.pop("retired")
+            if retired_flag:
+                if args.get("view") not in (None, "retired"):
+                    raise BadInput(
+                        f"args={{'retired': True}} conflicts with "
+                        f"view={args['view']!r} — the tombstone read is "
+                        "view='retired'",
+                        next="get(id=<handle>, view='retired')",
+                    )
+                args["view"] = "retired"
         if extras:
             accepted = self._accepted_kwargs(method)
             # Handlers that opt into an explicit ``args: dict``
@@ -4214,6 +4245,16 @@ class DispatchMixin(RuntimeShape):
             args["kind"] = parsed[0] if parsed else resolved.kind
             args["id"] = (str(parsed[2]) if parsed else normalized) + suffix
             return True
+        if resolved.redirected_from is not None and _wants_retired_view(args):
+            # view='retired' / args={'retired': True} (gr548660): the
+            # caller asked for the tombstone itself — route the decoded
+            # ref_id under the handle's own kind (the survivor may have
+            # been converted), so the transparent redirect below cannot
+            # land the tombstone read on the survivor.
+            parsed = handle_registry.parse(normalized)
+            args["kind"] = parsed[0] if parsed else resolved.kind
+            args["id"] = (str(parsed[2]) if parsed else normalized) + suffix
+            return True
         args["kind"] = resolved.kind
         if ref_door:
             # The paper retire / redirect_to / merge_into doors resolve
@@ -4290,6 +4331,15 @@ class DispatchMixin(RuntimeShape):
             # ``args={'redirect_to': …}`` on a half-tombstone (retired
             # with no superseded_by, gr524021) died on the NotFound below
             # before the handler could see them (gr509441, gr509659).
+            args["kind"] = kind
+            args["id"] = str(pk) + suffix
+            return True
+        if _wants_retired_view(args):
+            # A retired handle with no live supersede target (a plain
+            # retire, or a merge loser resolve_handle didn't follow)
+            # still has a row to read under view='retired' (gr548660).
+            # Route the decoded pk for slug kinds too — a tombstone has
+            # no live slug, but its ref_id addresses it.
             args["kind"] = kind
             args["id"] = str(pk) + suffix
             return True

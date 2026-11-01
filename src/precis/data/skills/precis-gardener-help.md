@@ -224,6 +224,26 @@ undo <relink_id>` deletes the edge a reviewed relink wrote
 for human follow-through (the apply paths are
 deliberately narrower than the proposal space).
 
+## Audit a merge
+
+An applied merge retires the loser, so its handle redirects to the
+winner — a plain `get` can no longer show what was folded. Two MCP
+doors close that gap (gr548660); no SQL needed:
+
+- `get(kind='job', id='/garden/merges', args={'since': '30d'})` — the
+  merge slice of the review ledger, folded by `garden.key`: merge id,
+  loser → survivor handles, verdict, proposed/decided times, the
+  proposal's title/rationale/evidence, and `undone` (the loser no
+  longer carries `meta.garden_merge` — `precis garden undo` writes no
+  ledger row, so the ref row is the reversal record).
+- `get(kind='<kind>', id='<loser handle>', view='retired')` — the
+  tombstone itself, never the redirect: remaining identifiers, its own
+  body chunks (count + first chunk), the links the merge repointed
+  (the `meta.garden_merge` reversal record), `superseded_by`, and the
+  merge id. `args={'retired': True}` spells the same opt-in. A merged
+  paper's re-homed cite key resolves to the survivor — address the
+  tombstone by its `pa<id>` handle, which the merges list prints.
+
 ## The sampled reviewer
 
 `precis garden review` burns down the open-proposal backlog: up to

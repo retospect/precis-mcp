@@ -326,6 +326,7 @@ _SUPPORTED_VIEWS = (
     "measures",
     "page_image",
     "comments",
+    "retired",
 )
 
 #: Chunk kinds that always get a figure pointer on read (gr520326).
@@ -2161,6 +2162,20 @@ class PaperHandler(Handler):
         raw_id = _maybe_resolve_doi(self.store, str(id))
         kind = self.spec.kind
         slug, chunk_spec, path_view = _parse_paper_id(raw_id, kind)
+
+        if chunk_spec is None and _normalise_view(path_view or view) == "retired":
+            # Opt-in tombstone read (gr548660): resolve the row WITHOUT
+            # the liveness filter — a merged loser's slug redirects to
+            # the survivor, so only ``pa<id>``/digits address it.
+            tomb = self._resolve_ref_incl_retired(slug)
+            if tomb is None:
+                raise NotFound(
+                    f"{kind} id={id!r} resolves to no ref (live or retired)",
+                    next=f"search(kind={kind!r}, q='...') to find the ref",
+                )
+            from precis.handlers._retired_view import render_retired_ref
+
+            return render_retired_ref(self.store, tomb)
 
         ref = resolve_live_slug_ref(
             self.store,

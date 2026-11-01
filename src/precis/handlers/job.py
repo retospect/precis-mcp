@@ -840,6 +840,7 @@ class JobHandler(NumericRefHandler):
             "delta",
             "settings",
             "garden",
+            "garden/merges",
         )
 
     def get(
@@ -892,7 +893,12 @@ class JobHandler(NumericRefHandler):
             )
             if v is not None
         }
-        if isinstance(id, str) and id.partition("?")[0] == "/garden":
+        if isinstance(id, str) and id.partition("?")[0] in (
+            "/garden",
+            "/garden/merges",
+        ):
+            merges_view = id.partition("?")[0] == "/garden/merges"
+            gate_path = "/garden/merges" if merges_view else "/garden"
             unsupported = set(logs_args) - {"since"}
             unsupported.update(
                 k
@@ -909,8 +915,12 @@ class JobHandler(NumericRefHandler):
             )
             if unsupported:
                 raise BadInput(
-                    f"{sorted(unsupported)} don't apply to /garden",
-                    next="get(kind='job', id='/garden', args={'since': '7d'})",
+                    f"{sorted(unsupported)} don't apply to {gate_path}",
+                    next=(f"get(kind='job', id='{gate_path}', args={{'since': '7d'}})"),
+                )
+            if merges_view:
+                return self._render_garden_merges_view(
+                    id.partition("?")[2], since=since
                 )
             return self._render_garden_view(id.partition("?")[2], since=since)
         if isinstance(id, str) and _is_logs_path(id):
@@ -1005,6 +1015,8 @@ class JobHandler(NumericRefHandler):
             return self._render_settings_view(query_string)
         if view == "garden" or view.startswith("garden?"):
             return self._render_garden_view(view.partition("?")[2])
+        if view == "garden/merges" or view.startswith("garden/merges?"):
+            return self._render_garden_merges_view(view.partition("?")[2])
         return super()._list_view(view)
 
     def _render_garden_view(
@@ -1074,6 +1086,123 @@ class JobHandler(NumericRefHandler):
             "garden results in the same window.",
         ]
         return Response(body="\n".join(lines), result_count=sum(counts.values()))
+
+    def _render_garden_merges_view(
+        self, query_string: str, *, since: str | int | None = None
+    ) -> Response:
+        """``/garden/merges`` — the merge ledger for the audit door
+        (gr548660).
+
+        Rows come from :func:`merge_ledger`, the same garden-key fold
+        ``precis garden review`` applies — proposal text plus the
+        terminal verdict (``applied`` carries the merge record id, and
+        ``undone`` reflects whether the loser still holds its
+        ``meta.garden_merge`` record).
+        """
+        params = dict(parse_qsl(query_string, keep_blank_values=True))
+        if set(params) - {"since"}:
+            raise BadInput(
+                "unknown /garden/merges filter",
+                next="get(kind='job', id='/garden/merges', args={'since': '30d'})",
+            )
+        raw = params.get("since", since if since is not None else "30d")
+        now = datetime.now(UTC)
+        cutoff = _job_window_bound(str(raw), "since")
+        if cutoff is None or cutoff >= now:
+            raise BadInput(
+                "since= must name a past time or positive age",
+                next="get(kind='job', id='/garden/merges', args={'since': '30d'})",
+            )
+        from precis.graph.garden.proposals import merge_ledger
+
+        entries = merge_ledger(self.store, since=cutoff)
+
+        def _as_int(v: Any) -> int | None:
+            try:
+                return int(v) if v is not None else None
+            except (TypeError, ValueError):
+                return None
+
+        pair_ids = sorted(
+            {
+                rid
+                for e in entries
+                for rid in (
+                    e.loser_id,
+                    e.winner_id,
+                    _as_int(e.payload.get("loser")),
+                    _as_int(e.payload.get("winner")),
+                )
+                if rid is not None
+            }
+        )
+        kind_of: dict[int, str] = (
+            {
+                r.id: r.kind
+                for r in self.store.fetch_refs_by_ids(
+                    pair_ids, include_deleted=True
+                ).values()
+            }
+            if pair_ids
+            else {}
+        )
+
+        def _h(rid: int | None, fallback_kind: str) -> str:
+            if rid is None:
+                return "?"
+            return (
+                handle_registry.try_format(kind_of.get(rid, fallback_kind), rid)
+                or f"ref:{rid}"
+            )
+
+        def _z(at: Any) -> str:
+            dt = as_utc(at)
+            return dt.strftime("%Y-%m-%dT%H:%M:%SZ") if dt is not None else "?"
+
+        lines = [
+            f"# garden merges since {cutoff.strftime('%Y-%m-%dT%H:%M:%SZ')} "
+            f"— {len(entries)} entr{'y' if len(entries) == 1 else 'ies'}",
+        ]
+        for e in entries:
+            loser = (
+                e.loser_id
+                if e.loser_id is not None
+                else _as_int(e.payload.get("loser"))
+            )
+            winner = (
+                e.winner_id
+                if e.winner_id is not None
+                else _as_int(e.payload.get("winner"))
+            )
+            loser_h = _h(loser, e.target_kind)
+            winner_h = _h(winner, e.target_kind)
+            state = e.verdict + (" — undone" if e.undone else "")
+            lines.append("")
+            lines.append(f"## {e.merge_id or f'proposal {e.review_id}'} — {state}")
+            lines.append(f"  {loser_h} → {winner_h}")
+            when = f"  proposed {_z(e.proposed_at)}"
+            if e.decided_at is not None:
+                when += f" · decided {_z(e.decided_at)}"
+                if e.decided_by:
+                    when += f" by {e.decided_by}"
+            lines.append(when)
+            if e.detector:
+                lines.append(f"  detector: {e.detector}")
+            if e.title:
+                lines.append(f"  {e.title}")
+            if e.rationale:
+                lines.append(f"  rationale: {e.rationale}")
+            if e.evidence:
+                ev = json.dumps(e.evidence, ensure_ascii=False, sort_keys=True)
+                if len(ev) > 400:
+                    ev = ev[:400] + "…"
+                lines.append(f"  evidence: {ev}")
+            lines.append(
+                f"  audit: get(kind={e.target_kind!r}, id='{loser_h}', view='retired')"
+            )
+        if not entries:
+            lines.append("no merge proposals in the window")
+        return Response(body="\n".join(lines), result_count=len(entries))
 
     def _render_transcript_view(self, ref: Any) -> Response:
         """``view='transcript'`` — the compact forensic read (gr504491).
