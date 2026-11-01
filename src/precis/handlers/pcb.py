@@ -25,7 +25,7 @@ pixels. The verbs map onto the seven-verb surface:
   Slice 1 — one 4-layer FR-4 board, ``pcb_boards``) on first write; nets are
   electrical-only in v1 (``domain`` != ``'electrical'`` is rejected).
   A batch too big for args rides the signed upload door (gr520323,
-  :mod:`precis.pcb.batch_door`): ``op='batch_upload_link'`` mints the URL
+  :mod:`precis.batch_door`): ``op='batch_upload_link'`` mints the URL
   and ``args={'batch_ref': '<sha256>'}`` expands the staged file into the
   same args before anything else reads them.
   ``args={'op': ...}`` is the pcb-guided-place-route Slice 10 tool surface:
@@ -109,7 +109,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, ClassVar
 
-from precis import bom_nudge
+from precis import batch_door, bom_nudge
 from precis.checklist.status import NOT_CHECKABLE
 from precis.config import load_config
 from precis.dispatch import Hub, InitError
@@ -127,7 +127,6 @@ from precis.pcb import (
     ROUTE_RETIRED_NEXT,
     STACKUP_PRESETS,
     argue,
-    batch_door,
     check_run,
     eyes,
     format_route_summary,
@@ -361,7 +360,7 @@ _IMPORT_OPS = ("import_epro",)
 #: existing-design lookup.
 _FORK_OPS = ("fork",)
 #: gr520323 — mints the batch upload door's signed URL
-#: (:mod:`precis.pcb.batch_door`). Writes nothing; routed before the
+#: (:mod:`precis.batch_door`). Writes nothing; routed before the
 #: generic lookup so a missing design's NotFound names the create call.
 _DOOR_OPS = ("batch_upload_link",)
 _OPS = (
@@ -1286,7 +1285,7 @@ class PcbHandler(Handler):
                 "run",
                 "run_job",
                 # gr520323: the batch rode the signed upload door —
-                # 'batch_ref' names the staged sha (precis.pcb.batch_door).
+                # 'batch_ref' names the staged sha (precis.batch_door).
                 "batch_ref",
                 "achieve_date",
                 "billing_address",
@@ -1518,7 +1517,7 @@ class PcbHandler(Handler):
 
         ``args={'batch_ref': '<sha256>'}`` is the same batch put with the
         batch read from the signed upload door's staging instead of args
-        (:mod:`precis.pcb.batch_door`) — expanded first, so everything
+        (:mod:`precis.batch_door`) — expanded first, so everything
         below sees exactly the args an inline batch carries."""
         args = args or {}
         if "batch_ref" in args:
@@ -6772,7 +6771,7 @@ class PcbHandler(Handler):
     ) -> Response:
         """``put(id=<slug>, args={'op':'batch_upload_link'})`` — mint the
         batch upload door's single-use signed URL, bound to the design's
-        ref (gr520323, :mod:`precis.pcb.batch_door`). Writes nothing, so
+        ref (gr520323, :mod:`precis.batch_door`). Writes nothing, so
         any other key — and ``title=``/``tags=``, which belong on the
         ``batch_ref`` put — refuses rather than vanishing."""
         extra = sorted(k for k in dict(args) if k != "op")

@@ -70,10 +70,9 @@ from typing import TYPE_CHECKING, BinaryIO
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import FileResponse, Response
 
-from precis import file_links
+from precis import batch_door, file_links
 from precis.corpus_layout import rebase_onto_local, resolve_local_pdf
 from precis.ingest import pdf_upload
-from precis.pcb import batch_door
 from precis_web.config import WebConfig
 from precis_web.deps import get_store, get_web_config
 
@@ -317,7 +316,7 @@ BATCH_SHA_HEADER = "x-content-sha256"
 
 def _batch_json_or_415(part: Path) -> None:
     """The batch door's content gate — the whole strict-JSON-object parse
-    (:func:`precis.pcb.batch_door.parse_batch_json`; the body is under
+    (:func:`precis.batch_door.parse_batch_json`; the body is under
     the cap, so one read is cheap). The key set and every design rule
     stay with the put."""
     try:

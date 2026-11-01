@@ -501,7 +501,7 @@ def test_upload_batch_declared_sha_mismatch_400(
 def test_upload_batch_oversize_413(
     runtime: FakeRuntime, staging_dir, tmp_path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from precis.pcb import batch_door
+    from precis import batch_door
 
     monkeypatch.setattr(batch_door, "MAX_BATCH_BYTES", 8)
     r = _post_batch(_client(runtime, tmp_path), 50, _batch_token(50))

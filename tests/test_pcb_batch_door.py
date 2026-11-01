@@ -18,13 +18,12 @@ from typing import Any
 
 import pytest
 
-from precis import file_links
+from precis import batch_door, file_links
 from precis.cli import door
 from precis.dispatch import Hub
 from precis.errors import BadInput, NotFound
 from precis.handlers.pcb import PcbHandler
 from precis.ingest import pdf_upload
-from precis.pcb import batch_door
 
 #: A two-part batch carrying every row family a board script emits that
 #: the identity check below can compare (parts, nets, wiring, a measure,

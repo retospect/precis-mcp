@@ -1,7 +1,7 @@
 """``precis door`` — push a local file through a signed precis_web upload door.
 
 ``precis door pcb <file.json> --url <url>`` is the host half of the pcb
-batch door (gr520323, :mod:`precis.pcb.batch_door`):
+batch door (gr520323, :mod:`precis.batch_door`):
 
 1. ``put(kind='pcb', id=<slug>, args={'op': 'batch_upload_link'})`` mints
    a single-use URL bound to the design;
@@ -135,7 +135,7 @@ def _detail(response: httpx.Response) -> str:
 
 
 def _door_pcb(args: argparse.Namespace) -> None:
-    from precis.pcb import batch_door
+    from precis import batch_door
 
     path = Path(args.path)
     try:

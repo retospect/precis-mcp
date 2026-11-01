@@ -40,7 +40,7 @@ Three artifact kinds live in the staging dir:
   ``staged`` key resolves a run's whole out/ tree as one uncompressed
   tar (gr517643); ``.json`` is the batch door — one put batch as a JSON
   object, read by ``put(kind='pcb', args={'batch_ref': '<sha>'})``
-  (gr520323; :mod:`precis.pcb.batch_door`). A batch staging is read,
+  (gr520323; :mod:`precis.batch_door`). A batch staging is read,
   never moved, so the same sha can be put again until the sweep;
 * ``<nonce>.done`` — the single-use marker: the upload token's nonce
   (``exp.sig``) is tombstoned here — before the body streams — so a
