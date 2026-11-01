@@ -242,6 +242,39 @@ def _one_task_plan(store: Store) -> T.PlanMint:
     return T._run(store, None, build)
 
 
+def test_dict_op_pins_model_and_effort_on_the_job(store: Store) -> None:
+    """gr549046: a child minted with a dict ``meta.op`` dispatches
+    ``run_slice`` with the pinned params — the carrier for the triage's
+    builder-model pick."""
+
+    def build(m: T._Minter) -> None:
+        m.node("root", "Plan", {"auto_close": True})
+        m.node(
+            "task",
+            "Build it",
+            {
+                "op": {
+                    "type": "run_slice",
+                    "params": {
+                        "model": "claude-haiku-4-5-20251001",
+                        "effort": "low",
+                    },
+                }
+            },
+            body="Do it.",
+        )
+
+    mint = T._run(store, None, build)
+    assert pd.run_pass(store).dispatched == 1
+    (job,) = _jobs_under(store, mint.ids["task"])
+    assert job[1]["job_type"] == "run_slice"
+    assert job[1]["params"] == {
+        "todo_id": mint.ids["task"],
+        "model": "claude-haiku-4-5-20251001",
+        "effort": "low",
+    }
+
+
 def test_expired_claim_is_released(store: Store) -> None:
     mint = _one_task_plan(store)
     task = mint.ids["task"]

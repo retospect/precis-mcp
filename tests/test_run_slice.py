@@ -256,6 +256,44 @@ def test_seed_table_has_one_enabled_lane() -> None:
     }
 
 
+def test_claude_sub_accepts_models_and_defaults_to_sonnet() -> None:
+    """gr549046: the lane carries the model ids its adapter accepts
+    (cheapest first) and the id an unpinned slice gets — the cheapest that
+    can still write code, not the frontier pin."""
+    sub = lanes.get_lane("claude-sub")
+    assert sub is not None
+    assert sub.models == (
+        "claude-haiku-4-5-20251001",
+        "claude-sonnet-5",
+        "claude-opus-4-8",
+    )
+    assert sub.default_model == "claude-sonnet-5"
+    for lane in lanes.LANES:
+        assert lane.default_model is None or lane.default_model in lane.models
+
+
+def test_resolve_model_order(
+    seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """params.model > PRECIS_RUN_SLICE_MODEL > the lane's default_model >
+    the router's frontier pin (gr549046)."""
+    lane = lanes.get_lane("claude-sub")
+    assert lane is not None
+    assert run_slice.resolve_model({"model": " claude-pinned "}, lane) == (
+        "claude-pinned"
+    )
+    # The seams env pins PRECIS_RUN_SLICE_MODEL.
+    assert run_slice.resolve_model({}, lane) == "claude-test-model"
+    monkeypatch.delenv("PRECIS_RUN_SLICE_MODEL")
+    assert run_slice.resolve_model({}, lane) == "claude-sonnet-5"
+    monkeypatch.delenv("PRECIS_MODEL_OPUS", raising=False)
+    monkeypatch.delenv("PRECIS_LLM_MODEL_FRONTIER", raising=False)
+    assert run_slice.resolve_model({}) == "claude-opus-4-8"
+    assert run_slice.resolve_model({}, _lane("bare", 1, {ANY_CLASS})) == (
+        "claude-opus-4-8"
+    )
+
+
 def test_pick_lane_fit_first() -> None:
     table = (_lane("docs-only", 3, {"docs"}), _lane("coder", 1, {"code"}))
     picked = pick_lane(None, "code", lanes=table, counts={})
@@ -400,6 +438,12 @@ def test_generator_brief_creates_children_and_never_lands(
     assert "Split it." in brief
     assert "put(kind='todo', text=..., body=..., meta={'llm_tier': None" in brief
     assert "args={'parent_id': 42}" in brief
+    # gr549046: the close pins each run_slice child's model in meta.op,
+    # naming the lane's accepted ids.
+    assert "'op': {'type': 'run_slice'" in brief
+    assert "'model': '<id>'" in brief
+    assert "'effort': '<low|medium|high>'" in brief
+    assert "claude-sonnet-5" in brief
     assert "blocked-by" in brief
     assert "Do not tag this todo done: the dispatcher closes it" in brief
     # no land steps: no ship, no landed comment, no STATUS:done instruction
@@ -480,6 +524,25 @@ def test_generator_close_links_not_prose_and_house_title() -> None:
     assert "never write sequencing prose" in text
     assert "· " in text
     assert "telegraphic" in text
+
+
+def test_generator_close_pins_child_model_in_meta() -> None:
+    """gr549046: with the lane's accepted ids given, the close tells the
+    generator to pin each run_slice child's model and effort in
+    ``meta.op.params`` — prose on the child never reaches dispatch."""
+    lane = lanes.get_lane("claude-sub")
+    assert lane is not None
+    text = "\n".join(run_slice._generator_close(5, lane.models))
+    assert "'op': {'type': 'run_slice'" in text
+    assert "'model': '<id>'" in text
+    assert "'effort': '<low|medium|high>'" in text
+    for model in lane.models:
+        assert model in text
+    assert "never in prose" in text
+    # No accepted ids on the lane → no pin recipe, the mint instruction stays.
+    bare = "\n".join(run_slice._generator_close(5))
+    assert "'op': {'type': 'run_slice'" not in bare
+    assert "create the child todos" in bare
 
 
 def test_role_close_table_is_the_only_dispatch() -> None:
@@ -610,6 +673,20 @@ def test_submit_launches_and_claims(
     assert kw["cwd"] == tree
     assert kw["stdin"] == tree / "scratch" / "brief.md"
     assert kw["env"]["PRECIS_SLICE_ID"] == "td42"
+
+
+def test_submit_unpinned_child_uses_lane_default_model(
+    seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr549046: a child the generator left unpinned runs on the lane's
+    default_model (Sonnet-class), not the frontier pin."""
+    monkeypatch.delenv("PRECIS_RUN_SLICE_MODEL")
+    store = _Store()
+    store.add_todo(42, "Verify the fix", meta={"op": "run_slice"})
+    ctx, _handle = _submit(store, seams)
+    assert ctx.meta_set["model"] == "claude-sonnet-5"
+    [(argv, _kw)] = seams["launch"]
+    assert argv[argv.index("--model") + 1] == "claude-sonnet-5"
 
 
 def test_submit_env_is_an_allowlist(

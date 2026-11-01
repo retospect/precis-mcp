@@ -161,7 +161,7 @@ PARAMS_SCHEMA: dict[str, Any] = {
         # Lane name from precis.plans.lanes; unset → pick_lane.
         "lane": {"type": "string"},
         # claude model id/alias; unset → PRECIS_RUN_SLICE_MODEL, else the
-        # router's FRONTIER pin.
+        # lane's default_model, else the router's FRONTIER pin.
         "model": {"type": "string"},
         # Recorded on meta.effort and exported as PRECIS_SLICE_EFFORT.
         "effort": {"type": "string"},
@@ -222,15 +222,17 @@ def wall_seconds() -> float:
     return float(n if n > 0 else _DEFAULT_WALL_S)
 
 
-def resolve_model(params: dict[str, Any]) -> str:
-    """``params.model``, else ``PRECIS_RUN_SLICE_MODEL``, else the router's
-    ``Tier.FRONTIER`` pin."""
+def resolve_model(params: dict[str, Any], lane: _lanes.Lane | None = None) -> str:
+    """``params.model``, else ``PRECIS_RUN_SLICE_MODEL``, else the lane's
+    ``default_model``, else the router's ``Tier.FRONTIER`` pin."""
     model = params.get("model")
     if isinstance(model, str) and model.strip():
         return model.strip()
     env = os.environ.get("PRECIS_RUN_SLICE_MODEL", "").strip()
     if env:
         return env
+    if lane is not None and lane.default_model:
+        return lane.default_model
     from precis.utils.llm.router import Tier
     from precis.utils.llm.router import resolve_model as _router_model
 
@@ -635,8 +637,23 @@ def _generate_role(meta: Any) -> str | None:
     return str(role) if role else None
 
 
-def _generator_close(todo_id: int) -> list[str]:
-    """Closing steps of a generator brief: mint children, never close."""
+def _generator_close(todo_id: int, models: tuple[str, ...] = ()) -> list[str]:
+    """Closing steps of a generator brief: mint children, never close.
+
+    ``models`` is the lane's accepted model ids; listed, the close tells
+    the generator to pin each ``run_slice`` child's model and effort in
+    ``meta.op.params`` — a model named only in the child's prose is lost
+    at dispatch (gr549046)."""
+    pin = (
+        " Pin the child's model and effort in meta, never in prose — "
+        "dispatch reads meta, not the body: `'op': {'type': 'run_slice', "
+        "'params': {'model': '<id>', 'effort': '<low|medium|high>'}}` "
+        f"with `<id>` one of this lane's accepted ids — {', '.join(models)} — "
+        "the cheapest that can still write code, `effort` the smallest "
+        "that fits the child."
+        if models
+        else ""
+    )
     return [
         "",
         "## When done: create the child todos",
@@ -645,7 +662,7 @@ def _generator_close(todo_id: int) -> list[str]:
         "",
         "1. Create each child with `put(kind='todo', text=..., body=..., "
         "meta={'llm_tier': None, ...}, "
-        f"args={{'parent_id': {todo_id}}})`. Title each child in the "
+        f"args={{'parent_id': {todo_id}}})`.{pin} Title each child in the "
         "summary-title house style — `<object> · <behaviour> · <role>`, "
         "middot-separated, telegraphic.",
         "2. Add `blocked-by` links between the children for any sequence. "
@@ -781,7 +798,14 @@ def render_brief(
     if latest:
         lines += ["", "## Latest brief / handoff on the todo", "", latest.strip()]
     if generator:
-        lines += _ROLE_CLOSE.get(role or "", _generator_close)(todo_id)
+        close = _ROLE_CLOSE.get(role or "")
+        if close is not None:
+            lines += close(todo_id)
+        else:
+            lane_obj = _lanes.get_lane(lane)
+            lines += _generator_close(
+                todo_id, lane_obj.models if lane_obj is not None else ()
+            )
         return "\n".join(lines) + "\n"
     lines += [
         "",
@@ -1132,7 +1156,7 @@ def submit(ctx: Any, spec: Any) -> Any:
             ctx.record_failure(note)
             return None
 
-    model = resolve_model(params)
+    model = resolve_model(params, lane)
     effort = str(params.get("effort") or _DEFAULT_EFFORT)
     ctx.set_meta(lane=lane.name, model=model, effort=effort)
     _claim_todo(store, todo_id, lane.name)

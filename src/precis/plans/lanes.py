@@ -4,7 +4,12 @@ Spec: ``docs/backlog/dark-factory.md`` § "Lanes: capacity shapes". A lane
 is an adapter plus a credential pool plus a concurrency cap (Reto
 2026-10-30, td541982). Model, effort and temperature are per-job choices
 inside a lane; the lane itself is a field on the job (``meta.lane``),
-never prose on a todo.
+never prose on a todo. The lane pins the model ids its adapter accepts
+(``Lane.models``, cheapest first — the list a generator's brief names so
+the pick lands in ``meta.op.params.model``, gr549046) and the model an
+unpinned job gets (``Lane.default_model``: the cheapest of ``models``
+that can still write code, so an unpinned child never drifts to the
+frontier pin).
 
 The table lives in code until the lane registry (step 3, a ``lanes``
 table seeded from me538174) lands; :data:`LANES` is its seed. Only
@@ -81,6 +86,10 @@ class Lane:
     write (:data:`FACTORY_DENY_WRITE_PATHS` for every seed lane).
     ``vendor`` is the model vendor behind the lane (``''`` = unknown); a
     review is picked with ``exclude_vendor`` = the builder lane's vendor.
+    ``models`` are the model ids the lane's adapter accepts, cheapest
+    first (empty while the adapter is unbuilt). ``default_model`` is what
+    an unpinned ``run_slice`` job on this lane gets; ``None`` falls to
+    the router's frontier pin.
     """
 
     name: str
@@ -91,6 +100,8 @@ class Lane:
     enabled: bool = True
     deny_write_paths: tuple[str, ...] = FACTORY_DENY_WRITE_PATHS
     vendor: str = ""
+    models: tuple[str, ...] = ()
+    default_model: str | None = None
 
     def fits(self, task_class: str) -> bool:
         """``True`` when this lane takes ``task_class`` work."""
@@ -106,6 +117,13 @@ LANES: tuple[Lane, ...] = (
         cap=2,
         task_classes=frozenset({ANY_CLASS}),
         vendor="anthropic",
+        models=(
+            "claude-haiku-4-5-20251001",
+            "claude-sonnet-5",
+            "claude-opus-4-8",
+        ),
+        # Sonnet-class: the cheapest accepted id that still writes code.
+        default_model="claude-sonnet-5",
     ),
     Lane(
         name="codex",

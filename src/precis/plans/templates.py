@@ -318,10 +318,15 @@ def mint_gripe_fix(
             f"Triage {handle}",
             _generate("triage", handle),
             body=(
-                f"Read {handle}: pick the task class and the builder model; "
-                "mint an ask gate when the report is unusable. Already "
-                "resolved or closed? Mint nothing and make `moot: <why>` the "
-                "first line of your final message: the plan closes on it."
+                f"Read {handle}: pick the task class and the builder model — "
+                "pin it on each `run_slice` child you mint as `meta.op` "
+                "(`{'type': 'run_slice', 'params': {'model': '<id>', "
+                "'effort': '<low|medium|high>'}}`, `<id>` from the ids the "
+                "lane accepts); a model named only in the child's prose is "
+                "lost at dispatch. Mint an ask gate when the report is "
+                "unusable. Already resolved or closed? Mint nothing and "
+                "make `moot: <why>` the first line of your final message: "
+                "the plan closes on it."
             ),
         )
         m.node(

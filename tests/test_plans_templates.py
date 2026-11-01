@@ -146,6 +146,20 @@ def test_gripe_fix_shape(handler: TodoHandler, store: Store) -> None:
     assert row is not None and row[0] == 1
 
 
+def test_gripe_fix_triage_pins_the_builder_model_in_meta(
+    handler: TodoHandler, store: Store
+) -> None:
+    """gr549046: the triage body tells the generator to pin the builder
+    model on each run_slice child in meta.op — the carrier from the
+    triage verdict to dispatch."""
+    mint = TEMPLATES["gripe-fix"].mint(store, None, gripe_id=_gripe(handler))
+    body = _body(store, mint.ids["triage"])
+    assert "meta.op" in body
+    assert "'type': 'run_slice'" in body
+    assert "'model': '<id>'" in body
+    assert "'effort': '<low|medium|high>'" in body
+
+
 def test_gripe_fix_gate_carries_the_placeholder_comment(
     handler: TodoHandler, store: Store
 ) -> None:
@@ -422,6 +436,28 @@ def test_parented_put_skips_llm_tier_for_task_nodes(
 ) -> None:
     # gr542301: plan_dispatch alone drives a task node, so no plan_tick
     assert _tier_after_parented_put(handler, store, op=op) is None
+
+
+def test_parented_put_stores_a_dict_op_on_create(
+    handler: TodoHandler, store: Store
+) -> None:
+    """gr549046: put(kind='todo', meta={'op': {...}}) accepts the pin on
+    create — the shape the generator brief now instructs (it already did;
+    pinned here so it cannot regress to edit-only)."""
+    root = id_of(handler.put(text="Root.", meta={"rotation_root": True}).body)
+    op = {
+        "type": "run_slice",
+        "params": {"model": "claude-sonnet-5", "effort": "low"},
+    }
+    child = id_of(
+        handler.put(
+            text="Child.", parent_id=root, meta={"llm_tier": None, "op": op}
+        ).body
+    )
+    meta = _meta(store, child)
+    assert meta["op"] == op
+    assert "llm_tier" not in meta
+    assert node_kind(meta) == "task"
 
 
 def test_parented_put_keeps_llm_tier_default_for_plain(
