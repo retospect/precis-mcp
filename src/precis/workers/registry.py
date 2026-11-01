@@ -754,6 +754,28 @@ SERVICES: tuple[ServiceSpec, ...] = (
         doc_skill="precis-job-help",
     ),
     ServiceSpec(
+        # gr543831: the Devin job executor (workers/executors/devin_api.py)
+        # — hands a devin_task job to a cloud Devin session via the
+        # official API v3 (mint, poll, collect; never a router rung).
+        # Same dark-by-default shape as job_claude_docker above:
+        # `enable_env` makes it a dark-switched service with NO
+        # `default_profiles`, so it registers structurally and is gated
+        # off every cycle until an operator lights a service_config row
+        # (`precis service prio '*' job_devin_api 1`) or runs
+        # `--only job_devin_api`. Needs DEVIN_API_TOKEN + an org id
+        # (`PRECIS_DEVIN_ORG_ID` env or the devin.org_id setting).
+        name="job_devin_api",
+        label="Devin API executor",
+        category="jobs",
+        kind=ServiceKind.PASS,
+        ref_pass=True,
+        enable_env="PRECIS_DEVIN_EXEC_ENABLED",
+        uses_external=("devin",),
+        one_line="Drain devin_task jobs via Devin API v3 sessions; dark "
+        "until service_config lights it.",
+        doc_skill="precis-job-help",
+    ),
+    ServiceSpec(
         # §F cycle a: the first `requires`-carrying job_type (not a pass/
         # compute-lane row) — `effective_requires` derives {'embedder': 1}
         # from THIS row's `requires`, matching struct_relax/fold's

@@ -66,6 +66,12 @@ The lanes
   tick, synchronous ``dispatch(ctx, spec)``, no submit/poll, no kill
   hook. Exists for job_types that need a counted ``resource_slots``
   reservation and finish in minutes (``embed_batch`` is the first).
+* ``devin_api`` — hands a ``devin_task`` job to a cloud Devin session
+  via the official REST API v3: mint with the prompt, record the
+  session id, poll politely, collect the result + PR link; quota-class
+  suspensions park the job and pause the lane. Ships dark behind the
+  ``job_devin_api`` service_config gate; the job carries no
+  prod-write credential.
 
 Claim substrate (``_common.py``)
 --------------------------------
@@ -196,6 +202,14 @@ EXECUTOR_PROVIDES: dict[str, frozenset[str]] = {
     # (``ServiceSpec.requires`` / ``effective_requires``), not this
     # executor-capability check.
     "job_inproc": frozenset(),
+    # ``devin_api`` (gr543831) hands a ``devin_task`` job to a cloud
+    # Devin session via the official REST API — mint, poll, collect.
+    # Detached like ``claude_docker`` but the remote handle is a
+    # session id, not a container: the claiming worker needs no local
+    # capability (one HTTPS client + a vault-resolved token), so
+    # PROVIDES is empty. Ships dark behind the ``job_devin_api``
+    # service_config gate.
+    "devin_api": frozenset(),
 }
 
 
@@ -211,7 +225,7 @@ DEFAULT_EXECUTOR = "claude_inproc"
 #: exempts candidates minting onto these lanes; blocking a pure-numpy
 #: ``autocatpath_aggregate`` because Claude ticks burned the window starved
 #: every pathway rollup for 29h (2026-08-16/17).
-ZERO_LLM_EXECUTORS: frozenset[str] = frozenset({"ssh_node", "job_inproc"})
+ZERO_LLM_EXECUTORS: frozenset[str] = frozenset({"ssh_node", "job_inproc", "devin_api"})
 
 
 def is_known_executor(name: str) -> bool:

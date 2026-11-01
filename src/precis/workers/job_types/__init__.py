@@ -572,6 +572,26 @@ def _load_sandbox_run() -> JobTypeSpec:
     )
 
 
+def _load_devin_task() -> JobTypeSpec:
+    # Hand one task to a cloud Devin session, run by the devin_api
+    # executor (gr543831). Registered unconditionally so put/dispatch
+    # validation and error messages work everywhere; the executor lane
+    # itself ships dark behind the job_devin_api service_config gate.
+    from precis.workers.job_types import devin_task
+
+    # No run/dispatch/submit/poll: devin_api bypasses the dispatch
+    # protocol entirely — see _DISPATCH_PROTOCOL_EXECUTORS and
+    # __post_init__'s exemption (same shape as sandbox_run).
+    return JobTypeSpec(
+        name="devin_task",
+        params_schema=devin_task.PARAMS_SCHEMA,
+        compatible_executors=devin_task.COMPATIBLE_EXECUTORS,
+        requires=devin_task.REQUIRES,
+        description=devin_task.DESCRIPTION,
+        validate_submit=devin_task.validate_submit,
+    )
+
+
 def _load_run_slice() -> JobTypeSpec:
     # Dark factory step 6: one slice headless on a lane (claude -p in its
     # own worktree), the detached submit/poll pair under ssh_node. Registers
@@ -983,6 +1003,9 @@ def get_job_type(name: str) -> JobTypeSpec | None:
     if name == "sandbox_run":
         _REGISTRY["sandbox_run"] = _load_sandbox_run()
         return _REGISTRY["sandbox_run"]
+    if name == "devin_task":
+        _REGISTRY["devin_task"] = _load_devin_task()
+        return _REGISTRY["devin_task"]
     if name == "run_slice":
         _REGISTRY["run_slice"] = _load_run_slice()
         return _REGISTRY["run_slice"]
@@ -1141,6 +1164,7 @@ def known_job_types() -> list[str]:
         "diagram_propose",
         "cad_discuss",
         "sandbox_run",
+        "devin_task",
         "run_slice",
         "land_slice",
         "plan_dispatch",

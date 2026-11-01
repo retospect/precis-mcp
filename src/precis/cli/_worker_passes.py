@@ -578,6 +578,28 @@ def build_ref_passes(
 
         ref_passes.append(_job_claude_docker_pass)
 
+    # job_devin_api — drains devin_task jobs (meta.executor=='devin_api')
+    # by minting a Devin API v3 session, polling it, and collecting the
+    # result (gr543831). Dark-by-default like job_claude_docker above:
+    # registered structurally (registry enable_env), gated off every
+    # cycle until a `service prio` row lights job_devin_api — or a
+    # manual `--only job_devin_api` (the operator escape hatch; the
+    # pass gets enabled=True, the same hatch citer_watch takes).
+    if _register("job_devin_api"):
+        from precis.workers.executors.devin_api import run_devin_api_pass
+        from precis.workers.runner import BatchResult as _BatchResult
+
+        def _job_devin_api_pass(batch_size: int) -> _BatchResult:
+            # Detached-poll: each tick is a cheap status GET per
+            # in-flight session plus a couple of mints, so the cap is
+            # small. enabled=True — the per-cycle pass gate already
+            # resolved service_config for rotation runs, and --only is
+            # the explicit operator run.
+            r = run_devin_api_pass(store, enabled=True, limit=min(batch_size, 4))
+            return _BatchResult.from_dict("job_devin_api", r)
+
+        ref_passes.append(_job_devin_api_pass)
+
     # wake_runner — re-queues paused coordinator jobs whose wake
     # condition has fired (children done, time reached, ask-user
     # tag cleared, manual_kick tag added, or cancel_requested

@@ -482,6 +482,11 @@ POLICIES: dict[str, Policy] = {
     "web-fetch": Policy(attempts=3, base=2.0, cap=30.0, label="web fetch"),
     # The dark factory's GitHub REST reads (pr_poll, ci_verdict_poll).
     "github": Policy(attempts=3, base=2.0, cap=30.0, label="GitHub API"),
+    # The Devin job executor (workers/executors/devin_api.py): session
+    # create/poll/delete against api.devin.ai. No named provider row —
+    # callers pass url=, so the auto-seeded host:api.devin.ai lane
+    # (1 req/s) paces it.
+    "devin": Policy(attempts=4, base=2.0, cap=60.0, label="Devin API"),
     "wikipedia": Policy(attempts=4, base=2.0, label="Wikipedia"),
     "wolfram": Policy(attempts=3, base=2.0, cap=30.0, label="Wolfram Alpha"),
     # A live agent waits on these two: few attempts, short cap. A 429 backs

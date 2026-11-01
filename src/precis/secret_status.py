@@ -160,8 +160,9 @@ KNOWN_SECRETS: tuple[SecretSpec, ...] = (
     ),
     SecretSpec(
         name="DEVIN_API_TOKEN",
-        purpose="Devin API token for the planned job executor, not an LLM "
-        "router rung; presence-only, executor not yet enabled.",
+        purpose="Devin API token for the devin_task job executor "
+        "(devin_api lane, job_devin_api service), not an LLM router "
+        "rung; ships dark — an operator lights the service_config row.",
         get_url="https://docs.devin.ai/api-reference/overview",
         get_blurb="Before creating a token, first confirm the plan includes "
         "the Devin API and read Cognition's terms on automated use. Create "
@@ -170,6 +171,7 @@ KNOWN_SECRETS: tuple[SecretSpec, ...] = (
         cost="requires a plan with Devin API access",
         probe_group=None,
         optional=True,
+        used_by_job_types=("devin_task",),
     ),
     SecretSpec(
         name="PERPLEXITY_API_KEY",
