@@ -42,6 +42,7 @@ from typing import TYPE_CHECKING, Any
 from psycopg import Connection
 from psycopg.types.json import Jsonb
 
+from precis.errors import Conflict
 from precis.store._mappers import _upsert_tag
 from precis.store.revision_context import trust_door
 from precis.taproot.canon import (
@@ -1565,20 +1566,69 @@ def _resolve_or_create_stub(
     # the audit trail surfaces every chase-created ref.
     from precis.identity import _title_key_word, make_cite_key
 
-    cite_key = make_cite_key(
-        [{"family": _title_key_word(target.title) or "anon"}],
-        target.year,
-        taken=set(),  # collision resolution deferred to a follow-up
-    )
+    key_authors = [{"family": _title_key_word(target.title) or "anon"}]
+    cite_key = make_cite_key(key_authors, target.year, taken=set())
     title = target.title or "(no title)"
     stub_meta: dict[str, Any] = {**(target.s2_meta or {}), "set_by": "chase"}
-    new_ref = store.insert_ref(
-        kind="paper",
-        slug=cite_key,
-        title=title,
-        meta=stub_meta,
-        conn=conn,
-    )
+    try:
+        # Savepoint: a refused insert (live slug conflict) rolls the
+        # partial ``refs`` row back without killing the caller's
+        # transaction — the same shape ``ensure_skill_ref`` uses.
+        with conn.transaction():
+            new_ref = store.insert_ref(
+                kind="paper",
+                slug=cite_key,
+                title=title,
+                meta=stub_meta,
+                conn=conn,
+            )
+    except Conflict:
+        # cite_key is a global namespace — a LIVE ref of some kind
+        # holds the slug (gr517405; the Conflict's savepoint already
+        # undid the orphan ``refs`` row). A same-kind holder that is
+        # the same work gets adopted (the identifier probes missed, so
+        # the verdict falls to DOI/arxiv/s2 on the holder row or a
+        # gated title match, mirroring ``upsert_stub_paper``); a
+        # different work — or a foreign-kind holder — mints under a
+        # disambiguated slug. Either way the pass advances instead of
+        # failing on the held slug (gr549326).
+        holder = store.live_slug_owner(cite_key, conn=conn)
+        if (
+            holder is not None
+            and holder.kind == "paper"
+            and _held_slug_is_same_work(conn, holder, target, probes)
+        ):
+            # Same work: fold the candidate onto the held ref and
+            # register any external ids it lacks, so the next pass's
+            # probe hits it directly.
+            for id_kind, id_value in probes:
+                conn.execute(
+                    "INSERT INTO ref_identifiers "
+                    "(id_kind, id_value, ref_id, source) "
+                    "VALUES (%s, %s, %s, %s) ON CONFLICT DO NOTHING",
+                    (id_kind, id_value, holder.id, "chase"),
+                )
+            return int(holder.id)
+        # Different work (or a foreign-kind holder): roll the cite_key
+        # suffix past every taken key with this base — alias rows count
+        # too (gr521515), same as ``upsert_stub_paper``'s mint.
+        taken_rows = conn.execute(
+            "SELECT id_value FROM ref_identifiers "
+            "WHERE id_kind IN ('cite_key', 'cite_key_alias') "
+            "AND id_value LIKE %s",
+            (cite_key + "%",),
+        ).fetchall()
+        cite_key = make_cite_key(
+            key_authors, target.year, taken={str(r[0]) for r in taken_rows}
+        )
+        with conn.transaction():
+            new_ref = store.insert_ref(
+                kind="paper",
+                slug=cite_key,
+                title=title,
+                meta=stub_meta,
+                conn=conn,
+            )
     # Register every external ID we have, plus the chase-actor row.
     for id_kind, id_value in probes:
         conn.execute(
@@ -1587,6 +1637,75 @@ def _resolve_or_create_stub(
             (id_kind, id_value, new_ref.id, "chase"),
         )
     return int(new_ref.id)
+
+
+def _held_slug_is_same_work(
+    conn: Connection,
+    holder: Any,
+    target: _NextHopTarget,
+    probes: list[tuple[str, str]],
+) -> bool:
+    """Whether the live ``paper`` holding a mint-collided slug is the same
+    work as the next-hop target (gr549326).
+
+    Identifier legs decide first: an id shared with the target is a
+    same-work match (reaches here only when the global probe missed,
+    e.g. a holder row written under a denormalised spelling — values are
+    compared normalised); an id of the SAME kind but a different value
+    vetoes. Without the veto a corrigendum or companion paper with a
+    near-identical title would fold onto the original and take the
+    second work's DOI stamped on it. Only when the holder carries none
+    of the target's identifier kinds does a gated title match decide —
+    pg_trgm ``similarity`` >= 0.85 on the plain title views plus
+    ``title_merge_refusal`` (>=5 content tokens or the identical-title
+    waiver, years within 1, agreeing bylines).
+    """
+    from precis.identity import normalize_arxiv, normalize_doi
+    from precis.utils.title_merge import title_merge_refusal
+    from precis.utils.title_views import title_plain
+
+    def _norm_id(id_kind: str, id_value: str) -> str:
+        if id_kind == "doi":
+            return normalize_doi(id_value) or id_value
+        if id_kind == "arxiv":
+            return normalize_arxiv(id_value) or id_value
+        return id_value
+
+    held_by_kind: dict[str, set[str]] = {}
+    for k, v in conn.execute(
+        "SELECT id_kind, id_value FROM ref_identifiers WHERE ref_id = %s",
+        (int(holder.id),),
+    ).fetchall():
+        held_by_kind.setdefault(str(k), set()).add(str(v))
+    for id_kind, id_value in probes:
+        held_norm = {_norm_id(id_kind, v) for v in held_by_kind.get(id_kind, ())}
+        if _norm_id(id_kind, id_value) in held_norm:
+            return True
+        if held_norm:
+            return False  # same id kind, different value → different work
+
+    if not (target.title or "").strip() or not (holder.title or "").strip():
+        return False
+    row = conn.execute(
+        "SELECT similarity(%s, %s)",
+        (title_plain(target.title), title_plain(holder.title)),
+    ).fetchone()
+    sim = float(row[0]) if row and row[0] is not None else 0.0
+    if sim < 0.85:
+        return False
+    return (
+        title_merge_refusal(
+            target.title,
+            target.year,
+            None,
+            holder.title,
+            holder.year,
+            holder.authors,
+            sim=sim,
+            unknown_year_min_sim=0.95,
+        )
+        is None
+    )
 
 
 def _record_candidates(

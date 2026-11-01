@@ -1502,3 +1502,183 @@ def test_stub_mint_title_with_no_content_word_stays_anon(store) -> None:
     minted = store.get_ref(kind="paper", id=ref_id)
     assert minted is not None
     assert minted.slug == "anon26"
+
+
+# ── held-slug conflict (gr549326): same work adopts, different work mints ──
+
+#: A target title whose first significant word + year mints
+#: ``preparation23`` — the shape the prod pass kept dying on.
+_HELD_SLUG_TITLE = (
+    "Preparation and Characterization of Catalyst Materials for Electrolysis"
+)
+
+
+def test_stub_slug_held_by_same_work_adopts_it(store) -> None:
+    """gr549326: the mint's cite_key is already held by a live paper that
+    IS the cited work (a bibliography re-resolve — ``preparation23`` in
+    prod). The chase folds the candidate onto the held ref and registers
+    the external id it lacked, instead of failing the pass on Conflict."""
+    held = store.insert_ref(
+        kind="paper",
+        slug="preparation23",
+        title=_HELD_SLUG_TITLE,
+        year=2023,
+        meta={},
+    )
+    _seed_paper(
+        store,
+        cite_key="frontier-held",
+        blocks=["The device was held at 2.4 kV throughout the entire run [1]."],
+        identifiers=[("doi", "10.1/frontier-held")],
+    )
+    fid = _seed_finding(store, cite_key="frontier-held")
+
+    # The held ref does not carry the target's doi — the identifier
+    # probe misses, the mint collides, and only the same-work check
+    # (title + year) folds it back.
+    s2_refs = [
+        {"doi": "10.1/preparation-target", "title": _HELD_SLUG_TITLE, "year": 2023}
+    ]
+    with patch(
+        "precis.workers.chase._load_s2_references",
+        return_value=s2_refs,
+    ):
+        result = run_finding_chase_pass(store, limit=10)
+    assert result == {"claimed": 1, "ok": 1, "failed": 0}
+
+    chain = _chain(store, fid)
+    assert int(chain[-1]["ref_id"]) == int(held.id)
+    # The held ref now carries the target's doi (source='chase'), so the
+    # next pass's identifier probe hits it directly.
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            "SELECT ref_id FROM ref_identifiers "
+            "WHERE id_kind = 'doi' AND id_value = %s",
+            ("10.1/preparation-target",),
+        ).fetchone()
+    assert row is not None
+    assert int(row[0]) == int(held.id)
+
+
+def test_stub_slug_held_by_different_work_mints_disambiguated(store) -> None:
+    """gr549326: the slug is held by a live paper that is NOT the cited
+    work — the chase mints the stub under the rolled cite_key suffix
+    (``preparation23a``) rather than folding onto it or failing."""
+    held = store.insert_ref(
+        kind="paper",
+        slug="preparation23",
+        title="Electrochemical Reduction of Carbon Dioxide on Copper",
+        year=2023,
+        meta={},
+    )
+    _seed_paper(
+        store,
+        cite_key="frontier-held2",
+        blocks=["The device was held at 2.4 kV throughout the entire run [1]."],
+        identifiers=[("doi", "10.1/frontier-held2")],
+    )
+    fid = _seed_finding(store, cite_key="frontier-held2")
+
+    s2_refs = [
+        {
+            "doi": "10.1/preparation-other",
+            "title": (
+                "Preparation Methods for Enzyme Immobilization "
+                "in Industrial Biotechnology"
+            ),
+            "year": 2023,
+        }
+    ]
+    with patch(
+        "precis.workers.chase._load_s2_references",
+        return_value=s2_refs,
+    ):
+        result = run_finding_chase_pass(store, limit=10)
+    assert result == {"claimed": 1, "ok": 1, "failed": 0}
+
+    chain = _chain(store, fid)
+    assert int(chain[-1]["ref_id"]) != int(held.id)
+    minted = store.get_ref(kind="paper", id=int(chain[-1]["ref_id"]))
+    assert minted is not None
+    assert minted.slug == "preparation23a"
+
+
+def test_stub_slug_veto_when_holder_has_different_doi(store) -> None:
+    """gr549326 review: the holder carries a doi of its own that differs
+    from the target's — the same-kind/different-value veto fires BEFORE
+    the title leg, so an identical title still mints a disambiguated
+    slug instead of folding (a corrigendum/companion must not take the
+    second work's doi stamped onto the original)."""
+    held = store.insert_ref(
+        kind="paper",
+        slug="preparation23",
+        title=_HELD_SLUG_TITLE,
+        year=2023,
+        meta={},
+    )
+    _seed_paper(
+        store,
+        cite_key="frontier-veto",
+        blocks=["The device was held at 2.4 kV throughout the entire run [1]."],
+        identifiers=[("doi", "10.1/frontier-veto")],
+    )
+    fid = _seed_finding(store, cite_key="frontier-veto")
+    with store.pool.connection() as conn:
+        conn.execute(
+            "INSERT INTO ref_identifiers (id_kind, id_value, ref_id, source) "
+            "VALUES ('doi', '10.1/preparation-original', %s, 'test')",
+            (held.id,),
+        )
+
+    s2_refs = [
+        {"doi": "10.1/preparation-target", "title": _HELD_SLUG_TITLE, "year": 2023}
+    ]
+    with patch(
+        "precis.workers.chase._load_s2_references",
+        return_value=s2_refs,
+    ):
+        result = run_finding_chase_pass(store, limit=10)
+    assert result == {"claimed": 1, "ok": 1, "failed": 0}
+
+    chain = _chain(store, fid)
+    assert int(chain[-1]["ref_id"]) != int(held.id)
+    minted = store.get_ref(kind="paper", id=int(chain[-1]["ref_id"]))
+    assert minted is not None
+    assert minted.slug == "preparation23a"
+    # The target's doi landed on the NEW stub, never on the held ref.
+    with store.pool.connection() as conn:
+        rows = conn.execute(
+            "SELECT ri.ref_id FROM ref_identifiers ri "
+            "WHERE ri.id_kind = 'doi' "
+            "AND ri.id_value IN ('10.1/preparation-original', "
+            "                   '10.1/preparation-target') "
+            "ORDER BY ri.ref_id",
+        ).fetchall()
+    assert {int(r[0]) for r in rows} == {int(held.id), int(minted.id)}
+
+
+def test_stub_slug_held_by_foreign_kind_mints_disambiguated(store) -> None:
+    """gr549326 review: a non-paper ref holding the slug is never the
+    same work — the stub mints under the rolled suffix."""
+    from precis.workers.chase import _NextHopTarget, _resolve_or_create_stub
+
+    store.insert_ref(
+        kind="draft",
+        slug="preparation23",
+        title="a draft holding the slug",
+        meta={},
+    )
+    target = _NextHopTarget(
+        doi="10.1/preparation-target",
+        arxiv=None,
+        s2_id=None,
+        title=_HELD_SLUG_TITLE,
+        year=2023,
+    )
+    with store.tx() as conn:
+        ref_id = _resolve_or_create_stub(conn, store, target)
+
+    assert ref_id is not None
+    minted = store.get_ref(kind="paper", id=ref_id)
+    assert minted is not None
+    assert minted.slug == "preparation23a"
