@@ -36,6 +36,16 @@ serves every session on the machine rather than one. The same drained
 exit is available on demand: under the supervisor, :data:`DRAIN_SIGNAL`
 (SIGHUP) triggers it — see :func:`install_drain_signal` (gr460711).
 
+Both respawn triggers further defer while sessions are live (gr548248):
+the exit drops every in-memory MCP session, so :func:`drain_then_exit`
+first waits for a quiet window — no call in flight and none within
+``PRECIS_MCP_RESPAWN_QUIET_S`` (default ~2 min) — capped by
+``PRECIS_MCP_RESPAWN_DEFER_CAP_S`` (default 30 min), past which the restart
+is forced and logged as such. The deferral is why "session active" means
+tool dispatch only: the supervisor's liveness probe runs initialize +
+tools/list every 20 s, never enters dispatch, and so must not count —
+otherwise the server would never go quiet.
+
 gr341515: the exit itself was invisible — the warning above only reaches
 stderr, which no MCP client surfaces, so an operator found the server
 simply gone with zero explanation. :func:`_write_exit_breadcrumb` drops a
@@ -57,6 +67,7 @@ import signal
 import subprocess
 import sys
 import threading
+import time
 from datetime import UTC, datetime
 from pathlib import Path
 from types import TracebackType
@@ -453,6 +464,30 @@ _DEFAULT_DRAIN_TIMEOUT_S = 120.0
 #: this module cannot know.
 _DRAIN_TIMEOUT_ENV = "PRECIS_MCP_DRAIN_TIMEOUT_S"
 
+#: How long sessions must be quiet before a deferred respawn goes ahead
+#: (gr548248). A bounce drops every in-memory MCP session, so a call in
+#: flight — or a call that finished less than this long ago — holds it back:
+#: sessions think between calls, and a bounce in that gap is exactly the
+#: "Error POSTing" the gripe counts. ~2 min covers a thinking pause; much
+#: longer defers a bounce past the point a ship wants its code serving.
+_DEFAULT_RESPAWN_QUIET_S = 120.0
+
+#: Overrides :data:`_DEFAULT_RESPAWN_QUIET_S`. ``0`` disables the deferral
+#: outright (the bounce waits only on the drain, as before).
+_RESPAWN_QUIET_ENV = "PRECIS_MCP_RESPAWN_QUIET_S"
+
+#: Ceiling on the quiet deferral: a shared server's sessions can stay busy
+#: indefinitely, so past this the respawn happens anyway, logged forced —
+#: one busy session must not hold a deploy's bounce off all afternoon.
+_DEFAULT_RESPAWN_DEFER_CAP_S = 1800.0
+
+#: Overrides :data:`_DEFAULT_RESPAWN_DEFER_CAP_S`. Non-positive falls back —
+#: "defer forever" is how a bounce never lands.
+_RESPAWN_DEFER_CAP_ENV = "PRECIS_MCP_RESPAWN_DEFER_CAP_S"
+
+#: Poll cadence inside the quiet wait — a lock and a stamp, cheap at this rate.
+_DEFER_POLL_S = 0.5
+
 
 def resolved_drain_timeout_s() -> float:
     """Drain bound from :data:`_DRAIN_TIMEOUT_ENV`, else the default.
@@ -477,6 +512,46 @@ def resolved_drain_timeout_s() -> float:
         )
         return _DEFAULT_DRAIN_TIMEOUT_S
     return value
+
+
+def _env_seconds(env: str, default: float, *, allow_zero: bool) -> float:
+    """Seconds from ``env``, else ``default``; same fail-safe shape as the drain bound.
+
+    A bad or out-of-range value warns and falls back rather than raising: a
+    typo in the ensure script's environment must not stop the server from
+    booting, and the default is the safe direction to fail in.
+    ``allow_zero`` marks ``0`` a real setting (the quiet window's off
+    switch); without it, non-positive is invalid — "defer forever" is how a
+    bounce never lands.
+    """
+    raw = (os.environ.get(env) or "").strip()
+    if not raw:
+        return default
+    try:
+        value = float(raw)
+    except ValueError:
+        value = -1.0
+    if value < 0 or (value == 0 and not allow_zero):
+        log.warning(
+            "checkout watchdog: ignoring %s=%r — out of range; using %.0fs",
+            env,
+            raw,
+            default,
+        )
+        return default
+    return value
+
+
+def resolved_respawn_quiet_s() -> float:
+    """Quiet window from :data:`_RESPAWN_QUIET_ENV`, else the default; ``0`` is off."""
+    return _env_seconds(_RESPAWN_QUIET_ENV, _DEFAULT_RESPAWN_QUIET_S, allow_zero=True)
+
+
+def resolved_respawn_defer_cap_s() -> float:
+    """Deferral ceiling from :data:`_RESPAWN_DEFER_CAP_ENV`, else the default."""
+    return _env_seconds(
+        _RESPAWN_DEFER_CAP_ENV, _DEFAULT_RESPAWN_DEFER_CAP_S, allow_zero=False
+    )
 
 
 def resolve_git_dir(root: Path) -> Path | None:
@@ -578,15 +653,50 @@ def watched_checkout_root() -> Path | None:
 
 
 def drain_then_exit(
-    *, reason: str, detail: str, why: str, drain_timeout_s: float
+    *,
+    reason: str,
+    detail: str,
+    why: str,
+    drain_timeout_s: float,
+    quiet_s: float = 0.0,
+    defer_cap_s: float = _DEFAULT_RESPAWN_DEFER_CAP_S,
 ) -> None:
-    """Quiesce in-flight tool calls, leave a breadcrumb, ``os._exit(0)``.
+    """Wait for session quiet, quiesce in-flight calls, breadcrumb, ``os._exit(0)``.
 
     The one exit path for a supervised shared server that wants to be
     replaced (checkout moved, restart requested). Exit 0 tells the
     supervisor to respawn at once rather than back off. Never returns.
+
+    ``quiet_s`` is the gr548248 deferral: the exit itself drops every
+    in-memory MCP session, so while a call is in flight — or dispatch ran
+    within the window — the respawn waits here and retries instead of
+    landing mid-conversation. ``defer_cap_s`` bounds the wait; past it the
+    restart goes ahead anyway, logged forced. ``quiet_s <= 0`` skips the
+    wait entirely (the drain below still bounds in-flight calls).
     """
     from precis import inflight
+
+    if quiet_s > 0 and inflight.busy(quiet_s):
+        deadline = time.monotonic() + max(defer_cap_s, 0.0)
+        log.warning(
+            "%s — deferred: sessions live (%d call(s) in flight or activity "
+            "within %.0fs); retrying until quiet, forced after %.0fs",
+            why,
+            inflight.count(),
+            quiet_s,
+            defer_cap_s,
+        )
+        while inflight.busy(quiet_s):
+            if time.monotonic() >= deadline:
+                detail += (
+                    f"; FORCED after {defer_cap_s:.0f}s of deferrals "
+                    "(sessions never went quiet)"
+                )
+                why += f" (FORCED — deferral cap {defer_cap_s:.0f}s reached)"
+                break
+            time.sleep(_DEFER_POLL_S)
+        else:
+            log.warning("%s — sessions went quiet; proceeding", why)
 
     # Latch the high-water ticket first and drain against *that* set. On
     # a server shared by a dozen sessions, waiting for the process to go
@@ -627,7 +737,12 @@ def drain_then_exit(
 DRAIN_SIGNAL = getattr(signal, "SIGHUP", signal.SIGTERM)
 
 
-def install_drain_signal(*, drain_timeout_s: float | None = None) -> bool:
+def install_drain_signal(
+    *,
+    drain_timeout_s: float | None = None,
+    quiet_s: float | None = None,
+    defer_cap_s: float | None = None,
+) -> bool:
     """Make :data:`DRAIN_SIGNAL` a drained restart; ``False`` if not installable.
 
     Only for a child of :mod:`precis.mcp_supervisor`: exit 0 is a restart
@@ -640,6 +755,8 @@ def install_drain_signal(*, drain_timeout_s: float | None = None) -> bool:
     if threading.current_thread() is not threading.main_thread():
         return False
     timeout = resolved_drain_timeout_s() if drain_timeout_s is None else drain_timeout_s
+    quiet = resolved_respawn_quiet_s() if quiet_s is None else quiet_s
+    cap = resolved_respawn_defer_cap_s() if defer_cap_s is None else defer_cap_s
     draining = threading.Event()
 
     def _on_drain_signal(_signum: int, _frame: object) -> None:
@@ -656,6 +773,8 @@ def install_drain_signal(*, drain_timeout_s: float | None = None) -> bool:
                     "so the supervisor starts a fresh server"
                 ),
                 "drain_timeout_s": timeout,
+                "quiet_s": quiet,
+                "defer_cap_s": cap,
             },
             name="drain-restart",
             daemon=True,
@@ -682,6 +801,9 @@ class CheckoutWatchdog(threading.Thread):
       so :mod:`precis.inflight` drains dispatch before the exit rather
       than failing a dozen calls. Bounded — see
       :data:`_DEFAULT_DRAIN_TIMEOUT_S`.
+    - **Defer while live.** The exit drops every in-memory session, so the
+      bounce also waits out a busy server — no call in flight and none
+      within ``quiet_s`` — up to ``defer_cap_s``, then forced (gr548248).
 
     Supervision is Docker's ``--restart unless-stopped`` rather than
     launchd's ``KeepAlive``; either way the clean exit is only a recovery
@@ -697,12 +819,16 @@ class CheckoutWatchdog(threading.Thread):
         baseline: str,
         interval_s: float,
         drain_timeout_s: float = _DEFAULT_DRAIN_TIMEOUT_S,
+        quiet_s: float = _DEFAULT_RESPAWN_QUIET_S,
+        defer_cap_s: float = _DEFAULT_RESPAWN_DEFER_CAP_S,
     ) -> None:
         super().__init__(name="checkout-watchdog", daemon=True)
         self._root = root
         self._baseline = baseline
         self._interval_s = interval_s
         self._drain_timeout_s = drain_timeout_s
+        self._quiet_s = quiet_s
+        self._defer_cap_s = defer_cap_s
         self._stop_event = threading.Event()
 
     def stop(self, timeout: float | None = 5.0) -> None:
@@ -724,6 +850,8 @@ class CheckoutWatchdog(threading.Thread):
                 "supervisor starts a server on the new code"
             ),
             drain_timeout_s=self._drain_timeout_s,
+            quiet_s=self._quiet_s,
+            defer_cap_s=self._defer_cap_s,
         )
 
     def run(self) -> None:
@@ -740,6 +868,8 @@ def start_checkout_watchdog(
     *,
     interval_s: float = _DEFAULT_CHECKOUT_INTERVAL_S,
     drain_timeout_s: float | None = None,
+    quiet_s: float | None = None,
+    defer_cap_s: float | None = None,
 ) -> CheckoutWatchdog | None:
     """Arm the checkout arm from ``PRECIS_CHECKOUT_WATCHDOG``.
 
@@ -769,6 +899,10 @@ def start_checkout_watchdog(
         interval_s=interval_s,
         drain_timeout_s=(
             resolved_drain_timeout_s() if drain_timeout_s is None else drain_timeout_s
+        ),
+        quiet_s=(resolved_respawn_quiet_s() if quiet_s is None else quiet_s),
+        defer_cap_s=(
+            resolved_respawn_defer_cap_s() if defer_cap_s is None else defer_cap_s
         ),
     )
     thread.start()

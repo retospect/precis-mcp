@@ -20,6 +20,12 @@ is visible from both threads with no portal at all.
 
 Its own module rather than ``server.py`` so ``install_watchdog`` can import it
 without importing the server (which imports ``install_watchdog``).
+
+A second consumer reads a weaker fact: respawns should defer not only while
+a call is in flight but while any session was active recently (gr548248), so
+:func:`enter`/:func:`leave` also stamp the last activity and :func:`busy`
+answers "in flight or fresh" in one locked read — a counter and a timestamp,
+no DB, visible only inside the serve child that owns it.
 """
 
 from __future__ import annotations
@@ -38,20 +44,29 @@ _active: set[int] = set()
 #: :func:`wait_for_drain` takes is only meaningful while it keeps rising.
 _issued = 0
 
+#: Monotonic stamp of the last call start or finish — the "a session was
+#: active recently" half of a respawn's quiet check (gr548248). A start or
+#: a finish is both activity; what happens between them is covered by the
+#: ticket sitting in ``_active``.
+_last_activity: float | None = None
+
 
 def enter() -> int:
     """Mark one tool call as started; returns its ticket for :func:`leave`."""
-    global _issued
+    global _issued, _last_activity
     with _cond:
         _issued += 1
         _active.add(_issued)
+        _last_activity = time.monotonic()
         return _issued
 
 
 def leave(ticket: int) -> None:
     """Mark the call holding ``ticket`` as finished."""
+    global _last_activity
     with _cond:
         _active.discard(ticket)
+        _last_activity = time.monotonic()
         _cond.notify_all()
 
 
@@ -69,6 +84,25 @@ def count() -> int:
     """How many tool calls are executing right now."""
     with _cond:
         return len(_active)
+
+
+def busy(quiet_s: float) -> bool:
+    """A call is in flight, or dispatch ran within the last ``quiet_s``.
+
+    One locked snapshot — reading :func:`count` and the activity stamp
+    separately would miss a call landing between the two reads. Only tool
+    dispatch moves this needle: protocol chatter (``initialize``,
+    ``tools/list`` — including the supervisor's own liveness probe, which
+    fires every 20 s) never enters dispatch, so a probed-but-otherwise-idle
+    server still counts as quiet. ``quiet_s <= 0`` degenerates to "a call
+    is in flight".
+    """
+    with _cond:
+        if _active:
+            return True
+        if _last_activity is None:
+            return False
+        return time.monotonic() - _last_activity < quiet_s
 
 
 def wait_for_drain(timeout: float, *, mark: int | None = None) -> bool:
@@ -121,8 +155,9 @@ def high_water() -> int:
 
 def _reset_for_tests() -> None:
     """Drop the counter back to idle (tests only — no production caller)."""
-    global _issued
+    global _issued, _last_activity
     with _cond:
         _active.clear()
         _issued = 0
+        _last_activity = None
         _cond.notify_all()

@@ -272,8 +272,14 @@ def test_bounce_waits_for_in_flight_calls_to_drain(
     what fails against that version.
     """
     root = _checkout(tmp_path)
+    # quiet_s=0 pins the drain path alone — the gr548248 quiet-window
+    # deferral has its own tests below.
     thread = CheckoutWatchdog(
-        root=root, baseline=SHA_A, interval_s=0.02, drain_timeout_s=30.0
+        root=root,
+        baseline=SHA_A,
+        interval_s=0.02,
+        drain_timeout_s=30.0,
+        quiet_s=0.0,
     )
     codes, fired = _run_until_exit(thread, monkeypatch)
 
@@ -295,7 +301,11 @@ def test_bounce_gives_up_on_a_wedged_call(
     bounce open forever, which would leave every session on stale code."""
     root = _checkout(tmp_path)
     thread = CheckoutWatchdog(
-        root=root, baseline=SHA_A, interval_s=0.02, drain_timeout_s=0.2
+        root=root,
+        baseline=SHA_A,
+        interval_s=0.02,
+        drain_timeout_s=0.2,
+        quiet_s=0.0,  # drain path alone; the deferral cap is tested below
     )
     codes, fired = _run_until_exit(thread, monkeypatch)
 
@@ -359,7 +369,9 @@ def test_drain_signal_drains_in_flight_calls_then_exits_clean(
     previous = signal.getsignal(install_watchdog.DRAIN_SIGNAL)
     slow = None
     try:
-        assert install_watchdog.install_drain_signal(drain_timeout_s=30.0)
+        # quiet_s=0 pins the drain semantics; the quiet-window deferral
+        # the same signal now carries is covered by the watchdog tests.
+        assert install_watchdog.install_drain_signal(drain_timeout_s=30.0, quiet_s=0.0)
         slow = inflight.enter()
         os.kill(os.getpid(), install_watchdog.DRAIN_SIGNAL)
         assert not fired.wait(0.6), "exited while a tool call was still in flight"
@@ -524,8 +536,14 @@ def test_bounce_drains_a_slow_call_while_other_sessions_keep_calling(
     go, without waiting for the churn to stop.
     """
     root = _checkout(tmp_path)
+    # quiet_s=0: the churn below would otherwise hold the bounce on the
+    # quiet window — this test pins the drain's high-water semantics.
     thread = CheckoutWatchdog(
-        root=root, baseline=SHA_A, interval_s=0.02, drain_timeout_s=8.0
+        root=root,
+        baseline=SHA_A,
+        interval_s=0.02,
+        drain_timeout_s=8.0,
+        quiet_s=0.0,
     )
     codes, fired = _run_until_exit(thread, monkeypatch)
 
@@ -574,4 +592,140 @@ def test_drain_timeout_is_env_tunable_and_defaults_above_real_latency(
         monkeypatch.setenv("PRECIS_MCP_DRAIN_TIMEOUT_S", bad)
         assert install_watchdog.resolved_drain_timeout_s() >= 60.0, (
             f"{bad!r} should fall back to the default, not disable the drain"
+        )
+
+
+# --- the quiet-window deferral (gr548248) -------------------------------------
+
+
+def test_bounce_proceeds_at_once_when_sessions_are_idle(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Nothing in flight, nothing recent: the deferral must not hold a
+    bounce that costs nobody anything — stale code is its own failure."""
+    root = _checkout(tmp_path)
+    thread = CheckoutWatchdog(
+        root=root,
+        baseline=SHA_A,
+        interval_s=0.02,
+        drain_timeout_s=1.0,
+        quiet_s=60.0,
+        defer_cap_s=60.0,
+    )
+    codes, fired = _run_until_exit(thread, monkeypatch)
+    (root / ".git" / "refs" / "heads" / "main").write_text(
+        SHA_B + "\n", encoding="utf-8"
+    )
+    assert fired.wait(10.0), "an idle server's bounce deferred for no reason"
+    assert codes == [0]
+
+
+def test_bounce_defers_while_a_call_is_in_flight_then_goes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr548248 AC: a respawn mid-call is the 'Error POSTing' — the bounce
+    must wait out the call and the short quiet tail after it, then go."""
+    root = _checkout(tmp_path)
+    thread = CheckoutWatchdog(
+        root=root,
+        baseline=SHA_A,
+        interval_s=0.02,
+        drain_timeout_s=30.0,
+        quiet_s=0.5,
+        defer_cap_s=30.0,
+    )
+    codes, fired = _run_until_exit(thread, monkeypatch)
+
+    slow = inflight.enter()  # a live call: the bounce must defer
+    (root / ".git" / "refs" / "heads" / "main").write_text(
+        SHA_B + "\n", encoding="utf-8"
+    )
+    assert not fired.wait(0.8), "bounced while a call was in flight"
+
+    inflight.leave(slow)
+    assert not fired.wait(0.2), "a call that just ended is still recent activity"
+    assert fired.wait(10.0), "never restarted after sessions went quiet"
+    assert codes == [0]
+
+
+def test_bounce_defers_on_recent_activity_alone(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """No call in flight, but one ran a moment ago: sessions think between
+    calls, and a bounce in that gap is exactly the gripe's error."""
+    root = _checkout(tmp_path)
+    thread = CheckoutWatchdog(
+        root=root,
+        baseline=SHA_A,
+        interval_s=0.02,
+        drain_timeout_s=1.0,
+        quiet_s=0.6,
+        defer_cap_s=30.0,
+    )
+    codes, fired = _run_until_exit(thread, monkeypatch)
+
+    inflight.leave(inflight.enter())  # a call that just finished
+    (root / ".git" / "refs" / "heads" / "main").write_text(
+        SHA_B + "\n", encoding="utf-8"
+    )
+    assert not fired.wait(0.3), "bounced inside the quiet window"
+    assert fired.wait(10.0), "the quiet window passed and the bounce still held"
+    assert codes == [0]
+
+
+def test_bounce_is_forced_once_the_deferral_cap_passes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Busy forever is a wedge, not a reason to serve stale code all
+    afternoon: past the cap the bounce happens anyway, logged FORCED."""
+    root = _checkout(tmp_path)
+    thread = CheckoutWatchdog(
+        root=root,
+        baseline=SHA_A,
+        interval_s=0.02,
+        drain_timeout_s=0.2,
+        quiet_s=60.0,
+        defer_cap_s=0.5,
+    )
+    codes, fired = _run_until_exit(thread, monkeypatch)
+
+    wedged = inflight.enter()  # never leaves — sessions stay "live" forever
+    (root / ".git" / "refs" / "heads" / "main").write_text(
+        SHA_B + "\n", encoding="utf-8"
+    )
+    try:
+        assert fired.wait(10.0), "a busy server held the bounce past the cap"
+    finally:
+        inflight.leave(wedged)
+    assert codes == [0]
+    crumb = json.loads(install_watchdog._breadcrumb_path().read_text(encoding="utf-8"))
+    assert "FORCED" in str(crumb["detail"]), "a forced bounce must say so"
+
+
+def test_respawn_quiet_and_defer_cap_are_env_tunable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Same contract as the drain bound: right-sized defaults, env override
+    for a deployment that differs, garbage falls back — except quiet ``0``,
+    which is a real setting (the deferral's off switch)."""
+    monkeypatch.delenv("PRECIS_MCP_RESPAWN_QUIET_S", raising=False)
+    monkeypatch.delenv("PRECIS_MCP_RESPAWN_DEFER_CAP_S", raising=False)
+    assert install_watchdog.resolved_respawn_quiet_s() == 120.0
+    assert install_watchdog.resolved_respawn_defer_cap_s() >= 300.0
+
+    monkeypatch.setenv("PRECIS_MCP_RESPAWN_QUIET_S", "0")
+    assert install_watchdog.resolved_respawn_quiet_s() == 0.0
+    monkeypatch.setenv("PRECIS_MCP_RESPAWN_QUIET_S", "30")
+    assert install_watchdog.resolved_respawn_quiet_s() == 30.0
+    monkeypatch.setenv("PRECIS_MCP_RESPAWN_DEFER_CAP_S", "600")
+    assert install_watchdog.resolved_respawn_defer_cap_s() == 600.0
+
+    for bad in ("nonsense", "-5"):
+        monkeypatch.setenv("PRECIS_MCP_RESPAWN_QUIET_S", bad)
+        assert install_watchdog.resolved_respawn_quiet_s() == 120.0
+    for bad in ("nonsense", "0", "-5"):
+        monkeypatch.setenv("PRECIS_MCP_RESPAWN_DEFER_CAP_S", bad)
+        assert install_watchdog.resolved_respawn_defer_cap_s() >= 300.0, (
+            f"{bad!r} must not become 'defer forever' — the cap exists so a "
+            "bounce always lands"
         )

@@ -155,6 +155,45 @@ def test_arrivals_during_a_drain_cannot_stop_it_settling() -> None:
     assert inflight.count() >= 0
 
 
+def test_busy_is_false_when_nothing_ever_ran() -> None:
+    """gr548248: a booted-but-uncalled server is quiet — a respawn may go."""
+    assert inflight.count() == 0
+    assert inflight.busy(60.0) is False
+
+
+def test_busy_while_a_call_is_in_flight() -> None:
+    ticket = inflight.enter()
+    assert inflight.busy(60.0) is True
+    assert inflight.busy(0.0) is True  # quiet_s 0 still means "in flight"
+    inflight.leave(ticket)
+
+
+def test_busy_holds_for_the_quiet_window_then_clears() -> None:
+    """A call that just ended is still activity — the deferral's whole
+    point is the pause *between* calls, not only the calls themselves."""
+    inflight.leave(inflight.enter())
+    assert inflight.busy(60.0) is True
+    assert inflight.busy(0.0) is False, "quiet_s 0 degenerates to 'in flight only'"
+    time.sleep(0.05)
+    assert inflight.busy(0.02) is False
+
+
+def test_busy_sees_activity_from_another_thread() -> None:
+    """Same visibility contract as the count: the watchdog's daemon thread
+    reads what the event-loop thread's calls stamped."""
+    seen = threading.Event()
+
+    def _worker() -> None:
+        inflight.leave(inflight.enter())
+        seen.set()
+
+    thread = threading.Thread(target=_worker, daemon=True)
+    thread.start()
+    assert seen.wait(5.0)
+    thread.join(5.0)
+    assert inflight.busy(60.0) is True
+
+
 def test_a_mark_pins_the_set_the_drain_owns() -> None:
     """``pending_at`` is what the watchdog logs, so it must count only the
     calls the drain is actually waiting on."""
