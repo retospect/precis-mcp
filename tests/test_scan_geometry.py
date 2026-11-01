@@ -86,10 +86,12 @@ def test_append_only_rerun_adds_chunks_and_the_newest_wins(store: Store) -> None
     rerun = [dict(_records()[0], final=_XYZ_BAD)]
     scan_geometry.store_geometries(store, job, rerun)
     with store.pool.connection() as conn:
-        (n,) = conn.execute(
+        row = conn.execute(
             "SELECT count(*) FROM chunks WHERE ref_id = %s AND chunk_kind = %s",
             (job, scan_geometry.KIND),
         ).fetchone()
+    assert row is not None
+    (n,) = row
     assert n == 4  # nothing updated in place
     assert scan_geometry.fetch_point(store, job, "(111):O:1") == _XYZ_BAD
 
