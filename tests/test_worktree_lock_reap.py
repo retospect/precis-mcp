@@ -3057,6 +3057,176 @@ def test_inflight_reads_another_users_live_pid_as_live(
     assert bucket["bucket"] != "safe_remove", bucket
 
 
+# --- idle-lock#: an alive lock pid with nothing running inside an idle tree --
+# A long-lived parent session holds `git worktree lock` on every subagent /
+# qland tree it created (2026-10-31: one pid, 156 trees). The pid is alive,
+# so `live#` was wrong. idle-lock# needs: lsof shows no process cwd in the
+# tree AND no activity for PRECIS_INFLIGHT_IDLE_LOCK_H hours. The fresh
+# fixture commit is "recent activity"; H=0 stands in for "hours have passed".
+
+
+def _fake_lsof(
+    tmp_path: Path, cwds: list[Path], *, fail: bool = False
+) -> dict[str, str]:
+    """Env with a fake `lsof` first on PATH printing `-Fn` cwd records."""
+    fakebin = tmp_path / "fakebin-lsof"
+    fakebin.mkdir(exist_ok=True)
+    if fail:
+        body = "exit 1\n"
+    else:
+        body = "printf 'p42\\nfcwd\\nn/\\n'\n" + "".join(
+            f"printf 'p42\\nfcwd\\nn{c}\\n'\n" for c in cwds
+        )
+    script = fakebin / "lsof"
+    script.write_text("#!/bin/sh\n" + body, encoding="utf-8")
+    script.chmod(0o755)
+    env = _test_env()
+    env["PATH"] = f"{fakebin}:{env['PATH']}"
+    return env
+
+
+def _inflight(primary: Path, env: dict[str, str], flag: str) -> str:
+    return subprocess.run(
+        [str(primary / "scripts" / "inflight"), flag],
+        cwd=str(primary),
+        env=env,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+    ).stdout
+
+
+@pytest.fixture
+def alive_pid():
+    proc = subprocess.Popen(["sleep", "120"], env=_test_env())
+    try:
+        yield proc.pid
+    finally:
+        proc.kill()
+        proc.wait(timeout=10)
+
+
+def test_inflight_alive_lock_idle_tree_no_process_is_idle_lock(
+    guard_repo: dict[str, Path], alive_pid: int, tmp_path: Path
+) -> None:
+    primary, b = guard_repo["primary"], guard_repo["b"]
+    _git(primary, "worktree", "lock", str(b), "--reason", f"pid {alive_pid}")
+    env = _fake_lsof(tmp_path, [tmp_path / "elsewhere"])
+    env["PRECIS_INFLIGHT_IDLE_LOCK_H"] = "0"
+
+    bucket = _bucket_for(_inflight(primary, env, "--json"), b)
+    assert bucket["session"] == f"idle-lock#{alive_pid}", bucket
+    assert bucket["bucket"] == "safe_remove", bucket
+
+
+def test_inflight_idle_lock_agent_tree_merged_clean_is_safe_remove(
+    guard_repo: dict[str, Path], alive_pid: int, tmp_path: Path
+) -> None:
+    primary = guard_repo["primary"]
+    agent = primary / ".claude" / "worktrees" / "agent-a1b2c3"
+    _git(
+        primary,
+        "worktree",
+        "add",
+        "-q",
+        "-b",
+        "worktree-agent-a1b2c3",
+        str(agent),
+        "main",
+    )
+    _git(
+        primary,
+        "worktree",
+        "lock",
+        str(agent),
+        "--reason",
+        f"claude agent a1b2c3 (pid {alive_pid})",
+    )
+    env = _fake_lsof(tmp_path, [])
+    env["PRECIS_INFLIGHT_IDLE_LOCK_H"] = "0"
+
+    bucket = _bucket_for(_inflight(primary, env, "--json"), agent)
+    assert bucket["session"] == f"idle-lock#{alive_pid}", bucket
+    assert bucket["bucket"] == "safe_remove", bucket
+
+
+def test_inflight_alive_lock_with_process_cwd_inside_stays_live(
+    guard_repo: dict[str, Path], alive_pid: int, tmp_path: Path
+) -> None:
+    primary, b = guard_repo["primary"], guard_repo["b"]
+    _git(primary, "worktree", "lock", str(b), "--reason", f"pid {alive_pid}")
+    # A process in a SUBDIRECTORY of the tree counts too.
+    env = _fake_lsof(tmp_path, [b.resolve() / "src" / "deep"])
+    env["PRECIS_INFLIGHT_IDLE_LOCK_H"] = "0"
+
+    bucket = _bucket_for(_inflight(primary, env, "--json"), b)
+    assert bucket["session"] == f"live#{alive_pid}", bucket
+    assert bucket["bucket"] == "live_session", bucket
+
+
+def test_inflight_alive_lock_with_recent_activity_stays_live(
+    guard_repo: dict[str, Path], alive_pid: int, tmp_path: Path
+) -> None:
+    primary, b = guard_repo["primary"], guard_repo["b"]
+    _git(primary, "worktree", "lock", str(b), "--reason", f"pid {alive_pid}")
+    env = _fake_lsof(tmp_path, [tmp_path / "elsewhere"])  # default 6 h threshold
+
+    bucket = _bucket_for(_inflight(primary, env, "--json"), b)
+    assert bucket["session"] == f"live#{alive_pid}", bucket
+    assert bucket["bucket"] == "live_session", bucket
+
+
+def test_inflight_alive_lock_stays_live_when_lsof_fails(
+    guard_repo: dict[str, Path], alive_pid: int, tmp_path: Path
+) -> None:
+    primary, b = guard_repo["primary"], guard_repo["b"]
+    _git(primary, "worktree", "lock", str(b), "--reason", f"pid {alive_pid}")
+    env = _fake_lsof(tmp_path, [], fail=True)
+    env["PRECIS_INFLIGHT_IDLE_LOCK_H"] = "0"
+
+    bucket = _bucket_for(_inflight(primary, env, "--json"), b)
+    assert bucket["session"] == f"live#{alive_pid}", bucket
+    assert bucket["bucket"] == "live_session", bucket
+
+
+def test_for_hook_counts_only_live_not_idle_lock(
+    guard_repo: dict[str, Path], alive_pid: int, tmp_path: Path
+) -> None:
+    primary, b = guard_repo["primary"], guard_repo["b"]
+    _git(primary, "worktree", "lock", str(b), "--reason", f"pid {alive_pid}")
+    env = _fake_lsof(tmp_path, [tmp_path / "elsewhere"])
+
+    # Control: recent activity -> counted live.
+    assert "(1 live," in _inflight(primary, env, "--for-hook")
+    env["PRECIS_INFLIGHT_IDLE_LOCK_H"] = "0"
+    out = _inflight(primary, env, "--for-hook")
+    assert "(0 live," in out, out
+
+
+def test_reap_worktrees_removes_an_idle_lock_tree(
+    guard_repo: dict[str, Path], alive_pid: int, tmp_path: Path
+) -> None:
+    """End to end: an idle-lock# tree is unlocked then removed, while the
+    lock pid (the long-lived parent) stays alive."""
+    primary, b = guard_repo["primary"], guard_repo["b"]
+    _git(primary, "worktree", "lock", str(b), "--reason", f"pid {alive_pid}")
+    env = _fake_lsof(tmp_path, [tmp_path / "elsewhere"])
+    env["PRECIS_INFLIGHT_IDLE_LOCK_H"] = "0"
+    env["PRECIS_REAP_GRACE_SECONDS"] = "0"
+
+    result = subprocess.run(
+        ["bash", str(primary / "scripts" / "reap-worktrees")],
+        cwd=str(primary),
+        env=env,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+    )
+    assert result.returncode == 0, result.stderr
+    assert not b.exists()
+    assert _pid_alive(alive_pid)
+
+
 # --- reap-worktrees --report: the read-only census --------------------------
 # A dedicated fixture (not repo_trio/guard_repo): the report reads
 # `origin/main`, so this repo fakes the remote-tracking ref by hand

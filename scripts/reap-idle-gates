@@ -24,7 +24,7 @@ Safe by construction. A project is reaped only when every check holds:
    is not the primary checkout, it exists, and ``compose_project_for`` of it
    gives this project name (a gone tree belongs to ``reap-test-dbs``);
 3. ``scripts/inflight --json`` names the tree and its ``session`` is ``—`` or
-   ``dead-lock#<pid>``; no inflight answer means nothing is reaped;
+   ``dead-lock#<pid>`` / ``idle-lock#<pid>``; no inflight answer means nothing is reaped;
 4. ``.claude/purpose`` is absent or older than
    ``PRECIS_REAP_GATE_PURPOSE_FRESH_SECONDS`` (default 6 h);
 5. no container in the project has an exec attached (a gate in flight runs
@@ -232,7 +232,7 @@ def _sessions() -> dict[str, str] | None:
 
 
 def _sessionless(session: str) -> bool:
-    return session == "—" or session.startswith("dead-lock#")
+    return session == "—" or session.startswith(("dead-lock#", "idle-lock#"))
 
 
 def _git_dir(tree: str) -> str | None:

@@ -19,7 +19,7 @@ Live census at invocation:
 ## Procedure
 
 1. **Nothing to do.** If the report shows no removal candidates (no
-   missing-dir, no dead-lock, no runbook-only, no clean+merged, no
+   missing-dir, no dead-lock/idle-lock, no runbook-only, no clean+merged, no
    merged/landed branchless branches), say so in one line and stop.
 
 2. **Per-list go for the removal candidates.** For each non-empty
@@ -28,7 +28,7 @@ Live census at invocation:
    and the `merged` / `landed` branchless-branch lists — show the names
    and `AskUserQuestion` whether that whole list goes. A yes removes
    every entry in it: `git worktree remove <path>` for worktrees
-   (`git worktree unlock` first for the dead-lock list — `remove`
+   (`git worktree unlock` first for the dead-lock/idle-lock list — `remove`
    unconditionally refuses a locked tree), `git branch -D` for
    branchless branches. A no leaves the whole list untouched. Per-list
    means per-list — never cherry-pick entries out of a list silently,

@@ -22,6 +22,14 @@
 #   SESSION    live#<pid>  — a Claude session holds the worktree lock and is alive
 #              live-task#<id> — a Claude subagent task is active in this worktree
 #              dead-lock#<pid> — locked by a pid that is gone (safe to reap)
+#              idle-lock#<pid> — the locking pid is alive but no process has its cwd
+#                            in the tree AND the tree is idle (newest of gitdir
+#                            HEAD/index mtime, .claude/purpose mtime, HEAD commit
+#                            time older than PRECIS_INFLIGHT_IDLE_LOCK_H hours,
+#                            default 6): a long-lived parent session holding the
+#                            lock on trees it spawned (agent / qland-*). Treated
+#                            like dead-lock# (reapable). Needs `lsof`; without it
+#                            (or if it fails) the tree stays live#.
 #              —           — no lock
 #   DIRTY      count of tracked-modified files (+N = untracked), or "clean"
 #   VS-MAIN    merged        — tip is an ancestor of main (shipped & reset, or ff)
@@ -194,6 +202,60 @@ pid_alive() { # pid_alive <pid> — exists, whoever owns it. A bare `kill -0`
   local err
   err="$(export LC_ALL=C; kill -0 "$1" 2>&1)" && return 0
   [[ "$err" == *"not permitted"* ]]
+}
+
+# Process-cwd truth for idle-lock#: one `lsof -d cwd -Fn` per run, before the
+# probe subshells fork (they inherit the array). Only taken when some tree
+# carries a lock at all. LSOF_OK=0 (missing or failed lsof) means "cannot
+# tell" -> a live lock pid stays live#, never guessed idle.
+IDLE_LOCK_H=${PRECIS_INFLIGHT_IDLE_LOCK_H:-6}
+case $IDLE_LOCK_H in ''|*[!0-9]*) IDLE_LOCK_H=6 ;; esac
+PROC_CWDS=() LSOF_OK=0
+collect_proc_cwds() { # run once, after WT_LOCKED is filled, before the fan-out
+  local lk any=0 out l
+  for lk in "${WT_LOCKED[@]:-}"; do [ -n "$lk" ] && { any=1; break; }; done
+  [ "$any" = 1 ] && command -v lsof >/dev/null 2>&1 || return 0
+  out=$(lsof -d cwd -Fn 2>/dev/null) || true
+  [ -n "$out" ] || return 0
+  while IFS= read -r l; do
+    case $l in n/*) PROC_CWDS+=("${l:1}") ;; esac
+  done <<< "$out"
+  LSOF_OK=1
+}
+
+proc_in_tree() { # proc_in_tree <path>... — some process cwd is a path or under it
+  local c p
+  for c in "${PROC_CWDS[@]:-}"; do
+    for p in "$@"; do
+      [ -n "$p" ] || continue
+      [ "$c" = "$p" ] && return 0
+      case $c in "$p"/*) return 0 ;; esac
+    done
+  done
+  return 1
+}
+
+mtime_of() { # mtime_of <file> — epoch seconds or nothing (GNU stat, then BSD)
+  stat -c %Y "$1" 2>/dev/null || stat -f %m "$1" 2>/dev/null
+}
+
+tree_idle() { # tree_idle <path> <head-sha> — newest activity older than IDLE_LOCK_H
+  local path=$1 head=$2 gd='' newest=0 t f now
+  if [ -f "$path/.git" ]; then
+    gd=$(sed -n 's/^gitdir: //p' "$path/.git" 2>/dev/null | head -1)
+    case $gd in /*) ;; *) gd="$path/$gd" ;; esac
+  fi
+  for f in "$gd/HEAD" "$gd/index" "$path/.claude/purpose"; do
+    t=$(mtime_of "$f") || continue
+    case $t in ''|*[!0-9]*) continue ;; esac
+    [ "$t" -gt "$newest" ] && newest=$t
+  done
+  t=$(git --no-optional-locks -C "$path" show -s --format=%ct "$head" 2>/dev/null)
+  case $t in ''|*[!0-9]*) ;; *) [ "$t" -gt "$newest" ] && newest=$t ;; esac
+  # No readable signal at all -> cannot call it idle.
+  [ "$newest" -gt 0 ] || return 1
+  now=$(date +%s)
+  [ $((now - newest)) -ge $((IDLE_LOCK_H * 3600)) ]
 }
 
 session_field() { # session_field <locked-reason>
@@ -436,7 +498,13 @@ probe_worktree() {
   local canon
   if cd -P "$path" 2>/dev/null; then canon=$PWD; else canon=$path; fi
   task_id=$(task_for "$canon" "$locked")
-  [ -n "$task_id" ] && sess="live-task#${task_id}"
+  if [ -n "$task_id" ]; then sess="live-task#${task_id}"
+  elif [[ "$sess" == live#* ]] && [ "$LSOF_OK" = 1 ] && [ "$path" != "$SELF_PATH" ] \
+       && ! proc_in_tree "$canon" "$path" && tree_idle "$path" "$head"; then
+    # Alive lock pid, but nothing runs inside and nothing changed for hours:
+    # a long-lived parent session's lock on a tree it spawned.
+    sess="idle-lock#${sess#live#}"
+  fi
   agent_tree=0
   case "$name:$branch" in
     agent-*:*) agent_tree=1 ;;
@@ -498,7 +566,7 @@ probe_worktree() {
   # defect 2 — a recovery lock "live session 22516 …" was reaped as unlocked).
   if [ "$verd" = 'merged' ] && [ "$dirtyf" = 'clean' ] \
      && [[ "$sess" != live#* && "$sess" != live-task#* ]] \
-     && [ "$sess" != 'locked' ] && [ "$agent_tree" = 0 ] \
+     && [ "$sess" != 'locked' ] && { [ "$agent_tree" = 0 ] || [[ "$sess" == idle-lock#* ]]; } \
      && [ "$path" != "$SELF_PATH" ] && [ "$path" != "$PRIMARY" ]; then
     rem=$name
   fi
@@ -509,7 +577,7 @@ probe_worktree() {
     elif [[ "$sess" == live-task#* ]]; then bucket='live_subagent'
     elif [[ "$sess" == live#* ]]; then bucket='live_session'
     elif [ "$sess" = 'locked' ]; then bucket='needs_judgment'
-    elif [ "$agent_tree" = 1 ]; then bucket='needs_judgment'
+    elif [ "$agent_tree" = 1 ] && [[ "$sess" != idle-lock#* ]]; then bucket='needs_judgment'
     elif [ "$dirtyf" != 'clean' ]; then
       bucket='needs_judgment'
       ds=$(git --no-optional-locks -C "$path" diff --stat 2>/dev/null | head -10)
@@ -558,6 +626,7 @@ probe_branch() {
 }
 
 # --- fan-out -----------------------------------------------------------------
+collect_proc_cwds
 PROBE_DIR=$(mktemp -d "${TMPDIR:-/tmp}/inflight.XXXXXX") || exit 0
 trap 'rm -rf "$PROBE_DIR"' EXIT
 
