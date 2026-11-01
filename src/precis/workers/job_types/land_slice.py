@@ -64,6 +64,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from precis.plans.logbook import log_plan_event
 from precis.plans.templates import PENDING_SHA
 from precis.store.types import Tag
 from precis.workers import factory_git as _factory_git
@@ -700,6 +701,21 @@ def poll(ctx: Any, handle: Any) -> bool:
     except Exception as exc:  # pragma: no cover — reported, the land stands
         log.warning("land_slice: gate write for td%d failed", todo_id, exc_info=True)
         summary.append(f"gate: write FAILED ({exc})")
+    try:
+        plan_tag = _plan_tag(store, todo_id)
+        if plan_tag is not None:
+            # gr548800: a landed slice is a quest-logbook milestone.
+            root_id = int(plan_tag[5:])
+            log_plan_event(
+                store,
+                todo_id,
+                f"slice td{todo_id} landed {sha[:9]} — {subject}",
+                entry_type="milestone",
+                root=root_id,
+            )
+    except Exception as exc:  # pragma: no cover — reported, the land stands
+        log.warning("land_slice: logbook write for td%d failed", todo_id, exc_info=True)
+        summary.append(f"logbook: write FAILED ({exc})")
     cleanup = _cleanup(tree, branch)
     summary += cleanup
     closed_pr = None

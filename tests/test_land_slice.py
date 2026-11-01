@@ -415,6 +415,34 @@ def test_poll_green_after_land_notify(seams: dict[str, Any]) -> None:
     assert "gate td44" in summary
 
 
+def test_poll_green_logs_the_land_on_the_plan_quest(
+    seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr548800: a landed slice appends a milestone logbook entry naming its
+    plan root — here via the seam (the fake store has no quest lookup)."""
+    seen: list[dict[str, Any]] = []
+
+    def fake_log(store: Any, node_id: int, event: str, **kw: Any) -> int:
+        seen.append({"node": node_id, "event": event, "kw": kw})
+        return 1
+
+    monkeypatch.setattr(land_slice, "log_plan_event", fake_log)
+    store = _Store()
+    store.add_todo(42, tags=("claimed-by:lane-claude-sub", "plan:40"))
+    ctx, handle = _submit(store, seams)
+    _finish(handle, 0, GREEN_LOG)
+    pctx = _Ctx(store, _params(seams))
+    assert land_slice.poll(pctx, handle) is True
+    assert pctx.status == "succeeded"
+    assert seen == [
+        {
+            "node": 42,
+            "event": f"slice td42 landed {FULL_SHA[:9]} — {SUBJECT}",
+            "kw": {"entry_type": "milestone", "root": 40},
+        }
+    ]
+
+
 def test_poll_green_writes_the_land_when_land_notify_did_not(
     seams: dict[str, Any],
 ) -> None:

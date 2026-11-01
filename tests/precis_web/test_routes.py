@@ -4569,6 +4569,51 @@ def test_alerts_ack_and_unack_redirect_to_list(client) -> None:
         assert resp.headers["location"] == "/alerts"
 
 
+def test_alerts_shows_ask_user_todos_in_a_needs_you_section(
+    client, monkeypatch
+) -> None:
+    """gr548802: ask-user todos (meta.ask) render at the top of /alerts in a
+    'needs you' section, answerable in place via the shared asks rows."""
+    from precis_web.routes import asks as asks_mod
+
+    monkeypatch.setattr(
+        asks_mod,
+        "_load_asks",
+        lambda store, **kw: [
+            {
+                "id": 501,
+                "title": "Should the pass cut on a red gate?",
+                "created_at": None,
+                "questions": [],
+                "tags": ["ask-user"],
+                "ask": {
+                    "kind": "ruling",
+                    "options": ["yes, cut", "no, warn only"],
+                    "blocks": "td77",
+                    "context": "gate went red twice",
+                },
+            }
+        ],
+    )
+    text = client.get("/alerts").text
+    assert "needs you" in text
+    assert "1 ask waiting on you" in text
+    assert "Should the pass cut on a red gate?" in text
+    assert 'action="/asks/501/answer"' in text
+    # The answer form returns the operator to /alerts, not /asks.
+    assert 'value="/alerts"' in text
+    # The resolved-history view carries no needs-you section.
+    assert "needs you" not in client.get("/alerts?state=resolved").text
+
+
+def test_alerts_needs_you_empty_state(client) -> None:
+    """With no open asks the section still renders, saying so."""
+    text = client.get("/alerts").text
+    assert "needs you" in text
+    assert "0 asks waiting on you" in text
+    assert "Nothing waits on you" in text
+
+
 # ── gripes workbench ────────────────────────────────────────────────
 
 

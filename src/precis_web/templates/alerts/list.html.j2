@@ -24,6 +24,26 @@
   <span class="text-sm text-fg-subtle">{{ total }} {{ state }}</span>
 </div>
 
+{# needs you (gr548802): the ask-user todos that always wait on a human,
+   at the top of the page — same grouped rows as /asks + /needs-you,
+   answered in place (the answer form returns here via next_path). #}
+{% if state == 'open' %}
+<section class="mb-6" data-needs-you>
+  <div class="flex items-baseline justify-between mb-3">
+    <h2 class="text-sm font-semibold text-fg-secondary">
+      needs you
+      <span class="text-fg-faint font-normal">— {{ asks_total }} ask{{ '' if asks_total == 1 else 's' }} waiting on you</span>
+    </h2>
+    <a href="/needs-you" class="text-xs text-success-strong hover:underline">full queue &rarr;</a>
+  </div>
+  {% if ask_groups %}
+  {% with groups = ask_groups, next_path = "/alerts" %}{% include "asks/_groups.html.j2" %}{% endwith %}
+  {% else %}
+  <p class="text-sm text-fg-subtle">Nothing waits on you — no open <span class="font-mono">ask-user</span> todos.</p>
+  {% endif %}
+</section>
+{% endif %}
+
 {% if not groups %}
   {% if state == 'open' %}
   <div class="rounded-md border border-success-strong bg-success-subtle px-4 py-3 text-sm text-success-deep">

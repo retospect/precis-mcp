@@ -87,6 +87,7 @@ from precis.handlers._prio_tag import PRIO_TAG_TO_INT, split_prio, validate_prio
 from precis.handlers._request_state import RequestState
 from precis.handlers._tag_redirect import redirect_long_tag_values
 from precis.handlers.plaintext import _require_find_and_text
+from precis.plans import logbook as plan_log
 from precis.plans import nodes as plan_nodes
 from precis.plans import templates as plan_templates
 from precis.protocol import ArgsSpec, KindSpec
@@ -993,7 +994,7 @@ class TodoHandler(NumericRefHandler):
             stamped_default_tier=stamped_default_tier,
         )
         with _PUT_STATE.bind(state):
-            return super().put(
+            resp = super().put(
                 text=text,
                 mode=mode,
                 tags=tags,
@@ -1003,6 +1004,18 @@ class TodoHandler(NumericRefHandler):
                 rel=rel,
                 auto_refresh_days=auto_refresh_days,
             )
+        # gr548800: an ask raised inside a plan is a quest-logbook event.
+        if (
+            resp.ref_id is not None
+            and isinstance(meta, dict)
+            and isinstance(meta.get("ask"), dict)
+        ):
+            plan_log.log_plan_event(
+                self.store,
+                resp.ref_id,
+                f"ask td{resp.ref_id} raised — {plan_log.first_line(text)}",
+            )
+        return resp
 
     def _put_plan(
         self,
@@ -1955,6 +1968,10 @@ class TodoHandler(NumericRefHandler):
             # connections; the gr504803 audit row lands right after them.
             self._record_tag_reason(ref_id, reason)
             return Response(body=f"set {suffix} on {self._sense()} id={ref_id}")
+        prev_status = next(
+            (str(t.value) for t in self.store.tags_for(ref_id) if t.prefix == "STATUS"),
+            "open",
+        )
         resp = super().tag(id=id, add=add, remove=remove, reason=reason, **_kw)
         # Picks-7d accounting (plan's Accounting section): when a
         # leaf flips to STATUS:done, append a ``status:done`` event
@@ -1966,6 +1983,26 @@ class TodoHandler(NumericRefHandler):
                 ref_id,
                 source=guards._caller_source(),
                 event="status:done",
+            )
+        # gr548800: pausing a plan root is a quest-logbook event (the
+        # ``plan:<self>`` open tag marks the root the minter tagged).
+        if (
+            add
+            and "STATUS:paused" in add
+            and prev_status != "paused"
+            and f"plan:{ref_id}"
+            in {
+                str(t.value)
+                for t in self.store.tags_for(ref_id)
+                if t.namespace == "open"
+            }
+        ):
+            ref = self._resolve_live_ref(ref_id)
+            plan_log.log_plan_event(
+                self.store,
+                ref_id,
+                f"paused — {plan_log.first_line(ref.title)}",
+                root=ref_id,
             )
         return resp
 

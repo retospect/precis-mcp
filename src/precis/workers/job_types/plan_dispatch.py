@@ -119,6 +119,7 @@ from precis.plans import gates as _gates
 from precis.plans import lanes as _lanes
 from precis.plans import release as _release
 from precis.plans import templates as _templates
+from precis.plans.logbook import log_plan_event
 from precis.plans.nodes import MOOT_TAG, node_kind
 from precis.store._todo_sql import _DOABLE_EXCLUSION_TAGS
 from precis.store.types import TODO_BODY_KIND, ChunkInsert, Tag
@@ -1535,6 +1536,21 @@ def _step_hygiene(plan: _Plan, w: _Writer, res: PassResult, now: datetime) -> No
         else:
             ask_id = _mint_ask(w.store, plan, n, attempts)
             res.notes.append(f"td{n.id}: retry cap hit, asked in td{ask_id}")
+            # gr548800: the park and the ask are quest-logbook events.
+            log_plan_event(
+                w.store,
+                n.id,
+                f"node td{n.id} parked at retry cap "
+                f"({attempts} attempts; meta.retries={_retries(n)})",
+                entry_type="observation",
+                root=n.root,
+            )
+            log_plan_event(
+                w.store,
+                n.id,
+                f"ask td{ask_id} raised (blocks td{n.id})",
+                root=n.root,
+            )
         res.asks += 1
 
 

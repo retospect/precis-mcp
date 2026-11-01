@@ -40,6 +40,7 @@ from precis.alerts import (
     unack_alert,
 )
 from precis_web.deps import get_store, templates
+from precis_web.routes import asks as asks_mod
 from precis_web.timefmt import ago as _ago
 
 if TYPE_CHECKING:
@@ -54,6 +55,9 @@ log = logging.getLogger(__name__)
 _RESOLVED_LIMIT = 100
 
 _SEVERITY_RANK = {"critical": 0, "warn": 1, "info": 2}
+
+#: Asks shown in the "needs you" section (every ask is actionable; a cap).
+_ASK_CAP = 50
 
 
 def _rows(store: Store, *, state_tag: str, limit: int | None) -> list[dict[str, Any]]:
@@ -141,11 +145,20 @@ async def alerts(request: Request, state: str = "open") -> HTMLResponse:
         }
     else:
         rows = _rows(store, state_tag=STATE_OPEN, limit=None)
+        # gr548802: a "needs you" section at the top — the ask-user todos
+        # (meta.ask / the asks view) that always wait on a human, rendered
+        # with the shared asks groups partial like /needs-you.
+        asks = asks_mod._load_asks(store, limit=_ASK_CAP)
+        ask_groups, ask_by_id, _hidden = asks_mod.class_groups(store, asks)
         ctx = {
             "active_tab": "alerts",
             "state": "open",
             "groups": _group_by_source(rows),
             "total": len(rows),
+            "ask_groups": ask_groups,
+            "ask_by_id": ask_by_id,
+            "class_hints": asks_mod.CLASS_HINTS,
+            "asks_total": sum(g.count for g in ask_groups),
         }
     return templates.TemplateResponse(request, "alerts/list.html.j2", ctx)
 

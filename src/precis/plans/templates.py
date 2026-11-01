@@ -33,6 +33,7 @@ from precis.errors import BadInput, NotFound, Upstream
 from precis.plans import pr_class
 from precis.plans import release as _release
 from precis.plans.gates import resolve_board
+from precis.plans.logbook import first_line, log_plan_event
 from precis.plans.nodes import validate_plan_meta
 from precis.store import Store, Tag
 from precis.store.types import TODO_BODY_KIND, ChunkInsert
@@ -87,6 +88,11 @@ class _Minter:
         #: body mints under the loop but belongs to the loop's plan).
         self.plan_root: int | None = None
         self.ids: dict[str, int] = {}
+        #: The minted root's title (the "plan opened" logbook line, gr548800).
+        self.root_title: str = ""
+        #: ``(todo id, title)`` of nodes minted carrying ``meta.ask`` — each
+        #: gets an "ask raised" logbook line post-commit (gr548800).
+        self.ask_nodes: list[tuple[int, str]] = []
         #: ``(todo id, text)`` comments to append once the tx has committed.
         self.comments: list[tuple[int, str]] = []
 
@@ -118,6 +124,9 @@ class _Minter:
         )
         if is_root:
             self.root_id = ref.id
+            self.root_title = title
+        if isinstance(meta.get("ask"), dict):
+            self.ask_nodes.append((ref.id, title))
         tags = ["STATUS:open", f"plan:{self.plan_root or self.root_id}"]
         for tag in tags:
             self.store.add_tag(
@@ -169,7 +178,21 @@ def _run(
                 conn=conn,
             )
     _post_comments(store, m.comments)
+    _log_plan_events(store, m)
     return m.result()
+
+
+def _log_plan_events(store: Store, m: _Minter) -> None:
+    """gr548800: the "plan opened" line plus one "ask raised" line per
+    minted ask node, appended on the quest above the plan root (a no-op
+    for a plan no quest serves). Post-commit: the parent chain must be
+    readable to resolve the quest."""
+    root = m.result().root_id
+    log_plan_event(store, root, f"opened — {first_line(m.root_title)}", root=root)
+    for ask_id, title in m.ask_nodes:
+        log_plan_event(
+            store, root, f"ask td{ask_id} raised — {first_line(title)}", root=root
+        )
 
 
 def _post_comments(store: Store, comments: list[tuple[int, str]]) -> None:
