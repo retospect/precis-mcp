@@ -87,6 +87,10 @@ _ALLOWLIST: dict[str, str] = {
     "precis/workers/serving_metrics.py": "loopback scrape of the host's own SGLang /metrics",
     "precis/workers/capability_probe.py": "cluster-internal embedder readiness probe",
     "precis/fixer/tick.py": "operator-configured readyz URL of our own server",
+    "precis/workers/job_types/run_slice.py": (
+        "one initialize preflight against our own precis MCP (the checkout's "
+        ".mcp.json); a retry would hide the rejected bearer it exists to catch"
+    ),
     # Deadman ping: exactly one GET per health-digest tick (the tick is the
     # cadence), to the operator's own heartbeat endpoint. It bypasses the core
     # on purpose: a retry or breaker would blur "the tick ran" into "the
