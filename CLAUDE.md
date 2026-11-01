@@ -4,196 +4,112 @@
 > `precis` tools and `get(kind='skill')` skills are the *product's* runtime
 > surface for cluster agents — not dev docs for this code.
 
-Lean router: ship workflow, conventions that bite, pointers. The doc system
-(where truth lives, how to keep it true) is defined once in `docs/README.md`.
-Reading order: `docs/codebase.md` → owning package `__init__.py` docstring →
-`docs/glossary.md` → `docs/backlog/INDEX.md` (generated, gitignored —
-run `scripts/docs-index` if absent). Conventions/workflow/DoD:
-`AGENTS.md`. Prose style: `docs/conventions/llm-facing-prose.md`.
-
-Repo-dev recall, durable writes and outage behavior:
-[AGENTS.md — Repo-dev graph memory](AGENTS.md#repo-dev-graph-memory).
+Reading order: `docs/codebase.md` → owning package `__init__.py` docstring
+→ `docs/glossary.md` → `docs/backlog/INDEX.md`. Conventions, workflow, DoD,
+repo-dev memory, prose style: `AGENTS.md`. Long form of every rule here:
+`docs/conventions/shipping.md` and `AGENTS.md` §Long form (budget 6,000 B).
 
 ## Ship workflow
 
-Work always happens on a task branch in a separate worktree (`claude -w <name>`).
-Never edit or commit in the primary `main` checkout; integrate branches in
-a dedicated integration worktree. Mechanics: `docs/conventions/shipping.md`.
+Always a task branch in its own worktree (`claude -w <name>`); never edit or
+commit in the primary `main` checkout. Mechanics: `docs/conventions/shipping.md`.
 
-- **`/land`** — `scripts/ship --remote`: GitHub's check.yml gate, then CAS
-  squash-merge to `main`. Harness only under the release train — the canonical
-  list is the `HARNESS_DIFF` case in `scripts/ship` (`scripts/ship`,
-  `scripts/test`, `scripts/lib/*`, `.github/*`); a
-  non-harness diff is refused, name `--quick`. Run ship in background,
-  output to a log.
-- **`/go`** — `scripts/ship --quick` to `main`, then `scripts/release`: cut
-  `release/r<N>` from main at a fixed sha, gate it on check.yml, deploy that
-  head pinned. Later main pushes don't touch it; one release at a time, a
-  second `/go` rides along or waits.
-- **`/qland`** — `scripts/ship --quick`: lint only, no pytest. The release-train
-  default lane for every non-harness diff — `uv.lock`, `pyproject.toml`,
-  migrations and schema included; a harness diff is refused, name `--remote`.
-  Burst-land many
-  trees, then one `/go`. `--checked` is the same machinery plus a cheap
-  selected pytest (`scripts/impacted-tests`: contract invariants + corpus/
-  import map + index evidence, testmon when a map exists) — the recommended
-  burst lane (gr485791); preview the selection with `scripts/test --selected`.
-- **`/qgo`** — qland + ungated deploy. Never for `*/migrations/*.sql` or
-  `safe_fetch.py` (`scripts/qgo-guard` refuses; those take `/go`).
+- `/land` — `scripts/ship --remote`: GitHub gate, CAS squash-merge. Harness
+  diffs only (`scripts/ship`, `scripts/test`, `scripts/lib/*`, `.github/*`).
+- `/go` — `--quick` to main, then `scripts/release`: cut `release/r<N>`,
+  gate it, deploy that head pinned.
+- `/qland` — `scripts/ship --quick`: lint only, no pytest; the default lane
+  for every non-harness diff. `--checked` adds the selected pytest
+  (recommended burst lane). Burst-land many trees, then one `/go`.
+- `/qgo` — qland + ungated deploy; never for `*/migrations/*.sql` or
+  `safe_fetch.py`.
 
-All are idempotent — fix and re-run. Red gate: read the failure above the
-`✖`, not `scripts/ship`. Refs: `main` (landed), `origin/gated` (last
-full-gate green), `origin/prod` (what runs), `release/r<N>` (the open
-release) — script-moved, never committed to.
+All idempotent — fix and re-run; on red read the failure above the `✖`. Run
+ship in the background to a log; never pipe `ship|deploy|bump` into
+`tail`/`grep`/`tee`. Refs `main`, `origin/gated`, `origin/prod`,
+`release/r<N>` are script-moved. Before starting and before touching shared
+files: `scripts/inflight`; then one line to `.claude/purpose`. Open round →
+`scripts/round in <sha>|none|eta <text>`. Fleet session: deploys/`/go` are
+the coordinator's; questions for Reto → `ask-user` todo
+(`precis-work-help`). Thread work updates `docs/backlog/threads/<slug>.md`
+in the same commit.
 
-Many sibling sessions run at once: the SessionStart hook prints only a
-counts line (trees, dirty, live sessions — gr499042, ~3.6k tokens saved per
-session), so before starting work and before touching shared files run
-`scripts/inflight` (or `--json`) to see sibling trees, purpose lines and
-overlap; once your task is clear, write one line to `.claude/purpose`.
-When a coordinator has a round open (`scripts/round status`), mark it from
-your tree (`scripts/round in <sha>|none|eta <text>`) instead of messaging.
-In a fleet session leave deploys (and `/go`) to the coordinator. Fleet: `/fleet`; in a fleet session a
-question for Reto is an `ask-user` todo with `meta.ask`, never a file
-(`search(kind='todo', view='asks')`; skill `precis-work-help`).
-Merged+clean+sessionless worktrees auto-reap. Work that belongs to a thread
-(`docs/backlog/threads/<slug>.md`) updates that file in the same commit —
-delete what shipped, insert what you filed at its rank (README there).
+Commits: `type(scope): what changed` ≤72 chars, optional why, then the
+Co-Authored-By/session footer; write it to a file and `git commit -F <file>`
+(never a quoted `-m`). Devin footer: `Co-Authored-By: Devin SWE-2
+<noreply@cognition.ai>` + `Claude-Session: none (Devin builder, <fleet name>)`.
 
 ## Orientation
 
-Specialist-domain work too: `search(kind='skill', q='<the task>')` before
-doing any — precis carries curated skill families well beyond repo-dev, so
-assume one exists until search says otherwise. Missing or hard to find →
-gripe.
-`docs/codebase.md` (shape, lifecycle, seams) → the owning package's
-`__init__.py` docstring. Runtime kinds/affordances: skills `precis-overview`,
-`precis-toolpath-help`. Coined terms: `docs/glossary.md`. Planned work:
-`docs/backlog/` (open items only, delete-on-ship); pillars + the active
-thread set: `docs/roadmap.md`. Dated history: `git log`
-(no CHANGELOG). Schema: `docs/reference/schema.md` (generated). Mission:
-`docs/mission.md`. Replicate this setup: `docs/how-to-setup-like-this.md`.
-Install/run the product: `docs/setup-single-machine.md` · cluster:
-`deploy/README.md`.
-Code: workers `src/precis/workers/`, ingest `src/precis/ingest/`, web UI
-`src/precis_web/`, Discord bridge `src/asa_bot/`, SSRF guard
-`src/precis/utils/safe_fetch.py`.
-Design in se / CAD / mechanical (geometry, joints, fasteners, bosses,
-enclosures, molds, prints): the product's own skills are the spec — read
-them before authoring. `precis-se-help` first (op grammar), then the task
-skill (`precis-se-fasten-help`, `-print-`, `-fit-`, `-check-`, …). Repo
-entry point: the `se-design` skill. Missing one → gripe.
+- Specialist work: `search(kind='skill', q='<the task>')` first — assume a
+  skill exists until search says otherwise; missing → gripe.
+- Code: workers `src/precis/workers/`, ingest `src/precis/ingest/`, web
+  `src/precis_web/`, Discord `src/asa_bot/`, SSRF guard
+  `src/precis/utils/safe_fetch.py`.
+- Backlog `docs/backlog/` (open items, delete-on-ship); pillars
+  `docs/roadmap.md`; history `git log`; schema `docs/reference/schema.md`;
+  cluster `deploy/README.md`.
+- se / CAD / mechanical: the `se-design` skill — the product's se skills
+  are the spec.
 
 ## Conventions that bite (irreversible, or reddens the ship)
 
-- **Forward-only migrations.** Never edit a sealed migration; ship a new one.
-  → `docs/conventions/invariants.md`
-- **Don't mutate body chunks.** Body `chunks` rows are append-only: DELETE +
-  INSERT, never UPDATE. → `docs/conventions/invariants.md`
-- **Session `precis` MCP targets PROD** (write-capable `agent_rw`). Writes
-  land in production and need no ask unless destructive, outward-facing or
-  over $25 (`docs/conventions/thresholds.md`, Reto 2026-10-01); do
-  write-path *testing* on the dev DB (`scripts/dev`) — never this MCP. Ad-hoc SQL: `scripts/prod-psql "SELECT …"` (prefer
-  read-only); `scripts/db` is local-only.
-- **Agent-supplied-URL fetches → `safe_get`/`safe_stream`.**
-  → `docs/conventions/invariants.md`
-- **No cluster addresses anywhere — the repo is PUBLIC.** Tailnet/LAN IPs and
-  vault blobs are gated across the *whole* tree
-  (`tests/test_deploy_tree_no_secrets.py`); real node hostnames are gated under
-  `deploy/` only (there they mean an un-parameterised role). Prod coordinates
-  come from the gitignored overlay via `scripts/lib/pgb-host.sh` — use
-  `scripts/prod-psql`, never a literal. Genuine ranges/samples take a
-  `secret-gate: allow — <reason>` marker.
-- **Embeddings come from the worker, not ingest** — ingest stores chunks
-  `embedding IS NULL`; never call `fill_embeddings` from ingest.
-- **`uv` for everything; tests via `scripts/test`** — never bare
-  pytest/pip/mypy. → `docs/conventions/invariants.md`
-- **Commit messages: `type(scope): what changed`** (≤72 chars;
-  feat/fix/docs/test/chore/refactor…; `docs(backlog)` for specs), optional
-  short why as body, then the required Co-Authored-By/session footer. Write
-  the message to a file and `git commit -F <file>` — the `-m "$(cat <<'EOF'
-  …)"` recipe trips the shell rules and breaks on apostrophes (gr513763).
-  `scripts/ship` reuses your branch's single commit message or takes `-m`; it
-  refuses `ship(...)`/`wip(...)` placeholders and unprefixed subjects.
-  A multi-line message or one carrying `'`/`` ` ``/`$` goes via
-  `git commit -F scratch/commit-msg.txt`, never a quoted `-m` (→
-  `docs/conventions/container-ops.md`).
-  Non-Claude builders (Devin) use the literal footer
-  `Co-Authored-By: Devin SWE-2 <noreply@cognition.ai>` then
-  `Claude-Session: none (Devin builder, <fleet name>)`.
+- Forward-only migrations; never edit a sealed one. →
+  `docs/conventions/invariants.md`
+- Body `chunks` are append-only: DELETE + INSERT, never UPDATE.
+- The session `precis` MCP targets PROD (`agent_rw`). Writes need no ask
+  unless destructive, outward-facing or over $25
+  (`docs/conventions/thresholds.md`); write-path *testing* on the dev DB
+  (`scripts/dev`). Ad-hoc SQL: `scripts/prod-psql` (read-only preferred);
+  `scripts/db` is local-only.
+- Agent-supplied URLs → `safe_get`/`safe_stream`.
+- The repo is PUBLIC: no cluster addresses anywhere (gated tree-wide); real
+  node hostnames only under `deploy/`; prod coordinates via
+  `scripts/lib/pgb-host.sh`. Genuine samples take
+  `secret-gate: allow — <reason>`.
+- Embeddings come from the worker, never ingest (`fill_embeddings`).
+- `uv` for everything; tests via `scripts/test` — never bare
+  pytest/pip/mypy.
 
-## Hook/gate-enforced — one-liners, detail on demand
+## Hook/gate-enforced
 
-- Container-first; shell cwd is already this worktree — never `cd`. Other
-  trees are NOT reachable by `git -C` (the harness refuses it) — read them
-  with `scripts/inflight --json`. → `docs/conventions/container-ops.md`
+- Container-first; never `cd`; other trees are not reachable by `git -C` —
+  read them with `scripts/inflight --json`. →
+  `docs/conventions/container-ops.md`
 - One plain command per Bash call: no loops, heredocs, `$(…)`,
-  `&&`/`;`/`||` chains, or shell variables holding paths — the harness's
-  worktree-isolation guard refuses them (gr456287, ~127/12 h); a chain
-  another driver tolerates is still off-rule (gr514492). Write a script
-  with the Write tool, then run it as one plain command.
-- Text IO names `encoding="utf-8"` (ruff PLW1514 + AST-walk test; also
-  `subprocess(..., text=True)`).
-- MCP handler errors: a call does what its ack says or refuses with a next
-  step; raises carry `next=`/`options=` (ratchet-pinned), library faults map
-  to Upstream with a retry hint. → `docs/conventions/mcp-authoring.md`
-- **Timestamps are UTC, labelled `Z`/`UTC`** — `date -u`, `datetime.now(UTC)`,
-  never `date.today()`/`utcnow()` (`date +%s` is fine). →
+  `&&`/`;`/`||` chains, or shell variables holding paths. Write a script,
+  run it.
+- Text IO names `encoding="utf-8"` (also `subprocess(..., text=True)`).
+- MCP handler errors: do what the ack says or refuse with a next step. →
+  `docs/conventions/mcp-authoring.md`
+- Timestamps UTC, labelled `Z`/`UTC`; never `date.today()`/`utcnow()`. →
   `docs/conventions/time.md`
-- `rtk` digests noisy Bash output — you see a filtered digest. →
-  `docs/conventions/rtk.md`
-- Never pipe `scripts/ship|deploy|bump` into `tail`/`grep`/`tee` — a pipeline
-  reports the *filter's* status, so a red gate reads as exit 0. Redirect to a
-  log, or `set -o pipefail`.
-- Read/Grep tools over cat/sed/bash-grep; no `echo "==="` narration; don't
+- Read/Grep tools over cat/sed/grep; no `echo "==="` narration; don't
   re-Read files already in context.
-- Structure-aware first: the session MCP's python kind
-  (`search(kind='python', mode='pattern', q=...)`, `get(kind='python',
-  id='main::<qualname>')` for signature + callers + callees) and
-  `scripts/coderef callers|deps <file.py::Sym>` before grepping bare symbols.
-  `main::` is the live main checkout; a worktree session queries its own tree
-  as `wt-<tree name>::<qualname>` (git-registered worktrees, read-only; Grep
-  if the alias doesn't resolve) — Grep is truth for code you changed here. Skill `precis-python-help`.
-  Repo prose the same way: the md kind (`get(kind='md',
-  id='main/docs/backlog/<item>.md')` for the heading outline, `~<heading>`
-  for one section, `search(kind='md', q=..., scope='main/docs/backlog')`)
-  before cat/grep on docs; roots are `main` (live main), `repo` (the
-  image checkout) and `wt-<tree name>` (the same read-only worktree
-  aliases as the python kind — Grep if the alias doesn't resolve).
-  Skill `precis-md-help`.
-- Product data (paper, quest, gripe, job, memory, finding) goes through the
-  session MCP first (`get`/`search`, links, `extent='fisheye+1hop'`);
-  `scripts/prod-psql` only when the MCP has no affordance for the question,
-  and then name the missing affordance in a gripe (Reto 2026-10-20).
-- Cite durable anchors, not line numbers, in docs/memory. →
-  `docs/conventions/code-anchors.md`
-- Bug intake → the `bug` skill before fixing; masked root cause → dispatch
-  `root-cause` first.
-- Skills are runtime docs: `src/precis/data/skills/`, served via
-  `get(kind='skill')`.
-- Sibling branches' trivial drift (needs `ruff`): just fix it, in its own commit.
+- Structure first: the python kind (`search(kind='python',
+  mode='pattern')`, `get(kind='python', id='main::<qualname>')`,
+  `wt-<tree>::` for your tree) and `scripts/coderef`; repo prose via the md
+  kind (`get(kind='md', id='main/docs/…')`). Grep is truth for code you
+  changed. Skills `precis-python-help`, `precis-md-help`.
+- Product data through the session MCP first; `scripts/prod-psql` only when
+  the MCP has no affordance — then gripe the missing one.
+- Cite durable anchors, not line numbers. → `docs/conventions/code-anchors.md`
+- Bug intake → the `bug` skill; masked root cause → `root-cause` first.
+- Skills are runtime docs: `src/precis/data/skills/`.
 
 ## Response style (Reto — busy; BLUF always)
 
-Bottom line up front, then supporting detail. Plain, specific language over
-quotable phrasing — if a sentence would fit unchanged in a different
-conversation, cut it or make it specific. Direct ≠ terse: give full
-reasoning, minus the editorializing.
-
-- No validation-as-move ("that's valid", "not your fault") and no reflexive
-  agreement/praise ("you're absolutely right", "great question"). Agree when
-  earned and say why; don't manufacture disagreement either.
-- No performed insight: aphorisms, metaphors, named "tensions".
-- Cut ceremony, not reasoning: no preamble/recap, no tool-call narration, no
-  filler/hedges (just, really, basically, actually, it's worth noting), no
-  pleasantries, no emoji, no decorative headers on short answers.
-- Quote the shortest decisive line + `path:line`; never dump logs/files/diffs.
-- Each fact once per response; don't re-derive what's established.
-- No invented abbreviations (cfg, impl, req) — they save nothing.
-- EXEMPT from compression: security warnings, confirmations for
-  destructive/irreversible actions, and ordered multi-step instructions.
+Bottom line first, then detail. Plain, specific language; if a sentence
+would fit unchanged in another conversation, cut it. Direct ≠ terse: full
+reasoning, no editorializing. No validation-as-move, no reflexive agreement
+or praise; agree when earned and say why. No performed insight (aphorisms,
+metaphors, named "tensions"). No preamble, recap, tool-call narration,
+filler, hedges, pleasantries, emoji, or decorative headers on short answers.
+Quote the shortest decisive line + `path:line`; never dump logs/files/diffs.
+Each fact once. No invented abbreviations. EXEMPT: security warnings,
+confirmations for destructive actions, ordered multi-step instructions.
 
 ## Agent sizing
 
-Main loop bills big — delegating down is the primary cost lever; start
-cheap. → `AGENTS.md` §Agent sizing; per-agent remits in `.claude/agents/`.
+Main loop bills big — delegate down; start cheap. → `AGENTS.md` §Agent
+sizing; remits in `.claude/agents/`.

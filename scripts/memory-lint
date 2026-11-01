@@ -401,6 +401,19 @@ for tf in "$SCAN_DIR"/*.md; do
 done
 fi  # SCAN_DIR (check 3b)
 
+# 3c. CLAUDE.md resident budget (context-memory-hierarchy S4, 2026-11-01):
+# the brief sits in every turn's context, so it is one line per rule with
+# the long form in docs/conventions/shipping.md and AGENTS.md. Advisory.
+CLAUDE_BUDGET=${CLAUDE_BUDGET:-6000}
+claude_md="$(git rev-parse --show-toplevel 2>/dev/null)/CLAUDE.md"
+if [[ -f "$claude_md" ]]; then
+    cb=$(wc -c < "$claude_md" | tr -d ' ')
+    if (( cb > CLAUDE_BUDGET )); then
+        echo "  CLAUDE.md over budget → ${cb} bytes (budget ${CLAUDE_BUDGET}) — keep one line + pointer per rule; move detail to docs/conventions/shipping.md or AGENTS.md §Long form"
+        problems=$((problems+1))
+    fi
+fi
+
 # 8. fisheye shape (graph mode, manifest with the shape columns). Recall is
 # search → get(view='fisheye+1hop+recall'), so a node is only as good as what
 # that read shows: the eye cuts the body to a fixed cap, lists at most a fixed

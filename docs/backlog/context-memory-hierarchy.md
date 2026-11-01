@@ -54,7 +54,13 @@ Slices, in build order:
    2026-09-14). Reto decides whether it is still wanted now that
    `conventions-as-findings.md` turns rules into findings: the skill's
    description adds about 40 tok to every session's skill listing.
-4. **S4 — router collapse + P2 resident block.** Edits CLAUDE.md, so a
+4. **S4 — router collapse + P2 resident block: built 2026-11-01.**
+   CLAUDE.md is the resident block (11.9 kB → under 6 kB, one line per
+   rule); the long form moved verbatim to `docs/conventions/shipping.md`
+   §Long form (ship paths, commit messages) and `AGENTS.md` §Long form
+   (orientation, convention rationale, trap detail, style examples);
+   `scripts/memory-lint` check 3c flags CLAUDE.md over 6,000 bytes
+   (`CLAUDE_BUDGET`). Original plan: edits CLAUDE.md, so a
    session that may edit CLAUDE.md builds it. Reto decides where the block
    lives (P2 left that to the builder; the cutover moved the measured
    preamble from CLAUDE.md + MEMORY.md to CLAUDE.md + the live-thread

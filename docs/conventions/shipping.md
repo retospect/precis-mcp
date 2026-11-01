@@ -511,3 +511,71 @@ Two fleet-coordination rules (Reto 2026-09-30):
   turn — no "gate starting" broadcasts, and drop a peer silent for 3+
   pings. A peer's "landed `<sha>` remote-green, carry it" is the /go
   trigger.
+
+## Long form — ship workflow and commit messages (moved from CLAUDE.md, 2026-11-01)
+
+The resident brief (`CLAUDE.md`) keeps one line per rule; the detail that
+used to sit there lives here (context-memory-hierarchy S4). Nothing below
+is new.
+
+Work always happens on a task branch in a separate worktree (`claude -w
+<name>`). Never edit or commit in the primary `main` checkout; integrate
+branches in a dedicated integration worktree.
+
+- **`/land`** — `scripts/ship --remote`: GitHub's check.yml gate, then CAS
+  squash-merge to `main`. Harness only under the release train — the
+  canonical list is the `HARNESS_DIFF` case in `scripts/ship`
+  (`scripts/ship`, `scripts/test`, `scripts/lib/*`, `.github/*`); a
+  non-harness diff is refused, name `--quick`. Run ship in background,
+  output to a log.
+- **`/go`** — `scripts/ship --quick` to `main`, then `scripts/release`: cut
+  `release/r<N>` from main at a fixed sha, gate it on check.yml, deploy that
+  head pinned. Later main pushes don't touch it; one release at a time, a
+  second `/go` rides along or waits.
+- **`/qland`** — `scripts/ship --quick`: lint only, no pytest. The
+  release-train default lane for every non-harness diff — `uv.lock`,
+  `pyproject.toml`, migrations and schema included; a harness diff is
+  refused, name `--remote`. Burst-land many trees, then one `/go`.
+  `--checked` is the same machinery plus a cheap selected pytest
+  (`scripts/impacted-tests`: contract invariants + corpus/import map + index
+  evidence, testmon when a map exists) — the recommended burst lane
+  (gr485791); preview the selection with `scripts/test --selected`.
+- **`/qgo`** — qland + ungated deploy. Never for `*/migrations/*.sql` or
+  `safe_fetch.py` (`scripts/qgo-guard` refuses; those take `/go`).
+
+All are idempotent — fix and re-run. Red gate: read the failure above the
+`✖`, not `scripts/ship`. Refs: `main` (landed), `origin/gated` (last
+full-gate green), `origin/prod` (what runs), `release/r<N>` (the open
+release) — script-moved, never committed to.
+
+Many sibling sessions run at once: the SessionStart hook prints only a
+counts line (trees, dirty, live sessions — gr499042, ~3.6k tokens saved per
+session), so before starting work and before touching shared files run
+`scripts/inflight` (or `--json`) to see sibling trees, purpose lines and
+overlap; once your task is clear, write one line to `.claude/purpose`. When
+a coordinator has a round open (`scripts/round status`), mark it from your
+tree (`scripts/round in <sha>|none|eta <text>`) instead of messaging. In a
+fleet session leave deploys (and `/go`) to the coordinator. Fleet: `/fleet`;
+in a fleet session a question for Reto is an `ask-user` todo with
+`meta.ask`, never a file (`search(kind='todo', view='asks')`; skill
+`precis-work-help`). Merged+clean+sessionless worktrees auto-reap. Work that
+belongs to a thread (`docs/backlog/threads/<slug>.md`) updates that file in
+the same commit — delete what shipped, insert what you filed at its rank
+(README there).
+
+Never pipe `scripts/ship|deploy|bump` into `tail`/`grep`/`tee` — a pipeline
+reports the *filter's* status, so a red gate reads as exit 0. Redirect to a
+log, or `set -o pipefail`.
+
+**Commit messages: `type(scope): what changed`** (≤72 chars;
+feat/fix/docs/test/chore/refactor…; `docs(backlog)` for specs), optional
+short why as body, then the required Co-Authored-By/session footer. Write
+the message to a file and `git commit -F <file>` — the `-m "$(cat <<'EOF'
+…)"` recipe trips the shell rules and breaks on apostrophes (gr513763).
+`scripts/ship` reuses your branch's single commit message or takes `-m`; it
+refuses `ship(...)`/`wip(...)` placeholders and unprefixed subjects. A
+multi-line message or one carrying `'`/`` ` ``/`$` goes via `git commit -F
+scratch/commit-msg.txt`, never a quoted `-m` (→
+`docs/conventions/container-ops.md`). Non-Claude builders (Devin) use the
+literal footer `Co-Authored-By: Devin SWE-2 <noreply@cognition.ai>` then
+`Claude-Session: none (Devin builder, <fleet name>)`.
