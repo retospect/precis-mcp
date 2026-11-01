@@ -7641,3 +7641,36 @@ def test_resolve_profile_parses_env_table(
     assert router.resolve_profile("missing") is None
     assert router.resolve_profile("broken") is None
     assert router.resolve_profile(None) is None
+
+
+def test_resolve_profile_ops_empty_is_not_absent(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``ops`` keeps absent-vs-empty distinct: no key ⇒ ``None`` (no op
+    gate); ``"ops": []`` ⇒ an empty frozenset (an allowlist that serves
+    nothing — the Kimi default)."""
+    _set_profiles(
+        monkeypatch,
+        {
+            "ungated": {
+                "base_url": "https://a.example.invalid/v1",
+                "kind": "subscription",
+            },
+            "empty": {
+                "base_url": "https://b.example.invalid/v1",
+                "kind": "subscription",
+                "ops": [],
+            },
+            "listed": {
+                "base_url": "https://c.example.invalid/v1",
+                "kind": "subscription",
+                "ops": ["plan_tick"],
+            },
+        },
+    )
+    ungated = router.resolve_profile("ungated")
+    empty = router.resolve_profile("empty")
+    listed = router.resolve_profile("listed")
+    assert ungated is not None and ungated.ops is None
+    assert empty is not None and empty.ops == frozenset()
+    assert listed is not None and listed.ops == frozenset({"plan_tick"})

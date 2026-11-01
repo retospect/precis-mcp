@@ -76,7 +76,8 @@ CLOUD_ENABLED_KEY = "llm.cloud_enabled"
 #: "metered"|"subscription" (default "metered"), "cap": {"calls": <int?>,
 #: "tokens": <int?>, "window_s": <number>}?, "adapter": <str?> (a known
 #: wire adapter, e.g. "kimi"), "gate": <service_config service>?,
-#: "ops": [<source>…]? (subscription profiles: the req.source allowlist),
+#: "ops": [<source>…]? (subscription profiles: the req.source allowlist —
+#: absent = no op gate, [] = serve nothing),
 #: "thinking_required": [<model id>…]?}}`` — the grammar
 #: :func:`precis.utils.llm.router.resolve_profile` validates. A chain
 #: rung's ``"profile"`` key names one entry; each profile carries its own

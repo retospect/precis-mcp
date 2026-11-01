@@ -19,13 +19,18 @@ Conservative rules, per those docs:
 * **Key auth only** — ``api_key_ref: KIMI_CODE_API_KEY`` resolved at call
   time; never the CLI's OAuth login (the docs scope that to official
   clients).
-* **Coding/agent ops only** — the profile's ``ops`` allowlist restricts
-  which ``req.source`` ops may run, on top of the subscription bulk
-  guard. The Community Guidelines limit subscriptions to *interactive*
-  use ("scripted batch execution or data annotation pipelines … goes
-  beyond normal use") and send product-integration/enterprise traffic to
-  the pay-as-you-go Kimi Platform — so only coding-class ops are listed,
-  never bulk background ops.
+* **Interactive use only — never worker ops** — Reto ruled 2026-11-01
+  (gr543829): NO autonomous use of the Kimi Code subscription. The
+  router refuses a kimi-rung call whose effective
+  :mod:`~precis.budget.work_class` isn't ``interactive``
+  (``subscription_worker_refused``), and the shipped ``ops`` allowlist
+  is **empty** so the default profile routes nothing even once lit. The
+  Community Guidelines limit subscriptions to *interactive* use
+  ("scripted batch execution or data annotation pipelines … goes beyond
+  normal use") and send product-integration/enterprise traffic to the
+  pay-as-you-go Kimi Platform — an operator widening ``ops`` lists only
+  interactive-driven ops; bulk background ops stay refused by the bulk
+  guard regardless.
 * **Quota** — a rolling 5-hour rate window plus a monthly total (new
   plans; legacy plans keep a 7-day refresh), shared across every device
   and API key. Account-side limits surface as HTTP 429 with documented
@@ -40,7 +45,10 @@ writing the profile and key alone never sends a request. Enabling is an
 operator act: store ``KIMI_CODE_API_KEY`` (the secrets page entry landed
 in e83bdaefc), write the ``llm.profiles`` entry
 (:func:`default_profile`), add a chain rung naming the profile, then
-``precis service prio '*' llm_kimi 1``.
+``precis service prio '*' llm_kimi 1``. Lit is still not serving: the
+shipped ``ops`` allowlist is empty (routes nothing) and worker-origin
+calls are refused — only an interactive call on an operator-listed op
+runs.
 
 Wire differences from OpenRouter (:func:`wire_routing`): the Kimi
 endpoint takes a flat ``reasoning_effort`` field (levels
@@ -108,13 +116,13 @@ MODELS: tuple[str, ...] = (
 #: this set is informational/for the catalog.
 THINKING_REQUIRED_MODELS: frozenset[str] = frozenset({"k3.1-pro", "k3.1-pro-highspeed"})
 
-#: The coding-class ``req.source`` ops the shipped profile allowlists —
-#: coding/agent work only, per the membership terms; never a bulk
-#: background op (those stay refused by the bulk guard regardless).
-#: ``plan_tick`` is the one registered agentic coding op today; an
-#: operator registering a new coding-class ``llm.op`` entry adds its
-#: source here in the profile row.
-DEFAULT_OPS: tuple[str, ...] = ("plan_tick",)
+#: The ``req.source`` ops the shipped profile allowlists — **empty** per
+#: the 2026-11-01 ruling (gr543829): no autonomous use of the Kimi Code
+#: subscription, so the default profile routes nothing even once the
+#: gate is lit. An operator may list interactive ops in the profile row;
+#: worker/job-origin calls stay refused regardless (the router's
+#: work_class check, :func:`~precis.utils.llm.router._subscription_refusal`).
+DEFAULT_OPS: tuple[str, ...] = ()
 
 #: Our ``effort`` vocabulary → Kimi's ``low``/``high``/``max``: the same
 #: three-step ordinal scale, different labels (``low→low``,
@@ -156,7 +164,9 @@ def default_profile() -> dict[str, Any]:
     JSON-able; an operator writes it under
     ``{"<PROFILE_NAME>": default_profile()}`` (or adapts the
     ``base_url``/``cap`` for the account region and tier) — the values
-    are config, not constants the wire reads directly.
+    are config, not constants the wire reads directly. ``ops`` ships
+    empty: the profile routes nothing until the operator lists the
+    interactive ops it may serve (gr543829).
     """
     return {
         "base_url": DEFAULT_BASE_URL,

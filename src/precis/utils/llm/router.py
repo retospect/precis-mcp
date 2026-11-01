@@ -28,7 +28,9 @@ Four pieces:
   ``profile`` key pins its own hosted endpoint + credential reference, so
   one process routes several hosted providers in a single chain
   (gr543825). A ``kind='subscription'`` profile additionally gates its
-  rung through a bulk-work guard and a sliding-window cap.
+  rung through an ops allowlist, a bulk-work guard and a sliding-window
+  cap; a ``kimi``-adapter rung refuses worker/job-origin calls outright
+  (interactive use only — gr543829).
 
 :class:`Tier` aligns with :class:`~precis.utils.prompt.model.Profile`: a
 ``HELPER`` (tool-less, one-shot) profile rides ``MEDIUM``/``SMALL`` on
@@ -1824,7 +1826,10 @@ class ProviderProfile:
     service that must be lit (``prio > 0``) before the profile's rungs
     may run — the dark switch a subscription adapter ships behind.
     ``ops`` (subscription profiles only) allowlists the ``req.source``
-    ops the rung serves (:func:`_subscription_refusal`).
+    ops the rung serves (:func:`_subscription_refusal`): ``None`` (the
+    key absent or null) means no op gate; a present list is the
+    allowlist — an explicitly **empty** list serves nothing (the Kimi
+    adapter ships that way, gr543829).
     ``thinking_required`` lists model ids the wire must never send a
     thinking-disable directive for (:func:`openrouter_routing`).
     """
@@ -1966,7 +1971,10 @@ def resolve_profile(name: str | None) -> ProviderProfile | None:
         cap=cap,
         adapter=adapter,
         gate=gate.strip() if isinstance(gate, str) else None,
-        ops=ops or None,
+        # ``ops`` distinguishes absent (``None`` — no allowlist) from a
+        # present list: an explicit ``"ops": []`` is an allowlist that
+        # serves nothing, not a missing gate.
+        ops=ops if raw.get("ops") is not None else None,
         thinking_required=thinking_required or None,
     )
 
@@ -2043,10 +2051,23 @@ def _subscription_window(
 def _subscription_refusal(
     profile: ProviderProfile, req: LlmRequest, *, model: str
 ) -> LlmResult | None:
-    """Why a subscription-profile rung must skip THIS call, as a result —
-    ``None`` when the rung may run. Only ``kind='subscription'`` profiles
-    gate: a metered profile buys per token and needs no lane guard.
+    """Why a profile's rung must skip THIS call, as a result — ``None``
+    when the rung may run. ``kind='subscription'`` profiles carry the
+    ops/bulk/cap lane guards (a metered profile buys per token and needs
+    none); the ``kimi``-adapter worker guard runs regardless of kind.
 
+    * **Worker guard** (``adapter='kimi'`` only) — Reto ruled 2026-11-01
+      (gr543829): NO autonomous use of the Kimi Code subscription. Any
+      call whose effective work class
+      (:func:`precis.budget.work_class.resolve` — explicit
+      ``req.work_class`` → ambient ``work_class_scope`` → ``background``)
+      isn't ``interactive`` refuses outright:
+      ``subscription_worker_refused``. Checked before the ``kind`` gate
+      so a mis-kinded kimi profile still can't carry worker traffic.
+    * **Ops allowlist** — a subscription profile carrying ``ops`` serves
+      only those ``req.source`` ops (exact or ``:``-prefixed base) or
+      ``req.work_class`` labels; an explicitly empty list serves none:
+      ``subscription_op_refused``.
     * **Bulk guard** — the ``SMALL`` tier and the bulk purposes in
       :data:`_SUBSCRIPTION_BULK_WORK` (matched on ``req.source``, exact or
       ``:``-prefixed, and on an explicit ``req.work_class``) refuse
@@ -2056,10 +2077,30 @@ def _subscription_refusal(
       ``subscription_cap``, ``paused`` with ``retry_at`` at the oldest
       in-window call's expiry.
 
-    Both refusals are rung-scoped: :class:`FailoverProvider` treats the
+    Every refusal is rung-scoped: :class:`FailoverProvider` treats the
     result like any other failed rung — it logs the ``reason_class`` and
     walks on, so the refusal never pauses the rest of the chain.
     """
+    if profile.adapter == "kimi":
+        from precis.budget.work_class import WorkClass
+        from precis.budget.work_class import resolve as _resolve_class
+
+        origin = _resolve_class(req.work_class)
+        if origin is not WorkClass.INTERACTIVE:
+            return LlmResult(
+                text="",
+                cost_usd=None,
+                turns_used=None,
+                model=model,
+                tier=req.tier,
+                error=(
+                    f"kimi profile {profile.name!r} refuses a "
+                    f"{origin.value} call (source={req.source or 'unset'!r})"
+                    " — the Kimi Code subscription serves interactive use "
+                    "only; no worker/job ops (gr543829)"
+                ),
+                reason_class="subscription_worker_refused",
+            )
     if profile.kind != "subscription":
         return None
     source = req.source or ""
@@ -2174,8 +2215,9 @@ class Rung:
     on that profile's ``base_url`` and key instead of the process-wide
     ``PRECIS_LLM_BASE_URL``/host-keyed default, so one chain can mix two
     hosted providers (gr543825). A ``kind='subscription'`` profile also
-    gates the rung through :func:`_subscription_refusal` (bulk guard +
-    window cap) before it runs. ``None`` ⇒ unchanged behaviour.
+    gates the rung through :func:`_subscription_refusal` (ops allowlist,
+    bulk guard, window cap; a ``kimi``-adapter rung also refuses
+    worker-origin calls) before it runs. ``None`` ⇒ unchanged behaviour.
     """
 
     transport: Transport
@@ -2257,8 +2299,9 @@ class FailoverProvider:
             started = time.monotonic()
             rung_model = rung.model or model
             rung_profile = resolve_profile(rung.profile) if rung.profile else None
-            # A subscription-profile rung gates per call here (bulk guard +
-            # window cap). The refusal is an ordinary failed-rung result —
+            # A subscription-profile rung gates per call here (kimi worker
+            # guard, ops allowlist, bulk guard, window cap). The refusal is
+            # an ordinary failed-rung result —
             # the ladder logs it with its reason_class and walks on.
             refusal = (
                 _subscription_refusal(rung_profile, call_req, model=rung_model)
@@ -5208,7 +5251,12 @@ def _dispatch_openai_compat(req: LlmRequest, model: str) -> LlmResult:
 
     profile = resolve_profile(req.profile) if req.profile else None
     if profile is not None:
-        gated = _gate_refusal(profile, req, model=model)
+        # Gate + per-call lane guards: a pinned dispatch bypasses
+        # FailoverProvider's rung-level _subscription_refusal, so both
+        # apply here — no path to the wire may skip them.
+        gated = _gate_refusal(profile, req, model=model) or _subscription_refusal(
+            profile, req, model=model
+        )
         if gated is not None:
             return gated
     base_url = _req_base_url(req)
@@ -5582,7 +5630,11 @@ def _dispatch_openai_tools(req: LlmRequest, model: str) -> LlmResult:
                     stop_reason="error",
                 )
             )
-        gated = _gate_refusal(profile, req, model=model)
+        # Gate + per-call lane guards, same as _dispatch_openai_compat —
+        # a pinned dispatch bypasses FailoverProvider's rung-level check.
+        gated = _gate_refusal(profile, req, model=model) or _subscription_refusal(
+            profile, req, model=model
+        )
         if gated is not None:
             return gated
     ctx = _overlay_tick_context(_overlay_with_source(req))

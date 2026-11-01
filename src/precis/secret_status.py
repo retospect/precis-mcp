@@ -131,15 +131,17 @@ KNOWN_SECRETS: tuple[SecretSpec, ...] = (
     SecretSpec(
         name="KIMI_CODE_API_KEY",
         purpose="Kimi Code membership key; presence-only provisioning for "
-        "the planned coding adapter, not enabled by storing a key.",
+        "the planned coding adapter, not enabled by storing a key. "
+        "Interactive use only — the subscription never serves worker ops "
+        "(ruling 2026-11-01, gr543829).",
         get_url="https://www.kimi.com/coding/docs/en/",
         get_blurb="Create a key in the Kimi Code Console (up to 5 per account) "
         "and paste it here. Use our real User-Agent; never impersonate the "
         "Kimi CLI or another client. Use key auth only, never CLI OAuth. "
-        "Restricted to coding and agent use only, not bulk background or "
-        "product integration calls. Read the Membership Benefits and "
-        "Community Guidelines pages before enabling, and check data "
-        "retention and training terms before sending production prompts.",
+        "Interactive calls only — never autonomous worker/job ops, bulk "
+        "background or product integration calls. Read the Membership "
+        "Benefits and Community Guidelines pages before enabling, and check "
+        "data retention and training terms before sending production prompts.",
         cost="included with a Kimi Code membership",
         probe_group=None,
         optional=True,

@@ -163,7 +163,9 @@ def _chain(*rungs: dict[str, Any]) -> list[dict[str, Any]]:
 
 def test_default_profile_resolves(monkeypatch: pytest.MonkeyPatch) -> None:
     """The shipped profile spec parses into a ProviderProfile — gate,
-    adapter, subscription kind and the coding-ops allowlist all land."""
+    adapter, subscription kind and an EMPTY ops allowlist all land (the
+    2026-11-01 ruling: no autonomous use, so the default serves no op)."""
+    assert kimi.DEFAULT_OPS == ()
     _profiles(monkeypatch, _kimi_profile())
     p = resolve_profile(kimi.PROFILE_NAME)
     assert p is not None
@@ -172,7 +174,7 @@ def test_default_profile_resolves(monkeypatch: pytest.MonkeyPatch) -> None:
     assert p.kind == "subscription"
     assert p.adapter == kimi.ADAPTER
     assert p.gate == kimi.SERVICE_NAME
-    assert p.ops == frozenset(kimi.DEFAULT_OPS)
+    assert p.ops == frozenset()
 
 
 def test_dark_gate_drops_the_kimi_rung(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -199,9 +201,10 @@ def test_dark_gate_drops_the_kimi_rung(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def test_lit_gate_dispatches_at_kimi(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Gate lit: the rung dispatches at the profile's base_url authed by
-    KIMI_CODE_API_KEY — never a host-keyed default key."""
-    _profiles(monkeypatch, _kimi_profile())
+    """Gate lit + op allowlisted + an interactive call: the rung dispatches
+    at the profile's base_url authed by KIMI_CODE_API_KEY — never a
+    host-keyed default key."""
+    _profiles(monkeypatch, _kimi_profile(ops=["my_op"]))
     _gate(monkeypatch, lit=True)
     seen: list[dict[str, Any]] = []
     _wire_fakes(monkeypatch, seen)
@@ -214,7 +217,14 @@ def test_lit_gate_dispatches_at_kimi(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("PRECIS_LLM_BASE_URL", raising=False)
     router._sub_ledger.clear()
 
-    out = route(LlmRequest(tier=Tier.BIG, prompt="x", source="plan_tick"))
+    out = route(
+        LlmRequest(
+            tier=Tier.BIG,
+            prompt="x",
+            source="my_op",
+            work_class="interactive",
+        )
+    )
 
     assert out.error is None
     assert seen[0]["url"] == kimi.DEFAULT_BASE_URL
@@ -225,7 +235,47 @@ def test_ops_allowlist_refuses_non_coding_op(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A source outside the profile's ops allowlist is refused —
-    ``subscription_op_refused`` — and the chain falls through."""
+    ``subscription_op_refused`` — and the chain falls through. The call
+    is interactive so the worker guard isn't what refuses it."""
+    _profiles(monkeypatch, {**_kimi_profile(ops=["my_op"]), **_paid_profile()})
+    _gate(monkeypatch, lit=True)
+    seen: list[dict[str, Any]] = []
+    _wire_fakes(monkeypatch, seen)
+    recorded: list[Any] = []
+    from precis import route_log
+
+    monkeypatch.setattr(route_log, "enabled", lambda: True)
+    monkeypatch.setattr(route_log, "record_call", lambda rec: recorded.append(rec))
+    monkeypatch.setattr(
+        "precis.utils.llm.live_config.chain_override",
+        lambda _tier: _chain(
+            {"transport": "openai_compat", "model": "k3", "profile": "kimi"},
+            {"transport": "openai_compat", "model": "m", "profile": "paid"},
+        ),
+    )
+    monkeypatch.delenv("PRECIS_LLM_BASE_URL", raising=False)
+    router._sub_ledger.clear()
+
+    out = route(
+        LlmRequest(
+            tier=Tier.BIG,
+            prompt="x",
+            source="reading_brief",
+            work_class="interactive",
+        )
+    )
+
+    assert out.error is None
+    assert [c["url"] for c in seen] == ["https://paid.example.invalid/v1"]
+    skipped = recorded[-2]
+    assert skipped.reason_class == "subscription_op_refused"
+    assert skipped.features["profile"] == "kimi"
+
+
+def test_default_profile_routes_nothing(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The shipped allowlist is empty: even an interactive call is refused
+    (``subscription_op_refused``) — the default profile routes nothing
+    until an operator lists ops."""
     _profiles(monkeypatch, {**_kimi_profile(), **_paid_profile()})
     _gate(monkeypatch, lit=True)
     seen: list[dict[str, Any]] = []
@@ -245,13 +295,127 @@ def test_ops_allowlist_refuses_non_coding_op(
     monkeypatch.delenv("PRECIS_LLM_BASE_URL", raising=False)
     router._sub_ledger.clear()
 
-    out = route(LlmRequest(tier=Tier.BIG, prompt="x", source="reading_brief"))
+    out = route(
+        LlmRequest(
+            tier=Tier.BIG,
+            prompt="x",
+            source="plan_tick",
+            work_class="interactive",
+        )
+    )
 
     assert out.error is None
     assert [c["url"] for c in seen] == ["https://paid.example.invalid/v1"]
     skipped = recorded[-2]
     assert skipped.reason_class == "subscription_op_refused"
     assert skipped.features["profile"] == "kimi"
+
+
+@pytest.mark.parametrize(
+    "req_kwargs",
+    [
+        {"work_class": "background"},
+        {"work_class": "deliverable"},
+        {},
+    ],
+    ids=["background", "deliverable", "unset-defaults-background"],
+)
+def test_kimi_rung_refuses_worker_origin(
+    monkeypatch: pytest.MonkeyPatch, req_kwargs: dict[str, Any]
+) -> None:
+    """The ruling: no autonomous use — a non-interactive call on the kimi
+    rung is refused (``subscription_worker_refused``) even when its op IS
+    allowlisted, and the chain falls through to the paid rung."""
+    _profiles(monkeypatch, {**_kimi_profile(ops=["plan_tick"]), **_paid_profile()})
+    _gate(monkeypatch, lit=True)
+    seen: list[dict[str, Any]] = []
+    _wire_fakes(monkeypatch, seen)
+    recorded: list[Any] = []
+    from precis import route_log
+
+    monkeypatch.setattr(route_log, "enabled", lambda: True)
+    monkeypatch.setattr(route_log, "record_call", lambda rec: recorded.append(rec))
+    monkeypatch.setattr(
+        "precis.utils.llm.live_config.chain_override",
+        lambda _tier: _chain(
+            {"transport": "openai_compat", "model": "k3", "profile": "kimi"},
+            {"transport": "openai_compat", "model": "m", "profile": "paid"},
+        ),
+    )
+    monkeypatch.delenv("PRECIS_LLM_BASE_URL", raising=False)
+    router._sub_ledger.clear()
+
+    out = route(LlmRequest(tier=Tier.BIG, prompt="x", source="plan_tick", **req_kwargs))
+
+    assert out.error is None
+    assert [c["url"] for c in seen] == ["https://paid.example.invalid/v1"]
+    skipped = recorded[-2]
+    assert skipped.reason_class == "subscription_worker_refused"
+    assert skipped.features["profile"] == "kimi"
+    assert "interactive" in (skipped.error or "")
+
+
+def test_pinned_kimi_dispatch_refuses_worker(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A pinned ``req.profile`` call bypasses the rung-level check — the
+    dispatch-level guard still refuses a worker-origin call before the
+    wire, with no fallthrough rung to hide it."""
+    _profiles(monkeypatch, _kimi_profile(ops=["plan_tick"]))
+    _gate(monkeypatch, lit=True)
+    seen: list[dict[str, Any]] = []
+    _wire_fakes(monkeypatch, seen)
+    monkeypatch.setattr(
+        "precis.utils.llm.live_config.chain_override",
+        lambda _tier: _chain(
+            {"transport": "openai_compat", "model": "k3"},
+        ),
+    )
+    # The profile-less rung needs SOME hosted base url to survive
+    # resolve_chain; req.profile pins kimi at dispatch regardless.
+    monkeypatch.setenv("PRECIS_LLM_BASE_URL", "https://x.example.invalid/v1")
+    router._sub_ledger.clear()
+
+    out = route(
+        LlmRequest(
+            tier=Tier.BIG,
+            prompt="x",
+            source="plan_tick",
+            profile="kimi",
+            work_class="background",
+        )
+    )
+
+    assert out.reason_class == "subscription_worker_refused"
+    assert "interactive" in (out.error or "")
+    assert seen == []
+
+
+def test_interactive_scope_allows_listed_op(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An ambient ``work_class_scope('interactive')`` counts as interactive
+    — a listed op dispatches at kimi without an explicit request flag."""
+    from precis.budget.work_class import work_class_scope
+
+    _profiles(monkeypatch, _kimi_profile(ops=["my_op"]))
+    _gate(monkeypatch, lit=True)
+    seen: list[dict[str, Any]] = []
+    _wire_fakes(monkeypatch, seen)
+    monkeypatch.setattr(
+        "precis.utils.llm.live_config.chain_override",
+        lambda _tier: _chain(
+            {"transport": "openai_compat", "model": "k3", "profile": "kimi"},
+        ),
+    )
+    monkeypatch.delenv("PRECIS_LLM_BASE_URL", raising=False)
+    router._sub_ledger.clear()
+
+    with work_class_scope("interactive"):
+        out = route(LlmRequest(tier=Tier.BIG, prompt="x", source="my_op"))
+
+    assert out.error is None
+    assert seen[0]["url"] == kimi.DEFAULT_BASE_URL
 
 
 def test_kimi_wire_never_sends_thinking_off(
@@ -277,7 +441,13 @@ def test_kimi_wire_never_sends_thinking_off(
     router._sub_ledger.clear()
 
     out = route(
-        LlmRequest(tier=Tier.BIG, prompt="x", source="my_custom_op", thinking=False)
+        LlmRequest(
+            tier=Tier.BIG,
+            prompt="x",
+            source="my_custom_op",
+            thinking=False,
+            work_class="interactive",
+        )
     )
 
     assert out.error is None
@@ -312,7 +482,9 @@ def test_quota_error_pauses_and_falls_through(
     _profiles(
         monkeypatch,
         {
-            **_kimi_profile(base_url="https://quota5h.example.invalid/v1"),
+            **_kimi_profile(
+                base_url="https://quota5h.example.invalid/v1", ops=["my_op"]
+            ),
             **_paid_profile(),
         },
     )
@@ -334,7 +506,14 @@ def test_quota_error_pauses_and_falls_through(
     monkeypatch.delenv("PRECIS_LLM_BASE_URL", raising=False)
     router._sub_ledger.clear()
 
-    out = route(LlmRequest(tier=Tier.BIG, prompt="x", source="plan_tick"))
+    out = route(
+        LlmRequest(
+            tier=Tier.BIG,
+            prompt="x",
+            source="my_op",
+            work_class="interactive",
+        )
+    )
 
     assert out.error is None
     assert seen[-1]["url"] == "https://paid.example.invalid/v1"
