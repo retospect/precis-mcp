@@ -18,6 +18,10 @@ from typing import Any
 from unittest import mock
 
 import pytest
+from shapely.affinity import translate
+from shapely.geometry import Polygon as SPoly
+from shapely.geometry import box as sbox
+from shapely.ops import unary_union
 
 from precis.pcb import (
     DEFAULT_STACKUP,
@@ -3195,6 +3199,43 @@ def test_an_outline_is_one_closed_line_two_widths_clear_of_its_pads(
     # (pads_for_ir rounds an oblique pad's polygon to 0.1 um)
     assert min(ink.distance(_pad_shape(p)) for p in pads) == pytest.approx(
         target + slack, abs=1e-3
+    )
+
+
+@pytest.mark.parametrize(("dx", "dy"), [(0.0, 0.0), (11.0, 7.0), (-11.0, -7.0)])
+def test_neighbour_voronoi_cells_partition_the_requested_margin(dx, dy):
+    """NIGHTRED: GEOS's unbounded cells grew across the other part on
+    macOS despite identical boundary samples on Linux. Snapping/repairing
+    those wrong polygons cannot restore nearest-part ownership."""
+    hull = SPoly(
+        [
+            (-1.125, -1.14625),
+            (-1.125, 1.14625),
+            (1.125, 1.14625),
+            (1.125, -1.14625),
+        ]
+    )
+    hulls = [(0, translate(hull, dx, dy)), (1, translate(hull, dx + 3.6, dy))]
+    margin = 1.6
+    cells = silk._hull_cells(hulls, margin_mm=margin)
+    assert set(cells) == {0, 1}
+    domain = sbox(
+        dx - 1.125 - margin,
+        dy - 1.14625 - margin,
+        dx + 4.725 + margin,
+        dy + 1.14625 + margin,
+    )
+    for inst, own in hulls:
+        cell = cells[inst]
+        assert cell.is_valid
+        assert cell.buffer(1e-6).covers(own)
+        other = hulls[1 - inst][1]
+        assert cell.intersection(other).area == pytest.approx(0.0, abs=1e-8)
+    assert cells[0].intersection(cells[1]).intersection(domain).area == pytest.approx(
+        0.0, abs=1e-5
+    )
+    assert domain.difference(unary_union(list(cells.values()))).area == pytest.approx(
+        0.0, abs=1e-5
     )
 
 

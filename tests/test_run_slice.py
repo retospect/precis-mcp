@@ -527,7 +527,14 @@ def _submit(store: _Store, seams: dict[str, Any], **params: Any) -> tuple[_Ctx, 
     return ctx, handle
 
 
-def test_submit_launches_and_claims(seams: dict[str, Any], tmp_path: Path) -> None:
+@pytest.mark.parametrize("platform", ["darwin", "linux"])
+def test_submit_launches_and_claims(
+    seams: dict[str, Any],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    platform: str,
+) -> None:
+    monkeypatch.setattr(run_slice.sys, "platform", platform)
     store = _Store()
     store.add_todo(42, "Build the widget", body="Do X.")
     ctx, handle = _submit(store, seams, effort="medium")
@@ -535,6 +542,10 @@ def test_submit_launches_and_claims(seams: dict[str, Any], tmp_path: Path) -> No
     tree = tmp_path / ".claude" / "worktrees" / "slice-td42"
     started_at = handle.pop("started_at")
     assert re.fullmatch(r"\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ", started_at)
+    if platform == "darwin":
+        assert handle.pop("ps_identity") == seams["ps_identity"]
+    else:
+        assert "ps_identity" not in handle
     assert handle == {
         "pid": 4242,
         "pgid": 4242,

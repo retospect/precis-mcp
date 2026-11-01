@@ -1689,12 +1689,25 @@ def _hull_cells(hulls: list[tuple[int, Any]], *, margin_mm: float) -> dict[int, 
             (min(xs) - margin_mm, max(ys) + margin_mm),
         ]
     )
+    # Bound the real cells before GEOS clips its outer rays: on macOS
+    # near-collinear rays can turn into oversized polygons, even for the
+    # exact same samples as Linux. Guards stay farther than every real
+    # site throughout the requested envelope, so ownership there is unchanged.
+    guard_margin = 2.0 * (max(max(xs) - min(xs), max(ys) - min(ys)) + margin_mm)
+    guards = [
+        (min(xs) - guard_margin, min(ys) - guard_margin),
+        (min(xs) - guard_margin, max(ys) + guard_margin),
+        (max(xs) + guard_margin, max(ys) + guard_margin),
+        (max(xs) + guard_margin, min(ys) - guard_margin),
+    ]
+    sites = [*points, *guards]
     diagram = _shapely_voronoi_polygons(
-        _ShapelyMultiPoint(points), extend_to=envelope, ordered=True
+        _ShapelyMultiPoint(sites), extend_to=envelope, ordered=True
     )
     pieces: dict[int, list[Any]] = {}
-    for point, cell in zip(points, diagram.geoms, strict=True):
-        pieces.setdefault(owner[point], []).append(cell)
+    for point, cell in zip(sites, diagram.geoms, strict=True):
+        if point in owner:
+            pieces.setdefault(owner[point], []).append(cell)
     # Snapped to a micrometre grid: neighbouring Voronoi cells share edges
     # that float noise otherwise makes GEOS reject as a topology conflict.
     return {

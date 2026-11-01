@@ -92,6 +92,8 @@ Map, in pipeline order (design doc:
   owns a region on a layer), :mod:`~precis.pcb.silk` +
   :mod:`~precis.pcb.stroke_font` (silkscreen), :mod:`~precis.pcb.geom`
   (segment/fillet/quantization primitives).
+  Silk's Voronoi guard sites prevent macOS outer-ray clipping defects; see
+  :mod:`~precis.pcb.silk`.
 * **Checks** — :mod:`~precis.pcb.drc` (geometric DRC on realized copper;
   its graph-level half lives in ``ir.py``), :mod:`~precis.pcb.connectivity`
   (is each net's copper one piece).
