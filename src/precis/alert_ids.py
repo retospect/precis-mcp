@@ -762,6 +762,15 @@ ALERT_RULES: tuple[AlertRule, ...] = (
         "(--curve for recall versus estimated tokens); fix the regressed "
         "titles/hooks, index path or render cost, then resolve.",
     ),
+    AlertRule(
+        "plan_dispatch",
+        "plan-moot:{root}",
+        "A plan closed itself as moot — its open nodes were set to won't-do.",
+        "info",
+        "plan_dispatch",
+        triage="get(kind='todo', id=<root>): the alert detail names why the "
+        "plan was moot; reopen the root if that call was wrong.",
+    ),
 )
 
 RULES_BY_ID: dict[str, AlertRule] = {r.id: r for r in ALERT_RULES}

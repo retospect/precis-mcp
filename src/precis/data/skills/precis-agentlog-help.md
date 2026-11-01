@@ -94,9 +94,10 @@ up to 50 pre-cut candidates (`candidates_total` keeps the uncapped count).
 Reading that row shows lexical ranks, semantic distances, fused ranks,
 cut reasons and whether each candidate rendered. Traces create no chunks
 or derived work and never alter search output. They have their own
-retention window (default 60 days), physically deleted by the same
-sweeper to bound storage rather than retained as tombstones. To change
-the window or turn trace writes off, ask a human operator.
+retention window (default 60 days), physically deleted by the same sweeper
+to bound storage rather than retained as tombstones. To change the window
+or switch trace writes off, ask a human operator (recipe:
+`docs/runbooks/agentlog-search-traces.md`).
 
 ## Web
 

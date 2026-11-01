@@ -134,10 +134,10 @@ def test_trace_retains_stage_values_and_cuts(runtime_with_store, monkeypatch, vi
     assert candidates[f"me{ids['floor']}"]["cut"] == "corpus-floor"
     assert candidates[f"me{ids['floor']}"]["rendered"] is False
     table = runtime.dispatch("get", {"kind": "agentlog", "id": ident})
-    assert (
-        "| handle | lexical_rank | semantic_distance | fused_rank | cut | rendered |"
-        in table
-    )
+    assert "handle" in table
+    assert "lexical_rank" in table
+    assert "semantic_distance" in table
+    assert "fused_rank" in table
     assert f"me{ids['floor']}" in table
 
 
@@ -240,7 +240,7 @@ def test_trace_filters_and_default_listing_isolation(runtime_with_store):
         },
     )
     assert not error, listed
-    assert listed.count("candidates") == 3
+    assert listed.count("\nag") == 3
     other = runtime.dispatch(
         "get", {"kind": "agentlog", "id": "/traces?since=90d&kind=paper"}
     )
@@ -389,7 +389,7 @@ def test_source_is_not_a_trace_marker(runtime_with_store):
     assert f"ag{trace.id}" in listed
     assert f"ag{normal}" not in listed
     rendered = runtime_with_store.dispatch("get", {"kind": "agentlog", "id": trace.id})
-    assert "| lexical_rank |" in rendered
+    assert "lexical_rank" in rendered
     with store.tx() as conn:
         conn.execute(
             "UPDATE refs SET created_at = now() - interval '61 days' "

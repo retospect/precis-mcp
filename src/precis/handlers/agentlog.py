@@ -33,6 +33,7 @@ from typing import Any, ClassVar
 from urllib.parse import parse_qsl, urlencode
 
 from precis.errors import BadInput
+from precis.format import render_agent_table
 from precis.handlers._numeric_ref import NumericRefHandler
 from precis.protocol import KindSpec
 from precis.response import Response
@@ -53,6 +54,15 @@ _TRIAGE_KEYS: tuple[str, ...] = (
 _BULKY_KEYS: frozenset[str] = frozenset(
     {"prompt", "checkpoint", "result", "candidates"}
 )
+#: Columns of the per-candidate table on a search-trace agentlog.
+_TRACE_CANDIDATE_COLS: list[str] = [
+    "handle",
+    "lexical_rank",
+    "semantic_distance",
+    "fused_rank",
+    "cut",
+    "rendered",
+]
 #: Caps on the generic section: lines shown and chars per value.
 _EXTRA_META_CAP = 8
 _META_VALUE_CHARS = 200
@@ -263,13 +273,24 @@ class AgentLogHandler(NumericRefHandler):
                 values,
             ).fetchall()
         lines = ["# Search traces"]
-        for ident, created, meta in rows:
+        if rows:
             lines.append(
-                f"ag{ident} | {created.isoformat()} | q={_meta_value(meta.get('q'))} "
-                f"| {meta.get('mode')} | {meta.get('kinds')} "
-                f"| {meta.get('candidates_total', 0)} candidates"
+                render_agent_table(
+                    [
+                        {
+                            "id": f"ag{ident}",
+                            "created": created.isoformat(),
+                            "q": _meta_value(meta.get("q")),
+                            "mode": meta.get("mode"),
+                            "kinds": meta.get("kinds"),
+                            "candidates": meta.get("candidates_total", 0),
+                        }
+                        for ident, created, meta in rows
+                    ],
+                    schema=["id", "created", "q", "mode", "kinds", "candidates"],
+                )
             )
-        if not rows:
+        else:
             lines.append("no search traces match")
         return Response(body="\n".join(lines), result_count=len(rows))
 
@@ -585,30 +606,21 @@ class AgentLogHandler(NumericRefHandler):
             lines = [
                 body,
                 f"q: {_meta_value(meta.get('q'))}",
-                f"mode: {meta.get('mode')} | kinds: {meta.get('kinds')} "
-                f"| view: {meta.get('view')} | session: {meta.get('session')}",
+                f"mode: {meta.get('mode')}",
+                f"kinds: {meta.get('kinds')}",
+                f"view: {meta.get('view')}",
+                f"session: {meta.get('session')}",
                 f"candidates: {len(meta.get('candidates', []))} "
                 f"of {meta.get('candidates_total', 0)}",
                 "",
-                "| handle | lexical_rank | semantic_distance | fused_rank | cut | rendered |",
-                "| --- | --- | --- | --- | --- | --- |",
+                render_agent_table(
+                    [
+                        {k: c.get(k) for k in _TRACE_CANDIDATE_COLS}
+                        for c in meta.get("candidates", [])
+                    ],
+                    schema=_TRACE_CANDIDATE_COLS,
+                ),
             ]
-            for candidate in meta.get("candidates", []):
-                lines.append(
-                    "| "
-                    + " | ".join(
-                        str(candidate.get(key))
-                        for key in (
-                            "handle",
-                            "lexical_rank",
-                            "semantic_distance",
-                            "fused_rank",
-                            "cut",
-                            "rendered",
-                        )
-                    )
-                    + " |"
-                )
             return "\n".join(lines)
         shown: set[str] = set()
         for key in _TRIAGE_KEYS:
