@@ -753,6 +753,137 @@ class TestMoveBody:
             _edit(handler, a, {"move_body_to": "pa99999999", "reason": "x"})
 
 
+class TestTombstoneCarry:
+    """gr548654 follow-up: a merge tombstone may hand its leftover body
+    to ITS OWN survivor when the survivor still holds no body chunks and
+    no pdf — the repair for merges that ran before the merge-time carry.
+    Every other tombstone move keeps the refusal."""
+
+    def _tombstone(self, store: Store, survivor: int, slug: str) -> int:
+        tomb = _seed(store, slug, year=2020)
+        store.retire_ref(tomb)
+        store.stamp_ref_meta(
+            tomb, {"superseded_by": survivor, "garden_merge": {"winner": survivor}}
+        )
+        return tomb
+
+    def test_carry_moves_body_pdf_and_links(
+        self, store: Store, handler: PaperHandler
+    ) -> None:
+        surv = _seed(store, "tcarrysurv2020", year=2020)
+        tomb = self._tombstone(store, surv, "tcarrytomb2020")
+        other = _seed(store, "tcarryother2020", year=2020)
+        _body(store, tomb, 3)
+        _pdf(store, tomb)
+        link = store.add_link(
+            src_ref_id=other, dst_ref_id=tomb, relation="related-to", dst_pos=1
+        )
+
+        resp = _edit(
+            handler,
+            tomb,
+            {"move_body_to": f"pa{surv}", "reason": "gr548654 carry"},
+        )
+
+        assert "moved" in resp.body
+        assert _ords(store, tomb) == []
+        assert _ords(store, surv) == [0, 1, 2]
+        assert _pdf_sha(store, tomb) is None
+        assert _pdf_sha(store, surv) == _SHA
+        # the pdf_sha256 identifier row followed the file; the tombstone
+        # keeps its cite_key
+        assert _id_kinds(store, tomb) == {"cite_key"}
+        # links anchored on the moved chunks re-point to the copies
+        new = _chunk_ids(store, surv)
+        row = _link_row(store, link.id)
+        assert (int(row[0]), row[1], int(row[2]), int(row[3])) == (
+            other,
+            None,
+            surv,
+            new[1],
+        )
+        # the tombstone stays a tombstone; the merge's meta records the
+        # carry the way apply_merge would have stamped it
+        meta = _meta(store, tomb)
+        assert meta["superseded_by"] == surv
+        assert meta["garden_merge"]["body_moved"] == ["pdf", "body"]
+        assert meta["garden_merge"]["body_moved_from"] == tomb
+        assert (
+            store.fetch_refs_by_ids([tomb], include_deleted=True)[tomb].retired_at
+            is not None
+        )
+        ev = _events(store, surv, "body_moved")
+        assert len(ev) == 1 and ev[0].payload["moved_from"] == tomb
+        ev = _events(store, tomb, "body_moved")
+        assert len(ev) == 1 and ev[0].payload["moved_to"] == surv
+
+    def test_survivor_with_a_body_still_refused(
+        self, store: Store, handler: PaperHandler
+    ) -> None:
+        surv = _seed(store, "tfullsurv2020", year=2020)
+        tomb = self._tombstone(store, surv, "tfulltomb2020")
+        _body(store, tomb, 2)
+        _body(store, surv, 1)
+        with pytest.raises(BadInput, match="already holds") as exc:
+            _edit(handler, tomb, {"move_body_to": f"pa{surv}", "reason": "x"})
+        assert exc.value.next is not None
+        assert _ords(store, tomb) == [0, 1]
+        assert _ords(store, surv) == [0]
+        assert _events(store, tomb, "body_moved") == []
+
+    def test_survivor_with_a_pdf_still_refused(
+        self, store: Store, handler: PaperHandler
+    ) -> None:
+        surv = _seed(store, "tpdfsurv2020", year=2020)
+        tomb = self._tombstone(store, surv, "tpdftomb2020")
+        _body(store, tomb, 2)
+        _pdf(store, surv, sha="b" * 64)
+        with pytest.raises(BadInput, match="different file"):
+            _edit(handler, tomb, {"move_body_to": f"pa{surv}", "reason": "x"})
+        assert _ords(store, tomb) == [0, 1]
+        assert _ords(store, surv) == []
+
+    def test_unrelated_target_still_refused(
+        self, store: Store, handler: PaperHandler
+    ) -> None:
+        surv = _seed(store, "tunrsurv2020", year=2020)
+        tomb = self._tombstone(store, surv, "tunrtomb2020")
+        unrelated = _seed(store, "tunrother2020", year=2020)
+        _body(store, tomb, 2)
+        with pytest.raises(BadInput, match="merge tombstone") as exc:
+            _edit(handler, tomb, {"move_body_to": f"pa{unrelated}", "reason": "x"})
+        # the survivor is bodiless — the refusal names the carry door
+        assert "move_body_to" in str(exc.value.next)
+        assert f"pa{surv}" in str(exc.value.next)
+        assert _ords(store, tomb) == [0, 1]
+        assert _ords(store, unrelated) == []
+
+    def test_carry_by_handle_reaches_the_tombstone(
+        self, runtime_with_store: Any
+    ) -> None:
+        """The ``pa<tomb>`` address works too: the dispatcher routes the
+        tombstone's ref_id for this door instead of collapsing source
+        and target onto the survivor."""
+        store = runtime_with_store.store
+        surv = _seed(store, "thndlsurv2020", year=2020)
+        tomb = self._tombstone(store, surv, "thndltomb2020")
+        _body(store, tomb, 2)
+        body, is_error = runtime_with_store.dispatch_with_status(
+            "edit",
+            {
+                "kind": "paper",
+                "id": f"pa{tomb}",
+                "__extras__": {
+                    "move_body_to": f"pa{surv}",
+                    "reason": "gr548654 carry",
+                },
+            },
+        )
+        assert not is_error, body
+        assert _ords(store, tomb) == []
+        assert _ords(store, surv) == [0, 1]
+
+
 class TestSplitBody:
     def test_happy_path(self, store: Store, handler: PaperHandler) -> None:
         a = _seed(store, "splitdonor2019", year=2019)

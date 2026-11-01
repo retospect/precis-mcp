@@ -4228,16 +4228,19 @@ class DispatchMixin(RuntimeShape):
             "redirect_to" in door_extras
             or "retire" in door_extras
             or "merge_into" in door_extras
+            or "move_body_to" in door_extras
         )
         if resolved.redirected_from is not None and ref_door:
-            # The paper redirect_to, retire and merge_into doors operate
-            # ON the merged tombstone: rewriting id= to the survivor (the
-            # transparent redirect below) would land the re-point /
-            # un-retire / merge on the wrong ref — a merge_into aimed at
-            # a tombstone would fold the *survivor* instead of refusing
-            # "already merged". Route the decoded tombstone ref_id
-            # through instead so the handler can resolve it with
-            # include_deleted (gr501446, gr509441, gr509659).
+            # The paper redirect_to, retire, merge_into and move_body_to
+            # doors operate ON the merged tombstone: rewriting id= to the
+            # survivor (the transparent redirect below) would land the
+            # re-point / un-retire / merge / body-carry on the wrong ref —
+            # a merge_into aimed at a tombstone would fold the *survivor*
+            # instead of refusing "already merged", and the gr548654
+            # tombstone carry would read donor == survivor. Route the
+            # decoded tombstone ref_id through instead so the handler can
+            # resolve it with include_deleted (gr501446, gr509441,
+            # gr509659).
             parsed = handle_registry.parse(normalized)
             # kind is the tombstone's own — decoded from the handle, not
             # resolved.kind: the survivor may have been converted to a
@@ -4257,8 +4260,9 @@ class DispatchMixin(RuntimeShape):
             return True
         args["kind"] = resolved.kind
         if ref_door:
-            # The paper retire / redirect_to / merge_into doors resolve
-            # the ref themselves (``_resolve_ref_incl_retired``), so route
+            # The paper retire / redirect_to / merge_into / move_body_to
+            # doors resolve the ref themselves
+            # (``_resolve_ref_incl_retired``), so route
             # the decoded ref_id: a ``pa<id>`` handle must resolve by ref
             # id, never re-resolve through the cite_key — which can spell
             # like another kind's handle (``dr00``, gr524004).

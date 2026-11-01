@@ -235,22 +235,18 @@ edit(kind="paper", id="pa174214", args={"clear_abstract": True, "reason": "junk 
 ```
 
 `reason` required, `dry_run` previews, one DELETE+INSERT transaction.
-Judge the body before you drop it — `get(id=…, view='tables')` renders
-its `chunk_kind='table'` chunks as parsed grids (caption, units, a
-`pc<id> row R col C` cell cite), and
-`search(kind='paper', q=…, args={'chunk_kind': 'table'})` restricts
-hits to table chunks.
+Judge the body before you drop it — `get(view='tables')` renders table
+chunks as parsed grids and `search(args={'chunk_kind': 'table'})`
+restricts hits to them.
 `drop_body` deletes body chunks + embeddings, clears `pdf_sha256` and
 content ids, keeps metadata — a live stub, refetchable via `pdf_url`.
 Add `'keep_pdf': True` when the ref's own PDF is the right file and only
 the body is wrong (e.g. it arrived by a dedup merge): the pointer and its
 `pdf_sha256` identifier stay, so the stub is a bodiless-heal candidate —
 the `paper_reconcile` pass or `precis bodiless-heal --apply` re-extracts
-the stored file, no refetch needed. When the ref is attached to several
-PDFs (several `pdf_sha256` identifier rows), `'pdf_sha256': '<sha>'` names
-the one to keep — required then; naming an attached sha that is not the
-pointer re-points `refs.pdf_sha256` at it. It refuses when the named sha
-isn't attached or several are attached and none is named.
+the stored file, no refetch needed. Attached to several PDFs?
+`'pdf_sha256': '<sha>'` names the one to keep — required then; a named
+non-pointer sha re-points `refs.pdf_sha256` at it.
 `reextract` queues a `paper_reextract` job to re-extract the body from
 the stored pdf — the repair for a bad *extraction* of the right file
 (garbled chunks, an old Marker). The door only validates: a sha no
@@ -268,7 +264,10 @@ non-extracted verdict (missing file, unreadable, preview,
 identity_mismatch) also logs `reextract_failed`.
 `move_body_to` gives body, pdf and content ids to a live ref holding
 zero body chunks and no pdf (refuses otherwise: `drop_body`/
-`merge_into`/`bodiless-heal`); the donor ends a live stub.
+`merge_into`/`bodiless-heal`); the donor ends a live stub — except a
+merge tombstone, which may hand its leftover body to ITS OWN survivor
+while that survivor holds no body chunks and no pdf (every other
+tombstone move refuses).
 `split_body` mints a NEW ref from the dict
 (`title` required) and moves the body onto it; a held DOI refuses
 naming its ref — the move case. `clear_abstract` drops `meta.abstract`
@@ -278,9 +277,8 @@ naming its ref — the move case. `clear_abstract` drops `meta.abstract`
 re-point on move/split, count on drop.
 
 Each door's `dry_run` ends with an `undo:` line naming the export to
-take first: `get(kind='paper', id='<pa>', view='ops')` dumps the ref's
-full stored state — ref row, identifiers, tags, byline, bib entries,
-inbound+outbound links (with chunk ords) and every chunk incl. cards —
+take first: `get(id='<pa>', view='ops')` dumps the ref's stored state —
+ref row, identifiers, tags, links (with chunk ords) and every chunk —
 as a fenced `precis-paper-dump/1` block, paged by
 `args={'page': N, 'page_size': K}` (default 100, cap 500, 0 = the rest;
 concatenate the slices' `chunks` arrays). The operator twin

@@ -5230,8 +5230,11 @@ class PaperHandler(Handler):
     def _require_live_body_ref(self, id: str | int, door: str) -> tuple[Ref, str]:
         """Resolve a body-op's source ref; refuse a tombstone/retired ref.
 
-        All four doors act on a *live* ref — a merged tombstone's body is
-        the survivor's to manage, and a plain-retired one restores first.
+        The doors act on a *live* ref — a merged tombstone's body is the
+        survivor's to manage (``move_body_to`` is the one exception: it
+        resolves itself so the gr548654 carry can run — a merged
+        tombstone's leftover body MAY move to its own bodiless survivor),
+        and a plain-retired one restores first.
         Resolution goes through :meth:`_resolve_door_subject`: these are
         destructive/identity-changing doors, so a slug that reaches the
         live ref only through a merge-re-homed alias refuses the same
@@ -5246,18 +5249,54 @@ class PaperHandler(Handler):
         handle = _pa(ref)
         if ref.retired_at is not None:
             if (ref.meta or {}).get("superseded_by") is not None:
-                raise BadInput(
-                    f"{handle} is a merge tombstone — its leftover body is "
-                    "the survivor's to manage",
-                    next=f"get(kind='{kind}', id='{handle}') to see which "
-                    "survivor it redirects to",
-                )
+                raise self._merge_tombstone_body_refusal(ref, handle)
             raise BadInput(
                 f"{handle} is retired — {door} acts on a live ref",
                 next=f"restore it first: edit(kind='{kind}', id='{handle}', "
                 "args={'retire': False, 'reason': '<why>'})",
             )
         return ref, handle
+
+    def _merge_tombstone_body_refusal(self, ref: Ref, handle: str) -> BadInput:
+        """The merge-tombstone refusal for the body doors (gr548654).
+
+        ``next=`` names the one door a tombstone's leftover body CAN take
+        — ``move_body_to`` onto its own merge survivor, addressed by
+        numeric ref_id — when the survivor still holds no body chunks and
+        no pdf (the same predicate the merge-time carry applies,
+        :func:`precis.ingest.dedup.pending_body_move` + a stub probe);
+        otherwise the survivor manages it and the ``next=`` just names
+        the redirect."""
+        kind = self.spec.kind
+        hint = (
+            f"get(kind='{kind}', id='{handle}') to see which survivor it redirects to"
+        )
+        surv = (ref.meta or {}).get("superseded_by")
+        try:
+            surv_id = int(surv) if surv is not None else None
+        except (TypeError, ValueError):
+            surv_id = None
+        if surv_id is not None:
+            from precis.ingest.body_ops import probe_body
+            from precis.ingest.dedup import pending_body_move
+
+            with self.store.pool.connection() as conn:
+                moves = pending_body_move(
+                    conn, survivor_ref_id=surv_id, duplicate_ref_id=ref.id
+                )
+                survivor_stub = probe_body(conn, surv_id).is_stub
+            if moves and survivor_stub:
+                surv_h = handle_registry.format_handle(kind, surv_id)
+                hint = (
+                    "its leftover body moves to its own survivor only: "
+                    f"edit(kind='{kind}', id={ref.id}, args="
+                    f"{{'move_body_to': '{surv_h}', 'reason': '<why>'}})"
+                )
+        return BadInput(
+            f"{handle} is a merge tombstone — its leftover body is the "
+            "survivor's to manage",
+            next=hint,
+        )
 
     @staticmethod
     def _require_reason(
@@ -5559,11 +5598,44 @@ class PaperHandler(Handler):
         both be the body, and pairing a pdf-less donor's body text with a
         file it wasn't extracted from is unverifiable (the target
         re-extracts from its own pdf via ``precis bodiless-heal``).
+
+        One tombstone case runs too (gr548654): a merge that predates the
+        merge-time carry stranded the only body on the loser. When the
+        donor is a merge tombstone and the target is ITS OWN
+        ``superseded_by`` survivor — still holding no body chunks and no
+        pdf — the door carries the leftover body across the redirect and
+        stamps the tombstone's ``meta.garden_merge`` the way the merge
+        itself would have (``body_moved`` / ``body_moved_from``). Every
+        other tombstone move keeps the plain refusal: a different target,
+        or a survivor that already has a body/pdf, refuses on the
+        ordinary target checks. Address the tombstone by numeric ref_id
+        (a ``pa<loser>`` handle also reaches it — the dispatcher routes
+        the tombstone ref_id for this door, gr501446's wiring).
         """
         from precis.ingest import body_ops, paper_dump
 
         kind = self.spec.kind
-        donor, donor_h = self._require_live_body_ref(id, "move_body_to")
+        donor = self._resolve_door_subject(id, door="move_body_to")
+        if donor is None:
+            raise NotFound(
+                f"{kind} id={id!r} resolves to no ref (live or retired)",
+                next=f"search(kind='{kind}', q='...') to find the ref",
+            )
+        donor_h = _pa(donor)
+        tombstone_surv: int | None = None
+        if donor.retired_at is not None:
+            surv = (donor.meta or {}).get("superseded_by")
+            try:
+                tombstone_surv = int(surv) if surv is not None else None
+            except (TypeError, ValueError):
+                tombstone_surv = None
+            if tombstone_surv is None:
+                raise BadInput(
+                    f"{donor_h} is retired — move_body_to acts on a live ref",
+                    next=f"restore it first: edit(kind='{kind}', "
+                    f"id='{donor_h}', "
+                    "args={'retire': False, 'reason': '<why>'})",
+                )
         self._require_reason(reason, "move_body_to", kind, donor_h, arg="'pa<M>'")
         tgt_raw = "" if target is None else str(target).strip()
         tgt = self._resolve_ref_incl_retired(tgt_raw) if tgt_raw else None
@@ -5579,6 +5651,8 @@ class PaperHandler(Handler):
                 "move_body_to names the record itself",
                 next="pass the other live ref the body belongs to",
             )
+        if tombstone_surv is not None and tgt.id != tombstone_surv:
+            raise self._merge_tombstone_body_refusal(donor, donor_h)
         if tgt.retired_at is not None:
             chain_end = self.store.follow_supersede(tgt.id)
             if chain_end is not None:
@@ -5631,6 +5705,11 @@ class PaperHandler(Handler):
                 f"id='{tgt_h}', args={{'drop_body': True, "
                 "'reason': '<why>'}})",
             )
+        donor_end = (
+            "stays a retired tombstone (meta.garden_merge records the carry)"
+            if tombstone_surv is not None
+            else "keeps its metadata and ends a live stub"
+        )
         if dry:
             return Response(
                 body=(
@@ -5643,7 +5722,7 @@ class PaperHandler(Handler):
                     f"{'pdf moved, ' if src_probe.pdf else ''}content ids "
                     f"({', '.join(src_probe.identifiers) or 'none'}) and "
                     "extraction meta keys handed over; "
-                    f"{donor_h} keeps its metadata and ends a live stub; "
+                    f"{donor_h} {donor_end}; "
                     "'body_moved' ref_events logged on both.\n\n"
                     f"{undo}"
                 )
@@ -5668,13 +5747,34 @@ class PaperHandler(Handler):
             }
             for ref_id, handle in ((donor.id, donor_h), (tgt.id, tgt_h)):
                 row = locked.get(ref_id)
-                if row is None or row[2] is not None or row[3] is not None:
-                    raise BadInput(
+                if tombstone_surv is not None and ref_id == donor.id:
+                    # The donor is MEANT to be the tombstone — stale only
+                    # if it came back live or now points elsewhere.
+                    ok = (
+                        row is not None
+                        and row[2] is not None
+                        and row[3] is not None
+                        and row[3] == str(tgt.id)
+                    )
+                    msg = (
+                        f"{handle} was restored or re-pointed since the "
+                        "check — the carry needs it still its survivor's "
+                        "tombstone"
+                    )
+                    retry_tgt = tgt_h
+                else:
+                    ok = row is not None and row[2] is None and row[3] is None
+                    msg = (
                         f"{handle} was retired or merged since the check — "
-                        "a body move needs both refs live",
+                        "a body move needs both refs live"
+                    )
+                    retry_tgt = "<live target>"
+                if not ok:
+                    raise BadInput(
+                        msg,
                         next=f"re-resolve and retry: edit(kind='{kind}', "
-                        f"id='{donor_h}', args={{'move_body_to': '<live "
-                        f"target>', 'reason': '{reason}'}})",
+                        f"id='{donor_h}', args={{'move_body_to': "
+                        f"'{retry_tgt}', 'reason': '{reason}'}})",
                     )
             if conn.execute(
                 "SELECT 1 FROM chunks WHERE ref_id = %s AND ord >= 0 LIMIT 1",
@@ -5704,9 +5804,39 @@ class PaperHandler(Handler):
                     f"edit(kind='{kind}', id='{tgt_h}', args="
                     "{'drop_body': True, 'reason': '<why>'})",
                 )
+            moves: list[str] = []
+            if tombstone_surv is not None:
+                from precis.ingest.dedup import pending_body_move
+
+                moves = pending_body_move(
+                    conn, survivor_ref_id=tgt.id, duplicate_ref_id=donor.id
+                )
             report = body_ops.move_body(
                 src_ref_id=donor.id, dst_ref_id=tgt.id, conn=conn
             )
+            if moves:
+                # The carry's audit, stamped the way apply_merge would
+                # have stamped it at merge time (gr548654): jsonb_set
+                # merges under garden_merge so the merge's own keys
+                # (merge_id, winner, links) survive.
+                from psycopg.types.json import Jsonb
+
+                conn.execute(
+                    "UPDATE refs SET meta = jsonb_set("
+                    "coalesce(meta, '{}'::jsonb), '{garden_merge}', "
+                    "coalesce(meta->'garden_merge', '{}'::jsonb) || "
+                    "%s::jsonb, true), updated_at = now() "
+                    "WHERE ref_id = %s",
+                    (
+                        Jsonb(
+                            {
+                                "body_moved": moves,
+                                "body_moved_from": donor.id,
+                            }
+                        ),
+                        donor.id,
+                    ),
+                )
             cards = body_ops.ensure_paper_cards(conn, tgt.id)
             payload = {
                 "reason": reason,
@@ -5741,7 +5871,7 @@ class PaperHandler(Handler):
                 f"{report.chunk_links} chunk link(s) re-pointed"
                 f"{_links_removed_note(report)}"
                 f"{', pdf moved' if report.pdf else ''}; "
-                f"{donor_h} kept its metadata and is now a live stub; "
+                f"{donor_h} {donor_end}; "
                 "ref_events 'body_moved' logged on both."
             )
         )
