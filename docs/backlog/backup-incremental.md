@@ -160,3 +160,12 @@ never printed.
   ship time (`/mnt/dbbackup` absent — the nfs_client dbbackup play needs
   `nas_dbbackup_export` + `nas_lan_*` in the overlay), and the
   backup-window deploy guard does not cover the 21:45 slot.
+- Status 2026-11-01 (reconsolidation pass): slice 1 is on main (a6e09ee11)
+  but its deploy state is unverified — whether `pg_backup_dir.sh`, the
+  `/mnt/dbbackup` mount and `restic-dbdump.sh` are live on the DB node and
+  the NAS, and whether a restic restore drill has passed, need a read-only
+  look at the hosts (no MCP or alert covers backup stamps). The old
+  tar+zstd chain's own checks are green (gr496659 first dump verified
+  2026-10-23, B2 offsite current; both closed). td461206 (restore-drill
+  pull key) is open. The file stays `in-progress` / claimed until that
+  read confirms; slice 2 needs Reto present either way.

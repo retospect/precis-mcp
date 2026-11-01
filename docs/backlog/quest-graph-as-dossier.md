@@ -47,6 +47,19 @@ Superseded as input-only designs: `quest-dossier-dialectic.md`,
    export; whether its output is ephemeral (a render, discarded) or persisted
    as a draft the reader can cite and `paper-of` binds to.
 
+## The quest is also the memory hub (added 2026-11-01)
+
+The repo-dev memory graph works because every node hangs off a subject hub
+(`part-of`) and the lint reports orphans, no-hub nodes and cold nodes. The
+research space has no hubs: ~11,000 memories carry no SPACE, no type and no
+parent (counted 2026-11-01). The quest node at the apex is the research
+analogue of the hub — a memory written under a quest is `part-of` (or
+`serves`, per Q1) that quest, asa notes hang off their conversation, and
+the same lint runs over the whole graph. The write-side mechanics are
+`dreaming-classify-rehome.md` (type + parent at the dreaming pass) and
+gr548275 (SPACE backfill); this item owns the apex relation (Q1) they
+consume.
+
 ## Links
 
 - `knowledge-mesh.md` — the mesh this graph lives in.

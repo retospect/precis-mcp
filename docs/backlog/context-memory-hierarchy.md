@@ -58,7 +58,15 @@ Slices, in build order:
    session that may edit CLAUDE.md builds it. Reto decides where the block
    lives (P2 left that to the builder; the cutover moved the measured
    preamble from CLAUDE.md + MEMORY.md to CLAUDE.md + the live-thread
-   render, so the budget line needs re-stating).
+   render, so the budget line needs re-stating). Recommendation from the
+   2026-11-01 memory-architecture review: CLAUDE.md *is* the block, with a
+   1,500-token budget enforced by `memory-lint` check 3, S3's index folded
+   into the one router line; the long form stays in AGENTS.md. Grounds:
+   CLAUDE.md is ~3k tokens resident today (11.9 kB); the published
+   best-of-breed sticky core is 200–800 tokens plus a 100–300-token map;
+   caching removes the dollar cost but not the window occupancy, and every
+   CLAUDE.md edit breaks the cached prefix for every live session (~50 at
+   a time). Largest single token lever in that review; Reto's call.
 
 5. **P4 — recall quality: done 2026-10-18** (Reto: "Memory p4, yes";
    32f1dc70c, f24973944). Question set `src/precis/data/memory_recall_set.json`,

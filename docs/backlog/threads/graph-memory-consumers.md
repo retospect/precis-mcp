@@ -151,6 +151,17 @@ and the R17 ruling keeps files and graph coexisting. Kept for the record.
      and hypothesis; the one `compound` row is now `composite`.
      `nanopub_artifacts` is append-only and was not rewritten.
 5. **backlog/context-navigation.md §7–§8** — twin + Mode B loop, owned by thread context-navigation; seam only.
+6. **Memory-architecture gripe set (2026-11-01, from the gr547899/900/901
+   review; all `builder:swe2-high`):** build in this order — gr548261
+   search trace row → gr548263 followed/used/export → gr548264 gap cut
+   (re-scopes gr514956) → gr548265 memory fusion (absorbs gr515867) →
+   gr548268 tokens-per-hit + knee curve → gr548269 recall-set harvest;
+   independent: gr548266/548267 glossary mirror + canon pre-pass,
+   gr548270 sub-hub hint, gr548271 dry_run door, gr548275 SPACE backfill,
+   gr548278/548279/548280 pass hygiene. Specs:
+   `memory-retrieval-learning.md` (idea, decision rule),
+   `dreaming-classify-rehome.md` (draft). Reto's call: S4 in
+   `context-memory-hierarchy.md` (resident block, largest token lever).
 
 ## Horizon
 

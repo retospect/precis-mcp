@@ -100,6 +100,11 @@ the latest, OTA2607 July 2026, at bringup). A post-upgrade `torn-score` of
 GB10, persistence Enabled, ~30–33 °C; **`nvidia-smi` shows `memory.total [N/A]`
 — normal for unified Grace-Blackwell memory**, not a fault.
 
+Fleet snapshot 2026-10-22 (both twins): EC `0x03000d07`, SoC `0x02009e0f`,
+USB-PD `0x00000519`, OTA2610, kernel `7.0.0-1019`; the auto-update units are
+masked (§5); the Caddy apt repo key was stale (gr506049). Compare a new unit
+against this line before deciding whether an OTA is pending.
+
 ## 7. Fast-cable pairing (ConnectX QSFP, 200G RDMA)
 
 Each Spark has a ConnectX-7 with two QSFP ports, **both cabled to the

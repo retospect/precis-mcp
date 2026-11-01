@@ -144,12 +144,21 @@ duplicates the index and makes the fisheye (which renders links) noisier.
   and nothing mints those yet; build splits after the annotation path is
   real.
 
-## Watch (running now)
+## Watch (ended 2026-10-24) and trial state
 
-A 6-hourly check in the chat desk session reads gardener runs, proposals
-and `graph_garden:propose` call stats, and files gripes per class: model
-confusion, skill confusion, API, flow, token efficiency. Findings feed
-slice 3.
+The 6-hourly chat-desk watch (gardener runs, proposals,
+`graph_garden:propose` call stats → gripes per class) ran 2026-10-21 to
+2026-10-24 and died with its chat session; every gripe it filed is closed
+(gr504843, gr504896, gr506044, gr506045, gr506046, gr508975, gr512124,
+gr512125). The trial itself keeps running unattended: recurring td504852
+every 2 h, proposer castor-only, consumer cloud Opus; since 2026-10-24 the
+`reviews` ledger shows 102 approved / 344 rejected / 59 held for a human
+(read 2026-11-01). Still open from the watch: the four pre-gate merges
+applied 2026-10-24 06:33Z (reviews 8830, 8833, 8845, 8846) are unaudited
+(gr512125 c8). Operator recipe (pause, resume, re-route, logs, undo):
+[`docs/runbooks/graph-gardener-ops.md`](../runbooks/graph-gardener-ops.md).
+Reto decides whether the trial continues or slices 4–5 start (slice 5's
+blocker gr502793 closed 2026-10-22).
 
 ## Explicitly NOT in scope
 
