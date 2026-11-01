@@ -319,6 +319,7 @@ class TestImport:
             ["git", "hash-object", str(path)],
             capture_output=True,
             text=True,
+            encoding="utf-8",
             check=False,
         )
         if git.returncode == 0:
@@ -356,6 +357,7 @@ class TestMemoryLintCheck:
             cwd=repo,
             capture_output=True,
             text=True,
+            encoding="utf-8",
             env=env,
         )
         assert out.returncode == 0, out.stderr
