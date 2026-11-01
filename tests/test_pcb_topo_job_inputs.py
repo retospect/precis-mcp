@@ -292,6 +292,58 @@ def test_topo_job_wires_the_flex_slot_pins_it_assigns(store: Store) -> None:
         assert {p for r, p in after[net] if r == "U1"} == {str(rechosen[net]["pin"])}
 
 
+def test_topo_rerun_seeds_the_slot_solve_with_the_last_pins(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr520372: a re-place moved every flex pin and broke the firmware
+    pin map. The released bindings still seed the re-solve: the job hands
+    the last run's slot pins to ``assign_pins`` as its prior, and the run
+    summary counts the slots that kept them."""
+    from precis.pcb import topoplace as _tp
+
+    ref_id = _seed(store, "topo-prior", _FLEX)
+    first = _FakeCtx(store, params=_topo(ref_id, iters=200))
+    _dispatch(first)
+    assert not first.failures, first.failures
+    pins = first.meta["topo_run"]["files"]["pins.json"]["pins"]
+    chosen = {n: str(pins[n]["pin"]) for n in pins}
+
+    seen: dict[str, Any] = {}
+    real = _tp.assign_pins
+
+    def spy(d: Any, pose: Any, proxy: Any = None, prior: Any = None) -> Any:
+        seen["prior"] = prior
+        return real(d, pose, proxy, prior=prior)
+
+    monkeypatch.setattr(_tp, "assign_pins", spy)
+    again = _FakeCtx(store, params=_topo(ref_id, iters=200, seed=2))
+    _dispatch(again)
+    assert not again.failures, again.failures
+    assert seen["prior"] == {
+        ("U1", chosen["SDA"]): "SDA",
+        ("U1", chosen["LED"]): "LED",
+    }
+    summary = again.meta["topo_run"]["files"]["summary.txt"]
+    assert "/2 kept from the last run" in summary
+
+    # A re-place whose anneal kept the stored placement (topo_place's
+    # own invariant, tests/test_pcb_topoplace_placer.py) says so in the
+    # job summary.
+    import dataclasses
+
+    monkeypatch.setattr(_tp, "assign_pins", real)
+    place = _tp.topo_place
+    monkeypatch.setattr(
+        _tp,
+        "topo_place",
+        lambda *a, **k: dataclasses.replace(place(*a, **k), kept_start=True),
+    )
+    kept = _FakeCtx(store, params=_topo(ref_id, iters=50, seed=3))
+    _dispatch(kept)
+    assert not kept.failures, kept.failures
+    assert "no anneal pose beat the stored placement" in _summary(kept)
+
+
 #: Two slots over shared candidates: S_B can only take P1. A previous
 #: run declared S_A alone and wired P1 to net A.
 _TWO_SLOTS: dict[str, Any] = {

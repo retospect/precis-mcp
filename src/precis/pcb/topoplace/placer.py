@@ -15,7 +15,9 @@ Search shape, all spec-driven:
   from an archive elite round-robin (first restart: ``pose0``);
 - acceptance — Metropolis on Δ(proxy + rubber band); the incumbent is
   ranked by (crossings, cost), crossings primary, because the summary
-  and the autoplace comparison both read the crossing count.
+  and the autoplace comparison both read the crossing count. A fully
+  placed ``pose0`` (a re-place) is the first incumbent, so a run never
+  returns a pose ranked worse than the stored one (gr520372).
 
 ``Ladder`` is the hook type only (Decision 10's rung 1 ships here):
 each ``(every_n, callable)`` rung fires on the incumbent pose, its
@@ -82,6 +84,10 @@ class TopoPlaceResult:
     #: The phase-3 shove-LP report (``ShoveResult``) — runs before
     #: legalize; ``remaining`` in the same (a, b, area) encoding.
     shove: Any = None
+    #: No anneal pose beat a fully placed ``pose0`` on (crossings, cost),
+    #: so ``best_pose`` is the start (settled) — gr520372: a re-place
+    #: keeps the stored placement rather than write a worse one.
+    kept_start: bool = False
 
     def elites_json(self) -> bytes:
         """Canonical ``elites.json`` bytes — the determinism contract:
@@ -345,6 +351,8 @@ def topo_place(
     best_rank: tuple[float, float] = (math.inf, math.inf)
     last_improve = 0
     evals = 0
+    kept_start = False
+    start_pose: np.ndarray | None = None
 
     for restart in range(n_restarts):
         elites = archive.elites
@@ -390,6 +398,14 @@ def topo_place(
             event(f"place: restart {restart + 1}/{n_restarts} ({budget} evals)")
         restart_best_pose = proxy.pose.copy()
         restart_best = (proxy.crossings, proxy.cost)
+        if restart == 0 and np.isfinite(d.pose0[:, :2]).all():
+            # gr520372: a fully placed pose0 is the stored placement and
+            # the incumbent to beat. The race below ranks post-move poses
+            # only, so an uphill first move used to drop it, and a short
+            # or wandering run wrote a placement worse than the board had.
+            best_rank, best_pose = restart_best, restart_best_pose.copy()
+            start_pose = best_pose.copy()
+            kept_start = True
         #: the committed violation total — the legality floor for every
         #: proposal below (a move may reduce debt, never raise it).
         ov_now = float(proxy.overlap)
@@ -572,6 +588,7 @@ def topo_place(
                 best_rank = rank
                 best_pose = proxy.pose.copy()
                 last_improve = evals
+                kept_start = False
                 # every new incumbent is an archive candidate — the
                 # diversity rule decides whether it earns a slot.
                 archive.admit(best_pose, best_rank[1])
@@ -599,6 +616,15 @@ def topo_place(
     # A shoved pose re-enters the archive as an elite (spec §4).
     best_pose, shoved, legal = _settle_pose(d, best_pose)
     final = ProxyState(d, best_pose, objective)
+    if start_pose is not None and not kept_start:
+        # gr520372: the settle passes can cost the anneal's best its edge
+        # over the stored placement; settled the same way, the stored
+        # pose stands while it still ranks ahead.
+        s_pose, s_shoved, s_legal = _settle_pose(d, start_pose)
+        s_final = ProxyState(d, s_pose, objective)
+        if (s_final.crossings, s_final.cost) < (final.crossings, final.cost):
+            best_pose, shoved, legal, final = s_pose, s_shoved, s_legal, s_final
+            kept_start = True
     if event is not None:
         event(
             f"place: done — {final.crossings} crossing(s), cost "
@@ -620,6 +646,7 @@ def topo_place(
         last_improve_eval=last_improve,
         legalize=legal,
         shove=shoved,
+        kept_start=kept_start,
     )
 
 

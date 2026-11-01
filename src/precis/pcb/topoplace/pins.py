@@ -28,7 +28,7 @@ from __future__ import annotations
 
 import math
 import re
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from typing import Any
 
@@ -78,13 +78,15 @@ class PinAssignment:
     crossing count — the number the summary's widen-a-slot edit
     diffs against (1c spec-call: ``net_pins`` is frozen, so a
     widened ``any_of`` is priced by re-solving, not by a placer
-    re-run)."""
+    re-run). ``prior_kept`` counts the slots still on the pin the last
+    run gave them (gr520372) — ``None`` when no usable prior was given."""
 
     by_name: dict[str, tuple[str, int | str]]
     swaps: tuple[tuple[str, int | str, int | str], ...]
     cost_vs_fixed: float
     choice: tuple[int, ...] = ()
     crossings: int = 0
+    prior_kept: int | None = None
 
 
 def _slot_tag(d: TopoDesign, i: int) -> str:
@@ -552,8 +554,40 @@ def _apply(m: _Assign, changes: list[tuple[int, int | None, int | None]]) -> set
     return affected
 
 
+def _prior_choice(
+    d: TopoDesign,
+    effs: list[tuple[int, ...]],
+    prior: Mapping[tuple[str, str], str] | None,
+) -> list[int] | None:
+    """The last run's pin per slot, from ``prior`` (``(refdes, pin label)
+    -> net``), or ``None`` unless every slot finds a distinct candidate
+    the prior put on the slot's own net — a changed netlist re-solves
+    from scratch."""
+    if not prior or not effs:
+        return None
+    out: list[int] = []
+    for i, s in enumerate(d.flex):
+        refdes = d.parts[s.part]
+        net = d.decl_net_name[s.net] if s.net < len(d.decl_net_name) else None
+        pick = next(
+            (
+                p
+                for p in effs[i]
+                if p not in out and prior.get((refdes, str(d.pin_label[p]))) == net
+            ),
+            None,
+        )
+        if net is None or pick is None:
+            return None
+        out.append(pick)
+    return out
+
+
 def assign_pins(
-    d: TopoDesign, pose: np.ndarray, proxy: ProxyState | None = None
+    d: TopoDesign,
+    pose: np.ndarray,
+    proxy: ProxyState | None = None,
+    prior: Mapping[tuple[str, str], str] | None = None,
 ) -> PinAssignment:
     """Fill the design's slots for one pose and report the swaps.
 
@@ -563,6 +597,12 @@ def assign_pins(
     while crossings drop. ``proxy`` supplies its committed wires for
     the static nets when given (built on the same pose); the eval does
     not need it to exist.
+
+    ``prior`` is the last run's slot binding, ``(refdes, pin label) ->
+    net`` (gr520372: a re-place moved every flex pin and broke the
+    firmware pin map). When it covers every slot it seeds a second 2-opt
+    and that answer stands unless the fresh solve crosses strictly less:
+    a pin moves only when moving drops crossings.
     """
     check_slots(d)
     effs = _effective(d)
@@ -586,6 +626,16 @@ def assign_pins(
 
     swaps: list[tuple[str, int | str, int | str]] = []
     _two_opt(d, m, effs, choice, swaps)
+    last = _prior_choice(d, effs, prior)
+    kept: int | None = None
+    if last is not None:
+        held = list(last)
+        held_m = _model(d, pw, effs, held, proxy)
+        held_swaps: list[tuple[str, int | str, int | str]] = []
+        _two_opt(d, held_m, effs, held, held_swaps)
+        if held_m.crossings <= m.crossings:
+            choice, m, swaps = held, held_m, held_swaps
+        kept = sum(1 for p, q in zip(choice, last, strict=True) if p == q)
 
     by_name: dict[str, tuple[str, int | str]] = {
         str(s.name): (d.parts[s.part], _pin_value(str(d.pin_label[choice[i]])))
@@ -602,6 +652,7 @@ def assign_pins(
         cost_vs_fixed=float(m.crossings - base_m.crossings),
         choice=tuple(choice),
         crossings=m.crossings,
+        prior_kept=kept,
     )
 
 

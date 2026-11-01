@@ -5,6 +5,17 @@ repo (Reto 2026-10-26). Run:  uv run python scratch/taz-leaf/board.py
 -> scratch/taz-leaf/out/{manifest.json,check.txt,batch.json}
 Rev B (taz-leaf-b) is kept as board_b.py.
 
+Scaled board (Reto 2026-11-01, "double the size": 2x each side, seeded
+from taz-leaf-t), three environment knobs on the same run command:
+    TAZ_SCALE=2 TAZ_SEED=out/local-70_export/poses.json TAZ_OUT=out-x2
+TAZ_SCALE scales the leaf about its base: blade, combs, keepouts, zip-hole
+and test-pad positions, part poses. The hanger ring, stalk hole, slit,
+drills and the antenna clearance keep their size (mechanical and RF
+sizes). TAZ_SEED replaces the hand placement with a placed board's poses
+({refdes: {x, y, rot}} in the scale-1 board frame; taz-leaf-t = local-70).
+TAZ_OUT is the output dir under scratch/taz-leaf (compact.py and
+local_loop.py read the same variable).
+
 Rev C (Reto 2026-10-26, review of taz-leaf-b):
   - halves swapped: the combs sit next to the hanger, the electronics hang
     at the tip (heavy end down; antenna farthest from the stalk)
@@ -38,6 +49,7 @@ from __future__ import annotations
 
 import json
 import math
+import os
 import re
 import sys
 from pathlib import Path
@@ -51,17 +63,24 @@ sys.path.insert(0, str(Path(__file__).parent))
 from comb import CombSpec, comb_footprint, leaf_outline  # noqa: E402
 
 HERE = Path(__file__).parent
-SLUG = "taz-leaf-d"  # rev C geometry + sheet groups, first routed run
+OUT = HERE / os.environ.get("TAZ_OUT", "out")
+SCALE = float(os.environ.get("TAZ_SCALE", "1"))
+SEED = os.environ.get("TAZ_SEED")  # placed poses, scale-1 board frame
+SEED_FRAME = (30.0, 30.0)  # (OX, OY) of the scale-1 board the seed came from
+# rev C geometry + sheet groups, first routed run; x2 = the doubled leaf
+SLUG = "taz-leaf-d" if SCALE == 1 else f"taz-leaf-x{SCALE:g}"
 
-LEAF_L, LEAF_W = 110.0, 55.0
-OX, OY = 30.0, 30.0  # leaf frame -> board frame (all positive)
-SENSE_X = (4.0, 48.0)  # combs between these (leaf frame); copper-free root
-ELEC_FROM_X = 50.0
+LEAF_L, LEAF_W = 110.0 * SCALE, 55.0 * SCALE
+SENSE_X = (4.0 * SCALE, 48.0 * SCALE)  # combs between these (leaf frame); copper-free root
+ELEC_FROM_X = 50.0 * SCALE
 RING_C, RING_R, HOLE_R, SLIT_W = (-13.0, 0.0), 15.0, 10.0, 0.8
 SLIT_EXIT = (1.0, 5.45)  # Reto: slit leaves the ring here (leaf frame)
-ZIP_HOLES = ((11.0, 0.0), (103.0, 0.0))  # 5 mm, zip-tie fallback mount
+# 5 mm, zip-tie fallback mount
+ZIP_HOLES = ((11.0 * SCALE, 0.0), (103.0 * SCALE, 0.0))
 ZIP_D, ZIP_KEEP = 5.0, 3.0  # drill, copper-free radius
-ANT_KEEP_X = 93.4  # no inner/bottom copper from here to the tip
+# leaf frame -> board frame (all positive): the ring reaches x = -28, the
+# blade's widest half-width plus 7 mm sets OY (30 at scale 1)
+OX, OY = 30.0, math.ceil(leaf_outline(LEAF_L, LEAF_W).bounds[3]) + 7.0
 
 # nRF52833 QFN40 pins by function (pa520104 Table 63, pc5353448..51; the
 # catalog footprint pin_map C2895249 uses the same names).
@@ -141,6 +160,9 @@ POSE: dict[str, tuple[float, float, float]] = {
     "R30": (88.4, 8.5, 90.0),
     "R31": (89.6, 8.5, 90.0),
 }
+# no inner/bottom copper from here to the tip. The clearance is an antenna
+# size: it follows AE1 (2.1 mm ahead of its centre) and never scales.
+ANT_KEEP_X = 93.4 + POSE["AE1"][0] * (SCALE - 1.0)
 TESTPOINTS = {  # programming pads (program before coating)
     "VSTOR": (90.0, -4.6),
     "GND": (92.0, -4.6),
@@ -214,6 +236,12 @@ def build() -> pcb.Board:
             "dogfood": "td519926",
             "fab": "JLCPCB 4-layer flex, ENIG, 12 um outer copper (3/3 mil combs), ~0.3 mm",
             "frame": f"board = leaf frame + ({OX:g}, {OY:g}); leaf base x=0, midrib y=0",
+            **(
+                {"scale": f"x{SCALE:g} about the leaf base; ring, holes, antenna "
+                 "clearance unscaled"}
+                if SCALE != 1
+                else {}
+            ),
         },
     )
     b.outline(_coords(shape), note="leaf + hanger ring; radial slit from the stalk hole")
@@ -633,7 +661,7 @@ def build() -> pcb.Board:
     # -- programming pads (program before coating; Reto 2026-10-26) -------
     nets = {"VSTOR": vstor, "GND": gnd, "SWDIO": swdio, "SWDCLK": swdclk, "NRESET": nreset}
     for name, (tx, ty) in TESTPOINTS.items():
-        b.testpoint(nets[name], *B(tx, ty))
+        b.testpoint(nets[name], *B(tx * SCALE, ty * SCALE))
 
     # -- schematic sheets: one per group (declarative only; rigid=False
     # stamps nothing — every persisted group is rigid, and a rigid sheet
@@ -649,19 +677,8 @@ def build() -> pcb.Board:
     for name, refs in sheets.items():
         b.group(name, [b._parts[r] for r in refs], rigid=False)
 
-    # -- hand placement: R*/C* passives unlocked in xy, rest fixed ------
-    # legalize.py shoves overlapping courtyards apart into out/pose_legal.json
-    legal = HERE / "out" / "pose_legal.json"
-    pose = dict(POSE)
-    if legal.exists():
-        pose.update({k: tuple(v) for k, v in json.loads(legal.read_text(encoding="utf-8")).items()})
-    # nudges after the first check of the legal poses (real courtyards of AE1
-    # and the 0402 row are a hair bigger than legalize.py's estimates)
-    for ref, (dx, dy) in {"C15": (-0.5, 0.0), "R10": (-0.2, 0.0), "R11": (-0.2, 0.0),
-                          "C40": (-0.2, 0.0), "R12": (-0.2, 0.0), "R13": (-0.2, 0.0),
-                          "C41": (-0.2, 0.0)}.items():
-        px, py, rot = pose[ref]
-        pose[ref] = (px + dx, py + dy, rot)
+    # -- placement: R*/C* passives unlocked in xy, rest fixed -----------
+    pose = seed_pose() if SEED else hand_pose()
     for ref, (px, py, rot) in pose.items():
         # the anneal may slide a passive, never rotate it off the authored
         # quarter turn (fixed='rot' keeps xy free, rotation locked). The
@@ -689,10 +706,48 @@ def build() -> pcb.Board:
              "note": "parts area rigid; rounded ends so the bend spreads"},
         ],
         "tape_mask": {"before": "parylene",
-                      "regions": ["SNS1 (leaf x 4..48, y>0)", "U3 SHT40 opening",
+                      "regions": [f"SNS1 (leaf x {SENSE_X[0]:g}..{SENSE_X[1]:g}, y>0)",
+                        "U3 SHT40 opening",
                                   "PV1 face", "test pads"]},
     }
     return b
+
+
+def hand_pose() -> dict[str, tuple[float, float, float]]:
+    """The hand placement (leaf frame), scaled about the leaf base: POSE,
+    overlaid by legalize.py's out/pose_legal.json (it shoves overlapping
+    courtyards apart), then the post-check nudges."""
+    legal = HERE / "out" / "pose_legal.json"
+    pose = dict(POSE)
+    if legal.exists():
+        pose.update({k: tuple(v) for k, v in json.loads(legal.read_text(encoding="utf-8")).items()})
+    # nudges after the first check of the legal poses (real courtyards of AE1
+    # and the 0402 row are a hair bigger than legalize.py's estimates)
+    for ref, (dx, dy) in {"C15": (-0.5, 0.0), "R10": (-0.2, 0.0), "R11": (-0.2, 0.0),
+                          "C40": (-0.2, 0.0), "R12": (-0.2, 0.0), "R13": (-0.2, 0.0),
+                          "C41": (-0.2, 0.0)}.items():
+        px, py, rot = pose[ref]
+        pose[ref] = (px + dx, py + dy, rot)
+    return {k: (x * SCALE, y * SCALE, r) for k, (x, y, r) in pose.items()}
+
+
+def seed_pose() -> dict[str, tuple[float, float, float]]:
+    """A placed board's poses (TAZ_SEED, {refdes: {x, y, rot}} in the
+    scale-1 board frame) moved to the leaf frame and scaled about the leaf
+    base. Fixed parts never move, so the seed's AE1 must sit where POSE
+    puts it — ANT_KEEP_X follows that spot."""
+    assert SEED is not None
+    rows = json.loads((HERE / SEED).read_text(encoding="utf-8"))
+    sx, sy = SEED_FRAME
+    pose = {
+        ref: ((r["x"] - sx) * SCALE, (r["y"] - sy) * SCALE, float(r["rot"] or 0.0))
+        for ref, r in rows.items()
+    }
+    missing = sorted(set(POSE) - set(pose))
+    assert not missing, f"seed {SEED} lacks poses for {missing}"
+    ae1_x = pose["AE1"][0]
+    assert abs(ae1_x - POSE["AE1"][0] * SCALE) < 1e-6, f"seed AE1 x {ae1_x} moved"
+    return pose
 
 
 def _translate_pts(pts: list, dx: float, dy: float) -> None:
@@ -728,7 +783,8 @@ def to_quadrant(batch: dict) -> dict:
 
 if __name__ == "__main__":
     board = build()
-    out = HERE / "out"
+    out = OUT
+    out.mkdir(parents=True, exist_ok=True)
     pcb.run(board, out)
     batch = to_quadrant(board.to_batch())
     o = next(f for f in batch["features"] if f["ftype"] == "outline")["geom"]["path"]

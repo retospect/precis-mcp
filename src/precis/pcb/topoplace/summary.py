@@ -310,13 +310,16 @@ def render_summary(
             f"{float(np.percentile(costs, 90)):.4f}); best cost "
             f"{result.best_cost:.4f}"
         )
-    frac = result.last_improve_eval / max(result.evals, 1)
-    verdict = (
-        "more effort won't help"
-        if frac < 0.75
-        else "still improving at the cutoff — more effort may help"
-    )
-    lines.append(f"plateau: last improvement {frac:.0%} of evals — {verdict}")
+    if result.kept_start:
+        lines.append("plateau: no pose beat the stored placement — kept it")
+    else:
+        frac = result.last_improve_eval / max(result.evals, 1)
+        verdict = (
+            "more effort won't help"
+            if frac < 0.75
+            else "still improving at the cutoff — more effort may help"
+        )
+        lines.append(f"plateau: last improvement {frac:.0%} of evals — {verdict}")
     stable, undetermined = _agreement(d, result)
     tail = ", ".join(undetermined[:8])
     if len(undetermined) > 8:
@@ -348,6 +351,11 @@ def render_summary(
         lines += [f"  {e.text}: {e.delta:+d} crossings" for e in edits]
     if d.flex or d.claims or assignment.swaps:
         lines.append(summary_table(d, assignment).rstrip("\n"))
+    if assignment.prior_kept is not None:
+        lines.append(
+            f"flex pins: {assignment.prior_kept}/{len(d.flex)} kept from the "
+            "last run (a pin moves only when that drops crossings)"
+        )
     return "\n".join(lines) + "\n"
 
 

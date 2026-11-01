@@ -708,6 +708,32 @@ def test_determinism_same_seed_identical_elites_json() -> None:
     assert (a.best_pose == b.best_pose).all()
 
 
+def test_replace_never_ends_worse_than_the_stored_placement() -> None:
+    """gr520372: a re-place starts from the stored placement, and that
+    pose is the one to beat. The incumbent race used to rank only
+    post-move poses, and the shove/legalize settle could cost the
+    winner its edge, so a short run could return (and the job write) a
+    placement worse than the board already had — 3 of these 8 seeds did
+    (952, 951, 954 crossings over a stored 950). A strong stored pose (a
+    settled 3000-eval result) re-placed at a small effort must come back
+    no worse on (crossings, cost); when nothing beat it the result says
+    it kept the start."""
+    import dataclasses
+
+    d, _inst, _nets = synth_design(seed=2)
+    stored = topo_place(d, objective=W, effort=3000, seed=0).best_pose
+    d2 = dataclasses.replace(d, pose0=stored)
+    start = ProxyState(d2, stored, W)
+    kept = 0
+    for seed in range(8):
+        res = topo_place(d2, objective=W, effort=200, seed=seed)
+        assert res.crossings <= start.crossings, seed
+        if res.crossings == start.crossings:
+            assert res.best_cost <= start.cost + 1e-9, seed
+        kept += res.kept_start
+    assert kept, "no small run kept the strong stored pose"
+
+
 def test_topo_place_event_reports_restarts() -> None:
     """gr513870's per-round progress: an ``event`` sink gets one line
     per anneal restart plus the closing line — a silent default keeps

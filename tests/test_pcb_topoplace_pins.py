@@ -393,6 +393,78 @@ def test_requirement_filters_rated_pins() -> None:
     assert a.by_name["PWR"] == ("U1", 2)  # pin 1 under-rated
 
 
+def _two_slot_design() -> TopoDesign:
+    """``test_2opt_never_raises_and_helps``'s board: TOP wants the upper
+    J1 pin, BOT the lower; TOP on U1.2 and BOT on U1.1 cross nothing."""
+    return _design(
+        parts=("U1", "J1"),
+        pin_xy=[[0, 0], [0, 1], [10, 0], [10, 1]],
+        pin_part=[0, 0, 1, 1],
+        pin_label=["1", "2", "1", "2"],
+        pin_net=[-1, -1, 0, 1],
+        flex=(_slot(0, [0, 1], 0, "TOP"), _slot(0, [0, 1], 1, "BOT")),
+        decl_nets=([3], [2]),
+        decl_net_ir=[0, 1],
+        decl_net_name=("A", "B"),
+        pose0=[[0, 0, 0, 0], [10, 0, 0, 0]],
+    )
+
+
+def test_prior_pin_stays_when_moving_buys_no_crossing() -> None:
+    """gr520372: a re-place keeps the last run's slot pin unless moving
+    it drops crossings. One slot, three candidates, one wire — every
+    pick crosses nothing, so the prior holds wherever the fresh solve
+    would have gone."""
+    d = _design(
+        parts=("U1", "J1"),
+        pin_xy=[[0, 0], [0, 1], [0, 2], [10, 0]],
+        pin_part=[0, 0, 0, 1],
+        pin_label=["1", "2", "3", "1"],
+        pin_net=[-1, -1, -1, 0],
+        flex=(_slot(0, [0, 1, 2], 0, "SIG"),),
+        decl_nets=([3],),
+        decl_net_ir=[0],
+        decl_net_name=("SIG",),
+        pose0=[[0, 0, 0, 0], [10, 0, 0, 0]],
+    )
+    fresh = assign_pins(d, d.pose0)
+    assert fresh.prior_kept is None
+    other = next(p for p in (0, 1, 2) if p != fresh.choice[0])
+    label = str(d.pin_label[other])
+    a = assign_pins(d, d.pose0, prior={("U1", label): "SIG"})
+    assert a.by_name["SIG"] == ("U1", int(label))
+    assert a.choice == (other,)
+    assert a.prior_kept == 1
+    assert a.crossings == fresh.crossings
+
+
+def test_prior_pins_yield_when_moving_drops_a_crossing() -> None:
+    """A prior that crosses its own wires is not worth keeping: the
+    re-solve lands on the crossing-free answer and reports no slot kept."""
+    d = _two_slot_design()
+    fresh = assign_pins(d, d.pose0)
+    assert _crosses(_added_wires(d, fresh, _world(d))) == 0
+    a = assign_pins(d, d.pose0, prior={("U1", "1"): "A", ("U1", "2"): "B"})
+    assert a.choice == fresh.choice
+    assert _crosses(_added_wires(d, a, _world(d))) == 0
+    assert a.prior_kept == 0
+
+
+def test_partial_or_stale_prior_is_ignored() -> None:
+    """A prior that does not cover every slot (the netlist changed), or
+    names a pin on another net, seeds nothing: the fresh solve stands."""
+    d = _two_slot_design()
+    fresh = assign_pins(d, d.pose0)
+    for prior in (
+        {("U1", "1"): "A"},
+        {("U1", "1"): "B", ("U1", "2"): "C"},
+        {("U9", "1"): "A", ("U9", "2"): "B"},
+    ):
+        a = assign_pins(d, d.pose0, prior=prior)
+        assert a.choice == fresh.choice, prior
+        assert a.prior_kept is None, prior
+
+
 def test_pins_h_one_define_per_name_and_determinism() -> None:
     """``pins.h`` carries one ``#define <NAME>_PIN`` per name and a
     rerun gives the same bytes (Decisions 14, 22)."""

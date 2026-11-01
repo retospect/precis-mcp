@@ -27,7 +27,9 @@ resolved-netlist snapshot (``pcb_netlist_snapshots``; entries tagged
 route stage, exports — lays over the authored graph. Derived, never
 authored ``pcb_netconns``: the next topo run releases those entries and
 re-solves every slot, so a wired pin neither freezes its slot nor
-starves another slot of a candidate.
+starves another slot of a candidate. The released pins still seed that
+solve: a slot keeps its last pin unless moving drops crossings
+(gr520372 — the firmware pin map stays put across re-places).
 
 Runs under the ``job_inproc`` executor (bounded, in-process — mirrors
 ``embed_batch``'s dispatch shape verbatim).
@@ -210,6 +212,17 @@ def _has_topo_slots(snapshot: dict[str, Any] | None) -> bool:
     )
 
 
+def _topo_slot_prior(snapshot: dict[str, Any] | None) -> dict[tuple[str, str], str]:
+    """The previous topo run's flex-slot bindings, ``(refdes, pin) ->
+    net`` — the pins the re-solve keeps unless moving drops crossings
+    (gr520372)."""
+    return {
+        (str(e["refdes"]), str(e["pin"])): str(e["net"])
+        for e in (snapshot or {}).get("pins") or []
+        if e.get("source") == _TOPO_SLOT_SOURCE and e.get("net")
+    }
+
+
 def _wire_slots(ir: PcbIR, td: Any, assignment: Any) -> list[tuple[str, str, str]]:
     """Fold the solver's flex-slot choices into ``ir.pin_net``: each
     chosen pin joins its slot's declared net, so the route stage's
@@ -315,6 +328,7 @@ def _topo_run(
     hole_margin_mm: float | None = None,
     gate: Any = None,
     errors_before: int | None = None,
+    slot_prior: dict[tuple[str, str], str] | None = None,
 ) -> (
     tuple[
         Any,
@@ -333,8 +347,12 @@ def _topo_run(
     back into ``ir`` so the shared gate/ripup/``pcb_set_pose`` tail
     below measures and writes it like an anneal result. ``measures``
     are the design's stored ``pcb_measures`` rows — they live beside
-    the graph, never in it. Returns ``(result, files, summary,
-    side_changes, label_spots, diverged, slot_wiring)`` —
+    the graph, never in it; ``slot_prior`` the last run's slot pins
+    (:func:`_topo_slot_prior`), kept unless moving drops crossings.
+    Returns ``(result, files, summary, side_changes, label_spots,
+    diverged, slot_wiring)`` — ``diverged`` the job-summary note for a
+    committed fallback or a kept stored placement ("" when the anneal's
+    own best stands);
     ``label_spots`` the refdes → LABEL_SPOT_ORDER pin each part's
     refdes label should try first
     (:func:`precis.pcb.topoplace.label_spots_for`), persisted by the
@@ -412,7 +430,13 @@ def _topo_run(
                 crossings=int(scored.crossings),
                 length=float(scored.length),
             )
-        assignment = _tp.assign_pins(td, result.best_pose)
+        elif result.kept_start:
+            # gr520372: say so when the re-place wrote back what the
+            # board already had rather than a worse pose.
+            diverged = (
+                "no anneal pose beat the stored placement — kept it (settled)\n\n"
+            )
+        assignment = _tp.assign_pins(td, result.best_pose, prior=slot_prior)
     except PinConflict as exc:
         ctx.record_failure(str(exc))
         return None
@@ -1684,6 +1708,7 @@ def _dispatch(ctx: DispatchContext, spec: JobTypeSpec) -> None:
             # anyway" escape — the elite fallback must not preempt it.
             gate=_gate_topo_pose if not force else None,
             errors_before=errors_before,
+            slot_prior=_topo_slot_prior(netlist_snapshot),
         )
         if topo_out is None:  # PinConflict already recorded
             return
