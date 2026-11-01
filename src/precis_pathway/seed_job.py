@@ -450,7 +450,7 @@ def _job_stamped(ctx: Any) -> bool:
     return bool(row and row[0])
 
 
-def _harvest_scratch(ctx: Any, handle: Any) -> int:
+def _harvest_scratch(ctx: Any, handle: Any) -> tuple[int, list[str]]:
     """Salvage whatever the child left under ``<scratch>/checkpoints/``
     before the dir is reaped (gr543776 item 2): a killed or failed seed
     returns nothing, so its finished relaxes and NEB bands only ever
@@ -458,15 +458,20 @@ def _harvest_scratch(ctx: Any, handle: Any) -> int:
     artifact store. Filenames already recorded on the job (the succeeded
     path wrote the same artifacts from the result envelope) are skipped,
     so a re-reap stays idempotent; meta is re-read fresh because
-    ``ctx.meta`` is the claim-time snapshot."""
+    ``ctx.meta`` is the claim-time snapshot.
+
+    Returns ``(n_kept, failed)`` — every file that could not be read or
+    recorded lands in ``failed``; :func:`_reap_scratch` keeps the dir
+    whenever it is non-empty rather than deleting a measurement's only
+    copy."""
     from precis.store import job_artifacts
 
     scratch_dir = (handle or {}).get("dir")
     if not scratch_dir:
-        return 0
+        return 0, []
     ckpt = os.path.join(scratch_dir, "checkpoints")
     if not os.path.isdir(ckpt):
-        return 0
+        return 0, []
     with ctx.store.pool.connection() as conn:
         row = conn.execute(
             "SELECT meta->'artifacts' FROM refs WHERE ref_id = %s", (ctx.ref_id,)
@@ -477,14 +482,21 @@ def _harvest_scratch(ctx: Any, handle: Any) -> int:
         if isinstance(a, dict)
     }
     n = 0
+    failed: list[str] = []
     for fname in sorted(os.listdir(ckpt)):
         fpath = os.path.join(ckpt, fname)
-        if fname in existing or not os.path.isfile(fpath) or os.path.islink(fpath):
+        if (
+            fname.endswith(".tmp")  # keep._record's atomic-write scratch
+            or fname in existing
+            or not os.path.isfile(fpath)
+            or os.path.islink(fpath)
+        ):
             continue
         try:
             with open(fpath, "rb") as fh:
                 data = fh.read()
         except OSError:
+            failed.append(fname)
             continue
         try:
             with ctx.store.pool.connection() as conn:
@@ -497,12 +509,13 @@ def _harvest_scratch(ctx: Any, handle: Any) -> int:
                 fname,
                 exc_info=True,
             )
+            failed.append(fname)
     if n:
         ctx.append_chunk(
             "job_event",
             f"autocatpath_seed: harvested {n} artifact(s) from the scratch dir",
         )
-    return n
+    return n, failed
 
 
 def _reap_scratch(ctx: Any, handle: Any, *, failed: bool) -> None:
@@ -514,7 +527,8 @@ def _reap_scratch(ctx: Any, handle: Any, *, failed: bool) -> None:
     Before the delete, harvest the child's ``checkpoints/`` into the job
     artifact store (gr543776) and drain this job's local spool toward the
     shared root — the ruling's "keep them locally and move them in the
-    job's cleanup step"."""
+    job's cleanup step". Any file the harvest could not land keeps the
+    dir: deleting it would discard a measurement's only copy."""
     from precis_pathway import scratch
 
     if not _job_stamped(ctx):
@@ -524,16 +538,26 @@ def _reap_scratch(ctx: Any, handle: Any, *, failed: bool) -> None:
             (handle or {}).get("dir"),
         )
         return
+    missed: list[str] = []
     try:
-        _harvest_scratch(ctx, handle)
+        _kept, missed = _harvest_scratch(ctx, handle)
     except Exception:
         log.warning("autocatpath_seed: scratch harvest failed", exc_info=True)
+        missed = ["<harvest raised>"]
     try:
         from precis.store import job_artifacts
 
         job_artifacts.drain_spool(ctx.ref_id)
     except Exception:
         log.warning("autocatpath_seed: spool drain failed", exc_info=True)
+    if missed:
+        log.warning(
+            "autocatpath_seed: keeping %s — %d checkpoint file(s) not harvested: %s",
+            (handle or {}).get("dir"),
+            len(missed),
+            ", ".join(missed[:5]),
+        )
+        return
     scratch.finalize_seed_partial_detached(handle, failed=failed)
 
 

@@ -20,10 +20,16 @@ This is the small helper every job_type that keeps artifacts shares:
 :func:`precis.workers.executors._sandbox_harvest.artifact_root` uses, so a
 host whose ``~/work`` IS the NAS mount keeps both stores under it with no
 extra config; the ops play points the var at the NAS mount on nodes where
-it differs. **Fallback** (Reto: "if this process may not write to nas,
-keep them locally and move them in the job's cleanup step"): a root that
-does not exist — the mount is absent, an empty shadow dir must never be
-created over it — or that refuses the write lands the file under
+it differs. A root counts as *present* only when it is a mountpoint
+(``os.path.ismount``) or carries the sentinel file
+``.precis-artifact-root``: an empty unmounted mountpoint's plain dir must
+never be written into — that creates a local shadow dir that silently
+eats the artifacts the mount was meant to hold (hidden again once the
+share remounts), which is exactly the failure the spool exists for. Ops
+touches the sentinel in the shared dir when activating the lane.
+**Fallback** (Reto: "if this process may not write to nas, keep them
+locally and move them in the job's cleanup step"): a root that is absent,
+unsentined, or refuses the write lands the file under
 ``PRECIS_JOB_ARTIFACT_SPOOL`` (default
 ``~/.cache/precis/job-artifacts-spool``) instead, records the entry with
 ``"spooled": true``, and logs a warning. The relative ``path`` is
@@ -53,6 +59,9 @@ ARTIFACT_SUBDIR = "job-artifacts"
 _ROOT_ENV = "PRECIS_JOB_ARTIFACT_ROOT"
 _SPOOL_ENV = "PRECIS_JOB_ARTIFACT_SPOOL"
 _DEFAULT_SPOOL = Path("~/.cache/precis/job-artifacts-spool")
+
+#: Marks a directory as a real artifact root (see :func:`_root_writable`).
+SENTINEL = ".precis-artifact-root"
 
 _SAFE_NAME_RE = re.compile(r"[^A-Za-z0-9._-]+")
 
@@ -120,6 +129,10 @@ def _write_bytes(root: Path, rel: Path, data: bytes) -> Path:
     try:
         with os.fdopen(fd, "wb") as fh:
             fh.write(data)
+        # mkstemp is 0600; artifacts are shared files other hosts read
+        # over the mount — make them world-readable like every other
+        # corpus sibling.
+        os.chmod(tmp, 0o644)
         os.replace(tmp, dest)
     except BaseException:
         try:
@@ -131,12 +144,16 @@ def _write_bytes(root: Path, rel: Path, data: bytes) -> Path:
 
 
 def _root_writable(root: Path) -> bool:
-    """The root must EXIST before we write under it: ``mkdir`` on an
-    absent NAS mountpoint would create a shadow dir on the local disk and
-    silently eat the artifacts the mount was meant to hold (hidden again
-    once the share remounts). Subdirs beneath an existing root are fine
-    to create."""
-    return root.is_dir()
+    """The root must be a real mount or sentinel-marked before we write
+    under it. A bare ``is_dir`` is not enough: an unmounted NAS
+    mountpoint IS a directory — just an empty local one — and writing
+    into it creates a shadow dir that silently eats the artifacts the
+    mount was meant to hold (and never ``mkdir`` the root itself, for
+    the same reason). ``os.path.ismount`` covers mounted roots; the
+    :data:`SENTINEL` file covers a shared dir that is genuinely local
+    (dev hosts, ``~/work``) and opted in by ops. Subdirs beneath an
+    accepted root are fine to create."""
+    return root.is_dir() and (os.path.ismount(root) or (root / SENTINEL).is_file())
 
 
 def write_artifact(
@@ -189,6 +206,10 @@ def write_artifact(
     }
     if spooled:
         entry["spooled"] = True
+    # Append-only by (name, sha256): a retried harvest/dispatch lands the
+    # same payload under the same logical name — the EXISTS guard keeps a
+    # retry from duplicating the row while a same-name-different-bytes
+    # write (a re-run's band) still records its own entry and path.
     conn.execute(
         """
         UPDATE refs
@@ -196,11 +217,19 @@ def write_artifact(
                    meta, '{artifacts}',
                    (CASE WHEN jsonb_typeof(meta->'artifacts') = 'array'
                          THEN meta->'artifacts'
-                         ELSE '[]'::jsonb END) || %s::jsonb,
+                         ELSE '[]'::jsonb END)
+                   || CASE WHEN EXISTS (
+                           SELECT 1 FROM jsonb_array_elements(
+                               CASE WHEN jsonb_typeof(meta->'artifacts') = 'array'
+                                    THEN meta->'artifacts'
+                                    ELSE '[]'::jsonb END) AS e
+                           WHERE e.value->>'name' = %s
+                             AND e.value->>'sha256' = %s)
+                       THEN '[]'::jsonb ELSE %s::jsonb END,
                    true)
          WHERE ref_id = %s
         """,
-        (Jsonb(entry), ref_id),
+        (name, sha, Jsonb(entry), ref_id),
     )
     return entry
 
@@ -219,16 +248,22 @@ def read_artifact(
     root = root if root is not None else artifact_root()
     spool = spool if spool is not None else spool_root()
     rel = Path(str(entry["path"]))
+    saw_file = False
     for base in (root, spool):
         cand = base / rel
-        if cand.is_file():
-            data = cand.read_bytes()
-            sha = entry.get("sha256")
-            if sha and hashlib.sha256(data).hexdigest() != sha:
-                raise ValueError(
-                    f"artifact {entry.get('name')}: sha256 mismatch at {cand}"
-                )
-            return data
+        if not cand.is_file():
+            continue
+        data = cand.read_bytes()
+        sha = entry.get("sha256")
+        if sha and hashlib.sha256(data).hexdigest() != sha:
+            # Wrong content under this root — a same-name sibling, not
+            # this artifact. Keep looking: the recorded path resolves
+            # under the spool for an entry never drained.
+            saw_file = True
+            continue
+        return data
+    if saw_file:
+        raise ValueError(f"artifact {entry.get('name')}: sha256 mismatch at {rel}")
     raise FileNotFoundError(f"artifact {entry.get('name')}: no {rel} under {root}")
 
 
@@ -258,9 +293,18 @@ def drain_spool(
         try:
             dest.parent.mkdir(parents=True, exist_ok=True)
             if dest.exists() and _sha256_file(dest) != _sha256_file(src):
-                # Same name, different content — keep both rather than
-                # lose a recorded byte stream.
-                dest = dest.with_name(f"{dest.stem}-moved{dest.suffix}")
+                # Same recorded path, different bytes — a move would
+                # either clobber the root file or rename this one out
+                # from under its meta entry. Leave it in the spool:
+                # the recorded path still resolves to THIS file's
+                # content through read_artifact's spool fallback.
+                log.warning(
+                    "job_artifacts: drain of %s kept in spool — %s already "
+                    "holds different content",
+                    src,
+                    dest,
+                )
+                continue
             shutil.move(str(src), str(dest))
             moved += 1
         except OSError as exc:

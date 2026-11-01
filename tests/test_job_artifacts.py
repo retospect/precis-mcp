@@ -27,10 +27,17 @@ class _FakeConn:
         return None
 
 
+def _root(path: Path) -> Path:
+    """An accepted artifact root: exists AND sentinel-marked (a plain tmp
+    dir is never a mount)."""
+    path.mkdir()
+    (path / job_artifacts.SENTINEL).touch()
+    return path
+
+
 def test_write_artifact_records_entry_and_round_trips(tmp_path: Path) -> None:
     conn = _FakeConn()
-    root = tmp_path / "nas"
-    root.mkdir()
+    root = _root(tmp_path / "nas")
     data = b"extxyz-bytes"
 
     entry = job_artifacts.write_artifact(conn, 42, "band-CO.extxyz", data, root=root)
@@ -43,12 +50,14 @@ def test_write_artifact_records_entry_and_round_trips(tmp_path: Path) -> None:
     assert (root / entry["path"]).read_bytes() == data
     assert len(conn.calls) == 1 and "jsonb_set" in conn.calls[0][0]
     assert job_artifacts.read_artifact(entry, root=root) == data
+    import stat as _stat
+
+    assert _stat.S_IMODE((root / entry["path"]).stat().st_mode) == 0o644
 
 
 def test_same_name_different_bytes_never_overwrites(tmp_path: Path) -> None:
     conn = _FakeConn()
-    root = tmp_path / "nas"
-    root.mkdir()
+    root = _root(tmp_path / "nas")
     e1 = job_artifacts.write_artifact(conn, 7, "b.extxyz", b"one", root=root)
     e2 = job_artifacts.write_artifact(conn, 7, "b.extxyz", b"two", root=root)
     e3 = job_artifacts.write_artifact(conn, 7, "b.extxyz", b"one", root=root)
@@ -73,16 +82,52 @@ def test_unwritable_root_spools_and_drain_moves(tmp_path: Path) -> None:
         job_artifacts.read_artifact(entry, root=missing_root, spool=spool) == b"saddle"
     )
 
-    missing_root.mkdir()  # the mount comes up
+    missing_root.mkdir()  # the mount dir appears but is not sentinel-marked
+    assert job_artifacts.drain_spool(9, root=missing_root, spool=spool) == 0
+    (missing_root / job_artifacts.SENTINEL).touch()  # marked = usable root
     assert job_artifacts.drain_spool(9, root=missing_root, spool=spool) == 1
     assert (missing_root / entry["path"]).read_bytes() == b"saddle"
     assert not (spool / entry["path"]).exists()
 
 
-def test_read_artifact_verifies_sha256(tmp_path: Path) -> None:
+def test_unsentined_root_spools_instead_of_shadowing(tmp_path: Path) -> None:
+    """An empty unmounted mountpoint is a directory — but it is not the
+    NAS. Without the sentinel the write must fall back to the spool."""
+    conn = _FakeConn()
+    bare = tmp_path / "mountpoint"
+    bare.mkdir()  # exists, no sentinel, not a mount
+    spool = tmp_path / "spool"
+    entry = job_artifacts.write_artifact(
+        conn, 11, "b.extxyz", b"x", root=bare, spool=spool
+    )
+    assert entry["spooled"] is True
+    assert not (bare / "job-artifacts").exists()
+    assert (spool / entry["path"]).is_file()
+
+
+def test_drain_conflict_keeps_spool_and_read_still_resolves(tmp_path: Path) -> None:
     conn = _FakeConn()
     root = tmp_path / "nas"
-    root.mkdir()
+    spool = tmp_path / "spool"
+    entry = job_artifacts.write_artifact(
+        conn, 12, "c.extxyz", b"spooled-bytes", root=root, spool=spool
+    )
+    assert entry["spooled"] is True
+    _root(root)
+    # a DIFFERENT artifact already occupies the recorded path on the root
+    (root / entry["path"]).parent.mkdir(parents=True, exist_ok=True)
+    (root / entry["path"]).write_bytes(b"other-bytes")
+    assert job_artifacts.drain_spool(12, root=root, spool=spool) == 0
+    # the spool file stayed, and the recorded path resolves to ITS bytes
+    assert (spool / entry["path"]).is_file()
+    assert (
+        job_artifacts.read_artifact(entry, root=root, spool=spool) == b"spooled-bytes"
+    )
+
+
+def test_read_artifact_verifies_sha256(tmp_path: Path) -> None:
+    conn = _FakeConn()
+    root = _root(tmp_path / "nas")
     entry = job_artifacts.write_artifact(conn, 3, "b.extxyz", b"data", root=root)
     (root / entry["path"]).write_bytes(b"tampered")
     with pytest.raises(ValueError, match="sha256 mismatch"):
@@ -110,8 +155,7 @@ def _artifacts(store: Any, ref_id: int) -> list[dict[str, Any]]:
 
 def test_write_artifact_appends_meta_artifacts(store: Any, tmp_path: Path) -> None:
     ref_id = _mk_job(store)
-    root = tmp_path / "nas"
-    root.mkdir()
+    root = _root(tmp_path / "nas")
     with store.pool.connection() as conn:
         e1 = job_artifacts.write_artifact(conn, ref_id, "a.extxyz", b"a", root=root)
         e2 = job_artifacts.write_artifact(conn, ref_id, "b.json", b"{}", root=root)
@@ -119,6 +163,21 @@ def test_write_artifact_appends_meta_artifacts(store: Any, tmp_path: Path) -> No
     got = _artifacts(store, ref_id)
     assert [a["name"] for a in got] == ["a.extxyz", "b.json"]
     assert got[0]["sha256"] == e1["sha256"] and got[1]["path"] == e2["path"]
+
+
+def test_meta_artifacts_dedupes_by_name_and_sha(store: Any, tmp_path: Path) -> None:
+    """A retried write of the same payload must not append a duplicate
+    entry; a same-name write with different bytes records its own."""
+    ref_id = _mk_job(store)
+    root = _root(tmp_path / "nas")
+    with store.pool.connection() as conn:
+        job_artifacts.write_artifact(conn, ref_id, "a.extxyz", b"a", root=root)
+        job_artifacts.write_artifact(conn, ref_id, "a.extxyz", b"a", root=root)
+        job_artifacts.write_artifact(conn, ref_id, "a.extxyz", b"other", root=root)
+        conn.commit()
+    got = _artifacts(store, ref_id)
+    assert [a["name"] for a in got] == ["a.extxyz", "a.extxyz"]
+    assert len({a["sha256"] for a in got}) == 2
 
 
 def test_reap_scratch_harvests_failed_seed_checkpoints(
@@ -143,8 +202,8 @@ def test_reap_scratch_harvests_failed_seed_checkpoints(
     ckpt.mkdir(parents=True)
     (ckpt / "band-s1.extxyz").write_bytes(b"band")
     (ckpt / "relax-R.extxyz").write_bytes(b"relax")
-    root = tmp_path / "nas"
-    root.mkdir()
+    (ckpt / "band-s1.extxyz.tmp").write_bytes(b"torn")  # never harvested
+    root = _root(tmp_path / "nas")
     monkeypatch.setenv("PRECIS_JOB_ARTIFACT_ROOT", str(root))
 
     seed_job._reap_scratch(ctx, {"dir": str(scratch)}, failed=True)
@@ -153,6 +212,52 @@ def test_reap_scratch_harvests_failed_seed_checkpoints(
     assert names == {"band-s1.extxyz", "relax-R.extxyz"}
     assert (root / f"job-artifacts/{ref_id}/band-s1.extxyz").is_file()
     assert not scratch.exists()  # reaped after the harvest
+
+
+def test_reap_scratch_keeps_dir_when_harvest_fails(
+    store: Any,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A checkpoint file that cannot be landed must keep the scratch dir
+    — deleting it would discard a measurement's only copy."""
+    from precis.store import job_artifacts as ja
+    from precis.workers.executors import _common, claude_inproc
+    from precis_pathway import seed_job
+
+    ref_id = _mk_job(store)
+    meta = {"executor": "ssh_node", "params": {}}
+    _common.set_status(store, ref_id, "failed")
+    ctx = claude_inproc._build_dispatch_context(store, ref_id, "t", meta)
+
+    temp_root = tmp_path / "tmp"
+    temp_root.mkdir()
+    monkeypatch.setattr(tempfile, "gettempdir", lambda: str(temp_root))
+    scratch = temp_root / "autocatpath-seed-x2"
+    ckpt = scratch / "checkpoints"
+    ckpt.mkdir(parents=True)
+    (ckpt / "band-s1.extxyz").write_bytes(b"band")
+    root = _root(tmp_path / "nas")
+    monkeypatch.setenv("PRECIS_JOB_ARTIFACT_ROOT", str(root))
+
+    real_write = ja.write_artifact
+
+    def _boom(conn: Any, rid: int, name: str, data: bytes, **kw: Any) -> Any:
+        raise OSError("disk full")
+
+    monkeypatch.setattr(ja, "write_artifact", _boom)
+
+    seed_job._reap_scratch(ctx, {"dir": str(scratch)}, failed=True)
+
+    assert scratch.exists()  # kept, not deleted
+    assert "not" in caplog.text and "harvested" in caplog.text
+    assert not _artifacts(store, ref_id)
+
+    monkeypatch.setattr(ja, "write_artifact", real_write)
+    seed_job._reap_scratch(ctx, {"dir": str(scratch)}, failed=True)
+    assert not scratch.exists()  # a clean re-reap finishes the job
+    assert {a["name"] for a in _artifacts(store, ref_id)} == {"band-s1.extxyz"}
 
 
 def test_harvest_skips_names_already_recorded(
@@ -164,8 +269,7 @@ def test_harvest_skips_names_already_recorded(
     from precis_pathway import seed_job
 
     ref_id = _mk_job(store)
-    root = tmp_path / "nas"
-    root.mkdir()
+    root = _root(tmp_path / "nas")
     monkeypatch.setenv("PRECIS_JOB_ARTIFACT_ROOT", str(root))
     with store.pool.connection() as conn:
         job_artifacts.write_artifact(conn, ref_id, "band-s1.extxyz", b"band", root=root)
@@ -177,8 +281,8 @@ def test_harvest_skips_names_already_recorded(
     (ckpt / "ts-s1.extxyz").write_bytes(b"ts")
 
     ctx = claude_inproc._build_dispatch_context(store, ref_id, "t", {})
-    n = seed_job._harvest_scratch(ctx, {"dir": str(ckpt.parent)})
+    n, missed = seed_job._harvest_scratch(ctx, {"dir": str(ckpt.parent)})
 
-    assert n == 1
+    assert n == 1 and missed == []
     names = [a["name"] for a in _artifacts(store, ref_id)]
     assert names == ["band-s1.extxyz", "ts-s1.extxyz"]
