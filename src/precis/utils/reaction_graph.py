@@ -129,7 +129,8 @@ def rate_limiting(
 def energetic_span(graph: dict[str, Any], root: str, target: str) -> float | None:
     """Whole-path apparent barrier: the biggest climb from any intermediate to
     any *later* transition state along the path (Kozuch–Shaik energetic span).
-    Can exceed every single-step Eₐ when a deep well precedes a high TS."""
+    Can exceed every single-step Eₐ when a deep well precedes a high TS.
+    Unavailable if any reaction barrier on the path is unknown."""
     path = reaction_path(graph, root, target)
     if len(path) < 2:
         return None
@@ -140,7 +141,13 @@ def energetic_span(graph: dict[str, Any], root: str, target: str) -> float | Non
     for i, (a, b) in enumerate(pairwise(path)):
         e = _edge(graph, a, b)
         # supply bridges carry no barrier — no extra climb at that step.
-        ea = 0.0 if (e is None or _is_supply(e)) else finite_or(e.get("barrier"))
+        ea = (
+            0.0
+            if _is_supply(e)
+            else _finite_or_none(e.get("barrier") if e is not None else None)
+        )
+        if ea is None:
+            return None
         ts_energy = state_e[i] + ea  # cumulative TS height
         min_state = min(min_state, state_e[i])
         span = max(span, ts_energy - min_state)

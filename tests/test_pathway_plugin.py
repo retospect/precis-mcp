@@ -1088,7 +1088,11 @@ def test_analysis_over_computed_graph() -> None:
     assert rl and rl["ea"] is not None and "→" in rl["step"]
 
     span = analysis.energetic_span(g, root, target)
-    assert span is not None and span >= 0.0
+    path, cols = analysis.profile_positions(g, root, target)
+    if any(c["kind"] == "ts" and c["value"] is None for c in cols):
+        assert span is None
+    else:
+        assert span is not None and span >= 0.0
 
     ranked = analysis.barriers_ranked(g)
     eas = [r["ea"] for r in ranked]
@@ -1097,7 +1101,6 @@ def test_analysis_over_computed_graph() -> None:
     finite = [e for e in eas if e is not None and not math.isnan(e)]
     assert eas[: len(finite)] == sorted(finite, reverse=True)
 
-    path, cols = analysis.profile_positions(g, root, target)
     assert path and cols[0]["kind"] == "state"
     assert any(c["kind"] == "ts" for c in cols)  # ≥1 barrier column on the path
 

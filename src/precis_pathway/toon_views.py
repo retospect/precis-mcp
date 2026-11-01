@@ -698,9 +698,9 @@ def analysis_text(meta: dict[str, Any], *, U: float | None = None) -> str:
                 "  → spread exceeds tolerance; escalate this step's fidelity "
                 "before trusting it."
             )
-    if span is not None:
-        at = f" at U = {U:+.2f} V" if U is not None else ""
-        head.append(f"energetic span (whole-path apparent barrier){at}: {_b(span)} eV")
+    at = f" at U = {U:+.2f} V" if U is not None else ""
+    span_label = "n/a" if span is None else f"{_b(span)} eV"
+    head.append(f"energetic span (whole-path apparent barrier){at}: {span_label}")
     if U is not None:
         step = analysis.most_endergonic_step(graph, root, target)
         if step is not None:
@@ -1319,7 +1319,7 @@ def compare_toon(candidates: list[dict[str, Any]], *, U: float | None = None) ->
             "cand": p["c"]["slug"],
             "lever": p["c"].get("lever", ""),
             "RATE": _b(rl.get("ea")),
-            "SPAN": _b(p["summ"]["span"]),
+            "SPAN": _b(p["summ"]["span"]) or "n/a",
             "conf": _conf(rl.get("low_confidence")),
         }
 

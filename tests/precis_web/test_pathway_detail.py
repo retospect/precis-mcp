@@ -1950,6 +1950,65 @@ def _seed_parked(runtime: Any, graph: dict[str, Any]) -> None:
 
 
 @needs_node
+@pytest.mark.parametrize("folded", [False, True])
+def test_pathway_diagram_unknown_barrier_is_na_not_a_hump(
+    client, runtime, tmp_path: Path, folded: bool
+) -> None:
+    """A failed NEB is a dashed unknown connection, not a barrierless curve."""
+    ids = ["a", "a+H", "b"] if folded else ["a", "b"]
+    links: list[dict[str, Any]] = (
+        [{"source": "a", "target": "a+H", "kind": "supply"}] if folded else []
+    )
+    links.append(
+        {
+            "source": ids[-2],
+            "target": "b",
+            "kind": "reaction",
+            "barrier": None,
+            "barrier_std": None,
+        }
+    )
+    graph = {
+        "nodes": [{"id": sid, "rel_energy": 0.1 * i} for i, sid in enumerate(ids)],
+        "links": links,
+    }
+    _seed_parked(runtime, graph)
+
+    response = client.get("/refs/pathway/171696")
+    assert response.status_code == 200
+    svg = _render_diagram_svg(tmp_path, response.text)
+
+    segment = re.search(r'<polyline class="pw-seg"[^>]*>', svg)
+    assert segment is not None
+    assert 'stroke-dasharray="4 3"' in segment[0]
+    points = re.search(r'points="([^"]*)"', segment[0])
+    assert points is not None and len(points[1].split()) == 2
+    assert re.search(r"<text[^>]*>Ea n/a</text>", svg)
+    assert "Ea=0.00" not in svg
+    assert "NaN" not in svg
+
+
+@needs_node
+@pytest.mark.parametrize(("kind", "barrier"), [("reaction", 0.0), ("supply", None)])
+def test_pathway_diagram_measured_zero_barrier_stays_solid(
+    client, runtime, tmp_path: Path, kind: str, barrier: float | None
+) -> None:
+    graph = {
+        "nodes": [{"id": sid, "rel_energy": 0.0} for sid in ["a", "b"]],
+        "links": [{"source": "a", "target": "b", "kind": kind, "barrier": barrier}],
+    }
+    _seed_parked(runtime, graph)
+
+    response = client.get("/refs/pathway/171696")
+    assert response.status_code == 200
+    svg = _render_diagram_svg(tmp_path, response.text)
+
+    segment = re.search(r'<polyline class="pw-seg"[^>]*>', svg)
+    assert segment is not None and "stroke-dasharray" not in segment[0]
+    assert "Ea n/a" not in svg
+
+
+@needs_node
 def test_pathway_diagram_renders_folded_steps_with_annotations(
     client, runtime, tmp_path: Path
 ) -> None:

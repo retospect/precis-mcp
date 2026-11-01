@@ -6,6 +6,8 @@ from __future__ import annotations
 import itertools
 import math
 
+import pytest
+
 from precis.utils import reaction_graph as rg
 
 NAN = float("nan")
@@ -42,9 +44,54 @@ def test_no_raw_nan_escapes():
     top = rg.rate_limiting(g, "s0", "s3")
     assert top is not None and top["ea"] == 0.3
     span = rg.energetic_span(g, "s0", "s3")
-    assert span is not None and math.isfinite(span)
+    assert span is None
     ranked = rg.barriers_ranked(g)
     assert all(r["ea"] is None or math.isfinite(r["ea"]) for r in ranked)
     assert ranked[-1]["ea"] is None
     only = rg.rate_limiting(_graph([NAN]), "s0", "s1")
     assert only is not None and only["ea"] is None
+
+
+@pytest.mark.parametrize("barrier", [None, NAN, float("inf"), float("-inf")])
+def test_span_is_unavailable_with_any_unknown_route_barrier(barrier):
+    graph = _graph([1.2, barrier, 0.3])
+
+    assert rg.energetic_span(graph, "s0", "s3") is None
+    assert rg.summarize(graph, "s0", "s3")["span"] is None
+
+
+def test_span_is_unavailable_when_route_barrier_key_is_missing():
+    graph = _graph([0.4])
+    graph["links"][0].pop("barrier")
+
+    assert rg.energetic_span(graph, "s0", "s1") is None
+
+
+def test_span_preserves_measured_zero_and_supply_links():
+    graph = _graph([None, 0.0, 0.7])
+    graph["links"][0]["kind"] = "supply"
+    graph["nodes"][1]["rel_energy"] = -0.5
+    graph["nodes"][2]["rel_energy"] = -0.5
+
+    assert rg.energetic_span(graph, "s0", "s2") == 0.0
+    assert rg.energetic_span(graph, "s0", "s3") == pytest.approx(0.7)
+
+
+def test_span_ignores_unknown_barriers_off_the_route():
+    graph = _graph([0.4, 0.7])
+    graph["links"].append({"source": "s0", "target": "side", "barrier": None})
+
+    assert rg.energetic_span(graph, "s0", "s2") == pytest.approx(0.7)
+
+
+def test_unknown_span_is_rendered_as_na():
+    from precis_pathway.toon_views import analysis_text, compare_toon
+
+    graph = _graph([None, 0.7])
+    meta = {"graph": graph, "results": {"pathway": ["s0", "s1", "s2"]}}
+
+    assert "energetic span (whole-path apparent barrier): n/a" in analysis_text(meta)
+    comparison = compare_toon(
+        [{"slug": "unknown", "graph": graph, "root": "s0", "target": "s2"}]
+    )
+    assert comparison.splitlines()[-1].split("\t")[-2] == "n/a"

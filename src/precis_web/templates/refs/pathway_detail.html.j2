@@ -1054,10 +1054,13 @@
       if (!src || !tgt || src.rel_energy == null || tgt.rel_energy == null) { return null; }
       const sh = s.shoulder != null ? byId[s.shoulder] : null;
       const shE = (sh && sh.rel_energy != null) ? sh.rel_energy : null;
-      const barrier = s.react ? Math.max(s.react.barrier || 0, 0) : 0;
-      let peak = (shE != null ? shE : src.rel_energy) + barrier;
-      if (shE != null) { peak = Math.max(peak, src.rel_energy, tgt.rel_energy); }
-      return { src, tgt, shE, barrier, bsd: s.react ? (s.react.barrier_std || 0) : 0, peak };
+      const rawBarrier = s.react ? s.react.barrier : 0;
+      const barrier = Number.isFinite(rawBarrier)
+        ? Math.max(rawBarrier, 0)
+        : (s.react && s.react.kind === 'supply' ? 0 : null);
+      let peak = barrier == null ? null : (shE != null ? shE : src.rel_energy) + barrier;
+      if (peak != null && shE != null) { peak = Math.max(peak, src.rel_energy, tgt.rel_energy); }
+      return { src, tgt, shE, barrier, bsd: s.react && barrier != null ? (s.react.barrier_std || 0) : 0, peak };
     }
 
     // ── potential lever
@@ -1129,7 +1132,7 @@
     steps.forEach((s) => {
       if (xOf[s.src] == null || xOf[s.tgt] == null) { return; }
       const geo = stepGeom(s);
-      if (geo) { yMax = Math.max(yMax, geo.peak + geo.bsd); }
+      if (geo && geo.peak != null) { yMax = Math.max(yMax, geo.peak + geo.bsd); }
     });
     if (!isFinite(yMin) || !isFinite(yMax)) { yMin = 0; yMax = 1; }
     if (yMax - yMin < 1e-6) { yMax = yMin + 1; }
@@ -1185,9 +1188,8 @@
 
     // steps — folded chemical steps (``steps`` above: path order, target
     // path first, a shared prefix drawn once for the first path owning it).
-    // Every step is a solid hump in its owning path's colour — there are no
-    // dashed supply segments any more: the supply drop is the step's
-    // shoulder tick, and what entered/left is its annotation.
+    // Measured steps are solid humps; unknown barriers are dashed connections
+    // with no inferred TS. The supply drop is the step's shoulder tick.
     steps.forEach((s) => {
       const color = PATH_COLORS[s.pi % PATH_COLORS.length];
       if (xOf[s.src] == null || xOf[s.tgt] == null) { return; }
@@ -1201,13 +1203,20 @@
       // put humps/edges thousands of px off-canvas.
       const x0 = xScale(xOf[s.src]) + half, x1 = xScale(xOf[s.tgt]) - half;
       const xm = (x0 + x1) / 2;
-      const peakY = geo.peak, bsd = geo.bsd;
+      const unknown = geo.barrier == null;
+      // An unknown step's midpoint only positions its label, not a TS.
+      const peakY = unknown ? (geo.src.rel_energy + geo.tgt.rel_energy) / 2 : geo.peak;
+      const bsd = geo.bsd;
       // humpPoints runs entirely in pixel-x/energy-y space (x0/x1 are
       // already scaled above) — map ONLY y through py() when emitting
       // points; re-scaling x here would double-apply xScale.
-      const curvePts = humpPoints(x0, geo.src.rel_energy, x1, geo.tgt.rel_energy, peakY);
+      const curvePts = unknown
+        ? [[x0, geo.src.rel_energy], [x1, geo.tgt.rel_energy]]
+        : humpPoints(x0, geo.src.rel_energy, x1, geo.tgt.rel_energy, peakY);
       const curve = curvePts.map(([x, y]) => `${x},${py(y)}`).join(' ');
-      parts.push(`<polyline class="pw-seg"${pa} data-from="${esc(s.src)}" data-to="${esc(s.tgt)}" points="${curve}" fill="none" stroke="${color}" stroke-width="2" style="cursor:pointer"><title>${esc(`step ${s.src} \u2192 ${s.tgt}${geo.barrier > 1e-3 ? `, Ea=${geo.barrier.toFixed(2)} eV` : ''}\nclick to isolate its path`)}</title></polyline>`);
+      const dash = unknown ? ' stroke-dasharray="4 3"' : '';
+      const eaTitle = unknown ? ', Ea n/a (no computed barrier)' : (geo.barrier > 1e-3 ? `, Ea=${geo.barrier.toFixed(2)} eV` : '');
+      parts.push(`<polyline class="pw-seg"${pa} data-from="${esc(s.src)}" data-to="${esc(s.tgt)}" points="${curve}" fill="none" stroke="${color}" stroke-width="2"${dash} style="cursor:pointer"><title>${esc(`step ${s.src} \u2192 ${s.tgt}${eaTitle}\nclick to isolate its path`)}</title></polyline>`);
       // shoulder — the X+H level (its energy is real) as a small tick at
       // the hump's foot, joined to X by a thin solid drop; clickable like a
       // level, and it moves with U like any other n_H-carrying node.
@@ -1221,12 +1230,12 @@
         parts.push(`<rect class="pw-svg-node"${pa} data-state="${esc(s.shoulder)}" x="${x0 - 2}" y="${ys - 6}" width="${tx1 - x0 + 4}" height="12" `
           + `fill="transparent" stroke="none" style="cursor:pointer"><title>${esc(shTip)}</title></rect>`);
       }
-      const hasEa = geo.barrier > 1e-3;
+      const hasEa = unknown || geo.barrier > 1e-3;
       if (hasEa) {
         if (bsd > 1e-6) {
           parts.push(`<line${pa} x1="${xm}" y1="${py(peakY - bsd)}" x2="${xm}" y2="${py(peakY + bsd)}" stroke="${color}" stroke-width="1"/>`);
         }
-        let lab = bsd > 1e-6 ? `Ea=${geo.barrier.toFixed(2)}±${bsd.toFixed(2)}` : `Ea=${geo.barrier.toFixed(2)}`;
+        let lab = unknown ? 'Ea n/a' : (bsd > 1e-6 ? `Ea=${geo.barrier.toFixed(2)}±${bsd.toFixed(2)}` : `Ea=${geo.barrier.toFixed(2)}`);
         // Fork-probability annotation (slice 3 item 4) — only present
         // when this edge's source cleared the guard in
         // computeForkProbabilities (numeric barriers, no low_confidence/

@@ -42,6 +42,8 @@ the whole live queue.
 columns; only supply→reaction folds. Raw ``kind=supply`` still excludes
 reservoir links from kinetic fork probabilities; changing it would imply
 a measured barrier. Legacy graphs fall back to ``kind``.
+Unknown reaction barriers draw dashed ``Ea n/a`` connectors, not zero-height
+transition states; only measured barriers determine the diagram's peaks.
 
 **Smartdraft review.** Shared block widget shows read-only F/C/S/A flags
 (✓ current / ~ stale / – unreviewed); structure/adversarial stay on prose,

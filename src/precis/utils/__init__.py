@@ -45,7 +45,9 @@ pattern. Module docstrings own the detail; this one only groups them.
   to lexical on a bad embedder), :mod:`~precis.utils.toc` / ``toc_db``,
   :mod:`~precis.utils.fisheye` / ``refeye`` / ``eye_render``,
   :mod:`~precis.utils.next_block` (the ``Next:`` hint block),
-  :mod:`~precis.utils.search_header`.
+  :mod:`~precis.utils.search_header`, :mod:`~precis.utils.reaction_graph`
+  (a missing route barrier makes the whole-path span unavailable; treating
+  a failed NEB as barrierless would fabricate a favorable objective).
 - *Units, time, env.* :mod:`~precis.utils.units` (ingest-any, SI internally),
   :mod:`~precis.utils.timeutil` (coerce to tz-aware UTC),
   :mod:`~precis.utils.utc_logging`, :mod:`~precis.utils.env`.
