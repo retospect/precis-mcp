@@ -152,7 +152,7 @@ band — viable but not guaranteed (dashed); each in its route's colour">
           corrections {% if m.uncorrected %}<span class="text-warning-strong">none — uncorrected anchors</span>{% else %}{{ m.corrections }}{% endif %} ·
           σ<sub>e</sub> {{ '%.3f' % m.sigma_e_eV if m.sigma_e_eV is not none else 'unrecorded' }} eV
         </div>
-        <div>scan jobs: {% for j in m.scan_jobs %}<span class="font-mono">jo{{ j }}</span>{{ ', ' if not loop.last }}{% endfor %}{% if m.n_anchors is not none %} · {{ m.n_anchors }} anchor(s){% endif %}</div>
+        <div>scan jobs: {% for j in m.scan_jobs %}<a href="/refs/job/{{ j }}" class="font-mono text-info-strong hover:underline">jo{{ j }}</a>{{ ', ' if not loop.last }}{% endfor %}{% if m.n_anchors is not none %} · {{ m.n_anchors }} anchor(s){% endif %}</div>
         {% for d in m.dropped %}
         <div class="pbx-dropped text-warning-strong">dropped: {{ d }}</div>
         {% endfor %}
@@ -166,6 +166,12 @@ band — viable but not guaranteed (dashed); each in its route's colour">
         <div class="text-warning-strong">incomplete: {{ m.incomplete | join('; ') }}</div>
         {% endif %}
       </div>
+      {% if m.scan_points %}
+      <details class="mt-2 text-xs">
+        <summary class="cursor-pointer text-fg-muted">Stored coverage points and geometries</summary>
+        {% with scan_points=m.scan_points %}{% include "refs/_scan_points.html.j2" %}{% endwith %}
+      </details>
+      {% endif %}
     </div>
     {% endfor %}
     <div class="pbx-mismatch mt-1 hidden text-[11px] font-medium text-warning-strong"></div>

@@ -1,0 +1,47 @@
+{% extends "structure/detail.html.j2" %}
+{% block title %}{{ title }}{% endblock %}
+{% block content %}
+<p class="mb-2 text-sm">
+  <a href="/refs/job/{{ job_id }}" class="text-info-strong hover:underline">Back to jo{{ job_id }}</a>
+</p>
+<h1 class="text-lg font-semibold">{{ title }}</h1>
+<p class="mb-4 text-xs text-fg-subtle">
+  {{ point }} - {{ 'stored relaxation frames' if frames else 'final relaxed geometry' }}.
+  Read-only snapshot; no structure is created and no calculation is run.
+</p>
+<div class="mb-3 flex flex-wrap gap-3 text-sm">
+  <a href="{{ final_url }}" class="text-info-strong hover:underline">Final geometry</a>
+  {% if has_frames %}
+  <a href="{{ frames_url }}" class="text-info-strong hover:underline">Failed-point frames</a>
+  {% endif %}
+</div>
+{% if frames %}
+<form method="get" class="mb-4 flex flex-wrap items-center gap-2 text-sm">
+  <input type="hidden" name="point" value="{{ point }}">
+  <input type="hidden" name="frames" value="true">
+  <label for="scan-frame">Stored frame {{ frame }} of {{ n_frames }}</label>
+  <input type="range" id="scan-frame" name="frame" min="1" max="{{ n_frames }}"
+         value="{{ frame }}" step="1" onchange="this.form.submit()" class="w-48">
+  <button type="submit" class="rounded border border-line px-2 py-1">View frame</button>
+  <span class="text-xs text-fg-subtle">Subsampled trajectory, not every optimizer step.</span>
+</form>
+{% endif %}
+<div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
+  <div>{{ self.cell_viewer() }}</div>
+  <div class="overflow-x-auto">
+    <h2 class="mb-2 text-sm font-semibold">Atom positions (Angstrom)</h2>
+    <table class="w-full text-xs font-mono">
+      <thead><tr><th class="text-left">Atom</th><th class="text-right">x</th><th class="text-right">y</th><th class="text-right">z</th></tr></thead>
+      <tbody>
+      {% for atom in viewer.initial.atoms %}
+      <tr class="sv-hl border-t border-line" data-atoms="{{ atom.label }}">
+        <td class="py-1">{{ atom.label }} ({{ atom.element }})</td>
+        {% for coordinate in atom.cart %}<td class="text-right">{{ '%.6f'|format(coordinate) }}</td>{% endfor %}
+      </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+{% endblock %}
+{% block scripts %}{{ self.cell_scripts() }}{% endblock %}

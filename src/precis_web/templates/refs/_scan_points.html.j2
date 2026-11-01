@@ -1,0 +1,27 @@
+<section class="my-4 rounded-lg border border-line bg-surface p-3">
+  <h2 class="mb-2 text-sm font-semibold">Coverage-scan points</h2>
+  <div class="overflow-x-auto">
+    <table class="w-full text-xs">
+      <thead class="text-fg-subtle"><tr>
+        <th class="text-left">Facet / adsorbate</th><th class="text-right">n</th>
+        <th class="text-right">gamma (eV/Angstrom^2)</th><th class="text-right">theta (ML)</th>
+        <th class="text-right">Energy (eV)</th><th class="text-left">Converged</th><th class="text-left">Geometry</th>
+      </tr></thead>
+      <tbody>
+      {% for point in scan_points %}
+      <tr class="border-t border-line">
+        <td class="py-1 pr-2">{{ point.facet }} / {{ point.adsorbate }}{% if point.counts %} ({{ point.counts }}){% endif %}{% if point.detached %} - detached{% endif %}</td>
+        <td class="text-right px-2">{{ point.n if point.n is not none else 'n/a' }}</td>
+        {% for key in ['gamma', 'theta', 'energy'] %}
+        <td class="text-right px-2 font-mono">{{ '%.6f'|format(point[key]) if point[key] is not none else 'n/a' }}</td>
+        {% endfor %}
+        <td class="px-2">{{ 'yes' if point.converged else ('no' if point.converged is not none else 'unrecorded') }}</td>
+        <td>{% if point.url %}<a href="{{ point.url }}" class="text-info-strong hover:underline">view</a>{% else %}<span class="text-fg-subtle">not stored</span>{% endif %}</td>
+      </tr>
+      {% else %}
+      <tr><td colspan="7" class="py-2 text-fg-subtle">No scan points recorded yet.</td></tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</section>

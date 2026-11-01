@@ -53,9 +53,12 @@ def _parse_properties(spec: str) -> list[tuple[str, str, int]]:
     ]
 
 
-def extxyz_to_scene(text: str, *, fallback_cell: float = 20.0) -> Scene:
+def extxyz_to_scene(
+    text: str, *, fallback_cell: float = 20.0, wrap: bool = True
+) -> Scene:
     """Parse extXYZ text into a :class:`Scene` (Cartesian → fractional).
 
+    ``wrap=False`` preserves the stored Cartesian images for read-only viewers.
     Requires ``species`` + ``pos`` columns; tolerates and skips columns it
     does not know. Labels come from the ``label`` column verbatim —
     duplicate labels refuse; a file with no ``label`` column mints
@@ -128,10 +131,11 @@ def extxyz_to_scene(text: str, *, fallback_cell: float = 20.0) -> Scene:
             label = scene.next_label(element)
         if label in scene.atoms:
             raise BadInput(f"extxyz: duplicate atom label {label!r} (row {i + 1})")
+        frac = cell.cart_to_frac(cart)
         scene.atoms[label] = Atom(
             label=label,
             element=element,
-            frac=cell.wrap(cell.cart_to_frac(cart)),
+            frac=cell.wrap(frac) if wrap else frac,
             maker=maker,
         )
     return scene

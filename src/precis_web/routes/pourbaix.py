@@ -47,6 +47,7 @@ from precis.utils import handle_registry
 from precis_web.deps import get_store, templates, timed_response
 from precis_web.pourbaix_svg import map_svg
 from precis_web.ref_urls import ref_url
+from precis_web.scan_view import coverage_points
 
 if TYPE_CHECKING:
     from precis.store.store import Store
@@ -442,6 +443,10 @@ def _candidate_ctx(
         if pw is not None
         else sq.coads_of(ref.meta or {})
     )
+    scan_ids = {j for m in raw_maps for j in m.get("scan_jobs") or []}
+    scan_refs = (
+        store.fetch_refs_by_ids(scan_ids, include_deleted=False) if scan_ids else {}
+    )
     maps = [
         _map_ctx(
             m,
@@ -454,6 +459,13 @@ def _candidate_ctx(
         )
         for k, m in enumerate(raw_maps)
     ]
+    for m in maps:
+        m["scan_points"] = [
+            point
+            for job_id in m["scan_jobs"]
+            if job_id in scan_refs
+            for point in coverage_points(job_id, scan_refs[job_id].meta or {}) or []
+        ]
     coads = sq.coads_of(ref.meta or {})
     if staircase is not None and u_marker is not None:
         # the server-rendered first paint: the same call /states answers

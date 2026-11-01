@@ -108,6 +108,10 @@
 </div>
 {% endif %}
 
+{% if scan_points is defined and scan_points is not none %}
+{% include "refs/_scan_points.html.j2" %}
+{% endif %}
+
 {% if kind == 'component' and component_supplier_linked %}
 <section class="rounded-lg border border-line bg-surface p-4">
   <button type="button" class="text-sm text-info-strong underline"

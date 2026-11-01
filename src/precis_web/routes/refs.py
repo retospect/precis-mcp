@@ -42,10 +42,12 @@ from urllib.parse import urlencode
 from fastapi import APIRouter, Form, HTTPException, Request, Response
 from fastapi.responses import HTMLResponse, RedirectResponse
 
-from precis.errors import NotFound
+from precis.errors import BadInput, NotFound
 from precis.handlers._paper_format import bibtex_title
 from precis.handlers.structure import format_calc_identity
+from precis.store import scan_geometry
 from precis.structure import Measure, anchor_identity_verified, evaluate_measure
+from precis.structure.importers.extxyz import extxyz_to_scene
 from precis.taproot.seniority import is_claim_hub
 from precis.utils import handle_registry, mentions
 from precis.utils.authors import author_names
@@ -71,6 +73,7 @@ from precis_web.ref_urls import ref_url
 from precis_web.routes.favorites import faved
 from precis_web.routes.rxn import doi_link_map as rxn_doi_links
 from precis_web.routes.structure import _geom_payload
+from precis_web.scan_view import coverage_points, geometry_url, xyz_frames
 from precis_web.timefmt import abs_ts
 from precis_web.trust_footer import strip_trust_footer
 
@@ -2985,6 +2988,66 @@ async def component_supplier_live(request: Request, ref_id: int) -> HTMLResponse
     return response
 
 
+@router.get("/job/{ref_id}/geometry", response_class=HTMLResponse)
+async def job_geometry(
+    request: Request,
+    ref_id: int,
+    point: str,
+    frames: bool = False,
+    frame: int = 1,
+) -> HTMLResponse:
+    """Read one stored scan point, using the structure viewer without a ref mint."""
+    store = get_store(request)
+    ref = store.fetch_refs_by_ids([ref_id], include_deleted=False).get(ref_id)
+    if ref is None or ref.kind != "job":
+        raise HTTPException(status_code=404, detail="Scan job not found")
+    text = await asyncio.to_thread(
+        scan_geometry.fetch_point, store, ref_id, point, "frames" if frames else "final"
+    )
+    if text is None:
+        raise HTTPException(status_code=404, detail="No stored geometry for this point")
+
+    def _payload() -> tuple[dict[str, Any], int]:
+        snapshots = xyz_frames(text)
+        if not 1 <= frame <= len(snapshots):
+            raise HTTPException(status_code=404, detail="Stored frame not found")
+        scene = extxyz_to_scene(snapshots[frame - 1], wrap=False)
+        return _geom_payload(scene, f"jo{ref_id} {point}"), len(snapshots)
+
+    try:
+        geometry, n_frames = await asyncio.to_thread(_payload)
+    except (BadInput, ValueError) as exc:
+        raise HTTPException(
+            status_code=422, detail=f"Cannot read stored extxyz: {exc}"
+        ) from exc
+    points = await asyncio.to_thread(scan_geometry.list_points, store, ref_id)
+    has_frames = any(p["point"] == point and "frames" in p["parts"] for p in points)
+    return templates.TemplateResponse(
+        request,
+        "structure/scan.html.j2",
+        {
+            "title": f"Coverage-scan geometry - jo{ref_id}",
+            "active_tab": "refs:job",
+            "job_id": ref_id,
+            "point": point,
+            "frames": frames,
+            "frame": frame,
+            "n_frames": n_frames,
+            "has_frames": has_frames,
+            "final_url": geometry_url(ref_id, point),
+            "frames_url": geometry_url(ref_id, point, frames=True),
+            "viewer": {
+                "initial": geometry,
+                "relaxed": None,
+                "relaxed_run_id": None,
+                "legend": [],
+            },
+            "markers": [],
+            "focus_label": "",
+        },
+    )
+
+
 @router.get("/{kind}/{ref_id}", response_class=HTMLResponse, response_model=None)
 async def detail(
     request: Request, kind: str, ref_id: int
@@ -3221,6 +3284,9 @@ async def detail(
             and bool((ref.meta or {}).get("supplier_links")),
             "references": references,
             "job_actions": job_actions,
+            "scan_points": coverage_points(ref.id, ref.meta or {})
+            if kind == "job"
+            else None,
             # gr489578: rxn source cells cite papers as bare ``doi:<id>``
             # text — each resolves to its /papers page in corpus, else to
             # the /drive lookup listing what cites it.
