@@ -44,6 +44,12 @@ def add_parser(subparsers: Any) -> None:
         help="Seed both the default (models precis runs) and frontier ladders.",
     )
     s.add_argument(
+        "--kimi",
+        action="store_true",
+        help="Seed the Kimi Code subscription cards (kimi-for-coding, k3*, "
+        "billing=subscription) instead of the default/frontier ladders.",
+    )
+    s.add_argument(
         "--slullama",
         action="store_true",
         help="Seed the static remote-cluster tunnel card (e.g. a Slurm-HPC "
@@ -253,12 +259,20 @@ def _cmd_seed(
     frontier: bool = False,
     seed_all: bool = False,
     slullama: bool = False,
+    kimi: bool = False,
     model: str | None = None,
     model_id: str | None = None,
     host: str | None = None,
     endpoint: str | None = None,
     max_parallel: int | None = None,
 ) -> None:
+    if kimi:
+        from precis.utils.llm.kimi import seed_cards
+
+        for model_id_, ref_id, created in seed_cards(store):
+            verb = "created" if created else "refreshed"
+            print(f"{verb} llm lm{ref_id} — {model_id_}")
+        return
     if slullama:
         from precis.llm_catalog import seed_slullama_card
 
@@ -830,6 +844,7 @@ def run(args: argparse.Namespace) -> None:
             frontier=args.frontier,
             seed_all=args.all,
             slullama=args.slullama,
+            kimi=args.kimi,
             model=args.model,
             model_id=args.model_id,
             host=args.host,

@@ -73,8 +73,15 @@ OFFERING_KEYS: frozenset[str] = frozenset(
         # pass reserves a local slot before calling localhost. Absent on
         # external-service offerings (OpenRouter / anthropic — no reservation).
         "served_by",
+        # Billing class of the operating point: ``"metered"`` (per-token
+        # price_in/price_out) or ``"subscription"`` (a flat plan — no
+        # token price, e.g. the Kimi Code membership, gr543829).
+        "billing",
     }
 )
+
+#: Values an offering's ``billing`` key may take — see :data:`OFFERING_KEYS`.
+BILLING_CLASSES: frozenset[str] = frozenset({"metered", "subscription"})
 
 #: Keys one ``served_by`` entry (a local-serving host for an offering) may carry.
 #: ``model`` is the SERVER-SIDE model id the endpoint expects (a llama-swap alias
@@ -144,6 +151,12 @@ def _validate_offerings(offerings: Any) -> list[dict[str, Any]]:
             )
         if o.get("served_by") is not None:
             _validate_served_by(o["served_by"])
+        billing = o.get("billing")
+        if billing is not None and billing not in BILLING_CLASSES:
+            raise BadInput(
+                f"offering billing must be one of {sorted(BILLING_CLASSES)}, "
+                f"got {billing!r}"
+            )
         out.append(o)
     return out
 

@@ -35,6 +35,9 @@ Classes (:data:`FailureClass`):
 * ``subscription_bulk_refused`` — a subscription-profile rung refused
   bulk work (SMALL tier / a bulk purpose). No horizon: the call's shape
   can't change, another rung must take it.
+* ``subscription_op_refused`` — a subscription-profile rung refused the
+  op: ``req.source`` isn't in the profile's ``ops`` allowlist (the Kimi
+  coding-ops rule, gr543829). No horizon: another rung must take it.
 
 Unknown wording stays unclassified (``None``) — a false negative keeps
 today's generic cool-down, a false positive would only bring one retry
@@ -64,6 +67,7 @@ FailureClass = Literal[
     "unparseable",
     "subscription_cap",
     "subscription_bulk_refused",
+    "subscription_op_refused",
 ]
 
 #: Classes a failover chain may fall through on: the *rung* is the problem,
@@ -78,6 +82,7 @@ FALL_THROUGH_CLASSES: frozenset[str] = frozenset(
         "unparseable",
         "subscription_cap",
         "subscription_bulk_refused",
+        "subscription_op_refused",
     }
 )
 

@@ -74,7 +74,10 @@ CLOUD_ENABLED_KEY = "llm.cloud_enabled"
 #: app_settings key for the named provider-profile table: a JSON object
 #: ``{"<name>": {"base_url": <str>, "api_key_ref": <str?>, "kind":
 #: "metered"|"subscription" (default "metered"), "cap": {"calls": <int?>,
-#: "tokens": <int?>, "window_s": <number>}?}}`` — the grammar
+#: "tokens": <int?>, "window_s": <number>}?, "adapter": <str?> (a known
+#: wire adapter, e.g. "kimi"), "gate": <service_config service>?,
+#: "ops": [<source>…]? (subscription profiles: the req.source allowlist),
+#: "thinking_required": [<model id>…]?}}`` — the grammar
 #: :func:`precis.utils.llm.router.resolve_profile` validates. A chain
 #: rung's ``"profile"`` key names one entry; each profile carries its own
 #: endpoint + credential reference, so one process can route several

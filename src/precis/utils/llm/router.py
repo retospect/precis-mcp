@@ -1817,6 +1817,16 @@ class ProviderProfile:
     billing — the default) or ``'subscription'`` (a flat plan the bulk
     guard + window cap protect). ``cap`` bounds a subscription profile's
     sliding-window usage.
+
+    ``adapter`` opts the wire into a provider-specific request/failure
+    shape (:data:`_PROFILE_ADAPTERS` — ``'kimi'`` →
+    :mod:`precis.utils.llm.kimi`). ``gate`` names a ``service_config``
+    service that must be lit (``prio > 0``) before the profile's rungs
+    may run — the dark switch a subscription adapter ships behind.
+    ``ops`` (subscription profiles only) allowlists the ``req.source``
+    ops the rung serves (:func:`_subscription_refusal`).
+    ``thinking_required`` lists model ids the wire must never send a
+    thinking-disable directive for (:func:`openrouter_routing`).
     """
 
     name: str
@@ -1824,6 +1834,16 @@ class ProviderProfile:
     api_key_ref: str | None
     kind: str  # 'metered' | 'subscription'
     cap: SubscriptionCap | None
+    adapter: str | None
+    gate: str | None
+    ops: frozenset[str] | None
+    thinking_required: frozenset[str] | None
+
+
+#: ``adapter`` values :func:`resolve_profile` accepts — each names a
+#: provider-specific wire shape; today only the Kimi Code subscription
+#: adapter (:mod:`precis.utils.llm.kimi`, gr543829).
+_PROFILE_ADAPTERS: frozenset[str] = frozenset({"kimi"})
 
 
 def _parse_profile_cap(name: str, raw: object) -> SubscriptionCap | None:
@@ -1913,13 +1933,63 @@ def resolve_profile(name: str | None) -> ProviderProfile | None:
         cap = _parse_profile_cap(name, raw["cap"])
         if cap is None:
             return None
+    adapter = raw.get("adapter")
+    if adapter is not None and (
+        not isinstance(adapter, str) or adapter not in _PROFILE_ADAPTERS
+    ):
+        log.warning(
+            "llm-profile %r: adapter must be one of %s (%r) — ignored",
+            name,
+            sorted(_PROFILE_ADAPTERS),
+            adapter,
+        )
+        return None
+    gate = raw.get("gate")
+    if gate is not None and (not isinstance(gate, str) or not gate.strip()):
+        log.warning(
+            "llm-profile %r: gate must name a service_config service (%r) — ignored",
+            name,
+            gate,
+        )
+        return None
+    ops = _parse_profile_str_list(name, raw, "ops")
+    if ops is None:
+        return None
+    thinking_required = _parse_profile_str_list(name, raw, "thinking_required")
+    if thinking_required is None:
+        return None
     return ProviderProfile(
         name=name,
         base_url=base_url,
         api_key_ref=api_key_ref,
         kind=kind,
         cap=cap,
+        adapter=adapter,
+        gate=gate.strip() if isinstance(gate, str) else None,
+        ops=ops or None,
+        thinking_required=thinking_required or None,
     )
+
+
+def _parse_profile_str_list(name: str, raw: dict, key: str) -> frozenset[str] | None:
+    """Parse a profile's optional string-list field (``ops``,
+    ``thinking_required``) — ``frozenset`` of entries, ``frozenset()``
+    absent, or ``None`` on a malformed value (the caller drops the
+    profile, same as every other malformed field)."""
+    value = raw.get(key)
+    if value is None:
+        return frozenset()
+    if not isinstance(value, list) or not all(
+        isinstance(v, str) and v.strip() for v in value
+    ):
+        log.warning(
+            "llm-profile %r: %s must be a list of non-empty strings (%r) — ignored",
+            name,
+            key,
+            value,
+        )
+        return None
+    return frozenset(v.strip() for v in value)
 
 
 #: Per-process subscription usage ledger: profile name → deque of
@@ -1993,6 +2063,25 @@ def _subscription_refusal(
     if profile.kind != "subscription":
         return None
     source = req.source or ""
+    if (
+        profile.ops is not None
+        and source not in profile.ops
+        and source.partition(":")[0] not in profile.ops
+        and (req.work_class or "") not in profile.ops
+    ):
+        return LlmResult(
+            text="",
+            cost_usd=None,
+            turns_used=None,
+            model=model,
+            tier=req.tier,
+            error=(
+                f"subscription profile {profile.name!r} refuses op "
+                f"{source or 'unset'!r} — not in its ops allowlist "
+                f"({sorted(profile.ops)})"
+            ),
+            reason_class="subscription_op_refused",
+        )
     if (
         req.tier is Tier.SMALL
         or source in _SUBSCRIPTION_BULK_WORK
@@ -2888,6 +2977,11 @@ def _hosted_oss_unavailable(rung: Rung, model: str) -> str | None:
             return (
                 f"llm profile {rung.profile!r} does not resolve "
                 "(no llm.profiles entry, or malformed)"
+            )
+        if profile.gate and not _service_gate_lit(profile.gate):
+            return (
+                f"llm profile {profile.name!r} is dark — no live "
+                f"service_config row lights {profile.gate!r} (prio > 0)"
             )
         if profile.api_key_ref:
             from precis.secrets import get_secret
@@ -4856,6 +4950,7 @@ def openrouter_routing(
     *,
     effort: str | None = None,
     thinking: bool | None = None,
+    thinking_required: bool = False,
 ) -> dict[str, Any]:
     """Translate a booked ``meta.endpoints`` variant → the OpenRouter
     request-body block that pins it, composed with the gen-param
@@ -4873,7 +4968,10 @@ def openrouter_routing(
     sets ``reasoning.enabled: false`` (OpenRouter's switch to turn reasoning
     off entirely) so a ``SMALL``-tier dispatch disables it without touching a
     booked ``effort``. ``thinking`` of ``True``/``None`` never clobbers a set
-    ``effort``.
+    ``effort``. ``thinking_required`` (a profile's
+    :attr:`ProviderProfile.thinking_required` match — a model that rejects
+    thinking-disabled requests) suppresses ``enabled: false``: nothing is
+    sent and the model uses its own default.
 
     Returns ``{}`` when there is nothing to pin/toggle — the caller posts the
     bare slug with no ``reasoning`` block.
@@ -4901,7 +4999,7 @@ def openrouter_routing(
         reasoning["effort"] = effort
     # Auto-off only guards the default (no-effort) shape: an explicit effort
     # means the caller wants reasoning, so it wins over a thinking=False.
-    if thinking is False and not effort:
+    if thinking is False and not effort and not thinking_required:
         reasoning["enabled"] = False
     if reasoning:
         body["reasoning"] = reasoning
@@ -4916,7 +5014,84 @@ def openrouter_routing(
 _PROVIDER_KEY_BY_HOST: dict[str, str] = {
     "openrouter.ai": "OPENROUTER_API_KEY",
     "deepinfra.com": "DEEPINFRA_API_KEY",
+    "api.kimi.ai": "KIMI_CODE_API_KEY",
+    "api.kimi.com": "KIMI_CODE_API_KEY",
 }
+
+
+def _service_gate_lit(name: str) -> bool:
+    """Whether a profile's ``gate`` service is lit — delegates to
+    :func:`precis.utils.llm.kimi.service_gate_lit`, which owns the
+    service_config read shape (never raises; dark on any failure)."""
+    from precis.utils.llm import kimi as _kimi
+
+    return _kimi.service_gate_lit(name)
+
+
+def _gate_refusal(
+    profile: ProviderProfile, req: LlmRequest, *, model: str
+) -> LlmResult | None:
+    """A dispatch-time gate check for a pinned ``req.profile`` — the
+    chain path already drops gated rungs in
+    :func:`_hosted_oss_unavailable`; a direct dispatch (eval harness,
+    pinned rung) reaches here without that pass and must still never
+    send while dark."""
+    if profile.gate and not _service_gate_lit(profile.gate):
+        return LlmResult(
+            text="",
+            cost_usd=None,
+            turns_used=None,
+            model=model,
+            tier=req.tier,
+            error=(
+                f"llm profile {profile.name!r} is dark — no live "
+                f"service_config row lights {profile.gate!r} (prio > 0)"
+            ),
+        )
+    return None
+
+
+def _adapter_failure_adjust(
+    profile: ProviderProfile | None,
+    result: LlmResult,
+    *,
+    exc: BaseException | None = None,
+) -> LlmResult:
+    """A profile ``adapter``'s failure remap — today only the kimi wire
+    (:func:`precis.utils.llm.kimi.adjust_failure`: 429/quota wording →
+    ``quota``, paused)."""
+    if profile is None or profile.adapter != "kimi":
+        return result
+    from precis.utils.llm import kimi as _kimi
+
+    return _kimi.adjust_failure(result, exc=exc)
+
+
+def _extra_body_for(
+    profile: ProviderProfile | None,
+    req: LlmRequest,
+    model: str,
+    *,
+    thinking: bool | None,
+) -> dict[str, Any]:
+    """The wire's ``extra_body``: the kimi adapter's flat
+    ``reasoning_effort`` shape (never a thinking-disable), else
+    :func:`openrouter_routing` with the profile's
+    ``thinking_required`` honored."""
+    if profile is not None and profile.adapter == "kimi":
+        from precis.utils.llm import kimi as _kimi
+
+        return _kimi.wire_routing(model, effort=req.effort, thinking=thinking)
+    return openrouter_routing(
+        req.endpoint,
+        effort=req.effort,
+        thinking=thinking,
+        thinking_required=bool(
+            profile is not None
+            and profile.thinking_required
+            and model in profile.thinking_required
+        ),
+    )
 
 
 def _provider_api_key(base_url: str) -> str:
@@ -5031,6 +5206,11 @@ def _dispatch_openai_compat(req: LlmRequest, model: str) -> LlmResult:
 
     from precis.workers.llm_summarize import LlmClient, LlmConfig
 
+    profile = resolve_profile(req.profile) if req.profile else None
+    if profile is not None:
+        gated = _gate_refusal(profile, req, model=model)
+        if gated is not None:
+            return gated
     base_url = _req_base_url(req)
     parsed_base_url = urlparse(base_url)
     if not parsed_base_url.scheme or not parsed_base_url.netloc:
@@ -5081,7 +5261,7 @@ def _dispatch_openai_compat(req: LlmRequest, model: str) -> LlmResult:
     thinking = (
         req.thinking if req.thinking is not None else _tier_gen_defaults(req.tier)[0]
     )
-    extra_body = openrouter_routing(req.endpoint, effort=req.effort, thinking=thinking)
+    extra_body = _extra_body_for(profile, req, model, thinking=thinking)
     client = LlmClient(cfg)
     try:
         # Only pass extra_body when there is something to send, so the bare
@@ -5096,15 +5276,19 @@ def _dispatch_openai_compat(req: LlmRequest, model: str) -> LlmResult:
         return _limiter_refused(req, model, exc)
     except (RuntimeError, OSError) as exc:
         # Same unavailability-vs-semantic split as `_dispatch_local` above.
-        return _classified(
-            LlmResult(
-                text="",
-                cost_usd=None,
-                turns_used=None,
-                model=model,
-                tier=req.tier,
-                error=str(exc),
-                paused=_is_unavailability(exc),
+        return _adapter_failure_adjust(
+            profile,
+            _classified(
+                LlmResult(
+                    text="",
+                    cost_usd=None,
+                    turns_used=None,
+                    model=model,
+                    tier=req.tier,
+                    error=str(exc),
+                    paused=_is_unavailability(exc),
+                ),
+                exc=exc,
             ),
             exc=exc,
         )
@@ -5231,7 +5415,23 @@ def run_oss_tool_loop(
             if profile is not None
             else _provider_api_key(base_url)
         )
-        extra_body = openrouter_routing(None, thinking=thinking) or None
+        if profile is not None and profile.adapter == "kimi":
+            from precis.utils.llm import kimi as _kimi
+
+            extra_body = _kimi.wire_routing(model, thinking=thinking) or None
+        else:
+            extra_body = (
+                openrouter_routing(
+                    None,
+                    thinking=thinking,
+                    thinking_required=bool(
+                        profile is not None
+                        and profile.thinking_required
+                        and model in profile.thinking_required
+                    ),
+                )
+                or None
+            )
     timeout = timeout_s if timeout_s is not None else 600.0
     client = ToolChatClient(
         url=base_url,
@@ -5382,6 +5582,9 @@ def _dispatch_openai_tools(req: LlmRequest, model: str) -> LlmResult:
                     stop_reason="error",
                 )
             )
+        gated = _gate_refusal(profile, req, model=model)
+        if gated is not None:
+            return gated
     ctx = _overlay_tick_context(_overlay_with_source(req))
     try:
         with tick_context(ctx) if ctx is not None else contextlib.nullcontext():
@@ -5402,18 +5605,22 @@ def _dispatch_openai_tools(req: LlmRequest, model: str) -> LlmResult:
     except RateLimited as exc:
         return _replace(_limiter_refused(req, model, exc), stop_reason="error")
     except (RuntimeError, OSError) as exc:
-        return _classified(
-            LlmResult(
-                text="",
-                cost_usd=None,
-                turns_used=None,
-                model=model,
-                tier=req.tier,
-                error=str(exc),
-                # Same unavailability-vs-semantic split as `_dispatch_local` —
-                # a failure to *build* the executor/tools shares its exceptions.
-                paused=_is_unavailability(exc),
-                stop_reason="error",
+        return _adapter_failure_adjust(
+            profile,
+            _classified(
+                LlmResult(
+                    text="",
+                    cost_usd=None,
+                    turns_used=None,
+                    model=model,
+                    tier=req.tier,
+                    error=str(exc),
+                    # Same unavailability-vs-semantic split as `_dispatch_local` —
+                    # a failure to *build* the executor/tools shares its exceptions.
+                    paused=_is_unavailability(exc),
+                    stop_reason="error",
+                ),
+                exc=exc,
             ),
             exc=exc,
         )
@@ -5430,22 +5637,25 @@ def _dispatch_openai_tools(req: LlmRequest, model: str) -> LlmResult:
         cost = cost_from_tokens(
             model, prompt_tokens=None, completion_tokens=result.total_tokens
         )
-    return _classified(
-        LlmResult(
-            text=result.final_text,
-            cost_usd=cost,
-            turns_used=result.turns_used,
-            model=model,
-            tier=req.tier,
-            error=result.error,
-            paused=result.paused,
-            timed_out=result.timed_out,
-            # `tool_calls_made` is the loop's own definitive count, needed so
-            # the review seam's empty-result assertion (which demands a real
-            # 0, not None) works on this backend too.
-            tool_calls=result.tool_calls_made,
-            stop_reason=result.stop_reason,
-        )
+    return _adapter_failure_adjust(
+        profile,
+        _classified(
+            LlmResult(
+                text=result.final_text,
+                cost_usd=cost,
+                turns_used=result.turns_used,
+                model=model,
+                tier=req.tier,
+                error=result.error,
+                paused=result.paused,
+                timed_out=result.timed_out,
+                # `tool_calls_made` is the loop's own definitive count, needed so
+                # the review seam's empty-result assertion (which demands a real
+                # 0, not None) works on this backend too.
+                tool_calls=result.tool_calls_made,
+                stop_reason=result.stop_reason,
+            )
+        ),
     )
 
 
