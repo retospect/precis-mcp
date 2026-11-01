@@ -57,11 +57,14 @@ backends, so there was no exclusion and the lock leaked. An open
 transaction pins one pgbouncer server connection for the whole pass, so
 the lock lives and dies on one backend, and it ends with the transaction
 (rollback in a ``finally``), so a ``DISCARD ALL`` reset or backend reuse
-cannot leak it. This pass has no ceiling on wall-clock length (a slow
-embedder, or a big batch), so the helper issues ``SET LOCAL
-idle_in_transaction_session_timeout = 0`` — prod's ``300s`` kill (same
-``ALTER ROLE`` block that sets ``lock_timeout=5s``) would otherwise end
-the idle lock-holding transaction mid-run, silently dropping the lock.
+cannot leak it. The pass's own wall-clock cap
+(:data:`_MAX_SECONDS_DEFAULT`, overridable) bounds the routine hold,
+but a configured longer window — or one slow claim/embed call — can
+still pass prod's ``300s`` ``idle_in_transaction_session_timeout``
+kill (same ``ALTER ROLE`` block that sets ``lock_timeout=5s``), which
+would end the idle lock-holding transaction mid-run, silently dropping
+the lock; so the helper issues ``SET LOCAL
+idle_in_transaction_session_timeout = 0``.
 ``SET LOCAL`` is transaction-scoped; a session ``SET`` through pgbouncer
 would poison other clients. A lock-acquire miss (another host
 owns this tick) is a graceful skip — same ``claimed=0`` convention as
@@ -72,6 +75,8 @@ from __future__ import annotations
 
 import logging
 import math
+import time
+from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
 from psycopg import Connection
@@ -82,6 +87,7 @@ from precis.embedder import Embedder, EmbedderUnavailable
 from precis.store.advisory import try_xact_advisory_lock
 from precis.utils.abbreviations import find as find_abbreviations
 from precis.utils.db_retry import retry_locked
+from precis.utils.env import env_float, env_int
 from precis.utils.rake import extract_keywords as _rake_phrases
 
 if TYPE_CHECKING:
@@ -133,8 +139,44 @@ SKIP_KINDS: frozenset[str] = frozenset(
 _TOP_K = 8
 
 #: RAKE candidate pool size. Wider gives KeyBERT more to score and
-#: rank from. Candidates across the claimed chunks share one embed call.
+#: rank from. Unique candidates across the claimed chunks share each
+#: embed call.
 _RAKE_POOL = 40
+
+#: ``PRECIS_CHUNK_KEYWORDS_BATCH_SIZE`` — chunks claimed per pass; the
+#: pass's own knob. The ``_chunk_keywords_pass`` closure deliberately
+#: does NOT forward the worker loop's ``--batch-size`` (default 32) —
+#: the generic flag made this knob dead code, capping each claim at 32
+#: and draining a 1.6M-chunk backlog at ~43 chunks/h (gr549751); same
+#: argparse-default-overrides-env trap as
+#: ``PRECIS_TAPROOT_CHASE_TRIGGER_BATCH_SIZE`` (gr454865).
+_BATCH_SIZE_ENV = "PRECIS_CHUNK_KEYWORDS_BATCH_SIZE"
+_BATCH_SIZE_DEFAULT = 256
+
+#: ``PRECIS_CHUNK_KEYWORDS_MAX_SECONDS`` — wall-clock cap on one pass:
+#: the pass stops preparing/embedding new chunks once the deadline
+#: passes, so a big claim can't hold the single-runner advisory lock
+#: for minutes. ``0`` claims nothing — a parked drain that doesn't
+#: touch ``service prio``.
+_MAX_SECONDS_ENV = "PRECIS_CHUNK_KEYWORDS_MAX_SECONDS"
+_MAX_SECONDS_DEFAULT = 60.0
+
+#: Unique candidate texts per embedder call inside a pass. There is no
+#: client-side max batch size to honour — ``RemoteEmbedder.embed``
+#: ships every text in one ``EmbedRequest`` and ``serve-embeddings``
+#: re-chunks internally under its own ``pass_token_budget`` — so this
+#: bound is ours: at the prod-observed ~0.1 s/candidate-text it keeps
+#: one call under ~30 s, so the deadline check between calls stays
+#: meaningful and the response payload (~30 MB of vectors) bounded.
+_EMBED_CALL_MAX_TEXTS = 256
+
+
+def _batch_size_default() -> int:
+    return env_int(_BATCH_SIZE_ENV, _BATCH_SIZE_DEFAULT, lo=1)
+
+
+def _max_seconds_default() -> float:
+    return env_float(_MAX_SECONDS_ENV, _MAX_SECONDS_DEFAULT, lo=0.0)
 
 
 def is_keyword_eligible(chunk: Any) -> bool:
@@ -522,13 +564,26 @@ def _ensure_paper_abbrevs_retrying(store: Store, ref_id: int) -> dict[str, str]:
 
 
 def _run_chunk_keywords_batch(
-    store: Store, embedder: Embedder, *, batch_size: int
+    store: Store,
+    embedder: Embedder,
+    *,
+    batch_size: int,
+    max_seconds: float,
+    clock: Callable[[], float] = time.monotonic,
 ) -> dict[str, int]:
     """The claim + per-chunk work. Runs while the caller
     (:func:`run_chunk_keywords_pass`) holds the single-runner advisory
     lock for the whole pass — every DB access in here still goes through
     ``store``'s own pool (short, independent transactions), never the
     caller's lock-holding connection.
+
+    Wall-clock cap: ``max_seconds`` bounds the whole body. The deadline
+    is checked per claimed row and before the last embed call, so a big
+    ``batch_size`` cannot hold the advisory lock for minutes. Chunks
+    claimed but not reached before the deadline — or queued behind an
+    unrun embed call — simply stay unwritten and re-claim next pass;
+    the claim's row lock already released at commit and the claim's
+    ``ORDER BY chunk_id`` puts them first in line again.
 
     Three phases (mirrors ``runner.run_handler_once``'s claim-commit-
     first discipline, and gripe: prod's ``lock_timeout=5s`` — see
@@ -539,10 +594,19 @@ def _run_chunk_keywords_batch(
        commits immediately — releasing the lock well before the slow
        per-chunk work below runs, not held for the whole batch as the
        pre-fix single-transaction version did.
-    2. **Abbrevs + extract** (no DB connection held across the embedder
-       call): :func:`_ensure_paper_abbrevs_retrying` (per ref, cached —
-       its own short retried transaction), then prepare all candidates
-       and embed them in one call. Score each chunk's slice independently.
+    2. **Abbrevs + batched embed** (no DB connection held across an
+       embedder call): per row, :func:`_ensure_paper_abbrevs_retrying`
+       (per ref, cached — its own short retried transaction) and RAKE
+       candidates. Candidate *texts* dedupe across the whole pass into
+       ``vec_by_text`` — same text ⇒ same vector ⇒ same score, so each
+       unique phrase embeds once and is shared by every chunk that
+       produced it (the abbrev short→long mapping alone duplicates
+       texts within one chunk's pool). Whenever the queue of unseen
+       texts reaches :data:`_EMBED_CALL_MAX_TEXTS` it flushes in ONE
+       ``embedder.embed`` call — a bounded few calls per pass, never
+       one per chunk or per phrase — then every queued chunk scores +
+       writes; see the constant's comment for why a few calls beat one
+       giant call.
     3. **Write** (short txn per chunk, wrapped in :func:`retry_locked`):
        :func:`write_chunk_keywords`, guarded (see its docstring) so a
        double-claim landing in the post-commit window — genuinely rare
@@ -556,72 +620,43 @@ def _run_chunk_keywords_batch(
     contention after :func:`retry_locked`'s own retry budget is counted
     as neither (see the ``LockNotAvailable``/``DeadlockDetected`` branch
     below): it's still unwritten, so it re-claims cleanly next pass.
+    Chunks past the wall-clock deadline report the same way.
     """
+    idle = {"claimed": 0, "ok": 0, "failed": 0}
+    deadline = clock() + max_seconds
+    if clock() >= deadline:
+        return idle
     with store.pool.connection() as conn:
         rows = claim_chunks_without_keywords(conn, limit=batch_size)
         conn.commit()
     claimed = len(rows)
+    if not rows:
+        return idle
 
     ok = failed = 0
     abbrev_cache: dict[int, dict[str, str]] = {}
-    prepared: list[tuple[int, list[float], list[tuple[str, str | None]]]] = []
-    embed_texts: list[str] = []
-    for chunk_id, ref_id, text, vec_text in rows:
+    # text -> vector, shared across the pass; a candidate already
+    # embedded earlier scores from cache, never re-embeds.
+    vec_by_text: dict[str, list[float]] = {}
+    pending_texts: list[str] = []
+    pending_set: set[str] = set()
+    pending_items: list[tuple[int, list[float], list[tuple[str, str | None]]]] = []
+
+    def _write_item(
+        item: tuple[int, list[float], list[tuple[str, str | None]]],
+    ) -> None:
+        nonlocal ok, failed
+        chunk_id, chunk_vec, candidates = item
         try:
-            if vec_text is None:
-                raise RuntimeError(
-                    "chunk has no bge-m3 embedding yet — run `precis worker --only embed` first"
-                )
-            # pgvector returns the vector as a string of the form
-            # "[0.1, 0.2, ...]" when cast to text; parse it.
-            chunk_vec = _parse_pgvector_text(vec_text)
-
-            if ref_id not in abbrev_cache:
-                abbrev_cache[ref_id] = _ensure_paper_abbrevs_retrying(store, ref_id)
-            abbrevs = abbrev_cache[ref_id]
-
-            candidates = _prepare_keyword_candidates(text, abbrevs)
-            prepared.append((chunk_id, chunk_vec, candidates))
-            embed_texts.extend(long_form for long_form, _ in candidates)
-        except (LockNotAvailable, DeadlockDetected) as exc:
-            log.warning(
-                "chunk_keywords: chunk_id=%s deferred after residual lock "
-                "contention: %s",
-                chunk_id,
-                exc,
+            keywords = _score_keyword_candidates(
+                chunk_vec,
+                candidates,
+                [vec_by_text[long_form] for long_form, _ in candidates],
             )
-        except Exception:
-            log.exception("chunk_keywords: chunk_id=%s failed", chunk_id)
-            failed += 1
-
-    try:
-        cand_vecs = embedder.embed(embed_texts) if embed_texts else []
-        if len(cand_vecs) != len(embed_texts):
-            raise ValueError(
-                f"embedder returned {len(cand_vecs)} vectors for "
-                f"{len(embed_texts)} keyword candidates"
-            )
-    except EmbedderUnavailable as exc:
-        log.warning(
-            "chunk_keywords: embedder unavailable (%s); deferring batch of %d chunks",
-            exc,
-            claimed,
-        )
-        return {"claimed": 0, "ok": 0, "failed": 0}
-    except Exception:
-        log.exception("chunk_keywords: candidate embedding batch failed")
-        return {"claimed": claimed, "ok": 0, "failed": failed + len(prepared)}
-
-    offset = 0
-    for chunk_id, chunk_vec, candidates in prepared:
-        end = offset + len(candidates)
-        chunk_cand_vecs = cand_vecs[offset:end]
-        offset = end
-        try:
-            keywords = _score_keyword_candidates(chunk_vec, candidates, chunk_cand_vecs)
 
             def _write(
-                chunk_id: int = chunk_id, keywords: list[dict[str, Any]] = keywords
+                chunk_id: int = chunk_id,
+                keywords: list[dict[str, Any]] = keywords,
             ) -> None:
                 with store.pool.connection() as wconn:
                     write_chunk_keywords(
@@ -634,9 +669,8 @@ def _run_chunk_keywords_batch(
 
             retry_locked(_write, label=f"chunk_keywords chunk_id={chunk_id}")
             ok += 1
-        except EmbedderUnavailable as exc:
-            log.warning("chunk_keywords: embedder unavailable (%s); deferring", exc)
-            return {"claimed": 0, "ok": 0, "failed": 0}
+        except EmbedderUnavailable:
+            raise  # defer the rest of the pass — handled by _flush_or_defer
         except (LockNotAvailable, DeadlockDetected) as exc:
             # Residual lock contention that outlasted retry_locked's own
             # budget. Expected fleet contention under prod's
@@ -653,14 +687,119 @@ def _run_chunk_keywords_batch(
         except Exception:
             log.exception("chunk_keywords: chunk_id=%s failed", chunk_id)
             failed += 1
+
+    def _flush() -> None:
+        """One embed call for the queued unique texts, then score +
+        write every chunk they unblock."""
+        nonlocal pending_texts, pending_set, pending_items
+        if pending_texts:
+            vecs = embedder.embed(pending_texts)
+            if len(vecs) != len(pending_texts):
+                raise ValueError(
+                    f"embedder returned {len(vecs)} vectors for "
+                    f"{len(pending_texts)} keyword candidates"
+                )
+            vec_by_text.update(zip(pending_texts, vecs, strict=True))
+            pending_texts = []
+            pending_set = set()
+        items, pending_items = pending_items, []
+        for item in items:
+            _write_item(item)
+
+    def _flush_or_defer() -> dict[str, int] | None:
+        """Run :func:`_flush`; on embedder-level failure return the pass
+        result to propagate, ``None`` on success."""
+        try:
+            _flush()
+        except EmbedderUnavailable as exc:
+            # The embedder is transiently down/busy — defer: queued
+            # chunks stay unwritten and re-claim next pass. Same
+            # ``claimed=0`` shape as a lock miss, so the run-loop backs
+            # off rather than hot re-polling into a down embedder.
+            # Slices already written stay written — the write guard
+            # makes a redundant write a no-op anyway.
+            log.warning(
+                "chunk_keywords: embedder unavailable (%s); deferring "
+                "batch of %d chunks",
+                exc,
+                claimed,
+            )
+            return idle
+        except Exception:
+            log.exception("chunk_keywords: candidate embedding batch failed")
+            return {
+                "claimed": claimed,
+                "ok": ok,
+                "failed": failed + len(pending_items),
+            }
+        return None
+
+    for chunk_id, ref_id, text, vec_text in rows:
+        if clock() >= deadline:
+            break
+        try:
+            if vec_text is None:
+                raise RuntimeError(
+                    "chunk has no bge-m3 embedding yet — run `precis worker --only embed` first"
+                )
+            # pgvector returns the vector as a string of the form
+            # "[0.1, 0.2, ...]" when cast to text; parse it.
+            chunk_vec = _parse_pgvector_text(vec_text)
+
+            if ref_id not in abbrev_cache:
+                abbrev_cache[ref_id] = _ensure_paper_abbrevs_retrying(store, ref_id)
+
+            candidates = _prepare_keyword_candidates(text, abbrev_cache[ref_id])
+        except (LockNotAvailable, DeadlockDetected) as exc:
+            log.warning(
+                "chunk_keywords: chunk_id=%s deferred after residual lock "
+                "contention: %s",
+                chunk_id,
+                exc,
+            )
+            continue
+        except Exception:
+            log.exception("chunk_keywords: chunk_id=%s failed", chunk_id)
+            failed += 1
+            continue
+        pending_items.append((chunk_id, chunk_vec, candidates))
+        for long_form, _ in candidates:
+            if long_form not in vec_by_text and long_form not in pending_set:
+                pending_set.add(long_form)
+                pending_texts.append(long_form)
+        if len(pending_texts) >= _EMBED_CALL_MAX_TEXTS:
+            out = _flush_or_defer()
+            if out is not None:
+                return out
+
+    # Drain the last partial slice — unless the clock already ran out;
+    # chunks left unflushed stay unwritten and re-claim next pass.
+    if pending_items and clock() < deadline:
+        out = _flush_or_defer()
+        if out is not None:
+            return out
     return {"claimed": claimed, "ok": ok, "failed": failed}
 
 
 def run_chunk_keywords_pass(
-    store: Store, embedder: Embedder, *, batch_size: int = 50
+    store: Store,
+    embedder: Embedder,
+    *,
+    batch_size: int | None = None,
+    max_seconds: float | None = None,
+    clock: Callable[[], float] = time.monotonic,
 ) -> dict[str, int]:
     """One pass over the chunk_keywords queue, single-runner across the
     fleet.
+
+    ``batch_size`` — chunks claimed this pass. ``None`` resolves
+    :data:`_BATCH_SIZE_ENV` (default :data:`_BATCH_SIZE_DEFAULT`); the
+    worker closure passes ``None`` deliberately so this knob — not the
+    generic ``--batch-size`` — sizes the claim (gr549751).
+    ``max_seconds`` — wall-clock cap inside the advisory lock. ``None``
+    resolves :data:`_MAX_SECONDS_ENV` (default
+    :data:`_MAX_SECONDS_DEFAULT`); ``0`` claims nothing. ``clock`` is
+    the deadline's time source — tests inject a fake one.
 
     Returns ``{"claimed": N, "ok": K, "failed": F}`` — see
     :func:`_run_chunk_keywords_batch`'s docstring for the shape and the
@@ -689,10 +828,22 @@ def run_chunk_keywords_pass(
     if not store.dsn:
         return idle
 
+    resolved_batch_size = (
+        batch_size if batch_size is not None else _batch_size_default()
+    )
+    resolved_max_seconds = (
+        max_seconds if max_seconds is not None else _max_seconds_default()
+    )
     with try_xact_advisory_lock(store.dsn, _LOCK_KEY) as got:
         if not got:
             return idle  # another node owns this pass this cycle
-        return _run_chunk_keywords_batch(store, embedder, batch_size=batch_size)
+        return _run_chunk_keywords_batch(
+            store,
+            embedder,
+            batch_size=resolved_batch_size,
+            max_seconds=resolved_max_seconds,
+            clock=clock,
+        )
 
 
 # ── helpers ─────────────────────────────────────────────────────────

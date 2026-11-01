@@ -79,10 +79,16 @@ RESCUE_SERVICES: tuple[str, ...] = ("sweeper", "nursery", "quest_loop_reconcile"
 #: rotation cadence, and the parked job outlived its claim-time lease
 #: (gr507636). Both halves now run within ``rescue_budget_s`` plus one
 #: pass instead of once per full rotation (~85 min on melchior).
+#: ``chunk_keywords`` (gr549751): same starvation shape — a steady drain
+#: whose 1.6M-chunk backlog sank to ~3-7 runs/h under the serial
+#: rotation. Safe to interleave only because the pass now bounds itself
+#: (~60 s wall cap) and its single-runner advisory lock makes a peer
+#: host's overdue trigger a graceful no-op.
 INTERLEAVED_SERVICES: tuple[str, ...] = (
     *RESCUE_SERVICES,
     "job_coordinator",
     "wake_runner",
+    "chunk_keywords",
 )
 
 #: Env var overriding :data:`DEFAULT_RESCUE_BUDGET_S`; ``0`` turns the

@@ -495,7 +495,16 @@ class TestRunChunkKeywordsPass:
 
         assert result == {"claimed": batch_size, "ok": batch_size, "failed": 0}
         embed.assert_called_once()
-        assert len(embed.call_args.args[0]) == sum(len(candidates[r[2]]) for r in rows)
+        # One call carrying each UNIQUE candidate text — the abbrev
+        # mapping and shared phrases dedupe across chunks into one
+        # embed slot per distinct text (was: every chunk's candidate
+        # list flattened, duplicates embedded).
+        assert sorted(embed.call_args.args[0]) == [
+            "alpha batch",
+            "another batch",
+            "last phrase",
+            "shared phrase",
+        ]
         with store.pool.connection() as conn:
             written = conn.execute(
                 "SELECT chunk_id, keywords, keywords_meta FROM chunks ORDER BY chunk_id"
@@ -719,3 +728,159 @@ class TestRunChunkKeywordsPass:
         assert versions[good_id_1] == KEYWORDS_VERSION
         assert versions[good_id_2] == KEYWORDS_VERSION
         assert versions[poison_id] is None
+
+    def test_embed_call_text_cap_chunks_one_pass(
+        self, store: Store, monkeypatch: Any
+    ) -> None:
+        """``_EMBED_CALL_MAX_TEXTS`` bounds one call's texts; a batch
+        bigger than the cap lands in a bounded few calls — never one
+        per chunk or per phrase — and each text still embeds once."""
+        import precis.workers.chunk_keywords as ck
+
+        ref_id = seed_ref(store)
+        bodies = [f"{_BODY_TEXT_1} Variant {i}." for i in range(4)]
+        for i, text in enumerate(bodies):
+            _seed_long_chunk(store, ref_id=ref_id, ord=i, text=text)
+        # Two fresh candidates per chunk → 8 unique texts; cap 2 forces
+        # one flush per chunk.
+        monkeypatch.setattr(
+            "precis.workers.chunk_keywords._rake_phrases",
+            lambda text, *, max_keywords: [f"{text[-9:]} a", f"{text[-9:]} b"],
+        )
+        monkeypatch.setattr(ck, "_EMBED_CALL_MAX_TEXTS", 2)
+        embedder = make_mock_bge_m3()
+        embed = Mock(wraps=embedder.embed)
+        monkeypatch.setattr(embedder, "embed", embed)
+
+        result = run_chunk_keywords_pass(store, embedder, batch_size=10)
+
+        assert result == {"claimed": 4, "ok": 4, "failed": 0}
+        assert embed.call_count == 4
+        seen: list[str] = []
+        for call in embed.call_args_list:
+            texts = call.args[0]
+            assert len(texts) <= 2
+            seen.extend(texts)
+        assert len(seen) == len(set(seen)) == 8
+
+    def test_wall_clock_cap_defers_rest_of_claim(
+        self, store: Store, monkeypatch: Any
+    ) -> None:
+        """The ``max_seconds`` deadline stops preparing new chunks mid-
+        claim, so a big batch can't hold the advisory lock for minutes;
+        the deferred tail re-claims cleanly next pass (gr549751)."""
+        import precis.workers.chunk_keywords as ck
+
+        ref_id = seed_ref(store)
+        bodies = [f"{_BODY_TEXT_1} Variant {i}." for i in range(5)]
+        for i, text in enumerate(bodies):
+            _seed_long_chunk(store, ref_id=ref_id, ord=i, text=text)
+        monkeypatch.setattr(
+            "precis.workers.chunk_keywords._rake_phrases",
+            lambda text, *, max_keywords: [f"{text[-9:]} a", f"{text[-9:]} b"],
+        )
+        monkeypatch.setattr(ck, "_EMBED_CALL_MAX_TEXTS", 2)
+        now = 0.0
+
+        def _clock() -> float:
+            return now
+
+        embedder = make_mock_bge_m3()
+        real_embed = embedder.embed
+
+        def slow_embed(texts: list[str]) -> list[list[float]]:
+            nonlocal now
+            now += 30.0
+            return real_embed(texts)
+
+        monkeypatch.setattr(embedder, "embed", slow_embed)
+
+        result = run_chunk_keywords_pass(
+            store,
+            embedder,
+            batch_size=10,
+            max_seconds=60.0,
+            clock=_clock,
+        )
+
+        # deadline=60: chunk 1 flushes at t=30, chunk 2 at t=60 — the
+        # third row sees clock >= deadline and the pass stops. The
+        # remaining 3 are claimed but unwritten, so they stay claimable.
+        assert result == {"claimed": 5, "ok": 2, "failed": 0}
+        with store.pool.connection() as conn:
+            assert conn.execute(
+                "SELECT count(*) FROM chunks WHERE keywords IS NULL"
+            ).fetchone() == (3,)
+
+        drained = run_chunk_keywords_pass(
+            store,
+            embedder,
+            batch_size=10,
+            max_seconds=600.0,
+            clock=_clock,
+        )
+        assert drained == {"claimed": 3, "ok": 3, "failed": 0}
+
+    def test_zero_max_seconds_claims_nothing(
+        self, store: Store, monkeypatch: Any
+    ) -> None:
+        """``max_seconds=0`` parks the drain without touching service
+        prio: nothing claims, no embed call fires."""
+        ref_id = seed_ref(store)
+        _seed_long_chunk(store, ref_id=ref_id, ord=0, text=_BODY_TEXT_1)
+        embedder = make_mock_bge_m3()
+        embed = Mock(wraps=embedder.embed)
+        monkeypatch.setattr(embedder, "embed", embed)
+
+        assert run_chunk_keywords_pass(store, embedder, max_seconds=0.0) == {
+            "claimed": 0,
+            "ok": 0,
+            "failed": 0,
+        }
+        embed.assert_not_called()
+        with store.pool.connection() as conn:
+            assert conn.execute("SELECT keywords FROM chunks").fetchall() == [(None,)]
+
+    def test_batch_size_env_is_the_passs_own_knob(
+        self, store: Store, monkeypatch: Any
+    ) -> None:
+        """``PRECIS_CHUNK_KEYWORDS_BATCH_SIZE`` sizes the claim when the
+        caller passes ``batch_size=None`` — which the worker closure
+        always does now that the shared ``--batch-size`` no longer
+        leaks in (gr549751)."""
+        ref_id = seed_ref(store)
+        for i in range(5):
+            _seed_long_chunk(store, ref_id=ref_id, ord=i, text=_BODY_TEXT_1)
+        emb = make_mock_bge_m3()
+        monkeypatch.setenv("PRECIS_CHUNK_KEYWORDS_BATCH_SIZE", "2")
+        assert run_chunk_keywords_pass(store, emb) == {
+            "claimed": 2,
+            "ok": 2,
+            "failed": 0,
+        }
+        # Unset → the 256-chunk default claims whatever the cap admits.
+        monkeypatch.delenv("PRECIS_CHUNK_KEYWORDS_BATCH_SIZE")
+        assert run_chunk_keywords_pass(store, emb) == {
+            "claimed": 3,
+            "ok": 3,
+            "failed": 0,
+        }
+
+    def test_max_seconds_env_parks_the_pass(
+        self, store: Store, monkeypatch: Any
+    ) -> None:
+        ref_id = seed_ref(store)
+        _seed_long_chunk(store, ref_id=ref_id, ord=0, text=_BODY_TEXT_1)
+        emb = make_mock_bge_m3()
+        monkeypatch.setenv("PRECIS_CHUNK_KEYWORDS_MAX_SECONDS", "0")
+        assert run_chunk_keywords_pass(store, emb) == {
+            "claimed": 0,
+            "ok": 0,
+            "failed": 0,
+        }
+        monkeypatch.delenv("PRECIS_CHUNK_KEYWORDS_MAX_SECONDS")
+        assert run_chunk_keywords_pass(store, emb) == {
+            "claimed": 1,
+            "ok": 1,
+            "failed": 0,
+        }

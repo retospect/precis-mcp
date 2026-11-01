@@ -71,7 +71,15 @@ def build_ref_passes(
         )
 
         def _chunk_keywords_pass(batch_size: int) -> BatchResult:
-            r = run_chunk_keywords_pass(store, kw_embedder, batch_size=batch_size)
+            # Do NOT forward the loop's ``batch_size`` (``--batch-size``,
+            # default 32): the generic flag made the pass's own knob
+            # dead code, capping each claim at 32 and draining a 1.6M-
+            # chunk backlog at ~43 chunks/h (gr549751). ``None`` lets
+            # ``PRECIS_CHUNK_KEYWORDS_BATCH_SIZE`` (default 256) size
+            # the claim while ``PRECIS_CHUNK_KEYWORDS_MAX_SECONDS``
+            # (~60 s) bounds the advisory-lock hold — same trap as
+            # ``chase_trigger`` (gr454865), which passes ``None`` too.
+            r = run_chunk_keywords_pass(store, kw_embedder, batch_size=None)
             return BatchResult.from_dict("chunk_keywords", r)
 
         ref_passes.append(_chunk_keywords_pass)

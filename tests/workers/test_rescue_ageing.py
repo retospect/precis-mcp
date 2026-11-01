@@ -215,3 +215,30 @@ def test_wake_runner_requeue_wait_is_bounded_under_flood(
         should_stop=lambda: sim.now >= horizon_s,
     )
     assert _max_gap(runs, horizon_s) <= _DEFAULT_BUDGET_S + 36 * _MIN
+
+
+def test_chunk_keywords_drain_wait_is_bounded_under_flood(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """gr549751: chunk_keywords is a bounded steady drain (~60 s wall
+    cap, single-runner advisory lock) whose 1.6M-chunk backlog sank to
+    ~3-7 runs/h under the serial rotation — same starvation shape as
+    job_coordinator, so it interleaves on the same rescue budget."""
+    sim = _SimTime()
+    monkeypatch.setattr(runner, "time", sim)
+    monkeypatch.delenv("PRECIS_WORKER_RESCUE_BUDGET_S", raising=False)
+    horizon_s = 24 * 60 * _MIN
+    runs: list[float] = []
+    ref_passes: list[RefPass] = [
+        _rescue("chunk_keywords", sim, runs),
+        _pass("llm_summarize", sim, 36 * _MIN, 32),
+        _pass("fetch", sim, 30 * _MIN, 32),
+        _pass("chase", sim, 30 * _MIN, 32),
+    ]
+    run_loop(
+        [],
+        store=_NO_STORE,
+        ref_passes=ref_passes,
+        should_stop=lambda: sim.now >= horizon_s,
+    )
+    assert _max_gap(runs, horizon_s) <= _DEFAULT_BUDGET_S + 36 * _MIN
