@@ -1048,6 +1048,19 @@ def test_host_refusal_marks_and_line() -> None:
     assert land_slice.refusal_side("scripts/ship exit 3") is None
     assert land_slice.host_refusal_line(DRIFT_LOG) is None
     assert land_slice.host_refusal_line("") is None
+    # jo553766: no gate image on the node; ship's ✖ blamed the lockfile
+    no_image = (
+        " Image precis-dev pull access denied for precis-dev, repository does "
+        "not exist or may require 'docker login' \n"
+        "#5 ERROR: pull access denied, repository does not exist or may require "
+        "authorization: server message: insufficient_scope: authorization failed\n"
+        " > [context premodels] load metadata for precis-mcp:premodels:\n"
+        "\x1b[31m✖ gate env sync failed and NOT on a package fetch — uv could "
+        "not resolve/install the locked environment (output above).\x1b[0m\n"
+    )
+    line = land_slice.host_refusal_line(no_image)
+    assert line is not None and "load metadata for precis-mcp:premodels" in line
+    assert land_slice.refusal_side(line) == "host"
 
 
 BROKEN_DOCKER_LOG = (

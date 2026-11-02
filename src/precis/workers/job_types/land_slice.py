@@ -126,6 +126,11 @@ HOST_REFUSAL_MARKS: tuple[str, ...] = (
     "unknown shorthand flag: 'f' in -f",
     "is not a docker command",
     "Cannot connect to the Docker daemon",
+    # No gate image on the node: compose cannot pull `precis-dev` and the
+    # fallback build has no local :premodels seed (jo553766). The node needs
+    # `scripts/build-image precis-dev`, not a branch fix.
+    "pull access denied for precis-dev",
+    "load metadata for precis-mcp:premodels",
 )
 #: Deferrals tolerated per land; the next main refusal fails the job with a
 #: "land BLOCKED" handoff (nothing wrong on the branch).
