@@ -389,7 +389,7 @@ deploy. Nothing else about the plan tree changes (WM 6).
   2026-11-02: six gripes at `STATUS:fixing` (gr549760, gr550979, gr551098,
   gr551840, gr551238, gr554555), zero in the `/queue` loop, and the
   coordinator's file state under `/tmp/gripe-fix` (a symlink to
-  `~/work/gripe-fix-state`, ~1,400 brief and queue files). A CLI verb
+  the GRIPE_FIX state directory, ~1,400 brief and queue files). A CLI verb
   `precis gripe-fix to-todos [--apply]` next to the existing `gripe-fix
   import`: for each `fixing` gripe with no `fixed-by` todo, mint the code
   todo under the §2 root with `body` = the newest `gripe_brief` chunk or

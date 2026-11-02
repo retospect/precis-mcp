@@ -194,7 +194,7 @@ transitive (prod `relations`, 2026-11-02; migration 0180 touched only
 and only a cycle refuses. Prod has 0 memory→todo `part-of` rows, so the
 case is untested in the wild; slice 2b pins it next to
 `test_part_of_todo_to_quest_passes_constraints`
-(`tests/test_relation_constraints.py::test_part_of_memory_to_todo_passes_constraints`).
+(a new pin in tests/test_relation_constraints.py, to be added: memory part-of todo passes the constraints).
 No rule change. The two guards on the door are irrelevant here:
 `guard_taxon_hierarchy` fires on `specialises`/`generalises` only;
 `_machine_edge_admission` (`store/_links_ops.py`) gates machine writers
@@ -826,7 +826,7 @@ deleted with weave (Q8, feature removed, no replacement) — `test_weave*.py`,
 `precis_web/test_quest_dashboard.py`, `test_pathway_detail.py`,
 `test_draft_block_routes_handler_path.py`, `workers/test_draft_refresh_job.py`,
 `test_relation_constraints.py`; new — `test_quest_cards.py` (slice 2b),
-`test_relation_constraints.py::test_part_of_memory_to_todo_passes_constraints`,
+a new memory-part-of-todo pin in test_relation_constraints.py,
 the card fixture in `precis_web/test_pathway_detail.py` (slice 8); the
 rest are incidental strings. A slice that
 deletes a test moves its assertion into the replacement test in the same
