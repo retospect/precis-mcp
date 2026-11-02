@@ -7,12 +7,12 @@ resolution-markers = [
     "python_full_version >= '3.14' and platform_machine == 'aarch64' and sys_platform == 'linux'",
     "(python_full_version >= '3.14' and platform_machine != 'aarch64' and sys_platform == 'linux') or (python_full_version >= '3.14' and sys_platform != 'darwin' and sys_platform != 'linux' and sys_platform != 'win32')",
     "python_full_version == '3.13.*' and sys_platform == 'win32'",
-    "python_full_version < '3.13' and sys_platform == 'win32'",
     "python_full_version == '3.13.*' and sys_platform == 'darwin'",
-    "python_full_version < '3.13' and sys_platform == 'darwin'",
     "python_full_version == '3.13.*' and platform_machine == 'aarch64' and sys_platform == 'linux'",
-    "python_full_version < '3.13' and platform_machine == 'aarch64' and sys_platform == 'linux'",
     "(python_full_version == '3.13.*' and platform_machine != 'aarch64' and sys_platform == 'linux') or (python_full_version == '3.13.*' and sys_platform != 'darwin' and sys_platform != 'linux' and sys_platform != 'win32')",
+    "python_full_version < '3.13' and sys_platform == 'win32'",
+    "python_full_version < '3.13' and sys_platform == 'darwin'",
+    "python_full_version < '3.13' and platform_machine == 'aarch64' and sys_platform == 'linux'",
     "(python_full_version < '3.13' and platform_machine != 'aarch64' and sys_platform == 'linux') or (python_full_version < '3.13' and sys_platform != 'darwin' and sys_platform != 'linux' and sys_platform != 'win32')",
 ]
 
@@ -404,8 +404,8 @@ wheels = [
 
 [[package]]
 name = "autocatpath"
-version = "0.45.1"
-source = { git = "https://github.com/retospect/catpath?rev=5d9b7dfc118b409fd52342b5d13129688f4b2b0a#5d9b7dfc118b409fd52342b5d13129688f4b2b0a" }
+version = "0.46.0"
+source = { git = "https://github.com/retospect/catpath?rev=240c53ac6dac8338edc0dc9a9cfff25d71e49c0f#240c53ac6dac8338edc0dc9a9cfff25d71e49c0f" }
 dependencies = [
     { name = "ase" },
     { name = "matplotlib" },
@@ -4140,8 +4140,8 @@ requires-dist = [
     { name = "aiohttp", marker = "extra == 'asa'", specifier = ">=3.9" },
     { name = "ase", specifier = ">=3.29.0" },
     { name = "ase", marker = "extra == 'dft-ml'", specifier = ">=3.29.0" },
-    { name = "autocatpath", marker = "extra == 'catalyst'", git = "https://github.com/retospect/catpath?rev=5d9b7dfc118b409fd52342b5d13129688f4b2b0a" },
-    { name = "autocatpath", extras = ["mace"], marker = "extra == 'catalyst-gpu'", git = "https://github.com/retospect/catpath?rev=5d9b7dfc118b409fd52342b5d13129688f4b2b0a" },
+    { name = "autocatpath", marker = "extra == 'catalyst'", git = "https://github.com/retospect/catpath?rev=240c53ac6dac8338edc0dc9a9cfff25d71e49c0f" },
+    { name = "autocatpath", extras = ["mace"], marker = "extra == 'catalyst-gpu'", git = "https://github.com/retospect/catpath?rev=240c53ac6dac8338edc0dc9a9cfff25d71e49c0f" },
     { name = "avwx-engine", specifier = ">=1.9.9,<1.9.10" },
     { name = "cadquery-ocp-novtk", marker = "extra == 'cad-step'", specifier = ">=7.8" },
     { name = "cuequivariance-torch", marker = "sys_platform == 'linux' and extra == 'catalyst-gpu'" },
