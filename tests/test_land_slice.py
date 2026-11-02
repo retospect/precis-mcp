@@ -332,6 +332,12 @@ def test_submit_launches_ship_with_the_slice_subject(seams: dict[str, Any]) -> N
     assert argv == [str(tree / "scripts" / "ship"), "--quick", SUBJECT]
     assert kw["cwd"] == tree
     assert kw["env"]["PRECIS_SHIP_VERBOSE"] == "1"
+    # ship's uv steps run on the worker's Python line, never the newest
+    # interpreter on the host (jo551780: Homebrew 3.15, no rdkit wheel)
+    assert kw["env"]["UV_PYTHON"] == land_slice.ship_python()
+    assert (
+        kw["env"]["UV_PYTHON"] == f"{sys.version_info.major}.{sys.version_info.minor}"
+    )
     assert handle["subject"] == SUBJECT and handle["pid"] == 5151
     assert handle["log"] == str(tree / "scratch" / "land_slice.log")
     assert ctx.meta_set["land_subject"] == SUBJECT

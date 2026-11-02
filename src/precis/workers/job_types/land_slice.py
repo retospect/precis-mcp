@@ -705,8 +705,17 @@ def _launch_ship(
             log=log_path,
             exit_file=exit_path,
             # The factory token (vault) as git's credential helper: the slice
-            # host's service account has none of its own (td543734).
-            env={**_factory_git.git_auth_env(), "PRECIS_SHIP_VERBOSE": "1"},
+            # host's service account has none of its own (td543734). UV_PYTHON
+            # pins ship's `uv run` steps to the worker's Python line: with no
+            # .venv in a slice tree uv takes the newest interpreter satisfying
+            # requires-python — Homebrew 3.15 on melchior, for which rdkit has
+            # no wheel, so the frozen sync fails and gen-devin-hooks' check
+            # reads as "stale" (jo551780 event 6).
+            env={
+                **_factory_git.git_auth_env(),
+                "PRECIS_SHIP_VERBOSE": "1",
+                "UV_PYTHON": ship_python(),
+            },
         )
     except Exception as exc:
         log.warning("land_slice: launch for td%d failed", todo_id, exc_info=True)
@@ -747,6 +756,13 @@ UNKNOWN_GATE_CROSS = (
     "(drift guard unknown: blind token or GitHub unanswerable; fail-closed, "
     "gr550941)"
 )
+
+
+def ship_python() -> str:
+    """The Python line ship's ``uv run`` steps pin to (``UV_PYTHON``): the
+    worker's own ``major.minor`` (a version, not the venv's interpreter path,
+    so uv picks a matching base interpreter rather than a venv)."""
+    return f"{sys.version_info.major}.{sys.version_info.minor}"
 
 
 def _drift_preflight(tree: Path) -> dict[str, Any]:
@@ -1135,6 +1151,7 @@ __all__ = [
     "poll",
     "refusal_backoff_s",
     "ship_bin",
+    "ship_python",
     "ship_status",
     "squash_subject",
     "submit",
