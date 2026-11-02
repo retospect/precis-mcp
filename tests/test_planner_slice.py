@@ -284,7 +284,9 @@ def test_guardrails_halt_on_tick_cap(
     assert rid not in _candidate_parent_ids(store, limit=10)
 
 
-def _log_spend(store: Store, ref_id: int | None, cost: float) -> None:
+def _log_spend(
+    store: Store, ref_id: int | None, cost: float, *, billed: float | None = None
+) -> None:
     """Record spend in ``llm_call_log`` — the ledger the caps actually read.
 
     These tests used to hand-write ``meta={'cost_usd': ...}`` onto a job ref
@@ -292,12 +294,16 @@ def _log_spend(store: Store, ref_id: int | None, cost: float) -> None:
     fixture invented the data the assertion then verified: the caps read $0.00
     in prod and never fired, while the suite stayed green. Seed the real
     ledger, or the test proves nothing.
+
+    ``billed`` stamps ``billed_usd`` directly; ``None`` leaves the pre-0272
+    shape (NULL — the daily ceiling falls back to ``cost_usd``).
     """
     with store.pool.connection() as conn:
         conn.execute(
-            "INSERT INTO llm_call_log (source, transport, model, cost_usd, ref_id) "
-            "VALUES ('plan_tick', 'claude_agent', 'claude-opus-4-8', %s, %s)",
-            (cost, ref_id),
+            "INSERT INTO llm_call_log "
+            "(source, transport, model, cost_usd, billed_usd, ref_id) "
+            "VALUES ('plan_tick', 'claude_agent', 'claude-opus-4-8', %s, %s, %s)",
+            (cost, billed, ref_id),
         )
         conn.commit()
 
@@ -318,8 +324,13 @@ def test_guardrails_halt_on_cost_cap(
 def test_guardrails_skip_on_daily_ceiling(
     handler: TodoHandler, store: Store, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """When daily cost >= PRECIS_DAILY_COST_CEILING, dispatch is paused
-    (but the parent is NOT individually halted — round-wide pause).
+    """When daily billed cost >= PRECIS_DAILY_COST_CEILING, dispatch is
+    paused (but the parent is NOT individually halted — round-wide pause).
+
+    The ceiling sums ``billed_usd`` (gr549279): the first spend below has
+    a nominal ``cost_usd`` of $10 — over the $5 ceiling — but billed $0
+    (a subscription ``claude_p`` burst), so dispatch proceeds; the second
+    bills real dollars and trips it.
 
     Setup: keep the per-todo and per-tree caps loose, push global cost
     against a DIFFERENT parent so the parent-under-test has $0 of its own
@@ -329,9 +340,16 @@ def test_guardrails_skip_on_daily_ceiling(
     monkeypatch.setenv("PRECIS_MAX_TODO_USD", "1000.0")
     monkeypatch.setenv("PRECIS_MAX_TREE_USD", "1000.0")
     other = handler.put(text="big spender", meta={"llm_tier": "opus"})
-    _log_spend(store, _id_of(other.body), 10.0)
+    _log_spend(store, _id_of(other.body), 10.0, billed=0.0)
     r = handler.put(text="cheap parent", meta={"llm_tier": "sonnet"})
     rid = _id_of(r.body)
+    # gr549279: nominal $10 is over the $5 ceiling but billed $0 is not —
+    # a subscription claude_p burst must not pause dispatch.
+    verdict = planner_guardrails.check_parent(store, parent_ref_id=rid)
+    assert verdict.allow is True
+    # Billed spend over the ceiling pauses dispatch — and the parent is
+    # NOT individually halted (round-wide pause).
+    _log_spend(store, _id_of(other.body), 6.0, billed=6.0)
     verdict = planner_guardrails.check_parent(store, parent_ref_id=rid)
     assert verdict.allow is False
     # No per-parent halt: the global ceiling is round-scoped.

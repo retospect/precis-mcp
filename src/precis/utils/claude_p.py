@@ -313,7 +313,8 @@ def call_claude_p(
         # modern Claude Code no longer emits — so ``cost_usd`` came back
         # ``None`` on *every* call this helper has ever made, and the whole
         # claude_p lane (quest_tick, figure) was invisible to
-        # ``PRECIS_DAILY_COST_CEILING``, which sums ``llm_call_log.cost_usd``.
+        # ``PRECIS_DAILY_COST_CEILING``, which sums ``llm_call_log.billed_usd``
+        # (migration 0272; ``cost_usd`` on a billed login feeds it).
         # The ``json`` envelope carries ``total_cost_usd`` alongside the
         # assistant text. Sibling of ``LlmRequest.output_format`` defaulting to
         # ``stream-json`` on the claude_agent lane — same bug, same fix.

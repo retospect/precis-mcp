@@ -63,6 +63,9 @@ Environment=PRECIS_MAX_TICKS={{ precis_max_ticks | default(25) }}
 Environment=PRECIS_MAX_TODO_USD={{ precis_max_todo_usd | default(5.0) }}
 Environment=PRECIS_MAX_TREE_USD={{ precis_max_tree_usd | default(10.0) }}
 Environment=PRECIS_DAILY_COST_CEILING={{ precis_daily_cost_ceiling | default(50.0) }}
+# Whether the deploy user's `claude -p` login is API-billed (gr549279):
+# 0 (default) = OAuth subscription — claude_p rows log billed_usd=0.
+Environment=PRECIS_CLAUDE_P_BILLED={{ '1' if (precis_claude_p_billed | default(false)) else '0' }}
 # Operator hold switch: comma-separated job_types the claim path skips
 # (queued rows wait; in-flight rows finish). Empty = nothing held.
 Environment=PRECIS_SUSPENDED_JOB_TYPES={{ precis_suspended_job_types | default('') }}

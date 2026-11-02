@@ -116,6 +116,11 @@
     <string>{{ precis_max_tree_usd | default(10.0) }}</string>
     <key>PRECIS_DAILY_COST_CEILING</key>
     <string>{{ precis_daily_cost_ceiling | default(50.0) }}</string>
+    {# Whether the deploy user's `claude -p` login is API-billed (gr549279):
+       0 (default) = OAuth subscription, so claude_p rows log billed_usd=0
+       and the ceiling above counts real dollars, not list-price nominal. #}
+    <key>PRECIS_CLAUDE_P_BILLED</key>
+    <string>{{ '1' if (precis_claude_p_billed | default(false)) else '0' }}</string>
     {# Operator hold switch: comma-separated job_types the claim path skips
        (queued rows wait; in-flight rows finish). Empty = nothing held. #}
     <key>PRECIS_SUSPENDED_JOB_TYPES</key>

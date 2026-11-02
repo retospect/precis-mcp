@@ -290,6 +290,32 @@ def test_metered_billed_call_is_silent(caplog: Any) -> None:
     assert caplog.text == ""
 
 
+def test_unmetered_claude_p_on_subscription_is_silent(
+    caplog: Any, monkeypatch: Any
+) -> None:
+    """gr549279: a subscription claude_p call stamps ``billed_usd = 0`` —
+    the ceiling accounts for it correctly even when the nominal
+    ``cost_usd`` is missing, so the meter warning does not fire."""
+    monkeypatch.delenv("PRECIS_CLAUDE_P_BILLED", raising=False)
+    route_log.bind_store(None)
+    with caplog.at_level(logging.WARNING, logger="precis.route_log"):
+        route_log.record_call(_rec(transport="claude_p"))
+    assert caplog.text == ""
+
+
+def test_unmetered_claude_p_on_a_billed_login_warns(
+    caplog: Any, monkeypatch: Any
+) -> None:
+    """``PRECIS_CLAUDE_P_BILLED`` truthy → ``billed_usd = cost_usd``, so a
+    NULL cost on claude_p is the same ceiling-blind metering gap the
+    claude_agent check exists for."""
+    monkeypatch.setenv("PRECIS_CLAUDE_P_BILLED", "1")
+    route_log.bind_store(None)
+    with caplog.at_level(logging.WARNING, logger="precis.route_log"):
+        route_log.record_call(_rec(transport="claude_p"))
+    assert "no cost_usd" in caplog.text
+
+
 def test_claude_p_unparseable_envelope_keeps_cost_usage_and_flags(
     monkeypatch: Any,
 ) -> None:

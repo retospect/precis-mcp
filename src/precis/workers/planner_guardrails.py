@@ -28,11 +28,14 @@ three caps the dispatcher consults before minting a planner job:
    when the project as a whole has spent enough.
 
 4. **Global daily cost ceiling** (``PRECIS_DAILY_COST_CEILING``,
-   default $20/day; prod sets 100 via ``precis_daily_cost_ceiling``).
-   Sums *all* recorded LLM spend over the last 24h; when the ceiling
-   is hit the dispatcher pauses discretionary candidates until the
-   rolling window clears. Coarse but effective — protects the overall
-   budget envelope. Two dispatcher-side exemptions survive a tripped
+   default $20/day; prod sets 300 via ``precis_daily_cost_ceiling``).
+   Sums *billed* LLM spend (``llm_call_log.billed_usd``, migration 0272)
+   over the last 24h; when the ceiling is hit the dispatcher pauses
+   discretionary candidates until the rolling window clears. Coarse but
+   effective — protects the overall budget envelope. Billed, not the
+   nominal ``cost_usd``: a ``claude_p`` call on a subscription login
+   bills $0 and must not black out the fleet for a day (gr549279).
+   Two dispatcher-side exemptions survive a tripped
    ceiling (``workers/dispatch.py``): cadence work
    (``_cadence_parent_ids``) and zero-LLM compute mints
    (``_zero_llm_parent_ids`` — the ceiling is an LLM budget, and an
@@ -57,11 +60,15 @@ could never fire, however far spend ran (a soft-deleted project tree
 burned $291 over five days against a $20/day ceiling before anyone
 noticed). ``llm_call_log`` is the authoritative per-dispatch ledger
 and needs no cooperation from the runner, so the caps cannot rot the
-same way again. Deliberately **includes** the ``claude_agent`` /
-``claude_p`` OAuth transports that :mod:`precis.budget.meter`
-excludes: the meter tracks real money, while these caps bound the
-planner's *discretionary* burn — subscription quota very much
-included, since that is the path that actually ran away.
+same way again. Checks 2 and 3 deliberately **include** the
+``claude_agent`` / ``claude_p`` OAuth transports that
+:mod:`precis.budget.meter` excludes: the meter tracks real money, while
+these caps bound the planner's *discretionary* burn — subscription quota
+very much included, since that is the path that actually ran away.
+Check 4 reads the ledger differently (migration 0272): it sums
+``billed_usd``, the dollars actually billed, so a subscription
+``claude_p`` call counts $0 there while still counting its nominal
+``cost_usd`` against the per-todo and per-tree burn caps.
 
 **And deliberately EXCLUDES ``placement='local'`` (migration 0112).**
 The cluster's own GPUs are a sunk cost, so a local row's ``cost_usd``
@@ -421,18 +428,23 @@ def _read_tree_cost_usd(store: Store, ref_id: int) -> float:
 
 
 def _read_daily_cost(store: Store) -> float:
-    """Sum *all* recorded LLM spend over the rolling last 24h.
+    """Sum *billed* LLM spend over the rolling last 24h.
 
     Every source, every transport — not just planner ticks. The ceiling
     gates the planner because that is the expensive discretionary work,
     but the envelope it protects is the whole day's spend: if the fleet
     has already burned the day's budget, minting more opus ticks is
     exactly the wrong move.
+
+    The sum is over ``billed_usd`` (migration 0272), not the nominal
+    ``cost_usd``: a ``claude_p`` row on a subscription login bills $0 and
+    must not hold the ceiling tripped for a day (gr549279). NULL
+    ``billed_usd`` — every pre-0272 row — falls back to ``cost_usd``.
     """
     with store.pool.connection() as conn:
         row = conn.execute(
             """
-            SELECT COALESCE(SUM(cost_usd), 0)::float
+            SELECT COALESCE(SUM(COALESCE(billed_usd, cost_usd)), 0)::float
               FROM llm_call_log
              WHERE cost_usd IS NOT NULL
                AND placement IS DISTINCT FROM 'local'

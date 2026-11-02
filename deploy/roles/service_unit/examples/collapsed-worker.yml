@@ -51,4 +51,5 @@
 #               'PRECIS_MAX_TODO_USD': (precis_max_todo_usd | default(5.0)) | string,
 #               'PRECIS_MAX_TREE_USD': (precis_max_tree_usd | default(10.0)) | string,
 #               'PRECIS_DAILY_COST_CEILING': (precis_daily_cost_ceiling | default(50.0)) | string,
+#               'PRECIS_CLAUDE_P_BILLED': ('1' if (precis_claude_p_billed | default(false)) else '0'),
 #             }) }}

@@ -19,6 +19,8 @@ import logging
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
+from precis.utils.env import env_flag
+
 if TYPE_CHECKING:
     from precis.store import Store
 
@@ -169,13 +171,29 @@ class LlmCallRecord:
     reason_class: str | None = None
 
 
+def _billed_usd(rec: LlmCallRecord) -> float | None:
+    """What ``rec`` was actually billed — the column the daily ceiling sums.
+
+    ``cost_usd`` is the *nominal* figure; on ``claude_p`` it is Claude
+    Code's list-price estimate, which an OAuth-subscription login never
+    pays (gr549279). The json envelope does not say how the call was paid,
+    so the host declares it: ``PRECIS_CLAUDE_P_BILLED`` falsy (the default —
+    the deploy user runs a subscription) stamps ``billed_usd = 0``, truthy
+    stamps ``cost_usd``. Every other transport bills what it reports.
+    """
+    if rec.transport == "claude_p" and not env_flag("PRECIS_CLAUDE_P_BILLED"):
+        return 0.0
+    return rec.cost_usd
+
+
 def _blob_hash(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
-#: Transports that spend real money on a metered account. A ``NULL`` cost on
-#: one of these is a **metering bug**, not a free call — unlike the local /
-#: OSS lanes, where ``None`` legitimately means "cost nothing to report".
+#: Transports that can spend real money on a metered/billed account. A
+#: ``NULL`` *billed* figure on one of these is a **metering bug**, not a
+#: free call — unlike the local / OSS lanes, where ``None`` legitimately
+#: means "cost nothing to report".
 #: These are ``Transport`` *values* (what ``LlmCallRecord.transport`` carries),
 #: deliberately not the ``Backend`` names — spelling a backend here would be a
 #: silently-never-matching entry. Compared as strings so this module stays
@@ -184,32 +202,35 @@ BILLED_TRANSPORTS = frozenset({"claude_agent", "claude_p"})
 
 
 def _warn_if_unmetered(rec: LlmCallRecord) -> None:
-    """Make a missing ``cost_usd`` on a billed transport loud.
+    """Make a missing ``billed_usd`` on a billed transport loud.
 
     Cost is not reported by the provider unless the call site asks for it —
     ``--output-format`` on both claude lanes. That made metering a silent
     per-call-site opt-in: the sites that happened to ask billed visibly, the
     ones that didn't logged >1000 Claude calls at ``NULL`` cost, invisible to
-    ``PRECIS_DAILY_COST_CEILING`` (which sums this column). Both defaults are
-    fixed now, but a *default* only protects the call sites that exist today —
-    the next transport, or a caller that overrides ``output_format`` back to
-    ``text``, would reopen the hole just as quietly.
+    ``PRECIS_DAILY_COST_CEILING`` (which sums ``billed_usd``). Both defaults
+    are fixed now, but a *default* only protects the call sites that exist
+    today — the next transport, or a caller that overrides ``output_format``
+    back to ``text``, would reopen the hole just as quietly.
 
     So this is the standing detector, at the one chokepoint every dispatch
-    passes through: a billed transport that reports no cost gets a WARNING
-    naming the source, which is enough to catch it in the worker log without
-    failing the call. Deliberately not an exception — a metering gap must never
-    break the LLM call it is measuring (the module's dark-by-construction rule).
-    Errored calls are exempt: a transport that blew up legitimately has no cost.
+    passes through: a billed transport whose *billed* figure comes out NULL
+    gets a WARNING naming the source, which is enough to catch it in the
+    worker log without failing the call. Deliberately not an exception — a
+    metering gap must never break the LLM call it is measuring (the module's
+    dark-by-construction rule). Errored calls are exempt: a transport that
+    blew up legitimately has no cost. A ``claude_p`` call on a subscription
+    login is exempt too — its ``billed_usd`` is pinned at 0, so a missing
+    nominal ``cost_usd`` hides nothing from the ceiling.
     """
-    if rec.errored or rec.cost_usd is not None:
+    if rec.errored or _billed_usd(rec) is not None:
         return
     if rec.transport not in BILLED_TRANSPORTS:
         return
     log.warning(
         "route_log: %s call on billed transport %r reported no cost_usd — "
-        "this call is invisible to the daily cost ceiling. Check the call "
-        "site's output_format.",
+        "billed_usd is NULL and this call is invisible to the daily cost "
+        "ceiling. Check the call site's output_format.",
         rec.source or "unknown-source",
         rec.transport,
     )
@@ -264,15 +285,15 @@ def _write(store: Store, rec: LlmCallRecord) -> str | None:
             INSERT INTO llm_call_log (
                 source, tier, transport, model, tools_needed,
                 request_hash, response_hash, request_chars, response_chars,
-                cost_usd, turns_used, duration_ms, errored, error, data_parsed,
-                ref_id, features, placement, placement_routed,
+                cost_usd, billed_usd, turns_used, duration_ms, errored, error,
+                data_parsed, ref_id, features, placement, placement_routed,
                 input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens,
                 reason_class
             ) VALUES (
                 %s, %s, %s, %s, %s,
                 %s, %s, %s, %s,
                 %s, %s, %s, %s, %s, %s,
-                %s, %s, %s, %s,
+                %s, %s, %s, %s, %s,
                 %s, %s, %s, %s, %s
             )
             """,
@@ -287,6 +308,7 @@ def _write(store: Store, rec: LlmCallRecord) -> str | None:
                 len(rec.request_text),
                 len(rec.response_text),
                 rec.cost_usd,
+                _billed_usd(rec),
                 rec.turns_used,
                 rec.duration_ms,
                 rec.errored,

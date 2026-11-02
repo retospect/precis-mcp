@@ -41,6 +41,13 @@ precis_identity_env: "{{ precis_identity_env_raw | dict2items | rejectattr('valu
 # until the ceiling sums billed dollars only (gr549279).
 precis_daily_cost_ceiling: 300.0
 
+# Is this fleet's `claude -p` login API-billed? (PRECIS_CLAUDE_P_BILLED,
+# gr549279). false = OAuth subscription: transport claude_p rows log
+# billed_usd=0 (cost_usd keeps the nominal list-price figure) so the
+# daily ceiling counts real dollars only. Set true on a host whose claude
+# login bills per call — the json envelope cannot say how it was paid.
+precis_claude_p_billed: false
+
 # Planner spend caps (PRECIS_MAX_TODO_USD / PRECIS_MAX_TREE_USD). Templates
 # fall back to 5.0 / 10.0 when unset; raised 2026-09-09 after the organoid
 # survey (td301714/td311100) hit both while still producing usable Related

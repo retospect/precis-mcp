@@ -93,6 +93,7 @@
                  'PRECIS_PROCESS': 'precis-worker-hubrefine',
                  'PRECIS_SOURCE': 'precis-worker-hubrefine',
                  'PRECIS_DAILY_COST_CEILING': (precis_daily_cost_ceiling | default(50.0)) | string,
+                 'PRECIS_CLAUDE_P_BILLED': ('1' if (precis_claude_p_billed | default(false)) else '0'),
                  'PRECIS_EMBEDDER': precis_worker_agent_embedder | default('remote'),
                  'PRECIS_EMBEDDER_URL': precis_worker_agent_embedder_url
                    | default('http://127.0.0.1:' ~ (embedder_port | default(8181))),

@@ -145,6 +145,42 @@ def test_record_call_persists_ref_id(store: Any) -> None:
     assert row is not None and row[0] == 424242
 
 
+def test_record_call_stamps_billed_usd_from_the_env(
+    store: Any, monkeypatch: Any
+) -> None:
+    # gr549279 / migration 0272: billed_usd is computed at log time. A
+    # claude_p row stamps 0 while PRECIS_CLAUDE_P_BILLED is falsy (the
+    # deploy user's OAuth subscription) and cost_usd when it is truthy;
+    # every other transport stamps cost_usd outright.
+    tag = uuid4().hex[:8]
+    src = f"billed-{tag}"
+    monkeypatch.setenv("PRECIS_CLAUDE_P_BILLED", "0")
+    route_log.record_call(
+        _rec(source=f"{src}-sub", transport="claude_p", cost_usd=1.25),
+        store=store,
+    )
+    monkeypatch.setenv("PRECIS_CLAUDE_P_BILLED", "1")
+    route_log.record_call(
+        _rec(source=f"{src}-api", transport="claude_p", cost_usd=1.25),
+        store=store,
+    )
+    route_log.record_call(
+        _rec(source=f"{src}-agent", transport="claude_agent", cost_usd=2.50),
+        store=store,
+    )
+    with store.pool.connection() as conn:
+        rows = dict(
+            conn.execute(
+                "SELECT source, billed_usd::float FROM llm_call_log "
+                "WHERE source LIKE %s",
+                (f"{src}-%",),
+            ).fetchall()
+        )
+    assert rows[f"{src}-sub"] == 0.0
+    assert rows[f"{src}-api"] == 1.25
+    assert rows[f"{src}-agent"] == 2.50
+
+
 def test_spend_rollup_groups_and_keeps_units_separate(store: Any) -> None:
     # The mining rollup buckets by a column and keeps natural units apart:
     # real_usd sums ONLY billed (non-null cost) rows; wall_ms sums duration;
