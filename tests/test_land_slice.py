@@ -1050,6 +1050,42 @@ def test_host_refusal_marks_and_line() -> None:
     assert land_slice.host_refusal_line("") is None
 
 
+BROKEN_DOCKER_LOG = (
+    "quick ship (--quick)\n"
+    "WARNING: precis-gate didn't start — gate falls back to the per-run "
+    "bind-mount container\n"
+    "offline env sync missed the uv cache — trying online (a genuinely new dep "
+    "lands here; the cache re-warms for next time)\n"
+    "unknown shorthand flag: 'f' in -f\n"
+    "\n"
+    "Usage:  docker [OPTIONS] COMMAND [ARG...]\n"
+    "\n"
+    "Run 'docker --help' for more information\n"
+    "\x1b[31m✖ gate env sync failed and NOT on a package fetch — uv could not "
+    "resolve/install the locked environment (output above). A lockfile/dep "
+    "problem, not lint: fix it and re-run scripts/ship.\x1b[0m\n"
+)
+
+
+def test_poll_broken_docker_outranks_the_lockfile_cross(
+    seams: dict[str, Any], clock: dict[str, datetime]
+) -> None:
+    """jo553514: the deploy user had no compose plugin; every `docker compose`
+    died on its own flags and ship's ✖ blamed the branch's lockfile."""
+    store = _Store()
+    store.add_todo(42, tags=("claimed-by:lane-claude-sub",))
+    _ctx, handle = _submit(store, seams)
+    _finish(handle, 1, BROKEN_DOCKER_LOG)
+    pctx = _Ctx(store, _params(seams))
+    assert land_slice.poll(pctx, handle) is False
+    assert handle["main_refusals"] == 1
+    assert handle["last_refusal"] == "unknown shorthand flag: 'f' in -f"
+    [(kind, text)] = pctx.chunks
+    assert kind == "job_event" and "host-side refusal #1" in text
+    assert store.comments(42) == []
+    assert not any(t.startswith("attempt:") for t in store.tag_strings(42))
+
+
 def _host_defer_setup(
     seams: dict[str, Any], refusals: int | None = None
 ) -> tuple[_Store, dict[str, Any]]:

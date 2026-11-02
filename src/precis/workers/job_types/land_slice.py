@@ -119,6 +119,13 @@ MAIN_REFUSAL_MARKS: tuple[str, ...] = (
 HOST_REFUSAL_MARKS: tuple[str, ...] = (
     "docker VM disk has",
     "disk probe failed:",
+    # The docker CLI itself is broken for the lander's user (no compose
+    # plugin: every `docker compose …` dies parsing its own flags; jo553514).
+    # Ship's ✖ then misreads the dead gate as a lockfile problem, so the host
+    # line wins over the ✖ in :func:`poll`.
+    "unknown shorthand flag: 'f' in -f",
+    "is not a docker command",
+    "Cannot connect to the Docker daemon",
 )
 #: Deferrals tolerated per land; the next main refusal fails the job with a
 #: "land BLOCKED" handoff (nothing wrong on the branch).
@@ -1054,9 +1061,11 @@ def poll(ctx: Any, handle: Any) -> bool:
     green = exit_code == 0 and (status is None or status == "shipped")
 
     if not green:
+        # A host-side line outranks the ✖: when docker itself is broken the ✖
+        # that follows blames the branch's lockfile (jo553514).
         cross = (
-            cross_line(log_text)
-            or host_refusal_line(log_text)
+            host_refusal_line(log_text)
+            or cross_line(log_text)
             or (
                 f"scripts/ship exit {'unknown' if exit_code is None else exit_code}"
                 f"{f', SHIP_STATUS {status}' if status else ''}"
