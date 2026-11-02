@@ -1461,24 +1461,59 @@ SERVICES: tuple[ServiceSpec, ...] = (
     # its dispatch, which only the `[catalyst]` venvs carry. An unpinned job
     # claimed by a node without it failed in 0.1 s on ModuleNotFoundError;
     # `placement` holds it queued until a host advertising `autocatpath` claims.
+    # `has_mace` (gr548810 follow-up) marks the two that also need the MLIP
+    # backend — kinetics re-measures gas/slab ledger refs, modes builds the
+    # model calculator — and are minted UNPINNED, so the gateway's catch-all
+    # `--profile all` worker (engine but no mace) could claim them and write
+    # garbage. The rest stay `autocatpath`-only: seed/explore/coverage pin
+    # `target_node` at mint (an unrouted mint is the EMT demo — deliberately
+    # not mace-gated), aggregate is pure numpy, revalidate loads no MLIP.
     *(
         ServiceSpec(
             name=_name,
             label=f"{_name} (job)",
             category="jobs",
             kind=ServiceKind.JOB,
-            placement=frozenset({"autocatpath"}),
+            placement=frozenset(_placement),
             one_line=_line,
             doc_skill="precis-pathway-help",
         )
-        for _name, _line in (
-            ("autocatpath_explore", "Legacy in-process reaction-network exploration."),
-            ("autocatpath_seed", "One (model, seed) unit of a pathway exploration."),
-            ("autocatpath_aggregate", "Combine seed partials into the pathway result."),
-            ("autocatpath_kinetics", "Refresh a stored pathway's kinetics and sweep."),
-            ("autocatpath_modes", "Measure missing normal modes on a stored pathway."),
-            ("autocatpath_revalidate", "Re-run a stored result from its manifest."),
-            ("surface_coverage_scan", "One model's coverage anchors on a slab."),
+        for _name, _line, _placement in (
+            (
+                "autocatpath_explore",
+                "Legacy in-process reaction-network exploration.",
+                {"autocatpath"},
+            ),
+            (
+                "autocatpath_seed",
+                "One (model, seed) unit of a pathway exploration.",
+                {"autocatpath"},
+            ),
+            (
+                "autocatpath_aggregate",
+                "Combine seed partials into the pathway result.",
+                {"autocatpath"},
+            ),
+            (
+                "autocatpath_kinetics",
+                "Refresh a stored pathway's kinetics and sweep.",
+                {"autocatpath", "has_mace"},
+            ),
+            (
+                "autocatpath_modes",
+                "Measure missing normal modes on a stored pathway.",
+                {"autocatpath", "has_mace"},
+            ),
+            (
+                "autocatpath_revalidate",
+                "Re-run a stored result from its manifest.",
+                {"autocatpath"},
+            ),
+            (
+                "surface_coverage_scan",
+                "One model's coverage anchors on a slab.",
+                {"autocatpath"},
+            ),
         )
     ),
     ServiceSpec(

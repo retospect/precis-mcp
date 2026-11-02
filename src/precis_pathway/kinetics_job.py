@@ -46,6 +46,7 @@ neb-tier pathway, and by ``put(kind='pathway', mode='recompute_kinetics')``.
 from __future__ import annotations
 
 import logging
+import math
 import os
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any, cast
@@ -270,6 +271,51 @@ def run_compute(config: dict[str, Any], inputs: dict[str, Any]) -> dict[str, Any
 # ── persistence (shared by _dispatch and _poll) ───────────────────────────
 
 
+def _finite(value: Any) -> bool:
+    return (
+        isinstance(value, (int, float))
+        and not isinstance(value, bool)
+        and math.isfinite(value)
+    )
+
+
+def _degraded_keys(stored: dict[str, Any], results: dict[str, Any]) -> dict[str, str]:
+    """``{output key: rejection reason}`` for each record key ``results``
+    produced but must not store — judged key by key, so a mixed run keeps
+    its good half: a finite ``tof_mf`` still lands when only the sweep
+    degraded, and vice versa.
+
+    ``kinetics_v2`` degrades when the new ``tof_mf`` is not finite while
+    the stored one is; ``kinetics_sweep`` degrades when the new sweep has
+    no ``optimum`` while the stored one does — a solve on a backend-less
+    host writes exactly this and used to clobber a good record wholesale
+    (pathway 527720 lost its v2 record to a one-point, optimum-less
+    sweep). Keys absent from ``results`` aren't judged (the ``*_error``
+    tail keeps the stored record on its own), and a stored record with
+    nothing to protect is overwritten as before.
+    """
+    out: dict[str, str] = {}
+    if "kinetics_v2" in results:
+        v2 = results.get("kinetics_v2")
+        old = stored.get("kinetics_v2")
+        if not (isinstance(v2, dict) and _finite(v2.get("tof_mf"))) and (
+            isinstance(old, dict) and _finite(old.get("tof_mf"))
+        ):
+            out["kinetics_v2"] = (
+                "kinetics_v2 degraded: no finite tof_mf; stored record kept"
+            )
+    if "kinetics_sweep" in results:
+        sweep = results.get("kinetics_sweep")
+        old = stored.get("kinetics_sweep")
+        if not (isinstance(sweep, dict) and sweep.get("optimum")) and (
+            isinstance(old, dict) and old.get("optimum")
+        ):
+            out["kinetics_sweep"] = (
+                "kinetics_sweep degraded: no optimum; stored record kept"
+            )
+    return out
+
+
 def _load(ctx: Any) -> tuple[int, dict[str, Any], Any, dict[str, Any]] | None:
     """Parse params and read the pathway; ``None`` after recording the
     failure. Returns ``(pathway_ref_id, config, ref, inputs)``."""
@@ -346,6 +392,7 @@ def _finalize(
     # meta.results — the same place the aggregate's kinetics record lives
     # — and stamp wholesale (persist.py:129).
     manifest_id: str | None = None
+    degraded: dict[str, str] = {}
     try:
         cur = dict(
             (ctx.store.get_ref(kind="pathway", id=pathway_ref_id) or ref).meta or {}
@@ -355,6 +402,17 @@ def _finalize(
         # the id agrees — and folded into the refreshed D8 record.
         from precis_pathway import manifest as vm
         from precis_pathway.persist import _json_finite
+
+        res_meta = dict(cur.get("results") or {})
+        # Per-key degradation guard: a produced record with no real answer
+        # must not clobber a stored one that has it — judged key by key,
+        # so a finite tof still lands when only the sweep degraded. The
+        # rejected output is kept under ``<key>_rejected`` with the
+        # reason; the stored key stands.
+        degraded = _degraded_keys(res_meta, results)
+        accepted = {
+            k: results[k] for k in _OUTPUT_KEYS if k in results and k not in degraded
+        }
 
         if cur.get("config_snapshot_yaml"):
             # The stored mlip weight pins ride along verbatim — they were
@@ -372,7 +430,7 @@ def _finalize(
             manifest = vm.build_safely(
                 config=manifest_config,
                 config_snapshot_yaml=str(cur["config_snapshot_yaml"]),
-                results={**(cur.get("results") or {}), **results},
+                results={**(cur.get("results") or {}), **accepted},
                 autocatpath_version=str(cur.get("autocatpath_version") or ""),
                 seed_weights={
                     i: {ml.get("weights_sha256")}
@@ -380,23 +438,56 @@ def _finalize(
                     if isinstance(ml, dict)
                 },
             )
-            manifest_id = vm.stamp_results(results, manifest)
+            manifest_id = vm.stamp_results(accepted, manifest)
             if manifest is not None:
                 cur["validation_manifest"] = manifest
                 cur["manifest_id"] = manifest_id
-        res_meta = dict(cur.get("results") or {})
         for ok_key, err_key in _CLEARS.items():
-            if ok_key in results:
+            if ok_key in accepted:
                 res_meta.pop(err_key, None)  # a fresh success retires its error
-        if "kinetics_sweep_error" in results and "kinetics_sweep" not in results:
+                res_meta.pop(f"{ok_key}_rejected", None)  # and its stale rejection
+        if (
+            "kinetics_sweep_error" in results
+            and "kinetics_sweep" not in accepted
+            and "kinetics_sweep" not in degraded
+        ):
             # the stored sweep was solved under another request: kept, but it
             # must not read as this request's answer
             if "kinetics_sweep" in res_meta:
                 res_meta["kinetics_sweep_previous"] = res_meta.pop("kinetics_sweep")
-        res_meta.update({k: results[k] for k in _OUTPUT_KEYS if k in results})
+        # the prior record a fresh success replaces moves under *_previous —
+        # never lost, one write per finalize (paired with the rejection
+        # guard above: whatever this merge drops is recoverable either way)
+        for ok_key in ("kinetics_v2", "kinetics_sweep"):
+            if ok_key in accepted and ok_key in res_meta:
+                res_meta[f"{ok_key}_previous"] = res_meta.pop(ok_key)
+        res_meta.update(accepted)
+        for key, why in degraded.items():
+            rejected = {key: results[key], "reason": why}
+            rej_err_key = _CLEARS.get(key)
+            if rej_err_key is not None and rej_err_key in results:
+                rejected[rej_err_key] = results[rej_err_key]
+            res_meta[f"{key}_rejected"] = rejected
         cur["results"] = res_meta
         # a failed solve's rate-control sum is NaN, which Jsonb refuses
         ctx.store.stamp_ref_meta(pathway_ref_id, _json_finite(cur))
+        if degraded:
+            try:
+                ctx.store.append_event(
+                    pathway_ref_id,
+                    source=NAME,
+                    event="kinetics-rejected",
+                    payload={
+                        "reason": "; ".join(degraded[k] for k in sorted(degraded)),
+                        "keys": sorted(degraded),
+                        "job_id": getattr(ctx, "ref_id", None),
+                    },
+                )
+            except Exception:
+                log.warning(
+                    "autocatpath_kinetics: rejected event append failed",
+                    exc_info=True,
+                )
     except Exception as exc:  # pragma: no cover - persistence is best-effort
         log.warning("autocatpath_kinetics: meta persist failed", exc_info=True)
         ctx.record_failure(
@@ -406,18 +497,19 @@ def _finalize(
         return False
 
     errors: list[str] = []
-    if "kinetics_error" in results and "kinetics_v2" not in results:
+    if "kinetics_error" in results and "kinetics_v2" not in accepted:
         errors.append(
             f"kinetics re-solve failed (stored record left as it was): "
             f"{results['kinetics_error']}"
         )
     if "kinetics_sweep_error" in results:
         errors.append(str(results["kinetics_sweep_error"]))
-    elif "kinetics_sweep" in results and not n_pts:
+    elif "kinetics_sweep" in accepted and not n_pts:
         # the engine turns each dead point into a warning and returns an
         # empty sweep: without this the job reads as a success
         why = next(iter(sweep.get("warnings") or []), "no reason given")
         errors.append(f"sweep solved no point: {why}")
+    errors.extend(degraded[k] for k in sorted(degraded))
     if errors:
         # the errors are saved above for the record; the job itself failed
         ctx.record_failure("autocatpath_kinetics: " + "; ".join(errors))

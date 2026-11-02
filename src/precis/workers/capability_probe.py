@@ -380,6 +380,22 @@ def _probe_autocatpath() -> int:
         return 0
 
 
+def _probe_has_mace() -> int:
+    """The ``mace`` MLIP backend importable in THIS venv — 1/0, never
+    unknown. ``find_spec`` locates the package without importing it (mace
+    pulls torch), so a heartbeat stays cheap; a venv carrying the engine
+    but not the ``autocatpath[mace]`` extra reads 0 and the claim gate
+    leaves backend job types queued for a host that has it. Distinct from
+    ``autocatpath``: a host can import the engine and still produce
+    garbage kinetics/modes output (gr548810: the gateway catch-all
+    ``--profile all`` worker stole unpinned ``autocatpath_kinetics`` rows
+    and re-solved them with no backend)."""
+    try:
+        return 1 if find_spec("mace") else 0
+    except (ImportError, ValueError):
+        return 0
+
+
 def claude_bin_present() -> bool:
     """Public read of the ``claude_bin`` probe — whether THIS host can exec
     ``claude`` (``PRECIS_CLAUDE_BIN`` or ``claude`` on PATH). The LLM router's
@@ -454,6 +470,7 @@ _PROBES: dict[str, Callable[[], int | None]] = {
     "claude_config_mount": _probe_claude_config,
     "repo_checkout": _probe_repo_checkout,
     "autocatpath": _probe_autocatpath,
+    "has_mace": _probe_has_mace,
 }
 
 #: Vocabulary tokens already warned about as probe-less — the

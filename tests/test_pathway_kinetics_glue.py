@@ -365,7 +365,7 @@ def test_kinetics_scalars_lift_kmc():
 
 
 class _MetaStore:
-    """The two store calls the job makes, over one in-memory pathway ref
+    """The store calls the job makes, over one in-memory pathway ref
     (the persist path itself is covered through the real store in
     test_pathway_kinetics_sweep.py)."""
 
@@ -373,6 +373,7 @@ class _MetaStore:
         from types import SimpleNamespace
 
         self.ref = SimpleNamespace(id=4242, meta=meta)
+        self.events: list[dict[str, Any]] = []
 
     def get_ref(self, *, kind: str, id: int) -> Any:
         return self.ref if (kind, id) == ("pathway", self.ref.id) else None
@@ -380,6 +381,19 @@ class _MetaStore:
     def stamp_ref_meta(self, ref_id: int, meta: dict[str, Any]) -> None:
         assert ref_id == self.ref.id
         self.ref.meta = meta
+
+    def append_event(
+        self, ref_id: int, *, source: str, event: str, payload: Any = None
+    ) -> int:
+        self.events.append(
+            {
+                "ref_id": ref_id,
+                "source": source,
+                "event": event,
+                "payload": payload,
+            }
+        )
+        return len(self.events)
 
 
 def test_kinetics_job_reports_kmc_points(monkeypatch):
@@ -436,6 +450,191 @@ def test_kinetics_job_reports_kmc_points(monkeypatch):
     assert stamped["optimum_correlation_effect"] == opt["correlation_effect"]
     got = store.get_ref(kind="pathway", id=ref.id)
     assert len(got.meta["results"]["kinetics_sweep"]["kmc_points"]) == n
+
+
+# --- finalize: *_previous preservation + the degradation guard ---------------
+
+
+def _stored_results() -> dict[str, Any]:
+    """A pathway results block holding a good kinetics record (real tof
+    + an optimum-bearing sweep), as the aggregate stamped it."""
+    return {
+        "nodes": {"A": -1.0},
+        "edges": [{"a": "A", "b": "A"}],
+        "kinetics_v2": {"tof_mf": 9.1e-3, "warnings": []},
+        "kinetics_sweep": {
+            "points": [{"T": 300.0}, {"T": 400.0}],
+            "optimum": {"T": 400.0, "p_total": 1.0, "value": 9.1e-3},
+        },
+    }
+
+
+def _finalize_ctx(store: _MetaStore, ref_id: int) -> MagicMock:
+    ctx = MagicMock()
+    ctx.meta = {"params": {"pathway_ref_id": ref_id, "config": {}}}
+    ctx.store = store
+    return ctx
+
+
+def test_finalize_rejects_a_degraded_resolved_record():
+    """gr548810/pathway 527720: a re-solve with no tof_mf and no optimum
+    must NOT replace a stored record that has them — each degraded key
+    lands under ``<key>_rejected`` with its reason, the job fails, and a
+    ref_events row marks the rejection."""
+    from precis_pathway import kinetics_job
+
+    store = _MetaStore({"results": _stored_results()})
+    ref = store.ref
+    results = {
+        "nodes": {"A": -1.0},
+        "edges": [{"a": "A", "b": "A"}],
+        "kinetics_v2": {"tof_mf": None, "warnings": ["no backend"]},
+        "kinetics_sweep": {"points": [{"T": 300.0}], "optimum": None},
+    }
+    ctx = _finalize_ctx(store, ref.id)
+    ok = kinetics_job._finalize(ctx, ref.id, {}, ref, results)
+
+    assert ok is False
+    ctx.record_failure.assert_called_once()
+    fail = ctx.record_failure.call_args.args[0]
+    assert "kinetics_v2 degraded" in fail and "kinetics_sweep degraded" in fail
+    res = ref.meta["results"]
+    assert res["kinetics_v2"] == {"tof_mf": 9.1e-3, "warnings": []}
+    assert res["kinetics_sweep"]["optimum"]["value"] == 9.1e-3
+    rej_v2 = res["kinetics_v2_rejected"]
+    assert rej_v2["reason"] == (
+        "kinetics_v2 degraded: no finite tof_mf; stored record kept"
+    )
+    assert rej_v2["kinetics_v2"]["tof_mf"] is None
+    rej_sweep = res["kinetics_sweep_rejected"]
+    assert rej_sweep["reason"] == (
+        "kinetics_sweep degraded: no optimum; stored record kept"
+    )
+    assert len(rej_sweep["kinetics_sweep"]["points"]) == 1
+    assert store.events and store.events[0]["event"] == "kinetics-rejected"
+    assert store.events[0]["payload"]["keys"] == [
+        "kinetics_sweep",
+        "kinetics_v2",
+    ]
+
+
+def test_finalize_judges_each_record_key_separately():
+    """A finite tof with a one-point, optimum-less sweep is a MIXED run:
+    the v2 record replaces the stored one (stored kept under
+    ``*_previous``) while the stored sweep stands and the new sweep lands
+    under ``kinetics_sweep_rejected``."""
+    from precis_pathway import kinetics_job
+
+    store = _MetaStore({"results": _stored_results()})
+    ref = store.ref
+    results = {
+        "nodes": {"A": -1.0},
+        "edges": [{"a": "A", "b": "A"}],
+        "kinetics_v2": {"tof_mf": 1.2e-2, "warnings": []},
+        "kinetics_sweep": {"points": [{"T": 300.0}], "optimum": None},
+    }
+    ctx = _finalize_ctx(store, ref.id)
+    ok = kinetics_job._finalize(ctx, ref.id, {}, ref, results)
+
+    assert ok is False
+    fail = ctx.record_failure.call_args.args[0]
+    assert "kinetics_sweep degraded" in fail and "kinetics_v2 degraded" not in fail
+    res = ref.meta["results"]
+    # the good half landed
+    assert res["kinetics_v2"] == {"tof_mf": 1.2e-2, "warnings": []}
+    assert res["kinetics_v2_previous"] == {"tof_mf": 9.1e-3, "warnings": []}
+    # the bad half did not
+    assert res["kinetics_sweep"]["optimum"]["value"] == 9.1e-3
+    assert res["kinetics_sweep_rejected"]["reason"] == (
+        "kinetics_sweep degraded: no optimum; stored record kept"
+    )
+    assert "kinetics_v2_rejected" not in res
+
+
+def test_accepted_finalize_pops_the_stale_rejected():
+    """A later accepted finalize of a previously rejected key clears its
+    ``*_rejected`` marker — the good answer retiring the bad run."""
+    from precis_pathway import kinetics_job
+
+    store = _MetaStore({"results": _stored_results()})
+    ref = store.ref
+    ctx = _finalize_ctx(store, ref.id)
+    bad = {
+        "nodes": {"A": -1.0},
+        "edges": [{"a": "A", "b": "A"}],
+        "kinetics_v2": {"tof_mf": None},
+    }
+    assert kinetics_job._finalize(ctx, ref.id, {}, ref, dict(bad)) is False
+    assert "kinetics_v2_rejected" in ref.meta["results"]
+
+    good = {
+        "nodes": {"A": -1.0},
+        "edges": [{"a": "A", "b": "A"}],
+        "kinetics_v2": {"tof_mf": 1.2e-2, "warnings": []},
+    }
+    ctx = _finalize_ctx(store, ref.id)
+    assert kinetics_job._finalize(ctx, ref.id, {}, ref, dict(good)) is True
+    res = ref.meta["results"]
+    assert res["kinetics_v2"] == {"tof_mf": 1.2e-2, "warnings": []}
+    assert res["kinetics_v2_previous"] == {"tof_mf": 9.1e-3, "warnings": []}
+    assert "kinetics_v2_rejected" not in res
+
+
+def test_finalize_keeps_the_prior_record_under_previous():
+    """A better/equal re-solve replaces the stored record but moves it
+    under ``kinetics_v2_previous``/``kinetics_sweep_previous`` first."""
+    from precis_pathway import kinetics_job
+
+    store = _MetaStore({"results": _stored_results()})
+    ref = store.ref
+    new_v2 = {"tof_mf": 1.2e-2, "warnings": []}
+    new_sweep = {
+        "points": [{"T": 300.0}, {"T": 400.0}, {"T": 500.0}],
+        "optimum": {"T": 500.0, "p_total": 1.0, "value": 1.2e-2},
+    }
+    results = {
+        "nodes": {"A": -1.0},
+        "edges": [{"a": "A", "b": "A"}],
+        "kinetics_v2": new_v2,
+        "kinetics_sweep": new_sweep,
+    }
+    ctx = _finalize_ctx(store, ref.id)
+    ok = kinetics_job._finalize(ctx, ref.id, {}, ref, results)
+
+    assert ok is True
+    res = ref.meta["results"]
+    assert res["kinetics_v2"] == new_v2
+    assert res["kinetics_sweep"] == new_sweep
+    assert res["kinetics_v2_previous"] == {"tof_mf": 9.1e-3, "warnings": []}
+    assert res["kinetics_sweep_previous"]["optimum"]["value"] == 9.1e-3
+    assert "kinetics_v2_rejected" not in res
+    assert not store.events
+
+
+def test_finalize_first_record_writes_no_previous():
+    """A first-ever kinetics record is stored as today — no *_previous,
+    no rejection, nothing to preserve."""
+    from precis_pathway import kinetics_job
+
+    store = _MetaStore(
+        {"results": {"nodes": {"A": -1.0}, "edges": [{"a": "A", "b": "A"}]}}
+    )
+    ref = store.ref
+    new_v2 = {"tof_mf": 9.1e-3, "warnings": []}
+    results = {
+        "nodes": {"A": -1.0},
+        "edges": [{"a": "A", "b": "A"}],
+        "kinetics_v2": new_v2,
+    }
+    ctx = _finalize_ctx(store, ref.id)
+    ok = kinetics_job._finalize(ctx, ref.id, {}, ref, results)
+
+    assert ok is True
+    res = ref.meta["results"]
+    assert res["kinetics_v2"] == new_v2
+    assert "kinetics_v2_previous" not in res
+    assert "kinetics_sweep_previous" not in res
+    assert "kinetics_v2_rejected" not in res
 
 
 # --- kinetics v2 slice 6: accelerated KMC (D6/D8) ----------------------------

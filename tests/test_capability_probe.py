@@ -332,6 +332,21 @@ def test_probe_autocatpath_present_and_absent(monkeypatch: pytest.MonkeyPatch) -
     assert "autocatpath" in cap.capability_vocabulary()
 
 
+def test_probe_has_mace_present_and_absent(monkeypatch: pytest.MonkeyPatch) -> None:
+    """gr548810: the backend token reads the venv, never imports mace."""
+    monkeypatch.setattr(cap, "find_spec", lambda name: object())
+    assert cap._probe_has_mace() == 1
+    monkeypatch.setattr(cap, "find_spec", lambda name: None)
+    assert cap._probe_has_mace() == 0
+
+    def _boom(name: str) -> None:
+        raise ValueError(name)
+
+    monkeypatch.setattr(cap, "find_spec", _boom)
+    assert cap._probe_has_mace() == 0
+    assert "has_mace" in cap.capability_vocabulary()
+
+
 def test_vocabulary_includes_placement_tokens() -> None:
     """td543917: ``ServiceSpec.placement`` tokens are probed like ``requires``."""
     assert {"repo_checkout", "claude_bin", "git"} <= cap.capability_vocabulary()

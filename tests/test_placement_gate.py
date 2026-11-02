@@ -164,13 +164,28 @@ ENGINE_JOB_TYPES = [
     "surface_coverage_scan",
 ]
 
+#: Expected ``ServiceSpec.placement`` per engine job type (gr543909 for
+#: ``autocatpath``; gr548810 adds ``has_mace`` to the two minted unpinned
+#: whose compute loads the MLIP backend).
+ENGINE_PLACEMENT = {
+    "autocatpath_explore": {"autocatpath"},
+    "autocatpath_seed": {"autocatpath"},
+    "autocatpath_aggregate": {"autocatpath"},
+    "autocatpath_kinetics": {"autocatpath", "has_mace"},
+    "autocatpath_modes": {"autocatpath", "has_mace"},
+    "autocatpath_revalidate": {"autocatpath"},
+    "surface_coverage_scan": {"autocatpath"},
+}
 
-@pytest.mark.parametrize("name", ENGINE_JOB_TYPES)
-def test_engine_job_types_declare_autocatpath_placement(name: str) -> None:
+
+@pytest.mark.parametrize(("name", "placement"), sorted(ENGINE_PLACEMENT.items()))
+def test_engine_job_types_declare_autocatpath_placement(
+    name: str, placement: set[str]
+) -> None:
     """gr543909: every job_type whose dispatch imports the engine is gated."""
     spec = SERVICES_BY_NAME[name]
     assert spec.kind is ServiceKind.JOB
-    assert spec.placement == frozenset({"autocatpath"})
+    assert spec.placement == frozenset(placement)
     assert spec.requires == frozenset()
 
 
@@ -199,6 +214,39 @@ def test_unpinned_coverage_scan_waits_for_an_engine_node(
     assert _status(store, jid) == "queued"
     assert "lease_host" not in _meta(store, jid)
     _advertise(store, "node-a", {"git": 1, "autocatpath": 1})
+    assert ssh_node.run_ssh_node_pass(store, limit=5)["claimed"] == 1
+    assert _ssh_host == [jid]
+
+
+@pytest.mark.parametrize("name", ["autocatpath_kinetics", "autocatpath_modes"])
+def test_unpinned_backend_job_waits_for_a_mace_node(
+    store: Store, _ssh_host: list[int], name: str
+) -> None:
+    """gr548810: the gateway's catch-all ``--profile all`` worker runs
+    ``job_ssh_node`` and has the engine but no ``mace`` backend — it
+    claimed unpinned ``autocatpath_kinetics`` rows and re-solved them
+    into garbage. The ``has_mace`` placement holds the row queued until
+    a backend host claims it."""
+    _advertise(store, "node-a", {"git": 1, "autocatpath": 1})
+    jid = _queue(store, name)
+    assert ssh_node.run_ssh_node_pass(store, limit=5)["claimed"] == 0
+    assert _ssh_host == []
+    assert _status(store, jid) == "queued"
+    assert "lease_host" not in _meta(store, jid)
+    _advertise(store, "node-a", {"git": 1, "autocatpath": 1, "has_mace": 1})
+    assert ssh_node.run_ssh_node_pass(store, limit=5)["claimed"] == 1
+    assert _ssh_host == [jid]
+
+
+@pytest.mark.parametrize("name", ["autocatpath_revalidate", "autocatpath_aggregate"])
+def test_engine_only_job_still_claims_without_mace(
+    store: Store, _ssh_host: list[int], name: str
+) -> None:
+    """Engine job types that load no MLIP backend keep the
+    ``autocatpath``-only gate — they must not strand on a mace-less
+    engine host."""
+    _advertise(store, "node-a", {"autocatpath": 1})
+    jid = _queue(store, name)
     assert ssh_node.run_ssh_node_pass(store, limit=5)["claimed"] == 1
     assert _ssh_host == [jid]
 
