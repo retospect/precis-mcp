@@ -41,7 +41,11 @@ Detached submit/poll pair under ``ssh_node``, like ``run_slice``:
   identity (:func:`_drift_preflight`); when that cannot say how old main's
   verdict is (a blind token, GitHub unanswerable) the land parks the same
   way instead of riding ship's "unknown never refuses" (fail-closed,
-  gr550941). Every deferral event ends with the helper's ``--diag`` line.
+  gr550941). Every main-side deferral event ends with the helper's
+  ``--diag`` line. Ship's host-side refusals (:func:`is_host_refusal`: the
+  docker VM disk preflight, exit 3, no ✖) defer the same way under the same
+  counter and cap; the blocked handoff then names the node, not main
+  (gr552214).
 * :func:`kill` SIGTERMs ship's process group.
 
 **Pull requests** (td543749). With ``params.pr = <n>`` (a ``pr-intake``
@@ -106,6 +110,15 @@ _LANDED_MARK = "shipped — landed on main:"
 MAIN_REFUSAL_MARKS: tuple[str, ...] = (
     "main has no all-green shard matrix",
     "main's last all-green shard matrix is",
+)
+#: Substrings of ship's host-side refusals (``docker_disk_preflight`` in
+#: ``scripts/lib/docker-disk.sh``, exit 3, printed to stderr without a ✖):
+#: the lander's own node cannot run a gate right now. Same deferral as a
+#: main refusal (gr552214): nothing on the branch caused it, and a builder
+#: cannot change it.
+HOST_REFUSAL_MARKS: tuple[str, ...] = (
+    "docker VM disk has",
+    "disk probe failed:",
 )
 #: Deferrals tolerated per land; the next main refusal fails the job with a
 #: "land BLOCKED" handoff (nothing wrong on the branch).
@@ -318,6 +331,32 @@ def is_main_refusal(cross: str | None) -> bool:
     """True when ``cross`` (a :func:`cross_line` result) is ship refusing on
     main's state (:data:`MAIN_REFUSAL_MARKS`), not on the branch."""
     return bool(cross) and any(mark in str(cross) for mark in MAIN_REFUSAL_MARKS)
+
+
+def is_host_refusal(cross: str | None) -> bool:
+    """True when ``cross`` is ship refusing on the lander's own host
+    (:data:`HOST_REFUSAL_MARKS`: the docker VM disk preflight)."""
+    return bool(cross) and any(mark in str(cross) for mark in HOST_REFUSAL_MARKS)
+
+
+def host_refusal_line(log_text: str) -> str | None:
+    """The last host-side refusal line in ship's output, or ``None``. These
+    carry no ✖ (jo552075: ``scripts/ship: docker VM disk has 4 GB free; …``),
+    so :func:`cross_line` misses them."""
+    for line in reversed(_lines(log_text)):
+        if is_host_refusal(line):
+            return line.strip()
+    return None
+
+
+def refusal_side(cross: str | None) -> str | None:
+    """``"main"`` / ``"host"`` for a refusal that is not about the branch,
+    else ``None``."""
+    if is_main_refusal(cross):
+        return "main"
+    if is_host_refusal(cross):
+        return "host"
+    return None
 
 
 def landed_short(log_text: str) -> str | None:
@@ -886,8 +925,19 @@ def _gate_unknown(pre: dict[str, Any]) -> bool:
     return pre.get("rc") != 2 and not pre.get("age")
 
 
-def _blocked_handoff(branch: str, refusals: int, cross: str) -> tuple[str, str]:
-    """``(reason, handoff)`` for a land parked past :data:`MAX_MAIN_REFUSALS`."""
+def _blocked_handoff(
+    branch: str, refusals: int, cross: str, side: str = "main"
+) -> tuple[str, str]:
+    """``(reason, handoff)`` for a land parked past :data:`MAX_MAIN_REFUSALS`.
+    ``side`` is :func:`refusal_side`: the handoff names what has to change."""
+    if side == "host":
+        return (
+            f"land blocked by the lander's host for {refusals} refusals: {cross}",
+            f"land BLOCKED on {branch}: the lander's host refused the land "
+            f"{refusals} times ({cross}). Nothing is wrong on the branch; the "
+            "node needs the ops action the refusal names (an operator, not a "
+            "builder). Do not rebuild.",
+        )
     return (
         f"land blocked by main for {refusals} refusals: {cross}",
         f"land BLOCKED on {branch}: main refused the land {refusals} times "
@@ -903,17 +953,19 @@ def _defer_to_main(
     refusals: int,
     *,
     probe: str | None = None,
+    side: str = "main",
 ) -> bool:
-    """A main-side refusal is a deferral, not a red: count it, note it on the
-    job and park the handle until ``not_before`` (now + :func:`refusal_backoff_s`);
+    """A main-side (or host-side, ``side="host"``) refusal is a deferral, not
+    a red: count it, note it on the job and park the handle until
+    ``not_before`` (now + :func:`refusal_backoff_s`);
     :func:`_relaunch_when_due` runs ship again then. The dead ship's pid,
     identity and exit file are dropped so no poll re-reads its exit. The
     handle is mutated in place and persisted to ``meta.compute_handle`` (poll
     cannot hand one back). Always ``False``: the job stays running.
 
-    The event carries the lander identity's drift diag (``probe``, else a
-    fresh :func:`_drift_preflight`) so a blind token and a red window read
-    differently (gr550941)."""
+    A main-side event carries the lander identity's drift diag (``probe``,
+    else a fresh :func:`_drift_preflight`) so a blind token and a red window
+    read differently (gr550941); a host-side one has nothing to probe."""
     due = _now() + timedelta(seconds=refusal_backoff_s())
     for key in ("pid", "pgid", "boot_id", "start_time"):
         handle.pop(key, None)
@@ -923,11 +975,11 @@ def _defer_to_main(
         last_refusal=cross,
         not_before=due.strftime(_TS_FMT),
     )
-    if probe is None:
+    if probe is None and side == "main":
         probe = _drift_preflight(Path(str(handle.get("worktree") or "")))["diag"]
     ctx.append_chunk(
         "job_event",
-        f"land_slice: deferred (main-side refusal #{refusals}): {cross} — "
+        f"land_slice: deferred ({side}-side refusal #{refusals}): {cross} — "
         f"scripts/ship again after {due:%H:%M}Z"
         + (f"\ndrift probe (lander identity): {probe}" if probe else ""),
     )
@@ -1002,21 +1054,27 @@ def poll(ctx: Any, handle: Any) -> bool:
     green = exit_code == 0 and (status is None or status == "shipped")
 
     if not green:
-        cross = cross_line(log_text) or (
-            f"scripts/ship exit {'unknown' if exit_code is None else exit_code}"
-            f"{f', SHIP_STATUS {status}' if status else ''}"
+        cross = (
+            cross_line(log_text)
+            or host_refusal_line(log_text)
+            or (
+                f"scripts/ship exit {'unknown' if exit_code is None else exit_code}"
+                f"{f', SHIP_STATUS {status}' if status else ''}"
+            )
         )
         reason = f"ship of td{todo_id} red: {cross}"
         handoff = (
             f"land FAILED on {branch}: {cross}. Fix it on the branch, commit, "
             "leave the tree clean; the lander re-runs scripts/ship."
         )
-        if is_main_refusal(cross):
-            # Main's state, not the branch's: park and retry later, up to the cap.
+        side = refusal_side(cross)
+        if side is not None:
+            # Main's or the host's state, not the branch's: park and retry
+            # later, up to the cap.
             refusals = int(handle.get("main_refusals") or 0) + 1
             if refusals <= MAX_MAIN_REFUSALS:
-                return _defer_to_main(ctx, handle, cross, refusals)
-            reason, handoff = _blocked_handoff(branch, refusals, cross)
+                return _defer_to_main(ctx, handle, cross, refusals, side=side)
+            reason, handoff = _blocked_handoff(branch, refusals, cross, side)
         ctx.set_meta(exit_code=exit_code, ship_status=status)
         ctx.append_chunk(
             "job_summary",
@@ -1132,6 +1190,7 @@ __all__ = [
     "COMPATIBLE_EXECUTORS",
     "DESCRIPTION",
     "DRIFT_PROBE_TIMEOUT_S",
+    "HOST_REFUSAL_MARKS",
     "MAIN_REFUSAL_BACKOFF_S",
     "MAIN_REFUSAL_MARKS",
     "MAX_MAIN_REFUSALS",
@@ -1144,12 +1203,15 @@ __all__ = [
     "SUBJECT_CAP",
     "UNKNOWN_GATE_CROSS",
     "cross_line",
+    "host_refusal_line",
+    "is_host_refusal",
     "is_main_refusal",
     "kill",
     "landed_short",
     "pending_gate",
     "poll",
     "refusal_backoff_s",
+    "refusal_side",
     "ship_bin",
     "ship_python",
     "ship_status",

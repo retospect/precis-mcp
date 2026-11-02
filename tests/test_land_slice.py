@@ -1018,6 +1018,102 @@ def test_poll_main_refusal_cap_fails_with_the_blocked_handoff(
     assert _cleanup_cmds(seams) == []
 
 
+HOST_LOG = (
+    "quick ship (--quick)\n"
+    "Installed 169 packages in 516ms\n"
+    ".devin/hooks.v1.json is up to date\n"
+    "scripts/ship: docker VM disk has 4 GB free; run scripts/reap-test-dbs, "
+    "or ask the orchestrator to prune; do not re-run\n"
+)
+HOST_CROSS = (
+    "scripts/ship: docker VM disk has 4 GB free; run scripts/reap-test-dbs, "
+    "or ask the orchestrator to prune; do not re-run"
+)
+
+
+def test_host_refusal_marks_and_line() -> None:
+    """jo552075: the disk preflight refuses on stderr without a ✖, exit 3."""
+    assert land_slice.cross_line(HOST_LOG) is None
+    assert land_slice.host_refusal_line(HOST_LOG) == HOST_CROSS
+    assert land_slice.is_host_refusal(HOST_CROSS) is True
+    assert land_slice.is_main_refusal(HOST_CROSS) is False
+    assert land_slice.refusal_side(HOST_CROSS) == "host"
+    probe_failed = (
+        "scripts/ship: disk probe failed: docker not on PATH; this is not a "
+        "disk-full verdict. Re-run, or PRECIS_DOCKER_DISK_CHECK=0 to skip the probe"
+    )
+    assert land_slice.refusal_side(probe_failed) == "host"
+    assert land_slice.refusal_side(land_slice.cross_line(DRIFT_LOG)) == "main"
+    assert land_slice.refusal_side("✖ ruff format: 1 file would be reformatted") is None
+    assert land_slice.refusal_side("scripts/ship exit 3") is None
+    assert land_slice.host_refusal_line(DRIFT_LOG) is None
+    assert land_slice.host_refusal_line("") is None
+
+
+def _host_defer_setup(
+    seams: dict[str, Any], refusals: int | None = None
+) -> tuple[_Store, dict[str, Any]]:
+    store = _Store()
+    store.add_todo(42, tags=("claimed-by:lane-claude-sub",))
+    _ctx, handle = _submit(store, seams)
+    if refusals is not None:
+        handle["main_refusals"] = refusals
+    _finish(handle, 3, HOST_LOG)
+    return store, handle
+
+
+def test_poll_host_refusal_defers_without_a_probe(
+    seams: dict[str, Any], clock: dict[str, datetime]
+) -> None:
+    store, handle = _host_defer_setup(seams)
+    pctx = _Ctx(store, _params(seams))
+    assert land_slice.poll(pctx, handle) is False
+    assert len(seams["launch"]) == 1  # the original submit only
+    assert pctx.status is None and pctx.failure is None
+    assert handle["main_refusals"] == 1
+    assert handle["not_before"] == "2026-11-01T10:30:00Z"
+    assert handle["last_refusal"] == HOST_CROSS
+    assert not {"pid", "pgid", "boot_id", "start_time"} & handle.keys()
+    assert not Path(handle["exit_file"]).exists()
+    assert pctx.meta_set["compute_handle"] == handle
+    assert pctx.meta_set["compute_handle_released"] is False
+    [(kind, text)] = pctx.chunks
+    assert kind == "job_event"
+    assert text.startswith(
+        "land_slice: deferred (host-side refusal #1): scripts/ship: docker VM disk"
+    )
+    assert text.endswith("scripts/ship again after 10:30Z")
+    assert "drift probe" not in text
+    assert seams["probed"] == [seams["tree"]]  # the launch only; no deferral probe
+    # the todo is untouched: still claimed, no attempt bump, no handoff
+    tags = store.tag_strings(42)
+    assert "claimed-by:lane-claude-sub" in tags
+    assert not any(t.startswith("attempt:") for t in tags)
+    assert store.comments(42) == []
+    assert "exit_code" not in pctx.meta_set
+
+
+def test_poll_host_refusal_cap_names_the_node(seams: dict[str, Any]) -> None:
+    store, handle = _host_defer_setup(seams, refusals=land_slice.MAX_MAIN_REFUSALS)
+    pctx = _Ctx(store, _params(seams))
+    assert land_slice.poll(pctx, handle) is True
+    assert len(seams["launch"]) == 1
+    n = land_slice.MAX_MAIN_REFUSALS + 1
+    assert pctx.status == "failed" and pctx.failure is not None
+    assert (
+        f"land blocked by the lander's host for {n} refusals: {HOST_CROSS}"
+        in pctx.failure
+    )
+    [handoff] = store.comments(42)
+    assert handoff.startswith(
+        "handoff: land BLOCKED on slice/42: the lander's host refused the land "
+    )
+    assert "Nothing is wrong on the branch" in handoff
+    assert "an operator, not a builder" in handoff
+    assert handoff.endswith("Do not rebuild.")
+    assert _cleanup_cmds(seams) == []
+
+
 def test_poll_lint_red_is_unchanged_by_the_main_refusal_path(
     seams: dict[str, Any],
 ) -> None:
