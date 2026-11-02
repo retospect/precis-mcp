@@ -27,6 +27,22 @@ from precis.workers.job_types import get_job_type, known_job_types, land_slice
 
 FULL_SHA = "abc1234" + "0" * 33
 SUBJECT = "feat(x): widget (td42)"
+# The real preflight, captured before the `seams` fixture replaces it.
+_REAL_DRIFT_PREFLIGHT = land_slice._drift_preflight
+
+NONE_GREEN_DIAG = (
+    "last-gated-main-sha: status=none local=40 fetched=40 with_suites=40 "
+    "with_runs=40 matched=40 runs: lint=SUCCESS, test-linux (3.13, 1)=FAILURE (exit 2)"
+)
+BLIND_DIAG = (
+    "last-gated-main-sha: status=unknown (blind: no check runs visible) local=40 "
+    "fetched=40 with_suites=40 with_runs=0 matched=40 runs: - (exit 0)"
+)
+
+
+def _preflight(rc: int | None, age: str, diag: str) -> dict[str, Any]:
+    return {"ran": True, "rc": rc, "age": age, "diag": diag}
+
 
 # ── fakes ──────────────────────────────────────────────────────────
 
@@ -186,6 +202,16 @@ def seams(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> dict[str, Any]:
     monkeypatch.setattr(
         land_slice, "_pending_gates", lambda store, plan, todo: list(calls["gates"])
     )
+    # The lander's own drift preflight: by default "no helper in this tree",
+    # so ship launches and its own guard decides (the pre-gr550941 shape).
+    calls["preflight"] = {"ran": False, "rc": None, "age": "", "diag": ""}
+    calls["probed"] = []
+
+    def fake_preflight(tree: Path) -> dict[str, Any]:
+        calls["probed"].append(tree)
+        return dict(calls["preflight"])
+
+    monkeypatch.setattr(land_slice, "_drift_preflight", fake_preflight)
     monkeypatch.setenv("PRECIS_SLICE_ROOT", str(tmp_path))
     monkeypatch.delenv("PRECIS_FACTORY", raising=False)
     monkeypatch.delenv("PRECIS_SHIP_BIN", raising=False)
@@ -596,6 +622,194 @@ def test_poll_main_refusal_defers_without_launching(
     assert not any(t.startswith("attempt:") for t in tags)
     assert store.comments(42) == []
     assert "exit_code" not in pctx.meta_set
+
+
+def test_poll_main_refusal_records_the_drift_probe(
+    seams: dict[str, Any], clock: dict[str, datetime]
+) -> None:
+    """gr550941: the deferral event carries what the lander's own identity saw
+    of main's gate, so a blind token and a red window read differently. Exit 2
+    (looked, none green) is ship's refusal to make: the launch goes ahead."""
+    seams["preflight"] = _preflight(2, "", NONE_GREEN_DIAG)
+    store, handle = _defer_setup(seams)
+    assert len(seams["launch"]) == 1  # the preflight did not stop the launch
+    pctx = _Ctx(store, _params(seams))
+    assert land_slice.poll(pctx, handle) is False
+    assert seams["probed"] == [seams["tree"], seams["tree"]]  # launch + deferral
+    [(kind, text)] = pctx.chunks
+    assert kind == "job_event"
+    first, probe = text.split("\n", 1)
+    assert first.endswith("scripts/ship again after 10:30Z")
+    assert probe == f"drift probe (lander identity): {NONE_GREEN_DIAG}"
+
+
+def test_gate_unknown_rules() -> None:
+    gu = land_slice._gate_unknown
+    assert not gu({"ran": False, "rc": None, "age": "", "diag": ""})  # no helper
+    assert not gu(_preflight(0, "3.2", "found"))  # a verdict: ship judges its age
+    assert not gu(_preflight(2, "", NONE_GREEN_DIAG))  # looked, none: ship refuses
+    assert gu(_preflight(0, "", BLIND_DIAG))  # blind identity
+    assert gu(_preflight(None, "", "helper did not answer (TimeoutExpired)"))
+    assert gu(_preflight(1, "", "(no diag line) (exit 1)"))  # crashed helper
+
+
+def test_submit_parks_when_the_lander_identity_cannot_read_the_gate(
+    seams: dict[str, Any], clock: dict[str, datetime]
+) -> None:
+    """Fail closed (gr550941): ship treats an unknowable drift as "do not
+    refuse"; an unattended land must not ride that. The lander parks before
+    launching, under the main-side refusal backoff, no attempt burned."""
+    seams["preflight"] = _preflight(0, "", BLIND_DIAG)
+    store = _Store()
+    store.add_todo(42, tags=("claimed-by:lane-claude-sub",))
+    ctx, handle = _submit(store, seams)
+    assert seams["launch"] == []  # ship never ran
+    assert seams["probed"] == [seams["tree"]]
+    assert handle["not_before"] == "2026-11-01T10:30:00Z"
+    assert handle["main_refusals"] == 1
+    assert handle["last_refusal"] == land_slice.UNKNOWN_GATE_CROSS
+    assert handle["flag"] == "--quick" and handle["subject"] == SUBJECT
+    assert handle["worktree"] == str(seams["tree"])
+    assert "pid" not in handle
+    assert ctx.meta_set["compute_handle"] == handle
+    assert ctx.meta_set["compute_handle_released"] is False
+    assert ctx.meta_set["land_subject"] == SUBJECT
+    assert ctx.meta_set["deadline"] == T0.timestamp() + 1800 + land_slice.wall_seconds()
+    [(kind, text)] = ctx.chunks
+    assert kind == "job_event"
+    assert text.startswith(
+        "land_slice: deferred (main-side refusal #1): " + land_slice.UNKNOWN_GATE_CROSS
+    )
+    assert text.endswith(f"\ndrift probe (lander identity): {BLIND_DIAG}")
+    assert land_slice.is_main_refusal(land_slice.UNKNOWN_GATE_CROSS)
+    tags = store.tag_strings(42)
+    assert "claimed-by:lane-claude-sub" in tags
+    assert not any(t.startswith("attempt:") for t in tags)
+    assert store.comments(42) == [] and ctx.status is None
+    # polls before the park ends do nothing
+    pctx = _Ctx(store, _params(seams))
+    assert land_slice.poll(pctx, handle) is False
+    assert pctx.chunks == [] and seams["launch"] == []
+
+
+def test_relaunch_parks_again_while_the_gate_stays_unknown(
+    seams: dict[str, Any], clock: dict[str, datetime]
+) -> None:
+    store, handle = _defer_setup(seams)
+    assert land_slice.poll(_Ctx(store, _params(seams)), handle) is False
+    assert handle["main_refusals"] == 1
+    seams["preflight"] = _preflight(0, "", BLIND_DIAG)
+    clock["t"] = T0 + timedelta(seconds=1800)
+    pctx = _Ctx(store, _params(seams))
+    assert land_slice.poll(pctx, handle) is False
+    assert len(seams["launch"]) == 1  # no second ship
+    assert handle["main_refusals"] == 2
+    assert handle["not_before"] == "2026-11-01T11:00:00Z"
+    assert handle["last_refusal"] == land_slice.UNKNOWN_GATE_CROSS
+    assert handle["flag"] == "--quick" and handle["subject"] == SUBJECT
+    assert pctx.meta_set["compute_handle"] == handle
+    due = T0 + timedelta(seconds=1800)
+    assert (
+        pctx.meta_set["deadline"] == due.timestamp() + 1800 + land_slice.wall_seconds()
+    )
+    [(kind, text)] = pctx.chunks
+    assert kind == "job_event" and "refusal #2" in text and BLIND_DIAG in text
+    # the identity can see the gate again: the relaunch goes ahead
+    seams["preflight"] = _preflight(0, "3.2", "found")
+    clock["t"] = T0 + timedelta(seconds=3600)
+    pctx = _Ctx(store, _params(seams))
+    assert land_slice.poll(pctx, handle) is False
+    assert len(seams["launch"]) == 2
+    assert handle["pid"] == 5151 and "not_before" not in handle
+    assert handle["main_refusals"] == 2  # carried, not reset
+
+
+def test_preflight_past_the_cap_fails_blocked_without_a_launch(
+    seams: dict[str, Any], clock: dict[str, datetime]
+) -> None:
+    store, handle = _defer_setup(seams, refusals=land_slice.MAX_MAIN_REFUSALS - 1)
+    assert land_slice.poll(_Ctx(store, _params(seams)), handle) is False
+    assert handle["main_refusals"] == land_slice.MAX_MAIN_REFUSALS
+    seams["preflight"] = _preflight(0, "", BLIND_DIAG)
+    clock["t"] = T0 + timedelta(seconds=1800)
+    pctx = _Ctx(store, _params(seams))
+    assert land_slice.poll(pctx, handle) is True
+    assert len(seams["launch"]) == 1
+    assert pctx.status == "failed"
+    assert pctx.failure is not None
+    assert (
+        f"land blocked by main for {land_slice.MAX_MAIN_REFUSALS + 1} refusals: "
+        + land_slice.UNKNOWN_GATE_CROSS
+    ) in pctx.failure
+    assert any("land BLOCKED on slice/42" in c for c in store.comments(42))
+    [(kind, text)] = pctx.chunks
+    assert kind == "job_summary" and BLIND_DIAG in text
+
+
+def test_drift_preflight_runs_the_helper_under_the_factory_identity(
+    seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    tree = seams["tree"]
+    helper = tree / "scripts" / "last-gated-main-sha"
+    helper.parent.mkdir(parents=True)
+    helper.write_text("#!/bin/sh\n", encoding="utf-8")
+    seen: list[dict[str, Any]] = []
+    answer: dict[str, Any] = {
+        "rc": 0,
+        "out": "",
+        "err": f"noise\n{BLIND_DIAG[: -len(' (exit 0)')]}\n",
+    }
+
+    def fake_run(argv: list[str], **kw: Any) -> subprocess.CompletedProcess[str]:
+        seen.append({"argv": argv, **kw})
+        return subprocess.CompletedProcess(
+            argv,
+            int(answer["rc"]),
+            stdout=str(answer["out"]),
+            stderr=str(answer["err"]),
+        )
+
+    monkeypatch.setattr(land_slice.subprocess, "run", fake_run)
+    monkeypatch.setattr(
+        land_slice._factory_git, "git_auth_env", lambda base=None: {"GH_TOKEN": "x"}
+    )
+    pre = _REAL_DRIFT_PREFLIGHT(tree)
+    assert pre == {"ran": True, "rc": 0, "age": "", "diag": BLIND_DIAG}
+    [call] = seen
+    assert call["argv"] == [
+        str(helper),
+        "--age-hours",
+        "--start",
+        "origin/main",
+        "--hours",
+        "48",
+        "--diag",
+    ]
+    assert call["cwd"] == tree
+    assert call["env"] == {"GH_TOKEN": "x"}
+    assert call["timeout"] == land_slice.DRIFT_PROBE_TIMEOUT_S
+    # a verdict: the age comes back, exit 0
+    answer.update(out="3.2\n", err="last-gated-main-sha: status=found local=1 x\n")
+    pre = _REAL_DRIFT_PREFLIGHT(tree)
+    assert pre["age"] == "3.2" and pre["diag"].endswith("(exit 0)")
+    # no helper in the tree: nothing ran
+    helper.unlink()
+    assert _REAL_DRIFT_PREFLIGHT(tree) == {
+        "ran": False,
+        "rc": None,
+        "age": "",
+        "diag": "",
+    }
+    assert len(seen) == 2
+
+    def boom(argv: list[str], **kw: Any) -> subprocess.CompletedProcess[str]:
+        raise subprocess.TimeoutExpired(argv, 1)
+
+    helper.write_text("#!/bin/sh\n", encoding="utf-8")
+    monkeypatch.setattr(land_slice.subprocess, "run", boom)
+    pre = _REAL_DRIFT_PREFLIGHT(tree)
+    assert pre["ran"] is True and pre["rc"] is None and pre["age"] == ""
+    assert pre["diag"] == "helper did not answer (TimeoutExpired)"
 
 
 def test_poll_before_not_before_does_nothing(

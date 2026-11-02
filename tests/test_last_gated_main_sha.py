@@ -829,6 +829,57 @@ def test_suites_present_but_none_green_is_still_none_green(
     assert mod.main([]) == 2
 
 
+def test_suites_listed_but_no_runs_anywhere_is_blind(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """gr549328: an identity can be shown the suites and none of their runs.
+    Blindness is "no check run visible on any commit", not "no suite"; such a
+    window is unknowable (exit 0, empty), never none-gated (exit 2)."""
+    mod = _load()
+    hollow: list[dict[str, Any]] = [
+        {"oid": BURST, "checkSuites": {"nodes": [{"checkRuns": {"nodes": []}}]}},
+        {"oid": GATED, "checkSuites": {"nodes": [{"checkRuns": {"nodes": []}}, {}]}},
+    ]
+
+    def fake_run(*args: str) -> str | None:
+        return f"{BURST}\n{GATED}" if args[0] != "gh" else _response(hollow)
+
+    monkeypatch.setattr(mod, "_run", fake_run)
+    diag: dict[str, Any] = {}
+    assert mod.lookup("HEAD", 500, 48, diag)[0] == mod.UNKNOWN
+    assert diag["with_suites"] == 2 and diag["with_runs"] == 0
+    assert diag["status"].startswith("unknown (blind")
+    assert mod.main(["--age-hours"]) == 0
+    assert capsys.readouterr().out == ""
+
+
+def test_diag_prints_one_stderr_line_of_counts(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    mod = _load()
+    mixed = [
+        {"oid": BURST, "checkSuites": {"nodes": []}},
+        _commit(GATED, _shards("CANCELLED")),
+    ]
+
+    def fake_run(*args: str) -> str | None:
+        return f"{BURST}\n{GATED}" if args[0] != "gh" else _response(mixed)
+
+    monkeypatch.setattr(mod, "_run", fake_run)
+    assert mod.main(["--diag"]) == 2
+    out, err = capsys.readouterr()
+    assert out == ""
+    [line] = err.splitlines()
+    assert line.startswith(
+        "last-gated-main-sha: status=none local=2 fetched=2 with_suites=1 "
+        "with_runs=1 matched=2 runs: "
+    )
+    assert "test-linux (3.13, 1)=CANCELLED" in line and "lint=SUCCESS" in line
+    # without the flag stderr stays quiet
+    assert mod.main([]) == 2
+    assert capsys.readouterr().err == ""
+
+
 def test_exit_two_needs_every_page_the_walk_needed(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:

@@ -37,6 +37,11 @@ Detached submit/poll pair under ``ssh_node``, like ``run_slice``:
   (park: backoff + wall; relaunch: wall), so a parked land is not killed at
   the 1 h wall while a running ship still is; past
   :data:`MAX_MAIN_REFUSALS` the job fails with a "land BLOCKED" handoff.
+  Before every launch the lander runs the drift helper itself under its own
+  identity (:func:`_drift_preflight`); when that cannot say how old main's
+  verdict is (a blind token, GitHub unanswerable) the land parks the same
+  way instead of riding ship's "unknown never refuses" (fail-closed,
+  gr550941). Every deferral event ends with the helper's ``--diag`` line.
 * :func:`kill` SIGTERMs ship's process group.
 
 **Pull requests** (td543749). With ``params.pr = <n>`` (a ``pr-intake``
@@ -627,6 +632,8 @@ def submit(ctx: Any, spec: Any) -> Any:
     if handle is None:
         return None
     ctx.set_meta(land_subject=subject)
+    if handle.get("not_before"):
+        return handle  # parked before launch; the deferral event says why
     ctx.append_chunk(
         "job_event",
         f"land_slice: scripts/ship {flag} {subject!r} pid {handle['pid']} in {tree}",
@@ -651,6 +658,34 @@ def _launch_ship(
     scratch = tree / "scratch"
     log_path = scratch / "land_slice.log"
     exit_path = scratch / "land_slice.exit"
+    pre = _drift_preflight(tree)
+    if _gate_unknown(pre):
+        # Fail closed: the lander's identity cannot see main's gate, so do not
+        # let ship's "unknown never refuses" carry an unattended land. Park
+        # under the same backoff and cap as a main-side refusal.
+        parked: dict[str, Any] = {
+            "worktree": str(tree),
+            "log": str(log_path),
+            "exit_file": str(exit_path),
+            "subject": subject,
+            "flag": flag,
+        }
+        for key in ("main_refusals", "last_refusal"):
+            if carry is not None and key in carry:
+                parked[key] = carry[key]
+        refusals = int(parked.get("main_refusals") or 0) + 1
+        if refusals > MAX_MAIN_REFUSALS:
+            branch = str(params.get("branch") or _rs.slice_branch(todo_id))
+            reason, handoff = _blocked_handoff(branch, refusals, UNKNOWN_GATE_CROSS)
+            ctx.append_chunk(
+                "job_summary",
+                f"land_slice td{todo_id}: BLOCKED — {UNKNOWN_GATE_CROSS}\n"
+                f"drift probe (lander identity): {pre['diag']}",
+            )
+            _fail(ctx, todo_id, params.get("lane"), reason, handoff=handoff)
+            return None
+        _defer_to_main(ctx, parked, UNKNOWN_GATE_CROSS, refusals, probe=pre["diag"])
+        return parked
     try:
         scratch.mkdir(parents=True, exist_ok=True)
         exit_path.unlink(missing_ok=True)
@@ -692,18 +727,106 @@ def _launch_ship(
     return handle
 
 
+#: Seconds the drift preflight may take before it counts as unanswered.
+DRIFT_PROBE_TIMEOUT_S = 45
+
+#: The cross line the lander writes when its own identity cannot read main's
+#: gate; :data:`MAIN_REFUSAL_MARKS` matches it, so it defers like ship's own.
+UNKNOWN_GATE_CROSS = (
+    "✖ main has no all-green shard matrix the lander's identity can read "
+    "(drift guard unknown: blind token or GitHub unanswerable; fail-closed, "
+    "gr550941)"
+)
+
+
+def _drift_preflight(tree: Path) -> dict[str, Any]:
+    """What the lander's own GitHub identity sees of main's gate, before ship
+    runs: ``scripts/last-gated-main-sha --age-hours --diag`` in ``tree`` under
+    the factory token. ``{"ran": bool, "rc": int | None, "age": str, "diag":
+    str}`` — ``age`` is the helper's stdout (hours, or empty for unknowable),
+    ``diag`` its one stderr line with the exit code appended.
+
+    gr549328/gr550941: ship refused the land on melchior while the same main
+    read green elsewhere. Ship treats an unknowable lookup as "do not refuse"
+    (a GitHub outage must not stop the fleet); an *unattended* land must not
+    ride that — :func:`_gate_unknown` parks it instead. ``ran`` is False when
+    the tree has no helper (then ship's own guard is all there is)."""
+    out: dict[str, Any] = {"ran": False, "rc": None, "age": "", "diag": ""}
+    helper = tree / "scripts" / "last-gated-main-sha"
+    if not helper.is_file():
+        return out
+    try:
+        cp = subprocess.run(
+            [
+                str(helper),
+                "--age-hours",
+                "--start",
+                "origin/main",
+                "--hours",
+                "48",
+                "--diag",
+            ],
+            cwd=tree,
+            env=_factory_git.git_auth_env(),
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            timeout=DRIFT_PROBE_TIMEOUT_S,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        out.update(ran=True, diag=f"helper did not answer ({type(exc).__name__})")
+        return out
+    lines = [
+        ln for ln in (cp.stderr or "").splitlines() if "last-gated-main-sha:" in ln
+    ]
+    diag = lines[-1].strip()[:400] if lines else "(no diag line)"
+    out.update(
+        ran=True,
+        rc=cp.returncode,
+        age=(cp.stdout or "").strip(),
+        diag=f"{diag} (exit {cp.returncode})",
+    )
+    return out
+
+
+def _gate_unknown(pre: dict[str, Any]) -> bool:
+    """True when the preflight ran and could not say how old main's verdict
+    is: exit 0 with empty output (blind identity, GitHub unanswerable) or no
+    answer at all. Exit 2 (looked, none green) is ship's refusal to make."""
+    if not pre.get("ran"):
+        return False
+    return pre.get("rc") != 2 and not pre.get("age")
+
+
+def _blocked_handoff(branch: str, refusals: int, cross: str) -> tuple[str, str]:
+    """``(reason, handoff)`` for a land parked past :data:`MAX_MAIN_REFUSALS`."""
+    return (
+        f"land blocked by main for {refusals} refusals: {cross}",
+        f"land BLOCKED on {branch}: main refused the land {refusals} times "
+        f"({cross}). Nothing is wrong on the branch; it needs a /go (full "
+        "gate) over main or a fixed red on main. Do not rebuild.",
+    )
+
+
 def _defer_to_main(
     ctx: Any,
     handle: dict[str, Any],
     cross: str,
     refusals: int,
+    *,
+    probe: str | None = None,
 ) -> bool:
     """A main-side refusal is a deferral, not a red: count it, note it on the
     job and park the handle until ``not_before`` (now + :func:`refusal_backoff_s`);
     :func:`_relaunch_when_due` runs ship again then. The dead ship's pid,
     identity and exit file are dropped so no poll re-reads its exit. The
     handle is mutated in place and persisted to ``meta.compute_handle`` (poll
-    cannot hand one back). Always ``False``: the job stays running."""
+    cannot hand one back). Always ``False``: the job stays running.
+
+    The event carries the lander identity's drift diag (``probe``, else a
+    fresh :func:`_drift_preflight`) so a blind token and a red window read
+    differently (gr550941)."""
     due = _now() + timedelta(seconds=refusal_backoff_s())
     for key in ("pid", "pgid", "boot_id", "start_time"):
         handle.pop(key, None)
@@ -713,10 +836,13 @@ def _defer_to_main(
         last_refusal=cross,
         not_before=due.strftime(_TS_FMT),
     )
+    if probe is None:
+        probe = _drift_preflight(Path(str(handle.get("worktree") or "")))["diag"]
     ctx.append_chunk(
         "job_event",
         f"land_slice: deferred (main-side refusal #{refusals}): {cross} — "
-        f"scripts/ship again after {due:%H:%M}Z",
+        f"scripts/ship again after {due:%H:%M}Z"
+        + (f"\ndrift probe (lander identity): {probe}" if probe else ""),
     )
     # Parked time must not eat the ssh_node wall deadline: it covers the
     # wait plus one fresh ship run.
@@ -751,6 +877,8 @@ def _relaunch_when_due(ctx: Any, handle: dict[str, Any]) -> bool:
         return True
     handle.clear()
     handle.update(fresh)
+    if fresh.get("not_before"):
+        return False  # parked again by the preflight; its deferral set the meta
     ctx.set_meta(
         compute_handle=fresh,
         compute_handle_released=False,
@@ -801,12 +929,7 @@ def poll(ctx: Any, handle: Any) -> bool:
             refusals = int(handle.get("main_refusals") or 0) + 1
             if refusals <= MAX_MAIN_REFUSALS:
                 return _defer_to_main(ctx, handle, cross, refusals)
-            reason = f"land blocked by main for {refusals} refusals: {cross}"
-            handoff = (
-                f"land BLOCKED on {branch}: main refused the land {refusals} times "
-                f"({cross}). Nothing is wrong on the branch; it needs a /go (full "
-                "gate) over main or a fixed red on main. Do not rebuild."
-            )
+            reason, handoff = _blocked_handoff(branch, refusals, cross)
         ctx.set_meta(exit_code=exit_code, ship_status=status)
         ctx.append_chunk(
             "job_summary",
@@ -921,6 +1044,7 @@ SPEC = JobTypeSpec(
 __all__ = [
     "COMPATIBLE_EXECUTORS",
     "DESCRIPTION",
+    "DRIFT_PROBE_TIMEOUT_S",
     "MAIN_REFUSAL_BACKOFF_S",
     "MAIN_REFUSAL_MARKS",
     "MAX_MAIN_REFUSALS",
@@ -929,6 +1053,7 @@ __all__ = [
     "REQUIRES",
     "SPEC",
     "SUBJECT_CAP",
+    "UNKNOWN_GATE_CROSS",
     "cross_line",
     "is_main_refusal",
     "kill",
