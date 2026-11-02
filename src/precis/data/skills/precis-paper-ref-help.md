@@ -13,6 +13,8 @@ answers:
   - a ref carries one wrong identifier next to right ones — how do I remove just it?
   - the body is another paper's but the attached PDF is right — how do I re-extract it?
   - a stored PDF sits on the wrong ref — how do I move it?
+  - the pdf pointer names the wrong file — how do I re-seat it without re-extracting?
+  - a converted datasheet kept the donor paper's authors/year — how do I clear them?
   - how do I undo a drop_body or rebuild a ref from its dump?
   - a worker stamped a paper done/failed — how do I re-run it?
   - how do I attach a legal PDF to a body-less stub?
@@ -28,7 +30,10 @@ A *ref* is the record a `pa<id>` handle names. Finding and reading
 papers: [[precis-paper-help]]; the still-to-acquire backlog:
 [[precis-stubs-help]]. Every door below is `edit(kind='paper', id=…)`
 unless noted — `dry_run` previews each, and the `args=` doors require a
-`reason` that lands in a ref_event.
+`reason` that lands in a ref_event. Three doors also run on
+`kind='datasheet'` — `clear`, `move_identifier_to`, `pdf_pointer` — a
+converted paper's leftover byline/year, identifier rows and pdf pointer
+share the same `refs` machinery.
 
 ## Quick reference — the edit doors
 
@@ -37,12 +42,15 @@ unless noted — `dry_run` previews each, and the `args=` doors require a
 | fix a wrong/missing author | `edit(id=…, authors=["Family, Given [iD]"])` |
 | repair stub metadata | `edit(id=…, title=/doi=/arxiv=/year=/journal=/entry_type=/abstract=/volume=/issue=/pages=/url=)` |
 | remove one wrong identifier row | `args={'drop_identifier': {'scheme': 'pubmed', 'value': '…'}, 'reason': …}` |
+| re-home one identifier row | `args={'move_identifier_to': {'scheme': '…', 'value': '…', 'to': '<ref>'}, 'reason': …}` |
+| clear a wrong byline or year | `args={'clear': ['authors','year'], 'reason': …}` — what `authors=[]`/`year=` can't spell |
 | fold a duplicate pair | `args={'merge_into': '<survivor>', 'reason': …}` |
 | re-point a merged stub | `args={'redirect_to': '<pa>', 'reason': …}` |
 | retire a phantom stub | `args={'retire': True, 'reason': …}` (`retire: False` restores) |
 | re-home a wrong body | `args={'drop_body'/'move_body_to'/'split_body'/'clear_abstract': …, 'reason': …}` (drop_body takes `'keep_pdf': True` to keep the stored pdf) |
 | re-extract from the stored pdf | `args={'reextract': True, 'reason': …}` — keeps the pdf, queues a `paper_reextract` job; `'pdf_sha256': '<sha>'` names the file when several are attached |
 | re-home a stored pdf / adopt an orphan | `args={'move_pdf_to': '<pa>'/'attach_pdf': '<sha>', 'reason': …}` — identity-gated on the target's title/DOI |
+| re-seat the pdf pointer on a held sha | `args={'pdf_pointer': '<sha>', 'reason': …}` — no body change, no re-extract |
 | export a ref's full state (undo) | `get(id=…, view='ops')` or `precis paper dump <id> --out <file>` |
 | rebuild a ref from its dump | `put(id=…, args={'restore': <slice>, 'reason': …})` or `precis paper restore <file> --apply` |
 | download a held PDF | `get(id=…, view='pdf_link')` — signed URL, no bytes over MCP |
@@ -110,7 +118,17 @@ suppressed under `meta.dropped_identifiers`, so enrichment can't re-add
 re-add of the same pair lifts it) — and an `identifier_dropped`
 ref_event carries
 the reason. It refuses with the ref's actual rows when the named pair
-isn't held. A
+isn't held. A row that belongs on *another* live ref moves rather than
+drops — `args={'move_identifier_to': {'scheme': '…', 'value': '…',
+'to': '<ref>'}, 'reason': …}` re-homes it (an `identifier_moved` event
+on both refs); a ref's own pdf pointer row refuses — the file moves
+with `move_pdf_to`, or re-seat the pointer first with `pdf_pointer`.
+Where no field spelling can blank a column — `authors=[]` reads as
+"set an empty byline" and `year=` has no empty value —
+`args={'clear': ['authors','year'], 'reason': …}` is the removal door
+(`authors` also drops `meta.authors_source` and every `paper_authors`
+row; the cards rebuild; a `metadata_cleared` event carries the
+reason). A
 mis-filed record's year and venue repair the same way — `year=2007`,
 `journal='Nature Nanotechnology'` (also `entry_type=`, `abstract=`,
 and the locator fields `volume=`/`issue=`/`pages=`/`url=` — the BibTeX
@@ -334,6 +352,26 @@ the target's metadata fixed first). On a
 `paper_reextract` so the adopted file becomes the target's body. Watch
 `get(kind='job', id=…)`; the outcome lands on `meta.pdf_attach` and a
 failure also logs `pdf_attach_failed`.
+
+## The pdf pointer names the wrong file — how do I re-seat it?
+
+```python
+edit(kind="paper", id="pa549144", args={"pdf_pointer": "93f1…", "reason": "pointer names the donor's pdf; body is the other work's"})
+```
+
+`pdf_pointer` sets `refs.pdf_sha256` to another `pdf_sha256` identifier
+the **same ref already carries** — nothing else changes: the body
+stays, no re-extract is queued, and the old pointer's identifier row
+stays as an ordinary row `move_identifier_to` can then re-home.
+`pdf_pages` clears (the stored span was measured on the old file's
+extraction). The case it exists for: a `split_body` or merge left the
+pointer on a file that isn't the body's — `move_identifier_to` refuses
+the pointer row ("moves with the file") and `move_pdf_to` refuses a
+donor still holding a body. Refusals: a sha the ref's own
+`pdf_sha256` identifier rows don't claim (`attach_pdf` adopts a corpus
+orphan instead), and a held sha with no `pdfs` row — the pointer
+would dangle. Naming the current pointer is a no-change ack; a
+`pdf_repointed` ref_event carries the reason. `dry_run` previews.
 
 ## Undo a body door — restore a ref from its dump
 

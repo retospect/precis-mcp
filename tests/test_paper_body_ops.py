@@ -2842,3 +2842,111 @@ class TestSplitBodyMultiSha:
         b = int(_events(store, a, "body_split")[0].payload["new_ref_id"])
         assert _pdf_id_values(store, a) == [_SHA, _SHA_B]
         assert _pdf_id_values(store, b) == []
+
+
+class TestPdfPointer:
+    """gr548255: ``args={'pdf_pointer': '<sha>'}`` re-seats
+    ``refs.pdf_sha256`` on another pdf_sha256 identifier the ref already
+    carries — the repair for a pointer left on the wrong file while the
+    body is right (no body change, no re-extract)."""
+
+    def test_repoint_happy_path(self, store: Store, handler: PaperHandler) -> None:
+        a = _seed(store, "ptrsrc2020", year=2020)
+        _body(store, a, 2)
+        _pdf(store, a)  # pointer + pdfs row + identifier row on _SHA
+        _pdfs_row(store, _SHA_B, "mak.pdf")
+        _add_pdf_id(store, a, _SHA_B)
+        with store.pool.connection() as conn:
+            conn.execute("UPDATE refs SET pdf_pages = '[1,3)' WHERE ref_id = %s", (a,))
+        resp = _edit(
+            handler,
+            a,
+            {"pdf_pointer": _SHA_B, "reason": "pointer names the donor's file"},
+        )
+        assert _pdf_sha(store, a) == _SHA_B
+        assert _pdf_pages(store, a) is None
+        # the body's chunks and both identifier rows are untouched
+        assert _ords(store, a) == [0, 1]
+        assert _pdf_id_values(store, a) == [_SHA, _SHA_B]
+        ev = _events(store, a, "pdf_repointed")
+        assert len(ev) == 1
+        assert ev[0].payload["from"] == _SHA
+        assert ev[0].payload["to"] == _SHA_B
+        assert ev[0].payload["reason"] == "pointer names the donor's file"
+        assert "re-pointed" in resp.body
+
+    def test_repoint_then_move_old_identifier(
+        self, store: Store, handler: PaperHandler
+    ) -> None:
+        """The prod sequence (gr548255 comment 10): re-point off the
+        wrong file, then the old sha's row is an ordinary identifier
+        ``move_identifier_to`` can re-home — chunks untouched."""
+        a = _seed(store, "ptrseqa2020", year=2020)
+        b = _seed(store, "ptrseqb2020", year=2020)
+        _body(store, a, 2)
+        _pdf(store, a)
+        _pdfs_row(store, _SHA_B, "mak.pdf")
+        _add_pdf_id(store, a, _SHA_B)
+        _edit(handler, a, {"pdf_pointer": _SHA_B, "reason": "x"})
+        _edit(
+            handler,
+            a,
+            {
+                "move_identifier_to": {
+                    "scheme": "pdf_sha256",
+                    "value": _SHA,
+                    "to": f"pa{b}",
+                },
+                "reason": "the file is b's",
+            },
+        )
+        assert _pdf_sha(store, a) == _SHA_B
+        assert _pdf_id_values(store, a) == [_SHA_B]
+        assert _pdf_id_values(store, b) == [_SHA]
+        assert _ords(store, a) == [0, 1]
+
+    def test_dry_run_writes_nothing(self, store: Store, handler: PaperHandler) -> None:
+        a = _seed(store, "ptrdry2020", year=2020)
+        _pdf(store, a)
+        _pdfs_row(store, _SHA_B, "mak.pdf")
+        _add_pdf_id(store, a, _SHA_B)
+        resp = _edit(
+            handler,
+            a,
+            {"pdf_pointer": _SHA_B, "reason": "x"},
+            dry_run=True,
+        )
+        assert "DRY RUN" in resp.body
+        assert _pdf_sha(store, a) == _SHA
+        assert _events(store, a, "pdf_repointed") == []
+
+    def test_repoint_to_current_pointer_is_noop(
+        self, store: Store, handler: PaperHandler
+    ) -> None:
+        a = _seed(store, "ptrnoop2020", year=2020)
+        _pdf(store, a)
+        resp = _edit(handler, a, {"pdf_pointer": _SHA, "reason": "x"})
+        assert "no change" in resp.body
+        assert _pdf_sha(store, a) == _SHA
+        assert _events(store, a, "pdf_repointed") == []
+
+    def test_unheld_sha_refused(self, store: Store, handler: PaperHandler) -> None:
+        a = _seed(store, "ptrbad2020", year=2020)
+        _pdf(store, a)
+        with pytest.raises(BadInput, match="has no pdf_sha256"):
+            _edit(handler, a, {"pdf_pointer": _SHA_B, "reason": "x"})
+        assert _pdf_sha(store, a) == _SHA
+
+    def test_no_pdfs_row_refused(self, store: Store, handler: PaperHandler) -> None:
+        a = _seed(store, "ptrdangle2020", year=2020)
+        _pdf(store, a)
+        _add_pdf_id(store, a, _SHA_B)  # claimed, but the corpus holds no file
+        with pytest.raises(BadInput, match="no pdfs row"):
+            _edit(handler, a, {"pdf_pointer": _SHA_B, "reason": "x"})
+        assert _pdf_sha(store, a) == _SHA
+
+    def test_missing_reason_refused(self, store: Store, handler: PaperHandler) -> None:
+        a = _seed(store, "ptrnoreason2020", year=2020)
+        _pdf(store, a)
+        with pytest.raises(BadInput, match="reason"):
+            _edit(handler, a, {"pdf_pointer": _SHA_B})

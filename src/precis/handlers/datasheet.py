@@ -97,6 +97,20 @@ _PAPER_EDIT_FIELDS: tuple[str, ...] = (
     "entry_type",
 )
 
+#: The ``edit(args=…)`` doors a datasheet shares with paper
+#: (gr548255): ``clear`` blanks the shared ``refs`` columns a converted
+#: paper left stamped (``authors``/``year``), ``move_identifier_to``
+#: re-homes one identifier row, and ``pdf_pointer`` re-seats
+#: ``refs.pdf_sha256`` on another sha the ref already claims — all act
+#: on rows every kind carries, so they run the paper implementation
+#: verbatim. The rest of paper's doors stay paper-only (``split_body``
+#: mints a *paper* ref, ``convert_to`` only runs paper → datasheet).
+_DATASHEET_EDIT_DOORS: tuple[str, ...] = (
+    "clear",
+    "move_identifier_to",
+    "pdf_pointer",
+)
+
 
 def _pull_line(state_or_pull: Any) -> str:
     """The ``meta.datasheet_pull`` record as one status-cell string.
@@ -180,9 +194,14 @@ class DatasheetHandler(PaperHandler):
     # mints a bodiless ref a human fills by named drop — gr520099;
     # ``mfr_part``/``manufacturer`` address a non-LCSC part through the
     # component kind — gr519849), the rest inherited from PaperHandler.
+    # edit()'s args= declares only what this edit reads there
+    # (gr548255): the forwarded paper doors + the ``reason`` audit key
+    # every door takes — the bib and meta fields stay top-level kwargs,
+    # so an ``args=`` field key is promoted to them by dispatch.
     ARGS: ClassVar[dict[str, ArgsSpec]] = {
         **PaperHandler.ARGS,
         "put": ArgsSpec({"url", "part", "path", "stub", "mfr_part", "manufacturer"}),
+        "edit": ArgsSpec({*_DATASHEET_EDIT_DOORS, "reason"}),
     }
 
     def __init__(self, *, hub: Hub) -> None:
@@ -742,6 +761,7 @@ class DatasheetHandler(PaperHandler):
         journal: str | None = None,
         entry_type: str | None = None,
         dry_run: bool | str | None = None,
+        args: dict[str, Any] | None = None,
         **kw: Any,
     ) -> Response:
         """Edit a datasheet's metadata.
@@ -754,6 +774,14 @@ class DatasheetHandler(PaperHandler):
         blank string clears a field; an unrecognised ``subtype`` is rejected.
         Any bibliographic field (``title`` / ``year`` / ``authors`` / …) is
         forwarded to the paper editor unchanged.
+
+        ``args={'clear': ['authors','year'], 'reason': …}`` and
+        ``args={'move_identifier_to': …, 'reason': …}`` /
+        ``args={'pdf_pointer': '<sha>', 'reason': …}`` are the shared
+        ``refs``-row doors a converted paper's leftovers need
+        (:data:`_DATASHEET_EDIT_DOORS`, gr548255) — the call forwards to
+        the paper editor untouched; a door call doesn't combine with
+        field edits.
 
         ``part_lcsc`` is dual-written: ``meta.part_lcsc`` (read by the
         nanopub evidence, docx and latex exporters) and a ``datasheet-of``
@@ -782,6 +810,32 @@ class DatasheetHandler(PaperHandler):
             }.items()
             if v not in (None, "")
         }
+
+        if args:
+            if meta_patch or bib:
+                raise BadInput(
+                    "an args= door call doesn't combine with field edits",
+                    next="make the door call alone, then edit the rest",
+                )
+            # The dispatch gate already refuses undeclared args= keys on
+            # the MCP path; a direct call could still smuggle a paper-only
+            # door in (``split_body`` mints a *paper*), so forward only
+            # the doors this kind takes.
+            forward = {
+                k: v
+                for k, v in args.items()
+                if k in _DATASHEET_EDIT_DOORS or k == "reason"
+            }
+            smuggled = sorted(set(args) - set(forward))
+            if smuggled:
+                raise BadInput(
+                    f"args= keys {smuggled!r} are paper-only edit doors — "
+                    f"a datasheet takes {sorted(_DATASHEET_EDIT_DOORS)} "
+                    "(+ 'reason')",
+                    next=f"run it under kind='paper', or use one of "
+                    f"{sorted(_DATASHEET_EDIT_DOORS)}",
+                )
+            return super().edit(id=id, args=forward, dry_run=dry_run)
 
         if not meta_patch and not bib:
             raise BadInput(

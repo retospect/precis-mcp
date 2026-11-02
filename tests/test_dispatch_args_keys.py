@@ -50,6 +50,7 @@ PASSTHROUGH = [
     ("paper", "put"),
     ("paper", "delete"),
     ("datasheet", "put"),
+    ("datasheet", "edit"),
     ("youtube", "put"),
     # Plugin handlers (entry point group ``precis.handlers``).
     ("estimate", "get"),

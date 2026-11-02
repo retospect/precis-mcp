@@ -426,6 +426,7 @@ _EDIT_DOOR_ARGS = (
     "move_body_to",
     "move_pdf_to",
     "attach_pdf",
+    "pdf_pointer",
     "split_body",
     "clear_abstract",
     "convert_to",
@@ -696,9 +697,11 @@ class PaperHandler(Handler):
         # (:meth:`_drop_identifier`); ``move_identifier_to`` re-homes it
         # onto another live ref (:meth:`_move_identifier_to`); ``clear``
         # blanks a first-class column (``authors``/``year``,
-        # :meth:`_clear_fields`); ``reason`` is the audit string every
-        # door writes into its ref_event. Subclass hooks read their own
-        # keys via _edit_args.
+        # :meth:`_clear_fields`); ``pdf_pointer`` re-points
+        # ``refs.pdf_sha256`` at a sha the ref's own identifier rows
+        # already claim (:meth:`_pdf_pointer`); ``reason`` is the audit
+        # string every door writes into its ref_event. Subclass hooks
+        # read their own keys via _edit_args.
         "edit": ArgsSpec(
             {
                 "redirect_to",
@@ -712,6 +715,7 @@ class PaperHandler(Handler):
                 "move_body_to",
                 "move_pdf_to",
                 "attach_pdf",
+                "pdf_pointer",
                 "split_body",
                 "clear_abstract",
                 "convert_to",
@@ -4016,7 +4020,10 @@ class PaperHandler(Handler):
         (:meth:`_move_identifier_to`);
         ``args={'clear': ['authors','year']}`` blanks a first-class
         bibliographic column no field spelling can express
-        (:meth:`_clear_fields`); ``args={'drop_body': True,
+        (:meth:`_clear_fields`); ``args={'pdf_pointer': '<sha>'}``
+        re-points ``refs.pdf_sha256`` at another ``pdf_sha256``
+        identifier the ref already carries — no body change, no
+        re-extract (:meth:`_pdf_pointer`); ``args={'drop_body': True,
         'keep_pdf': True}`` drops the body but keeps the pdf attachment
         so the bodiless-heal re-extracts it (:meth:`_drop_body`);
         ``args={'reextract': True}`` is that kept drop plus the queued
@@ -4233,6 +4240,13 @@ class PaperHandler(Handler):
                 return self._attach_pdf(
                     id,
                     raw_args["attach_pdf"],
+                    reason=reason,
+                    dry=bool(dry_mode),
+                )
+            if door == "pdf_pointer":
+                return self._pdf_pointer(
+                    id,
+                    raw_args["pdf_pointer"],
                     reason=reason,
                     dry=bool(dry_mode),
                 )
@@ -6275,6 +6289,155 @@ class PaperHandler(Handler):
             )
         )
 
+    def _pdf_pointer(
+        self, id: str | int, sha_value: Any, *, reason: str, dry: bool
+    ) -> Response:
+        """``edit(args={'pdf_pointer': '<sha>'})`` — re-point
+        ``refs.pdf_sha256`` at another ``pdf_sha256`` identifier the
+        same ref already carries (gr548255).
+
+        The repair for a pointer left on the wrong file while the body
+        is right: a ``split_body`` re-homed every ``pdf_sha256`` row to
+        the minted ref, so the new ref held the split-off body while
+        its pointer still named the *donor's* file —
+        ``move_identifier_to`` refuses the pointer row ("the identifier
+        row moves with the file") and ``move_pdf_to`` refuses a donor
+        holding a body, so nothing could re-seat it. Naming a sha the
+        ref's own ``pdf_sha256`` identifier rows claim moves only the
+        pointer — no body change, no re-extract — and clears
+        ``pdf_pages`` (the stored span was measured on the old file's
+        extraction; ``pdf_role`` stays — the ref's attachment didn't
+        change role). The old pointer's identifier row stays and is now
+        an ordinary row ``move_identifier_to`` can re-home.
+
+        Refusals: a sha the ref's identifier rows don't hold (the door
+        re-seats an attachment — ``attach_pdf`` adopts a corpus orphan
+        instead) and a held sha with no ``pdfs`` row
+        (``refs.pdf_sha256`` FKs to ``pdfs`` — the pointer would
+        dangle). Naming the current pointer is a no-change ack. A
+        ``pdf_repointed`` ref_event carries the reason and both shas.
+        """
+        from precis.ingest import body_ops, paper_dump
+
+        kind = self.spec.kind
+        ref, handle = self._require_live_body_ref(id, "pdf_pointer")
+        self._require_reason(reason, "pdf_pointer", kind, handle, arg="'<sha>'")
+        sha = "" if sha_value is None else str(sha_value).strip().lower()
+        if not sha:
+            raise BadInput(
+                "pdf_pointer needs the sha to point at",
+                next=f"edit(kind='{kind}', id='{handle}', args="
+                "{'pdf_pointer': '<sha>', 'reason': '<why>'})",
+            )
+        with self.store.pool.connection() as conn:
+            pointer, id_shas = body_ops._attached_pdf_shas(conn, ref.id)
+            has_pdfs_row = (
+                conn.execute(
+                    "SELECT 1 FROM pdfs WHERE pdf_sha256 = %s", (sha,)
+                ).fetchone()
+                is not None
+            )
+            undo = paper_dump.undo_line(conn, ref.id, handle)
+        held = {s.lower() for s in id_shas}
+        if pointer is not None and sha == pointer.lower():
+            return Response(
+                body=f"no change: {handle}'s pdf pointer already names {sha}."
+            )
+        if sha not in held:
+            raise BadInput(
+                f"{handle} has no pdf_sha256={sha!r} identifier row — "
+                "pdf_pointer only re-seats a file the ref already "
+                "claims, it does not attach a new one",
+                next=(
+                    f"{handle} holds pdf_sha256: {', '.join(sorted(held))} "
+                    "— pass one of those"
+                    if held
+                    else f"attach the file first: edit(kind='{kind}', "
+                    f"id='{handle}', args={{'attach_pdf': '{sha}', "
+                    f"'reason': '{reason}'}})"
+                ),
+            )
+        if not has_pdfs_row:
+            raise BadInput(
+                f"pdf_sha256={sha!r} is on {handle} but the corpus holds "
+                "no pdfs row for it — the pointer would dangle",
+                next="re-fetch the file first, or point at a held sha "
+                f"the corpus stores ({', '.join(sorted(held))})",
+            )
+        if dry:
+            return Response(
+                body=(
+                    f"DRY RUN (no write) - would re-point {handle}'s "
+                    f"pdf_sha256 {pointer or 'NULL'} → {sha} "
+                    "(pdf_pages cleared — the stored span was measured "
+                    "on the old file); body, identifier rows and "
+                    "pdf_role untouched, no re-extract queued; a "
+                    "'pdf_repointed' ref_event logged.\n\n"
+                    f"{undo}"
+                )
+            )
+        with self.store.tx() as conn:
+            # Same TOCTOU pin as the other doors: lock the ref row and
+            # re-verify liveness + the row's ownership — a concurrent
+            # move_identifier_to could take the sha between the check
+            # and the write.
+            row = conn.execute(
+                "SELECT pdf_sha256, retired_at, meta->>'superseded_by' "
+                "FROM refs WHERE ref_id = %s FOR NO KEY UPDATE",
+                (ref.id,),
+            ).fetchone()
+            if row is None or row[1] is not None or row[2] is not None:
+                raise BadInput(
+                    f"{handle} was retired or merged since the check — "
+                    "a re-point needs a live ref",
+                    next=f"re-resolve and retry: edit(kind='{kind}', "
+                    "id='<live ref>', args={'pdf_pointer': "
+                    f"'{sha}', 'reason': '{reason}'}})",
+                )
+            if (
+                conn.execute(
+                    "SELECT 1 FROM ref_identifiers WHERE ref_id = %s "
+                    "AND id_kind = 'pdf_sha256' AND lower(id_value) = %s",
+                    (ref.id, sha),
+                ).fetchone()
+                is None
+            ):
+                raise BadInput(
+                    f"{handle}'s pdf_sha256={sha!r} row was removed "
+                    "between the check and the write — nothing moved",
+                    next="re-list the ref's identifiers and retry if "
+                    "the row is really still there",
+                )
+            conn.execute(
+                "UPDATE refs SET pdf_sha256 = %s, pdf_pages = NULL, "
+                "updated_at = now() WHERE ref_id = %s",
+                (sha, ref.id),
+            )
+            self.store.append_event(
+                ref.id,
+                source="agent",
+                event="pdf_repointed",
+                payload={"reason": reason, "from": pointer, "to": sha},
+                conn=conn,
+            )
+        old = (
+            f" {pointer}'s identifier row is now an ordinary row — "
+            "re-home it with args={'move_identifier_to': {'scheme': "
+            "'pdf_sha256', 'value': "
+            f"'{pointer}', 'to': '<ref>'}} if it belongs elsewhere."
+            if pointer
+            else ""
+        )
+        return Response(
+            body=(
+                f"re-pointed {handle}'s pdf_sha256 {pointer or 'NULL'} → "
+                f"{sha}: pdf_pages cleared (the span was measured on "
+                "the old file); body, identifier rows and pdf_role "
+                "untouched, no re-extract queued; ref_event "
+                f"'pdf_repointed' logged.{old}"
+            )
+        )
+
     def _split_body(
         self, id: str | int, spec: Any, *, reason: str, dry: bool
     ) -> Response:
@@ -7153,7 +7316,11 @@ class PaperHandler(Handler):
                 f"id='{src_h}', args={{'move_pdf_to': '{tgt_h}', "
                 "'pdf_sha256': "
                 f"'{value}', 'reason': '{reason}'}}) (or 'move_body_to' "
-                "when the body goes too)",
+                "when the body goes too); when the pointer sits on the "
+                "wrong file, re-seat it at another pdf_sha256 the ref "
+                f"already claims first: edit(kind='{kind}', "
+                f"id='{src_h}', args={{'pdf_pointer': '<sha>', "
+                f"'reason': '{reason}'}}), then retry this move",
             )
         with self.store.pool.connection() as conn:
             held = [

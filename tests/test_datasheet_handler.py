@@ -514,6 +514,247 @@ def test_datasheet_states_prefers_canonical_subtype(store: Store) -> None:
     assert datasheet_state(store, "C2895249")["datasheet"] == (manual, "refman")
 
 
+# ── forwarded paper edit doors (gr548255) ──────────────────────────
+#
+# ``clear`` / ``move_identifier_to`` / ``pdf_pointer`` act on rows every
+# kind carries (refs.authors/year, ref_identifiers, refs.pdf_sha256), so
+# the datasheet edit forwards the args= call to the paper implementation
+# — a converted paper's wrong byline/year is the case that needed it.
+_DS_CLEAR_SHA = "c" * 64
+
+
+def _ds_with_byline(store: Store, cite_key: str) -> int:
+    """A datasheet carrying the wrong paper's byline/year — the shape a
+    ``convert_to`` flip leaves (gr548255)."""
+    rid = store.insert_ref(
+        kind="datasheet",
+        slug=cite_key,
+        title="A Datasheet",
+        authors=[{"family": "Wrong", "given": "W."}],
+        year=2019,
+        meta={"authors_source": "crossref"},
+    ).id
+    # A converted paper may still carry paper_authors rows
+    # (set_paper_authors no-ops on non-paper kinds) — the clear door
+    # must wipe them too, so seed one by hand.
+    with store.pool.connection() as conn:
+        conn.execute(
+            "INSERT INTO paper_authors (ref_id, position, family, "
+            "name_raw, source) VALUES (%s, 1, 'Wrong', 'Wrong W.', 'pdf')",
+            (rid,),
+        )
+    return rid
+
+
+def _ds_ref(store: Store, rid: int):
+    return store.fetch_refs_by_ids([rid], include_deleted=True)[rid]
+
+
+def test_edit_clear_door_clears_authors_and_year(
+    runtime_with_store: PrecisRuntime, store: Store
+) -> None:
+    rid = _ds_with_byline(store, "cleards")
+    assert _ds_ref(store, rid).authors
+    handle = handle_registry.format_handle("datasheet", rid)
+    out = runtime_with_store.dispatch(
+        "edit",
+        {
+            "kind": "datasheet",
+            "id": handle,
+            "__extras__": {
+                "clear": ["authors", "year"],
+                "reason": "converted paper kept the donor's byline",
+            },
+        },
+    )
+    assert "error" not in out.lower()
+    ref = _ds_ref(store, rid)
+    assert ref.year is None
+    assert not ref.authors
+    assert "authors_source" not in (ref.meta or {})
+    with store.pool.connection() as conn:
+        n = conn.execute(
+            "SELECT count(*) FROM paper_authors WHERE ref_id = %s", (rid,)
+        ).fetchone()
+    assert n is not None and n[0] == 0
+    ev = [e for e in store.events_for(rid) if e.event == "metadata_cleared"]
+    assert len(ev) == 1
+    assert sorted(ev[0].payload["cleared"]) == ["authors", "year"]
+
+
+def test_edit_clear_door_dry_run_writes_nothing(
+    runtime_with_store: PrecisRuntime, store: Store
+) -> None:
+    rid = _ds_with_byline(store, "cleardry")
+    out = runtime_with_store.dispatch(
+        "edit",
+        {
+            "kind": "datasheet",
+            "id": handle_registry.format_handle("datasheet", rid),
+            "dry_run": True,
+            "__extras__": {"clear": ["year"], "reason": "x"},
+        },
+    )
+    assert "DRY RUN" in out
+    assert _ds_ref(store, rid).year == 2019
+    assert not [e for e in store.events_for(rid) if e.event == "metadata_cleared"]
+
+
+def test_edit_authors_empty_hint_names_a_working_call(
+    runtime_with_store: PrecisRuntime, store: Store
+) -> None:
+    """The ``authors=[]`` refusal's ``next=`` names
+    ``args={'clear': ['authors']}`` — that call must actually run on a
+    datasheet (it refused before the doors were forwarded, gr548255)."""
+    rid = _ds_with_byline(store, "hintds")
+    handler = DatasheetHandler(hub=Hub(store=store))
+    with pytest.raises(BadInput, match="does not clear the byline") as ei:
+        handler.edit(id=rid, authors=[])
+    nxt = str(ei.value.next)
+    assert "kind='datasheet'" in nxt
+    assert "'clear': ['authors']" in nxt
+    out = runtime_with_store.dispatch(
+        "edit",
+        {
+            "kind": "datasheet",
+            "id": handle_registry.format_handle("datasheet", rid),
+            "__extras__": {"clear": ["authors"], "reason": "wrong byline"},
+        },
+    )
+    assert "error" not in out.lower()
+    assert not _ds_ref(store, rid).authors
+
+
+def test_edit_clear_door_refuses_a_field_combo(
+    runtime_with_store: PrecisRuntime, store: Store
+) -> None:
+    rid = _ds_with_byline(store, "combods")
+    out = runtime_with_store.dispatch(
+        "edit",
+        {
+            "kind": "datasheet",
+            "id": handle_registry.format_handle("datasheet", rid),
+            "vendor": "Acme",
+            "__extras__": {"clear": ["year"], "reason": "x"},
+        },
+    )
+    assert "doesn't combine" in out
+    assert _ds_ref(store, rid).year == 2019
+
+
+def test_edit_move_identifier_door_on_datasheet(
+    runtime_with_store: PrecisRuntime, store: Store
+) -> None:
+    """The other shared row door: a wrong pdf_sha256 identifier row on
+    one datasheet re-homes onto the datasheet it belongs to."""
+    a = _ds(store, cite_key="midsrcds", title="src")
+    b = _ds(store, cite_key="midtgtds", title="tgt")
+    store.set_ref_identifier(a, "pdf_sha256", _DS_CLEAR_SHA, source="test")
+    out = runtime_with_store.dispatch(
+        "edit",
+        {
+            "kind": "datasheet",
+            "id": handle_registry.format_handle("datasheet", a),
+            "__extras__": {
+                "move_identifier_to": {
+                    "scheme": "pdf_sha256",
+                    "value": _DS_CLEAR_SHA,
+                    "to": handle_registry.format_handle("datasheet", b),
+                },
+                "reason": "the file is the other sheet's",
+            },
+        },
+    )
+    assert "error" not in out.lower()
+    with store.pool.connection() as conn:
+        rows = conn.execute(
+            "SELECT ref_id FROM ref_identifiers WHERE id_kind = 'pdf_sha256' "
+            "AND id_value = %s",
+            (_DS_CLEAR_SHA,),
+        ).fetchall()
+    assert [int(r[0]) for r in rows] == [b]
+
+
+def _ds_pdf(store: Store, rid: int, sha: str, *, pointer: bool = False) -> None:
+    """A pdfs row + the ref's pdf_sha256 identifier row; ``pointer=True``
+    also seats ``refs.pdf_sha256`` on it."""
+    with store.pool.connection() as conn:
+        conn.execute(
+            "INSERT INTO pdfs (pdf_sha256, content_hash, page_count, "
+            "size_bytes, storage_path) VALUES (%s, %s, 3, 10, 'x.pdf') "
+            "ON CONFLICT DO NOTHING",
+            (sha, sha),
+        )
+        if pointer:
+            conn.execute(
+                "UPDATE refs SET pdf_sha256 = %s WHERE ref_id = %s", (sha, rid)
+            )
+        conn.execute(
+            "INSERT INTO ref_identifiers (id_kind, id_value, ref_id, source) "
+            "VALUES ('pdf_sha256', %s, %s, 'test') ON CONFLICT DO NOTHING",
+            (sha, rid),
+        )
+
+
+def _ds_pdf_sha(store: Store, rid: int) -> str | None:
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            "SELECT pdf_sha256 FROM refs WHERE ref_id = %s", (rid,)
+        ).fetchone()
+    return row[0] if row else None
+
+
+def test_edit_pdf_pointer_door_on_datasheet(
+    runtime_with_store: PrecisRuntime, store: Store
+) -> None:
+    """A datasheet's pointer re-seats on another sha its own identifier
+    rows claim — body untouched, both rows stay."""
+    rid = _ds(store, cite_key="ptrds", title="ptr")
+    sha_a = "a" * 64
+    sha_b = "b" * 64
+    _ds_pdf(store, rid, sha_a, pointer=True)
+    _ds_pdf(store, rid, sha_b)
+    out = runtime_with_store.dispatch(
+        "edit",
+        {
+            "kind": "datasheet",
+            "id": handle_registry.format_handle("datasheet", rid),
+            "__extras__": {"pdf_pointer": sha_b, "reason": "wrong file"},
+        },
+    )
+    assert "error" not in out.lower()
+    assert _ds_pdf_sha(store, rid) == sha_b
+    ev = [e for e in store.events_for(rid) if e.event == "pdf_repointed"]
+    assert len(ev) == 1
+    assert ev[0].payload["from"] == sha_a
+    assert ev[0].payload["to"] == sha_b
+
+
+def test_edit_paper_only_doors_refused_on_datasheet(
+    runtime_with_store: PrecisRuntime, store: Store
+) -> None:
+    """``split_body`` mints a *paper* and ``merge_into`` folds refs —
+    neither reaches the handler through the declared args= gate."""
+    rid = _ds(store, cite_key="paperdoorsds", title="pd")
+    handle = handle_registry.format_handle("datasheet", rid)
+    for door_args in (
+        {"split_body": {"title": "x"}, "reason": "x"},
+        {"merge_into": "da1", "reason": "x"},
+    ):
+        out = runtime_with_store.dispatch(
+            "edit",
+            {"kind": "datasheet", "id": handle, "__extras__": door_args},
+        )
+        assert "not accepted by datasheet.edit" in out, out
+    # A direct call bypasses the dispatch gate — the handler's own
+    # filter refuses the same doors before forwarding.
+    handler = DatasheetHandler(hub=Hub(store=store))
+    with pytest.raises(BadInput, match="paper-only"):
+        handler.edit(id=rid, args={"split_body": {"title": "x"}, "reason": "x"})
+    with pytest.raises(BadInput, match="paper-only"):
+        handler.edit(id=rid, args={"merge_into": "da1", "reason": "x"})
+
+
 def test_datasheet_states_tie_goes_to_newest_link(store: Store) -> None:
     pid = store.ensure_part_ref("C25804", uncatalogued_ok=True)
     older = _ds(store, cite_key="olderds", title="older")
