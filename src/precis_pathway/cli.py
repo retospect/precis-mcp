@@ -22,6 +22,16 @@ slug-recompute would mint a duplicate per state. Dry-run by default;
 
 An operator one-shot for pathways ingested before the injective slug —
 nothing calls it on a cadence.
+
+``retitle`` renames every live pathway to the spec form
+``'<substrate> → <target> on <catalyst>'`` (gr549574): the linked
+candidate structure's name with dashes as spaces, a tombstone's
+``'<name> (deleted)'``, or the slab (``'… on Pd(111)'``) when no
+candidate resolves. A pathway whose named candidate is gone without a
+tombstone keeps its old title. Title-only — the old title stays in
+``ref_events`` as a ``title_changed`` row, the way every retitle does.
+Dry-run by default, listing each change as ``id: old → new``;
+``--apply`` writes. Hand-run only — nothing wires it to a cadence or hook.
 """
 
 from __future__ import annotations
@@ -29,9 +39,13 @@ from __future__ import annotations
 import argparse
 import sys
 from collections import Counter
+from typing import TYPE_CHECKING
 
 from precis.cli._common import resolve_dsn
 from precis.cli.registry import Command
+
+if TYPE_CHECKING:
+    from precis.store import Store
 
 #: The ``precis.cli`` entry point resolves to this sequence — the plugin
 #: analogue of a ``COMMANDS`` row. ``help`` must byte-match ``add_parser``'s
@@ -40,16 +54,16 @@ COMMANDS: tuple[Command, ...] = (
     Command(
         "pathway",
         "precis_pathway.cli",
-        "Pathway-kind maintenance: re-ingest intermediate structures.",
+        "Pathway-kind maintenance: re-ingest intermediates; retitle titles.",
     ),
 )
 
 
 def add_parser(sub: argparse._SubParsersAction) -> argparse.ArgumentParser:
-    """Register the ``pathway`` subcommand (``reingest-structures``)."""
+    """Register the ``pathway`` subcommands."""
     p = sub.add_parser(
         "pathway",
-        help="Pathway-kind maintenance: re-ingest intermediate structures.",
+        help="Pathway-kind maintenance: re-ingest intermediates; retitle titles.",
         description=__doc__,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
@@ -74,6 +88,28 @@ def add_parser(sub: argparse._SubParsersAction) -> argparse.ArgumentParser:
     ri.add_argument(
         "--database-url", default=None, help="Override PRECIS_DATABASE_URL."
     )
+    rt = psub.add_parser(
+        "retitle",
+        help="Retitle every live pathway to '<rxn> on <catalyst>' (gr549574).",
+        description=(
+            "Rename every live pathway to '<substrate> → <target> on "
+            "<catalyst>' — the linked candidate structure's name (dashes as "
+            "spaces), '<name> (deleted)' off a tombstone, or the slab "
+            "('… on Pd(111)') when no candidate resolves. A named candidate "
+            "gone without a tombstone keeps the old title. Dry-run by "
+            "default, listing each change as 'id: old → new'; --apply "
+            "writes through the retitle door (old titles stay in "
+            "ref_events). Idempotent."
+        ),
+    )
+    rt.add_argument(
+        "--apply",
+        action="store_true",
+        help="Write the retitles. Without this flag the command is a dry-run.",
+    )
+    rt.add_argument(
+        "--database-url", default=None, help="Override PRECIS_DATABASE_URL."
+    )
     return p
 
 
@@ -81,13 +117,13 @@ def run(args: argparse.Namespace) -> None:
     """Dispatch ``precis pathway <cmd>``."""
     if args.pathway_cmd == "reingest-structures":
         _reingest_structures(args)
+    elif args.pathway_cmd == "retitle":
+        _retitle(args)
 
 
-def _reingest_structures(args: argparse.Namespace) -> None:
+def _open_store(args: argparse.Namespace) -> Store:
     from precis.config import load_config
     from precis.runtime import build_runtime
-
-    from . import ingest as pw_ingest
 
     cfg = load_config()
     dsn = resolve_dsn(args.database_url, cfg=cfg)
@@ -100,6 +136,47 @@ def _reingest_structures(args: argparse.Namespace) -> None:
             file=sys.stderr,
         )
         raise SystemExit(2)
+    return store
+
+
+def _retitle(args: argparse.Namespace) -> None:
+    from . import persist as pw_persist
+
+    store = _open_store(args)
+    checked, rows = pw_persist.retitle_plan(store)
+    writes = [r for r in rows if r.new_title != r.old_title]
+    dry_run = not args.apply
+    mode = "DRY-RUN" if dry_run else "APPLY"
+    print(
+        f"pathway retitle [{mode}]: {checked} live pathway(s), "
+        f"{len(writes)} to retitle",
+        file=sys.stderr,
+    )
+    for r in rows:
+        if r.new_title != r.old_title:
+            line = f"  {r.ref_id}: {r.old_title} → {r.new_title}"
+            if r.note:
+                line += f"  ({r.note})"
+        else:
+            line = f"  {r.ref_id}: {r.old_title} (kept — {r.note})"
+        print(line)
+    if dry_run:
+        if writes:
+            print("Re-run with --apply to write.", file=sys.stderr)
+        return
+    for r in writes:
+        store.chunks.set_ref_title(r.ref_id, r.new_title, source="agent")
+    print(
+        f"pathway retitle [APPLY] done: {len(writes)} title(s) updated "
+        "(old titles kept in ref_events as title_changed).",
+        file=sys.stderr,
+    )
+
+
+def _reingest_structures(args: argparse.Namespace) -> None:
+    from . import ingest as pw_ingest
+
+    store = _open_store(args)
 
     ident: int | str = int(args.pathway) if args.pathway.isdigit() else args.pathway
     ref = store.get_ref(kind="pathway", id=ident)

@@ -371,7 +371,7 @@ class PathwayHandler(Handler):
                 ref = store.insert_ref(
                     kind="pathway",
                     slug=slug,
-                    title=pathway_title(artifact),
+                    title=pathway_title(artifact) or f"pathway {slug}",
                     meta={"status": "computing", "created_by": "put:pathway:emt"},
                     conn=conn,
                 )

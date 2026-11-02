@@ -13,6 +13,8 @@ from __future__ import annotations
 
 import logging
 import math
+import re
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
@@ -23,6 +25,12 @@ if TYPE_CHECKING:
 log = logging.getLogger(__name__)
 
 BODY_KIND = "pathway_body"
+
+#: The quest-candidate slug convention (``precis.quest.compute._candidate_slug``
+#: mints ``q<quest_id>cand-<digest>`` and ``dispatch_autocatpath`` names the
+#: pathway ``<cand>-rx-<key>``): a quest-minted pathway's candidate resolves
+#: off its own slug even on refs that predate the ``meta.candidate_ref`` stamp.
+_QUEST_CAND_SLUG_RE = re.compile(r"^q\d+cand-")
 
 
 def _json_finite(obj: Any) -> Any:
@@ -63,10 +71,253 @@ def pathway_meta(
     return _json_finite(meta)
 
 
-def pathway_title(artifact: PathwayArtifact) -> str:
+def slab_name(slab: dict[str, Any] | None) -> str | None:
+    """``<element>`` / ``<element>(<facet>)`` — the catalyst slot's fallback
+    when no candidate structure names it. The facet renders only when
+    ``slab.miller`` is set (a missing miller means 'Pd', not 'Pd(111)' —
+    the config's default is an engine detail the title does not assert);
+    negative indices take the bar-free comma form ('Pd(1,-1,1)').
+    ``None`` when the config names no element at all — callers keep the
+    existing title then."""
+    slab = slab or {}
+    element = slab.get("element")
+    if not element:
+        return None
+    miller = slab.get("miller")
+    if not miller:
+        return str(element)
+    sep = "," if any(int(i) < 0 or int(i) > 9 for i in miller) else ""
+    return f"{element}({sep.join(str(int(i)) for i in miller)})"
+
+
+def _related_structure_ids(store: Store, ref_id: int) -> list[int]:
+    """ref_ids of ``structure`` refs linked ``related-to`` this pathway —
+    the same symmetric read ``links_for`` does everywhere. The per-state
+    intermediates ride this relation too, so several ids means the set
+    does not single out a candidate."""
+    others = {
+        ln.dst_ref_id if ln.src_ref_id == ref_id else ln.src_ref_id
+        for ln in store.links_for(ref_id, direction="both", relation="related-to")
+    }
+    others.discard(ref_id)
+    if not others:
+        return []
+    refs = store.fetch_refs_by_ids(others)
+    return sorted(rid for rid, r in refs.items() if r.kind == "structure")
+
+
+def _candidate_structure(
+    store: Store,
+    meta: dict[str, Any],
+    slug: str | None,
+    *,
+    ref_id: int | None = None,
+    structs: dict[int, Any] | None = None,
+    related: dict[int, set[int]] | None = None,
+    conn: Any = None,
+) -> tuple[Any | None, bool, str | None]:
+    """``(structure ref | None, named, note)`` — the structure a pathway
+    ran on, whether one was identified at all, and an ambiguity note for
+    the retitle dry-run.
+
+    The pathway's own candidate link is the source of truth, in order:
+    the mint-stamped ``meta.candidate_ref`` (what the handler/web views
+    already resolve); when that is absent, the pathway's ``related-to``
+    structure link (the quest harvest's ``_link_pathway`` — exactly one
+    linked structure IS the candidate; several name none, since the
+    per-state intermediates ride the same relation); then the slug's
+    ``q<quest>cand-<digest>`` prefix for pathways minted before the stamp.
+    Tombstones resolve too — a deleted candidate still names the catalyst.
+    ``(None, True, _)`` means a candidate was named but is gone without a
+    tombstone.
+    """
+    struct = None
+    named = False
+    note = None
+    cand_id = (meta or {}).get("candidate_ref")
+    if cand_id is not None:
+        named = True
+        try:
+            cid = int(cand_id)
+        except (TypeError, ValueError):
+            cid = None
+        if cid is not None:
+            struct = (
+                structs.get(cid)
+                if structs is not None
+                else store.get_ref(
+                    kind="structure", id=cid, include_deleted=True, conn=conn
+                )
+            )
+    elif ref_id is not None:
+        ids = (
+            sorted(related.get(ref_id, ()))
+            if related is not None
+            else _related_structure_ids(store, ref_id)
+        )
+        if len(ids) == 1:
+            named = True
+            struct = (
+                structs.get(ids[0])
+                if structs is not None
+                else store.get_ref(
+                    kind="structure", id=ids[0], include_deleted=True, conn=conn
+                )
+            )
+        elif len(ids) > 1:
+            note = f"ambiguous: {len(ids)} related-to structures"
+    if struct is None and slug:
+        head = str(slug).split("-rx-", 1)[0]
+        if _QUEST_CAND_SLUG_RE.match(head):
+            struct = store.get_ref(
+                kind="structure", id=head, include_deleted=True, conn=conn
+            )
+            if struct is not None:
+                named = True
+    return struct, named, note
+
+
+def _catalyst_name(struct: Any | None) -> str | None:
+    """``'<name>'`` / ``'<name> (deleted)'`` off the candidate structure's
+    title — dashes render as spaces (gr549574, Reto 2026-11-02)."""
+    if struct is None:
+        return None
+    name = str(getattr(struct, "title", "") or "").replace("-", " ").strip()
+    if not name:
+        return None
+    return f"{name} (deleted)" if getattr(struct, "retired_at", None) else name
+
+
+def pathway_title(
+    artifact: PathwayArtifact, *, catalyst: str | None = None
+) -> str | None:
     r = artifact["results_json"]
-    el = artifact["config"].get("slab", {}).get("element", "?")
-    return f"{r['substrate']} → {r['target']} on {el}"
+    name = catalyst or slab_name(artifact["config"].get("slab"))
+    if name is None:
+        return None
+    return f"{r['substrate']} → {r['target']} on {name}"
+
+
+@dataclass(frozen=True)
+class Retitle:
+    """One pathway row in a retitle plan. ``new_title == old_title`` with
+    a ``note`` is an informational keep (e.g. an ambiguous candidate
+    link), not a change — apply skips it."""
+
+    ref_id: int
+    slug: str | None
+    old_title: str
+    new_title: str
+    note: str | None = None
+
+
+def stored_title(
+    store: Store,
+    meta: dict[str, Any],
+    slug: str | None,
+    *,
+    ref_id: int | None = None,
+    structs: dict[int, Any] | None = None,
+    related: dict[int, set[int]] | None = None,
+    conn: Any = None,
+) -> tuple[str | None, str | None]:
+    """``(title, note)`` — the spec title for a stored pathway
+    (``'<substrate> → <target> on <catalyst>'`` off ``meta.results`` + the
+    candidate link), and a dry-run note when the candidate evidence needs
+    a human look. ``title=None`` keeps the stored title: no results yet,
+    a named candidate gone without a tombstone, or no element to name the
+    slab."""
+    results = (meta or {}).get("results") or {}
+    substrate, target = results.get("substrate"), results.get("target")
+    if not substrate or not target:
+        return None, None
+    struct, named, note = _candidate_structure(
+        store,
+        meta or {},
+        slug,
+        ref_id=ref_id,
+        structs=structs,
+        related=related,
+        conn=conn,
+    )
+    if struct is None and named:
+        return None, note or "candidate named but gone, no tombstone"
+    catalyst = _catalyst_name(struct) or slab_name(
+        (meta or {}).get("config", {}).get("slab")
+    )
+    if catalyst is None:
+        return None, "no slab element to name"
+    return f"{substrate} → {target} on {catalyst}", note
+
+
+def retitle_plan(store: Store) -> tuple[int, list[Retitle]]:
+    """``(checked, rows)`` — every live pathway whose stored title differs
+    from :func:`stored_title`, plus informational keeps (``note`` set,
+    title unchanged). Title-only: no meta/body churn, so an apply is
+    idempotent by construction."""
+    with store.pool.connection() as conn:
+        rows = conn.execute(
+            "SELECT r.ref_id, r.title, r.meta, "
+            "(SELECT ri.id_value FROM ref_identifiers ri "
+            " WHERE ri.ref_id = r.ref_id AND ri.id_kind = 'cite_key' "
+            " LIMIT 1) "
+            "FROM refs r WHERE r.kind = 'pathway' AND r.retired_at IS NULL "
+            "ORDER BY r.ref_id"
+        ).fetchall()
+        cand_ids = set()
+        unlinked = []
+        for ref_id, _, meta, _ in rows:
+            cid = (meta or {}).get("candidate_ref")
+            if cid is not None:
+                try:
+                    cand_ids.add(int(cid))
+                except (TypeError, ValueError):
+                    pass
+            else:
+                unlinked.append(int(ref_id))
+        # One batched related-to read for every pathway that names no
+        # candidate — the quest harvest's structure↔pathway link (either
+        # direction, the relation is symmetric), structure ends only.
+        related: dict[int, set[int]] = {}
+        if unlinked:
+            for pw_id, struct_id in conn.execute(
+                "SELECT l.src_ref_id, l.dst_ref_id FROM links l "
+                "JOIN refs r ON r.ref_id = l.dst_ref_id "
+                "WHERE l.relation = 'related-to' AND l.src_ref_id = ANY(%s) "
+                "AND r.kind = 'structure' "
+                "UNION ALL "
+                "SELECT l.dst_ref_id, l.src_ref_id FROM links l "
+                "JOIN refs r ON r.ref_id = l.src_ref_id "
+                "WHERE l.relation = 'related-to' AND l.dst_ref_id = ANY(%s) "
+                "AND r.kind = 'structure'",
+                (unlinked, unlinked),
+            ).fetchall():
+                related.setdefault(int(pw_id), set()).add(int(struct_id))
+    structs = store.fetch_refs_by_ids(
+        cand_ids | {sid for ids in related.values() for sid in ids}
+    )
+    changes = []
+    for ref_id, title, meta, slug in rows:
+        old = str(title or "")
+        new, note = stored_title(
+            store,
+            meta or {},
+            slug,
+            ref_id=int(ref_id),
+            structs=structs,
+            related=related,
+        )
+        if (new is not None and new != old) or note is not None:
+            changes.append(
+                Retitle(
+                    ref_id=int(ref_id),
+                    slug=slug,
+                    old_title=old,
+                    new_title=new if new is not None else old,
+                    note=note,
+                )
+            )
+    return len(rows), changes
 
 
 def persist_result(
@@ -132,9 +383,29 @@ def persist_result(
         # nothing ever rewrote it: 697 of prod's 701 pathway refs carried a
         # "(computing)" title, including all 528 that were ``status: ready``.
         # An agent listing pathways reads the title, so every finished run
-        # advertised itself as still running. The in-process path already
-        # inserts this exact title, so re-setting it there is a no-op.
-        store.update_ref(ref_id, title=pathway_title(artifact), conn=c)
+        # advertised itself as still running.
+        #
+        # The catalyst slot names the candidate structure when the pathway
+        # has one (gr549574): the mint-stamped ``meta.candidate_ref`` the
+        # just-written merge preserves, else the related-to link, else the
+        # slug's candidate prefix. A named candidate gone without a
+        # tombstone (or a config naming no element) keeps the existing
+        # title — the same keep rule ``stored_title`` applies.
+        ref = store.get_ref(kind="pathway", id=ref_id, conn=c)
+        struct, named, _note = _candidate_structure(
+            store,
+            (ref.meta if ref is not None else meta),
+            (ref.slug if ref is not None else None) or pathway_slug,
+            ref_id=ref_id,
+            conn=c,
+        )
+        title = (
+            pathway_title(artifact, catalyst=_catalyst_name(struct))
+            if struct is not None or not named
+            else None
+        )
+        if title is not None:
+            store.update_ref(ref_id, title=title, conn=c)
         store.chunks.replace_body_chunk(
             ref_id, artifact["methods_md"], chunk_kind=BODY_KIND, conn=c
         )

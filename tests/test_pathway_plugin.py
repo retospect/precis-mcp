@@ -1507,7 +1507,7 @@ def _store_synthetic_pathway(store: Store, slug: str, *, element: str) -> int:
         ref = store.insert_ref(
             kind="pathway",
             slug=slug,
-            title=pathway_title(artifact),
+            title=pathway_title(artifact) or slug,
             meta={"status": "computing"},
             conn=conn,
         )
