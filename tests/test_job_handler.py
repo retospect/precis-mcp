@@ -945,3 +945,77 @@ class TestJobCardErrorLine:
         err = next(l for l in lines if l.startswith("error: "))
         assert len(err) <= 310
         assert err.endswith("…")
+
+
+class TestRunningJobCardBudget:
+    """gr549807: a detached autocatpath_kinetics job stamps its per-step
+    ceiling at submit — the running card shows it plus live elapsed, so a
+    long sweep no longer reads as stalled."""
+
+    def test_running_card_shows_step_budget_and_elapsed(
+        self, jobs: JobHandler, store: Store
+    ) -> None:
+        import re
+
+        job_id = _insert_job(
+            store,
+            meta={
+                "job_type": "autocatpath_kinetics",
+                "kinetics_step_s": 6000,
+                "compute_handle": {
+                    "pid": 1,
+                    "started_at": datetime.now(UTC).timestamp() - 1500,
+                },
+            },
+            status="running",
+        )
+        body = jobs.get(id=job_id).body
+        assert "step_budget: 6000 s per step" in body
+        m = re.search(r"elapsed: (\d+) s", body)
+        assert m is not None
+        assert 1490 <= int(m.group(1)) <= 1520
+
+    def test_unbounded_step_budget_reads_unbounded(
+        self, jobs: JobHandler, store: Store
+    ) -> None:
+        job_id = _insert_job(
+            store,
+            meta={"job_type": "autocatpath_kinetics", "kinetics_step_s": 0},
+            status="running",
+        )
+        body = jobs.get(id=job_id).body
+        assert "step_budget: unbounded per step" in body
+
+    def test_elapsed_falls_back_to_started_at(
+        self, jobs: JobHandler, store: Store
+    ) -> None:
+        import re
+
+        job_id = _insert_job(
+            store,
+            meta={
+                "job_type": "autocatpath_kinetics",
+                "kinetics_step_s": 900,
+                "started_at": (datetime.now(UTC) - timedelta(minutes=10)).isoformat(),
+            },
+            status="running",
+        )
+        m = re.search(r"elapsed: (\d+) s", jobs.get(id=job_id).body)
+        assert m is not None
+        assert int(m.group(1)) >= 590
+
+    def test_no_stamp_no_budget_line(self, jobs: JobHandler, store: Store) -> None:
+        job_id = _insert_job(
+            store,
+            meta={"job_type": "fix_gripe"},
+            status="running",
+        )
+        assert "step_budget:" not in jobs.get(id=job_id).body
+
+    def test_succeeded_job_no_budget_line(self, jobs: JobHandler, store: Store) -> None:
+        job_id = _insert_job(
+            store,
+            meta={"job_type": "autocatpath_kinetics", "kinetics_step_s": 6000},
+            status="succeeded",
+        )
+        assert "step_budget:" not in jobs.get(id=job_id).body

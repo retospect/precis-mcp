@@ -162,7 +162,7 @@ def test_detached_child_round_trips_the_kinetics_job_envelope(monkeypatch, tmp_p
     monkeypatch.setattr(
         kinetics_job,
         "run_compute",
-        lambda cfg, inputs: {
+        lambda cfg, inputs, **_kw: {
             "results": {"kinetics_v2": {"tof_mf": 1.0}},
             "notes": ["n"],
         },

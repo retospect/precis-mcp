@@ -3628,6 +3628,19 @@ class JobHandler(NumericRefHandler):
             lines.append(
                 f"ran_on: {ran_on} (code {meta.get('lease_code') or 'unstamped'})"
             )
+        if status == "running":
+            step_s = meta.get("kinetics_step_s")
+            if step_s is not None:
+                # stamped at submit by autocatpath_kinetics' detached
+                # compute (gr549807): the per-step ceiling a silent step
+                # may still be inside, and how long it's been going.
+                lines.append(
+                    f"step_budget: {'unbounded' if not step_s else f'{step_s} s'} "
+                    "per step"
+                )
+                elapsed = _running_elapsed_s(meta)
+                if elapsed is not None:
+                    lines.append(f"elapsed: {elapsed:.0f} s")
         if status in ("queued", "yielded"):
             lines.extend(self._queue_lines(ref))
         slices = meta.get("relax_slices")
@@ -5182,6 +5195,21 @@ def _status_of(tags: list[Tag]) -> str | None:
         if s.startswith("STATUS:"):
             return s[len("STATUS:") :]
     return None
+
+
+def _running_elapsed_s(meta: dict[str, Any]) -> float | None:
+    """Seconds a running job's compute has been going (gr549807): the
+    detached child's own ``started_at`` epoch when ``compute_handle``
+    carries it, else the claim's ``meta.started_at``; ``None`` when
+    neither parses."""
+    handle = meta.get("compute_handle")
+    started = handle.get("started_at") if isinstance(handle, dict) else None
+    if isinstance(started, int | float) and not isinstance(started, bool):
+        return max(0.0, datetime.now(UTC).timestamp() - float(started))
+    dt = as_utc(meta.get("started_at"))
+    if dt is None:
+        return None
+    return max(0.0, (datetime.now(UTC) - dt).total_seconds())
 
 
 def _default_executor_for(spec: Any) -> str:

@@ -27,11 +27,15 @@ From engine 0.38 (slice 10, D10) the persist step restamps
 child (:func:`precis_pathway.runner.submit_kinetics_job_detached`), exactly
 the seed job's protocol: ``_submit`` launches it and returns the handle,
 ``_poll`` reads its ``result.json`` and does the persistence, the seed job's
-``_kill``/``_reap`` bound and clean it up. ``ssh_node`` claims ``limit=1``
-and a blocking dispatch held its worker thread for up to an hour; the
-detached job holds none, and ``requires={}`` takes no gpu slot, so it may
-share pollux/spark with seed and aggregate work. ``_dispatch`` stays as the
-blocking fallback for an executor build that only knows ``dispatch``.
+``_kill``/``_reap`` bound and clean it up. The child mirrors each step note
+into ``progress.log`` next to ``result.json`` as it happens, and ``_poll``
+drains that file into job events (plus one heartbeat per quiet poll) so a
+long sweep no longer reads as stalled (gr549807). ``ssh_node`` claims
+``limit=1`` and a blocking dispatch held its worker thread for up to an
+hour; the detached job holds none, and ``requires={}`` takes no gpu slot,
+so it may share pollux/spark with seed and aggregate work. ``_dispatch``
+stays as the blocking fallback for an executor build that only knows
+``dispatch``.
 
 Gas references: the solve, TPD and sweep rebuild the net and call
 ``autocatpath.pipeline.ledger_refs``, which re-measures gas / bare-slab
@@ -47,9 +51,11 @@ neb-tier pathway, and by ``put(kind='pathway', mode='recompute_kinetics')``.
 from __future__ import annotations
 
 import copy
+import json
 import logging
 import math
 import os
+import time
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any, cast
 
@@ -109,6 +115,10 @@ _CLEARS = {
 #: The per-step ceiling (s) when ``PRECIS_AUTOCATPATH_KINETICS_SECONDS`` is
 #: unset, the same default as ``runner._kinetics_timeout_s``.
 _DEFAULT_STEP_S = 900
+#: The live step-note file the detached child mirrors every ``note()``
+#: line into, next to ``result.json`` (gr549807): ``_poll`` drains it so a
+#: long sweep stops reading as a stalled job.
+PROGRESS_NAME = "progress.log"
 #: The sweep gets this many step budgets: 48 points with an order stencil per
 #: gas plus the optimum search outran one on 511428 (job 544260).
 _SWEEP_STEPS = 3
@@ -140,6 +150,18 @@ def _sweep_budget_s() -> int:
     except ValueError:
         step = _DEFAULT_STEP_S
     return max(0, step) * _SWEEP_STEPS
+
+
+def _step_seconds() -> int:
+    """The per-step ceiling the compute children run under — the same
+    ``PRECIS_AUTOCATPATH_KINETICS_SECONDS`` read
+    ``runner._kinetics_timeout_s`` makes (0 = unbounded steps). Stamped on
+    submit so the running job card can show the budget a silent step may
+    still be inside (gr549807)."""
+    try:
+        return max(0, int(os.environ.get("PRECIS_AUTOCATPATH_KINETICS_SECONDS", "")))
+    except ValueError:
+        return _DEFAULT_STEP_S
 
 
 def _tpd_family(config: dict[str, Any]) -> Any:
@@ -451,13 +473,33 @@ def _tpd_check(
     return tpd
 
 
-def run_compute(config: dict[str, Any], inputs: dict[str, Any]) -> dict[str, Any]:
+def run_compute(
+    config: dict[str, Any],
+    inputs: dict[str, Any],
+    *,
+    progress_path: str | None = None,
+) -> dict[str, Any]:
     """Child entrypoint (``runner._subprocess_main`` mode ``kinetics_job``):
     the :func:`compute` over ``inputs``, returned as the JSON envelope
-    ``{"results": <output keys>, "notes": [<job_event lines>]}``."""
+    ``{"results": <output keys>, "notes": [<job_event lines>]}``. Every
+    note also lands on ``progress_path`` appended and flushed per line, so
+    the detached ``_poll`` streams step notes while the compute still
+    runs — the envelope only travels at exit otherwise (gr549807)."""
     results = {k: inputs.get(k) for k in _INPUT_KEYS}
     notes: list[str] = []
-    compute(config, results, notes.append)
+
+    def note(line: str) -> None:
+        notes.append(line)
+        if progress_path:
+            try:
+                # one JSON record per line — a note's own newlines stay
+                # inside the record, so _drain_progress counts NOTES
+                with open(progress_path, "a", encoding="utf-8") as fh:
+                    fh.write(json.dumps(line) + "\n")
+            except OSError:
+                pass  # the envelope copy still lands on done
+
+    compute(config, results, note)
     return {
         "results": {k: results[k] for k in _OUTPUT_KEYS if k in results},
         "notes": notes,
@@ -786,25 +828,104 @@ def _submit(ctx: Any, spec: Any) -> Any:
         from precis_pathway import runner
 
         cpuset = (params.get("resources") or {}).get("cpuset")
-        return runner.submit_kinetics_job_detached(
+        handle = runner.submit_kinetics_job_detached(
             config, inputs, **({"cpuset": cpuset} if cpuset else {})
         )
     except Exception as exc:  # pragma: no cover - spawn/env dependent
         log.warning("autocatpath_kinetics: submit failed", exc_info=True)
         ctx.record_failure(f"autocatpath_kinetics: submit failed: {exc}")
         return None
+    # the per-step ceiling the children run under — the running card shows
+    # it so a silent step's budget is visible (gr549807)
+    ctx.set_meta(kinetics_step_s=_step_seconds())
+    return handle
+
+
+def _drain_progress(ctx: Any, handle: Any) -> tuple[int, int]:
+    """Append the progress records the detached child wrote since the last
+    read as ``job_event``s — one JSON-encoded note per line, so a note
+    carrying its own newlines (a ``kinetics_error`` reason with a stderr
+    tail) still counts and lands once. Returns ``(total, new)`` — the
+    running count of emitted notes (the done-envelope skips the ones
+    already shown) and how many this call added. The byte offset and
+    count ride on ``meta`` so a worker restart resumes mid-file.
+    Best-effort: an absent or unreadable file emits nothing, and a record
+    that doesn't decode is skipped rather than counted."""
+    meta = ctx.meta if isinstance(ctx.meta, dict) else {}
+    offset = int(meta.get("kinetics_progress_offset") or 0)
+    emitted = int(meta.get("kinetics_progress_notes") or 0)
+    try:
+        path = os.path.join(str(handle["dir"]), PROGRESS_NAME)
+        with open(path, "rb") as fh:
+            fh.seek(offset)
+            data = fh.read()
+    except (OSError, KeyError, TypeError):
+        return emitted, 0
+    cut = data.rfind(b"\n") + 1  # a trailing partial line waits for its flush
+    if not cut:
+        return emitted, 0
+    new = 0
+    for raw in data[:cut].decode("utf-8", "replace").split("\n"):
+        if not raw:
+            continue
+        try:
+            line = json.loads(raw)
+        except ValueError:
+            continue  # not a progress record — never emitted, never counted
+        ctx.append_chunk("job_event", str(line))
+        new += 1
+    offset += cut
+    emitted += new
+    ctx.set_meta(kinetics_progress_offset=offset, kinetics_progress_notes=emitted)
+    meta["kinetics_progress_offset"] = offset
+    meta["kinetics_progress_notes"] = emitted
+    return emitted, new
+
+
+def _heartbeat(ctx: Any, handle: Any, runner: Any) -> None:
+    """One liveness line for a quiet poll — child pid, alive/dead and
+    elapsed — so a running job does not read as stalled (gr549807)."""
+    pid = handle.get("pid")
+    probe = getattr(runner, "_process_alive", None)
+    alive = True
+    if callable(probe) and isinstance(pid, int):
+        try:
+            alive = bool(probe(pid))
+        except OSError:
+            alive = True
+    started = handle.get("started_at")
+    elapsed = (
+        f"{max(0.0, time.time() - float(started)):.0f}"
+        if isinstance(started, (int, float))
+        else "?"
+    )
+    ctx.append_chunk(
+        "job_event",
+        f"autocatpath_kinetics: heartbeat — pid {pid} "
+        f"{'alive' if alive else 'dead'}, {elapsed} s elapsed",
+    )
 
 
 def _poll(ctx: Any, handle: Any) -> bool:
-    """Detached poll half: ``False`` while the child runs; on a terminal
-    state does ``_dispatch``'s persistence from the child's envelope and
-    drives the job terminal."""
+    """Detached poll half: ``False`` while the child runs — draining the
+    child's ``progress.log`` into job events, with one heartbeat per poll
+    when nothing new arrived; on a terminal state does ``_dispatch``'s
+    persistence from the child's envelope and drives the job terminal."""
     from precis_pathway import runner
     from precis_pathway.seed_job import _reap_scratch
 
     status = runner.poll_seed_partial_detached(handle, defer_cleanup=True)
     state = status.get("state")
+    emitted, new = _drain_progress(ctx, handle)
     if state == "running":
+        meta = ctx.meta if isinstance(ctx.meta, dict) else {}
+        if meta.get("kinetics_step_s") is None:
+            # a job submitted before the stamp existed
+            step = _step_seconds()
+            ctx.set_meta(kinetics_step_s=step)
+            meta["kinetics_step_s"] = step
+        if not new:
+            _heartbeat(ctx, handle, runner)
         return False
     # the runner observed completion: a finished pid must never authorize an
     # orphan kill after its process-group number is reused.
@@ -832,7 +953,8 @@ def _poll(ctx: Any, handle: Any) -> bool:
         return True
     pathway_ref_id, config, ref, inputs = loaded
     envelope = cast("dict[str, Any]", status["result"])
-    for line in envelope.get("notes") or []:
+    # the first ``emitted`` notes already landed via the progress drain
+    for line in (envelope.get("notes") or [])[emitted:]:
         ctx.append_chunk("job_event", str(line))
     results = {**inputs, **(envelope.get("results") or {})}
     ok = _finalize(ctx, pathway_ref_id, config, ref, results)

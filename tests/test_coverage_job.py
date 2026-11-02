@@ -234,11 +234,11 @@ JO482106_CONFIG: dict[str, Any] = {
 #: ``coverage_anchor_key(with_defaults(JO482106_CONFIG))`` re-derived
 #: under autocatpath 0.43.0 (lock 187a792c); the pin was first authored
 #: under 0.24.1 (the version locked at 01b36dba7), last re-derived under
-#: 0.45.0 (lock da2033ea). Convention for
+#: 0.45.1 (lock 5d9b7dfc, bump c4ac1d98d). Convention for
 #: engine-versioned pins: the key folds in the engine version, so an
 #: engine bump re-derives the pin and re-labels it from the lock that
 #: produced it — never loosen it.
-JO482106_KEY = "dda07e56e08398f1efddc4f5747b7d1bf8b263e8dd2b1876968c662b8f969d88"
+JO482106_KEY = "f3cf3ae83a19c5d5e2ab8d97e1a1119e585011ed1cdf223aa216ebdf4643aaba"
 
 
 def test_anchor_key_normalises_requests_to_the_achieved_thetas() -> None:

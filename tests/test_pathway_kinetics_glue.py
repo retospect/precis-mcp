@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 import math
+import time
 from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock
@@ -1778,6 +1779,166 @@ def test_poll_records_a_child_that_died(monkeypatch) -> None:
     assert kinetics_job._poll(ctx, {"dir": "/tmp/x"}) is True
     ctx.record_failure.assert_called_once()
     assert ctx.record_failure.call_args.kwargs["failure_class"] == "infra"
+
+
+def test_poll_streams_progress_lines_once_and_heartbeats_when_quiet(
+    monkeypatch, tmp_path
+) -> None:
+    """gr549807: the detached child's step notes land as job events while
+    it still runs — each exactly once across polls — and a quiet poll
+    writes one heartbeat with the child's pid and elapsed."""
+    from precis_pathway import kinetics_job, seed_job
+
+    progress = tmp_path / kinetics_job.PROGRESS_NAME
+    progress.write_text(
+        json.dumps("autocatpath_kinetics: TPD check") + "\n", encoding="utf-8"
+    )
+    handle = {"dir": str(tmp_path), "pid": 4242, "started_at": time.time() - 120}
+    notes = [
+        "autocatpath_kinetics: TPD check",
+        "autocatpath_kinetics: kinetics solved (tof_mf=9.0)",
+        "autocatpath_kinetics: sweeping (T, p_total)",
+    ]
+    envelope = {
+        "results": {
+            "kinetics_v2": {"tof_mf": 9.0},
+            "kinetics_sweep": {"points": [{"T": 500.0}]},
+        },
+        "notes": notes,
+    }
+    states = iter(
+        [
+            {"state": "running"},
+            {"state": "running"},
+            {"state": "running"},
+            {"state": "done", "result": envelope},
+        ]
+    )
+    _fake_runner(
+        monkeypatch,
+        poll_seed_partial_detached=lambda h, **kw: next(states),
+        _process_alive=lambda pid: True,
+    )
+    monkeypatch.setattr(seed_job, "_reap_scratch", lambda *a, **k: None)
+    ctx = _job_ctx(_stored_pathway())
+
+    assert kinetics_job._poll(ctx, handle) is False
+    # a quiet poll (no new progress records) writes the heartbeat
+    assert kinetics_job._poll(ctx, handle) is False
+    with progress.open("a", encoding="utf-8") as fh:
+        fh.write(
+            json.dumps("autocatpath_kinetics: kinetics solved (tof_mf=9.0)") + "\n"
+        )
+        fh.write(json.dumps("autocatpath_kinetics: sweeping (T, p_total)") + "\n")
+    assert kinetics_job._poll(ctx, handle) is False
+    assert kinetics_job._poll(ctx, handle) is True
+
+    events = [c.args[1] for c in ctx.append_chunk.call_args_list]
+    for line in notes:
+        assert events.count(line) == 1
+    heartbeats = [e for e in events if "heartbeat" in e]
+    assert len(heartbeats) == 1
+    assert "pid 4242 alive" in heartbeats[0]
+    ctx.set_status.assert_called_once_with("succeeded")
+
+
+def test_poll_records_a_dead_childs_last_progress(monkeypatch, tmp_path) -> None:
+    """A child that wrote progress lines then died still fails as today —
+    and the lines it did write land first."""
+    from precis_pathway import kinetics_job, seed_job
+
+    (tmp_path / kinetics_job.PROGRESS_NAME).write_text(
+        json.dumps("autocatpath_kinetics: sweeping (T, p_total)") + "\n",
+        encoding="utf-8",
+    )
+    _fake_runner(
+        monkeypatch,
+        poll_seed_partial_detached=lambda h, **kw: {
+            "state": "failed",
+            "error": "child process exited without writing result.json",
+            "infra": True,
+        },
+    )
+    monkeypatch.setattr(seed_job, "_reap_scratch", lambda *a, **k: None)
+    ctx = _job_ctx(_stored_pathway())
+    assert kinetics_job._poll(ctx, {"dir": str(tmp_path), "pid": 1}) is True
+    ctx.record_failure.assert_called_once()
+    assert ctx.record_failure.call_args.kwargs["failure_class"] == "infra"
+    events = [c.args[1] for c in ctx.append_chunk.call_args_list]
+    assert "autocatpath_kinetics: sweeping (T, p_total)" in events
+
+
+def test_run_compute_mirrors_notes_to_the_progress_file(monkeypatch, tmp_path) -> None:
+    """The child's note() mirror: every envelope note is also a flushed
+    progress line, in order, so _poll can stream it."""
+    from precis_pathway import kinetics_job
+
+    _fake_runner(
+        monkeypatch,
+        has_tpd=lambda: False,
+        run_kinetics_subprocess=lambda cfg, artifact, **kw: artifact[
+            "results_json"
+        ].__setitem__("kinetics_v2", {"tof_mf": 9.0}),
+        run_kinetics_sweep_subprocess=lambda cfg, res, **kw: res.__setitem__(
+            "kinetics_sweep", {"points": []}
+        ),
+    )
+    path = tmp_path / kinetics_job.PROGRESS_NAME
+    out = kinetics_job.run_compute(
+        {"name": "x"},
+        {"nodes": {"A": 0}, "edges": []},
+        progress_path=str(path),
+    )
+    assert out["notes"]
+    records = [
+        json.loads(raw) for raw in path.read_text(encoding="utf-8").split("\n") if raw
+    ]
+    assert records == out["notes"]
+
+
+def test_poll_streams_a_multi_line_note_once(monkeypatch, tmp_path) -> None:
+    """A note carrying its own newlines (a ``kinetics_error`` reason with a
+    stderr tail) is ONE JSON record: decoded whole, counted once — so the
+    done-envelope dedup does not eat the notes after it."""
+    from precis_pathway import kinetics_job, seed_job
+
+    multi = (
+        "autocatpath_kinetics: kinetics solve failed: boom\n"
+        "--- stderr (warnings removed) ---\nTraceback: engine died"
+    )
+    notes = [
+        multi,
+        "autocatpath_kinetics: sweeping (T, p_total)",
+        "autocatpath_kinetics: done",
+    ]
+    progress = tmp_path / kinetics_job.PROGRESS_NAME
+    progress.write_text(json.dumps(multi) + "\n", encoding="utf-8")
+    envelope = {
+        "results": {
+            "kinetics_v2": {"tof_mf": 9.0},
+            "kinetics_sweep": {"points": [{"T": 500.0}]},
+        },
+        "notes": notes,
+    }
+    states = iter([{"state": "running"}, {"state": "done", "result": envelope}])
+    _fake_runner(
+        monkeypatch,
+        poll_seed_partial_detached=lambda h, **kw: next(states),
+        _process_alive=lambda pid: True,
+    )
+    monkeypatch.setattr(seed_job, "_reap_scratch", lambda *a, **k: None)
+    ctx = _job_ctx(_stored_pathway())
+    handle = {"dir": str(tmp_path), "pid": 4242, "started_at": time.time()}
+
+    assert kinetics_job._poll(ctx, handle) is False  # drains the multi-line note
+    with progress.open("a", encoding="utf-8") as fh:
+        fh.write(json.dumps(notes[1]) + "\n")
+        fh.write(json.dumps(notes[2]) + "\n")
+    assert kinetics_job._poll(ctx, handle) is True
+
+    events = [c.args[1] for c in ctx.append_chunk.call_args_list]
+    for line in notes:
+        assert events.count(line) == 1
 
 
 class _Jobs:

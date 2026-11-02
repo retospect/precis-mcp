@@ -2689,7 +2689,15 @@ def _subprocess_main(argv: list[str]) -> int:
         elif req.get("mode") == "kinetics_job":
             from precis_pathway import kinetics_job
 
-            result = kinetics_job.run_compute(req["config"], req["results"])
+            result = kinetics_job.run_compute(
+                req["config"],
+                req["results"],
+                # gr549807: step notes stream here flushed per line so the
+                # poll half can show them while the compute still runs.
+                progress_path=os.path.join(
+                    os.path.dirname(out_path), kinetics_job.PROGRESS_NAME
+                ),
+            )
         elif req.get("mode") == "modes_job":
             from precis_pathway import modes_job
 
