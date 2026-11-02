@@ -118,10 +118,12 @@ def rate_limiting(
         return None
     # A null barrier (a non-finite EMT value persisted as JSON null) sorts last.
     top = max(steps, key=lambda e: finite_or(e.get("barrier"), float("-inf")))
+    ea = _finite_or_none(top.get("barrier"))
     return {
         "step": f"{top['source']}→{top['target']}",
-        "ea": _finite_or_none(top.get("barrier")),
-        "std": top.get("barrier_std", 0.0),
+        "ea": ea,
+        # a missing barrier has no measured spread — None, not a fake 0.0.
+        "std": (top.get("barrier_std", 0.0) if ea is not None else None),
         "low_confidence": bool(top.get("low_confidence", False)),
     }
 
@@ -156,15 +158,21 @@ def energetic_span(graph: dict[str, Any], root: str, target: str) -> float | Non
 
 def barriers_ranked(graph: dict[str, Any]) -> list[dict[str, Any]]:
     """All reaction steps, highest barrier first (the drill-down table)."""
-    rows = [
-        {
-            "reaction": f"{e['source']}→{e['target']}",
-            "ea": _finite_or_none(e.get("barrier")),
-            "std": e.get("barrier_std", 0.0),
-            "conf": "low" if e.get("low_confidence") else "ok",
-        }
-        for e in _reaction_edges(graph)
-    ]
+    rows = []
+    for e in _reaction_edges(graph):
+        ea = _finite_or_none(e.get("barrier"))
+        rows.append(
+            {
+                "reaction": f"{e['source']}→{e['target']}",
+                "ea": ea,
+                # a missing barrier has no measured spread and no trust
+                # verdict — "ok" on a non-measurement reads as one.
+                "std": (e.get("barrier_std", 0.0) if ea is not None else None),
+                "conf": (
+                    "low" if e.get("low_confidence") else "n/a" if ea is None else "ok"
+                ),
+            }
+        )
 
     # A NaN barrier (the engine's "not computed") sorts last with the None
     # ones: NaN compares false both ways, so left in the key it gives the sort

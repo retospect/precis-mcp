@@ -42,8 +42,28 @@ def _b(x: Any) -> str:
     return "" if x is None else f"{float(x):.2f}"  # barriers (positive)
 
 
-def _conf(low: Any) -> str:
-    return "low" if low else "ok"
+def _conf(low: Any, *, known: bool = True) -> str:
+    """``low`` when flagged, ``ok`` only on a real measurement — a missing
+    value gets no trust verdict (``n/a``)."""
+    return "low" if low else ("ok" if known else "n/a")
+
+
+def _ea_or_na(x: Any) -> str:
+    """A barrier cell — ``n/a`` when the step has no computed barrier, never
+    a measured-looking ``0.00`` or a silent blank (gr549592; the ``n/a``
+    convention the ``energetic_span`` fix set)."""
+    v = analysis._finite_or_none(x)
+    return "n/a" if v is None else f"{v:.2f}"
+
+
+def _barrier_cells(barrier: Any, std: Any, low: Any) -> dict[str, str]:
+    """The ``Ea_eV``/``std``/``conf`` cells for one reaction step: a missing
+    barrier is ``n/a`` across Ea and std (there is no spread to report) and
+    carries no ``ok`` verdict; an engine ``low_confidence`` flag still
+    renders ``low``."""
+    if analysis._finite_or_none(barrier) is None:
+        return {"Ea_eV": "n/a", "std": "n/a", "conf": "low" if low else "n/a"}
+    return {"Ea_eV": _ea_or_na(barrier), "std": _b(std), "conf": _conf(low)}
 
 
 def _roots(meta: dict[str, Any]) -> tuple[str, str]:
@@ -97,10 +117,10 @@ def steps_toon(meta: dict[str, Any]) -> str:
     rows = [
         {
             "reaction": f"{e['source']}→{e['target']}",
-            "Ea_eV": _b(e.get("barrier")),
-            "std": _b(e.get("barrier_std")),
+            **_barrier_cells(
+                e.get("barrier"), e.get("barrier_std"), e.get("low_confidence")
+            ),
             "dE_eV": _e(e.get("delta_e")),
-            "conf": _conf(e.get("low_confidence")),
             "structures": _endpoints(e["source"], e["target"]),
         }
         for e in analysis._reaction_edges(graph)
@@ -596,7 +616,7 @@ def trust_toon(
             )
             + ")"
         )
-    if rl:
+    if rl and rl.get("ea") is not None:
         step_label = str(rl["step"]).replace("→", "->")
         by_seed = sorted(
             (
@@ -611,9 +631,11 @@ def trust_toon(
         )
         flag = "  [LOW CONFIDENCE]" if rl.get("low_confidence") else ""
         head.append(
-            f"rate-limiting: {step_label} · Ea {_b(rl.get('ea'))} ± {_b(rl.get('std'))} eV{flag}"
+            f"rate-limiting: {step_label} · Ea {_b(rl.get('ea'))} ± {_ea_or_na(rl.get('std'))} eV{flag}"
             + (f" · by seed: {seed_bits}" if seed_bits else "")
         )
+    elif rl:
+        head.append("rate-limiting: n/a — no computed barrier on the route")
     head.append("")
     head.append(
         toon.dump(rows, schema=["gate", "verdict", "input", "threshold", "blocking"])
@@ -688,16 +710,18 @@ def analysis_text(meta: dict[str, Any], *, U: float | None = None) -> str:
     head.append("")
     rl = analysis.rate_limiting(graph, root, target)
     span = analysis.energetic_span(graph, root, target)
-    if rl:
+    if rl and rl["ea"] is not None:
         flag = "  [LOW CONFIDENCE]" if rl["low_confidence"] else ""
         head.append(
-            f"rate-limiting: {rl['step']}   Ea = {_b(rl['ea'])} ± {_b(rl['std'])} eV{flag}"
+            f"rate-limiting: {rl['step']}   Ea = {_b(rl['ea'])} ± {_ea_or_na(rl['std'])} eV{flag}"
         )
         if rl["low_confidence"]:
             head.append(
                 "  → spread exceeds tolerance; escalate this step's fidelity "
                 "before trusting it."
             )
+    elif rl:
+        head.append("rate-limiting: n/a — no computed barrier on the route")
     at = f" at U = {U:+.2f} V" if U is not None else ""
     span_label = "n/a" if span is None else f"{_b(span)} eV"
     head.append(f"energetic span (whole-path apparent barrier){at}: {span_label}")
@@ -715,9 +739,7 @@ def analysis_text(meta: dict[str, Any], *, U: float | None = None) -> str:
     brows = [
         {
             "reaction": s["reaction"],
-            "Ea_eV": _b(s["ea"]),
-            "std": _b(s["std"]),
-            "conf": s["conf"],
+            **_barrier_cells(s["ea"], s["std"], s["conf"] == "low"),
         }
         for s in ranked
     ]
@@ -751,10 +773,10 @@ def step_view(meta: dict[str, Any], pw_handle: str, edge: dict[str, Any]) -> str
     source, target = edge["source"], edge["target"]
     row = {
         "reaction": f"{source}→{target}",
-        "Ea_eV": _b(edge.get("barrier")),
-        "std": _b(edge.get("barrier_std")),
+        **_barrier_cells(
+            edge.get("barrier"), edge.get("barrier_std"), edge.get("low_confidence")
+        ),
         "dE_eV": _e(edge.get("delta_e")),
-        "conf": _conf(edge.get("low_confidence")),
         "kind": edge.get("kind") or "reaction",
     }
     table = toon.dump(
@@ -934,7 +956,10 @@ def kinetics_text(meta: dict[str, Any], T_k: float = 300.0) -> str:
                 "Ea_eV": _ea_str(ea),
                 "k_f_/s": _rate_str(k),
                 "tau_s": _rate_str(tau),
-                "conf": _conf(e.get("low_confidence")),
+                "conf": _conf(
+                    e.get("low_confidence"),
+                    known=analysis._finite_or_none(ea) is not None,
+                ),
             }
         )
     table = toon.dump(rows, schema=["reaction", "Ea_eV", "k_f_/s", "tau_s", "conf"])
@@ -1318,9 +1343,9 @@ def compare_toon(candidates: list[dict[str, Any]], *, U: float | None = None) ->
         return {
             "cand": p["c"]["slug"],
             "lever": p["c"].get("lever", ""),
-            "RATE": _b(rl.get("ea")),
+            "RATE": _ea_or_na(rl.get("ea")),
             "SPAN": _b(p["summ"]["span"]) or "n/a",
-            "conf": _conf(rl.get("low_confidence")),
+            "conf": _conf(rl.get("low_confidence"), known=rl.get("ea") is not None),
         }
 
     def _sort_key(p: dict[str, Any]) -> tuple[bool, float]:
@@ -1358,7 +1383,9 @@ def compare_toon(candidates: list[dict[str, Any]], *, U: float | None = None) ->
     for p in profiles:
         row = _row_scalars(p)
         for col, name in zip(p["cols"], col_names):
-            row[name] = _e(col["value"]) if col["kind"] == "state" else _b(col["value"])
+            row[name] = (
+                _e(col["value"]) if col["kind"] == "state" else _ea_or_na(col["value"])
+            )
         rows.append(row)
 
     head = "# ‡ = step barrier Eₐ; state cols = rel eV vs root.  " + "  ".join(legend)
