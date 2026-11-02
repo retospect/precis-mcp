@@ -43,7 +43,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from precis.cli._common import resolve_dsn
+from precis.cli._common import bind_process_store, resolve_dsn
 
 #: A gripe id in prose: ``gr<N>`` always, a bare six-digit ``4xxxxx``/``5xxxxx``
 #: (the era's id range) too — a bare small integer is a count, not an id.
@@ -91,6 +91,7 @@ def run(args: argparse.Namespace) -> None:
     from precis.store import Store
 
     store = Store.connect(resolve_dsn(args.database_url, cfg=load_config()))
+    bind_process_store(store)
     try:
         handler = _handler(store)
         if args.op == "import":
