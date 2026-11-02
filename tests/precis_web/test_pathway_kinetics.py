@@ -9,6 +9,7 @@ HTML itself is built client-side by the vendored ``pathway-kinetics.js``.
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
 import pytest
@@ -226,7 +227,9 @@ def test_payload_trims_and_keys_by_tier() -> None:
     out = kinetics_payload({"kinetics": rec})
     assert out is not None and set(out) == {"ml"}
     ml = out["ml"]
-    assert len(ml["coverages"]) == 8
+    # gr549757: no fixed cap — the payload is the full θ-desc list and the
+    # page applies its display threshold
+    assert len(ml["coverages"]) == 12
     assert ml["n_coverages"] == 12
     assert ml["drc"] == rec["drc"]["X_RC"]
     assert ml["trc"] == rec["thermodynamic_drc"]["X_TRC"]
@@ -277,7 +280,7 @@ def test_payload_and_verdict_survive_drifted_shapes() -> None:
     out = kinetics_payload({"kinetics": junk})
     assert out is not None
     ml = out["ml"]
-    assert ml["coverages"] == {} and ml["drc"] == {} and ml["production"] == {}
+    assert ml["coverages"] == [] and ml["drc"] == {} and ml["production"] == {}
     assert ml["bracket"] is None
     assert ml["warnings"] == [] and ml["transitions"] == []
 
@@ -322,8 +325,11 @@ def test_payload_renders_a_v2_only_record() -> None:
     assert ml["tof"] == 9.1e-3 and ml["tof_span_limit"] == 8.0e-3
     assert ml["drc"] == {"NO*->NOH*": 0.8}
     assert ml["trc"] == {"NO@fcc": -0.7}
-    assert ml["coverages"]["NO@fcc"] == 0.61
-    assert ml["coverages"]["*@fcc"] == 0.19 and ml["n_coverages"] == 3
+    assert ml["coverages"] == [["NO@fcc", 0.61], ["H@fcc", 0.2], ["*@fcc", 0.19]]
+    assert ml["coverage_classes"] == [
+        {"cls": "fcc", "states": [["NO", 0.61], ["H", 0.2], ["*", 0.19]]}
+    ]
+    assert ml["n_coverages"] == 3
     assert ml["product"] == "NH3" and ml["selectivity"] == 0.9
     assert ml["sensitivity"]["tof"]["median"] == pytest.approx(1e-2)
     assert ml["sensitivity"]["n_samples"] == 200
@@ -431,7 +437,7 @@ def test_payload_reports_a_failed_mf_solve() -> None:
     assert s["bep_flux_share"] == 1.0
     assert s["selectivity_target"] == "NH3"
     assert s["selectivity_known"] is False
-    assert d["coverages"] == {}  # v1 coverages do not ride beside a failed MF
+    assert d["coverages"] == []  # v1 coverages do not ride beside a failed MF
 
 
 def test_payload_healthy_v2_solve_names_its_rung() -> None:
@@ -524,3 +530,314 @@ def test_js_never_renders_unsettled_as_ok() -> None:
     assert "const caution = S.unsettled || FO.length > 0;" in js
     assert "state not fully settled: ln-coverage step" in js
     assert "failed observables: " in js
+
+
+# ── gr549757: coverages ordered by θ, vacancies can't win the verdict ────
+
+
+def test_coverages_sorted_by_theta_not_jsonb_order() -> None:
+    """The stored dict arrives in jsonb's key order (length then bytes); the
+    payload must sort by θ or the table shows the shortest-named states."""
+    rec = _record(
+        coverages={
+            # jsonb-ordered: short keys first, sizes unrelated to order
+            "*": 1e-9,
+            "N": 0.348,
+            "NH": 2e-6,
+            "NO": 3e-7,
+            "OH": 1e-8,
+            "HNO": 0.056,
+            "H2O": 4e-9,
+            "HNOH": 0.347,
+            "H2NO": 0.247,
+        }
+    )
+    out = kinetics_payload({"kinetics": rec})
+    assert out is not None
+    assert out["ml"]["coverages"] == [
+        ["N", 0.348],
+        ["HNOH", 0.347],
+        ["H2NO", 0.247],
+        ["HNO", 0.056],
+        ["NH", 2e-6],
+        ["NO", 3e-7],
+        ["OH", 1e-8],
+        ["H2O", 4e-9],
+        ["*", 1e-9],
+    ]
+
+
+def test_verdict_via_payload_never_names_a_vacancy() -> None:
+    """gr549757: ``*@hcp`` at θ = 1 is an empty site, not the MARI — the
+    verdict sees a vacancy-stripped table (the ported function itself stays
+    verbatim for the golden parity gate)."""
+    out = kinetics_payload(
+        {"kinetics": _record(coverages={"*@hcp": 1.0, "N@fcc": 0.348})}
+    )
+    assert out is not None
+    lines = out["ml"]["verdict"]["lines"]
+    assert not any("*@hcp" in x for x in lines)
+    assert any("No single intermediate dominates" in x for x in lines)
+
+
+def test_coverage_classes_keep_each_class_together() -> None:
+    """Each site class sums to ~1 independently — the payload keeps the v2
+    per-class tables (θ-desc inside, biggest class first) so the page never
+    pretends the flattened dict sums to 1."""
+    v2 = {
+        **_v2_record(),
+        "coverages": {
+            "hcp": {"*": 1.0, "O": 2e-4},
+            "fcc": {"N": 0.348, "HNOH": 0.347, "H2NO": 0.247, "*": 0.05},
+        },
+    }
+    out = kinetics_payload({"kinetics_v2": v2, "score": {"target": "NH3"}})
+    assert out is not None
+    ml = out["ml"]
+    assert ml["coverage_classes"] == [
+        {"cls": "hcp", "states": [["*", 1.0], ["O", 2e-4]]},
+        {
+            "cls": "fcc",
+            "states": [["N", 0.348], ["HNOH", 0.347], ["H2NO", 0.247], ["*", 0.05]],
+        },
+    ]
+    # the flat list is the same states, θ-desc across classes, @cls-suffixed
+    assert ml["coverages"][0] == ["*@hcp", 1.0]
+    assert ml["coverages"][1] == ["N@fcc", 0.348]
+
+
+def test_rate_control_names_its_solve() -> None:
+    """gr549763: the bars' numbers may come from a different solve than the
+    warnings describe — the payload says which (``drc_mf or drc["X_RC"]``:
+    a failed/empty MF observable folds the chain's dict forward verbatim)."""
+    # v2-only record: the flat values are the MF solve's
+    out = kinetics_payload({"kinetics_v2": _v2_record(), "score": {"target": "NH3"}})
+    assert out is not None
+    assert out["ml"]["drc_source"] == "mf"
+    assert out["ml"]["trc_source"] == "mf"
+    # both blocks: v2's flat dict equal to v1's X_RC means it IS the chain's
+    rec = _record()
+    v2 = {"tof_mf": 1e-3, "drc": dict(rec["drc"]["X_RC"]), "trc": {}}
+    out = kinetics_payload({"kinetics": rec, "kinetics_v2": v2})
+    assert out is not None
+    assert out["ml"]["drc_source"] == "chain"
+    assert out["ml"]["trc_source"] == "chain"
+    # v1-only: the chain solve's own sensitivities
+    out = kinetics_payload({"kinetics": rec})
+    assert out is not None
+    assert out["ml"]["drc_source"] == "chain"
+    assert out["ml"]["trc_source"] == "chain"
+
+
+# ── gr549759: the solve status flags a TOF inside solver noise ───────────
+
+
+def test_near_noise_marks_the_rung_and_hardens_the_headline() -> None:
+    """A TOF below the solver's noise floor has no resolved magnitude — the
+    status must say so, not merely 'order-of-magnitude'."""
+    s = _solve(state_err=0.42, tof_near_noise=True)
+    assert s["near_noise"] is True
+    assert "noise" in s["headline"]
+    assert "order-of-magnitude" not in s["headline"]
+    # the same flag read off a legacy record's warning text
+    rec = _v2_record()
+    rec["warnings"] = [
+        "mkm: TOF 6.87e-53 is within 10x the balance residual noise "
+        "(3.63e-38 /s); the sign and magnitude are not resolved"
+    ]
+    out = kinetics_payload({"kinetics_v2": rec, "score": {"target": "NH3"}})
+    assert out is not None
+    assert out["ml"]["v2_solve"]["near_noise"] is True
+    # chain rung carries its own flag
+    rec2: dict[str, Any] = {
+        "tof_mf": None,
+        "tof_chain": -5.17e-26,
+        "tof_chain_near_noise": True,
+        "warnings": [],
+    }
+    out = kinetics_payload({"kinetics_v2": rec2, "score": {"target": "NH3"}})
+    assert out is not None
+    s = out["ml"]["v2_solve"]
+    assert s["rung"] == "chain" and s["near_noise"] is True
+    # a clean record flags nothing
+    assert _solve()["near_noise"] is False
+
+
+# ── gr549759: every known engine warning has a help entry ────────────────
+
+#: Representative instantiations of every warning the engine emits from
+#: ``autocatpath/kinetics.py`` and ``autocatpath/mkm.py`` (the texts carry
+#: values, so these are real strings, not templates). When a new engine
+#: message reaches the panel it renders verbatim under "unrecognised" —
+#: add it here AND to ``WARN_HELP`` in pathway-kinetics.js.
+KNOWN_WARNINGS = [
+    # the numbers can't be trusted
+    "mkm: TOF 6.87e-53 is within 10x the balance residual noise "
+    "(3.63e-38 /s); the sign and magnitude are not resolved",
+    "kinetics: chain TOF -5.17e-26 is inside its cancellation noise "
+    "(4.81e-25); sign and magnitude are not resolved -- read it as zero "
+    "within noise, not as a rate",
+    "mkm: steady state resolved only to |d ln theta| ~ 0.1 (a slow mode: "
+    "near-singular balance Jacobian); coverages and TOF carry that "
+    "relative uncertainty",
+    "kinetics: mean-field MKM failed (MKMError: mkm: Newton did not converge)",
+    "kinetics: mean-field observable ea_app failed "
+    "(MKMError: mkm: Newton did not converge)",
+    "kinetics: mean-field observable orders skipped (observable time budget spent)",
+    "kinetics: mean-field observable orders failed for NH3, NO "
+    "(MKMError: mkm: steady state not resolved tightly enough for a "
+    "finite difference)",
+    "kinetics: DRC is undefined -- the steady-state TOF is not positive",
+    "kinetics: thermodynamic DRC is undefined -- the steady-state TOF is not positive",
+    "kinetics: X_RC of NO*->NOH* is undefined (a perturbed TOF was not positive)",
+    "kinetics: X_TRC of NOH is undefined (a perturbed TOF was not positive)",
+    "kinetics: sum of X_RC = 1.234 differs from 1 by more than 0.05 -- "
+    "the steady state may be unconverged or the network mis-specified",
+    "kinetics: 328 of 500 correlated draws failed a core check or gave "
+    "no positive TOF; excluded from the band",
+    "kinetics: 40 of 500 Monte-Carlo draws gave no positive TOF; "
+    "excluded from the band",
+    "kinetics: GUARD -- excluded steps are load-bearing: at their "
+    "optimistic bound the TOF(NH3) moves from 1e-9 to 2e-4 /site/s; "
+    "missing barriers carrying flux: a->b -- TOF, coverages and rate "
+    "control are unreliable until these barriers are computed",
+    "kinetics: steady-state residual 1.2e-4 /s is large relative to the "
+    "fastest rate constant; coverages and TOF may not be converged",
+    "mkm: steady-state residual on 'N' is 1e-7 /s against a flux scale "
+    "1e-5; coverages and TOF may not be converged",
+    "kinetics: the graph has more than one absorbing component; the "
+    "steady state depends on the initial coverages (reported from the "
+    "ODE at t = 1000000 s)",
+    "kinetics: states with no usable transition (excluded from the model): X, Y",
+    "kinetics: step a->b endpoint missing an energy; excluded",
+    "kinetics: step a->b has no computed barrier (screening/best-first); "
+    "excluded -- never assumed barrierless",
+    "kinetics: step a->b has no finite barrier/energy (failed NEBs "
+    "aggregate to NaN); excluded -- never guessed",
+    "kinetics: provider mlip cannot price step a->b by any rated source; excluded",
+    "kinetics: link a -> b endpoint missing an energy; excluded",
+    "kinetics: transition a->b has |dG| = 20.00 eV (773 kT); its reverse "
+    "rate is outside double precision, so it is treated as one-way and "
+    "its detailed balance is unverifiable -- check the endpoint energies "
+    "before trusting any rate through it",
+    "kinetics: no state releases NH3; the cycle does not close and the "
+    "steady-state TOF will be ~0",
+    "kinetics: kinetics_v2 record not written (TypeError: x)",
+    "kinetics: CONSISTENCY equilibrium_flux failed: edge a->b",
+    # assumptions, fixable by stating conditions
+    "kinetics: no pressure stated for NH3; its gas exchange is priced at "
+    "the 1 bar reference",
+    "kinetics: no pressure stated for H2O; its gas exchange is priced at "
+    "the 1 bar reference -- for a product gas this over-counts "
+    "readsorption; state its real partial pressure for an honest "
+    "selectivity",
+    "kinetics: no pressure stated for the product NH3; run again with pressures",
+    "sticking uncited: H2",
+    "kinetics: environment.electrochemical.U_vs_RHE is set but "
+    "electrochemical.provider is null — the potential is recorded but "
+    "shifts nothing; set provider: 'che' to apply the CHE layer",
+    "kinetics: thermo.mode none -- no gas reference carries kT ln p, so "
+    "the environment's pressures reach only the Hertz-Knudsen prefactors",
+    "kinetics: no thermo table data for NH3(g); its reference stays E-based",
+    "kinetics: could not measure E(NH3(g)) (KeyError); its cycle closure "
+    "cannot be priced",
+    "kinetics: cannot price the closure NOH -> * + NOH(g) (unpriced "
+    "gas); closure skipped",
+    "kinetics: MARI guess 'X' is not a network state; starting from the clean surface",
+    "kinetics: MARI fragment 'X' matches no network state; starting from "
+    "the clean surface",
+    "kinetics: DFT root '*' not in the run's nodes; state energies stay ML-tier",
+    "kinetics: results.dft.json has no referenced 'rel' energies "
+    "(re-run refine with gas_references on); state energies stay ML-tier",
+    "kinetics: DFT tier requested but nothing in results.dft.json was "
+    "applicable; result is ML-tier",
+    "kinetics: product 'X' is not a closed-shell gas molecule; no cycle closure",
+    "kinetics.tpd: requested adsorbate(s) the network does not desorb "
+    "from a bare adsorbate state: NH3",
+    # model limits, for information
+    "kinetics: link H -> *~h2 exchanges more than one gas (H2+H2); "
+    "treated as one barrierless event -- no collision-theory prefactor "
+    "is defined for it (v1 limit)",
+    "kinetics: link a -> b supplies an element with no reservoir "
+    "molecule; treated as a barrierless surface link",
+    "kinetics: landing state *~nh2oh sits +0.849 eV off its base * after "
+    "ledger pricing (independent relaxations); each transition keeps its "
+    "own dG",
+    "kinetics: step a->b aggregated delta_e +0.080 eV differs from its "
+    "endpoints' node difference +0.200 eV by more than 0.05 eV",
+    "kinetics: no barrier carries a spread (single seed and model?); "
+    "there is no distribution to sample -- the sensitivity of a single "
+    "draw is the DRC itself",
+    "kinetics: q_over_k unavailable -- the overall NH3 reaction has an "
+    "unpriced gas reference",
+    "kinetics: q_over_k -- the overall reaction leaves parked fragments "
+    "(N) at infinite dilution; their reference energies are inside dG",
+    "kinetics.sweep: net has no slab — site_area_A2 falls back to "
+    "6.5 A^2; adsorption prefactors carry that assumption",
+    "kinetics: tpd_corrected offsets applied (X +0.10 eV); the "
+    "uncorrected energies stay on the base provider",
+    "kinetics: electrochemical provider 'che' applied (U_vs_RHE -1.000 "
+    "V): every state moves by n_eff*eU (the ledger's PCET count — "
+    "supplied O/C carry their reference's embedded reservoir H), every "
+    "TS by the omega rule, and the gas references are untouched",
+    "kinetics: DFT tier -- 3 state energie(s) and 2 barrier(s) swapped "
+    "in at std = 0; the Monte-Carlo band now spans only the remaining "
+    "ML-tier spread",
+    "kinetics: the target committor did not converge in 2000 iterations "
+    "— bep_flux_share uses the partially-relaxed h",
+    "kinetics: mean-field TOF departs from the chain by +0.50 decades "
+    "(reported, not gated)",
+    "kinetics: CONSISTENCY equilibrium_flux did not run (no equilibrium "
+    "composition could be formed (x))",
+]
+
+
+def _warn_help_patterns() -> list[re.Pattern[str]]:
+    """The ``re`` strings out of ``WARN_HELP`` in pathway-kinetics.js, as
+    Python regexes (the table is held to a syntax both engines share)."""
+    from pathlib import Path
+
+    import precis_web
+
+    js = (
+        Path(precis_web.__file__).parent / "static" / "pathway-kinetics.js"
+    ).read_text(encoding="utf-8")
+    block = js[js.index("const WARN_HELP") : js.index("const WARN_RES")]
+    return [
+        re.compile(p.replace("\\\\", "\\"))
+        for p in re.findall(r'\bre:\s*"((?:[^"\\]|\\.)*)"', block)
+    ]
+
+
+def test_every_known_engine_warning_has_a_help_entry() -> None:
+    """Each known engine message matches at least one WARN_HELP regex, and
+    every regex is exercised — a pattern that matches nothing is dead code
+    and a message that matches nothing renders raw."""
+    pats = _warn_help_patterns()
+    assert pats, "WARN_HELP table not found in pathway-kinetics.js"
+    hit = [0] * len(pats)
+    misses = []
+    for w in KNOWN_WARNINGS:
+        matched = [i for i, p in enumerate(pats) if p.search(w)]
+        if not matched:
+            misses.append(w)
+        for i in matched:
+            hit[i] += 1
+    assert misses == []
+    dead = [pats[i].pattern for i, n in enumerate(hit) if n == 0]
+    assert dead == []
+
+
+def test_thermodynamic_drc_warning_takes_its_own_entry() -> None:
+    """``thermodynamic DRC is undefined`` contains ``DRC is undefined`` —
+    first-match order in WARN_HELP must hand it to the TRC entry."""
+    pats = _warn_help_patterns()
+    first = next(
+        i
+        for i, p in enumerate(pats)
+        if p.search(
+            "kinetics: thermodynamic DRC is undefined -- "
+            "the steady-state TOF is not positive"
+        )
+    )
+    assert pats[first].pattern == "thermodynamic DRC is undefined"

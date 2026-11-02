@@ -529,9 +529,14 @@
     #kinetics th { font-weight: 600; }
     #kinetics .kbar { display: flex; gap: .5rem; align-items: center; font-size: .8rem; margin: 2px 0; }
     #kinetics .kbar .kname { flex: none; width: 180px; overflow-wrap: anywhere; }
-    #kinetics .kbar .ktrack { flex: none; width: 220px; background: rgb(var(--bg-surface-muted)); border-radius: 2px; height: 12px; }
-    #kinetics .kbar .kfill { display: block; height: 12px; border-radius: 2px; }
-    #kinetics .kbar .kval { font-variant-numeric: tabular-nums; color: rgb(var(--text-fg-muted)); }
+    #kinetics .kbar .ktrack { flex: none; display: flex; align-items: center; width: 220px; background: rgb(var(--bg-surface-muted)); border-radius: 2px; height: 14px; }
+    #kinetics .kbar .kfill { flex: none; display: block; height: 14px; border-radius: 2px; }
+    #kinetics .kbar .kval { flex: none; font-variant-numeric: tabular-nums; font-size: .7rem; color: rgb(var(--text-fg-muted)); padding-left: 4px; white-space: nowrap; }
+    #kinetics .ksw { display: inline-block; width: 9px; height: 9px; border-radius: 2px; margin-right: 2px; }
+    #kinetics .kwlist .wtag { font-weight: 600; cursor: help; border-bottom: 1px dotted rgb(var(--border-line-heavy)); }
+    #kinetics .kwlist .wtag.wsev-bad { color: rgb(var(--text-danger-strong)); }
+    #kinetics .kwlist .wtag.wsev-fix { color: rgb(var(--text-warning-deep)); }
+    #kinetics .kwlist .wtag.wsev-info { color: rgb(var(--text-fg-muted)); font-weight: 500; }
     #kinetics .kguard { background: rgb(var(--bg-warning-subtle)); border: 1px solid rgb(var(--border-warning-solid)); color: rgb(var(--text-warning-deep)); border-radius: 4px; padding: .5rem .7rem; margin: .5rem 0; font-size: .85rem; max-width: 60rem; }
     #kinetics .term { border-bottom: 1px dotted rgb(var(--border-line-heavy)); cursor: help; }
     #kinetics .verdict { border-radius: 4px; padding: .6rem .8rem; margin: .5rem 0 1rem; max-width: 60rem; border: 1px solid rgb(var(--border-line)); background: rgb(var(--bg-surface-subtle)); }

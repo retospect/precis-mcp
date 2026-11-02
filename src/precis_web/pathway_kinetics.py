@@ -278,13 +278,16 @@ _STATE_SETTLED_TOL = 1e-4
 
 def _mf_reading(
     v2: dict[str, Any],
-) -> tuple[str | None, float | None, list[dict[str, str]], str | None]:
-    """``(failure, state_err, failed_observables, stage)`` of the record's
-    mean-field solve. ``v2['mf_status']`` (engine >= the one that stamps it)
-    wins; a stored record without it falls back to parsing the warnings
-    (``mean-field MKM failed (…)`` / ``mean-field observable <name> failed
-    (…)``). ``state_err`` is ``None`` unless the solve returned but its
-    state is not settled (> :data:`_STATE_SETTLED_TOL`)."""
+) -> tuple[str | None, float | None, list[dict[str, str]], str | None, bool]:
+    """``(failure, state_err, failed_observables, stage, tof_near_noise)`` of
+    the record's mean-field solve. ``v2['mf_status']`` (engine >= the one
+    that stamps it) wins; a stored record without it falls back to parsing
+    the warnings (``mean-field MKM failed (…)`` / ``mean-field observable
+    <name> failed (…)`` / ``mkm: TOF … within 10x the balance residual
+    noise``). ``state_err`` is ``None`` unless the solve returned but its
+    state is not settled (> :data:`_STATE_SETTLED_TOL`); ``tof_near_noise``
+    flags an MF TOF inside the solver's own noise floor, where its sign and
+    magnitude are unresolved."""
     st = v2.get("mf_status")
     if isinstance(st, dict):
         failure = None
@@ -300,15 +303,24 @@ def _mf_reading(
             if isinstance(o, dict) and o.get("name")
         ]
         stage = st.get("stage")
-        return failure, state_err, found, stage if isinstance(stage, str) else None
+        return (
+            failure,
+            state_err,
+            found,
+            stage if isinstance(stage, str) else None,
+            st.get("tof_near_noise") is True,
+        )
     warned: str | None = None
+    near_noise = False
     parsed: list[dict[str, str]] = []
     for w in _strlist(v2.get("warnings")):
         if warned is None and (m := _MF_FAILED.search(w)):
             warned = _ERR_PREFIX.sub("", m.group(1)).strip() or "unknown error"
         elif m := _OBS_FAILED.search(w):
             parsed.append({"name": m.group(1), "reason": m.group(2).strip()})
-    return warned, None, parsed, None
+        elif "within 10x the balance residual noise" in w:
+            near_noise = True
+    return warned, None, parsed, None, near_noise
 
 
 def _v2_solve(v2: dict[str, Any], product: Any) -> dict[str, Any]:
@@ -330,7 +342,13 @@ def _v2_solve(v2: dict[str, Any], product: Any) -> dict[str, Any]:
         rung, tof = "chain", chain
     else:
         rung, tof = "none", None
-    failure, state_err, failed_obs, stage = _mf_reading(v2)
+    failure, state_err, failed_obs, stage, mf_near_noise = _mf_reading(v2)
+    # the engine stamps ``tof_chain_near_noise`` beside ``tof_chain``; an
+    # older record says it only in the warnings
+    chain_near_noise = v2.get("tof_chain_near_noise") is True or any(
+        "inside its cancellation noise" in w for w in _strlist(v2.get("warnings"))
+    )
+    near_noise = {"mf": mf_near_noise, "chain": chain_near_noise}.get(rung, False)
     unsettled = state_err is not None
     sel = _dict(v2.get("selectivity"))
     target = product if isinstance(product, str) and product else None
@@ -345,14 +363,19 @@ def _v2_solve(v2: dict[str, Any], product: Any) -> dict[str, Any]:
     if tof is not None and not positive:
         head += "; no positive steady state (TOF ≤ 0, not a rate)"
     if unsettled and failure is None:
+        head += f"; state not fully settled (ln-coverage step {state_err:.2g}) " + (
+            "— no resolved rate" if near_noise else "— order-of-magnitude TOF"
+        )
+    if near_noise:
         head += (
-            f"; state not fully settled (ln-coverage step {state_err:.2g}) "
-            "— order-of-magnitude TOF"
+            "; TOF inside the solver's noise floor — sign and magnitude "
+            "unresolved, read it as no resolved rate"
         )
     return {
         "rung": rung,
         "tof": tof,
         "positive": positive,
+        "near_noise": near_noise,
         "mf_failure": failure,
         "mf_stage": stage,
         "state_err": state_err,
@@ -477,11 +500,29 @@ def kinetics_payload(results: dict[str, Any]) -> dict[str, Any] | None:
     :func:`_v2_overlay` — so a stored run whose engine stopped writing the
     v1 block still renders the panel, and a run carrying both shows the
     ranked (KMC > MF > chain) numbers rather than the chain's.
+
+    Beyond the trim the payload also derives display metadata the stored
+    record lacks: coverages re-ordered by θ and grouped back into their
+    site classes (gr549757 — jsonb destroys the engine's sort), the
+    rate-control bars' solve provenance (``drc_source``/``trc_source``,
+    gr549763), and a vacancy-stripped coverage dict for the verdict so an
+    empty site can't win the MARI slot (gr549757 — the ported
+    ``kinetics_verdict`` itself stays verbatim for the parity gate).
     """
     rec = results.get("kinetics")
     d = dict(rec) if isinstance(rec, dict) else {}
     v2 = results.get("kinetics_v2")
+    drc_source: str | None = None
+    trc_source: str | None = None
+    classes: list[dict[str, Any]] = []
     if isinstance(v2, dict):
+        # the record's flat ``drc``/``trc`` are the MF solve's values when it
+        # produced them and the chain's (``drc["X_RC"]``) when it could not —
+        # the overlay folds them over the v1 block without saying which, so
+        # the panel labels the bars' provenance off this comparison. Equal to
+        # the v1 values means it IS the chain's dict folded forward.
+        v1_drc = _dict(_dict(d.get("drc")).get("X_RC"))
+        v1_trc = _dict(_dict(d.get("thermodynamic_drc")).get("X_TRC"))
         product = d.get("product") or _target(results)
         d.update(_v2_overlay(v2, product=product))
         d["v2_solve"] = _v2_solve(v2, product)
@@ -489,9 +530,74 @@ def kinetics_payload(results: dict[str, Any]) -> dict[str, Any] | None:
             # the MF solve left no steady state: v1's coverages belong to a
             # different solve, so showing them beside the chain TOF misleads
             d["coverages"] = {}
+
+        def _rc_source(key: str, v1_flat: dict[str, Any]) -> str | None:
+            # the record's flat value is the MF solve's when it produced one
+            # (``drc_mf or drc["X_RC"]`` — a failed/empty MF observable falls
+            # back to the chain's dict verbatim, which compares equal to the
+            # v1 block's). An empty record value leaves the v1 block's in
+            # place — still the chain solve's.
+            merged = _dict(v2.get(key))
+            if not merged:
+                return "chain" if v1_flat else None
+            return "mf" if merged != v1_flat else "chain"
+
+        drc_source = _rc_source("drc", v1_drc)
+        trc_source = _rc_source("trc", v1_trc)
+        # the v2 coverage table is per site class — each class's states sum
+        # to ~1 independently, so the page groups by class rather than
+        # pretending the flattened dict sums to 1 (gr549757)
+        for cls, table in _dict(v2.get("coverages")).items():
+            if not isinstance(table, dict):
+                continue
+            states = [
+                [str(tok), float(th)]
+                for tok, th in sorted(
+                    (
+                        (t, x)
+                        for t, x in table.items()
+                        if isinstance(x, int | float) and math.isfinite(x)
+                    ),
+                    key=lambda kv: -kv[1],
+                )
+            ]
+            if states:
+                classes.append({"cls": str(cls), "states": states})
+        classes.sort(key=lambda c: -c["states"][0][1])
+    else:
+        v1_drc = _dict(_dict(d.get("drc")).get("X_RC"))
+        v1_trc = _dict(_dict(d.get("thermodynamic_drc")).get("X_TRC"))
+        drc_source = "chain" if v1_drc else None
+        trc_source = "chain" if v1_trc else None
     if "tof" not in d:
         return None
     cov = _dict(d.get("coverages"))
+    # gr549757: nothing sorts stored coverages — jsonb reorders keys by
+    # length, so slicing the dict showed the eight SHORTEST-NAMED states,
+    # not the largest. Emit the table as a list ordered by θ (the template's
+    # tojson would re-sort a dict's keys); the page then shows every state
+    # above its display threshold instead of a fixed cap. A null coverage
+    # is an absent number, not a small one — it never reaches the table.
+    cov_sorted = [
+        [str(k), float(v)]
+        for k, v in sorted(
+            (
+                (k, v)
+                for k, v in cov.items()
+                if isinstance(v, int | float) and math.isfinite(v)
+            ),
+            key=lambda kv: -kv[1],
+        )
+    ]
+    # the verdict is a hand-port of the engine's report function (a golden
+    # parity test pins it verbatim) — the vacancy fix therefore lives at
+    # this call boundary: an empty site (*, or *@class under the v2 flat
+    # naming) is not an intermediate and must not win the MARI slot
+    # (gr549757)
+    d_verdict = {
+        **d,
+        "coverages": {k: v for k, v in cov.items() if str(k).split("@", 1)[0] != "*"},
+    }
     sens = _dict(d.get("sensitivity"))
     br = _dict(d.get("tof_bracket")) or None
     warns = _strlist(d.get("warnings"))
@@ -522,12 +628,16 @@ def kinetics_payload(results: dict[str, Any]) -> dict[str, Any] | None:
             "tof_span_limit": d.get("tof_span_limit"),
             "coverage_effect": d.get("coverage_effect"),
             "mari_seed": d.get("mari_seed"),
-            "coverages": dict(list(cov.items())[:8]),
-            # how many there were BEFORE the slice: the page may only claim a
-            # remainder exists when one actually does
-            "n_coverages": len(cov),
+            "coverages": cov_sorted,
+            # per-class tables when the v2 record carries them:
+            # [{"cls", "states": [[tok, θ], ...]}, ...] — θ-desc inside each
+            # class, classes ordered by their largest θ
+            "coverage_classes": classes,
+            "n_coverages": len(cov_sorted),
             "drc": _dict(_dict(d.get("drc")).get("X_RC")),
+            "drc_source": drc_source,
             "trc": _dict(_dict(d.get("thermodynamic_drc")).get("X_TRC")),
+            "trc_source": trc_source,
             "sensitivity": {
                 k: sens.get(k) for k in ("tof", "n_samples", "controlling")
             },
@@ -554,7 +664,7 @@ def kinetics_payload(results: dict[str, Any]) -> dict[str, Any] | None:
                 for t in (trans if isinstance(trans, list) else [])
                 if isinstance(t, dict)
             ],
-            "verdict": kinetics_verdict(d),
+            "verdict": kinetics_verdict(d_verdict),
             "v2_solve": d.get("v2_solve"),
         }
     }

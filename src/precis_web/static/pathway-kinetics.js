@@ -8,6 +8,12 @@
 // rather than a run folder: the payload arrives in the #kinetics-data JSON
 // script tag (not window.CATPATH_REPORT), and the tier table has no `record`
 // file-link column (there is no side-car file to link).
+//
+// The 2026-11-01 kinetics-panel-ux gripes (gr549748/9/57/59/63) landed
+// web-side first: unit-ful headers, the net-rate wording, sorted per-class
+// coverages, the warning help table, and the rate-control rework below are
+// NOT yet in autocatpath/report.py — the upstream copy wants the same
+// changes ported to the run report.
 (function () {
   const host = document.getElementById("kinetics");
   const data = document.getElementById("kinetics-data");
@@ -21,6 +27,8 @@
   const esc2 = s => String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;")
                              .replace(/>/g, "&gt;").replace(/"/g, "&quot;")
                              .replace(/'/g, "&#39;");
+  // step names render "->" as a real arrow; the raw name stays the key
+  const disp = s => esc2(String(s).replace(/->/g, "→"));
   const sci = v => (v === null || v === undefined || !isFinite(v))
     ? "&mdash;" : Number(v).toExponential(2);
   // every piece of jargon on this panel defines itself on hover, and the
@@ -53,14 +61,18 @@
     "X_TRC": "Thermodynamic degree of rate control: the same sensitivity " +
            "for the stability of a STATE rather than a step. Negative = a " +
            "poison, stabilising it slows the cycle down.",
-    "coverage": "Fraction of surface sites occupied by that state (theta). " +
-           "The values sum to 1 across the surface, bare sites included.",
+    "coverage": "Fraction of the site class's sites occupied by that " +
+           "state (theta, dimensionless). Each site class (fcc, hcp, ...) " +
+           "sums to 1 independently, bare sites (*) included.",
     "bracket": "Steps with no computed barrier are excluded rather than " +
            "guessed. The bracket prices them at both limits -- never, and " +
            "as fast as thermodynamics allows -- so you see whether the " +
            "missing barriers could change the answer.",
-    "net rate": "Forward minus reverse flux through a step at steady state. " +
-           "Negative = that step runs backwards.",
+    "net rate": "Flux through this step within the full network: " +
+           "k_f·θ(from) − k_b·θ(to), evaluated at the steady-state " +
+           "coverages. It depends on every other step through those " +
+           "coverages; only k_f and k_b are the step's own rate " +
+           "constants. Negative = that step runs backwards.",
     "dG": "Reaction free energy of the step at the stated temperature.",
     "k_f": "Forward rate constant, per second.",
     "k_b": "Reverse rate constant, per second.",
@@ -72,8 +84,8 @@
            "exp(-ΔG/k_BT) exactly, by construction -- the reverse " +
            "constant is never fitted independently of the forward one.",
     "net gas production": "Net rate each gas leaves the surface " +
-           "(desorption minus readsorption), per site per second. " +
-           "Negative = net consumption (a reactant).",
+           "(desorption minus readsorption), per site per second, from " +
+           "the chain solve. Negative = net consumption (a reactant).",
     "selectivity": "The target's share of all net gas production, " +
            "counting only gases with a positive net rate."
   };
@@ -81,21 +93,198 @@
     ? "<span class='term' title='" + esc2(TERMS[t]) + "'>" +
       esc2(label || t) + "</span>"
     : esc2(label || t);
+  // Solve warnings -> plain meaning + what to do (gr549759). One table next
+  // to where the warnings are rendered; `re` is matched by new RegExp()
+  // against the raw engine line (kept to a JS/Python-shared regex subset —
+  // tests/precis_web/test_pathway_kinetics.py pins every known engine
+  // message to an entry so a new one is noticed when it renders raw).
+  // sev: "bad" the page's numbers can't be trusted as stated · "fix" an
+  // assumption the reader can change · "info" a model limit, for
+  // information. `subj: 1` names the capture group the collapsible subject
+  // sits in (the five "no pressure stated for X" lines become one).
+  const WARN_HELP = [
+    {re: "mkm: TOF \\S+ is within 10x the balance residual noise", sev: "bad",
+     name: "headline TOF unresolved",
+     help: "The mean-field TOF sits below the solver's own balance residual, so its sign and magnitude carry no information — read it as no resolved rate, not a small one. No user-side fix on a stored record."},
+    {re: "chain TOF \\S+ is inside its cancellation noise", sev: "bad",
+     name: "chain TOF unresolved",
+     help: "The chain solve's TOF is inside the subtraction's round-off noise — zero within noise, not a rate."},
+    {re: "mkm: steady state resolved only to \\|d ln theta\\|", sev: "bad",
+     name: "steady state not settled",
+     help: "A near-singular balance Jacobian (a slow mode): coverages and TOF carry roughly that relative uncertainty — order-of-magnitude at best."},
+    {re: "mean-field MKM failed", sev: "bad",
+     name: "mean-field solve failed",
+     help: "The site-balance solve did not converge; every v2 number that depends on it (MF TOF, coverages, MF rate control) is absent, so the panel falls back to the chain solve's."},
+    {re: "mean-field observable (\\S+) (?:failed|skipped)", sev: "bad", subj: 1,
+     name: "mean-field observable missing",
+     help: "That perturbed re-solve failed or hit its time budget; the observable it feeds (orders, apparent Ea, MF DRC/TRC) is not on the record."},
+    {re: "thermodynamic DRC is undefined", sev: "bad",
+     name: "no thermodynamic rate control",
+     help: "The steady-state TOF is not positive, so the sensitivity could not be formed. Follows from the TOF problem; any X_TRC bars shown come from the other solve."},
+    {re: "DRC is undefined", sev: "bad",
+     name: "no rate control from this solve",
+     help: "Same cause as the TRC line: no positive steady-state TOF to perturb about; any X_RC bars shown come from the other solve."},
+    {re: "X_(?:RC|TRC) of (\\S+) is undefined", sev: "bad", subj: 1,
+     name: "a rate-control entry is undefined",
+     help: "A perturbed re-solve gave no positive TOF; that entry is absent rather than zero."},
+    {re: "sum of X_RC .* differs from 1", sev: "bad",
+     name: "X_RC sum rule failed",
+     help: "X_RC should sum to ~1 for a converged steady state; the solve may be unconverged or the network mis-specified. Do not read the bars as a clean ranking."},
+    {re: "\\d+ of \\d+ (correlated|Monte-Carlo) draws", sev: "bad",
+     name: "sensitivity band is partial",
+     help: "The band is built only from the draws that returned a positive TOF — it is biased toward the draws that worked."},
+    {re: "GUARD -- excluded steps are load-bearing", sev: "bad",
+     name: "missing barriers change the answer",
+     help: "Steps with no computed barrier carry flux at their optimistic bound; TOF, coverages and rate control are provisional until those barriers are computed. Re-run the pathway's barrier compute."},
+    {re: "steady-state residual .* is large|mkm: steady-state residual", sev: "bad",
+     name: "steady state may not be converged",
+     help: "The balance residual is large against the rate scale; coverages and TOF are suspect."},
+    {re: "the graph has more than one absorbing component", sev: "bad",
+     name: "no unique steady state",
+     help: "The reported coverages and TOF are the ODE's end state from one starting coverage, not the unique answer."},
+    {re: "states with no usable transition", sev: "bad",
+     name: "part of the network excluded",
+     help: "Those states play no role in the solve — missing barriers or energies cut them out. The numbers describe the remaining network."},
+    {re: "(?:step|link) (.*?) (?:endpoint missing|has no|by any rated source).*excluded", sev: "bad", subj: 1,
+     name: "transitions excluded",
+     help: "An endpoint energy or a barrier is missing and the step was dropped rather than guessed; the bracket verdict says whether it could change the answer."},
+    {re: "\\|dG\\| = .*outside double precision|treated as one-way", sev: "bad",
+     name: "an endpoint energy looks wrong",
+     help: "A |dG| this large (over ~15 eV) almost always means a nonsense endpoint energy upstream; no rate through that transition is trustworthy."},
+    {re: "no state releases \\S+; the cycle does not close", sev: "bad",
+     name: "cycle does not close",
+     help: "No desorption channel produces the target, so the steady-state TOF is ~0 by construction — the network or the target is mis-specified."},
+    {re: "kinetics_v2 record not written", sev: "bad",
+     name: "v2 record incomplete",
+     help: "The record itself failed to serialise; whatever is shown is partial."},
+    {re: "CONSISTENCY \\S+ failed", sev: "bad",
+     name: "engine consistency check failed",
+     help: "One of the engine's self-checks on this network failed; the numbers carry that check's caveat."},
+    {re: "the target committor did not converge", sev: "info",
+     name: "BEP flux share approximate",
+     help: "The committor solve used to attribute BEP-priced flux did not fully converge; that one number is approximate."},
+    {re: "mean-field TOF departs from the chain", sev: "info",
+     name: "the two solves disagree",
+     help: "Mean-field and chain TOFs differ by more than 0.05 decades — reported, not gated."},
+    {re: "no pressure stated for (?:the product )?(\\w+)", sev: "fix", subj: 1,
+     name: "gas pressures assumed",
+     help: "These gases' exchange rates are priced at the 1 bar reference — for a product that over-counts readsorption and distorts selectivity. State partial pressures via put(kind='pathway', mode='recompute_kinetics', args={'environment': {...}})."},
+    {re: "sticking uncited: (\\S+)", sev: "fix", subj: 1,
+     name: "sticking coefficient assumed",
+     help: "The adsorption prefactor uses the default sticking coefficient for these gases; set it in the environment and recompute."},
+    {re: "U_vs_RHE is set but electrochemical.provider is null", sev: "fix",
+     name: "potential not applied",
+     help: "The CHE potential is recorded but shifts nothing until provider: 'che' is set in the environment; recompute under it."},
+    {re: "thermo.mode none", sev: "fix",
+     name: "pressures reach only prefactors",
+     help: "No gas reference carries the kT ln p term, so stated pressures affect only the collision prefactors, not the thermodynamics."},
+    {re: "no thermo table data for (\\S+)", sev: "fix", subj: 1,
+     name: "gas reference is E-based",
+     help: "These gases have no thermo-table correction; their references stay raw electronic energies."},
+    {re: "could not measure E\\((\\S+)\\(g\\)\\)", sev: "fix", subj: 1,
+     name: "cycle closure unpriced",
+     help: "This gas's reference energy could not be measured, so its desorption closure is unpriced; supply the reference and recompute."},
+    {re: "cannot price the closure", sev: "fix",
+     name: "a closure desorption was skipped",
+     help: "A cycle-closure channel was dropped for lack of a reference energy; if it carried flux the TOF is biased."},
+    {re: "MARI (?:guess|fragment) .* (?:not|matches no)", sev: "fix",
+     name: "MARI seed not found",
+     help: "The seeded most-abundant intermediate is not a network state; the solve started from the clean surface instead."},
+    {re: "DFT root .* not in the run's nodes|dft.json has no referenced 'rel' energies|DFT tier requested but nothing", sev: "fix",
+     name: "DFT tier not applied",
+     help: "State energies stay ML-tier; the DFT overlay found nothing applicable."},
+    {re: "is not a closed-shell gas molecule", sev: "fix",
+     name: "target cannot close the cycle",
+     help: "The named product cannot be desorbed by the closure rule; re-specify the target."},
+    {re: "kinetics.tpd: requested adsorbate", sev: "fix",
+     name: "requested TPD adsorbate not desorbed",
+     help: "The network never desorbs these from a bare adsorbate state; check the request."},
+    {re: "link .* exchanges more than one gas", sev: "info",
+     name: "multi-gas link (model limit)",
+     help: "Treated as one barrierless event — no collision-theory prefactor is defined for it (v1 limit). No user action."},
+    {re: "link .* supplies an element with no reservoir molecule", sev: "info",
+     name: "barrierless link convention",
+     help: "An element moves without a reservoir molecule, so the link is treated as barrierless — a network convention, not a measurement."},
+    {re: "differs from its endpoints", sev: "info",
+     name: "endpoint energy disagreement",
+     help: "The step's aggregated energy disagrees with its endpoints' node difference; the solve keeps the endpoint values. Worth checking that step's aggregation."},
+    {re: "landing state \\S+ sits .* eV off its base", sev: "info",
+     name: "landing state energy flagged",
+     help: "Independent relaxations disagree on that state's energy by the stated amount; each transition keeps its own dG. A flag on the state, not on the solve."},
+    {re: "no barrier carries a spread", sev: "info",
+     name: "no uncertainty distribution",
+     help: "No measured barrier spread exists to Monte-Carlo over (single seed and model?); the DRC is the only sensitivity shown."},
+    {re: "q_over_k", sev: "info",
+     name: "reversibility metric limited",
+     help: "The overall-reaction reversibility could not be priced, or parked fragments sit inside its dG."},
+    {re: "net has no slab", sev: "info",
+     name: "site area assumed",
+     help: "site_area_A2 falls back to 6.5 A²; adsorption prefactors carry that assumption."},
+    {re: "tpd_corrected offsets applied|electrochemical provider 'che' applied|DFT tier -- .* swapped in", sev: "info",
+     name: "engine adjustment applied",
+     help: "A stated correction was applied to the energies or rates; shown for provenance."},
+    {re: "CONSISTENCY \\S+ did not run", sev: "info",
+     name: "consistency check skipped",
+     help: "A self-check could not run on this record; nothing failed, it is simply unchecked."}
+  ];
+  const WARN_RES = WARN_HELP.map(w => new RegExp(w.re));
+  const WARN_SEV = {bad: 0, fix: 1, info: 2};
+  const warnList = ws => {
+    // group raw warnings by the help entry they match (same entry -> one
+    // line, subjects joined), order groups by severity, leave unrecognised
+    // messages verbatim at the end where a new engine message stands out
+    const groups = new Map(), unknown = [];
+    ws.forEach(w => {
+      for (let i = 0; i < WARN_RES.length; i++) {
+        const m = w.match(WARN_RES[i]);
+        if (!m) continue;
+        if (!groups.has(i)) groups.set(i, {e: WARN_HELP[i], raws: [], subjs: []});
+        const g = groups.get(i);
+        g.raws.push(w);
+        if (g.e.subj && m[g.e.subj] && !g.subjs.includes(m[g.e.subj]))
+          g.subjs.push(m[g.e.subj]);
+        return;
+      }
+      unknown.push(w);
+    });
+    const ordered = [...groups.values()].sort(
+      (a, b) => WARN_SEV[a.e.sev] - WARN_SEV[b.e.sev]);
+    const row = g =>
+      "<li><span class='wtag wsev-" + g.e.sev + "' title='" +
+      esc2(g.raws.join("\n")) + "'>" + esc2(g.e.name) +
+      (g.subjs.length ? " (" + esc2(g.subjs.join(", ")) + ")" : "") +
+      "</span> " + esc2(g.e.help) + "</li>";
+    return "<ul class='kwlist'>" + ordered.map(row).join("") + "</ul>" +
+      (unknown.length
+        ? "<div class='caption'>unrecognised engine messages, verbatim:" +
+          "</div><ul class='kwlist'>" +
+          unknown.map(x => "<li>" + esc2(x) + "</li>").join("") + "</ul>"
+        : "");
+  };
   let h = "<h2>Kinetics &mdash; " + term("mean-field") + " " +
           term("microkinetics") + " at the stated conditions</h2>";
   // state the conditions the header promises (tiers share the run's)
   const cond = (K.ml && K.ml.conditions) || (K.dft && K.dft.conditions);
   if (cond) {
     const ps = Object.entries(cond.pressures || {});
-    h += "<div class='caption'>T = " +
-         Number(cond.temperature).toFixed(2).replace(/\.?0+$/, "") +
-         " K &middot; " +
+    h += "<div class='caption'>" +
+         (isFinite(Number(cond.temperature))
+           ? "T = " + Number(cond.temperature).toFixed(2)
+                         .replace(/\.?0+$/, "") + " K"
+           : "T = &mdash;") +
+         " &middot; " +
          (ps.length
            ? ps.map(kv => "p(" + esc2(kv[0]) + ") = " + sci(kv[1]) +
                           " bar").join(" &middot; ")
            : "all gas species at the 1 bar reference pressure") +
          "</div>";
   }
+  // the panel renders the stored run: it never follows the explorer's
+  // U/pH lever (gr549748), which only re-draws the energetics diagram
+  if (document.getElementById("pw-u-slider"))
+    h += "<div class='caption'>The numbers below are the stored solve at " +
+         "these conditions &mdash; they do not follow the U / pH slider." +
+         "</div>";
   // the verdict: the server synthesised it from the numbers below by fixed
   // rules, and says so -- it is a reading aid for the tables, not evidence
   // it describes ONE tier -- the same one the rate-control bars below use --
@@ -107,7 +296,7 @@
   // why the mean-field solve failed, and what the answer is priced against
   const S = (K.ml && K.ml.v2_solve) || (K.dft && K.dft.v2_solve);
   if (S) {
-    const bad = S.mf_failure || !S.positive || S.rung === "none";
+    const bad = S.mf_failure || !S.positive || S.rung === "none" || S.near_noise;
     const FO = S.failed_observables || [];
     // a solve that returned but did not settle, or lost observables, is
     // never the green box: amber, with the reason spelled out below
@@ -116,10 +305,16 @@
          (bad ? "dead" : caution ? "warn" : "ok") + "'><span class='vhead'>" +
          "v2 solve: " + esc2(S.headline) + "</span><ul>" +
          "<li>TOF rung: " + esc2(S.rung) + "</li>" +
+         (S.near_noise
+           ? "<li>TOF inside the solver's noise floor: its sign and " +
+             "magnitude are unresolved &mdash; read it as &ldquo;no " +
+             "resolved rate&rdquo;</li>" : "") +
          (S.unsettled
            ? "<li>state not fully settled: ln-coverage step " +
              esc2(Number(S.state_err).toPrecision(2)) +
-             " &mdash; treat TOF as order-of-magnitude</li>" : "") +
+             (S.near_noise
+               ? " &mdash; no resolved rate"
+               : " &mdash; treat TOF as order-of-magnitude") + "</li>" : "") +
          (S.mf_failure && S.mf_stage
            ? "<li>failed at stage: " + esc2(S.mf_stage) + "</li>" : "") +
          (FO.length
@@ -152,8 +347,9 @@
          "</div>";
   }
   h += "<table><tr><th>tier</th><th>" + term("TOF", "TOF (/site/s)") +
-       "</th><th>" + term("5-95 % band", "5–95 % band") + "</th><th>" +
-       term("span limit") + "</th><th>" + term("MARI seed") + "</th></tr>";
+       "</th><th>" + term("5-95 % band", "5–95 % band (/site/s)") + "</th><th>" +
+       term("span limit", "span limit (/site/s)") + "</th><th>" +
+       term("MARI seed") + "</th></tr>";
   [["ml", "ML"], ["dft", "DFT (hybrid: unmeasured steps stay ML)"]]
     .forEach(pair => {
       const d = K[pair[0]];
@@ -170,14 +366,18 @@
            esc2(d.mari_seed || "clean") + "</td></tr>";
     });
   h += "</table>";
-  // what leaves the surface, per gas -- the selectivity readout
+  // what leaves the surface, per gas -- the selectivity readout. The record
+  // carries production only from the chain solve: when a v2 rung headlines
+  // the TOF the label says so, or the numbers invite a false comparison
+  // (gr549748)
   [["ml", "ML"], ["dft", "DFT"]].forEach(pair => {
     const d = K[pair[0]];
     const P = d ? Object.entries(d.production || {}) : [];
     if (!P.length) return;
     P.sort((a, b) => b[1] - a[1]);
     h += "<div class='caption'>" + esc2(pair[1]) + " tier " +
-         term("net gas production") + ": " +
+         term("net gas production") +
+         (d.v2_solve ? " (chain solve)" : "") + ": " +
          P.map(kv => esc2(kv[0]) + " " + sci(kv[1]) + " /site/s")
           .join(" &middot; ") +
          (d.selectivity == null ? ""
@@ -200,9 +400,9 @@
         "their optimistic bound (barrier = max(0, &Delta;G), a bound, " +
         "never a measurement) the TOF moves from " + sci(b.tof_slow) +
         " to " + sci(b.tof_fast) + " /site/s. Missing barriers: " +
-        esc2(((b.load_bearing || []).length ? b.load_bearing
-                                            : (b.bounded_steps || []))
-             .join(", ") || "(not individually attributed)") +
+        (((b.load_bearing || []).length ? b.load_bearing
+                                       : (b.bounded_steps || []))
+             .map(disp).join(", ") || "(not individually attributed)") +
         ". TOF, coverages and rate control are unreliable until these " +
         "are computed.</div>";
   });
@@ -285,7 +485,7 @@
       term("dG", "ΔG (eV)") + "</th><th>barrier (eV)</th>" +
       "<th><i>k</i><sub>i</sub> (/s)</th>" +
       "<th><i>k</i><sub>&minus;i</sub> (/s)</th></tr>" +
-      eqTs.map((t, i) => "<tr><td>" + (i + 1) + "</td><td>" + esc2(t.name) +
+      eqTs.map((t, i) => "<tr><td>" + (i + 1) + "</td><td>" + disp(t.name) +
         "</td><td>" + esc2(t.kind) + "</td><td>" +
         (t.dG_eV == null ? "&mdash;" : Number(t.dG_eV).toFixed(3)) +
         "</td><td>" +
@@ -294,57 +494,127 @@
         "</td></tr>").join("") + "</table></details>";
     h += e;
   }
-  const bars = (obj, pos, neg) => {
-    const rows = Object.entries(obj || {})
+  // rate-control bars (gr549763): a colour legend, the value on the fill
+  // itself, bars scaled to the section's largest |X| so magnitude survives
+  // clipping, and an unusable banner the moment a value leaves the physical
+  // range -- |X_RC| above ~2 is a broken linearisation, not a strong effect
+  const srcName = s => s === "mf" ? "mean-field solve"
+                             : s === "chain" ? "chain solve" : null;
+  const bars = (obj, pos, neg, what, src) => {
+    const all = Object.entries(obj || {})
       .filter(kv => isFinite(kv[1]) && Math.abs(kv[1]) > 0.005)
-      .sort((a, b) => Math.abs(b[1]) - Math.abs(a[1])).slice(0, 6);
-    return rows.map(kv => {
-      const w = Math.min(Math.abs(kv[1]), 1) * 220;
-      return "<div class='kbar'><span class='kname'>" + esc2(kv[0]) +
+      .sort((a, b) => Math.abs(b[1]) - Math.abs(a[1]));
+    if (!all.length) return "<div class='caption'>none above 0.005</div>";
+    const maxAbs = Math.abs(all[0][1]);
+    // |X| <= 1 keeps the absolute 220 px scale; beyond that the bars are
+    // relative to the section's largest value and the caption says so
+    const scale = 220 / Math.max(maxAbs, 1);
+    let out = "";
+    if (maxAbs > 2)
+      out += "<div class='kguard'>&#9888; unusual " + esc2(what) +
+        " values (largest |value| = " + maxAbs.toFixed(2) +
+        "): " + (what === "X_RC"
+          ? "X_RC is a normalised sensitivity that usually sums to ~1 " +
+            "-- values this far out can signal inhibition or an " +
+            "ill-conditioned solve rather than strong control"
+          : "values this large are rare for a well-behaved solve") +
+        " &mdash; read with care.</div>";
+    out += all.slice(0, 6).map(kv => {
+      const w = Math.abs(kv[1]) * scale;
+      return "<div class='kbar'><span class='kname'>" + disp(kv[0]) +
         "</span><span class='ktrack'><span class='kfill' style='width:" +
         w.toFixed(0) + "px;background:" + (kv[1] >= 0 ? pos : neg) +
-        "'></span></span><span class='kval'>" + (kv[1] >= 0 ? "+" : "") +
-        Number(kv[1]).toFixed(2) + "</span></div>";
-    }).join("") || "<div class='caption'>none above 0.005</div>";
+        "'></span><span class='kval'>" + (kv[1] >= 0 ? "+" : "") +
+        Number(kv[1]).toFixed(2) + "</span></span></div>";
+    }).join("");
+    out += "<div class='caption'>bar length &prop; |" + esc2(what) + "|" +
+      (maxAbs > 1 ? ", scaled to the largest shown" : "") +
+      (all.length > 6 ? " &middot; top 6 of " + all.length : "") +
+      (src ? " &middot; " + esc2(src) : "") + "</div>";
+    return out;
   };
+  const legend = (pairs, src) =>
+    "<div class='caption'>" + pairs.map(p =>
+      "<span class='ksw' style='background:" + p[0] + "'></span> " +
+      esc2(p[1])).join(" &middot; ") +
+    (src ? " &middot; " + esc2(src) : "") + "</div>";
   h += "<h3>Degree of rate control " + term("X_RC") + " (" + tierName +
-       ")</h3>" + bars(base.drc, "#2b6cb0", "#a33");
+       ")</h3>" +
+       legend([["#2b6cb0", "positive: lowering this step's barrier speeds the cycle"],
+               ["#a33", "negative: making the step faster slows the cycle"]],
+              srcName(base.drc_source)) +
+       bars(base.drc, "#2b6cb0", "#a33", "X_RC",
+            srcName(base.drc_source));
   h += "<h3>Thermodynamic rate control " + term("X_TRC") + " (" + tierName +
-       "; negative = poison)</h3>" + bars(base.trc, "#2f855a", "#a33");
-  const cov = Object.entries(base.coverages || {});
-  if (cov.length) {
+       "; negative = poison)</h3>" +
+       legend([["#2f855a", "positive: binding this state harder speeds the cycle"],
+               ["#a33", "negative: a poison &mdash; stabilising it slows the cycle"]],
+              srcName(base.trc_source)) +
+       bars(base.trc, "#2f855a", "#a33", "X_TRC",
+            srcName(base.trc_source));
+  // coverages (gr549757): largest first, every state above the display
+  // threshold shown, hidden states counted. The v2 record's table is per
+  // site class -- each class sums to ~1 on its own, so multi-class records
+  // are grouped and each class's shown sum stated
+  const COV_MIN = 0.001;
+  const covBlock = (states, label) => {
+    const shown = states.filter(kv => Number(kv[1]) > COV_MIN);
+    const hidden = states.length - shown.length;
+    const sum = shown.reduce((s, kv) => s + Number(kv[1]), 0);
+    const cap = "<div class='caption'>the " + shown.length +
+      " shown states hold &theta; = " + sum.toFixed(3) + " of " +
+      (label ? "this site class's" : "the surface's") + " sites" +
+      (hidden ? "; " + hidden + " state" + (hidden === 1 ? "" : "s") +
+        " below 0.001 not shown" : "") + ".</div>";
+    return (label ? "<h4>" + esc2(label) + "</h4>" : "") +
+      (shown.length
+        ? "<table><tr><th>state</th><th>" +
+          term("coverage", "&theta; (fraction of sites)") + "</th></tr>" +
+          shown.map(kv => "<tr><td>" + esc2(kv[0]) + "</td><td>" +
+            Number(kv[1]).toFixed(3) + "</td></tr>").join("") + "</table>"
+        : "") + cap;
+  };
+  const covCls = base.coverage_classes || [];
+  if (covCls.length > 1) {
     h += "<h3>Steady-state " + term("coverage", "coverages") + " (" +
-         tierName + ")</h3><table><tr><th>state</th><th>&theta;</th></tr>" +
-         cov.map(kv => "<tr><td>" + esc2(kv[0]) + "</td><td>" +
-                 Number(kv[1]).toFixed(3) + "</td></tr>").join("") +
-         "</table>" +
-         ((base.n_coverages || 0) > cov.length
-           ? "<div class='caption'>The " + cov.length + " largest of " +
-             base.n_coverages + " states; the rest hold the remainder.</div>"
-           : "");
+         tierName + ", per site class; mean-field solve)</h3>" +
+         covCls.map(c => covBlock(c.states || [], c.cls + " sites")).join("");
+  } else {
+    const states = covCls.length ? (covCls[0].states || [])
+                                 : (base.coverages || []);
+    if (states.length)
+      h += "<h3>Steady-state " + term("coverage", "coverages") + " (" +
+           tierName + (covCls.length ? ", mean-field solve" : "") +
+           ")</h3>" + covBlock(states, null);
   }
   // the warnings: computed every run, and the reader has no way to calibrate
-  // the numbers above without them
+  // the numbers above without them -- each raw engine line carries its
+  // meaning and what to do from WARN_HELP; unrecognised ones stay verbatim
   [["ml", "ML"], ["dft", "DFT"]].forEach(pair => {
     const d = K[pair[0]], w = d && d.warnings;
     if (!w || !w.length) return;
     h += "<details class='kx'><summary>" + esc2(pair[1]) + " tier: " +
          w.length + " warning" + (w.length === 1 ? "" : "s") +
-         " from the solve</summary><ul class='kwlist'>" +
-         w.map(x => "<li>" + esc2(x) + "</li>").join("") + "</ul></details>";
+         " from the solve, grouped by meaning</summary>" + warnList(w) +
+         "</details>";
   });
   // per-step detail: X_RC says which steps matter, this is the arithmetic
-  // behind it. Collapsed, because the verdict above is the headline.
+  // behind it. Collapsed, because the verdict above is the headline. The
+  // net rates are the chain solve's -- the v2 record carries no per-step
+  // rates, so under a v2 headline the label keeps the two solves apart
+  // (gr549748)
   const steps = (base.transitions || []).filter(t => t.kind === "step");
   if (steps.length) {
     const rows = steps.slice().sort(
       (a, b) => Math.abs(b.net_rate || 0) - Math.abs(a.net_rate || 0));
     h += "<details class='kx'><summary>Every step: " + rows.length +
-         " transitions, by |" + term("net rate") +
-         "|</summary><table><tr><th>step</th><th>" + term("dG", "ΔG (eV)") +
-         "</th><th>barrier (eV)</th><th>" + term("k_f") + "</th><th>" +
-         term("k_b") + "</th><th>" + term("net rate") + "</th></tr>" +
-      rows.map(t => "<tr><td>" + esc2(t.name) + "</td><td>" +
+         " transitions, by |" + term("net rate") + "|" +
+         (base.v2_solve ? " &mdash; rates from the chain solve" : "") +
+         "</summary><table><tr><th>step</th><th>" + term("dG", "ΔG (eV)") +
+         "</th><th>barrier (eV)</th><th>" + term("k_f", "k_f (/s)") +
+         "</th><th>" + term("k_b", "k_b (/s)") + "</th><th>" +
+         term("net rate", "net rate (/site/s)") + "</th></tr>" +
+      rows.map(t => "<tr><td>" + disp(t.name) + "</td><td>" +
         (t.dG_eV == null ? "&mdash;" : Number(t.dG_eV).toFixed(3)) +
         "</td><td>" +
         (t.barrier_eV == null ? "<i>none computed</i>"
