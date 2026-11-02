@@ -190,6 +190,37 @@ the dated detail is in `git log` and the owning items):**
    crowded-surface ask; ranked last, after the catpath 0.30.0 re-run
    (spectator mode, NH2/NOH template fix), because the dilute-vs-1 ML table
    it starts from is uncertain until then.
+8. **gr543776 items 3–13 — keep-everything retention, remaining slices.**
+   Items 1–2 landed (745e225c5, bddd19fd2): NEB band geometries,
+   `images_energy` profiles and TS geometries ride the job artifact store
+   (`precis.store.job_artifacts`, NAS mount — the ruled storage backend,
+   Reto 2026-11-01 reconfirmed 2026-11-02, never `refs.meta`), and a
+   killed/failed seed's finished relaxes are harvested from its scratch
+   `checkpoints/`. Remaining drops, in the gripe's order (sizes for ~40
+   atoms, 3 seeds, 20 steps, 30 states):
+   - (3) Step retry: `narrow_partial` keeps the retried step and discards
+     the rest of the full-network run, ~100 kB.
+   - (4) Hidden intermediate (`_split_and_stamp`): `mres.atoms`, the newly
+     found minimum, and both segment bands.
+   - (5) Discarded NEB attempts: multistart, denser-band retries,
+     auto-retry bands.
+   - (6) Reseat (`_relax_state_bound`, `_adsorption_barrier`): desorbed and
+     failed geometries and the adsorption band; heights survive only in
+     warning text.
+   - (7) KMC `sweep_points`: replica TOFs, `block_tof`, `channel_counts`,
+     `coverage_ci`, ~10 kB per point.
+   - (8) Relax trajectories, ~5 MB.
+   - (9) Sweep timeout: only the error string survives; finished points
+     lost.
+   - (10) TPD: T/rate curves, ~5 kB per adsorbate.
+   - (11) MC draws: 500 log-TOFs — cheap to redo, rank last.
+   - (12) `poison:` geometries always dropped (`runner.run_seed_partial`),
+     ~4 kB each.
+   - (13) `model_index>0` units keep no structures, ~100 kB per seed,
+     including the geometry vib ran on.
+   Solver warnings are also discarded at `kmc.py` and `mkm.run_sweep`
+   (`warnings=[]`); vib modes and the Hessian are covered by gr543723
+   (closed).
 
 ## Horizon
 
