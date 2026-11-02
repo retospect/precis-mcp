@@ -180,6 +180,32 @@ def test_th_header_t_junction_recovery_keeps_every_constraint() -> None:
             assert_edge(pa, pb)
 
 
+@pytest.mark.timeout(30)
+def test_crossed_walk_bails_on_a_degenerate_soup() -> None:
+    """gr551098: the constraint-recovery walk follows (tri, entry-edge)
+    transitions with no re-visit check — a deterministic function of
+    state, so a repeat means an infinite loop. On a non-manifold soup
+    (edge (2,3) carried by three tris — the kind of degeneracy
+    collinear-triple frozen constraints leave) this walk cycles
+    T1→T2→T3→T4→T1 forever: without the guard this test hangs, with it
+    the walk bails to ``None`` and ``recover``'s full-scan fallback
+    still computes the crossing set."""
+    from precis.pcb.topoplace.mesh import _Soup
+
+    verts = np.asarray(
+        [
+            [0.0, 0.0],
+            [10.0, 0.0],
+            [4.0, 1.0],
+            [4.0, -1.0],
+            [6.0, 1.0],
+            [6.0, -1.0],
+        ]
+    ).tolist()
+    soup = _Soup(np.asarray([[2, 4, 3], [0, 2, 3], [3, 4, 5], [4, 5, 2], [2, 5, 3]]))
+    assert soup.crossed_walk(verts, 0, 1) is None
+
+
 def test_euler_no_holes_example_a_and_100p_synth() -> None:
     """V − E + T = 1 over referenced vertices — footprint interiors are
     triangulated, so the courtyards punch no holes."""
@@ -665,7 +691,7 @@ def test_routing_rule_oracle_catches_a_gap_leak(monkeypatch) -> None:
 
     def leaky(ctx_, d_, cand_mask, net, own, trace_mm, clearance_mm):
         out = real(ctx_, d_, cand_mask, net, own, trace_mm, clearance_mm).copy()
-        blocked_gap, _free, _ep, _pe = wires_mod._pad_eval(
+        blocked_gap, _free, _ep, _pe, _oi = wires_mod._pad_eval(
             ctx_, trace_mm / 2.0 + clearance_mm
         )
         out[blocked_gap != 0] = True  # the leak: closed channels pass
@@ -1212,7 +1238,7 @@ def test_build_wires_gap_priced_by_geometry() -> None:
     assert all(abs(y) > 3 * 0.5 + 0.15 - 0.01 for y in _crossing_ys(b4))
     d5 = _pad_row_design(0.5, 0.3, n_row=7, side=0, n_force=-1)
     ctx5 = _make_ctx(build_mesh(d5, d5.pose0), d5, 2)
-    blocked5, free5, _ep, _pe = _pad_eval(ctx5, r_def)
+    blocked5, free5, _ep, _pe, _oi = _pad_eval(ctx5, r_def)
     assert (blocked5 & 1).any()  # some channel edge closed on top
     assert not (blocked5 & 2).any()  # none closed on bottom
     assert (free5[:, 0] < free5[:, 1]).any()
@@ -1230,8 +1256,11 @@ def _channel_wall_design(n_nets: int = 3, drop: tuple[int, ...] = ()) -> TopoDes
     )
     padw = 0.6
     # pitch 1.0 → 0.4 gaps (closed, < 0.45); the pad at y=0.4 shifted to
-    # 0.6 opens one 0.6 gap between -0.6 and +0.6. Row ends reach the
-    # outline (0.1 residual, closed) so the channel is the ONLY way.
+    # 0.6 opens one 0.6 gap between -0.6 and +0.6. The row ends reach
+    # the outline with a 0.1 residual at the bottom and a 0.3 residual
+    # at the top (ys run -9.6..9.4, half-height 0.3) — the top is closed
+    # only under the outline's own cover (gr551114), so the channel is
+    # the ONLY way.
     ys = [-9.6 + i * 1.0 for i in range(20)]
     ys[10] = 0.6  # the y=0.4 pad shifts to 0.6, opening the 0.6 gap
     ys = [y for i, y in enumerate(ys) if i not in drop]
@@ -1362,6 +1391,90 @@ def test_corridor_overflow_message_caps_edges_and_nets() -> None:
     assert "+2 more edge(s)" in msg
 
 
+def test_wire_gap_rule_reads_the_outline_cover() -> None:
+    """gr551114: the wire gap rule holds the outline's cover — a
+    centreline keeps ``trace/2 + max(clearance, edge_clearance)`` off the
+    board edge on every layer, the way ``realise._edge_zone`` already
+    holds chords and via barrels. Pre-fix the eval grew only the pads:
+    a mesh edge hugging the board edge inside that cover still read
+    passable and a wire could sit copper on the outline. The cover is a
+    UNION merge — an edge pad-grown on one stretch and outline-grown on
+    another is closed only when nothing survives."""
+    from precis.pcb.topoplace.wires import (
+        _make_ctx,
+        _open_layers,
+        _pad_eval,
+        build_wires,
+    )
+
+    r_def = 0.15 / 2.0 + 0.15
+    d = _channel_wall_design(3)
+    mesh = build_mesh(d, d.pose0)
+    ctx = _make_ctx(mesh, d, 2)
+    blocked0, free0, _e, _p, oi0 = _pad_eval(ctx, r_def, 0.0)
+    blocked1, free1, _e, _p, oi1 = _pad_eval(ctx, r_def, r_def)
+    assert not oi0 and oi1  # the outline only covers at its own growth
+    # the sliver edges between the bottom row end and the outline: open
+    # under pad cover alone, fully inside the outline's capsule now
+    band = [
+        e
+        for e in range(len(mesh.edges))
+        if not ctx.board[e] and max(ctx.eu[e][1], ctx.ev[e][1]) < -9.775
+    ]
+    assert band
+    own = frozenset(int(p) for p in d.net_pins[0])
+    open_ = _open_layers(ctx, d, 3, "N0", own, 0.15, 0.15)
+    assert all(int(open_[e]) == 0 for e in band)
+    # pad-cover alone left every one of them passable — the differential
+    # is the outline's cover, on every layer
+    assert (blocked1 & ~blocked0 & 3).any()
+    assert all(int(blocked1[e]) == 3 for e in band)
+    # an edge merely TOUCHED by the band keeps its honest free stretch —
+    # and the channel record now carries it for the corridor ledger
+    assert (free1 >= 0.0).any(axis=None) and (
+        (free1 >= 0.0) & (free1 < free0 - 1e-9)
+    ).any(axis=None)
+    # the three nets still all cross x=0 through the one 0.6 mm channel
+    w = build_wires(mesh, d, 2)
+    for b in w.branches:
+        assert _crossing_ys(b)
+        assert all(abs(y) < 1.0 for y in _crossing_ys(b))
+
+
+def test_edge_clearance_mm_widens_the_outline_cover() -> None:
+    """gr551114 (the fab-bar half): the outline's cover is ``trace/2 +
+    max(clearance, edge_clearance_mm)``. At the default rule the wall's
+    top residual (0.3 mm, pad top 9.7 → outline 10) still leaves a legal
+    stretch on the long edge from the pad corner into the open board; a
+    0.4 mm board-edge bar grows the cover to 0.075 + 0.4 and the
+    residual's last escape edge goes fully covered."""
+    import dataclasses
+
+    from precis.pcb.topoplace.wires import _make_ctx, _open_layers
+
+    d = _channel_wall_design(3)
+    mesh = build_mesh(d, d.pose0)
+    d2 = dataclasses.replace(d, edge_clearance_mm=0.4)
+    ctx = _make_ctx(mesh, d, 2)
+    own = frozenset(int(p) for p in d.net_pins[0])
+    open_def = _open_layers(ctx, d, 3, "N0", own, 0.15, 0.15)
+    open_bar = _open_layers(ctx, d2, 3, "N0", own, 0.15, 0.15)
+    # interior edges crossing x=0 in the top residual band: under the
+    # 0.4 mm bar every one is closed on all layers
+    band = [
+        e
+        for e in range(len(mesh.edges))
+        if not ctx.board[e]
+        and (
+            (ctx.eu[e][0] <= 0.0 < ctx.ev[e][0]) or (ctx.ev[e][0] <= 0.0 < ctx.eu[e][0])
+        )
+        and (ctx.eu[e][1] + ctx.ev[e][1]) / 2.0 > 9.4
+    ]
+    assert band
+    assert (open_def != open_bar).any()  # the bar is load-bearing
+    assert all(int(open_bar[e]) == 0 for e in band)
+
+
 def test_power_net_routes_at_routing_width_not_widen_target() -> None:
     """gr520904 follow-up (Reto's widen ruling): a rail's
     ``est_current_a`` resolves to an IPC-2221 width (~2.8 mm at 5 A) —
@@ -1439,7 +1552,7 @@ def _slot_wall_design() -> TopoDesign:
         [[-hx, -hy], [hx, -hy], [hx, hy], [-hx, hy], [-hx, hy]], float
     )
     padw = 0.6
-    ys = [-3.6 + i * 1.0 for i in range(14)]  # -3.6 .. 9.6, top residual 0.1
+    ys = [-3.6 + i * 1.0 for i in range(14)]  # -3.6 .. 9.4, top residual 0.3
     # shift one pad +0.2 per row: the gap below it opens 0.4 -> 0.6
     wall = [
         (x, y + 0.2 if i == ci else y)

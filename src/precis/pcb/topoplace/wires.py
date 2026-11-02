@@ -20,7 +20,9 @@ always a wall — even on the wire's own part:
 - a drilled pad (TH pin) blocks every layer the same way;
 - a keepout/fixed-copper zone edge blocks the zone's ``layers`` — except
   fixed copper of the SAME net, which lets the wire through;
-- the board edge never passes.
+- the board edge never passes — and a wire keeps ``trace/2 +
+  max(clearance, edge_clearance)`` of cover off the outline (gr551114),
+  so a pad-to-outline residual closes like any other channel.
 
 Per net the pins' tree is Prim over PATH distances (R-b): one persistent
 multi-source search grows from the tree; the nearest unreached pin by
@@ -126,9 +128,10 @@ class Wires:
     unreachable: tuple[Unreachable, ...]
     # slice-4 channel record (round-4): per edge and layer, the stretch
     # left uncovered by ringed pads buffered at the finest resolved rule
-    # (−1 where no pad reaches the edge), and the TOTAL traces that
-    # stretch takes — floor(free / (trace + clearance)) + 1 where a
-    # centreline survives, 0 where the channel is closed (round-5:
+    # and by the board outline buffered at its own (gr551114; −1 where
+    # neither reaches the edge), and the TOTAL traces that stretch
+    # takes — floor(free / (trace + clearance)) + 1 where a centreline
+    # survives, 0 where the channel is closed (round-5:
     # the count is measured in the free width's own frame — a just-
     # passable gap records 1, not 0).
     gap_free_mm: np.ndarray  # (E, L) mm, -1 = not a pad-channel edge
@@ -257,12 +260,19 @@ class _Ctx:
     pad_block_all: np.ndarray  # (E,) int — all pads' blocked-layer OR
     zone_block: dict[str, np.ndarray]  # net name -> (E,) zone-blocked OR
     gap_eval_cache: dict[
-        float,
-        tuple[np.ndarray, np.ndarray, dict[int, np.ndarray], dict[int, list[int]]],
+        tuple[float, float],
+        tuple[
+            np.ndarray,
+            np.ndarray,
+            dict[int, np.ndarray],
+            dict[int, list[int]],
+            dict[int, list[tuple[float, float]]],
+        ],
     ]
-    # gap_eval_cache[r] = (blocked (E,) int, free (E, L) mm, edge_pads,
-    # pad_edges) — the all-pads coverage eval; _blocked_masks re-opens
-    # a net's own pads on top of it.
+    # gap_eval_cache[(r, r_edge)] = (blocked (E,) int, free (E, L) mm,
+    # edge_pads, pad_edges, out_ints) — the all-pads coverage eval at
+    # growth ``r`` plus the board outline's capsule coverage at
+    # ``r_edge``; _blocked_masks re-opens a net's own pads on top of it.
     board: np.ndarray  # (E,) bool — board-outline edges
     vid_of: dict[tuple[float, float], int]  # rounded xy -> vertex id
     eu: list[tuple[float, float]]  # edge u endpoint xy (python floats)
@@ -1526,6 +1536,7 @@ def _wall_owners(
     cand_mask: int,
     net_name: str,
     r: float,
+    r_edge: float,
 ) -> tuple[int, ...]:
     """What separates an unreachable component's region from the main
     tree's: owners of the blocked edges on the cut between the two
@@ -1533,7 +1544,7 @@ def _wall_owners(
     ``edge_owner`` id space). Falls back to the region's whole blocked
     boundary when the regions meet only at vertices."""
     n_parts = len(d.parts)
-    _b, _f, gap_pads, _p = _pad_eval(ctx, r)
+    _b, _f, gap_pads, _p, out_ints = _pad_eval(ctx, r, r_edge)
     cut: set[int] = set()
     boundary: set[int] = set()
     for t in region:
@@ -1547,7 +1558,7 @@ def _wall_owners(
                 cut.add(e)
 
     def blame(e: int, acc: set[int]) -> None:
-        if ctx.board[e]:
+        if ctx.board[e] or e in out_ints:
             acc.add(OWNER_BOARD)
         for pin, pm in ctx.pad_contrib.get(e, ()):
             if pin not in own and pm & cand_mask:
@@ -1611,20 +1622,111 @@ def _merge_len(ints: list[tuple[float, float]]) -> float:
     return min(cov, 1.0)
 
 
+def _outline_cover(ctx: _Ctx, r_edge: float) -> dict[int, list[tuple[float, float]]]:
+    """Parameter intervals of each mesh edge lying within ``r_edge`` of
+    the board outline — the outline's cover in the gap rule's frame
+    (gr551114): a centreline keeps ``trace/2 + max(clearance,
+    edge_clearance)`` off the outline on every layer, the same frame
+    ``realise._edge_zone`` already holds chords and via barrels to. An
+    outline segment's capsule is convex, so it covers one contiguous
+    interval of an edge — the slab between its end caps merged with each
+    cap's disc. Board-outline edges themselves are never passable, so
+    only interior edges are priced."""
+    ints: dict[int, list[tuple[float, float]]] = {}
+    if r_edge <= _EPS or not ctx.board.any():
+        return ints
+    inner = ~ctx.board
+    for bi in np.flatnonzero(ctx.board):
+        b0 = ctx.seg_u[bi]
+        bs = ctx.seg_v[bi] - b0
+        seg_l = float(math.hypot(bs[0], bs[1]))
+        blo = np.minimum(b0, ctx.seg_v[bi]) - r_edge
+        bhi = np.maximum(b0, ctx.seg_v[bi]) + r_edge
+        cand = np.flatnonzero(
+            inner & (ctx.edge_lo <= bhi).all(axis=1) & (ctx.edge_hi >= blo).all(axis=1)
+        )
+        if not len(cand):
+            continue
+        pu = ctx.seg_u[cand]
+        dd = ctx.seg_v[cand] - pu
+        pieces: list[tuple[np.ndarray, np.ndarray, np.ndarray]] = []
+        if seg_l > _EPS:
+            # slab: |lateral| <= r_edge AND 0 <= axial <= seg_l, each a
+            # linear t-constraint, intersected and clipped to [0, 1]
+            sx, sy = float(bs[0]) / seg_l, float(bs[1]) / seg_l
+            lat0 = sx * (pu[:, 1] - b0[1]) - sy * (pu[:, 0] - b0[0])
+            latd = sx * dd[:, 1] - sy * dd[:, 0]
+            ax0 = sx * (pu[:, 0] - b0[0]) + sy * (pu[:, 1] - b0[1])
+            axd = sx * dd[:, 0] + sy * dd[:, 1]
+            lo = np.zeros(len(cand))
+            hi = np.ones(len(cand))
+            ok = np.ones(len(cand), dtype=bool)
+            m = np.abs(latd) > _EPS
+            ok[~m] &= np.abs(lat0[~m]) <= r_edge
+            t_a = np.empty(len(cand))
+            t_b = np.empty(len(cand))
+            t_a[m] = (-r_edge - lat0[m]) / latd[m]
+            t_b[m] = (r_edge - lat0[m]) / latd[m]
+            lo[m] = np.maximum(lo[m], np.minimum(t_a[m], t_b[m]))
+            hi[m] = np.minimum(hi[m], np.maximum(t_a[m], t_b[m]))
+            m = np.abs(axd) > _EPS
+            ok[~m] &= (ax0[~m] >= 0.0) & (ax0[~m] <= seg_l)
+            t_a[m] = (0.0 - ax0[m]) / axd[m]
+            t_b[m] = (seg_l - ax0[m]) / axd[m]
+            lo[m] = np.maximum(lo[m], np.minimum(t_a[m], t_b[m]))
+            hi[m] = np.minimum(hi[m], np.maximum(t_a[m], t_b[m]))
+            hit = ok & (hi - lo > 1e-12)
+            pieces.append((cand[hit], lo[hit], hi[hit]))
+        # end-cap discs: |u + t·d − cap|² <= r_edge² — a quadratic in t
+        for cap in (b0, b0 + bs):
+            w = pu - cap
+            aa = (dd * dd).sum(axis=1)
+            bq = 2.0 * (dd * w).sum(axis=1)
+            cc = (w * w).sum(axis=1) - r_edge * r_edge
+            big = aa > _EPS
+            disc = bq * bq - 4.0 * aa * cc
+            m = big & (disc >= 0.0)
+            sq = np.sqrt(disc[m])
+            lo2 = np.clip((-bq[m] - sq) / (2.0 * aa[m]), 0.0, 1.0)
+            hi2 = np.clip((-bq[m] + sq) / (2.0 * aa[m]), 0.0, 1.0)
+            hm = hi2 - lo2 > 1e-12
+            pieces.append((cand[m][hm], lo2[hm], hi2[hm]))
+            sm = ~big & (cc <= 0.0)
+            if sm.any():
+                pieces.append(
+                    (cand[sm], np.zeros(int(sm.sum())), np.ones(int(sm.sum())))
+                )
+        for ei_a, lo_a, hi_a in pieces:
+            for ei_, lo_, hi_ in zip(ei_a, lo_a, hi_a, strict=True):
+                ints.setdefault(int(ei_), []).append((float(lo_), float(hi_)))
+    return ints
+
+
 def _pad_eval(
-    ctx: _Ctx, r: float
-) -> tuple[np.ndarray, np.ndarray, dict[int, np.ndarray], dict[int, list[int]]]:
+    ctx: _Ctx, r: float, r_edge: float = 0.0
+) -> tuple[
+    np.ndarray,
+    np.ndarray,
+    dict[int, np.ndarray],
+    dict[int, list[int]],
+    dict[int, list[tuple[float, float]]],
+]:
     """Coverage of every mesh edge by every ringed pad grown by ``r``
-    (``trace/2 + clearance`` — the exclusion a centreline must keep).
-    Returns ``(blocked, free, edge_pads, pad_edges)``: ``blocked[e]`` is
-    the layer mask where no free stretch of ``e`` survives, ``free[e,
-    l]`` the uncovered length in mm (−1 where no pad reaches ``e``), and
-    the two maps index candidate pads per edge / candidate edges per
-    pad for the per-net own-pad re-eval. Cached per ``r`` — nets sharing
-    a rule share the eval (round-4 rework: the old endpoint-coincidence
-    test missed every channel split by a non-pad vertex, and ran the
-    O(ring²) pair scan per call)."""
-    got = ctx.gap_eval_cache.get(r)
+    (``trace/2 + clearance`` — the exclusion a centreline must keep)
+    plus the board outline's capsule grown by ``r_edge`` (``trace/2 +
+    max(clearance, edge_clearance)``, all layers — gr551114: without it
+    a wire through a pad-to-outline residual sat its copper on the board
+    edge). Returns ``(blocked, free, edge_pads, pad_edges, out_ints)``:
+    ``blocked[e]`` is the layer mask where no free stretch of ``e``
+    survives, ``free[e, l]`` the uncovered length in mm (−1 where
+    neither pad nor outline reaches ``e``), the two maps index candidate
+    pads per edge / candidate edges per pad for the per-net own-pad
+    re-eval, and ``out_ints`` holds each edge's outline-covered
+    parameter intervals for that re-eval. Cached per ``(r, r_edge)`` —
+    nets sharing a rule share the eval (round-4 rework: the old
+    endpoint-coincidence test missed every channel split by a non-pad
+    vertex, and ran the O(ring²) pair scan per call)."""
+    got = ctx.gap_eval_cache.get((r, r_edge))
     if got is not None:
         return got
     n_e = len(ctx.board)
@@ -1633,79 +1735,93 @@ def _pad_eval(
     blocked = np.zeros(n_e, dtype=np.int64)
     edge_pads: dict[int, np.ndarray] = {}
     pad_edges: dict[int, list[int]] = {}
-    out = (blocked, free, edge_pads, pad_edges)
-    ctx.gap_eval_cache[r] = out
-    if not len(ctx.pad_pin):
-        return out
-    # candidate (edge, pad) pairs: the grown pad AABB meets the edge's
-    hit = np.logical_and(
-        ctx.pad_lo[None] <= ctx.edge_hi[:, None] + r,
-        ctx.pad_hi[None] >= ctx.edge_lo[:, None] - r,
-    ).all(axis=2)
-    ei, pi = np.nonzero(hit)
-    if not len(ei):
-        return out
-    # slab clip of every pair's segment against its grown pad box
-    pu = ctx.seg_u[ei]
-    dd = ctx.seg_v[ei] - pu
-    plo = ctx.pad_lo[pi] - r
-    phi = ctx.pad_hi[pi] + r
-    ent = np.zeros(len(ei))
-    ext = np.ones(len(ei))
-    feas = np.ones(len(ei), dtype=bool)
-    for ax in range(2):
-        dax = dd[:, ax]
-        pax = pu[:, ax]
-        big = np.abs(dax) > _EPS
-        t0 = np.empty(len(ei))
-        t1 = np.empty(len(ei))
-        t0[big] = (plo[big, ax] - pax[big]) / dax[big]
-        t1[big] = (phi[big, ax] - pax[big]) / dax[big]
-        ent[big] = np.maximum(ent[big], np.minimum(t0[big], t1[big]))
-        ext[big] = np.minimum(ext[big], np.maximum(t0[big], t1[big]))
-        small = ~big
-        feas[small] &= (pax[small] >= plo[small, ax] - 1e-12) & (
-            pax[small] <= phi[small, ax] + 1e-12
-        )
-    valid = feas & (ext - ent > 1e-12)
-    # per edge, per layer: merge the sorted covered intervals
-    order = np.lexsort((ent, ei))
-    ei_s, ent_s, ext_s = ei[order], ent[order], ext[order]
-    val_s, lm_s = valid[order], ctx.pad_copper[pi][order]
-    pi_s = pi[order]
-    i = 0
-    n = len(order)
-    while i < n:
-        e = int(ei_s[i])
-        j = i
-        while j < n and ei_s[j] == e:
-            j += 1
-        plist = pi_s[i:j]
-        edge_pads[e] = np.asarray(sorted(set(int(x) for x in plist)))
-        for p_ in edge_pads[e]:
-            pad_edges.setdefault(int(p_), []).append(e)
+    out_ints = _outline_cover(ctx, r_edge)
+    out = (blocked, free, edge_pads, pad_edges, out_ints)
+    ctx.gap_eval_cache[(r, r_edge)] = out
+    if len(ctx.pad_pin):
+        # candidate (edge, pad) pairs: the grown pad AABB meets the edge's
+        hit = np.logical_and(
+            ctx.pad_lo[None] <= ctx.edge_hi[:, None] + r,
+            ctx.pad_hi[None] >= ctx.edge_lo[:, None] - r,
+        ).all(axis=2)
+        ei, pi = np.nonzero(hit)
+        if len(ei):
+            # slab clip of every pair's segment against its grown pad box
+            pu = ctx.seg_u[ei]
+            dd = ctx.seg_v[ei] - pu
+            plo = ctx.pad_lo[pi] - r
+            phi = ctx.pad_hi[pi] + r
+            ent = np.zeros(len(ei))
+            ext = np.ones(len(ei))
+            feas = np.ones(len(ei), dtype=bool)
+            for ax in range(2):
+                dax = dd[:, ax]
+                pax = pu[:, ax]
+                big = np.abs(dax) > _EPS
+                t0 = np.empty(len(ei))
+                t1 = np.empty(len(ei))
+                t0[big] = (plo[big, ax] - pax[big]) / dax[big]
+                t1[big] = (phi[big, ax] - pax[big]) / dax[big]
+                ent[big] = np.maximum(ent[big], np.minimum(t0[big], t1[big]))
+                ext[big] = np.minimum(ext[big], np.maximum(t0[big], t1[big]))
+                small = ~big
+                feas[small] &= (pax[small] >= plo[small, ax] - 1e-12) & (
+                    pax[small] <= phi[small, ax] + 1e-12
+                )
+            valid = feas & (ext - ent > 1e-12)
+            # per edge, per layer: merge the sorted covered intervals
+            order = np.lexsort((ent, ei))
+            ei_s, ent_s, ext_s = ei[order], ent[order], ext[order]
+            val_s, lm_s = valid[order], ctx.pad_copper[pi][order]
+            pi_s = pi[order]
+            i = 0
+            n = len(order)
+            while i < n:
+                e = int(ei_s[i])
+                j = i
+                while j < n and ei_s[j] == e:
+                    j += 1
+                plist = pi_s[i:j]
+                edge_pads[e] = np.asarray(sorted(set(int(x) for x in plist)))
+                for p_ in edge_pads[e]:
+                    pad_edges.setdefault(int(p_), []).append(e)
+                oints = out_ints.get(e)
+                for ly in range(n_l):
+                    bit = 1 << ly
+                    ints = [
+                        (float(ent_s[k]), float(ext_s[k]))
+                        for k in range(i, j)
+                        if val_s[k] and (int(lm_s[k]) & bit)
+                    ]
+                    if oints:
+                        ints += oints
+                    cov = _merge_len(ints) if ints else 0.0
+                    free[e, ly] = float(ctx.seg_len[e]) * (1.0 - cov)
+                    if free[e, ly] <= 1e-9:
+                        blocked[e] |= bit
+                i = j
+    # edges the outline alone covers (no pad reaches them): the same
+    # free-stretch record on every layer — the channel ledger prices
+    # them and a fully covered one is blocked outright.
+    for e, oints in out_ints.items():
+        if e in edge_pads:
+            continue
+        cov = _merge_len(list(oints))
         for ly in range(n_l):
-            bit = 1 << ly
-            ints = [
-                (float(ent_s[k]), float(ext_s[k]))
-                for k in range(i, j)
-                if val_s[k] and (int(lm_s[k]) & bit)
-            ]
-            cov = _merge_len(ints) if ints else 0.0
             free[e, ly] = float(ctx.seg_len[e]) * (1.0 - cov)
             if free[e, ly] <= 1e-9:
-                blocked[e] |= bit
-        i = j
+                blocked[e] |= 1 << ly
     return out
 
 
 def _edge_free(
-    ctx: _Ctx, e: int, r: float, drop: frozenset[int], edge_pads
+    ctx: _Ctx, e: int, r: float, drop: frozenset[int], edge_pads, out_ints
 ) -> np.ndarray:
     """``free`` row for edge ``e`` re-merged without the net's own pads
     (``drop`` = pad indices) — the own-net exemption applied to the gap
     rule: a channel off the wire's own pad is measured against foreign
-    copper only."""
+    copper only. The board outline's cover (``out_ints``) is foreign to
+    every net — it stays in."""
     free = np.empty(ctx.n_layers)
     cands = [p for p in edge_pads.get(e, ()) if p not in drop]
     ints: list[tuple[float, float, int]] = []
@@ -1713,9 +1829,14 @@ def _edge_free(
         iv = _seg_pad_int(ctx, e, int(pi_), r)
         if iv is not None:
             ints.append((iv[0], iv[1], int(ctx.pad_copper[pi_])))
+    oints = list(out_ints.get(e, ()))
     for ly in range(ctx.n_layers):
         bit = 1 << ly
-        cov = _merge_len([(a, b) for a, b, m in ints if m & bit]) if ints else 0.0
+        cov = (
+            _merge_len([(a, b) for a, b, m in ints if m & bit] + oints)
+            if ints or oints
+            else 0.0
+        )
         free[ly] = float(ctx.seg_len[e]) * (1.0 - cov)
     return free
 
@@ -1760,8 +1881,11 @@ def _open_layers(
         ctx.zone_block[net_name] = zb
     full_blocked |= zb
     r = trace_mm / 2.0 + clearance_mm
-    blocked_gap, _free, edge_pads, pad_edges = _pad_eval(ctx, r)
-    if edge_pads:
+    # the outline holds the wire's copper to the fab's edge rule — the
+    # same cover ``_edge_zone`` gives chords and via barrels (gr551114)
+    r_edge = trace_mm / 2.0 + max(clearance_mm, float(d.edge_clearance_mm or 0.0))
+    blocked_gap, _free, edge_pads, pad_edges, out_ints = _pad_eval(ctx, r, r_edge)
+    if edge_pads or out_ints:
         gap_mask = blocked_gap.copy()
         # own-net pads stay out of the coverage — the pin's ringed pad
         # AND every extra pad pinned to one of the net's pins (a second
@@ -1775,7 +1899,7 @@ def _open_layers(
                     if e in seen_e:
                         continue
                     seen_e.add(e)
-                    free = _edge_free(ctx, e, r, own_pads, edge_pads)
+                    free = _edge_free(ctx, e, r, own_pads, edge_pads, out_ints)
                     m = 0
                     for ly in range(ctx.n_layers):
                         if free[ly] <= 1e-9:
@@ -1806,7 +1930,10 @@ def _blocked_masks(
     only where a free stretch remains, so a channel closes exactly when
     ``gap < trace + 2·clearance``; the closure applies per LAYER — two
     top-side pads leave the bottom open — and the net's own pads are
-    dropped from the coverage (own-flanked stays open)."""
+    dropped from the coverage (own-flanked stays open). The outline's
+    cover is the same shape at ``trace/2 + max(clearance,
+    edge_clearance)`` on every layer — gr551114: a pad-to-outline
+    residual reads closed once both covers are merged)."""
     return _open_layers(ctx, d, cand_mask, net_name, own, trace_mm, clearance_mm) != 0
 
 
@@ -2191,6 +2318,7 @@ class _Corridor:
     inv_cap: np.ndarray
     edge_pins: list[frozenset[int]]
     edge_pads: dict[int, np.ndarray]  # edge -> pad roster indices (extras incl.)
+    out_edges: frozenset[int]  # edges the outline's cover reaches
     own_pins: list[frozenset[int]]
     weight: list[float]
 
@@ -2239,7 +2367,7 @@ class _Corridor:
                 str(d.zones[z].name or f"zone{z}")
                 for z, _zm in ctx.zone_contrib.get(e, ())
             )
-            if ctx.board[e]:
+            if ctx.board[e] or e in self.out_edges:
                 names.add("outline")
             return tuple(sorted(names)) or ("free space",)
 
@@ -2314,11 +2442,15 @@ def _corridor(
         if rules_used
         else (_DEFAULT_TRACE_MM, _DEFAULT_CLEAR_MM)
     )
-    _b, free_ref, edge_pads_ref, _p = _pad_eval(ctx, t_ref / 2.0 + c_ref)
+    _b, free_ref, edge_pads_ref, _p, out_ref = _pad_eval(
+        ctx,
+        t_ref / 2.0 + c_ref,
+        t_ref / 2.0 + max(c_ref, float(getattr(d, "edge_clearance_mm", 0.0) or 0.0)),
+    )
     n_e = len(mesh.edges)
     gap_free = np.full((n_e, n_layers), -1.0)
     gap_cap = np.full((n_e, n_layers), -1, dtype=np.int64)
-    for e in edge_pads_ref:
+    for e in (int(x) for x in np.flatnonzero((free_ref >= 0.0).any(axis=1))):
         f = free_ref[e]
         gap_free[e] = f
         # total traces the free stretch takes, in the free width's own
@@ -2374,6 +2506,7 @@ def _corridor(
         inv_cap=inv_cap,
         edge_pins=edge_pins,
         edge_pads=edge_pads_ref,
+        out_edges=frozenset(out_ref),
         own_pins=own_pins,
         weight=weight,
     )
@@ -2490,6 +2623,8 @@ def build_wires(
                     cand_mask,
                     net_name,
                     trace_mm / 2.0 + clearance_mm,
+                    trace_mm / 2.0
+                    + max(clearance_mm, float(d.edge_clearance_mm or 0.0)),
                 )
                 unreachable.append(
                     Unreachable(

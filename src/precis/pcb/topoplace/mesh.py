@@ -289,12 +289,22 @@ class _Soup:
             return []
         tid, e = start
         out = []
+        # (tri, entry-edge) states already attempted: each step is a
+        # deterministic function of them, so a repeat means the walk
+        # cycles — a degenerate (non-manifold) soup, e.g. the collinear
+        # triples frozen-stub constraints leave behind (gr551098). Bail
+        # to the full scan rather than spin.
+        seen: set[tuple[int, tuple[int, int]]] = set()
         while True:
             out.append(e)
             nxt = [t for t in self.edge_tris.get(e, ()) if t != tid]
             if not nxt:
                 return None  # walked off the hull — degenerate
             tid = nxt[0]
+            state = (tid, e)
+            if state in seen:
+                return None
+            seen.add(state)
             tri = self.tris[tid]
             if b in tri:
                 return out
