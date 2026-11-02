@@ -19,6 +19,7 @@ from precis.extract.tables import (
     has_citation_marker,
     header_unit,
     parse_table,
+    printed_unit,
     run_headers,
     strip_footnote,
     table_runs,
@@ -159,6 +160,111 @@ class TestParseGrid:
         assert parsed2 is not None
         assert parsed2.row_label_cited == [True]
 
+    def test_stacked_title_header_promotes_label_row(self) -> None:
+        # gr506762 subset-5 (pa452964): a spanning title line as the
+        # sole detected header is a caption, not the labels — the
+        # label row under the separator joins the header.
+        text = (
+            "| Sticking probabilities | | | |\n|---|---|---|---|\n"
+            "| m | 0 | 1 | 2 |\n"
+            "| mol | 0.7 | 0.6 | 0.5 |"
+        )
+        parsed = parse_table(12, text)
+        assert parsed is not None
+        assert parsed.header_rows == 2
+        assert parsed.columns[1].header == "0"
+        assert [[c.text for c in r] for r in parsed.rows] == [
+            ["mol", "0.7", "0.6", "0.5"]
+        ]
+        _assert_offsets(text, parsed)
+
+    def test_stacked_header_without_separator(self) -> None:
+        text = (
+            "| Sticking probabilities | | | |\n"
+            "| m | 0 | 1 | 2 |\n"
+            "| mol | 0.7 | 0.6 | 0.5 |"
+        )
+        parsed = parse_table(13, text)
+        assert parsed is not None
+        assert parsed.header_rows == 2
+        assert len(parsed.rows) == 1
+
+    def test_spanning_header_over_data_stays_data(self) -> None:
+        # A numeric first data row is not a label row — no promotion.
+        text = "| Rates | | |\n|---|---|---|\n| A | 0.9 | 0.8 |\n| B | 0.7 | 0.6 |"
+        parsed = parse_table(14, text)
+        assert parsed is not None
+        assert parsed.header_rows == 1
+        assert len(parsed.rows) == 2
+
+    def test_text_label_row_over_text_body_stays_data(self) -> None:
+        # subset-5b: a text row under a spanning title is a label row
+        # only when the body holds numbers — ``| Pt | fcc | top |``
+        # over a text body is a data row.
+        text = (
+            "| Summary | | | |\n|---|---|---|---|\n"
+            "| Pt | fcc | top | hcp |\n"
+            "| Pd | bridge | hollow | atop |"
+        )
+        parsed = parse_table(15, text)
+        assert parsed is not None
+        assert parsed.header_rows == 1
+        assert len(parsed.rows) == 2
+
+    def test_integer_row_over_text_body_stays_data(self) -> None:
+        # ``| Pt | 1 | 2 | 3 |`` reads as an index enumeration, but a
+        # text body below means the run is data, not column labels.
+        text = (
+            "| Summary | | | |\n|---|---|---|---|\n"
+            "| Pt | 1 | 2 | 3 |\n"
+            "| Pd | a | b | c |"
+        )
+        parsed = parse_table(16, text)
+        assert parsed is not None
+        assert parsed.header_rows == 1
+        assert len(parsed.rows) == 2
+
+    def test_text_label_row_over_numeric_body_promotes(self) -> None:
+        # The type difference is the label-row evidence: non-numeric
+        # cells over a numeric body join the header.
+        text = (
+            "| Energies | | |\n|---|---|---|\n"
+            "| Site | E_fcc | E_top |\n"
+            "| Pt | -0.9 | -0.5 |"
+        )
+        parsed = parse_table(17, text)
+        assert parsed is not None
+        assert parsed.header_rows == 2
+        assert parsed.columns[1].header == "E_fcc"
+        assert len(parsed.rows) == 1
+
+    def test_text_row_over_numeric_label_column_stays_data(self) -> None:
+        # subset-5c: a numeric LABEL column below — an index or
+        # temperature axis — is not the type difference that promotes
+        # a text row; a value column must differ.
+        text = (
+            "| Energies | | |\n|---|---|---|\n"
+            "| Pt | fcc | top |\n"
+            "| 300 | atop | hollow |\n"
+            "| 400 | bridge | fcc |"
+        )
+        parsed = parse_table(18, text)
+        assert parsed is not None
+        assert parsed.header_rows == 1
+        assert parsed.rows[0][0].text == "Pt"
+        assert len(parsed.rows) == 3
+
+    def test_printed_unit_ignores_panel_letters(self) -> None:
+        # subset-5b/5c: parenthesised lowercase a–h in prose are panel
+        # labels, not units — "(b)" is not a barn; "in a" is the
+        # article, not a year. Other letters still read.
+        assert printed_unit("Energies in a periodic cell") is None
+        assert printed_unit("values (b)") is None
+        assert printed_unit("(b) adsorption energies") is None
+        assert printed_unit("time in s") == "s"
+        assert printed_unit("temperature (K)") == "K"
+        assert printed_unit("rates (V)") == "V"
+
     def test_crlf_offsets_exact(self) -> None:
         # ``\r\n`` breaks keep their ``\r`` inside the split("\n")
         # line; every anchor must still slice verbatim.
@@ -213,6 +319,18 @@ class TestHeaderUnit:
             ("Saturation coverage $\\theta_{\\rm sat}$ (ML)", "ML"),
             ("pre-exponential, $\\log \\nu$ (s <sup>-1</sup> )", "s^-1"),
             ("desorption energy [kJ/mol]", "kJ/mol"),
+            ("Overpotential (V)", "V"),
+            ("E (J)", "J"),
+            ("mass (g)", "g"),
+            ("time (h)", "h"),
+            ("rate (s)", "s"),
+            ("length (m)", "m"),
+            # subset-5d: a lowercase footnote letter a–f is a marker
+            # even in a header — never a year, barn or day.
+            ("E_ads (b)", None),
+            ("sample (a)", None),
+            ("rate (d)", None),
+            ("count (f)", None),
             ("Saturation sticking $s_{\\rm rev}$", None),
             ("expt", None),
             ("Wichtendahl et al. <sup>56</sup>", None),

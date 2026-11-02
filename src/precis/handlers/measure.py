@@ -132,7 +132,7 @@ def _utc(when: datetime | None) -> str:
 class MeasureHandler(Handler):
     ARGS: ClassVar[dict[str, ArgsSpec]] = {
         "search": ArgsSpec({"paper", "serves"}),
-        "put": ArgsSpec({"papers", "dry_run"}),
+        "put": ArgsSpec({"papers", "dry_run", "detail", "page", "page_size"}),
     }
     #: ``edit(id=[...])`` repeats the same edit per id in one transaction
     #: (gr514482); the method itself keeps its scalar-id signature.
@@ -431,8 +431,11 @@ class MeasureHandler(Handler):
         live recipe rows and the rows that would now be refused are
         listed with their reasons. ``args.dry_run`` defaults to True —
         a list only; ``dry_run=False`` records a ``rejected`` ledger
-        review per refused row (the measure kind's retraction). A
-        hand-run command, never a cadence."""
+        review per refused row (the measure kind's retraction). The
+        reply defaults to a compact summary (counts by reason × paper ×
+        extraction_run, refused ids as ranges); ``args.detail=True``
+        pages the per-row listing via ``args.page``/``args.page_size``.
+        A hand-run command, never a cadence."""
         if mode == "recheck":
             extras = args or {}
             if (
@@ -464,10 +467,30 @@ class MeasureHandler(Handler):
                 dry_run = dry_run.strip().lower() != "false"
             elif not isinstance(dry_run, bool):
                 dry_run = True
+            detail = extras.get("detail", False)
+            if isinstance(detail, str):
+                detail = detail.strip().lower() in {"true", "1", "yes"}
+            elif not isinstance(detail, bool):
+                detail = False
+
+            def _page_arg(raw: Any, default: int) -> int:
+                if isinstance(raw, bool):
+                    return default
+                try:
+                    v = int(str(raw).strip())
+                except (TypeError, ValueError):
+                    return default
+                return v if v > 0 else default
+
             result = _recheck.measure_recheck(
                 self.store, list(raw_papers), dry_run=bool(dry_run)
             )
-            lines = _recheck.recheck_lines(result)
+            lines = _recheck.recheck_lines(
+                result,
+                detail=bool(detail),
+                page=_page_arg(extras.get("page"), 1),
+                page_size=_page_arg(extras.get("page_size"), 50),
+            )
             if result["refused"] and dry_run:
                 lines.append(
                     "dry run — nothing changed; re-run with "

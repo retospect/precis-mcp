@@ -1043,6 +1043,42 @@ class TestRuns:
         )
         assert _row(store, run.output_id)["value_num"] == pytest.approx(0.15)
 
+    def test_molar_bridge_stores_the_canonical_ev(
+        self, store: Store, world: dict[str, Any]
+    ) -> None:
+        # subset-5d: a recipe row the grid printed in kJ/mol carries the
+        # molar_bridge opt-in — 96.485 kJ/mol writes ~1.0 eV through
+        # insert_measure, with the printed unit kept as reported_unit.
+        run = store.insert_measure(
+            MeasureSpec(
+                world["energy"],
+                "96.485",
+                world["paper"],
+                reported_unit="kJ/mol",
+                molar_bridge=True,
+            ),
+            actor="reader",
+        )
+        r = _row(store, run.output_id)
+        assert r["value_num"] == pytest.approx(1.0, abs=1e-3)
+        assert r["reported_unit"] == "kJ/mol"
+
+    def test_per_mol_unit_without_the_opt_in_refuses(
+        self, store: Store, world: dict[str, Any]
+    ) -> None:
+        # The store's default stays strict: the same row without the
+        # opt-in is a dimension mismatch, never a silent 1/N_A write.
+        with pytest.raises(BadInput):
+            store.insert_measure(
+                MeasureSpec(
+                    world["energy"],
+                    "96.485",
+                    world["paper"],
+                    reported_unit="kJ/mol",
+                ),
+                actor="reader",
+            )
+
     def test_extraction_status_is_computed_from_the_span(
         self, store: Store, world: dict[str, Any]
     ) -> None:

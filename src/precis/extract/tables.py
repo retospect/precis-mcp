@@ -183,31 +183,101 @@ _UNIT_GROUP_RE = re.compile(r"\(([^()]*)\)|\[([^\][]*)\]")
 _DIMENSIONLESS_HINTS = frozenset({"ML", "%", "1"})
 
 
+#: A parenthesised single lowercase letter is a footnote/panel marker,
+#: never a unit — ``(a)``/``(b)``/``(d)`` are not years, barns or days.
+#: The footnote set is ``a``–``f`` everywhere — header, caption, notes
+#: (gr506762 subset-5d); in prose it also covers ``g`` and ``h``
+#: (subset-5c). The remaining single letters still read as units in a
+#: COLUMN HEADER: uppercase ``(V)`` volts, ``(J)`` joules, ``(A)``
+#: amperes … and lowercase ``(g)`` grams, ``(h)`` hours, ``(s)``
+#: seconds, ``(m)`` metres.
+_PANEL_LETTERS = frozenset("abcdefgh")
+_HEADER_PANEL_LETTERS = frozenset("abcdef")
+
+
+def _group_unit(text: str, *, panel_letters: frozenset[str]) -> str | None:
+    """The unit the last parenthesised or bracketed group of ``text``
+    names, markup-folded — the shared scan of :func:`header_unit`
+    (``panel_letters=_HEADER_PANEL_LETTERS``: ``(a)``–``(f)`` are
+    footnote markers, every other single letter is a real unit) and
+    :func:`printed_unit` (``panel_letters=_PANEL_LETTERS``: ``(a)``–``(h)``
+    in prose are panel labels)."""
+    for m in reversed(list(_UNIT_GROUP_RE.finditer(text))):
+        raw = m.group(1) if m.group(1) is not None else (m.group(2) or "")
+        candidate = markup_unit(raw).strip()
+        # ``s <sup>-1</sup>`` folds to ``s ^-1`` — the space before a
+        # caret exponent is markup spill, not a second unit token.
+        candidate = re.sub(r"\s+\^(?=-?\d)", "^", candidate)
+        if not candidate or (len(candidate) == 1 and candidate in panel_letters):
+            continue
+        if candidate in _DIMENSIONLESS_HINTS:
+            return candidate
+        try:
+            _parse_unit(candidate, what="header")
+        except BadInput:
+            return None
+        return candidate
+    return None
+
+
 def header_unit(header: str) -> str | None:
     """The unit a column header names in its last parenthesised or
     bracketed group, markup-folded (``(s <sup>-1</sup> )`` → ``s^-1``,
     ``[kJ/mol]`` → ``kJ/mol``). Kept only when pint parses it as a unit
     or it is one of the dimensionless labels ``ML``/``%``/``1`` — a
     display hint for the recipe and the renderer, never a stored unit
-    on its own."""
-    matches = list(_UNIT_GROUP_RE.finditer(header))
-    if not matches:
+    on its own. A single-letter group is the unit the header prints —
+    ``Overpotential (V)`` reads ``V`` (subset-5c) — except the
+    lowercase footnote letters ``(a)``–``(f)``, which are panel/footnote
+    markers even in a header (``E_ads (b)`` prints no unit, subset-5d)."""
+    return _group_unit(header, panel_letters=_HEADER_PANEL_LETTERS)
+
+
+#: An explicit unit phrasing in prose — ``in eV``, ``units of kJ/mol``,
+#: ``unit: s^-1`` — the way a caption or a footnote line names the
+#: table's unit without a parenthesised group (gr506762 subset-5).
+_UNIT_PHRASE_RE = re.compile(
+    r"(?:\bunits?\s*(?:of|in|[:=])|\bin)\s+([^\s.,;:()\[\]]+)", re.IGNORECASE
+)
+
+
+def _unit_phrase_article(match: re.Match[str], text: str) -> bool:
+    """The captured token is the article of an ``in a <word>`` /
+    ``in an <word>`` phrase — ``"Energies in a periodic cell"`` is not
+    a year (gr506762 subset-5c). Any other single letter after ``in``
+    still reads as a unit (``rates in s``)."""
+    if match.group(1).strip() not in ("a", "an"):
+        return False
+    prefix = match.group(0)[: match.start(1) - match.start(0)]
+    return bool(
+        re.search(r"\bin\s*$", prefix, re.IGNORECASE)
+        and re.search(r"\S", text[match.end() :])
+    )
+
+
+def printed_unit(text: str | None) -> str | None:
+    """The first unit a caption or notes line prints: the last
+    parenthesised/bracketed group — a single lowercase ``a``–``h``
+    there is a panel label, not a unit — else a token after an explicit
+    ``in``/``units of``/``unit:`` phrasing that pint reads as a unit
+    (or a dimensionless hint), the article ``in a``/``in an`` aside.
+    ``None`` when the text names no unit — detection, never trust."""
+    if not text:
         return None
-    m = matches[-1]
-    raw = m.group(1) if m.group(1) is not None else (m.group(2) or "")
-    candidate = markup_unit(raw).strip()
-    # ``s <sup>-1</sup>`` folds to ``s ^-1`` — the space before a caret
-    # exponent is markup spill, not a second unit token.
-    candidate = re.sub(r"\s+\^(?=-?\d)", "^", candidate)
-    if not candidate:
-        return None
-    if candidate in _DIMENSIONLESS_HINTS:
+    if (u := _group_unit(text, panel_letters=_PANEL_LETTERS)) is not None:
+        return u
+    for m in _UNIT_PHRASE_RE.finditer(text):
+        candidate = markup_unit(m.group(1)).strip()
+        if not candidate or _unit_phrase_article(m, text):
+            continue
+        if candidate in _DIMENSIONLESS_HINTS:
+            return candidate
+        try:
+            _parse_unit(candidate, what="caption")
+        except BadInput:
+            continue
         return candidate
-    try:
-        _parse_unit(candidate, what="header")
-    except BadInput:
-        return None
-    return candidate
+    return None
 
 
 #: A caption line opens ``Table <n>`` followed by a delimiter — ``.``
@@ -419,6 +489,78 @@ def _numeric_cell(text: str) -> bool:
     return parse_literal(strip_footnote(text)[0]).form != "categorical"
 
 
+def _int_point(value_text: str) -> int | None:
+    """The cell as a plain integer point reading, else ``None`` — a
+    bound, interval, ``±`` or non-integer is real data, not an index."""
+    lit = parse_literal(value_text)
+    if lit.form != "point" or lit.err is not None or lit.num is None:
+        return None
+    return int(lit.num) if lit.num.is_integer() else None
+
+
+def _enumeration_run(nums: list[int]) -> bool:
+    """``nums`` is a consecutive integer run starting at 0 or 1 — the
+    shape of a printed index/enumeration axis (``m = 0..12``, a row
+    counter), never a measured quantity."""
+    return (
+        len(nums) >= 2
+        and nums[0] in (0, 1)
+        and nums == list(range(nums[0], nums[0] + len(nums)))
+    )
+
+
+def _spanning_line(cells: list[tuple[str, int, int]]) -> bool:
+    """A caption-like spanning line: exactly one non-empty cell — the
+    title row over a stacked header, never the column-label row."""
+    return sum(1 for text, _s, _e in cells if text.strip()) == 1
+
+
+def _body_numeric_in(
+    cols: set[int], body: list[list[tuple[str, int, int]]], *, label: int = 0
+) -> bool:
+    """A row below the candidate holds a number in one of ``cols`` —
+    the body differs in type from the candidate there, so the
+    candidate can be its label row. Column ``label`` is the row's own
+    label axis and never counts: a numeric label column below (an
+    index or temperature axis) is not the type difference that makes
+    a text row a column-label row (gr506762 subset-5c)."""
+    return any(
+        j in cols and j != label and text.strip() and _numeric_cell(text)
+        for row in body
+        for j, (text, _s, _e) in enumerate(row)
+    )
+
+
+def _column_label_row(
+    cells: list[tuple[str, int, int]],
+    body: list[list[tuple[str, int, int]]],
+) -> bool:
+    """The row under a spanning title reads as column labels, not
+    readings: the cells after its own label are an integer ``0../1..``
+    enumeration — a printed ``m = 0..12`` index axis is a header row,
+    never a value row — or its cells are non-numeric where the body
+    rows below hold numbers in the same columns (gr506762 subset-5).
+    A body that is text like the candidate makes it a data row —
+    ``| Pt | fcc | top |`` over a text body, or ``| Pt | 1 | 2 | 3 |``
+    whose integer run is data — never a label row (subset-5b)."""
+    nonempty = [(j, t.strip()) for j, (t, _s, _e) in enumerate(cells) if t.strip()]
+    if not nonempty:
+        return False
+    if not _body_numeric_in({j for j, _t in nonempty}, body):
+        return False
+    if all(not _numeric_cell(t) for _j, t in nonempty):
+        return True
+    nums: list[int] = []
+    for t, _s, _e in cells[1:]:
+        if not t.strip():
+            continue
+        v = _int_point(t)
+        if v is None:
+            return False
+        nums.append(v)
+    return _enumeration_run(nums)
+
+
 def parse_table(
     chunk_id: int, text: str, *, header: Sequence[str] | None = None
 ) -> ParsedTable | None:
@@ -470,23 +612,52 @@ def parse_table(
             None,
         )
         if sep_idx is not None:
-            header_rows = min(sep_idx, 2)
+            header_idx = list(range(min(sep_idx, 2)))
         else:
-            header_rows = 1
+            header_idx = [0]
             r0 = _row_cells(pipe_rows[0][2], pipe_rows[0][0])
             r1 = _row_cells(pipe_rows[1][2], pipe_rows[1][0])
-            if any(not cell for cell, _s, _e in r0) and not any(
-                _numeric_cell(cell) for cell, _s, _e in r1
+            if (
+                any(not cell for cell, _s, _e in r0)
+                and not any(_numeric_cell(cell) for cell, _s, _e in r1)
+                and _body_numeric_in(
+                    {j for j, (t, _s, _e) in enumerate(r1) if t.strip()},
+                    [_row_cells(ln, s) for s, _e, ln in pipe_rows[2:]],
+                )
             ):
-                header_rows = 2
+                header_idx = [0, 1]
+        # A caption-like spanning line as the only detected header row
+        # is a title, not the column labels — the row it spans is the
+        # real label row and joins the header (gr506762 subset-5:
+        # pa452964's "Sticking probabilities" line over the ``m = 0..12``
+        # axis; the index row then never reaches the data region and the
+        # value columns keep their printed labels). The label row may
+        # sit under the separator (Marker prints the visual title as
+        # THE header line) or directly under the title line.
+        next_idx = header_idx[-1] + 1 if header_idx else -1
+        if sep_idx is not None and next_idx == sep_idx:
+            next_idx += 1
+        if (
+            header_idx
+            and 0 <= next_idx < len(pipe_rows) - 1
+            and _spanning_line(
+                _row_cells(pipe_rows[header_idx[-1]][2], pipe_rows[header_idx[-1]][0])
+            )
+            and _column_label_row(
+                _row_cells(pipe_rows[next_idx][2], pipe_rows[next_idx][0]),
+                [_row_cells(ln, s) for s, _e, ln in pipe_rows[next_idx + 1 :]],
+            )
+        ):
+            header_idx.append(next_idx)
 
-        raw_header = [ln for _s, _e, ln in pipe_rows[:header_rows]]
+        header_rows = len(header_idx)
+        raw_header = [pipe_rows[i][2] for i in header_idx]
         header_lines = [
-            _row_cells(pipe_rows[i][2], pipe_rows[i][0]) for i in range(header_rows)
+            _row_cells(pipe_rows[i][2], pipe_rows[i][0]) for i in header_idx
         ]
-        if header_rows:
-            header_span = (pipe_rows[0][0], pipe_rows[header_rows - 1][1])
-        data_rows = pipe_rows[header_rows:]
+        if header_idx:
+            header_span = (pipe_rows[0][0], pipe_rows[header_idx[-1]][1])
+        data_rows = pipe_rows[header_idx[-1] + 1 :] if header_idx else pipe_rows
     ncols = len(header_lines[0]) if header_lines else 0
 
     columns: list[Column] = []

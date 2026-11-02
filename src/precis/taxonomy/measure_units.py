@@ -11,6 +11,11 @@ superscripts, ``·``/``⋅``, ``−``, a caret before a bare exponent) and then
   separately, to be stored as the measure's ``normalization``;
 * a **mass <-> amount bridge** through a molar mass, for yield rates printed
   as ``µg h⁻¹ cm⁻²`` against a ``mol s⁻¹ m⁻²`` measurand;
+* an **energy-per-amount <-> per-particle bridge** through Avogadro's
+  number (``kJ/mol`` -> ``eV``), but only on the explicit
+  ``molar_bridge=True`` opt-in and only for ``<energy>/mol`` against an
+  ``eV``/``meV`` canonical — every other caller keeps the strict
+  dimension match;
 * a refusal naming both units when no dimension match exists.
 
 **Store SI, convert at the edges.** The display half (:func:`display_numbers`,
@@ -298,6 +303,20 @@ class NeedsMolarMass(Exception):
         self.direction = direction
 
 
+#: Avogadro's number — the per-amount <-> per-particle bridge for
+#: energy units (``kJ/mol`` <-> ``eV``), a universal constant, never a
+#: molar mass.
+_AVOGADRO: Final[float] = 6.02214076e23
+
+#: Canonical units the Avogadro bridge may write to — per-particle
+#: energies. The taxonomy marks no unit as per-particle, so the
+#: ``molar_bridge`` opt-in accepts only these two spellings
+#: (gr506762 subset-5d); a bare ``kJ``/``J`` canonical is a molar
+#: quantity's unit nowhere near this table convention and stays
+#: refused.
+_PER_PARTICLE_CANONICALS: Final[frozenset[str]] = frozenset({"ev", "mev"})
+
+
 @dataclass(frozen=True, slots=True)
 class Conversion:
     """A reported-unit -> canonical-unit converter. ``value`` maps a number;
@@ -362,13 +381,22 @@ def make_converter(
     *,
     molar_mass_g_mol: float | None = None,
     delta: bool = False,
+    molar_bridge: bool = False,
 ) -> Conversion:
     """Build the converter, or raise :class:`BadInput` naming both units when
     their dimensions do not match (and no molar-mass bridge applies), or
     :class:`NeedsMolarMass` when a bridge applies but none was given.
 
     ``delta`` marks a difference measurand (``meta.difference``): affine
-    reported units (°C, °F) convert as deltas, not absolute temperatures."""
+    reported units (°C, °F) convert as deltas, not absolute temperatures.
+
+    ``molar_bridge`` is the table-extraction opt-in (gr506762 subset-5d):
+    it admits ONE extra conversion — a reported unit that is exactly
+    ``<energy>/mol`` (``kJ/mol``, ``kcal/mol``, ``J/mol``, nothing else in
+    the unit) against an ``eV``/``meV`` canonical — through Avogadro's
+    number. Everything else keeps the strict dimension match, so
+    ``kJ/mol`` against a total-energy ``kJ`` canonical and
+    ``J/(mol K)`` against ``J/K`` still refuse."""
     ureg = _registry()
     src_text, label, gas = _pint_unit_ex(reported_unit)
     dst_text, _, _ = _pint_unit_ex(canonical_unit)
@@ -401,6 +429,7 @@ def make_converter(
     if src.dimensionality != dst.dimensionality:
         ratio = src.dimensionality / dst.dimensionality
         mass_per_amount = ureg.get_dimensionality("[mass]/[substance]")
+        energy_per_amount = ureg.get_dimensionality("[energy]/[substance]")
         # The ratio test alone would accept ``h⁻¹`` for a per-mass yield rate
         # (mass cancels against a basis mass), so the reported unit must name
         # the quantity being bridged: a mass unit for mass -> amount, a mole
@@ -409,6 +438,20 @@ def make_converter(
             bridge = "mass_to_amount"
         elif ratio == 1 / mass_per_amount and _names_dimension(src_text, "[substance]"):
             bridge = "amount_to_mass"
+        elif (
+            molar_bridge
+            and src.dimensionality == energy_per_amount
+            and dst_text.casefold() in _PER_PARTICLE_CANONICALS
+        ):
+            # kJ/mol -> eV: an energy per amount is the same energy per
+            # particle through Avogadro's number — the standard
+            # catalysis pair (96.485 kJ/mol = 1 eV), a constant, never
+            # a molar mass (gr506762 subset-5c). Opt-in only, and only
+            # for a reported unit that IS energy-per-amount against an
+            # eV/meV canonical — an energy-per-X against a bare energy
+            # (150 kJ/mol under kJ, J/(mol K) under J/K) refuses
+            # (subset-5d).
+            bridge = "per_amount"
         else:
             raise BadInput(
                 f"unit {reported_unit!r} has no dimension match with the "
@@ -416,7 +459,7 @@ def make_converter(
                 next="correct the unit, or file the number under a measurand "
                 "whose canonical unit has that dimension",
             )
-    if bridge is not None and molar_mass_g_mol is None:
+    if bridge in ("mass_to_amount", "amount_to_mass") and molar_mass_g_mol is None:
         raise NeedsMolarMass(bridge)
 
     def conv(v: float) -> float:
@@ -425,6 +468,8 @@ def make_converter(
             q = q / ureg.Quantity(molar_mass_g_mol, "g/mol")
         elif bridge == "amount_to_mass":
             q = q * ureg.Quantity(molar_mass_g_mol, "g/mol")
+        elif bridge == "per_amount":
+            q = q / ureg.Quantity(_AVOGADRO, "mol^-1")
         return float(q.to(dst).magnitude)
 
     return Conversion(value=conv, scale=conv(1.0) - conv(0.0), label=label, gas=gas)

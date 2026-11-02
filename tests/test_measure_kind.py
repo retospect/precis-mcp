@@ -25,6 +25,7 @@ from precis.store._measures_ops import (
     row_interval,
 )
 from precis.taxonomy.measure_units import (
+    NeedsMolarMass,
     display_numbers,
     format_value,
     make_converter,
@@ -102,6 +103,37 @@ class TestDisplay:
         assert to_canonical(1, "eV", "J") == pytest.approx(1.602176634e-19)
         with pytest.raises(BadInput, match="no canonical unit"):
             to_canonical(1, "m", None)
+
+
+class TestMolarBridge:
+    """gr506762 subset-5d: the Avogadro bridge is the ``molar_bridge``
+    opt-in, never ``make_converter``'s default — and even then only an
+    exact ``<energy>/mol`` reported unit against an ``eV``/``meV``
+    canonical."""
+
+    def test_kj_per_mol_to_ev_needs_the_opt_in(self) -> None:
+        with pytest.raises(BadInput):
+            make_converter("kJ/mol", "eV")
+        conv = make_converter("kJ/mol", "eV", molar_bridge=True)
+        assert conv.value(96.485) == pytest.approx(1.0, abs=1e-3)
+        conv = make_converter("kcal/mol", "eV", molar_bridge=True)
+        assert conv.value(1.0) == pytest.approx(0.04336, rel=1e-3)
+
+    def test_mol_per_energy_canonical_still_refuses(self) -> None:
+        # kJ/mol under a total-energy kJ canonical is not the
+        # per-particle pair — refused even with the opt-in.
+        with pytest.raises(BadInput):
+            make_converter("kJ/mol", "kJ", molar_bridge=True)
+
+    def test_energy_per_mol_per_kelvin_still_refuses(self) -> None:
+        # J/(mol K) is energy per amount per temperature — outside the
+        # bridge's exact energy/mol shape, even under J/K.
+        with pytest.raises(BadInput):
+            make_converter("J/(mol K)", "J/K", molar_bridge=True)
+
+    def test_mass_amount_bridge_still_needs_a_molar_mass(self) -> None:
+        with pytest.raises(NeedsMolarMass):
+            make_converter("mg", "mol")
 
 
 class TestDisplayUnitKey:

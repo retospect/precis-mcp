@@ -35,12 +35,13 @@ The same rule covers log scales (gr506762 slice-4: mx1410/mx1424 stored
 ``lg`` (base 10 — bare ``log`` is the kinetics convention) or
 ``ln``/``log_e`` stores ``base**cell``; a label naming another base, or a
 declared ``transform`` that disagrees with the label, drops
-(``log_base_unclear``) rather than guessing. A header-only unit the text
-never prints (the ``unit_without_text_support`` case) in one of the
-units small models pin on unrelated columns — ``eV``, ``%``, ``s^-1`` —
-drops (``unit_header_mismatch``) when the label does not name the
-measurand either (mx1609 eV on fluence exponents, mx1455 % site
-fraction as coverage); any other unsupported unit stays a flag.
+(``log_base_unclear``) rather than guessing. A claimed unit the table
+never prints stays a flag — ``unit_unconfirmed`` when no unit appears
+anywhere (the unit often lives only in the body text), else
+``unit_without_text_support``; ``unit_header_mismatch`` refuses only on
+a printed contradiction — a header, caption or notes unit the claim
+can't convert to (subset-5: a unitless ``E_b`` column takes its eV
+from the caption or a table note).
 
 Subset-2 review (gr506762, jo550561) added three more deterministic
 refusals on the same "the grid itself is evidence" footing:
@@ -117,6 +118,84 @@ cells mx1505/mx1721/mx1727) extends the same footing:
   names the divergence (``anchor_cell_mismatch``). The same guards
   re-run on stored rows through :func:`stored_row_reasons`, the
   ``put(kind='measure', mode='recheck')`` dry-run's engine.
+
+Subset-5 review (gr506762 round 5 — a prod dry run showed the same
+guards dropping valid rows, 360 of 576 sampled rows refused, mostly
+false positives):
+
+* a caption-like spanning line as the only detected header row is a
+  title, not the column labels — ``parse_table`` pulls the
+  column-label row it spans (the ``m = 0..12`` axis) into the header
+  for the span check and the review context alike; the index row
+  never reaches the data region while ``index_enumeration`` still
+  guards a printed index sitting in it (pa452964);
+* ``anchor_cell_mismatch`` also compares the located cell's
+  coordinates against a partial ``row``/``col`` claim (the mx1505
+  literal one column off silently passed) and flags an anchor landing
+  in the header region;
+* the ``Δ``/``δ`` correction exemption covers the barrier symbols
+  ``ΔE‡``/``ΔG‡``/``ΔH‡``/``ΔS‡``/``ΔE_a`` (``Ea``) alongside
+  ``ΔE_ads``/``ΔH_ads`` — a barrier column is a reading, not a
+  correction row (pa4750's ΔE‡ column, mx1821-1845).
+
+Subset-5b review (gr506762 — review of the subset-5 commit):
+
+* a stored value whose anchor lands in the header region — an index
+  row a stacked-header parse pulled up — refuses as
+  ``value_in_header_row``: a deterministic verdict, not parser drift
+  (mx2049/mx2051-2061 sat in the recheck's review-only bucket instead
+  of refused);
+* the recheck's ``printed_unit`` caption sniffing ignores
+  single-letter tokens — ``in a`` is not a year, ``(b)`` is not a
+  barn — except ``K`` and ``s``;
+* a printed unit the claim can't spell but that converts is taken as
+  the row's unit and converted to canonical at write — the subset-3
+  r2 auto-match rule extended to claims — refusing
+  ``unit_needs_molar_mass`` when the conversion needs a molar mass;
+* ``anchor_cell_mismatch`` also runs at extraction — a model-claimed
+  condition literal sitting in a different cell than the claimed
+  ``r:c`` is the mx1505 off-by-one, deterministic on the same grid.
+
+Subset-5c review (gr506762 — review of the subset-5b commit) narrowed
+the unit rules back out and closed two more silent wrongs:
+
+* a single-letter unit in a COLUMN HEADER is always read —
+  ``Overpotential (V)`` prints volts (the 5b filter had left an mV
+  claim ``unit_unconfirmed`` and stored it 1000x off). In prose the
+  rule holds only against the real noise: a parenthesised lowercase
+  ``a``–``h`` is a panel label and an ``in a``/``in an <word>``
+  phrase is the article, while ``rates in s`` and ``(V)`` still read;
+* ``kJ/mol``/``kcal/mol`` against an energy claim converts through
+  Avogadro's number (96.485 kJ/mol = 1 eV) inside
+  :func:`precis.taxonomy.measure_units.make_converter` — the
+  per-amount bridge is a constant, so ``mg``↔``mol`` stays the only
+  ``unit_needs_molar_mass`` case, and then only when the column's own
+  header prints it;
+* a caption/notes unit is taken for a column only when its dimension
+  is compatible with the claimed measurand — a unit naming a
+  different column's quantity leaves the claim flagged, as before
+  5b.
+
+Subset-5d review (gr506762 — review of the subset-5c commit) narrowed
+all three again:
+
+* the Avogadro bridge left ``make_converter``'s default — it fired for
+  ANY energy-per-X against ANY energy unit (``150 kJ/mol`` under a
+  total-energy ``kJ`` canonical stored 1/N_A off, ``J/(mol K)`` under
+  ``J/K`` likewise). It now fires only on the ``molar_bridge`` opt-in,
+  only for a unit that IS energy-per-amount against an ``eV``/``meV``
+  canonical; the store stays strict, and each spec that needs the
+  bridge carries the opt-in as ``MeasureSpec.molar_bridge``
+  (:func:`_needs_molar_bridge`);
+* a parenthesised lowercase ``a``–``f`` is a footnote marker even in a
+  column header — ``E_ads (b)`` prints no unit — while ``(V)``,
+  ``(g)``, ``(h)``, ``(s)``, ``(m)`` and the uppercase letters stay
+  header units;
+* the column's own header unit is the strongest evidence and is TAKEN
+  over a differing claim — ``Overpotential (V)`` under an mV claim
+  stores 0.523 V; a caption/notes unit is taken second, and only a
+  header unit needing a molar mass still refuses
+  ``unit_needs_molar_mass``.
 """
 
 from __future__ import annotations
@@ -138,7 +217,15 @@ from precis.extract.proposals import (
     _tier,
     resolve_measurand,
 )
-from precis.extract.tables import ParsedTable, has_citation_marker, header_unit
+from precis.extract.tables import (
+    _DIMENSIONLESS_HINTS,
+    ParsedTable,
+    _enumeration_run,
+    _int_point,
+    has_citation_marker,
+    header_unit,
+    printed_unit,
+)
 from precis.store._measures_ops import MeasureAnchor, MeasureSpec
 from precis.taxonomy.measure_units import NeedsMolarMass, make_converter, parse_literal
 from precis.taxonomy.money import split_currency
@@ -691,11 +778,15 @@ def _count_label(label: str) -> str | None:
 #: ``errors`` stay out. The symbols are narrower than the words
 #: (subset-3 r2): ``Δ``/``δ`` names a correction term — ``ΔZPE``,
 #: ``Δ(CCSD-PBE)`` — but ``ΔE_ads``/``ΔH_ads``/``ΔG_ads``/``ΔS_ads``
-#: (folded: ``ΔEads`` …) is the measurand's own symbol, and ``zpe``
+#: (folded: ``ΔEads`` …) is the measurand's own symbol, the barrier
+#: symbols ``ΔE‡``/``ΔG‡``/``ΔH‡``/``ΔS‡``/``ΔE_a`` (folded: ``ΔE‡``
+#: …, ``ΔEa``) are genuine barriers not corrections (subset-5,
+#: pa4750's ΔE‡ column read as a delta row), and ``zpe``
 #: counts only as the term itself — a ``ZPE-corrected`` or
 #: ``corrected for ZPE`` energy IS the corrected measurand.
 _CORRECTION_RE = re.compile(
-    r"[Δδ](?!\s*[EGHS]\s*(?:ads|des)(?:orption)?\b)"
+    r"[Δδ](?!\s*(?:[EGHS]\s*(?:ads|des)(?:orption)?\b"
+    r"|[EGHS]\s*‡|Ea(?![A-Za-z])))"
     r"|(?<![A-Za-z0-9])(?:correction|delta|difference|diff|error)"
     r"(?![A-Za-z0-9])"
     r"|(?<![A-Za-z0-9])(?<!corrected )(?<!corrected for )zpe"
@@ -768,33 +859,17 @@ def _label_quantity(label: str) -> str | None:
     return _count_label(label)
 
 
-def _int_point(value_text: str) -> int | None:
-    """The cell as a plain integer point reading, else ``None`` — a
-    bound, interval, ``±`` or non-integer is real data, not an index."""
-    lit = parse_literal(value_text)
-    if lit.form != "point" or lit.err is not None or lit.num is None:
-        return None
-    return int(lit.num) if lit.num.is_integer() else None
-
-
-def _enumeration_run(nums: list[int]) -> bool:
-    """``nums`` is a consecutive integer run starting at 0 or 1 — the
-    shape of a printed index/enumeration axis (``m = 0..12``, a row
-    counter), never a measured quantity."""
-    return (
-        len(nums) >= 2
-        and nums[0] in (0, 1)
-        and nums == list(range(nums[0], nums[0] + len(nums)))
-    )
-
-
 def _unit_mismatch(unit: str, entry: VocabEntry) -> str | None:
     """``None`` when ``unit`` converts to the measurand's canonical unit
     (or is a currency token — the S1 currency path inside
     ``insert_measure`` owns those); else the
     ``unit_dimension_mismatch`` detail naming both units. A
     ``NeedsMolarMass`` bridge is not a mismatch — the store's own
-    ``no_molar_mass`` escalation handles it at write."""
+    ``no_molar_mass`` escalation handles it at write. The table path
+    opts in to the Avogadro bridge (``molar_bridge=True``): a
+    ``kJ/mol`` unit against an ``eV``/``meV`` canonical converts at
+    write, while ``kJ/mol`` against ``kJ`` or ``J/(mol K)`` against
+    ``J/K`` still refuses (subset-5d)."""
     canonical = entry.canonical_unit
     if not canonical:
         return (
@@ -814,11 +889,93 @@ def _unit_mismatch(unit: str, entry: VocabEntry) -> str | None:
     except BadInput as exc:
         return str(exc)
     try:
-        make_converter(unit, canonical)
+        make_converter(unit, canonical, molar_bridge=True)
     except NeedsMolarMass:
         return None
     except BadInput as exc:
         return str(exc)
+    return None
+
+
+def _needs_molar_bridge(unit: str | None, canonical: str | None) -> bool:
+    """``unit`` reaches ``canonical`` only through the Avogadro bridge
+    (an ``<energy>/mol`` unit against an ``eV``/``meV`` canonical) —
+    the spec's ``molar_bridge`` opt-in the store's strict
+    ``make_converter`` needs to write the row (subset-5d)."""
+    if not unit or not canonical:
+        return False
+    try:
+        make_converter(unit, canonical)
+    except NeedsMolarMass:
+        return False
+    except BadInput:
+        pass
+    else:
+        return False
+    try:
+        make_converter(unit, canonical, molar_bridge=True)
+    except (BadInput, NeedsMolarMass):
+        return False
+    return True
+
+
+def _notes_text(chunk_text: str | None) -> str:
+    """The chunk's non-pipe text — the leading title and the trailing
+    footnote/notes lines where a unit the header doesn't print still
+    shows up (gr506762 subset-5: pa255303's E_b column takes its eV
+    from a table note)."""
+    if not chunk_text:
+        return ""
+    return " ".join(
+        ln.strip() for ln in chunk_text.split("\n") if not ln.lstrip().startswith("|")
+    )
+
+
+def _unit_conflicts(printed: str, claimed: str) -> bool:
+    """A unit the table prints contradicts the claimed unit — different
+    dimensions (``(K)`` under an ``eV`` claim). A convertible spelling
+    (``J`` vs ``eV``) is not a contradiction — nor is ``kJ/mol`` against
+    an ``eV`` claim (the table path's ``molar_bridge`` opt-in,
+    subset-5d) — and a dimensionless hint (``ML``/``%``) agrees with a
+    dimensionless claim."""
+    if printed == claimed:
+        return False
+    try:
+        make_converter(printed, claimed, molar_bridge=True)
+    except NeedsMolarMass:
+        return False
+    except BadInput:
+        pass
+    else:
+        return False
+    if printed in _DIMENSIONLESS_HINTS:
+        try:
+            make_converter(claimed, "1")
+        except (BadInput, NeedsMolarMass):
+            return True
+        return False
+    return True
+
+
+def _conflicting_unit(claimed: str, label: str | None, *pieces: str) -> str | None:
+    """The first printed unit contradicting ``claimed`` — checked per
+    evidence piece so a line that itself spells the claimed unit can't
+    conflict. ``label`` is the series's own axis label and reads under
+    header rules (:func:`header_unit` — a header's single letter is a
+    unit, ``(V)`` volts, except the ``(a)``–``(f)`` footnote markers);
+    ``pieces`` are the caption and table notes, prose
+    (:func:`printed_unit` — ``(b)`` is a panel label)."""
+    candidates: list[tuple[str, str]] = []
+    if label and (u := header_unit(label)) is not None:
+        candidates.append((u, label))
+    for piece in pieces:
+        if piece and (u := printed_unit(piece)) is not None:
+            candidates.append((u, piece))
+    for printed, piece in candidates:
+        if _unit_conflicts(printed, claimed) and not _verify.unit_has_text_support(
+            claimed, piece
+        ):
+            return printed
     return None
 
 
@@ -941,6 +1098,26 @@ def _literal_cell(
     return hit
 
 
+def _span_offsets(span: Any) -> tuple[int, int] | None:
+    """The ``[chunk, start, end]`` anchor's int offsets, else ``None``."""
+    if not isinstance(span, (list, tuple)) or len(span) != 3:
+        return None
+    start, end = span[1], span[2]
+    if not all(isinstance(x, int) and not isinstance(x, bool) for x in (start, end)):
+        return None
+    return start, end
+
+
+def _in_header(parsed: ParsedTable, start: int, end: int) -> bool:
+    """The ``[start, end)`` anchor overlaps the chunk's header region
+    (``header_span``) — a header/index line, not a data cell."""
+    return (
+        parsed.header_span is not None
+        and start < parsed.header_span[1]
+        and end > parsed.header_span[0]
+    )
+
+
 def _label_at(parsed: ParsedTable, r: int, c: int, orientation: str) -> str:
     """The emitting axis's label for cell ``(r, c)`` — its column
     header (``columns``) or its row's label cell (``rows``)."""
@@ -971,6 +1148,21 @@ def _row_has_label(parsed: ParsedTable, r: int, label: str, skip: int) -> bool:
         if " ".join(markup_surface(cell.text).split()).casefold() == want:
             return True
     return False
+
+
+def _row_label_ok(parsed: ParsedTable, r: int, c: int, claim: str) -> bool:
+    """The claimed row label sits in row ``r`` — in a cell other than
+    ``c``, or in ``c`` itself when ``c`` is the label's own axis: a
+    condition or output anchored on the subject column carries the
+    claimed label AS its cell text, not in a sibling cell (gr506762
+    subset-5c)."""
+    if _row_has_label(parsed, r, claim, c):
+        return True
+    if not (0 <= r < len(parsed.rows) and 0 <= c < len(parsed.rows[r])):
+        return False
+    want = " ".join(markup_surface(claim).split()).casefold()
+    got = " ".join(markup_surface(parsed.rows[r][c].text).split()).casefold()
+    return bool(want) and got == want
 
 
 def _claim_coord(meta: dict[str, Any], key: str) -> int | None:
@@ -1034,11 +1226,12 @@ def anchor_cell_mismatch(
         cell = parsed.rows[claimed_r][claimed_c]
         if min(end, cell.end) - max(start, cell.start) <= 0:
             located = _literal_cell(parsed, start, end, literal, chunk_text)
-            where = (
-                f"row {located[0] + 1} col {located[1] + 1}"
-                if located is not None
-                else "outside the grid"
-            )
+            if located is not None:
+                where = f"row {located[0] + 1} col {located[1] + 1}"
+            elif _in_header(parsed, start, end):
+                where = "the header rows"
+            else:
+                where = "outside the grid"
             return (
                 f"the anchor sits in {where}, not the claimed "
                 f"row {claimed_r + 1} col {claimed_c + 1}"
@@ -1063,15 +1256,30 @@ def anchor_cell_mismatch(
                 f"claimed column header {claim_col!r} vs the grid's "
                 f"{parsed.columns[claimed_c].header!r}"
             )
-        if claim_row and not _row_has_label(
-            parsed, claimed_r, str(claim_row), claimed_c
+        if claim_row and not _row_label_ok(
+            parsed, claimed_r, claimed_c, str(claim_row)
         ):
             return f"claimed row label {claim_row!r} is not in the anchor row"
         return None
     located = _literal_cell(parsed, start, end, literal, chunk_text)
     if located is None:
+        # The anchor lands in the header region — a header/index line
+        # stored as a value stays refused (subset-5: pa452964's
+        # ``m = 0..12`` row under its promoted stacked header).
+        if _in_header(parsed, start, end):
+            return (
+                "the anchor sits in the header rows — a header/index "
+                "line, not a data cell"
+            )
         return None
     r, c = located
+    # A partial coordinate claim is still a claim: the located cell's
+    # column (or row) must agree with it — the mx1505 off-by-one, where
+    # the literal resolved one column off and silently passed (subset-5).
+    if claimed_c is not None and c != claimed_c:
+        return f"the literal sits in col {c + 1}, not the claimed col {claimed_c + 1}"
+    if claimed_r is not None and r != claimed_r:
+        return f"the literal sits in row {r + 1}, not the claimed row {claimed_r + 1}"
     if (
         claim_col
         and 0 <= c < n_cols
@@ -1084,7 +1292,7 @@ def anchor_cell_mismatch(
             f"the anchor cell sits under {parsed.columns[c].header!r}, "
             f"not the claimed {claim_col!r}"
         )
-    if claim_row and not _row_has_label(parsed, r, str(claim_row), c):
+    if claim_row and not _row_label_ok(parsed, r, c, str(claim_row)):
         return f"claimed row label {claim_row!r} is not in the anchor row"
     if not cell_ok(r, c):
         return f"literal {literal!r} is not in the anchor cell's text"
@@ -1187,6 +1395,9 @@ def expand_recipe(
     # The title the reviewer sees when no caption paired — the chunk's
     # own leading line (a table chunk opening on "Table N. …").
     cap_or_title = cap_text or _table_title(chunk_text)
+    # The chunk's footnote/notes lines (and its title when no caption
+    # paired) — where a unit the header doesn't print still shows up.
+    notes_text = _notes_text(chunk_text)
     runs: list[RunProposal] = []
     label_col = (
         norm.subject_axis
@@ -1412,6 +1623,21 @@ def expand_recipe(
             anchor = MeasureAnchor(
                 paper, chunk_id, "offsets", [chunk_id, cell.start, cell.end]
             )
+            if chunk_text is not None:
+                # The literal+``r:c`` pair is model-claimed — the one
+                # extraction shape where the claimed cell and the
+                # literal's cell can diverge (the mx1505 off-by-one).
+                # Same grid → deterministic → refuse, never flag.
+                detail = anchor_cell_mismatch(
+                    parsed,
+                    span=[chunk_id, cell.start, cell.end],
+                    literal=cond.literal,
+                    table_meta=table_meta(cr, cc, cond.condition, None),
+                    chunk_text=chunk_text,
+                )
+                if detail is not None:
+                    drops.append(_drop(loc, "anchor_cell_mismatch", detail))
+                    continue
         in_meta = base_meta()
         in_meta["condition"] = cond.condition
         in_meta["table"] = (
@@ -1425,6 +1651,7 @@ def expand_recipe(
                 literal=cond.literal,
                 subject_ref_id=paper,
                 reported_unit=cond.unit,
+                molar_bridge=_needs_molar_bridge(cond.unit, entry.canonical_unit),
                 role=cond.role,
                 direction="input",
                 source_attribution="own_work",
@@ -1512,6 +1739,7 @@ def expand_recipe(
                 literal=cell.text,
                 subject_ref_id=paper,
                 reported_unit=unit,
+                molar_bridge=_needs_molar_bridge(unit, entry.canonical_unit),
                 value_num=parsed_lit.num,
                 value_low=parsed_lit.low,
                 value_high=parsed_lit.high,
@@ -1966,23 +2194,97 @@ def expand_recipe(
                     # to support, so the flag is always spurious (gr506762
                     # slice-4: correct sticking coefficients flagged).
                     support = " ".join(
-                        t for t in (label, unit_cell or "", cap_text) if t
+                        t for t in (label, unit_cell or "", cap_text, notes_text) if t
                     )
                     if not _verify.unit_has_text_support(claimed_unit, support):
-                        if _guessed_unit(claimed_unit) and not _label_names_measurand(
-                            label, out_entry
-                        ):
+                        # subset-5: refuse only on a printed
+                        # contradiction — a header/caption/notes unit
+                        # the claim can't convert to. Nothing printed
+                        # anywhere flags ``unit_unconfirmed`` for the
+                        # reviewer instead of refusing (the unit often
+                        # lives only in the body text).
+                        printed = _conflicting_unit(
+                            claimed_unit, label, cap_text, notes_text
+                        )
+                        if printed is not None:
                             drops.append(
                                 _drop(
                                     loc_cell,
                                     "unit_header_mismatch",
-                                    f"unit {claimed_unit!r} is printed nowhere "
-                                    f"and label {label!r} does not name "
-                                    f"{out_entry.name!r}",
+                                    f"the table prints unit {printed!r} — "
+                                    f"the claimed {claimed_unit!r} conflicts",
                                 )
                             )
                             continue
-                        flags.append("unit_without_text_support")
+                        # subset-5b/5c/5d: a printed unit that differs
+                        # from the claim but converts to the measurand's
+                        # unit is the row's unit — take it and let
+                        # insert_measure convert at write (the subset-3
+                        # r2 auto-match rule on claims). The column's
+                        # own header is the strongest evidence and wins
+                        # first (subset-5d: ``Overpotential (V)`` under
+                        # an mV claim stores volts, not 1000x off); a
+                        # caption/notes unit is taken next, only when it
+                        # could describe THIS column — a caption may
+                        # name another column's quantity, so a
+                        # dimension-incompatible (or molar-mass-needing)
+                        # unit leaves the claim flagged, as before 5b.
+                        # A header unit needing a molar mass refuses
+                        # ``unit_needs_molar_mass``: it certainly names
+                        # this column and the recipe cannot supply the
+                        # bridge.
+                        taken = False
+                        header_u = header_unit(label) if label else None
+                        if header_u is not None:
+                            try:
+                                make_converter(
+                                    header_u,
+                                    out_entry.canonical_unit or header_u,
+                                    molar_bridge=True,
+                                )
+                            except NeedsMolarMass:
+                                drops.append(
+                                    _drop(
+                                        loc_cell,
+                                        "unit_needs_molar_mass",
+                                        f"the header prints unit "
+                                        f"{header_u!r} — converting to "
+                                        "the measurand's unit needs a "
+                                        "molar mass the recipe does not "
+                                        "have",
+                                    )
+                                )
+                                continue
+                            except BadInput:
+                                pass
+                            else:
+                                unit = header_u
+                                taken = True
+                        if not taken:
+                            for piece in (cap_text, notes_text):
+                                u = printed_unit(piece) if piece else None
+                                if u is None:
+                                    continue
+                                try:
+                                    make_converter(
+                                        u,
+                                        out_entry.canonical_unit or u,
+                                        molar_bridge=True,
+                                    )
+                                except (BadInput, NeedsMolarMass):
+                                    continue
+                                unit = u
+                                taken = True
+                                break
+                        if not taken:
+                            flags.append(
+                                "unit_without_text_support"
+                                if header_u is not None
+                                or any(
+                                    printed_unit(p) for p in (cap_text, notes_text) if p
+                                )
+                                else "unit_unconfirmed"
+                            )
                 cited = cited_at(r, c, idx)
                 attribution = (
                     "cited_work" if cited else (spec.attribution or norm.attribution)
@@ -2002,6 +2304,20 @@ def expand_recipe(
                     status = over["measurand_status"]
                 meta = base_meta()
                 meta["table"] = table_meta(r, c, label, cell.footnote)
+                if chunk_text is not None:
+                    # Deterministic on the same grid — a claim/anchor
+                    # divergence at extraction is a bug, never a flag
+                    # (subset-5b: the mx1505 off-by-one shape).
+                    detail = anchor_cell_mismatch(
+                        parsed,
+                        span=[chunk_id, cell.start, cell.end],
+                        literal=literal,
+                        table_meta=meta["table"],
+                        chunk_text=chunk_text,
+                    )
+                    if detail is not None:
+                        drops.append(_drop(loc_cell, "anchor_cell_mismatch", detail))
+                        continue
                 if eff_spec.transform:
                     meta["transform"] = eff_spec.transform
                     if printed_value is not None:
@@ -2011,6 +2327,7 @@ def expand_recipe(
                     literal=literal,
                     subject_ref_id=paper,
                     reported_unit=unit,
+                    molar_bridge=_needs_molar_bridge(unit, out_entry.canonical_unit),
                     subject=subject,
                     subject_group=norm.group,
                     value_num=num,
@@ -2125,6 +2442,26 @@ def stored_row_reasons(
             reasons.append(("unit_dimension_mismatch", mismatch))
 
     # ── cell-level guards ───────────────────────────────────────────
+    # A stored value whose anchor sits in the header region — an index
+    # row a stacked-header parse pulled into the header (subset-5b,
+    # mx2049/mx2051-2061) — is a header cell, not parser drift: its own
+    # deterministic reason, never the recheck's review-only bucket.
+    off = _span_offsets(span)
+    if off is not None and _in_header(parsed, *off):
+        reasons.append(
+            (
+                "value_in_header_row",
+                "the anchor sits in the header rows — the claimed value "
+                "is a header/index cell, not a data cell",
+            )
+        )
+    else:
+        # The anchor check runs whether or not a cell was located.
+        detail = anchor_cell_mismatch(
+            parsed, span=span, literal=literal, table_meta=meta, chunk_text=chunk_text
+        )
+        if detail is not None:
+            reasons.append(("anchor_cell_mismatch", detail))
     if r is None or c is None:
         return reasons
     row_label = _cross_label_at(parsed, r, c, "columns")
@@ -2236,20 +2573,20 @@ def stored_row_reasons(
                 )
             )
     if unit is not None and unit != "1":
-        support = " ".join(t for t in (label, caption_text) if t)
-        if not _verify.unit_has_text_support(unit, support) and (
-            _guessed_unit(unit) and not _label_names_measurand(label, entry)
-        ):
-            reasons.append(
-                (
-                    "unit_header_mismatch",
-                    f"unit {unit!r} is printed nowhere and label {label!r} "
-                    f"does not name {entry.name!r}",
+        # subset-5: refuse only on a printed contradiction — the
+        # header, caption or table notes naming a unit the claim can't
+        # convert to. Nothing printed anywhere keeps the row's
+        # ``unit_unconfirmed`` flag for the reviewer, never a refusal.
+        notes_text = _notes_text(chunk_text)
+        support = " ".join(t for t in (label, caption_text, notes_text) if t)
+        if not _verify.unit_has_text_support(unit, support):
+            printed = _conflicting_unit(unit, label, caption_text, notes_text)
+            if printed is not None:
+                reasons.append(
+                    (
+                        "unit_header_mismatch",
+                        f"the table prints unit {printed!r} — the stored "
+                        f"unit {unit!r} conflicts",
+                    )
                 )
-            )
-    detail = anchor_cell_mismatch(
-        parsed, span=span, literal=literal, table_meta=meta, chunk_text=chunk_text
-    )
-    if detail is not None:
-        reasons.append(("anchor_cell_mismatch", detail))
     return reasons

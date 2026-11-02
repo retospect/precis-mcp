@@ -176,6 +176,8 @@ _TEX_SYMBOLS = {
     "degree": "°",
     "ast": "*",
     "star": "*",
+    "dagger": "†",
+    "ddagger": "‡",
     "partial": "∂",
     "nabla": "∇",
     "langle": "⟨",

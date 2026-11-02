@@ -3860,6 +3860,12 @@ class TestMeasureRecheck:
         "| Ni{111} | 3 | -1.2 |"
     )
 
+    STACKED = (
+        "| Sticking probabilities | | | |\n|---|---|---|---|\n"
+        "| m | 0 | 1 | 2 |\n"
+        "| Rh3Fe3(N2)m | 0.71 | 0.65 | 0.60 |"
+    )
+
     def _world(self, store: Store) -> dict[str, Any]:
         w = survey_world(store)
         w["tid"] = seed_chunk(
@@ -4007,3 +4013,135 @@ class TestMeasureRecheck:
                 (mid,),
             ).fetchone()
         assert n is not None and n[0] == 0
+
+    def test_summary_mode_counts_and_id_ranges(self, store: Store) -> None:
+        # subset-5: the default reply is the compact summary — counts
+        # by reason × paper × extraction_run plus refused ids as
+        # ranges; per-row literals stay out.
+        from precis.extract import recheck as _recheck
+
+        w = self._world(store)
+        bad = self._recipe_row(w, "3", 1, "Number of oxide layers", 2)
+        self._recipe_row(w, "-1.2", 2, "E_ads (eV)", 3)
+        result = _recheck.measure_recheck(store, [w["paper"]], dry_run=True)
+        text = "\n".join(_recheck.recheck_lines(result))
+        assert "counts by reason" in text, text
+        assert f"label_measurand_mismatch  pa{w['paper']}  test-run  1" in text
+        assert f"label_measurand_mismatch: mx{bad} (1)" in text
+        # no per-row detail lines in summary mode
+        assert "[3]" not in text
+
+    def test_detail_mode_pages(self, store: Store) -> None:
+        from precis.extract import recheck as _recheck
+
+        w = self._world(store)
+        a = self._recipe_row(w, "3", 1, "Number of oxide layers", 2)
+        b = self._recipe_row(w, "-1.2", 2, "Number of oxide layers", 3)
+        result = _recheck.measure_recheck(store, [w["paper"]], dry_run=True)
+        p1 = "\n".join(_recheck.recheck_lines(result, detail=True, page=1, page_size=1))
+        assert "detail page 1/2" in p1, p1
+        assert f"mx{a} " in p1 and f"mx{b} " not in p1
+        assert "test-run" in p1  # extraction_run rides the row line
+        p2 = "\n".join(_recheck.recheck_lines(result, detail=True, page=2, page_size=1))
+        assert f"mx{b} " in p2 and f"mx{a} " not in p2
+
+    def test_stored_index_cell_stays_refused(self, store: Store) -> None:
+        # subset-5b (mx2049/mx2051-2061): a row stored when the m row
+        # was a data row goes through the refused/review_only split as
+        # REFUSED — ``value_in_header_row`` is a header cell, not
+        # parser drift.
+        from precis.extract import recheck as _recheck
+
+        w = survey_world(store)
+        tid = seed_chunk(
+            store,
+            ref_id=w["paper"],
+            text=self.STACKED,
+            ord=3,
+            chunk_kind="table",
+        )
+        m0 = self.STACKED.index("| m | 0 |") + 6
+        mid = (
+            w["store"]
+            .insert_measure(
+                MeasureSpec(
+                    measurand_ref_id=w["ads"],
+                    literal="0",
+                    subject_ref_id=w["paper"],
+                    reported_unit="eV",
+                    tier="measured",
+                    source_attribution="own_work",
+                    anchor=MeasureAnchor(w["paper"], tid, "offsets", [tid, m0, m0 + 1]),
+                    meta={
+                        "extraction_run": "test-run",
+                        "extraction": {"prompt": "table-r1"},
+                        "table": {
+                            "chunk": tid,
+                            "table": 1,
+                            "row": 1,
+                            "col": 2,
+                            "header": "Sticking probabilities",
+                            "orientation": "columns",
+                        },
+                    },
+                ),
+                actor="test",
+            )
+            .output_id
+        )
+        result = _recheck.measure_recheck(store, [w["paper"]], dry_run=False)
+        refused = {r["id"]: r for r in result["refused"]}
+        assert mid in refused
+        assert mid not in {r["id"] for r in result["review_only"]}
+        reasons = {r for r, _d in refused[mid]["reasons"]}
+        assert "value_in_header_row" in reasons
+        assert result["applied"] == 1
+
+    def test_review_only_pages_in_detail_mode(self, store: Store) -> None:
+        # subset-5b: the review-only listing pages like the refused
+        # one, and the "… more" hint keeps a custom page_size.
+        from precis.extract import recheck as _recheck
+        from precis.extract.tables import parse_table as _pt
+
+        w = self._world(store)
+        parsed = _pt(w["tid"], self.TABLE)
+        assert parsed is not None
+        mids = []
+        for cell_idx, literal, col in ((1, "3", 3), (2, "-1.2", 2)):
+            c = parsed.rows[0][cell_idx]
+            mids.append(
+                w["store"]
+                .insert_measure(
+                    MeasureSpec(
+                        measurand_ref_id=w["ads"],
+                        literal=literal,
+                        subject_ref_id=w["paper"],
+                        reported_unit="eV",
+                        tier="measured",
+                        source_attribution="own_work",
+                        anchor=MeasureAnchor(
+                            w["paper"], w["tid"], "offsets", [w["tid"], c.start, c.end]
+                        ),
+                        meta={
+                            "extraction_run": "test-run",
+                            "extraction": {"prompt": "table-r1"},
+                            "table": {
+                                "chunk": w["tid"],
+                                "table": 1,
+                                "row": 1,
+                                "col": col,
+                                "header": "E_ads (eV)",
+                                "orientation": "columns",
+                            },
+                        },
+                    ),
+                    actor="test",
+                )
+                .output_id
+            )
+        result = _recheck.measure_recheck(store, [w["paper"]], dry_run=True)
+        assert {r["id"] for r in result["review_only"]} == set(mids)
+        p1 = "\n".join(_recheck.recheck_lines(result, detail=True, page=1, page_size=1))
+        assert "review-only page 1/2" in p1, p1
+        assert f"mx{mids[0]} " in p1 and f"mx{mids[1]} " not in p1
+        assert "'page_size': 1" in p1

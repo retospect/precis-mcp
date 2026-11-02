@@ -194,12 +194,18 @@ class MeasureSpec:
     ``500``, ``reported_unit='mV'``, ``value_num=500`` stores 0.5 V).
     ``reported_unit`` is the unit the number is printed in; it is
     required for a number on a taxon with a ``canonical_unit`` (a number
-    already in the canonical unit says so by passing it)."""
+    already in the canonical unit says so by passing it).
+    ``molar_bridge`` opts the write in to the Avogadro bridge — an
+    ``<energy>/mol`` reported unit against an ``eV``/``meV`` canonical —
+    the one conversion ``make_converter`` keeps off by default
+    (gr506762 subset-5d: the table-recipe path sets it for the rows the
+    grid printed in ``kJ/mol``)."""
 
     measurand_ref_id: int
     literal: str
     subject_ref_id: int
     reported_unit: str | None = None
+    molar_bridge: bool = False
     #: the year a currency figure is priced at (``EUR2015/t``, or the field);
     #: NULL means unknown — shown as reported, never converted (gr510555 S1)
     price_year: int | None = None
@@ -1161,7 +1167,10 @@ class MeasuresMixin:
                 conv = self._compat_conversion(
                     c, taxon, reported_unit, canonical
                 ) or make_converter(
-                    reported_unit, canonical, delta=bool(taxon.get("difference"))
+                    reported_unit,
+                    canonical,
+                    delta=bool(taxon.get("difference")),
+                    molar_bridge=spec.molar_bridge,
                 )
             except NeedsMolarMass as need:
                 conv = None

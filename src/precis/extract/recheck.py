@@ -279,7 +279,8 @@ def measure_recheck(
             "SELECT m.id, m.measurand_ref_id, m.literal, m.reported_unit, "
             "       m.subject, m.span, m.value_form, m.value_num, "
             "       m.subject_ref_id, l.src_chunk_id, "
-            "       m.meta->'table', m.meta->>'transform' "
+            "       m.meta->'table', m.meta->>'transform', "
+            "       m.meta->>'extraction_run' "
             "  FROM measures m "
             "  LEFT JOIN links l ON l.link_id = m.primary_link_id "
             " WHERE m.subject_ref_id = ANY(%s) "
@@ -307,6 +308,7 @@ def measure_recheck(
         chunk_id,
         table_meta,
         transform,
+        extraction_run,
     ) in rows:
         entry = entries.get(int(measurand_id))
         if entry is None:
@@ -341,6 +343,7 @@ def measure_recheck(
                 "paper": int(paper),
                 "literal": literal,
                 "measurand": entry.name,
+                "extraction_run": extraction_run,
                 "reasons": reasons,
             }
             # anchor_cell_mismatch is judged against today's re-parse —
@@ -377,8 +380,40 @@ def measure_recheck(
     }
 
 
-def recheck_lines(result: dict[str, Any]) -> list[str]:
-    """The response text for a recheck call."""
+def _id_ranges(ids: list[int]) -> str:
+    """``mx1-3, mx7, mx9-10`` — consecutive ids compressed to ranges."""
+    ordered = sorted(set(ids))
+    parts: list[str] = []
+    i = 0
+    while i < len(ordered):
+        j = i
+        while j + 1 < len(ordered) and ordered[j + 1] == ordered[j] + 1:
+            j += 1
+        parts.append(f"mx{ordered[i]}-{ordered[j]}" if j > i else f"mx{ordered[i]}")
+        i = j + 1
+    return ", ".join(parts)
+
+
+def _detail_line(row: dict[str, Any]) -> str:
+    mx = handle_registry.format_handle("measure", row["id"])
+    why = "; ".join(r for r, _d in row["reasons"])
+    return (
+        f"  {mx} pa{row['paper']} {row['measurand']} "
+        f"run={row.get('extraction_run') or '-'} [{row['literal']}]: {why}"
+    )
+
+
+def recheck_lines(
+    result: dict[str, Any], *, detail: bool = False, page: int = 1, page_size: int = 50
+) -> list[str]:
+    """The response text for a recheck call.
+
+    Default is the compact summary — counts by reason × paper ×
+    extraction_run plus the refused ids grouped by reason as id
+    ranges — so a multi-paper run fits one reply (subset-5: the
+    24-paper dry run's per-row listing truncated at ~24 kB).
+    ``detail=True`` pages the per-row listing, ``page_size`` rows a
+    page."""
     lines = [
         f"measure recheck over {len(result['papers'])} paper(s): "
         f"{result['checked']} table_recipe row(s) checked, "
@@ -394,21 +429,65 @@ def recheck_lines(result: dict[str, Any]) -> list[str]:
             else ""
         )
     ]
-    for row in result["refused"]:
-        mx = handle_registry.format_handle("measure", row["id"])
-        why = "; ".join(r for r, _d in row["reasons"])
-        lines.append(
-            f"  {mx} pa{row['paper']} {row['measurand']} [{row['literal']}]: {why}"
-        )
-    if result["review_only"]:
-        lines.append("  review-only (parser-drift-possible — never auto-applied):")
-        for row in result["review_only"]:
-            mx = handle_registry.format_handle("measure", row["id"])
-            why = "; ".join(r for r, _d in row["reasons"])
+    if not detail:
+        counts: dict[tuple[str, int, str], int] = {}
+        by_reason: dict[str, list[int]] = {}
+        for row in result["refused"]:
+            run = str(row.get("extraction_run") or "-")
+            for reason, _d in row["reasons"]:
+                key = (reason, row["paper"], run)
+                counts[key] = counts.get(key, 0) + 1
+                by_reason.setdefault(reason, []).append(row["id"])
+        if counts:
+            lines.append("counts by reason × paper × extraction_run:")
+            for (reason, paper, run), n in sorted(counts.items()):
+                lines.append(f"  {reason}  pa{paper}  {run}  {n}")
+            lines.append("refused ids by reason (a row can carry several):")
+            for reason in sorted(by_reason):
+                ids = by_reason[reason]
+                lines.append(f"  {reason}: {_id_ranges(ids)} ({len(set(ids))})")
+        if result["review_only"]:
+            ro_reasons: dict[str, list[int]] = {}
+            for row in result["review_only"]:
+                for reason, _d in row["reasons"]:
+                    ro_reasons.setdefault(reason, []).append(row["id"])
+            lines.append("review-only (parser-drift-possible — never auto-applied):")
+            for reason in sorted(ro_reasons):
+                ids = ro_reasons[reason]
+                lines.append(f"  {reason}: {_id_ranges(ids)} ({len(set(ids))})")
+    else:
+        rows = result["refused"]
+        total = len(rows)
+        pages = max(1, -(-total // page_size))
+        page = min(max(1, page), pages)
+        start = (page - 1) * page_size
+        lines.append(f"detail page {page}/{pages} — {total} refused row(s):")
+        for row in rows[start : start + page_size]:
+            lines.append(_detail_line(row))
+        if page < pages:
             lines.append(
-                f"    {mx} pa{row['paper']} {row['measurand']} "
-                f"[{row['literal']}]: {why}"
+                f"  … {total - start - page_size} more — "
+                f"args={{'detail': True, 'page': {page + 1}, "
+                f"'page_size': {page_size}}}"
             )
+        if result["review_only"]:
+            ro_rows = result["review_only"]
+            ro_total = len(ro_rows)
+            ro_pages = max(1, -(-ro_total // page_size))
+            ro_page = min(max(1, page), ro_pages)
+            ro_start = (ro_page - 1) * page_size
+            lines.append(
+                f"  review-only page {ro_page}/{ro_pages} — {ro_total} "
+                "row(s) (parser-drift-possible — never auto-applied):"
+            )
+            for row in ro_rows[ro_start : ro_start + page_size]:
+                lines.append(_detail_line(row))
+            if ro_page < ro_pages:
+                lines.append(
+                    f"  … {ro_total - ro_start - page_size} more — "
+                    f"args={{'detail': True, 'page': {ro_page + 1}, "
+                    f"'page_size': {page_size}}}"
+                )
     if result["applied"]:
         lines.append(
             f"applied: {result['applied']} rejected review(s) recorded — "

@@ -574,24 +574,48 @@ class TestLogScaleHeaders:
 
 
 class TestHeaderOnlyUnits:
-    """gr506762 slice-4: a unit the table never prints, in a unit small
-    models pin on unrelated columns (eV, %, s^-1), refuses when the label
-    does not name the measurand either — mx1609 eV on laser-fluence
-    exponents, mx1455 % on a site fraction read as coverage."""
+    """gr506762 slice-4 / subset-5: a claimed unit the table never
+    prints flags ``unit_unconfirmed`` (nothing printed anywhere) or
+    ``unit_without_text_support`` (a compatible unit is printed) —
+    ``unit_header_mismatch`` refuses only on a printed contradiction.
+    The eV small models pin on unrelated columns often lives in the
+    caption, a table note or the body text (mx1351/pa255303)."""
 
-    def test_unprinted_ev_on_unrelated_label_refuses(self) -> None:
+    def test_unprinted_ev_flags_unit_unconfirmed(self) -> None:
         text = "| Sample | fluence exponent n |\n|---|---|\n| A | 1.8 |"
+        runs, drops = _expand(
+            text, _one_series("desorption-activation-energy", "eV"), caption=None
+        )
+        assert drops == []
+        assert runs[0].flags == ["unit_unconfirmed"]
+
+    def test_unprinted_percent_flags_unit_unconfirmed(self) -> None:
+        text = "| Site | site fraction |\n|---|---|\n| step | 12 |"
+        runs, drops = _expand(text, _one_series("coverage", "%"), caption=None)
+        assert drops == []
+        assert runs[0].flags == ["unit_unconfirmed"]
+
+    def test_conflicting_printed_unit_refuses(self) -> None:
+        # The header prints a unit the claim can't convert to — a real
+        # contradiction stays refused.
+        text = "| Sample | T (K) |\n|---|---|\n| A | 300 |"
         runs, drops = _expand(
             text, _one_series("desorption-activation-energy", "eV"), caption=None
         )
         assert runs == []
         assert [d["reason"] for d in drops] == ["unit_header_mismatch"]
 
-    def test_unprinted_percent_on_site_fraction_refuses(self) -> None:
-        text = "| Site | site fraction |\n|---|---|\n| step | 12 |"
-        runs, drops = _expand(text, _one_series("coverage", "%"), caption=None)
-        assert runs == []
-        assert [d["reason"] for d in drops] == ["unit_header_mismatch"]
+    def test_unit_in_table_notes_lands_unflagged(self) -> None:
+        # The E_b case: unitless header, the eV comes from a footnote
+        # line under the grid.
+        text = (
+            "| Surface | E_b |\n|---|---|\n| O^I | -2.44 |\n^a Binding energies in eV."
+        )
+        runs, drops = _expand(
+            text, _one_series("adsorption-energy", "eV"), caption=None
+        )
+        assert drops == []
+        assert runs[0].flags == []
 
     def test_unprinted_ev_on_naming_label_stays_a_flag(self) -> None:
         text = "| Sample | E_d |\n|---|---|\n| A | 1.8 |"
@@ -599,7 +623,7 @@ class TestHeaderOnlyUnits:
             text, _one_series("desorption-activation-energy", "eV"), caption=None
         )
         assert drops == []
-        assert runs[0].flags == ["unit_without_text_support"]
+        assert runs[0].flags == ["unit_unconfirmed"]
 
     def test_printed_ev_lands_unflagged(self) -> None:
         text = "| Sample | fluence exponent n |\n|---|---|\n| A | 1.8 |"
@@ -617,7 +641,205 @@ class TestHeaderOnlyUnits:
             text, _one_series("desorption-activation-energy", "meV"), caption=None
         )
         assert drops == []
+        assert runs[0].flags == ["unit_unconfirmed"]
+
+    def test_printed_compatible_header_unit_is_taken(self) -> None:
+        # subset-5d: the column's own header unit is the strongest
+        # evidence — a printed unit that converts to the measurand's
+        # unit is the row's unit and converts at write, never stored
+        # under the claim. The header's ``(J)`` reads as joules — a
+        # single letter in a column header IS the printed unit.
+        text = "| Sample | E (J) |\n|---|---|\n| A | -7.3e-19 |"
+        runs, drops = _expand(
+            text, _one_series("desorption-activation-energy", "eV"), caption=None
+        )
+        assert drops == []
+        assert runs[0].output.reported_unit == "J"
+        assert runs[0].output.value_num == pytest.approx(-7.3e-19)
+        assert runs[0].flags == []
+
+    def test_footnote_letter_in_header_is_no_unit(self) -> None:
+        # subset-5d: ``(b)`` in a column header is a footnote marker,
+        # not barn — an eV claim on ``E_ads (b)`` flags
+        # ``unit_unconfirmed``, never ``unit_header_mismatch``.
+        text = "| Site | E_ads (b) |\n|---|---|\n| Ni | -0.9 |"
+        runs, drops = _expand(
+            text, _one_series("adsorption-energy", "eV"), caption=None
+        )
+        assert drops == []
+        assert runs[0].output.reported_unit == "eV"
+        assert runs[0].flags == ["unit_unconfirmed"]
+
+    def test_single_letter_header_unit_is_taken(self) -> None:
+        # subset-5d: ``(V)`` in a column header is volts — the column's
+        # own header wins over a differing claim, so an mV claim on it
+        # stores volts (the 5b filter had swallowed it as "nothing
+        # printed" and stored 1000x off).
+        vocab = dict(VOCAB)
+        vocab[41] = _entry(41, "overpotential", "overpotential", "V")
+        text = "| Sample | Overpotential (V) |\n|---|---|\n| A | 0.523 |"
+        parsed = parse_table(9, text)
+        assert parsed is not None
+        recipe = {
+            "table": {
+                "orientation": "columns",
+                "subject_axis": 0,
+                "series": [
+                    {
+                        "index": 1,
+                        "measurand": "overpotential",
+                        "unit": "mV",
+                        "role": "output",
+                    }
+                ],
+            }
+        }
+        runs, drops = expand_recipe(
+            parsed,
+            recipe,
+            chunk_id=9,
+            caption=None,
+            vocab=vocab,
+            paper=500,
+            table=2,
+            chunk_text=text,
+        )
+        assert drops == []
+        assert runs[0].output.reported_unit == "V"
+        assert runs[0].output.value_num == pytest.approx(0.523)
+        assert runs[0].flags == []
+
+    def test_caption_panel_letter_is_no_unit(self) -> None:
+        # subset-5c: ``(b)`` in a caption is a panel label, not barn —
+        # nothing printed anywhere flags ``unit_unconfirmed``.
+        text = "| Site | E_ads |\n|---|---|\n| Ni | -0.9 |"
+        runs, drops = _expand(
+            text,
+            _one_series("adsorption-energy", "eV"),
+            caption=(7, "(b) adsorption energies"),
+        )
+        assert drops == []
+        assert runs[0].flags == ["unit_unconfirmed"]
+
+    def test_caption_periodic_cell_is_no_unit(self) -> None:
+        # subset-5b: "a" (a year to pint) and "(b)" (a barn) are
+        # caption tokens, never units — an eV claim on an E_ads
+        # column flags ``unit_unconfirmed``, not a refusal.
+        text = "| Site | E_ads |\n|---|---|\n| Ni | -0.9 |"
+        runs, drops = _expand(
+            text,
+            _one_series("adsorption-energy", "eV"),
+            caption=(7, "Energies in a periodic cell (b)"),
+        )
+        assert drops == []
+        assert runs[0].flags == ["unit_unconfirmed"]
+
+    def test_printed_convertible_unit_is_taken(self) -> None:
+        # subset-5b ruling: a printed unit that differs from the claim
+        # but converts is the row's unit — it converts to the
+        # measurand's unit at write, never stores under the claim.
+        text = "| Site | E_ads |\n|---|---|\n| Ni | 96.5 |"
+        runs, drops = _expand(
+            text,
+            _one_series("adsorption-energy", "eV"),
+            caption=(7, "Adsorption energies in meV"),
+        )
+        assert drops == []
+        assert runs[0].output.reported_unit == "meV"
+        assert runs[0].output.value_num == 96.5
+        assert runs[0].flags == []
+
+    def test_printed_per_mol_unit_converts_via_avogadro(self) -> None:
+        # subset-5c: kJ/mol against an eV claim is the standard
+        # catalysis pair through Avogadro's number (96.485 kJ/mol =
+        # 1 eV), not a dimension mismatch — the printed kJ/mol is the
+        # row's unit and converts to ~1.0 eV at write.
+        text = "| Site | E_ads |\n|---|---|\n| Ni | 96.5 |"
+        runs, drops = _expand(
+            text,
+            _one_series("adsorption-energy", "eV"),
+            caption=(7, "Adsorption energies in kJ/mol"),
+        )
+        assert drops == []
+        assert runs[0].output.reported_unit == "kJ/mol"
+        assert runs[0].output.value_num == 96.5
+        # subset-5d: the strict store needs the row's opt-in to write it.
+        assert runs[0].output.molar_bridge is True
+        assert runs[0].flags == []
+
+    def test_incompatible_caption_unit_flags_not_refuses(self) -> None:
+        # subset-5c: a caption/notes unit that can't name this column's
+        # quantity — it may describe another column — leaves the claim
+        # flagged, as before 5b, never taken nor refused.
+        vocab = dict(VOCAB)
+        vocab[40] = _entry(40, "active-metal-content", "active metal content", "mol")
+        text = "| Site | content |\n|---|---|\n| Ni | 3 |"
+        parsed = parse_table(9, text)
+        assert parsed is not None
+        recipe = {
+            "table": {
+                "orientation": "columns",
+                "subject_axis": 0,
+                "series": [
+                    {
+                        "index": 1,
+                        "measurand": "active-metal-content",
+                        "unit": "mol",
+                        "role": "output",
+                    }
+                ],
+            }
+        }
+        runs, drops = expand_recipe(
+            parsed,
+            recipe,
+            chunk_id=9,
+            caption=(7, "Loading in mg"),
+            vocab=vocab,
+            paper=500,
+            table=2,
+            chunk_text=text,
+        )
+        assert drops == []
+        assert runs[0].output.reported_unit == "mol"
         assert runs[0].flags == ["unit_without_text_support"]
+
+    def test_printed_unit_needing_molar_mass_refuses(self) -> None:
+        # A unit the column's own header prints that bridges mass to
+        # amount needs a molar mass the recipe does not have —
+        # ``unit_needs_molar_mass`` (unlike a caption unit, a header
+        # unit certainly names this column).
+        vocab = dict(VOCAB)
+        vocab[40] = _entry(40, "active-metal-content", "active metal content", "mol")
+        text = "| Site | content (mg) |\n|---|---|\n| Ni | 3 |"
+        parsed = parse_table(9, text)
+        assert parsed is not None
+        recipe = {
+            "table": {
+                "orientation": "columns",
+                "subject_axis": 0,
+                "series": [
+                    {
+                        "index": 1,
+                        "measurand": "active-metal-content",
+                        "unit": "mol",
+                        "role": "output",
+                    }
+                ],
+            }
+        }
+        runs, drops = expand_recipe(
+            parsed,
+            recipe,
+            chunk_id=9,
+            caption=(7, "Contents in mg"),
+            vocab=vocab,
+            paper=500,
+            table=2,
+            chunk_text=text,
+        )
+        assert runs == []
+        assert [d["reason"] for d in drops] == ["unit_needs_molar_mass"]
 
     def test_dimensionless_1_never_flags(self) -> None:
         text = "| Site | site fraction |\n|---|---|\n| step | 0.12 |"
@@ -1146,19 +1368,25 @@ class TestSameMeasurandColumns:
         assert len(runs) == 1
         assert runs[0].output.meta["table"]["col"] == 2
 
-    def test_auto_column_printed_unit_mismatch_drops(self) -> None:
+    def test_auto_column_printed_per_mol_unit_converts(self) -> None:
         # The auto column resolves its unit from its own header —
-        # kJ/mol under an inherited eV claim never stores kJ/mol
-        # numbers as eV.
+        # subset-5c: kJ/mol reaches the eV measurand through Avogadro's
+        # number, so the column's own printed unit is taken and
+        # converts at write.
         text = (
             "| Species | E_ads (eV) | E_ads (kJ/mol) |\n"
             "|---|---|---|\n"
             "| CO | -1.21 | -121 |"
         )
         runs, drops = _expand(text, self._wide_recipe(), caption=None)
-        assert [d["reason"] for d in drops] == ["unit_dimension_mismatch"]
-        assert len(runs) == 1
-        assert runs[0].output.meta["table"]["col"] == 2
+        assert drops == []
+        by_col = {r.output.meta["table"]["col"]: r.output for r in runs}
+        assert set(by_col) == {2, 3}
+        assert by_col[2].reported_unit == "eV"
+        assert by_col[3].reported_unit == "kJ/mol"
+        # subset-5d: the strict store needs the row's opt-in to write it.
+        assert by_col[3].molar_bridge is True
+        assert by_col[2].molar_bridge is False
 
     def test_auto_column_compatible_printed_unit_wins(self) -> None:
         # A printed unit that converts is the column's own claim — the
@@ -1800,3 +2028,278 @@ class TestAnchorCellMismatch:
             )
         )
         assert "anchor_cell_mismatch" in reasons
+
+    def test_located_cell_off_a_partial_claim_fires(self) -> None:
+        # subset-5 (mx1505): with only a partial coordinate claim the
+        # located cell's column silently moved — the claim is checked
+        # by index now.
+        detail = anchor_cell_mismatch(
+            self._parsed(),
+            span=self._span(0, 2),
+            literal="0.9",
+            table_meta={"col": 2, "orientation": "columns"},
+            chunk_text=self.TEXT,
+        )
+        assert detail is not None
+
+    def test_anchor_in_the_header_region_fires(self) -> None:
+        # A header/index line stored as a value: the span lands above
+        # the data region — refused, never silently unlocated.
+        head_end = self.TEXT.index("\n")
+        detail = anchor_cell_mismatch(
+            self._parsed(),
+            span=[9, 0, head_end],
+            literal="rate (s^-1)",
+            table_meta={"orientation": "columns"},
+            chunk_text=self.TEXT,
+        )
+        assert detail is not None
+        assert "header" in detail
+
+
+# A stacked-header table modelled on pa452964's sticking table: Marker
+# printed the visual title row as THE header, so the ``m`` label row
+# was eaten as data — 164 no_header_in_span false refusals (mx1624),
+# and the m cells stored as values (mx2049, mx2051-2061).
+STACKED = (
+    "| Sticking probabilities | | | |\n|---|---|---|---|\n"
+    "| m | 0 | 1 | 2 |\n"
+    "| Rh3Fe3(N2)m | 0.71 | 0.65 | 0.60 |\n"
+    "| Rh3Fe3(N2)m+1 | 0.50 | 0.40 | 0.30 |"
+)
+
+
+class TestStackedHeaders:
+    """gr506762 subset-5: the spanning title line plus the label row
+    under it are the header — the index row never reaches the data
+    region and the value columns keep their printed labels."""
+
+    def _recipe(self) -> dict[str, Any]:
+        return {
+            "table": {
+                "orientation": "columns",
+                "subject_axis": 0,
+                "series": [
+                    {
+                        "index": i,
+                        "measurand": "saturation-sticking",
+                        "unit": None,
+                        "role": "output",
+                    }
+                    for i in (1, 2, 3)
+                ],
+            }
+        }
+
+    def test_label_row_joins_the_header(self) -> None:
+        parsed = parse_table(9, STACKED)
+        assert parsed is not None
+        assert parsed.header_rows == 2
+        assert parsed.header_lines == [
+            "| Sticking probabilities | | | |",
+            "| m | 0 | 1 | 2 |",
+        ]
+        # The first data row is the molecule, not the index row.
+        assert parsed.rows[0][0].text == "Rh3Fe3(N2)m"
+        assert parsed.columns[1].header == "0"
+        # The cited span covers title, separator and the label row.
+        assert parsed.header_span is not None
+        h0, h1 = parsed.header_span
+        assert "| m | 0 | 1 | 2 |" in STACKED[h0:h1]
+
+    def test_sticking_values_land_with_headers(self) -> None:
+        runs, drops = _expand(STACKED, self._recipe(), caption=None)
+        assert drops == []
+        assert len(runs) == 6
+        m_row = [r for r in runs if r.output.subject == "Rh3Fe3(N2)m"]
+        assert {r.output.value_num for r in m_row} == {0.71, 0.65, 0.60}
+        tm = m_row[0].output.meta["table"]
+        assert tm["col_header"] == "0"
+        assert tm["row_label"] == "Rh3Fe3(N2)m"
+
+    def test_index_cells_never_emit(self) -> None:
+        runs, drops = _expand(STACKED, self._recipe(), caption=None)
+        assert drops == []
+        assert {r.output.literal for r in runs}.isdisjoint({"0", "1", "2"})
+
+    def test_stored_index_cell_gets_value_in_header_row(self) -> None:
+        # Regression (mx2049/mx2051-2061): a row stored when the m row
+        # was a data row refuses deterministically — its anchor lands
+        # in the header region now, which is ``value_in_header_row``,
+        # not the drift-possible ``anchor_cell_mismatch``. The recheck
+        # split (refused, not review-only) is tested at job level.
+        parsed = parse_table(9, STACKED)
+        assert parsed is not None
+        m0 = STACKED.index("| m | 0 |") + 6
+        assert STACKED[m0] == "0"
+        reasons = dict(
+            stored_row_reasons(
+                parsed,
+                cell=None,
+                literal="0",
+                unit=None,
+                subject="Rh3Fe3(N2)m",
+                value_form="point",
+                value_num=0.0,
+                entry=VOCAB[13],
+                table_meta={"row": 1, "col": 2, "orientation": "columns"},
+                transform=None,
+                caption_text="",
+                chunk_text=STACKED,
+                span=[9, m0, m0 + 1],
+            )
+        )
+        assert "value_in_header_row" in reasons
+        assert "anchor_cell_mismatch" not in reasons
+
+    def test_condition_literal_in_neighbour_cell_refuses(self) -> None:
+        # subset-5b: a table-source condition whose literal sits in a
+        # cell other than the claimed ``r:c`` — the mx1505 off-by-one
+        # shape — refuses at extraction (same grid, deterministic).
+        text = "| Site | T | E_ads (eV) |\n|---|---|---|\n| Ni | 300 | -1.2 |"
+        recipe = {
+            "table": {
+                "orientation": "columns",
+                "subject_axis": 0,
+                "conditions": [
+                    {
+                        "condition": "temperature",
+                        "measurand": "temperature",
+                        "literal": "300",
+                        "role": "context",
+                        "source": "table",
+                        "cell": "0:2",
+                    }
+                ],
+                "series": [
+                    {
+                        "index": 2,
+                        "measurand": "adsorption-energy",
+                        "unit": "eV",
+                        "role": "output",
+                    }
+                ],
+            }
+        }
+        runs, drops = _expand(text, recipe, caption=None)
+        assert [d["reason"] for d in drops] == ["anchor_cell_mismatch"]
+        assert len(runs) == 1
+
+    def test_condition_cell_on_the_subject_axis_is_not_a_mismatch(self) -> None:
+        # subset-5c: a table-source condition anchored on the subject
+        # column itself carries the claimed row_label AS its cell —
+        # ``_row_has_label`` skipping the anchor column is not a
+        # refusal.
+        text = "| Site | T (K) | E_ads (eV) |\n|---|---|---|\n| Ni | 300 | -1.2 |"
+        recipe = {
+            "table": {
+                "orientation": "columns",
+                "subject_axis": 0,
+                "conditions": [
+                    {
+                        "condition": "surface",
+                        "measurand": "adsorption-energy",
+                        "literal": "Ni",
+                        "role": "context",
+                        "source": "table",
+                        "cell": "0:0",
+                    }
+                ],
+                "series": [
+                    {
+                        "index": 2,
+                        "measurand": "adsorption-energy",
+                        "unit": "eV",
+                        "role": "output",
+                    }
+                ],
+            }
+        }
+        runs, drops = _expand(text, recipe, caption=None)
+        assert drops == []
+        assert len(runs) == 1
+        assert len(runs[0].inputs) == 1
+        assert runs[0].inputs[0].literal == "Ni"
+
+
+class TestBarrierSymbols:
+    """gr506762 subset-5 (pa4750, mx1821-1845): ΔE‡/E_a are barrier
+    symbols, not correction marks — a ΔE‡ column is a genuine
+    barrier."""
+
+    @pytest.mark.parametrize(
+        "label",
+        [
+            "ΔE‡ (eV)",
+            "ΔE^‡ (eV)",
+            "ΔE^{\\ddagger} (eV)",
+            "ΔG‡ (eV)",
+            "ΔH‡ (eV)",
+            "ΔE_a (eV)",
+            "E_a (eV)",
+            "Ea (eV)",
+        ],
+    )
+    def test_barrier_labels_write(self, label: str) -> None:
+        text = f"| Species | {label} |\n|---|---|\n| ABC→A*C | 0.91 |"
+        runs, drops = _expand(
+            text, _one_series("adsorption-energy", "eV"), caption=None
+        )
+        assert drops == []
+        assert len(runs) == 1
+
+    def test_delta_deviation_stays_a_correction(self) -> None:
+        # True positive mx1507 (pa39644): an "RPBE ΔE deviation" row is
+        # a correction/difference, not a barrier.
+        text = "| Species | RPBE ΔE deviation (eV) |\n|---|---|\n| CO | 0.009 |"
+        runs, drops = _expand(
+            text, _one_series("adsorption-energy", "eV"), caption=None
+        )
+        assert runs == []
+        assert [d["reason"] for d in drops] == ["correction_row"]
+
+
+class TestRecheckUnitSemantics:
+    """subset-5 parity: stored_row_reasons refuses a claimed unit only
+    on a printed contradiction — notes/caption support and the
+    unitless-everywhere case survive."""
+
+    def _reasons(self, text: str, unit: str, caption: str = "") -> dict[str, str]:
+        parsed = parse_table(9, text)
+        assert parsed is not None
+        cell = parsed.rows[0][1]
+        return dict(
+            stored_row_reasons(
+                parsed,
+                cell=(0, 1),
+                literal=cell.text,
+                unit=unit,
+                subject="Ni",
+                value_form="point",
+                value_num=-1.2,
+                entry=VOCAB[26],
+                table_meta={"header": parsed.columns[1].header},
+                transform=None,
+                caption_text=caption,
+                chunk_text=text,
+                span=[9, cell.start, cell.end],
+            )
+        )
+
+    def test_unit_in_notes_survives(self) -> None:
+        text = "| Surface | E_b |\n|---|---|\n| Ni | -1.2 |\n^a In eV."
+        assert "unit_header_mismatch" not in self._reasons(text, "eV")
+
+    def test_unit_in_caption_survives(self) -> None:
+        text = "| Surface | E_b |\n|---|---|\n| Ni | -1.2 |"
+        assert "unit_header_mismatch" not in self._reasons(
+            text, "eV", "Table 5. Barriers in eV."
+        )
+
+    def test_nothing_printed_survives(self) -> None:
+        text = "| Surface | E_b |\n|---|---|\n| Ni | -1.2 |"
+        assert "unit_header_mismatch" not in self._reasons(text, "eV")
+
+    def test_conflicting_printed_unit_still_refuses(self) -> None:
+        text = "| Surface | T (K) |\n|---|---|\n| Ni | 300 |"
+        assert "unit_header_mismatch" in self._reasons(text, "eV")
