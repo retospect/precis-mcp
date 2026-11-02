@@ -19,7 +19,12 @@ import pytest
 
 from precis.extract.prompt import review_prompt
 from precis.extract.proposals import VocabEntry
-from precis.extract.recipes import expand_recipe, validate_recipe
+from precis.extract.recipes import (
+    anchor_cell_mismatch,
+    expand_recipe,
+    stored_row_reasons,
+    validate_recipe,
+)
 from precis.extract.tables import parse_table
 
 # Sample 1 as in the spec, plus a second data row and one cell
@@ -708,7 +713,7 @@ class TestIndexEnumeration:
 
     def test_non_index_integer_column_stays(self) -> None:
         # A run not starting at 0/1 is not an enumeration.
-        text = "| Site | layers |\n|---|---|\n| A | 4 |\n| B | 5 |"
+        text = "| Site | fraction |\n|---|---|\n| A | 4 |\n| B | 5 |"
         runs, drops = _expand(text, _one_series("coverage", None), caption=None)
         assert drops == []
         assert len(runs) == 2
@@ -1370,3 +1375,428 @@ class TestReferenceZero:
         )
         assert drops == []
         assert len(runs) == 1
+
+
+class TestCountColumns:
+    """gr506762 subset-4 (tables-4): pa1820's ``Number of oxide layers``
+    column stored as 12 saturation coverages — a count header pins its
+    axis to a dimensionless count, never a coverage/energy/rate
+    measurand. ``_LABEL_QUANTITY`` is a term list and a count is a
+    category, so the incompatibility never matched."""
+
+    def _count_series(self, measurand: str) -> dict[str, Any]:
+        return _one_series(measurand, None)
+
+    @pytest.mark.parametrize(
+        "header",
+        [
+            "Number of oxide layers",
+            "No. of layers",
+            "nr. of defects",
+            "count",
+            "layers",
+            "#",
+            "N",
+        ],
+    )
+    def test_count_header_refuses_as_coverage(self, header: str) -> None:
+        text = f"| Surface | {header} |\n|---|---|\n| Ni{{111}} | 3 |"
+        runs, drops = _expand(
+            text, self._count_series("saturation-coverage"), caption=None
+        )
+        assert runs == []
+        assert [d["reason"] for d in drops] == ["label_measurand_mismatch"]
+        assert "count" in drops[0]["detail"]
+
+    def test_count_header_refuses_as_energy(self) -> None:
+        text = "| Surface | Number of oxide layers |\n|---|---|\n| Ni | 3 |"
+        runs, drops = _expand(
+            text, self._count_series("adsorption-energy"), caption=None
+        )
+        assert runs == []
+        assert [d["reason"] for d in drops] == ["label_measurand_mismatch"]
+
+    def test_count_label_naming_the_measurand_writes(self) -> None:
+        # The label-names-measurand escape: a measurand whose name is in
+        # the count header IS the count the column reports.
+        text = "| Surface | layers count |\n|---|---|\n| Ni | 3 |"
+        entry = _entry(28, "layers", "layers", "1")
+        parsed = parse_table(9, text)
+        assert parsed is not None
+        runs, drops = expand_recipe(
+            parsed,
+            self._count_series("layers"),
+            chunk_id=9,
+            caption=None,
+            vocab={**VOCAB, 28: entry},
+            paper=500,
+            chunk_text=text,
+        )
+        assert drops == []
+        assert len(runs) == 1
+
+    def test_unit_carrying_count_word_stays(self) -> None:
+        # The unit decides, not the word: "count rate (s^-1)" is a rate.
+        text = "| Site | count rate (s^-1) |\n|---|---|\n| A | 1.8 |"
+        runs, drops = _expand(text, _one_series("rate", "s^-1"), caption=None)
+        assert drops == []
+        assert len(runs) == 1
+
+    def test_layers_with_a_unit_stays(self) -> None:
+        text = "| Site | layers (nm) |\n|---|---|\n| A | 12 |"
+        runs, drops = _expand(text, _one_series("rate", "nm"), caption=None)
+        assert drops == [] or [d["reason"] for d in drops] == [
+            "unit_dimension_mismatch"
+        ]
+
+    @pytest.mark.parametrize(
+        "header",
+        ["oxide layers", "defect layers", "no. of layers", "n of layers", "# layers"],
+    )
+    def test_layer_count_spellings_refuse(self, header: str) -> None:
+        # subset-4b: plural "layers" ending the label, or "layer(s)"
+        # preceded by a count opener — still a count.
+        text = f"| Surface | {header} |\n|---|---|\n| Ni | 3 |"
+        runs, drops = _expand(
+            text, self._count_series("saturation-coverage"), caption=None
+        )
+        assert runs == []
+        assert [d["reason"] for d in drops] == ["label_measurand_mismatch"]
+
+    @pytest.mark.parametrize("header", ["top layer", "Layer 1", "E_ads bottom layer"])
+    def test_layer_position_headers_stay(self, header: str) -> None:
+        # subset-4b: a singular layer in a position phrase is not a
+        # count — no opener, and "layer" is not the plural tail.
+        text = f"| Surface | {header} |\n|---|---|\n| Ni | 0.5 |"
+        runs, drops = _expand(text, _one_series("rate", "s^-1"), caption=None)
+        assert "label_measurand_mismatch" not in [d["reason"] for d in drops]
+
+    def test_bare_n_stays_when_symbol_is_n(self) -> None:
+        # subset-4b/4c: a bare "n" names the measurand when the taxon's
+        # slug/name is an n-symbol measurand (reaction order,
+        # refractive index). Built the way the seeds build it — the
+        # seed meta carries no ``symbol`` key.
+        from precis.extract.proposals import vocab_entry
+
+        text = "| Surface | n |\n|---|---|\n| Ni | 2 |"
+        entry = vocab_entry(
+            29,
+            {
+                "name": "Reaction order",
+                "norm_name": "reaction order",
+                "slug": "reaction-order",
+                "aliases": [],
+                "dimension_kind": "dimensionless",
+                "canonical_unit": "1",
+                "value_type": "quantity",
+            },
+        )
+        parsed = parse_table(9, text)
+        assert parsed is not None
+        runs, drops = expand_recipe(
+            parsed,
+            self._count_series("reaction-order"),
+            chunk_id=9,
+            caption=None,
+            vocab={**VOCAB, 29: entry},
+            paper=500,
+            chunk_text=text,
+        )
+        assert drops == []
+        assert len(runs) == 1
+
+    def test_bare_n_still_a_count_for_other_measurands(self) -> None:
+        text = "| Surface | n |\n|---|---|\n| Ni | 2 |"
+        runs, drops = _expand(
+            text, self._count_series("saturation-coverage"), caption=None
+        )
+        assert runs == []
+        assert [d["reason"] for d in drops] == ["label_measurand_mismatch"]
+
+
+class TestSubHeaderRows:
+    """gr506762 subset-4 (mx2313): a data row that is a printed
+    sub-header — its extracted value cells empty or non-numeric AND a
+    divider's shape: header echoes, label-only text, or a lone text
+    cell floating among empties. subset-4b narrowed it: an ordinary
+    data row with text columns is never one."""
+
+    def _two_series(self) -> dict[str, Any]:
+        return {
+            "table": {
+                "orientation": "columns",
+                "subject_axis": 0,
+                "series": [
+                    {"index": 1, "measurand": "coverage", "role": "output"},
+                    {"index": 2, "measurand": "rate", "unit": "s^-1", "role": "output"},
+                ],
+            }
+        }
+
+    def test_merge_row_drops(self) -> None:
+        # A lone text blob spanning the grid's middle — a divider.
+        text = (
+            "| Surface | coverage (ML) | rate (s^-1) |\n|---|---|---|\n"
+            "| Ni{111} | 0.9 | 0.5 |\n"
+            "| | thin oxide films | |\n"
+            "| Ni{100} | 0.8 | 0.4 |"
+        )
+        runs, drops = _expand(text, self._two_series(), caption=None)
+        assert [d["reason"] for d in drops] == ["sub_header_row"]
+        assert len(runs) == 4
+        assert {r.output.subject for r in runs} == {"Ni111", "Ni100"}
+
+    def test_header_echo_row_drops(self) -> None:
+        # A second header line eaten as a data row.
+        text = (
+            "| Surface | coverage (ML) |\n|---|---|\n"
+            "| Surface | coverage |\n"
+            "| Ni{111} | 0.9 |"
+        )
+        runs, drops = _expand(text, _one_series("coverage", None), caption=None)
+        assert [d["reason"] for d in drops] == ["sub_header_row"]
+        assert len(runs) == 1
+
+    def test_label_only_row_is_a_sub_header(self) -> None:
+        # "| divider | | |" emits nothing, but the predicate itself
+        # must still flag it — stored_row_reasons asks the question.
+        text = "| Surface | coverage (ML) |\n|---|---|\n| section 2 | |"
+        parsed = parse_table(9, text)
+        assert parsed is not None
+        from precis.extract.recipes import _sub_header_row
+
+        assert _sub_header_row(parsed, 0, 0, {1})
+        # and the neighbouring real row is not one
+        text2 = text + "\n| Ni{111} | 0.9 |"
+        parsed2 = parse_table(9, text2)
+        assert parsed2 is not None
+        assert not _sub_header_row(parsed2, 1, 0, {1})
+
+    def test_numeric_value_row_never_drops(self) -> None:
+        # subset-4b: text in site/method columns is data — the numeric
+        # value cell ends the sub-header question.
+        text = (
+            "| Surface | Site | E_ads (eV) | Method |\n|---|---|---|---|\n"
+            "| Pt(111) | top | -0.45 | PBE |"
+        )
+        recipe = {
+            "table": {
+                "orientation": "columns",
+                "subject_axis": 0,
+                "series": [
+                    {
+                        "index": 2,
+                        "measurand": "adsorption-energy",
+                        "unit": "eV",
+                        "role": "output",
+                    },
+                ],
+            }
+        }
+        runs, drops = _expand(text, recipe, caption=None)
+        assert drops == []
+        assert len(runs) == 1
+        assert runs[0].output.subject == "Pt(111)"
+
+    def test_categorical_lone_cell_stays(self) -> None:
+        # subset-4c: a lone text cell amid empties is a merge — except
+        # when it IS the value a categorical measurand reads
+        # (``Pt(111) | top | --`` for an adsorption-site measurand).
+        from precis.extract.proposals import vocab_entry
+
+        text = "| Surface | Site | E_ads (eV) |\n|---|---|---|\n| Pt(111) | top | |"
+        site = vocab_entry(
+            30,
+            {
+                "name": "Adsorption site",
+                "slug": "adsorption-site",
+                "aliases": [],
+                "dimension_kind": "categorical",
+                "canonical_unit": "1",
+                "value_type": "categorical",
+                "allowed_values": ["top", "fcc", "hcp"],
+            },
+        )
+        recipe = {
+            "table": {
+                "orientation": "columns",
+                "subject_axis": 0,
+                "series": [
+                    {"index": 1, "measurand": "adsorption-site", "role": "output"},
+                ],
+            }
+        }
+        parsed = parse_table(9, text)
+        assert parsed is not None
+        runs, drops = expand_recipe(
+            parsed,
+            recipe,
+            chunk_id=9,
+            caption=None,
+            vocab={**VOCAB, 30: site},
+            paper=500,
+            chunk_text=text,
+        )
+        assert "sub_header_row" not in [d["reason"] for d in drops]
+        assert len(runs) == 1
+
+    def test_non_categorical_lone_cell_still_drops(self) -> None:
+        # The same row shape under a numeric measurand is still a
+        # merge — the categorical skip only covers value columns of
+        # categorical measurands.
+        text = "| Surface | Site | E_ads (eV) |\n|---|---|---|\n| Pt(111) | top | |"
+        recipe = {
+            "table": {
+                "orientation": "columns",
+                "subject_axis": 0,
+                "series": [
+                    {"index": 1, "measurand": "coverage", "role": "output"},
+                ],
+            }
+        }
+        runs, drops = _expand(text, recipe, caption=None)
+        assert "sub_header_row" in [d["reason"] for d in drops]
+
+    def test_categorical_row_stays(self) -> None:
+        # A categorical measurand's row is text in the value column —
+        # still a reading row, never a sub-header.
+        text = "| Site | phase |\n|---|---|\n| A | fcc |"
+        recipe = {
+            "table": {
+                "orientation": "columns",
+                "subject_axis": 0,
+                "series": [
+                    {"index": 1, "measurand": "coverage", "role": "output"},
+                ],
+            }
+        }
+        runs, drops = _expand(text, recipe, caption=None)
+        assert "sub_header_row" not in [d["reason"] for d in drops]
+
+    def test_lone_text_cell_row_stays(self) -> None:
+        # One non-label cell can't be judged a divider — a subject
+        # plus a categorical value is a reading row's shape.
+        text = "| Site | rate |\n|---|---|\n| A | high |"
+        runs, drops = _expand(text, _one_series("rate", "s^-1"), caption=None)
+        assert "sub_header_row" not in [d["reason"] for d in drops]
+
+    def test_two_cell_data_row_stays(self) -> None:
+        # A one-value row is data, not a sub-header.
+        text = "| Surface | coverage (ML) |\n|---|---|\n| Ni{111} | 0.9 |"
+        runs, drops = _expand(text, _one_series("coverage", None), caption=None)
+        assert drops == []
+        assert len(runs) == 1
+
+
+class TestAnchorCellMismatch:
+    """gr506762 subset-4 (mx1505/mx1721/mx1727): the row's literal must
+    sit in the cell at the intersection of the claimed row label and
+    column header — not anywhere in the span."""
+
+    TEXT = "| Site | E_ads (eV) | rate (s^-1) |\n|---|---|---|\n| Ni | -1.2 | 0.9 |"
+
+    def _parsed(self) -> Any:
+        parsed = parse_table(9, self.TEXT)
+        assert parsed is not None
+        return parsed
+
+    def _span(self, r: int, c: int) -> list[int]:
+        cell = self._parsed().rows[r][c]
+        return [9, cell.start, cell.end]
+
+    def test_consistent_cell_passes(self) -> None:
+        detail = anchor_cell_mismatch(
+            self._parsed(),
+            span=self._span(0, 2),
+            literal="0.9",
+            table_meta={
+                "row": 1,
+                "col": 3,
+                "header": "rate (s^-1)",
+                "orientation": "columns",
+            },
+            chunk_text=self.TEXT,
+        )
+        assert detail is None
+
+    def test_off_by_one_column_refuses(self) -> None:
+        detail = anchor_cell_mismatch(
+            self._parsed(),
+            span=self._span(0, 1),
+            literal="-1.2",
+            table_meta={
+                "row": 1,
+                "col": 3,
+                "header": "rate (s^-1)",
+                "orientation": "columns",
+            },
+            chunk_text=self.TEXT,
+        )
+        assert detail is not None
+
+    def test_literal_elsewhere_in_the_span_refuses(self) -> None:
+        # A row-level anchor covering the claimed cell but the literal
+        # living in a different column.
+        row_s, row_e = self._parsed().row_spans[0]
+        detail = anchor_cell_mismatch(
+            self._parsed(),
+            span=[9, row_s, row_e],
+            literal="0.9",
+            table_meta={
+                "row": 1,
+                "col": 2,
+                "header": "E_ads (eV)",
+                "orientation": "columns",
+            },
+            chunk_text=self.TEXT,
+        )
+        assert detail is not None
+
+    def test_claimed_column_header_mismatch_refuses(self) -> None:
+        # No claimed coords: the anchor cell's header must match the
+        # claimed series label.
+        detail = anchor_cell_mismatch(
+            self._parsed(),
+            span=self._span(0, 1),
+            literal="-1.2",
+            table_meta={"header": "rate (s^-1)", "orientation": "columns"},
+            chunk_text=self.TEXT,
+        )
+        assert detail is not None
+
+    def test_row_span_locates_by_literal(self) -> None:
+        # subset-4b: a row-level anchor resolves to the cell holding
+        # the literal, not the widest cell; no match is unlocated,
+        # never a guess.
+        from precis.extract.recheck import locate_cell
+
+        parsed = self._parsed()
+        s, e = parsed.row_spans[0]
+        assert locate_cell(parsed, [9, s, e], "0.9", self.TEXT) == (0, 2)
+        assert locate_cell(parsed, [9, s, e], "9.9", self.TEXT) is None
+
+    def test_stored_row_reasons_fires_it(self) -> None:
+        entry = VOCAB[16]
+        reasons = dict(
+            stored_row_reasons(
+                self._parsed(),
+                cell=(0, 2),
+                literal="0.9",
+                unit="s^-1",
+                subject="Ni",
+                value_form="point",
+                value_num=0.9,
+                entry=entry,
+                table_meta={
+                    "row": 1,
+                    "col": 3,
+                    "header": "rate (s^-1)",
+                    "orientation": "columns",
+                },
+                transform=None,
+                caption_text="",
+                chunk_text=self.TEXT,
+                span=self._span(0, 1),
+            )
+        )
+        assert "anchor_cell_mismatch" in reasons

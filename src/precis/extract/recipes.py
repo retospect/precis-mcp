@@ -93,6 +93,30 @@ is shown and three more silent wrongs:
   next to ``E_ads (eV)`` emitted unchecked, and kJ/mol numbers stored
   as eV); its transform is re-derived from its own label and its unit
   from its own header.
+
+Subset-4 review (gr506762, tables-4: 12 of 12 sampled rows wrong on
+pa1820's ``Number of oxide layers`` column stored as saturation
+coverages, a sub-header row stored as a value, and the off-by-one
+cells mx1505/mx1721/mx1727) extends the same footing:
+
+* a header naming a count — ``Number of``, ``No. of``, ``#``,
+  ``count``, ``layers``, a bare ``N`` — pins its axis to a
+  dimensionless count (:func:`_count_label` folds into
+  :func:`_label_quantity`), never a coverage, energy, rate or barrier
+  measurand: ``label_measurand_mismatch`` refuses it. The check fires
+  only when the header prints no unit — a ``count rate (s^-1)`` is a
+  rate, a ``layers (nm)`` column a thickness. This was the
+  incompatibility table's blind spot: ``_LABEL_QUANTITY`` is a term
+  list and a count is a category, so the table never matched;
+* a data row that is a printed sub-header — non-empty cells mostly
+  text or empty, or cells mostly repeating the column headers — never
+  emits as a value (``sub_header_row``);
+* at review and recheck time the row's literal must sit in the cell at
+  the intersection of the claimed row label and column header, not
+  just anywhere in the anchor span — :func:`anchor_cell_mismatch`
+  names the divergence (``anchor_cell_mismatch``). The same guards
+  re-run on stored rows through :func:`stored_row_reasons`, the
+  ``put(kind='measure', mode='recheck')`` dry-run's engine.
 """
 
 from __future__ import annotations
@@ -118,7 +142,7 @@ from precis.extract.tables import ParsedTable, has_citation_marker, header_unit
 from precis.store._measures_ops import MeasureAnchor, MeasureSpec
 from precis.taxonomy.measure_units import NeedsMolarMass, make_converter, parse_literal
 from precis.taxonomy.money import split_currency
-from precis.utils.text import markup_surface
+from precis.utils.text import markup_surface, slugify
 
 #: The reader-contract generation stamped on recipe-expanded runs —
 #: the recipe op is a different contract from ``build_runs``' per-chunk
@@ -513,14 +537,43 @@ def _subject_surface(text: str) -> str:
     return " ".join(out.split()).strip(" /").strip()
 
 
+#: Measurands whose standard symbol is a bare ``n``/``N`` — a
+#: ``| n |`` column under one of these is the measurand, not a count
+#: (subset-4c: no seed writes a ``symbol`` meta key, so the exemption
+#: keys on the slug/name the seeds actually write; ``entry.symbol``
+#: is still honoured when a taxon declares it).
+_N_SYMBOL_SLUGS = frozenset({"reaction-order", "refractive-index"})
+_N_SYMBOL_NAMES = frozenset({"reaction order", "refractive index"})
+
+
 def _label_names_measurand(label: str, entry: VocabEntry) -> bool:
     """The measurand's name or an alias appears in the series label —
-    case-insensitive on the folded surface (``explicit`` evidence)."""
+    case-insensitive on the folded surface (``explicit`` evidence). A
+    label that IS the measurand's declared symbol counts too: a bare
+    ``n`` on a reaction-order column names the measurand, not a count
+    (subset-4b/4c)."""
     hay = " ".join(markup_surface(label).split()).casefold()
+    if (
+        entry.symbol
+        and hay == " ".join(markup_surface(entry.symbol).split()).casefold()
+    ):
+        return True
+    if re.fullmatch(r"[Nn]", hay) and (
+        slugify(entry.slug) in _N_SYMBOL_SLUGS
+        or " ".join(markup_surface(entry.name).split()).casefold() in _N_SYMBOL_NAMES
+    ):
+        return True
     for key in (entry.name, *entry.aliases):
         if key and " ".join(markup_surface(key).split()).casefold() in hay:
             return True
     return False
+
+
+def _entry_categorical(entry: VocabEntry) -> bool:
+    """The measurand's declared value type is categorical — its value
+    cells are labels, not numbers (the seed meta's ``value_type`` /
+    ``dimension_kind``, subset-4c)."""
+    return entry.value_type == "categorical" or entry.dimension_kind == "categorical"
 
 
 #: A log token in a series label: ``log``/``Log``/``LOG`` with an
@@ -577,6 +630,58 @@ _LABEL_QUANTITY: dict[str, str] = {
     "absorption energy": "absorption energy",
     "eabs": "absorption energy",
 }
+
+
+#: A label opening ``number of`` / ``no. of`` / ``nr. of`` pins its
+#: axis to a count of whatever follows — a count always wins over the
+#: term table (``number of equilibrium constants`` IS a count).
+_COUNT_OPENER_RE = re.compile(r"^\s*(?:number|no|nr|num)\.?\s+of\b", re.IGNORECASE)
+
+#: The trailing count markers — word-boundary ``count``/``counts`` and
+#: a standalone ``#``. Checked only when the header prints no unit: a
+#: ``count rate (s^-1)`` is a rate, and the unit — not the word —
+#: decides (subset-4).
+_COUNT_WORD_RE = re.compile(
+    r"(?<![A-Za-z0-9])counts?(?![A-Za-z0-9])|(?<!\S)#(?!\S)",
+    re.IGNORECASE,
+)
+
+#: ``layer``/``layers`` as a count — only when preceded by a count
+#: opener (``number of``, ``no. of``, ``n of``, ``#``) or, for the
+#: plural, ending the label / followed only by a parenthetical:
+#: ``oxide layers`` and ``no. of layers`` are counts, but
+#: ``E_ads, top layer`` and ``Layer 1`` name a position, not a count
+#: (subset-4b).
+_LAYER_COUNT_RE = re.compile(
+    r"(?:"
+    r"(?<![A-Za-z0-9])(?:number|no|nr|num|n)\.?\s+of\b.*?\blayers?\b"
+    r"|(?<!\S)#\s*\S*\s*layers?\b"
+    r"|\blayers\b\s*(?:\([^)]*\))?\s*$"
+    r")",
+    re.IGNORECASE,
+)
+
+
+def _count_label(label: str) -> str | None:
+    """``'count'`` when the label pins the axis to a dimensionless
+    count — a header naming a number of things can never map to a
+    coverage, energy, rate or barrier measurand (gr506762 subset-4:
+    pa1820's ``Number of oxide layers`` written as 12 saturation
+    coverages while ``_LABEL_QUANTITY`` matched nothing — a count is a
+    category, not a term). ``None`` for a unit-carrying label that
+    opens on something other than ``number of`` — the unit decides.
+    A bare ``n``/``N`` counts only against a measurand that doesn't
+    claim that symbol — :func:`_label_names_measurand` exempts it."""
+    surf = " ".join(markup_surface(label).split())
+    if not surf:
+        return None
+    if re.fullmatch(r"[Nn]", surf) or _COUNT_OPENER_RE.match(surf):
+        return "count"
+    if header_unit(label) is not None:
+        return None
+    if _COUNT_WORD_RE.search(surf) or _LAYER_COUNT_RE.search(surf):
+        return "count"
+    return None
 
 
 #: Label terms marking a correction, difference or delta row — never a
@@ -651,12 +756,16 @@ def _table_title(text: str | None) -> str:
 
 
 def _label_quantity(label: str) -> str | None:
-    """The quantity the label's terms pin it to, else ``None``."""
+    """The quantity the label's terms pin it to, else ``None`` —
+    the ``_LABEL_QUANTITY`` terms, then the dimensionless-count
+    category (:func:`_count_label`, subset-4)."""
+    if _COUNT_OPENER_RE.match(" ".join(markup_surface(label).split())):
+        return "count"
     hay = " ".join(markup_surface(label).split()).casefold()
     for term, quantity in _LABEL_QUANTITY.items():
         if term in hay:
             return quantity
-    return None
+    return _count_label(label)
 
 
 def _int_point(value_text: str) -> int | None:
@@ -710,6 +819,275 @@ def _unit_mismatch(unit: str, entry: VocabEntry) -> str | None:
         return None
     except BadInput as exc:
         return str(exc)
+    return None
+
+
+def _sub_header_row(
+    parsed: ParsedTable,
+    r: int,
+    label_col: int = 0,
+    value_cols: set[int] | frozenset[int] = frozenset(),
+    categorical: bool = False,
+) -> bool:
+    """A data row that is a printed sub-header, not a reading row —
+    subset-4's mx2313 stored as a value. Narrowed in subset-4b after
+    the numeric-share rule dropped ordinary data rows
+    (``Pt(111) | top | -0.45 | PBE`` — text in a site/method column is
+    data, not a divider): the row is a sub-header only when *every*
+    cell in the ``value_cols`` the extraction reads is empty or
+    non-numeric, AND its shape says divider — the non-empty cells
+    mostly repeat their column headers (a second header line eaten as
+    data), text sits only in the label cell, or one lone non-numeric
+    cell floats among empties (a span/merge). A numeric value cell
+    ends the question — never judge by the share of numeric cells
+    across the whole row."""
+    if not 0 <= r < len(parsed.rows):
+        return False
+    row = parsed.rows[r]
+    vals = [
+        row[c]
+        for c in value_cols
+        if c != label_col
+        and 0 <= c < len(row)
+        and row[c].value_text.strip().casefold() not in _EMPTY_CELL
+    ]
+    if any(c.numeric for c in vals):
+        return False
+    nonempty = [
+        (j, c)
+        for j, c in enumerate(row)
+        if c.value_text.strip().casefold() not in _EMPTY_CELL
+    ]
+    if not nonempty:
+        return False
+    echo = sum(
+        1
+        for j, c in nonempty
+        if j < len(parsed.columns)
+        and (h := " ".join(markup_surface(parsed.columns[j].header).split()).casefold())
+        and len(cs := " ".join(markup_surface(c.text).split()).casefold()) >= 3
+        and (cs in h or h in cs)
+    )
+    if echo * 2 > len(nonempty):
+        return True
+    if all(j == label_col for j, _c in nonempty):
+        return True
+    nonlabel = [(j, c) for j, c in nonempty if j != label_col]
+    if not (
+        len(nonlabel) == 1 and not nonlabel[0][1].numeric and len(nonempty) < len(row)
+    ):
+        return False
+    # A lone text cell amid empties reads as a span/merge — unless it
+    # IS the value a categorical measurand reads
+    # (``Pt(111) | top | --`` for an adsorption-site measurand,
+    # subset-4c): then the text is the reading, not a divider.
+    j, _cell = nonlabel[0]
+    return not (categorical and j in value_cols)
+
+
+def _offset_cell(parsed: ParsedTable, start: int, end: int) -> tuple[int, int] | None:
+    """The grid cell covering ``[start, end)``: exact containment wins;
+    else the cell the anchor most overlaps. ``None`` when no cell
+    overlaps at all."""
+    hit: tuple[int, int] | None = None
+    best = 0
+    for r, row in enumerate(parsed.rows):
+        for c, cell in enumerate(row):
+            if start < end and cell.start <= start and end <= cell.end:
+                return r, c
+            overlap = min(end, cell.end) - max(start, cell.start)
+            if overlap > best:
+                hit, best = (r, c), overlap
+    return hit
+
+
+def _literal_cell(
+    parsed: ParsedTable,
+    start: int,
+    end: int,
+    literal: str,
+    chunk_text: str,
+) -> tuple[int, int] | None:
+    """The grid cell the ``[start, end)`` anchor belongs to — for an
+    old row-level span covering several cells, the one whose own text
+    supports ``literal`` (subset-4b: the largest-overlap fallback could
+    name the wrong cell, poisoning the review context and the
+    anchor-cell check). ``None`` when the span reaches no cell, or when
+    zero or several overlapped cells carry the literal — ambiguity is
+    'unlocated', never a guess."""
+    hit: tuple[int, int] | None = None
+    cells: list[tuple[int, int]] = []
+    for r, row in enumerate(parsed.rows):
+        for c, cell in enumerate(row):
+            if start < end and cell.start <= start and end <= cell.end:
+                return r, c
+            if min(end, cell.end) - max(start, cell.start) > 0:
+                cells.append((r, c))
+    if len(cells) == 1:
+        hit = cells[0]
+    elif cells:
+        matches = [
+            (r, c)
+            for r, c in cells
+            if _verify.literal_supported(
+                literal,
+                chunk_text[parsed.rows[r][c].start : parsed.rows[r][c].end],
+                chunk_text,
+                (parsed.rows[r][c].start, parsed.rows[r][c].end),
+                numeric_required=False,
+            )
+        ]
+        hit = matches[0] if len(matches) == 1 else None
+    return hit
+
+
+def _label_at(parsed: ParsedTable, r: int, c: int, orientation: str) -> str:
+    """The emitting axis's label for cell ``(r, c)`` — its column
+    header (``columns``) or its row's label cell (``rows``)."""
+    if orientation == "columns":
+        return parsed.columns[c].header if 0 <= c < len(parsed.columns) else ""
+    row = parsed.rows[r] if 0 <= r < len(parsed.rows) else []
+    return row[0].text if row else ""
+
+
+def _cross_label_at(parsed: ParsedTable, r: int, c: int, orientation: str) -> str:
+    """The other axis's label for cell ``(r, c)`` — the row's label
+    cell (``columns``) or the column header (``rows``)."""
+    if orientation == "columns":
+        row = parsed.rows[r] if 0 <= r < len(parsed.rows) else []
+        return row[0].text if row else ""
+    return parsed.columns[c].header if 0 <= c < len(parsed.columns) else ""
+
+
+def _row_has_label(parsed: ParsedTable, r: int, label: str, skip: int) -> bool:
+    """The folded ``label`` occurs in a cell of row ``r`` other than
+    column ``skip``."""
+    want = " ".join(markup_surface(label).split()).casefold()
+    if not want or not 0 <= r < len(parsed.rows):
+        return False
+    for j, cell in enumerate(parsed.rows[r]):
+        if j == skip:
+            continue
+        if " ".join(markup_surface(cell.text).split()).casefold() == want:
+            return True
+    return False
+
+
+def _claim_coord(meta: dict[str, Any], key: str) -> int | None:
+    """``meta.table``'s 1-based ``row``/``col`` as a 0-based index."""
+    raw = meta.get(key)
+    return raw - 1 if isinstance(raw, int) and not isinstance(raw, bool) else None
+
+
+def anchor_cell_mismatch(
+    parsed: ParsedTable,
+    *,
+    span: Any,
+    literal: str,
+    table_meta: dict[str, Any] | None,
+    chunk_text: str,
+) -> str | None:
+    """``detail`` when the stored row's literal does not sit in the
+    cell at the intersection of the claimed row label and column
+    header — the off-by-one-column cases (gr506762 subset-4,
+    mx1505/mx1721/mx1727). ``None`` when the anchor resolves
+    consistently, or too little is claimed to check.
+
+    ``span`` is the row's ``[chunk, start, end]`` anchor; the claims
+    are ``meta.table``'s 1-based ``row``/``col`` and the
+    ``col_header``/``row_label``/``header`` labels."""
+    meta = table_meta or {}
+    if not isinstance(span, (list, tuple)) or len(span) != 3:
+        return None
+    _cid, start, end = span
+    if not all(isinstance(x, int) and not isinstance(x, bool) for x in (start, end)):
+        return None
+    orientation = meta.get("orientation") or "columns"
+    claimed_r = _claim_coord(meta, "row")
+    claimed_c = _claim_coord(meta, "col")
+    claim_col = meta.get("col_header") or (
+        meta.get("header") if orientation == "columns" else None
+    )
+    claim_row = meta.get("row_label") or (
+        meta.get("header") if orientation == "rows" else None
+    )
+    n_cols = len(parsed.columns)
+
+    def cell_ok(r: int, c: int) -> bool:
+        cell = parsed.rows[r][c]
+        return _verify.literal_supported(
+            literal,
+            chunk_text[cell.start : cell.end],
+            chunk_text,
+            (cell.start, cell.end),
+            numeric_required=False,
+        )
+
+    if claimed_r is not None and claimed_c is not None:
+        if not (
+            0 <= claimed_r < len(parsed.rows)
+            and claimed_c < len(parsed.rows[claimed_r])
+        ):
+            return (
+                f"claimed cell row {claimed_r + 1} col {claimed_c + 1} is off the grid"
+            )
+        cell = parsed.rows[claimed_r][claimed_c]
+        if min(end, cell.end) - max(start, cell.start) <= 0:
+            located = _literal_cell(parsed, start, end, literal, chunk_text)
+            where = (
+                f"row {located[0] + 1} col {located[1] + 1}"
+                if located is not None
+                else "outside the grid"
+            )
+            return (
+                f"the anchor sits in {where}, not the claimed "
+                f"row {claimed_r + 1} col {claimed_c + 1}"
+            )
+        if not cell_ok(claimed_r, claimed_c):
+            return (
+                f"literal {literal!r} is not in the claimed cell "
+                f"(row {claimed_r + 1} col {claimed_c + 1}) "
+                f"{cell.text[:80]!r}"
+            )
+        if (
+            claim_col
+            and 0 <= claimed_c < n_cols
+            and (
+                " ".join(
+                    markup_surface(parsed.columns[claimed_c].header).split()
+                ).casefold()
+                != " ".join(markup_surface(str(claim_col)).split()).casefold()
+            )
+        ):
+            return (
+                f"claimed column header {claim_col!r} vs the grid's "
+                f"{parsed.columns[claimed_c].header!r}"
+            )
+        if claim_row and not _row_has_label(
+            parsed, claimed_r, str(claim_row), claimed_c
+        ):
+            return f"claimed row label {claim_row!r} is not in the anchor row"
+        return None
+    located = _literal_cell(parsed, start, end, literal, chunk_text)
+    if located is None:
+        return None
+    r, c = located
+    if (
+        claim_col
+        and 0 <= c < n_cols
+        and (
+            " ".join(markup_surface(parsed.columns[c].header).split()).casefold()
+            != " ".join(markup_surface(str(claim_col)).split()).casefold()
+        )
+    ):
+        return (
+            f"the anchor cell sits under {parsed.columns[c].header!r}, "
+            f"not the claimed {claim_col!r}"
+        )
+    if claim_row and not _row_has_label(parsed, r, str(claim_row), c):
+        return f"claimed row label {claim_row!r} is not in the anchor row"
+    if not cell_ok(r, c):
+        return f"literal {literal!r} is not in the anchor cell's text"
     return None
 
 
@@ -810,6 +1188,11 @@ def expand_recipe(
     # own leading line (a table chunk opening on "Table N. …").
     cap_or_title = cap_text or _table_title(chunk_text)
     runs: list[RunProposal] = []
+    label_col = (
+        norm.subject_axis
+        if orientation == "columns" and norm.subject_axis is not None
+        else 0
+    )
 
     def cell_at(r: int, c: int) -> Any:
         if 0 <= r < n_rows and 0 <= c < len(parsed.rows[r]):
@@ -1085,6 +1468,22 @@ def expand_recipe(
             if cell is None or (r, c) in norm.skip_cells:
                 continue
             if cell.value_text.strip().casefold() in _EMPTY_CELL:
+                continue
+            value_cols = (
+                {spec.index} if orientation == "columns" else set(range(1, n_cols))
+            )
+            if _sub_header_row(
+                parsed, r, label_col, value_cols, _entry_categorical(entry)
+            ):
+                drops.append(
+                    _drop(
+                        f"{loc} cell {r}:{c}",
+                        "sub_header_row",
+                        f"row {r + 1} is a sub-header (header echoes, "
+                        "label-only text, or a lone text cell amid "
+                        "empties), not a reading row",
+                    )
+                )
                 continue
             unit = spec.unit
             if spec.unit_index is not None:
@@ -1396,6 +1795,22 @@ def expand_recipe(
                 if cell.value_text.strip().casefold() in _EMPTY_CELL:
                     continue
                 loc_cell = f"{loc} cell {r}:{c}"
+                value_cols = (
+                    {idx} if orientation == "columns" else set(range(1, n_cols))
+                )
+                if _sub_header_row(
+                    parsed, r, label_col, value_cols, _entry_categorical(entry)
+                ):
+                    drops.append(
+                        _drop(
+                            loc_cell,
+                            "sub_header_row",
+                            f"row {r + 1} is a sub-header (header echoes, "
+                            "label-only text, or a lone text cell amid "
+                            "empties), not a reading row",
+                        )
+                    )
+                    continue
                 if not (0 <= c < n_cols and _subject_surface(parsed.columns[c].header)):
                     drops.append(
                         _drop(
@@ -1640,3 +2055,201 @@ def expand_recipe(
                     )
                 )
     return runs, drops
+
+
+def stored_row_reasons(
+    parsed: ParsedTable,
+    *,
+    cell: tuple[int, int] | None,
+    literal: str,
+    unit: str | None,
+    subject: str | None,
+    value_form: str | None,
+    value_num: float | None,
+    entry: VocabEntry,
+    table_meta: dict[str, Any],
+    transform: str | None,
+    caption_text: str,
+    chunk_text: str,
+    span: Any,
+) -> list[tuple[str, str]]:
+    """The extraction guards re-run on a stored table_recipe row —
+    the recheck pass's per-row verdicts (gr506762 subset-4).
+
+    ``cell`` is the anchor's located ``(row, col)`` in the re-parsed
+    grid (:func:`precis.extract.recheck`); ``table_meta`` is the row's
+    stored ``meta.table`` — its claims fill in what the grid can't
+    re-derive (the series label, claimed coords). Returns
+    ``(reason, detail)`` pairs; an empty list means the row survives
+    every current guard."""
+    reasons: list[tuple[str, str]] = []
+    meta = table_meta or {}
+    orientation = meta.get("orientation") or "columns"
+    label = str(meta.get("header") or "")
+    n_cols = len(parsed.columns)
+    n_rows = len(parsed.rows)
+    r, c = cell if cell is not None else (None, None)
+
+    def cell_at(rr: int, cc: int) -> Any:
+        if 0 <= rr < n_rows and 0 <= cc < len(parsed.rows[rr]):
+            return parsed.rows[rr][cc]
+        return None
+
+    # ── series-label guards (no located cell needed) ────────────────
+    quantity = _label_quantity(label)
+    if quantity is not None and not _label_names_measurand(label, entry):
+        reasons.append(
+            (
+                "label_measurand_mismatch",
+                f"label {label!r} names {quantity!r}, not {entry.name!r}",
+            )
+        )
+    if (corr := _correction_label(label)) is not None:
+        reasons.append(
+            (
+                "correction_row",
+                f"label {label!r} prints {corr!r} — a correction/delta "
+                "series, not a reading",
+            )
+        )
+    label_tf = _label_log_transform(label)
+    if label_tf == "unclear" or (
+        label_tf is not None and transform is not None and transform != label_tf
+    ):
+        reasons.append(
+            ("log_base_unclear", f"label {label!r} vs transform {transform!r}")
+        )
+    if unit is not None:
+        mismatch = _unit_mismatch(unit, entry)
+        if mismatch is not None:
+            reasons.append(("unit_dimension_mismatch", mismatch))
+
+    # ── cell-level guards ───────────────────────────────────────────
+    if r is None or c is None:
+        return reasons
+    row_label = _cross_label_at(parsed, r, c, "columns")
+    cross = _cross_label_at(parsed, r, c, orientation)
+    # The label column expand_recipe used (subject_axis) isn't stored —
+    # recover it from the stored ``row_label`` claim when it folds onto
+    # exactly one cell of the row, else fall back to column 0, the same
+    # axis ``row_label()`` reads when no subject_axis was claimed.
+    claim_row_label = meta.get("row_label")
+    label_col = 0
+    if claim_row_label:
+        hits = [
+            j
+            for j, cj in enumerate(parsed.rows[r])
+            if j != c
+            and " ".join(markup_surface(cj.text).split()).casefold()
+            == " ".join(markup_surface(str(claim_row_label)).split()).casefold()
+        ]
+        if len(hits) == 1:
+            label_col = hits[0]
+    if _sub_header_row(parsed, r, label_col, {c}, _entry_categorical(entry)):
+        reasons.append(
+            (
+                "sub_header_row",
+                f"row {r + 1} is a sub-header (mostly text or empty "
+                "cells, or header echoes), not a reading row",
+            )
+        )
+    if not (0 <= c < n_cols and _subject_surface(parsed.columns[c].header)):
+        reasons.append(
+            (
+                "no_header_in_span",
+                f"column {c + 1} prints no header — the cited span "
+                "cannot show which column the value is",
+            )
+        )
+    if (corr := _correction_label(cross)) is not None:
+        reasons.append(
+            (
+                "correction_row",
+                f"label {cross!r} prints {corr!r} — a correction/delta "
+                "row, not a reading",
+            )
+        )
+    # The emitting axis's enumeration check — the located cell's own
+    # column (``columns``) or row (``rows``), same shape as expand's.
+    nums: list[int] = []
+    axis_span = n_rows if orientation == "columns" else n_cols - 1
+    axis_idx = c if orientation == "columns" else r
+    for ac in (
+        (cell_at(rr, c) for rr in range(n_rows))
+        if orientation == "columns"
+        else (cell_at(r, cc) for cc in range(1, n_cols))
+    ):
+        if ac is None or ac.value_text.strip().casefold() in _EMPTY_CELL:
+            continue
+        v = _int_point(ac.value_text)
+        if v is None:
+            break
+        nums.append(v)
+    else:
+        if (
+            _enumeration_run(nums)
+            and (axis_idx == 0 or len(nums) == axis_span)
+            and not _label_names_measurand(label, entry)
+        ):
+            reasons.append(
+                (
+                    "index_enumeration",
+                    f"cells are an integer run {nums[0]}..{nums[-1]} — "
+                    f"an index axis, not {entry.name!r} readings",
+                )
+            )
+    if subject:
+        parts = [caption_text, row_label or ""]
+        if 0 <= c < n_cols:
+            parts.append(parsed.columns[c].header)
+        if r < len(parsed.row_spans):
+            s, e = parsed.row_spans[r]
+            parts.append(chunk_text[s:e])
+        hay = _subject_surface(" ".join(parts)).casefold()
+        if subject.casefold() not in hay:
+            reasons.append(
+                (
+                    "subject_not_in_span",
+                    f"subject {subject!r} is in neither the cited row, "
+                    "the column header nor the caption",
+                )
+            )
+    if value_form == "point" and value_num == 0 and _energy_unit(entry.canonical_unit):
+        marked = _REFERENCE_MARK_RE.search(f"{row_label or ''} {caption_text}")
+        sole_zero = (
+            _REFERENCE_PHASE_RE.search(cross) is not None
+            and sum(
+                1
+                for row in parsed.rows
+                if c < len(row)
+                and (lit := parse_literal(row[c].value_text)).form == "point"
+                and lit.num == 0
+            )
+            == 1
+        )
+        if marked is not None or sole_zero:
+            reasons.append(
+                (
+                    "reference_zero",
+                    "an exact 0 on an energy measurand marked as the "
+                    "reference/zero of the scale",
+                )
+            )
+    if unit is not None and unit != "1":
+        support = " ".join(t for t in (label, caption_text) if t)
+        if not _verify.unit_has_text_support(unit, support) and (
+            _guessed_unit(unit) and not _label_names_measurand(label, entry)
+        ):
+            reasons.append(
+                (
+                    "unit_header_mismatch",
+                    f"unit {unit!r} is printed nowhere and label {label!r} "
+                    f"does not name {entry.name!r}",
+                )
+            )
+    detail = anchor_cell_mismatch(
+        parsed, span=span, literal=literal, table_meta=meta, chunk_text=chunk_text
+    )
+    if detail is not None:
+        reasons.append(("anchor_cell_mismatch", detail))
+    return reasons

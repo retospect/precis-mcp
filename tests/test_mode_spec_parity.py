@@ -89,6 +89,12 @@ _EXPECTED_MODES: dict[tuple[str, str], tuple[str, ...] | None] = {
     #    existing paper (put(id=<slug>, mode='fetch-si')); any other value
     #    is BadInput (si-attachments build 1) -------------------------
     ("paper", "put"): ("fetch-si",),
+    # -- put: measure's sole mode is the hand-run extraction-guard
+    #    recheck (put(mode='recheck', args={'papers': […]}) — a dry-run
+    #    lister over stored table_recipe rows; audited: the handler
+    #    refuses any other mode and writes nothing under it (gr506762
+    #    subset-4) -------------------------------------------------
+    ("measure", "put"): ("recheck",),
     # -- edit: file kinds, the region-rewrite grammar -------------------
     ("markdown", "edit"): ("find-replace", "append", "insert", "replace"),
     ("plaintext", "edit"): ("find-replace", "append", "insert", "replace"),

@@ -32,6 +32,9 @@ PASSTHROUGH = [
     ("todo", "delete"),
     ("gripe", "delete"),
     ("measure", "search"),
+    # measure.put's recheck door reads args{'papers','dry_run'}
+    # (gr506762 subset-4)
+    ("measure", "put"),
     ("draft", "get"),
     ("python", "get"),
     ("pcb", "put"),

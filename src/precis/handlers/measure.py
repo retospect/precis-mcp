@@ -132,6 +132,7 @@ def _utc(when: datetime | None) -> str:
 class MeasureHandler(Handler):
     ARGS: ClassVar[dict[str, ArgsSpec]] = {
         "search": ArgsSpec({"paper", "serves"}),
+        "put": ArgsSpec({"papers", "dry_run"}),
     }
     #: ``edit(id=[...])`` repeats the same edit per id in one transaction
     #: (gr514482); the method itself keeps its scalar-id signature.
@@ -160,6 +161,7 @@ class MeasureHandler(Handler):
         is_numeric=True,
         id_required=True,
         placement="stream",
+        modes=("recheck",),
     )
 
     def __init__(self, *, hub: Hub) -> None:
@@ -416,10 +418,68 @@ class MeasureHandler(Handler):
         meta: dict[str, Any] | None = None,
         items: list[dict[str, Any]] | None = None,
         id: str | int | None = None,
+        mode: str | None = None,
+        args: dict[str, Any] | None = None,
         **_kw: Any,
     ) -> Response:
         """Write one run: the output (``text`` + ``meta``) and its input rows
-        (``items``), tied by one ``run_key``, in one transaction."""
+        (``items``), tied by one ``run_key``, in one transaction.
+
+        ``put(kind='measure', mode='recheck', args={'papers': [<id>…]})``
+        is the extraction-guard recheck door (gr506762 subset-4): the
+        current ``table_recipe`` refusals are re-run over the papers'
+        live recipe rows and the rows that would now be refused are
+        listed with their reasons. ``args.dry_run`` defaults to True —
+        a list only; ``dry_run=False`` records a ``rejected`` ledger
+        review per refused row (the measure kind's retraction). A
+        hand-run command, never a cadence."""
+        if mode == "recheck":
+            extras = args or {}
+            if (
+                text is not None
+                or meta is not None
+                or items is not None
+                or (id is not None and str(id).strip())
+            ):
+                raise BadInput(
+                    "mode='recheck' writes nothing — it does not combine "
+                    "with text/meta/items/id",
+                    next="put(kind='measure', mode='recheck', "
+                    "args={'papers': [<id>, …]})",
+                )
+            from precis.extract import recheck as _recheck
+
+            raw_papers = extras.get("papers")
+            if not isinstance(raw_papers, (list, tuple)) or not raw_papers:
+                raise BadInput(
+                    "measure recheck needs args={'papers': [<paper id or pa<id>>, …]}",
+                    next="put(kind='measure', mode='recheck', "
+                    "args={'papers': ['pa452964']})",
+                )
+            dry_run = extras.get("dry_run", True)
+            # Only an explicit boolean False or the string "false"
+            # applies — None, 0, "" and every other value keep the dry
+            # run (subset-4b: bool(0) would have applied silently).
+            if isinstance(dry_run, str):
+                dry_run = dry_run.strip().lower() != "false"
+            elif not isinstance(dry_run, bool):
+                dry_run = True
+            result = _recheck.measure_recheck(
+                self.store, list(raw_papers), dry_run=bool(dry_run)
+            )
+            lines = _recheck.recheck_lines(result)
+            if result["refused"] and dry_run:
+                lines.append(
+                    "dry run — nothing changed; re-run with "
+                    "args={'dry_run': False} to record rejected reviews"
+                )
+            return Response(body="\n".join(lines))
+        if mode is not None:
+            raise BadInput(
+                f"put(kind='measure') has no mode {mode!r}",
+                next="omit mode= for a write, or mode='recheck' for the "
+                "extraction-guard recheck",
+            )
         if id is not None and str(id).strip():
             raise BadInput(
                 "put(kind='measure') writes a new run; it takes no id=. Rows are "

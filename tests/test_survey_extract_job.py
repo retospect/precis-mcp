@@ -3651,3 +3651,359 @@ def test_0212_sets_higher_is_better_on_the_two_taxa(fresh_db: str) -> None:
     assert hibs == [False, True]
     assert got[("total-current-density", "J")] is None
     assert got[("reaction-step-free-energy", "J")] is None
+
+
+class TestReviewTimeTableContext:
+    """gr506762 subset-4: rows written before meta.table carried the
+    header spans get the column header, caption and units at review
+    time — the source table is re-located from the anchor chunk, no
+    data rewrite. And a row whose literal sits outside the claimed
+    row/col cell is refused ``anchor_cell_mismatch`` without a call."""
+
+    TABLE = (
+        "Table 1. CO adsorption on Ni.\n"
+        "| Surface | E_ads (eV) | rate (s^-1) |\n|---|---|---|\n"
+        "| Ni{100} | -1.2 | 0.9 |"
+    )
+
+    def _seed(self, world: dict) -> tuple[int, list[tuple[int, int]]]:
+        store = world["store"]
+        cap = seed_chunk(
+            store,
+            ref_id=world["paper"],
+            text="Table 1. CO adsorption on Ni.",
+            ord=3,
+            chunk_kind="paragraph",
+        )
+        tid = seed_chunk(
+            store,
+            ref_id=world["paper"],
+            text=self.TABLE,
+            ord=4,
+            chunk_kind="table",
+        )
+        from precis.extract.tables import parse_table as _pt
+
+        parsed = _pt(tid, self.TABLE)
+        assert parsed is not None
+        return tid, [(c.start, c.end) for c in parsed.rows[0]]
+
+    def _row(
+        self,
+        world: dict,
+        tid: int,
+        span: list,
+        meta_table: dict,
+        literal: str = "-1.2",
+    ) -> int:
+        return (
+            world["store"]
+            .insert_measure(
+                MeasureSpec(
+                    measurand_ref_id=world["ads"],
+                    literal=literal,
+                    subject_ref_id=world["paper"],
+                    reported_unit="eV",
+                    tier="measured",
+                    source_attribution="own_work",
+                    anchor=MeasureAnchor(world["paper"], tid, "offsets", span),
+                    meta={
+                        "extraction_run": "test-run",
+                        "extraction": {"prompt": "table-r1"},
+                        "table": meta_table,
+                    },
+                ),
+                actor="test",
+            )
+            .output_id
+        )
+
+    def test_old_style_row_gets_derived_context(
+        self, world: dict, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        store = world["store"]
+        tid, cells = self._seed(world)
+        # An old-style meta.table: coords and series label only — no
+        # header_span, col_header, row_label or caption.
+        self._row(
+            world,
+            tid,
+            [tid, cells[1][0], cells[1][1]],
+            {
+                "chunk": tid,
+                "table": 1,
+                "row": 1,
+                "col": 2,
+                "header": "E_ads (eV)",
+                "orientation": "columns",
+            },
+        )
+        prompts: list[str] = []
+
+        def _route(req: Any) -> Any:
+            prompts.append(req.prompt)
+            return llm_result(
+                json.dumps({"verdict": "correct", "reason": "ok"}), "frontier-x"
+            )
+
+        monkeypatch.setattr(job, "route", _route)
+        meta = {
+            "job_type": "measure_accept",
+            "executor": "coordinator",
+            "params": {
+                "papers": [world["paper"]],
+                "sample_n": 5,
+                "bar": 0.5,
+                "reviews_per_slice": 10,
+            },
+        }
+        done, _events = drive(meta, store, job.ACCEPT_SPEC)
+        assert done.success
+        assert prompts, "no review was routed"
+        assert "column header: E_ads (eV)" in prompts[0]
+        assert "row label: Ni{100}" in prompts[0]
+        assert "header unit: eV" in prompts[0]
+        assert "table caption: Table 1. CO adsorption on Ni." in prompts[0]
+
+    def test_off_by_one_cell_goes_to_the_reviewer(
+        self, world: dict, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # subset-4b: a stored claim vs today's re-parse disagreeing is
+        # not proof of wrongness — the parser may have moved. The row
+        # reaches the reviewer with the mismatch note, and the verdict
+        # is the model's, never a deterministic rejection.
+        store = world["store"]
+        tid, cells = self._seed(world)
+        mid = self._row(
+            world,
+            tid,
+            [tid, cells[1][0], cells[1][1]],
+            {
+                "chunk": tid,
+                "table": 1,
+                "row": 1,
+                "col": 3,
+                "header": "rate (s^-1)",
+                "orientation": "columns",
+            },
+        )
+        prompts: list[str] = []
+
+        def _route(req: Any) -> Any:
+            prompts.append(req.prompt)
+            return llm_result(
+                json.dumps({"verdict": "wrong", "reason": "column is E_ads"}),
+                "frontier-x",
+            )
+
+        monkeypatch.setattr(job, "route", _route)
+        meta = {
+            "job_type": "measure_accept",
+            "executor": "coordinator",
+            "params": {
+                "papers": [world["paper"]],
+                "sample_n": 5,
+                "bar": 0.5,
+                "reviews_per_slice": 10,
+            },
+        }
+        done, _events = drive(meta, store, job.ACCEPT_SPEC)
+        assert done.success
+        assert prompts, "a mismatched row bypassed the reviewer"
+        assert "stored table coordinates do not match" in prompts[0]
+        with store.pool.connection() as conn:
+            v = conn.execute(
+                "SELECT verdict, note FROM reviews "
+                "WHERE target_kind = 'measure' AND target_id = %s",
+                (mid,),
+            ).fetchone()
+        assert v is not None and v[0] == "rejected"
+        assert "column is E_ads" in (v[1] or "")
+
+    def test_span_text_guarantees_a_row_floor(self, world: dict) -> None:
+        # subset-4b: a header longer than the cap truncates itself —
+        # the data row keeps its _ROW_FLOOR of the evidence window.
+        store = world["store"]
+        head_text = "| " + "H" * 1800 + " |"
+        row_text = "| " + "q" * 1500 + " | -1.2 |"
+        text = head_text + "\n" + row_text
+        cid = seed_chunk(
+            store,
+            ref_id=world["paper"],
+            text=text,
+            ord=3,
+            chunk_kind="table",
+        )
+        ctx = {
+            "header_span": [0, len(head_text)],
+            "row_span": [len(head_text) + 1, len(text)],
+        }
+        span = job._span_text(
+            store,
+            {"chunk_id": cid, "span": [cid, len(text) - 6, len(text) - 2]},
+            ctx,
+        )
+        assert span is not None
+        body = span.split("\n…\n", 1)[-1]
+        assert len(body) >= job._ROW_FLOOR
+        assert "-1.2" in body
+        assert len(span) <= job._SPAN_TEXT_CAP
+
+
+class TestMeasureRecheck:
+    """gr506762 subset-4, item 4: ``measure_recheck`` dry-runs the
+    current extraction guards over stored table_recipe rows and lists
+    which would now be refused."""
+
+    TABLE = (
+        "| Surface | Number of oxide layers | E_ads (eV) |\n|---|---|---|\n"
+        "| Ni{111} | 3 | -1.2 |"
+    )
+
+    def _world(self, store: Store) -> dict[str, Any]:
+        w = survey_world(store)
+        w["tid"] = seed_chunk(
+            store,
+            ref_id=w["paper"],
+            text=self.TABLE,
+            ord=3,
+            chunk_kind="table",
+        )
+        return w
+
+    def _recipe_row(
+        self, w: dict, literal: str, cell: int, header: str, col: int
+    ) -> int:
+        from precis.extract.tables import parse_table as _pt
+
+        parsed = _pt(w["tid"], self.TABLE)
+        assert parsed is not None
+        c = parsed.rows[0][cell]
+        return (
+            w["store"]
+            .insert_measure(
+                MeasureSpec(
+                    measurand_ref_id=w["ads"],
+                    literal=literal,
+                    subject_ref_id=w["paper"],
+                    reported_unit="eV",
+                    tier="measured",
+                    source_attribution="own_work",
+                    anchor=MeasureAnchor(
+                        w["paper"], w["tid"], "offsets", [w["tid"], c.start, c.end]
+                    ),
+                    meta={
+                        "extraction_run": "test-run",
+                        "extraction": {"prompt": "table-r1"},
+                        "table": {
+                            "chunk": w["tid"],
+                            "table": 1,
+                            "row": 1,
+                            "col": col,
+                            "header": header,
+                            "orientation": "columns",
+                        },
+                    },
+                ),
+                actor="test",
+            )
+            .output_id
+        )
+
+    def test_dry_run_lists_the_count_column_row(self, store: Store) -> None:
+        from precis.extract import recheck as _recheck
+
+        w = self._world(store)
+        bad = self._recipe_row(w, "3", 1, "Number of oxide layers", 2)
+        good = self._recipe_row(w, "-1.2", 2, "E_ads (eV)", 3)
+        result = _recheck.measure_recheck(store, [w["paper"]], dry_run=True)
+        assert result["checked"] == 2
+        ids = {r["id"]: r for r in result["refused"]}
+        assert bad in ids and good not in ids
+        reasons = {r for r, _d in ids[bad]["reasons"]}
+        assert "label_measurand_mismatch" in reasons
+        # dry run: no ledger review was recorded.
+        with store.pool.connection() as conn:
+            n = conn.execute(
+                "SELECT count(*) FROM reviews WHERE target_kind = 'measure' "
+                "AND target_id = %s",
+                (bad,),
+            ).fetchone()
+        assert n is not None and n[0] == 0
+
+    def test_apply_records_rejected_reviews(self, store: Store) -> None:
+        from precis.extract import recheck as _recheck
+
+        w = self._world(store)
+        bad = self._recipe_row(w, "3", 1, "Number of oxide layers", 2)
+        result = _recheck.measure_recheck(store, [w["paper"]], dry_run=False)
+        assert result["applied"] == 1
+        with store.pool.connection() as conn:
+            v = conn.execute(
+                "SELECT verdict FROM reviews WHERE target_kind = 'measure' "
+                "AND target_id = %s",
+                (bad,),
+            ).fetchone()
+        assert v is not None and v[0] == "rejected"
+
+    def test_unknown_paper_refuses(self, store: Store) -> None:
+        from precis.extract import recheck as _recheck
+
+        self._world(store)
+        with pytest.raises(BadInput, match="does not resolve"):
+            _recheck.measure_recheck(store, [99999999])
+
+    def test_anchor_only_rows_are_review_only(self, store: Store) -> None:
+        # subset-4c: anchor_cell_mismatch is judged against today's
+        # re-parse — parser drift can flag a correct row. Those rows
+        # list separately and never apply a rejected review.
+        from precis.extract import recheck as _recheck
+        from precis.extract.tables import parse_table as _pt
+
+        w = self._world(store)
+        parsed = _pt(w["tid"], self.TABLE)
+        assert parsed is not None
+        c = parsed.rows[0][1]
+        # Claimed the E_ads column (col 3) but anchored on the count
+        # cell — anchor_cell_mismatch only.
+        mid = (
+            w["store"]
+            .insert_measure(
+                MeasureSpec(
+                    measurand_ref_id=w["ads"],
+                    literal="3",
+                    subject_ref_id=w["paper"],
+                    reported_unit="eV",
+                    tier="measured",
+                    source_attribution="own_work",
+                    anchor=MeasureAnchor(
+                        w["paper"], w["tid"], "offsets", [w["tid"], c.start, c.end]
+                    ),
+                    meta={
+                        "extraction_run": "test-run",
+                        "extraction": {"prompt": "table-r1"},
+                        "table": {
+                            "chunk": w["tid"],
+                            "table": 1,
+                            "row": 1,
+                            "col": 3,
+                            "header": "E_ads (eV)",
+                            "orientation": "columns",
+                        },
+                    },
+                ),
+                actor="test",
+            )
+            .output_id
+        )
+        result = _recheck.measure_recheck(store, [w["paper"]], dry_run=False)
+        assert result["applied"] == 0
+        assert {r["id"] for r in result["review_only"]} == {mid}
+        assert mid not in {r["id"] for r in result["refused"]}
+        with store.pool.connection() as conn:
+            n = conn.execute(
+                "SELECT count(*) FROM reviews WHERE target_kind = 'measure' "
+                "AND target_id = %s",
+                (mid,),
+            ).fetchone()
+        assert n is not None and n[0] == 0

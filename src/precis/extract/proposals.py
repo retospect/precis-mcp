@@ -128,6 +128,18 @@ class VocabEntry:
     canonical_unit: str | None
     display_unit: str | None
     required_conditions: tuple[str, ...]
+    #: The measurand's printed symbol when the taxon declares one
+    #: (``n`` for reaction order, ``N`` for refractive index) — a bare
+    #: symbol label then *names* the measurand rather than a count
+    #: (gr506762 subset-4b). No seed writes ``symbol`` today, but the
+    #: field is read when present.
+    symbol: str | None = None
+    #: The seed meta's ``value_type``/``dimension_kind``
+    #: (``'quantity'``/``'ratio'``/``'count'``/``'categorical'``) — the
+    #: categorical marks tell a text value cell from a divider
+    #: (subset-4c).
+    value_type: str | None = None
+    dimension_kind: str | None = None
 
     def lookup_keys(self) -> set[str]:
         keys = {slugify(self.slug), slugify(self.name)}
@@ -171,6 +183,11 @@ def vocab_entry(ref_id: int, meta: dict[str, Any]) -> VocabEntry:
             str(c)
             for c in (meta.get("required_conditions") or [])
             if isinstance(c, str)
+        ),
+        symbol=(str(meta["symbol"]) if meta.get("symbol") else None),
+        value_type=(str(meta["value_type"]) if meta.get("value_type") else None),
+        dimension_kind=(
+            str(meta["dimension_kind"]) if meta.get("dimension_kind") else None
         ),
     )
 

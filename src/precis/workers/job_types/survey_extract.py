@@ -91,6 +91,7 @@ from typing import TYPE_CHECKING, Any
 from precis.errors import BadInput
 from precis.extract import accept as _accept
 from precis.extract import prompt as _prompt
+from precis.extract import recheck as _recheck
 from precis.extract import recipes as _recipes
 from precis.extract.proposals import (
     RunProposal,
@@ -1559,6 +1560,9 @@ def _chunk_text(store: Store, chunk_id: Any) -> str | None:
 #: longer row is trimmed to a window centered on the reviewed cell's
 #: offsets — the sibling cells nearest it stay in view.
 _SPAN_TEXT_CAP = 2000
+#: The data row keeps at least this much of the evidence window — a
+#: long header eats itself, not the row (subset-4b).
+_ROW_FLOOR = 400
 
 
 def _span_text(
@@ -1595,13 +1599,21 @@ def _span_text(
         # recipe carried the lines as text (gr506762 subset-3 r2).
         head = ctx["header_text"]
     row_span = ctx.get("row_span")
+    # The header rides above the row inside the same 2000-char
+    # evidence window (gr506762 subset-4): its cost comes off the row
+    # budget — but a long header truncates itself before it can leave
+    # the data row under _ROW_FLOOR chars (subset-4b).
+    row_cap = _SPAN_TEXT_CAP
+    if head:
+        head = head[: _SPAN_TEXT_CAP - _ROW_FLOOR - 3]
+        row_cap = _SPAN_TEXT_CAP - len(head) - 3
     if (
         isinstance(row_span, list)
         and len(row_span) == 2
         and all(isinstance(x, int) and not isinstance(x, bool) for x in row_span)
     ):
         start, end = row_span
-        if end - start > _SPAN_TEXT_CAP:
+        if end - start > row_cap:
             span = row.get("span")
             mid = (
                 (span[1] + span[2]) // 2
@@ -1610,8 +1622,8 @@ def _span_text(
                 and all(isinstance(x, int) for x in span)
                 else (start + end) // 2
             )
-            start = max(start, min(mid - _SPAN_TEXT_CAP // 2, end - _SPAN_TEXT_CAP))
-            end = start + _SPAN_TEXT_CAP
+            start = max(start, min(mid - row_cap // 2, end - row_cap))
+            end = start + row_cap
         body = text[start:end]
     else:
         span = row.get("span")
@@ -1778,6 +1790,7 @@ def _accept_dispatch(ctx: DispatchContext, spec: JobTypeSpec) -> Any:
     verdicts = dict(state.get("verdicts") or {})
     idx = int(state.get("idx") or 0)
     by_id = {r["id"]: r for r in rows}
+    idx_cache: dict[int, dict[str, Any]] = {}
     per_slice = _reviews_per_slice(params)
     tier = tier_from_str(params.get("tier") or "frontier", default=Tier.FRONTIER)
     model_pin = params.get("model") if isinstance(params.get("model"), str) else None
@@ -1814,18 +1827,44 @@ def _accept_dispatch(ctx: DispatchContext, spec: JobTypeSpec) -> Any:
                 ),
             }
             continue
-        table_ctx = measure.get("table_meta")
+        # Review-time table context (gr506762 subset-4): the source
+        # table is located from the row's anchor chunk and re-parsed,
+        # so rows written before meta.table carried the header spans
+        # get the column header, caption and units anyway. The located
+        # grid also feeds the anchor-cell check.
+        paper_idx = idx_cache.get(measure["subject_ref_id"])
+        if paper_idx is None:
+            paper_idx = _recheck.table_index(
+                _chunks(ctx.store, measure["subject_ref_id"])
+            )
+            idx_cache[measure["subject_ref_id"]] = paper_idx
+        table_ctx, parsed_grid, grid_text = _recheck.review_table_ctx(
+            measure, paper_idx
+        )
         if isinstance(table_ctx, dict):
-            # The reviewer's table context: the series label, the cell's
-            # 1-based coordinates and the paired caption's text —
-            # without them the sample is one bare cell with no column
-            # name.
-            table_ctx = dict(table_ctx)
             cap_text = _chunk_text(ctx.store, table_ctx.get("caption_chunk"))
             if cap_text:
                 table_ctx["caption"] = cap_text
-        else:
-            table_ctx = None
+        if parsed_grid is not None and isinstance(measure.get("span"), list):
+            detail = _recipes.anchor_cell_mismatch(
+                parsed_grid,
+                span=measure["span"],
+                literal=str(measure["literal"] or ""),
+                table_meta=measure.get("table_meta") or table_ctx,
+                chunk_text=grid_text,
+            )
+            if detail is not None:
+                # A stored row/col claim vs today's re-parse disagreeing
+                # is not proof the row is wrong — the parser may have
+                # moved since it was written (subset-4b). The reviewer
+                # gets the context and the note; the verdict is theirs
+                # — undecidable at worst, never a deterministic
+                # rejection. (Deterministic refusal is only for new
+                # extraction, where the grid is the row's own.)
+                if isinstance(table_ctx, dict):
+                    table_ctx["anchor_mismatch"] = detail
+                else:
+                    table_ctx = {"anchor_mismatch": detail}
         span = _span_text(ctx.store, measure, table_ctx)
         if span is None:
             verdicts[str(mid)] = {

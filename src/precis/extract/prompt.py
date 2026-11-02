@@ -326,6 +326,22 @@ def review_prompt(
             f"is the printed exponent, not the value itself{stored}"
         )
     if table:
+        if table.get("anchor_mismatch"):
+            # Subset-4b: the stored cell claim and the re-parsed grid
+            # disagree — say so; the span and headers shown decide.
+            bits.append(
+                f"note: the stored table coordinates do not match this "
+                f"table ({table['anchor_mismatch']}) — judge the row from "
+                "the span and the headers shown, not the coordinates"
+            )
+        if table.get("unlocated"):
+            # Subset-4: the anchor's source table could not be
+            # re-located — say so; the verdict stays undecidable.
+            bits.append(
+                "table: the source table could not be located from the "
+                "anchor — column header, row label, caption and units are "
+                "unavailable; without them the verdict is undecidable"
+            )
         orientation = table.get("orientation") or "columns"
         coord = (
             f"T{table.get('table')} row {table.get('row')} "

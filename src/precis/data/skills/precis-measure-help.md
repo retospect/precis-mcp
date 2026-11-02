@@ -299,6 +299,36 @@ put(kind="measure", text="95", reason="qu202467 pilot extraction",
   `glyph_suspected` (the source paper's extracted text is flagged) — or
   `anchor_mismatch` (the literal is not in the anchored span: check the chunk).
 
+## Recheck a batch
+
+`measure_accept` samples a run's rows and has a frontier model verdict
+each; `params.papers` re-scopes it to every live output row on the
+named papers regardless of run token (a re-run's dup-skipped rows keep
+their older token, so a token-scoped re-accept never reaches them):
+
+```python
+put(kind="job", job_type="measure_accept", executor="coordinator",
+    params={"papers": ["pa452964", "pa1820"], "sample_n": 60, "bar": 0.05})
+```
+
+The paper-scoped verdict reviews rows but never counts as a token-batch
+verdict. While a `survey_extract` job still carries the token a run-level
+accept is refused.
+
+`put(kind='measure', mode='recheck', args={'papers': [...]})` is the
+deterministic counterpart — a hand-run dry run, never a cadence: the
+current `table_recipe` extraction guards (count-column, sub-header,
+anchor-cell, label/correction/enumeration/unit refusals) are re-run over
+the papers' live recipe rows, and each row that would now be refused is
+listed with its reasons. `dry_run` defaults to True; with
+`args={'dry_run': False}` each refused row gets a `rejected` ledger
+review — the measure kind's retraction, which drops it from rankings.
+
+```python
+put(kind="measure", mode="recheck", args={"papers": ["pa452964"]})
+put(kind="measure", mode="recheck", args={"papers": [452964], "dry_run": False})
+```
+
 ## Review a row
 
 ```python
