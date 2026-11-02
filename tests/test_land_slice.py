@@ -746,6 +746,46 @@ def test_preflight_past_the_cap_fails_blocked_without_a_launch(
     assert kind == "job_summary" and BLIND_DIAG in text
 
 
+def test_drift_preflight_prefers_mains_helper_over_the_branchs(
+    seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """jo550940 event 6: the slice branch's helper predated --diag. The
+    preflight runs origin/main's copy, materialised under scratch/ so the
+    helper's ROOT is still the tree."""
+    tree = seams["tree"]
+    own = tree / "scripts" / "last-gated-main-sha"
+    own.parent.mkdir(parents=True)
+    own.write_text("#!/bin/sh\n# old branch copy\n", encoding="utf-8")
+    main_copy = "#!/bin/sh\n# main copy with --diag\n"
+    real_git = land_slice._git
+
+    def git_with_main(args: list[str], cwd: Path) -> subprocess.CompletedProcess[str]:
+        if args[:1] == ["show"]:
+            return _proc(main_copy)
+        return real_git(args, cwd)
+
+    monkeypatch.setattr(land_slice, "_git", git_with_main)
+    seen: list[list[str]] = []
+
+    def fake_run(argv: list[str], **kw: Any) -> subprocess.CompletedProcess[str]:
+        seen.append(argv)
+        return subprocess.CompletedProcess(argv, 0, stdout="3.2\n", stderr="")
+
+    monkeypatch.setattr(land_slice.subprocess, "run", fake_run)
+    monkeypatch.setattr(land_slice._factory_git, "git_auth_env", lambda base=None: {})
+    pre = _REAL_DRIFT_PREFLIGHT(tree)
+    assert pre["ran"] and pre["age"] == "3.2"
+    target = tree / land_slice.PREFLIGHT_HELPER_REL
+    assert seen[0][0] == str(target)
+    assert target.read_text(encoding="utf-8") == main_copy
+    assert target.stat().st_mode & 0o111
+    # neither copy: nothing ran
+    own.unlink()
+    monkeypatch.setattr(land_slice, "_git", real_git)
+    target.unlink()
+    assert _REAL_DRIFT_PREFLIGHT(tree)["ran"] is False
+
+
 def test_drift_preflight_runs_the_helper_under_the_factory_identity(
     seams: dict[str, Any], monkeypatch: pytest.MonkeyPatch
 ) -> None:

@@ -752,8 +752,8 @@ def _drift_preflight(tree: Path) -> dict[str, Any]:
     ride that — :func:`_gate_unknown` parks it instead. ``ran`` is False when
     the tree has no helper (then ship's own guard is all there is)."""
     out: dict[str, Any] = {"ran": False, "rc": None, "age": "", "diag": ""}
-    helper = tree / "scripts" / "last-gated-main-sha"
-    if not helper.is_file():
+    helper = _preflight_helper(tree)
+    if helper is None:
         return out
     try:
         cp = subprocess.run(
@@ -788,6 +788,35 @@ def _drift_preflight(tree: Path) -> dict[str, Any]:
         diag=f"{diag} (exit {cp.returncode})",
     )
     return out
+
+
+#: Where the preflight materialises main's copy of the drift helper. Under
+#: ``scratch/`` so the helper's ``ROOT`` (two levels up) is still the tree.
+PREFLIGHT_HELPER_REL = Path("scratch") / "last-gated-main-sha"
+
+
+def _preflight_helper(tree: Path) -> Path | None:
+    """The drift helper the preflight runs: ``origin/main``'s copy, written to
+    :data:`PREFLIGHT_HELPER_REL` in ``tree`` after a fetch, else the tree's
+    own ``scripts/last-gated-main-sha``, else ``None``.
+
+    A slice branch forks from an older main and ship only merges main in
+    *after* the guard; the branch's helper can predate the rule and the flag
+    the preflight relies on (jo550940 event 6: "(no diag line) (exit 2)" from
+    a copy without ``--diag``). Main's copy is the one ship itself will run."""
+    own = tree / "scripts" / "last-gated-main-sha"
+    _git(["fetch", "--quiet", "origin", "main"], tree)
+    cp = _git(["show", "origin/main:scripts/last-gated-main-sha"], tree)
+    if cp.returncode == 0 and cp.stdout.strip():
+        target = tree / PREFLIGHT_HELPER_REL
+        try:
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text(cp.stdout, encoding="utf-8")
+            target.chmod(0o755)
+            return target
+        except OSError:
+            log.warning("land_slice: could not write %s", target, exc_info=True)
+    return own if own.is_file() else None
 
 
 def _gate_unknown(pre: dict[str, Any]) -> bool:
@@ -1050,6 +1079,7 @@ __all__ = [
     "MAX_MAIN_REFUSALS",
     "NAME",
     "PARAMS_SCHEMA",
+    "PREFLIGHT_HELPER_REL",
     "REQUIRES",
     "SPEC",
     "SUBJECT_CAP",
