@@ -202,9 +202,11 @@ def test_reingest_pathway_structures_from_seed_meta(store: Store) -> None:
 def test_reingest_keeps_prior_entry_when_geometry_unreadable(
     store: Store,
 ) -> None:
-    """A state whose seed geometry fails to parse keeps its existing
-    ``structure_refs`` entry — the pass repairs what it can instead of
-    dropping the state from the map (and reports written vs input)."""
+    """A colliding state whose seed geometry fails to parse keeps its
+    existing ``structure_refs`` entry — the pass repairs what it can
+    instead of dropping the state from the map (and reports written vs
+    input). The fixture maps both members to the one shared ref, the
+    pre-fix damage the command exists to repair."""
     ref = _pathway(store)
     first = pw_ingest.ingest_intermediates(
         store,
@@ -213,7 +215,11 @@ def test_reingest_keeps_prior_entry_when_geometry_unreadable(
         "ck-test",
         {"NH2OH": _extxyz(_COVERED), "*~nh2oh": _extxyz(_BARE)},
     )
-    store.stamp_ref_meta(int(ref.id), {"structure_refs": first})
+    shared_id = first["NH2OH"]
+    store.stamp_ref_meta(
+        int(ref.id),
+        {"structure_refs": {"NH2OH": shared_id, "*~nh2oh": shared_id}},
+    )
     _seed_job(
         store,
         int(ref.id),
@@ -227,14 +233,132 @@ def test_reingest_keeps_prior_entry_when_geometry_unreadable(
 
     assert res.input_states == 2 and res.written == 1
     assert res.skipped == ("NH2OH",)
-    assert res.structure_refs["NH2OH"] == first["NH2OH"]
+    assert res.structure_refs["NH2OH"] == shared_id
     sink = res.structure_refs["*~nh2oh"]
-    assert sink != res.structure_refs["NH2OH"]
+    assert sink != shared_id
     fetched = store.fetch_refs_by_ids([sink])
     assert fetched[sink].meta["composition"] == {"Pd": 4}
     meta = store.get_ref(kind="pathway", id=int(ref.id))
     assert meta is not None
     assert meta.meta["structure_refs"] == res.structure_refs
+
+
+def test_reingest_older_pathway_touches_only_collision_groups(
+    store: Store,
+) -> None:
+    """SLUGFIX2 (gr549179 follow-up): on older pathways the stamped refs
+    live under a different ``pw-`` prefix than the one
+    ``intermediate_slugs`` computes now (the structure-set fingerprint
+    changed since ingest), so re-resolving every slug mints a duplicate
+    per state. The re-ingest touches ONLY the legacy-slug collision
+    group: non-colliding states keep both ref and mapping byte-for-byte,
+    the keeper is re-saved onto the shared ref it is mapped to (by ref
+    id — the ref's own slug stays), and each other member mints once
+    under its new suffixed slug."""
+    ref = _pathway(store)
+    # the "older" ingest: a different content key AND a different
+    # structure set, so every recomputed slug differs from these.
+    old = pw_ingest.ingest_intermediates(
+        store,
+        int(ref.id),
+        "pw-ingest",
+        "ck-OLD",
+        {
+            "NH": _extxyz(_COVERED),
+            "OH": _extxyz(_COVERED),
+            "NH2OH": _extxyz(_BARE),
+        },
+    )
+    shared_id = old["NH2OH"]
+    store.stamp_ref_meta(
+        int(ref.id),
+        {
+            "structure_refs": {
+                "NH": old["NH"],
+                "OH": old["OH"],
+                "NH2OH": shared_id,
+                "*~nh2oh": shared_id,
+            }
+        },
+    )
+    # the seed offers DIFFERENT geometries for the non-colliding states:
+    # if the pass touched them their refs' composition would change.
+    _seed_job(
+        store,
+        int(ref.id),
+        structures={
+            "NH": {"energy": -3.0, "extxyz": _extxyz(_BARE)},
+            "OH": {"energy": -3.0, "extxyz": _extxyz(_BARE)},
+            "NH2OH": {"energy": -3.0, "extxyz": _extxyz(_COVERED)},
+            "*~nh2oh": {"energy": -1.0, "extxyz": _extxyz(_BARE)},
+        },
+    )
+
+    res = pw_ingest.reingest_pathway_structures(store, ref)
+
+    assert res.input_states == 4 and res.written == 2 and not res.skipped
+    # non-colliding states: mapping and ref content both untouched, and
+    # no ref exists under the recomputed slug.
+    assert res.structure_refs["NH"] == old["NH"]
+    assert res.structure_refs["OH"] == old["OH"]
+    structures, key = pw_ingest.seed_geometry(store, int(ref.id))
+    slugs = pw_ingest.intermediate_slugs(key, structures)
+    assert store.get_ref(kind="structure", id=slugs["NH"]) is None
+    assert store.get_ref(kind="structure", id=slugs["OH"]) is None
+    # the keeper was re-saved onto the shared ref by id — same ref id,
+    # its own (old-prefix) slug, so no ref exists under the recomputed
+    # base slug either.
+    assert res.structure_refs["NH2OH"] == shared_id
+    assert store.get_ref(kind="structure", id=slugs["NH2OH"]) is None
+    # the sink minted exactly once, under its new suffixed slug.
+    sink_id = res.structure_refs["*~nh2oh"]
+    assert sink_id != shared_id
+    sink_ref = store.get_ref(kind="structure", id=slugs["*~nh2oh"])
+    assert sink_ref is not None and int(sink_ref.id) == sink_id
+
+    fetched = store.fetch_refs_by_ids([shared_id, sink_id, old["NH"], old["OH"]])
+    # the shared ref now carries the adsorbed geometry again
+    assert fetched[shared_id].meta["composition"]["N"] == 1
+    assert fetched[sink_id].meta["composition"] == {"Pd": 4}
+    # ... while the non-colliding refs were never rewritten
+    assert fetched[old["NH"]].meta["composition"]["N"] == 1
+    assert fetched[old["OH"]].meta["composition"]["N"] == 1
+
+    meta = store.get_ref(kind="pathway", id=int(ref.id))
+    assert meta is not None and meta.meta["n_structures"] == 4
+
+
+def test_reingest_second_apply_is_noop(store: Store) -> None:
+    """After one repair no collision member still shares a ref: a
+    second ``--apply`` plans only ``keep``s — nothing is written and the
+    stamped map is identical."""
+    ref = _pathway(store)
+    old = pw_ingest.ingest_intermediates(
+        store,
+        int(ref.id),
+        "pw-ingest",
+        "ck-OLD",
+        {"NH2OH": _extxyz(_BARE)},
+    )
+    shared_id = old["NH2OH"]
+    store.stamp_ref_meta(
+        int(ref.id),
+        {"structure_refs": {"NH2OH": shared_id, "*~nh2oh": shared_id}},
+    )
+    _seed_job(
+        store,
+        int(ref.id),
+        structures={
+            "NH2OH": {"energy": -3.0, "extxyz": _extxyz(_COVERED)},
+            "*~nh2oh": {"energy": -1.0, "extxyz": _extxyz(_BARE)},
+        },
+    )
+
+    first = pw_ingest.reingest_pathway_structures(store, ref)
+    assert first.written == 2
+    second = pw_ingest.reingest_pathway_structures(store, ref)
+    assert second.written == 0 and not second.skipped
+    assert second.structure_refs == first.structure_refs
 
 
 def test_reingest_pathway_structures_empty_without_seed_geometry(

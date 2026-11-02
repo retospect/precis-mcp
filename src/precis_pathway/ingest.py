@@ -19,6 +19,7 @@ import dataclasses
 import hashlib
 import io
 import re
+from collections import Counter
 from collections.abc import Iterable
 from typing import TYPE_CHECKING, Any
 
@@ -179,23 +180,40 @@ def ingest_intermediates(
             scene = scene_from_ase(_read_extxyz(xyz))
         except Exception:
             continue
-        ref, _created = store.structure_save(
-            slug=slugs[state],
-            title=f"{pathway_slug}: {state}",
-            scene=scene,
-            version=1,
-            card_text=f"{state} — {len(scene.atoms)} atoms, autocatpath intermediate "
-            f"of pathway {pathway_slug}",
-            description=f"autocatpath intermediate '{state}' of pathway {pathway_slug}",
+        ref = _save_intermediate(
+            store, pathway_ref_id, pathway_slug, state, slugs[state], scene
         )
         out[state] = ref.id
-        try:
-            store.add_link(
-                src_ref_id=pathway_ref_id, dst_ref_id=ref.id, relation="related-to"
-            )
-        except Exception:
-            pass  # duplicate link on re-run — fine
     return out
+
+
+def _save_intermediate(
+    store: Store,
+    pathway_ref_id: int,
+    pathway_slug: str,
+    state: str,
+    slug: str,
+    scene: Any,
+) -> Any:
+    """One ``structure_save`` + ``related-to`` link for an intermediate —
+    shared by ``ingest_intermediates`` and the re-ingest repair pass so a
+    repaired ref reads exactly like a freshly ingested one."""
+    ref, _created = store.structure_save(
+        slug=slug,
+        title=f"{pathway_slug}: {state}",
+        scene=scene,
+        version=1,
+        card_text=f"{state} — {len(scene.atoms)} atoms, autocatpath intermediate "
+        f"of pathway {pathway_slug}",
+        description=f"autocatpath intermediate '{state}' of pathway {pathway_slug}",
+    )
+    try:
+        store.add_link(
+            src_ref_id=pathway_ref_id, dst_ref_id=ref.id, relation="related-to"
+        )
+    except Exception:
+        pass  # duplicate link on re-run — fine
+    return ref
 
 
 def seed_geometry(store: Store, pathway_ref_id: int) -> tuple[dict[str, str], str]:
@@ -233,25 +251,78 @@ class ReingestResult:
     """What a ``reingest_pathway_structures`` pass did."""
 
     structure_refs: dict[str, int]  # the stamped map: new refs over prior
-    written: int  # states ingested this pass
+    written: int  # states re-saved or minted this pass
     input_states: int  # states collected from seed jobs
-    skipped: tuple[str, ...]  # input states whose geometry failed to parse
+    skipped: tuple[str, ...]  # repair targets whose geometry failed to parse
+
+
+@dataclasses.dataclass(frozen=True)
+class ReingestAction:
+    """One collision-group member's planned write — or the deliberate
+    non-action that keeps an older pathway's stamped mapping intact."""
+
+    action: str  # "keep" | "repair" | "mint"
+    ref_id: int | None = None  # keep/repair: the ref the mapping points to
+    slug: str | None = None  # mint: the slug to save under; repair: fallback
+
+
+def reingest_plan(
+    key: str,
+    structures: dict[str, str],
+    prior: dict[str, int],
+) -> dict[str, ReingestAction]:
+    """Per collision-group member, what the gr549179 repair must do —
+    keyed ONLY by the states ``colliding_states`` names. Everything else
+    is untouched by design: older pathways' refs sit under a different
+    ``pw-`` prefix than the one ``intermediate_slugs`` computes now (the
+    structure-set fingerprint changed since ingest), so re-resolving
+    every slug would mint a duplicate ref per state instead of
+    replacing in place (~19k dupes on the prod dry-run).
+
+    Inside a group the stamped ``structure_refs`` mapping leads, never
+    the recomputed slug:
+
+    * a member already mapped to a ref of its own (not shared) is
+      already repaired — ``keep``;
+    * the member keeping the legacy slug, when mapped to a ref other
+      members share, is re-saved onto that ref BY ID — the ref's own
+      slug stays, whatever it is — ``repair``;
+    * every other member — and any unmapped member — gets its new
+      slug from ``intermediate_slugs`` (suffixed for non-keepers),
+      minted once — ``mint``. ``structure_save`` replaces in place if a
+      partial earlier run already created it, so the mint cannot
+      duplicate either.
+    """
+    shared = {rid for rid, n in Counter(prior.values()).items() if n > 1}
+    slugs = intermediate_slugs(key, structures)
+    tails = state_slugs(structures)
+    plan: dict[str, ReingestAction] = {}
+    for base, names in colliding_states(structures).items():
+        for state in names:
+            cur = prior.get(state)
+            if cur is not None and cur not in shared:
+                plan[state] = ReingestAction("keep", ref_id=cur, slug=slugs[state])
+            elif tails[state] == base and cur is not None:
+                plan[state] = ReingestAction("repair", ref_id=cur, slug=slugs[state])
+            else:
+                plan[state] = ReingestAction("mint", slug=slugs[state])
+    return plan
 
 
 def reingest_pathway_structures(store: Store, ref: Any) -> ReingestResult:
-    """Operator repair for gr549179: re-write one pathway's intermediate
-    ``structure`` refs from the geometries still on its seed jobs, then
-    re-stamp ``meta.structure_refs``.
+    """Operator repair for gr549179: re-write ONLY the legacy-slug
+    collision groups of one pathway's intermediate ``structure`` refs
+    from the geometries still on its seed jobs, then re-stamp
+    ``meta.structure_refs`` (see :func:`reingest_plan` for who is touched
+    and why a non-colliding state's entry is left byte-for-byte intact).
 
-    The stamped map is the new ``{state → ref_id}`` over the prior one:
-    a state whose seed geometry fails to parse keeps its existing entry
-    rather than dropping out of the map. Adsorbed names keep their
-    legacy slug, so the ref a ``*~`` collision overwrote is repaired in
-    place; the sink forms mint fresh refs under their now-distinct
-    slugs. ``structure_save`` is create-or-replace, so the pass is
-    idempotent. ``input_states == 0`` (a monolith-era pathway keeps no
-    per-state geometry — re-run it instead) writes nothing and reports
-    zero counts."""
+    A state whose seed geometry fails to parse keeps its existing entry
+    rather than dropping out of the map. The pass is idempotent: after
+    one ``--apply`` no collision-group member still shares a ref, so a
+    second run plans only ``keep``s and writes nothing.
+    ``input_states == 0`` (a monolith-era pathway keeps no per-state
+    geometry — re-run it instead) writes nothing and reports zero
+    counts."""
     # Re-read the ref: the caller's object may carry a stale meta
     # snapshot (structure_refs was stamped after it was fetched).
     fresh = store.get_ref(kind="pathway", id=int(ref.id))
@@ -261,17 +332,31 @@ def reingest_pathway_structures(store: Store, ref: Any) -> ReingestResult:
     if not structures:
         return ReingestResult(prior, 0, 0, ())
     content_key = str(meta.get("content_key") or "") or content_key
-    out = ingest_intermediates(
-        store,
-        int(ref.id),
-        str(ref.slug or ref.id),
-        content_key,
-        structures,
-    )
+    plan = reingest_plan(content_key, structures, prior)
+    pathway_slug = str(ref.slug or ref.id)
+    out: dict[str, int] = {}
+    skipped: list[str] = []
+    for state in structures:
+        act = plan.get(state)
+        if act is None or act.action == "keep":
+            continue
+        try:
+            scene = scene_from_ase(_read_extxyz(structures[state]))
+        except Exception:
+            skipped.append(state)
+            continue
+        slug = str(act.slug)
+        if act.action == "repair" and act.ref_id is not None:
+            # Re-save onto the stamped ref by id — its slug is whatever
+            # the original ingest minted, NOT the recomputed one.
+            tgt = store.get_ref(kind="structure", id=int(act.ref_id))
+            if tgt is not None and tgt.slug:
+                slug = str(tgt.slug)
+        saved = _save_intermediate(store, int(ref.id), pathway_slug, state, slug, scene)
+        out[state] = int(saved.id)
     merged = {**prior, **out}
     store.stamp_ref_meta(
         int(ref.id),
         {"structure_refs": merged, "n_structures": len(structures)},
     )
-    skipped = tuple(s for s in structures if s not in out)
-    return ReingestResult(merged, len(out), len(structures), skipped)
+    return ReingestResult(merged, len(out), len(structures), tuple(skipped))

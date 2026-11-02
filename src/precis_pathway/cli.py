@@ -6,14 +6,19 @@ package, so the command cannot live under ``src/precis/cli`` —
 ``tests/test_plugin_import_boundary.py`` walks core's AST for exactly
 that.
 
-``reingest-structures <pathway>`` rewrites one pathway's intermediate
+``reingest-structures <pathway>`` repairs one pathway's intermediate
 ``structure`` refs from the per-state extxyz still on its succeeded
 ``autocatpath_seed`` jobs (``meta.structures``, keyed by the full state
 name — the record that survived gr549179's slug collision), then
-re-stamps ``meta.structure_refs``. Under the collision-aware
-``state_slugs`` the adsorbed name keeps its legacy slug, so the ref a
-``*~`` sink overwrote is repaired in place; the sink mints a fresh ref
-under its new distinct slug. Dry-run by default; ``--apply`` writes.
+re-stamps ``meta.structure_refs``. Only the legacy-slug collision
+groups are touched: the member keeping the legacy slug is re-saved
+onto the shared ref its stamped mapping already names (by ref id —
+its slug is whatever the original ingest minted), each other member
+mints once under its new suffixed slug, and every non-colliding state
+keeps its stamped ref untouched — older pathways' refs sit under a
+different ``pw-`` prefix than the recomputed one, so a blanket
+slug-recompute would mint a duplicate per state. Dry-run by default;
+``--apply`` writes.
 
 An operator one-shot for pathways ingested before the injective slug —
 nothing calls it on a cadence.
@@ -54,10 +59,10 @@ def add_parser(sub: argparse._SubParsersAction) -> argparse.ArgumentParser:
         help="Rewrite a pathway's intermediate structure refs from its seed jobs.",
         description=(
             "Re-collect each state's relaxed extxyz from the pathway's "
-            "succeeded autocatpath_seed jobs (meta.structures), rewrite the "
-            "intermediate structure refs under the injective state slug "
-            "(gr549179) and re-stamp meta.structure_refs. Dry-run by "
-            "default; --apply writes."
+            "succeeded autocatpath_seed jobs (meta.structures), repair the "
+            "legacy-slug collision groups' structure refs (gr549179) and "
+            "re-stamp meta.structure_refs. Non-colliding states keep their "
+            "stamped refs untouched. Dry-run by default; --apply writes."
         ),
     )
     ri.add_argument("pathway", help="Pathway ref id or slug.")
@@ -114,11 +119,10 @@ def _reingest_structures(args: argparse.Namespace) -> None:
 
     meta = dict(ref.meta or {})
     key = str(meta.get("content_key") or "") or seed_key
-    slugs = pw_ingest.intermediate_slugs(key, structures)
     collisions = pw_ingest.colliding_states(structures)
-    collided = {s for names in collisions.values() for s in names}
     prior = {str(s): int(r) for s, r in (meta.get("structure_refs") or {}).items()}
     shared = {rid for rid, n in Counter(prior.values()).items() if n > 1}
+    plan = pw_ingest.reingest_plan(key, structures, prior)
 
     dry_run = not args.apply
     mode = "DRY-RUN" if dry_run else "APPLY"
@@ -128,21 +132,33 @@ def _reingest_structures(args: argparse.Namespace) -> None:
         file=sys.stderr,
     )
     for state in structures:
-        existing = store.get_ref(kind="structure", id=slugs[state])
-        action = (
-            f"replace st{existing.id} in place"
-            if existing is not None
-            else "mint a new structure ref"
-        )
+        act = plan.get(state)
+        if act is None:
+            continue
         cur = prior.get(state)
+        if act.action == "keep":
+            action = f"leave st{act.ref_id} untouched (already distinct)"
+            target = ""
+        elif act.action == "repair":
+            action = f"re-save onto st{act.ref_id} (shared) in place"
+            target = ""
+        else:
+            existing = store.get_ref(kind="structure", id=str(act.slug))
+            action = (
+                f"replace st{existing.id} in place"
+                if existing is not None
+                else "mint a new structure ref"
+            )
+            target = f"{act.slug} — "
         if cur is None:
             now = "currently unmapped"
         elif cur in shared:
             now = f"currently st{cur} (shared)"
         else:
             now = f"currently st{cur}"
-        flag = " [legacy-slug collision]" if state in collided else ""
-        print(f"  {state}: {slugs[state]} — {action}; {now}{flag}")
+        print(f"  {state}: {target}{action}; {now} [legacy-slug collision]")
+    untouched = len(structures) - len(plan)
+    print(f"  {untouched} non-colliding state(s) keep their stamped refs untouched")
     if collisions:
         print(
             "  legacy-slug collisions: "
