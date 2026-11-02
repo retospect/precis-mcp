@@ -46,6 +46,7 @@ from psycopg.errors import ForeignKeyViolation, UniqueViolation
 
 from precis.errors import BadInput, Upstream
 from precis.response import Response
+from precis.store.revision_context import current_revision_context
 from precis.store.types import ChunkInsert, ChunkRow, Ref
 
 #: Comments rendered in full on a bare ``get`` (the default policy).
@@ -385,6 +386,15 @@ def append_comment(
     (e.g. ``{"no_index": "true"}``).
     """
 
+    # The author stamp (gr549420): the revision-context actor lands in
+    # ``meta.authored_by`` — a web comment records the signed-in login
+    # (``deps.human_write_context``), an MCP call the session's actor.
+    # Callers' explicit meta wins.
+    merged_meta = dict(meta or {})
+    ctx = current_revision_context()
+    if ctx is not None and ctx.actor:
+        merged_meta.setdefault("authored_by", ctx.actor)
+
     def _ins() -> int:
         return _insert_next(
             store,
@@ -394,7 +404,7 @@ def append_comment(
             lister=lister,
             number_of=number_of,
             ord_for=ord_for,
-            meta=meta,
+            meta=merged_meta,
         )
 
     try:

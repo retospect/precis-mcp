@@ -1,9 +1,11 @@
-"""``/gripes`` status chips (gr520298): open rows inline, every other
-status a chip whose rows lazy-load through ``GET /gripes/rows``.
+"""``/gripes`` status filters: the selected filter's rows inline under
+a row of real ``?status=`` buttons (gr549794) — the daily cohorts as
+buttons, every other status the grouped count surfaces behind ``more``.
 
-Page load is one ``COUNT … GROUP BY`` status plus the open rows — the
-closed/merged/duplicate cohort (``done``/``wontfix``/off-vocab values
-and the soft-deleted ``retired`` bucket) renders as counts, not tables.
+Page load is one ``COUNT … GROUP BY`` status plus the selected rows —
+the closed/merged/duplicate cohort (``done``/``wontfix``/off-vocab
+values and the soft-deleted ``retired`` bucket) renders as counts and
+links, not tables.
 """
 
 import re
@@ -66,10 +68,10 @@ def test_initial_load_one_grouped_count_plus_selected_rows_only(
     assert "fixture-triaged" in live.text
     for hidden in ("fixture-open", "fixture-done", "fixture-retired"):
         assert hidden not in live.text
-    # …but their chips — retired included — are there on the shared
-    # lazy path.
+    # …but their filter links — retired included — are all there:
+    # ``open`` as a button, ``done``/``retired`` behind "more".
     for state in ("open", "done", "retired"):
-        assert f'hx-get="/gripes/rows?status={state}"' in live.text
+        assert f'href="/gripes?status={state}"' in live.text
 
 
 @pytest.mark.parametrize(
@@ -128,7 +130,7 @@ def test_rows_endpoint_serves_a_drift_status_the_count_surfaces(
     _seed_off_vocab_gripe(store, "fixture-drift-closed", "closed")
     monkeypatch.setattr(gripes, "get_store", lambda request: store)
 
-    assert 'data-status="closed"' in client.get("/gripes").text
+    assert 'href="/gripes?status=closed"' in client.get("/gripes").text
     frag = client.get("/gripes/rows?status=closed")
     assert frag.status_code == 200
     assert "fixture-drift-closed" in frag.text
@@ -245,13 +247,15 @@ def test_rows_endpoint_returns_only_that_statuss_rows(
     assert bogus.status_code == 400
 
 
-def test_every_status_renders_as_a_collapsible_chip(
+def test_every_status_renders_as_a_filter_link(
     store: Any, client: Any, monkeypatch: Any
 ) -> None:
-    """Every status present is a ``<details>`` chip in workflow order:
-    the default triaged filter expanded with its rows inline; the rest
-    collapsed behind an hx-get — none of their rows in the served HTML."""
+    """gr549794: the daily cohorts render as real ``?status=`` buttons
+    in ``_FILTER_BUTTONS`` order; every other status the grouped count
+    surfaces is a ``?status=`` link behind ``more`` — same allowlist.
+    Only the selected filter's rows render inline."""
     from precis_web.routes import gripes
+    from precis_web.routes.gripes import _FILTER_BUTTONS
 
     for state in ("open", "triaged", "done"):
         insert_gripe(store, f"fixture-panel-{state}", status=state)
@@ -260,11 +264,11 @@ def test_every_status_renders_as_a_collapsible_chip(
     monkeypatch.setattr(gripes, "get_store", lambda request: store)
 
     live = client.get("/gripes").text
-    assert '<details class="mb-3 group" data-status="triaged" open>' in live
+    positions = [live.index(f'href="/gripes?status={s}"') for s in _FILTER_BUTTONS]
+    assert positions == sorted(positions)
+    for state in ("done", "retired"):
+        assert f'href="/gripes?status={state}"' in live
     assert "fixture-panel-triaged" in live
-    for state in ("open", "done", "retired"):
-        assert f'data-status="{state}"' in live
-        assert f'hx-get="/gripes/rows?status={state}"' in live
     for hidden in (
         "fixture-panel-open",
         "fixture-panel-done",
@@ -273,12 +277,127 @@ def test_every_status_renders_as_a_collapsible_chip(
         assert hidden not in live
 
 
+def test_filter_buttons_carry_cohort_sums_and_tooltips(store: Any) -> None:
+    """gr549794/gr549769: ``_filter_buttons`` returns the row in
+    ``_FILTER_BUTTONS`` order — cohort buttons carry the same sums
+    ``_filter_chips`` computes (``attention`` = the badge set,
+    ``live`` = non-retired non-terminal, ``all`` = everything) —
+    every other counted status lands in ``more``, and every entry
+    carries a ``title=`` tooltip."""
+    from precis_web.routes.gripes import (
+        _FILTER_BUTTONS,
+        _filter_buttons,
+        _status_counts,
+    )
+
+    insert_gripe(store, "b-open")
+    insert_gripe(store, "b-open-2")
+    insert_gripe(store, "b-triaged", status="triaged")
+    insert_gripe(store, "b-auto", status="auto_verify")
+    insert_gripe(store, "b-done", status="done")
+    ret = insert_gripe(store, "b-retired", status="wontfix")
+    store.retire_ref(ret.id)
+
+    buttons, more = _filter_buttons(_status_counts(store), "triaged")
+
+    assert [b["status"] for b in buttons] == list(_FILTER_BUTTONS)
+    by_status = {b["status"]: b["count"] for b in buttons}
+    assert by_status["attention"] == 4  # open×2 + triaged + auto_verify
+    assert by_status["open"] == 2
+    assert by_status["triaged"] == 1
+    assert by_status["user_verify"] == 0  # present at 0, not dropped
+    assert by_status["live"] == 4
+    assert by_status["all"] == 6
+    assert [b["status"] for b in buttons if b["selected"]] == ["triaged"]
+    assert {m["status"]: m["count"] for m in more} == {
+        "done": 1,
+        "retired": 1,
+    }
+    assert all(b["tooltip"] for b in buttons)
+    assert all(m["tooltip"] for m in more)
+
+
+def test_filter_buttons_keep_a_selected_uncounted_status(store: Any) -> None:
+    """A selected status with no rows (``?status=parked`` on an empty
+    parked bucket) still renders — as a ``more`` entry at 0, so the
+    page always shows which filter is on."""
+    from precis_web.routes.gripes import _filter_buttons, _status_counts
+
+    insert_gripe(store, "b-open")
+
+    buttons, more = _filter_buttons(_status_counts(store), "parked")
+
+    assert all(b["status"] != "parked" for b in buttons)
+    parked = next(m for m in more if m["status"] == "parked")
+    assert parked["count"] == 0
+    assert parked["selected"] is True
+
+
+def test_detail_comments_show_author_and_utc_stamp(
+    store: Any, client: Any, monkeypatch: Any
+) -> None:
+    """gr549420: each comment header on the detail page carries its
+    author and UTC stamp labelled ``Z`` — ``append_comment`` stamps
+    ``meta.authored_by`` from the revision-context actor (a web comment
+    records the signed-in login), legacy rows fall back to ``agent``."""
+    from precis.handlers import _comment_timeline as tl
+    from precis.store.revision_context import revision_context
+    from precis_web.routes import gripes
+
+    ref = insert_gripe(store, "fixture-commented")
+    with revision_context(actor="user:reto"):
+        tl.append_comment(
+            store,
+            ref,
+            kind="gripe",
+            comment_kind="gripe_comment",
+            text="humans can read this",
+        )
+    tl.append_comment(
+        store,
+        ref,
+        kind="gripe",
+        comment_kind="gripe_comment",
+        text="agent note",
+    )
+    monkeypatch.setattr(gripes, "get_store", lambda request: store)
+
+    page = client.get(f"/gripes/{ref.id}").text
+    assert "humans can read this" in page
+    assert "agent note" in page
+    assert re.search(r"comment 1 · user:reto · \d{4}-\d{2}-\d{2} \d{2}:\d{2}Z", page)
+    assert re.search(r"comment 2 · agent · \d{4}-\d{2}-\d{2} \d{2}:\d{2}Z", page)
+
+
+def test_every_status_link_on_the_page_passes_the_allowlist(
+    store: Any, client: Any, monkeypatch: Any
+) -> None:
+    """gr549572 regression: every ``?status=`` value the rendered page
+    links — the nav link, the button row, the ``more`` overflow — is in
+    the route's allowlist and serves a 200, never a 400."""
+    from precis_web.routes import gripes
+
+    insert_gripe(store, "fixture-open", status="open")
+    insert_gripe(store, "fixture-done", status="done")
+    retired = insert_gripe(store, "fixture-retired", status="wontfix")
+    store.retire_ref(retired.id)
+    monkeypatch.setattr(gripes, "get_store", lambda request: store)
+
+    page = client.get("/gripes")
+    assert page.status_code == 200
+    links = sorted(set(re.findall(r'href="(/gripes\?status=[^"]+)"', page.text)))
+    assert links
+    for href in links:
+        resp = client.get(href)
+        assert resp.status_code == 200, f"{href} -> {resp.status_code}"
+
+
 def test_selected_chip_renders_with_zero_rows(
     store: Any, client: Any, monkeypatch: Any
 ) -> None:
-    """No triaged gripes: the default triaged chip still renders (count
-    0, expanded) with the friendly empty state, and a rows hit for an
-    empty status gets the same kind of line."""
+    """No triaged gripes: the default triaged button still renders
+    (count 0, marked selected) with the friendly empty state, and a
+    rows hit for an empty status gets the same kind of line."""
     from precis_web.routes import gripes
 
     insert_gripe(store, "fixture-populated-open", status="open")
@@ -286,7 +405,7 @@ def test_selected_chip_renders_with_zero_rows(
 
     live = client.get("/gripes")
     assert live.status_code == 200
-    assert 'data-status="triaged" open' in live.text
+    assert re.search(r'href="/gripes\?status=triaged"[^>]*bg-accent-muted', live.text)
     assert "No triaged gripes" in live.text
     assert "fixture-populated-open" not in live.text
     frag = client.get("/gripes/rows?status=verify")

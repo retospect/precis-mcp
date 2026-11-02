@@ -11,21 +11,24 @@ tree guards stay single-sourced with the MCP surface (see ``deps.py``).
 * ``GET /gripes[?status=<s>]`` — the selected filter's gripes inline
   (default ``triaged``, the pick list; ``attention`` — the cohort the
   nav badge counts — plus ``live`` / ``all`` / any one status by
-  ``status=``) plus one status chip per
-  status with its count (gr520298). The load is a single
-  ``COUNT … GROUP BY`` status plus the selected rows; every other
-  status's rows lazy-load on the chip's first expand. Retired gripes
-  (merged/duplicate/junk soft-deletes) bucket under a ``retired``
-  pseudo-status chip; carries the filing form.
-* ``GET /gripes/rows?status=<s>[&offset=<n>]`` — the chips' shared
-  lazy-rows fragment: one status's rows, on the same ``_rows`` query
-  the list used to run for every status at page load. Paged
+  ``status=``) under a row of real filter buttons with counts
+  (gr549794): the daily cohorts as buttons, every other status the
+  grouped count surfaces behind a ``more`` overflow, each carrying a
+  ``title=`` tooltip naming what it covers (gr549769). Only the
+  selected filter's rows render — the earlier per-status sections
+  duplicated a cohort filter's rows across the status sections below
+  it. The load is a single ``COUNT … GROUP BY`` status plus the
+  selected rows. Retired gripes (merged/duplicate/junk soft-deletes)
+  bucket under a ``retired`` pseudo-status; carries the filing form.
+* ``GET /gripes/rows?status=<s>[&offset=<n>]`` — the rows paging
+  fragment: one status's rows, on the same ``_rows`` query. Paged
   ``_ROWS_PAGE`` at a time — the done bucket alone is ~1.9k rows, so
-  one chip click must not ship the whole cohort; a trailing
+  one filter switch must not ship the whole cohort; a trailing
   "show more" row fetches the next page and swaps into the tbody.
   ``status`` is allowlisted to ``_STATUS_PARAM_VALUES`` plus whatever
-  the grouped count surfaces — a drift status's chip stays expandable;
-  an unknown value not in the DB is a 400 naming the allowed list.
+  the grouped count surfaces — a drift status's filter stays
+  reachable; an unknown value not in the DB is a 400 naming the
+  allowed list.
 * ``POST /gripes`` — ``put`` verb create. The filed text gets an
   attribution line naming the signed-in user appended to it (see
   ``_attribute``): a gripe's stored text *is* its whole record, and
@@ -45,6 +48,7 @@ tree guards stay single-sourced with the MCP surface (see ``deps.py``).
 
 from __future__ import annotations
 
+from datetime import UTC
 from typing import TYPE_CHECKING, Any
 
 from fastapi import APIRouter, Form, Request
@@ -145,6 +149,49 @@ _STATUS_PARAM_VALUES: tuple[str, ...] = (
     "live",
     BADGE_FILTER,
 )
+
+#: The filter button row on ``GET /gripes`` (gr549794): the cohorts
+#: reached for daily — ``attention`` (the badge's set), the pick list,
+#: the verify queues, plus ``live`` / ``all``. Every other status the
+#: grouped count surfaces sits behind the ``more`` overflow — same
+#: ``?status=`` links, same allowlist.
+_FILTER_BUTTONS: tuple[str, ...] = (
+    BADGE_FILTER,
+    "open",
+    "triaged",
+    "auto_verify",
+    "user_verify",
+    "needs_spec",
+    "live",
+    "all",
+)
+
+#: ``title=`` mouseover per filter (gr549769): which STATUS values or
+#: tags the filter covers and why a gripe lands there. One dict next to
+#: ``_STATUS_PARAM_VALUES`` so the texts stay beside the vocabulary;
+#: an off-vocabulary drift status gets a generated line in
+#: ``_filter_buttons``.
+_STATUS_TOOLTIPS: dict[str, str] = {
+    BADGE_FILTER: (
+        "open + triaged + auto_verify — the nav badge's cohort: "
+        "gripes that need an eye now"
+    ),
+    "open": "STATUS:open — newly filed, not yet triaged",
+    "triaged": "STATUS:triaged — reviewed, on the pick list",
+    "fixing": "STATUS:fixing — claimed, work in flight",
+    "ready_for_fix": "STATUS:ready_for_fix — specced, waiting for a builder",
+    "in_review": "STATUS:in_review — a fix is in review",
+    "verify": "STATUS:verify — legacy verify bucket",
+    "auto_verify": ("STATUS:auto_verify — a fix landed, awaiting the release check"),
+    "user_verify": ("STATUS:user_verify — waiting on the human to confirm the fix"),
+    "needs_spec": ("STATUS:needs_spec — blocked on a spec or a ruling"),
+    "parked": "STATUS:parked — deliberately shelved, off every queue",
+    "done": "STATUS:done — fixed and verified",
+    "wontfix": "STATUS:wontfix — won't act, kept on record",
+    "retired": "soft-deleted gripes — merged, duplicate or junk",
+    "live": "every live gripe — all statuses except done and wontfix",
+    "all": "every gripe, including the retired bucket",
+}
 
 #: Rows per ``/gripes/rows`` page — the cap that keeps a closed-status
 #: chip's first expand from shipping its whole cohort (the done bucket
@@ -412,33 +459,102 @@ def _filter_chips(chips: list[dict[str, Any]], selected: str) -> list[dict[str, 
     return out
 
 
+def _status_tooltip(status: str) -> str:
+    """The ``title=`` text for one filter (gr549769) — the dict's
+    wording for known values, a generated line for drift."""
+    return _STATUS_TOOLTIPS.get(
+        status,
+        f"STATUS:{status} — a status outside the current vocabulary (legacy drift).",
+    )
+
+
+def _filter_buttons(
+    counts: list[dict[str, Any]], selected: str
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """The button row + ``more`` overflow for ``GET /gripes`` (gr549794).
+
+    ``buttons`` is ``_FILTER_BUTTONS`` in order with cohort counts —
+    the same sums ``_filter_chips`` computes for its synthetic leading
+    chip (``attention`` = the ``BADGE_STATUSES`` union, ``live`` =
+    every non-retired non-terminal status, ``all`` = everything);
+    a real status takes its grouped count, a not-present one 0.
+    ``more`` is every other status the grouped count surfaced —
+    ``fixing``/``parked``/``done``/``wontfix``/``retired`` and drift
+    values — plus the selected value itself when it's neither a button
+    nor counted, so a selected filter always renders somewhere.
+    """
+    by_status = {str(c["status"]): int(c["count"]) for c in counts}
+    cohort = {
+        BADGE_FILTER: sum(by_status.get(s, 0) for s in BADGE_STATUSES),
+        "live": sum(
+            n
+            for s, n in by_status.items()
+            if s != "retired" and s not in TERMINAL_VALUES
+        ),
+        "all": sum(by_status.values()),
+    }
+    buttons = [
+        {
+            "status": s,
+            "count": cohort.get(s, by_status.get(s, 0)),
+            "selected": s == selected,
+            "tooltip": _status_tooltip(s),
+        }
+        for s in _FILTER_BUTTONS
+    ]
+    more_statuses = [s for s in by_status if s not in _FILTER_BUTTONS]
+    if selected not in _FILTER_BUTTONS and selected not in more_statuses:
+        more_statuses.append(selected)
+    more = [
+        {
+            "status": s,
+            "count": by_status.get(s, 0),
+            "selected": s == selected,
+            "tooltip": _status_tooltip(s),
+        }
+        for s in more_statuses
+    ]
+    return buttons, more
+
+
+def _comment_stamp(dt: Any) -> str:
+    """The comment-header timestamp (gr549420): ``%Y-%m-%d %H:%MZ`` —
+    the same format the MCP ``view='comments'`` header prints
+    (``_comment_timeline._stamp``)."""
+    if dt is None:
+        return ""
+    return dt.astimezone(UTC).strftime("%Y-%m-%d %H:%MZ")
+
+
 @router.get("", response_class=HTMLResponse)
 async def gripes(request: Request, status: str = DEFAULT_STATUS) -> HTMLResponse:
-    """The selected filter's rows inline + one chip per status (gr520298).
+    """The filter button row + the selected filter's rows (gr549794).
 
     The default filter is ``triaged`` — the pick list. The nav badge
     (``nav.py::_gripes_count``) counts the wider ``attention`` cohort
     (``BADGE_STATUSES``), which ``?status=attention`` lists.
-    ``?status=live`` / ``all`` / any one status reaches the rest; the
-    chips carry counts per status so the big list is one click away.
+    ``?status=live`` / ``all`` / any one status reaches the rest — the
+    buttons link to all of them with counts; statuses outside
+    ``_FILTER_BUTTONS`` sit behind ``more`` so the row stays short.
 
     Two queries at load: the grouped count and the selected rows — the
     terminal/retired cohort (thousands of rows in prod) never leaves
-    the DB until its chip is expanded. ``status`` takes the same
+    the DB until its filter is picked. ``status`` takes the same
     allowlist as ``/gripes/rows``."""
     store = get_store(request)
     counts = _status_counts(store)
     allowed = _allowed_statuses(counts)
     if status not in allowed:
         return _unknown_status(request, status, allowed)
-    chips = _filter_chips(counts, status)
+    buttons, more_filters = _filter_buttons(counts, status)
     selected_rows = _rows(store, status_filter=status, limit=_ROWS_PAGE + 1)
     return templates.TemplateResponse(
         request,
         "gripes/list.html.j2",
         {
             "active_tab": "gripes",
-            "chips": chips,
+            "buttons": buttons,
+            "more_filters": more_filters,
             "selected": status,
             "selected_rows": selected_rows[:_ROWS_PAGE],
             "selected_next_offset": (
@@ -562,7 +678,19 @@ async def detail(request: Request, id: int) -> HTMLResponse:
         if chunk_kind == _BODY_KIND:
             body_text = b.text or body_text
         elif chunk_kind == _COMMENT_KIND:
-            comments.append({"pos": b.ord, "text": b.text or ""})
+            # Author + UTC stamp (gr549420) — the same data the MCP
+            # ``view='comments'`` header renders. ``meta.authored_by``
+            # is stamped by ``tl.append_comment`` from the revision
+            # context; 'agent' covers rows written before it existed.
+            comments.append(
+                {
+                    "pos": b.ord,
+                    "text": b.text or "",
+                    "author": (getattr(b, "meta", None) or {}).get("authored_by")
+                    or "agent",
+                    "stamp": _comment_stamp(getattr(b, "created_at", None)),
+                }
+            )
 
     tags = store.tags_for(ref.id)
     status = _status_of(tags)

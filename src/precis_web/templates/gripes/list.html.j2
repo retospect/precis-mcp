@@ -39,41 +39,40 @@
   </form>
 </details>
 
-{# One <details> chip per status, workflow order (gr520298). Only the
-   selected filter's panel carries rows at page load (default: triaged,
-   the pick list; the nav badge counts the wider ``attention`` cohort —
-   gr548577) — every other status fires ONE
-   /gripes/rows request on its first expand (``toggle once``), on the
-   shared code path; counts come from the load-time GROUP BY, so a
-   1.9k-row done bucket costs a number, not a table. ``retired`` is the
-   pseudo-status the count gives soft-deleted rows (merged/duplicate/
-   junk). ``attention`` / ``live`` / ``all`` lead the list only when
-   selected. #}
-<p class="mb-3 text-sm text-fg-faint">
-  Showing <span class="font-mono">{{ selected }}</span>.
-  Filter:
-  {% for f in ['triaged', 'attention', 'live', 'all'] %}
-  {% if f == selected %}<span class="font-semibold text-fg-secondary">{{ f }}</span>{% else %}<a href="/gripes?status={{ f }}" class="text-accent-deep hover:underline">{{ f }}</a>{% endif %}{% if not loop.last %} · {% endif %}
+{# Real filter buttons (gr549794): each links to /gripes?status=<s> —
+   the route's allowlist already covers every value here (gr549572
+   pinned the nav's link). Counts come from the load-time GROUP BY;
+   cohort buttons (attention/live/all) carry the summed counts. Every
+   button's title= names what it covers and why a gripe lands there
+   (gr549769). Less-used statuses sit behind ``more`` — same links.
+   Only the selected filter's rows render: a cohort filter used to
+   duplicate its rows across the per-status sections below. #}
+<div class="flex flex-wrap items-center gap-2 mb-4">
+  {% for b in buttons %}
+  <a href="/gripes?status={{ b.status | urlencode }}" title="{{ b.tooltip }}"
+     class="inline-flex items-center gap-1.5 rounded-md border px-3 py-1.5 text-sm font-medium transition {% if b.selected %}border-accent-strong bg-accent-muted text-accent-deep{% else %}border-line bg-surface text-fg-secondary hover:bg-surface-subtle{% endif %}">
+    {{ b.status }}
+    <span class="rounded-full px-1 text-xs {% if b.selected %}text-accent-deep{% else %}text-fg-faint{% endif %}">{{ b.count }}</span>
+  </a>
   {% endfor %}
-</p>
-{% for c in chips %}
-<details class="mb-3 group" data-status="{{ c.status }}"{% if c.status == selected %} open{% endif %}
-  {%- if c.status != selected %} hx-get="/gripes/rows?status={{ c.status | urlencode }}" hx-trigger="toggle once" hx-target="#gripe-rows-{{ loop.index }}" hx-swap="innerHTML"{% endif %}>
-  <summary class="cursor-pointer select-none text-sm font-semibold text-fg-secondary py-1 flex items-center gap-2">
-    <span class="text-fg-faint transition group-open:rotate-90">&#9656;</span>
-    <span class="inline-block rounded border px-1.5 py-0.5 text-[11px] font-medium uppercase {{ c.badge }}">
-      {{ c.status }}
-    </span>
-    <span class="text-fg-faint font-normal">{{ c.count }}</span>
-  </summary>
-  <div id="gripe-rows-{{ loop.index }}" class="mt-2">
-    {% if c.status == selected %}
-      {% set rows = selected_rows %}{% set rows_status = c.status %}{% set next_offset = selected_next_offset %}{% set append = false %}{% include "gripes/_rows.html.j2" %}
-    {% else %}
-      <div class="rounded-md border border-line px-3 py-2 text-sm text-fg-faint">loading…</div>
-    {% endif %}
-  </div>
-</details>
-{% endfor %}
+  {% if more_filters %}
+  <details class="relative group">
+    <summary class="cursor-pointer select-none list-none inline-flex items-center gap-1 rounded-md border border-line bg-surface px-3 py-1.5 text-sm font-medium text-fg-secondary hover:bg-surface-subtle">
+      more <span class="text-fg-faint transition group-open:rotate-180">&#9662;</span>
+    </summary>
+    <div class="absolute z-10 mt-1 min-w-[11rem] rounded-md border border-line bg-surface py-1 shadow-lg">
+      {% for m in more_filters %}
+      <a href="/gripes?status={{ m.status | urlencode }}" title="{{ m.tooltip }}"
+         class="flex items-center justify-between gap-4 px-3 py-1.5 text-sm {% if m.selected %}bg-accent-muted text-accent-deep font-medium{% else %}text-fg-secondary hover:bg-surface-subtle{% endif %}">
+        {{ m.status }}
+        <span class="text-xs text-fg-faint">{{ m.count }}</span>
+      </a>
+      {% endfor %}
+    </div>
+  </details>
+  {% endif %}
+</div>
+
+{% set rows = selected_rows %}{% set rows_status = selected %}{% set next_offset = selected_next_offset %}{% set append = false %}{% include "gripes/_rows.html.j2" %}
 
 {% endblock %}

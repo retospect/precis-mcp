@@ -38,7 +38,7 @@
     {% for c in comments %}
     <li class="rounded-lg border border-line bg-surface">
       <div class="px-4 py-1.5 border-b border-line-subtle bg-surface-subtle/60 rounded-t-lg text-xs font-mono text-fg-faint">
-        ~{{ c.pos }}
+        comment {{ c.pos }} · {{ c.author }} · {{ c.stamp }}
       </div>
       <div class="px-4 py-3 text-sm whitespace-pre-wrap break-words text-fg">{{ c.text | linkify_refs(markdown=True) }}</div>
     </li>

@@ -11,6 +11,7 @@
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 from typing import Any
 
@@ -109,10 +110,10 @@ def test_gripes_default_filter_is_the_pick_list(
     monkeypatch.setattr(gripes, "get_store", lambda request: store)
 
     page = client.get("/gripes").text
-    assert '<details class="mb-3 group" data-status="triaged" open>' in page
+    assert 'href="/gripes?status=triaged"' in page
     assert "fixture-triaged-pick" in page
     assert "fixture-open-hidden" not in page
-    assert 'hx-get="/gripes/rows?status=open"' in page
+    assert 'href="/gripes?status=open"' in page
     assert _gripes_count(store) == 2
 
 
@@ -133,7 +134,7 @@ def test_gripes_badge_lands_on_the_attention_cohort(
 
     assert 'href="/gripes?status=attention"' in client.get("/gripes").text
     page = client.get("/gripes?status=attention").text
-    assert 'data-status="attention" open' in page
+    assert re.search(r'href="/gripes\?status=attention"[^>]*bg-accent-muted', page)
     for listed in (
         "fixture-open-listed",
         "fixture-triaged-listed",
@@ -163,7 +164,7 @@ def test_gripes_status_param_reaches_the_cohort_lists(
     monkeypatch.setattr(gripes, "get_store", lambda request: store)
 
     page = client.get(f"/gripes?status={status}").text
-    assert f'data-status="{status}" open' in page
+    assert re.search(rf'href="/gripes\?status={status}"[^>]*bg-accent-muted', page)
     assert "fixture-triaged-pick" in page
     assert "fixture-open-too" in page
     assert ("fixture-done-row" in page) is (status == "all")

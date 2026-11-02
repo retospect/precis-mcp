@@ -4618,12 +4618,13 @@ def test_alerts_needs_you_empty_state(client) -> None:
 
 
 def test_gripes_page_renders_empty(client) -> None:
-    """Under the fake store (empty pool) the default triaged chip renders at 0."""
+    """Under the fake store (empty pool) the default triaged filter
+    button renders selected at 0."""
     resp = client.get("/gripes")
     assert resp.status_code == 200
     assert "Gripes" in resp.text
     assert "No triaged gripes" in resp.text
-    assert 'data-status="triaged" open' in resp.text
+    assert 'href="/gripes?status=triaged"' in resp.text
 
 
 def test_gripes_list_carries_the_filing_form(client) -> None:
