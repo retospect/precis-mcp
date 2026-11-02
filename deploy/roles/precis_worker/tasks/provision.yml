@@ -104,6 +104,40 @@
     creates: "{{ precis_worker_venv }}/bin/python"
   become: true
 
+# gr551938: the worker's child `uv run` calls (land_slice -> scripts/ship ->
+# gen-devin-hooks, slice sessions' scripts/test) build a project env in a
+# venv-less checkout, and with no pin uv took the newest Homebrew python
+# (3.15: no rdkit wheel). The deploy user's uv gets a global pin to the same
+# python.org 3.12 the worker venv symlinks: Full Disk Access is granted to
+# that Developer-ID signature, rdkit/marker/torch all have cp312 wheels,
+# and CI's matrix covers 3.12. A project's own .python-version or an
+# explicit --python still wins. The cache dir is made deploy-owned too — a
+# root-owned ~/.cache/uv made every uv shebang exit 2 (gr551238).
+- name: Deploy user's uv cache and config dirs (macOS)
+  when: os_family == "darwin"
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: deploy
+    group: staff
+    mode: "0755"
+  loop:
+    - /Users/deploy/.cache
+    - /Users/deploy/.cache/uv
+    - /Users/deploy/.config
+    - /Users/deploy/.config/uv
+  become: true
+
+- name: Pin the deploy user's uv to python.org 3.12 (macOS, gr551938)
+  when: os_family == "darwin"
+  ansible.builtin.copy:
+    dest: /Users/deploy/.config/uv/.python-version
+    content: "{{ precis_python }}\n"
+    owner: deploy
+    group: staff
+    mode: "0644"
+  become: true
+
 # autocatpath's floor is >=0.18.0, not on PyPI yet (release-gated; PyPI tops
 # out at 0.13.0) — land the controller-side private wheel into this host's
 # wheelhouse BEFORE the `catalyst`-extra install below so its --find-links
