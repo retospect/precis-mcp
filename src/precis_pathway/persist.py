@@ -33,6 +33,14 @@ BODY_KIND = "pathway_body"
 _QUEST_CAND_SLUG_RE = re.compile(r"^q\d+cand-")
 
 
+def quest_minted_slug(slug: str | None) -> bool:
+    """A quest-minted pathway's slug — ``q<quest_id>cand-<digest>-rx-…`` —
+    the pre-``candidate_ref``-stamp mark (the stamp itself is the modern
+    check; both name the barrier-lane mint)."""
+    head = str(slug or "").split("-rx-", 1)[0]
+    return bool(_QUEST_CAND_SLUG_RE.match(head))
+
+
 def _json_finite(obj: Any) -> Any:
     """Recursively replace non-finite floats (NaN/Inf) with None.
 

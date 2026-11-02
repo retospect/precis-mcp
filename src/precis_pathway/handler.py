@@ -40,7 +40,7 @@ if TYPE_CHECKING:
 
     from .types import NetworkTopology, PathwayArtifact
 
-from .persist import BODY_KIND, pathway_title, persist_result
+from .persist import BODY_KIND, pathway_title, persist_result, quest_minted_slug
 
 #: When set, `put` routes the compute to a `autocatpath_explore` job pinned to this
 #: node instead of running autocatpath in-process (slice 1). The gateway sets it to
@@ -156,6 +156,13 @@ def _env_overlay(raw: Any, args: dict[str, Any] | None) -> Any:
             )
         out[key] = args[key]
     return out
+
+
+def _is_quest_pathway(meta: dict[str, Any], slug: str | None) -> bool:
+    """A quest's barrier lane minted this pathway — the mint-stamped
+    ``meta.candidate_ref``, or the ``q<N>cand-<digest>`` slug head on
+    refs that predate the stamp (:func:`persist.quest_minted_slug`)."""
+    return meta.get("candidate_ref") is not None or quest_minted_slug(slug)
 
 
 def _env_key(message: str) -> str | None:
@@ -677,9 +684,14 @@ class PathwayHandler(Handler):
         conditions). A pathway with no usable stored environment is refused
         here, not after the solve burns a run (gr550976). The environment
         and objective are validated through the engine's own ``from_dict``;
-        the sweep block's full validation is the engine's, at job time,
-        where a refusal lands as ``kinetics_sweep_error`` on the pathway and
-        fails the job."""
+        an explicit ``sweep`` is shape-checked at the door
+        (:func:`kinetics_job.sweep_shape_error` — the refusal names the
+        accepted keys), and the deeper validation stays the engine's at job
+        time. A quest-minted pathway with no sweep arg and no
+        config-declared ``kinetics.sweep`` takes
+        :data:`kinetics_job.QUEST_KINETICS_SWEEP` instead of the stored
+        record echo (gr543723); a non-quest pathway keeps the
+        stored/engine box."""
         store = self.hub.live_store
         example = (
             "put(kind='pathway', id='pw123', mode='recompute_kinetics', "
@@ -721,11 +733,22 @@ class PathwayHandler(Handler):
                 )
         from .aggregate_job import kinetics_idem_key
         from .kinetics_job import (
+            QUEST_KINETICS_SWEEP,
+            SWEEP_KEYS_HINT,
             overlay_recompute_config,
             stored_environment,
             stored_objective,
             stored_sweep,
+            sweep_shape_error,
         )
+
+        if sweep is not None:
+            reason = sweep_shape_error(sweep)
+            if reason is not None:
+                raise BadInput(
+                    f"args['sweep'] refused: {reason}",
+                    next=SWEEP_KEYS_HINT,
+                )
 
         # an explicit arg overrides only its own key; a key it leaves unset
         # falls back to the pathway's stored value — the last solve's
@@ -738,8 +761,17 @@ class PathwayHandler(Handler):
             env = env_stored
         if obj is None:
             obj = obj_stored
+        sweep_default = False
         if sweep is None:
-            sweep = sweep_stored
+            # a caller-declared box always wins (args above, or the
+            # config's own kinetics.sweep stored_sweep reports as
+            # "config"); else a quest-minted pathway takes the widened
+            # precis-side default, not the stale record echo (gr543723)
+            if sweep_src != "config" and _is_quest_pathway(meta, ref.slug):
+                sweep = QUEST_KINETICS_SWEEP
+                sweep_default = True
+            else:
+                sweep = sweep_stored
         if env is not None:
             try:
                 from autocatpath.environment import Environment
@@ -806,7 +838,7 @@ class PathwayHandler(Handler):
             for k, v, src in (
                 ("environment", given.get("environment"), env_src),
                 ("objective", given.get("objective"), obj_src),
-                ("sweep", given.get("sweep"), sweep_src),
+                ("sweep", given.get("sweep"), None if sweep_default else sweep_src),
             )
             if v is None and src is not None
         ]
@@ -815,6 +847,10 @@ class PathwayHandler(Handler):
             parts.append(f"overriding {', '.join(overlaid)}")
         if reused:
             parts.append(f"reusing stored {', '.join(reused)}")
+        if sweep_default:
+            parts.append(
+                "quest default sweep box (T 350-900 K, p_total 0.1-100 bar, 8x8)"
+            )
         detail = f" — {'; '.join(parts)}" if parts else ""
         return Response(
             body=(

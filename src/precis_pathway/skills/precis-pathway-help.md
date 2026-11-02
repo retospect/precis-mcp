@@ -163,8 +163,13 @@ put(kind="pathway", id="no-nh3-pd", mode="recompute_kinetics",
 With no args it re-solves under the stored config on the current engine.
 `environment` and `objective` replace the stored blocks (validated at `put`);
 a new `environment` must keep the run temperature, and replaces the stored
-gas table. `sweep` replaces `kinetics.sweep` (the engine checks it when the
-job runs; a refusal lands as `kinetics_sweep_error` and fails the job). The
+gas table. `sweep` replaces `kinetics.sweep` (shape-checked at `put` —
+the refusal names the accepted keys; deeper checks run at job time and a
+refusal lands as `kinetics_sweep_error`). A quest-minted pathway
+(`meta.candidate_ref` or a `q<N>cand-` slug) recomputed with no sweep arg
+takes the widened quest default box — T 350-900 K linear, p_total
+0.1-100 bar log, 8x8 — unless its config declares `kinetics.sweep`
+(gr543723). The
 job runs detached (no gpu slot, no worker thread held), refreshes
 `kinetics`/`kinetics_v2` (the old `tof_mf` is replaced, not kept), then the
 sweep. It re-measures gas references with the config's MLIP backend, so it

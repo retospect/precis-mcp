@@ -397,6 +397,99 @@ def stored_sweep(
     return (out, "kinetics_sweep record") if out else (None, None)
 
 
+#: The precis-side default sweep box for quest-driven catalysis recomputes
+#: (gr543723, Reto 2026-11-02; the engine's own 298-450 K / 0.1-30 bar
+#: default stays for everything else): 31 of 46 rollout optima landed on
+#: the old 800 K / 10 bar corner — box-limited, not chemistry-limited.
+#: The operating window is a caller decision, so it lives here as the
+#: recompute door's quest default, not in the engine: T [350, 900] K
+#: linear — 900 K is the defensible thermo/sintering ceiling — and
+#: p_total [0.1, 100] bar log covers Haber-Bosch-adjacent. 64 points is
+#: an 8x8 grid; composition stays fixed and the objective (subject_to
+#: selectivity.NH3 [0.9, 1]) is the caller's, untouched.
+QUEST_KINETICS_SWEEP: dict[str, Any] = {
+    "axes": {"T": [350.0, 900.0], "p_total": [0.1, 100.0]},
+    "log": {"p_total": True},
+    "n": 64,
+    "composition": "fixed",
+}
+
+#: The keys ``autocatpath.mkm.run_sweep`` reads off
+#: ``config['kinetics']['sweep']`` — plus ``kmc_points``, which
+#: ``kmc.sweep_points`` reads. The door's accepted-keys list for an
+#: explicit ``args['sweep']``.
+_SWEEP_KEYS = frozenset(
+    {"axes", "log", "n", "composition", "seed", "design", "kmc_points"}
+)
+
+#: The ``next=`` the door's sweep refusal carries — the accepted keys
+#: with each one's shape (the engine-side reads
+#: :func:`sweep_shape_error` mirrors).
+SWEEP_KEYS_HINT = (
+    "kinetics.sweep keys: axes (name -> [lo, hi] numeric range), log "
+    "(axis -> bool), n (points), composition ('fixed'|'free'), seed, "
+    "design, kmc_points ('optimum' | {T, p_total})"
+)
+
+
+def _num(v: Any) -> bool:
+    return not isinstance(v, bool) and isinstance(v, int | float) and math.isfinite(v)
+
+
+def sweep_shape_error(sweep: dict[str, Any]) -> str | None:
+    """``None`` when ``sweep``'s shape is what ``mkm.run_sweep`` reads;
+    else the refusal, naming the bad key — and the accepted set when the
+    key itself is unknown. Engine-free: the engine consumes the block
+    with bare ``.get`` calls, so this mirrors its reads and refuses the
+    shapes it would crash on at the door instead of burning a job; the
+    deeper checks stay the engine's (they land as
+    ``kinetics_sweep_error``)."""
+    unknown = sorted(str(k) for k in sweep if k not in _SWEEP_KEYS)
+    if unknown:
+        return f"unknown key(s) {unknown} — {SWEEP_KEYS_HINT}"
+    axes = sweep.get("axes")
+    if axes is not None:
+        if not isinstance(axes, dict):
+            return "axes must map a name to a [lo, hi] numeric range"
+        for name, rng in axes.items():
+            if (
+                not isinstance(rng, list | tuple)
+                or not rng
+                or any(not _num(v) for v in rng)
+            ):
+                return f"axes[{name!r}] must be a [lo, hi] numeric range"
+    log_axes = sweep.get("log")
+    if log_axes is not None and (
+        not isinstance(log_axes, dict)
+        or any(not isinstance(v, bool) for v in log_axes.values())
+    ):
+        return "log must map an axis name to a bool"
+    n = sweep.get("n")
+    if n is not None and (isinstance(n, bool) or not isinstance(n, int) or n < 1):
+        return "n must be a positive int"
+    comp = sweep.get("composition")
+    if comp is not None and comp not in ("fixed", "free"):
+        return "composition must be 'fixed' or 'free'"
+    seed = sweep.get("seed")
+    if seed is not None and (isinstance(seed, bool) or not isinstance(seed, int)):
+        return "seed must be an int"
+    design = sweep.get("design")
+    if design is not None and not isinstance(design, str):
+        return "design must be a string label"
+    kmc = sweep.get("kmc_points")
+    if kmc is not None:
+        if not isinstance(kmc, list | tuple):
+            return "kmc_points must be a list of 'optimum' / {T, p_total}"
+        for pt in kmc:
+            if pt == "optimum":
+                continue
+            if not isinstance(pt, dict) or not all(
+                _num(pt.get(k)) for k in ("T", "p_total")
+            ):
+                return "kmc_points entries are 'optimum' or {T, p_total}"
+    return None
+
+
 # ── compute (runs in the detached child, or inline for the fallback) ──────
 
 

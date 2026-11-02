@@ -1952,12 +1952,12 @@ class _Jobs:
         return MagicMock(body="job #99 queued", ref_id=99)
 
 
-def _recompute_handler(meta: dict[str, Any]) -> Any:
+def _recompute_handler(meta: dict[str, Any], slug: str = "pw-a") -> Any:
     from types import SimpleNamespace
 
     from precis_pathway.handler import PathwayHandler
 
-    ref = SimpleNamespace(id=11, slug="pw-a", meta=meta)
+    ref = SimpleNamespace(id=11, slug=slug, meta=meta)
     store = SimpleNamespace(get_ref=lambda *, kind, id: ref)
     h = PathwayHandler.__new__(PathwayHandler)
     setattr(h, "hub", SimpleNamespace(live_store=store))
@@ -2170,6 +2170,110 @@ def test_recompute_kinetics_arg_overrides_only_its_own_key(monkeypatch) -> None:
     assert "objective (config)" in resp.body
     assert "sweep (config)" in resp.body
     assert "kinetics_v2 record" not in resp.body
+
+
+def test_recompute_kinetics_refuses_a_bad_sweep_shape(monkeypatch) -> None:
+    """``args['sweep']`` is shape-checked at the door — the refusal names
+    the accepted keys instead of burning a job run (gr543723)."""
+    import precis.handlers.job as job_mod
+    from precis.errors import BadInput
+
+    _Jobs.calls = []
+    monkeypatch.setattr(job_mod, "JobHandler", _Jobs)
+    h = _recompute_handler(
+        {
+            "config": {"name": "x", "conditions": {"pressures": {"NO": 0.5}}},
+            "results": {"nodes": {"A": 0}, "edges": [{"a": "A"}]},
+        }
+    )
+    for bad in (
+        {"bogus_axis": 1},
+        {"axes": "T 350-900"},
+        {"axes": {"T": "hot"}},
+        {"axes": {"T": [float("nan"), 900]}},
+        {"log": {"p_total": "yes"}},
+        {"n": 0},
+        {"composition": "dynamic"},
+        {"seed": 1.5},
+        {"kmc_points": [{"T": 500}]},
+    ):
+        with pytest.raises(BadInput, match="sweep") as e:
+            h.put(id="pw-a", mode="recompute_kinetics", args={"sweep": bad})
+        assert "axes" in str(e.value.next), (bad, e.value.next)
+    assert _Jobs.calls == []
+
+
+def test_recompute_kinetics_quest_pathway_gets_the_quest_sweep_box(
+    monkeypatch,
+) -> None:
+    """gr543723 (Reto 2026-11-02): a quest-minted pathway recomputed with
+    no sweep arg takes QUEST_KINETICS_SWEEP — the wider box, not the
+    stored record echo. Both mint marks count: the ``candidate_ref``
+    stamp and the pre-stamp ``q<N>cand-`` slug."""
+    import precis.handlers.job as job_mod
+    from precis_pathway.kinetics_job import QUEST_KINETICS_SWEEP
+
+    _stub_env_engine(monkeypatch)
+    for meta, slug in (
+        ({**_kinetics_meta({"name": "x"}), "candidate_ref": 55}, "pw-a"),
+        (_kinetics_meta({"name": "x"}), "q7cand-deadbeef-rx-0123456789"),
+    ):
+        _Jobs.calls = []
+        monkeypatch.setattr(job_mod, "JobHandler", _Jobs)
+        h = _recompute_handler(meta, slug=slug)
+        resp = h.put(id="pw-a", mode="recompute_kinetics")
+        (kw,) = _Jobs.calls
+        assert kw["params"]["config"]["kinetics"]["sweep"] == QUEST_KINETICS_SWEEP
+        assert "quest default sweep box" in resp.body
+        assert "sweep (kinetics_sweep record)" not in resp.body
+
+
+def test_recompute_kinetics_quest_sweep_default_yields_to_caller_boxes(
+    monkeypatch,
+) -> None:
+    """The quest box is a default: an explicit args sweep and the
+    config's own declared ``kinetics.sweep`` both outrank it."""
+    import precis.handlers.job as job_mod
+
+    _stub_env_engine(monkeypatch)
+    meta = _kinetics_meta({"name": "x", "kinetics": {"sweep": {"n": 4}}})
+    meta["candidate_ref"] = 55
+    _Jobs.calls = []
+    monkeypatch.setattr(job_mod, "JobHandler", _Jobs)
+    resp = _recompute_handler(meta).put(id="pw-a", mode="recompute_kinetics")
+    (kw,) = _Jobs.calls
+    assert kw["params"]["config"]["kinetics"]["sweep"] == {"n": 4}
+    assert "sweep (config)" in resp.body
+    assert "quest default" not in resp.body
+
+    box = {"axes": {"T": [300, 500]}, "n": 9}
+    _Jobs.calls = []
+    h = _recompute_handler({**_kinetics_meta({"name": "x"}), "candidate_ref": 55})
+    resp = h.put(id="pw-a", mode="recompute_kinetics", args={"sweep": box})
+    (kw,) = _Jobs.calls
+    assert kw["params"]["config"]["kinetics"]["sweep"] == box
+    assert "overriding sweep" in resp.body
+
+
+def test_recompute_kinetics_non_quest_pathway_keeps_the_engine_default(
+    monkeypatch,
+) -> None:
+    """A non-quest pathway with no sweep anywhere mints the job carrying
+    no ``kinetics.sweep`` — the engine's own box applies."""
+    import precis.handlers.job as job_mod
+
+    _Jobs.calls = []
+    monkeypatch.setattr(job_mod, "JobHandler", _Jobs)
+    h = _recompute_handler(
+        {
+            "config": {"name": "x", "conditions": {"pressures": {"NO": 0.5}}},
+            "results": {"nodes": {"A": 0}, "edges": [{"a": "A"}]},
+            "content_key": "ck",
+        }
+    )
+    h.put(id="pw-a", mode="recompute_kinetics")
+    (kw,) = _Jobs.calls
+    assert "sweep" not in kw["params"]["config"].get("kinetics", {})
 
 
 def test_recompute_kinetics_prefers_the_record_env_over_the_config(
