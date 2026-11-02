@@ -138,6 +138,42 @@
     mode: "0644"
   become: true
 
+# gr552214: the worker's land_slice runs scripts/ship, whose gate is
+# `docker compose -f ...` against deploy's colima VM. Homebrew's
+# docker-compose is only a CLI plugin once linked into the calling user's
+# ~/.docker/cli-plugins; deploy had no link, so every compose call failed
+# with "unknown shorthand flag: 'f'" and ship misread it as a lockfile error.
+- name: Ensure docker-compose is installed (macOS)
+  when: os_family == "darwin"
+  community.general.homebrew:
+    name: docker-compose
+    state: present
+  become: false
+
+- name: Deploy user's docker CLI plugin dir (macOS)
+  when: os_family == "darwin"
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: deploy
+    group: staff
+    mode: "0755"
+  loop:
+    - /Users/deploy/.docker
+    - /Users/deploy/.docker/cli-plugins
+  become: true
+
+- name: Link docker compose as deploy's CLI plugin (macOS, gr552214)
+  when: os_family == "darwin"
+  ansible.builtin.file:
+    src: /opt/homebrew/bin/docker-compose
+    dest: /Users/deploy/.docker/cli-plugins/docker-compose
+    state: link
+    owner: deploy
+    group: staff
+    force: true
+  become: true
+
 # autocatpath's floor is >=0.18.0, not on PyPI yet (release-gated; PyPI tops
 # out at 0.13.0) — land the controller-side private wheel into this host's
 # wheelhouse BEFORE the `catalyst`-extra install below so its --find-links
