@@ -175,11 +175,16 @@ def load_config_from_env() -> FixGripeConfig:
     least one of the two must be set or the runner has no repo
     to clone from.
     """
-    work_dir_raw = os.environ.get("PRECIS_FIX_WORK_DIR")
-    if not work_dir_raw:
+    # The lane-off gate is the registry's light predicate — the same
+    # one the gripe create ack's offer probes without importing this
+    # module (get_job_type's load pulls utils.llm.router in, r185).
+    from precis.workers.job_types import fix_gripe_lane_on
+
+    if not fix_gripe_lane_on():
         raise RuntimeError(
             "fix_gripe: PRECIS_FIX_WORK_DIR is not set (clone scratch root)"
         )
+    work_dir_raw = os.environ["PRECIS_FIX_WORK_DIR"]
     repo_dir_raw = os.environ.get("PRECIS_FIX_REPO_DIR")
     default_repo = Path(repo_dir_raw).resolve() if repo_dir_raw else None
     repos = _parse_repos_env(os.environ.get("PRECIS_FIX_REPOS"))

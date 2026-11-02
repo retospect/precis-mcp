@@ -34,6 +34,7 @@ removing body/hash/event evidence or calling a provider/model.
 from __future__ import annotations
 
 import logging
+import os
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
@@ -920,6 +921,77 @@ def _reset_plugin_cache() -> None:
     _PLUGIN_SPECS = None
 
 
+#: Built-in job_type names — the static-membership half of the
+#: registry, in ``known_job_types`` display order.
+#: :func:`is_registered_job_type` answers "is this name known" from it
+#: WITHOUT loading the module — ``get_job_type('fix_gripe')`` imports
+#: it, pulling ``utils.claude_agent``/``utils.llm.router`` into the
+#: process (the r185 ``test_cli_binds_store`` red: every CLI that
+#: merely built a GripeHandler then reached the router unbound). Keep
+#: in sync with the ``get_job_type`` dispatch chain.
+_BUILTIN_JOB_TYPES: tuple[str, ...] = (
+    "fix_gripe",
+    "plan_tick",
+    "doctor_tick",
+    "draft_export",
+    "taproot_backfill",
+    "elsevier_abstract_backfill",
+    "reground_claim",
+    "conflict_sweep",
+    "draft_refresh",
+    "remarkable_send",
+    "remarkable_papers_send",
+    "remarkable_reading_send",
+    "news_poll",
+    "money_refresh",
+    "pourbaix_bulk",
+    "briefing",
+    "reading_brief",
+    "meditation",
+    "card_forge",
+    "struct_relax",
+    "struct_search",
+    "struct_neb",
+    "structure_propose",
+    "cad_propose",
+    "diagram_propose",
+    "cad_discuss",
+    "sandbox_run",
+    "devin_task",
+    "run_slice",
+    "land_slice",
+    "plan_dispatch",
+    "gripe_validate",
+    "diagnose_gripe",
+    "graph_garden",
+    "secret_status",
+    "good_search",
+    "good_search_triage",
+    "quest_tick",
+    "embed_batch",
+    "derived_drain",
+    "pcb_place",
+    "datasheet_pull",
+    "datasheet_facts",
+    "pcb_argue",
+    "pcb_review",
+    "paper_pull",
+    "paper_reextract",
+    "pdf_attach",
+    "deferred_llm_call",
+    "survey_extract",
+    "measure_accept",
+    "release_cut",
+    "ci_verdict_poll",
+    "release_deploy",
+    "pr_poll",
+    "dep_check",
+    "pr_action",
+    "youtube_bulk",
+    "cite_resolve",
+)
+
+
 def get_job_type(name: str) -> JobTypeSpec | None:
     if name in _REGISTRY:
         return _REGISTRY[name]
@@ -1137,69 +1209,39 @@ def get_job_type(name: str) -> JobTypeSpec | None:
     return None
 
 
+def is_registered_job_type(name: str) -> bool:
+    """``get_job_type(name) is not None`` without paying for the load.
+
+    A name is registered when it resolves through :func:`get_job_type`
+    — a spec already loaded, a name in :data:`_BUILTIN_JOB_TYPES` (the
+    dispatch chain's static half), or a discovered plugin spec. Probing
+    via ``get_job_type`` itself would import the module: fix_gripe's
+    pulls ``utils.claude_agent``/``utils.llm.router`` in, which is what
+    made every CLI that merely built a GripeHandler reach the router
+    unbound (r185 ``test_cli_binds_store``). The gripe create ack's
+    hand-off hint asks the question cheaply here instead.
+    """
+    if name in _REGISTRY or name in _BUILTIN_JOB_TYPES:
+        return True
+    return name in _get_plugin_specs()
+
+
+def fix_gripe_lane_on() -> bool:
+    """``PRECIS_FIX_WORK_DIR`` is set — the light env half of
+    fix_gripe's submit gate, shared so the gripe create ack's hand-off
+    hint (:meth:`GripeHandler._fix_gripe_offer`) can judge "would a put
+    run here" without importing :mod:`.fix_gripe` (same r185 path —
+    the module pulls ``utils.llm.router``/``claude_agent`` in).
+    ``fix_gripe.load_config_from_env`` — the submit path's own env
+    read — checks the same predicate; the heavier gates (repo
+    resolution, ``ANTHROPIC_API_KEY``) stay inside the module.
+    """
+    return bool(os.environ.get("PRECIS_FIX_WORK_DIR"))
+
+
 def known_job_types() -> list[str]:
     """List of registered job_type names (for error messages)."""
-    builtins = [
-        "fix_gripe",
-        "plan_tick",
-        "doctor_tick",
-        "draft_export",
-        "taproot_backfill",
-        "elsevier_abstract_backfill",
-        "reground_claim",
-        "conflict_sweep",
-        "draft_refresh",
-        "remarkable_send",
-        "remarkable_papers_send",
-        "remarkable_reading_send",
-        "news_poll",
-        "money_refresh",
-        "pourbaix_bulk",
-        "briefing",
-        "reading_brief",
-        "meditation",
-        "card_forge",
-        "struct_relax",
-        "struct_search",
-        "struct_neb",
-        "structure_propose",
-        "cad_propose",
-        "diagram_propose",
-        "cad_discuss",
-        "sandbox_run",
-        "devin_task",
-        "run_slice",
-        "land_slice",
-        "plan_dispatch",
-        "gripe_validate",
-        "diagnose_gripe",
-        "graph_garden",
-        "secret_status",
-        "good_search",
-        "good_search_triage",
-        "quest_tick",
-        "embed_batch",
-        "derived_drain",
-        "pcb_place",
-        "datasheet_pull",
-        "datasheet_facts",
-        "pcb_argue",
-        "pcb_review",
-        "paper_pull",
-        "paper_reextract",
-        "pdf_attach",
-        "deferred_llm_call",
-        "survey_extract",
-        "measure_accept",
-        "release_cut",
-        "ci_verdict_poll",
-        "release_deploy",
-        "pr_poll",
-        "dep_check",
-        "pr_action",
-        "youtube_bulk",
-        "cite_resolve",
-    ]
+    builtins = list(_BUILTIN_JOB_TYPES)
     plugin_names = sorted(_get_plugin_specs())
     # Built-ins first so the error-message ordering is stable for
     # callers that have only ever seen the in-tree set.
@@ -1211,6 +1253,8 @@ __all__ = [
     "JobTypeSpec",
     "_reset_plugin_cache",
     "defer_on_pause",
+    "fix_gripe_lane_on",
     "get_job_type",
+    "is_registered_job_type",
     "known_job_types",
 ]

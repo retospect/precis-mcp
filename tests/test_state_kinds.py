@@ -8,6 +8,10 @@ addressing, view paths.
 
 from __future__ import annotations
 
+import os
+import subprocess
+import sys
+import textwrap
 from typing import Any
 
 import pytest
@@ -22,7 +26,7 @@ from precis.handlers.presentation import PresentationHandler
 from precis.store import Store, Tag
 from precis.store.types import ChunkInsert
 from tests._refs import insert_gripe
-from tests.conftest import chunk_handle, record_handle
+from tests.conftest import _active_dsn, chunk_handle, record_handle
 
 # ── GripeHandler — first-class bug tracker ──────────────────────────
 
@@ -593,6 +597,85 @@ class TestGripe:
         assert "job_type='fix_gripe'" not in resp.body
         assert "append a comment" in resp.body
         assert "supersedes" in resp.body
+
+    def test_create_ack_offer_needs_only_the_lane_env(
+        self, gripe: GripeHandler, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The offer's contract is the light pair — the name registered
+        plus ``PRECIS_FIX_WORK_DIR`` set. Repo resolution and
+        ``ANTHROPIC_API_KEY`` stay with ``validate_submit`` on the real
+        put; their absence no longer hides the hint."""
+        monkeypatch.setenv("PRECIS_FIX_WORK_DIR", "/tmp/precis-fix-work")
+        for var in ("PRECIS_FIX_REPO_DIR", "PRECIS_FIX_REPOS", "ANTHROPIC_API_KEY"):
+            monkeypatch.delenv(var, raising=False)
+        resp = gripe.put(text="armed lane, unverified submit")
+        assert "job_type='fix_gripe'" in resp.body
+
+    def test_create_ack_offer_never_calls_get_job_type(
+        self, gripe: GripeHandler, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The probe is the light predicate pair, not the lazy loader —
+        a ``get_job_type`` that explodes must not change the ack."""
+        import precis.workers.job_types as job_types
+
+        def _boom(name: str) -> object:
+            raise AssertionError(f"offer probed get_job_type({name!r})")
+
+        monkeypatch.setattr(job_types, "get_job_type", _boom)
+        monkeypatch.setenv("PRECIS_FIX_WORK_DIR", "/tmp/precis-fix-work")
+        resp = gripe.put(text="offer stays off the loader")
+        assert "job_type='fix_gripe'" in resp.body
+
+    def test_create_ack_does_not_import_fix_gripe_chain(self, store: Store) -> None:
+        """r185 regression, runtime leg: filing a gripe must not import
+        the fix_gripe job-type module — its chain
+        (``utils.claude_agent`` → ``utils.llm.router``) is what made
+        every CLI building a GripeHandler reach the router unbound.
+        Fresh interpreter, lane env armed (the armed path is the one
+        that used to probe ``validate_submit``), real put: the hint
+        renders and no ``job_types`` leaf module is loaded.
+        (``utils.llm.router``/``claude_agent`` are not asserted —
+        ``handlers._eye`` imports them at module level regardless.)"""
+        code = textwrap.dedent(
+            """
+            import os
+            import sys
+
+            from precis.dispatch import Hub
+            from precis.handlers.gripe import GripeHandler
+            from precis.store import Store
+
+            store = Store.connect(os.environ["PRECIS_ACK_DSN"])
+            try:
+                resp = GripeHandler(hub=Hub(store=store)).put(
+                    text="import-light ack probe", new=True
+                )
+            finally:
+                store.close()
+            heavy = sorted(
+                m
+                for m in sys.modules
+                if m.startswith("precis.workers.job_types.")
+            )
+            assert not heavy, f"ack pulled a job_types module: {heavy}"
+            assert "job_type='fix_gripe'" in resp.body
+            print("ok")
+            """
+        )
+        env = dict(os.environ)
+        env["PRECIS_ACK_DSN"] = _active_dsn()
+        env["PRECIS_FIX_WORK_DIR"] = "/tmp/precis-fix-work"
+        run = subprocess.run(
+            [sys.executable, "-c", code],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            check=False,
+            timeout=120,
+            env=env,
+        )
+        assert run.returncode == 0, run.stderr
+        assert "ok" in run.stdout
 
     def test_kindspec_is_first_class(self) -> None:
         """Regression guard: the v0 write-only KindSpec was inverted

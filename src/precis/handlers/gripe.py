@@ -2686,31 +2686,25 @@ class GripeHandler(NumericRefHandler):
     def _fix_gripe_offer(self, ref_id: int) -> list[tuple[str, str]]:
         """The ``fix_gripe`` hand-off hint — only where it can run.
 
-        Advertised only when the job type is registered AND this
-        process would accept the put, judged by the same pre-submit
-        gate the JobHandler runs on it
-        (``JobTypeSpec.validate_submit`` — the ``PRECIS_FIX_*`` env
-        wired, a repo route for the gripe, ``ANTHROPIC_API_KEY``
-        present). On a session-MCP process the fix lane is off and the
-        hint's only outcome was a refusal the caller cannot fix
-        (gr549582), so it stays out; the refusal's own ``next=`` names
-        the route that works (the gripe-fix loop). A probe failure
-        suppresses the hint rather than sinking the ack of an
-        already-filed gripe.
+        Advertised only when the job type is registered AND the lane is
+        nominally armed — ``PRECIS_FIX_WORK_DIR`` set. The probe is
+        deliberately light (:func:`is_registered_job_type` +
+        :func:`fix_gripe_lane_on`, never ``get_job_type``): loading the
+        spec imports the fix_gripe module, which pulls
+        ``utils.llm.router``/``claude_agent`` into the process — every
+        CLI that merely built a GripeHandler then reached the router
+        unbound (r185 ``test_cli_binds_store``). The authoritative gate
+        stays ``fix_gripe.validate_submit`` on the real put; a refusal
+        there carries the ``next=`` naming the route that works (the
+        gripe-fix loop, gr549582). On a session-MCP process the env is
+        unwired and the hint still stays out.
         """
-        from precis.workers.job_types import get_job_type
+        from precis.workers.job_types import (
+            fix_gripe_lane_on,
+            is_registered_job_type,
+        )
 
-        spec = get_job_type("fix_gripe")
-        if spec is None or spec.validate_submit is None:
-            return []
-        try:
-            err = spec.validate_submit(self.store, gripe_id=ref_id, params={})
-        except BadInput:
-            return []
-        except Exception:
-            log.exception("fix_gripe offer probe failed for gripe id=%s", ref_id)
-            return []
-        if err is not None:
+        if not is_registered_job_type("fix_gripe") or not fix_gripe_lane_on():
             return []
         return [
             (

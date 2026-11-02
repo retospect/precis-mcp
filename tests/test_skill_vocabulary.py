@@ -26,8 +26,8 @@ counts; ``dead-gen-claims`` does not match ``dead-generation-claims``
   ``<source>/<fingerprint>`` pattern (``{var}`` placeholders removed):
   the hyphenated compounds (``child-failed-parked``) and snake_case keys
   (``papers_ingested``) an alert's ``meta.rule_id`` and fingerprint show.
-* ``workers.job_types.known_job_types`` built-ins (AST-read from the
-  function's literal list, like ``test_alert_ids``) plus the declared
+* ``workers.job_types._BUILTIN_JOB_TYPES`` (AST-read from the
+  module-level tuple, like ``test_alert_ids``) plus the declared
   ``[project.entry-points."precis.job_types"]`` names — the
   ``meta.job_type`` tokens a ``kind='job'`` shows.
 * ``store.types`` status vocabularies — ``_CLOSED_VOCAB["STATUS"]`` plus
@@ -125,23 +125,27 @@ def _alert_rule_names() -> dict[str, set[str]]:
 
 def _job_type_names() -> dict[str, str]:
     """``{job_type name → 'builtin'|'plugin'}`` — the built-in list read
-    statically from ``known_job_types`` (mirrors ``test_alert_ids``' AST
-    style: no import side effects, no installed-dist drift) plus the
-    ``precis.job_types`` entry-point names this repo's pyproject declares."""
+    statically from the ``_BUILTIN_JOB_TYPES`` module tuple (mirrors
+    ``test_alert_ids``' AST style: no import side effects, no
+    installed-dist drift) plus the ``precis.job_types`` entry-point
+    names this repo's pyproject declares."""
     from precis.workers import job_types
 
     tree = ast.parse(Path(job_types.__file__).read_text(encoding="utf-8"))
     builtins: list[str] = []
-    for node in ast.walk(tree):
-        if isinstance(node, ast.FunctionDef) and node.name == "known_job_types":
-            for sub in ast.walk(node):
-                if isinstance(sub, ast.Assign) and isinstance(sub.value, ast.List):
-                    builtins = [
-                        str(e.value)
-                        for e in sub.value.elts
-                        if isinstance(e, ast.Constant)
-                    ]
-    assert builtins, "could not AST-read the builtins list in known_job_types"
+    for node in tree.body:
+        if not isinstance(node, (ast.Assign, ast.AnnAssign)):
+            continue
+        targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+        if not any(
+            isinstance(t, ast.Name) and t.id == "_BUILTIN_JOB_TYPES" for t in targets
+        ):
+            continue
+        if isinstance(node.value, (ast.Tuple, ast.List)):
+            builtins = [
+                str(e.value) for e in node.value.elts if isinstance(e, ast.Constant)
+            ]
+    assert builtins, "could not AST-read _BUILTIN_JOB_TYPES in workers.job_types"
 
     pyproj = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
     plugins = sorted(pyproj["project"]["entry-points"]["precis.job_types"])
