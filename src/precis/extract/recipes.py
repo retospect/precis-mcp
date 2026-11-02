@@ -41,6 +41,25 @@ units small models pin on unrelated columns — ``eV``, ``%``, ``s^-1`` —
 drops (``unit_header_mismatch``) when the label does not name the
 measurand either (mx1609 eV on fluence exponents, mx1455 % site
 fraction as coverage); any other unsupported unit stays a flag.
+
+Subset-2 review (gr506762, jo550561) added three more deterministic
+refusals on the same "the grid itself is evidence" footing:
+
+* an output series whose cells are a consecutive integer run ``0..n``
+  or ``1..n`` sitting where an index axis sits — first position of its
+  axis, or spanning the whole cross axis — is a printed enumeration,
+  not a measurement (pa452964's ``m = 0..12`` index row written as 13
+  sticking coefficients): the series drops ``index_enumeration`` unless
+  its label names the measurand (``cluster size m`` IS the data);
+* a series label naming a different quantity than the claimed measurand
+  — the small :data:`_LABEL_QUANTITY` table — drops
+  ``label_measurand_mismatch`` (``Experimental formation energy`` read
+  as adsorption energy; an equilibrium constant read as a saturation
+  coverage);
+* an output whose subject appears in none of the spans the reviewer
+  sees — the cited row's own line, the column header, the caption —
+  drops ``subject_not_in_span`` (a label-row subject is another row's
+  text and never evidence for this cell).
 """
 
 from __future__ import annotations
@@ -507,6 +526,50 @@ def _guessed_unit(unit: str) -> bool:
     return re.sub(r"\s+", "", _verify.unit_surface(unit)) in _GUESSED_UNITS
 
 
+#: Label terms that pin an axis to a named quantity. Kept small and
+#: explicit on purpose — the observed subset-2 misreads are
+#: ``Experimental formation energy`` taken for adsorption energy
+#: (mx2035-2039) and an equilibrium constant taken for a saturation
+#: coverage (mx2042-2046). Deliberate near-synonyms stay out (``binding
+#: energy`` is how catalysis papers print adsorption energy — listing
+#: it would refuse correct rows).
+_LABEL_QUANTITY: dict[str, str] = {
+    "formation energy": "formation energy",
+    "formation enthalpy": "formation energy",
+    "heat of formation": "formation energy",
+    "equilibrium constant": "equilibrium constant",
+}
+
+
+def _label_quantity(label: str) -> str | None:
+    """The quantity the label's terms pin it to, else ``None``."""
+    hay = " ".join(markup_surface(label).split()).casefold()
+    for term, quantity in _LABEL_QUANTITY.items():
+        if term in hay:
+            return quantity
+    return None
+
+
+def _int_point(value_text: str) -> int | None:
+    """The cell as a plain integer point reading, else ``None`` — a
+    bound, interval, ``±`` or non-integer is real data, not an index."""
+    lit = parse_literal(value_text)
+    if lit.form != "point" or lit.err is not None or lit.num is None:
+        return None
+    return int(lit.num) if lit.num.is_integer() else None
+
+
+def _enumeration_run(nums: list[int]) -> bool:
+    """``nums`` is a consecutive integer run starting at 0 or 1 — the
+    shape of a printed index/enumeration axis (``m = 0..12``, a row
+    counter), never a measured quantity."""
+    return (
+        len(nums) >= 2
+        and nums[0] in (0, 1)
+        and nums == list(range(nums[0], nums[0] + len(nums)))
+    )
+
+
 def _unit_mismatch(unit: str, entry: VocabEntry) -> str | None:
     """``None`` when ``unit`` converts to the measurand's canonical unit
     (or is a currency token — the S1 currency path inside
@@ -674,11 +737,12 @@ def expand_recipe(
             return _subject_surface(cell.text) if cell is not None else None
         # rows: each subject is a column — its label is the column
         # header, or a designated label row's cell when the recipe names
-        # one.
+        # one and that cell prints a label (an empty one defers to the
+        # header — the only other subject evidence the reviewer sees).
         if norm.subject_axis is not None:
             cell = cell_at(norm.subject_axis, c)
-            if cell is not None:
-                return _subject_surface(cell.text)
+            if cell is not None and (surf := _subject_surface(cell.text)):
+                return surf
         if 0 <= c < n_cols:
             return _subject_surface(parsed.columns[c].header)
         return None
@@ -747,6 +811,26 @@ def expand_recipe(
             span,
             numeric_required=not categorical,
         )
+
+    def subject_evidenced(subject: str, r: int, c: int) -> bool:
+        """The stored subject appears in a span the reviewer sees: the
+        cited row's own line (the cell and its row label ride in it),
+        the column header, or the caption. A ``columns`` subject sits in
+        its own row by construction; a ``rows`` subject sits in the
+        column header — the label row a ``subject_axis`` names is a
+        *different* row's line, never this cell's evidence, so a
+        label-row subject that surfaces nowhere else drops
+        (``subject_not_in_span``, gr506762 subset-2)."""
+        parts = [cap_text, row_label(r) or ""]
+        if 0 <= c < n_cols:
+            parts.append(parsed.columns[c].header)
+        if chunk_text is not None and r < len(parsed.row_spans):
+            s, e = parsed.row_spans[r]
+            parts.append(chunk_text[s:e])
+        elif r < n_rows:
+            parts.extend(cl.text for cl in parsed.rows[r])
+        hay = _subject_surface(" ".join(parts)).casefold()
+        return subject.casefold() in hay
 
     # ── table-level conditions → one input spec each, shared by every
     # run of the table ────────────────────────────────────────────────
@@ -824,6 +908,16 @@ def expand_recipe(
             drops.append(_drop(loc, "unknown_measurand", repr(spec.measurand)))
             continue
         label = series_label(spec)
+        quantity = _label_quantity(label)
+        if quantity is not None and not _label_names_measurand(label, entry):
+            drops.append(
+                _drop(
+                    loc,
+                    "label_measurand_mismatch",
+                    f"label {label!r} names {quantity!r}, not {entry.name!r}",
+                )
+            )
+            continue
         # A rows-orientation series spans ``range(1, n_cols)`` — column
         # 0 is the row-label axis ``series_label`` reads, never a
         # reading, whether or not the model listed it in skip_cells.
@@ -928,12 +1022,57 @@ def expand_recipe(
             continue
         if label_tf is not None:
             eff_spec = replace(eff_spec, transform=label_tf)
-        coords = (
-            ((r, spec.index) for r in range(n_rows))
-            if orientation == "columns"
-            else ((spec.index, c) for c in range(1, n_cols))
-        )
-        for r, c in coords:
+        quantity = _label_quantity(label)
+        if quantity is not None and not _label_names_measurand(label, entry):
+            drops.append(
+                _drop(
+                    loc,
+                    "label_measurand_mismatch",
+                    f"label {label!r} names {quantity!r}, not {entry.name!r}",
+                )
+            )
+            continue
+        axis_coords = [
+            (r, c)
+            for r, c in (
+                ((r, spec.index) for r in range(n_rows))
+                if orientation == "columns"
+                else ((spec.index, c) for c in range(1, n_cols))
+            )
+        ]
+        nums: list[int] = []
+        axis_span = n_rows if orientation == "columns" else n_cols - 1
+        for r, c in axis_coords:
+            cell = cell_at(r, c)
+            if cell is None or (r, c) in norm.skip_cells:
+                continue
+            if cell.value_text.strip().casefold() in _EMPTY_CELL:
+                continue
+            v = _int_point(cell.value_text)
+            if v is None:
+                break
+            nums.append(v)
+        else:
+            # Every emitted cell is an integer point. A consecutive run
+            # 0../1.. filling the whole cross axis (a column per index)
+            # or sitting in the axis's first position is a printed
+            # enumeration — a label axis, never a measurement — unless
+            # the label names the measurand (then it IS the data).
+            if (
+                _enumeration_run(nums)
+                and (spec.index == 0 or len(nums) == axis_span)
+                and not _label_names_measurand(label, entry)
+            ):
+                drops.append(
+                    _drop(
+                        loc,
+                        "index_enumeration",
+                        f"cells are an integer run {nums[0]}..{nums[-1]} — "
+                        f"an index axis, not {entry.name!r} readings",
+                    )
+                )
+                continue
+        for r, c in axis_coords:
             cell = cell_at(r, c)
             if cell is None or (r, c) in norm.skip_cells:
                 continue
@@ -1017,6 +1156,17 @@ def expand_recipe(
                     )
                 )
                 continue
+            subject = subject_at(r, c)
+            if subject and not subject_evidenced(subject, r, c):
+                drops.append(
+                    _drop(
+                        loc_cell,
+                        "subject_not_in_span",
+                        f"subject {subject!r} is in neither the cited row, "
+                        "the column header nor the caption",
+                    )
+                )
+                continue
             flags: list[str] = []
             if claimed_unit is not None and claimed_unit != "1":
                 # '1' is the dimensionless claim (reaching here only on a
@@ -1065,7 +1215,7 @@ def expand_recipe(
                 literal=literal,
                 subject_ref_id=paper,
                 reported_unit=unit,
-                subject=subject_at(r, c),
+                subject=subject,
                 subject_group=norm.group,
                 value_num=num,
                 value_low=low,

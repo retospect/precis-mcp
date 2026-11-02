@@ -147,7 +147,13 @@ Rules:
 - one series per measurable axis. role "input" marks a condition axis
   (a temperature column that conditions the row's outputs, not a
   result); "output" marks a result axis. The label column / label row
-  is not a series — list its cells in skip_cells;
+  is not a series — list its cells in skip_cells. Neither is an index
+  axis (a row or column numbering the grid — m = 0, 1, 2, … or run
+  counters): it is a label, not a reading;
+- a series's own header or label names the quantity it reports — map
+  it only to a measurand of THAT quantity: a 'formation energy' column
+  is never an adsorption-energy series and an equilibrium constant is
+  never a coverage. No fitting slug means the axis stays out;
 - unit is the unit PRINTED for the series — the header's unit hint is
   the parser's guess, check it against the cell values. null is allowed
   only for a measurand whose canonical unit is 1 (dimensionless).
@@ -160,6 +166,10 @@ Rules:
   "table" anchors it in a cell and needs "cell": "r:c";
 - skip_cells names cells that are not readings (footer lines, totals,
   notes the grid kept as cells);
+- a subject must be text the cited evidence prints: the subject cell
+  of the cell's own row ("columns") or the column header ("rows"), or
+  the caption. A subject only another row prints is not a subject of
+  this row's readings;
 - overrides repair ONE cell's interpretation — measurand,
   measurand_status, reference, normalization, unit — never the literal;
 - attribution/tier on the table are defaults a series may override; a

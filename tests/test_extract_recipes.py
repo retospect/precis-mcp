@@ -79,6 +79,7 @@ VOCAB = {
         "E_d",
     ),
     24: _entry(24, "coverage", "coverage", "1"),
+    25: _entry(25, "formation-energy", "formation energy", "eV", "heat of formation"),
 }
 
 
@@ -617,6 +618,209 @@ class TestHeaderOnlyUnits:
         assert drops == []
         assert runs[0].output.reported_unit == "1"
         assert runs[0].flags == []
+
+
+# A rows-orientation table whose first data row enumerates the columns —
+# the pa452964 ``m = 0..12`` index row read as 13 sticking coefficients
+# (gr506762 subset-2, mx2049-2061).
+INDEX_ROW = (
+    "| | m = 0 | m = 1 | m = 2 |\n|---|---|---|---|\n"
+    "| m | 0 | 1 | 2 |\n"
+    "| s (N2) | 0.9 | 0.8 | 0.7 |"
+)
+
+# A columns-orientation table with a row-counter column.
+INDEX_COL = (
+    "| sample | no. | s |\n|---|---|---|\n"
+    "| A | 0 | 0.9 |\n"
+    "| B | 1 | 0.8 |\n"
+    "| C | 2 | 0.7 |"
+)
+
+
+class TestIndexEnumeration:
+    """gr506762 subset-2: an integer run 0../1.. filling the cross axis
+    or sitting in the axis's first position is a printed index, never a
+    measured output."""
+
+    def test_rows_index_row_drops(self) -> None:
+        recipe = {
+            "table": {
+                "orientation": "rows",
+                "series": [
+                    {
+                        "index": 0,
+                        "measurand": "saturation-sticking",
+                        "unit": None,
+                        "role": "output",
+                    },
+                    {
+                        "index": 1,
+                        "measurand": "saturation-sticking",
+                        "unit": None,
+                        "role": "output",
+                    },
+                ],
+            }
+        }
+        runs, drops = _expand(INDEX_ROW, recipe, caption=None)
+        assert [d["reason"] for d in drops] == ["index_enumeration"]
+        assert "series[0]" in drops[0]["location"]
+        # The s(N2) row behind it still writes.
+        assert len(runs) == 3
+        assert [r.output.value_num for r in runs] == [0.9, 0.8, 0.7]
+
+    def test_columns_index_column_drops(self) -> None:
+        recipe = {
+            "table": {
+                "orientation": "columns",
+                "subject_axis": 0,
+                "series": [
+                    {
+                        "index": 1,
+                        "measurand": "saturation-sticking",
+                        "unit": None,
+                        "role": "output",
+                    },
+                    {
+                        "index": 2,
+                        "measurand": "saturation-sticking",
+                        "unit": None,
+                        "role": "output",
+                    },
+                ],
+            }
+        }
+        runs, drops = _expand(INDEX_COL, recipe, caption=None)
+        assert [d["reason"] for d in drops] == ["index_enumeration"]
+        assert len(runs) == 3
+        assert [r.output.subject for r in runs] == ["A", "B", "C"]
+
+    def test_integer_run_naming_the_measurand_stays(self) -> None:
+        # The escape: a run of integer ML coverages under a label that
+        # names the measurand is real data, not an index.
+        text = "| Site | coverage (ML) |\n|---|---|\n| A | 1 |\n| B | 2 |"
+        runs, drops = _expand(text, _one_series("coverage", None), caption=None)
+        assert drops == []
+        assert [r.output.value_num for r in runs] == [1.0, 2.0]
+
+    def test_non_index_integer_column_stays(self) -> None:
+        # A run not starting at 0/1 is not an enumeration.
+        text = "| Site | layers |\n|---|---|\n| A | 4 |\n| B | 5 |"
+        runs, drops = _expand(text, _one_series("coverage", None), caption=None)
+        assert drops == []
+        assert len(runs) == 2
+
+
+class TestLabelMeasurandMismatch:
+    """gr506762 subset-2: a header that names a different quantity than
+    the claimed measurand — ``Experimental formation energy`` is not
+    adsorption energy (mx2035-2039), an equilibrium constant is not a
+    saturation coverage (mx2042-2046)."""
+
+    def test_formation_energy_not_adsorption_energy(self) -> None:
+        text = (
+            "| Surface | Experimental formation energy (eV) |\n|---|---|\n| Ni | 1.2 |"
+        )
+        runs, drops = _expand(
+            text,
+            _one_series("desorption-activation-energy", "eV"),
+            caption=None,
+        )
+        assert runs == []
+        assert [d["reason"] for d in drops] == ["label_measurand_mismatch"]
+        assert "formation energy" in drops[0]["detail"]
+
+    def test_equilibrium_constant_not_coverage(self) -> None:
+        text = "| Surface | equilibrium constant K |\n|---|---|\n| Ni | 320 |"
+        runs, drops = _expand(
+            text, _one_series("saturation-coverage", None), caption=None
+        )
+        assert runs == []
+        assert [d["reason"] for d in drops] == ["label_measurand_mismatch"]
+
+    def test_formation_energy_on_its_own_measurand_writes(self) -> None:
+        text = (
+            "| Surface | Experimental formation energy (eV) |\n|---|---|\n| Ni | 1.2 |"
+        )
+        runs, drops = _expand(text, _one_series("formation-energy", "eV"), caption=None)
+        assert drops == []
+        assert len(runs) == 1
+        assert runs[0].output.measurand_ref_id == 25
+
+    def test_unrelated_label_still_writes(self) -> None:
+        # A label naming no tabled quantity is untouched by the rule.
+        text = "| Sample | fluence exponent n |\n|---|---|\n| A | 1.8 |"
+        runs, drops = _expand(
+            text, _one_series("desorption-activation-energy", "meV"), caption=None
+        )
+        assert drops == []
+        assert len(runs) == 1
+
+
+# A rows-orientation table whose subjects live in a label ROW the grid
+# kept as data — another row's line, never the cited cell's evidence
+# (gr506762 subset-2, mx2042-2046).
+LABEL_ROW = "| | expt | calc |\n|---|---|---|\n| | CO | H2 |\n| E_a (eV) | 1.1 | 0.9 |"
+
+# The same shape with the subjects printed in the column header — the
+# evidence the reviewer does see.
+HEADER_SUBJ = "| | CO | H2 |\n|---|---|---|\n| | CO | H2 |\n| E_a (eV) | 1.1 | 0.9 |"
+
+
+class TestSubjectInSpan:
+    """gr506762 subset-2: a subject that appears in neither the cited
+    row, the column header nor the caption cannot be verified — the row
+    refuses ``subject_not_in_span``."""
+
+    def _rows_recipe(self, subject_axis: int | None) -> dict[str, Any]:
+        return {
+            "table": {
+                "orientation": "rows",
+                "subject_axis": subject_axis,
+                "series": [
+                    {
+                        "index": 1,
+                        "measurand": "desorption-activation-energy",
+                        "unit": "eV",
+                        "role": "output",
+                    }
+                ],
+            }
+        }
+
+    def test_label_row_subject_not_in_span_drops(self) -> None:
+        runs, drops = _expand(LABEL_ROW, self._rows_recipe(0), caption=None)
+        assert runs == []
+        assert [d["reason"] for d in drops] == [
+            "subject_not_in_span",
+            "subject_not_in_span",
+        ]
+        assert "CO" in drops[0]["detail"]
+
+    def test_header_subject_writes(self) -> None:
+        # subject_axis=None defers to the column header — the subject
+        # the reviewer sees on the 'column header:' line.
+        runs, drops = _expand(HEADER_SUBJ, self._rows_recipe(None), caption=None)
+        assert drops == []
+        assert len(runs) == 2
+        assert [r.output.subject for r in runs] == ["CO", "H2"]
+
+    def test_caption_carries_the_subject(self) -> None:
+        runs, drops = _expand(
+            LABEL_ROW,
+            self._rows_recipe(0),
+            caption=(CAP_ID, "Table 4. Barriers of CO and H2 on Ni."),
+        )
+        assert drops == []
+        assert [r.output.subject for r in runs] == ["CO", "H2"]
+
+    def test_columns_subject_row_is_evidence(self) -> None:
+        # The control: a columns-orientation subject sits in the cited
+        # row by construction.
+        runs, drops = _expand(SAMPLE1, _recipe1())
+        assert drops == []
+        assert {r.output.subject for r in runs} == {"Ni100", "Ni111"}
 
 
 class TestReviewContext:

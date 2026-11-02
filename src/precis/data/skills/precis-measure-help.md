@@ -386,10 +386,16 @@ paper's governing verdict passed, the row id sits under the mark, and the
 row keeps its anchor — rows carrying no `extraction_run` token are not
 batch rows and stay.
 
+## Table recipe
+
 For parsed pipe tables, the pass makes one table-level recipe call and expands
 its series into cell-anchored runs; an unparsed table or unusable recipe falls
 back to per-cell reading. Table outputs and inputs carry `meta.table` cell
 coordinates, header, column header, row label, header unit, orientation and
 caption link. Log-scale series record `meta.transform` (`log10` or `ln`), store
 the transformed value, and retain the printed exponent as `meta.printed_value`;
-a label printing `log`/`lg`/`ln` sets it even when the recipe omits it.
+a label printing `log`/`lg`/`ln` sets it even when the recipe omits it. Series
+whose cells are a printed index run (`0..n`/`1..n` across the axis) drop as
+`index_enumeration`; a label naming a different quantity than the measurand
+drops as `label_measurand_mismatch`; an output subject no cited span names
+drops as `subject_not_in_span`.
