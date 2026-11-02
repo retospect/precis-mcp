@@ -3,9 +3,10 @@
 Registered as ``autocatpath_kinetics = precis_pathway.kinetics_job:SPEC``
 in ``pyproject.toml``. Reads the aggregated pathway's ``meta.results`` and
 the job's ``params.config`` (the effective config, or — for
-``put(kind='pathway', mode='recompute_kinetics')`` — that config with a
-caller-supplied ``environment``/``objective``/``kinetics.sweep`` laid over
-it) and computes, in this order:
+``put(kind='pathway', mode='recompute_kinetics')`` — that config with the
+stored ``environment``/``objective``/``kinetics.sweep`` laid over it:
+explicit args where given, the kinetics record's echo otherwise) and
+computes, in this order:
 
 1. the D11 TPD check (``meta.kinetics_tpd``, engine >= 0.39);
 2. the kinetics solve on the CURRENT engine under ``params.config``,
@@ -45,6 +46,7 @@ neb-tier pathway, and by ``put(kind='pathway', mode='recompute_kinetics')``.
 
 from __future__ import annotations
 
+import copy
 import logging
 import math
 import os
@@ -177,6 +179,200 @@ def overlay_recompute_config(
         kin["sweep"] = dict(sweep)
         out["kinetics"] = kin
     return out
+
+
+# ── the stored environment/objective/sweep a no-arg recompute reuses ──────
+
+
+def _bar(raw: Any) -> float | None:
+    """``float(raw)`` when it parses finite — the engine's acceptance for a
+    gas table entry (``_table`` and ``from_legacy`` both use a bare
+    ``float()``: ints, floats and numeric strings count); ``None`` for
+    anything the engine itself would refuse."""
+    try:
+        v = float(raw)
+    except (TypeError, ValueError):
+        return None
+    return v if math.isfinite(v) else None
+
+
+def _block_gas_table(environment: dict[str, Any]) -> dict[str, float]:
+    """The positive gas partials an ``environment:`` block declares:
+    ``inputs`` + a mapping ``outputs`` + ``inerts``. The ``far`` preset
+    contributes nothing — the engine's ``Environment._table_sum``
+    semantics, engine-free."""
+    gases = environment.get("gases")
+    table: dict[str, float] = {}
+    if isinstance(gases, dict):
+        for key in ("inputs", "outputs", "inerts"):
+            entry = gases.get(key)
+            if isinstance(entry, dict):
+                for gas, p in entry.items():
+                    v = _bar(p)
+                    if v is not None and v > 0:
+                        table[str(gas)] = v
+    return table
+
+
+def _effective_gas_table(config: dict[str, Any]) -> dict[str, float]:
+    """The gas table the job's environment prices from: the
+    ``environment:`` block's own when present (the engine re-derives
+    ``conditions.pressures`` from it — it is the single source), else the
+    legacy ``conditions.pressures``."""
+    env = config.get("environment")
+    if env is not None:
+        return _block_gas_table(env) if isinstance(env, dict) else {}
+    cond = config.get("conditions")
+    pressures = cond.get("pressures") if isinstance(cond, dict) else None
+    if not isinstance(pressures, dict):
+        return {}
+    return {
+        str(g): v for g, p in pressures.items() if (v := _bar(p)) is not None and v > 0
+    }
+
+
+def _environment_refusal(config: dict[str, Any]) -> str | None:
+    """``environment.p_total`` stated while the block's gas table is empty —
+    the one inconsistency this job refuses at its start instead of inside
+    a child's ``_prep``: the engine's own ``Environment.from_dict`` raises
+    it, so a config carrying it can never compute. Everything else runs —
+    with no ``environment:`` block the config prices the legacy conditions
+    (unstated gases at the 1 bar fallback), the aggregate-minted job's
+    normal shape (gr550976)."""
+    env = config.get("environment")
+    if not isinstance(env, dict):
+        return None
+    p_total = _bar(env.get("p_total"))
+    if p_total is not None and p_total > 0 and not _block_gas_table(env):
+        return (
+            "environment.p_total is set but the gas table is empty: "
+            "there is no composition to scale"
+        )
+    return None
+
+
+def _record_environment_block(record: dict[str, Any]) -> dict[str, Any]:
+    """A stored ``kinetics_v2.environment`` — the resolved block the solve
+    wrote — back into an ``environment:`` block a config accepts. The
+    resolved tables are already in bar (``scaled()`` applied), so
+    ``p_total`` is never restated (the env's total is the table's sum
+    either way) and the ``composition``/``p_total_stated``/``legacy``
+    views are dropped; a ``far`` preset maps back onto ``outputs: 'far'``.
+    Only keys the record actually carries are emitted — a missing or empty
+    value is left out."""
+    gases = record.get("gases")
+    gases = gases if isinstance(gases, dict) else {}
+    outputs = gases.get("outputs")
+    gas_block: dict[str, Any] = {}
+    for key in ("inputs", "inerts"):
+        entry = gases.get(key)
+        if isinstance(entry, dict) and entry:
+            gas_block[key] = dict(entry)
+    if gases.get("preset") == "far":
+        gas_block["outputs"] = "far"
+    elif isinstance(outputs, dict) and outputs:
+        gas_block["outputs"] = dict(outputs)
+    if gases.get("unlisted") is not None:
+        gas_block["unlisted"] = str(gases["unlisted"])
+    sticking = record.get("sticking")
+    block: dict[str, Any] = {}
+    if record.get("T") is not None:
+        block["T"] = record["T"]
+    if gas_block:
+        block["gases"] = gas_block
+    if isinstance(sticking, dict) and sticking:
+        block["sticking"] = dict(sticking)
+    if record.get("electrochemical") is not None:
+        block["electrochemical"] = copy.deepcopy(record["electrochemical"])
+    return block
+
+
+def stored_environment(
+    meta: dict[str, Any], config: dict[str, Any], results: dict[str, Any]
+) -> tuple[dict[str, Any] | None, str | None]:
+    """The stored environment a no-arg ``recompute_kinetics`` reuses, as
+    ``(block_to_overlay | None, source_label | None)``. ``(None, label)``
+    means the env exists but the config already prices it (nothing to lay
+    over); ``(None, None)`` means the pathway has no usable stored
+    environment and the door refuses.
+
+    Order: the last solve's own record env (``results.kinetics_v2`` —
+    what the current record was priced under, so a re-solve matches it),
+    the config's declared ``environment:``, a ``meta.environment`` stamp,
+    then the legacy ``conditions.pressures`` the config already carries.
+    A ``legacy``-flagged record is skipped: the same gases are already
+    priced byte-faithfully by the legacy keys, and de-resolving it would
+    drop the flag that suppresses the uncited-sticking warning. A
+    candidate counts only with a non-empty gas table — the (T, p_total)
+    sweep needs a composition to scale; an empty-table env solves at the
+    fallback and dies at the sweep, the exact burn gr550976 reported."""
+    rec = next(
+        (
+            v2["environment"]
+            for v2 in (results.get("kinetics_v2"), meta.get("kinetics_v2"))
+            if isinstance(v2, dict) and isinstance(v2.get("environment"), dict)
+        ),
+        None,
+    )
+    if rec is not None and not rec.get("legacy"):
+        block = _record_environment_block(rec)
+        if _block_gas_table(block):
+            return block, "kinetics_v2 record"
+    env = config.get("environment")
+    if isinstance(env, dict) and _block_gas_table(env):
+        return None, "config"
+    meta_env = meta.get("environment")
+    if isinstance(meta_env, dict) and _block_gas_table(meta_env):
+        return dict(meta_env), "meta.environment"
+    if _effective_gas_table(config):
+        return None, "legacy conditions"
+    return None, None
+
+
+def stored_objective(
+    meta: dict[str, Any], config: dict[str, Any], results: dict[str, Any]
+) -> tuple[dict[str, Any] | None, str | None]:
+    """The stored objective a no-arg recompute reuses, same
+    ``(overlay | None, label | None)`` contract as
+    :func:`stored_environment`. The config's declared ``objective:`` wins
+    (it is complete); the sweep record's echo — ``optimum.objective`` plus
+    the ``competing`` pair — is the rescue when the config never stated
+    one (``subject_to`` is not on the record, so it cannot be rebuilt)."""
+    obj = config.get("objective")
+    if isinstance(obj, dict) and obj:
+        return None, "config"
+    record = results.get("kinetics_sweep")
+    record = record if isinstance(record, dict) else {}
+    optimum = record.get("optimum")
+    maximise = optimum.get("objective") if isinstance(optimum, dict) else None
+    if isinstance(maximise, str) and maximise:
+        out: dict[str, Any] = {"maximise": maximise}
+        competing = record.get("competing")
+        pair = competing.get("pair") if isinstance(competing, dict) else None
+        if isinstance(pair, list) and len(pair) == 2:
+            out["competing"] = [str(p) for p in pair]
+        return out, "kinetics_sweep record"
+    return None, None
+
+
+def stored_sweep(
+    meta: dict[str, Any], config: dict[str, Any], results: dict[str, Any]
+) -> tuple[dict[str, Any] | None, str | None]:
+    """The stored sweep a no-arg recompute reuses, same
+    ``(overlay | None, label | None)`` contract as
+    :func:`stored_environment`. The config's declared ``kinetics.sweep``
+    wins (it is complete: ``n``, ``log``, ``seed``, ``kmc_points``); the
+    ``kinetics_sweep`` record's ``axes``/``design``/``composition`` echo
+    is the rescue when the config never stated one — the engine's
+    defaults fill the rest."""
+    kin = config.get("kinetics")
+    declared = kin.get("sweep") if isinstance(kin, dict) else None
+    if isinstance(declared, dict) and declared:
+        return None, "config"
+    record = results.get("kinetics_sweep")
+    record = record if isinstance(record, dict) else {}
+    out = {k: record[k] for k in ("axes", "design", "composition") if k in record}
+    return (out, "kinetics_sweep record") if out else (None, None)
 
 
 # ── compute (runs in the detached child, or inline for the fallback) ──────
@@ -547,6 +743,11 @@ def _dispatch(ctx: Any, spec: Any) -> None:
     if loaded is None:
         return
     pathway_ref_id, config, ref, inputs = loaded
+    why = _environment_refusal(config)
+    if why is not None:
+        # an env the engine itself refuses — fail here, not inside _prep
+        ctx.record_failure(f"autocatpath_kinetics: {why}")
+        return
     params = (ctx.meta or {}).get("params") or {}
     ctx.append_chunk(
         "job_event",
@@ -570,6 +771,11 @@ def _submit(ctx: Any, spec: Any) -> Any:
     if loaded is None:
         return None
     pathway_ref_id, config, _ref, inputs = loaded
+    why = _environment_refusal(config)
+    if why is not None:
+        # an env the engine itself refuses — fail before the child launches
+        ctx.record_failure(f"autocatpath_kinetics: {why}")
+        return None
     params = (ctx.meta or {}).get("params") or {}
     ctx.append_chunk(
         "job_event",
@@ -670,4 +876,14 @@ def load() -> JobTypeSpec:
     return SPEC
 
 
-__all__ = ["NAME", "SPEC", "compute", "load", "overlay_recompute_config", "run_compute"]
+__all__ = [
+    "NAME",
+    "SPEC",
+    "compute",
+    "load",
+    "overlay_recompute_config",
+    "run_compute",
+    "stored_environment",
+    "stored_objective",
+    "stored_sweep",
+]

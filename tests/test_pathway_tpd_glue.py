@@ -222,7 +222,10 @@ def _run_job(
     monkeypatch.setattr(precis_pathway, "runner", fake, raising=False)
     ctx = MagicMock()
     # a family is required: with none the job skips the TPD leg (8a75d4bfb)
-    config = {"kinetics": {"tpd": {"family": "Pd(111)"}}}
+    config = {
+        "kinetics": {"tpd": {"family": "Pd(111)"}},
+        "conditions": {"pressures": {"NO": 0.5}},
+    }
     ctx.meta = {"params": {"pathway_ref_id": 7, "config": config}}
     ctx.store = store
     kinetics_job._dispatch(ctx, kinetics_job.SPEC)

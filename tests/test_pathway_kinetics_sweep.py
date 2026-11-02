@@ -75,11 +75,12 @@ def test_kinetics_job_dispatch_runs_grid_and_persists(store, monkeypatch):
     monkeypatch.setattr(runner_mod, "run_kinetics_subprocess", _fake_solve)
     monkeypatch.setattr(runner_mod, "run_kinetics_sweep_subprocess", _fake_sweep)
     monkeypatch.setattr(runner_mod, "has_tpd", lambda: False)  # the sweep path only
+    cfg = {"name": "kin", "conditions": {"pressures": {"NO": 0.5}}}
     ctx = MagicMock()
-    ctx.meta = {"params": {"pathway_ref_id": ref.id, "config": {"name": "kin"}}}
+    ctx.meta = {"params": {"pathway_ref_id": ref.id, "config": cfg}}
     ctx.store = store
     kinetics_job._dispatch(ctx, kinetics_job.SPEC)
-    assert solved == [{"name": "kin"}]  # the re-solve ran under params.config
+    assert solved == [cfg]  # the re-solve ran under params.config
 
     got = store.get_ref(kind="pathway", id=ref.id)
     sw = got.meta["results"]["kinetics_sweep"]
@@ -114,7 +115,12 @@ def test_kinetics_job_records_failure_on_sweep_error(store, monkeypatch):
     monkeypatch.setattr(runner_mod, "run_kinetics_subprocess", lambda *a, **k: None)
     monkeypatch.setattr(runner_mod, "has_tpd", lambda: False)  # the sweep path only
     ctx = MagicMock()
-    ctx.meta = {"params": {"pathway_ref_id": ref.id, "config": {}}}
+    ctx.meta = {
+        "params": {
+            "pathway_ref_id": ref.id,
+            "config": {"conditions": {"pressures": {"NO": 0.5}}},
+        }
+    }
     ctx.store = store
     kinetics_job._dispatch(ctx, kinetics_job.SPEC)
 

@@ -435,7 +435,12 @@ def test_kinetics_job_reports_kmc_points(monkeypatch):
     monkeypatch.setitem(sys.modules, "precis_pathway.runner", fake_runner)
     monkeypatch.setattr(precis_pathway, "runner", fake_runner, raising=False)
     ctx = MagicMock()
-    ctx.meta = {"params": {"pathway_ref_id": ref.id, "config": {}}}
+    ctx.meta = {
+        "params": {
+            "pathway_ref_id": ref.id,
+            "config": {"conditions": {"pressures": {"NO": 0.5}}},
+        }
+    }
     ctx.store = store
     kinetics_job._dispatch(ctx, kinetics_job.SPEC)
     events = [c.args[1] for c in ctx.append_chunk.call_args_list]
@@ -1422,11 +1427,12 @@ def test_compute_skips_the_tpd_ramp_without_a_reference_family(monkeypatch) -> N
         fold_tpd=lambda res: None,
     )
     notes: list[str] = []
-    kinetics_job.compute({"name": "x"}, {}, notes.append)
+    legacy = {"name": "x", "conditions": {"pressures": {"NO": 0.5}}}
+    kinetics_job.compute(legacy, {}, notes.append)
     assert ramps == []
     assert any("TPD skipped" in n for n in notes)
 
-    with_family = {"kinetics": {"tpd": {"family": "Pd111"}}}
+    with_family = {**legacy, "kinetics": {"tpd": {"family": "Pd111"}}}
 
     def _ramp(runner: Any, cfg: dict, res: dict, note: Any) -> None:
         ramps.append(cfg)
@@ -1503,10 +1509,12 @@ def _fake_runner(monkeypatch: pytest.MonkeyPatch, **fns: Any) -> Any:
 def test_run_compute_drops_a_stale_record_and_returns_an_envelope(monkeypatch) -> None:
     from precis_pathway import kinetics_job
 
+    env = {"T": 300.0, "gases": {"inputs": {"NO": 0.5}}}
+
     def _solve(config, artifact, *, timeout=None, tpd=None):
         rj = artifact["results_json"]
         assert "kinetics_v2" not in rj  # the stale record never reaches the engine
-        assert config == {"environment": {"T": 300.0}}  # params.config rides through
+        assert config == {"environment": env}  # params.config rides through
         rj["kinetics_v2"] = {"tof_mf": 9.0}
 
     def _sweep(config, res, *, timeout=None):
@@ -1519,7 +1527,7 @@ def test_run_compute_drops_a_stale_record_and_returns_an_envelope(monkeypatch) -
         run_kinetics_sweep_subprocess=_sweep,
     )
     out = kinetics_job.run_compute(
-        {"environment": {"T": 300.0}},
+        {"environment": env},
         {"nodes": {"A": 0}, "edges": [], "kinetics_v2": {"tof_mf": 1.0}},
     )
     assert out["results"] == {
@@ -1560,11 +1568,12 @@ def test_submit_launches_the_child_with_inputs_only(monkeypatch) -> None:
 
     _fake_runner(monkeypatch, submit_kinetics_job_detached=_launch)
     store = _stored_pathway()
-    ctx = _job_ctx(store, {"environment": {"T": 300.0}})
+    env = {"T": 300.0, "gases": {"inputs": {"NO": 0.5}}}
+    ctx = _job_ctx(store, {"environment": env})
     handle = kinetics_job._submit(ctx, kinetics_job.SPEC)
     assert handle and handle["pid"] == 1
     cfg, res = launched[0]
-    assert cfg == {"environment": {"T": 300.0}}
+    assert cfg == {"environment": env}
     assert set(res) == {"nodes", "edges", "score", "thermo"}  # no stale kinetics_v2
     ctx.set_status.assert_not_called()
     ctx.record_failure.assert_not_called()
@@ -1801,16 +1810,26 @@ def test_recompute_kinetics_mode_mints_with_overridden_sweep(monkeypatch) -> Non
     monkeypatch.setattr(job_mod, "JobHandler", _Jobs)
     h = _recompute_handler(
         {
-            "config": {"name": "x", "kinetics": {"n_samples": 50}},
+            "config": {
+                "name": "x",
+                "conditions": {"pressures": {"NO": 0.5, "H2": 1.0}},
+                "kinetics": {"n_samples": 50},
+            },
             "results": {"nodes": {"A": 0}, "edges": [{"a": "A"}]},
             "content_key": "ck",
         }
     )
     resp = h.put(id="pw-a", mode="recompute_kinetics", args={"sweep": {"n": 6}})
     assert "overriding sweep" in resp.body
+    assert "environment (legacy conditions)" in resp.body
     (kw,) = _Jobs.calls
     assert kw["job_type"] == "autocatpath_kinetics" and kw["requires"] == {}
     assert kw["params"]["config"]["kinetics"] == {"n_samples": 50, "sweep": {"n": 6}}
+    # the stored legacy env rides along untouched — only the sweep key moved
+    assert kw["params"]["config"]["conditions"]["pressures"] == {
+        "NO": 0.5,
+        "H2": 1.0,
+    }
     assert kw["params"]["pathway_ref_id"] == 11
     assert kw["params"]["pathway_slug"] == "pw-a"
     assert kw["idem_key"].startswith("autocatpath_kinetics:11:")
@@ -1834,3 +1853,351 @@ def test_recompute_kinetics_refusals_name_the_next_step() -> None:
     with pytest.raises(BadInput, match="must be a mapping") as e:
         h3.put(id="pw-a", mode="recompute_kinetics", args={"sweep": "n=4"})
     assert e.value.next
+
+
+#: A ``kinetics_v2.environment`` record as ``Environment.resolved()`` writes
+#: it — resolved (bar-scaled) tables, stated p_total, derived views.
+_RECORD_ENV = {
+    "T": 298.15,
+    "p_total": 1.1,
+    "p_total_stated": True,
+    "gases": {
+        "inputs": {"NO": 0.1, "H2": 1.0},
+        "outputs": {"NH3": 1e-6},
+        "inerts": {},
+        "unlisted": "reference",
+    },
+    "sticking": {"NO": {"s0": 0.5, "source": "pa498804"}},
+    "electrochemical": None,
+    "composition": {"NO": 0.0909, "H2": 0.909, "NH3": 1e-6},
+}
+
+_RECORD_SWEEP = {
+    "axes": {"T": [298.0, 450.0], "p_total": [0.1, 30.0]},
+    "design": "grid",
+    "composition": "fixed",
+    "competing": {"pair": ["NO@N", "NOH"], "points": []},
+    "optimum": {"T": 450.0, "p_total": 30.0, "objective": "tof", "value": 234.9},
+    "points": [{"T": 298.0}],
+}
+
+
+def _kinetics_meta(config: dict[str, Any]) -> dict[str, Any]:
+    """Pathway meta with the gripe's shape: aggregated results, a kinetics
+    record solved under an env the stored config never carried."""
+    return {
+        "config": config,
+        "results": {
+            "nodes": {"A": 0},
+            "edges": [{"a": "A"}],
+            "kinetics_v2": {"tof_mf": 1.0, "environment": _RECORD_ENV},
+            "kinetics_sweep": _RECORD_SWEEP,
+        },
+        "content_key": "ck",
+    }
+
+
+def _stub_env_engine(monkeypatch: pytest.MonkeyPatch) -> dict[str, list]:
+    """Stand-in ``autocatpath.environment`` for the door's ``from_dict``
+    validation — the engine is absent on the glue host (CI
+    ``--no-extra catalyst``); real refusals live in
+    ``test_pathway_kinetics_sweep.py``. Returns the calls each fake saw."""
+    import sys
+    from types import ModuleType
+
+    seen: dict[str, list] = {"environment": [], "objective": []}
+
+    class _Environment:
+        @classmethod
+        def from_dict(cls, d: dict[str, Any]) -> Any:
+            seen["environment"].append(d)
+            # the one check the tests lean on: the engine requires a
+            # numeric T — everything else is a pass-through
+            if not isinstance(d.get("T"), (int, float)) or isinstance(d.get("T"), bool):
+                raise ValueError("environment.T is required (K)")
+            return d
+
+    class _Objective:
+        @classmethod
+        def from_dict(cls, d: dict[str, Any]) -> Any:
+            seen["objective"].append(d)
+            return d
+
+    env_mod: Any = ModuleType("autocatpath.environment")
+    env_mod.Environment = _Environment
+    env_mod.Objective = _Objective
+    parent: Any = sys.modules.get("autocatpath")
+    if parent is None:
+        parent = ModuleType("autocatpath")
+        monkeypatch.setitem(sys.modules, "autocatpath", parent)
+    parent.environment = env_mod
+    monkeypatch.setitem(sys.modules, "autocatpath.environment", env_mod)
+    return seen
+
+
+def test_recompute_kinetics_no_args_carries_the_stored_record(monkeypatch) -> None:
+    """gr550976: a no-arg recompute mints the job under the env/objective/
+    sweep the last solve stored, and the ack names what it reused."""
+    import precis.handlers.job as job_mod
+
+    _Jobs.calls = []
+    monkeypatch.setattr(job_mod, "JobHandler", _Jobs)
+    seen = _stub_env_engine(monkeypatch)
+    h = _recompute_handler(_kinetics_meta({"name": "x", "kinetics": {"n_samples": 50}}))
+    resp = h.put(id="pw-a", mode="recompute_kinetics")
+    (kw,) = _Jobs.calls
+    cfg = kw["params"]["config"]
+    # the record env is de-resolved back into an environment: block — the
+    # resolved gases are already bar-scaled so p_total is never restated,
+    # and only keys the record actually carries are emitted
+    assert cfg["environment"] == {
+        "T": 298.15,
+        "gases": {
+            "inputs": {"NO": 0.1, "H2": 1.0},
+            "outputs": {"NH3": 1e-6},
+            "unlisted": "reference",
+        },
+        "sticking": {"NO": {"s0": 0.5, "source": "pa498804"}},
+    }
+    assert cfg["objective"] == {"maximise": "tof", "competing": ["NO@N", "NOH"]}
+    assert cfg["kinetics"]["sweep"] == {
+        "axes": {"T": [298.0, 450.0], "p_total": [0.1, 30.0]},
+        "design": "grid",
+        "composition": "fixed",
+    }
+    assert cfg["kinetics"]["n_samples"] == 50  # unrelated keys untouched
+    # the reused env passed the engine's own validation at the door
+    assert seen["environment"] == [cfg["environment"]]
+    for what in (
+        "environment (kinetics_v2 record)",
+        "objective (kinetics_sweep record)",
+        "sweep (kinetics_sweep record)",
+    ):
+        assert what in resp.body
+    assert "overriding" not in resp.body
+
+
+def test_recompute_kinetics_arg_overrides_only_its_own_key(monkeypatch) -> None:
+    """An explicit arg replaces only its key; the others still come from
+    the stored record/config."""
+    import precis.handlers.job as job_mod
+
+    _Jobs.calls = []
+    monkeypatch.setattr(job_mod, "JobHandler", _Jobs)
+    _stub_env_engine(monkeypatch)
+    h = _recompute_handler(
+        _kinetics_meta(
+            {
+                "name": "x",
+                "objective": {"maximise": "selectivity.NH3"},
+                "kinetics": {"sweep": {"n": 12}},
+            }
+        )
+    )
+    new_env = {"T": 300.0, "gases": {"inputs": {"NO": 0.5}}}
+    resp = h.put(
+        id="pw-a",
+        mode="recompute_kinetics",
+        args={"environment": new_env},
+    )
+    (kw,) = _Jobs.calls
+    cfg = kw["params"]["config"]
+    assert cfg["environment"] == new_env  # the override
+    assert cfg["objective"] == {"maximise": "selectivity.NH3"}  # config's own
+    assert cfg["kinetics"]["sweep"] == {"n": 12}  # config's own
+    assert "overriding environment" in resp.body
+    assert "objective (config)" in resp.body
+    assert "sweep (config)" in resp.body
+    assert "kinetics_v2 record" not in resp.body
+
+
+def test_recompute_kinetics_prefers_the_record_env_over_the_config(
+    monkeypatch,
+) -> None:
+    """The env the current record was priced under is the freshest stored
+    env — it wins over a differing declared one. A legacy-flagged record
+    instead keeps the config's legacy projection byte-faithful."""
+    import precis.handlers.job as job_mod
+    from precis_pathway.kinetics_job import stored_environment
+
+    _Jobs.calls = []
+    monkeypatch.setattr(job_mod, "JobHandler", _Jobs)
+    _stub_env_engine(monkeypatch)
+    config_env = {"T": 300.0, "gases": {"inputs": {"NO": 0.5}}}
+    meta = _kinetics_meta({"name": "x", "environment": config_env})
+    h = _recompute_handler(meta)
+    resp = h.put(id="pw-a", mode="recompute_kinetics")
+    (kw,) = _Jobs.calls
+    # the record env's gases (NO+H2 at stated 1.1 bar), not the config's
+    assert kw["params"]["config"]["environment"]["gases"]["inputs"] == {
+        "NO": 0.1,
+        "H2": 1.0,
+    }
+    assert "environment (kinetics_v2 record)" in resp.body
+
+    # a legacy-flagged record is not de-resolved: the legacy conditions in
+    # the config price the same env byte-faithfully
+    legacy_meta: dict[str, Any] = {
+        "config": {
+            "name": "x",
+            "conditions": {"pressures": {"NO": 0.5}},
+            "kinetics": {"sticking": {"NO": 0.5}},
+        },
+        "results": {
+            "kinetics_v2": {
+                "environment": {**_RECORD_ENV, "legacy": True},
+            }
+        },
+    }
+    block, src = stored_environment(
+        legacy_meta, legacy_meta["config"], legacy_meta["results"]
+    )
+    assert block is None and src == "legacy conditions"
+
+
+def test_recompute_kinetics_refuses_without_any_stored_environment() -> None:
+    """gr550976 part: no usable env anywhere — refuse at submit naming the
+    missing environment, not after the solve burns a run."""
+    from precis.errors import BadInput
+
+    results = {"nodes": {"A": 0}, "edges": [{"a": "A"}]}
+    for meta in (
+        # no environment anywhere
+        {"config": {"name": "x", "kinetics": {"n_samples": 50}}, "results": results},
+        # a record env with an empty gas table is no env to sweep under
+        {
+            "config": {"name": "x"},
+            "results": {
+                **results,
+                "kinetics_v2": {
+                    "environment": {
+                        "T": 298.15,
+                        "p_total": 0.0,
+                        "p_total_stated": False,
+                        "gases": {
+                            "inputs": {},
+                            "outputs": {},
+                            "inerts": {},
+                            "unlisted": "reference",
+                        },
+                        "sticking": {},
+                        "electrochemical": None,
+                    }
+                },
+            },
+        },
+        # legacy keys but an empty pressures table
+        {"config": {"name": "x", "conditions": {"pressures": {}}}, "results": results},
+    ):
+        h = _recompute_handler(meta)
+        with pytest.raises(BadInput, match="stores no environment") as e:
+            h.put(id="pw-a", mode="recompute_kinetics")
+        assert "environment" in str(e.value.next)
+
+
+def test_kinetics_job_fails_fast_only_on_a_stated_p_total(monkeypatch) -> None:
+    """The job-side gate refuses the one env inconsistency that can never
+    compute — a stated ``p_total`` on an empty gas table, which the
+    engine's own ``Environment.from_dict`` rejects — before a child
+    launches. Everything else runs: an aggregate-minted job with no env
+    at all still solves at the fallback."""
+    from precis_pathway import kinetics_job
+
+    launched: list = []
+    _fake_runner(
+        monkeypatch,
+        submit_kinetics_job_detached=lambda cfg, res, **kw: launched.append(cfg),
+    )
+    store = _stored_pathway()
+
+    # stated p_total with nothing to scale — refused at submit AND at the
+    # blocking dispatch fallback, before any child burns
+    bad = _job_ctx(store, {"environment": {"T": 300.0, "p_total": 2.0}})
+    assert kinetics_job._submit(bad, kinetics_job.SPEC) is None
+    bad.record_failure.assert_called_once()
+    assert "no composition to scale" in bad.record_failure.call_args.args[0]
+    bad2 = _job_ctx(store, {"environment": {"T": 300.0, "p_total": 2.0}})
+    kinetics_job._dispatch(bad2, kinetics_job.SPEC)
+    bad2.record_failure.assert_called_once()
+    assert launched == []
+
+    # gas entries count toward the table by the engine's own acceptance —
+    # a bare float(): numeric strings count; forms the engine itself
+    # refuses (unit strings, dicts) don't, and the gate still catches them
+    ok_env = {
+        "T": 300.0,
+        "p_total": 2.0,
+        "gases": {"inputs": {"NO": "0.5"}},
+    }
+    str_ctx = _job_ctx(store, {"environment": ok_env})
+    kinetics_job._submit(str_ctx, kinetics_job.SPEC)
+    str_ctx.record_failure.assert_not_called()
+    assert launched == [{"environment": ok_env}]
+    for entry in ("0.5 bar", {"p": 0.5}):
+        ctx = _job_ctx(
+            store,
+            {
+                "environment": {
+                    "T": 300.0,
+                    "p_total": 2.0,
+                    "gases": {"inputs": {"NO": entry}},
+                }
+            },
+        )
+        assert kinetics_job._submit(ctx, kinetics_job.SPEC) is None
+        ctx.record_failure.assert_called_once()
+    launched.clear()
+
+    # never when the env is absent — and an empty table with null p_total
+    # is engine-valid, so these launch (an empty-table env reaches the
+    # sweep, where its rescale dies downstream as before)
+    solved: list = []
+    _fake_runner(
+        monkeypatch,
+        submit_kinetics_job_detached=lambda cfg, res, **kw: launched.append(cfg),
+        run_kinetics_subprocess=lambda *a, **kw: solved.append(a),
+        run_kinetics_sweep_subprocess=lambda *a, **kw: None,
+    )
+    ok_cfgs: list[dict[str, Any]] = [
+        {},  # no environment at all — the aggregate-minted shape
+        {"conditions": {"pressures": {}}},  # legacy empty
+        {"environment": {"T": 300.0}},  # null p_total, empty table
+    ]
+    for cfg in ok_cfgs:
+        ctx = _job_ctx(store, cfg)
+        kinetics_job._submit(ctx, kinetics_job.SPEC)
+        ctx.record_failure.assert_not_called()
+    assert len(launched) == 3
+
+    # the blocking fallback too: a no-env job still solves
+    dispatch_ctx = _job_ctx(store, {})
+    kinetics_job._dispatch(dispatch_ctx, kinetics_job.SPEC)
+    dispatch_ctx.record_failure.assert_not_called()
+    assert len(solved) == 1
+
+
+def test_recompute_kinetics_names_a_stored_env_refusal(monkeypatch) -> None:
+    """A reconstructed stored env the engine rejects is named as the STORED
+    env being refused — the caller gave no args to blame; an args env
+    refusal still says args."""
+    import precis.handlers.job as job_mod
+    from precis.errors import BadInput
+
+    _Jobs.calls = []
+    monkeypatch.setattr(job_mod, "JobHandler", _Jobs)
+    _stub_env_engine(monkeypatch)  # refuses a non-numeric T
+    meta = _kinetics_meta({"name": "x"})
+    meta["results"]["kinetics_v2"]["environment"] = {**_RECORD_ENV, "T": "hot"}
+    h = _recompute_handler(meta)
+    with pytest.raises(BadInput, match="stored environment refused") as e:
+        h.put(id="pw-a", mode="recompute_kinetics")
+    assert "environment" in str(e.value.next)
+    assert _Jobs.calls == []
+
+    h2 = _recompute_handler(_kinetics_meta({"name": "x"}))
+    with pytest.raises(BadInput, match="args environment refused"):
+        h2.put(
+            id="pw-a",
+            mode="recompute_kinetics",
+            args={"environment": {"T": "hot"}},
+        )

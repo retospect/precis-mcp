@@ -670,12 +670,16 @@ class PathwayHandler(Handler):
     ) -> Response:
         """``mode='recompute_kinetics'``: mint ``autocatpath_kinetics`` for a
         stored pathway so its ``kinetics_v2`` (and sweep) are re-solved on the
-        current engine — optionally under an overriding ``environment`` /
-        ``objective`` / ``sweep`` laid over the stored config. The environment
-        and objective are validated here through the engine's own
-        ``from_dict``; the sweep block's full validation is the engine's, at
-        job time, where a refusal lands as ``kinetics_sweep_error`` on the
-        pathway and fails the job."""
+        current engine under the stored conditions — an explicit
+        ``environment`` / ``objective`` / ``sweep`` arg overrides only its own
+        key; a key left unset falls back to the stored value (the last
+        solve's record, then the config's blocks, then the legacy
+        conditions). A pathway with no usable stored environment is refused
+        here, not after the solve burns a run (gr550976). The environment
+        and objective are validated through the engine's own ``from_dict``;
+        the sweep block's full validation is the engine's, at job time,
+        where a refusal lands as ``kinetics_sweep_error`` on the pathway and
+        fails the job."""
         store = self.hub.live_store
         example = (
             "put(kind='pathway', id='pw123', mode='recompute_kinetics', "
@@ -715,23 +719,61 @@ class PathwayHandler(Handler):
                     f"args['{name}'] must be a mapping, got {type(val).__name__}",
                     next=example,
                 )
-        try:
-            if env is not None or obj is not None:
-                from autocatpath.environment import Environment, Objective
-
-                if env is not None:
-                    Environment.from_dict(env)
-                if obj is not None:
-                    Objective.from_dict(obj)
-        except Exception as e:
-            env_key = _env_key(str(e))
-            raise BadInput(
-                f"pathway environment/objective refused: {e}",
-                next=_env_next(env_key or "environment"),
-            ) from e
         from .aggregate_job import kinetics_idem_key
-        from .kinetics_job import overlay_recompute_config
+        from .kinetics_job import (
+            overlay_recompute_config,
+            stored_environment,
+            stored_objective,
+            stored_sweep,
+        )
 
+        # an explicit arg overrides only its own key; a key it leaves unset
+        # falls back to the pathway's stored value — the last solve's
+        # kinetics record first, then the config's own blocks, then the
+        # legacy conditions the config already prices (gr550976).
+        env_stored, env_src = stored_environment(meta, config, results)
+        obj_stored, obj_src = stored_objective(meta, config, results)
+        sweep_stored, sweep_src = stored_sweep(meta, config, results)
+        if env is None:
+            env = env_stored
+        if obj is None:
+            obj = obj_stored
+        if sweep is None:
+            sweep = sweep_stored
+        if env is not None:
+            try:
+                from autocatpath.environment import Environment
+
+                Environment.from_dict(env)
+            except Exception as e:
+                env_key = _env_key(str(e))
+                # the rejected block came from the pathway's records, not
+                # args — name the stored env as what was refused
+                who = "args" if given.get("environment") is not None else "stored"
+                raise BadInput(
+                    f"pathway {who} environment refused: {e}",
+                    next=_env_next(env_key or "environment"),
+                ) from e
+        if obj is not None:
+            try:
+                from autocatpath.environment import Objective
+
+                Objective.from_dict(obj)
+            except Exception as e:
+                env_key = _env_key(str(e))
+                who = "args" if given.get("objective") is not None else "stored"
+                raise BadInput(
+                    f"pathway {who} objective refused: {e}",
+                    next=_env_next(env_key or "objective"),
+                ) from e
+        if env is None and env_src is None:
+            raise BadInput(
+                f"pathway '{ident}' stores no environment to re-solve under "
+                "(no environment block, no kinetics_v2 record env and no "
+                "conditions.pressures — the (T, p_total) sweep needs a gas "
+                "table to scale)",
+                next=example,
+            )
         new_config = overlay_recompute_config(
             config, environment=env, objective=obj, sweep=sweep
         )
@@ -752,14 +794,31 @@ class PathwayHandler(Handler):
         )
         overlaid = [
             k
-            for k, v in (("environment", env), ("objective", obj), ("sweep", sweep))
+            for k, v in (
+                ("environment", given.get("environment")),
+                ("objective", given.get("objective")),
+                ("sweep", given.get("sweep")),
+            )
             if v is not None
         ]
+        reused = [
+            f"{k} ({src})"
+            for k, v, src in (
+                ("environment", given.get("environment"), env_src),
+                ("objective", given.get("objective"), obj_src),
+                ("sweep", given.get("sweep"), sweep_src),
+            )
+            if v is None and src is not None
+        ]
+        parts = []
+        if overlaid:
+            parts.append(f"overriding {', '.join(overlaid)}")
+        if reused:
+            parts.append(f"reusing stored {', '.join(reused)}")
+        detail = f" — {'; '.join(parts)}" if parts else ""
         return Response(
             body=(
-                f"kinetics recompute queued for '{ident}'"
-                + (f" under overriding {', '.join(overlaid)}" if overlaid else "")
-                + f". {job.body}\n"
+                f"kinetics recompute queued for '{ident}'{detail}. {job.body}\n"
                 f"Result: get(kind='pathway', id={str(ident)!r}, view='kinetics') "
                 "and view='kinetics-sweep'"
             )
