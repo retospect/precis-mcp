@@ -2465,8 +2465,16 @@ for (( attempt = 1; attempt <= MAX_ATTEMPTS; attempt++ )); do
             # reddened release/r106 (gr517403). Host-side, sub-second, no
             # container — checked before the DOCS_ONLY split on purpose.
             if [[ -f scripts/gen-devin-hooks && -f .claude/settings.json ]]; then
-                scripts/gen-devin-hooks render --check \
-                    || die ".devin/hooks.v1.json is stale — it is generated from .claude/settings.json. next=scripts/gen-devin-hooks render, then commit the file and re-run scripts/ship."
+                # Only the renderer's own "stale <file>" line is a staleness
+                # verdict. Any other failure is `uv run --frozen` not starting
+                # (an unwritable cache, no wheel for the interpreter uv picked —
+                # gr551238): still a refusal, but named for what it is.
+                if ! hooks_out="$(scripts/gen-devin-hooks render --check 2>&1)"; then
+                    if grep -q '^stale ' <<<"$hooks_out"; then
+                        die ".devin/hooks.v1.json is stale — it is generated from .claude/settings.json. next=scripts/gen-devin-hooks render, then commit the file and re-run scripts/ship."
+                    fi
+                    die "scripts/gen-devin-hooks could not run (not a staleness verdict): $(tail -n 1 <<<"$hooks_out")"
+                fi
             fi
             setup_gate_infra
             if [[ "$DOCS_ONLY" == 1 ]]; then

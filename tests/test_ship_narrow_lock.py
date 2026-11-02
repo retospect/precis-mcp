@@ -556,15 +556,22 @@ def test_quiet_status_names_a_failed_local_main_sync(rig: Rig) -> None:
     ), out
 
 
-def _stage_hooks_mirror(wt: Path, stub_rc: int) -> None:
+#: What the real renderer prints (stderr) on a stale mirror.
+_HOOKS_STALE = (
+    "echo 'stale .devin/hooks.v1.json — next=scripts/gen-devin-hooks render' >&2\n"
+)
+
+
+def _stage_hooks_mirror(wt: Path, stub_rc: int, say: str = "") -> None:
     """The .claude/.devin mirror pair as the real repo tracks it, with a
-    stub gen-devin-hooks whose exit code is the verdict."""
+    stub gen-devin-hooks whose exit code is the verdict and ``say`` its
+    output."""
     (wt / ".claude").mkdir(exist_ok=True)
     (wt / ".claude" / "settings.json").write_text('{"hooks": {}}\n', encoding="utf-8")
     (wt / ".devin").mkdir(exist_ok=True)
     (wt / ".devin" / "hooks.v1.json").write_text("{}\n", encoding="utf-8")
     stub = wt / "scripts" / "gen-devin-hooks"
-    stub.write_text(f"#!/bin/sh\nexit {stub_rc}\n", encoding="utf-8")
+    stub.write_text(f"#!/bin/sh\n{say}exit {stub_rc}\n", encoding="utf-8")
     stub.chmod(0o755)
 
 
@@ -573,7 +580,7 @@ def test_quick_ship_refuses_a_stale_devin_hooks_mirror(rig: Rig) -> None:
     class — .claude/settings.json is in the docs-only set, so the check runs
     before the docs/code lint split, or the mirror drift keeps slipping."""
     wt = rig.worktree("hook", {"h.txt": "h\n"})
-    _stage_hooks_mirror(wt, 1)
+    _stage_hooks_mirror(wt, 1, _HOOKS_STALE)
     rig.g(wt, "add", "-f", ".claude/settings.json")
     rig.g(wt, "add", ".devin/hooks.v1.json", "scripts/gen-devin-hooks")
     # amend, not a second commit: a 2-commit branch dies earlier at
@@ -586,6 +593,25 @@ def test_quick_ship_refuses_a_stale_devin_hooks_mirror(rig: Rig) -> None:
     assert "next=scripts/gen-devin-hooks render" in out
     # died before any gate leg ran
     assert not (rig.lintdir / "hook.started").exists()
+
+
+def test_quick_ship_names_a_hooks_renderer_that_could_not_run(rig: Rig) -> None:
+    """gr551238: `uv run --frozen` failing (no rdkit wheel for the cp315 uv
+    picked) exited non-zero and was reported as a stale mirror. Still a
+    refusal, but it must name the launcher failure, not staleness."""
+    wt = rig.worktree("hookuv", {"h.txt": "h\n"})
+    _stage_hooks_mirror(
+        wt, 1, "echo 'error: Distribution `rdkit` has no wheel for cp315' >&2\n"
+    )
+    rig.g(wt, "add", "-f", ".claude/settings.json")
+    rig.g(wt, "add", ".devin/hooks.v1.json", "scripts/gen-devin-hooks")
+    rig.g(wt, "commit", "-q", "--amend", "-m", "chore(test): uv fails")
+    rc, out = _ship_no_m(rig, wt, "--quick")
+    assert rc != 0, out
+    assert "gen-devin-hooks could not run (not a staleness verdict)" in out, out
+    assert "no wheel for cp315" in out, out
+    assert "hooks.v1.json is stale" not in out, out
+    assert not (rig.lintdir / "hookuv.started").exists()
 
 
 def test_quick_ship_passes_a_fresh_devin_hooks_mirror(rig: Rig) -> None:
