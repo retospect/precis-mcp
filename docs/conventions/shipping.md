@@ -534,6 +534,11 @@ work lands with `scripts/fleet-wave land <tree>`, which runs that tree's own
 branch) lands the copy and leaves the original looking unmerged forever —
 the 147 `*-pin` branches this rule retires.
 
+**A lander removes its own landing tree** (Reto 2026-11-02). When a ship
+from a scratch tree it made (`qland-<x>` tree, `land-<x>` branch) reports
+shipped, the same session removes that tree and deletes that branch — no
+further go needed. Never someone else's tree.
+
 Two fleet-coordination rules (Reto 2026-09-30):
 
 - **The no-deploy window.** Deploys wait out the 03:00–04:20Z nightly
