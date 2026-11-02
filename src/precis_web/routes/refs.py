@@ -1820,6 +1820,70 @@ def _pathway_quest_id(ref: Any, candidate_struct: Any | None) -> int | None:
     return None
 
 
+#: What one run-job link reads as. ``autocatpath_seed`` is ONE seed's
+#: simulation run (distinguished by its seed number — two seed links used
+#: to differ only by job id, gr549584); ``autocatpath_aggregate`` combines
+#: the seeds' partials into the pathway, not a new simulation.
+_RUN_JOB_WHAT: dict[str, str] = {
+    "autocatpath_seed": "one seed's simulation run",
+    "autocatpath_aggregate": "combines the seeds' partial results into the pathway — not a new simulation",
+}
+
+#: A job in one of these ``STATUS:`` values is a finished record — the
+#: link opens its record, it never starts a rerun (gr549584 item 1).
+_RUN_JOB_DONE = ("succeeded", "failed", "cancelled")
+
+
+def _pathway_job_chip(row: Any) -> dict[str, Any]:
+    """One provenance-strip job chip: ``label`` distinguishes the jobs at
+    a glance (``seed 1 on spark`` / ``aggregate on pollux`` — the host is
+    per-job, ``meta.lease_host``, because pooled seeds can land on
+    different machines and one page-level "ran on" lied about that),
+    ``title`` is the mouseover: what the job is, that it's a finished
+    record, the ``job_summary`` chunk's own line, and the wall time."""
+    jid = int(row[0])
+    job_type = row[1] or "job"
+    seed, host, wall, status, summary = row[2], row[3], row[4], row[5], row[6]
+    if job_type == "autocatpath_seed":
+        text = f"seed {seed}" if seed not in (None, "") else "seed"
+    elif job_type == "autocatpath_aggregate":
+        text = "aggregate"
+    else:
+        text = str(job_type)
+    bits = [f"job #{jid} ({job_type})"]
+    if job_type in _RUN_JOB_WHAT:
+        bits.append(_RUN_JOB_WHAT[job_type])
+    st = str(status).removeprefix("STATUS:") if status else ""
+    if st:
+        bits.append(
+            st
+            + (
+                " — a finished record; the link opens it, nothing reruns"
+                if st in _RUN_JOB_DONE
+                else ""
+            )
+        )
+    facts = " ".join(
+        p
+        for p in (
+            f"{float(wall):.1f} s" if wall not in (None, "") else None,
+            f"on {host}" if host else None,
+        )
+        if p
+    )
+    if facts:
+        bits.append(facts)
+    if summary:
+        bits.append(str(summary).splitlines()[0].strip())
+    return {
+        "id": jid,
+        "label": text + (f" on {host}" if host else ""),
+        "url": f"/refs/job/{jid}",
+        "title": " — ".join(bits),
+        "host": host,
+    }
+
+
 def _pathway_run_jobs(store: Store, ref_id: int) -> list[dict[str, Any]]:
     """The (up to 10, most-recent-first) ``kind='job'`` refs that produced
     this pathway — the explore/aggregate tail (``precis_pathway.
@@ -1828,11 +1892,22 @@ def _pathway_run_jobs(store: Store, ref_id: int) -> list[dict[str, Any]]:
     on completion; the seed jobs are where the ``run_log`` chunks live. Raw
     SQL off ``store.pool`` (same seam ``_pathway_candidate_stepper`` uses),
     guarded broadly so a store that can't run it (or a fake whose cursor
-    never parses SQL) degrades to no run-job links, not a 500."""
+    never parses SQL) degrades to no run-job links, not a 500. gr549584:
+    the row also carries the seed index, claim host (``lease_host``), wall
+    time, the ``STATUS:`` tag and the ``job_summary`` chunk's first line so
+    the strip can label and mouseover each job truthfully — seed 0 may
+    have run on a different host than seed 1."""
     try:
         with store.pool.connection() as conn:
             rows = conn.execute(
-                "SELECT ref_id, meta->>'job_type' FROM refs "
+                "SELECT ref_id, meta->>'job_type', meta->'params'->>'seed', "
+                "meta->>'lease_host', meta->>'wall_s', "
+                "(SELECT t.value FROM ref_tags rt JOIN tags t "
+                "ON t.tag_id = rt.tag_id WHERE rt.ref_id = refs.ref_id "
+                "AND t.namespace = 'STATUS' ORDER BY t.value LIMIT 1), "
+                "(SELECT c.text FROM chunks c WHERE c.ref_id = refs.ref_id "
+                "AND c.chunk_kind = 'job_summary' ORDER BY c.ord DESC LIMIT 1) "
+                "FROM refs "
                 "WHERE kind = 'job' AND retired_at IS NULL "
                 "AND meta->>'pathway_ref' = %s "
                 "ORDER BY ref_id DESC LIMIT 10",
@@ -1841,10 +1916,7 @@ def _pathway_run_jobs(store: Store, ref_id: int) -> list[dict[str, Any]]:
     except Exception:
         log.warning("pathway %s: run-jobs query failed", ref_id, exc_info=True)
         return []
-    return [
-        {"id": int(r[0]), "label": r[1] or "job", "url": f"/refs/job/{int(r[0])}"}
-        for r in rows
-    ]
+    return [_pathway_job_chip(r) for r in rows]
 
 
 def _pathway_provenance(
@@ -1855,39 +1927,49 @@ def _pathway_provenance(
 ) -> dict[str, Any] | None:
     """Context for the provenance strip (item D): the candidate structure
     link (already resolved elsewhere on the page — reused here), the owning
-    quest (``_pathway_quest_id``), its dossier draft (``dossier-of`` edge,
-    ``precis.quest.dossier``), the full logbook page, the node the compute
-    ran on (``meta.ran_on``), and the job(s) that produced it
-    (``_pathway_run_jobs``). Every piece is independently optional — a
-    candidate-less/quest-less pathway (ad-hoc or hand-authored) still
-    renders the strip with whatever resolves, never a 500; ``None`` only
-    when NOTHING resolves at all (nothing to show)."""
+    quest (``_pathway_quest_id``), the full logbook page, a fisheye link
+    (the candidate structure's neighbourhood — ``/eye/st<id>``, the same
+    approach the quest page took in gr541346 — falling back to the
+    pathway's own ``/eye/pw<id>`` when there is no candidate; the
+    template drops it when the nav partial already links that handle),
+    the node the compute ran on (``meta.ran_on``, shown only when no run-jobs
+    resolved — the jobs carry the truer per-job host, gr549584), and the
+    job(s) that produced it (``_pathway_run_jobs``). Every piece is
+    independently optional — a candidate-less/quest-less pathway (ad-hoc
+    or hand-authored) still renders the strip with whatever resolves,
+    never a 500; ``None`` only when NOTHING resolves at all (nothing to
+    show)."""
     qid = _pathway_quest_id(ref, candidate_struct)
-    dossier_url = None
-    if qid is not None:
-        try:
-            from precis.quest import dossier as dossier_mod
-
-            did = dossier_mod.dossier_ref_id(store, qid)
-            if did is not None:
-                dossier_url = _quest_draft_url(store, did)
-        except Exception:
-            log.warning(
-                "pathway %s: dossier lookup failed for quest %s",
-                ref.id,
-                qid,
-                exc_info=True,
-            )
-    ran_on = (ref.meta or {}).get("ran_on")
+    # gr549580: never a dossier draft link — the fisheye of the candidate
+    # structure (or, with no candidate, of the pathway itself). The pw
+    # fallback duplicates the nav partial's own /eye/pw<id> on a real
+    # store — the template suppresses it then so the page carries exactly
+    # one /eye/ anchor (test_detail_eye_link); it still renders wherever
+    # the nav link can't resolve (a fake store, a lookup miss).
+    if candidate_struct is not None:
+        eye_handle = handle_registry.try_format("structure", int(candidate_struct.id))
+    else:
+        eye_handle = handle_registry.try_format("pathway", int(ref.id))
     run_jobs = _pathway_run_jobs(store, ref.id)
-    if candidate is None and qid is None and not ran_on and not run_jobs:
+    ran_on = (ref.meta or {}).get("ran_on") if not run_jobs else None
+    if (
+        candidate is None
+        and qid is None
+        and eye_handle is None
+        and not ran_on
+        and not run_jobs
+    ):
         return None
     return {
         "candidate": candidate,
         "quest_id": qid,
+        "quest_handle": handle_registry.format_handle("quest", qid)
+        if qid is not None
+        else None,
         "quest_url": f"/refs/quest/{qid}" if qid is not None else None,
         "logbook_url": f"/refs/quest/{qid}/logbook" if qid is not None else None,
-        "dossier_url": dossier_url,
+        "eye_url": f"/eye/{eye_handle}" if eye_handle else None,
+        "eye_handle": eye_handle,
         "ran_on": ran_on,
         "run_jobs": run_jobs,
     }

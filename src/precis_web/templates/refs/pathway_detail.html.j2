@@ -66,33 +66,40 @@
   </p>
   {% endif %}
   {# ── provenance strip (item D) — candidate structure / owning quest /
-     dossier / logbook / run node / run job(s), each independently optional
+     logbook / fisheye / run job(s) / run node, each independently optional
      (``_pathway_provenance`` resolves whatever it can off the candidate-
-     slug naming convention). #}
-  {% if provenance and (provenance.candidate or provenance.quest_id is not none or provenance.ran_on or provenance.run_jobs) %}
+     slug naming convention). gr549580: the fisheye replaces the dossier
+     link (never a draft). gr549584: every item carries a mouseover, the
+     quest prints its ``qu`` handle, and each job chip names its own seed
+     + claim host instead of one page-level "ran on". #}
+  {% if provenance and (provenance.candidate or provenance.quest_id is not none or provenance.eye_url or provenance.ran_on or provenance.run_jobs) %}
   <p class="mt-1 text-xs text-fg-subtle flex flex-wrap items-center gap-x-1.5">
     {% if provenance.candidate %}
-    <span>candidate <a href="{{ provenance.candidate.url }}" class="text-info-strong hover:underline">{{ provenance.candidate.title }}</a></span>
+    <span title="the candidate structure this pathway was computed for">candidate <a href="{{ provenance.candidate.url }}" class="text-info-strong hover:underline">{{ provenance.candidate.title }}</a></span>
     {% endif %}
     {% if provenance.quest_id is not none %}
     {% if provenance.candidate %}<span class="text-fg-ghost">&middot;</span>{% endif %}
-    <span>quest <a href="{{ provenance.quest_url }}" class="text-info-strong hover:underline">#{{ provenance.quest_id }}</a></span>
-    {% endif %}
-    {% if provenance.dossier_url %}
-    <span class="text-fg-ghost">&middot;</span>
-    <a href="{{ provenance.dossier_url }}" class="text-info-strong hover:underline">dossier</a>
+    <span title="the owning quest (recovered from the q<id>cand-&hellip; slug convention)">quest <a href="{{ provenance.quest_url }}" class="text-info-strong hover:underline">{{ provenance.quest_handle }}</a></span>
     {% endif %}
     {% if provenance.logbook_url %}
     <span class="text-fg-ghost">&middot;</span>
-    <a href="{{ provenance.logbook_url }}" class="text-info-strong hover:underline">logbook</a>
+    <a href="{{ provenance.logbook_url }}" class="text-info-strong hover:underline" title="the quest's append-only logbook">logbook</a>
+    {% endif %}
+    {# skipped when the nav partial (``_eye_link`` in base) already carries
+       the same handle — a candidate-less pathway's fallback IS this page's
+       own pw handle, and one /eye/ anchor per detail page is the invariant
+       (tests/precis_web/test_detail_eye_link.py). #}
+    {% if provenance.eye_url and provenance.eye_handle != eye_handle %}
+    <span class="text-fg-ghost">&middot;</span>
+    <a href="{{ provenance.eye_url }}" class="text-info-strong hover:underline" title="{{ provenance.eye_handle }} — the graph neighbourhood (fisheye+1hop); this pathway shows in its ring">fisheye</a>
     {% endif %}
     {% for job in provenance.run_jobs %}
     <span class="text-fg-ghost">&middot;</span>
-    <a href="{{ job.url }}" class="text-info-strong hover:underline">run job #{{ job.id }} ({{ job.label }})</a>
+    <a href="{{ job.url }}" class="text-info-strong hover:underline" title="{{ job.title }}">{{ job.label }}</a>
     {% endfor %}
     {% if provenance.ran_on %}
     <span class="text-fg-ghost">&middot;</span>
-    <span>ran on {{ provenance.ran_on }}</span>
+    <span title="the node this pathway's compute was dispatched to">ran on <a href="/status?tab=services&host={{ provenance.ran_on }}" class="text-info-strong hover:underline" title="{{ provenance.ran_on }} — its services/config page">{{ provenance.ran_on }}</a></span>
     {% endif %}
   </p>
   {% endif %}
@@ -142,12 +149,12 @@
   <div id="pw-u-lever" class="mb-2 rounded border border-info-subtle bg-info-subtle/60 px-2 py-1.5 text-xs text-fg-muted flex flex-wrap items-center gap-x-3 gap-y-1">
     <label class="flex items-center gap-1.5">
       <span class="font-semibold text-fg-secondary">U vs RHE</span>
-      <input type="range" id="pw-u-slider" min="-1.5" max="0.5" step="0.01" value="0" class="align-middle w-32">
+      <input type="range" id="pw-u-slider" min="-1.5" max="0.5" step="0.01" value="-0.5" class="align-middle w-32">
     </label>
     <span id="pw-u-readout" class="font-mono text-fg-secondary"></span>
     <label class="flex items-center gap-1">
       <span>pH</span>
-      <input type="number" id="pw-ph-input" value="0" step="0.1" class="w-14 rounded border border-line-strong px-1 py-0.5">
+      <input type="number" id="pw-ph-input" value="7" step="0.1" class="w-14 rounded border border-line-strong px-1 py-0.5">
     </label>
     <span>T = {{ '%.2f'|format(results_electro.T) if results_electro.T is not none else '298.15' }} K</span>
     {% if results_electro.U_L is not none %}
@@ -956,8 +963,20 @@
   // re-render without needing it threaded through as an argument. Fork
   // probabilities are U-independent (chemical steps, by definition, don't
   // shift with the lever) so computed exactly once here, off the stored
-  // graph — never re-run on a slider move. ──
-  let currentU = 0;
+  // graph — never re-run on a slider move.
+  // gr549591: the default is no longer 0 (never an operating point for
+  // these reductions) — the engine's bounded U_opt when the route isn't
+  // blocked, else one fixed fallback; the readout says which it used so a
+  // fallback is never read as computed. An explicit u= in the URL or any
+  // slider/snap change overrides either (setU clears ``uNote``). ──
+  const PW_U_FALLBACK = -0.5;  // fixed default (V vs RHE); Reto's call, gr549591
+  const _uBlocked = !!((V.results && V.results.blocked_by) || []).length;
+  const _uOpt = V.results ? V.results.U_opt : null;
+  const _uDefault = (_uOpt != null && Number.isFinite(+_uOpt) && !_uBlocked)
+    ? { v: +_uOpt, note: 'default: U_opt' }
+    : { v: PW_U_FALLBACK, note: `default: fixed ${PW_U_FALLBACK.toFixed(2)} V` };
+  let currentU = _uDefault.v;
+  let uNote = _uDefault.note;
   const forkProbs = V.diagram ? computeForkProbabilities(V.diagram) : {};
 
   // Tooltip for a state-level bar: what it is, its energy, and (when
@@ -1298,7 +1317,7 @@
         // matching comment below — two states sharing an x-column used to
         // get identical full-height rects where only the last-drawn one
         // was actually clickable).
-        parts.push(`<rect class="pw-svg-node" data-state="${esc(id)}" x="${x0}" y="${yFloor - 14}" width="${x1 - x0}" height="28" `
+        parts.push(`<rect class="pw-svg-node"${pAttr(nodePaths[id])} data-state="${esc(id)}" x="${x0}" y="${yFloor - 14}" width="${x1 - x0}" height="28" `
           + `fill="transparent" stroke="none" style="cursor:pointer"/>`);
         return;
       }
@@ -1332,7 +1351,7 @@
       // identical overlapping full-height rects, so only the last-drawn one
       // was actually clickable.
       const bandHalf = 14;
-      parts.push(`<rect class="pw-svg-node" data-state="${esc(id)}" x="${x0}" y="${y - bandHalf}" width="${x1 - x0}" height="${bandHalf * 2}" `
+      parts.push(`<rect class="pw-svg-node"${pAttr(nodePaths[id])} data-state="${esc(id)}" x="${x0}" y="${y - bandHalf}" width="${x1 - x0}" height="${bandHalf * 2}" `
         + `fill="transparent" stroke="none" style="cursor:pointer"><title>${esc(levelTip(nd, reason))}</title></rect>`);
     });
 
@@ -1486,6 +1505,11 @@
         || elm.getAttribute('data-paths').indexOf('|' + active + '|') !== -1;
       elm.style.opacity = on ? ''
         : (elm.classList.contains('pw-sdband') ? '0.04' : '0.15');
+      // gr549590: a faded element must not take clicks — with a path
+      // selected, every click resolves to that path's states only. The
+      // level click-bands carry data-paths too (they used not to, which
+      // is how a greyed-out state stole the selected path's clicks).
+      elm.style.pointerEvents = on ? '' : 'none';
     });
     document.querySelectorAll('.pw-path-btn').forEach((b) => {
       const on = selectedPath != null && +b.dataset.path === selectedPath;
@@ -1851,9 +1875,12 @@
       const p = ((V.diagram || {}).paths || [])[selectedPath];
       if (p && p.length) { qs.set('path', p[p.length - 1]); }
     }
-    if (currentU !== 0) { qs.set('u', String(+currentU.toFixed(2))); }
+    // gr549591: always write u and ph — with the new non-zero defaults an
+    // explicit pH 0 or U = 0 must survive a copied link, not fall back to
+    // the default.
+    qs.set('u', String(+currentU.toFixed(2)));
     const ph = phInput ? parseFloat(phInput.value) : NaN;
-    if (ph) { qs.set('ph', String(ph)); }
+    if (Number.isFinite(ph)) { qs.set('ph', String(ph)); }
     const s = qs.toString();
     return s ? '?' + s : '';
   }
@@ -1901,6 +1928,7 @@
       const u = parseFloat(qU);
       if (Number.isFinite(u)) {
         currentU = Math.max(-1.5, Math.min(0.5, u));
+        uNote = '';  // an explicit u= beats either default (gr549591)
         if (uSlider) { uSlider.value = String(currentU); }
       } else { ignored.push('u'); }
     }
@@ -1928,6 +1956,40 @@
     showState(selected || V.stateIds[0], true);
   }
 
+  // ── gr549590: a click lands on whichever transparent band CONTAINS the
+  // point and is CLOSEST to it — two states in one column whose energies
+  // sit within the 28px band used to overlap, and the last-drawn rect
+  // took every click regardless of which bar was nearest. Every band
+  // (level, floor placeholder, shoulder) joins the contest; bands faded
+  // out by a selected path are skipped entirely (pointer-events: none is
+  // set on them by applyPathSelection too — the guard here makes the rule
+  // hold even in a DOM where the attribute lags). ──
+  const pwDiagramEl = document.getElementById('pw-diagram');
+  if (pwDiagramEl) {
+    pwDiagramEl.addEventListener('click', (ev) => {
+      const t = ev.target && ev.target.closest ? ev.target.closest('rect.pw-svg-node') : null;
+      if (!t) { return; }
+      const hits = [];
+      pwDiagramEl.querySelectorAll('rect.pw-svg-node').forEach((r) => {
+        if (r.style.pointerEvents === 'none') { return; }
+        const b = r.getBoundingClientRect();
+        if (ev.clientX >= b.left && ev.clientX <= b.right
+            && ev.clientY >= b.top && ev.clientY <= b.bottom) { hits.push(r); }
+      });
+      if (!hits.length) { return; }
+      let best = hits[0], bestD = Infinity;
+      hits.forEach((r) => {
+        const b = r.getBoundingClientRect();
+        const dx = ev.clientX - (b.left + b.right) / 2;
+        const dy = ev.clientY - (b.top + b.bottom) / 2;
+        const d = dx * dx + dy * dy;
+        if (d < bestD) { bestD = d; best = r; }
+      });
+      ev.stopPropagation();
+      const sid = best.getAttribute('data-state');
+      if (sid) { showState(sid); }
+    });
+  }
   document.addEventListener('click', (ev) => {
     const t = ev.target.closest('[data-state]');
     if (t) { showState(t.getAttribute('data-state')); }
@@ -1981,6 +2043,7 @@
     if (pH !== 0) {
       text += ` (${sheFromRhe(currentU, pH, T).toFixed(2)} V SHE @ pH ${pH})`;
     }
+    if (uNote) { text += ` — ${uNote}`; }
     if (clampNote) { text += ` — ${clampNote}`; }
     uReadout.textContent = text;
   }
@@ -1994,6 +2057,7 @@
     clampNote = name && currentU !== u
       ? `${name} = ${u.toFixed(2)} V is off the slider (-1.50…+0.50 V); showing the nearest end`
       : '';
+    uNote = '';
     if (uSlider) { uSlider.value = String(currentU); }
     updateUReadout();
     try {
@@ -2036,6 +2100,7 @@
   }
 
   const initState = applyUrlSelection();
+  if (uSlider) { uSlider.value = String(currentU); }  // default may be U_opt
   updateUReadout();
 
   // A diagram-render failure (e.g. a still-unanticipated bad graph shape)

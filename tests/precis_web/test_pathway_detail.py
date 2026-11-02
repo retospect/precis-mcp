@@ -1043,10 +1043,17 @@ def test_pathway_detail_provenance_strip_branch_sections_and_annotations(
     full = resp.text
 
     # Provenance strip — candidate + quest (from the "q1cand-…" pathway
-    # slug the fixture seeds) + logbook. No dossier seeded -> omitted.
+    # slug the fixture seeds, rendered by its universal handle, gr549584
+    # item 2) + logbook + the candidate structure's fisheye (gr549580 —
+    # never a dossier draft link).
     assert "/refs/structure/166700" in full
     assert "/refs/quest/1" in full
     assert "/refs/quest/1/logbook" in full
+    assert 'quest <a href="/refs/quest/1"' in full
+    assert ">qu1</a>" in full
+    assert "/eye/st166700" in full
+    assert ">fisheye</a>" in full
+    assert "dossier" not in full
 
     # Branch-grouped sections: target path's section (leaf NH3) precedes
     # the branch section (leaf H2O), which carries the branch subtitle.
@@ -1178,8 +1185,11 @@ class _RunJobsPool:
 
 
 def test_pathway_detail_ran_on_shown_when_set(client, runtime) -> None:
-    """``meta.ran_on`` renders as plain "ran on <node>" text in the
-    provenance strip — not a link, just where the compute happened."""
+    """``meta.ran_on`` renders as "ran on <node>" in the provenance strip
+    (only when NO run-jobs resolved — per-job hosts carry it otherwise),
+    linked to the host's services/config page (gr549584 item 4 — the
+    machine-kind page proposed in the linked gripe doesn't exist yet;
+    ``/status?tab=services&host=`` is the page that best shows a host)."""
     _seed_pathway(
         runtime.store,
         meta={"results": {"substrate": "NO", "target": "NH3"}, "ran_on": "spark"},
@@ -1187,7 +1197,38 @@ def test_pathway_detail_ran_on_shown_when_set(client, runtime) -> None:
     )
     resp = client.get("/refs/pathway/171696")
     assert resp.status_code == 200
-    assert "ran on spark" in resp.text
+    assert "ran on" in resp.text
+    assert "/status?tab=services&amp;host=spark" in resp.text or (
+        "/status?tab=services&host=spark" in resp.text
+    )
+
+
+def test_pathway_detail_ran_on_hidden_when_jobs_carry_the_host(client, runtime) -> None:
+    """gr549584 comment 1: with run-jobs present, the one page-level
+    ``meta.ran_on`` value is suppressed — the host rides each job chip
+    instead (seed 0 and seed 1 may have run on different machines)."""
+    _seed_pathway(
+        runtime.store,
+        meta={"results": {"substrate": "NO", "target": "NH3"}, "ran_on": "pollux"},
+        body_text=None,
+    )
+    runtime.store.pool = _RunJobsPool(
+        [
+            (
+                190002,
+                "autocatpath_seed",
+                "1",
+                "spark",
+                "322.1",
+                "STATUS:succeeded",
+                "autocatpath_seed: seed=1 model=mace:medium: 29 state(s), 8 warning(s).",
+            ),
+        ]
+    )
+    resp = client.get("/refs/pathway/171696")
+    assert resp.status_code == 200
+    assert "ran on" not in resp.text
+    assert "seed 1 on spark" in resp.text
 
 
 def test_pathway_detail_ran_on_omitted_when_unset(client, runtime) -> None:
@@ -1203,20 +1244,76 @@ def test_pathway_detail_ran_on_omitted_when_unset(client, runtime) -> None:
 
 def test_pathway_detail_run_job_links_render_from_query_rows(client, runtime) -> None:
     """``_pathway_run_jobs`` resolves the job(s) whose meta.pathway_ref
-    names this pathway into "run job #N (label)" links in the strip."""
+    names this pathway into per-job chips — ``seed <n> on <host>`` /
+    ``aggregate on <host>`` labels (gr549584 comment 1), each with a
+    mouseover naming what the job is, its status and its summary line."""
     _seed_pathway(
         runtime.store,
         meta={"results": {"substrate": "NO", "target": "NH3"}},
         body_text=None,
     )
     runtime.store.pool = _RunJobsPool(
-        [(190001, "autocatpath_seed"), (190000, "autocatpath_aggregate")]
+        [
+            (
+                190001,
+                "autocatpath_seed",
+                "1",
+                "spark",
+                "322.1",
+                "STATUS:succeeded",
+                "autocatpath_seed: seed=1 model=mace:medium: "
+                "29 state(s), 8 warning(s).",
+            ),
+            (190000, "autocatpath_aggregate", None, "pollux", "40.0", None, None),
+        ]
     )
     resp = client.get("/refs/pathway/171696")
     assert resp.status_code == 200
-    assert "run job #190001 (autocatpath_seed)" in resp.text
     assert "/refs/job/190001" in resp.text
-    assert "run job #190000 (autocatpath_aggregate)" in resp.text
+    assert ">seed 1 on spark<" in resp.text
+    assert ">aggregate on pollux<" in resp.text
+    assert "job #190001 (autocatpath_seed)" in resp.text
+    assert "one seed&#39;s simulation run" in resp.text
+    assert "succeeded — a finished record" in resp.text
+    assert "322.1 s on spark" in resp.text
+    assert "29 state(s), 8 warning(s)" in resp.text
+    assert "combines the seeds&#39; partial results" in resp.text
+
+
+def test_pathway_detail_fisheye_falls_back_to_pathway_without_candidate(
+    client, runtime
+) -> None:
+    """gr549580: a candidate-less pathway's provenance strip links its OWN
+    fisheye (``/eye/pw<id>``) instead of a structure's — and ``/eye/pw<id>``
+    links back to this page via its "open in its reader" link
+    (``ref_url``'s generic-detail fallback)."""
+    from precis_web.ref_urls import ref_url
+
+    _seed_pathway(
+        runtime.store,
+        meta={"results": {"substrate": "NO", "target": "NH3"}},
+        body_text=None,
+    )
+    resp = client.get("/refs/pathway/171696")
+    assert resp.status_code == 200
+    assert "/eye/pw171696" in resp.text
+    assert "dossier" not in resp.text
+    # the eye's reader link for a pw handle is this very page
+    assert ref_url("pathway", 171696) == "/refs/pathway/171696"
+
+
+def test_pathway_detail_dossier_link_never_renders(client, runtime) -> None:
+    """gr549580 acceptance: nothing in the strip links a ``dossier`` draft
+    — not even when the quest has one (the route no longer looks it up)."""
+    _seed_pathway(
+        runtime.store,
+        meta={"candidate_ref": 166700, "results": {"substrate": "NO", "target": "NH3"}},
+        body_text=None,
+    )
+    resp = client.get("/refs/pathway/171696")
+    assert resp.status_code == 200
+    assert ">dossier<" not in resp.text
+    assert "dossier_url" not in resp.text
 
 
 def test_pathway_detail_run_jobs_degrade_cleanly_without_pool_support(
@@ -1452,6 +1549,66 @@ def test_pathway_u_opt_inside_the_window_is_not_bounded(client, runtime) -> None
     resp = client.get("/refs/pathway/171696")
     assert 'id="pw-u-snap-uopt" data-u="-0.3"' in resp.text
     assert "(bounded;" not in resp.text
+
+
+def test_pathway_explorer_defaults_ph7_and_u_fallback(client, runtime) -> None:
+    """gr549591: the explorer opens at pH 7 (always) and at the engine's
+    bounded U_opt when the route isn't blocked — else the fixed fallback;
+    the readout says which it used, never a bare 0 V."""
+    _seed_pathway(
+        runtime.store,
+        meta={"graph": _GRAPH3_NH, "results": _ELECTRO_RESULTS},
+        body_text=None,
+    )
+    resp = client.get("/refs/pathway/171696")
+    assert resp.status_code == 200
+    assert 'id="pw-ph-input" value="7"' in resp.text
+    # U_opt = -0.30, route unblocked -> the default IS U_opt
+    assert "'default: U_opt'" in resp.text
+    assert "{ v: +_uOpt, note: 'default: U_opt' }" in resp.text
+    # fixed fallback for the no-U_opt / blocked case
+    assert "PW_U_FALLBACK = -0.5" in resp.text
+    # explicit u=/ph= in the URL still wins, and pwQueryString always
+    # writes BOTH params so an explicit pH 0 / U 0 survives a copied link
+    assert "qs.set('u', String(+currentU.toFixed(2)))" in resp.text
+    assert "Number.isFinite(ph)) { qs.set('ph'" in resp.text
+    assert "uNote = '';  // an explicit u= beats either default" in resp.text
+
+
+def test_pathway_explorer_u_default_blocked_route_uses_fallback(
+    client, runtime
+) -> None:
+    """A blocked route (``blocked_by`` non-empty) must not trust U_opt as
+    the default — the fixed fallback applies, and the page says so."""
+    _seed_pathway(
+        runtime.store,
+        meta={"graph": _GRAPH3_NH, "results": _ELECTRO_RESULTS},
+        body_text=None,
+    )
+    resp = client.get("/refs/pathway/171696")
+    assert "_uBlocked" in resp.text
+    assert "default: fixed " in resp.text
+
+
+@needs_node
+def test_pathway_diagram_level_bands_carry_path_membership(
+    client, runtime, tmp_path: Path
+) -> None:
+    """gr549590: every click band (level, floor placeholder, shoulder)
+    carries ``data-paths`` so applyPathSelection can drop pointer-events
+    on elements outside the isolated path — a faded state can no longer
+    steal clicks meant for the selected path's bar."""
+    _seed_parked(runtime, _parked_graph())
+    resp = client.get("/refs/pathway/171696")
+    assert resp.status_code == 200
+    svg = _render_diagram_svg(tmp_path, resp.text)
+    bands = re.findall(r'<rect class="pw-svg-node"([^>]*)>', svg)
+    assert bands
+    assert all('data-paths="|' in b for b in bands)
+    # the faded-elements click guard ships on the page
+    assert "elm.style.pointerEvents = on ? '' : 'none'" in resp.text
+    # nearest-band click resolution ships too
+    assert "rect.pw-svg-node" in resp.text
 
 
 def test_pathway_u_readout_scalars_omitted_when_absent(client, runtime) -> None:
@@ -2052,7 +2209,12 @@ def test_pathway_diagram_renders_folded_steps_with_annotations(
     )
     assert len(drops) == len(hits) == 5
     # level labels: one per chemical node, none for the shoulder states
-    labels = re.findall(r'font-weight="bold"[^>]*>([^<(]*?)(?: \(|<)', svg)
+    # (centred anchors only — a stacked hydro label is also bold but
+    # start-anchored, and at the non-zero default U it crowds enough to
+    # stack, gr549591)
+    labels = re.findall(
+        r'font-weight="bold"[^>]*text-anchor="middle"[^>]*>([^<(]*?)(?: \(|<)', svg
+    )
     assert sorted(labels) == sorted(["NO@N", "N+O", "NH", "NH2", "NH3", "OH", "H2O"])
 
     annots = re.findall(
@@ -2249,8 +2411,8 @@ def _level_bars(svg: str) -> dict[str, tuple[float, float, float]]:
     centred on its bar: rect y = bar y - 14, same x extent as the bar)."""
     out: dict[str, tuple[float, float, float]] = {}
     for sid, x, y, w in re.findall(
-        r'<rect class="pw-svg-node" data-state="([^"]*)" x="([\d.]+)" y="([\d.-]+)" '
-        r'width="([\d.]+)" height="28"',
+        r'<rect class="pw-svg-node"(?: data-paths="[^"]*")? data-state="([^"]*)" '
+        r'x="([\d.]+)" y="([\d.-]+)" width="([\d.]+)" height="28"',
         svg,
     ):
         out[sid] = (float(x), float(x) + float(w), float(y) + 14)
@@ -2603,10 +2765,12 @@ els['pw-ph-input'].handlers.input[0]();
 els['pw-copy-link'].handlers.click[0]();
 """
     out = _run_url_probe(tmp_path, resp.text, after=after)
+    # gr549591: u and ph are now ALWAYS written (defaults -0.5 / the
+    # stub's ph value 0) — an explicit 0 must survive a copied link.
     assert out["rs"] == [
-        "/refs/pathway/171696?state=NH3",
-        "/refs/pathway/171696?state=NH3&path=NH3",
-        "/refs/pathway/171696?state=NH3&path=NH3&u=-1",
+        "/refs/pathway/171696?state=NH3&u=-0.5&ph=0",
+        "/refs/pathway/171696?state=NH3&path=NH3&u=-0.5&ph=0",
+        "/refs/pathway/171696?state=NH3&path=NH3&u=-1&ph=0",
         "/refs/pathway/171696?state=NH3&path=NH3&u=-1&ph=7",
     ]
     assert out["clip"] == ["http://precis.test" + out["rs"][-1]]
@@ -2639,9 +2803,10 @@ def test_pathway_url_state_invalid_params_fall_back_with_notice(
     assert out["noteHidden"] is False
     for p in ("state", "path", "u", "ph"):
         assert p in out["note"]
-    # the default view: first state selected, lever defaults, nothing pressed
+    # the default view: first state selected, lever defaults (gr549591:
+    # fixed -0.5 U fallback; the stub's ph input reads '0'), nothing pressed
     assert "NO@N" in out["sel"]
-    assert out["u"] == "0"
+    assert out["u"] == "-0.5"
     assert out["ph"] == "0"
     assert out["pressed"] == ["false", "false"]
 
@@ -2669,7 +2834,7 @@ def test_pathway_url_state_escapes_state_ids(client, runtime, tmp_path: Path) ->
         "({getAttribute: () => 'N+H'})}}));"
     )
     out = _run_url_probe(tmp_path, html, after=after)
-    assert out["rs"][-1].endswith("?state=N%2BH")
+    assert out["rs"][-1] == "/refs/pathway/171696?state=N%2BH&u=-0.5&ph=0"
 
     restored = _run_url_probe(tmp_path, html, search="?state=N%2BH")
     assert "N+H" in restored["sel"]
