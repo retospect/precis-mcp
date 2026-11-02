@@ -440,6 +440,53 @@ def test_get_batch_comments_through_dispatch(
     assert "note on second" in body
 
 
+# ── gr552235: list route before single-id view branches ────────────
+
+
+def test_get_batch_view_job_single_id_views(store: Store, hub: Hub) -> None:
+    """gr552235: job's single-id get views refused ``id=[...]`` with
+    'takes one integer or handle' while the refusal's own ``next=``
+    named get as a list-taker — the list route now runs first and the
+    view maps one block per id."""
+    handler = JobHandler(hub=hub)
+    a = store.insert_ref(kind="job", slug=None, title="job one")
+    b = store.insert_ref(kind="job", slug=None, title="job two")
+    body = handler.get(id=_batch(a.id, b.id), view="transcript").body
+    assert body.startswith("# 2 job (batch, view='transcript')")
+    assert f"job {a.id} has no recorded transcript" in body
+    assert f"job {b.id} has no recorded transcript" in body
+
+
+def test_get_batch_view_job_sha_stays_builds_only(store: Store, hub: Hub) -> None:
+    a = store.insert_ref(kind="job", slug=None, title="job")
+    with pytest.raises(BadInput, match="/builds") as exc:
+        JobHandler(hub=hub).get(id=_batch(a.id), view="transcript", sha="abc123")
+    assert "get(kind='job', id='/builds'" in str(exc.value.next)
+
+
+def test_get_batch_view_gripe_comment_selectors_forward(hub: Hub) -> None:
+    """gr552235: ``args={'comment': K}``/``{'comments': K}`` on a batch
+    used to drop silently — they window every block now."""
+    handler, ids = _gripes(hub, 2)
+    for i in range(3):
+        handler.put(id=ids[0], text=f"c{i} on first")
+    handler.put(id=ids[1], text="only on second")
+    body = handler.get(id=_batch(*ids), view="comments", comments=1).body
+    assert "c2 on first" in body and "c0 on first" not in body
+    assert "only on second" in body
+
+
+def test_get_batch_bare_comment_selector_reads_as_comments(hub: Hub) -> None:
+    """gr552235 + gr523120: a comment selector on a bare batch get has
+    the same one reading as a singleton — view='comments'."""
+    handler, ids = _gripes(hub, 1)
+    handler.put(id=ids[0], text="the note")
+    resp = handler.get(id=_batch(*ids), comment=1)
+    assert resp.body.startswith("interpreted: ")
+    assert "batch, view='comments'" in resp.body
+    assert "the note" in resp.body
+
+
 # ── link fan-in (``id=[...]``) ──────────────────────────────────────
 
 

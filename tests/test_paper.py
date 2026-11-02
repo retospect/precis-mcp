@@ -414,6 +414,30 @@ class TestViews:
         resp = handler.get(id="wang2020state", view="abstract")
         assert "no abstract" in resp.body
 
+    def test_meta_view_reads_as_the_overview(
+        self, store: Store, handler: PaperHandler
+    ) -> None:
+        """gr551843: agents reach for ``view='meta'`` wanting the
+        bibliographic card — the overview *is* that card, so it aliases
+        instead of refusing (one reading; 'raw' has two and still
+        refuses with the view list)."""
+        _seed_paper(store)
+        resp = handler.get(id="wang2020state", view="meta")
+        plain = handler.get(id="wang2020state")
+        assert resp.body == plain.body
+        assert "Nature, 2020" in resp.body
+
+    def test_raw_view_still_refuses_with_the_view_list(
+        self, store: Store, handler: PaperHandler
+    ) -> None:
+        """gr551843: ``view='raw'`` has no single natural reading on a
+        paper — it still refuses, and the refusal lists the views."""
+        _seed_paper(store)
+        with pytest.raises(Unsupported) as exc:
+            handler.get(id="wang2020state", view="raw")
+        assert "bibtex" in (exc.value.options or [])
+        assert "toc" in (exc.value.options or [])
+
     def test_toc(self, store: Store, handler: PaperHandler) -> None:
         """F20 (superseded): view='toc' renders a flat
         per-chunk keyword table — one TOON row per chunk — off the

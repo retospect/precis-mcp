@@ -254,9 +254,15 @@ def test_comment_selector_past_the_last_names_count_and_window(
 def test_comment_selector_on_a_commentless_gripe_still_gives_a_call(
     hub: Hub,
 ) -> None:
+    """gr551839: ``args={'comment': K}`` on a gripe with ZERO comments
+    says 'has no comments' and the ``next=`` is the body read, not
+    another comments call — one session re-issued the failing
+    comment-1 get 120 times."""
     handler = GripeHandler(hub=hub)
     rid = _gripe(handler, comments=0)
     with pytest.raises(BadInput) as exc:
         handler.get(id=rid, view="comments", comment=1)
-    assert "has no comment 1" in str(exc.value)
-    assert "view='comments'" in str(exc.value.next)
+    assert f"gripe {rid} has no comments" in str(exc.value)
+    nxt = str(exc.value.next)
+    assert nxt == f"get(kind='gripe', id={rid})"
+    assert "view='comments'" not in nxt

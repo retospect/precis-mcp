@@ -10269,7 +10269,12 @@ _VIEW_KWARG_ALIASES: dict[str, str] = {
 }
 
 
-_VIEW_NOOP_ALIASES: frozenset[str] = frozenset({"text", "body", "full"})
+#: View names that read as the default render (the ref-level overview,
+#: or the addressed chunk). ``meta`` joins them (gr551843): agents reach
+#: for it wanting the bibliographic card — title / authors / journal /
+#: year / doi — and the overview *is* that card, the one reading the
+#: word has on a paper.
+_VIEW_NOOP_ALIASES: frozenset[str] = frozenset({"text", "body", "full", "meta"})
 
 
 def _normalise_view(view: str | None) -> str | None:

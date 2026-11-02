@@ -3882,13 +3882,17 @@ class NumericRefHandler(Handler):
         )
         return Response(body=body, result_count=len(ref_ids))
 
-    def _get_batch_view(self, ref_ids: list[int], *, view: str) -> Response:
+    def _get_batch_view(self, ref_ids: list[int], *, view: str, **kw: Any) -> Response:
         """``get(id=[...], view='…')``: the single-id view mapped per id.
 
         Runs the kind's own ``get`` once per id, so subclass views keep
         one code path (alert's ``detail``/``full``, gripe's ``comments``,
         the base ``links``/``log``/``raw`` — gr484236's alert-triage
-        batch is the driver). The id count stays bounded by
+        batch is the driver). ``**kw`` forwards the view's own selectors
+        (gripe's ``comment``/``comments``, job's ``file``/``point`` —
+        gr552235): the subclass's list route passes them here so
+        ``args={'comments': 5}`` windows every block, not none. The id
+        count stays bounded by
         :data:`BATCH_ID_CAP` via :meth:`_coerce_ids`; a missing or
         soft-deleted id renders a one-line block, same as the summary
         form. A view-level error (unknown view for the kind) raises on
@@ -3904,7 +3908,7 @@ class NumericRefHandler(Handler):
         for rid in ref_ids:
             handle = handle_registry.try_format(self.kind, rid) or str(rid)
             try:
-                blocks.append(self.get(id=rid, view=view).body)
+                blocks.append(self.get(id=rid, view=view, **kw).body)
             except NotFound:
                 blocks.append(f"{handle}  not found")
             except Gone:

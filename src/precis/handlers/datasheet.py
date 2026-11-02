@@ -811,12 +811,8 @@ class DatasheetHandler(PaperHandler):
             if v not in (None, "")
         }
 
+        args_reason: str | None = None
         if args:
-            if meta_patch or bib:
-                raise BadInput(
-                    "an args= door call doesn't combine with field edits",
-                    next="make the door call alone, then edit the rest",
-                )
             # The dispatch gate already refuses undeclared args= keys on
             # the MCP path; a direct call could still smuggle a paper-only
             # door in (``split_body`` mints a *paper*), so forward only
@@ -835,8 +831,39 @@ class DatasheetHandler(PaperHandler):
                     next=f"run it under kind='paper', or use one of "
                     f"{sorted(_DATASHEET_EDIT_DOORS)}",
                 )
-            return super().edit(id=id, args=forward, dry_run=dry_run)
+            if any(k in _DATASHEET_EDIT_DOORS for k in forward):
+                if meta_patch or bib:
+                    raise BadInput(
+                        "an args= door call doesn't combine with field edits",
+                        next="make the door call alone, then edit the rest",
+                    )
+                return super().edit(id=id, args=forward, dry_run=dry_run)
+            # No door key — ``args={'reason': '…'}`` alone is the verb's
+            # audit key spelled in the args= channel (the shape every
+            # door teaches, gr551841): record it on the revisions row
+            # the way dispatch records a top-level ``reason=``, then
+            # run the field edit — a reason-only args= is not a door
+            # call, so it combines with field edits.
+            args_reason = str(forward.get("reason") or "").strip() or None
 
+        from precis.store.revision_context import revision_context
+
+        with revision_context(args_reason):
+            return self._edit_fields(
+                id, meta_patch=meta_patch, bib=bib, dry_run=dry_run
+            )
+
+    def _edit_fields(
+        self,
+        id: str | int,
+        *,
+        meta_patch: dict[str, Any],
+        bib: dict[str, Any],
+        dry_run: bool | str | None,
+    ) -> Response:
+        """The field-edit half of :meth:`edit` — datasheet meta fields
+        plus the inherited bibliographic door — run under the caller's
+        revision context."""
         if not meta_patch and not bib:
             raise BadInput(
                 "edit(kind='datasheet') needs at least one field to change",

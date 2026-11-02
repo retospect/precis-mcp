@@ -473,6 +473,48 @@ def test_edit_accepts_reason(runtime_with_store: PrecisRuntime, store: Store) ->
     assert ref is not None and ref.title == "Reasoned"
 
 
+def test_edit_args_reason_combines_with_field_edits(
+    runtime_with_store: PrecisRuntime, store: Store
+) -> None:
+    """gr551841: ``args={'reason': …}`` on a field edit — the shape
+    every door teaches — was refused at the args= gate, then as 'an
+    args= door call doesn't combine' once the key was declared. A
+    reason-only args= is not a door call: it records on the revisions
+    row like the verb-level ``reason=`` and runs the edit."""
+    rid = _ds(store, cite_key="reasargs", title="Old Title")
+    out = runtime_with_store.dispatch(
+        "edit",
+        {
+            "kind": "datasheet",
+            "id": handle_registry.format_handle("datasheet", rid),
+            "title": "Reasoned",
+            "__extras__": {"reason": "title was the MPN, gr551841"},
+        },
+    )
+    assert "error" not in out.lower()
+    ref = store.get_ref(kind="datasheet", id=rid)
+    assert ref is not None and ref.title == "Reasoned"
+    ev = [e for e in store.events_for(rid) if e.event == "metadata_edited"]
+    assert len(ev) == 1
+
+
+def test_edit_args_reason_alone_still_needs_a_field(
+    runtime_with_store: PrecisRuntime, store: Store
+) -> None:
+    """A reason with no field and no door is the same refusal paper
+    gives — not a silent no-op."""
+    rid = _ds(store, cite_key="reasonly", title="Old Title")
+    out = runtime_with_store.dispatch(
+        "edit",
+        {
+            "kind": "datasheet",
+            "id": handle_registry.format_handle("datasheet", rid),
+            "__extras__": {"reason": "just a reason"},
+        },
+    )
+    assert "needs at least one field" in out
+
+
 def test_edit_still_refuses_an_unknown_kwarg(
     runtime_with_store: PrecisRuntime, store: Store
 ) -> None:

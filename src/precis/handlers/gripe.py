@@ -2198,8 +2198,31 @@ class GripeHandler(NumericRefHandler):
             head = "\n".join(self._header_lines(ref, tags))
             return Response(body=gf.render_fix_view(ref, state, head))
         if isinstance(id, list):
-            # Batch form: the base class renders it (summary-shaped) or
-            # refuses the view= combination.
+            # Batch form: one summary block per id by default, or the
+            # single-id view mapped over each (gr552235). The comment
+            # selectors forward per id — on a bare get they mean
+            # view='comments', the same reading a singleton takes
+            # (gr523120).
+            if (comment is not None or comments is not None) and view is None:
+                return interpreted(
+                    self._get_batch_view(
+                        self._coerce_ids(id),
+                        view="comments",
+                        comment=comment,
+                        comments=comments,
+                    ),
+                    [
+                        "args={'comment': K} / {'comments': K} on a bare get "
+                        "read as view='comments'"
+                    ],
+                )
+            if view is not None:
+                return self._get_batch_view(
+                    self._coerce_ids(id),
+                    view=view,
+                    comment=comment,
+                    comments=comments,
+                )
             return super().get(id=id, view=view, q=q, **_kw)
         readings: list[str] = []
         single = id is not None and not (isinstance(id, str) and id.startswith("/"))
@@ -2581,13 +2604,17 @@ class GripeHandler(NumericRefHandler):
                 # message; the ``next=`` is the listing call — a bare
                 # ord list isn't callable and callers re-issued the same
                 # failing get.
+                if not ords:
+                    # gr551839: no comments at all — the ref's body is
+                    # the working read, not another comments call (one
+                    # session re-issued the comment-1 get 120 times).
+                    raise BadInput(
+                        f"{self._sense()} {ref.id} has no comments",
+                        next=f"get(kind={self.kind!r}, id={ref.id})",
+                    )
                 raise BadInput(
                     f"{self._sense()} {ref.id} has no comment {number}"
-                    + (
-                        f" — it has {len(ords)} comments, valid: {ords[0]}..{ords[-1]}"
-                        if ords
-                        else " — it has none"
-                    ),
+                    f" — it has {len(ords)} comments, valid: {ords[0]}..{ords[-1]}",
                     next=(f"get(kind={self.kind!r}, id={ref.id}, view='comments')"),
                 )
             return _Window(only=number)

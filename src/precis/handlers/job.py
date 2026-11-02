@@ -955,6 +955,29 @@ class JobHandler(NumericRefHandler):
             )
             readings.append(f"view={view!r} read as {shown}")
             view = canon
+        if isinstance(id, list):
+            # Batch form (gr552235): one block per id — the summary by
+            # default, or the single-id view mapped over each with its
+            # selectors forwarded (run-files' ``file``, geometry's
+            # ``point``/``frames``). Before this, the single-id view
+            # branches below refused a list with "takes one integer or
+            # handle" while the refusal's own next= named get as a
+            # list-taker. ``sha`` stays a /builds-only filter — it
+            # names a commit, not a job.
+            if sha is not None:
+                raise BadInput(
+                    "sha= only applies to the /builds view",
+                    next="get(kind='job', id='/builds', args={'sha': '<commit>'})",
+                )
+            if view is not None:
+                return self._get_batch_view(
+                    self._coerce_ids(id),
+                    view=view,
+                    file=file,
+                    point=point,
+                    frames=frames,
+                )
+            return super().get(id=id, view=view, q=q, **_kw)
         if view == "transcript":
             ref = self._resolve_live_ref(self._coerce_id(id))
             return interpreted(self._render_transcript_view(ref), readings)
