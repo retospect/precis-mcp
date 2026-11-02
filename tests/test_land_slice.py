@@ -650,7 +650,9 @@ def test_gate_unknown_rules() -> None:
     assert not gu(_preflight(2, "", NONE_GREEN_DIAG))  # looked, none: ship refuses
     assert gu(_preflight(0, "", BLIND_DIAG))  # blind identity
     assert gu(_preflight(None, "", "helper did not answer (TimeoutExpired)"))
-    assert gu(_preflight(1, "", "(no diag line) (exit 1)"))  # crashed helper
+    assert gu(_preflight(1, "", "(no diag line; stderr: -) (exit 1)"))  # crashed
+    # exit 2 without the helper's diag is uv's or the interpreter's, not a verdict
+    assert gu(_preflight(2, "", "(no diag line; stderr: error: cache) (exit 2)"))
 
 
 def test_submit_parks_when_the_lander_identity_cannot_read_the_gate(
@@ -776,7 +778,7 @@ def test_drift_preflight_prefers_mains_helper_over_the_branchs(
     pre = _REAL_DRIFT_PREFLIGHT(tree)
     assert pre["ran"] and pre["age"] == "3.2"
     target = tree / land_slice.PREFLIGHT_HELPER_REL
-    assert seen[0][0] == str(target)
+    assert seen[0][:2] == [sys.executable, str(target)]
     assert target.read_text(encoding="utf-8") == main_copy
     assert target.stat().st_mode & 0o111
     # neither copy: nothing ran
@@ -817,6 +819,7 @@ def test_drift_preflight_runs_the_helper_under_the_factory_identity(
     assert pre == {"ran": True, "rc": 0, "age": "", "diag": BLIND_DIAG}
     [call] = seen
     assert call["argv"] == [
+        sys.executable,  # never the helper's `uv run` shebang (gr551238)
         str(helper),
         "--age-hours",
         "--start",
@@ -832,6 +835,14 @@ def test_drift_preflight_runs_the_helper_under_the_factory_identity(
     answer.update(out="3.2\n", err="last-gated-main-sha: status=found local=1 x\n")
     pre = _REAL_DRIFT_PREFLIGHT(tree)
     assert pre["age"] == "3.2" and pre["diag"].endswith("(exit 0)")
+    # the process died before the helper's diag (uv, interpreter): the event
+    # keeps its stderr tail, and the exit 2 is not taken as a verdict
+    answer.update(rc=2, out="", err="warning: x\nerror: failed to open cache\n")
+    pre = _REAL_DRIFT_PREFLIGHT(tree)
+    assert pre["diag"] == (
+        "(no diag line; stderr: warning: x | error: failed to open cache) (exit 2)"
+    )
+    assert land_slice._gate_unknown(pre) is True  # not the helper's exit 2
     # no helper in the tree: nothing ran
     helper.unlink()
     assert _REAL_DRIFT_PREFLIGHT(tree) == {
@@ -840,7 +851,7 @@ def test_drift_preflight_runs_the_helper_under_the_factory_identity(
         "age": "",
         "diag": "",
     }
-    assert len(seen) == 2
+    assert len(seen) == 3
 
     def boom(argv: list[str], **kw: Any) -> subprocess.CompletedProcess[str]:
         raise subprocess.TimeoutExpired(argv, 1)

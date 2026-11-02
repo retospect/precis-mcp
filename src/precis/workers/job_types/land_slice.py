@@ -72,6 +72,7 @@ import os
 import re
 import signal
 import subprocess
+import sys
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -758,6 +759,12 @@ def _drift_preflight(tree: Path) -> dict[str, Any]:
     try:
         cp = subprocess.run(
             [
+                # The worker's own interpreter, not the helper's `uv run`
+                # shebang: on melchior the deploy user's uv cache is
+                # root-owned and uv exits 2 before the helper starts, which
+                # ship's guard reads as "none green" (gr551238). The helper
+                # is stdlib-only.
+                sys.executable,
                 str(helper),
                 "--age-hours",
                 "--start",
@@ -780,7 +787,13 @@ def _drift_preflight(tree: Path) -> dict[str, Any]:
     lines = [
         ln for ln in (cp.stderr or "").splitlines() if "last-gated-main-sha:" in ln
     ]
-    diag = lines[-1].strip()[:400] if lines else "(no diag line)"
+    if lines:
+        diag = lines[-1].strip()[:400]
+    else:
+        # The helper never reached its diag: keep what the process said, so
+        # an interpreter or shebang failure is not mistaken for a verdict.
+        tail = " | ".join((cp.stderr or "").strip().splitlines()[-3:])[-300:]
+        diag = f"(no diag line; stderr: {tail or '-'})"
     out.update(
         ran=True,
         rc=cp.returncode,
@@ -821,10 +834,14 @@ def _preflight_helper(tree: Path) -> Path | None:
 
 def _gate_unknown(pre: dict[str, Any]) -> bool:
     """True when the preflight ran and could not say how old main's verdict
-    is: exit 0 with empty output (blind identity, GitHub unanswerable) or no
-    answer at all. Exit 2 (looked, none green) is ship's refusal to make."""
+    is: exit 0 with empty output (blind identity, GitHub unanswerable), no
+    answer at all, or a process that died before the helper's diag line
+    (whatever its exit code — a crashed interpreter is not a verdict). Exit 2
+    *from the helper* (looked, none green) is ship's refusal to make."""
     if not pre.get("ran"):
         return False
+    if str(pre.get("diag") or "").startswith("(no diag line"):
+        return True
     return pre.get("rc") != 2 and not pre.get("age")
 
 
