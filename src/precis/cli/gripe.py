@@ -36,7 +36,7 @@ from typing import Any
 
 import psycopg
 
-from precis.cli._common import resolve_dsn
+from precis.cli._common import bind_process_store, resolve_dsn
 
 
 def add_parser(sub: argparse._SubParsersAction) -> argparse.ArgumentParser:
@@ -175,6 +175,7 @@ def run(args: argparse.Namespace) -> None:
         or args.spec_done is not None
     ):
         store = Store.connect(resolve_dsn(args.database_url, cfg=load_config()))
+        bind_process_store(store)
         try:
             ids = [int(i) for i in args.ids.replace(" ", "").split(",") if i]
             if args.verify_list:
@@ -213,6 +214,7 @@ def run(args: argparse.Namespace) -> None:
     if args.note is not None:
         ids = [int(i) for i in args.ids.replace(" ", "").split(",") if i]
         store = Store.connect(resolve_dsn(args.database_url, cfg=load_config()))
+        bind_process_store(store)
         try:
             print(note_gripes(store, args.note, ids))
         finally:
@@ -220,6 +222,7 @@ def run(args: argparse.Namespace) -> None:
         return
     if args.shorten_titles:
         store = Store.connect(resolve_dsn(args.database_url, cfg=load_config()))
+        bind_process_store(store)
         try:
             ids = [int(i) for i in args.ids.replace(" ", "").split(",") if i]
             for line in shorten_titles(
@@ -262,6 +265,7 @@ def run(args: argparse.Namespace) -> None:
         params.append(args.limit)
 
     store = Store.connect(dsn)
+    bind_process_store(store)
     try:
         with store.pool.connection() as conn:
             rows = conn.execute(sql, params).fetchall()
@@ -297,6 +301,7 @@ def _print_summary(args: argparse.Namespace) -> None:
     from precis.store import Store
 
     store = Store.connect(resolve_dsn(args.database_url, cfg=load_config()))
+    bind_process_store(store)
     try:
         # "open" is the live cohort — every non-terminal STATUS, the
         # same set get(kind='gripe', id='/open') lists (gr530682).
