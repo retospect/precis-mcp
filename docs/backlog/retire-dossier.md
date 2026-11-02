@@ -2,10 +2,19 @@
 status: draft
 pillar: quests
 prio: high
-title: Retire the dossier — the quest's typed edges carry the synthesis, every document is a render
+title: Retire the dossier — the quest's typed edges carry the synthesis, one memory card per experiment
 ---
 
 # Retire the dossier
+
+Reto 2026-11-01/02 (gr549581, gr553318 folded in): one `memory` card per
+experiment, under its direction todo — §Experiment memory cards. Passes:
+1 this design (done 2026-11-02), 2 the card writer incl. auto-commit, 3
+conversion of the 25 dossiers (qu164903 first, dry run to Reto), 4 the
+pathway page repoint. Build on HOLD until Reto rules on §Open for Reto.
+Shipped so far: slices 1–2 (`quest/directions.py`, the relation pin) and the
+quest-page dossier block removal (gr541346); the tick still rewrites the
+dossier (dr164905) on every unflagged quest.
 
 Reto 2026-10-24 (gr510505): "retire the dossier". Refines Reto 2026-10-01
 (`quest-graph-as-dossier.md`): "we want a graph that 'belongs to' the quest,
@@ -42,13 +51,18 @@ the unused `paper-of` projection. Deletes weave (§Decisions Q8).
 | `capability-ledger` pinned chunk (roadmap root) | rendered on read from `roadmap_ledger` |
 | `paper-of` draft (0 links on prod) | none; an export is a writer-authored draft that `serves` the quest (Q5) |
 | weave body (0 quests on prod) | deleted; papers reach the graph through `hub_refine` (Q8) |
+| a candidate's why/expected/result/next: scattered over narrative + logbook, no edge to the structure | one `memory` card per candidate structure, `part-of` its direction, `serves` the quest (§Experiment memory cards) |
+| a logbook entry names `[st…]` as plain text | chunk-scoped `cites` edge entry → structure, written by `logbook.append_entry` (gr553318) |
 
 **Membership.** `serves` keeps its meaning (work/knowledge that advances the
 quest: 3528 papers, 1112 findings, 682 structures, 44 todos serve quests on
 prod today), with Reto's narrowest-target rule: evidence serves the direction
 or strand it answers. `part-of` is new on quests and means "a direction of
 this quest's attempt tree"; it is what separates a direction from a work
-todo that `serves`.
+todo that `serves`. A memory card is `part-of` a direction todo, never of
+the quest (the direction readers filter `kind = 'todo'`, so a card is never
+a direction: `directions.direction_ref_ids`, `store/_todo_sql.py::
+direction_todo_sql`).
 
 **The `part-of` door.** Migration 0095 registered `part-of` ↔ `contains` for
 components ("Source component is structurally part of target component.")
@@ -106,6 +120,204 @@ maps at the boundary.
 `view='doable'`/`'queue'`, the nursery, hub counts or `gaps.quest_momentum`'s
 `open_todo_servers`. The fence is "reachable from a quest by `part-of` +
 `parent_id`", applied in `precis/todo/views.py` and the nursery sweep.
+
+## Experiment memory cards (gr549581; gr553318 folded in)
+
+Reto 2026-11-01: one `memory` card per experiment; an experiment is a
+candidate `structure`, not a pathway (prod 2026-11-02: 219 of qu164903's
+305 candidates have more than one pathway, max 9; they share one card).
+The card holds why it ran, what was expected, what was dispatched, the
+result, the analysis, the next ideas and its lineage — every line a
+verbatim quote with its source handle; what no source records reads
+`not recorded`, never inferred. Todos stay the direction tree (status,
+do-not-repropose). The structure's fisheye reaches its card in one hop;
+the card reaches its logbook entries, pathways, the cards before and after
+it, and the quest. A card never links a draft (gr549580). The reader is an
+LLM: a card is one `get`, its sections are `~` selectors.
+
+### Card shape
+
+| Field | Where | Value |
+|---|---|---|
+| title | `refs.title` (≤ 80, `handlers/memory.py::_TITLE_MAX`) | `<structure title>: <outcome line>`, conclusion first (precis-firstline-help); recomputed on every Result line |
+| hook | `meta.hook` | the outcome line alone, e.g. `barrier measured, trust gate refused (anchor:none)` — the index and recall line |
+| body | the `memory_body` chunk | seven `##` sections, fixed order: `Why`, `Expected`, `Plan`, `Result`, `Analysis`, `Next`, `Lineage`; `_SECTION_HEAD_RE` makes each one `me<id>~<section>` |
+| line | body | `"<verbatim quote>" [<source>]`; sources: `[ql<chunk id>]` a logbook entry (`handle_registry.CHUNK_CODES['quest']`), `[dc<id>]` a dossier chunk (conversion only), `[pw<id>]` a pathway's stored measure, `[plan: <created_by>]` a dispatch the code made (`run_compute_step:new-candidate`, `promote_tiers:screening→neb`, `request_rerun by=agent`, …) |
+| empty section | body | the single line `not recorded`. An auto-committed candidate's `Why` reads `not recorded — auto-committed after the model stalled N tick(s) [ql…]`, quoting the ladder's `decision` entry (Boron, st549017: prod entries 1667/1671) |
+| `Lineage` | body | `from [me…] (st… derived-from st…)` and `to [me…], …`, mirroring the `derived-from` edges; `not recorded` when the structure has none |
+| tags | open tags; `SPACE:research` stays the memory default (`default_tags_on_create`) | `card:experiment` — the marker every reader filters on; `quest:qu<id>`; `outcome:<pending\|measured\|trust-refused\|ruled-out\|graduated>` mirrored from the structure (`meta.barrier` / `meta.barrier_trusted` / `ruled-out:*` tag / `needs-experiment` tag) |
+| meta, system-stamped | `refs.meta` | `card_structure`, `card_quest`, `card_sources` (chunk ids already quoted — idempotency), `card_rev`, `converted_from` + `converted_at` (pass 3). `_validate_meta` lets agents write `hook`/`type` only, so these stay system-owned: the writer uses `store.insert_ref` + `stamp_ref_meta` (the `workers/dream_consolidate.py` pattern), never the handler |
+| never | | a `DREAM:` tag or `auto_refresh_days` — a card neither decays nor consolidates (`_dream_stamp_defaults`, `dream_consolidate`) |
+| size | | the fisheye shows 4,000 chars of a body, `get` all of it. Past 12 kB the writer moves the oldest `Result`/`Analysis` lines into one child memory `part-of` the card (precis-memory-help summary/detail) and leaves `+N earlier lines [me…]` |
+
+Agents edit a card through the normal memory doors (`edit`, `tag`) —
+`Analysis`/`Next` are theirs to extend; the writer only appends and never
+rewrites an agent's line. Quotes are verbatim, so the attribution gate
+(`AUDIT:ungrounded-number`, `handlers/_attribution.py`) stays quiet.
+
+**Where each line comes from** (the routing is by the entry's
+`meta.entry_type`, `logbook.ENTRY_TYPES`; a dispatch is a code call, not
+an entry):
+
+| Source | Section |
+|---|---|
+| the proposal's `hypothesis` entry (`_stage_apply`; the ladder after pass 2) | `Why`; its `(expects: …)` tail → `Expected` |
+| dialectic `experiment` entry naming the structure (`dossier.apply_dialectic_op`, `predicts:`; after retire the direction todo with `meta.hypothesis_id`) | `Expected` |
+| `run_compute_step` relax + autocatpath dispatch, `promote_tiers`, `redispatch_candidates`, `request_rerun`/`apply_reruns` (with the model's `reruns[].why`), `harvest_measures` amnesty/stuck-seed/infra-retry redispatches | `Plan` |
+| `result`, `dead-end`, `milestone` entries; `_stamp_preflight_dead_end`; `graduate_frontier` | `Result` (+ the `outcome:` tag) |
+| `observation`, `note`, `reflection` entries | `Analysis` |
+| `decision` entries; a `hypothesis` entry naming the structure after it exists (the experiment it spawned) | `Next` |
+| `cost` entries | ignored |
+
+The proposal schema gains one optional field, `expected` (one sentence,
+the pre-registered outcome), folded into the hypothesis entry text as
+`(expects: …)` the way `predicts:` is folded today — the only prompt
+change; without it `Expected` is `not recorded` for every plain proposal.
+
+### Links
+
+| Edge | rel | Note |
+|---|---|---|
+| card → direction todo | `part-of` | the card's home; zoom-out from a card follows it (`refeye.UP_RELATIONS['memory']`); `view='members'` / `under=` on the todo list the card (`Store.part_of_descendants` has no kind filter). Resolved from the proposal's new `direction` field (`td` handle or quoted text, `directions._resolve_node`), else the dialectic hypothesis's experiment todo (`meta.hypothesis_id`), else absent until step 6 re-homes it (rule b on the structure title, rule a through its pathways' `tests` edges) |
+| card → quest | `serves` | always; the structure carries the same edge, so `directions.quest_evidence` and the quest's Roadmap ring see the card |
+| card → candidate structure | `related-to` | the bridge the pathway↔structure edge already uses (`compute._link_pathway`); renders under Notes & links on both fisheyes today. `RING_GROUP_KIND_RANK` gains `"Notes & links": ("memory",)` so the card lists before the pathways |
+| card → each pathway | `related-to` | added when `_link_pathway` runs |
+| card → the card before it | `derived-from` | the structures' lineage edge (`compute._link_parent_if_present`, `StructureHandler.derive`) mirrored one level up; the next cards read as `derived-into` (`_INVERSE_RELATIONS`); renders under Argument |
+| logbook entry → structure | `cites`, chunk-scoped | `add_link(src_ref_id=<quest>, src_pos=<entry ord>, dst_ref_id=<st>)`; §Logbook edges |
+| card → draft | none | gr549580 |
+
+**Memory `part-of` todo is allowed today.** `part-of`/`contains` is one
+constraint row: `domain_kinds`/`range_kinds` NULL, `contains` acyclic +
+transitive (prod `relations`, 2026-11-02; migration 0180 touched only
+`contains`), and `check_relation_constraints` checks a `part-of` write as
+`contains` with the ends swapped, so the kind check passes for any kind
+and only a cycle refuses. Prod has 0 memory→todo `part-of` rows, so the
+case is untested in the wild; slice 2b pins it next to
+`test_part_of_todo_to_quest_passes_constraints`
+(`tests/test_relation_constraints.py::test_part_of_memory_to_todo_passes_constraints`).
+No rule change. The two guards on the door are irrelevant here:
+`guard_taxon_hierarchy` fires on `specialises`/`generalises` only;
+`_machine_edge_admission` (`store/_links_ops.py`) gates machine writers
+with a model identity, and the writer uses the same `store.add_link`
+door `_link_pathway`/`_link_parent_if_present` already pass — slice 2b's
+test runs the writer under the tick's write context to prove it.
+
+### Writers
+
+Every path that mints a candidate, measures one or names one must write
+or update its card. `quest/cards.py` (new) owns the three operations —
+`ensure_card(store, quest_id, structure_id, *, why=…)`, `append_line(…,
+section=, text=, source=)`, `set_outcome(…)` — each one transaction on the
+card ref, idempotent by `meta.card_sources`.
+
+| Path | Has at that moment | Lacks | Card op |
+|---|---|---|---|
+| `tick.py::_TickRun._stage_apply` — writes `candidate: <name> [buildable] — <rationale>` as a `hypothesis` entry per proposal | name, rationale, `parent`, structure spec, the entry's ord | the structure id (minted two stages later), the direction | stash `{name: entry ord}` in the checkpoint (`self.st['proposal_entries']`) so compute can quote it; nothing else |
+| `compute.py::run_compute_step` → `_ensure_candidate_detail` — the only minter (`ensure_candidate` has no other caller in `src/`) | proposal, the new or existing structure id, `was_duplicate`, the resolved `parent` structure, the quest | the hypothesis entry's ord unless passed; `expected` unless the schema gains it | **`ensure_card`** on a fresh mint: `Why` quotes the hypothesis entry `[ql…]`, `Plan` the relax + autocatpath dispatch, `Lineage` + `derived-from` to the parent's card; on `was_duplicate` or a symmetry duplicate: one `Why` line quoting the `duplicate proposal` observation (`_note_duplicate_proposal`, `_note_symmetry_duplicate`) on the existing card. Also mints the chunk-scoped `cites` edge from the hypothesis entry to the new structure (gr553318's missing "why" edge). `run_compute_step` takes `entry_ords: dict[str, int]` from both callers |
+| `tick.py::_TickRun._stage_ladder` → `_commit_rung` → `run_compute_step` — the **auto-commit**: a re-prompt rung's proposals are materialised with no `hypothesis` entry; the only record is the `decision` "committed after re-prompt: <names> — model stalled N tick(s)" written after the fact. Boron (st549017) landed this way 2026-11-01: relax result 1666, decision 1667, no hypothesis entry | the rung's proposals (name, rationale, `expected` after pass 2), the stall count, the tier | a hypothesis entry; the direction | before `run_compute_step`, log each rung proposal as a `hypothesis` entry tagged `[auto-commit]` in the text (same shape as `_stage_apply`) and pass the ords; `ensure_card` then quotes it; `Why` opens with `not recorded — auto-committed after the model stalled N tick(s) [ql<decision>]` and the rationale quote follows. Without this, every stalled quest keeps producing card-less runs |
+| `compute.py::harvest_measures` — relax result, autocatpath result, trust-gate refusal, nonphysical/unrelaxed warnings, seed diagnostics, `dead-end` + `ruled-out:*`; `_link_pathway`, `_link_refines`; redispatches (`created_by='harvest_measures:*'`) | structure id, pathway id, measures, the exact entry text | nothing for `Result` | `append_line(Result, <entry text>, [ql…])` per entry it writes, `related-to` card → pathway, `set_outcome`, title/hook recompute; redispatches → `Plan` |
+| `compute.py::_stamp_preflight_dead_end` | structure id, reason | — | `Result` + `outcome:ruled-out` |
+| `compute.py::promote_tiers`, `redispatch_candidates`, `request_rerun`/`apply_reruns` | structure id, tier, seeds, `created_by`, the model's `why` (reruns) | — | `Plan` lines |
+| `graduate.py::graduate_frontier` | structure id, the `needs-experiment` deed | — | `Result` + `outcome:graduated`, `Next` quoting the graduation note |
+| `dossier.apply_dialectic_op` (`experiment`, `predicts:`) today; the experiment direction todo after step 3 | hypothesis finding, experiment text, structure handles (`rulings._experiment_structures`) | — | `Expected` on each named structure's card; `rulings.mint_measurement_rulings` → `Analysis` line `ruling [fi…]` |
+| `logbook.append_entry` — the one insert path (handler `entry=` and the tick) | quest id, chunk id, text, `entry_type`, `by` | the structure ids: parsed from the text | the catch-all: `extract_handles(text)` (`utils/mentions.py`) → for each `structure` handle, the chunk-scoped `cites` edge + `append_line` routed by the table above, `ensure_card` with `Why = not recorded` when the structure has no card yet. This covers every model-authored observation/decision/reflection and every human entry without touching their callers |
+| `precis quest extract-cards` (pass 3) | the dossier, the logbook, the structure meta | — | §Conversion |
+
+Pass 2 ships the writer before any retire apply: on an unflagged quest the
+card gets `serves` quest + `related-to` structure/pathways + lineage, and
+its `part-of` direction when `--rehome` (step 6) runs after retire.
+
+### Logbook edges (gr553318)
+
+Prod 2026-11-02: qu164903's logbook has 1,739 entries (observation 574,
+result 516, decision 278, cost 175, hypothesis 103, dead-end 39, note 37,
+reflection 17); 785 name a structure as `[st…]`, none carries an edge.
+st478029 (Pd111-Ta-subsurf-1-vacancy-surf-colocated) is named by handle in
+21 entries, by title in 28; its first title mention is entry 654, its
+first handle mention 668, and 1 of its 2 proposing `hypothesis` entries
+carries the handle — so the gripe's last question is answered: a proposal
+entry is written in `_stage_apply` before `run_compute_step` mints the
+structure, and names the proposal, never the id. The fix is the
+`_ensure_candidate_detail` back-link above, not a prompt change.
+
+- The edge: `cites`, chunk-scoped from the entry (`links.src_chunk_id`)
+  to the structure, link meta `{'entry_type': …, 'by': …}`. Written in
+  `append_entry` for every `structure` handle `extract_handles` finds;
+  backfilled for the 785 by pass 3 (`--all`, idempotent on the unique
+  tuple).
+- The fisheye follows `cites` both ways incl. chunk-level edges
+  (`eye_render._link_neighbors`), so a structure's ring lists its entries
+  under Notes & links behind the card (the 8-per-label cap and
+  `q='cites'` expansion apply; §Balanced TOC clusters a long one). The
+  quest's own ring gains an outbound `cites` group under the same cap.
+- The grouping gr553318 asks for (why / plan / results / analysis /
+  lineage) is the card's sections, not a ring renderer: one `get` on the
+  card reads them in order with their `[ql…]` sources. A `q='cites'`
+  expansion on the structure stays the exhaustive list.
+- Lineage: `derived-from` already links st478029 → st242611
+  (`_link_parent_if_present`) and st517875 → st478029 when the proposer
+  passed `parent`; the cards mirror it. A missing `parent` is `Lineage:
+  not recorded`, never guessed from titles.
+
+### Conversion (pass 3)
+
+`precis quest extract-cards <qid>|--all [--apply]`
+(`src/precis/quest/cards.py`, CLI `cli/quest.py`), dry run by default,
+deterministic — no LLM, so nothing can be invented. Order: qu164903 dry run
+to Reto; on his word `--apply` on qu164903; then `--all` dry run; then
+apply on the other 24 dossiers of the 2026-10-24 census (25 live
+`dossier-of` links on prod 2026-11-02, incl. the 6 retired quests — their
+information stays relevant, Q6). Per quest, per candidate structure
+(`compute._candidate_struct_ids`), one transaction:
+
+1. Sources, in this order, each quoted as the sentence containing the
+   mention (≤ 300 chars) with its handle: logbook entries naming the
+   structure by handle or by exact title (the `[ql…]` lines, routed by
+   the section table); dossier chunks naming it (narrative, ledger nodes,
+   dialectic entries; `[dc…]` — the draft is soft-retired by step 5, the
+   handle still resolves); the structure's own meta (`barrier`,
+   `barrier_trusted`, `barrier_fidelity`, `ruled-out:*`, `params`) as
+   `[st… meta]` `Result` lines; each `related-to` pathway's stored
+   measures as `[pw…]`.
+2. A section with no source → `not recorded`. B-subsurf-1's card reads
+   `Why: not recorded — auto-committed after the model stalled 3 tick(s)
+   [ql…]`, `Expected: not recorded`.
+3. Links as §Links; `part-of` the direction only when a ledger node (todo
+   after retire) names the structure by title or handle, else none;
+   `derived-from` from the structure's own edges; the 785 `cites` edges.
+4. `meta.converted_from=<dossier draft id>`, `converted_at`; a re-run skips
+   a structure whose card exists (`card_structure`), appends only
+   sources missing from `card_sources`.
+5. Stamp `meta.cards_extracted_at` on the quest; the retire tool's
+   `--apply` refuses a quest whose dossier narrative is non-empty and
+   lacks it (same rule as `key_ideas_extracted_at`).
+
+The dry run prints per quest: candidates, cards to create / to extend,
+per-section line counts, sources unresolved (a handle that resolves to no
+live structure), sections `not recorded` by name; then every card in full
+for the first 10 candidates by id plus any Reto names (`--show st549017
+st478029`), so he reads real cards, not counts. Pass 3 does not depend on
+the retire apply; a card converted before retire gets its `part-of` from
+`--rehome`.
+
+### Pathway page (pass 4)
+
+Today `precis_web/routes/refs.py::_pathway_provenance` builds the strip's
+`eye_url` = `/eye/st<id>` of the candidate (gr549580: the fisheye replaced
+the dossier link; `/eye/pw<id>` when there is no candidate), rendered by
+`templates/refs/pathway_detail.html.j2`'s provenance strip next to
+candidate · quest · logbook · run jobs; pinned by
+`tests/precis_web/test_pathway_detail.py::test_pathway_detail_provenance_strip_branch_sections_and_annotations`
+(asserts `/eye/st166700`, `fisheye`, no `dossier`). Once cards exist the
+strip gains `card` → `/refs/memory/<id>` (the generic refs page;
+`_DEFAULT_REFS_KINDS` lists memory), resolved as the candidate's
+`related-to` memory tagged `card:experiment`, mouseover "why · expected ·
+result · next"; the fisheye link stays (the card's own ring lists the
+pathway, Reto's "links back to the pathway view"), and the one-`/eye/`-
+anchor invariant holds because the card link is not an `/eye/` URL. No
+card → no change in the strip. The structure detail page gets the same
+item in the same slice. Test: the strip test gains a card fixture and
+asserts the `/refs/memory/` link and its absence without a card.
 
 ## Quest navigation for the LLM
 
@@ -215,7 +427,8 @@ Which edges count as "under" (the subtree of node X):
 - todos `part-of` a quest (depth 1 under the quest), then their
   `parent_id` descendants;
 - evidence that `serves` a node in the subtree (finding, measure, paper,
-  structure, draft): included **by kind, not by flag**. `search(kind='todo',
+  structure, draft, and a memory tagged `card:experiment`): included
+  **by kind, not by flag**. `search(kind='todo',
   under=X)` returns directions only; `search(kind='finding'|'paper'|'measure',
   under=X)` returns the evidence that serves X or any todo in its subtree
   (the set `directions.quest_evidence` defines, slice 5), at depth =
@@ -433,16 +646,20 @@ transaction:
 5. Dossier draft: soft-retired (`retired_at`), `dossier-of` link rows
    deleted, the 35 inbound `related-to` rows kept (they resolve to a
    retired ref, like any retired ref). Hard deletes of the draft: not done.
-6. **Re-home evidence.** For every live finding, measure and paper with a
-   `serves` edge to the quest, pick a home among the quest's direction and
-   strand todos by the first rule that yields one:
+6. **Re-home evidence.** For every live finding, measure, paper and
+   experiment card (memory tagged `card:experiment`) with a `serves` edge
+   to the quest, pick a home among the quest's direction and strand todos
+   by the first rule that yields one (a card's home is written as
+   `part-of` the todo, its `serves` quest edge stays — §Links):
    - a. *Hypothesis edge.* The evidence has a `supports`, `disputes`,
      `contradicts` or `tests` edge to a hypothesis finding H, and H has
      experiment direction todos (`meta.hypothesis_id=H`, step 3): home = the
      narrowest todo containing all of them (the one todo, or their lowest
-     common ancestor). H itself homes by the same rule.
+     common ancestor). H itself homes by the same rule. A card homes
+     through its pathways' `tests` edges.
    - b. *Text match.* `directions._match_nodes(forest, <evidence title>)`:
-     exact match, then the ≥ 40-char unique-prefix pass.
+     exact match, then the ≥ 40-char unique-prefix pass; for a card the
+     matched text is its structure's title and handle.
    - c. *Paper via its findings.* A paper with `establishes`/`corroborates`
      edges to findings homed by a or b: home = the narrowest todo containing
      all those homes.
@@ -524,7 +741,9 @@ by the flag.
 Grep of `src/` + `scripts/` (non-pycache): 73 files mention "dossier", 49
 of them Python. Every file is in exactly one group below.
 
-**New:** `quest/directions.py` (slice 2), `quest/key_ideas.py` (slice 6),
+**New:** `quest/directions.py` (slice 2), `quest/cards.py` (slice 2b:
+`ensure_card`/`append_line`/`set_outcome`, the `append_entry` hook, the
+`extract-cards` conversion), `quest/key_ideas.py` (slice 6),
 `quest/retire.py` (slice 5).
 
 **Deleted (last slice):** `quest/dossier.py` storage — `ensure_dossier`,
@@ -553,7 +772,9 @@ importers first: `QUEST_BODY_*` constants move from `weave_tick.py` to
 
 | Module | Today | After |
 |---|---|---|
-| `quest/tick.py` | `build_tick_prompt` reads narrative, ledger forest, dialectic; `_apply_narrative_gate`; apply stage runs `ledger_ops`→`add_attempt`/`mark_attempt`, `append_ledger_entry`, `dialectic_ops`; finish stage `update_frontier_tree`, `rewrite_dossier` | prompt reads the newest synthesis entry + `directions` open/do-not-repropose lists; `direction_ops` (add/mark by `td` handle or quoted text; `nest` when > 40 live childless roots) → `directions`; `dossier_text` replaced by one synthesis entry (Q1); finish drops both dossier writes; apply and finish re-read the flag |
+| `quest/tick.py` | `build_tick_prompt` reads narrative, ledger forest, dialectic; `_apply_narrative_gate`; apply stage runs `ledger_ops`→`add_attempt`/`mark_attempt`, `append_ledger_entry`, `dialectic_ops`; finish stage `update_frontier_tree`, `rewrite_dossier`; the ladder (`_stage_ladder` → `_commit_rung`) materialises re-prompt proposals with no hypothesis entry | prompt reads the newest synthesis entry + `directions` open/do-not-repropose lists; `direction_ops` (add/mark by `td` handle or quoted text; `nest` when > 40 live childless roots) → `directions`; `dossier_text` replaced by one synthesis entry (Q1); finish drops both dossier writes; apply and finish re-read the flag; proposals carry `expected` + `direction`, apply stashes `proposal_entries`, the ladder logs its rung's proposals as `hypothesis` entries first (slice 2b) |
+| `quest/compute.py` | `_ensure_candidate_detail` mints the structure, `serves` quest, `derived-from` parent; `harvest_measures` writes result entries and `related-to` pathway | plus the card ops at each of those points (§Writers); `run_compute_step(entry_ords=)` |
+| `quest/logbook.py` | `append_entry` inserts the chunk | plus the card hook: `cites` edge + card line per structure handle in the text (§Logbook edges) |
 | `workers/job_types/quest_tick.py` | `outcome.dossier_rewritten` counts a tick as substantive (dry-tick/empty-punt detection, `_phase_tick`); routes weave-body quests to `weave_tick` | substantive = a direction op applied or a synthesis entry written (`TickOutcome.directions_changed`); weave route removed (slice 7) |
 | `workers/hub_refine.py` | stage 5 widen seeds from hub due-sets | plus a quest seed: papers in `directions.quest_evidence` with no inbound evidence edge (`establishes`/`corroborates`/`supports`/`disputes` from or to a finding) → the existing canon/judge path → `taproot/hub.py::attach_evidence`/`apply_placement`; bounded per pass (slice 7) |
 | `quest/rulings.py` | `dossier_ref_id` + dialectic experiment entries → measurement rulings | experiment direction todos (`meta.hypothesis_id`) + hypothesis findings; `tests` edge unchanged |
@@ -567,10 +788,10 @@ importers first: `QUEST_BODY_*` constants move from `weave_tick.py` to
 | `handlers/draft.py` | `_MACHINE_OWNED_RELATIONS` refusal | removed in slice 10 |
 | `handlers/quest.py` | `view='dossier'` (`_render_dossier`), fisheye text | `view='directions'`, `view='frontier'`, fisheye per §Quest navigation; `view='dossier'` answers with `view='directions'` plus a one-line rename note until the skills ship |
 | `handlers/todo.py` | todo fisheye without parent/children | `parent_id` parent + children, `under=` search (slice 3) |
-| `utils/eye_render.py`, `utils/refeye.py` | hub listing only for memory `section:index`; no todo status in labels; 8-per-label cap | §Quest navigation items 1–4 |
+| `utils/eye_render.py`, `utils/refeye.py` | hub listing only for memory `section:index`; no todo status in labels; 8-per-label cap; `RING_GROUP_KIND_RANK` ranks Roadmap only; `UP_RELATIONS['memory']` = `part-of` | §Quest navigation items 1–4; `"Notes & links": ("memory",)` so a card lists before pathways; memory's up rule gains `("serves", "out")` for a card with no direction yet (slice 2b) |
 | `workers/job_types/draft_refresh.py` | attempt label into the owning quest's ledger | logbook `observation` entry; no direction (an LLM failure is not a ruled-out direction) |
-| `precis_web/routes/refs.py` | quest page: dossier link, narrative, ledger, `paper_ref_id`; pathway page dossier link | direction tree (fisheye order), newest synthesis entry, frontier tree; pathway links the quest page |
-| `templates/refs/quest_detail.html.j2`, `pathway_detail.html.j2` | Dossier column, "Open dossier (draft · fisheye)" | Directions + Synthesis + Frontier tree sections |
+| `precis_web/routes/refs.py` | quest page: neighbourhood block (gr541346 removed the dossier block), `paper_ref_id`; pathway page `_pathway_provenance` links the candidate's fisheye (gr549580) | direction tree (fisheye order), newest synthesis entry, frontier tree; pathway and structure pages add the `card` item (§Pathway page, slice 8) |
+| `templates/refs/quest_detail.html.j2`, `pathway_detail.html.j2` | quest neighbourhood; pathway provenance strip (candidate · quest · logbook · fisheye · jobs) | Directions + Synthesis + Frontier tree sections; strip + `card` |
 | `precis_web/routes/smartdraft.py` | `dossier-of` in link sort order | entry removed |
 | `handlers/_integration_view.py`, `store/_integration_ops.py` | integration ledger over "a topic dossier" draft | any draft (prose + one lookup) |
 | `quest/narrative_budget.py` | `meta.dossier.*` overrides | `meta.narrative.*`, old key fallback; `narrative_growth_gate` gates the synthesis entry and `draft_refresh` |
@@ -604,14 +825,20 @@ deleted with weave (Q8, feature removed, no replacement) — `test_weave*.py`,
 `test_review_fanout_writeback.py`, `test_draft_handler.py`,
 `precis_web/test_quest_dashboard.py`, `test_pathway_detail.py`,
 `test_draft_block_routes_handler_path.py`, `workers/test_draft_refresh_job.py`,
-`test_relation_constraints.py`; the rest are incidental strings. A slice that
+`test_relation_constraints.py`; new — `test_quest_cards.py` (slice 2b),
+`test_relation_constraints.py::test_part_of_memory_to_todo_passes_constraints`,
+the card fixture in `precis_web/test_pathway_detail.py` (slice 8); the
+rest are incidental strings. A slice that
 deletes a test moves its assertion into the replacement test in the same
 commit (no loosening; Reto rules on any test that has no replacement other
 than the weave tests above).
 
 **Skills:** rewrite `precis-quest-help` (dossier, ledger, `view='dossier'`
 sections → directions, navigation recipe: quest fisheye → strand →
-evidence, `under=` search), `precis-quest-writing-help`, `precis-relations`
+evidence, `under=` search; the card recipe: structure fisheye → `card:`
+memory → `~Why`/`~Result`/`~Next`), `precis-memory-help` and
+`precis-pathway-help` (the `card:experiment` tag, system-owned `card_*`
+meta, agents extend `Analysis`/`Next`), `precis-quest-writing-help`, `precis-relations`
 (`dossier-of`, `paper-of`, new `part-of` on quests, the narrowest-`serves`
 rule), `precis-roadmap-help`, `precis-fisheye-help` (status labels, hub
 listing on quests and strands, `q='contains:<status>'`); one-line edits in
@@ -629,13 +856,15 @@ complete spec; Opus = design judgment inside the slice.
 | # | Slice | Size | Tier | Acceptance |
 |---|---|---|---|---|
 | 2 | `quest/directions.py` (todo-backed list/add/mark/nest, near-dup upsert, do-not-repropose + open renders, both status maps, `quest_evidence`; text logic moved from `dossier.py`, which re-imports it); rotation fence — **done 2026-10-24** | M | Sonnet | `test_quest_directions.py` ports every `test_dossier_hygiene.py` assertion onto todos (Rh/Ru veto, prefix match ≥ 40 chars, never-regress merge, ancestor shadow) and pins the model-side map (`blocked`/`paused` on the open list); `test_todo_views` case: a direction todo is absent from `doable`/`queue`/nursery (the relation pin test already landed in slice 1) |
-| 3 | Navigation layer (§Quest navigation 1–6, minus clustering) and `view='directions'`/`'frontier'`; todo status labels, `parent_id` parent/children, `under=`/`depth=` search with the edge rules above | M | Opus | `tests/test_quest_navigation.py` as pinned above (flat rings); `under=` returns exactly the subtree, `depth=1` the direct children, evidence kinds include `serves` evidence; memory-hub fisheye tests unchanged |
+| 2b | Card writer (pass 2, after Reto rules on §Open for Reto): `quest/cards.py`; `_ensure_candidate_detail` creates/extends the card and back-links the hypothesis entry; `_stage_apply` stashes `proposal_entries`; the ladder logs rung proposals as `hypothesis` entries before `run_compute_step`; `harvest_measures`, `_stamp_preflight_dead_end`, `promote_tiers`, `redispatch_candidates`, `apply_reruns`, `graduate_frontier`, `apply_dialectic_op` write their lines; `append_entry` hook (`cites` edge + routed line per structure handle); proposal schema `expected` + `direction`; `RING_GROUP_KIND_RANK` + memory up rule | L | Opus | `tests/test_quest_cards.py`: a proposal tick creates one card whose `Why` quotes the hypothesis entry `[ql…]` and whose `Expected` is `not recorded` without `expected`; a ladder commit creates a card whose `Why` opens `not recorded — auto-committed …` and quotes the rung's entry; a second pathway on the same structure extends the same card (no second card); a duplicate proposal adds one `Why` line; `derived-from` parent → card `derived-from` + `Lineage`; a dialectic `predicts:` → `Expected`; harvest → `Result` lines, `related-to` pathway, `outcome:` tag, title recomputed; an observation naming `[st…]` → chunk-scoped `cites` + `Analysis` line, and a card with `Why: not recorded` when none existed; a re-run writes nothing (`card_sources`); `_validate_meta` refuses `card_*` from an agent; `direction_ref_ids` ignores the card; structure fisheye lists the card first under Notes & links; the writer passes `_machine_edge_admission` under the tick's write context; relation pin `test_part_of_memory_to_todo_passes_constraints` |
+| 2c | Conversion (pass 3): `extract-cards` dry run / apply / `--show`, `cards_extracted_at` stamp, the 785-edge backfill | M | Sonnet | `test_quest_cards.py::test_extract_cards_*`: a fixture quest with a dossier, logbook and three candidates (one auto-committed, one with a dialectic `predicts:`, one with two pathways) converts to three cards whose every line is a substring of a source chunk or structure meta, `not recorded` where no source, idempotent re-run, dry run prints the counts and the `--show` cards; ops: qu164903 dry run to Reto before any apply |
+| 3 | Navigation layer (§Quest navigation 1–6, minus clustering) and `view='directions'`/`'frontier'`; todo status labels, `parent_id` parent/children, `under=`/`depth=` search with the edge rules above | M | Opus | `tests/test_quest_navigation.py` as pinned above (flat rings); `under=` returns exactly the subtree, `depth=1` the direct children, evidence kinds include `serves` evidence and cards; memory-hub fisheye tests unchanged |
 | 3b | Balanced TOC on fisheye overflow (§Balanced TOC): size-constrained k-means tree, keyword labels, lexical fallback, cache by neighbourhood fingerprint, `toc_k`, `toc='specific'`, ring `q=` filter; replaces the `… +N more` cap and the loosened-cap list | M | Opus | on the qu202467-shaped fixture: every root reachable exactly once, per-level size CV ≤ 0.35, ≤ 2 levels at k = 8, each page ≤ 2,500 tokens, same tree for the same fingerprint, lexical fallback with no embeddings, a ≤ k ring unchanged; the 3 pre-existing cap tests updated, not loosened |
 | 4 | Tick on the flag: quests with `meta.dossier_retired` and quests with no dossier use directions + synthesis entry + `direction_ops` (incl. `nest`); apply and finish re-read the flag; `ensure_dossier` refuses (raises `DossierRetired`) when the quest is flagged **or has no dossier**, so from this slice on it returns existing dossiers and creates none; each pre-slice-8 caller (`roadmap_tick`, `draft_refresh` via `add_attempt`/`mark_attempt`; `rulings` only reads via `dossier_ref_id` and already no-ops without a dossier) catches the refusal and skips its dossier write with a log line | L | Opus | Synthesis entry = `entry_type='reflection'` + `meta.synthesis=true`, WORM, ≤ `target_words`, gated by `narrative_growth_gate` against the previous synthesis entry; archive marker = `entry_type='note'` + `meta.archived_narrative=true`; no `ENTRY_TYPES` change, because the vocabulary is listed to the model in the tick prompt and accepted by the handler's `entry=`, model entries carry no meta (`_stage_apply` calls `append_entry` without `extra_meta`) so a model `reflection` never reads as a synthesis, and an added `synthesis` type would invite writes that `clamp_entry_type` would otherwise turn into `note`. Tests in `test_quest_tick.py`: flagged fixture runs llm→finish with no `dossier-of` link created and one synthesis entry; the prompt picks the synthesis entry over a newer plain `reflection`; `test_prompt_context_sections_bounded` (synthesis + directions sections ≤ `target_words` words + 12 000 chars on a 500-direction fixture); `nest` moves a direction under a strand and opens an umbrella only with ≥ 3 members; `test_no_dossier_resurrection` — every `ensure_dossier` path (`update_frontier_tree`, `ensure_ledger_chunk` and its readers/writers, `rewrite_dossier`, `ensure_dialectic_chunk`, `roadmap_tick`, `draft_refresh`) on a flagged quest and on a dossier-less quest creates nothing, plus a tick checkpointed at `tick:apply` and one at `tick:finish` on an unflagged quest, flag flipped, resumed: no dossier write, its ledger ops present as todos, its `dossier_text` as the synthesis entry; unflagged-with-dossier fixtures unchanged |
-| 5 | `retire-dossier` tool: dry run, apply (steps 1–7), `--undo`, `--rehome`, in-flight check, step-0 stamp check; `serves`-set readers switched to `directions.quest_evidence` | M | Sonnet | `test_retire_dossier.py`: lossless round trip (forest == todo tree, statuses by the table), idempotent re-run, archived entry excluded from `_logbook_tail`, `test_serving_draft_untouched`, `test_apply_undo_apply_round_trip`, re-home by rule a, b and c, deepest-on-path, disjoint hits stay on the quest and print as ambiguous, refuses while the job is `running` or at `tick:*`, refuses a quest with narrative and no `key_ideas_extracted_at`; reader tests: quest evidence counts equal before and after a re-home |
+| 5 | `retire-dossier` tool: dry run, apply (steps 1–7), `--undo`, `--rehome`, in-flight check, step-0 and cards stamp checks; `serves`-set readers switched to `directions.quest_evidence` | M | Sonnet | `test_retire_dossier.py`: lossless round trip (forest == todo tree, statuses by the table), idempotent re-run, archived entry excluded from `_logbook_tail`, `test_serving_draft_untouched`, `test_apply_undo_apply_round_trip`, re-home by rule a, b and c, deepest-on-path, disjoint hits stay on the quest and print as ambiguous, a card re-homes as `part-of` the todo with its `serves` kept, refuses while the job is `running` or at `tick:*`, refuses a quest with narrative and no `key_ideas_extracted_at` or no `cards_extracted_at`; reader tests: quest evidence counts equal before and after a re-home |
 | 6 | Step 0: `extract-key-ideas` (prompt, verbatim-span check, restated-hub dedupe, cites, idempotency, stamp) | M | Sonnet build; Opus reviews the prompt on 3 real dossiers' dry runs | `test_key_ideas.py` with a stubbed LLM: a claim without a verbatim span is dropped and listed; a restated claim links the existing finding; cites resolve to `cites` edges; re-run writes nothing; stamp set |
 | 7 | Weave delete + `hub_refine` quest seed: move `QUEST_BODY_*` to `body.py`, delete the seven modules, their CLI command, routes and tests; add the seed | M | Sonnet | `rtk proxy grep -rln "weave_tick\|residual_cluster\|citation_mint" src` empty; `tests/workers/test_hub_refine.py` case: a quest-serving paper with no inbound evidence edge is selected, one already placed is not, the pass bound holds |
-| 8 | Remaining consumers: web quest page, rulings, roadmap capability ledger, `draft_refresh`, compute reset | L (split a–d by module) | Sonnet | each module's rewritten tests; `test_quest_dashboard.py`: no dossier link, direction tree and frontier tree present, link from gr510505 fixed; `test_refresh_on_retired_quest_logs_and_mints_no_dossier` |
+| 8 | Remaining consumers: web quest page, rulings, roadmap capability ledger, `draft_refresh`, compute reset; pathway + structure page `card` item (pass 4, §Pathway page) | L (split a–e by module) | Sonnet | each module's rewritten tests; `test_quest_dashboard.py`: no dossier link, direction tree and frontier tree present, link from gr510505 fixed; `test_refresh_on_retired_quest_logs_and_mints_no_dossier`; the provenance-strip test with and without a card |
 | 9 | Ops: step-0 `--all` dry run and retire `--all` dry run to Reto; on his go, step 0 apply, then retire apply on dormant quests, then active ones between ticks; skills ship | ops | Sonnet (cluster-admin) | dry-run reports attached to gr510505; post-apply census shows 0 live `dossier-of` links, every live quest's `meta.retired_dossier_id` and `meta.key_ideas_extracted_at` set |
 | 10 | Delete: dossier storage code, `ledger_ops`/`dialectic_ops`/`dossier_text` schema keys, `view='dossier'` alias, ATTEMPT axis, machine-owned refusals, dossier tests, skills/glossary/manual rewrite, relation-refusal migration, superseded backlog items | M | Sonnet | `rtk proxy grep -rli dossier src` lists only sealed migrations and the retire tool; skill-eval corpus has no dossier answers |
 
@@ -688,11 +917,70 @@ surviving design input is in this file or in code).
 - **Retired draft ids in old links.** 35 `related-to` rows and logbook
   `[dr…]` cites point at retired dossier drafts; they render as retired
   refs, which is the existing behaviour.
+- **Invented card content.** Mitigation: the writer and the converter
+  only quote (substring of a source chunk or a structure meta value) and
+  write `not recorded` otherwise; no LLM in either path; slice 2c's test
+  asserts the substring property on every line.
+- **Card flood in memory search.** ~300 cards per materials quest land in
+  `SPACE:research`, where recall fusion and the dream frontier read. They
+  are real research memory and stay searchable; `card:experiment` lets a
+  reader exclude them, and no `DREAM:`/`auto_refresh_days` keeps them out
+  of consolidation and staleness (§Open for Reto 4).
+- **Concurrent card writes.** Two harvests or a harvest and an agent edit
+  on one card: the body is one chunk replaced whole. The writer re-reads
+  inside its transaction, appends, and skips sources already in
+  `card_sources`; an agent's line is never rewritten.
+
+## Open for Reto (cards)
+
+Only what the design cannot settle; each with the recommended answer,
+which slice 2b builds unless he says otherwise.
+
+1. **Card → structure/pathway rel.** `related-to` (recommended: exists,
+   renders today, identified by the `card:experiment` tag, no migration)
+   vs a new typed `card-of` relation (one migration through BUILDER, a
+   ring-group entry, a `precis-relations` line).
+2. **No LLM in the writer or the converter.** Recommended: deterministic
+   quotes only, so "never inferred" holds by construction; the cost is a
+   `Next` section that is only ever quoted decisions, never a synthesis.
+   An optional LLM `Next` pass can come later as its own slice.
+3. **Does the tick read the cards?** Recommended: not in passes 2–4. The
+   prompt keeps the logbook tail + synthesis entry; cards are written, and
+   the structure fisheye is where an agent reads one. A "cards of the
+   frontier rows" prompt section is a later slice, after Reto has read
+   qu164903's converted cards.
+4. **Cards in default memory recall.** Recommended: included (they are
+   research memory), excluded from the dream frontier by having no
+   `DREAM:` tag. The alternative, hiding `card:experiment` from
+   `search(kind='memory')` unless asked for, changes recall semantics for
+   every space.
+5. **The ladder keeps auto-committing.** Recommended: yes, unchanged in
+   behaviour; it now logs the rung's proposals as hypothesis entries so a
+   card can quote the model's rationale, and the card's `Why` says
+   `auto-committed`. The alternative is refusing a rung whose proposal has
+   no `rationale`, which would re-open the stall the ladder exists to
+   break.
 
 ## Decisions
 
 "Knowledge graph" here means the refs and their typed links: papers,
 findings, measures, todos, quests, memories. All folded into the body above.
+
+**Reto 2026-11-01, gr549581 ("file it"):** one memory card per experiment,
+under a direction todo; todos stay the direction tree with status and
+do-not-repropose; the card holds the why, expected outcome, result and
+next ideas and links to the cards before and after it; an experiment is a
+candidate structure, not a pathway (candidates with several pathways share
+one card); a pathway "should lead into the memory graph, to a current key
+memory … deeply meshed under the quest … and not to a draft. A fisheye
+view is fine if it links back to the pathway view." Passes 1–4 as in the
+intro; HOLD on building until this design pass is done.
+
+**Reto 2026-11-02, gr549581 comment 1:** start the design pass now; fold
+gr553318 in — "the quest writer's typed edges from log entries to the
+structures they name, grouped why/plan/results/analysis/lineage on the
+structure fisheye, are the same mesh as the experiment cards." →
+§Logbook edges; the grouping is the card's sections.
 
 **Reto 2026-10-24, coordinator brief:** "Retire the Dossiers. These move into
 the knowledge graph. Generally we want to enhance the graph so its easy to
@@ -750,6 +1038,10 @@ well-balance the TOC tree (we are allowed to!) then it's super awesome" →
 
 ## Links
 
+- gr549581 (experiment memory cards, Reto 2026-11-01/02; passes 1–4) ·
+  gr553318 (logbook entry → structure edges, folded in) · gr549580 (never
+  a draft link from the pathway page) · gr541346 (quest-page dossier
+  block removed) ·
 - gr510505 (ruling + the shape proposed in `chat-99`) ·
   `quest-graph-as-dossier.md` (2026-10-01 ruling) ·
   `paper-writing-pipeline.md` (export = writer step; embed target for

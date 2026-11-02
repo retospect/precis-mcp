@@ -191,7 +191,10 @@ how an agent reaches the graph; `fisheye-*` is how it moves within it):
 
 1. **backlog/quest-graph-as-dossier.md** — Reto 2026-10-01: a quest's
    graph "is" the dossier and a writer agent linearises it. Specified by
-   `retire-dossier.md` (draft, ranked in roadmap-quest Horizon 5). Same
+   `retire-dossier.md` (draft, ranked in roadmap-quest Horizon 5); its
+   experiment memory cards (gr549581) are the quest loop's memory
+   consumer: one `memory` per candidate structure, `serves` the quest,
+   `part-of` its direction todo, every line a quoted source. Same
    principle as Do-next 1 (graph is truth, text is a render).
 2. **backlog/source-code-ingest.md** — the claude-context retire it was
    sequenced with shipped 2026-10-10 (Milvus stack torn down; a

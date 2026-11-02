@@ -234,9 +234,13 @@ a block exists. The dialectic design is
 5. **backlog/retire-dossier.md** (draft) — Reto 2026-10-24:
    "retire the dossier". Directions become todos `part-of` the quest,
    evidence `serves`, the narrative is a bounded generated view, exports
-   build from the graph; 7 slices plus a dry-run-first migration of the 25
-   prod dossiers. Answers quest-graph-as-dossier's open questions. Waits on
-   a Fable review, then Reto's rulings on its 8 open questions.
+   build from the graph; a dry-run-first migration of the 25 prod
+   dossiers. Slices 1–2 shipped (`quest/directions.py`, the relation pin).
+   Reto 2026-11-01/02 (gr549581, gr553318 folded in): one memory card per
+   experiment (candidate structure) under its direction todo, written by
+   the tick's proposal and auto-commit paths and converted from the 25
+   dossiers; the design pass landed 2026-11-02 (§Experiment memory
+   cards). Build on HOLD until Reto rules on the spec's §Open for Reto.
 6. **backlog/curation-gate.md** — waits on eval-run-spine's verdict column;
    review of what each tick wrote before it feeds the next.
 
