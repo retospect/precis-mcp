@@ -121,16 +121,50 @@ def _install_replaced(baseline: Fingerprint) -> bool:
         return True
 
 
-def _breadcrumb_path() -> Path:
-    """Stable per-host path for the "why did the last server end" note.
+def _state_file(stem: str) -> Path:
+    """``server-state/<stem>[-<colour>].json`` under the cache root.
 
     Reuses :func:`precis.config.cache_root` — the same ``~/.cache/precis/*``
     root the patent/edgar raw-mirror caches already write under — so this
     needs no new directory, no new permission, and no configuration.
+
+    Keyed on ``PRECIS_MCP_COLOUR`` when it is set (the mcp-http blue-green
+    deploy passes it to each backend): both colours mount the same cache
+    dir, so an unkeyed file let one colour's marker read as the other's
+    state (gr550038). Everywhere else the name stays ``<stem>.json``.
     """
     from precis.config import cache_root
 
-    return cache_root("server-state") / "last-exit.json"
+    colour = os.environ.get("PRECIS_MCP_COLOUR", "").strip()
+    name = f"{stem}-{colour}.json" if colour else f"{stem}.json"
+    return cache_root("server-state") / name
+
+
+def _legacy_state_file(stem: str) -> Path:
+    """The unkeyed ``<stem>.json`` name — the pre-gr550038 path.
+
+    Offered to readers only while ``PRECIS_MCP_COLOUR`` is set: unset, the
+    keyed path already *is* this name, so the fallback would add nothing —
+    and consulting the real cache dir on a second candidate would leak
+    host state into tests that patch only the keyed path.
+    """
+    from precis.config import cache_root
+
+    return cache_root("server-state") / f"{stem}.json"
+
+
+def _state_candidates(stem: str, own: Path) -> list[Path]:
+    """``own`` — this colour's ``<stem>`` file — then, only when
+    colour-keyed, the legacy unkeyed name an older release may have left
+    (one-release bridge; drop with :func:`_legacy_state_file`)."""
+    if os.environ.get("PRECIS_MCP_COLOUR", "").strip():
+        return [own, _legacy_state_file(stem)]
+    return [own]
+
+
+def _breadcrumb_path() -> Path:
+    """Stable per-host path for the "why did the last server end" note."""
+    return _state_file("last-exit")
 
 
 def _short_fingerprint(fp: Fingerprint | None) -> str | None:
@@ -213,21 +247,27 @@ def _write_exit_breadcrumb(
 
 
 def _read_and_delete_breadcrumb() -> dict[str, object] | None:
-    """Take the breadcrumb file's contents, removing the file."""
-    path = _breadcrumb_path()
-    try:
-        raw = path.read_text(encoding="utf-8")
-    except OSError:
-        return None
-    try:
-        path.unlink()
-    except OSError:  # pragma: no cover — already-gone race, harmless
-        pass
-    try:
-        data = json.loads(raw)
-    except (json.JSONDecodeError, ValueError):
-        return None
-    return data if isinstance(data, dict) else None
+    """Take the breadcrumb file's contents, removing the file.
+
+    Own colour's file first, then the legacy unkeyed name for one release
+    (gr550038) — a breadcrumb an older release dropped is still collected
+    once rather than left to stand forever.
+    """
+    for path in _state_candidates("last-exit", _breadcrumb_path()):
+        try:
+            raw = path.read_text(encoding="utf-8")
+        except OSError:
+            continue
+        try:
+            path.unlink()
+        except OSError:  # pragma: no cover — already-gone race, harmless
+            pass
+        try:
+            data = json.loads(raw)
+        except (json.JSONDecodeError, ValueError):
+            return None
+        return data if isinstance(data, dict) else None
+    return None
 
 
 def _prepare_status_path() -> Path:
@@ -238,11 +278,12 @@ def _prepare_status_path() -> Path:
     starts: ``{"state": "ok"}``, or ``{"state": "degraded", "detail": …}``
     when the runtime dep sync / metadata reinstall could not reconcile the
     venv with the checkout (gr529877 — the failure used to live only in
-    ``docker logs``).
+    ``docker logs``). Keyed on ``PRECIS_MCP_COLOUR`` like the breadcrumb:
+    the colours share the mounted cache dir, and an unkeyed name let the
+    standby's in-progress marker report as the live backend's dep state
+    (gr550038).
     """
-    from precis.config import cache_root
-
-    return cache_root("server-state") / "prepare-status.json"
+    return _state_file("prepare-status")
 
 
 def read_prepare_status() -> dict[str, object] | None:
@@ -251,13 +292,17 @@ def read_prepare_status() -> dict[str, object] | None:
     Absent on every non-container install — nothing there runs the prepare
     step. Unlike the exit breadcrumb this is a *state* file, not a
     consume-once note: every prepare run overwrites it, so readers always
-    see the current verdict rather than a historical one.
+    see the current verdict rather than a historical one. Falls back to
+    the pre-gr550038 unkeyed name for one release so a marker written
+    before this shipped is not invisible.
     """
-    try:
-        data = json.loads(_prepare_status_path().read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return None
-    return data if isinstance(data, dict) else None
+    for path in _state_candidates("prepare-status", _prepare_status_path()):
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        return data if isinstance(data, dict) else None
+    return None
 
 
 #: The most recent breadcrumb this process has taken off disk, held in

@@ -813,7 +813,9 @@ def test_drift_preflight_prefers_mains_helper_over_the_branchs(
     monkeypatch.setattr(land_slice._factory_git, "git_auth_env", lambda base=None: {})
     pre = _REAL_DRIFT_PREFLIGHT(tree)
     assert pre["ran"] and pre["age"] == "3.2"
-    target = tree / land_slice.PREFLIGHT_HELPER_REL
+    # The lib module is tried first (gr550044's shim would resolve lib/
+    # beside itself and find nothing materialised alone).
+    target = tree / land_slice.PREFLIGHT_LIB_REL
     assert seen[0][:2] == [sys.executable, str(target)]
     assert target.read_text(encoding="utf-8") == main_copy
     assert target.stat().st_mode & 0o111

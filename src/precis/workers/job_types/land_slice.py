@@ -814,31 +814,47 @@ def _drift_preflight(tree: Path) -> dict[str, Any]:
 
 #: Where the preflight materialises main's copy of the drift helper. Under
 #: ``scratch/`` so the helper's ``ROOT`` (two levels up) is still the tree.
+#: Since gr550044 the logic lives in ``scripts/lib/last_gated_main_sha.py``
+#: (the dotless name is a shim that execs it), so the lib path is tried
+#: first — a materialised shim alone could not find its module. The lib
+#: copy lands at ``scratch/lib/`` so its ``parents[2]`` is still the tree.
 PREFLIGHT_HELPER_REL = Path("scratch") / "last-gated-main-sha"
+PREFLIGHT_LIB_REL = Path("scratch") / "lib" / "last_gated_main_sha.py"
 
 
 def _preflight_helper(tree: Path) -> Path | None:
     """The drift helper the preflight runs: ``origin/main``'s copy, written to
-    :data:`PREFLIGHT_HELPER_REL` in ``tree`` after a fetch, else the tree's
-    own ``scripts/last-gated-main-sha``, else ``None``.
+    ``scratch/`` in ``tree`` after a fetch, else the tree's own helper, else
+    ``None``.
 
     A slice branch forks from an older main and ship only merges main in
     *after* the guard; the branch's helper can predate the rule and the flag
     the preflight relies on (jo550940 event 6: "(no diag line) (exit 2)" from
-    a copy without ``--diag``). Main's copy is the one ship itself will run."""
-    own = tree / "scripts" / "last-gated-main-sha"
+    a copy without ``--diag``). Main's copy is the one ship itself will run:
+    the lib module when main has it, else the self-contained dotless script
+    an older main still carries."""
     _git(["fetch", "--quiet", "origin", "main"], tree)
-    cp = _git(["show", "origin/main:scripts/last-gated-main-sha"], tree)
-    if cp.returncode == 0 and cp.stdout.strip():
-        target = tree / PREFLIGHT_HELPER_REL
-        try:
-            target.parent.mkdir(parents=True, exist_ok=True)
-            target.write_text(cp.stdout, encoding="utf-8")
-            target.chmod(0o755)
-            return target
-        except OSError:
-            log.warning("land_slice: could not write %s", target, exc_info=True)
-    return own if own.is_file() else None
+    for src, rel in (
+        ("scripts/lib/last_gated_main_sha.py", PREFLIGHT_LIB_REL),
+        ("scripts/last-gated-main-sha", PREFLIGHT_HELPER_REL),
+    ):
+        cp = _git(["show", f"origin/main:{src}"], tree)
+        if cp.returncode == 0 and cp.stdout.strip():
+            target = tree / rel
+            try:
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_text(cp.stdout, encoding="utf-8")
+                target.chmod(0o755)
+                return target
+            except OSError:
+                log.warning("land_slice: could not write %s", target, exc_info=True)
+    for own in (
+        tree / "scripts" / "lib" / "last_gated_main_sha.py",
+        tree / "scripts" / "last-gated-main-sha",
+    ):
+        if own.is_file():
+            return own
+    return None
 
 
 def _gate_unknown(pre: dict[str, Any]) -> bool:
@@ -1106,6 +1122,7 @@ __all__ = [
     "NAME",
     "PARAMS_SCHEMA",
     "PREFLIGHT_HELPER_REL",
+    "PREFLIGHT_LIB_REL",
     "REQUIRES",
     "SPEC",
     "SUBJECT_CAP",

@@ -954,9 +954,12 @@ ENVS=(
 #     pyproject.toml changes, reinstall the project metadata (--no-deps, ~4 s).
 # A dependency failure stops prepare before the child starts and says to
 # rebuild the image (a dep with no wheel needs the builder's compiler).
-# Every run also overwrites a prepare-status.json marker in the mounted
-# cache so `precis-status` can show a degraded dep sync — the docker log
-# line was previously the only place that failure surfaced (gr529877).
+# Every run also overwrites a prepare-status-<colour>.json marker in the
+# mounted cache so `precis-status` can show a degraded dep sync — the
+# docker log line was previously the only place that failure surfaced
+# (gr529877). Keyed on PRECIS_MCP_COLOUR: both colours share the mounted
+# cache, so one shared name let the standby's in-progress marker read as
+# the live backend's state (gr550038).
 #
 # PID 1 is precis.mcp_supervisor (gr459481): it binds the port once and runs
 # `precis serve --fd` as a child, re-running the prepare step before each one,
@@ -974,11 +977,14 @@ t0=$SECONDS
 # every run — "degraded" with the reason when a step below could not
 # reconcile the venv with the checkout, "ok" otherwise (gr529877: a
 # failed dep sync used to live only in docker logs). Best-effort — a
-# status note must never break the prepare. No single quotes anywhere in
-# this body — it lives inside the single-quoted RUN_CMD, where each one
-# silently ends the literal (bash -n caught the comment apostrophe; code
-# quotes would have been eaten at container start just the same).
-prep_status_file="${XDG_CACHE_HOME:-${HOME}/.cache}/precis/server-state/prepare-status.json"
+# status note must never break the prepare. The name is keyed on
+# PRECIS_MCP_COLOUR because both colours mount this dir: an unkeyed file
+# reported the standby prepare as the live backend state (gr550038).
+# No single quotes anywhere in this body — it lives inside the
+# single-quoted RUN_CMD, where each one silently ends the literal
+# (bash -n caught the comment apostrophe; code quotes would have been
+# eaten at container start just the same).
+prep_status_file="${XDG_CACHE_HOME:-${HOME}/.cache}/precis/server-state/prepare-status${PRECIS_MCP_COLOUR:+-${PRECIS_MCP_COLOUR}}.json"
 prep_issues=""
 note_issue() { prep_issues="${prep_issues:+${prep_issues}; }$1"; }
 write_prepare_status() {

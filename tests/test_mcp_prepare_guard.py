@@ -256,6 +256,29 @@ def test_crashed_prepare_replaces_a_stale_ok_marker(tmp_path: Path) -> None:
     assert "did not finish" in str(marker["detail"])
 
 
+def test_status_marker_is_keyed_on_the_backend_colour(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr550038: both colours mount the same cache dir, so the PREP body
+    writes ``prepare-status-<colour>.json`` when ``PRECIS_MCP_COLOUR`` is
+    set — an unkeyed name let the standby's in-progress marker read as the
+    live backend's dep state."""
+    from precis import install_watchdog
+
+    launcher, env = _prep_rig(tmp_path, "noop")
+    env["PRECIS_MCP_COLOUR"] = "b"
+    monkeypatch.setenv("HOME", env["HOME"])
+    monkeypatch.delenv("XDG_CACHE_HOME", raising=False)
+    monkeypatch.setenv("PRECIS_MCP_COLOUR", "b")
+    result = _run(launcher, env)
+    assert result.returncode == 0, result.stderr
+    state = Path(env["HOME"]) / ".cache/precis/server-state"
+    assert not (state / "prepare-status.json").exists()
+    assert (state / "prepare-status-b.json").exists()
+    marker = install_watchdog.read_prepare_status()
+    assert marker is not None and marker["state"] == "ok"
+
+
 @pytest.mark.parametrize("xdg", [False, True], ids=["home-fallback", "xdg"])
 def test_status_marker_lands_where_the_python_reader_looks(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, xdg: bool

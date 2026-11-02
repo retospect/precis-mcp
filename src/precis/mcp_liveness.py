@@ -188,11 +188,15 @@ def probe(url: str, token: str, timeout_s: float) -> str | None:
 def breadcrumb_path() -> Path:
     """Where ``install_watchdog`` keeps its last-exit note — same file.
 
-    Mirrors ``config.cache_root("server-state") / "last-exit.json"``; see
-    the module docstring for why it is not imported.
+    Mirrors ``config.cache_root("server-state") / "last-exit[-<colour>].json"``
+    — keyed on ``PRECIS_MCP_COLOUR`` when set, because the mcp-http
+    colours share the mounted cache dir (gr550038). See the module
+    docstring for why it is not imported.
     """
     base = os.environ.get("XDG_CACHE_HOME") or str(Path.home() / ".cache")
-    return Path(base).expanduser() / "precis" / "server-state" / "last-exit.json"
+    colour = os.environ.get("PRECIS_MCP_COLOUR", "").strip()
+    name = f"last-exit-{colour}.json" if colour else "last-exit.json"
+    return Path(base).expanduser() / "precis" / "server-state" / name
 
 
 def record_wedge_kill(detector: WedgeDetector, *, pid: int | None, now: float) -> None:

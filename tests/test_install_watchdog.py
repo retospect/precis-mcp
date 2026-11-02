@@ -444,3 +444,66 @@ def test_consume_last_exit_breadcrumb_corrupt_json(_breadcrumb_in_tmp: Path) -> 
     _breadcrumb_in_tmp.write_text("{not json", encoding="utf-8")
     assert consume_last_exit_breadcrumb() is None
     assert not _breadcrumb_in_tmp.exists()
+
+
+def test_state_files_are_keyed_on_the_backend_colour(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr550038: both mcp-http colours share the mounted cache dir, so the
+    prepare-status marker and the last-exit breadcrumb carry the colour —
+    a standby's in-progress marker used to read as the live backend's."""
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path))
+    state = tmp_path / "precis" / "server-state"
+    monkeypatch.setenv("PRECIS_MCP_COLOUR", "b")
+    assert install_watchdog._prepare_status_path() == state / "prepare-status-b.json"
+    assert install_watchdog._state_file("last-exit") == state / "last-exit-b.json"
+    monkeypatch.delenv("PRECIS_MCP_COLOUR")
+    assert install_watchdog._prepare_status_path() == state / "prepare-status.json"
+    assert install_watchdog._state_file("last-exit") == state / "last-exit.json"
+
+
+def test_read_prepare_status_prefers_own_colour_then_legacy(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The colour's own marker wins; the unkeyed name an older release left
+    is the one-release bridge, read only while the colour file is absent."""
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path))
+    monkeypatch.setenv("PRECIS_MCP_COLOUR", "a")
+    state = tmp_path / "precis" / "server-state"
+    state.mkdir(parents=True)
+    (state / "prepare-status.json").write_text(
+        json.dumps({"state": "degraded", "detail": "old release"}),
+        encoding="utf-8",
+    )
+    assert install_watchdog.read_prepare_status() == {
+        "state": "degraded",
+        "detail": "old release",
+    }
+    (state / "prepare-status-a.json").write_text(
+        json.dumps({"state": "ok"}), encoding="utf-8"
+    )
+    assert install_watchdog.read_prepare_status() == {"state": "ok"}
+
+
+def test_legacy_breadcrumb_is_consumed_once_for_one_release(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, _breadcrumb_in_tmp: Path
+) -> None:
+    """gr550038: a last-exit.json an older release dropped under the unkeyed
+    name is collected (and deleted) once — not left standing next to the
+    keyed file forever."""
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path))
+    monkeypatch.setenv("PRECIS_MCP_COLOUR", "a")
+    monkeypatch.setattr(
+        install_watchdog,
+        "_breadcrumb_path",
+        lambda: install_watchdog._state_file("last-exit"),
+    )
+    legacy = tmp_path / "precis" / "server-state" / "last-exit.json"
+    legacy.parent.mkdir(parents=True, exist_ok=True)
+    legacy.write_text(
+        json.dumps({"reason": "exit", "written_at": "2026-11-01T23:00:00Z"}),
+        encoding="utf-8",
+    )
+    crumb = consume_last_exit_breadcrumb()
+    assert crumb is not None and crumb["reason"] == "exit"
+    assert not legacy.exists()

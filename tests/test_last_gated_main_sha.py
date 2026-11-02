@@ -17,14 +17,12 @@ window and ``--start`` behaviour against a real temp repo.
 
 from __future__ import annotations
 
-import importlib.util
 import json
 import os
 import re
 import shutil
 import subprocess
 import sys
-import tempfile
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
@@ -36,7 +34,12 @@ import yaml
 from tests._script import load_script
 
 REPO = Path(__file__).resolve().parents[1]
-SCRIPT = REPO / "scripts" / "last-gated-main-sha"
+# The logic lives in the .py module (gr550044); the dotless name is a shim
+# exec'd in place. Nothing here reads the shim in-process — testmon
+# fingerprints every file a test touches and IndexErrors on a dotless name —
+# it is only ever run as a subprocess.
+MODULE = REPO / "scripts" / "lib" / "last_gated_main_sha.py"
+SHIM = REPO / "scripts" / "last-gated-main-sha"
 
 GATED = "aaaa111100000000000000000000000000000000"
 BURST = "bbbb222200000000000000000000000000000000"
@@ -428,15 +431,10 @@ def test_exact_verdict_rerun_attempt_judges_only_the_latest_attempt(
 
 
 def _load() -> ModuleType:
-    # Loaded from a `.py`-suffixed copy, not the dotless executable: testmon
-    # fingerprints by extension and IndexErrors on a dotless file, which
-    # INTERNALERRORs any `--impacted` run touching this test (gr450298) — same
-    # convention as tests/test_main_ci_status.py.
-    tmp_copy = (
-        Path(tempfile.mkdtemp(prefix="last_gated_py_")) / "last_gated_main_sha.py"
-    )
-    shutil.copyfile(SCRIPT, tmp_copy)
-    return load_script("last_gated_main_sha", tmp_copy)
+    # The real `.py` module directly — no copy: since gr550044 the logic
+    # lives under scripts/lib/ precisely so tests never open the dotless
+    # script (testmon IndexErrors fingerprinting it, gr450298/gr550044).
+    return load_script("last_gated_main_sha", MODULE)
 
 
 def _iso(hours_ago: float) -> str:
@@ -1118,13 +1116,21 @@ def test_gate_shard_counts_match_ci_shard_plan() -> None:
     `pytest --shard K/N` denominator both read the plan job's output. A new
     emitted count reddens this until the constant follows."""
     mod = _load()
-    tmp = Path(tempfile.mkdtemp(prefix="ci_shard_plan_")) / "ci_shard_plan.py"
-    shutil.copyfile(REPO / "scripts" / "ci-shard-plan", tmp)
-    spec = importlib.util.spec_from_file_location("ci_shard_plan", tmp)
-    assert spec is not None and spec.loader is not None
-    plan = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(plan)
-    assert plan.SHARDS in mod.GATE_SHARD_COUNTS
+    # Subprocess, not an in-process load: ci-shard-plan is dotless and
+    # testmon fingerprints every file a test touches (gr550044). Parsing
+    # the emitted `n=` pins the count the workflow actually consumes.
+    env = {k: v for k, v in os.environ.items() if k != "FORCE_SHARDS"}
+    out = subprocess.run(
+        [sys.executable, str(REPO / "scripts" / "ci-shard-plan")],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        env=env,
+        timeout=30,
+        check=True,
+    ).stdout
+    emitted = re.search(r"^n=(\d+)$", out, re.M)
+    assert emitted and int(emitted.group(1)) in mod.GATE_SHARD_COUNTS
     wf = yaml.safe_load(
         (REPO / ".github" / "workflows" / "check.yml").read_text(encoding="utf-8")
     )
@@ -1404,7 +1410,7 @@ def test_missing_gh_is_silent_and_exits_zero(tmp_path: Path) -> None:
     stub.chmod(0o755)
     env = {**os.environ, "PATH": f"{tmp_path}{os.pathsep}{os.environ.get('PATH', '')}"}
     cp = subprocess.run(
-        [sys.executable, str(SCRIPT), "--limit", "2"],
+        [sys.executable, str(SHIM), "--limit", "2"],
         capture_output=True,
         text=True,
         encoding="utf-8",

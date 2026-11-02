@@ -15,7 +15,7 @@ FORCE_SHARDS (the workflow_dispatch `shards` input) still overrides for
 measuring another width; the floor is SHARDS.
 
 The count's weights table lives in tests/shard_weights.json; a second count
-needs a table there, GATE_SHARD_COUNTS in scripts/last-gated-main-sha, and
+needs a table there, GATE_SHARD_COUNTS in scripts/lib/last_gated_main_sha.py, and
 the budget arithmetic in tests/test_ci_shards.py.
 """
 

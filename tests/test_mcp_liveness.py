@@ -113,6 +113,12 @@ def test_breadcrumb_path_is_install_watchdogs(
     assert breadcrumb_path() == _breadcrumb_path()
     monkeypatch.delenv("XDG_CACHE_HOME")
     assert breadcrumb_path() == _breadcrumb_path()
+    # gr550038: keyed on the backend colour — both colours share the
+    # mounted cache dir, so the two implementations must agree on the
+    # colour-keyed name too.
+    monkeypatch.setenv("PRECIS_MCP_COLOUR", "b")
+    assert breadcrumb_path() == _breadcrumb_path()
+    assert breadcrumb_path().name == "last-exit-b.json"
 
 
 @_NEEDS_SIGHUP
