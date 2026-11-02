@@ -810,8 +810,10 @@ def search(
     # finding-specific filter: short-circuits a STATUS:<value> tag
     # filter. Defaults to 'established' on the finding handler; pass
     # 'tracing' / 'multi_candidate' / 'dead_chain' to inspect a
-    # specific lifecycle cohort, or '*' to see all. Declared at the
-    # verb level so the schema advertises it to strict-schema clients.
+    # specific lifecycle cohort, or '*' to see all. On kind='machine'
+    # it filters the heartbeat-derived state instead — 'live' /
+    # 'stale' / 'no heartbeat' (see precis-machine-help). Declared at
+    # the verb level so the schema advertises it to strict-schema clients.
     status: str | None = None,
     # finding-specific epistemic filter, orthogonal to status= (which is
     # the chase lifecycle). 'signed' = a human attesting key stands behind
@@ -940,6 +942,14 @@ def search(
     under: str | int | list[str] | None = None,
     axis: str | None = None,
     depth: int | None = None,
+    # machine filters (see precis-machine-help): search(kind='machine',
+    # platform='linux', role='worker') narrows the host list by the ref's
+    # stable-fact meta (case-insensitive substring). status= — the
+    # heartbeat-derived 'live'|'stale'|'no heartbeat' — rides the existing
+    # status= param declared above. Declared at the verb level so
+    # strict-schema clients don't strip them.
+    platform: str | None = None,
+    role: str | None = None,
     # Typed extras, mirroring ``get``'s ``args=``: rides ``__extras__`` so a
     # handler declaring ``args`` (todo's view='doable' reads ``args['under']``)
     # gets the dict, others get the keys flattened and whitelist-checked.
@@ -1321,6 +1331,13 @@ def search(
         payload["axis"] = axis
     if depth is not None:
         payload["depth"] = depth
+    # machine stable-fact filters — forwarded only when set, same
+    # discipline. status= already forwards above (heartbeat-derived
+    # live/stale/'no heartbeat' for this kind, not a STATUS: tag).
+    if platform is not None:
+        payload["platform"] = platform
+    if role is not None:
+        payload["role"] = role
     if args:
         err = _check_reserved_args(args, reserved=("kind", "q", "view"))
         if err is not None:
@@ -1688,6 +1705,15 @@ def put(
     # Declared at the verb level so strict-schema MCP clients don't strip
     # it — the whole checklist put path was otherwise unreachable over MCP.
     items: list[dict[str, Any]] | None = None,
+    # machine (see precis-machine-help): put(kind='machine', id='<host>',
+    # platform=…, role=…, gpu=…) upserts one ref's stable facts;
+    # put(kind='machine', mode='sync', hosts=['<host>',…]) adds hosts the
+    # heartbeat table doesn't know to the census refresh. Declared at the
+    # verb level so strict-schema clients don't strip them.
+    platform: str | None = None,
+    role: str | None = None,
+    gpu: str | None = None,
+    hosts: list[str] | None = None,
     # profile (see precis-profile-help): put(kind='profile', name=…,
     # palette={role: '#RRGGBB'}, fonts=…, logos=[…], sponsor_line=…,
     # default=…, owner=<login>). owner= is checked by ProfileHandler: a
@@ -1876,6 +1902,11 @@ def put(
                 "owner": owner,
                 "default": default,
                 "ops": ops,
+                # machine — the stable-fact upsert kwargs + sync's extra hosts.
+                "platform": platform,
+                "role": role,
+                "gpu": gpu,
+                "hosts": hosts,
             },
             ctx=ctx,
         )

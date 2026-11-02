@@ -27,7 +27,8 @@ surface is **not** a dev aid for this repo — see the "Two surfaces" note in
 Everything is one Postgres DB (pgvector). Two ideas carry the whole model:
 
 - **`refs` — one row per thing, discriminated by `kind`.** `todo`, `paper`,
-  `patent`, `draft`, `quest`, `llm`, `gripe`, `concept`, … (~50 kinds). A
+  `patent`, `draft`, `quest`, `llm`, `gripe`, `concept`, `machine`, …
+  (~50 kinds). A
   kind is a *handler* (`src/precis/handlers/`), not a table. The primary
   key is **`ref_id`** (`bigint`); every satellite table FKs to it, so
   grepping `ref_id` floods — the concept's home is this bullet and

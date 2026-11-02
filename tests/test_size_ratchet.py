@@ -136,6 +136,11 @@ _EXEMPT: dict[str, str] = {
         "paper list rows — refs carry no stored byte length"
     ),
     "handlers/patent.py::_render_list": "patent registry rows — meta fields only",
+    "handlers/machine.py::search": (
+        "fleet census rows — meta facts plus the live heartbeat overlay; "
+        "the only stored text is the card chunk generated from meta, "
+        "which the table never loads"
+    ),
 }
 
 

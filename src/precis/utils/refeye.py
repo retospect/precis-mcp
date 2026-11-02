@@ -244,8 +244,8 @@ UP_RELATIONS: dict[str, UpRule] = {
         k: _no_container(k)
         for k in (
             "agentlog", "alert", "alias", "anki", "calc", "cfp", "chem", "checklist", "citation",
-            "email", "figure", "fleet", "folder", "gripe", "job", "llm", "make",
-            "markdown", "material", "math", "md", "measure", "mermaid",
+            "email", "figure", "fleet", "folder", "gripe", "job", "llm", "machine",
+            "make", "markdown", "material", "math", "md", "measure", "mermaid",
             "message", "news", "oracle", "orcid", "part", "perplexity-reasoning",
             "perplexity-research", "plaintext", "plan", "pres", "profile", "provenance",
             "python", "random", "rxn", "semanticscholar", "skill", "structure",

@@ -76,6 +76,7 @@ EXPECTED_PERSISTENT_KINDS = frozenset(
         "checklist",
         "profile",
         "alias",
+        "machine",
     }
 )
 

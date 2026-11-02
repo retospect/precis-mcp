@@ -128,7 +128,6 @@ name/path.
 | `gripe` | `gr9` | Annoyance / niggle | store |
 | `alert` | `al38260` | Machine-detected ops / health condition, deduped + auto-resolved, surfaced by the `/alerts` web tab — not semantic search. See `precis-alert-help`. | store |
 | `agentlog` | `ag38312` | Run-attribution record — one per agentic run that touched the corpus; `touched` links to every chunk it wrote. GC'd past a retention window; not semantic search. See `precis-agentlog-help`. | store |
-| `fleet` | `fl412` | Live agent-fleet rows — one per agent tree (state, purpose, last activity, attach line) and per host; `get(kind='fleet')` renders EXCEPTIONS / AGENTS / QUOTA. Collector-fed; not searchable. See `precis-fleet-help`. | store |
 | `anki` | `ak204` | Spaced-repetition cloze card (`{{c1::…}}`) that lives in the corpus and syncs to AnkiWeb. See `precis-anki-help`. | store |
 | `concept` | `cn88` | A node in the learner's personal knowledge graph — a term with a continuous mastery field and typed edges (`has-prerequisite`/`analogy-of`/`contrasts-with`) to other concepts, promoted from paper glossaries. | store |
 | `taxon` | `tn31` | A node in the term taxonomy — a named term with a one-sentence definition (embedded, so search matches by meaning), an earned status (`proposed`/`systematic`) and an optional dimension. See `precis-taxon-help`. | store |
@@ -142,6 +141,13 @@ name/path.
 | `email` | *(no handle — live IMAP adapter)* | Live, read-only mailbox browse over IMAP — mirrors nothing. `get(kind='email')` lists recent mail; `id='INBOX'` a folder; `id='INBOX/<uid>'` reads one message; `account='addr@host'` picks among configured accounts. Never marks mail `\Seen`. | store |
 | `provenance` | `92` (int) | Per-ref provenance audit (sources, transforms) | store |
 | `tag` | `topic:co2-capture` | Discoverable tag row (`get`/`search` only) | store |
+
+## The ref kinds, continued — fleet and hosts
+
+| Kind | Handle | What it is | Needs |
+|---|---|---|---|
+| `fleet` | `fl412` | Live agent-fleet rows — one per agent tree (state, purpose, last activity, attach line) and per host; `get(kind='fleet')` renders EXCEPTIONS / AGENTS / QUOTA. Collector-fed; not searchable. See `precis-fleet-help`. | store |
+| `machine` | `ma_alpha` (`mh7` also resolves) | One ref per fleet host — the linkable host identity. Stable facts in the body; live load/temp/last-seen overlaid from `host_heartbeat` (`no heartbeat`, never `down`). See `precis-machine-help`. | store |
 
 Rows with an env var in *Needs* are only active when that var is set.
 For the live list use `get(kind='skill', id='precis-help')`.

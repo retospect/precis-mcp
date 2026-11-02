@@ -95,6 +95,11 @@ _EXPECTED_MODES: dict[tuple[str, str], tuple[str, ...] | None] = {
     #    refuses any other mode and writes nothing under it (gr506762
     #    subset-4) -------------------------------------------------
     ("measure", "put"): ("recheck",),
+    # -- put: machine's sole recognised mode is the fleet-census sync
+    #    (put(mode='sync') upserts one ref per host_heartbeat row);
+    #    every other value is BadInput and no-mode-with-id= is the
+    #    manual one-ref upsert (gr549585) -----------------------------
+    ("machine", "put"): ("sync",),
     # -- edit: file kinds, the region-rewrite grammar -------------------
     ("markdown", "edit"): ("find-replace", "append", "insert", "replace"),
     ("plaintext", "edit"): ("find-replace", "append", "insert", "replace"),

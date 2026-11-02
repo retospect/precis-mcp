@@ -55,6 +55,11 @@ residue, then batched ops and flip steps.
 
 ## Horizon
 
+0. **backlog/machine-capabilities.md** — machine kind slice 2: source
+   capability facts (GPU, worker lanes, services) from deploy config /
+   service_config / worker lanes instead of hand-entered args. Slice 1
+   (kind + refs + heartbeat overlay) landed via gr549585; the item names
+   the open decision (no inventory reader exists in `src/` yet).
 1. **backlog/data-node-worker-daemon-cleanup.md** — deploy removes the venv
    but leaves the launchd daemon on the data node.
 2. **backlog/cluster-daemon-user-model.md** — the hermes vs deploy user

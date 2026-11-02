@@ -1099,6 +1099,7 @@ def boot(
         from precis.handlers.gripe import GripeHandler
         from precis.handlers.job import JobHandler
         from precis.handlers.llm import LlmHandler
+        from precis.handlers.machine import MachineHandler
         from precis.handlers.make import MakeHandler
         from precis.handlers.material import MaterialHandler
         from precis.handlers.measure import MeasureHandler
@@ -1167,6 +1168,10 @@ def boot(
         # (materials-handbook-kind proposal). Slug entity + typed property
         # registry + sourced value fact table; canonical-units-only in v1.
         _gated(MaterialHandler)
+        # machine — one ref per fleet host (gr549585). Slug entity
+        # (ma_<host>): stable facts in meta+card, live load/temp/last-seen
+        # overlaid at get time from host_heartbeat (0017), never stored.
+        _gated(MachineHandler)
         # component — general procurable-part store. Mirrors material's star schema plus a
         # category-scoped spec registry; made-of links to a material.
         _gated(ComponentHandler)
