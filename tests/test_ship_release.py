@@ -122,7 +122,13 @@ class ReleaseRig(Rig):
     def _stage_repo(self) -> None:
         super()._stage_repo()
         stub = self.primary / "scripts" / "last-gated-main-sha"
-        stub.write_text(f"#!/bin/sh\nexit {self._drift_rc}\n", encoding="utf-8")
+        # Exit 2 carries the helper's --diag verdict line, as the real one does.
+        diag = (
+            "echo 'last-gated-main-sha: status=none' >&2\n"
+            if self._drift_rc == 2
+            else ""
+        )
+        stub.write_text(f"#!/bin/sh\n{diag}exit {self._drift_rc}\n", encoding="utf-8")
 
     def worktree_from(self, name: str, base: str, files: dict[str, str]) -> Path:
         """A thread tree cut from ``base`` (e.g. ``origin/release/r1``)."""

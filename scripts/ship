@@ -2382,13 +2382,25 @@ for (( attempt = 1; attempt <= MAX_ATTEMPTS; attempt++ )); do
             drift_warn="${PRECIS_QLAND_DRIFT_WARN_HOURS:-24}"
             drift_refuse="${PRECIS_QLAND_DRIFT_REFUSE_HOURS:-48}"
             drift_rc=0
-            drift_age="$(scripts/last-gated-main-sha --age-hours --start origin/main --hours "$drift_refuse" 2>/dev/null)" || drift_rc=$?
-            if [[ -z "$drift_age" && "$drift_rc" == 2 ]]; then
+            # --diag: the helper prints one `last-gated-main-sha: status=...`
+            # stderr line before every exit. Exit 2 refuses only WITH that
+            # line saying status=none — exit 2 without it is the launcher's
+            # (the `uv run` shebang could not write its cache or find a
+            # >=3.12 interpreter: melchior's deploy user, gr550941), not a
+            # verdict, and reads as unknowable like any other failed lookup.
+            drift_err="$(mktemp)"
+            drift_age="$(scripts/last-gated-main-sha --age-hours --diag --start origin/main --hours "$drift_refuse" 2>"$drift_err")" || drift_rc=$?
+            drift_diag="$(grep -m1 '^last-gated-main-sha: ' "$drift_err" || true)"
+            drift_tail="$(tail -n 1 "$drift_err")"
+            rm -f "$drift_err"
+            if [[ -z "$drift_age" && "$drift_rc" == 2 && "$drift_diag" == *"status=none"* ]]; then
                 if [[ "${PRECIS_QLAND_DRIFT_OVERRIDE:-0}" == 1 ]]; then
                     say "main has no green shard verdict in the last ${drift_refuse}h — REFUSAL OVERRIDDEN by PRECIS_QLAND_DRIFT_OVERRIDE=1"
                 else
-                    die "main has no all-green shard matrix in the last ${drift_refuse}h (refuse at ${drift_refuse}h). The burst has outrun its verdicts: stacking another untested merge on top makes the eventual bisect worse, not better. What this needs next is a red on main fixed or a /go over the integrated main, not another qland. Deliberate override: PRECIS_QLAND_DRIFT_OVERRIDE=1."
+                    die "main has no all-green shard matrix in the last ${drift_refuse}h (refuse at ${drift_refuse}h). The burst has outrun its verdicts: stacking another untested merge on top makes the eventual bisect worse, not better. What this needs next is a red on main fixed or a /go over the integrated main, not another qland. Deliberate override: PRECIS_QLAND_DRIFT_OVERRIDE=1. [${drift_diag}]"
                 fi
+            elif [[ -z "$drift_age" && "$drift_rc" != 0 ]]; then
+                say "drift helper failed (exit ${drift_rc}, no verdict) — not gating on it: ${drift_tail:-no stderr}"
             elif [[ -z "$drift_age" ]]; then
                 say "main's last shard verdict: age unknown — not gating on it (drift guard only ever refuses on a number it actually has)"
             elif awk "BEGIN{exit !($drift_age >= $drift_refuse)}"; then

@@ -97,7 +97,8 @@ Three outcomes, in both the plain and the `--age-hours` mode:
 
 Exit 2 is an answer, not a crash: callers must not treat it as one. check.yml's
 `plan` runs under `bash -e` and catches it explicitly; `scripts/ship --quick`
-refuses on it.
+refuses on it only alongside the `--diag` line's `status=none` — a bare exit 2
+can be the `uv run` shebang failing before this file runs (gr550941).
 
 `--diag` adds one stderr line — `last-gated-main-sha: status=… local=N
 fetched=N with_suites=N with_runs=N matched=N runs: name=CONCLUSION, …` —
