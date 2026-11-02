@@ -450,7 +450,9 @@ auto-close phases; (4) for each doable task with no live job, pick the
 lane (fit, then pacing), mint the job with the rendered brief, launch
 through the lane's adapter (step 6); (5) hygiene: expired leases, retry
 caps, stuck jobs → asks. Concurrency is the lane cap. The work view
-shows gates and loops as rows with their predicate and count.
+shows gates and loops as rows with their predicate and count. The tick
+also runs as the worker pass `plan_tick` (`--only plan_tick` on the slices
+lane, every 30 s), bypassing scheduler, todo and job (gr548810).
 
 ### What exists, what is missing
 

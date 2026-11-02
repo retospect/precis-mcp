@@ -24,9 +24,20 @@
 # run_slice's remaining reads are optional with code defaults or come from the
 # vault (OAuth token, MCP token), so they need no key here.
 #
-# NO READINESS GATE (unlike 20e/43). A single `--only` value has no
-# append-vs-store hazard, and job_ssh_node is long-registered in the
-# installed argparse choices, so a stale venv just runs the right pass.
+# PLAN TICKER. The lane also runs `--only plan_tick`: the dark-factory tick
+# (plan_dispatch.run_pass) as a worker pass, bypassing scheduler -> recurring
+# todo td543894 -> catch-all `dispatch` -> job. The closure runs at most once
+# per PRECIS_PLAN_TICK_INTERVAL_S (default 30; unset here on purpose, set it
+# in precis_shared_env to tune). When the lane goes live the operator pauses
+# td543894 (STATUS:paused) so there is ONE ticker. The kill switch
+# PRECIS_FACTORY=off is read by the tick from the unit env, which is
+# precis_shared_env + precis_identity_env (the same source the catch-all's
+# plist renders), so setting it there turns the tick read-only on both.
+#
+# NO READINESS GATE (unlike 20e/43). A repeated `--only` has no
+# append-vs-store hazard for job_ssh_node, long-registered in the installed
+# argparse choices. plan_tick is NOT in an older venv's choices, but the
+# redeploy refreshes the venv before this unit bounces.
 #
 # Run order: after 20b (rides its venv, deploy user and pgpass; imports no
 # role). The redeploy macOS `com.precis.*.plist` glob already bounces
@@ -54,7 +65,7 @@
         service_unit_timeout_stop_sec: 60
         service_unit_exec: >-
           {{ _slices_venv }}/bin/precis worker --only job_ssh_node
-          --batch-size 1
+          --only plan_tick --batch-size 1
           --idle-seconds {{ precis_worker_slices_idle_seconds | default(5) }}
         service_unit_env: >-
           {{ precis_shared_env

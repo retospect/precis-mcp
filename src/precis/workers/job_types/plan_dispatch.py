@@ -100,7 +100,9 @@ the minter turns into a job every 5 minutes, like ``graph_garden``::
         meta={'schedule': {'every': '5m'}, 'executor': 'job_inproc',
               'job_type': 'plan_dispatch'})
 
-``dedupe_pending`` coalesces a tick whose previous run is still pending.
+``dedupe_pending`` coalesces a tick whose previous run is still pending. The
+pass and the job may run side by side: :func:`run_pass` takes a global
+advisory lock for the whole tick and a second tick skips instead of racing it.
 Workers never import handlers: every write here is a store call.
 """
 
@@ -122,6 +124,7 @@ from precis.plans import templates as _templates
 from precis.plans.logbook import log_plan_event
 from precis.plans.nodes import MOOT_TAG, node_kind
 from precis.store._todo_sql import _DOABLE_EXCLUSION_TAGS
+from precis.store.advisory import try_xact_advisory_lock
 from precis.store.types import TODO_BODY_KIND, ChunkInsert, Tag
 from precis.todo import BLOCKER_TERMINAL_STATUSES, TERMINAL_TODO_STATUSES
 from precis.todo.guards import check_ask_meta, release_claims
@@ -131,6 +134,18 @@ from precis.workers.job_types import JobTypeSpec, get_job_type
 log = logging.getLogger(__name__)
 
 NAME = "plan_dispatch"
+
+#: Advisory-lock key serialising whole ticks (ascii "PLANTICK"; fits bigint).
+#: Held as a transaction-scoped lock on a dedicated connection for the full
+#: pass, so the job path and the worker-lane pass never mint or dispatch the
+#: same thing twice.
+TICK_LOCK_KEY: int = 0x504C414E5449434B
+#: ``idle_in_transaction_session_timeout`` for the lock connection: longer than
+#: any tick, so a tick that overruns loses the lock (the intended failure)
+#: rather than pinning it forever.
+TICK_LOCK_IDLE_TIMEOUT = "900s"
+#: ``application_name`` of the lock connection in ``pg_stat_activity``.
+TICK_LOCK_APP_NAME = "precis plan_tick lock"
 
 #: ``service_config.service`` of the kill switch (a ``prio = 0`` row).
 SERVICE = "plan_dispatch"
@@ -450,10 +465,12 @@ class PassResult:
     reopened: int = 0
     #: Reviewer verdicts acted on (LAND / FIX / REVERT).
     reviews: int = 0
+    #: Why the pass did nothing (another tick held the lock); ``None`` = ran.
+    skipped: str | None = None
     notes: list[str] = field(default_factory=list)
 
     def counts(self) -> dict[str, Any]:
-        return {
+        out: dict[str, Any] = {
             "roots": self.roots,
             "gates_opened": self.gates_opened,
             "gates_closed": self.gates_closed,
@@ -467,8 +484,13 @@ class PassResult:
             "reopened": self.reopened,
             "reviews": self.reviews,
         }
+        if self.skipped:
+            out["skipped"] = self.skipped
+        return out
 
     def summary(self) -> str:
+        if self.skipped:
+            return f"plan_dispatch: skipped — {self.skipped}"
         return (
             f"plan_dispatch: roots={self.roots} "
             f"gates={self.gates_opened}/{self.gates_closed} "
@@ -1580,20 +1602,36 @@ def run_pass(
     reason: str | None = None,
     now: datetime | None = None,
 ) -> PassResult:
-    """One dispatcher pass over every plan subtree (module docstring)."""
+    """One dispatcher pass over every plan subtree (module docstring).
+
+    The whole tick runs under :data:`TICK_LOCK_KEY`; when another tick holds
+    it this returns a ``skipped`` result and touches nothing.
+    """
     now = now or datetime.now(UTC)
     res = PassResult(dry_run=dry_run, reason=reason)
-    plan = _load(store)
-    res.roots = len(plan.roots)
-    w = _Writer(store, dry_run)
-    _step_gates(store, plan, w, res, now)
-    _step_loops(store, plan, w, res, now)
-    _step_reviews(store, plan, w, res, now)
-    _step_reopen(plan, w, res)
-    _step_moot(store, plan, w, res)
-    _step_phases(plan, w, res)
-    _step_dispatch(plan, w, res)
-    _step_hygiene(plan, w, res, now)
+    # The lock sits on a dedicated connection whose open transaction does no
+    # writes: it exists only to pin one backend (pgbouncer-safe) and hold the
+    # transaction-scoped lock while the steps use their own connections.
+    with try_xact_advisory_lock(
+        store.dsn,
+        TICK_LOCK_KEY,
+        idle_timeout=TICK_LOCK_IDLE_TIMEOUT,
+        application_name=TICK_LOCK_APP_NAME,
+    ) as got:
+        if not got:
+            res.skipped = "another tick holds the lock"
+            return res
+        plan = _load(store)
+        res.roots = len(plan.roots)
+        w = _Writer(store, dry_run)
+        _step_gates(store, plan, w, res, now)
+        _step_loops(store, plan, w, res, now)
+        _step_reviews(store, plan, w, res, now)
+        _step_reopen(plan, w, res)
+        _step_moot(store, plan, w, res)
+        _step_phases(plan, w, res)
+        _step_dispatch(plan, w, res)
+        _step_hygiene(plan, w, res, now)
     return res
 
 

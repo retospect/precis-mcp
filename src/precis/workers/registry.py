@@ -1393,6 +1393,21 @@ SERVICES: tuple[ServiceSpec, ...] = (
         doc_skill="precis-job-help",
     ),
     ServiceSpec(
+        # The same tick as ``plan_dispatch`` above, run as a worker PASS by a
+        # dedicated lane (``--only plan_tick``) instead of a job minted by the
+        # recurring todo. No ``default_profiles`` and no ``enable_env``:
+        # opt-in via ``--only`` only, so exactly one lane claims it.
+        name="plan_tick",
+        label="Plan tick (pass)",
+        category="jobs",
+        kind=ServiceKind.PASS,
+        ref_pass=True,
+        default_profiles=frozenset(),
+        one_line="Dark-factory tick as a pass: gates, loops, reviews, phases, "
+        "dispatch, hygiene — for a dedicated lane.",
+        doc_skill="precis-job-help",
+    ),
+    ServiceSpec(
         name="ci_verdict_poll",
         label="CI verdict poll (job)",
         category="jobs",

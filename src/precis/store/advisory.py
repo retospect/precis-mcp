@@ -34,15 +34,24 @@ lock connection ONLY holds the lock; real work keeps using the store pool.
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Iterator
 from contextlib import contextmanager
 
 import psycopg
+from psycopg import sql
+
+log = logging.getLogger(__name__)
 
 
 @contextmanager
 def try_xact_advisory_lock(
-    dsn: str, key: int, *, text_key: str | None = None
+    dsn: str,
+    key: int,
+    *,
+    text_key: str | None = None,
+    idle_timeout: str = "0",
+    application_name: str | None = None,
 ) -> Iterator[bool]:
     """Try a transaction-scoped advisory lock; yield whether it was won.
 
@@ -55,10 +64,26 @@ def try_xact_advisory_lock(
     Yields ``False`` on a miss (another holder owns it; nothing is held).
     On ``True`` the lock is held until the ``with`` block exits, normally or
     by exception; exit rolls back and closes the dedicated connection.
+
+    ``idle_timeout`` is the ``SET LOCAL idle_in_transaction_session_timeout``
+    value (default ``"0"`` = unbounded); a holder with a known upper bound
+    passes one (e.g. ``"900s"``) so a hung holder loses the lock.
+    ``application_name`` (``SET LOCAL``) labels the connection in
+    ``pg_stat_activity``.
     """
     conn = psycopg.connect(dsn)
     try:
-        conn.execute("SET LOCAL idle_in_transaction_session_timeout = 0")
+        conn.execute(
+            sql.SQL("SET LOCAL idle_in_transaction_session_timeout = {}").format(
+                sql.Literal(idle_timeout)
+            )
+        )
+        if application_name is not None:
+            conn.execute(
+                sql.SQL("SET LOCAL application_name = {}").format(
+                    sql.Literal(application_name)
+                )
+            )
         if text_key is None:
             row = conn.execute(
                 "SELECT pg_try_advisory_xact_lock(%s)", (key,)
@@ -72,6 +97,14 @@ def try_xact_advisory_lock(
     finally:
         try:
             conn.rollback()
+        except (psycopg.OperationalError, psycopg.InterfaceError):
+            # The server dropped the connection (e.g. an idle-in-transaction
+            # timeout): it already released the lock, and the holder's work
+            # on other connections stands, so don't raise over it.
+            log.warning(
+                "advisory lock connection lost before rollback (idle timeout?)"
+                " — the server already released the lock"
+            )
         finally:
             conn.close()
 

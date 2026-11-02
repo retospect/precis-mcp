@@ -38,6 +38,7 @@ def build_ref_passes(
         _build_chase_pass,
         _build_chase_trigger_pass,
         _build_inbound_ground_pass,
+        _build_plan_tick_pass,
         _classify_topics_enabled_slugs,
         _resolve_embedder,
         log,
@@ -420,6 +421,13 @@ def build_ref_passes(
     if _register("inbound_ground"):
         _inbound_ground_pass = _build_inbound_ground_pass(args, store, handlers)
         ref_passes.append(_inbound_ground_pass)
+
+    # plan_tick — the dark-factory tick as a pass for a dedicated lane
+    # (``--only plan_tick``, deploy 20g). No default_profiles/enable_env, so
+    # nothing else registers it: exactly one claimant by construction.
+    if _register("plan_tick"):
+        _plan_tick_pass = _build_plan_tick_pass(args, store, handlers)
+        ref_passes.append(_plan_tick_pass)
 
     # Hierarchical SOM cluster maps (precis-web /clusters grid).
     # Time-gated full rebuild per scope; see workers/clusterize.py.

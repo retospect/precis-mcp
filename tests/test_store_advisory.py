@@ -131,3 +131,34 @@ def test_claim_uses_the_xact_lock(dsn: str) -> None:
             raise RuntimeError("forced")
     with Claim(dsn, sha) as after:
         assert after.acquired is True
+
+
+def test_lost_connection_at_rollback_warns_and_exits_cleanly(
+    dsn: str, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A server-side kill (idle-in-transaction timeout) must not raise."""
+    real_connect = psycopg.connect
+    held: list[Any] = []
+
+    class _Dropped:
+        def __init__(self, conn: Any) -> None:
+            self.conn = conn
+
+        def rollback(self) -> None:
+            raise psycopg.OperationalError("server closed the connection")
+
+        def __getattr__(self, name: str) -> Any:
+            return getattr(self.conn, name)
+
+    def _connect(*a: Any, **kw: Any) -> Any:
+        wrapped = _Dropped(real_connect(*a, **kw))
+        held.append(wrapped.conn)
+        return wrapped
+
+    with monkeypatch.context() as mp:
+        mp.setattr(psycopg, "connect", _connect)
+        with caplog.at_level("WARNING", logger="precis.store.advisory"):
+            with try_xact_advisory_lock(dsn, _fresh_key()) as got:
+                assert got is True
+    assert "advisory lock connection lost before rollback" in caplog.text
+    assert held[0].closed  # the socket is closed whatever rollback did

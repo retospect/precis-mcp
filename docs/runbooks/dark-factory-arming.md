@@ -125,6 +125,20 @@ whose `(td<id>)` PRs count as factory slices (default Devin's bot).
 - A `service_config` row for `plan_dispatch` with `prio = 0` (any host)
   also makes the pass read-only, as does `params.dry_run`.
 
+## Lane ticker (r184+)
+
+The slices lane (`com.precis.worker-slices`, playbook 20g) also runs
+`--only plan_tick`: the same `plan_dispatch` pass as a worker pass, at most
+once per `PRECIS_PLAN_TICK_INTERVAL_S` (default 30 s), with no scheduler,
+todo or job in between. Once the lane is live, pause the recurring tick todo
+so there is one ticker:
+
+    tag(kind='todo', id=543894, add=['STATUS:paused'])
+
+The kill switch is unchanged: `PRECIS_FACTORY=off` on the lane's
+environment, or a `service_config` row for `plan_dispatch` with `prio = 0`;
+either makes each tick read-only (it logs what it would have done).
+
 ## Slice hosts
 
 A slice host is any worker whose heartbeat advertises `repo_checkout`,

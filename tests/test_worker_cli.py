@@ -9,13 +9,16 @@ from __future__ import annotations
 
 import argparse
 import json
+from typing import Any
 
 import pytest
 
 from precis.cli.main import _build_parser
 from precis.cli.worker import (
+    _PASS_CHOICES,
     _axis_id_default_on,
     _build_handlers,
+    _build_plan_tick_pass,
     _capability_ok,
     _classify_topics_enabled_slugs,
     _claude_ok_for,
@@ -170,6 +173,15 @@ class TestParser:
         parser = _build_parser()
         args = parser.parse_args(["worker", "--only", "hub_refine"])
         assert args.only == ["hub_refine"]
+
+    def test_worker_only_accepts_plan_tick(self):
+        # Dedicated plan-ticker lane (deploy 20g): `--only plan_tick`.
+        assert "plan_tick" in _PASS_CHOICES
+        parser = _build_parser()
+        args = parser.parse_args(
+            ["worker", "--only", "job_ssh_node", "--only", "plan_tick"]
+        )
+        assert args.only == ["job_ssh_node", "plan_tick"]
 
     def test_worker_skip_repeatable_and_validated(self):
         parser = _build_parser()
@@ -649,6 +661,113 @@ class TestShouldRegister:
 
     def test_skip_wins_over_only(self):
         assert not _should_register(["hub_refine"], "hub_refine", skip=["hub_refine"])
+
+
+class TestPlanTickRegistration:
+    """plan_tick is opt-in via ``--only`` ONLY (exactly one claimant)."""
+
+    def test_in_no_profile_rotation(self):
+        assert "plan_tick" not in service_names_for_profile("all")
+        assert "plan_tick" not in service_names_for_profile("system")
+        assert "plan_tick" not in service_names_for_profile("agent")
+        spec = SERVICES_BY_NAME["plan_tick"]
+        assert spec.ref_pass and not spec.enable_env
+        assert spec.default_profiles == frozenset()
+
+    def test_not_registered_without_only(self):
+        every = service_names_for_profile("all")
+        assert _should_register(None, "plan_tick", profile_passes=every) is False
+        assert _should_register(None, "plan_tick") is False
+
+    def test_registered_only_by_only(self):
+        assert _should_register(["job_ssh_node", "plan_tick"], "plan_tick")
+        assert not _should_register(["job_ssh_node"], "plan_tick")
+
+
+class TestPlanTickPass:
+    """``_build_plan_tick_pass``: the interval guard and the read-only seam."""
+
+    @staticmethod
+    def _wire(monkeypatch, *, reason=None, now=None):
+        from types import SimpleNamespace
+
+        from precis.cli import worker as worker_mod
+        from precis.workers.job_types import plan_dispatch
+
+        calls: list[dict] = []
+
+        def _run_pass(store, *, dry_run=False, reason=None, now=None):
+            calls.append({"dry_run": dry_run, "reason": reason})
+            return plan_dispatch.PassResult(
+                dry_run=dry_run, reason=reason, dispatched=2, phases_closed=1
+            )
+
+        monkeypatch.setattr(plan_dispatch, "read_only_reason", lambda store: reason)
+        monkeypatch.setattr(plan_dispatch, "run_pass", _run_pass)
+        clock = [100.0] if now is None else now
+        monkeypatch.setattr(
+            worker_mod, "time", SimpleNamespace(monotonic=lambda: clock[0])
+        )
+        store: Any = object()
+        pass_fn = _build_plan_tick_pass(argparse.Namespace(), store, [])
+        return pass_fn, calls, clock
+
+    def test_skips_inside_the_interval_and_runs_when_due(self, monkeypatch):
+        monkeypatch.setenv("PRECIS_PLAN_TICK_INTERVAL_S", "30")
+        fn, calls, clock = self._wire(monkeypatch)
+        first = fn(32)
+        assert len(calls) == 1
+        assert (first.handler, first.claimed, first.ok, first.failed) == (
+            "plan_tick",
+            3,
+            3,
+            0,
+        )
+        assert not first.report_only
+        clock[0] += 29.0
+        idle = fn(32)
+        assert len(calls) == 1  # not due: run_pass untouched
+        assert (idle.claimed, idle.ok, idle.failed) == (0, 0, 0)
+        clock[0] += 1.0
+        fn(32)
+        assert len(calls) == 2  # due again at exactly the interval
+
+    def test_zero_interval_runs_every_call(self, monkeypatch):
+        monkeypatch.setenv("PRECIS_PLAN_TICK_INTERVAL_S", "0")
+        fn, calls, _ = self._wire(monkeypatch)
+        fn(1)
+        fn(1)
+        assert len(calls) == 2
+
+    def test_read_only_reason_runs_a_dry_pass(self, monkeypatch):
+        monkeypatch.setenv("PRECIS_PLAN_TICK_INTERVAL_S", "0")
+        fn, calls, _ = self._wire(monkeypatch, reason="PRECIS_FACTORY=off")
+        res = fn(1)
+        assert calls == [{"dry_run": True, "reason": "PRECIS_FACTORY=off"}]
+        assert res.report_only  # a dry run reports but is not "work"
+
+    def test_armed_pass_is_not_dry(self, monkeypatch):
+        monkeypatch.setenv("PRECIS_PLAN_TICK_INTERVAL_S", "0")
+        fn, calls, _ = self._wire(monkeypatch)
+        fn(1)
+        assert calls == [{"dry_run": False, "reason": None}]
+
+    def test_skipped_pass_reports_only_with_zero_counts(self, monkeypatch):
+        from precis.workers.job_types import plan_dispatch
+
+        monkeypatch.setenv("PRECIS_PLAN_TICK_INTERVAL_S", "0")
+        fn, calls, _ = self._wire(monkeypatch)
+        monkeypatch.setattr(
+            plan_dispatch,
+            "run_pass",
+            lambda store, **kw: plan_dispatch.PassResult(
+                dry_run=False, skipped="another tick holds the lock"
+            ),
+        )
+        res = fn(1)
+        assert (res.handler, res.claimed, res.ok, res.failed) == ("plan_tick", 0, 0, 0)
+        assert res.report_only
+        assert res.extra == {"skipped": "another tick holds the lock"}
 
 
 class TestCapabilityGateDefault:

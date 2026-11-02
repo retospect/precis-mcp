@@ -1175,3 +1175,114 @@ def test_queued_slice_with_a_capable_host_gets_no_note(store: Store) -> None:
     _backdate(store, job, 30)
     _advertise(store, "node-a", {"repo_checkout": 1, "claude_bin": 1, "git": 1})
     assert _unplaced_notes(pd.run_pass(store)) == []
+
+
+# ── Tick lock ─────────────────────────────────────────────────────
+
+
+def _plan_state(store: Store, ids: dict[str, int]) -> dict[str, str | None]:
+    return {k: _status(store, v) for k, v in ids.items()}
+
+
+def test_a_held_tick_lock_skips_the_pass_untouched(store: Store) -> None:
+    mint = _small_plan(store)
+    before = _plan_state(store, mint.ids)
+    jobs_before = _all_jobs(store)
+    with store.pool.connection() as other:
+        other.execute("SELECT pg_advisory_xact_lock(%s)", (pd.TICK_LOCK_KEY,))
+        res = pd.run_pass(store)
+        assert res.skipped == "another tick holds the lock"
+        assert res.counts()["skipped"] == res.skipped
+        assert res.summary() == "plan_dispatch: skipped — another tick holds the lock"
+        assert res.render().startswith("plan_dispatch: skipped")
+        assert (res.roots, res.dispatched, res.loops_minted, res.asks) == (0, 0, 0, 0)
+        assert _plan_state(store, mint.ids) == before
+        assert _all_jobs(store) == jobs_before
+        other.rollback()  # ends the transaction: the lock is released
+    res = pd.run_pass(store)
+    assert res.skipped is None
+    assert "skipped" not in res.counts()
+    assert res.dispatched == 2
+    assert _all_jobs(store) == jobs_before + 2
+
+
+def test_a_dry_run_also_takes_the_tick_lock(store: Store) -> None:
+    _small_plan(store)
+    with store.pool.connection() as other:
+        other.execute("SELECT pg_advisory_xact_lock(%s)", (pd.TICK_LOCK_KEY,))
+        res = pd.run_pass(store, dry_run=True, reason="params.dry_run")
+        assert res.skipped is not None
+        other.rollback()
+
+
+def test_the_tick_lock_is_free_after_a_pass(store: Store) -> None:
+    _small_plan(store)
+    assert pd.run_pass(store).skipped is None
+    with store.pool.connection() as other:
+        row = other.execute(
+            "SELECT pg_try_advisory_xact_lock(%s)", (pd.TICK_LOCK_KEY,)
+        ).fetchone()
+        other.rollback()
+    assert row is not None and row[0] is True
+
+
+def test_the_tick_lock_connection_is_bounded_and_labelled(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import psycopg
+
+    from precis.store import advisory
+
+    seen: list[str] = []
+    real_connect = psycopg.connect
+
+    class _Recorder:
+        def __init__(self, conn: Any) -> None:
+            self._conn = conn
+
+        def execute(self, query: Any, *a: Any, **kw: Any) -> Any:
+            seen.append(
+                query.as_string(self._conn)
+                if hasattr(query, "as_string")
+                else str(query)
+            )
+            return self._conn.execute(query, *a, **kw)
+
+        def __getattr__(self, name: str) -> Any:
+            return getattr(self._conn, name)
+
+    with monkeypatch.context() as mp:
+        mp.setattr(
+            advisory.psycopg,
+            "connect",
+            lambda *a, **kw: _Recorder(real_connect(*a, **kw)),
+        )
+        assert pd.run_pass(store).skipped is None
+    assert "SET LOCAL idle_in_transaction_session_timeout = '900s'" in seen
+    assert "SET LOCAL application_name = 'precis plan_tick lock'" in seen
+    # Both are issued before the lock statement.
+    lock_at = next(i for i, q in enumerate(seen) if "pg_try_advisory_xact_lock" in q)
+    set_local_at = {i for i, q in enumerate(seen) if q.startswith("SET LOCAL")}
+    assert len(set_local_at) == 2
+    assert max(set_local_at) < lock_at
+
+
+def test_the_tick_lock_connection_shows_in_pg_stat_activity(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    names: list[str] = []
+    real_load = pd._load
+
+    def _spy(s: Any) -> Any:
+        with s.pool.connection() as c:
+            rows = c.execute(
+                "SELECT application_name FROM pg_stat_activity"
+                " WHERE application_name = %s",
+                (pd.TICK_LOCK_APP_NAME,),
+            ).fetchall()
+            names.extend(r[0] for r in rows)
+        return real_load(s)
+
+    monkeypatch.setattr(pd, "_load", _spy)
+    pd.run_pass(store)
+    assert names == [pd.TICK_LOCK_APP_NAME]

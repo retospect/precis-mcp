@@ -305,6 +305,7 @@ _REF_PASS_PRIORITY: dict[str, PassPriority] = {
     "_scheduler_pass": PassPriority.PLANNER,
     "_minter_pass": PassPriority.PLANNER,
     "_sweeper_pass": PassPriority.PLANNER,
+    "_plan_tick_pass": PassPriority.PLANNER,
     "_nursery_pass": PassPriority.HEALTH,
     "_heartbeat_pass": PassPriority.HEALTH,
     "_chase_pass": PassPriority.BACKGROUND,
@@ -382,6 +383,7 @@ _PASS_CHOICES: tuple[str, ...] = (
     "chase_trigger",
     "inbound_ground",
     "hub_refine",
+    "plan_tick",
     "fetch",
     "gp_fetch",
     "stub_rank",
@@ -1123,6 +1125,84 @@ def _build_chase_trigger_pass(
         )
 
     return _chase_trigger_pass
+
+
+_PLAN_TICK_INTERVAL_ENV = "PRECIS_PLAN_TICK_INTERVAL_S"
+_PLAN_TICK_INTERVAL_DEFAULT_S = 30.0
+
+
+def _build_plan_tick_pass(
+    args: argparse.Namespace, store: Store, handlers: list[WorkerHandler]
+) -> RefPass:
+    """Build the plan_tick pass — the dark-factory tick
+    (``plan_dispatch.run_pass``) run directly by a dedicated worker lane
+    (``--only plan_tick``) instead of as a job minted by the recurring todo.
+
+    The rotation may call a pass far more often than the tick should run, so
+    the closure keeps a minimum interval (``PRECIS_PLAN_TICK_INTERVAL_S``,
+    default 30 s, read per call): inside it the pass returns an empty result
+    without touching the DB. Read-only (``PRECIS_FACTORY=off`` or a
+    ``plan_dispatch`` prio-0 ``service_config`` row) still runs the pass as a
+    dry run, exactly as the job path does.
+
+    Extracted from :func:`build_ref_passes` so the interval and read-only
+    seams are unit-testable without booting the worker.
+    """
+    del args, handlers  # the tick needs only the store
+    from precis.workers.job_types import plan_dispatch
+    from precis.workers.runner import BatchResult as _PlanTickBatchResult
+
+    last_run: list[float] = []
+
+    def _plan_tick_pass(batch_size: int) -> _PlanTickBatchResult:
+        interval = env_float(
+            _PLAN_TICK_INTERVAL_ENV, _PLAN_TICK_INTERVAL_DEFAULT_S, lo=0.0
+        )
+        now = time.monotonic()
+        if last_run and now - last_run[0] < interval:
+            return _PlanTickBatchResult(handler="plan_tick", claimed=0, ok=0, failed=0)
+        last_run[:] = [now]
+        reason = plan_dispatch.read_only_reason(store)
+        res = plan_dispatch.run_pass(store, dry_run=reason is not None, reason=reason)
+        log.info("%s", res.summary())
+        if res.skipped:
+            # Another tick (the job path or a lane overlap) holds the lock.
+            return _PlanTickBatchResult(
+                handler="plan_tick",
+                claimed=0,
+                ok=0,
+                failed=0,
+                extra={"skipped": res.skipped},
+                report_only=True,
+            )
+        c = res.counts()
+        # Work units: every state change the tick made. A dry run writes
+        # nothing, so it reports (``report_only``) without counting as work.
+        worked = sum(
+            int(c[k])
+            for k in (
+                "gates_opened",
+                "gates_closed",
+                "loops_minted",
+                "loops_closed",
+                "phases_closed",
+                "dispatched",
+                "released",
+                "asks",
+                "reopened",
+                "reviews",
+            )
+        )
+        return _PlanTickBatchResult(
+            handler="plan_tick",
+            claimed=worked,
+            ok=worked,
+            failed=0,
+            extra={k: v for k, v in c.items() if k != "dry_run"},
+            report_only=res.dry_run,
+        )
+
+    return _plan_tick_pass
 
 
 def _build_inbound_ground_pass(
