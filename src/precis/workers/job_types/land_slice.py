@@ -687,6 +687,15 @@ def _launch_ship(
             return None
         _defer_to_main(ctx, parked, UNKNOWN_GATE_CROSS, refusals, probe=pre["diag"])
         return parked
+    if pre.get("ran"):
+        # What the lander's identity saw before ship ran: a verdict's age or
+        # the helper's own "none" — on the job even when the land goes on
+        # (jo550940 launched nine times and never recorded which).
+        ctx.append_chunk(
+            "job_event",
+            f"land_slice: drift preflight (lander identity): age="
+            f"{pre.get('age') or '-'}; {pre.get('diag')}",
+        )
     try:
         scratch.mkdir(parents=True, exist_ok=True)
         exit_path.unlink(missing_ok=True)

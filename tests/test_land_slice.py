@@ -643,6 +643,42 @@ def test_poll_main_refusal_records_the_drift_probe(
     assert probe == f"drift probe (lander identity): {NONE_GREEN_DIAG}"
 
 
+def test_submit_records_the_preflight_when_the_land_goes_on(
+    seams: dict[str, Any], clock: dict[str, datetime]
+) -> None:
+    """A verdict (or the helper's own none-green) launches ship, and the job
+    says what the lander's identity saw: jo550940 launched nine times without
+    ever recording which answer let it through."""
+    found = "last-gated-main-sha: status=found local=40 fetched=40 with_suites=40 "
+    found += "with_runs=40 matched=40 runs: lint=SUCCESS (exit 0)"
+    seams["preflight"] = _preflight(0, "3.2", found)
+    store = _Store()
+    store.add_todo(42, tags=("claimed-by:lane-claude-sub",))
+    ctx, handle = _submit(store, seams)
+    assert handle["pid"] == 5151 and len(seams["launch"]) == 1
+    kinds = [k for k, _ in ctx.chunks]
+    assert kinds == ["job_event", "job_event"]
+    assert ctx.chunks[0][1] == (
+        f"land_slice: drift preflight (lander identity): age=3.2; {found}"
+    )
+    assert ctx.chunks[1][1].startswith("land_slice: scripts/ship --quick")
+    # the helper's own none-green: ship makes the refusal, the job still says so
+    seams["preflight"] = _preflight(2, "", NONE_GREEN_DIAG)
+    seams["launch"].clear()
+    store2 = _Store()
+    store2.add_todo(42, tags=("claimed-by:lane-claude-sub",))
+    ctx2, handle2 = _submit(store2, seams)
+    assert handle2["pid"] == 5151
+    assert ctx2.chunks[0][1].endswith(f"age=-; {NONE_GREEN_DIAG}")
+    # no helper in the tree: nothing to say
+    seams["preflight"] = {"ran": False, "rc": None, "age": "", "diag": ""}
+    store3 = _Store()
+    store3.add_todo(42, tags=("claimed-by:lane-claude-sub",))
+    ctx3, _handle3 = _submit(store3, seams)
+    assert [k for k, _ in ctx3.chunks] == ["job_event"]
+    assert ctx3.chunks[0][1].startswith("land_slice: scripts/ship")
+
+
 def test_gate_unknown_rules() -> None:
     gu = land_slice._gate_unknown
     assert not gu({"ran": False, "rc": None, "age": "", "diag": ""})  # no helper
