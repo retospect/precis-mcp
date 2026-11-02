@@ -366,7 +366,11 @@ rule (default bar 5%); the verdict lands in the accept job's
 without extracting again. `paper` may be omitted — the batch is then the
 whole run token across papers and the sample stratifies by paper × measurand
 (the intended shape: one token per trial or filler window, since a per-paper
-batch rarely reaches the n=52 the zero-error bar needs).
+batch rarely reaches the n=52 the zero-error bar needs). `params.papers=[<id>,
+…]` is the re-review scope: it samples every live output row on those papers
+regardless of `extraction_run`, so rows a re-run skipped as duplicates (they
+keep their older token) are reviewable; the verdict is recorded under a
+synthetic `papers:<ids>` token that grants nothing to `accepted_runs`.
 
 The verdict is read, never written onto rows (a row's `meta` is frozen).
 Each `meta.acceptance` records its coverage, frozen at the draw:
@@ -394,8 +398,23 @@ back to per-cell reading. Table outputs and inputs carry `meta.table` cell
 coordinates, header, column header, row label, header unit, orientation and
 caption link. Log-scale series record `meta.transform` (`log10` or `ln`), store
 the transformed value, and retain the printed exponent as `meta.printed_value`;
-a label printing `log`/`lg`/`ln` sets it even when the recipe omits it. Series
+a label printing `log`/`lg`/`ln` sets it even when the recipe omits it. The
+reviewed span is the column header cells plus the data row, with the caption
+(or the chunk's own leading title) beside it; a value column that prints no
+header drops as `no_header_in_span`. A continuation chunk's header lives in
+the run head's text — it rides `meta.table.header_text` so the cited span
+still shows it. Several columns naming one measurand emit one run each —
+the run records the column it took as a condition — never a silent pick,
+and each auto-matched column passes the same checks on its own label and
+header unit (its own log token sets the transform, a printed unit that
+can't convert drops as `unit_dimension_mismatch`). A label marking a
+correction, difference or delta row (`correction`, `delta`, `diff`,
+`error`, `Δ`/`δ` — but `ΔE_ads`/`ΔH_ads` is the measurand's own symbol —
+`ZPE` — but `ZPE-corrected` is the corrected measurand) drops as
+`correction_row`; an exact 0 on an energy measurand marked as the
+reference/zero of the scale drops as `reference_zero`. Series
 whose cells are a printed index run (`0..n`/`1..n` across the axis) drop as
 `index_enumeration`; a label naming a different quantity than the measurand
+(`formation energy`, `equilibrium constant`, `absorption energy`/`E_abs`)
 drops as `label_measurand_mismatch`; an output subject no cited span names
 drops as `subject_not_in_span`.

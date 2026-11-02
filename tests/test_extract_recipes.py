@@ -80,6 +80,8 @@ VOCAB = {
     ),
     24: _entry(24, "coverage", "coverage", "1"),
     25: _entry(25, "formation-energy", "formation energy", "eV", "heat of formation"),
+    26: _entry(26, "adsorption-energy", "adsorption energy", "eV", "E_ads"),
+    27: _entry(27, "absorption-energy", "absorption energy", "eV", "E_abs"),
 }
 
 
@@ -961,3 +963,410 @@ class TestValidateRecipe:
         assert norm is not None
         assert [d["reason"] for d in drops] == ["bad_shape"]
         assert norm.skip_cells == frozenset()
+
+
+class TestHeaderInSpan:
+    """gr506762 subset-3 (jo551208): a table-derived row's cited span
+    must carry the column header cells plus the data row, and the
+    caption (or the nearest table title). A column that prints no
+    header refuses ``no_header_in_span``."""
+
+    def test_header_span_and_caption_ride_meta(self) -> None:
+        text = "| Site | E_ads (eV) |\n|---|---|\n| Ni | -1.2 |"
+        runs, drops = _expand(
+            text,
+            _one_series("desorption-activation-energy", "eV"),
+            caption=(CAP_ID, "Table 7. Adsorption energies."),
+        )
+        assert drops == []
+        tm = runs[0].output.meta["table"]
+        h0, h1 = tm["header_span"]
+        assert text[h0:h1] == "| Site | E_ads (eV) |"
+        assert tm["header_text"] is None
+        assert tm["caption"] == "Table 7. Adsorption energies."
+
+    def test_continuation_carries_the_run_head_header_as_text(self) -> None:
+        # subset-3 r2: an ``enforce_hard_max`` continuation parses
+        # against the run head's header lines — their offsets index the
+        # OTHER chunk, so ``header_span`` is None and the lines ride as
+        # ``header_text`` for the cited span instead.
+        head_line = "| Site | E_ads (eV) |"
+        tail = "| Ni | -1.2 |\n| Co | -0.9 |"
+        parsed = parse_table(10, tail, header=[head_line])
+        assert parsed is not None and parsed.header_span is None
+        runs, drops = expand_recipe(
+            parsed,
+            _one_series("adsorption-energy", "eV"),
+            chunk_id=10,
+            caption=None,
+            vocab=VOCAB,
+            paper=500,
+            chunk_text=tail,
+        )
+        assert drops == []
+        assert len(runs) == 2
+        for run in runs:
+            tm = run.output.meta["table"]
+            assert tm["header_span"] is None
+            assert tm["header_text"] == head_line
+
+    def test_leading_title_stands_in_for_a_missing_caption(self) -> None:
+        text = (
+            "Table 7. Adsorption energies.\n"
+            "| Site | E_ads (eV) |\n|---|---|\n| Ni | -1.2 |"
+        )
+        runs, _ = _expand(
+            text, _one_series("desorption-activation-energy", "eV"), caption=None
+        )
+        assert (
+            runs[0].output.meta["table"]["caption"] == "Table 7. Adsorption energies."
+        )
+
+    def test_headerless_column_refuses(self) -> None:
+        text = "| Site | | E (eV) |\n|---|---|---|\n| Ni | x | -1.2 |"
+        recipe = {
+            "table": {
+                "orientation": "columns",
+                "subject_axis": 0,
+                "series": [
+                    {
+                        "index": 1,
+                        "measurand": "desorption-activation-energy",
+                        "unit": "eV",
+                        "role": "output",
+                    },
+                    {
+                        "index": 2,
+                        "measurand": "desorption-activation-energy",
+                        "unit": "eV",
+                        "role": "output",
+                    },
+                ],
+            }
+        }
+        runs, drops = _expand(text, recipe, caption=None)
+        assert [d["reason"] for d in drops] == ["no_header_in_span"]
+        assert drops[0]["location"] == "series[0] cell 0:1"
+        assert len(runs) == 1
+        assert runs[0].output.literal == "-1.2"
+
+    def test_rows_headerless_column_refuses(self) -> None:
+        text = "| | m = 1 | |\n|---|---|---|\n| E_a (eV) | 1.1 | 0.9 |"
+        recipe = {
+            "table": {
+                "orientation": "rows",
+                "series": [
+                    {
+                        "index": 0,
+                        "measurand": "desorption-activation-energy",
+                        "unit": "eV",
+                        "role": "output",
+                    }
+                ],
+            }
+        }
+        runs, drops = _expand(text, recipe, caption=None)
+        assert [d["reason"] for d in drops] == ["no_header_in_span"]
+        assert len(runs) == 1
+        assert runs[0].output.meta["table"]["col"] == 2
+
+
+# One wide same-measurand table, modelled on the CCSD(cT) case
+# (mx2224-2228): three adsorption-energy columns at three sites.
+WIDE_SITE = (
+    "| Species | E_ads,top (eV) | E_ads,fcc (eV) | E_ads,hcp (eV) |\n"
+    "|---|---|---|---|\n"
+    "| CO | -1.21 | -1.45 | -1.38 |"
+)
+
+
+class TestSameMeasurandColumns:
+    """gr506762 subset-3: several columns naming one measurand emit one
+    run per matching column — never a silent pick — and each run
+    records the column it took as a condition on the measure."""
+
+    def _wide_recipe(self, **series_extra: Any) -> dict[str, Any]:
+        series = {
+            "index": 1,
+            "measurand": "adsorption-energy",
+            "unit": "eV",
+            "role": "output",
+        }
+        series.update(series_extra)
+        return {
+            "table": {
+                "orientation": "columns",
+                "subject_axis": 0,
+                "series": [series],
+            }
+        }
+
+    def test_one_run_per_matching_column(self) -> None:
+        runs, drops = _expand(WIDE_SITE, self._wide_recipe(), caption=None)
+        assert drops == []
+        by_col = {r.output.meta["table"]["col"]: r.output for r in runs}
+        assert set(by_col) == {2, 3, 4}
+        assert {r.output.literal for r in runs} == {"-1.21", "-1.45", "-1.38"}
+        for col, out in by_col.items():
+            assert out.measurand_ref_id == 26
+        assert by_col[2].conditions == {"column": "E_ads,top (eV)"}
+        assert by_col[3].conditions == {"column": "E_ads,fcc (eV)"}
+        assert by_col[4].conditions == {"column": "E_ads,hcp (eV)"}
+
+    def test_recipe_condition_names_the_condition(self) -> None:
+        runs, drops = _expand(
+            WIDE_SITE, self._wide_recipe(condition="site"), caption=None
+        )
+        assert drops == []
+        assert all(set(r.output.conditions) == {"site"} for r in runs)
+
+    def test_single_matching_column_stamps_nothing(self) -> None:
+        text = "| Species | E_ads,top (eV) | s |\n|---|---|---|\n| CO | -1.2 | 0.9 |"
+        runs, drops = _expand(text, self._wide_recipe(), caption=None)
+        assert drops == []
+        assert len(runs) == 1
+        assert runs[0].output.conditions is None
+
+    def test_correction_labelled_auto_column_drops(self) -> None:
+        # subset-3 r2: the auto-match checked only that the label names
+        # the measurand — an unmapped correction column's own header
+        # mark still refuses it.
+        text = (
+            "| Species | E_ads (eV) | ΔE_ads correction (eV) |\n"
+            "|---|---|---|\n"
+            "| CO | -1.21 | 0.08 |"
+        )
+        runs, drops = _expand(text, self._wide_recipe(), caption=None)
+        assert [d["reason"] for d in drops] == ["correction_row"]
+        assert len(runs) == 1
+        assert runs[0].output.meta["table"]["col"] == 2
+
+    def test_auto_column_printed_unit_mismatch_drops(self) -> None:
+        # The auto column resolves its unit from its own header —
+        # kJ/mol under an inherited eV claim never stores kJ/mol
+        # numbers as eV.
+        text = (
+            "| Species | E_ads (eV) | E_ads (kJ/mol) |\n"
+            "|---|---|---|\n"
+            "| CO | -1.21 | -121 |"
+        )
+        runs, drops = _expand(text, self._wide_recipe(), caption=None)
+        assert [d["reason"] for d in drops] == ["unit_dimension_mismatch"]
+        assert len(runs) == 1
+        assert runs[0].output.meta["table"]["col"] == 2
+
+    def test_auto_column_compatible_printed_unit_wins(self) -> None:
+        # A printed unit that converts is the column's own claim — the
+        # inherited eV stays only where the header prints none.
+        text = (
+            "| Species | E_ads (eV) | E_ads (J) |\n|---|---|---|\n"
+            "| CO | -1.21 | -7.3e-19 |"
+        )
+        runs, drops = _expand(text, self._wide_recipe(), caption=None)
+        assert drops == []
+        by_col = {r.output.meta["table"]["col"]: r.output for r in runs}
+        assert set(by_col) == {2, 3}
+        assert by_col[2].reported_unit == "eV"
+        assert by_col[3].reported_unit == "J"
+
+    def test_auto_column_does_not_inherit_the_mapped_transform(self) -> None:
+        # The mapped column's declared log10 belongs to its own cells —
+        # an auto column printing plain numbers must not be
+        # exponentiated by it.
+        text = (
+            "| Species | log rate (s^-1) | rate (s^-1) |\n|---|---|---|\n"
+            "| A | 2 | 0.9 |"
+        )
+        recipe = {
+            "table": {
+                "orientation": "columns",
+                "subject_axis": 0,
+                "series": [
+                    {
+                        "index": 1,
+                        "measurand": "rate",
+                        "unit": "s^-1",
+                        "role": "output",
+                        "transform": "log10",
+                    }
+                ],
+            }
+        }
+        runs, drops = _expand(text, recipe, caption=None)
+        assert drops == []
+        by_col = {r.output.meta["table"]["col"]: r.output for r in runs}
+        assert by_col[2].value_num == 100.0
+        assert by_col[3].value_num == 0.9
+
+    def test_auto_column_derives_its_own_log_label(self) -> None:
+        text = (
+            "| Species | rate (s^-1) | log rate (s^-1) |\n|---|---|---|\n"
+            "| A | 0.9 | 2 |"
+        )
+        recipe = {
+            "table": {
+                "orientation": "columns",
+                "subject_axis": 0,
+                "series": [
+                    {"index": 1, "measurand": "rate", "unit": "s^-1", "role": "output"}
+                ],
+            }
+        }
+        runs, drops = _expand(text, recipe, caption=None)
+        assert drops == []
+        by_col = {r.output.meta["table"]["col"]: r.output for r in runs}
+        assert by_col[2].value_num == 0.9
+        assert by_col[3].value_num == 100.0
+        assert by_col[3].meta["transform"] == "log10"
+
+    def test_auto_column_unclear_log_label_drops(self) -> None:
+        text = (
+            "| Species | rate (s^-1) | log_2 rate (s^-1) |\n|---|---|---|\n"
+            "| A | 0.9 | 3 |"
+        )
+        recipe = {
+            "table": {
+                "orientation": "columns",
+                "subject_axis": 0,
+                "series": [
+                    {"index": 1, "measurand": "rate", "unit": "s^-1", "role": "output"}
+                ],
+            }
+        }
+        runs, drops = _expand(text, recipe, caption=None)
+        assert [d["reason"] for d in drops] == ["log_base_unclear"]
+        assert len(runs) == 1
+        assert runs[0].output.meta["table"]["col"] == 2
+
+
+class TestCorrectionRows:
+    """gr506762 subset-3 (mx2224-2228): a row or series whose label
+    marks a correction, difference or delta is not a reading."""
+
+    def test_delta_labelled_data_row_drops(self) -> None:
+        text = (
+            "| Species | E_ads (eV) |\n|---|---|\n"
+            "| CO | -1.21 |\n| ZPE correction | 0.08 |\n| NO | -0.92 |"
+        )
+        runs, drops = _expand(
+            text, _one_series("adsorption-energy", "eV"), caption=None
+        )
+        assert [d["reason"] for d in drops] == ["correction_row"]
+        assert len(runs) == 2
+        assert {r.output.subject for r in runs} == {"CO", "NO"}
+
+    def test_delta_labelled_series_drops(self) -> None:
+        text = "| Species | ΔE (eV) |\n|---|---|\n| CO | 0.08 |"
+        runs, drops = _expand(
+            text, _one_series("adsorption-energy", "eV"), caption=None
+        )
+        assert runs == []
+        assert [d["reason"] for d in drops] == ["correction_row"]
+
+    @pytest.mark.parametrize(
+        "label",
+        [
+            "ΔZPE (eV)",
+            "Δ(CCSD-PBE) (eV)",
+            "ZPE correction (eV)",
+            "E_ads difference (eV)",
+            "E_ads error (eV)",
+        ],
+    )
+    def test_correction_term_labels_refuse(self, label: str) -> None:
+        text = f"| Species | {label} |\n|---|---|\n| CO | 0.08 |"
+        runs, drops = _expand(
+            text, _one_series("adsorption-energy", "eV"), caption=None
+        )
+        assert runs == []
+        assert [d["reason"] for d in drops] == ["correction_row"]
+
+    @pytest.mark.parametrize(
+        "label",
+        [
+            # ``ΔE_ads``/``ΔH_ads`` is the measurand's own symbol, not a
+            # delta row; a ``ZPE-corrected`` value IS the corrected
+            # measurand (subset-3 r2 — the broad match refused both).
+            "ΔE_ads (eV)",
+            "ΔH_ads (eV)",
+            "ΔG_ads (eV)",
+            "ΔE_ads,top (eV)",
+            "ZPE-corrected adsorption energy (eV)",
+            "E_ads corrected for ZPE (eV)",
+        ],
+    )
+    def test_measurand_symbol_and_corrected_labels_write(self, label: str) -> None:
+        text = f"| Species | {label} |\n|---|---|\n| CO | -1.21 |"
+        runs, drops = _expand(
+            text, _one_series("adsorption-energy", "eV"), caption=None
+        )
+        assert drops == []
+        assert len(runs) == 1
+
+
+class TestAbsorptionVsAdsorption:
+    """gr506762 subset-3 (mx2216): ``absorption energy`` / ``E_abs`` is
+    a different quantity than adsorption energy."""
+
+    def test_e_abs_column_refuses_as_adsorption(self) -> None:
+        text = "| Surface | E_abs (eV) |\n|---|---|\n| Ni | 0.9 |"
+        runs, drops = _expand(
+            text, _one_series("adsorption-energy", "eV"), caption=None
+        )
+        assert runs == []
+        assert [d["reason"] for d in drops] == ["label_measurand_mismatch"]
+        assert "absorption energy" in drops[0]["detail"]
+
+    def test_absorption_label_on_its_own_measurand_writes(self) -> None:
+        text = "| Surface | absorption energy (eV) |\n|---|---|\n| Ni | 0.9 |"
+        runs, drops = _expand(
+            text, _one_series("absorption-energy", "eV"), caption=None
+        )
+        assert drops == []
+        assert len(runs) == 1
+        assert runs[0].output.measurand_ref_id == 27
+
+
+class TestReferenceZero:
+    """gr506762 subset-3 (mx2188): an exact 0 on an energy measurand is
+    the scale's reference point — graphite's ``0 eV`` is not a measured
+    adsorption energy."""
+
+    def test_reference_marked_zero_drops(self) -> None:
+        text = (
+            "| Species | E_ads (eV) |\n|---|---|\n"
+            "| graphite (reference) | 0 |\n| CO | -1.21 |"
+        )
+        runs, drops = _expand(
+            text, _one_series("adsorption-energy", "eV"), caption=None
+        )
+        assert [d["reason"] for d in drops] == ["reference_zero"]
+        assert len(runs) == 1
+
+    def test_sole_zero_on_a_reference_phase_row_drops(self) -> None:
+        # No marker word — a phase label plus the column's only zero.
+        text = "| Species | E_ads (eV) |\n|---|---|\n| graphite | 0 |\n| CO | -1.21 |"
+        runs, drops = _expand(
+            text, _one_series("adsorption-energy", "eV"), caption=None
+        )
+        assert [d["reason"] for d in drops] == ["reference_zero"]
+        assert len(runs) == 1
+
+    def test_second_zero_in_the_column_writes(self) -> None:
+        text = (
+            "| Species | E_ads (eV) |\n|---|---|\n"
+            "| graphite | 0 |\n| CO | 0 |\n| NO | -1.2 |"
+        )
+        runs, drops = _expand(
+            text, _one_series("adsorption-energy", "eV"), caption=None
+        )
+        assert drops == []
+        assert len(runs) == 3
+
+    def test_unmarked_zero_energy_writes(self) -> None:
+        text = "| Species | E_ads (eV) |\n|---|---|\n| CO | 0 |"
+        runs, drops = _expand(
+            text, _one_series("adsorption-energy", "eV"), caption=None
+        )
+        assert drops == []
+        assert len(runs) == 1

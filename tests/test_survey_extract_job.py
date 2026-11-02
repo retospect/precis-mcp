@@ -445,6 +445,13 @@ class TestValidate:
             {"paper": world["paper"], "measurands": ["faradaic-efficiency"]},
         )
 
+    def test_accept_papers_scope_validates(self, world: dict) -> None:
+        job.accept_validate(world["store"], {"papers": [world["paper"]]})
+        with pytest.raises(BadInput, match="papers"):
+            job.accept_validate(world["store"], {"papers": [99999999]})
+        with pytest.raises(BadInput, match="papers"):
+            job.accept_validate(world["store"], {"papers": "pa1"})
+
     def test_spec_wires_the_hook(self) -> None:
         assert job.SPEC.validate is job.validate
         # gr515504: validator membership, not identity — a second
@@ -801,6 +808,81 @@ class TestRunLevelAcceptance:
         got = store.accepted_runs("trial-1")["trial-1"]
         assert set(got) == set(acc["papers"])
         assert all(v["accepted"] for v in got.values())
+
+    def test_papers_scope_samples_regardless_of_run_token(
+        self, world: dict, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """gr506762 subset-3: ``params.papers`` re-reviews the papers'
+        live rows regardless of ``extraction_run`` — the rows a re-run
+        skipped as duplicates (an older token, or none) are in the
+        frame, and the verdict is recorded under a synthetic
+        ``papers:<ids>`` token that grants nothing."""
+        store = world["store"]
+        paper2 = seed_ref(store, title="second paper", kind="paper")
+        text2 = "reading -2.4 eV"
+        chunk2 = seed_chunk(store, ref_id=paper2, text=text2)
+        old = self._row(
+            world,
+            paper=world["paper"],
+            chunk=world["c1"],
+            lit="95",
+            text=CHUNK1,
+            measurand=world["fe"],
+            unit="%",
+            token="old-run",
+        )
+        other = self._row(
+            world,
+            paper=paper2,
+            chunk=chunk2,
+            lit="-2.4",
+            text=text2,
+            measurand=world["ads"],
+            unit="eV",
+            token=None,
+        )
+        monkeypatch.setattr(
+            job,
+            "route",
+            lambda req: llm_result(
+                json.dumps({"verdict": "correct", "reason": "matches"}),
+                "frontier-x",
+            ),
+        )
+        done, events = drive(
+            {
+                "job_type": "measure_accept",
+                "executor": "coordinator",
+                "params": {
+                    "papers": [world["paper"], paper2],
+                    "sample_n": 10,
+                    "bar": 0.9,
+                    "reviews_per_slice": 10,
+                },
+            },
+            store,
+            job.ACCEPT_SPEC,
+        )
+        assert done.success and "ACCEPTED" in done.summary
+        acc = next(v for k, v in events if k == "meta")["acceptance"]
+        assert acc["sampled"] == 2 and acc["errors"] == 0
+        assert sorted(acc["papers"]) == sorted([world["paper"], paper2])
+        assert acc["run_token"].startswith("papers:")
+        assert store.reviews_for("measure", old)
+        assert store.reviews_for("measure", other)
+
+    def test_papers_entry_unresolvable_fails(self, world: dict) -> None:
+        done, _ = drive(
+            {
+                "job_type": "measure_accept",
+                "executor": "coordinator",
+                "params": {"papers": [world["paper"], 99999999]},
+            },
+            world["store"],
+            job.ACCEPT_SPEC,
+        )
+        assert not done.success
+        assert "does not resolve" in done.summary
 
     def test_run_level_needs_a_token_or_a_paper(self, world: dict) -> None:
         done, _ = drive(
@@ -1684,6 +1766,118 @@ class TestRunLevelAcceptance:
         # The window keeps the reviewed cell; the row's 5 KB head is dropped.
         assert lit in span
         assert pad not in span
+
+    def test_table_row_review_shows_the_header_first_or_continuation(
+        self, world: dict, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """gr506762 subset-3 r2: a first chunk's span opens on its
+        ``header_span`` slice; a continuation's header lives in the run
+        head's chunk, so it rides ``meta.table.header_text`` — either
+        way the reviewer sees the column headers, not a bare row."""
+        store = world["store"]
+        head_line = "| Site | E_ads (eV) |"
+        first = f"{head_line}\n|---|---|\n| Ni | -1.2 |"
+        tail = "| Co | -0.9 |"
+        f_id = _seed_body_chunk(
+            store, world["paper"], ord_=9, text=first, chunk_kind="table"
+        )
+        t_id = _seed_body_chunk(
+            store, world["paper"], ord_=10, text=tail, chunk_kind="table"
+        )
+        f_row = first.index("| Ni | -1.2 |")
+        f_cell = first.index("-1.2")
+        t_cell = tail.index("-0.9")
+        store.insert_measure(
+            MeasureSpec(
+                measurand_ref_id=world["ads"],
+                literal="-1.2",
+                subject_ref_id=world["paper"],
+                reported_unit="eV",
+                subject="Ni",
+                tier="measured",
+                source_attribution="own_work",
+                anchor=MeasureAnchor(
+                    world["paper"], f_id, "offsets", [f_id, f_cell, f_cell + 4]
+                ),
+                meta={
+                    "extraction_run": "run-head-header",
+                    "table": {
+                        "chunk": f_id,
+                        "table": 1,
+                        "row": 1,
+                        "col": 2,
+                        "header": "E_ads (eV)",
+                        "row_span": [f_row, f_row + len("| Ni | -1.2 |")],
+                        "header_span": [0, len(head_line)],
+                        "caption_chunk": None,
+                        "footnote": None,
+                        "orientation": "columns",
+                    },
+                },
+            ),
+            actor="test",
+        )
+        store.insert_measure(
+            MeasureSpec(
+                measurand_ref_id=world["ads"],
+                literal="-0.9",
+                subject_ref_id=world["paper"],
+                reported_unit="eV",
+                subject="Co",
+                tier="measured",
+                source_attribution="own_work",
+                anchor=MeasureAnchor(
+                    world["paper"],
+                    t_id,
+                    "offsets",
+                    [t_id, t_cell, t_cell + len("-0.9")],
+                ),
+                meta={
+                    "extraction_run": "run-head-header",
+                    "table": {
+                        "chunk": t_id,
+                        "table": 1,
+                        "row": 1,
+                        "col": 2,
+                        "header": "E_ads (eV)",
+                        "row_span": [0, len(tail)],
+                        "header_span": None,
+                        "header_text": head_line,
+                        "caption_chunk": None,
+                        "footnote": None,
+                        "orientation": "columns",
+                    },
+                },
+            ),
+            actor="test",
+        )
+        reqs: list[Any] = []
+
+        def _route(req: Any) -> Any:
+            reqs.append(req)
+            return llm_result(
+                json.dumps({"verdict": "correct", "reason": "matches"}),
+                "frontier-x",
+            )
+
+        monkeypatch.setattr(job, "route", _route)
+        done, _ = drive(
+            {
+                "job_type": "measure_accept",
+                "executor": "coordinator",
+                "params": {
+                    "extraction_run": "run-head-header",
+                    "reviews_per_slice": 50,
+                },
+            },
+            store,
+            job.ACCEPT_SPEC,
+        )
+        assert done.success
+        assert len(reqs) == 2
+        spans = {r.prompt.split("span:\n", 1)[1] for r in reqs}
+        assert any(s.startswith(f"{head_line}\n…\n| Ni | -1.2 |") for s in spans)
+        assert any(s.startswith(f"{head_line}\n…\n{tail}") for s in spans)
 
 
 class TestCastorTrialPrep:
@@ -3279,8 +3473,17 @@ class TestTableRecipes:
             assert tm["header"] in ("FE NH3 (%)", "j_total (A m-2)")
             cid, s, e = r["span"]
             assert cid == t_id and tail[s:e] == r["literal"]
+            # The header lives in the head's text — its offsets can't
+            # slice the tail, so the lines ride as ``header_text``
+            # (subset-3 r2).
+            assert tm["header_span"] is None
+            assert tm["header_text"] == "| Catalyst | FE NH3 (%) | j_total (A m-2) |"
         head_rows = [r for r in outs if r["meta"]["table"]["chunk"] == h_id]
         assert len(head_rows) == 2
+        for r in head_rows:
+            tm = r["meta"]["table"]
+            assert tm["header_span"] is not None
+            assert tm["header_text"] is None
 
     def test_reader_measures_skip_the_recipe_call(
         self, world: dict, monkeypatch: pytest.MonkeyPatch

@@ -65,6 +65,11 @@ class ParsedTable:
     header_lines: list[str]  # the raw header lines — a continuation parses against them
     ragged_rows: list[int]  # data-row indices whose cell count != header's
     row_label_cited: list[bool]  # per row: label cell carries a citation marker
+    #: (start, end) covering this chunk's own header lines — the column
+    #: header cells the recipe slice puts in the cited span (gr506762
+    #: subset-3). ``None`` when the header was supplied (a run head's
+    #: lines — their offsets index another chunk) or there is none.
+    header_span: tuple[int, int] | None = None
 
 
 def _table_line_cells(text: str) -> list[tuple[int, int, int]]:
@@ -450,6 +455,7 @@ def parse_table(
     if len(pipe_rows) < (1 if header else 2):
         return None
 
+    header_span: tuple[int, int] | None = None
     if header:
         # The header lives in the run head's text — its cell offsets
         # index that line, not this chunk, and are only ever used for
@@ -478,6 +484,8 @@ def parse_table(
         header_lines = [
             _row_cells(pipe_rows[i][2], pipe_rows[i][0]) for i in range(header_rows)
         ]
+        if header_rows:
+            header_span = (pipe_rows[0][0], pipe_rows[header_rows - 1][1])
         data_rows = pipe_rows[header_rows:]
     ncols = len(header_lines[0]) if header_lines else 0
 
@@ -530,6 +538,7 @@ def parse_table(
         header_lines=raw_header,
         ragged_rows=ragged_rows,
         row_label_cited=row_label_cited,
+        header_span=header_span,
     )
 
 

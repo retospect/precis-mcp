@@ -60,6 +60,39 @@ refusals on the same "the grid itself is evidence" footing:
   sees — the cited row's own line, the column header, the caption —
   drops ``subject_not_in_span`` (a label-row subject is another row's
   text and never evidence for this cell).
+
+Subset-3 review (gr506762, jo551208) hardened the evidence the reviewer
+is shown and three more silent wrongs:
+
+* every emitted cell's column must print a header the cited span can
+  show — a headerless value column drops ``no_header_in_span`` (a
+  single-row span with no header or caption reads 'undecidable').
+  ``meta.table`` carries the chunk's ``header_span`` and the caption
+  text (or the chunk's own leading title when no caption paired), so
+  the reviewed span is header cells + data row + title; a
+  continuation's header lives in the run head's chunk — its offsets
+  can't slice this chunk's text, so ``meta.table`` carries those lines
+  as ``header_text`` instead (subset-3 r2);
+* a label marking a correction, difference or delta row — the small
+  :data:`_CORRECTION_RE` term list — drops ``correction_row``, on its
+  series or on the data row whose label marks it (a ``ZPE correction``
+  row read as adsorption energies);
+* an exact ``0`` on an energy measurand (:func:`_energy_unit`: converts
+  to ``J`` or ``J/mol``) whose row label or caption marks it as the
+  reference/zero/standard state — or which is the column's sole zero on
+  a row labelled a reference phase — drops ``reference_zero`` (graphite
+  ``0 eV`` stored as an adsorption energy, mx2188);
+* several axis elements naming one measurand emit one run each — the
+  recipe's mapped index plus every other column/row whose label names
+  it — and each run records the column (or row) it took as a condition
+  on the measure, so a wide same-measurand table can no longer silently
+  pick ``E_top`` for ``E_fcc`` (mx2224-2228). An auto-matched element
+  passes the same series-level checks on its own label and cells —
+  the group inherits the measurand, not the mapped column's clean bill
+  (subset-3 r2: a ``ΔE_ads correction`` or ``E_ads (kJ/mol)`` column
+  next to ``E_ads (eV)`` emitted unchecked, and kJ/mol numbers stored
+  as eV); its transform is re-derived from its own label and its unit
+  from its own header.
 """
 
 from __future__ import annotations
@@ -538,7 +571,83 @@ _LABEL_QUANTITY: dict[str, str] = {
     "formation enthalpy": "formation energy",
     "heat of formation": "formation energy",
     "equilibrium constant": "equilibrium constant",
+    # subset-3 (mx2216): "absorption energy" is not adsorption energy —
+    # E_abs is a different printed symbol, not an alias (the terms match
+    # the folded surface, where ``E_abs`` reads ``Eabs``).
+    "absorption energy": "absorption energy",
+    "eabs": "absorption energy",
 }
+
+
+#: Label terms marking a correction, difference or delta row — never a
+#: reading of the measurand (subset-3: a ``ZPE correction`` / ``ΔE``
+#: row stored as adsorption energies, mx2224-2228). Kept to the
+#: observed misreads; word-boundary tokens so ``diffusion`` and
+#: ``errors`` stay out. The symbols are narrower than the words
+#: (subset-3 r2): ``Δ``/``δ`` names a correction term — ``ΔZPE``,
+#: ``Δ(CCSD-PBE)`` — but ``ΔE_ads``/``ΔH_ads``/``ΔG_ads``/``ΔS_ads``
+#: (folded: ``ΔEads`` …) is the measurand's own symbol, and ``zpe``
+#: counts only as the term itself — a ``ZPE-corrected`` or
+#: ``corrected for ZPE`` energy IS the corrected measurand.
+_CORRECTION_RE = re.compile(
+    r"[Δδ](?!\s*[EGHS]\s*(?:ads|des)(?:orption)?\b)"
+    r"|(?<![A-Za-z0-9])(?:correction|delta|difference|diff|error)"
+    r"(?![A-Za-z0-9])"
+    r"|(?<![A-Za-z0-9])(?<!corrected )(?<!corrected for )zpe"
+    r"(?![A-Za-z0-9])(?!\s*-?\s*correct)",
+    re.IGNORECASE,
+)
+
+
+def _correction_label(label: str) -> str | None:
+    """The correction/delta term the label prints, else ``None``."""
+    m = _CORRECTION_RE.search(" ".join(markup_surface(label).split()))
+    return m.group(0) if m is not None else None
+
+
+#: Words marking the zero of an energy scale — on a row label or a
+#: caption, an exact-0 cell they name is the reference point, never a
+#: measured adsorption/desorption energy (subset-3, mx2188).
+_REFERENCE_MARK_RE = re.compile(
+    r"(?<![A-Za-z])(?:reference|standard state|zero|baseline)(?![A-Za-z])",
+    re.IGNORECASE,
+)
+
+#: Row labels naming a phase that conventionally IS the reference —
+#: only fires on a column's sole zero, the narrower half of the rule.
+_REFERENCE_PHASE_RE = re.compile(
+    r"(?<![A-Za-z])(?:graphite|bulk|clean surface|pristine|bare surface"
+    r"|vacuum|gas[- ]phase)(?![A-Za-z])",
+    re.IGNORECASE,
+)
+
+
+def _energy_unit(unit: str | None) -> bool:
+    """The measurand's canonical unit is an energy: converts to ``J``
+    (per particle — eV, meV, Ha) or to ``J/mol`` (molar — kJ/mol)."""
+    if not unit:
+        return False
+    for target in ("J", "J/mol"):
+        try:
+            make_converter(unit, target)
+        except (BadInput, NeedsMolarMass):
+            continue
+        return True
+    return False
+
+
+def _table_title(text: str | None) -> str:
+    """The chunk's leading non-pipe text — the nearest table title when
+    ``assign_captions`` paired no caption (a table chunk opening on its
+    own ``Table N`` line)."""
+    if not text:
+        return ""
+    lines: list[str] = []
+    for ln in text.split("\n"):
+        if ln.lstrip().startswith("|"):
+            break
+        lines.append(ln)
+    return " ".join(" ".join(lines).split()).strip()[:300]
 
 
 def _label_quantity(label: str) -> str | None:
@@ -697,6 +806,9 @@ def expand_recipe(
     n_cols = len(parsed.columns)
     n_rows = len(parsed.rows)
     cap_id, cap_text = caption if caption is not None else (None, "")
+    # The title the reviewer sees when no caption paired — the chunk's
+    # own leading line (a table chunk opening on "Table N. …").
+    cap_or_title = cap_text or _table_title(chunk_text)
     runs: list[RunProposal] = []
 
     def cell_at(r: int, c: int) -> Any:
@@ -710,22 +822,21 @@ def expand_recipe(
         row = parsed.rows[spec.index]
         return row[0].text if row else ""
 
-    def cited_at(r: int, c: int, series: SeriesSpec) -> bool:
+    def cited_at(r: int, c: int, axis_idx: int) -> bool:
         """Decision 6 detection at one cell: the series axis's citation
         flag (column header for ``columns``, row label for ``rows``), or
         a citation marker on the subject cell of that cell's row /
-        column."""
+        column. ``axis_idx`` is the emitted axis element — it can differ
+        from the recipe's mapped index when a measurand-matched column
+        joins the series (subset-3)."""
         if orientation == "columns":
-            if parsed.columns[series.index].cited:
+            if parsed.columns[axis_idx].cited:
                 return True
             subj = (
                 cell_at(r, norm.subject_axis) if norm.subject_axis is not None else None
             )
             return bool(subj is not None and has_citation_marker(subj.text))
-        if (
-            series.index < len(parsed.row_label_cited)
-            and parsed.row_label_cited[series.index]
-        ):
+        if axis_idx < len(parsed.row_label_cited) and parsed.row_label_cited[axis_idx]:
             return True
         return bool(0 <= c < n_cols and parsed.columns[c].cited)
 
@@ -782,6 +893,21 @@ def expand_recipe(
                 if r is not None and r < len(parsed.row_spans)
                 else None
             ),
+            # subset-3: the header cells + the data row are the cited
+            # span's evidence; ``caption`` is the paired caption's text
+            # or the chunk's own leading title.
+            "header_span": (
+                list(parsed.header_span) if parsed.header_span is not None else None
+            ),
+            # A continuation's header lives in the run head's chunk —
+            # its offsets can't slice this chunk's text, so the lines
+            # ride as text (the cited span's head falls back to them).
+            "header_text": (
+                "\n".join(parsed.header_lines)
+                if parsed.header_span is None and parsed.header_lines
+                else None
+            ),
+            "caption": cap_or_title or None,
             "caption_chunk": cap_id,
             "footnote": footnote,
             "orientation": orientation,
@@ -831,6 +957,34 @@ def expand_recipe(
             parts.extend(cl.text for cl in parsed.rows[r])
         hay = _subject_surface(" ".join(parts)).casefold()
         return subject.casefold() in hay
+
+    def axis_label(i: int) -> str:
+        """The label axis element ``i`` prints — a column header
+        (``columns``) or the row's label cell (``rows``)."""
+        if orientation == "columns":
+            return parsed.columns[i].header
+        row = parsed.rows[i]
+        return row[0].text if row else ""
+
+    def cross_label(r: int, c: int) -> str:
+        """The other axis's label for cell ``(r, c)``: the data row's
+        label cell for ``columns``, the column header for ``rows`` —
+        the label that can mark the row/column a correction or a
+        reference phase (subset-3)."""
+        if orientation == "columns":
+            return row_label(r) or ""
+        return parsed.columns[c].header if 0 <= c < n_cols else ""
+
+    def _zero_cells_in_column(col: int) -> int:
+        """Data cells in column ``col`` parsing as an exact-0 point —
+        the sole-zero test of the ``reference_zero`` rule."""
+        n = 0
+        for row in parsed.rows:
+            if col < len(row):
+                lit = parse_literal(row[col].value_text)
+                if lit.form == "point" and lit.num == 0:
+                    n += 1
+        return n
 
     # ── table-level conditions → one input spec each, shared by every
     # run of the table ────────────────────────────────────────────────
@@ -968,7 +1122,7 @@ def expand_recipe(
                 value_form=parsed_lit.form,
                 direction="input",
                 source_attribution=(
-                    "cited_work" if cited_at(r, c, spec) else "own_work"
+                    "cited_work" if cited_at(r, c, spec.index) else "own_work"
                 ),
                 anchor=MeasureAnchor(
                     paper, chunk_id, "offsets", [chunk_id, cell.start, cell.end]
@@ -987,6 +1141,13 @@ def expand_recipe(
         return own + shared_inputs
 
     # ── output series → one run per non-empty cell ───────────────────
+    # Pass 1: per-series checks and grouping by measurand. Pass 2 emits
+    # each group's axis union — the recipe's indices plus every other
+    # axis element whose label names the measurand (subset-3: a wide
+    # same-measurand table emits one run per matching column, each
+    # recording the column it took, never a silent pick).
+    out_groups: dict[int, list[tuple[int, SeriesSpec, SeriesSpec, VocabEntry]]] = {}
+    group_order: list[int] = []
     for si, spec in enumerate(norm.series):
         if spec.role != "output":
             continue
@@ -1032,6 +1193,16 @@ def expand_recipe(
                 )
             )
             continue
+        if (corr := _correction_label(label)) is not None:
+            drops.append(
+                _drop(
+                    loc,
+                    "correction_row",
+                    f"label {label!r} prints {corr!r} — a correction/delta "
+                    "series, not a reading",
+                )
+            )
+            continue
         axis_coords = [
             (r, c)
             for r, c in (
@@ -1072,185 +1243,400 @@ def expand_recipe(
                     )
                 )
                 continue
-        for r, c in axis_coords:
+        if entry.ref_id not in out_groups:
+            group_order.append(entry.ref_id)
+        out_groups.setdefault(entry.ref_id, []).append((si, spec, eff_spec, entry))
+
+    def auto_axis(
+        idx: int, group: list[tuple[int, SeriesSpec, SeriesSpec, VocabEntry]]
+    ) -> tuple[int, SeriesSpec, SeriesSpec, VocabEntry] | None:
+        """The emitting spec for an auto-matched axis element — one the
+        recipe never mapped but whose label names the group's measurand.
+
+        It passes the same checks a mapped series passes in pass 1, on
+        ITS OWN label and cells: the group inherits the measurand, not
+        the mapped column's clean bill (subset-3 r2 — a
+        ``ΔE_ads correction`` or ``E_ads (kJ/mol)`` column auto-matched
+        next to ``E_ads (eV)`` emitted unchecked). The transform is
+        re-derived from its own label (a sibling's ``log10`` claim never
+        exponentiates plain numbers) and the unit from its own header
+        (a printed kJ/mol never stores under an inherited eV claim —
+        when it can't convert, the element drops
+        ``unit_dimension_mismatch``)."""
+        si, spec, _eff, entry = group[0]
+        loc = f"series[{si}] axis {idx}"
+        label = axis_label(idx)
+        label_tf = _label_log_transform(label)
+        if label_tf == "unclear" or (
+            label_tf is not None
+            and spec.transform is not None
+            and spec.transform != label_tf
+        ):
+            drops.append(
+                _drop(
+                    loc,
+                    "log_base_unclear",
+                    f"label {label!r} vs transform {spec.transform!r}",
+                )
+            )
+            return None
+        eff_spec = replace(
+            spec,
+            transform=label_tf,
+            unit=(
+                spec.unit
+                if spec.unit is not None or entry.canonical_unit != "1"
+                else "1"
+            ),
+        )
+        quantity = _label_quantity(label)
+        if quantity is not None and not _label_names_measurand(label, entry):
+            drops.append(
+                _drop(
+                    loc,
+                    "label_measurand_mismatch",
+                    f"label {label!r} names {quantity!r}, not {entry.name!r}",
+                )
+            )
+            return None
+        if (corr := _correction_label(label)) is not None:
+            drops.append(
+                _drop(
+                    loc,
+                    "correction_row",
+                    f"label {label!r} prints {corr!r} — a correction/delta "
+                    "series, not a reading",
+                )
+            )
+            return None
+        printed = (
+            parsed.columns[idx].header_unit
+            if orientation == "columns"
+            else header_unit(label)
+        )
+        if printed is not None and printed != eff_spec.unit:
+            mismatch = _unit_mismatch(printed, entry)
+            if mismatch is not None:
+                drops.append(_drop(loc, "unit_dimension_mismatch", mismatch))
+                return None
+            eff_spec = replace(eff_spec, unit=printed)
+        nums: list[int] = []
+        axis_span = n_rows if orientation == "columns" else n_cols - 1
+        for r, c in (
+            ((r, idx) for r in range(n_rows))
+            if orientation == "columns"
+            else ((idx, c) for c in range(1, n_cols))
+        ):
             cell = cell_at(r, c)
             if cell is None or (r, c) in norm.skip_cells:
                 continue
             if cell.value_text.strip().casefold() in _EMPTY_CELL:
                 continue
-            loc_cell = f"{loc} cell {r}:{c}"
-            over = norm.overrides.get((r, c)) or {}
-            out_entry = entry
-            if isinstance(over.get("measurand"), str):
-                resolved = resolve_measurand(over["measurand"], vocab)
-                if resolved is None:
-                    drops.append(
-                        _drop(loc_cell, "unknown_measurand", repr(over["measurand"]))
+            v = _int_point(cell.value_text)
+            if v is None:
+                break
+            nums.append(v)
+        else:
+            if (
+                _enumeration_run(nums)
+                and (idx == 0 or len(nums) == axis_span)
+                and not _label_names_measurand(label, entry)
+            ):
+                drops.append(
+                    _drop(
+                        loc,
+                        "index_enumeration",
+                        f"cells are an integer run {nums[0]}..{nums[-1]} — "
+                        f"an index axis, not {entry.name!r} readings",
                     )
+                )
+                return None
+        return si, spec, eff_spec, entry
+
+    for ref_id in group_order:
+        group = out_groups[ref_id]
+        explicit: dict[int, tuple[int, SeriesSpec, SeriesSpec, VocabEntry]] = {}
+        for item in group:
+            explicit.setdefault(item[1].index, item)
+        # An index a series outside this group names — subject axis or an
+        # explicit mapping to anything — stays out of the auto-match: the
+        # recipe's own claim on it wins.
+        foreign = {s.index for s in norm.series} - set(explicit)
+        if norm.subject_axis is not None:
+            foreign.add(norm.subject_axis)
+        entry0 = group[0][3]
+        axes = set(explicit)
+        for i in range(n_cols if orientation == "columns" else n_rows):
+            if i in axes or i in foreign:
+                continue
+            if _label_names_measurand(axis_label(i), entry0):
+                axes.add(i)
+        # Several axis elements naming the measurand: every emitted run
+        # records which one it took as a condition on the measure.
+        multi = len(axes) > 1
+        for idx in sorted(axes):
+            axis_item = explicit.get(idx) or auto_axis(idx, group)
+            if axis_item is None:
+                continue
+            si, spec, eff_spec, entry = axis_item
+            loc = f"series[{si}]"
+            label = axis_label(idx)
+            cond_name = spec.condition or (
+                "column" if orientation == "columns" else "row"
+            )
+            coords = (
+                ((r, idx) for r in range(n_rows))
+                if orientation == "columns"
+                else ((idx, c) for c in range(1, n_cols))
+            )
+            for r, c in coords:
+                cell = cell_at(r, c)
+                if cell is None or (r, c) in norm.skip_cells:
                     continue
-                out_entry = resolved
-            literal = cell.text
-            parsed_lit = parse_literal(cell.value_text)
-            num, low, high = parsed_lit.num, parsed_lit.low, parsed_lit.high
-            err, text_v, flag_v = parsed_lit.err, parsed_lit.text, parsed_lit.flag
-            form = parsed_lit.form
-            printed_value: float | None = None
-            if eff_spec.transform:
-                if form in ("categorical", "boolean") or (
-                    num is None and low is None and high is None
-                ):
+                if cell.value_text.strip().casefold() in _EMPTY_CELL:
+                    continue
+                loc_cell = f"{loc} cell {r}:{c}"
+                if not (0 <= c < n_cols and _subject_surface(parsed.columns[c].header)):
                     drops.append(
                         _drop(
                             loc_cell,
-                            "bad_shape",
-                            f"{eff_spec.transform} on non-numeric {literal!r}",
+                            "no_header_in_span",
+                            f"column {c + 1} prints no header — the cited "
+                            "span cannot show which column the value is",
                         )
                     )
                     continue
-                printed_value = num
-                tf = _transformed(parsed_lit, eff_spec.transform)
-                if tf is None or isinstance(tf, str):
+                if (corr := _correction_label(cross_label(r, c))) is not None:
                     drops.append(
                         _drop(
                             loc_cell,
-                            tf if isinstance(tf, str) else "bad_shape",
-                            f"{eff_spec.transform} "
-                            + (
-                                "uncertainty edges overflow"
-                                if isinstance(tf, str)
-                                else "overflow"
+                            "correction_row",
+                            f"label {cross_label(r, c)!r} prints {corr!r} — "
+                            "a correction/delta row, not a reading",
+                        )
+                    )
+                    continue
+                over = norm.overrides.get((r, c)) or {}
+                out_entry = entry
+                if isinstance(over.get("measurand"), str):
+                    resolved = resolve_measurand(over["measurand"], vocab)
+                    if resolved is None:
+                        drops.append(
+                            _drop(
+                                loc_cell,
+                                "unknown_measurand",
+                                repr(over["measurand"]),
                             )
-                            + f" on {literal!r}",
                         )
-                    )
-                    continue
-                num, low, high, err, form = tf
-            unit = eff_spec.unit
-            claimed_unit = unit
-            unit_cell: str | None = None
-            over_unit = over.get("unit")
-            if isinstance(over_unit, str) and over_unit.strip():
-                unit, claimed_unit = over_unit.strip(), over_unit.strip()
-            elif spec.unit_index is not None:
-                uc = (
-                    cell_at(r, spec.unit_index)
-                    if orientation == "columns"
-                    else cell_at(spec.unit_index, c)
+                        continue
+                    out_entry = resolved
+                literal = cell.text
+                parsed_lit = parse_literal(cell.value_text)
+                num, low, high = parsed_lit.num, parsed_lit.low, parsed_lit.high
+                err, text_v, flag_v = (
+                    parsed_lit.err,
+                    parsed_lit.text,
+                    parsed_lit.flag,
                 )
-                unit = uc.value_text.strip() if uc is not None else None
-                unit_cell = uc.value_text if uc is not None else None
-                claimed_unit = None  # printed in its own cell — self-supported
-            if unit is not None:
-                mismatch = _unit_mismatch(unit, out_entry)
-                if mismatch is not None:
-                    drops.append(_drop(loc_cell, "unit_dimension_mismatch", mismatch))
-                    continue
-            categorical = form == "categorical" and text_v is not None
-            if not cell_literal_ok(cell, literal, categorical):
-                drops.append(
-                    _drop(
-                        loc_cell,
-                        "literal_not_in_span",
-                        f"{literal!r} vs cell span {cell.text[:120]!r} — a "
-                        "parse_table offset bug",
-                    )
-                )
-                continue
-            subject = subject_at(r, c)
-            if subject and not subject_evidenced(subject, r, c):
-                drops.append(
-                    _drop(
-                        loc_cell,
-                        "subject_not_in_span",
-                        f"subject {subject!r} is in neither the cited row, "
-                        "the column header nor the caption",
-                    )
-                )
-                continue
-            flags: list[str] = []
-            if claimed_unit is not None and claimed_unit != "1":
-                # '1' is the dimensionless claim (reaching here only on a
-                # canonical-'1' measurand — anything else dropped at
-                # unit_dimension_mismatch): there is no printed unit token
-                # to support, so the flag is always spurious (gr506762
-                # slice-4: correct sticking coefficients flagged).
-                support = " ".join(t for t in (label, unit_cell or "", cap_text) if t)
-                if not _verify.unit_has_text_support(claimed_unit, support):
-                    if _guessed_unit(claimed_unit) and not _label_names_measurand(
-                        label, out_entry
+                form = parsed_lit.form
+                printed_value: float | None = None
+                if eff_spec.transform:
+                    if form in ("categorical", "boolean") or (
+                        num is None and low is None and high is None
                     ):
                         drops.append(
                             _drop(
                                 loc_cell,
-                                "unit_header_mismatch",
-                                f"unit {claimed_unit!r} is printed nowhere and "
-                                f"label {label!r} does not name {out_entry.name!r}",
+                                "bad_shape",
+                                f"{eff_spec.transform} on non-numeric {literal!r}",
                             )
                         )
                         continue
-                    flags.append("unit_without_text_support")
-            cited = cited_at(r, c, spec)
-            attribution = (
-                "cited_work" if cited else (spec.attribution or norm.attribution)
-            )
-            tier = "asserted" if cited else _tier(attribution, spec.tier or norm.tier)
-            if eff_spec.transform:
-                status = "interpreted"
-            else:
-                status = (
-                    "explicit"
-                    if _label_names_measurand(label, out_entry)
-                    else "interpreted"
+                    printed_value = num
+                    tf = _transformed(parsed_lit, eff_spec.transform)
+                    if tf is None or isinstance(tf, str):
+                        drops.append(
+                            _drop(
+                                loc_cell,
+                                tf if isinstance(tf, str) else "bad_shape",
+                                f"{eff_spec.transform} "
+                                + (
+                                    "uncertainty edges overflow"
+                                    if isinstance(tf, str)
+                                    else "overflow"
+                                )
+                                + f" on {literal!r}",
+                            )
+                        )
+                        continue
+                    num, low, high, err, form = tf
+                unit = eff_spec.unit
+                claimed_unit = unit
+                unit_cell: str | None = None
+                over_unit = over.get("unit")
+                if isinstance(over_unit, str) and over_unit.strip():
+                    unit, claimed_unit = over_unit.strip(), over_unit.strip()
+                elif spec.unit_index is not None:
+                    uc = (
+                        cell_at(r, spec.unit_index)
+                        if orientation == "columns"
+                        else cell_at(spec.unit_index, c)
+                    )
+                    unit = uc.value_text.strip() if uc is not None else None
+                    unit_cell = uc.value_text if uc is not None else None
+                    claimed_unit = None  # printed in its own cell — self-supported
+                if unit is not None:
+                    mismatch = _unit_mismatch(unit, out_entry)
+                    if mismatch is not None:
+                        drops.append(
+                            _drop(loc_cell, "unit_dimension_mismatch", mismatch)
+                        )
+                        continue
+                categorical = form == "categorical" and text_v is not None
+                if not cell_literal_ok(cell, literal, categorical):
+                    drops.append(
+                        _drop(
+                            loc_cell,
+                            "literal_not_in_span",
+                            f"{literal!r} vs cell span {cell.text[:120]!r} — a "
+                            "parse_table offset bug",
+                        )
+                    )
+                    continue
+                subject = subject_at(r, c)
+                if subject and not subject_evidenced(subject, r, c):
+                    drops.append(
+                        _drop(
+                            loc_cell,
+                            "subject_not_in_span",
+                            f"subject {subject!r} is in neither the cited row, "
+                            "the column header nor the caption",
+                        )
+                    )
+                    continue
+                if (
+                    form == "point"
+                    and num == 0.0
+                    and _energy_unit(out_entry.canonical_unit)
+                ):
+                    # An exact 0 on an energy measurand is the scale's
+                    # reference point when a label says so — never a
+                    # measured adsorption energy (subset-3, mx2188).
+                    marked = _REFERENCE_MARK_RE.search(
+                        f"{row_label(r) or ''} {cap_text}"
+                    )
+                    if marked is not None or (
+                        _REFERENCE_PHASE_RE.search(cross_label(r, c)) is not None
+                        and _zero_cells_in_column(c) == 1
+                    ):
+                        drops.append(
+                            _drop(
+                                loc_cell,
+                                "reference_zero",
+                                "an exact 0 on an energy measurand marked as "
+                                "the reference/zero of the scale"
+                                + (
+                                    f" ({marked.group(0)!r})"
+                                    if marked is not None
+                                    else ""
+                                ),
+                            )
+                        )
+                        continue
+                flags: list[str] = []
+                if claimed_unit is not None and claimed_unit != "1":
+                    # '1' is the dimensionless claim (reaching here only on a
+                    # canonical-'1' measurand — anything else dropped at
+                    # unit_dimension_mismatch): there is no printed unit token
+                    # to support, so the flag is always spurious (gr506762
+                    # slice-4: correct sticking coefficients flagged).
+                    support = " ".join(
+                        t for t in (label, unit_cell or "", cap_text) if t
+                    )
+                    if not _verify.unit_has_text_support(claimed_unit, support):
+                        if _guessed_unit(claimed_unit) and not _label_names_measurand(
+                            label, out_entry
+                        ):
+                            drops.append(
+                                _drop(
+                                    loc_cell,
+                                    "unit_header_mismatch",
+                                    f"unit {claimed_unit!r} is printed nowhere "
+                                    f"and label {label!r} does not name "
+                                    f"{out_entry.name!r}",
+                                )
+                            )
+                            continue
+                        flags.append("unit_without_text_support")
+                cited = cited_at(r, c, idx)
+                attribution = (
+                    "cited_work" if cited else (spec.attribution or norm.attribution)
                 )
-            if over.get("measurand_status") in _MEASURAND_STATUSES:
-                status = over["measurand_status"]
-            meta = base_meta()
-            meta["table"] = table_meta(r, c, label, cell.footnote)
-            if eff_spec.transform:
-                meta["transform"] = eff_spec.transform
-                if printed_value is not None:
-                    meta["printed_value"] = printed_value
-            output = MeasureSpec(
-                measurand_ref_id=out_entry.ref_id,
-                literal=literal,
-                subject_ref_id=paper,
-                reported_unit=unit,
-                subject=subject,
-                subject_group=norm.group,
-                value_num=num,
-                value_low=low,
-                value_high=high,
-                value_err=err,
-                value_text=text_v,
-                value_bool=flag_v,
-                value_form=form,
-                reference=(
-                    over["reference"]
-                    if isinstance(over.get("reference"), str)
-                    else None
-                ),
-                tier=tier,
-                source_attribution=attribution,
-                measurand_status=status,
-                normalization=(
-                    over["normalization"]
-                    if isinstance(over.get("normalization"), str)
-                    else None
-                ),
-                normalization_status=(
-                    "explicit" if isinstance(over.get("normalization"), str) else None
-                ),
-                anchor=MeasureAnchor(
-                    paper, chunk_id, "offsets", [chunk_id, cell.start, cell.end]
-                ),
-                meta=meta,
-            )
-            runs.append(
-                RunProposal(
-                    output=output,
-                    inputs=inputs_for(r, c),
-                    location=f"table cell {r}:{c}",
-                    flags=flags,
+                tier = (
+                    "asserted" if cited else _tier(attribution, spec.tier or norm.tier)
                 )
-            )
+                if eff_spec.transform:
+                    status = "interpreted"
+                else:
+                    status = (
+                        "explicit"
+                        if _label_names_measurand(label, out_entry)
+                        else "interpreted"
+                    )
+                if over.get("measurand_status") in _MEASURAND_STATUSES:
+                    status = over["measurand_status"]
+                meta = base_meta()
+                meta["table"] = table_meta(r, c, label, cell.footnote)
+                if eff_spec.transform:
+                    meta["transform"] = eff_spec.transform
+                    if printed_value is not None:
+                        meta["printed_value"] = printed_value
+                output = MeasureSpec(
+                    measurand_ref_id=out_entry.ref_id,
+                    literal=literal,
+                    subject_ref_id=paper,
+                    reported_unit=unit,
+                    subject=subject,
+                    subject_group=norm.group,
+                    value_num=num,
+                    value_low=low,
+                    value_high=high,
+                    value_err=err,
+                    value_text=text_v,
+                    value_bool=flag_v,
+                    value_form=form,
+                    reference=(
+                        over["reference"]
+                        if isinstance(over.get("reference"), str)
+                        else None
+                    ),
+                    tier=tier,
+                    source_attribution=attribution,
+                    measurand_status=status,
+                    normalization=(
+                        over["normalization"]
+                        if isinstance(over.get("normalization"), str)
+                        else None
+                    ),
+                    normalization_status=(
+                        "explicit"
+                        if isinstance(over.get("normalization"), str)
+                        else None
+                    ),
+                    conditions=(
+                        {cond_name: " ".join(label.split()) or label} if multi else None
+                    ),
+                    anchor=MeasureAnchor(
+                        paper, chunk_id, "offsets", [chunk_id, cell.start, cell.end]
+                    ),
+                    meta=meta,
+                )
+                runs.append(
+                    RunProposal(
+                        output=output,
+                        inputs=inputs_for(r, c),
+                        location=f"table cell {r}:{c}",
+                        flags=flags,
+                    )
+                )
     return runs, drops

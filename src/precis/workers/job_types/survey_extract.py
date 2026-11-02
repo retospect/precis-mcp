@@ -58,6 +58,10 @@ verdict passed, the row id sits under the mark, and the row keeps its
 anchor. A run-level accept is refused while ``survey_extract`` jobs
 still carry the token — sequence order is not commit order, so a row
 can hold an id under the mark and commit after the frame read.
+``params.papers`` is the re-review scope: a paper list that samples
+every live output row on them regardless of the run token (a re-run's
+dup-skipped rows keep their older token), recorded under a synthetic
+``papers:<ids>`` token that grants nothing.
 
 Castor-trial knobs on the extract pass: ``params.measurands`` narrows
 the reader vocabulary to the named taxa plus their descendants (the
@@ -1421,6 +1425,10 @@ ACCEPT_PARAMS_SCHEMA: dict[str, Any] = {
     "type": "object",
     "properties": {
         "paper": {"type": ["integer", "string"]},
+        "papers": {
+            "type": ["array", "null"],
+            "items": {"type": ["integer", "string"]},
+        },
         "extraction_run": {"type": ["string", "null"]},
         "sample_n": {"type": ["integer", "null"]},
         "bar": {"type": ["number", "null"]},
@@ -1475,6 +1483,34 @@ def _batch_rows(
             "   AND m.meta->>'extraction_run' = %s ORDER BY m.id",
             (paper, paper, run_token),
         ).fetchall()
+    return _batch_row_dicts(rows)
+
+
+def _papers_batch_rows(store: Store, papers: list[int]) -> list[dict[str, Any]]:
+    """Every live output row on ``papers``, regardless of the
+    ``extraction_run`` token — the ``params.papers`` re-review scope
+    (gr506762 subset-3: rows a re-run skipped as duplicates keep their
+    older token, so a token-scoped re-accept can never reach them).
+    Same row shape as :meth:`_batch_rows`."""
+    with store.pool.connection() as conn:
+        rows = conn.execute(
+            "SELECT m.id, m.measurand_ref_id, m.literal, m.reported_unit, "
+            "       m.subject, m.span, m.anchor_scheme, m.run_key, "
+            "       m.conditions, l.src_chunk_id, t.meta->>'slug', "
+            "       m.subject_ref_id, m.meta->'table', m.value_num, "
+            "       m.meta->>'transform' "
+            "  FROM measures m "
+            "  LEFT JOIN links l ON l.link_id = m.primary_link_id "
+            "  LEFT JOIN refs t ON t.ref_id = m.measurand_ref_id "
+            " WHERE m.subject_ref_id = ANY(%s) "
+            "   AND m.direction = 'output' "
+            "   AND m.superseded_by IS NULL ORDER BY m.id",
+            (papers,),
+        ).fetchall()
+    return _batch_row_dicts(rows)
+
+
+def _batch_row_dicts(rows: list[Any]) -> list[dict[str, Any]]:
     return [
         {
             "id": int(r[0]),
@@ -1528,11 +1564,13 @@ _SPAN_TEXT_CAP = 2000
 def _span_text(
     store: Store, row: dict[str, Any], table_ctx: dict[str, Any] | None = None
 ) -> str | None:
-    """The row's evidence text: for a cell-anchored table row the whole
-    table ROW's slice (``meta.table.row_span``) — a bare ``'0.37'`` cell
-    alone is unverifiable; the row prints the subject label and sibling
-    cells (gr506762 slice-4: ~55 of 60 sampled rows read 'undecidable'
-    on a bare-number span). Otherwise the span's slice for an offsets
+    """The row's evidence text: for a cell-anchored table row the column
+    header cells plus the whole data row's slice (``meta.table``
+    ``header_span`` + ``row_span``, gr506762 subset-3 — a row citing a
+    bare data line reads 'undecidable': the reviewer cannot confirm
+    measurand, unit or column; a continuation's header can't slice
+    this chunk — its offsets index the run head's — so it rides as
+    ``header_text``). Otherwise the span's slice for an offsets
     anchor, the whole chunk otherwise (mirrors the store's own
     _span_text)."""
     with store.pool.connection() as conn:
@@ -1542,7 +1580,21 @@ def _span_text(
     if r is None:
         return None
     text = str(r[0] or "")
-    row_span = (table_ctx or {}).get("row_span")
+    ctx = table_ctx or {}
+    head = ""
+    header_span = ctx.get("header_span")
+    if (
+        isinstance(header_span, list)
+        and len(header_span) == 2
+        and all(isinstance(x, int) and not isinstance(x, bool) for x in header_span)
+        and 0 <= header_span[0] <= header_span[1] <= len(text)
+    ):
+        head = text[header_span[0] : header_span[1]]
+    elif isinstance(ctx.get("header_text"), str):
+        # A run head's header: its offsets index another chunk, so the
+        # recipe carried the lines as text (gr506762 subset-3 r2).
+        head = ctx["header_text"]
+    row_span = ctx.get("row_span")
     if (
         isinstance(row_span, list)
         and len(row_span) == 2
@@ -1560,15 +1612,18 @@ def _span_text(
             )
             start = max(start, min(mid - _SPAN_TEXT_CAP // 2, end - _SPAN_TEXT_CAP))
             end = start + _SPAN_TEXT_CAP
-        return text[start:end]
-    span = row.get("span")
-    if (
-        isinstance(span, list)
-        and len(span) == 3
-        and all(isinstance(x, int) for x in span)
-    ):
-        return text[span[1] : span[2]]
-    return text
+        body = text[start:end]
+    else:
+        span = row.get("span")
+        if (
+            isinstance(span, list)
+            and len(span) == 3
+            and all(isinstance(x, int) for x in span)
+        ):
+            body = text[span[1] : span[2]]
+        else:
+            body = text
+    return f"{head}\n…\n{body}" if head else body
 
 
 def _row_conditions(
@@ -1607,41 +1662,84 @@ def _accept_dispatch(ctx: DispatchContext, spec: JobTypeSpec) -> Any:
             summary="measure_accept: params.paper does not resolve to a live ref",
             success=False,
         )
-    raw_token = params.get("extraction_run")
-    token = raw_token.strip() if isinstance(raw_token, str) else ""
-    if paper is None and not token:
-        return Done(
-            summary=(
-                "measure_accept: needs params.extraction_run (the batch is "
-                "the run token) or a resolvable params.paper"
-            ),
-            success=False,
+    paper_scope: list[int] = []
+    raw_papers = params.get("papers")
+    if raw_papers is not None:
+        if not isinstance(raw_papers, (list, tuple)):
+            return Done(
+                summary="measure_accept: params.papers must be a list",
+                success=False,
+            )
+        for item in raw_papers:
+            pid = _paper_id(ctx.store, item)
+            if pid is None:
+                return Done(
+                    summary=(
+                        f"measure_accept: params.papers entry {item!r} does "
+                        "not resolve to a live ref"
+                    ),
+                    success=False,
+                )
+            if pid not in paper_scope:
+                paper_scope.append(pid)
+        if paper is not None and paper not in paper_scope:
+            paper_scope.append(paper)
+        paper_scope = sorted(paper_scope)
+    if paper_scope:
+        # A re-review scope: every live output row on these papers
+        # regardless of extraction_run — the rows a re-run skipped as
+        # duplicates keep their older token (gr506762 subset-3). The
+        # scope token is synthetic: the verdict reviews rows and never
+        # stands as a token-batch verdict accepted_runs could grant.
+        run_token = "papers:" + "-".join(str(p) for p in paper_scope)
+        rows = _papers_batch_rows(ctx.store, paper_scope)
+        if not rows:
+            return Done(
+                summary=(
+                    f"measure_accept: no live output rows on papers {paper_scope}"
+                ),
+                success=False,
+            )
+    else:
+        raw_token = params.get("extraction_run")
+        token = raw_token.strip() if isinstance(raw_token, str) else ""
+        if paper is None and not token:
+            return Done(
+                summary=(
+                    "measure_accept: needs params.extraction_run (the batch is "
+                    "the run token), params.papers, or a resolvable params.paper"
+                ),
+                success=False,
+            )
+        run_token = token or str(
+            _latest_run_token(ctx.store, paper) if paper is not None else ""
         )
-    run_token = token or str(
-        _latest_run_token(ctx.store, paper) if paper is not None else ""
-    )
-    if not run_token:
-        return Done(
-            summary=(
-                f"measure_accept: no extraction_run given and none found on "
-                f"paper {paper}"
-            ),
-            success=False,
-        )
-    rows = _batch_rows(ctx.store, paper, run_token)
-    if not rows:
-        scope = f"on paper {paper}" if paper is not None else "on any paper"
-        return Done(
-            summary=(
-                f"measure_accept: no live output rows for run {run_token!r} {scope}"
-            ),
-            success=False,
-        )
+        if not run_token:
+            return Done(
+                summary=(
+                    f"measure_accept: no extraction_run given and none found on "
+                    f"paper {paper}"
+                ),
+                success=False,
+            )
+        rows = _batch_rows(ctx.store, paper, run_token)
+        if not rows:
+            scope = f"on paper {paper}" if paper is not None else "on any paper"
+            return Done(
+                summary=(
+                    f"measure_accept: no live output rows for run {run_token!r} {scope}"
+                ),
+                success=False,
+            )
 
     if "sampled" not in state:
         # The put-time refusal is hours stale by dispatch — re-check that
         # no extract job still carries the token before reading the frame.
-        if paper is None and _token_extract_live(ctx.store, run_token):
+        if (
+            not paper_scope
+            and paper is None
+            and _token_extract_live(ctx.store, run_token)
+        ):
             return Done(
                 summary=(
                     f"measure_accept: survey_extract jobs for run "
@@ -1863,7 +1961,9 @@ def _accept_dispatch(ctx: DispatchContext, spec: JobTypeSpec) -> Any:
         for mid in sampled
         if verdicts.get(str(mid), {}).get("verdict") == "unanchored"
     ]
-    if paper is not None:
+    if paper_scope:
+        scope = f"{len(paper_scope)} papers"
+    elif paper is not None:
         scope = f"pa{paper}"
     elif covered and isinstance(papers, list):
         scope = f"{len(papers)} papers"
@@ -1925,25 +2025,44 @@ def _token_extract_live(store: Store, token: str) -> bool:
 def accept_validate(store: Store, params: dict[str, Any]) -> None:
     """``JobTypeSpec.validate`` for ``measure_accept`` — the batch is the
     run token, so ``extraction_run`` alone suffices; ``paper`` only narrows
-    the batch to that paper's share and must resolve when given. A
-    run-level accept is refused while extract jobs still carry the token:
+    the batch to that paper's share and must resolve when given.
+    ``papers`` is the re-review scope: those papers' live rows regardless
+    of run token. A run-level accept is refused while extract jobs still
+    carry the token:
     sequence order is not commit order, so a row can take an id under the
     frame's high-water mark yet commit after the draw."""
     raw_paper = params.get("paper")
     raw_token = params.get("extraction_run")
     has_token = isinstance(raw_token, str) and bool(raw_token.strip())
+    raw_papers = params.get("papers")
     if raw_paper is not None and _paper_id(store, raw_paper) is None:
         raise BadInput(
             "measure_accept: params.paper does not resolve to a live ref",
             next="pass a live paper ref_id, pa<id> handle or slug",
         )
-    if _paper_id(store, raw_paper) is None and not has_token:
+    if raw_papers is not None:
+        if not isinstance(raw_papers, (list, tuple)):
+            raise BadInput(
+                "measure_accept: params.papers must be a list",
+                next="pass papers=[<paper ref_id, pa<id> or slug>, …]",
+            )
+        bad = [p for p in raw_papers if _paper_id(store, p) is None]
+        if bad:
+            raise BadInput(
+                f"measure_accept: params.papers entries {bad} do not "
+                "resolve to live refs",
+                next="pass live paper ref_ids, pa<id> handles or slugs",
+            )
+    has_papers = isinstance(raw_papers, (list, tuple)) and bool(raw_papers)
+    if _paper_id(store, raw_paper) is None and not has_token and not has_papers:
         raise BadInput(
-            "measure_accept: needs params.extraction_run or params.paper",
+            "measure_accept: needs params.extraction_run, params.paper "
+            "or params.papers",
             next="pass extraction_run='<run token>' (a paper alone means "
-            "its latest extraction run)",
+            "its latest extraction run; papers=[ids] re-reviews those "
+            "papers' rows regardless of run)",
         )
-    if raw_paper is None and has_token:
+    if raw_paper is None and not has_papers and has_token:
         token = str(raw_token).strip()
         if _token_extract_live(store, token):
             raise BadInput(
