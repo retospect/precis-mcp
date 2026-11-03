@@ -12,6 +12,8 @@ NATIVE_REF_URLS: dict[str, str] = {
     "draft": "/smartdraft/{id}",
     "agentlog": "/agentlogs/{id}",
     "datasheet": "/datasheets/{id}",
+    "pres": "/pres/{id}",
+    "cfp": "/cfp/{id}",
     "folder": "/drive?folder={id}",
     "todo": "/todo?focus={id}",
     "cad": "/cad/{slug}",

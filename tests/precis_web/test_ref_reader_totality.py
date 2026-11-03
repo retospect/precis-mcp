@@ -236,3 +236,9 @@ def test_orcid_includes_inverse_authorship_and_omits_retired_papers(
 def test_slug_reader_requires_and_escapes_stored_slug():
     assert ref_url("cad", 5) == "/refs/cad/5"
     assert ref_url("cad", 5, "a?b#c") == "/cad/a%3Fb%23c"
+
+
+def test_document_kinds_open_their_pdf_readers():
+    # gr560166: Drive opened decks in the generic /refs fisheye detail.
+    assert ref_url("pres", 50151) == "/pres/50151"
+    assert ref_url("cfp", 7) == "/cfp/7"
