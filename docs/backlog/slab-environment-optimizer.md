@@ -57,6 +57,58 @@ intersected, objectives are never summed. So the output is a **Pareto
 set of environment points**, not one number; "best setup" is the
 rubric's pick on that set (human-set weights, as for slabs).
 
+### The scalar the optimizer climbs (Reto, 2026-11-03: "do we have a clear cost function?")
+
+**Today: no.** At the run point the engine gives `results.score`, four
+worst-case axes (activity span, selectivity margin, poison margin, trap
+margin) with a `limiting_factor`; across slabs the quest ranks on
+Pareto objectives or a human-weighted `rubric_composite`. Neither is a
+function of the environment. Proposed, and consistent with the rulings
+(masks intersect, objectives are never summed — a minimum is not a
+sum), the **bottleneck form**:
+
+```
+J(e) = min{ m_th(e), m_kin(e), m_HER(e), s(e), r(e) }   if M(e) = 1, else −∞
+e*   = argmax_e J(e)
+```
+
+every term in eV at the environment point `e = (U, pH, T, p_i, c_ion)`:
+
+| term | formula | plain text |
+|---|---|---|
+| `m_th(e)` | `min_r [ε_r − ΔG_r(e)]` over the target route's rungs, `ΔG_r(e) = ΔG0_r + n_e,r·U` (+ the pH, `kT·ln p` and modes terms as they ship), `ε_r` = 0.3 eV chemical / 0 electrochemical | the worst step's downhill margin: positive means every step is downhill within tolerance |
+| `m_kin(e)` | `min_b [Ea_side,b − Ea_on,b]` over branch points on the target route (NEB; BEP where none, flagged) | at the worst fork, how much higher the side barrier is than the on-route one; U-flat under CHE |
+| `m_HER(e)` | `ΔG_lim,HER(e) − ΔG_lim,route(e)` | the route's limiting step beats hydrogen evolution's by this much |
+| `s(e)` | `kT·ln[S(e) / (1 − S(e))]`, `S` = fraction of the key element leaving as the target | selectivity as an energy: 0 at 50 %, +0.06 eV at 90 %, +0.12 eV at 99 % (298 K) |
+| `r(e)` | `kT·ln[TOF(e) / TOF_floor]`, `TOF_floor` = the quest's `subject_to` floor | rate above the required rate, as an energy: one decade = 0.059 eV at 298 K |
+| `M(e)` | 1 iff the resting termination at (U, pH) is the surface the pathway assumed, the bulk is not dissolved at `c_ion`, `reset_ok`, the solve is trusted (`bep_flux_share` ≤ 0.5, settled, not poisoned) and `TOF ≥ TOF_floor` | the setup is physically the one that was computed, and the numbers are trusted |
+
+Plain text: **a setup is as good as its worst goal, in eV; the term that
+sets the minimum is the limiting factor**, the same reading
+`results.score.limiting_factor` gives at one point. Goal (a) is
+`min(m_th, m_kin)`, goal (b) is `min(m_HER, s)`, goal (c) is `r`; the
+`kT·ln` forms put rate and selectivity in the units the margins already
+use, so one number compares them. A quest that wants trade-offs instead
+of a bottleneck uses the weighted alternative `J_w(e) = Σ_k w_k·term_k`
+with `rubric_composite` weights (human-set, never tuned by the agent).
+The Pareto set is kept beside `J` for the explorer's tab; `J` is only
+the scalar the search climbs and the number `env_best` reports.
+
+Worked example, pw549461 at its run point (298 K, 1 bar reference, U = 0):
+`M = 0` (BEP-priced, `bep_flux_share = 1`; no scan, so the termination is
+unknown). Unmasked: `r = −2.9 eV` (TOF 7e-53 against a 1e-3 floor: fifty
+decades short, surface held by N), `m_th = −0.025 eV` (NO@N→N+O at
++0.325 eV against ε = 0.3, U-flat, so no potential fixes it), `m_HER =
++0.39 eV` on route 1. Limiting factor: rate. What the cart would ask
+for: a coverage scan (to set `M`), NEB on the N–O scission (to replace
+the BEP `m_kin`), then a re-solve.
+
+Availability of each term as a function of `e` today: `m_th` moves with
+U (closed form), not yet with pH, T or p; `m_kin` is U- and T-flat and
+needs barriers; `m_HER` moves with U; `s` and `r` move with T and p
+inside a stored sweep and not with U (kinetics v2 slice 8); `M`'s
+termination needs a scan, its bulk verdict a `pourbaix_bulk` job.
+
 ### Axes and where their derivatives come from (the `differentiation` skill applies)
 
 | axis | smooth? | derivative source | discrete jumps |
