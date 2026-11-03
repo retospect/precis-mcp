@@ -618,6 +618,12 @@ gear a1 to a2 ratio:1
 """
 
 
+@pytest.mark.no_cov(
+    reason="the 2026-11-01 and -03 coverage-db runs left hang-stack dumps "
+    "for this test, then the 480 s thread timeout os._exit'd the worker; "
+    "traced it runs ~1.6x slower on 6 workers / 4 cores. The trace-free "
+    "nightly legs still run it"
+)
 @pytest.mark.timeout(480)  # CI worst 179s x2.5 for runner variance (gr503084)
 def test_sweep_sees_gear_driven_collisions(cad):
     # finding-1 regression: sweeping the DRIVER must also score and
