@@ -2358,6 +2358,23 @@ async def _pathway_detail(request: Request, store: Store, ref: Any) -> HTMLRespo
     # linked" (AC4); an unrecognised measure op -> skipped with a note.
     graph = meta.get("graph")
     diagram = _pathway_graph_payload(graph, target=results.get("target"))
+    if diagram:
+        # gr553482: per-route steady-state flux shares off the stored
+        # kinetics record — the greedy net-flux decomposition lives in
+        # pure ``precis_pathway.flux_share``; this layer only attaches the
+        # payload the picker renders. None on a pathway with no usable
+        # kinetics record -> the legend renders as before.
+        try:
+            from precis_pathway import flux_share
+
+            rf = flux_share.route_flux(results.get("kinetics"), diagram["paths"])
+        except Exception:
+            # a record shape the decomposition didn't anticipate must cost
+            # the shares, never the page
+            log.warning("pathway %s: route flux failed", ref.id, exc_info=True)
+            rf = None
+        if rf is not None:
+            diagram["route_flux"] = rf
     measure_defs, measure_notes = _pathway_measures(meta.get("measures"))
     state_ids = _pathway_state_ids(diagram, graph, structure_refs)
     structures = _pathway_ordered_structures(structs, structure_refs, state_ids)

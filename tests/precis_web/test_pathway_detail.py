@@ -618,6 +618,116 @@ def test_pathway_diagram_paths_no_target_longest_first(client, runtime) -> None:
     assert diagram["paths"][1] == ["R", "Q1"]
 
 
+def _flux_graph() -> dict[str, Any]:
+    """The gr553482 worked example as a ``meta.graph``: shared step R->S,
+    then two parallel routes to NH3 — the WEAKER branch (through B) is
+    enumerated first so the flux sort has to move it."""
+    edges = [("R", "S"), ("S", "B"), ("B", "NH3"), ("S", "A"), ("A", "NH3")]
+    return {
+        "nodes": [
+            {
+                "id": nid,
+                "energy": -1.0,
+                "energy_std": 0.0,
+                "rel_energy": 0.1,
+                "low_confidence": False,
+            }
+            for nid in ("R", "S", "B", "A", "NH3")
+        ],
+        "links": [
+            {
+                "source": u,
+                "target": v,
+                "kind": "reaction",
+                "barrier": 0.1,
+                "barrier_std": 0.0,
+                "delta_e": 0.0,
+                "delta_e_std": 0.0,
+                "low_confidence": False,
+            }
+            for u, v in edges
+        ],
+    }
+
+
+def _flux_record() -> dict[str, Any]:
+    """The matching ``kinetics.solve`` record: R->S carries 10, the A and
+    B branches split it 7:3, the NH3 desorption closes the cycle at 10 —
+    so the A route holds 70% of the TOF and B 30%."""
+
+    def t(a: str, b: str, r: float, **kw: Any) -> dict[str, Any]:
+        return {
+            "name": f"{a}->{b}",
+            "from": a,
+            "to": b,
+            "kind": "step",
+            "net_rate": r,
+            **kw,
+        }
+
+    return {
+        "conditions": {"temperature": 500.0, "pressures": {"N2": 1.0}},
+        "product": "NH3",
+        "root": "R",
+        "tof": 10.0,
+        "warnings": [],
+        "transitions": [
+            t("R", "S", 10.0),
+            t("S", "A", 7.0),
+            t("A", "NH3", 7.0),
+            t("S", "B", 3.0),
+            t("B", "NH3", 3.0),
+            t("NH3", "R", 10.0, kind="desorption", gas="NH3"),
+        ],
+    }
+
+
+def test_pathway_route_flux_shares_sorted_with_dominant(client, runtime) -> None:
+    """gr553482: the picker's ``route_flux`` payload maps the greedy
+    decomposition onto the enumerated routes — every route's TOF share,
+    the dominant one flagged, display order by yield (the stronger A
+    route jumps the earlier-enumerated B route) — plus the note saying
+    what a share means."""
+    _seed_pathway(
+        runtime.store,
+        meta={
+            "graph": _flux_graph(),
+            "results": {"target": "NH3", "kinetics": _flux_record()},
+        },
+        body_text=None,
+    )
+    resp = client.get("/refs/pathway/171696")
+    assert resp.status_code == 200
+    diagram = _extract_json_object(resp.text, "diagram: ")
+    assert diagram["paths"] == [["R", "S", "B", "NH3"], ["R", "S", "A", "NH3"]]
+    rf = diagram["route_flux"]
+    small, big = rf["routes"]
+    assert small["share"] == pytest.approx(0.3) and not small["dominant"]
+    assert big["share"] == pytest.approx(0.7) and big["dominant"]
+    assert big["log10"] == pytest.approx(math.log10(7.0))
+    assert rf["order"] == [1, 0]
+    assert rf["remainder_share"] == pytest.approx(0.0)
+    # the mandated one-liner, with the conditions the flux is at
+    assert "kinetics solves all routes together" in resp.text
+    assert "shares are flux at the stated conditions" in resp.text
+    assert "(T = 500 K)" in resp.text
+
+
+def test_pathway_no_kinetics_renders_picker_as_before(client, runtime) -> None:
+    """gr553482: no usable kinetics record -> no ``route_flux`` key and no
+    share note — the legend is byte-identical to the pre-shares one."""
+    _seed_pathway(
+        runtime.store,
+        meta={"graph": _flux_graph(), "results": {"target": "NH3"}},
+        body_text=None,
+    )
+    resp = client.get("/refs/pathway/171696")
+    assert resp.status_code == 200
+    diagram = _extract_json_object(resp.text, "diagram: ")
+    assert "route_flux" not in diagram
+    assert "kinetics solves all routes together" not in resp.text
+
+
 def test_pathway_linked_structures_follow_state_order_not_alphabetical(
     client, runtime
 ) -> None:

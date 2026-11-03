@@ -188,8 +188,16 @@
   {% if diagram %}
   {# path legend — built by JS (buildPathLegend): one button per root->leaf
      path, hover = emphasize, click = select+fade the rest, Esc = clear.
-     Mirrors the autocatpath HTML export's legend-as-buttons interaction. #}
+     Mirrors the autocatpath HTML export's legend-as-buttons interaction.
+     gr553482: with a usable kinetics record the buttons are sorted by
+     flux share and each shows its share of the TOF; the note below says
+     what a share means. #}
   <div id="pw-path-legend" class="flex flex-wrap items-center gap-1 mb-1"></div>
+  {% if diagram.route_flux %}
+  <p class="mb-1 text-[10px] text-fg-faint">{{ diagram.route_flux.note
+    }}{% if diagram.route_flux.conditions.temperature is number %} (T = {{ '%g'|format(diagram.route_flux.conditions.temperature) }} K){% endif
+    %}{% if diagram.route_flux.remainder_share > 0.005 %} — {{ '%.0f%%'|format(diagram.route_flux.remainder_share * 100) }} of the flux is not attributed to any route (loops or side products){% endif %}</p>
+  {% endif %}
   {# what is selected right now (state and/or isolated path) — filled by
      updateSelectionReadout; a click used to scroll the page to the table
      with nothing on the diagram saying what it had picked. The copy-link
@@ -1540,15 +1548,44 @@
     const host = document.getElementById('pw-path-legend');
     if (!host || host.childElementCount) { return; }
     if (!paths || paths.length < 2) { return; }  // one path — nothing to pick
-    paths.forEach((path, pi) => {
+    // gr553482: ``route_flux`` (server-side greedy net-flux decomposition
+    // off the stored kinetics record — precis_pathway.flux_share) carries
+    // the display order (routes by TOF share) plus each route's
+    // {share, rate log10, dominant, excluded}. Absent — no usable
+    // kinetics — the legend is exactly the pre-shares one.
+    const rf = (V.diagram && V.diagram.route_flux) || null;
+    const order = (rf && rf.order) || paths.map((_, i) => i);
+    const fmtShare = (s) => (s < 0.005 ? '<1%' : `${Math.round(s * 100)}%`);
+    order.forEach((pi) => {
+      const path = paths[pi];
+      if (!path || !path.length) { return; }
+      const fx = rf && rf.routes && rf.routes[pi];
+      const leaf = path[path.length - 1];
       const b = document.createElement('button');
       b.type = 'button';
       b.className = 'pw-path-btn flex items-center gap-1.5 rounded border border-line px-1.5 py-0.5 text-[11px] text-fg-muted hover:bg-surface-muted';
       b.dataset.path = String(pi);
-      b.title = `Path to ${path[path.length - 1]} \u2014 its bars, curves and arrows share this colour. Hover to preview, click to isolate.`;
+      b.title = `Path to ${leaf} \u2014 its bars, curves and arrows share this colour. Hover to preview, click to isolate.`;
       b.setAttribute('aria-pressed', 'false');
       const color = PATH_COLORS[pi % PATH_COLORS.length];
-      b.innerHTML = `<span class="inline-block w-2.5 h-2.5 rounded-sm" style="background:${color}"></span>&rarr; ${esc(path[path.length - 1])}`;
+      let inner = `<span class="inline-block w-2.5 h-2.5 rounded-sm" style="background:${color}"></span>&rarr; ${esc(leaf)}`;
+      if (fx) {
+        if (fx.share != null) {
+          inner += ` &middot; ${fmtShare(fx.share)} &middot; log&nbsp;r&nbsp;${fx.log10.toFixed(1)}`;
+          b.title += ` Carries ${fmtShare(fx.share)} of the ${rf.product} ${rf.gross ? 'decomposed flux' : 'TOF'} (net rate \u2248 10^${fx.log10.toFixed(1)} /site/s).`;
+        } else if (fx.excluded) {
+          inner += ' &middot; excluded';
+          b.title += ' A step on this route was excluded from the kinetics solve (no computed barrier) \u2014 it carries no tracked flux.';
+        } else {
+          inner += ' &middot; \u2014';
+          b.title += ' No flux attributed to this route at the stated conditions.';
+        }
+      }
+      if (fx && fx.dominant) {
+        inner = '\u2605 ' + inner;
+        b.title = `Dominant route \u2014 ${b.title}`;
+      }
+      b.innerHTML = inner;
       b.addEventListener('click', () => togglePathSelection(pi));
       b.addEventListener('mouseenter', () => applyPathSelection(pi));
       b.addEventListener('mouseleave', () => applyPathSelection());
