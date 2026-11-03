@@ -14,11 +14,17 @@ from __future__ import annotations
 
 import threading
 import time
+from types import SimpleNamespace
+from typing import Any
 
 import psycopg
 import pytest
+from psycopg.conninfo import make_conninfo
+from psycopg.errors import LockNotAvailable
 
+from precis.errors import NotFound
 from precis.store.store import Store
+from precis.utils import db_retry
 
 BLOCK_WAIT = 0.5
 
@@ -200,3 +206,130 @@ def test_move_chunk_blocks_on_held_destination_section(store: Store, side_lock) 
     moved = store.drafts.get_draft_chunk(para.handle)
     assert moved is not None
     assert moved.parent_chunk_id == methods.chunk_id
+
+
+# ── gr553312: bounded retry inside the write ────────────────────────────
+#
+# Prod roles run ``lock_timeout=5s``: a draft write that found its
+# section lock held surfaced ``LockNotAvailable`` to the caller although
+# the write was safe to replay. The write ops now run under
+# ``retry_locked`` — a wait inside the retry budget retires in the
+# store; a hold past it reraises the same error dispatch maps to the
+# Upstream retry hint. The contending ops run on a second store whose
+# sessions carry a compressed ``lock_timeout`` (same idiom as
+# ``test_paper_body_ops``'s lock-contention case), so the first attempt
+# fails fast and the test doesn't wait out the suite's 30 s default.
+
+CONTENDED_LOCK_TIMEOUT_MS = 300
+
+
+def _contended_store(store: Store) -> Store:
+    dsn = make_conninfo(
+        store.dsn or "",
+        options="-c statement_timeout=120s "
+        f"-c lock_timeout={CONTENDED_LOCK_TIMEOUT_MS}ms",
+    )
+    return Store.connect(dsn, min_size=1, max_size=2)
+
+
+def test_sibling_writes_retry_through_held_section_lock(
+    store: Store, side_lock, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    proj = _project(store)
+    ref, _title = store.drafts.create_draft(
+        name="d4", title="Title", project_ref_id=proj
+    )
+
+    # Two sibling puts (same parent → same section) behind a held lock:
+    # the gripe's 2-way parallel collision. Deterministic backoff —
+    # retry_locked's own ``time`` name is swapped for a no-sleep stub
+    # (this test's real ``time.sleep`` is untouched) — so attempts land
+    # at exact lock_timeout boundaries: attempt 1 fails at ~0.3 s,
+    # attempt 2's wait spans ~[0.3 s, 0.6 s]. The 0.45 s release falls
+    # inside attempt 2 with margin both ways (uniform jitter let
+    # attempt 3 time out just before a 1.0 s release — flaky, gr553312
+    # review).
+    monkeypatch.setattr(db_retry, "time", SimpleNamespace(sleep=lambda _s: None))
+
+    lk = side_lock(ref.id, 0)
+    store2 = _contended_store(store)
+    try:
+        t1, r1 = _run_in_thread(
+            lambda: store2.drafts.add_chunks(
+                ref_id=ref.id,
+                chunk_kind="paragraph",
+                text="one",
+                at={"last": True},
+            )
+        )
+        t2, r2 = _run_in_thread(
+            lambda: store2.drafts.add_chunks(
+                ref_id=ref.id,
+                chunk_kind="paragraph",
+                text="two",
+                at={"last": True},
+            )
+        )
+        time.sleep(1.5 * CONTENDED_LOCK_TIMEOUT_MS / 1000)
+        lk.release()
+        t1.join(timeout=10)
+        t2.join(timeout=10)
+    finally:
+        store2.close()
+
+    assert not t1.is_alive() and not t2.is_alive()
+    for result in (r1, r2):
+        assert "error" not in result, result.get("error")
+    assert {c.text for c in r1["value"] + r2["value"]} == {"one", "two"}
+
+
+def test_section_lock_held_past_retry_budget_reraises(store: Store, side_lock) -> None:
+    proj = _project(store)
+    ref, _title = store.drafts.create_draft(
+        name="d5", title="Title", project_ref_id=proj
+    )
+
+    lk = side_lock(ref.id, 0)
+    store2 = _contended_store(store)
+    try:
+        t, result = _run_in_thread(
+            lambda: store2.drafts.add_chunks(
+                ref_id=ref.id,
+                chunk_kind="paragraph",
+                text="never lands",
+                at={"last": True},
+            )
+        )
+        t.join(timeout=15)
+    finally:
+        lk.release()
+        store2.close()
+
+    assert not t.is_alive()
+    assert isinstance(result.get("error"), LockNotAvailable), result.get("error")
+
+
+def test_non_lock_errors_are_not_retried(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    proj = _project(store)
+    ref, _title = store.drafts.create_draft(
+        name="d6", title="Title", project_ref_id=proj
+    )
+
+    opens = {"n": 0}
+    real_tx = store.drafts.tx
+
+    def counting_tx() -> Any:
+        opens["n"] += 1
+        return real_tx()
+
+    monkeypatch.setattr(store.drafts, "tx", counting_tx)
+    with pytest.raises(NotFound):
+        store.drafts.add_chunks(
+            ref_id=ref.id,
+            chunk_kind="paragraph",
+            text="x",
+            at={"after": "dc999999999"},
+        )
+    assert opens["n"] == 1

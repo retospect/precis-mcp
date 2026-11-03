@@ -28,7 +28,7 @@ import re
 from collections.abc import Callable, Iterable, Sequence
 from contextlib import AbstractContextManager
 from dataclasses import dataclass, field, replace
-from functools import cached_property
+from functools import cached_property, wraps
 from typing import TYPE_CHECKING, Any
 
 import psycopg
@@ -45,6 +45,7 @@ from precis.store._draft_review_ops import (
 )
 from precis.store.core import StoreCore
 from precis.utils import handle_registry
+from precis.utils.db_retry import retry_locked
 from precis.utils.fractional import key_between, n_keys_between
 from precis.utils.handles import new_handle
 
@@ -601,6 +602,33 @@ class _AbbrevMixin:
                 (Jsonb(sorted(existing - set(clean))), ref_id),
             )
         return (removed, sorted(set(clean) - existing))
+
+
+def _write_retried[**P, T](fn: Callable[P, T]) -> Callable[P, T]:
+    """Bounded lock-contention retry for a public :class:`DraftStore` write.
+
+    Sibling writes to one draft serialize on the ``(ref, section)``
+    ``pg_advisory_xact_lock`` (:meth:`DraftStore._lock_sections`), and an
+    in-place chunk edit can wait on a structural op's span-wide ``FOR
+    UPDATE`` — under prod's ``lock_timeout='5s'`` the slower waiter
+    surfaced a bare ``LockNotAvailable`` although the write was safe to
+    replay (gr553312: five lost put/edit turns in ~30 min against one
+    draft's sibling chunks). Each op opens its own ``self.tx()``, so
+    re-invoking the whole method satisfies :func:`retry_locked`'s
+    fresh-transaction contract. Non-lock errors propagate untouched; an
+    exhausted budget reraises the original error — dispatch maps it to
+    the same Upstream retry hint as before.
+    """
+
+    @wraps(fn)
+    def wrapper(*args: P.args, **kwargs: P.kwargs) -> T:
+        return retry_locked(
+            lambda: fn(*args, **kwargs),
+            attempts=3,
+            label=f"draft {fn.__name__}",
+        )
+
+    return wrapper
 
 
 class DraftStore(_AbbrevMixin):
@@ -2599,6 +2627,7 @@ class DraftStore(_AbbrevMixin):
             )
         return new_ref
 
+    @_write_retried
     def add_chunks(
         self,
         *,
@@ -2707,6 +2736,7 @@ class DraftStore(_AbbrevMixin):
                 )
         return out
 
+    @_write_retried
     def add_figure(
         self,
         *,
@@ -3107,6 +3137,7 @@ class DraftStore(_AbbrevMixin):
             )
         return self.get_draft_chunk(handle)
 
+    @_write_retried
     def set_chunk_style(self, handle: str, style: str | None) -> DraftChunk | None:
         """Set (or clear) a heading chunk's section style. Writes
         ``meta.style`` (a skill slug) in place — metadata-only, no
@@ -3147,6 +3178,7 @@ class DraftStore(_AbbrevMixin):
             )
         return self.get_draft_chunk(handle)
 
+    @_write_retried
     def patch_chunk_meta(
         self,
         handle: str,
@@ -3217,6 +3249,7 @@ class DraftStore(_AbbrevMixin):
         "ordering",
     )
 
+    @_write_retried
     def set_term_attrs(self, handle: str, attrs: dict[str, Any]) -> DraftChunk | None:
         """Patch a ``term`` leaf's attribute bag/hover surfaces in place —
         ``manufacturer``/``mpn``/``url``/``ordering``/``short``/
@@ -3311,6 +3344,7 @@ class DraftStore(_AbbrevMixin):
             )
         return meta
 
+    @_write_retried
     def set_list_kind(
         self,
         handle: str,
@@ -3487,6 +3521,7 @@ class DraftStore(_AbbrevMixin):
                 ).fetchone()
         return None
 
+    @_write_retried
     def scaffold_sections(
         self,
         ref_id: int,
@@ -3580,6 +3615,7 @@ class DraftStore(_AbbrevMixin):
             (chunk_id, kind, Jsonb(payload)),
         )
 
+    @_write_retried
     def edit_text(
         self,
         handle: str,
@@ -3716,6 +3752,7 @@ class DraftStore(_AbbrevMixin):
             (row[0], sha, row[5], Jsonb(source or {})),
         )
 
+    @_write_retried
     def replace_block_content(
         self,
         handle: str,
@@ -4110,6 +4147,7 @@ class DraftStore(_AbbrevMixin):
         (:attr:`review`)."""
         return self.review.review_diff_since(chunk_id, since_sha)
 
+    @_write_retried
     def move_chunk(
         self,
         handle: str,
@@ -4159,6 +4197,7 @@ class DraftStore(_AbbrevMixin):
             )
         return self.get_draft_chunk(handle, kind=kind)
 
+    @_write_retried
     def retire_chunk(
         self,
         handle: str,
@@ -4238,6 +4277,7 @@ class DraftStore(_AbbrevMixin):
                 )
                 self._log(conn, chunk_id, "retired", source, None)
 
+    @_write_retried
     def merge_prev_block(
         self,
         handle: str,
