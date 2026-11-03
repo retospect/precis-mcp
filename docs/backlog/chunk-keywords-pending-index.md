@@ -1,11 +1,20 @@
 ---
-status: ready
+status: in-progress
 pillar: platform
 ---
 
 # Pre-build chunks_keywords_pending_idx on prod, then ship its migration
 
 Ops item, not a code change — gr520236 / gr550973 (chunk_keywords drain).
+
+**Code drafted, blocked on the ops step.** The guard-only migration
+(`src/precis/migrations/0274_chunks_keywords_pending_idx.sql`) and its
+test (`tests/test_migration_0274_chunks_keywords_pending_idx.py`) are
+committed on `fix/chunk-keywords-pending-index`. Do NOT land/merge
+0274 until ops has pre-built `chunks_keywords_pending_idx`
+CONCURRENTLY on prod (DDL below) — on prod's ~4.7M-row `chunks`, the
+migration's guard refuses to build it inline and the apply fails,
+blocking the deploy pipeline until the pre-build lands.
 
 The dedicated chunk_keywords lane claims the fresh backlog
 `WHERE keywords IS NULL … ORDER BY chunk_id DESC` (newest-first, so
