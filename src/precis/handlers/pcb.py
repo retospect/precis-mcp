@@ -38,7 +38,9 @@ pixels. The verbs map onto the seven-verb surface:
   edits. ``op='part'`` (``{'refdes','part'}`` or ``moves=[...]``) binds a
   SELECTED catalog C-number to an existing generic component — the edit the
   create-or-extend re-put ruling excludes — re-stamping footprint/height/
-  courtyard from the catalog under the judge. ``op='footprint'`` (gr341532
+  courtyard from the catalog under the judge, and (gr553735) the component's
+  value + label too: explicit ``label=``/``value=`` win, else the value
+  restamps from the catalog row and a generated label follows it. ``op='footprint'`` (gr341532
   fix 3) pulls a catalog part's real pad
   geometry into the ``part_footprints`` cache (``part='C639448'`` or
   ``parts=[...]``, ``force=True`` to re-pull) through the live EasyEDA/JLC
@@ -433,6 +435,9 @@ _REPUT_FIELD_OPS: dict[str, str] = {
     "fixed": "op='move'",
     "max_travel_mm": "op='move'",
     "pins": "op='pins'",
+    "part": "op='part'",
+    "label": "op='part' (label=)",
+    "value": "op='part' (value=)",
     # op='pins' annotates REAL pins only and refuses a name the component
     # lacks — a pin the design never declared is minted by wiring it,
     # then annotated.
@@ -1225,6 +1230,9 @@ class PcbHandler(Handler):
                 "ground",
                 "part",
                 "parts",
+                # op='part' label/value restamp (gr553735).
+                "label",
+                "value",
                 "footprint",
                 "force",
                 "phase",
@@ -2765,10 +2773,17 @@ class PcbHandler(Handler):
         does the one live lookup and catalogues it. The mutation runs
         under the judge: a real footprint whose stamped courtyard newly
         collides refuses and rolls back. Afterwards run
-        ``op='footprint'`` for parts whose footprint the cache lacks."""
+        ``op='footprint'`` for parts whose footprint the cache lacks.
+        Optional ``label=``/``value=`` (per move in bulk form) restamp
+        the component's display label and stored value — gr553735: a
+        re-bind to a different-valued part otherwise leaves BOM/silk/
+        schematic reading the old value; unset, the value restamps from
+        the bound catalog row and a generated label follows it. An
+        explicitly empty ``label=``/``value=`` refuses — a blank is a
+        caller mistake, not a restamp request."""
         from precis.pcb.catalog import lcsc_id
 
-        entries: list[tuple[str, str]] = []
+        entries: list[tuple[str, str, str | None, str | None]] = []
         raw = args.get("moves")
         if raw is not None:
             if not isinstance(raw, list) or not raw:
@@ -2795,7 +2810,16 @@ class PcbHandler(Handler):
                         next="args={'op':'part','moves':[{'refdes':'R10',"
                         "'part':'C25741'}]}",
                     )
-                entries.append((rd, pn))
+                lbl = item.get("label") if isinstance(item, dict) else None
+                val = item.get("value") if isinstance(item, dict) else None
+                entries.append(
+                    (
+                        rd,
+                        pn,
+                        str(lbl).strip() if lbl is not None else None,
+                        str(val).strip() if val is not None else None,
+                    )
+                )
         else:
             rd = str(args.get("refdes") or "").strip()
             pn = str(args.get("part") or "").strip()
@@ -2804,27 +2828,45 @@ class PcbHandler(Handler):
                     "op='part' needs args.refdes and args.part (an LCSC C-number)",
                     next="args={'op':'part','refdes':'R10','part':'C25741'}",
                 )
-            entries.append((rd, pn))
+            entries.append(
+                (
+                    rd,
+                    pn,
+                    str(args["label"]).strip()
+                    if args.get("label") is not None
+                    else None,
+                    str(args["value"]).strip()
+                    if args.get("value") is not None
+                    else None,
+                )
+            )
 
-        canon: list[tuple[str, str]] = []
-        for rd, pn in entries:
+        canon: list[tuple[str, str, str | None, str | None]] = []
+        for rd, pn, lbl, val in entries:
             c = lcsc_id(pn)
             if c is None:
                 raise BadInput(
                     f"pcb: op='part' part must be an LCSC C-number (got {pn!r})",
                     next="search(kind='part', q='<value package>') finds one",
                 )
-            canon.append((rd, c))
+            for name, v in (("label", lbl), ("value", val)):
+                if v == "":
+                    raise BadInput(
+                        f"pcb: op='part' {name}= must be non-empty — "
+                        "omit it to restamp from the bound catalog row",
+                        next="args={'op':'part','refdes':'R10','part':'C25741'}",
+                    )
+            canon.append((rd, c, lbl, val))
 
         with self.store.pool.connection() as conn:
             known = {
                 str(r[0])
                 for r in conn.execute(
                     "SELECT lcsc FROM parts WHERE lcsc = ANY(%s)",
-                    ([c for _, c in canon],),
+                    ([c for _, c, _l, _v in canon],),
                 ).fetchall()
             }
-        missing = sorted({c for _, c in canon if c not in known})
+        missing = sorted({c for _, c, _l, _v in canon if c not in known})
         if missing:
             raise BadInput(
                 f"pcb: op='part': {', '.join(missing)} not in the catalog — "
@@ -2834,10 +2876,13 @@ class PcbHandler(Handler):
             )
 
         rows: list[dict[str, str]] = []
+        warns: list[str] = []
 
         def apply(conn: Any) -> bool:
-            for rd, c in canon:
-                out = self.store.pcb_bind_part(ref.id, rd, c, conn=conn)
+            for rd, c, lbl, val in canon:
+                out = self.store.pcb_bind_part(
+                    ref.id, rd, c, label=lbl, value=val, conn=conn
+                )
                 if out is None:
                     raise NotFound(
                         f"pcb instance {rd!r} not found in {ref.slug!r}",
@@ -2856,14 +2901,22 @@ class PcbHandler(Handler):
                         "part": c,
                         "previous": f"(prev {prev})",
                         "stamped": stamped + note,
+                        "label": str(out["label"]),
+                        "value": str(out["value"] or "—"),
                     }
                 )
+                if out["label_warn"]:
+                    warns.append(f"{rd}: {out['label_warn']}")
             return True
 
         _, judged = self._judged_mutation(ref.id, apply)
         body = (
             f"# part — {len(canon)} bound\n"
-            + render_agent_table(rows, schema=["refdes", "part", "previous", "stamped"])
+            + render_agent_table(
+                rows,
+                schema=["refdes", "part", "previous", "stamped", "value", "label"],
+            )
+            + "".join(f"warn: {w}\n" for w in warns)
             + "\n"
         )
         if judged.standing:

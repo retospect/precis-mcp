@@ -135,6 +135,48 @@ def _jsonb_or_none(value: Any) -> Jsonb | None:
     return Jsonb(value) if value is not None else None
 
 
+#: The ``parts.params`` attribute names ``op='part'``'s value restamp
+#: reads, in precedence order — the jlcparts/LCSC parametric spellings
+#: ``normalize_jlcparts_row`` stores verbatim (the same names
+#: ``pcb.passive._RES_PARAM_OHM_KEYS`` and ``bom_nudge._JLC_UNITS``
+#: read). An IC/diode/connector row carries none of them. The .epro2
+#: ATTR spellings differ — ``epro._PART_VALUE_KEYS``.
+_CATALOG_VALUE_KEYS = (
+    "Resistance",
+    "Resistance (Ohms)",
+    "Resistance(Ω)",
+    "Capacitance",
+    "Inductance",
+    "Value",
+)
+
+
+def _catalog_part_value(params: dict[str, Any]) -> str | None:
+    """The catalog row's value token for ``op='part'``'s restamp — the
+    first non-empty ``parts.params`` attribute under
+    :data:`_CATALOG_VALUE_KEYS`, else ``None`` (the stored value then
+    keeps the same COALESCE rule the geometry fields get)."""
+    for key in _CATALOG_VALUE_KEYS:
+        v = params.get(key)
+        if isinstance(v, str) and v.strip():
+            return v.strip()
+        if isinstance(v, (int, float)) and not isinstance(v, bool):
+            return str(v)
+    return None
+
+
+def _value_token_norm(token: str) -> str:
+    """A value token's compare form — case-folded, minus one trailing
+    unit suffix — so the label's ``2.7M`` matches the catalog's
+    ``2.7MΩ`` while ``4.7k`` never reads as ``4.7`` (gr553735 review:
+    the in-place label swap is token-bounded, not a substring hit)."""
+    t = token.strip().lower()
+    for unit in ("ohms", "ohm", "ω", "f", "h"):
+        if t.endswith(unit) and len(t) > len(unit):
+            return t[: -len(unit)]
+    return t
+
+
 def _json_same(a: Any, b: Any) -> bool:
     """Structural equality tolerant of the jsonb round-trip — numbers
     compare by value (an authored ``10`` reads back ``10.0``), dicts and
@@ -1577,6 +1619,10 @@ class PcbMixin:
         changed("centroid", row[13])
         changed("height_mm", row[14])
         changed("note", row[15])
+        # ``value`` lives at ``meta.part.value`` (the stamped value;
+        # op='part' rewrites it, gr553735) — diffed against the stored
+        # blob the same presence-based way.
+        changed("value", (c_meta.get("part") or {}).get("value"))
         for k in cls._REPUT_COMPONENT_META_KEYS:
             changed(k, c_meta.get(k))
         changed("part_meta", c_meta.get("part"))
@@ -1807,6 +1853,8 @@ class PcbMixin:
         refdes: str,
         lcsc: str,
         *,
+        label: str | None = None,
+        value: str | None = None,
         conn: Connection,
     ) -> dict[str, Any] | None:
         """Bind a catalog C-number to one LIVE component (op='part').
@@ -1819,12 +1867,31 @@ class PcbMixin:
         part's stamp REPLACES the old per field when the catalog has one
         (a re-bind to a different part must not keep the old geometry),
         and a catalog field the new part lacks keeps the stored value.
-        Poses, pins and nets are never touched. Returns the previous
-        binding + the applied stamp, or ``None`` when no live instance
-        carries ``refdes`` on this design."""
+        Poses, pins and nets are never touched.
+
+        gr553735: the same op restamps the component's value
+        (``meta.part.value``) and label — a re-bind to a different-VALUED
+        part otherwise leaves BOM/silk/schematic reading the old value.
+        ``value=`` wins outright; unset, the stored value restamps from
+        the bound catalog row's ``params`` (:func:`_catalog_part_value`)
+        — a catalog row with no value token keeps the stored one (the
+        same COALESCE rule as the geometry fields) and warns the label
+        may now be stale. ``label=`` wins outright; unset, a label that
+        embeds the OLD value as one whitespace-bounded token (the put's
+        own generated label) is regenerated in-place by swapping that
+        token for the new — token-bounded so an old ``1`` can't mangle
+        ``100k``/``1%`` the way a substring replace would, and so
+        ``4.7`` never reads inside ``4.7k`` (:func:`_value_token_norm`
+        folds the unit suffix when the catalog adds one, e.g. Ω). A
+        label without the old value reads as hand-written, is kept, and
+        the reply warns the label no longer names the bound value.
+        Every other component field is untouched.
+        Returns the previous binding + the applied stamp + the effective
+        label/value + a label warning (empty when none), or ``None`` when
+        no live instance carries ``refdes`` on this design."""
         row = conn.execute(
             "SELECT c.component_id, c.part_lcsc, c.footprint, c.height_mm, "
-            "       c.courtyard "
+            "       c.courtyard, c.label, c.meta "
             "FROM pcb_components c "
             "JOIN pcb_instances i ON i.component_id = c.component_id "
             "WHERE i.ref_id = %s AND i.refdes = %s "
@@ -1835,6 +1902,46 @@ class PcbMixin:
         if row is None:
             return None
         resolved = self._pcb_resolve_parts(conn, [lcsc]).get(lcsc) or {}
+        prow = conn.execute(
+            "SELECT params FROM parts WHERE lcsc = %s", (lcsc,)
+        ).fetchone()
+        new_value = (
+            value
+            if value is not None
+            else _catalog_part_value(
+                dict(prow[0]) if prow is not None and prow[0] else {}
+            )
+        )
+        old_meta = dict(row[6] or {})
+        old_value = (old_meta.get("part") or {}).get("value")
+        old_value = str(old_value) if old_value is not None else ""
+        stored_label = str(row[5])
+        new_label = label
+        label_warn = ""
+        if label is None:
+            if old_value and new_value and old_value != new_value:
+                tokens = stored_label.split(" ")
+                old_norm = _value_token_norm(old_value)
+                for i, tok in enumerate(tokens):
+                    if _value_token_norm(tok) == old_norm:
+                        tokens[i] = new_value
+                        new_label = " ".join(tokens)
+                        break
+            if new_label is None and stored_label != refdes:
+                if new_value:
+                    named = {_value_token_norm(t) for t in stored_label.split(" ")}
+                    if _value_token_norm(new_value) not in named:
+                        label_warn = (
+                            f"label {stored_label!r} kept — it does not name "
+                            f"the bound part's value {new_value!r} "
+                            "(hand-written label)"
+                        )
+                else:
+                    label_warn = (
+                        f"catalog row {lcsc} names no value — stored value "
+                        f"and label {stored_label!r} kept; the label may be "
+                        "stale (label=/value= can set it)"
+                    )
         conn.execute(
             "UPDATE pcb_components SET "
             "  part_lcsc = %s, "
@@ -1850,6 +1957,26 @@ class PcbMixin:
                 int(row[0]),
             ),
         )
+        sets: list[str] = []
+        stamp_args: list[Any] = []
+        if new_label is not None and new_label != stored_label:
+            sets.append("label = %s")
+            stamp_args.append(new_label)
+        if new_value is not None and new_value != old_value:
+            # jsonb_set creates only the LAST missing key — a component
+            # with no meta.part (the common generic) would silently keep
+            # the old blob; || builds the 'part' object itself.
+            sets.append(
+                "meta = meta || jsonb_build_object('part', "
+                "COALESCE(meta->'part', '{}'::jsonb) || "
+                "jsonb_build_object('value', %s::jsonb))"
+            )
+            stamp_args.append(Jsonb(new_value))
+        if sets:
+            conn.execute(
+                f"UPDATE pcb_components SET {', '.join(sets)} WHERE component_id = %s",
+                (*stamp_args, int(row[0])),
+            )
         return {
             "component_id": int(row[0]),
             "previous_lcsc": row[1],
@@ -1858,6 +1985,9 @@ class PcbMixin:
                 for k in ("footprint", "height_mm", "courtyard")
                 if resolved.get(k) is not None
             },
+            "label": new_label if new_label is not None else stored_label,
+            "value": new_value,
+            "label_warn": label_warn,
         }
 
     def _pcb_card_text(self, conn: Connection, ref_id: int, title: str) -> str:
