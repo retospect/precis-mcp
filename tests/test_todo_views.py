@@ -159,6 +159,37 @@ def test_doable_skips_waiting_leaves(handler: TodoHandler) -> None:
     _ = leaf  # silence unused
 
 
+def test_doable_skips_plan_control_nodes(handler: TodoHandler) -> None:
+    """A gate / loop / generator / phase node is evaluated by the plan tick,
+    never worked: listing one as a claimable leaf invites "mark it done",
+    which opens the gate early (gr559623). A plain task beside it stays."""
+    root = handler.put(text="Strategic.", meta={"rotation_root": True})
+    root_id = _id_of(root.body)
+    held = handler.put(text="Resume DBOWN on the ninth.", parent_id=root_id)
+    held_id = _id_of(held.body)
+    gate = handler.put(
+        text="not before 2026-11-09Z",
+        parent_id=held_id,
+        meta={
+            "gate": {"kind": "not-before", "args": {"ts": "2026-11-09T00:00:00Z"}},
+            "llm_tier": None,
+        },
+    )
+    gate_id = _id_of(gate.body)
+    handler.put(
+        text="A phase that closes itself.",
+        parent_id=root_id,
+        meta={"auto_close": True, "llm_tier": None},
+    )
+    plain = handler.put(text="A plain task.", parent_id=root_id)
+    plain_id = _id_of(plain.body)
+    out = handler.search(view="doable")
+    assert f"td{gate_id}" not in out.body
+    assert "not before 2026-11-09Z" not in out.body
+    assert "A phase that closes itself." not in out.body
+    assert f"td{plain_id}" in out.body
+
+
 def test_doable_skips_paused_subtree(handler: TodoHandler) -> None:
     root = handler.put(text="Strategic.", meta={"rotation_root": True})
     root_id = _id_of(root.body)

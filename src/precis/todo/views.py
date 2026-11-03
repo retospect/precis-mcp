@@ -24,6 +24,7 @@ from precis.store._todo_sql import (  # noqa: F401  (re-export)
     _DOABLE_EXCLUSION_TAGS,
     _doable_exclusion_clause,
     direction_todo_sql,
+    plan_control_node_sql,
 )
 from precis.todo import TERMINAL_TODO_STATUSES, blocker_terminal_sql
 from precis.todo.guards import todo_root_sql
@@ -1108,6 +1109,9 @@ def _fetch_doable(
            -- normal worker-mintable subtasks (no ``meta.schedule`` of
            -- their own) and pass through untouched.
            AND NOT (r.meta ? 'schedule')
+           -- Plan control nodes (gate / loop / generator / phase) are the
+           -- tick's to evaluate, never a leaf to work (gr559623).
+           AND NOT {plan_control_node_sql("r")}
            {under_clause}
          ORDER BY prio ASC,
                   ((picks_7d + 1) / (1 + COALESCE(sv.w, 0))) ASC,

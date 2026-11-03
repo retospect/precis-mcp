@@ -80,6 +80,29 @@ def _doable_exclusion_clause(tag_alias: str = "t", reftag_alias: str = "rt") -> 
     return "(" + " OR ".join(parts) + ")"
 
 
+def plan_control_node_sql(alias: str) -> str:
+    """SQL predicate: the ``alias`` row is a plan **control** node — a
+    gate, loop, generator or phase (``precis.plans.nodes.node_kind`` not
+    in ``None``/``task``).
+
+    Control nodes are evaluated by the ``plan_dispatch`` tick, never
+    worked: a not-before gate closes when the clock passes its ``ts``, a
+    generator when its children are minted. Listing one in
+    ``view='doable'`` invites an agent to "mark the leaf done" and open the
+    gate early (gr559623). Mirrors ``node_kind``: ``gate`` / ``loop`` /
+    ``generate`` present and not JSON null, or ``auto_close`` true.
+    ``alias`` is a trusted table alias — never user input.
+    """
+    return (
+        "("
+        f"COALESCE(jsonb_typeof({alias}.meta->'gate'), 'null') <> 'null'"
+        f" OR COALESCE(jsonb_typeof({alias}.meta->'loop'), 'null') <> 'null'"
+        f" OR COALESCE(jsonb_typeof({alias}.meta->'generate'), 'null') <> 'null'"
+        f" OR COALESCE(({alias}.meta->>'auto_close')::boolean, false)"
+        ")"
+    )
+
+
 def todo_root_sql(alias: str) -> str:
     """SQL predicate: the ``alias`` row is a todo-tree *root*.
 
