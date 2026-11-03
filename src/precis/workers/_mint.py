@@ -79,6 +79,71 @@ def active_job_id(conn: Any, idem_key: str) -> int | None:
     return int(row[0]) if row else None
 
 
+def latest_job_for_idem(
+    conn: Any, idem_key: str
+) -> tuple[int, str | None, str | None, str | None] | None:
+    """The newest job carrying ``meta.idem_key`` — any STATUS, terminal or
+    live — as ``(ref_id, status, finished_at, error)``, else ``None``.
+
+    Complements :func:`active_job_id` for a caller that also needs the
+    terminal record: the retry gate that refuses a re-mint while the last
+    attempt's failure is still fresh (``paper_ingest``'s DOI window,
+    gr551840). ``status``/``finished_at``/``error`` are ``None``-safe
+    mirrors of the row's tags and meta. ``finished_at`` falls back to the
+    row's ``updated_at``/``created_at`` stamp (naive UTC text — the
+    caller's parser treats naive as UTC): every terminal write through
+    ``add_tag`` stamps ``meta.finished_at``, but a STATUS written by
+    another path or a hand-edit can leave it absent, and a terminal job
+    with no readable stamp still ends the window on its row timestamp."""
+    row = conn.execute(
+        """
+        SELECT r.ref_id,
+               (SELECT t.value
+                  FROM ref_tags rt JOIN tags t USING (tag_id)
+                 WHERE rt.ref_id = r.ref_id
+                   AND t.namespace = 'STATUS'
+                 LIMIT 1),
+               COALESCE(r.meta->>'finished_at',
+                        (r.updated_at AT TIME ZONE 'UTC')::text,
+                        (r.created_at AT TIME ZONE 'UTC')::text),
+               r.meta->>'error'
+          FROM refs r
+         WHERE r.kind = 'job' AND r.retired_at IS NULL
+           AND r.meta->>'idem_key' = %s
+         ORDER BY r.ref_id DESC
+         LIMIT 1
+        """,
+        (idem_key,),
+    ).fetchone()
+    if row is None:
+        return None
+    return (
+        int(row[0]),
+        str(row[1]) if row[1] is not None else None,
+        str(row[2]) if row[2] is not None else None,
+        str(row[3]) if row[3] is not None else None,
+    )
+
+
+def meta_marked_mints_24h(
+    conn: Any, *, job_type: str, meta_key: str, meta_value: str
+) -> int:
+    """``kind='job'`` rows minted in the rolling 24 h carrying
+    ``meta.<meta_key> = <meta_value>`` — the count a mint-side daily cap
+    checks (``paper_ingest``'s get-origin cap on ``discovered_via='get'``,
+    gr551840 review; the ``struct_neb_quest_mints_24h`` shape). ``conn``
+    runs the count inside the caller's mint-lock transaction so the check
+    and the insert serialize."""
+    row = conn.execute(
+        "SELECT count(*) FROM refs "
+        "WHERE kind = 'job' AND retired_at IS NULL "
+        "AND meta->>'job_type' = %s AND meta ->> %s = %s "
+        "AND created_at > now() - interval '24 hours'",
+        (job_type, meta_key, meta_value),
+    ).fetchone()
+    return int(row[0]) if row else 0
+
+
 def mint_job_once(
     store: Store,
     *,
@@ -191,6 +256,8 @@ __all__ = [
     "JOB_TERMINAL_STATUSES",
     "active_job_id",
     "idem_lock_key",
+    "latest_job_for_idem",
+    "meta_marked_mints_24h",
     "mint_background_job",
     "mint_job_once",
 ]

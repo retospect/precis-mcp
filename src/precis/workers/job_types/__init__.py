@@ -694,6 +694,15 @@ def _load_paper_pull() -> JobTypeSpec:
     return paper_pull.SPEC
 
 
+def _load_paper_ingest() -> JobTypeSpec:
+    # Acquire one DOI-requested paper — the enqueued half of
+    # get(kind='paper', id='<DOI>') on an unheld identifier (gr551840).
+    # job_inproc plugin dispatch.
+    from precis.workers.job_types import paper_ingest
+
+    return paper_ingest.SPEC
+
+
 def _load_youtube_bulk() -> JobTypeSpec:
     # Serialised transcript fetch for a list of video ids — the enqueued
     # half of put(kind='youtube', args={'op': 'fetch_many'}) (gr531240).
@@ -976,6 +985,7 @@ _BUILTIN_JOB_TYPES: tuple[str, ...] = (
     "pcb_argue",
     "pcb_review",
     "paper_pull",
+    "paper_ingest",
     "paper_reextract",
     "pdf_attach",
     "deferred_llm_call",
@@ -1163,6 +1173,9 @@ def get_job_type(name: str) -> JobTypeSpec | None:
     if name == "paper_pull":
         _REGISTRY["paper_pull"] = _load_paper_pull()
         return _REGISTRY["paper_pull"]
+    if name == "paper_ingest":
+        _REGISTRY["paper_ingest"] = _load_paper_ingest()
+        return _REGISTRY["paper_ingest"]
     if name == "paper_reextract":
         _REGISTRY["paper_reextract"] = _load_paper_reextract()
         return _REGISTRY["paper_reextract"]

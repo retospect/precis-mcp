@@ -101,6 +101,7 @@ from precis.store import (
 from precis.store._body_predicate import has_body_sql
 from precis.store._chunks_ops import _year_range_clauses
 from precis.store._identifiers_ops import (
+    _DOI_RE,
     _normalise_identifier,
     detect_identifier_scheme,
 )
@@ -304,6 +305,14 @@ _STATUS_MAX_IDS = 200
 #: (:data:`precis.handlers._numeric_ref.BATCH_ID_CAP`), restated here
 #: because the slug-addressed handler doesn't share that base class.
 _BATCH_ID_CAP = 50
+
+#: Cap on get-triggered DOI ingest mints inside ONE batch call
+#: (gr551840 review): the idem key dedupes a repeated DOI but a batch of
+#: N distinct unheld DOIs would otherwise mint N jobs in one call —
+#: each of which can end on the paid OpenAlex Content leg. Past this
+#: many fresh mints a DOI element renders as plain not-ingested with the
+#: explicit-``put`` hint (reused/blocked outcomes don't spend the cap).
+_BATCH_DOI_QUEUE_CAP = 5
 
 _SUPPORTED_VIEWS = (
     "bibtex",
@@ -2054,6 +2063,7 @@ class PaperHandler(Handler):
         q: Any = None,
         view: Any = None,
         context: Any = None,
+        _queue_budget: list[int] | None = None,
     ) -> Response:
         """``get(id='<slug>', q='…')`` — matching passages inside one paper.
 
@@ -2061,6 +2071,10 @@ class PaperHandler(Handler):
         ``id=None`` keeps ``get``'s older delegation to ``search`` so the
         bare ``get(kind='paper', q='…')`` shape doesn't regress
         (gr486840). cfp/datasheet inherit this unchanged.
+
+        ``_queue_budget`` is the per-batch mint counter
+        (:data:`_BATCH_DOI_QUEUE_CAP`) the list form threads into each
+        element's unheld-DOI queue door — private, one mutable slot.
         """
         from precis.handlers._find_in_ref import find_preflight, find_response
 
@@ -2100,9 +2114,19 @@ class PaperHandler(Handler):
                     ),
                 )
             blocks: list[str] = []
+            queue_budget = (
+                _queue_budget if _queue_budget is not None else [_BATCH_DOI_QUEUE_CAP]
+            )
             for elem in id:
                 try:
-                    blocks.append(self.find_in_ref(id=elem, view=view, q=q).body)
+                    blocks.append(
+                        self.find_in_ref(
+                            id=elem,
+                            view=view,
+                            q=q,
+                            _queue_budget=queue_budget,
+                        ).body
+                    )
                 except NotFound:
                     blocks.append(f"{elem}  not found")
                 except Gone:
@@ -2115,7 +2139,16 @@ class PaperHandler(Handler):
                 result_count=len(id),
             )
         find_preflight(kind=self.spec.kind, id=id, view=view, q=q)
-        raw_id = _maybe_resolve_doi(self.store, str(id))
+        try:
+            raw_id = _maybe_resolve_doi(self.store, str(id))
+        except NotFound:
+            # gr551840: an unheld well-formed DOI queues ingest, same
+            # door as the plain get below (the batch loop shares its
+            # mint budget through ``_queue_budget``).
+            queued = _queue_doi_ingest(self.store, str(id), budget=_queue_budget)
+            if queued is not None:
+                return queued
+            raise
         slug, chunk_spec, path_view = _parse_paper_id(raw_id, self.spec.kind)
         if path_view is not None:
             raise BadInput(
@@ -2178,7 +2211,16 @@ class PaperHandler(Handler):
             return self._render_list_papers()
         if isinstance(id, list):
             return self._get_batch(id, view=view)
-        raw_id = _maybe_resolve_doi(self.store, str(id))
+        try:
+            raw_id = _maybe_resolve_doi(self.store, str(id))
+        except NotFound:
+            # gr551840 (Reto ruling 2026-11-02): a well-formed DOI nobody
+            # holds earns an ingest job, not a repeated error — the ack
+            # names it and the retry lands on the same door.
+            queued = _queue_doi_ingest(self.store, str(id))
+            if queued is not None:
+                return queued
+            raise
         kind = self.spec.kind
         slug, chunk_spec, path_view = _parse_paper_id(raw_id, kind)
 
@@ -2371,6 +2413,7 @@ class PaperHandler(Handler):
             # other verb (the gr501175 arg sample).
             return self._fetch_status_view([str(i) for i in ids])
         blocks: list[str] = []
+        queue_budget = [_BATCH_DOI_QUEUE_CAP]
         for elem in ids:
             shown = str(elem)
             try:
@@ -2386,7 +2429,15 @@ class PaperHandler(Handler):
                 )
                 blocks.append(self._batch_summary(ref))
             except NotFound:
-                blocks.append(f"{shown}  not found")
+                # gr551840: an unheld well-formed DOI element queues its
+                # ingest job like the single-id get does — bounded per
+                # call by _BATCH_DOI_QUEUE_CAP (the review's N-paid-legs
+                # hole): past it the element reads as plain
+                # not-ingested with the explicit-put hint.
+                queued = _queue_doi_ingest(self.store, shown, budget=queue_budget)
+                blocks.append(
+                    queued.body if queued is not None else f"{shown}  not found"
+                )
             except Gone:
                 blocks.append(f"{shown}  deleted")
         body = f"# {len(ids)} {kind}s (batch)\n\n" + "\n\n".join(blocks)
@@ -9908,18 +9959,34 @@ def _maybe_resolve_doi(store: Store, raw: str) -> str:
         # directly, or register the claim now in acquisition mode
         # (``wants=``/``provenance=`` — a bare ``cited_in='doi:'`` is
         # rejected, the link parser has no 'doi' kind; gr311341).
-        # ``get`` refuses rather than queueing the fetch itself because
-        # the cascade can end on the paid OpenAlex Content leg (~$0.01 a
-        # file; gr494831) — the hint names the cost so the caller makes
-        # the call. Kept short: the MCP client already appends the tool
+        # Spend control (gr551840 + review): the fetch cascade can end
+        # on the paid OpenAlex Content leg (~$0.01/file, gr494831), so
+        # an unheld-DOI get queues a bounded ingest — a fleet-wide
+        # rolling-24h cap (PRECIS_GET_DOI_QUEUE_DAILY, default 50) plus
+        # _BATCH_DOI_QUEUE_CAP per batch — and lands here when a cap is
+        # spent, the scope is read-only, or the DOI is malformed. The
+        # non-DOI schemes never queue: the hint text keeps that split
+        # honest. Kept short: the MCP client already appends the tool
         # schema on isError, so a long hint lands twice (gr516710).
+        from precis.runtime.scope import current_scope
+
+        if scheme == "doi" and current_scope() != "read":
+            queue_wording = (
+                "to mint a stub — get also queues a bounded ingest for "
+                "an unheld DOI (fleet daily cap, 5/batch): the fetch "
+                "can end on the paid OpenAlex Content leg, so the "
+                "spend is the caller's call."
+            )
+        else:
+            queue_wording = (
+                "to mint a stub — get does not queue it: the fetch can "
+                "end on the paid OpenAlex Content leg (~$0.01/file), so "
+                "the spend is the caller's call."
+            )
         raise NotFound(
             f"paper with {scheme.upper()} {base!r} not ingested",
             next=(
-                f"{mint}  "
-                "to mint a stub — get does not queue it: the fetch can "
-                "end on the paid OpenAlex Content leg (~$0.01/file), so "
-                "the spend is the caller's call. To register the claim "
+                f"{mint}  " + queue_wording + " To register the claim "
                 "meanwhile: put(kind='finding', title='<short claim>', "
                 "body='<claim>', "
                 f"wants=[{{{scheme!r}: '{ident}'}}], "
@@ -9929,6 +9996,170 @@ def _maybe_resolve_doi(store: Store, raw: str) -> str:
             ),
         )
     return slug + ("~" + sel if sel else "")
+
+
+def _queueable_doi(raw: str) -> str | None:
+    """The canonical DOI a get id asks about, else ``None`` — every
+    non-DOI shape (non-DOI scheme, malformed DOI-looking id, a bare
+    slug, a chunk selector's empty base) keeps the caller's
+    NotFound/BadInput path untouched."""
+    base, _, _sel = raw.partition("~")
+    if not base or detect_identifier_scheme(base) != "doi":
+        return None
+    from precis.identity import normalize_doi
+
+    doi = normalize_doi(base)
+    if doi is None or _DOI_RE.match(doi) is None:
+        return None
+    return doi
+
+
+def _retired_paper_id_for_doi(store: Store, doi: str) -> int | None:
+    """A retired paper ref still carrying this DOI in
+    ``ref_identifiers``, else ``None``.
+
+    ``retire_ref`` sets ``retired_at`` only — the alias row survives on
+    the tombstone, so the DOI resolves nowhere under
+    ``_maybe_resolve_doi``'s live-only lookup and lands here; the same
+    (id_kind, id_value) join the retire door uses says whether the miss
+    is a tombstone rather than a never-held DOI."""
+    with store.pool.connection() as conn:
+        row = conn.execute(
+            "SELECT pi.ref_id FROM ref_identifiers pi "
+            "JOIN refs r ON r.ref_id = pi.ref_id "
+            "WHERE pi.id_kind = 'doi' AND pi.id_value = %s "
+            "AND r.kind = 'paper' AND r.retired_at IS NOT NULL LIMIT 1",
+            (doi,),
+        ).fetchone()
+    return int(row[0]) if row else None
+
+
+def _queue_doi_ingest(
+    store: Store, raw: str, *, budget: list[int] | None = None
+) -> Response | None:
+    """gr551840 (Reto ruling 2026-11-02): a well-formed DOI no live paper
+    holds earns an ingest job, not a repeated "not ingested" — the gripe
+    showed one probing client re-asking the same DOI 30× in a day and
+    getting an error every time.
+
+    Returns the ack for a queueable DOI id; ``None`` for every other
+    shape so the caller's NotFound/BadInput path stays untouched — a
+    malformed DOI-looking id and a non-DOI scheme keep the acquire-hint
+    error :func:`_maybe_resolve_doi` raises. No network, no fetch, no
+    resolver call here: minting the ``paper_ingest`` row is the whole
+    call — the worker's dispatch verifies the DOI and the ``fetch_oa``
+    pass pulls the paper. The job's ``paper_ingest:<canonical doi>``
+    idem key dedupes the retry loop, and a job that ended inside the
+    retry window reports its failure instead of requeueing.
+
+    Refusals that stay non-error acks (the review's bounds on the mint):
+    a DOI whose only carrier is a retired ref answers the tombstone
+    hint (re-ingesting a deleted paper is not the get's call); the
+    fleet-wide daily cap and the per-batch cap answer the plain
+    not-ingested text with the explicit-``put`` hint. ``budget``
+    carries the batch caller's remaining mint allowance — a one-element
+    list so the decrement survives the batch loop; a fresh mint
+    (``state == 'queued'``) spends one, reuse/blocked/capped outcomes
+    spend nothing. ``None`` also for a read-only scope
+    (``runtime.scope.current_scope() == 'read'``) or a mint that raises
+    the read-only / privilege errors — ``get`` is in
+    ``READ_ONLY_VERBS``, so on a read-only serve or a read-only DB role
+    the caller's original NotFound with the acquire hint is the honest
+    answer."""
+    doi = _queueable_doi(raw)
+    if doi is None:
+        return None
+    tomb = _retired_paper_id_for_doi(store, doi)
+    if tomb is not None:
+        return Response(
+            body=(
+                f"paper with DOI {doi!r} resolves only to a deleted "
+                f"paper (pa{tomb}, soft-deleted) — not queueing an "
+                "ingest"
+                + render_next_section(
+                    [
+                        (
+                            f"get(kind='paper', id='pa{tomb}', view='retired')",
+                            "read the tombstone",
+                        )
+                    ]
+                )
+            )
+        )
+    from precis.runtime.scope import current_scope
+
+    if current_scope() == "read":
+        return None
+    if budget is not None and budget[0] <= 0:
+        return Response(
+            body=(
+                f"paper with DOI {doi!r} not ingested; batch get-queue "
+                f"cap reached ({_BATCH_DOI_QUEUE_CAP} per call) — "
+                f"put(kind='paper', doi='{doi}') to ingest explicitly"
+            )
+        )
+    from precis.workers.job_types import paper_ingest
+
+    try:
+        outcome = paper_ingest.ensure_queued(store, doi)
+    except (
+        psycopg.errors.ReadOnlySqlTransaction,
+        psycopg.errors.InsufficientPrivilege,
+    ):
+        return None
+    if outcome.state == "capped":
+        return Response(
+            body=(
+                f"paper with DOI {doi!r} not ingested; daily get-queue "
+                "cap reached — "
+                f"put(kind='paper', doi='{doi}') to ingest explicitly"
+            )
+        )
+    if outcome.state == "blocked":
+        detail = f" ({outcome.error})" if outcome.error else ""
+        return Response(
+            body=(
+                f"paper with DOI {doi!r} not ingested; the last ingest "
+                f"attempt ended STATUS:{outcome.status} at "
+                f"{outcome.finished_at}{detail} — not requeueing inside "
+                f"the {paper_ingest.REQUEUE_WINDOW_HOURS}h window "
+                f"(that was jo{outcome.job_id}); retry get later"
+                + render_next_section(
+                    [
+                        (
+                            f"get(kind='job', id={outcome.job_id})",
+                            "see the failed ingest attempt",
+                        )
+                    ]
+                )
+            ),
+            ref_id=outcome.job_id,
+        )
+    if outcome.state == "queued" and budget is not None:
+        budget[0] -= 1
+    if outcome.state == "reused":
+        head = (
+            f"not ingested yet; ingest job jo{outcome.job_id} for {doi} "
+            "is already queued/running"
+        )
+    else:
+        head = f"not ingested yet; queued ingest job jo{outcome.job_id} for {doi}"
+    return Response(
+        body=(
+            head
+            + "; retry get in a few minutes"
+            + render_next_section(
+                [
+                    (
+                        f"get(kind='job', id={outcome.job_id})",
+                        "check the ingest job",
+                    )
+                ]
+            )
+        ),
+        ref_id=outcome.job_id,
+        reused=(outcome.state == "reused"),
+    )
 
 
 def _supersede_chain_reaches(

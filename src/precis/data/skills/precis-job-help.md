@@ -124,6 +124,7 @@ next section.
 | `structure_propose` | `claude_inproc` | Turn an instruction into proposed structure ops (tool-less claude, propose-only — a human applies them) |
 | `reading_brief`     | `claude_inproc` | Compose the morning reading-brief cast as a dated draft (see `precis-audio-help`) |
 | `remarkable_send`   | `claude_inproc` | Export a draft in reMarkable mode and upload the PDF to the tablet — siblings `remarkable_papers_send` (cited-source PDFs) and `remarkable_reading_send` (per-source reading edition) |
+| `paper_ingest`      | `job_inproc`    | Acquire one DOI-requested paper — verifies the DOI (Semantic Scholar, then the DOI registries), mints the stub and pins it to the `fetch_oa` queue. Internal: minted by `get(kind='paper', id='<unheld DOI>')` (gr551840), idem key `paper_ingest:<doi>` — a get repeat reuses the live job, a terminal job inside 24h blocks the re-mint |
 
 ## Fleet and dark-factory job_types — queue drains, slices, plan dispatch
 

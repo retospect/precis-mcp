@@ -46,16 +46,30 @@ DOI suffixes can contain `/`, so DOI + view needs the `view=` kwarg — the
 
 ## The DOI isn't indexed yet — how do I get the paper?
 
-`get` never fetches. A DOI that is not held answers "not ingested" and
-names the next call: `put` mints a stub and the fetch worker pulls an
-open-access PDF on its next pass. `get` does not make that call for you
-because the fetch can cost: when no open-access copy exists, the last
-leg is the paid OpenAlex Content API (~$0.01 a file).
+`get` on a well-formed DOI that is not held queues a `paper_ingest` job
+and returns its handle — `not ingested yet; queued ingest job jo<N> for
+<doi>; retry get in a few minutes`. Repeating the `get` reuses the same
+job (any DOI spelling — bare, `doi:`, doi.org URL, any case), so polling
+is safe; a job that already failed inside the 24h window reports its
+failure instead of requeueing. The worker verifies the DOI against
+Semantic Scholar / the DOI registries, mints the stub, and pins it to
+the open-access fetch pass — no fetch runs inside the `get` call.
+
+The queue is bounded — an ingest job can reach the paid OpenAlex fetch
+leg, so spend stays caller-controlled: at most 5 mints per batch `get`,
+a fleet-wide 50 per rolling 24h (`PRECIS_GET_DOI_QUEUE_DAILY`), and no
+queue at all for a DOI whose paper was deleted or on a read-only serve.
+Past a bound the `get` answers the plain `not ingested` text — use
+`put(kind="paper", doi=…)` to ingest explicitly regardless.
 
 ```python
-put(kind="paper", doi="10.1126/sciadv.aeh2779")  # mint stub, queue fetch
+get(kind="paper", id="10.1126/sciadv.aeh2779")  # → queued ingest job jo<N>
+get(kind="job", id=N)  # the ingest job's status
 get(kind="paper", id="10.1126/sciadv.aeh2779")  # works once it is held
 ```
+
+`put(kind="paper", doi=…)` is the same stub + fetch queue from the write
+side — use it when you want the paper ingested, not just looked up.
 
 ## I only have a citation string (journal, volume, page, year)
 
