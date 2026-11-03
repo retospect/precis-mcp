@@ -151,7 +151,11 @@ def test_fixed_validate_warns_exactly_prods_known_findings(
     assert "0 error(s), 4 warning(s)" in body
     # prod's two standing findings survive verbatim; nothing new is added
     assert "undeclared_interpenetration" in body  # axle—fork_left/right
-    assert "crank_bolt" not in body
+    # The findings table only: the header's "fdm findings:" line cites the
+    # per-block print notes (gr551980), and crank_bolt's abstract_joint
+    # note is one of those, not a validator finding.
+    table = body[body.index("{id\t") :]
+    assert "crank_bolt" not in table
 
 
 def test_fixed_clearance_engages_axle_and_bearing_symmetrically(
