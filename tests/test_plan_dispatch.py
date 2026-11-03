@@ -301,7 +301,14 @@ def test_expired_claim_is_released(store: Store) -> None:
     assert pd.run_pass(store).dispatched == 1
 
 
-def _failed_job(store: Store, task: int, reason: str) -> int:
+def _failed_job(
+    store: Store,
+    task: int,
+    reason: str,
+    *,
+    lane: str | None = None,
+    model: str | None = None,
+) -> int:
     with store.tx() as conn:
         ref = mint_background_job(
             store,
@@ -312,6 +319,11 @@ def _failed_job(store: Store, task: int, reason: str) -> int:
             params={"todo_id": task},
             parent_id=task,
             status="failed",
+        )
+    if lane is not None or model is not None:
+        store.stamp_ref_meta(
+            ref.id,
+            {k: v for k, v in (("lane", lane), ("model", model)) if v is not None},
         )
     store.chunks.insert_chunks(
         ref.id, [ChunkInsert(ord=1, text=reason, meta={"chunk_kind": "job_event"})]
@@ -410,6 +422,70 @@ def test_retry_climbs_the_lane_model_ladder(store: Store) -> None:
     assert _jobs_under(store, pinned)[-1][1]["params"]["model"] == (
         "claude-haiku-4-5-20251001"
     )
+
+
+def test_retry_climbs_across_lanes(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """td561544: with a free vendor lane enabled the ladder is cross-lane —
+    the vendor lane's models from its default up, then the Claude lane's.
+    Each retry climbs one rung above where the last attempt ran."""
+    free = L.Lane(
+        name="free",
+        adapter="devin_tree",
+        credential_pool="free",
+        cap=1,
+        task_classes=frozenset({"code"}),
+        vendor="cognition",
+        models=("f-low", "f-high", "f-max"),
+        default_model="f-high",
+    )
+    bare = L.Lane(
+        name="bare",
+        adapter="codex_exec",
+        credential_pool="bare",
+        cap=1,
+        task_classes=frozenset({"code"}),
+        vendor="openai",
+    )
+    sub = L.get_lane("claude-sub")
+    assert sub is not None
+    monkeypatch.setattr(L, "LANES", (free, bare, sub))
+    assert [(r.lane, r.model) for r in L.ladder("code")] == [
+        ("free", "f-high"),
+        ("free", "f-max"),
+        ("bare", None),
+        ("claude-sub", "claude-sonnet-5"),
+        ("claude-sub", "claude-opus-4-8"),
+    ]
+
+    def build(m: T._Minter) -> None:
+        m.node("root", "Plan", {"auto_close": True})
+        m.node("task", "The task", {"op": "run_slice", "retries": 6}, body="Do it.")
+
+    mint = T._run(store, None, build)
+    task = mint.ids["task"]
+    expected = [
+        ("free", "f-max"),
+        ("bare", None),
+        ("claude-sub", "claude-sonnet-5"),
+        ("claude-sub", "claude-opus-4-8"),
+        ("claude-sub", "claude-opus-4-8"),  # floored at the top
+    ]
+    # The first attempt ran on the ladder's foot (as run_slice would record).
+    _failed_job(store, task, "first failure", lane="free", model="f-high")
+    for lane, model in expected:
+        store.add_tag(task, Tag.open("child-failed:1"), set_by="system")
+        res = pd.run_pass(store)
+        assert (res.dispatched, res.asks) == (1, 0)
+        job_id, meta = _jobs_under(store, task)[-1]
+        assert meta["params"].get("lane") == lane
+        assert meta["params"].get("model") == model
+        # run_slice would stamp where it ran; mirror that, then fail it.
+        store.stamp_ref_meta(
+            job_id, {"lane": lane, "model": model or "account-default"}
+        )
+        _set_job_status(store, job_id, "failed")
 
 
 def _pinned_plan(store: Store, model: str) -> T.PlanMint:

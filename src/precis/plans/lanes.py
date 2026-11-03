@@ -21,6 +21,11 @@ Pick (:func:`pick_lane`): fit for the task class first, then the fit lane
 with the fewest live ``run_slice`` jobs carrying its ``meta.lane``, under
 its cap. Pacing (the lane most behind its window target) replaces the
 live-count order once the registry carries the window numbers.
+
+Retry (:func:`ladder`): the table in order is also the escalation chain
+``plan_dispatch`` climbs when a slice fails — each enabled fit lane's
+models from its default upward, free vendor lanes before the Claude
+subscription (Reto td559457).
 """
 
 from __future__ import annotations
@@ -108,8 +113,41 @@ class Lane:
         return ANY_CLASS in self.task_classes or task_class in self.task_classes
 
 
-#: Seed table, in preference order (ties in :func:`pick_lane` keep it).
+#: Seed table, in preference order (ties in :func:`pick_lane` keep it, and
+#: :func:`ladder` climbs it): the free vendor lanes first, the Claude
+#: subscription after them (Reto td559457, 2026-11-03: "devin → haiku →
+#: sonnet → opus"; "both devin and codex are ok").
 LANES: tuple[Lane, ...] = (
+    Lane(
+        name="devin",
+        adapter="devin_tree",
+        credential_pool="devin",
+        cap=1,
+        task_classes=frozenset({"code"}),
+        # Flipped on once the devin_tree adapter (td561543) and deploy's
+        # Devin login on the slice host (td561545) exist.
+        enabled=False,
+        vendor="cognition",
+        # `devin models list` 2026-11-03: every SWE-2 tier is free; the
+        # "-lightning" variants and every other family are paid and never
+        # launched unattended (Reto: never buy overage).
+        models=("swe-2-medium", "swe-2-high", "swe-2-max"),
+        default_model="swe-2-high",
+    ),
+    Lane(
+        name="codex",
+        adapter="codex_exec",
+        credential_pool="codex",
+        cap=1,
+        # Code only (Reto 2026-10-26); reviews stay with the Claude lane
+        # until Codex has a review track record.
+        task_classes=frozenset({"code"}),
+        # Flipped on with the codex_exec adapter (td561543) and deploy's
+        # Codex login on the slice host (td561545). No model list: the
+        # adapter passes no model flag and the CLI's account default runs.
+        enabled=False,
+        vendor="openai",
+    ),
     Lane(
         name="claude-sub",
         adapter="claude_p",
@@ -126,15 +164,6 @@ LANES: tuple[Lane, ...] = (
         default_model="claude-sonnet-5",
     ),
     Lane(
-        name="codex",
-        adapter="codex_exec",
-        credential_pool="codex",
-        cap=1,
-        task_classes=frozenset({"code", "review"}),
-        enabled=False,
-        vendor="openai",
-    ),
-    Lane(
         name="kimi",
         adapter="kimi_tree",
         credential_pool="kimi",
@@ -142,15 +171,6 @@ LANES: tuple[Lane, ...] = (
         task_classes=frozenset({"code", "docs"}),
         enabled=False,
         vendor="moonshot",
-    ),
-    Lane(
-        name="devin",
-        adapter="devin_tree",
-        credential_pool="devin",
-        cap=1,
-        task_classes=frozenset({"code"}),
-        enabled=False,
-        vendor="cognition",
     ),
     Lane(
         name="metered",
@@ -240,13 +260,68 @@ def pick_lane(
     return min(open_lanes, key=lambda lane: live.get(lane.name, 0))
 
 
+@dataclass(frozen=True)
+class Rung:
+    """One step of the retry ladder: a lane and the model pinned on it
+    (``None`` = the lane declares no models; its adapter runs the
+    account default)."""
+
+    lane: str
+    model: str | None
+
+
+def ladder(
+    task_class: str, *, lanes: tuple[Lane, ...] | None = None
+) -> tuple[Rung, ...]:
+    """The cross-lane retry ladder for ``task_class`` (Reto td559457: a
+    failed slice climbs before the cap asks): every enabled fit lane in
+    table order, each contributing its ``models`` from ``default_model``
+    upward, or one model-less rung when it declares none. With today's
+    table that is devin high → devin max → codex → sonnet → opus once the
+    vendor lanes are on, and sonnet → opus until then."""
+    out: list[Rung] = []
+    for lane in LANES if lanes is None else lanes:
+        if not lane.enabled or not lane.fits(task_class):
+            continue
+        if not lane.models:
+            out.append(Rung(lane.name, None))
+            continue
+        start = (
+            lane.models.index(lane.default_model)
+            if lane.default_model in lane.models
+            else 0
+        )
+        out.extend(Rung(lane.name, m) for m in lane.models[start:])
+    return tuple(out)
+
+
+def rung_index(
+    rungs: tuple[Rung, ...], lane: str | None, model: str | None
+) -> int | None:
+    """Where a run on ``lane`` with ``model`` sits on ``rungs``: the exact
+    (lane, model) rung, else the lane's model-less rung, else the lane's
+    first rung (a model the lane does not list, e.g. a resolver fallback),
+    else ``None``."""
+    if not lane:
+        return None
+    exact = next(
+        (i for i, r in enumerate(rungs) if r.lane == lane and r.model == model), None
+    )
+    if exact is not None:
+        return exact
+    return next((i for i, r in enumerate(rungs) if r.lane == lane), None)
+
+
 __all__ = [
     "ANY_CLASS",
     "FACTORY_DENY_WRITE_PATHS",
     "LANES",
     "RUN_SLICE",
     "Lane",
+    "Rung",
     "get_lane",
+    "ladder",
     "live_lane_counts",
     "pick_lane",
+    "rung_index",
 ]

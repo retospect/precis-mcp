@@ -1228,40 +1228,50 @@ _DEFAULT_TASK_CLASS = "code"
 
 
 def _escalate(w: _Writer, plan: _Plan, n: _Node, params: dict[str, Any]) -> str | None:
-    """Pin a retried ``run_slice`` one rung up its lane's model ladder.
+    """Pin a retried ``run_slice`` one rung up the cross-lane ladder.
 
     Reto's ruling (td559457, 2026-11-03): when a slice fails, go up the
-    chain before asking. The chain today is the lane's ``models`` tuple,
-    cheapest first (``claude-sub``: haiku, sonnet, opus); the first attempt
-    runs on the lane's ``default_model`` and attempt *k* on the model *k*
-    rungs above it, floored at the top rung. A node whose ``meta.op``
-    already pins ``model`` is left alone (gr549046: the triage's pick wins).
-    The cross-lane rung (a free Devin lane before the Claude ladder) joins
-    once that lane has an executor (td559444). Returns the action note, or
-    ``None`` when nothing was pinned.
+    chain before asking — free vendor lanes first, then the Claude
+    subscription's models. The chain is :func:`precis.plans.lanes.ladder`
+    for the node's task class (every enabled fit lane in table order, its
+    models from the default upward). The retry climbs one rung above where
+    the newest ended attempt ran (its job's ``meta.lane``/``meta.model``);
+    when that is unknown, attempt *k* takes rung *k* from the foot. Floored
+    at the top rung. A node whose ``meta.op`` already pins ``model`` is left
+    alone (gr549046: the triage's pick wins); one that pins ``lane`` climbs
+    within that lane only. Returns the action note, or ``None`` when
+    nothing was pinned.
     """
+    del w
     if "model" in params:
         return None
     attempts = _attempts(plan, n)
     if attempts <= 0:
         return None
-    lane = _lanes.get_lane(str(params["lane"])) if params.get("lane") else None
-    if lane is None:
-        task_class = str(n.meta.get("task_class") or _DEFAULT_TASK_CLASS)
-        lane = _lanes.pick_lane(w.store, task_class)
-    if lane is None or not lane.models:
+    task_class = str(n.meta.get("task_class") or _DEFAULT_TASK_CLASS)
+    rungs = _lanes.ladder(task_class)
+    pinned_lane = str(params["lane"]) if params.get("lane") else None
+    if pinned_lane:
+        rungs = tuple(r for r in rungs if r.lane == pinned_lane)
+    if not rungs:
         return None
-    start = (
-        lane.models.index(lane.default_model)
-        if lane.default_model in lane.models
-        else 0
+    ended = [j for j in plan.jobs(n) if j.status in _JOB_ENDED]
+    prev = (
+        _lanes.rung_index(
+            rungs, ended[-1].meta.get("lane"), ended[-1].meta.get("model")
+        )
+        if ended
+        else None
     )
-    rung = min(start + attempts, len(lane.models) - 1)
-    params["model"] = lane.models[rung]
-    params.setdefault("lane", lane.name)
+    rung = min(prev + 1 if prev is not None else attempts, len(rungs) - 1)
+    target = rungs[rung]
+    params["lane"] = target.lane
+    if target.model is not None:
+        params["model"] = target.model
     return (
-        f"td{n.id}: retry {attempts} climbs to {params['model']} on lane "
-        f"{lane.name} (rung {rung + 1}/{len(lane.models)})"
+        f"td{n.id}: retry {attempts} climbs to lane {target.lane}"
+        f"{f' model {target.model}' if target.model else ''} "
+        f"(rung {rung + 1}/{len(rungs)})"
     )
 
 
