@@ -81,7 +81,7 @@ import tempfile
 import urllib.error
 import urllib.request
 from collections.abc import Callable
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -107,6 +107,12 @@ _DEFAULT_MAX_TURNS = 300
 _DEFAULT_WALL_S = 4 * 3600
 _DEFAULT_TASK_CLASS = "code"
 _DEFAULT_EFFORT = "high"
+
+#: Park horizon when every fit lane is at its cap (gr561491). Slot
+#: saturation frees when a sibling slice ends, minutes later; without an
+#: instant ``ctx.defer`` falls to the executor's two-hour quota-window
+#: backoff, which idled a triage 86 minutes behind two finished builds.
+LANE_FULL_BACKOFF = timedelta(minutes=10)
 #: Cap on the handoff comment and the failure tail.
 _HANDOFF_CAP = 6000
 _TAIL_CAP = 2000
@@ -1151,7 +1157,7 @@ def submit(ctx: Any, spec: Any) -> Any:
                 "(every fit lane at its cap)"
             )
             defer = getattr(ctx, "defer", None)
-            if defer is not None and defer(None, note):
+            if defer is not None and defer(datetime.now(UTC) + LANE_FULL_BACKOFF, note):
                 return None
             ctx.record_failure(note)
             return None

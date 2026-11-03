@@ -14,6 +14,7 @@ import subprocess
 import sys
 import urllib.error
 from dataclasses import dataclass, field
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -832,15 +833,26 @@ def test_submit_parks_when_every_lane_full(seams: dict[str, Any]) -> None:
     store = _Store()
     store.add_todo(42, "t")
     ctx = _Ctx(store, {"todo_id": 42})
-    deferred: list[str] = []
+    deferred: list[tuple[Any, str]] = []
 
     def _defer(wake_at: Any, note: str) -> bool:
-        deferred.append(note)
+        deferred.append((wake_at, note))
         return True
 
     ctx.defer = _defer
+    before = datetime.now(UTC)
     assert run_slice.submit(ctx, None) is None
-    assert deferred and "no lane free" in deferred[0]
+    assert deferred and "no lane free" in deferred[0][1]
+    # gr561491: a lane-full park names a short wake, not the executor's
+    # two-hour quota fallback (wake_at=None).
+    wake_at = deferred[0][0]
+    assert isinstance(wake_at, datetime)
+    horizon = wake_at - before
+    assert (
+        timedelta(minutes=5)
+        < horizon
+        < run_slice.LANE_FULL_BACKOFF + timedelta(minutes=1)
+    )
     assert ctx.failure is None
     assert seams["launch"] == []
     assert "STATUS:open" in store.tag_strings(42)
