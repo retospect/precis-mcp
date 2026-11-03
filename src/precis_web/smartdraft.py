@@ -54,6 +54,7 @@ from typing import TYPE_CHECKING, Any
 from precis.quest.review_fanout import ALL_PERSONAS, DOC_PERSONAS
 from precis.store._chunks_ops import _prepare_filtered_ann
 from precis.store._draft_ops import content_sha
+from precis.utils import handle_registry
 from precis.utils.figure_source import RenderSpec, resolve_figure_source
 from precis.utils.table_data import table_payload
 from precis.utils.wordcount import PROSE_CHUNK_KINDS
@@ -1084,7 +1085,39 @@ _MACHINE_PERSONAS: tuple[str, ...] = ("flow", "cites")
 #: The per-chunk machine personas that gate a HEADING's own state, and a
 #: prose block's *section* state (via its nearest heading ancestor).
 _SECTION_PERSONAS: tuple[str, ...] = ("structure", "adversarial")
-_STATUS_SYMBOL: dict[str, str] = {"current": "✓", "stale": "⚠", "never": "–"}
+#: The four checker-strip letters (F C S A, gr553412) — ``human`` and
+#: ``toc`` matrix rows never get a badge.
+_BADGE_PERSONAS: tuple[str, ...] = _MACHINE_PERSONAS + _SECTION_PERSONAS
+#: Personas a badge click confirms before posting — the expensive
+#: opus-tier rung (``review_fanout._PERSONA_TIER``).
+_OPUS_PERSONAS: frozenset[str] = frozenset({"structure", "adversarial", "toc"})
+#: Checker name → the review's full name (the badge hover leads with it —
+#: "F" alone means nothing to a reader).
+_CHECKER_FULL: dict[str, str] = {
+    "flow": "Flow",
+    "cites": "Cites",
+    "structure": "Structure",
+    "adversarial": "Adversarial",
+    "toc": "TOC",
+    "human": "Human sign-off",
+}
+#: Badge states (gr553412) — icon per status: green ✓ passed, red ✗ the
+#: recorded verdict asked for rework, amber ◷ the churn measure says the
+#: text moved a lot since the run (``stale`` field, REVIEW_STALE_THRESHOLD),
+#: grey ○ never run.
+_BADGE_ICON: dict[str, str] = {
+    "passed": "✓",
+    "needs-work": "✗",
+    "stale": "◷",
+    "never": "○",
+}
+#: The same four states as hover/aria words.
+_BADGE_WORD: dict[str, str] = {
+    "passed": "passed",
+    "needs-work": "needs work",
+    "stale": "stale",
+    "never": "never run",
+}
 
 #: Plain-language headline per :func:`review_indicator` ``state``, prefixed
 #: to the tooltip ahead of the per-checker matrix (gr348557): a reader who
@@ -1123,21 +1156,61 @@ def _age_str(at: Any) -> str:
     return f"{int(secs // 86400)}d ago"
 
 
+def _run_at_str(at: Any) -> str:
+    """``"last run 2026-11-02 14:10Z"`` — the badge hover's absolute
+    timestamp (UTC, Z-labelled per the time convention); ``""`` when ``at``
+    is absent or unparseable (same tolerance as :func:`_age_str`)."""
+    if not at:
+        return ""
+    try:
+        from datetime import datetime
+
+        ts = datetime.fromisoformat(at) if isinstance(at, str) else at
+        if ts.tzinfo is None:
+            ts = ts.replace(tzinfo=UTC)
+        return f"last run {ts.astimezone(UTC):%Y-%m-%d %H:%MZ}"
+    except Exception:
+        return ""
+
+
+def _verdict_needs_work(verdict: Any) -> bool:
+    """``True`` when a recorded verdict is a rework ask — the ledger's
+    free-text verdict is "led by 'approved' or 'needs-rework'" (the 0185
+    mirror folds anything not ``approved%`` to ``rejected``), so every
+    non-approval-led word counts: needs-rework, a bare ``rejected``, or a
+    future non-approval verdict."""
+    return bool(verdict) and not str(verdict).lower().startswith("approved")
+
+
+def _badge_status(entry: dict[str, Any] | None) -> str:
+    """One badge's state (gr553412): ``never`` with no ledger row;
+    ``needs-work`` on a rework verdict (checked first — an explicit
+    reviewer ask outranks inferred churn); ``stale`` on the churn measure
+    (the record's own ``stale`` field — paragraph-churn for a prose
+    persona, whole-section churn for a heading one — never plain
+    ``dirty``, a one-word edit must not read as a rewrite); else
+    ``passed`` (approved — a dirty-but-minor edit keeps the tick, the
+    hover notes the drift)."""
+    if entry is None:
+        return "never"
+    if _verdict_needs_work(entry.get("verdict")):
+        return "needs-work"
+    if entry.get("stale"):
+        return "stale"
+    return "passed"
+
+
 def _matrix_row(
     checker: str, entry: dict[str, Any] | None, *, via_section: bool
 ) -> dict[str, Any]:
-    """One tooltip-matrix line — ``✓ current`` / ``⚠ stale`` / ``– never``,
-    with the checker's verdict + age once it has ever run; section personas
-    (item 2's "via section" imprecision) get an explicit suffix so the
-    tooltip never reads as if the paragraph itself carries that persona."""
-    if entry is None:
-        status = "never"
-    elif entry.get("dirty"):
-        status = "stale"
-    else:
-        status = "current"
+    """One tooltip-matrix line + badge row — ``✓ passed`` / ``✗ needs
+    work`` / ``◷ stale`` / ``○ never run``, with the checker's verdict +
+    age once it has ever run; section personas (item 2's "via section"
+    imprecision) get an explicit suffix so the tooltip never reads as if
+    the paragraph itself carries that persona."""
+    status = _badge_status(entry)
     label = checker + (" (via section)" if via_section else "")
-    bits = [f"{_STATUS_SYMBOL[status]} {label}"]
+    bits = [f"{_BADGE_ICON[status]} {label} — {_BADGE_WORD[status]}"]
     if entry is not None:
         if entry.get("verdict"):
             bits.append(str(entry["verdict"]))
@@ -1148,12 +1221,71 @@ def _matrix_row(
         "checker": checker,
         "via_section": via_section,
         "status": status,
+        "verdict": entry.get("verdict") if entry else None,
+        "at": entry.get("at") if entry else None,
+        "dirty": bool(entry.get("dirty")) if entry else False,
         "line": " · ".join(bits),
     }
 
 
+def _scope_title(text: Any, cap: int = 80) -> str:
+    """A heading's title for the badge scope phrase — whitespace-collapsed
+    and capped so a long heading doesn't flood the hover."""
+    t = " ".join(str(text or "").split())
+    return t if len(t) <= cap else t[: cap - 1].rstrip() + "…"
+
+
+def _badge_for(
+    row: dict[str, Any], *, run_dc: str | None, scope: str
+) -> dict[str, Any]:
+    """One checker-strip badge (gr553412): the state icon, the instructive
+    hover (the review's full name, its state, the scope a click covers,
+    the action), and the click's POST scope (``run_dc`` — ``None`` when
+    the persona has nothing to run on, e.g. a section-persona badge on a
+    paragraph with no enclosing heading). ``confirm`` marks the opus-tier
+    personas the click asks about first (the expensive rung)."""
+    checker = row["checker"]
+    name = _CHECKER_FULL.get(checker, checker.title())
+    status = row["status"]
+    if status == "never":
+        state = "never run"
+    elif status == "needs-work":
+        # The verdict IS the reviewer note — led by 'needs-rework' per the
+        # ledger's free-text convention, so strip that lead to keep the
+        # hover's own "needs rework:" from doubling up.
+        note = re.sub(
+            r"^needs[\s_-]*rework[:\s-]*", "", str(row["verdict"]), flags=re.I
+        )
+        state = f"needs rework: {note}" if note else "needs rework"
+    elif status == "stale":
+        ran = _run_at_str(row.get("at"))
+        state = f"stale — text changed a lot since{(', ' + ran) if ran else ''}"
+    else:
+        ran = _run_at_str(row.get("at"))
+        state = f"{ran}, approved" if ran else "approved"
+        if row.get("dirty"):
+            state += " — text edited since"
+    opus = checker in _OPUS_PERSONAS
+    if run_dc:
+        action = "click to run now" + (" (opus-tier — asks to confirm)" if opus else "")
+    else:
+        action = "nothing to run here"
+    return {
+        "icon": _BADGE_ICON[status],
+        "title": f"{name} — {state}\n{scope} — {action}",
+        "aria": f"{name}{' (via section)' if row['via_section'] else ''}: "
+        f"{_BADGE_WORD[status]}",
+        "run_dc": run_dc,
+        "confirm": opus,
+    }
+
+
 def review_indicator(
-    chunk_id: int, chunk_kind: str, status_by_chunk: dict[int, dict[str, Any]]
+    chunk_id: int,
+    chunk_kind: str,
+    status_by_chunk: dict[int, dict[str, Any]],
+    *,
+    section_titles: dict[int, str] | None = None,
 ) -> dict[str, Any] | None:
     """Derive one block's 4-state review indicator from the whole-draft
     ledger map (item 6). ``None`` when the chunk is absent from the map
@@ -1175,7 +1307,11 @@ def review_indicator(
     * ``"dirty"`` — was human-approved, edited since (amber).
 
     ``matrix`` is the tooltip's per-checker list (:func:`_matrix_row`), in
-    persona → human display order."""
+    persona → human display order; each of the four badge personas also
+    carries a ``badge`` (:func:`_badge_for`) — icon, hover and the click's
+    POST scope. ``section_titles`` maps ``chunk_id → heading text`` so a
+    section-persona badge can name its scope ("this section: <heading>")
+    — a missing id falls back to a bare "this section"."""
     own = status_by_chunk.get(chunk_id)
     if own is None:
         return None
@@ -1191,6 +1327,7 @@ def review_indicator(
         else:
             machine_seen = True
 
+    section_id = own.get("_section_chunk_id")
     if is_heading:
         for persona in _SECTION_PERSONAS:
             entry = own.get(persona)
@@ -1201,7 +1338,6 @@ def review_indicator(
             entry = own.get(persona)
             matrix.append(_matrix_row(persona, entry, via_section=False))
             _gate(entry)
-        section_id = own.get("_section_chunk_id")
         section = status_by_chunk.get(section_id) if section_id is not None else None
         for persona in _SECTION_PERSONAS:
             entry = section.get(persona) if section is not None else None
@@ -1223,6 +1359,37 @@ def review_indicator(
         state = "machine"
     else:
         state = "empty"
+
+    # Badge scopes (gr553412): flow/cites run on the block itself ("this
+    # paragraph"); structure/adversarial run on the section — the heading's
+    # own subtree on a heading block, the enclosing heading on a prose one
+    # (a paragraph's badge mints nothing on the paragraph itself —
+    # ``review_fanout._personas_for_kind`` gates them to headings, so
+    # scoping the click to the paragraph would silently no-op). A prose
+    # block with no enclosing heading gets no runnable badge at all.
+    titles = section_titles or {}
+    own_dc = handle_registry.format_handle("draft", chunk_id, chunk=True)
+    for row in matrix:
+        checker = row["checker"]
+        if checker not in _BADGE_PERSONAS:
+            continue
+        if checker in _SECTION_PERSONAS:
+            if is_heading:
+                scope_id, run_dc = chunk_id, own_dc
+            else:
+                scope_id = section_id
+                run_dc = (
+                    handle_registry.format_handle("draft", int(section_id), chunk=True)
+                    if section_id is not None
+                    else None
+                )
+            title = _scope_title(titles.get(scope_id)) if scope_id is not None else ""
+            scope = f"this section: {title}" if title else "this section"
+            if run_dc is None:
+                scope = "no enclosing section"
+        else:
+            scope, run_dc = "this paragraph", own_dc
+        row["badge"] = _badge_for(row, run_dc=run_dc, scope=scope)
 
     headline = _STATE_HEADLINE[state]
     return {
@@ -1378,6 +1545,40 @@ def _prepopulate_trust_cache(store: Store, nodes: list[ChunkNode]) -> dict[str, 
     return {head: states.get(ref_id) for head, ref_id in head_ref.items()}
 
 
+def _section_titles_for(
+    store: Store,
+    nodes: list[ChunkNode],
+    status_by_chunk: dict[int, dict[str, Any]],
+) -> dict[int, str]:
+    """``{chunk_id: heading text}`` for every heading a checker badge's
+    scope names (gr553412): a heading node's own text comes free from the
+    node itself; a prose block's *enclosing* heading is usually outside
+    the rendered window, so those resolve in ONE ``universal_chunks``
+    batch — never per-block. Any failure degrades to no titles (the hover
+    falls back to a bare "this section"), never a broken render."""
+    titles = {n.chunk_id: n.text for n in nodes if n.is_heading}
+    missing: list[str] = []
+    for n in nodes:
+        if n.is_heading:
+            continue
+        own = status_by_chunk.get(n.chunk_id)
+        if not own:
+            continue
+        sid = own.get("_section_chunk_id")
+        if sid is not None and sid not in titles:
+            missing.append(handle_registry.format_handle("draft", int(sid), chunk=True))
+    if not missing:
+        return titles
+    try:
+        for handle, info in store.drafts.universal_chunks(missing).items():
+            parsed = handle_registry.parse(handle)
+            if parsed is not None and info.get("text"):
+                titles[int(parsed[2])] = str(info["text"])
+    except Exception:
+        log.warning("section-title lookup for review badges failed", exc_info=True)
+    return titles
+
+
 def review_payloads_for(
     nodes: list[ChunkNode],
     status_by_chunk: dict[int, dict[str, Any]],
@@ -1397,9 +1598,12 @@ def review_payloads_for(
     "heads": [...]}``, worst-of across the block's cite heads)."""
     integrity_cache: dict[int, bool] = {}
     trust_cache: dict[str, Any] = _prepopulate_trust_cache(store, nodes)
+    section_titles = _section_titles_for(store, nodes, status_by_chunk)
     out: dict[str, dict[str, Any]] = {}
     for n in nodes:
-        ind = review_indicator(n.chunk_id, n.chunk_kind, status_by_chunk)
+        ind = review_indicator(
+            n.chunk_id, n.chunk_kind, status_by_chunk, section_titles=section_titles
+        )
         if ind is None:
             continue
         ind["integrity_ok"] = cite_integrity_ok(store, n.text, integrity_cache)

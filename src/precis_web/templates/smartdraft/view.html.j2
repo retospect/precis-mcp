@@ -191,6 +191,21 @@
   .sd-review-dot.machine { color: rgb(var(--text-info-faint)); }  /* sky-400 — hollow/machine-green */
   .sd-review-dot.human { color: rgb(var(--text-success)); }    /* emerald-600 */
   .sd-review-dot.dirty { color: rgb(var(--text-warning)); }    /* amber-600 */
+  /* Checker-strip badges (gr553412) — the F/C/S/A letters are real
+     buttons (keyboard-focusable): colour by state, same tokens the
+     review dot uses. ``sd-badge-pending``/``sd-badge-error`` are the
+     transient client-side states ``sdReviewBadge`` toggles between the
+     click and the next refresh (they deliberately override the state
+     colour, later in source). */
+  .sd-badge { background: none; border: 0; padding: 0; font: inherit;
+    line-height: 1; cursor: pointer; }
+  .sd-badge.passed { color: rgb(var(--text-success)); }         /* emerald-600 */
+  .sd-badge.needs-work { color: rgb(var(--text-danger)); }      /* red-600 */
+  .sd-badge.stale { color: rgb(var(--text-warning)); }          /* amber-600 */
+  .sd-badge.never { color: rgb(var(--text-fg-ghost)); }         /* slate-300 */
+  .sd-badge:disabled { cursor: default; }
+  .sd-badge.sd-badge-pending { color: rgb(var(--text-info-faint)); }  /* sky-400 */
+  .sd-badge.sd-badge-error { color: rgb(var(--text-danger)); font-weight: 700; }
   /* Softer-than-⚠ overlays, quietest first so a louder co-applied overlay
      (integrity/unsupported, further down) wins by source order. */
   .sd-review-dot.sd-trust-abstract::after { content: "Ⓐ"; color: rgb(var(--text-danger)); }  /* abstract-only — red circled A (red per Reto; not bold, so it reads lighter than the ‼ contradiction mark) */
@@ -2507,6 +2522,51 @@ function sdReviewRun(dc, persona) {
     body: JSON.stringify({ dc, persona }),
   }).then((r) => { if (!r.ok) window.alert('review run failed'); else window.__sdRefresh(); })
     .catch(() => window.alert('network error — review not started'));
+}
+// Checker-strip badge click (gr553412): one badge runs its ONE persona on
+// the badge's own scope — the block's dc for flow/cites ("this
+// paragraph"), the section heading's dc for structure/adversarial ("this
+// section", scoped server-side since the paragraph's own dc would mint
+// nothing for those personas). The opus-tier personas confirm first —
+// they're the expensive rung. While the POST is in flight the badge is
+// disabled and marked pending (the same double-click guard as gr553306's
+// `sending` flag: a second click is a no-op, never a second mint); a
+// failed POST flips the badge to a visible error state — never silent.
+// On success __sdRefresh repaints the whole panel, so the pending mark
+// just has to hold until then.
+// (No JS test harness exists for this page — the fetch body, the
+// opus-tier confirm and the pending/error transitions are exercised by
+// hand; the server-rendered states they key off are covered in
+// tests/precis_web/test_smartdraft_reader.py.)
+function sdReviewBadge(ev, dc, persona, confirmFirst) {
+  ev.stopPropagation();
+  ev.preventDefault();
+  const el = ev.currentTarget;
+  if (!el || el.dataset.inflight === '1') return;
+  if (confirmFirst &&
+      !window.confirm(`Run the ${persona} review? (opus-tier — the expensive rung)`)) return;
+  el.dataset.inflight = '1';
+  const orig = el.textContent;
+  el.disabled = true;
+  el.classList.add('sd-badge-pending');
+  el.textContent = orig.charAt(0) + '⟳';
+  const fail = (msg) => {
+    delete el.dataset.inflight;
+    el.disabled = false;
+    el.classList.remove('sd-badge-pending');
+    el.classList.add('sd-badge-error');
+    el.textContent = orig.charAt(0) + '⚠';
+    el.title = (el.title || '') + `\nrun failed: ${msg}`;
+  };
+  fetch(`/drafts/{{ ident }}/review`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ dc, persona }),
+  }).then(async (r) => {
+    if (r.ok) { window.__sdRefresh(); return; }
+    let msg = `HTTP ${r.status}`;
+    try { const d = await r.json(); if (d && d.error) msg = d.error; } catch (e) {}
+    fail(msg);
+  }).catch(() => fail('network error — review not started'));
 }
 function sdReviewAllOutstanding() {
   fetch(`/drafts/{{ ident }}/review`, {

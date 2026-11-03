@@ -164,6 +164,28 @@ class SmartDraftFakeStore(FakeStore):
             return SimpleNamespace(ref_id=700, dc=handle, chunk_id=parsed[2])
         return None
 
+    def universal_chunks(self, handles):
+        # Batched chunk-handle resolve — gr553412's badge section-title
+        # lookup uses it for a paragraph's enclosing heading (often
+        # outside the rendered window). Real shape:
+        # ``{handle: {kind, ref_id, ord, chunk_kind, text}}``.
+        by_id = {c.chunk_id: c for c in self._chunks}
+        out = {}
+        for h in handles:
+            parsed = handle_registry.parse(h)
+            if parsed is None or not parsed[1]:
+                continue
+            c = by_id.get(parsed[2])
+            if c is not None:
+                out[h] = {
+                    "kind": "draft",
+                    "ref_id": 700,
+                    "ord": None,
+                    "chunk_kind": c.chunk_kind,
+                    "text": c.text,
+                }
+        return out
+
     def list_refs(self, *, kind=None, limit=50, offset=0, **kw):
         if kind == "draft":
             return [_DRAFT]
@@ -330,20 +352,11 @@ class ReviewMatrixFakeStore(SmartDraftFakeStore):
             )
 
         return [
-            row(
-                1, "structure", dirty=False, kind="heading", section=None, verdict="ok"
-            ),
-            row(
-                1,
-                "adversarial",
-                dirty=False,
-                kind="heading",
-                section=None,
-                verdict="ok",
-            ),
-            row(1, "toc", dirty=False, kind="heading", section=None, verdict="ok"),
-            row(2, "flow", dirty=False, verdict="ok"),
-            row(2, "cites", dirty=False, verdict="ok"),
+            row(1, "structure", dirty=False, kind="heading", section=None),
+            row(1, "adversarial", dirty=False, kind="heading", section=None),
+            row(1, "toc", dirty=False, kind="heading", section=None),
+            row(2, "flow", dirty=False),
+            row(2, "cites", dirty=False),
             row(3, "human", dirty=False),
             row(4, None, dirty=True, kind="table"),
             row(7, "human", dirty=True),
@@ -990,7 +1003,7 @@ def test_smartdraft_indicator_machine_green_derives_via_section(
     assert "✓ flow" in tooltip and "✓ cites" in tooltip
     assert "✓ structure (via section)" in tooltip
     assert "✓ adversarial (via section)" in tooltip
-    assert "– human" in tooltip  # never reviewed by a human yet
+    assert "○ human — never run" in tooltip  # never reviewed by a human yet
 
 
 def test_smartdraft_indicator_dirty_amber_when_edited_since_human_approval(
@@ -999,13 +1012,13 @@ def test_smartdraft_indicator_dirty_amber_when_edited_since_human_approval(
     """chunk 7 was human-approved once but has since been edited (``dirty``
     on the ``human`` row) — the indicator reads "dirty" (amber), the
     un-review action still offers (a human row exists to retract), and the
-    tooltip marks the stale human row with ``⚠``."""
+    tooltip marks the stale human row with ``◷``."""
     dc7 = handle_registry.format_handle("draft", 7, chunk=True)
     r = review_matrix_client.get(f"/smartdraft/sdt?focus={dc7}")
     assert r.status_code == 200
     assert 'class="sd-review sd-review-dot dirty"' in r.text
     assert "sdReviewRetract(" in r.text
-    assert "⚠ human" in r.text
+    assert "◷ human — stale" in r.text
 
 
 def test_smartdraft_blocks_hydration_carries_review_payload(
@@ -2143,6 +2156,18 @@ def test_smartdraft_visible_checker_strip_uses_ledger_scope(
             else row
             for row in rows
         ]
+        # (1,'structure') is a HEADING record — its badge staleness is the
+        # whole-SECTION churn measure (``_apply_section_churn``), not the
+        # heading text's own diff; pin it above the 0.25 threshold. Only
+        # structure is dirty — a clean checker's section churn is ~0.
+        monkeypatch.setattr(
+            store,
+            "sections_churn_map",
+            lambda ref_id, heading_chunk_ids, *, checkers: {
+                h: {c: (0.5 if c == "structure" else 0.0) for c in checkers}
+                for h in heading_chunk_ids
+            },
+        )
     monkeypatch.setattr(store, "review_status_for_draft", lambda ref_id: rows)
     for chunk_id in (2, 3):
         dc = handle_registry.format_handle("draft", chunk_id, chunk=True)
@@ -2155,38 +2180,53 @@ def test_smartdraft_visible_checker_strip_uses_ledger_scope(
         assert response.status_code == 200
         body = response.text if lazy else response.text.split('id="mid-focus"', 1)[1]
         strip = re.search(
-            r'class="sd-review sd-checker-strip[^>]*>(.*?)</span>\s*</span>', body, re.S
+            r'class="sd-review sd-checker-strip[^>]*>(.*?)</span>\s*'
+            r'<span class="relative inline-block"',
+            body,
+            re.S,
         )
         assert strip is not None
         flags = re.findall(
             r'data-review-checker="([^"]+)" data-review-status="([^"]+)".*?'
-            r'aria-label="([^"]+)">([^<]+)</span>',
+            r'aria-label="([^"]+)"[^>]*>([^<]+)</(?:button|span)>',
             strip.group(1) + "</span>",
             re.S,
         )
-        own_status = "current" if chunk_id == 2 else "never"
+        own_status = "passed" if chunk_id == 2 else "never"
+        own_word = "passed" if chunk_id == 2 else "never run"
+        own_icon = "F✓" if chunk_id == 2 else "F○"
         assert flags == [
             (
                 "flow",
                 own_status,
-                f"flow: {'current' if chunk_id == 2 else 'unreviewed'}",
-                "F✓" if chunk_id == 2 else "F–",
+                f"Flow: {own_word}",
+                own_icon,
             ),
             (
                 "cites",
                 "stale" if stale and chunk_id == 2 else own_status,
-                f"cites: {'stale' if stale and chunk_id == 2 else ('current' if chunk_id == 2 else 'unreviewed')}",
-                "C~" if stale and chunk_id == 2 else ("C✓" if chunk_id == 2 else "C–"),
+                f"Cites: {'stale' if stale and chunk_id == 2 else own_word}",
+                "C◷" if stale and chunk_id == 2 else ("C✓" if chunk_id == 2 else "C○"),
             ),
             (
                 "structure",
-                "stale" if stale else "current",
-                f"structure (via section): {'stale' if stale else 'current'}",
-                "S~" if stale else "S✓",
+                "stale" if stale else "passed",
+                f"Structure (via section): {'stale' if stale else 'passed'}",
+                "S◷" if stale else "S✓",
             ),
-            ("adversarial", "current", "adversarial (via section): current", "A✓"),
+            (
+                "adversarial",
+                "passed",
+                "Adversarial (via section): passed",
+                "A✓",
+            ),
         ]
-        assert "<button" not in strip.group(1)
+        # The badges are real buttons now (gr553412): a click runs that one
+        # persona on its own scope — the block's dc for flow/cites, the
+        # SECTION heading's dc for structure/adversarial (which also carry
+        # the opus-tier confirm flag).
+        assert f"sdReviewBadge(event, '{dc}', 'flow', false)" in strip.group(1)
+        assert "sdReviewBadge(event, 'dc1', 'structure', true)" in strip.group(1)
         assert "<a " not in strip.group(1)
 
 
@@ -2201,15 +2241,97 @@ def test_smartdraft_checker_strip_heading_and_nonprose_scope(
     strip = focus.split("sd-checker-strip", 1)[1].split('x-data="{ open: false }"', 1)[
         0
     ]
-    assert 'aria-label="structure: current">S✓' in strip
-    assert 'aria-label="adversarial: current">A✓' in strip
+    assert 'aria-label="Structure: passed"' in strip
+    assert 'aria-label="Adversarial: passed"' in strip
+    assert ">S✓</button>" in strip
+    assert ">A✓</button>" in strip
     assert 'data-review-checker="flow"' not in strip
     assert 'data-review-checker="cites"' not in strip
+    # A heading block's section-persona badge scopes its click (and its
+    # hover) to its own subtree — "this section: <heading>" (gr553412).
+    assert "this section: Smartdraft reader draft" in strip
+    assert "sdReviewBadge(event, 'dc1', 'structure', true)" in strip
     dc4 = handle_registry.format_handle("draft", 4, chunk=True)
     response = review_matrix_client.get(f"/smartdraft/sdt/blocks?dcs={dc4}")
     assert response.status_code == 200
     assert "sd-review-dot" in response.text
     assert "sd-checker-strip" not in response.text
+
+
+def test_smartdraft_checker_badges_states_hover_and_escape(
+    review_matrix_client: TestClient,
+    review_matrix_runtime: FakeRuntime,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """gr553412 — one badge per state: ✓ passed (with the run timestamp in
+    the hover), ✗ a rework verdict (the verdict text is the hover's note,
+    HTML-escaped), ◷ churn over the stale threshold, ○ never run. The
+    hover always names the full review, its state and the scope a click
+    covers; opus-tier badges carry the confirm flag in the onclick."""
+    from datetime import datetime
+
+    store = review_matrix_runtime.store
+    rows = store.review_status_for_draft(700)
+    rows = [
+        (
+            replace(
+                row,
+                verdict='needs-rework: two "uncited" claims <here>',
+            )
+            if (row.chunk_id, row.checker) == (2, "cites")
+            else (
+                replace(row, dirty=True)
+                if (row.chunk_id, row.checker) == (1, "structure")
+                else (
+                    replace(row, at=datetime(2026, 11, 2, 14, 10))
+                    if (row.chunk_id, row.checker) == (2, "flow")
+                    else row
+                )
+            )
+        )
+        for row in rows
+    ]
+    monkeypatch.setattr(store, "review_status_for_draft", lambda ref_id: rows)
+    # Section-churn above the 0.25 threshold → the heading's structure
+    # record reads ``stale`` (a paragraph's via-section badge shares it);
+    # the still-clean checkers measure ~0.
+    monkeypatch.setattr(
+        store,
+        "sections_churn_map",
+        lambda ref_id, heading_chunk_ids, *, checkers: {
+            h: {c: (0.5 if c == "structure" else 0.0) for c in checkers}
+            for h in heading_chunk_ids
+        },
+    )
+    dc2 = handle_registry.format_handle("draft", 2, chunk=True)
+    r = review_matrix_client.get(f"/smartdraft/sdt?focus={dc2}")
+    assert r.status_code == 200
+    strip = r.text.split('id="mid-focus"', 1)[1].split("sd-checker-strip", 1)[1]
+
+    # passed — icon + the "last run …, approved" hover (UTC, Z-labelled).
+    assert 'data-review-status="passed"' in strip
+    assert ">F✓<" in strip
+    assert "Flow — last run 2026-11-02 14:10Z, approved" in strip
+    assert "this paragraph — click to run now" in strip
+    # needs-work — red ✗, the reviewer note in the hover, HTML-escaped
+    # (the &quot;/<here> in the verdict must never land raw).
+    assert ">C✗<" in strip
+    assert "Cites — needs rework: two &#34;uncited&#34; claims &lt;here&gt;" in strip
+    assert '"uncited" claims <here>' not in strip
+    # stale — the section-churn measure flipped structure to ◷.
+    assert ">S◷<" in strip
+    assert "Structure — stale — text changed a lot since" in strip
+    # via-section scope on a paragraph names the enclosing heading and
+    # posts against it — opus-tier badges ask to confirm first.
+    assert "this section: Smartdraft reader draft" in strip
+    assert "click to run now (opus-tier — asks to confirm)" in strip
+    assert "sdReviewBadge(event, 'dc1', 'structure', true)" in strip
+    # never run — chunk 3's own flow/cites have no ledger row at all.
+    dc3 = handle_registry.format_handle("draft", 3, chunk=True)
+    r3 = review_matrix_client.get(f"/smartdraft/sdt?focus={dc3}")
+    strip3 = r3.text.split('id="mid-focus"', 1)[1].split("sd-checker-strip", 1)[1]
+    assert ">F○<" in strip3
+    assert "Flow — never run" in strip3
 
 
 # ── machine-authored provenance marker (rung 3d) + "around here" ──

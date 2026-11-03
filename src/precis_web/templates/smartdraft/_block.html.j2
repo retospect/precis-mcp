@@ -203,15 +203,30 @@
    the readable-block slicing (``_dc_block`` is nesting-aware, but prose/table
    blocks stay div-free on purpose). -#}
 {# Reuse the ledger matrix so inherited section checks and stale watermarks
-   agree with the aggregate dot; these flags never start a review. #}
+   agree with the aggregate dot. Each letter badge is its own button
+   (gr553412): icon = state (✓ passed, ✗ needs work, ◷ stale — the churn
+   measure, ○ never run), hover = full review name + state + the scope a
+   click covers + the action, click = run that ONE review on that scope
+   (``sdReviewBadge`` in view.html.j2 — opus-tier personas confirm first,
+   and the button goes pending/disabled while the POST is in flight). A
+   badge with no runnable scope (a section persona on a paragraph with no
+   enclosing heading) renders the same icon+hover as an inert span. #}
 {% if n.is_prose or n.is_heading %}
-<span class="sd-review sd-checker-strip inline-block text-xs" @click.stop
-      title="Review checkers: F flow, C cites, S structure, A adversarial. Marks: ✓ reviewed and current, ~ reviewed but stale (block edited since), – never run. Hover a letter for that checker's detail.">
+<span class="sd-review sd-checker-strip inline-block text-xs" @click.stop>
   {%- set labels = {'flow': 'F', 'cites': 'C', 'structure': 'S', 'adversarial': 'A'} -%}
-  {%- set symbols = {'current': '✓', 'stale': '~', 'never': '–'} -%}
-  {%- for row in review.matrix if row.checker in labels -%}
+  {%- for row in review.matrix if row.checker in labels and row.badge -%}
+    {%- set b = row.badge -%}
+    {%- if b.run_dc -%}
+  <button type="button" data-review-checker="{{ row.checker }}" data-review-status="{{ row.status }}"
+          class="sd-badge sd-badge-{{ row.status }}"
+          title="{{ b.title }}" aria-label="{{ b.aria }}"
+          onclick="sdReviewBadge(event, '{{ b.run_dc }}', '{{ row.checker }}', {{ 'true' if b.confirm else 'false' }})">{{ labels[row.checker] }}{{ b.icon }}</button>
+    {%- else -%}
   <span data-review-checker="{{ row.checker }}" data-review-status="{{ row.status }}"
-        title="{{ row.line }}" aria-label="{{ row.checker }}{% if row.via_section %} (via section){% endif %}: {{ 'unreviewed' if row.status == 'never' else row.status }}">{{ labels[row.checker] }}{{ symbols[row.status] }}</span>{{ ' ' if not loop.last else '' }}
+        class="sd-badge sd-badge-{{ row.status }}"
+        title="{{ b.title }}" aria-label="{{ b.aria }}">{{ labels[row.checker] }}{{ b.icon }}</span>
+    {%- endif -%}
+    {{- ' ' if not loop.last else '' -}}
   {%- endfor -%}
 </span>
 {% endif %}

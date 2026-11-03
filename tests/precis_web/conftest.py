@@ -640,6 +640,12 @@ class FakeStore(_FakeStoreBase):
         # by (bare) handle.
         return {}
 
+    def universal_chunks(self, handles):
+        # ``{handle: {kind, ref_id, ord, chunk_kind, text}}`` — the fake
+        # resolves nothing by default; SmartDraftFakeStore overrides with
+        # its own ``_chunks`` (gr553412's badge section-title lookup).
+        return {}
+
     # Figure medium resolver — safe defaults; DraftFakeStore
     # overrides for its blob-backed figure fixtures.
     def chunk_blob_version(self, chunk_id) -> str | None:
