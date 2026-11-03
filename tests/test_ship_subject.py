@@ -527,3 +527,35 @@ def test_ship_dies_on_wip_only_branch_before_the_gate(tmp_path: Path) -> None:
     assert r.returncode == 1, r.stdout + r.stderr
     assert "no commit message: pass -m" in r.stderr
     assert "syncing origin/main" not in r.stdout
+
+
+def _subject(n: int) -> str:
+    prefix = "fix(ship): "
+    return prefix + "x" * (n - len(prefix))
+
+
+def test_long_subject_note_stays_on_stderr(tmp_path: Path) -> None:
+    """A 73-120 char subject warns on stderr only; stdout (the squash
+    message) starts with the subject, never the 'note:' line."""
+    subject = _subject(100)
+    r = _resolve(_repo(tmp_path, [subject]))
+    assert r.returncode == 0, r.stderr
+    assert r.stdout.splitlines()[0] == subject
+    assert "note: subject is 100 chars" in r.stderr
+
+
+def test_over_hard_max_subject_still_refused(tmp_path: Path) -> None:
+    r = _resolve(_repo(tmp_path, [_subject(121)]))
+    assert r.returncode == 1
+    assert "over hard max 120" in r.stderr
+    assert r.stdout == ""
+
+
+def test_ship_does_not_merge_stderr_into_message() -> None:
+    """Regression: scripts/ship captured ship_resolve_msg with 2>&1, so the
+    length note became the first line of the landed commit subject."""
+    src = SHIP.read_text(encoding="utf-8")
+    assert "ship_resolve_msg" in src
+    for line in src.splitlines():
+        if "ship_resolve_msg" in line and "$(" in line:
+            assert "2>&1" not in line, line

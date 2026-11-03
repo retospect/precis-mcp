@@ -708,7 +708,11 @@ fi
 # A bad message must never trigger a Tailwind rebuild (gr548403).
 . "${WORKTREE}/scripts/lib/ship-subject.sh"
 _base="$(git merge-base origin/main HEAD 2>/dev/null || echo origin/main)"
-MSG="$(ship_resolve_msg "$MSG" "$_base" 2>&1)" || die "$MSG"
+# stdout is the message; stderr is the reason (die) or a non-fatal note (forward).
+_msg_err="$(mktemp)"
+MSG="$(ship_resolve_msg "$MSG" "$_base" 2>"$_msg_err")" || { _e="$(cat "$_msg_err")"; rm -f "$_msg_err"; die "$_e"; }
+[[ ! -s "$_msg_err" ]] || cat "$_msg_err" >&2
+rm -f "$_msg_err"
 
 # ── 1b. per-worktree ship lock (gr335894) ────────────────────────────────
 # Taken here — after the sanity checks, before the first git write (§2 WIP
