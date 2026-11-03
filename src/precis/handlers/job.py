@@ -18,6 +18,7 @@ non-skipped graph_garden job with recorded results in the same window.
 from __future__ import annotations
 
 import json
+import math
 import os
 import re
 import subprocess
@@ -26,7 +27,7 @@ from pathlib import Path
 from typing import Any, ClassVar
 from urllib.parse import parse_qsl, urlencode
 
-from precis.errors import BadInput, NotFound
+from precis.errors import BadInput, Denied, NotFound
 from precis.handlers._interpret import interpreted
 from precis.handlers._numeric_ref import (
     NumericRefHandler,
@@ -65,11 +66,19 @@ from precis.workers.executors._common import (
     _BASE_CLASS_RANK,
     _CLASS_RANK_CASE,
     _DEFAULT_JOB_PRIO,
+    _MAX_RUNNING_DEFAULTS,
+    _MAX_RUNNING_KEY_PREFIX,
+    _SLICE_S_KEY_PREFIX,
+    _SLICING_KEY_PREFIX,
     CLAIMABLE,
+    DEFAULT_SLICE_S,
     QUEUED,
     RUNNING,
+    SLICE_S_ENV,
+    SLICING_ENV,
     STATUS_NAMESPACE,
     _claim_order_sql,
+    _truthy,
     claim_age_step_s,
     claim_class_age_s,
     claim_class_rank_enabled,
@@ -402,6 +411,105 @@ def _fmt_interval(seconds: int) -> str:
     if s and s % 60 == 0:
         return f"{s // 60}m"
     return f"{s}s"
+
+
+# ── put(mode='setting') + id='/claim' — the ``claim.*`` app_state knobs
+# (gr556919) ─────────────────────────────────────────────────────────
+#: The three override families the claim substrate reads live out of
+#: ``app_state``: a per-host running cap per job_type (``0`` suspends the
+#: type entirely), a per-executor slicing flag, and a per-executor slice
+#: wall budget in seconds. Before this door an override needed a raw
+#: ``INSERT INTO app_state`` through prod-psql — which agents may not
+#: write. The setter validates the key against the job_type / executor
+#: registries and the value's type+range, requires a reason, and audits
+#: each write to ``worker_logs`` (the ``precis limits`` precedent).
+_CLAIM_MAX_RUNNING_MAX = 64
+
+#: The only call sources allowed to write a ``claim.*`` override — an
+#: explicit allowlist, NOT the ``is_owner`` gradient: the deployed worker
+#: lanes run ``PRECIS_SOURCE=precis-worker*``, which ``is_owner``'s
+#: forward-compatible "unknown → owner" default would wave through.
+_CLAIM_SETTING_SOURCES: frozenset[str] = frozenset({"cli", "web:owner"})
+
+_CLAIM_SETTING_NEXT = (
+    "put(kind='job', mode='setting', args={'key': "
+    "'claim.max_running.<job_type>' | 'claim.slicing.<executor>' | "
+    "'claim.slice_s.<executor>', 'value': <v>, 'reason': '<why>'}; "
+    "clear with args={'key': ..., 'unset': true, 'reason': ...})"
+)
+
+
+def _claim_setting_leaf(key: str) -> str:
+    """Split ``claim.<family>.<leaf>`` and validate the leaf names a real
+    job_type / executor — a typo'd override must refuse at write time, not
+    sit inert in ``app_state``."""
+    for prefix, registry in (
+        (_MAX_RUNNING_KEY_PREFIX, "job_type"),
+        (_SLICING_KEY_PREFIX, "executor"),
+        (_SLICE_S_KEY_PREFIX, "executor"),
+    ):
+        if key.startswith(prefix):
+            leaf = key[len(prefix) :]
+            known = (
+                sorted(set(known_job_types()) | set(_MAX_RUNNING_DEFAULTS))
+                if registry == "job_type"
+                else sorted(EXECUTOR_PROVIDES)
+            )
+            if not leaf or leaf not in known:
+                raise BadInput(
+                    f"{key!r}: unknown {registry} {leaf!r} — the override "
+                    "would never be read",
+                    options=known,
+                )
+            return leaf
+    raise BadInput(
+        f"unknown claim override key {key!r}",
+        options=[
+            f"{_MAX_RUNNING_KEY_PREFIX}<job_type>",
+            f"{_SLICING_KEY_PREFIX}<executor>",
+            f"{_SLICE_S_KEY_PREFIX}<executor>",
+        ],
+        next=_CLAIM_SETTING_NEXT,
+    )
+
+
+def _claim_setting_value(key: str, value: Any) -> str:
+    """The canonical ``app_state`` string for ``key``'s typed value, or
+    BadInput naming the accepted shape."""
+    if key.startswith(_MAX_RUNNING_KEY_PREFIX):
+        if isinstance(value, float) and value.is_integer():
+            value = int(value)
+        if isinstance(value, bool) or not isinstance(value, int):
+            raise BadInput(
+                f"{key!r} takes an int 0..{_CLAIM_MAX_RUNNING_MAX} "
+                f"(a per-host running cap; 0 suspends the type), got {value!r}",
+                next=_CLAIM_SETTING_NEXT,
+            )
+        if not 0 <= value <= _CLAIM_MAX_RUNNING_MAX:
+            raise BadInput(
+                f"{key!r} takes an int 0..{_CLAIM_MAX_RUNNING_MAX}, got {value}",
+                next=_CLAIM_SETTING_NEXT,
+            )
+        return str(value)
+    if key.startswith(_SLICING_KEY_PREFIX):
+        if not isinstance(value, bool):
+            raise BadInput(
+                f"{key!r} takes a bool (the lane's slicing flag), got {value!r}",
+                next=_CLAIM_SETTING_NEXT,
+            )
+        return "true" if value else "false"
+    if (
+        isinstance(value, bool)
+        or not isinstance(value, (int, float))
+        or not math.isfinite(value)
+        or not value > 0
+    ):
+        raise BadInput(
+            f"{key!r} takes a positive finite number of seconds (the "
+            f"lane's per-claim wall budget), got {value!r}",
+            next=_CLAIM_SETTING_NEXT,
+        )
+    return f"{float(value):g}"
 
 
 def _job_search_call(
@@ -790,11 +898,12 @@ class JobHandler(NumericRefHandler):
         id_required=False,
         note_like=True,
         # put() genuinely branches on mode= — the recognised
-        # values are the retry surface (put(id=N, mode='retry')) and the
-        # queued-pin move (put(id=N, mode='retarget')); every other
+        # values are the retry surface (put(id=N, mode='retry')), the
+        # queued-pin move (put(id=N, mode='retarget')) and the audited
+        # claim.* override door (put(mode='setting')); every other
         # value is rejected (gr343755 — a real vocabulary, not the
         # "every mode= rejected" `()` shape).
-        modes=("retry", "retarget"),
+        modes=("retry", "retarget", "setting"),
     )
 
     kind: ClassVar[str] = "job"
@@ -841,6 +950,7 @@ class JobHandler(NumericRefHandler):
             "limits",
             "delta",
             "settings",
+            "claim",
             "garden",
             "garden/merges",
         )
@@ -1038,6 +1148,9 @@ class JobHandler(NumericRefHandler):
         if view == "settings" or view.startswith("settings?"):
             _, _, query_string = view.partition("?")
             return self._render_settings_view(query_string)
+        if view == "claim" or view.startswith("claim?"):
+            _, _, query_string = view.partition("?")
+            return self._render_claim_view(query_string)
         if view == "garden" or view.startswith("garden?"):
             return self._render_garden_view(view.partition("?")[2])
         if view == "garden/merges" or view.startswith("garden/merges?"):
@@ -1660,6 +1773,150 @@ class JobHandler(NumericRefHandler):
             )
         return Response(
             body="\n".join(lines), result_count=len(display) + len(svc_rows)
+        )
+
+    def _render_claim_view(self, query_string: str) -> Response:
+        """``id='/claim'`` — the ``claim.*`` override knobs vs their code
+        defaults (gr556919).
+
+        Three ``app_state`` families the claim substrate reads live:
+        ``claim.max_running.<job_type>`` (per-host running cap;
+        :data:`_MAX_RUNNING_DEFAULTS` is the code default, an absent key
+        is uncapped), ``claim.slicing.<executor>`` (the per-lane slicing
+        flip — default off unless ``PRECIS_JOB_SLICING``) and
+        ``claim.slice_s.<executor>`` (the per-claim wall budget;
+        ``PRECIS_JOB_SLICE_S``, else :data:`DEFAULT_SLICE_S`). Read-only —
+        writes go through ``put(kind='job', mode='setting', ...)``, which
+        validates the key against the job_type / executor registries and
+        audits the change to ``worker_logs``. A row whose leaf names no
+        current job_type / executor still renders (default ``-``) so a
+        stale override stays visible instead of vanishing.
+        """
+        from precis.format import render_agent_table
+
+        params = dict(parse_qsl(query_string, keep_blank_values=True))
+        if params:
+            raise BadInput(
+                f"/claim takes no filters (got {sorted(params)})",
+                next="get(kind='job', id='/claim')",
+            )
+        with self.store.pool.connection() as conn:
+            stored = {
+                str(k): (str(v), ts)
+                for k, v, ts in conn.execute(
+                    "SELECT key, value, updated_at FROM app_state "
+                    "WHERE key LIKE 'claim.%' ORDER BY key"
+                ).fetchall()
+            }
+
+        def leaves(prefix: str) -> dict[str, tuple[str, Any]]:
+            return {
+                k[len(prefix) :]: v for k, v in stored.items() if k.startswith(prefix)
+            }
+
+        caps = leaves(_MAX_RUNNING_KEY_PREFIX)
+        flags = leaves(_SLICING_KEY_PREFIX)
+        budgets = leaves(_SLICE_S_KEY_PREFIX)
+        other = sorted(
+            k
+            for k in stored
+            if not k.startswith(
+                (_MAX_RUNNING_KEY_PREFIX, _SLICING_KEY_PREFIX, _SLICE_S_KEY_PREFIX)
+            )
+        )
+
+        lines = [
+            "# claim — app_state overrides vs code defaults",
+            "",
+            "claim.max_running.<job_type>: per-host running cap (0 "
+            "suspends the type; absent key = uncapped unless the type "
+            "has a code default). claim.slicing.<executor>: live "
+            "slicing flip (default off unless PRECIS_JOB_SLICING). "
+            "claim.slice_s.<executor>: per-claim wall budget seconds "
+            f"(PRECIS_JOB_SLICE_S, else {DEFAULT_SLICE_S:g}s). Write: "
+            "put(kind='job', mode='setting', args={'key': ..., "
+            "'value': <v>, 'reason': '<why>'}) or args={'key': ..., "
+            "'unset': true, 'reason': ...}.",
+            "",
+            "## claim.max_running.<job_type>",
+        ]
+        cap_rows = []
+        for jt in sorted(set(_MAX_RUNNING_DEFAULTS) | set(caps)):
+            override, ts = caps.get(jt, (None, None))
+            default = _MAX_RUNNING_DEFAULTS.get(jt)
+            cap_rows.append(
+                {
+                    "job_type": jt,
+                    "override": override if override is not None else "-",
+                    "default": str(default) if default is not None else "uncapped",
+                    "effective": override
+                    if override is not None
+                    else (str(default) if default is not None else "uncapped"),
+                    "updated": _limits_ts(ts) if override is not None else "-",
+                }
+            )
+        if cap_rows:
+            lines.append(
+                render_agent_table(
+                    cap_rows,
+                    schema=["job_type", "override", "default", "effective", "updated"],
+                )
+            )
+        else:
+            lines.append(
+                "no caps — every job_type is uncapped (no code defaults, no overrides)."
+            )
+        lines += ["", "## claim.slicing.<executor>"]
+        env_flag = _truthy(os.environ.get(SLICING_ENV))
+        flag_rows = []
+        for ex in sorted(set(EXECUTOR_PROVIDES) | set(flags)):
+            override, ts = flags.get(ex, (None, None))
+            effective = _truthy(override) if override is not None else env_flag
+            flag_rows.append(
+                {
+                    "executor": ex,
+                    "override": override if override is not None else "-",
+                    "default": "on (env)" if env_flag else "off",
+                    "effective": "on" if effective else "off",
+                    "updated": _limits_ts(ts) if override is not None else "-",
+                }
+            )
+        lines.append(
+            render_agent_table(
+                flag_rows,
+                schema=["executor", "override", "default", "effective", "updated"],
+            )
+        )
+        lines += ["", "## claim.slice_s.<executor>"]
+        env_budget = (os.environ.get(SLICE_S_ENV) or "").strip()
+        budget_default = env_budget or f"{DEFAULT_SLICE_S:g}"
+        budget_rows = []
+        for ex in sorted(set(EXECUTOR_PROVIDES) | set(budgets)):
+            override, ts = budgets.get(ex, (None, None))
+            budget_rows.append(
+                {
+                    "executor": ex,
+                    "override": override if override is not None else "-",
+                    "default": budget_default + (" (env)" if env_budget else ""),
+                    "effective": override if override is not None else budget_default,
+                    "updated": _limits_ts(ts) if override is not None else "-",
+                }
+            )
+        lines.append(
+            render_agent_table(
+                budget_rows,
+                schema=["executor", "override", "default", "effective", "updated"],
+            )
+        )
+        if other:
+            lines += [
+                "",
+                f"unrecognised claim.* keys ({len(other)}): "
+                + ", ".join(f"{k}={stored[k][0]!r}" for k in other),
+            ]
+        return Response(
+            body="\n".join(lines),
+            result_count=len(cap_rows) + len(flag_rows) + len(budget_rows),
         )
 
     def _render_throughput_view(self, query_string: str) -> Response:
@@ -2661,6 +2918,13 @@ class JobHandler(NumericRefHandler):
         placement: str | None = None,
         prio: int | None = None,
         origin: str | None = None,
+        # mode='setting' args (gr556919): the claim.* override door.
+        # Declared (not read off ``**_kw``) so the args= extras gate
+        # passes them; refused below on every other mode.
+        key: str | None = None,
+        value: Any = None,
+        reason: str | None = None,
+        unset: bool | str | None = None,
         **_kw: Any,
     ) -> Response:
         # Retry surface: ``put(kind='job', id=N, mode='retry')`` re-runs a
@@ -2674,7 +2938,9 @@ class JobHandler(NumericRefHandler):
         # the same way unless it is overridden here).
         # Handled before the generic ``id is not None`` /
         # ``mode`` rejections below.
-        if mode in ("retry", "retarget") and (prio is not None or origin is not None):
+        if mode in ("retry", "retarget", "setting") and (
+            prio is not None or origin is not None
+        ):
             raise BadInput(
                 f"prio=/origin= are mint-time stamps; put(mode={mode!r}) "
                 "does not mint a row",
@@ -2686,6 +2952,34 @@ class JobHandler(NumericRefHandler):
             )
         if mode == "retarget":
             return self._retarget_job(id=id, text=text, params=params)
+        if mode == "setting":
+            return self._put_claim_setting(
+                id=id,
+                text=text,
+                tags=tags,
+                untags=untags,
+                link=link,
+                unlink=unlink,
+                rel=rel,
+                job_type=job_type,
+                executor=executor,
+                params=params,
+                idem_key=idem_key,
+                requires=requires,
+                parent_id=parent_id,
+                model=model,
+                select=select,
+                placement=placement,
+                key=key,
+                value=value,
+                reason=reason,
+                unset=unset,
+            )
+        if key is not None or value is not None or reason is not None or _truthy(unset):
+            raise BadInput(
+                "key=/value=/reason=/unset= only apply to put(mode='setting')",
+                next=_CLAIM_SETTING_NEXT,
+            )
         if id is not None:
             raise BadInput(
                 f"put on existing job id={id!r} is not supported",
@@ -2696,11 +2990,11 @@ class JobHandler(NumericRefHandler):
                     f"link(kind='job', id=N, target=..., mode='add'|'remove')"
                 ),
             )
-        # mode= is fully handled above: KindSpec.modes=('retry',)
-        # (gr343755) means the dispatch gate already rejects any value
-        # other than 'retry'/None before this method runs, and 'retry'
-        # already returned above — so by this point mode is always
-        # None and needs no further check here.
+        # mode= is fully handled above: KindSpec.modes covers every
+        # accepted value (gr343755) so the dispatch gate already rejects
+        # any other mode= before this method runs, and each recognised
+        # one already returned above — by this point mode is always None
+        # and needs no further check here.
         if untags is not None or unlink is not None:
             raise BadInput(
                 "untags= / unlink= are not accepted on job put",
@@ -3112,6 +3406,134 @@ class JobHandler(NumericRefHandler):
                 )
             self.store.retire_ref(job_id, conn=conn)
         return Response(body=f"deleted {self._sense()} id={job_id}")
+
+    def _put_claim_setting(
+        self, *, key: Any, value: Any, reason: Any, unset: Any, **_kw: Any
+    ) -> Response:
+        """Set or clear a ``claim.*`` ``app_state`` override (gr556919).
+
+        ``put(kind='job', mode='setting', args={'key':
+        'claim.max_running.<job_type>' | 'claim.slicing.<executor>' |
+        'claim.slice_s.<executor>', 'value': <v>, 'reason': '<why>'})``;
+        ``args={'key': ..., 'unset': true, 'reason': ...}`` clears the
+        override. Mints no job row — every mint kwarg is refused. The key
+        must name a real job_type / executor and the value the family
+        type (max_running int 0..64 — ``0`` suspends the type; slicing
+        bool; slice_s positive seconds). ``reason=`` is required: the
+        change (who, when, old → new, why) lands in ``worker_logs``, the
+        same audit row ``precis limits set`` writes. Operator-only —
+        :data:`_CLAIM_SETTING_SOURCES` is an explicit allowlist
+        (``cli`` / ``web:owner``); every worker source
+        (``precis-worker*``, ``asa-*``) and every call inside a
+        background pass is :class:`Denied`.
+        """
+        stray = sorted(k for k, v in _kw.items() if v is not None)
+        if stray:
+            raise BadInput(
+                f"mode='setting' mints no job row — {stray} don't apply; "
+                "it takes only args={'key', 'value'|'unset', 'reason'}",
+                next=_CLAIM_SETTING_NEXT,
+            )
+        source = todo_guards._caller_source()
+        if (
+            source not in _CLAIM_SETTING_SOURCES
+            or current_background_actor() is not None
+        ):
+            raise Denied(
+                f"claim.* overrides are operator knobs — source {source!r} "
+                "may not write them",
+                next="run from an allowed source (cli / web:owner)",
+            )
+        if not isinstance(key, str) or not key.strip():
+            raise BadInput(
+                "mode='setting' requires args={'key': 'claim.<family>.<name>'}",
+                next=_CLAIM_SETTING_NEXT,
+            )
+        key = key.strip()
+        _claim_setting_leaf(key)
+        reason_s = reason.strip() if isinstance(reason, str) else ""
+        if not reason_s:
+            raise BadInput(
+                "mode='setting' requires args={'reason': '<why>'}; it is "
+                "recorded with the change",
+                next=_CLAIM_SETTING_NEXT,
+            )
+        unset_flag = _truthy(unset)
+        if unset_flag:
+            if value is not None:
+                raise BadInput(
+                    "args={'unset': true} and 'value' are mutually exclusive",
+                    next=_CLAIM_SETTING_NEXT,
+                )
+            stored: str | None = None
+        else:
+            if value is None:
+                raise BadInput(
+                    "mode='setting' requires args={'value': <v>} — or "
+                    "args={'unset': true} to clear the override",
+                    next=_CLAIM_SETTING_NEXT,
+                )
+            stored = _claim_setting_value(key, value)
+
+        from precis.store.revision_context import current_revision_context
+        from precis.utils.db_log_handler import (
+            _resolve_host_name,
+            _resolve_process_name,
+        )
+
+        ctx = current_revision_context()
+        actor = (ctx.actor if ctx else None) or source or "agent"
+        with self.store.tx() as conn:
+            row = conn.execute(
+                "SELECT value FROM app_state WHERE key = %s FOR UPDATE", (key,)
+            ).fetchone()
+            old = None if row is None else str(row[0])
+            if unset_flag and old is None:
+                return Response(body=f"{key} has no override set — nothing to clear")
+            if not unset_flag and old == stored:
+                return Response(body=f"{key} is already {stored!r} — no change")
+            if unset_flag:
+                conn.execute("DELETE FROM app_state WHERE key = %s", (key,))
+            else:
+                conn.execute(
+                    "INSERT INTO app_state (key, value) VALUES (%s, %s) "
+                    "ON CONFLICT (key) DO UPDATE SET "
+                    "value = EXCLUDED.value, updated_at = now()",
+                    (key, stored),
+                )
+            # The 'who changed what' audit row — same shape as
+            # ``precis limits set``'s (cli/limits.py): one worker_logs
+            # INFO row carrying actor + old→new + reason as jsonb.
+            payload = {
+                "event": "claim-setting",
+                "key": key,
+                "actor": actor,
+                "old": old,
+                "new": stored,
+                "reason": reason_s,
+            }
+            conn.execute(
+                "INSERT INTO worker_logs "
+                "(host, process, level, logger, message, payload) "
+                "VALUES (%s, %s, 'INFO', 'precis.handlers.job', %s, %s::jsonb)",
+                (
+                    _resolve_host_name(),
+                    _resolve_process_name(),
+                    f"claim {key} {'cleared' if unset_flag else 'set'}: "
+                    f"{old!r} -> {stored!r} by {actor}",
+                    json.dumps(payload),
+                ),
+            )
+        shown_new = "(default)" if unset_flag else stored
+        shown_old = old if old is not None else "(unset)"
+        return Response(
+            body=(
+                f"{'cleared' if unset_flag else 'set'} {key}: "
+                f"{shown_old} -> {shown_new} by {actor}: {reason_s}. "
+                "effective on the next claim cycle; current: "
+                "get(kind='job', id='/claim')"
+            )
+        )
 
     def _retarget_job(
         self,

@@ -2,7 +2,7 @@
 id: precis-job-observe-help
 family: work
 title: precis — compute job types and the fleet /-views
-summary: the compute-lane job types (struct_relax, pourbaix_bulk, surface_coverage_scan, sandbox_run, pathway/pcb/retrosynth lanes) plus the read-only /… views (/logs, /limits, /delta, /builds, /throughput, /cadence, /settings) on kind='job'
+summary: the compute-lane job types (struct_relax, pourbaix_bulk, surface_coverage_scan, sandbox_run, pathway/pcb/retrosynth lanes) plus the read-only /… views (/logs, /limits, /delta, /builds, /throughput, /cadence, /settings, /claim) on kind='job'
 answers:
   - which job types run compute or code, and on which executor?
   - how do I run a relax, a Pourbaix verdict or a coverage scan?
@@ -15,6 +15,7 @@ answers:
   - is the fleet working or idle?
   - when does a cadence fire next?
   - is a live switch (app_settings / service_config row) set?
+  - which claim.* overrides are set, vs the code defaults?
   - how many garden proposals were approved, rejected or held for a human?
 applies-to: get/search/put (kind='job')
 tags: workflow, verbs, troubleshooting
@@ -252,6 +253,22 @@ vetted enum word — anything else is `(withheld: string, N chars)`).
 a human operator (the service/settings surfaces and the web pages).
 The Dark switches table on [[precis-status]] covers only `enable_env`
 services; this is every row.
+
+## Which claim.* overrides are set? — /claim
+
+```python
+get(kind="job", id="/claim")
+```
+
+The `claim.*` `app_state` knobs the claim substrate reads live, next
+to their code defaults: `claim.max_running.<job_type>` (per-host
+running cap, `0` suspends the type; code default
+`_MAX_RUNNING_DEFAULTS`, absent = uncapped),
+`claim.slicing.<executor>` (per-lane slicing flip — default off
+unless `PRECIS_JOB_SLICING`) and `claim.slice_s.<executor>` (per-claim
+wall budget seconds — `PRECIS_JOB_SLICE_S`, else `DEFAULT_SLICE_S`).
+Writes go through `put(kind='job', mode='setting', …)` — see
+[[precis-job-help]].
 
 ## See also
 

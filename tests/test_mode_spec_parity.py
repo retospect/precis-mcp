@@ -71,11 +71,12 @@ _EXPECTED_MODES: dict[tuple[str, str], tuple[str, ...] | None] = {
     #    door (put(id=<slug-or-handle>, mode='rerun')) onto the quest
     #    compute lane — every other value is rejected (gr499904) --------
     ("structure", "put"): ("rerun", "neb"),
-    # -- put: job's sole recognised mode is the retry surface
-    #    (put(id=N, mode='retry')); every other value is rejected — a
-    #    real one-element vocabulary, not the reject-all `()` shape
-    #    (gr343755) -----------------------------------------------------
-    ("job", "put"): ("retry", "retarget"),
+    # -- put: job's recognised modes are the retry surface
+    #    (put(id=N, mode='retry')), the queued-pin move (mode='retarget')
+    #    and the audited claim.* override door (mode='setting', gr556919);
+    #    every other value is rejected — a real vocabulary, not the
+    #    reject-all `()` shape (gr343755) --------------------------------
+    ("job", "put"): ("retry", "retarget", "setting"),
     # -- fleet: put is the collector report only; edit rewrites the
     #    coordinator-owned fields (assigned/slice/note) -----------------
     ("fleet", "put"): ("report",),
@@ -201,7 +202,7 @@ def test_job_retry_and_message_reject_all_are_distinct_sentinels(
     other."""
     job = full_hub.handlers["job"].spec
     message = full_hub.handlers["message"].spec
-    assert job.modes == ("retry", "retarget")
+    assert job.modes == ("retry", "retarget", "setting")
     assert message.modes == ()
     assert job.modes is not None
     assert message.modes is not None

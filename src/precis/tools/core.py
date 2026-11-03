@@ -1511,6 +1511,12 @@ def put(
     # child's class. Declared at the verb level (the gr262482 pattern)
     # so strict-schema MCP clients don't strip it.
     origin: str | None = None,
+    # job setting (put(kind='job', mode='setting', key=…, value=…[, unset=True],
+    # see precis-job-help): key= names the setting, unset=True clears it.
+    # Declared at the verb level (the gr262482 pattern) so strict-schema
+    # MCP clients don't strip them.
+    key: str | None = None,
+    unset: bool | None = None,
     # todo plan mint (put(kind='todo', mode='plan'), see precis-plan-help):
     # template= names the plan template, gripe_id=/section=/board= are its
     # arguments. Declared at the verb level (the gr262482 pattern) so
@@ -1825,6 +1831,8 @@ def put(
                 "model": model,
                 "placement": placement,
                 "origin": origin,
+                "key": key,
+                "unset": unset,
                 "template": template,
                 "gripe_id": gripe_id,
                 "section": section,

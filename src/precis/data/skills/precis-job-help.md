@@ -235,7 +235,8 @@ put(kind='job', parent_id=<todo>, job_type='survey_extract',
   on any non-terminal job (queued, running, `waiting_*`; the write
   lands on the row's next claim/re-queue). A terminal job refuses:
   nothing claims it again. `prio=`/`origin=` on `mode='retry'` /
-  `mode='retarget'` are refused — those verbs don't mint.
+  `mode='retarget'` / `mode='setting'` are refused — those verbs don't
+  mint.
 
 The handler validates `job_type`, `executor`, `params`, AND the
 parent todo's existence at submit time. If something's wrong, the
@@ -495,6 +496,31 @@ It refuses a job that is not `STATUS:queued` or not pinned, a node whose
 executor lane is retired, and a node that doesn't advertise every resource
 the job requires. `text=` is required; the old and new node, the reason and
 the actor land in a `job-retarget` event on the job.
+
+## Set or clear a claim.* operator override
+
+The claim substrate reads `claim.*` `app_state` keys live:
+`claim.max_running.<job_type>` (per-host running cap, int 0..64 — `0`
+suspends the type), `claim.slicing.<executor>` (bool) and
+`claim.slice_s.<executor>` (positive seconds). Set or clear them with
+the audited setter — `reason=` is required and the change (who, old →
+new, why) lands in `worker_logs`:
+
+```python
+put(kind='job', mode='setting',
+    args={'key': 'claim.max_running.derived_drain', 'value': 4,
+          'reason': '<why>'})
+put(kind='job', mode='setting',
+    args={'key': 'claim.slicing.job_inproc', 'unset': True,
+          'reason': '<why>'})
+```
+
+The key must name a real job_type / executor and the value the family
+type. Writes are operator-only: only `PRECIS_SOURCE` `cli` or
+`web:owner` may set or unset — every worker source
+(`precis-worker*`, `asa-*`, calls inside a background pass) is denied.
+Read the live overrides next to their code defaults with
+`get(kind='job', id='/claim')` ([[precis-job-observe-help]]).
 
 ## Re-submit a failed job
 ## Retry a failed job
