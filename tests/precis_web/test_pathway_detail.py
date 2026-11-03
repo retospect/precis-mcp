@@ -1928,6 +1928,91 @@ def test_pathway_tier_toggle_absent_without_sibling(client, runtime) -> None:
     assert '<span class="font-semibold text-fg-subtle">view:</span>' not in resp.text
 
 
+# ── screening-tier honesty banner (gr559345) ────────────────────────────
+
+_SCREENING_BANNER_TEXT = (
+    "screening tier: no measured barriers; estimates shown are BEP "
+    "&alpha;&middot;&Delta;E+&beta; &plusmn; band."
+)
+
+
+def test_pathway_tier_banner_fires_screening_no_measured_barrier(
+    client, runtime
+) -> None:
+    """gr559345: screening tier, every link's ``barrier_source`` is "bep"
+    or "none" — the honesty banner renders Reto's wording verbatim above
+    the diagram."""
+    graph = {
+        "nodes": [{"id": "A", "rel_energy": 0.0}, {"id": "B", "rel_energy": 0.2}],
+        "links": [
+            {
+                "source": "A",
+                "target": "B",
+                "kind": "reaction",
+                "barrier": None,
+                "delta_e": 0.2,
+            }
+        ],
+    }
+    _seed_pathway(
+        runtime.store,
+        meta={
+            "tier": "screening",
+            "graph": graph,
+            "results": {
+                "edges": [{"name": "A->B", "bep": {"alpha": 0.8, "beta": 0.05}}]
+            },
+        },
+        body_text=None,
+    )
+    resp = client.get("/refs/pathway/171696")
+    assert resp.status_code == 200
+    assert _SCREENING_BANNER_TEXT in resp.text
+
+
+def test_pathway_tier_banner_absent_with_a_measured_edge(client, runtime) -> None:
+    """The flip side: still screening tier, but one link carries a
+    measured (``barrier_source == "neb"``) edge — the per-edge hover/hump
+    already shows the distinction, so the page-level banner would be
+    redundant and does not render."""
+    graph = {
+        "nodes": [
+            {"id": "A", "rel_energy": 0.0},
+            {"id": "B", "rel_energy": 0.2},
+            {"id": "C", "rel_energy": 0.4},
+        ],
+        "links": [
+            {"source": "A", "target": "B", "kind": "reaction", "barrier": None},
+            {"source": "B", "target": "C", "kind": "reaction", "barrier": None},
+        ],
+    }
+    _seed_pathway(
+        runtime.store,
+        meta={
+            "tier": "screening",
+            "graph": graph,
+            "results": {"edges": [{"name": "A->B", "barrier": {"mean": 0.3}}]},
+        },
+        body_text=None,
+    )
+    resp = client.get("/refs/pathway/171696")
+    assert resp.status_code == 200
+    assert _SCREENING_BANNER_TEXT not in resp.text
+
+
+def test_pathway_tier_banner_absent_outside_screening_tier(client, runtime) -> None:
+    """Same all-estimated graph, but a ``neb``-tier pathway — the banner is
+    a screening-tier-only honesty note, not a generic "no barriers" flag."""
+    graph = {
+        "nodes": [{"id": "A", "rel_energy": 0.0}, {"id": "B", "rel_energy": 0.2}],
+        "links": [{"source": "A", "target": "B", "kind": "reaction", "barrier": None}],
+    }
+    _seed_pathway(runtime.store, meta={"tier": "neb", "graph": graph}, body_text=None)
+    resp = client.get("/refs/pathway/171696")
+    assert resp.status_code == 200
+    assert _SCREENING_BANNER_TEXT not in resp.text
+
+
 # ── Kinetics panel (meta.results.kinetics -> vendored report panel) ─────
 
 
@@ -2467,6 +2552,109 @@ def test_pathway_diagram_measured_zero_barrier_stays_solid(
 
 
 @needs_node
+def test_pathway_diagram_bep_estimated_hump_is_dashed_with_band(
+    client, runtime, tmp_path: Path
+) -> None:
+    """gr559345: no measured barrier but a usable BEP fit on the joined
+    ``results.edges`` record — the hump still draws through ``humpPoints``
+    (not the bare 2-point "Ea n/a" line), stays dashed, carries a
+    translucent +/-rmse band, and labels ``Ea≈<value> (BEP)``."""
+    graph = {
+        "nodes": [{"id": "A", "rel_energy": 0.0}, {"id": "B", "rel_energy": 0.1}],
+        "links": [
+            {
+                "source": "A",
+                "target": "B",
+                "kind": "reaction",
+                "barrier": None,
+                "delta_e": 0.2,
+            }
+        ],
+    }
+    _seed_pathway(
+        runtime.store,
+        meta={
+            "graph": graph,
+            "results": {
+                "edges": [
+                    {"name": "A->B", "bep": {"alpha": 0.8, "beta": 0.05, "rmse": 0.03}}
+                ]
+            },
+        },
+        body_text=None,
+    )
+    resp = client.get("/refs/pathway/171696")
+    assert resp.status_code == 200
+    svg = _render_diagram_svg(tmp_path, resp.text)
+
+    segment = re.search(r'<polyline class="pw-seg"[^>]*>', svg)
+    assert segment is not None
+    assert 'stroke-dasharray="4 3"' in segment[0]
+    points = re.search(r'points="([^"]*)"', segment[0])
+    assert points is not None and len(points[1].split()) > 2
+
+    assert "Ea≈0.21 (BEP)" in svg
+    assert "Ea n/a" not in svg
+    assert re.search(r'<line[^>]*opacity="0\.4"[^>]*/>', svg)
+
+
+@needs_node
+def test_pathway_diagram_hover_title_names_barrier_source_every_step(
+    client, runtime, tmp_path: Path
+) -> None:
+    """gr559345: every transition's hover title now names its
+    ``barrier_source`` (neb/bep/none), not just the formerly-unknown case."""
+    graph = {
+        "nodes": [
+            {"id": "A", "rel_energy": 0.0},
+            {"id": "B", "rel_energy": 0.3},
+            {"id": "C", "rel_energy": 0.5},
+            {"id": "D", "rel_energy": 0.6},
+        ],
+        "links": [
+            {"source": "A", "target": "B", "kind": "reaction", "barrier": 0.3},
+            {
+                "source": "B",
+                "target": "C",
+                "kind": "reaction",
+                "barrier": None,
+                "delta_e": 0.2,
+            },
+            {"source": "C", "target": "D", "kind": "reaction", "barrier": None},
+        ],
+    }
+    _seed_pathway(
+        runtime.store,
+        meta={
+            "graph": graph,
+            "results": {
+                "edges": [
+                    {"name": "A->B", "barrier": {"mean": 0.3}},
+                    {"name": "B->C", "bep": {"alpha": 0.8, "beta": 0.05}},
+                ]
+            },
+        },
+        body_text=None,
+    )
+    resp = client.get("/refs/pathway/171696")
+    assert resp.status_code == 200
+    svg = _render_diagram_svg(tmp_path, resp.text)
+
+    def _title_for(src: str, tgt: str) -> str:
+        seg = re.search(
+            rf'<polyline class="pw-seg"[^>]*data-from="{src}" data-to="{tgt}"[^>]*>'
+            rf"<title>([^<]*)</title>",
+            svg,
+        )
+        assert seg is not None, svg
+        return seg[1]
+
+    assert "source=neb" in _title_for("A", "B")
+    assert "source=bep" in _title_for("B", "C")
+    assert "source=none" in _title_for("C", "D")
+
+
+@needs_node
 def test_pathway_diagram_renders_folded_steps_with_annotations(
     client, runtime, tmp_path: Path
 ) -> None:
@@ -2586,6 +2774,68 @@ def test_pathway_graph_payload_passes_link_added_removed_through() -> None:
     assert first["added"] == {"H": 1} and first["removed"] is None
     assert second["kind"] == "desorption"
     assert second["removed"] == {"NH3": 1} and second["added"] is None
+
+
+def test_pathway_graph_payload_joins_bep_and_barrier_source_by_edge_name() -> None:
+    """gr559345: ``results.edges`` joins onto each link by physical
+    ``(source, target)`` name (``~history`` landing suffixes stripped, same
+    rule as ``flux_share._phys``) and attaches ``bep``/``barrier_source`` —
+    ``"neb"`` when a finite measured barrier is on record, ``"bep"`` when
+    only a usable BEP fit is, else ``"none"``. A degenerate fit (missing or
+    non-finite alpha/beta) is treated the same as no fit at all."""
+    from precis_web.routes.refs import _pathway_graph_payload
+
+    graph = {
+        "nodes": [{"id": "A"}, {"id": "B~history"}, {"id": "C"}, {"id": "D"}],
+        "links": [
+            {"source": "A", "target": "B~history", "kind": "reaction"},
+            {"source": "B~history", "target": "C", "kind": "reaction"},
+            {"source": "C", "target": "D", "kind": "reaction"},
+        ],
+    }
+    edges = [
+        {
+            "name": "A->B",
+            "barrier": {"mean": 0.42},
+            "bep": {"alpha": 0.9, "beta": 0.1, "rmse": 0.05},
+        },
+        {"name": "B->C", "bep": {"alpha": 0.9, "beta": 0.1}},
+        {"name": "C->D", "bep": {"alpha": float("nan"), "beta": 0.1}},
+    ]
+    payload = _pathway_graph_payload(graph, edges=edges)
+    assert payload is not None
+    neb, bep, none = payload["links"]
+
+    # a finite measured barrier wins even though a bep fit is also on
+    # record — "neb" carries the bep dict along anyway (the client only
+    # draws through it when barrier is itself null)
+    assert neb["barrier_source"] == "neb"
+    assert neb["bep"] == {"alpha": 0.9, "beta": 0.1, "rmse": 0.05}
+
+    # no measured barrier, a usable fit, no rmse recorded — rmse omitted
+    # rather than fabricated
+    assert bep["barrier_source"] == "bep"
+    assert bep["bep"] == {"alpha": 0.9, "beta": 0.1}
+
+    # a degenerate fit (alpha non-finite) is no fit at all
+    assert none["barrier_source"] == "none"
+    assert none["bep"] is None
+
+
+def test_pathway_graph_payload_barrier_source_none_off_stored_graph() -> None:
+    """No ``results.edges`` block at all (a pathway stored before catpath
+    exported it, or no ``edges`` kwarg passed) -> every link is
+    ``barrier_source == "none"``/``bep is None``, not a crash."""
+    from precis_web.routes.refs import _pathway_graph_payload
+
+    graph = {
+        "nodes": [{"id": "A"}, {"id": "B"}],
+        "links": [{"source": "A", "target": "B", "kind": "reaction", "barrier": 0.2}],
+    }
+    payload = _pathway_graph_payload(graph)
+    assert payload is not None
+    (link,) = payload["links"]
+    assert link["barrier_source"] == "none" and link["bep"] is None
 
 
 def _typed_link(

@@ -33,6 +33,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import math
 import re
 from collections import Counter
 from datetime import UTC, datetime, timedelta
@@ -1133,17 +1134,96 @@ def _pathway_reasons(raw: Any) -> list[str]:
     return [str(r) for r in raw if r]
 
 
+def _pathway_phys(name: object) -> str:
+    """Physical state name — a ``meta.graph`` node id may keep catpath's
+    ``~history`` landing suffix, which ``results.edges`` step names never
+    carry. Autocatpath's own ``_phys``, re-derived here rather than
+    imported — the same rule :func:`_pathway_electro_blockers` already
+    follows, and the sibling copy in ``precis_pathway.flux_share._phys``."""
+    return str(name).split("~", 1)[0]
+
+
+def _pathway_edges_by_name(edges: Any) -> dict[str, dict[str, Any]]:
+    """``results.edges`` keyed by step name (e.g. ``"N+H->NH"``) — the join
+    key a link's physical ``(source, target)`` pair is matched against
+    below. ``{}`` for anything but a list of named dicts (a pathway stored
+    before catpath exported this block)."""
+    out: dict[str, dict[str, Any]] = {}
+    if isinstance(edges, list):
+        for e in edges:
+            if isinstance(e, dict) and isinstance(e.get("name"), str):
+                out[e["name"]] = e
+    return out
+
+
+def _pathway_link_bep_source(edge_record: dict[str, Any] | None) -> dict[str, Any]:
+    """gr559345's barrier-provenance tag for one link: ``"neb"`` when
+    ``results.edges[name].barrier.mean`` is a finite measured value,
+    ``"bep"`` when instead a BEP fit (finite ``alpha``/``beta``) is on
+    record, else ``"none"`` — the trust distinction the explorer's hover
+    and hump render key off (no separate ``trust`` field; this one already
+    carries it). ``bep`` (``{alpha, beta, rmse}``, ``rmse`` optional) rides
+    along whenever the fit is present, pulled straight off the record
+    rather than ``precis_pathway.staircase_routes._kinetics`` — that trims
+    ``rmse`` for a different subsystem's Rung-shaped kinetics inputs.
+
+    Returned under ``barrier_source`` rather than ``source``: a link dict
+    already carries ``source``/``target`` for the edge's graph node ids
+    (the join key every fold/fork-probability lookup in the diagram script
+    uses), so stamping the provenance tag onto the same key would silently
+    break them."""
+    bep: dict[str, Any] | None = None
+    if isinstance(edge_record, dict):
+        raw_bep = edge_record.get("bep")
+        if isinstance(raw_bep, dict):
+            alpha, beta = raw_bep.get("alpha"), raw_bep.get("beta")
+            if (
+                isinstance(alpha, (int, float))
+                and not isinstance(alpha, bool)
+                and math.isfinite(alpha)
+                and isinstance(beta, (int, float))
+                and not isinstance(beta, bool)
+                and math.isfinite(beta)
+            ):
+                bep = {"alpha": float(alpha), "beta": float(beta)}
+                rmse = raw_bep.get("rmse")
+                if (
+                    isinstance(rmse, (int, float))
+                    and not isinstance(rmse, bool)
+                    and math.isfinite(rmse)
+                ):
+                    bep["rmse"] = float(rmse)
+    barrier = edge_record.get("barrier") if isinstance(edge_record, dict) else None
+    mean = barrier.get("mean") if isinstance(barrier, dict) else None
+    if (
+        isinstance(mean, (int, float))
+        and not isinstance(mean, bool)
+        and math.isfinite(mean)
+    ):
+        barrier_source = "neb"
+    else:
+        barrier_source = "bep" if bep is not None else "none"
+    return {"bep": bep, "barrier_source": barrier_source}
+
+
 def _pathway_graph_payload(
-    graph: dict[str, Any] | None, target: str | None = None
+    graph: dict[str, Any] | None,
+    target: str | None = None,
+    edges: Any = None,
 ) -> dict[str, Any] | None:
     """Trim ``meta.graph`` (a networkx ``node_link_data`` dict) to exactly what
     the client-side energy diagram needs, plus the server-enumerated root->leaf
     ``paths`` (``_pathway_paths``) the diagram now draws one profile per,
     instead of a single shared topological x-axis. Returns ``None`` when
-    there's no graph to draw (an early/sparse pathway — AC4-adjacent)."""
+    there's no graph to draw (an early/sparse pathway — AC4-adjacent).
+
+    ``edges`` (``results.get("edges")``) joins in each link's ``bep`` fit
+    and ``barrier_source`` (gr559345) by physical state name — see
+    :func:`_pathway_link_bep_source`."""
     if not graph or not graph.get("nodes"):
         return None
     raw_nodes = graph.get("nodes", [])
+    edges_by_name = _pathway_edges_by_name(edges)
     nodes = [
         {
             "id": str(n["id"]),
@@ -1180,6 +1260,11 @@ def _pathway_graph_payload(
             # state labels instead.
             "added": _pathway_link_counts(e.get("added")),
             "removed": _pathway_link_counts(e.get("removed")),
+            **_pathway_link_bep_source(
+                edges_by_name.get(
+                    f"{_pathway_phys(e['source'])}->{_pathway_phys(e['target'])}"
+                )
+            ),
         }
         for e in graph.get("links", [])
         if e.get("source") is not None and e.get("target") is not None
@@ -1221,6 +1306,18 @@ def _pathway_status_banner(
         banner["superseded_by"] = sid
         banner["superseded_url"] = f"/refs/pathway/{sid}" if sid is not None else None
     return banner
+
+
+def _pathway_tier_banner(tier: str | None, diagram: dict[str, Any] | None) -> bool:
+    """gr559345's screening-tier honesty banner: fires only when this is a
+    screening-tier pathway AND every drawn link's ``barrier_source`` is
+    something other than ``"neb"`` — a mixed graph (some measured, some
+    BEP-estimated) already shows the distinction per edge via ``source``/
+    the hover title, so the page-level banner would be redundant there."""
+    if tier != "screening" or not diagram:
+        return False
+    links = diagram.get("links") or []
+    return bool(links) and all(link.get("barrier_source") != "neb" for link in links)
 
 
 #: Same collapse rule as ``precis_pathway.toon_views._NUM_RE`` — the
@@ -2357,7 +2454,9 @@ async def _pathway_detail(request: Request, store: Store, ref: Any) -> HTMLRespo
     # -> no diagram; no/partial structure_refs -> per-state "no geometry
     # linked" (AC4); an unrecognised measure op -> skipped with a note.
     graph = meta.get("graph")
-    diagram = _pathway_graph_payload(graph, target=results.get("target"))
+    diagram = _pathway_graph_payload(
+        graph, target=results.get("target"), edges=results.get("edges")
+    )
     if diagram:
         # gr553482: per-route steady-state flux shares off the stored
         # kinetics record — the greedy net-flux decomposition lives in
@@ -2420,6 +2519,11 @@ async def _pathway_detail(request: Request, store: Store, ref: Any) -> HTMLRespo
     tier = _pathway_tier(meta)
     tier_sibling = _pathway_tier_sibling(store, ref, tier, candidate_ref_id)
     tier_toggle = _pathway_tier_toggle(ref.id, tier, tier_sibling, meta)
+    # gr559345: screening tier, no measured barrier anywhere on the graph —
+    # the explorer draws BEP-estimated humps instead of real NEB ones, so
+    # the page says so up front rather than letting the diagram alone imply
+    # trust it doesn't have.
+    tier_banner = _pathway_tier_banner(tier, diagram)
 
     # No graph yet -> a status-aware banner (computing/failed/superseded)
     # instead of just the bare empty-diagram message.
@@ -2466,6 +2570,7 @@ async def _pathway_detail(request: Request, store: Store, ref: Any) -> HTMLRespo
             "stepper": stepper,
             "tier": tier,
             "tier_toggle": tier_toggle,
+            "tier_banner": tier_banner,
         },
     )
 

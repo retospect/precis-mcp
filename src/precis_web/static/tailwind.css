@@ -2205,6 +2205,10 @@ video {
   background-color: rgb(var(--bg-warning-subtle) / var(--tw-bg-opacity, 1));
 }
 
+.bg-warning-subtle\/60 {
+  background-color: rgb(var(--bg-warning-subtle) / 0.6);
+}
+
 .fill-fg {
   fill: rgb(var(--text-fg) / 1);
 }
