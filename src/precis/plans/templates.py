@@ -375,7 +375,10 @@ def mint_gripe_fix(
             _task(),
             body=(
                 "Re-run the repro or test the gripe names; an LLM read of the "
-                "report against the landed change otherwise."
+                "report against the landed change otherwise. The fix holds? "
+                "Commit nothing and make `validated: <why>` the first line of "
+                "your final message. It does not? Commit the correction on "
+                "the branch and hand off as a build would."
             ),
             blocked_by=("gate",),
         )

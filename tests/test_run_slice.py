@@ -1257,6 +1257,33 @@ def test_poll_clean_exit_without_a_commit_fails(seams: dict[str, Any]) -> None:
     assert {"STATUS:open", "attempt:1"} <= store.tag_strings(42)
 
 
+def test_poll_task_validated_verdict_closes_it_as_done(seams: dict[str, Any]) -> None:
+    """gr561132: a task that checked and found nothing to change (a validation
+    that passed) says `validated:` first; that is a success with no land, not
+    a failed attempt (td561139 and td561151 each hit the cap this way)."""
+    store = _Store()
+    store.add_todo(42, "Validate the fix")
+    ctx, handle = _submit(store, seams)
+    _finish(
+        handle,
+        0,
+        json.dumps(
+            {"is_error": False, "result": "validated: 715c352ca holds, 135 tests pass."}
+        ),
+    )
+    pctx = _poll_ctx(store, ctx)
+    assert run_slice.poll(pctx, handle) is True
+    assert pctx.status == "succeeded" and pctx.failure is None
+    tags = store.tag_strings(42)
+    assert "STATUS:done" in tags
+    assert not any(
+        t.startswith("claimed-by:") or t.startswith("attempt:") for t in tags
+    )
+    assert "verdict:moot" not in tags
+    assert seams["lands"] == []
+    assert any(c.startswith("handoff: validated:") for c in store.comments(42))
+
+
 def test_poll_generator_clean_exit_mints_no_land(seams: dict[str, Any]) -> None:
     store = _Store()
     store.add_todo(42, "Slice it", meta={"generate": {"role": "slicer", "from": "x"}})
@@ -1304,6 +1331,7 @@ def test_poll_generator_with_no_children_fails_and_releases(
         ),
         ("Minted td1.\nmoot: late", None),
         ("moot:", None),
+        ("Validated: the fix holds.", ("validated", "the fix holds.")),
         ("BLOCKED: MCP 401.", None),
         ("", None),
     ],

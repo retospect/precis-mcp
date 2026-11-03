@@ -299,23 +299,27 @@ def node_kind(meta: dict[str, Any] | None) -> NodeKind | None:
     return None
 
 
-#: A child-minting generator's verdict when it correctly mints nothing
-#: (gr548813): the first non-empty line of its result is ``no-op: <why>``
-#: (nothing to add, the plan goes on) or ``moot: <why>`` (the plan's reason
-#: is gone -- the source already resolved, closed or deleted). Any other
-#: childless exit is a failed attempt.
-GENERATOR_VERDICTS: tuple[str, ...] = ("no-op", "moot")
+#: A slice's verdict when it correctly delivers nothing: the first non-empty
+#: line of its result is ``no-op: <why>`` (nothing to add or change, the
+#: plan goes on), ``moot: <why>`` (the plan's reason is gone -- the source
+#: already resolved, closed or deleted) or, for a task that checks rather
+#: than changes, ``validated: <why>`` (the check passed; gr561132 -- a
+#: validation that found the fix correct used to count as a failed attempt
+#: because it left no commit). A child-minting generator uses the first two
+#: (gr548813). Any other childless or commit-less exit is a failed attempt.
+GENERATOR_VERDICTS: tuple[str, ...] = ("no-op", "moot", "validated")
 
 #: Open tag ``run_slice`` sets on a ``moot:`` generator; the tick closes the
 #: plan on it (every open node and the root as won't-do) and drops it.
 MOOT_TAG = "verdict:moot"
 
-_VERDICT_RE = re.compile(r"^\s*(no-op|moot):\s*(\S.*?)\s*$", re.IGNORECASE)
+_VERDICT_RE = re.compile(r"^\s*(no-op|moot|validated):\s*(\S.*?)\s*$", re.IGNORECASE)
 
 
 def generator_verdict(result: str | None) -> tuple[str, str] | None:
     """``(kind, why)`` when the first non-empty line of ``result`` is one of
-    :data:`GENERATOR_VERDICTS`, else ``None``."""
+    :data:`GENERATOR_VERDICTS`, else ``None``. Named for the generator case
+    it was built for; task slices use it the same way."""
     for line in (result or "").splitlines():
         if line.strip():
             m = _VERDICT_RE.match(line)

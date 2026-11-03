@@ -826,6 +826,13 @@ def render_brief(
         "once you exit cleanly, the lander lands every commit on the branch, "
         "so commit only work fit to land.",
         "",
+        "Nothing to commit on purpose? Say so as the FIRST line of your final "
+        "message: `validated: <why>` when the check you were asked for passed, "
+        "`no-op: <why>` when there is nothing to change and the plan should go "
+        "on, `moot: <why>` when the plan's reason is gone (already fixed, "
+        "closed). The todo then closes done. Any other commit-less exit counts "
+        "as a failed attempt and is retried.",
+        "",
         "Your final message is posted on the todo as the `handoff:` comment the "
         "next session starts from: what you committed, what is left, what you "
         "would do next.",
@@ -1401,11 +1408,31 @@ def poll(ctx: Any, handle: Any) -> bool:
     land = clean and not _is_generator(ctx.store, todo_id)
     nothing = None
     if land and not commits:
-        nothing = (
-            f"left no commit on {slice_branch(todo_id)} ahead of origin/main "
-            "(nothing to land)"
-        )
-        summary.append(f"Land: {nothing}.")
+        verdict = generator_verdict(result)
+        if verdict is None:
+            nothing = (
+                f"left no commit on {slice_branch(todo_id)} ahead of origin/main "
+                "(nothing to land)"
+            )
+            summary.append(f"Land: {nothing}.")
+        else:
+            # gr561132: a task that checked and found nothing to change (a
+            # validation that passed, a fix already on main) says so on its
+            # first line; that is a success with nothing to land, not a
+            # failed attempt to retry and escalate.
+            kind_, why = verdict
+            moot = kind_ == "moot"
+            land = False
+            close_todo(
+                ctx.store,
+                todo_id,
+                str(lane) if lane else None,
+                tags=(MOOT_TAG,) if moot else (),
+            )
+            summary.append(
+                f"Land: none, by verdict `{kind_}: {why[:200]}`; td{todo_id} "
+                f"closed{' and tagged for the tick to close the plan' if moot else ''}."
+            )
     elif (
         clean
         and not land
