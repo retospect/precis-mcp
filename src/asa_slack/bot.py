@@ -373,7 +373,13 @@ class AsaSlack:
             max_turns=self._cfg.router.max_turns,
             max_usd=self._cfg.router.max_usd,
             timeout_s=self._cfg.router.timeout_s,
-            env_overlay={"PRECIS_KINDS_DISABLED": slack_kinds_disabled()},
+            env_overlay={
+                "PRECIS_KINDS_DISABLED": slack_kinds_disabled(),
+                # Read-scope conv to this thread: the agent may read its
+                # own conversation back but nothing else, and may not
+                # write conv at all (gr555998).
+                "PRECIS_CONV_READ_SCOPE": slug,
+            },
             source="asa-slack",
         )
         result = await asyncio.to_thread(_dispatch_warm, req)

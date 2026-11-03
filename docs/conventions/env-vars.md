@@ -55,14 +55,18 @@ Values that change per request / per subprocess and are passed as env
 `PRECIS_CURRENT_TODO`, `PRECIS_WORKSPACE`, `PRECIS_CURRENT_AGENTLOG`,
 `PRECIS_CURRENT_MODEL`, `PRECIS_CURRENT_SOURCE` (the producing job, e.g.
 `dream` — what `tool_calls.source` records; the router sets it from
-`LlmRequest.source`), `PRECIS_SOURCE`, `PRECIS_PROCESS`.
+`LlmRequest.source`), `PRECIS_SOURCE`, `PRECIS_PROCESS`,
+`PRECIS_CONV_READ_SCOPE` (a scoped-surface bridge binds the run's own
+conv slug — `precis.handlers.conversation` enforces reads for that
+conversation only and refuses conv writes).
 
 A containerized agent run (`PRECIS_AGENT_CONTAINER=1`) forwards only an
 allowlist of these from the caller's `env_overlay` as `--env`
 (`agent_container.RUN_CONTEXT_ENV_KEYS`: agentlog, model, todo,
-kinds-disabled, acting-user, source). Secrets and envelope-pinned keys
-(role, deny verbs) never cross from the overlay; host paths
-(`PRECIS_WORKSPACE`, `PRECIS_PYTHON_ROOTS`) are not forwarded yet.
+kinds-disabled, conv-read-scope, acting-user, source). Secrets and
+envelope-pinned keys (role, deny verbs) never cross from the overlay;
+host paths (`PRECIS_WORKSPACE`, `PRECIS_PYTHON_ROOTS`) are not forwarded
+yet.
 
 - These are set by a parent (the job runner, the MCP server) for a
   single child invocation. Reading them through a frozen startup config

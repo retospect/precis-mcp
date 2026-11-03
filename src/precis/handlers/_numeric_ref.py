@@ -4133,6 +4133,15 @@ class NumericRefHandler(Handler):
             other_id, other_pos = link.src_ref_id, link.src_ord
 
         ref = endpoints.get(other_id)
+        # gr555998 round 3: an endpoint this surface may not read — an
+        # out-of-scope conv or a ref of a gated kind — collapses to the
+        # same opaque placeholder the eye rings print; the relation the
+        # surfaced ref recorded stays visible.
+        from precis.utils.surface_scope import masked_ref_placeholder
+
+        placeholder = masked_ref_placeholder(ref)
+        if placeholder is not None:
+            return f"{arrow} {placeholder}  ({link.relation})"
         if ref is None:
             target = f"<unknown ref {other_id}>"
         else:

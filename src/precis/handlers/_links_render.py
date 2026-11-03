@@ -32,6 +32,7 @@ from precis._result_budget import size_cell
 from precis.handlers._capped_section import DEFAULT_CHILD_ROW_CAP, render_capped_section
 from precis.response import Response
 from precis.utils import handle_registry
+from precis.utils.surface_scope import masked_ref_placeholder
 
 if TYPE_CHECKING:
     from precis.store import Link, Ref, Store
@@ -228,6 +229,22 @@ def render_links_section(
                 other_id, other_pos = link.src_ref_id, link.src_ord
                 other_chunk_id = link.src_chunk_id
                 rel_marker = _format_inbound_rel(link.relation)
+            # gr555998 round 3: an endpoint this surface may not read —
+            # an out-of-scope conv or a ref of a gated kind — collapses
+            # to the same opaque placeholder the eye rings print; the
+            # row still shows the edge exists but carries no handle,
+            # title, size or get-call.
+            placeholder = masked_ref_placeholder(endpoints.get(other_id))
+            if placeholder is not None:
+                rows.append(
+                    {
+                        "related to": f"{rel_marker} {placeholder}".strip(),
+                        "keywords": "",
+                        "how to get": "",
+                        "size": "",
+                    }
+                )
+                continue
             target = _format_target_handle(
                 other_id, other_pos, other_chunk_id, endpoints
             )

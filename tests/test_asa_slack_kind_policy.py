@@ -7,8 +7,14 @@ import importlib
 
 import pytest
 
-from asa_slack.kind_policy import ALLOWED_KINDS, slack_kinds_disabled
+from asa_slack.kind_policy import (
+    ALLOWED_KINDS,
+    SURFACE_REASON,
+    slack_kinds_disabled,
+)
+from precis.kind_gate import parse_disabled, parse_disabled_reasons
 from precis.runtime.core import PrecisRuntime
+from precis.store import Store
 
 
 def _known_kind_roster(runtime: PrecisRuntime) -> set[str]:
@@ -37,7 +43,7 @@ def test_allowed_is_subset_of_live_kind_roster(
 
 
 def test_compute_kinds_are_disabled(runtime_with_store: PrecisRuntime) -> None:
-    disabled = set(slack_kinds_disabled().split(","))
+    disabled = parse_disabled(slack_kinds_disabled())
     roster = _known_kind_roster(runtime_with_store)
     for kind in ("job", "quest", "cron", "todo", "sandbox_run"):
         # sandbox_run isn't a registered kind (it's a job_type), but a
@@ -49,7 +55,7 @@ def test_compute_kinds_are_disabled(runtime_with_store: PrecisRuntime) -> None:
 
 
 def test_research_kinds_stay_enabled():
-    disabled = set(slack_kinds_disabled().split(","))
+    disabled = parse_disabled(slack_kinds_disabled())
     for kind in (
         "paper",
         "patent",
@@ -72,12 +78,60 @@ def test_disabled_value_is_sorted_and_comma_joined():
     assert all(parts)  # no empty entries
 
 
+def test_every_disabled_entry_carries_the_surface_reason():
+    """gr555998 (a): the old bare ``kind`` entries rendered as a naked
+    ``prohibited`` in the banner and the blocked-call error. Every entry
+    must carry the inline ``kind:reason`` telling the agent the denial
+    is per-surface and what to do instead — and the reason must keep
+    working through ``parse_disabled_reasons`` (no comma, which is the
+    entry delimiter)."""
+    value = slack_kinds_disabled()
+    reasons = parse_disabled_reasons(value)
+    disabled = parse_disabled(value)
+    assert disabled  # the complement is non-empty by construction
+    assert "," not in SURFACE_REASON
+    for kind in disabled:
+        assert reasons[kind] == SURFACE_REASON
+
+
+def test_conv_is_allowed_so_the_read_scope_can_bind() -> None:
+    """gr555998 (b): ``conv`` left the disabled list — the handler then
+    enforces ``PRECIS_CONV_READ_SCOPE`` server-side (reads own conv
+    only, writes refused)."""
+    assert "conv" in ALLOWED_KINDS
+    assert "conv" not in parse_disabled(slack_kinds_disabled())
+
+
+def test_blocked_kind_banner_and_call_error_name_the_fix(store: Store) -> None:
+    """gr555998 (a), end to end: the ``Kinds unavailable:`` banner and
+    the ``Unsupported`` a blocked ``get`` returns both carry the
+    surface reason, not a bare ``prohibited``."""
+    from precis.config import PrecisConfig
+    from precis.dispatch import boot
+    from precis.kind_gate import format_unavailable
+    from precis.runtime.core import PrecisRuntime
+
+    raw = slack_kinds_disabled()
+    hub = boot(
+        store=store,
+        kinds_disabled=parse_disabled(raw),
+        kinds_disabled_reasons=parse_disabled_reasons(raw),
+    )
+    line = format_unavailable(hub.loadabilities)
+    assert f"gripe ({SURFACE_REASON})" in line
+
+    runtime = PrecisRuntime(config=PrecisConfig(), hub=hub)
+    body = runtime.dispatch("get", {"kind": "gripe", "id": 1})
+    assert "disabled" in body
+    assert SURFACE_REASON in body
+
+
 def test_drifted_kinds_stay_blocked():
     """The four kinds that motivated this fix (gr, 2026-08-11): added to
     the live registry after ALLOWED_KINDS' 2026-07-22 hand-cross-check, so
     the old ``KNOWN_KINDS - ALLOWED_KINDS`` scheme silently enabled them.
     They're deliberately not in ALLOWED_KINDS and must stay disabled."""
-    disabled = set(slack_kinds_disabled().split(","))
+    disabled = parse_disabled(slack_kinds_disabled())
     for kind in ("pathway", "material", "component", "python"):
         assert kind not in ALLOWED_KINDS
         assert kind in disabled, f"{kind} must be disabled for Slack turns"
@@ -91,7 +145,7 @@ def test_a_kind_the_registry_has_never_heard_of_is_not_silently_enabled():
     # live registry but aren't in ALLOWED_KINDS (see
     # test_drifted_kinds_stay_blocked), not about kinds nobody has coded yet.
     assert "totally-made-up-kind" not in ALLOWED_KINDS
-    assert "totally-made-up-kind" not in slack_kinds_disabled().split(",")
+    assert "totally-made-up-kind" not in parse_disabled(slack_kinds_disabled())
 
 
 def test_builtin_import_failure_refuses_to_compute_policy(
@@ -118,4 +172,4 @@ def test_builtin_import_failure_refuses_to_compute_policy(
 
     monkeypatch.undo()
     kind_policy._discover_live_kinds.cache_clear()
-    assert "material" in slack_kinds_disabled().split(",")
+    assert "material" in parse_disabled(slack_kinds_disabled())

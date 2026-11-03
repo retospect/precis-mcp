@@ -116,6 +116,19 @@ _CHUNK_SUMMARY_CAP = 140
 #: clusterer already caps the top level, this bounds the collapsed labels.
 _MAP_CLUSTER_CAP = 20
 
+
+def _scope_masks(ref: Any) -> bool:
+    """True when ``ref`` renders as an opaque neighbour on this surface —
+    a conv outside the bound read scope or a ref of a gated kind
+    (``precis.utils.surface_scope``). The ring prints the placeholder,
+    never the title, keywords or excerpt; applied at every hop
+    (gr555998 follow-up, ``PRECIS_CONV_READ_SCOPE`` /
+    ``PRECIS_KINDS_DISABLED``)."""
+    from precis.utils.surface_scope import masked_ref_placeholder
+
+    return masked_ref_placeholder(ref) is not None
+
+
 #: Forward-biased summary window *within* the eye's home cluster (mirrors the
 #: draft fisheye's falloff): a keyword-homogeneous section can cluster into
 #: dozens of chunks, so show the eye's neighbours and collapse the far tail
@@ -689,6 +702,16 @@ def _render_note_eye(
     ref = _resolve_ref(store, handle)
     if ref is None or getattr(ref, "retired_at", None) is not None:
         raise ValueError(f"eye: no live {kind} ref for {handle!r}")
+    if kind == "conv":
+        # The ladder is a conv read like any other (gr555998 follow-up):
+        # every conv handle — record ``co<N>`` or chunk ``cc<N>`` —
+        # funnels through the note eye, so the bound read scope gates
+        # the focus once here, for every rung and every door (handler
+        # ``eye``, the ``/eye`` route, the working-set composer). The
+        # ``Denied`` propagates beside the eye's ``ValueError``s.
+        from precis.handlers.conversation import deny_out_of_scope_conv
+
+        deny_out_of_scope_conv(ref)
     chips = _head_chips(store, ref, kind)
     if ext <= Extent.TOC and not recall:
         return f"· {_head(ref, kind, chips)}"
@@ -965,12 +988,23 @@ def _hub_member_notes(
     from precis.utils.memory_hubs import band_order
 
     shown = band_order(store, members)[:_HUB_LIST_CAP]
+    masked = {o for o in shown if _scope_masks(refs[o])}
     firsts = _first_body_lines(
         store,
-        [o for o in shown if not (getattr(refs[o], "meta", None) or {}).get("hook")],
+        [
+            o
+            for o in shown
+            if o not in masked
+            and not (getattr(refs[o], "meta", None) or {}).get("hook")
+        ],
     )
     notes: dict[int, str] = {}
     for oid in shown:
+        if oid in masked:
+            # A masked member carries no hook — its body first line
+            # would be an excerpt leak.
+            notes[oid] = ""
+            continue
         hook = str(((getattr(refs[oid], "meta", None) or {}).get("hook")) or "")
         hook = " ".join((hook or firsts.get(oid, "")).split())
         if len(hook) > _HUB_HOOK_CAP:
@@ -1340,6 +1374,13 @@ def _passage_suffix(n: _RingNeighbour, kind: str) -> str:
 
 def _ring_row(ref: Any, n: _RingNeighbour, *, chips: str = "", size: str = "") -> str:
     """One ring row: the neighbour label plus its collapsed-edge tail."""
+    from precis.utils.surface_scope import masked_ref_placeholder
+
+    placeholder = masked_ref_placeholder(ref)
+    if placeholder is not None:
+        # The placeholder carries no passage handles either — a masked
+        # neighbour leaks nothing but its existence as a neighbour.
+        return placeholder
     return _neighbor_label(ref, n.ref_id, chips=chips, size=size) + _passage_suffix(
         n, str(getattr(ref, "kind", "") or "")
     )
@@ -1418,6 +1459,11 @@ def _render_first_hop(
 
 
 def _neighbor_label(ref: Any, ref_id: int, *, chips: str = "", size: str = "") -> str:
+    from precis.utils.surface_scope import masked_ref_placeholder
+
+    placeholder = masked_ref_placeholder(ref)
+    if placeholder is not None:
+        return placeholder
     oh = _handle_with_file(getattr(ref, "kind", "?"), ref, ref_id)
     title = " ".join((getattr(ref, "title", None) or "").split())
     if getattr(ref, "kind", None) == "part":
@@ -1693,6 +1739,11 @@ def _recall(store: Store, ref_id: int, kind: str, *, ring: RingFilter | None) ->
         rid = int(ref.id)
         if rid in seen:
             continue  # one line per ref: its nearest chunk speaks for it
+        if _scope_masks(ref):
+            # A masked hit prints neither label nor gist — an
+            # out-of-scope conv's chunk excerpt would carry the
+            # conversation's text.
+            continue
         seen.add(rid)
         kept.append(ref)
         gist = _cap(" ".join((block.text or "").split()), _CHUNK_SUMMARY_CAP)

@@ -65,16 +65,23 @@ class LinkTarget:
 def parse_link_target(
     target: str, *, store: Store, include_retired: bool = False
 ) -> LinkTarget:
-    """:func:`_parse_link_target` plus the profile owner check
-    (gr490266): a target naming another owner's ``kind='profile'`` row is
-    ``NotFound`` for an identified caller, so no link can point a user's
-    ref (and its eye/links renders) at someone else's private profile."""
+    """:func:`_parse_link_target` plus two visibility gates:
+    the profile owner check (gr490266 — a target naming another owner's
+    ``kind='profile'`` row is ``NotFound`` for an identified caller, so
+    no link can point a user's ref at someone else's private profile),
+    and the conv read scope (gr555998 follow-up — a scoped surface
+    refuses any conv target but its bound one, so no edge it creates
+    can surface another conversation in this surface's rings)."""
     from precis import profiles
 
     resolved = _parse_link_target(target, store=store, include_retired=include_retired)
     ref = store.get_ref(kind=profiles.KIND, id=resolved.ref_id, include_deleted=True)
     if ref is not None and not profiles.visible_to(ref, profiles.acting_login(store)):
         raise NotFound(f"link target {target!r} not found")
+    if resolved.kind == "conv":
+        from precis.handlers.conversation import deny_out_of_scope_conv_target
+
+        deny_out_of_scope_conv_target(store, resolved.ref_id)
     return resolved
 
 

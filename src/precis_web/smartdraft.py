@@ -1369,13 +1369,13 @@ def review_indicator(
     # block with no enclosing heading gets no runnable badge at all.
     titles = section_titles or {}
     own_dc = handle_registry.format_handle("draft", chunk_id, chunk=True)
+    scope_id: int | None
+    run_dc: str | None
     for row in matrix:
         checker = row["checker"]
         if checker not in _BADGE_PERSONAS:
             continue
         if checker in _SECTION_PERSONAS:
-            scope_id: int | None
-            run_dc: str | None
             if is_heading:
                 scope_id, run_dc = chunk_id, own_dc
             else:

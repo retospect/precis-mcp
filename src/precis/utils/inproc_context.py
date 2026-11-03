@@ -73,6 +73,11 @@ class TickContext:
     #: the ``slice-td<id>-`` tool_calls session-id prefix.
     slice_id: str | None = None
     disabled_kinds: tuple[tuple[str, str], ...] = ()
+    #: The in-process equivalent of the ``PRECIS_CONV_READ_SCOPE`` env
+    #: back-door: a scoped-surface bridge (asa-slack) binds the run's own
+    #: conv slug so the conv handler serves reads for that conversation
+    #: only and refuses conv writes (gr555998). ``None`` ⇒ unscoped.
+    conv_read_scope: str | None = None
 
 
 _CURRENT: ContextVar[TickContext | None] = ContextVar(

@@ -741,6 +741,15 @@ def _render_claims_group(
         ref = refs.get(hub_ref_id)
         if ref is None or getattr(ref, "retired_at", None) is not None:
             continue
+        # gr555998 round 3: a claim hub this surface may not read
+        # collapses to the placeholder — its evidence explosion would
+        # leak the gated kind's titles wholesale.
+        from precis.utils.surface_scope import masked_ref_placeholder
+
+        placeholder = masked_ref_placeholder(ref)
+        if placeholder is not None:
+            entries.append((hub_ref_id, placeholder))
+            continue
         evidence = derive_evidence(store, hub_ref_id)
         claim_links = derive_refines(store, hub_ref_id)
         pin = (op, pins[hub_ref_id]) if op is not None else None
@@ -858,6 +867,15 @@ def collect_ring(
         for rid in all_ids:
             ref = refs.get(rid)
             if ref is None or getattr(ref, "retired_at", None) is not None:
+                continue
+            # gr555998 round 3: a neighbour this surface may not read —
+            # an out-of-scope conv or a ref of a gated kind — collapses
+            # to the opaque placeholder the note eye's rings print.
+            from precis.utils.surface_scope import masked_ref_placeholder
+
+            placeholder = masked_ref_placeholder(ref)
+            if placeholder is not None:
+                groups[_group_for(getattr(ref, "kind", "?"))].append((rid, placeholder))
                 continue
             sz = size_cell(body_sizes.get(rid, 0))
             groups[_group_for(getattr(ref, "kind", "?"))].append(

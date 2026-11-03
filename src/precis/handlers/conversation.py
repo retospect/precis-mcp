@@ -22,6 +22,7 @@ This does not make legacy SE edit-before-transcript atomic.
 
 from __future__ import annotations
 
+import os
 from collections.abc import Callable
 from contextlib import nullcontext
 from dataclasses import dataclass
@@ -30,7 +31,7 @@ from typing import Any, ClassVar
 from psycopg import Connection
 
 from precis.dispatch import Hub, InitError
-from precis.errors import BadInput, NotFound, Unsupported
+from precis.errors import BadInput, Denied, NotFound, Unsupported
 from precis.handlers._slug_ref_shared import (
     reject_chunk_or_path_view,
     render_slug_ref_list,
@@ -52,6 +53,138 @@ from precis.utils.match_all import fold_match_all_q
 from precis.utils.next_block import render_next_section
 from precis.utils.search_header import format_search_headline
 from precis.utils.search_merge import SearchHit, block_hits_to_search_hits
+
+#: Per-invocation env back-door (Tier 3, ``docs/conventions/env-vars.md``)
+#: a scoped-surface bridge sets on the agent run's serving process —
+#: ``asa_slack`` binds each Slack turn's own conv slug (gr555998). When
+#: set, ``conv`` serves reads for that conversation alone: other convs,
+#: the bare list and cross-conv search refuse, and every conv write is
+#: denied (capture stays with the bridge, whose own MCP connection is
+#: unscoped). The same bound gates the rest of the conv surface (the
+#: follow-up to the original review): the eye ladder's focus render
+#: (:func:`precis.utils.eye_render._render_note_eye`), every conv
+#: neighbour a link/doc eye's rings print, and any link edge targeting a
+#: conv (:func:`precis.utils.link_target.parse_link_target`). The
+#: in-process OSS loop binds the same value on the tick ContextVar
+#: (:attr:`precis.utils.inproc_context.TickContext.conv_read_scope`).
+_READ_SCOPE_ENV = "PRECIS_CONV_READ_SCOPE"
+
+
+def _read_scope_slug() -> str | None:
+    """The one conv slug this run may read, or ``None`` when unscoped.
+
+    The in-process tick binding wins — the worker's own env would answer
+    for the wrong run — then the spawned-subprocess env var (the
+    ``claude`` path's MCP server inherits the bridge's overlay).
+    """
+    from precis.utils.inproc_context import current
+
+    ctx = current()
+    if ctx is not None and ctx.conv_read_scope:
+        return ctx.conv_read_scope
+    raw = os.environ.get(_READ_SCOPE_ENV, "").strip()
+    return raw or None
+
+
+def conv_read_scope() -> str | None:
+    """The bound conv read-scope slug, or ``None`` when unscoped.
+
+    The public half of :func:`_read_scope_slug` for non-conv gates —
+    the mention autolinker drops out-of-scope conv link targets on a
+    scoped surface (gr555998 round 3), which needs the bound check
+    without reaching for a private helper.
+    """
+    return _read_scope_slug()
+
+
+def _deny_scoped_write(verb: str, bound: str) -> None:
+    """Refuse a conv write on a read-scoped surface.
+
+    ``Denied`` (the permission-envelope class), not ``BadInput``: the
+    call is well-formed, the surface forbids it.
+    """
+    raise Denied(
+        f"{verb}(kind='conv') is not available on this surface — "
+        "conv is read-only here; turns are captured by the chat bridge, "
+        "not written by agents",
+        next=f"get(kind='conv', id={bound!r}) to read this conversation",
+    )
+
+
+def _deny_out_of_scope_read(slug: str, bound: str) -> None:
+    """The refusal every out-of-scope conv access raises — one wording
+    across ``get``, the eye ladder and the link-target gate, so the rule
+    reads the same on every door: this surface's conversation only."""
+    raise Denied(
+        f"conv {slug!r} is not readable on this surface — reads "
+        "are limited to this surface's own conversation",
+        next=f"get(kind='conv', id={bound!r})",
+    )
+
+
+def conv_ref_out_of_scope(ref: Any) -> bool:
+    """True when a conv read scope is bound and ``ref`` is a conv outside it.
+
+    The bool half of the gate — renderers that must *mask* an out-of-scope
+    conv rather than refuse the whole call use it
+    (:mod:`precis.utils.eye_render`'s neighbour rows print an opaque
+    placeholder, never title/keywords/excerpt). The focus itself uses
+    :func:`deny_out_of_scope_conv`. ``False`` when unscoped, and when
+    ``ref`` is the bound conversation.
+    """
+    bound = _read_scope_slug()
+    if bound is None or getattr(ref, "kind", None) != "conv":
+        return False
+    return str(getattr(ref, "slug", "") or "") != bound
+
+
+def deny_out_of_scope_conv(ref: Any) -> None:
+    """Raise ``Denied`` when ``ref`` is a conv outside the bound read scope.
+
+    The ref-level half of the gate, for read paths that resolve a conv
+    ref without going through this handler's ``get`` — the eye ladder's
+    focus render calls it so a ``co<N>``/``cc<N>``/slug eye is scoped
+    exactly like ``get(kind='conv', id=…)``. No-op when unscoped.
+    """
+    bound = _read_scope_slug()
+    if bound is not None and conv_ref_out_of_scope(ref):
+        _deny_out_of_scope_read(str(getattr(ref, "slug", "") or ""), bound)
+
+
+def deny_out_of_scope_conv_target(store: Any, ref_id: int) -> None:
+    """Refuse a link edge to a conv outside the bound read scope.
+
+    :func:`precis.utils.link_target.parse_link_target` calls this on every
+    resolved conv target, so ``link()``, ``put(link=)``, ``unlink=`` and
+    the ``link=`` search filter share the one gate — an out-of-scope conv
+    edge can neither be created nor probed from a scoped surface, which is
+    what keeps the ring's masked-placeholder guarantee true.
+    """
+    bound = _read_scope_slug()
+    if bound is None:
+        return
+    ref = store.get_ref(kind="conv", id=ref_id, include_deleted=True)
+    slug = str(getattr(ref, "slug", "") or "") if ref is not None else ""
+    if slug != bound:
+        _deny_out_of_scope_read(slug, bound)
+
+
+def _conv_handle_for_scope(
+    store: Any, ident: str, chunk: int | None
+) -> tuple[str, int | None]:
+    """``(slug, turn ord)`` for the scope comparison — a ``co<N>`` record
+    handle or ``cc<N>`` chunk handle names a conversation by number, not
+    by slug, so it resolves to its owning conv before the bound-slug
+    compare (an agent citing one of its own turns by ``cc<id>`` is
+    in-scope). Anything else — and an unresolvable handle — passes
+    through for the scope check or the ref resolver to report."""
+    parsed = handle_registry.parse(ident)
+    if parsed is None or parsed[0] != "conv":
+        return ident, chunk
+    resolved = store.resolve_handle(ident)
+    if resolved is None or resolved.kind != "conv":
+        return ident, chunk
+    return (resolved.public_id, resolved.chunk_ord if chunk is None else chunk)
 
 
 @dataclass(frozen=True)
@@ -127,10 +260,25 @@ class ConversationHandler(Handler):
             the previous turn's stop_reason / token counts /
             anomalies.
         """
+        bound = _read_scope_slug()
         if id is None or (isinstance(id, str) and id.startswith("/")):
+            if bound is not None:
+                raise Denied(
+                    "conv on this surface is limited to its own "
+                    "conversation — there is no cross-conv list here",
+                    next=f"get(kind='conv', id={bound!r})",
+                )
             return self._render_list()
 
         slug, chunk, path_view = _parse_conv_id(str(id))
+        if bound is not None:
+            # A ``co<N>``/``cc<N>`` handle names a conversation by number,
+            # not slug — resolve it to its owning conv so citing this
+            # surface's own turns by handle is in-scope (gr555998
+            # follow-up); anything else compares as spelled.
+            slug, chunk = _conv_handle_for_scope(self.store, slug, chunk)
+            if slug.strip() != bound:
+                _deny_out_of_scope_read(slug, bound)
         ref = resolve_live_slug_ref(self.store, kind="conv", id=slug)
 
         effective_view = path_view or view
@@ -175,6 +323,16 @@ class ConversationHandler(Handler):
                 "search requires q=",
                 next="search(kind='conv', q='your query')",
             )
+        bound = _read_scope_slug()
+        if bound is not None:
+            if scope is not None and scope.strip() != bound:
+                raise Denied(
+                    f"conv {scope!r} is not searchable on this surface — "
+                    "searches are limited to this surface's own "
+                    "conversation",
+                    next=f"search(kind='conv', q={q!r}, scope={bound!r})",
+                )
+            scope = bound
         scope_ref_id: int | None = None
         if scope is not None:
             scope_ref = resolve_live_slug_ref(
@@ -233,10 +391,18 @@ class ConversationHandler(Handler):
         """
         if not (q and q.strip()):
             return []
+        bound = _read_scope_slug()
+        scope_ref_id: int | None = None
+        if bound is not None:
+            ref = self.store.get_ref(kind="conv", id=bound)
+            if ref is None:
+                return []
+            scope_ref_id = ref.id
         triples = self.store.chunks.search_chunks_fused(
             q=q,
             query_vec=None,
             kind="conv",
+            scope_ref_id=scope_ref_id,
             limit=page_size,
         )
         return block_hits_to_search_hits(triples, kind="conv", excerpt=160)
@@ -301,6 +467,9 @@ class ConversationHandler(Handler):
         ``embed:bge-m3`` worker; keyword extraction by the
         ``chunk_keywords`` worker.
         """
+        bound = _read_scope_slug()
+        if bound is not None:
+            _deny_scoped_write("put", bound)
         if id is None or not str(id).strip():
             raise BadInput(
                 "put(kind='conv') requires id= (the conv slug)",
@@ -451,6 +620,9 @@ class ConversationHandler(Handler):
         **_kw: Any,
     ) -> Response:
         """Add/remove conversation tags. Open-tag only (no closed prefixes)."""
+        bound = _read_scope_slug()
+        if bound is not None:
+            _deny_scoped_write("tag", bound)
         require_tag_ops("conv", add, remove)
         slug, ref_id = self._resolve_conv_slug(id)
         n_added, n_removed = apply_tag_ops(
@@ -477,6 +649,9 @@ class ConversationHandler(Handler):
         **_kw: Any,
     ) -> Response:
         """Add or remove a link from this conversation to another ref."""
+        bound = _read_scope_slug()
+        if bound is not None:
+            _deny_scoped_write("link", bound)
         target = require_link_target("conv", target)
         validate_link_mode(mode)
         slug, ref_id = self._resolve_conv_slug(id)

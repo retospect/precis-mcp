@@ -696,13 +696,29 @@ def resolve_link_targets(
             if rid is None or (exclude_ref_id is not None and rid == exclude_ref_id):
                 continue
             targets.setdefault((rid, None), LinkTarget(rid, None))
-    # A mention never auto-links another owner's profile (gr490266); a
-    # fake store without the batch read skips the check.
+    # Endpoint visibility gates share one batched fetch. A mention never
+    # auto-links another owner's profile (gr490266), and a scoped surface
+    # never materialises an edge to a conv outside its read scope
+    # (gr555998 round 3 — both write doors arrive here: the note
+    # autolinker and the draft link sync; the edge would otherwise name
+    # the conv in this surface's rings). A fake store without the batch
+    # read skips both gates.
     fetch = getattr(store, "fetch_refs_by_ids", None)
-    if targets and fetch is not None and _PROFILE_MENTION.search(body):
-        from precis import profiles
+    if targets and fetch is not None:
+        from precis.handlers.conversation import conv_read_scope, conv_ref_out_of_scope
 
-        refs = fetch(sorted({t.dst_ref_id for t in targets.values()}))
-        hidden = profiles.hidden_ids(store, refs.values())
-        return [t for t in targets.values() if t.dst_ref_id not in hidden]
+        profile_gate = _PROFILE_MENTION.search(body) is not None
+        if profile_gate or conv_read_scope() is not None:
+            refs = fetch(sorted({t.dst_ref_id for t in targets.values()}))
+            hidden: set[int] = set()
+            if profile_gate:
+                from precis import profiles
+
+                hidden = set(profiles.hidden_ids(store, refs.values()))
+            return [
+                t
+                for t in targets.values()
+                if t.dst_ref_id not in hidden
+                and not conv_ref_out_of_scope(refs.get(t.dst_ref_id))
+            ]
     return list(targets.values())

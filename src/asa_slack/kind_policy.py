@@ -22,6 +22,16 @@ stays disabled by default, including one this module has never heard of by
 name. ``tests/test_asa_slack_kind_policy.py`` diffs ``ALLOWED_KINDS``
 against a fully-booted :class:`precis.dispatch.Hub` so a stale or renamed
 entry (a kind removed from the live build) fails the build.
+
+Two refinements on top of the flat allowlist (gr555998):
+
+- Every disabled entry carries :data:`SURFACE_REASON` as its inline
+  ``kind:reason`` so the banner and the blocked-call error name the
+  surface and the fix instead of a bare ``prohibited``.
+- ``conv`` is allowed but read-scoped: the bridge sets
+  ``PRECIS_CONV_READ_SCOPE=<the turn's slug>`` alongside this var
+  (``bot.py``), and ``precis.handlers.conversation`` enforces the scope
+  server-side — reads reach the bound conversation only, writes refuse.
 """
 
 from __future__ import annotations
@@ -37,7 +47,11 @@ log = logging.getLogger(__name__)
 #: What a Slack turn's agent may touch. Deliberately narrow — this is a
 #: research-lookup + light-memory surface, not a general precis client.
 #: The complete allow/deny policy; see the module docstring for how the
-#: disabled complement is derived.
+#: disabled complement is derived. ``conv`` is in the set but NOT open:
+#: the bridge also binds ``PRECIS_CONV_READ_SCOPE`` to the turn's own
+#: conv slug, so reads reach that one conversation only and writes stay
+#: refused (gr555998 — the writes the gate was for are the bridge's own
+#: captures anyway, which ride the unscoped PrecisClient connection).
 ALLOWED_KINDS: frozenset[str] = frozenset(
     {
         "paper",
@@ -54,7 +68,20 @@ ALLOWED_KINDS: frozenset[str] = frozenset(
         "perplexity-reasoning",
         "memory",
         "skill",
+        "conv",
     }
+)
+
+#: The inline ``kind:reason`` every disabled kind carries in the
+#: generated ``PRECIS_KINDS_DISABLED`` value (see
+#: ``precis.kind_gate.parse_disabled_reasons``). It surfaces verbatim in
+#: the ``Kinds unavailable:`` banner and in the ``Unsupported`` error a
+#: blocked call returns, so it must say what to do — the bare
+#: ``prohibited`` tag was the gr555998 complaint. No commas (comma is
+#: the entry delimiter).
+SURFACE_REASON = (
+    "not available on this surface (public channel) — "
+    "use it from a private session or ask the operator"
 )
 
 #: Entry-point group third-party kind plugins advertise under (mirrors
@@ -130,9 +157,10 @@ def _discover_live_kinds() -> frozenset[str]:
 def slack_kinds_disabled() -> str:
     """``PRECIS_KINDS_DISABLED`` value for a Slack-originated agent turn.
 
-    Every discovered kind not in :data:`ALLOWED_KINDS` — comma-separated,
-    sorted for a stable/diffable env value. See the module docstring for
-    how "every discovered kind" is computed.
+    Every discovered kind not in :data:`ALLOWED_KINDS`, each carrying
+    :data:`SURFACE_REASON` inline — comma-separated, sorted for a
+    stable/diffable env value. See the module docstring for how "every
+    discovered kind" is computed.
     """
     disabled = _discover_live_kinds() - ALLOWED_KINDS
-    return ",".join(sorted(disabled))
+    return ",".join(f"{kind}:{SURFACE_REASON}" for kind in sorted(disabled))

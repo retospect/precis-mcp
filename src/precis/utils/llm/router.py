@@ -5521,6 +5521,7 @@ _OVERLAY_CTX_KEYS = (
     "PRECIS_WORKSPACE",
     "PRECIS_CURRENT_AGENTLOG",
     "PRECIS_KINDS_DISABLED",
+    "PRECIS_CONV_READ_SCOPE",
     "PRECIS_CURRENT_SOURCE",
 )
 
@@ -5591,6 +5592,7 @@ def _overlay_tick_context(overlay: Mapping[str, str] | None) -> TickContext | No
         agentlog_id=_ival("PRECIS_CURRENT_AGENTLOG", base.agentlog_id),
         source=_sval(_SOURCE_ENV, base.source),
         disabled_kinds=disabled,
+        conv_read_scope=_sval("PRECIS_CONV_READ_SCOPE", base.conv_read_scope),
     )
 
 

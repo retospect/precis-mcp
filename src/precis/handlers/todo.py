@@ -2272,11 +2272,18 @@ class TodoHandler(NumericRefHandler):
         parent_kind = parent_ref.kind if parent_ref is not None else "todo"
         if of_kind is not None and parent_kind != of_kind:
             return base
+        # gr555998 round 3: a parent this surface may not read collapses
+        # to the same opaque placeholder the stored-link rows print.
+        from precis.utils.surface_scope import masked_ref_placeholder
+
+        parent_label = masked_ref_placeholder(parent_ref) or (
+            f"{parent_kind}:{ref.parent_id}"
+        )
         parts = [
             header,
             "",
             "## parent",
-            f"→ {parent_kind}:{ref.parent_id}  (parent)",
+            f"→ {parent_label}  (parent)",
         ]
         if rest:
             parts.extend(["", rest])
