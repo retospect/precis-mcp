@@ -328,12 +328,21 @@ the dated detail is in `git log` and the owning items):**
    pw549461; draft, prio high) — the explorer's two control boxes
    (environment on the Pourbaix slider bank, visual filters), per-step
    kinetics on the diagram, BEP humps, one environment record, the compute
-   cart, the separable operating-point optimum. Eight slice gripes
-   (cluster `pathway-explorer-controls`, gr559345–gr559353) plus
-   gr559354 (catpath transient θ(t)) and gr559355. Ranked here, not in
-   Do next: slices 1–4 are stored-data display Reto reads results
-   through, and nothing in them touches the engine; 5–8 wait on his
-   decisions in the file.
+   cart, the left box as a tab strip (Pourbaix, kinetic map, rung lines,
+   sensitivity, per-slab Pareto). Ten slice gripes (cluster
+   `pathway-explorer-controls`, gr559345–gr559353 and the two filed
+   later that day) plus gr559354 (catpath transient θ(t)) and gr559355.
+   Reto's six decisions are recorded in the file (2026-11-03). Ranked
+   here, not in Do next: slices 1–4 are stored-data display Reto reads
+   results through, and nothing in them touches the engine.
+10. **backlog/slab-environment-optimizer.md** (Reto 2026-11-03; draft,
+   prio high) — the inner loop of Horizon 3 widened to the whole
+   environment and run by the quest per slab: three goals as Pareto
+   objectives with masks, a derivative table per axis, a three-layer
+   search (closed-form U/pH, stencil steps in T/p, multi-objective
+   sampler over the box), `env_best`/`env_pareto`/`env_next` stamped on
+   the candidate, `env_next` minted through the compute cart under the
+   quest's caps. Kinetics gain a U axis only with kinetics v2 slice 8.
 
 ## Parked
 

@@ -81,13 +81,29 @@ and the state is visible on the control:
 | state | meaning | examples |
 |---|---|---|
 | **closed form** | re-renders now from stored energies | U_RHE on the profile (`n_H·eU`, `reaction_graph.at_potential`) and on the staircase (`ΔG0 + n_e·U`); pH as the SHE label and, once `pathway-selectivity-u-ph-window` ships, the protonation and HER terms; a gas pressure on adsorption/desorption steps (`±kT·ln(p/p°)` per gas molecule exchanged) |
-| **stored / interpolated** | a stored solve covers this point or brackets it | T and p_total inside a stored `kinetics_sweep` box (46 quest pathways carry one since gr543723 comment 42; this pathway does not); interpolation is Arrhenius in 1/T and log-linear in p between grid points, and the control says "interpolated between 350 K and 400 K" |
-| **not computed** | greyed, with a cart button naming the job | T outside the box or on a pathway without modes; any kinetic number at U ≠ run U (kinetics has no U dependence — CHE is thermodynamic post-processing, `electrochem-kinetics-beyond-che.md`, kinetics-engine-v2 slice 8); the resting state without a coverage scan |
+| **stored / interpolated** | a stored solve covers this point or brackets it, within the cutoffs below | T and p_total inside a stored `kinetics_sweep` box (46 quest pathways carry one since gr543723 comment 42; this pathway does not); interpolation is Arrhenius in 1/T and log-linear in p between grid points, and the control says "interpolated between 350 K and 400 K" |
+| **not computed** | greyed, with a "low confidence — request computation at this point" button that mints the cart item with the environment filled in (Reto 2026-11-03, decision 3) | T outside the box or on a pathway without modes; any kinetic number at U ≠ run U (kinetics has no U dependence — CHE is thermodynamic post-processing, `electrochem-kinetics-beyond-che.md`, kinetics-engine-v2 slice 8); the resting state without a coverage scan |
+
+Cutoffs (decision 3, "within reasonable range; pick a cutoff"): a kinetic
+number is *interpolated* only between two adjacent grid points of a
+stored sweep (the quest default box is 8×8 over 350–900 K and 0.1–100
+bar, so at most ~80 K and ~2.7× in p between neighbours); outside the box,
+or with no sweep, it is *not computed*. The thermodynamic profile re-prices
+closed-form in p (the ledger's own `kT·ln p` term, exact in the model)
+and in T when modes are stored; without modes, ±10 K of the run T is
+shown as approximate and beyond that the state is *not computed* with a
+`measure_modes` item. U is exact in the model at every value.
 
 This is the "what we can show vs what needs more simulation" partition,
 made visible per control instead of argued per page.
 
-### B. Left box — environment
+### B. Left box — environment, with a Pourbaix tab and a Pareto tab
+
+The box is a tab strip over one slider state (Reto 2026-11-03):
+**Pourbaix** (the controls and mini map below), **Kinetic map**, **Rung
+lines**, **Sensitivity** (the three in §I) and **Pareto** (§H: every
+simulation on this slab as a selectable point). Every tab marks the
+current point and a click in any map moves it.
 
 - **Axes:** T (K); U vs RHE with the SHE reading beside it; pH;
   `p_total` and the per-gas inputs/outputs of the kinetics v2 D1 block;
@@ -119,6 +135,15 @@ made visible per control instead of argued per page.
   `candidate_ref` — the embed must pin the viewed pathway explicitly.
 - **Hover help** on every control: what the axis is, what it moves in
   this model, what it does not (pH on the RHE scale moves no PCET rung).
+- **pH ships with the box** (decision 5). The page already has a pH
+  input, but it changes only the SHE readout. The three routes by which
+  pH moves the answer — fixed-SHE operation, product protonation
+  (NH₃/NH₄⁺ pKa 9.25, NH₂OH pKa ~6, on the desorption rung), the HER
+  competitor — are specified in `pathway-selectivity-u-ph-window.md`;
+  their post-processing mechanism is built with slice 6 and applies to
+  any pathway. Using the resulting window to *rank* qu164903 stays under
+  that item's hold (a window over an incomplete network is the wrong
+  window).
 - Every change round-trips through the URL (gr486822 pattern) so a view
   is a link.
 
@@ -163,11 +188,14 @@ made visible per control instead of argued per page.
 
 ### D. Per-step kinetics on the diagram
 
-Hover (and an optional label layer) on a transition line shows, at the
-stored environment: barrier source (`neb` / `bep` with band / none), Ea
-forward and reverse, `k_f`, `k_b`, net flux, reversibility `z_i`,
-`X_RC`; and names the solve the numbers come from (v2 mean-field or v1
-chain — gr549748). What exists: a hump is drawn only when the graph
+Hover on a transition line shows, at the stored environment: barrier
+source (`neb` / `bep` with band / none), Ea forward and reverse, `k_f`,
+`k_b`, net flux, reversibility `z_i`, `X_RC`; and names the solve the
+numbers come from (v2 mean-field or v1 chain — gr549748). Each of those
+quantities is also a **viewing checkbox** in the right box (Reto
+2026-11-03): on, it is printed as a label on the transition state;
+default on for the source, off for the rest, under one "kinetics on
+transitions" master toggle, state in the URL like every other layer. What exists: a hump is drawn only when the graph
 link's `barrier` is finite (`stepGeom`), a null barrier is a dashed
 "Ea n/a" line, and the diagram payload (`routes/refs.py::
 _pathway_graph_payload`) carries no barrier source, no `bep` fit and no
@@ -197,9 +225,19 @@ exists:
 | kinetics at another environment / a T–p sweep | `put(kind='pathway', mode='recompute_kinetics', args={environment, objective, sweep})` | 10–25 min CPU (jo548252/3) |
 | more seeds / higher model | `mode='rerun'` with `seeds` / `tier` | per seed |
 
+Who mints (decision 2): **the user, or the quest.** A user mints any
+item from the page or the MCP door. The quest mints from the per-slab
+environment optimizer (`slab-environment-optimizer.md`): when the best
+setup it finds lies where stored data ends — outside a sweep box, on a
+resting state with no scan, on a decisive edge without a barrier — the
+optimizer's `env_next` becomes cart items, minted under the quest's caps
+and tote like any other dispatch. A held item (`fidelity_restale_cap =
+0`, item 25 "no re-runs") is **queued, not dropped**: it shows as held
+with the hold named and runs at the lift (my default; Reto did not rule
+on it).
+
 Rules: every item carries its idem key (a repeat collapses onto the
-running job); a hold (`fidelity_restale_cap = 0`, item 25 "no re-runs")
-renders the item as **held** with the hold named, not minted; owned GPU
+running job); owned GPU
 counts as $0 cash and the bound is wall time (Reto 2026-10-29), so the
 cart shows GPU-minutes and CPU-minutes, and a cash estimate only for
 paid lanes; the $25 rule applies per request. Minting is the same code
@@ -207,8 +245,9 @@ path as the MCP doors (`put(kind='pathway', mode='request',
 args={'items': [...]})`), the page's button calls it. Progress: the
 jobs are linked to the pathway and the explorer shows each item's state
 next to the control that asked for it; a landed result flips the
-control's honesty state. Storage: one `todo` per cart ("compute
-request: pw549461"), job refs as children, nothing in `refs.meta`.
+control's honesty state. Storage (decision 4, mine): one `todo` per
+cart ("compute request: pw549461") linked to the pathway, job refs as
+its children, nothing in `refs.meta`.
 
 ### F. One environment record
 
@@ -229,17 +268,59 @@ the reference environment, as the harvest already does
 
 ### G. Operating-point optimum for one slab
 
-What exists: the (U, pH) window and Shapley attribution per route on the
-staircase (`window_objectives.window_measures`, needs a coverage scan
-for the resting state, else the pathway's own energetics alone); the (T,
-p_total, composition) optimum of the kinetics sweep with a rate floor
-(`subject_to`, gr543723). What does not: a joint read, because kinetics
-carries no U. Until kinetics-engine-v2 slice 8 (CHE shift provider)
-lands, the optimum is reported as two separable reads, each labelled with
-its validity, and the environment box offers both as snaps. After slice 8
-the sweep gains a U axis and one objective. Optuna stays in the outer
-(slab) loop (catalyst-discovery-quest slice 7); the inner loop is a grid
-plus Nelder–Mead.
+Owned by `slab-environment-optimizer.md` (filed 2026-11-03 from Reto's
+decision 2): the quest finds each slab's best setup over U, pH, T,
+pressures and salt against three goals — the target reaction most
+favourable at every step, thermodynamically and kinetically; side
+reactions minimised; rate maximised — and names the next point to
+compute. What exists today is separable: the (U, pH) window and Shapley
+attribution on the staircase (`window_objectives.window_measures`), and
+the (T, p_total, composition) optimum of the kinetics sweep with a rate
+floor (`subject_to`, gr543723). The explorer's part: the snaps in the
+environment box (`→ env_best`, `→ env_next`) and the Pareto tab below.
+
+### I. Pourbaix-adjacent views for navigating the environment (Reto's ask, 2026-11-03)
+
+The Pourbaix map answers "which surface exists at (U, pH)". Three more
+views answer the other navigation questions, each from data that exists
+or is closed-form, each a tab with the point marked and clickable:
+
+| tab | question | axes | data today | render today |
+|---|---|---|---|---|
+| **Kinetic map** | what holds the surface and how fast it turns over at (T, p) | T × p_total (or any two sweep axes) | the stored sweep rows: per point TOF, selectivity, coverages, `drc_top`, orders (kinetics v2 D7; 46 quest pathways) | none — the panel reads `kinetics_sweep` only for the target name (`pathway_kinetics.py`); `view='kinetics-sweep'` is text |
+| **Rung lines** | which rung limits at which U, and where each one crosses zero | U (one line per rung: ΔG0 + n_e·U; HER rungs dashed) | `che_affine` and `her` on every engine ≥ 0.25 pathway, via `staircase_routes.routes_for_pathway` | none in the explorer; the staircase table re-tilts on `/pourbaix` |
+| **Sensitivity** | which knob to turn, and which way | a tornado: ∂ln TOF/∂ln p_i and ∂ln S/∂ln p_i per gas, apparent Ea, n_e of the limiting rung, ∂ΔG_lim/∂T from modes | `orders` and `ea_app` on the v2 record (MF stencils; `ea_app` failed on pw549461), n_e exact; selectivity stencils are the optimizer item's addition | none |
+
+Two layers, not tabs: on the Kinetic map, the **MARI regions** (the
+most abundant intermediate per point — the kinetic twin of the resting
+termination; the sweep's coverages give it) and the dominant `drc_top`
+step; on the Pourbaix map, the **limiting-rung colouring** (which rung
+closes the window at each point, from `point_states` over the grid; the
+Shapley field has no render in `precis_web`, SPSO slice 8 deliverable b)
+and the **bulk diagram at the ion concentration** — the one view where
+the salt slider visibly does something today (the dissolution
+boundaries move by `0.059/n·log c`; the bulk verdict overlay already
+reads `bulk.ion_conc_M`). A pathway without a sweep shows the Kinetic
+map stub and the cart item; Rung lines and Sensitivity need no new
+compute.
+
+### H. Pareto tab — every simulation on this slab
+
+The left box's second tab (Reto 2026-11-03): all simulations run on this
+candidate as points in objective space, selectable. Points are (pathway
+× environment point): every pathway on the candidate (`get(kind=
+'structure', view='pathways')`, gr540871 — tiers, seeds, engine
+versions), each at its run point, at every stored sweep grid point, and
+at every `recompute_kinetics` result; coverage scans appear as the
+resting-state mask. Axes: the optimizer's objectives (worst rung margin,
+selectivity, HER margin, log TOF) plus wall time and engine version, with
+the hierarchical picker gr553414 asks for on the quest plot; the same
+plot code (`quest/frontier.py::plot_axes_for`,
+`templates/refs/quest_detail.html.j2`) scoped to one slab. Untrusted
+points hollow, with the trust note on hover; the slab's own frontier
+drawn. Click → the explorer loads that pathway at that environment (the
+URL encoding of §F). The quest-level Pareto stays where it is; this tab
+is the slab's.
 
 ## Slices (one gripe each; the gripe id is the ship record)
 
@@ -257,8 +338,12 @@ plus Nelder–Mead.
    state (large).
 7. gr559352 — compute cart: `mode='request'`, hold and cost rules, page
    button, progress (large).
-8. gr559353 — separable optimum reads and snaps; joint optimum after
-   slice 8 of kinetics v2 (spec).
+8. gr559353 — the optimizer's snaps in the box; the optimizer itself is
+   `slab-environment-optimizer.md`.
+9. gr559428 — Pareto tab per slab (§H; large, after 5).
+10. gr559429 — Kinetic map, Rung lines and Sensitivity tabs plus the
+    MARI and limiting-rung layers (§I; medium, after 5; the Kinetic map
+    only where a sweep is stored).
 
 Filed beside them: gr559354 (catpath: transient θ(t) from an initial
 coverage, decision 6) and gr559355 (`view='kinetics'` prints T = 300 K
@@ -329,22 +414,30 @@ vendored from it and carry a parity test).
 
 ## Open questions / decisions log
 
-1. **Defaults.** τ = 1 s for the barrier equivalent and 1e-10 /s/site
-   for the turnover floor are guesses; Reto sets them.
-2. **Who may mint from the cart.** Reto only, or any agent within the
-   wall-time bound; and whether a held item may be queued to run at the
-   lift.
-3. **Client-side re-pricing.** Is the closed-form pressure lever on the
-   profile (`±kT·ln p` per exchanged gas molecule) and Arrhenius
-   interpolation between sweep points acceptable as the "interpolated"
-   state, or must every displayed kinetic number come from a stored
-   solve?
-4. **Cart storage.** One `todo` with job children (proposed) versus a
-   `meta.requests` list on the pathway (rejected by the keep-everything
-   ruling: nothing operational in `refs.meta`).
-5. **pH routes.** `pathway-selectivity-u-ph-window` owns protonation,
-   HER and fixed-SHE; confirm it ships before or with slice 6, else the
-   pH control is an SHE label only and says so.
-6. **Transient kinetics** (Reto's notes: conditions from initial
-   coverage, how it changes over time): engine item, filed separately
-   (catpath); the explorer would show θ(t) when it exists.
+Ruled by Reto 2026-11-03 (chat), recorded here:
+
+1. **Defaults — decided.** τ = 1 s for the barrier equivalent, 1e-10
+   /s/site for the turnover floor.
+2. **Who mints — decided.** The user, or the quest (through the per-slab
+   environment optimizer, under its caps). Held items queue and run at
+   the lift: my default, not ruled; say so if wrong.
+3. **Interpolation — decided.** Allowed within the cutoffs in §A; past
+   them the control reads "low confidence" and offers the request
+   button that mints the computation at that point.
+4. **Cart storage — decided (mine).** One `todo` per cart with job
+   children; nothing in `refs.meta`.
+5. **pH — decided.** Ships with the box (§B); the existing pH input is
+   an SHE label only.
+6. **Transient kinetics — explained, stays an engine item.** Today the
+   solver reports only the settled steady state. "Conditions from
+   initial conditions, how it changes over time" is the time evolution
+   from a clean or stated surface: which species takes the surface
+   first, how long until steady state, whether a poison accumulates on
+   the way. gr559354 against catpath; nothing for Reto to do.
+
+Open:
+
+7. **Pareto tab data volume.** A slab with 8 pathways × 64 sweep points
+   is ~500 points; cap per tab or page the sweep points?
+8. **Kinetics-on-transition labels** default set: source on, the rest
+   off (proposed).
