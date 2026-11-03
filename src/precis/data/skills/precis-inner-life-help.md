@@ -6,7 +6,7 @@ summary: inner-life tag protocol — internal-state, internal-thought, dreams, i
 answers:
   - how do I capture a fleeting thought or internal-state note?
   - how do I refresh my living self-state doc?
-  - how do I reinforce a thought so it doesn't decay away?
+  - how do I resurface an old thought into the preamble?
   - how do I promote a speculative dream connection into something durable?
   - how do I browse older inner-life items the cold-start preamble didn't show?
 applies-to: put/get/search/tag (kind='memory'), tags=['internal-state'|'internal-thought'|'DREAM:speculative'|'user:asa'|'interest:*'|'changed-mind:*']
@@ -27,9 +27,9 @@ cap exist in the DB but don't surface until explicitly searched.
 | Tag | Cardinality | Decay | Surface |
 |---|---|---|---|
 | `internal-state` | rolling self-doc (latest wins) | none (durable) | top 1 by recency |
-| `internal-thought` | many fragments | `auto_refresh_days=30` (Model A) | top 8 by `refreshed_at` |
+| `internal-thought` | many fragments | `auto_refresh_days` stamp (write-only today — nothing ranks on it) | top 8 by `updated_at` |
 | `DREAM:speculative` | written by the dream worker | none (fenced by `speculative_fence`) | top 5 |
-| `interest:<topic>` | several | `auto_refresh_days=90` | not in preamble; search to find |
+| `interest:<topic>` | several | `auto_refresh_days` stamp (write-only today) | not in preamble; search to find |
 | `changed-mind:<topic>` | as-needed | none | not in preamble; search to find |
 | `user:asa` | identity anchor, applied to *all* of the above | — | scopes to asa's own memories |
 
@@ -48,8 +48,10 @@ put(
 # → integer id, auto_refresh_days defaults to None unless set
 ```
 
-For decay, pass `args={'auto_refresh_days': 30}` on create. Once set,
-re-tagging touches `refreshed_at` (the timer resets each touch).
+To mark a thought as time-boxed, pass `args={'auto_refresh_days': 30}`
+on create — it stamps `refreshed_at` plus the window. Today both are
+write-only: no query orders or weights on them, and re-tagging does
+not reset anything (tag writes never touch the `refs` row).
 
 ## Update the state-of-self doc
 ## Refresh my living self-doc
@@ -89,21 +91,24 @@ search(kind="memory", q="<keyword>", tags=["internal-thought"])  # fragments by 
 `tags=` is OR-semantics. To narrow by both kind-of-thought *and*
 topic, scope by tag and filter with `q=` for the content.
 
-## Reinforce a thought (bump decay)
-## Touch a memory so it stays
-## Renew an internal-thought
+## Resurface an old thought
+## Bring a fragment back into the preamble
+## Keep a thought on top
 
-Re-adding an existing tag is a no-op for the tag set but bumps the
-ref's `refreshed_at`. Use this to keep a fragment alive past its
-decay window:
+There is no decay to beat — `auto_refresh_days`/`refreshed_at` are
+write-only today — and re-tagging is a pure tag-set change (it bumps
+neither `refreshed_at` nor `updated_at`). What *does* resurface a
+fragment in the preamble is an `edit`: the recent-thoughts list
+orders by `updated_at`, so editing the body or title puts it back on
+top:
 
 ```python
-tag(kind='memory', id=42, add=['internal-thought'])
+edit(kind='memory', id=42, mode='replace',
+     text='<still-true body, maybe tightened>', title='<header>')
 ```
 
-A common pattern: when a recent-thoughts entry resonates with the
-current turn, re-tag it before referencing it. Untouched thoughts
-fade over the auto-refresh window.
+Only worth doing when the thought still matters — the preamble caps
+at 8 either way.
 
 ## Promote a dream
 ## Accept a speculative connection
@@ -132,8 +137,8 @@ put(
     title="<short header>",  # omit → derived from first body line
     tags=["interest:<topic>", "user:asa"],
 )
-# → integer id; consider auto_refresh_days=90 to let stale
-# interests fall off if not reinforced
+# → integer id; consider auto_refresh_days=90 to mark the interest
+# as time-boxed (a written marker — nothing decays on it yet)
 ```
 
 `interest:<topic>` and `changed-mind:<topic>` aren't surfaced in
@@ -150,12 +155,12 @@ search(kind="memory", tags=["DREAM:speculative"], q="<topic of interest>")
 # is named in tags= (see _tag_filter._fence_speculative).
 ```
 
-## Bulk decay introspection
+## Bulk review old fragments
 
 ```python
 search(kind="memory", tags=["internal-thought"], page_size=100)
-# Sort/scan the body to see which fragments are due to fade.
-# Touch the ones still alive; let the rest go.
+# The preamble caps at 8 — everything older is search-only.
+# delete() what no longer matters; a soft delete is recoverable.
 ```
 
 ## Write future-facing items so they're actionable

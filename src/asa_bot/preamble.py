@@ -209,9 +209,9 @@ async def _fetch_inner_state(precis: PrecisClient) -> str:
 async def _fetch_inner_thoughts(precis: PrecisClient) -> str:
     """Recent ``internal-thought`` memories (asa's stream-of-consciousness).
 
-    Top N by ``refreshed_at`` (Model A decay) — frequently-touched
-    thoughts surface, untouched ones fade. The ids accompany each
-    entry so asa can re-tag to reinforce on use.
+    Top N by ``updated_at`` — recently written or edited thoughts
+    surface. The ids accompany each entry so asa can act on one
+    (edit, tag, link).
     """
     return await precis.call_tool(
         "search",
@@ -226,8 +226,8 @@ async def _fetch_inner_thoughts(precis: PrecisClient) -> str:
 async def _fetch_recent_dreams(precis: PrecisClient) -> str:
     """Recent dream-tagged memories — what the dream worker connected
     since asa was last awake. Surfacing them as "While I was away" lets
-    her decide which feel real (re-tag to promote) and which to let
-    decay.
+    her decide which feel real (re-tag to promote) and which to leave
+    fenced.
 
     Queries both ``DREAM:speculative`` (the SOUL-specified namespace)
     and plain ``speculative`` (what opus has been emitting in practice).
@@ -256,9 +256,9 @@ async def _fetch_user_note(precis: PrecisClient, author_handle: str) -> str:
     placeholder memory so the first ID exists for Asa to edit on
     her next turn ("she has somewhere to start"). The placeholder
     self-documents its purpose — body text + the user tag — and
-    sets `auto_refresh_days=180` to mark it as a slow-decay note
-    rather than a permanent fact (Asa promotes to durable by
-    explicit retag).
+    sets `auto_refresh_days=180` — a written time-box marker;
+    nothing decays on it today, so it records intent rather than
+    enforcing anything.
     """
     body = await precis.call_tool(
         "search",
@@ -385,9 +385,6 @@ def _render_inner_life(inner_state: str, inner_thoughts: str, dreams: str) -> st
                 "*Drop a fragment when something feels worth noting: "
                 "`precis put(kind='memory', text='I...', "
                 "tags=['internal-thought', 'user:asa'])`. "
-                "Re-tag any of the above to bump its decay timer when "
-                "it still matters: "
-                "`precis tag(kind='memory', id=N, add=['internal-thought'])`. "
                 "Older fragments aren't shown here — find them with "
                 "`precis search(kind='memory', tags=['internal-thought'])`.*"
             ),
@@ -400,7 +397,9 @@ def _render_inner_life(inner_state: str, inner_thoughts: str, dreams: str) -> st
             empty_label="*No dreams yet — first pass scheduled.*",
             instruction=(
                 "*If a connection above feels real, promote it by re-tagging "
-                "without the speculative qualifier. Otherwise let it decay. "
+                "without the speculative qualifier. Otherwise leave it — "
+                "while it carries `DREAM:speculative` it stays out of "
+                "default `search`. "
                 "Older dreams aren't shown here — find them with "
                 "`precis search(kind='memory', tags=['DREAM:speculative'])`.*"
             ),

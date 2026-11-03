@@ -124,25 +124,26 @@ walk back from the abstraction to the lived moments.
 tag(kind="memory", id=old_id, add=["retired"])
 ```
 
-`retired` is a bare flag (no namespace) — it doesn't constrain
-search by default, but the preamble's inner-life renderer can
-filter it out so retired items don't crowd the surface. They
-remain searchable when you want the receipts:
+`retired` is a bare flag (no namespace) — a marker for your own
+later searches. It doesn't constrain `search` and the preamble
+doesn't read it either, so drop the surface tag too when the item
+was visible there (`remove=['internal-thought']`). The receipts
+stay searchable:
 
 ```python
 search(kind="memory", tags=["retired"], q="...")  # explicit recall
 ```
 
-### 5. (Optional) Touch the schema to anchor it
+### 5. Put the schema on the self-doc surface
 
 ```python
 tag(kind="memory", id=synth_id, add=["internal-state"])
 ```
 
-Re-adding an existing tag is a no-op for the tag set but bumps
-`refreshed_at`. For schemas in particular, you want the recency
-clock to start *now*, not from when the original cluster was
-encoded.
+The tag enrols the schema in the `internal-state` pool the preamble
+reads. Its top-1 slot orders by `updated_at`, so a freshly written
+synthesis wins it directly — there is no separate "touch" step
+(re-tagging bumps no timestamp).
 
 ## When to consolidate
 

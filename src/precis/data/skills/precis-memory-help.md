@@ -170,7 +170,10 @@ put(
 ```
 
 Decisions are conventionally tagged with `confidence-*` and the
-relevant `project:`. Add `pinned` to suppress any future archival.
+relevant `project:`. `pinned` is a writable marker only — nothing
+archives a non-thread memory while `dream_consolidate` stays dark
+(lit, it soft-retires stale `DREAM:`-tagged nodes behind `supersedes`
+summaries); the armed `section:threads` sweep never reads `pinned`.
 
 ## Flag an open question to come back to
 ## Park an unresolved problem

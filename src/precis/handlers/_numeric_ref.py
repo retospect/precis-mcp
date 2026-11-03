@@ -4254,7 +4254,8 @@ class NumericRefHandler(Handler):
           - ``links``: total edges touching this ref (in + out),
             batched into one COUNT across the page.
           - ``age``: integer days since ``updated_at``. Answers "is
-            this stale?" at a glance; a re-tag/edit bumps it back to 0.
+            this stale?" at a glance; an edit bumps it back to 0
+            (tag writes don't touch ``updated_at``).
 
         Body source is ``ref.title`` for numeric-ref kinds (memory,
         todo, gripe-body). Side chunks (gripe comments) aren't

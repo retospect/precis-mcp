@@ -329,6 +329,7 @@ Corpus-pipeline services documenting against this skill:
 - [[precis-tags]] — axis vocabulary
 - [[precis-relations]] — link vocabulary
 - [[precis-cache]] — paid-tool caching, TTLs
+- [[precis-architecture-help]] — retention, decay, dreams, recall ranking, SPACE scoping
 - [[precis-paper-help]] — paper views, citation export
 - [[precis-files-help]] — shared file-backed address grammar
 - [[precis-addressing-help]] — handle format, relative grammar, type codes

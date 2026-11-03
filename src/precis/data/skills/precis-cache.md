@@ -69,12 +69,13 @@ row.
 ## Is this cached answer still fresh?
 ## Tell me if a ref is fresh, stale, or pinned
 
-The `CACHE:` axis is system-applied, closed-vocab:
+The `CACHE:` axis is system-applied, closed-vocab — a rendered state
+of the row's `fresh_until`, not a flag you write:
 
-- `CACHE:fresh` — age within 50% of the kind's TTL.
-- `CACHE:stale` — age between 50% and 100% of TTL.
-- `CACHE:pinned` — never expires (kind is pinned, or the row carries
-  the `pinned` flag).
+- `CACHE:fresh` — `fresh_until` still in the future.
+- `CACHE:stale` — past `fresh_until` (the next `get` re-fetches).
+- `CACHE:pinned` — `fresh_until` NULL: the row was written without a
+  TTL (a pinned kind, `mode='import'`, or `args={'ttl_days': 0}`).
 
 Filter on it:
 
@@ -110,14 +111,34 @@ canonical URL / video ID.
 ## Keep a cached answer indefinitely
 ## Stop a useful answer from going stale
 
+Pinning is a write-time property, not a tag: pass
+`args={'ttl_days': 0}` on the `get` — the row's `fresh_until` lands
+NULL and it reports `CACHE:pinned` forever:
+
 ```python
-tag(kind="perplexity-reasoning", id="photocat-mechanism", add=["pinned"])
-tag(kind="perplexity-reasoning", id="photocat-mechanism", remove=["pinned"])
+get(kind="perplexity-reasoning", q="<query>", args={"ttl_days": 0})
+# same on a refresh — pins the stored row in place:
+get(kind="perplexity-reasoning", q="<query>", mode="refresh", args={"ttl_days": 0})
 ```
 
-`pinned` is a system-recognised flag — it suppresses `CACHE:*` decay
-and the row reports as `CACHE:pinned`. Imported entries (e.g.
-`put(kind='perplexity-research', ..., mode='import')`) are pinned automatically.
+The bare `pinned` flag is *not* the mechanism — on a cache kind it is
+refused outright (it collides with the closed `CACHE:pinned` value),
+and a `CACHE:pinned` tag row is inert: freshness reads the cache
+row's `fresh_until`, never the tag. Rows on a TTL-less kind (`math`,
+`perplexity-*`) are pinned from the start, and `put(mode='import')`
+writes `ttl_seconds=None` — pinned — explicitly.
+
+<!--
+Fact-checked (archdocs3): bare `pinned` refused on cache kinds —
+store/types.py Tag.parse_strict kind-scoped collision (cache kinds
+allow the CACHE axis, or like math are unlisted); pinned-from-start —
+handlers/math.py ttl_seconds=None, perplexity.py ThinkHandler /
+ResearchHandler TIER ttl_seconds=None (websearch is 7d);
+import-mode put — perplexity.py put writes ttl_seconds=None;
+args ttl_days ≤0 → handlers/_cache_base.py CacheBackedHandler.get
+leaves ttl_seconds_override None with ttl_override_active →
+put_cache_entry/_refetch_in_place write fresh_until NULL.
+-->
 
 ## See also
 

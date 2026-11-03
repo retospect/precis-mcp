@@ -9,7 +9,11 @@ import sys
 import pytest
 
 from asa_bot.config import PreambleConfig
-from asa_bot.preamble import _render_conv_pointer, _render_operator_prefs
+from asa_bot.preamble import (
+    _render_conv_pointer,
+    _render_inner_life,
+    _render_operator_prefs,
+)
 
 
 def test_empty_by_default():
@@ -77,3 +81,16 @@ def test_platform_slack():
     )
     assert "replying in Slack" in out
     assert "replying in Discord" not in out
+
+
+# ── gr553220: no decay-timer fiction in the inner-life instructions ──
+# Re-tagging never wrote refreshed_at (touch_ref has no callers; tag
+# writes never touch refs.*), so "re-tag to bump its decay timer" was
+# an instruction to do nothing. The preamble must not teach it.
+
+
+def test_inner_life_no_decay_timer_claims():
+    out = _render_inner_life("state", "thoughts", "dreams")
+    assert "decay timer" not in out
+    assert "bump its decay" not in out
+    assert "let it decay" not in out
