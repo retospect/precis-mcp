@@ -292,6 +292,38 @@ rejoined compute at 932364d0a" as two dated events.
   to a dated event plus handle; proposals through the ledger, applied
   through `apply_rewrite`.
 
+### 6. Disagreement shapes (reader gripes; the checklist rows `griped` needs)
+
+Reto 2026-11-03: the goal is not a shorter route; a circuitous path is
+fine. Two routes that arrive at contradictory answers end linked and
+fixed, or linked and qualified, and the clarification is added dry and
+graph-y: scope is a title word plus an edge to the referent, never a
+paragraph; one claim lives in one node. The evaluator reads no skills
+today (`graph/garden/proposer.py` builds its prompt in code). DRY rule
+(Reto 2026-11-03): the whole memory-body checklist (§2 per-type checks
+and standard of done, this table, the never-list) is one skill,
+`precis-memory-checklist-help`, which the evaluator pins verbatim the
+way `workers/planner_prompt.py::_load_skill_verbatim` pins
+`precis-todo-tree-help`; prompt code holds only the output contract.
+`precis-memory-help` "A recalled memory misled me" and
+`precis-gardener-help` point at it: hand and machine read one source.
+
+| shape | decided by | fix (ledger, sha-pinned, undoable) | edge |
+|---|---|---|---|
+| same referent, one wrong | the entity ref, the repo at main, a dated commit | rewrite the wrong claim to the truth with one live anchor and a date; supersede when the right node already states it | `supersedes` winner → loser; the tombstone redirects |
+| same referent, true at different times | both claims dated | the entity ref carries current state; each memory keeps its dated event and the handle (§5) | none, or `supersedes` when the older is pure history |
+| different referents (Joe's dog, Brenda's dog) | each claim true in its own scope | the referent into each note's title and first line, its handle into the body so the edge materialises; nothing copied from the sibling | mention edge note → referent; `related-to` between the siblings, `meta.why='same question, different referent'` |
+| unclear, not contradictory | the claim cannot be stated in one sentence from the body | rewrite to the standard of done (§2); grab-bag → split (13) | none |
+| undecidable | neither source resolves it | `AUDIT:contested` on both; `ask` (memory-review todo linked to the gripe, with what was looked at) | `contradicts` between the two memories (the one allowed pair; the evaluator is the adjudicator) so both fisheyes show the dispute |
+
+Replay pass, after any row: both routes still arrive where the story
+says; the answers are consistent, or each carries its scope in the title
+plus an edge; no live node states a losing claim; every handle resolves;
+the hub's recall set finds what it found before (a regression guard, not
+a rank target). Never: retitle to win a query; prose that restates
+another node; drop a still-true claim without moving it; edit a
+`trust_origin='human'` node (hold, `ask`).
+
 ## Slices (one gripe each, cluster `memory-gardener`; filed 2026-11-03)
 
 Detectors first (proposal-only), the rewrite door second, the evaluator
@@ -328,6 +360,25 @@ third, the entity normal form last. `blocked-by` edges carry the order.
 15. gr561026 — the write path: the shape card in the skills and the
     insert-time shape checks as ack lines and `AUDIT:` tags (medium;
     independent; the highest-leverage slice, start it early).
+16. gr561869 — reader intake: the first-read hint on `get(kind='memory')`
+    (one line, first sight per session, no edit clause), the story shape
+    (Goal / Route / claims, naming every handle involved, any kind), the
+    server-attached `meta.route` from the tool ledger, the fixer-intake
+    exclusion for `project:memory`, and the five skill updates (medium;
+    independent; start it with 15).
+17. gr561873 — `griped` detector: a `project:memory` gripe is a replayable
+    test. Candidate = the gripe, its mentioned memories and entity refs,
+    `meta.route`. Replay both routes, name the disagreement shape (§6),
+    apply its row through the ledger, replay again; pass = both routes
+    still arrive, answers consistent or scoped, no live losing claim,
+    handles resolve, no recall regression. Close the gripe with shape,
+    change and sha, or `ask` (medium; after 4 and 6). Not a path-length
+    target: a circuitous route is fine.
+18. gr561877 — the checklist skill `precis-memory-checklist-help` (§2
+    checks, standard of done, §6 shapes incl. the two the spec lacked:
+    different referents, undecidable; the never-list), pinned verbatim
+    by slice 6's evaluator and pointed at from `precis-memory-help` and
+    `precis-gardener-help` (small; independent; land with 16).
 
 Precondition for 11: `search(kind='machine')` returned zero refs on
 2026-11-03; the slice starts with `put(kind='machine', mode='sync')` plus
@@ -408,3 +459,11 @@ runs until the `graph_garden` service row is lit for it.
   split (13) and the expiry above are what reach it.
 - Open: whether `source_drift` should compare the memory's claim against
   the new section text in the evaluator, or only flag.
+- 2026-11-03: a reader who finds a node wonky, contradicted or unclear
+  files a `project:memory` gripe with the story (goal, route, claims side
+  by side); the gardener is its fixer. Not a memory-review todo (that is
+  the evaluator's `ask` output) and no edit clause in the first-read
+  hint: at first read the reader has only the text. The fixer's goal is
+  consistency, not path length (§6). The gardener's checklist is a skill
+  the evaluator pins verbatim, and the hand path points at the same
+  skill: one source, no fixer skill of its own. Decided (Reto, chat).
