@@ -40,9 +40,12 @@ unreviewed section behind a green ✓.
 
 from __future__ import annotations
 
+import hashlib
+import json
 import re
 import threading
 import time
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 from datetime import UTC
 from typing import TYPE_CHECKING, Any
@@ -352,6 +355,25 @@ def invalidate(ref_id: int) -> None:
     TTL. Body-text edits self-invalidate via :func:`_cache_version`."""
     with _NODE_CACHE_LOCK:
         _NODE_CACHE.pop(ref_id, None)
+
+
+def render_version(store: Store, ref_id: int, overlays: Iterable[Any] = ()) -> str:
+    """The ``v`` token ``#sd-state`` ships to the reader's prefetch cache
+    (gr553319). A cached ``?focus=`` page revalidates by asking "is the
+    render the server would send now still mine?" — this digest answers it.
+
+    The chunk digest (:func:`_cache_version` — any live chunk's
+    id/pos/parent/content_sha, plus the tag count) covers block text and
+    structure; ``overlays`` folds in the per-request state a render also
+    shows but the digest can't see — the marks set (pins/eyes/locks ride
+    per-request over the cached nodes), the review ledger, the authored-
+    stamp index. ``""`` when the store can't version (the client treats
+    every entry as untrusted and skips caching — the FakeStore path)."""
+    ver = _cache_version(store, ref_id)
+    if ver is None:
+        return ""
+    src = ver + "|" + json.dumps(list(overlays), sort_keys=True, default=str)
+    return hashlib.sha256(src.encode("utf-8")).hexdigest()[:24]
 
 
 def _apply_marks(nodes: list[ChunkNode], marks: dict[str, Any] | None) -> None:

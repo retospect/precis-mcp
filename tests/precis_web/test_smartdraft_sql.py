@@ -9,6 +9,9 @@ fixture. See CLAUDE.md "psycopg % LIKE / fake-store gap".
 
 from __future__ import annotations
 
+import json
+import re
+
 from fastapi.testclient import TestClient
 
 from precis.store import ChunkInsert
@@ -38,3 +41,33 @@ def test_tag_suggest_treats_percent_literally(store) -> None:
     resp = client.get(f"/smartdraft/{ref.id}/tag-suggest", params={"q": "t%t"})
     assert resp.status_code == 200
     assert resp.json() == {"tags": ["pct%tag"]}
+
+
+def _sd_state(html: str) -> dict:
+    m = re.search(
+        r'<script type="application/json" id="sd-state">(.*?)</script>', html, re.S
+    )
+    assert m is not None, "sd-state script missing from the reader page"
+    return json.loads(m.group(1))
+
+
+def test_sd_state_render_version_moves_on_edit(store) -> None:
+    """gr553319: the prefetch cache validates a cached ``?focus=`` render by
+    its ``v`` token — this pins that the token exists (the FakeStore reader
+    fixture can't answer ``_cache_version``, so ``v`` is empty there — only
+    a real-PG test can see it) and that it MOVES when the draft does."""
+    proj = store.insert_ref(kind="todo", slug=None, title="P").id
+    ref, head = store.drafts.create_draft(
+        name="sql-sdv", title="v draft", project_ref_id=proj
+    )
+    app = create_app(runtime=FakeRuntime(store), web_config=WebConfig(corpus_dir=None))
+    client = TestClient(app)
+
+    v1 = _sd_state(client.get("/smartdraft/sql-sdv").text)["v"]
+    assert v1 != ""
+
+    store.drafts.edit_text(head.handle, "The body, edited.")
+
+    v2 = _sd_state(client.get("/smartdraft/sql-sdv").text)["v"]
+    assert v2 != ""
+    assert v2 != v1, "a text edit must move the render token"

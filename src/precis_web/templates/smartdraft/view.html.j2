@@ -1463,9 +1463,16 @@
   {# nav state travels INSIDE #sd-content so a swap carries the fresh values.
      focusHandle (base58) lets the keyboard reach the focus block's inline
      editor via window.__dEditors (i / Enter → startEdit). #}
-  <script type="application/json" id="sd-state">{{ {"order": view.order, "hits": (hits | map(attribute='node') | map(attribute='dc') | list), "focus": focus_dc, "focusHandle": (view.focus.base58 if view.focus else ""), "q": q, "eyes": eye_dcs} | tojson }}</script>
+  <script type="application/json" id="sd-state">{{ {"order": view.order, "hits": (hits | map(attribute='node') | map(attribute='dc') | list), "focus": focus_dc, "focusHandle": (view.focus.base58 if view.focus else ""), "q": q, "eyes": eye_dcs, "v": view_version} | tojson }}</script>
 </div>
 
+<script type="module">
+// Prefetch/render-cache module (gr553319) — an ES module so node can test
+// it; exposed on window for the classic nav script below (which must stay
+// non-module: its top-level functions are inline-onclick targets).
+import * as _sdPrefetch from '/static/sd-prefetch.js';
+window.sdPrefetch = _sdPrefetch;
+</script>
 <script>
 // KaTeX render (parity with the classic /drafts reader, since retired).
 // __renderMath renders one element; __sdRenderMath does the whole panel and is
@@ -1504,41 +1511,215 @@ document.body.addEventListener('htmx:afterSwap', function (e) {
     try { return JSON.parse(document.getElementById('sd-state').textContent); }
     catch (e) { return { order: [], hits: [], focus: '', q: '' }; }
   }
-  async function swapFrom(url) {
-    try {
-      const html = await (await fetch(url, { cache: 'no-store' })).text();
-      const doc = new DOMParser().parseFromString(html, 'text/html');
-      const fresh = doc.getElementById('sd-content');
-      const cur = document.getElementById('sd-content');
-      if (!fresh || !cur) { location.href = url; return; }
-      // Hover-preview cards are teleported to <body> (shared linkify fix,
-      // gripe 56806) — they live OUTSIDE #sd-content, so replacing its
-      // innerHTML can't reap them. Alpine's own teleport cleanup removes a
-      // clone when its source <template> is destroyed by that replace, but
-      // drop any survivors defensively so a stale card can never linger
-      // after navigating away from the para that opened it.
-      document.querySelectorAll('body > .ref-popover').forEach((el) => el.remove());
-      // Alpine's own MutationObserver also initialises the nodes an innerHTML
-      // replace adds, so an explicit initTree on top used to initialise every
-      // x-data component in the panel TWICE (Alpine 3.14.3 has no
-      // already-initialised guard): two reactive scopes per block, with the
-      // x-show effects bound to the dead one — after any nav/refresh swap the
-      // block editor mounted hidden and the ✎ click looked like a no-op
-      // (gr335590). mutateDom() pauses the observer around the replace so the
-      // explicit initTree is the only one; destroyTree() first runs the old
-      // components' cleanups the observer would otherwise have run.
-      if (window.Alpine && window.Alpine.mutateDom) {
-        window.Alpine.destroyTree(cur);
-        window.Alpine.mutateDom(() => { cur.innerHTML = fresh.innerHTML; });
-        window.Alpine.initTree(cur);
-      } else {
-        cur.innerHTML = fresh.innerHTML;
+  // ── Focus-render prefetch cache (gr553319) ─────────────────────────
+  // Arrow-stepping used to wait on a full-page fetch before the next
+  // block showed as focused. Now every settled nav also prefetches the
+  // ±3 neighbours in ST.order (and in ST.hits while a search is on), an
+  // LRU serves a repeat visit instantly, and a background revalidate
+  // swaps fresh markup in only when the server says the render moved
+  // (the `v` token — a byte-compare would flap on the header's
+  // relative timestamps). `window.sdPrefetch` is the ESM above; until
+  // it lands (it runs deferred, after this script) the paths below
+  // degrade to plain fetch+swap.
+  let RC = null;
+  // The still-pristine #sd-content markup at parse time — deferred
+  // Alpine/KaTeX haven't mutated it yet, so it's the same shape a
+  // prefetch would return; seeds the entry page (the back button's
+  // target) once the module arrives.
+  let seedHtml = (document.getElementById('sd-content') || {}).innerHTML || null;
+  function rcache() {
+    if (RC === null && window.sdPrefetch) {
+      RC = window.sdPrefetch.createRenderCache({ max: 20, radius: 3 });
+      if (seedHtml && ST.v) {
+        RC.put(location.pathname + location.search,
+               { html: seedHtml, v: ST.v, focus: ST.focus, focusHandle: ST.focusHandle });
       }
-      ST = readState();
-      afterSwap();
-    } catch (e) { location.href = url; }
+      seedHtml = null;
+    }
+    return RC;
   }
-  function afterSwap() {
+  // Fetch one reader page and lift the swap payload out of it:
+  // #sd-content's markup plus the render token/focus identity the cache
+  // entry needs (from the embedded #sd-state, which travels inside it).
+  async function fetchPanel(url, signal) {
+    const res = await fetch(url, { cache: 'no-store', signal });
+    if (!res.ok) return null;
+    const doc = new DOMParser().parseFromString(await res.text(), 'text/html');
+    const fresh = doc.getElementById('sd-content');
+    if (!fresh) return null;
+    let st = {};
+    const stEl = doc.getElementById('sd-state');
+    try { st = stEl ? JSON.parse(stEl.textContent) : {}; } catch (e) { st = {}; }
+    return {
+      html: fresh.innerHTML,
+      v: st.v || '',
+      focus: st.focus || '',
+      focusHandle: st.focusHandle || '',
+    };
+  }
+  function applyPanel(html) {
+    const cur = document.getElementById('sd-content');
+    if (!cur) return false;
+    // Hover-preview cards are teleported to <body> (shared linkify fix,
+    // gripe 56806) — they live OUTSIDE #sd-content, so replacing its
+    // innerHTML can't reap them. Alpine's own teleport cleanup removes a
+    // clone when its source <template> is destroyed by that replace, but
+    // drop any survivors defensively so a stale card can never linger
+    // after navigating away from the para that opened it.
+    document.querySelectorAll('body > .ref-popover').forEach((el) => el.remove());
+    // Alpine's own MutationObserver also initialises the nodes an innerHTML
+    // replace adds, so an explicit initTree on top used to initialise every
+    // x-data component in the panel TWICE (Alpine 3.14.3 has no
+    // already-initialised guard): two reactive scopes per block, with the
+    // x-show effects bound to the dead one — after any nav/refresh swap the
+    // block editor mounted hidden and the ✎ click looked like a no-op
+    // (gr335590). mutateDom() pauses the observer around the replace so the
+    // explicit initTree is the only one; destroyTree() first runs the old
+    // components' cleanups the observer would otherwise have run.
+    if (window.Alpine && window.Alpine.mutateDom) {
+      window.Alpine.destroyTree(cur);
+      window.Alpine.mutateDom(() => { cur.innerHTML = html; });
+      window.Alpine.initTree(cur);
+    } else {
+      cur.innerHTML = html;
+    }
+    return true;
+  }
+  // Callers pass a path+query (nav/focus urls, anchor hrefs, the form
+  // action) — compare resolved, so an absolute location.href variant of
+  // the same page can't look "not current".
+  const isCurrent = (url) => {
+    const u = new URL(url, location.origin);
+    return u.pathname + u.search === location.pathname + location.search;
+  };
+  // The URL a ?focus=<dc> nav would fetch — same params, new focus. The
+  // prefetch window and navTo build from the same mould so an inflight
+  // prefetch serves the very nav that would have re-requested it.
+  const focusUrl = (dc) => {
+    const p = new URLSearchParams(location.search);
+    p.set('focus', dc);
+    return `/smartdraft/${IDENT}?` + p.toString();
+  };
+  // Every swapFrom caller is a REAL navigation (arrow key, TOC/result
+  // click, popstate, refresh) — its fetch is pinned so a later jump's
+  // reap() or an edit's clear() can't abort it out from under the await.
+  // And no path here may fall back to location.href without re-checking
+  // isCurrent(url): reloading onto a page the user already left is worse
+  // than doing nothing.
+  async function swapFrom(url, opts) {
+    opts = opts || {};
+    const rc = rcache();
+    const fallback = () => { if (isCurrent(url)) location.href = url; };
+    if (rc && !opts.force) {
+      const hit = rc.get(url);
+      if (hit && !hit.stale) {
+        // Serve the cached render instantly; a background revalidate
+        // (debounced in afterSwap) replaces it only if the draft moved
+        // under the copy. A stale-flagged entry is known-behind — fall
+        // through and refetch instead of serving it.
+        if (!applyPanel(hit.html)) { fallback(); return; }
+        ST = readState(); afterSwap(url);
+        return;
+      }
+      const r = await rc.track(url, fetchPanel, { pinned: true });
+      // 'aborted' can't happen for a pinned fetch; 'stale' means an edit
+      // landed mid-fetch and the post-mutation refresh owns the screen —
+      // either way another nav/refresh is in charge: do nothing.
+      if (r.status !== 'ok') { if (r.status === 'error') fallback(); return; }
+      if (!r.entry) { fallback(); return; }
+      if (!isCurrent(url)) return;   // moved on mid-fetch — keep it cached only
+      if (!applyPanel(r.entry.html)) { fallback(); return; }
+      ST = readState(); afterSwap();
+      return;
+    }
+    if (rc) {
+      // Forced post-mutation refresh — still goes through track() (pinned
+      // + epoch-checked) so a pre-clear fetch can neither be shared for a
+      // possibly pre-write render nor put() over a newer cache entry.
+      const r = await rc.track(url, fetchPanel, { pinned: true });
+      if (r.status !== 'ok') { if (r.status === 'error') fallback(); return; }
+      if (!r.entry) { fallback(); return; }
+      if (!isCurrent(url)) return;
+      if (!applyPanel(r.entry.html)) { fallback(); return; }
+      ST = readState(); afterSwap();
+      return;
+    }
+    // Module not loaded yet — plain fetch+swap.
+    try {
+      const ent = await fetchPanel(url, null);
+      if (!ent) { fallback(); return; }
+      if (!isCurrent(url)) return;
+      if (!applyPanel(ent.html)) { fallback(); return; }
+      ST = readState(); afterSwap();
+    } catch (e) { fallback(); }
+  }
+  // True while #sd-content holds an open inline editor or a visible text
+  // surface the user may have typed into. draftEdit/tableEditor surfaces
+  // stay in the DOM under x-show containers, so VISIBILITY — not presence
+  // — is the signal. A revalidate swap would silently discard that work.
+  function panelBusy() {
+    const c = document.getElementById('sd-content');
+    if (!c) return false;
+    const sel = '[x-show="editing"], [x-show="ted"], textarea, [contenteditable="true"]';
+    for (const el of c.querySelectorAll(sel)) {
+      if (el.offsetParent !== null) return true;
+    }
+    return false;
+  }
+  // Background check behind a served-from-cache nav: the `v` token tells
+  // a still-good render (refresh the cached copy, leave the screen alone)
+  // from a draft that moved under it — then swap the fresh render in, but
+  // only while this page is on screen AND no inline edit is open (a busy
+  // panel keeps its markup; the cache entry is marked stale so the next
+  // nav refetches instead of re-serving a proven-old copy).
+  async function revalidate(url) {
+    const rc = rcache();
+    if (!rc) return;
+    const prev = rc.get(url);
+    const r = await rc.track(url, fetchPanel);
+    if (r.status !== 'ok' || !r.entry || !prev || prev.v === r.entry.v) return;
+    if (!isCurrent(url)) return;
+    if (panelBusy()) { rc.markStale(url); return; }
+    if (!applyPanel(r.entry.html)) { if (isCurrent(url)) location.href = url; return; }
+    ST = readState(); afterSwap();
+  }
+  // Refill the ±3 prefetch window around the focus after each swap, and
+  // abort the unpinned in-flight fetches a jump stranded outside the new
+  // window (the current URL itself is always kept — its revalidate rides
+  // along). A stale-flagged entry counts as missing — it gets refetched.
+  function prefetchAround() {
+    const rc = rcache();
+    if (!rc) return;
+    const want = rc.wanted(ST.focus, ST.order || [], ST.hits || [], focusUrl);
+    const cur = location.pathname + location.search;
+    want.add(cur);
+    rc.reap(want);
+    for (const url of want) {
+      // Never re-fetch the page already on screen: it was just rendered.
+      if (url === cur || rc.inflightFor(url)) continue;
+      const e = rc.get(url);
+      if (e && !e.stale) continue;
+      rc.track(url, fetchPanel);
+    }
+  }
+  // ~150ms settle: arrow-stepping swaps panels per keypress, but firing
+  // a render per step while the key is held just burns fetches the next
+  // keypress aborts — prefetch and the owed background revalidate wait
+  // until focus stops moving. `revalUrl` is the just-served-from-cache
+  // page that owes a revalidate; the latest settle wins.
+  let settleTimer = null;
+  let settleReval = null;
+  function scheduleSettle(revalUrl) {
+    if (revalUrl) settleReval = revalUrl;
+    if (settleTimer) clearTimeout(settleTimer);
+    settleTimer = setTimeout(() => {
+      settleTimer = null;
+      const u = settleReval; settleReval = null;
+      if (u && isCurrent(u)) revalidate(u);
+      prefetchAround();
+    }, 150);
+  }
+  function afterSwap(revalUrl) {
     const el = document.getElementById('toc-' + ST.focus);
     if (el) el.scrollIntoView({ block: 'center' });
     const mid = document.getElementById('mid-focus');
@@ -1550,6 +1731,9 @@ document.body.addEventListener('htmx:afterSwap', function (e) {
     // auto-render's onload (window.__sdRenderMath) covers that initial pass.
     __sdRenderMath();
     installDocHydrator();   // full-doc (📄) lazy block hydration, if present
+    // Debounced: refill the ±3 window / reap stale prefetches / run the
+    // owed revalidate once focus has been still ~150ms — not per keypress.
+    scheduleSettle(revalUrl);
   }
   // ── Full-document lazy hydration ─────────────────────────────────────
   // In 📄 (relevance-off) mode only a window around the focus renders real
@@ -1669,14 +1853,30 @@ document.body.addEventListener('htmx:afterSwap', function (e) {
     hydrateSoon();   // fill whatever is already on screen at install
   }
   async function navTo(dc) {
-    const p = new URLSearchParams(location.search);
-    p.set('focus', dc);
-    const url = `/smartdraft/${IDENT}?` + p.toString();
+    const url = focusUrl(dc);
     history.pushState({}, '', url);
     await swapFrom(url);
   }
-  // expose a reload-free refresh for the action helpers (pin/tag/mark/save)
-  window.__sdRefresh = () => swapFrom(location.href);
+  // expose a reload-free refresh for the action helpers (pin/tag/mark/save).
+  // Every caller is a post-write path, so drop the whole render cache first —
+  // each entry predates the mutation (its `v` would revalidate stale anyway,
+  // but a dropped entry can't even flash a pre-write render) — then force an
+  // uncached refetch. The cache's epoch guard refuses puts from fetches the
+  // clear aborted mid-flight.
+  window.__sdRefresh = () => {
+    const rc = rcache();
+    if (rc) rc.clear();
+    // path+query, not location.href — the cache keys nav urls relatively,
+    // so an absolute URL would split one page across two entries.
+    return swapFrom(location.pathname + location.search, { force: true });
+  };
+  // Targeted half of "invalidate a cached block when it is edited": the
+  // draft:* listener outside this IIFE drops the entry FOCUSED on the
+  // edited handle before __sdRefresh clears the rest.
+  window.__sdInvalidate = (handle) => {
+    const rc = rcache();
+    if (rc) rc.dropFocusHandle(handle);
+  };
   const jump = navTo;
   const clearSearch = () => {
     const p = new URLSearchParams(location.search);
@@ -1777,8 +1977,8 @@ document.body.addEventListener('htmx:afterSwap', function (e) {
       setHead(null);
     });
   })();
-  window.addEventListener('DOMContentLoaded', afterSwap);
-  window.addEventListener('popstate', () => swapFrom(location.href));
+  window.addEventListener('DOMContentLoaded', () => afterSwap());
+  window.addEventListener('popstate', () => swapFrom(location.pathname + location.search));
   // Delegate: any internal /smartdraft link (TOC rows, results, header toggles)
   // and the search form swap #sd-content instead of a full page navigation.
   const INT = 'a[href^="/smartdraft/' + IDENT + '?"]';
@@ -2177,7 +2377,18 @@ document.body.addEventListener('htmx:afterSwap', function (e) {
 // text save/split/merge/delete/insert and a table save (all dispatch
 // `draft:edited`).
 ['draft:edited', 'draft:split', 'draft:merged', 'draft:removed', 'draft:inserted']
-  .forEach((ev) => window.addEventListener(ev, () => window.__sdRefresh()));
+  .forEach((ev) => window.addEventListener(ev, (e) => {
+    // gr553319: drop the cached render FOCUSED on the edited block (the
+    // detail handle is its base58, matching an entry's focusHandle) —
+    // __sdRefresh's clear then drops the rest anyway, this is the
+    // per-block piece the gripe names.
+    const d = (e && e.detail) || {};
+    if (window.__sdInvalidate) {
+      if (d.handle) window.__sdInvalidate(d.handle);
+      if (d.prev) window.__sdInvalidate(d.prev);
+    }
+    window.__sdRefresh();
+  }));
 
 // Pin/unpin any chunk (a persistent context eye) — used by the focus header
 // and the TOC rows. POSTs the shipped /marks toggle, then swaps in place.

@@ -300,6 +300,15 @@ async def reader(
     hub_stats = _hub_and_citation_stats(request, store, rendered_nodes)
     shape_stats = _document_shape_stats(store, ref.id)
 
+    # Prefetch cache's render token (gr553319) — ``#sd-state`` ships it as
+    # ``v``; a cached page's background revalidate swaps fresh only when it
+    # moved. Folds the draft content digest with the per-request overlays a
+    # render also shows: marks (pin/eye/lock badges), the review ledger,
+    # the authored-stamp index.
+    view_version = smartdraft.render_version(
+        store, ref.id, overlays=(marks, review_status, authored_idx)
+    )
+
     # Document-level edges for the header panel — one query, whole-ref
     # (chunk-anchored edges are the right rail's job, per focus block).
     ref_conns = _ref_connection_groups(store, ref.id)
@@ -356,6 +365,7 @@ async def reader(
             "checker_counts": checker_counts,
             "hub_stats": hub_stats,
             "shape_stats": shape_stats,
+            "view_version": view_version,
             # ── Header meta panel (▸ collapsed / ▾ expanded) ──
             "doc_meta": _doc_meta(ref),
             "ref_conns": ref_conns,
