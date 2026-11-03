@@ -34,7 +34,7 @@ the coordinator's; questions for Reto → `ask-user` todo
 (`precis-work-help`). Thread work updates `docs/backlog/threads/<slug>.md`
 in the same commit.
 
-Commits: `type(scope): what changed` ≤72 chars, optional why, then the
+Commits: `type(scope): what changed` aim ≤72 chars, hard limit 120, optional why, then the
 Co-Authored-By/session footer; write it to a file and `git commit -F <file>`
 (never a quoted `-m`). Devin footer: `Co-Authored-By: Devin SWE-2
 <noreply@cognition.ai>` + `Claude-Session: none (Devin builder, <fleet name>)`.

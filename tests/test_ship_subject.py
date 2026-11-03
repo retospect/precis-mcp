@@ -161,7 +161,7 @@ def test_bad_subject_via_m_dies(tmp_path: Path) -> None:
         "wip(x): snapshot",
         "fixed stuff",
         "feat(Bad Scope): x",
-        "fix: " + "x" * 80,
+        "fix: " + "x" * 116,
     ):
         r = _resolve(repo, bad)
         assert r.returncode == 1, bad
@@ -181,7 +181,7 @@ def test_lint_off_via_env(tmp_path: Path) -> None:
 
 
 @pytest.mark.parametrize("char", ["x", "\u00e9", "\U0001f680"])
-@pytest.mark.parametrize("length", [72, 73])
+@pytest.mark.parametrize("length", [72, 100, 121])
 def test_lint_counts_characters_not_bytes(char: str, length: int) -> None:
     """gr548403: the limit and cut tail stay character-based in a byte locale."""
     subject = "fix(ship): " + char * (length - len("fix(ship): "))
@@ -201,35 +201,37 @@ def test_lint_counts_characters_not_bytes(char: str, length: int) -> None:
         env={k: v for k, v in os.environ.items() if k != "PRECIS_SHIP_SUBJECT_LINT"}
         | {"LC_ALL": "C"},
     )
-    assert r.returncode == (0 if length == 72 else 1), r.stderr
+    assert r.returncode == (1 if length == 121 else 0), r.stderr
     assert r.stdout == ""
-    if length == 73:
-        assert "73 chars (characters, not bytes), 1 over max 72" in r.stderr
-        assert f"cut: '{char}'" in r.stderr
-        assert len(r.stderr.splitlines()) == 1
+    assert len(r.stderr.splitlines()) == (0 if length == 72 else 1)
+    if length == 121:
+        assert "121 chars (characters, not bytes), 1 over hard max 120" in r.stderr
+    elif length == 100:
+        assert r.stderr == "note: subject is 100 chars; aim for <=72\n"
     else:
         assert r.stderr == ""
 
 
 def test_lint_names_the_exact_overshoot(tmp_path: Path) -> None:
-    subject = "fix: " + "x" * 67 + " the pass"
+    subject = "fix: " + "x" * 107 + " the pass"
     r = _resolve(_repo(tmp_path, []), subject)
     assert r.returncode == 1
-    assert "81 chars (characters, not bytes), 9 over max 72" in r.stderr
-    assert "cut: ' the pass'" in r.stderr
+    assert "121 chars (characters, not bytes), 1 over hard max 120" in r.stderr
 
 
 @pytest.mark.parametrize(
     ("subject", "lint_off", "accepted"),
     [
         ("fix: " + "x" * 67, False, True),
-        ("fix: " + "x" * 68, False, False),
+        ("fix: " + "x" * 68, False, True),
+        ("fix: " + "x" * 115, False, True),
+        ("fix: " + "x" * 116, False, False),
         ("fix: " + "\u00e9" * 67, False, True),
-        ("fix: " + "\u00e9" * 68, False, False),
+        ("fix: " + "\u00e9" * 116, False, False),
         ("ship(branch): squash-merge", False, False),
         ("wip(branch): snapshot", False, False),
         ("no conventional prefix", False, False),
-        ("fix: " + "x" * 68, True, True),
+        ("fix: " + "x" * 116, True, True),
     ],
 )
 def test_commit_msg_hook_lints_git_commit_f(
@@ -274,9 +276,8 @@ def test_commit_msg_hook_lints_git_commit_f(
     assert (_git(worktree, "rev-parse", "HEAD") != before) == accepted
     if not accepted:
         assert r.stderr.count("commit subject") == 1
-        if len(subject) == 73:
-            assert "73 chars (characters, not bytes), 1 over max 72" in r.stderr
-            assert f"cut: '{subject[-1]}'" in r.stderr
+        if len(subject) == 121:
+            assert "121 chars (characters, not bytes), 1 over hard max 120" in r.stderr
 
 
 def _fn(func: str, msg: str, *args: str) -> subprocess.CompletedProcess[str]:
@@ -443,7 +444,7 @@ def test_ship_rejects_subject_before_build_and_clears_stale_pin(
     for lib in (REPO / "scripts" / "lib").glob("*.sh"):
         (lib_dir / lib.name).write_bytes(lib.read_bytes())
     (repo / ".gitignore").write_text(".claude/\n.ship-sha\n", encoding="utf-8")
-    subject = "fix: " + "x" * 67 + "\u00e9"
+    subject = "fix: " + "x" * 115 + "\u00e9"
     _git(repo, "add", "-A")
     _git(repo, "commit", "-q", "-m", "fix: real change" if explicit else subject)
     pin = repo / ".ship-sha"
@@ -478,8 +479,7 @@ def test_ship_rejects_subject_before_build_and_clears_stale_pin(
     assert r.returncode == 1, r.stdout + r.stderr
     assert r.stderr.count("commit subject") == 1
     assert r.stderr.count("\u2716") == 1
-    assert "73 chars (characters, not bytes), 1 over max 72" in r.stderr
-    assert "cut: '\u00e9'" in r.stderr
+    assert "121 chars (characters, not bytes), 1 over hard max 120" in r.stderr
     assert not probe.exists(), "Tailwind ran before subject lint"
     assert not pin.exists(), "a rejected ship must not retain a stale gate pin"
     assert _git(repo, "rev-parse", "HEAD") == before

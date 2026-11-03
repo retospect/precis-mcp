@@ -45,7 +45,7 @@ allow list as permission rules. `kimi doctor` validates it;
 - **Bash.** One plain command per call, same as Claude. There is no rtk
   rewrite hook here: prefix noisy commands (`git log`, `ls -R`, big greps)
   with `rtk` yourself. Never pipe `scripts/ship|deploy|bump` into a filter.
-- **Commits.** `type(scope): what changed` (≤72 chars), message via
+- **Commits.** `type(scope): what changed` (aim ≤72 chars, hard limit 120), message via
   `git commit -F scratch/commit-msg.txt`, ending with:
 
       Co-Authored-By: Kimi Code (<model display name>) <noreply@moonshot.ai>

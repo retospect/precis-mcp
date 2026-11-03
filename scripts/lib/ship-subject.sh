@@ -44,17 +44,19 @@ ship_subject_lint() {
     fi
     # Count UTF-8 code points, not bytes, even under LC_ALL=C or macOS bash
     # 3.2. Continuation bytes do not start a character.
-    local LC_ALL=C length=0 offset=0 cut_offset=0
+    local LC_ALL=C length=0 offset=0
     while (( offset < ${#subject} )); do
         if [[ "${subject:offset:1}" != [$'\200'-$'\277'] ]]; then
             (( length += 1 ))
-            if (( length == 73 )); then cut_offset=$offset; fi
         fi
         (( offset += 1 ))
     done
-    if (( length > 72 )); then
-        printf "commit subject is %d chars (characters, not bytes), %d over max 72 — cut: '%s' — put detail in the body, or set PRECIS_SHIP_SUBJECT_LINT=0 in an emergency\n" "$length" "$(( length - 72 ))" "${subject:cut_offset}" >&2
+    if (( length > 120 )); then
+        printf "commit subject is %d chars (characters, not bytes), %d over hard max 120 — put detail in the body, or set PRECIS_SHIP_SUBJECT_LINT=0 in an emergency\n" "$length" "$(( length - 120 ))" >&2
         return 1
+    fi
+    if (( length > 72 )); then
+        printf "note: subject is %d chars; aim for <=72\n" "$length" >&2
     fi
     return 0
 }

@@ -607,7 +607,7 @@ Never pipe `scripts/ship|deploy|bump` into `tail`/`grep`/`tee` — a pipeline
 reports the *filter's* status, so a red gate reads as exit 0. Redirect to a
 log, or `set -o pipefail`.
 
-**Commit messages: `type(scope): what changed`** (≤72 chars;
+**Commit messages: `type(scope): what changed`** (aim ≤72 chars, hard limit 120;
 feat/fix/docs/test/chore/refactor…; `docs(backlog)` for specs), optional
 short why as body, then the required Co-Authored-By/session footer. Write
 the message to a file and `git commit -F <file>` — the `-m "$(cat <<'EOF'
