@@ -377,6 +377,60 @@ def _revision_from_row(row: dict[str, Any]) -> Revision:
     )
 
 
+#: Ops that establish a cell on an empty scene (mirrors
+#: ``precis.handlers.structure._CELL_ESTABLISHING_OPS``): a design whose
+#: revisions carry one built itself; without one, the design was cloned
+#: from a parent whose own revisions hold the base recipe.
+_CELL_ESTABLISHING_OPS = frozenset({"slab", "set_cell"})
+
+#: Bound on the derived-from climb — a candidate's lineage is a handful
+#: of hops, never more; the cap doubles as the cycle guard.
+_RECIPE_DEPTH = 8
+
+
+def recipe_ops(
+    store: Any,
+    ref_id: int,
+    *,
+    conn: Connection | None = None,
+    _seen: set[int] | None = None,
+) -> list[dict[str, Any]]:
+    """The design's recorded construction: every revision's ops in rev
+    order — preceded by the ``derived-from`` parent's recipe when this
+    design's own ops establish no cell (a ``put`` from a spec carries its
+    own ``slab``/``set_cell``; a ``derive`` records only the delta ops —
+    the base recipe lives on the parent's revisions — gr553416)."""
+    seen = _seen if _seen is not None else set()
+    if ref_id in seen or len(seen) >= _RECIPE_DEPTH:
+        return []
+    seen.add(ref_id)
+    ops = [
+        dict(o)
+        for rev in list_revisions(store, ref_id, conn=conn)
+        for o in rev.ops
+        if isinstance(o, dict)
+    ]
+    if any(o.get("op") in _CELL_ESTABLISHING_OPS for o in ops):
+        return ops
+    # Climb only for a true derive: ``derive()`` stamps ``meta.derived_from``
+    # on the child. A bare ``derived-from`` link is not enough — the quest
+    # also wires it for a proposal's ``parent`` lineage field, and those
+    # children are full specs (top-level ``cell``) that must NOT inherit the
+    # parent's slab and modifications.
+    try:
+        ref = store.get_ref(kind="structure", id=ref_id)
+        derived = bool((getattr(ref, "meta", None) or {}).get("derived_from"))
+    except Exception:
+        return ops
+    if not derived:
+        return ops
+    for ln in store.links_for(ref_id, direction="out", relation="derived-from"):
+        parent_ops = recipe_ops(store, int(ln.dst_ref_id), conn=conn, _seen=seen)
+        if parent_ops:
+            return parent_ops + ops
+    return ops
+
+
 # ── branches ───────────────────────────────────────────────────────────────
 
 

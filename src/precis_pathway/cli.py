@@ -25,13 +25,16 @@ nothing calls it on a cadence.
 
 ``retitle`` renames every live pathway to the spec form
 ``'<substrate> → <target> on <catalyst>'`` (gr549574): the linked
-candidate structure's name with dashes as spaces, a tombstone's
-``'<name> (deleted)'``, or the slab (``'… on Pd(111)'``) when no
-candidate resolves. A pathway whose named candidate is gone without a
-tombstone keeps its old title. Title-only — the old title stays in
-``ref_events`` as a ``title_changed`` row, the way every retitle does.
-Dry-run by default, listing each change as ``id: old → new``;
-``--apply`` writes. Hand-run only — nothing wires it to a cadence or hook.
+candidate structure's readable catalyst label off its recorded
+construction (gr553416 — ``'Pd(111) + Ta (subsurface) + vacancy
+(surface, co-located)'`` — else the name with dashes as spaces), a
+tombstone's ``'<name> (deleted)'``, or the slab (``'… on Pd(111)'``)
+when no candidate resolves. A pathway whose named candidate is gone
+without a tombstone keeps its old title. Title-only — the old title
+stays in ``ref_events`` as a ``title_changed`` row, the way every
+retitle does. Dry-run by default, listing each change as
+``id: old → new``; ``--apply`` writes. Hand-run only — nothing wires it
+to a cadence or hook.
 """
 
 from __future__ import annotations
@@ -93,8 +96,10 @@ def add_parser(sub: argparse._SubParsersAction) -> argparse.ArgumentParser:
         help="Retitle every live pathway to '<rxn> on <catalyst>' (gr549574).",
         description=(
             "Rename every live pathway to '<substrate> → <target> on "
-            "<catalyst>' — the linked candidate structure's name (dashes as "
-            "spaces), '<name> (deleted)' off a tombstone, or the slab "
+            "<catalyst>' — the linked candidate structure's readable "
+            "catalyst label off its recorded construction (gr553416; its "
+            "name with dashes as spaces when none is recorded), "
+            "'<name> (deleted)' off a tombstone, or the slab "
             "('… on Pd(111)') when no candidate resolves. A named candidate "
             "gone without a tombstone keeps the old title. Dry-run by "
             "default, listing each change as 'id: old → new'; --apply "

@@ -54,7 +54,7 @@ from typing import TYPE_CHECKING, Any, ClassVar
 
 import numpy as np
 
-from precis.design.history import record_revision
+from precis.design.history import recipe_ops, record_revision
 from precis.dispatch import Hub, InitError
 from precis.errors import BadInput, Internal, NotFound, Unsupported, Upstream
 from precis.format import render_agent_table
@@ -81,6 +81,7 @@ from precis.structure import cache as relax_cache
 from precis.structure import relax as run_relax
 from precis.structure.canonical import normalize_scene
 from precis.structure.card import card_text
+from precis.structure.catalyst_label import catalyst_label
 from precis.structure.cell import Cell
 from precis.structure.importers import (
     bundle_index,
@@ -1197,7 +1198,15 @@ class StructureHandler(Handler):
                 title=ttl,
                 scene=scene,
                 version=version,
-                card_text=self._card_text(ttl, scene, desc),
+                card_text=self._card_text(
+                    ttl,
+                    scene,
+                    desc,
+                    label=self._recipe_label(
+                        ops if isinstance(ops, list) else None,
+                        {"composition": scene.composition()},
+                    ),
+                ),
                 description=desc,
                 relax_summary=relax_summary,
                 conn=conn,
@@ -1547,7 +1556,15 @@ class StructureHandler(Handler):
                     title=ttl,
                     scene=scene,
                     version=version,
-                    card_text=self._card_text(ttl, scene, desc),
+                    card_text=self._card_text(
+                        ttl,
+                        scene,
+                        desc,
+                        label=self._recipe_label(
+                            self._recorded_recipe(ref.id) + list(op_list),
+                            {"composition": scene.composition()},
+                        ),
+                    ),
                     description=desc,
                     relax_summary=relax_summary,
                     conn=conn,
@@ -1670,7 +1687,16 @@ class StructureHandler(Handler):
                 title=ttl,
                 scene=scene,
                 version=1,
-                card_text=self._card_text(ttl, scene, ""),
+                card_text=self._card_text(
+                    ttl,
+                    scene,
+                    "",
+                    label=self._recipe_label(
+                        self._recorded_recipe(parent.id) + list(op_list),
+                        {"composition": scene.composition()},
+                    ),
+                ),
+                meta_extra={"derived_from": str(parent.slug or parent.id)},
                 conn=conn,
             )
             # Revision 1 of the new design is the delta from its parent —
@@ -4457,7 +4483,15 @@ class StructureHandler(Handler):
                         scene=scene,
                         version=version,
                         description=desc,
-                        card_text=self._card_text(title, scene, desc),
+                        card_text=self._card_text(
+                            title,
+                            scene,
+                            desc,
+                            label=self._recipe_label(
+                                self._recorded_recipe(ref_id),
+                                {"composition": scene.composition()},
+                            ),
+                        ),
                         relax_summary=self._relax_summary(hit or pre),
                         conn=conn,
                     )
@@ -5458,11 +5492,38 @@ class StructureHandler(Handler):
             comp[el] = comp.get(el, 0) + 1
         return "".join(f"{el}{comp[el]}" for el in sorted(comp))
 
-    def _card_text(self, title: str, scene: Scene, description: str = "") -> str:
+    def _card_text(
+        self,
+        title: str,
+        scene: Scene,
+        description: str = "",
+        *,
+        label: str | None = None,
+    ) -> str:
         """Delegates to the module-level :func:`card_text` (see its
         docstring) — kept as a method so every existing call site here reads
         unchanged."""
-        return card_text(title, scene, description)
+        return card_text(title, scene, description, label=label)
+
+    @staticmethod
+    def _recipe_label(
+        ops: list[dict[str, Any]] | None, meta: dict[str, Any] | None = None
+    ) -> str | None:
+        """The recipe-derived catalyst label for a card (gr553416) —
+        best-effort: a render failure degrades to the title-only card."""
+        try:
+            return catalyst_label({"ops": ops or [], "meta": meta or {}})
+        except Exception:
+            return None
+
+    def _recorded_recipe(self, ref_id: int) -> list[dict[str, Any]]:
+        """``design_revisions`` + ``derived-from`` parents, for the card's
+        catalyst label — ``[]`` on any read failure (the card then falls
+        back to its title)."""
+        try:
+            return recipe_ops(self.store, ref_id)
+        except Exception:
+            return []
 
     # ── search ───────────────────────────────────────────────────────
     def search(

@@ -1,6 +1,11 @@
 """gr549574 — pathway titles name the candidate structure, and the
 ``precis pathway retitle`` maintenance command renames existing ones.
 
+gr553416 — the candidate slot renders the readable catalyst label off the
+structure's recorded construction (``design_revisions`` ops +
+``meta.params``) instead of the spaced name, when construction is
+recorded.
+
 Engine-free: synthetic ``PathwayArtifact``s through the real
 ``persist_result``/``retitle_plan`` store paths — no autocatpath import.
 """
@@ -13,6 +18,7 @@ from typing import Any
 
 import pytest
 
+from precis.design.history import record_revision
 from precis.store import Store
 from precis_pathway import cli as pw_cli
 from precis_pathway.persist import (
@@ -370,3 +376,145 @@ def test_retitle_apply_is_idempotent_and_keeps_history(
     assert "0 to retitle" in err and out == ""
     checked, changes = retitle_plan(store)
     assert changes == []
+
+
+# ── gr553416 — the recipe-derived catalyst label ─────────────────
+
+_RECIPE_SUBSURF_VAC: list[dict[str, Any]] = [
+    {"op": "slab", "element": "Pd", "size": [3, 3, 4]},
+    {
+        "op": "set_element",
+        "element": "Ta",
+        "site": {"type": "subsurface", "near": "aPd35"},
+    },
+    {"op": "vacancy", "atom": "aPd35"},
+]
+
+
+def test_persist_titles_the_candidate_by_its_recipe(store: Store) -> None:
+    """Recorded construction (design_revisions) renders the readable
+    label — the gripe's own example — instead of the spaced name."""
+    cand = _structure(
+        store, "q1cand-abc123", "Pd111-Ta-subsurf-1-vacancy-surf-colocated"
+    )
+    record_revision(store, int(cand.id), rev=1, ops=list(_RECIPE_SUBSURF_VAC))
+    pw = _pathway(store, "q1cand-abc123-rx-deadbeef01", candidate_ref=int(cand.id))
+
+    persist_result(store, int(pw.id), _artifact(), pathway_slug=pw.slug, ingest=False)
+
+    after = store.fetch_refs_by_ids([int(pw.id)])[int(pw.id)]
+    assert after.title == (
+        "NO → NH3 on Pd(111) + Ta (subsurface) + vacancy (surface, co-located)"
+    )
+
+
+def test_persist_recipe_follows_the_derived_from_parent(store: Store) -> None:
+    """A derived candidate records only its delta ops; the parent's
+    revisions hold the slab — the label still names host and facet."""
+    parent = _structure(store, "q1cand-base", "Pd111")
+    record_revision(
+        store,
+        int(parent.id),
+        rev=1,
+        ops=[{"op": "slab", "element": "Pd", "size": [3, 3, 4]}],
+    )
+    cand = store.insert_ref(
+        kind="structure",
+        slug="q1cand-abc123",
+        title="Pd111-Cu-surf-2",
+        meta={"derived_from": "q1cand-base"},
+    )
+    record_revision(
+        store,
+        int(cand.id),
+        rev=1,
+        ops=[
+            {"op": "set_element", "element": "Cu", "site": {"type": "top"}},
+            {"op": "set_element", "element": "Cu", "site": {"type": "top"}},
+        ],
+    )
+    store.add_link(
+        src_ref_id=int(cand.id),
+        dst_ref_id=int(parent.id),
+        relation="derived-from",
+        set_by="system",
+    )
+    pw = _pathway(store, "q1cand-abc123-rx-deadbeef01", candidate_ref=int(cand.id))
+
+    persist_result(store, int(pw.id), _artifact(), pathway_slug=pw.slug, ingest=False)
+
+    after = store.fetch_refs_by_ids([int(pw.id)])[int(pw.id)]
+    assert after.title == "NO → NH3 on Pd(111) + 2 Cu (surface substitution)"
+
+
+def test_lineage_linked_full_spec_does_not_climb(store: Store) -> None:
+    """A quest ``parent`` lineage link is NOT a derive: the child is a
+    full spec (top-level cell → rev-1 ops without a cell op), so it must
+    not inherit the parent's slab and modifications. Only a real derive
+    (``meta.derived_from``) climbs."""
+    from precis.design.history import recipe_ops
+
+    parent = _structure(store, "q1cand-base", "Pd111-Ta-subsurf-1")
+    record_revision(
+        store,
+        int(parent.id),
+        rev=1,
+        ops=[
+            {"op": "slab", "element": "Pd", "size": [3, 3, 4]},
+            {"op": "set_element", "element": "Ta", "site": {"type": "subsurface"}},
+        ],
+    )
+    child_ops = [
+        {"op": "set_element", "element": "Cu", "site": {"type": "top"}},
+    ]
+    cand = _structure(store, "q1cand-abc123", "Pd111-Cu-surf-1")
+    record_revision(store, int(cand.id), rev=1, ops=list(child_ops))
+    store.add_link(
+        src_ref_id=int(cand.id),
+        dst_ref_id=int(parent.id),
+        relation="derived-from",
+        set_by="system",
+    )
+
+    assert recipe_ops(store, int(cand.id)) == child_ops
+
+
+def test_retitle_plan_uses_the_recipe_label(store: Store) -> None:
+    cand = _structure(store, "q1cand-abc123", "Pd111-Pt-hollow-1")
+    record_revision(
+        store,
+        int(cand.id),
+        rev=1,
+        ops=[
+            {"op": "slab", "element": "Pd", "size": [3, 3, 4]},
+            {"op": "add_atom_site", "element": "Pt", "site": {"type": "hollow"}},
+        ],
+    )
+    stale = _stored_pathway(
+        store,
+        "q1cand-abc123-rx-deadbeef01",
+        "NO → NH3 on Pd111 Pt hollow 1",
+        candidate_ref=int(cand.id),
+    )
+
+    checked, changes = retitle_plan(store)
+
+    assert checked == 1
+    assert changes[0].new_title == "NO → NH3 on Pd(111) + Pt adatom (hollow)"
+    assert store.fetch_refs_by_ids([int(stale.id)])[int(stale.id)].title == (
+        "NO → NH3 on Pd111 Pt hollow 1"
+    )
+
+
+def test_no_recorded_construction_falls_back_to_spaced_name(
+    store: Store,
+) -> None:
+    """A candidate with no design_revisions keeps the gr549574 form —
+    the recipe is the trigger, not the slug."""
+    cand = _structure(store, "q1cand-abc123", "Pd111-Ta-subsurf-1")
+    pw = _pathway(store, "q1cand-abc123-rx-deadbeef01", candidate_ref=int(cand.id))
+
+    persist_result(store, int(pw.id), _artifact(), pathway_slug=pw.slug, ingest=False)
+
+    after = store.fetch_refs_by_ids([int(pw.id)])[int(pw.id)]
+    assert after.title == "NO → NH3 on Pd111 Ta subsurf 1"

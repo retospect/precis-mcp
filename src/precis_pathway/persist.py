@@ -32,6 +32,11 @@ BODY_KIND = "pathway_body"
 #: off its own slug even on refs that predate the ``meta.candidate_ref`` stamp.
 _QUEST_CAND_SLUG_RE = re.compile(r"^q\d+cand-")
 
+#: A pathway title is a one-line header — the catalyst slot is capped at
+#: ~120 chars with an ellipsis (the full label stays on the structure
+#: card, which has no length constraint).
+_CATALYST_NAME_CAP = 120
+
 
 def quest_minted_slug(slug: str | None) -> bool:
     """A quest-minted pathway's slug — ``q<quest_id>cand-<digest>-rx-…`` —
@@ -185,14 +190,42 @@ def _candidate_structure(
     return struct, named, note
 
 
-def _catalyst_name(struct: Any | None) -> str | None:
-    """``'<name>'`` / ``'<name> (deleted)'`` off the candidate structure's
-    title — dashes render as spaces (gr549574, Reto 2026-11-02)."""
+def _catalyst_name(store: Store, struct: Any | None, *, conn: Any = None) -> str | None:
+    """``'<name>'`` / ``'<name> (deleted)'`` for the candidate structure —
+    the readable catalyst label off its recorded construction (gr553416,
+    :func:`precis.structure.catalyst_label.catalyst_label` over the
+    ``design_revisions`` recipe + ``meta.params``), else the title with
+    dashes rendered as spaces (gr549574) when no construction is
+    recorded."""
     if struct is None:
         return None
-    name = str(getattr(struct, "title", "") or "").replace("-", " ").strip()
+    name = None
+    try:
+        # Local imports: persist's module surface stays cheap for the job
+        # dispatcher (precis.structure pulls numpy/ase).
+        from precis.design.history import recipe_ops
+        from precis.structure.catalyst_label import catalyst_label
+
+        name = catalyst_label(
+            {
+                "ops": recipe_ops(store, int(struct.id), conn=conn),
+                "meta": getattr(struct, "meta", None) or {},
+            }
+        )
+    except Exception:
+        log.debug(
+            "catalyst label failed for structure %s — title fallback",
+            getattr(struct, "id", None),
+            exc_info=True,
+        )
+    if not name:
+        name = str(getattr(struct, "title", "") or "").replace("-", " ").strip()
     if not name:
         return None
+    # A title is a one-line header: cap the catalyst slot (the card keeps
+    # the full label).
+    if len(name) > _CATALYST_NAME_CAP:
+        name = name[: _CATALYST_NAME_CAP - 1].rstrip(" ,+") + "…"
     return f"{name} (deleted)" if getattr(struct, "retired_at", None) else name
 
 
@@ -250,7 +283,7 @@ def stored_title(
     )
     if struct is None and named:
         return None, note or "candidate named but gone, no tombstone"
-    catalyst = _catalyst_name(struct) or slab_name(
+    catalyst = _catalyst_name(store, struct, conn=conn) or slab_name(
         (meta or {}).get("config", {}).get("slab")
     )
     if catalyst is None:
@@ -408,7 +441,7 @@ def persist_result(
             conn=c,
         )
         title = (
-            pathway_title(artifact, catalyst=_catalyst_name(struct))
+            pathway_title(artifact, catalyst=_catalyst_name(store, struct, conn=c))
             if struct is not None or not named
             else None
         )

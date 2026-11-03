@@ -16,8 +16,15 @@ from .fragment_names import fragment_names
 from .scene import Scene
 
 
-def card_text(title: str, scene: Scene, description: str = "") -> str:
+def card_text(
+    title: str, scene: Scene, description: str = "", *, label: str | None = None
+) -> str:
     """Title + composition + the LLM's own description, one line.
+
+    ``label`` — the recipe-derived readable catalyst name (gr553416,
+    :func:`precis.structure.catalyst_label.catalyst_label`) — leads the
+    card ahead of the coded design title when the construction is
+    recorded; ``None`` keeps the title-only card.
 
     :meth:`StructureHandler._card_text` delegates here, so handler and
     worker write paths can never grow two driftable definitions."""
@@ -27,8 +34,9 @@ def card_text(title: str, scene: Scene, description: str = "") -> str:
     intent = f" {description}" if description else ""
     names = fragment_names(scene)
     groups = f" Groups: {'; '.join(names)}." if names else ""
+    lead = f"{label} — {title}" if label and label != title else title
     return (
-        f"{title} (atomistic structure).{intent} Composition: {t['formula']} "
+        f"{lead} (atomistic structure).{intent} Composition: {t['formula']} "
         f"({elements}); {t['natoms']} atoms, {t['nbonds']} bonds; pbc[{pbc}]."
         f"{groups}"
     )
