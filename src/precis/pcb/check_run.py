@@ -283,6 +283,56 @@ def geometry(
     )
 
 
+def authored_plane_fills(
+    store: Store,
+    ref_id: int,
+    graph: dict[str, Any],
+    *,
+    fixed: list[dict[str, Any]],
+    outline: list[Any] | None,
+) -> list[dict[str, Any]]:
+    """The fills this board's effective plane assignments pour over its
+    AUTHORED copper — a fresh IR with its ``pcb_planes`` rows applied
+    (:func:`precis.pcb.session.apply_plane_assignments`), then
+    :func:`precis.pcb.realize.fixed_copper_pours` under the board's own
+    capability, thermal rule and pad geometry.
+
+    One computation for the two places that need the same shape:
+    ``run``'s DRC-model synthesis (for an authored-copper board that
+    stored no pours) and the ``--copper fixed`` epro import, which
+    STORES the result as ``pcb_copper`` rows so the plane is real
+    copper from the import on, until the first route regenerates it
+    (gr556943). ``[]`` when the board carries no authored copper or no
+    outline — the guard the DRC caller always kept."""
+    if not fixed or not outline:
+        return []
+    board = graph.get("board") or {}
+    pour_ir = build_ir(store, ref_id, graph)
+    pour_ir.outline = [(float(x), float(y)) for x, y in outline]
+    pcb_session.apply_plane_assignments(pour_ir, store.pcb_planes_list(ref_id))
+    profile_name = pcb_profiles.board_profile(board.get("meta"))
+    footprints = pcb_session.footprints_by_refdes(
+        pour_ir,
+        store.pcb_footprints_for(ref_id),
+        local_footprints_by_name=store.pcb_local_footprints_for(ref_id),
+        local_names_by_refdes=pcb_session.local_footprint_names_by_refdes(graph),
+    )
+    return pcb_realize.fixed_copper_pours(
+        pour_ir,
+        pcb_realize.RealizeConfig(
+            fab_caps=pcb_session.board_capability(
+                list(board.get("stackup") or []),
+                profile_name,
+                meta=board.get("meta"),
+            ),
+            class_rules=graph.get("net_classes"),
+            thermal=pcb_planes.thermal_spec(pcb_profiles.profile_rules(profile_name)),
+        ),
+        footprints,
+        fixed,
+    )
+
+
 def drills(ir: pcb_ir.PcbIR) -> list[dict[str, Any]]:
     """``model['drills']`` for :func:`precis.pcb.drc.
     check_npth_clearance` — the IR's mounting holes (``mounting_hole``
@@ -924,18 +974,8 @@ def run(
     # above stays the unpromoted one every other reader here was built on.
     fixed = [c for c in copper if c.get("fixed")]
     if fixed and outline and not any(c.get("ctype") == "pour" for c in copper):
-        pour_ir = build_ir(store, ref_id, graph)
-        pour_ir.outline = [(float(x), float(y)) for x, y in outline]
-        pcb_session.apply_plane_assignments(pour_ir, store.pcb_planes_list(ref_id))
-        copper = copper + pcb_realize.fixed_copper_pours(
-            pour_ir,
-            pcb_realize.RealizeConfig(
-                fab_caps=capability,
-                class_rules=graph.get("net_classes"),
-                thermal=pcb_planes.thermal_spec(board_profile_rules),
-            ),
-            footprints,
-            fixed,
+        copper = copper + authored_plane_fills(
+            store, ref_id, graph, fixed=fixed, outline=outline
         )
     # `pads` below is REPLACED with `_board_furniture`'s own return, not
     # merely extended — that call already folds the component pads

@@ -6556,6 +6556,20 @@ class PcbHandler(Handler):
         # board coords): an inner one IS the layer's plane, an outer one
         # has no other home — either way the authored outline goes back
         # out verbatim rather than precis rebuilding a zone of its own.
+        # A stored pour the import itself re-poured on that (layer, net)
+        # is the zone's fill (gr556943): emitting both would write two
+        # zones where the source had one, so the stored one yields.
+        authored_pours = {
+            (str(p.get("layer")), str(p.get("net")))
+            for p in meta.get("epro_pours") or []
+        }
+        if authored_pours:
+            model["copper"] = [
+                c
+                for c in model["copper"]
+                if c.get("ctype") != "pour"
+                or (str(c.get("layer")), str(c.get("net"))) not in authored_pours
+            ]
         for pour in meta.get("epro_pours") or []:
             model["copper"].append({"ctype": "pour", **pour})
         # Footprint-owned non-plated holes per refdes (authored-local) —

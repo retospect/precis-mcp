@@ -31,6 +31,16 @@ changed copper cannot safely attach to deliberately unchanged nets/outline.
 Every import still reports source widths, vias and gaps through
 :func:`report_copper` and :mod:`precis.pcb.copper_report`.
 
+A frozen import also POURS its effective plane assignments
+(``pcb_planes`` rows — a label the router acts on, never a run) and
+stores the fills as derived ``pcb_copper`` rows (gr556943): nothing else
+ever re-pours a frozen board, so without them the viewer and DRC saw no
+plane at all. It is the same :func:`precis.pcb.realize.fixed_copper_pours`
+computation ``view='drc'`` synthesizes for an authored-copper board
+(:func:`precis.pcb.check_run.authored_plane_fills`), not the authored
+zone outline — the zone claims copper inside the fill's antipads, and
+already rides ``meta.epro_pours`` verbatim for re-export.
+
 ``--update`` (the rest of 1c) re-reads the source onto an existing import
 of the same board: moved parts take their new pose, new parts are added,
 and everything else the source changed — a removed part, a rewired pin,
@@ -50,7 +60,16 @@ from typing import Any
 from shapely.geometry import Polygon
 from shapely.ops import unary_union
 
-from precis.pcb import copper_report, datasheets, drc, epro, ir, padplace, rows
+from precis.pcb import (
+    check_run,
+    copper_report,
+    datasheets,
+    drc,
+    epro,
+    ir,
+    padplace,
+    rows,
+)
 from precis.pcb.capabilities import CapabilityRow, capability_for
 from precis.pcb.rules import NetRules, resolve_net_rules
 from precis.store._pcb_ops import (
@@ -1274,6 +1293,53 @@ def import_epro(
                 "1",
                 source_rows,
                 conn=conn,
+            )
+    if copper_mode == "fixed" and assignments:
+        # The pcb_planes row above is only the router's skip-net
+        # instruction — on a frozen import nothing ever re-pours it, so
+        # the plane existed as a label, not copper: view='planes' said
+        # "no pours stored yet" and the board showed no fill (gr556943).
+        # Pour the assignments the way view='drc' synthesizes them for
+        # an authored-copper board and STORE the fills — the same
+        # geometry every reader sees, until the first route regenerates
+        # pcb_copper. Storing the authored ZONE polygon instead would
+        # claim copper inside the fill's antipads — a phantom short
+        # against every foreign via crossing the layer; the zone itself
+        # still rides meta.epro_pours verbatim for re-export.
+        try:
+            pours = check_run.authored_plane_fills(
+                store,
+                result.ref_id,
+                store.pcb_graph(result.ref_id),
+                fixed=store.pcb_fixed_copper_list(board_id),
+                outline=_outline_path(design),
+            )
+        except Exception:
+            # Best-effort like the datasheet linking below: the import
+            # committed — a fill hiccup (a pad the pour's blocker model
+            # cannot read) must not refuse a board that used to import.
+            log.warning("epro import: plane fill pour failed", exc_info=True)
+            result.warnings.append(
+                "the plane/pour-carried fill could not be computed at "
+                "import — the assignment stays a pcb_planes row until a "
+                "route pours it"
+            )
+            pours = []
+        if pours:
+            net_ids = store.pcb_net_ids(result.ref_id)
+            result.counts["pours"] = store.pcb_copper_replace(
+                board_id,
+                [
+                    {
+                        "ctype": "pour",
+                        "layer": str(p["layer"]),
+                        "net_id": net_ids[str(p["net"])],
+                        "geom": {
+                            k: p[k] for k in p if k not in ("ctype", "layer", "net")
+                        },
+                    }
+                    for p in pours
+                ],
             )
     for layer in unresolved:
         result.warnings.append(

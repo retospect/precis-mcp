@@ -861,6 +861,48 @@ def test_an_inner_pour_on_two_nets_stays_a_signal_layer(store) -> None:
     assert store.pcb_planes_list(result.ref_id) == []
 
 
+def test_a_fixed_import_stores_the_inner_plane_fill(store, pcb) -> None:
+    """gr556943: on a frozen (``--copper fixed``) import an inner pour
+    became only a ``pcb_planes`` row — a label, never copper, so the
+    board showed no plane (``view='planes'``: "no pours stored yet").
+    The import now pours the assignment and stores the fill."""
+    stream = (_FIXTURE / "board.epru").read_text(encoding="utf-8")
+    inner = stream.replace(
+        '"netName":"GND","layerId":2,"width":0.2',
+        '"netName":"GND","layerId":15,"width":0.2',
+    )
+    assert inner != stream
+    result = pcb_epro.import_epro(
+        store, _zip(inner.encode("utf-8")), slug="epro-plane-fill"
+    )
+    board_id = int(store.pcb_graph(result.ref_id)["board"]["board_id"])
+    pours = [r for r in store.pcb_copper_list(board_id) if r.get("ctype") == "pour"]
+    assert {(p["layer"], p["net"]) for p in pours} == {("In1.Cu", "GND")}
+    assert all(len(p["polygon"]) >= 3 for p in pours)
+    # The planes row stays — the router's skip-net decision reads it.
+    assert {(p["layer"], p["net"]) for p in store.pcb_planes_list(result.ref_id)} == {
+        ("In1.Cu", "GND")
+    }
+    body = pcb.get(id="epro-plane-fill", view="planes").body
+    assert "no pours stored yet" not in body
+    assert "In1.Cu" in body
+
+
+def test_a_non_fixed_import_stores_no_fill(store) -> None:
+    """``--copper none`` is untouched: no authored copper lands, no pour
+    is stored — the plane waits for a route to fill it."""
+    stream = (_FIXTURE / "board.epru").read_text(encoding="utf-8")
+    inner = stream.replace(
+        '"netName":"GND","layerId":2,"width":0.2',
+        '"netName":"GND","layerId":15,"width":0.2',
+    )
+    result = pcb_epro.import_epro(
+        store, _zip(inner.encode("utf-8")), slug="epro-plane-none", copper="none"
+    )
+    board_id = int(store.pcb_graph(result.ref_id)["board"]["board_id"])
+    assert not any(r.get("ctype") == "pour" for r in store.pcb_copper_list(board_id))
+
+
 # ── the named pin reaches real copper ────────────────────────────────────
 def test_an_imported_named_pin_reaches_real_copper(store, imported) -> None:
     """Acceptance criterion 3 on the IMPORTED footprint. ``U1`` pad 1 is
