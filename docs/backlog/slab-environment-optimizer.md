@@ -83,6 +83,22 @@ every term in eV at the environment point `e = (U, pH, T, p_i, c_ion)`:
 | `r(e)` | `kT·ln[TOF(e) / TOF_floor]`, `TOF_floor` = the quest's `subject_to` floor | rate above the required rate, as an energy: one decade = 0.059 eV at 298 K |
 | `M(e)` | 1 iff the resting termination at (U, pH) is the surface the pathway assumed, the bulk is not dissolved at `c_ion`, `reset_ok`, the solve is trusted (`bep_flux_share` ≤ 0.5, settled, not poisoned) and `TOF ≥ TOF_floor` | the setup is physically the one that was computed, and the numbers are trusted |
 
+Optional sixth term, for a pathway whose solve is untrusted (screening
+tier, `bep_flux_share` > 0.5): `m_Ea(e) = min_steps [kT·ln(ν·τ) − Ea_step]`
+with `ν = k_B·T/h` and τ the barrier-equivalent default (1 s), the
+thermal equivalent the explorer's filter slider uses — "every route step
+clears within τ at T". With a trusted solve it is redundant with `r(e)`
+and is not in the minimum.
+
+Reto's three checks (2026-11-03): kinetics enter twice, as the per-fork
+barrier margin `m_kin` and as the whole-network steady state behind `s`
+and `r` (whose per-step derivative is the degree of rate control
+`X_RC`); the per-step eV readings are `m_th`, `m_kin` and `m_Ea`; side
+products are pushed down by `s`, `m_HER` and `m_kin` — but only while
+one of them is the worst term. A quest that wants side products pushed
+down always adds a selectivity floor to `M(e)` beside the rate floor, or
+uses the weighted form. Poisoning is a mask, not a side product.
+
 Plain text: **a setup is as good as its worst goal, in eV; the term that
 sets the minimum is the limiting factor**, the same reading
 `results.score.limiting_factor` gives at one point. Goal (a) is
