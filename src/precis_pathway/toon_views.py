@@ -17,6 +17,7 @@ from collections import Counter
 from typing import Any
 
 from precis.format import toon
+from precis.utils import pathway_conditions
 from precis.utils import reaction_graph as analysis
 from precis.utils.handle_registry import try_format
 
@@ -961,7 +962,19 @@ def kinetics_text(meta: dict[str, Any], T_k: float = 300.0) -> str:
     ``results.kinetics`` block filling what the record lacks, engine >= 0.33)
     its environment, Q/K and per-transition reversibility follow the Eyring
     table, read verbatim from that record (:func:`_solve_lines`).
+
+    ``T_k`` tracks the recorded environment: the kinetics solve's own T
+    (:func:`precis.utils.pathway_conditions.kinetics_environment`), else the
+    profile/span's T (:func:`precis.utils.pathway_conditions.profile_conditions`),
+    else the ``300.0`` default — the caller never overrides it today.
     """
+    env = pathway_conditions.kinetics_environment(meta.get("results") or {})
+    resolved_t = env.get("T") if env else None
+    if resolved_t is None:
+        resolved_t = pathway_conditions.profile_conditions(meta).get("T")
+    if resolved_t is not None:
+        T_k = resolved_t
+
     graph = meta.get("graph") or {}
     root, target = _roots(meta)
     path = analysis.reaction_path(graph, root, target)
@@ -1010,10 +1023,11 @@ def kinetics_text(meta: dict[str, Any], T_k: float = 300.0) -> str:
             f"τ ≈ {_rate_str(tau_rl)} s){flag}"
         )
         lines.append("")
+    prefactor = _KB_EV_PER_K * T_k / _H_EV_S
     lines.append(
         "Barriers are electronic (NEB, no ZPE/entropy). Eyring pre-exponential "
-        "A = k_B·T/h ≈ 6.2e12 /s at 300 K; residence times ignore reverse "
-        "reactions and surface-coverage effects."
+        f"A = k_B·T/h ≈ {prefactor:.1e} /s at {T_k:.0f} K; residence times "
+        "ignore reverse reactions and surface-coverage effects."
     )
     kin = results.get("kinetics")
     v2 = results.get("kinetics_v2")
@@ -1032,8 +1046,6 @@ def kinetics_text(meta: dict[str, Any], T_k: float = 300.0) -> str:
         ]
     # gr553328: the solve ran at its own environment — state it beside the
     # profile's gas pricing so the kT·ln(p/p°) difference is on the page.
-    from precis.utils import pathway_conditions
-
     cond_note = pathway_conditions.conditions_note(meta)
     if cond_note:
         lines += ["", cond_note]

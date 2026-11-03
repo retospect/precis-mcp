@@ -501,12 +501,6 @@ _GRAPH: dict[str, Any] = {
 }
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="gr559355: the kinetics header hardcodes T=300K regardless of "
-    "the recorded environment; kinetics_text/_eyring_rate need the real T "
-    "from pathway_conditions.kinetics_environment threaded through",
-)
 def test_kinetics_view_renders_environment_q_over_k_and_reversibility(replay) -> None:
     far, _ = replay(
         {"T": 298.15, "gases": {"inputs": {"NO": 1.0, "H2": 1.0}, "outputs": "far"}}
