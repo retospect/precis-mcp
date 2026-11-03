@@ -11,7 +11,9 @@ import pytest
 from precis.dispatch import Hub, boot
 from precis.handlers.todo import _TREE_SEARCH_VIEWS, TodoHandler, TodoView
 from precis.store import Store
+from precis.store.types import Tag
 from precis.todo import work_view
+from tests._refs import insert_gripe
 from tests.conftest import id_of
 
 
@@ -349,3 +351,108 @@ def test_bare_fisheye_has_no_tree_ring(handler: TodoHandler, hub: Hub) -> None:
 def test_tree_ring_empty_for_a_lone_root(handler: TodoHandler, hub: Hub) -> None:
     t = _tree(handler, hub.live_store)
     assert work_view.render_tree_ring(hub.live_store, t["lone"]) == ""
+
+
+# ── the todo eye as a handoff view (gr555997) ─────────────────────
+
+
+def _eye_neighbourhood(handler: TodoHandler, store: Store) -> dict[str, Any]:
+    """A focus todo with a parent, two children, a blocking todo, a linked
+    gripe and a second-hop edge — the neighbourhood ``extent=`` shows."""
+    parent = id_of(handler.put(text="Parent slice.").body)
+    focus = id_of(
+        handler.put(
+            text="Focus slice.",
+            body="The focus details.",
+            parent_id=parent,
+            meta={"llm_tier": None},
+        ).body
+    )
+    c1 = id_of(
+        handler.put(text="Child one.", parent_id=focus, meta={"llm_tier": None}).body
+    )
+    c2 = id_of(
+        handler.put(text="Child two.", parent_id=focus, meta={"llm_tier": None}).body
+    )
+    blocker = id_of(handler.put(text="Blocks the focus.").body)
+    gripe = insert_gripe(store, "A linked gripe")
+    store.add_link(src_ref_id=blocker, dst_ref_id=focus, relation="blocks")
+    store.add_link(src_ref_id=blocker, dst_ref_id=c1, relation="blocks")
+    store.add_link(src_ref_id=focus, dst_ref_id=gripe.id, relation="related-to")
+    store.add_tag(focus, Tag.closed("STATUS", "doing"), set_by="system")
+    store.set_prio(focus, 2)
+    return {
+        "parent": parent,
+        "focus": focus,
+        "c1": c1,
+        "c2": c2,
+        "blocker": blocker,
+        "gripe": gripe.id,
+    }
+
+
+def test_eye_1hop_renders_the_whole_neighbourhood(
+    handler: TodoHandler, hub: Hub
+) -> None:
+    """gr555997: one call renders the card (title, status, prio, body
+    excerpt), the tree ring, the blocks edge and the linked gripe — the
+    handoff view that needs no full-tree walk."""
+    t = _eye_neighbourhood(handler, hub.live_store)
+    out = handler.get(id=t["focus"], view="fisheye+1hop").body
+    # focal card
+    assert f"td{t['focus']} [todo] Focus slice." in out
+    assert "status: doing · prio: 2" in out
+    assert "The focus details." in out
+    # tree ring: parent + both children
+    assert "part-of:" in out and f"td{t['parent']}" in out
+    assert "contains (2):" in out
+    assert f"td{t['c1']}" in out and f"td{t['c2']}" in out
+    # link ring: the dependency edge read from the focus's side, the gripe
+    assert "Dependencies:" in out
+    assert f"blocked-by: td{t['blocker']}" in out
+    assert "Notes & links:" in out
+    assert f"related-to: gr{t['gripe']}" in out
+
+
+def test_eye_2hop_counts_the_neighbours_links(handler: TodoHandler, hub: Hub) -> None:
+    """gr555997: +2hop expands one more hop as counts — the blocker's
+    other blocked todo surfaces without a second call."""
+    t = _eye_neighbourhood(handler, hub.live_store)
+    out = handler.get(id=t["focus"], view="fisheye+2hop").body
+    assert "— second hop" in out
+    assert "1 todo via blocks" in out
+
+
+def test_bare_fisheye_renders_only_the_focal_card(
+    handler: TodoHandler, hub: Hub
+) -> None:
+    """gr555997: ``fisheye`` shows the card alone — the rings belong to
+    the +1hop rung, the same ladder the other link kinds keep."""
+    t = _eye_neighbourhood(handler, hub.live_store)
+    out = handler.get(id=t["focus"], view="fisheye").body
+    assert f"td{t['focus']} [todo] Focus slice." in out
+    assert "status: doing · prio: 2" in out
+    assert "— linked" not in out and "— tree —" not in out
+
+
+def test_eye_1hop_on_a_linkless_todo_is_just_the_card(
+    handler: TodoHandler, hub: Hub
+) -> None:
+    """A lone todo's +1hop renders the focal card — no empty ring
+    sections, and no ``prio`` fragment on an unset column."""
+    lone = id_of(handler.put(text="Lone leaf.").body)
+    out = handler.get(id=lone, view="fisheye+1hop").body
+    assert f"td{lone} [todo] Lone leaf." in out
+    assert "status: open" in out
+    assert "prio" not in out
+    assert "— linked" not in out and "— tree —" not in out
+
+
+def test_eye_body_stays_under_the_verbatim_cap(handler: TodoHandler, hub: Hub) -> None:
+    """The focal body keeps the shared verbatim cap — a long
+    ``todo_body`` cuts with the marker naming ``view='body'``."""
+    big = id_of(handler.put(text="Big leaf.", body="x" * 5000).body)
+    out = handler.get(id=big, view="fisheye").body
+    assert "… cut:" in out
+    assert "view='body'" in out
+    assert len(out) < 4600

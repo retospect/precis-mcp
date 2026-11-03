@@ -654,6 +654,21 @@ def _note_body(store: Store, ref: Any, kind: str, *, cap: int) -> tuple[str, int
     return _ordered_body(store, int(ref.id), cap=cap)
 
 
+def _todo_state(store: Store, ref: Any) -> str:
+    """``status: <STATUS>`` for a todo's focal card, plus ``· prio: <N>`` when
+    the ``refs.prio`` column is set. Neither field rides the chip row:
+    ``STATUS:open`` drops there as context-restating (the default), and prio
+    is a sort column, never a stored tag — ``PRIO:`` spellings split into the
+    column at write time (``handlers._prio_tag``)."""
+    from precis.todo import views
+
+    ref_id = int(ref.id)
+    status = views._status_of_many(store, [ref_id]).get(ref_id, "open")
+    out = f"status: {status}"
+    prio = getattr(ref, "prio", None)
+    return f"{out} · prio: {prio}" if prio is not None else out
+
+
 def _render_note_eye(
     store: Store,
     handle: str,
@@ -667,7 +682,10 @@ def _render_note_eye(
     """A link-kind ref (memory / finding / …): the note at its extent (title →
     gist → body), and at ``fisheye+1hop`` its **link neighborhood** — every ref
     linked to it, *either direction*, with its relation type. For a memory the
-    body *is* the note and the links are its point."""
+    body *is* the note and the links are its point. A todo's focal card also
+    carries its workflow state line (:func:`_todo_state`) — STATUS and prio
+    are the fields a task handoff reads first, and neither rides the chip
+    row."""
     ref = _resolve_ref(store, handle)
     if ref is None or getattr(ref, "retired_at", None) is not None:
         raise ValueError(f"eye: no live {kind} ref for {handle!r}")
@@ -681,7 +699,12 @@ def _render_note_eye(
             kind, handle_registry.format_handle(kind, int(ref.id)), _VERBATIM_CAP, total
         )
         body = f"{body}\n{marker}"
-    block = f"{_head(ref, kind, chips)}\n{body}" if body else _head(ref, kind, chips)
+    lines = [_head(ref, kind, chips)]
+    if kind == "todo":
+        lines.append(_todo_state(store, ref))
+    if body:
+        lines.append(body)
+    block = "\n".join(lines)
     sections = _rings(
         store, int(ref.id), kind, ext, recall=recall, expand=expand, ring=ring
     )

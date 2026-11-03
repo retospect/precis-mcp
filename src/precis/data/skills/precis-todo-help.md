@@ -70,7 +70,11 @@ search(kind="todo", view="flat")  # every live todo: id | status | parent | titl
 (The old `id='/open'` `/queue` `/doing` `/blocked` `/done` paths still
 work as deprecated aliases of these views.) `get(kind='todo', id=N,
 q='…')` is find-in-ref — the matching passages inside one todo
-(`precis-get-help`).
+(`precis-get-help`). `get(kind='todo', id=N, extent='fisheye+1hop')`
+renders one todo plus its neighbourhood — the `— tree —` ring (parent,
+peers, children), `blocks`/`blocked-by` under `Dependencies:` and other
+link edges — the handoff view that needs no full-tree walk
+(`precis-fisheye-help`).
 
 ## Start work on a todo
 ## Mark a todo as in-progress

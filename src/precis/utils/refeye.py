@@ -125,6 +125,12 @@ CLAIM_RELATIONS: frozenset[str] = frozenset(
 #: names the stored slug *and* its inverse: ``links_for`` returns the row as
 #: stored, so a ``part-of`` row and a ``contains`` row are the same family.
 ROADMAP_RELATIONS: frozenset[str] = frozenset({"serves", "served-by"})
+#: Work-ordering edges — a todo's blockers and what it blocks (gr555997:
+#: the todo eye's link neighbourhood followed only the groups below, so a
+#: task's dependencies never rendered). Both slugs belong — ``blocked-by``
+#: is written as a stored relation in its own right (``meta.ask.blocks``,
+#: ``rel='blocked-by'`` links), not only as ``blocks``' inverse.
+DEPENDENCY_RELATIONS: frozenset[str] = frozenset({"blocks", "blocked-by"})
 TAXON_RELATIONS: frozenset[str] = frozenset(
     {
         "specialises",
@@ -164,6 +170,7 @@ ARGUMENT_RELATIONS: frozenset[str] = frozenset(
 RING_GROUPS: dict[str, frozenset[str]] = {
     "Claim graph": CLAIM_RELATIONS,
     "Roadmap": ROADMAP_RELATIONS,
+    "Dependencies": DEPENDENCY_RELATIONS,
     "Taxonomy": TAXON_RELATIONS,
     "Concepts": CONCEPT_RELATIONS,
     "Parts": COMPONENT_RELATIONS,

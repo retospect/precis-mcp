@@ -152,10 +152,13 @@ Parallel edges to the **same** neighbour collapse into one row:
 `<-corroborates: pa5 — …  ×4 (pc11 ~29 · pc12 ~28 · +2 more)`. `×N`
 counts edges; the handles are passages to `get`.
 
+## The ring groups — relation → heading
+
 | Ring | Relations | Worked example |
 |---|---|---|
 | **Claim graph** | `establishes`, `corroborates`, `contradicts`, `refines`, `conjunct-of`, `disputes`, `motivated-by` | `get(kind='finding', id='fi42', extent='fisheye+1hop')` → `Claim graph:` · `<-establishes: pa5 — …` · `<-refines: fi77 — …` (fi77 refines this); a claim hub leads with its trust posture (`precis-finding-help`) |
 | **Roadmap** | `serves`, `served-by` | `get(kind='quest', id='qu12', extent='fisheye+1hop')` → `Roadmap:` · `serves: qu3 — Grow the mesh` · `served-by: qu40 — …` · `served-by: pa88 — …`; a todo that `serves` a quest shows the same block. Serving **sub-quests list before any paper** — a hub with hundreds of serving papers can't hide them behind the cap |
+| **Dependencies** | `blocks`, `blocked-by` | `get(kind='todo', id='td17', extent='fisheye+1hop')` → `Dependencies:` · `blocked-by: td9 — …`; either stored slug reads from the focus's side |
 | **Taxonomy** | `specialises`, `generalises`, `instance-of`, `has-instance`, `quantifies`, `quantified-by` | `get(kind='taxon', id='tn88', extent='fisheye+1hop')` → `Taxonomy:` · `specialises: tn2 — Faradaic efficiency` · `has-instance: me5 — FE at −0.5 V` |
 | **Concepts** | `has-prerequisite`, `prerequisite-of`, `analogy-of`, `contrasts-with` | `get(kind='concept', id='cn9', extent='fisheye+1hop')` → `Concepts:` · `has-prerequisite: cn4 — Maxwell counting` |
 | **Parts** | `contains`, `part-of`, `made-of`, `used-in` | `get(kind='component', id='cp3', extent='fisheye+1hop')` → `Parts:` · `contains: cp7 — Bipolar plate`; on `cp7` the same row reads `part-of: cp3`; a memory section `part-of` its file reads `contains:` on the file's eye |
@@ -181,6 +184,11 @@ get(kind="memory", id="me474312", extent="fisheye+1hop",
 A **quest** eye opens with its gist — the striving statement +
 `rubric:`/`demand:`/`supply:` lines from meta — not its logbook; the
 lab notebook stays at `view='logbook'`.
+
+A **todo** eye adds `status: <STATUS> · prio: <N>` to the focal card and
+a `— tree —` ring (parent, peers, children from `parent_id`) at
+`fisheye+1hop`, alongside its `Dependencies:` and other link groups
+(`precis-todo-help`).
 
 ## Memory rings
 
