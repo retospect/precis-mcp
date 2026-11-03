@@ -337,7 +337,10 @@ def mint_gripe_fix(
                 f"A frontier model writes the builder's brief chunk for "
                 f"{handle}; it names each step in the summary-title house "
                 "style (`<object> · <behaviour> · <role>`, middot-separated, "
-                "telegraphic)."
+                "telegraphic). Post it as a `brief:` comment on the build "
+                "node; a spec test may ride the branch. Nothing committed? "
+                "End with `no-op: brief posted on td<build>` as the first "
+                "line of your final message (gr561132)."
             ),
             blocked_by=("triage",),
         )
