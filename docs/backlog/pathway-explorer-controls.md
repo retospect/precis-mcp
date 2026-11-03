@@ -325,7 +325,31 @@ is the slab's.
 ## Slices (one gripe each; the gripe id is the ship record)
 
 1. gr559345 — BEP-estimated barriers drawn as their own layer; tier
-   banner (small).
+   banner (small). Builder brief (td561147), anchors confirmed live
+   2026-11-03 (triage td561146):
+   - link payload · join bep/source by edge name · explorer data
+     layer (`routes/refs.py::_pathway_graph_payload`'s call site,
+     joined off `results.edges[name].bep` by physical node name,
+     `~history` stripped per `flux_share._phys`; re-derived, not
+     imported, same rule as the route's own flux-share join)
+   - tier context · screening banner off `_pathway_tier` · honesty
+     surface (`routes/refs.py::_pathway_tier` already returns
+     `"screening"`; new payload gates on it plus "no link has
+     `source == neb`", new template key `tier_banner`)
+   - stepGeom + hump curve · dashed BEP hump with band · diagram
+     render (`pathway_detail.html.j2`'s `stepGeom` and the hump-draw
+     loop inside `// pw-annot:begin … :end`; `Ea≈alpha·ΔE+beta`
+     clipped ≥ 0, same clip as `reset_contour._edge_margin`; band
+     from the fit's `rmse` when present, else no band)
+   - transition hover · barrier-source label on every step · trust
+     surface (the same `<title>` string the Ea label already builds,
+     today only set for the unknown case)
+   - screening banner markup · render above `#pw-diagram` · template
+     (Reto's wording verbatim: "screening tier: no measured barriers;
+     estimates shown are BEP α·ΔE+β ± band")
+   - payload + template tests · bep/source/banner coverage ·
+     regression guard (`tests/precis_web/test_pathway_detail.py`,
+     beside `test_pathway_graph_payload_passes_link_added_removed_through`)
 2. gr559346 — named annotation toggles with hover help, URL-persisted
    (medium).
 3. gr559348 — per-step kinetics on hover/labels; Arrhenius inset;
