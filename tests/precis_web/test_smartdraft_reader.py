@@ -1572,6 +1572,57 @@ def test_smartdraft_full_doc_table_chunk_renders_real_table_when_not_focused(
     assert seg.count("<div") == 1  # no nested <div> inside the block
 
 
+def _span_block(html: str, start: int) -> str:
+    """The ``<span …>…</span>`` element whose open tag starts at ``start``
+    — nesting-aware, like ``_dc_block`` (the header row nests the dc-id,
+    checker-strip and menu spans)."""
+    depth, pos = 1, html.index(">", start) + 1
+    while depth:
+        nxt_open = html.find("<span", pos)
+        nxt_close = html.find("</span>", pos)
+        assert nxt_close >= 0
+        if 0 <= nxt_open < nxt_close:
+            depth += 1
+            pos = nxt_open + 5
+        else:
+            depth -= 1
+            pos = nxt_close + 7
+    return html[start:pos]
+
+
+def test_smartdraft_doc_block_chrome_renders_on_one_flex_row(
+    smartdraft_client: TestClient,
+) -> None:
+    """gr553307: an unfocused block's header chrome — the dc handle, the
+    ``F– C– S– A–`` checker strip and the review dot — used to render one
+    item per line (~4 rows per block): ``sd_review_widget``'s emitted
+    newlines render literally inside the block's ``whitespace-pre-wrap``.
+    The chrome now sits in ONE ``flex items-center`` row container (the
+    focused header's classes; a whitespace-only text node is not a rendered
+    flex item), so each block's header costs one row."""
+    dc1 = handle_registry.format_handle("draft", 1, chunk=True)
+    dc3 = handle_registry.format_handle("draft", 3, chunk=True)
+    r = smartdraft_client.get(f"/smartdraft/sdt?relevance=0&focus={dc1}")
+    assert r.status_code == 200
+    seg = _dc_block(r.text, dc3)
+
+    hstart = seg.index('<span class="flex items-center')
+    row = _span_block(seg, hstart)
+    assert dc3 in row  # the dc handle
+    assert "sd-checker-strip" in row  # the F– C– S– A– review badges
+    assert "sd-review-dot" in row  # the status dot
+    assert "Second body paragraph" not in row
+    # …and the block text still follows the row, inside the same block div.
+    assert "Second body paragraph" in seg[seg.index(row) + len(row) :]
+
+    # The lazy-hydrate fragment renders the identical header row.
+    r2 = smartdraft_client.get(f"/smartdraft/sdt/blocks?dcs={dc3}")
+    assert r2.status_code == 200
+    seg2 = _dc_block(r2.text, dc3)
+    row2 = _span_block(seg2, seg2.index('<span class="flex items-center'))
+    assert "sd-checker-strip" in row2 and "sd-review-dot" in row2
+
+
 def test_smartdraft_reader_glossary_terms_fold_into_abbreviations_details(
     smartdraft_client: TestClient,
 ) -> None:
