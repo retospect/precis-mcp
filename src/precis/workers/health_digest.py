@@ -2332,8 +2332,15 @@ def _layer2_checks(
     pass_specs = [s for s in candidates if s.kind == ServiceKind.PASS and s.ref_pass]
     enabled = _resolve_enabled_somewhere(store, pass_specs)
     windows = _layer2_window_hours(store, pass_specs)
-    activity = health_checks.activity_by_handler(
-        store, window_hours=max([_LAYER2_WINDOW_H, *windows.values()])
+    # Name-scoped probe, not the console's unscoped rollup: the
+    # ``= ANY(names)`` clause keeps the read indexable (a whole-table
+    # ``pass IS NOT NULL`` clause seq-scans the full table — the gr557268
+    # follow-up on the /factory 7-day window), and pass-keyed module
+    # rows count toward liveness only for the names asked about.
+    activity = health_checks.liveness_by_handler(
+        store,
+        [s.log_handler for s in pass_specs if enabled.get(s.name, False)],
+        window_hours=max([_LAYER2_WINDOW_H, *windows.values()]),
     )
 
     out: list[CheckResult] = []
@@ -2341,9 +2348,12 @@ def _layer2_checks(
         if not enabled.get(spec.name, False):
             continue
         act = activity.get(spec.log_handler)
-        # last_seen is UNFILTERED (any row, not just ok>0/failed>0) — a
-        # healthy-idle pass logs claimed=0 every cycle (workers/runner.py),
-        # which has neither a last_ok nor a last_fail. Keying off those
+        # last_seen is UNFILTERED (any row attributable to the handler,
+        # not just ok>0/failed>0 minted rows — a payload-free module line
+        # counts via its `pass` key, gr557268): a healthy-idle pass logs
+        # claimed=0 every cycle (workers/runner.py) and a zero-demand
+        # cadence pass logs its own all-zero cycle line every fire,
+        # neither with a last_ok nor a last_fail. Keying off those
         # alone misread "ran all day, nothing to do" as "never ran",
         # violating the idle-vs-stuck acceptance gate. The fetched window
         # is the widest any spec needs; each spec then measures the age

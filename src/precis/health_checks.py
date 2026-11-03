@@ -609,6 +609,75 @@ def activity_by_handler(
     }
 
 
+def liveness_by_handler(
+    store: Any, handlers: Iterable[str], *, window_hours: float
+) -> dict[str, dict[str, Any]]:
+    """``handler -> {last_ok, last_fail, last_seen}`` — the
+    :func:`activity_by_handler` rollup, scoped to a name list.
+
+    Row attribution is wider than ``activity_by_handler``'s: a row counts
+    for a name by ``payload->>'handler'`` (the minted BatchResult shape)
+    or, payload-free, by its ``pass`` column — a cadence-fired pass's own
+    module-logger cycle summary (``gripe_autoclose``'s ``claimed=0 ok=0
+    failed=0 pending=0 skipped=0``, logged with no ``extra={'payload':
+    …}``) still proves the pass ran (gr557268). Grouping is
+    ``COALESCE(payload->>'handler', pass)`` so the minted identity wins
+    when both exist; ``last_seen`` counts either attribution while
+    ``last_ok``/``last_fail`` stay minted-payload FILTERs (outcome counts
+    are a separate health signal, not liveness).
+
+    The name scoping is the cost contract, not just tidiness:
+    ``= ANY(names)`` equalities keep the probe inside the
+    ``worker_logs_pass_ts_idx`` / ``worker_logs_handler_ts_idx`` bitmap
+    scans bounded by the window — the ``payload ? 'handler'`` conjunct on
+    the handler arm implies the partial index's predicate so the planner
+    picks the BitmapOr, and an unscoped ``pass IS NOT NULL`` clause on
+    this query turned the console's 7-day rollup into a seq scan of the
+    whole table. Built for ``health_digest``'s Layer-2 "intended-on but
+    silent" check, which only ever needs the enabled registry
+    ``log_handler`` names; the /status console keeps
+    :func:`activity_by_handler`. Empty ``handlers`` short-circuits to
+    ``{}``. Degrades to ``{}`` on any surprise — never raises.
+    """
+    names = [str(h) for h in handlers]
+    if not names:
+        return {}
+    try:
+        with store.pool.connection() as conn:
+            # ``payload ? 'handler'`` rides alongside the equality so the
+            # handler arm implies ``worker_logs_handler_ts_idx``'s
+            # partial predicate (``ON worker_logs (ts) WHERE payload ?
+            # 'handler'``, migration 0124) — without it the planner falls
+            # to a ts-only bitmap scan instead of the BitmapOr over the
+            # handler and pass indexes.
+            cur = conn.execute(
+                "SELECT COALESCE(payload->>'handler', pass) AS h, "
+                "  MAX(ts) FILTER ("
+                "    WHERE payload->>'ok' ~ '^[0-9]+$' "
+                "      AND (payload->>'ok')::int > 0) AS last_ok, "
+                "  MAX(ts) FILTER ("
+                "    WHERE payload->>'failed' ~ '^[0-9]+$' "
+                "      AND (payload->>'failed')::int > 0) AS last_fail, "
+                "  MAX(ts) AS last_seen "
+                "FROM worker_logs "
+                "WHERE ((payload ? 'handler' "
+                "      AND payload->>'handler' = ANY(%(names)s)) "
+                "    OR pass = ANY(%(names)s)) "
+                "  AND ts > now() - (%(hrs)s || ' hours')::interval "
+                "GROUP BY COALESCE(payload->>'handler', pass)",
+                {"names": names, "hrs": window_hours},
+            )
+            rows = cur.fetchall()
+    except Exception:
+        log.warning("health_checks: worker_logs liveness read failed", exc_info=True)
+        return {}
+    return {
+        h: {"last_ok": ok, "last_fail": fail, "last_seen": seen}
+        for h, ok, fail, seen in rows
+        if h
+    }
+
+
 @dataclass(frozen=True, slots=True)
 class LoopUtilisation:
     """One ``(host, process)`` worker loop's pass-time split over a window.
@@ -909,6 +978,7 @@ __all__ = [
     "compute_backlog_counts",
     "fetch_freshness_timestamps",
     "idle_lanes",
+    "liveness_by_handler",
     "loop_utilisation",
     "tool_latency",
     "tool_latency_budget_ms",

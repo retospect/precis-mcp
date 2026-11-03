@@ -32,6 +32,7 @@ from uuid import uuid4
 
 import pytest
 
+from precis import health_checks
 from precis.alerts import OPS_ALERT_TARGET_ENV, list_open_alerts, raise_alert
 from precis.store.types import Tag
 from precis.taproot.canon import CanonicalClaim
@@ -1085,6 +1086,121 @@ def test_layer2_non_cadence_spec_keeps_the_24h_window(store) -> None:
 
     results = _layer2_checks(store, specs=[fake])
     assert [r.name for r in results] == [fake.name]
+
+
+# ── (1c) Layer-2 pass-keyed cycle rows (gr557268) ───────────────────────
+
+
+def _seed_module_cycle_row(store, handler: str, *, hours_ago: float = 0.0) -> None:
+    """Insert one ``worker_logs`` row shaped exactly like a cadence-fired
+    pass's own module-logger cycle summary — ``gripe_autoclose``'s
+    ``claimed=0 ok=0 failed=0 pending=0 skipped=0`` line is logged from
+    ``precis.workers.gripe_autoclose`` with no ``extra={'payload': …}``,
+    so the row carries ``pass=<handler>`` and ``payload=NULL``. This is
+    the gr557268 zero-demand shape: alive every fire, invisible to a
+    ``payload ? 'handler'``-only keying."""
+    with store.pool.connection() as conn:
+        conn.execute(
+            "INSERT INTO worker_logs "
+            "(ts, host, process, pass, level, logger, message, payload) "
+            "VALUES (now() - (%(age)s || ' hours')::interval, 'th', "
+            "'precis-worker', %(pass)s, 'INFO', %(logger)s, %(msg)s, NULL)",
+            {
+                "age": hours_ago,
+                "pass": handler,
+                "logger": f"precis.workers.{handler}",
+                "msg": (f"{handler}: claimed=0 ok=0 failed=0 pending=0 skipped=0"),
+            },
+        )
+        conn.commit()
+
+
+def test_liveness_module_cycle_row_is_liveness_not_outcome(store) -> None:
+    """A payload-free module row moves ``last_seen`` (liveness) but not
+    ``last_ok``/``last_fail`` — outcome counters stay minted-payload
+    only."""
+    handler = f"fake-mod-{uuid4().hex}"
+    _seed_module_cycle_row(store, handler)
+
+    act = health_checks.liveness_by_handler(store, [handler], window_hours=24)
+    assert act[handler]["last_seen"] is not None
+    assert act[handler]["last_ok"] is None
+    assert act[handler]["last_fail"] is None
+
+
+def test_liveness_by_handler_ignores_unnamed_rows(store) -> None:
+    """The ``= ANY(names)`` scope is real, not just a cost knob: a
+    module row for a name NOT in the list doesn't surface, and an empty
+    list short-circuits without touching the table."""
+    handler = f"fake-mod-{uuid4().hex}"
+    _seed_module_cycle_row(store, handler)
+
+    assert (
+        health_checks.liveness_by_handler(store, ["other-handler"], window_hours=24)
+        == {}
+    )
+    assert health_checks.liveness_by_handler(store, [], window_hours=24) == {}
+
+
+def test_layer2_zero_demand_cycle_row_is_not_flagged(store) -> None:
+    """gr557268: a lit pass whose only rows are all-zero module cycle
+    lines (``pass=<handler>``, ``payload=NULL``) inside the window is
+    idle-but-alive, not silent."""
+    fake = ServiceSpec(
+        name=f"fake-zerodemand-{uuid4().hex}",
+        label="Fake zero-demand pass (test-only)",
+        category="test",
+        kind=ServiceKind.PASS,
+        ref_pass=True,
+    )
+    set_service_prio(store, "*", fake.name, 1)
+    _seed_module_cycle_row(store, fake.log_handler)
+
+    assert _layer2_checks(store, specs=[fake]) == []
+
+
+def test_layer2_stale_module_cycle_row_still_fires(store) -> None:
+    """The pass-keyed read is not a muzzle: a module cycle row older
+    than the spec's window still reads silent."""
+    fake = ServiceSpec(
+        name=f"fake-stalemod-{uuid4().hex}",
+        label="Fake stale pass (test-only)",
+        category="test",
+        kind=ServiceKind.PASS,
+        ref_pass=True,
+        default_profiles=frozenset({"system"}),
+    )
+    _seed_module_cycle_row(store, fake.log_handler, hours_ago=25.0)
+
+    results = _layer2_checks(store, specs=[fake])
+    assert [r.name for r in results] == [fake.name]
+    assert "intended-on but silent" in results[0].detail
+
+
+def test_layer2_zero_demand_row_resolves_open_alert(store) -> None:
+    """gr557268 end-to-end: silent → finding → open
+    ``watchdog:coherence`` alert; once a zero-demand module cycle row
+    lands, the next eval is quiet and the all-quiet sweep resolves the
+    alert."""
+    fake = ServiceSpec(
+        name=f"fake-resolve-{uuid4().hex}",
+        label="Fake zero-demand pass (test-only)",
+        category="test",
+        kind=ServiceKind.PASS,
+        ref_pass=True,
+    )
+    set_service_prio(store, "*", fake.name, 1)
+
+    findings = _layer2_checks(store, specs=[fake])
+    assert [f.name for f in findings] == [fake.name]
+    _sync_alerts(store, findings)
+    assert any(a["source"] == "watchdog:coherence" for a in list_open_alerts(store))
+
+    _seed_module_cycle_row(store, fake.log_handler)
+    assert _layer2_checks(store, specs=[fake]) == []
+    _raised, resolved, _degraded = _sync_alerts(store, [])
+    assert resolved >= 1
+    assert not any(a["source"] == "watchdog:coherence" for a in list_open_alerts(store))
 
 
 # ── (2) chunks_extracted: body-row, input-aware staleness ───────────────
