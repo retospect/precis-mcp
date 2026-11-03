@@ -10,7 +10,10 @@ candidate carries a *provenance grade*:
 - **prior-art** (`patent`, `datasheet`, `web`) — external but *not* peer-reviewed:
   cite for "this exists / was built / is specified," never for consensus.
 - **lead** (`memory` and other own-authored kinds) — your *own* thinking, not
-  external evidence at all: a lead to chase, never a citation.
+  external evidence at all: a lead to chase, never a citation. No default
+  scope searches lead-tier kinds (gr553420): this is the conservative
+  *default* a candidate gets when its kind is unknown or a caller opted one
+  in explicitly via ``kinds=`` — not a tier the sweep produces.
 
 The grade rides on every candidate (a bracketed tag in the render), **down-weights**
 lower grades in the gap-rank (``weight``), and drives the standing skill admonition
@@ -72,15 +75,18 @@ _GRADE_BY_KIND: dict[str, SourceGrade] = {
     "memory": LEAD,
 }
 
-#: Kinds the recall sweep searches by default. The citeable evidence kinds each
-#: expose a **chunk** handle the workspace opens at the chunk (``pc``/``qc``/``pk``/
-#: ``dk``). ``memory`` (the ``lead`` tier) has **no** chunk handle, so it rides as a
-#: **ref-level** candidate — addressed + rendered by its ``me<id>`` record handle as
-#: a flat note eye (a lead to chase, never a citation; the ``[own-note]`` admonition
-#: keeps the model honest). ``web`` stays out: it has no record handle *either*, so
-#: there is nothing to open it under yet — its enabling follow-up is a web record
-#: code in the handle registry.
-SOURCE_KINDS: tuple[str, ...] = ("paper", "cfp", "patent", "datasheet", "memory")
+#: Kinds the recall sweep searches — the kinds a draft can actually **cite**
+#: (``handlers/citation._ACCEPTED_SOURCE_KINDS``; ``DraftHandler._CITABLE_KINDS``
+#: adds ``finding``, but an ``fi`` hub is already-cited evidence, never a
+#: suggestion). ``cfp``/``datasheet``/``web`` stay out: surfacing a source the
+#: agent then cannot cite is noise (gr553420). Internal kinds are never
+#: candidates either — a ``memory``/``todo``/``gripe`` (``SPACE:repo-dev`` ops
+#: notes, runbooks, gotchas) is a note you already wrote, not a citable
+#: source, so the lead tier stays a *grade* (``grade_for``'s conservative
+#: default) but never a *search scope*; the ref-level rendering survives only
+#: for a handle-less kind a caller passes ``kinds=`` explicitly. Each searched
+#: kind exposes a **chunk** handle (``pc``/``pk``) the workspace opens.
+SOURCE_KINDS: tuple[str, ...] = ("paper", "patent")
 
 
 def grade_for(kind: str | None) -> SourceGrade:

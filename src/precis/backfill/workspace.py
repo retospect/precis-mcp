@@ -146,8 +146,8 @@ def assemble(
             ws.focus(handle, "summary")
     # Candidates — inferred/transient (fades unless the driver adopts it by
     # re-focusing). A chunk-addressable hit opens its matched chunk verbatim; a
-    # ref-level lead (memory has no chunk handle) opens the whole ref as a flat
-    # summary note eye, addressed by me<id>.
+    # ref-level hit from a handle-less kind opens the whole ref as a flat
+    # summary note eye, addressed by its record handle.
     for cand in candidates:
         if cand.is_ref_level:
             ws.focus(cand.paper_handle, "summary", provenance=Provenance.INFERRED)
@@ -164,7 +164,8 @@ def _render_candidate_list(candidates: list[RecallCandidate]) -> str:
     land."""
     if not candidates:
         return (
-            "— candidate sources · none found (already well-cited, or recall empty) —"
+            "— candidate sources · no citable candidates found; "
+            "try search(kind='paper', q=…) —"
         )
     lines = [
         f"— candidate sources · not yet cited · {len(candidates)} "
@@ -175,7 +176,7 @@ def _render_candidate_list(candidates: list[RecallCandidate]) -> str:
         title = cand.title[:90] or "(untitled)"
         glyph, where = _support_overlay(cand.support)
         tier = grade_tag(getattr(cand.ref, "kind", None))
-        # chunk-level: "pa5 pc10"; ref-level lead: just "me7" (no chunk handle).
+        # chunk-level: "pa5 pc10"; ref-level: just "me7" (no chunk handle).
         addr = (
             f"{cand.paper_handle} {cand.chunk_handle}"
             if cand.chunk_handle
@@ -232,7 +233,7 @@ def _backfill_marks(
         glyph, where = _support_overlay(cand.support)
         tier = grade_tag(getattr(cand.ref, "kind", None))
         # Key by the handle the composer renders this candidate's eye under — its
-        # chunk handle, or its ref handle for a ref-level lead (memory).
+        # chunk handle, or its ref handle for a ref-level (handle-less) hit.
         marks[cand.eye_handle] = (
             f"{glyph} candidate · {tier} · {'+'.join(cand.lenses)}{where}"
         )

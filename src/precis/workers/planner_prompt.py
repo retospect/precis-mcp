@@ -2218,10 +2218,12 @@ def _backfill_find_instructions(kind: str, draft_ident: str, run_ref_id: int) ->
     """The **find** phase (slice 4 + slice 7 transition): weave / dismiss / request
     each ``○`` candidate, then advance to *review* rather than finishing — so the
     next tick re-reads the woven prose with its sources still open."""
-    from precis.backfill.provenance import SOURCE_GRADES
+    from precis.backfill.provenance import LEAD, SOURCE_GRADES
 
     tier_admonition = "\n".join(
-        f"   - `[{t.tag}]` — {t.admonition}" for t in SOURCE_GRADES
+        f"   - `[{t.tag}]` — {t.admonition}"
+        for t in SOURCE_GRADES
+        if t is not LEAD  # candidates are citeable kinds only (gr553420)
     )
     return (
         "## Source backfill — weave the sources you missed\n\n"
@@ -2267,7 +2269,7 @@ def _backfill_find_instructions(kind: str, draft_ident: str, run_ref_id: int) ->
         "when you decide whether (and how) to cite it:\n\n"
         f"{tier_admonition}\n\n"
         "Recall already down-ranks lower tiers; weave only what the claim "
-        "honestly needs, and never let a `[prior-art]` or `[own-note]` hit stand "
+        "honestly needs, and never let a `[prior-art]` hit stand "
         "in for the peer-reviewed source a scientific claim actually requires.\n"
     )
 

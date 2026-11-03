@@ -8,8 +8,9 @@ memory that stops a many-tick / many-agent edit from losing the plot.
 
 Substrate — **no new kind, no migration**:
 
-- a ``memory`` ref, so the intent **embeds** → searchable + recallable (it can
-  surface as a ``○ [own-note]`` LEAD in a topically-adjacent section's sweep);
+- a ``memory`` ref, so the intent **embeds** → searchable + recallable via
+  ``search`` (never via the backfill sweep — internal kinds are not
+  candidates, gr553420);
 - ``meta.anchor = '<heading handle>'`` — the precise heading it is about, reusing
   the change-request anchor convention already read by ``_render_anchor_context``;
 - ``meta.heading_intent = 'hard' | 'soft'`` — **hard** = a structural commitment,

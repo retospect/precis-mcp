@@ -2,13 +2,18 @@
 
 The deterministic **text lens**: seed the multi-query search from a target
 section's own keywords (lexical legs) + its embedded text (semantic leg) — the
-section *programs its own recall* — scope it across the source kinds (paper /
-cfp / patent / datasheet, :data:`~precis.backfill.provenance.SOURCE_KINDS`), and
-exclude everything the draft already cites (**Tier-0 dedup**). Returns ranked
+section *programs its own recall* — scope it across the citeable source kinds
+(paper / patent — the kinds the citation handler accepts,
+:data:`~precis.backfill.provenance.SOURCE_KINDS`), and exclude everything the
+draft already cites (**Tier-0 dedup**). Returns ranked
 :class:`RecallCandidate` chunks, best first, each score down-weighted by its source's
 **provenance tier** so peer-reviewed evidence outranks an equally-matched
-prior-art spec. No LLM: HyDE ``answers=`` and the Tier-1 relevance cull are
-model-authored layers for a later slice; here the RRF fused score is the ranker.
+prior-art spec. A kept candidate must also clear the **semantic-corroboration
+gate** (gr553420): a bare keyword hit — the project name landing in an
+unrelated paper's title — is not topical evidence, so a hit the semantic leg
+never ranked within the relevance floor is dropped. No LLM: HyDE ``answers=``
+and the Tier-1 relevance cull are model-authored layers for a later slice;
+here the RRF fused score is the ranker.
 """
 
 from __future__ import annotations
@@ -18,6 +23,7 @@ from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Any
 
 from precis.backfill.provenance import SOURCE_KINDS, grade_for
+from precis.store._search_cut import semantic_fold_distance
 from precis.utils import handle_registry
 from precis.utils.embed_query import embed_query
 from precis.utils.mentions import resolve_link_targets
@@ -61,13 +67,14 @@ class RecallCandidate:
 
     Two shapes, distinguished by :attr:`is_ref_level`:
 
-    * **chunk-level** (the norm — ``paper``/``cfp``/``patent``/``datasheet``):
-      ``chunk_handle`` is the ``pc<id>``/``qc<id>``/``pk<id>``/``dk<id>`` to open,
-      ``paper_handle`` the ``pa<id>`` of its ref.
-    * **ref-level** (a *lead* — ``memory``, which has **no** chunk handle):
-      ``chunk_handle`` is ``""``; the candidate is addressed + rendered by its
-      ``me<id>`` record handle (``paper_handle``) as a flat note eye. Its
-      ``chunk_id`` still records the matched block for provenance.
+    * **chunk-level** (the norm — ``paper``/``patent``, the citeable kinds):
+      ``chunk_handle`` is the ``pc<id>``/``pk<id>`` to open, ``paper_handle``
+      the ``pa<id>``/``pt<id>`` of its ref.
+    * **ref-level** (a handle-less kind — reachable only when a caller opts it
+      into ``kinds=``; nothing in the default scope produces one): the
+      candidate is addressed + rendered by its record handle
+      (``paper_handle``) as a flat note eye. Its ``chunk_id`` still records
+      the matched block for provenance.
 
     ``lenses`` records which lens(es) found it (lens-agreement = confidence).
     ``support`` names the target handles it could support (the recurrence overlay)."""
@@ -91,8 +98,8 @@ class RecallCandidate:
 
     @property
     def is_ref_level(self) -> bool:
-        """A lead with no chunk handle (e.g. ``memory``) — opened + marked at the
-        ref (``me<id>`` flat eye), not by a ``pc<id>`` chunk eye."""
+        """A handle-less-kind hit with no chunk handle — opened + marked at the
+        ref's flat record-handle eye, not by a ``pc<id>`` chunk eye."""
         return not self.chunk_handle
 
     @property
@@ -311,7 +318,11 @@ def _text_lens(
     Tier-0-excluded). Every hit is stamped with ``support`` (the target handle(s)
     this sweep speaks for) so the caller can see which section surfaced it, and its
     score is **down-weighted by the source's provenance grade** (:func:`grade_for`)
-    so a peer-reviewed paper outranks an equally-matched prior-art datasheet."""
+    so a peer-reviewed paper outranks an equally-matched prior-art datasheet.
+    Two drops before a hit becomes a candidate (gr553420): a hit whose ref kind
+    is outside ``kinds`` (the search is already scoped, this guards the boundary),
+    and — when the semantic leg ran — a hit with no ``sem`` leg sighting within
+    the relevance floor (a bare keyword collision is not topical evidence)."""
     keywords, seed_text = seed_from_targets(store, target_chunks, kind=kind)
     q_texts = keywords or ([seed_text[:400]] if seed_text else [])
     query_vecs: list[list[float]] = []
@@ -321,6 +332,7 @@ def _text_lens(
             query_vecs.append(vec)
     if not (q_texts or query_vecs):
         return []
+    legs: dict[int, dict[str, tuple[int, float]]] = {}
     hits = store.chunks.search_chunks_multi(
         q_texts=q_texts,
         query_vecs=query_vecs,
@@ -329,13 +341,44 @@ def _text_lens(
         per_paper=per_paper,
         exclude_ref_ids=sorted(exclude_ref_ids) if exclude_ref_ids else None,
         limit=limit,
+        legs_out=legs,
     )
+    # Semantic-corroboration gate (gr553420): the ``legs_out`` provenance carries
+    # each fused candidate's per-leg (rank, score); a ``sem<i>`` score is the
+    # cosine distance. A candidate with no sem-leg sighting at all — a keyword
+    # leg alone put it here (the product name in an unrelated title) — is not
+    # topical evidence, and a sem sighting past the query-relative floor
+    # (:func:`semantic_fold_distance`, the same cut rendered search applies)
+    # fares no better. The gate degrades away when no semantic leg ran
+    # (embedder down) or no leg provenance came back at all — the lexical legs
+    # still carry the workspace. The floor's distance pool is bucketed **per
+    # kind**: the gap cut is "best + delta", so one pooled list would let a
+    # close patent cut a merely-good paper (gr553420 review).
+    require_sem = bool(query_vecs) and bool(legs)
+    sem_ds_by_chunk: dict[int, list[float]] = {}
+    for cid, leg_hits in legs.items():
+        ds = [d for leg, (_r, d) in leg_hits.items() if leg.startswith("sem")]
+        if ds:
+            sem_ds_by_chunk[cid] = ds
+    sem_pool_by_kind: dict[str, list[float]] = {}
+    for block, ref, _s in hits:
+        rkind = getattr(ref, "kind", "paper") or "paper"
+        sem_pool_by_kind.setdefault(rkind, []).extend(
+            sem_ds_by_chunk.get(int(block.id), ())
+        )
     out: list[RecallCandidate] = []
     for block, ref, score in hits:
         rkind = getattr(ref, "kind", "paper") or "paper"
-        # A chunk handle when the kind exposes one; ``""`` for a handle-less kind
-        # (``memory`` — the lead tier), which then rides as a ref-level candidate
-        # (addressed by ``me<id>``). ``try_format`` keeps a new handle-less source
+        if rkind not in kinds:
+            continue
+        if require_sem:
+            sem_ds = sem_ds_by_chunk.get(int(block.id), [])
+            floor = semantic_fold_distance(rkind, sem_pool_by_kind.get(rkind, ()))
+            if not sem_ds or (floor is not None and min(sem_ds) > floor):
+                continue
+        # A chunk handle when the kind exposes one; ``""`` for a handle-less
+        # kind, which then rides as a ref-level candidate (addressed by its
+        # record handle). ``try_format`` keeps a new handle-less source
         # kind from crashing the whole sweep the way ``format_handle`` would.
         handle = handle_registry.try_format(rkind, int(block.id), chunk=True) or ""
         out.append(
@@ -401,11 +444,13 @@ def find_candidates(
     on any failure — the text lens always carries the workspace.
 
     **Beyond papers + provenance tiering:** ``kinds`` (default
-    :data:`~precis.backfill.provenance.SOURCE_KINDS` — paper/cfp/patent/datasheet)
-    scopes the recall sweep across source kinds, and each hit's score is
-    down-weighted by its provenance tier so a peer-reviewed paper outranks an
-    equally-matched prior-art datasheet (the tier tag + skill admonition ride
-    downstream in the render).
+    :data:`~precis.backfill.provenance.SOURCE_KINDS` — the citeable
+    paper/patent the citation handler accepts; a cfp/datasheet/web hit and
+    every internal kind like memory stay out, gr553420) scopes the recall
+    sweep across source kinds, and each hit's score is down-weighted by its
+    provenance tier so a peer-reviewed paper outranks an equally-matched
+    prior-art patent (the tier tag + skill admonition ride downstream in
+    the render).
 
     **Multi-focus recurrence overlay:** with more than one target the text lens
     runs *per section* (each programs its own recall) and the hits merge by source

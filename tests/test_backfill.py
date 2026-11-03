@@ -72,7 +72,9 @@ def test_candidate_list_render_marks_gaps() -> None:
 
 
 def test_candidate_list_render_empty() -> None:
-    assert _render_candidate_list([]).startswith("— candidate sources · none")
+    out = _render_candidate_list([])
+    assert "no citable candidates found" in out
+    assert "search(kind='paper'" in out  # the plain next step (gr553420)
 
 
 def _cand(
@@ -123,17 +125,17 @@ def test_candidate_list_render_shows_provenance_tier() -> None:
     )
     sheet = RecallCandidate(
         ref_id=6,
-        ref=NS(kind="datasheet", title="Part spec"),
+        ref=NS(kind="patent", title="A patent"),
         chunk_id=11,
-        chunk_handle="dk11",
+        chunk_handle="pk11",
         score=1.0,
     )
     out = _render_candidate_list([paper, sheet])
     assert "[peer-reviewed]" in out  # the paper's tier
-    assert "[prior-art]" in out  # the datasheet's tier
+    assert "[prior-art]" in out  # the patent's tier
 
 
-def test_find_candidates_broadens_kinds_and_weights_by_tier(
+def test_find_candidates_scopes_to_citeable_kinds_and_weights_by_tier(
     hub: Hub, plan: PlanHandler, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     from precis.backfill.candidates import find_candidates
@@ -148,23 +150,25 @@ def test_find_candidates_broadens_kinds_and_weights_by_tier(
     def fake_search(**kw: object) -> list[tuple[Any, Any, float]]:
         captured.update(kw)
         block = NS(id=777)
-        ref = NS(id=42, kind="datasheet", title="A datasheet")
+        ref = NS(id=42, kind="patent", title="A patent")
         return [(block, ref, 1.0)]
 
     monkeypatch.setattr(store.chunks, "search_chunks_multi", fake_search)
 
     out = find_candidates(store, None, [tc], kind="plan", limit=5)
-    # the sweep scopes across the source kinds, not a hard-coded 'paper'
-    assert captured["kinds"] == list(SOURCE_KINDS)
+    # the sweep scopes to the citeable kinds, not a hard-coded 'paper'
+    assert captured["kinds"] == list(SOURCE_KINDS) == ["paper", "patent"]
     assert len(out) == 1
-    assert out[0].chunk_handle == "dk777"  # datasheet chunk handle
+    assert out[0].chunk_handle == "pk777"  # patent chunk handle
     # the prior-art tier down-weights the score vs a peer-reviewed 1.0 hit
     assert out[0].score == 1.0 * PRIOR_ART.weight
 
 
 def test_candidate_ref_level_lead_shape() -> None:
-    """A memory hit has no chunk handle — it is a ref-level *lead*, addressed +
-    rendered by its ``me<id>`` record handle, tagged ``[own-note]``."""
+    """The ref-level shape a handle-less kind would take (reachable only when
+    a caller opts the kind into ``kinds=`` — nothing in the default scope
+    produces one, gr553420): no chunk handle, addressed + rendered by its
+    ``me<id>`` record handle, tagged ``[own-note]``."""
     lead = RecallCandidate(
         ref_id=7,
         ref=NS(kind="memory", title="my own synthesis of the transport data"),
@@ -181,38 +185,35 @@ def test_candidate_ref_level_lead_shape() -> None:
     assert "me7  ·" not in out  # no empty chunk-handle artifact / double space
 
 
-def test_find_candidates_surfaces_memory_as_ref_level_lead(
+def test_find_candidates_drops_internal_kind_hits(
     hub: Hub, plan: PlanHandler, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The sweep now spans ``memory`` (the lead tier). A memory hit does not crash
-    the handle formatter — it becomes a ref-level candidate, its score down-weighted
-    by the LEAD tier so a real paper always outranks a topically-dense own-note."""
+    """gr553420: internal kinds are never candidates — ``memory``/``gripe``
+    hits the search layer returns anyway are dropped at the boundary
+    (``kinds`` no longer scopes them, and the post-filter guards the
+    contract whatever the search returns)."""
     from precis.backfill.candidates import find_candidates
-    from precis.backfill.provenance import LEAD
 
     store = hub.live_store
     sec, _cited, _cand = _doc_with_citation(store, plan)
     tc = store.drafts.get_draft_chunk(sec, kind="plan")
 
     def fake_search(**kw: object) -> list[tuple[Any, Any, float]]:
-        block = NS(id=555)
-        ref = NS(id=7, kind="memory", title="my own synthesis")
-        return [(block, ref, 1.0)]
+        return [
+            (NS(id=555), NS(id=7, kind="memory", title="ops runbook"), 1.0),
+            (NS(id=556), NS(id=8, kind="gripe", title="a gripe"), 0.9),
+        ]
 
     monkeypatch.setattr(store.chunks, "search_chunks_multi", fake_search)
 
-    out = find_candidates(store, None, [tc], kind="plan", limit=5)
-    assert len(out) == 1
-    lead = out[0]
-    assert lead.is_ref_level and lead.chunk_handle == ""
-    assert lead.paper_handle == "me7"  # addressed at ref level, not by a chunk
-    assert lead.score == 1.0 * LEAD.weight  # down-weighted (0.4)
+    assert find_candidates(store, None, [tc], kind="plan", limit=5) == []
 
 
 def test_assemble_focuses_memory_lead_as_flat_ref_eye(
     hub: Hub, plan: PlanHandler, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A ref-level lead opens as a flat ``summary`` note eye addressed by ``me<id>``
+    """A ref-level hit (the opt-in handle-less shape — a fabricated memory
+    candidate here) opens as a flat ``summary`` note eye addressed by ``me<id>``
     (not a ``verbatim`` chunk eye), and the whole workspace renders without the
     handle-less kind blowing up the composer."""
     store = hub.live_store
@@ -700,3 +701,176 @@ def test_assemble_draft_reraises_badinput_and_skips_dead_sections(
 
     monkeypatch.setattr(wsmod, "assemble", _dead)
     assert assemble_draft(cast(Any, None), None, 1) == ([], set(), ["dc1"], False)
+
+
+# ── gr553420 — citable-only, semantically corroborated candidates ──────
+
+
+def _seed_embedded_source(
+    store: Any, e: Any, *, kind: str, slug: str | None, title: str, text: str
+) -> int:
+    """A ref with one body chunk embedded by the test embedder — reachable
+    by the text lens's semantic leg."""
+    from precis.store import ChunkInsert
+
+    ref = store.insert_ref(kind=kind, slug=slug, title=title)
+    store.chunks.insert_chunks(
+        ref.id, [ChunkInsert(ord=0, text=text, embedding=e.embed_one(text))]
+    )
+    return int(ref.id)
+
+
+def _seed_section_keyword(store: Any, chunk_id: int, keywords: list[str]) -> None:
+    """Write ``chunks.keywords`` the way the chunk_keywords worker would —
+    ``seed_from_targets`` reads them through ``block_views`` as lexical legs."""
+    with store.pool.connection() as conn:
+        conn.execute(
+            "UPDATE chunks SET keywords = %s WHERE chunk_id = %s",
+            (keywords, chunk_id),
+        )
+        conn.commit()
+
+
+def test_find_candidates_returns_only_the_citable_paper(
+    hub: Hub, plan: PlanHandler
+) -> None:
+    """gr553420 (test DB): a section whose nearest semantic neighbours are
+    a repo-dev memory and a relevant paper returns only the paper — an ops
+    note is not a citable source at all, however topically dense."""
+    from precis.backfill.candidates import find_candidates
+
+    store = hub.live_store
+    e = hub.embedder
+    text = "DFT reproducibility of ionic transport in solid electrolytes"
+    paper_id = _seed_embedded_source(
+        store, e, kind="paper", slug="iontran", title="Ionic transport", text=text
+    )
+    _seed_embedded_source(
+        store, e, kind="memory", slug=None, title="runbook note", text=text
+    )
+    proj = store.insert_ref(kind="todo", slug=None, title="proj").id
+    plan.put(id="p-sem", title="Doc", project=proj)
+    sec = _pe(plan.put(id="p-sem", text=text, at={"last": True}).body)
+    tc = store.drafts.get_draft_chunk(sec, kind="plan")
+    assert tc is not None
+
+    out = find_candidates(store, e, [tc], kind="plan", limit=5)
+    assert [c.ref_id for c in out] == [paper_id]
+
+
+def test_find_candidates_drops_keyword_only_name_collision(
+    hub: Hub, plan: PlanHandler
+) -> None:
+    """gr553420 (test DB): a paper matching only the product-name keyword
+    ('catpath') — the semantic leg ranks it past the relevance floor — is
+    dropped; the semantically corroborated paper survives."""
+    from precis.backfill.candidates import find_candidates
+
+    store = hub.live_store
+    e = hub.embedder
+    seed_text = "validating the catpath migration workflow end to end"
+    rel_id = _seed_embedded_source(
+        store,
+        e,
+        kind="paper",
+        slug="relpaper",
+        title="Relevant paper",
+        text=seed_text,
+    )
+    _seed_embedded_source(
+        store,
+        e,
+        kind="paper",
+        slug="catpathgpt",
+        title="CatPath-GPT",
+        text="catpath model predicts token paths for language models",
+    )
+    proj = store.insert_ref(kind="todo", slug=None, title="proj").id
+    plan.put(id="p-cat", title="Doc", project=proj)
+    sec = _pe(plan.put(id="p-cat", text=seed_text, at={"last": True}).body)
+    tc = store.drafts.get_draft_chunk(sec, kind="plan")
+    assert tc is not None
+    _seed_section_keyword(store, tc.chunk_id, ["catpath"])
+
+    out = find_candidates(store, e, [tc], kind="plan", limit=5)
+    assert [c.ref_id for c in out] == [rel_id]
+
+
+def test_find_candidates_empty_result_hint(hub: Hub, plan: PlanHandler) -> None:
+    """gr553420 (test DB): when no citable candidate clears the floor the
+    render says so plainly instead of padding the list."""
+    from precis.backfill.candidates import find_candidates
+
+    store = hub.live_store
+    e = hub.embedder
+    _seed_embedded_source(
+        store,
+        e,
+        kind="paper",
+        slug="onlycat",
+        title="CatPath-GPT",
+        text="catpath model predicts token paths for language models",
+    )
+    proj = store.insert_ref(kind="todo", slug=None, title="proj").id
+    plan.put(id="p-none", title="Doc", project=proj)
+    seed_text = "benchmarking DFT formation energies against OC20 and MACE-MP-0"
+    sec = _pe(plan.put(id="p-none", text=seed_text, at={"last": True}).body)
+    tc = store.drafts.get_draft_chunk(sec, kind="plan")
+    assert tc is not None
+    _seed_section_keyword(store, tc.chunk_id, ["catpath"])
+
+    out = find_candidates(store, e, [tc], kind="plan", limit=5)
+    assert out == []
+    rendered = _render_candidate_list(out)
+    assert "no citable candidates found" in rendered
+    assert "search(kind='paper'" in rendered
+
+
+def test_find_candidates_never_suggests_an_unciteable_datasheet(
+    hub: Hub, plan: PlanHandler
+) -> None:
+    """gr553420 review: a datasheet the section's embedding sits right on top
+    of is still not a candidate — the cite path accepts only paper and patent
+    (``_ACCEPTED_SOURCE_KINDS``), so suggesting one would be unciteable noise."""
+    from precis.backfill.candidates import find_candidates
+
+    store = hub.live_store
+    e = hub.embedder
+    text = "DFT reproducibility of ionic transport in solid electrolytes"
+    _seed_embedded_source(
+        store, e, kind="datasheet", slug="ds1", title="A datasheet", text=text
+    )
+    proj = store.insert_ref(kind="todo", slug=None, title="proj").id
+    plan.put(id="p-ds", title="Doc", project=proj)
+    sec = _pe(plan.put(id="p-ds", text=text, at={"last": True}).body)
+    tc = store.drafts.get_draft_chunk(sec, kind="plan")
+    assert tc is not None
+
+    assert find_candidates(store, e, [tc], kind="plan", limit=5) == []
+
+
+def test_find_candidates_per_kind_floor_keeps_paper_past_a_close_patent(
+    hub: Hub, plan: PlanHandler, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gr553420 review: the relevance floor's gap cut applies per kind — a
+    patent at sem distance 0.20 sets its own envelope and must NOT cut a
+    paper at 0.40 (one pooled list would floor at 0.20+0.15 and drop the
+    paper)."""
+    from precis.backfill.candidates import find_candidates
+
+    store = hub.live_store
+    sec, _cited, _cand = _doc_with_citation(store, plan)
+    tc = store.drafts.get_draft_chunk(sec, kind="plan")
+    patent = store.insert_ref(kind="patent", slug="pat1", title="A patent")
+    paper = store.insert_ref(kind="paper", slug="pap1", title="A paper")
+
+    def fake_search(**kw: object) -> list[tuple[Any, Any, float]]:
+        cast(dict, kw["legs_out"]).update(
+            {111: {"sem0": (0, 0.20)}, 222: {"sem0": (1, 0.40)}}
+        )
+        return [(NS(id=111), patent, 1.0), (NS(id=222), paper, 0.9)]
+
+    monkeypatch.setattr(store.chunks, "search_chunks_multi", fake_search)
+
+    out = find_candidates(store, hub.embedder, [tc], kind="plan", limit=5)
+    assert {c.ref_id for c in out} == {patent.id, paper.id}
