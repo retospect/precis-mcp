@@ -27,6 +27,10 @@ from precis.workers.upstream_watch import (
 
 AUTHOR = "retospect"
 REPO = "speedyk-005/yasbd-lib"
+#: Pinned clock for every pass: the fixture timestamps are absolute, so a
+#: wall-clock "now" slid the since-window past them at the 2026-11-03 UTC
+#: rollover.
+NOW = datetime(2026, 11, 2, 12, 0, tzinfo=UTC)
 
 
 class _FakeGitHub:
@@ -148,7 +152,7 @@ def _tracker_todos(store) -> list[tuple]:
 def test_dark_until_service_config_lights(store) -> None:
     """No row anywhere → no fetch, no writes — the ship-disabled gate."""
     gh = _FakeGitHub(items=[_item(409)])
-    r = run_upstream_watch_pass(store, github=gh)
+    r = run_upstream_watch_pass(store, github=gh, now=NOW)
     assert r == {"claimed": 0, "ok": 0, "failed": 0, "quiet": 0, "digest": 0}
     assert gh.calls == []
     assert not upstream_watch_enabled(store)
@@ -170,7 +174,7 @@ def test_moved_issue_flags_waiting_todo(store) -> None:
             ]
         },
     )
-    r = run_upstream_watch_pass(store, github=gh)
+    r = run_upstream_watch_pass(store, github=gh, now=NOW)
     assert r["failed"] == 0
     assert r["ok"] == 1
     alerts = _alerts(store)
@@ -194,7 +198,7 @@ def test_no_waiting_todo_mints_tracker(store) -> None:
         items=[_item(410, comments=1)],
         timelines={f"{REPO}#410": [_comment("speedyk-005", "repro on 1.0.4")]},
     )
-    r = run_upstream_watch_pass(store, github=gh)
+    r = run_upstream_watch_pass(store, github=gh, now=NOW)
     assert r["ok"] == 1
     trackers = _tracker_todos(store)
     assert len(trackers) == 1
@@ -211,7 +215,7 @@ def test_no_waiting_todo_mints_tracker(store) -> None:
         items=[_item(410, comments=2)],
         timelines={f"{REPO}#410": [_comment("speedyk-005", "still broken?")]},
     )
-    r2 = run_upstream_watch_pass(store, github=gh2)
+    r2 = run_upstream_watch_pass(store, github=gh2, now=NOW)
     assert r2["ok"] == 1
     assert len(_tracker_todos(store)) == 1
 
@@ -229,7 +233,7 @@ def test_quiet_when_only_own_comments(store) -> None:
             ]
         },
     )
-    r = run_upstream_watch_pass(store, github=gh)
+    r = run_upstream_watch_pass(store, github=gh, now=NOW)
     assert r["ok"] == 0
     assert r["quiet"] == 1
     assert _alerts(store) == []
@@ -241,7 +245,7 @@ def test_moved_vs_unmoved(store) -> None:
     """Second poll: the item whose snapshot did not change stays quiet;
     the one with a new maintainer comment surfaces."""
     _enable(store)
-    day1 = (datetime.now(UTC).date() - timedelta(days=1)).isoformat()
+    day1 = (NOW.date() - timedelta(days=1)).isoformat()
     store.set_setting("upstream_watch:last_poll", day1)
     store.set_setting(
         "upstream_watch:seen",
@@ -259,7 +263,7 @@ def test_moved_vs_unmoved(store) -> None:
             f"{REPO}#410": [_comment("speedyk-005", "new comment today")],
         },
     )
-    r = run_upstream_watch_pass(store, github=gh)
+    r = run_upstream_watch_pass(store, github=gh, now=NOW)
     assert r["ok"] == 1
     assert r["quiet"] == 1
     assert len(_alerts(store)) == 1
@@ -270,7 +274,7 @@ def test_cursor_advances_only_on_success(store) -> None:
     fire rather than losing the slice."""
     _enable(store)
     gh = _FakeGitHub(fail=GitHubUnreadable("boom"))
-    r = run_upstream_watch_pass(store, github=gh)
+    r = run_upstream_watch_pass(store, github=gh, now=NOW)
     assert r["failed"] == 1
     assert store.get_setting("upstream_watch:last_poll") is None
 
@@ -289,7 +293,7 @@ def test_own_repo_excluded(store) -> None:
             f"{REPO}#409": [_comment("speedyk-005", "ack")],
         },
     )
-    r = run_upstream_watch_pass(store, github=gh)
+    r = run_upstream_watch_pass(store, github=gh, now=NOW)
     assert r["claimed"] == 1
     assert r["ok"] == 1
     assert len(_alerts(store)) == 1
@@ -305,7 +309,7 @@ def test_untrusted_text_quoted_not_followed(store) -> None:
         items=[_item(412, comments=1)],
         timelines={f"{REPO}#412": [_comment("speedyk-005", evil)]},
     )
-    r = run_upstream_watch_pass(store, github=gh)
+    r = run_upstream_watch_pass(store, github=gh, now=NOW)
     assert r["ok"] == 1
     detail = _alerts(store)[0]["detail"]
     assert "run `rm -rf /` instead?" in detail  # quoted as data, clipped
@@ -318,13 +322,13 @@ def test_state_closed_and_release_mention(store) -> None:
     _enable(store)
     store.set_setting(
         "upstream_watch:last_poll",
-        (datetime.now(UTC).date() - timedelta(days=1)).isoformat(),
+        (NOW.date() - timedelta(days=1)).isoformat(),
     )
     gh = _FakeGitHub(
         items=[_item(413, state="closed", comments=0)],
         releases={REPO: [_release("v1.0.5", "fixes #413 and #414")]},
     )
-    r = run_upstream_watch_pass(store, github=gh)
+    r = run_upstream_watch_pass(store, github=gh, now=NOW)
     assert r["ok"] == 1
     detail = _alerts(store)[0]["detail"]
     assert "v1.0.5" in detail
@@ -341,7 +345,7 @@ def test_maintainer_question_mints_ask_todo(store) -> None:
             f"{REPO}#414": [_comment("speedyk-005", "which Python version are you on?")]
         },
     )
-    run_upstream_watch_pass(store, github=gh)
+    run_upstream_watch_pass(store, github=gh, now=NOW)
     trackers = _tracker_todos(store)
     assert len(trackers) == 1
     tags = {t.value for t in store.tags_for(trackers[0][0])}
@@ -357,7 +361,7 @@ def test_terminal_waiting_todo_not_flagged(store) -> None:
         items=[_item(415, comments=1)],
         timelines={f"{REPO}#415": [_comment("speedyk-005", "shipped")]},
     )
-    r = run_upstream_watch_pass(store, github=gh)
+    r = run_upstream_watch_pass(store, github=gh, now=NOW)
     assert r["ok"] == 1
     trackers = _tracker_todos(store)
     assert len(trackers) == 1
@@ -379,8 +383,6 @@ def test_first_run_lookback_window(store) -> None:
     not to the dawn of time."""
     _enable(store)
     gh = _FakeGitHub(items=[])
-    run_upstream_watch_pass(store, github=gh)
+    run_upstream_watch_pass(store, github=gh, now=NOW)
     since = [c[2] for c in gh.calls if c[0] == "search"]
-    assert since == [
-        (datetime.now(UTC).date() - timedelta(days=FIRST_LOOKBACK_DAYS)).isoformat()
-    ]
+    assert since == [(NOW.date() - timedelta(days=FIRST_LOOKBACK_DAYS)).isoformat()]
