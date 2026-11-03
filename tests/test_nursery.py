@@ -747,6 +747,157 @@ def test_stalled_recurring_detector_skips_done_child(
     assert rec_id not in ids
 
 
+def test_stalled_recurring_resolves_alert_when_rec_cancelled(
+    handler: TodoHandler, store: Store
+) -> None:
+    """gr551962: a ``STATUS:cancelled`` recurring (td462086) kept
+    re-firing. End to end — the alert must resolve itself on the next
+    pass once the rec leaves the live set, no manual prod write."""
+    rec = handler.put(
+        text="Monthly CFP scan",
+        meta={"schedule": {"cron": "0 0 1 * *"}},
+    )
+    rec_id = _id_of(rec.body)
+    child = store.insert_ref(
+        kind="todo",
+        slug=None,
+        title="Stuck tick child",
+        meta={"spawned_for_tick": "2026-10-01T00:00"},
+        parent_id=rec_id,
+    )
+    store.add_tag(child.id, Tag.closed("STATUS", "open"), set_by="system")
+    _backdate_ref(store, child.id, 30)
+
+    run_nursery_pass(store)
+    assert any(
+        a["source"] == "nursery:stalled-recurring" for a in list_open_alerts(store)
+    )
+
+    # Prod rows carry STATUS:cancelled although it is outside the todo
+    # write vocabulary — set it the same bypassing way.
+    store.add_tag(
+        rec_id,
+        Tag.closed("STATUS", "cancelled"),
+        set_by="system",
+        replace_prefix=True,
+    )
+
+    run_nursery_pass(store)
+    assert not any(
+        a["source"] == "nursery:stalled-recurring" for a in list_open_alerts(store)
+    )
+
+
+def test_stalled_recurring_skips_cancelled_recurring(
+    handler: TodoHandler, store: Store
+) -> None:
+    rec = handler.put(
+        text="Monthly CFP scan",
+        meta={"schedule": {"cron": "0 0 1 * *"}},
+    )
+    rec_id = _id_of(rec.body)
+    child = store.insert_ref(
+        kind="todo",
+        slug=None,
+        title="Stuck tick child",
+        meta={"spawned_for_tick": "2026-10-01T00:00"},
+        parent_id=rec_id,
+    )
+    store.add_tag(child.id, Tag.closed("STATUS", "open"), set_by="system")
+    _backdate_ref(store, child.id, 30)
+    store.add_tag(
+        rec_id,
+        Tag.closed("STATUS", "cancelled"),
+        set_by="system",
+        replace_prefix=True,
+    )
+
+    findings = _detect_stalled_recurrings(store)
+    ids = {f.ref_id for f in findings}
+    assert rec_id not in ids
+
+
+def test_stalled_recurring_skips_retired_child(
+    handler: TodoHandler, store: Store
+) -> None:
+    """A child job that no longer resolves (soft-deleted, like the
+    404'd jo547878) settles the condition — nothing is stuck."""
+    rec = handler.put(
+        text="Monthly CFP scan",
+        meta={"schedule": {"cron": "0 0 1 * *"}},
+    )
+    rec_id = _id_of(rec.body)
+    child = store.insert_ref(
+        kind="job",
+        slug=None,
+        title="Gone tick child",
+        meta={"spawned_for_tick": "2026-10-01T00:00"},
+        parent_id=rec_id,
+    )
+    store.add_tag(child.id, Tag.closed("STATUS", "open"), set_by="system")
+    _backdate_ref(store, child.id, 30)
+    store.retire_ref(child.id)
+
+    findings = _detect_stalled_recurrings(store)
+    ids = {f.ref_id for f in findings}
+    assert rec_id not in ids
+
+
+def test_stalled_recurring_skips_terminal_job_child(
+    handler: TodoHandler, store: Store
+) -> None:
+    """A ``STATUS:cancelled`` job child is settled, not stuck — the
+    todo-terminal set alone misses job-vocabulary values."""
+    rec = handler.put(
+        text="Monthly CFP scan",
+        meta={"schedule": {"cron": "0 0 1 * *"}},
+    )
+    rec_id = _id_of(rec.body)
+    child = store.insert_ref(
+        kind="job",
+        slug=None,
+        title="Cancelled tick child",
+        meta={"spawned_for_tick": "2026-10-01T00:00"},
+        parent_id=rec_id,
+    )
+    store.add_tag(
+        child.id,
+        Tag.closed("STATUS", "cancelled"),
+        set_by="system",
+        replace_prefix=True,
+    )
+    _backdate_ref(store, child.id, 30)
+
+    findings = _detect_stalled_recurrings(store)
+    ids = {f.ref_id for f in findings}
+    assert rec_id not in ids
+
+
+def test_stalled_recurring_still_flags_live_rec_open_child(
+    handler: TodoHandler, store: Store
+) -> None:
+    """Guard rail for the new liveness checks: a live recurring whose
+    child has been open 24h+ still fires."""
+    rec = handler.put(
+        text="Daily scan",
+        meta={"schedule": {"cron": "0 0 * * *"}},
+    )
+    rec_id = _id_of(rec.body)
+    child = store.insert_ref(
+        kind="todo",
+        slug=None,
+        title="Stuck tick child",
+        meta={"spawned_for_tick": "2026-10-01T00:00"},
+        parent_id=rec_id,
+    )
+    store.add_tag(child.id, Tag.closed("STATUS", "open"), set_by="system")
+    _backdate_ref(store, child.id, 25)
+
+    findings = _detect_stalled_recurrings(store)
+    ids = {f.ref_id for f in findings}
+    assert rec_id in ids
+
+
 # ── spin loops ─────────────────────────────────────────────────────
 
 

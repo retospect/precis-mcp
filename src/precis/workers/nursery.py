@@ -18,8 +18,10 @@ Todo-tree detectors (each one SQL query → finding rows):
   (:func:`precis.todo.views._doable_exclusion_clause`) and
   ``created_at`` older than ``STUCK_DOABLE_HOURS=24``. Skip the candidacy
   gate and every non-dispatchable leaf reads as stuck.
-* **stalled recurrings** — a recurring ref's (``meta.schedule``) latest
-  spawned child open longer than the schedule period.
+* **stalled recurrings** — a *live* recurring ref's (``meta.schedule``)
+  latest *live* spawned child open longer than the schedule period;
+  cancelled/terminal recs and terminal or deleted children don't stall
+  (gr551962).
 * **spin loops** — a ``(ref_id, source)`` emitting > ``SPIN_LOOP_EVENTS_24H``
   ``ref_events``/24h — a derived-queue worker re-claiming the same ref
   every pass.
@@ -109,6 +111,7 @@ from precis.store._todo_sql import (
 from precis.store.types import TODO_BODY_KIND
 from precis.todo import TERMINAL_TODO_STATUSES, blocker_terminal_sql
 from precis.utils import handle_registry
+from precis.workers._mint import JOB_TERMINAL_STATUSES
 from precis.workers.runner import BatchResult
 
 log = logging.getLogger(__name__)
@@ -965,6 +968,28 @@ def _detect_child_failed_final(store: Store) -> list[Symptom]:
 
 # ── stalled recurrings ────────────────────────────────────────────
 
+#: ``stalled-recurring``: the recurring itself must be live. A
+#: ``cancelled``/done-class recurring keeps no cadence, so its last
+#: spawned child is dead weight, not a stall — gr551962's alert
+#: re-fired 82 times on a ``STATUS:cancelled`` recurring.
+#: ``cancelled`` isn't in the todo write vocabulary
+#: (:data:`precis.store.types._KIND_STATUS_VALUES`), but prod rows
+#: carry it, so it is named next to
+#: :data:`precis.todo.TERMINAL_TODO_STATUSES` here rather than folded
+#: into it. ``retired_at IS NULL`` covers the retired/deleted cases.
+_DEAD_RECURRING_STATUSES: frozenset[str] = TERMINAL_TODO_STATUSES | {"cancelled"}
+
+#: ``stalled-recurring``: the spawned child must still be live too.
+#: Spawned children are todos today, but the detector joins any child
+#: kind and prod carries off-vocabulary STATUS values (a ``cancelled``
+#: job child, gr551962), so "terminal" is the union of the todo and
+#: job (:data:`precis.workers._mint.JOB_TERMINAL_STATUSES`)
+#: vocabularies. A child that is gone entirely drops out of the JOIN
+#: on its own.
+_STALLED_CHILD_TERMINAL: frozenset[str] = TERMINAL_TODO_STATUSES | set(
+    JOB_TERMINAL_STATUSES
+)
+
 
 def _detect_stalled_recurrings(store: Store) -> list[Symptom]:
     """Recurring refs (``meta.schedule`` set) whose most recent spawned
@@ -977,6 +1002,12 @@ def _detect_stalled_recurrings(store: Store) -> list[Symptom]:
     since the recurring's previous spawn event — whichever is
     longer. The 1h floor catches near-immediate stalls (a daily
     recurring that crashed on its first tick).
+
+    Both ends must be live (gr551962): a recurring whose own STATUS is
+    dead (:data:`_DEAD_RECURRING_STATUSES`) has no cadence left to
+    stall, and a terminal or deleted child is settled, not stuck.
+    Either way the finding disappears and the resolve sweep clears the
+    open alert on the next pass.
     """
     with store.pool.connection() as conn:
         rows = conn.execute(
@@ -993,7 +1024,18 @@ def _detect_stalled_recurrings(store: Store) -> list[Symptom]:
                               AND child.meta ? 'spawned_for_tick'
              WHERE rec.kind = 'todo' AND rec.retired_at IS NULL
                AND (rec.meta ? 'schedule')
+               -- The recurring itself must be live: a cancelled /
+               -- done-class recurring has no cadence left to stall
+               -- (gr551962 — the alert re-fired 82 times on one).
+               AND COALESCE(
+                     (SELECT t.value FROM ref_tags rt JOIN tags t ON t.tag_id = rt.tag_id
+                       WHERE rt.ref_id = rec.ref_id AND t.namespace = 'STATUS' LIMIT 1),
+                     'open'
+                   ) <> ALL(%s)
                AND child.created_at < now() - interval '1 hour'
+               -- The child must still be live: todo- or job-terminal
+               -- STATUS values both settle it (union of both
+               -- vocabularies — prod carries off-vocabulary values).
                AND COALESCE(
                      (SELECT t.value FROM ref_tags rt JOIN tags t ON t.tag_id = rt.tag_id
                        WHERE rt.ref_id = child.ref_id AND t.namespace = 'STATUS' LIMIT 1),
@@ -1008,7 +1050,10 @@ def _detect_stalled_recurrings(store: Store) -> list[Symptom]:
              ORDER BY rec.ref_id
              LIMIT 50
             """,
-            (sorted(TERMINAL_TODO_STATUSES),),
+            (
+                sorted(_DEAD_RECURRING_STATUSES),
+                sorted(_STALLED_CHILD_TERMINAL),
+            ),
         ).fetchall()
     return [
         Symptom(
