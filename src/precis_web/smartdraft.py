@@ -174,6 +174,19 @@ class ChunkNode:
     #: per-paragraph colour marker. ``""`` for a non-prose node (heading /
     #: figure / table / term), which has no citation surface.
     provenance: str = ""
+    #: The chunk's structural parent (``None`` at root) — carried so the
+    #: reader can compute which ``ulist``/``olist`` containers enclose a
+    #: node (the list rail, gr553310) by walking ancestors, without a
+    #: second store read.
+    parent_chunk_id: int | None = None
+    #: Bullet/number marker for an ``item`` node — ``•`` or ``N.`` from
+    #: :func:`precis_web.routes.drafts._list_markers` (ordered siblings,
+    #: honouring a container's ``meta.start``). ``""`` for a non-item node.
+    item_marker: str = ""
+    #: Direct ``item``-child count for a ``ulist``/``olist`` container —
+    #: shown in its rail head ("list — N items") so the container reads as
+    #: structure, never as missing content. ``0`` otherwise.
+    list_items: int = 0
 
     @property
     def is_heading(self) -> bool:
@@ -190,6 +203,23 @@ class ChunkNode:
     @property
     def is_term(self) -> bool:
         return self.chunk_kind == "term"
+
+    @property
+    def is_list_container(self) -> bool:
+        """A ``ulist``/``olist`` container — rendered as the left rail
+        backing its ``item`` children, never an empty card (gr553310)."""
+        return self.chunk_kind in ("ulist", "olist")
+
+    @property
+    def is_item(self) -> bool:
+        return self.chunk_kind == "item"
+
+    @property
+    def list_label(self) -> str:
+        """The rail-head / TOC label for a list container — ``list — 6
+        items`` / ``numbered list — 1 item`` / ``empty list``. ``""`` on a
+        non-container node."""
+        return _list_label(self.chunk_kind, self.list_items)
 
     @property
     def is_prose(self) -> bool:
@@ -218,6 +248,17 @@ class ChunkNode:
     @property
     def has_status(self) -> bool:
         return self.pinned or self.locked
+
+
+def _list_label(kind: str, count: int) -> str:
+    """One list container's terse label — ``list — N items`` /
+    ``numbered list — N items`` / ``empty list`` (gr553310)."""
+    if kind not in ("ulist", "olist"):
+        return ""
+    which = "numbered list" if kind == "olist" else "list"
+    if not count:
+        return f"empty {which}"
+    return f"{which} — {count} item{'s' if count != 1 else ''}"
 
 
 def _jaccard(a: set[str], b: set[str]) -> float:
@@ -355,7 +396,7 @@ def _build_nodes_uncached(store: Store, ref_id: int) -> list[ChunkNode]:
     # `precis_web.smartdraft`) via `routes.smartdraft` — an eager module-level
     # import here would risk a load-order cycle. Cheap (no heavy work at
     # import time) and called once per (cache-missed) build.
-    from precis_web.routes.drafts import provenance_state
+    from precis_web.routes.drafts import _list_markers, provenance_state
 
     chunks = store.drafts.reading_order(ref_id)
     # NB: do NOT load embeddings here — for a 10k-chunk draft that fetches ~10M
@@ -364,12 +405,29 @@ def _build_nodes_uncached(store: Store, ref_id: int) -> list[ChunkNode]:
     blocks = {b.id: b for b in store.chunks.list_chunks_for_ref(ref_id)}
     views = store.drafts.block_views(ref_id)
     tag_map = _load_chunk_tags(store, ref_id)
+    # List structure (gr553310): per-``item`` bullet/number markers, and each
+    # ``ulist``/``olist`` container's direct item count for its rail head.
+    marker_map, _ordered = _list_markers(chunks)
+    kind_by_id = {c.chunk_id: c.chunk_kind for c in chunks}
+    item_counts: dict[int, int] = {}
+    for c in chunks:
+        pid = getattr(c, "parent_chunk_id", None)
+        if (
+            c.chunk_kind == "item"
+            and pid is not None
+            and kind_by_id.get(pid) in ("ulist", "olist")
+        ):
+            item_counts[pid] = item_counts.get(pid, 0) + 1
     nodes: list[ChunkNode] = []
     for i, c in enumerate(chunks):
         b = blocks.get(c.chunk_id)
         v = views.get(c.handle, {}) or {}
         kws = list(b.keywords) if (b and b.keywords) else _kw_from_view(v)
         summary = v.get("summary") or _first_line(c.text)
+        if not summary and c.chunk_kind in ("ulist", "olist"):
+            # A container's text is empty by design — label it by what it
+            # holds, so a TOC/summary row never reads as blank.
+            summary = _list_label(c.chunk_kind, item_counts.get(c.chunk_id, 0))
         is_table = c.chunk_kind == "table"
         table = table_payload(getattr(c, "meta", None), c.text) if is_table else None
         is_figure = c.chunk_kind == "figure"
@@ -412,6 +470,9 @@ def _build_nodes_uncached(store: Store, ref_id: int) -> list[ChunkNode]:
                 if is_term
                 else [],
                 provenance=provenance_state(c.text or "") if is_paragraph else "",
+                parent_chunk_id=getattr(c, "parent_chunk_id", None),
+                item_marker=marker_map.get(c.handle, ""),
+                list_items=item_counts.get(c.chunk_id, 0),
             )
         )
     return nodes
@@ -621,6 +682,8 @@ def _est_px(n: ChunkNode) -> int:
     viewport; the estimate only has to keep the scrollbar from lurching wildly."""
     if n.is_heading:
         return 34
+    if n.is_list_container:
+        return 28  # a rail-head strip, no body
     if n.is_figure:
         return 240
     if n.is_table:
@@ -643,6 +706,12 @@ class MidRow:
     mode: str = "summary"
     display: str = ""
     est: int = 0  # skel-mode height estimate (px) for the un-hydrated spacer
+    #: List-rail structure (gr553310): how many ``<div class="sd-listrail">``
+    #: wrappers to close / open before this row renders — a ``ulist``/``olist``
+    #: container opens a rail backing its descendants instead of rendering as
+    #: a standalone empty card.
+    rail_close: int = 0
+    rail_open: int = 0
 
 
 @dataclass(slots=True)
@@ -660,6 +729,9 @@ class SmartView:
     order: list[list[Any]] = field(default_factory=list)
     #: All nodes (reading order) — the route searches these (`search_chunks`).
     nodes: list[ChunkNode] = field(default_factory=list)
+    #: ``</div>`` count still owed after ``middle``'s last row — list rails
+    #: left open by the final MidRow (gr553310).
+    rail_tail: int = 0
 
 
 def _left_toc(
@@ -820,6 +892,43 @@ def assemble_view(
                 MidRow(node=n, is_focus=(dist == 0), mode=mode, display=display)
             )
 
+    # List rails (gr553310): a ``ulist``/``olist`` container never renders its
+    # own empty card — it opens a left-rail wrapper that backs its descendants,
+    # so its item children read as a real list. Membership walks
+    # ``parent_chunk_id`` ancestors (not depth), so a nested list nests its
+    # rail inside the parent's, and an item still lands inside its rail when
+    # the container sits outside the rendered window (the fisheye middle
+    # slice, or a full-doc skel gap). Each row carries the number of rail
+    # ``<div>``s to close/open before it renders; ``rail_tail`` closes what
+    # stays open after the last.
+    rail_tail = 0
+    if middle:
+        by_id = {n.chunk_id: n for n in nodes}
+        rail_stack: list[int] = []
+        for m in middle:
+            n = m.node
+            chain: list[int] = []
+            seen = {n.chunk_id}
+            pid = n.parent_chunk_id
+            while pid is not None and pid not in seen:
+                seen.add(pid)
+                p = by_id.get(pid)
+                if p is None:
+                    break
+                if p.is_list_container:
+                    chain.append(p.chunk_id)
+                pid = p.parent_chunk_id
+            chain.reverse()
+            while rail_stack and rail_stack != chain[: len(rail_stack)]:
+                rail_stack.pop()
+                m.rail_close += 1
+            m.rail_open = len(chain) - len(rail_stack)
+            rail_stack = chain
+            if n.is_list_container:
+                m.rail_open += 1
+                rail_stack = [*chain, n.chunk_id]
+        rail_tail = len(rail_stack)
+
     # "relevant elsewhere" — highest-pressure chunks outside the fisheye window
     # (empty in full-doc mode, where everything is already shown). Kept on the
     # model for a future TOC-hover surfacing.
@@ -844,6 +953,7 @@ def assemble_view(
         elsewhere=elsewhere,
         order=[[n.dc, n.depth] for n in nodes],
         nodes=nodes,
+        rail_tail=rail_tail,
     )
 
 

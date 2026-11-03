@@ -2252,3 +2252,170 @@ def test_draft_alias_routes_carry_handle_idents(
         r = smartdraft_client.get(path, follow_redirects=False)
         assert r.status_code == 307
         assert r.headers["location"].startswith("/smartdraft/")
+
+
+# ── gr553310: a list container is the rail behind its items, not a card ───
+
+
+class ListDraftFakeStore(SmartDraftFakeStore):
+    """A ``ulist`` and an ``olist`` container — each empty text by design,
+    each owning three ``item`` children — bracketed by paragraphs."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._chunks = [
+            _sd_chunk(1, "heading", "List draft", 0),
+            _sd_chunk(2, "paragraph", "Lead-in paragraph.", 1),
+            _sd_chunk(3, "ulist", "", 1),
+            _sd_chunk(4, "item", "First bullet point.", 2, parent_chunk_id=3),
+            _sd_chunk(5, "item", "Second bullet point.", 2, parent_chunk_id=3),
+            _sd_chunk(6, "item", "Third bullet point.", 2, parent_chunk_id=3),
+            _sd_chunk(7, "olist", "", 1),
+            _sd_chunk(8, "item", "Step one.", 2, parent_chunk_id=7),
+            _sd_chunk(9, "item", "Step two.", 2, parent_chunk_id=7),
+            _sd_chunk(10, "item", "Step three.", 2, parent_chunk_id=7),
+            _sd_chunk(11, "paragraph", "After the lists.", 1),
+        ]
+
+
+@pytest.fixture
+def list_draft_client(tmp_path) -> TestClient:
+    app = create_app(
+        runtime=FakeRuntime(ListDraftFakeStore()),
+        web_config=WebConfig(corpus_dir=tmp_path),
+    )
+    return TestClient(app)
+
+
+def _div_segment(html: str, marker: str, nth: int = 0) -> str:
+    """Inner markup of the nth ``<div`` carrying ``marker`` — a balanced-tag
+    scan, since a plain split can't see where a div ends."""
+    start = -1
+    for _ in range(nth + 1):
+        start = html.index(marker, start + 1)
+    start = html.index(">", start) + 1
+    depth, i = 1, start
+    while depth:
+        open_at, close_at = html.find("<div", i), html.find("</div>", i)
+        assert close_at != -1
+        if open_at != -1 and open_at < close_at:
+            depth += 1
+            i = open_at + 4
+        else:
+            depth -= 1
+            i = close_at + 6
+    return html[start:i]
+
+
+def _rail_segment(html: str, nth: int = 0) -> str:
+    """Inner markup of the nth ``<div class="sd-listrail">`` — the list
+    container's rail wrapper (gr553310)."""
+    return _div_segment(html, 'class="sd-listrail"', nth)
+
+
+def test_list_container_items_render_inside_rail_not_empty_card(
+    list_draft_client: TestClient,
+) -> None:
+    """gr553310: the list container's ``item`` children render inside its
+    ``sd-listrail`` wrapper, and the container itself emits a slim head
+    strip — never the standalone empty card an empty-text chunk used to."""
+    r = list_draft_client.get("/smartdraft/sdt?relevance=0")
+    assert r.status_code == 200
+    html = r.text
+
+    # The container's element is the rail head, not the ordinary block card.
+    assert 'data-dc="dc3" class="sd-list-head' in html
+    assert 'data-dc="dc7" class="sd-list-head' in html
+    assert 'data-dc="dc3" class="block cursor-pointer' not in html
+    assert 'data-dc="dc7" class="block cursor-pointer' not in html
+
+    # The ulist rail wraps its head + all three items in reading order, and
+    # closes before the trailing paragraph.
+    rail = _rail_segment(html)
+    assert 'data-dc="dc3"' in rail and "list — 3 items" in rail
+    positions = [rail.index(f'data-dc="dc{cid}"') for cid in (4, 5, 6)]
+    assert positions == sorted(positions)
+    for text in ("First bullet point.", "Second bullet point.", "Third bullet point."):
+        assert text in rail
+    assert rail.count('class="sd-list-mark"') == 3
+    assert ">•</span>" in rail
+    assert 'data-dc="dc11"' not in rail
+
+    # The olist rail numbers its items and likewise closes cleanly.
+    orail = _rail_segment(html, nth=1)
+    assert 'data-dc="dc7"' in orail and "numbered list — 3 items" in orail
+    for marker in ("1.", "2.", "3."):
+        assert f'<span class="sd-list-mark">{marker}</span>' in orail
+    assert 'data-dc="dc11"' not in orail
+
+
+def test_list_container_focus_shows_label_not_empty_box(
+    list_draft_client: TestClient,
+) -> None:
+    """A focused container (ArrowLeft outdent lands on it — it stays a nav
+    stop) shows what it holds, not a dead empty text box — in the
+    relevance/fisheye mode, where its neighbours shrink to head/summary rows."""
+    r = list_draft_client.get("/smartdraft/sdt?focus=dc3&relevance=1")
+    assert r.status_code == 200
+    # The label sits in the focus card itself — the TOC row alone (which
+    # carries the same label) must not be able to pass this.
+    focus_card = _div_segment(r.text, 'id="mid-focus"')
+    assert "list — 3 items" in focus_card
+    # …and its items still render inside the rail around the focus card —
+    # dc4 is the +1 verbatim row (data-dc), dc5/dc6 ±2 summary anchors.
+    rail = _rail_segment(r.text)
+    assert 'data-dc="dc4"' in rail
+    assert "focus=dc5" in rail and "focus=dc6" in rail
+
+
+class ListSkelDraftFakeStore(SmartDraftFakeStore):
+    """The list sits past the ±``_FULLDOC_WINDOW`` server-render window — its
+    container AND items start as ``data-ph`` placeholders."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        filler = "lorem ipsum dolor sit amet " * 8
+        self._chunks = (
+            [_sd_chunk(1, "heading", "Big list draft", 0)]
+            + [
+                _sd_chunk(i, "paragraph", f"Para {i}. {filler} tail{i}end.", 1)
+                for i in range(2, 45)
+            ]
+            + [
+                _sd_chunk(45, "ulist", "", 1),
+                _sd_chunk(46, "item", "Far bullet one.", 2, parent_chunk_id=45),
+                _sd_chunk(47, "item", "Far bullet two.", 2, parent_chunk_id=45),
+                _sd_chunk(48, "item", "Far bullet three.", 2, parent_chunk_id=45),
+                _sd_chunk(49, "paragraph", f"After. {filler} tail49end.", 1),
+            ]
+        )
+
+
+@pytest.fixture
+def list_skel_client(tmp_path) -> TestClient:
+    app = create_app(
+        runtime=FakeRuntime(ListSkelDraftFakeStore()),
+        web_config=WebConfig(corpus_dir=tmp_path),
+    )
+    return TestClient(app)
+
+
+def test_list_placeholders_inside_rail_carry_data_dc(
+    list_skel_client: TestClient,
+) -> None:
+    """gr553310 follow-up: in full-doc mode a list beyond the render window
+    still sits inside its rail — as ``data-ph`` placeholders that carry
+    ``data-dc``, which is what RSVP's ``.sd-listrail [data-dc]`` block walk
+    matches, so read-aloud can't skip unhydrated list items and park early."""
+    r = list_skel_client.get("/smartdraft/sdt?relevance=0")
+    assert r.status_code == 200
+    rail = _rail_segment(r.text)
+    # Container + 3 items: all four placeholders, each addressable by dc.
+    assert rail.count("data-ph") == 4
+    for cid in (45, 46, 47, 48):
+        assert f'data-dc="dc{cid}"' in rail
+    # Nothing inside is pre-rendered — sd-list-item/sd-list-head arrive on
+    # /blocks hydration.
+    assert "sd-list-item" not in rail and "sd-list-head" not in rail
+    # The rail closes before the trailing paragraph's placeholder.
+    assert 'data-dc="dc49"' not in rail
