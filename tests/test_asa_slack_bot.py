@@ -230,3 +230,41 @@ def test_gate_off_restores_reply_to_everything(monkeypatch):
     client = _FakeClient()
     asyncio.run(instance._handle_message(_event("morning everyone"), client))
     assert len(client.posted) == 1
+
+
+def test_error_result_posts_neutral_status_and_logs_detail(monkeypatch, caplog):
+    """gr552866 review: same rule as Discord — the transport's error
+    string can carry raw stream-json (tool_use inputs, tool_result
+    payloads) from a failed run. Chat gets a neutral status; the detail
+    is logged server-side, never posted verbatim."""
+    import asyncio
+    import logging
+
+    instance, _captures = _make_bot(monkeypatch)
+    raw = (
+        'claude -p exited 1: {"type":"assistant","message":{"content":'
+        '[{"type":"tool_use","name":"Agent",'
+        '"input":{"prompt":"INTERNAL-DISPATCH"}}]}}\n'
+        '{"type":"user","message":{"content":'
+        '[{"type":"tool_result","content":"INTERNAL-RESULT"}]}}'
+    )
+    err = bot.LlmResult(
+        text="",
+        cost_usd=None,
+        turns_used=None,
+        model="t",
+        tier=bot.Tier.BIG,
+        error=raw,
+    )
+    monkeypatch.setattr(bot, "_dispatch_warm", lambda req: err)
+    client = _FakeClient()
+    with caplog.at_level(logging.ERROR, logger="asa_slack.bot"):
+        asyncio.run(instance._handle_message(_event("asa, what do you think?"), client))
+    assert client.updated
+    body = client.updated[0]["text"]
+    assert body == "(sorry — something went wrong; logged)"
+    for marker in ("tool_use", "tool_result", "INTERNAL-DISPATCH", "INTERNAL-RESULT"):
+        assert marker not in body
+    # The detail still lands server-side.
+    assert "INTERNAL-DISPATCH" in caplog.text
+    assert "turn failed" in caplog.text

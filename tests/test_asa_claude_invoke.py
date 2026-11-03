@@ -864,3 +864,233 @@ def test_rate_pause_does_not_degrade(monkeypatch: pytest.MonkeyPatch) -> None:
 
     assert [r.tier for r in seen] == [Tier.FRONTIER]
     assert result.error == _QUOTA_MSG
+
+
+# ── gr552866: the reply is an allowlist of the turn's final text ──────
+#
+# A turn's stream carries the whole transcript — tool_use inputs,
+# tool_result echoes, subagent (``parent_tool_use_id``) turns, task and
+# system notices. Only the main turn's own text blocks may reach the
+# reply. The gripe's posted message was the full turn: internal tool
+# content reached the outgoing text through ``str()`` on a non-string
+# ``result`` field and through sidechain assistant events accumulating
+# unchecked.
+
+
+def _bg_dispatch_events(
+    final_text: str | None = "Research dispatched.",
+) -> list[dict[str, Any]]:
+    """The stream-json of a background-agent dispatch turn (gr552866).
+
+    Mirrors the real shape: the ``Agent(run_in_background)`` dispatch is
+    an assistant ``tool_use`` block, its launch ack returns as a user
+    ``tool_result``, the task's own internal turns stream through tagged
+    ``parent_tool_use_id`` (its text, tool calls and results are
+    INTERNAL), a lifecycle ``system`` subtype arrives, and the terminal
+    ``result`` carries the reply.
+    """
+    events: list[dict[str, Any]] = [
+        {"type": "system", "subtype": "init", "session_id": "sess-bg"},
+        {
+            "type": "assistant",
+            "message": {
+                "content": [
+                    {
+                        "type": "tool_use",
+                        "id": "toolu_bg1",
+                        "name": "Agent",
+                        "input": {
+                            "subagent_type": "researcher",
+                            "run_in_background": True,
+                            "prompt": "INTERNAL-DISPATCH-BRIEF",
+                        },
+                    }
+                ]
+            },
+        },
+        {
+            "type": "user",
+            "message": {
+                "content": [
+                    {
+                        "type": "tool_result",
+                        "tool_use_id": "toolu_bg1",
+                        "content": "INTERNAL-LAUNCH-ACK",
+                    }
+                ]
+            },
+        },
+        {"type": "system", "subtype": "task_started", "task_id": "task-9"},
+        {
+            "type": "assistant",
+            "parent_tool_use_id": "toolu_bg1",
+            "message": {
+                "content": [
+                    {"type": "text", "text": "INTERNAL-AGENT-PROSE"},
+                    {
+                        "type": "tool_use",
+                        "name": "mcp__perplexity__search",
+                        "input": {"query": "INTERNAL-QUERY"},
+                    },
+                ]
+            },
+        },
+        {
+            "type": "user",
+            "parent_tool_use_id": "toolu_bg1",
+            "message": {
+                "content": [
+                    {
+                        "type": "tool_result",
+                        "tool_use_id": "toolu_x",
+                        "content": "INTERNAL-TOOL-RESULT",
+                    }
+                ]
+            },
+        },
+    ]
+    if final_text is not None:
+        events.append(
+            {
+                "type": "assistant",
+                "message": {"content": [{"type": "text", "text": final_text}]},
+            }
+        )
+    events.append({"type": "result", "subtype": "success", "result": final_text})
+    return events
+
+
+def test_bg_dispatch_turn_replies_only_with_main_text(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """gr552866: the backgrounded task's own turns — streamed through
+    tagged ``parent_tool_use_id`` — used to land in the reply: prose,
+    tool names and all. Only the main turn's text may surface."""
+    monkeypatch.setattr(
+        claude_agent, "run_claude_async", _events_stub(_bg_dispatch_events())
+    )
+    progress: list[tuple] = []
+
+    async def on_progress(evt: tuple) -> None:
+        progress.append(evt)
+
+    result = asyncio.run(
+        invoke(_cfg(), "sys", "hi", conv_slug="conv-bg1", on_progress=on_progress)
+    )
+
+    assert result.text == "Research dispatched."
+    assert result.tool_uses == ["Agent"]
+    # No sidechain event fed progress either — internal tool calls stay
+    # internal (the task's dispatch is all a user should see).
+    emitted_tools = [p[1] for p in progress if p[0] == "tool_use"]
+    assert emitted_tools == ["Agent"]
+    for marker in (
+        "INTERNAL-AGENT-PROSE",
+        "INTERNAL-QUERY",
+        "INTERNAL-TOOL-RESULT",
+        "INTERNAL-LAUNCH-ACK",
+        "INTERNAL-DISPATCH-BRIEF",
+    ):
+        assert marker not in result.text
+
+
+def test_turn_with_only_internal_content_yields_no_raw_reply(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """gr552866: a turn that streamed only the dispatch and the task's
+    internal turns — no main-agent text at all — yields an empty reply
+    (bot.py renders it as the neutral "(no reply — …)" status), never
+    the task's internal transcript."""
+    monkeypatch.setattr(
+        claude_agent,
+        "run_claude_async",
+        _events_stub(_bg_dispatch_events(final_text=None)),
+    )
+
+    result = asyncio.run(
+        invoke(_cfg(), "sys", "hi", conv_slug="conv-bg2", on_progress=None)
+    )
+
+    assert result.text == ""
+    assert result.error is None
+    assert result.tool_uses == ["Agent"]
+
+
+def test_result_event_block_list_yields_only_its_text(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """gr552866 repro — the posted message itself: a ``result`` field
+    arriving as the final message's content blocks went through
+    ``str()``, so the reply was the raw repr of tool_use/tool_result
+    blocks. Only its ``text`` blocks may land."""
+    events: list[dict[str, Any]] = [
+        {
+            "type": "assistant",
+            "message": {
+                "content": [
+                    {
+                        "type": "tool_use",
+                        "name": "Agent",
+                        "input": {"prompt": "INTERNAL-BRIEF"},
+                    }
+                ]
+            },
+        },
+        {
+            "type": "user",
+            "message": {
+                "content": [{"type": "tool_result", "content": "INTERNAL-RESULT"}]
+            },
+        },
+        {
+            "type": "result",
+            "subtype": "success",
+            "result": [
+                {"type": "text", "text": "Done."},
+                {
+                    "type": "tool_use",
+                    "name": "Agent",
+                    "input": {"prompt": "INTERNAL-BRIEF"},
+                },
+                {"type": "tool_result", "content": "INTERNAL-RESULT"},
+            ],
+        },
+    ]
+    monkeypatch.setattr(claude_agent, "run_claude_async", _events_stub(events))
+
+    result = asyncio.run(
+        invoke(_cfg(), "sys", "hi", conv_slug="conv-bg3", on_progress=None)
+    )
+
+    assert result.text == "Done."
+    for marker in ("tool_use", "tool_result", "INTERNAL-BRIEF", "INTERNAL-RESULT"):
+        assert marker not in result.text
+
+
+def test_user_tool_result_events_never_reach_text(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """tool_result echoes — main-turn or sidechain — are ignored wholesale:
+    a partial stream (no result event) still ends with only main text."""
+    events: list[dict[str, Any]] = [
+        {
+            "type": "assistant",
+            "message": {"content": [{"type": "text", "text": "safe answer"}]},
+        },
+        {
+            "type": "user",
+            "message": {
+                "content": [{"type": "tool_result", "content": "INTERNAL-RESULT"}]
+            },
+            "tool_use_result": {"stdout": "INTERNAL-RESULT"},
+        },
+        # No result event — a truncated/partial stream.
+    ]
+    monkeypatch.setattr(claude_agent, "run_claude_async", _events_stub(events))
+
+    result = asyncio.run(
+        invoke(_cfg(), "sys", "hi", conv_slug="conv-bg4", on_progress=None)
+    )
+
+    assert result.text == "safe answer"
+    assert "INTERNAL-RESULT" not in result.text

@@ -71,6 +71,7 @@ from precis.utils.claude_agent import (
     AgentResult,
     call_claude_agent,
     call_claude_agent_async,
+    stream_final_text,
 )
 from precis.utils.claude_p import (
     ClaudePResult,
@@ -5714,9 +5715,14 @@ def _dispatch_openai_tools(req: LlmRequest, model: str) -> LlmResult:
 def _error_result(exc: ClaudeProcessError, *, model: str, tier: Tier) -> LlmResult:
     """Fold a transport failure into a normalized error result.
 
-    Surfaces any partial stdout the wrapper captured as ``text`` so a
-    caller keeps a recoverable-exhaustion answer while still seeing the
-    ``error`` — a :class:`ClaudePUnparseableError` instead surfaces the
+    Surfaces the partial stdout's *final text* — extracted via
+    :func:`~precis.utils.claude_agent.stream_final_text`, which pulls the
+    reply out of a stream-json transcript and never returns its raw
+    event lines (gr552866: a failed agent run's stdout is the whole
+    turn, tool blocks included, and was once posted verbatim). A
+    non-stream stdout passes through, so a caller keeps a recoverable-
+    exhaustion answer while still seeing the ``error`` — a
+    :class:`ClaudePUnparseableError` instead surfaces the
     envelope-stripped reply plus the cost/usage the envelope carried, so
     a failed call's spend is never invisible (gr543828). A pre-flight
     refusal (MCP gate not ready, CLI missing) ran no model turn, so its
@@ -5732,7 +5738,12 @@ def _error_result(exc: ClaudeProcessError, *, model: str, tier: Tier) -> LlmResu
     preflight = getattr(exc, "mcp_not_ready", False) or getattr(
         exc, "binary_missing", False
     )
-    text = getattr(exc, "stdout", "") or ""
+    raw_stdout = getattr(exc, "stdout", "") or ""
+    # A failed agent run's stdout is the raw stream-json transcript —
+    # tool_use inputs, tool_result payloads, task notices — not reply
+    # text. Surface only its final text (gr552866); a non-stream stdout
+    # (text output, a stub) passes through unchanged.
+    text = stream_final_text(raw_stdout)
     cost_usd: float | None = None
     usage: dict[str, int | None] = {}
     env_is_error: bool | None = None
@@ -5747,7 +5758,7 @@ def _error_result(exc: ClaudeProcessError, *, model: str, tier: Tier) -> LlmResu
         usage = exc.usage or {}
         env_is_error = exc.is_error
         if reply is None or env_is_error is None:
-            u_reply, u_cost, u_usage, u_is_error = unwrap_envelope(text)
+            u_reply, u_cost, u_usage, u_is_error = unwrap_envelope(raw_stdout)
             if reply is None:
                 reply = u_reply
             if cost_usd is None:

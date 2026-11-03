@@ -122,8 +122,11 @@ def exit_detail(stdout: str, stderr: str, *, limit: int = 400) -> str:
     That is what a dead ``ANTHROPIC_API_KEY`` looked like from the
     diagnose lane for an entire debugging session (gr211457). Prefer
     stderr when it carries anything; otherwise fall back to stdout's
-    *tail* — under ``--output-format stream-json`` the terminal
-    ``{"type":"result"}`` event (which holds the error text) is last.
+    *tail* — except under ``--output-format stream-json``, where the
+    raw tail is internal transcript (``tool_use`` inputs, ``tool_result``
+    payloads, task notices) and this string reaches chat surfaces on a
+    dead turn (gr552866): extract the terminal result event's error
+    text or the turn's final assistant text instead.
     """
     err = (stderr or "").strip()
     if err:
@@ -131,7 +134,49 @@ def exit_detail(stdout: str, stderr: str, *, limit: int = 400) -> str:
     out = (stdout or "").strip()
     if not out:
         return "(no output on stdout or stderr)"
-    return out[-limit:] if len(out) > limit else out
+    return _stdout_detail(out, limit)
+
+
+def _stdout_detail(out: str, limit: int) -> str:
+    """``exit_detail``'s stdout branch.
+
+    Plain-text output still tails from the end (the ``result`` event is
+    last under stream-json, and plain errors end the stream). A
+    stream-json transcript yields only its failure prose — never raw
+    event lines (gr552866).
+    """
+    # Deferred import: precis.utils.claude_agent imports THIS module at
+    # top level, so its stream helpers can only be bound at call time.
+    from precis.utils.claude_agent import (
+        _has_stream_events,
+        _last_result_event,
+        _result_field_text,
+        stream_final_text,
+    )
+
+    if not _has_stream_events(out):
+        return out[-limit:] if len(out) > limit else out
+    detail = ""
+    last = _last_result_event(out)
+    if last is not None:
+        detail = _result_field_text(last.get("result")).strip()
+        if not detail:
+            errs = last.get("errors")
+            if isinstance(errs, str):
+                detail = errs.strip()
+            elif isinstance(errs, list):
+                detail = "; ".join(
+                    e.strip() for e in errs if isinstance(e, str) and e.strip()
+                )
+        if not detail:
+            err = last.get("error")
+            if isinstance(err, str):
+                detail = err.strip()
+    if not detail:
+        detail = stream_final_text(out).strip()
+    return (
+        detail[:limit] if detail else "(stream-json transcript carried no final text)"
+    )
 
 
 #: Marks the subprocess env as a NESTED model call rather than a user session.

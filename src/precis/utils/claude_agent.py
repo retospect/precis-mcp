@@ -1014,25 +1014,31 @@ def _build_agent_result(res: Any, *, duration_s: float) -> AgentResult:
         # turns 0/None ∧ tool_calls==0 ∧ no text) hinges on this being a
         # *definitive* zero — only the stream-json path can supply it.
         tool_calls = _count_tool_use_events(res.stdout or "")
-        # Prefer the result event's ``result`` field; but on an exhaustion
-        # cutoff (max_turns / budget) it is often null/empty, in which case
-        # falling back to ``res.stdout`` would dump the entire JSON stream
-        # as the "answer". Walk the stream for the last assistant text
-        # instead, only dropping to raw stdout when there is none.
-        result_text = last_result.get("result")
-        if isinstance(result_text, str) and result_text.strip():
-            final_text = result_text
-        else:
-            final_text = _last_assistant_text(res.stdout) or res.stdout
+        # Prefer the result event's ``result`` field, allowlisted to
+        # actual text. On an exhaustion cutoff — or a turn that ended on
+        # a tool call, e.g. a backgrounded Agent dispatch — it is null
+        # or non-text; dropping to raw ``res.stdout`` here once posted
+        # the entire JSON turn (tool_use inputs, tool_result payloads)
+        # as the "answer" (gr552866). Fall back to the last main-turn
+        # assistant text, else nothing.
+        final_text = _result_field_text(last_result.get("result"))
+        if not final_text.strip():
+            final_text = _last_assistant_text(res.stdout) or ""
     else:
         # text-format path or stub-tests: regex over stderr for cost
         # (legacy Claude Code), final_text is the raw stdout.
         cost_usd = _extract_cost_usd(res.stderr or "")
         turns_used = _extract_turns_used(res.stderr or "")
-        final_text = res.stdout
-        # No stream to count — leave tool_calls unknown (never a false
-        # zero) so the empty-result assertion stays inert on this path.
-        tool_calls = None
+        if _has_stream_events(res.stdout or ""):
+            # A stream-json stdout with no result event is a truncated
+            # turn — its raw events are never the reply (gr552866).
+            final_text = _last_assistant_text(res.stdout) or ""
+            tool_calls = _count_tool_use_events(res.stdout or "")
+        else:
+            final_text = res.stdout
+            # No stream to count — leave tool_calls unknown (never a false
+            # zero) so the empty-result assertion stays inert on this path.
+            tool_calls = None
 
     usage = _stream_usage(res.stdout or "")
 
@@ -1300,20 +1306,81 @@ def compact_stream_transcript(stdout: str) -> str:
     return "\n".join(out)
 
 
+def _is_sidechain_event(ev: dict[str, Any]) -> bool:
+    """True for a subagent's internal turn events — never reply content.
+
+    A foreground or backgrounded ``Agent`` task streams its own
+    assistant/user messages tagged with the dispatching ``tool_use`` id
+    (``parent_tool_use_id``) or a sidechain flag; their text and tool
+    calls are the task's internal transcript, not the main agent's
+    user-facing reply (gr552866).
+    """
+    return bool(
+        ev.get("parent_tool_use_id") or ev.get("isSidechain") or ev.get("is_sidechain")
+    )
+
+
+def _result_field_text(value: Any) -> str:
+    """User-facing text carried by a result event's ``result`` field.
+
+    Allowlist (gr552866): a plain string passes through; a content-block
+    list yields only its ``text`` blocks' text — ``tool_use`` inputs,
+    ``tool_result`` payloads, thinking blocks and task notifications
+    never reach a reply surface.
+    """
+    if isinstance(value, str):
+        return value
+    if isinstance(value, list):
+        return "".join(
+            b.get("text", "")
+            for b in value
+            if isinstance(b, dict) and b.get("type") == "text"
+        )
+    return ""
+
+
+def _has_stream_events(stdout: str) -> bool:
+    """stdout parses as a ``--output-format stream-json`` transcript.
+
+    One line that decodes to a dict with a string ``type`` is enough —
+    used to refuse raw-stdout fallbacks (gr552866): a truncated or
+    result-less stream is internal transcript, never the reply text.
+    """
+    import json as _json
+
+    for line in (stdout or "").splitlines():
+        stripped = line.strip()
+        if not stripped.startswith("{"):
+            continue
+        try:
+            ev = _json.loads(stripped)
+        except _json.JSONDecodeError:
+            continue
+        if isinstance(ev, dict) and isinstance(ev.get("type"), str):
+            return True
+    return False
+
+
 def stream_final_text(stdout: str) -> str:
     """The assistant's final text from a ``stream-json`` stdout (the
     trailing ``result`` event's ``result`` field).
 
-    Falls back to the **raw stdout** when there's no result event — i.e.
-    text-format output or a stub test that prints canned text — so a
-    caller that switched its invocation to ``stream-json`` stays correct
-    on legacy / stub output (the conclusion parser still sees plain text).
+    Falls back to the **raw stdout** only when the stdout isn't a
+    stream-json transcript — i.e. text-format output or a stub test
+    that prints canned text — so a caller that switched its invocation
+    to ``stream-json`` stays correct on legacy / stub output (the
+    conclusion parser still sees plain text). On a stream the raw
+    transcript is never the reply (gr552866): a missing or non-text
+    ``result`` yields the last main-turn assistant text — or "".
     """
     ev = _last_result_event(stdout or "")
     if ev is not None:
-        r = ev.get("result")
-        if isinstance(r, str):
-            return r
+        text = _result_field_text(ev.get("result"))
+        if text.strip():
+            return text
+        return _last_assistant_text(stdout or "") or ""
+    if _has_stream_events(stdout or ""):
+        return _last_assistant_text(stdout or "") or ""
     return stdout or ""
 
 
@@ -1377,8 +1444,10 @@ def _last_assistant_text(stdout: str) -> str | None:
     and concatenates its text blocks. Used as the final-text fallback
     when the trailing ``result`` event carries no usable ``result``
     string (e.g. a max-turns cutoff), so callers get the model's actual
-    last words instead of the raw JSON stream. Returns ``None`` when no
-    assistant text is present.
+    last words instead of the raw JSON stream. Sidechain events — a
+    subagent's own turns, tagged ``parent_tool_use_id`` — are skipped:
+    their text is internal transcript, never the reply (gr552866).
+    Returns ``None`` when no main-turn assistant text is present.
     """
     import json as _json
 
@@ -1391,6 +1460,9 @@ def _last_assistant_text(stdout: str) -> str | None:
         except _json.JSONDecodeError:
             continue
         if not isinstance(ev, dict) or ev.get("type") != "assistant":
+            continue
+        if _is_sidechain_event(ev):
+            # A subagent's internal turn text — never the reply (gr552866).
             continue
         msg = ev.get("message")
         content = msg.get("content") if isinstance(msg, dict) else ev.get("content")

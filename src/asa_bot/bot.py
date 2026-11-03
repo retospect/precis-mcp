@@ -450,7 +450,15 @@ class AsaBot(discord.Client):
                     except discord.HTTPException:
                         pass
                 return True
-            body = f"(no reply — {result.error or 'empty response'})"
+            if result.error:
+                # The transport's error string can carry raw stream-json —
+                # tool_use inputs, tool_result payloads — from the failed
+                # run. Log it server-side; the user gets a neutral status
+                # (gr552866).
+                log.error("turn failed (slug=%s): %s", slug, result.error)
+                body = "(no reply — the run failed; logged)"
+            else:
+                body = "(no reply — empty response)"
             await self._post_reply(message, progress_msg, body, result)
             return False
         await self._post_reply(message, progress_msg, body, result)

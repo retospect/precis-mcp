@@ -11,6 +11,7 @@ subprocess.
 from __future__ import annotations
 
 import asyncio
+import logging
 import sys
 from typing import Any
 
@@ -20,6 +21,7 @@ pytest.importorskip("discord")
 
 from asa_bot import bot as bot_mod
 from asa_bot.bot import AsaBot
+from asa_bot.claude_invoke import ClaudeResult
 from asa_bot.config import (
     CaptureConfig,
     Config,
@@ -48,6 +50,7 @@ class _FakeMessage:
         self.content = "hi"
         self.author = object()
         self.channel = _FakeChannel()
+        self.guild = None
         self.reactions: list[str] = ["🔄"]
 
     async def add_reaction(self, emoji: str) -> None:
@@ -203,6 +206,52 @@ def test_cron_prompt_closes_log_on_pre_invoke_cancel(
         asyncio.run(bot._deliver_cron_prompt("conv-x", "payload", cron_id=1))
 
     assert closed == [9]
+
+
+def test_error_result_posts_neutral_status_and_logs_detail(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """gr552866 review: a dead run's ``result.error`` can carry raw
+    stream-json — tool_use inputs, tool_result payloads — copied out of
+    the transport exception by ``claude_invoke``. Chat gets a neutral
+    status; the detail is logged server-side, never posted verbatim."""
+    raw = (
+        'claude -p exited 1: {"type":"assistant","message":{"content":'
+        '[{"type":"tool_use","name":"Agent",'
+        '"input":{"prompt":"INTERNAL-DISPATCH"}}]}}\n'
+        '{"type":"user","message":{"content":'
+        '[{"type":"tool_result","content":"INTERNAL-RESULT"}]}}'
+    )
+    monkeypatch.setattr(bot_mod, "open_turn_log", lambda *a, **kw: 11)
+    monkeypatch.setattr(bot_mod, "close_turn_log", lambda *a, **kw: None)
+
+    async def speaker(db_url: Any, author: Any) -> tuple[str, None]:
+        return "rocky", None
+
+    monkeypatch.setattr("asa_bot.identity.resolve_speaker", speaker)
+
+    result = ClaudeResult()
+    result.error = raw
+
+    async def fake_invoke(*a: Any, **kw: Any) -> Any:
+        return result
+
+    monkeypatch.setattr(bot_mod, "claude_invoke", fake_invoke)
+
+    bot = _turn_bot(monkeypatch)
+    msg = _FakeMessage()
+    with caplog.at_level(logging.ERROR, logger="asa_bot.bot"):
+        ok = asyncio.run(bot._handle_one("conv-x", msg))
+
+    assert ok is False
+    assert len(msg.channel.sent) == 1
+    body = msg.channel.sent[0]
+    assert body == "(no reply — the run failed; logged)"
+    for marker in ("tool_use", "tool_result", "INTERNAL-DISPATCH", "INTERNAL-RESULT"):
+        assert marker not in body
+    # The detail still lands server-side.
+    assert "INTERNAL-DISPATCH" in caplog.text
+    assert "turn failed" in caplog.text
 
 
 # A precis "server" that reads requests and never answers: the hung leg.

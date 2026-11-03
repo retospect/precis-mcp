@@ -2017,3 +2017,194 @@ def test_compact_stream_transcript_strips_duplicates() -> None:
     # Non-stream (text/stub) input passes through verbatim.
     assert compact_stream_transcript("plain text\nnot json") == ("plain text\nnot json")
     assert compact_stream_transcript("") == ""
+
+
+# ── gr552866: final text is an allowlist — never the raw turn ─────────
+#
+# A turn that dispatched a backgrounded Agent (or otherwise ended on a
+# tool call) used to fall back to the raw stdout stream — every
+# ``tool_use`` input, ``tool_result`` payload and task-notice line — as
+# the "reply" whenever the result event's ``result`` field was unusable.
+# That stream is what reached Discord verbatim (``result_from_agent`` →
+# ``LlmResult.text`` → the reply body). The fix: only the turn's own
+# final text blocks may surface; internal events never do.
+
+
+def _bg_dispatch_stream(*, closing_text: str | None) -> str:
+    """The stream-json a background-agent dispatch turn emits.
+
+    Mirrors the real shape: the dispatch is an assistant ``tool_use``
+    block, the launch ack returns as a user ``tool_result``, the task's
+    own internal turns stream through tagged ``parent_tool_use_id``,
+    lifecycle surfaces as ``system`` subtypes, and a turn that ended on
+    the dispatch carries ``result: null`` in the terminal event.
+    """
+    main_content: list[dict[str, Any]] = [
+        {
+            "type": "tool_use",
+            "id": "toolu_bg1",
+            "name": "Agent",
+            "input": {
+                "subagent_type": "researcher",
+                "run_in_background": True,
+                "prompt": "INTERNAL-DISPATCH-BRIEF",
+            },
+        }
+    ]
+    if closing_text is not None:
+        main_content.insert(0, {"type": "text", "text": closing_text})
+    return _stream(
+        [
+            {"type": "system", "subtype": "init", "session_id": "sess-bg"},
+            {"type": "assistant", "message": {"content": main_content}},
+            {
+                "type": "user",
+                "message": {
+                    "content": [
+                        {
+                            "type": "tool_result",
+                            "tool_use_id": "toolu_bg1",
+                            "content": "INTERNAL-LAUNCH-ACK",
+                        }
+                    ]
+                },
+            },
+            {"type": "system", "subtype": "task_started", "task_id": "task-9"},
+            {
+                "type": "assistant",
+                "parent_tool_use_id": "toolu_bg1",
+                "message": {
+                    "content": [
+                        {"type": "text", "text": "INTERNAL-AGENT-PROSE"},
+                        {
+                            "type": "tool_use",
+                            "name": "mcp__perplexity__search",
+                            "input": {"query": "INTERNAL-QUERY"},
+                        },
+                    ]
+                },
+            },
+            {
+                "type": "user",
+                "parent_tool_use_id": "toolu_bg1",
+                "message": {
+                    "content": [
+                        {
+                            "type": "tool_result",
+                            "tool_use_id": "toolu_x",
+                            "content": "INTERNAL-TOOL-RESULT",
+                        }
+                    ]
+                },
+            },
+            {
+                "type": "result",
+                "subtype": "success",
+                "is_error": False,
+                "result": None,
+                "total_cost_usd": 0.05,
+                "num_turns": 2,
+            },
+        ]
+    )
+
+
+def test_bg_dispatch_turn_with_no_text_yields_no_raw_stream(stub_bin: Path) -> None:
+    """gr552866 repro: a turn that ended on the background dispatch
+    (``result`` null, no main-turn text) must reply empty — never the
+    raw JSON turn's tool blocks."""
+    _write_stream_stub(stub_bin, stdout=_bg_dispatch_stream(closing_text=None))
+    res = call_claude_agent("do")
+    assert res.final_text == ""
+    for marker in (
+        '"type"',
+        "tool_use",
+        "tool_result",
+        "INTERNAL-DISPATCH-BRIEF",
+        "INTERNAL-LAUNCH-ACK",
+        "INTERNAL-AGENT-PROSE",
+        "INTERNAL-QUERY",
+        "INTERNAL-TOOL-RESULT",
+    ):
+        assert marker not in res.final_text
+
+
+def test_bg_dispatch_turn_yields_only_main_turn_text(stub_bin: Path) -> None:
+    """… and when the turn DID write closing text, the reply is exactly
+    that — the sidechain's own assistant text (a ``parent_tool_use_id``
+    event, streamed after the closing message) must not win the
+    last-assistant-text walk either."""
+    _write_stream_stub(
+        stub_bin, stdout=_bg_dispatch_stream(closing_text="Research is running.")
+    )
+    res = call_claude_agent("do")
+    assert res.final_text == "Research is running."
+
+
+def test_stream_final_text_no_result_event_never_returns_raw_stream() -> None:
+    """``stream_final_text``'s raw-stdout fallback is for non-stream
+    output only — a truncated stream yields its last safe text, else ""."""
+    from precis.utils.claude_agent import stream_final_text
+
+    stream = _stream(
+        [
+            {
+                "type": "assistant",
+                "message": {
+                    "content": [
+                        {
+                            "type": "tool_use",
+                            "name": "Agent",
+                            "input": {"prompt": "INTERNAL-BRIEF"},
+                        }
+                    ]
+                },
+            },
+            {
+                "type": "user",
+                "message": {
+                    "content": [{"type": "tool_result", "content": "INTERNAL-RESULT"}]
+                },
+            },
+        ]
+    )
+    assert stream_final_text(stream) == ""
+    # A partial stream keeps its safe text — but never the sidechain's.
+    stream = _stream(
+        [
+            {
+                "type": "assistant",
+                "message": {"content": [{"type": "text", "text": "partial"}]},
+            },
+            {
+                "type": "assistant",
+                "parent_tool_use_id": "toolu_bg",
+                "message": {"content": [{"type": "text", "text": "INTERNAL"}]},
+            },
+        ]
+    )
+    assert stream_final_text(stream) == "partial"
+
+
+def test_stream_final_text_result_block_list_yields_only_text() -> None:
+    """A ``result`` field that arrives as content blocks yields its text
+    blocks only — ``tool_use``/``tool_result`` blocks are not the reply."""
+    from precis.utils.claude_agent import stream_final_text
+
+    stream = _stream(
+        [
+            {
+                "type": "result",
+                "subtype": "success",
+                "result": [
+                    {"type": "text", "text": "Done."},
+                    {
+                        "type": "tool_use",
+                        "name": "Agent",
+                        "input": {"prompt": "INTERNAL-BRIEF"},
+                    },
+                ],
+            }
+        ]
+    )
+    assert stream_final_text(stream) == "Done."

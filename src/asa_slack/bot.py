@@ -381,7 +381,12 @@ class AsaSlack:
         # 5. Reply.
         body = (result.text or "").strip()
         if result.error:
-            body = f"(sorry — something went wrong: {result.error[:300]})"
+            # The transport's error string can carry raw stream-json —
+            # tool_use inputs, tool_result payloads — from the failed
+            # run. Log it server-side; the user gets a neutral status
+            # (gr552866).
+            log.error("asa-slack: turn failed (slug=%s): %s", slug, result.error)
+            body = "(sorry — something went wrong; logged)"
         if not body:
             body = "(no reply)"
         chunks = split_message(body, limit=self._cfg.slack.max_message_chars) or [body]

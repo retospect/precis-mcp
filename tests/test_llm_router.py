@@ -7674,3 +7674,101 @@ def test_resolve_profile_ops_empty_is_not_absent(
     assert ungated is not None and ungated.ops is None
     assert empty is not None and empty.ops == frozenset()
     assert listed is not None and listed.ops == frozenset({"plan_tick"})
+
+
+# ── gr552866: a failed agent run's stdout is the raw stream, not text ──
+
+
+def test_error_result_agent_stream_surfaces_only_final_text() -> None:
+    """gr552866: a ``claude_agent`` failure's captured stdout is the raw
+    stream-json transcript — tool_use inputs, tool_result payloads.
+    ``_error_result`` surfaced it verbatim as ``text``; the chain lane
+    (and Slack) then posted the whole turn. Only final text may ride
+    through."""
+    from precis.utils.claude_agent import ClaudeAgentError
+    from precis.utils.llm.router import _error_result
+
+    stream = "\n".join(
+        json.dumps(e)
+        for e in [
+            {"type": "system", "subtype": "init"},
+            {
+                "type": "assistant",
+                "message": {"content": [{"type": "text", "text": "partial answer"}]},
+            },
+            {
+                "type": "user",
+                "message": {
+                    "content": [
+                        {
+                            "type": "tool_result",
+                            "tool_use_id": "t1",
+                            "content": "INTERNAL-RESULT",
+                        }
+                    ]
+                },
+            },
+            {
+                "type": "result",
+                "subtype": "error_during_execution",
+                "is_error": True,
+            },
+        ]
+    )
+    exc = ClaudeAgentError(
+        "claude -p (agent) exited 1", stdout=stream, stderr="", returncode=1
+    )
+    res = _error_result(exc, model="m", tier=Tier.BIG)
+    assert res.text == "partial answer"
+    assert "INTERNAL-RESULT" not in res.text
+    assert '"type"' not in res.text
+
+
+def test_error_result_agent_stream_without_text_yields_empty() -> None:
+    """gr552866: a failed run with no assistant text anywhere yields "" —
+    the raw stream never stands in as the reply."""
+    from precis.utils.claude_agent import ClaudeAgentError
+    from precis.utils.llm.router import _error_result
+
+    stream = "\n".join(
+        json.dumps(e)
+        for e in [
+            {"type": "system", "subtype": "init"},
+            {
+                "type": "assistant",
+                "message": {
+                    "content": [
+                        {
+                            "type": "tool_use",
+                            "name": "Agent",
+                            "input": {"prompt": "INTERNAL-BRIEF"},
+                        }
+                    ]
+                },
+            },
+            {
+                "type": "user",
+                "message": {
+                    "content": [{"type": "tool_result", "content": "INTERNAL-RESULT"}]
+                },
+            },
+        ]
+    )
+    exc = ClaudeAgentError(
+        "claude -p (agent) exited 1", stdout=stream, stderr="", returncode=1
+    )
+    res = _error_result(exc, model="m", tier=Tier.BIG)
+    assert res.text == ""
+
+
+def test_error_result_plain_stdout_still_passes_through() -> None:
+    """A non-stream stdout (text output, a stub) is the reply — the
+    allowlist only kicks in once the payload is recognizably a stream."""
+    from precis.utils.claude_agent import ClaudeAgentError
+    from precis.utils.llm.router import _error_result
+
+    exc = ClaudeAgentError(
+        "claude -p (agent) exited 1", stdout="partial", stderr="", returncode=1
+    )
+    res = _error_result(exc, model="m", tier=Tier.BIG)
+    assert res.text == "partial"

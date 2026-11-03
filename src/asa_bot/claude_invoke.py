@@ -85,6 +85,7 @@ from asa_bot.oauth import ensure_oauth_token
 from precis import agentlog
 from precis.acting_user import ENV_VAR as ACTING_USER_ENV
 from precis.acting_user import actor_for
+from precis.utils.claude_agent import _is_sidechain_event, _result_field_text
 from precis.utils.llm.degrade import (
     degrade_steps,
     is_budget_pause,
@@ -888,15 +889,31 @@ async def _handle_event(
     if etype == "system" and evt.get("subtype") == "init":
         result.session_id = evt.get("session_id")
     elif etype == "assistant":
-        msg = evt.get("message", {})
+        if _is_sidechain_event(evt):
+            # A subagent's internal turn — a foreground or backgrounded
+            # Agent task streams its own assistant events tagged with the
+            # dispatching tool_use id. Its text, tool calls and progress
+            # are internal transcript, never the user-facing reply
+            # (gr552866).
+            return
+        msg = evt.get("message")
+        if not isinstance(msg, dict):
+            msg = {}
         # Accumulate text + record tool uses. Emit text_partial so the
         # Discord progress indicator can heartbeat between tool calls
         # (otherwise it sits frozen while claude is generating prose
         # and the user thinks the bot stalled). Tool inputs ride along
         # with tool_use so `mcp__precis__get(kind='paper', id='…')` can
         # render in the progress message instead of a bare tool name.
+        content = msg.get("content", evt.get("content"))
+        if isinstance(content, str):
+            content = [{"type": "text", "text": content}]
+        if not isinstance(content, list):
+            content = []
         text_added = False
-        for block in msg.get("content", []) or []:
+        for block in content:
+            if not isinstance(block, dict):
+                continue
             btype = block.get("type")
             if btype == "text":
                 chunk = block.get("text", "")
@@ -923,9 +940,12 @@ async def _handle_event(
         result.stop_reason = evt.get("subtype") or evt.get("stop_reason")
         result.duration_ms = evt.get("duration_ms")
         _absorb_usage(result, evt.get("usage") or {})
-        # The terminal result may carry the final text too.
-        if not result.text and (rtext := evt.get("result")):
-            result.text = str(rtext)
+        # The terminal result may carry the final text — allowlisted to
+        # actual text: a ``str()`` over a non-string ``result`` (a
+        # content-block list, a structured payload) posts the raw turn —
+        # tool blocks included — as the reply (gr552866).
+        if not result.text:
+            result.text = _result_field_text(evt.get("result"))
     elif etype == "error":
         result.error = str(evt.get("message") or evt)
 

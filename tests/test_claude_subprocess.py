@@ -190,6 +190,98 @@ def test_exit_detail_prefers_stderr_then_falls_back_to_stdout_tail() -> None:
     assert len(exit_detail(long_out, "")) == 400
 
 
+#: A dead turn's stream-json stdout — init + tool_use + tool_result + an
+#: errored result event, the gr552866 review shape.
+_STREAM_FAILURE = "\n".join(
+    [
+        '{"type":"system","subtype":"init","session_id":"s1"}',
+        '{"type":"assistant","message":{"role":"assistant","content":'
+        '[{"type":"tool_use","name":"Bash",'
+        '"input":{"command":"INTERNAL-CMD"}}]}}',
+        '{"type":"user","message":{"role":"user","content":'
+        '[{"type":"tool_result","content":"INTERNAL-RESULT"}]}}',
+        '{"type":"result","subtype":"error_during_execution",'
+        '"is_error":true,"result":"API Error: overloaded"}',
+    ]
+)
+_STREAM_MARKERS = (
+    "tool_use",
+    "tool_result",
+    "INTERNAL-CMD",
+    "INTERNAL-RESULT",
+    '"type"',
+)
+
+
+def test_exit_detail_stream_json_yields_result_text_not_raw_events() -> None:
+    """gr552866 review: this string is posted to chat on a dead turn — a
+    stream-json stdout's raw tail is internal transcript (tool_use inputs,
+    tool_result payloads), never the blurb."""
+    detail = exit_detail(_STREAM_FAILURE, "")
+    assert detail == "API Error: overloaded"
+    for marker in _STREAM_MARKERS:
+        assert marker not in detail
+
+
+def test_exit_detail_stream_json_errors_list_and_no_text() -> None:
+    # ``errors`` (list) and ``error`` (str) fields carry the cause when
+    # ``result`` is absent; both yield prose, never JSON.
+    errs = (
+        '{"type":"assistant","message":{"content":'
+        '[{"type":"tool_use","name":"Bash","input":{"command":"INTERNAL-CMD"}}]}}\n'
+        '{"type":"result","is_error":true,"errors":["rate limited","retry later"]}'
+    )
+    assert exit_detail(errs, "") == "rate limited; retry later"
+    errf = '{"type":"result","is_error":true,"error":"bad request"}'
+    assert exit_detail(errf, "") == "bad request"
+
+
+def test_exit_detail_stream_json_falls_back_to_final_text_then_placeholder() -> None:
+    # A truncated turn (no result event) still yields the last main-turn
+    # assistant text; a stream with nothing user-facing yields a neutral
+    # placeholder — either way, no raw event lines.
+    trunc = (
+        '{"type":"assistant","message":{"content":'
+        '[{"type":"text","text":"partial answer"},{"type":"tool_use",'
+        '"name":"Bash","input":{"command":"INTERNAL-CMD"}}]}}'
+    )
+    assert exit_detail(trunc, "") == "partial answer"
+    internal_only = _STREAM_FAILURE.replace(
+        '"result":"API Error: overloaded"', '"result":null'
+    )
+    detail = exit_detail(internal_only, "")
+    assert detail == "(stream-json transcript carried no final text)"
+    for marker in _STREAM_MARKERS:
+        assert marker not in detail
+
+
+def test_run_claude_stream_json_failure_message_carries_no_raw_events(
+    tmp_path: Path,
+) -> None:
+    """End to end: non-zero exit, empty stderr, tool_use/tool_result JSON
+    on stdout — ``str(exc)`` (what the router folds into ``error``) holds
+    the failure prose only (gr552866 review)."""
+    stub = tmp_path / "claude_stub.sh"
+    _write_failing_stub(stub, stdout=_STREAM_FAILURE + "\n")
+
+    with pytest.raises(ClaudeProcessError) as exc:
+        run_claude(
+            [str(stub)],
+            binary=str(stub),
+            label="claude -p (test)",
+            timeout_s=10.0,
+            error_cls=ClaudeProcessError,
+            env={"PATH": os.environ.get("PATH", "")},
+            bootstrap_oauth=False,
+        )
+
+    assert "API Error: overloaded" in str(exc.value)
+    for marker in _STREAM_MARKERS:
+        assert marker not in str(exc.value)
+    # The raw transcript still rides the exception for telemetry.
+    assert "tool_use" in (exc.value.stdout or "")
+
+
 def test_run_claude_missing_binary_sets_binary_missing_flag(tmp_path: Path) -> None:
     """gr335087: a missing ``claude`` binary carries a structural
     ``binary_missing`` flag (never sniffed from the message text downstream —
@@ -278,10 +370,14 @@ def test_run_claude_async_surfaces_stdout_when_stderr_is_empty(
     tmp_path: Path, monkeypatch
 ) -> None:
     """Same contract on the async runner — its docstring promises the sync
-    runner's failure shape, so the two must not drift."""
+    runner's failure shape, so the two must not drift. Under stream-json
+    the surfaced detail is the result event's extracted text, never the
+    raw event line (gr552866)."""
     _vault(monkeypatch, None)
     stub = tmp_path / "claude_stub.sh"
-    _write_failing_stub(stub, stdout='{"type":"result","is_error":true}\n')
+    _write_failing_stub(
+        stub, stdout='{"type":"result","is_error":true,"result":"boom on stdout"}\n'
+    )
 
     with pytest.raises(ClaudeProcessError) as exc:
         asyncio.run(
@@ -295,7 +391,8 @@ def test_run_claude_async_surfaces_stdout_when_stderr_is_empty(
             )
         )
 
-    assert '"is_error":true' in str(exc.value)
+    assert "boom on stdout" in str(exc.value)
+    assert '"type"' not in str(exc.value)
 
 
 # --------------------------------------------------------------------------
