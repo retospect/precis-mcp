@@ -1374,6 +1374,8 @@ def review_indicator(
         if checker not in _BADGE_PERSONAS:
             continue
         if checker in _SECTION_PERSONAS:
+            scope_id: int | None
+            run_dc: str | None
             if is_heading:
                 scope_id, run_dc = chunk_id, own_dc
             else:
