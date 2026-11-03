@@ -25,7 +25,15 @@ def test_parallel_path_runs_every_claimed_job(monkeypatch, store: Store) -> None
     """With concurrency>1 the whole claimed batch runs (in a thread pool),
     not just the first — every job's _run_one fires exactly once."""
     rows = [(i, f"job{i}", {"job_type": "plan_tick"}) for i in (101, 102, 103)]
-    monkeypatch.setattr(ci, "_claim_jobs", lambda conn, *, limit: list(rows))
+    claim_calls = {"n": 0}
+
+    def _claim_once(conn, *, limit):
+        # The rolling pass claims until the queue reads empty — the
+        # stub drains after its one batch.
+        claim_calls["n"] += 1
+        return list(rows) if claim_calls["n"] == 1 else []
+
+    monkeypatch.setattr(ci, "_claim_jobs", _claim_once)
     monkeypatch.setattr(ci, "_set_status", lambda *a, **k: None)
     seen: set[int] = set()
     lock = threading.Lock()
@@ -36,6 +44,7 @@ def test_parallel_path_runs_every_claimed_job(monkeypatch, store: Store) -> None
 
     monkeypatch.setattr(ci, "_run_one", _fake_run_one)
     monkeypatch.setenv("PRECIS_INPROC_CONCURRENCY", "3")
+    monkeypatch.delenv("PRECIS_INPROC_PASS_BUDGET_S", raising=False)
 
     res = ci.run_claude_inproc_pass(store, limit=4)
     assert seen == {101, 102, 103}

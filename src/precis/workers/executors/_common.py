@@ -1002,6 +1002,7 @@ def claim_executor_jobs(
     reclaim_stale_running: bool = False,
     respect_reserve: bool = False,
     check_job_type_requires: bool = False,
+    reclaim_counts_toward_limit: bool = False,
 ) -> list[tuple[int, str, dict[str, Any]]]:
     """Lock up to ``limit`` claimable jobs for ``executor``.
 
@@ -1062,6 +1063,12 @@ def claim_executor_jobs(
     return to ``limit``, each just iterates the full list — so fresh-work
     throughput is exactly unchanged and a stale row is reclaimed within
     one or two claim cycles no matter how much fresh work is queued.
+    Opt out with ``reclaim_counts_toward_limit=True`` (claude_inproc's
+    slot-boundary claim, gr551639): then the reclaims consume part of
+    ``limit`` — the fresh-work pass below gets only the remainder, so
+    the WHOLE call returns at most ``limit`` rows (one per free pool
+    slot — an over-return would stamp a job's lease with no slot to
+    start it).
 
     **Lease-identity stamp.** Every successful claim (fresh-queued OR
     reclaimed) through this function stamps ``meta.lease_boot_id`` /
@@ -1596,6 +1603,10 @@ def claim_executor_jobs(
     # ``STATUS:queued|yielded`` only — the reclaim pre-pass above already
     # handled this cycle's bounded slice of stale-running candidates, so
     # this query no longer carries the running-row OR-arms (moved above).
+    # Under ``reclaim_counts_toward_limit`` the pre-pass consumed part of
+    # ``limit`` — the fresh window shrinks to the remainder so the call's
+    # total return stays ≤ ``limit`` (default stays additive).
+    fresh_limit = max(0, limit - len(claimed)) if reclaim_counts_toward_limit else limit
     # ``queued_since`` is needed twice — as a column and inside the aged
     # Per-job_type running caps (D4 cap half): code-shipped
     # :data:`_MAX_RUNNING_DEFAULTS` plus ``app_state``
@@ -1770,7 +1781,7 @@ def claim_executor_jobs(
             list(TERMINAL),
             *suspend_params,
             *cap_params,
-            limit * _CLAIM_OVERFETCH,
+            fresh_limit * _CLAIM_OVERFETCH,
         ),
     ).fetchall()
 
@@ -1851,7 +1862,7 @@ def claim_executor_jobs(
 
     fresh_claimed = 0
     remaining = sorted(rows, key=_order_key)
-    while remaining and fresh_claimed < limit:
+    while remaining and fresh_claimed < fresh_limit:
         # Pick the best row under the CURRENT share counts — popping
         # argmin each time keeps a ``limit``-sized batch interleaving
         # shares rather than claiming a statically-sorted prefix.

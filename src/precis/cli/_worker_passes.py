@@ -489,9 +489,12 @@ def build_ref_passes(
         from precis.workers.runner import BatchResult as _BatchResult
 
         def _job_claude_inproc_pass(batch_size: int) -> _BatchResult:
-            # Smaller cap than the default chunk batch — each job
-            # runs a multi-minute LLM subprocess and we want the
-            # outer loop to yield between attempts.
+            # ``limit`` is the per-claim batch size, NOT a pass cap —
+            # the rolling pool keeps refilling free slots until the
+            # drain flag is set or PRECIS_INPROC_PASS_BUDGET_S is spent
+            # (gr551639). Small claims because each job runs a
+            # multi-minute LLM subprocess and we want the loop to
+            # yield between attempts.
             r = run_claude_inproc_pass(store, limit=min(batch_size, 4))
             return _BatchResult.from_dict("job_claude_inproc", r)
 

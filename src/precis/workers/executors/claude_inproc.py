@@ -4,9 +4,11 @@ Sibling-worker shape: no ``WorkerHandler`` subclass,
 just a ``run_claude_inproc_pass`` function the CLI registers as a
 ``RefPass``. Each pass:
 
-1. Claim up to ``limit`` ``kind='job'`` rows whose ``meta.executor``
-   is ``'claude_inproc'``, tagged ``STATUS:queued`` (or whose
-   lease has expired), not yet terminal.
+1. Claim ``kind='job'`` rows whose ``meta.executor`` is
+   ``'claude_inproc'``, tagged ``STATUS:queued`` (or whose
+   lease has expired), not yet terminal — one at a time, only when
+   a pool slot is free to start the job (the rolling pool,
+   gr551639).
 2. For each claimed job: tag ``STATUS:running``, look up the
    ``job_type`` in the registry, invoke ``run(...)``, write the
    resulting summary + gripe comment chunks, transition status.
@@ -23,14 +25,21 @@ from __future__ import annotations
 import logging
 import os
 import time
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import (
+    FIRST_COMPLETED,
+    Future,
+    ThreadPoolExecutor,
+    wait,
+)
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any
 
 from psycopg import Connection
 from psycopg.errors import UniqueViolation
 
+from precis.liveness import drain_requested
 from precis.quest import review_guard
+from precis.utils.env import env_float
 from precis.workers.executors import EXECUTOR_PROVIDES
 from precis.workers.executors._common import (
     CANCELLED as _CANCELLED,
@@ -135,7 +144,11 @@ def _claim_jobs(
     still covers a same-generation hang.
     """
     return claim_executor_jobs(
-        conn, executor=_EXECUTOR_NAME, limit=limit, reclaim_stale_running=True
+        conn,
+        executor=_EXECUTOR_NAME,
+        limit=limit,
+        reclaim_stale_running=True,
+        reclaim_counts_toward_limit=True,
     )
 
 
@@ -172,6 +185,33 @@ def _inproc_concurrency() -> int:
         return 1
     return max(1, min(16, n))
 
+
+def _inproc_pass_budget_s() -> float:
+    """Wall-clock refill budget (seconds) for one pass —
+    ``PRECIS_INPROC_PASS_BUDGET_S``, default 120.
+
+    The rolling pool keeps claiming into free slots until the queue is
+    empty, the process drain flag is set (:func:`precis.liveness.
+    drain_requested` — SIGTERM/SIGINT), or this deadline passes; then it
+    stops claiming and joins the in-flight jobs. ``<= 0`` bounds the
+    pass to its FIRST fill (the deadline is the pass's own start) — one
+    pool's worth claimed, run, joined; the pre-rolling one-batch shape.
+    The default matches the coordinator's pass budget
+    (``PRECIS_COORDINATOR_PASS_BUDGET_S``): this pass holds the serial
+    worker rotation, so a longer budget starves overdue-rescue and the
+    other ref-passes of their turn. No unbounded setting on purpose:
+    an unbounded refill loop can hold the rotation hostage for hours
+    on a long queue; a huge value approximates it.
+    """
+    return env_float("PRECIS_INPROC_PASS_BUDGET_S", 120.0)
+
+
+#: Seconds the in-flight ``wait`` blocks before re-polling the queue:
+#: the empty-queue latch is re-armed on every wake — completion or
+#: this tick — so a job queued while only a long job ran (or one a
+#: per-type running cap / the reserve held back) is claimed on the
+#: next wake instead of waiting out the long job (gr551639).
+_RECLAIM_POLL_S = 10.0
 
 #: Lease a claimed job is stamped with (Stage 1 of the pass) and that a
 #: mid-run ``ctx.renew_lease()`` re-extends. See the comment at the claim
@@ -224,85 +264,144 @@ def _run_job_safe(ctx: DispatchContext) -> bool:
 
 
 def run_claude_inproc_pass(store: Store, *, limit: int = 4) -> dict[str, int]:
-    """Process up to ``limit`` claude_inproc jobs.
+    """Process claude_inproc jobs in a rolling pool.
 
     Returns ``{claimed, ok, failed}`` for runner aggregation.
-    Smaller default ``limit`` than chunk-level workers because each
-    job runs a multi-minute LLM subprocess; we want the loop to
-    yield often.
 
-    With ``PRECIS_INPROC_CONCURRENCY>1`` the claimed batch runs in a
-    thread pool (each tick is a blocking subprocess) so several ticks
-    drain at once; the claim count widens to cover the pool.
+    ``limit`` is the **per-claim batch size** — each claim transaction
+    takes at most ``limit`` rows — NOT a per-pass cap: the pass keeps
+    refilling free slots until the queue is empty, the process drain
+    flag is set, or the pass wall budget
+    (``PRECIS_INPROC_PASS_BUDGET_S``, :func:`_inproc_pass_budget_s`) is
+    spent. The caller's ``min(batch_size, 4)`` keeps each claim tx
+    small because every claim stamps leases and a job runs a
+    multi-minute LLM subprocess; the pool width — not ``limit`` —
+    bounds how many jobs run at once.
+
+    With ``PRECIS_INPROC_CONCURRENCY>1`` the jobs run in a rolling
+    thread pool (each tick is a blocking subprocess that releases the
+    GIL): a job is claimed only when a pool slot is free to start it,
+    and every completion triggers the next claim — one long job can
+    no longer idle the free slots while a claimed batch joins, and a
+    claimed-but-waiting job no longer sits ``STATUS:running`` with
+    its lease ticking before it starts (gr551639).
     """
-    concurrency = _inproc_concurrency()
-    claim_n = max(limit, concurrency)
-    # Stage 1: claim under a short tx. Lease must be written
-    # before we release the FOR UPDATE lock so concurrent runners
-    # don't double-claim.
-    poisoned = 0
-    to_run: list[tuple[int, str, dict[str, Any]]] = []
-    with store.pool.connection() as conn:
-        rows = _claim_jobs(conn, limit=claim_n)
-        if not rows:
+    pool_size = _inproc_concurrency()
+    deadline = time.monotonic() + max(0.0, _inproc_pass_budget_s())
+    claimed = 0
+    ok = 0
+    failed = 0
+
+    def _stop_claiming() -> bool:
+        """True once the pass must stop claiming new work — the process
+        drain flag (SIGTERM/SIGINT → :func:`drain_requested`) or the
+        wall budget spent."""
+        return drain_requested() or time.monotonic() >= deadline
+
+    def _claim_slots(want: int) -> list[DispatchContext]:
+        """Claim work for ``want`` free pool slots; stamp + ctx per row.
+
+        The FOR UPDATE claim, the ``lease_until`` stamp and the
+        ``STATUS:running`` tag must still land in one transaction —
+        a claimed row whose lease isn't committed is immediately
+        re-claimable by another worker. The claim therefore happens
+        at the slot boundary: at most ``want`` rows, one per free
+        slot, each submitted the moment the tx commits, so ``running``
+        and the 90-min lease begin at actual start (gr551639). The
+        bound is real: ``_claim_jobs`` passes
+        ``reclaim_counts_toward_limit`` so the starvation-bound
+        reclaim pre-pass
+        (:func:`~precis.workers.executors._common.claim_executor_jobs`)
+        can't push the return over ``want`` — no row is stamped unless
+        a slot is free for it now.
+
+        Counters move only after commit: a raised commit rolls every
+        stamp back — nothing was claimed or failed — so they must not
+        have moved either.
+        """
+        nonlocal claimed, failed
+        ctxs: list[DispatchContext] = []
+        n_rows = 0
+        n_poisoned = 0
+        with store.pool.connection() as conn:
+            rows = _claim_jobs(conn, limit=want)
+            n_rows = len(rows)
+            for ref_id, title, meta in rows:
+                # Crash-loop guard (§H piece 3): the bump (epoch or expiry)
+                # + the reclaim classification already happened inside
+                # claim_executor_jobs; this just applies the cap the way
+                # ssh_node's original guard did. Was a known interim gap
+                # ("ZERO attempt cap of its own") since claude_inproc's
+                # reclaim_stale_running landed — now closed.
+                if _poison_guard(store, conn, ref_id, meta):
+                    n_poisoned += 1
+                    continue
+                # Lease must outlive the longest possible job. A plan_tick
+                # tick can request up to ``timeout_s=3600`` (60 min, per
+                # plan_tick.PARAMS_SCHEMA), and the executor does extra work
+                # (writing summary / result chunks) after the subprocess
+                # returns. A 30-min lease was SHORTER than a long tick, so
+                # the lease could expire mid-run and a second worker could
+                # re-claim and double-run the job. 90 min covers the max
+                # tick + post-processing with margin; the only cost is that
+                # a genuinely crashed worker's job stays `running` a bit
+                # longer before another worker rescues it (latency, not
+                # correctness — crashes are rare).
+                conn.execute(
+                    "UPDATE refs SET meta = meta || "
+                    "jsonb_build_object("
+                    "  'lease_until', (now() + interval '90 minutes')::text"
+                    ") "
+                    "WHERE ref_id = %s",
+                    (ref_id,),
+                )
+                _set_status(store, ref_id, _RUNNING, conn=conn)
+                ctxs.append(_build_dispatch_context(store, ref_id, title, meta))
             conn.commit()
-            return {"claimed": 0, "ok": 0, "failed": 0}
-        for ref_id, title, meta in rows:
-            # Crash-loop guard (§H piece 3): the bump (epoch or expiry) + the
-            # reclaim classification already happened inside
-            # claim_executor_jobs; this just applies the cap the way
-            # ssh_node's original guard did. Was a known interim gap
-            # ("ZERO attempt cap of its own") since claude_inproc's
-            # reclaim_stale_running landed — now closed.
-            if _poison_guard(store, conn, ref_id, meta):
-                poisoned += 1
-                continue
-            # Lease must outlive the longest possible job. A plan_tick
-            # tick can request up to ``timeout_s=3600`` (60 min, per
-            # plan_tick.PARAMS_SCHEMA), and the executor does extra work
-            # (writing summary / result chunks) after the subprocess
-            # returns. A 30-min lease was SHORTER than a long tick, so
-            # the lease could expire mid-run and a second worker could
-            # re-claim and double-run the job. 90 min covers the max
-            # tick + post-processing with margin; the only cost is that
-            # a genuinely crashed worker's job stays `running` a bit
-            # longer before another worker rescues it (latency, not
-            # correctness — crashes are rare).
-            conn.execute(
-                "UPDATE refs SET meta = meta || "
-                "jsonb_build_object("
-                "  'lease_until', (now() + interval '90 minutes')::text"
-                ") "
-                "WHERE ref_id = %s",
-                (ref_id,),
+        claimed += n_rows
+        failed += n_poisoned
+        return ctxs
+
+    # Stage 2: rolling pool. Top up by claiming only for free slots;
+    # every FIRST_COMPLETED wake that frees slots lands here again —
+    # until ``_stop_claiming`` (drain flag or the pass budget) says
+    # stop. ``queue_empty`` is only a skip-hint for the fill loop, not
+    # a latch: the wait below also returns on the ``_RECLAIM_POLL_S``
+    # tick, and EVERY wake clears it so the fill re-tries — a row
+    # queued while a long job ran (or one a per-type cap / the reserve
+    # held back) is claimed on the next wake instead of idling behind
+    # in-flight work. Then the with-block join drains in-flight work
+    # and the pass returns. ``stop_claiming`` latches only AFTER a
+    # claim call, so the first fill always happens — a ``<= 0`` budget
+    # bounds the pass to exactly it.
+    in_flight: set[Future[bool]] = set()
+    queue_empty = False
+    stop_claiming = drain_requested()
+    with ThreadPoolExecutor(max_workers=pool_size) as ex:
+        while True:
+            while not queue_empty and not stop_claiming and len(in_flight) < pool_size:
+                want = pool_size - len(in_flight)
+                if limit > 0:
+                    want = min(want, limit)
+                before = claimed
+                for ctx in _claim_slots(want):
+                    in_flight.add(ex.submit(_run_job_safe, ctx))
+                if claimed == before:
+                    queue_empty = True
+                stop_claiming = _stop_claiming()
+            if not in_flight:
+                break
+            done, in_flight = wait(
+                in_flight, return_when=FIRST_COMPLETED, timeout=_RECLAIM_POLL_S
             )
-            _set_status(store, ref_id, _RUNNING, conn=conn)
-            to_run.append((ref_id, title, meta))
-        conn.commit()
-
-    if not to_run:
-        return {"claimed": len(rows), "ok": 0, "failed": poisoned}
-
-    # Stage 2: run the claimed jobs. Sequential by default; a thread pool
-    # when concurrency>1 (each _run_one blocks on a subprocess that
-    # releases the GIL, so threads parallelise the wall-clock). One
-    # DispatchContext per row, minted here rather than re-derived inside
-    # _run_job_safe/_run_one from the raw (store, ref_id, title, meta).
-    contexts = [
-        _build_dispatch_context(store, rid, title, meta) for rid, title, meta in to_run
-    ]
-    pool_size = min(concurrency, len(to_run))
-    if pool_size <= 1:
-        results = [_run_job_safe(ctx) for ctx in contexts]
-    else:
-        with ThreadPoolExecutor(max_workers=pool_size) as ex:
-            results = list(ex.map(_run_job_safe, contexts))
-    ok = sum(1 for r in results if r)
-    return {
-        "claimed": len(rows),
-        "ok": ok,
-        "failed": (len(results) - ok) + poisoned,
-    }
+            for fut in done:
+                if fut.result():
+                    ok += 1
+                else:
+                    failed += 1
+            queue_empty = False
+            stop_claiming = _stop_claiming()
+    return {"claimed": claimed, "ok": ok, "failed": failed}
 
 
 # ── Per-job dispatch ──────────────────────────────────────────────
