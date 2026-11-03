@@ -45,6 +45,7 @@ from typing import TYPE_CHECKING, Any, cast
 
 from .coverage_sites import representable_coverages, slab_top_sites
 from .keep import install_hooks as _install_keep_hooks
+from .keep import record as _keep_record
 from .scratch import (
     _cleanup_detached,
     _tail_logs,
@@ -573,7 +574,10 @@ def run_seed_partial(
     SIGKILLed or failed seed's finished measurements survive for
     ``seed_job._reap_scratch`` to harvest before the dir is reaped. All
     captures are feature-detected; an older engine loses retention, never
-    the run.
+    the run. Items 4–6 (split intermediates, discarded NEB attempts,
+    reseat geometries + heights) ride the same hooks' scope stack; a step
+    retry (``only_steps``) additionally keeps the full pre-narrow partial
+    as ``full-run.json`` (item 3).
     """
     import inspect
 
@@ -655,6 +659,15 @@ def run_seed_partial(
     }
     if only_steps:
         log(f"[{tag}] seed={seed}: step retry — recording only {list(only_steps)}")
+        try:
+            # gr543776 item 3: the retry computes the whole network and
+            # narrow_partial discards all but the retried step — keep the
+            # discarded full run (~100 kB) as a job artifact.
+            _keep_record(
+                artifacts, checkpoint_dir, "full-run.json", json.dumps(partial)
+            )
+        except Exception:  # retention only; never fails the unit
+            log(f"[{tag}] keep: full-run artifact write failed")
         partial = narrow_partial(partial, only_steps, root=root_state(config))
         structures = cast(
             "dict[str, SeedStructureEntry]", narrow_structures(structures, partial)

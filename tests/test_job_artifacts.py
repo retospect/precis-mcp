@@ -286,3 +286,35 @@ def test_harvest_skips_names_already_recorded(
     assert n == 1 and missed == []
     names = [a["name"] for a in _artifacts(store, ref_id)]
     assert names == ["band-s1.extxyz", "ts-s1.extxyz"]
+
+
+def test_record_artifacts_never_fails_the_job(
+    store: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A failed artifact write warns and continues — the run's result
+    already landed, so retention must never fail the job (gr543776)."""
+    from precis.store import job_artifacts as ja
+    from precis.workers.executors import claude_inproc
+    from precis_pathway import seed_job
+
+    ref_id = _mk_job(store)
+    root = _root(tmp_path / "nas")
+    monkeypatch.setenv("PRECIS_JOB_ARTIFACT_ROOT", str(root))
+    monkeypatch.setenv("PRECIS_JOB_ARTIFACT_SPOOL", str(tmp_path / "spool"))
+    ctx = claude_inproc._build_dispatch_context(store, ref_id, "t", {})
+
+    real_write = ja.write_artifact
+
+    def _flaky(conn: Any, rid: int, name: str, data: bytes, **kw: Any) -> Any:
+        if name == "bad.extxyz":
+            raise OSError("disk full")
+        return real_write(conn, rid, name, data, **kw)
+
+    monkeypatch.setattr(ja, "write_artifact", _flaky)
+
+    n = seed_job._record_artifacts(
+        ctx, {"artifacts": {"bad.extxyz": "x", "good.json": "{}"}}
+    )
+
+    assert n == 1
+    assert [a["name"] for a in _artifacts(store, ref_id)] == ["good.json"]

@@ -44,7 +44,11 @@ inside ``runner.run_seed_partial`` (``resolve_backend`` +
 validation manifest (``weights_sha256``).
 
 **Retention (gr543776, Reto 2026-11-01 "keep everything").** The child
-writes each finished band / saddle / relax incrementally into its scratch
+writes each finished band / saddle / relax — and, since items 3–6, the
+step-retry full run (``full-run.json``), hidden-intermediate minima and
+segment bands, every discarded NEB attempt (multistart starts, denser
+and auto retries, pool calls), and reseat desorbed/failed geometries
+with the ``diag`` heights — incrementally into its scratch
 ``checkpoints/`` AND returns the same payloads in the result envelope's
 ``artifacts``. The succeeded paths (``_dispatch`` / ``_poll``) land the
 envelope's in the job artifact store (:mod:`precis.store.job_artifacts`,
