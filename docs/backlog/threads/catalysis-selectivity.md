@@ -324,6 +324,16 @@ the dated detail is in `git log` and the owning items):**
    it lands. Needs a single-point mode, a `dft` params pass-through and
    per-species initial magmoms in the GPAW path, and a measured wall time
    before any run.
+9. **backlog/pathway-explorer-controls.md** (Reto 2026-11-03, from
+   pw549461; draft, prio high) — the explorer's two control boxes
+   (environment on the Pourbaix slider bank, visual filters), per-step
+   kinetics on the diagram, BEP humps, one environment record, the compute
+   cart, the separable operating-point optimum. Eight slice gripes
+   (cluster `pathway-explorer-controls`, gr559345–gr559353) plus
+   gr559354 (catpath transient θ(t)) and gr559355. Ranked here, not in
+   Do next: slices 1–4 are stored-data display Reto reads results
+   through, and nothing in them touches the engine; 5–8 wait on his
+   decisions in the file.
 
 ## Parked
 
