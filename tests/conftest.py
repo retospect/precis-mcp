@@ -117,6 +117,7 @@ from precis.dispatch import Hub, boot
 from precis.hints import HintBus
 from precis.runtime import PrecisRuntime
 from precis.store import Migrator, Store
+from tests import _testmon_shim
 from tests._node import require_node  # noqa: F401  (fixture for needs_node)
 
 # Test DSN. Default targets the local-dev convention
@@ -702,6 +703,8 @@ def parse_shard(spec: str) -> tuple[int, int]:
 
 
 def pytest_configure(config: pytest.Config) -> None:
+    # gr558530: testmon crashes on extensionless files; no-op without testmon.
+    _testmon_shim.install()
     config.addinivalue_line(
         "markers",
         "db: test requires a reachable PostgreSQL server at "
