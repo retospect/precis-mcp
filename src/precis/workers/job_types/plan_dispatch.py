@@ -1192,6 +1192,48 @@ def _params_problem(schema: dict[str, Any], params: dict[str, Any]) -> str | Non
     return None
 
 
+#: ``meta.task_class`` of a plain build node (mirrors ``run_slice``'s default).
+_DEFAULT_TASK_CLASS = "code"
+
+
+def _escalate(w: _Writer, plan: _Plan, n: _Node, params: dict[str, Any]) -> str | None:
+    """Pin a retried ``run_slice`` one rung up its lane's model ladder.
+
+    Reto's ruling (td559457, 2026-11-03): when a slice fails, go up the
+    chain before asking. The chain today is the lane's ``models`` tuple,
+    cheapest first (``claude-sub``: haiku, sonnet, opus); the first attempt
+    runs on the lane's ``default_model`` and attempt *k* on the model *k*
+    rungs above it, floored at the top rung. A node whose ``meta.op``
+    already pins ``model`` is left alone (gr549046: the triage's pick wins).
+    The cross-lane rung (a free Devin lane before the Claude ladder) joins
+    once that lane has an executor (td559444). Returns the action note, or
+    ``None`` when nothing was pinned.
+    """
+    if "model" in params:
+        return None
+    attempts = _attempts(plan, n)
+    if attempts <= 0:
+        return None
+    lane = _lanes.get_lane(str(params["lane"])) if params.get("lane") else None
+    if lane is None:
+        task_class = str(n.meta.get("task_class") or _DEFAULT_TASK_CLASS)
+        lane = _lanes.pick_lane(w.store, task_class)
+    if lane is None or not lane.models:
+        return None
+    start = (
+        lane.models.index(lane.default_model)
+        if lane.default_model in lane.models
+        else 0
+    )
+    rung = min(start + attempts, len(lane.models) - 1)
+    params["model"] = lane.models[rung]
+    params.setdefault("lane", lane.name)
+    return (
+        f"td{n.id}: retry {attempts} climbs to {params['model']} on lane "
+        f"{lane.name} (rung {rung + 1}/{len(lane.models)})"
+    )
+
+
 def _pick_executor(compatible: frozenset[str]) -> str:
     for name in _EXECUTOR_ORDER:
         if name in compatible:
@@ -1284,6 +1326,10 @@ def _step_dispatch(plan: _Plan, w: _Writer, res: PassResult) -> None:
             if not go:
                 continue
             params["lane"] = lane_name
+        if job_type == DEFAULT_OP:
+            climbed = _escalate(w, plan, n, params)
+            if climbed:
+                res.notes.append(climbed)
         if (
             job_type in ("release_deploy", "release_cut")
             and "target_node" not in params

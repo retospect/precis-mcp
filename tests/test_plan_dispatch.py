@@ -11,6 +11,7 @@ from typing import Any
 
 import pytest
 
+from precis.plans import lanes as L
 from precis.plans import templates as T
 from precis.store import Store
 from precis.store.types import ChunkInsert, Tag
@@ -373,6 +374,55 @@ def test_a_red_land_is_one_attempt_not_two(store: Store) -> None:
     res = pd.run_pass(store)
     assert (res.dispatched, res.asks) == (1, 0)
     assert _jobs_under(store, task)[-1][1]["job_type"] == "run_slice"
+
+
+def test_retry_climbs_the_lane_model_ladder(store: Store) -> None:
+    """td559457 (Reto 2026-11-03): a failed slice is retried one rung up the
+    lane's model ladder before the cap asks. First attempt: no pin (the
+    lane's default); attempt 1: the rung above the default; a node whose
+    op already pins a model keeps it."""
+    mint = _one_task_plan(store)
+    task = mint.ids["task"]
+    res = pd.run_pass(store)
+    assert res.dispatched == 1
+    first = _jobs_under(store, task)[-1][1]["params"]
+    assert "model" not in first
+    _set_job_status(store, _jobs_under(store, task)[-1][0], "failed")
+    store.add_tag(task, Tag.open("child-failed:1"), set_by="system")
+
+    res = pd.run_pass(store)
+    assert (res.dispatched, res.asks) == (1, 0)
+    retry = _jobs_under(store, task)[-1][1]["params"]
+    lane = L.get_lane("claude-sub")
+    assert lane is not None
+    above_default = lane.models[lane.models.index(lane.default_model or "") + 1]
+    assert retry["model"] == above_default
+    assert retry["lane"] == "claude-sub"
+    assert any("climbs to" in n and "rung" in n for n in res.notes)
+
+    # A pinned op is the triage's pick: the ladder leaves it alone.
+    pinned_mint = _pinned_plan(store, "claude-haiku-4-5-20251001")
+    pinned = pinned_mint.ids["task"]
+    _failed_job(store, pinned, "first failure")
+    store.add_tag(pinned, Tag.open("child-failed:1"), set_by="system")
+    res = pd.run_pass(store)
+    assert res.dispatched == 1
+    assert _jobs_under(store, pinned)[-1][1]["params"]["model"] == (
+        "claude-haiku-4-5-20251001"
+    )
+
+
+def _pinned_plan(store: Store, model: str) -> T.PlanMint:
+    def build(m: T._Minter) -> None:
+        m.node("root", "Plan", {"auto_close": True})
+        m.node(
+            "task",
+            "The pinned task",
+            {"op": {"type": "run_slice", "params": {"model": model}}},
+            body="Do it.",
+        )
+
+    return T._run(store, None, build)
 
 
 def test_retry_cap_mints_exactly_one_ask(store: Store) -> None:
@@ -1056,9 +1106,18 @@ def test_review_without_verdict_retries_once_then_asks(store: Store) -> None:
     assert _meta(store, review)["review"]["verdict"] is None
     assert "malformed verdict" in _todo_comments(store, review)[-1]
     # One retry, pinned to the review lane; one lane only, so the note says so.
+    # The retry is attempt 1, so it also climbs one rung above the lane's
+    # default model (td559457): a stronger reviewer reads the malformed one.
     assert res.dispatched == 1
     (_old, (retry, meta)) = _jobs_under(store, review)
-    assert meta["params"] == {"todo_id": review, "lane": "claude-sub"}
+    lane = L.get_lane("claude-sub")
+    assert lane is not None
+    rung = lane.models.index(lane.default_model) + 1
+    assert meta["params"] == {
+        "todo_id": review,
+        "lane": "claude-sub",
+        "model": lane.models[rung],
+    }
     assert any("shares the builder's vendor 'anthropic'" in n for n in res.notes)
     # The retry posts nothing either: the hygiene ask follows.
     store.add_tag(
