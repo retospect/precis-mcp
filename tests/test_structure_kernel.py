@@ -1870,6 +1870,133 @@ def test_op_slab_builds_fcc111_with_frozen_bottom_layers() -> None:
     assert frozen_zs == zs[:4]  # the four lowest
 
 
+def test_add_atom_on_a_slab_applies() -> None:
+    """gr549760: raw add_atom applies on a slab too — stored candidate and
+    pathway op lists replay unchanged; the buried-atom preflight
+    (test_structure_preflight.TestBuried) is the guard, not the op."""
+    pytest.importorskip("ase.build")
+
+    scene = Scene(cell=_cubic(1.0))
+    apply_ops(scene, [{"op": "slab", "element": "Pd", "size": [2, 2, 3]}])
+    apply_ops(
+        scene,
+        [{"op": "add_atom", "element": "H", "frac": [0.33, 0.33, 0.52]}],
+    )
+    assert len(scene.atoms) == 13
+
+
+def test_add_atom_site_marker_stamps_intent() -> None:
+    """The ``site`` key on raw add_atom is declared below-surface intent —
+    stamped on the atom for preflight to read."""
+    scene = Scene(cell=_cubic(10.0))
+    apply_ops(
+        scene,
+        [
+            {
+                "op": "add_atom",
+                "element": "B",
+                "frac": [0.5, 0.5, 0.5],
+                "site": "subsurface",
+            }
+        ],
+    )
+    assert scene.atoms["aB1"].site == "subsurface"
+
+
+def test_add_atom_site_marker_rejects_other_values() -> None:
+    """The marker is exactly 'subsurface'|'interstitial' — a surface site
+    name (or add_atom_site's site object) on raw add_atom refuses."""
+    from precis.structure import OpError
+
+    scene = Scene(cell=_cubic(10.0))
+    with pytest.raises(OpError) as exc:
+        apply_ops(
+            scene,
+            [
+                {
+                    "op": "add_atom",
+                    "element": "B",
+                    "frac": [0.5, 0.5, 0.5],
+                    "site": "fcc",
+                }
+            ],
+        )
+    assert "subsurface" in str(exc.value)
+    with pytest.raises(OpError):
+        apply_ops(
+            scene,
+            [
+                {
+                    "op": "add_atom",
+                    "element": "B",
+                    "frac": [0.5, 0.5, 0.5],
+                    "site": {"type": "top"},
+                }
+            ],
+        )
+
+
+def test_add_atom_still_works_off_slab() -> None:
+    """A molecule/bulk scene takes a raw frac add_atom (molecule building
+    has no site vocabulary)."""
+    scene = Scene(cell=_cubic(10.0))
+    apply_ops(scene, [{"op": "add_atom", "element": "C", "frac": [0.5, 0.5, 0.5]}])
+    apply_ops(scene, [{"op": "add_atom", "element": "H", "frac": [0.6, 0.5, 0.5]}])
+    assert len(scene.atoms) == 2
+
+
+def test_add_atom_works_on_bulk_no_vacuum() -> None:
+    """A bulk metal cell (dense layers but no vacuum gap) is not a slab —
+    interstitial add_atom stays legal."""
+    scene = Scene(cell=_cubic(4.0))
+    apply_ops(
+        scene,
+        [
+            {"op": "add_atom", "element": "Pd", "frac": [0.0, 0.0, 0.0]},
+            {"op": "add_atom", "element": "Pd", "frac": [0.5, 0.5, 0.0]},
+            {"op": "add_atom", "element": "Pd", "frac": [0.5, 0.0, 0.5]},
+            {"op": "add_atom", "element": "Pd", "frac": [0.0, 0.5, 0.5]},
+            {"op": "add_atom", "element": "Pd", "frac": [0.25, 0.25, 0.5]},
+            {"op": "add_atom", "element": "Pd", "frac": [0.25, 0.75, 0.5]},
+            {"op": "add_atom", "element": "Pd", "frac": [0.75, 0.25, 0.5]},
+            {"op": "add_atom", "element": "Pd", "frac": [0.75, 0.75, 0.5]},
+        ],
+    )
+    apply_ops(scene, [{"op": "add_atom", "element": "H", "frac": [0.5, 0.5, 0.25]}])
+    assert len(scene.atoms) == 9
+
+
+def test_cluster_in_a_periodic_box_is_not_a_slab() -> None:
+    """A metal cluster in a periodic vacuum box has the atom-free span on
+    EVERY side — a slab tiles in-plane and keeps the gap on the surface-
+    normal axis only (how the slab op orients its cell)."""
+    pytest.importorskip("ase.build")
+    from ase.cluster import Icosahedron
+
+    from precis.structure.ops import _is_slab_scene
+
+    clu = Icosahedron("Pt", 2)  # Pt13
+    scene = Scene(cell=Cell(np.diag([20.0, 20.0, 20.0]), (True, True, True)))
+    centre = clu.get_center_of_mass()
+    apply_ops(
+        scene,
+        [
+            {
+                "op": "add_atom",
+                "element": "Pt",
+                "cart": list(map(float, pos - centre + 10.0)),
+            }
+            for pos in clu.get_positions()
+        ],
+    )
+    assert len(scene.atoms) == 13
+    assert not _is_slab_scene(scene)
+
+    # The slab op's own product still detects.
+    apply_ops(scene, [{"op": "slab", "element": "Pd", "size": [2, 2, 3]}])
+    assert _is_slab_scene(scene)
+
+
 def test_op_slab_needs_element_and_size() -> None:
     pytest.importorskip("ase.build")
     from precis.structure import OpError

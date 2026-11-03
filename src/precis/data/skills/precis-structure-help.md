@@ -93,8 +93,8 @@ put(
   "ops": [
     {"op": "add_atom", "element": "Pd", "frac": [0.0, 0.0, 0.20]},
     {"op": "add_atom", "element": "Pd", "frac": [0.33, 0.33, 0.30]},
-    {"op": "add_atom", "element": "O",  "frac": [0.16, 0.16, 0.45]},
-    {"op": "add_atom", "element": "H",  "frac": [0.16, 0.16, 0.52]},
+    {"op": "add_atom_site", "element": "O", "site": {"type": "top", "anchors": ["aPd2"]}},
+    {"op": "add_atom_site", "element": "H", "site": {"type": "top", "anchors": ["aO1"]}, "height": 0.97},
     {"op": "add_bond", "i": "aO1", "j": "aH1", "order": 1},
     {"op": "constrain", "atoms": ["aPd1"], "kind": "fixed-all"}
   ]
@@ -135,7 +135,7 @@ record as a read-only design. Caps, refusals and provenance:
 |----|------|--------|
 | `set_cell` | `lattice` or `a,b,c,…` + `pbc` | redefine the cell |
 | `slab` | `element`, `size:[nx,ny,nz]`, `vacuum?`, `fix_layers?`, `a?` | **bulk template** — build an fcc(111) metal slab; **clears the scene** and sets the cell + `pbc (true,true,true)` (ASE-exact atom order, so autocatpath can inject it). Omit the top-level `cell`. `size` is `nx×ny` in-plane repeats × `nz` layers — the cell tiles, so one substitution = 1/(nx·ny) ML coverage. `fix_layers` is an **integer count** of *bottom* layers to freeze (`2` = bottom two layers), **not** a list of layer indices. |
-| `add_atom` | `element`, `frac:[fa,fb,fc]`, `charge?` | place an atom at a raw fractional coordinate (wraps into the cell) — an escape hatch; for an adsorbate on an existing site, use `add_atom_site` instead. `charge` is the declared formal/net charge (integer, default 0 — e.g. a quaternary N `+1`, a carboxylate O `-1`); it feeds the validator's charge-aware valence budget |
+| `add_atom` | `element`, `frac:[fa,fb,fc]`, `site?`, `charge?` | place an atom at a raw fractional coordinate (wraps into the cell) — an escape hatch; on a slab reach for `add_atom_site` first (a hand-typed z buries the adatom inside the metal — preflight rejects an unmarked atom below the top layer). `site` is **declared intent only**, exactly `"subsurface"` or `"interstitial"` — the one legal raw-coordinate below-surface placement: preflight waives the buried verdict for a marked atom (reported as a note) but still fails a hard overlap. `charge` is the declared formal/net charge (integer, default 0 — e.g. a quaternary N `+1`, a carboxylate O `-1`); it feeds the validator's charge-aware valence budget |
 | `add_atom_site` | `element`, `site:{type:"top"\|"bridge"\|"hollow"\|"fcc"\|"hcp", anchors?:[atom labels], near?:label\|element}`, `height?` | place an atom by **naming** a site (1/2/3/3/3 anchors) instead of guessing coordinates — `xy` = the anchors' centroid, `z` = the anchors' top + `height` (Å; default the covalent-radius sum of anchor + placed element). **Omit `anchors`** and precis picks a free site of that type on the slab's top layer (nearest `near`, else the cell centre) — no labels to guess (`precis-structure-slab-help`) |
 | `add_adsorbate` | `species:"H"\|"O"\|"N"\|"OH"\|"H2O"\|"NH"\|"NH2"\|"NH3"\|"C"\|"CH"\|"CH2"\|"CH3"\|"CH4"`, `site:{…}` (as above), `height?`, `rotate?` (angle with unit, `"30deg"` or `"0.5 rad"`, about the surface normal; bare nonzero is rejected) | place a whole adsorbate **group** from one named site: the binding atom lands where `add_atom_site` would put it, the rest follow at the species' gas-phase internal geometry, and the intra-group bonds are minted. The upright orientation is a **pre-relaxation starting guess**, not an adsorbed equilibrium — relax after placing. The CHₓ species bind through C (CH₄ sits one H down, a physisorption guess; CH₃/CH₂/CH have the H's up). Use it for coverage series and spectators instead of hand-placing each H |
 | `transfer` | `atom`\|`from`, `to`, `distance?`, `order?`, `direction?` | move ONE atom onto an acceptor along the acceptor's open coordination direction (default distance = covalent-radius sum) — the bond-swap step of a reaction endpoint. The moved atom's declared bonds drop and `atom`–`to` is minted. `from` picks the atom bonded to it nearest `to`; an equidistant tie refuses naming the candidates — pick with `atom` |
@@ -185,7 +185,7 @@ edit(
     kind="structure",
     id="pd111",
     ops=[
-        {"op": "add_atom", "element": "O", "frac": [0.5, 0.5, 0.55]},
+        {"op": "add_atom_site", "element": "O", "site": {"type": "top", "anchors": ["aPd2"]}},
         {"op": "add_bond", "i": "aO2", "j": "aPd2"},
     ],
 )

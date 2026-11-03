@@ -160,6 +160,7 @@ _STRUCTURE_OWNED_META_KEYS = frozenset(
         "composition",
         "description",
         "last_relax",
+        "site_intent",
     }
 )
 
@@ -243,6 +244,16 @@ class StructureMixin:
             # above is label bookkeeping and keeps the pre-dopant prefix.
             "composition": scene.composition(),
         }
+        # Declared below-surface intent (gr549760, ``add_atom``'s ``site``
+        # marker): ``struct_atoms`` has no intent column, so the label→intent
+        # map rides refs.meta — labels are the stable, never-recycled atom
+        # identity, so a later vacancy just orphans its entry (the map is
+        # recomputed from the live scene on every save, never preserved).
+        site_intent = {
+            label: atom.site for label, atom in scene.atoms.items() if atom.site
+        }
+        if site_intent:
+            meta["site_intent"] = site_intent
         if description:
             meta["description"] = description
         if relax_summary is not None:
@@ -953,7 +964,10 @@ class StructureMixin:
         versioned with it — so there is no honest "measures as of N" to
         reconstruct. The cell/lattice comes from ``refs.meta``, which holds
         only the current one; a scene-at-N therefore carries today's cell,
-        which is exact as long as no op has changed it since N.
+        which is exact as long as no op has changed it since N. The
+        ``site_intent`` label map (``add_atom``'s declared subsurface/
+        interstitial marker, gr549760) rehydrates the same way — applied to
+        whichever live labels still carry it.
         """
         ref = self.get_ref(kind="structure", id=ref_id)
         meta = dict(ref.meta) if (ref is not None and ref.meta) else {}
@@ -1019,6 +1033,14 @@ class StructureMixin:
             )
             handles[str(label)] = int(aid)
             id_to_label[int(aid)] = str(label)
+        # Re-apply the declared below-surface intent saved on refs.meta
+        # (gr549760): labels are stable identity, so a marker lands back on
+        # its atom; an entry whose label was since removed is skipped.
+        from precis.structure.ops import _SUBSURFACE_SITE_INTENT
+
+        for label, site in (meta.get("site_intent") or {}).items():
+            if label in scene.atoms and site in _SUBSURFACE_SITE_INTENT:
+                scene.atoms[str(label)].site = str(site)
         for kind, order, prov, i, j, image, maker in brows:
             li, lj = id_to_label.get(i), id_to_label.get(j)
             if li is None or lj is None:

@@ -93,8 +93,9 @@ count (1/2/3/3/3 anchors), a repeated or missing anchor label, anchors
 naming the other hollow (`form an hcp hollow, not fcc`), a site key
 other than `type`/`anchors`/`near` (`anchor` asks `did you mean
 'anchors'?`), `anchors` and `near` together, `set_element` given both
-`atom` and `site`, and `add_adsorbate 'species' must be one of […]`
-outside the catalogue.
+`atom` and `site`, `add_atom 'site'` outside
+`"subsurface"`/`"interstitial"`, and `add_adsorbate 'species' must be
+one of […]` outside the catalogue.
 
 ## Place an adsorbate on a real site, not a guessed z
 
@@ -113,10 +114,14 @@ edit(
 ```
 
 `z` comes from the anchors' own geometry, never a remembered constant — a
-`frac` copied from another cell doesn't transfer. Use raw `add_atom` only
-when no anchor exists yet; on the standard Pd(111) `[3,3,4]`/vacuum-10
-cell, on-surface hollow is `z≈0.46` (a ~1 Å H–metal bond) — `frac z=0.66`
-looks plausible but floats H ~4.3 Å off the surface: preflight fails or
+`frac` copied from another cell doesn't transfer. Raw `add_atom` still
+builds the slab atoms of a hand-made cell and is the one way to place a
+DELIBERATE subsurface or interstitial atom — declared on the op:
+`{"op":"add_atom","element":"B","frac":[…],"site":"subsurface"}`
+(`"interstitial"` is the other accepted value). Preflight rejects an
+unmarked atom buried below the top layer, and a marked one still fails
+a hard overlap — for anything meant to sit ON the surface, a guessed z
+either buries the atom or floats it in the vacuum: preflight fails or
 the relax finishes in 0 steps at a subsurface-degenerate energy.
 
 ## Let precis pick the site — no anchors

@@ -199,6 +199,127 @@ class TestClash:
         assert any("proposed" in r.message for r in clashes)
 
 
+class TestBuried:
+    """gr549760: a hand-typed fractional z lands an adatom *inside* the slab —
+    the prompt's old ≈0.52 recipe sits between slab layers, and preflight used
+    to pass it. The buried check fails the jammed position while deliberate
+    interstitials (the PdH case above) and subsurface substitutions pass —
+    and an explicit ``site`` marker on the add_atom op declares the intent."""
+
+    @staticmethod
+    def _cu_slab() -> Scene:
+        scene = Scene(cell=Cell(np.eye(3)))
+        ops.apply_ops(
+            scene,
+            [{"op": "slab", "element": "Cu", "size": [3, 3, 3], "fix_layers": 1}],
+        )
+        return scene
+
+    def test_adatom_at_the_old_recipe_z_is_buried(self) -> None:
+        scene = self._cu_slab()
+        ops.apply_ops(
+            scene,
+            [{"op": "add_atom", "element": "Pd", "frac": [0.33, 0.33, 0.52]}],
+        )
+        verdict = pf.preflight(scene)
+        buried = [r for r in verdict.reasons if r.code == "buried"]
+        assert verdict.ok is False
+        assert any(r.atom == "aPd1" for r in buried)
+        assert "below the slab's top layer" in buried[0].message
+
+    def test_marked_adatom_at_the_same_spot_passes_with_a_note(self) -> None:
+        """The same position with the ``site`` marker is a declared
+        subsurface placement — ok=True, reported as a non-gating note."""
+        scene = self._cu_slab()
+        ops.apply_ops(
+            scene,
+            [
+                {
+                    "op": "add_atom",
+                    "element": "Pd",
+                    "frac": [0.33, 0.33, 0.52],
+                    "site": "subsurface",
+                }
+            ],
+        )
+        verdict = pf.preflight(scene)
+        assert not any(r.code == "buried" for r in verdict.reasons)
+        assert verdict.ok is True, verdict.reasons
+        note = [c for c in verdict.caveats if c.atom == "aPd1"]
+        assert note and note[0].code == "subsurface"
+        assert "intended" in note[0].message
+
+    def test_marked_atom_overlapping_a_slab_atom_still_fails(self) -> None:
+        """Declared intent rescues the buried verdict, not a hard overlap:
+        a marked atom inside half the covalent-radii sum of a slab atom is
+        a coordinate mistake, not a site."""
+        scene = self._cu_slab()
+        top = max(scene.atoms.values(), key=lambda a: a.frac[2])
+        frac = top.frac.copy()
+        frac[2] -= 0.9 / float(np.linalg.norm(scene.cell.lattice[2]))
+        ops.apply_ops(
+            scene,
+            [
+                {
+                    "op": "add_atom",
+                    "element": "Pd",
+                    "frac": frac.tolist(),
+                    "site": "subsurface",
+                }
+            ],
+        )
+        verdict = pf.preflight(scene)
+        assert verdict.ok is False
+        buried = [r for r in verdict.reasons if r.code == "buried"]
+        assert any(r.atom == "aPd1" for r in buried)
+        assert "coordinate mistake" in buried[0].message
+
+    def test_marked_subsurface_boron_passes(self) -> None:
+        """The B-subsurf-1 candidate shape (slab, then add_atom B at frac
+        z 0.45) with the marker — an intended below-surface atom at a real
+        hole distance."""
+        scene = self._cu_slab()
+        ops.apply_ops(
+            scene,
+            [
+                {
+                    "op": "add_atom",
+                    "element": "B",
+                    "frac": [0.33, 0.33, 0.45],
+                    "site": "subsurface",
+                }
+            ],
+        )
+        verdict = pf.preflight(scene)
+        assert not any(r.code == "buried" for r in verdict.reasons)
+
+    def test_site_placed_adatom_passes(self) -> None:
+        scene = self._cu_slab()
+        ops.apply_ops(
+            scene,
+            [{"op": "add_atom_site", "element": "Pd", "site": {"type": "fcc"}}],
+        )
+        verdict = pf.preflight(scene)
+        assert not any(r.code == "buried" for r in verdict.reasons)
+
+    def test_subsurface_substitution_is_not_buried(self) -> None:
+        """A ``set_element`` dopant one layer down keeps the lattice site —
+        below the top layer but at a normal bond distance, not jammed."""
+        scene = self._cu_slab()
+        ops.apply_ops(
+            scene,
+            [
+                {
+                    "op": "set_element",
+                    "element": "Pd",
+                    "site": {"type": "subsurface"},
+                }
+            ],
+        )
+        verdict = pf.preflight(scene)
+        assert not any(r.code == "buried" for r in verdict.reasons)
+
+
 class TestPorous:
     def test_sparse_arrangement_flagged_as_porous(self) -> None:
         scene = Scene(cell=Cell(np.diag([20.0, 20.0, 20.0]), (True, True, True)))

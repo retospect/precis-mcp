@@ -139,3 +139,92 @@ class TestPutPreflightGate:
         monkeypatch.setenv(_ENV, "1")
         resp = structure.put(id="pd_slab", text=_PD_SLAB)
         assert "created" in resp.body
+
+
+class TestSubsurfaceIntentPersistence:
+    """gr549760 follow-up: the declared below-surface marker (``add_atom``'s
+    ``site``) is part of the design — ``struct_atoms`` has no intent column,
+    so the label→intent map rides ``refs.meta`` through save/load. Without
+    it a stored candidate passed at creation would fail as 'buried' on its
+    next edit or at autocatpath dispatch (a bare ``structure_load``). The
+    band here is 0.5–0.6× the radii sum: unmarked it's jammed, marked it's
+    a declared subsurface."""
+
+    _SUBSURF_SLAB = json.dumps(
+        {
+            "ops": [
+                {"op": "slab", "element": "Cu", "size": [3, 3, 3], "fix_layers": 1},
+                {
+                    "op": "add_atom",
+                    "element": "Pd",
+                    "frac": [0.33, 0.33, 0.52],
+                    "site": "subsurface",
+                },
+            ]
+        }
+    )
+    _UNMARKED_SLAB = json.dumps(
+        {
+            "ops": [
+                {"op": "slab", "element": "Cu", "size": [3, 3, 3], "fix_layers": 1},
+                {
+                    "op": "add_atom",
+                    "element": "Pd",
+                    "frac": [0.33, 0.33, 0.52],
+                },
+            ]
+        }
+    )
+
+    def test_unmarked_atom_in_the_band_is_rejected(
+        self, structure, monkeypatch
+    ) -> None:
+        monkeypatch.setenv(_ENV, "1")
+        with pytest.raises(BadInput, match="structure preflight rejected"):
+            structure.put(id="cu_pdburied", text=self._UNMARKED_SLAB)
+
+    def test_marked_atom_keeps_its_intent_across_save_load(
+        self, structure, monkeypatch
+    ) -> None:
+        monkeypatch.setenv(_ENV, "1")
+        resp = structure.put(id="cu_pdsub", text=self._SUBSURF_SLAB)
+        assert "created" in resp.body
+        ref = structure.store.get_ref(kind="structure", id="cu_pdsub")
+        assert ref.meta["site_intent"] == {"aPd1": "subsurface"}
+        scene, _ = structure.store.structure_load(ref.id)
+        assert scene.atoms["aPd1"].site == "subsurface"
+        # The rehydrated marker still waives the buried verdict.
+        verdict = preflight_mod.preflight(scene)
+        assert not any(r.code == "buried" for r in verdict.reasons)
+
+    def test_a_later_unrelated_edit_does_not_flip_it_to_buried(
+        self, structure, monkeypatch
+    ) -> None:
+        """The exact failure persistence closes: an adsorbate added on the
+        next edit re-judges the whole scene — the marker must ride along."""
+        monkeypatch.setenv(_ENV, "1")
+        structure.put(id="cu_pdsub", text=self._SUBSURF_SLAB)
+        resp = structure.edit(
+            id="cu_pdsub",
+            ops=[{"op": "add_atom_site", "element": "H", "site": {"type": "fcc"}}],
+        )
+        assert "edited" in resp.body
+        ref = structure.store.get_ref(kind="structure", id="cu_pdsub")
+        assert ref.meta["site_intent"] == {"aPd1": "subsurface"}
+        scene, _ = structure.store.structure_load(ref.id)
+        assert scene.atoms["aPd1"].site == "subsurface"
+        verdict = preflight_mod.preflight(scene)
+        assert not any(r.code == "buried" for r in verdict.reasons)
+
+    def test_removing_the_marked_atom_drops_its_entry(
+        self, structure, monkeypatch
+    ) -> None:
+        """The map is recomputed from the live scene each save — a vacancy
+        of the marked atom leaves no stale intent behind."""
+        monkeypatch.setenv(_ENV, "1")
+        structure.put(id="cu_pdsub", text=self._SUBSURF_SLAB)
+        structure.edit(id="cu_pdsub", ops=[{"op": "vacancy", "atom": "aPd1"}])
+        ref = structure.store.get_ref(kind="structure", id="cu_pdsub")
+        assert "site_intent" not in (ref.meta or {})
+        scene, _ = structure.store.structure_load(ref.id)
+        assert "aPd1" not in scene.atoms

@@ -1535,15 +1535,13 @@ def _reaction_context(store: Store, quest: Ref, *, fr: Any | None = None) -> str
         '("subsurface" = one layer down; "near" works as above)\n'
         "- vacancy — REMOVE a surface atom (defect site): "
         f'{{"op":"vacancy","atom":"{top_label}"}}\n'
-        "- add_atom (advanced/escape hatch) — a raw fractional coordinate: "
-        '{"op":"add_atom","element":"Cu","frac":[0.33,0.33,0.52]} '
-        "— only when no existing atom anchors the site you mean. DERIVE z "
-        "from the cell, never copy it: the top layer sits near frac z≈0.40 "
-        "in the standard cell and an adsorbate belongs ONE BOND LENGTH above "
-        "it (≈0.46–0.47 for H, ≈0.52 for a metal adatom); z=0.66 floats the "
-        "atom ~4 Å above the surface (preflight rejection, or a silent relax "
-        "into a subsurface-degenerate site). add_atom_site computes the "
-        "height for you — prefer it.\n"
+        "- add_atom (escape hatch) — a raw fractional coordinate. On a "
+        "slab use it ONLY for a deliberate subsurface or interstitial "
+        'atom, declaring the intent: {"op":"add_atom","element":"B",'
+        '"frac":[x,y,z],"site":"subsurface"} ("interstitial" also works) '
+        "— preflight rejects an unmarked atom buried below the top "
+        "layer. Adsorbates belong to add_atom_site / add_adsorbate / "
+        "set_element.\n"
         "You may combine several ops (e.g. two set_element for a 2-atom alloy, "
         "or set_element + vacancy). Vary composition; do not hand-enumerate "
         "atoms. Worked recipes (dopant adatoms, co-adsorbates, IS/FS pairs): "

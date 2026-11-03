@@ -58,6 +58,13 @@ class Atom:
     #: generator-built atoms. Persisted on ``struct_atoms.maker`` so it
     #: rides relax versions like ``label`` does.
     maker: int | None = None
+    #: Declared below-surface intent (gr549760): ``"subsurface"`` or
+    #: ``"interstitial"`` when the atom was placed by ``add_atom``'s
+    #: ``site`` marker — preflight reads it to treat a deliberate
+    #: below-top-layer atom as intended rather than buried. Persisted
+    #: off-row as a label→intent map on ``refs.meta`` (``struct_atoms``
+    #: has no intent column); ``structure_load`` re-applies it.
+    site: str | None = None
 
 
 @dataclass

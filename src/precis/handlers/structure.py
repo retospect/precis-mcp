@@ -1487,7 +1487,9 @@ class StructureHandler(Handler):
             raise BadInput(
                 "edit(kind='structure') does not support dry_run yet — ops mutate "
                 "the cell/bond graph (and may dispatch compute); omit dry_run to apply",
-                next="edit(kind='structure', id='pd111', ops=[{'op':'add_atom', ...}])",
+                next="edit(kind='structure', id='pd111', "
+                "ops=[{'op':'add_atom_site','element':'O',"
+                "'site':{'type':'top'}}])",
             )
         if id is None or not str(id).strip():
             raise BadInput(
@@ -1510,7 +1512,8 @@ class StructureHandler(Handler):
             raise BadInput(
                 "edit(kind='structure') requires ops=",
                 next="edit(kind='structure', id='pd111', "
-                "ops=[{'op':'add_atom','element':'O','frac':[0.33,0.33,0.55]}])",
+                "ops=[{'op':'add_atom_site','element':'O',"
+                "'site':{'type':'fcc'}}])",
             )
         version = self.store.structure_version(ref.id)
         scene, _ = self.store.structure_load(ref.id)
@@ -4037,8 +4040,8 @@ class StructureHandler(Handler):
             if not isinstance(op, dict) or "op" not in op:
                 raise BadInput(
                     f"op missing 'op' key: {op!r}",
-                    next="ops=[{'op': 'add_atom', 'element': 'O', "
-                    "'frac': [0.5, 0.5, 0.6]}]",
+                    next="ops=[{'op': 'add_atom_site', 'element': 'O', "
+                    "'site': {'type': 'top'}}]",
                 )
             name = op["op"]
             if name == "relax":

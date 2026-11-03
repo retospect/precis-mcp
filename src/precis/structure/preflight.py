@@ -206,13 +206,36 @@ INTERNAL_VOID_FRAC = 0.15
 #: the porosity check's close-packing estimate.
 FCC_PACKING_FRACTION = 0.7405
 
+#: A candidate atom this far (Å) or more under the slab's top metal layer
+#: counts as *below the surface* — the same layer tolerance the site ops
+#: cluster with (``ops._LAYER_TOL``; fcc(111) interlayer spacing is ~2 Å).
+BURIED_DEPTH_TOL = 0.5
+
+#: A below-surface atom closer than this fraction of the covalent-radii
+#: sum to a slab atom is jammed into the lattice, not adsorbed on it or
+#: seated at a proper interstitial — the validator's own hard-sphere
+#: fraction (``validate.OVERLAP_FRACTION``: under 0.6× the sum is a
+#: coordinate mistake, not a bond). A real bond/hole distance is ~1.0×,
+#: the β-PdH tetrahedral fixture H's sit ~0.66×, while a hand-typed frac
+#: z lands a metal adatom at ~0.55× (gr549760 — the quest prompt's ≈0.52
+#: recipe put adatoms between slab layers and preflight passed them).
+BURIED_OVERLAP_FRACTION = 0.6
+
+#: The floor a DECLARED subsurface/interstitial atom (``add_atom``'s
+#: ``site`` marker) is still judged against — the validator's gross
+#: band (``validate.GROSS_OVERLAP_FRACTION``): inside half the radii
+#: sum the position is a coordinate mistake, not a strained site, and
+#: declared intent does not rescue it.
+SUBSURFACE_OVERLAP_FRACTION = 0.5
+
 
 @dataclass
 class PreflightReason:
     """One preflight finding — always actionable, always names the atom."""
 
-    code: str  # element_out_of_box | clash | detached | ceiling | no_vacuum
-    #           | porous | internal_void
+    code: str  # element_out_of_box | clash | buried | detached | ceiling
+    #           | no_vacuum | porous | internal_void; non-gating caveats add
+    #           | domain_straddle | domain_charged | subsurface | interstitial
     message: str  # names the atom + element + problem + a fix verb
     atom: str | int | None = None  # the structure atom handle (preferred)
     element: str | None = None
@@ -279,6 +302,9 @@ def preflight(
         # The proposed geometry is what gets persisted and dispatched, so an
         # overlap is judged BEFORE the settle has a chance to hide it.
         proposed = _clash_reasons(scene, atoms, labels, settled=False)
+        buried_reasons, buried_notes = _buried_reasons(scene, atoms, labels)
+        proposed += buried_reasons
+        caveats += buried_notes
         _settle(atoms)
     except Exception:  # any ASE/conversion/settle failure ⇒ nothing to judge
         return PreflightVerdict(ok=not reasons, reasons=reasons, caveats=caveats)
@@ -589,6 +615,112 @@ def _clash_reasons(
             )
         )
     return reasons
+
+
+def _buried_reasons(
+    scene: Scene, atoms, labels: list[str]
+) -> tuple[list[PreflightReason], list[PreflightReason]]:
+    """Atoms jammed INSIDE a slab — under the top metal layer and closer
+    to a slab atom than any real bond or interstitial sits (gr549760).
+
+    Runs only on a true slab scene (:func:`ops._is_slab_scene`: ≥2 dense
+    metal layers, in-plane periodic, the vacuum gap along the same axis
+    the layers stack on — so a bulk cell, a molecule and a metal cluster
+    in a periodic box are all out of scope). The slab set is geometric:
+    the dense metal layers :func:`ops._metal_layers` reports. A candidate
+    is any non-dominant-element atom, or a dominant-element atom outside
+    every dense layer (a ``set_element`` substitution keeps the lattice
+    site and stays slab; an adatom/interstitial does not). An unmarked
+    candidate is flagged only when *jammed* — a deliberate interstitial
+    at a proper hole distance (the β-PdH octahedral H is ~1.1× the radii
+    sum) and an atom cleanly below the slab's underside both pass.
+
+    The declared-intent path: an atom placed by ``add_atom`` carrying
+    ``site: "subsurface"|"interstitial"`` (:data:`ops._SUBSURFACE_SITE_INTENT`,
+    stamped on :attr:`Atom.site`) is *intended* below the surface — the
+    buried verdict is waived and the atom is reported as a non-gating
+    note instead, unless it is a hard overlap (inside
+    :data:`SUBSURFACE_OVERLAP_FRACTION` of the radii sum — a coordinate
+    mistake, not a site). Runs on the PROPOSED geometry, same as the
+    clash pass — the settle is not what reaches the MLIP.
+    """
+    from ase.data import covalent_radii
+
+    from .ops import _SUBSURFACE_SITE_INTENT, _is_slab_scene, _metal_layers
+
+    if not _is_slab_scene(scene):
+        return [], []
+    layers = _metal_layers(scene)
+    layer_members = {la for _z, members in layers for la in members}
+    member_idx = [i for i, la in enumerate(labels) if la in layer_members]
+    if not member_idx:
+        return [], []
+    dominant = _dominant_element(scene)
+    z_top = layers[-1][0]
+    numbers = atoms.get_atomic_numbers()
+    radii = np.nan_to_num(covalent_radii[numbers], nan=1.5)
+    positions = atoms.get_positions()
+    reasons: list[PreflightReason] = []
+    notes: list[PreflightReason] = []
+    for i, la in enumerate(labels):
+        if la in layer_members and scene.atoms[la].element == dominant:
+            continue  # a lattice atom at its site
+        depth = z_top - float(positions[i][2])
+        if depth <= BURIED_DEPTH_TOL:
+            continue
+        others = [k for k in member_idx if k != i]
+        dists = atoms.get_distances(i, others, mic=True)
+        j = others[int(np.argmin(dists))]
+        dist = float(dists.min())
+        marked = scene.atoms[la].site in _SUBSURFACE_SITE_INTENT
+        floor = (SUBSURFACE_OVERLAP_FRACTION if marked else BURIED_OVERLAP_FRACTION) * (
+            radii[i] + radii[j]
+        )
+        if dist >= floor:
+            if marked:
+                notes.append(
+                    PreflightReason(
+                        code=scene.atoms[la].site or "subsurface",
+                        atom=la,
+                        element=scene.atoms[la].element,
+                        message=(
+                            f"atom {la} ({scene.atoms[la].element}) is a "
+                            f"declared {scene.atoms[la].site!r} atom "
+                            f"{depth:.2f} Å below the slab's top layer, "
+                            f"{dist:.2f} Å from {labels[j]} — treated as "
+                            "intended, not buried."
+                        ),
+                    )
+                )
+            continue
+        lb = labels[j]
+        if marked:
+            message = (
+                f"atom {la} ({scene.atoms[la].element}) is declared "
+                f"{scene.atoms[la].site!r} but sits {dist:.2f} Å from {lb} "
+                f"({scene.atoms[lb].element}) — under half the "
+                "covalent-radii sum, a coordinate mistake rather than a "
+                "subsurface/interstitial site; move it to a real hole."
+            )
+        else:
+            message = (
+                f"atom {la} ({scene.atoms[la].element}) sits {depth:.2f} Å "
+                f"below the slab's top layer, {dist:.2f} Å from {lb} "
+                f"({scene.atoms[lb].element}) — inside the metal, not "
+                "adsorbed on it; place it above the surface with "
+                "add_atom_site on a named site (top|bridge|hollow|fcc|hcp), "
+                "or declare a deliberate below-surface placement with the "
+                "add_atom 'site' marker (subsurface|interstitial)."
+            )
+        reasons.append(
+            PreflightReason(
+                code="buried",
+                atom=la,
+                element=scene.atoms[la].element,
+                message=message,
+            )
+        )
+    return reasons, notes
 
 
 def _geometry_checks(scene: Scene, atoms, labels: list[str]) -> list[PreflightReason]:

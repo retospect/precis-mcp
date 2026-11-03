@@ -198,6 +198,18 @@ def _op_add_atom(scene: Scene, op: dict[str, Any]) -> None:
         raise OpError(
             f"add_atom 'charge' must be an integer, got {charge_raw!r}"
         ) from exc
+    site = op.get("site")
+    if site is not None and (
+        not isinstance(site, str) or site not in _SUBSURFACE_SITE_INTENT
+    ):
+        raise OpError(
+            f"add_atom 'site' declares a deliberate below-surface "
+            f"placement — one of {sorted(_SUBSURFACE_SITE_INTENT)}, got "
+            f"{site!r}; surface sites (top|bridge|hollow|fcc|hcp) belong "
+            "to add_atom_site",
+            example=_SITE_EXAMPLE,
+            next=_SITE_HINT,
+        )
     scene.atoms[label] = Atom(
         label=label,
         element=element,
@@ -206,7 +218,18 @@ def _op_add_atom(scene: Scene, op: dict[str, Any]) -> None:
         oxidation=op.get("oxidation"),
         charge=charge,
         hybridization=op.get("hybridization"),
+        site=site,
     )
+
+
+#: The intent markers raw ``add_atom`` accepts on its ``site`` key
+#: (gr549760): a declared below-surface placement — ``"subsurface"`` for
+#: an atom meant one layer down, ``"interstitial"`` for a bulk-style
+#: hole. The op does no site resolution; it only stamps :attr:`Atom.site`
+#: so preflight treats a deliberate below-top-layer atom as intended
+#: instead of buried (a hard overlap still fails). The surface site
+#: vocabulary lives on ``add_atom_site``.
+_SUBSURFACE_SITE_INTENT = frozenset({"subsurface", "interstitial"})
 
 
 #: Anchor count required per site type (v1 closed set — no interstitials yet;
@@ -443,6 +466,48 @@ def _metal_layers(scene: Scene) -> list[tuple[float, list[str]]]:
         for c in clusters
         if len(c) > full / 2
     ]
+
+
+#: The atom-free span (Å) along some cell axis that marks a *surface* cell —
+#: the ``slab`` op's default vacuum is 10 Å a side while a bulk cell's largest
+#: gap is an interlayer spacing (~2 Å), so this sits between them.
+_SLAB_VACUUM_A = 4.0
+
+
+def _is_slab_scene(scene: Scene) -> bool:
+    """True when ``scene`` is a surface slab — the ``slab`` op's product.
+
+    The ``slab`` op (ASE ``fcc111``) always orients the cell the same way:
+    lattice vectors 0 and 1 span the surface, vector 2 is the surface
+    normal carrying the vacuum gap, and :func:`_metal_layers` stacks the
+    dense metal layers along it — so the layer stack and the gap are read
+    along the SAME axis here. A scene is a slab when it holds ≥2 dense
+    metal layers, is periodic on the two in-plane axes, and shows the
+    atom-free span (≥ :data:`_SLAB_VACUUM_A`) along axis 2 ONLY: a slab
+    tiles in-plane so its in-plane gaps never exceed an interatomic
+    spacing, while a metal cluster in a periodic vacuum box has the gap
+    on every side and is not a slab. A bulk cell fails the axis-2 gap
+    test (no vacuum — an interstitial ``add_atom`` there is legitimate),
+    a molecule the layer test."""
+    pbc = scene.cell.pbc
+    if not (pbc[0] and pbc[1]):
+        return False
+    if len(_metal_layers(scene)) < 2:
+        return False
+    lat = scene.cell.lattice
+    scaled = np.asarray([a.frac for a in scene.atoms.values()], dtype=float) % 1.0
+
+    def max_gap(ax: int) -> float:
+        h = float(np.linalg.norm(lat[ax]))
+        if h < 1e-9:
+            return 0.0
+        coords = np.sort(scaled[:, ax])
+        gaps = np.diff(np.concatenate([coords, coords[:1] + 1.0]))
+        return float(gaps.max()) * h
+
+    if max_gap(2) < _SLAB_VACUUM_A:
+        return False
+    return max(max_gap(0), max_gap(1)) < _SLAB_VACUUM_A
 
 
 def _in_plane_shifts(scene: Scene) -> list[np.ndarray]:

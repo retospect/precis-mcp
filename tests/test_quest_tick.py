@@ -2480,6 +2480,13 @@ class TestReactionContext:
         # in the reaction quest's own op menu too.
         assert '"site":{"type":"fcc"}}' in prompt
         assert "precis-structure-slab-help" in prompt
+        # gr549760: the old recipe's hard-coded frac-z guidance put adatoms
+        # INSIDE the slab — the menu keeps raw add_atom only for a declared
+        # subsurface/interstitial atom and carries no fractional-z numbers.
+        assert "subsurface" in prompt
+        assert '"site":"subsurface"' in prompt
+        assert "≈0.40" not in prompt and "≈0.52" not in prompt
+        assert '"op":"add_atom","element":"Cu"' not in prompt
 
     def test_reaction_context_steers_toward_novelty_without_enumerating_elements(
         self, store: Any
