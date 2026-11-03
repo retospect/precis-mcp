@@ -4887,7 +4887,7 @@ class PcbHandler(Handler):
         with no cached row silently DRC'd at a synthesized bound (the
         ``synthesized_footprint`` finding, :func:`precis.pcb.drc.
         check_synthesized_footprint`) with no MCP-facing way to close the
-        gap. Two modes:
+        gap. Three modes:
 
         ``args.part``/``args.parts`` — pull each C-number through the real
         EasyEDA fetcher (:func:`precis.pcb.easyeda.fetch_component`, wired
@@ -4895,6 +4895,18 @@ class PcbHandler(Handler):
         re-pulls even when already cached. A per-part failure (network,
         vendor, no-footprint) is reported in that part's own row — never
         raised — so one bad C-number in a batch doesn't lose the rest.
+
+        ``args.missing=True`` (with ``id`` naming a board, gr558714) —
+        resolves ``args.parts`` itself: every placed catalog-part
+        instance's C-number that has no cached footprint row
+        (:meth:`_board_missing_footprint_cnumbers`), deduped, then runs
+        the exact same fetch+cache loop as an explicit ``args.parts``
+        list (``args.force`` composes). Closes the gap an agent otherwise
+        has no way through — the design names instances by refdes, not
+        C-number, and ``get(kind='part', view='footprint')`` on an
+        unresolved C-number only ever 404s (that NotFound is
+        intentional, not a miss to auto-fetch on). Needs a board: there
+        is nothing to scan design-free.
 
         ``args.footprint`` (with ``args.part`` naming exactly one C-number)
         authors a footprint directly, for a part the API has nothing for —
@@ -4954,10 +4966,27 @@ class PcbHandler(Handler):
                 + self._footprint_judge_lines(ref, [lcsc], judged)
             )
 
-        if not parts:
+        missing_mode = bool(args.get("missing"))
+        if missing_mode:
+            if ref is None:
+                raise BadInput(
+                    "op='footprint' with args.missing=True needs id= (a "
+                    "board) — nothing to scan design-free",
+                    next="put(kind='pcb', id='<board>', args={'op':"
+                    "'footprint','missing':True})",
+                )
+            parts = self._board_missing_footprint_cnumbers(ref.id)
+            if not parts:
+                return Response(
+                    body="# footprint — every placed catalog-part instance "
+                    f"on {ref.slug!r} already has a cached footprint"
+                )
+        elif not parts:
             raise BadInput(
                 "op='footprint' needs args.part (one C-number) or "
-                "args.parts (a list), or args.footprint to author one",
+                "args.parts (a list), args.missing=True to bulk-fetch a "
+                "board's uncached catalog parts, or args.footprint to "
+                "author one",
                 next="put(kind='pcb', id='slug', args={'op':'footprint',"
                 "'part':'C639448'})",
             )
@@ -5021,6 +5050,23 @@ class PcbHandler(Handler):
                 f"  {lcsc}: {note}\n" for lcsc, note in dropped
             )
         return Response(body=body)
+
+    def _board_missing_footprint_cnumbers(self, ref_id: int) -> list[str]:
+        """C-numbers of every placed catalog-part instance on this board
+        whose ``part_footprints`` cache row doesn't exist yet — the
+        ``args.missing=True`` scan for ``_op_footprint``. Same placed +
+        ``part_lcsc`` filter ``_fab_model``'s ``missing`` warning applies
+        by refdes (pcb.py's ``has_pads``/``missing`` scan), here deduped
+        to C-numbers instead."""
+        design = self.store.pcb_load(ref_id)
+        lcscs = {
+            str(i["part_lcsc"]).strip().upper()
+            for i in design["instances"]
+            if i.get("part_lcsc") and i.get("x") is not None and i.get("y") is not None
+        }
+        return sorted(
+            lcsc for lcsc in lcscs if self.store.part_footprint_get(lcsc) is None
+        )
 
     def _put_footprints_judged(
         self, ref: Any, footprints: dict[str, dict[str, Any]]
@@ -6178,7 +6224,8 @@ class PcbHandler(Handler):
                 "fall back to SYNTHESIZED land patterns (bounds, not the real "
                 f"part): {', '.join(missing[:8])}"
                 + ("…" if len(missing) > 8 else "")
-                + " (fetch via precis.pcb.footprint first)"
+                + f" (put(kind='pcb', id={slug!r}, args={{'op':"
+                "'footprint','missing':True}) bulk-fetches every one)"
             )
         # `board_pads` (module docstring, verbatim) "contributes nothing"
         # for an instance with no cached footprint, and — per PIN — nothing
@@ -8179,7 +8226,9 @@ class PcbHandler(Handler):
             head += (
                 f"\n{n_synth} part(s) have no cached footprint — checked at a "
                 "synthesized bound (see the synthesized_footprint finding(s) "
-                "below); their DRC results are not a verdict"
+                "below); their DRC results are not a verdict — "
+                "put(kind='pcb', id='<board>', args={'op':'footprint',"
+                "'missing':True}) bulk-fetches them"
             )
         if pads_only:
             # State the scope EXPLICITLY (round-4 contract) so a clean

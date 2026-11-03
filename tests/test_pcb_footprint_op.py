@@ -142,6 +142,85 @@ def test_op_footprint_parts_batch_and_force(pcb, monkeypatch):
     assert calls.count("C222222") == 2  # force re-pulled despite the cache hit
 
 
+# ── (a2) args.missing=True — bulk-fetch a board's uncached catalog parts ──
+
+
+def _placed_catalog_design(*lcscs: str) -> dict:
+    return {
+        "components": [
+            {
+                "refdes": f"U{i + 1}",
+                "label": f"catalog part {i + 1}",
+                "part": lcsc,
+                "x": float(i) * 5.0,
+                "y": 0.0,
+                "fixed": "both",
+                "pins": [{"name": "A"}, {"name": "B"}],
+            }
+            for i, lcsc in enumerate(lcscs)
+        ],
+        "nets": [],
+        "connections": [],
+    }
+
+
+def test_op_footprint_missing_bulk_fetches_a_boards_uncached_catalog_parts(
+    pcb, monkeypatch
+):
+    """gr558714: a board with several placed catalog parts and no cached
+    footprint had no MCP-facing way to fetch them in bulk — an agent had
+    no way to self-assemble the C-numbers from refdes alone.
+    ``args.missing=True`` resolves them itself, dedupes, and runs the
+    same fetch+cache loop as an explicit ``args.parts`` list — leaving a
+    part that is already cached untouched."""
+    calls: list[str] = []
+
+    def fake(lcsc: str) -> dict:
+        calls.append(lcsc)
+        return _fake_footprint(source=f"easyeda:packageDetail:{lcsc}")
+
+    monkeypatch.setattr(pcb_footprint_mod, "_easyeda_fetch", fake)
+    pcb.put(id="fp-missing", args=_placed_catalog_design(_LCSC, "C222222", "C333333"))
+    # C333333 is authored before the scan — missing=True only resolves
+    # C-numbers with NO cache row, so this one must stay untouched.
+    pcb.put(
+        id="fp-missing",
+        args={
+            "op": "footprint",
+            "part": "C333333",
+            "footprint": {
+                "pads": [{"pin": "1", "shape": "rect", "x": 0.0, "y": 0.0, "w": 0.5}]
+            },
+        },
+    )
+
+    resp = pcb.put(id="fp-missing", args={"op": "footprint", "missing": True})
+
+    assert "2/2 cached" in resp.body
+    assert set(calls) == {_LCSC, "C222222"}
+    assert pcb.store.part_footprint_get(_LCSC) is not None
+    assert pcb.store.part_footprint_get("C222222") is not None
+    row = pcb.store.part_footprint_get("C333333")
+    assert row is not None
+    assert row["source"] == "authored"  # untouched, never refetched
+
+
+def test_op_footprint_missing_needs_a_board(pcb):
+    with pytest.raises(BadInput, match="needs id="):
+        pcb.put(args={"op": "footprint", "missing": True})
+
+
+def test_op_footprint_missing_is_a_noop_when_nothing_is_missing(pcb, monkeypatch):
+    monkeypatch.setattr(
+        pcb_footprint_mod, "_easyeda_fetch", lambda lcsc: _fake_footprint()
+    )
+    pcb.put(id="fp-allcached", args=_placed_catalog_design(_LCSC))
+    pcb.put(id="fp-allcached", args={"op": "footprint", "part": _LCSC})
+
+    resp = pcb.put(id="fp-allcached", args={"op": "footprint", "missing": True})
+    assert "already has a cached footprint" in resp.body
+
+
 # ── (b) a failing fetcher reports per-part, never raises ────────────────
 
 

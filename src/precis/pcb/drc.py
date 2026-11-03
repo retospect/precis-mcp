@@ -4360,7 +4360,8 @@ def check_undeclared_pads(
                 detail=(
                     f"{names}: no cached footprint — whether these parts "
                     "have pads no pin declares CANNOT be checked "
-                    "(op='footprint' or a catalog fetch completes them)"
+                    "(put(kind='pcb', id='<board>', args={'op':'footprint',"
+                    "'missing':True}) bulk-fetches them)"
                 ),
                 objects=tuple(
                     {"refdes": str(r), "not_checked": True} for r in sorted(unchecked)
